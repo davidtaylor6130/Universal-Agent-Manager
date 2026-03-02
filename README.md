@@ -7,6 +7,8 @@
 
 Universal Agent Manager (UAM) is a **local-first desktop interface for Gemini CLI workflows**.
 
+It began as a personal fix: Gemini CLI never offered an easy way to edit past prompts or keep session history quietly in the background, so I wrapped it with UAM to track history, attachments, and folder structure without fighting the native log files.
+
 It provides a structured UI for managing Gemini sessions while **keeping Gemini CLI as the source of truth**.
 
 UAM is designed to be **transparent, auditable, and non-invasive**, making it suitable for development environments with strict security requirements.
