@@ -10,16 +10,25 @@
 #include "core/gemini_command_builder.h"
 #include "core/settings_store.h"
 
+#ifndef SDL_MAIN_HANDLED
+#define SDL_MAIN_HANDLED
+#endif
 #include <SDL.h>
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <wincontypes.h>
+#endif
+
 #if defined(__APPLE__)
 #include <OpenGL/gl3.h>
 #else
 #include <GL/gl.h>
-#endif
-
-#if defined(_WIN32)
-#include <windows.h>
-#include <wincontypes.h>
 #endif
 
 #include <algorithm>
@@ -63,6 +72,10 @@
 #endif
 
 namespace fs = std::filesystem;
+
+#if defined(_WIN32)
+static void ClosePseudoConsoleSafe(HPCON handle);
+#endif
 
 struct CliTerminalState {
 #if defined(_WIN32)
@@ -117,6 +130,12 @@ struct AppState {
   std::optional<PendingGeminiCall> pending_call;
   bool scroll_to_bottom = false;
 };
+
+#if defined(_WIN32)
+static bool StartCliTerminalWindows(AppState& app, CliTerminalState& terminal, const ChatSession& chat);
+#else
+static bool StartCliTerminalUnix(AppState& app, CliTerminalState& terminal, const ChatSession& chat);
+#endif
 
 static ImFont* g_font_ui = nullptr;
 static ImFont* g_font_title = nullptr;
@@ -644,7 +663,11 @@ static std::string ExtractGeminiContentText(const JsonValue* value) {
 
 static std::string ExecuteCommandCaptureOutput(const std::string& command) {
   const std::string full_command = command + " 2>&1";
+#if defined(_WIN32)
+  FILE* pipe = _popen(full_command.c_str(), "r");
+#else
   FILE* pipe = popen(full_command.c_str(), "r");
+#endif
   if (pipe == nullptr) {
     return "Failed to launch Gemini CLI command.";
   }
@@ -655,7 +678,11 @@ static std::string ExecuteCommandCaptureOutput(const std::string& command) {
     output += buffer.data();
   }
 
+#if defined(_WIN32)
+  const int close_code = _pclose(pipe);
+#else
   const int close_code = pclose(pipe);
+#endif
   int exit_code = close_code;
 #if defined(__unix__) || defined(__APPLE__)
   if (WIFEXITED(close_code)) {
@@ -1243,7 +1270,7 @@ static bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, co
   size_t offset = 0;
   while (offset < len) {
     const size_t remaining = len - offset;
-    const DWORD chunk = static_cast<DWORD>(std::min<size_t>(remaining, static_cast<size_t>(DWORD_MAX)));
+    const DWORD chunk = static_cast<DWORD>(std::min<size_t>(remaining, static_cast<size_t>(MAXDWORD)));
     DWORD written = 0;
     if (!WriteFile(terminal.pipe_input, bytes + offset, chunk, &written, nullptr) || written == 0) {
       return false;
@@ -1307,28 +1334,6 @@ static int OnVTermResize(int rows, int cols, void* user) {
     terminal->needs_full_refresh = true;
   }
   return 1;
-}
-
-static void WriteBytesToPty(const char* bytes, const size_t len, void* user) {
-  if (user == nullptr || bytes == nullptr || len == 0) {
-    return;
-  }
-  auto* terminal = static_cast<CliTerminalState*>(user);
-  if (terminal->master_fd < 0) {
-    return;
-  }
-  std::size_t offset = 0;
-  while (offset < len) {
-    const ssize_t written = write(terminal->master_fd, bytes + offset, len - offset);
-    if (written > 0) {
-      offset += static_cast<std::size_t>(written);
-      continue;
-    }
-    if (written < 0 && errno == EINTR) {
-      continue;
-    }
-    break;
-  }
 }
 
 static const VTermScreenCallbacks kVTermScreenCallbacks = {
@@ -1793,7 +1798,7 @@ static void ResizeCliTerminal(CliTerminalState& terminal, const int rows, const 
 }
 
 #if defined(_WIN32)
-static ssize_t ReadCliTerminalOutput(CliTerminalState& terminal, char* buffer, const size_t buffer_size) {
+static std::ptrdiff_t ReadCliTerminalOutput(CliTerminalState& terminal, char* buffer, const size_t buffer_size) {
   if (terminal.pipe_output == INVALID_HANDLE_VALUE) {
     return -1;
   }
@@ -1820,7 +1825,7 @@ static ssize_t ReadCliTerminalOutput(CliTerminalState& terminal, char* buffer, c
   if (bytes_read == 0) {
     return -2;
   }
-  return static_cast<ssize_t>(bytes_read);
+  return static_cast<std::ptrdiff_t>(bytes_read);
 }
 #endif
 
@@ -1831,7 +1836,7 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
   }
   char buffer[8192];
   while (true) {
-    const ssize_t read_bytes = ReadCliTerminalOutput(terminal, buffer, sizeof(buffer));
+    const std::ptrdiff_t read_bytes = ReadCliTerminalOutput(terminal, buffer, sizeof(buffer));
     if (read_bytes > 0) {
       vterm_input_write(terminal.vt, buffer, static_cast<std::size_t>(read_bytes));
       terminal.needs_full_refresh = true;
@@ -2697,9 +2702,18 @@ static VTermModifier ActiveVTermModifiers() {
 }
 
 static void FeedCliTerminalKeyboard(CliTerminalState& terminal) {
-  if (terminal.vt == nullptr || terminal.master_fd < 0) {
+  if (terminal.vt == nullptr) {
     return;
   }
+#if defined(_WIN32)
+  if (terminal.pipe_input == INVALID_HANDLE_VALUE) {
+    return;
+  }
+#else
+  if (terminal.master_fd < 0) {
+    return;
+  }
+#endif
   ImGuiIO& io = ImGui::GetIO();
   const VTermModifier mod = ActiveVTermModifiers();
 
