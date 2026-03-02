@@ -1,6 +1,7 @@
 #pragma once
 
-#include <future>
+#include <atomic>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -51,7 +52,8 @@ struct PendingGeminiCall {
   std::string resume_session_id;
   std::vector<std::string> session_ids_before;
   std::string command_preview;
-  std::future<std::string> result;
+  std::shared_ptr<std::atomic<bool>> completed;
+  std::shared_ptr<std::string> output;
 };
 
 std::string RoleToString(MessageRole role);

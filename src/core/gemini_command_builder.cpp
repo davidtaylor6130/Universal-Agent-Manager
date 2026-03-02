@@ -18,6 +18,22 @@ std::string ReplaceAll(std::string src, const std::string& from, const std::stri
 }
 
 std::string ShellEscape(const std::string& value) {
+#if defined(_WIN32)
+  std::string escaped = "\"";
+  for (const char ch : value) {
+    if (ch == '"') {
+      escaped += "\"\"";
+    } else if (ch == '%') {
+      escaped += "%%";
+    } else if (ch == '\r' || ch == '\n') {
+      escaped.push_back(' ');
+    } else {
+      escaped.push_back(ch);
+    }
+  }
+  escaped.push_back('"');
+  return escaped;
+#else
   std::string escaped = "'";
   for (const char ch : value) {
     if (ch == '\'') {
@@ -28,6 +44,7 @@ std::string ShellEscape(const std::string& value) {
   }
   escaped.push_back('\'');
   return escaped;
+#endif
 }
 
 std::string JoinShellEscapedFiles(const std::vector<std::string>& files) {
@@ -131,7 +148,7 @@ std::string GeminiCommandBuilder::BuildCommand(const AppSettings& settings,
                                                const std::string& prompt,
                                                const std::vector<std::string>& files,
                                                const std::string& resume_session_id) {
-  std::string command = settings.gemini_command_template;
+  std::string command = settings.gemini_command_template.empty() ? "gemini -p {prompt}" : settings.gemini_command_template;
   const bool has_prompt_placeholder = command.find("{prompt}") != std::string::npos;
   const bool has_resume_placeholder = command.find("{resume}") != std::string::npos;
   const bool has_flags_placeholder = command.find("{flags}") != std::string::npos;
@@ -171,3 +188,4 @@ std::vector<std::string> GeminiCommandBuilder::BuildInteractiveArgv(const ChatSe
   }
   return argv;
 }
+

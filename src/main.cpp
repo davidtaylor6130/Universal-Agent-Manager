@@ -32,6 +32,7 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -53,6 +54,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -669,7 +671,13 @@ static std::string ExecuteCommandCaptureOutput(const std::string& command) {
   FILE* pipe = popen(full_command.c_str(), "r");
 #endif
   if (pipe == nullptr) {
-    return "Failed to launch Gemini CLI command.";
+    std::ostringstream message;
+    message << "Failed to launch Gemini CLI command";
+    if (errno != 0) {
+      message << " (" << std::strerror(errno) << ")";
+    }
+    message << ".";
+    return message.str();
   }
 
   std::array<char, 4096> buffer{};
@@ -1719,11 +1727,14 @@ static bool StartCliTerminalWindows(AppState& app, CliTerminalState& terminal, c
   PROCESS_INFORMATION pi{};
 
   const std::vector<std::string> argv_vec = BuildGeminiInteractiveArgv(chat, app.settings);
-  std::string command_line = BuildWindowsCommandLine(argv_vec);
+  const std::string gemini_invocation = BuildWindowsCommandLine(argv_vec);
+  const char* comspec_env = std::getenv("ComSpec");
+  const std::string comspec = (comspec_env != nullptr && *comspec_env != '\0') ? comspec_env : "C:\\Windows\\System32\\cmd.exe";
+  std::string command_line = QuoteWindowsArg(comspec) + " /d /s /c \"\"" + gemini_invocation + "\"\"";
   std::vector<char> cmd_mutable(command_line.begin(), command_line.end());
   cmd_mutable.push_back(0);
 
-  if (!CreateProcessA(nullptr,
+  if (!CreateProcessA(comspec.c_str(),
                       cmd_mutable.data(),
                       nullptr,
                       nullptr,
@@ -1733,7 +1744,7 @@ static bool StartCliTerminalWindows(AppState& app, CliTerminalState& terminal, c
                       nullptr,
                       &si.StartupInfo,
                       &pi)) {
-    terminal.last_error = "CreateProcess for Gemini failed.";
+    terminal.last_error = "CreateProcess for Gemini failed (Win32 error " + std::to_string(GetLastError()) + ").";
     DeleteProcThreadAttributeList(terminal.attr_list);
     HeapFree(GetProcessHeap(), 0, terminal.attr_list);
     terminal.attr_list = nullptr;
@@ -1969,7 +1980,16 @@ static void StartGeminiRequest(AppState& app) {
   pending.resume_session_id = resume_session_id;
   pending.session_ids_before = SessionIdsFromChats(native_before);
   pending.command_preview = command;
-  pending.result = std::async(std::launch::async, [command]() { return ExecuteCommandCaptureOutput(command); });
+  pending.completed = std::make_shared<std::atomic<bool>>(false);
+  pending.output = std::make_shared<std::string>();
+  {
+    std::shared_ptr<std::atomic<bool>> completed = pending.completed;
+    std::shared_ptr<std::string> output = pending.output;
+    std::thread([command, completed, output]() {
+      *output = ExecuteCommandCaptureOutput(command);
+      completed->store(true, std::memory_order_release);
+    }).detach();
+  }
   app.pending_call = std::move(pending);
 
   app.composer_text.clear();
@@ -2057,12 +2077,14 @@ static void PollPendingGeminiCall(AppState& app) {
     return;
   }
 
-  using namespace std::chrono_literals;
-  if (app.pending_call->result.wait_for(0ms) != std::future_status::ready) {
+  if (app.pending_call->completed == nullptr || app.pending_call->output == nullptr) {
+    app.pending_call.reset();
     return;
   }
-
-  const std::string output = app.pending_call->result.get();
+  if (!app.pending_call->completed->load(std::memory_order_acquire)) {
+    return;
+  }
+  const std::string output = *app.pending_call->output;
   const std::string pending_chat_id = app.pending_call->chat_id;
   const int pending_chat_index = FindChatIndexById(app, pending_chat_id);
   ChatSession pending_chat_snapshot;
@@ -3458,9 +3480,7 @@ int main(int, char**) {
     SDL_GL_SwapWindow(window);
   }
 
-  if (app.pending_call.has_value()) {
-    app.pending_call->result.wait();
-  }
+  app.pending_call.reset();
   StopAllCliTerminals(app, true);
 
   ImGui_ImplOpenGL3_Shutdown();
