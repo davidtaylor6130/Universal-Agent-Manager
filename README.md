@@ -7,11 +7,12 @@
 **Tags:** `#desktop` `#GeminiCLI` `#ImGui` `#OpenGL` `#ConPTY` `#project-management`
 
 ## Executive Summary
-- **Purpose:** provide a polished desktop control surface that lets developers or teams monitor Gemini CLI conversations and metadata without dropping into the terminal for every action.
-- **Business value:** accelerates review, file contextualization, and troubleshooting by combining Gemini’s native session files with a structured UI and embedded terminal.
-- **Audience:** internal engineering teams or on-call developers already using Gemini CLI in projects who want transparent history, workspace file attachments, and optional terminal replay.
+- **Purpose:** deliver a desktop “wrapper” around Gemini CLI that keeps chat history in the background and exposes structured editing/listing tools, because the default Gemini CLI workflow lacked a good way to edit prompts or manage history.
+- **Business value:** removes the friction of re-running Gemini or digging through raw files by persisting folders, metadata, and attachments while still honoring Gemini’s native session logs.
+- **Audience:** developers (including the author) who rely on Gemini CLI and need a lightweight UI plug-in to keep folders, edits, and terminal replay within reach.
 
 ## What the App Does
+_Built out of frustration with Gemini CLI’s lack of editable history, this pluginish wrapper keeps each conversation and its metadata synchronized so you can stop re-running commands just to pick up where you left off._
 1. Auto-discovers Gemini sessions from `~/.gemini/tmp/<project>/chats` (via `GEMINI_HOME` or directory heuristics) and mirrors each chat inside a scripted folder and designer-friendly layout.
 2. Tracks metadata such as chat titles, folders, attached files, and custom command templates/flags in `UAM_DATA_DIR` so each workspace can stay organized without touching Gemini logs.
 3. Offers two center views: a bubble-style structured conversation that replays history with edit/repeat controls plus a fully embedded `gemini` terminal powered by `libvterm`.
