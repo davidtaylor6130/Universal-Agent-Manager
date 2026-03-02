@@ -17,6 +17,11 @@
 #include <GL/gl.h>
 #endif
 
+#if defined(_WIN32)
+#include <windows.h>
+#include <wincontypes.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -60,8 +65,16 @@
 namespace fs = std::filesystem;
 
 struct CliTerminalState {
+#if defined(_WIN32)
+  HANDLE pipe_input = INVALID_HANDLE_VALUE;
+  HANDLE pipe_output = INVALID_HANDLE_VALUE;
+  PROCESS_INFORMATION process_info = {INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, 0, 0};
+  HPCON pseudo_console = nullptr;
+  LPPROC_THREAD_ATTRIBUTE_LIST attr_list = nullptr;
+#else
   int master_fd = -1;
   pid_t child_pid = -1;
+#endif
   bool running = false;
   std::string attached_chat_id;
   std::string attached_session_id;
@@ -1172,19 +1185,96 @@ static bool TruncateNativeSessionFromDisplayedMessage(const AppState& app,
   return true;
 }
 
-static void CloseCliTerminalFd(CliTerminalState& terminal) {
-  if (terminal.master_fd >= 0) {
-    close(terminal.master_fd);
-    terminal.master_fd = -1;
-  }
-}
-
 static void FreeCliTerminalVTerm(CliTerminalState& terminal) {
   if (terminal.vt != nullptr) {
     vterm_free(terminal.vt);
     terminal.vt = nullptr;
     terminal.screen = nullptr;
     terminal.state = nullptr;
+  }
+}
+
+static void CloseCliTerminalHandles(CliTerminalState& terminal) {
+#if defined(_WIN32)
+  if (terminal.pipe_input != INVALID_HANDLE_VALUE) {
+    CloseHandle(terminal.pipe_input);
+    terminal.pipe_input = INVALID_HANDLE_VALUE;
+  }
+  if (terminal.pipe_output != INVALID_HANDLE_VALUE) {
+    CloseHandle(terminal.pipe_output);
+    terminal.pipe_output = INVALID_HANDLE_VALUE;
+  }
+  if (terminal.pseudo_console != nullptr) {
+    ClosePseudoConsoleSafe(terminal.pseudo_console);
+    terminal.pseudo_console = nullptr;
+  }
+  if (terminal.attr_list != nullptr) {
+    DeleteProcThreadAttributeList(terminal.attr_list);
+    HeapFree(GetProcessHeap(), 0, terminal.attr_list);
+    terminal.attr_list = nullptr;
+  }
+  if (terminal.process_info.hThread != INVALID_HANDLE_VALUE) {
+    CloseHandle(terminal.process_info.hThread);
+    terminal.process_info.hThread = INVALID_HANDLE_VALUE;
+  }
+  if (terminal.process_info.hProcess != INVALID_HANDLE_VALUE) {
+    CloseHandle(terminal.process_info.hProcess);
+    terminal.process_info.hProcess = INVALID_HANDLE_VALUE;
+  }
+  terminal.process_info.dwProcessId = 0;
+  terminal.process_info.dwThreadId = 0;
+#else
+  if (terminal.master_fd >= 0) {
+    close(terminal.master_fd);
+    terminal.master_fd = -1;
+  }
+  terminal.child_pid = -1;
+#endif
+}
+
+static bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, const size_t len) {
+  if (bytes == nullptr || len == 0) {
+    return true;
+  }
+#if defined(_WIN32)
+  if (terminal.pipe_input == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+  size_t offset = 0;
+  while (offset < len) {
+    const size_t remaining = len - offset;
+    const DWORD chunk = static_cast<DWORD>(std::min<size_t>(remaining, static_cast<size_t>(DWORD_MAX)));
+    DWORD written = 0;
+    if (!WriteFile(terminal.pipe_input, bytes + offset, chunk, &written, nullptr) || written == 0) {
+      return false;
+    }
+    offset += written;
+  }
+  return true;
+#else
+  std::size_t offset = 0;
+  while (offset < len) {
+    const ssize_t written = write(terminal.master_fd, bytes + offset, len - offset);
+    if (written > 0) {
+      offset += static_cast<std::size_t>(written);
+      continue;
+    }
+    if (written < 0 && errno == EINTR) {
+      continue;
+    }
+    return false;
+  }
+  return true;
+#endif
+}
+
+static void WriteBytesToPty(const char* bytes, const size_t len, void* user) {
+  if (user == nullptr || bytes == nullptr || len == 0) {
+    return;
+  }
+  auto* terminal = static_cast<CliTerminalState*>(user);
+  if (!WriteToCliTerminal(*terminal, bytes, len)) {
+    terminal->last_error = "Failed to write to Gemini terminal.";
   }
 }
 
@@ -1254,14 +1344,21 @@ static const VTermScreenCallbacks kVTermScreenCallbacks = {
     nullptr};
 
 static void StopCliTerminal(CliTerminalState& terminal, const bool clear_identity = false) {
+#if defined(_WIN32)
+  if (terminal.process_info.hProcess != INVALID_HANDLE_VALUE) {
+    TerminateProcess(terminal.process_info.hProcess, 1);
+    WaitForSingleObject(terminal.process_info.hProcess, 0);
+  }
+#else
   if (terminal.child_pid > 0) {
     kill(terminal.child_pid, SIGHUP);
     int status = 0;
     waitpid(terminal.child_pid, &status, WNOHANG);
     terminal.child_pid = -1;
   }
+#endif
 
-  CloseCliTerminalFd(terminal);
+  CloseCliTerminalHandles(terminal);
   FreeCliTerminalVTerm(terminal);
   terminal.running = false;
   terminal.needs_full_refresh = true;
@@ -1363,6 +1460,7 @@ static std::vector<std::string> BuildGeminiInteractiveArgv(const ChatSession& ch
   return GeminiCommandBuilder::BuildInteractiveArgv(chat, settings);
 }
 
+#if defined(__unix__)
 static bool SetFdNonBlocking(const int fd) {
   const int flags = fcntl(fd, F_GETFL, 0);
   if (flags < 0) {
@@ -1370,6 +1468,7 @@ static bool SetFdNonBlocking(const int fd) {
   }
   return fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
 }
+#endif
 
 static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, const ChatSession& chat, const int rows, const int cols) {
   StopCliTerminal(terminal);
@@ -1398,6 +1497,28 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
   vterm_output_set_callback(terminal.vt, WriteBytesToPty, &terminal);
   vterm_screen_reset(terminal.screen, 1);
 
+#if defined(_WIN32)
+  if (!StartCliTerminalWindows(app, terminal, chat)) {
+    terminal.last_error = terminal.last_error.empty() ? "Failed to start Gemini terminal." : terminal.last_error;
+    StopCliTerminal(terminal, false);
+    return false;
+  }
+#else
+  if (!StartCliTerminalUnix(app, terminal, chat)) {
+    terminal.last_error = terminal.last_error.empty() ? "Failed to start Gemini terminal." : terminal.last_error;
+    StopCliTerminal(terminal, false);
+    return false;
+  }
+#endif
+
+  terminal.running = true;
+  terminal.should_launch = false;
+  terminal.needs_full_refresh = true;
+  return true;
+}
+
+#if defined(__unix__)
+static bool StartCliTerminalUnix(AppState& app, CliTerminalState& terminal, const ChatSession& chat) {
   int master_fd = -1;
   int slave_fd = -1;
   struct winsize ws {};
@@ -1406,7 +1527,6 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
 
   if (openpty(&master_fd, &slave_fd, nullptr, nullptr, &ws) != 0) {
     terminal.last_error = "openpty failed.";
-    StopCliTerminal(terminal, false);
     return false;
   }
 
@@ -1415,7 +1535,6 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
     terminal.last_error = "fork failed.";
     close(master_fd);
     close(slave_fd);
-    StopCliTerminal(terminal, false);
     return false;
   }
 
@@ -1443,12 +1562,189 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
   close(slave_fd);
   terminal.master_fd = master_fd;
   terminal.child_pid = pid;
-  terminal.running = true;
-  terminal.should_launch = false;
-  terminal.needs_full_refresh = true;
   SetFdNonBlocking(terminal.master_fd);
   return true;
 }
+#endif
+
+#if defined(_WIN32)
+using CreatePseudoConsoleFunc = HRESULT(WINAPI*)(COORD, HANDLE, HANDLE, DWORD, HPCON*);
+using ResizePseudoConsoleFunc = HRESULT(WINAPI*)(HPCON, COORD);
+using ClosePseudoConsoleFunc = void(WINAPI*)(HPCON);
+
+static CreatePseudoConsoleFunc GetCreatePseudoConsoleFunc() {
+  static CreatePseudoConsoleFunc func = reinterpret_cast<CreatePseudoConsoleFunc>(
+      GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "CreatePseudoConsole"));
+  return func;
+}
+
+static ResizePseudoConsoleFunc GetResizePseudoConsoleFunc() {
+  static ResizePseudoConsoleFunc func = reinterpret_cast<ResizePseudoConsoleFunc>(
+      GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "ResizePseudoConsole"));
+  return func;
+}
+
+static ClosePseudoConsoleFunc GetClosePseudoConsoleFunc() {
+  static ClosePseudoConsoleFunc func = reinterpret_cast<ClosePseudoConsoleFunc>(
+      GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "ClosePseudoConsole"));
+  return func;
+}
+
+static void ClosePseudoConsoleSafe(HPCON handle) {
+  const auto close_proc = GetClosePseudoConsoleFunc();
+  if (close_proc != nullptr && handle != nullptr) {
+    close_proc(handle);
+  }
+}
+
+static void ResizePseudoConsoleSafe(HPCON handle, COORD size) {
+  const auto resize_proc = GetResizePseudoConsoleFunc();
+  if (resize_proc != nullptr && handle != nullptr) {
+    resize_proc(handle, size);
+  }
+}
+
+static std::string QuoteWindowsArg(const std::string& arg) {
+  if (arg.empty()) {
+    return "\"\"";
+  }
+  const bool needs_quotes = (arg.find_first_of(" \t\"") != std::string::npos);
+  if (!needs_quotes) {
+    return arg;
+  }
+  std::string result = "\"";
+  int backslashes = 0;
+  for (char ch : arg) {
+    if (ch == '\\') {
+      backslashes++;
+    } else if (ch == '"') {
+      result.append(backslashes * 2 + 1, '\\');
+      result.push_back('"');
+      backslashes = 0;
+    } else {
+      if (backslashes > 0) {
+        result.append(backslashes, '\\');
+        backslashes = 0;
+      }
+      result.push_back(ch);
+    }
+  }
+  if (backslashes > 0) {
+    result.append(backslashes * 2, '\\');
+  }
+  result.push_back('"');
+  return result;
+}
+
+static std::string BuildWindowsCommandLine(const std::vector<std::string>& argv) {
+  std::ostringstream out;
+  bool first = true;
+  for (const std::string& arg : argv) {
+    if (!first) {
+      out << ' ';
+    }
+    out << QuoteWindowsArg(arg);
+    first = false;
+  }
+  return out.str();
+}
+
+static bool StartCliTerminalWindows(AppState& app, CliTerminalState& terminal, const ChatSession& chat) {
+  SECURITY_ATTRIBUTES sa{};
+  sa.nLength = sizeof(sa);
+  sa.bInheritHandle = TRUE;
+
+  HANDLE pipe_pty_in = INVALID_HANDLE_VALUE;
+  HANDLE pipe_pty_out = INVALID_HANDLE_VALUE;
+  HANDLE pipe_con_in = INVALID_HANDLE_VALUE;
+  HANDLE pipe_con_out = INVALID_HANDLE_VALUE;
+
+  if (!CreatePipe(&pipe_pty_in, &pipe_con_out, &sa, 0) ||
+      !CreatePipe(&pipe_con_in, &pipe_pty_out, &sa, 0)) {
+    terminal.last_error = "Failed to create ConPTY pipes.";
+    CloseHandle(pipe_pty_in);
+    CloseHandle(pipe_pty_out);
+    CloseHandle(pipe_con_in);
+    CloseHandle(pipe_con_out);
+    return false;
+  }
+
+  const COORD size{static_cast<SHORT>(terminal.cols), static_cast<SHORT>(terminal.rows)};
+  HPCON pseudo_console = nullptr;
+  const auto create_pseudo_console = GetCreatePseudoConsoleFunc();
+  if (create_pseudo_console == nullptr ||
+      create_pseudo_console(size, pipe_con_in, pipe_con_out, 0, &pseudo_console) != S_OK) {
+    terminal.last_error = "CreatePseudoConsole failed.";
+    CloseHandle(pipe_pty_in);
+    CloseHandle(pipe_pty_out);
+    CloseHandle(pipe_con_in);
+    CloseHandle(pipe_con_out);
+    return false;
+  }
+  CloseHandle(pipe_con_in);
+  CloseHandle(pipe_con_out);
+
+  SIZE_T attr_size = 0;
+  InitializeProcThreadAttributeList(nullptr, 1, 0, &attr_size);
+  terminal.attr_list = static_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(HeapAlloc(GetProcessHeap(), 0, attr_size));
+  if (terminal.attr_list == nullptr ||
+      !InitializeProcThreadAttributeList(terminal.attr_list, 1, 0, &attr_size)) {
+    terminal.last_error = "Failed to initialize attribute list.";
+    ClosePseudoConsoleSafe(pseudo_console);
+    CloseHandle(pipe_pty_in);
+    CloseHandle(pipe_pty_out);
+    return false;
+  }
+
+  if (!UpdateProcThreadAttribute(terminal.attr_list, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+                                 pseudo_console, sizeof(HPCON), nullptr, nullptr)) {
+    terminal.last_error = "Failed to attach pseudo console.";
+    DeleteProcThreadAttributeList(terminal.attr_list);
+    HeapFree(GetProcessHeap(), 0, terminal.attr_list);
+    terminal.attr_list = nullptr;
+    ClosePseudoConsoleSafe(pseudo_console);
+    CloseHandle(pipe_pty_in);
+    CloseHandle(pipe_pty_out);
+    return false;
+  }
+
+  STARTUPINFOEX si{};
+  si.StartupInfo.cb = sizeof(si);
+  si.lpAttributeList = terminal.attr_list;
+  PROCESS_INFORMATION pi{};
+
+  const std::vector<std::string> argv_vec = BuildGeminiInteractiveArgv(chat, app.settings);
+  std::string command_line = BuildWindowsCommandLine(argv_vec);
+  std::vector<char> cmd_mutable(command_line.begin(), command_line.end());
+  cmd_mutable.push_back(0);
+
+  if (!CreateProcessA(nullptr,
+                      cmd_mutable.data(),
+                      nullptr,
+                      nullptr,
+                      FALSE,
+                      EXTENDED_STARTUPINFO_PRESENT,
+                      nullptr,
+                      nullptr,
+                      &si.StartupInfo,
+                      &pi)) {
+    terminal.last_error = "CreateProcess for Gemini failed.";
+    DeleteProcThreadAttributeList(terminal.attr_list);
+    HeapFree(GetProcessHeap(), 0, terminal.attr_list);
+    terminal.attr_list = nullptr;
+    ClosePseudoConsoleSafe(pseudo_console);
+    CloseHandle(pipe_pty_in);
+    CloseHandle(pipe_pty_out);
+    return false;
+  }
+
+  terminal.pipe_input = pipe_pty_out;
+  terminal.pipe_output = pipe_pty_in;
+  terminal.process_info = pi;
+  terminal.pseudo_console = pseudo_console;
+  return true;
+}
+#endif
 
 static std::string CodepointToUtf8(const uint32_t cp) {
   std::string out;
@@ -1481,15 +1777,88 @@ static void ResizeCliTerminal(CliTerminalState& terminal, const int rows, const 
   if (terminal.vt != nullptr) {
     vterm_set_size(terminal.vt, terminal.rows, terminal.cols);
   }
+#if defined(__unix__)
   if (terminal.master_fd >= 0) {
     struct winsize ws {};
     ws.ws_row = static_cast<unsigned short>(terminal.rows);
     ws.ws_col = static_cast<unsigned short>(terminal.cols);
     ioctl(terminal.master_fd, TIOCSWINSZ, &ws);
   }
+#elif defined(_WIN32)
+  if (terminal.pseudo_console != nullptr) {
+    COORD size{static_cast<SHORT>(terminal.cols), static_cast<SHORT>(terminal.rows)};
+    ResizePseudoConsoleSafe(terminal.pseudo_console, size);
+  }
+#endif
 }
 
+#if defined(_WIN32)
+static ssize_t ReadCliTerminalOutput(CliTerminalState& terminal, char* buffer, const size_t buffer_size) {
+  if (terminal.pipe_output == INVALID_HANDLE_VALUE) {
+    return -1;
+  }
+  DWORD available = 0;
+  if (!PeekNamedPipe(terminal.pipe_output, nullptr, 0, nullptr, &available, nullptr)) {
+    const DWORD err = GetLastError();
+    if (err == ERROR_BROKEN_PIPE) {
+      return 0;
+    }
+    return -1;
+  }
+  if (available == 0) {
+    return -2;
+  }
+  const DWORD to_read = static_cast<DWORD>(std::min<size_t>(buffer_size, available));
+  DWORD bytes_read = 0;
+  if (!ReadFile(terminal.pipe_output, buffer, to_read, &bytes_read, nullptr)) {
+    const DWORD err = GetLastError();
+    if (err == ERROR_BROKEN_PIPE) {
+      return 0;
+    }
+    return -1;
+  }
+  if (bytes_read == 0) {
+    return -2;
+  }
+  return static_cast<ssize_t>(bytes_read);
+}
+#endif
+
 static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const bool preserve_selection) {
+#if defined(_WIN32)
+  if (!terminal.running || terminal.pipe_output == INVALID_HANDLE_VALUE || terminal.vt == nullptr) {
+    return;
+  }
+  char buffer[8192];
+  while (true) {
+    const ssize_t read_bytes = ReadCliTerminalOutput(terminal, buffer, sizeof(buffer));
+    if (read_bytes > 0) {
+      vterm_input_write(terminal.vt, buffer, static_cast<std::size_t>(read_bytes));
+      terminal.needs_full_refresh = true;
+      continue;
+    }
+    if (read_bytes == 0) {
+      StopCliTerminal(terminal);
+      terminal.should_launch = false;
+      app.status_line = "Gemini terminal exited.";
+      break;
+    }
+    if (read_bytes == -2) {
+      break;
+    }
+    StopCliTerminal(terminal);
+    terminal.should_launch = false;
+    app.status_line = "Gemini terminal read failed.";
+    break;
+  }
+
+  if (terminal.process_info.hProcess != INVALID_HANDLE_VALUE &&
+      WaitForSingleObject(terminal.process_info.hProcess, 0) == WAIT_OBJECT_0) {
+    StopCliTerminal(terminal);
+    terminal.should_launch = false;
+    app.status_line = "Gemini terminal exited.";
+  }
+#else
   if (!terminal.running || terminal.master_fd < 0 || terminal.vt == nullptr) {
     return;
   }
@@ -1526,6 +1895,7 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
     terminal.should_launch = false;
     app.status_line = "Gemini terminal exited.";
   }
+#endif
 
   const double now = ImGui::GetTime();
   if (now - terminal.last_sync_time_s > 1.25) {
