@@ -139,7 +139,7 @@ std::vector<std::pair<fs::path, std::string>> ReadProjectMappings(const fs::path
     return mappings;
   }
 
-  const std::regex pair_pattern(R"("((?:\\.|[^"])*)"\s*:\s*"((?:\\.|[^"])*)")");
+  const std::regex pair_pattern(R"PAIR("((?:\\.|[^"])*)"\s*:\s*"((?:\\.|[^"])*)")PAIR");
   for (auto it = std::sregex_iterator(text.begin(), text.end(), pair_pattern); it != std::sregex_iterator(); ++it) {
     const std::string key = JsonUnescape((*it)[1].str());
     const std::string value = JsonUnescape((*it)[2].str());

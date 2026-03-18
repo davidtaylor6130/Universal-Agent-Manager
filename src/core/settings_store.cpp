@@ -32,6 +32,7 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file,
   std::error_code ec;
   std::filesystem::create_directories(settings_file.parent_path(), ec);
   std::ostringstream lines;
+  lines << "active_provider_id=" << settings.active_provider_id << '\n';
   lines << "gemini_command_template=" << settings.gemini_command_template << '\n';
   lines << "gemini_yolo_mode=" << (settings.gemini_yolo_mode ? "1" : "0") << '\n';
   lines << "gemini_extra_flags=" << settings.gemini_extra_flags << '\n';
@@ -55,7 +56,9 @@ void SettingsStore::Load(const std::filesystem::path& settings_file,
     }
     const std::string key = line.substr(0, equals_at);
     const std::string value = line.substr(equals_at + 1);
-    if (key == "gemini_command_template") {
+    if (key == "active_provider_id") {
+      settings.active_provider_id = value;
+    } else if (key == "gemini_command_template") {
       settings.gemini_command_template = value;
     } else if (key == "gemini_yolo_mode") {
       settings.gemini_yolo_mode = (value == "1" || value == "true" || value == "on");
@@ -68,5 +71,8 @@ void SettingsStore::Load(const std::filesystem::path& settings_file,
 
   if (settings.gemini_command_template.empty() || settings.gemini_command_template == "gemini -p {prompt}") {
     settings.gemini_command_template = "gemini {resume} {flags} {prompt}";
+  }
+  if (settings.active_provider_id.empty()) {
+    settings.active_provider_id = "gemini";
   }
 }

@@ -98,6 +98,9 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/core/chat_repository.cpp
   src/core/settings_store.cpp
   src/core/gemini_command_builder.cpp
+  src/core/frontend_actions.cpp
+  src/core/provider_profile.cpp
+  src/core/provider_runtime.cpp
 )
 target_include_directories(universal_agent_manager PRIVATE src)
 target_link_libraries(universal_agent_manager PRIVATE imgui_core vterm_core ${UAM_SDL_TARGET} OpenGL::GL)
@@ -110,4 +113,20 @@ if(APPLE)
       MACOSX_BUNDLE_GUI_IDENTIFIER "com.universalagentmanager.desktop"
     )
   endif()
+endif()
+
+include(CTest)
+if(BUILD_TESTING)
+  add_executable(uam_core_tests
+    tests/core_tests.cpp
+    src/core/app_models.cpp
+    src/core/app_paths.cpp
+    src/core/frontend_actions.cpp
+    src/core/gemini_command_builder.cpp
+    src/core/provider_profile.cpp
+    src/core/provider_runtime.cpp
+    src/core/settings_store.cpp
+  )
+  target_include_directories(uam_core_tests PRIVATE src)
+  add_test(NAME uam_core_tests COMMAND uam_core_tests)
 endif()

@@ -1,0 +1,1506 @@
+
+---
+events:
+  -
+    kind: "message-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineSystem.cmake:212 (message)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      The system is: Windows - 10.0.22631 - AMD64
+  -
+    kind: "find-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:468 (find_file)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:506 (CMAKE_DETERMINE_COMPILER_ID_WRITE)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:8 (CMAKE_DETERMINE_COMPILER_ID_BUILD)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCCompiler.cmake:122 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "file"
+    variable: "src_in"
+    description: "Path to a file."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "CMakeCCompilerId.c.in"
+    candidate_directories:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/"
+    found: "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeCCompilerId.c.in"
+    search_context:
+      ENV{PATH}:
+        - "C:\\Users\\david\\.codex\\tmp\\arg0\\codex-arg0tKMPz3"
+        - "C:\\Python314\\Scripts\\"
+        - "C:\\Python314\\"
+        - "C:\\Program Files\\Oculus\\Support\\oculus-runtime"
+        - "C:\\Program Files\\Eclipse Foundation\\jdk-8.0.302.8-hotspot\\bin"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\130\\Tools\\Binn\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\Client SDK\\ODBC\\170\\Tools\\Binn\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\ProgramData\\chocolatey\\bin"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\david\\AppData\\Local\\GitHubDesktop\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\david\\.dotnet\\tools"
+        - "C:\\Users\\david\\AppData\\Roaming\\npm"
+        - "C:\\Users\\david\\AppData\\Local\\OpenAI\\Codex\\bin"
+        - "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0\\app\\resources"
+  -
+    kind: "message-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCCompiler.cmake:122 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      Compiling the C compiler identification source file "CMakeCCompilerId.c" failed.
+      Compiler:  
+      Build flags: 
+      Id flags:  
+      
+      The output was:
+      1
+      MSBuild version 18.3.0-release-26070-10+3972042b7 for .NET Framework
+      Build started 18/03/2026 19:59:29.
+      
+      Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj" on node 1 (default targets).
+      PrepareForBuild:
+        Creating directory "Debug\\".
+        Structured output is enabled. The formatting of compiler diagnostics will reflect the error hierarchy. See https://aka.ms/cpp/structured-output for more details.
+        Creating directory "Debug\\CompilerIdC.tlog\\".
+      InitializeBuildStatus:
+        Creating "Debug\\CompilerIdC.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        Touching "Debug\\CompilerIdC.tlog\\unsuccessfulbuild".
+      ClCompile:
+        C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.50.35717\\bin\\HostX64\\x64\\CL.exe /c /nologo /W0 /WX- /diagnostics:column /Od /D _MBCS /Gm- /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /Fo"Debug\\\\" /Fd"Debug\\vc145.pdb" /external:W0 /Gd /TC /FC /errorReport:queue CMakeCCompilerId.c
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001: Invalid command line switch for "CL.exe". System.ArgumentException: Item has already been added. Key in dictionary: 'Path'  Key being added: 'PATH' [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at System.Collections.Hashtable.Insert(Object key, Object nvalue, Boolean add) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at System.Diagnostics.ProcessStartInfo.get_EnvironmentVariables() [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.Utilities.ToolTask.GetProcessStartInfo(String pathToTool, String commandLineCommands, String responseFileSwitch) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.Utilities.ToolTask.ExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.CPPTasks.TrackedVCToolTask.TrackerExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.CPPTasks.TrackedVCToolTask.ExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.CPPTasks.CL.ExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.Utilities.ToolTask.Execute() [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj" (default targets) -- FAILED.
+      
+      Build FAILED.
+      
+      "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj" (default target) (1) ->
+      (ClCompile target) -> 
+        C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001: Invalid command line switch for "CL.exe". System.ArgumentException: Item has already been added. Key in dictionary: 'Path'  Key being added: 'PATH' [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at System.Collections.Hashtable.Insert(Object key, Object nvalue, Boolean add) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at System.Diagnostics.ProcessStartInfo.get_EnvironmentVariables() [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.Utilities.ToolTask.GetProcessStartInfo(String pathToTool, String commandLineCommands, String responseFileSwitch) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.Utilities.ToolTask.ExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.CPPTasks.TrackedVCToolTask.TrackerExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.CPPTasks.TrackedVCToolTask.ExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.CPPTasks.CL.ExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.Utilities.ToolTask.Execute() [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      
+          0 Warning(s)
+          1 Error(s)
+      
+      Time Elapsed 00:00:00.21
+      
+      
+  -
+    kind: "find-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:468 (find_file)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:506 (CMAKE_DETERMINE_COMPILER_ID_WRITE)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:8 (CMAKE_DETERMINE_COMPILER_ID_BUILD)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCCompiler.cmake:122 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "file"
+    variable: "src_in"
+    description: "Path to a file."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "CMakeCCompilerId.c.in"
+    candidate_directories:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/"
+    found: "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeCCompilerId.c.in"
+    search_context:
+      ENV{PATH}:
+        - "C:\\Users\\david\\.codex\\tmp\\arg0\\codex-arg0tKMPz3"
+        - "C:\\Python314\\Scripts\\"
+        - "C:\\Python314\\"
+        - "C:\\Program Files\\Oculus\\Support\\oculus-runtime"
+        - "C:\\Program Files\\Eclipse Foundation\\jdk-8.0.302.8-hotspot\\bin"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\130\\Tools\\Binn\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\Client SDK\\ODBC\\170\\Tools\\Binn\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\ProgramData\\chocolatey\\bin"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\david\\AppData\\Local\\GitHubDesktop\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\david\\.dotnet\\tools"
+        - "C:\\Users\\david\\AppData\\Roaming\\npm"
+        - "C:\\Users\\david\\AppData\\Local\\OpenAI\\Codex\\bin"
+        - "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0\\app\\resources"
+  -
+    kind: "message-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCCompiler.cmake:122 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      Compiling the C compiler identification source file "CMakeCCompilerId.c" failed.
+      Compiler:  
+      Build flags: 
+      Id flags:  
+      
+      The output was:
+      1
+      MSBuild version 18.3.0-release-26070-10+3972042b7 for .NET Framework
+      Build started 18/03/2026 19:59:30.
+      
+      Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj" on node 1 (default targets).
+      PrepareForBuild:
+        Creating directory "Debug\\".
+        Structured output is enabled. The formatting of compiler diagnostics will reflect the error hierarchy. See https://aka.ms/cpp/structured-output for more details.
+        Creating directory "Debug\\CompilerIdC.tlog\\".
+      InitializeBuildStatus:
+        Creating "Debug\\CompilerIdC.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        Touching "Debug\\CompilerIdC.tlog\\unsuccessfulbuild".
+      ClCompile:
+        C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.50.35717\\bin\\HostX64\\x64\\CL.exe /c /nologo /W0 /WX- /diagnostics:column /Od /D _MBCS /Gm- /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /Fo"Debug\\\\" /Fd"Debug\\vc145.pdb" /external:W0 /Gd /TC /FC /errorReport:queue CMakeCCompilerId.c
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001: Invalid command line switch for "CL.exe". System.ArgumentException: Item has already been added. Key in dictionary: 'Path'  Key being added: 'PATH' [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at System.Collections.Hashtable.Insert(Object key, Object nvalue, Boolean add) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at System.Diagnostics.ProcessStartInfo.get_EnvironmentVariables() [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.Utilities.ToolTask.GetProcessStartInfo(String pathToTool, String commandLineCommands, String responseFileSwitch) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.Utilities.ToolTask.ExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.CPPTasks.TrackedVCToolTask.TrackerExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.CPPTasks.TrackedVCToolTask.ExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.CPPTasks.CL.ExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.Utilities.ToolTask.Execute() [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj" (default targets) -- FAILED.
+      
+      Build FAILED.
+      
+      "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj" (default target) (1) ->
+      (ClCompile target) -> 
+        C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001: Invalid command line switch for "CL.exe". System.ArgumentException: Item has already been added. Key in dictionary: 'Path'  Key being added: 'PATH' [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at System.Collections.Hashtable.Insert(Object key, Object nvalue, Boolean add) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at System.Diagnostics.ProcessStartInfo.get_EnvironmentVariables() [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.Utilities.ToolTask.GetProcessStartInfo(String pathToTool, String commandLineCommands, String responseFileSwitch) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.Utilities.ToolTask.ExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.CPPTasks.TrackedVCToolTask.TrackerExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.CPPTasks.TrackedVCToolTask.ExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.CPPTasks.CL.ExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.Utilities.ToolTask.Execute() [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdC\\CompilerIdC.vcxproj]
+      
+          0 Warning(s)
+          1 Error(s)
+      
+      Time Elapsed 00:00:00.20
+      
+      
+  -
+    kind: "find-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeFindBinUtils.cmake:37 (find_program)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeFindBinUtils.cmake:65 (__resolve_tool_path)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeFindBinUtils.cmake:103 (__resolve_linker_path)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "program"
+    variable: "_CMAKE_TOOL_WITH_PATH"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "link"
+    candidate_directories:
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/"
+      - "C:/Python314/Scripts/"
+      - "C:/Python314/"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/"
+      - "C:/Windows/System32/"
+      - "C:/Windows/"
+      - "C:/Windows/System32/wbem/"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/"
+      - "C:/Windows/System32/OpenSSH/"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/"
+      - "C:/Program Files/dotnet/"
+      - "C:/Program Files/Git/cmd/"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/"
+      - "C:/Program Files/nodejs/"
+      - "C:/ProgramData/chocolatey/bin/"
+      - "C:/Program Files/CMake/bin/"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/"
+      - "C:/Users/david/.dotnet/tools/"
+      - "C:/Users/david/AppData/Roaming/npm/"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/"
+    searched_directories:
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/link.com"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/link.exe"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/link"
+      - "C:/Python314/Scripts/link.com"
+      - "C:/Python314/Scripts/link.exe"
+      - "C:/Python314/Scripts/link"
+      - "C:/Python314/link.com"
+      - "C:/Python314/link.exe"
+      - "C:/Python314/link"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/link.com"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/link.exe"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/link"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/link.com"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/link.exe"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/link"
+      - "C:/Windows/System32/link.com"
+      - "C:/Windows/System32/link.exe"
+      - "C:/Windows/System32/link"
+      - "C:/Windows/link.com"
+      - "C:/Windows/link.exe"
+      - "C:/Windows/link"
+      - "C:/Windows/System32/wbem/link.com"
+      - "C:/Windows/System32/wbem/link.exe"
+      - "C:/Windows/System32/wbem/link"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/link.com"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/link.exe"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/link"
+      - "C:/Windows/System32/OpenSSH/link.com"
+      - "C:/Windows/System32/OpenSSH/link.exe"
+      - "C:/Windows/System32/OpenSSH/link"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/link.com"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/link.exe"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/link"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/link.com"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/link.exe"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/link"
+      - "C:/Program Files/dotnet/link.com"
+      - "C:/Program Files/dotnet/link.exe"
+      - "C:/Program Files/dotnet/link"
+      - "C:/Program Files/Git/cmd/link.com"
+      - "C:/Program Files/Git/cmd/link.exe"
+      - "C:/Program Files/Git/cmd/link"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/link.com"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/link.exe"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/link"
+      - "C:/Program Files/nodejs/link.com"
+      - "C:/Program Files/nodejs/link.exe"
+      - "C:/Program Files/nodejs/link"
+      - "C:/ProgramData/chocolatey/bin/link.com"
+      - "C:/ProgramData/chocolatey/bin/link.exe"
+      - "C:/ProgramData/chocolatey/bin/link"
+      - "C:/Program Files/CMake/bin/link.com"
+      - "C:/Program Files/CMake/bin/link.exe"
+      - "C:/Program Files/CMake/bin/link"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/link.com"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/link.exe"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/link"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/link.com"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/link.exe"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/link"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/link.com"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/link.exe"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/link"
+      - "C:/Users/david/.dotnet/tools/link.com"
+      - "C:/Users/david/.dotnet/tools/link.exe"
+      - "C:/Users/david/.dotnet/tools/link"
+      - "C:/Users/david/AppData/Roaming/npm/link.com"
+      - "C:/Users/david/AppData/Roaming/npm/link.exe"
+      - "C:/Users/david/AppData/Roaming/npm/link"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/link.com"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/link.exe"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/link"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/link.com"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/link.exe"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/link"
+    found: false
+    search_context:
+      ENV{PATH}:
+        - "C:\\Users\\david\\.codex\\tmp\\arg0\\codex-arg0tKMPz3"
+        - "C:\\Python314\\Scripts\\"
+        - "C:\\Python314\\"
+        - "C:\\Program Files\\Oculus\\Support\\oculus-runtime"
+        - "C:\\Program Files\\Eclipse Foundation\\jdk-8.0.302.8-hotspot\\bin"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\130\\Tools\\Binn\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\Client SDK\\ODBC\\170\\Tools\\Binn\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\ProgramData\\chocolatey\\bin"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\david\\AppData\\Local\\GitHubDesktop\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\david\\.dotnet\\tools"
+        - "C:\\Users\\david\\AppData\\Roaming\\npm"
+        - "C:\\Users\\david\\AppData\\Local\\OpenAI\\Codex\\bin"
+        - "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0\\app\\resources"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeFindBinUtils.cmake:37 (find_program)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeFindBinUtils.cmake:65 (__resolve_tool_path)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeFindBinUtils.cmake:104 (__resolve_linker_path)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "program"
+    variable: "_CMAKE_TOOL_WITH_PATH"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "lld-link"
+    candidate_directories:
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/"
+      - "C:/Python314/Scripts/"
+      - "C:/Python314/"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/"
+      - "C:/Windows/System32/"
+      - "C:/Windows/"
+      - "C:/Windows/System32/wbem/"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/"
+      - "C:/Windows/System32/OpenSSH/"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/"
+      - "C:/Program Files/dotnet/"
+      - "C:/Program Files/Git/cmd/"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/"
+      - "C:/Program Files/nodejs/"
+      - "C:/ProgramData/chocolatey/bin/"
+      - "C:/Program Files/CMake/bin/"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/"
+      - "C:/Users/david/.dotnet/tools/"
+      - "C:/Users/david/AppData/Roaming/npm/"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/"
+    searched_directories:
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/lld-link.com"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/lld-link.exe"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/lld-link"
+      - "C:/Python314/Scripts/lld-link.com"
+      - "C:/Python314/Scripts/lld-link.exe"
+      - "C:/Python314/Scripts/lld-link"
+      - "C:/Python314/lld-link.com"
+      - "C:/Python314/lld-link.exe"
+      - "C:/Python314/lld-link"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/lld-link.com"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/lld-link.exe"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/lld-link"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/lld-link.com"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/lld-link.exe"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/lld-link"
+      - "C:/Windows/System32/lld-link.com"
+      - "C:/Windows/System32/lld-link.exe"
+      - "C:/Windows/System32/lld-link"
+      - "C:/Windows/lld-link.com"
+      - "C:/Windows/lld-link.exe"
+      - "C:/Windows/lld-link"
+      - "C:/Windows/System32/wbem/lld-link.com"
+      - "C:/Windows/System32/wbem/lld-link.exe"
+      - "C:/Windows/System32/wbem/lld-link"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/lld-link.com"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/lld-link.exe"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/lld-link"
+      - "C:/Windows/System32/OpenSSH/lld-link.com"
+      - "C:/Windows/System32/OpenSSH/lld-link.exe"
+      - "C:/Windows/System32/OpenSSH/lld-link"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/lld-link.com"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/lld-link.exe"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/lld-link"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/lld-link.com"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/lld-link.exe"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/lld-link"
+      - "C:/Program Files/dotnet/lld-link.com"
+      - "C:/Program Files/dotnet/lld-link.exe"
+      - "C:/Program Files/dotnet/lld-link"
+      - "C:/Program Files/Git/cmd/lld-link.com"
+      - "C:/Program Files/Git/cmd/lld-link.exe"
+      - "C:/Program Files/Git/cmd/lld-link"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/lld-link.com"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/lld-link.exe"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/lld-link"
+      - "C:/Program Files/nodejs/lld-link.com"
+      - "C:/Program Files/nodejs/lld-link.exe"
+      - "C:/Program Files/nodejs/lld-link"
+      - "C:/ProgramData/chocolatey/bin/lld-link.com"
+      - "C:/ProgramData/chocolatey/bin/lld-link.exe"
+      - "C:/ProgramData/chocolatey/bin/lld-link"
+      - "C:/Program Files/CMake/bin/lld-link.com"
+      - "C:/Program Files/CMake/bin/lld-link.exe"
+      - "C:/Program Files/CMake/bin/lld-link"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/lld-link.com"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/lld-link.exe"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/lld-link"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/lld-link.com"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/lld-link.exe"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/lld-link"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/lld-link.com"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/lld-link.exe"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/lld-link"
+      - "C:/Users/david/.dotnet/tools/lld-link.com"
+      - "C:/Users/david/.dotnet/tools/lld-link.exe"
+      - "C:/Users/david/.dotnet/tools/lld-link"
+      - "C:/Users/david/AppData/Roaming/npm/lld-link.com"
+      - "C:/Users/david/AppData/Roaming/npm/lld-link.exe"
+      - "C:/Users/david/AppData/Roaming/npm/lld-link"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/lld-link.com"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/lld-link.exe"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/lld-link"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/lld-link.com"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/lld-link.exe"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/lld-link"
+    found: false
+    search_context:
+      ENV{PATH}:
+        - "C:\\Users\\david\\.codex\\tmp\\arg0\\codex-arg0tKMPz3"
+        - "C:\\Python314\\Scripts\\"
+        - "C:\\Python314\\"
+        - "C:\\Program Files\\Oculus\\Support\\oculus-runtime"
+        - "C:\\Program Files\\Eclipse Foundation\\jdk-8.0.302.8-hotspot\\bin"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\130\\Tools\\Binn\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\Client SDK\\ODBC\\170\\Tools\\Binn\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\ProgramData\\chocolatey\\bin"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\david\\AppData\\Local\\GitHubDesktop\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\david\\.dotnet\\tools"
+        - "C:\\Users\\david\\AppData\\Roaming\\npm"
+        - "C:\\Users\\david\\AppData\\Local\\OpenAI\\Codex\\bin"
+        - "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0\\app\\resources"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "program"
+    variable: "CMAKE_LINKER"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "link"
+    candidate_directories:
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/"
+      - "C:/Python314/Scripts/"
+      - "C:/Python314/"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/"
+      - "C:/Windows/System32/"
+      - "C:/Windows/"
+      - "C:/Windows/System32/wbem/"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/"
+      - "C:/Windows/System32/OpenSSH/"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/"
+      - "C:/Program Files/dotnet/"
+      - "C:/Program Files/Git/cmd/"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/"
+      - "C:/Program Files/nodejs/"
+      - "C:/ProgramData/chocolatey/bin/"
+      - "C:/Program Files/CMake/bin/"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/"
+      - "C:/Users/david/.dotnet/tools/"
+      - "C:/Users/david/AppData/Roaming/npm/"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/"
+    searched_directories:
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/link.com"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/link.exe"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/link"
+      - "C:/Python314/Scripts/link.com"
+      - "C:/Python314/Scripts/link.exe"
+      - "C:/Python314/Scripts/link"
+      - "C:/Python314/link.com"
+      - "C:/Python314/link.exe"
+      - "C:/Python314/link"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/link.com"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/link.exe"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/link"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/link.com"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/link.exe"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/link"
+      - "C:/Windows/System32/link.com"
+      - "C:/Windows/System32/link.exe"
+      - "C:/Windows/System32/link"
+      - "C:/Windows/link.com"
+      - "C:/Windows/link.exe"
+      - "C:/Windows/link"
+      - "C:/Windows/System32/wbem/link.com"
+      - "C:/Windows/System32/wbem/link.exe"
+      - "C:/Windows/System32/wbem/link"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/link.com"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/link.exe"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/link"
+      - "C:/Windows/System32/OpenSSH/link.com"
+      - "C:/Windows/System32/OpenSSH/link.exe"
+      - "C:/Windows/System32/OpenSSH/link"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/link.com"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/link.exe"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/link"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/link.com"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/link.exe"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/link"
+      - "C:/Program Files/dotnet/link.com"
+      - "C:/Program Files/dotnet/link.exe"
+      - "C:/Program Files/dotnet/link"
+      - "C:/Program Files/Git/cmd/link.com"
+      - "C:/Program Files/Git/cmd/link.exe"
+      - "C:/Program Files/Git/cmd/link"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/link.com"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/link.exe"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/link"
+      - "C:/Program Files/nodejs/link.com"
+      - "C:/Program Files/nodejs/link.exe"
+      - "C:/Program Files/nodejs/link"
+      - "C:/ProgramData/chocolatey/bin/link.com"
+      - "C:/ProgramData/chocolatey/bin/link.exe"
+      - "C:/ProgramData/chocolatey/bin/link"
+      - "C:/Program Files/CMake/bin/link.com"
+      - "C:/Program Files/CMake/bin/link.exe"
+      - "C:/Program Files/CMake/bin/link"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/link.com"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/link.exe"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/link"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/link.com"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/link.exe"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/link"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/link.com"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/link.exe"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/link"
+      - "C:/Users/david/.dotnet/tools/link.com"
+      - "C:/Users/david/.dotnet/tools/link.exe"
+      - "C:/Users/david/.dotnet/tools/link"
+      - "C:/Users/david/AppData/Roaming/npm/link.com"
+      - "C:/Users/david/AppData/Roaming/npm/link.exe"
+      - "C:/Users/david/AppData/Roaming/npm/link"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/link.com"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/link.exe"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/link"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/link.com"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/link.exe"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/link"
+    found: false
+    search_context:
+      ENV{PATH}:
+        - "C:\\Users\\david\\.codex\\tmp\\arg0\\codex-arg0tKMPz3"
+        - "C:\\Python314\\Scripts\\"
+        - "C:\\Python314\\"
+        - "C:\\Program Files\\Oculus\\Support\\oculus-runtime"
+        - "C:\\Program Files\\Eclipse Foundation\\jdk-8.0.302.8-hotspot\\bin"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\130\\Tools\\Binn\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\Client SDK\\ODBC\\170\\Tools\\Binn\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\ProgramData\\chocolatey\\bin"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\david\\AppData\\Local\\GitHubDesktop\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\david\\.dotnet\\tools"
+        - "C:\\Users\\david\\AppData\\Roaming\\npm"
+        - "C:\\Users\\david\\AppData\\Local\\OpenAI\\Codex\\bin"
+        - "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0\\app\\resources"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "program"
+    variable: "CMAKE_MT"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "mt"
+    candidate_directories:
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/"
+      - "C:/Python314/Scripts/"
+      - "C:/Python314/"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/"
+      - "C:/Windows/System32/"
+      - "C:/Windows/"
+      - "C:/Windows/System32/wbem/"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/"
+      - "C:/Windows/System32/OpenSSH/"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/"
+      - "C:/Program Files/dotnet/"
+      - "C:/Program Files/Git/cmd/"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/"
+      - "C:/Program Files/nodejs/"
+      - "C:/ProgramData/chocolatey/bin/"
+      - "C:/Program Files/CMake/bin/"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/"
+      - "C:/Users/david/.dotnet/tools/"
+      - "C:/Users/david/AppData/Roaming/npm/"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/"
+    searched_directories:
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/mt.com"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/mt.exe"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/mt"
+      - "C:/Python314/Scripts/mt.com"
+      - "C:/Python314/Scripts/mt.exe"
+      - "C:/Python314/Scripts/mt"
+      - "C:/Python314/mt.com"
+      - "C:/Python314/mt.exe"
+      - "C:/Python314/mt"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/mt.com"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/mt.exe"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/mt"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/mt.com"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/mt.exe"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/mt"
+      - "C:/Windows/System32/mt.com"
+      - "C:/Windows/System32/mt.exe"
+      - "C:/Windows/System32/mt"
+      - "C:/Windows/mt.com"
+      - "C:/Windows/mt.exe"
+      - "C:/Windows/mt"
+      - "C:/Windows/System32/wbem/mt.com"
+      - "C:/Windows/System32/wbem/mt.exe"
+      - "C:/Windows/System32/wbem/mt"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/mt.com"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/mt.exe"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/mt"
+      - "C:/Windows/System32/OpenSSH/mt.com"
+      - "C:/Windows/System32/OpenSSH/mt.exe"
+      - "C:/Windows/System32/OpenSSH/mt"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/mt.com"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/mt.exe"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/mt"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/mt.com"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/mt.exe"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/mt"
+      - "C:/Program Files/dotnet/mt.com"
+      - "C:/Program Files/dotnet/mt.exe"
+      - "C:/Program Files/dotnet/mt"
+      - "C:/Program Files/Git/cmd/mt.com"
+      - "C:/Program Files/Git/cmd/mt.exe"
+      - "C:/Program Files/Git/cmd/mt"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/mt.com"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/mt.exe"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/mt"
+      - "C:/Program Files/nodejs/mt.com"
+      - "C:/Program Files/nodejs/mt.exe"
+      - "C:/Program Files/nodejs/mt"
+      - "C:/ProgramData/chocolatey/bin/mt.com"
+      - "C:/ProgramData/chocolatey/bin/mt.exe"
+      - "C:/ProgramData/chocolatey/bin/mt"
+      - "C:/Program Files/CMake/bin/mt.com"
+      - "C:/Program Files/CMake/bin/mt.exe"
+      - "C:/Program Files/CMake/bin/mt"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/mt.com"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/mt.exe"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/mt"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/mt.com"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/mt.exe"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/mt"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/mt.com"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/mt.exe"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/mt"
+      - "C:/Users/david/.dotnet/tools/mt.com"
+      - "C:/Users/david/.dotnet/tools/mt.exe"
+      - "C:/Users/david/.dotnet/tools/mt"
+      - "C:/Users/david/AppData/Roaming/npm/mt.com"
+      - "C:/Users/david/AppData/Roaming/npm/mt.exe"
+      - "C:/Users/david/AppData/Roaming/npm/mt"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/mt.com"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/mt.exe"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/mt"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/mt.com"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/mt.exe"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/mt"
+    found: false
+    search_context:
+      ENV{PATH}:
+        - "C:\\Users\\david\\.codex\\tmp\\arg0\\codex-arg0tKMPz3"
+        - "C:\\Python314\\Scripts\\"
+        - "C:\\Python314\\"
+        - "C:\\Program Files\\Oculus\\Support\\oculus-runtime"
+        - "C:\\Program Files\\Eclipse Foundation\\jdk-8.0.302.8-hotspot\\bin"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\130\\Tools\\Binn\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\Client SDK\\ODBC\\170\\Tools\\Binn\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\ProgramData\\chocolatey\\bin"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\david\\AppData\\Local\\GitHubDesktop\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\david\\.dotnet\\tools"
+        - "C:\\Users\\david\\AppData\\Roaming\\npm"
+        - "C:\\Users\\david\\AppData\\Local\\OpenAI\\Codex\\bin"
+        - "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0\\app\\resources"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "program"
+    variable: "CMAKE_AR"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "lib"
+    candidate_directories:
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/"
+      - "C:/Python314/Scripts/"
+      - "C:/Python314/"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/"
+      - "C:/Windows/System32/"
+      - "C:/Windows/"
+      - "C:/Windows/System32/wbem/"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/"
+      - "C:/Windows/System32/OpenSSH/"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/"
+      - "C:/Program Files/dotnet/"
+      - "C:/Program Files/Git/cmd/"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/"
+      - "C:/Program Files/nodejs/"
+      - "C:/ProgramData/chocolatey/bin/"
+      - "C:/Program Files/CMake/bin/"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/"
+      - "C:/Users/david/.dotnet/tools/"
+      - "C:/Users/david/AppData/Roaming/npm/"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/"
+    searched_directories:
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/lib.com"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/lib.exe"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/lib"
+      - "C:/Python314/Scripts/lib.com"
+      - "C:/Python314/Scripts/lib.exe"
+      - "C:/Python314/Scripts/lib"
+      - "C:/Python314/lib.com"
+      - "C:/Python314/lib.exe"
+      - "C:/Python314/lib"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/lib.com"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/lib.exe"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/lib"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/lib.com"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/lib.exe"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/lib"
+      - "C:/Windows/System32/lib.com"
+      - "C:/Windows/System32/lib.exe"
+      - "C:/Windows/System32/lib"
+      - "C:/Windows/lib.com"
+      - "C:/Windows/lib.exe"
+      - "C:/Windows/lib"
+      - "C:/Windows/System32/wbem/lib.com"
+      - "C:/Windows/System32/wbem/lib.exe"
+      - "C:/Windows/System32/wbem/lib"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/lib.com"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/lib.exe"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/lib"
+      - "C:/Windows/System32/OpenSSH/lib.com"
+      - "C:/Windows/System32/OpenSSH/lib.exe"
+      - "C:/Windows/System32/OpenSSH/lib"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/lib.com"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/lib.exe"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/lib"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/lib.com"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/lib.exe"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/lib"
+      - "C:/Program Files/dotnet/lib.com"
+      - "C:/Program Files/dotnet/lib.exe"
+      - "C:/Program Files/dotnet/lib"
+      - "C:/Program Files/Git/cmd/lib.com"
+      - "C:/Program Files/Git/cmd/lib.exe"
+      - "C:/Program Files/Git/cmd/lib"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/lib.com"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/lib.exe"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/lib"
+      - "C:/Program Files/nodejs/lib.com"
+      - "C:/Program Files/nodejs/lib.exe"
+      - "C:/Program Files/nodejs/lib"
+      - "C:/ProgramData/chocolatey/bin/lib.com"
+      - "C:/ProgramData/chocolatey/bin/lib.exe"
+      - "C:/ProgramData/chocolatey/bin/lib"
+      - "C:/Program Files/CMake/bin/lib.com"
+      - "C:/Program Files/CMake/bin/lib.exe"
+      - "C:/Program Files/CMake/bin/lib"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/lib.com"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/lib.exe"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/lib"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/lib.com"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/lib.exe"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/lib"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/lib.com"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/lib.exe"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/lib"
+      - "C:/Users/david/.dotnet/tools/lib.com"
+      - "C:/Users/david/.dotnet/tools/lib.exe"
+      - "C:/Users/david/.dotnet/tools/lib"
+      - "C:/Users/david/AppData/Roaming/npm/lib.com"
+      - "C:/Users/david/AppData/Roaming/npm/lib.exe"
+      - "C:/Users/david/AppData/Roaming/npm/lib"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/lib.com"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/lib.exe"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/lib"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/lib.com"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/lib.exe"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/lib"
+    found: false
+    search_context:
+      ENV{PATH}:
+        - "C:\\Users\\david\\.codex\\tmp\\arg0\\codex-arg0tKMPz3"
+        - "C:\\Python314\\Scripts\\"
+        - "C:\\Python314\\"
+        - "C:\\Program Files\\Oculus\\Support\\oculus-runtime"
+        - "C:\\Program Files\\Eclipse Foundation\\jdk-8.0.302.8-hotspot\\bin"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\130\\Tools\\Binn\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\Client SDK\\ODBC\\170\\Tools\\Binn\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\ProgramData\\chocolatey\\bin"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\david\\AppData\\Local\\GitHubDesktop\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\david\\.dotnet\\tools"
+        - "C:\\Users\\david\\AppData\\Roaming\\npm"
+        - "C:\\Users\\david\\AppData\\Local\\OpenAI\\Codex\\bin"
+        - "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0\\app\\resources"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:468 (find_file)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:506 (CMAKE_DETERMINE_COMPILER_ID_WRITE)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:8 (CMAKE_DETERMINE_COMPILER_ID_BUILD)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCXXCompiler.cmake:125 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "file"
+    variable: "src_in"
+    description: "Path to a file."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "CMakeCXXCompilerId.cpp.in"
+    candidate_directories:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/"
+    found: "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeCXXCompilerId.cpp.in"
+    search_context:
+      ENV{PATH}:
+        - "C:\\Users\\david\\.codex\\tmp\\arg0\\codex-arg0tKMPz3"
+        - "C:\\Python314\\Scripts\\"
+        - "C:\\Python314\\"
+        - "C:\\Program Files\\Oculus\\Support\\oculus-runtime"
+        - "C:\\Program Files\\Eclipse Foundation\\jdk-8.0.302.8-hotspot\\bin"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\130\\Tools\\Binn\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\Client SDK\\ODBC\\170\\Tools\\Binn\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\ProgramData\\chocolatey\\bin"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\david\\AppData\\Local\\GitHubDesktop\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\david\\.dotnet\\tools"
+        - "C:\\Users\\david\\AppData\\Roaming\\npm"
+        - "C:\\Users\\david\\AppData\\Local\\OpenAI\\Codex\\bin"
+        - "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0\\app\\resources"
+  -
+    kind: "message-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCXXCompiler.cmake:125 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      Compiling the CXX compiler identification source file "CMakeCXXCompilerId.cpp" failed.
+      Compiler:  
+      Build flags: 
+      Id flags:  
+      
+      The output was:
+      1
+      MSBuild version 18.3.0-release-26070-10+3972042b7 for .NET Framework
+      Build started 18/03/2026 19:59:30.
+      
+      Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj" on node 1 (default targets).
+      PrepareForBuild:
+        Creating directory "Debug\\".
+        Structured output is enabled. The formatting of compiler diagnostics will reflect the error hierarchy. See https://aka.ms/cpp/structured-output for more details.
+        Creating directory "Debug\\CompilerIdCXX.tlog\\".
+      InitializeBuildStatus:
+        Creating "Debug\\CompilerIdCXX.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        Touching "Debug\\CompilerIdCXX.tlog\\unsuccessfulbuild".
+      ClCompile:
+        C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.50.35717\\bin\\HostX64\\x64\\CL.exe /c /nologo /W0 /WX- /diagnostics:column /Od /D _MBCS /Gm- /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /Fo"Debug\\\\" /Fd"Debug\\vc145.pdb" /external:W0 /Gd /TP /FC /errorReport:queue CMakeCXXCompilerId.cpp
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001: Invalid command line switch for "CL.exe". System.ArgumentException: Item has already been added. Key in dictionary: 'Path'  Key being added: 'PATH' [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at System.Collections.Hashtable.Insert(Object key, Object nvalue, Boolean add) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at System.Diagnostics.ProcessStartInfo.get_EnvironmentVariables() [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.Utilities.ToolTask.GetProcessStartInfo(String pathToTool, String commandLineCommands, String responseFileSwitch) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.Utilities.ToolTask.ExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.CPPTasks.TrackedVCToolTask.TrackerExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.CPPTasks.TrackedVCToolTask.ExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.CPPTasks.CL.ExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.Utilities.ToolTask.Execute() [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj" (default targets) -- FAILED.
+      
+      Build FAILED.
+      
+      "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj" (default target) (1) ->
+      (ClCompile target) -> 
+        C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001: Invalid command line switch for "CL.exe". System.ArgumentException: Item has already been added. Key in dictionary: 'Path'  Key being added: 'PATH' [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at System.Collections.Hashtable.Insert(Object key, Object nvalue, Boolean add) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at System.Diagnostics.ProcessStartInfo.get_EnvironmentVariables() [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.Utilities.ToolTask.GetProcessStartInfo(String pathToTool, String commandLineCommands, String responseFileSwitch) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.Utilities.ToolTask.ExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.CPPTasks.TrackedVCToolTask.TrackerExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.CPPTasks.TrackedVCToolTask.ExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.CPPTasks.CL.ExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.Utilities.ToolTask.Execute() [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      
+          0 Warning(s)
+          1 Error(s)
+      
+      Time Elapsed 00:00:00.20
+      
+      
+  -
+    kind: "find-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:468 (find_file)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:506 (CMAKE_DETERMINE_COMPILER_ID_WRITE)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:8 (CMAKE_DETERMINE_COMPILER_ID_BUILD)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCXXCompiler.cmake:125 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "file"
+    variable: "src_in"
+    description: "Path to a file."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "CMakeCXXCompilerId.cpp.in"
+    candidate_directories:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/"
+    found: "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeCXXCompilerId.cpp.in"
+    search_context:
+      ENV{PATH}:
+        - "C:\\Users\\david\\.codex\\tmp\\arg0\\codex-arg0tKMPz3"
+        - "C:\\Python314\\Scripts\\"
+        - "C:\\Python314\\"
+        - "C:\\Program Files\\Oculus\\Support\\oculus-runtime"
+        - "C:\\Program Files\\Eclipse Foundation\\jdk-8.0.302.8-hotspot\\bin"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\130\\Tools\\Binn\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\Client SDK\\ODBC\\170\\Tools\\Binn\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\ProgramData\\chocolatey\\bin"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\david\\AppData\\Local\\GitHubDesktop\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\david\\.dotnet\\tools"
+        - "C:\\Users\\david\\AppData\\Roaming\\npm"
+        - "C:\\Users\\david\\AppData\\Local\\OpenAI\\Codex\\bin"
+        - "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0\\app\\resources"
+  -
+    kind: "message-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCXXCompiler.cmake:125 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      Compiling the CXX compiler identification source file "CMakeCXXCompilerId.cpp" failed.
+      Compiler:  
+      Build flags: 
+      Id flags:  
+      
+      The output was:
+      1
+      MSBuild version 18.3.0-release-26070-10+3972042b7 for .NET Framework
+      Build started 18/03/2026 19:59:31.
+      
+      Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj" on node 1 (default targets).
+      PrepareForBuild:
+        Creating directory "Debug\\".
+        Structured output is enabled. The formatting of compiler diagnostics will reflect the error hierarchy. See https://aka.ms/cpp/structured-output for more details.
+        Creating directory "Debug\\CompilerIdCXX.tlog\\".
+      InitializeBuildStatus:
+        Creating "Debug\\CompilerIdCXX.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        Touching "Debug\\CompilerIdCXX.tlog\\unsuccessfulbuild".
+      ClCompile:
+        C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.50.35717\\bin\\HostX64\\x64\\CL.exe /c /nologo /W0 /WX- /diagnostics:column /Od /D _MBCS /Gm- /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /Fo"Debug\\\\" /Fd"Debug\\vc145.pdb" /external:W0 /Gd /TP /FC /errorReport:queue CMakeCXXCompilerId.cpp
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001: Invalid command line switch for "CL.exe". System.ArgumentException: Item has already been added. Key in dictionary: 'Path'  Key being added: 'PATH' [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at System.Collections.Hashtable.Insert(Object key, Object nvalue, Boolean add) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at System.Diagnostics.ProcessStartInfo.get_EnvironmentVariables() [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.Utilities.ToolTask.GetProcessStartInfo(String pathToTool, String commandLineCommands, String responseFileSwitch) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.Utilities.ToolTask.ExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.CPPTasks.TrackedVCToolTask.TrackerExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.CPPTasks.TrackedVCToolTask.ExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.CPPTasks.CL.ExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.Utilities.ToolTask.Execute() [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj" (default targets) -- FAILED.
+      
+      Build FAILED.
+      
+      "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj" (default target) (1) ->
+      (ClCompile target) -> 
+        C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001: Invalid command line switch for "CL.exe". System.ArgumentException: Item has already been added. Key in dictionary: 'Path'  Key being added: 'PATH' [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at System.Collections.Hashtable.Insert(Object key, Object nvalue, Boolean add) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at System.Diagnostics.ProcessStartInfo.get_EnvironmentVariables() [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.Utilities.ToolTask.GetProcessStartInfo(String pathToTool, String commandLineCommands, String responseFileSwitch) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.Utilities.ToolTask.ExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.CPPTasks.TrackedVCToolTask.TrackerExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.CPPTasks.TrackedVCToolTask.ExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.CPPTasks.CL.ExecuteTool(String pathToTool, String responseFileCommands, String commandLineCommands) [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.CppCommon.targets(788,5): error MSB6001:    at Microsoft.Build.Utilities.ToolTask.Execute() [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_verify\\CMakeFiles\\4.3.0-rc1\\CompilerIdCXX\\CompilerIdCXX.vcxproj]
+      
+          0 Warning(s)
+          1 Error(s)
+      
+      Time Elapsed 00:00:00.20
+      
+      
+  -
+    kind: "find-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeFindBinUtils.cmake:37 (find_program)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeFindBinUtils.cmake:65 (__resolve_tool_path)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeFindBinUtils.cmake:103 (__resolve_linker_path)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCXXCompiler.cmake:206 (include)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "program"
+    variable: "_CMAKE_TOOL_WITH_PATH"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "link"
+    candidate_directories:
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/"
+      - "C:/Python314/Scripts/"
+      - "C:/Python314/"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/"
+      - "C:/Windows/System32/"
+      - "C:/Windows/"
+      - "C:/Windows/System32/wbem/"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/"
+      - "C:/Windows/System32/OpenSSH/"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/"
+      - "C:/Program Files/dotnet/"
+      - "C:/Program Files/Git/cmd/"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/"
+      - "C:/Program Files/nodejs/"
+      - "C:/ProgramData/chocolatey/bin/"
+      - "C:/Program Files/CMake/bin/"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/"
+      - "C:/Users/david/.dotnet/tools/"
+      - "C:/Users/david/AppData/Roaming/npm/"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/"
+    searched_directories:
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/link.com"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/link.exe"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/link"
+      - "C:/Python314/Scripts/link.com"
+      - "C:/Python314/Scripts/link.exe"
+      - "C:/Python314/Scripts/link"
+      - "C:/Python314/link.com"
+      - "C:/Python314/link.exe"
+      - "C:/Python314/link"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/link.com"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/link.exe"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/link"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/link.com"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/link.exe"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/link"
+      - "C:/Windows/System32/link.com"
+      - "C:/Windows/System32/link.exe"
+      - "C:/Windows/System32/link"
+      - "C:/Windows/link.com"
+      - "C:/Windows/link.exe"
+      - "C:/Windows/link"
+      - "C:/Windows/System32/wbem/link.com"
+      - "C:/Windows/System32/wbem/link.exe"
+      - "C:/Windows/System32/wbem/link"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/link.com"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/link.exe"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/link"
+      - "C:/Windows/System32/OpenSSH/link.com"
+      - "C:/Windows/System32/OpenSSH/link.exe"
+      - "C:/Windows/System32/OpenSSH/link"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/link.com"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/link.exe"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/link"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/link.com"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/link.exe"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/link"
+      - "C:/Program Files/dotnet/link.com"
+      - "C:/Program Files/dotnet/link.exe"
+      - "C:/Program Files/dotnet/link"
+      - "C:/Program Files/Git/cmd/link.com"
+      - "C:/Program Files/Git/cmd/link.exe"
+      - "C:/Program Files/Git/cmd/link"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/link.com"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/link.exe"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/link"
+      - "C:/Program Files/nodejs/link.com"
+      - "C:/Program Files/nodejs/link.exe"
+      - "C:/Program Files/nodejs/link"
+      - "C:/ProgramData/chocolatey/bin/link.com"
+      - "C:/ProgramData/chocolatey/bin/link.exe"
+      - "C:/ProgramData/chocolatey/bin/link"
+      - "C:/Program Files/CMake/bin/link.com"
+      - "C:/Program Files/CMake/bin/link.exe"
+      - "C:/Program Files/CMake/bin/link"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/link.com"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/link.exe"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/link"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/link.com"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/link.exe"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/link"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/link.com"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/link.exe"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/link"
+      - "C:/Users/david/.dotnet/tools/link.com"
+      - "C:/Users/david/.dotnet/tools/link.exe"
+      - "C:/Users/david/.dotnet/tools/link"
+      - "C:/Users/david/AppData/Roaming/npm/link.com"
+      - "C:/Users/david/AppData/Roaming/npm/link.exe"
+      - "C:/Users/david/AppData/Roaming/npm/link"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/link.com"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/link.exe"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/link"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/link.com"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/link.exe"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/link"
+    found: false
+    search_context:
+      ENV{PATH}:
+        - "C:\\Users\\david\\.codex\\tmp\\arg0\\codex-arg0tKMPz3"
+        - "C:\\Python314\\Scripts\\"
+        - "C:\\Python314\\"
+        - "C:\\Program Files\\Oculus\\Support\\oculus-runtime"
+        - "C:\\Program Files\\Eclipse Foundation\\jdk-8.0.302.8-hotspot\\bin"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\130\\Tools\\Binn\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\Client SDK\\ODBC\\170\\Tools\\Binn\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\ProgramData\\chocolatey\\bin"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\david\\AppData\\Local\\GitHubDesktop\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\david\\.dotnet\\tools"
+        - "C:\\Users\\david\\AppData\\Roaming\\npm"
+        - "C:\\Users\\david\\AppData\\Local\\OpenAI\\Codex\\bin"
+        - "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0\\app\\resources"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeFindBinUtils.cmake:37 (find_program)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeFindBinUtils.cmake:65 (__resolve_tool_path)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeFindBinUtils.cmake:104 (__resolve_linker_path)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDetermineCXXCompiler.cmake:206 (include)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "program"
+    variable: "_CMAKE_TOOL_WITH_PATH"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "lld-link"
+    candidate_directories:
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/"
+      - "C:/Python314/Scripts/"
+      - "C:/Python314/"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/"
+      - "C:/Windows/System32/"
+      - "C:/Windows/"
+      - "C:/Windows/System32/wbem/"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/"
+      - "C:/Windows/System32/OpenSSH/"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/"
+      - "C:/Program Files/dotnet/"
+      - "C:/Program Files/Git/cmd/"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/"
+      - "C:/Program Files/nodejs/"
+      - "C:/ProgramData/chocolatey/bin/"
+      - "C:/Program Files/CMake/bin/"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/"
+      - "C:/Users/david/.dotnet/tools/"
+      - "C:/Users/david/AppData/Roaming/npm/"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/"
+    searched_directories:
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/lld-link.com"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/lld-link.exe"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/lld-link"
+      - "C:/Python314/Scripts/lld-link.com"
+      - "C:/Python314/Scripts/lld-link.exe"
+      - "C:/Python314/Scripts/lld-link"
+      - "C:/Python314/lld-link.com"
+      - "C:/Python314/lld-link.exe"
+      - "C:/Python314/lld-link"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/lld-link.com"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/lld-link.exe"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/lld-link"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/lld-link.com"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/lld-link.exe"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/lld-link"
+      - "C:/Windows/System32/lld-link.com"
+      - "C:/Windows/System32/lld-link.exe"
+      - "C:/Windows/System32/lld-link"
+      - "C:/Windows/lld-link.com"
+      - "C:/Windows/lld-link.exe"
+      - "C:/Windows/lld-link"
+      - "C:/Windows/System32/wbem/lld-link.com"
+      - "C:/Windows/System32/wbem/lld-link.exe"
+      - "C:/Windows/System32/wbem/lld-link"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/lld-link.com"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/lld-link.exe"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/lld-link"
+      - "C:/Windows/System32/OpenSSH/lld-link.com"
+      - "C:/Windows/System32/OpenSSH/lld-link.exe"
+      - "C:/Windows/System32/OpenSSH/lld-link"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/lld-link.com"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/lld-link.exe"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/lld-link"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/lld-link.com"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/lld-link.exe"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/lld-link"
+      - "C:/Program Files/dotnet/lld-link.com"
+      - "C:/Program Files/dotnet/lld-link.exe"
+      - "C:/Program Files/dotnet/lld-link"
+      - "C:/Program Files/Git/cmd/lld-link.com"
+      - "C:/Program Files/Git/cmd/lld-link.exe"
+      - "C:/Program Files/Git/cmd/lld-link"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/lld-link.com"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/lld-link.exe"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/lld-link"
+      - "C:/Program Files/nodejs/lld-link.com"
+      - "C:/Program Files/nodejs/lld-link.exe"
+      - "C:/Program Files/nodejs/lld-link"
+      - "C:/ProgramData/chocolatey/bin/lld-link.com"
+      - "C:/ProgramData/chocolatey/bin/lld-link.exe"
+      - "C:/ProgramData/chocolatey/bin/lld-link"
+      - "C:/Program Files/CMake/bin/lld-link.com"
+      - "C:/Program Files/CMake/bin/lld-link.exe"
+      - "C:/Program Files/CMake/bin/lld-link"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/lld-link.com"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/lld-link.exe"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/lld-link"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/lld-link.com"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/lld-link.exe"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/lld-link"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/lld-link.com"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/lld-link.exe"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/lld-link"
+      - "C:/Users/david/.dotnet/tools/lld-link.com"
+      - "C:/Users/david/.dotnet/tools/lld-link.exe"
+      - "C:/Users/david/.dotnet/tools/lld-link"
+      - "C:/Users/david/AppData/Roaming/npm/lld-link.com"
+      - "C:/Users/david/AppData/Roaming/npm/lld-link.exe"
+      - "C:/Users/david/AppData/Roaming/npm/lld-link"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/lld-link.com"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/lld-link.exe"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/lld-link"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/lld-link.com"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/lld-link.exe"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/lld-link"
+    found: false
+    search_context:
+      ENV{PATH}:
+        - "C:\\Users\\david\\.codex\\tmp\\arg0\\codex-arg0tKMPz3"
+        - "C:\\Python314\\Scripts\\"
+        - "C:\\Python314\\"
+        - "C:\\Program Files\\Oculus\\Support\\oculus-runtime"
+        - "C:\\Program Files\\Eclipse Foundation\\jdk-8.0.302.8-hotspot\\bin"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\130\\Tools\\Binn\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\Client SDK\\ODBC\\170\\Tools\\Binn\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\ProgramData\\chocolatey\\bin"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\david\\AppData\\Local\\GitHubDesktop\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\david\\.dotnet\\tools"
+        - "C:\\Users\\david\\AppData\\Roaming\\npm"
+        - "C:\\Users\\david\\AppData\\Local\\OpenAI\\Codex\\bin"
+        - "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0\\app\\resources"
+...

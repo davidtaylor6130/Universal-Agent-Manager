@@ -7,7 +7,10 @@
 #include "core/app_paths.h"
 #include "core/chat_folder_store.h"
 #include "core/chat_repository.h"
+#include "core/frontend_actions.h"
 #include "core/gemini_command_builder.h"
+#include "core/provider_profile.h"
+#include "core/provider_runtime.h"
 #include "core/settings_store.h"
 
 #ifndef SDL_MAIN_HANDLED
@@ -112,6 +115,8 @@ struct AppState {
   fs::path gemini_chats_dir;
   AppSettings settings;
   std::vector<ChatFolder> folders;
+  std::vector<ProviderProfile> provider_profiles;
+  uam::FrontendActionMap frontend_actions;
 
   std::vector<ChatSession> chats;
   int selected_chat_index = -1;
@@ -768,7 +773,7 @@ static std::optional<fs::path> ResolveGeminiProjectTmpDir(const fs::path& projec
   return AppPaths::ResolveGeminiProjectTmpDir(project_root);
 }
 
-static std::optional<ChatSession> ParseGeminiSessionFile(const fs::path& file_path) {
+static std::optional<ChatSession> ParseGeminiSessionFile(const fs::path& file_path, const ProviderProfile& provider) {
   const std::string file_text = ReadTextFile(file_path);
   if (file_text.empty()) {
     return std::nullopt;
@@ -810,13 +815,7 @@ static std::optional<ChatSession> ParseGeminiSessionFile(const fs::path& file_pa
       }
 
       Message message;
-      if (type == "user") {
-        message.role = MessageRole::User;
-      } else if (type == "assistant" || type == "model" || type == "gemini") {
-        message.role = MessageRole::Assistant;
-      } else {
-        message.role = MessageRole::System;
-      }
+      message.role = ProviderRuntime::RoleFromNativeType(provider, type);
       message.content = content;
       message.created_at = timestamp.empty() ? chat.updated_at : timestamp;
       chat.messages.push_back(std::move(message));
@@ -839,7 +838,7 @@ static std::optional<ChatSession> ParseGeminiSessionFile(const fs::path& file_pa
   return chat;
 }
 
-static std::vector<ChatSession> LoadNativeGeminiChats(const fs::path& chats_dir) {
+static std::vector<ChatSession> LoadNativeGeminiChats(const fs::path& chats_dir, const ProviderProfile& provider) {
   std::vector<ChatSession> chats;
   if (chats_dir.empty() || !fs::exists(chats_dir) || !fs::is_directory(chats_dir)) {
     return chats;
@@ -850,7 +849,7 @@ static std::vector<ChatSession> LoadNativeGeminiChats(const fs::path& chats_dir)
     if (ec || !item.is_regular_file() || item.path().extension() != ".json") {
       continue;
     }
-    const auto parsed = ParseGeminiSessionFile(item.path());
+    const auto parsed = ParseGeminiSessionFile(item.path(), provider);
     if (parsed.has_value()) {
       chats.push_back(parsed.value());
     }
@@ -947,6 +946,77 @@ static void SaveFolders(const AppState& app) {
   ChatFolderStore::Save(app.data_root, app.folders);
 }
 
+static void SaveProviders(const AppState& app) {
+  ProviderProfileStore::Save(app.data_root, app.provider_profiles);
+}
+
+static fs::path ProviderProfileFilePath(const AppState& app) {
+  return app.data_root / "providers.txt";
+}
+
+static fs::path FrontendActionFilePath(const AppState& app) {
+  return app.data_root / "frontend_actions.txt";
+}
+
+static ProviderProfile* ActiveProvider(AppState& app) {
+  ProviderProfile* found = ProviderProfileStore::FindById(app.provider_profiles, app.settings.active_provider_id);
+  if (found != nullptr) {
+    return found;
+  }
+  ProviderProfileStore::EnsureDefaultProfile(app.provider_profiles);
+  app.settings.active_provider_id = "gemini";
+  return ProviderProfileStore::FindById(app.provider_profiles, app.settings.active_provider_id);
+}
+
+static const ProviderProfile* ActiveProvider(const AppState& app) {
+  return ProviderProfileStore::FindById(app.provider_profiles, app.settings.active_provider_id);
+}
+
+static const ProviderProfile& ActiveProviderOrDefault(const AppState& app) {
+  const ProviderProfile* profile = ActiveProvider(app);
+  if (profile != nullptr) {
+    return *profile;
+  }
+  static const ProviderProfile fallback = ProviderProfileStore::DefaultGeminiProfile();
+  return fallback;
+}
+
+static bool ActiveProviderUsesGeminiHistory(const AppState& app) {
+  const ProviderProfile* profile = ActiveProvider(app);
+  return profile != nullptr && ProviderRuntime::SupportsGeminiJsonHistory(*profile);
+}
+
+static const uam::FrontendAction* FindFrontendAction(const AppState& app, const std::string& key) {
+  return uam::FindAction(app.frontend_actions, key);
+}
+
+static bool FrontendActionVisible(const AppState& app, const std::string& key, const bool fallback_visible = true) {
+  const uam::FrontendAction* action = FindFrontendAction(app, key);
+  return (action == nullptr) ? fallback_visible : action->visible;
+}
+
+static std::string FrontendActionLabel(const AppState& app, const std::string& key, const std::string& fallback_label) {
+  const uam::FrontendAction* action = FindFrontendAction(app, key);
+  if (action == nullptr || Trim(action->label).empty()) {
+    return fallback_label;
+  }
+  return action->label;
+}
+
+static void LoadFrontendActions(AppState& app) {
+  std::string error;
+  if (!uam::LoadFrontendActionMap(FrontendActionFilePath(app), app.frontend_actions, &error)) {
+    app.frontend_actions = uam::DefaultFrontendActionMap();
+    if (!uam::SaveFrontendActionMap(FrontendActionFilePath(app), app.frontend_actions, &error) && !error.empty()) {
+      app.status_line = "Frontend action map reset, but saving failed: " + error;
+    } else if (!error.empty()) {
+      app.status_line = "Frontend action map was invalid and has been reset.";
+    }
+    return;
+  }
+  uam::NormalizeFrontendActionMap(app.frontend_actions);
+}
+
 static std::string FolderForNewChat(const AppState& app) {
   if (!app.new_chat_folder_id.empty()) {
     return app.new_chat_folder_id;
@@ -1040,16 +1110,19 @@ static void AddMessage(ChatSession& chat, const MessageRole role, const std::str
   }
 }
 
-static std::string BuildGeminiPrompt(const std::string& user_prompt, const std::vector<std::string>& files) {
-  return GeminiCommandBuilder::BuildPrompt(user_prompt, files);
+static std::string BuildProviderPrompt(const ProviderProfile& provider,
+                                       const std::string& user_prompt,
+                                       const std::vector<std::string>& files) {
+  return ProviderRuntime::BuildPrompt(provider, user_prompt, files);
 }
 
-static std::string BuildGeminiCommand(
+static std::string BuildProviderCommand(
+    const ProviderProfile& provider,
     const AppSettings& settings,
     const std::string& prompt,
     const std::vector<std::string>& files,
     const std::string& resume_session_id) {
-  return GeminiCommandBuilder::BuildCommand(settings, prompt, files, resume_session_id);
+  return ProviderRuntime::BuildCommand(provider, settings, prompt, files, resume_session_id);
 }
 
 static void SaveAndUpdateStatus(AppState& app, const ChatSession& chat, const std::string& success, const std::string& failure) {
@@ -1105,6 +1178,8 @@ static void RefreshGeminiChatsDir(AppState& app) {
     app.gemini_chats_dir = tmp_dir.value() / "chats";
     std::error_code ec;
     fs::create_directories(app.gemini_chats_dir, ec);
+  } else {
+    app.gemini_chats_dir.clear();
   }
 }
 
@@ -1144,14 +1219,8 @@ static std::optional<fs::path> FindNativeSessionFilePath(const AppState& app, co
   return std::nullopt;
 }
 
-static MessageRole GeminiMessageRoleFromType(const std::string& type) {
-  if (type == "user") {
-    return MessageRole::User;
-  }
-  if (type == "assistant" || type == "model" || type == "gemini") {
-    return MessageRole::Assistant;
-  }
-  return MessageRole::System;
+static MessageRole NativeMessageRoleFromType(const ProviderProfile& provider, const std::string& type) {
+  return ProviderRuntime::RoleFromNativeType(provider, type);
 }
 
 static bool TruncateNativeSessionFromDisplayedMessage(const AppState& app,
@@ -1197,6 +1266,7 @@ static bool TruncateNativeSessionFromDisplayedMessage(const AppState& app,
     return false;
   }
   JsonValue& messages_array = messages_it->second;
+  const ProviderProfile& provider = ActiveProviderOrDefault(app);
 
   std::vector<int> visible_raw_indices;
   std::vector<MessageRole> visible_roles;
@@ -1212,7 +1282,7 @@ static bool TruncateNativeSessionFromDisplayedMessage(const AppState& app,
       continue;
     }
     visible_raw_indices.push_back(i);
-    visible_roles.push_back(GeminiMessageRoleFromType(JsonStringOrEmpty(raw_message.Find("type"))));
+    visible_roles.push_back(NativeMessageRoleFromType(provider, JsonStringOrEmpty(raw_message.Find("type"))));
   }
 
   if (displayed_message_index < 0 || displayed_message_index >= static_cast<int>(visible_raw_indices.size())) {
@@ -1462,9 +1532,14 @@ static void SyncChatsFromNative(AppState& app, const std::string& preferred_chat
   const std::string selected_before = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
   const std::string previous_selected = !selected_before.empty() ? selected_before : preferred_chat_id;
 
-  RefreshGeminiChatsDir(app);
-  std::vector<ChatSession> native = LoadNativeGeminiChats(app.gemini_chats_dir);
-  ApplyLocalOverrides(app, native);
+  if (ActiveProviderUsesGeminiHistory(app)) {
+    RefreshGeminiChatsDir(app);
+    std::vector<ChatSession> native = LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app));
+    ApplyLocalOverrides(app, native);
+  } else {
+    app.chats = LoadChats(app);
+    NormalizeChatFolderAssignments(app);
+  }
 
   if (preserve_selection && !selected_before.empty() && FindChatIndexById(app, selected_before) >= 0) {
     SelectChatById(app, selected_before);
@@ -1479,8 +1554,8 @@ static void SyncChatsFromNative(AppState& app, const std::string& preferred_chat
   }
 }
 
-static std::vector<std::string> BuildGeminiInteractiveArgv(const ChatSession& chat, const AppSettings& settings) {
-  return GeminiCommandBuilder::BuildInteractiveArgv(chat, settings);
+static std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const ChatSession& chat) {
+  return ProviderRuntime::BuildInteractiveArgv(ActiveProviderOrDefault(app), chat, app.settings);
 }
 
 #if defined(__unix__)
@@ -1495,14 +1570,20 @@ static bool SetFdNonBlocking(const int fd) {
 
 static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, const ChatSession& chat, const int rows, const int cols) {
   StopCliTerminal(terminal);
-  RefreshGeminiChatsDir(app);
+  if (ActiveProviderUsesGeminiHistory(app)) {
+    RefreshGeminiChatsDir(app);
+  }
 
   terminal.rows = std::max(8, rows);
   terminal.cols = std::max(20, cols);
   terminal.attached_chat_id = chat.id;
   terminal.attached_session_id = chat.uses_native_session ? chat.native_session_id : "";
   terminal.linked_files_snapshot = chat.linked_files;
-  terminal.session_ids_before = SessionIdsFromChats(LoadNativeGeminiChats(app.gemini_chats_dir));
+  if (ActiveProviderUsesGeminiHistory(app)) {
+    terminal.session_ids_before = SessionIdsFromChats(LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app)));
+  } else {
+    terminal.session_ids_before.clear();
+  }
   terminal.last_error.clear();
   terminal.last_sync_time_s = ImGui::GetTime();
 
@@ -1571,7 +1652,7 @@ static bool StartCliTerminalUnix(AppState& app, CliTerminalState& terminal, cons
     close(slave_fd);
 
     setenv("TERM", "xterm-256color", 1);
-    const std::vector<std::string> argv_vec = BuildGeminiInteractiveArgv(chat, app.settings);
+    const std::vector<std::string> argv_vec = BuildProviderInteractiveArgv(app, chat);
     std::vector<char*> argv_ptrs;
     argv_ptrs.reserve(argv_vec.size() + 1);
     for (const std::string& arg : argv_vec) {
@@ -1736,7 +1817,7 @@ static bool StartCliTerminalWindows(AppState& app, CliTerminalState& terminal, c
   si.lpAttributeList = terminal.attr_list;
   PROCESS_INFORMATION pi{};
 
-  const std::vector<std::string> argv_vec = BuildGeminiInteractiveArgv(chat, app.settings);
+  const std::vector<std::string> argv_vec = BuildProviderInteractiveArgv(app, chat);
   const std::string gemini_invocation = BuildWindowsCommandLine(argv_vec);
   const char* comspec_env = std::getenv("ComSpec");
   const std::string comspec = (comspec_env != nullptr && *comspec_env != '\0') ? comspec_env : "C:\\Windows\\System32\\cmd.exe";
@@ -1926,24 +2007,34 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
   const double now = ImGui::GetTime();
   if (now - terminal.last_sync_time_s > 1.25) {
     terminal.last_sync_time_s = now;
-    RefreshGeminiChatsDir(app);
-    const std::vector<ChatSession> native_now = LoadNativeGeminiChats(app.gemini_chats_dir);
-    if (terminal.attached_session_id.empty()) {
-      const std::string discovered = PickNewSessionId(native_now, terminal.session_ids_before);
-      if (!discovered.empty()) {
-        const std::string previous_chat_id = terminal.attached_chat_id;
-        terminal.attached_session_id = discovered;
-        terminal.attached_chat_id = discovered;
-        app.chats.erase(std::remove_if(app.chats.begin(), app.chats.end(),
-                                       [&](const ChatSession& c) {
-                                         return !c.uses_native_session && c.id == previous_chat_id;
-                                       }),
-                        app.chats.end());
+    if (ActiveProviderUsesGeminiHistory(app)) {
+      RefreshGeminiChatsDir(app);
+      const std::vector<ChatSession> native_now = LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app));
+      if (terminal.attached_session_id.empty()) {
+        const std::string discovered = PickNewSessionId(native_now, terminal.session_ids_before);
+        if (!discovered.empty()) {
+          const std::string previous_chat_id = terminal.attached_chat_id;
+          terminal.attached_session_id = discovered;
+          terminal.attached_chat_id = discovered;
+          app.chats.erase(std::remove_if(app.chats.begin(), app.chats.end(),
+                                         [&](const ChatSession& c) {
+                                           return !c.uses_native_session && c.id == previous_chat_id;
+                                         }),
+                          app.chats.end());
+        }
       }
+      std::string preferred_id = terminal.attached_session_id.empty() ? terminal.attached_chat_id : terminal.attached_session_id;
+      SyncChatsFromNative(app, preferred_id, preserve_selection);
+    } else {
+      SyncChatsFromNative(app, terminal.attached_chat_id, preserve_selection);
     }
-    std::string preferred_id = terminal.attached_session_id.empty() ? terminal.attached_chat_id : terminal.attached_session_id;
-    SyncChatsFromNative(app, preferred_id, preserve_selection);
   }
+}
+
+static void RefreshChatHistory(AppState& app) {
+  const std::string selected_id = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
+  SyncChatsFromNative(app, selected_id, true);
+  app.status_line = "Chat history refreshed.";
 }
 
 static void PollAllCliTerminals(AppState& app) {
@@ -1976,13 +2067,18 @@ static void StartGeminiRequest(AppState& app) {
   }
 
   AddMessage(*chat, MessageRole::User, prompt_text);
-  SaveAndUpdateStatus(app, *chat, "Prompt queued for Gemini CLI.", "Saved message locally, but failed to persist chat data.");
+  SaveAndUpdateStatus(app, *chat, "Prompt queued for provider runtime.", "Saved message locally, but failed to persist chat data.");
 
-  RefreshGeminiChatsDir(app);
-  const std::vector<ChatSession> native_before = LoadNativeGeminiChats(app.gemini_chats_dir);
-  const std::string resume_session_id = chat->uses_native_session ? chat->native_session_id : "";
-  const std::string gemini_prompt = BuildGeminiPrompt(prompt_text, chat->linked_files);
-  const std::string command = BuildGeminiCommand(app.settings, gemini_prompt, chat->linked_files, resume_session_id);
+  const ProviderProfile& provider = ActiveProviderOrDefault(app);
+  std::vector<ChatSession> native_before;
+  if (ActiveProviderUsesGeminiHistory(app)) {
+    RefreshGeminiChatsDir(app);
+    native_before = LoadNativeGeminiChats(app.gemini_chats_dir, provider);
+  }
+  const std::string resume_session_id =
+      (ActiveProviderUsesGeminiHistory(app) && chat->uses_native_session) ? chat->native_session_id : "";
+  const std::string provider_prompt = BuildProviderPrompt(provider, prompt_text, chat->linked_files);
+  const std::string command = BuildProviderCommand(provider, app.settings, provider_prompt, chat->linked_files, resume_session_id);
   const std::string chat_id = chat->id;
 
   PendingGeminiCall pending;
@@ -2058,7 +2154,7 @@ static bool ContinueFromEditedUserMessage(AppState& app, ChatSession& chat) {
     }
   }
 
-  if (chat.uses_native_session && !chat.native_session_id.empty()) {
+  if (ActiveProviderUsesGeminiHistory(app) && chat.uses_native_session && !chat.native_session_id.empty()) {
     std::string native_error;
     if (!TruncateNativeSessionFromDisplayedMessage(app, chat, message_index, &native_error)) {
       app.status_line = "Failed to trim native Gemini session: " + native_error;
@@ -2102,8 +2198,21 @@ static void PollPendingGeminiCall(AppState& app) {
     pending_chat_snapshot = app.chats[pending_chat_index];
   }
 
+  if (!ActiveProviderUsesGeminiHistory(app)) {
+    if (pending_chat_index >= 0) {
+      AddMessage(app.chats[pending_chat_index], MessageRole::Assistant, output);
+      SaveChat(app, app.chats[pending_chat_index]);
+      app.status_line = "Provider response appended to local chat history.";
+      app.scroll_to_bottom = true;
+    } else {
+      app.status_line = "Provider command completed, but chat no longer exists.";
+    }
+    app.pending_call.reset();
+    return;
+  }
+
   RefreshGeminiChatsDir(app);
-  std::vector<ChatSession> native_after = LoadNativeGeminiChats(app.gemini_chats_dir);
+  std::vector<ChatSession> native_after = LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app));
   ApplyLocalOverrides(app, native_after);
 
   std::string selected_id = app.pending_call->resume_session_id;
@@ -2128,15 +2237,15 @@ static void PollPendingGeminiCall(AppState& app) {
       SelectChatById(app, selected_id);
     }
     app.scroll_to_bottom = true;
-    app.status_line = "Gemini response synced from native session.";
+    app.status_line = "Provider response synced from native session.";
   } else {
     const int fallback_index = FindChatIndexById(app, pending_chat_id);
     if (fallback_index >= 0) {
       AddMessage(app.chats[fallback_index], MessageRole::System, output);
-      app.status_line = "Gemini command completed, but no native session was detected.";
+      app.status_line = "Provider command completed, but no native session was detected.";
       app.scroll_to_bottom = true;
     } else {
-      app.status_line = "Gemini command completed, but no native session was detected.";
+      app.status_line = "Provider command completed, but no native session was detected.";
     }
   }
 
@@ -2158,7 +2267,7 @@ static void RemoveCurrentChat(AppState& app) {
   fs::remove_all(ChatPath(app, *chat), local_delete_ec);
   std::error_code native_delete_ec;
   bool native_delete_attempted = false;
-  if (!native_session_id.empty()) {
+  if (ActiveProviderUsesGeminiHistory(app) && !native_session_id.empty()) {
     RefreshGeminiChatsDir(app);
     if (const auto native_file = FindNativeSessionFilePath(app, native_session_id); native_file.has_value()) {
       native_delete_attempted = true;
@@ -2540,23 +2649,37 @@ static void DrawLeftPane(AppState& app) {
         ImGui::SetItemDefaultFocus();
       }
     }
-    ImGui::EndCombo();
+      ImGui::EndCombo();
   }
 
-  if (DrawButton("+ New Chat", ImVec2(110.0f, 36.0f), ButtonKind::Primary)) {
-    CreateAndSelectChat(app);
+  const std::string new_chat_label = FrontendActionLabel(app, "create_chat", "+ New Chat");
+  const std::string refresh_label = FrontendActionLabel(app, "refresh_history", "Refresh");
+  const std::string delete_label = FrontendActionLabel(app, "delete_chat", "Del");
+
+  const bool show_create_chat = FrontendActionVisible(app, "create_chat");
+  if (show_create_chat) {
+    if (DrawButton(new_chat_label.c_str(), ImVec2(110.0f, 36.0f), ButtonKind::Primary)) {
+      CreateAndSelectChat(app);
+    }
+    ImGui::SameLine();
   }
-  ImGui::SameLine();
   if (DrawButton("+ Folder", ImVec2(90.0f, 36.0f), ButtonKind::Ghost)) {
     app.new_folder_title_input.clear();
     app.new_folder_directory_input = fs::current_path().string();
     ImGui::OpenPopup("new_folder_popup");
   }
+  if (FrontendActionVisible(app, "refresh_history")) {
+    ImGui::SameLine();
+    if (DrawButton(refresh_label.c_str(), ImVec2(84.0f, 36.0f), ButtonKind::Ghost)) {
+      RefreshChatHistory(app);
+    }
+  }
   const bool has_selected = (SelectedChat(app) != nullptr);
   if (!has_selected) {
     ImGui::BeginDisabled();
   }
-  if (DrawButton("Del", ImVec2(48.0f, 36.0f), ButtonKind::Ghost)) {
+  if (FrontendActionVisible(app, "delete_chat") &&
+      DrawButton(delete_label.c_str(), ImVec2(48.0f, 36.0f), ButtonKind::Ghost)) {
     RemoveCurrentChat(app);
   }
   if (!has_selected) {
@@ -2672,8 +2795,10 @@ static void DrawMessageBubble(AppState& app, ChatSession& chat, const int messag
   ImGui::SetCursorScreenPos(ImVec2(min.x + pad_x, min.y + pad_y));
   ImGui::TextColored(role, "%s", role_label);
   if (is_user) {
-    ImGui::SetCursorScreenPos(ImVec2(max.x - 60.0f, min.y + 6.0f));
-    if (DrawButton("Edit", ImVec2(50.0f, 24.0f), ButtonKind::Ghost)) {
+    const std::string edit_label = FrontendActionLabel(app, "edit_resubmit", "Edit");
+    ImGui::SetCursorScreenPos(ImVec2(max.x - 76.0f, min.y + 6.0f));
+    if (FrontendActionVisible(app, "edit_resubmit", true) &&
+        DrawButton(edit_label.c_str(), ImVec2(66.0f, 24.0f), ButtonKind::Ghost)) {
       BeginEditMessage(app, chat, message_index);
     }
   }
@@ -2954,12 +3079,15 @@ static void DrawInputContainer(AppState& app) {
 
   ImGui::SameLine();
   const bool can_send = !app.pending_call.has_value();
+  const std::string send_label = FrontendActionLabel(app, "send_prompt", "Send");
   if (!can_send) {
     ImGui::BeginDisabled();
   }
-  ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 22.0f);
-  if (DrawButton("Send", ImVec2(80.0f, 40.0f), ButtonKind::Accent)) {
-    StartGeminiRequest(app);
+  if (FrontendActionVisible(app, "send_prompt", true)) {
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 22.0f);
+    if (DrawButton(send_label.c_str(), ImVec2(80.0f, 40.0f), ButtonKind::Accent)) {
+      StartGeminiRequest(app);
+    }
   }
   if (!can_send) {
     ImGui::EndDisabled();
@@ -3241,10 +3369,32 @@ static void DrawSessionSidePane(AppState& app, ChatSession& chat) {
   EndPanel();
 
   ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
-  DrawSectionHeader("Gemini Runtime");
+  DrawSectionHeader("Provider Runtime");
   if (BeginSectionCard("runtime_card")) {
     ImGui::TextColored(ui::kTextMuted, "Template placeholders: {prompt} {files} {resume} {flags}");
     ImGui::Dummy(ImVec2(0.0f, 6.0f));
+
+    ProviderProfile* active_provider = ActiveProvider(app);
+    const char* active_provider_label =
+        (active_provider != nullptr && !Trim(active_provider->title).empty()) ? active_provider->title.c_str() : "Gemini CLI";
+    if (ImGui::BeginCombo("Provider", active_provider_label)) {
+      for (const ProviderProfile& profile : app.provider_profiles) {
+        const bool selected = (profile.id == app.settings.active_provider_id);
+        const std::string provider_title = Trim(profile.title).empty() ? profile.id : profile.title;
+        if (ImGui::Selectable(provider_title.c_str(), selected)) {
+          app.settings.active_provider_id = profile.id;
+          if (const ProviderProfile* selected_profile = ActiveProvider(app); selected_profile != nullptr) {
+            app.settings.gemini_command_template = selected_profile->command_template;
+          }
+          RefreshChatHistory(app);
+        }
+        if (selected) {
+          ImGui::SetItemDefaultFocus();
+        }
+      }
+      ImGui::EndCombo();
+    }
+
     ImGui::Checkbox("YOLO mode (Ctrl+Y)", &app.settings.gemini_yolo_mode);
     ImGui::PushStyleColor(ImGuiCol_FrameBg, Rgb(15, 20, 27, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_Border, Rgb(255, 255, 255, 0.08f));
@@ -3261,9 +3411,17 @@ static void DrawSessionSidePane(AppState& app, ChatSession& chat) {
     ImGui::PopStyleColor(2);
 
     if (DrawButton("Save Settings", ImVec2(120.0f, 34.0f), ButtonKind::Primary)) {
+      if (ProviderProfile* selected_profile = ActiveProvider(app); selected_profile != nullptr) {
+        selected_profile->command_template = app.settings.gemini_command_template;
+      }
       SaveSettings(app);
-      app.status_line = "Settings saved.";
+      SaveProviders(app);
+      app.status_line = "Provider settings saved.";
     }
+
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace4));
+    ImGui::TextColored(ui::kTextMuted, "Profiles file: %s", ProviderProfileFilePath(app).string().c_str());
+    ImGui::TextColored(ui::kTextMuted, "Action map file: %s", FrontendActionFilePath(app).string().c_str());
   }
   EndPanel();
 
@@ -3330,15 +3488,36 @@ int main(int, char**) {
     return 1;
   }
   LoadSettings(app);
+  const bool had_provider_file = fs::exists(ProviderProfileFilePath(app));
+  app.provider_profiles = ProviderProfileStore::Load(app.data_root);
+  ProviderProfileStore::EnsureDefaultProfile(app.provider_profiles);
+  if (ActiveProvider(app) == nullptr && !app.provider_profiles.empty()) {
+    app.settings.active_provider_id = app.provider_profiles.front().id;
+  }
+  if (ProviderProfile* active_profile = ActiveProvider(app); active_profile != nullptr) {
+    if (!had_provider_file && !app.settings.gemini_command_template.empty()) {
+      active_profile->command_template = app.settings.gemini_command_template;
+    }
+    app.settings.gemini_command_template = active_profile->command_template;
+  }
+  if (!had_provider_file) {
+    SaveProviders(app);
+  }
+  LoadFrontendActions(app);
   app.folders = ChatFolderStore::Load(app.data_root);
   EnsureDefaultFolder(app);
   SaveFolders(app);
-  RefreshGeminiChatsDir(app);
-  app.chats = LoadNativeGeminiChats(app.gemini_chats_dir);
-  ApplyLocalOverrides(app, app.chats);
-  NormalizeChatFolderAssignments(app);
-  if (app.gemini_chats_dir.empty()) {
-    app.status_line = "Gemini native session directory not found yet. Run Gemini CLI in this project once.";
+  if (ActiveProviderUsesGeminiHistory(app)) {
+    RefreshGeminiChatsDir(app);
+    app.chats = LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app));
+    ApplyLocalOverrides(app, app.chats);
+    NormalizeChatFolderAssignments(app);
+    if (app.gemini_chats_dir.empty()) {
+      app.status_line = "Gemini native session directory not found yet. Run Gemini CLI in this project once.";
+    }
+  } else {
+    app.chats = LoadChats(app);
+    NormalizeChatFolderAssignments(app);
   }
   if (!app.chats.empty()) {
     app.selected_chat_index = 0;

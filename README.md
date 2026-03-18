@@ -86,6 +86,8 @@ UAM stores UI-only metadata:
 
 folders.txt
 settings.txt
+providers.txt
+frontend_actions.txt
 
 chats/
   <chat-id>/
@@ -103,6 +105,8 @@ Metadata contains:
 - Folder organization
 - File attachments
 - Command templates
+- Provider profiles
+- Frontend action map
 - UI settings
 
 Gemini logs are **not duplicated**.
