@@ -65,4 +65,8 @@ void SettingsStore::Load(const std::filesystem::path& settings_file,
       center_view_mode = ViewModeFromString(value);
     }
   }
+
+  if (settings.gemini_command_template.empty() || settings.gemini_command_template == "gemini -p {prompt}") {
+    settings.gemini_command_template = "gemini {resume} {flags} {prompt}";
+  }
 }

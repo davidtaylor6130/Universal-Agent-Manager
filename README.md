@@ -68,7 +68,7 @@ in the future would love to add a layer to support multiple Gemini CLI software 
 Gemini writes session logs:
 
 ```
-~/.gemini/tmp/<project>/chats/*.json
+~/.gemini/tmp/<project_hash>/chats/*.json
 ```
 
 These files remain the **source of truth**.
@@ -114,7 +114,7 @@ Gemini logs are **not duplicated**.
 Commands are generated from templates:
 
 ```
-gemini {resume} {flags} "{prompt}" {files}
+gemini {resume} {flags} {prompt}
 ```
 
 Commands run as native processes.

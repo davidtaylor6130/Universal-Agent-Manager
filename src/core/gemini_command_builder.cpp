@@ -148,7 +148,9 @@ std::string GeminiCommandBuilder::BuildCommand(const AppSettings& settings,
                                                const std::string& prompt,
                                                const std::vector<std::string>& files,
                                                const std::string& resume_session_id) {
-  std::string command = settings.gemini_command_template.empty() ? "gemini -p {prompt}" : settings.gemini_command_template;
+  std::string command = settings.gemini_command_template.empty()
+                            ? "gemini {resume} {flags} {prompt}"
+                            : settings.gemini_command_template;
   const bool has_prompt_placeholder = command.find("{prompt}") != std::string::npos;
   const bool has_resume_placeholder = command.find("{resume}") != std::string::npos;
   const bool has_flags_placeholder = command.find("{flags}") != std::string::npos;
@@ -188,4 +190,3 @@ std::vector<std::string> GeminiCommandBuilder::BuildInteractiveArgv(const ChatSe
   }
   return argv;
 }
-

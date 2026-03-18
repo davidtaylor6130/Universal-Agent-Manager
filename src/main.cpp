@@ -812,7 +812,7 @@ static std::optional<ChatSession> ParseGeminiSessionFile(const fs::path& file_pa
       Message message;
       if (type == "user") {
         message.role = MessageRole::User;
-      } else if (type == "assistant" || type == "model") {
+      } else if (type == "assistant" || type == "model" || type == "gemini") {
         message.role = MessageRole::Assistant;
       } else {
         message.role = MessageRole::System;
@@ -1060,7 +1060,7 @@ static void SaveAndUpdateStatus(AppState& app, const ChatSession& chat, const st
   }
 }
 
-static void ApplyLocalOverrides(const AppState& app, std::vector<ChatSession>& native_chats) {
+static void ApplyLocalOverrides(AppState& app, std::vector<ChatSession>& native_chats) {
   std::vector<ChatSession> local_chats = LoadChats(app);
   std::unordered_map<std::string, ChatSession> local_map;
   for (const ChatSession& local : local_chats) {
@@ -1148,7 +1148,7 @@ static MessageRole GeminiMessageRoleFromType(const std::string& type) {
   if (type == "user") {
     return MessageRole::User;
   }
-  if (type == "assistant" || type == "model") {
+  if (type == "assistant" || type == "model" || type == "gemini") {
     return MessageRole::Assistant;
   }
   return MessageRole::System;

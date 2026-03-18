@@ -37,7 +37,7 @@ struct ChatFolder {
 };
 
 struct AppSettings {
-  std::string gemini_command_template = "gemini -p {prompt}";
+  std::string gemini_command_template = "gemini {resume} {flags} {prompt}";
   bool gemini_yolo_mode = false;
   std::string gemini_extra_flags;
 };
