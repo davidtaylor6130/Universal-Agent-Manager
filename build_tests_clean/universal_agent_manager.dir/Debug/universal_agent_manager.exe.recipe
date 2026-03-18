@@ -1,0 +1,14 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project>
+  <ProjectOutputs>
+    <ProjectOutput>
+      <FullPath>C:\Users\david\Documents\GitHub\Universal-Agent-Manager\build_tests_clean\_deps\sdl2-build\x64\Debug\sdl_headers_copy</FullPath>
+    </ProjectOutput>
+    <ProjectOutput>
+      <FullPath>C:\Users\david\Documents\GitHub\Universal-Agent-Manager\build_tests_clean\Debug\universal_agent_manager.exe</FullPath>
+    </ProjectOutput>
+  </ProjectOutputs>
+  <ContentFiles />
+  <SatelliteDlls />
+  <NonRecipeFileRefs />
+</Project>

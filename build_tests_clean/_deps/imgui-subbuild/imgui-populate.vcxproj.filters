@@ -1,0 +1,44 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="16.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\build_tests_clean\_deps\imgui-subbuild\CMakeFiles\431d7e8fa94ed05962dcb3a6437020ff\imgui-populate-mkdir.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\build_tests_clean\_deps\imgui-subbuild\CMakeFiles\431d7e8fa94ed05962dcb3a6437020ff\imgui-populate-download.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\build_tests_clean\_deps\imgui-subbuild\CMakeFiles\431d7e8fa94ed05962dcb3a6437020ff\imgui-populate-update.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\build_tests_clean\_deps\imgui-subbuild\CMakeFiles\431d7e8fa94ed05962dcb3a6437020ff\imgui-populate-patch.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\build_tests_clean\_deps\imgui-subbuild\CMakeFiles\431d7e8fa94ed05962dcb3a6437020ff\imgui-populate-configure.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\build_tests_clean\_deps\imgui-subbuild\CMakeFiles\431d7e8fa94ed05962dcb3a6437020ff\imgui-populate-build.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\build_tests_clean\_deps\imgui-subbuild\CMakeFiles\431d7e8fa94ed05962dcb3a6437020ff\imgui-populate-install.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\build_tests_clean\_deps\imgui-subbuild\CMakeFiles\431d7e8fa94ed05962dcb3a6437020ff\imgui-populate-test.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\build_tests_clean\_deps\imgui-subbuild\CMakeFiles\86503d28aada70b5480561c2e9b55597\imgui-populate-complete.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\build_tests_clean\_deps\imgui-subbuild\CMakeFiles\49e2902bbaa28dc134b3f3f4d0861f43\imgui-populate.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\build_tests_clean\_deps\imgui-subbuild\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\build_tests_clean\_deps\imgui-subbuild\CMakeFiles\imgui-populate" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{56AD1F78-7A53-3C19-9956-B0AF6265A485}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

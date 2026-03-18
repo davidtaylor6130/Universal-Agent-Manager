@@ -1,0 +1,8 @@
+{
+	"InstallScripts" : 
+	[
+		"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/cmake_install.cmake",
+		"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

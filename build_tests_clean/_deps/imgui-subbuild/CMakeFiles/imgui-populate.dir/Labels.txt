@@ -1,0 +1,14 @@
+# Target labels
+ imgui-populate
+# Source files and their labels
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/imgui-subbuild/CMakeFiles/imgui-populate
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/imgui-subbuild/CMakeFiles/49e2902bbaa28dc134b3f3f4d0861f43/imgui-populate.rule
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/imgui-subbuild/CMakeFiles/86503d28aada70b5480561c2e9b55597/imgui-populate-complete.rule
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/imgui-subbuild/CMakeFiles/431d7e8fa94ed05962dcb3a6437020ff/imgui-populate-build.rule
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/imgui-subbuild/CMakeFiles/431d7e8fa94ed05962dcb3a6437020ff/imgui-populate-configure.rule
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/imgui-subbuild/CMakeFiles/431d7e8fa94ed05962dcb3a6437020ff/imgui-populate-download.rule
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/imgui-subbuild/CMakeFiles/431d7e8fa94ed05962dcb3a6437020ff/imgui-populate-install.rule
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/imgui-subbuild/CMakeFiles/431d7e8fa94ed05962dcb3a6437020ff/imgui-populate-mkdir.rule
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/imgui-subbuild/CMakeFiles/431d7e8fa94ed05962dcb3a6437020ff/imgui-populate-patch.rule
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/imgui-subbuild/CMakeFiles/431d7e8fa94ed05962dcb3a6437020ff/imgui-populate-test.rule
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/imgui-subbuild/CMakeFiles/431d7e8fa94ed05962dcb3a6437020ff/imgui-populate-update.rule

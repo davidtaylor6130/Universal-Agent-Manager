@@ -1,0 +1,9 @@
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/universal_agent_manager.dir
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/uam_core_tests.dir
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/RUN_TESTS.dir
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/ALL_BUILD.dir
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-build/CMakeFiles/sdl_headers_copy.dir
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-build/CMakeFiles/SDL2main.dir
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-build/CMakeFiles/SDL2-static.dir
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-build/CMakeFiles/RUN_TESTS.dir
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-build/CMakeFiles/ALL_BUILD.dir

@@ -1,0 +1,12 @@
+[folder]
+id=folder-default
+title=General
+directory=C:\Users\david\Documents\GitHub\Universal-Agent-Manager\build_tests_clean\Debug
+collapsed=0
+
+[folder]
+id=folder-1773869387632
+title=Gemini Read Me Creator
+directory=C:\Users\david\Documents\GitHub\Universal-Agent-Manager\TestFolder1\
+collapsed=0
+

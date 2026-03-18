@@ -1537,3 +1537,2160 @@ events:
         - "C:/Program Files/CMake"
         - "C:/Program Files/universal_agent_manager"
 ...
+
+---
+events:
+  -
+    kind: "find-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/FindPkgConfig.cmake:517 (find_program)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:72 (find_package)"
+    mode: "program"
+    variable: "PKG_CONFIG_EXECUTABLE"
+    description: "pkg-config executable"
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "pkg-config.bat"
+      - "pkg-config"
+      - "pkgconf"
+    candidate_directories:
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/"
+      - "C:/Python314/Scripts/"
+      - "C:/Python314/"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/"
+      - "C:/Windows/System32/"
+      - "C:/Windows/"
+      - "C:/Windows/System32/wbem/"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/"
+      - "C:/Windows/System32/OpenSSH/"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/"
+      - "C:/Program Files/dotnet/"
+      - "C:/Program Files/Git/cmd/"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/"
+      - "C:/Program Files/nodejs/"
+      - "C:/ProgramData/chocolatey/bin/"
+      - "C:/Program Files/CMake/bin/"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/"
+      - "C:/Users/david/.dotnet/tools/"
+      - "C:/Users/david/AppData/Roaming/npm/"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/"
+      - "C:/Program Files/bin/"
+      - "C:/Program Files/sbin/"
+      - "C:/Program Files/"
+      - "C:/Program Files (x86)/bin/"
+      - "C:/Program Files (x86)/sbin/"
+      - "C:/Program Files (x86)/"
+      - "C:/Program Files/CMake/bin/"
+      - "C:/Program Files/CMake/sbin/"
+      - "C:/Program Files/CMake/"
+      - "C:/Program Files/universal_agent_manager/bin/"
+      - "C:/Program Files/universal_agent_manager/sbin/"
+      - "C:/Program Files/universal_agent_manager/"
+    searched_directories:
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/pkg-config.bat.com"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/pkg-config.bat.exe"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/pkg-config.bat"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/pkg-config.com"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/pkg-config.exe"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/pkg-config"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/pkgconf.com"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/pkgconf.exe"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/pkgconf"
+      - "C:/Python314/Scripts/pkg-config.bat.com"
+      - "C:/Python314/Scripts/pkg-config.bat.exe"
+      - "C:/Python314/Scripts/pkg-config.bat"
+      - "C:/Python314/Scripts/pkg-config.com"
+      - "C:/Python314/Scripts/pkg-config.exe"
+      - "C:/Python314/Scripts/pkg-config"
+      - "C:/Python314/Scripts/pkgconf.com"
+      - "C:/Python314/Scripts/pkgconf.exe"
+      - "C:/Python314/Scripts/pkgconf"
+      - "C:/Python314/pkg-config.bat.com"
+      - "C:/Python314/pkg-config.bat.exe"
+      - "C:/Python314/pkg-config.bat"
+      - "C:/Python314/pkg-config.com"
+      - "C:/Python314/pkg-config.exe"
+      - "C:/Python314/pkg-config"
+      - "C:/Python314/pkgconf.com"
+      - "C:/Python314/pkgconf.exe"
+      - "C:/Python314/pkgconf"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/pkg-config.bat.com"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/pkg-config.bat.exe"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/pkg-config.bat"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/pkg-config.com"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/pkg-config.exe"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/pkg-config"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/pkgconf.com"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/pkgconf.exe"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/pkgconf"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/pkg-config.bat.com"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/pkg-config.bat.exe"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/pkg-config.bat"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/pkg-config.com"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/pkg-config.exe"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/pkg-config"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/pkgconf.com"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/pkgconf.exe"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/pkgconf"
+      - "C:/Windows/System32/pkg-config.bat.com"
+      - "C:/Windows/System32/pkg-config.bat.exe"
+      - "C:/Windows/System32/pkg-config.bat"
+      - "C:/Windows/System32/pkg-config.com"
+      - "C:/Windows/System32/pkg-config.exe"
+      - "C:/Windows/System32/pkg-config"
+      - "C:/Windows/System32/pkgconf.com"
+      - "C:/Windows/System32/pkgconf.exe"
+      - "C:/Windows/System32/pkgconf"
+      - "C:/Windows/pkg-config.bat.com"
+      - "C:/Windows/pkg-config.bat.exe"
+      - "C:/Windows/pkg-config.bat"
+      - "C:/Windows/pkg-config.com"
+      - "C:/Windows/pkg-config.exe"
+      - "C:/Windows/pkg-config"
+      - "C:/Windows/pkgconf.com"
+      - "C:/Windows/pkgconf.exe"
+      - "C:/Windows/pkgconf"
+      - "C:/Windows/System32/wbem/pkg-config.bat.com"
+      - "C:/Windows/System32/wbem/pkg-config.bat.exe"
+      - "C:/Windows/System32/wbem/pkg-config.bat"
+      - "C:/Windows/System32/wbem/pkg-config.com"
+      - "C:/Windows/System32/wbem/pkg-config.exe"
+      - "C:/Windows/System32/wbem/pkg-config"
+      - "C:/Windows/System32/wbem/pkgconf.com"
+      - "C:/Windows/System32/wbem/pkgconf.exe"
+      - "C:/Windows/System32/wbem/pkgconf"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/pkg-config.bat.com"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/pkg-config.bat.exe"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/pkg-config.bat"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/pkg-config.com"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/pkg-config.exe"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/pkg-config"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/pkgconf.com"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/pkgconf.exe"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/pkgconf"
+      - "C:/Windows/System32/OpenSSH/pkg-config.bat.com"
+      - "C:/Windows/System32/OpenSSH/pkg-config.bat.exe"
+      - "C:/Windows/System32/OpenSSH/pkg-config.bat"
+      - "C:/Windows/System32/OpenSSH/pkg-config.com"
+      - "C:/Windows/System32/OpenSSH/pkg-config.exe"
+      - "C:/Windows/System32/OpenSSH/pkg-config"
+      - "C:/Windows/System32/OpenSSH/pkgconf.com"
+      - "C:/Windows/System32/OpenSSH/pkgconf.exe"
+      - "C:/Windows/System32/OpenSSH/pkgconf"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/pkg-config.bat.com"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/pkg-config.bat.exe"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/pkg-config.bat"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/pkg-config.com"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/pkg-config.exe"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/pkg-config"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/pkgconf.com"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/pkgconf.exe"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/pkgconf"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/pkg-config.bat.com"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/pkg-config.bat.exe"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/pkg-config.bat"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/pkg-config.com"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/pkg-config.exe"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/pkg-config"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/pkgconf.com"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/pkgconf.exe"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/pkgconf"
+      - "C:/Program Files/dotnet/pkg-config.bat.com"
+      - "C:/Program Files/dotnet/pkg-config.bat.exe"
+      - "C:/Program Files/dotnet/pkg-config.bat"
+      - "C:/Program Files/dotnet/pkg-config.com"
+      - "C:/Program Files/dotnet/pkg-config.exe"
+      - "C:/Program Files/dotnet/pkg-config"
+      - "C:/Program Files/dotnet/pkgconf.com"
+      - "C:/Program Files/dotnet/pkgconf.exe"
+      - "C:/Program Files/dotnet/pkgconf"
+      - "C:/Program Files/Git/cmd/pkg-config.bat.com"
+      - "C:/Program Files/Git/cmd/pkg-config.bat.exe"
+      - "C:/Program Files/Git/cmd/pkg-config.bat"
+      - "C:/Program Files/Git/cmd/pkg-config.com"
+      - "C:/Program Files/Git/cmd/pkg-config.exe"
+      - "C:/Program Files/Git/cmd/pkg-config"
+      - "C:/Program Files/Git/cmd/pkgconf.com"
+      - "C:/Program Files/Git/cmd/pkgconf.exe"
+      - "C:/Program Files/Git/cmd/pkgconf"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/pkg-config.bat.com"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/pkg-config.bat.exe"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/pkg-config.bat"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/pkg-config.com"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/pkg-config.exe"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/pkg-config"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/pkgconf.com"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/pkgconf.exe"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/pkgconf"
+      - "C:/Program Files/nodejs/pkg-config.bat.com"
+      - "C:/Program Files/nodejs/pkg-config.bat.exe"
+      - "C:/Program Files/nodejs/pkg-config.bat"
+      - "C:/Program Files/nodejs/pkg-config.com"
+      - "C:/Program Files/nodejs/pkg-config.exe"
+      - "C:/Program Files/nodejs/pkg-config"
+      - "C:/Program Files/nodejs/pkgconf.com"
+      - "C:/Program Files/nodejs/pkgconf.exe"
+      - "C:/Program Files/nodejs/pkgconf"
+      - "C:/ProgramData/chocolatey/bin/pkg-config.bat.com"
+      - "C:/ProgramData/chocolatey/bin/pkg-config.bat.exe"
+      - "C:/ProgramData/chocolatey/bin/pkg-config.bat"
+      - "C:/ProgramData/chocolatey/bin/pkg-config.com"
+      - "C:/ProgramData/chocolatey/bin/pkg-config.exe"
+      - "C:/ProgramData/chocolatey/bin/pkg-config"
+      - "C:/ProgramData/chocolatey/bin/pkgconf.com"
+      - "C:/ProgramData/chocolatey/bin/pkgconf.exe"
+      - "C:/ProgramData/chocolatey/bin/pkgconf"
+      - "C:/Program Files/CMake/bin/pkg-config.bat.com"
+      - "C:/Program Files/CMake/bin/pkg-config.bat.exe"
+      - "C:/Program Files/CMake/bin/pkg-config.bat"
+      - "C:/Program Files/CMake/bin/pkg-config.com"
+      - "C:/Program Files/CMake/bin/pkg-config.exe"
+      - "C:/Program Files/CMake/bin/pkg-config"
+      - "C:/Program Files/CMake/bin/pkgconf.com"
+      - "C:/Program Files/CMake/bin/pkgconf.exe"
+      - "C:/Program Files/CMake/bin/pkgconf"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/pkg-config.bat.com"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/pkg-config.bat.exe"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/pkg-config.bat"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/pkg-config.com"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/pkg-config.exe"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/pkg-config"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/pkgconf.com"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/pkgconf.exe"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/pkgconf"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/pkg-config.bat.com"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/pkg-config.bat.exe"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/pkg-config.bat"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/pkg-config.com"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/pkg-config.exe"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/pkg-config"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/pkgconf.com"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/pkgconf.exe"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/pkgconf"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/pkg-config.bat.com"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/pkg-config.bat.exe"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/pkg-config.bat"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/pkg-config.com"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/pkg-config.exe"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/pkg-config"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/pkgconf.com"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/pkgconf.exe"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/pkgconf"
+      - "C:/Users/david/.dotnet/tools/pkg-config.bat.com"
+      - "C:/Users/david/.dotnet/tools/pkg-config.bat.exe"
+      - "C:/Users/david/.dotnet/tools/pkg-config.bat"
+      - "C:/Users/david/.dotnet/tools/pkg-config.com"
+      - "C:/Users/david/.dotnet/tools/pkg-config.exe"
+      - "C:/Users/david/.dotnet/tools/pkg-config"
+      - "C:/Users/david/.dotnet/tools/pkgconf.com"
+      - "C:/Users/david/.dotnet/tools/pkgconf.exe"
+      - "C:/Users/david/.dotnet/tools/pkgconf"
+      - "C:/Users/david/AppData/Roaming/npm/pkg-config.bat.com"
+      - "C:/Users/david/AppData/Roaming/npm/pkg-config.bat.exe"
+      - "C:/Users/david/AppData/Roaming/npm/pkg-config.bat"
+      - "C:/Users/david/AppData/Roaming/npm/pkg-config.com"
+      - "C:/Users/david/AppData/Roaming/npm/pkg-config.exe"
+      - "C:/Users/david/AppData/Roaming/npm/pkg-config"
+      - "C:/Users/david/AppData/Roaming/npm/pkgconf.com"
+      - "C:/Users/david/AppData/Roaming/npm/pkgconf.exe"
+      - "C:/Users/david/AppData/Roaming/npm/pkgconf"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/pkg-config.bat.com"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/pkg-config.bat.exe"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/pkg-config.bat"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/pkg-config.com"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/pkg-config.exe"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/pkg-config"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/pkgconf.com"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/pkgconf.exe"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/pkgconf"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/pkg-config.bat.com"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/pkg-config.bat.exe"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/pkg-config.bat"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/pkg-config.com"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/pkg-config.exe"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/pkg-config"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/pkgconf.com"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/pkgconf.exe"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/pkgconf"
+      - "C:/Program Files/bin/pkg-config.bat.com"
+      - "C:/Program Files/bin/pkg-config.bat.exe"
+      - "C:/Program Files/bin/pkg-config.bat"
+      - "C:/Program Files/bin/pkg-config.com"
+      - "C:/Program Files/bin/pkg-config.exe"
+      - "C:/Program Files/bin/pkg-config"
+      - "C:/Program Files/bin/pkgconf.com"
+      - "C:/Program Files/bin/pkgconf.exe"
+      - "C:/Program Files/bin/pkgconf"
+      - "C:/Program Files/sbin/pkg-config.bat.com"
+      - "C:/Program Files/sbin/pkg-config.bat.exe"
+      - "C:/Program Files/sbin/pkg-config.bat"
+      - "C:/Program Files/sbin/pkg-config.com"
+      - "C:/Program Files/sbin/pkg-config.exe"
+      - "C:/Program Files/sbin/pkg-config"
+      - "C:/Program Files/sbin/pkgconf.com"
+      - "C:/Program Files/sbin/pkgconf.exe"
+      - "C:/Program Files/sbin/pkgconf"
+      - "C:/Program Files/pkg-config.bat.com"
+      - "C:/Program Files/pkg-config.bat.exe"
+      - "C:/Program Files/pkg-config.bat"
+      - "C:/Program Files/pkg-config.com"
+      - "C:/Program Files/pkg-config.exe"
+      - "C:/Program Files/pkg-config"
+      - "C:/Program Files/pkgconf.com"
+      - "C:/Program Files/pkgconf.exe"
+      - "C:/Program Files/pkgconf"
+      - "C:/Program Files (x86)/bin/pkg-config.bat.com"
+      - "C:/Program Files (x86)/bin/pkg-config.bat.exe"
+      - "C:/Program Files (x86)/bin/pkg-config.bat"
+      - "C:/Program Files (x86)/bin/pkg-config.com"
+      - "C:/Program Files (x86)/bin/pkg-config.exe"
+      - "C:/Program Files (x86)/bin/pkg-config"
+      - "C:/Program Files (x86)/bin/pkgconf.com"
+      - "C:/Program Files (x86)/bin/pkgconf.exe"
+      - "C:/Program Files (x86)/bin/pkgconf"
+      - "C:/Program Files (x86)/sbin/pkg-config.bat.com"
+      - "C:/Program Files (x86)/sbin/pkg-config.bat.exe"
+      - "C:/Program Files (x86)/sbin/pkg-config.bat"
+      - "C:/Program Files (x86)/sbin/pkg-config.com"
+      - "C:/Program Files (x86)/sbin/pkg-config.exe"
+      - "C:/Program Files (x86)/sbin/pkg-config"
+      - "C:/Program Files (x86)/sbin/pkgconf.com"
+      - "C:/Program Files (x86)/sbin/pkgconf.exe"
+      - "C:/Program Files (x86)/sbin/pkgconf"
+      - "C:/Program Files (x86)/pkg-config.bat.com"
+      - "C:/Program Files (x86)/pkg-config.bat.exe"
+      - "C:/Program Files (x86)/pkg-config.bat"
+      - "C:/Program Files (x86)/pkg-config.com"
+      - "C:/Program Files (x86)/pkg-config.exe"
+      - "C:/Program Files (x86)/pkg-config"
+      - "C:/Program Files (x86)/pkgconf.com"
+      - "C:/Program Files (x86)/pkgconf.exe"
+      - "C:/Program Files (x86)/pkgconf"
+      - "C:/Program Files/CMake/bin/pkg-config.bat.com"
+      - "C:/Program Files/CMake/bin/pkg-config.bat.exe"
+      - "C:/Program Files/CMake/bin/pkg-config.bat"
+      - "C:/Program Files/CMake/bin/pkg-config.com"
+      - "C:/Program Files/CMake/bin/pkg-config.exe"
+      - "C:/Program Files/CMake/bin/pkg-config"
+      - "C:/Program Files/CMake/bin/pkgconf.com"
+      - "C:/Program Files/CMake/bin/pkgconf.exe"
+      - "C:/Program Files/CMake/bin/pkgconf"
+      - "C:/Program Files/CMake/sbin/pkg-config.bat.com"
+      - "C:/Program Files/CMake/sbin/pkg-config.bat.exe"
+      - "C:/Program Files/CMake/sbin/pkg-config.bat"
+      - "C:/Program Files/CMake/sbin/pkg-config.com"
+      - "C:/Program Files/CMake/sbin/pkg-config.exe"
+      - "C:/Program Files/CMake/sbin/pkg-config"
+      - "C:/Program Files/CMake/sbin/pkgconf.com"
+      - "C:/Program Files/CMake/sbin/pkgconf.exe"
+      - "C:/Program Files/CMake/sbin/pkgconf"
+      - "C:/Program Files/CMake/pkg-config.bat.com"
+      - "C:/Program Files/CMake/pkg-config.bat.exe"
+      - "C:/Program Files/CMake/pkg-config.bat"
+      - "C:/Program Files/CMake/pkg-config.com"
+      - "C:/Program Files/CMake/pkg-config.exe"
+      - "C:/Program Files/CMake/pkg-config"
+      - "C:/Program Files/CMake/pkgconf.com"
+      - "C:/Program Files/CMake/pkgconf.exe"
+      - "C:/Program Files/CMake/pkgconf"
+      - "C:/Program Files/universal_agent_manager/bin/pkg-config.bat.com"
+      - "C:/Program Files/universal_agent_manager/bin/pkg-config.bat.exe"
+      - "C:/Program Files/universal_agent_manager/bin/pkg-config.bat"
+      - "C:/Program Files/universal_agent_manager/bin/pkg-config.com"
+      - "C:/Program Files/universal_agent_manager/bin/pkg-config.exe"
+      - "C:/Program Files/universal_agent_manager/bin/pkg-config"
+      - "C:/Program Files/universal_agent_manager/bin/pkgconf.com"
+      - "C:/Program Files/universal_agent_manager/bin/pkgconf.exe"
+      - "C:/Program Files/universal_agent_manager/bin/pkgconf"
+      - "C:/Program Files/universal_agent_manager/sbin/pkg-config.bat.com"
+      - "C:/Program Files/universal_agent_manager/sbin/pkg-config.bat.exe"
+      - "C:/Program Files/universal_agent_manager/sbin/pkg-config.bat"
+      - "C:/Program Files/universal_agent_manager/sbin/pkg-config.com"
+      - "C:/Program Files/universal_agent_manager/sbin/pkg-config.exe"
+      - "C:/Program Files/universal_agent_manager/sbin/pkg-config"
+      - "C:/Program Files/universal_agent_manager/sbin/pkgconf.com"
+      - "C:/Program Files/universal_agent_manager/sbin/pkgconf.exe"
+      - "C:/Program Files/universal_agent_manager/sbin/pkgconf"
+      - "C:/Program Files/universal_agent_manager/pkg-config.bat.com"
+      - "C:/Program Files/universal_agent_manager/pkg-config.bat.exe"
+      - "C:/Program Files/universal_agent_manager/pkg-config.bat"
+      - "C:/Program Files/universal_agent_manager/pkg-config.com"
+      - "C:/Program Files/universal_agent_manager/pkg-config.exe"
+      - "C:/Program Files/universal_agent_manager/pkg-config"
+      - "C:/Program Files/universal_agent_manager/pkgconf.com"
+      - "C:/Program Files/universal_agent_manager/pkgconf.exe"
+      - "C:/Program Files/universal_agent_manager/pkgconf"
+    found: false
+    search_context:
+      ENV{PATH}:
+        - "C:\\Users\\david\\.codex\\tmp\\arg0\\codex-arg0tKMPz3"
+        - "C:\\Python314\\Scripts\\"
+        - "C:\\Python314\\"
+        - "C:\\Program Files\\Oculus\\Support\\oculus-runtime"
+        - "C:\\Program Files\\Eclipse Foundation\\jdk-8.0.302.8-hotspot\\bin"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\130\\Tools\\Binn\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\Client SDK\\ODBC\\170\\Tools\\Binn\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\ProgramData\\chocolatey\\bin"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\david\\AppData\\Local\\GitHubDesktop\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\david\\.dotnet\\tools"
+        - "C:\\Users\\david\\AppData\\Roaming\\npm"
+        - "C:\\Users\\david\\AppData\\Local\\OpenAI\\Codex\\bin"
+        - "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0\\app\\resources"
+      CMAKE_INSTALL_PREFIX: "C:/Program Files/universal_agent_manager"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "C:/Program Files"
+        - "C:/Program Files (x86)"
+        - "C:/Program Files/CMake"
+        - "C:/Program Files/universal_agent_manager"
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckSymbolExists.cmake:193 (try_compile)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckSymbolExists.cmake:98 (__CHECK_SYMBOL_EXISTS_IMPL)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:82 (check_symbol_exists)"
+    checks:
+      - "Looking for __GLIBC__"
+    directories:
+      source: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-17z2sh"
+      binary: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-17z2sh"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
+      CMAKE_C_FLAGS_DEBUG: "/Zi /Ob0 /Od /RTC1"
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake"
+    buildResult:
+      variable: "LIBC_IS_GLIBC"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-17z2sh'
+        
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe" cmTC_63f34.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
+        Copyright (C) Microsoft Corporation. All rights reserved.
+        
+        Build started 18/03/2026 21:08:14.
+        Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-17z2sh\\cmTC_63f34.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-17z2sh\\Debug\\".
+          Creating directory "cmTC_63f34.dir\\Debug\\cmTC_63f34.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_63f34.dir\\Debug\\cmTC_63f34.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        ClCompile:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /RTC1 /MDd /Fo"cmTC_63f34.dir\\Debug\\\\" /Fd"cmTC_63f34.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-17z2sh\\CheckSymbolExists.c"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30148 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          CheckSymbolExists.c
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /RTC1 /MDd /Fo"cmTC_63f34.dir\\Debug\\\\" /Fd"cmTC_63f34.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-17z2sh\\CheckSymbolExists.c"
+        C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-17z2sh\\CheckSymbolExists.c(8,28): error C2065: '__GLIBC__': undeclared identifier [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-17z2sh\\cmTC_63f34.vcxproj]
+        Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-17z2sh\\cmTC_63f34.vcxproj" (default targets) -- FAILED.
+        
+        Build FAILED.
+        
+        "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-17z2sh\\cmTC_63f34.vcxproj" (default target) (1) ->
+        (ClCompile target) -> 
+          C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-17z2sh\\CheckSymbolExists.c(8,28): error C2065: '__GLIBC__': undeclared identifier [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-17z2sh\\cmTC_63f34.vcxproj]
+        
+            0 Warning(s)
+            1 Error(s)
+        
+        Time Elapsed 00:00:00.41
+        
+      exitCode: 1
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/Internal/CheckSourceCompiles.cmake:104 (try_compile)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckCSourceCompiles.cmake:103 (cmake_check_source_compiles)"
+      - "build_tests_clean/_deps/sdl2-src/cmake/CheckCPUArchitecture.cmake:17 (check_c_source_compiles)"
+      - "build_tests_clean/_deps/sdl2-src/cmake/CheckCPUArchitecture.cmake:28 (_internal_check_cpu_architecture)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:139 (check_cpu_architecture)"
+    checks:
+      - "Performing Test CHECK_CPU_ARCHITECTURE_X86"
+    directories:
+      source: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-kd45l0"
+      binary: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-kd45l0"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
+      CMAKE_C_FLAGS_DEBUG: "/Zi /Ob0 /Od /RTC1"
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake"
+    buildResult:
+      variable: "CHECK_CPU_ARCHITECTURE_X86"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-kd45l0'
+        
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe" cmTC_c9c44.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
+        Copyright (C) Microsoft Corporation. All rights reserved.
+        
+        Build started 18/03/2026 21:08:15.
+        Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-kd45l0\\cmTC_c9c44.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-kd45l0\\Debug\\".
+          Creating directory "cmTC_c9c44.dir\\Debug\\cmTC_c9c44.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_c9c44.dir\\Debug\\cmTC_c9c44.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        ClCompile:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D CHECK_CPU_ARCHITECTURE_X86 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /RTC1 /MDd /Fo"cmTC_c9c44.dir\\Debug\\\\" /Fd"cmTC_c9c44.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-kd45l0\\src.c"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30148 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          src.c
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D CHECK_CPU_ARCHITECTURE_X86 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /RTC1 /MDd /Fo"cmTC_c9c44.dir\\Debug\\\\" /Fd"cmTC_c9c44.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-kd45l0\\src.c"
+        C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-kd45l0\\src.c(8,1): error C2065: 'choke': undeclared identifier [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-kd45l0\\cmTC_c9c44.vcxproj]
+        C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-kd45l0\\src.c(8,1): error C2143: syntax error: missing ';' before '}' [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-kd45l0\\cmTC_c9c44.vcxproj]
+        Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-kd45l0\\cmTC_c9c44.vcxproj" (default targets) -- FAILED.
+        
+        Build FAILED.
+        
+        "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-kd45l0\\cmTC_c9c44.vcxproj" (default target) (1) ->
+        (ClCompile target) -> 
+          C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-kd45l0\\src.c(8,1): error C2065: 'choke': undeclared identifier [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-kd45l0\\cmTC_c9c44.vcxproj]
+          C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-kd45l0\\src.c(8,1): error C2143: syntax error: missing ';' before '}' [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-kd45l0\\cmTC_c9c44.vcxproj]
+        
+            0 Warning(s)
+            2 Error(s)
+        
+        Time Elapsed 00:00:00.28
+        
+      exitCode: 1
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/Internal/CheckSourceCompiles.cmake:104 (try_compile)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckCSourceCompiles.cmake:103 (cmake_check_source_compiles)"
+      - "build_tests_clean/_deps/sdl2-src/cmake/CheckCPUArchitecture.cmake:17 (check_c_source_compiles)"
+      - "build_tests_clean/_deps/sdl2-src/cmake/CheckCPUArchitecture.cmake:30 (_internal_check_cpu_architecture)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:140 (check_cpu_architecture)"
+    checks:
+      - "Performing Test CHECK_CPU_ARCHITECTURE_X64"
+    directories:
+      source: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-mefyxa"
+      binary: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-mefyxa"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
+      CMAKE_C_FLAGS_DEBUG: "/Zi /Ob0 /Od /RTC1"
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake"
+    buildResult:
+      variable: "CHECK_CPU_ARCHITECTURE_X64"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-mefyxa'
+        
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe" cmTC_c8c21.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
+        Copyright (C) Microsoft Corporation. All rights reserved.
+        
+        Build started 18/03/2026 21:08:16.
+        Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-mefyxa\\cmTC_c8c21.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-mefyxa\\Debug\\".
+          Creating directory "cmTC_c8c21.dir\\Debug\\cmTC_c8c21.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_c8c21.dir\\Debug\\cmTC_c8c21.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        ClCompile:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D CHECK_CPU_ARCHITECTURE_X64 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /RTC1 /MDd /Fo"cmTC_c8c21.dir\\Debug\\\\" /Fd"cmTC_c8c21.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-mefyxa\\src.c"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30148 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          src.c
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D CHECK_CPU_ARCHITECTURE_X64 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /RTC1 /MDd /Fo"cmTC_c8c21.dir\\Debug\\\\" /Fd"cmTC_c8c21.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-mefyxa\\src.c"
+        Link:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\link.exe /OUT:"C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-mefyxa\\Debug\\cmTC_c8c21.exe" /INCREMENTAL /ILK:"cmTC_c8c21.dir\\Debug\\cmTC_c8c21.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-mefyxa/Debug/cmTC_c8c21.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /IMPLIB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-mefyxa/Debug/cmTC_c8c21.lib" /MACHINE:X64  /machine:x64 cmTC_c8c21.dir\\Debug\\src.obj
+          cmTC_c8c21.vcxproj -> C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-mefyxa\\Debug\\cmTC_c8c21.exe
+        FinalizeBuildStatus:
+          Deleting file "cmTC_c8c21.dir\\Debug\\cmTC_c8c21.tlog\\unsuccessfulbuild".
+          Touching "cmTC_c8c21.dir\\Debug\\cmTC_c8c21.tlog\\cmTC_c8c21.lastbuildstate".
+        Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-mefyxa\\cmTC_c8c21.vcxproj" (default targets).
+        
+        Build succeeded.
+            0 Warning(s)
+            0 Error(s)
+        
+        Time Elapsed 00:00:00.43
+        
+      exitCode: 0
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/Internal/CheckSourceCompiles.cmake:104 (try_compile)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckCSourceCompiles.cmake:103 (cmake_check_source_compiles)"
+      - "build_tests_clean/_deps/sdl2-src/cmake/CheckCPUArchitecture.cmake:17 (check_c_source_compiles)"
+      - "build_tests_clean/_deps/sdl2-src/cmake/CheckCPUArchitecture.cmake:32 (_internal_check_cpu_architecture)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:141 (check_cpu_architecture)"
+    checks:
+      - "Performing Test CHECK_CPU_ARCHITECTURE_ARM32"
+    directories:
+      source: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-v9ccw6"
+      binary: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-v9ccw6"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
+      CMAKE_C_FLAGS_DEBUG: "/Zi /Ob0 /Od /RTC1"
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake"
+    buildResult:
+      variable: "CHECK_CPU_ARCHITECTURE_ARM32"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-v9ccw6'
+        
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe" cmTC_59902.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
+        Copyright (C) Microsoft Corporation. All rights reserved.
+        
+        Build started 18/03/2026 21:08:16.
+        Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-v9ccw6\\cmTC_59902.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-v9ccw6\\Debug\\".
+          Creating directory "cmTC_59902.dir\\Debug\\cmTC_59902.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_59902.dir\\Debug\\cmTC_59902.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        ClCompile:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D CHECK_CPU_ARCHITECTURE_ARM32 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /RTC1 /MDd /Fo"cmTC_59902.dir\\Debug\\\\" /Fd"cmTC_59902.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-v9ccw6\\src.c"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30148 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          src.c
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D CHECK_CPU_ARCHITECTURE_ARM32 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /RTC1 /MDd /Fo"cmTC_59902.dir\\Debug\\\\" /Fd"cmTC_59902.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-v9ccw6\\src.c"
+        C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-v9ccw6\\src.c(8,1): error C2065: 'choke': undeclared identifier [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-v9ccw6\\cmTC_59902.vcxproj]
+        C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-v9ccw6\\src.c(8,1): error C2143: syntax error: missing ';' before '}' [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-v9ccw6\\cmTC_59902.vcxproj]
+        Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-v9ccw6\\cmTC_59902.vcxproj" (default targets) -- FAILED.
+        
+        Build FAILED.
+        
+        "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-v9ccw6\\cmTC_59902.vcxproj" (default target) (1) ->
+        (ClCompile target) -> 
+          C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-v9ccw6\\src.c(8,1): error C2065: 'choke': undeclared identifier [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-v9ccw6\\cmTC_59902.vcxproj]
+          C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-v9ccw6\\src.c(8,1): error C2143: syntax error: missing ';' before '}' [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-v9ccw6\\cmTC_59902.vcxproj]
+        
+            0 Warning(s)
+            2 Error(s)
+        
+        Time Elapsed 00:00:00.27
+        
+      exitCode: 1
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/Internal/CheckSourceCompiles.cmake:104 (try_compile)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckCSourceCompiles.cmake:103 (cmake_check_source_compiles)"
+      - "build_tests_clean/_deps/sdl2-src/cmake/CheckCPUArchitecture.cmake:17 (check_c_source_compiles)"
+      - "build_tests_clean/_deps/sdl2-src/cmake/CheckCPUArchitecture.cmake:34 (_internal_check_cpu_architecture)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:142 (check_cpu_architecture)"
+    checks:
+      - "Performing Test CHECK_CPU_ARCHITECTURE_ARM64"
+    directories:
+      source: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-464bu0"
+      binary: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-464bu0"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
+      CMAKE_C_FLAGS_DEBUG: "/Zi /Ob0 /Od /RTC1"
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake"
+    buildResult:
+      variable: "CHECK_CPU_ARCHITECTURE_ARM64"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-464bu0'
+        
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe" cmTC_a51df.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
+        Copyright (C) Microsoft Corporation. All rights reserved.
+        
+        Build started 18/03/2026 21:08:17.
+        Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-464bu0\\cmTC_a51df.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-464bu0\\Debug\\".
+          Creating directory "cmTC_a51df.dir\\Debug\\cmTC_a51df.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_a51df.dir\\Debug\\cmTC_a51df.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        ClCompile:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D CHECK_CPU_ARCHITECTURE_ARM64 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /RTC1 /MDd /Fo"cmTC_a51df.dir\\Debug\\\\" /Fd"cmTC_a51df.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-464bu0\\src.c"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30148 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          src.c
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D CHECK_CPU_ARCHITECTURE_ARM64 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /RTC1 /MDd /Fo"cmTC_a51df.dir\\Debug\\\\" /Fd"cmTC_a51df.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-464bu0\\src.c"
+        C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-464bu0\\src.c(8,1): error C2065: 'choke': undeclared identifier [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-464bu0\\cmTC_a51df.vcxproj]
+        C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-464bu0\\src.c(8,1): error C2143: syntax error: missing ';' before '}' [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-464bu0\\cmTC_a51df.vcxproj]
+        Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-464bu0\\cmTC_a51df.vcxproj" (default targets) -- FAILED.
+        
+        Build FAILED.
+        
+        "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-464bu0\\cmTC_a51df.vcxproj" (default target) (1) ->
+        (ClCompile target) -> 
+          C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-464bu0\\src.c(8,1): error C2065: 'choke': undeclared identifier [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-464bu0\\cmTC_a51df.vcxproj]
+          C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-464bu0\\src.c(8,1): error C2143: syntax error: missing ';' before '}' [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-464bu0\\cmTC_a51df.vcxproj]
+        
+            0 Warning(s)
+            2 Error(s)
+        
+        Time Elapsed 00:00:00.27
+        
+      exitCode: 1
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/Internal/CheckSourceCompiles.cmake:104 (try_compile)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckCSourceCompiles.cmake:103 (cmake_check_source_compiles)"
+      - "build_tests_clean/_deps/sdl2-src/cmake/CheckCPUArchitecture.cmake:17 (check_c_source_compiles)"
+      - "build_tests_clean/_deps/sdl2-src/cmake/CheckCPUArchitecture.cmake:36 (_internal_check_cpu_architecture)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:143 (check_cpu_architecture)"
+    checks:
+      - "Performing Test CHECK_CPU_ARCHITECTURE_LOONGARCH64"
+    directories:
+      source: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-tzmeai"
+      binary: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-tzmeai"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
+      CMAKE_C_FLAGS_DEBUG: "/Zi /Ob0 /Od /RTC1"
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake"
+    buildResult:
+      variable: "CHECK_CPU_ARCHITECTURE_LOONGARCH64"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-tzmeai'
+        
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe" cmTC_44b94.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
+        Copyright (C) Microsoft Corporation. All rights reserved.
+        
+        Build started 18/03/2026 21:08:17.
+        Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-tzmeai\\cmTC_44b94.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-tzmeai\\Debug\\".
+          Creating directory "cmTC_44b94.dir\\Debug\\cmTC_44b94.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_44b94.dir\\Debug\\cmTC_44b94.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        ClCompile:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D CHECK_CPU_ARCHITECTURE_LOONGARCH64 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /RTC1 /MDd /Fo"cmTC_44b94.dir\\Debug\\\\" /Fd"cmTC_44b94.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-tzmeai\\src.c"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30148 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          src.c
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D CHECK_CPU_ARCHITECTURE_LOONGARCH64 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /RTC1 /MDd /Fo"cmTC_44b94.dir\\Debug\\\\" /Fd"cmTC_44b94.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-tzmeai\\src.c"
+        C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-tzmeai\\src.c(8,1): error C2065: 'choke': undeclared identifier [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-tzmeai\\cmTC_44b94.vcxproj]
+        C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-tzmeai\\src.c(8,1): error C2143: syntax error: missing ';' before '}' [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-tzmeai\\cmTC_44b94.vcxproj]
+        Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-tzmeai\\cmTC_44b94.vcxproj" (default targets) -- FAILED.
+        
+        Build FAILED.
+        
+        "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-tzmeai\\cmTC_44b94.vcxproj" (default target) (1) ->
+        (ClCompile target) -> 
+          C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-tzmeai\\src.c(8,1): error C2065: 'choke': undeclared identifier [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-tzmeai\\cmTC_44b94.vcxproj]
+          C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-tzmeai\\src.c(8,1): error C2143: syntax error: missing ';' before '}' [C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-tzmeai\\cmTC_44b94.vcxproj]
+        
+            0 Warning(s)
+            2 Error(s)
+        
+        Time Elapsed 00:00:00.27
+        
+      exitCode: 1
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckIncludeFile.cmake:174 (try_compile)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:1003 (check_include_file)"
+    checks:
+      - "Looking for immintrin.h"
+    directories:
+      source: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-a1fzb0"
+      binary: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-a1fzb0"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
+      CMAKE_C_FLAGS_DEBUG: "/Zi /Ob0 /Od "
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake"
+    buildResult:
+      variable: "HAVE_IMMINTRIN_H"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-a1fzb0'
+        
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe" cmTC_4765e.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
+        Copyright (C) Microsoft Corporation. All rights reserved.
+        
+        Build started 18/03/2026 21:08:18.
+        Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-a1fzb0\\cmTC_4765e.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-a1fzb0\\Debug\\".
+          Creating directory "cmTC_4765e.dir\\Debug\\cmTC_4765e.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_4765e.dir\\Debug\\cmTC_4765e.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        ClCompile:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_4765e.dir\\Debug\\\\" /Fd"cmTC_4765e.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-a1fzb0\\CheckIncludeFile.c"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30148 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          CheckIncludeFile.c
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_4765e.dir\\Debug\\\\" /Fd"cmTC_4765e.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-a1fzb0\\CheckIncludeFile.c"
+        Link:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\link.exe /OUT:"C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-a1fzb0\\Debug\\cmTC_4765e.exe" /INCREMENTAL /ILK:"cmTC_4765e.dir\\Debug\\cmTC_4765e.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-a1fzb0/Debug/cmTC_4765e.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /IMPLIB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-a1fzb0/Debug/cmTC_4765e.lib" /MACHINE:X64  /machine:x64 cmTC_4765e.dir\\Debug\\CheckIncludeFile.obj
+          cmTC_4765e.vcxproj -> C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-a1fzb0\\Debug\\cmTC_4765e.exe
+        FinalizeBuildStatus:
+          Deleting file "cmTC_4765e.dir\\Debug\\cmTC_4765e.tlog\\unsuccessfulbuild".
+          Touching "cmTC_4765e.dir\\Debug\\cmTC_4765e.tlog\\cmTC_4765e.lastbuildstate".
+        Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-a1fzb0\\cmTC_4765e.vcxproj" (default targets).
+        
+        Build succeeded.
+            0 Warning(s)
+            0 Error(s)
+        
+        Time Elapsed 00:00:00.43
+        
+      exitCode: 0
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckIncludeFile.cmake:174 (try_compile)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:1166 (check_include_file)"
+    checks:
+      - "Looking for stdint.h"
+    directories:
+      source: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-63qi7g"
+      binary: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-63qi7g"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
+      CMAKE_C_FLAGS_DEBUG: "/Zi /Ob0 /Od "
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake"
+    buildResult:
+      variable: "HAVE_STDINT_H"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-63qi7g'
+        
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe" cmTC_c8303.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
+        Copyright (C) Microsoft Corporation. All rights reserved.
+        
+        Build started 18/03/2026 21:08:18.
+        Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-63qi7g\\cmTC_c8303.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-63qi7g\\Debug\\".
+          Creating directory "cmTC_c8303.dir\\Debug\\cmTC_c8303.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_c8303.dir\\Debug\\cmTC_c8303.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        ClCompile:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_c8303.dir\\Debug\\\\" /Fd"cmTC_c8303.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-63qi7g\\CheckIncludeFile.c"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30148 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          CheckIncludeFile.c
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_c8303.dir\\Debug\\\\" /Fd"cmTC_c8303.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-63qi7g\\CheckIncludeFile.c"
+        Link:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\link.exe /OUT:"C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-63qi7g\\Debug\\cmTC_c8303.exe" /INCREMENTAL /ILK:"cmTC_c8303.dir\\Debug\\cmTC_c8303.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-63qi7g/Debug/cmTC_c8303.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /IMPLIB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-63qi7g/Debug/cmTC_c8303.lib" /MACHINE:X64  /machine:x64 cmTC_c8303.dir\\Debug\\CheckIncludeFile.obj
+          cmTC_c8303.vcxproj -> C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-63qi7g\\Debug\\cmTC_c8303.exe
+        FinalizeBuildStatus:
+          Deleting file "cmTC_c8303.dir\\Debug\\cmTC_c8303.tlog\\unsuccessfulbuild".
+          Touching "cmTC_c8303.dir\\Debug\\cmTC_c8303.tlog\\cmTC_c8303.lastbuildstate".
+        Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-63qi7g\\cmTC_c8303.vcxproj" (default targets).
+        
+        Build succeeded.
+            0 Warning(s)
+            0 Error(s)
+        
+        Time Elapsed 00:00:00.41
+        
+      exitCode: 0
+  -
+    kind: "find-v1"
+    backtrace:
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:1766 (find_program)"
+    mode: "program"
+    variable: "WINDRES"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "windres"
+    candidate_directories:
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/"
+      - "C:/Python314/Scripts/"
+      - "C:/Python314/"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/"
+      - "C:/Windows/System32/"
+      - "C:/Windows/"
+      - "C:/Windows/System32/wbem/"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/"
+      - "C:/Windows/System32/OpenSSH/"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/"
+      - "C:/Program Files/dotnet/"
+      - "C:/Program Files/Git/cmd/"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/"
+      - "C:/Program Files/nodejs/"
+      - "C:/ProgramData/chocolatey/bin/"
+      - "C:/Program Files/CMake/bin/"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/"
+      - "C:/Users/david/.dotnet/tools/"
+      - "C:/Users/david/AppData/Roaming/npm/"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/"
+      - "C:/Program Files/bin/"
+      - "C:/Program Files/sbin/"
+      - "C:/Program Files/"
+      - "C:/Program Files (x86)/bin/"
+      - "C:/Program Files (x86)/sbin/"
+      - "C:/Program Files (x86)/"
+      - "C:/Program Files/CMake/bin/"
+      - "C:/Program Files/CMake/sbin/"
+      - "C:/Program Files/CMake/"
+      - "C:/Program Files/universal_agent_manager/bin/"
+      - "C:/Program Files/universal_agent_manager/sbin/"
+      - "C:/Program Files/universal_agent_manager/"
+    searched_directories:
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/windres.com"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/windres.exe"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/windres"
+      - "C:/Python314/Scripts/windres.com"
+      - "C:/Python314/Scripts/windres.exe"
+      - "C:/Python314/Scripts/windres"
+      - "C:/Python314/windres.com"
+      - "C:/Python314/windres.exe"
+      - "C:/Python314/windres"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/windres.com"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/windres.exe"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/windres"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/windres.com"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/windres.exe"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/windres"
+      - "C:/Windows/System32/windres.com"
+      - "C:/Windows/System32/windres.exe"
+      - "C:/Windows/System32/windres"
+      - "C:/Windows/windres.com"
+      - "C:/Windows/windres.exe"
+      - "C:/Windows/windres"
+      - "C:/Windows/System32/wbem/windres.com"
+      - "C:/Windows/System32/wbem/windres.exe"
+      - "C:/Windows/System32/wbem/windres"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/windres.com"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/windres.exe"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/windres"
+      - "C:/Windows/System32/OpenSSH/windres.com"
+      - "C:/Windows/System32/OpenSSH/windres.exe"
+      - "C:/Windows/System32/OpenSSH/windres"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/windres.com"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/windres.exe"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/windres"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/windres.com"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/windres.exe"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/windres"
+      - "C:/Program Files/dotnet/windres.com"
+      - "C:/Program Files/dotnet/windres.exe"
+      - "C:/Program Files/dotnet/windres"
+      - "C:/Program Files/Git/cmd/windres.com"
+      - "C:/Program Files/Git/cmd/windres.exe"
+      - "C:/Program Files/Git/cmd/windres"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/windres.com"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/windres.exe"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/windres"
+      - "C:/Program Files/nodejs/windres.com"
+      - "C:/Program Files/nodejs/windres.exe"
+      - "C:/Program Files/nodejs/windres"
+      - "C:/ProgramData/chocolatey/bin/windres.com"
+      - "C:/ProgramData/chocolatey/bin/windres.exe"
+      - "C:/ProgramData/chocolatey/bin/windres"
+      - "C:/Program Files/CMake/bin/windres.com"
+      - "C:/Program Files/CMake/bin/windres.exe"
+      - "C:/Program Files/CMake/bin/windres"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/windres.com"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/windres.exe"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/windres"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/windres.com"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/windres.exe"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/windres"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/windres.com"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/windres.exe"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/windres"
+      - "C:/Users/david/.dotnet/tools/windres.com"
+      - "C:/Users/david/.dotnet/tools/windres.exe"
+      - "C:/Users/david/.dotnet/tools/windres"
+      - "C:/Users/david/AppData/Roaming/npm/windres.com"
+      - "C:/Users/david/AppData/Roaming/npm/windres.exe"
+      - "C:/Users/david/AppData/Roaming/npm/windres"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/windres.com"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/windres.exe"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/windres"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/windres.com"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/windres.exe"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/windres"
+      - "C:/Program Files/bin/windres.com"
+      - "C:/Program Files/bin/windres.exe"
+      - "C:/Program Files/bin/windres"
+      - "C:/Program Files/sbin/windres.com"
+      - "C:/Program Files/sbin/windres.exe"
+      - "C:/Program Files/sbin/windres"
+      - "C:/Program Files/windres.com"
+      - "C:/Program Files/windres.exe"
+      - "C:/Program Files/windres"
+      - "C:/Program Files (x86)/bin/windres.com"
+      - "C:/Program Files (x86)/bin/windres.exe"
+      - "C:/Program Files (x86)/bin/windres"
+      - "C:/Program Files (x86)/sbin/windres.com"
+      - "C:/Program Files (x86)/sbin/windres.exe"
+      - "C:/Program Files (x86)/sbin/windres"
+      - "C:/Program Files (x86)/windres.com"
+      - "C:/Program Files (x86)/windres.exe"
+      - "C:/Program Files (x86)/windres"
+      - "C:/Program Files/CMake/bin/windres.com"
+      - "C:/Program Files/CMake/bin/windres.exe"
+      - "C:/Program Files/CMake/bin/windres"
+      - "C:/Program Files/CMake/sbin/windres.com"
+      - "C:/Program Files/CMake/sbin/windres.exe"
+      - "C:/Program Files/CMake/sbin/windres"
+      - "C:/Program Files/CMake/windres.com"
+      - "C:/Program Files/CMake/windres.exe"
+      - "C:/Program Files/CMake/windres"
+      - "C:/Program Files/universal_agent_manager/bin/windres.com"
+      - "C:/Program Files/universal_agent_manager/bin/windres.exe"
+      - "C:/Program Files/universal_agent_manager/bin/windres"
+      - "C:/Program Files/universal_agent_manager/sbin/windres.com"
+      - "C:/Program Files/universal_agent_manager/sbin/windres.exe"
+      - "C:/Program Files/universal_agent_manager/sbin/windres"
+      - "C:/Program Files/universal_agent_manager/windres.com"
+      - "C:/Program Files/universal_agent_manager/windres.exe"
+      - "C:/Program Files/universal_agent_manager/windres"
+    found: false
+    search_context:
+      ENV{PATH}:
+        - "C:\\Users\\david\\.codex\\tmp\\arg0\\codex-arg0tKMPz3"
+        - "C:\\Python314\\Scripts\\"
+        - "C:\\Python314\\"
+        - "C:\\Program Files\\Oculus\\Support\\oculus-runtime"
+        - "C:\\Program Files\\Eclipse Foundation\\jdk-8.0.302.8-hotspot\\bin"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\130\\Tools\\Binn\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\Client SDK\\ODBC\\170\\Tools\\Binn\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\ProgramData\\chocolatey\\bin"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\david\\AppData\\Local\\GitHubDesktop\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\david\\.dotnet\\tools"
+        - "C:\\Users\\david\\AppData\\Roaming\\npm"
+        - "C:\\Users\\david\\AppData\\Local\\OpenAI\\Codex\\bin"
+        - "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0\\app\\resources"
+      CMAKE_INSTALL_PREFIX: "C:/Program Files/universal_agent_manager"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "C:/Program Files"
+        - "C:/Program Files (x86)"
+        - "C:/Program Files/CMake"
+        - "C:/Program Files/universal_agent_manager"
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/Internal/CheckSourceCompiles.cmake:104 (try_compile)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckCSourceCompiles.cmake:103 (cmake_check_source_compiles)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:1768 (check_c_source_compiles)"
+    checks:
+      - "Performing Test HAVE_WIN32_CC"
+    directories:
+      source: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-nzghri"
+      binary: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-nzghri"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
+      CMAKE_C_FLAGS_DEBUG: "/Zi /Ob0 /Od "
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake"
+    buildResult:
+      variable: "HAVE_WIN32_CC"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-nzghri'
+        
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe" cmTC_a2c1d.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
+        Copyright (C) Microsoft Corporation. All rights reserved.
+        
+        Build started 18/03/2026 21:08:19.
+        Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-nzghri\\cmTC_a2c1d.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-nzghri\\Debug\\".
+          Creating directory "cmTC_a2c1d.dir\\Debug\\cmTC_a2c1d.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_a2c1d.dir\\Debug\\cmTC_a2c1d.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        ClCompile:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D HAVE_WIN32_CC /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_a2c1d.dir\\Debug\\\\" /Fd"cmTC_a2c1d.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-nzghri\\src.c"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30148 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          src.c
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D HAVE_WIN32_CC /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_a2c1d.dir\\Debug\\\\" /Fd"cmTC_a2c1d.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-nzghri\\src.c"
+        Link:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\link.exe /OUT:"C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-nzghri\\Debug\\cmTC_a2c1d.exe" /INCREMENTAL /ILK:"cmTC_a2c1d.dir\\Debug\\cmTC_a2c1d.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-nzghri/Debug/cmTC_a2c1d.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /IMPLIB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-nzghri/Debug/cmTC_a2c1d.lib" /MACHINE:X64  /machine:x64 cmTC_a2c1d.dir\\Debug\\src.obj
+          cmTC_a2c1d.vcxproj -> C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-nzghri\\Debug\\cmTC_a2c1d.exe
+        FinalizeBuildStatus:
+          Deleting file "cmTC_a2c1d.dir\\Debug\\cmTC_a2c1d.tlog\\unsuccessfulbuild".
+          Touching "cmTC_a2c1d.dir\\Debug\\cmTC_a2c1d.tlog\\cmTC_a2c1d.lastbuildstate".
+        Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-nzghri\\cmTC_a2c1d.vcxproj" (default targets).
+        
+        Build succeeded.
+            0 Warning(s)
+            0 Error(s)
+        
+        Time Elapsed 00:00:00.60
+        
+      exitCode: 0
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckIncludeFile.cmake:174 (try_compile)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:1802 (check_include_file)"
+    checks:
+      - "Looking for d3d9.h"
+    directories:
+      source: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-s62u8t"
+      binary: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-s62u8t"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
+      CMAKE_C_FLAGS_DEBUG: "/Zi /Ob0 /Od "
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake"
+    buildResult:
+      variable: "HAVE_D3D_H"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-s62u8t'
+        
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe" cmTC_f7c19.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
+        Copyright (C) Microsoft Corporation. All rights reserved.
+        
+        Build started 18/03/2026 21:08:20.
+        Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-s62u8t\\cmTC_f7c19.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-s62u8t\\Debug\\".
+          Creating directory "cmTC_f7c19.dir\\Debug\\cmTC_f7c19.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_f7c19.dir\\Debug\\cmTC_f7c19.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        ClCompile:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_f7c19.dir\\Debug\\\\" /Fd"cmTC_f7c19.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-s62u8t\\CheckIncludeFile.c"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30148 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          CheckIncludeFile.c
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_f7c19.dir\\Debug\\\\" /Fd"cmTC_f7c19.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-s62u8t\\CheckIncludeFile.c"
+        Link:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\link.exe /OUT:"C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-s62u8t\\Debug\\cmTC_f7c19.exe" /INCREMENTAL /ILK:"cmTC_f7c19.dir\\Debug\\cmTC_f7c19.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-s62u8t/Debug/cmTC_f7c19.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /IMPLIB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-s62u8t/Debug/cmTC_f7c19.lib" /MACHINE:X64  /machine:x64 cmTC_f7c19.dir\\Debug\\CheckIncludeFile.obj
+          cmTC_f7c19.vcxproj -> C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-s62u8t\\Debug\\cmTC_f7c19.exe
+        FinalizeBuildStatus:
+          Deleting file "cmTC_f7c19.dir\\Debug\\cmTC_f7c19.tlog\\unsuccessfulbuild".
+          Touching "cmTC_f7c19.dir\\Debug\\cmTC_f7c19.tlog\\cmTC_f7c19.lastbuildstate".
+        Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-s62u8t\\cmTC_f7c19.vcxproj" (default targets).
+        
+        Build succeeded.
+            0 Warning(s)
+            0 Error(s)
+        
+        Time Elapsed 00:00:00.61
+        
+      exitCode: 0
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckIncludeFile.cmake:174 (try_compile)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:1803 (check_include_file)"
+    checks:
+      - "Looking for d3d11_1.h"
+    directories:
+      source: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-ozenmu"
+      binary: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-ozenmu"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
+      CMAKE_C_FLAGS_DEBUG: "/Zi /Ob0 /Od "
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake"
+    buildResult:
+      variable: "HAVE_D3D11_H"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-ozenmu'
+        
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe" cmTC_f96c4.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
+        Copyright (C) Microsoft Corporation. All rights reserved.
+        
+        Build started 18/03/2026 21:08:21.
+        Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-ozenmu\\cmTC_f96c4.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-ozenmu\\Debug\\".
+          Creating directory "cmTC_f96c4.dir\\Debug\\cmTC_f96c4.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_f96c4.dir\\Debug\\cmTC_f96c4.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        ClCompile:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_f96c4.dir\\Debug\\\\" /Fd"cmTC_f96c4.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-ozenmu\\CheckIncludeFile.c"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30148 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          CheckIncludeFile.c
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_f96c4.dir\\Debug\\\\" /Fd"cmTC_f96c4.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-ozenmu\\CheckIncludeFile.c"
+        Link:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\link.exe /OUT:"C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-ozenmu\\Debug\\cmTC_f96c4.exe" /INCREMENTAL /ILK:"cmTC_f96c4.dir\\Debug\\cmTC_f96c4.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-ozenmu/Debug/cmTC_f96c4.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /IMPLIB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-ozenmu/Debug/cmTC_f96c4.lib" /MACHINE:X64  /machine:x64 cmTC_f96c4.dir\\Debug\\CheckIncludeFile.obj
+          cmTC_f96c4.vcxproj -> C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-ozenmu\\Debug\\cmTC_f96c4.exe
+        FinalizeBuildStatus:
+          Deleting file "cmTC_f96c4.dir\\Debug\\cmTC_f96c4.tlog\\unsuccessfulbuild".
+          Touching "cmTC_f96c4.dir\\Debug\\cmTC_f96c4.tlog\\cmTC_f96c4.lastbuildstate".
+        Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-ozenmu\\cmTC_f96c4.vcxproj" (default targets).
+        
+        Build succeeded.
+            0 Warning(s)
+            0 Error(s)
+        
+        Time Elapsed 00:00:00.64
+        
+      exitCode: 0
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/Internal/CheckSourceCompiles.cmake:104 (try_compile)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckCSourceCompiles.cmake:103 (cmake_check_source_compiles)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:1804 (check_c_source_compiles)"
+    checks:
+      - "Performing Test HAVE_D3D12_H"
+    directories:
+      source: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-kauyeo"
+      binary: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-kauyeo"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
+      CMAKE_C_FLAGS_DEBUG: "/Zi /Ob0 /Od "
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake"
+    buildResult:
+      variable: "HAVE_D3D12_H"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-kauyeo'
+        
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe" cmTC_57d72.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
+        Copyright (C) Microsoft Corporation. All rights reserved.
+        
+        Build started 18/03/2026 21:08:21.
+        Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-kauyeo\\cmTC_57d72.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-kauyeo\\Debug\\".
+          Creating directory "cmTC_57d72.dir\\Debug\\cmTC_57d72.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_57d72.dir\\Debug\\cmTC_57d72.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        ClCompile:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D HAVE_D3D12_H /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_57d72.dir\\Debug\\\\" /Fd"cmTC_57d72.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-kauyeo\\src.c"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30148 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          src.c
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D HAVE_D3D12_H /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_57d72.dir\\Debug\\\\" /Fd"cmTC_57d72.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-kauyeo\\src.c"
+        Link:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\link.exe /OUT:"C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-kauyeo\\Debug\\cmTC_57d72.exe" /INCREMENTAL /ILK:"cmTC_57d72.dir\\Debug\\cmTC_57d72.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-kauyeo/Debug/cmTC_57d72.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /IMPLIB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-kauyeo/Debug/cmTC_57d72.lib" /MACHINE:X64  /machine:x64 cmTC_57d72.dir\\Debug\\src.obj
+          cmTC_57d72.vcxproj -> C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-kauyeo\\Debug\\cmTC_57d72.exe
+        FinalizeBuildStatus:
+          Deleting file "cmTC_57d72.dir\\Debug\\cmTC_57d72.tlog\\unsuccessfulbuild".
+          Touching "cmTC_57d72.dir\\Debug\\cmTC_57d72.tlog\\cmTC_57d72.lastbuildstate".
+        Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-kauyeo\\cmTC_57d72.vcxproj" (default targets).
+        
+        Build succeeded.
+            0 Warning(s)
+            0 Error(s)
+        
+        Time Elapsed 00:00:00.63
+        
+      exitCode: 0
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckIncludeFile.cmake:174 (try_compile)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:1810 (check_include_file)"
+    checks:
+      - "Looking for ddraw.h"
+    directories:
+      source: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-fqkwqp"
+      binary: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-fqkwqp"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
+      CMAKE_C_FLAGS_DEBUG: "/Zi /Ob0 /Od "
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake"
+    buildResult:
+      variable: "HAVE_DDRAW_H"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-fqkwqp'
+        
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe" cmTC_0e4e9.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
+        Copyright (C) Microsoft Corporation. All rights reserved.
+        
+        Build started 18/03/2026 21:08:22.
+        Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-fqkwqp\\cmTC_0e4e9.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-fqkwqp\\Debug\\".
+          Creating directory "cmTC_0e4e9.dir\\Debug\\cmTC_0e4e9.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_0e4e9.dir\\Debug\\cmTC_0e4e9.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        ClCompile:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_0e4e9.dir\\Debug\\\\" /Fd"cmTC_0e4e9.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-fqkwqp\\CheckIncludeFile.c"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30148 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          CheckIncludeFile.c
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_0e4e9.dir\\Debug\\\\" /Fd"cmTC_0e4e9.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-fqkwqp\\CheckIncludeFile.c"
+        Link:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\link.exe /OUT:"C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-fqkwqp\\Debug\\cmTC_0e4e9.exe" /INCREMENTAL /ILK:"cmTC_0e4e9.dir\\Debug\\cmTC_0e4e9.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-fqkwqp/Debug/cmTC_0e4e9.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /IMPLIB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-fqkwqp/Debug/cmTC_0e4e9.lib" /MACHINE:X64  /machine:x64 cmTC_0e4e9.dir\\Debug\\CheckIncludeFile.obj
+          cmTC_0e4e9.vcxproj -> C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-fqkwqp\\Debug\\cmTC_0e4e9.exe
+        FinalizeBuildStatus:
+          Deleting file "cmTC_0e4e9.dir\\Debug\\cmTC_0e4e9.tlog\\unsuccessfulbuild".
+          Touching "cmTC_0e4e9.dir\\Debug\\cmTC_0e4e9.tlog\\cmTC_0e4e9.lastbuildstate".
+        Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-fqkwqp\\cmTC_0e4e9.vcxproj" (default targets).
+        
+        Build succeeded.
+            0 Warning(s)
+            0 Error(s)
+        
+        Time Elapsed 00:00:00.60
+        
+      exitCode: 0
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckIncludeFile.cmake:174 (try_compile)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:1811 (check_include_file)"
+    checks:
+      - "Looking for dsound.h"
+    directories:
+      source: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-f78k6f"
+      binary: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-f78k6f"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
+      CMAKE_C_FLAGS_DEBUG: "/Zi /Ob0 /Od "
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake"
+    buildResult:
+      variable: "HAVE_DSOUND_H"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-f78k6f'
+        
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe" cmTC_aab1e.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
+        Copyright (C) Microsoft Corporation. All rights reserved.
+        
+        Build started 18/03/2026 21:08:23.
+        Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-f78k6f\\cmTC_aab1e.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-f78k6f\\Debug\\".
+          Creating directory "cmTC_aab1e.dir\\Debug\\cmTC_aab1e.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_aab1e.dir\\Debug\\cmTC_aab1e.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        ClCompile:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_aab1e.dir\\Debug\\\\" /Fd"cmTC_aab1e.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-f78k6f\\CheckIncludeFile.c"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30148 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          CheckIncludeFile.c
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_aab1e.dir\\Debug\\\\" /Fd"cmTC_aab1e.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-f78k6f\\CheckIncludeFile.c"
+        Link:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\link.exe /OUT:"C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-f78k6f\\Debug\\cmTC_aab1e.exe" /INCREMENTAL /ILK:"cmTC_aab1e.dir\\Debug\\cmTC_aab1e.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-f78k6f/Debug/cmTC_aab1e.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /IMPLIB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-f78k6f/Debug/cmTC_aab1e.lib" /MACHINE:X64  /machine:x64 cmTC_aab1e.dir\\Debug\\CheckIncludeFile.obj
+          cmTC_aab1e.vcxproj -> C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-f78k6f\\Debug\\cmTC_aab1e.exe
+        FinalizeBuildStatus:
+          Deleting file "cmTC_aab1e.dir\\Debug\\cmTC_aab1e.tlog\\unsuccessfulbuild".
+          Touching "cmTC_aab1e.dir\\Debug\\cmTC_aab1e.tlog\\cmTC_aab1e.lastbuildstate".
+        Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-f78k6f\\cmTC_aab1e.vcxproj" (default targets).
+        
+        Build succeeded.
+            0 Warning(s)
+            0 Error(s)
+        
+        Time Elapsed 00:00:00.61
+        
+      exitCode: 0
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckIncludeFile.cmake:174 (try_compile)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:1812 (check_include_file)"
+    checks:
+      - "Looking for dinput.h"
+    directories:
+      source: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-halffs"
+      binary: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-halffs"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
+      CMAKE_C_FLAGS_DEBUG: "/Zi /Ob0 /Od "
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake"
+    buildResult:
+      variable: "HAVE_DINPUT_H"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-halffs'
+        
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe" cmTC_8c4e4.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
+        Copyright (C) Microsoft Corporation. All rights reserved.
+        
+        Build started 18/03/2026 21:08:24.
+        Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-halffs\\cmTC_8c4e4.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-halffs\\Debug\\".
+          Creating directory "cmTC_8c4e4.dir\\Debug\\cmTC_8c4e4.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_8c4e4.dir\\Debug\\cmTC_8c4e4.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        ClCompile:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_8c4e4.dir\\Debug\\\\" /Fd"cmTC_8c4e4.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-halffs\\CheckIncludeFile.c"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30148 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          CheckIncludeFile.c
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_8c4e4.dir\\Debug\\\\" /Fd"cmTC_8c4e4.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-halffs\\CheckIncludeFile.c"
+          C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.26100.0\\um\\dinput.h: DIRECTINPUT_VERSION undefined. Defaulting to version 0x0800
+        Link:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\link.exe /OUT:"C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-halffs\\Debug\\cmTC_8c4e4.exe" /INCREMENTAL /ILK:"cmTC_8c4e4.dir\\Debug\\cmTC_8c4e4.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-halffs/Debug/cmTC_8c4e4.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /IMPLIB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-halffs/Debug/cmTC_8c4e4.lib" /MACHINE:X64  /machine:x64 cmTC_8c4e4.dir\\Debug\\CheckIncludeFile.obj
+          cmTC_8c4e4.vcxproj -> C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-halffs\\Debug\\cmTC_8c4e4.exe
+        FinalizeBuildStatus:
+          Deleting file "cmTC_8c4e4.dir\\Debug\\cmTC_8c4e4.tlog\\unsuccessfulbuild".
+          Touching "cmTC_8c4e4.dir\\Debug\\cmTC_8c4e4.tlog\\cmTC_8c4e4.lastbuildstate".
+        Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-halffs\\cmTC_8c4e4.vcxproj" (default targets).
+        
+        Build succeeded.
+            0 Warning(s)
+            0 Error(s)
+        
+        Time Elapsed 00:00:00.60
+        
+      exitCode: 0
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckIncludeFile.cmake:174 (try_compile)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:1816 (check_include_file)"
+    checks:
+      - "Looking for dxgi.h"
+    directories:
+      source: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-4wnfus"
+      binary: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-4wnfus"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
+      CMAKE_C_FLAGS_DEBUG: "/Zi /Ob0 /Od "
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake"
+    buildResult:
+      variable: "HAVE_DXGI_H"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-4wnfus'
+        
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe" cmTC_c4037.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
+        Copyright (C) Microsoft Corporation. All rights reserved.
+        
+        Build started 18/03/2026 21:08:25.
+        Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-4wnfus\\cmTC_c4037.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-4wnfus\\Debug\\".
+          Creating directory "cmTC_c4037.dir\\Debug\\cmTC_c4037.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_c4037.dir\\Debug\\cmTC_c4037.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        ClCompile:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_c4037.dir\\Debug\\\\" /Fd"cmTC_c4037.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-4wnfus\\CheckIncludeFile.c"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30148 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          CheckIncludeFile.c
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_c4037.dir\\Debug\\\\" /Fd"cmTC_c4037.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-4wnfus\\CheckIncludeFile.c"
+        Link:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\link.exe /OUT:"C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-4wnfus\\Debug\\cmTC_c4037.exe" /INCREMENTAL /ILK:"cmTC_c4037.dir\\Debug\\cmTC_c4037.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-4wnfus/Debug/cmTC_c4037.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /IMPLIB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-4wnfus/Debug/cmTC_c4037.lib" /MACHINE:X64  /machine:x64 cmTC_c4037.dir\\Debug\\CheckIncludeFile.obj
+          cmTC_c4037.vcxproj -> C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-4wnfus\\Debug\\cmTC_c4037.exe
+        FinalizeBuildStatus:
+          Deleting file "cmTC_c4037.dir\\Debug\\cmTC_c4037.tlog\\unsuccessfulbuild".
+          Touching "cmTC_c4037.dir\\Debug\\cmTC_c4037.tlog\\cmTC_c4037.lastbuildstate".
+        Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-4wnfus\\cmTC_c4037.vcxproj" (default targets).
+        
+        Build succeeded.
+            0 Warning(s)
+            0 Error(s)
+        
+        Time Elapsed 00:00:00.60
+        
+      exitCode: 0
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/Internal/CheckSourceCompiles.cmake:104 (try_compile)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckCSourceCompiles.cmake:103 (cmake_check_source_compiles)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:1830 (check_c_source_compiles)"
+    checks:
+      - "Performing Test HAVE_XINPUT_H"
+    directories:
+      source: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-25cs9y"
+      binary: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-25cs9y"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
+      CMAKE_C_FLAGS_DEBUG: "/Zi /Ob0 /Od "
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake"
+    buildResult:
+      variable: "HAVE_XINPUT_H"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-25cs9y'
+        
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe" cmTC_f095a.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
+        Copyright (C) Microsoft Corporation. All rights reserved.
+        
+        Build started 18/03/2026 21:08:25.
+        Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-25cs9y\\cmTC_f095a.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-25cs9y\\Debug\\".
+          Creating directory "cmTC_f095a.dir\\Debug\\cmTC_f095a.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_f095a.dir\\Debug\\cmTC_f095a.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        ClCompile:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D HAVE_XINPUT_H /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_f095a.dir\\Debug\\\\" /Fd"cmTC_f095a.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-25cs9y\\src.c"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30148 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          src.c
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D HAVE_XINPUT_H /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_f095a.dir\\Debug\\\\" /Fd"cmTC_f095a.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-25cs9y\\src.c"
+        Link:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\link.exe /OUT:"C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-25cs9y\\Debug\\cmTC_f095a.exe" /INCREMENTAL /ILK:"cmTC_f095a.dir\\Debug\\cmTC_f095a.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-25cs9y/Debug/cmTC_f095a.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /IMPLIB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-25cs9y/Debug/cmTC_f095a.lib" /MACHINE:X64  /machine:x64 cmTC_f095a.dir\\Debug\\src.obj
+          cmTC_f095a.vcxproj -> C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-25cs9y\\Debug\\cmTC_f095a.exe
+        FinalizeBuildStatus:
+          Deleting file "cmTC_f095a.dir\\Debug\\cmTC_f095a.tlog\\unsuccessfulbuild".
+          Touching "cmTC_f095a.dir\\Debug\\cmTC_f095a.tlog\\cmTC_f095a.lastbuildstate".
+        Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-25cs9y\\cmTC_f095a.vcxproj" (default targets).
+        
+        Build succeeded.
+            0 Warning(s)
+            0 Error(s)
+        
+        Time Elapsed 00:00:00.60
+        
+      exitCode: 0
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/Internal/CheckSourceCompiles.cmake:104 (try_compile)"
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckCSourceCompiles.cmake:103 (cmake_check_source_compiles)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:1834 (check_c_source_compiles)"
+    checks:
+      - "Performing Test HAVE_WINDOWS_GAMING_INPUT_H"
+    directories:
+      source: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-uo9s9r"
+      binary: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-uo9s9r"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
+      CMAKE_C_FLAGS_DEBUG: "/Zi /Ob0 /Od "
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake"
+    buildResult:
+      variable: "HAVE_WINDOWS_GAMING_INPUT_H"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-uo9s9r'
+        
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe" cmTC_289b2.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
+        Copyright (C) Microsoft Corporation. All rights reserved.
+        
+        Build started 18/03/2026 21:08:26.
+        Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-uo9s9r\\cmTC_289b2.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-uo9s9r\\Debug\\".
+          Creating directory "cmTC_289b2.dir\\Debug\\cmTC_289b2.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_289b2.dir\\Debug\\cmTC_289b2.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        ClCompile:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D HAVE_WINDOWS_GAMING_INPUT_H /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_289b2.dir\\Debug\\\\" /Fd"cmTC_289b2.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-uo9s9r\\src.c"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30148 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          src.c
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D HAVE_WINDOWS_GAMING_INPUT_H /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_289b2.dir\\Debug\\\\" /Fd"cmTC_289b2.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-uo9s9r\\src.c"
+        Link:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\link.exe /OUT:"C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-uo9s9r\\Debug\\cmTC_289b2.exe" /INCREMENTAL /ILK:"cmTC_289b2.dir\\Debug\\cmTC_289b2.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-uo9s9r/Debug/cmTC_289b2.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /IMPLIB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-uo9s9r/Debug/cmTC_289b2.lib" /MACHINE:X64  /machine:x64 cmTC_289b2.dir\\Debug\\src.obj
+          cmTC_289b2.vcxproj -> C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-uo9s9r\\Debug\\cmTC_289b2.exe
+        FinalizeBuildStatus:
+          Deleting file "cmTC_289b2.dir\\Debug\\cmTC_289b2.tlog\\unsuccessfulbuild".
+          Touching "cmTC_289b2.dir\\Debug\\cmTC_289b2.tlog\\cmTC_289b2.lastbuildstate".
+        Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-uo9s9r\\cmTC_289b2.vcxproj" (default targets).
+        
+        Build succeeded.
+            0 Warning(s)
+            0 Error(s)
+        
+        Time Elapsed 00:00:01.09
+        
+      exitCode: 0
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckIncludeFile.cmake:174 (try_compile)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:1842 (check_include_file)"
+    checks:
+      - "Looking for tpcshrd.h"
+    directories:
+      source: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-uuvdlp"
+      binary: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-uuvdlp"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
+      CMAKE_C_FLAGS_DEBUG: "/Zi /Ob0 /Od "
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake"
+    buildResult:
+      variable: "HAVE_TPCSHRD_H"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-uuvdlp'
+        
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe" cmTC_42e96.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
+        Copyright (C) Microsoft Corporation. All rights reserved.
+        
+        Build started 18/03/2026 21:08:28.
+        Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-uuvdlp\\cmTC_42e96.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-uuvdlp\\Debug\\".
+          Creating directory "cmTC_42e96.dir\\Debug\\cmTC_42e96.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_42e96.dir\\Debug\\cmTC_42e96.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        ClCompile:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_42e96.dir\\Debug\\\\" /Fd"cmTC_42e96.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-uuvdlp\\CheckIncludeFile.c"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30148 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          CheckIncludeFile.c
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_42e96.dir\\Debug\\\\" /Fd"cmTC_42e96.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-uuvdlp\\CheckIncludeFile.c"
+        Link:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\link.exe /OUT:"C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-uuvdlp\\Debug\\cmTC_42e96.exe" /INCREMENTAL /ILK:"cmTC_42e96.dir\\Debug\\cmTC_42e96.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-uuvdlp/Debug/cmTC_42e96.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /IMPLIB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-uuvdlp/Debug/cmTC_42e96.lib" /MACHINE:X64  /machine:x64 cmTC_42e96.dir\\Debug\\CheckIncludeFile.obj
+          cmTC_42e96.vcxproj -> C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-uuvdlp\\Debug\\cmTC_42e96.exe
+        FinalizeBuildStatus:
+          Deleting file "cmTC_42e96.dir\\Debug\\cmTC_42e96.tlog\\unsuccessfulbuild".
+          Touching "cmTC_42e96.dir\\Debug\\cmTC_42e96.tlog\\cmTC_42e96.lastbuildstate".
+        Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-uuvdlp\\cmTC_42e96.vcxproj" (default targets).
+        
+        Build succeeded.
+            0 Warning(s)
+            0 Error(s)
+        
+        Time Elapsed 00:00:00.60
+        
+      exitCode: 0
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckIncludeFile.cmake:174 (try_compile)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:1843 (check_include_file)"
+    checks:
+      - "Looking for roapi.h"
+    directories:
+      source: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-ebxnju"
+      binary: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-ebxnju"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
+      CMAKE_C_FLAGS_DEBUG: "/Zi /Ob0 /Od "
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake"
+    buildResult:
+      variable: "HAVE_ROAPI_H"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-ebxnju'
+        
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe" cmTC_46b78.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
+        Copyright (C) Microsoft Corporation. All rights reserved.
+        
+        Build started 18/03/2026 21:08:28.
+        Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-ebxnju\\cmTC_46b78.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-ebxnju\\Debug\\".
+          Creating directory "cmTC_46b78.dir\\Debug\\cmTC_46b78.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_46b78.dir\\Debug\\cmTC_46b78.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        ClCompile:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_46b78.dir\\Debug\\\\" /Fd"cmTC_46b78.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-ebxnju\\CheckIncludeFile.c"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30148 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          CheckIncludeFile.c
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_46b78.dir\\Debug\\\\" /Fd"cmTC_46b78.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-ebxnju\\CheckIncludeFile.c"
+        Link:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\link.exe /OUT:"C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-ebxnju\\Debug\\cmTC_46b78.exe" /INCREMENTAL /ILK:"cmTC_46b78.dir\\Debug\\cmTC_46b78.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-ebxnju/Debug/cmTC_46b78.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /IMPLIB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-ebxnju/Debug/cmTC_46b78.lib" /MACHINE:X64  /machine:x64 cmTC_46b78.dir\\Debug\\CheckIncludeFile.obj
+          cmTC_46b78.vcxproj -> C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-ebxnju\\Debug\\cmTC_46b78.exe
+        FinalizeBuildStatus:
+          Deleting file "cmTC_46b78.dir\\Debug\\cmTC_46b78.tlog\\unsuccessfulbuild".
+          Touching "cmTC_46b78.dir\\Debug\\cmTC_46b78.tlog\\cmTC_46b78.lastbuildstate".
+        Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-ebxnju\\cmTC_46b78.vcxproj" (default targets).
+        
+        Build succeeded.
+            0 Warning(s)
+            0 Error(s)
+        
+        Time Elapsed 00:00:00.60
+        
+      exitCode: 0
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckIncludeFile.cmake:174 (try_compile)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:1844 (check_include_file)"
+    checks:
+      - "Looking for mmdeviceapi.h"
+    directories:
+      source: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-jp9pqo"
+      binary: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-jp9pqo"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
+      CMAKE_C_FLAGS_DEBUG: "/Zi /Ob0 /Od "
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake"
+    buildResult:
+      variable: "HAVE_MMDEVICEAPI_H"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-jp9pqo'
+        
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe" cmTC_ee866.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
+        Copyright (C) Microsoft Corporation. All rights reserved.
+        
+        Build started 18/03/2026 21:08:29.
+        Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-jp9pqo\\cmTC_ee866.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-jp9pqo\\Debug\\".
+          Creating directory "cmTC_ee866.dir\\Debug\\cmTC_ee866.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_ee866.dir\\Debug\\cmTC_ee866.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        ClCompile:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_ee866.dir\\Debug\\\\" /Fd"cmTC_ee866.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-jp9pqo\\CheckIncludeFile.c"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30148 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          CheckIncludeFile.c
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_ee866.dir\\Debug\\\\" /Fd"cmTC_ee866.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-jp9pqo\\CheckIncludeFile.c"
+        Link:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\link.exe /OUT:"C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-jp9pqo\\Debug\\cmTC_ee866.exe" /INCREMENTAL /ILK:"cmTC_ee866.dir\\Debug\\cmTC_ee866.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-jp9pqo/Debug/cmTC_ee866.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /IMPLIB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-jp9pqo/Debug/cmTC_ee866.lib" /MACHINE:X64  /machine:x64 cmTC_ee866.dir\\Debug\\CheckIncludeFile.obj
+          cmTC_ee866.vcxproj -> C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-jp9pqo\\Debug\\cmTC_ee866.exe
+        FinalizeBuildStatus:
+          Deleting file "cmTC_ee866.dir\\Debug\\cmTC_ee866.tlog\\unsuccessfulbuild".
+          Touching "cmTC_ee866.dir\\Debug\\cmTC_ee866.tlog\\cmTC_ee866.lastbuildstate".
+        Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-jp9pqo\\cmTC_ee866.vcxproj" (default targets).
+        
+        Build succeeded.
+            0 Warning(s)
+            0 Error(s)
+        
+        Time Elapsed 00:00:00.60
+        
+      exitCode: 0
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckIncludeFile.cmake:174 (try_compile)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:1845 (check_include_file)"
+    checks:
+      - "Looking for audioclient.h"
+    directories:
+      source: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-baygp6"
+      binary: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-baygp6"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
+      CMAKE_C_FLAGS_DEBUG: "/Zi /Ob0 /Od "
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake"
+    buildResult:
+      variable: "HAVE_AUDIOCLIENT_H"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-baygp6'
+        
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe" cmTC_53472.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
+        Copyright (C) Microsoft Corporation. All rights reserved.
+        
+        Build started 18/03/2026 21:08:30.
+        Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-baygp6\\cmTC_53472.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-baygp6\\Debug\\".
+          Creating directory "cmTC_53472.dir\\Debug\\cmTC_53472.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_53472.dir\\Debug\\cmTC_53472.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        ClCompile:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_53472.dir\\Debug\\\\" /Fd"cmTC_53472.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-baygp6\\CheckIncludeFile.c"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30148 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          CheckIncludeFile.c
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_53472.dir\\Debug\\\\" /Fd"cmTC_53472.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-baygp6\\CheckIncludeFile.c"
+        Link:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\link.exe /OUT:"C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-baygp6\\Debug\\cmTC_53472.exe" /INCREMENTAL /ILK:"cmTC_53472.dir\\Debug\\cmTC_53472.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-baygp6/Debug/cmTC_53472.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /IMPLIB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-baygp6/Debug/cmTC_53472.lib" /MACHINE:X64  /machine:x64 cmTC_53472.dir\\Debug\\CheckIncludeFile.obj
+          cmTC_53472.vcxproj -> C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-baygp6\\Debug\\cmTC_53472.exe
+        FinalizeBuildStatus:
+          Deleting file "cmTC_53472.dir\\Debug\\cmTC_53472.tlog\\unsuccessfulbuild".
+          Touching "cmTC_53472.dir\\Debug\\cmTC_53472.tlog\\cmTC_53472.lastbuildstate".
+        Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-baygp6\\cmTC_53472.vcxproj" (default targets).
+        
+        Build succeeded.
+            0 Warning(s)
+            0 Error(s)
+        
+        Time Elapsed 00:00:00.60
+        
+      exitCode: 0
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckIncludeFile.cmake:174 (try_compile)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:1846 (check_include_file)"
+    checks:
+      - "Looking for sensorsapi.h"
+    directories:
+      source: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-hpo1gp"
+      binary: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-hpo1gp"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
+      CMAKE_C_FLAGS_DEBUG: "/Zi /Ob0 /Od "
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake"
+    buildResult:
+      variable: "HAVE_SENSORSAPI_H"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-hpo1gp'
+        
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe" cmTC_fc97d.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
+        Copyright (C) Microsoft Corporation. All rights reserved.
+        
+        Build started 18/03/2026 21:08:31.
+        Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-hpo1gp\\cmTC_fc97d.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-hpo1gp\\Debug\\".
+          Creating directory "cmTC_fc97d.dir\\Debug\\cmTC_fc97d.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_fc97d.dir\\Debug\\cmTC_fc97d.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        ClCompile:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_fc97d.dir\\Debug\\\\" /Fd"cmTC_fc97d.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-hpo1gp\\CheckIncludeFile.c"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30148 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          CheckIncludeFile.c
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_fc97d.dir\\Debug\\\\" /Fd"cmTC_fc97d.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-hpo1gp\\CheckIncludeFile.c"
+        Link:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\link.exe /OUT:"C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-hpo1gp\\Debug\\cmTC_fc97d.exe" /INCREMENTAL /ILK:"cmTC_fc97d.dir\\Debug\\cmTC_fc97d.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-hpo1gp/Debug/cmTC_fc97d.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /IMPLIB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-hpo1gp/Debug/cmTC_fc97d.lib" /MACHINE:X64  /machine:x64 cmTC_fc97d.dir\\Debug\\CheckIncludeFile.obj
+          cmTC_fc97d.vcxproj -> C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-hpo1gp\\Debug\\cmTC_fc97d.exe
+        FinalizeBuildStatus:
+          Deleting file "cmTC_fc97d.dir\\Debug\\cmTC_fc97d.tlog\\unsuccessfulbuild".
+          Touching "cmTC_fc97d.dir\\Debug\\cmTC_fc97d.tlog\\cmTC_fc97d.lastbuildstate".
+        Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-hpo1gp\\cmTC_fc97d.vcxproj" (default targets).
+        
+        Build succeeded.
+            0 Warning(s)
+            0 Error(s)
+        
+        Time Elapsed 00:00:00.60
+        
+      exitCode: 0
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.3/Modules/CheckIncludeFile.cmake:174 (try_compile)"
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:1847 (check_include_file)"
+    checks:
+      - "Looking for shellscalingapi.h"
+    directories:
+      source: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-0rcexh"
+      binary: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-0rcexh"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
+      CMAKE_C_FLAGS_DEBUG: "/Zi /Ob0 /Od "
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake"
+    buildResult:
+      variable: "HAVE_SHELLSCALINGAPI_H"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-0rcexh'
+        
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/MSBuild/Current/Bin/MSBuild.exe" cmTC_b7b4f.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
+        Copyright (C) Microsoft Corporation. All rights reserved.
+        
+        Build started 18/03/2026 21:08:32.
+        Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-0rcexh\\cmTC_b7b4f.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-0rcexh\\Debug\\".
+          Creating directory "cmTC_b7b4f.dir\\Debug\\cmTC_b7b4f.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_b7b4f.dir\\Debug\\cmTC_b7b4f.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+        ClCompile:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_b7b4f.dir\\Debug\\\\" /Fd"cmTC_b7b4f.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-0rcexh\\CheckIncludeFile.c"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30148 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          CheckIncludeFile.c
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D _GNU_SOURCE=1 /D _MBCS /D "CMAKE_INTDIR=\\"Debug\\"" /MDd /Fo"cmTC_b7b4f.dir\\Debug\\\\" /Fd"cmTC_b7b4f.dir\\Debug\\vc142.pdb" /external:W1 /TC /errorReport:queue "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-0rcexh\\CheckIncludeFile.c"
+        Link:
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\link.exe /OUT:"C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-0rcexh\\Debug\\cmTC_b7b4f.exe" /INCREMENTAL /ILK:"cmTC_b7b4f.dir\\Debug\\cmTC_b7b4f.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-0rcexh/Debug/cmTC_b7b4f.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /IMPLIB:"C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/CMakeFiles/CMakeScratch/TryCompile-0rcexh/Debug/cmTC_b7b4f.lib" /MACHINE:X64  /machine:x64 cmTC_b7b4f.dir\\Debug\\CheckIncludeFile.obj
+          cmTC_b7b4f.vcxproj -> C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-0rcexh\\Debug\\cmTC_b7b4f.exe
+        FinalizeBuildStatus:
+          Deleting file "cmTC_b7b4f.dir\\Debug\\cmTC_b7b4f.tlog\\unsuccessfulbuild".
+          Touching "cmTC_b7b4f.dir\\Debug\\cmTC_b7b4f.tlog\\cmTC_b7b4f.lastbuildstate".
+        Done Building Project "C:\\Users\\david\\Documents\\GitHub\\Universal-Agent-Manager\\build_tests_clean\\CMakeFiles\\CMakeScratch\\TryCompile-0rcexh\\cmTC_b7b4f.vcxproj" (default targets).
+        
+        Build succeeded.
+            0 Warning(s)
+            0 Error(s)
+        
+        Time Elapsed 00:00:00.59
+        
+      exitCode: 0
+  -
+    kind: "find-v1"
+    backtrace:
+      - "build_tests_clean/_deps/sdl2-src/CMakeLists.txt:3250 (find_program)"
+    mode: "program"
+    variable: "CCACHE_BINARY"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "ccache"
+    candidate_directories:
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/"
+      - "C:/Python314/Scripts/"
+      - "C:/Python314/"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/"
+      - "C:/Windows/System32/"
+      - "C:/Windows/"
+      - "C:/Windows/System32/wbem/"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/"
+      - "C:/Windows/System32/OpenSSH/"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/"
+      - "C:/Program Files/dotnet/"
+      - "C:/Program Files/Git/cmd/"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/"
+      - "C:/Program Files/nodejs/"
+      - "C:/ProgramData/chocolatey/bin/"
+      - "C:/Program Files/CMake/bin/"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/"
+      - "C:/Users/david/.dotnet/tools/"
+      - "C:/Users/david/AppData/Roaming/npm/"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/"
+      - "C:/Program Files/bin/"
+      - "C:/Program Files/sbin/"
+      - "C:/Program Files/"
+      - "C:/Program Files (x86)/bin/"
+      - "C:/Program Files (x86)/sbin/"
+      - "C:/Program Files (x86)/"
+      - "C:/Program Files/CMake/bin/"
+      - "C:/Program Files/CMake/sbin/"
+      - "C:/Program Files/CMake/"
+      - "C:/Program Files/universal_agent_manager/bin/"
+      - "C:/Program Files/universal_agent_manager/sbin/"
+      - "C:/Program Files/universal_agent_manager/"
+    searched_directories:
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/ccache.com"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/ccache.exe"
+      - "C:/Users/david/.codex/tmp/arg0/codex-arg0tKMPz3/ccache"
+      - "C:/Python314/Scripts/ccache.com"
+      - "C:/Python314/Scripts/ccache.exe"
+      - "C:/Python314/Scripts/ccache"
+      - "C:/Python314/ccache.com"
+      - "C:/Python314/ccache.exe"
+      - "C:/Python314/ccache"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/ccache.com"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/ccache.exe"
+      - "C:/Program Files/Oculus/Support/oculus-runtime/ccache"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/ccache.com"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/ccache.exe"
+      - "C:/Program Files/Eclipse Foundation/jdk-8.0.302.8-hotspot/bin/ccache"
+      - "C:/Windows/System32/ccache.com"
+      - "C:/Windows/System32/ccache.exe"
+      - "C:/Windows/System32/ccache"
+      - "C:/Windows/ccache.com"
+      - "C:/Windows/ccache.exe"
+      - "C:/Windows/ccache"
+      - "C:/Windows/System32/wbem/ccache.com"
+      - "C:/Windows/System32/wbem/ccache.exe"
+      - "C:/Windows/System32/wbem/ccache"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/ccache.com"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/ccache.exe"
+      - "C:/Windows/System32/WindowsPowerShell/v1.0/ccache"
+      - "C:/Windows/System32/OpenSSH/ccache.com"
+      - "C:/Windows/System32/OpenSSH/ccache.exe"
+      - "C:/Windows/System32/OpenSSH/ccache"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/ccache.com"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/ccache.exe"
+      - "C:/Program Files/Microsoft SQL Server/130/Tools/Binn/ccache"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/ccache.com"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/ccache.exe"
+      - "C:/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/ccache"
+      - "C:/Program Files/dotnet/ccache.com"
+      - "C:/Program Files/dotnet/ccache.exe"
+      - "C:/Program Files/dotnet/ccache"
+      - "C:/Program Files/Git/cmd/ccache.com"
+      - "C:/Program Files/Git/cmd/ccache.exe"
+      - "C:/Program Files/Git/cmd/ccache"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/ccache.com"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/ccache.exe"
+      - "C:/Program Files (x86)/NVIDIA Corporation/PhysX/Common/ccache"
+      - "C:/Program Files/nodejs/ccache.com"
+      - "C:/Program Files/nodejs/ccache.exe"
+      - "C:/Program Files/nodejs/ccache"
+      - "C:/ProgramData/chocolatey/bin/ccache.com"
+      - "C:/ProgramData/chocolatey/bin/ccache.exe"
+      - "C:/ProgramData/chocolatey/bin/ccache"
+      - "C:/Program Files/CMake/bin/ccache.com"
+      - "C:/Program Files/CMake/bin/ccache.exe"
+      - "C:/Program Files/CMake/bin/ccache"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/ccache.com"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/ccache.exe"
+      - "C:/Users/david/AppData/Local/Microsoft/WindowsApps/ccache"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/ccache.com"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/ccache.exe"
+      - "C:/Users/david/AppData/Local/GitHubDesktop/bin/ccache"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/ccache.com"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/ccache.exe"
+      - "C:/Users/david/AppData/Local/Programs/Microsoft VS Code/bin/ccache"
+      - "C:/Users/david/.dotnet/tools/ccache.com"
+      - "C:/Users/david/.dotnet/tools/ccache.exe"
+      - "C:/Users/david/.dotnet/tools/ccache"
+      - "C:/Users/david/AppData/Roaming/npm/ccache.com"
+      - "C:/Users/david/AppData/Roaming/npm/ccache.exe"
+      - "C:/Users/david/AppData/Roaming/npm/ccache"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/ccache.com"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/ccache.exe"
+      - "C:/Users/david/AppData/Local/OpenAI/Codex/bin/ccache"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/ccache.com"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/ccache.exe"
+      - "C:/Program Files/WindowsApps/OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0/app/resources/ccache"
+      - "C:/Program Files/bin/ccache.com"
+      - "C:/Program Files/bin/ccache.exe"
+      - "C:/Program Files/bin/ccache"
+      - "C:/Program Files/sbin/ccache.com"
+      - "C:/Program Files/sbin/ccache.exe"
+      - "C:/Program Files/sbin/ccache"
+      - "C:/Program Files/ccache.com"
+      - "C:/Program Files/ccache.exe"
+      - "C:/Program Files/ccache"
+      - "C:/Program Files (x86)/bin/ccache.com"
+      - "C:/Program Files (x86)/bin/ccache.exe"
+      - "C:/Program Files (x86)/bin/ccache"
+      - "C:/Program Files (x86)/sbin/ccache.com"
+      - "C:/Program Files (x86)/sbin/ccache.exe"
+      - "C:/Program Files (x86)/sbin/ccache"
+      - "C:/Program Files (x86)/ccache.com"
+      - "C:/Program Files (x86)/ccache.exe"
+      - "C:/Program Files (x86)/ccache"
+      - "C:/Program Files/CMake/bin/ccache.com"
+      - "C:/Program Files/CMake/bin/ccache.exe"
+      - "C:/Program Files/CMake/bin/ccache"
+      - "C:/Program Files/CMake/sbin/ccache.com"
+      - "C:/Program Files/CMake/sbin/ccache.exe"
+      - "C:/Program Files/CMake/sbin/ccache"
+      - "C:/Program Files/CMake/ccache.com"
+      - "C:/Program Files/CMake/ccache.exe"
+      - "C:/Program Files/CMake/ccache"
+      - "C:/Program Files/universal_agent_manager/bin/ccache.com"
+      - "C:/Program Files/universal_agent_manager/bin/ccache.exe"
+      - "C:/Program Files/universal_agent_manager/bin/ccache"
+      - "C:/Program Files/universal_agent_manager/sbin/ccache.com"
+      - "C:/Program Files/universal_agent_manager/sbin/ccache.exe"
+      - "C:/Program Files/universal_agent_manager/sbin/ccache"
+      - "C:/Program Files/universal_agent_manager/ccache.com"
+      - "C:/Program Files/universal_agent_manager/ccache.exe"
+      - "C:/Program Files/universal_agent_manager/ccache"
+    found: false
+    search_context:
+      ENV{PATH}:
+        - "C:\\Users\\david\\.codex\\tmp\\arg0\\codex-arg0tKMPz3"
+        - "C:\\Python314\\Scripts\\"
+        - "C:\\Python314\\"
+        - "C:\\Program Files\\Oculus\\Support\\oculus-runtime"
+        - "C:\\Program Files\\Eclipse Foundation\\jdk-8.0.302.8-hotspot\\bin"
+        - "C:\\WINDOWS\\system32"
+        - "C:\\WINDOWS"
+        - "C:\\WINDOWS\\System32\\Wbem"
+        - "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\"
+        - "C:\\WINDOWS\\System32\\OpenSSH\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\130\\Tools\\Binn\\"
+        - "C:\\Program Files\\Microsoft SQL Server\\Client SDK\\ODBC\\170\\Tools\\Binn\\"
+        - "C:\\Program Files\\dotnet\\"
+        - "C:\\Program Files\\Git\\cmd"
+        - "C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common"
+        - "C:\\Program Files\\nodejs\\"
+        - "C:\\ProgramData\\chocolatey\\bin"
+        - "C:\\Program Files\\CMake\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Microsoft\\WindowsApps"
+        - "C:\\Users\\david\\AppData\\Local\\GitHubDesktop\\bin"
+        - "C:\\Users\\david\\AppData\\Local\\Programs\\Microsoft VS Code\\bin"
+        - "C:\\Users\\david\\.dotnet\\tools"
+        - "C:\\Users\\david\\AppData\\Roaming\\npm"
+        - "C:\\Users\\david\\AppData\\Local\\OpenAI\\Codex\\bin"
+        - "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.313.5234.0_x64__2p2nqsd0c76g0\\app\\resources"
+      CMAKE_INSTALL_PREFIX: "C:/Program Files/universal_agent_manager"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "C:/Program Files"
+        - "C:/Program Files (x86)"
+        - "C:/Program Files/CMake"
+        - "C:/Program Files/universal_agent_manager"
+...

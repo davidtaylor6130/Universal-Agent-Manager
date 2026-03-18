@@ -22,8 +22,11 @@ class ProviderRuntime {
                                                        const ChatSession& chat,
                                                        const AppSettings& settings);
 
+  static bool ShouldForceYoloForStructuredMode(const ProviderProfile& profile,
+                                               const AppSettings& settings,
+                                               CenterViewMode view_mode);
+
   static MessageRole RoleFromNativeType(const ProviderProfile& profile, const std::string& native_type);
 
   static bool SupportsGeminiJsonHistory(const ProviderProfile& profile);
 };
-

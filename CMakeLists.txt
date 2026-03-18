@@ -104,6 +104,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/core/app_paths.cpp
   src/core/chat_folder_store.cpp
   src/core/chat_repository.cpp
+  src/core/chat_sync.cpp
   src/core/settings_store.cpp
   src/core/gemini_command_builder.cpp
   src/core/frontend_actions.cpp
@@ -150,6 +151,9 @@ if(UAM_BUILD_TESTS)
     tests/core_tests.cpp
     src/core/app_models.cpp
     src/core/app_paths.cpp
+    src/core/chat_folder_store.cpp
+    src/core/chat_repository.cpp
+    src/core/chat_sync.cpp
     src/core/frontend_actions.cpp
     src/core/gemini_command_builder.cpp
     src/core/provider_profile.cpp

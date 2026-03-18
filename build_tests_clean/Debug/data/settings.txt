@@ -1,0 +1,5 @@
+active_provider_id=gemini
+gemini_command_template=gemini {resume} {flags} {prompt}
+gemini_yolo_mode=0
+gemini_extra_flags=
+center_view_mode=cli

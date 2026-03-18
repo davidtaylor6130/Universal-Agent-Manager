@@ -1,0 +1,91 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="16.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\build_tests_clean\_deps\imgui-src\imgui.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\build_tests_clean\_deps\imgui-src\imgui_draw.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\build_tests_clean\_deps\imgui-src\imgui_tables.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\build_tests_clean\_deps\imgui-src\imgui_widgets.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\build_tests_clean\_deps\imgui-src\misc\cpp\imgui_stdlib.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\build_tests_clean\_deps\imgui-src\backends\imgui_impl_sdl2.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\build_tests_clean\_deps\imgui-src\backends\imgui_impl_opengl3.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\third_party\libvterm\src\encoding.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\third_party\libvterm\src\keyboard.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\third_party\libvterm\src\mouse.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\third_party\libvterm\src\parser.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\third_party\libvterm\src\pen.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\third_party\libvterm\src\screen.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\third_party\libvterm\src\state.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\third_party\libvterm\src\unicode.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\third_party\libvterm\src\vterm.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\src\main.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\src\core\app_models.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\src\core\app_paths.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\src\core\chat_folder_store.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\src\core\chat_repository.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\src\core\chat_sync.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\src\core\settings_store.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\src\core\gemini_command_builder.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\src\core\frontend_actions.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\src\core\provider_profile.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\david\Documents\GitHub\Universal-Agent-Manager\src\core\provider_runtime.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{DD4697AD-9F48-3FAC-8EAB-41E1841F48CE}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

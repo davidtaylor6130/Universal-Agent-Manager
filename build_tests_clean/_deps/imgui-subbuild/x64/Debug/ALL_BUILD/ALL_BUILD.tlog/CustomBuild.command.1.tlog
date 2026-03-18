@@ -1,0 +1,10 @@
+^C:\USERS\DAVID\DOCUMENTS\GITHUB\UNIVERSAL-AGENT-MANAGER\BUILD_TESTS_CLEAN\_DEPS\IMGUI-SUBBUILD\CMAKELISTS.TXT
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/imgui-subbuild -BC:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/imgui-subbuild --check-stamp-file C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/imgui-subbuild/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

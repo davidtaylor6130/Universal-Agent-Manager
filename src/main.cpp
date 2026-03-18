@@ -7,11 +7,14 @@
 #include "core/app_paths.h"
 #include "core/chat_folder_store.h"
 #include "core/chat_repository.h"
+#include "core/chat_sync.h"
 #include "core/frontend_actions.h"
 #include "core/gemini_command_builder.h"
 #include "core/provider_profile.h"
 #include "core/provider_runtime.h"
 #include "core/settings_store.h"
+#include "core/terminal_polling.h"
+#include "core/terminal_typography.h"
 
 #ifndef SDL_MAIN_HANDLED
 #define SDL_MAIN_HANDLED
@@ -42,10 +45,12 @@
 #include <cctype>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <ctime>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -82,6 +87,20 @@ namespace fs = std::filesystem;
 static void ClosePseudoConsoleSafe(HPCON handle);
 #endif
 
+struct CliTerminalIoState {
+#if defined(_WIN32)
+  HANDLE pipe_input = INVALID_HANDLE_VALUE;
+  HANDLE pipe_output = INVALID_HANDLE_VALUE;
+#endif
+  std::mutex mutex;
+  std::deque<std::string> pending_input;
+  std::deque<std::string> pending_output;
+  std::atomic<bool> stop_requested{false};
+  std::atomic<bool> output_closed{false};
+  std::atomic<bool> read_failed{false};
+  std::atomic<bool> write_failed{false};
+};
+
 struct CliTerminalState {
 #if defined(_WIN32)
   HANDLE pipe_input = INVALID_HANDLE_VALUE;
@@ -107,6 +126,10 @@ struct CliTerminalState {
   bool needs_full_refresh = true;
   bool should_launch = false;
   double last_sync_time_s = 0.0;
+  double last_background_poll_time_s = 0.0;
+  double last_text_cache_refresh_s = 0.0;
+  std::vector<std::string> rendered_rows;
+  std::shared_ptr<CliTerminalIoState> io_state;
   std::string last_error;
 };
 
@@ -131,11 +154,14 @@ struct AppState {
   std::string editing_message_text;
   bool open_edit_message_popup = false;
   std::string status_line;
-  CenterViewMode center_view_mode = CenterViewMode::Structured;
+  CenterViewMode center_view_mode = CenterViewMode::CliConsole;
   std::vector<std::unique_ptr<CliTerminalState>> cli_terminals;
 
   std::optional<PendingGeminiCall> pending_call;
   bool scroll_to_bottom = false;
+
+  std::future<std::vector<ChatSession>> deferred_native_history_load;
+  bool deferred_native_history_loading = false;
 };
 
 #if defined(_WIN32)
@@ -147,11 +173,36 @@ static bool StartCliTerminalUnix(AppState& app, CliTerminalState& terminal, cons
 static ImFont* g_font_ui = nullptr;
 static ImFont* g_font_title = nullptr;
 static ImFont* g_font_mono = nullptr;
+static ImFont* g_font_mono_readable = nullptr;
+static ImVector<ImWchar> g_terminal_glyph_ranges;
 
 static constexpr const char* kDefaultFolderId = "folder-default";
 static constexpr const char* kDefaultFolderTitle = "General";
+static constexpr int kMinTerminalRows = 8;
+static constexpr int kMinTerminalCols = 20;
+static constexpr int kMaxTerminalRows = 120;
+static constexpr int kMaxTerminalCols = 240;
+static constexpr double kTerminalTextRefreshIntervalSeconds = 1.0 / 30.0;
 
 static void SortChatsByRecent(std::vector<ChatSession>& chats);
+
+static int ClampTerminalRows(const int rows) {
+  return std::clamp(rows, kMinTerminalRows, kMaxTerminalRows);
+}
+
+static int ClampTerminalCols(const int cols) {
+  return std::clamp(cols, kMinTerminalCols, kMaxTerminalCols);
+}
+
+static bool ShouldRefreshTerminalTextCache(const CliTerminalState& terminal, const double now_s) {
+  if (!terminal.needs_full_refresh) {
+    return false;
+  }
+  if (terminal.rendered_rows.empty() || !terminal.running) {
+    return true;
+  }
+  return (now_s - terminal.last_text_cache_refresh_s) >= kTerminalTextRefreshIntervalSeconds;
+}
 
 static std::string Trim(const std::string& value) {
   const auto start = value.find_first_not_of(" \t\r\n");
@@ -1069,6 +1120,38 @@ static void LoadSettings(AppState& app) {
   SettingsStore::Load(SettingsFilePath(app), app.settings, app.center_view_mode);
 }
 
+static void ToggleYoloMode(AppState& app, const char* trigger_label) {
+  app.settings.gemini_yolo_mode = !app.settings.gemini_yolo_mode;
+  SaveSettings(app);
+  app.status_line = std::string("YOLO mode ") +
+                    (app.settings.gemini_yolo_mode ? "enabled" : "disabled") +
+                    " (" + trigger_label + ").";
+}
+
+static void HandleGlobalHotkeys(AppState& app) {
+  // Structured mode has no approve/disapprove controls, so provide keyboard
+  // toggles for YOLO directly from the center pane.
+  if (app.center_view_mode != CenterViewMode::Structured) {
+    return;
+  }
+
+  ImGuiIO& io = ImGui::GetIO();
+  if (io.WantTextInput || ImGui::IsAnyItemActive()) {
+    return;
+  }
+
+  const bool shift_tab =
+      ImGui::IsKeyPressed(ImGuiKey_Tab, false) && io.KeyShift && !io.KeyCtrl && !io.KeyAlt;
+  const bool ctrl_y =
+      ImGui::IsKeyPressed(ImGuiKey_Y, false) && io.KeyCtrl && !io.KeyAlt;
+
+  if (shift_tab) {
+    ToggleYoloMode(app, "Shift+Tab");
+  } else if (ctrl_y) {
+    ToggleYoloMode(app, "Ctrl+Y");
+  }
+}
+
 static bool SaveChat(const AppState& app, const ChatSession& chat) {
   return ChatRepository::SaveChat(app.data_root, chat);
 }
@@ -1135,40 +1218,7 @@ static void SaveAndUpdateStatus(AppState& app, const ChatSession& chat, const st
 
 static void ApplyLocalOverrides(AppState& app, std::vector<ChatSession>& native_chats) {
   std::vector<ChatSession> local_chats = LoadChats(app);
-  std::unordered_map<std::string, ChatSession> local_map;
-  for (const ChatSession& local : local_chats) {
-    local_map.emplace(local.id, local);
-  }
-
-  std::unordered_set<std::string> native_ids;
-  for (ChatSession& native : native_chats) {
-    native_ids.insert(native.id);
-    const auto it = local_map.find(native.id);
-    if (it == local_map.end()) {
-      continue;
-    }
-    const ChatSession& local = it->second;
-    if (!local.title.empty()) {
-      native.title = local.title;
-    }
-    native.linked_files = local.linked_files;
-    native.folder_id = local.folder_id;
-    native.created_at = local.created_at;
-    native.updated_at = local.updated_at;
-    if (!local.messages.empty()) {
-      native.messages = local.messages;
-    }
-  }
-
-  std::vector<ChatSession> merged = native_chats;
-  for (const ChatSession& chat : local_chats) {
-    if (!chat.uses_native_session && native_ids.find(chat.id) == native_ids.end()) {
-      merged.push_back(chat);
-    }
-  }
-
-  SortChatsByRecent(merged);
-  app.chats = std::move(merged);
+  app.chats = uam::MergeNativeAndLocalChats(std::move(native_chats), local_chats);
   NormalizeChatFolderAssignments(app);
 }
 
@@ -1319,8 +1369,89 @@ static void FreeCliTerminalVTerm(CliTerminalState& terminal) {
   }
 }
 
+#if defined(_WIN32)
+static void StartCliTerminalIoWorker(CliTerminalState& terminal) {
+  auto io_state = std::make_shared<CliTerminalIoState>();
+  io_state->pipe_input = terminal.pipe_input;
+  io_state->pipe_output = terminal.pipe_output;
+  terminal.io_state = io_state;
+
+  std::thread([io_state]() {
+    std::array<char, 8192> buffer{};
+    while (!io_state->stop_requested.load(std::memory_order_acquire)) {
+      bool did_work = false;
+
+      while (!io_state->stop_requested.load(std::memory_order_acquire)) {
+        std::string chunk;
+        {
+          std::lock_guard<std::mutex> lock(io_state->mutex);
+          if (io_state->pending_input.empty()) {
+            break;
+          }
+          chunk = std::move(io_state->pending_input.front());
+          io_state->pending_input.pop_front();
+        }
+        if (chunk.empty()) {
+          continue;
+        }
+
+        DWORD written = 0;
+        if (!WriteFile(io_state->pipe_input, chunk.data(), static_cast<DWORD>(chunk.size()), &written, nullptr) ||
+            written != chunk.size()) {
+          io_state->write_failed.store(true, std::memory_order_release);
+          io_state->stop_requested.store(true, std::memory_order_release);
+          break;
+        }
+        did_work = true;
+      }
+
+      if (io_state->stop_requested.load(std::memory_order_acquire)) {
+        break;
+      }
+
+      DWORD available = 0;
+      if (!PeekNamedPipe(io_state->pipe_output, nullptr, 0, nullptr, &available, nullptr)) {
+        const DWORD err = GetLastError();
+        if (err == ERROR_BROKEN_PIPE || err == ERROR_INVALID_HANDLE) {
+          io_state->output_closed.store(true, std::memory_order_release);
+        } else {
+          io_state->read_failed.store(true, std::memory_order_release);
+        }
+        break;
+      }
+
+      if (available > 0) {
+        const DWORD to_read = static_cast<DWORD>(std::min<std::size_t>(buffer.size(), available));
+        DWORD bytes_read = 0;
+        if (!ReadFile(io_state->pipe_output, buffer.data(), to_read, &bytes_read, nullptr)) {
+          const DWORD err = GetLastError();
+          if (err == ERROR_BROKEN_PIPE || err == ERROR_INVALID_HANDLE) {
+            io_state->output_closed.store(true, std::memory_order_release);
+          } else {
+            io_state->read_failed.store(true, std::memory_order_release);
+          }
+          break;
+        }
+        if (bytes_read > 0) {
+          std::lock_guard<std::mutex> lock(io_state->mutex);
+          io_state->pending_output.emplace_back(buffer.data(), buffer.data() + bytes_read);
+          did_work = true;
+        }
+      }
+
+      if (!did_work) {
+        Sleep(10);
+      }
+    }
+  }).detach();
+}
+#endif
+
 static void CloseCliTerminalHandles(CliTerminalState& terminal) {
 #if defined(_WIN32)
+  if (terminal.io_state != nullptr) {
+    terminal.io_state->stop_requested.store(true, std::memory_order_release);
+  }
   if (terminal.pipe_input != INVALID_HANDLE_VALUE) {
     CloseHandle(terminal.pipe_input);
     terminal.pipe_input = INVALID_HANDLE_VALUE;
@@ -1348,6 +1479,7 @@ static void CloseCliTerminalHandles(CliTerminalState& terminal) {
   }
   terminal.process_info.dwProcessId = 0;
   terminal.process_info.dwThreadId = 0;
+  terminal.io_state.reset();
 #else
   if (terminal.master_fd >= 0) {
     close(terminal.master_fd);
@@ -1362,18 +1494,12 @@ static bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, co
     return true;
   }
 #if defined(_WIN32)
-  if (terminal.pipe_input == INVALID_HANDLE_VALUE) {
+  if (terminal.io_state == nullptr || terminal.io_state->stop_requested.load(std::memory_order_acquire)) {
     return false;
   }
-  size_t offset = 0;
-  while (offset < len) {
-    const size_t remaining = len - offset;
-    const DWORD chunk = static_cast<DWORD>(std::min<size_t>(remaining, static_cast<size_t>(MAXDWORD)));
-    DWORD written = 0;
-    if (!WriteFile(terminal.pipe_input, bytes + offset, chunk, &written, nullptr) || written == 0) {
-      return false;
-    }
-    offset += written;
+  {
+    std::lock_guard<std::mutex> lock(terminal.io_state->mutex);
+    terminal.io_state->pending_input.emplace_back(bytes, bytes + len);
   }
   return true;
 #else
@@ -1465,6 +1591,9 @@ static void StopCliTerminal(CliTerminalState& terminal, const bool clear_identit
   FreeCliTerminalVTerm(terminal);
   terminal.running = false;
   terminal.needs_full_refresh = true;
+  terminal.last_background_poll_time_s = 0.0;
+  terminal.last_text_cache_refresh_s = 0.0;
+  terminal.rendered_rows.clear();
   if (clear_identity) {
     terminal.attached_chat_id.clear();
     terminal.attached_session_id.clear();
@@ -1519,12 +1648,25 @@ static void StopAllCliTerminals(AppState& app, const bool clear_identity = true)
   }
 }
 
+static void StopCliTerminalsExcept(AppState& app, const std::string& chat_id) {
+  for (auto& terminal : app.cli_terminals) {
+    if (terminal == nullptr || terminal->attached_chat_id == chat_id) {
+      continue;
+    }
+    if (terminal->running) {
+      StopCliTerminal(*terminal, false);
+    }
+    terminal->should_launch = false;
+  }
+}
+
 static void MarkSelectedCliTerminalForLaunch(AppState& app) {
   ChatSession* selected = SelectedChat(app);
   if (selected == nullptr) {
     return;
   }
   CliTerminalState& terminal = EnsureCliTerminalForChat(app, *selected);
+  StopCliTerminalsExcept(app, selected->id);
   terminal.should_launch = true;
 }
 
@@ -1570,22 +1712,23 @@ static bool SetFdNonBlocking(const int fd) {
 
 static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, const ChatSession& chat, const int rows, const int cols) {
   StopCliTerminal(terminal);
-  if (ActiveProviderUsesGeminiHistory(app)) {
-    RefreshGeminiChatsDir(app);
-  }
 
-  terminal.rows = std::max(8, rows);
-  terminal.cols = std::max(20, cols);
+  terminal.rows = ClampTerminalRows(rows);
+  terminal.cols = ClampTerminalCols(cols);
   terminal.attached_chat_id = chat.id;
   terminal.attached_session_id = chat.uses_native_session ? chat.native_session_id : "";
   terminal.linked_files_snapshot = chat.linked_files;
   if (ActiveProviderUsesGeminiHistory(app)) {
-    terminal.session_ids_before = SessionIdsFromChats(LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app)));
+    // Reuse the in-memory chat snapshot to avoid a blocking native history scan
+    // on the UI thread during terminal startup.
+    terminal.session_ids_before = SessionIdsFromChats(app.chats);
   } else {
     terminal.session_ids_before.clear();
   }
   terminal.last_error.clear();
   terminal.last_sync_time_s = ImGui::GetTime();
+  terminal.last_text_cache_refresh_s = 0.0;
+  terminal.rendered_rows.clear();
 
   terminal.vt = vterm_new(terminal.rows, terminal.cols);
   if (terminal.vt == nullptr) {
@@ -1597,7 +1740,7 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
   terminal.screen = vterm_obtain_screen(terminal.vt);
   terminal.state = vterm_obtain_state(terminal.vt);
   vterm_screen_set_callbacks(terminal.screen, &kVTermScreenCallbacks, &terminal);
-  vterm_screen_set_damage_merge(terminal.screen, VTERM_DAMAGE_CELL);
+  vterm_screen_set_damage_merge(terminal.screen, VTERM_DAMAGE_SCREEN);
   vterm_output_set_callback(terminal.vt, WriteBytesToPty, &terminal);
   vterm_screen_reset(terminal.screen, 1);
 
@@ -1618,6 +1761,7 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
   terminal.running = true;
   terminal.should_launch = false;
   terminal.needs_full_refresh = true;
+  terminal.last_background_poll_time_s = 0.0;
   return true;
 }
 
@@ -1821,7 +1965,7 @@ static bool StartCliTerminalWindows(AppState& app, CliTerminalState& terminal, c
   const std::string gemini_invocation = BuildWindowsCommandLine(argv_vec);
   const char* comspec_env = std::getenv("ComSpec");
   const std::string comspec = (comspec_env != nullptr && *comspec_env != '\0') ? comspec_env : "C:\\Windows\\System32\\cmd.exe";
-  std::string command_line = QuoteWindowsArg(comspec) + " /d /s /c \"\"" + gemini_invocation + "\"\"";
+  std::string command_line = QuoteWindowsArg(comspec) + " /d /s /c \"\"chcp 65001>nul && " + gemini_invocation + "\"\"";
   std::vector<char> cmd_mutable(command_line.begin(), command_line.end());
   cmd_mutable.push_back(0);
 
@@ -1849,33 +1993,55 @@ static bool StartCliTerminalWindows(AppState& app, CliTerminalState& terminal, c
   terminal.pipe_output = pipe_pty_in;
   terminal.process_info = pi;
   terminal.pseudo_console = pseudo_console;
+  StartCliTerminalIoWorker(terminal);
   return true;
 }
 #endif
 
-static std::string CodepointToUtf8(const uint32_t cp) {
-  std::string out;
-  if (cp <= 0x7F) {
-    out.push_back(static_cast<char>(cp));
-  } else if (cp <= 0x7FF) {
-    out.push_back(static_cast<char>(0xC0 | ((cp >> 6) & 0x1F)));
-    out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-  } else if (cp <= 0xFFFF) {
-    out.push_back(static_cast<char>(0xE0 | ((cp >> 12) & 0x0F)));
-    out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-  } else {
-    out.push_back(static_cast<char>(0xF0 | ((cp >> 18) & 0x07)));
-    out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+static void RefreshCliTerminalTextCache(CliTerminalState& terminal) {
+  if (terminal.screen == nullptr || terminal.rows <= 0 || terminal.cols <= 0) {
+    terminal.needs_full_refresh = false;
+    return;
   }
-  return out;
+
+  const VTermRect rect{0, terminal.rows, 0, terminal.cols};
+  const std::size_t buffer_size =
+      static_cast<std::size_t>(terminal.rows) * (static_cast<std::size_t>(terminal.cols) * 4 + 1) + 1;
+  std::string buffer(buffer_size, '\0');
+  const std::size_t text_len = vterm_screen_get_text(terminal.screen, buffer.data(), buffer.size(), rect);
+
+  terminal.rendered_rows.clear();
+  terminal.rendered_rows.reserve(static_cast<std::size_t>(terminal.rows));
+
+  std::string current_line;
+  current_line.reserve(static_cast<std::size_t>(terminal.cols) * 2);
+  for (std::size_t i = 0; i < text_len; ++i) {
+    const char ch = buffer[i];
+    if (ch == '\n') {
+      while (!current_line.empty() && current_line.back() == ' ') {
+        current_line.pop_back();
+      }
+      terminal.rendered_rows.push_back(std::move(current_line));
+      current_line = std::string{};
+      current_line.reserve(static_cast<std::size_t>(terminal.cols) * 2);
+      continue;
+    }
+    current_line.push_back(ch);
+  }
+  while (!current_line.empty() && current_line.back() == ' ') {
+    current_line.pop_back();
+  }
+  terminal.rendered_rows.push_back(std::move(current_line));
+
+  while (terminal.rendered_rows.size() < static_cast<std::size_t>(terminal.rows)) {
+    terminal.rendered_rows.push_back(std::string{});
+  }
+  terminal.needs_full_refresh = false;
 }
 
 static void ResizeCliTerminal(CliTerminalState& terminal, const int rows, const int cols) {
-  const int safe_rows = std::max(8, rows);
-  const int safe_cols = std::max(20, cols);
+  const int safe_rows = ClampTerminalRows(rows);
+  const int safe_cols = ClampTerminalCols(cols);
   if (terminal.rows == safe_rows && terminal.cols == safe_cols) {
     return;
   }
@@ -1931,32 +2097,54 @@ static std::ptrdiff_t ReadCliTerminalOutput(CliTerminalState& terminal, char* bu
 }
 #endif
 
-static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const bool preserve_selection) {
+static void PollCliTerminal(AppState& app,
+                            CliTerminalState& terminal,
+                            const bool preserve_selection,
+                            const bool background_poll) {
+  // Drain only a bounded amount of output per frame so one busy terminal cannot freeze the UI.
+  uam::TerminalDrainBudget drain_budget = uam::TerminalDrainBudgetForView(background_poll);
+
 #if defined(_WIN32)
   if (!terminal.running || terminal.pipe_output == INVALID_HANDLE_VALUE || terminal.vt == nullptr) {
     return;
   }
-  char buffer[8192];
-  while (true) {
-    const std::ptrdiff_t read_bytes = ReadCliTerminalOutput(terminal, buffer, sizeof(buffer));
-    if (read_bytes > 0) {
-      vterm_input_write(terminal.vt, buffer, static_cast<std::size_t>(read_bytes));
+  if (terminal.io_state != nullptr) {
+    while (drain_budget.CanDrainMore()) {
+      std::string chunk;
+      {
+        std::lock_guard<std::mutex> lock(terminal.io_state->mutex);
+        if (terminal.io_state->pending_output.empty()) {
+          break;
+        }
+        chunk = std::move(terminal.io_state->pending_output.front());
+        terminal.io_state->pending_output.pop_front();
+      }
+      if (chunk.empty()) {
+        continue;
+      }
+      vterm_input_write(terminal.vt, chunk.data(), chunk.size());
       terminal.needs_full_refresh = true;
-      continue;
+      drain_budget.RecordRead(chunk.size());
     }
-    if (read_bytes == 0) {
+
+    if (terminal.io_state->write_failed.load(std::memory_order_acquire)) {
+      StopCliTerminal(terminal);
+      terminal.should_launch = false;
+      app.status_line = "Gemini terminal write failed.";
+      return;
+    }
+    if (terminal.io_state->read_failed.load(std::memory_order_acquire)) {
+      StopCliTerminal(terminal);
+      terminal.should_launch = false;
+      app.status_line = "Gemini terminal read failed.";
+      return;
+    }
+    if (terminal.io_state->output_closed.load(std::memory_order_acquire)) {
       StopCliTerminal(terminal);
       terminal.should_launch = false;
       app.status_line = "Gemini terminal exited.";
-      break;
+      return;
     }
-    if (read_bytes == -2) {
-      break;
-    }
-    StopCliTerminal(terminal);
-    terminal.should_launch = false;
-    app.status_line = "Gemini terminal read failed.";
-    break;
   }
 
   if (terminal.process_info.hProcess != INVALID_HANDLE_VALUE &&
@@ -1971,11 +2159,12 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
   }
 
   char buffer[8192];
-  while (true) {
+  while (drain_budget.CanDrainMore()) {
     const ssize_t read_bytes = read(terminal.master_fd, buffer, sizeof(buffer));
     if (read_bytes > 0) {
       vterm_input_write(terminal.vt, buffer, static_cast<std::size_t>(read_bytes));
       terminal.needs_full_refresh = true;
+      drain_budget.RecordRead(static_cast<std::size_t>(read_bytes));
       continue;
     }
     if (read_bytes == 0) {
@@ -2004,27 +2193,45 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
   }
 #endif
 
+  if (ShouldRefreshTerminalTextCache(terminal, ImGui::GetTime())) {
+    RefreshCliTerminalTextCache(terminal);
+    terminal.last_text_cache_refresh_s = ImGui::GetTime();
+  }
+
   const double now = ImGui::GetTime();
+  if (!uam::ShouldSyncNativeHistoryAfterTerminalPoll(terminal.running)) {
+    return;
+  }
+
   if (now - terminal.last_sync_time_s > 1.25) {
     terminal.last_sync_time_s = now;
     if (ActiveProviderUsesGeminiHistory(app)) {
-      RefreshGeminiChatsDir(app);
-      const std::vector<ChatSession> native_now = LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app));
+      const std::string previous_chat_id = terminal.attached_chat_id;
+      const std::string previous_session_id = terminal.attached_session_id;
+      std::string preferred_id = previous_session_id.empty() ? previous_chat_id : previous_session_id;
+      SyncChatsFromNative(app, preferred_id, preserve_selection);
+
       if (terminal.attached_session_id.empty()) {
-        const std::string discovered = PickNewSessionId(native_now, terminal.session_ids_before);
+        const std::string discovered = PickNewSessionId(app.chats, terminal.session_ids_before);
         if (!discovered.empty()) {
-          const std::string previous_chat_id = terminal.attached_chat_id;
           terminal.attached_session_id = discovered;
           terminal.attached_chat_id = discovered;
+          const int previous_index = FindChatIndexById(app, previous_chat_id);
+          const int native_index = FindChatIndexById(app, discovered);
+          if (previous_index >= 0 && native_index >= 0 && previous_chat_id != discovered) {
+            ChatSession native_chat = app.chats[native_index];
+            if (!ChatRepository::PromoteDraftChatToNative(app.data_root, app.chats[previous_index], native_chat)) {
+              app.status_line = "Gemini session linked, but legacy draft cleanup failed.";
+            }
+          }
           app.chats.erase(std::remove_if(app.chats.begin(), app.chats.end(),
                                          [&](const ChatSession& c) {
                                            return !c.uses_native_session && c.id == previous_chat_id;
                                          }),
                           app.chats.end());
+          SelectChatById(app, discovered);
         }
       }
-      std::string preferred_id = terminal.attached_session_id.empty() ? terminal.attached_chat_id : terminal.attached_session_id;
-      SyncChatsFromNative(app, preferred_id, preserve_selection);
     } else {
       SyncChatsFromNative(app, terminal.attached_chat_id, preserve_selection);
     }
@@ -2039,13 +2246,40 @@ static void RefreshChatHistory(AppState& app) {
 
 static void PollAllCliTerminals(AppState& app) {
   const std::string selected_chat_id = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
+  const bool terminal_view_visible = (app.center_view_mode == CenterViewMode::CliConsole);
+  const double now = ImGui::GetTime();
   for (auto& terminal : app.cli_terminals) {
     if (terminal == nullptr) {
       continue;
     }
+    const bool selected_terminal = !selected_chat_id.empty() && terminal->attached_chat_id == selected_chat_id;
+    const bool background_poll = (!terminal_view_visible || !selected_terminal);
+    if (background_poll) {
+      if (!uam::ShouldPollBackgroundTerminalNow(now,
+                                                terminal->last_background_poll_time_s,
+                                                uam::HiddenTerminalPollIntervalSeconds())) {
+        continue;
+      }
+      terminal->last_background_poll_time_s = now;
+    } else {
+      terminal->last_background_poll_time_s = now;
+    }
     const bool preserve_selection = !selected_chat_id.empty() && terminal->attached_chat_id != selected_chat_id;
-    PollCliTerminal(app, *terminal, preserve_selection);
+    PollCliTerminal(app, *terminal, preserve_selection, background_poll);
   }
+
+  app.cli_terminals.erase(
+      std::remove_if(app.cli_terminals.begin(), app.cli_terminals.end(),
+                     [&](const std::unique_ptr<CliTerminalState>& terminal) {
+                       if (terminal == nullptr) {
+                         return true;
+                       }
+                       if (terminal->running || terminal->should_launch) {
+                         return false;
+                       }
+                       return terminal->attached_chat_id != selected_chat_id;
+                     }),
+      app.cli_terminals.end());
 }
 
 static void StartGeminiRequest(AppState& app) {
@@ -2070,6 +2304,12 @@ static void StartGeminiRequest(AppState& app) {
   SaveAndUpdateStatus(app, *chat, "Prompt queued for provider runtime.", "Saved message locally, but failed to persist chat data.");
 
   const ProviderProfile& provider = ActiveProviderOrDefault(app);
+  AppSettings runtime_settings = app.settings;
+  const bool force_structured_yolo =
+      ProviderRuntime::ShouldForceYoloForStructuredMode(provider, runtime_settings, app.center_view_mode);
+  if (force_structured_yolo) {
+    runtime_settings.gemini_yolo_mode = true;
+  }
   std::vector<ChatSession> native_before;
   if (ActiveProviderUsesGeminiHistory(app)) {
     RefreshGeminiChatsDir(app);
@@ -2078,7 +2318,7 @@ static void StartGeminiRequest(AppState& app) {
   const std::string resume_session_id =
       (ActiveProviderUsesGeminiHistory(app) && chat->uses_native_session) ? chat->native_session_id : "";
   const std::string provider_prompt = BuildProviderPrompt(provider, prompt_text, chat->linked_files);
-  const std::string command = BuildProviderCommand(provider, app.settings, provider_prompt, chat->linked_files, resume_session_id);
+  const std::string command = BuildProviderCommand(provider, runtime_settings, provider_prompt, chat->linked_files, resume_session_id);
   const std::string chat_id = chat->id;
 
   PendingGeminiCall pending;
@@ -2100,6 +2340,9 @@ static void StartGeminiRequest(AppState& app) {
 
   app.composer_text.clear();
   app.scroll_to_bottom = true;
+  if (force_structured_yolo) {
+    app.status_line = "Prompt queued. Structured mode auto-enabled --yolo because approve/disapprove UI is not available.";
+  }
 }
 
 static void ClearEditMessageState(AppState& app) {
@@ -2124,8 +2367,12 @@ static void BeginEditMessage(AppState& app, const ChatSession& chat, const int m
 
 static bool ContinueFromEditedUserMessage(AppState& app, ChatSession& chat) {
   if (app.pending_call.has_value()) {
-    app.status_line = "Cannot edit while Gemini is already running.";
-    return false;
+    if (app.pending_call->chat_id != chat.id) {
+      app.status_line = "Cannot edit this chat while Gemini is running in another chat.";
+      return false;
+    }
+    app.pending_call.reset();
+    app.status_line = "Stopped current run for this chat and continuing from the edited message.";
   }
   if (app.editing_chat_id != chat.id) {
     app.status_line = "Edit target no longer matches selected chat.";
@@ -2149,8 +2396,8 @@ static bool ContinueFromEditedUserMessage(AppState& app, ChatSession& chat) {
 
   if (CliTerminalState* terminal = FindCliTerminalForChat(app, chat.id)) {
     if (terminal->running) {
-      app.status_line = "Stop Gemini terminal for this chat before editing a previous message.";
-      return false;
+      StopCliTerminal(*terminal, false);
+      terminal->should_launch = false;
     }
   }
 
@@ -2223,12 +2470,15 @@ static void PollPendingGeminiCall(AppState& app) {
   if (!selected_id.empty()) {
     SelectChatById(app, selected_id);
     const int selected_index = FindChatIndexById(app, selected_id);
+    bool cleanup_failed = false;
     if (selected_index >= 0 && pending_chat_index >= 0) {
-      app.chats[selected_index].linked_files = pending_chat_snapshot.linked_files;
-      if (!pending_chat_snapshot.folder_id.empty()) {
-        app.chats[selected_index].folder_id = pending_chat_snapshot.folder_id;
+      const bool promoted = ChatRepository::PromoteDraftChatToNative(app.data_root,
+                                                                      pending_chat_snapshot,
+                                                                      app.chats[selected_index]);
+      if (!promoted) {
+        app.status_line = "Provider response synced from native session, but legacy draft cleanup failed.";
+        cleanup_failed = true;
       }
-      SaveChat(app, app.chats[selected_index]);
     }
     if (selected_id != pending_chat_id) {
       app.chats.erase(
@@ -2237,7 +2487,9 @@ static void PollPendingGeminiCall(AppState& app) {
       SelectChatById(app, selected_id);
     }
     app.scroll_to_bottom = true;
-    app.status_line = "Provider response synced from native session.";
+    if (!cleanup_failed) {
+      app.status_line = "Provider response synced from native session.";
+    }
   } else {
     const int fallback_index = FindChatIndexById(app, pending_chat_id);
     if (fallback_index >= 0) {
@@ -2370,10 +2622,14 @@ enum class ButtonKind {
   Accent
 };
 
-static ImFont* TryLoadFont(ImGuiIO& io, const float size, std::initializer_list<const char*> paths) {
+static ImFont* TryLoadFont(ImGuiIO& io,
+                           const float size,
+                           const std::vector<const char*>& paths,
+                           const ImFontConfig* config = nullptr,
+                           const ImWchar* glyph_ranges = nullptr) {
   for (const char* path : paths) {
     if (path != nullptr && fs::exists(path)) {
-      if (ImFont* font = io.Fonts->AddFontFromFileTTF(path, size)) {
+      if (ImFont* font = io.Fonts->AddFontFromFileTTF(path, size, config, glyph_ranges)) {
         return font;
       }
     }
@@ -2381,8 +2637,69 @@ static ImFont* TryLoadFont(ImGuiIO& io, const float size, std::initializer_list<
   return nullptr;
 }
 
+static ImFont* TryLoadFont(ImGuiIO& io,
+                           const float size,
+                           std::initializer_list<const char*> paths,
+                           const ImFontConfig* config = nullptr,
+                           const ImWchar* glyph_ranges = nullptr) {
+  return TryLoadFont(io, size, std::vector<const char*>{paths}, config, glyph_ranges);
+}
+
+static const ImVector<ImWchar>& TerminalGlyphRanges(ImGuiIO& io) {
+  if (!g_terminal_glyph_ranges.empty()) {
+    return g_terminal_glyph_ranges;
+  }
+
+  static const ImWchar kBoxDrawingRanges[] = {0x2500, 0x259F, 0};
+  static const ImWchar kDingbatsRanges[] = {0x2600, 0x26FF, 0};
+  static const ImWchar kMathSymbolsRanges[] = {0x2200, 0x22FF, 0};
+
+  ImFontGlyphRangesBuilder builder;
+  builder.AddRanges(io.Fonts->GetGlyphRangesDefault());
+  builder.AddRanges(io.Fonts->GetGlyphRangesGreek());
+  builder.AddRanges(io.Fonts->GetGlyphRangesCyrillic());
+  builder.AddRanges(io.Fonts->GetGlyphRangesKorean());
+  builder.AddRanges(io.Fonts->GetGlyphRangesJapanese());
+  builder.AddRanges(io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+  builder.AddRanges(io.Fonts->GetGlyphRangesThai());
+  builder.AddRanges(io.Fonts->GetGlyphRangesVietnamese());
+  builder.AddRanges(kBoxDrawingRanges);
+  builder.AddRanges(kDingbatsRanges);
+  builder.AddRanges(kMathSymbolsRanges);
+  builder.BuildRanges(&g_terminal_glyph_ranges);
+  return g_terminal_glyph_ranges;
+}
+
+static bool MergeFontFallbacks(ImGuiIO& io,
+                               ImFont* target_font,
+                               const float size,
+                               const std::vector<const char*>& fallback_paths,
+                               const ImWchar* glyph_ranges) {
+  if (target_font == nullptr) {
+    return false;
+  }
+
+  ImFontConfig config;
+  config.MergeMode = true;
+  config.PixelSnapH = true;
+  config.DstFont = target_font;
+
+  bool merged_any = false;
+  for (const char* path : fallback_paths) {
+    if (path == nullptr || !fs::exists(path)) {
+      continue;
+    }
+    if (io.Fonts->AddFontFromFileTTF(path, size, &config, glyph_ranges) != nullptr) {
+      merged_any = true;
+    }
+  }
+  return merged_any;
+}
+
 static void ConfigureFonts(ImGuiIO& io, const float dpi_scale = 1.0f) {
   const float scale = std::clamp(dpi_scale, 1.0f, 2.25f);
+  const uam::TerminalTypographyConfig& terminal_typography = uam::TerminalTypographyConfigForPlatform();
+  const ImVector<ImWchar>& terminal_ranges = TerminalGlyphRanges(io);
   g_font_ui = TryLoadFont(io, 14.0f * scale, {
       "C:/Windows/Fonts/segoeui.ttf",
       "C:/Windows/Fonts/arial.ttf",
@@ -2401,18 +2718,81 @@ static void ConfigureFonts(ImGuiIO& io, const float dpi_scale = 1.0f) {
       "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
       "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
   });
-  g_font_mono = TryLoadFont(io, 13.5f * scale, {
-      "C:/Windows/Fonts/consola.ttf",
-      "C:/Windows/Fonts/cascadiamono.ttf",
-      "/Library/Fonts/JetBrainsMono-Regular.ttf",
-      "/System/Library/Fonts/Menlo.ttc",
-      "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-      "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf"
-  });
+  g_font_mono = TryLoadFont(io,
+                            terminal_typography.mono_font_size * scale,
+                            terminal_typography.mono_font_candidates,
+                            nullptr,
+                            terminal_ranges.Data);
+  g_font_mono_readable = TryLoadFont(io,
+                                     terminal_typography.mono_font_size * scale,
+                                     terminal_typography.readable_mono_font_candidates,
+                                     nullptr,
+                                     terminal_ranges.Data);
+  if (g_font_mono_readable == nullptr) {
+    g_font_mono_readable = g_font_mono;
+  }
+
+  if (!terminal_typography.fallback_font_candidates.empty()) {
+    MergeFontFallbacks(io,
+                       g_font_mono,
+                       terminal_typography.mono_font_size * scale,
+                       terminal_typography.fallback_font_candidates,
+                       terminal_ranges.Data);
+    if (g_font_mono_readable != g_font_mono) {
+      MergeFontFallbacks(io,
+                         g_font_mono_readable,
+                         terminal_typography.mono_font_size * scale,
+                         terminal_typography.fallback_font_candidates,
+                         terminal_ranges.Data);
+    }
+  }
 
   if (g_font_ui != nullptr) {
     io.FontDefault = g_font_ui;
   }
+}
+
+static void BeginDeferredNativeHistoryLoad(AppState& app) {
+  if (!ActiveProviderUsesGeminiHistory(app) || app.gemini_chats_dir.empty() || app.deferred_native_history_loading) {
+    return;
+  }
+
+  const ProviderProfile provider = ActiveProviderOrDefault(app);
+  const fs::path chats_dir = app.gemini_chats_dir;
+  app.deferred_native_history_load =
+      std::async(std::launch::async, [chats_dir, provider]() { return LoadNativeGeminiChats(chats_dir, provider); });
+  app.deferred_native_history_loading = true;
+}
+
+static void PollDeferredNativeHistoryLoad(AppState& app) {
+  if (!app.deferred_native_history_loading) {
+    return;
+  }
+  if (!app.deferred_native_history_load.valid()) {
+    app.deferred_native_history_loading = false;
+    return;
+  }
+
+  if (app.deferred_native_history_load.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+    return;
+  }
+
+  const std::string selected_before = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
+  try {
+    std::vector<ChatSession> native = app.deferred_native_history_load.get();
+    ApplyLocalOverrides(app, native);
+    if (!selected_before.empty() && FindChatIndexById(app, selected_before) >= 0) {
+      SelectChatById(app, selected_before);
+    } else if (app.selected_chat_index < 0 && !app.chats.empty()) {
+      app.selected_chat_index = 0;
+    }
+    if (app.status_line.empty() || app.status_line.find("not found yet") != std::string::npos) {
+      app.status_line = "Chat history loaded.";
+    }
+  } catch (...) {
+    app.status_line = "Failed to load native Gemini history in background.";
+  }
+  app.deferred_native_history_loading = false;
 }
 
 static float DetectUiScale(SDL_Window* window) {
@@ -2433,13 +2813,13 @@ static float DetectUiScale(SDL_Window* window) {
   return 1.0f;
 }
 
-static void PushFontIfAvailable(ImFont* font) {
+static void PushFontIfAvailable(const ImFont* font) {
   if (font != nullptr) {
-    ImGui::PushFont(font);
+    ImGui::PushFont(const_cast<ImFont*>(font));
   }
 }
 
-static void PopFontIfAvailable(ImFont* font) {
+static void PopFontIfAvailable(const ImFont* font) {
   if (font != nullptr) {
     ImGui::PopFont();
   }
@@ -2950,6 +3330,9 @@ static void DrawCenterModeToggle(AppState& app) {
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 6.0f));
   const bool structured_active = (app.center_view_mode == CenterViewMode::Structured);
   if (DrawButton("Structured", ImVec2(104.0f, 30.0f), structured_active ? ButtonKind::Primary : ButtonKind::Ghost)) {
+    if (!structured_active) {
+      StopAllCliTerminals(app, false);
+    }
     app.center_view_mode = CenterViewMode::Structured;
     SaveSettings(app);
   }
@@ -3093,23 +3476,18 @@ static void FeedCliTerminalKeyboard(CliTerminalState& terminal) {
   }
 }
 
-static ImU32 VTermColorToImU32(const VTermScreen* screen, VTermColor color, const bool background) {
-  if ((background && VTERM_COLOR_IS_DEFAULT_BG(&color)) || (!background && VTERM_COLOR_IS_DEFAULT_FG(&color))) {
-    const ImVec4 fallback = background ? ui::kInputSurface : ui::kTextPrimary;
-    return ImGui::GetColorU32(fallback);
-  }
-  vterm_screen_convert_color_to_rgb(screen, &color);
-  return IM_COL32(color.rgb.red, color.rgb.green, color.rgb.blue, 255);
-}
-
 static void DrawCliTerminalSurface(AppState& app, ChatSession& chat) {
   CliTerminalState& terminal = EnsureCliTerminalForChat(app, chat);
+  const ImFont* terminal_font = (g_font_mono_readable != nullptr) ? g_font_mono_readable : g_font_mono;
+  const float terminal_cell_width_scale = uam::TerminalCellWidthScale();
   if (!terminal.running && terminal.should_launch) {
-    const float mono_h = (g_font_mono != nullptr ? g_font_mono->FontSize : ImGui::GetTextLineHeight());
-    const float mono_w = std::max(7.0f, ImGui::CalcTextSize("W").x);
+    PushFontIfAvailable(terminal_font);
+    const float mono_h = (terminal_font != nullptr ? terminal_font->FontSize : ImGui::GetTextLineHeight());
+    const float mono_w = std::max(7.0f, ImGui::CalcTextSize("W").x * terminal_cell_width_scale);
+    PopFontIfAvailable(terminal_font);
     const ImVec2 avail = ImGui::GetContentRegionAvail();
-    const int rows = std::max(8, static_cast<int>(avail.y / mono_h) - 1);
-    const int cols = std::max(20, static_cast<int>(avail.x / mono_w) - 1);
+    const int rows = ClampTerminalRows(static_cast<int>(avail.y / mono_h) - 1);
+    const int cols = ClampTerminalCols(static_cast<int>(avail.x / mono_w) - 1);
     if (!StartCliTerminalForChat(app, terminal, chat, rows, cols)) {
       ImGui::TextColored(ui::kError, "Failed to start Gemini terminal.");
       if (!terminal.last_error.empty()) {
@@ -3129,12 +3507,12 @@ static void DrawCliTerminalSurface(AppState& app, ChatSession& chat) {
     return;
   }
 
-  PushFontIfAvailable(g_font_mono);
-  const float cell_h = (g_font_mono != nullptr) ? g_font_mono->FontSize + 1.0f : ImGui::GetTextLineHeight();
-  const float cell_w = std::max(7.0f, ImGui::CalcTextSize("W").x);
+  PushFontIfAvailable(terminal_font);
+  const float cell_h = (terminal_font != nullptr) ? terminal_font->FontSize + 1.0f : ImGui::GetTextLineHeight();
+  const float cell_w = std::max(7.0f, ImGui::CalcTextSize("W").x * terminal_cell_width_scale);
   const ImVec2 avail = ImGui::GetContentRegionAvail();
-  const int rows = std::max(8, static_cast<int>(avail.y / cell_h));
-  const int cols = std::max(20, static_cast<int>(avail.x / cell_w));
+  const int rows = ClampTerminalRows(static_cast<int>(avail.y / cell_h));
+  const int cols = ClampTerminalCols(static_cast<int>(avail.x / cell_w));
   ResizeCliTerminal(terminal, rows, cols);
 
   const ImVec2 origin = ImGui::GetCursorScreenPos();
@@ -3151,46 +3529,37 @@ static void DrawCliTerminalSurface(AppState& app, ChatSession& chat) {
   draw->AddRectFilled(origin, ImVec2(origin.x + terminal_size.x, origin.y + terminal_size.y), ImGui::GetColorU32(ui::kInputSurface), 10.0f);
   draw->AddRect(origin, ImVec2(origin.x + terminal_size.x, origin.y + terminal_size.y), ImGui::GetColorU32(ui::kBorder), 10.0f);
 
-  if (terminal.screen != nullptr) {
-    for (int row = 0; row < terminal.rows; ++row) {
-      for (int col = 0; col < terminal.cols; ++col) {
-        VTermPos pos{row, col};
-        VTermScreenCell cell{};
-        if (!vterm_screen_get_cell(terminal.screen, pos, &cell)) {
-          continue;
-        }
+  const double now = ImGui::GetTime();
+  if (ShouldRefreshTerminalTextCache(terminal, now)) {
+    RefreshCliTerminalTextCache(terminal);
+    terminal.last_text_cache_refresh_s = now;
+  }
 
-        const ImVec2 cell_min(origin.x + col * cell_w, origin.y + row * cell_h);
-        const ImVec2 cell_max(cell_min.x + cell_w * std::max<int>(1, cell.width), cell_min.y + cell_h);
-
-        const ImU32 bg = VTermColorToImU32(terminal.screen, cell.bg, true);
-        draw->AddRectFilled(cell_min, cell_max, bg);
-
-        if (cell.chars[0] == 0 || cell.width == 0) {
-          continue;
-        }
-
-        std::string glyph;
-        for (int i = 0; i < VTERM_MAX_CHARS_PER_CELL && cell.chars[i] != 0; ++i) {
-          glyph += CodepointToUtf8(cell.chars[i]);
-        }
-        const ImU32 fg = VTermColorToImU32(terminal.screen, cell.fg, false);
-        draw->AddText(ImVec2(cell_min.x, cell_min.y), fg, glyph.c_str());
+  if (!terminal.rendered_rows.empty()) {
+    draw->PushClipRect(origin, ImVec2(origin.x + terminal_size.x, origin.y + terminal_size.y), true);
+    const ImU32 text_color = ImGui::GetColorU32(ui::kTextPrimary);
+    const int cached_rows = std::min<int>(terminal.rows, static_cast<int>(terminal.rendered_rows.size()));
+    for (int row = 0; row < cached_rows; ++row) {
+      const std::string& line = terminal.rendered_rows[static_cast<std::size_t>(row)];
+      if (line.empty()) {
+        continue;
       }
+      draw->AddText(ImVec2(origin.x, origin.y + row * cell_h), text_color, line.c_str());
     }
+    draw->PopClipRect();
+  }
 
-    if (terminal.state != nullptr) {
-      VTermPos cursor{0, 0};
-      vterm_state_get_cursorpos(terminal.state, &cursor);
-      if (cursor.row >= 0 && cursor.row < terminal.rows && cursor.col >= 0 && cursor.col < terminal.cols) {
-        const ImVec2 cursor_min(origin.x + cursor.col * cell_w, origin.y + cursor.row * cell_h);
-        const ImVec2 cursor_max(cursor_min.x + cell_w, cursor_min.y + cell_h);
-        draw->AddRect(cursor_min, cursor_max, ImGui::GetColorU32(ui::kAccent), 0.0f, 0, 1.2f);
-      }
+  if (terminal.state != nullptr) {
+    VTermPos cursor{0, 0};
+    vterm_state_get_cursorpos(terminal.state, &cursor);
+    if (cursor.row >= 0 && cursor.row < terminal.rows && cursor.col >= 0 && cursor.col < terminal.cols) {
+      const ImVec2 cursor_min(origin.x + cursor.col * cell_w, origin.y + cursor.row * cell_h);
+      const ImVec2 cursor_max(cursor_min.x + cell_w, cursor_min.y + cell_h);
+      draw->AddRect(cursor_min, cursor_max, ImGui::GetColorU32(ui::kAccent), 0.0f, 0, 1.2f);
     }
   }
 
-  PopFontIfAvailable(g_font_mono);
+  PopFontIfAvailable(terminal_font);
   ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
   ImGui::TextColored(ui::kTextMuted, "Native Gemini terminal for this chat (Ctrl+Y and other shortcuts pass through).");
 }
@@ -3232,7 +3601,7 @@ static void DrawInputContainer(AppState& app) {
   EndPanel();
 }
 
-static void DrawStructuredProcessingIndicator(const AppState& app, const ChatSession& chat) {
+static void DrawStructuredProcessingIndicator(AppState& app, const ChatSession& chat) {
   if (!app.pending_call.has_value() || app.pending_call->chat_id != chat.id) {
     return;
   }
@@ -3261,7 +3630,11 @@ static void DrawStructuredProcessingIndicator(const AppState& app, const ChatSes
   if (seg_max.x > seg_min.x) {
     draw->AddRectFilled(seg_min, seg_max, ImGui::GetColorU32(ui::kAccent), 6.0f);
   }
-  ImGui::Dummy(ImVec2(0.0f, bar_h + 2.0f));
+  ImGui::Dummy(ImVec2(0.0f, bar_h + 6.0f));
+  if (DrawButton("Stop Run", ImVec2(108.0f, 30.0f), ButtonKind::Ghost)) {
+    app.pending_call.reset();
+    app.status_line = "Stopped current structured run.";
+  }
   EndPanel();
 }
 
@@ -3344,6 +3717,12 @@ static void DrawChatDetailPane(AppState& app, ChatSession& chat) {
     }
 
     DrawStructuredProcessingIndicator(app, chat);
+    if (!app.settings.gemini_yolo_mode &&
+        ProviderRuntime::SupportsGeminiJsonHistory(ActiveProviderOrDefault(app))) {
+      ImGui::TextColored(ui::kWarning,
+                         "Structured mode auto-enables --yolo. Use Terminal mode for approve/disapprove prompts.");
+      ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
+    }
     DrawInputContainer(app);
   } else {
     BeginPanel("cli_terminal_panel", ImVec2(0.0f, 0.0f), PanelTone::Secondary, true, 0, ImVec2(12.0f, 12.0f));
@@ -3514,7 +3893,7 @@ static void DrawSessionSidePane(AppState& app, ChatSession& chat) {
       ImGui::EndCombo();
     }
 
-    ImGui::Checkbox("YOLO mode (Ctrl+Y)", &app.settings.gemini_yolo_mode);
+    ImGui::Checkbox("YOLO mode (Ctrl+Y / Shift+Tab)", &app.settings.gemini_yolo_mode);
     PushInputChrome();
     ImGui::InputText("Extra Flags", &app.settings.gemini_extra_flags);
     PopInputChrome();
@@ -3621,11 +4000,13 @@ int main(int, char**) {
   SaveFolders(app);
   if (ActiveProviderUsesGeminiHistory(app)) {
     RefreshGeminiChatsDir(app);
-    app.chats = LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app));
-    ApplyLocalOverrides(app, app.chats);
+    app.chats = LoadChats(app);
     NormalizeChatFolderAssignments(app);
+    BeginDeferredNativeHistoryLoad(app);
     if (app.gemini_chats_dir.empty()) {
       app.status_line = "Gemini native session directory not found yet. Run Gemini CLI in this project once.";
+    } else if (app.deferred_native_history_loading) {
+      app.status_line = "Loading native Gemini history in background...";
     }
   } else {
     app.chats = LoadChats(app);
@@ -3634,9 +4015,8 @@ int main(int, char**) {
   if (!app.chats.empty()) {
     app.selected_chat_index = 0;
   }
-  if (app.center_view_mode == CenterViewMode::CliConsole) {
-    MarkSelectedCliTerminalForLaunch(app);
-  }
+  // Avoid auto-starting terminals on startup; this keeps launch responsive even
+  // in large Gemini histories and lets the user opt in per chat.
 
 #if defined(_WIN32)
   SetProcessDPIAware();
@@ -3717,11 +4097,13 @@ int main(int, char**) {
     }
 
     PollPendingGeminiCall(app);
+    PollDeferredNativeHistoryLoad(app);
     PollAllCliTerminals(app);
 
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
+    HandleGlobalHotkeys(app);
 
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     DrawAmbientBackdrop(viewport->Pos, viewport->Size, static_cast<float>(ImGui::GetTime()));

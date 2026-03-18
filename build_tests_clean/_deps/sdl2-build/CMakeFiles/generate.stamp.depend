@@ -1,0 +1,38 @@
+# CMake generation dependency list for this directory.
+C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeCheckCompilerFlagCommonPatterns.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeDependentOption.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/CMakeParseArguments.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/CMakePushCheckState.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/CheckCCompilerFlag.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/CheckCSourceCompiles.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/CheckCSourceRuns.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/CheckCXXCompilerFlag.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/CheckCXXSourceCompiles.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/CheckIncludeFile.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/CheckIncludeFiles.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/CheckLanguage.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/CheckLibraryExists.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/CheckSourceCompiles.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/CheckStructHasMember.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/CheckSymbolExists.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/FindGit.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/FindPackageHandleStandardArgs.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/FindPackageMessage.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/FindPkgConfig.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/GNUInstallDirs.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/Internal/CheckCompilerFlag.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/Internal/CheckFlagCommonConfig.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/Internal/CheckSourceCompiles.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/Internal/CheckSourceRuns.cmake
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-build/SDL_config.h.intermediate
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/CMakeLists.txt
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/SDL2.spec.in
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake/CheckCPUArchitecture.cmake
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake/macros.cmake
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake/sdlchecks.cmake
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake/sdlfind.cmake
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/cmake/sdlplatform.cmake
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/include/SDL_config.h.cmake
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/include/SDL_revision.h.cmake
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/sdl2-config.in
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests_clean/_deps/sdl2-src/sdl2.pc.in

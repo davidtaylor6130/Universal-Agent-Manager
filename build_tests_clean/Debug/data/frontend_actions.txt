@@ -1,0 +1,33 @@
+# Universal frontend action map
+version = 1
+
+[action create_chat]
+label = Create Chat
+group = chat
+visible = true
+order = 10
+
+[action delete_chat]
+label = Delete Chat
+group = chat
+visible = true
+order = 20
+
+[action send_prompt]
+label = Send Prompt
+group = composer
+visible = true
+order = 30
+
+[action edit_resubmit]
+label = Edit and Resubmit
+group = conversation
+visible = true
+order = 40
+
+[action refresh_history]
+label = Refresh History
+group = history
+visible = true
+order = 50
+

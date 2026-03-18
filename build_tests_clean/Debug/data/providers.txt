@@ -1,0 +1,12 @@
+[provider]
+id=gemini
+title=Gemini CLI
+command_template=gemini {resume} {flags} {prompt}
+interactive_command=gemini
+supports_resume=1
+runtime_flags=
+resume_argument=--resume
+history_adapter=gemini-cli-json
+user_types=user
+assistant_types=assistant,model,gemini
+

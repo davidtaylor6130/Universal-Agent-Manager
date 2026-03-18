@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <system_error>
 
 namespace {
 namespace fs = std::filesystem;
@@ -19,6 +20,16 @@ bool WriteTextFile(const fs::path& path, const std::string& content) {
   }
   out << content;
   return out.good();
+}
+
+bool DeleteChatTree(const fs::path& data_root, const std::string& chat_id) {
+  if (chat_id.empty()) {
+    return false;
+  }
+
+  std::error_code ec;
+  fs::remove_all(AppPaths::ChatPath(data_root, chat_id), ec);
+  return !ec;
 }
 
 std::string ReadTextFile(const fs::path& path) {
@@ -65,6 +76,12 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 
   std::ostringstream meta;
   meta << "id=" << chat.id << '\n';
+  if (chat.uses_native_session) {
+    meta << "uses_native_session=1\n";
+  }
+  if (!chat.native_session_id.empty()) {
+    meta << "native_session_id=" << chat.native_session_id << '\n';
+  }
   meta << "folder=" << chat.folder_id << '\n';
   meta << "title=" << chat.title << '\n';
   meta << "created_at=" << chat.created_at << '\n';
@@ -94,6 +111,44 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
     if (!WriteTextFile(messages_dir / filename.str(), chat.messages[i].content)) {
       return false;
     }
+  }
+
+  return true;
+}
+
+bool ChatRepository::PromoteDraftChatToNative(const std::filesystem::path& data_root,
+                                              const ChatSession& draft_chat,
+                                              ChatSession& native_chat) {
+  if (native_chat.id.empty()) {
+    return false;
+  }
+
+  native_chat.uses_native_session = true;
+  if (native_chat.native_session_id.empty()) {
+    native_chat.native_session_id = native_chat.id;
+  }
+
+  ChatSession hidden_draft = draft_chat;
+  hidden_draft.uses_native_session = true;
+  hidden_draft.native_session_id = native_chat.native_session_id;
+  if (!SaveChat(data_root, hidden_draft)) {
+    return false;
+  }
+
+  if (!draft_chat.title.empty()) {
+    native_chat.title = draft_chat.title;
+  }
+  if (!draft_chat.folder_id.empty()) {
+    native_chat.folder_id = draft_chat.folder_id;
+  }
+  native_chat.linked_files = draft_chat.linked_files;
+
+  if (!SaveChat(data_root, native_chat)) {
+    return false;
+  }
+
+  if (draft_chat.id != native_chat.id) {
+    DeleteChatTree(data_root, draft_chat.id);
   }
 
   return true;
@@ -129,6 +184,10 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
         const std::string value = line.substr(equals_at + 1);
         if (key == "id") {
           chat.id = value;
+        } else if (key == "uses_native_session") {
+          chat.uses_native_session = (value == "1" || value == "true" || value == "on");
+        } else if (key == "native_session_id") {
+          chat.native_session_id = value;
         } else if (key == "folder") {
           chat.folder_id = value;
         } else if (key == "title") {
@@ -141,6 +200,9 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
           chat.linked_files.push_back(value);
         }
       }
+    }
+    if (!chat.native_session_id.empty()) {
+      chat.uses_native_session = true;
     }
     if (chat.created_at.empty()) {
       chat.created_at = chat.updated_at.empty() ? TimestampNow() : chat.updated_at;

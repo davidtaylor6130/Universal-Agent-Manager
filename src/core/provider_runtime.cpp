@@ -149,6 +149,14 @@ std::vector<std::string> ProviderRuntime::BuildInteractiveArgv(const ProviderPro
   return argv;
 }
 
+bool ProviderRuntime::ShouldForceYoloForStructuredMode(const ProviderProfile& profile,
+                                                       const AppSettings& settings,
+                                                       const CenterViewMode view_mode) {
+  return view_mode == CenterViewMode::Structured &&
+         SupportsGeminiJsonHistory(profile) &&
+         !settings.gemini_yolo_mode;
+}
+
 MessageRole ProviderRuntime::RoleFromNativeType(const ProviderProfile& profile, const std::string& native_type) {
   if (AnyTypeMatches(profile.user_message_types, native_type)) {
     return MessageRole::User;
