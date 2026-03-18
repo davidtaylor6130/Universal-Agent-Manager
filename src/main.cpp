@@ -56,6 +56,7 @@
 #include <future>
 #include <iomanip>
 #include <initializer_list>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <random>
@@ -85,20 +86,30 @@ namespace fs = std::filesystem;
 
 #if defined(_WIN32)
 static void ClosePseudoConsoleSafe(HPCON handle);
+static void ResizePseudoConsoleSafe(HPCON handle, COORD size);
 #endif
 
 struct CliTerminalIoState {
 #if defined(_WIN32)
+  static constexpr std::size_t kMaxBufferedInputBytes = 64 * 1024;
+  static constexpr std::size_t kMaxBufferedOutputBytes = 16 * 1024 * 1024;
+
   HANDLE pipe_input = INVALID_HANDLE_VALUE;
   HANDLE pipe_output = INVALID_HANDLE_VALUE;
+  HPCON pseudo_console = nullptr;
 #endif
   std::mutex mutex;
   std::deque<std::string> pending_input;
   std::deque<std::string> pending_output;
+  std::size_t pending_input_bytes = 0;
+  std::size_t pending_output_bytes = 0;
   std::atomic<bool> stop_requested{false};
   std::atomic<bool> output_closed{false};
   std::atomic<bool> read_failed{false};
   std::atomic<bool> write_failed{false};
+  std::atomic<bool> resize_requested{false};
+  std::atomic<int> requested_rows{0};
+  std::atomic<int> requested_cols{0};
 };
 
 struct CliTerminalState {
@@ -1374,12 +1385,23 @@ static void StartCliTerminalIoWorker(CliTerminalState& terminal) {
   auto io_state = std::make_shared<CliTerminalIoState>();
   io_state->pipe_input = terminal.pipe_input;
   io_state->pipe_output = terminal.pipe_output;
+  io_state->pseudo_console = terminal.pseudo_console;
   terminal.io_state = io_state;
 
   std::thread([io_state]() {
     std::array<char, 8192> buffer{};
     while (!io_state->stop_requested.load(std::memory_order_acquire)) {
       bool did_work = false;
+
+      if (io_state->resize_requested.exchange(false, std::memory_order_acq_rel) && io_state->pseudo_console != nullptr) {
+        const int rows = io_state->requested_rows.load(std::memory_order_acquire);
+        const int cols = io_state->requested_cols.load(std::memory_order_acquire);
+        if (rows > 0 && cols > 0) {
+          const COORD size{static_cast<SHORT>(cols), static_cast<SHORT>(rows)};
+          ResizePseudoConsoleSafe(io_state->pseudo_console, size);
+          did_work = true;
+        }
+      }
 
       while (!io_state->stop_requested.load(std::memory_order_acquire)) {
         std::string chunk;
@@ -1390,14 +1412,24 @@ static void StartCliTerminalIoWorker(CliTerminalState& terminal) {
           }
           chunk = std::move(io_state->pending_input.front());
           io_state->pending_input.pop_front();
+          io_state->pending_input_bytes -= std::min(io_state->pending_input_bytes, chunk.size());
         }
         if (chunk.empty()) {
           continue;
         }
 
-        DWORD written = 0;
-        if (!WriteFile(io_state->pipe_input, chunk.data(), static_cast<DWORD>(chunk.size()), &written, nullptr) ||
-            written != chunk.size()) {
+        std::size_t offset = 0;
+        bool write_ok = true;
+        while (offset < chunk.size()) {
+          const DWORD remaining = static_cast<DWORD>(std::min<std::size_t>(chunk.size() - offset, static_cast<std::size_t>(std::numeric_limits<DWORD>::max())));
+          DWORD written = 0;
+          if (!WriteFile(io_state->pipe_input, chunk.data() + offset, remaining, &written, nullptr) || written == 0) {
+            write_ok = false;
+            break;
+          }
+          offset += written;
+        }
+        if (!write_ok) {
           io_state->write_failed.store(true, std::memory_order_release);
           io_state->stop_requested.store(true, std::memory_order_release);
           break;
@@ -1407,6 +1439,16 @@ static void StartCliTerminalIoWorker(CliTerminalState& terminal) {
 
       if (io_state->stop_requested.load(std::memory_order_acquire)) {
         break;
+      }
+
+      std::size_t output_room = 0;
+      {
+        std::lock_guard<std::mutex> lock(io_state->mutex);
+        output_room = CliTerminalIoState::kMaxBufferedOutputBytes - std::min(io_state->pending_output_bytes, CliTerminalIoState::kMaxBufferedOutputBytes);
+      }
+      if (output_room == 0) {
+        Sleep(10);
+        continue;
       }
 
       DWORD available = 0;
@@ -1421,7 +1463,7 @@ static void StartCliTerminalIoWorker(CliTerminalState& terminal) {
       }
 
       if (available > 0) {
-        const DWORD to_read = static_cast<DWORD>(std::min<std::size_t>(buffer.size(), available));
+        const DWORD to_read = static_cast<DWORD>(std::min<std::size_t>({buffer.size(), static_cast<std::size_t>(available), output_room}));
         DWORD bytes_read = 0;
         if (!ReadFile(io_state->pipe_output, buffer.data(), to_read, &bytes_read, nullptr)) {
           const DWORD err = GetLastError();
@@ -1434,14 +1476,22 @@ static void StartCliTerminalIoWorker(CliTerminalState& terminal) {
         }
         if (bytes_read > 0) {
           std::lock_guard<std::mutex> lock(io_state->mutex);
-          io_state->pending_output.emplace_back(buffer.data(), buffer.data() + bytes_read);
-          did_work = true;
+          if (io_state->pending_output_bytes < CliTerminalIoState::kMaxBufferedOutputBytes) {
+            io_state->pending_output.emplace_back(buffer.data(), buffer.data() + bytes_read);
+            io_state->pending_output_bytes += bytes_read;
+            did_work = true;
+          }
         }
       }
 
       if (!did_work) {
         Sleep(10);
       }
+    }
+
+    if (io_state->pseudo_console != nullptr) {
+      ClosePseudoConsoleSafe(io_state->pseudo_console);
+      io_state->pseudo_console = nullptr;
     }
   }).detach();
 }
@@ -1460,10 +1510,10 @@ static void CloseCliTerminalHandles(CliTerminalState& terminal) {
     CloseHandle(terminal.pipe_output);
     terminal.pipe_output = INVALID_HANDLE_VALUE;
   }
-  if (terminal.pseudo_console != nullptr) {
+  if (terminal.io_state == nullptr && terminal.pseudo_console != nullptr) {
     ClosePseudoConsoleSafe(terminal.pseudo_console);
-    terminal.pseudo_console = nullptr;
   }
+  terminal.pseudo_console = nullptr;
   if (terminal.attr_list != nullptr) {
     DeleteProcThreadAttributeList(terminal.attr_list);
     HeapFree(GetProcessHeap(), 0, terminal.attr_list);
@@ -1500,6 +1550,7 @@ static bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, co
   {
     std::lock_guard<std::mutex> lock(terminal.io_state->mutex);
     terminal.io_state->pending_input.emplace_back(bytes, bytes + len);
+    terminal.io_state->pending_input_bytes += len;
   }
   return true;
 #else
@@ -1994,6 +2045,7 @@ static bool StartCliTerminalWindows(AppState& app, CliTerminalState& terminal, c
   terminal.process_info = pi;
   terminal.pseudo_console = pseudo_console;
   StartCliTerminalIoWorker(terminal);
+  terminal.pseudo_console = nullptr;
   return true;
 }
 #endif
@@ -2058,9 +2110,10 @@ static void ResizeCliTerminal(CliTerminalState& terminal, const int rows, const 
     ioctl(terminal.master_fd, TIOCSWINSZ, &ws);
   }
 #elif defined(_WIN32)
-  if (terminal.pseudo_console != nullptr) {
-    COORD size{static_cast<SHORT>(terminal.cols), static_cast<SHORT>(terminal.rows)};
-    ResizePseudoConsoleSafe(terminal.pseudo_console, size);
+  if (terminal.io_state != nullptr && !terminal.io_state->stop_requested.load(std::memory_order_acquire)) {
+    terminal.io_state->requested_rows.store(terminal.rows, std::memory_order_release);
+    terminal.io_state->requested_cols.store(terminal.cols, std::memory_order_release);
+    terminal.io_state->resize_requested.store(true, std::memory_order_release);
   }
 #endif
 }
@@ -2109,6 +2162,13 @@ static void PollCliTerminal(AppState& app,
     return;
   }
   if (terminal.io_state != nullptr) {
+    if (!background_poll) {
+      std::lock_guard<std::mutex> lock(terminal.io_state->mutex);
+      if (terminal.io_state->pending_output_bytes > (1024 * 1024)) {
+        drain_budget.max_reads = std::max<std::size_t>(drain_budget.max_reads, 128);
+        drain_budget.max_bytes = std::max<std::size_t>(drain_budget.max_bytes, 2 * 1024 * 1024);
+      }
+    }
     while (drain_budget.CanDrainMore()) {
       std::string chunk;
       {
@@ -2118,6 +2178,7 @@ static void PollCliTerminal(AppState& app,
         }
         chunk = std::move(terminal.io_state->pending_output.front());
         terminal.io_state->pending_output.pop_front();
+        terminal.io_state->pending_output_bytes -= std::min(terminal.io_state->pending_output_bytes, chunk.size());
       }
       if (chunk.empty()) {
         continue;
@@ -4015,8 +4076,9 @@ int main(int, char**) {
   if (!app.chats.empty()) {
     app.selected_chat_index = 0;
   }
-  // Avoid auto-starting terminals on startup; this keeps launch responsive even
-  // in large Gemini histories and lets the user opt in per chat.
+  if (app.center_view_mode == CenterViewMode::CliConsole && app.selected_chat_index >= 0) {
+    MarkSelectedCliTerminalForLaunch(app);
+  }
 
 #if defined(_WIN32)
   SetProcessDPIAware();

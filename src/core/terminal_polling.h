@@ -5,10 +5,10 @@
 namespace uam {
 
 struct TerminalDrainBudget {
-  static constexpr std::size_t kDefaultMaxReads = 2;
-  static constexpr std::size_t kDefaultMaxBytes = 16384;
-  static constexpr std::size_t kBackgroundMaxReads = 1;
-  static constexpr std::size_t kBackgroundMaxBytes = 2048;
+  static constexpr std::size_t kDefaultMaxReads = 32;
+  static constexpr std::size_t kDefaultMaxBytes = 512 * 1024;
+  static constexpr std::size_t kBackgroundMaxReads = 8;
+  static constexpr std::size_t kBackgroundMaxBytes = 64 * 1024;
 
   std::size_t max_reads = kDefaultMaxReads;
   std::size_t max_bytes = kDefaultMaxBytes;
@@ -42,7 +42,7 @@ inline bool ShouldSyncNativeHistoryAfterTerminalPoll(const bool terminal_running
 
 inline double HiddenTerminalPollIntervalSeconds() {
   // Background terminals still need to drain output, but not every frame.
-  return 0.20;
+  return 0.05;
 }
 
 inline bool ShouldPollBackgroundTerminalNow(const double now_s,
