@@ -253,6 +253,16 @@ cmake --build build -j
 
 ---
 
+## Solution Layout
+
+If you are using Visual Studio, start with the solution guide:
+
+- [Visual Studio Solution Layout](docs/visual-studio-solution.md)
+
+It explains which projects are the real app targets, which ones are generated dependency/utility targets, and which project should be used for normal run/debug workflows.
+
+---
+
 ## Custom Dependencies
 
 ```

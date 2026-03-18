@@ -1,0 +1,10 @@
+^C:\USERS\DAVID\DOCUMENTS\GITHUB\UNIVERSAL-AGENT-MANAGER\BUILD_TESTS19\_DEPS\SDL2-SUBBUILD\CMAKEFILES\51E574E0AFAF695C6BC2945ACA90610B\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests19/_deps/sdl2-subbuild -BC:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests19/_deps/sdl2-subbuild --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests19/_deps/sdl2-subbuild/sdl2-populate.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

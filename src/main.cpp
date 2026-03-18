@@ -2322,29 +2322,36 @@ static ImVec4 Rgb(const int r, const int g, const int b, const float a = 1.0f) {
 namespace ui {
 constexpr float kSpace4 = 4.0f;
 constexpr float kSpace8 = 8.0f;
+constexpr float kSpace10 = 10.0f;
 constexpr float kSpace12 = 12.0f;
 constexpr float kSpace16 = 16.0f;
+constexpr float kSpace20 = 20.0f;
 constexpr float kSpace24 = 24.0f;
 constexpr float kSpace32 = 32.0f;
 
-constexpr float kSidebarWidth = 240.0f;
-constexpr float kRightPanelWidth = 280.0f;
+constexpr float kSidebarWidth = 292.0f;
+constexpr float kRightPanelWidth = 336.0f;
 
-constexpr float kRadiusSmall = 6.0f;
-constexpr float kRadiusPanel = 10.0f;
-constexpr float kRadiusInput = 14.0f;
+constexpr float kRadiusSmall = 8.0f;
+constexpr float kRadiusPanel = 14.0f;
+constexpr float kRadiusInput = 12.0f;
 
-const ImVec4 kMainBackground = Rgb(11, 15, 20, 1.0f);
-const ImVec4 kPrimarySurface = Rgb(18, 24, 33, 0.98f);
-const ImVec4 kSecondarySurface = Rgb(22, 29, 38, 0.98f);
-const ImVec4 kElevatedSurface = Rgb(27, 36, 48, 1.0f);
-const ImVec4 kBorder = Rgb(255, 255, 255, 0.06f);
+const ImVec4 kMainBackground = Rgb(8, 12, 17, 1.0f);
+const ImVec4 kPrimarySurface = Rgb(12, 17, 24, 0.95f);
+const ImVec4 kSecondarySurface = Rgb(16, 22, 31, 0.95f);
+const ImVec4 kElevatedSurface = Rgb(22, 30, 42, 0.98f);
+const ImVec4 kInputSurface = Rgb(10, 15, 22, 0.94f);
+const ImVec4 kBorder = Rgb(255, 255, 255, 0.08f);
+const ImVec4 kBorderStrong = Rgb(130, 171, 255, 0.35f);
+const ImVec4 kShadow = Rgb(0, 0, 0, 0.36f);
+const ImVec4 kShadowSoft = Rgb(0, 0, 0, 0.20f);
 
-const ImVec4 kTextPrimary = Rgb(230, 237, 243, 1.0f);
-const ImVec4 kTextSecondary = Rgb(155, 167, 180, 1.0f);
-const ImVec4 kTextMuted = Rgb(107, 119, 133, 1.0f);
+const ImVec4 kTextPrimary = Rgb(234, 240, 248, 1.0f);
+const ImVec4 kTextSecondary = Rgb(178, 189, 203, 1.0f);
+const ImVec4 kTextMuted = Rgb(132, 145, 160, 1.0f);
 
-const ImVec4 kAccent = Rgb(76, 141, 255, 1.0f);
+const ImVec4 kAccent = Rgb(96, 160, 255, 1.0f);
+const ImVec4 kAccentSoft = Rgb(96, 160, 255, 0.24f);
 const ImVec4 kSuccess = Rgb(34, 197, 94, 1.0f);
 const ImVec4 kError = Rgb(255, 107, 107, 1.0f);
 const ImVec4 kWarning = Rgb(245, 158, 11, 1.0f);
@@ -2374,25 +2381,56 @@ static ImFont* TryLoadFont(ImGuiIO& io, const float size, std::initializer_list<
   return nullptr;
 }
 
-static void ConfigureFonts(ImGuiIO& io) {
-  g_font_ui = TryLoadFont(io, 14.0f, {
+static void ConfigureFonts(ImGuiIO& io, const float dpi_scale = 1.0f) {
+  const float scale = std::clamp(dpi_scale, 1.0f, 2.25f);
+  g_font_ui = TryLoadFont(io, 14.0f * scale, {
+      "C:/Windows/Fonts/segoeui.ttf",
+      "C:/Windows/Fonts/arial.ttf",
       "/Library/Fonts/Inter-Regular.ttf",
       "/Library/Fonts/Inter Variable.ttf",
-      "/System/Library/Fonts/Supplemental/Helvetica.ttc"
+      "/System/Library/Fonts/Supplemental/Helvetica.ttc",
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+      "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
   });
-  g_font_title = TryLoadFont(io, 20.0f, {
+  g_font_title = TryLoadFont(io, 19.0f * scale, {
+      "C:/Windows/Fonts/seguisb.ttf",
+      "C:/Windows/Fonts/segoeuib.ttf",
       "/Library/Fonts/Inter-SemiBold.ttf",
       "/Library/Fonts/Inter-Bold.ttf",
-      "/System/Library/Fonts/Supplemental/Helvetica Bold.ttf"
+      "/System/Library/Fonts/Supplemental/Helvetica Bold.ttf",
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+      "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
   });
-  g_font_mono = TryLoadFont(io, 14.0f, {
+  g_font_mono = TryLoadFont(io, 13.5f * scale, {
+      "C:/Windows/Fonts/consola.ttf",
+      "C:/Windows/Fonts/cascadiamono.ttf",
       "/Library/Fonts/JetBrainsMono-Regular.ttf",
-      "/System/Library/Fonts/Menlo.ttc"
+      "/System/Library/Fonts/Menlo.ttc",
+      "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+      "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf"
   });
 
   if (g_font_ui != nullptr) {
     io.FontDefault = g_font_ui;
   }
+}
+
+static float DetectUiScale(SDL_Window* window) {
+  int display_index = 0;
+  if (window != nullptr) {
+    const int window_display = SDL_GetWindowDisplayIndex(window);
+    if (window_display >= 0) {
+      display_index = window_display;
+    }
+  }
+
+  float ddpi = 96.0f;
+  float hdpi = 96.0f;
+  float vdpi = 96.0f;
+  if (SDL_GetDisplayDPI(display_index, &ddpi, &hdpi, &vdpi) == 0 && ddpi > 0.0f) {
+    return std::clamp(ddpi / 96.0f, 1.0f, 2.25f);
+  }
+  return 1.0f;
 }
 
 static void PushFontIfAvailable(ImFont* font) {
@@ -2419,14 +2457,56 @@ static ImVec4 PanelColor(const PanelTone tone) {
   return ui::kPrimarySurface;
 }
 
+static ImVec4 PanelStrokeColor(const PanelTone tone) {
+  switch (tone) {
+    case PanelTone::Primary:
+      return ui::kBorderStrong;
+    case PanelTone::Secondary:
+      return ui::kBorder;
+    case PanelTone::Elevated:
+      return Rgb(255, 255, 255, 0.10f);
+  }
+  return ui::kBorder;
+}
+
+static void PushInputChrome(const float rounding = ui::kRadiusSmall) {
+  ImGui::PushStyleColor(ImGuiCol_FrameBg, ui::kInputSurface);
+  ImGui::PushStyleColor(ImGuiCol_Border, ui::kBorder);
+  ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, Rgb(16, 23, 33, 1.0f));
+  ImGui::PushStyleColor(ImGuiCol_FrameBgActive, Rgb(20, 29, 40, 1.0f));
+  ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, rounding);
+}
+
+static void PopInputChrome() {
+  ImGui::PopStyleVar();
+  ImGui::PopStyleColor(4);
+}
+
 static bool BeginPanel(const char* id, const ImVec2& size, const PanelTone tone, const bool border = true,
                        const ImGuiWindowFlags flags = 0, const ImVec2 padding = ImVec2(ui::kSpace16, ui::kSpace16),
                        const float rounding = ui::kRadiusPanel) {
   ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, rounding);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, padding);
   ImGui::PushStyleColor(ImGuiCol_ChildBg, PanelColor(tone));
-  ImGui::PushStyleColor(ImGuiCol_Border, border ? ui::kBorder : ui::kTransparent);
-  return ImGui::BeginChild(id, size, border, flags);
+  ImGui::PushStyleColor(ImGuiCol_Border, border ? PanelStrokeColor(tone) : ui::kTransparent);
+  const bool is_open = ImGui::BeginChild(id, size, border, flags);
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+  const ImVec2 min = ImGui::GetWindowPos();
+  const ImVec2 max(min.x + ImGui::GetWindowSize().x, min.y + ImGui::GetWindowSize().y);
+  draw->AddRectFilled(ImVec2(min.x + 1.0f, min.y + 4.0f), ImVec2(max.x + 1.0f, max.y + 4.0f), ImGui::GetColorU32(ui::kShadowSoft), rounding);
+  if (border) {
+    draw->AddRect(min, max, ImGui::GetColorU32(PanelStrokeColor(tone)), rounding, 0, 1.0f);
+  }
+  if (tone == PanelTone::Primary) {
+    draw->AddRectFilledMultiColor(
+        min,
+        ImVec2(max.x, min.y + 2.0f),
+        ImGui::GetColorU32(Rgb(130, 171, 255, 0.35f)),
+        ImGui::GetColorU32(Rgb(130, 171, 255, 0.10f)),
+        ImGui::GetColorU32(ui::kTransparent),
+        ImGui::GetColorU32(ui::kTransparent));
+  }
+  return is_open;
 }
 
 static void EndPanel() {
@@ -2437,25 +2517,32 @@ static void EndPanel() {
 
 static bool DrawButton(const char* label, const ImVec2& size, const ButtonKind kind) {
   ImVec4 bg = ui::kElevatedSurface;
-  ImVec4 bg_hover = ui::kElevatedSurface;
-  ImVec4 bg_active = ui::kElevatedSurface;
+  ImVec4 bg_hover = Rgb(31, 42, 57, 1.0f);
+  ImVec4 bg_active = Rgb(35, 47, 64, 1.0f);
   ImVec4 border = ui::kBorder;
   ImVec4 text = ui::kTextPrimary;
 
-  if (kind == ButtonKind::Primary || kind == ButtonKind::Accent) {
-    bg = Rgb(76, 141, 255, 0.95f);
-    bg_hover = Rgb(96, 154, 255, 1.0f);
-    bg_active = Rgb(67, 127, 234, 1.0f);
-    border = Rgb(76, 141, 255, 0.55f);
+  if (kind == ButtonKind::Primary) {
+    bg = Rgb(84, 147, 255, 0.94f);
+    bg_hover = Rgb(100, 160, 255, 1.0f);
+    bg_active = Rgb(71, 133, 238, 1.0f);
+    border = Rgb(140, 182, 255, 0.70f);
+    text = Rgb(255, 255, 255, 1.0f);
+  } else if (kind == ButtonKind::Accent) {
+    bg = Rgb(48, 108, 201, 0.92f);
+    bg_hover = Rgb(62, 121, 215, 1.0f);
+    bg_active = Rgb(42, 98, 189, 1.0f);
+    border = Rgb(116, 167, 255, 0.65f);
     text = Rgb(255, 255, 255, 1.0f);
   } else if (kind == ButtonKind::Ghost) {
     bg = ui::kTransparent;
-    bg_hover = Rgb(255, 255, 255, 0.05f);
-    bg_active = Rgb(255, 255, 255, 0.08f);
-    border = Rgb(255, 255, 255, 0.08f);
+    bg_hover = Rgb(255, 255, 255, 0.08f);
+    bg_active = Rgb(255, 255, 255, 0.12f);
+    border = Rgb(255, 255, 255, 0.10f);
   }
 
-  ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(13.0f, 8.0f));
   ImGui::PushStyleColor(ImGuiCol_Button, bg);
   ImGui::PushStyleColor(ImGuiCol_ButtonHovered, bg_hover);
   ImGui::PushStyleColor(ImGuiCol_ButtonActive, bg_active);
@@ -2463,7 +2550,7 @@ static bool DrawButton(const char* label, const ImVec2& size, const ButtonKind k
   ImGui::PushStyleColor(ImGuiCol_Text, text);
   const bool clicked = ImGui::Button(label, size);
   ImGui::PopStyleColor(5);
-  ImGui::PopStyleVar();
+  ImGui::PopStyleVar(2);
   return clicked;
 }
 
@@ -2472,7 +2559,7 @@ static void DrawSoftDivider() {
   const ImVec2 p = ImGui::GetCursorScreenPos();
   const float width = ImGui::GetContentRegionAvail().x;
   const ImU32 left = ImGui::GetColorU32(Rgb(255, 255, 255, 0.0f));
-  const ImU32 center = ImGui::GetColorU32(Rgb(255, 255, 255, 0.09f));
+  const ImU32 center = ImGui::GetColorU32(Rgb(255, 255, 255, 0.12f));
   draw->AddRectFilledMultiColor(p, ImVec2(p.x + width, p.y + 1.0f), left, center, center, left);
   ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
 }
@@ -2492,13 +2579,13 @@ static std::string CompactPreview(const std::string& text, const std::size_t max
 
 static void ApplyModernTheme() {
   ImGuiStyle& style = ImGui::GetStyle();
-  style.WindowPadding = ImVec2(ui::kSpace16, ui::kSpace16);
-  style.FramePadding = ImVec2(10.0f, 8.0f);
+  style.WindowPadding = ImVec2(ui::kSpace20, ui::kSpace20);
+  style.FramePadding = ImVec2(12.0f, 9.0f);
   style.CellPadding = ImVec2(ui::kSpace12, ui::kSpace8);
-  style.ItemSpacing = ImVec2(ui::kSpace12, ui::kSpace12);
+  style.ItemSpacing = ImVec2(ui::kSpace12, ui::kSpace10);
   style.ItemInnerSpacing = ImVec2(ui::kSpace8, ui::kSpace8);
-  style.IndentSpacing = 20.0f;
-  style.ScrollbarSize = 8.0f;
+  style.IndentSpacing = 18.0f;
+  style.ScrollbarSize = 10.0f;
   style.GrabMinSize = 10.0f;
 
   style.WindowBorderSize = 0.0f;
@@ -2507,59 +2594,60 @@ static void ApplyModernTheme() {
   style.FrameBorderSize = 1.0f;
   style.TabBorderSize = 0.0f;
 
-  style.WindowRounding = ui::kRadiusPanel;
+  style.WindowRounding = 10.0f;
   style.ChildRounding = ui::kRadiusPanel;
-  style.FrameRounding = ui::kRadiusSmall;
+  style.FrameRounding = 10.0f;
   style.PopupRounding = ui::kRadiusPanel;
-  style.ScrollbarRounding = 8.0f;
+  style.ScrollbarRounding = 9.0f;
   style.GrabRounding = ui::kRadiusSmall;
-  style.TabRounding = ui::kRadiusSmall;
+  style.TabRounding = 10.0f;
 
   ImVec4* colors = style.Colors;
   colors[ImGuiCol_Text] = ui::kTextPrimary;
   colors[ImGuiCol_TextDisabled] = ui::kTextMuted;
   colors[ImGuiCol_WindowBg] = ui::kMainBackground;
   colors[ImGuiCol_ChildBg] = ui::kPrimarySurface;
-  colors[ImGuiCol_PopupBg] = ui::kElevatedSurface;
+  colors[ImGuiCol_PopupBg] = Rgb(16, 22, 30, 0.98f);
   colors[ImGuiCol_Border] = ui::kBorder;
   colors[ImGuiCol_BorderShadow] = ui::kTransparent;
-  colors[ImGuiCol_FrameBg] = Rgb(15, 20, 27, 1.0f);
-  colors[ImGuiCol_FrameBgHovered] = Rgb(20, 27, 36, 1.0f);
-  colors[ImGuiCol_FrameBgActive] = Rgb(24, 33, 45, 1.0f);
+  colors[ImGuiCol_FrameBg] = ui::kInputSurface;
+  colors[ImGuiCol_FrameBgHovered] = Rgb(17, 24, 34, 1.0f);
+  colors[ImGuiCol_FrameBgActive] = Rgb(22, 31, 43, 1.0f);
   colors[ImGuiCol_TitleBg] = ui::kPrimarySurface;
   colors[ImGuiCol_TitleBgActive] = ui::kPrimarySurface;
   colors[ImGuiCol_MenuBarBg] = ui::kSecondarySurface;
   colors[ImGuiCol_ScrollbarBg] = ui::kTransparent;
-  colors[ImGuiCol_ScrollbarGrab] = Rgb(255, 255, 255, 0.15f);
-  colors[ImGuiCol_ScrollbarGrabHovered] = Rgb(255, 255, 255, 0.24f);
-  colors[ImGuiCol_ScrollbarGrabActive] = Rgb(255, 255, 255, 0.30f);
+  colors[ImGuiCol_ScrollbarGrab] = Rgb(255, 255, 255, 0.18f);
+  colors[ImGuiCol_ScrollbarGrabHovered] = Rgb(255, 255, 255, 0.28f);
+  colors[ImGuiCol_ScrollbarGrabActive] = Rgb(255, 255, 255, 0.35f);
   colors[ImGuiCol_CheckMark] = ui::kAccent;
   colors[ImGuiCol_SliderGrab] = ui::kAccent;
-  colors[ImGuiCol_SliderGrabActive] = Rgb(96, 154, 255, 1.0f);
+  colors[ImGuiCol_SliderGrabActive] = Rgb(122, 176, 255, 1.0f);
   colors[ImGuiCol_Button] = ui::kElevatedSurface;
-  colors[ImGuiCol_ButtonHovered] = Rgb(37, 47, 61, 1.0f);
-  colors[ImGuiCol_ButtonActive] = Rgb(43, 55, 72, 1.0f);
-  colors[ImGuiCol_Header] = Rgb(255, 255, 255, 0.03f);
-  colors[ImGuiCol_HeaderHovered] = Rgb(255, 255, 255, 0.05f);
-  colors[ImGuiCol_HeaderActive] = Rgb(76, 141, 255, 0.15f);
+  colors[ImGuiCol_ButtonHovered] = Rgb(31, 42, 57, 1.0f);
+  colors[ImGuiCol_ButtonActive] = Rgb(38, 50, 68, 1.0f);
+  colors[ImGuiCol_Header] = Rgb(255, 255, 255, 0.05f);
+  colors[ImGuiCol_HeaderHovered] = Rgb(255, 255, 255, 0.08f);
+  colors[ImGuiCol_HeaderActive] = ui::kAccentSoft;
   colors[ImGuiCol_Separator] = ui::kBorder;
-  colors[ImGuiCol_ResizeGrip] = Rgb(255, 255, 255, 0.12f);
-  colors[ImGuiCol_ResizeGripHovered] = Rgb(76, 141, 255, 0.45f);
-  colors[ImGuiCol_ResizeGripActive] = Rgb(76, 141, 255, 0.75f);
+  colors[ImGuiCol_ResizeGrip] = Rgb(255, 255, 255, 0.10f);
+  colors[ImGuiCol_ResizeGripHovered] = Rgb(96, 160, 255, 0.42f);
+  colors[ImGuiCol_ResizeGripActive] = Rgb(96, 160, 255, 0.75f);
   colors[ImGuiCol_Tab] = ui::kSecondarySurface;
-  colors[ImGuiCol_TabHovered] = Rgb(29, 38, 49, 1.0f);
+  colors[ImGuiCol_TabHovered] = Rgb(24, 34, 48, 1.0f);
   colors[ImGuiCol_TabActive] = ui::kElevatedSurface;
   colors[ImGuiCol_TabUnfocused] = ui::kSecondarySurface;
   colors[ImGuiCol_TabUnfocusedActive] = ui::kElevatedSurface;
   colors[ImGuiCol_TableHeaderBg] = ui::kSecondarySurface;
   colors[ImGuiCol_TableBorderStrong] = ui::kBorder;
-  colors[ImGuiCol_TableBorderLight] = Rgb(255, 255, 255, 0.03f);
+  colors[ImGuiCol_TableBorderLight] = Rgb(255, 255, 255, 0.05f);
   colors[ImGuiCol_TableRowBg] = ui::kTransparent;
-  colors[ImGuiCol_TableRowBgAlt] = Rgb(255, 255, 255, 0.02f);
-  colors[ImGuiCol_TextSelectedBg] = Rgb(76, 141, 255, 0.32f);
+  colors[ImGuiCol_TableRowBgAlt] = Rgb(255, 255, 255, 0.03f);
+  colors[ImGuiCol_TextSelectedBg] = Rgb(96, 160, 255, 0.32f);
   colors[ImGuiCol_DragDropTarget] = ui::kAccent;
   colors[ImGuiCol_NavCursor] = ui::kAccent;
-  colors[ImGuiCol_NavWindowingHighlight] = Rgb(76, 141, 255, 0.65f);
+  colors[ImGuiCol_NavWindowingHighlight] = Rgb(96, 160, 255, 0.65f);
+  colors[ImGuiCol_ModalWindowDimBg] = Rgb(0, 0, 0, 0.45f);
 }
 
 static void DrawAmbientBackdrop(const ImVec2& pos, const ImVec2& size, const float time_s) {
@@ -2567,18 +2655,27 @@ static void DrawAmbientBackdrop(const ImVec2& pos, const ImVec2& size, const flo
   draw->AddRectFilledMultiColor(
       pos,
       ImVec2(pos.x + size.x, pos.y + size.y),
-      ImGui::GetColorU32(Rgb(11, 15, 20, 1.0f)),
-      ImGui::GetColorU32(Rgb(13, 18, 24, 1.0f)),
-      ImGui::GetColorU32(Rgb(11, 15, 20, 1.0f)),
-      ImGui::GetColorU32(Rgb(11, 15, 20, 1.0f)));
+      ImGui::GetColorU32(Rgb(8, 12, 17, 1.0f)),
+      ImGui::GetColorU32(Rgb(10, 15, 22, 1.0f)),
+      ImGui::GetColorU32(Rgb(7, 11, 16, 1.0f)),
+      ImGui::GetColorU32(Rgb(6, 10, 15, 1.0f)));
 
-  const float pulse = 0.65f + 0.35f * std::sin(time_s * 0.35f);
-  draw->AddCircleFilled(ImVec2(pos.x + size.x * 0.18f, pos.y + size.y * 0.24f), size.x * 0.22f,
-                        ImGui::GetColorU32(Rgb(76, 141, 255, 0.05f * pulse)), 64);
+  const float pulse = 0.70f + 0.30f * std::sin(time_s * 0.35f);
+  draw->AddCircleFilled(ImVec2(pos.x + size.x * 0.16f, pos.y + size.y * 0.19f), size.x * 0.20f,
+                        ImGui::GetColorU32(Rgb(96, 160, 255, 0.07f * pulse)), 72);
+  draw->AddCircleFilled(ImVec2(pos.x + size.x * 0.86f, pos.y + size.y * 0.08f), size.x * 0.15f,
+                        ImGui::GetColorU32(Rgb(90, 130, 255, 0.05f * pulse)), 60);
+  draw->AddRectFilledMultiColor(
+      ImVec2(pos.x, pos.y + size.y * 0.68f),
+      ImVec2(pos.x + size.x, pos.y + size.y),
+      ImGui::GetColorU32(ui::kTransparent),
+      ImGui::GetColorU32(ui::kTransparent),
+      ImGui::GetColorU32(Rgb(0, 0, 0, 0.35f)),
+      ImGui::GetColorU32(Rgb(0, 0, 0, 0.35f)));
 }
 
 static bool DrawSidebarItem(const ChatSession& chat, const bool selected, const std::string& item_id) {
-  const ImVec2 card_size(ImGui::GetContentRegionAvail().x, 28.0f);
+  const ImVec2 card_size(ImGui::GetContentRegionAvail().x, 52.0f);
   const ImVec2 min = ImGui::GetCursorScreenPos();
   ImGui::InvisibleButton(item_id.c_str(), card_size);
   const bool hovered = ImGui::IsItemHovered();
@@ -2586,25 +2683,41 @@ static bool DrawSidebarItem(const ChatSession& chat, const bool selected, const 
 
   ImDrawList* draw = ImGui::GetWindowDrawList();
   ImVec4 bg_color = ui::kTransparent;
+  ImVec4 border_color = ui::kTransparent;
   if (selected) {
-    bg_color = Rgb(76, 141, 255, 0.15f);
+    bg_color = Rgb(96, 160, 255, 0.20f);
+    border_color = ui::kBorderStrong;
   } else if (hovered) {
-    bg_color = Rgb(255, 255, 255, 0.05f);
+    bg_color = Rgb(255, 255, 255, 0.07f);
+    border_color = ui::kBorder;
   }
   const ImVec2 max(min.x + card_size.x, min.y + card_size.y);
-  draw->AddRectFilled(min, max, ImGui::GetColorU32(bg_color), 8.0f);
+  draw->AddRectFilled(min, max, ImGui::GetColorU32(bg_color), 10.0f);
+  if (selected || hovered) {
+    draw->AddRect(min, max, ImGui::GetColorU32(border_color), 10.0f);
+  }
   if (selected) {
-    draw->AddRectFilled(min, ImVec2(min.x + 3.0f, max.y), ImGui::GetColorU32(ui::kAccent), 8.0f, ImDrawFlags_RoundCornersLeft);
+    draw->AddRectFilled(min, ImVec2(min.x + 3.0f, max.y), ImGui::GetColorU32(ui::kAccent), 10.0f, ImDrawFlags_RoundCornersLeft);
   }
 
-  const std::string row_title = CompactPreview(Trim(chat.title).empty() ? chat.id : chat.title, 40);
-  draw->AddText(ImVec2(min.x + 10.0f, min.y + 6.0f), ImGui::GetColorU32(ui::kTextPrimary), row_title.c_str());
-  ImGui::Dummy(ImVec2(0.0f, 4.0f));
+  const std::string row_title = CompactPreview(Trim(chat.title).empty() ? chat.id : chat.title, 34);
+  std::string row_subtitle = chat.updated_at;
+  if (!chat.messages.empty()) {
+    row_subtitle = CompactPreview(chat.messages.back().content, 46);
+  }
+  row_subtitle = CompactPreview(Trim(row_subtitle), 46);
+  if (row_subtitle.empty()) {
+    row_subtitle = "No messages yet";
+  }
+
+  draw->AddText(ImVec2(min.x + 10.0f, min.y + 7.0f), ImGui::GetColorU32(ui::kTextPrimary), row_title.c_str());
+  draw->AddText(ImVec2(min.x + 10.0f, min.y + 29.0f), ImGui::GetColorU32(ui::kTextMuted), row_subtitle.c_str());
+  ImGui::Dummy(ImVec2(0.0f, 6.0f));
   return clicked;
 }
 
 static bool DrawFolderHeaderItem(const ChatFolder& folder, const int chat_count) {
-  const ImVec2 row_size(ImGui::GetContentRegionAvail().x, 24.0f);
+  const ImVec2 row_size(ImGui::GetContentRegionAvail().x, 30.0f);
   const ImVec2 min = ImGui::GetCursorScreenPos();
   ImGui::InvisibleButton("folder_header", row_size);
   const bool hovered = ImGui::IsItemHovered();
@@ -2613,17 +2726,23 @@ static bool DrawFolderHeaderItem(const ChatFolder& folder, const int chat_count)
   ImDrawList* draw = ImGui::GetWindowDrawList();
   const ImVec2 max(min.x + row_size.x, min.y + row_size.y);
   if (hovered) {
-    draw->AddRectFilled(min, max, ImGui::GetColorU32(Rgb(255, 255, 255, 0.04f)), 6.0f);
+    draw->AddRectFilled(min, max, ImGui::GetColorU32(Rgb(255, 255, 255, 0.05f)), 8.0f);
+    draw->AddRect(min, max, ImGui::GetColorU32(ui::kBorder), 8.0f);
   }
 
-  const std::string marker = folder.collapsed ? "[+]" : "[-]";
+  const std::string marker = folder.collapsed ? ">" : "v";
   const std::string title = FolderTitleOrFallback(folder);
-  const std::string count_text = "(" + std::to_string(chat_count) + ")";
+  const std::string count_text = std::to_string(chat_count);
   const float count_w = ImGui::CalcTextSize(count_text.c_str()).x;
+  const float count_pad = 8.0f;
+  const float badge_w = count_w + (count_pad * 2.0f);
+  const ImVec2 badge_min(max.x - badge_w - 8.0f, min.y + 6.0f);
+  const ImVec2 badge_max(max.x - 8.0f, max.y - 6.0f);
+  draw->AddRectFilled(badge_min, badge_max, ImGui::GetColorU32(Rgb(255, 255, 255, 0.09f)), 10.0f);
 
-  draw->AddText(ImVec2(min.x + 6.0f, min.y + 4.0f), ImGui::GetColorU32(ui::kTextMuted), marker.c_str());
-  draw->AddText(ImVec2(min.x + 34.0f, min.y + 4.0f), ImGui::GetColorU32(ui::kTextPrimary), CompactPreview(title, 24).c_str());
-  draw->AddText(ImVec2(max.x - count_w - 8.0f, min.y + 4.0f), ImGui::GetColorU32(ui::kTextMuted), count_text.c_str());
+  draw->AddText(ImVec2(min.x + 8.0f, min.y + 7.0f), ImGui::GetColorU32(ui::kTextMuted), marker.c_str());
+  draw->AddText(ImVec2(min.x + 30.0f, min.y + 7.0f), ImGui::GetColorU32(ui::kTextPrimary), CompactPreview(title, 24).c_str());
+  draw->AddText(ImVec2(badge_min.x + count_pad, min.y + 7.0f), ImGui::GetColorU32(ui::kTextSecondary), count_text.c_str());
   return clicked;
 }
 
@@ -2633,12 +2752,15 @@ static void DrawLeftPane(AppState& app) {
   PushFontIfAvailable(g_font_title);
   ImGui::TextColored(ui::kTextPrimary, "Universal Agent Manager");
   PopFontIfAvailable(g_font_title);
-  ImGui::TextColored(ui::kTextMuted, "Chat folders");
-  ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
+  ImGui::TextColored(ui::kTextMuted, "%zu chats across %zu folders", app.chats.size(), app.folders.size());
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace4));
+  DrawSoftDivider();
 
   const ChatFolder* create_folder = FindFolderById(app, app.new_chat_folder_id);
   const std::string create_folder_label = (create_folder != nullptr) ? FolderTitleOrFallback(*create_folder) : std::string(kDefaultFolderTitle);
-  if (ImGui::BeginCombo("New Chat In", create_folder_label.c_str())) {
+  ImGui::TextColored(ui::kTextMuted, "New chat destination");
+  ImGui::SetNextItemWidth(-1.0f);
+  if (ImGui::BeginCombo("##new_chat_in", create_folder_label.c_str())) {
     for (const ChatFolder& folder : app.folders) {
       const std::string folder_label = FolderTitleOrFallback(folder);
       const bool selected = (app.new_chat_folder_id == folder.id);
@@ -2649,7 +2771,7 @@ static void DrawLeftPane(AppState& app) {
         ImGui::SetItemDefaultFocus();
       }
     }
-      ImGui::EndCombo();
+    ImGui::EndCombo();
   }
 
   const std::string new_chat_label = FrontendActionLabel(app, "create_chat", "+ New Chat");
@@ -2657,43 +2779,51 @@ static void DrawLeftPane(AppState& app) {
   const std::string delete_label = FrontendActionLabel(app, "delete_chat", "Del");
 
   const bool show_create_chat = FrontendActionVisible(app, "create_chat");
+  const float row_width = ImGui::GetContentRegionAvail().x;
   if (show_create_chat) {
-    if (DrawButton(new_chat_label.c_str(), ImVec2(110.0f, 36.0f), ButtonKind::Primary)) {
+    if (DrawButton(new_chat_label.c_str(), ImVec2(row_width, 38.0f), ButtonKind::Primary)) {
       CreateAndSelectChat(app);
     }
-    ImGui::SameLine();
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
   }
-  if (DrawButton("+ Folder", ImVec2(90.0f, 36.0f), ButtonKind::Ghost)) {
+
+  const bool show_refresh = FrontendActionVisible(app, "refresh_history");
+  const float secondary_w = show_refresh ? std::max(90.0f, (row_width - ui::kSpace8) * 0.5f) : row_width;
+  if (DrawButton("+ Folder", ImVec2(secondary_w, 34.0f), ButtonKind::Ghost)) {
     app.new_folder_title_input.clear();
     app.new_folder_directory_input = fs::current_path().string();
     ImGui::OpenPopup("new_folder_popup");
   }
-  if (FrontendActionVisible(app, "refresh_history")) {
+  if (show_refresh) {
     ImGui::SameLine();
-    if (DrawButton(refresh_label.c_str(), ImVec2(84.0f, 36.0f), ButtonKind::Ghost)) {
+    if (DrawButton(refresh_label.c_str(), ImVec2(secondary_w, 34.0f), ButtonKind::Ghost)) {
       RefreshChatHistory(app);
     }
   }
+
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
   const bool has_selected = (SelectedChat(app) != nullptr);
   if (!has_selected) {
     ImGui::BeginDisabled();
   }
   if (FrontendActionVisible(app, "delete_chat") &&
-      DrawButton(delete_label.c_str(), ImVec2(48.0f, 36.0f), ButtonKind::Ghost)) {
+      DrawButton(delete_label.c_str(), ImVec2(row_width, 34.0f), ButtonKind::Ghost)) {
     RemoveCurrentChat(app);
   }
   if (!has_selected) {
     ImGui::EndDisabled();
   }
+
   if (ImGui::BeginPopupModal("new_folder_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
     ImGui::TextColored(ui::kTextPrimary, "Create chat folder");
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, Rgb(15, 20, 27, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_Border, Rgb(255, 255, 255, 0.08f));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
+    ImGui::SetNextItemWidth(420.0f);
+    PushInputChrome();
     ImGui::InputText("Title", &app.new_folder_title_input);
+    ImGui::SetNextItemWidth(420.0f);
     ImGui::InputText("Directory", &app.new_folder_directory_input);
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor(2);
+    PopInputChrome();
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
     if (DrawButton("Create", ImVec2(96.0f, 32.0f), ButtonKind::Primary)) {
       const std::string folder_title = Trim(app.new_folder_title_input);
       const std::string folder_dir = Trim(app.new_folder_directory_input);
@@ -2747,7 +2877,7 @@ static void DrawLeftPane(AppState& app) {
         }
       }
       if (chat_count == 0) {
-        ImGui::TextColored(ui::kTextMuted, "No chats");
+        ImGui::TextColored(ui::kTextMuted, "No chats in folder");
       }
       ImGui::Unindent(10.0f);
     }
@@ -2765,40 +2895,38 @@ static void DrawMessageBubble(AppState& app, ChatSession& chat, const int messag
   const Message& message = chat.messages[message_index];
   const bool is_user = (message.role == MessageRole::User);
   const bool is_assistant = (message.role == MessageRole::Assistant);
-  const float max_width = content_width * 0.65f;
-  const float pad_x = 14.0f;
-  const float pad_y = 12.0f;
+  const float max_width = content_width * 0.74f;
+  const float pad_x = 16.0f;
+  const float pad_y = 14.0f;
   const float text_wrap_width = max_width - (pad_x * 2.0f);
   const ImVec2 text_size = ImGui::CalcTextSize(message.content.c_str(), nullptr, false, text_wrap_width);
-  const float header_h = ImGui::GetTextLineHeight() + 2.0f;
+  const float header_h = ImGui::GetTextLineHeight();
   const float meta_h = ImGui::GetTextLineHeight();
-  const float bubble_w = std::max(180.0f, std::min(max_width, text_size.x + pad_x * 2.0f));
-  const float bubble_h = pad_y + header_h + 6.0f + text_size.y + 8.0f + meta_h + pad_y;
+  const float bubble_w = std::max(220.0f, std::min(max_width, text_size.x + pad_x * 2.0f));
+  const float bubble_h = pad_y + header_h + 8.0f + text_size.y + 10.0f + meta_h + pad_y;
 
   ImVec2 cursor = ImGui::GetCursorScreenPos();
   const float bubble_x = is_user ? (cursor.x + content_width - bubble_w) : cursor.x;
   const ImVec2 min(bubble_x, cursor.y);
   const ImVec2 max(bubble_x + bubble_w, cursor.y + bubble_h);
 
-  const ImVec4 bg = is_user ? Rgb(76, 141, 255, 0.15f) : ui::kSecondarySurface;
-  const ImVec4 border = is_user ? Rgb(76, 141, 255, 0.40f) : ui::kBorder;
+  const ImVec4 bg = is_user ? Rgb(63, 114, 205, 0.42f) : (is_assistant ? Rgb(16, 24, 35, 0.98f) : Rgb(64, 45, 16, 0.34f));
+  const ImVec4 border = is_user ? Rgb(140, 182, 255, 0.52f) : (is_assistant ? ui::kBorder : Rgb(245, 158, 11, 0.45f));
   const ImVec4 role = is_assistant ? ui::kSuccess : (is_user ? ui::kAccent : ui::kWarning);
 
   ImDrawList* draw = ImGui::GetWindowDrawList();
-  if (!is_user) {
-    draw->AddRectFilled(ImVec2(min.x + 2.0f, min.y + 3.0f), ImVec2(max.x + 2.0f, max.y + 3.0f), ImGui::GetColorU32(Rgb(0, 0, 0, 0.25f)), 12.0f);
-  }
-  draw->AddRectFilled(min, max, ImGui::GetColorU32(bg), 12.0f);
-  draw->AddRect(min, max, ImGui::GetColorU32(border), 12.0f, 0, 1.0f);
+  draw->AddRectFilled(ImVec2(min.x + 1.0f, min.y + 3.0f), ImVec2(max.x + 1.0f, max.y + 3.0f), ImGui::GetColorU32(ui::kShadow), 14.0f);
+  draw->AddRectFilled(min, max, ImGui::GetColorU32(bg), 14.0f);
+  draw->AddRect(min, max, ImGui::GetColorU32(border), 14.0f, 0, 1.1f);
 
-  const char* role_label = is_user ? "You" : (is_assistant ? "Gemini" : "System");
+  const char* role_label = is_user ? "You" : (is_assistant ? "Assistant" : "System");
   ImGui::SetCursorScreenPos(ImVec2(min.x + pad_x, min.y + pad_y));
   ImGui::TextColored(role, "%s", role_label);
   if (is_user) {
     const std::string edit_label = FrontendActionLabel(app, "edit_resubmit", "Edit");
-    ImGui::SetCursorScreenPos(ImVec2(max.x - 76.0f, min.y + 6.0f));
+    ImGui::SetCursorScreenPos(ImVec2(max.x - 80.0f, min.y + 7.0f));
     if (FrontendActionVisible(app, "edit_resubmit", true) &&
-        DrawButton(edit_label.c_str(), ImVec2(66.0f, 24.0f), ButtonKind::Ghost)) {
+        DrawButton(edit_label.c_str(), ImVec2(70.0f, 24.0f), ButtonKind::Ghost)) {
       BeginEditMessage(app, chat, message_index);
     }
   }
@@ -2817,20 +2945,22 @@ static void DrawMessageBubble(AppState& app, ChatSession& chat, const int messag
 }
 
 static void DrawCenterModeToggle(AppState& app) {
-  ImGui::TextColored(ui::kTextMuted, "View");
+  ImGui::TextColored(ui::kTextMuted, "Mode");
   ImGui::SameLine();
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 6.0f));
   const bool structured_active = (app.center_view_mode == CenterViewMode::Structured);
-  if (DrawButton("Structured UI", ImVec2(120.0f, 30.0f), structured_active ? ButtonKind::Primary : ButtonKind::Ghost)) {
+  if (DrawButton("Structured", ImVec2(104.0f, 30.0f), structured_active ? ButtonKind::Primary : ButtonKind::Ghost)) {
     app.center_view_mode = CenterViewMode::Structured;
     SaveSettings(app);
   }
   ImGui::SameLine();
   const bool cli_active = (app.center_view_mode == CenterViewMode::CliConsole);
-  if (DrawButton("CLI Console", ImVec2(110.0f, 30.0f), cli_active ? ButtonKind::Primary : ButtonKind::Ghost)) {
+  if (DrawButton("Terminal", ImVec2(92.0f, 30.0f), cli_active ? ButtonKind::Primary : ButtonKind::Ghost)) {
     app.center_view_mode = CenterViewMode::CliConsole;
     MarkSelectedCliTerminalForLaunch(app);
     SaveSettings(app);
   }
+  ImGui::PopStyleVar();
 }
 
 static VTermModifier ActiveVTermModifiers() {
@@ -2965,7 +3095,7 @@ static void FeedCliTerminalKeyboard(CliTerminalState& terminal) {
 
 static ImU32 VTermColorToImU32(const VTermScreen* screen, VTermColor color, const bool background) {
   if ((background && VTERM_COLOR_IS_DEFAULT_BG(&color)) || (!background && VTERM_COLOR_IS_DEFAULT_FG(&color))) {
-    const ImVec4 fallback = background ? Rgb(15, 20, 27, 1.0f) : ui::kTextPrimary;
+    const ImVec4 fallback = background ? ui::kInputSurface : ui::kTextPrimary;
     return ImGui::GetColorU32(fallback);
   }
   vterm_screen_convert_color_to_rgb(screen, &color);
@@ -3016,8 +3146,10 @@ static void DrawCliTerminalSurface(AppState& app, ChatSession& chat) {
   }
 
   ImDrawList* draw = ImGui::GetWindowDrawList();
-  draw->AddRectFilled(origin, ImVec2(origin.x + terminal_size.x, origin.y + terminal_size.y), ImGui::GetColorU32(Rgb(15, 20, 27, 1.0f)), 8.0f);
-  draw->AddRect(origin, ImVec2(origin.x + terminal_size.x, origin.y + terminal_size.y), ImGui::GetColorU32(ui::kBorder), 8.0f);
+  draw->AddRectFilled(ImVec2(origin.x + 1.0f, origin.y + 3.0f), ImVec2(origin.x + terminal_size.x + 1.0f, origin.y + terminal_size.y + 3.0f),
+                      ImGui::GetColorU32(ui::kShadow), 10.0f);
+  draw->AddRectFilled(origin, ImVec2(origin.x + terminal_size.x, origin.y + terminal_size.y), ImGui::GetColorU32(ui::kInputSurface), 10.0f);
+  draw->AddRect(origin, ImVec2(origin.x + terminal_size.x, origin.y + terminal_size.y), ImGui::GetColorU32(ui::kBorder), 10.0f);
 
   if (terminal.screen != nullptr) {
     for (int row = 0; row < terminal.rows; ++row) {
@@ -3064,18 +3196,16 @@ static void DrawCliTerminalSurface(AppState& app, ChatSession& chat) {
 }
 
 static void DrawInputContainer(AppState& app) {
-  BeginPanel("input_container", ImVec2(0.0f, 132.0f), PanelTone::Secondary, true, 0, ImVec2(12.0f, 12.0f), ui::kRadiusInput);
+  BeginPanel("input_container", ImVec2(0.0f, 148.0f), PanelTone::Secondary, true, 0, ImVec2(12.0f, 12.0f), ui::kRadiusInput);
   ImDrawList* draw = ImGui::GetWindowDrawList();
   const ImVec2 min = ImGui::GetWindowPos();
   const ImVec2 max(min.x + ImGui::GetWindowSize().x, min.y + ImGui::GetWindowSize().y);
-  draw->AddRectFilled(ImVec2(min.x + 3.0f, min.y + 5.0f), ImVec2(max.x + 3.0f, max.y + 5.0f), ImGui::GetColorU32(Rgb(0, 0, 0, 0.45f)), ui::kRadiusInput);
+  draw->AddRectFilled(ImVec2(min.x + 2.0f, min.y + 4.0f), ImVec2(max.x + 2.0f, max.y + 4.0f), ImGui::GetColorU32(ui::kShadow), ui::kRadiusInput);
 
-  ImGui::PushStyleColor(ImGuiCol_FrameBg, Rgb(15, 20, 27, 1.0f));
-  ImGui::PushStyleColor(ImGuiCol_Border, Rgb(255, 255, 255, 0.08f));
-  ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ui::kRadiusInput);
-  ImGui::InputTextMultiline("##composer", &app.composer_text, ImVec2(-96.0f, 84.0f), ImGuiInputTextFlags_AllowTabInput);
-  ImGui::PopStyleVar();
-  ImGui::PopStyleColor(2);
+  ImGui::TextColored(ui::kTextMuted, "Message");
+  PushInputChrome(ui::kRadiusInput);
+  ImGui::InputTextMultiline("##composer", &app.composer_text, ImVec2(-96.0f, 92.0f), ImGuiInputTextFlags_AllowTabInput);
+  PopInputChrome();
 
   ImGui::SameLine();
   const bool can_send = !app.pending_call.has_value();
@@ -3084,7 +3214,7 @@ static void DrawInputContainer(AppState& app) {
     ImGui::BeginDisabled();
   }
   if (FrontendActionVisible(app, "send_prompt", true)) {
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 22.0f);
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 28.0f);
     if (DrawButton(send_label.c_str(), ImVec2(80.0f, 40.0f), ButtonKind::Accent)) {
       StartGeminiRequest(app);
     }
@@ -3107,21 +3237,21 @@ static void DrawStructuredProcessingIndicator(const AppState& app, const ChatSes
     return;
   }
 
-  BeginPanel("structured_processing_indicator", ImVec2(0.0f, 68.0f), PanelTone::Secondary, true, 0,
+  BeginPanel("structured_processing_indicator", ImVec2(0.0f, 72.0f), PanelTone::Secondary, true, 0,
              ImVec2(ui::kSpace12, 10.0f), ui::kRadiusPanel);
 
   const int dots = static_cast<int>(ImGui::GetTime() * 2.5) % 4;
   std::string status = "Gemini is processing";
   status.append(static_cast<std::size_t>(dots), '.');
-  ImGui::TextColored(ui::kWarning, "%s", status.c_str());
-  ImGui::TextColored(ui::kTextMuted, "The request is still running. You can keep browsing chats.");
+  ImGui::TextColored(ui::kAccent, "%s", status.c_str());
+  ImGui::TextColored(ui::kTextMuted, "You can keep browsing chats while this runs.");
 
   const ImVec2 bar_min = ImGui::GetCursorScreenPos();
   const float bar_w = std::max(120.0f, ImGui::GetContentRegionAvail().x);
   const float bar_h = 6.0f;
   const ImVec2 bar_max(bar_min.x + bar_w, bar_min.y + bar_h);
   ImDrawList* draw = ImGui::GetWindowDrawList();
-  draw->AddRectFilled(bar_min, bar_max, ImGui::GetColorU32(Rgb(255, 255, 255, 0.08f)), 6.0f);
+  draw->AddRectFilled(bar_min, bar_max, ImGui::GetColorU32(Rgb(255, 255, 255, 0.10f)), 6.0f);
 
   const float cycle = std::fmod(static_cast<float>(ImGui::GetTime()) * 0.9f, 1.0f);
   const float seg_w = bar_w * 0.28f;
@@ -3137,15 +3267,13 @@ static void DrawStructuredProcessingIndicator(const AppState& app, const ChatSes
 
 static void DrawChatDetailPane(AppState& app, ChatSession& chat) {
   BeginPanel("main_chat_panel", ImVec2(0.0f, 0.0f), PanelTone::Primary, true, 0, ImVec2(ui::kSpace24, ui::kSpace24));
-  ImGui::PushStyleColor(ImGuiCol_FrameBg, Rgb(15, 20, 27, 1.0f));
-  ImGui::PushStyleColor(ImGuiCol_Border, Rgb(255, 255, 255, 0.08f));
-  ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
+  PushInputChrome();
+  ImGui::SetNextItemWidth(-1.0f);
   if (ImGui::InputText("##chat_title", &chat.title)) {
     chat.updated_at = TimestampNow();
     SaveAndUpdateStatus(app, chat, "Chat title updated.", "Chat title changed in UI, but failed to save.");
   }
-  ImGui::PopStyleVar();
-  ImGui::PopStyleColor(2);
+  PopInputChrome();
 
   ImGui::TextColored(ui::kTextMuted, "Ctrl+Enter to send");
   ImGui::SameLine();
@@ -3163,7 +3291,7 @@ static void DrawChatDetailPane(AppState& app, ChatSession& chat) {
   ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
 
   if (app.center_view_mode == CenterViewMode::Structured) {
-    const float input_area_h = 156.0f;
+    const float input_area_h = 176.0f;
     BeginPanel("conversation_history", ImVec2(0.0f, -input_area_h), PanelTone::Primary, false, ImGuiWindowFlags_AlwaysVerticalScrollbar, ImVec2(0.0f, 0.0f));
     const float content_width = ImGui::GetContentRegionAvail().x;
     for (int i = 0; i < static_cast<int>(chat.messages.size()); ++i) {
@@ -3191,12 +3319,9 @@ static void DrawChatDetailPane(AppState& app, ChatSession& chat) {
       } else {
         ImGui::TextColored(ui::kTextPrimary, "Edit message and continue from this point");
         ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
-        ImGui::PushStyleColor(ImGuiCol_FrameBg, Rgb(15, 20, 27, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_Border, Rgb(255, 255, 255, 0.08f));
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
+        PushInputChrome();
         ImGui::InputTextMultiline("##edited_user_message", &app.editing_message_text, ImVec2(560.0f, 170.0f));
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor(2);
+        PopInputChrome();
         ImGui::Dummy(ImVec2(0.0f, ui::kSpace4));
         ImGui::TextColored(ui::kTextMuted, "This removes all messages after this point and re-runs Gemini.");
       }
@@ -3233,7 +3358,7 @@ static void DrawChatDetailPane(AppState& app, ChatSession& chat) {
 
 static void DrawSectionHeader(const char* title) {
   PushFontIfAvailable(g_font_ui);
-  ImGui::TextColored(ui::kTextPrimary, "%s", title);
+  ImGui::TextColored(ui::kTextSecondary, "%s", title);
   PopFontIfAvailable(g_font_ui);
   ImGui::Dummy(ImVec2(0.0f, ui::kSpace4));
 }
@@ -3265,13 +3390,10 @@ static void DrawSessionSidePane(AppState& app, ChatSession& chat) {
       ImGui::EndCombo();
     }
     if (active_folder != nullptr) {
-      ImGui::PushStyleColor(ImGuiCol_FrameBg, Rgb(15, 20, 27, 1.0f));
-      ImGui::PushStyleColor(ImGuiCol_Border, Rgb(255, 255, 255, 0.08f));
-      ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
+      PushInputChrome();
       ImGui::InputText("Folder Title", &active_folder->title);
       ImGui::InputText("Folder Dir", &active_folder->directory);
-      ImGui::PopStyleVar();
-      ImGui::PopStyleColor(2);
+      PopInputChrome();
       if (DrawButton("Save Folder", ImVec2(110.0f, 32.0f), ButtonKind::Ghost)) {
         SaveFolders(app);
         app.status_line = "Folder settings saved.";
@@ -3339,12 +3461,9 @@ static void DrawSessionSidePane(AppState& app, ChatSession& chat) {
       SaveAndUpdateStatus(app, chat, "File detached from chat.", "Detached file in UI, but failed to save chat.");
     }
 
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, Rgb(15, 20, 27, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_Border, Rgb(255, 255, 255, 0.08f));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
+    PushInputChrome();
     ImGui::InputText("File Path", &app.attach_file_input);
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor(2);
+    PopInputChrome();
 
     if (DrawButton("Attach File", ImVec2(100.0f, 34.0f), ButtonKind::Ghost)) {
       const std::string path_text = Trim(app.attach_file_input);
@@ -3396,19 +3515,13 @@ static void DrawSessionSidePane(AppState& app, ChatSession& chat) {
     }
 
     ImGui::Checkbox("YOLO mode (Ctrl+Y)", &app.settings.gemini_yolo_mode);
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, Rgb(15, 20, 27, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_Border, Rgb(255, 255, 255, 0.08f));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
+    PushInputChrome();
     ImGui::InputText("Extra Flags", &app.settings.gemini_extra_flags);
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor(2);
+    PopInputChrome();
 
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, Rgb(15, 20, 27, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_Border, Rgb(255, 255, 255, 0.08f));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
+    PushInputChrome();
     ImGui::InputTextMultiline("Command Template", &app.settings.gemini_command_template, ImVec2(-1.0f, 88.0f));
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor(2);
+    PopInputChrome();
 
     if (DrawButton("Save Settings", ImVec2(120.0f, 34.0f), ButtonKind::Primary)) {
       if (ProviderProfile* selected_profile = ActiveProvider(app); selected_profile != nullptr) {
@@ -3430,10 +3543,9 @@ static void DrawSessionSidePane(AppState& app, ChatSession& chat) {
     DrawSectionHeader("Current Command");
     if (BeginSectionCard("command_preview_card", 128.0f)) {
       PushFontIfAvailable(g_font_mono);
-      ImGui::PushStyleColor(ImGuiCol_FrameBg, Rgb(15, 20, 27, 1.0f));
-      ImGui::PushStyleColor(ImGuiCol_Border, Rgb(255, 255, 255, 0.08f));
+      PushInputChrome();
       ImGui::InputTextMultiline("##cmd_preview", &app.pending_call->command_preview, ImVec2(-1.0f, -1.0f), ImGuiInputTextFlags_ReadOnly);
-      ImGui::PopStyleColor(2);
+      PopInputChrome();
       PopFontIfAvailable(g_font_mono);
     }
     EndPanel();
@@ -3526,6 +3638,10 @@ int main(int, char**) {
     MarkSelectedCliTerminalForLaunch(app);
   }
 
+#if defined(_WIN32)
+  SetProcessDPIAware();
+#endif
+
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) != 0) {
     std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
     return 1;
@@ -3576,8 +3692,12 @@ int main(int, char**) {
   ImGui::CreateContext();
   ImGuiIO& io = ImGui::GetIO();
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-  ConfigureFonts(io);
+  const float ui_scale = DetectUiScale(window);
+  ConfigureFonts(io, ui_scale);
   ApplyModernTheme();
+  if (ui_scale > 1.01f) {
+    ImGui::GetStyle().ScaleAllSizes(ui_scale);
+  }
 
   ImGui_ImplSDL2_InitForOpenGL(window, gl_context);
   ImGui_ImplOpenGL3_Init(glsl_version);
@@ -3615,7 +3735,7 @@ int main(int, char**) {
 
     ImGui::Begin("UAM Gemini Manager", nullptr, window_flags);
     if (ImGui::BeginTable("layout_split", 3, ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings |
-                                              ImGuiTableFlags_SizingStretchProp)) {
+                                              ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) {
       ImGui::TableSetupColumn("Chats", ImGuiTableColumnFlags_WidthFixed, ui::kSidebarWidth);
       ImGui::TableSetupColumn("Conversation", ImGuiTableColumnFlags_WidthStretch, 0.72f);
       ImGui::TableSetupColumn("Workspace", ImGuiTableColumnFlags_WidthFixed, ui::kRightPanelWidth);

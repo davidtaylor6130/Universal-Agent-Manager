@@ -1,0 +1,3 @@
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests19/_deps/sdl2-subbuild/CMakeFiles/sdl2-populate.dir
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests19/_deps/sdl2-subbuild/CMakeFiles/ALL_BUILD.dir
+C:/Users/david/Documents/GitHub/Universal-Agent-Manager/build_tests19/_deps/sdl2-subbuild/CMakeFiles/ZERO_CHECK.dir
