@@ -1061,22 +1061,42 @@ static void SaveAndUpdateStatus(AppState& app, const ChatSession& chat, const st
 }
 
 static void ApplyLocalOverrides(const AppState& app, std::vector<ChatSession>& native_chats) {
+  std::vector<ChatSession> local_chats = LoadChats(app);
   std::unordered_map<std::string, ChatSession> local_map;
-  for (const ChatSession& local : LoadChats(app)) {
+  for (const ChatSession& local : local_chats) {
     local_map.emplace(local.id, local);
   }
 
+  std::unordered_set<std::string> native_ids;
   for (ChatSession& native : native_chats) {
+    native_ids.insert(native.id);
     const auto it = local_map.find(native.id);
     if (it == local_map.end()) {
       continue;
     }
-    if (!it->second.title.empty()) {
-      native.title = it->second.title;
+    const ChatSession& local = it->second;
+    if (!local.title.empty()) {
+      native.title = local.title;
     }
-    native.linked_files = it->second.linked_files;
-    native.folder_id = it->second.folder_id;
+    native.linked_files = local.linked_files;
+    native.folder_id = local.folder_id;
+    native.created_at = local.created_at;
+    native.updated_at = local.updated_at;
+    if (!local.messages.empty()) {
+      native.messages = local.messages;
+    }
   }
+
+  std::vector<ChatSession> merged = native_chats;
+  for (const ChatSession& chat : local_chats) {
+    if (!chat.uses_native_session && native_ids.find(chat.id) == native_ids.end()) {
+      merged.push_back(chat);
+    }
+  }
+
+  SortChatsByRecent(merged);
+  app.chats = std::move(merged);
+  NormalizeChatFolderAssignments(app);
 }
 
 static void RefreshGeminiChatsDir(AppState& app) {
@@ -1445,16 +1465,6 @@ static void SyncChatsFromNative(AppState& app, const std::string& preferred_chat
   RefreshGeminiChatsDir(app);
   std::vector<ChatSession> native = LoadNativeGeminiChats(app.gemini_chats_dir);
   ApplyLocalOverrides(app, native);
-
-  std::vector<ChatSession> merged = native;
-  for (const ChatSession& chat : app.chats) {
-    if (!chat.uses_native_session) {
-      merged.push_back(chat);
-    }
-  }
-  SortChatsByRecent(merged);
-  app.chats = std::move(merged);
-  NormalizeChatFolderAssignments(app);
 
   if (preserve_selection && !selected_before.empty() && FindChatIndexById(app, selected_before) >= 0) {
     SelectChatById(app, selected_before);
@@ -2095,16 +2105,6 @@ static void PollPendingGeminiCall(AppState& app) {
   RefreshGeminiChatsDir(app);
   std::vector<ChatSession> native_after = LoadNativeGeminiChats(app.gemini_chats_dir);
   ApplyLocalOverrides(app, native_after);
-
-  std::vector<ChatSession> merged = native_after;
-  for (const ChatSession& chat : app.chats) {
-    if (!chat.uses_native_session) {
-      merged.push_back(chat);
-    }
-  }
-  SortChatsByRecent(merged);
-  app.chats = std::move(merged);
-  NormalizeChatFolderAssignments(app);
 
   std::string selected_id = app.pending_call->resume_session_id;
   if (selected_id.empty()) {
