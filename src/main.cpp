@@ -4104,24 +4104,24 @@ static bool BeginSectionCard(const char* id, const float height = 0.0f) {
 static void DrawSessionSidePane(AppState& app, ChatSession& chat) {
   BeginPanel("right_settings", ImVec2(0.0f, 0.0f), PanelTone::Secondary, true, 0, ImVec2(ui::kSpace16, ui::kSpace16));
   PushFontIfAvailable(g_font_title);
-  ImGui::TextColored(ui::kTextPrimary, "Inspector");
+  ImGui::TextColored(ui::kTextPrimary, "Chat Settings");
   PopFontIfAvailable(g_font_title);
-  ImGui::TextColored(ui::kTextMuted, "Chat metadata, files, and runtime controls");
+  ImGui::TextColored(ui::kTextMuted, "Move this chat, manage files, and tune runtime template");
   ImGui::Dummy(ImVec2(0.0f, ui::kSpace6));
   DrawSoftDivider();
 
-  DrawSectionHeader("Chat Folder");
+  DrawSectionHeader("Chat Placement");
   if (BeginSectionCard("folder_card")) {
-    ChatFolder* active_folder = FindFolderById(app, chat.folder_id);
+    const ChatFolder* active_folder = FindFolderById(app, chat.folder_id);
     const char* active_label = (active_folder != nullptr) ? active_folder->title.c_str() : "(Unassigned)";
     if (ImGui::BeginCombo("Folder", active_label)) {
       for (const ChatFolder& folder : app.folders) {
         const bool selected = (chat.folder_id == folder.id);
-        if (ImGui::Selectable(folder.title.c_str(), selected)) {
+        const std::string folder_name = FolderTitleOrFallback(folder);
+        if (ImGui::Selectable(folder_name.c_str(), selected)) {
           chat.folder_id = folder.id;
           chat.updated_at = TimestampNow();
           SaveAndUpdateStatus(app, chat, "Chat moved to folder.", "Moved chat in UI, but failed to save.");
-          active_folder = FindFolderById(app, chat.folder_id);
         }
         if (selected) {
           ImGui::SetItemDefaultFocus();
@@ -4129,27 +4129,7 @@ static void DrawSessionSidePane(AppState& app, ChatSession& chat) {
       }
       ImGui::EndCombo();
     }
-    if (active_folder != nullptr) {
-      PushInputChrome();
-      ImGui::InputText("Folder Title", &active_folder->title);
-      ImGui::InputText("Folder Dir", &active_folder->directory);
-      PopInputChrome();
-      if (DrawButton("Save Folder", ImVec2(110.0f, 32.0f), ButtonKind::Ghost)) {
-        SaveFolders(app);
-        app.status_line = "Folder settings saved.";
-      }
-      ImGui::SameLine();
-      const bool can_delete_folder = (active_folder->id != kDefaultFolderId);
-      if (!can_delete_folder) {
-        ImGui::BeginDisabled();
-      }
-      if (DrawButton("Delete Folder", ImVec2(118.0f, 32.0f), ButtonKind::Ghost)) {
-        RequestDeleteFolder(app, active_folder->id);
-      }
-      if (!can_delete_folder) {
-        ImGui::EndDisabled();
-      }
-    }
+    ImGui::TextColored(ui::kTextMuted, "Folder creation/management stays in the left chat rail.");
   }
   EndPanel();
 
@@ -4199,7 +4179,7 @@ static void DrawSessionSidePane(AppState& app, ChatSession& chat) {
   EndPanel();
 
   ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
-  DrawSectionHeader("Provider Runtime");
+  DrawSectionHeader("Prompt / Runtime");
   if (BeginSectionCard("runtime_card")) {
     ImGui::TextColored(ui::kTextMuted, "Template placeholders: {prompt} {files} {resume} {flags}");
     ImGui::Dummy(ImVec2(0.0f, 6.0f));
@@ -4231,21 +4211,17 @@ static void DrawSessionSidePane(AppState& app, ChatSession& chat) {
     PopInputChrome();
 
     PushInputChrome();
-    ImGui::InputTextMultiline("Command Template", &app.settings.gemini_command_template, ImVec2(-1.0f, 88.0f));
+    ImGui::InputTextMultiline("Prompt Template", &app.settings.gemini_command_template, ImVec2(-1.0f, 112.0f));
     PopInputChrome();
 
-    if (DrawButton("Save Settings", ImVec2(120.0f, 34.0f), ButtonKind::Primary)) {
+    if (DrawButton("Save Runtime", ImVec2(120.0f, 34.0f), ButtonKind::Primary)) {
       if (ProviderProfile* selected_profile = ActiveProvider(app); selected_profile != nullptr) {
         selected_profile->command_template = app.settings.gemini_command_template;
       }
       SaveSettings(app);
       SaveProviders(app);
-      app.status_line = "Provider settings saved.";
+      app.status_line = "Runtime settings saved.";
     }
-
-    ImGui::Dummy(ImVec2(0.0f, ui::kSpace4));
-    ImGui::TextColored(ui::kTextMuted, "Profiles file: %s", ProviderProfileFilePath(app).string().c_str());
-    ImGui::TextColored(ui::kTextMuted, "Action map file: %s", FrontendActionFilePath(app).string().c_str());
   }
   EndPanel();
 
