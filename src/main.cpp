@@ -130,6 +130,11 @@ struct AppState {
   int editing_message_index = -1;
   std::string editing_message_text;
   bool open_edit_message_popup = false;
+  bool open_app_settings_popup = false;
+  bool open_delete_chat_popup = false;
+  std::string pending_delete_chat_id;
+  bool open_delete_folder_popup = false;
+  std::string pending_delete_folder_id;
   std::string status_line;
   CenterViewMode center_view_mode = CenterViewMode::Structured;
   std::vector<std::unique_ptr<CliTerminalState>> cli_terminals;
@@ -152,6 +157,8 @@ static constexpr const char* kDefaultFolderId = "folder-default";
 static constexpr const char* kDefaultFolderTitle = "General";
 
 static void SortChatsByRecent(std::vector<ChatSession>& chats);
+static void ClampWindowSettings(AppSettings& settings);
+static std::string NormalizeThemeChoice(std::string value);
 
 static std::string Trim(const std::string& value) {
   const auto start = value.find_first_not_of(" \t\r\n");
@@ -1055,13 +1062,32 @@ static ChatSession* SelectedChat(AppState& app) {
   return &app.chats[app.selected_chat_index];
 }
 
+static const ChatSession* SelectedChat(const AppState& app) {
+  if (app.selected_chat_index < 0 || app.selected_chat_index >= static_cast<int>(app.chats.size())) {
+    return nullptr;
+  }
+  return &app.chats[app.selected_chat_index];
+}
+
 static void SortChatsByRecent(std::vector<ChatSession>& chats) {
   std::sort(chats.begin(), chats.end(), [](const ChatSession& a, const ChatSession& b) {
     return a.updated_at > b.updated_at;
   });
 }
 
-static void SaveSettings(const AppState& app) {
+static void RefreshRememberedSelection(AppState& app) {
+  if (!app.settings.remember_last_chat) {
+    app.settings.last_selected_chat_id.clear();
+    return;
+  }
+  const ChatSession* selected = SelectedChat(app);
+  app.settings.last_selected_chat_id = (selected != nullptr) ? selected->id : "";
+}
+
+static void SaveSettings(AppState& app) {
+  app.settings.ui_theme = NormalizeThemeChoice(app.settings.ui_theme);
+  ClampWindowSettings(app.settings);
+  RefreshRememberedSelection(app);
   SettingsStore::Save(SettingsFilePath(app), app.settings, app.center_view_mode);
 }
 
@@ -1089,6 +1115,7 @@ static ChatSession CreateNewChat(const std::string& folder_id) {
 
 static void SelectChatById(AppState& app, const std::string& chat_id) {
   app.selected_chat_index = FindChatIndexById(app, chat_id);
+  RefreshRememberedSelection(app);
 }
 
 static void AddMessage(ChatSession& chat, const MessageRole role, const std::string& text) {
@@ -2252,19 +2279,22 @@ static void PollPendingGeminiCall(AppState& app) {
   app.pending_call.reset();
 }
 
-static void RemoveCurrentChat(AppState& app) {
-  ChatSession* chat = SelectedChat(app);
-  if (chat == nullptr) {
-    return;
+static bool RemoveChatById(AppState& app, const std::string& chat_id) {
+  const int chat_index = FindChatIndexById(app, chat_id);
+  if (chat_index < 0) {
+    app.status_line = "Chat no longer exists.";
+    return false;
   }
-  if (app.pending_call.has_value() && app.pending_call->chat_id == chat->id) {
+
+  const ChatSession chat = app.chats[chat_index];
+  if (app.pending_call.has_value() && app.pending_call->chat_id == chat.id) {
     app.status_line = "Cannot delete a chat while Gemini is still running for it.";
-    return;
+    return false;
   }
-  const std::string id = chat->id;
-  const std::string native_session_id = chat->uses_native_session ? chat->native_session_id : "";
+
+  const std::string native_session_id = chat.uses_native_session ? chat.native_session_id : "";
   std::error_code local_delete_ec;
-  fs::remove_all(ChatPath(app, *chat), local_delete_ec);
+  fs::remove_all(ChatPath(app, chat), local_delete_ec);
   std::error_code native_delete_ec;
   bool native_delete_attempted = false;
   if (ActiveProviderUsesGeminiHistory(app) && !native_session_id.empty()) {
@@ -2275,20 +2305,24 @@ static void RemoveCurrentChat(AppState& app) {
     }
   }
 
-  app.chats.erase(app.chats.begin() + app.selected_chat_index);
+  app.chats.erase(app.chats.begin() + chat_index);
   if (app.chats.empty()) {
     app.selected_chat_index = -1;
-  } else if (app.selected_chat_index >= static_cast<int>(app.chats.size())) {
-    app.selected_chat_index = static_cast<int>(app.chats.size()) - 1;
+  } else if (app.selected_chat_index > chat_index) {
+    --app.selected_chat_index;
+  } else if (app.selected_chat_index == chat_index) {
+    app.selected_chat_index = std::min(chat_index, static_cast<int>(app.chats.size()) - 1);
   }
 
-  if (app.pending_call.has_value() && app.pending_call->chat_id == id) {
+  if (app.pending_call.has_value() && app.pending_call->chat_id == chat.id) {
     app.pending_call.reset();
   }
-  if (app.editing_chat_id == id) {
+  if (app.editing_chat_id == chat.id) {
     ClearEditMessageState(app);
   }
-  StopAndEraseCliTerminalForChat(app, id);
+  StopAndEraseCliTerminalForChat(app, chat.id);
+  RefreshRememberedSelection(app);
+  SaveSettings(app);
 
   if (local_delete_ec) {
     app.status_line = "Chat removed from UI, but deleting local history failed.";
@@ -2297,6 +2331,46 @@ static void RemoveCurrentChat(AppState& app) {
   } else {
     app.status_line = "Chat deleted.";
   }
+  return true;
+}
+
+static bool DeleteFolderById(AppState& app, const std::string& folder_id) {
+  if (folder_id.empty() || folder_id == kDefaultFolderId) {
+    app.status_line = "The default folder cannot be deleted.";
+    return false;
+  }
+  const int folder_index = FindFolderIndexById(app, folder_id);
+  if (folder_index < 0) {
+    app.status_line = "Folder no longer exists.";
+    return false;
+  }
+
+  bool all_chat_saves_ok = true;
+  int moved_chat_count = 0;
+  for (ChatSession& existing_chat : app.chats) {
+    if (existing_chat.folder_id != folder_id) {
+      continue;
+    }
+    existing_chat.folder_id = kDefaultFolderId;
+    existing_chat.updated_at = TimestampNow();
+    if (!SaveChat(app, existing_chat)) {
+      all_chat_saves_ok = false;
+    }
+    ++moved_chat_count;
+  }
+
+  app.folders.erase(app.folders.begin() + folder_index);
+  EnsureDefaultFolder(app);
+  if (app.new_chat_folder_id == folder_id) {
+    app.new_chat_folder_id = kDefaultFolderId;
+  }
+  SaveFolders(app);
+  if (all_chat_saves_ok) {
+    app.status_line = "Folder deleted. Moved " + std::to_string(moved_chat_count) + " chat(s) to General.";
+  } else {
+    app.status_line = "Folder deleted, but failed to persist one or more moved chats.";
+  }
+  return true;
 }
 
 static void CreateAndSelectChat(AppState& app) {
@@ -2305,6 +2379,7 @@ static void CreateAndSelectChat(AppState& app) {
   app.chats.push_back(chat);
   SortChatsByRecent(app.chats);
   SelectChatById(app, id);
+  SaveSettings(app);
   if (app.center_view_mode == CenterViewMode::CliConsole) {
     MarkSelectedCliTerminalForLaunch(app);
   }
@@ -2313,6 +2388,33 @@ static void CreateAndSelectChat(AppState& app) {
   } else {
     app.status_line = "New chat created.";
   }
+}
+
+static void RequestDeleteSelectedChat(AppState& app) {
+  const ChatSession* chat = SelectedChat(app);
+  if (chat == nullptr) {
+    app.status_line = "Select a chat to delete.";
+    return;
+  }
+  if (app.settings.confirm_delete_chat) {
+    app.pending_delete_chat_id = chat->id;
+    app.open_delete_chat_popup = true;
+    return;
+  }
+  RemoveChatById(app, chat->id);
+}
+
+static void RequestDeleteFolder(AppState& app, const std::string& folder_id) {
+  if (folder_id.empty()) {
+    app.status_line = "No folder selected.";
+    return;
+  }
+  if (app.settings.confirm_delete_folder) {
+    app.pending_delete_folder_id = folder_id;
+    app.open_delete_folder_popup = true;
+    return;
+  }
+  DeleteFolderById(app, folder_id);
 }
 
 static ImVec4 Rgb(const int r, const int g, const int b, const float a = 1.0f) {
@@ -2336,27 +2438,32 @@ constexpr float kRadiusSmall = 8.0f;
 constexpr float kRadiusPanel = 14.0f;
 constexpr float kRadiusInput = 12.0f;
 
-const ImVec4 kMainBackground = Rgb(8, 12, 17, 1.0f);
-const ImVec4 kPrimarySurface = Rgb(12, 17, 24, 0.95f);
-const ImVec4 kSecondarySurface = Rgb(16, 22, 31, 0.95f);
-const ImVec4 kElevatedSurface = Rgb(22, 30, 42, 0.98f);
-const ImVec4 kInputSurface = Rgb(10, 15, 22, 0.94f);
-const ImVec4 kBorder = Rgb(255, 255, 255, 0.08f);
-const ImVec4 kBorderStrong = Rgb(130, 171, 255, 0.35f);
-const ImVec4 kShadow = Rgb(0, 0, 0, 0.36f);
-const ImVec4 kShadowSoft = Rgb(0, 0, 0, 0.20f);
+ImVec4 kMainBackground = Rgb(8, 12, 17, 1.0f);
+ImVec4 kPrimarySurface = Rgb(12, 17, 24, 0.95f);
+ImVec4 kSecondarySurface = Rgb(16, 22, 31, 0.95f);
+ImVec4 kElevatedSurface = Rgb(22, 30, 42, 0.98f);
+ImVec4 kInputSurface = Rgb(10, 15, 22, 0.94f);
+ImVec4 kBorder = Rgb(255, 255, 255, 0.08f);
+ImVec4 kBorderStrong = Rgb(130, 171, 255, 0.35f);
+ImVec4 kShadow = Rgb(0, 0, 0, 0.36f);
+ImVec4 kShadowSoft = Rgb(0, 0, 0, 0.20f);
 
-const ImVec4 kTextPrimary = Rgb(234, 240, 248, 1.0f);
-const ImVec4 kTextSecondary = Rgb(178, 189, 203, 1.0f);
-const ImVec4 kTextMuted = Rgb(132, 145, 160, 1.0f);
+ImVec4 kTextPrimary = Rgb(234, 240, 248, 1.0f);
+ImVec4 kTextSecondary = Rgb(178, 189, 203, 1.0f);
+ImVec4 kTextMuted = Rgb(132, 145, 160, 1.0f);
 
-const ImVec4 kAccent = Rgb(96, 160, 255, 1.0f);
-const ImVec4 kAccentSoft = Rgb(96, 160, 255, 0.24f);
-const ImVec4 kSuccess = Rgb(34, 197, 94, 1.0f);
-const ImVec4 kError = Rgb(255, 107, 107, 1.0f);
-const ImVec4 kWarning = Rgb(245, 158, 11, 1.0f);
-const ImVec4 kTransparent = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+ImVec4 kAccent = Rgb(96, 160, 255, 1.0f);
+ImVec4 kAccentSoft = Rgb(96, 160, 255, 0.24f);
+ImVec4 kSuccess = Rgb(34, 197, 94, 1.0f);
+ImVec4 kError = Rgb(255, 107, 107, 1.0f);
+ImVec4 kWarning = Rgb(245, 158, 11, 1.0f);
+ImVec4 kTransparent = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
 }  // namespace ui
+
+enum class UiThemeResolved {
+  Dark,
+  Light
+};
 
 enum class PanelTone {
   Primary,
@@ -2369,6 +2476,139 @@ enum class ButtonKind {
   Ghost,
   Accent
 };
+
+static std::string ToLowerCopy(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return value;
+}
+
+static std::string NormalizeThemeChoice(std::string value) {
+  value = ToLowerCopy(std::move(value));
+  if (value == "light") {
+    return "light";
+  }
+  if (value == "system") {
+    return "system";
+  }
+  return "dark";
+}
+
+static bool ContainsInsensitive(const std::string& haystack, const std::string& needle) {
+  const std::string lowered_haystack = ToLowerCopy(haystack);
+  const std::string lowered_needle = ToLowerCopy(needle);
+  return lowered_haystack.find(lowered_needle) != std::string::npos;
+}
+
+static std::optional<bool> DetectSystemPrefersLightTheme() {
+#if defined(_WIN32)
+  DWORD value = 1;
+  DWORD value_size = sizeof(value);
+  const LONG rc = RegGetValueA(
+      HKEY_CURRENT_USER,
+      "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+      "AppsUseLightTheme",
+      RRF_RT_REG_DWORD,
+      nullptr,
+      &value,
+      &value_size);
+  if (rc == ERROR_SUCCESS) {
+    return value != 0;
+  }
+  return std::nullopt;
+#elif defined(__APPLE__)
+  if (const char* env_style = std::getenv("AppleInterfaceStyle")) {
+    return ContainsInsensitive(env_style, "dark") ? std::optional<bool>(false) : std::optional<bool>(true);
+  }
+  FILE* pipe = popen("defaults read -g AppleInterfaceStyle 2>/dev/null", "r");
+  if (pipe == nullptr) {
+    return std::nullopt;
+  }
+  std::array<char, 128> buffer{};
+  std::string output;
+  while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
+    output += buffer.data();
+  }
+  pclose(pipe);
+  const std::string trimmed = Trim(output);
+  if (trimmed.empty()) {
+    return std::nullopt;
+  }
+  return ContainsInsensitive(trimmed, "dark") ? std::optional<bool>(false) : std::optional<bool>(true);
+#else
+  const std::array<const char*, 4> env_candidates = {"GTK_THEME", "QT_STYLE_OVERRIDE", "KDE_COLOR_SCHEME", "COLORFGBG"};
+  for (const char* env_key : env_candidates) {
+    const char* value = std::getenv(env_key);
+    if (value == nullptr || *value == '\0') {
+      continue;
+    }
+    const std::string text = value;
+    if (ContainsInsensitive(text, "dark")) {
+      return false;
+    }
+    if (ContainsInsensitive(text, "light")) {
+      return true;
+    }
+  }
+  return std::nullopt;
+#endif
+}
+
+static UiThemeResolved ResolveUiTheme(const AppSettings& settings) {
+  const std::string mode = NormalizeThemeChoice(settings.ui_theme);
+  if (mode == "light") {
+    return UiThemeResolved::Light;
+  }
+  if (mode == "dark") {
+    return UiThemeResolved::Dark;
+  }
+  if (const std::optional<bool> system_prefers_light = DetectSystemPrefersLightTheme(); system_prefers_light.has_value()) {
+    return system_prefers_light.value() ? UiThemeResolved::Light : UiThemeResolved::Dark;
+  }
+  return UiThemeResolved::Dark;
+}
+
+static void ApplyResolvedPalette(const UiThemeResolved theme) {
+  if (theme == UiThemeResolved::Light) {
+    ui::kMainBackground = Rgb(241, 245, 250, 1.0f);
+    ui::kPrimarySurface = Rgb(255, 255, 255, 0.98f);
+    ui::kSecondarySurface = Rgb(247, 250, 255, 0.98f);
+    ui::kElevatedSurface = Rgb(235, 242, 252, 0.98f);
+    ui::kInputSurface = Rgb(250, 252, 255, 1.0f);
+    ui::kBorder = Rgb(26, 48, 84, 0.14f);
+    ui::kBorderStrong = Rgb(86, 141, 230, 0.50f);
+    ui::kShadow = Rgb(9, 20, 39, 0.16f);
+    ui::kShadowSoft = Rgb(9, 20, 39, 0.08f);
+    ui::kTextPrimary = Rgb(21, 33, 49, 1.0f);
+    ui::kTextSecondary = Rgb(76, 93, 115, 1.0f);
+    ui::kTextMuted = Rgb(102, 120, 144, 1.0f);
+    ui::kAccent = Rgb(69, 128, 230, 1.0f);
+    ui::kAccentSoft = Rgb(69, 128, 230, 0.18f);
+    ui::kSuccess = Rgb(22, 163, 74, 1.0f);
+    ui::kError = Rgb(220, 38, 38, 1.0f);
+    ui::kWarning = Rgb(217, 119, 6, 1.0f);
+    return;
+  }
+
+  ui::kMainBackground = Rgb(8, 12, 17, 1.0f);
+  ui::kPrimarySurface = Rgb(12, 17, 24, 0.95f);
+  ui::kSecondarySurface = Rgb(16, 22, 31, 0.95f);
+  ui::kElevatedSurface = Rgb(22, 30, 42, 0.98f);
+  ui::kInputSurface = Rgb(10, 15, 22, 0.94f);
+  ui::kBorder = Rgb(255, 255, 255, 0.08f);
+  ui::kBorderStrong = Rgb(130, 171, 255, 0.35f);
+  ui::kShadow = Rgb(0, 0, 0, 0.36f);
+  ui::kShadowSoft = Rgb(0, 0, 0, 0.20f);
+  ui::kTextPrimary = Rgb(234, 240, 248, 1.0f);
+  ui::kTextSecondary = Rgb(178, 189, 203, 1.0f);
+  ui::kTextMuted = Rgb(132, 145, 160, 1.0f);
+  ui::kAccent = Rgb(96, 160, 255, 1.0f);
+  ui::kAccentSoft = Rgb(96, 160, 255, 0.24f);
+  ui::kSuccess = Rgb(34, 197, 94, 1.0f);
+  ui::kError = Rgb(255, 107, 107, 1.0f);
+  ui::kWarning = Rgb(245, 158, 11, 1.0f);
+}
 
 static ImFont* TryLoadFont(ImGuiIO& io, const float size, std::initializer_list<const char*> paths) {
   for (const char* path : paths) {
@@ -2452,6 +2692,10 @@ static void PopFontIfAvailable(ImFont* font) {
   }
 }
 
+static bool IsLightPaletteActive() {
+  return ui::kMainBackground.x > 0.55f;
+}
+
 static ImVec4 PanelColor(const PanelTone tone) {
   switch (tone) {
     case PanelTone::Primary:
@@ -2477,10 +2721,11 @@ static ImVec4 PanelStrokeColor(const PanelTone tone) {
 }
 
 static void PushInputChrome(const float rounding = ui::kRadiusSmall) {
+  const bool light = IsLightPaletteActive();
   ImGui::PushStyleColor(ImGuiCol_FrameBg, ui::kInputSurface);
   ImGui::PushStyleColor(ImGuiCol_Border, ui::kBorder);
-  ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, Rgb(16, 23, 33, 1.0f));
-  ImGui::PushStyleColor(ImGuiCol_FrameBgActive, Rgb(20, 29, 40, 1.0f));
+  ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, light ? Rgb(240, 246, 255, 1.0f) : Rgb(16, 23, 33, 1.0f));
+  ImGui::PushStyleColor(ImGuiCol_FrameBgActive, light ? Rgb(234, 242, 255, 1.0f) : Rgb(20, 29, 40, 1.0f));
   ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, rounding);
 }
 
@@ -2523,29 +2768,30 @@ static void EndPanel() {
 }
 
 static bool DrawButton(const char* label, const ImVec2& size, const ButtonKind kind) {
+  const bool light = IsLightPaletteActive();
   ImVec4 bg = ui::kElevatedSurface;
-  ImVec4 bg_hover = Rgb(31, 42, 57, 1.0f);
-  ImVec4 bg_active = Rgb(35, 47, 64, 1.0f);
+  ImVec4 bg_hover = light ? Rgb(221, 234, 249, 1.0f) : Rgb(31, 42, 57, 1.0f);
+  ImVec4 bg_active = light ? Rgb(211, 228, 248, 1.0f) : Rgb(35, 47, 64, 1.0f);
   ImVec4 border = ui::kBorder;
   ImVec4 text = ui::kTextPrimary;
 
   if (kind == ButtonKind::Primary) {
-    bg = Rgb(84, 147, 255, 0.94f);
-    bg_hover = Rgb(100, 160, 255, 1.0f);
-    bg_active = Rgb(71, 133, 238, 1.0f);
-    border = Rgb(140, 182, 255, 0.70f);
+    bg = light ? Rgb(69, 128, 230, 0.94f) : Rgb(84, 147, 255, 0.94f);
+    bg_hover = light ? Rgb(84, 141, 238, 1.0f) : Rgb(100, 160, 255, 1.0f);
+    bg_active = light ? Rgb(58, 113, 212, 1.0f) : Rgb(71, 133, 238, 1.0f);
+    border = light ? Rgb(104, 156, 245, 0.70f) : Rgb(140, 182, 255, 0.70f);
     text = Rgb(255, 255, 255, 1.0f);
   } else if (kind == ButtonKind::Accent) {
-    bg = Rgb(48, 108, 201, 0.92f);
-    bg_hover = Rgb(62, 121, 215, 1.0f);
-    bg_active = Rgb(42, 98, 189, 1.0f);
-    border = Rgb(116, 167, 255, 0.65f);
+    bg = light ? Rgb(58, 116, 216, 0.94f) : Rgb(48, 108, 201, 0.92f);
+    bg_hover = light ? Rgb(71, 129, 227, 1.0f) : Rgb(62, 121, 215, 1.0f);
+    bg_active = light ? Rgb(51, 105, 202, 1.0f) : Rgb(42, 98, 189, 1.0f);
+    border = light ? Rgb(98, 148, 233, 0.65f) : Rgb(116, 167, 255, 0.65f);
     text = Rgb(255, 255, 255, 1.0f);
   } else if (kind == ButtonKind::Ghost) {
     bg = ui::kTransparent;
-    bg_hover = Rgb(255, 255, 255, 0.08f);
-    bg_active = Rgb(255, 255, 255, 0.12f);
-    border = Rgb(255, 255, 255, 0.10f);
+    bg_hover = light ? Rgb(7, 24, 56, 0.06f) : Rgb(255, 255, 255, 0.08f);
+    bg_active = light ? Rgb(7, 24, 56, 0.10f) : Rgb(255, 255, 255, 0.12f);
+    border = light ? Rgb(7, 24, 56, 0.12f) : Rgb(255, 255, 255, 0.10f);
   }
 
   ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.0f);
@@ -2565,8 +2811,9 @@ static void DrawSoftDivider() {
   ImDrawList* draw = ImGui::GetWindowDrawList();
   const ImVec2 p = ImGui::GetCursorScreenPos();
   const float width = ImGui::GetContentRegionAvail().x;
-  const ImU32 left = ImGui::GetColorU32(Rgb(255, 255, 255, 0.0f));
-  const ImU32 center = ImGui::GetColorU32(Rgb(255, 255, 255, 0.12f));
+  const bool light = IsLightPaletteActive();
+  const ImU32 left = ImGui::GetColorU32(light ? Rgb(9, 20, 39, 0.0f) : Rgb(255, 255, 255, 0.0f));
+  const ImU32 center = ImGui::GetColorU32(light ? Rgb(20, 42, 73, 0.16f) : Rgb(255, 255, 255, 0.12f));
   draw->AddRectFilledMultiColor(p, ImVec2(p.x + width, p.y + 1.0f), left, center, center, left);
   ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
 }
@@ -2585,6 +2832,7 @@ static std::string CompactPreview(const std::string& text, const std::size_t max
 }
 
 static void ApplyModernTheme() {
+  const bool light = IsLightPaletteActive();
   ImGuiStyle& style = ImGui::GetStyle();
   style.WindowPadding = ImVec2(ui::kSpace20, ui::kSpace20);
   style.FramePadding = ImVec2(12.0f, 9.0f);
@@ -2614,32 +2862,32 @@ static void ApplyModernTheme() {
   colors[ImGuiCol_TextDisabled] = ui::kTextMuted;
   colors[ImGuiCol_WindowBg] = ui::kMainBackground;
   colors[ImGuiCol_ChildBg] = ui::kPrimarySurface;
-  colors[ImGuiCol_PopupBg] = Rgb(16, 22, 30, 0.98f);
+  colors[ImGuiCol_PopupBg] = light ? Rgb(252, 254, 255, 0.98f) : Rgb(16, 22, 30, 0.98f);
   colors[ImGuiCol_Border] = ui::kBorder;
   colors[ImGuiCol_BorderShadow] = ui::kTransparent;
   colors[ImGuiCol_FrameBg] = ui::kInputSurface;
-  colors[ImGuiCol_FrameBgHovered] = Rgb(17, 24, 34, 1.0f);
-  colors[ImGuiCol_FrameBgActive] = Rgb(22, 31, 43, 1.0f);
+  colors[ImGuiCol_FrameBgHovered] = light ? Rgb(240, 246, 255, 1.0f) : Rgb(17, 24, 34, 1.0f);
+  colors[ImGuiCol_FrameBgActive] = light ? Rgb(234, 242, 255, 1.0f) : Rgb(22, 31, 43, 1.0f);
   colors[ImGuiCol_TitleBg] = ui::kPrimarySurface;
   colors[ImGuiCol_TitleBgActive] = ui::kPrimarySurface;
   colors[ImGuiCol_MenuBarBg] = ui::kSecondarySurface;
   colors[ImGuiCol_ScrollbarBg] = ui::kTransparent;
-  colors[ImGuiCol_ScrollbarGrab] = Rgb(255, 255, 255, 0.18f);
-  colors[ImGuiCol_ScrollbarGrabHovered] = Rgb(255, 255, 255, 0.28f);
-  colors[ImGuiCol_ScrollbarGrabActive] = Rgb(255, 255, 255, 0.35f);
+  colors[ImGuiCol_ScrollbarGrab] = light ? Rgb(17, 35, 61, 0.24f) : Rgb(255, 255, 255, 0.18f);
+  colors[ImGuiCol_ScrollbarGrabHovered] = light ? Rgb(17, 35, 61, 0.36f) : Rgb(255, 255, 255, 0.28f);
+  colors[ImGuiCol_ScrollbarGrabActive] = light ? Rgb(17, 35, 61, 0.46f) : Rgb(255, 255, 255, 0.35f);
   colors[ImGuiCol_CheckMark] = ui::kAccent;
   colors[ImGuiCol_SliderGrab] = ui::kAccent;
-  colors[ImGuiCol_SliderGrabActive] = Rgb(122, 176, 255, 1.0f);
+  colors[ImGuiCol_SliderGrabActive] = light ? Rgb(54, 114, 220, 1.0f) : Rgb(122, 176, 255, 1.0f);
   colors[ImGuiCol_Button] = ui::kElevatedSurface;
-  colors[ImGuiCol_ButtonHovered] = Rgb(31, 42, 57, 1.0f);
-  colors[ImGuiCol_ButtonActive] = Rgb(38, 50, 68, 1.0f);
-  colors[ImGuiCol_Header] = Rgb(255, 255, 255, 0.05f);
-  colors[ImGuiCol_HeaderHovered] = Rgb(255, 255, 255, 0.08f);
+  colors[ImGuiCol_ButtonHovered] = light ? Rgb(221, 234, 249, 1.0f) : Rgb(31, 42, 57, 1.0f);
+  colors[ImGuiCol_ButtonActive] = light ? Rgb(211, 228, 248, 1.0f) : Rgb(38, 50, 68, 1.0f);
+  colors[ImGuiCol_Header] = light ? Rgb(9, 20, 39, 0.05f) : Rgb(255, 255, 255, 0.05f);
+  colors[ImGuiCol_HeaderHovered] = light ? Rgb(9, 20, 39, 0.08f) : Rgb(255, 255, 255, 0.08f);
   colors[ImGuiCol_HeaderActive] = ui::kAccentSoft;
   colors[ImGuiCol_Separator] = ui::kBorder;
-  colors[ImGuiCol_ResizeGrip] = Rgb(255, 255, 255, 0.10f);
-  colors[ImGuiCol_ResizeGripHovered] = Rgb(96, 160, 255, 0.42f);
-  colors[ImGuiCol_ResizeGripActive] = Rgb(96, 160, 255, 0.75f);
+  colors[ImGuiCol_ResizeGrip] = light ? Rgb(17, 35, 61, 0.20f) : Rgb(255, 255, 255, 0.10f);
+  colors[ImGuiCol_ResizeGripHovered] = light ? Rgb(69, 128, 230, 0.42f) : Rgb(96, 160, 255, 0.42f);
+  colors[ImGuiCol_ResizeGripActive] = light ? Rgb(69, 128, 230, 0.75f) : Rgb(96, 160, 255, 0.75f);
   colors[ImGuiCol_Tab] = ui::kSecondarySurface;
   colors[ImGuiCol_TabHovered] = Rgb(24, 34, 48, 1.0f);
   colors[ImGuiCol_TabActive] = ui::kElevatedSurface;
@@ -2647,38 +2895,45 @@ static void ApplyModernTheme() {
   colors[ImGuiCol_TabUnfocusedActive] = ui::kElevatedSurface;
   colors[ImGuiCol_TableHeaderBg] = ui::kSecondarySurface;
   colors[ImGuiCol_TableBorderStrong] = ui::kBorder;
-  colors[ImGuiCol_TableBorderLight] = Rgb(255, 255, 255, 0.05f);
+  colors[ImGuiCol_TableBorderLight] = light ? Rgb(17, 35, 61, 0.08f) : Rgb(255, 255, 255, 0.05f);
   colors[ImGuiCol_TableRowBg] = ui::kTransparent;
-  colors[ImGuiCol_TableRowBgAlt] = Rgb(255, 255, 255, 0.03f);
-  colors[ImGuiCol_TextSelectedBg] = Rgb(96, 160, 255, 0.32f);
+  colors[ImGuiCol_TableRowBgAlt] = light ? Rgb(9, 20, 39, 0.03f) : Rgb(255, 255, 255, 0.03f);
+  colors[ImGuiCol_TextSelectedBg] = light ? Rgb(69, 128, 230, 0.28f) : Rgb(96, 160, 255, 0.32f);
   colors[ImGuiCol_DragDropTarget] = ui::kAccent;
   colors[ImGuiCol_NavCursor] = ui::kAccent;
-  colors[ImGuiCol_NavWindowingHighlight] = Rgb(96, 160, 255, 0.65f);
-  colors[ImGuiCol_ModalWindowDimBg] = Rgb(0, 0, 0, 0.45f);
+  colors[ImGuiCol_NavWindowingHighlight] = light ? Rgb(69, 128, 230, 0.65f) : Rgb(96, 160, 255, 0.65f);
+  colors[ImGuiCol_ModalWindowDimBg] = light ? Rgb(20, 30, 45, 0.26f) : Rgb(0, 0, 0, 0.45f);
+}
+
+static void ApplyThemeFromSettings(AppState& app) {
+  app.settings.ui_theme = NormalizeThemeChoice(app.settings.ui_theme);
+  ApplyResolvedPalette(ResolveUiTheme(app.settings));
+  ApplyModernTheme();
 }
 
 static void DrawAmbientBackdrop(const ImVec2& pos, const ImVec2& size, const float time_s) {
+  const bool light = IsLightPaletteActive();
   ImDrawList* draw = ImGui::GetBackgroundDrawList();
   draw->AddRectFilledMultiColor(
       pos,
       ImVec2(pos.x + size.x, pos.y + size.y),
-      ImGui::GetColorU32(Rgb(8, 12, 17, 1.0f)),
-      ImGui::GetColorU32(Rgb(10, 15, 22, 1.0f)),
-      ImGui::GetColorU32(Rgb(7, 11, 16, 1.0f)),
-      ImGui::GetColorU32(Rgb(6, 10, 15, 1.0f)));
+      ImGui::GetColorU32(light ? Rgb(245, 249, 255, 1.0f) : Rgb(8, 12, 17, 1.0f)),
+      ImGui::GetColorU32(light ? Rgb(236, 244, 255, 1.0f) : Rgb(10, 15, 22, 1.0f)),
+      ImGui::GetColorU32(light ? Rgb(239, 246, 255, 1.0f) : Rgb(7, 11, 16, 1.0f)),
+      ImGui::GetColorU32(light ? Rgb(232, 241, 255, 1.0f) : Rgb(6, 10, 15, 1.0f)));
 
   const float pulse = 0.70f + 0.30f * std::sin(time_s * 0.35f);
   draw->AddCircleFilled(ImVec2(pos.x + size.x * 0.16f, pos.y + size.y * 0.19f), size.x * 0.20f,
-                        ImGui::GetColorU32(Rgb(96, 160, 255, 0.07f * pulse)), 72);
+                        ImGui::GetColorU32(light ? Rgb(69, 128, 230, 0.08f * pulse) : Rgb(96, 160, 255, 0.07f * pulse)), 72);
   draw->AddCircleFilled(ImVec2(pos.x + size.x * 0.86f, pos.y + size.y * 0.08f), size.x * 0.15f,
-                        ImGui::GetColorU32(Rgb(90, 130, 255, 0.05f * pulse)), 60);
+                        ImGui::GetColorU32(light ? Rgb(54, 114, 220, 0.05f * pulse) : Rgb(90, 130, 255, 0.05f * pulse)), 60);
   draw->AddRectFilledMultiColor(
       ImVec2(pos.x, pos.y + size.y * 0.68f),
       ImVec2(pos.x + size.x, pos.y + size.y),
       ImGui::GetColorU32(ui::kTransparent),
       ImGui::GetColorU32(ui::kTransparent),
-      ImGui::GetColorU32(Rgb(0, 0, 0, 0.35f)),
-      ImGui::GetColorU32(Rgb(0, 0, 0, 0.35f)));
+      ImGui::GetColorU32(light ? Rgb(12, 30, 58, 0.12f) : Rgb(0, 0, 0, 0.35f)),
+      ImGui::GetColorU32(light ? Rgb(12, 30, 58, 0.12f) : Rgb(0, 0, 0, 0.35f)));
 }
 
 static bool DrawSidebarItem(const ChatSession& chat, const bool selected, const std::string& item_id) {
@@ -2695,7 +2950,7 @@ static bool DrawSidebarItem(const ChatSession& chat, const bool selected, const 
     bg_color = Rgb(96, 160, 255, 0.20f);
     border_color = ui::kBorderStrong;
   } else if (hovered) {
-    bg_color = Rgb(255, 255, 255, 0.07f);
+    bg_color = IsLightPaletteActive() ? Rgb(7, 24, 56, 0.06f) : Rgb(255, 255, 255, 0.07f);
     border_color = ui::kBorder;
   }
   const ImVec2 max(min.x + card_size.x, min.y + card_size.y);
@@ -2815,10 +3070,14 @@ static void DrawLeftPane(AppState& app) {
   }
   if (FrontendActionVisible(app, "delete_chat") &&
       DrawButton(delete_label.c_str(), ImVec2(row_width, 34.0f), ButtonKind::Ghost)) {
-    RemoveCurrentChat(app);
+    RequestDeleteSelectedChat(app);
   }
   if (!has_selected) {
     ImGui::EndDisabled();
+  }
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
+  if (DrawButton("App Settings", ImVec2(row_width, 34.0f), ButtonKind::Ghost)) {
+    app.open_app_settings_popup = true;
   }
 
   if (ImGui::BeginPopupModal("new_folder_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
@@ -2878,6 +3137,8 @@ static void DrawLeftPane(AppState& app) {
         }
         if (DrawSidebarItem(app.chats[i], i == app.selected_chat_index, "session_" + app.chats[i].id)) {
           app.selected_chat_index = i;
+          RefreshRememberedSelection(app);
+          SaveSettings(app);
           if (app.center_view_mode == CenterViewMode::CliConsole) {
             MarkSelectedCliTerminalForLaunch(app);
           }
@@ -3411,36 +3672,7 @@ static void DrawSessionSidePane(AppState& app, ChatSession& chat) {
         ImGui::BeginDisabled();
       }
       if (DrawButton("Delete Folder", ImVec2(118.0f, 32.0f), ButtonKind::Ghost)) {
-        const std::string folder_id_to_delete = active_folder->id;
-        bool all_chat_saves_ok = true;
-        int moved_chat_count = 0;
-        for (ChatSession& existing_chat : app.chats) {
-          if (existing_chat.folder_id != folder_id_to_delete) {
-            continue;
-          }
-          existing_chat.folder_id = kDefaultFolderId;
-          if (!SaveChat(app, existing_chat)) {
-            all_chat_saves_ok = false;
-          }
-          ++moved_chat_count;
-        }
-        if (chat.folder_id == folder_id_to_delete) {
-          chat.folder_id = kDefaultFolderId;
-        }
-        const int folder_index = FindFolderIndexById(app, folder_id_to_delete);
-        if (folder_index >= 0) {
-          app.folders.erase(app.folders.begin() + folder_index);
-        }
-        EnsureDefaultFolder(app);
-        if (app.new_chat_folder_id == folder_id_to_delete) {
-          app.new_chat_folder_id = kDefaultFolderId;
-        }
-        SaveFolders(app);
-        if (all_chat_saves_ok) {
-          app.status_line = "Folder deleted. Moved " + std::to_string(moved_chat_count) + " chat(s) to General.";
-        } else {
-          app.status_line = "Folder deleted, but failed to persist one or more moved chats.";
-        }
+        RequestDeleteFolder(app, active_folder->id);
       }
       if (!can_delete_folder) {
         ImGui::EndDisabled();
@@ -3561,6 +3793,227 @@ static void DrawSessionSidePane(AppState& app, ChatSession& chat) {
   EndPanel();
 }
 
+static void ClampWindowSettings(AppSettings& settings) {
+  settings.window_width = std::clamp(settings.window_width, 960, 8192);
+  settings.window_height = std::clamp(settings.window_height, 620, 8192);
+  settings.ui_scale_multiplier = std::clamp(settings.ui_scale_multiplier, 0.85f, 1.75f);
+}
+
+static void CaptureWindowState(AppState& app, SDL_Window* window) {
+  if (window == nullptr) {
+    return;
+  }
+  int width = app.settings.window_width;
+  int height = app.settings.window_height;
+  SDL_GetWindowSize(window, &width, &height);
+  app.settings.window_width = width;
+  app.settings.window_height = height;
+  app.settings.window_maximized = (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) != 0;
+  ClampWindowSettings(app.settings);
+}
+
+static void DrawDeleteChatConfirmationModal(AppState& app) {
+  if (app.open_delete_chat_popup) {
+    ImGui::OpenPopup("confirm_delete_chat_popup");
+    app.open_delete_chat_popup = false;
+  }
+  if (ImGui::BeginPopupModal("confirm_delete_chat_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    const int chat_index = FindChatIndexById(app, app.pending_delete_chat_id);
+    const std::string chat_title = (chat_index >= 0) ? CompactPreview(app.chats[chat_index].title, 42) : "Unknown chat";
+    ImGui::TextColored(ui::kTextPrimary, "Delete chat?");
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace4));
+    ImGui::TextWrapped("This will remove local metadata and any linked native Gemini session.");
+    ImGui::TextColored(ui::kTextMuted, "Target: %s", chat_title.c_str());
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
+    if (DrawButton("Delete Chat", ImVec2(110.0f, 32.0f), ButtonKind::Primary)) {
+      RemoveChatById(app, app.pending_delete_chat_id);
+      app.pending_delete_chat_id.clear();
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (DrawButton("Cancel", ImVec2(96.0f, 32.0f), ButtonKind::Ghost)) {
+      app.pending_delete_chat_id.clear();
+      app.status_line = "Delete chat cancelled.";
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+}
+
+static void DrawDeleteFolderConfirmationModal(AppState& app) {
+  if (app.open_delete_folder_popup) {
+    ImGui::OpenPopup("confirm_delete_folder_popup");
+    app.open_delete_folder_popup = false;
+  }
+  if (ImGui::BeginPopupModal("confirm_delete_folder_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    const ChatFolder* folder = FindFolderById(app, app.pending_delete_folder_id);
+    const std::string folder_name = (folder != nullptr) ? FolderTitleOrFallback(*folder) : "Unknown folder";
+    ImGui::TextColored(ui::kTextPrimary, "Delete folder?");
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace4));
+    ImGui::TextWrapped("Chats in this folder will be moved to General.");
+    ImGui::TextColored(ui::kTextMuted, "Target: %s", folder_name.c_str());
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
+    if (DrawButton("Delete Folder", ImVec2(118.0f, 32.0f), ButtonKind::Primary)) {
+      DeleteFolderById(app, app.pending_delete_folder_id);
+      app.pending_delete_folder_id.clear();
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (DrawButton("Cancel", ImVec2(96.0f, 32.0f), ButtonKind::Ghost)) {
+      app.pending_delete_folder_id.clear();
+      app.status_line = "Delete folder cancelled.";
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+}
+
+static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
+  static AppSettings draft_settings{};
+  static CenterViewMode draft_center_mode = CenterViewMode::Structured;
+  static bool initialized = false;
+
+  if (app.open_app_settings_popup) {
+    draft_settings = app.settings;
+    draft_settings.ui_theme = NormalizeThemeChoice(draft_settings.ui_theme);
+    draft_center_mode = app.center_view_mode;
+    initialized = true;
+    ImGui::OpenPopup("app_settings_popup");
+    app.open_app_settings_popup = false;
+  }
+
+  if (ImGui::BeginPopupModal("app_settings_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (!initialized) {
+      draft_settings = app.settings;
+      draft_settings.ui_theme = NormalizeThemeChoice(draft_settings.ui_theme);
+      draft_center_mode = app.center_view_mode;
+      initialized = true;
+    }
+
+    ImGui::TextColored(ui::kTextPrimary, "Application Settings");
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
+    DrawSoftDivider();
+
+    ImGui::TextColored(ui::kTextSecondary, "Appearance");
+    const char* theme_preview = "Dark";
+    if (draft_settings.ui_theme == "light") {
+      theme_preview = "Light";
+    } else if (draft_settings.ui_theme == "system") {
+      theme_preview = "System";
+    }
+    if (ImGui::BeginCombo("Theme", theme_preview)) {
+      const std::array<std::pair<const char*, const char*>, 3> theme_options{{
+          {"dark", "Dark"},
+          {"light", "Light"},
+          {"system", "System"},
+      }};
+      for (const auto& option : theme_options) {
+        const bool selected = (draft_settings.ui_theme == option.first);
+        if (ImGui::Selectable(option.second, selected)) {
+          draft_settings.ui_theme = option.first;
+          app.settings.ui_theme = option.first;
+          ApplyThemeFromSettings(app);
+          SaveSettings(app);
+          app.status_line = "Theme updated.";
+        }
+        if (selected) {
+          ImGui::SetItemDefaultFocus();
+        }
+      }
+      ImGui::EndCombo();
+    }
+    ImGui::SetNextItemWidth(280.0f);
+    ImGui::SliderFloat("UI Scale", &draft_settings.ui_scale_multiplier, 0.85f, 1.75f, "%.2fx");
+    ImGui::TextColored(ui::kTextMuted, "Platform scale: %.2fx", platform_scale);
+
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
+    DrawSoftDivider();
+    ImGui::TextColored(ui::kTextSecondary, "Behavior");
+    ImGui::Checkbox("Confirm before deleting chat", &draft_settings.confirm_delete_chat);
+    ImGui::Checkbox("Confirm before deleting folder", &draft_settings.confirm_delete_folder);
+    ImGui::Checkbox("Remember last selected chat", &draft_settings.remember_last_chat);
+
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
+    DrawSoftDivider();
+    ImGui::TextColored(ui::kTextSecondary, "Startup / Window");
+    bool start_structured = (draft_center_mode == CenterViewMode::Structured);
+    if (ImGui::RadioButton("Structured mode", start_structured)) {
+      draft_center_mode = CenterViewMode::Structured;
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Terminal mode", !start_structured)) {
+      draft_center_mode = CenterViewMode::CliConsole;
+    }
+    ImGui::SetNextItemWidth(140.0f);
+    ImGui::InputInt("Window Width", &draft_settings.window_width);
+    ImGui::SetNextItemWidth(140.0f);
+    ImGui::InputInt("Window Height", &draft_settings.window_height);
+    ImGui::Checkbox("Start maximized", &draft_settings.window_maximized);
+
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
+    DrawSoftDivider();
+    ImGui::TextColored(ui::kTextSecondary, "Diagnostics / About");
+    ImGui::TextWrapped("Data Root: %s", app.data_root.string().c_str());
+    ImGui::TextWrapped("Provider Profiles: %s", ProviderProfileFilePath(app).string().c_str());
+    ImGui::TextWrapped("Action Map: %s", FrontendActionFilePath(app).string().c_str());
+    ImGui::TextWrapped("Gemini Home: %s", AppPaths::GeminiHomePath().string().c_str());
+    ImGui::TextColored(ui::kTextMuted, "Build: %s %s", __DATE__, __TIME__);
+
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
+    DrawSoftDivider();
+    ImGui::TextColored(ui::kTextSecondary, "Shortcuts");
+    ImGui::TextColored(ui::kTextMuted, "Ctrl+,  Open App Settings");
+    ImGui::TextColored(ui::kTextMuted, "Ctrl+N  Create chat");
+    ImGui::TextColored(ui::kTextMuted, "Ctrl+R  Refresh history");
+    ImGui::TextColored(ui::kTextMuted, "Ctrl+Enter  Send message");
+    ImGui::TextColored(ui::kTextMuted, "Ctrl+Y  YOLO mode toggle (provider settings)");
+
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
+    if (DrawButton("Save Preferences", ImVec2(138.0f, 34.0f), ButtonKind::Primary)) {
+      draft_settings.ui_theme = NormalizeThemeChoice(draft_settings.ui_theme);
+      ClampWindowSettings(draft_settings);
+      app.settings = draft_settings;
+      app.center_view_mode = draft_center_mode;
+      if (app.center_view_mode == CenterViewMode::CliConsole) {
+        MarkSelectedCliTerminalForLaunch(app);
+      }
+      ImGui::GetIO().FontGlobalScale = app.settings.ui_scale_multiplier;
+      ApplyThemeFromSettings(app);
+      SaveSettings(app);
+      app.status_line = "Preferences saved.";
+      initialized = false;
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (DrawButton("Cancel", ImVec2(96.0f, 34.0f), ButtonKind::Ghost)) {
+      initialized = false;
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+}
+
+static void HandleGlobalShortcuts(AppState& app) {
+  ImGuiIO& io = ImGui::GetIO();
+  const bool ctrl = io.KeyCtrl;
+
+  if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Comma, false)) {
+    app.open_app_settings_popup = true;
+  }
+  const bool allow_global_action = !io.WantTextInput && !ImGui::IsAnyItemActive();
+  if (allow_global_action && ctrl && ImGui::IsKeyPressed(ImGuiKey_N, false)) {
+    CreateAndSelectChat(app);
+  }
+  if (allow_global_action && ctrl && ImGui::IsKeyPressed(ImGuiKey_R, false)) {
+    RefreshChatHistory(app);
+  }
+  if (allow_global_action && ctrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
+    app.settings.gemini_yolo_mode = !app.settings.gemini_yolo_mode;
+    SaveSettings(app);
+    app.status_line = app.settings.gemini_yolo_mode ? "YOLO mode enabled." : "YOLO mode disabled.";
+  }
+}
+
 int main(int, char**) {
   AppState app;
   std::vector<fs::path> data_root_candidates;
@@ -3639,7 +4092,13 @@ int main(int, char**) {
     NormalizeChatFolderAssignments(app);
   }
   if (!app.chats.empty()) {
-    app.selected_chat_index = 0;
+    if (app.settings.remember_last_chat && !app.settings.last_selected_chat_id.empty()) {
+      app.selected_chat_index = FindChatIndexById(app, app.settings.last_selected_chat_id);
+    }
+    if (app.selected_chat_index < 0 || app.selected_chat_index >= static_cast<int>(app.chats.size())) {
+      app.selected_chat_index = 0;
+    }
+    RefreshRememberedSelection(app);
   }
   if (app.center_view_mode == CenterViewMode::CliConsole) {
     MarkSelectedCliTerminalForLaunch(app);
@@ -3676,8 +4135,8 @@ int main(int, char**) {
       "Universal Agent Manager",
       SDL_WINDOWPOS_CENTERED,
       SDL_WINDOWPOS_CENTERED,
-      1440,
-      860,
+      app.settings.window_width,
+      app.settings.window_height,
       SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
   if (window == nullptr) {
     std::fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
@@ -3699,15 +4158,20 @@ int main(int, char**) {
   ImGui::CreateContext();
   ImGuiIO& io = ImGui::GetIO();
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-  const float ui_scale = DetectUiScale(window);
-  ConfigureFonts(io, ui_scale);
-  ApplyModernTheme();
-  if (ui_scale > 1.01f) {
-    ImGui::GetStyle().ScaleAllSizes(ui_scale);
+  const float platform_ui_scale = DetectUiScale(window);
+  ConfigureFonts(io, platform_ui_scale);
+  ApplyThemeFromSettings(app);
+  if (platform_ui_scale > 1.01f) {
+    ImGui::GetStyle().ScaleAllSizes(platform_ui_scale);
   }
+  io.FontGlobalScale = app.settings.ui_scale_multiplier;
 
   ImGui_ImplSDL2_InitForOpenGL(window, gl_context);
   ImGui_ImplOpenGL3_Init(glsl_version);
+
+  if (app.settings.window_maximized) {
+    SDL_MaximizeWindow(window);
+  }
 
   bool done = false;
   while (!done) {
@@ -3721,6 +4185,16 @@ int main(int, char**) {
           event.window.windowID == SDL_GetWindowID(window)) {
         done = true;
       }
+      if (event.type == SDL_WINDOWEVENT && event.window.windowID == SDL_GetWindowID(window)) {
+        const Uint8 window_event = event.window.event;
+        if (window_event == SDL_WINDOWEVENT_SIZE_CHANGED ||
+            window_event == SDL_WINDOWEVENT_RESIZED ||
+            window_event == SDL_WINDOWEVENT_MAXIMIZED ||
+            window_event == SDL_WINDOWEVENT_RESTORED) {
+          CaptureWindowState(app, window);
+          SaveSettings(app);
+        }
+      }
     }
 
     PollPendingGeminiCall(app);
@@ -3729,6 +4203,9 @@ int main(int, char**) {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
+    io.FontGlobalScale = app.settings.ui_scale_multiplier;
+
+    HandleGlobalShortcuts(app);
 
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     DrawAmbientBackdrop(viewport->Pos, viewport->Size, static_cast<float>(ImGui::GetTime()));
@@ -3774,6 +4251,9 @@ int main(int, char**) {
     }
 
     ImGui::End();
+    DrawDeleteChatConfirmationModal(app);
+    DrawDeleteFolderConfirmationModal(app);
+    DrawAppSettingsModal(app, platform_ui_scale);
 
     ImGui::Render();
     int display_w = 0;
@@ -3785,6 +4265,9 @@ int main(int, char**) {
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     SDL_GL_SwapWindow(window);
   }
+
+  CaptureWindowState(app, window);
+  SaveSettings(app);
 
   app.pending_call.reset();
   StopAllCliTerminals(app, true);

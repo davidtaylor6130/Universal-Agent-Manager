@@ -41,6 +41,15 @@ struct AppSettings {
   std::string gemini_command_template = "gemini {resume} {flags} {prompt}";
   bool gemini_yolo_mode = false;
   std::string gemini_extra_flags;
+  std::string ui_theme = "dark";
+  bool confirm_delete_chat = true;
+  bool confirm_delete_folder = true;
+  bool remember_last_chat = true;
+  std::string last_selected_chat_id;
+  float ui_scale_multiplier = 1.0f;
+  int window_width = 1440;
+  int window_height = 860;
+  bool window_maximized = false;
 };
 
 enum class CenterViewMode {

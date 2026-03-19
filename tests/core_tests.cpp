@@ -8,6 +8,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <cmath>
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
@@ -276,6 +277,87 @@ UAM_TEST(TestSettingsStoreMigratesLegacyCommandTemplate) {
   UAM_ASSERT(settings.gemini_yolo_mode);
   UAM_ASSERT_EQ(std::string("--alpha --beta"), settings.gemini_extra_flags);
   UAM_ASSERT(view_mode == CenterViewMode::CliConsole);
+}
+
+UAM_TEST(TestSettingsStoreRoundTripExtendedPreferences) {
+  TempDir data_root("uam-settings-roundtrip");
+  const fs::path settings_file = data_root.root / "settings.txt";
+
+  AppSettings write_settings;
+  write_settings.active_provider_id = "gemini";
+  write_settings.gemini_command_template = "gemini {resume} {flags} {prompt}";
+  write_settings.gemini_yolo_mode = true;
+  write_settings.gemini_extra_flags = "--alpha --beta";
+  write_settings.ui_theme = "system";
+  write_settings.confirm_delete_chat = false;
+  write_settings.confirm_delete_folder = false;
+  write_settings.remember_last_chat = true;
+  write_settings.last_selected_chat_id = "chat-123";
+  write_settings.ui_scale_multiplier = 1.35f;
+  write_settings.window_width = 1680;
+  write_settings.window_height = 960;
+  write_settings.window_maximized = true;
+
+  UAM_ASSERT(SettingsStore::Save(settings_file, write_settings, CenterViewMode::CliConsole));
+
+  AppSettings loaded;
+  CenterViewMode loaded_mode = CenterViewMode::Structured;
+  SettingsStore::Load(settings_file, loaded, loaded_mode);
+
+  UAM_ASSERT_EQ(std::string("system"), loaded.ui_theme);
+  UAM_ASSERT(loaded_mode == CenterViewMode::CliConsole);
+  UAM_ASSERT(loaded.gemini_yolo_mode);
+  UAM_ASSERT_EQ(std::string("--alpha --beta"), loaded.gemini_extra_flags);
+  UAM_ASSERT(!loaded.confirm_delete_chat);
+  UAM_ASSERT(!loaded.confirm_delete_folder);
+  UAM_ASSERT(loaded.remember_last_chat);
+  UAM_ASSERT_EQ(std::string("chat-123"), loaded.last_selected_chat_id);
+  UAM_ASSERT(std::fabs(loaded.ui_scale_multiplier - 1.35f) < 0.0001f);
+  UAM_ASSERT_EQ(1680, loaded.window_width);
+  UAM_ASSERT_EQ(960, loaded.window_height);
+  UAM_ASSERT(loaded.window_maximized);
+}
+
+UAM_TEST(TestSettingsStoreClampsInvalidValues) {
+  TempDir data_root("uam-settings-clamp");
+  const fs::path settings_file = data_root.root / "settings.txt";
+  UAM_ASSERT(WriteTextFile(settings_file,
+                           "ui_theme=invalid-theme\n"
+                           "ui_scale_multiplier=9.0\n"
+                           "window_width=64\n"
+                           "window_height=99\n"
+                           "remember_last_chat=0\n"
+                           "last_selected_chat_id=stale-chat\n"));
+
+  AppSettings loaded;
+  CenterViewMode loaded_mode = CenterViewMode::Structured;
+  SettingsStore::Load(settings_file, loaded, loaded_mode);
+
+  UAM_ASSERT_EQ(std::string("dark"), loaded.ui_theme);
+  UAM_ASSERT(std::fabs(loaded.ui_scale_multiplier - 1.75f) < 0.0001f);
+  UAM_ASSERT_EQ(960, loaded.window_width);
+  UAM_ASSERT_EQ(620, loaded.window_height);
+  UAM_ASSERT(!loaded.remember_last_chat);
+  UAM_ASSERT_EQ(std::string(""), loaded.last_selected_chat_id);
+}
+
+UAM_TEST(TestSettingsStoreLoadsLowScaleClamp) {
+  TempDir data_root("uam-settings-scale-low");
+  const fs::path settings_file = data_root.root / "settings.txt";
+  UAM_ASSERT(WriteTextFile(settings_file,
+                           "ui_theme=light\n"
+                           "ui_scale_multiplier=0.1\n"
+                           "remember_last_chat=1\n"
+                           "last_selected_chat_id=chat-keep\n"));
+
+  AppSettings loaded;
+  CenterViewMode loaded_mode = CenterViewMode::Structured;
+  SettingsStore::Load(settings_file, loaded, loaded_mode);
+
+  UAM_ASSERT_EQ(std::string("light"), loaded.ui_theme);
+  UAM_ASSERT(std::fabs(loaded.ui_scale_multiplier - 0.85f) < 0.0001f);
+  UAM_ASSERT(loaded.remember_last_chat);
+  UAM_ASSERT_EQ(std::string("chat-keep"), loaded.last_selected_chat_id);
 }
 
 UAM_TEST(TestGeminiCommandBuilderReplacesPlaceholders) {
