@@ -166,6 +166,7 @@ static constexpr const char* kDefaultFolderId = "folder-default";
 static constexpr const char* kDefaultFolderTitle = "General";
 
 static void SortChatsByRecent(std::vector<ChatSession>& chats);
+static std::vector<ChatSession> DeduplicateChatsById(std::vector<ChatSession> chats);
 static void ClampWindowSettings(AppSettings& settings);
 static std::string NormalizeThemeChoice(std::string value);
 
@@ -871,8 +872,7 @@ static std::vector<ChatSession> LoadNativeGeminiChats(const fs::path& chats_dir,
     }
   }
 
-  SortChatsByRecent(chats);
-  return chats;
+  return DeduplicateChatsById(std::move(chats));
 }
 
 static std::vector<std::string> SessionIdsFromChats(const std::vector<ChatSession>& chats) {
@@ -1084,6 +1084,51 @@ static void SortChatsByRecent(std::vector<ChatSession>& chats) {
   });
 }
 
+static bool ShouldReplaceChatForDuplicateId(const ChatSession& candidate, const ChatSession& existing) {
+  if (candidate.uses_native_session != existing.uses_native_session) {
+    return candidate.uses_native_session && !existing.uses_native_session;
+  }
+  if (candidate.messages.size() != existing.messages.size()) {
+    return candidate.messages.size() > existing.messages.size();
+  }
+  if (candidate.updated_at != existing.updated_at) {
+    return candidate.updated_at > existing.updated_at;
+  }
+  if (candidate.created_at != existing.created_at) {
+    return candidate.created_at > existing.created_at;
+  }
+  if (candidate.linked_files.size() != existing.linked_files.size()) {
+    return candidate.linked_files.size() > existing.linked_files.size();
+  }
+  return false;
+}
+
+static std::vector<ChatSession> DeduplicateChatsById(std::vector<ChatSession> chats) {
+  std::vector<ChatSession> deduped;
+  deduped.reserve(chats.size());
+  std::unordered_map<std::string, std::size_t> index_by_id;
+
+  for (ChatSession& chat : chats) {
+    chat.id = Trim(chat.id);
+    if (chat.id.empty()) {
+      continue;
+    }
+    const auto it = index_by_id.find(chat.id);
+    if (it == index_by_id.end()) {
+      index_by_id.emplace(chat.id, deduped.size());
+      deduped.push_back(std::move(chat));
+      continue;
+    }
+    ChatSession& existing = deduped[it->second];
+    if (ShouldReplaceChatForDuplicateId(chat, existing)) {
+      existing = std::move(chat);
+    }
+  }
+
+  SortChatsByRecent(deduped);
+  return deduped;
+}
+
 static void RefreshRememberedSelection(AppState& app) {
   if (!app.settings.remember_last_chat) {
     app.settings.last_selected_chat_id.clear();
@@ -1170,10 +1215,11 @@ static void SaveAndUpdateStatus(AppState& app, const ChatSession& chat, const st
 }
 
 static void ApplyLocalOverrides(AppState& app, std::vector<ChatSession>& native_chats) {
-  std::vector<ChatSession> local_chats = LoadChats(app);
-  std::unordered_map<std::string, ChatSession> local_map;
+  native_chats = DeduplicateChatsById(std::move(native_chats));
+  std::vector<ChatSession> local_chats = DeduplicateChatsById(LoadChats(app));
+  std::unordered_map<std::string, const ChatSession*> local_map;
   for (const ChatSession& local : local_chats) {
-    local_map.emplace(local.id, local);
+    local_map[local.id] = &local;
   }
 
   std::unordered_set<std::string> native_ids;
@@ -1183,16 +1229,21 @@ static void ApplyLocalOverrides(AppState& app, std::vector<ChatSession>& native_
     if (it == local_map.end()) {
       continue;
     }
-    const ChatSession& local = it->second;
-    if (!local.title.empty()) {
+    const ChatSession& local = *it->second;
+    if (!Trim(local.title).empty()) {
       native.title = local.title;
     }
-    native.linked_files = local.linked_files;
-    native.folder_id = local.folder_id;
-    native.created_at = local.created_at;
-    native.updated_at = local.updated_at;
-    if (!local.messages.empty()) {
-      native.messages = local.messages;
+    if (!local.linked_files.empty()) {
+      native.linked_files = local.linked_files;
+    }
+    if (!local.folder_id.empty()) {
+      native.folder_id = local.folder_id;
+    }
+    if (native.created_at.empty() && !local.created_at.empty()) {
+      native.created_at = local.created_at;
+    }
+    if (native.updated_at.empty() && !local.updated_at.empty()) {
+      native.updated_at = local.updated_at;
     }
   }
 
@@ -1203,8 +1254,7 @@ static void ApplyLocalOverrides(AppState& app, std::vector<ChatSession>& native_
     }
   }
 
-  SortChatsByRecent(merged);
-  app.chats = std::move(merged);
+  app.chats = DeduplicateChatsById(std::move(merged));
   NormalizeChatFolderAssignments(app);
 }
 
@@ -3240,7 +3290,8 @@ static void DrawLeftPane(AppState& app) {
         if (app.chats[i].folder_id != folder.id) {
           continue;
         }
-        if (DrawSidebarItem(app.chats[i], i == app.selected_chat_index, "session_" + app.chats[i].id)) {
+        const std::string sidebar_item_id = "session_" + app.chats[i].id + "##" + std::to_string(i);
+        if (DrawSidebarItem(app.chats[i], i == app.selected_chat_index, sidebar_item_id)) {
           app.selected_chat_index = i;
           RefreshRememberedSelection(app);
           SaveSettings(app);
@@ -3690,11 +3741,18 @@ static void DrawStructuredProcessingIndicator(const AppState& app, const ChatSes
 
 static void DrawChatDetailPane(AppState& app, ChatSession& chat) {
   if (app.center_view_mode == CenterViewMode::CliConsole) {
-    BeginPanel("main_chat_panel", ImVec2(0.0f, 0.0f), PanelTone::Primary, true, 0, ImVec2(8.0f, 8.0f));
+    BeginPanel("main_chat_panel", ImVec2(0.0f, 0.0f), PanelTone::Primary, true,
+               ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse, ImVec2(8.0f, 8.0f));
+    DrawCenterModeToggle(app);
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
     BeginPanel("cli_terminal_panel", ImVec2(0.0f, 0.0f), PanelTone::Secondary, true,
                ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse, ImVec2(8.0f, 8.0f));
     DrawCliTerminalSurface(app, chat, false);
     EndPanel();
+    if (!app.status_line.empty()) {
+      ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
+      ImGui::TextColored(ui::kTextSecondary, "%s", app.status_line.c_str());
+    }
     EndPanel();
     return;
   }

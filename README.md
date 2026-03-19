@@ -15,6 +15,12 @@ UAM is designed to be **transparent, auditable, and non-invasive**, making it su
 
 ---
 
+# macOS Builds UI
+
+![macOS Builds UI](docs/images/macos-builds-ui.png)
+
+---
+
 # Key Properties
 
 - **Local-first**
