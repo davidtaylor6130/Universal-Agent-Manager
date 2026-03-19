@@ -169,6 +169,7 @@ static void SortChatsByRecent(std::vector<ChatSession>& chats);
 static std::vector<ChatSession> DeduplicateChatsById(std::vector<ChatSession> chats);
 static void ClampWindowSettings(AppSettings& settings);
 static std::string NormalizeThemeChoice(std::string value);
+static void DrawSessionSidePane(AppState& app, ChatSession& chat);
 
 static std::string Trim(const std::string& value) {
   const auto start = value.find_first_not_of(" \t\r\n");
@@ -2544,6 +2545,7 @@ static ImVec4 Rgb(const int r, const int g, const int b, const float a = 1.0f) {
 
 namespace ui {
 constexpr float kSpace4 = 4.0f;
+constexpr float kSpace6 = 6.0f;
 constexpr float kSpace8 = 8.0f;
 constexpr float kSpace10 = 10.0f;
 constexpr float kSpace12 = 12.0f;
@@ -2552,29 +2554,30 @@ constexpr float kSpace20 = 20.0f;
 constexpr float kSpace24 = 24.0f;
 constexpr float kSpace32 = 32.0f;
 
-constexpr float kSidebarWidth = 292.0f;
-constexpr float kRightPanelWidth = 336.0f;
+constexpr float kSidebarWidth = 316.0f;
+constexpr float kRightPanelWidth = 348.0f;
+constexpr float kTopBarHeight = 78.0f;
 
 constexpr float kRadiusSmall = 8.0f;
-constexpr float kRadiusPanel = 14.0f;
-constexpr float kRadiusInput = 12.0f;
+constexpr float kRadiusPanel = 12.0f;
+constexpr float kRadiusInput = 10.0f;
 
-ImVec4 kMainBackground = Rgb(8, 12, 17, 1.0f);
-ImVec4 kPrimarySurface = Rgb(12, 17, 24, 0.95f);
-ImVec4 kSecondarySurface = Rgb(16, 22, 31, 0.95f);
-ImVec4 kElevatedSurface = Rgb(22, 30, 42, 0.98f);
-ImVec4 kInputSurface = Rgb(10, 15, 22, 0.94f);
+ImVec4 kMainBackground = Rgb(13, 17, 24, 1.0f);
+ImVec4 kPrimarySurface = Rgb(20, 25, 34, 0.97f);
+ImVec4 kSecondarySurface = Rgb(24, 29, 39, 0.97f);
+ImVec4 kElevatedSurface = Rgb(30, 36, 47, 0.99f);
+ImVec4 kInputSurface = Rgb(17, 22, 31, 0.98f);
 ImVec4 kBorder = Rgb(255, 255, 255, 0.08f);
-ImVec4 kBorderStrong = Rgb(130, 171, 255, 0.35f);
-ImVec4 kShadow = Rgb(0, 0, 0, 0.36f);
-ImVec4 kShadowSoft = Rgb(0, 0, 0, 0.20f);
+ImVec4 kBorderStrong = Rgb(115, 171, 255, 0.38f);
+ImVec4 kShadow = Rgb(0, 0, 0, 0.40f);
+ImVec4 kShadowSoft = Rgb(0, 0, 0, 0.26f);
 
-ImVec4 kTextPrimary = Rgb(234, 240, 248, 1.0f);
-ImVec4 kTextSecondary = Rgb(178, 189, 203, 1.0f);
-ImVec4 kTextMuted = Rgb(132, 145, 160, 1.0f);
+ImVec4 kTextPrimary = Rgb(232, 237, 245, 1.0f);
+ImVec4 kTextSecondary = Rgb(176, 187, 202, 1.0f);
+ImVec4 kTextMuted = Rgb(130, 144, 162, 1.0f);
 
-ImVec4 kAccent = Rgb(96, 160, 255, 1.0f);
-ImVec4 kAccentSoft = Rgb(96, 160, 255, 0.24f);
+ImVec4 kAccent = Rgb(94, 160, 255, 1.0f);
+ImVec4 kAccentSoft = Rgb(94, 160, 255, 0.24f);
 ImVec4 kSuccess = Rgb(34, 197, 94, 1.0f);
 ImVec4 kError = Rgb(255, 107, 107, 1.0f);
 ImVec4 kWarning = Rgb(245, 158, 11, 1.0f);
@@ -2692,40 +2695,40 @@ static UiThemeResolved ResolveUiTheme(const AppSettings& settings) {
 
 static void ApplyResolvedPalette(const UiThemeResolved theme) {
   if (theme == UiThemeResolved::Light) {
-    ui::kMainBackground = Rgb(241, 245, 250, 1.0f);
-    ui::kPrimarySurface = Rgb(255, 255, 255, 0.98f);
-    ui::kSecondarySurface = Rgb(247, 250, 255, 0.98f);
-    ui::kElevatedSurface = Rgb(235, 242, 252, 0.98f);
-    ui::kInputSurface = Rgb(250, 252, 255, 1.0f);
-    ui::kBorder = Rgb(26, 48, 84, 0.14f);
-    ui::kBorderStrong = Rgb(86, 141, 230, 0.50f);
+    ui::kMainBackground = Rgb(240, 244, 250, 1.0f);
+    ui::kPrimarySurface = Rgb(254, 255, 255, 0.98f);
+    ui::kSecondarySurface = Rgb(246, 249, 255, 0.98f);
+    ui::kElevatedSurface = Rgb(236, 242, 251, 0.99f);
+    ui::kInputSurface = Rgb(249, 252, 255, 1.0f);
+    ui::kBorder = Rgb(26, 44, 71, 0.14f);
+    ui::kBorderStrong = Rgb(72, 133, 233, 0.48f);
     ui::kShadow = Rgb(9, 20, 39, 0.16f);
-    ui::kShadowSoft = Rgb(9, 20, 39, 0.08f);
-    ui::kTextPrimary = Rgb(21, 33, 49, 1.0f);
-    ui::kTextSecondary = Rgb(76, 93, 115, 1.0f);
-    ui::kTextMuted = Rgb(102, 120, 144, 1.0f);
-    ui::kAccent = Rgb(69, 128, 230, 1.0f);
-    ui::kAccentSoft = Rgb(69, 128, 230, 0.18f);
+    ui::kShadowSoft = Rgb(9, 20, 39, 0.10f);
+    ui::kTextPrimary = Rgb(18, 31, 51, 1.0f);
+    ui::kTextSecondary = Rgb(70, 88, 114, 1.0f);
+    ui::kTextMuted = Rgb(99, 118, 144, 1.0f);
+    ui::kAccent = Rgb(66, 126, 228, 1.0f);
+    ui::kAccentSoft = Rgb(66, 126, 228, 0.18f);
     ui::kSuccess = Rgb(22, 163, 74, 1.0f);
     ui::kError = Rgb(220, 38, 38, 1.0f);
     ui::kWarning = Rgb(217, 119, 6, 1.0f);
     return;
   }
 
-  ui::kMainBackground = Rgb(8, 12, 17, 1.0f);
-  ui::kPrimarySurface = Rgb(12, 17, 24, 0.95f);
-  ui::kSecondarySurface = Rgb(16, 22, 31, 0.95f);
-  ui::kElevatedSurface = Rgb(22, 30, 42, 0.98f);
-  ui::kInputSurface = Rgb(10, 15, 22, 0.94f);
+  ui::kMainBackground = Rgb(13, 17, 24, 1.0f);
+  ui::kPrimarySurface = Rgb(20, 25, 34, 0.97f);
+  ui::kSecondarySurface = Rgb(24, 29, 39, 0.97f);
+  ui::kElevatedSurface = Rgb(30, 36, 47, 0.99f);
+  ui::kInputSurface = Rgb(17, 22, 31, 0.98f);
   ui::kBorder = Rgb(255, 255, 255, 0.08f);
-  ui::kBorderStrong = Rgb(130, 171, 255, 0.35f);
-  ui::kShadow = Rgb(0, 0, 0, 0.36f);
-  ui::kShadowSoft = Rgb(0, 0, 0, 0.20f);
-  ui::kTextPrimary = Rgb(234, 240, 248, 1.0f);
-  ui::kTextSecondary = Rgb(178, 189, 203, 1.0f);
-  ui::kTextMuted = Rgb(132, 145, 160, 1.0f);
-  ui::kAccent = Rgb(96, 160, 255, 1.0f);
-  ui::kAccentSoft = Rgb(96, 160, 255, 0.24f);
+  ui::kBorderStrong = Rgb(115, 171, 255, 0.38f);
+  ui::kShadow = Rgb(0, 0, 0, 0.40f);
+  ui::kShadowSoft = Rgb(0, 0, 0, 0.26f);
+  ui::kTextPrimary = Rgb(232, 237, 245, 1.0f);
+  ui::kTextSecondary = Rgb(176, 187, 202, 1.0f);
+  ui::kTextMuted = Rgb(130, 144, 162, 1.0f);
+  ui::kAccent = Rgb(94, 160, 255, 1.0f);
+  ui::kAccentSoft = Rgb(94, 160, 255, 0.24f);
   ui::kSuccess = Rgb(34, 197, 94, 1.0f);
   ui::kError = Rgb(255, 107, 107, 1.0f);
   ui::kWarning = Rgb(245, 158, 11, 1.0f);
@@ -2776,18 +2779,19 @@ static void ConfigureFonts(ImGuiIO& io, const float dpi_scale = 1.0f) {
   const ImWchar* terminal_ranges = BuildTerminalGlyphRanges(io);
   g_font_ui = TryLoadFont(io, 14.0f * scale, {
       "C:/Windows/Fonts/segoeui.ttf",
+      "C:/Windows/Fonts/segoeuii.ttf",
       "C:/Windows/Fonts/arial.ttf",
+      "/System/Library/Fonts/SFNS.ttf",
       "/Library/Fonts/Inter-Regular.ttf",
-      "/Library/Fonts/Inter Variable.ttf",
       "/System/Library/Fonts/Supplemental/Helvetica.ttc",
       "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
       "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
   }, ui_ranges);
-  g_font_title = TryLoadFont(io, 19.0f * scale, {
+  g_font_title = TryLoadFont(io, 18.5f * scale, {
       "C:/Windows/Fonts/seguisb.ttf",
       "C:/Windows/Fonts/segoeuib.ttf",
+      "/System/Library/Fonts/SFNS.ttf",
       "/Library/Fonts/Inter-SemiBold.ttf",
-      "/Library/Fonts/Inter-Bold.ttf",
       "/System/Library/Fonts/Supplemental/Helvetica Bold.ttf",
       "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
       "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
@@ -2795,7 +2799,9 @@ static void ConfigureFonts(ImGuiIO& io, const float dpi_scale = 1.0f) {
   g_font_mono = TryLoadFont(io, 13.5f * scale, {
       "C:/Windows/Fonts/consola.ttf",
       "C:/Windows/Fonts/cascadiamono.ttf",
+      "C:/Windows/Fonts/CascadiaCode.ttf",
       "/Library/Fonts/JetBrainsMono-Regular.ttf",
+      "/System/Library/Fonts/SFNSMono.ttf",
       "/System/Library/Fonts/Menlo.ttc",
       "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
       "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf"
@@ -2864,13 +2870,14 @@ static ImVec4 PanelColor(const PanelTone tone) {
 }
 
 static ImVec4 PanelStrokeColor(const PanelTone tone) {
+  const bool light = IsLightPaletteActive();
   switch (tone) {
     case PanelTone::Primary:
       return ui::kBorderStrong;
     case PanelTone::Secondary:
       return ui::kBorder;
     case PanelTone::Elevated:
-      return Rgb(255, 255, 255, 0.10f);
+      return light ? Rgb(13, 38, 69, 0.15f) : Rgb(255, 255, 255, 0.10f);
   }
   return ui::kBorder;
 }
@@ -2879,8 +2886,8 @@ static void PushInputChrome(const float rounding = ui::kRadiusSmall) {
   const bool light = IsLightPaletteActive();
   ImGui::PushStyleColor(ImGuiCol_FrameBg, ui::kInputSurface);
   ImGui::PushStyleColor(ImGuiCol_Border, ui::kBorder);
-  ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, light ? Rgb(240, 246, 255, 1.0f) : Rgb(16, 23, 33, 1.0f));
-  ImGui::PushStyleColor(ImGuiCol_FrameBgActive, light ? Rgb(234, 242, 255, 1.0f) : Rgb(20, 29, 40, 1.0f));
+  ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, light ? Rgb(237, 244, 255, 1.0f) : Rgb(21, 27, 37, 1.0f));
+  ImGui::PushStyleColor(ImGuiCol_FrameBgActive, light ? Rgb(232, 240, 254, 1.0f) : Rgb(25, 32, 43, 1.0f));
   ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, rounding);
 }
 
@@ -2892,24 +2899,30 @@ static void PopInputChrome() {
 static bool BeginPanel(const char* id, const ImVec2& size, const PanelTone tone, const bool border = true,
                        const ImGuiWindowFlags flags = 0, const ImVec2 padding = ImVec2(ui::kSpace16, ui::kSpace16),
                        const float rounding = ui::kRadiusPanel) {
+  const bool light = IsLightPaletteActive();
   ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, rounding);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, padding);
   ImGui::PushStyleColor(ImGuiCol_ChildBg, PanelColor(tone));
   ImGui::PushStyleColor(ImGuiCol_Border, border ? PanelStrokeColor(tone) : ui::kTransparent);
   const bool is_open = ImGui::BeginChild(id, size, border, flags);
+
   ImDrawList* draw = ImGui::GetWindowDrawList();
   const ImVec2 min = ImGui::GetWindowPos();
   const ImVec2 max(min.x + ImGui::GetWindowSize().x, min.y + ImGui::GetWindowSize().y);
-  draw->AddRectFilled(ImVec2(min.x + 1.0f, min.y + 4.0f), ImVec2(max.x + 1.0f, max.y + 4.0f), ImGui::GetColorU32(ui::kShadowSoft), rounding);
+  draw->AddRectFilled(
+      ImVec2(min.x + 1.0f, min.y + 4.0f),
+      ImVec2(max.x + 1.0f, max.y + 4.0f),
+      ImGui::GetColorU32(ui::kShadowSoft),
+      rounding);
   if (border) {
     draw->AddRect(min, max, ImGui::GetColorU32(PanelStrokeColor(tone)), rounding, 0, 1.0f);
   }
-  if (tone == PanelTone::Primary) {
+  if (tone != PanelTone::Elevated) {
     draw->AddRectFilledMultiColor(
         min,
-        ImVec2(max.x, min.y + 2.0f),
-        ImGui::GetColorU32(Rgb(130, 171, 255, 0.35f)),
-        ImGui::GetColorU32(Rgb(130, 171, 255, 0.10f)),
+        ImVec2(max.x, min.y + 1.5f),
+        ImGui::GetColorU32(light ? Rgb(66, 126, 228, 0.22f) : Rgb(94, 160, 255, 0.22f)),
+        ImGui::GetColorU32(light ? Rgb(66, 126, 228, 0.08f) : Rgb(94, 160, 255, 0.08f)),
         ImGui::GetColorU32(ui::kTransparent),
         ImGui::GetColorU32(ui::kTransparent));
   }
@@ -2925,32 +2938,32 @@ static void EndPanel() {
 static bool DrawButton(const char* label, const ImVec2& size, const ButtonKind kind) {
   const bool light = IsLightPaletteActive();
   ImVec4 bg = ui::kElevatedSurface;
-  ImVec4 bg_hover = light ? Rgb(221, 234, 249, 1.0f) : Rgb(31, 42, 57, 1.0f);
-  ImVec4 bg_active = light ? Rgb(211, 228, 248, 1.0f) : Rgb(35, 47, 64, 1.0f);
+  ImVec4 bg_hover = light ? Rgb(226, 237, 251, 1.0f) : Rgb(35, 42, 53, 1.0f);
+  ImVec4 bg_active = light ? Rgb(216, 230, 250, 1.0f) : Rgb(39, 47, 59, 1.0f);
   ImVec4 border = ui::kBorder;
   ImVec4 text = ui::kTextPrimary;
 
   if (kind == ButtonKind::Primary) {
-    bg = light ? Rgb(69, 128, 230, 0.94f) : Rgb(84, 147, 255, 0.94f);
-    bg_hover = light ? Rgb(84, 141, 238, 1.0f) : Rgb(100, 160, 255, 1.0f);
-    bg_active = light ? Rgb(58, 113, 212, 1.0f) : Rgb(71, 133, 238, 1.0f);
-    border = light ? Rgb(104, 156, 245, 0.70f) : Rgb(140, 182, 255, 0.70f);
+    bg = light ? Rgb(66, 126, 228, 0.96f) : Rgb(78, 145, 248, 0.96f);
+    bg_hover = light ? Rgb(80, 138, 235, 1.0f) : Rgb(94, 157, 255, 1.0f);
+    bg_active = light ? Rgb(56, 109, 209, 1.0f) : Rgb(67, 129, 229, 1.0f);
+    border = light ? Rgb(94, 149, 240, 0.72f) : Rgb(127, 176, 255, 0.75f);
     text = Rgb(255, 255, 255, 1.0f);
   } else if (kind == ButtonKind::Accent) {
-    bg = light ? Rgb(58, 116, 216, 0.94f) : Rgb(48, 108, 201, 0.92f);
-    bg_hover = light ? Rgb(71, 129, 227, 1.0f) : Rgb(62, 121, 215, 1.0f);
-    bg_active = light ? Rgb(51, 105, 202, 1.0f) : Rgb(42, 98, 189, 1.0f);
-    border = light ? Rgb(98, 148, 233, 0.65f) : Rgb(116, 167, 255, 0.65f);
+    bg = light ? Rgb(57, 115, 214, 0.96f) : Rgb(60, 122, 218, 0.95f);
+    bg_hover = light ? Rgb(70, 127, 223, 1.0f) : Rgb(73, 136, 234, 1.0f);
+    bg_active = light ? Rgb(48, 99, 193, 1.0f) : Rgb(53, 111, 202, 1.0f);
+    border = light ? Rgb(90, 141, 230, 0.68f) : Rgb(108, 162, 250, 0.70f);
     text = Rgb(255, 255, 255, 1.0f);
   } else if (kind == ButtonKind::Ghost) {
     bg = ui::kTransparent;
-    bg_hover = light ? Rgb(7, 24, 56, 0.06f) : Rgb(255, 255, 255, 0.08f);
-    bg_active = light ? Rgb(7, 24, 56, 0.10f) : Rgb(255, 255, 255, 0.12f);
-    border = light ? Rgb(7, 24, 56, 0.12f) : Rgb(255, 255, 255, 0.10f);
+    bg_hover = light ? Rgb(7, 24, 56, 0.06f) : Rgb(255, 255, 255, 0.06f);
+    bg_active = light ? Rgb(7, 24, 56, 0.10f) : Rgb(255, 255, 255, 0.10f);
+    border = light ? Rgb(7, 24, 56, 0.14f) : Rgb(255, 255, 255, 0.12f);
   }
 
-  ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.0f);
-  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(13.0f, 8.0f));
+  ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ui::kRadiusSmall);
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(13.0f, 7.5f));
   ImGui::PushStyleColor(ImGuiCol_Button, bg);
   ImGui::PushStyleColor(ImGuiCol_ButtonHovered, bg_hover);
   ImGui::PushStyleColor(ImGuiCol_ButtonActive, bg_active);
@@ -2968,7 +2981,7 @@ static void DrawSoftDivider() {
   const float width = ImGui::GetContentRegionAvail().x;
   const bool light = IsLightPaletteActive();
   const ImU32 left = ImGui::GetColorU32(light ? Rgb(9, 20, 39, 0.0f) : Rgb(255, 255, 255, 0.0f));
-  const ImU32 center = ImGui::GetColorU32(light ? Rgb(20, 42, 73, 0.16f) : Rgb(255, 255, 255, 0.12f));
+  const ImU32 center = ImGui::GetColorU32(light ? Rgb(15, 35, 62, 0.15f) : Rgb(255, 255, 255, 0.11f));
   draw->AddRectFilledMultiColor(p, ImVec2(p.x + width, p.y + 1.0f), left, center, center, left);
   ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
 }
@@ -2989,13 +3002,13 @@ static std::string CompactPreview(const std::string& text, const std::size_t max
 static void ApplyModernTheme() {
   const bool light = IsLightPaletteActive();
   ImGuiStyle& style = ImGui::GetStyle();
-  style.WindowPadding = ImVec2(ui::kSpace20, ui::kSpace20);
-  style.FramePadding = ImVec2(12.0f, 9.0f);
-  style.CellPadding = ImVec2(ui::kSpace12, ui::kSpace8);
-  style.ItemSpacing = ImVec2(ui::kSpace12, ui::kSpace10);
+  style.WindowPadding = ImVec2(ui::kSpace16, ui::kSpace16);
+  style.FramePadding = ImVec2(10.0f, 7.0f);
+  style.CellPadding = ImVec2(ui::kSpace10, ui::kSpace8);
+  style.ItemSpacing = ImVec2(ui::kSpace10, ui::kSpace10);
   style.ItemInnerSpacing = ImVec2(ui::kSpace8, ui::kSpace8);
-  style.IndentSpacing = 18.0f;
-  style.ScrollbarSize = 10.0f;
+  style.IndentSpacing = 16.0f;
+  style.ScrollbarSize = 11.0f;
   style.GrabMinSize = 10.0f;
 
   style.WindowBorderSize = 0.0f;
@@ -3004,59 +3017,59 @@ static void ApplyModernTheme() {
   style.FrameBorderSize = 1.0f;
   style.TabBorderSize = 0.0f;
 
-  style.WindowRounding = 10.0f;
+  style.WindowRounding = 8.0f;
   style.ChildRounding = ui::kRadiusPanel;
-  style.FrameRounding = 10.0f;
+  style.FrameRounding = ui::kRadiusSmall;
   style.PopupRounding = ui::kRadiusPanel;
-  style.ScrollbarRounding = 9.0f;
+  style.ScrollbarRounding = ui::kRadiusSmall;
   style.GrabRounding = ui::kRadiusSmall;
-  style.TabRounding = 10.0f;
+  style.TabRounding = ui::kRadiusSmall;
 
   ImVec4* colors = style.Colors;
   colors[ImGuiCol_Text] = ui::kTextPrimary;
   colors[ImGuiCol_TextDisabled] = ui::kTextMuted;
   colors[ImGuiCol_WindowBg] = ui::kMainBackground;
   colors[ImGuiCol_ChildBg] = ui::kPrimarySurface;
-  colors[ImGuiCol_PopupBg] = light ? Rgb(252, 254, 255, 0.98f) : Rgb(16, 22, 30, 0.98f);
+  colors[ImGuiCol_PopupBg] = light ? Rgb(252, 254, 255, 0.99f) : Rgb(25, 31, 41, 0.99f);
   colors[ImGuiCol_Border] = ui::kBorder;
   colors[ImGuiCol_BorderShadow] = ui::kTransparent;
   colors[ImGuiCol_FrameBg] = ui::kInputSurface;
-  colors[ImGuiCol_FrameBgHovered] = light ? Rgb(240, 246, 255, 1.0f) : Rgb(17, 24, 34, 1.0f);
-  colors[ImGuiCol_FrameBgActive] = light ? Rgb(234, 242, 255, 1.0f) : Rgb(22, 31, 43, 1.0f);
+  colors[ImGuiCol_FrameBgHovered] = light ? Rgb(237, 244, 255, 1.0f) : Rgb(21, 27, 37, 1.0f);
+  colors[ImGuiCol_FrameBgActive] = light ? Rgb(232, 240, 254, 1.0f) : Rgb(25, 32, 43, 1.0f);
   colors[ImGuiCol_TitleBg] = ui::kPrimarySurface;
   colors[ImGuiCol_TitleBgActive] = ui::kPrimarySurface;
   colors[ImGuiCol_MenuBarBg] = ui::kSecondarySurface;
   colors[ImGuiCol_ScrollbarBg] = ui::kTransparent;
-  colors[ImGuiCol_ScrollbarGrab] = light ? Rgb(17, 35, 61, 0.24f) : Rgb(255, 255, 255, 0.18f);
-  colors[ImGuiCol_ScrollbarGrabHovered] = light ? Rgb(17, 35, 61, 0.36f) : Rgb(255, 255, 255, 0.28f);
-  colors[ImGuiCol_ScrollbarGrabActive] = light ? Rgb(17, 35, 61, 0.46f) : Rgb(255, 255, 255, 0.35f);
+  colors[ImGuiCol_ScrollbarGrab] = light ? Rgb(17, 35, 61, 0.22f) : Rgb(255, 255, 255, 0.17f);
+  colors[ImGuiCol_ScrollbarGrabHovered] = light ? Rgb(17, 35, 61, 0.34f) : Rgb(255, 255, 255, 0.24f);
+  colors[ImGuiCol_ScrollbarGrabActive] = light ? Rgb(17, 35, 61, 0.46f) : Rgb(255, 255, 255, 0.30f);
   colors[ImGuiCol_CheckMark] = ui::kAccent;
   colors[ImGuiCol_SliderGrab] = ui::kAccent;
-  colors[ImGuiCol_SliderGrabActive] = light ? Rgb(54, 114, 220, 1.0f) : Rgb(122, 176, 255, 1.0f);
+  colors[ImGuiCol_SliderGrabActive] = light ? Rgb(54, 114, 220, 1.0f) : Rgb(116, 174, 255, 1.0f);
   colors[ImGuiCol_Button] = ui::kElevatedSurface;
-  colors[ImGuiCol_ButtonHovered] = light ? Rgb(221, 234, 249, 1.0f) : Rgb(31, 42, 57, 1.0f);
-  colors[ImGuiCol_ButtonActive] = light ? Rgb(211, 228, 248, 1.0f) : Rgb(38, 50, 68, 1.0f);
-  colors[ImGuiCol_Header] = light ? Rgb(9, 20, 39, 0.05f) : Rgb(255, 255, 255, 0.05f);
-  colors[ImGuiCol_HeaderHovered] = light ? Rgb(9, 20, 39, 0.08f) : Rgb(255, 255, 255, 0.08f);
+  colors[ImGuiCol_ButtonHovered] = light ? Rgb(226, 237, 251, 1.0f) : Rgb(35, 42, 53, 1.0f);
+  colors[ImGuiCol_ButtonActive] = light ? Rgb(216, 230, 250, 1.0f) : Rgb(39, 47, 59, 1.0f);
+  colors[ImGuiCol_Header] = light ? Rgb(9, 20, 39, 0.04f) : Rgb(255, 255, 255, 0.04f);
+  colors[ImGuiCol_HeaderHovered] = light ? Rgb(9, 20, 39, 0.07f) : Rgb(255, 255, 255, 0.07f);
   colors[ImGuiCol_HeaderActive] = ui::kAccentSoft;
   colors[ImGuiCol_Separator] = ui::kBorder;
-  colors[ImGuiCol_ResizeGrip] = light ? Rgb(17, 35, 61, 0.20f) : Rgb(255, 255, 255, 0.10f);
-  colors[ImGuiCol_ResizeGripHovered] = light ? Rgb(69, 128, 230, 0.42f) : Rgb(96, 160, 255, 0.42f);
-  colors[ImGuiCol_ResizeGripActive] = light ? Rgb(69, 128, 230, 0.75f) : Rgb(96, 160, 255, 0.75f);
+  colors[ImGuiCol_ResizeGrip] = light ? Rgb(17, 35, 61, 0.18f) : Rgb(255, 255, 255, 0.09f);
+  colors[ImGuiCol_ResizeGripHovered] = light ? Rgb(66, 126, 228, 0.44f) : Rgb(94, 160, 255, 0.44f);
+  colors[ImGuiCol_ResizeGripActive] = light ? Rgb(66, 126, 228, 0.76f) : Rgb(94, 160, 255, 0.76f);
   colors[ImGuiCol_Tab] = ui::kSecondarySurface;
-  colors[ImGuiCol_TabHovered] = Rgb(24, 34, 48, 1.0f);
+  colors[ImGuiCol_TabHovered] = light ? Rgb(226, 237, 251, 1.0f) : Rgb(34, 41, 53, 1.0f);
   colors[ImGuiCol_TabActive] = ui::kElevatedSurface;
   colors[ImGuiCol_TabUnfocused] = ui::kSecondarySurface;
   colors[ImGuiCol_TabUnfocusedActive] = ui::kElevatedSurface;
   colors[ImGuiCol_TableHeaderBg] = ui::kSecondarySurface;
   colors[ImGuiCol_TableBorderStrong] = ui::kBorder;
-  colors[ImGuiCol_TableBorderLight] = light ? Rgb(17, 35, 61, 0.08f) : Rgb(255, 255, 255, 0.05f);
+  colors[ImGuiCol_TableBorderLight] = light ? Rgb(17, 35, 61, 0.08f) : Rgb(255, 255, 255, 0.04f);
   colors[ImGuiCol_TableRowBg] = ui::kTransparent;
-  colors[ImGuiCol_TableRowBgAlt] = light ? Rgb(9, 20, 39, 0.03f) : Rgb(255, 255, 255, 0.03f);
-  colors[ImGuiCol_TextSelectedBg] = light ? Rgb(69, 128, 230, 0.28f) : Rgb(96, 160, 255, 0.32f);
+  colors[ImGuiCol_TableRowBgAlt] = light ? Rgb(9, 20, 39, 0.03f) : Rgb(255, 255, 255, 0.02f);
+  colors[ImGuiCol_TextSelectedBg] = light ? Rgb(66, 126, 228, 0.28f) : Rgb(94, 160, 255, 0.32f);
   colors[ImGuiCol_DragDropTarget] = ui::kAccent;
   colors[ImGuiCol_NavCursor] = ui::kAccent;
-  colors[ImGuiCol_NavWindowingHighlight] = light ? Rgb(69, 128, 230, 0.65f) : Rgb(96, 160, 255, 0.65f);
+  colors[ImGuiCol_NavWindowingHighlight] = light ? Rgb(66, 126, 228, 0.64f) : Rgb(94, 160, 255, 0.64f);
   colors[ImGuiCol_ModalWindowDimBg] = light ? Rgb(20, 30, 45, 0.26f) : Rgb(0, 0, 0, 0.45f);
 }
 
@@ -3072,167 +3085,395 @@ static void DrawAmbientBackdrop(const ImVec2& pos, const ImVec2& size, const flo
   draw->AddRectFilledMultiColor(
       pos,
       ImVec2(pos.x + size.x, pos.y + size.y),
-      ImGui::GetColorU32(light ? Rgb(245, 249, 255, 1.0f) : Rgb(8, 12, 17, 1.0f)),
-      ImGui::GetColorU32(light ? Rgb(236, 244, 255, 1.0f) : Rgb(10, 15, 22, 1.0f)),
-      ImGui::GetColorU32(light ? Rgb(239, 246, 255, 1.0f) : Rgb(7, 11, 16, 1.0f)),
-      ImGui::GetColorU32(light ? Rgb(232, 241, 255, 1.0f) : Rgb(6, 10, 15, 1.0f)));
+      ImGui::GetColorU32(light ? Rgb(243, 247, 253, 1.0f) : Rgb(13, 17, 24, 1.0f)),
+      ImGui::GetColorU32(light ? Rgb(235, 242, 252, 1.0f) : Rgb(15, 20, 28, 1.0f)),
+      ImGui::GetColorU32(light ? Rgb(238, 245, 255, 1.0f) : Rgb(11, 15, 22, 1.0f)),
+      ImGui::GetColorU32(light ? Rgb(230, 239, 250, 1.0f) : Rgb(9, 13, 19, 1.0f)));
 
-  const float pulse = 0.70f + 0.30f * std::sin(time_s * 0.35f);
-  draw->AddCircleFilled(ImVec2(pos.x + size.x * 0.16f, pos.y + size.y * 0.19f), size.x * 0.20f,
-                        ImGui::GetColorU32(light ? Rgb(69, 128, 230, 0.08f * pulse) : Rgb(96, 160, 255, 0.07f * pulse)), 72);
-  draw->AddCircleFilled(ImVec2(pos.x + size.x * 0.86f, pos.y + size.y * 0.08f), size.x * 0.15f,
-                        ImGui::GetColorU32(light ? Rgb(54, 114, 220, 0.05f * pulse) : Rgb(90, 130, 255, 0.05f * pulse)), 60);
+  const float pulse = 0.72f + 0.28f * std::sin(time_s * 0.30f);
+  draw->AddCircleFilled(
+      ImVec2(pos.x + size.x * 0.14f, pos.y + size.y * 0.16f),
+      size.x * 0.20f,
+      ImGui::GetColorU32(light ? Rgb(66, 126, 228, 0.07f * pulse) : Rgb(94, 160, 255, 0.06f * pulse)),
+      72);
+  draw->AddCircleFilled(
+      ImVec2(pos.x + size.x * 0.87f, pos.y + size.y * 0.07f),
+      size.x * 0.14f,
+      ImGui::GetColorU32(light ? Rgb(66, 126, 228, 0.05f * pulse) : Rgb(94, 160, 255, 0.04f * pulse)),
+      64);
   draw->AddRectFilledMultiColor(
       ImVec2(pos.x, pos.y + size.y * 0.68f),
       ImVec2(pos.x + size.x, pos.y + size.y),
       ImGui::GetColorU32(ui::kTransparent),
       ImGui::GetColorU32(ui::kTransparent),
-      ImGui::GetColorU32(light ? Rgb(12, 30, 58, 0.12f) : Rgb(0, 0, 0, 0.35f)),
-      ImGui::GetColorU32(light ? Rgb(12, 30, 58, 0.12f) : Rgb(0, 0, 0, 0.35f)));
+      ImGui::GetColorU32(light ? Rgb(12, 30, 58, 0.12f) : Rgb(0, 0, 0, 0.42f)),
+      ImGui::GetColorU32(light ? Rgb(12, 30, 58, 0.12f) : Rgb(0, 0, 0, 0.42f)));
 }
 
-static bool DrawSidebarItem(const ChatSession& chat, const bool selected, const std::string& item_id) {
-  const ImVec2 card_size(ImGui::GetContentRegionAvail().x, 52.0f);
+static void DrawStatusChip(const std::string& chip_id, const std::string& label, const ImVec4& fill, const ImVec4& text_color) {
+  ImGui::PushID(chip_id.c_str());
+  const ImVec2 text_size = ImGui::CalcTextSize(label.c_str());
+  const ImVec2 chip_size(text_size.x + 16.0f, text_size.y + 8.0f);
   const ImVec2 min = ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton(item_id.c_str(), card_size);
+  ImGui::InvisibleButton("chip", chip_size);
+  const ImVec2 max(min.x + chip_size.x, min.y + chip_size.y);
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+  draw->AddRectFilled(min, max, ImGui::GetColorU32(fill), ui::kRadiusSmall);
+  draw->AddRect(min, max, ImGui::GetColorU32(ui::kBorder), ui::kRadiusSmall);
+  draw->AddText(ImVec2(min.x + 8.0f, min.y + 4.0f), ImGui::GetColorU32(text_color), label.c_str());
+  ImGui::PopID();
+}
+
+static void DrawGlobalTopBar(AppState& app) {
+  if (!BeginPanel("global_top_bar", ImVec2(0.0f, ui::kTopBarHeight), PanelTone::Secondary, true, 0,
+                  ImVec2(ui::kSpace16, ui::kSpace12), ui::kRadiusPanel)) {
+    EndPanel();
+    return;
+  }
+
+  const ProviderProfile* active_provider = ActiveProvider(app);
+  std::string provider_label = "No Provider";
+  if (active_provider != nullptr) {
+    provider_label = Trim(active_provider->title).empty() ? active_provider->id : active_provider->title;
+  }
+  provider_label = CompactPreview(provider_label, 28);
+
+  const ChatSession* selected = SelectedChat(app);
+  const bool pending_any = app.pending_call.has_value();
+  const bool pending_here = pending_any && selected != nullptr && app.pending_call->chat_id == selected->id;
+  const bool pending_elsewhere = pending_any && !pending_here;
+  const std::string runtime_label = pending_here ? "Running in current chat" : (pending_elsewhere ? "Running in another chat" : "Idle");
+
+  if (ImGui::BeginTable("global_top_layout", 2, ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_SizingStretchProp |
+                                                  ImGuiTableFlags_NoPadOuterX | ImGuiTableFlags_NoBordersInBody)) {
+    ImGui::TableSetupColumn("meta", ImGuiTableColumnFlags_WidthStretch, 0.72f);
+    ImGui::TableSetupColumn("actions", ImGuiTableColumnFlags_WidthFixed, 318.0f);
+    ImGui::TableNextRow();
+
+    ImGui::TableSetColumnIndex(0);
+    PushFontIfAvailable(g_font_title);
+    ImGui::TextColored(ui::kTextPrimary, "Universal Agent Manager");
+    PopFontIfAvailable(g_font_title);
+    ImGui::SameLine();
+    ImGui::TextColored(ui::kTextMuted, "Codex Workspace");
+
+    DrawStatusChip("provider_chip", "Provider: " + provider_label, IsLightPaletteActive() ? Rgb(9, 31, 63, 0.08f) : Rgb(255, 255, 255, 0.06f),
+                   ui::kTextSecondary);
+    ImGui::SameLine();
+    DrawStatusChip("runtime_chip", "Runtime: " + runtime_label,
+                   pending_here ? Rgb(245, 158, 11, IsLightPaletteActive() ? 0.18f : 0.22f)
+                                : (pending_elsewhere ? Rgb(94, 160, 255, IsLightPaletteActive() ? 0.14f : 0.18f)
+                                                     : Rgb(34, 197, 94, IsLightPaletteActive() ? 0.14f : 0.18f)),
+                   pending_here ? ui::kWarning : (pending_elsewhere ? ui::kAccent : ui::kSuccess));
+    ImGui::SameLine();
+    DrawStatusChip("chat_count_chip", "Chats: " + std::to_string(app.chats.size()),
+                   IsLightPaletteActive() ? Rgb(9, 31, 63, 0.08f) : Rgb(255, 255, 255, 0.06f), ui::kTextSecondary);
+
+    ImGui::TableSetColumnIndex(1);
+    const std::string new_chat_label = FrontendActionLabel(app, "create_chat", "New Chat");
+    const std::string refresh_label = FrontendActionLabel(app, "refresh_history", "Refresh");
+
+    const float row_w = ImGui::GetContentRegionAvail().x;
+    const bool show_create = FrontendActionVisible(app, "create_chat");
+    const bool show_refresh = FrontendActionVisible(app, "refresh_history");
+    const float action_w = show_create && show_refresh ? 96.0f : 106.0f;
+    const float total_w = (show_create ? action_w + ui::kSpace8 : 0.0f) + (show_refresh ? action_w + ui::kSpace8 : 0.0f) + 96.0f;
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, row_w - total_w));
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4.0f);
+
+    if (show_create) {
+      if (DrawButton(new_chat_label.c_str(), ImVec2(action_w, 34.0f), ButtonKind::Primary)) {
+        CreateAndSelectChat(app);
+      }
+      ImGui::SameLine(0.0f, ui::kSpace8);
+    }
+    if (show_refresh) {
+      if (DrawButton(refresh_label.c_str(), ImVec2(action_w, 34.0f), ButtonKind::Ghost)) {
+        RefreshChatHistory(app);
+      }
+      ImGui::SameLine(0.0f, ui::kSpace8);
+    }
+    if (DrawButton("Settings", ImVec2(96.0f, 34.0f), ButtonKind::Ghost)) {
+      app.open_app_settings_popup = true;
+    }
+
+    ImGui::EndTable();
+  }
+
+  EndPanel();
+}
+
+static bool DrawMiniIconButton(const char* id, const char* glyph, const ImVec2& size = ImVec2(22.0f, 22.0f),
+                               const bool danger = false) {
+  const bool light = IsLightPaletteActive();
+  ImGui::PushID(id);
+  const ImVec2 min = ImGui::GetCursorScreenPos();
+  ImGui::InvisibleButton("##mini_icon", size);
   const bool hovered = ImGui::IsItemHovered();
   const bool clicked = ImGui::IsItemClicked();
-
+  const ImVec2 max(min.x + size.x, min.y + size.y);
   ImDrawList* draw = ImGui::GetWindowDrawList();
-  ImVec4 bg_color = ui::kTransparent;
-  ImVec4 border_color = ui::kTransparent;
-  if (selected) {
-    bg_color = Rgb(96, 160, 255, 0.20f);
-    border_color = ui::kBorderStrong;
-  } else if (hovered) {
-    bg_color = IsLightPaletteActive() ? Rgb(7, 24, 56, 0.06f) : Rgb(255, 255, 255, 0.07f);
-    border_color = ui::kBorder;
-  }
-  const ImVec2 max(min.x + card_size.x, min.y + card_size.y);
-  draw->AddRectFilled(min, max, ImGui::GetColorU32(bg_color), 10.0f);
-  if (selected || hovered) {
-    draw->AddRect(min, max, ImGui::GetColorU32(border_color), 10.0f);
-  }
-  if (selected) {
-    draw->AddRectFilled(min, ImVec2(min.x + 3.0f, max.y), ImGui::GetColorU32(ui::kAccent), 10.0f, ImDrawFlags_RoundCornersLeft);
-  }
-
-  const std::string row_title = CompactPreview(Trim(chat.title).empty() ? chat.id : chat.title, 34);
-  std::string row_subtitle = chat.updated_at;
-  if (!chat.messages.empty()) {
-    row_subtitle = CompactPreview(chat.messages.back().content, 46);
-  }
-  row_subtitle = CompactPreview(Trim(row_subtitle), 46);
-  if (row_subtitle.empty()) {
-    row_subtitle = "No messages yet";
-  }
-
-  draw->AddText(ImVec2(min.x + 10.0f, min.y + 7.0f), ImGui::GetColorU32(ui::kTextPrimary), row_title.c_str());
-  draw->AddText(ImVec2(min.x + 10.0f, min.y + 29.0f), ImGui::GetColorU32(ui::kTextMuted), row_subtitle.c_str());
-  ImGui::Dummy(ImVec2(0.0f, 6.0f));
+  const ImVec4 bg = hovered
+                        ? (danger ? (light ? Rgb(220, 38, 38, 0.16f) : Rgb(255, 107, 107, 0.16f))
+                                  : (light ? Rgb(9, 31, 63, 0.09f) : Rgb(255, 255, 255, 0.10f)))
+                        : ui::kTransparent;
+  const ImVec4 border = hovered ? (danger ? ui::kError : ui::kBorderStrong) : ui::kBorder;
+  const ImVec4 text = danger ? ui::kError : ui::kTextSecondary;
+  draw->AddRectFilled(min, max, ImGui::GetColorU32(bg), ui::kRadiusSmall);
+  draw->AddRect(min, max, ImGui::GetColorU32(border), ui::kRadiusSmall);
+  const ImVec2 text_size = ImGui::CalcTextSize(glyph);
+  draw->AddText(ImVec2(min.x + (size.x - text_size.x) * 0.5f, min.y + (size.y - text_size.y) * 0.5f),
+                ImGui::GetColorU32(text), glyph);
+  ImGui::PopID();
   return clicked;
 }
 
-static bool DrawFolderHeaderItem(const ChatFolder& folder, const int chat_count) {
+static void DrawDesktopMenuBar(AppState& app, bool& done) {
+  if (!ImGui::BeginMainMenuBar()) {
+    return;
+  }
+
+  if (ImGui::BeginMenu("File")) {
+    if (ImGui::MenuItem("New Chat", "Ctrl+N")) {
+      CreateAndSelectChat(app);
+    }
+    if (ImGui::MenuItem("Refresh Chats", "Ctrl+R")) {
+      RefreshChatHistory(app);
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem("App Settings...", "Ctrl+,")) {
+      app.open_app_settings_popup = true;
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Quit", "Ctrl+Q")) {
+      done = true;
+    }
+    ImGui::EndMenu();
+  }
+
+  if (ImGui::BeginMenu("Edit")) {
+    ChatSession* selected = SelectedChat(app);
+    const bool can_delete = (selected != nullptr);
+    if (!can_delete) {
+      ImGui::BeginDisabled();
+    }
+    if (ImGui::MenuItem("Delete Selected Chat")) {
+      RequestDeleteSelectedChat(app);
+    }
+    if (!can_delete) {
+      ImGui::EndDisabled();
+    }
+    ImGui::EndMenu();
+  }
+
+  if (ImGui::BeginMenu("View")) {
+    const bool structured_active = (app.center_view_mode == CenterViewMode::Structured);
+    if (ImGui::MenuItem("Structured Mode", nullptr, structured_active)) {
+      app.center_view_mode = CenterViewMode::Structured;
+      SaveSettings(app);
+    }
+    const bool terminal_active = (app.center_view_mode == CenterViewMode::CliConsole);
+    if (ImGui::MenuItem("Terminal Mode", nullptr, terminal_active)) {
+      app.center_view_mode = CenterViewMode::CliConsole;
+      MarkSelectedCliTerminalForLaunch(app);
+      SaveSettings(app);
+    }
+    ImGui::Separator();
+    if (ImGui::BeginMenu("Theme")) {
+      const auto set_theme = [&](const char* choice) {
+        app.settings.ui_theme = choice;
+        ApplyThemeFromSettings(app);
+        SaveSettings(app);
+      };
+      if (ImGui::MenuItem("Dark", nullptr, app.settings.ui_theme == "dark")) {
+        set_theme("dark");
+      }
+      if (ImGui::MenuItem("Light", nullptr, app.settings.ui_theme == "light")) {
+        set_theme("light");
+      }
+      if (ImGui::MenuItem("System", nullptr, app.settings.ui_theme == "system")) {
+        set_theme("system");
+      }
+      ImGui::EndMenu();
+    }
+    ImGui::EndMenu();
+  }
+
+  ImGui::EndMainMenuBar();
+}
+
+struct SidebarItemAction {
+  bool select = false;
+  bool request_delete = false;
+};
+
+struct FolderHeaderAction {
+  bool toggle = false;
+  bool quick_create = false;
+};
+
+static SidebarItemAction DrawSidebarItem(const ChatSession& chat, const bool selected, const std::string& item_id) {
+  const bool light = IsLightPaletteActive();
+  SidebarItemAction action;
+
+  ImGui::PushID(item_id.c_str());
   const ImVec2 row_size(ImGui::GetContentRegionAvail().x, 30.0f);
   const ImVec2 min = ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("folder_header", row_size);
+  ImGui::InvisibleButton("chat_row", row_size);
+  ImGui::SetItemAllowOverlap();
   const bool hovered = ImGui::IsItemHovered();
-  const bool clicked = ImGui::IsItemClicked();
+  action.select = ImGui::IsItemClicked();
+  const ImVec2 max(min.x + row_size.x, min.y + row_size.y);
 
   ImDrawList* draw = ImGui::GetWindowDrawList();
+  const ImVec4 row_bg = selected ? (light ? Rgb(66, 126, 228, 0.13f) : Rgb(94, 160, 255, 0.15f))
+                                 : (hovered ? (light ? Rgb(9, 31, 63, 0.06f) : Rgb(255, 255, 255, 0.06f)) : ui::kTransparent);
+  const ImVec4 row_border = selected ? ui::kBorderStrong : ui::kBorder;
+  if (selected || hovered) {
+    draw->AddRectFilled(min, max, ImGui::GetColorU32(row_bg), ui::kRadiusSmall);
+    draw->AddRect(min, max, ImGui::GetColorU32(row_border), ui::kRadiusSmall);
+  }
+  if (selected) {
+    draw->AddRectFilled(min, ImVec2(min.x + 3.0f, max.y), ImGui::GetColorU32(ui::kAccent), ui::kRadiusSmall, ImDrawFlags_RoundCornersLeft);
+  }
+
+  const std::string row_title = CompactPreview(Trim(chat.title).empty() ? chat.id : chat.title, 46);
+  draw->AddText(ImVec2(min.x + 11.0f, min.y + 7.0f), ImGui::GetColorU32(ui::kTextPrimary), row_title.c_str());
+
+  if (hovered || selected) {
+    ImGui::SetCursorScreenPos(ImVec2(max.x - 22.0f, min.y + 6.0f));
+    if (DrawMiniIconButton("delete_chat", "x", ImVec2(16.0f, 16.0f), true)) {
+      action.request_delete = true;
+      action.select = false;
+    }
+  }
+
+  ImGui::SetCursorScreenPos(ImVec2(min.x, max.y + 4.0f));
+  ImGui::Dummy(ImVec2(0.0f, 0.0f));
+  ImGui::PopID();
+  return action;
+}
+
+static FolderHeaderAction DrawFolderHeaderItem(const ChatFolder& folder, const int chat_count) {
+  const bool light = IsLightPaletteActive();
+  FolderHeaderAction action;
+
+  ImGui::PushID(folder.id.c_str());
+  const ImVec2 row_size(ImGui::GetContentRegionAvail().x, 30.0f);
+  const ImVec2 min = ImGui::GetCursorScreenPos();
+  ImGui::InvisibleButton("folder_row", row_size);
+  const bool hovered = ImGui::IsItemHovered();
+  action.toggle = ImGui::IsItemClicked();
   const ImVec2 max(min.x + row_size.x, min.y + row_size.y);
-  if (hovered) {
-    draw->AddRectFilled(min, max, ImGui::GetColorU32(Rgb(255, 255, 255, 0.05f)), 8.0f);
-    draw->AddRect(min, max, ImGui::GetColorU32(ui::kBorder), 8.0f);
+
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+  if (hovered || !folder.collapsed) {
+    draw->AddRectFilled(min, max, ImGui::GetColorU32(light ? Rgb(9, 31, 63, 0.05f) : Rgb(255, 255, 255, 0.04f)), ui::kRadiusSmall);
+    draw->AddRect(min, max, ImGui::GetColorU32(ui::kBorder), ui::kRadiusSmall);
   }
 
   const std::string marker = folder.collapsed ? ">" : "v";
   const std::string title = FolderTitleOrFallback(folder);
   const std::string count_text = std::to_string(chat_count);
-  const float count_w = ImGui::CalcTextSize(count_text.c_str()).x;
-  const float count_pad = 8.0f;
-  const float badge_w = count_w + (count_pad * 2.0f);
-  const ImVec2 badge_min(max.x - badge_w - 8.0f, min.y + 6.0f);
-  const ImVec2 badge_max(max.x - 8.0f, max.y - 6.0f);
-  draw->AddRectFilled(badge_min, badge_max, ImGui::GetColorU32(Rgb(255, 255, 255, 0.09f)), 10.0f);
-
   draw->AddText(ImVec2(min.x + 8.0f, min.y + 7.0f), ImGui::GetColorU32(ui::kTextMuted), marker.c_str());
-  draw->AddText(ImVec2(min.x + 30.0f, min.y + 7.0f), ImGui::GetColorU32(ui::kTextPrimary), CompactPreview(title, 24).c_str());
-  draw->AddText(ImVec2(badge_min.x + count_pad, min.y + 7.0f), ImGui::GetColorU32(ui::kTextSecondary), count_text.c_str());
-  return clicked;
+  draw->AddText(ImVec2(min.x + 22.0f, min.y + 7.0f), ImGui::GetColorU32(ui::kTextSecondary), CompactPreview(title, 22).c_str());
+  draw->AddText(ImVec2(max.x - 54.0f, min.y + 7.0f), ImGui::GetColorU32(ui::kTextMuted), count_text.c_str());
+
+  ImGui::SetCursorScreenPos(ImVec2(max.x - 24.0f, min.y + 6.0f));
+  if (DrawMiniIconButton("folder_new_chat", "+", ImVec2(16.0f, 16.0f), false)) {
+    action.quick_create = true;
+    action.toggle = false;
+  }
+
+  ImGui::SetCursorScreenPos(ImVec2(min.x, max.y + 4.0f));
+  ImGui::Dummy(ImVec2(0.0f, 0.0f));
+  ImGui::PopID();
+  return action;
 }
 
 static void DrawLeftPane(AppState& app) {
-  BeginPanel("left_sidebar", ImVec2(0.0f, 0.0f), PanelTone::Secondary, true, 0, ImVec2(ui::kSpace16, ui::kSpace16));
+  BeginPanel("left_sidebar", ImVec2(0.0f, 0.0f), PanelTone::Secondary, true, 0, ImVec2(ui::kSpace12, ui::kSpace12));
   EnsureNewChatFolderSelection(app);
+
   PushFontIfAvailable(g_font_title);
-  ImGui::TextColored(ui::kTextPrimary, "Universal Agent Manager");
+  ImGui::TextColored(ui::kTextPrimary, "Chats");
   PopFontIfAvailable(g_font_title);
-  ImGui::TextColored(ui::kTextMuted, "%zu chats across %zu folders", app.chats.size(), app.folders.size());
-  ImGui::Dummy(ImVec2(0.0f, ui::kSpace4));
-  DrawSoftDivider();
 
-  const ChatFolder* create_folder = FindFolderById(app, app.new_chat_folder_id);
-  const std::string create_folder_label = (create_folder != nullptr) ? FolderTitleOrFallback(*create_folder) : std::string(kDefaultFolderTitle);
-  ImGui::TextColored(ui::kTextMuted, "New chat destination");
-  ImGui::SetNextItemWidth(-1.0f);
-  if (ImGui::BeginCombo("##new_chat_in", create_folder_label.c_str())) {
-    for (const ChatFolder& folder : app.folders) {
-      const std::string folder_label = FolderTitleOrFallback(folder);
-      const bool selected = (app.new_chat_folder_id == folder.id);
-      if (ImGui::Selectable(folder_label.c_str(), selected)) {
-        app.new_chat_folder_id = folder.id;
-      }
-      if (selected) {
-        ImGui::SetItemDefaultFocus();
-      }
-    }
-    ImGui::EndCombo();
+  ImGui::SameLine();
+  const float header_controls_x = ImGui::GetWindowPos().x + ImGui::GetWindowSize().x - 52.0f;
+  if (ImGui::GetCursorScreenPos().x < header_controls_x) {
+    ImGui::SetCursorScreenPos(ImVec2(header_controls_x, ImGui::GetCursorScreenPos().y));
   }
-
-  const std::string new_chat_label = FrontendActionLabel(app, "create_chat", "+ New Chat");
-  const std::string refresh_label = FrontendActionLabel(app, "refresh_history", "Refresh");
-  const std::string delete_label = FrontendActionLabel(app, "delete_chat", "Del");
-
-  const bool show_create_chat = FrontendActionVisible(app, "create_chat");
-  const float row_width = ImGui::GetContentRegionAvail().x;
-  if (show_create_chat) {
-    if (DrawButton(new_chat_label.c_str(), ImVec2(row_width, 38.0f), ButtonKind::Primary)) {
-      CreateAndSelectChat(app);
-    }
-    ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
+  if (DrawMiniIconButton("new_chat_global", "+", ImVec2(20.0f, 20.0f))) {
+    app.new_chat_folder_id = kDefaultFolderId;
+    CreateAndSelectChat(app);
   }
-
-  const bool show_refresh = FrontendActionVisible(app, "refresh_history");
-  const float secondary_w = show_refresh ? std::max(90.0f, (row_width - ui::kSpace8) * 0.5f) : row_width;
-  if (DrawButton("+ Folder", ImVec2(secondary_w, 34.0f), ButtonKind::Ghost)) {
+  ImGui::SameLine(0.0f, 6.0f);
+  if (DrawMiniIconButton("new_folder", "f+", ImVec2(20.0f, 20.0f))) {
     app.new_folder_title_input.clear();
     app.new_folder_directory_input = fs::current_path().string();
     ImGui::OpenPopup("new_folder_popup");
   }
-  if (show_refresh) {
-    ImGui::SameLine();
-    if (DrawButton(refresh_label.c_str(), ImVec2(secondary_w, 34.0f), ButtonKind::Ghost)) {
-      RefreshChatHistory(app);
+
+  ImGui::TextColored(ui::kTextMuted, "%zu chats", app.chats.size());
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace4));
+  DrawSoftDivider();
+
+  BeginPanel("sidebar_folder_scroll", ImVec2(0.0f, 0.0f), PanelTone::Primary, false, ImGuiWindowFlags_AlwaysVerticalScrollbar,
+             ImVec2(4.0f, 4.0f), ui::kRadiusSmall);
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
+
+  std::string chat_to_delete;
+  for (ChatFolder& folder : app.folders) {
+    const int chat_count = CountChatsInFolder(app, folder.id);
+    const FolderHeaderAction folder_action = DrawFolderHeaderItem(folder, chat_count);
+    if (folder_action.quick_create) {
+      app.new_chat_folder_id = folder.id;
+      CreateAndSelectChat(app);
+    } else if (folder_action.toggle) {
+      app.new_chat_folder_id = folder.id;
+      folder.collapsed = !folder.collapsed;
+      SaveFolders(app);
+    }
+
+    if (!folder.collapsed) {
+      ImGui::Indent(8.0f);
+      for (int i = 0; i < static_cast<int>(app.chats.size()); ++i) {
+        if (app.chats[i].folder_id != folder.id) {
+          continue;
+        }
+        const std::string sidebar_item_id = "session_" + app.chats[i].id + "##" + std::to_string(i);
+        const SidebarItemAction item_action = DrawSidebarItem(app.chats[i], i == app.selected_chat_index, sidebar_item_id);
+        if (item_action.select) {
+          app.selected_chat_index = i;
+          RefreshRememberedSelection(app);
+          SaveSettings(app);
+          if (app.center_view_mode == CenterViewMode::CliConsole) {
+            MarkSelectedCliTerminalForLaunch(app);
+          }
+        }
+        if (item_action.request_delete) {
+          chat_to_delete = app.chats[i].id;
+        }
+      }
+      if (chat_count == 0) {
+        ImGui::TextColored(ui::kTextMuted, "No chats in folder");
+        ImGui::Dummy(ImVec2(0.0f, 4.0f));
+      }
+      ImGui::Unindent(8.0f);
     }
   }
 
-  ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
-  const bool has_selected = (SelectedChat(app) != nullptr);
-  if (!has_selected) {
-    ImGui::BeginDisabled();
-  }
-  if (FrontendActionVisible(app, "delete_chat") &&
-      DrawButton(delete_label.c_str(), ImVec2(row_width, 34.0f), ButtonKind::Ghost)) {
-    RequestDeleteSelectedChat(app);
-  }
-  if (!has_selected) {
-    ImGui::EndDisabled();
-  }
-  ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
-  if (DrawButton("App Settings", ImVec2(row_width, 34.0f), ButtonKind::Ghost)) {
-    app.open_app_settings_popup = true;
+  ImGui::PopStyleVar();
+  EndPanel();
+
+  if (!chat_to_delete.empty()) {
+    if (app.settings.confirm_delete_chat) {
+      app.pending_delete_chat_id = chat_to_delete;
+      app.open_delete_chat_popup = true;
+    } else {
+      RemoveChatById(app, chat_to_delete);
+    }
   }
 
   if (ImGui::BeginPopupModal("new_folder_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
@@ -3272,43 +3513,6 @@ static void DrawLeftPane(AppState& app) {
     ImGui::EndPopup();
   }
 
-  ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
-  DrawSoftDivider();
-  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ui::kSpace8, ui::kSpace8));
-
-  for (ChatFolder& folder : app.folders) {
-    const int chat_count = CountChatsInFolder(app, folder.id);
-    ImGui::PushID(folder.id.c_str());
-    if (DrawFolderHeaderItem(folder, chat_count)) {
-      app.new_chat_folder_id = folder.id;
-      folder.collapsed = !folder.collapsed;
-      SaveFolders(app);
-    }
-    if (!folder.collapsed) {
-      ImGui::Indent(10.0f);
-      for (int i = 0; i < static_cast<int>(app.chats.size()); ++i) {
-        if (app.chats[i].folder_id != folder.id) {
-          continue;
-        }
-        const std::string sidebar_item_id = "session_" + app.chats[i].id + "##" + std::to_string(i);
-        if (DrawSidebarItem(app.chats[i], i == app.selected_chat_index, sidebar_item_id)) {
-          app.selected_chat_index = i;
-          RefreshRememberedSelection(app);
-          SaveSettings(app);
-          if (app.center_view_mode == CenterViewMode::CliConsole) {
-            MarkSelectedCliTerminalForLaunch(app);
-          }
-        }
-      }
-      if (chat_count == 0) {
-        ImGui::TextColored(ui::kTextMuted, "No chats in folder");
-      }
-      ImGui::Unindent(10.0f);
-    }
-    ImGui::PopID();
-  }
-
-  ImGui::PopStyleVar();
   EndPanel();
 }
 
@@ -3319,7 +3523,8 @@ static void DrawMessageBubble(AppState& app, ChatSession& chat, const int messag
   const Message& message = chat.messages[message_index];
   const bool is_user = (message.role == MessageRole::User);
   const bool is_assistant = (message.role == MessageRole::Assistant);
-  const float max_width = content_width * 0.74f;
+  const bool light = IsLightPaletteActive();
+  const float max_width = content_width * 0.78f;
   const float pad_x = 16.0f;
   const float pad_y = 14.0f;
   const float text_wrap_width = max_width - (pad_x * 2.0f);
@@ -3334,14 +3539,19 @@ static void DrawMessageBubble(AppState& app, ChatSession& chat, const int messag
   const ImVec2 min(bubble_x, cursor.y);
   const ImVec2 max(bubble_x + bubble_w, cursor.y + bubble_h);
 
-  const ImVec4 bg = is_user ? Rgb(63, 114, 205, 0.42f) : (is_assistant ? Rgb(16, 24, 35, 0.98f) : Rgb(64, 45, 16, 0.34f));
-  const ImVec4 border = is_user ? Rgb(140, 182, 255, 0.52f) : (is_assistant ? ui::kBorder : Rgb(245, 158, 11, 0.45f));
+  const ImVec4 bg = is_user
+                        ? (light ? Rgb(66, 126, 228, 0.16f) : Rgb(94, 160, 255, 0.20f))
+                        : (is_assistant ? (light ? Rgb(252, 254, 255, 0.97f) : Rgb(23, 29, 39, 0.98f))
+                                        : (light ? Rgb(255, 244, 230, 0.98f) : Rgb(71, 52, 22, 0.38f)));
+  const ImVec4 border = is_user
+                            ? (light ? Rgb(66, 126, 228, 0.42f) : Rgb(111, 171, 255, 0.50f))
+                            : (is_assistant ? ui::kBorder : Rgb(245, 158, 11, 0.45f));
   const ImVec4 role = is_assistant ? ui::kSuccess : (is_user ? ui::kAccent : ui::kWarning);
 
   ImDrawList* draw = ImGui::GetWindowDrawList();
-  draw->AddRectFilled(ImVec2(min.x + 1.0f, min.y + 3.0f), ImVec2(max.x + 1.0f, max.y + 3.0f), ImGui::GetColorU32(ui::kShadow), 14.0f);
-  draw->AddRectFilled(min, max, ImGui::GetColorU32(bg), 14.0f);
-  draw->AddRect(min, max, ImGui::GetColorU32(border), 14.0f, 0, 1.1f);
+  draw->AddRectFilled(ImVec2(min.x + 1.0f, min.y + 3.0f), ImVec2(max.x + 1.0f, max.y + 3.0f), ImGui::GetColorU32(ui::kShadowSoft), 12.0f);
+  draw->AddRectFilled(min, max, ImGui::GetColorU32(bg), 12.0f);
+  draw->AddRect(min, max, ImGui::GetColorU32(border), 12.0f, 0, 1.1f);
 
   const char* role_label = is_user ? "You" : (is_assistant ? "Assistant" : "System");
   ImGui::SetCursorScreenPos(ImVec2(min.x + pad_x, min.y + pad_y));
@@ -3369,17 +3579,15 @@ static void DrawMessageBubble(AppState& app, ChatSession& chat, const int messag
 }
 
 static void DrawCenterModeToggle(AppState& app) {
-  ImGui::TextColored(ui::kTextMuted, "Mode");
-  ImGui::SameLine();
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 6.0f));
   const bool structured_active = (app.center_view_mode == CenterViewMode::Structured);
-  if (DrawButton("Structured", ImVec2(104.0f, 30.0f), structured_active ? ButtonKind::Primary : ButtonKind::Ghost)) {
+  if (DrawButton("Structured", ImVec2(98.0f, 30.0f), structured_active ? ButtonKind::Primary : ButtonKind::Ghost)) {
     app.center_view_mode = CenterViewMode::Structured;
     SaveSettings(app);
   }
   ImGui::SameLine();
   const bool cli_active = (app.center_view_mode == CenterViewMode::CliConsole);
-  if (DrawButton("Terminal", ImVec2(92.0f, 30.0f), cli_active ? ButtonKind::Primary : ButtonKind::Ghost)) {
+  if (DrawButton("Terminal", ImVec2(86.0f, 30.0f), cli_active ? ButtonKind::Primary : ButtonKind::Ghost)) {
     app.center_view_mode = CenterViewMode::CliConsole;
     MarkSelectedCliTerminalForLaunch(app);
     SaveSettings(app);
@@ -3670,15 +3878,17 @@ static void DrawCliTerminalSurface(AppState& app, ChatSession& chat, const bool 
 }
 
 static void DrawInputContainer(AppState& app) {
-  BeginPanel("input_container", ImVec2(0.0f, 148.0f), PanelTone::Secondary, true, 0, ImVec2(12.0f, 12.0f), ui::kRadiusInput);
+  BeginPanel("input_container", ImVec2(0.0f, 166.0f), PanelTone::Secondary, true, 0, ImVec2(12.0f, 12.0f), ui::kRadiusInput);
   ImDrawList* draw = ImGui::GetWindowDrawList();
   const ImVec2 min = ImGui::GetWindowPos();
   const ImVec2 max(min.x + ImGui::GetWindowSize().x, min.y + ImGui::GetWindowSize().y);
-  draw->AddRectFilled(ImVec2(min.x + 2.0f, min.y + 4.0f), ImVec2(max.x + 2.0f, max.y + 4.0f), ImGui::GetColorU32(ui::kShadow), ui::kRadiusInput);
+  draw->AddRectFilled(ImVec2(min.x + 2.0f, min.y + 4.0f), ImVec2(max.x + 2.0f, max.y + 4.0f), ImGui::GetColorU32(ui::kShadowSoft), ui::kRadiusInput);
 
-  ImGui::TextColored(ui::kTextMuted, "Message");
+  ImGui::TextColored(ui::kTextSecondary, "Composer");
+  ImGui::SameLine();
+  ImGui::TextColored(ui::kTextMuted, "Ctrl+Enter to send");
   PushInputChrome(ui::kRadiusInput);
-  ImGui::InputTextMultiline("##composer", &app.composer_text, ImVec2(-96.0f, 92.0f), ImGuiInputTextFlags_AllowTabInput);
+  ImGui::InputTextMultiline("##composer", &app.composer_text, ImVec2(-96.0f, 110.0f), ImGuiInputTextFlags_AllowTabInput);
   PopInputChrome();
 
   ImGui::SameLine();
@@ -3688,8 +3898,8 @@ static void DrawInputContainer(AppState& app) {
     ImGui::BeginDisabled();
   }
   if (FrontendActionVisible(app, "send_prompt", true)) {
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 28.0f);
-    if (DrawButton(send_label.c_str(), ImVec2(80.0f, 40.0f), ButtonKind::Accent)) {
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 36.0f);
+    if (DrawButton(send_label.c_str(), ImVec2(80.0f, 42.0f), ButtonKind::Accent)) {
       StartGeminiRequest(app);
     }
   }
@@ -3725,7 +3935,7 @@ static void DrawStructuredProcessingIndicator(const AppState& app, const ChatSes
   const float bar_h = 6.0f;
   const ImVec2 bar_max(bar_min.x + bar_w, bar_min.y + bar_h);
   ImDrawList* draw = ImGui::GetWindowDrawList();
-  draw->AddRectFilled(bar_min, bar_max, ImGui::GetColorU32(Rgb(255, 255, 255, 0.10f)), 6.0f);
+  draw->AddRectFilled(bar_min, bar_max, ImGui::GetColorU32(IsLightPaletteActive() ? Rgb(12, 30, 58, 0.12f) : Rgb(255, 255, 255, 0.10f)), 6.0f);
 
   const float cycle = std::fmod(static_cast<float>(ImGui::GetTime()) * 0.9f, 1.0f);
   const float seg_w = bar_w * 0.28f;
@@ -3739,12 +3949,74 @@ static void DrawStructuredProcessingIndicator(const AppState& app, const ChatSes
   EndPanel();
 }
 
+static void DrawChatSettingsPopup(AppState& app, ChatSession& chat, const char* popup_id) {
+  if (!ImGui::BeginPopup(popup_id)) {
+    return;
+  }
+
+  ImGui::TextColored(ui::kTextPrimary, "Chat Settings");
+  ImGui::TextColored(ui::kTextMuted, "Folder, files, and provider runtime");
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
+  if (ImGui::BeginChild(("chat_settings_scroll##" + chat.id).c_str(), ImVec2(560.0f, 560.0f), false,
+                        ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
+    DrawSessionSidePane(app, chat);
+  }
+  ImGui::EndChild();
+  ImGui::EndPopup();
+}
+
 static void DrawChatDetailPane(AppState& app, ChatSession& chat) {
+  BeginPanel("main_chat_panel", ImVec2(0.0f, 0.0f), PanelTone::Primary, true, 0, ImVec2(ui::kSpace16, ui::kSpace16));
+  const std::string settings_popup_id = "chat_settings_popup##" + chat.id;
+  bool request_open_chat_settings_popup = false;
+
+  if (BeginPanel("chat_header_bar", ImVec2(0.0f, 92.0f), PanelTone::Secondary, true, 0, ImVec2(12.0f, 10.0f), ui::kRadiusInput)) {
+    if (ImGui::BeginTable("chat_header_layout", 2, ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_SizingStretchProp |
+                                                   ImGuiTableFlags_NoPadOuterX | ImGuiTableFlags_NoBordersInBody)) {
+      ImGui::TableSetupColumn("meta", ImGuiTableColumnFlags_WidthStretch, 0.72f);
+      ImGui::TableSetupColumn("mode", ImGuiTableColumnFlags_WidthFixed, 236.0f);
+      ImGui::TableNextRow();
+
+      ImGui::TableSetColumnIndex(0);
+      PushInputChrome();
+      ImGui::SetNextItemWidth(-1.0f);
+      if (ImGui::InputText("##chat_title", &chat.title)) {
+        chat.updated_at = TimestampNow();
+        SaveAndUpdateStatus(app, chat, "Chat title updated.", "Chat title changed in UI, but failed to save.");
+      }
+      PopInputChrome();
+
+      if (app.pending_call.has_value() && app.pending_call->chat_id == chat.id) {
+        static constexpr const char kSpinnerFrames[4] = {'|', '/', '-', '\\'};
+        const int spinner_index = static_cast<int>(ImGui::GetTime() * 8.0) & 3;
+        ImGui::TextColored(ui::kWarning, "Gemini running %c", kSpinnerFrames[spinner_index]);
+      } else if (app.pending_call.has_value()) {
+        ImGui::TextColored(ui::kTextSecondary, "Gemini running in another chat");
+      } else {
+        ImGui::TextColored(ui::kSuccess, "Ready");
+      }
+      ImGui::SameLine();
+      ImGui::TextColored(ui::kTextMuted, "Updated %s", CompactPreview(chat.updated_at, 20).c_str());
+
+      ImGui::TableSetColumnIndex(1);
+      ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 2.0f);
+      DrawCenterModeToggle(app);
+      ImGui::SameLine(0.0f, 8.0f);
+      if (DrawMiniIconButton("chat_settings_menu", "...", ImVec2(28.0f, 28.0f))) {
+        request_open_chat_settings_popup = true;
+      }
+
+      ImGui::EndTable();
+    }
+  }
+  EndPanel();
+  if (request_open_chat_settings_popup) {
+    ImGui::OpenPopup(settings_popup_id.c_str());
+  }
+  DrawChatSettingsPopup(app, chat, settings_popup_id.c_str());
+
   if (app.center_view_mode == CenterViewMode::CliConsole) {
-    BeginPanel("main_chat_panel", ImVec2(0.0f, 0.0f), PanelTone::Primary, true,
-               ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse, ImVec2(8.0f, 8.0f));
-    DrawCenterModeToggle(app);
-    ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
     BeginPanel("cli_terminal_panel", ImVec2(0.0f, 0.0f), PanelTone::Secondary, true,
                ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse, ImVec2(8.0f, 8.0f));
     DrawCliTerminalSurface(app, chat, false);
@@ -3757,32 +4029,10 @@ static void DrawChatDetailPane(AppState& app, ChatSession& chat) {
     return;
   }
 
-  BeginPanel("main_chat_panel", ImVec2(0.0f, 0.0f), PanelTone::Primary, true, 0, ImVec2(ui::kSpace24, ui::kSpace24));
-  PushInputChrome();
-  ImGui::SetNextItemWidth(-1.0f);
-  if (ImGui::InputText("##chat_title", &chat.title)) {
-    chat.updated_at = TimestampNow();
-    SaveAndUpdateStatus(app, chat, "Chat title updated.", "Chat title changed in UI, but failed to save.");
-  }
-  PopInputChrome();
-
-  ImGui::TextColored(ui::kTextMuted, "Ctrl+Enter to send");
-  ImGui::SameLine();
-  if (app.pending_call.has_value() && app.pending_call->chat_id == chat.id) {
-    static constexpr const char kSpinnerFrames[4] = {'|', '/', '-', '\\'};
-    const int spinner_index = static_cast<int>(ImGui::GetTime() * 8.0) & 3;
-    ImGui::TextColored(ui::kWarning, "Gemini running %c", kSpinnerFrames[spinner_index]);
-  } else if (app.pending_call.has_value()) {
-    ImGui::TextColored(ui::kTextSecondary, "Gemini running in another chat");
-  } else {
-    ImGui::TextColored(ui::kSuccess, "Ready");
-  }
-  ImGui::SameLine();
-  DrawCenterModeToggle(app);
-  ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
-
-  const float input_area_h = 176.0f;
-  BeginPanel("conversation_history", ImVec2(0.0f, -input_area_h), PanelTone::Primary, false, ImGuiWindowFlags_AlwaysVerticalScrollbar, ImVec2(0.0f, 0.0f));
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
+  const float input_area_h = 194.0f;
+  BeginPanel("conversation_history", ImVec2(0.0f, -input_area_h), PanelTone::Primary, false,
+             ImGuiWindowFlags_AlwaysVerticalScrollbar, ImVec2(2.0f, 2.0f), ui::kRadiusSmall);
   const float content_width = ImGui::GetContentRegionAvail().x;
   for (int i = 0; i < static_cast<int>(chat.messages.size()); ++i) {
     ImGui::PushID(i);
@@ -3795,43 +4045,42 @@ static void DrawChatDetailPane(AppState& app, ChatSession& chat) {
   }
   EndPanel();
 
-    if (app.open_edit_message_popup) {
-      ImGui::OpenPopup("edit_user_message_popup");
-      app.open_edit_message_popup = false;
+  if (app.open_edit_message_popup) {
+    ImGui::OpenPopup("edit_user_message_popup");
+    app.open_edit_message_popup = false;
+  }
+  if (ImGui::BeginPopupModal("edit_user_message_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    const bool editing_selected_chat = (app.editing_chat_id == chat.id);
+    const bool valid_index = (app.editing_message_index >= 0 && app.editing_message_index < static_cast<int>(chat.messages.size()));
+    const bool valid_target = editing_selected_chat && valid_index && chat.messages[app.editing_message_index].role == MessageRole::User;
+    if (!valid_target) {
+      ImGui::TextColored(ui::kWarning, "The selected message is no longer editable.");
+    } else {
+      ImGui::TextColored(ui::kTextPrimary, "Edit message and continue from this point");
+      ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
+      PushInputChrome();
+      ImGui::InputTextMultiline("##edited_user_message", &app.editing_message_text, ImVec2(560.0f, 170.0f));
+      PopInputChrome();
+      ImGui::Dummy(ImVec2(0.0f, ui::kSpace4));
+      ImGui::TextColored(ui::kTextMuted, "This removes all messages after this point and re-runs Gemini.");
     }
-    if (ImGui::BeginPopupModal("edit_user_message_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-      const bool editing_selected_chat = (app.editing_chat_id == chat.id);
-      const bool valid_index =
-          (app.editing_message_index >= 0 && app.editing_message_index < static_cast<int>(chat.messages.size()));
-      const bool valid_target = editing_selected_chat && valid_index && chat.messages[app.editing_message_index].role == MessageRole::User;
-      if (!valid_target) {
-        ImGui::TextColored(ui::kWarning, "The selected message is no longer editable.");
-      } else {
-        ImGui::TextColored(ui::kTextPrimary, "Edit message and continue from this point");
-        ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
-        PushInputChrome();
-        ImGui::InputTextMultiline("##edited_user_message", &app.editing_message_text, ImVec2(560.0f, 170.0f));
-        PopInputChrome();
-        ImGui::Dummy(ImVec2(0.0f, ui::kSpace4));
-        ImGui::TextColored(ui::kTextMuted, "This removes all messages after this point and re-runs Gemini.");
-      }
 
-      ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
-      if (valid_target) {
-        if (DrawButton("Apply + Continue", ImVec2(150.0f, 32.0f), ButtonKind::Primary)) {
-          if (ContinueFromEditedUserMessage(app, chat)) {
-            ClearEditMessageState(app);
-            ImGui::CloseCurrentPopup();
-          }
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
+    if (valid_target) {
+      if (DrawButton("Apply + Continue", ImVec2(150.0f, 32.0f), ButtonKind::Primary)) {
+        if (ContinueFromEditedUserMessage(app, chat)) {
+          ClearEditMessageState(app);
+          ImGui::CloseCurrentPopup();
         }
-        ImGui::SameLine();
       }
-      if (DrawButton("Cancel", ImVec2(96.0f, 32.0f), ButtonKind::Ghost)) {
-        ClearEditMessageState(app);
-        ImGui::CloseCurrentPopup();
-      }
-      ImGui::EndPopup();
+      ImGui::SameLine();
     }
+    if (DrawButton("Cancel", ImVec2(96.0f, 32.0f), ButtonKind::Ghost)) {
+      ClearEditMessageState(app);
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
 
   DrawStructuredProcessingIndicator(app, chat);
   DrawInputContainer(app);
@@ -3854,6 +4103,12 @@ static bool BeginSectionCard(const char* id, const float height = 0.0f) {
 
 static void DrawSessionSidePane(AppState& app, ChatSession& chat) {
   BeginPanel("right_settings", ImVec2(0.0f, 0.0f), PanelTone::Secondary, true, 0, ImVec2(ui::kSpace16, ui::kSpace16));
+  PushFontIfAvailable(g_font_title);
+  ImGui::TextColored(ui::kTextPrimary, "Inspector");
+  PopFontIfAvailable(g_font_title);
+  ImGui::TextColored(ui::kTextMuted, "Chat metadata, files, and runtime controls");
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace6));
+  DrawSoftDivider();
 
   DrawSectionHeader("Chat Folder");
   if (BeginSectionCard("folder_card")) {
@@ -4239,6 +4494,11 @@ static void HandleGlobalShortcuts(AppState& app) {
     SaveSettings(app);
     app.status_line = app.settings.gemini_yolo_mode ? "YOLO mode enabled." : "YOLO mode disabled.";
   }
+  if (allow_global_action && ctrl && ImGui::IsKeyPressed(ImGuiKey_Q, false)) {
+    SDL_Event quit_event{};
+    quit_event.type = SDL_QUIT;
+    SDL_PushEvent(&quit_event);
+  }
 }
 
 int main(int, char**) {
@@ -4433,6 +4693,7 @@ int main(int, char**) {
     io.FontGlobalScale = app.settings.ui_scale_multiplier;
 
     HandleGlobalShortcuts(app);
+    DrawDesktopMenuBar(app, done);
 
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     DrawAmbientBackdrop(viewport->Pos, viewport->Size, static_cast<float>(ImGui::GetTime()));
@@ -4445,11 +4706,18 @@ int main(int, char**) {
                                     ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
 
     ImGui::Begin("UAM Gemini Manager", nullptr, window_flags);
-    if (ImGui::BeginTable("layout_split", 3, ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings |
-                                              ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) {
-      ImGui::TableSetupColumn("Chats", ImGuiTableColumnFlags_WidthFixed, ui::kSidebarWidth);
+
+    const float layout_w = ImGui::GetContentRegionAvail().x;
+    float sidebar_w = std::clamp(layout_w * 0.25f, 250.0f, 360.0f);
+    if (layout_w < 1020.0f) {
+      sidebar_w = std::clamp(layout_w * 0.30f, 230.0f, 320.0f);
+    }
+
+    if (ImGui::BeginTable("layout_split", 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings |
+                                              ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX |
+                                              ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoBordersInBody)) {
+      ImGui::TableSetupColumn("Chats", ImGuiTableColumnFlags_WidthFixed, sidebar_w);
       ImGui::TableSetupColumn("Conversation", ImGuiTableColumnFlags_WidthStretch, 0.72f);
-      ImGui::TableSetupColumn("Workspace", ImGuiTableColumnFlags_WidthFixed, ui::kRightPanelWidth);
       ImGui::TableNextRow();
 
       ImGui::TableSetColumnIndex(0);
@@ -4463,15 +4731,6 @@ int main(int, char**) {
         EndPanel();
       } else {
         DrawChatDetailPane(app, *selected);
-      }
-
-      ImGui::TableSetColumnIndex(2);
-      if (selected != nullptr) {
-        DrawSessionSidePane(app, *selected);
-      } else {
-        BeginPanel("empty_right", ImVec2(0.0f, 0.0f), PanelTone::Secondary, true, 0, ImVec2(ui::kSpace16, ui::kSpace16));
-        ImGui::TextDisabled("Select a chat to view workspace settings.");
-        EndPanel();
       }
 
       ImGui::EndTable();
