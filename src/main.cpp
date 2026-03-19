@@ -148,6 +148,10 @@ struct AppState {
   std::string pending_delete_chat_id;
   bool open_delete_folder_popup = false;
   std::string pending_delete_folder_id;
+  bool open_folder_settings_popup = false;
+  std::string pending_folder_settings_id;
+  std::string folder_settings_title_input;
+  std::string folder_settings_directory_input;
   bool open_template_manager_popup = false;
   bool template_catalog_dirty = true;
   std::vector<TemplateCatalogEntry> template_catalog;
@@ -182,6 +186,7 @@ static std::string NormalizeThemeChoice(std::string value);
 static void DrawSessionSidePane(AppState& app, ChatSession& chat);
 static void SaveAndUpdateStatus(AppState& app, const ChatSession& chat, const std::string& success, const std::string& failure);
 static void RefreshGeminiChatsDir(AppState& app);
+static const ChatFolder* FindFolderById(const AppState& app, const std::string& folder_id);
 
 static std::string Trim(const std::string& value) {
   const auto start = value.find_first_not_of(" \t\r\n");
@@ -277,17 +282,65 @@ static fs::path ResolveGeminiGlobalRootPath(const AppSettings& settings) {
   return AppPaths::DefaultGeminiUniversalRootPath();
 }
 
-static fs::path WorkspaceGeminiRootPath() {
-  return fs::current_path() / ".gemini";
-}
-
-static fs::path WorkspaceGeminiTemplatePath() {
-  return WorkspaceGeminiRootPath() / "gemini.md";
-}
-
-static bool EnsureWorkspaceGeminiLayout(std::string* error_out = nullptr) {
+static fs::path ResolveWorkspaceRootPath(const AppState& app, const ChatSession& chat) {
+  fs::path workspace_root;
+  if (const ChatFolder* folder = FindFolderById(app, chat.folder_id); folder != nullptr) {
+    workspace_root = ExpandLeadingTildePath(folder->directory);
+  }
+  if (workspace_root.empty()) {
+    workspace_root = fs::current_path();
+  }
   std::error_code ec;
-  const fs::path workspace_gemini = WorkspaceGeminiRootPath();
+  const fs::path absolute_root = fs::absolute(workspace_root, ec);
+  return ec ? workspace_root : absolute_root;
+}
+
+static fs::path WorkspaceGeminiRootPath(const AppState& app, const ChatSession& chat) {
+  return ResolveWorkspaceRootPath(app, chat) / ".gemini";
+}
+
+static fs::path WorkspaceGeminiTemplatePath(const AppState& app, const ChatSession& chat) {
+  return WorkspaceGeminiRootPath(app, chat) / "gemini.md";
+}
+
+static std::string BuildShellCommandWithWorkingDirectory(const fs::path& working_directory, const std::string& command) {
+#if defined(_WIN32)
+  std::string escaped = "\"";
+  for (const char ch : working_directory.string()) {
+    if (ch == '"') {
+      escaped += "\"\"";
+    } else {
+      escaped.push_back(ch);
+    }
+  }
+  escaped.push_back('"');
+  return "cd /d " + escaped + " && " + command;
+#else
+  std::string escaped = "'";
+  for (const char ch : working_directory.string()) {
+    if (ch == '\'') {
+      escaped += "'\\''";
+    } else {
+      escaped.push_back(ch);
+    }
+  }
+  escaped.push_back('\'');
+  return "cd " + escaped + " && " + command;
+#endif
+}
+
+static bool EnsureWorkspaceGeminiLayout(const AppState& app, const ChatSession& chat, std::string* error_out = nullptr) {
+  std::error_code ec;
+  const fs::path workspace_root = ResolveWorkspaceRootPath(app, chat);
+  fs::create_directories(workspace_root, ec);
+  if (ec) {
+    if (error_out != nullptr) {
+      *error_out = "Failed to create workspace root '" + workspace_root.string() + "': " + ec.message();
+    }
+    return false;
+  }
+
+  const fs::path workspace_gemini = WorkspaceGeminiRootPath(app, chat);
   fs::create_directories(workspace_gemini, ec);
   if (ec) {
     if (error_out != nullptr) {
@@ -1357,7 +1410,7 @@ enum class TemplatePreflightOutcome {
 static TemplatePreflightOutcome PreflightWorkspaceTemplateForChat(AppState& app,
                                                                   const ChatSession& chat,
                                                                   std::string* status_out = nullptr) {
-  if (!EnsureWorkspaceGeminiLayout(status_out)) {
+  if (!EnsureWorkspaceGeminiLayout(app, chat, status_out)) {
     return TemplatePreflightOutcome::BlockingError;
   }
   RefreshTemplateCatalog(app);
@@ -1383,7 +1436,7 @@ static TemplatePreflightOutcome PreflightWorkspaceTemplateForChat(AppState& app,
   }
 
   std::error_code ec;
-  fs::copy_file(entry->absolute_path, WorkspaceGeminiTemplatePath(), fs::copy_options::overwrite_existing, ec);
+  fs::copy_file(entry->absolute_path, WorkspaceGeminiTemplatePath(app, chat), fs::copy_options::overwrite_existing, ec);
   if (ec) {
     if (status_out != nullptr) {
       *status_out = "Failed to materialize .gemini/gemini.md: " + ec.message();
@@ -1427,7 +1480,8 @@ static bool QueueGeminiPromptForChat(AppState& app,
   const std::string resume_session_id =
       (ActiveProviderUsesGeminiHistory(app) && chat.uses_native_session) ? chat.native_session_id : "";
   const std::string provider_prompt = BuildProviderPrompt(provider, prompt_text, chat.linked_files);
-  const std::string command = BuildProviderCommand(provider, app.settings, provider_prompt, chat.linked_files, resume_session_id);
+  const std::string provider_command = BuildProviderCommand(provider, app.settings, provider_prompt, chat.linked_files, resume_session_id);
+  const std::string command = BuildShellCommandWithWorkingDirectory(ResolveWorkspaceRootPath(app, chat), provider_command);
   const std::string chat_id = chat.id;
 
   PendingGeminiCall pending;
@@ -2034,6 +2088,7 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
 
 #if defined(__unix__) || defined(__APPLE__)
 static bool StartCliTerminalUnix(AppState& app, CliTerminalState& terminal, const ChatSession& chat) {
+  const fs::path workspace_root = ResolveWorkspaceRootPath(app, chat);
   int master_fd = -1;
   int slave_fd = -1;
   struct winsize ws {};
@@ -2062,6 +2117,11 @@ static bool StartCliTerminalUnix(AppState& app, CliTerminalState& terminal, cons
     close(master_fd);
     close(slave_fd);
 
+    if (!workspace_root.empty()) {
+      std::error_code ec;
+      fs::create_directories(workspace_root, ec);
+      chdir(workspace_root.c_str());
+    }
     setenv("TERM", "xterm-256color", 1);
     const std::vector<std::string> argv_vec = BuildProviderInteractiveArgv(app, chat);
     std::vector<char*> argv_ptrs;
@@ -2165,6 +2225,7 @@ static std::string BuildWindowsCommandLine(const std::vector<std::string>& argv)
 }
 
 static bool StartCliTerminalWindows(AppState& app, CliTerminalState& terminal, const ChatSession& chat) {
+  const fs::path workspace_root = ResolveWorkspaceRootPath(app, chat);
   SECURITY_ATTRIBUTES sa{};
   sa.nLength = sizeof(sa);
   sa.bInheritHandle = TRUE;
@@ -2235,6 +2296,8 @@ static bool StartCliTerminalWindows(AppState& app, CliTerminalState& terminal, c
   std::string command_line = QuoteWindowsArg(comspec) + " /d /s /c \"\"" + gemini_invocation + "\"\"";
   std::vector<char> cmd_mutable(command_line.begin(), command_line.end());
   cmd_mutable.push_back(0);
+  const std::string working_dir_text = workspace_root.string();
+  const char* working_dir = working_dir_text.empty() ? nullptr : working_dir_text.c_str();
 
   if (!CreateProcessA(comspec.c_str(),
                       cmd_mutable.data(),
@@ -2243,7 +2306,7 @@ static bool StartCliTerminalWindows(AppState& app, CliTerminalState& terminal, c
                       FALSE,
                       EXTENDED_STARTUPINFO_PRESENT,
                       nullptr,
-                      nullptr,
+                      working_dir,
                       &si.StartupInfo,
                       &pi)) {
     terminal.last_error = "CreateProcess for Gemini failed (Win32 error " + std::to_string(GetLastError()) + ").";
@@ -3700,6 +3763,7 @@ struct SidebarItemAction {
 struct FolderHeaderAction {
   bool toggle = false;
   bool quick_create = false;
+  bool open_settings = false;
 };
 
 static SidebarItemAction DrawSidebarItem(const ChatSession& chat, const bool selected, const std::string& item_id) {
@@ -3752,6 +3816,7 @@ static FolderHeaderAction DrawFolderHeaderItem(const ChatFolder& folder, const i
   const ImVec2 row_size(ImGui::GetContentRegionAvail().x, 30.0f);
   const ImVec2 min = ImGui::GetCursorScreenPos();
   ImGui::InvisibleButton("folder_row", row_size);
+  ImGui::SetItemAllowOverlap();
   const bool hovered = ImGui::IsItemHovered();
   action.toggle = ImGui::IsItemClicked();
   const ImVec2 max(min.x + row_size.x, min.y + row_size.y);
@@ -3767,11 +3832,16 @@ static FolderHeaderAction DrawFolderHeaderItem(const ChatFolder& folder, const i
   const std::string count_text = std::to_string(chat_count);
   draw->AddText(ImVec2(min.x + 8.0f, min.y + 7.0f), ImGui::GetColorU32(ui::kTextMuted), marker.c_str());
   draw->AddText(ImVec2(min.x + 22.0f, min.y + 7.0f), ImGui::GetColorU32(ui::kTextSecondary), CompactPreview(title, 22).c_str());
-  draw->AddText(ImVec2(max.x - 54.0f, min.y + 7.0f), ImGui::GetColorU32(ui::kTextMuted), count_text.c_str());
+  draw->AddText(ImVec2(max.x - 74.0f, min.y + 7.0f), ImGui::GetColorU32(ui::kTextMuted), count_text.c_str());
 
-  ImGui::SetCursorScreenPos(ImVec2(max.x - 24.0f, min.y + 6.0f));
+  ImGui::SetCursorScreenPos(ImVec2(max.x - 44.0f, min.y + 6.0f));
   if (DrawMiniIconButton("folder_new_chat", "+", ImVec2(16.0f, 16.0f), false)) {
     action.quick_create = true;
+    action.toggle = false;
+  }
+  ImGui::SetCursorScreenPos(ImVec2(max.x - 24.0f, min.y + 6.0f));
+  if (DrawMiniIconButton("folder_settings", "...", ImVec2(16.0f, 16.0f), false)) {
+    action.open_settings = true;
     action.toggle = false;
   }
 
@@ -3820,6 +3890,11 @@ static void DrawLeftPane(AppState& app) {
     if (folder_action.quick_create) {
       app.new_chat_folder_id = folder.id;
       CreateAndSelectChat(app);
+    } else if (folder_action.open_settings) {
+      app.pending_folder_settings_id = folder.id;
+      app.folder_settings_title_input = folder.title;
+      app.folder_settings_directory_input = folder.directory;
+      app.open_folder_settings_popup = true;
     } else if (folder_action.toggle) {
       app.new_chat_folder_id = folder.id;
       folder.collapsed = !folder.collapsed;
@@ -4585,8 +4660,8 @@ static void DrawSessionSidePane(AppState& app, ChatSession& chat) {
   ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
   DrawSectionHeader("Local Gemini");
   if (BeginSectionCard("local_gemini_card")) {
-    const fs::path local_root = WorkspaceGeminiRootPath();
-    const fs::path local_template = WorkspaceGeminiTemplatePath();
+    const fs::path local_root = WorkspaceGeminiRootPath(app, chat);
+    const fs::path local_template = WorkspaceGeminiTemplatePath(app, chat);
     ImGui::TextColored(ui::kTextMuted, "Workspace root");
     ImGui::TextWrapped("%s", local_root.string().c_str());
     ImGui::TextColored(ui::kTextMuted, "Template file");
@@ -4729,6 +4804,77 @@ static void DrawDeleteFolderConfirmationModal(AppState& app) {
     }
     ImGui::EndPopup();
   }
+}
+
+static void DrawFolderSettingsModal(AppState& app) {
+  if (app.open_folder_settings_popup) {
+    ImGui::OpenPopup("folder_settings_popup");
+    app.open_folder_settings_popup = false;
+  }
+  if (!ImGui::BeginPopupModal("folder_settings_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    return;
+  }
+
+  const int folder_index = FindFolderIndexById(app, app.pending_folder_settings_id);
+  if (folder_index < 0) {
+    ImGui::TextColored(ui::kWarning, "Folder no longer exists.");
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
+    if (DrawButton("Close", ImVec2(96.0f, 32.0f), ButtonKind::Ghost)) {
+      app.pending_folder_settings_id.clear();
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+    return;
+  }
+
+  ChatFolder& folder = app.folders[folder_index];
+  ImGui::TextColored(ui::kTextPrimary, "Folder Settings");
+  ImGui::TextColored(ui::kTextMuted, "Edit the workspace directory used by chats in this folder.");
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
+  DrawSoftDivider();
+
+  PushInputChrome();
+  ImGui::SetNextItemWidth(460.0f);
+  ImGui::InputText("Title##folder_settings_title", &app.folder_settings_title_input);
+  ImGui::SetNextItemWidth(460.0f);
+  ImGui::InputText("Directory##folder_settings_directory", &app.folder_settings_directory_input);
+  PopInputChrome();
+
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
+  if (DrawButton("Open Directory", ImVec2(126.0f, 30.0f), ButtonKind::Ghost)) {
+    std::string error;
+    if (!OpenFolderInFileManager(ExpandLeadingTildePath(app.folder_settings_directory_input), &error)) {
+      app.status_line = error;
+    }
+  }
+
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
+  if (DrawButton("Save", ImVec2(96.0f, 32.0f), ButtonKind::Primary)) {
+    const std::string title = Trim(app.folder_settings_title_input);
+    const std::string directory = Trim(app.folder_settings_directory_input);
+    if (title.empty()) {
+      app.status_line = "Folder title is required.";
+    } else if (directory.empty()) {
+      app.status_line = "Folder directory is required.";
+    } else {
+      folder.title = title;
+      folder.directory = directory;
+      SaveFolders(app);
+      app.status_line = "Folder settings saved.";
+      ImGui::CloseCurrentPopup();
+    }
+  }
+  ImGui::SameLine();
+  if (DrawButton("Delete Folder", ImVec2(122.0f, 32.0f), ButtonKind::Ghost)) {
+    const std::string folder_id = folder.id;
+    ImGui::CloseCurrentPopup();
+    RequestDeleteFolder(app, folder_id);
+  }
+  ImGui::SameLine();
+  if (DrawButton("Cancel", ImVec2(96.0f, 32.0f), ButtonKind::Ghost)) {
+    ImGui::CloseCurrentPopup();
+  }
+  ImGui::EndPopup();
 }
 
 static void DrawTemplateChangeWarningModal(AppState& app) {
@@ -5386,6 +5532,7 @@ int main(int, char**) {
     ImGui::End();
     DrawDeleteChatConfirmationModal(app);
     DrawDeleteFolderConfirmationModal(app);
+    DrawFolderSettingsModal(app);
     DrawTemplateChangeWarningModal(app);
     DrawTemplateManagerModal(app);
     DrawAppSettingsModal(app, platform_ui_scale);
