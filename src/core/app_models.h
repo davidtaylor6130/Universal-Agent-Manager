@@ -22,6 +22,7 @@ struct ChatSession {
   std::string native_session_id;
   bool uses_native_session = false;
   std::string folder_id;
+  std::string template_override_id;
   std::string title;
   std::string created_at;
   std::string updated_at;
@@ -41,6 +42,8 @@ struct AppSettings {
   std::string gemini_command_template = "gemini {resume} {flags} {prompt}";
   bool gemini_yolo_mode = false;
   std::string gemini_extra_flags;
+  std::string gemini_global_root_path;
+  std::string default_gemini_template_id;
   std::string ui_theme = "dark";
   bool confirm_delete_chat = true;
   bool confirm_delete_folder = true;
@@ -64,6 +67,13 @@ struct PendingGeminiCall {
   std::string command_preview;
   std::shared_ptr<std::atomic<bool>> completed;
   std::shared_ptr<std::string> output;
+};
+
+struct TemplateCatalogEntry {
+  std::string id;
+  std::string display_name;
+  std::string absolute_path;
+  std::string updated_at;
 };
 
 std::string RoleToString(MessageRole role);

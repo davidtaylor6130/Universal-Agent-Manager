@@ -9,6 +9,7 @@
 #include "core/chat_repository.h"
 #include "core/frontend_actions.h"
 #include "core/gemini_command_builder.h"
+#include "core/gemini_template_catalog.h"
 #include "core/provider_profile.h"
 #include "core/provider_runtime.h"
 #include "core/settings_store.h"
@@ -135,6 +136,9 @@ struct AppState {
   std::string new_chat_folder_id;
   std::string new_folder_title_input;
   std::string new_folder_directory_input;
+  std::string template_import_path_input;
+  std::string template_manager_selected_id;
+  std::string template_rename_input;
   std::string editing_chat_id;
   int editing_message_index = -1;
   std::string editing_message_text;
@@ -144,6 +148,12 @@ struct AppState {
   std::string pending_delete_chat_id;
   bool open_delete_folder_popup = false;
   std::string pending_delete_folder_id;
+  bool open_template_manager_popup = false;
+  bool template_catalog_dirty = true;
+  std::vector<TemplateCatalogEntry> template_catalog;
+  bool open_template_change_warning_popup = false;
+  std::string pending_template_change_chat_id;
+  std::string pending_template_change_override_id;
   std::string status_line;
   CenterViewMode center_view_mode = CenterViewMode::Structured;
   std::vector<std::unique_ptr<CliTerminalState>> cli_terminals;
@@ -170,6 +180,8 @@ static std::vector<ChatSession> DeduplicateChatsById(std::vector<ChatSession> ch
 static void ClampWindowSettings(AppSettings& settings);
 static std::string NormalizeThemeChoice(std::string value);
 static void DrawSessionSidePane(AppState& app, ChatSession& chat);
+static void SaveAndUpdateStatus(AppState& app, const ChatSession& chat, const std::string& success, const std::string& failure);
+static void RefreshGeminiChatsDir(AppState& app);
 
 static std::string Trim(const std::string& value) {
   const auto start = value.find_first_not_of(" \t\r\n");
@@ -225,6 +237,129 @@ static bool WriteTextFile(const fs::path& path, const std::string& content) {
   }
   out << content;
   return out.good();
+}
+
+static fs::path ExpandLeadingTildePath(const std::string& raw_path) {
+  const std::string trimmed = Trim(raw_path);
+  if (trimmed.empty()) {
+    return {};
+  }
+  if (trimmed[0] != '~') {
+    return fs::path(trimmed);
+  }
+#if defined(_WIN32)
+  if (const char* user_profile = std::getenv("USERPROFILE")) {
+    if (trimmed.size() == 1) {
+      return fs::path(user_profile);
+    }
+    if (trimmed[1] == '\\' || trimmed[1] == '/') {
+      return fs::path(user_profile) / trimmed.substr(2);
+    }
+  }
+#else
+  if (const char* home = std::getenv("HOME")) {
+    if (trimmed.size() == 1) {
+      return fs::path(home);
+    }
+    if (trimmed[1] == '/') {
+      return fs::path(home) / trimmed.substr(2);
+    }
+  }
+#endif
+  return fs::path(trimmed);
+}
+
+static fs::path ResolveGeminiGlobalRootPath(const AppSettings& settings) {
+  const fs::path candidate = ExpandLeadingTildePath(settings.gemini_global_root_path);
+  if (!candidate.empty()) {
+    return candidate;
+  }
+  return AppPaths::DefaultGeminiUniversalRootPath();
+}
+
+static fs::path WorkspaceGeminiRootPath() {
+  return fs::current_path() / ".gemini";
+}
+
+static fs::path WorkspaceGeminiTemplatePath() {
+  return WorkspaceGeminiRootPath() / "gemini.md";
+}
+
+static bool EnsureWorkspaceGeminiLayout(std::string* error_out = nullptr) {
+  std::error_code ec;
+  const fs::path workspace_gemini = WorkspaceGeminiRootPath();
+  fs::create_directories(workspace_gemini, ec);
+  if (ec) {
+    if (error_out != nullptr) {
+      *error_out = "Failed to create local .gemini directory: " + ec.message();
+    }
+    return false;
+  }
+  fs::create_directories(workspace_gemini / "Lessons", ec);
+  if (ec) {
+    if (error_out != nullptr) {
+      *error_out = "Failed to create .gemini/Lessons: " + ec.message();
+    }
+    return false;
+  }
+  fs::create_directories(workspace_gemini / "Failures", ec);
+  if (ec) {
+    if (error_out != nullptr) {
+      *error_out = "Failed to create .gemini/Failures: " + ec.message();
+    }
+    return false;
+  }
+  fs::create_directories(workspace_gemini / "auto-test", ec);
+  if (ec) {
+    if (error_out != nullptr) {
+      *error_out = "Failed to create .gemini/auto-test: " + ec.message();
+    }
+    return false;
+  }
+  return true;
+}
+
+static void MarkTemplateCatalogDirty(AppState& app) {
+  app.template_catalog_dirty = true;
+}
+
+static bool RefreshTemplateCatalog(AppState& app, const bool force = false) {
+  if (!force && !app.template_catalog_dirty) {
+    return true;
+  }
+  const fs::path global_root = ResolveGeminiGlobalRootPath(app.settings);
+  std::string error;
+  if (!GeminiTemplateCatalog::EnsureCatalogPath(global_root, &error)) {
+    app.template_catalog.clear();
+    app.template_catalog_dirty = false;
+    if (!error.empty()) {
+      app.status_line = error;
+    }
+    return false;
+  }
+  app.template_catalog = GeminiTemplateCatalog::List(global_root);
+  app.template_catalog_dirty = false;
+  return true;
+}
+
+static const TemplateCatalogEntry* FindTemplateEntryById(const AppState& app, const std::string& template_id) {
+  if (template_id.empty()) {
+    return nullptr;
+  }
+  for (const TemplateCatalogEntry& entry : app.template_catalog) {
+    if (entry.id == template_id) {
+      return &entry;
+    }
+  }
+  return nullptr;
+}
+
+static std::string TemplateLabelOrFallback(const AppState& app, const std::string& template_id) {
+  const TemplateCatalogEntry* entry = FindTemplateEntryById(app, template_id);
+  if (entry != nullptr) {
+    return entry->display_name;
+  }
+  return template_id.empty() ? "None" : ("Missing: " + template_id);
 }
 
 struct JsonValue {
@@ -1101,6 +1236,9 @@ static bool ShouldReplaceChatForDuplicateId(const ChatSession& candidate, const 
   if (candidate.linked_files.size() != existing.linked_files.size()) {
     return candidate.linked_files.size() > existing.linked_files.size();
   }
+  if (candidate.template_override_id != existing.template_override_id) {
+    return !candidate.template_override_id.empty();
+  }
   return false;
 }
 
@@ -1148,6 +1286,9 @@ static void SaveSettings(AppState& app) {
 
 static void LoadSettings(AppState& app) {
   SettingsStore::Load(SettingsFilePath(app), app.settings, app.center_view_mode);
+  if (Trim(app.settings.gemini_global_root_path).empty()) {
+    app.settings.gemini_global_root_path = AppPaths::DefaultGeminiUniversalRootPath().string();
+  }
 }
 
 static bool SaveChat(const AppState& app, const ChatSession& chat) {
@@ -1207,6 +1348,114 @@ static std::string BuildProviderCommand(
   return ProviderRuntime::BuildCommand(provider, settings, prompt, files, resume_session_id);
 }
 
+enum class TemplatePreflightOutcome {
+  ReadyWithTemplate,
+  ReadyWithoutTemplate,
+  BlockingError
+};
+
+static TemplatePreflightOutcome PreflightWorkspaceTemplateForChat(AppState& app,
+                                                                  const ChatSession& chat,
+                                                                  std::string* status_out = nullptr) {
+  if (!EnsureWorkspaceGeminiLayout(status_out)) {
+    return TemplatePreflightOutcome::BlockingError;
+  }
+  RefreshTemplateCatalog(app);
+
+  std::string effective_template_id = chat.template_override_id;
+  if (effective_template_id.empty()) {
+    effective_template_id = app.settings.default_gemini_template_id;
+  }
+  if (effective_template_id.empty()) {
+    if (status_out != nullptr) {
+      *status_out = "No Gemini template selected. Set a default in Templates.";
+    }
+    return TemplatePreflightOutcome::ReadyWithoutTemplate;
+  }
+
+  const TemplateCatalogEntry* entry = FindTemplateEntryById(app, effective_template_id);
+  if (entry == nullptr) {
+    if (status_out != nullptr) {
+      *status_out = "Selected template is missing: " + effective_template_id + ". Choose one in Templates.";
+    }
+    app.open_template_manager_popup = true;
+    return TemplatePreflightOutcome::BlockingError;
+  }
+
+  std::error_code ec;
+  fs::copy_file(entry->absolute_path, WorkspaceGeminiTemplatePath(), fs::copy_options::overwrite_existing, ec);
+  if (ec) {
+    if (status_out != nullptr) {
+      *status_out = "Failed to materialize .gemini/gemini.md: " + ec.message();
+    }
+    return TemplatePreflightOutcome::BlockingError;
+  }
+
+  return TemplatePreflightOutcome::ReadyWithTemplate;
+}
+
+static bool QueueGeminiPromptForChat(AppState& app,
+                                     ChatSession& chat,
+                                     const std::string& prompt,
+                                     const bool template_control_message = false) {
+  if (app.pending_call.has_value()) {
+    app.status_line = "Gemini command already running.";
+    return false;
+  }
+  const std::string prompt_text = Trim(prompt);
+  if (prompt_text.empty()) {
+    app.status_line = "Prompt is empty.";
+    return false;
+  }
+
+  std::string template_status;
+  const TemplatePreflightOutcome template_outcome = PreflightWorkspaceTemplateForChat(app, chat, &template_status);
+  if (template_outcome == TemplatePreflightOutcome::BlockingError) {
+    app.status_line = template_status.empty() ? "Gemini template preflight failed." : template_status;
+    return false;
+  }
+
+  AddMessage(chat, MessageRole::User, prompt_text);
+  SaveAndUpdateStatus(app, chat, "Prompt queued for provider runtime.", "Saved message locally, but failed to persist chat data.");
+
+  const ProviderProfile& provider = ActiveProviderOrDefault(app);
+  std::vector<ChatSession> native_before;
+  if (ActiveProviderUsesGeminiHistory(app)) {
+    RefreshGeminiChatsDir(app);
+    native_before = LoadNativeGeminiChats(app.gemini_chats_dir, provider);
+  }
+  const std::string resume_session_id =
+      (ActiveProviderUsesGeminiHistory(app) && chat.uses_native_session) ? chat.native_session_id : "";
+  const std::string provider_prompt = BuildProviderPrompt(provider, prompt_text, chat.linked_files);
+  const std::string command = BuildProviderCommand(provider, app.settings, provider_prompt, chat.linked_files, resume_session_id);
+  const std::string chat_id = chat.id;
+
+  PendingGeminiCall pending;
+  pending.chat_id = chat_id;
+  pending.resume_session_id = resume_session_id;
+  pending.session_ids_before = SessionIdsFromChats(native_before);
+  pending.command_preview = command;
+  pending.completed = std::make_shared<std::atomic<bool>>(false);
+  pending.output = std::make_shared<std::string>();
+  {
+    std::shared_ptr<std::atomic<bool>> completed = pending.completed;
+    std::shared_ptr<std::string> output = pending.output;
+    std::thread([command, completed, output]() {
+      *output = ExecuteCommandCaptureOutput(command);
+      completed->store(true, std::memory_order_release);
+    }).detach();
+  }
+  app.pending_call = std::move(pending);
+
+  if (template_control_message) {
+    app.status_line = "Template updated. Sent @.gemini/gemini.md to Gemini.";
+  } else if (template_outcome == TemplatePreflightOutcome::ReadyWithoutTemplate && !template_status.empty()) {
+    app.status_line = template_status;
+  }
+  app.scroll_to_bottom = true;
+  return true;
+}
+
 static void SaveAndUpdateStatus(AppState& app, const ChatSession& chat, const std::string& success, const std::string& failure) {
   if (SaveChat(app, chat)) {
     app.status_line = success;
@@ -1236,6 +1485,9 @@ static void ApplyLocalOverrides(AppState& app, std::vector<ChatSession>& native_
     }
     if (!local.linked_files.empty()) {
       native.linked_files = local.linked_files;
+    }
+    if (!local.template_override_id.empty()) {
+      native.template_override_id = local.template_override_id;
     }
     if (!local.folder_id.empty()) {
       native.folder_id = local.folder_id;
@@ -1723,6 +1975,16 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
     RefreshGeminiChatsDir(app);
   }
 
+  std::string template_status;
+  const TemplatePreflightOutcome template_outcome = PreflightWorkspaceTemplateForChat(app, chat, &template_status);
+  if (template_outcome == TemplatePreflightOutcome::BlockingError) {
+    terminal.last_error = template_status.empty() ? "Gemini template preflight failed." : template_status;
+    return false;
+  }
+  if (template_outcome == TemplatePreflightOutcome::ReadyWithoutTemplate && !template_status.empty()) {
+    app.status_line = template_status;
+  }
+
   terminal.rows = std::max(8, rows);
   terminal.cols = std::max(20, cols);
   terminal.attached_chat_id = chat.id;
@@ -2198,11 +2460,6 @@ static void PollAllCliTerminals(AppState& app) {
 }
 
 static void StartGeminiRequest(AppState& app) {
-  if (app.pending_call.has_value()) {
-    app.status_line = "Gemini command already running.";
-    return;
-  }
-
   ChatSession* chat = SelectedChat(app);
   if (chat == nullptr) {
     app.status_line = "Select or create a chat first.";
@@ -2210,45 +2467,9 @@ static void StartGeminiRequest(AppState& app) {
   }
 
   const std::string prompt_text = Trim(app.composer_text);
-  if (prompt_text.empty()) {
-    app.status_line = "Prompt is empty.";
-    return;
+  if (QueueGeminiPromptForChat(app, *chat, prompt_text, false)) {
+    app.composer_text.clear();
   }
-
-  AddMessage(*chat, MessageRole::User, prompt_text);
-  SaveAndUpdateStatus(app, *chat, "Prompt queued for provider runtime.", "Saved message locally, but failed to persist chat data.");
-
-  const ProviderProfile& provider = ActiveProviderOrDefault(app);
-  std::vector<ChatSession> native_before;
-  if (ActiveProviderUsesGeminiHistory(app)) {
-    RefreshGeminiChatsDir(app);
-    native_before = LoadNativeGeminiChats(app.gemini_chats_dir, provider);
-  }
-  const std::string resume_session_id =
-      (ActiveProviderUsesGeminiHistory(app) && chat->uses_native_session) ? chat->native_session_id : "";
-  const std::string provider_prompt = BuildProviderPrompt(provider, prompt_text, chat->linked_files);
-  const std::string command = BuildProviderCommand(provider, app.settings, provider_prompt, chat->linked_files, resume_session_id);
-  const std::string chat_id = chat->id;
-
-  PendingGeminiCall pending;
-  pending.chat_id = chat_id;
-  pending.resume_session_id = resume_session_id;
-  pending.session_ids_before = SessionIdsFromChats(native_before);
-  pending.command_preview = command;
-  pending.completed = std::make_shared<std::atomic<bool>>(false);
-  pending.output = std::make_shared<std::string>();
-  {
-    std::shared_ptr<std::atomic<bool>> completed = pending.completed;
-    std::shared_ptr<std::string> output = pending.output;
-    std::thread([command, completed, output]() {
-      *output = ExecuteCommandCaptureOutput(command);
-      completed->store(true, std::memory_order_release);
-    }).detach();
-  }
-  app.pending_call = std::move(pending);
-
-  app.composer_text.clear();
-  app.scroll_to_bottom = true;
 }
 
 static void ClearEditMessageState(AppState& app) {
@@ -2374,6 +2595,7 @@ static void PollPendingGeminiCall(AppState& app) {
     const int selected_index = FindChatIndexById(app, selected_id);
     if (selected_index >= 0 && pending_chat_index >= 0) {
       app.chats[selected_index].linked_files = pending_chat_snapshot.linked_files;
+      app.chats[selected_index].template_override_id = pending_chat_snapshot.template_override_id;
       if (!pending_chat_snapshot.folder_id.empty()) {
         app.chats[selected_index].folder_id = pending_chat_snapshot.folder_id;
       }
@@ -2537,6 +2759,53 @@ static void RequestDeleteFolder(AppState& app, const std::string& folder_id) {
     return;
   }
   DeleteFolderById(app, folder_id);
+}
+
+static void ClearPendingTemplateChange(AppState& app) {
+  app.pending_template_change_chat_id.clear();
+  app.pending_template_change_override_id.clear();
+  app.open_template_change_warning_popup = false;
+}
+
+static bool ApplyChatTemplateOverride(AppState& app,
+                                      ChatSession& chat,
+                                      const std::string& override_id,
+                                      const bool send_control_message_for_started_chat) {
+  if (!override_id.empty() && FindTemplateEntryById(app, override_id) == nullptr) {
+    app.status_line = "Template not found in catalog: " + override_id;
+    app.open_template_manager_popup = true;
+    return false;
+  }
+  if (chat.template_override_id == override_id) {
+    return true;
+  }
+  chat.template_override_id = override_id;
+  chat.updated_at = TimestampNow();
+  SaveAndUpdateStatus(app, chat, "Chat template updated.", "Template changed in UI, but failed to save chat.");
+
+  std::string template_status;
+  const TemplatePreflightOutcome outcome = PreflightWorkspaceTemplateForChat(app, chat, &template_status);
+  if (outcome == TemplatePreflightOutcome::BlockingError) {
+    app.status_line = template_status.empty() ? "Template changed, but local sync failed." : template_status;
+    return false;
+  }
+
+  if (send_control_message_for_started_chat && !chat.messages.empty()) {
+    if (outcome != TemplatePreflightOutcome::ReadyWithTemplate) {
+      app.status_line = "Template updated, but no effective template file is available to send.";
+      return true;
+    }
+    if (app.pending_call.has_value()) {
+      app.status_line = "Template updated. Gemini is running, so @.gemini/gemini.md will be sent on next request.";
+      return true;
+    }
+    return QueueGeminiPromptForChat(app, chat, "@.gemini/gemini.md", true);
+  }
+
+  if (outcome == TemplatePreflightOutcome::ReadyWithoutTemplate && !template_status.empty()) {
+    app.status_line = template_status;
+  }
+  return true;
 }
 
 static ImVec4 Rgb(const int r, const int g, const int b, const float a = 1.0f) {
@@ -3228,6 +3497,94 @@ static bool DrawMiniIconButton(const char* id, const char* glyph, const ImVec2& 
   return clicked;
 }
 
+static std::string ShellQuotePath(const std::string& path) {
+#if defined(_WIN32)
+  std::string escaped = "\"";
+  for (const char ch : path) {
+    if (ch == '"') {
+      escaped += "\"\"";
+    } else {
+      escaped.push_back(ch);
+    }
+  }
+  escaped.push_back('"');
+  return escaped;
+#else
+  std::string escaped = "'";
+  for (const char ch : path) {
+    if (ch == '\'') {
+      escaped += "'\\''";
+    } else {
+      escaped.push_back(ch);
+    }
+  }
+  escaped.push_back('\'');
+  return escaped;
+#endif
+}
+
+static bool RunShellCommand(const std::string& command) {
+  return std::system(command.c_str()) == 0;
+}
+
+static bool OpenFolderInFileManager(const fs::path& folder_path, std::string* error_out = nullptr) {
+  if (folder_path.empty()) {
+    if (error_out != nullptr) {
+      *error_out = "Folder path is empty.";
+    }
+    return false;
+  }
+  std::error_code ec;
+  fs::create_directories(folder_path, ec);
+  if (ec) {
+    if (error_out != nullptr) {
+      *error_out = "Failed to create folder: " + ec.message();
+    }
+    return false;
+  }
+
+#if defined(_WIN32)
+  const std::string command = "explorer " + ShellQuotePath(folder_path.string());
+#elif defined(__APPLE__)
+  const std::string command = "open " + ShellQuotePath(folder_path.string());
+#else
+  const std::string command = "xdg-open " + ShellQuotePath(folder_path.string()) + " >/dev/null 2>&1";
+#endif
+  if (!RunShellCommand(command)) {
+    if (error_out != nullptr) {
+      *error_out = "Failed to open folder in file manager.";
+    }
+    return false;
+  }
+  return true;
+}
+
+static bool RevealPathInFileManager(const fs::path& file_path, std::string* error_out = nullptr) {
+  if (file_path.empty()) {
+    if (error_out != nullptr) {
+      *error_out = "File path is empty.";
+    }
+    return false;
+  }
+  if (!fs::exists(file_path)) {
+    return OpenFolderInFileManager(file_path.parent_path(), error_out);
+  }
+#if defined(_WIN32)
+  const std::string command = "explorer /select," + ShellQuotePath(file_path.string());
+#elif defined(__APPLE__)
+  const std::string command = "open -R " + ShellQuotePath(file_path.string());
+#else
+  return OpenFolderInFileManager(file_path.parent_path(), error_out);
+#endif
+  if (!RunShellCommand(command)) {
+    if (error_out != nullptr) {
+      *error_out = "Failed to reveal file in file manager.";
+    }
+    return false;
+  }
+  return true;
+}
+
 static void DrawDesktopMenuBar(AppState& app, bool& done) {
   if (!ImGui::BeginMainMenuBar()) {
     return;
@@ -3262,6 +3619,39 @@ static void DrawDesktopMenuBar(AppState& app, bool& done) {
     }
     if (!can_delete) {
       ImGui::EndDisabled();
+    }
+    ImGui::EndMenu();
+  }
+
+  if (ImGui::BeginMenu("Templates")) {
+    RefreshTemplateCatalog(app);
+    if (ImGui::BeginMenu("Default Template")) {
+      const bool none_selected = Trim(app.settings.default_gemini_template_id).empty();
+      if (ImGui::MenuItem("None", nullptr, none_selected)) {
+        app.settings.default_gemini_template_id.clear();
+        SaveSettings(app);
+        app.status_line = "Default Gemini template cleared.";
+      }
+      ImGui::Separator();
+      for (const TemplateCatalogEntry& entry : app.template_catalog) {
+        const bool selected = (app.settings.default_gemini_template_id == entry.id);
+        if (ImGui::MenuItem(entry.display_name.c_str(), nullptr, selected)) {
+          app.settings.default_gemini_template_id = entry.id;
+          SaveSettings(app);
+          app.status_line = "Default Gemini template set to " + entry.display_name + ".";
+        }
+      }
+      ImGui::EndMenu();
+    }
+    if (ImGui::MenuItem("Manage Templates...")) {
+      app.open_template_manager_popup = true;
+    }
+    if (ImGui::MenuItem("Open Template Folder")) {
+      std::string error;
+      const fs::path template_path = GeminiTemplateCatalog::CatalogPath(ResolveGeminiGlobalRootPath(app.settings));
+      if (!OpenFolderInFileManager(template_path, &error)) {
+        app.status_line = error;
+      }
     }
     ImGui::EndMenu();
   }
@@ -3955,7 +4345,7 @@ static void DrawChatSettingsPopup(AppState& app, ChatSession& chat, const char* 
   }
 
   ImGui::TextColored(ui::kTextPrimary, "Chat Settings");
-  ImGui::TextColored(ui::kTextMuted, "Folder, files, and provider runtime");
+  ImGui::TextColored(ui::kTextMuted, "Template override, folder move, and local Gemini");
   ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
   if (ImGui::BeginChild(("chat_settings_scroll##" + chat.id).c_str(), ImVec2(560.0f, 560.0f), false,
                         ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
@@ -4102,15 +4492,75 @@ static bool BeginSectionCard(const char* id, const float height = 0.0f) {
 }
 
 static void DrawSessionSidePane(AppState& app, ChatSession& chat) {
+  RefreshTemplateCatalog(app);
   BeginPanel("right_settings", ImVec2(0.0f, 0.0f), PanelTone::Secondary, true, 0, ImVec2(ui::kSpace16, ui::kSpace16));
   PushFontIfAvailable(g_font_title);
   ImGui::TextColored(ui::kTextPrimary, "Chat Settings");
   PopFontIfAvailable(g_font_title);
-  ImGui::TextColored(ui::kTextMuted, "Move this chat, manage files, and tune runtime template");
+  ImGui::TextColored(ui::kTextMuted, "Template override, folder assignment, and local Gemini paths");
   ImGui::Dummy(ImVec2(0.0f, ui::kSpace6));
   DrawSoftDivider();
 
-  DrawSectionHeader("Chat Placement");
+  DrawSectionHeader("Template");
+  if (BeginSectionCard("template_card")) {
+    const std::string global_label = TemplateLabelOrFallback(app, app.settings.default_gemini_template_id);
+    ImGui::TextColored(ui::kTextMuted, "Global default");
+    ImGui::TextWrapped("%s", global_label.c_str());
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace6));
+
+    const std::string override_preview = chat.template_override_id.empty()
+                                             ? "Use global default"
+                                             : TemplateLabelOrFallback(app, chat.template_override_id);
+    if (ImGui::BeginCombo("Per-chat override", override_preview.c_str())) {
+      const bool using_global = chat.template_override_id.empty();
+      if (ImGui::Selectable("Use global default", using_global) && !using_global) {
+        if (!chat.messages.empty()) {
+          app.pending_template_change_chat_id = chat.id;
+          app.pending_template_change_override_id.clear();
+          app.open_template_change_warning_popup = true;
+        } else {
+          ApplyChatTemplateOverride(app, chat, "", false);
+        }
+      }
+      ImGui::Separator();
+      for (const TemplateCatalogEntry& entry : app.template_catalog) {
+        const bool selected = (chat.template_override_id == entry.id);
+        if (ImGui::Selectable(entry.display_name.c_str(), selected) && !selected) {
+          if (!chat.messages.empty()) {
+            app.pending_template_change_chat_id = chat.id;
+            app.pending_template_change_override_id = entry.id;
+            app.open_template_change_warning_popup = true;
+          } else {
+            ApplyChatTemplateOverride(app, chat, entry.id, false);
+          }
+        }
+        if (selected) {
+          ImGui::SetItemDefaultFocus();
+        }
+      }
+      ImGui::EndCombo();
+    }
+    std::string effective_template_id = chat.template_override_id.empty() ? app.settings.default_gemini_template_id : chat.template_override_id;
+    ImGui::TextColored(ui::kTextMuted, "Effective template");
+    ImGui::TextWrapped("%s", TemplateLabelOrFallback(app, effective_template_id).c_str());
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace6));
+
+    if (DrawButton("Manage Templates", ImVec2(140.0f, 32.0f), ButtonKind::Ghost)) {
+      app.open_template_manager_popup = true;
+    }
+    ImGui::SameLine();
+    if (DrawButton("Open Catalog", ImVec2(120.0f, 32.0f), ButtonKind::Ghost)) {
+      std::string error;
+      const fs::path catalog_path = GeminiTemplateCatalog::CatalogPath(ResolveGeminiGlobalRootPath(app.settings));
+      if (!OpenFolderInFileManager(catalog_path, &error)) {
+        app.status_line = error;
+      }
+    }
+  }
+  EndPanel();
+
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
+  DrawSectionHeader("Move to Folder");
   if (BeginSectionCard("folder_card")) {
     const ChatFolder* active_folder = FindFolderById(app, chat.folder_id);
     const char* active_label = (active_folder != nullptr) ? active_folder->title.c_str() : "(Unassigned)";
@@ -4129,98 +4579,63 @@ static void DrawSessionSidePane(AppState& app, ChatSession& chat) {
       }
       ImGui::EndCombo();
     }
-    ImGui::TextColored(ui::kTextMuted, "Folder creation/management stays in the left chat rail.");
   }
   EndPanel();
 
   ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
-  DrawSectionHeader("Workspace Files");
-  if (BeginSectionCard("workspace_card")) {
-    int remove_index = -1;
-    for (int i = 0; i < static_cast<int>(chat.linked_files.size()); ++i) {
-      ImGui::PushID(i);
-      ImGui::TextWrapped("%s", chat.linked_files[i].c_str());
-      if (DrawButton("Detach", ImVec2(80.0f, 28.0f), ButtonKind::Ghost)) {
-        remove_index = i;
+  DrawSectionHeader("Local Gemini");
+  if (BeginSectionCard("local_gemini_card")) {
+    const fs::path local_root = WorkspaceGeminiRootPath();
+    const fs::path local_template = WorkspaceGeminiTemplatePath();
+    ImGui::TextColored(ui::kTextMuted, "Workspace root");
+    ImGui::TextWrapped("%s", local_root.string().c_str());
+    ImGui::TextColored(ui::kTextMuted, "Template file");
+    ImGui::TextWrapped("%s", local_template.string().c_str());
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace6));
+
+    if (DrawButton("Open .gemini", ImVec2(120.0f, 30.0f), ButtonKind::Ghost)) {
+      std::string error;
+      if (!OpenFolderInFileManager(local_root, &error)) {
+        app.status_line = error;
       }
-      DrawSoftDivider();
-      ImGui::PopID();
     }
-    if (remove_index >= 0) {
-      chat.linked_files.erase(chat.linked_files.begin() + remove_index);
-      chat.updated_at = TimestampNow();
-      SaveAndUpdateStatus(app, chat, "File detached from chat.", "Detached file in UI, but failed to save chat.");
+    ImGui::SameLine();
+    if (DrawButton("Reveal gemini.md", ImVec2(138.0f, 30.0f), ButtonKind::Ghost)) {
+      std::string error;
+      if (!RevealPathInFileManager(local_template, &error)) {
+        app.status_line = error;
+      }
     }
-
-    PushInputChrome();
-    ImGui::InputText("File Path", &app.attach_file_input);
-    PopInputChrome();
-
-    if (DrawButton("Attach File", ImVec2(100.0f, 34.0f), ButtonKind::Ghost)) {
-      const std::string path_text = Trim(app.attach_file_input);
-      if (path_text.empty()) {
-        app.status_line = "Provide a file path to attach.";
-      } else if (!fs::exists(path_text)) {
-        app.status_line = "Path does not exist: " + path_text;
-      } else if (!fs::is_regular_file(path_text)) {
-        app.status_line = "Path is not a regular file: " + path_text;
+    if (DrawButton("Open Lessons", ImVec2(120.0f, 30.0f), ButtonKind::Ghost)) {
+      std::string error;
+      if (!OpenFolderInFileManager(local_root / "Lessons", &error)) {
+        app.status_line = error;
+      }
+    }
+    ImGui::SameLine();
+    if (DrawButton("Open Failures", ImVec2(120.0f, 30.0f), ButtonKind::Ghost)) {
+      std::string error;
+      if (!OpenFolderInFileManager(local_root / "Failures", &error)) {
+        app.status_line = error;
+      }
+    }
+    ImGui::SameLine();
+    if (DrawButton("Open auto-test", ImVec2(120.0f, 30.0f), ButtonKind::Ghost)) {
+      std::string error;
+      if (!OpenFolderInFileManager(local_root / "auto-test", &error)) {
+        app.status_line = error;
+      }
+    }
+    if (DrawButton("Sync Template Now", ImVec2(132.0f, 32.0f), ButtonKind::Primary)) {
+      std::string sync_status;
+      const TemplatePreflightOutcome outcome = PreflightWorkspaceTemplateForChat(app, chat, &sync_status);
+      if (outcome == TemplatePreflightOutcome::BlockingError) {
+        app.status_line = sync_status.empty() ? "Template sync failed." : sync_status;
       } else {
-        if (std::find(chat.linked_files.begin(), chat.linked_files.end(), path_text) == chat.linked_files.end()) {
-          chat.linked_files.push_back(path_text);
-          chat.updated_at = TimestampNow();
-          SaveAndUpdateStatus(app, chat, "File attached.", "Attached file in UI, but failed to save chat.");
-        } else {
-          app.status_line = "File already attached to this chat.";
-        }
-        app.attach_file_input.clear();
+        app.status_line = (outcome == TemplatePreflightOutcome::ReadyWithTemplate)
+                              ? "Synced effective template to .gemini/gemini.md."
+                              : sync_status;
       }
-    }
-  }
-  EndPanel();
-
-  ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
-  DrawSectionHeader("Prompt / Runtime");
-  if (BeginSectionCard("runtime_card")) {
-    ImGui::TextColored(ui::kTextMuted, "Template placeholders: {prompt} {files} {resume} {flags}");
-    ImGui::Dummy(ImVec2(0.0f, 6.0f));
-
-    ProviderProfile* active_provider = ActiveProvider(app);
-    const char* active_provider_label =
-        (active_provider != nullptr && !Trim(active_provider->title).empty()) ? active_provider->title.c_str() : "Gemini CLI";
-    if (ImGui::BeginCombo("Provider", active_provider_label)) {
-      for (const ProviderProfile& profile : app.provider_profiles) {
-        const bool selected = (profile.id == app.settings.active_provider_id);
-        const std::string provider_title = Trim(profile.title).empty() ? profile.id : profile.title;
-        if (ImGui::Selectable(provider_title.c_str(), selected)) {
-          app.settings.active_provider_id = profile.id;
-          if (const ProviderProfile* selected_profile = ActiveProvider(app); selected_profile != nullptr) {
-            app.settings.gemini_command_template = selected_profile->command_template;
-          }
-          RefreshChatHistory(app);
-        }
-        if (selected) {
-          ImGui::SetItemDefaultFocus();
-        }
-      }
-      ImGui::EndCombo();
-    }
-
-    ImGui::Checkbox("YOLO mode (Ctrl+Y)", &app.settings.gemini_yolo_mode);
-    PushInputChrome();
-    ImGui::InputText("Extra Flags", &app.settings.gemini_extra_flags);
-    PopInputChrome();
-
-    PushInputChrome();
-    ImGui::InputTextMultiline("Prompt Template", &app.settings.gemini_command_template, ImVec2(-1.0f, 112.0f));
-    PopInputChrome();
-
-    if (DrawButton("Save Runtime", ImVec2(120.0f, 34.0f), ButtonKind::Primary)) {
-      if (ProviderProfile* selected_profile = ActiveProvider(app); selected_profile != nullptr) {
-        selected_profile->command_template = app.settings.gemini_command_template;
-      }
-      SaveSettings(app);
-      SaveProviders(app);
-      app.status_line = "Runtime settings saved.";
     }
   }
   EndPanel();
@@ -4316,6 +4731,231 @@ static void DrawDeleteFolderConfirmationModal(AppState& app) {
   }
 }
 
+static void DrawTemplateChangeWarningModal(AppState& app) {
+  if (app.open_template_change_warning_popup) {
+    ImGui::OpenPopup("template_change_warning_popup");
+    app.open_template_change_warning_popup = false;
+  }
+  if (ImGui::BeginPopupModal("template_change_warning_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    const int chat_index = FindChatIndexById(app, app.pending_template_change_chat_id);
+    const bool has_chat = (chat_index >= 0);
+    const std::string chat_title = has_chat ? CompactPreview(app.chats[chat_index].title, 42) : "Unknown chat";
+    const std::string new_template_label = app.pending_template_change_override_id.empty()
+                                               ? "Use global default"
+                                               : TemplateLabelOrFallback(app, app.pending_template_change_override_id);
+
+    ImGui::TextColored(ui::kTextPrimary, "Apply template change?");
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace4));
+    ImGui::TextWrapped("This chat already has messages. Template changes may not fully affect prior context.");
+    ImGui::TextColored(ui::kTextMuted, "Chat: %s", chat_title.c_str());
+    ImGui::TextColored(ui::kTextMuted, "New template: %s", new_template_label.c_str());
+    ImGui::TextColored(ui::kTextMuted, "On confirm, Gemini will receive: @.gemini/gemini.md");
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
+
+    if (DrawButton("Apply + Send", ImVec2(126.0f, 32.0f), ButtonKind::Primary)) {
+      if (has_chat) {
+        ApplyChatTemplateOverride(app, app.chats[chat_index], app.pending_template_change_override_id, true);
+      } else {
+        app.status_line = "Chat no longer exists.";
+      }
+      ClearPendingTemplateChange(app);
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (DrawButton("Cancel", ImVec2(96.0f, 32.0f), ButtonKind::Ghost)) {
+      ClearPendingTemplateChange(app);
+      app.status_line = "Template change cancelled.";
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+}
+
+static void DrawTemplateManagerModal(AppState& app) {
+  if (app.open_template_manager_popup) {
+    RefreshTemplateCatalog(app, true);
+    app.template_import_path_input.clear();
+    ImGui::OpenPopup("template_manager_popup");
+    app.open_template_manager_popup = false;
+  }
+  if (!ImGui::BeginPopupModal("template_manager_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    return;
+  }
+
+  RefreshTemplateCatalog(app);
+  const fs::path global_root = ResolveGeminiGlobalRootPath(app.settings);
+  const fs::path catalog_path = GeminiTemplateCatalog::CatalogPath(global_root);
+
+  ImGui::TextColored(ui::kTextPrimary, "Template Manager");
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
+  DrawSoftDivider();
+  ImGui::TextColored(ui::kTextSecondary, "Global Root");
+  PushInputChrome();
+  ImGui::SetNextItemWidth(560.0f);
+  ImGui::InputText("##gemini_global_root", &app.settings.gemini_global_root_path);
+  PopInputChrome();
+  if (DrawButton("Save Root", ImVec2(110.0f, 30.0f), ButtonKind::Ghost)) {
+    if (Trim(app.settings.gemini_global_root_path).empty()) {
+      app.settings.gemini_global_root_path = AppPaths::DefaultGeminiUniversalRootPath().string();
+    }
+    SaveSettings(app);
+    MarkTemplateCatalogDirty(app);
+    RefreshTemplateCatalog(app, true);
+    app.status_line = "Global Gemini root saved.";
+  }
+  ImGui::SameLine();
+  if (DrawButton("Open Catalog Folder", ImVec2(148.0f, 30.0f), ButtonKind::Ghost)) {
+    std::string error;
+    if (!OpenFolderInFileManager(catalog_path, &error)) {
+      app.status_line = error;
+    }
+  }
+  ImGui::TextColored(ui::kTextMuted, "%s", catalog_path.string().c_str());
+
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
+  DrawSoftDivider();
+  ImGui::TextColored(ui::kTextSecondary, "Import Markdown Template");
+  PushInputChrome();
+  ImGui::SetNextItemWidth(560.0f);
+  ImGui::InputText("Path", &app.template_import_path_input);
+  PopInputChrome();
+  if (DrawButton("Import", ImVec2(96.0f, 30.0f), ButtonKind::Primary)) {
+    std::string imported_id;
+    std::string error;
+    if (GeminiTemplateCatalog::ImportMarkdownTemplate(global_root, fs::path(Trim(app.template_import_path_input)), &imported_id, &error)) {
+      MarkTemplateCatalogDirty(app);
+      RefreshTemplateCatalog(app, true);
+      app.template_manager_selected_id = imported_id;
+      const TemplateCatalogEntry* imported = FindTemplateEntryById(app, imported_id);
+      app.template_rename_input = (imported != nullptr) ? imported->display_name : "";
+      app.status_line = "Template imported.";
+      app.template_import_path_input.clear();
+    } else {
+      app.status_line = error;
+    }
+  }
+
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
+  DrawSoftDivider();
+  ImGui::TextColored(ui::kTextSecondary, "Catalog Entries (%zu)", app.template_catalog.size());
+  if (ImGui::BeginChild("template_catalog_list", ImVec2(560.0f, 220.0f), true, ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
+    for (const TemplateCatalogEntry& entry : app.template_catalog) {
+      const bool selected = (entry.id == app.template_manager_selected_id);
+      std::string line = entry.display_name + "  (" + entry.id + ")";
+      if (ImGui::Selectable(line.c_str(), selected)) {
+        app.template_manager_selected_id = entry.id;
+        app.template_rename_input = entry.display_name;
+      }
+    }
+  }
+  ImGui::EndChild();
+
+  const TemplateCatalogEntry* selected_entry = FindTemplateEntryById(app, app.template_manager_selected_id);
+  const bool has_selection = (selected_entry != nullptr);
+  if (!has_selection) {
+    app.template_rename_input.clear();
+  }
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
+
+  if (!has_selection) {
+    ImGui::BeginDisabled();
+  }
+  if (DrawButton("Set as Default", ImVec2(122.0f, 30.0f), ButtonKind::Ghost) && selected_entry != nullptr) {
+    app.settings.default_gemini_template_id = selected_entry->id;
+    SaveSettings(app);
+    app.status_line = "Default Gemini template updated.";
+  }
+  ImGui::SameLine();
+  if (DrawButton("Use for This Chat", ImVec2(126.0f, 30.0f), ButtonKind::Ghost) && selected_entry != nullptr) {
+    ChatSession* selected_chat = SelectedChat(app);
+    if (selected_chat != nullptr) {
+      if (!selected_chat->messages.empty()) {
+        app.pending_template_change_chat_id = selected_chat->id;
+        app.pending_template_change_override_id = selected_entry->id;
+        app.open_template_change_warning_popup = true;
+      } else {
+        ApplyChatTemplateOverride(app, *selected_chat, selected_entry->id, false);
+      }
+    } else {
+      app.status_line = "Select a chat first.";
+    }
+  }
+  ImGui::SameLine();
+  if (DrawButton("Reveal File", ImVec2(96.0f, 30.0f), ButtonKind::Ghost) && selected_entry != nullptr) {
+    std::string error;
+    if (!RevealPathInFileManager(fs::path(selected_entry->absolute_path), &error)) {
+      app.status_line = error;
+    }
+  }
+  if (!has_selection) {
+    ImGui::EndDisabled();
+  }
+
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace6));
+  PushInputChrome();
+  ImGui::SetNextItemWidth(360.0f);
+  ImGui::InputText("Rename", &app.template_rename_input);
+  PopInputChrome();
+  if (!has_selection) {
+    ImGui::BeginDisabled();
+  }
+  if (DrawButton("Rename", ImVec2(92.0f, 30.0f), ButtonKind::Ghost) && selected_entry != nullptr) {
+    std::string new_id;
+    std::string error;
+    if (GeminiTemplateCatalog::RenameTemplate(global_root, selected_entry->id, app.template_rename_input, &new_id, &error)) {
+      if (app.settings.default_gemini_template_id == selected_entry->id) {
+        app.settings.default_gemini_template_id = new_id;
+        SaveSettings(app);
+      }
+      for (ChatSession& chat : app.chats) {
+        if (chat.template_override_id == selected_entry->id) {
+          chat.template_override_id = new_id;
+          SaveChat(app, chat);
+        }
+      }
+      MarkTemplateCatalogDirty(app);
+      RefreshTemplateCatalog(app, true);
+      app.template_manager_selected_id = new_id;
+      app.status_line = "Template renamed.";
+    } else {
+      app.status_line = error;
+    }
+  }
+  ImGui::SameLine();
+  if (DrawButton("Delete", ImVec2(92.0f, 30.0f), ButtonKind::Primary) && selected_entry != nullptr) {
+    std::string error;
+    const std::string removed_id = selected_entry->id;
+    if (GeminiTemplateCatalog::RemoveTemplate(global_root, removed_id, &error)) {
+      if (app.settings.default_gemini_template_id == removed_id) {
+        app.settings.default_gemini_template_id.clear();
+        SaveSettings(app);
+      }
+      for (ChatSession& chat : app.chats) {
+        if (chat.template_override_id == removed_id) {
+          chat.template_override_id.clear();
+          SaveChat(app, chat);
+        }
+      }
+      app.template_manager_selected_id.clear();
+      app.template_rename_input.clear();
+      MarkTemplateCatalogDirty(app);
+      RefreshTemplateCatalog(app, true);
+      app.status_line = "Template deleted.";
+    } else {
+      app.status_line = error;
+    }
+  }
+  if (!has_selection) {
+    ImGui::EndDisabled();
+  }
+
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
+  if (DrawButton("Close", ImVec2(96.0f, 32.0f), ButtonKind::Ghost)) {
+    ImGui::CloseCurrentPopup();
+  }
+  ImGui::EndPopup();
+}
+
 static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
   static AppSettings draft_settings{};
   static CenterViewMode draft_center_mode = CenterViewMode::Structured;
@@ -4323,6 +4963,9 @@ static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
 
   if (app.open_app_settings_popup) {
     draft_settings = app.settings;
+    if (Trim(draft_settings.gemini_global_root_path).empty()) {
+      draft_settings.gemini_global_root_path = AppPaths::DefaultGeminiUniversalRootPath().string();
+    }
     draft_settings.ui_theme = NormalizeThemeChoice(draft_settings.ui_theme);
     draft_center_mode = app.center_view_mode;
     initialized = true;
@@ -4333,10 +4976,14 @@ static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
   if (ImGui::BeginPopupModal("app_settings_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
     if (!initialized) {
       draft_settings = app.settings;
+      if (Trim(draft_settings.gemini_global_root_path).empty()) {
+        draft_settings.gemini_global_root_path = AppPaths::DefaultGeminiUniversalRootPath().string();
+      }
       draft_settings.ui_theme = NormalizeThemeChoice(draft_settings.ui_theme);
       draft_center_mode = app.center_view_mode;
       initialized = true;
     }
+    RefreshTemplateCatalog(app);
 
     ImGui::TextColored(ui::kTextPrimary, "Application Settings");
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
@@ -4383,6 +5030,20 @@ static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
 
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
     DrawSoftDivider();
+    ImGui::TextColored(ui::kTextSecondary, "Gemini Templates");
+    PushInputChrome();
+    ImGui::SetNextItemWidth(520.0f);
+    ImGui::InputText("Global Root", &draft_settings.gemini_global_root_path);
+    PopInputChrome();
+    ImGui::TextColored(ui::kTextMuted, "Catalog folder: <root>/Markdown_Templates");
+    const std::string current_default_template = TemplateLabelOrFallback(app, app.settings.default_gemini_template_id);
+    ImGui::TextColored(ui::kTextMuted, "Current default: %s", current_default_template.c_str());
+    if (DrawButton("Open Template Manager", ImVec2(164.0f, 30.0f), ButtonKind::Ghost)) {
+      app.open_template_manager_popup = true;
+    }
+
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
+    DrawSoftDivider();
     ImGui::TextColored(ui::kTextSecondary, "Startup / Window");
     bool start_structured = (draft_center_mode == CenterViewMode::Structured);
     if (ImGui::RadioButton("Structured mode", start_structured)) {
@@ -4405,6 +5066,7 @@ static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
     ImGui::TextWrapped("Provider Profiles: %s", ProviderProfileFilePath(app).string().c_str());
     ImGui::TextWrapped("Action Map: %s", FrontendActionFilePath(app).string().c_str());
     ImGui::TextWrapped("Gemini Home: %s", AppPaths::GeminiHomePath().string().c_str());
+    ImGui::TextWrapped("Gemini Global Root: %s", ResolveGeminiGlobalRootPath(draft_settings).string().c_str());
     ImGui::TextColored(ui::kTextMuted, "Build: %s %s", __DATE__, __TIME__);
 
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
@@ -4419,7 +5081,11 @@ static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
 
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
     if (DrawButton("Save Preferences", ImVec2(138.0f, 34.0f), ButtonKind::Primary)) {
+      const std::string previous_global_root = app.settings.gemini_global_root_path;
       draft_settings.ui_theme = NormalizeThemeChoice(draft_settings.ui_theme);
+      if (Trim(draft_settings.gemini_global_root_path).empty()) {
+        draft_settings.gemini_global_root_path = AppPaths::DefaultGeminiUniversalRootPath().string();
+      }
       ClampWindowSettings(draft_settings);
       app.settings = draft_settings;
       app.center_view_mode = draft_center_mode;
@@ -4429,6 +5095,10 @@ static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
       ImGui::GetIO().FontGlobalScale = app.settings.ui_scale_multiplier;
       ApplyThemeFromSettings(app);
       SaveSettings(app);
+      if (previous_global_root != app.settings.gemini_global_root_path) {
+        MarkTemplateCatalogDirty(app);
+        RefreshTemplateCatalog(app, true);
+      }
       app.status_line = "Preferences saved.";
       initialized = false;
       ImGui::CloseCurrentPopup();
@@ -4539,6 +5209,7 @@ int main(int, char**) {
     SaveProviders(app);
   }
   LoadFrontendActions(app);
+  RefreshTemplateCatalog(app, true);
   app.folders = ChatFolderStore::Load(app.data_root);
   EnsureDefaultFolder(app);
   SaveFolders(app);
@@ -4715,6 +5386,8 @@ int main(int, char**) {
     ImGui::End();
     DrawDeleteChatConfirmationModal(app);
     DrawDeleteFolderConfirmationModal(app);
+    DrawTemplateChangeWarningModal(app);
+    DrawTemplateManagerModal(app);
     DrawAppSettingsModal(app, platform_ui_scale);
 
     ImGui::Render();

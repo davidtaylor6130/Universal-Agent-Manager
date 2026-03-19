@@ -1,0 +1,11 @@
+/Users/davidtaylormacbookpro/Documents/GitHub/Universal Agent Manager/build_tests_local/CMakeFiles/universal_agent_manager.dir
+/Users/davidtaylormacbookpro/Documents/GitHub/Universal Agent Manager/build_tests_local/CMakeFiles/uam_core_tests.dir
+/Users/davidtaylormacbookpro/Documents/GitHub/Universal Agent Manager/build_tests_local/CMakeFiles/test.dir
+/Users/davidtaylormacbookpro/Documents/GitHub/Universal Agent Manager/build_tests_local/CMakeFiles/edit_cache.dir
+/Users/davidtaylormacbookpro/Documents/GitHub/Universal Agent Manager/build_tests_local/CMakeFiles/rebuild_cache.dir
+/Users/davidtaylormacbookpro/Documents/GitHub/Universal Agent Manager/build_tests_local/_deps/sdl2-build/CMakeFiles/sdl_headers_copy.dir
+/Users/davidtaylormacbookpro/Documents/GitHub/Universal Agent Manager/build_tests_local/_deps/sdl2-build/CMakeFiles/SDL2main.dir
+/Users/davidtaylormacbookpro/Documents/GitHub/Universal Agent Manager/build_tests_local/_deps/sdl2-build/CMakeFiles/SDL2-static.dir
+/Users/davidtaylormacbookpro/Documents/GitHub/Universal Agent Manager/build_tests_local/_deps/sdl2-build/CMakeFiles/test.dir
+/Users/davidtaylormacbookpro/Documents/GitHub/Universal Agent Manager/build_tests_local/_deps/sdl2-build/CMakeFiles/edit_cache.dir
+/Users/davidtaylormacbookpro/Documents/GitHub/Universal Agent Manager/build_tests_local/_deps/sdl2-build/CMakeFiles/rebuild_cache.dir

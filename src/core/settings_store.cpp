@@ -1,5 +1,7 @@
 #include "settings_store.h"
 
+#include "app_paths.h"
+
 #include <algorithm>
 #include <cctype>
 #include <fstream>
@@ -83,6 +85,8 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file,
   lines << "gemini_command_template=" << settings.gemini_command_template << '\n';
   lines << "gemini_yolo_mode=" << (settings.gemini_yolo_mode ? "1" : "0") << '\n';
   lines << "gemini_extra_flags=" << settings.gemini_extra_flags << '\n';
+  lines << "gemini_global_root_path=" << settings.gemini_global_root_path << '\n';
+  lines << "default_gemini_template_id=" << settings.default_gemini_template_id << '\n';
   lines << "center_view_mode=" << ViewModeToString(center_view_mode) << '\n';
   lines << "ui_theme=" << NormalizeThemeId(settings.ui_theme) << '\n';
   lines << "confirm_delete_chat=" << (settings.confirm_delete_chat ? "1" : "0") << '\n';
@@ -120,6 +124,10 @@ void SettingsStore::Load(const std::filesystem::path& settings_file,
       settings.gemini_yolo_mode = ParseBool(value, settings.gemini_yolo_mode);
     } else if (key == "gemini_extra_flags") {
       settings.gemini_extra_flags = value;
+    } else if (key == "gemini_global_root_path") {
+      settings.gemini_global_root_path = value;
+    } else if (key == "default_gemini_template_id") {
+      settings.default_gemini_template_id = value;
     } else if (key == "center_view_mode") {
       center_view_mode = ViewModeFromString(value);
     } else if (key == "ui_theme") {
@@ -148,6 +156,9 @@ void SettingsStore::Load(const std::filesystem::path& settings_file,
   }
   if (settings.active_provider_id.empty()) {
     settings.active_provider_id = "gemini";
+  }
+  if (settings.gemini_global_root_path.empty()) {
+    settings.gemini_global_root_path = AppPaths::DefaultGeminiUniversalRootPath().string();
   }
   settings.ui_theme = NormalizeThemeId(settings.ui_theme);
   settings.ui_scale_multiplier = std::clamp(settings.ui_scale_multiplier, 0.85f, 1.75f);

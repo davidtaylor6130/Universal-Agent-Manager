@@ -187,6 +187,23 @@ std::filesystem::path AppPaths::GeminiHomePath() {
   return std::filesystem::current_path() / ".gemini";
 }
 
+std::filesystem::path AppPaths::DefaultGeminiUniversalRootPath() {
+#if defined(_WIN32)
+  if (const char* user_profile = std::getenv("USERPROFILE")) {
+    return std::filesystem::path(user_profile) / ".Gemini_universal_agent_manager";
+  }
+  if (const char* home_drive = std::getenv("HOMEDRIVE")) {
+    if (const char* home_path = std::getenv("HOMEPATH")) {
+      return std::filesystem::path(std::string(home_drive) + std::string(home_path)) / ".Gemini_universal_agent_manager";
+    }
+  }
+#endif
+  if (const char* home = std::getenv("HOME")) {
+    return std::filesystem::path(home) / ".Gemini_universal_agent_manager";
+  }
+  return std::filesystem::current_path() / ".Gemini_universal_agent_manager";
+}
+
 std::optional<std::filesystem::path> AppPaths::ResolveGeminiProjectTmpDir(const std::filesystem::path& project_root) {
   namespace fs = std::filesystem;
   const fs::path gemini_home = GeminiHomePath();

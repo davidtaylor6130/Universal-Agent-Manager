@@ -1,0 +1,3 @@
+/Users/davidtaylormacbookpro/Documents/GitHub/Universal Agent Manager/build_tests_local/_deps/imgui-subbuild/CMakeFiles/imgui-populate.dir
+/Users/davidtaylormacbookpro/Documents/GitHub/Universal Agent Manager/build_tests_local/_deps/imgui-subbuild/CMakeFiles/edit_cache.dir
+/Users/davidtaylormacbookpro/Documents/GitHub/Universal Agent Manager/build_tests_local/_deps/imgui-subbuild/CMakeFiles/rebuild_cache.dir

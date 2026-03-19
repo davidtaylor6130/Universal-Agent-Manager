@@ -1,7 +1,9 @@
 #include "core/app_models.h"
 #include "core/app_paths.h"
+#include "core/chat_repository.h"
 #include "core/frontend_actions.h"
 #include "core/gemini_command_builder.h"
+#include "core/gemini_template_catalog.h"
 #include "core/provider_profile.h"
 #include "core/provider_runtime.h"
 #include "core/settings_store.h"
@@ -288,6 +290,8 @@ UAM_TEST(TestSettingsStoreRoundTripExtendedPreferences) {
   write_settings.gemini_command_template = "gemini {resume} {flags} {prompt}";
   write_settings.gemini_yolo_mode = true;
   write_settings.gemini_extra_flags = "--alpha --beta";
+  write_settings.gemini_global_root_path = "/tmp/.Gemini_universal_agent_manager";
+  write_settings.default_gemini_template_id = "baseline.md";
   write_settings.ui_theme = "system";
   write_settings.confirm_delete_chat = false;
   write_settings.confirm_delete_folder = false;
@@ -308,6 +312,8 @@ UAM_TEST(TestSettingsStoreRoundTripExtendedPreferences) {
   UAM_ASSERT(loaded_mode == CenterViewMode::CliConsole);
   UAM_ASSERT(loaded.gemini_yolo_mode);
   UAM_ASSERT_EQ(std::string("--alpha --beta"), loaded.gemini_extra_flags);
+  UAM_ASSERT_EQ(std::string("/tmp/.Gemini_universal_agent_manager"), loaded.gemini_global_root_path);
+  UAM_ASSERT_EQ(std::string("baseline.md"), loaded.default_gemini_template_id);
   UAM_ASSERT(!loaded.confirm_delete_chat);
   UAM_ASSERT(!loaded.confirm_delete_folder);
   UAM_ASSERT(loaded.remember_last_chat);
@@ -384,6 +390,54 @@ UAM_TEST(TestGeminiCommandBuilderReplacesPlaceholders) {
   UAM_ASSERT(command.find("--profile") != std::string::npos);
   UAM_ASSERT(command.find("nightly") != std::string::npos);
   UAM_ASSERT(command.find("--dry-run") != std::string::npos);
+}
+
+UAM_TEST(TestChatRepositoryPersistsTemplateOverride) {
+  TempDir data_root("uam-chat-repository");
+
+  ChatSession chat;
+  chat.id = "chat-test-1";
+  chat.folder_id = "folder-default";
+  chat.template_override_id = "custom-template.md";
+  chat.title = "Template Test";
+  chat.created_at = "2026-03-19 10:11:12";
+  chat.updated_at = "2026-03-19 10:11:13";
+  chat.messages.push_back(Message{MessageRole::User, "hello", "2026-03-19 10:11:13"});
+
+  UAM_ASSERT(ChatRepository::SaveChat(data_root.root, chat));
+  const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(data_root.root);
+  UAM_ASSERT_EQ(1u, loaded.size());
+  UAM_ASSERT_EQ(std::string("custom-template.md"), loaded.front().template_override_id);
+}
+
+UAM_TEST(TestGeminiTemplateCatalogImportCollisionAndFiltering) {
+  TempDir global_root("uam-template-global-root");
+  TempDir source_a("uam-template-source-a");
+  TempDir source_b("uam-template-source-b");
+
+  const fs::path file_a = source_a.root / "gemini.md";
+  const fs::path file_b = source_b.root / "gemini.md";
+  const fs::path non_markdown = source_b.root / "ignore.txt";
+  UAM_ASSERT(WriteTextFile(file_a, "# A\n"));
+  UAM_ASSERT(WriteTextFile(file_b, "# B\n"));
+  UAM_ASSERT(WriteTextFile(non_markdown, "skip"));
+
+  std::string imported_a;
+  std::string imported_b;
+  std::string error;
+  UAM_ASSERT(GeminiTemplateCatalog::ImportMarkdownTemplate(global_root.root, file_a, &imported_a, &error));
+  UAM_ASSERT(GeminiTemplateCatalog::ImportMarkdownTemplate(global_root.root, file_b, &imported_b, &error));
+  UAM_ASSERT(imported_a != imported_b);
+
+  UAM_ASSERT(!GeminiTemplateCatalog::ImportMarkdownTemplate(global_root.root, non_markdown, nullptr, &error));
+
+  const fs::path catalog_path = GeminiTemplateCatalog::CatalogPath(global_root.root);
+  UAM_ASSERT(WriteTextFile(catalog_path / "not-a-template.txt", "ignored"));
+
+  const std::vector<TemplateCatalogEntry> entries = GeminiTemplateCatalog::List(global_root.root);
+  UAM_ASSERT_EQ(2u, entries.size());
+  UAM_ASSERT(GeminiTemplateCatalog::HasTemplate(global_root.root, imported_a));
+  UAM_ASSERT(GeminiTemplateCatalog::HasTemplate(global_root.root, imported_b));
 }
 
 UAM_TEST(TestGeminiCommandBuilderInteractiveArgvIncludesResumeAndFlags) {

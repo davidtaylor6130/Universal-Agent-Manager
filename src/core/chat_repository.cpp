@@ -66,6 +66,7 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
   std::ostringstream meta;
   meta << "id=" << chat.id << '\n';
   meta << "folder=" << chat.folder_id << '\n';
+  meta << "template_override=" << chat.template_override_id << '\n';
   meta << "title=" << chat.title << '\n';
   meta << "created_at=" << chat.created_at << '\n';
   meta << "updated_at=" << chat.updated_at << '\n';
@@ -131,6 +132,8 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
           chat.id = value;
         } else if (key == "folder") {
           chat.folder_id = value;
+        } else if (key == "template_override") {
+          chat.template_override_id = value;
         } else if (key == "title") {
           chat.title = value;
         } else if (key == "created_at") {
