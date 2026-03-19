@@ -143,6 +143,7 @@ struct AppState {
   int editing_message_index = -1;
   std::string editing_message_text;
   bool open_edit_message_popup = false;
+  bool open_about_popup = false;
   bool open_app_settings_popup = false;
   bool open_delete_chat_popup = false;
   std::string pending_delete_chat_id;
@@ -158,6 +159,7 @@ struct AppState {
   bool open_template_change_warning_popup = false;
   std::string pending_template_change_chat_id;
   std::string pending_template_change_override_id;
+  std::unordered_set<std::string> chats_with_unseen_updates;
   std::string status_line;
   CenterViewMode center_view_mode = CenterViewMode::Structured;
   std::vector<std::unique_ptr<CliTerminalState>> cli_terminals;
@@ -178,6 +180,9 @@ static ImFont* g_font_mono = nullptr;
 
 static constexpr const char* kDefaultFolderId = "folder-default";
 static constexpr const char* kDefaultFolderTitle = "General";
+static constexpr const char* kAppDisplayName = "Universal Agent Manager";
+static constexpr const char* kAppVersion = "1.0.0";
+static constexpr const char* kAppCopyright = "(c) 2026 Universal Agent Manager. All rights reserved.";
 
 static void SortChatsByRecent(std::vector<ChatSession>& chats);
 static std::vector<ChatSession> DeduplicateChatsById(std::vector<ChatSession> chats);
@@ -1364,6 +1369,9 @@ static ChatSession CreateNewChat(const std::string& folder_id) {
 
 static void SelectChatById(AppState& app, const std::string& chat_id) {
   app.selected_chat_index = FindChatIndexById(app, chat_id);
+  if (app.selected_chat_index >= 0) {
+    app.chats_with_unseen_updates.erase(app.chats[app.selected_chat_index].id);
+  }
   RefreshRememberedSelection(app);
 }
 
@@ -1585,7 +1593,7 @@ static std::string PickNewSessionId(
       return chat.native_session_id;
     }
   }
-  return loaded_chats.empty() ? "" : loaded_chats.front().native_session_id;
+  return "";
 }
 
 static std::optional<fs::path> FindNativeSessionFilePath(const AppState& app, const std::string& session_id) {
@@ -1938,6 +1946,39 @@ static CliTerminalState* FindCliTerminalForChat(AppState& app, const std::string
   return nullptr;
 }
 
+static bool ChatHasRunningGemini(const AppState& app, const std::string& chat_id) {
+  if (chat_id.empty()) {
+    return false;
+  }
+  if (app.pending_call.has_value() && app.pending_call->chat_id == chat_id) {
+    return true;
+  }
+  for (const auto& terminal : app.cli_terminals) {
+    if (terminal != nullptr && terminal->running && terminal->attached_chat_id == chat_id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static void MarkChatUnseen(AppState& app, const std::string& chat_id) {
+  if (chat_id.empty()) {
+    return;
+  }
+  const ChatSession* selected = SelectedChat(app);
+  if (selected != nullptr && selected->id == chat_id) {
+    return;
+  }
+  app.chats_with_unseen_updates.insert(chat_id);
+}
+
+static void MarkSelectedChatSeen(AppState& app) {
+  const ChatSession* selected = SelectedChat(app);
+  if (selected != nullptr) {
+    app.chats_with_unseen_updates.erase(selected->id);
+  }
+}
+
 static CliTerminalState& EnsureCliTerminalForChat(AppState& app, const ChatSession& chat) {
   if (CliTerminalState* existing = FindCliTerminalForChat(app, chat.id)) {
     if (existing->attached_session_id.empty() && chat.uses_native_session) {
@@ -2007,6 +2048,14 @@ static void SyncChatsFromNative(AppState& app, const std::string& preferred_chat
   } else {
     app.selected_chat_index = -1;
   }
+  for (auto it = app.chats_with_unseen_updates.begin(); it != app.chats_with_unseen_updates.end();) {
+    if (FindChatIndexById(app, *it) < 0) {
+      it = app.chats_with_unseen_updates.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  MarkSelectedChatSeen(app);
 }
 
 static std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const ChatSession& chat) {
@@ -2406,6 +2455,12 @@ static std::ptrdiff_t ReadCliTerminalOutput(CliTerminalState& terminal, char* bu
 #endif
 
 static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const bool preserve_selection) {
+  const std::string selected_chat_id = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
+  const auto mark_unseen_if_background = [&]() {
+    if (!terminal.attached_chat_id.empty() && terminal.attached_chat_id != selected_chat_id) {
+      MarkChatUnseen(app, terminal.attached_chat_id);
+    }
+  };
 #if defined(_WIN32)
   if (!terminal.running || terminal.pipe_output == INVALID_HANDLE_VALUE || terminal.vt == nullptr) {
     return;
@@ -2419,6 +2474,7 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
       continue;
     }
     if (read_bytes == 0) {
+      mark_unseen_if_background();
       StopCliTerminal(terminal);
       terminal.should_launch = false;
       app.status_line = "Gemini terminal exited.";
@@ -2435,6 +2491,7 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
 
   if (terminal.process_info.hProcess != INVALID_HANDLE_VALUE &&
       WaitForSingleObject(terminal.process_info.hProcess, 0) == WAIT_OBJECT_0) {
+    mark_unseen_if_background();
     StopCliTerminal(terminal);
     terminal.should_launch = false;
     app.status_line = "Gemini terminal exited.";
@@ -2453,6 +2510,7 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
       continue;
     }
     if (read_bytes == 0) {
+      mark_unseen_if_background();
       StopCliTerminal(terminal);
       terminal.should_launch = false;
       app.status_line = "Gemini terminal exited.";
@@ -2472,6 +2530,7 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
 
   int status = 0;
   if (terminal.child_pid > 0 && waitpid(terminal.child_pid, &status, WNOHANG) > 0) {
+    mark_unseen_if_background();
     StopCliTerminal(terminal);
     terminal.should_launch = false;
     app.status_line = "Gemini terminal exited.";
@@ -2625,6 +2684,7 @@ static void PollPendingGeminiCall(AppState& app) {
   }
   const std::string output = *app.pending_call->output;
   const std::string pending_chat_id = app.pending_call->chat_id;
+  const std::string selected_before_id = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
   const int pending_chat_index = FindChatIndexById(app, pending_chat_id);
   ChatSession pending_chat_snapshot;
   if (pending_chat_index >= 0) {
@@ -2635,6 +2695,9 @@ static void PollPendingGeminiCall(AppState& app) {
     if (pending_chat_index >= 0) {
       AddMessage(app.chats[pending_chat_index], MessageRole::Assistant, output);
       SaveChat(app, app.chats[pending_chat_index]);
+      if (pending_chat_id != selected_before_id) {
+        MarkChatUnseen(app, pending_chat_id);
+      }
       app.status_line = "Provider response appended to local chat history.";
       app.scroll_to_bottom = true;
     } else {
@@ -2676,6 +2739,9 @@ static void PollPendingGeminiCall(AppState& app) {
     const int fallback_index = FindChatIndexById(app, pending_chat_id);
     if (fallback_index >= 0) {
       AddMessage(app.chats[fallback_index], MessageRole::System, output);
+      if (pending_chat_id != selected_before_id) {
+        MarkChatUnseen(app, pending_chat_id);
+      }
       app.status_line = "Provider command completed, but no native session was detected.";
       app.scroll_to_bottom = true;
     } else {
@@ -2724,6 +2790,7 @@ static bool RemoveChatById(AppState& app, const std::string& chat_id) {
   if (app.pending_call.has_value() && app.pending_call->chat_id == chat.id) {
     app.pending_call.reset();
   }
+  app.chats_with_unseen_updates.erase(chat.id);
   if (app.editing_chat_id == chat.id) {
     ClearEditMessageState(app);
   }
@@ -3654,6 +3721,10 @@ static void DrawDesktopMenuBar(AppState& app, bool& done) {
   }
 
   if (ImGui::BeginMenu("File")) {
+    if (ImGui::MenuItem("About Universal Agent Manager")) {
+      app.open_about_popup = true;
+    }
+    ImGui::Separator();
     if (ImGui::MenuItem("New Chat", "Ctrl+N")) {
       CreateAndSelectChat(app);
     }
@@ -3766,7 +3837,7 @@ struct FolderHeaderAction {
   bool open_settings = false;
 };
 
-static SidebarItemAction DrawSidebarItem(const ChatSession& chat, const bool selected, const std::string& item_id) {
+static SidebarItemAction DrawSidebarItem(const AppState& app, const ChatSession& chat, const bool selected, const std::string& item_id) {
   const bool light = IsLightPaletteActive();
   SidebarItemAction action;
 
@@ -3793,6 +3864,17 @@ static SidebarItemAction DrawSidebarItem(const ChatSession& chat, const bool sel
 
   const std::string row_title = CompactPreview(Trim(chat.title).empty() ? chat.id : chat.title, 46);
   draw->AddText(ImVec2(min.x + 11.0f, min.y + 7.0f), ImGui::GetColorU32(ui::kTextPrimary), row_title.c_str());
+
+  const bool running = ChatHasRunningGemini(app, chat.id);
+  const bool has_unseen = !running && (app.chats_with_unseen_updates.find(chat.id) != app.chats_with_unseen_updates.end());
+  if (running || has_unseen) {
+    static constexpr const char* kSpinnerFrames[4] = {"-", "/", "-", "\\"};
+    const int frame = static_cast<int>(ImGui::GetTime() * 8.0) & 3;
+    const char* glyph = running ? kSpinnerFrames[frame] : ".";
+    const ImVec4 indicator_color = running ? ui::kWarning : ui::kAccent;
+    const float indicator_x = (hovered || selected) ? (max.x - 40.0f) : (max.x - 18.0f);
+    draw->AddText(ImVec2(indicator_x, min.y + 7.0f), ImGui::GetColorU32(indicator_color), glyph);
+  }
 
   if (hovered || selected) {
     ImGui::SetCursorScreenPos(ImVec2(max.x - 22.0f, min.y + 6.0f));
@@ -3908,9 +3990,10 @@ static void DrawLeftPane(AppState& app) {
           continue;
         }
         const std::string sidebar_item_id = "session_" + app.chats[i].id + "##" + std::to_string(i);
-        const SidebarItemAction item_action = DrawSidebarItem(app.chats[i], i == app.selected_chat_index, sidebar_item_id);
+        const SidebarItemAction item_action = DrawSidebarItem(app, app.chats[i], i == app.selected_chat_index, sidebar_item_id);
         if (item_action.select) {
           app.selected_chat_index = i;
+          MarkSelectedChatSeen(app);
           RefreshRememberedSelection(app);
           SaveSettings(app);
           if (app.center_view_mode == CenterViewMode::CliConsole) {
@@ -4022,10 +4105,9 @@ static void DrawMessageBubble(AppState& app, ChatSession& chat, const int messag
   ImGui::SetCursorScreenPos(ImVec2(min.x + pad_x, min.y + pad_y));
   ImGui::TextColored(role, "%s", role_label);
   if (is_user) {
-    const std::string edit_label = FrontendActionLabel(app, "edit_resubmit", "Edit");
     ImGui::SetCursorScreenPos(ImVec2(max.x - 80.0f, min.y + 7.0f));
     if (FrontendActionVisible(app, "edit_resubmit", true) &&
-        DrawButton(edit_label.c_str(), ImVec2(70.0f, 24.0f), ButtonKind::Ghost)) {
+        DrawButton("Edit", ImVec2(70.0f, 24.0f), ButtonKind::Ghost)) {
       BeginEditMessage(app, chat, message_index);
     }
   }
@@ -4358,13 +4440,12 @@ static void DrawInputContainer(AppState& app) {
 
   ImGui::SameLine();
   const bool can_send = !app.pending_call.has_value();
-  const std::string send_label = FrontendActionLabel(app, "send_prompt", "Send");
   if (!can_send) {
     ImGui::BeginDisabled();
   }
   if (FrontendActionVisible(app, "send_prompt", true)) {
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 36.0f);
-    if (DrawButton(send_label.c_str(), ImVec2(80.0f, 42.0f), ButtonKind::Accent)) {
+    if (DrawButton("SEND", ImVec2(80.0f, 42.0f), ButtonKind::Accent)) {
       StartGeminiRequest(app);
     }
   }
@@ -4431,6 +4512,7 @@ static void DrawChatSettingsPopup(AppState& app, ChatSession& chat, const char* 
 }
 
 static void DrawChatDetailPane(AppState& app, ChatSession& chat) {
+  MarkSelectedChatSeen(app);
   BeginPanel("main_chat_panel", ImVec2(0.0f, 0.0f), PanelTone::Primary, true, 0, ImVec2(ui::kSpace16, ui::kSpace16));
   const std::string settings_popup_id = "chat_settings_popup##" + chat.id;
   bool request_open_chat_settings_popup = false;
@@ -4547,7 +4629,6 @@ static void DrawChatDetailPane(AppState& app, ChatSession& chat) {
     ImGui::EndPopup();
   }
 
-  DrawStructuredProcessingIndicator(app, chat);
   DrawInputContainer(app);
   if (!app.status_line.empty()) {
     ImGui::TextColored(ui::kTextSecondary, "%s", app.status_line.c_str());
@@ -4748,6 +4829,53 @@ static void CaptureWindowState(AppState& app, SDL_Window* window) {
   app.settings.window_height = height;
   app.settings.window_maximized = (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) != 0;
   ClampWindowSettings(app.settings);
+}
+
+static void DrawAboutModal(AppState& app) {
+  if (app.open_about_popup) {
+    ImGui::OpenPopup("about_popup");
+    app.open_about_popup = false;
+  }
+  if (!ImGui::BeginPopupModal("about_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    return;
+  }
+
+  PushFontIfAvailable(g_font_title);
+  ImGui::TextColored(ui::kTextPrimary, "%s", kAppDisplayName);
+  PopFontIfAvailable(g_font_title);
+  ImGui::TextColored(ui::kTextMuted, "Desktop application");
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
+  DrawSoftDivider();
+
+  if (ImGui::BeginTable("about_table", 2, ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_SizingFixedFit)) {
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextColored(ui::kTextSecondary, "Version");
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextColored(ui::kTextPrimary, "%s", kAppVersion);
+
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextColored(ui::kTextSecondary, "Build");
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextColored(ui::kTextPrimary, "%s %s", __DATE__, __TIME__);
+
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextColored(ui::kTextSecondary, "Provider");
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextColored(ui::kTextPrimary, "Gemini CLI Compatible");
+    ImGui::EndTable();
+  }
+
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
+  ImGui::TextWrapped("%s", kAppCopyright);
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
+
+  if (DrawButton("OK", ImVec2(96.0f, 32.0f), ButtonKind::Primary)) {
+    ImGui::CloseCurrentPopup();
+  }
+  ImGui::EndPopup();
 }
 
 static void DrawDeleteChatConfirmationModal(AppState& app) {
@@ -5530,6 +5658,7 @@ int main(int, char**) {
     }
 
     ImGui::End();
+    DrawAboutModal(app);
     DrawDeleteChatConfirmationModal(app);
     DrawDeleteFolderConfirmationModal(app);
     DrawFolderSettingsModal(app);
