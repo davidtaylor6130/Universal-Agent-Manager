@@ -1,5 +1,6 @@
 #include "provider_runtime.h"
 
+#include "command_line_words.h"
 #include "gemini_command_builder.h"
 
 #include <algorithm>
@@ -27,51 +28,6 @@ bool AnyTypeMatches(const std::vector<std::string>& types, const std::string& va
     }
   }
   return false;
-}
-
-std::vector<std::string> SplitShellWords(const std::string& value) {
-  std::vector<std::string> words;
-  std::string current;
-  bool escaping = false;
-  char quote = '\0';
-  for (char ch : value) {
-    if (escaping) {
-      current.push_back(ch);
-      escaping = false;
-      continue;
-    }
-    if (ch == '\\') {
-      escaping = true;
-      continue;
-    }
-    if (quote != '\0') {
-      if (ch == quote) {
-        quote = '\0';
-      } else {
-        current.push_back(ch);
-      }
-      continue;
-    }
-    if (ch == '\'' || ch == '"') {
-      quote = ch;
-      continue;
-    }
-    if (std::isspace(static_cast<unsigned char>(ch)) != 0) {
-      if (!current.empty()) {
-        words.push_back(current);
-        current.clear();
-      }
-      continue;
-    }
-    current.push_back(ch);
-  }
-  if (escaping) {
-    current.push_back('\\');
-  }
-  if (!current.empty()) {
-    words.push_back(current);
-  }
-  return words;
 }
 
 std::string JoinFlags(const std::vector<std::string>& flags) {
@@ -133,14 +89,14 @@ std::vector<std::string> ProviderRuntime::BuildInteractiveArgv(const ProviderPro
     return GeminiCommandBuilder::BuildInteractiveArgv(chat, provider_settings);
   }
 
-  std::vector<std::string> argv = SplitShellWords(profile.interactive_command);
+  std::vector<std::string> argv = SplitCommandLineWords(profile.interactive_command);
   if (argv.empty()) {
     argv.push_back("gemini");
   }
   if (provider_settings.gemini_yolo_mode) {
     argv.push_back("--yolo");
   }
-  const std::vector<std::string> extra_flags = SplitShellWords(provider_settings.gemini_extra_flags);
+  const std::vector<std::string> extra_flags = SplitCommandLineWords(provider_settings.gemini_extra_flags);
   argv.insert(argv.end(), extra_flags.begin(), extra_flags.end());
   if (profile.supports_resume && chat.uses_native_session && !chat.native_session_id.empty() && !profile.resume_argument.empty()) {
     argv.push_back(profile.resume_argument);

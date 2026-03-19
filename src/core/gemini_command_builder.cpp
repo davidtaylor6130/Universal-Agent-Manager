@@ -1,4 +1,5 @@
 #include "gemini_command_builder.h"
+#include "command_line_words.h"
 
 #include <cctype>
 #include <sstream>
@@ -60,51 +61,6 @@ std::string JoinShellEscapedFiles(const std::vector<std::string>& files) {
   return out.str();
 }
 
-std::vector<std::string> SplitShellWords(const std::string& value) {
-  std::vector<std::string> words;
-  std::string current;
-  bool escaping = false;
-  char quote = '\0';
-  for (char ch : value) {
-    if (escaping) {
-      current.push_back(ch);
-      escaping = false;
-      continue;
-    }
-    if (ch == '\\') {
-      escaping = true;
-      continue;
-    }
-    if (quote != '\0') {
-      if (ch == quote) {
-        quote = '\0';
-      } else {
-        current.push_back(ch);
-      }
-      continue;
-    }
-    if (ch == '\'' || ch == '"') {
-      quote = ch;
-      continue;
-    }
-    if (std::isspace(static_cast<unsigned char>(ch)) != 0) {
-      if (!current.empty()) {
-        words.push_back(current);
-        current.clear();
-      }
-      continue;
-    }
-    current.push_back(ch);
-  }
-  if (escaping) {
-    current.push_back('\\');
-  }
-  if (!current.empty()) {
-    words.push_back(current);
-  }
-  return words;
-}
-
 }  // namespace
 
 std::string GeminiCommandBuilder::BuildPrompt(const std::string& user_prompt,
@@ -125,7 +81,7 @@ std::vector<std::string> GeminiCommandBuilder::BuildFlagsArgv(const AppSettings&
   if (settings.gemini_yolo_mode) {
     flags.push_back("--yolo");
   }
-  const std::vector<std::string> extra_flags = SplitShellWords(settings.gemini_extra_flags);
+  const std::vector<std::string> extra_flags = SplitCommandLineWords(settings.gemini_extra_flags);
   flags.insert(flags.end(), extra_flags.begin(), extra_flags.end());
   return flags;
 }

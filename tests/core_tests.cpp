@@ -492,6 +492,24 @@ UAM_TEST(TestGeminiCommandBuilderInteractiveArgvIncludesResumeAndFlags) {
   UAM_ASSERT(argv == expected);
 }
 
+UAM_TEST(TestGeminiCommandBuilderParsesWindowsPathFlags) {
+#if defined(_WIN32)
+  AppSettings settings;
+  settings.gemini_extra_flags = R"(--config "C:\Users\david\gemini\settings.json" --profile nightly)";
+
+  ChatSession chat;
+  const std::vector<std::string> argv = GeminiCommandBuilder::BuildInteractiveArgv(chat, settings);
+  const std::vector<std::string> expected = {
+      "gemini",
+      "--config",
+      R"(C:\Users\david\gemini\settings.json)",
+      "--profile",
+      "nightly",
+  };
+  UAM_ASSERT(argv == expected);
+#endif
+}
+
 UAM_TEST(TestProviderProfileStoreRoundTrip) {
   TempDir data_root("uam-provider-profiles");
   std::vector<ProviderProfile> profiles;
@@ -518,6 +536,24 @@ UAM_TEST(TestProviderProfileStoreRoundTrip) {
   UAM_ASSERT(found->supports_resume == false);
   UAM_ASSERT_EQ(std::string("--continue"), found->resume_argument);
   UAM_ASSERT_EQ(std::string("local-only"), found->history_adapter);
+}
+
+UAM_TEST(TestProviderRuntimeParsesWindowsInteractiveCommandPath) {
+#if defined(_WIN32)
+  ProviderProfile profile = ProviderProfileStore::DefaultGeminiProfile();
+  profile.interactive_command = R"("C:\Program Files\Gemini\gemini.exe" --interactive)";
+  profile.supports_resume = false;
+  profile.resume_argument.clear();
+
+  AppSettings settings;
+  ChatSession chat;
+  const std::vector<std::string> argv = ProviderRuntime::BuildInteractiveArgv(profile, chat, settings);
+  const std::vector<std::string> expected = {
+      R"(C:\Program Files\Gemini\gemini.exe)",
+      "--interactive",
+  };
+  UAM_ASSERT(argv == expected);
+#endif
 }
 
 UAM_TEST(TestProviderRuntimeRoleMappingHonorsProfileTypes) {

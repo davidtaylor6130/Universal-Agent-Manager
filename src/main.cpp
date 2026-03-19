@@ -27,6 +27,7 @@
 #endif
 #include <windows.h>
 #include <wincontypes.h>
+#include <shellapi.h>
 #endif
 
 #if defined(__APPLE__)
@@ -196,6 +197,9 @@ static bool StartCliTerminalUnix(AppState& app, CliTerminalState& terminal, cons
 static ImFont* g_font_ui = nullptr;
 static ImFont* g_font_title = nullptr;
 static ImFont* g_font_mono = nullptr;
+static ImGuiStyle g_user_scale_base_style{};
+static bool g_user_scale_base_style_ready = false;
+static float g_last_applied_user_scale = -1.0f;
 
 static constexpr const char* kDefaultFolderId = "folder-default";
 static constexpr const char* kDefaultFolderTitle = "General";
@@ -225,6 +229,9 @@ static std::string ResolveResumeSessionIdForChat(const AppState& app, const Chat
 static bool HasPendingCallForChat(const AppState& app, const std::string& chat_id);
 static bool HasAnyPendingCall(const AppState& app);
 static const PendingGeminiCall* FirstPendingCallForChat(const AppState& app, const std::string& chat_id);
+static float PlatformUiSpacingScale();
+static void CaptureUiScaleBaseStyle();
+static void ApplyUserUiScale(ImGuiIO& io, float user_scale_multiplier);
 
 static std::string Trim(const std::string& value) {
   const auto start = value.find_first_not_of(" \t\r\n");
@@ -2580,6 +2587,44 @@ static void ResizePseudoConsoleSafe(HPCON handle, COORD size) {
   }
 }
 
+static std::wstring WideFromUtf8(const std::string& value) {
+  if (value.empty()) {
+    return std::wstring();
+  }
+
+  auto convert = [&](const UINT code_page, const DWORD flags) -> std::wstring {
+    const int wide_len =
+        MultiByteToWideChar(code_page, flags, value.data(), static_cast<int>(value.size()), nullptr, 0);
+    if (wide_len <= 0) {
+      return std::wstring();
+    }
+    std::wstring wide(static_cast<std::size_t>(wide_len), L'\0');
+    if (MultiByteToWideChar(code_page, flags, value.data(), static_cast<int>(value.size()), wide.data(), wide_len) <= 0) {
+      return std::wstring();
+    }
+    return wide;
+  };
+
+  std::wstring wide = convert(CP_UTF8, MB_ERR_INVALID_CHARS);
+  if (!wide.empty()) {
+    return wide;
+  }
+  return convert(CP_ACP, 0);
+}
+
+static std::wstring EscapeCmdPercentExpansion(const std::wstring& value) {
+  std::wstring out;
+  out.reserve(value.size() + 8);
+  for (const wchar_t ch : value) {
+    if (ch == L'%') {
+      out += L"%%";
+    } else {
+      out.push_back(ch);
+    }
+  }
+  return out;
+}
+
 static std::string QuoteWindowsArg(const std::string& arg) {
   if (arg.empty()) {
     return "\"\"";
@@ -2597,12 +2642,6 @@ static std::string QuoteWindowsArg(const std::string& arg) {
       result.append(backslashes * 2 + 1, '\\');
       result.push_back('"');
       backslashes = 0;
-    } else if (ch == '%') {
-      if (backslashes > 0) {
-        result.append(backslashes, '\\');
-        backslashes = 0;
-      }
-      result += "%%";
     } else if (ch == '\r' || ch == '\n') {
       if (backslashes > 0) {
         result.append(backslashes, '\\');
@@ -2697,32 +2736,83 @@ static bool StartCliTerminalWindows(AppState& app, CliTerminalState& terminal, c
     return false;
   }
 
-  STARTUPINFOEX si{};
+  STARTUPINFOEXW si{};
   si.StartupInfo.cb = sizeof(si);
   si.lpAttributeList = terminal.attr_list;
   PROCESS_INFORMATION pi{};
 
   const std::vector<std::string> argv_vec = BuildProviderInteractiveArgv(app, chat);
-  const std::string gemini_invocation = BuildWindowsCommandLine(argv_vec);
-  const char* comspec_env = std::getenv("ComSpec");
-  const std::string comspec = (comspec_env != nullptr && *comspec_env != '\0') ? comspec_env : "C:\\Windows\\System32\\cmd.exe";
-  std::string command_line = QuoteWindowsArg(comspec) + " /d /s /c \"\"" + gemini_invocation + "\"\"";
-  std::vector<char> cmd_mutable(command_line.begin(), command_line.end());
-  cmd_mutable.push_back(0);
-  const std::string working_dir_text = workspace_root.string();
-  const char* working_dir = working_dir_text.empty() ? nullptr : working_dir_text.c_str();
+  if (argv_vec.empty()) {
+    terminal.last_error = "Interactive provider command is empty.";
+    DeleteProcThreadAttributeList(terminal.attr_list);
+    HeapFree(GetProcessHeap(), 0, terminal.attr_list);
+    terminal.attr_list = nullptr;
+    ClosePseudoConsoleSafe(pseudo_console);
+    CloseHandle(pipe_pty_in);
+    CloseHandle(pipe_pty_out);
+    return false;
+  }
 
-  if (!CreateProcessA(comspec.c_str(),
-                      cmd_mutable.data(),
-                      nullptr,
-                      nullptr,
-                      FALSE,
-                      EXTENDED_STARTUPINFO_PRESENT,
-                      nullptr,
-                      working_dir,
-                      &si.StartupInfo,
-                      &pi)) {
-    terminal.last_error = "CreateProcess for Gemini failed (Win32 error " + std::to_string(GetLastError()) + ").";
+  const std::wstring invocation_line = WideFromUtf8(BuildWindowsCommandLine(argv_vec));
+  if (invocation_line.empty()) {
+    terminal.last_error = "Failed to encode interactive provider command line.";
+    DeleteProcThreadAttributeList(terminal.attr_list);
+    HeapFree(GetProcessHeap(), 0, terminal.attr_list);
+    terminal.attr_list = nullptr;
+    ClosePseudoConsoleSafe(pseudo_console);
+    CloseHandle(pipe_pty_in);
+    CloseHandle(pipe_pty_out);
+    return false;
+  }
+  std::vector<wchar_t> cmd_mutable(invocation_line.begin(), invocation_line.end());
+  cmd_mutable.push_back(L'\0');
+  const std::wstring working_dir_w = workspace_root.wstring();
+  LPCWSTR working_dir = working_dir_w.empty() ? nullptr : working_dir_w.c_str();
+
+  DWORD launch_error = ERROR_SUCCESS;
+  bool launched = CreateProcessW(nullptr,
+                                 cmd_mutable.data(),
+                                 nullptr,
+                                 nullptr,
+                                 FALSE,
+                                 EXTENDED_STARTUPINFO_PRESENT,
+                                 nullptr,
+                                 working_dir,
+                                 &si.StartupInfo,
+                                 &pi) != 0;
+  bool attempted_cmd_fallback = false;
+  if (!launched) {
+    launch_error = GetLastError();
+    if (launch_error == ERROR_FILE_NOT_FOUND || launch_error == ERROR_PATH_NOT_FOUND || launch_error == ERROR_BAD_EXE_FORMAT) {
+      attempted_cmd_fallback = true;
+      const wchar_t* comspec_env = _wgetenv(L"ComSpec");
+      const std::wstring comspec =
+          (comspec_env != nullptr && *comspec_env != L'\0') ? std::wstring(comspec_env) : L"C:\\Windows\\System32\\cmd.exe";
+      const std::wstring cmd_shell_args =
+          L"/d /s /c \"\"" + EscapeCmdPercentExpansion(invocation_line) + L"\"\"";
+      std::vector<wchar_t> cmd_shell_mutable(cmd_shell_args.begin(), cmd_shell_args.end());
+      cmd_shell_mutable.push_back(L'\0');
+      launched = CreateProcessW(comspec.c_str(),
+                                cmd_shell_mutable.data(),
+                                nullptr,
+                                nullptr,
+                                FALSE,
+                                EXTENDED_STARTUPINFO_PRESENT,
+                                nullptr,
+                                working_dir,
+                                &si.StartupInfo,
+                                &pi) != 0;
+      if (!launched) {
+        launch_error = GetLastError();
+      }
+    }
+  }
+
+  if (!launched) {
+    const std::string detail = attempted_cmd_fallback
+                                   ? "CreateProcess for Gemini failed after cmd fallback (Win32 error "
+                                   : "CreateProcess for Gemini failed (Win32 error ";
+    terminal.last_error = detail + std::to_string(launch_error) + ").";
     DeleteProcThreadAttributeList(terminal.attr_list);
     HeapFree(GetProcessHeap(), 0, terminal.attr_list);
     terminal.attr_list = nullptr;
@@ -3784,6 +3874,7 @@ static void EndPanel() {
 
 static bool DrawButton(const char* label, const ImVec2& size, const ButtonKind kind) {
   const bool light = IsLightPaletteActive();
+  const float spacing_scale = PlatformUiSpacingScale();
   ImVec4 bg = ui::kElevatedSurface;
   ImVec4 bg_hover = light ? Rgb(226, 237, 251, 1.0f) : Rgb(35, 42, 53, 1.0f);
   ImVec4 bg_active = light ? Rgb(216, 230, 250, 1.0f) : Rgb(39, 47, 59, 1.0f);
@@ -3810,7 +3901,7 @@ static bool DrawButton(const char* label, const ImVec2& size, const ButtonKind k
   }
 
   ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ui::kRadiusSmall);
-  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(13.0f, 7.5f));
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(13.0f * spacing_scale, 7.5f * spacing_scale));
   ImGui::PushStyleColor(ImGuiCol_Button, bg);
   ImGui::PushStyleColor(ImGuiCol_ButtonHovered, bg_hover);
   ImGui::PushStyleColor(ImGuiCol_ButtonActive, bg_active);
@@ -3848,13 +3939,14 @@ static std::string CompactPreview(const std::string& text, const std::size_t max
 
 static void ApplyModernTheme() {
   const bool light = IsLightPaletteActive();
+  const float spacing_scale = PlatformUiSpacingScale();
   ImGuiStyle& style = ImGui::GetStyle();
   style.WindowPadding = ImVec2(ui::kSpace16, ui::kSpace16);
-  style.FramePadding = ImVec2(10.0f, 7.0f);
-  style.CellPadding = ImVec2(ui::kSpace10, ui::kSpace8);
-  style.ItemSpacing = ImVec2(ui::kSpace10, ui::kSpace10);
-  style.ItemInnerSpacing = ImVec2(ui::kSpace8, ui::kSpace8);
-  style.IndentSpacing = 16.0f;
+  style.FramePadding = ImVec2(10.0f * spacing_scale, 7.0f * spacing_scale);
+  style.CellPadding = ImVec2(ui::kSpace10 * spacing_scale, ui::kSpace8 * spacing_scale);
+  style.ItemSpacing = ImVec2(ui::kSpace10 * spacing_scale, ui::kSpace10 * spacing_scale);
+  style.ItemInnerSpacing = ImVec2(ui::kSpace8 * spacing_scale, ui::kSpace8 * spacing_scale);
+  style.IndentSpacing = 16.0f * spacing_scale;
   style.ScrollbarSize = 11.0f;
   style.GrabMinSize = 10.0f;
 
@@ -3924,6 +4016,26 @@ static void ApplyThemeFromSettings(AppState& app) {
   app.settings.ui_theme = NormalizeThemeChoice(app.settings.ui_theme);
   ApplyResolvedPalette(ResolveUiTheme(app.settings));
   ApplyModernTheme();
+}
+
+static void CaptureUiScaleBaseStyle() {
+  g_user_scale_base_style = ImGui::GetStyle();
+  g_user_scale_base_style_ready = true;
+  g_last_applied_user_scale = -1.0f;
+}
+
+static void ApplyUserUiScale(ImGuiIO& io, float user_scale_multiplier) {
+  const float clamped = std::clamp(user_scale_multiplier, 0.85f, 1.75f);
+  if (!g_user_scale_base_style_ready) {
+    CaptureUiScaleBaseStyle();
+  }
+  if (std::fabs(g_last_applied_user_scale - clamped) > 0.0001f) {
+    ImGuiStyle scaled = g_user_scale_base_style;
+    scaled.ScaleAllSizes(clamped);
+    ImGui::GetStyle() = scaled;
+    g_last_applied_user_scale = clamped;
+  }
+  io.FontGlobalScale = clamped;
 }
 
 static void DrawAmbientBackdrop(const ImVec2& pos, const ImVec2& size, const float time_s) {
@@ -4023,8 +4135,9 @@ static void DrawGlobalTopBar(AppState& app) {
     const float row_w = ImGui::GetContentRegionAvail().x;
     const bool show_create = FrontendActionVisible(app, "create_chat");
     const bool show_refresh = FrontendActionVisible(app, "refresh_history");
+    const float row_spacing = ui::kSpace8 * PlatformUiSpacingScale();
     const float action_w = show_create && show_refresh ? 96.0f : 106.0f;
-    const float total_w = (show_create ? action_w + ui::kSpace8 : 0.0f) + (show_refresh ? action_w + ui::kSpace8 : 0.0f) + 96.0f;
+    const float total_w = (show_create ? action_w + row_spacing : 0.0f) + (show_refresh ? action_w + row_spacing : 0.0f) + 96.0f;
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, row_w - total_w));
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4.0f);
 
@@ -4032,13 +4145,13 @@ static void DrawGlobalTopBar(AppState& app) {
       if (DrawButton(new_chat_label.c_str(), ImVec2(action_w, 34.0f), ButtonKind::Primary)) {
         CreateAndSelectChat(app);
       }
-      ImGui::SameLine(0.0f, ui::kSpace8);
+      ImGui::SameLine(0.0f, row_spacing);
     }
     if (show_refresh) {
       if (DrawButton(refresh_label.c_str(), ImVec2(action_w, 34.0f), ButtonKind::Ghost)) {
         RefreshChatHistory(app);
       }
-      ImGui::SameLine(0.0f, ui::kSpace8);
+      ImGui::SameLine(0.0f, row_spacing);
     }
     if (DrawButton("Settings", ImVec2(96.0f, 34.0f), ButtonKind::Ghost)) {
       app.open_app_settings_popup = true;
@@ -4076,22 +4189,6 @@ static bool DrawMiniIconButton(const char* id, const char* glyph, const ImVec2& 
 }
 
 static std::string ShellQuotePath(const std::string& path) {
-#if defined(_WIN32)
-  std::string escaped = "\"";
-  for (const char ch : path) {
-    if (ch == '"') {
-      escaped += "\"\"";
-    } else if (ch == '%') {
-      escaped += "%%";
-    } else if (ch == '\r' || ch == '\n') {
-      escaped.push_back(' ');
-    } else {
-      escaped.push_back(ch);
-    }
-  }
-  escaped.push_back('"');
-  return escaped;
-#else
   std::string escaped = "'";
   for (const char ch : path) {
     if (ch == '\'') {
@@ -4102,6 +4199,13 @@ static std::string ShellQuotePath(const std::string& path) {
   }
   escaped.push_back('\'');
   return escaped;
+}
+
+static float PlatformUiSpacingScale() {
+#if defined(_WIN32)
+  return 1.14f;
+#else
+  return 1.0f;
 #endif
 }
 
@@ -4126,18 +4230,27 @@ static bool OpenFolderInFileManager(const fs::path& folder_path, std::string* er
   }
 
 #if defined(_WIN32)
-  const std::string command = "explorer " + ShellQuotePath(folder_path.string());
+  const HINSTANCE result = ShellExecuteW(nullptr, L"open", folder_path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+  if (reinterpret_cast<INT_PTR>(result) <= 32) {
+    if (error_out != nullptr) {
+      *error_out = "Failed to open folder in file manager.";
+    }
+    return false;
+  }
+  return true;
 #elif defined(__APPLE__)
   const std::string command = "open " + ShellQuotePath(folder_path.string());
 #else
   const std::string command = "xdg-open " + ShellQuotePath(folder_path.string()) + " >/dev/null 2>&1";
 #endif
+#if !defined(_WIN32)
   if (!RunShellCommand(command)) {
     if (error_out != nullptr) {
       *error_out = "Failed to open folder in file manager.";
     }
     return false;
   }
+#endif
   return true;
 }
 
@@ -4152,18 +4265,28 @@ static bool RevealPathInFileManager(const fs::path& file_path, std::string* erro
     return OpenFolderInFileManager(file_path.parent_path(), error_out);
   }
 #if defined(_WIN32)
-  const std::string command = "explorer /select," + ShellQuotePath(file_path.string());
+  const std::wstring params = L"/select,\"" + file_path.wstring() + L"\"";
+  const HINSTANCE result = ShellExecuteW(nullptr, L"open", L"explorer.exe", params.c_str(), nullptr, SW_SHOWNORMAL);
+  if (reinterpret_cast<INT_PTR>(result) <= 32) {
+    if (error_out != nullptr) {
+      *error_out = "Failed to reveal file in file manager.";
+    }
+    return false;
+  }
+  return true;
 #elif defined(__APPLE__)
   const std::string command = "open -R " + ShellQuotePath(file_path.string());
 #else
   return OpenFolderInFileManager(file_path.parent_path(), error_out);
 #endif
+#if !defined(_WIN32)
   if (!RunShellCommand(command)) {
     if (error_out != nullptr) {
       *error_out = "Failed to reveal file in file manager.";
     }
     return false;
   }
+#endif
   return true;
 }
 
@@ -4583,7 +4706,8 @@ static void DrawMessageBubble(AppState& app, ChatSession& chat, const int messag
 }
 
 static void DrawCenterModeToggle(AppState& app) {
-  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 6.0f));
+  const float spacing = 6.0f * PlatformUiSpacingScale();
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(spacing, spacing));
   const bool structured_active = (app.center_view_mode == CenterViewMode::Structured);
   if (DrawButton("Structured", ImVec2(98.0f, 30.0f), structured_active ? ButtonKind::Primary : ButtonKind::Ghost)) {
     app.center_view_mode = CenterViewMode::Structured;
@@ -5889,8 +6013,12 @@ static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
       if (app.center_view_mode == CenterViewMode::CliConsole) {
         MarkSelectedCliTerminalForLaunch(app);
       }
-      ImGui::GetIO().FontGlobalScale = app.settings.ui_scale_multiplier;
       ApplyThemeFromSettings(app);
+      if (platform_scale > 1.01f) {
+        ImGui::GetStyle().ScaleAllSizes(platform_scale);
+      }
+      CaptureUiScaleBaseStyle();
+      ApplyUserUiScale(ImGui::GetIO(), app.settings.ui_scale_multiplier);
       SaveSettings(app);
       if (previous_global_root != app.settings.gemini_global_root_path) {
         MarkTemplateCatalogDirty(app);
@@ -6095,7 +6223,8 @@ int main(int, char**) {
   if (platform_ui_scale > 1.01f) {
     ImGui::GetStyle().ScaleAllSizes(platform_ui_scale);
   }
-  io.FontGlobalScale = app.settings.ui_scale_multiplier;
+  CaptureUiScaleBaseStyle();
+  ApplyUserUiScale(io, app.settings.ui_scale_multiplier);
 
   ImGui_ImplSDL2_InitForOpenGL(window, gl_context);
   ImGui_ImplOpenGL3_Init(glsl_version);
@@ -6138,7 +6267,7 @@ int main(int, char**) {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
-    io.FontGlobalScale = app.settings.ui_scale_multiplier;
+    ApplyUserUiScale(io, app.settings.ui_scale_multiplier);
 
     HandleGlobalShortcuts(app);
     DrawDesktopMenuBar(app, done);
