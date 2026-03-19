@@ -4894,7 +4894,7 @@ static void DrawTemplateManagerModal(AppState& app) {
   ImGui::Dummy(ImVec2(0.0f, ui::kSpace6));
   PushInputChrome();
   ImGui::SetNextItemWidth(360.0f);
-  ImGui::InputText("Rename", &app.template_rename_input);
+  ImGui::InputText("Rename##template_rename_input", &app.template_rename_input);
   PopInputChrome();
   if (!has_selection) {
     ImGui::BeginDisabled();
