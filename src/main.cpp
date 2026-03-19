@@ -2610,10 +2610,38 @@ static void ApplyResolvedPalette(const UiThemeResolved theme) {
   ui::kWarning = Rgb(245, 158, 11, 1.0f);
 }
 
-static ImFont* TryLoadFont(ImGuiIO& io, const float size, std::initializer_list<const char*> paths) {
+static const ImWchar* BuildTerminalGlyphRanges(ImGuiIO& io) {
+  static ImVector<ImWchar> ranges;
+  if (!ranges.empty()) {
+    return ranges.Data;
+  }
+
+  ImFontGlyphRangesBuilder builder;
+  builder.AddRanges(io.Fonts->GetGlyphRangesDefault());
+  static const ImWchar kTerminalExtras[] = {
+      0x2190, 0x21FF,  // arrows
+      0x2300, 0x23FF,  // misc technical
+      0x2500, 0x259F,  // box drawing + block elements
+      0x25A0, 0x25FF,  // geometric shapes
+      0x2600, 0x26FF,  // misc symbols
+      0x2700, 0x27BF,  // dingbats
+      0x2B00, 0x2BFF,  // additional arrows/symbols
+      0xFFFD, 0xFFFD,  // replacement char
+      0xE0B0, 0xE0D4,  // powerline symbols (private use)
+      0,
+  };
+  builder.AddRanges(kTerminalExtras);
+  builder.BuildRanges(&ranges);
+  return ranges.Data;
+}
+
+static ImFont* TryLoadFont(ImGuiIO& io,
+                           const float size,
+                           std::initializer_list<const char*> paths,
+                           const ImWchar* glyph_ranges = nullptr) {
   for (const char* path : paths) {
     if (path != nullptr && fs::exists(path)) {
-      if (ImFont* font = io.Fonts->AddFontFromFileTTF(path, size)) {
+      if (ImFont* font = io.Fonts->AddFontFromFileTTF(path, size, nullptr, glyph_ranges)) {
         return font;
       }
     }
@@ -2623,6 +2651,8 @@ static ImFont* TryLoadFont(ImGuiIO& io, const float size, std::initializer_list<
 
 static void ConfigureFonts(ImGuiIO& io, const float dpi_scale = 1.0f) {
   const float scale = std::clamp(dpi_scale, 1.0f, 2.25f);
+  const ImWchar* ui_ranges = io.Fonts->GetGlyphRangesDefault();
+  const ImWchar* terminal_ranges = BuildTerminalGlyphRanges(io);
   g_font_ui = TryLoadFont(io, 14.0f * scale, {
       "C:/Windows/Fonts/segoeui.ttf",
       "C:/Windows/Fonts/arial.ttf",
@@ -2631,7 +2661,7 @@ static void ConfigureFonts(ImGuiIO& io, const float dpi_scale = 1.0f) {
       "/System/Library/Fonts/Supplemental/Helvetica.ttc",
       "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
       "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
-  });
+  }, ui_ranges);
   g_font_title = TryLoadFont(io, 19.0f * scale, {
       "C:/Windows/Fonts/seguisb.ttf",
       "C:/Windows/Fonts/segoeuib.ttf",
@@ -2640,7 +2670,7 @@ static void ConfigureFonts(ImGuiIO& io, const float dpi_scale = 1.0f) {
       "/System/Library/Fonts/Supplemental/Helvetica Bold.ttf",
       "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
       "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
-  });
+  }, ui_ranges);
   g_font_mono = TryLoadFont(io, 13.5f * scale, {
       "C:/Windows/Fonts/consola.ttf",
       "C:/Windows/Fonts/cascadiamono.ttf",
@@ -2648,7 +2678,11 @@ static void ConfigureFonts(ImGuiIO& io, const float dpi_scale = 1.0f) {
       "/System/Library/Fonts/Menlo.ttc",
       "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
       "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf"
-  });
+  }, terminal_ranges);
+
+  if (g_font_mono == nullptr) {
+    g_font_mono = g_font_ui;
+  }
 
   if (g_font_ui != nullptr) {
     io.FontDefault = g_font_ui;
