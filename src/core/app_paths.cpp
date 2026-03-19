@@ -164,6 +164,54 @@ std::filesystem::path AppPaths::ChatPath(const std::filesystem::path& data_root,
   return ChatsRootPath(data_root) / chat_id;
 }
 
+std::filesystem::path AppPaths::DefaultDataRootPath() {
+#if defined(_WIN32)
+  if (const char* local_app_data = std::getenv("LOCALAPPDATA")) {
+    const std::string value = Trim(local_app_data);
+    if (!value.empty()) {
+      return std::filesystem::path(value) / "Universal Agent Manager";
+    }
+  }
+  if (const char* app_data = std::getenv("APPDATA")) {
+    const std::string value = Trim(app_data);
+    if (!value.empty()) {
+      return std::filesystem::path(value) / "Universal Agent Manager";
+    }
+  }
+  if (const char* user_profile = std::getenv("USERPROFILE")) {
+    const std::string value = Trim(user_profile);
+    if (!value.empty()) {
+      return std::filesystem::path(value) / "AppData" / "Local" / "Universal Agent Manager";
+    }
+  }
+  if (const char* home_drive = std::getenv("HOMEDRIVE")) {
+    if (const char* home_path = std::getenv("HOMEPATH")) {
+      const std::string drive = Trim(home_drive);
+      const std::string path = Trim(home_path);
+      if (!drive.empty() && !path.empty()) {
+        return std::filesystem::path(drive + path) / "AppData" / "Local" / "Universal Agent Manager";
+      }
+    }
+  }
+#endif
+  if (const char* home = std::getenv("HOME")) {
+    const std::string value = Trim(home);
+    if (!value.empty()) {
+#if defined(__APPLE__)
+      return std::filesystem::path(value) / "Library" / "Application Support" / "Universal Agent Manager";
+#else
+      return std::filesystem::path(value) / ".universal_agent_manager";
+#endif
+    }
+  }
+  std::error_code ec;
+  const std::filesystem::path temp = std::filesystem::temp_directory_path(ec);
+  if (!ec) {
+    return temp / "universal_agent_manager_data";
+  }
+  return std::filesystem::path("data");
+}
+
 std::filesystem::path AppPaths::GeminiHomePath() {
   if (const char* gemini_cli_home = std::getenv("GEMINI_CLI_HOME")) {
     return std::filesystem::path(gemini_cli_home);

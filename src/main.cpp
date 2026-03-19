@@ -282,6 +282,33 @@ static bool WriteTextFile(const fs::path& path, const std::string& content) {
   return out.good();
 }
 
+#if defined(_WIN32)
+static std::optional<fs::path> ResolveWindowsHomePath() {
+  if (const char* user_profile = std::getenv("USERPROFILE")) {
+    const std::string value = Trim(user_profile);
+    if (!value.empty()) {
+      return fs::path(value);
+    }
+  }
+  if (const char* home_drive = std::getenv("HOMEDRIVE")) {
+    if (const char* home_path = std::getenv("HOMEPATH")) {
+      const std::string drive = Trim(home_drive);
+      const std::string path = Trim(home_path);
+      if (!drive.empty() && !path.empty()) {
+        return fs::path(drive + path);
+      }
+    }
+  }
+  if (const char* home = std::getenv("HOME")) {
+    const std::string value = Trim(home);
+    if (!value.empty()) {
+      return fs::path(value);
+    }
+  }
+  return std::nullopt;
+}
+#endif
+
 static fs::path ExpandLeadingTildePath(const std::string& raw_path) {
   const std::string trimmed = Trim(raw_path);
   if (trimmed.empty()) {
@@ -291,12 +318,12 @@ static fs::path ExpandLeadingTildePath(const std::string& raw_path) {
     return fs::path(trimmed);
   }
 #if defined(_WIN32)
-  if (const char* user_profile = std::getenv("USERPROFILE")) {
+  if (const std::optional<fs::path> home = ResolveWindowsHomePath(); home.has_value()) {
     if (trimmed.size() == 1) {
-      return fs::path(user_profile);
+      return home.value();
     }
     if (trimmed[1] == '\\' || trimmed[1] == '/') {
-      return fs::path(user_profile) / trimmed.substr(2);
+      return home.value() / trimmed.substr(2);
     }
   }
 #else
@@ -347,6 +374,10 @@ static std::string BuildShellCommandWithWorkingDirectory(const fs::path& working
   for (const char ch : working_directory.string()) {
     if (ch == '"') {
       escaped += "\"\"";
+    } else if (ch == '%') {
+      escaped += "%%";
+    } else if (ch == '\r' || ch == '\n') {
+      escaped.push_back(' ');
     } else {
       escaped.push_back(ch);
     }
@@ -1093,19 +1124,7 @@ static fs::path ChatPath(const AppState& app, const ChatSession& chat) {
 }
 
 static fs::path DefaultDataRootPath() {
-  if (const char* home = std::getenv("HOME")) {
-#if defined(__APPLE__)
-    return fs::path(home) / "Library" / "Application Support" / "Universal Agent Manager";
-#else
-    return fs::path(home) / ".universal_agent_manager";
-#endif
-  }
-  std::error_code ec;
-  const fs::path temp = fs::temp_directory_path(ec);
-  if (!ec) {
-    return temp / "universal_agent_manager_data";
-  }
-  return fs::path("data");
+  return AppPaths::DefaultDataRootPath();
 }
 
 static fs::path TempFallbackDataRootPath() {
@@ -2578,6 +2597,18 @@ static std::string QuoteWindowsArg(const std::string& arg) {
       result.append(backslashes * 2 + 1, '\\');
       result.push_back('"');
       backslashes = 0;
+    } else if (ch == '%') {
+      if (backslashes > 0) {
+        result.append(backslashes, '\\');
+        backslashes = 0;
+      }
+      result += "%%";
+    } else if (ch == '\r' || ch == '\n') {
+      if (backslashes > 0) {
+        result.append(backslashes, '\\');
+        backslashes = 0;
+      }
+      result.push_back(' ');
     } else {
       if (backslashes > 0) {
         result.append(backslashes, '\\');
@@ -4050,6 +4081,10 @@ static std::string ShellQuotePath(const std::string& path) {
   for (const char ch : path) {
     if (ch == '"') {
       escaped += "\"\"";
+    } else if (ch == '%') {
+      escaped += "%%";
+    } else if (ch == '\r' || ch == '\n') {
+      escaped.push_back(' ');
     } else {
       escaped.push_back(ch);
     }

@@ -227,6 +227,36 @@ UAM_TEST(TestGeminiHomeResolutionPrecedence) {
   }
 }
 
+UAM_TEST(TestDefaultDataRootPathResolution) {
+  TempDir home_root("uam-home-root");
+
+#if defined(_WIN32)
+  TempDir local_app_data("uam-local-app-data");
+  {
+    ScopedEnvVar local("LOCALAPPDATA", local_app_data.root.string());
+    ScopedEnvVar app_data("APPDATA", std::nullopt);
+    ScopedEnvVar user_profile("USERPROFILE", std::nullopt);
+    ScopedEnvVar home_drive("HOMEDRIVE", std::nullopt);
+    ScopedEnvVar home_path("HOMEPATH", std::nullopt);
+    ScopedEnvVar home("HOME", home_root.root.string());
+    const fs::path expected = local_app_data.root / "Universal Agent Manager";
+    UAM_ASSERT_EQ(expected.lexically_normal().generic_string(),
+                  AppPaths::DefaultDataRootPath().lexically_normal().generic_string());
+  }
+#else
+  {
+    ScopedEnvVar home("HOME", home_root.root.string());
+#if defined(__APPLE__)
+    const fs::path expected = home_root.root / "Library" / "Application Support" / "Universal Agent Manager";
+#else
+    const fs::path expected = home_root.root / ".universal_agent_manager";
+#endif
+    UAM_ASSERT_EQ(expected.lexically_normal().generic_string(),
+                  AppPaths::DefaultDataRootPath().lexically_normal().generic_string());
+  }
+#endif
+}
+
 UAM_TEST(TestResolveGeminiProjectTmpDirViaProjectRootFile) {
   TempDir gemini_home("uam-gemini-home");
   TempDir project("uam-project");
