@@ -56,6 +56,7 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -117,7 +118,16 @@ struct CliTerminalState {
   bool needs_full_refresh = true;
   bool should_launch = false;
   double last_sync_time_s = 0.0;
+  double last_output_time_s = 0.0;
+  bool generation_in_progress = false;
   std::string last_error;
+};
+
+struct AsyncCommandTask {
+  bool running = false;
+  std::string command_preview;
+  std::shared_ptr<std::atomic<bool>> completed;
+  std::shared_ptr<std::string> output;
 };
 
 struct AppState {
@@ -164,7 +174,16 @@ struct AppState {
   CenterViewMode center_view_mode = CenterViewMode::Structured;
   std::vector<std::unique_ptr<CliTerminalState>> cli_terminals;
 
-  std::optional<PendingGeminiCall> pending_call;
+  std::vector<PendingGeminiCall> pending_calls;
+  std::unordered_map<std::string, std::string> resolved_native_sessions_by_chat_id;
+  AsyncCommandTask gemini_version_check_task;
+  AsyncCommandTask gemini_downgrade_task;
+  bool gemini_version_checked = false;
+  bool gemini_version_supported = false;
+  std::string gemini_installed_version;
+  std::string gemini_version_raw_output;
+  std::string gemini_version_message;
+  std::string gemini_downgrade_output;
   bool scroll_to_bottom = false;
 };
 
@@ -183,6 +202,7 @@ static constexpr const char* kDefaultFolderTitle = "General";
 static constexpr const char* kAppDisplayName = "Universal Agent Manager";
 static constexpr const char* kAppVersion = "1.0.0";
 static constexpr const char* kAppCopyright = "(c) 2026 Universal Agent Manager. All rights reserved.";
+static constexpr const char* kSupportedGeminiVersion = "0.30.0";
 
 static void SortChatsByRecent(std::vector<ChatSession>& chats);
 static std::vector<ChatSession> DeduplicateChatsById(std::vector<ChatSession> chats);
@@ -192,6 +212,19 @@ static void DrawSessionSidePane(AppState& app, ChatSession& chat);
 static void SaveAndUpdateStatus(AppState& app, const ChatSession& chat, const std::string& success, const std::string& failure);
 static void RefreshGeminiChatsDir(AppState& app);
 static const ChatFolder* FindFolderById(const AppState& app, const std::string& folder_id);
+static void StartAsyncCommandTask(AsyncCommandTask& task, const std::string& command);
+static bool TryConsumeAsyncCommandTaskOutput(AsyncCommandTask& task, std::string& output_out);
+static std::optional<std::string> ExtractSemverVersion(const std::string& text);
+static std::string BuildGeminiVersionCheckCommand();
+static std::string BuildGeminiDowngradeCommand();
+static void StartGeminiVersionCheck(AppState& app, const bool force);
+static void StartGeminiDowngradeToSupported(AppState& app);
+static void PollGeminiCompatibilityTasks(AppState& app);
+static bool IsLocalDraftChatId(const std::string& chat_id);
+static std::string ResolveResumeSessionIdForChat(const AppState& app, const ChatSession& chat);
+static bool HasPendingCallForChat(const AppState& app, const std::string& chat_id);
+static bool HasAnyPendingCall(const AppState& app);
+static const PendingGeminiCall* FirstPendingCallForChat(const AppState& app, const std::string& chat_id);
 
 static std::string Trim(const std::string& value) {
   const auto start = value.find_first_not_of(" \t\r\n");
@@ -924,6 +957,129 @@ static std::string ExecuteCommandCaptureOutput(const std::string& command) {
   return output;
 }
 
+static void StartAsyncCommandTask(AsyncCommandTask& task, const std::string& command) {
+  task.running = true;
+  task.command_preview = command;
+  task.completed = std::make_shared<std::atomic<bool>>(false);
+  task.output = std::make_shared<std::string>();
+  std::shared_ptr<std::atomic<bool>> completed = task.completed;
+  std::shared_ptr<std::string> output = task.output;
+  std::thread([command, completed, output]() {
+    *output = ExecuteCommandCaptureOutput(command);
+    completed->store(true, std::memory_order_release);
+  }).detach();
+}
+
+static bool TryConsumeAsyncCommandTaskOutput(AsyncCommandTask& task, std::string& output_out) {
+  if (!task.running) {
+    return false;
+  }
+  if (task.completed == nullptr || task.output == nullptr) {
+    task.running = false;
+    task.command_preview.clear();
+    task.completed.reset();
+    task.output.reset();
+    output_out.clear();
+    return true;
+  }
+  if (!task.completed->load(std::memory_order_acquire)) {
+    return false;
+  }
+  output_out = *task.output;
+  task.running = false;
+  task.command_preview.clear();
+  task.completed.reset();
+  task.output.reset();
+  return true;
+}
+
+static std::optional<std::string> ExtractSemverVersion(const std::string& text) {
+  static const std::regex semver_pattern(R"((\d+)\.(\d+)\.(\d+))");
+  std::smatch match;
+  if (std::regex_search(text, match, semver_pattern) && !match.str(0).empty()) {
+    return match.str(0);
+  }
+  return std::nullopt;
+}
+
+static std::string BuildGeminiVersionCheckCommand() {
+  return "gemini --version";
+}
+
+static std::string BuildGeminiDowngradeCommand() {
+#if defined(__APPLE__)
+  return "brew install gemini-cli@0.30.0";
+#elif defined(_WIN32)
+  return "npm install -g @google/gemini-cli@0.30.0";
+#else
+  return "npm install -g @google/gemini-cli@0.30.0";
+#endif
+}
+
+static void StartGeminiVersionCheck(AppState& app, const bool force) {
+  if (app.gemini_version_check_task.running) {
+    return;
+  }
+  if (!force && app.gemini_version_checked) {
+    return;
+  }
+  StartAsyncCommandTask(app.gemini_version_check_task, BuildGeminiVersionCheckCommand());
+  app.gemini_version_message = "Checking installed Gemini version...";
+}
+
+static void StartGeminiDowngradeToSupported(AppState& app) {
+  if (app.gemini_downgrade_task.running) {
+    return;
+  }
+  const std::string command = BuildGeminiDowngradeCommand();
+  StartAsyncCommandTask(app.gemini_downgrade_task, command);
+  app.gemini_downgrade_output.clear();
+  app.status_line = "Running Gemini downgrade command...";
+}
+
+static bool OutputContainsNonZeroExit(const std::string& output) {
+  return output.find("[Gemini CLI exited with code ") != std::string::npos;
+}
+
+static void PollGeminiCompatibilityTasks(AppState& app) {
+  std::string output;
+  if (TryConsumeAsyncCommandTaskOutput(app.gemini_version_check_task, output)) {
+    app.gemini_version_checked = true;
+    app.gemini_version_raw_output = output;
+    app.gemini_installed_version.clear();
+    app.gemini_version_supported = false;
+
+    const std::optional<std::string> parsed = ExtractSemverVersion(output);
+    if (parsed.has_value()) {
+      app.gemini_installed_version = parsed.value();
+      app.gemini_version_supported = (app.gemini_installed_version == kSupportedGeminiVersion);
+      if (app.gemini_version_supported) {
+        app.gemini_version_message = "Gemini version is supported.";
+      } else {
+        app.gemini_version_message = "Installed Gemini version is unsupported for this app.";
+      }
+    } else {
+      const std::string lowered = Trim(output);
+      if (lowered.find("not found") != std::string::npos || lowered.find("not recognized") != std::string::npos) {
+        app.gemini_version_message = "Gemini CLI is not installed or not on PATH.";
+      } else {
+        app.gemini_version_message = "Could not parse Gemini version output.";
+      }
+    }
+  }
+
+  if (TryConsumeAsyncCommandTaskOutput(app.gemini_downgrade_task, output)) {
+    app.gemini_downgrade_output = output;
+    if (OutputContainsNonZeroExit(output)) {
+      app.status_line = "Gemini downgrade command failed. Review output in Settings.";
+      app.gemini_version_message = "Downgrade command failed.";
+    } else {
+      app.status_line = "Gemini downgrade completed. Re-checking installed version.";
+      StartGeminiVersionCheck(app, true);
+    }
+  }
+}
+
 static fs::path SettingsFilePath(const AppState& app) {
   return AppPaths::SettingsFilePath(app.data_root);
 }
@@ -1367,10 +1523,40 @@ static ChatSession CreateNewChat(const std::string& folder_id) {
   return chat;
 }
 
+static bool IsLocalDraftChatId(const std::string& chat_id) {
+  return chat_id.rfind("chat-", 0) == 0;
+}
+
+static std::string ResolveResumeSessionIdForChat(const AppState& app, const ChatSession& chat) {
+  if (!ActiveProviderUsesGeminiHistory(app)) {
+    return "";
+  }
+  if (chat.uses_native_session) {
+    if (!chat.native_session_id.empty()) {
+      return chat.native_session_id;
+    }
+    if (!chat.id.empty()) {
+      return chat.id;
+    }
+    return "";
+  }
+
+  // Legacy compatibility: older local snapshots of native chats may not persist native flags.
+  if (!chat.messages.empty() && !chat.id.empty() && !IsLocalDraftChatId(chat.id)) {
+    return chat.id;
+  }
+  return "";
+}
+
 static void SelectChatById(AppState& app, const std::string& chat_id) {
+  const ChatSession* previously_selected = SelectedChat(app);
+  const std::string previous_id = (previously_selected != nullptr) ? previously_selected->id : "";
   app.selected_chat_index = FindChatIndexById(app, chat_id);
   if (app.selected_chat_index >= 0) {
     app.chats_with_unseen_updates.erase(app.chats[app.selected_chat_index].id);
+  }
+  if (previous_id != chat_id) {
+    app.composer_text.clear();
   }
   RefreshRememberedSelection(app);
 }
@@ -1459,8 +1645,8 @@ static bool QueueGeminiPromptForChat(AppState& app,
                                      ChatSession& chat,
                                      const std::string& prompt,
                                      const bool template_control_message = false) {
-  if (app.pending_call.has_value()) {
-    app.status_line = "Gemini command already running.";
+  if (HasPendingCallForChat(app, chat.id)) {
+    app.status_line = "Gemini command already running for this chat.";
     return false;
   }
   const std::string prompt_text = Trim(prompt);
@@ -1476,6 +1662,12 @@ static bool QueueGeminiPromptForChat(AppState& app,
     return false;
   }
 
+  const bool should_bootstrap_template =
+      !template_control_message &&
+      !chat.gemini_md_bootstrapped &&
+      chat.messages.empty() &&
+      template_outcome == TemplatePreflightOutcome::ReadyWithTemplate;
+
   AddMessage(chat, MessageRole::User, prompt_text);
   SaveAndUpdateStatus(app, chat, "Prompt queued for provider runtime.", "Saved message locally, but failed to persist chat data.");
 
@@ -1485,9 +1677,10 @@ static bool QueueGeminiPromptForChat(AppState& app,
     RefreshGeminiChatsDir(app);
     native_before = LoadNativeGeminiChats(app.gemini_chats_dir, provider);
   }
-  const std::string resume_session_id =
-      (ActiveProviderUsesGeminiHistory(app) && chat.uses_native_session) ? chat.native_session_id : "";
-  const std::string provider_prompt = BuildProviderPrompt(provider, prompt_text, chat.linked_files);
+  const std::string resume_session_id = ResolveResumeSessionIdForChat(app, chat);
+  const std::string runtime_prompt =
+      should_bootstrap_template ? ("@.gemini/gemini.md\n\n" + prompt_text) : prompt_text;
+  const std::string provider_prompt = BuildProviderPrompt(provider, runtime_prompt, chat.linked_files);
   const std::string provider_command = BuildProviderCommand(provider, app.settings, provider_prompt, chat.linked_files, resume_session_id);
   const std::string command = BuildShellCommandWithWorkingDirectory(ResolveWorkspaceRootPath(app, chat), provider_command);
   const std::string chat_id = chat.id;
@@ -1507,7 +1700,12 @@ static bool QueueGeminiPromptForChat(AppState& app,
       completed->store(true, std::memory_order_release);
     }).detach();
   }
-  app.pending_call = std::move(pending);
+  app.pending_calls.push_back(std::move(pending));
+
+  if (should_bootstrap_template) {
+    chat.gemini_md_bootstrapped = true;
+    SaveChat(app, chat);
+  }
 
   if (template_control_message) {
     app.status_line = "Template updated. Sent @.gemini/gemini.md to Gemini.";
@@ -1551,6 +1749,16 @@ static void ApplyLocalOverrides(AppState& app, std::vector<ChatSession>& native_
     if (!local.template_override_id.empty()) {
       native.template_override_id = local.template_override_id;
     }
+    if (!local.native_session_id.empty()) {
+      native.native_session_id = local.native_session_id;
+      native.uses_native_session = true;
+    } else if (local.uses_native_session && native.native_session_id.empty()) {
+      native.native_session_id = native.id;
+      native.uses_native_session = true;
+    }
+    if (local.gemini_md_bootstrapped) {
+      native.gemini_md_bootstrapped = true;
+    }
     if (!local.folder_id.empty()) {
       native.folder_id = local.folder_id;
     }
@@ -1564,9 +1772,17 @@ static void ApplyLocalOverrides(AppState& app, std::vector<ChatSession>& native_
 
   std::vector<ChatSession> merged = native_chats;
   for (const ChatSession& chat : local_chats) {
-    if (!chat.uses_native_session && native_ids.find(chat.id) == native_ids.end()) {
-      merged.push_back(chat);
+    if (native_ids.find(chat.id) != native_ids.end()) {
+      continue;
     }
+    if (chat.uses_native_session || !chat.native_session_id.empty()) {
+      continue;
+    }
+    // In Gemini-history mode, only explicit in-app drafts (chat-*) should appear as local-only chats.
+    if (!IsLocalDraftChatId(chat.id)) {
+      continue;
+    }
+    merged.push_back(chat);
   }
 
   app.chats = DeduplicateChatsById(std::move(merged));
@@ -1584,16 +1800,40 @@ static void RefreshGeminiChatsDir(AppState& app) {
   }
 }
 
-static std::string PickNewSessionId(
+static std::vector<std::string> CollectNewSessionIds(
     const std::vector<ChatSession>& loaded_chats,
     const std::vector<std::string>& existing_ids) {
   std::unordered_set<std::string> seen(existing_ids.begin(), existing_ids.end());
+  std::vector<std::string> discovered;
   for (const ChatSession& chat : loaded_chats) {
     if (!chat.native_session_id.empty() && seen.find(chat.native_session_id) == seen.end()) {
-      return chat.native_session_id;
+      discovered.push_back(chat.native_session_id);
+    }
+  }
+  return discovered;
+}
+
+static std::string PickFirstUnblockedSessionId(const std::vector<std::string>& candidate_ids,
+                                               const std::unordered_set<std::string>& blocked_ids) {
+  for (const std::string& candidate : candidate_ids) {
+    if (!candidate.empty() && blocked_ids.find(candidate) == blocked_ids.end()) {
+      return candidate;
     }
   }
   return "";
+}
+
+static bool SessionIdExistsInLoadedChats(const std::vector<ChatSession>& loaded_chats,
+                                         const std::string& session_id) {
+  if (session_id.empty()) {
+    return false;
+  }
+  for (const ChatSession& chat : loaded_chats) {
+    if (chat.uses_native_session && chat.native_session_id == session_id) {
+      return true;
+    }
+  }
+  return false;
 }
 
 static std::optional<fs::path> FindNativeSessionFilePath(const AppState& app, const std::string& session_id) {
@@ -1928,6 +2168,8 @@ static void StopCliTerminal(CliTerminalState& terminal, const bool clear_identit
   terminal.scrollback_lines.clear();
   terminal.scrollback_view_offset = 0;
   terminal.needs_full_refresh = true;
+  terminal.generation_in_progress = false;
+  terminal.last_output_time_s = 0.0;
   if (clear_identity) {
     terminal.attached_chat_id.clear();
     terminal.attached_session_id.clear();
@@ -1946,15 +2188,78 @@ static CliTerminalState* FindCliTerminalForChat(AppState& app, const std::string
   return nullptr;
 }
 
+static bool ForwardEscapeToSelectedCliTerminal(AppState& app, const SDL_Event& event) {
+  if (event.type != SDL_KEYDOWN && event.type != SDL_KEYUP) {
+    return false;
+  }
+  if (event.key.keysym.sym != SDLK_ESCAPE) {
+    return false;
+  }
+  if (event.type == SDL_KEYUP) {
+    return true;
+  }
+  if (event.key.repeat != 0) {
+    return true;
+  }
+  ChatSession* selected = SelectedChat(app);
+  if (selected == nullptr) {
+    return true;
+  }
+  CliTerminalState* terminal = FindCliTerminalForChat(app, selected->id);
+  if (terminal == nullptr || !terminal->running || terminal->vt == nullptr) {
+    return true;
+  }
+
+  VTermModifier mod = VTERM_MOD_NONE;
+  const SDL_Keymod key_mod = static_cast<SDL_Keymod>(event.key.keysym.mod);
+  if ((key_mod & KMOD_CTRL) != 0) {
+    mod = static_cast<VTermModifier>(mod | VTERM_MOD_CTRL);
+  }
+  if ((key_mod & KMOD_SHIFT) != 0) {
+    mod = static_cast<VTermModifier>(mod | VTERM_MOD_SHIFT);
+  }
+  if ((key_mod & KMOD_ALT) != 0) {
+    mod = static_cast<VTermModifier>(mod | VTERM_MOD_ALT);
+  }
+  vterm_keyboard_key(terminal->vt, VTERM_KEY_ESCAPE, mod);
+  terminal->needs_full_refresh = true;
+  return true;
+}
+
+static bool HasPendingCallForChat(const AppState& app, const std::string& chat_id) {
+  for (const PendingGeminiCall& call : app.pending_calls) {
+    if (call.chat_id == chat_id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool HasAnyPendingCall(const AppState& app) {
+  return !app.pending_calls.empty();
+}
+
+static const PendingGeminiCall* FirstPendingCallForChat(const AppState& app, const std::string& chat_id) {
+  for (const PendingGeminiCall& call : app.pending_calls) {
+    if (call.chat_id == chat_id) {
+      return &call;
+    }
+  }
+  return nullptr;
+}
+
 static bool ChatHasRunningGemini(const AppState& app, const std::string& chat_id) {
   if (chat_id.empty()) {
     return false;
   }
-  if (app.pending_call.has_value() && app.pending_call->chat_id == chat_id) {
+  if (HasPendingCallForChat(app, chat_id)) {
     return true;
   }
   for (const auto& terminal : app.cli_terminals) {
-    if (terminal != nullptr && terminal->running && terminal->attached_chat_id == chat_id) {
+    if (terminal != nullptr &&
+        terminal->running &&
+        terminal->attached_chat_id == chat_id &&
+        terminal->generation_in_progress) {
       return true;
     }
   }
@@ -1980,15 +2285,16 @@ static void MarkSelectedChatSeen(AppState& app) {
 }
 
 static CliTerminalState& EnsureCliTerminalForChat(AppState& app, const ChatSession& chat) {
+  const std::string resume_id = ResolveResumeSessionIdForChat(app, chat);
   if (CliTerminalState* existing = FindCliTerminalForChat(app, chat.id)) {
-    if (existing->attached_session_id.empty() && chat.uses_native_session) {
-      existing->attached_session_id = chat.native_session_id;
+    if (existing->attached_session_id.empty() && !resume_id.empty()) {
+      existing->attached_session_id = resume_id;
     }
     return *existing;
   }
   auto terminal = std::make_unique<CliTerminalState>();
   terminal->attached_chat_id = chat.id;
-  terminal->attached_session_id = chat.uses_native_session ? chat.native_session_id : "";
+  terminal->attached_session_id = resume_id;
   terminal->should_launch = (app.center_view_mode == CenterViewMode::CliConsole);
   app.cli_terminals.push_back(std::move(terminal));
   return *app.cli_terminals.back();
@@ -2055,11 +2361,24 @@ static void SyncChatsFromNative(AppState& app, const std::string& preferred_chat
       ++it;
     }
   }
+  const ChatSession* selected_now = SelectedChat(app);
+  const std::string selected_now_id = (selected_now != nullptr) ? selected_now->id : "";
+  if (selected_now_id != selected_before) {
+    app.composer_text.clear();
+  }
   MarkSelectedChatSeen(app);
 }
 
 static std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const ChatSession& chat) {
-  return ProviderRuntime::BuildInteractiveArgv(ActiveProviderOrDefault(app), chat, app.settings);
+  ChatSession effective_chat = chat;
+  if (!effective_chat.uses_native_session) {
+    const std::string resume_id = ResolveResumeSessionIdForChat(app, chat);
+    if (!resume_id.empty()) {
+      effective_chat.uses_native_session = true;
+      effective_chat.native_session_id = resume_id;
+    }
+  }
+  return ProviderRuntime::BuildInteractiveArgv(ActiveProviderOrDefault(app), effective_chat, app.settings);
 }
 
 #if defined(__unix__) || defined(__APPLE__)
@@ -2091,7 +2410,7 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
   terminal.rows = std::max(8, rows);
   terminal.cols = std::max(20, cols);
   terminal.attached_chat_id = chat.id;
-  terminal.attached_session_id = chat.uses_native_session ? chat.native_session_id : "";
+  terminal.attached_session_id = ResolveResumeSessionIdForChat(app, chat);
   terminal.linked_files_snapshot = chat.linked_files;
   if (ActiveProviderUsesGeminiHistory(app)) {
     terminal.session_ids_before = SessionIdsFromChats(LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app)));
@@ -2100,6 +2419,8 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
   }
   terminal.last_error.clear();
   terminal.last_sync_time_s = ImGui::GetTime();
+  terminal.last_output_time_s = 0.0;
+  terminal.generation_in_progress = false;
 
   terminal.vt = vterm_new(terminal.rows, terminal.cols);
   if (terminal.vt == nullptr) {
@@ -2132,6 +2453,18 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
   terminal.running = true;
   terminal.should_launch = false;
   terminal.needs_full_refresh = true;
+
+  if (!chat.gemini_md_bootstrapped &&
+      chat.messages.empty() &&
+      template_outcome == TemplatePreflightOutcome::ReadyWithTemplate) {
+    static constexpr char kBootstrapCommand[] = "@.gemini/gemini.md\n";
+    WriteToCliTerminal(terminal, kBootstrapCommand, sizeof(kBootstrapCommand) - 1);
+    const int chat_index = FindChatIndexById(app, chat.id);
+    if (chat_index >= 0) {
+      app.chats[chat_index].gemini_md_bootstrapped = true;
+      SaveChat(app, app.chats[chat_index]);
+    }
+  }
   return true;
 }
 
@@ -2455,6 +2788,7 @@ static std::ptrdiff_t ReadCliTerminalOutput(CliTerminalState& terminal, char* bu
 #endif
 
 static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const bool preserve_selection) {
+  constexpr double kGenerationIdleSeconds = 1.15;
   const std::string selected_chat_id = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
   const auto mark_unseen_if_background = [&]() {
     if (!terminal.attached_chat_id.empty() && terminal.attached_chat_id != selected_chat_id) {
@@ -2469,6 +2803,8 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
   while (true) {
     const std::ptrdiff_t read_bytes = ReadCliTerminalOutput(terminal, buffer, sizeof(buffer));
     if (read_bytes > 0) {
+      terminal.last_output_time_s = ImGui::GetTime();
+      terminal.generation_in_progress = true;
       vterm_input_write(terminal.vt, buffer, static_cast<std::size_t>(read_bytes));
       terminal.needs_full_refresh = true;
       continue;
@@ -2505,6 +2841,8 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
   while (true) {
     const ssize_t read_bytes = read(terminal.master_fd, buffer, sizeof(buffer));
     if (read_bytes > 0) {
+      terminal.last_output_time_s = ImGui::GetTime();
+      terminal.generation_in_progress = true;
       vterm_input_write(terminal.vt, buffer, static_cast<std::size_t>(read_bytes));
       terminal.needs_full_refresh = true;
       continue;
@@ -2544,11 +2882,27 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
       RefreshGeminiChatsDir(app);
       const std::vector<ChatSession> native_now = LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app));
       if (terminal.attached_session_id.empty()) {
-        const std::string discovered = PickNewSessionId(native_now, terminal.session_ids_before);
+        const std::vector<std::string> candidates = CollectNewSessionIds(native_now, terminal.session_ids_before);
+        std::unordered_set<std::string> blocked_ids;
+        for (const auto& other_terminal : app.cli_terminals) {
+          if (other_terminal == nullptr || other_terminal.get() == &terminal || other_terminal->attached_session_id.empty()) {
+            continue;
+          }
+          blocked_ids.insert(other_terminal->attached_session_id);
+        }
+        for (const auto& resolved : app.resolved_native_sessions_by_chat_id) {
+          if (!resolved.second.empty()) {
+            blocked_ids.insert(resolved.second);
+          }
+        }
+        const std::string discovered = PickFirstUnblockedSessionId(candidates, blocked_ids);
         if (!discovered.empty()) {
           const std::string previous_chat_id = terminal.attached_chat_id;
           terminal.attached_session_id = discovered;
           terminal.attached_chat_id = discovered;
+          if (!previous_chat_id.empty()) {
+            app.resolved_native_sessions_by_chat_id[previous_chat_id] = discovered;
+          }
           app.chats.erase(std::remove_if(app.chats.begin(), app.chats.end(),
                                          [&](const ChatSession& c) {
                                            return !c.uses_native_session && c.id == previous_chat_id;
@@ -2561,6 +2915,14 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
     } else {
       SyncChatsFromNative(app, terminal.attached_chat_id, preserve_selection);
     }
+  }
+
+  if (terminal.running &&
+      terminal.generation_in_progress &&
+      terminal.last_output_time_s > 0.0 &&
+      (now - terminal.last_output_time_s) > kGenerationIdleSeconds) {
+    terminal.generation_in_progress = false;
+    mark_unseen_if_background();
   }
 }
 
@@ -2615,8 +2977,8 @@ static void BeginEditMessage(AppState& app, const ChatSession& chat, const int m
 }
 
 static bool ContinueFromEditedUserMessage(AppState& app, ChatSession& chat) {
-  if (app.pending_call.has_value()) {
-    app.status_line = "Cannot edit while Gemini is already running.";
+  if (HasPendingCallForChat(app, chat.id)) {
+    app.status_line = "Cannot edit while Gemini is already running for this chat.";
     return false;
   }
   if (app.editing_chat_id != chat.id) {
@@ -2671,85 +3033,136 @@ static bool ContinueFromEditedUserMessage(AppState& app, ChatSession& chat) {
 }
 
 static void PollPendingGeminiCall(AppState& app) {
-  if (!app.pending_call.has_value()) {
+  if (app.pending_calls.empty()) {
     return;
   }
 
-  if (app.pending_call->completed == nullptr || app.pending_call->output == nullptr) {
-    app.pending_call.reset();
-    return;
+  std::unordered_set<std::string> claimed_new_session_ids;
+  for (const auto& resolved : app.resolved_native_sessions_by_chat_id) {
+    if (!resolved.second.empty()) {
+      claimed_new_session_ids.insert(resolved.second);
+    }
   }
-  if (!app.pending_call->completed->load(std::memory_order_acquire)) {
-    return;
-  }
-  const std::string output = *app.pending_call->output;
-  const std::string pending_chat_id = app.pending_call->chat_id;
-  const std::string selected_before_id = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
-  const int pending_chat_index = FindChatIndexById(app, pending_chat_id);
-  ChatSession pending_chat_snapshot;
-  if (pending_chat_index >= 0) {
-    pending_chat_snapshot = app.chats[pending_chat_index];
+  for (const auto& terminal : app.cli_terminals) {
+    if (terminal != nullptr && !terminal->attached_session_id.empty()) {
+      claimed_new_session_ids.insert(terminal->attached_session_id);
+    }
   }
 
-  if (!ActiveProviderUsesGeminiHistory(app)) {
+  for (std::size_t i = 0; i < app.pending_calls.size();) {
+    PendingGeminiCall& call = app.pending_calls[i];
+    if (call.completed == nullptr || call.output == nullptr) {
+      app.pending_calls.erase(app.pending_calls.begin() + static_cast<std::ptrdiff_t>(i));
+      continue;
+    }
+    if (!call.completed->load(std::memory_order_acquire)) {
+      ++i;
+      continue;
+    }
+
+    const std::string output = *call.output;
+    const std::string pending_chat_id = call.chat_id;
+    const std::string selected_before_id = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
+    const int pending_chat_index = FindChatIndexById(app, pending_chat_id);
+    ChatSession pending_chat_snapshot;
     if (pending_chat_index >= 0) {
-      AddMessage(app.chats[pending_chat_index], MessageRole::Assistant, output);
-      SaveChat(app, app.chats[pending_chat_index]);
-      if (pending_chat_id != selected_before_id) {
-        MarkChatUnseen(app, pending_chat_id);
+      pending_chat_snapshot = app.chats[pending_chat_index];
+    }
+
+    if (!ActiveProviderUsesGeminiHistory(app)) {
+      if (pending_chat_index >= 0) {
+        AddMessage(app.chats[pending_chat_index], MessageRole::Assistant, output);
+        SaveChat(app, app.chats[pending_chat_index]);
+        if (pending_chat_id != selected_before_id) {
+          MarkChatUnseen(app, pending_chat_id);
+        }
+        app.status_line = "Provider response appended to local chat history.";
+        app.scroll_to_bottom = true;
+      } else {
+        app.status_line = "Provider command completed, but chat no longer exists.";
       }
-      app.status_line = "Provider response appended to local chat history.";
-      app.scroll_to_bottom = true;
+      app.resolved_native_sessions_by_chat_id.erase(pending_chat_id);
+      app.pending_calls.erase(app.pending_calls.begin() + static_cast<std::ptrdiff_t>(i));
+      continue;
+    }
+
+    RefreshGeminiChatsDir(app);
+    std::vector<ChatSession> native_after = LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app));
+    ApplyLocalOverrides(app, native_after);
+
+    std::string selected_id = call.resume_session_id;
+    if (selected_id.empty()) {
+      const auto resolved_it = app.resolved_native_sessions_by_chat_id.find(pending_chat_id);
+      if (resolved_it != app.resolved_native_sessions_by_chat_id.end() &&
+          SessionIdExistsInLoadedChats(native_after, resolved_it->second)) {
+        selected_id = resolved_it->second;
+      }
+      if (selected_id.empty()) {
+        const std::vector<std::string> candidates = CollectNewSessionIds(native_after, call.session_ids_before);
+        selected_id = PickFirstUnblockedSessionId(candidates, claimed_new_session_ids);
+      }
+    }
+
+    if (!selected_id.empty()) {
+      claimed_new_session_ids.insert(selected_id);
+      if (call.resume_session_id.empty()) {
+        app.resolved_native_sessions_by_chat_id[pending_chat_id] = selected_id;
+      }
+      const bool should_follow_to_result = (selected_before_id == pending_chat_id);
+      const int selected_index = FindChatIndexById(app, selected_id);
+      const bool transfer_overrides_to_resolved_chat =
+          pending_chat_index >= 0 &&
+          selected_index >= 0 &&
+          selected_id != pending_chat_id &&
+          IsLocalDraftChatId(pending_chat_id);
+      if (transfer_overrides_to_resolved_chat) {
+        app.chats[selected_index].linked_files = pending_chat_snapshot.linked_files;
+        app.chats[selected_index].template_override_id = pending_chat_snapshot.template_override_id;
+        app.chats[selected_index].gemini_md_bootstrapped = pending_chat_snapshot.gemini_md_bootstrapped;
+        if (!pending_chat_snapshot.folder_id.empty()) {
+          app.chats[selected_index].folder_id = pending_chat_snapshot.folder_id;
+        }
+        SaveChat(app, app.chats[selected_index]);
+      }
+      if (selected_id != pending_chat_id) {
+        app.chats.erase(
+            std::remove_if(app.chats.begin(), app.chats.end(), [&](const ChatSession& chat) { return chat.id == pending_chat_id; }),
+            app.chats.end());
+      }
+      if (should_follow_to_result) {
+        SelectChatById(app, selected_id);
+        app.scroll_to_bottom = true;
+      } else {
+        if (!selected_before_id.empty()) {
+          const int keep_index = FindChatIndexById(app, selected_before_id);
+          if (keep_index >= 0) {
+            app.selected_chat_index = keep_index;
+            app.chats_with_unseen_updates.erase(selected_before_id);
+            RefreshRememberedSelection(app);
+          }
+        }
+        if (selected_id != selected_before_id) {
+          MarkChatUnseen(app, selected_id);
+        }
+      }
+      app.status_line = "Provider response synced from native session.";
     } else {
-      app.status_line = "Provider command completed, but chat no longer exists.";
-    }
-    app.pending_call.reset();
-    return;
-  }
-
-  RefreshGeminiChatsDir(app);
-  std::vector<ChatSession> native_after = LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app));
-  ApplyLocalOverrides(app, native_after);
-
-  std::string selected_id = app.pending_call->resume_session_id;
-  if (selected_id.empty()) {
-    selected_id = PickNewSessionId(native_after, app.pending_call->session_ids_before);
-  }
-
-  if (!selected_id.empty()) {
-    SelectChatById(app, selected_id);
-    const int selected_index = FindChatIndexById(app, selected_id);
-    if (selected_index >= 0 && pending_chat_index >= 0) {
-      app.chats[selected_index].linked_files = pending_chat_snapshot.linked_files;
-      app.chats[selected_index].template_override_id = pending_chat_snapshot.template_override_id;
-      if (!pending_chat_snapshot.folder_id.empty()) {
-        app.chats[selected_index].folder_id = pending_chat_snapshot.folder_id;
+      app.resolved_native_sessions_by_chat_id.erase(pending_chat_id);
+      const int fallback_index = FindChatIndexById(app, pending_chat_id);
+      if (fallback_index >= 0) {
+        AddMessage(app.chats[fallback_index], MessageRole::System, output);
+        if (pending_chat_id != selected_before_id) {
+          MarkChatUnseen(app, pending_chat_id);
+        }
+        app.status_line = "Provider command completed, but no native session was detected.";
+        app.scroll_to_bottom = true;
+      } else {
+        app.status_line = "Provider command completed, but no native session was detected.";
       }
-      SaveChat(app, app.chats[selected_index]);
     }
-    if (selected_id != pending_chat_id) {
-      app.chats.erase(
-          std::remove_if(app.chats.begin(), app.chats.end(), [&](const ChatSession& chat) { return chat.id == pending_chat_id; }),
-          app.chats.end());
-      SelectChatById(app, selected_id);
-    }
-    app.scroll_to_bottom = true;
-    app.status_line = "Provider response synced from native session.";
-  } else {
-    const int fallback_index = FindChatIndexById(app, pending_chat_id);
-    if (fallback_index >= 0) {
-      AddMessage(app.chats[fallback_index], MessageRole::System, output);
-      if (pending_chat_id != selected_before_id) {
-        MarkChatUnseen(app, pending_chat_id);
-      }
-      app.status_line = "Provider command completed, but no native session was detected.";
-      app.scroll_to_bottom = true;
-    } else {
-      app.status_line = "Provider command completed, but no native session was detected.";
-    }
-  }
 
-  app.pending_call.reset();
+    app.pending_calls.erase(app.pending_calls.begin() + static_cast<std::ptrdiff_t>(i));
+  }
 }
 
 static bool RemoveChatById(AppState& app, const std::string& chat_id) {
@@ -2760,7 +3173,7 @@ static bool RemoveChatById(AppState& app, const std::string& chat_id) {
   }
 
   const ChatSession chat = app.chats[chat_index];
-  if (app.pending_call.has_value() && app.pending_call->chat_id == chat.id) {
+  if (HasPendingCallForChat(app, chat.id)) {
     app.status_line = "Cannot delete a chat while Gemini is still running for it.";
     return false;
   }
@@ -2786,9 +3199,20 @@ static bool RemoveChatById(AppState& app, const std::string& chat_id) {
   } else if (app.selected_chat_index == chat_index) {
     app.selected_chat_index = std::min(chat_index, static_cast<int>(app.chats.size()) - 1);
   }
+  app.composer_text.clear();
 
-  if (app.pending_call.has_value() && app.pending_call->chat_id == chat.id) {
-    app.pending_call.reset();
+  app.pending_calls.erase(
+      std::remove_if(app.pending_calls.begin(), app.pending_calls.end(),
+                     [&](const PendingGeminiCall& call) { return call.chat_id == chat.id; }),
+      app.pending_calls.end());
+  app.resolved_native_sessions_by_chat_id.erase(chat.id);
+  for (auto it = app.resolved_native_sessions_by_chat_id.begin();
+       it != app.resolved_native_sessions_by_chat_id.end();) {
+    if (it->second == chat.id) {
+      it = app.resolved_native_sessions_by_chat_id.erase(it);
+    } else {
+      ++it;
+    }
   }
   app.chats_with_unseen_updates.erase(chat.id);
   if (app.editing_chat_id == chat.id) {
@@ -2921,15 +3345,8 @@ static bool ApplyChatTemplateOverride(AppState& app,
   }
 
   if (send_control_message_for_started_chat && !chat.messages.empty()) {
-    if (outcome != TemplatePreflightOutcome::ReadyWithTemplate) {
-      app.status_line = "Template updated, but no effective template file is available to send.";
-      return true;
-    }
-    if (app.pending_call.has_value()) {
-      app.status_line = "Template updated. Gemini is running, so @.gemini/gemini.md will be sent on next request.";
-      return true;
-    }
-    return QueueGeminiPromptForChat(app, chat, "@.gemini/gemini.md", true);
+    app.status_line = "Template updated for this chat. gemini.md bootstrap runs once at new-chat start only.";
+    return true;
   }
 
   if (outcome == TemplatePreflightOutcome::ReadyWithoutTemplate && !template_status.empty()) {
@@ -3538,8 +3955,8 @@ static void DrawGlobalTopBar(AppState& app) {
   provider_label = CompactPreview(provider_label, 28);
 
   const ChatSession* selected = SelectedChat(app);
-  const bool pending_any = app.pending_call.has_value();
-  const bool pending_here = pending_any && selected != nullptr && app.pending_call->chat_id == selected->id;
+  const bool pending_any = HasAnyPendingCall(app);
+  const bool pending_here = (selected != nullptr) && HasPendingCallForChat(app, selected->id);
   const bool pending_elsewhere = pending_any && !pending_here;
   const std::string runtime_label = pending_here ? "Running in current chat" : (pending_elsewhere ? "Running in another chat" : "Idle");
 
@@ -3870,10 +4287,17 @@ static SidebarItemAction DrawSidebarItem(const AppState& app, const ChatSession&
   if (running || has_unseen) {
     static constexpr const char* kSpinnerFrames[4] = {"-", "/", "-", "\\"};
     const int frame = static_cast<int>(ImGui::GetTime() * 8.0) & 3;
-    const char* glyph = running ? kSpinnerFrames[frame] : ".";
-    const ImVec4 indicator_color = running ? ui::kWarning : ui::kAccent;
-    const float indicator_x = (hovered || selected) ? (max.x - 40.0f) : (max.x - 18.0f);
-    draw->AddText(ImVec2(indicator_x, min.y + 7.0f), ImGui::GetColorU32(indicator_color), glyph);
+    if (running) {
+      const float indicator_x = (hovered || selected) ? (max.x - 40.0f) : (max.x - 18.0f);
+      draw->AddText(ImVec2(indicator_x, min.y + 7.0f), ImGui::GetColorU32(ui::kWarning), kSpinnerFrames[frame]);
+    } else {
+      const bool has_title_font = (g_font_title != nullptr);
+      ImFont* glyph_font = has_title_font ? g_font_title : ImGui::GetFont();
+      const float glyph_size = has_title_font ? (g_font_title->FontSize * 0.62f) : (ImGui::GetFontSize() * 1.20f);
+      const char* unseen_glyph = has_title_font ? "\xE2\x97\x8F" : "@";
+      const float indicator_x = (hovered || selected) ? (max.x - 42.0f) : (max.x - 24.0f);
+      draw->AddText(glyph_font, glyph_size, ImVec2(indicator_x, min.y + 4.0f), ImGui::GetColorU32(ui::kAccent), unseen_glyph);
+    }
   }
 
   if (hovered || selected) {
@@ -3992,9 +4416,7 @@ static void DrawLeftPane(AppState& app) {
         const std::string sidebar_item_id = "session_" + app.chats[i].id + "##" + std::to_string(i);
         const SidebarItemAction item_action = DrawSidebarItem(app, app.chats[i], i == app.selected_chat_index, sidebar_item_id);
         if (item_action.select) {
-          app.selected_chat_index = i;
-          MarkSelectedChatSeen(app);
-          RefreshRememberedSelection(app);
+          SelectChatById(app, app.chats[i].id);
           SaveSettings(app);
           if (app.center_view_mode == CenterViewMode::CliConsole) {
             MarkSelectedCliTerminalForLaunch(app);
@@ -4424,7 +4846,7 @@ static void DrawCliTerminalSurface(AppState& app, ChatSession& chat, const bool 
   }
 }
 
-static void DrawInputContainer(AppState& app) {
+static void DrawInputContainer(AppState& app, const ChatSession& chat) {
   BeginPanel("input_container", ImVec2(0.0f, 166.0f), PanelTone::Secondary, true, 0, ImVec2(12.0f, 12.0f), ui::kRadiusInput);
   ImDrawList* draw = ImGui::GetWindowDrawList();
   const ImVec2 min = ImGui::GetWindowPos();
@@ -4439,7 +4861,7 @@ static void DrawInputContainer(AppState& app) {
   PopInputChrome();
 
   ImGui::SameLine();
-  const bool can_send = !app.pending_call.has_value();
+  const bool can_send = !HasPendingCallForChat(app, chat.id);
   if (!can_send) {
     ImGui::BeginDisabled();
   }
@@ -4456,14 +4878,14 @@ static void DrawInputContainer(AppState& app) {
   if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
       ImGui::IsKeyPressed(ImGuiKey_Enter) &&
       ImGui::GetIO().KeyCtrl &&
-      !app.pending_call.has_value()) {
+      !HasPendingCallForChat(app, chat.id)) {
     StartGeminiRequest(app);
   }
   EndPanel();
 }
 
 static void DrawStructuredProcessingIndicator(const AppState& app, const ChatSession& chat) {
-  if (!app.pending_call.has_value() || app.pending_call->chat_id != chat.id) {
+  if (!HasPendingCallForChat(app, chat.id)) {
     return;
   }
 
@@ -4527,17 +4949,18 @@ static void DrawChatDetailPane(AppState& app, ChatSession& chat) {
       ImGui::TableSetColumnIndex(0);
       PushInputChrome();
       ImGui::SetNextItemWidth(-1.0f);
-      if (ImGui::InputText("##chat_title", &chat.title)) {
+      const std::string chat_title_input_id = "##chat_title_" + chat.id;
+      if (ImGui::InputText(chat_title_input_id.c_str(), &chat.title)) {
         chat.updated_at = TimestampNow();
         SaveAndUpdateStatus(app, chat, "Chat title updated.", "Chat title changed in UI, but failed to save.");
       }
       PopInputChrome();
 
-      if (app.pending_call.has_value() && app.pending_call->chat_id == chat.id) {
+      if (HasPendingCallForChat(app, chat.id)) {
         static constexpr const char kSpinnerFrames[4] = {'|', '/', '-', '\\'};
         const int spinner_index = static_cast<int>(ImGui::GetTime() * 8.0) & 3;
         ImGui::TextColored(ui::kWarning, "Gemini running %c", kSpinnerFrames[spinner_index]);
-      } else if (app.pending_call.has_value()) {
+      } else if (HasAnyPendingCall(app)) {
         ImGui::TextColored(ui::kTextSecondary, "Gemini running in another chat");
       } else {
         ImGui::TextColored(ui::kSuccess, "Ready");
@@ -4629,7 +5052,7 @@ static void DrawChatDetailPane(AppState& app, ChatSession& chat) {
     ImGui::EndPopup();
   }
 
-  DrawInputContainer(app);
+  DrawInputContainer(app, chat);
   if (!app.status_line.empty()) {
     ImGui::TextColored(ui::kTextSecondary, "%s", app.status_line.c_str());
   }
@@ -4796,13 +5219,14 @@ static void DrawSessionSidePane(AppState& app, ChatSession& chat) {
   }
   EndPanel();
 
-  if (app.pending_call.has_value()) {
+  if (const PendingGeminiCall* pending = FirstPendingCallForChat(app, chat.id); pending != nullptr) {
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
     DrawSectionHeader("Current Command");
     if (BeginSectionCard("command_preview_card", 128.0f)) {
       PushFontIfAvailable(g_font_mono);
       PushInputChrome();
-      ImGui::InputTextMultiline("##cmd_preview", &app.pending_call->command_preview, ImVec2(-1.0f, -1.0f), ImGuiInputTextFlags_ReadOnly);
+      std::string command_preview = pending->command_preview;
+      ImGui::InputTextMultiline("##cmd_preview", &command_preview, ImVec2(-1.0f, -1.0f), ImGuiInputTextFlags_ReadOnly);
       PopInputChrome();
       PopFontIfAvailable(g_font_mono);
     }
@@ -5245,6 +5669,7 @@ static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
     initialized = true;
     ImGui::OpenPopup("app_settings_popup");
     app.open_app_settings_popup = false;
+    StartGeminiVersionCheck(app, true);
   }
 
   if (ImGui::BeginPopupModal("app_settings_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
@@ -5256,6 +5681,7 @@ static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
       draft_settings.ui_theme = NormalizeThemeChoice(draft_settings.ui_theme);
       draft_center_mode = app.center_view_mode;
       initialized = true;
+      StartGeminiVersionCheck(app, false);
     }
     RefreshTemplateCatalog(app);
 
@@ -5314,6 +5740,68 @@ static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
     ImGui::TextColored(ui::kTextMuted, "Current default: %s", current_default_template.c_str());
     if (DrawButton("Open Template Manager", ImVec2(164.0f, 30.0f), ButtonKind::Ghost)) {
       app.open_template_manager_popup = true;
+    }
+
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
+    DrawSoftDivider();
+    ImGui::TextColored(ui::kTextSecondary, "Gemini CLI Compatibility");
+    ImGui::TextColored(ui::kTextMuted, "Supported version: %s", kSupportedGeminiVersion);
+
+    if (app.gemini_version_check_task.running) {
+      ImGui::TextColored(ui::kTextMuted, "Checking installed Gemini version...");
+    } else if (!app.gemini_version_checked) {
+      ImGui::TextColored(ui::kTextMuted, "Installed Gemini version has not been checked yet.");
+    } else if (!app.gemini_installed_version.empty()) {
+      const bool supported = app.gemini_version_supported;
+      ImGui::TextColored(supported ? ui::kSuccess : ui::kWarning,
+                         "Installed: %s (%s)",
+                         app.gemini_installed_version.c_str(),
+                         supported ? "supported" : "unsupported");
+    } else {
+      ImGui::TextColored(ui::kWarning, "Installed Gemini version could not be detected.");
+    }
+    if (!app.gemini_version_message.empty()) {
+      ImGui::TextWrapped("%s", app.gemini_version_message.c_str());
+    }
+
+    if (app.gemini_version_check_task.running) {
+      ImGui::BeginDisabled();
+    }
+    if (DrawButton("Re-check Version", ImVec2(130.0f, 30.0f), ButtonKind::Ghost)) {
+      StartGeminiVersionCheck(app, true);
+    }
+    if (app.gemini_version_check_task.running) {
+      ImGui::EndDisabled();
+    }
+
+    const bool show_downgrade_action = app.gemini_version_checked &&
+                                       !app.gemini_installed_version.empty() &&
+                                       !app.gemini_version_supported;
+    if (show_downgrade_action) {
+      ImGui::SameLine();
+      if (app.gemini_downgrade_task.running) {
+        ImGui::BeginDisabled();
+      }
+      if (DrawButton("Downgrade to 0.30.0", ImVec2(166.0f, 30.0f), ButtonKind::Primary)) {
+        StartGeminiDowngradeToSupported(app);
+      }
+      if (app.gemini_downgrade_task.running) {
+        ImGui::EndDisabled();
+      }
+      ImGui::TextColored(ui::kTextMuted, "Downgrade command: %s", BuildGeminiDowngradeCommand().c_str());
+    }
+
+    if (app.gemini_downgrade_task.running) {
+      ImGui::TextColored(ui::kTextMuted, "Downgrade in progress...");
+    } else if (!app.gemini_downgrade_output.empty()) {
+      ImGui::TextColored(ui::kTextMuted, "Last downgrade output");
+      std::string downgrade_output_preview = app.gemini_downgrade_output;
+      PushInputChrome();
+      ImGui::InputTextMultiline("##gemini_downgrade_output",
+                                &downgrade_output_preview,
+                                ImVec2(520.0f, 88.0f),
+                                ImGuiInputTextFlags_ReadOnly);
+      PopInputChrome();
     }
 
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
@@ -5585,6 +6073,9 @@ int main(int, char**) {
   while (!done) {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
+      if (ForwardEscapeToSelectedCliTerminal(app, event)) {
+        continue;
+      }
       ImGui_ImplSDL2_ProcessEvent(&event);
       if (event.type == SDL_QUIT) {
         done = true;
@@ -5607,6 +6098,7 @@ int main(int, char**) {
 
     PollPendingGeminiCall(app);
     PollAllCliTerminals(app);
+    PollGeminiCompatibilityTasks(app);
 
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL2_NewFrame();
@@ -5680,7 +6172,8 @@ int main(int, char**) {
   CaptureWindowState(app, window);
   SaveSettings(app);
 
-  app.pending_call.reset();
+  app.pending_calls.clear();
+  app.resolved_native_sessions_by_chat_id.clear();
   StopAllCliTerminals(app, true);
 
   ImGui_ImplOpenGL3_Shutdown();

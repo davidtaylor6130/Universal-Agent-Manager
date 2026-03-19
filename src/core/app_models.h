@@ -23,6 +23,7 @@ struct ChatSession {
   bool uses_native_session = false;
   std::string folder_id;
   std::string template_override_id;
+  bool gemini_md_bootstrapped = false;
   std::string title;
   std::string created_at;
   std::string updated_at;
