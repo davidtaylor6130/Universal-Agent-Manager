@@ -46,6 +46,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -82,6 +83,12 @@ namespace fs = std::filesystem;
 static void ClosePseudoConsoleSafe(HPCON handle);
 #endif
 
+struct TerminalScrollbackLine {
+  std::vector<VTermScreenCell> cells;
+};
+
+static constexpr std::size_t kTerminalScrollbackMaxLines = 5000;
+
 struct CliTerminalState {
 #if defined(_WIN32)
   HANDLE pipe_input = INVALID_HANDLE_VALUE;
@@ -103,6 +110,8 @@ struct CliTerminalState {
   VTermState* state = nullptr;
   int rows = 24;
   int cols = 80;
+  std::deque<TerminalScrollbackLine> scrollback_lines;
+  int scrollback_view_offset = 0;
   bool scroll_to_bottom = false;
   bool needs_full_refresh = true;
   bool should_launch = false;
@@ -1456,8 +1465,68 @@ static int OnVTermResize(int rows, int cols, void* user) {
     auto* terminal = static_cast<CliTerminalState*>(user);
     terminal->rows = rows;
     terminal->cols = cols;
+    terminal->scrollback_view_offset = std::clamp(terminal->scrollback_view_offset, 0, static_cast<int>(terminal->scrollback_lines.size()));
     terminal->needs_full_refresh = true;
   }
+  return 1;
+}
+
+static VTermScreenCell BlankTerminalCell() {
+  VTermScreenCell cell{};
+  cell.width = 1;
+  return cell;
+}
+
+static int OnVTermScrollbackPushLine(int cols, const VTermScreenCell* cells, void* user) {
+  if (user == nullptr || cells == nullptr || cols <= 0) {
+    return 1;
+  }
+  auto* terminal = static_cast<CliTerminalState*>(user);
+  TerminalScrollbackLine line;
+  line.cells.assign(cells, cells + cols);
+  terminal->scrollback_lines.push_back(std::move(line));
+  if (terminal->scrollback_lines.size() > kTerminalScrollbackMaxLines) {
+    terminal->scrollback_lines.pop_front();
+  }
+  if (terminal->scrollback_view_offset > 0) {
+    terminal->scrollback_view_offset = std::min(terminal->scrollback_view_offset + 1,
+                                                static_cast<int>(terminal->scrollback_lines.size()));
+  }
+  terminal->needs_full_refresh = true;
+  return 1;
+}
+
+static int OnVTermScrollbackPopLine(int cols, VTermScreenCell* cells, void* user) {
+  if (user == nullptr || cells == nullptr || cols <= 0) {
+    return 0;
+  }
+  auto* terminal = static_cast<CliTerminalState*>(user);
+  if (terminal->scrollback_lines.empty()) {
+    return 0;
+  }
+  TerminalScrollbackLine line = std::move(terminal->scrollback_lines.back());
+  terminal->scrollback_lines.pop_back();
+
+  const int copy_cols = std::min(cols, static_cast<int>(line.cells.size()));
+  for (int i = 0; i < copy_cols; ++i) {
+    cells[i] = line.cells[static_cast<std::size_t>(i)];
+  }
+  for (int i = copy_cols; i < cols; ++i) {
+    cells[i] = BlankTerminalCell();
+  }
+  terminal->scrollback_view_offset = std::clamp(terminal->scrollback_view_offset, 0, static_cast<int>(terminal->scrollback_lines.size()));
+  terminal->needs_full_refresh = true;
+  return 1;
+}
+
+static int OnVTermScrollbackClear(void* user) {
+  if (user == nullptr) {
+    return 1;
+  }
+  auto* terminal = static_cast<CliTerminalState*>(user);
+  terminal->scrollback_lines.clear();
+  terminal->scrollback_view_offset = 0;
+  terminal->needs_full_refresh = true;
   return 1;
 }
 
@@ -1468,9 +1537,9 @@ static const VTermScreenCallbacks kVTermScreenCallbacks = {
     nullptr,
     nullptr,
     OnVTermResize,
-    nullptr,
-    nullptr,
-    nullptr,
+    OnVTermScrollbackPushLine,
+    OnVTermScrollbackPopLine,
+    OnVTermScrollbackClear,
     nullptr};
 
 static void StopCliTerminal(CliTerminalState& terminal, const bool clear_identity = false) {
@@ -1491,6 +1560,8 @@ static void StopCliTerminal(CliTerminalState& terminal, const bool clear_identit
   CloseCliTerminalHandles(terminal);
   FreeCliTerminalVTerm(terminal);
   terminal.running = false;
+  terminal.scrollback_lines.clear();
+  terminal.scrollback_view_offset = 0;
   terminal.needs_full_refresh = true;
   if (clear_identity) {
     terminal.attached_chat_id.clear();
@@ -3404,7 +3475,7 @@ static ImU32 VTermColorToImU32(const VTermScreen* screen, VTermColor color, cons
   return IM_COL32(color.rgb.red, color.rgb.green, color.rgb.blue, 255);
 }
 
-static void DrawCliTerminalSurface(AppState& app, ChatSession& chat) {
+static void DrawCliTerminalSurface(AppState& app, ChatSession& chat, const bool show_footer = false) {
   CliTerminalState& terminal = EnsureCliTerminalForChat(app, chat);
   if (!terminal.running && terminal.should_launch) {
     const float mono_h = (g_font_mono != nullptr ? g_font_mono->FontSize : ImGui::GetTextLineHeight());
@@ -3442,9 +3513,42 @@ static void DrawCliTerminalSurface(AppState& app, ChatSession& chat) {
   const ImVec2 origin = ImGui::GetCursorScreenPos();
   const ImVec2 terminal_size(cell_w * terminal.cols, cell_h * terminal.rows);
   ImGui::InvisibleButton("embedded_cli_surface", terminal_size, ImGuiButtonFlags_None);
-  const bool focused = ImGui::IsItemFocused() || ImGui::IsItemActive() || ImGui::IsItemHovered();
+  const bool hovered = ImGui::IsItemHovered();
+  const bool focused = ImGui::IsItemFocused() || ImGui::IsItemActive() || hovered;
+  const int max_scrollback_offset = static_cast<int>(terminal.scrollback_lines.size());
+  terminal.scrollback_view_offset = std::clamp(terminal.scrollback_view_offset, 0, max_scrollback_offset);
+
+  if (hovered) {
+    const float wheel = ImGui::GetIO().MouseWheel;
+    if (wheel != 0.0f) {
+      const int lines = std::max(1, static_cast<int>(std::round(std::abs(wheel) * 3.0f)));
+      const int delta = (wheel > 0.0f) ? lines : -lines;
+      terminal.scrollback_view_offset = std::clamp(terminal.scrollback_view_offset + delta, 0, max_scrollback_offset);
+    }
+  }
+
   if (focused) {
-    FeedCliTerminalKeyboard(terminal);
+    bool consumed_navigation = false;
+    if (ImGui::IsKeyPressed(ImGuiKey_PageUp, false)) {
+      terminal.scrollback_view_offset = std::clamp(terminal.scrollback_view_offset + std::max(3, terminal.rows / 2), 0, max_scrollback_offset);
+      consumed_navigation = true;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_PageDown, false)) {
+      terminal.scrollback_view_offset = std::clamp(terminal.scrollback_view_offset - std::max(3, terminal.rows / 2), 0, max_scrollback_offset);
+      consumed_navigation = true;
+    }
+    if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Home, false)) {
+      terminal.scrollback_view_offset = max_scrollback_offset;
+      consumed_navigation = true;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_End, false)) {
+      terminal.scrollback_view_offset = 0;
+      consumed_navigation = true;
+    }
+
+    if (!consumed_navigation && terminal.scrollback_view_offset == 0) {
+      FeedCliTerminalKeyboard(terminal);
+    }
   }
 
   ImDrawList* draw = ImGui::GetWindowDrawList();
@@ -3454,12 +3558,23 @@ static void DrawCliTerminalSurface(AppState& app, ChatSession& chat) {
   draw->AddRect(origin, ImVec2(origin.x + terminal_size.x, origin.y + terminal_size.y), ImGui::GetColorU32(ui::kBorder), 10.0f);
 
   if (terminal.screen != nullptr) {
+    const int scrollback_count = static_cast<int>(terminal.scrollback_lines.size());
+    const int start_virtual_row = std::max(0, scrollback_count - terminal.scrollback_view_offset);
     for (int row = 0; row < terminal.rows; ++row) {
+      const int virtual_row = start_virtual_row + row;
       for (int col = 0; col < terminal.cols; ++col) {
-        VTermPos pos{row, col};
-        VTermScreenCell cell{};
-        if (!vterm_screen_get_cell(terminal.screen, pos, &cell)) {
-          continue;
+        VTermScreenCell cell = BlankTerminalCell();
+        if (virtual_row < scrollback_count) {
+          const std::vector<VTermScreenCell>& line = terminal.scrollback_lines[static_cast<std::size_t>(virtual_row)].cells;
+          if (col < static_cast<int>(line.size())) {
+            cell = line[static_cast<std::size_t>(col)];
+          }
+        } else {
+          const int screen_row = virtual_row - scrollback_count;
+          if (screen_row >= 0 && screen_row < terminal.rows) {
+            VTermPos pos{screen_row, col};
+            vterm_screen_get_cell(terminal.screen, pos, &cell);
+          }
         }
 
         const ImVec2 cell_min(origin.x + col * cell_w, origin.y + row * cell_h);
@@ -3481,7 +3596,7 @@ static void DrawCliTerminalSurface(AppState& app, ChatSession& chat) {
       }
     }
 
-    if (terminal.state != nullptr) {
+    if (terminal.state != nullptr && terminal.scrollback_view_offset == 0) {
       VTermPos cursor{0, 0};
       vterm_state_get_cursorpos(terminal.state, &cursor);
       if (cursor.row >= 0 && cursor.row < terminal.rows && cursor.col >= 0 && cursor.col < terminal.cols) {
@@ -3493,8 +3608,14 @@ static void DrawCliTerminalSurface(AppState& app, ChatSession& chat) {
   }
 
   PopFontIfAvailable(g_font_mono);
-  ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
-  ImGui::TextColored(ui::kTextMuted, "Native Gemini terminal for this chat (Ctrl+Y and other shortcuts pass through).");
+  if (show_footer) {
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
+    if (terminal.scrollback_view_offset > 0) {
+      ImGui::TextColored(ui::kTextMuted, "Scrollback: %d lines up (End to jump bottom)", terminal.scrollback_view_offset);
+    } else {
+      ImGui::TextColored(ui::kTextMuted, "Native Gemini terminal for this chat.");
+    }
+  }
 }
 
 static void DrawInputContainer(AppState& app) {
@@ -3568,6 +3689,16 @@ static void DrawStructuredProcessingIndicator(const AppState& app, const ChatSes
 }
 
 static void DrawChatDetailPane(AppState& app, ChatSession& chat) {
+  if (app.center_view_mode == CenterViewMode::CliConsole) {
+    BeginPanel("main_chat_panel", ImVec2(0.0f, 0.0f), PanelTone::Primary, true, 0, ImVec2(8.0f, 8.0f));
+    BeginPanel("cli_terminal_panel", ImVec2(0.0f, 0.0f), PanelTone::Secondary, true,
+               ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse, ImVec2(8.0f, 8.0f));
+    DrawCliTerminalSurface(app, chat, false);
+    EndPanel();
+    EndPanel();
+    return;
+  }
+
   BeginPanel("main_chat_panel", ImVec2(0.0f, 0.0f), PanelTone::Primary, true, 0, ImVec2(ui::kSpace24, ui::kSpace24));
   PushInputChrome();
   ImGui::SetNextItemWidth(-1.0f);
@@ -3592,20 +3723,19 @@ static void DrawChatDetailPane(AppState& app, ChatSession& chat) {
   DrawCenterModeToggle(app);
   ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
 
-  if (app.center_view_mode == CenterViewMode::Structured) {
-    const float input_area_h = 176.0f;
-    BeginPanel("conversation_history", ImVec2(0.0f, -input_area_h), PanelTone::Primary, false, ImGuiWindowFlags_AlwaysVerticalScrollbar, ImVec2(0.0f, 0.0f));
-    const float content_width = ImGui::GetContentRegionAvail().x;
-    for (int i = 0; i < static_cast<int>(chat.messages.size()); ++i) {
-      ImGui::PushID(i);
-      DrawMessageBubble(app, chat, i, content_width);
-      ImGui::PopID();
-    }
-    if (app.scroll_to_bottom) {
-      ImGui::SetScrollHereY(1.0f);
-      app.scroll_to_bottom = false;
-    }
-    EndPanel();
+  const float input_area_h = 176.0f;
+  BeginPanel("conversation_history", ImVec2(0.0f, -input_area_h), PanelTone::Primary, false, ImGuiWindowFlags_AlwaysVerticalScrollbar, ImVec2(0.0f, 0.0f));
+  const float content_width = ImGui::GetContentRegionAvail().x;
+  for (int i = 0; i < static_cast<int>(chat.messages.size()); ++i) {
+    ImGui::PushID(i);
+    DrawMessageBubble(app, chat, i, content_width);
+    ImGui::PopID();
+  }
+  if (app.scroll_to_bottom) {
+    ImGui::SetScrollHereY(1.0f);
+    app.scroll_to_bottom = false;
+  }
+  EndPanel();
 
     if (app.open_edit_message_popup) {
       ImGui::OpenPopup("edit_user_message_popup");
@@ -3645,13 +3775,8 @@ static void DrawChatDetailPane(AppState& app, ChatSession& chat) {
       ImGui::EndPopup();
     }
 
-    DrawStructuredProcessingIndicator(app, chat);
-    DrawInputContainer(app);
-  } else {
-    BeginPanel("cli_terminal_panel", ImVec2(0.0f, 0.0f), PanelTone::Secondary, true, 0, ImVec2(12.0f, 12.0f));
-    DrawCliTerminalSurface(app, chat);
-    EndPanel();
-  }
+  DrawStructuredProcessingIndicator(app, chat);
+  DrawInputContainer(app);
   if (!app.status_line.empty()) {
     ImGui::TextColored(ui::kTextSecondary, "%s", app.status_line.c_str());
   }
@@ -3999,6 +4124,7 @@ static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
     ImGui::TextColored(ui::kTextMuted, "Ctrl+,  Open App Settings");
     ImGui::TextColored(ui::kTextMuted, "Ctrl+N  Create chat");
     ImGui::TextColored(ui::kTextMuted, "Ctrl+R  Refresh history");
+    ImGui::TextColored(ui::kTextMuted, "Ctrl+M  Toggle Structured/Terminal mode");
     ImGui::TextColored(ui::kTextMuted, "Ctrl+Enter  Send message");
     ImGui::TextColored(ui::kTextMuted, "Ctrl+Y  YOLO mode toggle (provider settings)");
 
@@ -4040,6 +4166,15 @@ static void HandleGlobalShortcuts(AppState& app) {
   }
   if (allow_global_action && ctrl && ImGui::IsKeyPressed(ImGuiKey_R, false)) {
     RefreshChatHistory(app);
+  }
+  if (allow_global_action && ctrl && ImGui::IsKeyPressed(ImGuiKey_M, false)) {
+    app.center_view_mode = (app.center_view_mode == CenterViewMode::Structured)
+                               ? CenterViewMode::CliConsole
+                               : CenterViewMode::Structured;
+    if (app.center_view_mode == CenterViewMode::CliConsole) {
+      MarkSelectedCliTerminalForLaunch(app);
+    }
+    SaveSettings(app);
   }
   if (allow_global_action && ctrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
     app.settings.gemini_yolo_mode = !app.settings.gemini_yolo_mode;
