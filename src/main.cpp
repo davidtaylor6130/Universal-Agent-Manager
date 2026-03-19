@@ -1558,7 +1558,7 @@ static std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app
   return ProviderRuntime::BuildInteractiveArgv(ActiveProviderOrDefault(app), chat, app.settings);
 }
 
-#if defined(__unix__)
+#if defined(__unix__) || defined(__APPLE__)
 static bool SetFdNonBlocking(const int fd) {
   const int flags = fcntl(fd, F_GETFL, 0);
   if (flags < 0) {
@@ -1621,7 +1621,7 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
   return true;
 }
 
-#if defined(__unix__)
+#if defined(__unix__) || defined(__APPLE__)
 static bool StartCliTerminalUnix(AppState& app, CliTerminalState& terminal, const ChatSession& chat) {
   int master_fd = -1;
   int slave_fd = -1;
@@ -1884,7 +1884,7 @@ static void ResizeCliTerminal(CliTerminalState& terminal, const int rows, const 
   if (terminal.vt != nullptr) {
     vterm_set_size(terminal.vt, terminal.rows, terminal.cols);
   }
-#if defined(__unix__)
+#if defined(__unix__) || defined(__APPLE__)
   if (terminal.master_fd >= 0) {
     struct winsize ws {};
     ws.ws_row = static_cast<unsigned short>(terminal.rows);
@@ -2416,6 +2416,12 @@ static void ConfigureFonts(ImGuiIO& io, const float dpi_scale = 1.0f) {
 }
 
 static float DetectUiScale(SDL_Window* window) {
+#if defined(__APPLE__)
+  // macOS windows use logical points (not raw pixels), so additional
+  // DPI-based scaling causes the UI to be oversized on Retina displays.
+  (void)window;
+  return 1.0f;
+#else
   int display_index = 0;
   if (window != nullptr) {
     const int window_display = SDL_GetWindowDisplayIndex(window);
@@ -2431,6 +2437,7 @@ static float DetectUiScale(SDL_Window* window) {
     return std::clamp(ddpi / 96.0f, 1.0f, 2.25f);
   }
   return 1.0f;
+#endif
 }
 
 static void PushFontIfAvailable(ImFont* font) {
