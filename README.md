@@ -1,5 +1,14 @@
 # Universal Agent Manager (Gemini CLI + Dear ImGui)
 
+## UI Screenshots
+
+### macOS — v0.0.3
+![Universal Agent Manager macOS v0.0.3 screenshot 1](docs/images/macos-v0.0.3-terminal-01.png)
+![Universal Agent Manager macOS v0.0.3 screenshot 2](docs/images/macos-v0.0.3-terminal-02.png)
+
+### Windows — v0.0.3 (coming next)
+![Universal Agent Manager Windows v0.0.3 placeholder](docs/images/windows-v0.0.3-placeholder.svg)
+
 ## Executive Summary
 - Purpose: provide a polished desktop control surface that lets developers or teams monitor Gemini CLI chat sessions inside a lightweight UI while preserving Gemini’s native session files.
 - Business value: enables quicker review, file contextualization, and terminal-driven troubleshooting without forcing team members to memorize CLI arguments or drop into a shell for every session.
