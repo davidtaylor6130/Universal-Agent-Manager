@@ -96,9 +96,17 @@ if(APPLE AND UAM_MACOS_BUNDLE)
   set(UAM_EXECUTABLE_KIND MACOSX_BUNDLE)
 endif()
 
+set(UAM_PLATFORM_SOURCES)
+if(WIN32)
+  list(APPEND UAM_PLATFORM_SOURCES
+    src/uam.rc
+  )
+endif()
+
 add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   ${UAM_IMGUI_SOURCES}
   ${UAM_VTERM_SOURCES}
+  ${UAM_PLATFORM_SOURCES}
   src/main.cpp
   src/core/app_models.cpp
   src/core/app_paths.cpp
@@ -123,6 +131,15 @@ target_include_directories(universal_agent_manager
 )
 target_link_libraries(universal_agent_manager PRIVATE ${UAM_SDL_TARGET} OpenGL::GL)
 set_target_properties(universal_agent_manager PROPERTIES FOLDER "App")
+
+set(UAM_WINDOW_ICON_BMP "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.bmp")
+if(EXISTS "${UAM_WINDOW_ICON_BMP}")
+  add_custom_command(TARGET universal_agent_manager POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${UAM_WINDOW_ICON_BMP}"
+      "$<TARGET_FILE_DIR:universal_agent_manager>/app_icon.bmp"
+  )
+endif()
 
 if(MSVC)
   set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT universal_agent_manager)
