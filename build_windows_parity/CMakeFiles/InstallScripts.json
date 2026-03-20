@@ -1,8 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/Users/davidtaylormacbookpro/Documents/GitHub/Universal Agent Manager/build_windows_parity/cmake_install.cmake",
-		"/Users/davidtaylormacbookpro/Documents/GitHub/Universal Agent Manager/build_windows_parity/_deps/sdl2-build/cmake_install.cmake"
-	],
-	"Parallel" : false
-}

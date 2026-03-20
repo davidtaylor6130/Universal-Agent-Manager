@@ -1,8 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/Users/davidtaylormacbookpro/Documents/GitHub/Universal Agent Manager/build_mac/cmake_install.cmake",
-		"/Users/davidtaylormacbookpro/Documents/GitHub/Universal Agent Manager/build_mac/_deps/sdl2-build/cmake_install.cmake"
-	],
-	"Parallel" : false
-}

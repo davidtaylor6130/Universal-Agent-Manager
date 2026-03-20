@@ -1,5 +1,12 @@
+# Build output directories
 /build/
+/build_*/
+/cmake-build-*/
+/out/build/
+
+# Data/runtime output
 /data/
+
+# IDE/system files
+/.vs/
 .DS_Store
-/out/build
-/.vs
