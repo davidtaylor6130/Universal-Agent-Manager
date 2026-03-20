@@ -1965,12 +1965,12 @@ static bool SessionIdExistsInLoadedChats(const std::vector<ChatSession>& loaded_
   return false;
 }
 
-static std::optional<fs::path> FindNativeSessionFilePath(const AppState& app, const std::string& session_id) {
-  if (session_id.empty() || app.gemini_chats_dir.empty() || !fs::exists(app.gemini_chats_dir)) {
+static std::optional<fs::path> FindNativeSessionFilePathInDirectory(const fs::path& chats_dir, const std::string& session_id) {
+  if (session_id.empty() || chats_dir.empty() || !fs::exists(chats_dir)) {
     return std::nullopt;
   }
   std::error_code ec;
-  for (const auto& item : fs::directory_iterator(app.gemini_chats_dir, ec)) {
+  for (const auto& item : fs::directory_iterator(chats_dir, ec)) {
     if (ec || !item.is_regular_file() || item.path().extension() != ".json") {
       continue;
     }
@@ -1987,6 +1987,10 @@ static std::optional<fs::path> FindNativeSessionFilePath(const AppState& app, co
     }
   }
   return std::nullopt;
+}
+
+static std::optional<fs::path> FindNativeSessionFilePath(const AppState& app, const std::string& session_id) {
+  return FindNativeSessionFilePathInDirectory(app.gemini_chats_dir, session_id);
 }
 
 static MessageRole NativeMessageRoleFromType(const ProviderProfile& provider, const std::string& type) {
@@ -2307,18 +2311,92 @@ static void RequestCliTerminalQuitAsyncWindows(CliTerminalState& terminal) {
   }).detach();
 }
 
+struct DetachedCliHandleSnapshotWindows {
+  HANDLE pipe_input = INVALID_HANDLE_VALUE;
+  HANDLE pipe_output = INVALID_HANDLE_VALUE;
+  HANDLE process_thread = INVALID_HANDLE_VALUE;
+  HANDLE process_handle = INVALID_HANDLE_VALUE;
+  LPPROC_THREAD_ATTRIBUTE_LIST attr_list = nullptr;
+  HPCON pseudo_console = nullptr;
+};
+
+static DetachedCliHandleSnapshotWindows DetachCliTerminalHandlesWindows(CliTerminalState& terminal) {
+  DetachedCliHandleSnapshotWindows snapshot{};
+  snapshot.pipe_input = terminal.pipe_input;
+  snapshot.pipe_output = terminal.pipe_output;
+  snapshot.process_thread = terminal.process_info.hThread;
+  snapshot.process_handle = terminal.process_info.hProcess;
+  snapshot.attr_list = terminal.attr_list;
+  snapshot.pseudo_console = terminal.pseudo_console;
+
+  terminal.pipe_input = INVALID_HANDLE_VALUE;
+  terminal.pipe_output = INVALID_HANDLE_VALUE;
+  terminal.process_info.hThread = INVALID_HANDLE_VALUE;
+  terminal.process_info.hProcess = INVALID_HANDLE_VALUE;
+  terminal.process_info.dwProcessId = 0;
+  terminal.process_info.dwThreadId = 0;
+  terminal.attr_list = nullptr;
+  terminal.pseudo_console = nullptr;
+  return snapshot;
+}
+
+static void CloseDetachedCliHandleSnapshotWindows(DetachedCliHandleSnapshotWindows snapshot) {
+  if (snapshot.pipe_input != INVALID_HANDLE_VALUE) {
+    CloseHandle(snapshot.pipe_input);
+  }
+  if (snapshot.pipe_output != INVALID_HANDLE_VALUE) {
+    CloseHandle(snapshot.pipe_output);
+  }
+  if (snapshot.attr_list != nullptr) {
+    DeleteProcThreadAttributeList(snapshot.attr_list);
+    HeapFree(GetProcessHeap(), 0, snapshot.attr_list);
+  }
+  if (snapshot.process_thread != INVALID_HANDLE_VALUE) {
+    CloseHandle(snapshot.process_thread);
+  }
+  if (snapshot.process_handle != INVALID_HANDLE_VALUE) {
+    CloseHandle(snapshot.process_handle);
+  }
+  if (snapshot.pseudo_console != nullptr) {
+    ClosePseudoConsoleSafe(snapshot.pseudo_console);
+  }
+}
+
+static void FastStopCliTerminalWindows(CliTerminalState& terminal, const bool clear_identity = false) {
+  // Windows-only fast stop path for UI-triggered actions (close/delete): never
+  // block the render thread waiting for ConPTY child shutdown. If macOS starts
+  // exhibiting similar UI stalls, we can promote this to a cross-platform path.
+  RequestCliTerminalQuitAsyncWindows(terminal);
+  if (terminal.process_info.hProcess != INVALID_HANDLE_VALUE) {
+    TerminateProcess(terminal.process_info.hProcess, 1);
+  }
+  DetachedCliHandleSnapshotWindows snapshot = DetachCliTerminalHandlesWindows(terminal);
+  FreeCliTerminalVTerm(terminal);
+  terminal.running = false;
+  terminal.scrollback_lines.clear();
+  terminal.scrollback_view_offset = 0;
+  terminal.needs_full_refresh = true;
+  terminal.generation_in_progress = false;
+  terminal.last_output_time_s = 0.0;
+  if (clear_identity) {
+    terminal.attached_chat_id.clear();
+    terminal.attached_session_id.clear();
+    terminal.session_ids_before.clear();
+    terminal.linked_files_snapshot.clear();
+    terminal.should_launch = false;
+  }
+  std::thread([snapshot]() mutable {
+    CloseDetachedCliHandleSnapshotWindows(std::move(snapshot));
+  }).detach();
+}
+
 static void FastStopCliTerminalsForExitWindows(AppState& app) {
   for (const auto& terminal_ptr : app.cli_terminals) {
     if (terminal_ptr == nullptr) {
       continue;
     }
     CliTerminalState& terminal = *terminal_ptr;
-    RequestCliTerminalQuitAsyncWindows(terminal);
-    if (terminal.process_info.hProcess != INVALID_HANDLE_VALUE) {
-      TerminateProcess(terminal.process_info.hProcess, 1);
-    }
-    terminal.running = false;
-    terminal.should_launch = false;
+    FastStopCliTerminalWindows(terminal, true);
   }
 }
 
@@ -2496,7 +2574,11 @@ static void StopAndEraseCliTerminalForChat(AppState& app, const std::string& cha
                        if (terminal == nullptr || terminal->attached_chat_id != chat_id) {
                          return false;
                        }
+#if defined(_WIN32)
+                       FastStopCliTerminalWindows(*terminal, true);
+#else
                        StopCliTerminal(*terminal, true);
+#endif
                        return true;
                      }),
       app.cli_terminals.end());
@@ -3542,17 +3624,48 @@ static bool RemoveChatById(AppState& app, const std::string& chat_id) {
     return false;
   }
 
-  const std::string native_session_id = chat.uses_native_session ? chat.native_session_id : "";
+  // Stop any attached CLI first so history file deletion does not race an
+  // active process. Windows uses a non-blocking fast-stop path in
+  // StopAndEraseCliTerminalForChat; macOS retains the existing behavior.
+  StopAndEraseCliTerminalForChat(app, chat.id);
+
   std::error_code local_delete_ec;
+  bool local_delete_async_scheduled = false;
+#if defined(_WIN32)
+  const fs::path local_chat_path = ChatPath(app, chat);
+  std::thread([local_chat_path]() {
+    std::error_code async_local_delete_ec;
+    fs::remove_all(local_chat_path, async_local_delete_ec);
+  }).detach();
+  local_delete_async_scheduled = true;
+#else
   fs::remove_all(ChatPath(app, chat), local_delete_ec);
+#endif
+
+  const std::string native_session_id = chat.uses_native_session ? chat.native_session_id : "";
   std::error_code native_delete_ec;
   bool native_delete_attempted = false;
+  bool native_delete_async_scheduled = false;
   if (ActiveProviderUsesGeminiHistory(app) && !native_session_id.empty()) {
     RefreshGeminiChatsDir(app);
+    native_delete_attempted = true;
+#if defined(_WIN32)
+    const fs::path chats_dir_snapshot = app.gemini_chats_dir;
+    const std::string native_session_id_snapshot = native_session_id;
+    std::thread([chats_dir_snapshot, native_session_id_snapshot]() {
+      const auto native_file = FindNativeSessionFilePathInDirectory(chats_dir_snapshot, native_session_id_snapshot);
+      if (!native_file.has_value()) {
+        return;
+      }
+      std::error_code async_delete_ec;
+      fs::remove(native_file.value(), async_delete_ec);
+    }).detach();
+    native_delete_async_scheduled = true;
+#else
     if (const auto native_file = FindNativeSessionFilePath(app, native_session_id); native_file.has_value()) {
-      native_delete_attempted = true;
       fs::remove(native_file.value(), native_delete_ec);
     }
+#endif
   }
 
   app.chats.erase(app.chats.begin() + chat_index);
@@ -3582,12 +3695,17 @@ static bool RemoveChatById(AppState& app, const std::string& chat_id) {
   if (app.editing_chat_id == chat.id) {
     ClearEditMessageState(app);
   }
-  StopAndEraseCliTerminalForChat(app, chat.id);
   RefreshRememberedSelection(app);
   SaveSettings(app);
 
   if (local_delete_ec) {
     app.status_line = "Chat removed from UI, but deleting local history failed.";
+  } else if (local_delete_async_scheduled && native_delete_async_scheduled) {
+    app.status_line = "Chat deleted. Local and native history cleanup are running in background.";
+  } else if (local_delete_async_scheduled) {
+    app.status_line = "Chat deleted. Local history cleanup is running in background.";
+  } else if (native_delete_async_scheduled) {
+    app.status_line = "Chat deleted. Native Gemini history cleanup is running in background.";
   } else if (native_delete_attempted && native_delete_ec) {
     app.status_line = "Chat removed from UI, but deleting native Gemini history failed.";
   } else {
