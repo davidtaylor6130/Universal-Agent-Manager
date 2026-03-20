@@ -214,6 +214,7 @@ static ImGuiStyle g_user_scale_base_style{};
 static bool g_user_scale_base_style_ready = false;
 static float g_last_applied_user_scale = -1.0f;
 static float g_ui_layout_scale = 1.0f;
+static float g_platform_layout_scale = 1.0f;
 
 static constexpr const char* kDefaultFolderId = "folder-default";
 static constexpr const char* kDefaultFolderTitle = "General";
@@ -4109,7 +4110,7 @@ static void PushInputChrome(const float rounding = ui::kRadiusSmall) {
   ImGui::PushStyleColor(ImGuiCol_Border, ui::kBorder);
   ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, light ? Rgb(237, 244, 255, 1.0f) : Rgb(21, 27, 37, 1.0f));
   ImGui::PushStyleColor(ImGuiCol_FrameBgActive, light ? Rgb(232, 240, 254, 1.0f) : Rgb(25, 32, 43, 1.0f));
-  ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, rounding);
+  ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ScaleUiLength(rounding));
 }
 
 static void PopInputChrome() {
@@ -4121,27 +4122,34 @@ static bool BeginPanel(const char* id, const ImVec2& size, const PanelTone tone,
                        const ImGuiWindowFlags flags = 0, const ImVec2 padding = ImVec2(ui::kSpace16, ui::kSpace16),
                        const float rounding = ui::kRadiusPanel) {
   const bool light = IsLightPaletteActive();
-  ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, rounding);
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, padding);
+  const ImVec2 scaled_size = ScaleUiSize(size);
+  const ImVec2 scaled_padding = ScaleUiSize(padding);
+  const float scaled_rounding = ScaleUiLength(rounding);
+  const float shadow_dx = ScaleUiLength(1.0f);
+  const float shadow_dy = ScaleUiLength(4.0f);
+  const float accent_h = std::max(1.0f, ScaleUiLength(1.5f));
+  const float border_thickness = std::max(1.0f, ScaleUiLength(1.0f));
+  ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, scaled_rounding);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, scaled_padding);
   ImGui::PushStyleColor(ImGuiCol_ChildBg, PanelColor(tone));
   ImGui::PushStyleColor(ImGuiCol_Border, border ? PanelStrokeColor(tone) : ui::kTransparent);
-  const bool is_open = ImGui::BeginChild(id, size, border, flags);
+  const bool is_open = ImGui::BeginChild(id, scaled_size, border, flags);
 
   ImDrawList* draw = ImGui::GetWindowDrawList();
   const ImVec2 min = ImGui::GetWindowPos();
   const ImVec2 max(min.x + ImGui::GetWindowSize().x, min.y + ImGui::GetWindowSize().y);
   draw->AddRectFilled(
-      ImVec2(min.x + 1.0f, min.y + 4.0f),
-      ImVec2(max.x + 1.0f, max.y + 4.0f),
+      ImVec2(min.x + shadow_dx, min.y + shadow_dy),
+      ImVec2(max.x + shadow_dx, max.y + shadow_dy),
       ImGui::GetColorU32(ui::kShadowSoft),
-      rounding);
+      scaled_rounding);
   if (border) {
-    draw->AddRect(min, max, ImGui::GetColorU32(PanelStrokeColor(tone)), rounding, 0, 1.0f);
+    draw->AddRect(min, max, ImGui::GetColorU32(PanelStrokeColor(tone)), scaled_rounding, 0, border_thickness);
   }
   if (tone != PanelTone::Elevated) {
     draw->AddRectFilledMultiColor(
         min,
-        ImVec2(max.x, min.y + 1.5f),
+        ImVec2(max.x, min.y + accent_h),
         ImGui::GetColorU32(light ? Rgb(66, 126, 228, 0.22f) : Rgb(94, 160, 255, 0.22f)),
         ImGui::GetColorU32(light ? Rgb(66, 126, 228, 0.08f) : Rgb(94, 160, 255, 0.08f)),
         ImGui::GetColorU32(ui::kTransparent),
@@ -4160,6 +4168,8 @@ static bool DrawButton(const char* label, const ImVec2& size, const ButtonKind k
   const bool light = IsLightPaletteActive();
   const float spacing_scale = PlatformUiSpacingScale();
   const ImVec2 scaled_size = ScaleUiSize(size);
+  const float scaled_rounding = ScaleUiLength(ui::kRadiusSmall);
+  const ImVec2 frame_padding(ScaleUiLength(13.0f * spacing_scale), ScaleUiLength(7.5f * spacing_scale));
   ImVec4 bg = ui::kElevatedSurface;
   ImVec4 bg_hover = light ? Rgb(226, 237, 251, 1.0f) : Rgb(35, 42, 53, 1.0f);
   ImVec4 bg_active = light ? Rgb(216, 230, 250, 1.0f) : Rgb(39, 47, 59, 1.0f);
@@ -4185,8 +4195,8 @@ static bool DrawButton(const char* label, const ImVec2& size, const ButtonKind k
     border = light ? Rgb(7, 24, 56, 0.14f) : Rgb(255, 255, 255, 0.12f);
   }
 
-  ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ui::kRadiusSmall);
-  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(13.0f * spacing_scale, 7.5f * spacing_scale));
+  ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, scaled_rounding);
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, frame_padding);
   ImGui::PushStyleColor(ImGuiCol_Button, bg);
   ImGui::PushStyleColor(ImGuiCol_ButtonHovered, bg_hover);
   ImGui::PushStyleColor(ImGuiCol_ButtonActive, bg_active);
@@ -4202,11 +4212,12 @@ static void DrawSoftDivider() {
   ImDrawList* draw = ImGui::GetWindowDrawList();
   const ImVec2 p = ImGui::GetCursorScreenPos();
   const float width = ImGui::GetContentRegionAvail().x;
+  const float line_h = std::max(1.0f, ScaleUiLength(1.0f));
   const bool light = IsLightPaletteActive();
   const ImU32 left = ImGui::GetColorU32(light ? Rgb(9, 20, 39, 0.0f) : Rgb(255, 255, 255, 0.0f));
   const ImU32 center = ImGui::GetColorU32(light ? Rgb(15, 35, 62, 0.15f) : Rgb(255, 255, 255, 0.11f));
-  draw->AddRectFilledMultiColor(p, ImVec2(p.x + width, p.y + 1.0f), left, center, center, left);
-  ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
+  draw->AddRectFilledMultiColor(p, ImVec2(p.x + width, p.y + line_h), left, center, center, left);
+  ImGui::Dummy(ImVec2(0.0f, ScaleUiLength(ui::kSpace12)));
 }
 
 static std::string CompactPreview(const std::string& text, const std::size_t max_len) {
@@ -4359,12 +4370,13 @@ static void DrawStatusChip(const std::string& chip_id, const std::string& label,
   ImGui::PushID(chip_id.c_str());
   const ImVec2 text_size = ImGui::CalcTextSize(label.c_str());
   const ImVec2 chip_size(text_size.x + ScaleUiLength(16.0f), text_size.y + ScaleUiLength(8.0f));
+  const float chip_rounding = ScaleUiLength(ui::kRadiusSmall);
   const ImVec2 min = ImGui::GetCursorScreenPos();
   ImGui::InvisibleButton("chip", chip_size);
   const ImVec2 max(min.x + chip_size.x, min.y + chip_size.y);
   ImDrawList* draw = ImGui::GetWindowDrawList();
-  draw->AddRectFilled(min, max, ImGui::GetColorU32(fill), ui::kRadiusSmall);
-  draw->AddRect(min, max, ImGui::GetColorU32(ui::kBorder), ui::kRadiusSmall);
+  draw->AddRectFilled(min, max, ImGui::GetColorU32(fill), chip_rounding);
+  draw->AddRect(min, max, ImGui::GetColorU32(ui::kBorder), chip_rounding);
   draw->AddText(ImVec2(min.x + ScaleUiLength(8.0f), min.y + ScaleUiLength(4.0f)), ImGui::GetColorU32(text_color), label.c_str());
   ImGui::PopID();
 }
@@ -4392,7 +4404,7 @@ static void DrawGlobalTopBar(AppState& app) {
   if (ImGui::BeginTable("global_top_layout", 2, ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_SizingStretchProp |
                                                   ImGuiTableFlags_NoPadOuterX | ImGuiTableFlags_NoBordersInBody)) {
     ImGui::TableSetupColumn("meta", ImGuiTableColumnFlags_WidthStretch, 0.72f);
-    ImGui::TableSetupColumn("actions", ImGuiTableColumnFlags_WidthFixed, 318.0f);
+    ImGui::TableSetupColumn("actions", ImGuiTableColumnFlags_WidthFixed, ScaleUiLength(318.0f));
     ImGui::TableNextRow();
 
     ImGui::TableSetColumnIndex(0);
@@ -4421,12 +4433,12 @@ static void DrawGlobalTopBar(AppState& app) {
     const float row_w = ImGui::GetContentRegionAvail().x;
     const bool show_create = FrontendActionVisible(app, "create_chat");
     const bool show_refresh = FrontendActionVisible(app, "refresh_history");
-    const float row_spacing = ui::kSpace8 * PlatformUiSpacingScale();
+    const float row_spacing_base = ui::kSpace8 * PlatformUiSpacingScale();
+    const float row_spacing = ScaleUiLength(row_spacing_base);
     const float action_w = show_create && show_refresh ? 96.0f : 106.0f;
     const float settings_w = 96.0f;
-    const float layout_scale = g_ui_layout_scale;
-    const float total_w = ((show_create ? action_w + row_spacing : 0.0f) + (show_refresh ? action_w + row_spacing : 0.0f) + settings_w) *
-                          layout_scale;
+    const float total_w = ScaleUiLength((show_create ? action_w + row_spacing_base : 0.0f) +
+                                        (show_refresh ? action_w + row_spacing_base : 0.0f) + settings_w);
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, row_w - total_w));
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ScaleUiLength(4.0f));
 
@@ -4456,6 +4468,7 @@ static bool DrawMiniIconButton(const char* id, const char* glyph, const ImVec2& 
                                const bool danger = false) {
   const bool light = IsLightPaletteActive();
   const ImVec2 scaled_size = ScaleUiSize(size);
+  const float corner = ScaleUiLength(ui::kRadiusSmall);
   ImGui::PushID(id);
   const ImVec2 min = ImGui::GetCursorScreenPos();
   ImGui::InvisibleButton("##mini_icon", scaled_size);
@@ -4469,8 +4482,8 @@ static bool DrawMiniIconButton(const char* id, const char* glyph, const ImVec2& 
                         : ui::kTransparent;
   const ImVec4 border = hovered ? (danger ? ui::kError : ui::kBorderStrong) : ui::kBorder;
   const ImVec4 text = danger ? ui::kError : ui::kTextSecondary;
-  draw->AddRectFilled(min, max, ImGui::GetColorU32(bg), ui::kRadiusSmall);
-  draw->AddRect(min, max, ImGui::GetColorU32(border), ui::kRadiusSmall);
+  draw->AddRectFilled(min, max, ImGui::GetColorU32(bg), corner);
+  draw->AddRect(min, max, ImGui::GetColorU32(border), corner);
   const ImVec2 text_size = ImGui::CalcTextSize(glyph);
   draw->AddText(ImVec2(min.x + (scaled_size.x - text_size.x) * 0.5f, min.y + (scaled_size.y - text_size.y) * 0.5f),
                 ImGui::GetColorU32(text), glyph);
@@ -4499,13 +4512,18 @@ static float PlatformUiSpacingScale() {
 #endif
 }
 
+static float EffectiveUiScale() {
+  return g_ui_layout_scale * g_platform_layout_scale;
+}
+
 static float ScaleUiLength(const float value) {
-  return value * g_ui_layout_scale;
+  return value * EffectiveUiScale();
 }
 
 static ImVec2 ScaleUiSize(const ImVec2& value) {
-  const float scaled_x = (value.x > 0.0f) ? (value.x * g_ui_layout_scale) : value.x;
-  const float scaled_y = (value.y > 0.0f) ? (value.y * g_ui_layout_scale) : value.y;
+  const float scale = EffectiveUiScale();
+  const float scaled_x = (value.x > 0.0f) ? (value.x * scale) : value.x;
+  const float scaled_y = (value.y > 0.0f) ? (value.y * scale) : value.y;
   return ImVec2(scaled_x, scaled_y);
 }
 
@@ -4717,28 +4735,67 @@ static SidebarItemAction DrawSidebarItem(const AppState& app, const ChatSession&
   SidebarItemAction action;
 
   ImGui::PushID(item_id.c_str());
-  const ImVec2 row_size(ImGui::GetContentRegionAvail().x, 30.0f);
+  float row_h = 30.0f;
+  float row_rounding = ui::kRadiusSmall;
+  float accent_w = 3.0f;
+  float title_x_offset = 11.0f;
+  float title_y_offset = 7.0f;
+  float indicator_running_active_offset = 40.0f;
+  float indicator_running_idle_offset = 18.0f;
+  float indicator_unseen_active_offset = 42.0f;
+  float indicator_unseen_idle_offset = 24.0f;
+  float delete_x_offset = 22.0f;
+  float delete_y_offset = 6.0f;
+  float row_bottom_gap = 4.0f;
+  int title_limit = 46;
+#if defined(_WIN32)
+  // Windows-only DPI/layout mitigation: ensure row geometry scales with text so
+  // large user scale values do not cause sidebar overlap. If this starts to
+  // happen on macOS later, we can make this universal.
+  row_h = std::max(ScaleUiLength(30.0f), ImGui::GetTextLineHeight() + ScaleUiLength(12.0f));
+  row_rounding = ScaleUiLength(ui::kRadiusSmall);
+  accent_w = std::max(2.0f, ScaleUiLength(3.0f));
+  title_x_offset = ScaleUiLength(11.0f);
+  title_y_offset = (row_h - ImGui::GetTextLineHeight()) * 0.5f;
+  delete_x_offset = ScaleUiLength(22.0f);
+  delete_y_offset = std::max(ScaleUiLength(3.0f), (row_h - ScaleUiLength(16.0f)) * 0.5f);
+  indicator_running_idle_offset = ScaleUiLength(18.0f);
+  indicator_unseen_idle_offset = ScaleUiLength(24.0f);
+  indicator_running_active_offset = delete_x_offset + ScaleUiLength(16.0f);
+  indicator_unseen_active_offset = delete_x_offset + ScaleUiLength(18.0f);
+  row_bottom_gap = ScaleUiLength(4.0f);
+#endif
+  const ImVec2 row_size(ImGui::GetContentRegionAvail().x, row_h);
   const ImVec2 min = ImGui::GetCursorScreenPos();
   ImGui::InvisibleButton("chat_row", row_size);
   ImGui::SetItemAllowOverlap();
   const bool hovered = ImGui::IsItemHovered();
   action.select = ImGui::IsItemClicked();
   const ImVec2 max(min.x + row_size.x, min.y + row_size.y);
+#if defined(_WIN32)
+  {
+    const bool showing_actions = (selected || hovered);
+    const float avg_char_w = std::max(4.0f, ImGui::CalcTextSize("ABCDEFGHIJKLMNOPQRSTUVWXYZ").x / 26.0f);
+    const float reserved_right_w = showing_actions ? (delete_x_offset + ScaleUiLength(20.0f)) : ScaleUiLength(24.0f);
+    const float available_title_w = std::max(48.0f, row_size.x - title_x_offset - reserved_right_w);
+    title_limit = std::max(10, static_cast<int>(std::floor(available_title_w / avg_char_w)));
+  }
+#endif
 
   ImDrawList* draw = ImGui::GetWindowDrawList();
   const ImVec4 row_bg = selected ? (light ? Rgb(66, 126, 228, 0.13f) : Rgb(94, 160, 255, 0.15f))
                                  : (hovered ? (light ? Rgb(9, 31, 63, 0.06f) : Rgb(255, 255, 255, 0.06f)) : ui::kTransparent);
   const ImVec4 row_border = selected ? ui::kBorderStrong : ui::kBorder;
   if (selected || hovered) {
-    draw->AddRectFilled(min, max, ImGui::GetColorU32(row_bg), ui::kRadiusSmall);
-    draw->AddRect(min, max, ImGui::GetColorU32(row_border), ui::kRadiusSmall);
+    draw->AddRectFilled(min, max, ImGui::GetColorU32(row_bg), row_rounding);
+    draw->AddRect(min, max, ImGui::GetColorU32(row_border), row_rounding);
   }
   if (selected) {
-    draw->AddRectFilled(min, ImVec2(min.x + 3.0f, max.y), ImGui::GetColorU32(ui::kAccent), ui::kRadiusSmall, ImDrawFlags_RoundCornersLeft);
+    draw->AddRectFilled(min, ImVec2(min.x + accent_w, max.y), ImGui::GetColorU32(ui::kAccent), row_rounding, ImDrawFlags_RoundCornersLeft);
   }
 
-  const std::string row_title = CompactPreview(Trim(chat.title).empty() ? chat.id : chat.title, 46);
-  draw->AddText(ImVec2(min.x + 11.0f, min.y + 7.0f), ImGui::GetColorU32(ui::kTextPrimary), row_title.c_str());
+  const std::string row_title = CompactPreview(Trim(chat.title).empty() ? chat.id : chat.title, title_limit);
+  draw->AddText(ImVec2(min.x + title_x_offset, min.y + title_y_offset), ImGui::GetColorU32(ui::kTextPrimary), row_title.c_str());
 
   const bool running = ChatHasRunningGemini(app, chat.id);
   const bool has_unseen = !running && (app.chats_with_unseen_updates.find(chat.id) != app.chats_with_unseen_updates.end());
@@ -4746,27 +4803,28 @@ static SidebarItemAction DrawSidebarItem(const AppState& app, const ChatSession&
     static constexpr const char* kSpinnerFrames[4] = {"-", "/", "-", "\\"};
     const int frame = static_cast<int>(ImGui::GetTime() * 8.0) & 3;
     if (running) {
-      const float indicator_x = (hovered || selected) ? (max.x - 40.0f) : (max.x - 18.0f);
-      draw->AddText(ImVec2(indicator_x, min.y + 7.0f), ImGui::GetColorU32(ui::kWarning), kSpinnerFrames[frame]);
+      const float indicator_x = (hovered || selected) ? (max.x - indicator_running_active_offset) : (max.x - indicator_running_idle_offset);
+      draw->AddText(ImVec2(indicator_x, min.y + title_y_offset), ImGui::GetColorU32(ui::kWarning), kSpinnerFrames[frame]);
     } else {
       const bool has_title_font = (g_font_title != nullptr);
       ImFont* glyph_font = has_title_font ? g_font_title : ImGui::GetFont();
       const float glyph_size = has_title_font ? (g_font_title->FontSize * 0.62f) : (ImGui::GetFontSize() * 1.20f);
       const char* unseen_glyph = has_title_font ? "\xE2\x97\x8F" : "@";
-      const float indicator_x = (hovered || selected) ? (max.x - 42.0f) : (max.x - 24.0f);
-      draw->AddText(glyph_font, glyph_size, ImVec2(indicator_x, min.y + 4.0f), ImGui::GetColorU32(ui::kAccent), unseen_glyph);
+      const float indicator_x = (hovered || selected) ? (max.x - indicator_unseen_active_offset) : (max.x - indicator_unseen_idle_offset);
+      const float unseen_y = std::max(min.y, min.y + title_y_offset - ScaleUiLength(2.5f));
+      draw->AddText(glyph_font, glyph_size, ImVec2(indicator_x, unseen_y), ImGui::GetColorU32(ui::kAccent), unseen_glyph);
     }
   }
 
   if (hovered || selected) {
-    ImGui::SetCursorScreenPos(ImVec2(max.x - 22.0f, min.y + 6.0f));
+    ImGui::SetCursorScreenPos(ImVec2(max.x - delete_x_offset, min.y + delete_y_offset));
     if (DrawMiniIconButton("delete_chat", "x", ImVec2(16.0f, 16.0f), true)) {
       action.request_delete = true;
       action.select = false;
     }
   }
 
-  ImGui::SetCursorScreenPos(ImVec2(min.x, max.y + 4.0f));
+  ImGui::SetCursorScreenPos(ImVec2(min.x, max.y + row_bottom_gap));
   ImGui::Dummy(ImVec2(0.0f, 0.0f));
   ImGui::PopID();
   return action;
@@ -4777,7 +4835,34 @@ static FolderHeaderAction DrawFolderHeaderItem(const ChatFolder& folder, const i
   FolderHeaderAction action;
 
   ImGui::PushID(folder.id.c_str());
-  const ImVec2 row_size(ImGui::GetContentRegionAvail().x, 30.0f);
+  float row_h = 30.0f;
+  float row_rounding = ui::kRadiusSmall;
+  float marker_x_offset = 8.0f;
+  float title_x_offset = 22.0f;
+  float text_y_offset = 7.0f;
+  float count_x_offset = 74.0f;
+  float icon_new_x_offset = 44.0f;
+  float icon_settings_x_offset = 24.0f;
+  float icon_y_offset = 6.0f;
+  float row_bottom_gap = 4.0f;
+  int title_limit = 22;
+#if defined(_WIN32)
+  // Windows-only DPI/layout mitigation for folder rows. Keeps controls and
+  // count text from colliding when text scale is increased.
+  row_h = std::max(ScaleUiLength(30.0f), ImGui::GetTextLineHeight() + ScaleUiLength(12.0f));
+  row_rounding = ScaleUiLength(ui::kRadiusSmall);
+  marker_x_offset = ScaleUiLength(8.0f);
+  title_x_offset = ScaleUiLength(22.0f);
+  text_y_offset = (row_h - ImGui::GetTextLineHeight()) * 0.5f;
+  const float icon_size = ScaleUiLength(16.0f);
+  const float icon_gap = ScaleUiLength(4.0f);
+  const float icon_right_padding = ScaleUiLength(6.0f);
+  icon_settings_x_offset = icon_size + icon_right_padding;
+  icon_new_x_offset = icon_settings_x_offset + icon_gap + icon_size;
+  icon_y_offset = std::max(ScaleUiLength(3.0f), (row_h - icon_size) * 0.5f);
+  row_bottom_gap = ScaleUiLength(4.0f);
+#endif
+  const ImVec2 row_size(ImGui::GetContentRegionAvail().x, row_h);
   const ImVec2 min = ImGui::GetCursorScreenPos();
   ImGui::InvisibleButton("folder_row", row_size);
   ImGui::SetItemAllowOverlap();
@@ -4787,29 +4872,39 @@ static FolderHeaderAction DrawFolderHeaderItem(const ChatFolder& folder, const i
 
   ImDrawList* draw = ImGui::GetWindowDrawList();
   if (hovered || !folder.collapsed) {
-    draw->AddRectFilled(min, max, ImGui::GetColorU32(light ? Rgb(9, 31, 63, 0.05f) : Rgb(255, 255, 255, 0.04f)), ui::kRadiusSmall);
-    draw->AddRect(min, max, ImGui::GetColorU32(ui::kBorder), ui::kRadiusSmall);
+    draw->AddRectFilled(min, max, ImGui::GetColorU32(light ? Rgb(9, 31, 63, 0.05f) : Rgb(255, 255, 255, 0.04f)), row_rounding);
+    draw->AddRect(min, max, ImGui::GetColorU32(ui::kBorder), row_rounding);
   }
 
   const std::string marker = folder.collapsed ? ">" : "v";
   const std::string title = FolderTitleOrFallback(folder);
   const std::string count_text = std::to_string(chat_count);
-  draw->AddText(ImVec2(min.x + 8.0f, min.y + 7.0f), ImGui::GetColorU32(ui::kTextMuted), marker.c_str());
-  draw->AddText(ImVec2(min.x + 22.0f, min.y + 7.0f), ImGui::GetColorU32(ui::kTextSecondary), CompactPreview(title, 22).c_str());
-  draw->AddText(ImVec2(max.x - 74.0f, min.y + 7.0f), ImGui::GetColorU32(ui::kTextMuted), count_text.c_str());
+  float count_x = max.x - count_x_offset;
+#if defined(_WIN32)
+  {
+    const ImVec2 count_size = ImGui::CalcTextSize(count_text.c_str());
+    count_x = max.x - icon_new_x_offset - ScaleUiLength(8.0f) - count_size.x;
+    const float avg_char_w = std::max(4.0f, ImGui::CalcTextSize("ABCDEFGHIJKLMNOPQRSTUVWXYZ").x / 26.0f);
+    const float available_title_w = std::max(40.0f, count_x - (min.x + title_x_offset) - ScaleUiLength(8.0f));
+    title_limit = std::max(8, static_cast<int>(std::floor(available_title_w / avg_char_w)));
+  }
+#endif
+  draw->AddText(ImVec2(min.x + marker_x_offset, min.y + text_y_offset), ImGui::GetColorU32(ui::kTextMuted), marker.c_str());
+  draw->AddText(ImVec2(min.x + title_x_offset, min.y + text_y_offset), ImGui::GetColorU32(ui::kTextSecondary), CompactPreview(title, title_limit).c_str());
+  draw->AddText(ImVec2(count_x, min.y + text_y_offset), ImGui::GetColorU32(ui::kTextMuted), count_text.c_str());
 
-  ImGui::SetCursorScreenPos(ImVec2(max.x - 44.0f, min.y + 6.0f));
+  ImGui::SetCursorScreenPos(ImVec2(max.x - icon_new_x_offset, min.y + icon_y_offset));
   if (DrawMiniIconButton("folder_new_chat", "+", ImVec2(16.0f, 16.0f), false)) {
     action.quick_create = true;
     action.toggle = false;
   }
-  ImGui::SetCursorScreenPos(ImVec2(max.x - 24.0f, min.y + 6.0f));
+  ImGui::SetCursorScreenPos(ImVec2(max.x - icon_settings_x_offset, min.y + icon_y_offset));
   if (DrawMiniIconButton("folder_settings", "...", ImVec2(16.0f, 16.0f), false)) {
     action.open_settings = true;
     action.toggle = false;
   }
 
-  ImGui::SetCursorScreenPos(ImVec2(min.x, max.y + 4.0f));
+  ImGui::SetCursorScreenPos(ImVec2(min.x, max.y + row_bottom_gap));
   ImGui::Dummy(ImVec2(0.0f, 0.0f));
   ImGui::PopID();
   return action;
@@ -4824,7 +4919,14 @@ static void DrawLeftPane(AppState& app) {
   PopFontIfAvailable(g_font_title);
 
   ImGui::SameLine();
-  const float header_controls_x = ImGui::GetWindowPos().x + ImGui::GetWindowSize().x - 52.0f;
+  float header_controls_x = ImGui::GetWindowPos().x + ImGui::GetWindowSize().x - 52.0f;
+#if defined(_WIN32)
+  const float header_button_w = ScaleUiLength(20.0f);
+  const float header_gap = ScaleUiLength(6.0f);
+  const float header_right_pad = ScaleUiLength(4.0f);
+  const float header_controls_w = (header_button_w * 2.0f) + header_gap;
+  header_controls_x = ImGui::GetWindowPos().x + ImGui::GetWindowSize().x - header_controls_w - header_right_pad;
+#endif
   if (ImGui::GetCursorScreenPos().x < header_controls_x) {
     ImGui::SetCursorScreenPos(ImVec2(header_controls_x, ImGui::GetCursorScreenPos().y));
   }
@@ -4832,7 +4934,11 @@ static void DrawLeftPane(AppState& app) {
     app.new_chat_folder_id = kDefaultFolderId;
     CreateAndSelectChat(app);
   }
-  ImGui::SameLine(0.0f, 6.0f);
+  float header_button_spacing = 6.0f;
+#if defined(_WIN32)
+  header_button_spacing = ScaleUiLength(6.0f);
+#endif
+  ImGui::SameLine(0.0f, header_button_spacing);
   if (DrawMiniIconButton("new_folder", "f+", ImVec2(20.0f, 20.0f))) {
     app.new_folder_title_input.clear();
     app.new_folder_directory_input = fs::current_path().string();
@@ -4866,7 +4972,11 @@ static void DrawLeftPane(AppState& app) {
     }
 
     if (!folder.collapsed) {
-      ImGui::Indent(8.0f);
+      float folder_indent = 8.0f;
+#if defined(_WIN32)
+      folder_indent = ScaleUiLength(8.0f);
+#endif
+      ImGui::Indent(folder_indent);
       for (int i = 0; i < static_cast<int>(app.chats.size()); ++i) {
         if (app.chats[i].folder_id != folder.id) {
           continue;
@@ -4886,9 +4996,13 @@ static void DrawLeftPane(AppState& app) {
       }
       if (chat_count == 0) {
         ImGui::TextColored(ui::kTextMuted, "No chats in folder");
-        ImGui::Dummy(ImVec2(0.0f, 4.0f));
+        float empty_spacing = 4.0f;
+#if defined(_WIN32)
+        empty_spacing = ScaleUiLength(4.0f);
+#endif
+        ImGui::Dummy(ImVec2(0.0f, empty_spacing));
       }
-      ImGui::Unindent(8.0f);
+      ImGui::Unindent(folder_indent);
     }
   }
 
@@ -5006,16 +5120,23 @@ static void DrawMessageBubble(AppState& app, ChatSession& chat, const int messag
 }
 
 static void DrawCenterModeToggle(AppState& app) {
-  const float spacing = 6.0f * PlatformUiSpacingScale();
+  float spacing = 6.0f * PlatformUiSpacingScale();
+  float structured_w = 98.0f;
+  float terminal_w = 86.0f;
+#if defined(_WIN32)
+  spacing = ScaleUiLength(6.0f * PlatformUiSpacingScale());
+  structured_w = 90.0f;
+  terminal_w = 78.0f;
+#endif
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(spacing, spacing));
   const bool structured_active = (app.center_view_mode == CenterViewMode::Structured);
-  if (DrawButton("Structured", ImVec2(98.0f, 30.0f), structured_active ? ButtonKind::Primary : ButtonKind::Ghost)) {
+  if (DrawButton("Structured", ImVec2(structured_w, 30.0f), structured_active ? ButtonKind::Primary : ButtonKind::Ghost)) {
     app.center_view_mode = CenterViewMode::Structured;
     SaveSettings(app);
   }
   ImGui::SameLine();
   const bool cli_active = (app.center_view_mode == CenterViewMode::CliConsole);
-  if (DrawButton("Terminal", ImVec2(86.0f, 30.0f), cli_active ? ButtonKind::Primary : ButtonKind::Ghost)) {
+  if (DrawButton("Terminal", ImVec2(terminal_w, 30.0f), cli_active ? ButtonKind::Primary : ButtonKind::Ghost)) {
     app.center_view_mode = CenterViewMode::CliConsole;
     MarkSelectedCliTerminalForLaunch(app);
     SaveSettings(app);
@@ -5316,16 +5437,39 @@ static void DrawInputContainer(AppState& app, const ChatSession& chat) {
   ImGui::SameLine();
   ImGui::TextColored(ui::kTextMuted, "Ctrl+Enter to send");
   PushInputChrome(ui::kRadiusInput);
+  const bool send_visible = FrontendActionVisible(app, "send_prompt", true);
+#if defined(_WIN32)
+  // Windows-only composer fit: reserve right-side width for the SEND button so
+  // the multiline input shrinks first at larger UI scales. If this appears on
+  // macOS later, we can move this logic to all platforms.
+  const float send_gap = ScaleUiLength(8.0f);
+  const float send_button_w = ScaleUiLength(80.0f);
+  const float composer_h = std::max(ScaleUiLength(110.0f), ImGui::GetTextLineHeight() * 5.2f);
+  const float reserved_send_w = send_visible ? (send_button_w + send_gap + ScaleUiLength(2.0f)) : 0.0f;
+  const float input_w = std::max(ScaleUiLength(180.0f), ImGui::GetContentRegionAvail().x - reserved_send_w);
+  ImGui::InputTextMultiline("##composer", &app.composer_text, ImVec2(input_w, composer_h), ImGuiInputTextFlags_AllowTabInput);
+#else
   ImGui::InputTextMultiline("##composer", &app.composer_text, ImVec2(-96.0f, 110.0f), ImGuiInputTextFlags_AllowTabInput);
+#endif
   PopInputChrome();
 
-  ImGui::SameLine();
+  float send_same_line_gap = 0.0f;
+#if defined(_WIN32)
+  send_same_line_gap = ScaleUiLength(8.0f);
+#endif
+  ImGui::SameLine(0.0f, send_same_line_gap);
   const bool can_send = !HasPendingCallForChat(app, chat.id);
   if (!can_send) {
     ImGui::BeginDisabled();
   }
-  if (FrontendActionVisible(app, "send_prompt", true)) {
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 36.0f);
+  if (send_visible) {
+    float send_y_nudge = 36.0f;
+#if defined(_WIN32)
+    const float composer_h = std::max(ScaleUiLength(110.0f), ImGui::GetTextLineHeight() * 5.2f);
+    const float send_h = ScaleUiLength(42.0f);
+    send_y_nudge = std::max(0.0f, (composer_h - send_h) * 0.5f);
+#endif
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + send_y_nudge);
     if (DrawButton("SEND", ImVec2(80.0f, 42.0f), ButtonKind::Accent)) {
       StartGeminiRequest(app);
     }
@@ -5401,8 +5545,12 @@ static void DrawChatDetailPane(AppState& app, ChatSession& chat) {
   if (BeginPanel("chat_header_bar", ImVec2(0.0f, 92.0f), PanelTone::Secondary, true, 0, ImVec2(12.0f, 10.0f), ui::kRadiusInput)) {
     if (ImGui::BeginTable("chat_header_layout", 2, ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_SizingStretchProp |
                                                    ImGuiTableFlags_NoPadOuterX | ImGuiTableFlags_NoBordersInBody)) {
+      float mode_column_w = 236.0f;
+#if defined(_WIN32)
+      mode_column_w = ScaleUiLength(212.0f);
+#endif
       ImGui::TableSetupColumn("meta", ImGuiTableColumnFlags_WidthStretch, 0.72f);
-      ImGui::TableSetupColumn("mode", ImGuiTableColumnFlags_WidthFixed, 236.0f);
+      ImGui::TableSetupColumn("mode", ImGuiTableColumnFlags_WidthFixed, mode_column_w);
       ImGui::TableNextRow();
 
       ImGui::TableSetColumnIndex(0);
@@ -5428,9 +5576,15 @@ static void DrawChatDetailPane(AppState& app, ChatSession& chat) {
       ImGui::TextColored(ui::kTextMuted, "Updated %s", CompactPreview(chat.updated_at, 20).c_str());
 
       ImGui::TableSetColumnIndex(1);
-      ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 2.0f);
+      float mode_y_nudge = 2.0f;
+      float mode_settings_gap = 8.0f;
+#if defined(_WIN32)
+      mode_y_nudge = ScaleUiLength(2.0f);
+      mode_settings_gap = ScaleUiLength(8.0f);
+#endif
+      ImGui::SetCursorPosY(ImGui::GetCursorPosY() + mode_y_nudge);
       DrawCenterModeToggle(app);
-      ImGui::SameLine(0.0f, 8.0f);
+      ImGui::SameLine(0.0f, mode_settings_gap);
       if (DrawMiniIconButton("chat_settings_menu", "...", ImVec2(28.0f, 28.0f))) {
         request_open_chat_settings_popup = true;
       }
@@ -6314,6 +6468,7 @@ static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
         MarkSelectedCliTerminalForLaunch(app);
       }
       ApplyThemeFromSettings(app);
+      g_platform_layout_scale = std::clamp(platform_scale, 1.0f, 2.25f);
       if (platform_scale > 1.01f) {
         ImGui::GetStyle().ScaleAllSizes(platform_scale);
       }
@@ -6555,6 +6710,7 @@ int main(int, char**) {
   ImGuiIO& io = ImGui::GetIO();
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   const float platform_ui_scale = DetectUiScale(window);
+  g_platform_layout_scale = std::clamp(platform_ui_scale, 1.0f, 2.25f);
   ConfigureFonts(io, platform_ui_scale);
   ApplyThemeFromSettings(app);
   if (platform_ui_scale > 1.01f) {
@@ -6639,6 +6795,16 @@ int main(int, char**) {
     if (layout_w < 1020.0f) {
       sidebar_w = std::clamp(layout_w * 0.30f, 230.0f, 320.0f);
     }
+#if defined(_WIN32)
+    // Windows-only split tuning: keep chat list readable at larger DPI/user
+    // scales without changing the macOS baseline layout.
+    const float effective_scale = std::max(1.0f, EffectiveUiScale());
+    const float width_bias = 1.0f + ((effective_scale - 1.0f) * 0.36f);
+    const float sidebar_ratio = (layout_w < 1180.0f) ? 0.35f : 0.30f;
+    sidebar_w = std::clamp(layout_w * sidebar_ratio, 280.0f * width_bias, 470.0f * width_bias);
+    const float max_sidebar_from_main_floor = std::max(220.0f, layout_w - 560.0f);
+    sidebar_w = std::clamp(sidebar_w, 220.0f, max_sidebar_from_main_floor);
+#endif
 
     if (ImGui::BeginTable("layout_split", 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings |
                                               ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX |
