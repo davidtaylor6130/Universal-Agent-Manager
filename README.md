@@ -14,53 +14,331 @@
 - Business value: enables quicker review, file contextualization, and terminal-driven troubleshooting without forcing team members to memorize CLI arguments or drop into a shell for every session.
 - Intended audience: developers or support engineers who already run Gemini CLI in projects and want a structured history, workspace file attachments, and optional terminal replay without leaving the desktop.
 
-## What the App Does
-1. Loads Gemini’s native `~/.gemini/tmp/<project>/chats` directory (auto-detected through `GEMINI_HOME` or file system heuristics) and exposes every session in a left-hand folder list.
-2. Lets you group chats into folders, attach workspace files, edit titles, and update Gemini command templates/flags from the right-hand pane.
-3. Houses a structured conversation view with bubble-style history plus a real embedded `gemini` terminal (via `libvterm`) so you can rerun or poke a session with its own prompt/resume arguments.
-4. Tracks Gemini CLI executions asynchronously (non-blocking UI) and automatically refreshes the session history after each run, ensuring local metadata stays in sync with Gemini’s JSON logs.
+Universal Agent Manager (UAM) is a **local-first desktop interface for Gemini CLI workflows**.
 
-## Architecture & Data Flow
-- UI metadata (folders, attached files, overrides, settings) is stored under `<data-root>/folders.txt`, `<data-root>/chats/<chat-id>/meta.txt`, and `<data-root>/settings.txt`. You can override the data root via `UAM_DATA_DIR` for per-project or enterprise storage.
-- Each chat mirrors a Gemini native session whenever possible. Messages are replayed from Gemini’s JSON export (`*.json`) so the app never duplicates Gemini logs; it only writes extra metadata and per-chat linked file lists.
-- Gemini commands are templated via settings with placeholders `{prompt}`, `{files}`, `{resume}`, and optional `{flags}`. CLI flags can also specify YOLO mode or arbitrary shell arguments (split intelligently) before being passed to `gemini`.
-- CLI terminal mode spins up `libvterm` + a pseudo-tty to run `gemini` with the same template flags, letting you interact with Gemini exactly as you would in a real terminal while still syncing the chat history afterward.
+It began as a personal fix: Gemini CLI never offered an easy way to edit past prompts or keep session history quietly in the background, so I wrapped it with UAM to track history, attachments, and folder structure without fighting the native log files.
 
-## Setup & Build Notes
-1. **Requirements**: CMake 3.20+, a C++20 compiler, system OpenGL headers/libs, and Gemini CLI on `PATH`. On macOS, SDL + OpenGL are bundled automatically; on Linux you may have to install `libsdl2-dev` or similar.
-2. **Option A (self-contained)**: `cmake -S . -B build -DUAM_FETCH_DEPS=ON && cmake --build build -j`. This pulls SDL2/ImGui, builds the vendored `libvterm`, and links everything statically.
-3. **Option B (custom ImGui/SDL)**: `cmake -S . -B build -DUAM_FETCH_DEPS=OFF -DIMGUI_DIR=/absolute/path/to/imgui && cmake --build build -j` plus make sure SDL2 is discoverable. `libvterm` is always built from `third_party/libvterm`.
-4. **Running**: `./build/universal_agent_manager`. Override the app data folder (useful for CI or clean profiles) with `UAM_DATA_DIR=/tmp/uam-data ./build/universal_agent_manager`.
+It provides a structured UI for managing Gemini sessions while **keeping Gemini CLI as the source of truth**.
 
-## Operational Workflow
-1. Launch Gemini CLI or run a command in the same project directory so the app can detect `~/.gemini/tmp/<project>` and load existing sessions.
-2. Create folders, add metadata, and attach files from the right pane before sending prompts. Attached files become part of the command text passed to Gemini as a markdown-style list.
-3. Compose prompts in the bottom input area; `Ctrl+Enter` or the `Send` button immediately constructs the configured command, appends `--resume <session-id>` when a native session exists, and runs it async.
-4. After Gemini returns, the app reloads all JSON logs, reconciles metadata (e.g., retain attachments, folder assignments), and if needed rewinds edited user messages directly inside native Gemini session JSON.
+UAM is designed to be **transparent, auditable, and non-invasive**, making it suitable for development environments with strict security requirements.
 
-## Known Constraints & Workarounds
-- **Session detection delay**: The app looks for `~/.gemini/tmp/<project>/chats/*.json`. If Gemini hasn’t been run yet, you’ll see a “native session directory not found yet” message—just run Gemini once and restart the UI or hit “Structured View” to refresh.
-- **Native session editing**: Editing a previous user message trims Gemini’s JSON to keep history accurate. This can fail if a terminal session is still running; stop the terminal before rewinding.
-- **File attachments**: App does **not** upload files. It only records local file paths (no copies). Avoid deleting/moving attached files while a chat references them because the app doesn’t track file renames.
-- **Gemini CLI compatibility**: If Gemini changes its flag set, you can use the template editor to inject `{flags}` or fully rewrite the command string. The YOLO toggle simply adds `--yolo`.
-- **Terminal mode**: CLI panel uses `openpty` + `fork` and therefore only runs on Unix-like systems. macOS (Bundled) and Linux are supported. Windows is not currently supported until a PTY/terminal layer can be ported.
+---
 
-## Launch Goals & Evaluation Checklist
-| Goal | Success Criteria |
-| --- | --- |
-| Productivity | Managers can browse all Gemini chats in one place, add context files, and iterate on prompts without consulting CLI history files manually. |
-| Reliability | Gemini history refresh triggers after each request, and edits persist locally even if the native JSON jumps ahead. |
-| Security | Gemini sessions remain on disk (no remote capture); metadata is limited to paths/settings in the local data root. |
-| Support Readiness | CLI panel doubles as a debugging terminal, so raises/testing can be reproduced without dropping into an external shell. |
+# macOS Builds UI
 
-Suggested validation steps:
-1. Run `gemini` once in a project so the tmp/chats directory exists, open the app, and verify sessions populate.
-2. Attach files and send a prompt; confirm the constructed command in “Current Command” matches expectations and Gemini output re-syncs.
-3. Switch to CLI Console, interact with the embedded terminal, then kill Gemini; confirm the terminal shuts down gracefully and status updates.
+![macOS Builds UI](docs/images/macos-builds-ui.png)
 
-## Development Notes
-- Fonts: ImGui favours `/Library/Fonts/Inter*.ttf` or fallback system fonts; adjust in `ConfigureFonts` if targeting Windows or Linux.
-- Theme: The app defines a bespoke dark palette (see `ApplyModernTheme`) so UI colors remain consistent between macOS and Linux builds.
-- Persistence: `ChatFolderStore`, `ChatRepository`, and `SettingsStore` each write simple key-value files, making it easy to back up, inspect, or version control local metadata.
+---
 
-Feel free to share this repo with the team and let me know if you want help packaging a build or drafting a one-pager for the backlog. 
+# Key Properties
+
+- **Local-first**
+- **No cloud services**
+- **No telemetry**
+- **No network calls**
+- **Gemini logs remain source-of-truth**
+- **Human-readable metadata**
+- **Deterministic CLI execution**
+
+---
+
+# Current Architecture
+
+```mermaid
+flowchart LR
+
+A[User Interface<br>Dear ImGui] --> B[Application Core]
+
+B --> C[Chat Repository]
+B --> D[Folder Store]
+B --> E[Settings Store]
+B --> F[Command Builder]
+
+C --> G[Gemini Session JSON]
+
+F --> H[CLI Runner]
+
+H --> I[Gemini CLI Process]
+
+I --> G
+
+H --> J[Pseudo Terminal Layer]
+
+J --> K[macOS/Linux<br>openpty fork]
+
+J --> L[Windows<br>ConPTY]
+
+B --> M[Attachment Manager]
+
+M --> N[Workspace Files]
+```
+in the future would love to add a layer to support multiple Gemini CLI software like Open AI codex. But right now its Gemini Only.
+
+---
+
+# How It Works
+
+### 1 — Gemini CLI Creates Sessions
+
+Gemini writes session logs:
+
+```
+~/.gemini/tmp/<project_hash>/chats/*.json
+```
+
+These files remain the **source of truth**.
+
+UAM reads these files directly.
+
+---
+
+### 2 — UAM Adds Metadata
+
+UAM stores UI-only metadata:
+
+```
+<data-root>/
+
+folders.txt
+settings.txt
+providers.txt
+frontend_actions.txt
+
+chats/
+  <chat-id>/
+    meta.txt
+```
+
+Location override:
+
+```
+UAM_DATA_DIR=/custom/path
+```
+
+Metadata contains:
+
+- Folder organization
+- File attachments
+- Command templates
+- Provider profiles
+- Frontend action map
+- UI settings
+
+Gemini logs are **not duplicated**.
+
+---
+
+### 3 — Command Execution
+
+Commands are generated from templates:
+
+```
+gemini {resume} {flags} {prompt}
+```
+
+Commands run as native processes.
+
+No background agents.
+
+No hidden execution.
+
+---
+
+### 4 — Embedded Terminal
+
+UAM runs Gemini inside a pseudo terminal.
+
+macOS/Linux:
+
+```
+openpty()
+fork()
+exec()
+```
+
+Windows:
+
+```
+CreatePseudoConsole()
+```
+
+Terminal behavior matches native shells.
+
+---
+
+# Dependencies
+
+## Required
+
+| Dependency | Purpose |
+|----------|---------|
+| Gemini CLI | AI execution |
+| CMake 3.20+ | Build system |
+| C++20 Compiler | Core language |
+| OpenGL | Rendering |
+| SDL2 | Windowing |
+
+---
+
+## Bundled (Optional FetchContent)
+
+| Dependency | Purpose |
+|-----------|---------|
+| Dear ImGui | UI framework |
+| libvterm | Terminal emulation |
+
+---
+
+# Security Model
+
+## Data Storage
+
+All data is stored locally:
+
+Gemini:
+
+```
+~/.gemini/
+```
+
+UAM:
+
+```
+<data-root>/
+```
+
+No remote storage.
+
+No sync.
+
+No upload.
+
+---
+
+## Network Activity
+
+UAM performs:
+
+- **Zero outbound network calls**
+- **Zero inbound network listeners**
+
+Only Gemini CLI may perform network requests.
+
+---
+
+## File Access
+
+UAM accesses:
+
+- Gemini session JSON files
+- User-selected attachment files
+- UAM metadata files
+
+UAM does **not copy attachments**.
+
+Paths are referenced directly.
+
+---
+
+## Process Execution
+
+UAM launches only:
+
+```
+gemini
+```
+
+Execution is visible in:
+
+- Command preview
+- CLI terminal
+
+No hidden subprocesses.
+
+---
+
+# Build
+
+## Self-Contained
+
+```
+cmake -S . -B build -DUAM_FETCH_DEPS=ON
+cmake --build build -j
+```
+
+---
+
+## Solution Layout
+
+If you are using Visual Studio, start with the solution guide:
+
+- [Visual Studio Solution Layout](docs/visual-studio-solution.md)
+
+It explains which projects are the real app targets, which ones are generated dependency/utility targets, and which project should be used for normal run/debug workflows.
+
+---
+
+## Custom Dependencies
+
+```
+cmake -S . -B build \
+-DUAM_FETCH_DEPS=OFF \
+-DIMGUI_DIR=/path/to/imgui
+```
+
+---
+
+# Run
+
+```
+./build/universal_agent_manager
+```
+
+Optional data root:
+
+```
+UAM_DATA_DIR=/tmp/uam-data ./build/universal_agent_manager
+```
+
+---
+
+# Security Review Notes
+
+This project is intended to be easy to audit.
+
+Properties:
+
+- Plain-text metadata
+- No binary databases
+- No background services
+- No auto-updaters
+- No plugins
+- No scripting engine
+- No dynamic code loading
+
+Gemini CLI remains the only AI runtime.
+
+---
+
+# Platform Requirements
+
+| Platform | Requirement |
+|---------|-------------|
+| macOS | Supported |
+| Linux | Supported |
+| Windows | Windows 10 1809+ |
+
+Windows requires ConPTY support.
+
+---
+
+# Project Status
+
+**Early Development Prototype**
+
+Architecture is stable.
+Features are evolving.
+
+---
+
+```

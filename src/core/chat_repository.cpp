@@ -65,7 +65,11 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 
   std::ostringstream meta;
   meta << "id=" << chat.id << '\n';
+  meta << "native_session_id=" << chat.native_session_id << '\n';
+  meta << "uses_native_session=" << (chat.uses_native_session ? "1" : "0") << '\n';
   meta << "folder=" << chat.folder_id << '\n';
+  meta << "template_override=" << chat.template_override_id << '\n';
+  meta << "gemini_md_bootstrapped=" << (chat.gemini_md_bootstrapped ? "1" : "0") << '\n';
   meta << "title=" << chat.title << '\n';
   meta << "created_at=" << chat.created_at << '\n';
   meta << "updated_at=" << chat.updated_at << '\n';
@@ -129,8 +133,16 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
         const std::string value = line.substr(equals_at + 1);
         if (key == "id") {
           chat.id = value;
+        } else if (key == "native_session_id") {
+          chat.native_session_id = value;
+        } else if (key == "uses_native_session") {
+          chat.uses_native_session = (value == "1" || value == "true");
         } else if (key == "folder") {
           chat.folder_id = value;
+        } else if (key == "template_override") {
+          chat.template_override_id = value;
+        } else if (key == "gemini_md_bootstrapped") {
+          chat.gemini_md_bootstrapped = (value == "1" || value == "true");
         } else if (key == "title") {
           chat.title = value;
         } else if (key == "created_at") {
@@ -147,6 +159,11 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
     }
     if (chat.updated_at.empty()) {
       chat.updated_at = chat.created_at;
+    }
+    if (!chat.native_session_id.empty()) {
+      chat.uses_native_session = true;
+    } else if (chat.uses_native_session) {
+      chat.native_session_id = chat.id;
     }
 
     const fs::path messages_dir = folder.path() / "messages";

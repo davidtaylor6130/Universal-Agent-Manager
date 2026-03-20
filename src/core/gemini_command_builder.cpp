@@ -1,4 +1,5 @@
 #include "gemini_command_builder.h"
+#include "command_line_words.h"
 
 #include <cctype>
 #include <sstream>
@@ -18,6 +19,22 @@ std::string ReplaceAll(std::string src, const std::string& from, const std::stri
 }
 
 std::string ShellEscape(const std::string& value) {
+#if defined(_WIN32)
+  std::string escaped = "\"";
+  for (const char ch : value) {
+    if (ch == '"') {
+      escaped += "\"\"";
+    } else if (ch == '%') {
+      escaped += "%%";
+    } else if (ch == '\r' || ch == '\n') {
+      escaped.push_back(' ');
+    } else {
+      escaped.push_back(ch);
+    }
+  }
+  escaped.push_back('"');
+  return escaped;
+#else
   std::string escaped = "'";
   for (const char ch : value) {
     if (ch == '\'') {
@@ -28,6 +45,7 @@ std::string ShellEscape(const std::string& value) {
   }
   escaped.push_back('\'');
   return escaped;
+#endif
 }
 
 std::string JoinShellEscapedFiles(const std::vector<std::string>& files) {
@@ -41,51 +59,6 @@ std::string JoinShellEscapedFiles(const std::vector<std::string>& files) {
     first = false;
   }
   return out.str();
-}
-
-std::vector<std::string> SplitShellWords(const std::string& value) {
-  std::vector<std::string> words;
-  std::string current;
-  bool escaping = false;
-  char quote = '\0';
-  for (char ch : value) {
-    if (escaping) {
-      current.push_back(ch);
-      escaping = false;
-      continue;
-    }
-    if (ch == '\\') {
-      escaping = true;
-      continue;
-    }
-    if (quote != '\0') {
-      if (ch == quote) {
-        quote = '\0';
-      } else {
-        current.push_back(ch);
-      }
-      continue;
-    }
-    if (ch == '\'' || ch == '"') {
-      quote = ch;
-      continue;
-    }
-    if (std::isspace(static_cast<unsigned char>(ch)) != 0) {
-      if (!current.empty()) {
-        words.push_back(current);
-        current.clear();
-      }
-      continue;
-    }
-    current.push_back(ch);
-  }
-  if (escaping) {
-    current.push_back('\\');
-  }
-  if (!current.empty()) {
-    words.push_back(current);
-  }
-  return words;
 }
 
 }  // namespace
@@ -108,7 +81,7 @@ std::vector<std::string> GeminiCommandBuilder::BuildFlagsArgv(const AppSettings&
   if (settings.gemini_yolo_mode) {
     flags.push_back("--yolo");
   }
-  const std::vector<std::string> extra_flags = SplitShellWords(settings.gemini_extra_flags);
+  const std::vector<std::string> extra_flags = SplitCommandLineWords(settings.gemini_extra_flags);
   flags.insert(flags.end(), extra_flags.begin(), extra_flags.end());
   return flags;
 }
@@ -131,7 +104,9 @@ std::string GeminiCommandBuilder::BuildCommand(const AppSettings& settings,
                                                const std::string& prompt,
                                                const std::vector<std::string>& files,
                                                const std::string& resume_session_id) {
-  std::string command = settings.gemini_command_template;
+  std::string command = settings.gemini_command_template.empty()
+                            ? "gemini {resume} {flags} {prompt}"
+                            : settings.gemini_command_template;
   const bool has_prompt_placeholder = command.find("{prompt}") != std::string::npos;
   const bool has_resume_placeholder = command.find("{resume}") != std::string::npos;
   const bool has_flags_placeholder = command.find("{flags}") != std::string::npos;

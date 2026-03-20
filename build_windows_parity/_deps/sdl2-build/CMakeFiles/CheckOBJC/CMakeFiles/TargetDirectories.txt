@@ -1,0 +1,2 @@
+/Users/davidtaylormacbookpro/Documents/GitHub/Universal Agent Manager/build_windows_parity/_deps/sdl2-build/CMakeFiles/CheckOBJC/CMakeFiles/edit_cache.dir
+/Users/davidtaylormacbookpro/Documents/GitHub/Universal Agent Manager/build_windows_parity/_deps/sdl2-build/CMakeFiles/CheckOBJC/CMakeFiles/rebuild_cache.dir

@@ -1,0 +1,171 @@
+
+---
+events:
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineSystem.cmake:12 (find_program)"
+      - "CMakeLists.txt:16 (project)"
+    mode: "program"
+    variable: "CMAKE_UNAME"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "uname"
+    candidate_directories:
+      - "/Library/Frameworks/Python.framework/Versions/3.12/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/Library/Frameworks/Mono.framework/Versions/Current/bin/"
+      - "/Library/Frameworks/Mono.framework/Versions/6.12.0/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/opt/pmk/env/global/bin/"
+      - "/Library/Apple/usr/bin/"
+      - "/Library/TeX/texbin/"
+      - "/usr/local/share/dotnet/"
+      - "/Users/davidtaylormacbookpro/.dotnet/tools/"
+      - "/Library/Frameworks/Mono.framework/Versions/Current/Commands/"
+      - "/Users/davidtaylormacbookpro/.codex/tmp/arg0/codex-arg0SjILMq/"
+      - "/Users/davidtaylormacbookpro/Library/Application Support/JetBrains/Toolbox/scripts/"
+      - "/Users/davidtaylormacbookpro/.oh-my-zsh/custom/plugins/fzf-zsh-plugin/bin/"
+      - "/Users/davidtaylormacbookpro/.fzf/bin/"
+      - "/Users/davidtaylormacbookpro/.lmstudio/bin/"
+      - "/Applications/Codex.app/Contents/Resources/"
+    searched_directories:
+      - "/Library/Frameworks/Python.framework/Versions/3.12/bin/uname"
+      - "/opt/homebrew/bin/uname"
+      - "/opt/homebrew/sbin/uname"
+      - "/usr/local/bin/uname"
+    found: "/usr/bin/uname"
+    search_context:
+      ENV{PATH}:
+        - "/Library/Frameworks/Python.framework/Versions/3.12/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/Library/Frameworks/Mono.framework/Versions/Current/bin"
+        - "/Library/Frameworks/Mono.framework/Versions/6.12.0/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/opt/pmk/env/global/bin"
+        - "/Library/Apple/usr/bin"
+        - "/Library/TeX/texbin"
+        - "/usr/local/share/dotnet"
+        - "~/.dotnet/tools"
+        - "/Library/Frameworks/Mono.framework/Versions/Current/Commands"
+        - "/Users/davidtaylormacbookpro/.codex/tmp/arg0/codex-arg0SjILMq"
+        - "/Library/Frameworks/Python.framework/Versions/3.12/bin"
+        - "/Users/davidtaylormacbookpro/Library/Application Support/JetBrains/Toolbox/scripts"
+        - "/Users/davidtaylormacbookpro/.oh-my-zsh/custom/plugins/fzf-zsh-plugin/bin"
+        - "/Users/davidtaylormacbookpro/.fzf/bin"
+        - "/Users/davidtaylormacbookpro/.lmstudio/bin"
+        - "/Applications/Codex.app/Contents/Resources"
+        - "/Users/davidtaylormacbookpro/Library/Application Support/JetBrains/Toolbox/scripts"
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineSystem.cmake:212 (message)"
+      - "CMakeLists.txt:16 (project)"
+    message: |
+      The system is: Darwin - 25.3.0 - arm64
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/Platform/Darwin.cmake:76 (find_program)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeSystemSpecificInformation.cmake:32 (include)"
+      - "CMakeLists.txt:16 (project)"
+    mode: "program"
+    variable: "CMAKE_INSTALL_NAME_TOOL"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "install_name_tool"
+    candidate_directories:
+      - "/Library/Frameworks/Python.framework/Versions/3.12/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/Library/Frameworks/Mono.framework/Versions/Current/bin/"
+      - "/Library/Frameworks/Mono.framework/Versions/6.12.0/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/opt/pmk/env/global/bin/"
+      - "/Library/Apple/usr/bin/"
+      - "/Library/TeX/texbin/"
+      - "/usr/local/share/dotnet/"
+      - "/Users/davidtaylormacbookpro/.dotnet/tools/"
+      - "/Library/Frameworks/Mono.framework/Versions/Current/Commands/"
+      - "/Users/davidtaylormacbookpro/.codex/tmp/arg0/codex-arg0SjILMq/"
+      - "/Users/davidtaylormacbookpro/Library/Application Support/JetBrains/Toolbox/scripts/"
+      - "/Users/davidtaylormacbookpro/.oh-my-zsh/custom/plugins/fzf-zsh-plugin/bin/"
+      - "/Users/davidtaylormacbookpro/.fzf/bin/"
+      - "/Users/davidtaylormacbookpro/.lmstudio/bin/"
+      - "/Applications/Codex.app/Contents/Resources/"
+    searched_directories:
+      - "/Library/Frameworks/Python.framework/Versions/3.12/bin/install_name_tool"
+      - "/opt/homebrew/bin/install_name_tool"
+      - "/opt/homebrew/sbin/install_name_tool"
+      - "/usr/local/bin/install_name_tool"
+    found: "/usr/bin/install_name_tool"
+    search_context:
+      ENV{PATH}:
+        - "/Library/Frameworks/Python.framework/Versions/3.12/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/Library/Frameworks/Mono.framework/Versions/Current/bin"
+        - "/Library/Frameworks/Mono.framework/Versions/6.12.0/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/opt/pmk/env/global/bin"
+        - "/Library/Apple/usr/bin"
+        - "/Library/TeX/texbin"
+        - "/usr/local/share/dotnet"
+        - "~/.dotnet/tools"
+        - "/Library/Frameworks/Mono.framework/Versions/Current/Commands"
+        - "/Users/davidtaylormacbookpro/.codex/tmp/arg0/codex-arg0SjILMq"
+        - "/Library/Frameworks/Python.framework/Versions/3.12/bin"
+        - "/Users/davidtaylormacbookpro/Library/Application Support/JetBrains/Toolbox/scripts"
+        - "/Users/davidtaylormacbookpro/.oh-my-zsh/custom/plugins/fzf-zsh-plugin/bin"
+        - "/Users/davidtaylormacbookpro/.fzf/bin"
+        - "/Users/davidtaylormacbookpro/.lmstudio/bin"
+        - "/Applications/Codex.app/Contents/Resources"
+        - "/Users/davidtaylormacbookpro/Library/Application Support/JetBrains/Toolbox/scripts"
+      CMAKE_INSTALL_PREFIX: "/usr/local"
+...
