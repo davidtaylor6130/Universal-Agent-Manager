@@ -1,344 +1,235 @@
-# Universal Agent Manager (Gemini CLI + Dear ImGui)
+<h1>
+  <img src="assets/app_icon.png" alt="Universal Agent Manager icon" width="36" valign="middle" />
+  Universal Agent Manager (UAM)
+</h1>
+
+> [!WARNING]
+> THIS IS VIBE CODED! I STILL NEED TO GO THROUGH CODE BY HAND AND REVIEW!!
+
+<img src="https://img.shields.io/badge/status-in%20development-orange" />
+<img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue" />
+<img src="https://img.shields.io/badge/language-C%2B%2B20-green" />
+<img src="https://img.shields.io/badge/UI-Dear%20ImGui-purple" />
+
+Universal Agent Manager is a local-first desktop app for CLI-driven AI workflows.
+
+The current default provider is Gemini CLI, and the runtime already supports provider profiles so other CLI providers can be configured without changing core app code.
 
 ## UI Screenshots
 
-### macOS — v0.0.3
-![Universal Agent Manager macOS v0.0.3 screenshot 1](docs/images/macos-v0.0.3-terminal-01.png)
-![Universal Agent Manager macOS v0.0.3 screenshot 2](docs/images/macos-v0.0.3-terminal-02.png)
+### Current: v0.0.3
 
-### Windows — v0.0.3 (coming next)
-![Universal Agent Manager Windows v0.0.3 placeholder](docs/images/windows-v0.0.3-placeholder.svg)
+#### Windows
 
-## Executive Summary
-- Purpose: provide a polished desktop control surface that lets developers or teams monitor Gemini CLI chat sessions inside a lightweight UI while preserving Gemini’s native session files.
-- Business value: enables quicker review, file contextualization, and terminal-driven troubleshooting without forcing team members to memorize CLI arguments or drop into a shell for every session.
-- Intended audience: developers or support engineers who already run Gemini CLI in projects and want a structured history, workspace file attachments, and optional terminal replay without leaving the desktop.
+![Windows UI v0.0.3](docs/images/windows-v0.0.3-terminal.png)
 
-Universal Agent Manager (UAM) is a **local-first desktop interface for Gemini CLI workflows**.
+#### macOS
 
-It began as a personal fix: Gemini CLI never offered an easy way to edit past prompts or keep session history quietly in the background, so I wrapped it with UAM to track history, attachments, and folder structure without fighting the native log files.
+![macOS UI v0.0.3 (Terminal 01)](docs/images/macos-v0.0.3-terminal-01.png)
 
-It provides a structured UI for managing Gemini sessions while **keeping Gemini CLI as the source of truth**.
+<details>
+<summary>Previous Releases (v0.0.1 / v0.0.2)</summary>
 
-UAM is designed to be **transparent, auditable, and non-invasive**, making it suitable for development environments with strict security requirements.
+### v0.0.2
 
----
+![macOS UI v0.0.2 (Terminal 02)](docs/images/macos-v0.0.2-terminal.png)
 
-# macOS Builds UI
+### v0.0.1
 
-![macOS Builds UI](docs/images/macos-builds-ui.png)
+![macOS UI v0.0.1](docs/images/macos-builds-ui.png)
 
----
+</details>
 
-# Key Properties
+## Project Goals
 
-- **Local-first**
-- **No cloud services**
-- **No telemetry**
-- **No network calls**
-- **Gemini logs remain source-of-truth**
-- **Human-readable metadata**
-- **Deterministic CLI execution**
+- Local-first operation with plain-text state
+- Auditable behavior with explicit command execution
+- Provider-native history when an adapter is available
+- No cloud backend, no telemetry, no sync service
+- Reproducible workspace-driven CLI runs
 
----
+## Current Scope
 
-# Current Architecture
+- Gemini is the default out-of-box provider profile.
+- Provider profiles are stored in `providers.txt` and support custom command templates, interactive commands, resume flags, and message role mappings.
+- Native Gemini JSON session history is supported through the `gemini-cli-json` adapter.
+- Providers without a native history adapter run in local-only mode using UAM's local chat store.
+
+## Architecture
 
 ```mermaid
 flowchart LR
 
-A[User Interface<br>Dear ImGui] --> B[Application Core]
+UI["SDL2 + OpenGL + Dear ImGui"] --> CORE["Application Core"]
 
-B --> C[Chat Repository]
-B --> D[Folder Store]
-B --> E[Settings Store]
-B --> F[Command Builder]
+CORE --> SETTINGS["SettingsStore\nsettings.txt"]
+CORE --> FOLDERS["ChatFolderStore\nfolders.txt"]
+CORE --> ACTIONS["FrontendActionMap\nfrontend_actions.txt"]
+CORE --> PROFILES["Provider Profiles\nproviders.txt"]
+CORE --> TEMPLATES["GeminiTemplateCatalog\nMarkdown_Templates/*.md"]
 
-C --> G[Gemini Session JSON]
+CORE --> HISTORY{"History Adapter"}
+HISTORY -->|gemini-cli-json| GEMINI_JSON["Gemini native sessions\n~/.gemini/tmp/.../chats/*.json"]
+HISTORY -->|local-only| LOCAL_STORE["Local chats\n<data-root>/chats/<chat-id>/..."]
 
-F --> H[CLI Runner]
+CORE --> RUNTIME["ProviderRuntime + GeminiCommandBuilder"]
+RUNTIME --> BATCH["Batch commands\npopen/_popen"]
+RUNTIME --> INTERACTIVE["Interactive terminal"]
+INTERACTIVE --> UNIX_PTY["macOS\nopenpty + fork + execvp"]
+INTERACTIVE --> WIN_PTY["Windows\nConPTY + CreateProcessW"]
 
-H --> I[Gemini CLI Process]
-
-I --> G
-
-H --> J[Pseudo Terminal Layer]
-
-J --> K[macOS/Linux<br>openpty fork]
-
-J --> L[Windows<br>ConPTY]
-
-B --> M[Attachment Manager]
-
-M --> N[Workspace Files]
-```
-in the future would love to add a layer to support multiple Gemini CLI software like Open AI codex. But right now its Gemini Only.
-
----
-
-# How It Works
-
-### 1 — Gemini CLI Creates Sessions
-
-Gemini writes session logs:
-
-```
-~/.gemini/tmp/<project_hash>/chats/*.json
+CORE --> FILES["Linked File References"] --> WORKSPACE["Workspace Files\n(no attachment copy)"]
 ```
 
-These files remain the **source of truth**.
+## How It Works
 
-UAM reads these files directly.
+### 1) Data Root Resolution and Layout
 
----
+At startup, UAM tries data roots in this order:
 
-### 2 — UAM Adds Metadata
+1. `UAM_DATA_DIR` (if set)
+2. `<current-working-directory>/data`
+3. OS default app-data location
+4. temp fallback (`.../universal_agent_manager_data`)
 
-UAM stores UI-only metadata:
+Primary local layout:
 
-```
+```text
 <data-root>/
-
-folders.txt
-settings.txt
-providers.txt
-frontend_actions.txt
-
-chats/
-  <chat-id>/
-    meta.txt
+  settings.txt
+  folders.txt
+  providers.txt
+  frontend_actions.txt
+  chats/
+    <chat-id>/
+      meta.txt
+      messages/
+        000001_user.txt
+        000002_assistant.txt
 ```
 
-Location override:
+### 2) Provider Runtime
 
-```
-UAM_DATA_DIR=/custom/path
-```
+The app merges provider profile settings with user settings, then builds either:
 
-Metadata contains:
+- A batch command for one-shot execution
+- An interactive argv for terminal mode
 
-- Folder organization
-- File attachments
-- Command templates
-- Provider profiles
-- Frontend action map
-- UI settings
+Default Gemini template:
 
-Gemini logs are **not duplicated**.
-
----
-
-### 3 — Command Execution
-
-Commands are generated from templates:
-
-```
+```text
 gemini {resume} {flags} {prompt}
 ```
 
-Commands run as native processes.
+### 3) History Modes
 
-No background agents.
+- `gemini-cli-json`: reads Gemini native session JSON files from the project tmp mapping under `~/.gemini/tmp/.../chats`.
+- `local-only`: appends responses to local chat files in `<data-root>/chats/...`.
 
-No hidden execution.
+### 4) Workspace Template Preflight
 
----
+Before request execution, UAM ensures workspace `.gemini` scaffolding exists and can materialize a selected markdown template into:
 
-### 4 — Embedded Terminal
-
-UAM runs Gemini inside a pseudo terminal.
-
-macOS/Linux:
-
-```
-openpty()
-fork()
-exec()
+```text
+<workspace>/.gemini/gemini.md
 ```
 
-Windows:
+Template catalog root defaults to:
 
-```
-CreatePseudoConsole()
-```
-
-Terminal behavior matches native shells.
-
----
-
-# Dependencies
-
-## Required
-
-| Dependency | Purpose |
-|----------|---------|
-| Gemini CLI | AI execution |
-| CMake 3.20+ | Build system |
-| C++20 Compiler | Core language |
-| OpenGL | Rendering |
-| SDL2 | Windowing |
-
----
-
-## Bundled (Optional FetchContent)
-
-| Dependency | Purpose |
-|-----------|---------|
-| Dear ImGui | UI framework |
-| libvterm | Terminal emulation |
-
----
-
-# Security Model
-
-## Data Storage
-
-All data is stored locally:
-
-Gemini:
-
-```
-~/.gemini/
+```text
+~/.Gemini_universal_agent_manager/Markdown_Templates/
 ```
 
-UAM:
+(Overridable in app settings.)
 
-```
-<data-root>/
-```
+### 5) Embedded Terminal
 
-No remote storage.
+Interactive mode is backed by `libvterm` and launches provider CLIs in a PTY:
 
-No sync.
+- macOS: `openpty`, `fork`, `execvp`
+- Windows: ConPTY (`CreatePseudoConsole`) + `CreateProcessW`
 
-No upload.
+## Security and Audit Model
 
----
+- UAM stores state locally in plain text.
+- UAM itself does not run telemetry or a cloud sync service.
+- UAM does not expose inbound network listeners.
+- Any network activity comes from child processes it launches (for example provider CLIs, or explicit install/downgrade commands initiated by the user).
+- Commands are deterministic from profile + settings + prompt, and the command preview is available in the UI.
 
-## Network Activity
+## Dependencies
 
-UAM performs:
+### Build and Runtime
 
-- **Zero outbound network calls**
-- **Zero inbound network listeners**
+- CMake 3.20+
+- C++20 compiler
+- OpenGL
+- SDL2
+- Dear ImGui
+- `libvterm` (vendored under `third_party/libvterm`)
 
-Only Gemini CLI may perform network requests.
+When `UAM_FETCH_DEPS=ON`, CMake fetches:
 
----
+- SDL2 `release-2.30.11`
+- Dear ImGui `v1.91.8`
 
-## File Access
+## Build
 
-UAM accesses:
+### Self-Contained (Fetch Dependencies)
 
-- Gemini session JSON files
-- User-selected attachment files
-- UAM metadata files
-
-UAM does **not copy attachments**.
-
-Paths are referenced directly.
-
----
-
-## Process Execution
-
-UAM launches only:
-
-```
-gemini
-```
-
-Execution is visible in:
-
-- Command preview
-- CLI terminal
-
-No hidden subprocesses.
-
----
-
-# Build
-
-## Self-Contained
-
-```
+```bash
 cmake -S . -B build -DUAM_FETCH_DEPS=ON
-cmake --build build -j
+cmake --build build --config Release
 ```
 
----
+### Custom Dependencies
 
-## Solution Layout
+```bash
+cmake -S . -B build -DUAM_FETCH_DEPS=OFF -DIMGUI_DIR=/path/to/imgui
+cmake --build build --config Release
+```
 
-If you are using Visual Studio, start with the solution guide:
+### Tests
+
+```bash
+cmake -S . -B build-tests -DUAM_FETCH_DEPS=ON -DUAM_BUILD_TESTS=ON
+cmake --build build-tests --config Debug
+ctest --test-dir build-tests -C Debug --output-on-failure
+```
+
+### Visual Studio
+
+For project/target layout guidance, see:
 
 - [Visual Studio Solution Layout](docs/visual-studio-solution.md)
 
-It explains which projects are the real app targets, which ones are generated dependency/utility targets, and which project should be used for normal run/debug workflows.
+## Run
 
----
-
-## Custom Dependencies
-
-```
-cmake -S . -B build \
--DUAM_FETCH_DEPS=OFF \
--DIMGUI_DIR=/path/to/imgui
-```
-
----
-
-# Run
-
-```
+```bash
+# macOS
 ./build/universal_agent_manager
+
+# Windows (Visual Studio generator example)
+.\build\Release\universal_agent_manager.exe
 ```
 
-Optional data root:
+Optional data-root override:
 
-```
+```bash
+# macOS
 UAM_DATA_DIR=/tmp/uam-data ./build/universal_agent_manager
+
+# Windows PowerShell
+$env:UAM_DATA_DIR='C:\temp\uam-data'; .\build\Release\universal_agent_manager.exe
 ```
 
----
+## Platform Notes
 
-# Security Review Notes
+- macOS: supported
+- Windows: requires ConPTY support (Windows 10 1809 or newer)
 
-This project is intended to be easy to audit.
+## Status
 
-Properties:
+Active prototype.
 
-- Plain-text metadata
-- No binary databases
-- No background services
-- No auto-updaters
-- No plugins
-- No scripting engine
-- No dynamic code loading
-
-Gemini CLI remains the only AI runtime.
-
----
-
-# Platform Requirements
-
-| Platform | Requirement |
-|---------|-------------|
-| macOS | Supported |
-| Linux | Supported |
-| Windows | Windows 10 1809+ |
-
-Windows requires ConPTY support.
-
----
-
-# Project Status
-
-**Early Development Prototype**
-
-Architecture is stable.
-Features are evolving.
-
----
-
-```
+The architecture is already modular (provider profiles + runtime adapter model), while UI workflows and defaults continue to evolve.
