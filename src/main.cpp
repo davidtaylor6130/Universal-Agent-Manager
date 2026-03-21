@@ -169,6 +169,8 @@ struct AppState {
   std::string editing_message_text;
   std::string pending_branch_chat_id;
   int pending_branch_message_index = -1;
+  bool open_sidebar_chat_options_popup = false;
+  std::string sidebar_chat_options_popup_chat_id;
   bool open_edit_message_popup = false;
   bool open_about_popup = false;
   bool open_app_settings_popup = false;
@@ -195,6 +197,7 @@ struct AppState {
   std::unordered_map<std::string, VcsSnapshot> vcs_snapshot_by_workspace;
   std::unordered_set<std::string> vcs_snapshot_loaded_workspaces;
   std::unordered_map<std::string, std::string> rag_last_refresh_by_workspace;
+  std::unordered_map<std::string, std::string> rag_last_rebuild_at_by_workspace;
   bool open_vcs_output_popup = false;
   std::string vcs_output_popup_title;
   std::string vcs_output_popup_content;
@@ -3958,6 +3961,10 @@ static bool RemoveChatById(AppState& app, const std::string& chat_id) {
     app.pending_branch_chat_id.clear();
     app.pending_branch_message_index = -1;
   }
+  if (app.sidebar_chat_options_popup_chat_id == chat.id) {
+    app.sidebar_chat_options_popup_chat_id.clear();
+    app.open_sidebar_chat_options_popup = false;
+  }
   RefreshRememberedSelection(app);
   SaveSettings(app);
 
@@ -5104,6 +5111,7 @@ static void DrawDesktopMenuBar(AppState& app, bool& done) {
 struct SidebarItemAction {
   bool select = false;
   bool request_delete = false;
+  bool request_open_options = false;
 };
 
 struct FolderHeaderAction {
@@ -5133,6 +5141,7 @@ static SidebarItemAction DrawSidebarItem(AppState& app,
   float indicator_running_idle_offset = 18.0f;
   float indicator_unseen_active_offset = 42.0f;
   float indicator_unseen_idle_offset = 24.0f;
+  float options_x_offset = 42.0f;
   float delete_x_offset = 22.0f;
   float delete_y_offset = 6.0f;
   float row_bottom_gap = 4.0f;
@@ -5147,12 +5156,13 @@ static SidebarItemAction DrawSidebarItem(AppState& app,
   accent_w = std::max(2.0f, ScaleUiLength(3.0f));
   title_x_offset = ScaleUiLength(11.0f);
   title_y_offset = (row_h - ImGui::GetTextLineHeight()) * 0.5f;
+  options_x_offset = ScaleUiLength(42.0f);
   delete_x_offset = ScaleUiLength(22.0f);
   delete_y_offset = std::max(ScaleUiLength(3.0f), (row_h - ScaleUiLength(16.0f)) * 0.5f);
   indicator_running_idle_offset = ScaleUiLength(18.0f);
   indicator_unseen_idle_offset = ScaleUiLength(24.0f);
-  indicator_running_active_offset = delete_x_offset + ScaleUiLength(16.0f);
-  indicator_unseen_active_offset = delete_x_offset + ScaleUiLength(18.0f);
+  indicator_running_active_offset = options_x_offset + ScaleUiLength(16.0f);
+  indicator_unseen_active_offset = options_x_offset + ScaleUiLength(18.0f);
   row_bottom_gap = ScaleUiLength(4.0f);
 #endif
   title_x_offset += depth_indent + (has_children ? ScaleUiLength(18.0f) : 0.0f);
@@ -5162,12 +5172,16 @@ static SidebarItemAction DrawSidebarItem(AppState& app,
   ImGui::SetItemAllowOverlap();
   const bool hovered = ImGui::IsItemHovered();
   action.select = ImGui::IsItemClicked();
+  if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+    action.request_open_options = true;
+    action.select = false;
+  }
   const ImVec2 max(min.x + row_size.x, min.y + row_size.y);
 #if defined(_WIN32)
   {
     const bool showing_actions = (selected || hovered);
     const float avg_char_w = std::max(4.0f, ImGui::CalcTextSize("ABCDEFGHIJKLMNOPQRSTUVWXYZ").x / 26.0f);
-    const float reserved_right_w = showing_actions ? (delete_x_offset + ScaleUiLength(20.0f)) : ScaleUiLength(24.0f);
+    const float reserved_right_w = showing_actions ? (options_x_offset + ScaleUiLength(20.0f)) : ScaleUiLength(24.0f);
     const float available_title_w = std::max(48.0f, row_size.x - title_x_offset - reserved_right_w);
     title_limit = std::max(10, static_cast<int>(std::floor(available_title_w / avg_char_w)));
   }
@@ -5223,6 +5237,11 @@ static SidebarItemAction DrawSidebarItem(AppState& app,
   }
 
   if (hovered || selected) {
+    ImGui::SetCursorScreenPos(ImVec2(max.x - options_x_offset, min.y + delete_y_offset));
+    if (DrawMiniIconButton("chat_options_menu", "...", ImVec2(16.0f, 16.0f), true)) {
+      action.request_open_options = true;
+      action.select = false;
+    }
     ImGui::SetCursorScreenPos(ImVec2(max.x - delete_x_offset, min.y + delete_y_offset));
     if (DrawMiniIconButton("delete_chat", "x", ImVec2(16.0f, 16.0f), true)) {
       action.request_delete = true;
@@ -5234,6 +5253,120 @@ static SidebarItemAction DrawSidebarItem(AppState& app,
   ImGui::Dummy(ImVec2(0.0f, 0.0f));
   ImGui::PopID();
   return action;
+}
+
+static void DrawSidebarChatOptionsPopup(AppState& app) {
+  if (app.open_sidebar_chat_options_popup && !app.sidebar_chat_options_popup_chat_id.empty()) {
+    ImGui::OpenPopup("sidebar_chat_options_popup");
+    app.open_sidebar_chat_options_popup = false;
+  }
+  if (!ImGui::BeginPopup("sidebar_chat_options_popup")) {
+    return;
+  }
+
+  const int chat_index = FindChatIndexById(app, app.sidebar_chat_options_popup_chat_id);
+  if (chat_index < 0) {
+    ImGui::TextColored(ui::kTextMuted, "Chat no longer exists.");
+    ImGui::EndPopup();
+    return;
+  }
+
+  ChatSession& popup_chat = app.chats[chat_index];
+  const auto ensure_selected_chat = [&]() {
+    if (app.selected_chat_index != chat_index) {
+      SelectChatById(app, popup_chat.id);
+      SaveSettings(app);
+    }
+  };
+
+  if (ImGui::BeginMenu("View Mode")) {
+    if (ImGui::MenuItem("Structured", nullptr, app.center_view_mode == CenterViewMode::Structured)) {
+      ensure_selected_chat();
+      app.center_view_mode = CenterViewMode::Structured;
+      SaveSettings(app);
+      ImGui::CloseCurrentPopup();
+    }
+    if (ImGui::MenuItem("Terminal", nullptr, app.center_view_mode == CenterViewMode::CliConsole)) {
+      ensure_selected_chat();
+      app.center_view_mode = CenterViewMode::CliConsole;
+      MarkSelectedCliTerminalForLaunch(app);
+      SaveSettings(app);
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndMenu();
+  }
+
+  if (ImGui::BeginMenu("Repository")) {
+    const fs::path workspace_root = ResolveWorkspaceRootPath(app, popup_chat);
+    RefreshWorkspaceVcsSnapshot(app, workspace_root, false);
+    const std::string workspace_key = workspace_root.lexically_normal().generic_string();
+    VcsSnapshot snapshot;
+    if (const auto it = app.vcs_snapshot_by_workspace.find(workspace_key); it != app.vcs_snapshot_by_workspace.end()) {
+      snapshot = it->second;
+    }
+    const bool is_svn = (snapshot.repo_type == VcsRepoType::Svn);
+
+    if (ImGui::MenuItem("Refresh")) {
+      RefreshWorkspaceVcsSnapshot(app, workspace_root, true);
+      ImGui::CloseCurrentPopup();
+    }
+    if (!is_svn) {
+      ImGui::BeginDisabled();
+    }
+    if (ImGui::MenuItem("Status")) {
+      const VcsCommandResult result = VcsWorkspaceService::ReadStatus(workspace_root);
+      ShowVcsCommandOutput(app, "SVN Status", result);
+      ImGui::CloseCurrentPopup();
+    }
+    if (ImGui::MenuItem("Diff")) {
+      const VcsCommandResult result = VcsWorkspaceService::ReadDiff(workspace_root);
+      ShowVcsCommandOutput(app, "SVN Diff", result);
+      ImGui::CloseCurrentPopup();
+    }
+    if (ImGui::MenuItem("Log")) {
+      const VcsCommandResult result = VcsWorkspaceService::ReadLog(workspace_root);
+      ShowVcsCommandOutput(app, "SVN Log", result);
+      ImGui::CloseCurrentPopup();
+    }
+    if (!is_svn) {
+      ImGui::EndDisabled();
+    }
+    ImGui::EndMenu();
+  }
+
+  if (ImGui::BeginMenu("RAG")) {
+    if (ImGui::MenuItem("Rebuild Index")) {
+      const fs::path workspace_root = ResolveWorkspaceRootPath(app, popup_chat);
+      const std::string workspace_key = workspace_root.lexically_normal().generic_string();
+      const RagRefreshResult rebuild = app.rag_index_service.RebuildIndex(workspace_root);
+      if (!rebuild.ok) {
+        app.rag_last_refresh_by_workspace[workspace_key] = rebuild.error;
+        app.status_line = "RAG index rebuild failed: " + rebuild.error;
+      } else {
+        app.rag_last_refresh_by_workspace[workspace_key] =
+            "Indexed files: " + std::to_string(rebuild.indexed_files) +
+            ", updated: " + std::to_string(rebuild.updated_files) +
+            ", removed: " + std::to_string(rebuild.removed_files);
+        app.rag_last_rebuild_at_by_workspace[workspace_key] = TimestampNow();
+        app.status_line = "RAG index rebuilt.";
+      }
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndMenu();
+  }
+
+  ImGui::Separator();
+  if (ImGui::MenuItem("Delete Chat")) {
+    if (app.settings.confirm_delete_chat) {
+      app.pending_delete_chat_id = popup_chat.id;
+      app.open_delete_chat_popup = true;
+    } else {
+      RemoveChatById(app, popup_chat.id);
+    }
+    ImGui::CloseCurrentPopup();
+  }
+
+  ImGui::EndPopup();
 }
 
 static FolderHeaderAction DrawFolderHeaderItem(const ChatFolder& folder, const int chat_count) {
@@ -5360,6 +5493,7 @@ static void DrawLeftPane(AppState& app) {
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
 
   std::string chat_to_delete;
+  std::string chat_to_open_options;
   for (ChatFolder& folder : app.folders) {
     const int chat_count = CountChatsInFolder(app, folder.id);
     const FolderHeaderAction folder_action = DrawFolderHeaderItem(folder, chat_count);
@@ -5459,6 +5593,9 @@ static void DrawLeftPane(AppState& app) {
           if (item_action.request_delete) {
             chat_to_delete = sidebar_chat.id;
           }
+          if (item_action.request_open_options) {
+            chat_to_open_options = sidebar_chat.id;
+          }
 
           if (has_children && !collapsed_children) {
             draw_tree(sidebar_chat.id, depth + 1);
@@ -5490,6 +5627,11 @@ static void DrawLeftPane(AppState& app) {
       RemoveChatById(app, chat_to_delete);
     }
   }
+  if (!chat_to_open_options.empty()) {
+    app.sidebar_chat_options_popup_chat_id = chat_to_open_options;
+    app.open_sidebar_chat_options_popup = true;
+  }
+  DrawSidebarChatOptionsPopup(app);
 
   if (ImGui::BeginPopupModal("new_folder_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
     ImGui::TextColored(ui::kTextPrimary, "Create chat folder");
@@ -5595,31 +5737,6 @@ static void DrawMessageBubble(AppState& app, ChatSession& chat, const int messag
 
   ImGui::SetCursorScreenPos(ImVec2(cursor.x, max.y + ui::kSpace16));
   ImGui::Dummy(ImVec2(content_width, 0.0f));
-}
-
-static void DrawCenterModeToggle(AppState& app) {
-  float spacing = 6.0f * PlatformUiSpacingScale();
-  float structured_w = 98.0f;
-  float terminal_w = 86.0f;
-#if defined(_WIN32)
-  spacing = ScaleUiLength(6.0f * PlatformUiSpacingScale());
-  structured_w = 90.0f;
-  terminal_w = 78.0f;
-#endif
-  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(spacing, spacing));
-  const bool structured_active = (app.center_view_mode == CenterViewMode::Structured);
-  if (DrawButton("Structured", ImVec2(structured_w, 30.0f), structured_active ? ButtonKind::Primary : ButtonKind::Ghost)) {
-    app.center_view_mode = CenterViewMode::Structured;
-    SaveSettings(app);
-  }
-  ImGui::SameLine();
-  const bool cli_active = (app.center_view_mode == CenterViewMode::CliConsole);
-  if (DrawButton("Terminal", ImVec2(terminal_w, 30.0f), cli_active ? ButtonKind::Primary : ButtonKind::Ghost)) {
-    app.center_view_mode = CenterViewMode::CliConsole;
-    MarkSelectedCliTerminalForLaunch(app);
-    SaveSettings(app);
-  }
-  ImGui::PopStyleVar();
 }
 
 static VTermModifier ActiveVTermModifiers() {
@@ -5998,34 +6115,16 @@ static void DrawStructuredProcessingIndicator(const AppState& app, const ChatSes
   EndPanel();
 }
 
-static void DrawChatSettingsPopup(AppState& app, ChatSession& chat, const char* popup_id) {
-  if (!ImGui::BeginPopup(popup_id)) {
-    return;
-  }
-
-  ImGui::TextColored(ui::kTextPrimary, "Chat Settings");
-  ImGui::TextColored(ui::kTextMuted, "Template, folder, local Gemini, repository, and RAG");
-  ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
-  if (ImGui::BeginChild(("chat_settings_scroll##" + chat.id).c_str(), ImVec2(560.0f, 560.0f), false,
-                        ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
-    DrawSessionSidePane(app, chat);
-  }
-  ImGui::EndChild();
-  ImGui::EndPopup();
-}
-
 static void DrawChatDetailPane(AppState& app, ChatSession& chat) {
   MarkSelectedChatSeen(app);
   BeginPanel("main_chat_panel", ImVec2(0.0f, 0.0f), PanelTone::Primary, true, 0, ImVec2(ui::kSpace16, ui::kSpace16));
-  const std::string settings_popup_id = "chat_settings_popup##" + chat.id;
-  bool request_open_chat_settings_popup = false;
 
   if (BeginPanel("chat_header_bar", ImVec2(0.0f, 92.0f), PanelTone::Secondary, true, 0, ImVec2(12.0f, 10.0f), ui::kRadiusInput)) {
     if (ImGui::BeginTable("chat_header_layout", 2, ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_SizingStretchProp |
                                                    ImGuiTableFlags_NoPadOuterX | ImGuiTableFlags_NoBordersInBody)) {
-      float mode_column_w = 236.0f;
+      float mode_column_w = 164.0f;
 #if defined(_WIN32)
-      mode_column_w = ScaleUiLength(212.0f);
+      mode_column_w = ScaleUiLength(164.0f);
 #endif
       ImGui::TableSetupColumn("meta", ImGuiTableColumnFlags_WidthStretch, 0.72f);
       ImGui::TableSetupColumn("mode", ImGuiTableColumnFlags_WidthFixed, mode_column_w);
@@ -6054,27 +6153,21 @@ static void DrawChatDetailPane(AppState& app, ChatSession& chat) {
       ImGui::TextColored(ui::kTextMuted, "Updated %s", CompactPreview(chat.updated_at, 20).c_str());
 
       ImGui::TableSetColumnIndex(1);
-      float mode_y_nudge = 2.0f;
-      float mode_settings_gap = 8.0f;
+      float mode_y_nudge = 3.0f;
 #if defined(_WIN32)
-      mode_y_nudge = ScaleUiLength(2.0f);
-      mode_settings_gap = ScaleUiLength(8.0f);
+      mode_y_nudge = ScaleUiLength(3.0f);
 #endif
       ImGui::SetCursorPosY(ImGui::GetCursorPosY() + mode_y_nudge);
-      DrawCenterModeToggle(app);
-      ImGui::SameLine(0.0f, mode_settings_gap);
-      if (DrawMiniIconButton("chat_settings_menu", "...", ImVec2(28.0f, 28.0f))) {
-        request_open_chat_settings_popup = true;
-      }
+      ImGui::TextColored(ui::kTextMuted, "View");
+      ImGui::SameLine();
+      ImGui::TextColored(ui::kTextPrimary, "%s",
+                         app.center_view_mode == CenterViewMode::Structured ? "Structured" : "Terminal");
+      ImGui::TextColored(ui::kTextMuted, "Use chat ... menu");
 
       ImGui::EndTable();
     }
   }
   EndPanel();
-  if (request_open_chat_settings_popup) {
-    ImGui::OpenPopup(settings_popup_id.c_str());
-  }
-  DrawChatSettingsPopup(app, chat, settings_popup_id.c_str());
 
   if (app.center_view_mode == CenterViewMode::CliConsole) {
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
@@ -6402,8 +6495,17 @@ static void DrawSessionSidePane(AppState& app, ChatSession& chat) {
             "Indexed files: " + std::to_string(rebuild.indexed_files) +
             ", updated: " + std::to_string(rebuild.updated_files) +
             ", removed: " + std::to_string(rebuild.removed_files);
+        app.rag_last_rebuild_at_by_workspace[workspace_key] = TimestampNow();
         app.status_line = "RAG index rebuilt.";
       }
+    }
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace4));
+    ImGui::TextColored(ui::kTextMuted, "Latest rebuild");
+    if (const auto it = app.rag_last_rebuild_at_by_workspace.find(workspace_key);
+        it != app.rag_last_rebuild_at_by_workspace.end() && !it->second.empty()) {
+      ImGui::TextColored(ui::kTextPrimary, "%s", it->second.c_str());
+    } else {
+      ImGui::TextColored(ui::kTextMuted, "(not rebuilt yet)");
     }
   }
   EndPanel();
