@@ -149,14 +149,6 @@ Interactive mode is backed by `libvterm` and launches provider CLIs in a PTY:
 - macOS: `openpty`, `fork`, `execvp`
 - Windows: ConPTY (`CreatePseudoConsole`) + `CreateProcessW`
 
-## Security and Audit Model
-
-- UAM stores state locally in plain text.
-- UAM itself does not run telemetry or a cloud sync service.
-- UAM does not expose inbound network listeners.
-- Any network activity comes from child processes it launches (for example provider CLIs, or explicit install/downgrade commands initiated by the user).
-- Commands are deterministic from profile + settings + prompt, and the command preview is available in the UI.
-
 ## Dependencies
 
 ### Build and Runtime
@@ -233,3 +225,13 @@ $env:UAM_DATA_DIR='C:\temp\uam-data'; .\build\Release\universal_agent_manager.ex
 Active prototype.
 
 The architecture is already modular (provider profiles + runtime adapter model), while UI workflows and defaults continue to evolve.
+
+## License
+
+This project is licensed under the Universal Agent Manager License (UAML) v1.0.
+See [LICENSE](LICENSE) for full terms.
+
+- Copyright remains with David Taylor (davidtaylor6130).
+- Free to use and modify.
+- You cannot sell the software as-is.
+- If you redistribute it, include attribution: "Originally created by David Taylor (davidtaylor6130)."

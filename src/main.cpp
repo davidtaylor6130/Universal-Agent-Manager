@@ -220,7 +220,7 @@ static constexpr const char* kDefaultFolderId = "folder-default";
 static constexpr const char* kDefaultFolderTitle = "General";
 static constexpr const char* kAppDisplayName = "Universal Agent Manager";
 static constexpr const char* kAppVersion = "1.0.0";
-static constexpr const char* kAppCopyright = "(c) 2026 Universal Agent Manager. All rights reserved.";
+static constexpr const char* kAppCopyright = "(c) 2026 David Taylor (davidtaylor6130). All rights reserved.";
 static constexpr const char* kSupportedGeminiVersion = "0.30.0";
 
 static void SortChatsByRecent(std::vector<ChatSession>& chats);
