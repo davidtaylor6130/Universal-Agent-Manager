@@ -1,0 +1,313 @@
+#pragma once
+
+static std::string CodepointToUtf8(const uint32_t cp) {
+  std::string out;
+  if (cp <= 0x7F) {
+    out.push_back(static_cast<char>(cp));
+  } else if (cp <= 0x7FF) {
+    out.push_back(static_cast<char>(0xC0 | ((cp >> 6) & 0x1F)));
+    out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+  } else if (cp <= 0xFFFF) {
+    out.push_back(static_cast<char>(0xE0 | ((cp >> 12) & 0x0F)));
+    out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+  } else {
+    out.push_back(static_cast<char>(0xF0 | ((cp >> 18) & 0x07)));
+    out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+  }
+  return out;
+}
+
+static void ResizeCliTerminal(CliTerminalState& terminal, const int rows, const int cols) {
+  const int safe_rows = std::max(8, rows);
+  const int safe_cols = std::max(20, cols);
+  if (terminal.rows == safe_rows && terminal.cols == safe_cols) {
+    return;
+  }
+  terminal.rows = safe_rows;
+  terminal.cols = safe_cols;
+  if (terminal.vt != nullptr) {
+    vterm_set_size(terminal.vt, terminal.rows, terminal.cols);
+  }
+#if defined(__unix__) || defined(__APPLE__)
+  if (terminal.master_fd >= 0) {
+    struct winsize ws {};
+    ws.ws_row = static_cast<unsigned short>(terminal.rows);
+    ws.ws_col = static_cast<unsigned short>(terminal.cols);
+    ioctl(terminal.master_fd, TIOCSWINSZ, &ws);
+  }
+#elif defined(_WIN32)
+  if (terminal.pseudo_console != nullptr) {
+    COORD size{static_cast<SHORT>(terminal.cols), static_cast<SHORT>(terminal.rows)};
+    ResizePseudoConsoleSafe(terminal.pseudo_console, size);
+  }
+#endif
+}
+
+#if defined(_WIN32)
+static std::ptrdiff_t ReadCliTerminalOutput(CliTerminalState& terminal, char* buffer, const size_t buffer_size) {
+  if (terminal.pipe_output == INVALID_HANDLE_VALUE) {
+    return -1;
+  }
+  DWORD available = 0;
+  if (!PeekNamedPipe(terminal.pipe_output, nullptr, 0, nullptr, &available, nullptr)) {
+    const DWORD err = GetLastError();
+    if (err == ERROR_BROKEN_PIPE) {
+      return 0;
+    }
+    return -1;
+  }
+  if (available == 0) {
+    return -2;
+  }
+  const DWORD to_read = static_cast<DWORD>(std::min<size_t>(buffer_size, available));
+  DWORD bytes_read = 0;
+  if (!ReadFile(terminal.pipe_output, buffer, to_read, &bytes_read, nullptr)) {
+    const DWORD err = GetLastError();
+    if (err == ERROR_BROKEN_PIPE) {
+      return 0;
+    }
+    return -1;
+  }
+  if (bytes_read == 0) {
+    return -2;
+  }
+  return static_cast<std::ptrdiff_t>(bytes_read);
+}
+#endif
+
+static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const bool preserve_selection) {
+  constexpr double kGenerationIdleSeconds = 1.15;
+  constexpr int kReadBudgetChunksPerTick = 72;
+  constexpr std::size_t kReadBudgetBytesPerTick = 512 * 1024;
+  const std::string selected_chat_id = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
+  const auto mark_unseen_if_background = [&]() {
+    if (!terminal.attached_chat_id.empty() && terminal.attached_chat_id != selected_chat_id) {
+      MarkChatUnseen(app, terminal.attached_chat_id);
+    }
+  };
+#if defined(_WIN32)
+  if (!terminal.running || terminal.pipe_output == INVALID_HANDLE_VALUE || terminal.vt == nullptr) {
+    return;
+  }
+  char buffer[8192];
+  int chunks_read = 0;
+  std::size_t bytes_read_total = 0;
+  while (true) {
+    if (chunks_read >= kReadBudgetChunksPerTick || bytes_read_total >= kReadBudgetBytesPerTick) {
+      break;
+    }
+    const std::ptrdiff_t read_bytes = ReadCliTerminalOutput(terminal, buffer, sizeof(buffer));
+    if (read_bytes > 0) {
+      ++chunks_read;
+      bytes_read_total += static_cast<std::size_t>(read_bytes);
+      terminal.last_output_time_s = ImGui::GetTime();
+      terminal.generation_in_progress = true;
+      vterm_input_write(terminal.vt, buffer, static_cast<std::size_t>(read_bytes));
+      terminal.needs_full_refresh = true;
+      continue;
+    }
+    if (read_bytes == 0) {
+      mark_unseen_if_background();
+      StopCliTerminal(terminal);
+      terminal.should_launch = false;
+      app.status_line = "Gemini terminal exited.";
+      break;
+    }
+    if (read_bytes == -2) {
+      break;
+    }
+    StopCliTerminal(terminal);
+    terminal.should_launch = false;
+    app.status_line = "Gemini terminal read failed.";
+    break;
+  }
+
+  if (terminal.process_info.hProcess != INVALID_HANDLE_VALUE &&
+      WaitForSingleObject(terminal.process_info.hProcess, 0) == WAIT_OBJECT_0) {
+    mark_unseen_if_background();
+    StopCliTerminal(terminal);
+    terminal.should_launch = false;
+    app.status_line = "Gemini terminal exited.";
+  }
+#else
+  if (!terminal.running || terminal.master_fd < 0 || terminal.vt == nullptr) {
+    return;
+  }
+
+  char buffer[8192];
+  int chunks_read = 0;
+  std::size_t bytes_read_total = 0;
+  while (true) {
+    if (chunks_read >= kReadBudgetChunksPerTick || bytes_read_total >= kReadBudgetBytesPerTick) {
+      break;
+    }
+    const ssize_t read_bytes = read(terminal.master_fd, buffer, sizeof(buffer));
+    if (read_bytes > 0) {
+      ++chunks_read;
+      bytes_read_total += static_cast<std::size_t>(read_bytes);
+      terminal.last_output_time_s = ImGui::GetTime();
+      terminal.generation_in_progress = true;
+      vterm_input_write(terminal.vt, buffer, static_cast<std::size_t>(read_bytes));
+      terminal.needs_full_refresh = true;
+      continue;
+    }
+    if (read_bytes == 0) {
+      mark_unseen_if_background();
+      StopCliTerminal(terminal);
+      terminal.should_launch = false;
+      app.status_line = "Gemini terminal exited.";
+      break;
+    }
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      break;
+    }
+    if (errno == EINTR) {
+      continue;
+    }
+    StopCliTerminal(terminal);
+    terminal.should_launch = false;
+    app.status_line = "Gemini terminal read failed.";
+    break;
+  }
+
+  int status = 0;
+  if (terminal.child_pid > 0 && waitpid(terminal.child_pid, &status, WNOHANG) > 0) {
+    mark_unseen_if_background();
+    StopCliTerminal(terminal);
+    terminal.should_launch = false;
+    app.status_line = "Gemini terminal exited.";
+  }
+#endif
+
+  const double now = ImGui::GetTime();
+  if (now - terminal.last_sync_time_s > 1.25) {
+    terminal.last_sync_time_s = now;
+    if (ActiveProviderUsesGeminiHistory(app)) {
+#if defined(_WIN32)
+      // Windows-only: run native session scanning off the UI thread to prevent
+      // this port from freezing when a large or malformed chat JSON appears.
+      // macOS is currently stable with synchronous loading; if it starts to show
+      // the same behavior, we can make this path universal.
+      std::vector<ChatSession> native_now;
+      std::string native_load_error;
+      const bool has_loaded_snapshot = TryConsumeAsyncNativeChatLoad(app, native_now, native_load_error);
+      StartAsyncNativeChatLoad(app);
+
+      if (!native_load_error.empty()) {
+        app.status_line = "Native chat refresh failed: " + native_load_error;
+      }
+      if (has_loaded_snapshot && native_load_error.empty()) {
+        if (terminal.attached_session_id.empty()) {
+          const std::vector<std::string> candidates = CollectNewSessionIds(native_now, terminal.session_ids_before);
+          std::unordered_set<std::string> blocked_ids;
+          for (const auto& other_terminal : app.cli_terminals) {
+            if (other_terminal == nullptr || other_terminal.get() == &terminal || other_terminal->attached_session_id.empty()) {
+              continue;
+            }
+            blocked_ids.insert(other_terminal->attached_session_id);
+          }
+          for (const auto& resolved : app.resolved_native_sessions_by_chat_id) {
+            if (!resolved.second.empty()) {
+              blocked_ids.insert(resolved.second);
+            }
+          }
+          const std::string discovered = PickFirstUnblockedSessionId(candidates, blocked_ids);
+          if (!discovered.empty()) {
+            const std::string previous_chat_id = terminal.attached_chat_id;
+            terminal.attached_session_id = discovered;
+            terminal.attached_chat_id = discovered;
+            if (!previous_chat_id.empty()) {
+              app.resolved_native_sessions_by_chat_id[previous_chat_id] = discovered;
+            }
+            app.chats.erase(std::remove_if(app.chats.begin(), app.chats.end(),
+                                           [&](const ChatSession& c) {
+                                             return !c.uses_native_session && c.id == previous_chat_id;
+                                           }),
+                            app.chats.end());
+          }
+        }
+        const std::string preferred_id =
+            terminal.attached_session_id.empty() ? terminal.attached_chat_id : terminal.attached_session_id;
+        SyncChatsFromLoadedNative(app, std::move(native_now), preferred_id, preserve_selection);
+      }
+#else
+      RefreshGeminiChatsDir(app);
+      const std::vector<ChatSession> native_now = LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app));
+      if (terminal.attached_session_id.empty()) {
+        const std::vector<std::string> candidates = CollectNewSessionIds(native_now, terminal.session_ids_before);
+        std::unordered_set<std::string> blocked_ids;
+        for (const auto& other_terminal : app.cli_terminals) {
+          if (other_terminal == nullptr || other_terminal.get() == &terminal || other_terminal->attached_session_id.empty()) {
+            continue;
+          }
+          blocked_ids.insert(other_terminal->attached_session_id);
+        }
+        for (const auto& resolved : app.resolved_native_sessions_by_chat_id) {
+          if (!resolved.second.empty()) {
+            blocked_ids.insert(resolved.second);
+          }
+        }
+        const std::string discovered = PickFirstUnblockedSessionId(candidates, blocked_ids);
+        if (!discovered.empty()) {
+          const std::string previous_chat_id = terminal.attached_chat_id;
+          terminal.attached_session_id = discovered;
+          terminal.attached_chat_id = discovered;
+          if (!previous_chat_id.empty()) {
+            app.resolved_native_sessions_by_chat_id[previous_chat_id] = discovered;
+          }
+          app.chats.erase(std::remove_if(app.chats.begin(), app.chats.end(),
+                                         [&](const ChatSession& c) {
+                                           return !c.uses_native_session && c.id == previous_chat_id;
+                                         }),
+                          app.chats.end());
+        }
+      }
+      std::string preferred_id = terminal.attached_session_id.empty() ? terminal.attached_chat_id : terminal.attached_session_id;
+      SyncChatsFromNative(app, preferred_id, preserve_selection);
+#endif
+    } else {
+      SyncChatsFromNative(app, terminal.attached_chat_id, preserve_selection);
+    }
+  }
+
+  if (terminal.running &&
+      terminal.generation_in_progress &&
+      terminal.last_output_time_s > 0.0 &&
+      (now - terminal.last_output_time_s) > kGenerationIdleSeconds) {
+    terminal.generation_in_progress = false;
+    mark_unseen_if_background();
+  }
+}
+
+static void RefreshChatHistory(AppState& app) {
+  const std::string selected_id = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
+  SyncChatsFromNative(app, selected_id, true);
+  app.status_line = "Chat history refreshed.";
+}
+
+static void PollAllCliTerminals(AppState& app) {
+  const std::string selected_chat_id = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
+  for (auto& terminal : app.cli_terminals) {
+    if (terminal == nullptr) {
+      continue;
+    }
+    const bool preserve_selection = !selected_chat_id.empty() && terminal->attached_chat_id != selected_chat_id;
+    PollCliTerminal(app, *terminal, preserve_selection);
+  }
+}
+
+static void StartGeminiRequest(AppState& app) {
+  ChatSession* chat = SelectedChat(app);
+  if (chat == nullptr) {
+    app.status_line = "Select or create a chat first.";
+    return;
+  }
+
+  const std::string prompt_text = Trim(app.composer_text);
+  if (QueueGeminiPromptForChat(app, *chat, prompt_text, false)) {
+    app.composer_text.clear();
+  }
+}

@@ -1,0 +1,42 @@
+#pragma once
+
+/// <summary>
+/// Window size/state helper functions.
+/// </summary>
+#include "common/ui/modals/modal_window_state.h"
+
+/// <summary>
+/// About dialog modal.
+/// </summary>
+#include "common/ui/modals/modal_about.h"
+
+/// <summary>
+/// Chat/folder delete confirmation modals.
+/// </summary>
+#include "common/ui/modals/modal_delete_chat.h"
+#include "common/ui/modals/modal_delete_folder.h"
+
+/// <summary>
+/// Folder settings modal.
+/// </summary>
+#include "common/ui/modals/modal_folder_settings.h"
+
+/// <summary>
+/// Template change warning modal.
+/// </summary>
+#include "common/ui/modals/modal_template_change_warning.h"
+
+/// <summary>
+/// Template manager modal and section components.
+/// </summary>
+#include "common/ui/modals/modal_template_manager.h"
+
+/// <summary>
+/// VCS output modal.
+/// </summary>
+#include "common/ui/modals/modal_vcs_output.h"
+
+/// <summary>
+/// App settings modal and section components.
+/// </summary>
+#include "common/ui/modals/modal_app_settings.h"
