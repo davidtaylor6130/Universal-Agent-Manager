@@ -11,3 +11,6 @@
 /.vs/
 .DS_Store
 /subprojects/ollama_engine/models
+/.idea
+/subprojects/ollama_engine/build
+/.idea
