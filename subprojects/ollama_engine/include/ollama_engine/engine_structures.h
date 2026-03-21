@@ -94,6 +94,29 @@ struct SendMessageResponse {
 };
 
 /// <summary>
+/// Common generation/sampling settings used by local inference.
+/// </summary>
+struct GenerationSettings {
+  /// <summary>Sampling temperature. Lower is more deterministic.</summary>
+  float pfTemperature = 0.8f;
+
+  /// <summary>Top-p nucleus sampling threshold.</summary>
+  float pfTopP = 0.95f;
+
+  /// <summary>Minimum probability floor for candidate tokens.</summary>
+  float pfMinP = 0.05f;
+
+  /// <summary>Top-k candidate count cap.</summary>
+  int piTopK = 40;
+
+  /// <summary>Repeat penalty to reduce loops/repetition.</summary>
+  float pfRepeatPenalty = 1.0f;
+
+  /// <summary>Random seed. 4294967295 means default/random behavior.</summary>
+  std::uint32_t piSeed = 4294967295U;
+};
+
+/// <summary>
 /// Runtime options used to initialize the engine.
 /// </summary>
 struct EngineOptions {
@@ -102,6 +125,9 @@ struct EngineOptions {
 
   /// <summary>Embedding vector dimensions.</summary>
   std::size_t piEmbeddingDimensions = 256;
+
+  /// <summary>Generation/sampling settings for prompt responses.</summary>
+  GenerationSettings pGenerationSettings;
 };
 
 }  // namespace ollama_engine
