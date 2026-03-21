@@ -46,6 +46,35 @@ class EngineInterface {
   /// <summary>Reads the latest state snapshot for lifecycle and progress polling.</summary>
   /// <returns>Current state response.</returns>
   virtual CurrentStateResponse QueryCurrentState() const = 0;
+
+  /// <summary>
+  /// Starts asynchronous scan + vectorisation for a repository source.
+  /// </summary>
+  /// <param name="pOptSVectorFile">
+  /// Optional scan target (local path or open-source remote repository URL/branch).
+  /// Nullopt reuses the last known source.
+  /// </param>
+  /// <param name="pSErrorOut">Optional output pointer for human-readable errors.</param>
+  /// <returns>True when the scan worker started.</returns>
+  virtual bool Scan(const std::optional<std::string>& pOptSVectorFile,
+                    std::string* pSErrorOut = nullptr) = 0;
+
+  /// <summary>
+  /// Retrieves semantically relevant indexed snippets from vector search.
+  /// </summary>
+  /// <param name="pSPrompt">Prompt/query text.</param>
+  /// <param name="piMax">Maximum amount of material to return.</param>
+  /// <param name="piMin">Minimum amount of material to return.</param>
+  /// <returns>Snippet list.</returns>
+  virtual std::vector<std::string> Fetch_Relevant_Info(const std::string& pSPrompt,
+                                                       std::size_t piMax,
+                                                       std::size_t piMin) = 0;
+
+  /// <summary>
+  /// Returns current vectorisation state snapshot.
+  /// </summary>
+  /// <returns>Vectorisation state response.</returns>
+  virtual VectorisationStateResponse Fetch_state() = 0;
 };
 
 }  // namespace ollama_engine

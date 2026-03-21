@@ -5358,18 +5358,6 @@ static void DrawSidebarChatOptionsPopup(AppState& app) {
     }
     ImGui::EndMenu();
   }
-
-  ImGui::Separator();
-  if (ImGui::MenuItem("Delete Chat")) {
-    if (app.settings.confirm_delete_chat) {
-      app.pending_delete_chat_id = popup_chat.id;
-      app.open_delete_chat_popup = true;
-    } else {
-      RemoveChatById(app, popup_chat.id);
-    }
-    ImGui::CloseCurrentPopup();
-  }
-
   ImGui::EndPopup();
 }
 
@@ -5728,6 +5716,7 @@ static void DrawMessageBubble(AppState& app, ChatSession& chat, const int messag
         DrawButton("Edit", ImVec2(70.0f, 24.0f), ButtonKind::Ghost)) {
       BeginEditMessage(app, chat, message_index);
     }
+    ImGui::Separator();
   }
 
   ImGui::SetCursorScreenPos(ImVec2(min.x + pad_x, min.y + pad_y + header_h + 2.0f));

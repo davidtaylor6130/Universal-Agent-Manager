@@ -1,14 +1,79 @@
 cmake_minimum_required(VERSION 3.20)
 
+include(FetchContent)
+
+FetchContent_Declare(
+  tree_sitter
+  GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter.git
+  GIT_TAG v0.22.6
+  GIT_SHALLOW TRUE
+)
+FetchContent_Declare(
+  tree_sitter_cpp
+  GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter-cpp.git
+  GIT_TAG v0.22.3
+  GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(tree_sitter tree_sitter_cpp)
+
+set(UAM_TREE_SITTER_CPP_SOURCES
+  ${tree_sitter_cpp_SOURCE_DIR}/src/parser.c
+)
+if(EXISTS "${tree_sitter_cpp_SOURCE_DIR}/src/scanner.c")
+  list(APPEND UAM_TREE_SITTER_CPP_SOURCES ${tree_sitter_cpp_SOURCE_DIR}/src/scanner.c)
+elseif(EXISTS "${tree_sitter_cpp_SOURCE_DIR}/src/scanner.cc")
+  list(APPEND UAM_TREE_SITTER_CPP_SOURCES ${tree_sitter_cpp_SOURCE_DIR}/src/scanner.cc)
+endif()
+
+add_library(uam_tree_sitter_runtime STATIC
+  ${tree_sitter_SOURCE_DIR}/lib/src/lib.c
+)
+target_include_directories(uam_tree_sitter_runtime
+  PUBLIC
+    ${tree_sitter_SOURCE_DIR}/lib/include
+)
+set_target_properties(uam_tree_sitter_runtime PROPERTIES
+  C_STANDARD 11
+  C_STANDARD_REQUIRED ON
+  FOLDER "Subprojects/OllamaEngine/ThirdParty"
+)
+
+add_library(uam_tree_sitter_cpp_grammar STATIC
+  ${UAM_TREE_SITTER_CPP_SOURCES}
+)
+target_include_directories(uam_tree_sitter_cpp_grammar
+  PUBLIC
+    ${tree_sitter_SOURCE_DIR}/lib/include
+    ${tree_sitter_cpp_SOURCE_DIR}/src
+)
+target_link_libraries(uam_tree_sitter_cpp_grammar PUBLIC uam_tree_sitter_runtime)
+set_target_properties(uam_tree_sitter_cpp_grammar PROPERTIES
+  FOLDER "Subprojects/OllamaEngine/ThirdParty"
+)
+
+find_package(SQLite3 REQUIRED)
+
 add_library(uam_ollama_engine STATIC
   src/engine_factory.cpp
+  src/internal/determanistic_hash/determanistic_hash.cpp
   src/internal/embedding_utils.cpp
   src/internal/local_ollama_engine.cpp
+  src/internal/vectorised_rag/vectorised_rag.cpp
 )
 
 target_include_directories(uam_ollama_engine
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+  PRIVATE
+    ${tree_sitter_SOURCE_DIR}/lib/include
+    ${tree_sitter_cpp_SOURCE_DIR}/src
+)
+
+target_link_libraries(uam_ollama_engine
+  PRIVATE
+    SQLite::SQLite3
+    uam_tree_sitter_runtime
+    uam_tree_sitter_cpp_grammar
 )
 
 if(TARGET llama)

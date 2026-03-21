@@ -1,7 +1,9 @@
 #pragma once
 
 #include "ollama_engine/engine_interface.h"
+#include "vectorised_rag/vectorised_rag.h"
 
+#include <optional>
 #include <mutex>
 #include <string>
 
@@ -36,6 +38,14 @@ class LocalOllamaCppEngine final : public EngineInterface {
   GenerationSettings GetGenerationSettings() const override;
   /// <inheritdoc />
   CurrentStateResponse QueryCurrentState() const override;
+  /// <inheritdoc />
+  bool Scan(const std::optional<std::string>& pOptSVectorFile, std::string* pSErrorOut = nullptr) override;
+  /// <inheritdoc />
+  std::vector<std::string> Fetch_Relevant_Info(const std::string& pSPrompt,
+                                               std::size_t piMax,
+                                               std::size_t piMin) override;
+  /// <inheritdoc />
+  VectorisationStateResponse Fetch_state() override;
 
  private:
   /// <summary>Frees currently loaded llama runtime objects when present.</summary>
@@ -47,6 +57,7 @@ class LocalOllamaCppEngine final : public EngineInterface {
   mutable std::mutex mMutexCurrentState;
   std::string ms_LoadedModelName;
   CurrentStateResponse mCurrentStateResponse;
+  vectorised_rag::Context mVectorisedRagContext;
 #ifdef UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP
   std::filesystem::path mPathLoadedModelFile;
   llama_model* mPtrModel = nullptr;

@@ -1,8 +1,8 @@
 #include "embedding_utils.h"
+#include "determanistic_hash/determanistic_hash.h"
 
 #include <cctype>
 #include <cmath>
-#include <cstdint>
 
 namespace ollama_engine {
 namespace {
@@ -37,28 +37,6 @@ std::vector<std::string> Tokenize(const std::string& pSText) {
   return lVecSTokens;
 }
 
-/// <summary>Computes a deterministic 64-bit FNV-1a hash.</summary>
-/// <param name="pSText">Input text.</param>
-/// <returns>FNV-1a hash value.</returns>
-/// <remarks>
-/// We use FNV-1a because it is fast, deterministic, and good enough for
-/// mapping tokens into embedding dimensions.
-/// Magic numbers used here are standard FNV-1a constants:
-/// - 1469598103934665603ULL: 64-bit FNV offset basis (initial hash)
-/// - 1099511628211ULL: 64-bit FNV prime (mixing multiplier)
-/// These are defined by the FNV hash specification and are not arbitrary.
-/// </remarks>
-std::uint64_t Fnv1a64(const std::string& pSText) {
-  constexpr std::uint64_t kiFnv64OffsetBasis = 1469598103934665603ULL;
-  constexpr std::uint64_t kiFnv64Prime = 1099511628211ULL;
-  std::uint64_t liHash = kiFnv64OffsetBasis;
-  for (const unsigned char lCChar : pSText) {
-    liHash ^= static_cast<std::uint64_t>(lCChar);
-    liHash *= kiFnv64Prime;
-  }
-  return liHash;
-}
-
 }  // namespace
 
 namespace internal {
@@ -78,7 +56,7 @@ std::vector<float> BuildEmbedding(const std::string& pSText, const std::size_t p
     lVecSTokens.push_back(pSText);
   }
   for (const std::string& lSToken : lVecSTokens) {
-    const std::uint64_t liHash = Fnv1a64(lSToken);
+    const std::uint64_t liHash = determanistic_hash::Fnv1a64(lSToken);
     // Map the full 64-bit hash into a valid embedding index [0, piDimensions-1].
     // '%' is used as a wrap-around bucket operation so any hash value fits the vector size.
     const std::size_t liFirst = static_cast<std::size_t>(liHash % piDimensions);

@@ -78,6 +78,32 @@ struct CurrentStateResponse {
 };
 
 /// <summary>
+/// Lifecycle state for internal vectorised RAG scanning.
+/// </summary>
+enum class VectorisationLifecycleState {
+  Stopped,  ///< Nothing is currently happening.
+  Running,  ///< Repository scan/vectorisation is in progress.
+  Finished  ///< Scan just finished (reported once).
+};
+
+/// <summary>
+/// Snapshot for vectorised RAG progress polling.
+/// </summary>
+struct VectorisationStateResponse {
+  /// <summary>Current vectorisation lifecycle state.</summary>
+  VectorisationLifecycleState pVectorisationLifecycleState = VectorisationLifecycleState::Stopped;
+
+  /// <summary>Current vector database size in indexed chunks.</summary>
+  std::size_t piVectorDatabaseSize = 0;
+
+  /// <summary>Files processed in the current run.</summary>
+  std::size_t piFilesProcessed = 0;
+
+  /// <summary>Total files targeted in the current run.</summary>
+  std::size_t piTotalFiles = 0;
+};
+
+/// <summary>
 /// Result payload from a prompt request.
 /// </summary>
 struct SendMessageResponse {

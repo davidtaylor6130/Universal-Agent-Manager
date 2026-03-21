@@ -7,6 +7,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <limits>
 #include <mutex>
@@ -43,6 +44,23 @@ GenerationSettings ClampGenerationSettings(const GenerationSettings& pGeneration
   lGenerationSettings.piTopK = std::clamp(lGenerationSettings.piTopK, 1, 200);
   lGenerationSettings.pfRepeatPenalty = std::clamp(lGenerationSettings.pfRepeatPenalty, 0.8f, 2.0f);
   return lGenerationSettings;
+}
+
+/// <summary>Builds runtime options for internal vectorised RAG calls.</summary>
+/// <param name="pEngineOptions">Engine runtime options.</param>
+/// <param name="pPathLoadedModelFile">Currently loaded model path, if any.</param>
+/// <returns>Vectorised RAG runtime options.</returns>
+vectorised_rag::RuntimeOptions BuildVectorisedRagRuntimeOptions(
+    const EngineOptions& pEngineOptions,
+    const std::filesystem::path& pPathLoadedModelFile) {
+  vectorised_rag::RuntimeOptions lRuntimeOptions;
+  lRuntimeOptions.pPathModelFolder = pEngineOptions.pPathModelFolder;
+  lRuntimeOptions.pPathEmbeddingModelFile = pPathLoadedModelFile;
+  const char* lPtrServerUrl = std::getenv("UAM_LLAMA_SERVER_URL");
+  if (lPtrServerUrl != nullptr && *lPtrServerUrl != '\0') {
+    lRuntimeOptions.pSLlamaServerUrl = lPtrServerUrl;
+  }
+  return lRuntimeOptions;
 }
 
 #ifdef UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP
@@ -509,6 +527,7 @@ LocalOllamaCppEngine::LocalOllamaCppEngine(EngineOptions pEngineOptions)
 
 /// <summary>Releases loaded runtime resources.</summary>
 LocalOllamaCppEngine::~LocalOllamaCppEngine() {
+  vectorised_rag::Shutdown(mVectorisedRagContext);
   std::lock_guard<std::mutex> lGuard(mMutexEngineRuntime);
   ReleaseRuntimeLocked();
 }
@@ -1000,6 +1019,66 @@ SendMessageResponse LocalOllamaCppEngine::SendMessage(const std::string& pSPromp
 CurrentStateResponse LocalOllamaCppEngine::QueryCurrentState() const {
   std::lock_guard<std::mutex> lGuard(mMutexCurrentState);
   return mCurrentStateResponse;
+}
+
+/// <summary>Starts asynchronous repository scan + vectorisation.</summary>
+/// <param name="pOptSVectorFile">Optional scan target path/URL.</param>
+/// <param name="pSErrorOut">Optional output pointer for error details.</param>
+/// <returns>True when the scan worker starts successfully.</returns>
+bool LocalOllamaCppEngine::Scan(const std::optional<std::string>& pOptSVectorFile, std::string* pSErrorOut) {
+  vectorised_rag::RuntimeOptions lRuntimeOptions;
+  {
+    std::lock_guard<std::mutex> lGuard(mMutexEngineRuntime);
+#ifdef UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP
+    lRuntimeOptions = BuildVectorisedRagRuntimeOptions(mEngineOptions, mPathLoadedModelFile);
+#else
+    lRuntimeOptions = BuildVectorisedRagRuntimeOptions(mEngineOptions, std::filesystem::path{});
+#endif
+  }
+  return vectorised_rag::Scan(mVectorisedRagContext, pOptSVectorFile, lRuntimeOptions, pSErrorOut);
+}
+
+/// <summary>Fetches semantically relevant snippets from the vectorised index.</summary>
+/// <param name="pSPrompt">Query prompt.</param>
+/// <param name="piMax">Maximum material to return.</param>
+/// <param name="piMin">Minimum material to return.</param>
+/// <returns>Snippet list.</returns>
+std::vector<std::string> LocalOllamaCppEngine::Fetch_Relevant_Info(const std::string& pSPrompt,
+                                                                    const std::size_t piMax,
+                                                                    const std::size_t piMin) {
+  vectorised_rag::RuntimeOptions lRuntimeOptions;
+  {
+    std::lock_guard<std::mutex> lGuard(mMutexEngineRuntime);
+#ifdef UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP
+    lRuntimeOptions = BuildVectorisedRagRuntimeOptions(mEngineOptions, mPathLoadedModelFile);
+#else
+    lRuntimeOptions = BuildVectorisedRagRuntimeOptions(mEngineOptions, std::filesystem::path{});
+#endif
+  }
+  return vectorised_rag::Fetch_Relevant_Info(mVectorisedRagContext, pSPrompt, piMax, piMin, lRuntimeOptions);
+}
+
+/// <summary>Returns current vectorisation state.</summary>
+/// <returns>Vectorisation state response snapshot.</returns>
+VectorisationStateResponse LocalOllamaCppEngine::Fetch_state() {
+  const vectorised_rag::ScanStateSnapshot lScanStateSnapshot = vectorised_rag::Fetch_state(mVectorisedRagContext);
+  VectorisationStateResponse lVectorisationStateResponse;
+  lVectorisationStateResponse.piVectorDatabaseSize = lScanStateSnapshot.piVectorDatabaseSize;
+  lVectorisationStateResponse.piFilesProcessed = lScanStateSnapshot.piFilesProcessed;
+  lVectorisationStateResponse.piTotalFiles = lScanStateSnapshot.piTotalFiles;
+  switch (lScanStateSnapshot.pState) {
+    case vectorised_rag::StateValue::Running:
+      lVectorisationStateResponse.pVectorisationLifecycleState = VectorisationLifecycleState::Running;
+      break;
+    case vectorised_rag::StateValue::Finished:
+      lVectorisationStateResponse.pVectorisationLifecycleState = VectorisationLifecycleState::Finished;
+      break;
+    case vectorised_rag::StateValue::Stopped:
+    default:
+      lVectorisationStateResponse.pVectorisationLifecycleState = VectorisationLifecycleState::Stopped;
+      break;
+  }
+  return lVectorisationStateResponse;
 }
 
 }  // namespace ollama_engine::internal
