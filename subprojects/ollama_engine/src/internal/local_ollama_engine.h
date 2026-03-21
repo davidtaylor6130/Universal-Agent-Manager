@@ -31,6 +31,10 @@ class LocalOllamaCppEngine final : public EngineInterface {
   /// <inheritdoc />
   SendMessageResponse SendMessage(const std::string& pSPrompt) override;
   /// <inheritdoc />
+  bool SetGenerationSettings(const GenerationSettings& pGenerationSettings, std::string* pSErrorOut = nullptr) override;
+  /// <inheritdoc />
+  GenerationSettings GetGenerationSettings() const override;
+  /// <inheritdoc />
   CurrentStateResponse QueryCurrentState() const override;
 
  private:
@@ -38,6 +42,7 @@ class LocalOllamaCppEngine final : public EngineInterface {
   void ReleaseRuntimeLocked();
 
   EngineOptions mEngineOptions;
+  GenerationSettings mGenerationSettings;
   mutable std::mutex mMutexEngineRuntime;
   mutable std::mutex mMutexCurrentState;
   std::string ms_LoadedModelName;

@@ -29,6 +29,22 @@ constexpr std::size_t ki_DefaultContextTokens = 2048;
 constexpr std::size_t ki_DefaultMaxGeneratedTokens = 256;
 constexpr int32_t ki_DefaultGpuLayers = 99;
 
+/// <summary>Clamps generation settings into safe operational ranges.</summary>
+/// <param name="pGenerationSettings">Input settings.</param>
+/// <returns>Clamped settings values.</returns>
+GenerationSettings ClampGenerationSettings(const GenerationSettings& pGenerationSettings) {
+  GenerationSettings lGenerationSettings = pGenerationSettings;
+  lGenerationSettings.pfTemperature = std::clamp(lGenerationSettings.pfTemperature, 0.0f, 2.0f);
+  lGenerationSettings.pfTopP = std::clamp(lGenerationSettings.pfTopP, 0.05f, 1.0f);
+  lGenerationSettings.pfMinP = std::clamp(lGenerationSettings.pfMinP, 0.0f, 1.0f);
+  if (lGenerationSettings.pfMinP > lGenerationSettings.pfTopP) {
+    lGenerationSettings.pfMinP = lGenerationSettings.pfTopP;
+  }
+  lGenerationSettings.piTopK = std::clamp(lGenerationSettings.piTopK, 1, 200);
+  lGenerationSettings.pfRepeatPenalty = std::clamp(lGenerationSettings.pfRepeatPenalty, 0.8f, 2.0f);
+  return lGenerationSettings;
+}
+
 #ifdef UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP
 std::once_flag g_OnceLlamaRuntimeInit;
 
@@ -53,6 +69,46 @@ bool LlamaLoadProgressCallback(float pfProgress, void* pPtrUserData) {
   (void)pfProgress;
   (void)pPtrUserData;
   return true;
+}
+
+/// <summary>Creates a sampler chain from active generation settings.</summary>
+/// <param name="pGenerationSettings">Settings used to assemble the chain.</param>
+/// <returns>Owned sampler chain pointer or null on allocation failure.</returns>
+llama_sampler* BuildSamplerFromGenerationSettings(const GenerationSettings& pGenerationSettings) {
+  llama_sampler_chain_params lSamplerChainParams = llama_sampler_chain_default_params();
+  llama_sampler* lPtrSamplerChain = llama_sampler_chain_init(lSamplerChainParams);
+  if (lPtrSamplerChain == nullptr) {
+    return nullptr;
+  }
+
+  auto AddOwnedSamplerOrFail = [&](llama_sampler* pPtrSampler) -> bool {
+    if (pPtrSampler == nullptr) {
+      llama_sampler_free(lPtrSamplerChain);
+      return false;
+    }
+    llama_sampler_chain_add(lPtrSamplerChain, pPtrSampler);
+    return true;
+  };
+
+  if (!AddOwnedSamplerOrFail(llama_sampler_init_top_k(pGenerationSettings.piTopK)) ||
+      !AddOwnedSamplerOrFail(llama_sampler_init_top_p(pGenerationSettings.pfTopP, 1)) ||
+      !AddOwnedSamplerOrFail(llama_sampler_init_min_p(pGenerationSettings.pfMinP, 1)) ||
+      !AddOwnedSamplerOrFail(llama_sampler_init_penalties(64, pGenerationSettings.pfRepeatPenalty, 0.0f, 0.0f))) {
+    return nullptr;
+  }
+
+  if (pGenerationSettings.pfTemperature <= 0.0f) {
+    if (!AddOwnedSamplerOrFail(llama_sampler_init_greedy())) {
+      return nullptr;
+    }
+  } else {
+    if (!AddOwnedSamplerOrFail(llama_sampler_init_temp(pGenerationSettings.pfTemperature)) ||
+        !AddOwnedSamplerOrFail(llama_sampler_init_dist(pGenerationSettings.piSeed))) {
+      return nullptr;
+    }
+  }
+
+  return lPtrSamplerChain;
 }
 #endif
 
@@ -447,6 +503,8 @@ LocalOllamaCppEngine::LocalOllamaCppEngine(EngineOptions pEngineOptions)
   }
   mEngineOptions.piEmbeddingDimensions =
       std::clamp<std::size_t>(mEngineOptions.piEmbeddingDimensions, 32, 4096);
+  mGenerationSettings = ClampGenerationSettings(mEngineOptions.pGenerationSettings);
+  mEngineOptions.pGenerationSettings = mGenerationSettings;
 }
 
 /// <summary>Releases loaded runtime resources.</summary>
@@ -597,8 +655,7 @@ bool LocalOllamaCppEngine::Load(const std::string& pSModelName, std::string* pSE
     return false;
   }
 
-  llama_sampler_chain_params lSamplerChainParams = llama_sampler_chain_default_params();
-  llama_sampler* lPtrSampler = llama_sampler_chain_init(lSamplerChainParams);
+  llama_sampler* lPtrSampler = BuildSamplerFromGenerationSettings(mGenerationSettings);
   if (lPtrSampler == nullptr) {
     llama_free(lPtrContext);
     llama_model_free(lPtrModel);
@@ -611,10 +668,6 @@ bool LocalOllamaCppEngine::Load(const std::string& pSModelName, std::string* pSE
     mCurrentStateResponse.pOptRunningStructure.reset();
     return false;
   }
-
-  llama_sampler_chain_add(lPtrSampler, llama_sampler_init_min_p(0.05f, 1));
-  llama_sampler_chain_add(lPtrSampler, llama_sampler_init_temp(0.8f));
-  llama_sampler_chain_add(lPtrSampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
 
   mPtrModel = lPtrModel;
   mPtrContext = lPtrContext;
@@ -642,6 +695,49 @@ bool LocalOllamaCppEngine::Load(const std::string& pSModelName, std::string* pSE
   mCurrentStateResponse.pOptRunningStructure.reset();
   return false;
 #endif
+}
+
+/// <summary>Applies generation settings and rebuilds the sampler chain when needed.</summary>
+/// <param name="pGenerationSettings">Requested generation settings.</param>
+/// <param name="pSErrorOut">Optional output pointer for error details.</param>
+/// <returns>True when settings were applied.</returns>
+bool LocalOllamaCppEngine::SetGenerationSettings(const GenerationSettings& pGenerationSettings,
+                                                 std::string* pSErrorOut) {
+  const GenerationSettings lGenerationSettings = ClampGenerationSettings(pGenerationSettings);
+  std::lock_guard<std::mutex> lRuntimeGuard(mMutexEngineRuntime);
+
+#ifdef UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP
+  llama_sampler* lPtrNewSampler = nullptr;
+  if (mPtrModel != nullptr && mPtrContext != nullptr) {
+    lPtrNewSampler = BuildSamplerFromGenerationSettings(lGenerationSettings);
+    if (lPtrNewSampler == nullptr) {
+      if (pSErrorOut != nullptr) {
+        *pSErrorOut = "Failed to build sampler chain from generation settings.";
+      }
+      return false;
+    }
+  }
+
+  if (lPtrNewSampler != nullptr) {
+    if (mPtrSampler != nullptr) {
+      llama_sampler_free(mPtrSampler);
+    }
+    mPtrSampler = lPtrNewSampler;
+  }
+#else
+  (void)pSErrorOut;
+#endif
+
+  mGenerationSettings = lGenerationSettings;
+  mEngineOptions.pGenerationSettings = lGenerationSettings;
+  return true;
+}
+
+/// <summary>Reads the currently active generation settings.</summary>
+/// <returns>Current generation settings.</returns>
+GenerationSettings LocalOllamaCppEngine::GetGenerationSettings() const {
+  std::lock_guard<std::mutex> lRuntimeGuard(mMutexEngineRuntime);
+  return mGenerationSettings;
 }
 
 /// <summary>Processes a prompt and returns a model response and optional embedding.</summary>
