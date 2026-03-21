@@ -438,6 +438,10 @@ static RagIndexService::Config RagConfigFromSettings(const AppSettings& settings
 
 static void SyncRagServiceConfig(AppState& app) {
   app.rag_index_service.SetConfig(RagConfigFromSettings(app.settings));
+  const fs::path model_folder = app.data_root / "models";
+  std::error_code ec;
+  fs::create_directories(model_folder, ec);
+  app.rag_index_service.SetModelFolder(model_folder);
 }
 
 static void NormalizeChatBranchMetadata(AppState& app) {

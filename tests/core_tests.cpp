@@ -9,6 +9,7 @@
 #include "core/provider_runtime.h"
 #include "core/rag_index_service.h"
 #include "core/settings_store.h"
+#include "core/ollama_engine_client.h"
 #include "core/vcs_workspace_service.h"
 
 #include <filesystem>
@@ -22,6 +23,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -613,6 +615,7 @@ UAM_TEST(TestRagIndexServiceRetrievalOrderingAndTopK) {
   UAM_ASSERT(WriteTextFile(workspace.root / "c.txt", "token gamma\n"));
 
   RagIndexService::Config config;
+  config.vector_enabled = false;
   config.top_k = 2;
   RagIndexService rag(config);
   const RagRefreshResult refresh = rag.RefreshIndexIncremental(workspace.root);
@@ -626,6 +629,107 @@ UAM_TEST(TestRagIndexServiceRetrievalOrderingAndTopK) {
   UAM_ASSERT_EQ(std::string("b.txt"), first[1].relative_path);
   UAM_ASSERT_EQ(first[0].relative_path, second[0].relative_path);
   UAM_ASSERT_EQ(first[1].relative_path, second[1].relative_path);
+}
+
+UAM_TEST(TestOllamaEngineInterfaceLifecycle) {
+  TempDir model_dir("uam-vector-rag-models");
+  UAM_ASSERT(WriteTextFile(model_dir.root / "alpha.gguf", "alpha"));
+  UAM_ASSERT(WriteTextFile(model_dir.root / "beta.gguf", "beta"));
+
+  OllamaEngineClient engine;
+  engine.SetModelFolder(model_dir.root);
+  engine.SetEmbeddingDimensions(128);
+
+  const std::vector<std::string> models = engine.ListModels();
+  UAM_ASSERT_EQ(2u, models.size());
+  UAM_ASSERT_EQ(std::string("alpha.gguf"), models[0]);
+  UAM_ASSERT_EQ(std::string("beta.gguf"), models[1]);
+
+  const ollama_engine::CurrentStateResponse initial = engine.QueryCurrentState();
+  UAM_ASSERT(initial.pEngineLifecycleState == ollama_engine::EngineLifecycleState::Idle);
+
+  std::string load_error;
+  UAM_ASSERT(!engine.Load("missing.gguf", &load_error));
+  UAM_ASSERT(!load_error.empty());
+  bool saw_loading = false;
+  bool load_ok = false;
+  std::thread load_worker([&]() {
+    load_ok = engine.Load("alpha.gguf", &load_error);
+  });
+  for (int i = 0; i < 80; ++i) {
+    const ollama_engine::CurrentStateResponse state = engine.QueryCurrentState();
+    if (state.pEngineLifecycleState == ollama_engine::EngineLifecycleState::Loading &&
+        state.pOptLoadingStructure.has_value()) {
+      saw_loading = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  load_worker.join();
+  UAM_ASSERT(load_ok);
+  UAM_ASSERT(saw_loading);
+
+  const ollama_engine::CurrentStateResponse loaded = engine.QueryCurrentState();
+  UAM_ASSERT(loaded.pEngineLifecycleState == ollama_engine::EngineLifecycleState::Loaded);
+  UAM_ASSERT_EQ(std::string("alpha.gguf"), loaded.pSLoadedModelName);
+
+  bool saw_active_generation = false;
+  bool saw_finished = false;
+  ollama_engine::SendMessageResponse message_response;
+  std::thread worker([&]() {
+    message_response = engine.SendMessage(std::string(600, 'x'));
+  });
+  for (int i = 0; i < 300; ++i) {
+    const ollama_engine::CurrentStateResponse state = engine.QueryCurrentState();
+    if (state.pEngineLifecycleState == ollama_engine::EngineLifecycleState::Running ||
+        state.pEngineLifecycleState == ollama_engine::EngineLifecycleState::Thinking) {
+      saw_active_generation = true;
+    }
+    if (state.pEngineLifecycleState == ollama_engine::EngineLifecycleState::Finished) {
+      saw_finished = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  worker.join();
+
+  UAM_ASSERT(saw_active_generation);
+  UAM_ASSERT(saw_finished);
+  UAM_ASSERT(message_response.pbOk);
+  UAM_ASSERT(message_response.pVecfEmbedding.has_value());
+  UAM_ASSERT_EQ(128u, message_response.pVecfEmbedding->size());
+  const ollama_engine::CurrentStateResponse done = engine.QueryCurrentState();
+  UAM_ASSERT(done.pEngineLifecycleState == ollama_engine::EngineLifecycleState::Loaded);
+}
+
+UAM_TEST(TestRagIndexServiceVectorRetrievalWithEngineModel) {
+  TempDir workspace("uam-rag-vector");
+  TempDir model_dir("uam-rag-vector-models");
+  UAM_ASSERT(WriteTextFile(model_dir.root / "mini.gguf", "fake-model"));
+  UAM_ASSERT(WriteTextFile(workspace.root / "deployment.md",
+                           "How to deploy service A\n"
+                           "Use canary migrations and rollout checks\n"));
+  UAM_ASSERT(WriteTextFile(workspace.root / "notes.txt",
+                           "Team lunch plans\n"
+                           "No production rollout guidance here\n"));
+
+  RagIndexService::Config config;
+  config.vector_enabled = true;
+  config.vector_dimensions = 96;
+  config.top_k = 2;
+  RagIndexService rag(config);
+  rag.SetModelFolder(model_dir.root);
+
+  const std::vector<std::string> models = rag.ListModels();
+  UAM_ASSERT_EQ(1u, models.size());
+  UAM_ASSERT(rag.LoadModel("mini.gguf"));
+
+  const RagRefreshResult refresh = rag.RefreshIndexIncremental(workspace.root);
+  UAM_ASSERT(refresh.ok);
+
+  const std::vector<RagSnippet> snippets = rag.RetrieveTopK(workspace.root, "canary rollout migration");
+  UAM_ASSERT(!snippets.empty());
+  UAM_ASSERT_EQ(std::string("deployment.md"), snippets.front().relative_path);
 }
 
 UAM_TEST(TestVcsWorkspaceServiceHandlesNonRepoWorkspace) {

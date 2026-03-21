@@ -10,16 +10,48 @@ set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 set_property(GLOBAL PROPERTY PREDEFINED_TARGETS_FOLDER "_CMake")
 
 option(UAM_FETCH_DEPS "Fetch SDL2 and Dear ImGui from GitHub during configure." ON)
+option(UAM_FETCH_LLAMA_CPP "Fetch pinned llama.cpp fork during configure." ON)
 option(UAM_BUILD_TESTS "Build UAM core tests executable." OFF)
 if(APPLE)
   option(UAM_MACOS_BUNDLE "Build as a macOS .app bundle (no Terminal window needed)." ON)
 endif()
+
+set(UAM_LLAMA_CPP_REPOSITORY "https://github.com/davidtaylor6130/llama.cpp-UAM-Fork.git" CACHE STRING
+  "Git repository URL for llama.cpp fork.")
+set(UAM_LLAMA_CPP_GIT_TAG "990e4d96980d0b016a2b07049cc9031642fb9903" CACHE STRING
+  "Pinned git commit for llama.cpp fork.")
 
 function(uam_set_target_folder target_name folder_name)
   if(TARGET ${target_name})
     set_property(TARGET ${target_name} PROPERTY FOLDER ${folder_name})
   endif()
 endfunction()
+
+if(UAM_FETCH_LLAMA_CPP)
+  include(FetchContent)
+
+  set(GGML_CCACHE OFF CACHE BOOL "" FORCE)
+  set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+  set(LLAMA_BUILD_COMMON OFF CACHE BOOL "" FORCE)
+  set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+  set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+  set(LLAMA_TOOLS_INSTALL OFF CACHE BOOL "" FORCE)
+  set(LLAMA_TESTS_INSTALL OFF CACHE BOOL "" FORCE)
+  set(LLAMA_OPENSSL OFF CACHE BOOL "" FORCE)
+
+  set(CMAKE_FOLDER "ThirdParty/llama.cpp")
+  FetchContent_Declare(
+    llama_cpp_uam
+    GIT_REPOSITORY ${UAM_LLAMA_CPP_REPOSITORY}
+    GIT_TAG ${UAM_LLAMA_CPP_GIT_TAG}
+    GIT_SHALLOW TRUE
+    GIT_PROGRESS TRUE
+  )
+  FetchContent_MakeAvailable(llama_cpp_uam)
+  set(CMAKE_FOLDER "")
+endif()
 
 if(UAM_FETCH_DEPS)
   include(FetchContent)
@@ -103,6 +135,8 @@ if(WIN32)
   )
 endif()
 
+add_subdirectory(subprojects/ollama_engine)
+
 add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   ${UAM_IMGUI_SOURCES}
   ${UAM_VTERM_SOURCES}
@@ -122,6 +156,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/core/provider_runtime.cpp
   src/core/vcs_workspace_service.cpp
   src/core/rag_index_service.cpp
+  src/core/ollama_engine_client.cpp
 )
 target_include_directories(universal_agent_manager
   PRIVATE
@@ -132,7 +167,7 @@ target_include_directories(universal_agent_manager
     ${VTERM_DIR}/include
     ${VTERM_DIR}/src
 )
-target_link_libraries(universal_agent_manager PRIVATE ${UAM_SDL_TARGET} OpenGL::GL)
+target_link_libraries(universal_agent_manager PRIVATE ${UAM_SDL_TARGET} OpenGL::GL uam_ollama_engine)
 set_target_properties(universal_agent_manager PROPERTIES FOLDER "App")
 
 set(UAM_WINDOW_ICON_BMP "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.bmp")
@@ -183,8 +218,10 @@ if(UAM_BUILD_TESTS)
     src/core/settings_store.cpp
     src/core/vcs_workspace_service.cpp
     src/core/rag_index_service.cpp
+    src/core/ollama_engine_client.cpp
   )
   target_include_directories(uam_core_tests PRIVATE src)
+  target_link_libraries(uam_core_tests PRIVATE uam_ollama_engine)
   set_target_properties(uam_core_tests PROPERTIES FOLDER "Tests")
   add_test(NAME uam_core_tests COMMAND uam_core_tests)
 endif()

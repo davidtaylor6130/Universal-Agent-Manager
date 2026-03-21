@@ -1,10 +1,13 @@
 #include "rag_index_service.h"
 
+#include "ollama_engine_client.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
+#include <numeric>
 #include <regex>
 #include <set>
 #include <sstream>
@@ -194,16 +197,67 @@ std::string TruncateSnippet(const std::string& text, const std::size_t max_chars
 
 }  // namespace
 
-RagIndexService::RagIndexService() : config_(Config{}) {}
+RagIndexService::RagIndexService()
+    : config_(Config{}),
+      model_folder_(std::filesystem::current_path() / "models"),
+      model_engine_client_(std::make_unique<OllamaEngineClient>()) {
+  config_.vector_dimensions = std::clamp<std::size_t>(config_.vector_dimensions, 32, 4096);
+  model_engine_client_->SetModelFolder(model_folder_);
+  model_engine_client_->SetEmbeddingDimensions(config_.vector_dimensions);
+}
 
-RagIndexService::RagIndexService(const Config& config) : config_(config) {}
+RagIndexService::RagIndexService(const Config& config)
+    : config_(config),
+      model_folder_(std::filesystem::current_path() / "models"),
+      model_engine_client_(std::make_unique<OllamaEngineClient>()) {
+  config_.vector_dimensions = std::clamp<std::size_t>(config_.vector_dimensions, 32, 4096);
+  model_engine_client_->SetModelFolder(model_folder_);
+  model_engine_client_->SetEmbeddingDimensions(config_.vector_dimensions);
+}
+
+RagIndexService::~RagIndexService() = default;
 
 void RagIndexService::SetConfig(const Config& config) {
   config_ = config;
+  config_.vector_dimensions = std::clamp<std::size_t>(config_.vector_dimensions, 32, 4096);
+  if (model_engine_client_ != nullptr) {
+    model_engine_client_->SetEmbeddingDimensions(config_.vector_dimensions);
+  }
 }
 
 const RagIndexService::Config& RagIndexService::GetConfig() const {
   return config_;
+}
+
+void RagIndexService::SetModelFolder(const std::filesystem::path& model_folder) {
+  model_folder_ = model_folder.empty() ? (std::filesystem::current_path() / "models") : model_folder;
+  loaded_model_.clear();
+  if (model_engine_client_ != nullptr) {
+    model_engine_client_->SetModelFolder(model_folder_);
+    model_engine_client_->SetEmbeddingDimensions(config_.vector_dimensions);
+  }
+}
+
+std::vector<std::string> RagIndexService::ListModels() {
+  if (model_engine_client_ == nullptr) {
+    model_engine_client_ = std::make_unique<OllamaEngineClient>();
+  }
+  model_engine_client_->SetModelFolder(model_folder_);
+  model_engine_client_->SetEmbeddingDimensions(config_.vector_dimensions);
+  return model_engine_client_->ListModels();
+}
+
+bool RagIndexService::LoadModel(const std::string& model_name, std::string* error_out) {
+  if (model_engine_client_ == nullptr) {
+    model_engine_client_ = std::make_unique<OllamaEngineClient>();
+  }
+  model_engine_client_->SetModelFolder(model_folder_);
+  model_engine_client_->SetEmbeddingDimensions(config_.vector_dimensions);
+  if (!model_engine_client_->Load(model_name, error_out)) {
+    return false;
+  }
+  loaded_model_ = model_name;
+  return true;
 }
 
 RagRefreshResult RagIndexService::RefreshIndexIncremental(const std::filesystem::path& workspace_root) {
@@ -232,6 +286,10 @@ RagRefreshResult RagIndexService::RefreshImpl(const std::filesystem::path& works
   if (force_rebuild) {
     workspace = WorkspaceIndex{};
   }
+
+  const bool vector_enabled = config_.vector_enabled;
+  std::string vector_error;
+  const bool vector_ready = vector_enabled && EnsureModelLoaded(&vector_error);
 
   const std::vector<IgnorePattern> ignore_patterns = LoadIgnorePatterns(workspace_root);
   std::unordered_set<std::string> seen_paths;
@@ -371,6 +429,23 @@ RagRefreshResult RagIndexService::RefreshImpl(const std::filesystem::path& works
     updated.mtime_ticks = mtime_ticks;
     updated.content_hash = content_hash;
     updated.chunks = chunk_text(relative_path, content);
+    for (Chunk& chunk : updated.chunks) {
+      if (!vector_enabled) {
+        chunk.vector_embedding.clear();
+        continue;
+      }
+      if (vector_ready && model_engine_client_ != nullptr) {
+        const ollama_engine::SendMessageResponse embedding_result = model_engine_client_->SendMessage(chunk.text);
+        if (embedding_result.pbOk && embedding_result.pVecfEmbedding.has_value() &&
+            !embedding_result.pVecfEmbedding->empty()) {
+          chunk.vector_embedding = *embedding_result.pVecfEmbedding;
+        } else {
+          chunk.vector_embedding = BuildFallbackEmbedding(chunk.text, config_.vector_dimensions);
+        }
+      } else {
+        chunk.vector_embedding = BuildFallbackEmbedding(chunk.text, config_.vector_dimensions);
+      }
+    }
     workspace.files_by_relative_path[relative_path] = std::move(updated);
     ++result.updated_files;
   }
@@ -408,7 +483,7 @@ RagRefreshResult RagIndexService::RefreshImpl(const std::filesystem::path& works
 }
 
 std::vector<RagSnippet> RagIndexService::RetrieveTopK(const std::filesystem::path& workspace_root,
-                                                      const std::string& query) const {
+                                                      const std::string& query) {
   std::vector<RagSnippet> snippets;
   if (!config_.enabled) {
     return snippets;
@@ -428,6 +503,9 @@ std::vector<RagSnippet> RagIndexService::RetrieveTopK(const std::filesystem::pat
     return snippets;
   }
 
+  const std::vector<float> query_embedding = BuildQueryEmbedding(query);
+  const bool use_vector = config_.vector_enabled && !query_embedding.empty();
+
   const double total_chunks = static_cast<double>(workspace.all_chunks.size());
   struct ScoredChunk {
     const Chunk* chunk = nullptr;
@@ -441,7 +519,7 @@ std::vector<RagSnippet> RagIndexService::RetrieveTopK(const std::filesystem::pat
       continue;
     }
 
-    double score = 0.0;
+    double lexical_score = 0.0;
     for (const std::string& token : query_tokens) {
       const auto tf_it = chunk.term_frequency.find(token);
       if (tf_it == chunk.term_frequency.end()) {
@@ -451,7 +529,14 @@ std::vector<RagSnippet> RagIndexService::RetrieveTopK(const std::filesystem::pat
       const double df = (df_it == workspace.chunk_document_frequency.end()) ? 0.0 : static_cast<double>(df_it->second);
       const double idf = std::log((total_chunks + 1.0) / (df + 1.0)) + 1.0;
       const double tf = static_cast<double>(tf_it->second) / static_cast<double>(chunk.token_count);
-      score += (tf * idf);
+      lexical_score += (tf * idf);
+    }
+
+    double score = lexical_score;
+    if (use_vector && chunk.vector_embedding.size() == query_embedding.size()) {
+      const double cosine = CosineSimilarity(query_embedding, chunk.vector_embedding);
+      const double vector_score = (cosine + 1.0) * 0.5;
+      score = (vector_score * 0.85) + (lexical_score * 0.15);
     }
 
     if (score > 0.0) {
@@ -488,4 +573,117 @@ std::vector<RagSnippet> RagIndexService::RetrieveTopK(const std::filesystem::pat
   }
 
   return snippets;
+}
+
+bool RagIndexService::EnsureModelLoaded(std::string* error_out) {
+  if (!config_.vector_enabled) {
+    return false;
+  }
+  if (model_engine_client_ == nullptr) {
+    model_engine_client_ = std::make_unique<OllamaEngineClient>();
+  }
+  model_engine_client_->SetModelFolder(model_folder_);
+  model_engine_client_->SetEmbeddingDimensions(config_.vector_dimensions);
+
+  const ollama_engine::CurrentStateResponse state = model_engine_client_->QueryCurrentState();
+  if ((state.pEngineLifecycleState == ollama_engine::EngineLifecycleState::Loaded ||
+       state.pEngineLifecycleState == ollama_engine::EngineLifecycleState::Thinking ||
+       state.pEngineLifecycleState == ollama_engine::EngineLifecycleState::Running ||
+       state.pEngineLifecycleState == ollama_engine::EngineLifecycleState::Loading ||
+       state.pEngineLifecycleState == ollama_engine::EngineLifecycleState::Finished) &&
+      !state.pSLoadedModelName.empty()) {
+    loaded_model_ = state.pSLoadedModelName;
+    return true;
+  }
+  if (!loaded_model_.empty()) {
+    std::string load_error;
+    if (model_engine_client_->Load(loaded_model_, &load_error)) {
+      return true;
+    }
+  }
+
+  const std::vector<std::string> models = model_engine_client_->ListModels();
+  if (models.empty()) {
+    if (error_out != nullptr) {
+      *error_out = "No models found in " + model_folder_.string();
+    }
+    return false;
+  }
+  const std::string model_name = models.front();
+  if (!model_engine_client_->Load(model_name, error_out)) {
+    return false;
+  }
+  loaded_model_ = model_name;
+  return true;
+}
+
+std::vector<float> RagIndexService::BuildQueryEmbedding(const std::string& query) {
+  if (!config_.vector_enabled) {
+    return {};
+  }
+  std::string vector_error;
+  if (!EnsureModelLoaded(&vector_error) || model_engine_client_ == nullptr) {
+    return BuildFallbackEmbedding(query, config_.vector_dimensions);
+  }
+  const ollama_engine::SendMessageResponse response = model_engine_client_->SendMessage(query);
+  if (response.pbOk && response.pVecfEmbedding.has_value() && !response.pVecfEmbedding->empty()) {
+    return *response.pVecfEmbedding;
+  }
+  return BuildFallbackEmbedding(query, config_.vector_dimensions);
+}
+
+std::vector<float> RagIndexService::BuildFallbackEmbedding(const std::string& text, const std::size_t dimensions) {
+  const std::size_t dim = std::clamp<std::size_t>(dimensions, 32, 4096);
+  std::vector<float> embedding(dim, 0.0f);
+  const std::vector<std::string> tokens = Tokenize(text);
+  const std::string seed = tokens.empty() ? text : std::string{};
+
+  auto mix_token = [&](const std::string& token) {
+    const std::uint64_t hash = Fnv1a64(token);
+    const std::size_t first = static_cast<std::size_t>(hash % dim);
+    const std::size_t second = static_cast<std::size_t>((hash >> 32) % dim);
+    const float weight = 1.0f + static_cast<float>(hash & 0xFFULL) / 255.0f;
+    embedding[first] += weight;
+    embedding[second] -= (weight * 0.5f);
+  };
+
+  if (!tokens.empty()) {
+    for (const std::string& token : tokens) {
+      mix_token(token);
+    }
+  } else {
+    mix_token(seed);
+  }
+
+  double norm = 0.0;
+  for (const float value : embedding) {
+    norm += static_cast<double>(value) * static_cast<double>(value);
+  }
+  norm = std::sqrt(norm);
+  if (norm > 0.0) {
+    for (float& value : embedding) {
+      value = static_cast<float>(static_cast<double>(value) / norm);
+    }
+  }
+  return embedding;
+}
+
+double RagIndexService::CosineSimilarity(const std::vector<float>& lhs, const std::vector<float>& rhs) {
+  if (lhs.empty() || rhs.empty() || lhs.size() != rhs.size()) {
+    return 0.0;
+  }
+  double dot = 0.0;
+  double lhs_norm = 0.0;
+  double rhs_norm = 0.0;
+  for (std::size_t i = 0; i < lhs.size(); ++i) {
+    const double lv = lhs[i];
+    const double rv = rhs[i];
+    dot += (lv * rv);
+    lhs_norm += (lv * lv);
+    rhs_norm += (rv * rv);
+  }
+  if (lhs_norm <= 0.0 || rhs_norm <= 0.0) {
+    return 0.0;
+  }
+  return dot / (std::sqrt(lhs_norm) * std::sqrt(rhs_norm));
 }
