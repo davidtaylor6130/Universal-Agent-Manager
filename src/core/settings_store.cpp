@@ -87,6 +87,10 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file,
   lines << "gemini_extra_flags=" << settings.gemini_extra_flags << '\n';
   lines << "gemini_global_root_path=" << settings.gemini_global_root_path << '\n';
   lines << "default_gemini_template_id=" << settings.default_gemini_template_id << '\n';
+  lines << "rag_enabled=" << (settings.rag_enabled ? "1" : "0") << '\n';
+  lines << "rag_top_k=" << settings.rag_top_k << '\n';
+  lines << "rag_max_snippet_chars=" << settings.rag_max_snippet_chars << '\n';
+  lines << "rag_max_file_bytes=" << settings.rag_max_file_bytes << '\n';
   lines << "center_view_mode=" << ViewModeToString(center_view_mode) << '\n';
   lines << "ui_theme=" << NormalizeThemeId(settings.ui_theme) << '\n';
   lines << "confirm_delete_chat=" << (settings.confirm_delete_chat ? "1" : "0") << '\n';
@@ -128,6 +132,14 @@ void SettingsStore::Load(const std::filesystem::path& settings_file,
       settings.gemini_global_root_path = value;
     } else if (key == "default_gemini_template_id") {
       settings.default_gemini_template_id = value;
+    } else if (key == "rag_enabled") {
+      settings.rag_enabled = ParseBool(value, settings.rag_enabled);
+    } else if (key == "rag_top_k") {
+      settings.rag_top_k = ParseInt(value, settings.rag_top_k);
+    } else if (key == "rag_max_snippet_chars") {
+      settings.rag_max_snippet_chars = ParseInt(value, settings.rag_max_snippet_chars);
+    } else if (key == "rag_max_file_bytes") {
+      settings.rag_max_file_bytes = ParseInt(value, settings.rag_max_file_bytes);
     } else if (key == "center_view_mode") {
       center_view_mode = ViewModeFromString(value);
     } else if (key == "ui_theme") {
@@ -160,6 +172,9 @@ void SettingsStore::Load(const std::filesystem::path& settings_file,
   if (settings.gemini_global_root_path.empty()) {
     settings.gemini_global_root_path = AppPaths::DefaultGeminiUniversalRootPath().string();
   }
+  settings.rag_top_k = std::clamp(settings.rag_top_k, 1, 20);
+  settings.rag_max_snippet_chars = std::clamp(settings.rag_max_snippet_chars, 120, 4000);
+  settings.rag_max_file_bytes = std::clamp(settings.rag_max_file_bytes, 16 * 1024, 20 * 1024 * 1024);
   settings.ui_theme = NormalizeThemeId(settings.ui_theme);
   settings.ui_scale_multiplier = std::clamp(settings.ui_scale_multiplier, 0.85f, 1.75f);
   settings.window_width = std::clamp(settings.window_width, 960, 8192);

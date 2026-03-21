@@ -5,6 +5,7 @@
 #include <vterm.h>
 #include "core/app_models.h"
 #include "core/app_paths.h"
+#include "core/chat_branching.h"
 #include "core/chat_folder_store.h"
 #include "core/chat_repository.h"
 #include "core/frontend_actions.h"
@@ -12,7 +13,9 @@
 #include "core/gemini_template_catalog.h"
 #include "core/provider_profile.h"
 #include "core/provider_runtime.h"
+#include "core/rag_index_service.h"
 #include "core/settings_store.h"
+#include "core/vcs_workspace_service.h"
 
 #ifndef SDL_MAIN_HANDLED
 #define SDL_MAIN_HANDLED
@@ -52,6 +55,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <iomanip>
 #include <initializer_list>
@@ -163,6 +167,8 @@ struct AppState {
   std::string editing_chat_id;
   int editing_message_index = -1;
   std::string editing_message_text;
+  std::string pending_branch_chat_id;
+  int pending_branch_message_index = -1;
   bool open_edit_message_popup = false;
   bool open_about_popup = false;
   bool open_app_settings_popup = false;
@@ -180,10 +186,18 @@ struct AppState {
   bool open_template_change_warning_popup = false;
   std::string pending_template_change_chat_id;
   std::string pending_template_change_override_id;
+  std::unordered_set<std::string> collapsed_branch_chat_ids;
   std::unordered_set<std::string> chats_with_unseen_updates;
   std::string status_line;
   CenterViewMode center_view_mode = CenterViewMode::Structured;
   std::vector<std::unique_ptr<CliTerminalState>> cli_terminals;
+  RagIndexService rag_index_service;
+  std::unordered_map<std::string, VcsSnapshot> vcs_snapshot_by_workspace;
+  std::unordered_set<std::string> vcs_snapshot_loaded_workspaces;
+  std::unordered_map<std::string, std::string> rag_last_refresh_by_workspace;
+  bool open_vcs_output_popup = false;
+  std::string vcs_output_popup_title;
+  std::string vcs_output_popup_content;
 
   std::vector<PendingGeminiCall> pending_calls;
   std::unordered_map<std::string, std::string> resolved_native_sessions_by_chat_id;
@@ -233,6 +247,13 @@ static void RefreshGeminiChatsDir(AppState& app);
 static const ChatFolder* FindFolderById(const AppState& app, const std::string& folder_id);
 static const ProviderProfile& ActiveProviderOrDefault(const AppState& app);
 static bool ActiveProviderUsesGeminiHistory(const AppState& app);
+static int FindChatIndexById(const AppState& app, const std::string& chat_id);
+static ChatSession CreateNewChat(const std::string& folder_id);
+static std::string CompactPreview(const std::string& text, std::size_t max_len);
+static void MarkSelectedCliTerminalForLaunch(AppState& app);
+static void SelectChatById(AppState& app, const std::string& chat_id);
+static void SaveSettings(AppState& app);
+static bool SaveChat(const AppState& app, const ChatSession& chat);
 static void StartAsyncCommandTask(AsyncCommandTask& task, const std::string& command);
 static bool TryConsumeAsyncCommandTaskOutput(AsyncCommandTask& task, std::string& output_out);
 static std::optional<std::string> ExtractSemverVersion(const std::string& text);
@@ -246,6 +267,15 @@ static std::string ResolveResumeSessionIdForChat(const AppState& app, const Chat
 static bool HasPendingCallForChat(const AppState& app, const std::string& chat_id);
 static bool HasAnyPendingCall(const AppState& app);
 static const PendingGeminiCall* FirstPendingCallForChat(const AppState& app, const std::string& chat_id);
+static void NormalizeChatBranchMetadata(AppState& app);
+static bool CreateBranchFromMessage(AppState& app, const std::string& source_chat_id, int message_index);
+static void ConsumePendingBranchRequest(AppState& app);
+static std::string BuildRagContextBlock(const std::vector<RagSnippet>& snippets);
+static std::string BuildRagEnhancedPrompt(AppState& app, const ChatSession& chat, const std::string& prompt_text);
+static RagIndexService::Config RagConfigFromSettings(const AppSettings& settings);
+static void SyncRagServiceConfig(AppState& app);
+static bool RefreshWorkspaceVcsSnapshot(AppState& app, const std::filesystem::path& workspace_root, bool force);
+static void ShowVcsCommandOutput(AppState& app, const std::string& title, const VcsCommandResult& result);
 static float PlatformUiSpacingScale();
 static float ScaleUiLength(float value);
 static ImVec2 ScaleUiSize(const ImVec2& value);
@@ -392,6 +422,178 @@ static fs::path WorkspaceGeminiRootPath(const AppState& app, const ChatSession& 
 
 static fs::path WorkspaceGeminiTemplatePath(const AppState& app, const ChatSession& chat) {
   return WorkspaceGeminiRootPath(app, chat) / "gemini.md";
+}
+
+static RagIndexService::Config RagConfigFromSettings(const AppSettings& settings) {
+  RagIndexService::Config config;
+  config.enabled = settings.rag_enabled;
+  config.top_k = std::clamp(settings.rag_top_k, 1, 20);
+  config.max_snippet_chars = static_cast<std::size_t>(std::clamp(settings.rag_max_snippet_chars, 120, 4000));
+  config.max_file_bytes = static_cast<std::size_t>(std::clamp(settings.rag_max_file_bytes, 16 * 1024, 20 * 1024 * 1024));
+  return config;
+}
+
+static void SyncRagServiceConfig(AppState& app) {
+  app.rag_index_service.SetConfig(RagConfigFromSettings(app.settings));
+}
+
+static void NormalizeChatBranchMetadata(AppState& app) {
+  ChatBranching::Normalize(app.chats);
+}
+
+static std::string BuildRagContextBlock(const std::vector<RagSnippet>& snippets) {
+  if (snippets.empty()) {
+    return "";
+  }
+  std::ostringstream out;
+  out << "Retrieved context:\n";
+  for (std::size_t i = 0; i < snippets.size(); ++i) {
+    const RagSnippet& snippet = snippets[i];
+    out << (i + 1) << ". " << snippet.relative_path << ":" << snippet.start_line << "-" << snippet.end_line << "\n";
+    out << snippet.text << "\n\n";
+  }
+  return out.str();
+}
+
+static std::string BuildRagEnhancedPrompt(AppState& app, const ChatSession& chat, const std::string& prompt_text) {
+  if (!app.settings.rag_enabled || app.center_view_mode != CenterViewMode::Structured) {
+    return prompt_text;
+  }
+
+  const fs::path workspace_root = ResolveWorkspaceRootPath(app, chat);
+  const std::string workspace_key = workspace_root.lexically_normal().generic_string();
+  const RagRefreshResult refresh = app.rag_index_service.RefreshIndexIncremental(workspace_root);
+  if (!refresh.ok) {
+    app.rag_last_refresh_by_workspace[workspace_key] = refresh.error;
+    return prompt_text;
+  }
+  app.rag_last_refresh_by_workspace[workspace_key] =
+      "Indexed files: " + std::to_string(refresh.indexed_files) +
+      ", updated: " + std::to_string(refresh.updated_files) +
+      ", removed: " + std::to_string(refresh.removed_files);
+
+  const std::vector<RagSnippet> snippets = app.rag_index_service.RetrieveTopK(workspace_root, prompt_text);
+  if (snippets.empty()) {
+    return prompt_text;
+  }
+
+  return BuildRagContextBlock(snippets) + "User prompt:\n" + prompt_text;
+}
+
+static bool RefreshWorkspaceVcsSnapshot(AppState& app, const std::filesystem::path& workspace_root, const bool force) {
+  if (workspace_root.empty()) {
+    return false;
+  }
+  const std::string workspace_key = workspace_root.lexically_normal().generic_string();
+  if (!force && app.vcs_snapshot_loaded_workspaces.find(workspace_key) != app.vcs_snapshot_loaded_workspaces.end()) {
+    return true;
+  }
+
+  VcsSnapshot snapshot;
+  snapshot.working_copy_root = workspace_key;
+  const VcsRepoType repo_type = VcsWorkspaceService::DetectRepo(workspace_root);
+  if (repo_type == VcsRepoType::None) {
+    snapshot.repo_type = VcsRepoType::None;
+    app.vcs_snapshot_by_workspace[workspace_key] = std::move(snapshot);
+    app.vcs_snapshot_loaded_workspaces.insert(workspace_key);
+    return true;
+  }
+
+  VcsCommandResult command = VcsWorkspaceService::ReadSnapshot(workspace_root, snapshot);
+  if (!command.ok) {
+    snapshot.repo_type = VcsRepoType::Svn;
+    app.vcs_snapshot_by_workspace[workspace_key] = std::move(snapshot);
+    app.vcs_snapshot_loaded_workspaces.insert(workspace_key);
+    if (force) {
+      app.status_line = command.error.empty() ? "SVN snapshot refresh failed." : command.error;
+    }
+    return false;
+  }
+
+  app.vcs_snapshot_by_workspace[workspace_key] = std::move(snapshot);
+  app.vcs_snapshot_loaded_workspaces.insert(workspace_key);
+  return true;
+}
+
+static void ShowVcsCommandOutput(AppState& app, const std::string& title, const VcsCommandResult& result) {
+  std::ostringstream out;
+  if (!result.ok) {
+    out << "[Command failed";
+    if (result.timed_out) {
+      out << " (timed out)";
+    }
+    if (result.exit_code >= 0) {
+      out << ", exit code " << result.exit_code;
+    }
+    out << "]\n";
+    if (!result.error.empty()) {
+      out << result.error << "\n\n";
+    }
+  }
+  out << result.output;
+  app.vcs_output_popup_title = title;
+  app.vcs_output_popup_content = out.str();
+  app.open_vcs_output_popup = true;
+}
+
+static bool CreateBranchFromMessage(AppState& app, const std::string& source_chat_id, const int message_index) {
+  const int source_index = FindChatIndexById(app, source_chat_id);
+  if (source_index < 0) {
+    app.status_line = "Branch source chat no longer exists.";
+    return false;
+  }
+  const ChatSession source = app.chats[source_index];
+  if (message_index < 0 || message_index >= static_cast<int>(source.messages.size())) {
+    app.status_line = "Branch source message is no longer valid.";
+    return false;
+  }
+  if (source.messages[message_index].role != MessageRole::User) {
+    app.status_line = "Branching is currently supported for user messages only.";
+    return false;
+  }
+
+  ChatSession branch = CreateNewChat(source.folder_id);
+  branch.uses_native_session = false;
+  branch.native_session_id.clear();
+  branch.parent_chat_id = source.id;
+  branch.branch_root_chat_id = source.branch_root_chat_id.empty() ? source.id : source.branch_root_chat_id;
+  branch.branch_from_message_index = message_index;
+  branch.template_override_id = source.template_override_id;
+  branch.gemini_md_bootstrapped = source.gemini_md_bootstrapped;
+  branch.linked_files = source.linked_files;
+  branch.messages.assign(source.messages.begin(), source.messages.begin() + message_index + 1);
+  branch.updated_at = TimestampNow();
+  branch.title = "Branch: " + CompactPreview(source.messages[message_index].content, 40);
+  if (Trim(branch.title).empty()) {
+    branch.title = "Branch Chat";
+  }
+
+  app.chats.push_back(branch);
+  NormalizeChatBranchMetadata(app);
+  SortChatsByRecent(app.chats);
+  SelectChatById(app, branch.id);
+  SaveSettings(app);
+  if (app.center_view_mode == CenterViewMode::CliConsole) {
+    MarkSelectedCliTerminalForLaunch(app);
+  }
+
+  if (!SaveChat(app, branch)) {
+    app.status_line = "Branch created in memory, but failed to save.";
+    return false;
+  }
+  app.status_line = "Branch chat created.";
+  return true;
+}
+
+static void ConsumePendingBranchRequest(AppState& app) {
+  if (app.pending_branch_chat_id.empty()) {
+    return;
+  }
+  const std::string chat_id = app.pending_branch_chat_id;
+  const int message_index = app.pending_branch_message_index;
+  app.pending_branch_chat_id.clear();
+  app.pending_branch_message_index = -1;
+  CreateBranchFromMessage(app, chat_id, message_index);
 }
 
 static std::string BuildShellCommandWithWorkingDirectory(const fs::path& working_directory, const std::string& command) {
@@ -1209,6 +1411,9 @@ static std::optional<ChatSession> ParseGeminiSessionFile(const fs::path& file_pa
   chat.id = session_id;
   chat.native_session_id = session_id;
   chat.uses_native_session = true;
+  chat.parent_chat_id.clear();
+  chat.branch_root_chat_id = session_id;
+  chat.branch_from_message_index = -1;
   chat.created_at = JsonStringOrEmpty(root.Find("startTime"));
   chat.updated_at = JsonStringOrEmpty(root.Find("lastUpdated"));
   if (chat.created_at.empty()) {
@@ -1582,6 +1787,15 @@ static bool ShouldReplaceChatForDuplicateId(const ChatSession& candidate, const 
   if (candidate.template_override_id != existing.template_override_id) {
     return !candidate.template_override_id.empty();
   }
+  if (candidate.parent_chat_id != existing.parent_chat_id) {
+    return !candidate.parent_chat_id.empty();
+  }
+  if (candidate.branch_root_chat_id != existing.branch_root_chat_id) {
+    return !candidate.branch_root_chat_id.empty();
+  }
+  if (candidate.branch_from_message_index != existing.branch_from_message_index) {
+    return candidate.branch_from_message_index > existing.branch_from_message_index;
+  }
   return false;
 }
 
@@ -1622,7 +1836,11 @@ static void RefreshRememberedSelection(AppState& app) {
 
 static void SaveSettings(AppState& app) {
   app.settings.ui_theme = NormalizeThemeChoice(app.settings.ui_theme);
+  app.settings.rag_top_k = std::clamp(app.settings.rag_top_k, 1, 20);
+  app.settings.rag_max_snippet_chars = std::clamp(app.settings.rag_max_snippet_chars, 120, 4000);
+  app.settings.rag_max_file_bytes = std::clamp(app.settings.rag_max_file_bytes, 16 * 1024, 20 * 1024 * 1024);
   ClampWindowSettings(app.settings);
+  SyncRagServiceConfig(app);
   RefreshRememberedSelection(app);
   SettingsStore::Save(SettingsFilePath(app), app.settings, app.center_view_mode);
 }
@@ -1632,6 +1850,7 @@ static void LoadSettings(AppState& app) {
   if (Trim(app.settings.gemini_global_root_path).empty()) {
     app.settings.gemini_global_root_path = AppPaths::DefaultGeminiUniversalRootPath().string();
   }
+  SyncRagServiceConfig(app);
 }
 
 static bool SaveChat(const AppState& app, const ChatSession& chat) {
@@ -1645,6 +1864,9 @@ static std::vector<ChatSession> LoadChats(const AppState& app) {
 static ChatSession CreateNewChat(const std::string& folder_id) {
   ChatSession chat;
   chat.id = NewSessionId();
+  chat.parent_chat_id.clear();
+  chat.branch_root_chat_id = chat.id;
+  chat.branch_from_message_index = -1;
   chat.folder_id = folder_id;
   chat.created_at = TimestampNow();
   chat.updated_at = chat.created_at;
@@ -1796,6 +2018,13 @@ static bool QueueGeminiPromptForChat(AppState& app,
       !chat.gemini_md_bootstrapped &&
       chat.messages.empty() &&
       template_outcome == TemplatePreflightOutcome::ReadyWithTemplate;
+  std::string runtime_prompt = prompt_text;
+  if (!template_control_message) {
+    runtime_prompt = BuildRagEnhancedPrompt(app, chat, prompt_text);
+  }
+  if (should_bootstrap_template) {
+    runtime_prompt = "@.gemini/gemini.md\n\n" + runtime_prompt;
+  }
 
   AddMessage(chat, MessageRole::User, prompt_text);
   SaveAndUpdateStatus(app, chat, "Prompt queued for provider runtime.", "Saved message locally, but failed to persist chat data.");
@@ -1807,8 +2036,6 @@ static bool QueueGeminiPromptForChat(AppState& app,
     native_before = LoadNativeGeminiChats(app.gemini_chats_dir, provider);
   }
   const std::string resume_session_id = ResolveResumeSessionIdForChat(app, chat);
-  const std::string runtime_prompt =
-      should_bootstrap_template ? ("@.gemini/gemini.md\n\n" + prompt_text) : prompt_text;
   const std::string provider_prompt = BuildProviderPrompt(provider, runtime_prompt, chat.linked_files);
   const std::string provider_command = BuildProviderCommand(provider, app.settings, provider_prompt, chat.linked_files, resume_session_id);
   const std::string command = BuildShellCommandWithWorkingDirectory(ResolveWorkspaceRootPath(app, chat), provider_command);
@@ -1878,6 +2105,15 @@ static void ApplyLocalOverrides(AppState& app, std::vector<ChatSession>& native_
     if (!local.template_override_id.empty()) {
       native.template_override_id = local.template_override_id;
     }
+    if (!local.parent_chat_id.empty()) {
+      native.parent_chat_id = local.parent_chat_id;
+    }
+    if (!local.branch_root_chat_id.empty()) {
+      native.branch_root_chat_id = local.branch_root_chat_id;
+    }
+    if (local.branch_from_message_index >= 0) {
+      native.branch_from_message_index = local.branch_from_message_index;
+    }
     if (!local.native_session_id.empty()) {
       native.native_session_id = local.native_session_id;
       native.uses_native_session = true;
@@ -1915,6 +2151,7 @@ static void ApplyLocalOverrides(AppState& app, std::vector<ChatSession>& native_
   }
 
   app.chats = DeduplicateChatsById(std::move(merged));
+  NormalizeChatBranchMetadata(app);
   NormalizeChatFolderAssignments(app);
 }
 
@@ -2624,6 +2861,13 @@ static void FinalizeChatSyncSelection(AppState& app,
       ++it;
     }
   }
+  for (auto it = app.collapsed_branch_chat_ids.begin(); it != app.collapsed_branch_chat_ids.end();) {
+    if (FindChatIndexById(app, *it) < 0) {
+      it = app.collapsed_branch_chat_ids.erase(it);
+    } else {
+      ++it;
+    }
+  }
   const ChatSession* selected_now = SelectedChat(app);
   const std::string selected_now_id = (selected_now != nullptr) ? selected_now->id : "";
   if (selected_now_id != selected_before) {
@@ -2650,6 +2894,7 @@ static void SyncChatsFromNative(AppState& app, const std::string& preferred_chat
     ApplyLocalOverrides(app, native);
   } else {
     app.chats = LoadChats(app);
+    NormalizeChatBranchMetadata(app);
     NormalizeChatFolderAssignments(app);
   }
   FinalizeChatSyncSelection(app, selected_before, preferred_chat_id, preserve_selection);
@@ -3565,6 +3810,9 @@ static void PollPendingGeminiCall(AppState& app) {
         app.chats[selected_index].linked_files = pending_chat_snapshot.linked_files;
         app.chats[selected_index].template_override_id = pending_chat_snapshot.template_override_id;
         app.chats[selected_index].gemini_md_bootstrapped = pending_chat_snapshot.gemini_md_bootstrapped;
+        app.chats[selected_index].parent_chat_id = pending_chat_snapshot.parent_chat_id;
+        app.chats[selected_index].branch_root_chat_id = pending_chat_snapshot.branch_root_chat_id;
+        app.chats[selected_index].branch_from_message_index = pending_chat_snapshot.branch_from_message_index;
         if (!pending_chat_snapshot.folder_id.empty()) {
           app.chats[selected_index].folder_id = pending_chat_snapshot.folder_id;
         }
@@ -3607,6 +3855,7 @@ static void PollPendingGeminiCall(AppState& app) {
       }
     }
 
+    NormalizeChatBranchMetadata(app);
     app.pending_calls.erase(app.pending_calls.begin() + static_cast<std::ptrdiff_t>(i));
   }
 }
@@ -3668,7 +3917,16 @@ static bool RemoveChatById(AppState& app, const std::string& chat_id) {
 #endif
   }
 
+  ChatBranching::ReparentChildrenAfterDelete(app.chats, chat.id);
+  for (const ChatSession& existing_chat : app.chats) {
+    if (existing_chat.id == chat.id) {
+      continue;
+    }
+    SaveChat(app, existing_chat);
+  }
+
   app.chats.erase(app.chats.begin() + chat_index);
+  NormalizeChatBranchMetadata(app);
   if (app.chats.empty()) {
     app.selected_chat_index = -1;
   } else if (app.selected_chat_index > chat_index) {
@@ -3692,8 +3950,13 @@ static bool RemoveChatById(AppState& app, const std::string& chat_id) {
     }
   }
   app.chats_with_unseen_updates.erase(chat.id);
+  app.collapsed_branch_chat_ids.erase(chat.id);
   if (app.editing_chat_id == chat.id) {
     ClearEditMessageState(app);
+  }
+  if (app.pending_branch_chat_id == chat.id) {
+    app.pending_branch_chat_id.clear();
+    app.pending_branch_message_index = -1;
   }
   RefreshRememberedSelection(app);
   SaveSettings(app);
@@ -3757,6 +4020,7 @@ static void CreateAndSelectChat(AppState& app) {
   ChatSession chat = CreateNewChat(FolderForNewChat(app));
   const std::string id = chat.id;
   app.chats.push_back(chat);
+  NormalizeChatBranchMetadata(app);
   SortChatsByRecent(app.chats);
   SelectChatById(app, id);
   SaveSettings(app);
@@ -4848,7 +5112,14 @@ struct FolderHeaderAction {
   bool open_settings = false;
 };
 
-static SidebarItemAction DrawSidebarItem(const AppState& app, const ChatSession& chat, const bool selected, const std::string& item_id) {
+static SidebarItemAction DrawSidebarItem(AppState& app,
+                                         const ChatSession& chat,
+                                         const bool selected,
+                                         const std::string& item_id,
+                                         const int tree_depth = 0,
+                                         const bool has_children = false,
+                                         const bool children_collapsed = false,
+                                         bool* toggle_children = nullptr) {
   const bool light = IsLightPaletteActive();
   SidebarItemAction action;
 
@@ -4866,6 +5137,7 @@ static SidebarItemAction DrawSidebarItem(const AppState& app, const ChatSession&
   float delete_y_offset = 6.0f;
   float row_bottom_gap = 4.0f;
   int title_limit = 46;
+  const float depth_indent = static_cast<float>(tree_depth) * ScaleUiLength(14.0f);
 #if defined(_WIN32)
   // Windows-only DPI/layout mitigation: ensure row geometry scales with text so
   // large user scale values do not cause sidebar overlap. If this starts to
@@ -4883,6 +5155,7 @@ static SidebarItemAction DrawSidebarItem(const AppState& app, const ChatSession&
   indicator_unseen_active_offset = delete_x_offset + ScaleUiLength(18.0f);
   row_bottom_gap = ScaleUiLength(4.0f);
 #endif
+  title_x_offset += depth_indent + (has_children ? ScaleUiLength(18.0f) : 0.0f);
   const ImVec2 row_size(ImGui::GetContentRegionAvail().x, row_h);
   const ImVec2 min = ImGui::GetCursorScreenPos();
   ImGui::InvisibleButton("chat_row", row_size);
@@ -4910,6 +5183,21 @@ static SidebarItemAction DrawSidebarItem(const AppState& app, const ChatSession&
   }
   if (selected) {
     draw->AddRectFilled(min, ImVec2(min.x + accent_w, max.y), ImGui::GetColorU32(ui::kAccent), row_rounding, ImDrawFlags_RoundCornersLeft);
+  }
+
+  if (has_children) {
+    ImGui::SetCursorScreenPos(ImVec2(min.x + depth_indent + ScaleUiLength(2.0f), min.y + delete_y_offset));
+    const char* glyph = children_collapsed ? ">" : "v";
+    if (DrawMiniIconButton("branch_toggle", glyph, ImVec2(14.0f, 14.0f), false)) {
+      if (toggle_children != nullptr) {
+        *toggle_children = true;
+      }
+      action.select = false;
+    }
+  } else if (tree_depth > 0) {
+    draw->AddText(ImVec2(min.x + depth_indent + ScaleUiLength(6.0f), min.y + title_y_offset),
+                  ImGui::GetColorU32(ui::kTextMuted),
+                  ".");
   }
 
   const std::string row_title = CompactPreview(Trim(chat.title).empty() ? chat.id : chat.title, title_limit);
@@ -5095,24 +5383,91 @@ static void DrawLeftPane(AppState& app) {
       folder_indent = ScaleUiLength(8.0f);
 #endif
       ImGui::Indent(folder_indent);
+
+      std::vector<int> folder_chat_indices;
+      std::unordered_set<std::string> folder_chat_ids;
       for (int i = 0; i < static_cast<int>(app.chats.size()); ++i) {
-        if (app.chats[i].folder_id != folder.id) {
-          continue;
-        }
-        const std::string sidebar_item_id = "session_" + app.chats[i].id + "##" + std::to_string(i);
-        const SidebarItemAction item_action = DrawSidebarItem(app, app.chats[i], i == app.selected_chat_index, sidebar_item_id);
-        if (item_action.select) {
-          SelectChatById(app, app.chats[i].id);
-          SaveSettings(app);
-          if (app.center_view_mode == CenterViewMode::CliConsole) {
-            MarkSelectedCliTerminalForLaunch(app);
-          }
-        }
-        if (item_action.request_delete) {
-          chat_to_delete = app.chats[i].id;
+        if (app.chats[i].folder_id == folder.id) {
+          folder_chat_indices.push_back(i);
+          folder_chat_ids.insert(app.chats[i].id);
         }
       }
-      if (chat_count == 0) {
+
+      std::unordered_map<std::string, std::vector<int>> children_by_parent;
+      for (const int chat_index : folder_chat_indices) {
+        const ChatSession& chat = app.chats[chat_index];
+        std::string parent_id = chat.parent_chat_id;
+        if (parent_id.empty() || folder_chat_ids.find(parent_id) == folder_chat_ids.end()) {
+          parent_id.clear();
+        }
+        children_by_parent[parent_id].push_back(chat_index);
+      }
+
+      if (auto roots_it = children_by_parent.find(""); roots_it != children_by_parent.end()) {
+        std::sort(roots_it->second.begin(), roots_it->second.end(), [&](const int lhs, const int rhs) {
+          return app.chats[lhs].updated_at > app.chats[rhs].updated_at;
+        });
+      }
+      for (auto& pair : children_by_parent) {
+        if (pair.first.empty()) {
+          continue;
+        }
+        std::sort(pair.second.begin(), pair.second.end(), [&](const int lhs, const int rhs) {
+          return app.chats[lhs].created_at < app.chats[rhs].created_at;
+        });
+      }
+
+      std::function<void(const std::string&, int)> draw_tree = [&](const std::string& parent_id, const int depth) {
+        const auto it = children_by_parent.find(parent_id);
+        if (it == children_by_parent.end()) {
+          return;
+        }
+
+        for (const int chat_index : it->second) {
+          ChatSession& sidebar_chat = app.chats[chat_index];
+          const auto children_it = children_by_parent.find(sidebar_chat.id);
+          const bool has_children = (children_it != children_by_parent.end() && !children_it->second.empty());
+          bool collapsed_children =
+              (app.collapsed_branch_chat_ids.find(sidebar_chat.id) != app.collapsed_branch_chat_ids.end());
+          bool toggle_children = false;
+          const std::string sidebar_item_id = "session_" + sidebar_chat.id + "##" + std::to_string(chat_index);
+          const SidebarItemAction item_action = DrawSidebarItem(
+              app,
+              sidebar_chat,
+              chat_index == app.selected_chat_index,
+              sidebar_item_id,
+              depth,
+              has_children,
+              collapsed_children,
+              &toggle_children);
+          if (toggle_children && has_children) {
+            if (collapsed_children) {
+              app.collapsed_branch_chat_ids.erase(sidebar_chat.id);
+              collapsed_children = false;
+            } else {
+              app.collapsed_branch_chat_ids.insert(sidebar_chat.id);
+              collapsed_children = true;
+            }
+          }
+          if (item_action.select) {
+            SelectChatById(app, sidebar_chat.id);
+            SaveSettings(app);
+            if (app.center_view_mode == CenterViewMode::CliConsole) {
+              MarkSelectedCliTerminalForLaunch(app);
+            }
+          }
+          if (item_action.request_delete) {
+            chat_to_delete = sidebar_chat.id;
+          }
+
+          if (has_children && !collapsed_children) {
+            draw_tree(sidebar_chat.id, depth + 1);
+          }
+        }
+      };
+
+      draw_tree("", 0);
+      if (folder_chat_indices.empty()) {
         ImGui::TextColored(ui::kTextMuted, "No chats in folder");
         float empty_spacing = 4.0f;
 #if defined(_WIN32)
@@ -5217,6 +5572,11 @@ static void DrawMessageBubble(AppState& app, ChatSession& chat, const int messag
   ImGui::SetCursorScreenPos(ImVec2(min.x + pad_x, min.y + pad_y));
   ImGui::TextColored(role, "%s", role_label);
   if (is_user) {
+    ImGui::SetCursorScreenPos(ImVec2(max.x - 158.0f, min.y + 7.0f));
+    if (DrawButton("Branch", ImVec2(72.0f, 24.0f), ButtonKind::Ghost)) {
+      app.pending_branch_chat_id = chat.id;
+      app.pending_branch_message_index = message_index;
+    }
     ImGui::SetCursorScreenPos(ImVec2(max.x - 80.0f, min.y + 7.0f));
     if (FrontendActionVisible(app, "edit_resubmit", true) &&
         DrawButton("Edit", ImVec2(70.0f, 24.0f), ButtonKind::Ghost)) {
@@ -5644,7 +6004,7 @@ static void DrawChatSettingsPopup(AppState& app, ChatSession& chat, const char* 
   }
 
   ImGui::TextColored(ui::kTextPrimary, "Chat Settings");
-  ImGui::TextColored(ui::kTextMuted, "Template override, folder move, and local Gemini");
+  ImGui::TextColored(ui::kTextMuted, "Template, folder, local Gemini, repository, and RAG");
   ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
   if (ImGui::BeginChild(("chat_settings_scroll##" + chat.id).c_str(), ImVec2(560.0f, 560.0f), false,
                         ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
@@ -5807,7 +6167,7 @@ static void DrawSessionSidePane(AppState& app, ChatSession& chat) {
   PushFontIfAvailable(g_font_title);
   ImGui::TextColored(ui::kTextPrimary, "Chat Settings");
   PopFontIfAvailable(g_font_title);
-  ImGui::TextColored(ui::kTextMuted, "Template override, folder assignment, and local Gemini paths");
+  ImGui::TextColored(ui::kTextMuted, "Template, folder, local Gemini, repository, and RAG");
   ImGui::Dummy(ImVec2(0.0f, ui::kSpace6));
   DrawSoftDivider();
 
@@ -5945,6 +6305,104 @@ static void DrawSessionSidePane(AppState& app, ChatSession& chat) {
         app.status_line = (outcome == TemplatePreflightOutcome::ReadyWithTemplate)
                               ? "Synced effective template to .gemini/gemini.md."
                               : sync_status;
+      }
+    }
+  }
+  EndPanel();
+
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
+  DrawSectionHeader("Repository");
+  if (BeginSectionCard("repository_card")) {
+    const fs::path workspace_root = ResolveWorkspaceRootPath(app, chat);
+    RefreshWorkspaceVcsSnapshot(app, workspace_root, false);
+    const std::string workspace_key = workspace_root.lexically_normal().generic_string();
+    VcsSnapshot snapshot;
+    if (const auto it = app.vcs_snapshot_by_workspace.find(workspace_key); it != app.vcs_snapshot_by_workspace.end()) {
+      snapshot = it->second;
+    } else {
+      snapshot.working_copy_root = workspace_key;
+    }
+
+    const char* repo_type_label = (snapshot.repo_type == VcsRepoType::Svn) ? "SVN" : "None";
+    ImGui::TextColored(ui::kTextMuted, "Repository type");
+    ImGui::TextColored(ui::kTextPrimary, "%s", repo_type_label);
+    ImGui::TextColored(ui::kTextMuted, "Workspace");
+    ImGui::TextWrapped("%s", workspace_key.c_str());
+    if (snapshot.repo_type == VcsRepoType::Svn) {
+      ImGui::TextColored(ui::kTextMuted, "Working copy root");
+      ImGui::TextWrapped("%s", snapshot.working_copy_root.c_str());
+      ImGui::TextColored(ui::kTextMuted, "Revision");
+      ImGui::TextWrapped("%s", snapshot.revision.empty() ? "(unknown)" : snapshot.revision.c_str());
+      ImGui::TextColored(ui::kTextMuted, "Branch path");
+      ImGui::TextWrapped("%s", snapshot.branch_path.empty() ? "(unknown)" : snapshot.branch_path.c_str());
+    }
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace6));
+
+    if (DrawButton("Refresh", ImVec2(90.0f, 30.0f), ButtonKind::Ghost)) {
+      if (RefreshWorkspaceVcsSnapshot(app, workspace_root, true)) {
+        app.status_line = "Repository snapshot refreshed.";
+      }
+    }
+    const bool enable_svn_actions = (snapshot.repo_type == VcsRepoType::Svn);
+    if (!enable_svn_actions) {
+      ImGui::BeginDisabled();
+    }
+    ImGui::SameLine();
+    if (DrawButton("Status", ImVec2(90.0f, 30.0f), ButtonKind::Ghost)) {
+      const VcsCommandResult result = VcsWorkspaceService::ReadStatus(workspace_root);
+      ShowVcsCommandOutput(app, "SVN Status", result);
+      app.status_line = result.ok ? "SVN status loaded." : "SVN status command failed.";
+    }
+    ImGui::SameLine();
+    if (DrawButton("Diff", ImVec2(90.0f, 30.0f), ButtonKind::Ghost)) {
+      const VcsCommandResult result = VcsWorkspaceService::ReadDiff(workspace_root);
+      ShowVcsCommandOutput(app, "SVN Diff", result);
+      app.status_line = result.ok ? "SVN diff loaded." : "SVN diff command failed.";
+    }
+    ImGui::SameLine();
+    if (DrawButton("Log", ImVec2(90.0f, 30.0f), ButtonKind::Ghost)) {
+      const VcsCommandResult result = VcsWorkspaceService::ReadLog(workspace_root);
+      ShowVcsCommandOutput(app, "SVN Log", result);
+      app.status_line = result.ok ? "SVN log loaded." : "SVN log command failed.";
+    }
+    if (!enable_svn_actions) {
+      ImGui::EndDisabled();
+    }
+  }
+  EndPanel();
+
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
+  DrawSectionHeader("RAG");
+  if (BeginSectionCard("rag_card")) {
+    const fs::path workspace_root = ResolveWorkspaceRootPath(app, chat);
+    const std::string workspace_key = workspace_root.lexically_normal().generic_string();
+    ImGui::TextColored(ui::kTextMuted, "RAG mode");
+    ImGui::TextColored(ui::kTextPrimary, "%s", app.settings.rag_enabled ? "Enabled (Structured mode)" : "Disabled");
+    ImGui::TextColored(ui::kTextMuted, "Top K");
+    ImGui::TextColored(ui::kTextPrimary, "%d", app.settings.rag_top_k);
+    ImGui::TextColored(ui::kTextMuted, "Max snippet chars");
+    ImGui::TextColored(ui::kTextPrimary, "%d", app.settings.rag_max_snippet_chars);
+    ImGui::TextColored(ui::kTextMuted, "Max file bytes");
+    ImGui::TextColored(ui::kTextPrimary, "%d", app.settings.rag_max_file_bytes);
+
+    if (const auto it = app.rag_last_refresh_by_workspace.find(workspace_key); it != app.rag_last_refresh_by_workspace.end()) {
+      ImGui::Dummy(ImVec2(0.0f, ui::kSpace4));
+      ImGui::TextColored(ui::kTextMuted, "Last refresh");
+      ImGui::TextWrapped("%s", it->second.c_str());
+    }
+
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace6));
+    if (DrawButton("Rebuild Index", ImVec2(128.0f, 30.0f), ButtonKind::Primary)) {
+      const RagRefreshResult rebuild = app.rag_index_service.RebuildIndex(workspace_root);
+      if (!rebuild.ok) {
+        app.rag_last_refresh_by_workspace[workspace_key] = rebuild.error;
+        app.status_line = "RAG index rebuild failed: " + rebuild.error;
+      } else {
+        app.rag_last_refresh_by_workspace[workspace_key] =
+            "Indexed files: " + std::to_string(rebuild.indexed_files) +
+            ", updated: " + std::to_string(rebuild.updated_files) +
+            ", removed: " + std::to_string(rebuild.removed_files);
+        app.status_line = "RAG index rebuilt.";
       }
     }
   }
@@ -6385,6 +6843,33 @@ static void DrawTemplateManagerModal(AppState& app) {
   ImGui::EndPopup();
 }
 
+static void DrawVcsOutputModal(AppState& app) {
+  if (app.open_vcs_output_popup) {
+    ImGui::OpenPopup("vcs_output_popup");
+    app.open_vcs_output_popup = false;
+  }
+  if (!ImGui::BeginPopupModal("vcs_output_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    return;
+  }
+
+  ImGui::TextColored(ui::kTextPrimary, "%s", app.vcs_output_popup_title.empty() ? "Repository Output" : app.vcs_output_popup_title.c_str());
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
+  PushFontIfAvailable(g_font_mono);
+  PushInputChrome();
+  std::string output_text = app.vcs_output_popup_content;
+  ImGui::InputTextMultiline("##vcs_output_text",
+                            &output_text,
+                            ImVec2(760.0f, 420.0f),
+                            ImGuiInputTextFlags_ReadOnly);
+  PopInputChrome();
+  PopFontIfAvailable(g_font_mono);
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
+  if (DrawButton("Close", ImVec2(96.0f, 32.0f), ButtonKind::Ghost)) {
+    ImGui::CloseCurrentPopup();
+  }
+  ImGui::EndPopup();
+}
+
 static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
   static AppSettings draft_settings{};
   static CenterViewMode draft_center_mode = CenterViewMode::Structured;
@@ -6751,12 +7236,14 @@ int main(int, char**) {
     RefreshGeminiChatsDir(app);
     app.chats = LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app));
     ApplyLocalOverrides(app, app.chats);
+    NormalizeChatBranchMetadata(app);
     NormalizeChatFolderAssignments(app);
     if (app.gemini_chats_dir.empty()) {
       app.status_line = "Gemini native session directory not found yet. Run Gemini CLI in this project once.";
     }
   } else {
     app.chats = LoadChats(app);
+    NormalizeChatBranchMetadata(app);
     NormalizeChatFolderAssignments(app);
   }
   if (!app.chats.empty()) {
@@ -6954,7 +7441,9 @@ int main(int, char**) {
     DrawFolderSettingsModal(app);
     DrawTemplateChangeWarningModal(app);
     DrawTemplateManagerModal(app);
+    DrawVcsOutputModal(app);
     DrawAppSettingsModal(app, platform_ui_scale);
+    ConsumePendingBranchRequest(app);
 
     ImGui::Render();
     int display_w = 0;

@@ -21,6 +21,9 @@ struct ChatSession {
   std::string id;
   std::string native_session_id;
   bool uses_native_session = false;
+  std::string parent_chat_id;
+  std::string branch_root_chat_id;
+  int branch_from_message_index = -1;
   std::string folder_id;
   std::string template_override_id;
   bool gemini_md_bootstrapped = false;
@@ -45,6 +48,10 @@ struct AppSettings {
   std::string gemini_extra_flags;
   std::string gemini_global_root_path;
   std::string default_gemini_template_id;
+  bool rag_enabled = true;
+  int rag_top_k = 6;
+  int rag_max_snippet_chars = 600;
+  int rag_max_file_bytes = 1024 * 1024;
   std::string ui_theme = "dark";
   bool confirm_delete_chat = true;
   bool confirm_delete_folder = true;

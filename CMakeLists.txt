@@ -112,6 +112,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/core/app_paths.cpp
   src/core/chat_folder_store.cpp
   src/core/chat_repository.cpp
+  src/core/chat_branching.cpp
   src/core/settings_store.cpp
   src/core/command_line_words.cpp
   src/core/gemini_command_builder.cpp
@@ -119,6 +120,8 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/core/frontend_actions.cpp
   src/core/provider_profile.cpp
   src/core/provider_runtime.cpp
+  src/core/vcs_workspace_service.cpp
+  src/core/rag_index_service.cpp
 )
 target_include_directories(universal_agent_manager
   PRIVATE
@@ -174,9 +177,12 @@ if(UAM_BUILD_TESTS)
     src/core/gemini_command_builder.cpp
     src/core/gemini_template_catalog.cpp
     src/core/chat_repository.cpp
+    src/core/chat_branching.cpp
     src/core/provider_profile.cpp
     src/core/provider_runtime.cpp
     src/core/settings_store.cpp
+    src/core/vcs_workspace_service.cpp
+    src/core/rag_index_service.cpp
   )
   target_include_directories(uam_core_tests PRIVATE src)
   set_target_properties(uam_core_tests PROPERTIES FOLDER "Tests")

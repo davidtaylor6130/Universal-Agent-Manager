@@ -1,12 +1,15 @@
 #include "core/app_models.h"
 #include "core/app_paths.h"
+#include "core/chat_branching.h"
 #include "core/chat_repository.h"
 #include "core/frontend_actions.h"
 #include "core/gemini_command_builder.h"
 #include "core/gemini_template_catalog.h"
 #include "core/provider_profile.h"
 #include "core/provider_runtime.h"
+#include "core/rag_index_service.h"
 #include "core/settings_store.h"
+#include "core/vcs_workspace_service.h"
 
 #include <filesystem>
 #include <fstream>
@@ -438,6 +441,286 @@ UAM_TEST(TestChatRepositoryPersistsTemplateOverride) {
   const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(data_root.root);
   UAM_ASSERT_EQ(1u, loaded.size());
   UAM_ASSERT_EQ(std::string("custom-template.md"), loaded.front().template_override_id);
+}
+
+UAM_TEST(TestChatRepositoryPersistsBranchMetadata) {
+  TempDir data_root("uam-chat-branch-meta");
+
+  ChatSession chat;
+  chat.id = "chat-branch-child";
+  chat.parent_chat_id = "chat-branch-parent";
+  chat.branch_root_chat_id = "chat-branch-root";
+  chat.branch_from_message_index = 2;
+  chat.folder_id = "folder-default";
+  chat.title = "Branch Child";
+  chat.created_at = "2026-03-21 10:00:00";
+  chat.updated_at = "2026-03-21 10:01:00";
+  chat.messages.push_back(Message{MessageRole::User, "hello", "2026-03-21 10:00:01"});
+
+  UAM_ASSERT(ChatRepository::SaveChat(data_root.root, chat));
+  const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(data_root.root);
+  UAM_ASSERT_EQ(1u, loaded.size());
+  UAM_ASSERT_EQ(std::string("chat-branch-parent"), loaded.front().parent_chat_id);
+  UAM_ASSERT_EQ(std::string("chat-branch-root"), loaded.front().branch_root_chat_id);
+  UAM_ASSERT_EQ(2, loaded.front().branch_from_message_index);
+}
+
+UAM_TEST(TestChatRepositoryDefaultsMissingBranchMetadata) {
+  TempDir data_root("uam-chat-branch-defaults");
+  const fs::path chat_root = data_root.root / "chats" / "chat-legacy";
+  const fs::path messages_root = chat_root / "messages";
+  fs::create_directories(messages_root);
+  UAM_ASSERT(WriteTextFile(chat_root / "meta.txt",
+                           "id=chat-legacy\n"
+                           "title=Legacy\n"
+                           "created_at=2026-03-21 11:00:00\n"
+                           "updated_at=2026-03-21 11:00:01\n"));
+  UAM_ASSERT(WriteTextFile(messages_root / "000001_user.txt", "hello"));
+
+  const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(data_root.root);
+  UAM_ASSERT_EQ(1u, loaded.size());
+  UAM_ASSERT_EQ(std::string("chat-legacy"), loaded.front().branch_root_chat_id);
+  UAM_ASSERT_EQ(std::string(""), loaded.front().parent_chat_id);
+  UAM_ASSERT_EQ(-1, loaded.front().branch_from_message_index);
+}
+
+UAM_TEST(TestChatBranchingReparentChildrenAfterDelete) {
+  std::vector<ChatSession> chats;
+
+  ChatSession root;
+  root.id = "root";
+  root.parent_chat_id = "";
+  root.branch_root_chat_id = "root";
+  root.branch_from_message_index = -1;
+  chats.push_back(root);
+
+  ChatSession child_a;
+  child_a.id = "child-a";
+  child_a.parent_chat_id = "root";
+  child_a.branch_root_chat_id = "root";
+  child_a.branch_from_message_index = 1;
+  chats.push_back(child_a);
+
+  ChatSession child_b;
+  child_b.id = "child-b";
+  child_b.parent_chat_id = "child-a";
+  child_b.branch_root_chat_id = "root";
+  child_b.branch_from_message_index = 2;
+  chats.push_back(child_b);
+
+  ChatBranching::ReparentChildrenAfterDelete(chats, "root");
+
+  ChatBranching::Normalize(chats);
+  const auto find_by_id = [&](const std::string& id) -> const ChatSession* {
+    for (const ChatSession& chat : chats) {
+      if (chat.id == id) {
+        return &chat;
+      }
+    }
+    return nullptr;
+  };
+
+  const ChatSession* a = find_by_id("child-a");
+  const ChatSession* b = find_by_id("child-b");
+  UAM_ASSERT(a != nullptr);
+  UAM_ASSERT(b != nullptr);
+  UAM_ASSERT_EQ(std::string(""), a->parent_chat_id);
+  UAM_ASSERT_EQ(std::string("child-a"), a->branch_root_chat_id);
+  UAM_ASSERT_EQ(std::string("child-a"), b->branch_root_chat_id);
+}
+
+UAM_TEST(TestRagIndexServiceIndexesRetrievesAndCites) {
+  TempDir workspace("uam-rag-workspace");
+  UAM_ASSERT(WriteTextFile(workspace.root / "alpha.txt",
+                           "First line about deployment\n"
+                           "Second line about branches\n"
+                           "Third line about release notes\n"));
+  UAM_ASSERT(WriteTextFile(workspace.root / "beta.txt",
+                           "A different topic with infra setup\n"
+                           "No mention of deployment here\n"));
+
+  RagIndexService::Config config;
+  config.top_k = 3;
+  config.max_snippet_chars = 240;
+  RagIndexService rag(config);
+
+  const RagRefreshResult refresh = rag.RefreshIndexIncremental(workspace.root);
+  UAM_ASSERT(refresh.ok);
+  const std::vector<RagSnippet> snippets = rag.RetrieveTopK(workspace.root, "deployment branches");
+  UAM_ASSERT(!snippets.empty());
+  UAM_ASSERT(!snippets.front().relative_path.empty());
+  UAM_ASSERT(snippets.front().start_line >= 1);
+  UAM_ASSERT(snippets.front().end_line >= snippets.front().start_line);
+}
+
+UAM_TEST(TestRagIndexServiceIncrementalRefreshDetectsChanges) {
+  TempDir workspace("uam-rag-incremental");
+  const fs::path file = workspace.root / "notes.txt";
+  UAM_ASSERT(WriteTextFile(file, "line one\nline two\n"));
+
+  RagIndexService rag;
+  RagRefreshResult first = rag.RefreshIndexIncremental(workspace.root);
+  UAM_ASSERT(first.ok);
+  UAM_ASSERT(first.indexed_files >= 1);
+
+  RagRefreshResult second = rag.RefreshIndexIncremental(workspace.root);
+  UAM_ASSERT(second.ok);
+  UAM_ASSERT_EQ(0, second.updated_files);
+
+  {
+    std::error_code ec;
+    const fs::file_time_type current_mtime = fs::last_write_time(file, ec);
+    UAM_ASSERT(!ec);
+    fs::last_write_time(file, current_mtime + std::chrono::seconds(2), ec);
+    UAM_ASSERT(!ec);
+  }
+  RagRefreshResult third = rag.RefreshIndexIncremental(workspace.root);
+  UAM_ASSERT(third.ok);
+  UAM_ASSERT_EQ(0, third.updated_files);
+
+  UAM_ASSERT(WriteTextFile(file, "line one\nline two changed\n"));
+  RagRefreshResult fourth = rag.RefreshIndexIncremental(workspace.root);
+  UAM_ASSERT(fourth.ok);
+  UAM_ASSERT(fourth.updated_files >= 1);
+}
+
+UAM_TEST(TestRagIndexServiceFiltersBinaryAndLargeFiles) {
+  TempDir workspace("uam-rag-filtering");
+  UAM_ASSERT(WriteTextFile(workspace.root / "keep.txt", "search token stays here\n"));
+  {
+    std::ofstream binary(workspace.root / "binary.bin", std::ios::binary | std::ios::trunc);
+    binary << "abc";
+    binary.put('\0');
+    binary << "def";
+  }
+  UAM_ASSERT(WriteTextFile(workspace.root / "huge.txt", std::string(1024, 'x')));
+
+  RagIndexService::Config config;
+  config.max_file_bytes = 128;
+  RagIndexService rag(config);
+
+  const RagRefreshResult refresh = rag.RefreshIndexIncremental(workspace.root);
+  UAM_ASSERT(refresh.ok);
+  const std::vector<RagSnippet> snippets = rag.RetrieveTopK(workspace.root, "token");
+  UAM_ASSERT_EQ(1u, snippets.size());
+  UAM_ASSERT_EQ(std::string("keep.txt"), snippets.front().relative_path);
+}
+
+UAM_TEST(TestRagIndexServiceRetrievalOrderingAndTopK) {
+  TempDir workspace("uam-rag-ordering");
+  UAM_ASSERT(WriteTextFile(workspace.root / "a.txt", "token token alpha\n"));
+  UAM_ASSERT(WriteTextFile(workspace.root / "b.txt", "token token beta\n"));
+  UAM_ASSERT(WriteTextFile(workspace.root / "c.txt", "token gamma\n"));
+
+  RagIndexService::Config config;
+  config.top_k = 2;
+  RagIndexService rag(config);
+  const RagRefreshResult refresh = rag.RefreshIndexIncremental(workspace.root);
+  UAM_ASSERT(refresh.ok);
+
+  const std::vector<RagSnippet> first = rag.RetrieveTopK(workspace.root, "token");
+  const std::vector<RagSnippet> second = rag.RetrieveTopK(workspace.root, "token");
+  UAM_ASSERT_EQ(2u, first.size());
+  UAM_ASSERT_EQ(first.size(), second.size());
+  UAM_ASSERT_EQ(std::string("a.txt"), first[0].relative_path);
+  UAM_ASSERT_EQ(std::string("b.txt"), first[1].relative_path);
+  UAM_ASSERT_EQ(first[0].relative_path, second[0].relative_path);
+  UAM_ASSERT_EQ(first[1].relative_path, second[1].relative_path);
+}
+
+UAM_TEST(TestVcsWorkspaceServiceHandlesNonRepoWorkspace) {
+  TempDir workspace("uam-vcs-none");
+  UAM_ASSERT(WriteTextFile(workspace.root / "file.txt", "hello\n"));
+
+  const VcsRepoType repo = VcsWorkspaceService::DetectRepo(workspace.root);
+  UAM_ASSERT(repo == VcsRepoType::None);
+
+  VcsSnapshot snapshot;
+  const VcsCommandResult snapshot_result = VcsWorkspaceService::ReadSnapshot(workspace.root, snapshot);
+  UAM_ASSERT(!snapshot_result.ok || snapshot.repo_type == VcsRepoType::Svn);
+
+  const VcsCommandResult status = VcsWorkspaceService::ReadStatus(workspace.root);
+  UAM_ASSERT(!status.ok || !status.output.empty());
+}
+
+UAM_TEST(TestVcsWorkspaceServiceAppliesOutputCapsAndTimeout) {
+#if defined(_WIN32)
+  return;
+#else
+  TempDir workspace("uam-vcs-fake-workspace");
+  TempDir fake_bin("uam-vcs-fake-bin");
+  const fs::path svn_binary = fake_bin.root / "svn";
+
+  std::ostringstream script;
+  script << "#!/bin/sh\n";
+  script << "cmd=\"$1\"\n";
+  script << "case \"$cmd\" in\n";
+  script << "  info)\n";
+  script << "    echo \"Working Copy Root Path: " << workspace.root.generic_string() << "\"\n";
+  script << "    echo \"URL: https://example.com/svn/repo/branches/feature-x\"\n";
+  script << "    echo \"Revision: 123\"\n";
+  script << "    echo \"Relative URL: ^/branches/feature-x\"\n";
+  script << "    ;;\n";
+  script << "  status)\n";
+  script << "    i=0\n";
+  script << "    while [ \"$i\" -lt 20000 ]; do\n";
+  script << "      echo \"M       file_$i.txt\"\n";
+  script << "      i=$((i + 1))\n";
+  script << "    done\n";
+  script << "    ;;\n";
+  script << "  diff)\n";
+  script << "    sleep 8\n";
+  script << "    echo \"delayed diff\"\n";
+  script << "    ;;\n";
+  script << "  log)\n";
+  script << "    echo \"r123 | test | 2026-03-21\"\n";
+  script << "    ;;\n";
+  script << "  *)\n";
+  script << "    echo \"unknown\" >&2\n";
+  script << "    exit 1\n";
+  script << "    ;;\n";
+  script << "esac\n";
+  script << "exit 0\n";
+  UAM_ASSERT(WriteTextFile(svn_binary, script.str()));
+  std::error_code chmod_ec;
+  fs::permissions(svn_binary,
+                  fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec |
+                      fs::perms::group_read | fs::perms::group_exec |
+                      fs::perms::others_read | fs::perms::others_exec,
+                  fs::perm_options::replace,
+                  chmod_ec);
+  UAM_ASSERT(!chmod_ec);
+
+  std::string path_value = fake_bin.root.string();
+  if (const char* existing_path = std::getenv("PATH")) {
+    path_value += ":";
+    path_value += existing_path;
+  }
+  ScopedEnvVar path_override("PATH", path_value);
+
+  UAM_ASSERT(VcsWorkspaceService::DetectRepo(workspace.root) == VcsRepoType::Svn);
+
+  VcsSnapshot snapshot;
+  const VcsCommandResult snapshot_result = VcsWorkspaceService::ReadSnapshot(workspace.root, snapshot);
+  UAM_ASSERT(snapshot_result.ok);
+  UAM_ASSERT(snapshot.repo_type == VcsRepoType::Svn);
+  UAM_ASSERT_EQ(std::string("123"), snapshot.revision);
+  UAM_ASSERT_EQ(std::string("/branches/feature-x"), snapshot.branch_path);
+
+  const VcsCommandResult status = VcsWorkspaceService::ReadStatus(workspace.root);
+  UAM_ASSERT(status.ok);
+  UAM_ASSERT(status.truncated);
+  UAM_ASSERT(status.output.find("[Output truncated due to size limit.]") != std::string::npos);
+
+  const auto start = std::chrono::steady_clock::now();
+  const VcsCommandResult diff = VcsWorkspaceService::ReadDiff(workspace.root);
+  const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - start)
+                              .count();
+  UAM_ASSERT(!diff.ok);
+  UAM_ASSERT(diff.timed_out);
+  UAM_ASSERT(elapsed_ms < 7800);
+#endif
 }
 
 UAM_TEST(TestGeminiTemplateCatalogImportCollisionAndFiltering) {

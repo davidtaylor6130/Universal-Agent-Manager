@@ -51,6 +51,19 @@ std::string TimestampNow() {
   return out.str();
 }
 
+int ParseIntOrDefault(const std::string& value, const int fallback) {
+  try {
+    std::size_t index = 0;
+    const int parsed = std::stoi(value, &index, 10);
+    if (index != value.size()) {
+      return fallback;
+    }
+    return parsed;
+  } catch (...) {
+    return fallback;
+  }
+}
+
 }  // namespace
 
 bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const ChatSession& chat) {
@@ -67,6 +80,9 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
   meta << "id=" << chat.id << '\n';
   meta << "native_session_id=" << chat.native_session_id << '\n';
   meta << "uses_native_session=" << (chat.uses_native_session ? "1" : "0") << '\n';
+  meta << "parent_chat=" << chat.parent_chat_id << '\n';
+  meta << "branch_root=" << chat.branch_root_chat_id << '\n';
+  meta << "branch_from_index=" << chat.branch_from_message_index << '\n';
   meta << "folder=" << chat.folder_id << '\n';
   meta << "template_override=" << chat.template_override_id << '\n';
   meta << "gemini_md_bootstrapped=" << (chat.gemini_md_bootstrapped ? "1" : "0") << '\n';
@@ -137,6 +153,12 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
           chat.native_session_id = value;
         } else if (key == "uses_native_session") {
           chat.uses_native_session = (value == "1" || value == "true");
+        } else if (key == "parent_chat") {
+          chat.parent_chat_id = value;
+        } else if (key == "branch_root") {
+          chat.branch_root_chat_id = value;
+        } else if (key == "branch_from_index") {
+          chat.branch_from_message_index = ParseIntOrDefault(value, -1);
         } else if (key == "folder") {
           chat.folder_id = value;
         } else if (key == "template_override") {
@@ -164,6 +186,12 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
       chat.uses_native_session = true;
     } else if (chat.uses_native_session) {
       chat.native_session_id = chat.id;
+    }
+    if (chat.branch_root_chat_id.empty()) {
+      chat.branch_root_chat_id = chat.id;
+    }
+    if (chat.parent_chat_id.empty()) {
+      chat.branch_from_message_index = -1;
     }
 
     const fs::path messages_dir = folder.path() / "messages";
