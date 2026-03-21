@@ -1,5 +1,6 @@
 #include "vectorised_rag.h"
 
+#include "../embedding_utils.h"
 #include "../determanistic_hash/determanistic_hash.h"
 
 #include <algorithm>
@@ -76,6 +77,20 @@ bool StartsWith(const std::string& pSValue, const std::string& pSPrefix) {
   return pSValue.size() >= pSPrefix.size() && pSValue.compare(0, pSPrefix.size(), pSPrefix) == 0;
 }
 
+bool EndsWithIgnoreCase(const std::string& pSValue, const std::string& pSSuffix) {
+  if (pSValue.size() < pSSuffix.size()) {
+    return false;
+  }
+  const std::size_t liOffset = pSValue.size() - pSSuffix.size();
+  for (std::size_t liIndex = 0; liIndex < pSSuffix.size(); ++liIndex) {
+    if (static_cast<char>(std::tolower(static_cast<unsigned char>(pSValue[liOffset + liIndex]))) !=
+        static_cast<char>(std::tolower(static_cast<unsigned char>(pSSuffix[liIndex])))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 std::string TrimAscii(const std::string& pSValue) {
   std::size_t liBegin = 0;
   while (liBegin < pSValue.size() && std::isspace(static_cast<unsigned char>(pSValue[liBegin])) != 0) {
@@ -86,6 +101,32 @@ std::string TrimAscii(const std::string& pSValue) {
     --liEnd;
   }
   return pSValue.substr(liBegin, liEnd - liBegin);
+}
+
+bool IsAllowedDatabaseNameCharacter(const char pCChar) {
+  const unsigned char lCUChar = static_cast<unsigned char>(pCChar);
+  return std::isalnum(lCUChar) != 0 || pCChar == '_' || pCChar == '-' || pCChar == '.';
+}
+
+std::string SanitizeDatabaseName(const std::string& pSDatabaseName) {
+  std::string lSDatabaseName = TrimAscii(pSDatabaseName);
+  if (EndsWithIgnoreCase(lSDatabaseName, ".sqlite3")) {
+    lSDatabaseName.resize(lSDatabaseName.size() - std::string(".sqlite3").size());
+  }
+  std::string lSSanitized;
+  lSSanitized.reserve(lSDatabaseName.size());
+  for (const char lCChar : lSDatabaseName) {
+    if (IsAllowedDatabaseNameCharacter(lCChar)) {
+      lSSanitized.push_back(lCChar);
+    } else {
+      lSSanitized.push_back('_');
+    }
+  }
+  while (!lSSanitized.empty() &&
+         (lSSanitized.back() == '.' || lSSanitized.back() == '_' || lSSanitized.back() == '-')) {
+    lSSanitized.pop_back();
+  }
+  return lSSanitized;
 }
 
 std::string ShellQuote(const std::string& pSValue) {
@@ -278,6 +319,16 @@ bool IsSupportedCppFile(const fs::path& pPathFile) {
   return kSetSExtensions.find(ToLowerAscii(pPathFile.extension().string())) != kSetSExtensions.end();
 }
 
+bool IsSupportedDocumentationFile(const fs::path& pPathFile) {
+  static const std::unordered_set<std::string> kSetSExtensions = {
+      ".md", ".markdown", ".txt", ".rst", ".adoc", ".asciidoc"};
+  return kSetSExtensions.find(ToLowerAscii(pPathFile.extension().string())) != kSetSExtensions.end();
+}
+
+bool IsIndexableSourceFile(const fs::path& pPathFile) {
+  return IsSupportedCppFile(pPathFile) || IsSupportedDocumentationFile(pPathFile);
+}
+
 bool ShouldSkipDirectory(const fs::path& pPathDirectory) {
   const std::string lSName = pPathDirectory.filename().string();
   if (lSName.empty()) {
@@ -292,7 +343,7 @@ bool ShouldSkipDirectory(const fs::path& pPathDirectory) {
   return false;
 }
 
-std::vector<fs::path> CollectCppFiles(const fs::path& pPathRoot) {
+std::vector<fs::path> CollectIndexableFiles(const fs::path& pPathRoot) {
   std::vector<fs::path> lVecPathFiles;
   std::error_code lErrorCode;
   fs::recursive_directory_iterator lIterator(pPathRoot, fs::directory_options::skip_permission_denied, lErrorCode);
@@ -317,7 +368,7 @@ std::vector<fs::path> CollectCppFiles(const fs::path& pPathRoot) {
       lErrorCode.clear();
       continue;
     }
-    if (!IsSupportedCppFile(lEntry.path())) {
+    if (!IsIndexableSourceFile(lEntry.path())) {
       continue;
     }
     lVecPathFiles.push_back(lEntry.path());
@@ -626,6 +677,125 @@ std::vector<ChunkRecord> BuildFileSummaryFallback(const std::string& pSSourceId,
   lChunk.piEndLine = static_cast<int>(liLineSpan);
   FinalizeChunkIdentity(&lChunk);
   lVecChunks.push_back(std::move(lChunk));
+  return lVecChunks;
+}
+
+bool IsRstHeadingUnderline(const std::string& pSLine) {
+  const std::string lSTrimmed = TrimAscii(pSLine);
+  if (lSTrimmed.size() < 3) {
+    return false;
+  }
+  const char lCChar = lSTrimmed.front();
+  if (lCChar != '=' && lCChar != '-' && lCChar != '~' && lCChar != '^' && lCChar != '*') {
+    return false;
+  }
+  for (const char lCCheck : lSTrimmed) {
+    if (lCCheck != lCChar) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::vector<ChunkRecord> ExtractChunksFromDocumentationFile(const std::string& pSSourceId,
+                                                            const std::string& pSRelativePath,
+                                                            const std::string& pSContent,
+                                                            const std::size_t piChunkCharLimit) {
+  const std::size_t liChunkLimit = std::max<std::size_t>(piChunkCharLimit, std::size_t{512});
+  const std::vector<std::string> lVecSLines = SplitLines(pSContent);
+  if (lVecSLines.empty()) {
+    return BuildFileSummaryFallback(pSSourceId, pSRelativePath, pSContent, liChunkLimit);
+  }
+
+  std::vector<ChunkRecord> lVecChunks;
+  std::string lSCurrentHeading = fs::path(pSRelativePath).filename().string();
+  std::string lSCurrentChunkText;
+  int liCurrentChunkStartLine = 1;
+
+  auto FlushChunk = [&](int piEndLineInclusive) {
+    const std::string lSTrimmed = TrimAscii(lSCurrentChunkText);
+    if (lSTrimmed.empty()) {
+      lSCurrentChunkText.clear();
+      return;
+    }
+    ChunkRecord lChunk;
+    lChunk.pSSourceId = pSSourceId;
+    lChunk.pSFilePath = pSRelativePath;
+    lChunk.pSChunkType = "doc_section";
+    lChunk.pSSymbolName = lSCurrentHeading.empty() ? fs::path(pSRelativePath).filename().string() : lSCurrentHeading;
+    lChunk.pSParentSymbol.clear();
+    lChunk.piStartLine = liCurrentChunkStartLine;
+    lChunk.piEndLine = std::max(liCurrentChunkStartLine, piEndLineInclusive);
+    lChunk.pSRawText = lSTrimmed;
+    FinalizeChunkIdentity(&lChunk);
+    std::vector<ChunkRecord> lVecSplitChunks = MaybeSplitLargeChunk(lChunk, liChunkLimit);
+    lVecChunks.insert(lVecChunks.end(),
+                      std::make_move_iterator(lVecSplitChunks.begin()),
+                      std::make_move_iterator(lVecSplitChunks.end()));
+    lSCurrentChunkText.clear();
+  };
+
+  std::size_t liIndex = 0;
+  while (liIndex < lVecSLines.size()) {
+    const std::string& lSLine = lVecSLines[liIndex];
+    const std::string lSTrimmed = TrimAscii(lSLine);
+
+    bool lbMarkdownHeading = false;
+    std::string lSHeadingText;
+    if (!lSTrimmed.empty() && lSTrimmed.front() == '#') {
+      lbMarkdownHeading = true;
+      std::size_t liPos = 0;
+      while (liPos < lSTrimmed.size() && lSTrimmed[liPos] == '#') {
+        ++liPos;
+      }
+      lSHeadingText = TrimAscii(lSTrimmed.substr(liPos));
+    }
+
+    bool lbSetextHeading = false;
+    if (!lbMarkdownHeading && !lSTrimmed.empty() && (liIndex + 1) < lVecSLines.size() &&
+        IsRstHeadingUnderline(lVecSLines[liIndex + 1])) {
+      lbSetextHeading = true;
+      lSHeadingText = lSTrimmed;
+    }
+
+    if (lbMarkdownHeading || lbSetextHeading) {
+      const int liHeadingLine = static_cast<int>(liIndex + 1);
+      FlushChunk(liHeadingLine - 1);
+      if (!lSHeadingText.empty()) {
+        lSCurrentHeading = lSHeadingText;
+      }
+      liCurrentChunkStartLine = liHeadingLine;
+      lSCurrentChunkText = lSLine;
+      if (lbSetextHeading) {
+        lSCurrentChunkText += "\n";
+        lSCurrentChunkText += lVecSLines[liIndex + 1];
+        liIndex += 2;
+      } else {
+        ++liIndex;
+      }
+      continue;
+    }
+
+    if (lSCurrentChunkText.empty()) {
+      liCurrentChunkStartLine = static_cast<int>(liIndex + 1);
+      lSCurrentChunkText = lSLine;
+    } else {
+      lSCurrentChunkText += "\n";
+      lSCurrentChunkText += lSLine;
+    }
+
+    const bool lbParagraphBoundary = lSTrimmed.empty();
+    const bool lbChunkLarge = lSCurrentChunkText.size() >= liChunkLimit;
+    if (lbChunkLarge || (lbParagraphBoundary && lSCurrentChunkText.size() >= (liChunkLimit / 2))) {
+      FlushChunk(static_cast<int>(liIndex + 1));
+    }
+    ++liIndex;
+  }
+
+  FlushChunk(static_cast<int>(lVecSLines.size()));
+  if (lVecChunks.empty()) {
+    return BuildFileSummaryFallback(pSSourceId, pSRelativePath, pSContent, liChunkLimit);
+  }
   return lVecChunks;
 }
 
@@ -1199,6 +1369,11 @@ std::optional<std::vector<float>> BuildEmbedding(Context& pContext,
                                                  const RuntimeOptions& pRuntimeOptions,
                                                  const std::string& pSText,
                                                  std::string* pSErrorOut) {
+  if (pRuntimeOptions.pbUseDeterministicEmbeddings) {
+    const std::size_t liDimensions =
+        std::clamp<std::size_t>(pRuntimeOptions.piDeterministicEmbeddingDimensions, 32, 4096);
+    return NormalizeEmbedding(ollama_engine::internal::BuildEmbedding(pSText, liDimensions));
+  }
 #ifdef UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP
   const fs::path lPathModelForServer = ResolveEmbeddingModelPath(pRuntimeOptions);
   const std::optional<std::vector<float>> lOptServerEmbedding =
@@ -1231,19 +1406,155 @@ bool ExecSql(sqlite3* pPtrDatabase, const char* pSSql, std::string* pSErrorOut) 
   return false;
 }
 
-fs::path BuildDatabasePath(const std::string& pSSourceId) {
-  const fs::path lPathDatabaseDirectory = fs::current_path() / ".vectorised_rag";
+fs::path BuildStorageDirectory(const RuntimeOptions& pRuntimeOptions) {
+  const std::string lSFolderName =
+      pRuntimeOptions.pSStorageFolderName.empty() ? ".vectorised_rag" : pRuntimeOptions.pSStorageFolderName;
+  const fs::path lPathDatabaseDirectory = fs::current_path() / lSFolderName;
   std::error_code lErrorCode;
   fs::create_directories(lPathDatabaseDirectory, lErrorCode);
+  return lPathDatabaseDirectory;
+}
+
+fs::path BuildNamedDatabasePath(const RuntimeOptions& pRuntimeOptions, const std::string& pSDatabaseName) {
+  const std::string lSDatabaseName = SanitizeDatabaseName(pSDatabaseName);
+  if (lSDatabaseName.empty()) {
+    return {};
+  }
+  return BuildStorageDirectory(pRuntimeOptions) / (lSDatabaseName + ".sqlite3");
+}
+
+fs::path BuildDatabasePath(const std::string& pSSourceId, const RuntimeOptions& pRuntimeOptions) {
+  const fs::path lPathNamedDatabase = BuildNamedDatabasePath(pRuntimeOptions, pRuntimeOptions.pSDatabaseName);
+  if (!lPathNamedDatabase.empty()) {
+    return lPathNamedDatabase;
+  }
+  const fs::path lPathDatabaseDirectory = BuildStorageDirectory(pRuntimeOptions);
   return lPathDatabaseDirectory / (determanistic_hash::HashTextHex(pSSourceId) + ".sqlite3");
 }
 
-bool OpenDatabaseForSource(const std::string& pSSourceId, sqlite3** pPtrDatabaseOut, fs::path* pPathDatabaseOut) {
+bool HasPathSeparator(const std::string& pSValue) {
+  return pSValue.find('/') != std::string::npos || pSValue.find('\\') != std::string::npos;
+}
+
+std::vector<fs::path> CollectSqliteFilesInDirectory(const fs::path& pPathDirectory) {
+  std::vector<fs::path> lVecPathDatabases;
+  std::error_code lErrorCode;
+  if (!fs::exists(pPathDirectory, lErrorCode) || !fs::is_directory(pPathDirectory, lErrorCode)) {
+    return lVecPathDatabases;
+  }
+
+  for (const fs::directory_entry& lEntry : fs::directory_iterator(pPathDirectory, lErrorCode)) {
+    if (lErrorCode) {
+      lErrorCode.clear();
+      continue;
+    }
+    if (!lEntry.is_regular_file(lErrorCode) || lErrorCode) {
+      lErrorCode.clear();
+      continue;
+    }
+    if (ToLowerAscii(lEntry.path().extension().string()) != ".sqlite3") {
+      continue;
+    }
+    lVecPathDatabases.push_back(lEntry.path());
+  }
+  std::sort(lVecPathDatabases.begin(), lVecPathDatabases.end());
+  return lVecPathDatabases;
+}
+
+bool ResolveDatabaseInput(const std::string& pSDatabaseInput,
+                          const RuntimeOptions& pRuntimeOptions,
+                          std::vector<fs::path>* pPtrVecPathDatabasesOut,
+                          std::string* pSErrorOut) {
+  if (pPtrVecPathDatabasesOut == nullptr) {
+    if (pSErrorOut != nullptr) {
+      *pSErrorOut = "Database path output was null.";
+    }
+    return false;
+  }
+
+  const std::string lSInput = TrimAscii(pSDatabaseInput);
+  if (lSInput.empty()) {
+    return true;
+  }
+
+  std::error_code lErrorCode;
+  const fs::path lPathInput = fs::path(lSInput);
+  if (fs::exists(lPathInput, lErrorCode)) {
+    if (fs::is_directory(lPathInput, lErrorCode)) {
+      const std::vector<fs::path> lVecPathDirectoryDatabases = CollectSqliteFilesInDirectory(lPathInput);
+      if (lVecPathDirectoryDatabases.empty()) {
+        if (pSErrorOut != nullptr) {
+          *pSErrorOut = "No .sqlite3 databases found in directory: " + lPathInput.string();
+        }
+        return false;
+      }
+      pPtrVecPathDatabasesOut->insert(pPtrVecPathDatabasesOut->end(), lVecPathDirectoryDatabases.begin(),
+                                      lVecPathDirectoryDatabases.end());
+      return true;
+    }
+
+    if (fs::is_regular_file(lPathInput, lErrorCode)) {
+      if (ToLowerAscii(lPathInput.extension().string()) != ".sqlite3") {
+        if (pSErrorOut != nullptr) {
+          *pSErrorOut = "Expected .sqlite3 database file: " + lPathInput.string();
+        }
+        return false;
+      }
+      pPtrVecPathDatabasesOut->push_back(lPathInput);
+      return true;
+    }
+
+    if (pSErrorOut != nullptr) {
+      *pSErrorOut = "Database input is not a regular file or directory: " + lPathInput.string();
+    }
+    return false;
+  }
+
+  if (HasPathSeparator(lSInput)) {
+    if (pSErrorOut != nullptr) {
+      *pSErrorOut = "Database path was not found: " + lSInput;
+    }
+    return false;
+  }
+
+  const fs::path lPathNamedDatabase = BuildNamedDatabasePath(pRuntimeOptions, lSInput);
+  if (lPathNamedDatabase.empty()) {
+    if (pSErrorOut != nullptr) {
+      *pSErrorOut = "Invalid logical database name: " + lSInput;
+    }
+    return false;
+  }
+  if (!fs::exists(lPathNamedDatabase, lErrorCode) || !fs::is_regular_file(lPathNamedDatabase, lErrorCode)) {
+    if (pSErrorOut != nullptr) {
+      *pSErrorOut = "Named database was not found: " + lPathNamedDatabase.string();
+    }
+    return false;
+  }
+
+  pPtrVecPathDatabasesOut->push_back(lPathNamedDatabase);
+  return true;
+}
+
+bool HasChunksTable(sqlite3* pPtrDatabase) {
+  static constexpr const char* kSql = "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunks' LIMIT 1;";
+  sqlite3_stmt* lPtrStatement = nullptr;
+  if (sqlite3_prepare_v2(pPtrDatabase, kSql, -1, &lPtrStatement, nullptr) != SQLITE_OK) {
+    return false;
+  }
+  const bool lbHasTable = (sqlite3_step(lPtrStatement) == SQLITE_ROW);
+  sqlite3_finalize(lPtrStatement);
+  return lbHasTable;
+}
+
+bool OpenDatabaseForSource(const std::string& pSSourceId,
+                           const RuntimeOptions& pRuntimeOptions,
+                           sqlite3** pPtrDatabaseOut,
+                           fs::path* pPathDatabaseOut) {
   if (pPtrDatabaseOut == nullptr || pPathDatabaseOut == nullptr) {
     return false;
   }
   *pPtrDatabaseOut = nullptr;
-  *pPathDatabaseOut = BuildDatabasePath(pSSourceId);
+  *pPathDatabaseOut = BuildDatabasePath(pSSourceId, pRuntimeOptions);
   if (sqlite3_open((*pPathDatabaseOut).string().c_str(), pPtrDatabaseOut) != SQLITE_OK) {
     if (*pPtrDatabaseOut != nullptr) {
       sqlite3_close(*pPtrDatabaseOut);
@@ -1483,7 +1794,7 @@ void MarkScanStopped(Context& pContext, const std::string& pSError, const bool p
 void RunScanWorker(Context& pContext, const SourceSpec pSourceSpec, const RuntimeOptions pRuntimeOptions) {
   sqlite3* lPtrDatabase = nullptr;
   fs::path lPathDatabase;
-  if (!OpenDatabaseForSource(pSourceSpec.pSSourceId, &lPtrDatabase, &lPathDatabase)) {
+  if (!OpenDatabaseForSource(pSourceSpec.pSSourceId, pRuntimeOptions, &lPtrDatabase, &lPathDatabase)) {
     MarkScanStopped(pContext, "Failed to open vector database.", false);
     return;
   }
@@ -1502,7 +1813,7 @@ void RunScanWorker(Context& pContext, const SourceSpec pSourceSpec, const Runtim
     pContext.pPathVectorDatabaseFile = lPathDatabase;
   }
 
-  const std::vector<fs::path> lVecPathFiles = CollectCppFiles(pSourceSpec.pPathRoot);
+  const std::vector<fs::path> lVecPathFiles = CollectIndexableFiles(pSourceSpec.pPathRoot);
   const std::size_t liTotalFiles = lVecPathFiles.size();
   std::size_t liFilesProcessed = 0;
   std::size_t liVectorDatabaseSize = CountVectorRows(lPtrDatabase, pSourceSpec.pSSourceId);
@@ -1543,8 +1854,13 @@ void RunScanWorker(Context& pContext, const SourceSpec pSourceSpec, const Runtim
       continue;
     }
 
-    std::vector<ChunkRecord> lVecChunks =
-        ExtractChunksFromCppFile(pSourceSpec.pSSourceId, lSRelativePath, *lOptSContent, liChunkCharLimit);
+    std::vector<ChunkRecord> lVecChunks;
+    if (IsSupportedCppFile(lPathFile)) {
+      lVecChunks = ExtractChunksFromCppFile(pSourceSpec.pSSourceId, lSRelativePath, *lOptSContent, liChunkCharLimit);
+    } else {
+      lVecChunks =
+          ExtractChunksFromDocumentationFile(pSourceSpec.pSSourceId, lSRelativePath, *lOptSContent, liChunkCharLimit);
+    }
     DeleteChunksForFile(lPtrDatabase, pSourceSpec.pSSourceId, lSRelativePath);
 
     for (ChunkRecord& lChunk : lVecChunks) {
@@ -1591,7 +1907,8 @@ void RunScanWorker(Context& pContext, const SourceSpec pSourceSpec, const Runtim
   MarkScanStopped(pContext, "", true);
 }
 
-std::string FormatSnippet(const std::string& pSFilePath,
+std::string FormatSnippet(const std::string& pSSourceId,
+                          const std::string& pSFilePath,
                           const int piStartLine,
                           const int piEndLine,
                           const std::string& pSChunkType,
@@ -1603,6 +1920,9 @@ std::string FormatSnippet(const std::string& pSFilePath,
     pSRawText = pSRawText.substr(0, kiMaxSnippetChars) + "\n// ... truncated ...";
   }
   std::ostringstream lStream;
+  if (!pSSourceId.empty()) {
+    lStream << "[" << pSSourceId << "] ";
+  }
   lStream << pSFilePath << ":" << piStartLine << "-" << piEndLine << " [" << pSChunkType;
   if (!pSSymbolName.empty()) {
     lStream << " " << pSSymbolName;
@@ -1677,6 +1997,77 @@ bool Scan(Context& pContext,
   return true;
 }
 
+bool LoadRagDatabases(Context& pContext,
+                      const std::vector<std::string>& pVecSDatabaseInputs,
+                      const RuntimeOptions& pRuntimeOptions,
+                      std::string* pSErrorOut) {
+  {
+    std::lock_guard<std::mutex> lGuard(pContext.pMutex);
+    if (pContext.pbThreadRunning) {
+      if (pSErrorOut != nullptr) {
+        *pSErrorOut = "Cannot load databases while scan is running.";
+      }
+      return false;
+    }
+  }
+
+  if (pVecSDatabaseInputs.empty()) {
+    std::lock_guard<std::mutex> lGuard(pContext.pMutex);
+    pContext.pVecPathLoadedDatabases.clear();
+    return true;
+  }
+
+  std::vector<fs::path> lVecPathLoadedDatabases;
+  for (const std::string& lSDatabaseInput : pVecSDatabaseInputs) {
+    if (!ResolveDatabaseInput(lSDatabaseInput, pRuntimeOptions, &lVecPathLoadedDatabases, pSErrorOut)) {
+      return false;
+    }
+  }
+
+  if (lVecPathLoadedDatabases.empty()) {
+    if (pSErrorOut != nullptr) {
+      *pSErrorOut = "No databases resolved from LoadRagDatabases inputs.";
+    }
+    return false;
+  }
+
+  std::vector<fs::path> lVecPathUniqueDatabases;
+  std::unordered_set<std::string> lSetSSeenKeys;
+  for (const fs::path& lPathDatabaseCandidate : lVecPathLoadedDatabases) {
+    std::error_code lErrorCode;
+    const fs::path lPathAbsolute = fs::absolute(lPathDatabaseCandidate, lErrorCode);
+    const fs::path lPathNormalized = (lErrorCode ? lPathDatabaseCandidate : lPathAbsolute).lexically_normal();
+    const std::string lSKey = lPathNormalized.generic_string();
+    if (lSetSSeenKeys.insert(lSKey).second) {
+      lVecPathUniqueDatabases.push_back(lPathNormalized);
+    }
+  }
+
+  for (const fs::path& lPathDatabase : lVecPathUniqueDatabases) {
+    sqlite3* lPtrDatabase = nullptr;
+    if (sqlite3_open(lPathDatabase.string().c_str(), &lPtrDatabase) != SQLITE_OK) {
+      if (lPtrDatabase != nullptr) {
+        sqlite3_close(lPtrDatabase);
+      }
+      if (pSErrorOut != nullptr) {
+        *pSErrorOut = "Failed to open database: " + lPathDatabase.string();
+      }
+      return false;
+    }
+    const auto lDatabaseCloser = std::unique_ptr<sqlite3, decltype(&sqlite3_close)>(lPtrDatabase, &sqlite3_close);
+    if (!HasChunksTable(lPtrDatabase)) {
+      if (pSErrorOut != nullptr) {
+        *pSErrorOut = "Database is missing required chunks table: " + lPathDatabase.string();
+      }
+      return false;
+    }
+  }
+
+  std::lock_guard<std::mutex> lGuard(pContext.pMutex);
+  pContext.pVecPathLoadedDatabases = std::move(lVecPathUniqueDatabases);
+  return true;
+}
+
 std::vector<std::string> Fetch_Relevant_Info(Context& pContext,
                                              const std::string& pSPrompt,
                                              std::size_t piMax,
@@ -1693,34 +2084,34 @@ std::vector<std::string> Fetch_Relevant_Info(Context& pContext,
   }
   const std::vector<float>& lVecfPromptEmbedding = *lOptVecfPromptEmbedding;
 
-  std::string lSSourceId;
-  fs::path lPathDatabase;
+  std::vector<fs::path> lVecPathDatabases;
   {
     std::lock_guard<std::mutex> lGuard(pContext.pMutex);
-    lSSourceId = pContext.pSActiveSourceId;
-    lPathDatabase = pContext.pPathVectorDatabaseFile;
+    lVecPathDatabases = pContext.pVecPathLoadedDatabases;
+    if (lVecPathDatabases.empty() && !pContext.pPathVectorDatabaseFile.empty()) {
+      lVecPathDatabases.push_back(pContext.pPathVectorDatabaseFile);
+    }
   }
-  if (lSSourceId.empty() || lPathDatabase.empty()) {
+
+  if (lVecPathDatabases.empty()) {
     return lVecSSnippets;
   }
 
-  sqlite3* lPtrDatabase = nullptr;
-  if (sqlite3_open(lPathDatabase.string().c_str(), &lPtrDatabase) != SQLITE_OK) {
-    if (lPtrDatabase != nullptr) {
-      sqlite3_close(lPtrDatabase);
+  std::vector<fs::path> lVecPathUniqueDatabases;
+  std::unordered_set<std::string> lSetSSeenDatabases;
+  for (const fs::path& lPathDatabaseCandidate : lVecPathDatabases) {
+    std::error_code lErrorCode;
+    const fs::path lPathAbsolute = fs::absolute(lPathDatabaseCandidate, lErrorCode);
+    const fs::path lPathNormalized = (lErrorCode ? lPathDatabaseCandidate : lPathAbsolute).lexically_normal();
+    const std::string lSKey = lPathNormalized.generic_string();
+    if (lSetSSeenDatabases.insert(lSKey).second) {
+      lVecPathUniqueDatabases.push_back(lPathNormalized);
     }
-    return lVecSSnippets;
   }
-  const auto lDatabaseCloser = std::unique_ptr<sqlite3, decltype(&sqlite3_close)>(lPtrDatabase, &sqlite3_close);
 
   static constexpr const char* kSql =
-      "SELECT file_path, chunk_type, symbol_name, parent_symbol, start_line, end_line, raw_text, embedding "
-      "FROM chunks WHERE source_id = ?1;";
-  sqlite3_stmt* lPtrStatement = nullptr;
-  if (sqlite3_prepare_v2(lPtrDatabase, kSql, -1, &lPtrStatement, nullptr) != SQLITE_OK) {
-    return lVecSSnippets;
-  }
-  sqlite3_bind_text(lPtrStatement, 1, lSSourceId.c_str(), -1, SQLITE_TRANSIENT);
+      "SELECT source_id, file_path, chunk_type, symbol_name, parent_symbol, start_line, end_line, raw_text, "
+      "embedding FROM chunks;";
 
   struct ScoredSnippet {
     std::string pSRendered;
@@ -1728,46 +2119,64 @@ std::vector<std::string> Fetch_Relevant_Info(Context& pContext,
   };
   std::vector<ScoredSnippet> lVecScored;
 
-  while (sqlite3_step(lPtrStatement) == SQLITE_ROW) {
-    const char* lPtrFilePath = reinterpret_cast<const char*>(sqlite3_column_text(lPtrStatement, 0));
-    const char* lPtrChunkType = reinterpret_cast<const char*>(sqlite3_column_text(lPtrStatement, 1));
-    const char* lPtrSymbolName = reinterpret_cast<const char*>(sqlite3_column_text(lPtrStatement, 2));
-    const char* lPtrParentSymbol = reinterpret_cast<const char*>(sqlite3_column_text(lPtrStatement, 3));
-    const int liStartLine = sqlite3_column_int(lPtrStatement, 4);
-    const int liEndLine = sqlite3_column_int(lPtrStatement, 5);
-    const char* lPtrRawText = reinterpret_cast<const char*>(sqlite3_column_text(lPtrStatement, 6));
-    const void* lPtrBlob = sqlite3_column_blob(lPtrStatement, 7);
-    const int liBlobBytes = sqlite3_column_bytes(lPtrStatement, 7);
+  for (const fs::path& lPathDatabase : lVecPathUniqueDatabases) {
+    sqlite3* lPtrDatabase = nullptr;
+    if (sqlite3_open(lPathDatabase.string().c_str(), &lPtrDatabase) != SQLITE_OK) {
+      if (lPtrDatabase != nullptr) {
+        sqlite3_close(lPtrDatabase);
+      }
+      continue;
+    }
+    const auto lDatabaseCloser = std::unique_ptr<sqlite3, decltype(&sqlite3_close)>(lPtrDatabase, &sqlite3_close);
 
-    if (lPtrFilePath == nullptr || lPtrChunkType == nullptr || lPtrRawText == nullptr) {
+    sqlite3_stmt* lPtrStatement = nullptr;
+    if (sqlite3_prepare_v2(lPtrDatabase, kSql, -1, &lPtrStatement, nullptr) != SQLITE_OK) {
       continue;
     }
 
-    const std::vector<float> lVecfChunkEmbedding = DeserializeEmbedding(lPtrBlob, liBlobBytes);
-    if (lVecfChunkEmbedding.size() != lVecfPromptEmbedding.size()) {
-      continue;
-    }
-    const double ldCosine = CosineSimilarity(lVecfPromptEmbedding, lVecfChunkEmbedding);
-    if (ldCosine <= 0.0) {
-      continue;
-    }
+    while (sqlite3_step(lPtrStatement) == SQLITE_ROW) {
+      const char* lPtrSourceId = reinterpret_cast<const char*>(sqlite3_column_text(lPtrStatement, 0));
+      const char* lPtrFilePath = reinterpret_cast<const char*>(sqlite3_column_text(lPtrStatement, 1));
+      const char* lPtrChunkType = reinterpret_cast<const char*>(sqlite3_column_text(lPtrStatement, 2));
+      const char* lPtrSymbolName = reinterpret_cast<const char*>(sqlite3_column_text(lPtrStatement, 3));
+      const char* lPtrParentSymbol = reinterpret_cast<const char*>(sqlite3_column_text(lPtrStatement, 4));
+      const int liStartLine = sqlite3_column_int(lPtrStatement, 5);
+      const int liEndLine = sqlite3_column_int(lPtrStatement, 6);
+      const char* lPtrRawText = reinterpret_cast<const char*>(sqlite3_column_text(lPtrStatement, 7));
+      const void* lPtrBlob = sqlite3_column_blob(lPtrStatement, 8);
+      const int liBlobBytes = sqlite3_column_bytes(lPtrStatement, 8);
 
-    double ldScore = ldCosine;
-    const std::string lSChunkType = lPtrChunkType;
-    if (lSChunkType == "function" || lSChunkType == "method") {
-      ldScore += 0.06;
-    } else if (lSChunkType == "class_overview" || lSChunkType == "struct_overview") {
-      ldScore += 0.03;
-    }
+      if (lPtrFilePath == nullptr || lPtrChunkType == nullptr || lPtrRawText == nullptr) {
+        continue;
+      }
 
-    ScoredSnippet lScoredSnippet;
-    lScoredSnippet.pdScore = ldScore;
-    lScoredSnippet.pSRendered =
-        FormatSnippet(lPtrFilePath, liStartLine, liEndLine, lSChunkType, lPtrSymbolName == nullptr ? "" : lPtrSymbolName,
-                      lPtrParentSymbol == nullptr ? "" : lPtrParentSymbol, lPtrRawText);
-    lVecScored.push_back(std::move(lScoredSnippet));
+      const std::vector<float> lVecfChunkEmbedding = DeserializeEmbedding(lPtrBlob, liBlobBytes);
+      if (lVecfChunkEmbedding.size() != lVecfPromptEmbedding.size()) {
+        continue;
+      }
+      const double ldCosine = CosineSimilarity(lVecfPromptEmbedding, lVecfChunkEmbedding);
+      if (ldCosine <= 0.0) {
+        continue;
+      }
+
+      double ldScore = ldCosine;
+      const std::string lSChunkType = lPtrChunkType;
+      if (lSChunkType == "function" || lSChunkType == "method") {
+        ldScore += 0.06;
+      } else if (lSChunkType == "class_overview" || lSChunkType == "struct_overview") {
+        ldScore += 0.03;
+      }
+
+      ScoredSnippet lScoredSnippet;
+      lScoredSnippet.pdScore = ldScore;
+      lScoredSnippet.pSRendered = FormatSnippet(
+          lPtrSourceId == nullptr ? "" : lPtrSourceId, lPtrFilePath, liStartLine, liEndLine, lSChunkType,
+          lPtrSymbolName == nullptr ? "" : lPtrSymbolName, lPtrParentSymbol == nullptr ? "" : lPtrParentSymbol,
+          lPtrRawText);
+      lVecScored.push_back(std::move(lScoredSnippet));
+    }
+    sqlite3_finalize(lPtrStatement);
   }
-  sqlite3_finalize(lPtrStatement);
 
   std::sort(lVecScored.begin(), lVecScored.end(), [](const ScoredSnippet& pLhs, const ScoredSnippet& pRhs) {
     return pLhs.pdScore > pRhs.pdScore;
@@ -1775,6 +2184,7 @@ std::vector<std::string> Fetch_Relevant_Info(Context& pContext,
 
   const std::size_t liMaxCount = std::max<std::size_t>(1, piMax);
   const std::size_t liMinCount = std::min(liMaxCount, std::max<std::size_t>(1, piMin));
+  std::unordered_set<std::string> lSetSRendered;
   for (const ScoredSnippet& lScoredSnippet : lVecScored) {
     if (lVecSSnippets.size() >= liMaxCount) {
       break;
@@ -1782,11 +2192,18 @@ std::vector<std::string> Fetch_Relevant_Info(Context& pContext,
     if (lScoredSnippet.pdScore < 0.1 && lVecSSnippets.size() >= liMinCount) {
       break;
     }
+    if (!lSetSRendered.insert(lScoredSnippet.pSRendered).second) {
+      continue;
+    }
     lVecSSnippets.push_back(lScoredSnippet.pSRendered);
   }
 
-  while (lVecSSnippets.size() < liMinCount && lVecSSnippets.size() < lVecScored.size()) {
-    lVecSSnippets.push_back(lVecScored[lVecSSnippets.size()].pSRendered);
+  for (std::size_t liIndex = 0; liIndex < lVecScored.size() && lVecSSnippets.size() < liMinCount; ++liIndex) {
+    const std::string& lSRendered = lVecScored[liIndex].pSRendered;
+    if (!lSetSRendered.insert(lSRendered).second) {
+      continue;
+    }
+    lVecSSnippets.push_back(lSRendered);
   }
 
   return lVecSSnippets;

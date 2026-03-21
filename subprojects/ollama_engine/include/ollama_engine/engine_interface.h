@@ -60,6 +60,26 @@ class EngineInterface {
                     std::string* pSErrorOut = nullptr) = 0;
 
   /// <summary>
+  /// Sets the output database name used by future Scan calls.
+  /// </summary>
+  /// <param name="pSDatabaseName">
+  /// Logical database name without extension. Empty string resets to source-derived naming.
+  /// </param>
+  /// <param name="pSErrorOut">Optional output pointer for human-readable errors.</param>
+  /// <returns>True when the name was accepted.</returns>
+  virtual bool SetRagOutputDatabase(const std::string& pSDatabaseName,
+                                    std::string* pSErrorOut = nullptr) = 0;
+
+  /// <summary>
+  /// Loads one or more local RAG databases for retrieval queries.
+  /// </summary>
+  /// <param name="pVecSDatabaseInputs">Database selectors (file paths, directories, or logical names).</param>
+  /// <param name="pSErrorOut">Optional output pointer for human-readable errors.</param>
+  /// <returns>True when inputs were resolved and loaded.</returns>
+  virtual bool LoadRagDatabases(const std::vector<std::string>& pVecSDatabaseInputs,
+                                std::string* pSErrorOut = nullptr) = 0;
+
+  /// <summary>
   /// Retrieves semantically relevant indexed snippets from vector search.
   /// </summary>
   /// <param name="pSPrompt">Prompt/query text.</param>

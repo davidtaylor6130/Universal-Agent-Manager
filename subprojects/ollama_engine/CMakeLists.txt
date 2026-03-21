@@ -88,10 +88,53 @@ set_target_properties(uam_ollama_engine PROPERTIES
   FOLDER "Subprojects/OllamaEngine"
 )
 
+add_library(uam_ollama_engine_cli_common STATIC
+  src/ollama_engine_cli_common.cpp
+  src/ollama_engine_cli_tests.cpp
+  src/ollama_engine_cli_autotune.cpp
+  src/ollama_engine_cli_modes.cpp
+)
+target_include_directories(uam_ollama_engine_cli_common
+  PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(uam_ollama_engine_cli_common PRIVATE uam_ollama_engine)
+set_target_properties(uam_ollama_engine_cli_common PROPERTIES
+  CXX_STANDARD 20
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF
+  FOLDER "Subprojects/OllamaEngine"
+)
+
 add_executable(uam_ollama_engine_cli
   src/ollama_engine_cli_main.cpp
 )
-target_link_libraries(uam_ollama_engine_cli PRIVATE uam_ollama_engine)
+add_executable(uam_ollama_engine_cli_finetune_wizard
+  src/ollama_engine_cli_finetune_wizard_main.cpp
+)
+add_executable(uam_ollama_engine_cli_auto_test
+  src/ollama_engine_cli_auto_test_main.cpp
+)
+add_executable(uam_ollama_engine_cli_custom_tests
+  src/ollama_engine_cli_custom_tests_main.cpp
+)
+
+set(UAM_OLLAMA_ENGINE_CLI_TARGETS
+  uam_ollama_engine_cli
+  uam_ollama_engine_cli_finetune_wizard
+  uam_ollama_engine_cli_auto_test
+  uam_ollama_engine_cli_custom_tests
+)
+
+foreach(lTargetName IN LISTS UAM_OLLAMA_ENGINE_CLI_TARGETS)
+  target_link_libraries(${lTargetName} PRIVATE uam_ollama_engine_cli_common)
+  set_target_properties(${lTargetName} PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+    FOLDER "Subprojects/OllamaEngine"
+  )
+endforeach()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/models")
   add_custom_target(uam_ollama_engine_copy_models ALL
@@ -101,26 +144,22 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/models")
       "${CMAKE_BINARY_DIR}/models"
     COMMENT "Copying ollama_engine models to build/models"
   )
-  add_dependencies(uam_ollama_engine_cli uam_ollama_engine_copy_models)
-
-  add_custom_command(TARGET uam_ollama_engine_cli POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:uam_ollama_engine_cli>/models"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-      "${CMAKE_CURRENT_SOURCE_DIR}/models"
-      "$<TARGET_FILE_DIR:uam_ollama_engine_cli>/models"
-    COMMENT "Copying ollama_engine models next to uam_ollama_engine_cli binary"
-  )
+  foreach(lTargetName IN LISTS UAM_OLLAMA_ENGINE_CLI_TARGETS)
+    add_dependencies(${lTargetName} uam_ollama_engine_copy_models)
+    add_custom_command(TARGET ${lTargetName} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${lTargetName}>/models"
+      COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/models"
+        "$<TARGET_FILE_DIR:${lTargetName}>/models"
+      COMMENT "Copying ollama_engine models next to ${lTargetName} binary"
+    )
+  endforeach()
 else()
   add_custom_target(uam_ollama_engine_copy_models ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/models"
     COMMENT "Source models folder is missing; creating empty build/models directory"
   )
-  add_dependencies(uam_ollama_engine_cli uam_ollama_engine_copy_models)
+  foreach(lTargetName IN LISTS UAM_OLLAMA_ENGINE_CLI_TARGETS)
+    add_dependencies(${lTargetName} uam_ollama_engine_copy_models)
+  endforeach()
 endif()
-
-set_target_properties(uam_ollama_engine_cli PROPERTIES
-  CXX_STANDARD 20
-  CXX_STANDARD_REQUIRED ON
-  CXX_EXTENSIONS OFF
-  FOLDER "Subprojects/OllamaEngine"
-)

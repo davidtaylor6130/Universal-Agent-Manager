@@ -142,25 +142,27 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   ${UAM_VTERM_SOURCES}
   ${UAM_PLATFORM_SOURCES}
   src/main.cpp
-  src/core/app_models.cpp
-  src/core/app_paths.cpp
-  src/core/chat_folder_store.cpp
-  src/core/chat_repository.cpp
-  src/core/chat_branching.cpp
-  src/core/settings_store.cpp
-  src/core/command_line_words.cpp
-  src/core/gemini_command_builder.cpp
-  src/core/gemini_template_catalog.cpp
-  src/core/frontend_actions.cpp
-  src/core/provider_profile.cpp
-  src/core/provider_runtime.cpp
-  src/core/vcs_workspace_service.cpp
-  src/core/rag_index_service.cpp
-  src/core/ollama_engine_client.cpp
+  src/common/models/app_models.cpp
+  src/common/paths/app_paths.cpp
+  src/common/chat/chat_folder_store.cpp
+  src/common/chat/chat_repository.cpp
+  src/common/chat/chat_branching.cpp
+  src/common/config/settings_store.cpp
+  src/common/utils/command_line_words.cpp
+  src/common/provider/gemini_command_builder.cpp
+  src/common/provider/gemini_template_catalog.cpp
+  src/common/config/frontend_actions.cpp
+  src/common/provider/provider_profile.cpp
+  src/common/provider/provider_runtime.cpp
+  src/common/vcs/vcs_workspace_service.cpp
+  src/common/rag/rag_index_service.cpp
+  src/common/rag/ollama_engine_client.cpp
+  src/common/provider/provider_profiles.cpp
 )
 target_include_directories(universal_agent_manager
   PRIVATE
     src
+    src/common
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
     ${IMGUI_DIR}/misc/cpp
@@ -205,22 +207,23 @@ if(UAM_BUILD_TESTS)
   enable_testing()
   add_executable(uam_core_tests
     tests/core_tests.cpp
-    src/core/app_models.cpp
-    src/core/app_paths.cpp
-    src/core/frontend_actions.cpp
-    src/core/command_line_words.cpp
-    src/core/gemini_command_builder.cpp
-    src/core/gemini_template_catalog.cpp
-    src/core/chat_repository.cpp
-    src/core/chat_branching.cpp
-    src/core/provider_profile.cpp
-    src/core/provider_runtime.cpp
-    src/core/settings_store.cpp
-    src/core/vcs_workspace_service.cpp
-    src/core/rag_index_service.cpp
-    src/core/ollama_engine_client.cpp
+    src/common/models/app_models.cpp
+    src/common/paths/app_paths.cpp
+    src/common/config/frontend_actions.cpp
+    src/common/utils/command_line_words.cpp
+    src/common/provider/gemini_command_builder.cpp
+    src/common/provider/gemini_template_catalog.cpp
+    src/common/chat/chat_repository.cpp
+    src/common/chat/chat_branching.cpp
+    src/common/provider/provider_profile.cpp
+    src/common/provider/provider_runtime.cpp
+    src/common/config/settings_store.cpp
+    src/common/vcs/vcs_workspace_service.cpp
+    src/common/rag/rag_index_service.cpp
+    src/common/rag/ollama_engine_client.cpp
+    src/common/provider/provider_profiles.cpp
   )
-  target_include_directories(uam_core_tests PRIVATE src)
+  target_include_directories(uam_core_tests PRIVATE src src/common)
   target_link_libraries(uam_core_tests PRIVATE uam_ollama_engine)
   set_target_properties(uam_core_tests PROPERTIES FOLDER "Tests")
   add_test(NAME uam_core_tests COMMAND uam_core_tests)

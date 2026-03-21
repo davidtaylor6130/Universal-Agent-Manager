@@ -1,6 +1,7 @@
 #include "local_ollama_engine.h"
 
 #include "embedding_utils.h"
+#include "vectorised_rag/vectorised_rag.h"
 
 #include <algorithm>
 #include <array>
@@ -30,6 +31,8 @@ constexpr std::size_t ki_DefaultContextTokens = 2048;
 constexpr std::size_t ki_DefaultMaxGeneratedTokens = 256;
 constexpr int32_t ki_DefaultGpuLayers = 99;
 
+std::string ToLowerAscii(std::string pSInput);
+
 /// <summary>Clamps generation settings into safe operational ranges.</summary>
 /// <param name="pGenerationSettings">Input settings.</param>
 /// <returns>Clamped settings values.</returns>
@@ -52,15 +55,49 @@ GenerationSettings ClampGenerationSettings(const GenerationSettings& pGeneration
 /// <returns>Vectorised RAG runtime options.</returns>
 vectorised_rag::RuntimeOptions BuildVectorisedRagRuntimeOptions(
     const EngineOptions& pEngineOptions,
-    const std::filesystem::path& pPathLoadedModelFile) {
+    const std::filesystem::path& pPathLoadedModelFile,
+    const std::string& pSRagOutputDatabaseName) {
   vectorised_rag::RuntimeOptions lRuntimeOptions;
   lRuntimeOptions.pPathModelFolder = pEngineOptions.pPathModelFolder;
   lRuntimeOptions.pPathEmbeddingModelFile = pPathLoadedModelFile;
+  lRuntimeOptions.piDeterministicEmbeddingDimensions = pEngineOptions.piEmbeddingDimensions;
+  lRuntimeOptions.pSDatabaseName = pSRagOutputDatabaseName;
   const char* lPtrServerUrl = std::getenv("UAM_LLAMA_SERVER_URL");
   if (lPtrServerUrl != nullptr && *lPtrServerUrl != '\0') {
     lRuntimeOptions.pSLlamaServerUrl = lPtrServerUrl;
   }
   return lRuntimeOptions;
+}
+
+bool IsAllowedDatabaseNameCharacter(const char pCChar) {
+  const unsigned char lCUChar = static_cast<unsigned char>(pCChar);
+  return std::isalnum(lCUChar) != 0 || pCChar == '_' || pCChar == '-' || pCChar == '.';
+}
+
+bool IsValidRagDatabaseName(const std::string& pSDatabaseName) {
+  if (pSDatabaseName.empty()) {
+    return true;
+  }
+  return std::all_of(pSDatabaseName.begin(), pSDatabaseName.end(),
+                     [](const char pCChar) { return IsAllowedDatabaseNameCharacter(pCChar); });
+}
+
+/// <summary>Resolves runtime mode with optional environment override.</summary>
+/// <param name="pRagRuntimeMode">Mode configured in engine options.</param>
+/// <returns>Resolved mode.</returns>
+RagRuntimeMode ResolveRagRuntimeMode(const RagRuntimeMode pRagRuntimeMode) {
+  const char* lPtrModeEnv = std::getenv("UAM_RAG_MODE");
+  if (lPtrModeEnv == nullptr || *lPtrModeEnv == '\0') {
+    return pRagRuntimeMode;
+  }
+  const std::string lSMode = ToLowerAscii(lPtrModeEnv);
+  if (lSMode == "deterministic") {
+    return RagRuntimeMode::Deterministic;
+  }
+  if (lSMode == "vectorised" || lSMode == "vectorized") {
+    return RagRuntimeMode::Vectorised;
+  }
+  return pRagRuntimeMode;
 }
 
 #ifdef UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP
@@ -510,6 +547,136 @@ std::optional<llama_token> SelectBestFallbackToken(const llama_vocab* pPtrVocab,
 
 }  // namespace
 
+struct RagRuntimeInterface {
+  virtual ~RagRuntimeInterface() = default;
+  virtual bool Scan(const std::optional<std::string>& pOptSVectorFile,
+                    const vectorised_rag::RuntimeOptions& pRuntimeOptions,
+                    std::string* pSErrorOut) = 0;
+  virtual bool LoadRagDatabases(const std::vector<std::string>& pVecSDatabaseInputs,
+                                const vectorised_rag::RuntimeOptions& pRuntimeOptions,
+                                std::string* pSErrorOut) = 0;
+  virtual std::vector<std::string> Fetch_Relevant_Info(const std::string& pSPrompt,
+                                                       std::size_t piMax,
+                                                       std::size_t piMin,
+                                                       const vectorised_rag::RuntimeOptions& pRuntimeOptions) = 0;
+  virtual VectorisationStateResponse Fetch_state() = 0;
+};
+
+namespace {
+
+VectorisationStateResponse ToVectorisationStateResponse(const vectorised_rag::ScanStateSnapshot& pScanStateSnapshot) {
+  VectorisationStateResponse lVectorisationStateResponse;
+  lVectorisationStateResponse.piVectorDatabaseSize = pScanStateSnapshot.piVectorDatabaseSize;
+  lVectorisationStateResponse.piFilesProcessed = pScanStateSnapshot.piFilesProcessed;
+  lVectorisationStateResponse.piTotalFiles = pScanStateSnapshot.piTotalFiles;
+  switch (pScanStateSnapshot.pState) {
+    case vectorised_rag::StateValue::Running:
+      lVectorisationStateResponse.pVectorisationLifecycleState = VectorisationLifecycleState::Running;
+      break;
+    case vectorised_rag::StateValue::Finished:
+      lVectorisationStateResponse.pVectorisationLifecycleState = VectorisationLifecycleState::Finished;
+      break;
+    case vectorised_rag::StateValue::Stopped:
+    default:
+      lVectorisationStateResponse.pVectorisationLifecycleState = VectorisationLifecycleState::Stopped;
+      break;
+  }
+  return lVectorisationStateResponse;
+}
+
+class VectorisedRagRuntime final : public RagRuntimeInterface {
+ public:
+  ~VectorisedRagRuntime() override {
+    vectorised_rag::Shutdown(mContext);
+  }
+
+  bool Scan(const std::optional<std::string>& pOptSVectorFile,
+            const vectorised_rag::RuntimeOptions& pRuntimeOptions,
+            std::string* pSErrorOut) override {
+    vectorised_rag::RuntimeOptions lRuntimeOptions = pRuntimeOptions;
+    lRuntimeOptions.pbUseDeterministicEmbeddings = false;
+    lRuntimeOptions.pSStorageFolderName = ".vectorised_rag";
+    return vectorised_rag::Scan(mContext, pOptSVectorFile, lRuntimeOptions, pSErrorOut);
+  }
+
+  bool LoadRagDatabases(const std::vector<std::string>& pVecSDatabaseInputs,
+                        const vectorised_rag::RuntimeOptions& pRuntimeOptions,
+                        std::string* pSErrorOut) override {
+    vectorised_rag::RuntimeOptions lRuntimeOptions = pRuntimeOptions;
+    lRuntimeOptions.pbUseDeterministicEmbeddings = false;
+    lRuntimeOptions.pSStorageFolderName = ".vectorised_rag";
+    return vectorised_rag::LoadRagDatabases(mContext, pVecSDatabaseInputs, lRuntimeOptions, pSErrorOut);
+  }
+
+  std::vector<std::string> Fetch_Relevant_Info(const std::string& pSPrompt,
+                                               const std::size_t piMax,
+                                               const std::size_t piMin,
+                                               const vectorised_rag::RuntimeOptions& pRuntimeOptions) override {
+    vectorised_rag::RuntimeOptions lRuntimeOptions = pRuntimeOptions;
+    lRuntimeOptions.pbUseDeterministicEmbeddings = false;
+    lRuntimeOptions.pSStorageFolderName = ".vectorised_rag";
+    return vectorised_rag::Fetch_Relevant_Info(mContext, pSPrompt, piMax, piMin, lRuntimeOptions);
+  }
+
+  VectorisationStateResponse Fetch_state() override {
+    return ToVectorisationStateResponse(vectorised_rag::Fetch_state(mContext));
+  }
+
+ private:
+  vectorised_rag::Context mContext;
+};
+
+class DeterministicRagRuntime final : public RagRuntimeInterface {
+ public:
+  ~DeterministicRagRuntime() override {
+    vectorised_rag::Shutdown(mContext);
+  }
+
+  bool Scan(const std::optional<std::string>& pOptSVectorFile,
+            const vectorised_rag::RuntimeOptions& pRuntimeOptions,
+            std::string* pSErrorOut) override {
+    vectorised_rag::RuntimeOptions lRuntimeOptions = pRuntimeOptions;
+    lRuntimeOptions.pbUseDeterministicEmbeddings = true;
+    lRuntimeOptions.pSStorageFolderName = ".deterministic_rag";
+    return vectorised_rag::Scan(mContext, pOptSVectorFile, lRuntimeOptions, pSErrorOut);
+  }
+
+  bool LoadRagDatabases(const std::vector<std::string>& pVecSDatabaseInputs,
+                        const vectorised_rag::RuntimeOptions& pRuntimeOptions,
+                        std::string* pSErrorOut) override {
+    vectorised_rag::RuntimeOptions lRuntimeOptions = pRuntimeOptions;
+    lRuntimeOptions.pbUseDeterministicEmbeddings = true;
+    lRuntimeOptions.pSStorageFolderName = ".deterministic_rag";
+    return vectorised_rag::LoadRagDatabases(mContext, pVecSDatabaseInputs, lRuntimeOptions, pSErrorOut);
+  }
+
+  std::vector<std::string> Fetch_Relevant_Info(const std::string& pSPrompt,
+                                               const std::size_t piMax,
+                                               const std::size_t piMin,
+                                               const vectorised_rag::RuntimeOptions& pRuntimeOptions) override {
+    vectorised_rag::RuntimeOptions lRuntimeOptions = pRuntimeOptions;
+    lRuntimeOptions.pbUseDeterministicEmbeddings = true;
+    lRuntimeOptions.pSStorageFolderName = ".deterministic_rag";
+    return vectorised_rag::Fetch_Relevant_Info(mContext, pSPrompt, piMax, piMin, lRuntimeOptions);
+  }
+
+  VectorisationStateResponse Fetch_state() override {
+    return ToVectorisationStateResponse(vectorised_rag::Fetch_state(mContext));
+  }
+
+ private:
+  vectorised_rag::Context mContext;
+};
+
+std::unique_ptr<RagRuntimeInterface> CreateRagRuntime(const RagRuntimeMode pRagRuntimeMode) {
+  if (pRagRuntimeMode == RagRuntimeMode::Deterministic) {
+    return std::make_unique<DeterministicRagRuntime>();
+  }
+  return std::make_unique<VectorisedRagRuntime>();
+}
+
+}  // namespace
+
 /// <summary>
 /// Initializes the local engine and normalizes runtime options.
 /// </summary>
@@ -523,11 +690,13 @@ LocalOllamaCppEngine::LocalOllamaCppEngine(EngineOptions pEngineOptions)
       std::clamp<std::size_t>(mEngineOptions.piEmbeddingDimensions, 32, 4096);
   mGenerationSettings = ClampGenerationSettings(mEngineOptions.pGenerationSettings);
   mEngineOptions.pGenerationSettings = mGenerationSettings;
+  mEngineOptions.pRagRuntimeMode = ResolveRagRuntimeMode(mEngineOptions.pRagRuntimeMode);
+  mPtrRagRuntime = CreateRagRuntime(mEngineOptions.pRagRuntimeMode);
 }
 
 /// <summary>Releases loaded runtime resources.</summary>
 LocalOllamaCppEngine::~LocalOllamaCppEngine() {
-  vectorised_rag::Shutdown(mVectorisedRagContext);
+  mPtrRagRuntime.reset();
   std::lock_guard<std::mutex> lGuard(mMutexEngineRuntime);
   ReleaseRuntimeLocked();
 }
@@ -1026,16 +1195,59 @@ CurrentStateResponse LocalOllamaCppEngine::QueryCurrentState() const {
 /// <param name="pSErrorOut">Optional output pointer for error details.</param>
 /// <returns>True when the scan worker starts successfully.</returns>
 bool LocalOllamaCppEngine::Scan(const std::optional<std::string>& pOptSVectorFile, std::string* pSErrorOut) {
+  if (mPtrRagRuntime == nullptr) {
+    if (pSErrorOut != nullptr) {
+      *pSErrorOut = "RAG runtime is not initialized.";
+    }
+    return false;
+  }
   vectorised_rag::RuntimeOptions lRuntimeOptions;
   {
     std::lock_guard<std::mutex> lGuard(mMutexEngineRuntime);
 #ifdef UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP
-    lRuntimeOptions = BuildVectorisedRagRuntimeOptions(mEngineOptions, mPathLoadedModelFile);
+    lRuntimeOptions =
+        BuildVectorisedRagRuntimeOptions(mEngineOptions, mPathLoadedModelFile, ms_RagOutputDatabaseName);
 #else
-    lRuntimeOptions = BuildVectorisedRagRuntimeOptions(mEngineOptions, std::filesystem::path{});
+    lRuntimeOptions =
+        BuildVectorisedRagRuntimeOptions(mEngineOptions, std::filesystem::path{}, ms_RagOutputDatabaseName);
 #endif
   }
-  return vectorised_rag::Scan(mVectorisedRagContext, pOptSVectorFile, lRuntimeOptions, pSErrorOut);
+  return mPtrRagRuntime->Scan(pOptSVectorFile, lRuntimeOptions, pSErrorOut);
+}
+
+bool LocalOllamaCppEngine::SetRagOutputDatabase(const std::string& pSDatabaseName, std::string* pSErrorOut) {
+  if (!IsValidRagDatabaseName(pSDatabaseName)) {
+    if (pSErrorOut != nullptr) {
+      *pSErrorOut =
+          "Invalid database name. Only [A-Za-z0-9._-] are allowed. Use empty string to reset default naming.";
+    }
+    return false;
+  }
+  std::lock_guard<std::mutex> lGuard(mMutexEngineRuntime);
+  ms_RagOutputDatabaseName = pSDatabaseName;
+  return true;
+}
+
+bool LocalOllamaCppEngine::LoadRagDatabases(const std::vector<std::string>& pVecSDatabaseInputs,
+                                            std::string* pSErrorOut) {
+  if (mPtrRagRuntime == nullptr) {
+    if (pSErrorOut != nullptr) {
+      *pSErrorOut = "RAG runtime is not initialized.";
+    }
+    return false;
+  }
+  vectorised_rag::RuntimeOptions lRuntimeOptions;
+  {
+    std::lock_guard<std::mutex> lGuard(mMutexEngineRuntime);
+#ifdef UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP
+    lRuntimeOptions =
+        BuildVectorisedRagRuntimeOptions(mEngineOptions, mPathLoadedModelFile, ms_RagOutputDatabaseName);
+#else
+    lRuntimeOptions =
+        BuildVectorisedRagRuntimeOptions(mEngineOptions, std::filesystem::path{}, ms_RagOutputDatabaseName);
+#endif
+  }
+  return mPtrRagRuntime->LoadRagDatabases(pVecSDatabaseInputs, lRuntimeOptions, pSErrorOut);
 }
 
 /// <summary>Fetches semantically relevant snippets from the vectorised index.</summary>
@@ -1046,39 +1258,27 @@ bool LocalOllamaCppEngine::Scan(const std::optional<std::string>& pOptSVectorFil
 std::vector<std::string> LocalOllamaCppEngine::Fetch_Relevant_Info(const std::string& pSPrompt,
                                                                     const std::size_t piMax,
                                                                     const std::size_t piMin) {
+  if (mPtrRagRuntime == nullptr) {
+    return {};
+  }
   vectorised_rag::RuntimeOptions lRuntimeOptions;
   {
     std::lock_guard<std::mutex> lGuard(mMutexEngineRuntime);
 #ifdef UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP
-    lRuntimeOptions = BuildVectorisedRagRuntimeOptions(mEngineOptions, mPathLoadedModelFile);
+    lRuntimeOptions =
+        BuildVectorisedRagRuntimeOptions(mEngineOptions, mPathLoadedModelFile, ms_RagOutputDatabaseName);
 #else
-    lRuntimeOptions = BuildVectorisedRagRuntimeOptions(mEngineOptions, std::filesystem::path{});
+    lRuntimeOptions =
+        BuildVectorisedRagRuntimeOptions(mEngineOptions, std::filesystem::path{}, ms_RagOutputDatabaseName);
 #endif
   }
-  return vectorised_rag::Fetch_Relevant_Info(mVectorisedRagContext, pSPrompt, piMax, piMin, lRuntimeOptions);
+  return mPtrRagRuntime->Fetch_Relevant_Info(pSPrompt, piMax, piMin, lRuntimeOptions);
 }
 
 /// <summary>Returns current vectorisation state.</summary>
 /// <returns>Vectorisation state response snapshot.</returns>
 VectorisationStateResponse LocalOllamaCppEngine::Fetch_state() {
-  const vectorised_rag::ScanStateSnapshot lScanStateSnapshot = vectorised_rag::Fetch_state(mVectorisedRagContext);
-  VectorisationStateResponse lVectorisationStateResponse;
-  lVectorisationStateResponse.piVectorDatabaseSize = lScanStateSnapshot.piVectorDatabaseSize;
-  lVectorisationStateResponse.piFilesProcessed = lScanStateSnapshot.piFilesProcessed;
-  lVectorisationStateResponse.piTotalFiles = lScanStateSnapshot.piTotalFiles;
-  switch (lScanStateSnapshot.pState) {
-    case vectorised_rag::StateValue::Running:
-      lVectorisationStateResponse.pVectorisationLifecycleState = VectorisationLifecycleState::Running;
-      break;
-    case vectorised_rag::StateValue::Finished:
-      lVectorisationStateResponse.pVectorisationLifecycleState = VectorisationLifecycleState::Finished;
-      break;
-    case vectorised_rag::StateValue::Stopped:
-    default:
-      lVectorisationStateResponse.pVectorisationLifecycleState = VectorisationLifecycleState::Stopped;
-      break;
-  }
-  return lVectorisationStateResponse;
+  return (mPtrRagRuntime != nullptr) ? mPtrRagRuntime->Fetch_state() : VectorisationStateResponse{};
 }
 
 }  // namespace ollama_engine::internal

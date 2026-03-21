@@ -87,6 +87,14 @@ enum class VectorisationLifecycleState {
 };
 
 /// <summary>
+/// Selects which internal RAG runtime implementation to use.
+/// </summary>
+enum class RagRuntimeMode {
+  Vectorised,    ///< llama.cpp embedding-based retrieval.
+  Deterministic  ///< deterministic hash-embedding retrieval.
+};
+
+/// <summary>
 /// Snapshot for vectorised RAG progress polling.
 /// </summary>
 struct VectorisationStateResponse {
@@ -155,6 +163,9 @@ struct EngineOptions {
 
   /// <summary>Generation/sampling settings for prompt responses.</summary>
   GenerationSettings pGenerationSettings;
+
+  /// <summary>Internal RAG runtime implementation mode.</summary>
+  RagRuntimeMode pRagRuntimeMode = RagRuntimeMode::Vectorised;
 };
 
 }  // namespace ollama_engine

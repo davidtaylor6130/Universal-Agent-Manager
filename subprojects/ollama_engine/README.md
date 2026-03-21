@@ -45,8 +45,22 @@ Headers:
   - local runtime implementation
 - `src/internal/embedding_utils.cpp`
   - deterministic embedding helper
+- `src/ollama_engine_cli_common.cpp`
+  - truly shared CLI primitives (I/O helpers, model selection, prompt metrics, session bootstrap)
+- `src/ollama_engine_cli_tests.cpp`
+  - benchmark probes + Question_N custom test harness
+- `src/ollama_engine_cli_autotune.cpp`
+  - finetune/autotune wizard + profile/template persistence and matching
+- `src/ollama_engine_cli_modes.cpp`
+  - mode orchestration used by each CLI entrypoint
 - `src/ollama_engine_cli_main.cpp`
-  - interactive CLI, benchmark probes, regression test harness
+  - basic load + chat executable entrypoint
+- `src/ollama_engine_cli_finetune_wizard_main.cpp`
+  - finetune/autotune wizard executable entrypoint
+- `src/ollama_engine_cli_auto_test_main.cpp`
+  - built-in benchmark auto-test executable entrypoint
+- `src/ollama_engine_cli_custom_tests_main.cpp`
+  - Question_N custom test executable entrypoint
 - `models/`
   - local model storage used by this subproject
 
@@ -119,29 +133,37 @@ The engine updates these states during load and prompt generation so callers can
 
 ## CLI Usage
 
-CLI target: `uam_ollama_engine_cli`
+CLI targets:
 
 From repository root:
 
 ```bash
 cmake -S . -B build -DUAM_FETCH_DEPS=ON -DUAM_FETCH_LLAMA_CPP=ON
-cmake --build build --target uam_ollama_engine_cli --config Release --parallel
+cmake --build build --target \
+  uam_ollama_engine_cli \
+  uam_ollama_engine_cli_finetune_wizard \
+  uam_ollama_engine_cli_auto_test \
+  uam_ollama_engine_cli_custom_tests \
+  --config Release --parallel
 ```
 
-Run:
+Run one of:
 
 ```bash
-./build/subprojects/ollama_engine/uam_ollama_engine_cli <model_folder>
+./build/subprojects/ollama_engine/uam_ollama_engine_cli [model_folder]
+./build/subprojects/ollama_engine/uam_ollama_engine_cli_finetune_wizard [model_folder]
+./build/subprojects/ollama_engine/uam_ollama_engine_cli_auto_test [model_folder]
+./build/subprojects/ollama_engine/uam_ollama_engine_cli_custom_tests [model_folder] [tests_directory]
 ```
 
-If `<model_folder>` is omitted, CLI uses `<current-working-directory>/models`.
+If `[model_folder]` is omitted, each CLI uses `<current-working-directory>/models`.
 
-Built-in commands:
+Modes:
 
-- `/help`
-- `/run_benchmarks`
-- `/run_tests <directory>`
-- `/quit`
+- `uam_ollama_engine_cli`: basic model load + chat loop (`/quit` to exit)
+- `uam_ollama_engine_cli_finetune_wizard`: interactive autotune wizard for finetuning profiles/templates
+- `uam_ollama_engine_cli_auto_test`: built-in benchmark probes for quick auto testing
+- `uam_ollama_engine_cli_custom_tests`: Question_N/Answer folder regression tests
 
 ## Auto Testing: Why It Matters
 
@@ -164,7 +186,7 @@ Why it helps:
 
 ### Layer 2: CLI regression harness
 
-`/run_tests <directory>` executes text-pair prompt checks:
+`uam_ollama_engine_cli_custom_tests [model_folder] [directory]` executes text-pair prompt checks:
 
 - `Question_N.txt`
 - `Question_N_Answer.txt` (or legacy `Question_N_Anser.txt`)
@@ -221,7 +243,7 @@ This should list:
 `subprojects/ollama_engine/CMakeLists.txt` creates `uam_ollama_engine_copy_models` (runs in `ALL`) and copies model assets to:
 
 - `build/models`
-- and next to CLI target dir (`build/subprojects/ollama_engine/models`)
+- and next to each CLI target dir (`build/subprojects/ollama_engine/models`)
 
 This helps local runs, but explicit `model_folder` argument is still the most predictable way to run.
 
@@ -236,7 +258,7 @@ This helps local runs, but explicit `model_folder` argument is still the most pr
 - `llama.cpp is not linked. Reconfigure with UAM_FETCH_LLAMA_CPP=ON.`
   - build was configured without llama target linkage
 
-- `/run_tests` reports no cases
+- custom test runner reports no cases
   - filenames do not match `Question_N.txt` + `Question_N_Answer.txt` (or `_Anser.txt`)
 
 ## Minimal C++ Example

@@ -1,8 +1,8 @@
 #pragma once
 
 #include "ollama_engine/engine_interface.h"
-#include "vectorised_rag/vectorised_rag.h"
 
+#include <memory>
 #include <optional>
 #include <mutex>
 #include <string>
@@ -14,6 +14,8 @@ struct llama_sampler;
 #endif
 
 namespace ollama_engine::internal {
+
+struct RagRuntimeInterface;
 
 /// <summary>
 /// Local file-backed engine implementation used by the factory.
@@ -41,6 +43,11 @@ class LocalOllamaCppEngine final : public EngineInterface {
   /// <inheritdoc />
   bool Scan(const std::optional<std::string>& pOptSVectorFile, std::string* pSErrorOut = nullptr) override;
   /// <inheritdoc />
+  bool SetRagOutputDatabase(const std::string& pSDatabaseName, std::string* pSErrorOut = nullptr) override;
+  /// <inheritdoc />
+  bool LoadRagDatabases(const std::vector<std::string>& pVecSDatabaseInputs,
+                        std::string* pSErrorOut = nullptr) override;
+  /// <inheritdoc />
   std::vector<std::string> Fetch_Relevant_Info(const std::string& pSPrompt,
                                                std::size_t piMax,
                                                std::size_t piMin) override;
@@ -56,8 +63,9 @@ class LocalOllamaCppEngine final : public EngineInterface {
   mutable std::mutex mMutexEngineRuntime;
   mutable std::mutex mMutexCurrentState;
   std::string ms_LoadedModelName;
+  std::string ms_RagOutputDatabaseName;
   CurrentStateResponse mCurrentStateResponse;
-  vectorised_rag::Context mVectorisedRagContext;
+  std::unique_ptr<RagRuntimeInterface> mPtrRagRuntime;
 #ifdef UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP
   std::filesystem::path mPathLoadedModelFile;
   llama_model* mPtrModel = nullptr;

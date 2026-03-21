@@ -32,7 +32,11 @@ struct RuntimeOptions {
   std::filesystem::path pPathModelFolder;
   std::filesystem::path pPathEmbeddingModelFile;
   std::string pSLlamaServerUrl = "http://127.0.0.1:8080";
+  std::string pSStorageFolderName = ".vectorised_rag";
+  std::string pSDatabaseName;
   std::size_t piChunkCharLimit = 4000;
+  bool pbUseDeterministicEmbeddings = false;
+  std::size_t piDeterministicEmbeddingDimensions = 256;
 };
 
 struct Context {
@@ -47,6 +51,7 @@ struct Context {
   std::string pSActiveSourceId;
   std::filesystem::path pPathSourceRoot;
   std::filesystem::path pPathVectorDatabaseFile;
+  std::vector<std::filesystem::path> pVecPathLoadedDatabases;
   std::string pSError;
   ScanStateSnapshot pScanState;
 #ifdef UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP
@@ -70,6 +75,19 @@ bool Scan(Context& pContext,
           const std::optional<std::string>& pOptSVectorFile,
           const RuntimeOptions& pRuntimeOptions,
           std::string* pSErrorOut = nullptr);
+
+/// <summary>Loads an explicit set of local RAG databases to query.</summary>
+/// <param name="pContext">RAG context.</param>
+/// <param name="pVecSDatabaseInputs">
+/// Database selectors: sqlite file paths, directories, or storage-folder logical names.
+/// </param>
+/// <param name="pRuntimeOptions">Runtime options.</param>
+/// <param name="pSErrorOut">Optional output pointer for errors.</param>
+/// <returns>True when all requested inputs resolve to queryable sqlite files.</returns>
+bool LoadRagDatabases(Context& pContext,
+                      const std::vector<std::string>& pVecSDatabaseInputs,
+                      const RuntimeOptions& pRuntimeOptions,
+                      std::string* pSErrorOut = nullptr);
 
 /// <summary>Retrieves relevant snippets for a prompt from the indexed source.</summary>
 /// <param name="pContext">RAG context.</param>
