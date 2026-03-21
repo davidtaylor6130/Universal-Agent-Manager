@@ -10,3 +10,4 @@
 # IDE/system files
 /.vs/
 .DS_Store
+/subprojects/ollama_engine/models
