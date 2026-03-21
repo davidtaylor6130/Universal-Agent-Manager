@@ -32,6 +32,17 @@ class EngineInterface {
   /// <returns>Response payload with status, text, and embedding.</returns>
   virtual SendMessageResponse SendMessage(const std::string& pSPrompt) = 0;
 
+  /// <summary>Applies generation/sampling settings for future prompt calls.</summary>
+  /// <param name="pGenerationSettings">Settings to apply.</param>
+  /// <param name="pSErrorOut">Optional output pointer for human-readable errors.</param>
+  /// <returns>True if settings were accepted and applied.</returns>
+  virtual bool SetGenerationSettings(const GenerationSettings& pGenerationSettings,
+                                     std::string* pSErrorOut = nullptr) = 0;
+
+  /// <summary>Reads the currently active generation settings.</summary>
+  /// <returns>Current generation settings.</returns>
+  virtual GenerationSettings GetGenerationSettings() const = 0;
+
   /// <summary>Reads the latest state snapshot for lifecycle and progress polling.</summary>
   /// <returns>Current state response.</returns>
   virtual CurrentStateResponse QueryCurrentState() const = 0;
