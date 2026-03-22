@@ -989,6 +989,8 @@ SendMessageResponse LocalOllamaCppEngine::SendMessage(const std::string& pSPromp
   llama_memory_clear(llama_get_memory(mPtrContext), true);
   llama_sampler_reset(mPtrSampler);
 
+  const int32_t liDecodeBatchSize = std::max<int32_t>(1, static_cast<int32_t>(llama_n_batch(mPtrContext)));
+
   const std::size_t liTotalUnits = lVeciPromptTokens.size() + ki_DefaultMaxGeneratedTokens;
   {
     std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
@@ -998,15 +1000,29 @@ SendMessageResponse LocalOllamaCppEngine::SendMessage(const std::string& pSPromp
     mCurrentStateResponse.pOptLoadingStructure.reset();
   }
 
-  llama_batch lPromptBatch =
-      llama_batch_get_one(lVeciPromptTokens.data(), static_cast<int32_t>(lVeciPromptTokens.size()));
-  if (llama_decode(mPtrContext, lPromptBatch) != 0) {
-    lSendMessageResponse.pSError = "llama_decode failed while evaluating prompt.";
-    std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
-    mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Loaded;
-    mCurrentStateResponse.pSLoadedModelName = ms_LoadedModelName;
-    mCurrentStateResponse.pOptRunningStructure.reset();
-    return lSendMessageResponse;
+  std::size_t liPromptOffset = 0;
+  while (liPromptOffset < lVeciPromptTokens.size()) {
+    const std::size_t liRemainingPromptTokens = lVeciPromptTokens.size() - liPromptOffset;
+    const std::size_t liChunkSize =
+        std::min<std::size_t>(liRemainingPromptTokens, static_cast<std::size_t>(liDecodeBatchSize));
+    llama_batch lPromptBatch = llama_batch_get_one(
+        lVeciPromptTokens.data() + liPromptOffset, static_cast<int32_t>(liChunkSize));
+    if (llama_decode(mPtrContext, lPromptBatch) != 0) {
+      lSendMessageResponse.pSError = "llama_decode failed while evaluating prompt.";
+      std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
+      mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Loaded;
+      mCurrentStateResponse.pSLoadedModelName = ms_LoadedModelName;
+      mCurrentStateResponse.pOptRunningStructure.reset();
+      return lSendMessageResponse;
+    }
+
+    liPromptOffset += liChunkSize;
+    {
+      std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
+      if (mCurrentStateResponse.pOptRunningStructure.has_value()) {
+        mCurrentStateResponse.pOptRunningStructure->piProcessedUnits = liPromptOffset;
+      }
+    }
   }
 
   std::size_t liProcessedUnits = lVeciPromptTokens.size();

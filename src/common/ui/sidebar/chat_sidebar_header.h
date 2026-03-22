@@ -30,6 +30,7 @@ static void DrawChatSidebarHeader(AppState& app) {
 #endif
   ImGui::SameLine(0.0f, header_button_spacing);
   if (DrawMiniIconButton("new_folder", "f+", ImVec2(20.0f, 20.0f))) {
+    app.pending_move_chat_to_new_folder_id.clear();
     app.new_folder_title_input.clear();
     app.new_folder_directory_input = fs::current_path().string();
     ImGui::OpenPopup("new_folder_popup");

@@ -4,6 +4,9 @@
 /// Draws the create-folder modal used by the sidebar.
 /// </summary>
 static void DrawSidebarNewFolderPopup(AppState& app) {
+  if (!ImGui::IsPopupOpen("new_folder_popup") && !app.pending_move_chat_to_new_folder_id.empty()) {
+    app.pending_move_chat_to_new_folder_id.clear();
+  }
   if (ImGui::BeginPopupModal("new_folder_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
     ImGui::TextColored(ui::kTextPrimary, "Create chat folder");
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
@@ -30,12 +33,27 @@ static void DrawSidebarNewFolderPopup(AppState& app) {
         app.folders.push_back(std::move(folder));
         app.new_chat_folder_id = app.folders.back().id;
         SaveFolders(app);
-        app.status_line = "Chat folder created.";
+        const std::string created_folder_id = app.folders.back().id;
+        const int move_chat_index = FindChatIndexById(app, app.pending_move_chat_to_new_folder_id);
+        if (move_chat_index >= 0) {
+          ChatSession& moved_chat = app.chats[move_chat_index];
+          moved_chat.folder_id = created_folder_id;
+          moved_chat.updated_at = TimestampNow();
+          SaveAndUpdateStatus(
+              app,
+              moved_chat,
+              "Project folder created and chat moved.",
+              "Folder created, chat moved in UI, but failed to save.");
+        } else {
+          app.status_line = "Project folder created.";
+        }
+        app.pending_move_chat_to_new_folder_id.clear();
         ImGui::CloseCurrentPopup();
       }
     }
     ImGui::SameLine();
     if (DrawButton("Cancel", ImVec2(96.0f, 32.0f), ButtonKind::Ghost)) {
+      app.pending_move_chat_to_new_folder_id.clear();
       ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();

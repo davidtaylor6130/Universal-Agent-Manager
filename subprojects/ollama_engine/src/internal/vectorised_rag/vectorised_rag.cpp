@@ -1801,6 +1801,83 @@ double CosineSimilarity(const std::vector<float>& pVecfLhs, const std::vector<fl
   return ldDot / (std::sqrt(ldNormLhs) * std::sqrt(ldNormRhs));
 }
 
+std::size_t CountNonEmptyLines(const std::string& pSText) {
+  if (pSText.empty()) {
+    return 0;
+  }
+  std::istringstream lStream(pSText);
+  std::string lSLine;
+  std::size_t liCount = 0;
+  while (std::getline(lStream, lSLine)) {
+    if (!TrimAscii(lSLine).empty()) {
+      ++liCount;
+    }
+  }
+  return liCount;
+}
+
+double ChunkTypeScoreBias(const std::string& pSChunkType) {
+  if (pSChunkType == "function" || pSChunkType == "method") {
+    return 0.08;
+  }
+  if (pSChunkType == "class_overview" || pSChunkType == "struct_overview") {
+    return 0.04;
+  }
+  if (pSChunkType == "enum") {
+    return 0.02;
+  }
+  if (pSChunkType == "namespace") {
+    return -0.12;
+  }
+  if (pSChunkType == "global_block") {
+    return -0.16;
+  }
+  return 0.0;
+}
+
+double RichnessScoreBonus(const std::string& pSRawText) {
+  const std::string lSTrimmed = TrimAscii(pSRawText);
+  if (lSTrimmed.empty()) {
+    return -0.2;
+  }
+
+  const std::size_t liLineCount = CountNonEmptyLines(lSTrimmed);
+  const std::size_t liCharCount = lSTrimmed.size();
+  double ldBonus = 0.0;
+  if (liLineCount >= 3) {
+    ldBonus += std::min<double>(0.06, static_cast<double>(liLineCount - 2) * 0.01);
+  }
+  if (liCharCount >= 160) {
+    ldBonus += std::min<double>(0.06, static_cast<double>(liCharCount - 160) / 1400.0);
+  }
+  return ldBonus;
+}
+
+bool IsLowInformationChunk(const std::string& pSChunkType, const std::string& pSRawText) {
+  const std::string lSTrimmed = TrimAscii(pSRawText);
+  if (lSTrimmed.empty()) {
+    return true;
+  }
+
+  if (pSChunkType == "function" || pSChunkType == "method") {
+    return false;
+  }
+
+  const std::size_t liLineCount = CountNonEmptyLines(lSTrimmed);
+  const std::size_t liCharCount = lSTrimmed.size();
+
+  if (pSChunkType == "namespace" || pSChunkType == "global_block") {
+    return liLineCount < 3 || liCharCount < 180;
+  }
+  if (pSChunkType == "class_overview" || pSChunkType == "struct_overview") {
+    return liLineCount < 2 || liCharCount < 140;
+  }
+  if (pSChunkType == "enum") {
+    return liLineCount < 2 || liCharCount < 100;
+  }
+  return liLineCount < 2 || liCharCount < 100;
+}
+
 void UpdateRunningState(Context& pContext,
                         const std::size_t piFilesProcessed,
                         const std::size_t piTotalFiles,
@@ -2145,6 +2222,7 @@ std::vector<std::string> Fetch_Relevant_Info(Context& pContext,
   struct ScoredSnippet {
     std::string pSRendered;
     double pdScore = 0.0;
+    bool pbLowInformation = false;
   };
   std::vector<ScoredSnippet> lVecScored;
 
@@ -2190,10 +2268,11 @@ std::vector<std::string> Fetch_Relevant_Info(Context& pContext,
 
       double ldScore = ldCosine;
       const std::string lSChunkType = lPtrChunkType;
-      if (lSChunkType == "function" || lSChunkType == "method") {
-        ldScore += 0.06;
-      } else if (lSChunkType == "class_overview" || lSChunkType == "struct_overview") {
-        ldScore += 0.03;
+      const std::string lSRawText = lPtrRawText;
+      ldScore += ChunkTypeScoreBias(lSChunkType);
+      ldScore += RichnessScoreBonus(lSRawText);
+      if (ldScore <= 0.0) {
+        continue;
       }
 
       ScoredSnippet lScoredSnippet;
@@ -2201,7 +2280,8 @@ std::vector<std::string> Fetch_Relevant_Info(Context& pContext,
       lScoredSnippet.pSRendered = FormatSnippet(
           lPtrSourceId == nullptr ? "" : lPtrSourceId, lPtrFilePath, liStartLine, liEndLine, lSChunkType,
           lPtrSymbolName == nullptr ? "" : lPtrSymbolName, lPtrParentSymbol == nullptr ? "" : lPtrParentSymbol,
-          lPtrRawText);
+          lSRawText);
+      lScoredSnippet.pbLowInformation = IsLowInformationChunk(lSChunkType, lSRawText);
       lVecScored.push_back(std::move(lScoredSnippet));
     }
     sqlite3_finalize(lPtrStatement);
@@ -2217,6 +2297,9 @@ std::vector<std::string> Fetch_Relevant_Info(Context& pContext,
   for (const ScoredSnippet& lScoredSnippet : lVecScored) {
     if (lVecSSnippets.size() >= liMaxCount) {
       break;
+    }
+    if (lScoredSnippet.pbLowInformation) {
+      continue;
     }
     if (lScoredSnippet.pdScore < 0.1 && lVecSSnippets.size() >= liMinCount) {
       break;

@@ -29,10 +29,6 @@ static SidebarItemAction DrawSidebarItem(AppState& app,
   float accent_w = 3.0f;
   float title_x_offset = 11.0f;
   float title_y_offset = 7.0f;
-  float indicator_running_active_offset = 40.0f;
-  float indicator_running_idle_offset = 18.0f;
-  float indicator_unseen_active_offset = 42.0f;
-  float indicator_unseen_idle_offset = 24.0f;
   float options_x_offset = 42.0f;
   float delete_x_offset = 22.0f;
   float delete_y_offset = 6.0f;
@@ -51,10 +47,6 @@ static SidebarItemAction DrawSidebarItem(AppState& app,
   options_x_offset = ScaleUiLength(42.0f);
   delete_x_offset = ScaleUiLength(22.0f);
   delete_y_offset = std::max(ScaleUiLength(3.0f), (row_h - ScaleUiLength(16.0f)) * 0.5f);
-  indicator_running_idle_offset = ScaleUiLength(18.0f);
-  indicator_unseen_idle_offset = ScaleUiLength(24.0f);
-  indicator_running_active_offset = options_x_offset + ScaleUiLength(16.0f);
-  indicator_unseen_active_offset = options_x_offset + ScaleUiLength(18.0f);
   row_bottom_gap = ScaleUiLength(4.0f);
 #endif
   title_x_offset += depth_indent + (has_children ? ScaleUiLength(18.0f) : 0.0f);
@@ -69,15 +61,6 @@ static SidebarItemAction DrawSidebarItem(AppState& app,
     action.select = false;
   }
   const ImVec2 max(min.x + row_size.x, min.y + row_size.y);
-#if defined(_WIN32)
-  {
-    const bool showing_actions = (selected || hovered);
-    const float avg_char_w = std::max(4.0f, ImGui::CalcTextSize("ABCDEFGHIJKLMNOPQRSTUVWXYZ").x / 26.0f);
-    const float reserved_right_w = showing_actions ? (options_x_offset + ScaleUiLength(20.0f)) : ScaleUiLength(24.0f);
-    const float available_title_w = std::max(48.0f, row_size.x - title_x_offset - reserved_right_w);
-    title_limit = std::max(10, static_cast<int>(std::floor(available_title_w / avg_char_w)));
-  }
-#endif
 
   ImDrawList* draw = ImGui::GetWindowDrawList();
   const ImVec4 row_bg = selected ? (light ? Rgb(66, 126, 228, 0.13f) : Rgb(94, 160, 255, 0.15f))
@@ -106,23 +89,40 @@ static SidebarItemAction DrawSidebarItem(AppState& app,
                   ".");
   }
 
+  const bool running = ChatHasRunningGemini(app, chat.id);
+  const bool has_unseen = !running && (app.chats_with_unseen_updates.find(chat.id) != app.chats_with_unseen_updates.end());
+  const bool showing_actions = (hovered || selected);
+  const float indicator_lane_x = showing_actions ? (max.x - options_x_offset - ScaleUiLength(14.0f)) : (max.x - ScaleUiLength(14.0f));
+  const float title_right_limit_x = (running || has_unseen)
+                                        ? (indicator_lane_x - ScaleUiLength(8.0f))
+                                        : (showing_actions ? (max.x - options_x_offset - ScaleUiLength(8.0f))
+                                                           : (max.x - ScaleUiLength(10.0f)));
+  const float available_title_w = std::max(44.0f, title_right_limit_x - (min.x + title_x_offset));
+  const float avg_char_w = std::max(4.0f, ImGui::CalcTextSize("ABCDEFGHIJKLMNOPQRSTUVWXYZ").x / 26.0f);
+  title_limit = std::max(10, static_cast<int>(std::floor(available_title_w / avg_char_w)));
+
   const std::string row_title = CompactPreview(Trim(chat.title).empty() ? chat.id : chat.title, title_limit);
   draw->AddText(ImVec2(min.x + title_x_offset, min.y + title_y_offset), ImGui::GetColorU32(ui::kTextPrimary), row_title.c_str());
 
-  const bool running = ChatHasRunningGemini(app, chat.id);
-  const bool has_unseen = !running && (app.chats_with_unseen_updates.find(chat.id) != app.chats_with_unseen_updates.end());
   if (running || has_unseen) {
-    static constexpr const char* kSpinnerFrames[4] = {"-", "/", "-", "\\"};
-    const int frame = static_cast<int>(ImGui::GetTime() * 8.0) & 3;
     if (running) {
-      const float indicator_x = (hovered || selected) ? (max.x - indicator_running_active_offset) : (max.x - indicator_running_idle_offset);
-      draw->AddText(ImVec2(indicator_x, min.y + title_y_offset), ImGui::GetColorU32(ui::kWarning), kSpinnerFrames[frame]);
+      const float dot_spacing = ScaleUiLength(5.0f);
+      const float dot_radius = ScaleUiLength(1.75f);
+      const float center_y = min.y + row_h * 0.5f;
+      const double t = ImGui::GetTime() * 7.0;
+      for (int i = 0; i < 3; ++i) {
+        ImVec4 dot_color = ui::kWarning;
+        const double wave = 0.5 + 0.5 * std::sin(t - static_cast<double>(i) * 0.9);
+        dot_color.w *= static_cast<float>(0.22 + (wave * 0.78));
+        const float x = indicator_lane_x + (static_cast<float>(i) - 1.0f) * dot_spacing;
+        draw->AddCircleFilled(ImVec2(x, center_y), dot_radius, ImGui::GetColorU32(dot_color), 12);
+      }
     } else {
       const bool has_title_font = (g_font_title != nullptr);
       ImFont* glyph_font = has_title_font ? g_font_title : ImGui::GetFont();
       const float glyph_size = has_title_font ? (g_font_title->FontSize * 0.62f) : (ImGui::GetFontSize() * 1.20f);
       const char* unseen_glyph = has_title_font ? "\xE2\x97\x8F" : "@";
-      const float indicator_x = (hovered || selected) ? (max.x - indicator_unseen_active_offset) : (max.x - indicator_unseen_idle_offset);
+      const float indicator_x = indicator_lane_x;
       const float unseen_y = std::max(min.y, min.y + title_y_offset - ScaleUiLength(2.5f));
       draw->AddText(glyph_font, glyph_size, ImVec2(indicator_x, unseen_y), ImGui::GetColorU32(ui::kAccent), unseen_glyph);
     }

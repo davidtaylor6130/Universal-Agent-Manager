@@ -111,5 +111,35 @@ static void DrawSidebarChatOptionsPopup(AppState& app) {
     }
     ImGui::EndMenu();
   }
+
+  if (ImGui::BeginMenu("Move folder")) {
+    bool moved_to_existing_folder = false;
+    for (const ChatFolder& folder : app.folders) {
+      const bool selected = (popup_chat.folder_id == folder.id);
+      const std::string folder_name = FolderTitleOrFallback(folder);
+      if (ImGui::MenuItem(folder_name.c_str(), nullptr, selected)) {
+        if (!selected) {
+          popup_chat.folder_id = folder.id;
+          popup_chat.updated_at = TimestampNow();
+          SaveAndUpdateStatus(app, popup_chat, "Chat moved to folder.", "Moved chat in UI, but failed to save.");
+        }
+        moved_to_existing_folder = true;
+        ImGui::CloseCurrentPopup();
+      }
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem("New Project folder...")) {
+      app.pending_move_chat_to_new_folder_id = popup_chat.id;
+      app.new_folder_title_input.clear();
+      app.new_folder_directory_input = fs::current_path().string();
+      ImGui::OpenPopup("new_folder_popup");
+    }
+    if (moved_to_existing_folder) {
+      ImGui::EndMenu();
+      ImGui::EndPopup();
+      return;
+    }
+    ImGui::EndMenu();
+  }
   ImGui::EndPopup();
 }

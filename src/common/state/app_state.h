@@ -116,6 +116,7 @@ struct AppState {
   std::string new_chat_folder_id;
   std::string new_folder_title_input;
   std::string new_folder_directory_input;
+  std::string pending_move_chat_to_new_folder_id;
   std::string template_import_path_input;
   std::string template_manager_selected_id;
   std::string template_rename_input;
