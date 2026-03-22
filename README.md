@@ -55,6 +55,42 @@ The current default provider is Gemini CLI, and the runtime already supports pro
 - Native Gemini JSON session history is supported through the `gemini-cli-json` adapter.
 - Providers without a native history adapter run in local-only mode using UAM's local chat store.
 
+## Development Roadmap
+
+### Long Shot Goals
+
+- Re-design the UI around Tailwind-style React components using an embedded Chromium-style GUI layer instead of Dear ImGui
+
+### New Features / Fixes
+
+- Get fully local basic messaging + RAG working cleanly
+- Make the inspector and terminal views use the same live CLI instance
+- Fix the issue where chats can spawn themselves
+- Add proper model, vector DB, and vector model selection
+- Get the testing suite properly in place
+- Split `ollama_engine` into its own separate GitHub repository
+- Improve performance
+- Improve CLI instance handling so background processes are not left open doing nothing
+
+### Done, But Still Needs Testing / Sanity Checking / Windows Port Before Main Merge
+
+- Local LLM support via custom `ollama_engine`
+- Local RAG
+- Auto-testing for local LLMs
+- Basic passthrough chat and model selection
+- Basic RAG via deterministic hash
+- Advanced RAG via GGUF model
+- Improved running animation
+- Fixed moving folders in the new GUI layout
+- RAG model selection popup
+- Refactored the monolithic structure into much cleaner project and file layouts
+- Started automatic model testing
+- Started a model wizard to help min-max performance
+- Included standard benchmark tests for LLM model wizard / model comparisons
+- Added model token context window passthrough
+- Fixed the UI to run at 30 FPS
+- Added a custom file format to store optimised model and hardware data so known hardware does not need to be benchmarked again
+
 ## Architecture
 
 ```mermaid
