@@ -2,7 +2,19 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build-release/_deps/imgui-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build-release/_deps/llama_cpp_uam-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build-release/_deps/sdl2-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build-release/_deps/tree_sitter-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build-release/_deps/tree_sitter_cpp-src" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/subprojects/ollama_engine/build/_deps/tree_sitter-src" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/subprojects/ollama_engine/build/_deps/tree_sitter_cpp-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/subprojects/ollama_engine/evaluation/reference_repos/C-Plus-Plus" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/subprojects/ollama_engine/evaluation/reference_repos/Catch2" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/subprojects/ollama_engine/evaluation/reference_repos/abseil-cpp" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/subprojects/ollama_engine/evaluation/reference_repos/benchmark" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/subprojects/ollama_engine/evaluation/reference_repos/folly" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/subprojects/ollama_engine/evaluation/reference_repos/googletest" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/subprojects/ollama_engine/evaluation/reference_repos/nanobench" vcs="Git" />
   </component>
 </project>

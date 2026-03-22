@@ -37,6 +37,7 @@ struct RuntimeOptions {
   std::size_t piChunkCharLimit = 4000;
   bool pbUseDeterministicEmbeddings = false;
   std::size_t piDeterministicEmbeddingDimensions = 256;
+  std::size_t piEmbeddingMaxTokens = 0;
 };
 
 struct Context {
@@ -56,6 +57,7 @@ struct Context {
   ScanStateSnapshot pScanState;
 #ifdef UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP
   std::filesystem::path pPathLoadedEmbeddingModel;
+  std::size_t piLoadedEmbeddingMaxTokens = 0;
   llama_model* pPtrEmbeddingModel = nullptr;
   llama_context* pPtrEmbeddingContext = nullptr;
 #endif

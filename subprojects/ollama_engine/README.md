@@ -144,6 +144,7 @@ cmake --build build --target \
   uam_ollama_engine_cli_finetune_wizard \
   uam_ollama_engine_cli_auto_test \
   uam_ollama_engine_cli_custom_tests \
+  uam_ollama_engine_cli_eval_suite \
   --config Release --parallel
 ```
 
@@ -154,6 +155,7 @@ Run one of:
 ./build/subprojects/ollama_engine/uam_ollama_engine_cli_finetune_wizard [model_folder]
 ./build/subprojects/ollama_engine/uam_ollama_engine_cli_auto_test [model_folder]
 ./build/subprojects/ollama_engine/uam_ollama_engine_cli_custom_tests [model_folder] [tests_directory]
+./build/subprojects/ollama_engine/uam_ollama_engine_cli_eval_suite [model_folder] [evaluation_root]
 ```
 
 If `[model_folder]` is omitted, each CLI uses `<current-working-directory>/models`.
@@ -164,6 +166,7 @@ Modes:
 - `uam_ollama_engine_cli_finetune_wizard`: interactive autotune wizard for finetuning profiles/templates
 - `uam_ollama_engine_cli_auto_test`: built-in benchmark probes for quick auto testing
 - `uam_ollama_engine_cli_custom_tests`: Question_N/Answer folder regression tests
+- `uam_ollama_engine_cli_eval_suite`: fetches C++ reference repos, builds an indexed corpus, runs 50 deterministic LLM/RAG evaluation tests, and prints one line per test as `Test N: TITLE (Pass/Fail)`
 
 ## Auto Testing: Why It Matters
 

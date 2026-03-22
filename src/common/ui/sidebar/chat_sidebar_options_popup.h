@@ -83,20 +83,29 @@ static void DrawSidebarChatOptionsPopup(AppState& app) {
   }
 
   if (ImGui::BeginMenu("RAG")) {
+    if (ImGui::MenuItem("Open RAG Console...")) {
+      ensure_selected_chat();
+      app.open_rag_console_popup = true;
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::Separator();
     if (ImGui::MenuItem("Rebuild Index")) {
       const fs::path workspace_root = ResolveWorkspaceRootPath(app, popup_chat);
-      const std::string workspace_key = workspace_root.lexically_normal().generic_string();
-      const RagRefreshResult rebuild = app.rag_index_service.RebuildIndex(workspace_root);
-      if (!rebuild.ok) {
-        app.rag_last_refresh_by_workspace[workspace_key] = rebuild.error;
-        app.status_line = "RAG index rebuild failed: " + rebuild.error;
+      std::string scan_error;
+      if (!TriggerProjectRagScan(app, false, workspace_root, &scan_error)) {
+        app.status_line = "RAG scan failed to start: " + scan_error;
       } else {
-        app.rag_last_refresh_by_workspace[workspace_key] =
-            "Indexed files: " + std::to_string(rebuild.indexed_files) +
-            ", updated: " + std::to_string(rebuild.updated_files) +
-            ", removed: " + std::to_string(rebuild.removed_files);
-        app.rag_last_rebuild_at_by_workspace[workspace_key] = TimestampNow();
-        app.status_line = "RAG index rebuilt.";
+        app.status_line = "RAG scan started.";
+      }
+      ImGui::CloseCurrentPopup();
+    }
+    if (ImGui::MenuItem("Rescan Previous Source")) {
+      const fs::path workspace_root = ResolveWorkspaceRootPath(app, popup_chat);
+      std::string scan_error;
+      if (!TriggerProjectRagScan(app, true, workspace_root, &scan_error)) {
+        app.status_line = "RAG rescan failed to start: " + scan_error;
+      } else {
+        app.status_line = "RAG rescan started (previous source).";
       }
       ImGui::CloseCurrentPopup();
     }

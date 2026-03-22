@@ -67,6 +67,8 @@ struct AppSettings {
   int rag_top_k = 6;
   int rag_max_snippet_chars = 600;
   int rag_max_file_bytes = 1024 * 1024;
+  int rag_scan_max_tokens = 0;
+  std::string rag_project_source_directory;
   std::string ui_theme = "dark";
   bool confirm_delete_chat = true;
   bool confirm_delete_folder = true;

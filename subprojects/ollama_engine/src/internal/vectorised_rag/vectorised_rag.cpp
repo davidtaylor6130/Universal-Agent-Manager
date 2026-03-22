@@ -403,6 +403,9 @@ bool IsLikelyBinary(const std::string& pSContent) {
 }
 
 std::string GetNodeText(const TSNode pNodeValue, const std::string& pSContent) {
+  if (ts_node_is_null(pNodeValue)) {
+    return {};
+  }
   const std::uint32_t liStart = ts_node_start_byte(pNodeValue);
   const std::uint32_t liEnd = ts_node_end_byte(pNodeValue);
   if (liEnd <= liStart || liEnd > pSContent.size()) {
@@ -412,7 +415,7 @@ std::string GetNodeText(const TSNode pNodeValue, const std::string& pSContent) {
 }
 
 TSNode GetChildByFieldName(const TSNode pNodeValue, const char* pSFieldName) {
-  if (pSFieldName == nullptr) {
+  if (ts_node_is_null(pNodeValue) || pSFieldName == nullptr) {
     return TSNode{};
   }
   return ts_node_child_by_field_name(pNodeValue, pSFieldName, std::strlen(pSFieldName));
@@ -480,6 +483,9 @@ std::string JoinWithScope(const std::vector<std::string>& pVecSParts) {
 }
 
 std::string BuildParentSymbol(const TSNode pNodeValue, const std::string& pSContent) {
+  if (ts_node_is_null(pNodeValue)) {
+    return {};
+  }
   std::vector<std::string> lVecSAncestors;
   TSNode lNodeCurrent = ts_node_parent(pNodeValue);
   while (!ts_node_is_null(lNodeCurrent)) {
@@ -502,6 +508,9 @@ std::string BuildParentSymbol(const TSNode pNodeValue, const std::string& pSCont
 }
 
 bool IsInsideClassOrStruct(const TSNode pNodeValue) {
+  if (ts_node_is_null(pNodeValue)) {
+    return false;
+  }
   TSNode lNodeCurrent = ts_node_parent(pNodeValue);
   while (!ts_node_is_null(lNodeCurrent)) {
     const std::string_view lSType(ts_node_type(lNodeCurrent));
@@ -1162,6 +1171,7 @@ void ReleaseEmbeddingRuntimeLocked(Context& pContext) {
     pContext.pPtrEmbeddingModel = nullptr;
   }
   pContext.pPathLoadedEmbeddingModel.clear();
+  pContext.piLoadedEmbeddingMaxTokens = 0;
 }
 
 std::vector<fs::path> DiscoverModelFiles(const fs::path& pPathModelFolder) {
@@ -1220,7 +1230,10 @@ fs::path ResolveEmbeddingModelPath(const RuntimeOptions& pRuntimeOptions) {
   return lVecPathModels.empty() ? fs::path{} : lVecPathModels.front();
 }
 
-bool EnsureDirectEmbeddingRuntime(Context& pContext, const fs::path& pPathModel, std::string* pSErrorOut) {
+bool EnsureDirectEmbeddingRuntime(Context& pContext,
+                                  const fs::path& pPathModel,
+                                  const RuntimeOptions& pRuntimeOptions,
+                                  std::string* pSErrorOut) {
   if (pPathModel.empty()) {
     if (pSErrorOut != nullptr) {
       *pSErrorOut = "No embedding model could be resolved.";
@@ -1228,10 +1241,15 @@ bool EnsureDirectEmbeddingRuntime(Context& pContext, const fs::path& pPathModel,
     return false;
   }
 
+  const std::size_t liEmbeddingMaxTokens = pRuntimeOptions.piEmbeddingMaxTokens > 0
+                                               ? std::clamp<std::size_t>(pRuntimeOptions.piEmbeddingMaxTokens, 1, 32768)
+                                               : 4096;
+
   EnsureLlamaBackendInit();
 
   if (pContext.pPtrEmbeddingModel != nullptr && pContext.pPtrEmbeddingContext != nullptr &&
-      pContext.pPathLoadedEmbeddingModel == pPathModel) {
+      pContext.pPathLoadedEmbeddingModel == pPathModel &&
+      pContext.piLoadedEmbeddingMaxTokens == liEmbeddingMaxTokens) {
     return true;
   }
   ReleaseEmbeddingRuntimeLocked(pContext);
@@ -1247,9 +1265,10 @@ bool EnsureDirectEmbeddingRuntime(Context& pContext, const fs::path& pPathModel,
   }
 
   llama_context_params lContextParams = llama_context_default_params();
-  lContextParams.n_ctx = 4096;
-  lContextParams.n_batch = 1024;
-  lContextParams.n_ubatch = 1024;
+  const auto liContextTokens = static_cast<decltype(lContextParams.n_ctx)>(liEmbeddingMaxTokens);
+  lContextParams.n_ctx = liContextTokens;
+  lContextParams.n_batch = liContextTokens;
+  lContextParams.n_ubatch = liContextTokens;
   lContextParams.embeddings = true;
   lContextParams.pooling_type = LLAMA_POOLING_TYPE_MEAN;
   llama_context* lPtrContext = llama_init_from_model(lPtrModel, lContextParams);
@@ -1264,6 +1283,7 @@ bool EnsureDirectEmbeddingRuntime(Context& pContext, const fs::path& pPathModel,
   pContext.pPtrEmbeddingModel = lPtrModel;
   pContext.pPtrEmbeddingContext = lPtrContext;
   pContext.pPathLoadedEmbeddingModel = pPathModel;
+  pContext.piLoadedEmbeddingMaxTokens = liEmbeddingMaxTokens;
   return true;
 }
 
@@ -1273,7 +1293,7 @@ std::optional<std::vector<float>> BuildEmbeddingDirect(Context& pContext,
                                                        std::string* pSErrorOut) {
   const fs::path lPathEmbeddingModel = ResolveEmbeddingModelPath(pRuntimeOptions);
   std::lock_guard<std::mutex> lGuard(pContext.pMutex);
-  if (!EnsureDirectEmbeddingRuntime(pContext, lPathEmbeddingModel, pSErrorOut)) {
+  if (!EnsureDirectEmbeddingRuntime(pContext, lPathEmbeddingModel, pRuntimeOptions, pSErrorOut)) {
     return std::nullopt;
   }
 
@@ -1305,6 +1325,15 @@ std::optional<std::vector<float>> BuildEmbeddingDirect(Context& pContext,
     return std::nullopt;
   }
   lVeciTokens.resize(static_cast<std::size_t>(liTokenCountWritten));
+  if (pContext.piLoadedEmbeddingMaxTokens > 0 && lVeciTokens.size() > pContext.piLoadedEmbeddingMaxTokens) {
+    lVeciTokens.resize(pContext.piLoadedEmbeddingMaxTokens);
+  }
+  if (lVeciTokens.empty()) {
+    if (pSErrorOut != nullptr) {
+      *pSErrorOut = "No tokens available after applying embedding token limit.";
+    }
+    return std::nullopt;
+  }
 
   llama_memory_clear(llama_get_memory(pContext.pPtrEmbeddingContext), true);
 

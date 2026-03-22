@@ -91,6 +91,8 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file,
   lines << "rag_top_k=" << settings.rag_top_k << '\n';
   lines << "rag_max_snippet_chars=" << settings.rag_max_snippet_chars << '\n';
   lines << "rag_max_file_bytes=" << settings.rag_max_file_bytes << '\n';
+  lines << "rag_scan_max_tokens=" << settings.rag_scan_max_tokens << '\n';
+  lines << "rag_project_source_directory=" << settings.rag_project_source_directory << '\n';
   lines << "center_view_mode=" << ViewModeToString(center_view_mode) << '\n';
   lines << "ui_theme=" << NormalizeThemeId(settings.ui_theme) << '\n';
   lines << "confirm_delete_chat=" << (settings.confirm_delete_chat ? "1" : "0") << '\n';
@@ -140,6 +142,10 @@ void SettingsStore::Load(const std::filesystem::path& settings_file,
       settings.rag_max_snippet_chars = ParseInt(value, settings.rag_max_snippet_chars);
     } else if (key == "rag_max_file_bytes") {
       settings.rag_max_file_bytes = ParseInt(value, settings.rag_max_file_bytes);
+    } else if (key == "rag_scan_max_tokens") {
+      settings.rag_scan_max_tokens = ParseInt(value, settings.rag_scan_max_tokens);
+    } else if (key == "rag_project_source_directory") {
+      settings.rag_project_source_directory = value;
     } else if (key == "center_view_mode") {
       center_view_mode = ViewModeFromString(value);
     } else if (key == "ui_theme") {
@@ -175,6 +181,7 @@ void SettingsStore::Load(const std::filesystem::path& settings_file,
   settings.rag_top_k = std::clamp(settings.rag_top_k, 1, 20);
   settings.rag_max_snippet_chars = std::clamp(settings.rag_max_snippet_chars, 120, 4000);
   settings.rag_max_file_bytes = std::clamp(settings.rag_max_file_bytes, 16 * 1024, 20 * 1024 * 1024);
+  settings.rag_scan_max_tokens = std::clamp(settings.rag_scan_max_tokens, 0, 32768);
   settings.ui_theme = NormalizeThemeId(settings.ui_theme);
   settings.ui_scale_multiplier = std::clamp(settings.ui_scale_multiplier, 0.85f, 1.75f);
   settings.window_width = std::clamp(settings.window_width, 960, 8192);

@@ -47,6 +47,7 @@
 #include <chrono>
 #include <cmath>
 #include <cctype>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <ctime>
@@ -135,6 +136,8 @@ static const ChatFolder* FindFolderById(const AppState& app, const std::string& 
 static const ProviderProfile& ActiveProviderOrDefault(const AppState& app);
 static bool ActiveProviderUsesGeminiHistory(const AppState& app);
 static int FindChatIndexById(const AppState& app, const std::string& chat_id);
+static ChatSession* SelectedChat(AppState& app);
+static const ChatSession* SelectedChat(const AppState& app);
 static ChatSession CreateNewChat(const std::string& folder_id);
 static std::string CompactPreview(const std::string& text, std::size_t max_len);
 static void MarkSelectedCliTerminalForLaunch(AppState& app);
@@ -161,6 +164,25 @@ static std::string BuildRagContextBlock(const std::vector<RagSnippet>& snippets)
 static std::string BuildRagEnhancedPrompt(AppState& app, const ChatSession& chat, const std::string& prompt_text);
 static RagIndexService::Config RagConfigFromSettings(const AppSettings& settings);
 static void SyncRagServiceConfig(AppState& app);
+static std::filesystem::path ResolveProjectRagSourceRoot(const AppState& app,
+                                                         const std::filesystem::path& fallback_source_root = {});
+static bool TriggerProjectRagScan(AppState& app,
+                                  bool reuse_previous_source,
+                                  const std::filesystem::path& fallback_source_root,
+                                  std::string* error_out = nullptr);
+static void PollRagScanState(AppState& app);
+static RagScanState EffectiveRagScanState(const AppState& app);
+static std::string BuildRagStatusText(const AppState& app);
+static std::filesystem::path ResolveCurrentRagFallbackSourceRoot(const AppState& app);
+static std::filesystem::path BuildRagTokenCappedStagingRoot(const AppState& app, const std::string& workspace_key);
+static bool BuildRagTokenCappedStagingTree(const std::filesystem::path& source_root,
+                                           const std::filesystem::path& staging_root,
+                                           int max_tokens,
+                                           std::size_t* indexed_files_out,
+                                           std::string* error_out);
+static void EnsureRagManualQueryWorkspaceState(AppState& app, const std::string& workspace_key);
+static void AppendRagScanReport(AppState& app, const std::string& message);
+static void RunRagManualTestQuery(AppState& app, const std::filesystem::path& workspace_root);
 static bool RefreshWorkspaceVcsSnapshot(AppState& app, const std::filesystem::path& workspace_root, bool force);
 static void ShowVcsCommandOutput(AppState& app, const std::string& title, const VcsCommandResult& result);
 static float PlatformUiSpacingScale();
@@ -311,20 +333,241 @@ static fs::path WorkspaceGeminiTemplatePath(const AppState& app, const ChatSessi
   return WorkspaceGeminiRootPath(app, chat) / "gemini.md";
 }
 
+static fs::path ResolveCurrentRagFallbackSourceRoot(const AppState& app) {
+  if (const ChatSession* selected = SelectedChat(app); selected != nullptr) {
+    return ResolveWorkspaceRootPath(app, *selected);
+  }
+  std::error_code cwd_ec;
+  const fs::path cwd = fs::current_path(cwd_ec);
+  return cwd_ec ? fs::path{} : cwd;
+}
+
+static std::uint64_t Fnv1a64(const std::string& text) {
+  std::uint64_t hash = 1469598103934665603ULL;
+  for (const unsigned char ch : text) {
+    hash ^= static_cast<std::uint64_t>(ch);
+    hash *= 1099511628211ULL;
+  }
+  return hash;
+}
+
+static std::string Hex64(const std::uint64_t value) {
+  std::ostringstream out;
+  out << std::hex << value;
+  return out.str();
+}
+
+static std::string ToLowerAscii(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return value;
+}
+
+static bool IsLikelyBinaryBlob(const std::string& content) {
+  return content.find('\0') != std::string::npos;
+}
+
+static bool IsRagIndexableTextFile(const fs::path& path) {
+  static const std::unordered_set<std::string> kAllowedExtensions = {
+      ".c",      ".cc",     ".cpp",    ".cxx",   ".h",      ".hh",     ".hpp",    ".hxx",   ".ixx",  ".ipp",
+      ".m",      ".mm",     ".java",   ".kt",    ".kts",    ".go",     ".rs",     ".swift", ".cs",   ".py",
+      ".js",     ".ts",     ".tsx",    ".jsx",   ".php",    ".rb",     ".lua",    ".sh",    ".zsh",  ".bash",
+      ".ps1",    ".sql",    ".json",   ".yaml",  ".yml",    ".toml",   ".ini",    ".cfg",   ".conf", ".xml",
+      ".html",   ".css",    ".scss",   ".md",    ".markdown", ".txt", ".rst", ".adoc", ".cmake", ".mk", ".make"};
+  const std::string extension = ToLowerAscii(path.extension().string());
+  return kAllowedExtensions.find(extension) != kAllowedExtensions.end();
+}
+
+static std::string TruncateToApproxTokenCount(const std::string& content, const std::size_t max_tokens) {
+  if (max_tokens == 0 || content.empty()) {
+    return content;
+  }
+  std::size_t token_count = 0;
+  bool in_token = false;
+  std::size_t token_start = 0;
+  for (std::size_t i = 0; i < content.size(); ++i) {
+    const unsigned char ch = static_cast<unsigned char>(content[i]);
+    const bool whitespace = (std::isspace(ch) != 0);
+    if (!whitespace && !in_token) {
+      token_start = i;
+      ++token_count;
+      if (token_count > max_tokens) {
+        std::size_t end = token_start;
+        while (end > 0 && std::isspace(static_cast<unsigned char>(content[end - 1])) != 0) {
+          --end;
+        }
+        return content.substr(0, end);
+      }
+      in_token = true;
+    } else if (whitespace) {
+      in_token = false;
+    }
+  }
+  return content;
+}
+
+static std::filesystem::path BuildRagTokenCappedStagingRoot(const AppState& app, const std::string& workspace_key) {
+  return app.data_root / "rag_scan_staging" / ("ws_" + Hex64(Fnv1a64(workspace_key)));
+}
+
+static bool BuildRagTokenCappedStagingTree(const std::filesystem::path& source_root,
+                                           const std::filesystem::path& staging_root,
+                                           const int max_tokens,
+                                           std::size_t* indexed_files_out,
+                                           std::string* error_out) {
+  if (indexed_files_out != nullptr) {
+    *indexed_files_out = 0;
+  }
+  if (max_tokens <= 0) {
+    if (error_out != nullptr) {
+      *error_out = "Token cap must be greater than zero.";
+    }
+    return false;
+  }
+
+  std::error_code ec;
+  fs::remove_all(staging_root, ec);
+  ec.clear();
+  fs::create_directories(staging_root, ec);
+  if (ec) {
+    if (error_out != nullptr) {
+      *error_out = "Failed to prepare token-capped staging directory: " + staging_root.string();
+    }
+    return false;
+  }
+
+  std::size_t copied_files = 0;
+  fs::recursive_directory_iterator it(source_root, fs::directory_options::skip_permission_denied, ec);
+  const fs::recursive_directory_iterator end;
+  while (!ec && it != end) {
+    const fs::directory_entry entry = *it;
+    ++it;
+    if (ec) {
+      ec.clear();
+      continue;
+    }
+    if (!entry.is_regular_file(ec)) {
+      ec.clear();
+      continue;
+    }
+    if (!IsRagIndexableTextFile(entry.path())) {
+      continue;
+    }
+
+    const fs::path absolute = entry.path();
+    const fs::path relative = fs::relative(absolute, source_root, ec);
+    if (ec || relative.empty()) {
+      ec.clear();
+      continue;
+    }
+    const fs::path destination = staging_root / relative;
+    fs::create_directories(destination.parent_path(), ec);
+    if (ec) {
+      ec.clear();
+      continue;
+    }
+
+    std::ifstream in(absolute, std::ios::binary);
+    if (!in.good()) {
+      continue;
+    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    std::string content = buffer.str();
+    if (IsLikelyBinaryBlob(content)) {
+      continue;
+    }
+    content = TruncateToApproxTokenCount(content, static_cast<std::size_t>(max_tokens));
+    if (!WriteTextFile(destination, content)) {
+      continue;
+    }
+    ++copied_files;
+  }
+
+  if (indexed_files_out != nullptr) {
+    *indexed_files_out = copied_files;
+  }
+  return true;
+}
+
+static fs::path ResolveProjectRagSourceRoot(const AppState& app, const fs::path& fallback_source_root) {
+  fs::path source_root = ExpandLeadingTildePath(app.settings.rag_project_source_directory);
+  if (source_root.empty()) {
+    source_root = fallback_source_root;
+  }
+  if (source_root.empty()) {
+    std::error_code cwd_ec;
+    source_root = fs::current_path(cwd_ec);
+  }
+  std::error_code ec;
+  const fs::path absolute_root = fs::absolute(source_root, ec);
+  return ec ? source_root.lexically_normal() : absolute_root.lexically_normal();
+}
+
+static bool DirectoryContainsGguf(const fs::path& directory) {
+  std::error_code ec;
+  if (directory.empty() || !fs::exists(directory, ec) || !fs::is_directory(directory, ec)) {
+    return false;
+  }
+  fs::recursive_directory_iterator it(directory, fs::directory_options::skip_permission_denied, ec);
+  const fs::recursive_directory_iterator end;
+  while (!ec && it != end) {
+    const fs::directory_entry entry = *it;
+    ++it;
+    if (ec) {
+      ec.clear();
+      continue;
+    }
+    if (!entry.is_regular_file(ec)) {
+      ec.clear();
+      continue;
+    }
+    std::string extension = entry.path().extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](const unsigned char ch) {
+      return static_cast<char>(std::tolower(ch));
+    });
+    if (extension == ".gguf") {
+      return true;
+    }
+  }
+  return false;
+}
+
+static fs::path ResolveRagModelFolder(const AppState& app) {
+  std::vector<fs::path> candidates;
+  candidates.push_back(app.data_root / "models");
+  std::error_code cwd_ec;
+  const fs::path cwd = fs::current_path(cwd_ec);
+  if (!cwd_ec) {
+    candidates.push_back(cwd / "models");
+    candidates.push_back(cwd / "build" / "models");
+    candidates.push_back(cwd / "subprojects" / "ollama_engine" / "models");
+  }
+  for (const fs::path& candidate : candidates) {
+    if (DirectoryContainsGguf(candidate)) {
+      return candidate;
+    }
+  }
+
+  std::error_code ec;
+  fs::create_directories(app.data_root / "models", ec);
+  return app.data_root / "models";
+}
+
 static RagIndexService::Config RagConfigFromSettings(const AppSettings& settings) {
   RagIndexService::Config config;
   config.enabled = settings.rag_enabled;
   config.top_k = std::clamp(settings.rag_top_k, 1, 20);
   config.max_snippet_chars = static_cast<std::size_t>(std::clamp(settings.rag_max_snippet_chars, 120, 4000));
   config.max_file_bytes = static_cast<std::size_t>(std::clamp(settings.rag_max_file_bytes, 16 * 1024, 20 * 1024 * 1024));
+  config.vector_max_tokens = static_cast<std::size_t>(std::clamp(settings.rag_scan_max_tokens, 0, 32768));
   return config;
 }
 
 static void SyncRagServiceConfig(AppState& app) {
   app.rag_index_service.SetConfig(RagConfigFromSettings(app.settings));
-  const fs::path model_folder = app.data_root / "models";
-  std::error_code ec;
-  fs::create_directories(model_folder, ec);
+  const fs::path model_folder = ResolveRagModelFolder(app);
   app.rag_index_service.SetModelFolder(model_folder);
 }
 
@@ -340,7 +583,16 @@ static std::string BuildRagContextBlock(const std::vector<RagSnippet>& snippets)
   out << "Retrieved context:\n";
   for (std::size_t i = 0; i < snippets.size(); ++i) {
     const RagSnippet& snippet = snippets[i];
-    out << (i + 1) << ". " << snippet.relative_path << ":" << snippet.start_line << "-" << snippet.end_line << "\n";
+    out << (i + 1) << ". ";
+    if (!snippet.relative_path.empty()) {
+      out << snippet.relative_path;
+      if (snippet.start_line > 0 && snippet.end_line >= snippet.start_line) {
+        out << ":" << snippet.start_line << "-" << snippet.end_line;
+      }
+    } else {
+      out << "Snippet";
+    }
+    out << "\n";
     out << snippet.text << "\n\n";
   }
   return out.str();
@@ -351,24 +603,262 @@ static std::string BuildRagEnhancedPrompt(AppState& app, const ChatSession& chat
     return prompt_text;
   }
 
-  const fs::path workspace_root = ResolveWorkspaceRootPath(app, chat);
+  const fs::path chat_workspace_root = ResolveWorkspaceRootPath(app, chat);
+  const fs::path workspace_root = ResolveProjectRagSourceRoot(app, chat_workspace_root);
   const std::string workspace_key = workspace_root.lexically_normal().generic_string();
-  const RagRefreshResult refresh = app.rag_index_service.RefreshIndexIncremental(workspace_root);
-  if (!refresh.ok) {
-    app.rag_last_refresh_by_workspace[workspace_key] = refresh.error;
+  std::error_code ec;
+  if (workspace_root.empty() || !fs::exists(workspace_root, ec) || !fs::is_directory(workspace_root, ec)) {
+    app.rag_last_refresh_by_workspace[workspace_key] = "RAG source directory is invalid or missing.";
     return prompt_text;
   }
-  app.rag_last_refresh_by_workspace[workspace_key] =
-      "Indexed files: " + std::to_string(refresh.indexed_files) +
-      ", updated: " + std::to_string(refresh.updated_files) +
-      ", removed: " + std::to_string(refresh.removed_files);
-
-  const std::vector<RagSnippet> snippets = app.rag_index_service.RetrieveTopK(workspace_root, prompt_text);
+  std::string rag_error;
+  const std::vector<RagSnippet> snippets = app.rag_index_service.Retrieve(
+      workspace_root, prompt_text, static_cast<std::size_t>(std::clamp(app.settings.rag_top_k, 1, 20)), 1, &rag_error);
+  if (!rag_error.empty()) {
+    app.rag_last_refresh_by_workspace[workspace_key] = rag_error;
+  }
   if (snippets.empty()) {
     return prompt_text;
   }
 
   return BuildRagContextBlock(snippets) + "User prompt:\n" + prompt_text;
+}
+
+static bool TriggerProjectRagScan(AppState& app,
+                                  const bool reuse_previous_source,
+                                  const fs::path& fallback_source_root,
+                                  std::string* error_out) {
+  const fs::path workspace_root = ResolveProjectRagSourceRoot(app, fallback_source_root);
+  const std::string workspace_display = workspace_root.empty() ? "<unset>" : workspace_root.string();
+  const std::string workspace_key = workspace_root.lexically_normal().generic_string();
+  std::error_code ec;
+  if (workspace_root.empty() || !fs::exists(workspace_root, ec) || !fs::is_directory(workspace_root, ec)) {
+    AppendRagScanReport(app, "Scan start rejected: source directory is invalid (" + workspace_display + ").");
+    app.open_rag_console_popup = true;
+    if (error_out != nullptr) {
+      *error_out = "RAG source directory is invalid or missing.";
+    }
+    return false;
+  }
+
+  app.settings.rag_scan_max_tokens = std::clamp(app.settings.rag_scan_max_tokens, 0, 32768);
+  if (!reuse_previous_source) {
+    if (app.settings.rag_scan_max_tokens > 0) {
+      const fs::path staging_root = BuildRagTokenCappedStagingRoot(app, workspace_key);
+      std::size_t staged_files = 0;
+      std::string stage_error;
+      if (!BuildRagTokenCappedStagingTree(
+              workspace_root, staging_root, app.settings.rag_scan_max_tokens, &staged_files, &stage_error)) {
+        const std::string failure = stage_error.empty() ? "Failed to build token-capped staging source." : stage_error;
+        AppendRagScanReport(app, "Scan start rejected: " + failure);
+        app.open_rag_console_popup = true;
+        if (error_out != nullptr) {
+          *error_out = failure;
+        }
+        return false;
+      }
+      app.rag_index_service.SetScanSourceOverride(workspace_root, staging_root);
+      std::ostringstream report;
+      report << "Using token-capped staging source: " << staging_root.string() << " (" << staged_files
+             << " files) | embedding token cap=" << app.settings.rag_scan_max_tokens;
+      AppendRagScanReport(app, report.str());
+    } else {
+      app.rag_index_service.ClearScanSourceOverride(workspace_root);
+    }
+  }
+
+  const bool has_local_models = !app.rag_index_service.ListModels().empty();
+  const RagRefreshResult refresh = reuse_previous_source ? app.rag_index_service.RescanPreviousSource(workspace_root)
+                                                         : app.rag_index_service.RebuildIndex(workspace_root);
+  if (!refresh.ok) {
+    app.rag_last_refresh_by_workspace[workspace_key] = refresh.error;
+    AppendRagScanReport(app, "Scan start failed: " + refresh.error);
+    app.open_rag_console_popup = true;
+    if (error_out != nullptr) {
+      *error_out = refresh.error;
+    }
+    return false;
+  }
+
+  app.rag_scan_workspace_key = workspace_key;
+  app.rag_scan_state = app.rag_index_service.FetchState();
+  app.rag_scan_status_last_emit_s = ImGui::GetTime();
+  app.rag_finished_visible_until_s = 0.0;
+  app.rag_last_refresh_by_workspace[workspace_key] =
+      reuse_previous_source ? "RAG rescan started (previous source)." : "RAG scan started.";
+  app.status_line = reuse_previous_source ? "RAG rescan started (previous source)." : "RAG scan started.";
+  AppendRagScanReport(
+      app,
+      (reuse_previous_source ? "Rescan started (previous source)." : "Scan started.") + std::string(" Source: ") + workspace_root.string());
+  app.open_rag_console_popup = true;
+  if (!has_local_models) {
+    app.status_line += " (no local .gguf detected; relying on llama server if available)";
+    AppendRagScanReport(app, "No local .gguf models detected; scan relies on configured llama server.");
+  }
+  if (error_out != nullptr) {
+    error_out->clear();
+  }
+  return true;
+}
+
+static void PollRagScanState(AppState& app) {
+  const RagScanState previous_state = app.rag_scan_state;
+  app.rag_scan_state = app.rag_index_service.FetchState();
+  const double now = ImGui::GetTime();
+  const bool transitioned_to_finished =
+      previous_state.lifecycle != RagScanLifecycleState::Finished && app.rag_scan_state.lifecycle == RagScanLifecycleState::Finished;
+
+  if (transitioned_to_finished) {
+    app.rag_finished_visible_until_s = now + 8.0;
+    if (!app.rag_scan_workspace_key.empty()) {
+      std::string finished = "Finished";
+      if (app.rag_scan_state.vector_database_size > 0) {
+        finished += " | " + std::to_string(app.rag_scan_state.vector_database_size) + " vectors";
+      }
+      app.rag_last_refresh_by_workspace[app.rag_scan_workspace_key] = finished;
+      app.rag_last_rebuild_at_by_workspace[app.rag_scan_workspace_key] = TimestampNow();
+    }
+    app.status_line = "RAG scan finished: " + std::to_string(app.rag_scan_state.files_processed) + "/" +
+                      std::to_string(app.rag_scan_state.total_files) + " files";
+    if (app.rag_scan_state.vector_database_size > 0) {
+      app.status_line += " | " + std::to_string(app.rag_scan_state.vector_database_size) + " vectors";
+    }
+    AppendRagScanReport(app, app.status_line);
+    app.rag_scan_status_last_emit_s = now;
+    return;
+  }
+
+  if (app.rag_scan_state.lifecycle == RagScanLifecycleState::Running && !app.rag_scan_workspace_key.empty()) {
+    std::ostringstream running;
+    running << "Running";
+    if (app.rag_scan_state.total_files > 0) {
+      running << " " << app.rag_scan_state.files_processed << "/" << app.rag_scan_state.total_files << " files";
+    }
+    if (app.rag_scan_state.vector_database_size > 0) {
+      running << " | " << app.rag_scan_state.vector_database_size << " vectors";
+    }
+    app.rag_last_refresh_by_workspace[app.rag_scan_workspace_key] = running.str();
+
+    const bool changed_progress = previous_state.lifecycle != RagScanLifecycleState::Running ||
+                                  previous_state.files_processed != app.rag_scan_state.files_processed ||
+                                  previous_state.total_files != app.rag_scan_state.total_files ||
+                                  previous_state.vector_database_size != app.rag_scan_state.vector_database_size;
+    if (changed_progress && (now - app.rag_scan_status_last_emit_s >= 0.33 || previous_state.lifecycle != RagScanLifecycleState::Running)) {
+      app.status_line = "RAG scan: " + running.str();
+      AppendRagScanReport(app, app.status_line);
+      app.rag_scan_status_last_emit_s = now;
+    }
+    return;
+  }
+
+  if (previous_state.lifecycle == RagScanLifecycleState::Running &&
+      app.rag_scan_state.lifecycle == RagScanLifecycleState::Stopped) {
+    if (!app.rag_scan_state.error.empty()) {
+      app.status_line = "RAG scan failed: " + app.rag_scan_state.error;
+    } else if (previous_state.total_files == 0) {
+      app.status_line =
+          "RAG scan stopped quickly: no indexable files found (.cpp/.h/.md/.txt/etc) in source directory.";
+    } else if (previous_state.vector_database_size == 0) {
+      app.status_line =
+          "RAG scan stopped with 0 vectors. Check embedding model (.gguf) or UAM_EMBEDDING_MODEL_PATH.";
+    } else {
+      app.status_line = "RAG scan stopped.";
+    }
+    AppendRagScanReport(app, app.status_line);
+    app.rag_scan_status_last_emit_s = now;
+  }
+}
+
+static RagScanState EffectiveRagScanState(const AppState& app) {
+  RagScanState state = app.rag_scan_state;
+  if (state.lifecycle == RagScanLifecycleState::Stopped && app.rag_finished_visible_until_s > ImGui::GetTime()) {
+    state.lifecycle = RagScanLifecycleState::Finished;
+  }
+  return state;
+}
+
+static std::string BuildRagStatusText(const AppState& app) {
+  const RagScanState state = EffectiveRagScanState(app);
+  if (state.lifecycle == RagScanLifecycleState::Finished) {
+    return "RAG: Finished";
+  }
+  if (state.lifecycle == RagScanLifecycleState::Running) {
+    std::ostringstream out;
+    out << "RAG: Running";
+    if (state.total_files > 0) {
+      out << " " << state.files_processed << "/" << state.total_files << " files";
+    } else {
+      out << " (scanning...)";
+    }
+    if (state.vector_database_size > 0) {
+      if (state.total_files > 0) {
+        out << " | ";
+      } else {
+        out << " ";
+      }
+      out << state.vector_database_size << " vectors";
+    }
+    return out.str();
+  }
+  return "RAG: Stopped";
+}
+
+static void EnsureRagManualQueryWorkspaceState(AppState& app, const std::string& workspace_key) {
+  if (app.rag_manual_query_workspace_key == workspace_key) {
+    return;
+  }
+  app.rag_manual_query_workspace_key = workspace_key;
+  app.rag_manual_query_results.clear();
+  app.rag_manual_query_error.clear();
+  app.rag_manual_query_last_query.clear();
+}
+
+static void AppendRagScanReport(AppState& app, const std::string& message) {
+  const std::string trimmed = Trim(message);
+  if (trimmed.empty()) {
+    return;
+  }
+
+  if (!app.rag_scan_reports.empty()) {
+    const std::string& last = app.rag_scan_reports.back();
+    const std::size_t separator = last.find(" | ");
+    if (separator != std::string::npos && last.substr(separator + 3) == trimmed) {
+      return;
+    }
+  }
+
+  app.rag_scan_reports.push_back(TimestampNow() + " | " + trimmed);
+  constexpr std::size_t kMaxRagReports = 320;
+  if (app.rag_scan_reports.size() > kMaxRagReports) {
+    const std::size_t trim_count = app.rag_scan_reports.size() - kMaxRagReports;
+    app.rag_scan_reports.erase(app.rag_scan_reports.begin(),
+                               app.rag_scan_reports.begin() + static_cast<std::ptrdiff_t>(trim_count));
+  }
+  app.rag_scan_reports_scroll_to_bottom = true;
+}
+
+static void RunRagManualTestQuery(AppState& app, const std::filesystem::path& workspace_root) {
+  app.rag_manual_query_max = std::clamp(app.rag_manual_query_max, 1, 50);
+  app.rag_manual_query_min = std::clamp(app.rag_manual_query_min, 1, app.rag_manual_query_max);
+  app.rag_manual_query_running = true;
+  app.rag_manual_query_error.clear();
+  app.rag_manual_query_last_query = app.rag_manual_query_input;
+  std::string query_error;
+  app.rag_manual_query_results = app.rag_index_service.Retrieve(
+      workspace_root,
+      app.rag_manual_query_input,
+      static_cast<std::size_t>(app.rag_manual_query_max),
+      static_cast<std::size_t>(app.rag_manual_query_min),
+      &query_error);
+  app.rag_manual_query_running = false;
+  app.rag_manual_query_error = query_error;
+  if (query_error.empty()) {
+    app.status_line = "RAG test query completed.";
+    AppendRagScanReport(app, "Manual query returned " + std::to_string(app.rag_manual_query_results.size()) + " snippet(s).");
+  } else {
+    app.status_line = "RAG test query failed: " + query_error;
+    AppendRagScanReport(app, "Manual query failed: " + query_error);
+  }
 }
 
 static bool RefreshWorkspaceVcsSnapshot(AppState& app, const std::filesystem::path& workspace_root, const bool force) {
@@ -1273,6 +1763,7 @@ static void SaveSettings(AppState& app) {
   app.settings.rag_top_k = std::clamp(app.settings.rag_top_k, 1, 20);
   app.settings.rag_max_snippet_chars = std::clamp(app.settings.rag_max_snippet_chars, 120, 4000);
   app.settings.rag_max_file_bytes = std::clamp(app.settings.rag_max_file_bytes, 16 * 1024, 20 * 1024 * 1024);
+  app.settings.rag_scan_max_tokens = std::clamp(app.settings.rag_scan_max_tokens, 0, 32768);
   ClampWindowSettings(app.settings);
   SyncRagServiceConfig(app);
   RefreshRememberedSelection(app);
@@ -1285,6 +1776,8 @@ static void LoadSettings(AppState& app) {
     app.settings.gemini_global_root_path = AppPaths::DefaultGeminiUniversalRootPath().string();
   }
   SyncRagServiceConfig(app);
+  app.rag_manual_query_max = std::clamp(app.settings.rag_top_k, 1, 20);
+  app.rag_manual_query_min = 1;
 }
 
 static bool SaveChat(const AppState& app, const ChatSession& chat) {
@@ -2008,6 +2501,7 @@ int main(int, char**) {
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
     ApplyUserUiScale(io, app.settings.ui_scale_multiplier);
+    PollRagScanState(app);
 
     HandleGlobalShortcuts(app);
     DrawDesktopMenuBar(app, done);
@@ -2071,6 +2565,7 @@ int main(int, char**) {
     DrawTemplateChangeWarningModal(app);
     DrawTemplateManagerModal(app);
     DrawVcsOutputModal(app);
+    DrawRagConsoleModal(app);
     DrawAppSettingsModal(app, platform_ui_scale);
     ConsumePendingBranchRequest(app);
 

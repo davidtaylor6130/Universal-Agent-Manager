@@ -4,29 +4,12 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cmath>
 #include <cstdint>
-#include <fstream>
-#include <numeric>
-#include <regex>
-#include <set>
+#include <optional>
 #include <sstream>
-#include <unordered_set>
 
 namespace {
 namespace fs = std::filesystem;
-
-struct IgnorePattern {
-  std::regex regex;
-  bool directory_only = false;
-};
-
-std::string NormalizeWorkspaceKey(const fs::path& workspace_root) {
-  std::error_code ec;
-  const fs::path absolute = fs::absolute(workspace_root, ec);
-  const fs::path normalized = ec ? workspace_root.lexically_normal() : absolute.lexically_normal();
-  return normalized.generic_string();
-}
 
 std::string Trim(const std::string& value) {
   const std::size_t start = value.find_first_not_of(" \t\r\n");
@@ -35,154 +18,6 @@ std::string Trim(const std::string& value) {
   }
   const std::size_t end = value.find_last_not_of(" \t\r\n");
   return value.substr(start, end - start + 1);
-}
-
-bool StartsWith(const std::string& value, const std::string& prefix) {
-  return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
-}
-
-std::string GlobToRegex(const std::string& pattern) {
-  std::string out;
-  out.reserve(pattern.size() * 2);
-  for (const char ch : pattern) {
-    switch (ch) {
-      case '*':
-        out += ".*";
-        break;
-      case '?':
-        out += '.';
-        break;
-      case '.':
-      case '+':
-      case '(':
-      case ')':
-      case '|':
-      case '^':
-      case '$':
-      case '{':
-      case '}':
-      case '[':
-      case ']':
-      case '\\':
-        out.push_back('\\');
-        out.push_back(ch);
-        break;
-      default:
-        out.push_back(ch);
-        break;
-    }
-  }
-  return out;
-}
-
-std::vector<IgnorePattern> LoadIgnorePatterns(const fs::path& workspace_root) {
-  std::vector<IgnorePattern> patterns;
-  const fs::path ignore_file = workspace_root / ".gitignore";
-  if (!fs::exists(ignore_file)) {
-    return patterns;
-  }
-
-  std::ifstream in(ignore_file, std::ios::binary);
-  if (!in.good()) {
-    return patterns;
-  }
-
-  std::string line;
-  while (std::getline(in, line)) {
-    line = Trim(line);
-    if (line.empty() || line[0] == '#') {
-      continue;
-    }
-    if (line[0] == '!') {
-      continue;
-    }
-
-    bool directory_only = false;
-    if (!line.empty() && line.back() == '/') {
-      directory_only = true;
-      line.pop_back();
-    }
-    if (line.empty()) {
-      continue;
-    }
-
-    const bool anchored = StartsWith(line, "/");
-    if (anchored) {
-      line = line.substr(1);
-    }
-    const std::string body = GlobToRegex(line);
-    const std::string regex_text = anchored ? ("^" + body + (directory_only ? "(/.*)?$" : "$"))
-                                            : ("(^|.*/)" + body + (directory_only ? "(/.*)?$" : "$"));
-
-    try {
-      IgnorePattern pattern;
-      pattern.regex = std::regex(regex_text);
-      pattern.directory_only = directory_only;
-      patterns.push_back(std::move(pattern));
-    } catch (...) {
-      // Skip malformed ignore patterns.
-    }
-  }
-  return patterns;
-}
-
-bool PathIsIgnored(const std::string& relative_path, const std::vector<IgnorePattern>& patterns) {
-  if (relative_path.empty()) {
-    return true;
-  }
-  if (StartsWith(relative_path, ".git/") || StartsWith(relative_path, ".svn/")) {
-    return true;
-  }
-  for (const IgnorePattern& pattern : patterns) {
-    if (std::regex_match(relative_path, pattern.regex)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-std::vector<std::string> Tokenize(const std::string& text) {
-  std::vector<std::string> tokens;
-  std::string current;
-  current.reserve(32);
-  for (const unsigned char ch : text) {
-    if (std::isalnum(ch) != 0 || ch == '_') {
-      current.push_back(static_cast<char>(std::tolower(ch)));
-      continue;
-    }
-    if (!current.empty()) {
-      tokens.push_back(current);
-      current.clear();
-    }
-  }
-  if (!current.empty()) {
-    tokens.push_back(current);
-  }
-  return tokens;
-}
-
-std::uint64_t Fnv1a64(const std::string& content) {
-  std::uint64_t hash = 1469598103934665603ULL;
-  for (const unsigned char ch : content) {
-    hash ^= static_cast<std::uint64_t>(ch);
-    hash *= 1099511628211ULL;
-  }
-  return hash;
-}
-
-std::uint64_t LastWriteTimeTicks(const fs::file_time_type& time) {
-  const auto ticks = time.time_since_epoch().count();
-  return static_cast<std::uint64_t>(ticks);
-}
-
-bool IsLikelyBinary(const std::string& content) {
-  const std::size_t probe_size = std::min<std::size_t>(content.size(), 4096);
-  for (std::size_t i = 0; i < probe_size; ++i) {
-    if (content[i] == '\0') {
-      return true;
-    }
-  }
-  return false;
 }
 
 std::string TruncateSnippet(const std::string& text, const std::size_t max_chars) {
@@ -195,33 +30,65 @@ std::string TruncateSnippet(const std::string& text, const std::size_t max_chars
   return text.substr(0, max_chars - 3) + "...";
 }
 
+std::uint64_t Fnv1a64(const std::string& text) {
+  std::uint64_t hash = 1469598103934665603ULL;
+  for (const unsigned char ch : text) {
+    hash ^= static_cast<std::uint64_t>(ch);
+    hash *= 1099511628211ULL;
+  }
+  return hash;
+}
+
+std::string Hex64(const std::uint64_t value) {
+  std::ostringstream out;
+  out << std::hex << value;
+  return out.str();
+}
+
+int ParsePositiveLineNumber(const std::string& text, const int fallback) {
+  const std::string trimmed = Trim(text);
+  if (trimmed.empty()) {
+    return fallback;
+  }
+  int value = fallback;
+  try {
+    value = std::stoi(trimmed);
+  } catch (...) {
+    return fallback;
+  }
+  return std::max(1, value);
+}
+
 }  // namespace
 
 RagIndexService::RagIndexService()
     : config_(Config{}),
       model_folder_(std::filesystem::current_path() / "models"),
       model_engine_client_(std::make_unique<OllamaEngineClient>()) {
-  config_.vector_dimensions = std::clamp<std::size_t>(config_.vector_dimensions, 32, 4096);
+  SetConfig(config_);
   model_engine_client_->SetModelFolder(model_folder_);
-  model_engine_client_->SetEmbeddingDimensions(config_.vector_dimensions);
 }
 
 RagIndexService::RagIndexService(const Config& config)
     : config_(config),
       model_folder_(std::filesystem::current_path() / "models"),
       model_engine_client_(std::make_unique<OllamaEngineClient>()) {
-  config_.vector_dimensions = std::clamp<std::size_t>(config_.vector_dimensions, 32, 4096);
+  SetConfig(config_);
   model_engine_client_->SetModelFolder(model_folder_);
-  model_engine_client_->SetEmbeddingDimensions(config_.vector_dimensions);
 }
 
 RagIndexService::~RagIndexService() = default;
 
 void RagIndexService::SetConfig(const Config& config) {
   config_ = config;
+  config_.top_k = std::clamp(config_.top_k, 1, 20);
+  config_.max_snippet_chars = std::clamp<std::size_t>(config_.max_snippet_chars, 120, 4000);
+  config_.max_file_bytes = std::clamp<std::size_t>(config_.max_file_bytes, 16 * 1024, 20 * 1024 * 1024);
   config_.vector_dimensions = std::clamp<std::size_t>(config_.vector_dimensions, 32, 4096);
+  config_.vector_max_tokens = std::clamp<std::size_t>(config_.vector_max_tokens, 0, 32768);
   if (model_engine_client_ != nullptr) {
     model_engine_client_->SetEmbeddingDimensions(config_.vector_dimensions);
+    model_engine_client_->SetEmbeddingMaxTokens(config_.vector_max_tokens);
   }
 }
 
@@ -231,10 +98,10 @@ const RagIndexService::Config& RagIndexService::GetConfig() const {
 
 void RagIndexService::SetModelFolder(const std::filesystem::path& model_folder) {
   model_folder_ = model_folder.empty() ? (std::filesystem::current_path() / "models") : model_folder;
-  loaded_model_.clear();
   if (model_engine_client_ != nullptr) {
     model_engine_client_->SetModelFolder(model_folder_);
     model_engine_client_->SetEmbeddingDimensions(config_.vector_dimensions);
+    model_engine_client_->SetEmbeddingMaxTokens(config_.vector_max_tokens);
   }
 }
 
@@ -244,6 +111,7 @@ std::vector<std::string> RagIndexService::ListModels() {
   }
   model_engine_client_->SetModelFolder(model_folder_);
   model_engine_client_->SetEmbeddingDimensions(config_.vector_dimensions);
+  model_engine_client_->SetEmbeddingMaxTokens(config_.vector_max_tokens);
   return model_engine_client_->ListModels();
 }
 
@@ -253,22 +121,46 @@ bool RagIndexService::LoadModel(const std::string& model_name, std::string* erro
   }
   model_engine_client_->SetModelFolder(model_folder_);
   model_engine_client_->SetEmbeddingDimensions(config_.vector_dimensions);
-  if (!model_engine_client_->Load(model_name, error_out)) {
-    return false;
+  model_engine_client_->SetEmbeddingMaxTokens(config_.vector_max_tokens);
+  return model_engine_client_->Load(model_name, error_out);
+}
+
+void RagIndexService::SetScanSourceOverride(const std::filesystem::path& workspace_root,
+                                            const std::filesystem::path& scan_source_root) {
+  const std::string workspace_key = NormalizeWorkspaceKey(workspace_root);
+  if (workspace_key.empty()) {
+    return;
   }
-  loaded_model_ = model_name;
-  return true;
+  const std::string source_key = NormalizeWorkspaceKey(scan_source_root);
+  if (source_key.empty()) {
+    scan_source_override_by_workspace_.erase(workspace_key);
+    return;
+  }
+  scan_source_override_by_workspace_[workspace_key] = source_key;
+}
+
+void RagIndexService::ClearScanSourceOverride(const std::filesystem::path& workspace_root) {
+  const std::string workspace_key = NormalizeWorkspaceKey(workspace_root);
+  if (workspace_key.empty()) {
+    return;
+  }
+  scan_source_override_by_workspace_.erase(workspace_key);
 }
 
 RagRefreshResult RagIndexService::RefreshIndexIncremental(const std::filesystem::path& workspace_root) {
-  return RefreshImpl(workspace_root, false);
+  return ScanWorkspace(workspace_root, false);
 }
 
 RagRefreshResult RagIndexService::RebuildIndex(const std::filesystem::path& workspace_root) {
-  return RefreshImpl(workspace_root, true);
+  return ScanWorkspace(workspace_root, false);
 }
 
-RagRefreshResult RagIndexService::RefreshImpl(const std::filesystem::path& workspace_root, const bool force_rebuild) {
+RagRefreshResult RagIndexService::RescanPreviousSource(const std::filesystem::path& workspace_root) {
+  return ScanWorkspace(workspace_root, true);
+}
+
+RagRefreshResult RagIndexService::ScanWorkspace(const std::filesystem::path& workspace_root,
+                                                const bool reuse_previous_source) {
   RagRefreshResult result;
   if (!config_.enabled) {
     return result;
@@ -278,412 +170,221 @@ RagRefreshResult RagIndexService::RefreshImpl(const std::filesystem::path& works
   if (workspace_root.empty() || !fs::exists(workspace_root, ec) || !fs::is_directory(workspace_root, ec)) {
     result.ok = false;
     result.error = "Workspace root is missing or not a directory.";
+    last_scan_error_ = result.error;
     return result;
   }
 
+  if (model_engine_client_ == nullptr) {
+    model_engine_client_ = std::make_unique<OllamaEngineClient>();
+    model_engine_client_->SetModelFolder(model_folder_);
+    model_engine_client_->SetEmbeddingDimensions(config_.vector_dimensions);
+    model_engine_client_->SetEmbeddingMaxTokens(config_.vector_max_tokens);
+  }
+
   const std::string workspace_key = NormalizeWorkspaceKey(workspace_root);
-  WorkspaceIndex& workspace = indexes_by_workspace_[workspace_key];
-  if (force_rebuild) {
-    workspace = WorkspaceIndex{};
+
+  std::string setup_error;
+  if (!ConfigureWorkspaceDatabase(workspace_root, &setup_error)) {
+    result.ok = false;
+    result.error = setup_error.empty() ? "Failed to configure RAG database." : setup_error;
+    last_scan_error_ = result.error;
+    return result;
   }
 
-  const bool vector_enabled = config_.vector_enabled;
-  std::string vector_error;
-  const bool vector_ready = vector_enabled && EnsureModelLoaded(&vector_error);
-
-  const std::vector<IgnorePattern> ignore_patterns = LoadIgnorePatterns(workspace_root);
-  std::unordered_set<std::string> seen_paths;
-
-  const auto chunk_text = [&](const std::string& relative_path, const std::string& content) {
-    std::vector<Chunk> chunks;
-    std::istringstream lines(content);
-    std::string line;
-    int line_number = 1;
-
-    Chunk current;
-    current.relative_path = relative_path;
-    current.start_line = 1;
-    int chunk_line_count = 0;
-    std::size_t chunk_chars = 0;
-
-    auto flush_chunk = [&]() {
-      const std::vector<std::string> tokens = Tokenize(current.text);
-      for (const std::string& token : tokens) {
-        ++current.term_frequency[token];
-      }
-      current.token_count = static_cast<int>(tokens.size());
-      if (!Trim(current.text).empty() && current.token_count > 0) {
-        chunks.push_back(current);
-      }
-      current = Chunk{};
-      current.relative_path = relative_path;
-      current.start_line = line_number;
-      chunk_line_count = 0;
-      chunk_chars = 0;
-    };
-
-    while (std::getline(lines, line)) {
-      if (chunk_line_count == 0) {
-        current.start_line = line_number;
-      }
-      if (!current.text.empty()) {
-        current.text.push_back('\n');
-      }
-      current.text += line;
-      current.end_line = line_number;
-      ++line_number;
-      ++chunk_line_count;
-      chunk_chars += line.size() + 1;
-
-      if (chunk_line_count >= config_.chunk_line_span || chunk_chars >= config_.chunk_char_budget) {
-        flush_chunk();
-      }
-    }
-
-    if (!current.text.empty()) {
-      flush_chunk();
-    }
-    return chunks;
-  };
-
-  fs::recursive_directory_iterator it(workspace_root, fs::directory_options::skip_permission_denied, ec);
-  const fs::recursive_directory_iterator end;
-  while (!ec && it != end) {
-    const fs::directory_entry entry = *it;
-    ++it;
-    if (ec) {
-      continue;
-    }
-
-    if (!entry.is_regular_file(ec)) {
-      continue;
-    }
-
-    const fs::path absolute_path = entry.path();
-    const fs::path relative_path_fs = fs::relative(absolute_path, workspace_root, ec);
-    if (ec) {
-      continue;
-    }
-    const std::string relative_path = relative_path_fs.generic_string();
-    if (PathIsIgnored(relative_path, ignore_patterns)) {
-      continue;
-    }
-    seen_paths.insert(relative_path);
-
-    const std::uintmax_t file_size = entry.file_size(ec);
-    if (ec) {
-      continue;
-    }
-    if (file_size > config_.max_file_bytes) {
-      workspace.files_by_relative_path.erase(relative_path);
-      continue;
-    }
-
-    const fs::file_time_type mtime = entry.last_write_time(ec);
-    if (ec) {
-      continue;
-    }
-    const std::uint64_t mtime_ticks = LastWriteTimeTicks(mtime);
-
-    const auto previous = workspace.files_by_relative_path.find(relative_path);
-    if (!force_rebuild && previous != workspace.files_by_relative_path.end() &&
-        previous->second.file_size == file_size && previous->second.mtime_ticks == mtime_ticks) {
-      continue;
-    }
-
-    std::ifstream in(absolute_path, std::ios::binary);
-    if (!in.good()) {
-      workspace.files_by_relative_path.erase(relative_path);
-      continue;
-    }
-    std::ostringstream buffer;
-    buffer << in.rdbuf();
-    const std::string content = buffer.str();
-
-    if (IsLikelyBinary(content)) {
-      workspace.files_by_relative_path.erase(relative_path);
-      continue;
-    }
-
-    int line_count = 0;
-    for (const char ch : content) {
-      if (ch == '\n') {
-        ++line_count;
-      }
-    }
-    if (line_count > config_.max_line_count) {
-      workspace.files_by_relative_path.erase(relative_path);
-      continue;
-    }
-
-    const std::uint64_t content_hash = Fnv1a64(content);
-    if (!force_rebuild && previous != workspace.files_by_relative_path.end() &&
-        previous->second.content_hash == content_hash) {
-      previous->second.file_size = file_size;
-      previous->second.mtime_ticks = mtime_ticks;
-      continue;
-    }
-
-    FileIndexEntry updated;
-    updated.file_size = file_size;
-    updated.mtime_ticks = mtime_ticks;
-    updated.content_hash = content_hash;
-    updated.chunks = chunk_text(relative_path, content);
-    for (Chunk& chunk : updated.chunks) {
-      if (!vector_enabled) {
-        chunk.vector_embedding.clear();
-        continue;
-      }
-      if (vector_ready && model_engine_client_ != nullptr) {
-        const ollama_engine::SendMessageResponse embedding_result = model_engine_client_->SendMessage(chunk.text);
-        if (embedding_result.pbOk && embedding_result.pVecfEmbedding.has_value() &&
-            !embedding_result.pVecfEmbedding->empty()) {
-          chunk.vector_embedding = *embedding_result.pVecfEmbedding;
-        } else {
-          chunk.vector_embedding = BuildFallbackEmbedding(chunk.text, config_.vector_dimensions);
-        }
-      } else {
-        chunk.vector_embedding = BuildFallbackEmbedding(chunk.text, config_.vector_dimensions);
-      }
-    }
-    workspace.files_by_relative_path[relative_path] = std::move(updated);
-    ++result.updated_files;
+  std::string scan_error;
+  std::optional<std::string> vector_file;
+  if (!reuse_previous_source) {
+    const auto it = scan_source_override_by_workspace_.find(workspace_key);
+    vector_file = (it != scan_source_override_by_workspace_.end() && !it->second.empty()) ? it->second : workspace_key;
+  }
+  if (!model_engine_client_->Scan(vector_file, &scan_error)) {
+    result.ok = false;
+    result.error = scan_error.empty() ? "Failed to start RAG scan." : scan_error;
+    last_scan_error_ = result.error;
+    return result;
   }
 
-  std::vector<std::string> stale_paths;
-  stale_paths.reserve(workspace.files_by_relative_path.size());
-  for (const auto& pair : workspace.files_by_relative_path) {
-    if (seen_paths.find(pair.first) == seen_paths.end()) {
-      stale_paths.push_back(pair.first);
-    }
-  }
-  for (const std::string& stale : stale_paths) {
-    workspace.files_by_relative_path.erase(stale);
-    ++result.removed_files;
-  }
-
-  workspace.all_chunks.clear();
-  workspace.chunk_document_frequency.clear();
-  for (const auto& pair : workspace.files_by_relative_path) {
-    const FileIndexEntry& entry = pair.second;
-    ++result.indexed_files;
-    for (const Chunk& chunk : entry.chunks) {
-      workspace.all_chunks.push_back(chunk);
-      std::set<std::string> unique_terms;
-      for (const auto& tf_pair : chunk.term_frequency) {
-        unique_terms.insert(tf_pair.first);
-      }
-      for (const std::string& term : unique_terms) {
-        ++workspace.chunk_document_frequency[term];
-      }
-    }
-  }
-
+  last_scan_error_.clear();
+  const RagScanState state = FetchState();
+  result.indexed_files = static_cast<int>(state.total_files);
+  result.updated_files = static_cast<int>(state.files_processed);
   return result;
 }
 
 std::vector<RagSnippet> RagIndexService::RetrieveTopK(const std::filesystem::path& workspace_root,
                                                       const std::string& query) {
+  return Retrieve(workspace_root, query, static_cast<std::size_t>(config_.top_k), 1);
+}
+
+std::vector<RagSnippet> RagIndexService::Retrieve(const std::filesystem::path& workspace_root,
+                                                  const std::string& query,
+                                                  const std::size_t max_results,
+                                                  const std::size_t min_results,
+                                                  std::string* error_out) {
   std::vector<RagSnippet> snippets;
-  if (!config_.enabled) {
+  if (!config_.enabled || !config_.vector_enabled) {
     return snippets;
   }
 
-  const auto query_tokens = Tokenize(query);
-  if (query_tokens.empty()) {
+  const std::string trimmed_query = Trim(query);
+  if (trimmed_query.empty()) {
     return snippets;
   }
 
-  const auto workspace_it = indexes_by_workspace_.find(NormalizeWorkspaceKey(workspace_root));
-  if (workspace_it == indexes_by_workspace_.end()) {
-    return snippets;
-  }
-  const WorkspaceIndex& workspace = workspace_it->second;
-  if (workspace.all_chunks.empty()) {
-    return snippets;
+  if (model_engine_client_ == nullptr) {
+    model_engine_client_ = std::make_unique<OllamaEngineClient>();
+    model_engine_client_->SetModelFolder(model_folder_);
+    model_engine_client_->SetEmbeddingDimensions(config_.vector_dimensions);
+    model_engine_client_->SetEmbeddingMaxTokens(config_.vector_max_tokens);
   }
 
-  const std::vector<float> query_embedding = BuildQueryEmbedding(query);
-  const bool use_vector = config_.vector_enabled && !query_embedding.empty();
-
-  const double total_chunks = static_cast<double>(workspace.all_chunks.size());
-  struct ScoredChunk {
-    const Chunk* chunk = nullptr;
-    double score = 0.0;
-  };
-  std::vector<ScoredChunk> scored;
-  scored.reserve(workspace.all_chunks.size());
-
-  for (const Chunk& chunk : workspace.all_chunks) {
-    if (chunk.token_count <= 0) {
-      continue;
+  std::string setup_error;
+  if (!ConfigureWorkspaceDatabase(workspace_root, &setup_error)) {
+    if (error_out != nullptr) {
+      *error_out = setup_error.empty() ? "Failed to configure RAG database." : setup_error;
     }
+    return snippets;
+  }
 
-    double lexical_score = 0.0;
-    for (const std::string& token : query_tokens) {
-      const auto tf_it = chunk.term_frequency.find(token);
-      if (tf_it == chunk.term_frequency.end()) {
-        continue;
+  const std::string workspace_key = NormalizeWorkspaceKey(workspace_root);
+  const std::string database_name = WorkspaceDatabaseName(workspace_key);
+
+  std::string load_error;
+  if (!model_engine_client_->LoadRagDatabases({database_name}, &load_error)) {
+    const RagScanState state = FetchState();
+    const bool running_same_workspace =
+        (state.lifecycle == RagScanLifecycleState::Running && workspace_key == active_workspace_key_);
+    if (!running_same_workspace) {
+      if (error_out != nullptr) {
+        *error_out = load_error.empty() ? "Failed to load RAG database." : load_error;
       }
-      const auto df_it = workspace.chunk_document_frequency.find(token);
-      const double df = (df_it == workspace.chunk_document_frequency.end()) ? 0.0 : static_cast<double>(df_it->second);
-      const double idf = std::log((total_chunks + 1.0) / (df + 1.0)) + 1.0;
-      const double tf = static_cast<double>(tf_it->second) / static_cast<double>(chunk.token_count);
-      lexical_score += (tf * idf);
-    }
-
-    double score = lexical_score;
-    if (use_vector && chunk.vector_embedding.size() == query_embedding.size()) {
-      const double cosine = CosineSimilarity(query_embedding, chunk.vector_embedding);
-      const double vector_score = (cosine + 1.0) * 0.5;
-      score = (vector_score * 0.85) + (lexical_score * 0.15);
-    }
-
-    if (score > 0.0) {
-      scored.push_back(ScoredChunk{&chunk, score});
+      return snippets;
     }
   }
 
-  std::sort(scored.begin(), scored.end(), [](const ScoredChunk& lhs, const ScoredChunk& rhs) {
-    if (lhs.score != rhs.score) {
-      return lhs.score > rhs.score;
-    }
-    if (lhs.chunk->relative_path != rhs.chunk->relative_path) {
-      return lhs.chunk->relative_path < rhs.chunk->relative_path;
-    }
-    return lhs.chunk->start_line < rhs.chunk->start_line;
-  });
+  const std::size_t clamped_max = std::max<std::size_t>(1, max_results);
+  const std::size_t clamped_min = std::min(clamped_max, std::max<std::size_t>(1, min_results));
 
-  std::unordered_set<std::string> seen_files;
-  for (const ScoredChunk& item : scored) {
-    if (seen_files.find(item.chunk->relative_path) != seen_files.end()) {
-      continue;
-    }
-    seen_files.insert(item.chunk->relative_path);
-    RagSnippet snippet;
-    snippet.relative_path = item.chunk->relative_path;
-    snippet.start_line = item.chunk->start_line;
-    snippet.end_line = item.chunk->end_line;
-    snippet.text = TruncateSnippet(item.chunk->text, config_.max_snippet_chars);
-    snippet.score = item.score;
-    snippets.push_back(std::move(snippet));
-    if (static_cast<int>(snippets.size()) >= config_.top_k) {
-      break;
-    }
+  const std::vector<std::string> raw_snippets =
+      model_engine_client_->FetchRelevantInfo(trimmed_query, clamped_max, clamped_min);
+  snippets.reserve(raw_snippets.size());
+  for (const std::string& raw_snippet : raw_snippets) {
+    snippets.push_back(ParseSnippet(raw_snippet, config_.max_snippet_chars));
   }
-
   return snippets;
 }
 
-bool RagIndexService::EnsureModelLoaded(std::string* error_out) {
-  if (!config_.vector_enabled) {
-    return false;
+RagScanState RagIndexService::FetchState() {
+  RagScanState state;
+  if (model_engine_client_ == nullptr) {
+    state.error = last_scan_error_;
+    return state;
   }
+
+  const ollama_engine::VectorisationStateResponse engine_state = model_engine_client_->FetchVectorisationState();
+  switch (engine_state.pVectorisationLifecycleState) {
+    case ollama_engine::VectorisationLifecycleState::Running:
+      state.lifecycle = RagScanLifecycleState::Running;
+      break;
+    case ollama_engine::VectorisationLifecycleState::Finished:
+      state.lifecycle = RagScanLifecycleState::Finished;
+      break;
+    case ollama_engine::VectorisationLifecycleState::Stopped:
+    default:
+      state.lifecycle = RagScanLifecycleState::Stopped;
+      break;
+  }
+  state.vector_database_size = engine_state.piVectorDatabaseSize;
+  state.files_processed = engine_state.piFilesProcessed;
+  state.total_files = engine_state.piTotalFiles;
+
+  if (state.lifecycle == RagScanLifecycleState::Stopped) {
+    state.error = last_scan_error_;
+  } else {
+    state.error.clear();
+  }
+
+  return state;
+}
+
+bool RagIndexService::ConfigureWorkspaceDatabase(const std::filesystem::path& workspace_root, std::string* error_out) {
   if (model_engine_client_ == nullptr) {
     model_engine_client_ = std::make_unique<OllamaEngineClient>();
-  }
-  model_engine_client_->SetModelFolder(model_folder_);
-  model_engine_client_->SetEmbeddingDimensions(config_.vector_dimensions);
-
-  const ollama_engine::CurrentStateResponse state = model_engine_client_->QueryCurrentState();
-  if ((state.pEngineLifecycleState == ollama_engine::EngineLifecycleState::Loaded ||
-       state.pEngineLifecycleState == ollama_engine::EngineLifecycleState::Thinking ||
-       state.pEngineLifecycleState == ollama_engine::EngineLifecycleState::Running ||
-       state.pEngineLifecycleState == ollama_engine::EngineLifecycleState::Loading ||
-       state.pEngineLifecycleState == ollama_engine::EngineLifecycleState::Finished) &&
-      !state.pSLoadedModelName.empty()) {
-    loaded_model_ = state.pSLoadedModelName;
-    return true;
-  }
-  if (!loaded_model_.empty()) {
-    std::string load_error;
-    if (model_engine_client_->Load(loaded_model_, &load_error)) {
-      return true;
-    }
+    model_engine_client_->SetModelFolder(model_folder_);
+    model_engine_client_->SetEmbeddingDimensions(config_.vector_dimensions);
+    model_engine_client_->SetEmbeddingMaxTokens(config_.vector_max_tokens);
   }
 
-  const std::vector<std::string> models = model_engine_client_->ListModels();
-  if (models.empty()) {
+  const std::string workspace_key = NormalizeWorkspaceKey(workspace_root);
+  if (workspace_key.empty()) {
     if (error_out != nullptr) {
-      *error_out = "No models found in " + model_folder_.string();
+      *error_out = "Workspace root is empty.";
     }
     return false;
   }
-  const std::string model_name = models.front();
-  if (!model_engine_client_->Load(model_name, error_out)) {
+
+  const std::string database_name = WorkspaceDatabaseName(workspace_key);
+  if (!model_engine_client_->SetRagOutputDatabase(database_name, error_out)) {
     return false;
   }
-  loaded_model_ = model_name;
+  active_workspace_key_ = workspace_key;
   return true;
 }
 
-std::vector<float> RagIndexService::BuildQueryEmbedding(const std::string& query) {
-  if (!config_.vector_enabled) {
-    return {};
+std::string RagIndexService::WorkspaceDatabaseName(const std::string& workspace_key) {
+  const auto it = database_name_by_workspace_.find(workspace_key);
+  if (it != database_name_by_workspace_.end()) {
+    return it->second;
   }
-  std::string vector_error;
-  if (!EnsureModelLoaded(&vector_error) || model_engine_client_ == nullptr) {
-    return BuildFallbackEmbedding(query, config_.vector_dimensions);
-  }
-  const ollama_engine::SendMessageResponse response = model_engine_client_->SendMessage(query);
-  if (response.pbOk && response.pVecfEmbedding.has_value() && !response.pVecfEmbedding->empty()) {
-    return *response.pVecfEmbedding;
-  }
-  return BuildFallbackEmbedding(query, config_.vector_dimensions);
+  const std::string database_name = "uam_" + Hex64(Fnv1a64(workspace_key));
+  database_name_by_workspace_[workspace_key] = database_name;
+  return database_name;
 }
 
-std::vector<float> RagIndexService::BuildFallbackEmbedding(const std::string& text, const std::size_t dimensions) {
-  const std::size_t dim = std::clamp<std::size_t>(dimensions, 32, 4096);
-  std::vector<float> embedding(dim, 0.0f);
-  const std::vector<std::string> tokens = Tokenize(text);
-  const std::string seed = tokens.empty() ? text : std::string{};
+RagSnippet RagIndexService::ParseSnippet(const std::string& snippet_text, const std::size_t max_snippet_chars) {
+  RagSnippet snippet;
+  if (snippet_text.empty()) {
+    return snippet;
+  }
 
-  auto mix_token = [&](const std::string& token) {
-    const std::uint64_t hash = Fnv1a64(token);
-    const std::size_t first = static_cast<std::size_t>(hash % dim);
-    const std::size_t second = static_cast<std::size_t>((hash >> 32) % dim);
-    const float weight = 1.0f + static_cast<float>(hash & 0xFFULL) / 255.0f;
-    embedding[first] += weight;
-    embedding[second] -= (weight * 0.5f);
-  };
+  const std::size_t newline = snippet_text.find('\n');
+  const std::string header = (newline == std::string::npos) ? snippet_text : snippet_text.substr(0, newline);
+  const std::string body = (newline == std::string::npos) ? std::string{} : snippet_text.substr(newline + 1);
 
-  if (!tokens.empty()) {
-    for (const std::string& token : tokens) {
-      mix_token(token);
+  std::string location = header;
+  if (!location.empty() && location.front() == '[') {
+    const std::size_t close = location.find("] ");
+    if (close != std::string::npos) {
+      location = location.substr(close + 2);
+    }
+  }
+  if (const std::size_t metadata = location.find(" ["); metadata != std::string::npos) {
+    location = location.substr(0, metadata);
+  }
+  location = Trim(location);
+
+  const std::size_t dash = location.rfind('-');
+  const std::size_t colon = (dash == std::string::npos) ? std::string::npos : location.rfind(':', dash);
+  if (colon != std::string::npos && dash != std::string::npos && dash > colon + 1) {
+    snippet.relative_path = Trim(location.substr(0, colon));
+    snippet.start_line = ParsePositiveLineNumber(location.substr(colon + 1, dash - colon - 1), 1);
+    snippet.end_line = ParsePositiveLineNumber(location.substr(dash + 1), snippet.start_line);
+    if (snippet.end_line < snippet.start_line) {
+      snippet.end_line = snippet.start_line;
     }
   } else {
-    mix_token(seed);
+    snippet.relative_path = location;
+    snippet.start_line = 1;
+    snippet.end_line = 1;
   }
 
-  double norm = 0.0;
-  for (const float value : embedding) {
-    norm += static_cast<double>(value) * static_cast<double>(value);
-  }
-  norm = std::sqrt(norm);
-  if (norm > 0.0) {
-    for (float& value : embedding) {
-      value = static_cast<float>(static_cast<double>(value) / norm);
-    }
-  }
-  return embedding;
+  snippet.text = TruncateSnippet(body.empty() ? snippet_text : body, max_snippet_chars);
+  return snippet;
 }
 
-double RagIndexService::CosineSimilarity(const std::vector<float>& lhs, const std::vector<float>& rhs) {
-  if (lhs.empty() || rhs.empty() || lhs.size() != rhs.size()) {
-    return 0.0;
-  }
-  double dot = 0.0;
-  double lhs_norm = 0.0;
-  double rhs_norm = 0.0;
-  for (std::size_t i = 0; i < lhs.size(); ++i) {
-    const double lv = lhs[i];
-    const double rv = rhs[i];
-    dot += (lv * rv);
-    lhs_norm += (lv * lv);
-    rhs_norm += (rv * rv);
-  }
-  if (lhs_norm <= 0.0 || rhs_norm <= 0.0) {
-    return 0.0;
-  }
-  return dot / (std::sqrt(lhs_norm) * std::sqrt(rhs_norm));
+std::string RagIndexService::NormalizeWorkspaceKey(const std::filesystem::path& workspace_root) {
+  std::error_code ec;
+  const fs::path absolute = fs::absolute(workspace_root, ec);
+  const fs::path normalized = ec ? workspace_root.lexically_normal() : absolute.lexically_normal();
+  return normalized.generic_string();
 }

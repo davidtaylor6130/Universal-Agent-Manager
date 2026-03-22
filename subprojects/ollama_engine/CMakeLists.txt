@@ -118,12 +118,16 @@ add_executable(uam_ollama_engine_cli_auto_test
 add_executable(uam_ollama_engine_cli_custom_tests
   src/ollama_engine_cli_custom_tests_main.cpp
 )
+add_executable(uam_ollama_engine_cli_eval_suite
+  src/ollama_engine_cli_eval_suite_main.cpp
+)
 
 set(UAM_OLLAMA_ENGINE_CLI_TARGETS
   uam_ollama_engine_cli
   uam_ollama_engine_cli_finetune_wizard
   uam_ollama_engine_cli_auto_test
   uam_ollama_engine_cli_custom_tests
+  uam_ollama_engine_cli_eval_suite
 )
 
 foreach(lTargetName IN LISTS UAM_OLLAMA_ENGINE_CLI_TARGETS)

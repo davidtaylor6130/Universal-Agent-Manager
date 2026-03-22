@@ -14,3 +14,4 @@
 /.idea
 /subprojects/ollama_engine/build
 /.idea
+/build-release

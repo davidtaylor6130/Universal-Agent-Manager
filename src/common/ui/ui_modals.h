@@ -37,6 +37,11 @@
 #include "common/ui/modals/modal_vcs_output.h"
 
 /// <summary>
+/// Project-wide RAG console modal.
+/// </summary>
+#include "common/ui/modals/modal_rag_console.h"
+
+/// <summary>
 /// App settings modal and section components.
 /// </summary>
 #include "common/ui/modals/modal_app_settings.h"

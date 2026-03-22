@@ -61,6 +61,7 @@ vectorised_rag::RuntimeOptions BuildVectorisedRagRuntimeOptions(
   lRuntimeOptions.pPathModelFolder = pEngineOptions.pPathModelFolder;
   lRuntimeOptions.pPathEmbeddingModelFile = pPathLoadedModelFile;
   lRuntimeOptions.piDeterministicEmbeddingDimensions = pEngineOptions.piEmbeddingDimensions;
+  lRuntimeOptions.piEmbeddingMaxTokens = pEngineOptions.piEmbeddingMaxTokens;
   lRuntimeOptions.pSDatabaseName = pSRagOutputDatabaseName;
   const char* lPtrServerUrl = std::getenv("UAM_LLAMA_SERVER_URL");
   if (lPtrServerUrl != nullptr && *lPtrServerUrl != '\0') {
@@ -688,6 +689,8 @@ LocalOllamaCppEngine::LocalOllamaCppEngine(EngineOptions pEngineOptions)
   }
   mEngineOptions.piEmbeddingDimensions =
       std::clamp<std::size_t>(mEngineOptions.piEmbeddingDimensions, 32, 4096);
+  mEngineOptions.piEmbeddingMaxTokens =
+      std::clamp<std::size_t>(mEngineOptions.piEmbeddingMaxTokens, 0, 32768);
   mGenerationSettings = ClampGenerationSettings(mEngineOptions.pGenerationSettings);
   mEngineOptions.pGenerationSettings = mGenerationSettings;
   mEngineOptions.pRagRuntimeMode = ResolveRagRuntimeMode(mEngineOptions.pRagRuntimeMode);

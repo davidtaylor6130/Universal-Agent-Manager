@@ -78,6 +78,52 @@ static void DrawDesktopMenuBar(AppState& app, bool& done) {
     ImGui::EndMenu();
   }
 
+  if (ImGui::BeginMenu("RAG")) {
+    const ChatSession* selected_chat = SelectedChat(app);
+    const bool has_selected_chat = (selected_chat != nullptr);
+    const fs::path fallback_source_root = ResolveCurrentRagFallbackSourceRoot(app);
+    if (ImGui::MenuItem("Open RAG Console...")) {
+      app.open_rag_console_popup = true;
+    }
+    ImGui::Separator();
+    if (!has_selected_chat) {
+      ImGui::BeginDisabled();
+    }
+    if (ImGui::MenuItem("Use Selected Chat Workspace As Source")) {
+      app.settings.rag_project_source_directory = ResolveWorkspaceRootPath(app, *selected_chat).string();
+      SaveSettings(app);
+      app.status_line = "RAG source directory set from selected chat workspace.";
+      AppendRagScanReport(app, "Source directory set from selected chat workspace.");
+    }
+    if (!has_selected_chat) {
+      ImGui::EndDisabled();
+    }
+    if (ImGui::MenuItem("Clear Project Source")) {
+      app.settings.rag_project_source_directory.clear();
+      SaveSettings(app);
+      app.status_line = "RAG source directory cleared.";
+      AppendRagScanReport(app, "Source directory cleared.");
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Rebuild Index")) {
+      std::string scan_error;
+      if (!TriggerProjectRagScan(app, false, fallback_source_root, &scan_error)) {
+        app.status_line = "RAG scan failed to start: " + scan_error;
+      } else {
+        app.status_line = "RAG scan started.";
+      }
+    }
+    if (ImGui::MenuItem("Rescan Previous Source")) {
+      std::string scan_error;
+      if (!TriggerProjectRagScan(app, true, fallback_source_root, &scan_error)) {
+        app.status_line = "RAG rescan failed to start: " + scan_error;
+      } else {
+        app.status_line = "RAG rescan started (previous source).";
+      }
+    }
+    ImGui::EndMenu();
+  }
+
   if (ImGui::BeginMenu("View")) {
     const bool structured_active = (app.center_view_mode == CenterViewMode::Structured);
     if (ImGui::MenuItem("Structured Mode", nullptr, structured_active)) {

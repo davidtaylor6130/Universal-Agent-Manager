@@ -161,6 +161,12 @@ struct EngineOptions {
   /// <summary>Embedding vector dimensions.</summary>
   std::size_t piEmbeddingDimensions = 256;
 
+  /// <summary>
+  /// Maximum tokens used for local embedding generation.
+  /// 0 uses engine defaults.
+  /// </summary>
+  std::size_t piEmbeddingMaxTokens = 0;
+
   /// <summary>Generation/sampling settings for prompt responses.</summary>
   GenerationSettings pGenerationSettings;
 
