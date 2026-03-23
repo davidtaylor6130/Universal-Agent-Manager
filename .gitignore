@@ -16,3 +16,6 @@
 /.idea
 /build-release
 /subprojects/ollama_engine/evaluation/reference_repos
+/.vectorised_rag
+/build-tests/.vectorised_rag
+/build-tests

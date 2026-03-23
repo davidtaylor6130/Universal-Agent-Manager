@@ -15,7 +15,11 @@ static void DrawChatDetailPane(AppState& app, ChatSession& chat) {
 
   DrawChatDetailHeaderBar(app, chat);
 
-  if (app.center_view_mode == CenterViewMode::CliConsole) {
+  const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
+  if (ProviderRuntime::UsesCliOutput(provider)) {
+    if (!ProviderRuntime::UsesInternalEngine(provider) && provider.supports_interactive) {
+      MarkSelectedCliTerminalForLaunch(app);
+    }
     DrawChatDetailCliConsoleBody(app, chat);
     EndPanel();
     return;

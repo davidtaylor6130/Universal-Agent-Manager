@@ -21,7 +21,14 @@ static void DrawTemplateChangeWarningModal(AppState& app) {
     ImGui::TextWrapped("This chat already has messages. Template changes may not fully affect prior context.");
     ImGui::TextColored(ui::kTextMuted, "Chat: %s", chat_title.c_str());
     ImGui::TextColored(ui::kTextMuted, "New template: %s", new_template_label.c_str());
-    ImGui::TextColored(ui::kTextMuted, "On confirm, Gemini will receive: @.gemini/gemini.md");
+    if (has_chat) {
+      const ProviderProfile& provider = ProviderForChatOrDefault(app, app.chats[chat_index]);
+      if (ProviderRuntime::UsesGeminiPathBootstrap(provider)) {
+        ImGui::TextColored(ui::kTextMuted, "On confirm, provider bootstrap uses: @.gemini/gemini.md");
+      } else {
+        ImGui::TextColored(ui::kTextMuted, "On confirm, template content is prepended to the next structured prompt.");
+      }
+    }
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
 
     if (DrawButton("Apply + Send", ImVec2(126.0f, 32.0f), ButtonKind::Primary)) {

@@ -1,7 +1,7 @@
 #pragma once
 
 /// <summary>
-/// Handles global keyboard shortcuts for app-level chat actions and mode toggles.
+/// Handles global keyboard shortcuts for app-level chat actions.
 /// </summary>
 static void HandleGlobalShortcuts(AppState& app) {
   ImGuiIO& io = ImGui::GetIO();
@@ -17,19 +17,11 @@ static void HandleGlobalShortcuts(AppState& app) {
   if (allow_global_action && ctrl && ImGui::IsKeyPressed(ImGuiKey_R, false)) {
     RefreshChatHistory(app);
   }
-  if (allow_global_action && ctrl && ImGui::IsKeyPressed(ImGuiKey_M, false)) {
-    app.center_view_mode = (app.center_view_mode == CenterViewMode::Structured)
-                               ? CenterViewMode::CliConsole
-                               : CenterViewMode::Structured;
-    if (app.center_view_mode == CenterViewMode::CliConsole) {
-      MarkSelectedCliTerminalForLaunch(app);
-    }
-    SaveSettings(app);
-  }
   if (allow_global_action && ctrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
-    app.settings.gemini_yolo_mode = !app.settings.gemini_yolo_mode;
+    app.settings.provider_yolo_mode = !app.settings.provider_yolo_mode;
+    app.settings.gemini_yolo_mode = app.settings.provider_yolo_mode;
     SaveSettings(app);
-    app.status_line = app.settings.gemini_yolo_mode ? "YOLO mode enabled." : "YOLO mode disabled.";
+    app.status_line = app.settings.provider_yolo_mode ? "YOLO mode enabled." : "YOLO mode disabled.";
   }
   if (allow_global_action && ctrl && ImGui::IsKeyPressed(ImGuiKey_Q, false)) {
     SDL_Event quit_event{};

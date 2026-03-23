@@ -4,9 +4,9 @@
 /// Draws the template card in the chat settings side pane.
 /// </summary>
 static void DrawChatSettingsTemplateCard(AppState& app, ChatSession& chat) {
-  DrawSectionHeader("Template");
+  DrawSectionHeader("Prompt Profile");
   if (BeginSectionCard("template_card")) {
-    const std::string global_label = TemplateLabelOrFallback(app, app.settings.default_gemini_template_id);
+    const std::string global_label = TemplateLabelOrFallback(app, app.settings.default_prompt_profile_id);
     ImGui::TextColored(ui::kTextMuted, "Global default");
     ImGui::TextWrapped("%s", global_label.c_str());
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace6));
@@ -43,7 +43,7 @@ static void DrawChatSettingsTemplateCard(AppState& app, ChatSession& chat) {
       }
       ImGui::EndCombo();
     }
-    std::string effective_template_id = chat.template_override_id.empty() ? app.settings.default_gemini_template_id : chat.template_override_id;
+    std::string effective_template_id = chat.template_override_id.empty() ? app.settings.default_prompt_profile_id : chat.template_override_id;
     ImGui::TextColored(ui::kTextMuted, "Effective template");
     ImGui::TextWrapped("%s", TemplateLabelOrFallback(app, effective_template_id).c_str());
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace6));

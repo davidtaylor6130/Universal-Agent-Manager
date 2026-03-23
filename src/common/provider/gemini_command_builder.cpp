@@ -78,10 +78,10 @@ std::string GeminiCommandBuilder::BuildPrompt(const std::string& user_prompt,
 
 std::vector<std::string> GeminiCommandBuilder::BuildFlagsArgv(const AppSettings& settings) {
   std::vector<std::string> flags;
-  if (settings.gemini_yolo_mode) {
+  if (settings.provider_yolo_mode) {
     flags.push_back("--yolo");
   }
-  const std::vector<std::string> extra_flags = SplitCommandLineWords(settings.gemini_extra_flags);
+  const std::vector<std::string> extra_flags = SplitCommandLineWords(settings.provider_extra_flags);
   flags.insert(flags.end(), extra_flags.begin(), extra_flags.end());
   return flags;
 }
@@ -104,19 +104,21 @@ std::string GeminiCommandBuilder::BuildCommand(const AppSettings& settings,
                                                const std::string& prompt,
                                                const std::vector<std::string>& files,
                                                const std::string& resume_session_id) {
-  std::string command = settings.gemini_command_template.empty()
-                            ? "gemini {resume} {flags} {prompt}"
-                            : settings.gemini_command_template;
+  std::string command = settings.provider_command_template.empty()
+                            ? "gemini {resume} {flags} -p {prompt}"
+                            : settings.provider_command_template;
   const bool has_prompt_placeholder = command.find("{prompt}") != std::string::npos;
   const bool has_resume_placeholder = command.find("{resume}") != std::string::npos;
   const bool has_flags_placeholder = command.find("{flags}") != std::string::npos;
   const std::string resume_fragment = resume_session_id.empty() ? "" : ("--resume " + ShellEscape(resume_session_id));
   const std::string flags_fragment = BuildFlagsShell(settings);
+  const std::string model_fragment = settings.selected_model_id.empty() ? "" : ShellEscape(settings.selected_model_id);
 
   command = ReplaceAll(command, "{prompt}", ShellEscape(prompt));
   command = ReplaceAll(command, "{files}", JoinShellEscapedFiles(files));
   command = ReplaceAll(command, "{resume}", resume_fragment);
   command = ReplaceAll(command, "{flags}", flags_fragment);
+  command = ReplaceAll(command, "{model}", model_fragment);
 
   if (!has_prompt_placeholder) {
     command += " ";

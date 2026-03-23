@@ -6,6 +6,7 @@
 #include "common/frontend_actions.h"
 #include "common/provider_profile.h"
 #include "common/rag_index_service.h"
+#include "common/ollama_engine_client.h"
 #include "common/vcs_workspace_service.h"
 
 #include <atomic>
@@ -41,7 +42,7 @@ struct TerminalScrollbackLine {
 inline constexpr std::size_t kTerminalScrollbackMaxLines = 5000;
 
 /// <summary>
-/// Runtime state for one embedded Gemini CLI terminal instance.
+/// Runtime state for one embedded provider CLI terminal instance.
 /// </summary>
 struct CliTerminalState {
 #if defined(_WIN32)
@@ -71,6 +72,11 @@ struct CliTerminalState {
   bool should_launch = false;
   double last_sync_time_s = 0.0;
   double last_output_time_s = 0.0;
+  double last_activity_time_s = 0.0;
+  double last_polled_time_s = 0.0;
+  bool input_ready = false;
+  double startup_time_s = 0.0;
+  std::deque<std::string> pending_structured_prompts;
   bool generation_in_progress = false;
   std::string last_error;
 };
@@ -114,6 +120,8 @@ struct AppState {
   std::string composer_text;
   std::string attach_file_input;
   std::string new_chat_folder_id;
+  bool open_new_chat_popup = false;
+  std::string pending_new_chat_provider_id;
   std::string new_folder_title_input;
   std::string new_folder_directory_input;
   std::string pending_move_chat_to_new_folder_id;
@@ -150,6 +158,8 @@ struct AppState {
   CenterViewMode center_view_mode = CenterViewMode::Structured;
   std::vector<std::unique_ptr<CliTerminalState>> cli_terminals;
   RagIndexService rag_index_service;
+  OllamaEngineClient local_runtime_engine;
+  std::string loaded_runtime_model_id;
   std::unordered_map<std::string, VcsSnapshot> vcs_snapshot_by_workspace;
   std::unordered_set<std::string> vcs_snapshot_loaded_workspaces;
   std::unordered_map<std::string, std::string> rag_last_refresh_by_workspace;

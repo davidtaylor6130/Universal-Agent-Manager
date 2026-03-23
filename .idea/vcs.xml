@@ -7,6 +7,24 @@
     <mapping directory="$PROJECT_DIR$/build-release/_deps/sdl2-src" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/build-release/_deps/tree_sitter-src" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/build-release/_deps/tree_sitter_cpp-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build-tests/_deps/imgui-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build-tests/_deps/llama_cpp_uam-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build-tests/_deps/sdl2-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build-tests/_deps/tree_sitter-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build-tests/_deps/tree_sitter_cpp-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build/_deps/imgui-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build/_deps/llama_cpp_uam-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build/_deps/sdl2-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build/_deps/tree_sitter-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build/_deps/tree_sitter_cpp-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build_mac_verify/_deps/imgui-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build_mac_verify/_deps/llama_cpp_uam-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build_mac_verify/_deps/sdl2-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build_mac_verify/_deps/tree_sitter-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build_mac_verify/_deps/tree_sitter_cpp-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/imgui-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/llama_cpp_uam-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/sdl2-src" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/subprojects/ollama_engine/build/_deps/tree_sitter-src" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/subprojects/ollama_engine/build/_deps/tree_sitter_cpp-src" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/subprojects/ollama_engine/evaluation/reference_repos/C-Plus-Plus" vcs="Git" />

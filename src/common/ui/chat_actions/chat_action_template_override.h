@@ -26,14 +26,16 @@ static bool ApplyChatTemplateOverride(AppState& app,
   SaveAndUpdateStatus(app, chat, "Chat template updated.", "Template changed in UI, but failed to save chat.");
 
   std::string template_status;
-  const TemplatePreflightOutcome outcome = PreflightWorkspaceTemplateForChat(app, chat, &template_status);
+  const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
+  const TemplatePreflightOutcome outcome =
+      PreflightWorkspaceTemplateForChat(app, provider, chat, nullptr, &template_status);
   if (outcome == TemplatePreflightOutcome::BlockingError) {
     app.status_line = template_status.empty() ? "Template changed, but local sync failed." : template_status;
     return false;
   }
 
   if (send_control_message_for_started_chat && !chat.messages.empty()) {
-    app.status_line = "Template updated for this chat. gemini.md bootstrap runs once at new-chat start only.";
+    app.status_line = "Template updated for this chat. Bootstrap content applies on the next provider request.";
     return true;
   }
 

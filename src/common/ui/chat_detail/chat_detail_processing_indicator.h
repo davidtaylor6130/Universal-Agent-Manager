@@ -1,7 +1,7 @@
 #pragma once
 
 /// <summary>
-/// Draws the structured-mode processing indicator while Gemini is running.
+/// Draws the structured-mode processing indicator while a provider call is running.
 /// </summary>
 static void DrawStructuredProcessingIndicator(const AppState& app, const ChatSession& chat) {
   if (!HasPendingCallForChat(app, chat.id)) {
@@ -12,7 +12,7 @@ static void DrawStructuredProcessingIndicator(const AppState& app, const ChatSes
              ImVec2(ui::kSpace12, 10.0f), ui::kRadiusPanel);
 
   const int dots = static_cast<int>(ImGui::GetTime() * 2.5) % 4;
-  std::string status = "Gemini is processing";
+  std::string status = "Provider is processing";
   status.append(static_cast<std::size_t>(dots), '.');
   ImGui::TextColored(ui::kAccent, "%s", status.c_str());
   ImGui::TextColored(ui::kTextMuted, "You can keep browsing chats while this runs.");

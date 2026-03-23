@@ -12,6 +12,8 @@ set_property(GLOBAL PROPERTY PREDEFINED_TARGETS_FOLDER "_CMake")
 option(UAM_FETCH_DEPS "Fetch SDL2 and Dear ImGui from GitHub during configure." ON)
 option(UAM_FETCH_LLAMA_CPP "Fetch pinned llama.cpp fork during configure." ON)
 option(UAM_BUILD_TESTS "Build UAM core tests executable." OFF)
+set(UAM_OLLAMA_ENGINE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/subprojects/ollama_engine" CACHE PATH
+  "Path to the ollama_engine source repository.")
 if(APPLE)
   option(UAM_MACOS_BUNDLE "Build as a macOS .app bundle (no Terminal window needed)." ON)
 endif()
@@ -135,7 +137,11 @@ if(WIN32)
   )
 endif()
 
-add_subdirectory(subprojects/ollama_engine)
+if(EXISTS "${UAM_OLLAMA_ENGINE_SOURCE_DIR}/CMakeLists.txt")
+  add_subdirectory("${UAM_OLLAMA_ENGINE_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/ollama_engine")
+else()
+  message(FATAL_ERROR "ollama_engine source not found at ${UAM_OLLAMA_ENGINE_SOURCE_DIR}.")
+endif()
 
 add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   ${UAM_IMGUI_SOURCES}

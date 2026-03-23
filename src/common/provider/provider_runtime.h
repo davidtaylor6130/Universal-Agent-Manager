@@ -33,4 +33,14 @@ class ProviderRuntime {
 
   /// <summary>Returns true when provider uses Gemini JSON history files.</summary>
   static bool SupportsGeminiJsonHistory(const ProviderProfile& profile);
+  /// <summary>Returns true when provider persists via local chat storage only.</summary>
+  static bool UsesLocalHistory(const ProviderProfile& profile);
+  /// <summary>Returns true when provider execution is internal engine backed.</summary>
+  static bool UsesInternalEngine(const ProviderProfile& profile);
+  /// <summary>Returns true when provider output is fixed to CLI terminal mode.</summary>
+  static bool UsesCliOutput(const ProviderProfile& profile);
+  /// <summary>Returns true when provider output is fixed to structured chat mode.</summary>
+  static bool UsesStructuredOutput(const ProviderProfile& profile);
+  /// <summary>Returns true when prompt bootstrap should use @.gemini path injection.</summary>
+  static bool UsesGeminiPathBootstrap(const ProviderProfile& profile);
 };

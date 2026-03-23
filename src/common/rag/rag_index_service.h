@@ -60,11 +60,14 @@ class RagIndexService {
   struct Config {
     bool enabled = true;
     bool vector_enabled = true;
+    std::string vector_backend = "ollama-engine";
     int top_k = 6;
     std::size_t max_snippet_chars = 600;
     std::size_t max_file_bytes = 1024 * 1024;
     std::size_t vector_dimensions = 256;
     std::size_t vector_max_tokens = 0;
+    std::string vector_model_id;
+    std::string vector_database_name_override;
     int max_line_count = 20000;
     int chunk_line_span = 60;
     std::size_t chunk_char_budget = 2400;
@@ -122,7 +125,9 @@ class RagIndexService {
   std::filesystem::path model_folder_;
   std::unordered_map<std::string, std::string> database_name_by_workspace_;
   std::unordered_map<std::string, std::string> scan_source_override_by_workspace_;
+  std::unordered_map<std::string, std::unordered_map<std::string, std::size_t>> lexical_fallback_hashes_by_workspace_;
   std::string active_workspace_key_;
+  std::string loaded_vector_model_id_;
   std::string last_scan_error_;
   std::unique_ptr<OllamaEngineClient> model_engine_client_;
 };

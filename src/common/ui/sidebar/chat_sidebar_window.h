@@ -3,6 +3,7 @@
 #include "common/ui/sidebar/chat_sidebar_folder_header.h"
 #include "common/ui/sidebar/chat_sidebar_header.h"
 #include "common/ui/sidebar/chat_sidebar_item.h"
+#include "common/ui/sidebar/chat_sidebar_new_chat_popup.h"
 #include "common/ui/sidebar/chat_sidebar_new_folder_popup.h"
 #include "common/ui/sidebar/chat_sidebar_options_popup.h"
 #include "common/ui/sidebar/chat_sidebar_tree.h"
@@ -33,6 +34,7 @@ static void DrawLeftPane(AppState& app) {
     app.open_sidebar_chat_options_popup = true;
   }
   DrawSidebarChatOptionsPopup(app);
+  DrawSidebarNewChatPopup(app);
   DrawSidebarNewFolderPopup(app);
 
   EndPanel();

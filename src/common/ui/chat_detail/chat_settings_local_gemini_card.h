@@ -50,7 +50,9 @@ static void DrawChatSettingsLocalGeminiCard(AppState& app, ChatSession& chat) {
     }
     if (DrawButton("Sync Template Now", ImVec2(132.0f, 32.0f), ButtonKind::Primary)) {
       std::string sync_status;
-      const TemplatePreflightOutcome outcome = PreflightWorkspaceTemplateForChat(app, chat, &sync_status);
+      const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
+      const TemplatePreflightOutcome outcome =
+          PreflightWorkspaceTemplateForChat(app, provider, chat, nullptr, &sync_status);
       if (outcome == TemplatePreflightOutcome::BlockingError) {
         app.status_line = sync_status.empty() ? "Template sync failed." : sync_status;
       } else {

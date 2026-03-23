@@ -17,7 +17,10 @@ static void DrawRagConsoleModal(AppState& app) {
   const bool has_selected_chat = (selected_chat != nullptr);
   const fs::path selected_chat_workspace = has_selected_chat ? ResolveWorkspaceRootPath(app, *selected_chat) : fs::path{};
   const fs::path fallback_source_root = ResolveCurrentRagFallbackSourceRoot(app);
-  const fs::path workspace_root = ResolveProjectRagSourceRoot(app, fallback_source_root);
+  const std::vector<fs::path> rag_source_roots =
+      has_selected_chat ? ResolveRagSourceRootsForChat(app, *selected_chat, fallback_source_root) : std::vector<fs::path>{};
+  const fs::path workspace_root =
+      rag_source_roots.empty() ? ResolveProjectRagSourceRoot(app, fallback_source_root) : rag_source_roots.front();
   const std::string workspace_key = workspace_root.lexically_normal().generic_string();
   EnsureRagManualQueryWorkspaceState(app, workspace_key);
 
@@ -70,6 +73,9 @@ static void DrawRagConsoleModal(AppState& app) {
   ImGui::Dummy(ImVec2(0.0f, ui::kSpace4));
   ImGui::TextColored(ui::kTextMuted, "Resolved source");
   ImGui::TextWrapped("%s", workspace_root.string().c_str());
+  if (rag_source_roots.size() > 1) {
+    ImGui::TextColored(ui::kTextMuted, "Custom sources selected: %zu (scan buttons target the first source)", rag_source_roots.size());
+  }
   if (!source_valid) {
     ImGui::TextColored(ui::kWarning, "Source is invalid. Update the directory before scanning.");
   }

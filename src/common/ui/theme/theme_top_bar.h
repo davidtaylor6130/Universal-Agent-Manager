@@ -25,14 +25,22 @@ static void DrawGlobalTopBar(AppState& app) {
     return;
   }
 
-  const ProviderProfile* active_provider = ActiveProvider(app);
+  const ChatSession* selected = SelectedChat(app);
+  const ProviderProfile* active_provider = nullptr;
+  if (selected != nullptr) {
+    active_provider = ProviderForChat(app, *selected);
+  }
+  if (active_provider == nullptr) {
+    active_provider = ActiveProvider(app);
+  }
   std::string provider_label = "No Provider";
   if (active_provider != nullptr) {
     provider_label = Trim(active_provider->title).empty() ? active_provider->id : active_provider->title;
   }
   provider_label = CompactPreview(provider_label, 28);
+  const std::string output_mode_label =
+      (active_provider != nullptr && ProviderRuntime::UsesCliOutput(*active_provider)) ? "CLI" : "Structured";
 
-  const ChatSession* selected = SelectedChat(app);
   const bool pending_any = HasAnyPendingCall(app);
   const bool pending_here = (selected != nullptr) && HasPendingCallForChat(app, selected->id);
   const bool pending_elsewhere = pending_any && !pending_here;
@@ -53,6 +61,9 @@ static void DrawGlobalTopBar(AppState& app) {
 
     DrawStatusChip("provider_chip", "Provider: " + provider_label, IsLightPaletteActive() ? Rgb(9, 31, 63, 0.08f) : Rgb(255, 255, 255, 0.06f),
                    ui::kTextSecondary);
+    ImGui::SameLine();
+    DrawStatusChip("output_chip", "Output: " + output_mode_label,
+                   IsLightPaletteActive() ? Rgb(9, 31, 63, 0.08f) : Rgb(255, 255, 255, 0.06f), ui::kTextSecondary);
     ImGui::SameLine();
     DrawStatusChip("runtime_chip", "Runtime: " + runtime_label,
                    pending_here ? Rgb(245, 158, 11, IsLightPaletteActive() ? 0.18f : 0.22f)

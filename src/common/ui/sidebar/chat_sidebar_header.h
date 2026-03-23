@@ -21,8 +21,7 @@ static void DrawChatSidebarHeader(AppState& app) {
     ImGui::SetCursorScreenPos(ImVec2(header_controls_x, ImGui::GetCursorScreenPos().y));
   }
   if (DrawMiniIconButton("new_chat_global", "+", ImVec2(20.0f, 20.0f))) {
-    app.new_chat_folder_id = kDefaultFolderId;
-    CreateAndSelectChat(app);
+    CreateAndSelectChatInFolder(app, kDefaultFolderId);
   }
   float header_button_spacing = 6.0f;
 #if defined(_WIN32)

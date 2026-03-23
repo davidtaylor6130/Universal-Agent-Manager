@@ -14,16 +14,14 @@
 /// </summary>
 static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
   static AppSettings draft_settings{};
-  static CenterViewMode draft_center_mode = CenterViewMode::Structured;
   static bool initialized = false;
 
   if (app.open_app_settings_popup) {
     draft_settings = app.settings;
-    if (Trim(draft_settings.gemini_global_root_path).empty()) {
-      draft_settings.gemini_global_root_path = AppPaths::DefaultGeminiUniversalRootPath().string();
+    if (Trim(draft_settings.prompt_profile_root_path).empty()) {
+      draft_settings.prompt_profile_root_path = AppPaths::DefaultGeminiUniversalRootPath().string();
     }
     draft_settings.ui_theme = NormalizeThemeChoice(draft_settings.ui_theme);
-    draft_center_mode = app.center_view_mode;
     initialized = true;
     ImGui::OpenPopup("app_settings_popup");
     app.open_app_settings_popup = false;
@@ -33,11 +31,10 @@ static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
   if (ImGui::BeginPopupModal("app_settings_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
     if (!initialized) {
       draft_settings = app.settings;
-      if (Trim(draft_settings.gemini_global_root_path).empty()) {
-        draft_settings.gemini_global_root_path = AppPaths::DefaultGeminiUniversalRootPath().string();
+      if (Trim(draft_settings.prompt_profile_root_path).empty()) {
+        draft_settings.prompt_profile_root_path = AppPaths::DefaultGeminiUniversalRootPath().string();
       }
       draft_settings.ui_theme = NormalizeThemeChoice(draft_settings.ui_theme);
-      draft_center_mode = app.center_view_mode;
       initialized = true;
       StartGeminiVersionCheck(app, false);
     }
@@ -51,7 +48,7 @@ static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
 
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
     DrawSoftDivider();
-    DrawAppSettingsBehaviorSection(draft_settings);
+    DrawAppSettingsBehaviorSection(app, draft_settings);
 
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
     DrawSoftDivider();
@@ -59,11 +56,17 @@ static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
 
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
     DrawSoftDivider();
-    DrawAppSettingsCompatibilitySection(app);
+    const ProviderProfile* active_profile = ProviderProfileStore::FindById(app.provider_profiles, draft_settings.active_provider_id);
+    if (active_profile != nullptr && IsGeminiProviderId(active_profile->id)) {
+      DrawAppSettingsCompatibilitySection(app);
+    } else {
+      ImGui::TextColored(ui::kTextSecondary, "Provider Compatibility");
+      ImGui::TextColored(ui::kTextMuted, "Gemini compatibility checks are shown when Gemini is the active provider.");
+    }
 
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
     DrawSoftDivider();
-    DrawAppSettingsStartupSection(draft_settings, draft_center_mode);
+    DrawAppSettingsStartupSection(draft_settings);
 
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
     DrawSoftDivider();
@@ -74,7 +77,7 @@ static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
     DrawAppSettingsShortcutsSection();
 
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
-    DrawAppSettingsCommitSection(app, draft_settings, draft_center_mode, platform_scale, initialized);
+    DrawAppSettingsCommitSection(app, draft_settings, platform_scale, initialized);
     ImGui::EndPopup();
   }
 }

@@ -78,6 +78,7 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 
   std::ostringstream meta;
   meta << "id=" << chat.id << '\n';
+  meta << "provider_id=" << chat.provider_id << '\n';
   meta << "native_session_id=" << chat.native_session_id << '\n';
   meta << "uses_native_session=" << (chat.uses_native_session ? "1" : "0") << '\n';
   meta << "parent_chat=" << chat.parent_chat_id << '\n';
@@ -86,9 +87,13 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
   meta << "folder=" << chat.folder_id << '\n';
   meta << "template_override=" << chat.template_override_id << '\n';
   meta << "gemini_md_bootstrapped=" << (chat.gemini_md_bootstrapped ? "1" : "0") << '\n';
+  meta << "rag_enabled=" << (chat.rag_enabled ? "1" : "0") << '\n';
   meta << "title=" << chat.title << '\n';
   meta << "created_at=" << chat.created_at << '\n';
   meta << "updated_at=" << chat.updated_at << '\n';
+  for (const std::string& source_dir : chat.rag_source_directories) {
+    meta << "rag_source_directory=" << source_dir << '\n';
+  }
   for (const std::string& file_path : chat.linked_files) {
     meta << "file=" << file_path << '\n';
   }
@@ -149,6 +154,8 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
         const std::string value = line.substr(equals_at + 1);
         if (key == "id") {
           chat.id = value;
+        } else if (key == "provider_id") {
+          chat.provider_id = value;
         } else if (key == "native_session_id") {
           chat.native_session_id = value;
         } else if (key == "uses_native_session") {
@@ -165,12 +172,16 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
           chat.template_override_id = value;
         } else if (key == "gemini_md_bootstrapped") {
           chat.gemini_md_bootstrapped = (value == "1" || value == "true");
+        } else if (key == "rag_enabled") {
+          chat.rag_enabled = (value == "1" || value == "true");
         } else if (key == "title") {
           chat.title = value;
         } else if (key == "created_at") {
           chat.created_at = value;
         } else if (key == "updated_at") {
           chat.updated_at = value;
+        } else if (key == "rag_source_directory" && !value.empty()) {
+          chat.rag_source_directories.push_back(value);
         } else if (key == "file" && !value.empty()) {
           chat.linked_files.push_back(value);
         }

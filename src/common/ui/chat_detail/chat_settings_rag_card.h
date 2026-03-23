@@ -8,7 +8,9 @@ static void DrawChatSettingsRagCard(AppState& app, ChatSession& chat) {
   DrawSectionHeader("RAG");
   if (BeginSectionCard("rag_card")) {
     const fs::path chat_workspace_root = ResolveWorkspaceRootPath(app, chat);
-    const fs::path workspace_root = ResolveProjectRagSourceRoot(app, chat_workspace_root);
+    const std::vector<fs::path> rag_source_roots = ResolveRagSourceRootsForChat(app, chat, chat_workspace_root);
+    const fs::path workspace_root = rag_source_roots.empty() ? ResolveProjectRagSourceRoot(app, chat_workspace_root)
+                                                             : rag_source_roots.front();
     const std::string workspace_key = workspace_root.lexically_normal().generic_string();
     EnsureRagManualQueryWorkspaceState(app, workspace_key);
 
@@ -36,6 +38,9 @@ static void DrawChatSettingsRagCard(AppState& app, ChatSession& chat) {
         (!workspace_root.empty() && fs::exists(workspace_root, source_ec) && fs::is_directory(workspace_root, source_ec));
     ImGui::TextColored(ui::kTextMuted, "Resolved source");
     ImGui::TextWrapped("%s", workspace_root.string().c_str());
+    if (rag_source_roots.size() > 1) {
+      ImGui::TextColored(ui::kTextMuted, "Custom sources selected: %zu (scan buttons target the first source)", rag_source_roots.size());
+    }
     if (!source_valid) {
       ImGui::TextColored(ui::kTextMuted, "Source is invalid. Update the directory before scanning.");
     }

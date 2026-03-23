@@ -65,6 +65,7 @@ static bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, co
     }
     offset += written;
   }
+  terminal.last_activity_time_s = ImGui::GetTime();
   return true;
 #else
   std::size_t offset = 0;
@@ -79,8 +80,93 @@ static bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, co
     }
     return false;
   }
+  terminal.last_activity_time_s = ImGui::GetTime();
   return true;
 #endif
+}
+
+static void QueueStructuredPromptForTerminal(CliTerminalState& terminal, const std::string& prompt) {
+  if (prompt.empty()) {
+    return;
+  }
+  terminal.pending_structured_prompts.push_back(prompt);
+  terminal.generation_in_progress = true;
+  terminal.last_activity_time_s = ImGui::GetTime();
+}
+
+static bool InjectPromptAsPasteAndSubmit(CliTerminalState& terminal,
+                                         const std::string& prompt,
+                                         std::string* error_out = nullptr) {
+  if (prompt.empty()) {
+    return true;
+  }
+  if (!terminal.running) {
+    if (error_out != nullptr) {
+      *error_out = "Provider terminal is not running.";
+    }
+    return false;
+  }
+  if (terminal.vt == nullptr) {
+    if (error_out != nullptr) {
+      *error_out = "Provider terminal VT is not initialized.";
+    }
+    return false;
+  }
+  static constexpr char kBracketedPasteStart[] = "\x1b[200~";
+  static constexpr char kBracketedPasteEnd[] = "\x1b[201~";
+  if (!WriteToCliTerminal(terminal, kBracketedPasteStart, sizeof(kBracketedPasteStart) - 1)) {
+    if (error_out != nullptr) {
+      *error_out = "Failed to write bracketed paste start marker.";
+    }
+    return false;
+  }
+  if (!WriteToCliTerminal(terminal, prompt.c_str(), prompt.size())) {
+    if (error_out != nullptr) {
+      *error_out = "Failed to write prompt to provider terminal.";
+    }
+    return false;
+  }
+  if (!WriteToCliTerminal(terminal, kBracketedPasteEnd, sizeof(kBracketedPasteEnd) - 1)) {
+    if (error_out != nullptr) {
+      *error_out = "Failed to write bracketed paste end marker.";
+    }
+    return false;
+  }
+  vterm_keyboard_key(terminal.vt, VTERM_KEY_ENTER, VTERM_MOD_NONE);
+  terminal.generation_in_progress = true;
+  terminal.last_activity_time_s = ImGui::GetTime();
+  return true;
+}
+
+static bool FlushQueuedStructuredPromptsForTerminal(CliTerminalState& terminal, std::string* error_out = nullptr) {
+  while (!terminal.pending_structured_prompts.empty()) {
+    std::string prompt = std::move(terminal.pending_structured_prompts.front());
+    terminal.pending_structured_prompts.pop_front();
+    if (InjectPromptAsPasteAndSubmit(terminal, prompt, error_out)) {
+      continue;
+    }
+    terminal.pending_structured_prompts.push_front(std::move(prompt));
+    return false;
+  }
+  return true;
+}
+
+static void ReportDroppedQueuedStructuredPromptsForTerminal(AppState& app,
+                                                            const CliTerminalState& terminal,
+                                                            const std::string& reason) {
+  if (terminal.pending_structured_prompts.empty() || terminal.attached_chat_id.empty()) {
+    return;
+  }
+  std::string message = "Structured prompt delivery failed before terminal became ready.";
+  if (!reason.empty()) {
+    message += " Reason: " + reason;
+  }
+  const int chat_index = FindChatIndexById(app, terminal.attached_chat_id);
+  if (chat_index >= 0) {
+    AddMessage(app.chats[chat_index], MessageRole::System, message);
+    SaveChat(app, app.chats[chat_index]);
+  }
+  app.status_line = message;
 }
 
 static void WriteBytesToPty(const char* bytes, const size_t len, void* user) {
@@ -89,7 +175,7 @@ static void WriteBytesToPty(const char* bytes, const size_t len, void* user) {
   }
   auto* terminal = static_cast<CliTerminalState*>(user);
   if (!WriteToCliTerminal(*terminal, bytes, len)) {
-    terminal->last_error = "Failed to write to Gemini terminal.";
+    terminal->last_error = "Failed to write to provider terminal.";
   }
 }
 
@@ -292,6 +378,9 @@ static void FastStopCliTerminalWindows(CliTerminalState& terminal, const bool cl
   terminal.scrollback_lines.clear();
   terminal.scrollback_view_offset = 0;
   terminal.needs_full_refresh = true;
+  terminal.input_ready = false;
+  terminal.startup_time_s = 0.0;
+  terminal.pending_structured_prompts.clear();
   terminal.generation_in_progress = false;
   terminal.last_output_time_s = 0.0;
   if (clear_identity) {
@@ -333,14 +422,59 @@ static void StopCliTerminalProcessWindows(CliTerminalState& terminal) {
 }
 #endif
 
-static void StopCliTerminal(CliTerminalState& terminal, const bool clear_identity = false) {
+enum class CliTerminalStopMode {
+  Graceful,
+  FastExit,
+};
+
+static void StopCliTerminal(CliTerminalState& terminal,
+                            const bool clear_identity = false,
+                            const CliTerminalStopMode stop_mode = CliTerminalStopMode::Graceful) {
 #if defined(_WIN32)
   StopCliTerminalProcessWindows(terminal);
 #else
   if (terminal.child_pid > 0) {
-    kill(terminal.child_pid, SIGHUP);
+    const pid_t child_pid = terminal.child_pid;
     int status = 0;
-    waitpid(terminal.child_pid, &status, WNOHANG);
+    const auto has_exited = [&](const bool wait_for_exit, const double timeout_seconds) -> bool {
+      const double wait_start = ImGui::GetTime();
+      while (true) {
+        const pid_t wait_result = waitpid(child_pid, &status, WNOHANG);
+        if (wait_result == child_pid) {
+          return true;
+        }
+        if (wait_result < 0) {
+          if (errno == EINTR) {
+            continue;
+          }
+          return errno == ECHILD;
+        }
+        if (!wait_for_exit) {
+          return false;
+        }
+        if ((ImGui::GetTime() - wait_start) >= timeout_seconds) {
+          return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(8));
+      }
+    };
+
+    if (stop_mode == CliTerminalStopMode::FastExit) {
+      kill(child_pid, SIGHUP);
+      kill(child_pid, SIGTERM);
+      kill(child_pid, SIGKILL);
+      has_exited(false, 0.0);
+    } else {
+      kill(child_pid, SIGHUP);
+      if (!has_exited(true, 0.25)) {
+        kill(child_pid, SIGTERM);
+        if (!has_exited(true, 0.35)) {
+          kill(child_pid, SIGKILL);
+          has_exited(true, 0.15);
+        }
+      }
+    }
+
     terminal.child_pid = -1;
   }
 #endif
@@ -351,6 +485,9 @@ static void StopCliTerminal(CliTerminalState& terminal, const bool clear_identit
   terminal.scrollback_lines.clear();
   terminal.scrollback_view_offset = 0;
   terminal.needs_full_refresh = true;
+  terminal.input_ready = false;
+  terminal.startup_time_s = 0.0;
+  terminal.pending_structured_prompts.clear();
   terminal.generation_in_progress = false;
   terminal.last_output_time_s = 0.0;
   if (clear_identity) {
@@ -469,16 +606,22 @@ static void MarkSelectedChatSeen(AppState& app) {
 
 static CliTerminalState& EnsureCliTerminalForChat(AppState& app, const ChatSession& chat) {
   const std::string resume_id = ResolveResumeSessionIdForChat(app, chat);
+  const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
+  const bool can_launch_terminal =
+      ProviderRuntime::UsesCliOutput(provider) && !ProviderRuntime::UsesInternalEngine(provider) && provider.supports_interactive;
   if (CliTerminalState* existing = FindCliTerminalForChat(app, chat.id)) {
     if (existing->attached_session_id.empty() && !resume_id.empty()) {
       existing->attached_session_id = resume_id;
+    }
+    if (!can_launch_terminal) {
+      existing->should_launch = false;
     }
     return *existing;
   }
   auto terminal = std::make_unique<CliTerminalState>();
   terminal->attached_chat_id = chat.id;
   terminal->attached_session_id = resume_id;
-  terminal->should_launch = (app.center_view_mode == CenterViewMode::CliConsole);
+  terminal->should_launch = can_launch_terminal;
   app.cli_terminals.push_back(std::move(terminal));
   return *app.cli_terminals.back();
 }
@@ -508,9 +651,31 @@ static void StopAllCliTerminals(AppState& app, const bool clear_identity = true)
   }
 }
 
+static void FastStopCliTerminalsForExit(AppState& app) {
+  for (const auto& terminal_ptr : app.cli_terminals) {
+    if (terminal_ptr == nullptr) {
+      continue;
+    }
+#if defined(_WIN32)
+    FastStopCliTerminalWindows(*terminal_ptr, true);
+#else
+    StopCliTerminal(*terminal_ptr, true, CliTerminalStopMode::FastExit);
+#endif
+  }
+}
+
 static void MarkSelectedCliTerminalForLaunch(AppState& app) {
   ChatSession* selected = SelectedChat(app);
   if (selected == nullptr) {
+    return;
+  }
+  const ProviderProfile& provider = ProviderForChatOrDefault(app, *selected);
+  if (!ProviderRuntime::UsesCliOutput(provider)) {
+    app.status_line = "CLI output is unavailable for the selected provider.";
+    return;
+  }
+  if (ProviderRuntime::UsesInternalEngine(provider) || !provider.supports_interactive) {
+    app.status_line = "Provider does not expose an interactive CLI runtime.";
     return;
   }
   CliTerminalState& terminal = EnsureCliTerminalForChat(app, *selected);
@@ -561,6 +726,7 @@ static void SyncChatsFromLoadedNative(AppState& app,
                                       const bool preserve_selection = false) {
   const std::string selected_before = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
   ApplyLocalOverrides(app, native_chats);
+  MigrateChatProviderBindingsToFixedModes(app);
   FinalizeChatSyncSelection(app, selected_before, preferred_chat_id, preserve_selection);
 }
 
@@ -576,10 +742,12 @@ static void SyncChatsFromNative(AppState& app, const std::string& preferred_chat
     NormalizeChatBranchMetadata(app);
     NormalizeChatFolderAssignments(app);
   }
+  MigrateChatProviderBindingsToFixedModes(app);
   FinalizeChatSyncSelection(app, selected_before, preferred_chat_id, preserve_selection);
 }
 
 static std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const ChatSession& chat) {
+  const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
   ChatSession effective_chat = chat;
   if (!effective_chat.uses_native_session) {
     const std::string resume_id = ResolveResumeSessionIdForChat(app, chat);
@@ -588,7 +756,32 @@ static std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app
       effective_chat.native_session_id = resume_id;
     }
   }
-  return ProviderRuntime::BuildInteractiveArgv(ActiveProviderOrDefault(app), effective_chat, app.settings);
+  return ProviderRuntime::BuildInteractiveArgv(provider, effective_chat, app.settings);
+}
+
+static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, const ChatSession& chat, const int rows, const int cols);
+
+static bool SendPromptToCliRuntime(AppState& app, ChatSession& chat, const std::string& prompt, std::string* error_out = nullptr) {
+  CliTerminalState& terminal = EnsureCliTerminalForChat(app, chat);
+  if (!terminal.running) {
+    if (!StartCliTerminalForChat(app, terminal, chat, 30, 120)) {
+      if (error_out != nullptr) {
+        *error_out = terminal.last_error.empty() ? "Failed to start provider terminal." : terminal.last_error;
+      }
+      return false;
+    }
+  }
+  QueueStructuredPromptForTerminal(terminal, prompt);
+  if (!terminal.input_ready) {
+    return true;
+  }
+  if (!FlushQueuedStructuredPromptsForTerminal(terminal, error_out)) {
+    if (error_out != nullptr && error_out->empty()) {
+      *error_out = "Failed to flush queued prompt(s) to provider terminal.";
+    }
+    return false;
+  }
+  return true;
 }
 
 #if defined(__unix__) || defined(__APPLE__)
@@ -603,18 +796,37 @@ static bool SetFdNonBlocking(const int fd) {
 
 static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, const ChatSession& chat, const int rows, const int cols) {
   StopCliTerminal(terminal);
-  if (ActiveProviderUsesGeminiHistory(app)) {
+  const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
+  if (!ProviderRuntime::UsesCliOutput(provider)) {
+    terminal.last_error = "Selected provider is fixed to structured output.";
+    return false;
+  }
+  if (ProviderRuntime::UsesInternalEngine(provider)) {
+    terminal.last_error = "Active provider does not support terminal mode.";
+    return false;
+  }
+  if (!provider.supports_interactive) {
+    terminal.last_error = "Active provider does not expose an interactive runtime command.";
+    return false;
+  }
+  if (ChatUsesGeminiHistory(app, chat)) {
     RefreshGeminiChatsDir(app);
   }
 
   std::string template_status;
-  const TemplatePreflightOutcome template_outcome = PreflightWorkspaceTemplateForChat(app, chat, &template_status);
+  std::string bootstrap_prompt;
+  const TemplatePreflightOutcome template_outcome =
+      PreflightWorkspaceTemplateForChat(app, provider, chat, &bootstrap_prompt, &template_status);
   if (template_outcome == TemplatePreflightOutcome::BlockingError) {
-    terminal.last_error = template_status.empty() ? "Gemini template preflight failed." : template_status;
+    terminal.last_error = template_status.empty() ? "Prompt profile preflight failed." : template_status;
     return false;
   }
   if (template_outcome == TemplatePreflightOutcome::ReadyWithoutTemplate && !template_status.empty()) {
     app.status_line = template_status;
+  }
+  if (BuildProviderInteractiveArgv(app, chat).empty()) {
+    terminal.last_error = "Active provider does not expose an interactive CLI command.";
+    return false;
   }
 
   terminal.rows = std::max(8, rows);
@@ -622,14 +834,19 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
   terminal.attached_chat_id = chat.id;
   terminal.attached_session_id = ResolveResumeSessionIdForChat(app, chat);
   terminal.linked_files_snapshot = chat.linked_files;
-  if (ActiveProviderUsesGeminiHistory(app)) {
-    terminal.session_ids_before = SessionIdsFromChats(LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app)));
+  if (ChatUsesGeminiHistory(app, chat)) {
+    terminal.session_ids_before = SessionIdsFromChats(LoadNativeGeminiChats(app.gemini_chats_dir, provider));
   } else {
     terminal.session_ids_before.clear();
   }
   terminal.last_error.clear();
   terminal.last_sync_time_s = ImGui::GetTime();
   terminal.last_output_time_s = 0.0;
+  terminal.last_activity_time_s = ImGui::GetTime();
+  terminal.last_polled_time_s = 0.0;
+  terminal.input_ready = false;
+  terminal.startup_time_s = ImGui::GetTime();
+  terminal.pending_structured_prompts.clear();
   terminal.generation_in_progress = false;
 
   terminal.vt = vterm_new(terminal.rows, terminal.cols);
@@ -648,13 +865,13 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
 
 #if defined(_WIN32)
   if (!StartCliTerminalWindows(app, terminal, chat)) {
-    terminal.last_error = terminal.last_error.empty() ? "Failed to start Gemini terminal." : terminal.last_error;
+    terminal.last_error = terminal.last_error.empty() ? "Failed to start provider terminal." : terminal.last_error;
     StopCliTerminal(terminal, false);
     return false;
   }
 #else
   if (!StartCliTerminalUnix(app, terminal, chat)) {
-    terminal.last_error = terminal.last_error.empty() ? "Failed to start Gemini terminal." : terminal.last_error;
+    terminal.last_error = terminal.last_error.empty() ? "Failed to start provider terminal." : terminal.last_error;
     StopCliTerminal(terminal, false);
     return false;
   }
@@ -667,8 +884,10 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
   if (!chat.gemini_md_bootstrapped &&
       chat.messages.empty() &&
       template_outcome == TemplatePreflightOutcome::ReadyWithTemplate) {
-    static constexpr char kBootstrapCommand[] = "@.gemini/gemini.md\n";
-    WriteToCliTerminal(terminal, kBootstrapCommand, sizeof(kBootstrapCommand) - 1);
+    if (!bootstrap_prompt.empty()) {
+      std::string bootstrap_command = bootstrap_prompt + "\n";
+      WriteToCliTerminal(terminal, bootstrap_command.c_str(), bootstrap_command.size());
+    }
     const int chat_index = FindChatIndexById(app, chat.id);
     if (chat_index >= 0) {
       app.chats[chat_index].gemini_md_bootstrapped = true;
@@ -677,4 +896,3 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
   }
   return true;
 }
-

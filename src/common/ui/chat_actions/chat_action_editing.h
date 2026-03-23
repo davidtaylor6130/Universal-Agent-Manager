@@ -50,7 +50,7 @@ static bool ContinueFromEditedUserMessage(AppState& app, ChatSession& chat) {
 
   if (CliTerminalState* terminal = FindCliTerminalForChat(app, chat.id)) {
     if (terminal->running) {
-      app.status_line = "Stop Gemini terminal for this chat before editing a previous message.";
+      app.status_line = "Stop the live provider terminal for this chat before editing a previous message.";
       return false;
     }
   }

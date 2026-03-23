@@ -13,9 +13,9 @@ static void DrawTemplateManagerSelectionSection(AppState& app,
     ImGui::BeginDisabled();
   }
   if (DrawButton("Set as Default", ImVec2(122.0f, 30.0f), ButtonKind::Ghost) && selected_entry != nullptr) {
-    app.settings.default_gemini_template_id = selected_entry->id;
+    app.settings.default_prompt_profile_id = selected_entry->id;
     SaveSettings(app);
-    app.status_line = "Default Gemini template updated.";
+    app.status_line = "Default prompt profile updated.";
   }
   ImGui::SameLine();
   if (DrawButton("Use for This Chat", ImVec2(126.0f, 30.0f), ButtonKind::Ghost) && selected_entry != nullptr) {
@@ -55,8 +55,8 @@ static void DrawTemplateManagerSelectionSection(AppState& app,
     std::string new_id;
     std::string error;
     if (GeminiTemplateCatalog::RenameTemplate(global_root, selected_entry->id, app.template_rename_input, &new_id, &error)) {
-      if (app.settings.default_gemini_template_id == selected_entry->id) {
-        app.settings.default_gemini_template_id = new_id;
+      if (app.settings.default_prompt_profile_id == selected_entry->id) {
+        app.settings.default_prompt_profile_id = new_id;
         SaveSettings(app);
       }
       for (ChatSession& chat : app.chats) {
@@ -78,8 +78,8 @@ static void DrawTemplateManagerSelectionSection(AppState& app,
     std::string error;
     const std::string removed_id = selected_entry->id;
     if (GeminiTemplateCatalog::RemoveTemplate(global_root, removed_id, &error)) {
-      if (app.settings.default_gemini_template_id == removed_id) {
-        app.settings.default_gemini_template_id.clear();
+      if (app.settings.default_prompt_profile_id == removed_id) {
+        app.settings.default_prompt_profile_id.clear();
         SaveSettings(app);
       }
       for (ChatSession& chat : app.chats) {

@@ -134,16 +134,23 @@ static void SaveAndUpdateStatus(AppState& app, const ChatSession& chat, const st
 static void RefreshGeminiChatsDir(AppState& app);
 static const ChatFolder* FindFolderById(const AppState& app, const std::string& folder_id);
 static const ProviderProfile& ActiveProviderOrDefault(const AppState& app);
+static const ProviderProfile* ProviderForChat(const AppState& app, const ChatSession& chat);
+static const ProviderProfile& ProviderForChatOrDefault(const AppState& app, const ChatSession& chat);
 static bool ActiveProviderUsesGeminiHistory(const AppState& app);
+static bool ActiveProviderUsesInternalEngine(const AppState& app);
+static bool ChatUsesGeminiHistory(const AppState& app, const ChatSession& chat);
+static bool ChatUsesInternalEngine(const AppState& app, const ChatSession& chat);
+static bool ChatUsesCliOutput(const AppState& app, const ChatSession& chat);
 static int FindChatIndexById(const AppState& app, const std::string& chat_id);
 static ChatSession* SelectedChat(AppState& app);
 static const ChatSession* SelectedChat(const AppState& app);
-static ChatSession CreateNewChat(const std::string& folder_id);
+static ChatSession CreateNewChat(const std::string& folder_id, const std::string& provider_id);
 static std::string CompactPreview(const std::string& text, std::size_t max_len);
 static void MarkSelectedCliTerminalForLaunch(AppState& app);
 static void SelectChatById(AppState& app, const std::string& chat_id);
 static void SaveSettings(AppState& app);
 static bool SaveChat(const AppState& app, const ChatSession& chat);
+static bool SendPromptToCliRuntime(AppState& app, ChatSession& chat, const std::string& prompt, std::string* error_out);
 static void StartAsyncCommandTask(AsyncCommandTask& task, const std::string& command);
 static bool TryConsumeAsyncCommandTaskOutput(AsyncCommandTask& task, std::string& output_out);
 static std::optional<std::string> ExtractSemverVersion(const std::string& text);
@@ -162,10 +169,21 @@ static bool CreateBranchFromMessage(AppState& app, const std::string& source_cha
 static void ConsumePendingBranchRequest(AppState& app);
 static std::string BuildRagContextBlock(const std::vector<RagSnippet>& snippets);
 static std::string BuildRagEnhancedPrompt(AppState& app, const ChatSession& chat, const std::string& prompt_text);
+static bool IsRagEnabledForChat(const AppState& app, const ChatSession& chat);
 static RagIndexService::Config RagConfigFromSettings(const AppSettings& settings);
 static void SyncRagServiceConfig(AppState& app);
 static std::filesystem::path ResolveProjectRagSourceRoot(const AppState& app,
                                                          const std::filesystem::path& fallback_source_root = {});
+static std::filesystem::path NormalizeAbsolutePath(const std::filesystem::path& path);
+static std::vector<std::filesystem::path> ResolveRagSourceRootsForChat(const AppState& app,
+                                                                        const ChatSession& chat,
+                                                                        const std::filesystem::path& fallback_source_root = {});
+static std::vector<std::filesystem::path> DiscoverRagSourceFolders(const std::filesystem::path& workspace_root);
+static std::string RagDatabaseNameForSourceRoot(const AppSettings& settings, const std::filesystem::path& source_root);
+static bool ChatHasRagSourceDirectory(const ChatSession& chat, const std::filesystem::path& source_root);
+static bool AddChatRagSourceDirectory(ChatSession& chat, const std::filesystem::path& source_root);
+static bool RemoveChatRagSourceDirectoryAt(ChatSession& chat, std::size_t index);
+static bool RemoveChatRagSourceDirectory(ChatSession& chat, const std::filesystem::path& source_root);
 static bool TriggerProjectRagScan(AppState& app,
                                   bool reuse_previous_source,
                                   const std::filesystem::path& fallback_source_root,
@@ -198,6 +216,16 @@ static std::string Trim(const std::string& value) {
   }
   const auto end = value.find_last_not_of(" \t\r\n");
   return value.substr(start, end - start + 1);
+}
+
+static std::string NormalizeVectorDatabaseName(std::string value) {
+  value = Trim(value);
+  value.erase(std::remove_if(value.begin(), value.end(), [](const char ch) {
+                const unsigned char c = static_cast<unsigned char>(ch);
+                return !(std::isalnum(c) != 0 || ch == '_' || ch == '-' || ch == '.');
+              }),
+              value.end());
+  return value;
 }
 
 static std::string TimestampNow() {
@@ -305,7 +333,10 @@ static fs::path ExpandLeadingTildePath(const std::string& raw_path) {
 }
 
 static fs::path ResolveGeminiGlobalRootPath(const AppSettings& settings) {
-  const fs::path candidate = ExpandLeadingTildePath(settings.gemini_global_root_path);
+  fs::path candidate = ExpandLeadingTildePath(settings.prompt_profile_root_path);
+  if (candidate.empty()) {
+    candidate = ExpandLeadingTildePath(settings.gemini_global_root_path);
+  }
   if (!candidate.empty()) {
     return candidate;
   }
@@ -505,6 +536,138 @@ static fs::path ResolveProjectRagSourceRoot(const AppState& app, const fs::path&
   return ec ? source_root.lexically_normal() : absolute_root.lexically_normal();
 }
 
+static fs::path NormalizeAbsolutePath(const fs::path& path) {
+  if (path.empty()) {
+    return {};
+  }
+  std::error_code ec;
+  const fs::path absolute = fs::absolute(path, ec);
+  return ec ? path.lexically_normal() : absolute.lexically_normal();
+}
+
+static std::vector<fs::path> ResolveRagSourceRootsForChat(const AppState& app,
+                                                          const ChatSession& chat,
+                                                          const fs::path& fallback_source_root) {
+  std::vector<fs::path> roots;
+  std::unordered_set<std::string> seen;
+  roots.reserve(chat.rag_source_directories.size() + 1);
+
+  for (const std::string& raw_source : chat.rag_source_directories) {
+    fs::path source_root = NormalizeAbsolutePath(ExpandLeadingTildePath(raw_source));
+    if (source_root.empty()) {
+      continue;
+    }
+    const std::string source_key = source_root.generic_string();
+    if (source_key.empty()) {
+      continue;
+    }
+    if (seen.insert(source_key).second) {
+      roots.push_back(source_root);
+    }
+  }
+
+  if (roots.empty()) {
+    roots.push_back(ResolveProjectRagSourceRoot(app, fallback_source_root));
+  }
+  return roots;
+}
+
+static std::vector<fs::path> DiscoverRagSourceFolders(const fs::path& workspace_root) {
+  std::vector<fs::path> folders;
+  std::error_code ec;
+  const fs::path normalized_workspace = NormalizeAbsolutePath(workspace_root);
+  if (normalized_workspace.empty() || !fs::exists(normalized_workspace, ec) || !fs::is_directory(normalized_workspace, ec)) {
+    return folders;
+  }
+  folders.push_back(normalized_workspace);
+
+  static const std::unordered_set<std::string> kExcluded = {
+      ".git", ".svn", ".hg", "node_modules", "dist", "build", "out", "target", "__pycache__", ".venv", "venv"};
+
+  for (const auto& entry : fs::directory_iterator(normalized_workspace, fs::directory_options::skip_permission_denied, ec)) {
+    if (ec || !entry.is_directory(ec)) {
+      ec.clear();
+      continue;
+    }
+    const std::string name = entry.path().filename().string();
+    if (name.empty() || name[0] == '.' || kExcluded.find(name) != kExcluded.end()) {
+      continue;
+    }
+    folders.push_back(NormalizeAbsolutePath(entry.path()));
+  }
+
+  std::sort(folders.begin(), folders.end(), [](const fs::path& lhs, const fs::path& rhs) {
+    return lhs.generic_string() < rhs.generic_string();
+  });
+  folders.erase(std::remove_if(folders.begin(), folders.end(), [](const fs::path& path) { return path.empty(); }), folders.end());
+  folders.erase(std::unique(folders.begin(), folders.end(), [](const fs::path& lhs, const fs::path& rhs) {
+                  return lhs.generic_string() == rhs.generic_string();
+                }),
+                folders.end());
+  return folders;
+}
+
+static std::string RagDatabaseNameForSourceRoot(const AppSettings& settings, const fs::path& source_root) {
+  const std::string override_name = Trim(settings.vector_database_name_override);
+  if (!override_name.empty()) {
+    return override_name;
+  }
+  const std::string source_key = source_root.lexically_normal().generic_string();
+  if (source_key.empty()) {
+    return "";
+  }
+  return "uam_" + Hex64(Fnv1a64(source_key));
+}
+
+static bool ChatHasRagSourceDirectory(const ChatSession& chat, const fs::path& source_root) {
+  const std::string candidate_key = NormalizeAbsolutePath(source_root).generic_string();
+  if (candidate_key.empty()) {
+    return false;
+  }
+  for (const std::string& existing_source : chat.rag_source_directories) {
+    const fs::path existing_path = NormalizeAbsolutePath(ExpandLeadingTildePath(existing_source));
+    if (!existing_path.empty() && existing_path.generic_string() == candidate_key) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool AddChatRagSourceDirectory(ChatSession& chat, const fs::path& source_root) {
+  const fs::path normalized_root = NormalizeAbsolutePath(source_root);
+  const std::string candidate_key = normalized_root.generic_string();
+  if (candidate_key.empty()) {
+    return false;
+  }
+  if (ChatHasRagSourceDirectory(chat, normalized_root)) {
+    return false;
+  }
+  chat.rag_source_directories.push_back(normalized_root.string());
+  return true;
+}
+
+static bool RemoveChatRagSourceDirectoryAt(ChatSession& chat, const std::size_t index) {
+  if (index >= chat.rag_source_directories.size()) {
+    return false;
+  }
+  chat.rag_source_directories.erase(chat.rag_source_directories.begin() + static_cast<std::ptrdiff_t>(index));
+  return true;
+}
+
+static bool RemoveChatRagSourceDirectory(ChatSession& chat, const fs::path& source_root) {
+  const std::string remove_key = NormalizeAbsolutePath(source_root).generic_string();
+  if (remove_key.empty()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < chat.rag_source_directories.size(); ++i) {
+    const fs::path existing = NormalizeAbsolutePath(ExpandLeadingTildePath(chat.rag_source_directories[i]));
+    if (!existing.empty() && existing.generic_string() == remove_key) {
+      return RemoveChatRagSourceDirectoryAt(chat, i);
+    }
+  }
+  return false;
+}
+
 static bool DirectoryContainsGguf(const fs::path& directory) {
   std::error_code ec;
   if (directory.empty() || !fs::exists(directory, ec) || !fs::is_directory(directory, ec)) {
@@ -537,12 +700,17 @@ static bool DirectoryContainsGguf(const fs::path& directory) {
 static fs::path ResolveRagModelFolder(const AppState& app) {
   std::vector<fs::path> candidates;
   candidates.push_back(app.data_root / "models");
+  if (const char* env_models = std::getenv("UAM_OLLAMA_ENGINE_MODELS_DIR")) {
+    const std::string value = Trim(env_models);
+    if (!value.empty()) {
+      candidates.push_back(fs::path(value));
+    }
+  }
   std::error_code cwd_ec;
   const fs::path cwd = fs::current_path(cwd_ec);
   if (!cwd_ec) {
     candidates.push_back(cwd / "models");
     candidates.push_back(cwd / "build" / "models");
-    candidates.push_back(cwd / "subprojects" / "ollama_engine" / "models");
   }
   for (const fs::path& candidate : candidates) {
     if (DirectoryContainsGguf(candidate)) {
@@ -558,10 +726,14 @@ static fs::path ResolveRagModelFolder(const AppState& app) {
 static RagIndexService::Config RagConfigFromSettings(const AppSettings& settings) {
   RagIndexService::Config config;
   config.enabled = settings.rag_enabled;
+  config.vector_backend = (settings.vector_db_backend == "none") ? "none" : "ollama-engine";
+  config.vector_enabled = (config.vector_backend != "none");
   config.top_k = std::clamp(settings.rag_top_k, 1, 20);
   config.max_snippet_chars = static_cast<std::size_t>(std::clamp(settings.rag_max_snippet_chars, 120, 4000));
   config.max_file_bytes = static_cast<std::size_t>(std::clamp(settings.rag_max_file_bytes, 16 * 1024, 20 * 1024 * 1024));
   config.vector_max_tokens = static_cast<std::size_t>(std::clamp(settings.rag_scan_max_tokens, 0, 32768));
+  config.vector_model_id = Trim(settings.selected_vector_model_id);
+  config.vector_database_name_override = Trim(settings.vector_database_name_override);
   return config;
 }
 
@@ -598,39 +770,123 @@ static std::string BuildRagContextBlock(const std::vector<RagSnippet>& snippets)
   return out.str();
 }
 
+static bool IsRagEnabledForChat(const AppState& app, const ChatSession& chat) {
+  return app.settings.rag_enabled && chat.rag_enabled;
+}
+
 static std::string BuildRagEnhancedPrompt(AppState& app, const ChatSession& chat, const std::string& prompt_text) {
-  if (!app.settings.rag_enabled || app.center_view_mode != CenterViewMode::Structured) {
+  if (!IsRagEnabledForChat(app, chat)) {
     return prompt_text;
   }
 
   const fs::path chat_workspace_root = ResolveWorkspaceRootPath(app, chat);
-  const fs::path workspace_root = ResolveProjectRagSourceRoot(app, chat_workspace_root);
-  const std::string workspace_key = workspace_root.lexically_normal().generic_string();
-  std::error_code ec;
-  if (workspace_root.empty() || !fs::exists(workspace_root, ec) || !fs::is_directory(workspace_root, ec)) {
-    app.rag_last_refresh_by_workspace[workspace_key] = "RAG source directory is invalid or missing.";
-    return prompt_text;
+  const std::vector<fs::path> source_roots = ResolveRagSourceRootsForChat(app, chat, chat_workspace_root);
+  const std::size_t top_k = static_cast<std::size_t>(std::clamp(app.settings.rag_top_k, 1, 20));
+  const bool multiple_sources = source_roots.size() > 1;
+
+  std::vector<std::vector<RagSnippet>> snippets_by_source;
+  snippets_by_source.reserve(source_roots.size());
+
+  for (const fs::path& source_root : source_roots) {
+    const std::string source_key = source_root.lexically_normal().generic_string();
+    std::error_code ec;
+    if (source_root.empty() || !fs::exists(source_root, ec) || !fs::is_directory(source_root, ec)) {
+      if (!source_key.empty()) {
+        app.rag_last_refresh_by_workspace[source_key] = "RAG source directory is invalid or missing.";
+      }
+      continue;
+    }
+
+    std::string rag_error;
+    std::vector<RagSnippet> snippets = app.rag_index_service.Retrieve(source_root, prompt_text, top_k, 1, &rag_error);
+    if (!rag_error.empty() && !source_key.empty()) {
+      app.rag_last_refresh_by_workspace[source_key] = rag_error;
+    }
+    if (snippets.empty()) {
+      continue;
+    }
+
+    if (multiple_sources) {
+      std::string source_label = source_root.filename().string();
+      if (source_label.empty()) {
+        source_label = source_root.string();
+      }
+      for (RagSnippet& snippet : snippets) {
+        if (snippet.relative_path.empty()) {
+          snippet.relative_path = source_label;
+        } else {
+          snippet.relative_path = source_label + "/" + snippet.relative_path;
+        }
+      }
+    }
+    snippets_by_source.push_back(std::move(snippets));
   }
-  std::string rag_error;
-  const std::vector<RagSnippet> snippets = app.rag_index_service.Retrieve(
-      workspace_root, prompt_text, static_cast<std::size_t>(std::clamp(app.settings.rag_top_k, 1, 20)), 1, &rag_error);
-  if (!rag_error.empty()) {
-    app.rag_last_refresh_by_workspace[workspace_key] = rag_error;
+
+  std::vector<RagSnippet> merged_snippets;
+  merged_snippets.reserve(top_k);
+  std::vector<std::size_t> source_offsets(snippets_by_source.size(), 0);
+  while (merged_snippets.size() < top_k) {
+    bool added_any = false;
+    for (std::size_t i = 0; i < snippets_by_source.size(); ++i) {
+      if (source_offsets[i] >= snippets_by_source[i].size()) {
+        continue;
+      }
+      merged_snippets.push_back(snippets_by_source[i][source_offsets[i]]);
+      ++source_offsets[i];
+      added_any = true;
+      if (merged_snippets.size() >= top_k) {
+        break;
+      }
+    }
+    if (!added_any) {
+      break;
+    }
   }
-  if (snippets.empty()) {
+
+  if (merged_snippets.empty()) {
     return prompt_text;
   }
 
-  return BuildRagContextBlock(snippets) + "User prompt:\n" + prompt_text;
+  return BuildRagContextBlock(merged_snippets) + "User prompt:\n" + prompt_text;
 }
 
 static bool TriggerProjectRagScan(AppState& app,
                                   const bool reuse_previous_source,
                                   const fs::path& fallback_source_root,
                                   std::string* error_out) {
-  const fs::path workspace_root = ResolveProjectRagSourceRoot(app, fallback_source_root);
+  const auto normalize_root = [](const fs::path& source_root) {
+    if (source_root.empty()) {
+      return fs::path{};
+    }
+    std::error_code ec;
+    const fs::path absolute_root = fs::absolute(source_root, ec);
+    return ec ? source_root.lexically_normal() : absolute_root.lexically_normal();
+  };
+
+  std::vector<fs::path> source_roots;
+  const fs::path requested_root = normalize_root(fallback_source_root);
+  if (const ChatSession* selected_chat = SelectedChat(app); selected_chat != nullptr) {
+    source_roots = ResolveRagSourceRootsForChat(app, *selected_chat, fallback_source_root);
+  }
+  if (source_roots.empty()) {
+    source_roots.push_back(requested_root.empty() ? ResolveProjectRagSourceRoot(app, fallback_source_root) : requested_root);
+  }
+  if (!requested_root.empty()) {
+    const auto requested_it = std::find_if(source_roots.begin(), source_roots.end(), [&](const fs::path& source_root) {
+      return normalize_root(source_root).generic_string() == requested_root.generic_string();
+    });
+    if (requested_it != source_roots.end() && requested_it != source_roots.begin()) {
+      std::rotate(source_roots.begin(), requested_it, requested_it + 1);
+    }
+  }
+  const fs::path workspace_root = source_roots.front();
   const std::string workspace_display = workspace_root.empty() ? "<unset>" : workspace_root.string();
   const std::string workspace_key = workspace_root.lexically_normal().generic_string();
+  if (source_roots.size() > 1) {
+    AppendRagScanReport(
+        app,
+        "Multiple RAG source folders are selected for this chat; scan action targets the first folder: " + workspace_display);
+  }
   std::error_code ec;
   if (workspace_root.empty() || !fs::exists(workspace_root, ec) || !fs::is_directory(workspace_root, ec)) {
     AppendRagScanReport(app, "Scan start rejected: source directory is invalid (" + workspace_display + ").");
@@ -933,7 +1189,7 @@ static bool CreateBranchFromMessage(AppState& app, const std::string& source_cha
     return false;
   }
 
-  ChatSession branch = CreateNewChat(source.folder_id);
+  ChatSession branch = CreateNewChat(source.folder_id, source.provider_id);
   branch.uses_native_session = false;
   branch.native_session_id.clear();
   branch.parent_chat_id = source.id;
@@ -941,6 +1197,8 @@ static bool CreateBranchFromMessage(AppState& app, const std::string& source_cha
   branch.branch_from_message_index = message_index;
   branch.template_override_id = source.template_override_id;
   branch.gemini_md_bootstrapped = source.gemini_md_bootstrapped;
+  branch.rag_enabled = source.rag_enabled;
+  branch.rag_source_directories = source.rag_source_directories;
   branch.linked_files = source.linked_files;
   branch.messages.assign(source.messages.begin(), source.messages.begin() + message_index + 1);
   branch.updated_at = TimestampNow();
@@ -954,7 +1212,7 @@ static bool CreateBranchFromMessage(AppState& app, const std::string& source_cha
   SortChatsByRecent(app.chats);
   SelectChatById(app, branch.id);
   SaveSettings(app);
-  if (app.center_view_mode == CenterViewMode::CliConsole) {
+  if (ChatUsesCliOutput(app, app.chats[app.selected_chat_index])) {
     MarkSelectedCliTerminalForLaunch(app);
   }
 
@@ -1333,6 +1591,7 @@ static std::optional<ChatSession> ParseGeminiSessionFile(const fs::path& file_pa
 
   ChatSession chat;
   chat.id = session_id;
+  chat.provider_id = provider.id;
   chat.native_session_id = session_id;
   chat.uses_native_session = true;
   chat.parent_chat_id.clear();
@@ -1582,13 +1841,169 @@ static fs::path FrontendActionFilePath(const AppState& app) {
   return app.data_root / "frontend_actions.txt";
 }
 
+static bool IsLegacyBuiltInProviderId(const std::string& provider_id) {
+  const std::string lowered = ToLowerAscii(Trim(provider_id));
+  return lowered == "gemini" || lowered == "codex" || lowered == "claude" || lowered == "opencode";
+}
+
+static bool IsGeminiProviderId(const std::string& provider_id) {
+  const std::string lowered = ToLowerAscii(Trim(provider_id));
+  return lowered == "gemini" || lowered == "gemini-cli" || lowered == "gemini-structured";
+}
+
+static std::string MapLegacyProviderId(const std::string& provider_id, const bool prefer_cli_for_gemini) {
+  const std::string trimmed = Trim(provider_id);
+  const std::string lowered = ToLowerAscii(trimmed);
+  if (lowered == "gemini") {
+    return prefer_cli_for_gemini ? "gemini-cli" : "gemini-structured";
+  }
+  if (lowered == "codex") {
+    return "codex-cli";
+  }
+  if (lowered == "claude") {
+    return "claude-cli";
+  }
+  if (lowered == "opencode") {
+    return "opencode-cli";
+  }
+  return trimmed;
+}
+
+static std::string DefaultGeminiProviderIdForLegacyViewHint(const AppState& app) {
+  return (app.center_view_mode == CenterViewMode::CliConsole) ? "gemini-cli" : "gemini-structured";
+}
+
+static bool ChatHasCliViewHint(const AppState& app, const ChatSession& chat) {
+  for (const auto& terminal : app.cli_terminals) {
+    if (terminal == nullptr || terminal->attached_chat_id != chat.id) {
+      continue;
+    }
+    if (terminal->running || terminal->should_launch || terminal->input_ready || terminal->generation_in_progress) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool ShouldShowProviderProfileInUi(const ProviderProfile& profile) {
+  return !IsLegacyBuiltInProviderId(profile.id);
+}
+
+static bool MigrateProviderProfilesToFixedModeIds(AppState& app) {
+  bool changed = false;
+  std::vector<ProviderProfile> migrated;
+  migrated.reserve(app.provider_profiles.size());
+  std::unordered_set<std::string> seen_ids;
+  for (ProviderProfile profile : app.provider_profiles) {
+    const std::string original_id = Trim(profile.id);
+    const std::string mapped_id = MapLegacyProviderId(original_id, false);
+    if (mapped_id != original_id) {
+      changed = true;
+    }
+    if (mapped_id.empty()) {
+      changed = true;
+      continue;
+    }
+    profile.id = mapped_id;
+    const auto assign_if_changed = [&](auto& field, const auto& value) {
+      if (field != value) {
+        field = value;
+        changed = true;
+      }
+    };
+    if (mapped_id == "gemini-structured") {
+      assign_if_changed(profile.output_mode, std::string("structured"));
+      assign_if_changed(profile.supports_interactive, false);
+      if (Trim(profile.command_template).empty() || profile.command_template == "gemini {resume} {flags} {prompt}") {
+        assign_if_changed(profile.command_template, std::string("gemini {resume} {flags} -p {prompt}"));
+      }
+      if (Trim(profile.history_adapter).empty()) {
+        assign_if_changed(profile.history_adapter, std::string("gemini-cli-json"));
+      }
+      if (Trim(profile.prompt_bootstrap).empty()) {
+        assign_if_changed(profile.prompt_bootstrap, std::string("gemini-at-path"));
+      }
+      if (Trim(profile.prompt_bootstrap_path).empty()) {
+        assign_if_changed(profile.prompt_bootstrap_path, std::string("@.gemini/gemini.md"));
+      }
+    } else if (mapped_id == "gemini-cli") {
+      assign_if_changed(profile.output_mode, std::string("cli"));
+      assign_if_changed(profile.supports_interactive, true);
+      if (Trim(profile.command_template).empty()) {
+        assign_if_changed(profile.command_template, std::string("gemini {resume} {flags} {prompt}"));
+      }
+      if (Trim(profile.history_adapter).empty()) {
+        assign_if_changed(profile.history_adapter, std::string("gemini-cli-json"));
+      }
+      if (Trim(profile.prompt_bootstrap).empty()) {
+        assign_if_changed(profile.prompt_bootstrap, std::string("gemini-at-path"));
+      }
+      if (Trim(profile.prompt_bootstrap_path).empty()) {
+        assign_if_changed(profile.prompt_bootstrap_path, std::string("@.gemini/gemini.md"));
+      }
+    } else if (mapped_id == "codex-cli" || mapped_id == "claude-cli" || mapped_id == "opencode-cli") {
+      assign_if_changed(profile.output_mode, std::string("cli"));
+      assign_if_changed(profile.supports_interactive, true);
+    } else if (mapped_id == "ollama-engine") {
+      assign_if_changed(profile.output_mode, std::string("structured"));
+      assign_if_changed(profile.supports_interactive, false);
+    }
+    const std::string dedupe_key = ToLowerAscii(profile.id);
+    if (!seen_ids.insert(dedupe_key).second) {
+      changed = true;
+      continue;
+    }
+    migrated.push_back(std::move(profile));
+  }
+  if (migrated.size() != app.provider_profiles.size()) {
+    changed = true;
+  }
+  app.provider_profiles = std::move(migrated);
+  ProviderProfileStore::EnsureDefaultProfile(app.provider_profiles);
+
+  std::vector<ProviderProfile> filtered;
+  filtered.reserve(app.provider_profiles.size());
+  for (const ProviderProfile& profile : app.provider_profiles) {
+    if (IsLegacyBuiltInProviderId(profile.id)) {
+      changed = true;
+      continue;
+    }
+    filtered.push_back(profile);
+  }
+  app.provider_profiles = std::move(filtered);
+  ProviderProfileStore::EnsureDefaultProfile(app.provider_profiles);
+  return changed;
+}
+
+static bool MigrateActiveProviderIdToFixedModes(AppState& app) {
+  bool changed = false;
+  const std::string mapped_id = MapLegacyProviderId(app.settings.active_provider_id, app.center_view_mode == CenterViewMode::CliConsole);
+  if (mapped_id != app.settings.active_provider_id) {
+    app.settings.active_provider_id = mapped_id;
+    changed = true;
+  }
+  if (Trim(app.settings.active_provider_id).empty()) {
+    app.settings.active_provider_id = DefaultGeminiProviderIdForLegacyViewHint(app);
+    changed = true;
+  }
+  if (ProviderProfileStore::FindById(app.provider_profiles, app.settings.active_provider_id) == nullptr) {
+    app.settings.active_provider_id = DefaultGeminiProviderIdForLegacyViewHint(app);
+    if (ProviderProfileStore::FindById(app.provider_profiles, app.settings.active_provider_id) == nullptr &&
+        !app.provider_profiles.empty()) {
+      app.settings.active_provider_id = app.provider_profiles.front().id;
+    }
+    changed = true;
+  }
+  return changed;
+}
+
 static ProviderProfile* ActiveProvider(AppState& app) {
   ProviderProfile* found = ProviderProfileStore::FindById(app.provider_profiles, app.settings.active_provider_id);
   if (found != nullptr) {
     return found;
   }
   ProviderProfileStore::EnsureDefaultProfile(app.provider_profiles);
-  app.settings.active_provider_id = "gemini";
+  app.settings.active_provider_id = "gemini-structured";
   return ProviderProfileStore::FindById(app.provider_profiles, app.settings.active_provider_id);
 }
 
@@ -1605,9 +2020,46 @@ static const ProviderProfile& ActiveProviderOrDefault(const AppState& app) {
   return fallback;
 }
 
+static const ProviderProfile* ProviderForChat(const AppState& app, const ChatSession& chat) {
+  const std::string preferred = Trim(chat.provider_id);
+  if (!preferred.empty()) {
+    if (const ProviderProfile* profile = ProviderProfileStore::FindById(app.provider_profiles, preferred); profile != nullptr) {
+      return profile;
+    }
+  }
+  return ActiveProvider(app);
+}
+
+static const ProviderProfile& ProviderForChatOrDefault(const AppState& app, const ChatSession& chat) {
+  if (const ProviderProfile* profile = ProviderForChat(app, chat); profile != nullptr) {
+    return *profile;
+  }
+  return ActiveProviderOrDefault(app);
+}
+
 static bool ActiveProviderUsesGeminiHistory(const AppState& app) {
   const ProviderProfile* profile = ActiveProvider(app);
   return profile != nullptr && ProviderRuntime::SupportsGeminiJsonHistory(*profile);
+}
+
+static bool ActiveProviderUsesInternalEngine(const AppState& app) {
+  const ProviderProfile* profile = ActiveProvider(app);
+  return profile != nullptr && ProviderRuntime::UsesInternalEngine(*profile);
+}
+
+static bool ChatUsesGeminiHistory(const AppState& app, const ChatSession& chat) {
+  const ProviderProfile* profile = ProviderForChat(app, chat);
+  return profile != nullptr && ProviderRuntime::SupportsGeminiJsonHistory(*profile);
+}
+
+static bool ChatUsesInternalEngine(const AppState& app, const ChatSession& chat) {
+  const ProviderProfile* profile = ProviderForChat(app, chat);
+  return profile != nullptr && ProviderRuntime::UsesInternalEngine(*profile);
+}
+
+static bool ChatUsesCliOutput(const AppState& app, const ChatSession& chat) {
+  const ProviderProfile* profile = ProviderForChat(app, chat);
+  return profile != nullptr && ProviderRuntime::UsesCliOutput(*profile);
 }
 
 static const uam::FrontendAction* FindFrontendAction(const AppState& app, const std::string& key) {
@@ -1708,6 +2160,9 @@ static bool ShouldReplaceChatForDuplicateId(const ChatSession& candidate, const 
   if (candidate.linked_files.size() != existing.linked_files.size()) {
     return candidate.linked_files.size() > existing.linked_files.size();
   }
+  if (candidate.provider_id != existing.provider_id) {
+    return !candidate.provider_id.empty();
+  }
   if (candidate.template_override_id != existing.template_override_id) {
     return !candidate.template_override_id.empty();
   }
@@ -1727,21 +2182,54 @@ static std::vector<ChatSession> DeduplicateChatsById(std::vector<ChatSession> ch
   std::vector<ChatSession> deduped;
   deduped.reserve(chats.size());
   std::unordered_map<std::string, std::size_t> index_by_id;
+  std::unordered_map<std::string, std::size_t> index_by_native_session_id;
 
   for (ChatSession& chat : chats) {
     chat.id = Trim(chat.id);
     if (chat.id.empty()) {
       continue;
     }
+    const std::string native_session_id = Trim(chat.native_session_id);
+    const bool has_native_identity = chat.uses_native_session && !native_session_id.empty();
+    const std::string native_key = has_native_identity ? ("native:" + native_session_id) : std::string{};
+
+    if (has_native_identity) {
+      const auto native_it = index_by_native_session_id.find(native_key);
+      if (native_it != index_by_native_session_id.end()) {
+        ChatSession& existing = deduped[native_it->second];
+        if (ShouldReplaceChatForDuplicateId(chat, existing) || existing.id != existing.native_session_id) {
+          existing = std::move(chat);
+          if (existing.id != existing.native_session_id && !existing.native_session_id.empty()) {
+            existing.id = existing.native_session_id;
+          }
+          index_by_id[existing.id] = native_it->second;
+        }
+        continue;
+      }
+    }
+
     const auto it = index_by_id.find(chat.id);
     if (it == index_by_id.end()) {
-      index_by_id.emplace(chat.id, deduped.size());
+      if (has_native_identity && chat.id != native_session_id) {
+        chat.id = native_session_id;
+      }
+      const std::size_t next_index = deduped.size();
+      index_by_id[chat.id] = next_index;
+      if (has_native_identity) {
+        index_by_native_session_id[native_key] = next_index;
+      }
       deduped.push_back(std::move(chat));
       continue;
     }
     ChatSession& existing = deduped[it->second];
     if (ShouldReplaceChatForDuplicateId(chat, existing)) {
       existing = std::move(chat);
+      if (existing.uses_native_session && !existing.native_session_id.empty() && existing.id != existing.native_session_id) {
+        existing.id = existing.native_session_id;
+      }
+    }
+    if (existing.uses_native_session && !existing.native_session_id.empty()) {
+      index_by_native_session_id["native:" + existing.native_session_id] = it->second;
     }
   }
 
@@ -1760,6 +2248,12 @@ static void RefreshRememberedSelection(AppState& app) {
 
 static void SaveSettings(AppState& app) {
   app.settings.ui_theme = NormalizeThemeChoice(app.settings.ui_theme);
+  app.settings.runtime_backend = ActiveProviderUsesInternalEngine(app) ? "ollama-engine" : "provider-cli";
+  app.settings.vector_db_backend = (app.settings.vector_db_backend == "none") ? "none" : "ollama-engine";
+  app.settings.selected_model_id = Trim(app.settings.selected_model_id);
+  app.settings.selected_vector_model_id = Trim(app.settings.selected_vector_model_id);
+  app.settings.vector_database_name_override = NormalizeVectorDatabaseName(app.settings.vector_database_name_override);
+  app.settings.cli_idle_timeout_seconds = std::clamp(app.settings.cli_idle_timeout_seconds, 30, 3600);
   app.settings.rag_top_k = std::clamp(app.settings.rag_top_k, 1, 20);
   app.settings.rag_max_snippet_chars = std::clamp(app.settings.rag_max_snippet_chars, 120, 4000);
   app.settings.rag_max_file_bytes = std::clamp(app.settings.rag_max_file_bytes, 16 * 1024, 20 * 1024 * 1024);
@@ -1772,8 +2266,13 @@ static void SaveSettings(AppState& app) {
 
 static void LoadSettings(AppState& app) {
   SettingsStore::Load(SettingsFilePath(app), app.settings, app.center_view_mode);
-  if (Trim(app.settings.gemini_global_root_path).empty()) {
-    app.settings.gemini_global_root_path = AppPaths::DefaultGeminiUniversalRootPath().string();
+  app.settings.vector_db_backend = (app.settings.vector_db_backend == "none") ? "none" : "ollama-engine";
+  app.settings.selected_model_id = Trim(app.settings.selected_model_id);
+  app.settings.selected_vector_model_id = Trim(app.settings.selected_vector_model_id);
+  app.settings.vector_database_name_override = NormalizeVectorDatabaseName(app.settings.vector_database_name_override);
+  app.settings.cli_idle_timeout_seconds = std::clamp(app.settings.cli_idle_timeout_seconds, 30, 3600);
+  if (Trim(app.settings.prompt_profile_root_path).empty()) {
+    app.settings.prompt_profile_root_path = AppPaths::DefaultGeminiUniversalRootPath().string();
   }
   SyncRagServiceConfig(app);
   app.rag_manual_query_max = std::clamp(app.settings.rag_top_k, 1, 20);
@@ -1788,9 +2287,41 @@ static std::vector<ChatSession> LoadChats(const AppState& app) {
   return ChatRepository::LoadLocalChats(app.data_root);
 }
 
-static ChatSession CreateNewChat(const std::string& folder_id) {
+static bool MigrateChatProviderBindingsToFixedModes(AppState& app) {
+  bool changed = false;
+  const std::string fallback_provider_id =
+      Trim(app.settings.active_provider_id).empty() ? DefaultGeminiProviderIdForLegacyViewHint(app) : app.settings.active_provider_id;
+  for (ChatSession& chat : app.chats) {
+    const std::string original_provider_id = chat.provider_id;
+    const bool prefer_cli_for_legacy_gemini = ChatHasCliViewHint(app, chat) || app.center_view_mode == CenterViewMode::CliConsole;
+    std::string mapped_provider_id = MapLegacyProviderId(original_provider_id, prefer_cli_for_legacy_gemini);
+    if (mapped_provider_id.empty()) {
+      mapped_provider_id = fallback_provider_id;
+    }
+    if (ProviderProfileStore::FindById(app.provider_profiles, mapped_provider_id) == nullptr) {
+      mapped_provider_id = fallback_provider_id;
+    }
+    if (mapped_provider_id.empty()) {
+      continue;
+    }
+    if (mapped_provider_id != original_provider_id) {
+      chat.provider_id = mapped_provider_id;
+      if (chat.updated_at.empty()) {
+        chat.updated_at = TimestampNow();
+      }
+      if (!SaveChat(app, chat)) {
+        app.status_line = "Failed to persist migrated provider id for chat " + CompactPreview(chat.id, 24) + ".";
+      }
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+static ChatSession CreateNewChat(const std::string& folder_id, const std::string& provider_id) {
   ChatSession chat;
   chat.id = NewSessionId();
+  chat.provider_id = provider_id;
   chat.parent_chat_id.clear();
   chat.branch_root_chat_id = chat.id;
   chat.branch_from_message_index = -1;
@@ -1806,22 +2337,29 @@ static bool IsLocalDraftChatId(const std::string& chat_id) {
 }
 
 static std::string ResolveResumeSessionIdForChat(const AppState& app, const ChatSession& chat) {
-  if (!ActiveProviderUsesGeminiHistory(app)) {
+  if (!ChatUsesGeminiHistory(app, chat)) {
     return "";
   }
+  const auto session_exists = [&](const std::string& session_id) {
+    if (session_id.empty() || app.gemini_chats_dir.empty()) {
+      return false;
+    }
+    std::error_code ec;
+    return fs::exists(app.gemini_chats_dir / (session_id + ".json"), ec) && !ec;
+  };
   if (chat.uses_native_session) {
     if (!chat.native_session_id.empty()) {
-      return chat.native_session_id;
+      return session_exists(chat.native_session_id) ? chat.native_session_id : "";
     }
     if (!chat.id.empty()) {
-      return chat.id;
+      return session_exists(chat.id) ? chat.id : "";
     }
     return "";
   }
 
   // Legacy compatibility: older local snapshots of native chats may not persist native flags.
   if (!chat.messages.empty() && !chat.id.empty() && !IsLocalDraftChatId(chat.id)) {
-    return chat.id;
+    return session_exists(chat.id) ? chat.id : "";
   }
   return "";
 }
@@ -1873,6 +2411,27 @@ static std::string BuildProviderCommand(
   return ProviderRuntime::BuildCommand(provider, settings, prompt, files, resume_session_id);
 }
 
+static bool RuntimeUsesLocalEngine(const AppState& app) {
+  return ActiveProviderUsesInternalEngine(app);
+}
+
+static bool EnsureLocalRuntimeModelLoaded(AppState& app, std::string* error_out = nullptr) {
+  const fs::path model_folder = ResolveRagModelFolder(app);
+  app.local_runtime_engine.SetModelFolder(model_folder);
+  app.local_runtime_engine.SetEmbeddingDimensions(256);
+  if (Trim(app.settings.selected_model_id).empty()) {
+    return true;
+  }
+  if (app.loaded_runtime_model_id == app.settings.selected_model_id) {
+    return true;
+  }
+  if (!app.local_runtime_engine.Load(app.settings.selected_model_id, error_out)) {
+    return false;
+  }
+  app.loaded_runtime_model_id = app.settings.selected_model_id;
+  return true;
+}
+
 enum class TemplatePreflightOutcome {
   ReadyWithTemplate,
   ReadyWithoutTemplate,
@@ -1880,20 +2439,22 @@ enum class TemplatePreflightOutcome {
 };
 
 static TemplatePreflightOutcome PreflightWorkspaceTemplateForChat(AppState& app,
+                                                                  const ProviderProfile& provider,
                                                                   const ChatSession& chat,
+                                                                  std::string* bootstrap_prompt_out = nullptr,
                                                                   std::string* status_out = nullptr) {
-  if (!EnsureWorkspaceGeminiLayout(app, chat, status_out)) {
-    return TemplatePreflightOutcome::BlockingError;
-  }
   RefreshTemplateCatalog(app);
 
   std::string effective_template_id = chat.template_override_id;
+  if (effective_template_id.empty()) {
+    effective_template_id = app.settings.default_prompt_profile_id;
+  }
   if (effective_template_id.empty()) {
     effective_template_id = app.settings.default_gemini_template_id;
   }
   if (effective_template_id.empty()) {
     if (status_out != nullptr) {
-      *status_out = "No Gemini template selected. Set a default in Templates.";
+      *status_out = "No prompt profile selected. Set a default in Templates.";
     }
     return TemplatePreflightOutcome::ReadyWithoutTemplate;
   }
@@ -1901,21 +2462,39 @@ static TemplatePreflightOutcome PreflightWorkspaceTemplateForChat(AppState& app,
   const TemplateCatalogEntry* entry = FindTemplateEntryById(app, effective_template_id);
   if (entry == nullptr) {
     if (status_out != nullptr) {
-      *status_out = "Selected template is missing: " + effective_template_id + ". Choose one in Templates.";
+      *status_out = "Selected prompt profile is missing: " + effective_template_id + ". Choose one in Templates.";
     }
     app.open_template_manager_popup = true;
     return TemplatePreflightOutcome::BlockingError;
   }
 
-  std::error_code ec;
-  fs::copy_file(entry->absolute_path, WorkspaceGeminiTemplatePath(app, chat), fs::copy_options::overwrite_existing, ec);
-  if (ec) {
-    if (status_out != nullptr) {
-      *status_out = "Failed to materialize .gemini/gemini.md: " + ec.message();
+  if (ProviderRuntime::UsesGeminiPathBootstrap(provider)) {
+    if (!EnsureWorkspaceGeminiLayout(app, chat, status_out)) {
+      return TemplatePreflightOutcome::BlockingError;
     }
-    return TemplatePreflightOutcome::BlockingError;
+    std::error_code ec;
+    fs::copy_file(entry->absolute_path, WorkspaceGeminiTemplatePath(app, chat), fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+      if (status_out != nullptr) {
+        *status_out = "Failed to materialize .gemini/gemini.md: " + ec.message();
+      }
+      return TemplatePreflightOutcome::BlockingError;
+    }
+    if (bootstrap_prompt_out != nullptr) {
+      *bootstrap_prompt_out = provider.prompt_bootstrap_path.empty() ? "@.gemini/gemini.md" : provider.prompt_bootstrap_path;
+    }
+    return TemplatePreflightOutcome::ReadyWithTemplate;
   }
 
+  if (bootstrap_prompt_out != nullptr) {
+    *bootstrap_prompt_out = ReadTextFile(entry->absolute_path);
+    if (bootstrap_prompt_out->empty()) {
+      if (status_out != nullptr) {
+        *status_out = "Selected prompt profile is empty.";
+      }
+      return TemplatePreflightOutcome::ReadyWithoutTemplate;
+    }
+  }
   return TemplatePreflightOutcome::ReadyWithTemplate;
 }
 
@@ -1924,7 +2503,7 @@ static bool QueueGeminiPromptForChat(AppState& app,
                                      const std::string& prompt,
                                      const bool template_control_message = false) {
   if (HasPendingCallForChat(app, chat.id)) {
-    app.status_line = "Gemini command already running for this chat.";
+    app.status_line = "Provider command already running for this chat.";
     return false;
   }
   const std::string prompt_text = Trim(prompt);
@@ -1933,11 +2512,17 @@ static bool QueueGeminiPromptForChat(AppState& app,
     return false;
   }
 
+  const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
+  const bool use_local_runtime = ChatUsesInternalEngine(app, chat);
   std::string template_status;
-  const TemplatePreflightOutcome template_outcome = PreflightWorkspaceTemplateForChat(app, chat, &template_status);
-  if (template_outcome == TemplatePreflightOutcome::BlockingError) {
-    app.status_line = template_status.empty() ? "Gemini template preflight failed." : template_status;
-    return false;
+  std::string bootstrap_prompt;
+  TemplatePreflightOutcome template_outcome = TemplatePreflightOutcome::ReadyWithoutTemplate;
+  if (!template_control_message || !chat.gemini_md_bootstrapped) {
+    template_outcome = PreflightWorkspaceTemplateForChat(app, provider, chat, &bootstrap_prompt, &template_status);
+    if (template_outcome == TemplatePreflightOutcome::BlockingError) {
+      app.status_line = template_status.empty() ? "Prompt profile preflight failed." : template_status;
+      return false;
+    }
   }
 
   const bool should_bootstrap_template =
@@ -1949,16 +2534,68 @@ static bool QueueGeminiPromptForChat(AppState& app,
   if (!template_control_message) {
     runtime_prompt = BuildRagEnhancedPrompt(app, chat, prompt_text);
   }
-  if (should_bootstrap_template) {
-    runtime_prompt = "@.gemini/gemini.md\n\n" + runtime_prompt;
+  if (should_bootstrap_template && !bootstrap_prompt.empty()) {
+    runtime_prompt = bootstrap_prompt + "\n\n" + runtime_prompt;
   }
 
   AddMessage(chat, MessageRole::User, prompt_text);
   SaveAndUpdateStatus(app, chat, "Prompt queued for provider runtime.", "Saved message locally, but failed to persist chat data.");
 
-  const ProviderProfile& provider = ActiveProviderOrDefault(app);
+  const bool use_shared_cli_session =
+      !use_local_runtime && ProviderRuntime::UsesCliOutput(provider) && provider.supports_interactive;
+  if (!use_local_runtime && ProviderRuntime::UsesCliOutput(provider) && !provider.supports_interactive) {
+    AddMessage(chat, MessageRole::System, "Provider is configured for CLI output but has no interactive runtime command.");
+    SaveChat(app, chat);
+    app.status_line = "Provider runtime configuration error.";
+    return false;
+  }
+  if (use_shared_cli_session) {
+    std::string terminal_error;
+    if (!SendPromptToCliRuntime(app, chat, runtime_prompt, &terminal_error)) {
+      AddMessage(chat, MessageRole::System,
+                 "Provider terminal send failed: " + (terminal_error.empty() ? std::string("unknown error") : terminal_error));
+      SaveChat(app, chat);
+      app.status_line = "Provider terminal send failed.";
+      return false;
+    }
+    if (should_bootstrap_template) {
+      chat.gemini_md_bootstrapped = true;
+      SaveChat(app, chat);
+    }
+    if (template_control_message) {
+      app.status_line = "Prompt profile updated in live provider terminal session.";
+    } else {
+      app.status_line = "Prompt sent to live provider terminal session.";
+    }
+    app.scroll_to_bottom = true;
+    return true;
+  }
+
+  if (use_local_runtime) {
+    std::string load_error;
+    if (!EnsureLocalRuntimeModelLoaded(app, &load_error)) {
+      AddMessage(chat, MessageRole::System,
+                 "Local runtime model load failed: " + (load_error.empty() ? std::string("unknown error") : load_error));
+      SaveChat(app, chat);
+      app.status_line = "Local runtime model load failed.";
+      return false;
+    }
+    const ollama_engine::SendMessageResponse response = app.local_runtime_engine.SendMessage(runtime_prompt);
+    if (response.pbOk) {
+      AddMessage(chat, MessageRole::Assistant, response.pSText);
+      SaveAndUpdateStatus(app, chat, "Local response generated.", "Local response generated, but chat save failed.");
+      app.scroll_to_bottom = true;
+      return true;
+    }
+    AddMessage(chat, MessageRole::System, "Local runtime error: " + response.pSError);
+    SaveChat(app, chat);
+    app.status_line = "Local runtime command failed.";
+    app.scroll_to_bottom = true;
+    return false;
+  }
+
   std::vector<ChatSession> native_before;
-  if (ActiveProviderUsesGeminiHistory(app)) {
+  if (ChatUsesGeminiHistory(app, chat)) {
     RefreshGeminiChatsDir(app);
     native_before = LoadNativeGeminiChats(app.gemini_chats_dir, provider);
   }
@@ -1991,7 +2628,7 @@ static bool QueueGeminiPromptForChat(AppState& app,
   }
 
   if (template_control_message) {
-    app.status_line = "Template updated. Sent @.gemini/gemini.md to Gemini.";
+    app.status_line = "Prompt profile updated and synced to provider bootstrap flow.";
   } else if (template_outcome == TemplatePreflightOutcome::ReadyWithoutTemplate && !template_status.empty()) {
     app.status_line = template_status;
   }
@@ -2008,6 +2645,7 @@ static void SaveAndUpdateStatus(AppState& app, const ChatSession& chat, const st
 }
 
 static void ApplyLocalOverrides(AppState& app, std::vector<ChatSession>& native_chats) {
+  const std::string selected_chat_id = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
   native_chats = DeduplicateChatsById(std::move(native_chats));
   std::vector<ChatSession> local_chats = DeduplicateChatsById(LoadChats(app));
   std::unordered_map<std::string, const ChatSession*> local_map;
@@ -2029,9 +2667,14 @@ static void ApplyLocalOverrides(AppState& app, std::vector<ChatSession>& native_
     if (!local.linked_files.empty()) {
       native.linked_files = local.linked_files;
     }
+    if (!local.provider_id.empty()) {
+      native.provider_id = local.provider_id;
+    }
     if (!local.template_override_id.empty()) {
       native.template_override_id = local.template_override_id;
     }
+    native.rag_enabled = local.rag_enabled;
+    native.rag_source_directories = local.rag_source_directories;
     if (!local.parent_chat_id.empty()) {
       native.parent_chat_id = local.parent_chat_id;
     }
@@ -2060,6 +2703,20 @@ static void ApplyLocalOverrides(AppState& app, std::vector<ChatSession>& native_
     if (native.updated_at.empty() && !local.updated_at.empty()) {
       native.updated_at = local.updated_at;
     }
+    const bool local_messages_are_newer =
+        !local.messages.empty() &&
+        (local.messages.size() > native.messages.size() ||
+         (local.messages.size() == native.messages.size() && local.updated_at > native.updated_at));
+    if (local_messages_are_newer) {
+      // Keep optimistic local history visible until native provider history catches up.
+      native.messages = local.messages;
+      if (!local.updated_at.empty()) {
+        native.updated_at = local.updated_at;
+      }
+      if (native.created_at.empty() && !local.created_at.empty()) {
+        native.created_at = local.created_at;
+      }
+    }
   }
 
   std::vector<ChatSession> merged = native_chats;
@@ -2070,8 +2727,23 @@ static void ApplyLocalOverrides(AppState& app, std::vector<ChatSession>& native_
     if (chat.uses_native_session || !chat.native_session_id.empty()) {
       continue;
     }
+    const std::string normalized_provider_id = MapLegacyProviderId(chat.provider_id, false);
+    const ProviderProfile* local_provider = ProviderProfileStore::FindById(app.provider_profiles, normalized_provider_id);
+    const bool local_chat_uses_gemini_history =
+        (local_provider == nullptr) ? true : ProviderRuntime::SupportsGeminiJsonHistory(*local_provider);
     // In Gemini-history mode, only explicit in-app drafts (chat-*) should appear as local-only chats.
-    if (!IsLocalDraftChatId(chat.id)) {
+    if (local_chat_uses_gemini_history && !IsLocalDraftChatId(chat.id) && !Trim(chat.provider_id).empty()) {
+      continue;
+    }
+    bool has_running_terminal = false;
+    for (const auto& terminal : app.cli_terminals) {
+      if (terminal != nullptr && terminal->attached_chat_id == chat.id && terminal->running) {
+        has_running_terminal = true;
+        break;
+      }
+    }
+    if (chat.messages.empty() && !HasPendingCallForChat(app, chat.id) && !has_running_terminal &&
+        chat.id != selected_chat_id) {
       continue;
     }
     merged.push_back(chat);
@@ -2334,19 +3006,30 @@ int main(int, char**) {
     return 1;
   }
   LoadSettings(app);
+  bool settings_dirty = false;
   const bool had_provider_file = fs::exists(ProviderProfileFilePath(app));
   app.provider_profiles = ProviderProfileStore::Load(app.data_root);
-  ProviderProfileStore::EnsureDefaultProfile(app.provider_profiles);
+  bool providers_dirty = MigrateProviderProfilesToFixedModeIds(app);
+  if (MigrateActiveProviderIdToFixedModes(app)) {
+    settings_dirty = true;
+  }
   if (ActiveProvider(app) == nullptr && !app.provider_profiles.empty()) {
     app.settings.active_provider_id = app.provider_profiles.front().id;
+    settings_dirty = true;
   }
   if (ProviderProfile* active_profile = ActiveProvider(app); active_profile != nullptr) {
-    if (!had_provider_file && !app.settings.gemini_command_template.empty()) {
-      active_profile->command_template = app.settings.gemini_command_template;
+    if (!had_provider_file &&
+        !app.settings.provider_command_template.empty() &&
+        IsGeminiProviderId(active_profile->id) &&
+        ProviderRuntime::UsesStructuredOutput(*active_profile)) {
+      active_profile->command_template = app.settings.provider_command_template;
+      providers_dirty = true;
     }
-    app.settings.gemini_command_template = active_profile->command_template;
+    app.settings.provider_command_template = active_profile->command_template;
+    app.settings.gemini_command_template = app.settings.provider_command_template;
+    app.settings.runtime_backend = ProviderRuntime::UsesInternalEngine(*active_profile) ? "ollama-engine" : "provider-cli";
   }
-  if (!had_provider_file) {
+  if (!had_provider_file || providers_dirty) {
     SaveProviders(app);
   }
   LoadFrontendActions(app);
@@ -2368,6 +3051,9 @@ int main(int, char**) {
     NormalizeChatBranchMetadata(app);
     NormalizeChatFolderAssignments(app);
   }
+  if (MigrateChatProviderBindingsToFixedModes(app)) {
+    settings_dirty = true;
+  }
   if (!app.chats.empty()) {
     if (app.settings.remember_last_chat && !app.settings.last_selected_chat_id.empty()) {
       app.selected_chat_index = FindChatIndexById(app, app.settings.last_selected_chat_id);
@@ -2377,8 +3063,12 @@ int main(int, char**) {
     }
     RefreshRememberedSelection(app);
   }
-  if (app.center_view_mode == CenterViewMode::CliConsole) {
+  if (const ChatSession* selected_chat = SelectedChat(app);
+      selected_chat != nullptr && ChatUsesCliOutput(app, *selected_chat)) {
     MarkSelectedCliTerminalForLaunch(app);
+  }
+  if (settings_dirty) {
+    SaveSettings(app);
   }
 
 #if defined(_WIN32)
@@ -2481,17 +3171,13 @@ int main(int, char**) {
       }
     }
 
-#if defined(_WIN32)
     if (done) {
-      // Windows-only close guard: avoid blocking teardown while a ConPTY-backed
-      // Gemini process is still alive. We issue async /quit attempts and force
-      // terminate child CLI processes, then exit the render loop immediately.
-      // If macOS develops the same shutdown race, we can make this universal.
-      FastStopCliTerminalsForExitWindows(app);
+      // Exit guard: stop all CLI terminals using a non-blocking fast path so
+      // window close cannot hang behind child process teardown.
+      FastStopCliTerminalsForExit(app);
       terminals_stopped_for_shutdown = true;
       break;
     }
-#endif
 
     PollPendingGeminiCall(app);
     PollAllCliTerminals(app);
@@ -2516,7 +3202,7 @@ int main(int, char**) {
                                     ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBackground |
                                     ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
 
-    ImGui::Begin("UAM Gemini Manager", nullptr, window_flags);
+    ImGui::Begin("Universal Agent Manager", nullptr, window_flags);
 
     const float layout_w = ImGui::GetContentRegionAvail().x;
     float sidebar_w = std::clamp(layout_w * 0.25f, 250.0f, 360.0f);

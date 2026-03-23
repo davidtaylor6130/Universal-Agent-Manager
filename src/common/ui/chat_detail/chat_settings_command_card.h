@@ -1,7 +1,7 @@
 #pragma once
 
 /// <summary>
-/// Draws the current Gemini command preview card when a call is active.
+/// Draws the current provider command preview card when a call is active.
 /// </summary>
 static void DrawChatSettingsCommandPreviewCard(AppState& app, ChatSession& chat) {
   if (const PendingGeminiCall* pending = FirstPendingCallForChat(app, chat.id); pending != nullptr) {

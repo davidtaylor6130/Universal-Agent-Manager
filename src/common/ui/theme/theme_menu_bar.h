@@ -48,19 +48,19 @@ static void DrawDesktopMenuBar(AppState& app, bool& done) {
   if (ImGui::BeginMenu("Templates")) {
     RefreshTemplateCatalog(app);
     if (ImGui::BeginMenu("Default Template")) {
-      const bool none_selected = Trim(app.settings.default_gemini_template_id).empty();
+      const bool none_selected = Trim(app.settings.default_prompt_profile_id).empty();
       if (ImGui::MenuItem("None", nullptr, none_selected)) {
-        app.settings.default_gemini_template_id.clear();
+        app.settings.default_prompt_profile_id.clear();
         SaveSettings(app);
-        app.status_line = "Default Gemini template cleared.";
+        app.status_line = "Default prompt profile cleared.";
       }
       ImGui::Separator();
       for (const TemplateCatalogEntry& entry : app.template_catalog) {
-        const bool selected = (app.settings.default_gemini_template_id == entry.id);
+        const bool selected = (app.settings.default_prompt_profile_id == entry.id);
         if (ImGui::MenuItem(entry.display_name.c_str(), nullptr, selected)) {
-          app.settings.default_gemini_template_id = entry.id;
+          app.settings.default_prompt_profile_id = entry.id;
           SaveSettings(app);
-          app.status_line = "Default Gemini template set to " + entry.display_name + ".";
+          app.status_line = "Default prompt profile set to " + entry.display_name + ".";
         }
       }
       ImGui::EndMenu();
@@ -125,18 +125,6 @@ static void DrawDesktopMenuBar(AppState& app, bool& done) {
   }
 
   if (ImGui::BeginMenu("View")) {
-    const bool structured_active = (app.center_view_mode == CenterViewMode::Structured);
-    if (ImGui::MenuItem("Structured Mode", nullptr, structured_active)) {
-      app.center_view_mode = CenterViewMode::Structured;
-      SaveSettings(app);
-    }
-    const bool terminal_active = (app.center_view_mode == CenterViewMode::CliConsole);
-    if (ImGui::MenuItem("Terminal Mode", nullptr, terminal_active)) {
-      app.center_view_mode = CenterViewMode::CliConsole;
-      MarkSelectedCliTerminalForLaunch(app);
-      SaveSettings(app);
-    }
-    ImGui::Separator();
     if (ImGui::BeginMenu("Theme")) {
       const auto set_theme = [&](const char* choice) {
         app.settings.ui_theme = choice;

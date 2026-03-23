@@ -9,6 +9,6 @@ static void DrawAppSettingsDiagnosticsSection(const AppState& app, const AppSett
   ImGui::TextWrapped("Provider Profiles: %s", ProviderProfileFilePath(app).string().c_str());
   ImGui::TextWrapped("Action Map: %s", FrontendActionFilePath(app).string().c_str());
   ImGui::TextWrapped("Gemini Home: %s", AppPaths::GeminiHomePath().string().c_str());
-  ImGui::TextWrapped("Gemini Global Root: %s", ResolveGeminiGlobalRootPath(draft_settings).string().c_str());
+  ImGui::TextWrapped("Prompt Profile Root: %s", ResolveGeminiGlobalRootPath(draft_settings).string().c_str());
   ImGui::TextColored(ui::kTextMuted, "Build: %s %s", __DATE__, __TIME__);
 }

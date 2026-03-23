@@ -80,9 +80,16 @@ static std::ptrdiff_t ReadCliTerminalOutput(CliTerminalState& terminal, char* bu
 
 static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const bool preserve_selection) {
   constexpr double kGenerationIdleSeconds = 1.15;
+  constexpr double kStructuredInputReadyFallbackSeconds = 1.5;
   constexpr int kReadBudgetChunksPerTick = 72;
   constexpr std::size_t kReadBudgetBytesPerTick = 512 * 1024;
   const std::string selected_chat_id = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
+  const int terminal_chat_index = FindChatIndexById(app, terminal.attached_chat_id);
+  const ChatSession* terminal_chat = (terminal_chat_index >= 0) ? &app.chats[terminal_chat_index] : nullptr;
+  const bool terminal_uses_gemini_history = (terminal_chat != nullptr) && ChatUsesGeminiHistory(app, *terminal_chat);
+  const ProviderProfile terminal_provider = (terminal_chat != nullptr)
+                                                ? ProviderForChatOrDefault(app, *terminal_chat)
+                                                : ActiveProviderOrDefault(app);
   const auto mark_unseen_if_background = [&]() {
     if (!terminal.attached_chat_id.empty() && terminal.attached_chat_id != selected_chat_id) {
       MarkChatUnseen(app, terminal.attached_chat_id);
@@ -103,7 +110,9 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
     if (read_bytes > 0) {
       ++chunks_read;
       bytes_read_total += static_cast<std::size_t>(read_bytes);
+      terminal.input_ready = true;
       terminal.last_output_time_s = ImGui::GetTime();
+      terminal.last_activity_time_s = terminal.last_output_time_s;
       terminal.generation_in_progress = true;
       vterm_input_write(terminal.vt, buffer, static_cast<std::size_t>(read_bytes));
       terminal.needs_full_refresh = true;
@@ -111,26 +120,29 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
     }
     if (read_bytes == 0) {
       mark_unseen_if_background();
+      ReportDroppedQueuedStructuredPromptsForTerminal(app, terminal, "Provider terminal exited before input was ready.");
       StopCliTerminal(terminal);
       terminal.should_launch = false;
-      app.status_line = "Gemini terminal exited.";
+      app.status_line = "Provider terminal exited.";
       break;
     }
     if (read_bytes == -2) {
       break;
     }
+    ReportDroppedQueuedStructuredPromptsForTerminal(app, terminal, "Provider terminal read failed before input was ready.");
     StopCliTerminal(terminal);
     terminal.should_launch = false;
-    app.status_line = "Gemini terminal read failed.";
+    app.status_line = "Provider terminal read failed.";
     break;
   }
 
   if (terminal.process_info.hProcess != INVALID_HANDLE_VALUE &&
       WaitForSingleObject(terminal.process_info.hProcess, 0) == WAIT_OBJECT_0) {
     mark_unseen_if_background();
+    ReportDroppedQueuedStructuredPromptsForTerminal(app, terminal, "Provider terminal exited before input was ready.");
     StopCliTerminal(terminal);
     terminal.should_launch = false;
-    app.status_line = "Gemini terminal exited.";
+    app.status_line = "Provider terminal exited.";
   }
 #else
   if (!terminal.running || terminal.master_fd < 0 || terminal.vt == nullptr) {
@@ -148,7 +160,9 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
     if (read_bytes > 0) {
       ++chunks_read;
       bytes_read_total += static_cast<std::size_t>(read_bytes);
+      terminal.input_ready = true;
       terminal.last_output_time_s = ImGui::GetTime();
+      terminal.last_activity_time_s = terminal.last_output_time_s;
       terminal.generation_in_progress = true;
       vterm_input_write(terminal.vt, buffer, static_cast<std::size_t>(read_bytes));
       terminal.needs_full_refresh = true;
@@ -156,9 +170,10 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
     }
     if (read_bytes == 0) {
       mark_unseen_if_background();
+      ReportDroppedQueuedStructuredPromptsForTerminal(app, terminal, "Provider terminal exited before input was ready.");
       StopCliTerminal(terminal);
       terminal.should_launch = false;
-      app.status_line = "Gemini terminal exited.";
+      app.status_line = "Provider terminal exited.";
       break;
     }
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -167,25 +182,40 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
     if (errno == EINTR) {
       continue;
     }
+    ReportDroppedQueuedStructuredPromptsForTerminal(app, terminal, "Provider terminal read failed before input was ready.");
     StopCliTerminal(terminal);
     terminal.should_launch = false;
-    app.status_line = "Gemini terminal read failed.";
+    app.status_line = "Provider terminal read failed.";
     break;
   }
 
   int status = 0;
   if (terminal.child_pid > 0 && waitpid(terminal.child_pid, &status, WNOHANG) > 0) {
     mark_unseen_if_background();
+    ReportDroppedQueuedStructuredPromptsForTerminal(app, terminal, "Provider terminal exited before input was ready.");
     StopCliTerminal(terminal);
     terminal.should_launch = false;
-    app.status_line = "Gemini terminal exited.";
+    app.status_line = "Provider terminal exited.";
   }
 #endif
 
   const double now = ImGui::GetTime();
+  if (terminal.running &&
+      !terminal.input_ready &&
+      terminal.startup_time_s > 0.0 &&
+      (now - terminal.startup_time_s) >= kStructuredInputReadyFallbackSeconds) {
+    terminal.input_ready = true;
+  }
+  if (terminal.running && terminal.input_ready && !terminal.pending_structured_prompts.empty()) {
+    std::string flush_error;
+    if (!FlushQueuedStructuredPromptsForTerminal(terminal, &flush_error)) {
+      app.status_line =
+          "Provider terminal prompt flush failed: " + (flush_error.empty() ? std::string("unknown error.") : flush_error);
+    }
+  }
   if (now - terminal.last_sync_time_s > 1.25) {
     terminal.last_sync_time_s = now;
-    if (ActiveProviderUsesGeminiHistory(app)) {
+    if (terminal_uses_gemini_history) {
 #if defined(_WIN32)
       // Windows-only: run native session scanning off the UI thread to prevent
       // this port from freezing when a large or malformed chat JSON appears.
@@ -235,7 +265,7 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
       }
 #else
       RefreshGeminiChatsDir(app);
-      const std::vector<ChatSession> native_now = LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app));
+      const std::vector<ChatSession> native_now = LoadNativeGeminiChats(app.gemini_chats_dir, terminal_provider);
       if (terminal.attached_session_id.empty()) {
         const std::vector<std::string> candidates = CollectNewSessionIds(native_now, terminal.session_ids_before);
         std::unordered_set<std::string> blocked_ids;
@@ -290,12 +320,34 @@ static void RefreshChatHistory(AppState& app) {
 
 static void PollAllCliTerminals(AppState& app) {
   const std::string selected_chat_id = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
+  const double now = ImGui::GetTime();
   for (auto& terminal : app.cli_terminals) {
     if (terminal == nullptr) {
       continue;
     }
+    const bool selected_terminal = (!selected_chat_id.empty() && terminal->attached_chat_id == selected_chat_id);
+    const double min_poll_interval_s = selected_terminal ? 0.0 : 0.08;
+    if (terminal->last_polled_time_s > 0.0 && (now - terminal->last_polled_time_s) < min_poll_interval_s) {
+      continue;
+    }
+    terminal->last_polled_time_s = now;
     const bool preserve_selection = !selected_chat_id.empty() && terminal->attached_chat_id != selected_chat_id;
     PollCliTerminal(app, *terminal, preserve_selection);
+    if (!terminal->running || selected_terminal || terminal->attached_chat_id.empty()) {
+      continue;
+    }
+    if (HasPendingCallForChat(app, terminal->attached_chat_id) || terminal->generation_in_progress) {
+      continue;
+    }
+    const double terminal_activity = std::max({terminal->last_activity_time_s, terminal->last_output_time_s, terminal->last_sync_time_s});
+    const double idle_timeout = static_cast<double>(std::clamp(app.settings.cli_idle_timeout_seconds, 30, 3600));
+    if (terminal_activity > 0.0 && (now - terminal_activity) > idle_timeout) {
+      ReportDroppedQueuedStructuredPromptsForTerminal(
+          app, *terminal, "Provider terminal stopped due to idle timeout before queued prompt delivery.");
+      StopCliTerminal(*terminal, false);
+      terminal->should_launch = false;
+      app.status_line = "Stopped idle background terminal for chat " + CompactPreview(terminal->attached_chat_id, 36) + ".";
+    }
   }
 }
 

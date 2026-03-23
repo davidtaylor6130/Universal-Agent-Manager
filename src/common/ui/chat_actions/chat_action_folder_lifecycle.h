@@ -42,15 +42,69 @@ static bool DeleteFolderById(AppState& app, const std::string& folder_id) {
   return true;
 }
 
-static void CreateAndSelectChat(AppState& app) {
-  ChatSession chat = CreateNewChat(FolderForNewChat(app));
-  const std::string id = chat.id;
+static std::string ResolveNewChatProviderId(const AppState& app, const std::string& preferred_provider_id = std::string()) {
+  const std::string preferred = Trim(preferred_provider_id);
+  if (!preferred.empty()) {
+    if (const ProviderProfile* preferred_profile = ProviderProfileStore::FindById(app.provider_profiles, preferred);
+        preferred_profile != nullptr && ShouldShowProviderProfileInUi(*preferred_profile)) {
+      return preferred_profile->id;
+    }
+  }
+
+  const std::string active = Trim(app.settings.active_provider_id);
+  if (!active.empty()) {
+    if (const ProviderProfile* active_profile = ProviderProfileStore::FindById(app.provider_profiles, active);
+        active_profile != nullptr && ShouldShowProviderProfileInUi(*active_profile)) {
+      return active_profile->id;
+    }
+  }
+
+  for (const ProviderProfile& profile : app.provider_profiles) {
+    if (ShouldShowProviderProfileInUi(profile)) {
+      return profile.id;
+    }
+  }
+
+  return active.empty() ? std::string("gemini-structured") : active;
+}
+
+static void OpenNewChatPopup(AppState& app, const std::string& target_folder_id = std::string()) {
+  if (!target_folder_id.empty()) {
+    app.new_chat_folder_id = target_folder_id;
+  }
+  EnsureNewChatFolderSelection(app);
+  app.pending_new_chat_provider_id = ResolveNewChatProviderId(app, app.pending_new_chat_provider_id);
+  app.open_new_chat_popup = true;
+}
+
+static void CreateAndSelectChatWithProvider(AppState& app, const std::string& provider_id) {
+  const std::string selected_provider_id = ResolveNewChatProviderId(app, provider_id);
+  const std::string target_folder = FolderForNewChat(app);
+  for (const ChatSession& existing : app.chats) {
+    if (existing.folder_id == target_folder &&
+        existing.provider_id == selected_provider_id &&
+        IsLocalDraftChatId(existing.id) &&
+        existing.messages.empty() &&
+        !HasPendingCallForChat(app, existing.id)) {
+      SelectChatById(app, existing.id);
+      SaveSettings(app);
+      if (const ChatSession* selected = SelectedChat(app); selected != nullptr && ChatUsesCliOutput(app, *selected)) {
+        MarkSelectedCliTerminalForLaunch(app);
+      }
+      app.status_line = "Reused existing empty chat draft.";
+      return;
+    }
+  }
+
+  ChatSession chat = CreateNewChat(target_folder, selected_provider_id);
+  app.settings.active_provider_id = selected_provider_id;
+  chat.rag_enabled = app.settings.rag_enabled;
   app.chats.push_back(chat);
   NormalizeChatBranchMetadata(app);
   SortChatsByRecent(app.chats);
-  SelectChatById(app, id);
+  SelectChatById(app, chat.id);
   SaveSettings(app);
-  if (app.center_view_mode == CenterViewMode::CliConsole) {
+  if (const ChatSession* selected = SelectedChat(app); selected != nullptr && ChatUsesCliOutput(app, *selected)) {
     MarkSelectedCliTerminalForLaunch(app);
   }
   if (!SaveChat(app, app.chats[app.selected_chat_index])) {
@@ -58,6 +112,26 @@ static void CreateAndSelectChat(AppState& app) {
   } else {
     app.status_line = "New chat created.";
   }
+}
+
+static void CreateAndSelectChat(AppState& app) {
+  OpenNewChatPopup(app, FolderForNewChat(app));
+}
+
+static void CreateAndSelectChatInFolder(AppState& app, const std::string& folder_id) {
+  OpenNewChatPopup(app, folder_id);
+}
+
+static bool ConfirmCreateNewChat(AppState& app) {
+  const std::string provider_id = ResolveNewChatProviderId(app, app.pending_new_chat_provider_id);
+  if (provider_id.empty()) {
+    app.status_line = "No provider available for new chat.";
+    return false;
+  }
+  app.pending_new_chat_provider_id = provider_id;
+  CreateAndSelectChatWithProvider(app, provider_id);
+  app.pending_new_chat_provider_id.clear();
+  return true;
 }
 
 static void RequestDeleteSelectedChat(AppState& app) {

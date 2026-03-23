@@ -28,6 +28,7 @@ struct Message {
 /// </summary>
 struct ChatSession {
   std::string id;
+  std::string provider_id;
   std::string native_session_id;
   bool uses_native_session = false;
   std::string parent_chat_id;
@@ -36,6 +37,8 @@ struct ChatSession {
   std::string folder_id;
   std::string template_override_id;
   bool gemini_md_bootstrapped = false;
+  bool rag_enabled = true;
+  std::vector<std::string> rag_source_directories;
   std::string title;
   std::string created_at;
   std::string updated_at;
@@ -57,8 +60,20 @@ struct ChatFolder {
 /// Persisted application settings.
 /// </summary>
 struct AppSettings {
-  std::string active_provider_id = "gemini";
-  std::string gemini_command_template = "gemini {resume} {flags} {prompt}";
+  std::string active_provider_id = "gemini-structured";
+  std::string provider_command_template = "gemini {resume} {flags} -p {prompt}";
+  bool provider_yolo_mode = false;
+  std::string provider_extra_flags;
+  std::string runtime_backend = "provider-cli";
+  std::string selected_model_id;
+  std::string vector_db_backend = "ollama-engine";
+  std::string selected_vector_model_id;
+  std::string vector_database_name_override;
+  int cli_idle_timeout_seconds = 300;
+  std::string prompt_profile_root_path;
+  std::string default_prompt_profile_id;
+  // Legacy keys retained for backward-compatible load paths.
+  std::string gemini_command_template = "gemini {resume} {flags} -p {prompt}";
   bool gemini_yolo_mode = false;
   std::string gemini_extra_flags;
   std::string gemini_global_root_path;
@@ -89,7 +104,7 @@ enum class CenterViewMode {
 };
 
 /// <summary>
-/// In-flight Gemini command state used by async polling.
+/// In-flight provider command state used by async polling.
 /// </summary>
 struct PendingGeminiCall {
   std::string chat_id;

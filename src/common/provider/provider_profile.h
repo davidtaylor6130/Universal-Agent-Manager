@@ -10,12 +10,17 @@
 struct ProviderProfile {
   std::string id;
   std::string title;
+  std::string execution_mode = "cli";
+  std::string output_mode = "structured";
   std::string command_template;
   std::string interactive_command;
+  bool supports_interactive = true;
   bool supports_resume = true;
   std::vector<std::string> runtime_flags;
   std::string resume_argument = "--resume";
   std::string history_adapter = "gemini-cli-json";
+  std::string prompt_bootstrap = "prepend";
+  std::string prompt_bootstrap_path;
   std::vector<std::string> user_message_types;
   std::vector<std::string> assistant_message_types;
 };
@@ -32,6 +37,8 @@ class ProviderProfileStore {
 
   /// <summary>Returns the built-in default Gemini profile.</summary>
   static ProviderProfile DefaultGeminiProfile();
+  /// <summary>Returns built-in CLI defaults plus internal engine profile.</summary>
+  static std::vector<ProviderProfile> BuiltInProfiles();
   /// <summary>Ensures the default Gemini profile exists in the profile list.</summary>
   static void EnsureDefaultProfile(std::vector<ProviderProfile>& profiles);
 

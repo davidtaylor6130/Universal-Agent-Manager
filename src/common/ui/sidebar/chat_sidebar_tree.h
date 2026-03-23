@@ -12,8 +12,7 @@ static void DrawChatSidebarTree(AppState& app, std::string& chat_to_delete, std:
     const int chat_count = CountChatsInFolder(app, folder.id);
     const FolderHeaderAction folder_action = DrawFolderHeaderItem(folder, chat_count);
     if (folder_action.quick_create) {
-      app.new_chat_folder_id = folder.id;
-      CreateAndSelectChat(app);
+      CreateAndSelectChatInFolder(app, folder.id);
     } else if (folder_action.open_settings) {
       app.pending_folder_settings_id = folder.id;
       app.folder_settings_title_input = folder.title;
@@ -100,7 +99,7 @@ static void DrawChatSidebarTree(AppState& app, std::string& chat_to_delete, std:
           if (item_action.select) {
             SelectChatById(app, sidebar_chat.id);
             SaveSettings(app);
-            if (app.center_view_mode == CenterViewMode::CliConsole) {
+            if (const ChatSession* selected = SelectedChat(app); selected != nullptr && ChatUsesCliOutput(app, *selected)) {
               MarkSelectedCliTerminalForLaunch(app);
             }
           }

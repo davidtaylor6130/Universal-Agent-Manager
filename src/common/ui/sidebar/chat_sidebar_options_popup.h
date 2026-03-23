@@ -27,23 +27,6 @@ static void DrawSidebarChatOptionsPopup(AppState& app) {
     }
   };
 
-  if (ImGui::BeginMenu("View Mode")) {
-    if (ImGui::MenuItem("Structured", nullptr, app.center_view_mode == CenterViewMode::Structured)) {
-      ensure_selected_chat();
-      app.center_view_mode = CenterViewMode::Structured;
-      SaveSettings(app);
-      ImGui::CloseCurrentPopup();
-    }
-    if (ImGui::MenuItem("Terminal", nullptr, app.center_view_mode == CenterViewMode::CliConsole)) {
-      ensure_selected_chat();
-      app.center_view_mode = CenterViewMode::CliConsole;
-      MarkSelectedCliTerminalForLaunch(app);
-      SaveSettings(app);
-      ImGui::CloseCurrentPopup();
-    }
-    ImGui::EndMenu();
-  }
-
   if (ImGui::BeginMenu("Repository")) {
     const fs::path workspace_root = ResolveWorkspaceRootPath(app, popup_chat);
     RefreshWorkspaceVcsSnapshot(app, workspace_root, false);

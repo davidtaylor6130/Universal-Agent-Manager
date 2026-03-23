@@ -28,9 +28,9 @@ static void DrawChatDetailHeaderBar(AppState& app, ChatSession& chat) {
       if (HasPendingCallForChat(app, chat.id)) {
         static constexpr const char kSpinnerFrames[4] = {'|', '/', '-', '\\'};
         const int spinner_index = static_cast<int>(ImGui::GetTime() * 8.0) & 3;
-        ImGui::TextColored(ui::kWarning, "Gemini running %c", kSpinnerFrames[spinner_index]);
+        ImGui::TextColored(ui::kWarning, "Provider running %c", kSpinnerFrames[spinner_index]);
       } else if (HasAnyPendingCall(app)) {
-        ImGui::TextColored(ui::kTextSecondary, "Gemini running in another chat");
+        ImGui::TextColored(ui::kTextSecondary, "Provider running in another chat");
       } else {
         ImGui::TextColored(ui::kSuccess, "Ready");
       }
@@ -38,16 +38,17 @@ static void DrawChatDetailHeaderBar(AppState& app, ChatSession& chat) {
       ImGui::TextColored(ui::kTextMuted, "Updated %s", CompactPreview(chat.updated_at, 20).c_str());
 
       ImGui::TableSetColumnIndex(1);
+      const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
+      const char* mode_label = ProviderRuntime::UsesCliOutput(provider) ? "CLI" : "Structured";
       float mode_y_nudge = 3.0f;
 #if defined(_WIN32)
       mode_y_nudge = ScaleUiLength(3.0f);
 #endif
       ImGui::SetCursorPosY(ImGui::GetCursorPosY() + mode_y_nudge);
-      ImGui::TextColored(ui::kTextMuted, "View");
+      ImGui::TextColored(ui::kTextMuted, "Output");
       ImGui::SameLine();
-      ImGui::TextColored(ui::kTextPrimary, "%s",
-                         app.center_view_mode == CenterViewMode::Structured ? "Structured" : "Terminal");
-      ImGui::TextColored(ui::kTextMuted, "Use chat ... menu");
+      ImGui::TextColored(ui::kTextPrimary, "%s", mode_label);
+      ImGui::TextColored(ui::kTextMuted, "Locked by provider");
 
       ImGui::EndTable();
     }

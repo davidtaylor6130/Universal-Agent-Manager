@@ -24,7 +24,7 @@ static void DrawCliTerminalSurface(AppState& app, ChatSession& chat, const bool 
     const int rows = std::max(8, static_cast<int>(avail.y / mono_h) - 1);
     const int cols = std::max(20, static_cast<int>(avail.x / mono_w) - 1);
     if (!StartCliTerminalForChat(app, terminal, chat, rows, cols)) {
-      ImGui::TextColored(ui::kError, "Failed to start Gemini terminal.");
+      ImGui::TextColored(ui::kError, "Failed to start provider terminal.");
       if (!terminal.last_error.empty()) {
         ImGui::TextColored(ui::kTextMuted, "%s", terminal.last_error.c_str());
       }
@@ -32,7 +32,7 @@ static void DrawCliTerminalSurface(AppState& app, ChatSession& chat, const bool 
     }
   }
   if (!terminal.running) {
-    ImGui::TextColored(ui::kWarning, "Gemini terminal is stopped.");
+    ImGui::TextColored(ui::kWarning, "Provider terminal is stopped.");
     if (DrawButton("Restart Terminal", ImVec2(130.0f, 34.0f), ButtonKind::Primary)) {
       terminal.should_launch = true;
     }
@@ -153,7 +153,7 @@ static void DrawCliTerminalSurface(AppState& app, ChatSession& chat, const bool 
     if (terminal.scrollback_view_offset > 0) {
       ImGui::TextColored(ui::kTextMuted, "Scrollback: %d lines up (End to jump bottom)", terminal.scrollback_view_offset);
     } else {
-      ImGui::TextColored(ui::kTextMuted, "Native Gemini terminal for this chat.");
+      ImGui::TextColored(ui::kTextMuted, "Native provider terminal for this chat.");
     }
   }
 }

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <fstream>
 #include <optional>
 #include <sstream>
 
@@ -18,6 +19,13 @@ std::string Trim(const std::string& value) {
   }
   const std::size_t end = value.find_last_not_of(" \t\r\n");
   return value.substr(start, end - start + 1);
+}
+
+std::string ToLower(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return value;
 }
 
 std::string TruncateSnippet(const std::string& text, const std::size_t max_chars) {
@@ -59,6 +67,133 @@ int ParsePositiveLineNumber(const std::string& text, const int fallback) {
   return std::max(1, value);
 }
 
+bool IsLikelyBinaryBlob(const std::string& content) {
+  return content.find('\0') != std::string::npos;
+}
+
+std::vector<std::string> QueryTokensLower(const std::string& query) {
+  std::vector<std::string> tokens;
+  std::string current;
+  for (const char ch : query) {
+    if (std::isalnum(static_cast<unsigned char>(ch)) != 0) {
+      current.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+    } else if (!current.empty()) {
+      tokens.push_back(current);
+      current.clear();
+    }
+  }
+  if (!current.empty()) {
+    tokens.push_back(current);
+  }
+  return tokens;
+}
+
+std::vector<RagSnippet> RetrieveLexicalFallback(const fs::path& workspace_root,
+                                                const std::string& query,
+                                                const std::size_t max_results,
+                                                const std::size_t max_file_bytes,
+                                                const std::size_t max_snippet_chars) {
+  struct Candidate {
+    RagSnippet snippet;
+    int score = 0;
+  };
+
+  const std::vector<std::string> query_tokens = QueryTokensLower(query);
+  if (query_tokens.empty()) {
+    return {};
+  }
+
+  std::vector<Candidate> candidates;
+  std::error_code ec;
+  for (const auto& entry : fs::recursive_directory_iterator(workspace_root, fs::directory_options::skip_permission_denied, ec)) {
+    if (ec || !entry.is_regular_file(ec)) {
+      ec.clear();
+      continue;
+    }
+    if (entry.file_size(ec) > max_file_bytes) {
+      ec.clear();
+      continue;
+    }
+
+    std::ifstream in(entry.path(), std::ios::binary);
+    if (!in.good()) {
+      continue;
+    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    std::string text = buffer.str();
+    if (IsLikelyBinaryBlob(text)) {
+      continue;
+    }
+    std::string text_lower = ToLower(text);
+
+    int score = 0;
+    for (const std::string& token : query_tokens) {
+      std::size_t pos = text_lower.find(token);
+      while (pos != std::string::npos) {
+        ++score;
+        pos = text_lower.find(token, pos + token.size());
+      }
+    }
+    if (score <= 0) {
+      continue;
+    }
+
+    RagSnippet snippet;
+    snippet.relative_path = fs::relative(entry.path(), workspace_root, ec).generic_string();
+    ec.clear();
+    snippet.text = TruncateSnippet(text, max_snippet_chars);
+    snippet.start_line = 1;
+    snippet.end_line = 1;
+    snippet.score = static_cast<double>(score);
+    candidates.push_back(Candidate{snippet, score});
+  }
+
+  std::sort(candidates.begin(), candidates.end(), [](const Candidate& lhs, const Candidate& rhs) {
+    if (lhs.score != rhs.score) {
+      return lhs.score > rhs.score;
+    }
+    return lhs.snippet.relative_path < rhs.snippet.relative_path;
+  });
+
+  std::vector<RagSnippet> snippets;
+  snippets.reserve(std::min<std::size_t>(max_results, candidates.size()));
+  for (std::size_t i = 0; i < candidates.size() && i < max_results; ++i) {
+    snippets.push_back(std::move(candidates[i].snippet));
+  }
+  return snippets;
+}
+
+std::unordered_map<std::string, std::size_t> CollectLexicalFileHashes(const fs::path& workspace_root,
+                                                                       const std::size_t max_file_bytes) {
+  std::unordered_map<std::string, std::size_t> hashes;
+  std::error_code ec;
+  for (const auto& entry : fs::recursive_directory_iterator(workspace_root, fs::directory_options::skip_permission_denied, ec)) {
+    if (ec || !entry.is_regular_file(ec)) {
+      ec.clear();
+      continue;
+    }
+    if (entry.file_size(ec) > max_file_bytes) {
+      ec.clear();
+      continue;
+    }
+    std::ifstream in(entry.path(), std::ios::binary);
+    if (!in.good()) {
+      continue;
+    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    const std::string content = buffer.str();
+    if (IsLikelyBinaryBlob(content)) {
+      continue;
+    }
+    const fs::path relative = fs::relative(entry.path(), workspace_root, ec);
+    ec.clear();
+    hashes[relative.generic_string()] = std::hash<std::string>{}(content);
+  }
+  return hashes;
+}
+
 }  // namespace
 
 RagIndexService::RagIndexService()
@@ -81,6 +216,8 @@ RagIndexService::~RagIndexService() = default;
 
 void RagIndexService::SetConfig(const Config& config) {
   config_ = config;
+  config_.vector_backend = (ToLower(config_.vector_backend) == "none") ? "none" : "ollama-engine";
+  config_.vector_enabled = config_.vector_enabled && (config_.vector_backend != "none");
   config_.top_k = std::clamp(config_.top_k, 1, 20);
   config_.max_snippet_chars = std::clamp<std::size_t>(config_.max_snippet_chars, 120, 4000);
   config_.max_file_bytes = std::clamp<std::size_t>(config_.max_file_bytes, 16 * 1024, 20 * 1024 * 1024);
@@ -106,6 +243,9 @@ void RagIndexService::SetModelFolder(const std::filesystem::path& model_folder) 
 }
 
 std::vector<std::string> RagIndexService::ListModels() {
+  if (config_.vector_backend == "none") {
+    return {};
+  }
   if (model_engine_client_ == nullptr) {
     model_engine_client_ = std::make_unique<OllamaEngineClient>();
   }
@@ -116,13 +256,23 @@ std::vector<std::string> RagIndexService::ListModels() {
 }
 
 bool RagIndexService::LoadModel(const std::string& model_name, std::string* error_out) {
+  if (config_.vector_backend == "none") {
+    if (error_out != nullptr) {
+      *error_out = "Vector backend is disabled.";
+    }
+    return false;
+  }
   if (model_engine_client_ == nullptr) {
     model_engine_client_ = std::make_unique<OllamaEngineClient>();
   }
   model_engine_client_->SetModelFolder(model_folder_);
   model_engine_client_->SetEmbeddingDimensions(config_.vector_dimensions);
   model_engine_client_->SetEmbeddingMaxTokens(config_.vector_max_tokens);
-  return model_engine_client_->Load(model_name, error_out);
+  const bool ok = model_engine_client_->Load(model_name, error_out);
+  if (ok) {
+    loaded_vector_model_id_ = model_name;
+  }
+  return ok;
 }
 
 void RagIndexService::SetScanSourceOverride(const std::filesystem::path& workspace_root,
@@ -173,6 +323,31 @@ RagRefreshResult RagIndexService::ScanWorkspace(const std::filesystem::path& wor
     last_scan_error_ = result.error;
     return result;
   }
+  if (!config_.vector_enabled || config_.vector_backend == "none") {
+    const std::string workspace_key = NormalizeWorkspaceKey(workspace_root);
+    const auto new_hashes = CollectLexicalFileHashes(workspace_root, config_.max_file_bytes);
+    const auto previous_it = lexical_fallback_hashes_by_workspace_.find(workspace_key);
+    int updated_files = static_cast<int>(new_hashes.size());
+    if (previous_it != lexical_fallback_hashes_by_workspace_.end()) {
+      updated_files = 0;
+      for (const auto& item : new_hashes) {
+        const auto old_item = previous_it->second.find(item.first);
+        if (old_item == previous_it->second.end() || old_item->second != item.second) {
+          ++updated_files;
+        }
+      }
+      for (const auto& old_item : previous_it->second) {
+        if (new_hashes.find(old_item.first) == new_hashes.end()) {
+          ++updated_files;
+        }
+      }
+    }
+    lexical_fallback_hashes_by_workspace_[workspace_key] = new_hashes;
+    result.indexed_files = static_cast<int>(new_hashes.size());
+    result.updated_files = updated_files;
+    last_scan_error_.clear();
+    return result;
+  }
 
   if (model_engine_client_ == nullptr) {
     model_engine_client_ = std::make_unique<OllamaEngineClient>();
@@ -180,14 +355,28 @@ RagRefreshResult RagIndexService::ScanWorkspace(const std::filesystem::path& wor
     model_engine_client_->SetEmbeddingDimensions(config_.vector_dimensions);
     model_engine_client_->SetEmbeddingMaxTokens(config_.vector_max_tokens);
   }
+  if (!Trim(config_.vector_model_id).empty() && loaded_vector_model_id_ != config_.vector_model_id) {
+    std::string load_error;
+    if (!model_engine_client_->Load(config_.vector_model_id, &load_error)) {
+      result.ok = false;
+      result.error = load_error.empty() ? "Failed to load configured vector model." : load_error;
+      last_scan_error_ = result.error;
+      return result;
+    }
+    loaded_vector_model_id_ = config_.vector_model_id;
+  }
 
   const std::string workspace_key = NormalizeWorkspaceKey(workspace_root);
 
   std::string setup_error;
   if (!ConfigureWorkspaceDatabase(workspace_root, &setup_error)) {
-    result.ok = false;
-    result.error = setup_error.empty() ? "Failed to configure RAG database." : setup_error;
-    last_scan_error_ = result.error;
+    const std::string workspace_key = NormalizeWorkspaceKey(workspace_root);
+    const auto new_hashes = CollectLexicalFileHashes(workspace_root, config_.max_file_bytes);
+    lexical_fallback_hashes_by_workspace_[workspace_key] = new_hashes;
+    result.indexed_files = static_cast<int>(new_hashes.size());
+    result.updated_files = static_cast<int>(new_hashes.size());
+    result.ok = true;
+    last_scan_error_.clear();
     return result;
   }
 
@@ -198,16 +387,37 @@ RagRefreshResult RagIndexService::ScanWorkspace(const std::filesystem::path& wor
     vector_file = (it != scan_source_override_by_workspace_.end() && !it->second.empty()) ? it->second : workspace_key;
   }
   if (!model_engine_client_->Scan(vector_file, &scan_error)) {
-    result.ok = false;
-    result.error = scan_error.empty() ? "Failed to start RAG scan." : scan_error;
-    last_scan_error_ = result.error;
+    const std::string workspace_key = NormalizeWorkspaceKey(workspace_root);
+    const auto new_hashes = CollectLexicalFileHashes(workspace_root, config_.max_file_bytes);
+    const auto previous_it = lexical_fallback_hashes_by_workspace_.find(workspace_key);
+    int updated_files = static_cast<int>(new_hashes.size());
+    if (previous_it != lexical_fallback_hashes_by_workspace_.end()) {
+      updated_files = 0;
+      for (const auto& item : new_hashes) {
+        const auto old_item = previous_it->second.find(item.first);
+        if (old_item == previous_it->second.end() || old_item->second != item.second) {
+          ++updated_files;
+        }
+      }
+      for (const auto& old_item : previous_it->second) {
+        if (new_hashes.find(old_item.first) == new_hashes.end()) {
+          ++updated_files;
+        }
+      }
+    }
+    lexical_fallback_hashes_by_workspace_[workspace_key] = new_hashes;
+    result.indexed_files = static_cast<int>(new_hashes.size());
+    result.updated_files = updated_files;
+    result.ok = true;
+    last_scan_error_.clear();
     return result;
   }
 
   last_scan_error_.clear();
   const RagScanState state = FetchState();
-  result.indexed_files = static_cast<int>(state.total_files);
-  result.updated_files = static_cast<int>(state.files_processed);
+  const int lexical_count = static_cast<int>(CollectLexicalFileHashes(workspace_root, config_.max_file_bytes).size());
+  result.indexed_files = (state.total_files > 0) ? static_cast<int>(state.total_files) : lexical_count;
+  result.updated_files = (state.files_processed > 0) ? static_cast<int>(state.files_processed) : lexical_count;
   return result;
 }
 
@@ -222,13 +432,17 @@ std::vector<RagSnippet> RagIndexService::Retrieve(const std::filesystem::path& w
                                                   const std::size_t min_results,
                                                   std::string* error_out) {
   std::vector<RagSnippet> snippets;
-  if (!config_.enabled || !config_.vector_enabled) {
+  if (!config_.enabled) {
     return snippets;
   }
 
   const std::string trimmed_query = Trim(query);
   if (trimmed_query.empty()) {
     return snippets;
+  }
+  if (!config_.vector_enabled) {
+    return RetrieveLexicalFallback(
+        workspace_root, trimmed_query, std::max<std::size_t>(1, max_results), config_.max_file_bytes, config_.max_snippet_chars);
   }
 
   if (model_engine_client_ == nullptr) {
@@ -237,13 +451,21 @@ std::vector<RagSnippet> RagIndexService::Retrieve(const std::filesystem::path& w
     model_engine_client_->SetEmbeddingDimensions(config_.vector_dimensions);
     model_engine_client_->SetEmbeddingMaxTokens(config_.vector_max_tokens);
   }
+  if (!Trim(config_.vector_model_id).empty() && loaded_vector_model_id_ != config_.vector_model_id) {
+    std::string load_error;
+    if (!model_engine_client_->Load(config_.vector_model_id, &load_error)) {
+      if (error_out != nullptr) {
+        *error_out = load_error.empty() ? "Failed to load configured vector model." : load_error;
+      }
+      return snippets;
+    }
+    loaded_vector_model_id_ = config_.vector_model_id;
+  }
 
   std::string setup_error;
   if (!ConfigureWorkspaceDatabase(workspace_root, &setup_error)) {
-    if (error_out != nullptr) {
-      *error_out = setup_error.empty() ? "Failed to configure RAG database." : setup_error;
-    }
-    return snippets;
+    return RetrieveLexicalFallback(
+        workspace_root, trimmed_query, std::max<std::size_t>(1, max_results), config_.max_file_bytes, config_.max_snippet_chars);
   }
 
   const std::string workspace_key = NormalizeWorkspaceKey(workspace_root);
@@ -258,7 +480,8 @@ std::vector<RagSnippet> RagIndexService::Retrieve(const std::filesystem::path& w
       if (error_out != nullptr) {
         *error_out = load_error.empty() ? "Failed to load RAG database." : load_error;
       }
-      return snippets;
+      return RetrieveLexicalFallback(
+          workspace_root, trimmed_query, std::max<std::size_t>(1, max_results), config_.max_file_bytes, config_.max_snippet_chars);
     }
   }
 
@@ -270,6 +493,10 @@ std::vector<RagSnippet> RagIndexService::Retrieve(const std::filesystem::path& w
   snippets.reserve(raw_snippets.size());
   for (const std::string& raw_snippet : raw_snippets) {
     snippets.push_back(ParseSnippet(raw_snippet, config_.max_snippet_chars));
+  }
+  if (snippets.empty()) {
+    return RetrieveLexicalFallback(
+        workspace_root, trimmed_query, std::max<std::size_t>(1, max_results), config_.max_file_bytes, config_.max_snippet_chars);
   }
   return snippets;
 }
@@ -332,6 +559,9 @@ bool RagIndexService::ConfigureWorkspaceDatabase(const std::filesystem::path& wo
 }
 
 std::string RagIndexService::WorkspaceDatabaseName(const std::string& workspace_key) {
+  if (!Trim(config_.vector_database_name_override).empty()) {
+    return config_.vector_database_name_override;
+  }
   const auto it = database_name_by_workspace_.find(workspace_key);
   if (it != database_name_by_workspace_.end()) {
     return it->second;
