@@ -49,6 +49,8 @@ struct AppSettings {
   bool confirm_delete_chat = true;
   bool confirm_delete_folder = true;
   bool remember_last_chat = true;
+  bool mirror_native_gemini_history_to_local = true;
+  int native_history_mirror_idle_seconds = 30;
   std::string last_selected_chat_id;
   float ui_scale_multiplier = 1.0f;
   int window_width = 1440;

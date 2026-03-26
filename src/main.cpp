@@ -32,6 +32,7 @@
 
 #if defined(__APPLE__)
 #include <OpenGL/gl3.h>
+#include <mach-o/dyld.h>
 #else
 #include <GL/gl.h>
 #endif
@@ -205,6 +206,7 @@ struct AppState {
   std::string gemini_version_message;
   std::string gemini_downgrade_output;
   bool scroll_to_bottom = false;
+  double last_native_history_mirror_time_s = 0.0;
 #if defined(_WIN32)
   AsyncNativeChatLoadTask native_chat_load_task;
 #endif
@@ -240,6 +242,7 @@ static void DrawSessionSidePane(AppState& app, ChatSession& chat);
 static void SaveAndUpdateStatus(AppState& app, const ChatSession& chat, const std::string& success, const std::string& failure);
 static void RefreshGeminiChatsDir(AppState& app);
 static const ChatFolder* FindFolderById(const AppState& app, const std::string& folder_id);
+static const ChatSession* SelectedChat(const AppState& app);
 static const ProviderProfile& ActiveProviderOrDefault(const AppState& app);
 static bool ActiveProviderUsesGeminiHistory(const AppState& app);
 static void StartAsyncCommandTask(AsyncCommandTask& task, const std::string& command);
@@ -254,6 +257,7 @@ static bool IsLocalDraftChatId(const std::string& chat_id);
 static std::string ResolveResumeSessionIdForChat(const AppState& app, const ChatSession& chat);
 static bool HasPendingCallForChat(const AppState& app, const std::string& chat_id);
 static bool HasAnyPendingCall(const AppState& app);
+static void MirrorNativeGeminiHistoryToLocal(AppState& app, const std::vector<ChatSession>* native_hint = nullptr);
 static const PendingGeminiCall* FirstPendingCallForChat(const AppState& app, const std::string& chat_id);
 static float PlatformUiSpacingScale();
 static float ScaleUiLength(float value);
@@ -1158,17 +1162,71 @@ static fs::path ChatPath(const AppState& app, const ChatSession& chat) {
   return AppPaths::ChatPath(app.data_root, chat.id);
 }
 
-static fs::path DefaultDataRootPath() {
-  return AppPaths::DefaultDataRootPath();
+static std::optional<fs::path> ResolveExecutableDirectory(const int argc, char** argv) {
+#if defined(_WIN32)
+  std::wstring wide_path(512, L'\0');
+  DWORD length = 0;
+  while (true) {
+    length = GetModuleFileNameW(nullptr, wide_path.data(), static_cast<DWORD>(wide_path.size()));
+    if (length == 0) {
+      break;
+    }
+    if (length < wide_path.size() - 1) {
+      wide_path.resize(length);
+      return fs::path(wide_path).parent_path();
+    }
+    wide_path.resize(wide_path.size() * 2);
+  }
+#elif defined(__APPLE__)
+  uint32_t required_size = 0;
+  if (_NSGetExecutablePath(nullptr, &required_size) == 0 || required_size == 0) {
+    return std::nullopt;
+  }
+  std::string raw_path(required_size, '\0');
+  if (_NSGetExecutablePath(raw_path.data(), &required_size) == 0) {
+    if (!raw_path.empty() && raw_path.back() == '\0') {
+      raw_path.pop_back();
+    }
+    std::error_code canonical_ec;
+    const fs::path canonical = fs::weakly_canonical(fs::path(raw_path), canonical_ec);
+    return (canonical_ec ? fs::path(raw_path) : canonical).parent_path();
+  }
+#elif defined(__linux__)
+  std::array<char, 4096> exe_path{};
+  const ssize_t read_len = readlink("/proc/self/exe", exe_path.data(), exe_path.size() - 1);
+  if (read_len > 0) {
+    exe_path[static_cast<std::size_t>(read_len)] = '\0';
+    return fs::path(exe_path.data()).parent_path();
+  }
+#endif
+  if (argc > 0 && argv != nullptr && argv[0] != nullptr) {
+    std::string argv0 = Trim(argv[0]);
+    if (!argv0.empty()) {
+      std::error_code absolute_ec;
+      fs::path exe_path(argv0);
+      if (exe_path.is_relative()) {
+        exe_path = fs::absolute(exe_path, absolute_ec);
+      }
+      if (!absolute_ec) {
+        return exe_path.parent_path();
+      }
+      return fs::path(argv0).parent_path();
+    }
+  }
+  return std::nullopt;
 }
 
-static fs::path TempFallbackDataRootPath() {
-  std::error_code ec;
-  const fs::path temp = fs::temp_directory_path(ec);
-  if (!ec) {
-    return temp / "universal_agent_manager_data";
+static fs::path ResolvePortableDataRootPath(const fs::path& executable_directory) {
+  fs::path root = executable_directory;
+#if defined(__APPLE__)
+  if (!root.empty() &&
+      root.filename() == "MacOS" &&
+      root.parent_path().filename() == "Contents" &&
+      root.parent_path().parent_path().extension() == ".app") {
+    root = root.parent_path().parent_path();
   }
-  return fs::path("data");
+#endif
+  return root / "data";
 }
 
 static bool EnsureDataRootLayout(const fs::path& data_root, std::string* error_out) {
@@ -1862,6 +1920,78 @@ static void SaveAndUpdateStatus(AppState& app, const ChatSession& chat, const st
   }
 }
 
+static void ApplyLocalMetadataOverrides(const ChatSession& local, ChatSession& chat) {
+  if (!Trim(local.title).empty()) {
+    chat.title = local.title;
+  }
+  if (!local.linked_files.empty()) {
+    chat.linked_files = local.linked_files;
+  }
+  if (!local.template_override_id.empty()) {
+    chat.template_override_id = local.template_override_id;
+  }
+  if (!local.native_session_id.empty()) {
+    chat.native_session_id = local.native_session_id;
+    chat.uses_native_session = true;
+  } else if (local.uses_native_session && chat.native_session_id.empty()) {
+    chat.native_session_id = chat.id;
+    chat.uses_native_session = true;
+  }
+  if (local.gemini_md_bootstrapped) {
+    chat.gemini_md_bootstrapped = true;
+  }
+  if (!local.folder_id.empty()) {
+    chat.folder_id = local.folder_id;
+  }
+  if (chat.created_at.empty() && !local.created_at.empty()) {
+    chat.created_at = local.created_at;
+  }
+  if (chat.updated_at.empty() && !local.updated_at.empty()) {
+    chat.updated_at = local.updated_at;
+  }
+}
+
+static void MirrorNativeGeminiHistoryToLocal(AppState& app, const std::vector<ChatSession>* native_hint) {
+  if (!app.settings.mirror_native_gemini_history_to_local || !ActiveProviderUsesGeminiHistory(app)) {
+    return;
+  }
+
+  std::vector<ChatSession> native_chats;
+  if (native_hint != nullptr) {
+    native_chats = DeduplicateChatsById(*native_hint);
+  } else {
+    RefreshGeminiChatsDir(app);
+    native_chats = LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app));
+  }
+  if (native_chats.empty()) {
+    return;
+  }
+
+  std::vector<ChatSession> local_chats = DeduplicateChatsById(LoadChats(app));
+  std::unordered_map<std::string, const ChatSession*> local_map;
+  for (const ChatSession& local : local_chats) {
+    local_map[local.id] = &local;
+  }
+
+  for (ChatSession& native : native_chats) {
+    const auto it = local_map.find(native.id);
+    if (it != local_map.end()) {
+      ApplyLocalMetadataOverrides(*it->second, native);
+    }
+    if (native.native_session_id.empty()) {
+      native.native_session_id = native.id;
+    }
+    native.uses_native_session = true;
+    if (native.created_at.empty()) {
+      native.created_at = TimestampNow();
+    }
+    if (native.updated_at.empty()) {
+      native.updated_at = native.created_at;
+    }
+    SaveChat(app, native);
+  }
+}
+
 static void ApplyLocalOverrides(AppState& app, std::vector<ChatSession>& native_chats) {
   native_chats = DeduplicateChatsById(std::move(native_chats));
   std::vector<ChatSession> local_chats = DeduplicateChatsById(LoadChats(app));
@@ -1877,35 +2007,7 @@ static void ApplyLocalOverrides(AppState& app, std::vector<ChatSession>& native_
     if (it == local_map.end()) {
       continue;
     }
-    const ChatSession& local = *it->second;
-    if (!Trim(local.title).empty()) {
-      native.title = local.title;
-    }
-    if (!local.linked_files.empty()) {
-      native.linked_files = local.linked_files;
-    }
-    if (!local.template_override_id.empty()) {
-      native.template_override_id = local.template_override_id;
-    }
-    if (!local.native_session_id.empty()) {
-      native.native_session_id = local.native_session_id;
-      native.uses_native_session = true;
-    } else if (local.uses_native_session && native.native_session_id.empty()) {
-      native.native_session_id = native.id;
-      native.uses_native_session = true;
-    }
-    if (local.gemini_md_bootstrapped) {
-      native.gemini_md_bootstrapped = true;
-    }
-    if (!local.folder_id.empty()) {
-      native.folder_id = local.folder_id;
-    }
-    if (native.created_at.empty() && !local.created_at.empty()) {
-      native.created_at = local.created_at;
-    }
-    if (native.updated_at.empty() && !local.updated_at.empty()) {
-      native.updated_at = local.updated_at;
-    }
+    ApplyLocalMetadataOverrides(*it->second, native);
   }
 
   std::vector<ChatSession> merged = native_chats;
@@ -1913,7 +2015,18 @@ static void ApplyLocalOverrides(AppState& app, std::vector<ChatSession>& native_
     if (native_ids.find(chat.id) != native_ids.end()) {
       continue;
     }
-    if (chat.uses_native_session || !chat.native_session_id.empty()) {
+    const bool mirrored_native_session = chat.uses_native_session || !chat.native_session_id.empty();
+    if (mirrored_native_session) {
+      // Optional one-way mirror fallback: if native JSON history is unavailable on
+      // relaunch, recover mirrored sessions from local storage.
+      if (app.settings.mirror_native_gemini_history_to_local) {
+        ChatSession recovered = chat;
+        if (recovered.native_session_id.empty()) {
+          recovered.native_session_id = recovered.id;
+        }
+        recovered.uses_native_session = true;
+        merged.push_back(std::move(recovered));
+      }
       continue;
     }
     // In Gemini-history mode, only explicit in-app drafts (chat-*) should appear as local-only chats.
@@ -1927,8 +2040,35 @@ static void ApplyLocalOverrides(AppState& app, std::vector<ChatSession>& native_
   NormalizeChatFolderAssignments(app);
 }
 
+static fs::path ResolveGeminiWorkspaceRootForHistory(const AppState& app) {
+  if (const ChatSession* selected_chat = SelectedChat(app); selected_chat != nullptr) {
+    if (const ChatFolder* selected_folder = FindFolderById(app, selected_chat->folder_id); selected_folder != nullptr) {
+      const fs::path selected_root = ExpandLeadingTildePath(selected_folder->directory);
+      if (!selected_root.empty()) {
+        std::error_code abs_ec;
+        const fs::path absolute_root = fs::absolute(selected_root, abs_ec);
+        return abs_ec ? selected_root : absolute_root;
+      }
+    }
+  }
+
+  if (const ChatFolder* default_folder = FindFolderById(app, kDefaultFolderId); default_folder != nullptr) {
+    const fs::path default_root = ExpandLeadingTildePath(default_folder->directory);
+    if (!default_root.empty()) {
+      std::error_code abs_ec;
+      const fs::path absolute_root = fs::absolute(default_root, abs_ec);
+      return abs_ec ? default_root : absolute_root;
+    }
+  }
+
+  std::error_code cwd_ec;
+  const fs::path cwd = fs::current_path(cwd_ec);
+  return cwd_ec ? fs::path{} : cwd;
+}
+
 static void RefreshGeminiChatsDir(AppState& app) {
-  const auto tmp_dir = ResolveGeminiProjectTmpDir(fs::current_path());
+  const fs::path workspace_root = ResolveGeminiWorkspaceRootForHistory(app);
+  const auto tmp_dir = ResolveGeminiProjectTmpDir(workspace_root);
   if (tmp_dir.has_value()) {
     app.gemini_chats_dir = tmp_dir.value() / "chats";
     std::error_code ec;
@@ -3551,6 +3691,39 @@ static void PollAllCliTerminals(AppState& app) {
     const bool preserve_selection = !selected_chat_id.empty() && terminal->attached_chat_id != selected_chat_id;
     PollCliTerminal(app, *terminal, preserve_selection);
   }
+}
+
+static bool AnyCliTerminalGenerationInProgress(const AppState& app) {
+  for (const auto& terminal : app.cli_terminals) {
+    if (terminal != nullptr && terminal->running && terminal->generation_in_progress) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static void MirrorNativeGeminiHistoryOnIdle(AppState& app) {
+  if (!app.settings.mirror_native_gemini_history_to_local || !ActiveProviderUsesGeminiHistory(app)) {
+    return;
+  }
+  if (HasAnyPendingCall(app) || AnyCliTerminalGenerationInProgress(app)) {
+    return;
+  }
+#if defined(_WIN32)
+  if (app.native_chat_load_task.running) {
+    return;
+  }
+#endif
+
+  const double now = ImGui::GetTime();
+  const double idle_interval = static_cast<double>(std::max(5, app.settings.native_history_mirror_idle_seconds));
+  if (app.last_native_history_mirror_time_s > 0.0 &&
+      (now - app.last_native_history_mirror_time_s) < idle_interval) {
+    return;
+  }
+
+  MirrorNativeGeminiHistoryToLocal(app);
+  app.last_native_history_mirror_time_s = now;
 }
 
 static void StartGeminiRequest(AppState& app) {
@@ -6204,6 +6377,7 @@ static void ClampWindowSettings(AppSettings& settings) {
   settings.window_width = std::clamp(settings.window_width, 960, 8192);
   settings.window_height = std::clamp(settings.window_height, 620, 8192);
   settings.ui_scale_multiplier = std::clamp(settings.ui_scale_multiplier, 0.85f, 1.75f);
+  settings.native_history_mirror_idle_seconds = std::clamp(settings.native_history_mirror_idle_seconds, 5, 3600);
 }
 
 static void CaptureWindowState(AppState& app, SDL_Window* window) {
@@ -6691,6 +6865,18 @@ static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
     ImGui::Checkbox("Confirm before deleting chat", &draft_settings.confirm_delete_chat);
     ImGui::Checkbox("Confirm before deleting folder", &draft_settings.confirm_delete_folder);
     ImGui::Checkbox("Remember last selected chat", &draft_settings.remember_last_chat);
+    ImGui::Checkbox("Mirror native Gemini chats into local data folder", &draft_settings.mirror_native_gemini_history_to_local);
+    if (!draft_settings.mirror_native_gemini_history_to_local) {
+      ImGui::BeginDisabled();
+    }
+    ImGui::SetNextItemWidth(180.0f);
+    ImGui::InputInt("Mirror idle interval (seconds)", &draft_settings.native_history_mirror_idle_seconds);
+    draft_settings.native_history_mirror_idle_seconds =
+        std::clamp(draft_settings.native_history_mirror_idle_seconds, 5, 3600);
+    if (!draft_settings.mirror_native_gemini_history_to_local) {
+      ImGui::EndDisabled();
+    }
+    ImGui::TextColored(ui::kTextMuted, "Mirror triggers: startup, idle interval, and shutdown.");
 
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
     DrawSoftDivider();
@@ -6808,6 +6994,7 @@ static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
     if (DrawButton("Save Preferences", ImVec2(138.0f, 34.0f), ButtonKind::Primary)) {
       const std::string previous_global_root = app.settings.gemini_global_root_path;
+      const bool previous_history_mirror_enabled = app.settings.mirror_native_gemini_history_to_local;
       draft_settings.ui_theme = NormalizeThemeChoice(draft_settings.ui_theme);
       if (Trim(draft_settings.gemini_global_root_path).empty()) {
         draft_settings.gemini_global_root_path = AppPaths::DefaultGeminiUniversalRootPath().string();
@@ -6829,6 +7016,14 @@ static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
       if (previous_global_root != app.settings.gemini_global_root_path) {
         MarkTemplateCatalogDirty(app);
         RefreshTemplateCatalog(app, true);
+      }
+      if (app.settings.mirror_native_gemini_history_to_local && ActiveProviderUsesGeminiHistory(app)) {
+        if (!previous_history_mirror_enabled || previous_global_root != app.settings.gemini_global_root_path) {
+          MirrorNativeGeminiHistoryToLocal(app);
+        }
+        app.last_native_history_mirror_time_s = ImGui::GetTime();
+      } else {
+        app.last_native_history_mirror_time_s = 0.0;
       }
       app.status_line = "Preferences saved.";
       initialized = false;
@@ -6914,51 +7109,22 @@ static void ApplyWindowIcon(SDL_Window* window) {
   SDL_FreeSurface(icon_surface);
 }
 
-int main(int, char**) {
+int main(int argc, char** argv) {
   AppState app;
-  std::vector<fs::path> data_root_candidates;
-  if (const char* data_dir_env = std::getenv("UAM_DATA_DIR")) {
-    const std::string env_root = Trim(data_dir_env);
-    if (!env_root.empty()) {
-      data_root_candidates.push_back(fs::path(env_root));
-    }
-  }
-  if (data_root_candidates.empty()) {
-    std::error_code cwd_ec;
-    const fs::path cwd = fs::current_path(cwd_ec);
-    if (!cwd_ec) {
-      data_root_candidates.push_back(cwd / "data");
-    }
-    data_root_candidates.push_back(DefaultDataRootPath());
-  }
-  data_root_candidates.push_back(TempFallbackDataRootPath());
-
-  std::unordered_set<std::string> tried_roots;
-  std::string last_data_root_error = "Unknown data directory initialization failure.";
-  bool initialized_data_root = false;
-  for (const fs::path& candidate_root : data_root_candidates) {
-    if (candidate_root.empty()) {
-      continue;
-    }
-    const std::string key = candidate_root.lexically_normal().string();
-    if (tried_roots.find(key) != tried_roots.end()) {
-      continue;
-    }
-    tried_roots.insert(key);
-
-    std::string error;
-    if (EnsureDataRootLayout(candidate_root, &error)) {
-      app.data_root = candidate_root;
-      initialized_data_root = true;
-      break;
-    }
-    last_data_root_error = std::move(error);
-  }
-
-  if (!initialized_data_root) {
-    std::fprintf(stderr, "Failed to initialize application data directories: %s\n", last_data_root_error.c_str());
+  const std::optional<fs::path> executable_directory = ResolveExecutableDirectory(argc, argv);
+  if (!executable_directory.has_value() || executable_directory->empty()) {
+    std::fprintf(stderr, "Failed to resolve executable directory for portable data root.\n");
     return 1;
   }
+  app.data_root = ResolvePortableDataRootPath(executable_directory.value());
+  std::string data_root_error;
+  if (!EnsureDataRootLayout(app.data_root, &data_root_error)) {
+    std::fprintf(stderr, "Failed to initialize portable data directory '%s': %s\n",
+                 app.data_root.string().c_str(),
+                 data_root_error.c_str());
+    return 1;
+  }
+
   LoadSettings(app);
   const bool had_provider_file = fs::exists(ProviderProfileFilePath(app));
   app.provider_profiles = ProviderProfileStore::Load(app.data_root);
@@ -6982,11 +7148,17 @@ int main(int, char**) {
   SaveFolders(app);
   if (ActiveProviderUsesGeminiHistory(app)) {
     RefreshGeminiChatsDir(app);
-    app.chats = LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app));
+    std::vector<ChatSession> native_chats = LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app));
+    MirrorNativeGeminiHistoryToLocal(app, &native_chats);
+    app.chats = std::move(native_chats);
     ApplyLocalOverrides(app, app.chats);
     NormalizeChatFolderAssignments(app);
     if (app.gemini_chats_dir.empty()) {
-      app.status_line = "Gemini native session directory not found yet. Run Gemini CLI in this project once.";
+      if (app.settings.mirror_native_gemini_history_to_local && !app.chats.empty()) {
+        app.status_line = "Gemini native session directory not found. Restored mirrored local history.";
+      } else {
+        app.status_line = "Gemini native session directory not found yet. Run Gemini CLI in this project once.";
+      }
     }
   } else {
     app.chats = LoadChats(app);
@@ -7076,6 +7248,9 @@ int main(int, char**) {
   if (app.settings.window_maximized) {
     SDL_MaximizeWindow(window);
   }
+  if (app.settings.mirror_native_gemini_history_to_local && ActiveProviderUsesGeminiHistory(app)) {
+    app.last_native_history_mirror_time_s = ImGui::GetTime();
+  }
 
   bool done = false;
   bool terminals_stopped_for_shutdown = false;
@@ -7120,6 +7295,7 @@ int main(int, char**) {
     PollPendingGeminiCall(app);
     PollAllCliTerminals(app);
     PollGeminiCompatibilityTasks(app);
+    MirrorNativeGeminiHistoryOnIdle(app);
 
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL2_NewFrame();
@@ -7208,6 +7384,7 @@ int main(int, char**) {
   if (!terminals_stopped_for_shutdown) {
     StopAllCliTerminals(app, true);
   }
+  MirrorNativeGeminiHistoryToLocal(app);
 
   ImGui_ImplOpenGL3_Shutdown();
   ImGui_ImplSDL2_Shutdown();

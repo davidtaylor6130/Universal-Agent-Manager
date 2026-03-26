@@ -92,6 +92,8 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file,
   lines << "confirm_delete_chat=" << (settings.confirm_delete_chat ? "1" : "0") << '\n';
   lines << "confirm_delete_folder=" << (settings.confirm_delete_folder ? "1" : "0") << '\n';
   lines << "remember_last_chat=" << (settings.remember_last_chat ? "1" : "0") << '\n';
+  lines << "mirror_native_gemini_history_to_local=" << (settings.mirror_native_gemini_history_to_local ? "1" : "0") << '\n';
+  lines << "native_history_mirror_idle_seconds=" << settings.native_history_mirror_idle_seconds << '\n';
   lines << "last_selected_chat_id=" << settings.last_selected_chat_id << '\n';
   lines << "ui_scale_multiplier=" << settings.ui_scale_multiplier << '\n';
   lines << "window_width=" << settings.window_width << '\n';
@@ -138,6 +140,10 @@ void SettingsStore::Load(const std::filesystem::path& settings_file,
       settings.confirm_delete_folder = ParseBool(value, settings.confirm_delete_folder);
     } else if (key == "remember_last_chat") {
       settings.remember_last_chat = ParseBool(value, settings.remember_last_chat);
+    } else if (key == "mirror_native_gemini_history_to_local") {
+      settings.mirror_native_gemini_history_to_local = ParseBool(value, settings.mirror_native_gemini_history_to_local);
+    } else if (key == "native_history_mirror_idle_seconds") {
+      settings.native_history_mirror_idle_seconds = ParseInt(value, settings.native_history_mirror_idle_seconds);
     } else if (key == "last_selected_chat_id") {
       settings.last_selected_chat_id = value;
     } else if (key == "ui_scale_multiplier") {
@@ -162,6 +168,7 @@ void SettingsStore::Load(const std::filesystem::path& settings_file,
   }
   settings.ui_theme = NormalizeThemeId(settings.ui_theme);
   settings.ui_scale_multiplier = std::clamp(settings.ui_scale_multiplier, 0.85f, 1.75f);
+  settings.native_history_mirror_idle_seconds = std::clamp(settings.native_history_mirror_idle_seconds, 5, 3600);
   settings.window_width = std::clamp(settings.window_width, 960, 8192);
   settings.window_height = std::clamp(settings.window_height, 620, 8192);
   if (!settings.remember_last_chat) {

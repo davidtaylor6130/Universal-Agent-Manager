@@ -121,12 +121,12 @@ CORE --> FILES["Linked File References"] --> WORKSPACE["Workspace Files\n(no att
 
 ### 1) Data Root Resolution and Layout
 
-At startup, UAM tries data roots in this order:
+At startup, UAM uses a strict portable data root:
 
-1. `UAM_DATA_DIR` (if set)
-2. `<current-working-directory>/data`
-3. OS default app-data location
-4. temp fallback (`.../universal_agent_manager_data`)
+1. `<exe-folder>/data` on Windows/Linux
+2. `<YourApp>.app/data` on macOS bundles (bundle root, not `Contents/MacOS`)
+
+No user-profile, temp, or CWD fallback paths are used.
 
 Primary local layout:
 
@@ -161,6 +161,7 @@ gemini {resume} {flags} {prompt}
 
 - `gemini-cli-json`: reads Gemini native session JSON files from the project tmp mapping under `~/.gemini/tmp/.../chats`.
 - `local-only`: appends responses to local chat files in `<data-root>/chats/...`.
+- Optional in-app mirror: when enabled in Settings, Gemini native chats are copied into `<data-root>/chats/...` at startup, on idle intervals, and on shutdown.
 
 ### 4) Workspace Template Preflight
 
