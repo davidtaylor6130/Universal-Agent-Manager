@@ -10,3 +10,5 @@
 # IDE/system files
 /.vs/
 .DS_Store
+build-release/_deps/llama_cpp_uam-src/
+/build-release
