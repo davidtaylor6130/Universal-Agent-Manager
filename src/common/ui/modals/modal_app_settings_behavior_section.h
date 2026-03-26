@@ -24,6 +24,11 @@ static void DrawAppSettingsBehaviorSection(AppState& app, AppSettings& draft_set
   ImGui::TextColored(ui::kTextMuted, "Choose provider when creating a new chat.");
   ImGui::TextColored(ui::kTextMuted, "Last selected: %s", active_label.c_str());
 
+  ImGui::TextColored(ui::kTextMuted, "Models folder directory (Ollama Engine)");
+  ImGui::SetNextItemWidth(-1.0f);
+  ImGui::InputText("##models_folder_directory", &draft_settings.models_folder_directory);
+  ImGui::TextColored(ui::kTextMuted, "Leave empty to auto-detect models folder.");
+
   ImGui::TextColored(ui::kTextMuted, "Model id (runtime)");
   ImGui::SetNextItemWidth(-1.0f);
   ImGui::InputText("##runtime_model_id", &draft_settings.selected_model_id);
@@ -32,21 +37,31 @@ static void DrawAppSettingsBehaviorSection(AppState& app, AppSettings& draft_set
   static double last_model_refresh_s = -1.0;
   const double now_s = ImGui::GetTime();
   if (last_model_refresh_s < 0.0 || (now_s - last_model_refresh_s) > 1.0) {
-    const fs::path model_folder = ResolveRagModelFolder(app);
+    const fs::path model_folder = ResolveRagModelFolder(app, &draft_settings);
     app.local_runtime_engine.SetModelFolder(model_folder);
+    app.rag_index_service.SetModelFolder(model_folder);
     runtime_models_cache = app.local_runtime_engine.ListModels();
     vector_models_cache = app.rag_index_service.ListModels();
     last_model_refresh_s = now_s;
   }
   const std::vector<std::string>& runtime_models = runtime_models_cache;
-  if (!runtime_models.empty() && ImGui::BeginCombo("Runtime model", draft_settings.selected_model_id.empty() ? "(auto)" : draft_settings.selected_model_id.c_str())) {
-    if (ImGui::Selectable("(auto)", draft_settings.selected_model_id.empty())) {
-      draft_settings.selected_model_id.clear();
-    }
-    for (const std::string& model : runtime_models) {
-      const bool selected = (draft_settings.selected_model_id == model);
-      if (ImGui::Selectable(model.c_str(), selected)) {
-        draft_settings.selected_model_id = model;
+  const std::string runtime_model_preview =
+      runtime_models.empty() ? std::string("(no models found)")
+                             : (draft_settings.selected_model_id.empty() ? std::string("(auto)") : draft_settings.selected_model_id);
+  if (ImGui::BeginCombo("Runtime model", runtime_model_preview.c_str())) {
+    if (runtime_models.empty()) {
+      ImGui::BeginDisabled();
+      ImGui::Selectable("No local runtime models found", false);
+      ImGui::EndDisabled();
+    } else {
+      if (ImGui::Selectable("(auto)", draft_settings.selected_model_id.empty())) {
+        draft_settings.selected_model_id.clear();
+      }
+      for (const std::string& model : runtime_models) {
+        const bool selected = (draft_settings.selected_model_id == model);
+        if (ImGui::Selectable(model.c_str(), selected)) {
+          draft_settings.selected_model_id = model;
+        }
       }
     }
     ImGui::EndCombo();
@@ -66,15 +81,24 @@ static void DrawAppSettingsBehaviorSection(AppState& app, AppSettings& draft_set
   ImGui::SetNextItemWidth(-1.0f);
   ImGui::InputText("##vector_model_id", &draft_settings.selected_vector_model_id);
   const std::vector<std::string>& vector_models = vector_models_cache;
-  if (!vector_models.empty() &&
-      ImGui::BeginCombo("Vector model", draft_settings.selected_vector_model_id.empty() ? "(auto)" : draft_settings.selected_vector_model_id.c_str())) {
-    if (ImGui::Selectable("(auto)", draft_settings.selected_vector_model_id.empty())) {
-      draft_settings.selected_vector_model_id.clear();
-    }
-    for (const std::string& model : vector_models) {
-      const bool selected = (draft_settings.selected_vector_model_id == model);
-      if (ImGui::Selectable(model.c_str(), selected)) {
-        draft_settings.selected_vector_model_id = model;
+  const std::string vector_model_preview =
+      vector_models.empty() ? std::string("(no models found)")
+                            : (draft_settings.selected_vector_model_id.empty() ? std::string("(auto)")
+                                                                                : draft_settings.selected_vector_model_id);
+  if (ImGui::BeginCombo("Vector model", vector_model_preview.c_str())) {
+    if (vector_models.empty()) {
+      ImGui::BeginDisabled();
+      ImGui::Selectable("No local vector models found", false);
+      ImGui::EndDisabled();
+    } else {
+      if (ImGui::Selectable("(auto)", draft_settings.selected_vector_model_id.empty())) {
+        draft_settings.selected_vector_model_id.clear();
+      }
+      for (const std::string& model : vector_models) {
+        const bool selected = (draft_settings.selected_vector_model_id == model);
+        if (ImGui::Selectable(model.c_str(), selected)) {
+          draft_settings.selected_vector_model_id = model;
+        }
       }
     }
     ImGui::EndCombo();

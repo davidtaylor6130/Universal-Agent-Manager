@@ -700,13 +700,21 @@ static bool DirectoryContainsGguf(const fs::path& directory) {
   return false;
 }
 
-static fs::path ResolveRagModelFolder(const AppState& app) {
+static fs::path ResolveRagModelFolder(const AppState& app, const AppSettings* settings_override = nullptr) {
+  const AppSettings& settings = (settings_override != nullptr) ? *settings_override : app.settings;
+  const fs::path configured_model_folder = NormalizeAbsolutePath(ExpandLeadingTildePath(settings.models_folder_directory));
+  if (!configured_model_folder.empty()) {
+    std::error_code configured_ec;
+    fs::create_directories(configured_model_folder, configured_ec);
+    return configured_model_folder;
+  }
+
   std::vector<fs::path> candidates;
   candidates.push_back(app.data_root / "models");
   if (const char* env_models = std::getenv("UAM_OLLAMA_ENGINE_MODELS_DIR")) {
     const std::string value = Trim(env_models);
     if (!value.empty()) {
-      candidates.push_back(fs::path(value));
+      candidates.push_back(ExpandLeadingTildePath(value));
     }
   }
   std::error_code cwd_ec;
@@ -2254,6 +2262,7 @@ static void SaveSettings(AppState& app) {
   app.settings.runtime_backend = ActiveProviderUsesInternalEngine(app) ? "ollama-engine" : "provider-cli";
   app.settings.vector_db_backend = (app.settings.vector_db_backend == "none") ? "none" : "ollama-engine";
   app.settings.selected_model_id = Trim(app.settings.selected_model_id);
+  app.settings.models_folder_directory = Trim(app.settings.models_folder_directory);
   app.settings.selected_vector_model_id = Trim(app.settings.selected_vector_model_id);
   app.settings.vector_database_name_override = NormalizeVectorDatabaseName(app.settings.vector_database_name_override);
   app.settings.cli_idle_timeout_seconds = std::clamp(app.settings.cli_idle_timeout_seconds, 30, 3600);
@@ -2271,6 +2280,7 @@ static void LoadSettings(AppState& app) {
   SettingsStore::Load(SettingsFilePath(app), app.settings, app.center_view_mode);
   app.settings.vector_db_backend = (app.settings.vector_db_backend == "none") ? "none" : "ollama-engine";
   app.settings.selected_model_id = Trim(app.settings.selected_model_id);
+  app.settings.models_folder_directory = Trim(app.settings.models_folder_directory);
   app.settings.selected_vector_model_id = Trim(app.settings.selected_vector_model_id);
   app.settings.vector_database_name_override = NormalizeVectorDatabaseName(app.settings.vector_database_name_override);
   app.settings.cli_idle_timeout_seconds = std::clamp(app.settings.cli_idle_timeout_seconds, 30, 3600);
@@ -2620,6 +2630,24 @@ static bool QueueGeminiPromptForChat(AppState& app,
   }
   if (should_bootstrap_template && !bootstrap_prompt.empty()) {
     runtime_prompt = bootstrap_prompt + "\n\n" + runtime_prompt;
+  }
+
+  if (use_local_runtime && Trim(app.settings.selected_model_id).empty()) {
+    const fs::path model_folder = ResolveRagModelFolder(app);
+    app.local_runtime_engine.SetModelFolder(model_folder);
+    const std::vector<std::string> runtime_models = app.local_runtime_engine.ListModels();
+    if (runtime_models.empty()) {
+      app.runtime_model_selection_id.clear();
+      app.status_line = "No local runtime models found. Add one, then retry.";
+    } else {
+      if (Trim(app.runtime_model_selection_id).empty() ||
+          std::find(runtime_models.begin(), runtime_models.end(), app.runtime_model_selection_id) == runtime_models.end()) {
+        app.runtime_model_selection_id = runtime_models.front();
+      }
+      app.status_line = "Select a local runtime model to continue.";
+    }
+    app.open_runtime_model_selection_popup = true;
+    return false;
   }
 
   AddMessage(chat, MessageRole::User, prompt_text);
@@ -3352,6 +3380,7 @@ int main(int, char**) {
     DrawTemplateChangeWarningModal(app);
     DrawTemplateManagerModal(app);
     DrawVcsOutputModal(app);
+    DrawRuntimeModelSelectionModal(app);
     DrawRagConsoleModal(app);
     DrawAppSettingsModal(app, platform_ui_scale);
     ConsumePendingBranchRequest(app);

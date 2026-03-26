@@ -105,6 +105,7 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file,
   lines << "provider_extra_flags=" << settings.provider_extra_flags << '\n';
   lines << "runtime_backend=" << NormalizeRuntimeBackendId(runtime_backend_compat) << '\n';
   lines << "selected_model_id=" << settings.selected_model_id << '\n';
+  lines << "models_folder_directory=" << settings.models_folder_directory << '\n';
   lines << "vector_db_backend=" << NormalizeVectorDbBackendId(settings.vector_db_backend) << '\n';
   lines << "selected_vector_model_id=" << settings.selected_vector_model_id << '\n';
   lines << "vector_database_name_override=" << settings.vector_database_name_override << '\n';
@@ -176,6 +177,8 @@ void SettingsStore::Load(const std::filesystem::path& settings_file,
       has_runtime_backend = true;
     } else if (key == "selected_model_id") {
       settings.selected_model_id = value;
+    } else if (key == "models_folder_directory") {
+      settings.models_folder_directory = value;
     } else if (key == "vector_db_backend") {
       settings.vector_db_backend = value;
     } else if (key == "selected_vector_model_id") {

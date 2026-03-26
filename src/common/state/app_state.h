@@ -182,6 +182,8 @@ struct AppState {
   bool open_vcs_output_popup = false;
   std::string vcs_output_popup_title;
   std::string vcs_output_popup_content;
+  bool open_runtime_model_selection_popup = false;
+  std::string runtime_model_selection_id;
 
   std::vector<PendingGeminiCall> pending_calls;
   std::unordered_map<std::string, std::string> resolved_native_sessions_by_chat_id;

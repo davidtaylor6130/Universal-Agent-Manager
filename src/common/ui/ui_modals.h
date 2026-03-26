@@ -37,6 +37,11 @@
 #include "common/ui/modals/modal_vcs_output.h"
 
 /// <summary>
+/// Runtime model picker modal.
+/// </summary>
+#include "common/ui/modals/modal_runtime_model_selection.h"
+
+/// <summary>
 /// Project-wide RAG console modal.
 /// </summary>
 #include "common/ui/modals/modal_rag_console.h"

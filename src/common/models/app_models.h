@@ -66,6 +66,7 @@ struct AppSettings {
   std::string provider_extra_flags;
   std::string runtime_backend = "provider-cli";
   std::string selected_model_id;
+  std::string models_folder_directory;
   std::string vector_db_backend = "ollama-engine";
   std::string selected_vector_model_id;
   std::string vector_database_name_override;
