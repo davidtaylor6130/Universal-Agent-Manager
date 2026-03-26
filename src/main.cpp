@@ -121,6 +121,12 @@ struct CliTerminalState {
   bool cursor_visible = true;
   bool cursor_blink = true;
   int cursor_shape = VTERM_PROP_CURSORSHAPE_BLOCK;
+  bool selection_dragging = false;
+  int selection_anchor_virtual_row = 0;
+  int selection_anchor_col = 0;
+  int selection_active_virtual_row = 0;
+  int selection_active_col = 0;
+  bool has_selection = false;
   bool should_launch = false;
   double last_sync_time_s = 0.0;
   double last_output_time_s = 0.0;
@@ -2409,6 +2415,8 @@ static void FastStopCliTerminalWindows(CliTerminalState& terminal, const bool cl
   terminal.running = false;
   terminal.scrollback_lines.clear();
   terminal.scrollback_view_offset = 0;
+  terminal.selection_dragging = false;
+  terminal.has_selection = false;
   terminal.needs_full_refresh = true;
   terminal.generation_in_progress = false;
   terminal.last_output_time_s = 0.0;
@@ -2468,6 +2476,8 @@ static void StopCliTerminal(CliTerminalState& terminal, const bool clear_identit
   terminal.running = false;
   terminal.scrollback_lines.clear();
   terminal.scrollback_view_offset = 0;
+  terminal.selection_dragging = false;
+  terminal.has_selection = false;
   terminal.needs_full_refresh = true;
   terminal.generation_in_progress = false;
   terminal.last_output_time_s = 0.0;
@@ -2741,6 +2751,8 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
   terminal.last_sync_time_s = ImGui::GetTime();
   terminal.last_output_time_s = 0.0;
   terminal.generation_in_progress = false;
+  terminal.selection_dragging = false;
+  terminal.has_selection = false;
 
   terminal.vt = vterm_new(terminal.rows, terminal.cols);
   if (terminal.vt == nullptr) {
@@ -3142,6 +3154,124 @@ static std::string CodepointToUtf8(const uint32_t cp) {
     out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
   }
   return out;
+}
+
+struct TerminalSelectionRange {
+  bool valid = false;
+  int start_virtual_row = 0;
+  int start_col = 0;
+  int end_virtual_row = 0;
+  int end_col = 0;
+};
+
+static TerminalSelectionRange GetTerminalSelectionRange(const CliTerminalState& terminal) {
+  TerminalSelectionRange range;
+  if (!terminal.has_selection || terminal.cols <= 0 || terminal.rows <= 0) {
+    return range;
+  }
+
+  const int max_virtual_row =
+      std::max(0, static_cast<int>(terminal.scrollback_lines.size()) + terminal.rows - 1);
+  int anchor_row = std::clamp(terminal.selection_anchor_virtual_row, 0, max_virtual_row);
+  int active_row = std::clamp(terminal.selection_active_virtual_row, 0, max_virtual_row);
+  int anchor_col = std::clamp(terminal.selection_anchor_col, 0, terminal.cols - 1);
+  int active_col = std::clamp(terminal.selection_active_col, 0, terminal.cols - 1);
+
+  if (anchor_row == active_row && anchor_col == active_col) {
+    return range;
+  }
+  if (anchor_row > active_row || (anchor_row == active_row && anchor_col > active_col)) {
+    std::swap(anchor_row, active_row);
+    std::swap(anchor_col, active_col);
+  }
+
+  range.valid = true;
+  range.start_virtual_row = anchor_row;
+  range.start_col = anchor_col;
+  range.end_virtual_row = active_row;
+  range.end_col = active_col;
+  return range;
+}
+
+static VTermScreenCell ReadVirtualTerminalCell(const CliTerminalState& terminal,
+                                               const int virtual_row,
+                                               const int col) {
+  VTermScreenCell cell = BlankTerminalCell();
+  if (virtual_row < 0 || col < 0 || col >= terminal.cols) {
+    return cell;
+  }
+
+  const int scrollback_count = static_cast<int>(terminal.scrollback_lines.size());
+  if (virtual_row < scrollback_count) {
+    const std::vector<VTermScreenCell>& line =
+        terminal.scrollback_lines[static_cast<std::size_t>(virtual_row)].cells;
+    if (col < static_cast<int>(line.size())) {
+      cell = line[static_cast<std::size_t>(col)];
+    }
+    return cell;
+  }
+
+  const int screen_row = virtual_row - scrollback_count;
+  if (terminal.screen != nullptr && screen_row >= 0 && screen_row < terminal.rows) {
+    VTermPos pos{screen_row, col};
+    vterm_screen_get_cell(terminal.screen, pos, &cell);
+  }
+  return cell;
+}
+
+static bool IsTerminalCellSelected(const TerminalSelectionRange& selection,
+                                   const int virtual_row,
+                                   const int col) {
+  if (!selection.valid || virtual_row < selection.start_virtual_row ||
+      virtual_row > selection.end_virtual_row) {
+    return false;
+  }
+  if (selection.start_virtual_row == selection.end_virtual_row) {
+    return col >= selection.start_col && col <= selection.end_col;
+  }
+  if (virtual_row == selection.start_virtual_row) {
+    return col >= selection.start_col;
+  }
+  if (virtual_row == selection.end_virtual_row) {
+    return col <= selection.end_col;
+  }
+  return true;
+}
+
+static std::string BuildTerminalSelectionText(const CliTerminalState& terminal,
+                                              const TerminalSelectionRange& selection) {
+  if (!selection.valid || terminal.cols <= 0) {
+    return {};
+  }
+
+  std::string text;
+  for (int virtual_row = selection.start_virtual_row; virtual_row <= selection.end_virtual_row; ++virtual_row) {
+    const int first_col = (virtual_row == selection.start_virtual_row) ? selection.start_col : 0;
+    const int last_col =
+        (virtual_row == selection.end_virtual_row) ? selection.end_col : (terminal.cols - 1);
+    std::string line;
+    for (int col = first_col; col <= last_col; ++col) {
+      const VTermScreenCell cell = ReadVirtualTerminalCell(terminal, virtual_row, col);
+      if (cell.width == 0) {
+        continue;
+      }
+      if (cell.chars[0] == 0) {
+        line.push_back(' ');
+        continue;
+      }
+      for (int i = 0; i < VTERM_MAX_CHARS_PER_CELL && cell.chars[i] != 0; ++i) {
+        line += CodepointToUtf8(cell.chars[i]);
+      }
+    }
+    while (!line.empty() && line.back() == ' ') {
+      line.pop_back();
+    }
+    text += line;
+    if (virtual_row < selection.end_virtual_row) {
+      text.push_back('\n');
+    }
+  }
+  return text;
 }
 
 static void ResizeCliTerminal(CliTerminalState& terminal, const int rows, const int cols) {
@@ -5477,9 +5607,11 @@ static void DrawCliTerminalSurface(AppState& app, ChatSession& chat, const bool 
   const bool focused = ImGui::IsItemFocused() || ImGui::IsItemActive() || hovered;
   const int max_scrollback_offset = static_cast<int>(terminal.scrollback_lines.size());
   terminal.scrollback_view_offset = std::clamp(terminal.scrollback_view_offset, 0, max_scrollback_offset);
+  const int scrollback_count = static_cast<int>(terminal.scrollback_lines.size());
+  ImGuiIO& io = ImGui::GetIO();
 
   if (hovered) {
-    const float wheel = ImGui::GetIO().MouseWheel;
+    const float wheel = io.MouseWheel;
     if (wheel != 0.0f) {
       const int lines = std::max(1, static_cast<int>(std::round(std::abs(wheel) * 3.0f)));
       const int delta = (wheel > 0.0f) ? lines : -lines;
@@ -5487,7 +5619,61 @@ static void DrawCliTerminalSurface(AppState& app, ChatSession& chat, const bool 
     }
   }
 
+  const auto mouse_to_virtual_cell = [&](int* out_virtual_row, int* out_col) -> bool {
+    if (out_virtual_row == nullptr || out_col == nullptr || terminal.rows <= 0 || terminal.cols <= 0) {
+      return false;
+    }
+    const ImVec2 mouse = ImGui::GetMousePos();
+    int row = static_cast<int>((mouse.y - origin.y) / cell_h);
+    int col = static_cast<int>((mouse.x - origin.x) / cell_w);
+    row = std::clamp(row, 0, terminal.rows - 1);
+    col = std::clamp(col, 0, terminal.cols - 1);
+    *out_virtual_row = std::max(0, scrollback_count - terminal.scrollback_view_offset) + row;
+    *out_col = col;
+    return true;
+  };
+
+  if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    int virtual_row = 0;
+    int col = 0;
+    if (mouse_to_virtual_cell(&virtual_row, &col)) {
+      terminal.selection_dragging = true;
+      terminal.selection_anchor_virtual_row = virtual_row;
+      terminal.selection_anchor_col = col;
+      terminal.selection_active_virtual_row = virtual_row;
+      terminal.selection_active_col = col;
+      terminal.has_selection = false;
+    }
+  }
+  if (terminal.selection_dragging) {
+    if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+      int virtual_row = 0;
+      int col = 0;
+      if (mouse_to_virtual_cell(&virtual_row, &col)) {
+        terminal.selection_active_virtual_row = virtual_row;
+        terminal.selection_active_col = col;
+        terminal.has_selection = (terminal.selection_anchor_virtual_row != virtual_row ||
+                                  terminal.selection_anchor_col != col);
+      }
+    } else {
+      terminal.selection_dragging = false;
+    }
+  }
+  const TerminalSelectionRange selection_range = GetTerminalSelectionRange(terminal);
+
   if (focused) {
+    bool consumed_copy_shortcut = false;
+    const bool copy_shortcut = (io.KeyCtrl || io.KeySuper) && ImGui::IsKeyPressed(ImGuiKey_C, false);
+    if (copy_shortcut && selection_range.valid) {
+      const std::string copied_text = BuildTerminalSelectionText(terminal, selection_range);
+      if (SDL_SetClipboardText(copied_text.c_str()) == 0) {
+        app.status_line = "Copied terminal selection.";
+      } else {
+        app.status_line = "Failed to copy terminal selection.";
+      }
+      consumed_copy_shortcut = true;
+    }
+
     bool consumed_navigation = false;
     if (ImGui::IsKeyPressed(ImGuiKey_PageUp, false)) {
       terminal.scrollback_view_offset = std::clamp(terminal.scrollback_view_offset + std::max(3, terminal.rows / 2), 0, max_scrollback_offset);
@@ -5506,7 +5692,7 @@ static void DrawCliTerminalSurface(AppState& app, ChatSession& chat, const bool 
       consumed_navigation = true;
     }
 
-    if (!consumed_navigation && terminal.scrollback_view_offset == 0) {
+    if (!consumed_navigation && !consumed_copy_shortcut && terminal.scrollback_view_offset == 0) {
       FeedCliTerminalKeyboard(terminal);
     }
   }
@@ -5518,30 +5704,23 @@ static void DrawCliTerminalSurface(AppState& app, ChatSession& chat, const bool 
   draw->AddRect(origin, ImVec2(origin.x + terminal_size.x, origin.y + terminal_size.y), ImGui::GetColorU32(ui::kBorder), 10.0f);
 
   if (terminal.screen != nullptr) {
-    const int scrollback_count = static_cast<int>(terminal.scrollback_lines.size());
+    ImVec4 selection_tint = ui::kAccent;
+    selection_tint.w = IsLightPaletteActive() ? 0.22f : 0.30f;
+    const ImU32 selection_fill = ImGui::GetColorU32(selection_tint);
     const int start_virtual_row = std::max(0, scrollback_count - terminal.scrollback_view_offset);
     for (int row = 0; row < terminal.rows; ++row) {
       const int virtual_row = start_virtual_row + row;
       for (int col = 0; col < terminal.cols; ++col) {
-        VTermScreenCell cell = BlankTerminalCell();
-        if (virtual_row < scrollback_count) {
-          const std::vector<VTermScreenCell>& line = terminal.scrollback_lines[static_cast<std::size_t>(virtual_row)].cells;
-          if (col < static_cast<int>(line.size())) {
-            cell = line[static_cast<std::size_t>(col)];
-          }
-        } else {
-          const int screen_row = virtual_row - scrollback_count;
-          if (screen_row >= 0 && screen_row < terminal.rows) {
-            VTermPos pos{screen_row, col};
-            vterm_screen_get_cell(terminal.screen, pos, &cell);
-          }
-        }
+        const VTermScreenCell cell = ReadVirtualTerminalCell(terminal, virtual_row, col);
 
         const ImVec2 cell_min(origin.x + col * cell_w, origin.y + row * cell_h);
         const ImVec2 cell_max(cell_min.x + cell_w * std::max<int>(1, cell.width), cell_min.y + cell_h);
 
         const ImU32 bg = VTermColorToImU32(terminal.screen, cell.bg, true);
         draw->AddRectFilled(cell_min, cell_max, bg);
+        if (IsTerminalCellSelected(selection_range, virtual_row, col)) {
+          draw->AddRectFilled(cell_min, cell_max, selection_fill);
+        }
 
         if (cell.chars[0] == 0 || cell.width == 0) {
           continue;
