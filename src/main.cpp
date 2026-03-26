@@ -118,6 +118,9 @@ struct CliTerminalState {
   int scrollback_view_offset = 0;
   bool scroll_to_bottom = false;
   bool needs_full_refresh = true;
+  bool cursor_visible = true;
+  bool cursor_blink = true;
+  int cursor_shape = VTERM_PROP_CURSORSHAPE_BLOCK;
   bool should_launch = false;
   double last_sync_time_s = 0.0;
   double last_output_time_s = 0.0;
@@ -2191,9 +2194,40 @@ static int OnVTermMoveRect(VTermRect, VTermRect, void* user) {
   return 1;
 }
 
-static int OnVTermMoveCursor(VTermPos, VTermPos, int, void* user) {
+static int OnVTermMoveCursor(VTermPos, VTermPos, int visible, void* user) {
   if (user != nullptr) {
-    static_cast<CliTerminalState*>(user)->needs_full_refresh = true;
+    auto* terminal = static_cast<CliTerminalState*>(user);
+    terminal->cursor_visible = (visible != 0);
+    terminal->needs_full_refresh = true;
+  }
+  return 1;
+}
+
+static int OnVTermSetTermProp(VTermProp prop, VTermValue* val, void* user) {
+  if (user != nullptr && val != nullptr) {
+    auto* terminal = static_cast<CliTerminalState*>(user);
+    switch (prop) {
+      case VTERM_PROP_CURSORVISIBLE:
+        terminal->cursor_visible = (val->boolean != 0);
+        terminal->needs_full_refresh = true;
+        break;
+      case VTERM_PROP_CURSORBLINK:
+        terminal->cursor_blink = (val->boolean != 0);
+        terminal->needs_full_refresh = true;
+        break;
+      case VTERM_PROP_CURSORSHAPE:
+        if (val->number == VTERM_PROP_CURSORSHAPE_BLOCK ||
+            val->number == VTERM_PROP_CURSORSHAPE_UNDERLINE ||
+            val->number == VTERM_PROP_CURSORSHAPE_BAR_LEFT) {
+          terminal->cursor_shape = val->number;
+        } else {
+          terminal->cursor_shape = VTERM_PROP_CURSORSHAPE_BLOCK;
+        }
+        terminal->needs_full_refresh = true;
+        break;
+      default:
+        break;
+    }
   }
   return 1;
 }
@@ -2272,7 +2306,7 @@ static const VTermScreenCallbacks kVTermScreenCallbacks = {
     OnVTermDamage,
     OnVTermMoveRect,
     OnVTermMoveCursor,
-    nullptr,
+    OnVTermSetTermProp,
     nullptr,
     OnVTermResize,
     OnVTermScrollbackPushLine,
@@ -5522,13 +5556,33 @@ static void DrawCliTerminalSurface(AppState& app, ChatSession& chat, const bool 
       }
     }
 
-    if (terminal.state != nullptr && terminal.scrollback_view_offset == 0) {
+    if (terminal.state != nullptr && terminal.scrollback_view_offset == 0 && terminal.rows > 0 && terminal.cols > 0) {
       VTermPos cursor{0, 0};
       vterm_state_get_cursorpos(terminal.state, &cursor);
-      if (cursor.row >= 0 && cursor.row < terminal.rows && cursor.col >= 0 && cursor.col < terminal.cols) {
-        const ImVec2 cursor_min(origin.x + cursor.col * cell_w, origin.y + cursor.row * cell_h);
-        const ImVec2 cursor_max(cursor_min.x + cell_w, cursor_min.y + cell_h);
-        draw->AddRect(cursor_min, cursor_max, ImGui::GetColorU32(ui::kAccent), 0.0f, 0, 1.2f);
+      const int cursor_row = std::clamp(cursor.row, 0, terminal.rows - 1);
+      const int cursor_col = std::clamp(cursor.col, 0, terminal.cols - 1);
+      const ImVec2 cursor_min(origin.x + cursor_col * cell_w, origin.y + cursor_row * cell_h);
+      const ImVec2 cursor_max(cursor_min.x + cell_w, cursor_min.y + cell_h);
+      const ImU32 cursor_color = ImGui::GetColorU32(ui::kAccent);
+      switch (terminal.cursor_shape) {
+        case VTERM_PROP_CURSORSHAPE_UNDERLINE: {
+          const float thickness = std::max(2.0f, std::round(cell_h * 0.14f));
+          draw->AddRectFilled(ImVec2(cursor_min.x, cursor_max.y - thickness), cursor_max, cursor_color);
+          break;
+        }
+        case VTERM_PROP_CURSORSHAPE_BAR_LEFT: {
+          const float thickness = std::max(2.0f, std::round(cell_w * 0.14f));
+          draw->AddRectFilled(cursor_min, ImVec2(cursor_min.x + thickness, cursor_max.y), cursor_color);
+          break;
+        }
+        case VTERM_PROP_CURSORSHAPE_BLOCK:
+        default: {
+          ImVec4 fill = ui::kAccent;
+          fill.w = std::max(0.45f, fill.w);
+          draw->AddRectFilled(cursor_min, cursor_max, ImGui::GetColorU32(fill));
+          draw->AddRect(cursor_min, cursor_max, cursor_color, 0.0f, 0, 1.0f);
+          break;
+        }
       }
     }
   }
