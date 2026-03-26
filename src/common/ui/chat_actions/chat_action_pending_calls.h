@@ -81,6 +81,12 @@ static void PollPendingGeminiCall(AppState& app) {
       }
       const bool should_follow_to_result = (selected_before_id == pending_chat_id);
       const int selected_index = FindChatIndexById(app, selected_id);
+      if (pending_chat_index >= 0 &&
+          selected_id != pending_chat_id &&
+          IsLocalDraftChatId(pending_chat_id) &&
+          !app.chats[pending_chat_index].uses_native_session) {
+        PersistLocalDraftNativeSessionLink(app, app.chats[pending_chat_index], selected_id);
+      }
       const bool transfer_overrides_to_resolved_chat =
           pending_chat_index >= 0 &&
           selected_index >= 0 &&

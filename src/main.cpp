@@ -160,6 +160,9 @@ static void StartGeminiVersionCheck(AppState& app, const bool force);
 static void StartGeminiDowngradeToSupported(AppState& app);
 static void PollGeminiCompatibilityTasks(AppState& app);
 static bool IsLocalDraftChatId(const std::string& chat_id);
+static std::optional<std::string> InferNativeSessionIdForLocalDraft(const ChatSession& local_chat,
+                                                                    const std::vector<ChatSession>& native_chats);
+static bool PersistLocalDraftNativeSessionLink(const AppState& app, ChatSession& local_chat, const std::string& native_session_id);
 static std::string ResolveResumeSessionIdForChat(const AppState& app, const ChatSession& chat);
 static bool HasPendingCallForChat(const AppState& app, const std::string& chat_id);
 static bool HasAnyPendingCall(const AppState& app);
@@ -2336,6 +2339,87 @@ static bool IsLocalDraftChatId(const std::string& chat_id) {
   return chat_id.rfind("chat-", 0) == 0;
 }
 
+static bool MessagesEquivalentForNativeLinking(const Message& local_message, const Message& native_message) {
+  return local_message.role == native_message.role && Trim(local_message.content) == Trim(native_message.content);
+}
+
+static bool IsMessagePrefixForNativeLinking(const std::vector<Message>& local_messages,
+                                            const std::vector<Message>& native_messages) {
+  if (local_messages.empty() || local_messages.size() > native_messages.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < local_messages.size(); ++i) {
+    if (!MessagesEquivalentForNativeLinking(local_messages[i], native_messages[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static std::optional<std::string> SingleSessionIdFromSet(const std::unordered_set<std::string>& session_ids) {
+  if (session_ids.size() != 1) {
+    return std::nullopt;
+  }
+  return *session_ids.begin();
+}
+
+static std::optional<std::string> InferNativeSessionIdForLocalDraft(const ChatSession& local_chat,
+                                                                    const std::vector<ChatSession>& native_chats) {
+  if (!IsLocalDraftChatId(local_chat.id) || local_chat.messages.size() < 2) {
+    return std::nullopt;
+  }
+
+  std::unordered_set<std::string> exact_match_ids;
+  std::unordered_set<std::string> prefix_match_ids;
+  for (const ChatSession& native_chat : native_chats) {
+    if (!native_chat.uses_native_session || native_chat.native_session_id.empty()) {
+      continue;
+    }
+    if (!IsMessagePrefixForNativeLinking(local_chat.messages, native_chat.messages)) {
+      continue;
+    }
+    prefix_match_ids.insert(native_chat.native_session_id);
+    if (local_chat.messages.size() == native_chat.messages.size()) {
+      exact_match_ids.insert(native_chat.native_session_id);
+    }
+  }
+
+  if (const auto exact_match = SingleSessionIdFromSet(exact_match_ids); exact_match.has_value()) {
+    return exact_match;
+  }
+  if (local_chat.messages.size() >= 3) {
+    return SingleSessionIdFromSet(prefix_match_ids);
+  }
+  return std::nullopt;
+}
+
+static bool PersistLocalDraftNativeSessionLink(const AppState& app,
+                                               ChatSession& local_chat,
+                                               const std::string& native_session_id) {
+  const std::string session_id = Trim(native_session_id);
+  if (session_id.empty() || !IsLocalDraftChatId(local_chat.id)) {
+    return false;
+  }
+
+  bool changed = false;
+  if (!local_chat.uses_native_session) {
+    local_chat.uses_native_session = true;
+    changed = true;
+  }
+  if (local_chat.native_session_id != session_id) {
+    local_chat.native_session_id = session_id;
+    changed = true;
+  }
+  if (!changed) {
+    return true;
+  }
+
+  if (local_chat.updated_at.empty()) {
+    local_chat.updated_at = TimestampNow();
+  }
+  return SaveChat(app, local_chat);
+}
+
 static std::string ResolveResumeSessionIdForChat(const AppState& app, const ChatSession& chat) {
   if (!ChatUsesGeminiHistory(app, chat)) {
     return "";
@@ -2647,7 +2731,24 @@ static void SaveAndUpdateStatus(AppState& app, const ChatSession& chat, const st
 static void ApplyLocalOverrides(AppState& app, std::vector<ChatSession>& native_chats) {
   const std::string selected_chat_id = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
   native_chats = DeduplicateChatsById(std::move(native_chats));
-  std::vector<ChatSession> local_chats = DeduplicateChatsById(LoadChats(app));
+  std::vector<ChatSession> local_chats = LoadChats(app);
+  for (ChatSession& local : local_chats) {
+    if (local.uses_native_session || !local.native_session_id.empty() || !IsLocalDraftChatId(local.id)) {
+      continue;
+    }
+    const std::string normalized_provider_id = MapLegacyProviderId(local.provider_id, false);
+    const ProviderProfile* local_provider = ProviderProfileStore::FindById(app.provider_profiles, normalized_provider_id);
+    const bool local_chat_uses_gemini_history =
+        Trim(local.provider_id).empty() || (local_provider != nullptr && ProviderRuntime::SupportsGeminiJsonHistory(*local_provider));
+    if (!local_chat_uses_gemini_history) {
+      continue;
+    }
+    const auto inferred_session_id = InferNativeSessionIdForLocalDraft(local, native_chats);
+    if (inferred_session_id.has_value()) {
+      PersistLocalDraftNativeSessionLink(app, local, inferred_session_id.value());
+    }
+  }
+  local_chats = DeduplicateChatsById(std::move(local_chats));
   std::unordered_map<std::string, const ChatSession*> local_map;
   for (const ChatSession& local : local_chats) {
     local_map[local.id] = &local;

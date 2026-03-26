@@ -247,6 +247,12 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
           const std::string discovered = PickFirstUnblockedSessionId(candidates, blocked_ids);
           if (!discovered.empty()) {
             const std::string previous_chat_id = terminal.attached_chat_id;
+            const int previous_chat_index = FindChatIndexById(app, previous_chat_id);
+            if (previous_chat_index >= 0 &&
+                IsLocalDraftChatId(previous_chat_id) &&
+                !app.chats[previous_chat_index].uses_native_session) {
+              PersistLocalDraftNativeSessionLink(app, app.chats[previous_chat_index], discovered);
+            }
             terminal.attached_session_id = discovered;
             terminal.attached_chat_id = discovered;
             if (!previous_chat_id.empty()) {
@@ -283,6 +289,12 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
         const std::string discovered = PickFirstUnblockedSessionId(candidates, blocked_ids);
         if (!discovered.empty()) {
           const std::string previous_chat_id = terminal.attached_chat_id;
+          const int previous_chat_index = FindChatIndexById(app, previous_chat_id);
+          if (previous_chat_index >= 0 &&
+              IsLocalDraftChatId(previous_chat_id) &&
+              !app.chats[previous_chat_index].uses_native_session) {
+            PersistLocalDraftNativeSessionLink(app, app.chats[previous_chat_index], discovered);
+          }
           terminal.attached_session_id = discovered;
           terminal.attached_chat_id = discovered;
           if (!previous_chat_id.empty()) {

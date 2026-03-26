@@ -437,7 +437,8 @@ static void StopCliTerminal(CliTerminalState& terminal,
     const pid_t child_pid = terminal.child_pid;
     int status = 0;
     const auto has_exited = [&](const bool wait_for_exit, const double timeout_seconds) -> bool {
-      const double wait_start = ImGui::GetTime();
+      const auto wait_start = std::chrono::steady_clock::now();
+      const auto wait_timeout = std::chrono::duration<double>(std::max(0.0, timeout_seconds));
       while (true) {
         const pid_t wait_result = waitpid(child_pid, &status, WNOHANG);
         if (wait_result == child_pid) {
@@ -452,7 +453,7 @@ static void StopCliTerminal(CliTerminalState& terminal,
         if (!wait_for_exit) {
           return false;
         }
-        if ((ImGui::GetTime() - wait_start) >= timeout_seconds) {
+        if ((std::chrono::steady_clock::now() - wait_start) >= wait_timeout) {
           return false;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(8));
