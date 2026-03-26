@@ -11,6 +11,9 @@ set_property(GLOBAL PROPERTY PREDEFINED_TARGETS_FOLDER "_CMake")
 
 option(UAM_FETCH_DEPS "Fetch SDL2 and Dear ImGui from GitHub during configure." ON)
 option(UAM_BUILD_TESTS "Build UAM core tests executable." OFF)
+if(WIN32)
+  option(UAM_WINDOWS_GUI_SUBSYSTEM "Build as a Windows GUI app (no console window)." ON)
+endif()
 if(APPLE)
   option(UAM_MACOS_BUNDLE "Build as a macOS .app bundle (no Terminal window needed)." ON)
 endif()
@@ -92,6 +95,9 @@ set(UAM_VTERM_SOURCES
 )
 
 set(UAM_EXECUTABLE_KIND "")
+if(WIN32 AND UAM_WINDOWS_GUI_SUBSYSTEM)
+  set(UAM_EXECUTABLE_KIND WIN32)
+endif()
 if(APPLE AND UAM_MACOS_BUNDLE)
   set(UAM_EXECUTABLE_KIND MACOSX_BUNDLE)
 endif()
@@ -131,6 +137,11 @@ target_include_directories(universal_agent_manager
 )
 target_link_libraries(universal_agent_manager PRIVATE ${UAM_SDL_TARGET} OpenGL::GL)
 set_target_properties(universal_agent_manager PROPERTIES FOLDER "App")
+
+if(WIN32 AND UAM_WINDOWS_GUI_SUBSYSTEM AND MSVC)
+  # Keep `main()` as the entry point while linking as a GUI-subsystem app.
+  target_link_options(universal_agent_manager PRIVATE "/ENTRY:mainCRTStartup")
+endif()
 
 set(UAM_WINDOW_ICON_BMP "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.bmp")
 if(EXISTS "${UAM_WINDOW_ICON_BMP}")

@@ -5294,7 +5294,7 @@ static void FeedCliTerminalKeyboard(CliTerminalState& terminal) {
   const VTermModifier mod = ActiveVTermModifiers();
 
   auto send_key = [&](const ImGuiKey imgui_key, const VTermKey vterm_key) {
-    if (ImGui::IsKeyPressed(imgui_key, false)) {
+    if (ImGui::IsKeyPressed(imgui_key, true)) {
       vterm_keyboard_key(terminal.vt, vterm_key, mod);
     }
   };
