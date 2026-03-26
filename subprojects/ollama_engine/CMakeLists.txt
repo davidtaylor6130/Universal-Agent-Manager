@@ -14,7 +14,13 @@ FetchContent_Declare(
   GIT_TAG v0.22.3
   GIT_SHALLOW TRUE
 )
-FetchContent_MakeAvailable(tree_sitter tree_sitter_cpp)
+FetchContent_Declare(
+  cpp_httplib
+  GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+  GIT_TAG v0.20.1
+  GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(tree_sitter tree_sitter_cpp cpp_httplib)
 
 set(UAM_TREE_SITTER_CPP_SOURCES
   ${tree_sitter_cpp_SOURCE_DIR}/src/parser.c
@@ -52,6 +58,7 @@ set_target_properties(uam_tree_sitter_cpp_grammar PROPERTIES
 )
 
 find_package(SQLite3 REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 add_library(uam_ollama_engine STATIC
   src/engine_factory.cpp
@@ -140,6 +147,40 @@ foreach(lTargetName IN LISTS UAM_OLLAMA_ENGINE_CLI_TARGETS)
   )
 endforeach()
 
+add_executable(uam_ollama_engine_bridge
+  src/ollama_engine_bridge_main.cpp
+)
+target_link_libraries(uam_ollama_engine_bridge
+  PRIVATE
+    uam_ollama_engine
+    httplib::httplib
+    OpenSSL::SSL
+    OpenSSL::Crypto
+)
+target_compile_definitions(uam_ollama_engine_bridge PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+set_target_properties(uam_ollama_engine_bridge PROPERTIES
+  CXX_STANDARD 20
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF
+  FOLDER "Subprojects/OllamaEngine"
+)
+if(APPLE)
+  # Keep the app-bundled bridge binary in sync even when only the bridge target rebuilds.
+  add_custom_command(TARGET uam_ollama_engine_bridge POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+      "${CMAKE_BINARY_DIR}/universal_agent_manager.app/Contents/MacOS"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "$<TARGET_FILE:uam_ollama_engine_bridge>"
+      "${CMAKE_BINARY_DIR}/universal_agent_manager.app/Contents/MacOS/uam_ollama_engine_bridge"
+    COMMENT "Syncing OpenCode bridge into app bundle"
+  )
+endif()
+
+set(UAM_OLLAMA_ENGINE_RUNTIME_TARGETS
+  ${UAM_OLLAMA_ENGINE_CLI_TARGETS}
+  uam_ollama_engine_bridge
+)
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/models")
   add_custom_target(uam_ollama_engine_copy_models ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/models"
@@ -148,7 +189,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/models")
       "${CMAKE_BINARY_DIR}/models"
     COMMENT "Copying ollama_engine models to build/models"
   )
-  foreach(lTargetName IN LISTS UAM_OLLAMA_ENGINE_CLI_TARGETS)
+  foreach(lTargetName IN LISTS UAM_OLLAMA_ENGINE_RUNTIME_TARGETS)
     add_dependencies(${lTargetName} uam_ollama_engine_copy_models)
     add_custom_command(TARGET ${lTargetName} POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${lTargetName}>/models"
@@ -163,7 +204,7 @@ else()
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/models"
     COMMENT "Source models folder is missing; creating empty build/models directory"
   )
-  foreach(lTargetName IN LISTS UAM_OLLAMA_ENGINE_CLI_TARGETS)
+  foreach(lTargetName IN LISTS UAM_OLLAMA_ENGINE_RUNTIME_TARGETS)
     add_dependencies(${lTargetName} uam_ollama_engine_copy_models)
   endforeach()
 endif()

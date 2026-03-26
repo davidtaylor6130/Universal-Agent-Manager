@@ -9,8 +9,19 @@ static void DrawTemplateManagerGlobalRootSection(AppState& app,
   (void)global_root;
   ImGui::TextColored(ui::kTextSecondary, "Global Root");
   PushInputChrome();
-  ImGui::SetNextItemWidth(560.0f);
-  ImGui::InputText("##prompt_profile_global_root", &app.settings.prompt_profile_root_path);
+  std::string browse_error;
+  DrawPathInputWithBrowseButton(
+      "##prompt_profile_global_root",
+      app.settings.prompt_profile_root_path,
+      "template_manager_global_root_picker",
+      PathBrowseTarget::Directory,
+      560.0f,
+      nullptr,
+      nullptr,
+      &browse_error);
+  if (!browse_error.empty()) {
+    app.status_line = browse_error;
+  }
   PopInputChrome();
   if (DrawButton("Save Root", ImVec2(110.0f, 30.0f), ButtonKind::Ghost)) {
     if (Trim(app.settings.prompt_profile_root_path).empty()) {

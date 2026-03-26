@@ -91,6 +91,29 @@ struct AsyncCommandTask {
   std::shared_ptr<std::string> output;
 };
 
+/// <summary>
+/// Runtime state for the UAM-managed OpenCode bridge process.
+/// </summary>
+struct OpenCodeBridgeState {
+#if defined(_WIN32)
+  HANDLE process_handle = INVALID_HANDLE_VALUE;
+  HANDLE process_thread = INVALID_HANDLE_VALUE;
+  DWORD process_id = 0;
+#else
+  pid_t process_id = -1;
+#endif
+  bool running = false;
+  bool healthy = false;
+  std::string endpoint;
+  std::string api_base;
+  std::string token;
+  std::string selected_model;
+  std::string requested_model;
+  std::string model_folder;
+  std::string ready_file;
+  std::string last_error;
+};
+
 #if defined(_WIN32)
 /// <summary>
 /// Windows-only async loader for native Gemini chat history.
@@ -159,6 +182,7 @@ struct AppState {
   std::vector<std::unique_ptr<CliTerminalState>> cli_terminals;
   RagIndexService rag_index_service;
   OllamaEngineClient local_runtime_engine;
+  OpenCodeBridgeState opencode_bridge;
   std::string loaded_runtime_model_id;
   std::unordered_map<std::string, VcsSnapshot> vcs_snapshot_by_workspace;
   std::unordered_set<std::string> vcs_snapshot_loaded_workspaces;

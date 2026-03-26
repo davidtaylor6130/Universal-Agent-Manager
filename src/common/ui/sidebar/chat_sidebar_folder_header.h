@@ -76,12 +76,12 @@ static FolderHeaderAction DrawFolderHeaderItem(const ChatFolder& folder, const i
   draw->AddText(ImVec2(count_x, min.y + text_y_offset), ImGui::GetColorU32(ui::kTextMuted), count_text.c_str());
 
   ImGui::SetCursorScreenPos(ImVec2(max.x - icon_new_x_offset, min.y + icon_y_offset));
-  if (DrawMiniIconButton("folder_new_chat", "+", ImVec2(16.0f, 16.0f), false)) {
+  if (DrawMiniIconButton("folder_new_chat", "icon:new_chat", ImVec2(16.0f, 16.0f), false)) {
     action.quick_create = true;
     action.toggle = false;
   }
   ImGui::SetCursorScreenPos(ImVec2(max.x - icon_settings_x_offset, min.y + icon_y_offset));
-  if (DrawMiniIconButton("folder_settings", "...", ImVec2(16.0f, 16.0f), false)) {
+  if (DrawMiniIconButton("folder_settings", "icon:menu", ImVec2(16.0f, 16.0f), false)) {
     action.open_settings = true;
     action.toggle = false;
   }

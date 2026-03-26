@@ -93,6 +93,7 @@ else()
 endif()
 
 find_package(OpenGL REQUIRED)
+find_package(CURL REQUIRED)
 
 if(TARGET SDL2::SDL2)
   set(UAM_SDL_TARGET SDL2::SDL2)
@@ -175,8 +176,17 @@ target_include_directories(universal_agent_manager
     ${VTERM_DIR}/include
     ${VTERM_DIR}/src
 )
-target_link_libraries(universal_agent_manager PRIVATE ${UAM_SDL_TARGET} OpenGL::GL uam_ollama_engine)
+target_link_libraries(universal_agent_manager PRIVATE ${UAM_SDL_TARGET} OpenGL::GL CURL::libcurl uam_ollama_engine)
 set_target_properties(universal_agent_manager PROPERTIES FOLDER "App")
+if(TARGET uam_ollama_engine_bridge)
+  add_dependencies(universal_agent_manager uam_ollama_engine_bridge)
+  add_custom_command(TARGET universal_agent_manager POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "$<TARGET_FILE:uam_ollama_engine_bridge>"
+      "$<TARGET_FILE_DIR:universal_agent_manager>/"
+    COMMENT "Copying OpenCode local bridge next to universal_agent_manager"
+  )
+endif()
 
 set(UAM_WINDOW_ICON_BMP "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.bmp")
 if(EXISTS "${UAM_WINDOW_ICON_BMP}")

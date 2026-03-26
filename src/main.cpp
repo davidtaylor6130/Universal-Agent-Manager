@@ -3,6 +3,7 @@
 #include <backends/imgui_impl_opengl3.h>
 #include <backends/imgui_impl_sdl2.h>
 #include <vterm.h>
+#include <curl/curl.h>
 #include "common/constants/app_constants.h"
 #include "common/state/app_state.h"
 #include "common/app_models.h"
@@ -37,6 +38,7 @@
 
 #if defined(__APPLE__)
 #include <OpenGL/gl3.h>
+#include <mach-o/dyld.h>
 #else
 #include <GL/gl.h>
 #endif
@@ -150,7 +152,12 @@ static void MarkSelectedCliTerminalForLaunch(AppState& app);
 static void SelectChatById(AppState& app, const std::string& chat_id);
 static void SaveSettings(AppState& app);
 static bool SaveChat(const AppState& app, const ChatSession& chat);
+static bool ProviderUsesOpenCodeLocalBridge(const ProviderProfile& provider);
+static bool EnsureSelectedLocalRuntimeModelForProvider(AppState& app);
 static bool SendPromptToCliRuntime(AppState& app, ChatSession& chat, const std::string& prompt, std::string* error_out);
+static bool EnsureOpenCodeBridgeRunning(AppState& app, std::string* error_out = nullptr);
+static void StopOpenCodeBridge(AppState& app);
+static bool RestartOpenCodeBridgeIfModelChanged(AppState& app, std::string* error_out = nullptr);
 static void StartAsyncCommandTask(AsyncCommandTask& task, const std::string& command);
 static bool TryConsumeAsyncCommandTaskOutput(AsyncCommandTask& task, std::string& output_out);
 static std::optional<std::string> ExtractSemverVersion(const std::string& text);
@@ -1532,6 +1539,830 @@ static void PollGeminiCompatibilityTasks(AppState& app) {
   }
 }
 
+static std::string OpenCodeBridgeRandomHex(const std::size_t length) {
+  static thread_local std::mt19937 lRng(std::random_device{}());
+  std::uniform_int_distribution<int> lNibble(0, 15);
+  std::string lSValue;
+  lSValue.reserve(length);
+  for (std::size_t i = 0; i < length; ++i) {
+    const int lValue = lNibble(lRng);
+    lSValue.push_back(static_cast<char>((lValue < 10) ? ('0' + lValue) : ('a' + (lValue - 10))));
+  }
+  return lSValue;
+}
+
+static std::string OpenCodeBridgeTimestampStamp() {
+  const auto now = std::chrono::system_clock::now();
+  const std::time_t tt = std::chrono::system_clock::to_time_t(now);
+  std::tm tm_snapshot{};
+#if defined(_WIN32)
+  localtime_s(&tm_snapshot, &tt);
+#else
+  localtime_r(&tt, &tm_snapshot);
+#endif
+  std::ostringstream out;
+  out << std::put_time(&tm_snapshot, "%Y%m%d-%H%M%S");
+  return out.str();
+}
+
+static fs::path ResolveCurrentExecutablePathForBridge() {
+#if defined(_WIN32)
+  std::wstring lWBuffer(static_cast<std::size_t>(MAX_PATH), L'\0');
+  const DWORD lDwLength = GetModuleFileNameW(nullptr, lWBuffer.data(), static_cast<DWORD>(lWBuffer.size()));
+  if (lDwLength == 0 || lDwLength >= lWBuffer.size()) {
+    return {};
+  }
+  lWBuffer.resize(static_cast<std::size_t>(lDwLength));
+  return fs::path(lWBuffer);
+#elif defined(__APPLE__)
+  uint32_t lUiBufferSize = 0;
+  (void)_NSGetExecutablePath(nullptr, &lUiBufferSize);
+  if (lUiBufferSize == 0) {
+    return {};
+  }
+  std::string lSBuffer(static_cast<std::size_t>(lUiBufferSize), '\0');
+  if (_NSGetExecutablePath(lSBuffer.data(), &lUiBufferSize) != 0) {
+    return {};
+  }
+  return fs::path(lSBuffer.c_str());
+#elif defined(__linux__)
+  std::array<char, 4096> lBuffer{};
+  const ssize_t lRead = readlink("/proc/self/exe", lBuffer.data(), lBuffer.size() - 1);
+  if (lRead <= 0) {
+    return {};
+  }
+  lBuffer[static_cast<std::size_t>(lRead)] = '\0';
+  return fs::path(lBuffer.data());
+#else
+  return {};
+#endif
+}
+
+static fs::path ResolveOpenCodeBridgeExecutablePath() {
+#if defined(_WIN32)
+  const std::string lSBridgeBinaryName = "uam_ollama_engine_bridge.exe";
+#else
+  const std::string lSBridgeBinaryName = "uam_ollama_engine_bridge";
+#endif
+
+  std::vector<fs::path> lVecPathCandidates;
+  if (const fs::path lPathExecutable = ResolveCurrentExecutablePathForBridge(); !lPathExecutable.empty()) {
+    lVecPathCandidates.push_back(lPathExecutable.parent_path() / lSBridgeBinaryName);
+  }
+  if (char* base_path = SDL_GetBasePath(); base_path != nullptr) {
+    lVecPathCandidates.push_back(fs::path(base_path) / lSBridgeBinaryName);
+    SDL_free(base_path);
+  }
+  std::error_code lEcCwd;
+  const fs::path lPathCwd = fs::current_path(lEcCwd);
+  if (!lEcCwd) {
+    lVecPathCandidates.push_back(lPathCwd / lSBridgeBinaryName);
+    lVecPathCandidates.push_back(lPathCwd / "build" / lSBridgeBinaryName);
+    lVecPathCandidates.push_back(lPathCwd / "build" / "ollama_engine" / lSBridgeBinaryName);
+    lVecPathCandidates.push_back(lPathCwd / "build-release" / lSBridgeBinaryName);
+    lVecPathCandidates.push_back(lPathCwd / "build-release" / "ollama_engine" / lSBridgeBinaryName);
+  }
+
+  for (const fs::path& lPathCandidate : lVecPathCandidates) {
+    std::error_code lEcExists;
+    if (!lPathCandidate.empty() && fs::exists(lPathCandidate, lEcExists) && !lEcExists) {
+      return lPathCandidate;
+    }
+  }
+
+  return fs::path(lSBridgeBinaryName);
+}
+
+static fs::path ResolveOpenCodeConfigPath() {
+#if defined(_WIN32)
+  if (const std::optional<fs::path> lOptPathHome = ResolveWindowsHomePath(); lOptPathHome.has_value()) {
+    return lOptPathHome.value() / ".config" / "opencode" / "opencode.json";
+  }
+#endif
+  if (const char* lPtrCHome = std::getenv("HOME")) {
+    const std::string lSHome = Trim(lPtrCHome);
+    if (!lSHome.empty()) {
+      return fs::path(lSHome) / ".config" / "opencode" / "opencode.json";
+    }
+  }
+  std::error_code lEcCwd;
+  const fs::path lPathCwd = fs::current_path(lEcCwd);
+  return lEcCwd ? fs::path("opencode.json") : (lPathCwd / ".config" / "opencode" / "opencode.json");
+}
+
+static fs::path BuildOpenCodeBridgeReadyFilePath(const AppState& app) {
+  const fs::path lPathRuntimeDir = app.data_root / "runtime";
+  std::error_code lEc;
+  fs::create_directories(lPathRuntimeDir, lEc);
+  return lPathRuntimeDir /
+         ("opencode_bridge_ready_" + OpenCodeBridgeTimestampStamp() + "_" + OpenCodeBridgeRandomHex(8) + ".json");
+}
+
+static JsonValue JsonObjectValue() {
+  JsonValue value;
+  value.type = JsonValue::Type::Object;
+  return value;
+}
+
+static JsonValue JsonStringValue(const std::string& text) {
+  JsonValue value;
+  value.type = JsonValue::Type::String;
+  value.string_value = text;
+  return value;
+}
+
+static JsonValue* EnsureJsonObjectEntry(JsonValue& root, const std::string& key, bool* changed_out = nullptr) {
+  if (root.type != JsonValue::Type::Object) {
+    root = JsonObjectValue();
+    if (changed_out != nullptr) {
+      *changed_out = true;
+    }
+  }
+  auto it = root.object_value.find(key);
+  if (it == root.object_value.end() || it->second.type != JsonValue::Type::Object) {
+    root.object_value[key] = JsonObjectValue();
+    if (changed_out != nullptr) {
+      *changed_out = true;
+    }
+  }
+  return &root.object_value[key];
+}
+
+static bool SetJsonStringEntry(JsonValue& root, const std::string& key, const std::string& value) {
+  auto it = root.object_value.find(key);
+  if (it != root.object_value.end() && it->second.type == JsonValue::Type::String && it->second.string_value == value) {
+    return false;
+  }
+  root.object_value[key] = JsonStringValue(value);
+  return true;
+}
+
+static bool RemoveJsonEntry(JsonValue& root, const std::string& key) {
+  return root.object_value.erase(key) > 0;
+}
+
+static std::string JsonErrorStringMessage(const JsonValue* root_error) {
+  if (root_error == nullptr || root_error->type != JsonValue::Type::Object) {
+    return "";
+  }
+  return JsonStringOrEmpty(root_error->Find("error"));
+}
+
+struct OpenCodeBridgeReadyInfo {
+  std::string endpoint;
+  std::string api_base;
+  std::string model;
+  std::string error;
+  bool ok = false;
+};
+
+static std::optional<OpenCodeBridgeReadyInfo> ParseOpenCodeBridgeReadyInfo(const std::string& file_text) {
+  const std::optional<JsonValue> root_opt = ParseJson(file_text);
+  if (!root_opt.has_value() || root_opt->type != JsonValue::Type::Object) {
+    return std::nullopt;
+  }
+  OpenCodeBridgeReadyInfo info;
+  const JsonValue& root = root_opt.value();
+  if (const JsonValue* ok_value = root.Find("ok"); ok_value != nullptr && ok_value->type == JsonValue::Type::Bool) {
+    info.ok = ok_value->bool_value;
+  }
+  info.endpoint = Trim(JsonStringOrEmpty(root.Find("endpoint")));
+  info.api_base = Trim(JsonStringOrEmpty(root.Find("api_base")));
+  info.model = Trim(JsonStringOrEmpty(root.Find("model")));
+  info.error = Trim(JsonStringOrEmpty(root.Find("error")));
+  if (!info.ok && info.error.empty()) {
+    info.error = JsonErrorStringMessage(&root);
+  }
+  return info;
+}
+
+static size_t CurlAppendToStringCallback(void* ptr, const size_t size, const size_t nmemb, void* userdata) {
+  if (ptr == nullptr || userdata == nullptr || size == 0 || nmemb == 0) {
+    return 0;
+  }
+  const size_t total = size * nmemb;
+  auto* output = static_cast<std::string*>(userdata);
+  output->append(static_cast<const char*>(ptr), total);
+  return total;
+}
+
+static bool CurlHttpGet(const std::string& url,
+                        const std::string& bearer_token,
+                        long* status_code_out,
+                        std::string* body_out,
+                        std::string* error_out) {
+  if (status_code_out != nullptr) {
+    *status_code_out = 0;
+  }
+  if (body_out != nullptr) {
+    body_out->clear();
+  }
+  CURL* curl = curl_easy_init();
+  if (curl == nullptr) {
+    if (error_out != nullptr) {
+      *error_out = "Failed to initialize libcurl.";
+    }
+    return false;
+  }
+
+  std::string body;
+  curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+  curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 1500L);
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 1000L);
+  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, CurlAppendToStringCallback);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+
+  struct curl_slist* headers = nullptr;
+  if (!bearer_token.empty()) {
+    const std::string auth = "Authorization: Bearer " + bearer_token;
+    headers = curl_slist_append(headers, auth.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+  }
+
+  const CURLcode code = curl_easy_perform(curl);
+  long status_code = 0;
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status_code);
+
+  if (headers != nullptr) {
+    curl_slist_free_all(headers);
+  }
+  curl_easy_cleanup(curl);
+
+  if (body_out != nullptr) {
+    *body_out = body;
+  }
+  if (status_code_out != nullptr) {
+    *status_code_out = status_code;
+  }
+  if (code != CURLE_OK) {
+    if (error_out != nullptr) {
+      *error_out = std::string("HTTP probe failed: ") + curl_easy_strerror(code);
+    }
+    return false;
+  }
+  return true;
+}
+
+static bool ProbeOpenCodeBridgeHealth(const AppState& app, std::string* error_out = nullptr) {
+  const std::string endpoint = Trim(app.opencode_bridge.endpoint);
+  if (endpoint.empty()) {
+    if (error_out != nullptr) {
+      *error_out = "OpenCode bridge endpoint is empty.";
+    }
+    return false;
+  }
+
+  long status_code = 0;
+  std::string body;
+  std::string curl_error;
+  if (!CurlHttpGet(endpoint + "/healthz", "", &status_code, &body, &curl_error)) {
+    if (error_out != nullptr) {
+      *error_out = curl_error;
+    }
+    return false;
+  }
+  if (status_code != 200) {
+    if (error_out != nullptr) {
+      std::ostringstream out;
+      out << "OpenCode bridge health check failed (status " << status_code << ").";
+      const std::string trimmed_body = Trim(body);
+      if (!trimmed_body.empty()) {
+        out << " Body: " << CompactPreview(trimmed_body, 180);
+      }
+      *error_out = out.str();
+    }
+    return false;
+  }
+  return true;
+}
+
+#if defined(_WIN32)
+static std::wstring OpenCodeBridgeWideFromUtf8(const std::string& value) {
+  if (value.empty()) {
+    return std::wstring();
+  }
+  const int wide_len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()),
+                                           nullptr, 0);
+  if (wide_len <= 0) {
+    return std::wstring();
+  }
+  std::wstring wide(static_cast<std::size_t>(wide_len), L'\0');
+  if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), wide.data(),
+                          wide_len) <= 0) {
+    return std::wstring();
+  }
+  return wide;
+}
+
+static std::string OpenCodeBridgeQuoteWindowsArg(const std::string& arg) {
+  if (arg.empty()) {
+    return "\"\"";
+  }
+  const bool needs_quotes = (arg.find_first_of(" \t\"") != std::string::npos);
+  if (!needs_quotes) {
+    return arg;
+  }
+  std::string result = "\"";
+  int backslashes = 0;
+  for (const char ch : arg) {
+    if (ch == '\\') {
+      backslashes++;
+    } else if (ch == '"') {
+      result.append(backslashes * 2 + 1, '\\');
+      result.push_back('"');
+      backslashes = 0;
+    } else {
+      if (backslashes > 0) {
+        result.append(backslashes, '\\');
+        backslashes = 0;
+      }
+      result.push_back(ch);
+    }
+  }
+  if (backslashes > 0) {
+    result.append(backslashes * 2, '\\');
+  }
+  result.push_back('"');
+  return result;
+}
+
+static std::string OpenCodeBridgeBuildWindowsCommandLine(const std::vector<std::string>& argv) {
+  std::ostringstream out;
+  bool first = true;
+  for (const std::string& arg : argv) {
+    if (!first) {
+      out << ' ';
+    }
+    out << OpenCodeBridgeQuoteWindowsArg(arg);
+    first = false;
+  }
+  return out.str();
+}
+#endif
+
+static bool StartOpenCodeBridgeProcess(AppState& app, const std::vector<std::string>& argv, std::string* error_out = nullptr) {
+  if (argv.empty() || Trim(argv.front()).empty()) {
+    if (error_out != nullptr) {
+      *error_out = "OpenCode bridge command is empty.";
+    }
+    return false;
+  }
+
+#if defined(_WIN32)
+  std::vector<wchar_t> command_line;
+  const std::wstring command_w = OpenCodeBridgeWideFromUtf8(OpenCodeBridgeBuildWindowsCommandLine(argv));
+  if (command_w.empty()) {
+    if (error_out != nullptr) {
+      *error_out = "Failed to encode OpenCode bridge command line.";
+    }
+    return false;
+  }
+  command_line.assign(command_w.begin(), command_w.end());
+  command_line.push_back(L'\0');
+
+  STARTUPINFOW startup_info{};
+  startup_info.cb = sizeof(startup_info);
+  PROCESS_INFORMATION process_info{};
+  const BOOL created = CreateProcessW(nullptr,
+                                      command_line.data(),
+                                      nullptr,
+                                      nullptr,
+                                      FALSE,
+                                      CREATE_NO_WINDOW,
+                                      nullptr,
+                                      nullptr,
+                                      &startup_info,
+                                      &process_info);
+  if (!created) {
+    const DWORD launch_error = GetLastError();
+    if (error_out != nullptr) {
+      *error_out = "Failed to launch OpenCode bridge process (Win32 error " + std::to_string(launch_error) + ").";
+    }
+    return false;
+  }
+
+  app.opencode_bridge.process_handle = process_info.hProcess;
+  app.opencode_bridge.process_thread = process_info.hThread;
+  app.opencode_bridge.process_id = process_info.dwProcessId;
+#else
+  const pid_t child_pid = fork();
+  if (child_pid < 0) {
+    if (error_out != nullptr) {
+      *error_out = "fork failed while starting OpenCode bridge.";
+    }
+    return false;
+  }
+  if (child_pid == 0) {
+    setsid();
+    const int null_fd = open("/dev/null", O_RDWR);
+    if (null_fd >= 0) {
+      dup2(null_fd, STDIN_FILENO);
+      dup2(null_fd, STDOUT_FILENO);
+      dup2(null_fd, STDERR_FILENO);
+      if (null_fd > STDERR_FILENO) {
+        close(null_fd);
+      }
+    }
+
+    std::vector<char*> argv_ptrs;
+    argv_ptrs.reserve(argv.size() + 1);
+    for (const std::string& arg : argv) {
+      argv_ptrs.push_back(const_cast<char*>(arg.c_str()));
+    }
+    argv_ptrs.push_back(nullptr);
+    if (argv.front().find('/') != std::string::npos) {
+      execv(argv_ptrs.front(), argv_ptrs.data());
+    } else {
+      execvp(argv_ptrs.front(), argv_ptrs.data());
+    }
+    _exit(127);
+  }
+  app.opencode_bridge.process_id = child_pid;
+#endif
+
+  app.opencode_bridge.running = true;
+  return true;
+}
+
+static bool IsOpenCodeBridgeProcessRunning(AppState& app) {
+#if defined(_WIN32)
+  if (app.opencode_bridge.process_handle == INVALID_HANDLE_VALUE || app.opencode_bridge.process_handle == nullptr) {
+    app.opencode_bridge.running = false;
+    return false;
+  }
+  const DWORD wait_result = WaitForSingleObject(app.opencode_bridge.process_handle, 0);
+  if (wait_result == WAIT_TIMEOUT) {
+    return true;
+  }
+  app.opencode_bridge.running = false;
+  return false;
+#else
+  if (app.opencode_bridge.process_id <= 0) {
+    app.opencode_bridge.running = false;
+    return false;
+  }
+  int status = 0;
+  const pid_t wait_result = waitpid(app.opencode_bridge.process_id, &status, WNOHANG);
+  if (wait_result == 0) {
+    return true;
+  }
+  if (wait_result == app.opencode_bridge.process_id || (wait_result < 0 && errno == ECHILD)) {
+    app.opencode_bridge.process_id = -1;
+    app.opencode_bridge.running = false;
+    return false;
+  }
+  return true;
+#endif
+}
+
+static void ResetOpenCodeBridgeRuntimeFields(AppState& app, const bool keep_token = true) {
+  const std::string preserved_token = keep_token ? app.opencode_bridge.token : "";
+  app.opencode_bridge.running = false;
+  app.opencode_bridge.healthy = false;
+  app.opencode_bridge.endpoint.clear();
+  app.opencode_bridge.api_base.clear();
+  app.opencode_bridge.selected_model.clear();
+  app.opencode_bridge.requested_model.clear();
+  app.opencode_bridge.model_folder.clear();
+  app.opencode_bridge.ready_file.clear();
+  app.opencode_bridge.last_error.clear();
+  if (keep_token) {
+    app.opencode_bridge.token = preserved_token;
+  } else {
+    app.opencode_bridge.token.clear();
+  }
+}
+
+static bool WaitForOpenCodeBridgeReadyFile(AppState& app,
+                                           const fs::path& ready_file,
+                                           OpenCodeBridgeReadyInfo* info_out,
+                                           std::string* error_out = nullptr) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(12);
+  while (std::chrono::steady_clock::now() < deadline) {
+    std::error_code ec;
+    if (fs::exists(ready_file, ec) && !ec) {
+      const std::string text = Trim(ReadTextFile(ready_file));
+      if (!text.empty()) {
+        const std::optional<OpenCodeBridgeReadyInfo> info = ParseOpenCodeBridgeReadyInfo(text);
+        if (info.has_value()) {
+          if (!info->ok && !info->error.empty()) {
+            if (error_out != nullptr) {
+              *error_out = info->error;
+            }
+            return false;
+          }
+          if (!info->endpoint.empty()) {
+            if (info_out != nullptr) {
+              *info_out = info.value();
+            }
+            return true;
+          }
+        }
+      }
+    }
+    if (!IsOpenCodeBridgeProcessRunning(app)) {
+      if (error_out != nullptr) {
+        *error_out = "OpenCode bridge process exited before readiness handshake.";
+      }
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+  }
+  if (error_out != nullptr) {
+    *error_out = "Timed out waiting for OpenCode bridge ready file.";
+  }
+  return false;
+}
+
+static bool EnsureOpenCodeConfigProvisioned(AppState& app, std::string* error_out = nullptr) {
+  const std::string api_base = Trim(app.opencode_bridge.api_base);
+  std::string model_id = Trim(app.opencode_bridge.selected_model);
+  if (model_id.empty()) {
+    model_id = Trim(app.settings.selected_model_id);
+  }
+  if (api_base.empty()) {
+    if (error_out != nullptr) {
+      *error_out = "OpenCode bridge API base URL is empty.";
+    }
+    return false;
+  }
+  if (model_id.empty()) {
+    if (error_out != nullptr) {
+      *error_out = "OpenCode bridge has no selected model.";
+    }
+    return false;
+  }
+
+  const fs::path config_path = ResolveOpenCodeConfigPath();
+  std::error_code ec;
+  fs::create_directories(config_path.parent_path(), ec);
+  if (ec) {
+    if (error_out != nullptr) {
+      *error_out = "Failed to create OpenCode config directory: " + ec.message();
+    }
+    return false;
+  }
+
+  JsonValue root = JsonObjectValue();
+  bool changed = false;
+  bool parse_failed = false;
+
+  const std::string existing_text = ReadTextFile(config_path);
+  if (!Trim(existing_text).empty()) {
+    const std::optional<JsonValue> parsed = ParseJson(existing_text);
+    if (!parsed.has_value() || parsed->type != JsonValue::Type::Object) {
+      parse_failed = true;
+      const fs::path backup_path =
+          config_path.parent_path() /
+          (config_path.stem().string() + ".backup-" + OpenCodeBridgeTimestampStamp() + config_path.extension().string());
+      std::error_code copy_ec;
+      fs::copy_file(config_path, backup_path, fs::copy_options::overwrite_existing, copy_ec);
+      if (copy_ec) {
+        app.status_line = "OpenCode config parse failed; backup copy also failed: " + copy_ec.message();
+      } else {
+        app.status_line = "OpenCode config parse failed; created backup at " + backup_path.string() + ".";
+      }
+      changed = true;
+    } else {
+      root = parsed.value();
+    }
+  }
+
+  JsonValue* provider = EnsureJsonObjectEntry(root, "provider", &changed);
+  JsonValue* uam_local = EnsureJsonObjectEntry(*provider, "uam_local", &changed);
+  changed = SetJsonStringEntry(*uam_local, "npm", "@ai-sdk/openai-compatible") || changed;
+  changed = SetJsonStringEntry(*uam_local, "name", "UAM Local (Ollama Engine)") || changed;
+  changed = SetJsonStringEntry(*uam_local, "api", api_base) || changed;
+  JsonValue* options = EnsureJsonObjectEntry(*uam_local, "options", &changed);
+  changed = SetJsonStringEntry(*options, "baseURL", api_base) || changed;
+  if (!app.opencode_bridge.token.empty()) {
+    changed = SetJsonStringEntry(*options, "apiKey", app.opencode_bridge.token) || changed;
+  } else {
+    changed = RemoveJsonEntry(*options, "apiKey") || changed;
+  }
+  JsonValue* models = EnsureJsonObjectEntry(*uam_local, "models", &changed);
+  JsonValue* model_entry = EnsureJsonObjectEntry(*models, model_id, &changed);
+  fs::path model_path(model_id);
+  std::string model_display_name = model_path.filename().string();
+  if (model_display_name.empty()) {
+    model_display_name = model_id;
+  }
+  changed = SetJsonStringEntry(*model_entry, "name", model_display_name) || changed;
+  changed = SetJsonStringEntry(root, "model", "uam_local/" + model_id) || changed;
+
+  if (!changed && !parse_failed) {
+    return true;
+  }
+
+  if (!WriteTextFile(config_path, SerializeJson(root))) {
+    if (error_out != nullptr) {
+      *error_out = "Failed to write OpenCode config file: " + config_path.string();
+    }
+    return false;
+  }
+  return true;
+}
+
+static std::vector<std::string> BuildOpenCodeBridgeArgv(const fs::path& bridge_executable,
+                                                         const fs::path& model_folder,
+                                                         const std::string& requested_model,
+                                                         const std::string& token,
+                                                         const fs::path& ready_file) {
+  std::vector<std::string> argv;
+  argv.push_back(bridge_executable.string());
+  argv.push_back("--host");
+  argv.push_back("127.0.0.1");
+  argv.push_back("--port");
+  argv.push_back("0");
+  argv.push_back("--model-folder");
+  argv.push_back(model_folder.string());
+  if (!Trim(requested_model).empty()) {
+    argv.push_back("--default-model");
+    argv.push_back(Trim(requested_model));
+  }
+  if (!Trim(token).empty()) {
+    argv.push_back("--token");
+    argv.push_back(token);
+  }
+  argv.push_back("--ready-file");
+  argv.push_back(ready_file.string());
+  return argv;
+}
+
+static bool StartOpenCodeBridge(AppState& app,
+                                const fs::path& model_folder,
+                                const std::string& requested_model,
+                                std::string* error_out = nullptr) {
+  fs::path normalized_model_folder = NormalizeAbsolutePath(model_folder);
+  if (normalized_model_folder.empty()) {
+    normalized_model_folder = model_folder;
+  }
+
+  const fs::path bridge_executable = ResolveOpenCodeBridgeExecutablePath();
+  if (bridge_executable.empty()) {
+    if (error_out != nullptr) {
+      *error_out = "Could not resolve uam_ollama_engine_bridge executable.";
+    }
+    return false;
+  }
+
+  if (app.opencode_bridge.token.empty()) {
+    app.opencode_bridge.token = OpenCodeBridgeRandomHex(48);
+  }
+  const fs::path ready_file = BuildOpenCodeBridgeReadyFilePath(app);
+  std::error_code rm_ec;
+  fs::remove(ready_file, rm_ec);
+
+  const std::vector<std::string> argv =
+      BuildOpenCodeBridgeArgv(bridge_executable, normalized_model_folder, requested_model, app.opencode_bridge.token, ready_file);
+  if (!StartOpenCodeBridgeProcess(app, argv, error_out)) {
+    app.opencode_bridge.last_error = (error_out != nullptr) ? *error_out : "OpenCode bridge process launch failed.";
+    return false;
+  }
+
+  OpenCodeBridgeReadyInfo ready_info;
+  std::string ready_error;
+  if (!WaitForOpenCodeBridgeReadyFile(app, ready_file, &ready_info, &ready_error)) {
+    StopOpenCodeBridge(app);
+    if (error_out != nullptr) {
+      *error_out = ready_error.empty() ? "OpenCode bridge did not become ready." : ready_error;
+    }
+    app.opencode_bridge.last_error = (error_out != nullptr) ? *error_out : "OpenCode bridge startup failed.";
+    return false;
+  }
+
+  app.opencode_bridge.endpoint = ready_info.endpoint;
+  app.opencode_bridge.api_base = ready_info.api_base.empty() ? (ready_info.endpoint + "/v1") : ready_info.api_base;
+  app.opencode_bridge.selected_model = ready_info.model.empty() ? Trim(requested_model) : ready_info.model;
+  app.opencode_bridge.requested_model = Trim(requested_model);
+  app.opencode_bridge.model_folder = normalized_model_folder.string();
+  app.opencode_bridge.ready_file = ready_file.string();
+  app.opencode_bridge.running = true;
+  app.opencode_bridge.healthy = false;
+
+  std::string health_error;
+  if (!ProbeOpenCodeBridgeHealth(app, &health_error)) {
+    StopOpenCodeBridge(app);
+    if (error_out != nullptr) {
+      *error_out = health_error.empty() ? "OpenCode bridge health check failed." : health_error;
+    }
+    app.opencode_bridge.last_error = (error_out != nullptr) ? *error_out : "OpenCode bridge health check failed.";
+    return false;
+  }
+  app.opencode_bridge.healthy = true;
+
+  std::string config_error;
+  if (!EnsureOpenCodeConfigProvisioned(app, &config_error)) {
+    StopOpenCodeBridge(app);
+    if (error_out != nullptr) {
+      *error_out = config_error.empty() ? "OpenCode config provisioning failed." : config_error;
+    }
+    app.opencode_bridge.last_error = (error_out != nullptr) ? *error_out : "OpenCode config provisioning failed.";
+    return false;
+  }
+
+  app.opencode_bridge.last_error.clear();
+  return true;
+}
+
+static void StopOpenCodeBridge(AppState& app) {
+#if defined(_WIN32)
+  if (app.opencode_bridge.process_handle != INVALID_HANDLE_VALUE && app.opencode_bridge.process_handle != nullptr) {
+    const DWORD wait_result = WaitForSingleObject(app.opencode_bridge.process_handle, 0);
+    if (wait_result == WAIT_TIMEOUT) {
+      TerminateProcess(app.opencode_bridge.process_handle, 1);
+      WaitForSingleObject(app.opencode_bridge.process_handle, 1000);
+    }
+    CloseHandle(app.opencode_bridge.process_handle);
+    app.opencode_bridge.process_handle = INVALID_HANDLE_VALUE;
+  }
+  if (app.opencode_bridge.process_thread != INVALID_HANDLE_VALUE && app.opencode_bridge.process_thread != nullptr) {
+    CloseHandle(app.opencode_bridge.process_thread);
+    app.opencode_bridge.process_thread = INVALID_HANDLE_VALUE;
+  }
+  app.opencode_bridge.process_id = 0;
+#else
+  if (app.opencode_bridge.process_id > 0) {
+    const pid_t pid = app.opencode_bridge.process_id;
+    int status = 0;
+    kill(pid, SIGTERM);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(700);
+    while (std::chrono::steady_clock::now() < deadline) {
+      const pid_t wait_result = waitpid(pid, &status, WNOHANG);
+      if (wait_result == pid || (wait_result < 0 && errno == ECHILD)) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    const pid_t wait_result = waitpid(pid, &status, WNOHANG);
+    if (wait_result == 0) {
+      kill(pid, SIGKILL);
+      waitpid(pid, &status, WNOHANG);
+    }
+  }
+  app.opencode_bridge.process_id = -1;
+#endif
+
+  const std::string preserved_token = app.opencode_bridge.token;
+  ResetOpenCodeBridgeRuntimeFields(app, true);
+  app.opencode_bridge.token = preserved_token;
+}
+
+static bool RestartOpenCodeBridgeIfModelChanged(AppState& app, std::string* error_out) {
+  const fs::path desired_model_folder_path = ResolveRagModelFolder(app);
+  fs::path desired_model_folder_norm = NormalizeAbsolutePath(desired_model_folder_path);
+  if (desired_model_folder_norm.empty()) {
+    desired_model_folder_norm = desired_model_folder_path;
+  }
+  const std::string desired_model_folder = desired_model_folder_norm.string();
+  const std::string desired_requested_model = Trim(app.settings.selected_model_id);
+
+  const bool process_running = IsOpenCodeBridgeProcessRunning(app);
+  const bool signature_matches =
+      process_running &&
+      app.opencode_bridge.model_folder == desired_model_folder &&
+      app.opencode_bridge.requested_model == desired_requested_model &&
+      !Trim(app.opencode_bridge.endpoint).empty() &&
+      !Trim(app.opencode_bridge.api_base).empty();
+
+  if (signature_matches) {
+    std::string health_error;
+    if (!ProbeOpenCodeBridgeHealth(app, &health_error)) {
+      StopOpenCodeBridge(app);
+      if (!StartOpenCodeBridge(app, desired_model_folder_norm, desired_requested_model, error_out)) {
+        return false;
+      }
+      return true;
+    }
+    app.opencode_bridge.healthy = true;
+    std::string config_error;
+    if (!EnsureOpenCodeConfigProvisioned(app, &config_error)) {
+      if (error_out != nullptr) {
+        *error_out = config_error;
+      }
+      app.opencode_bridge.last_error = config_error;
+      return false;
+    }
+    return true;
+  }
+
+  StopOpenCodeBridge(app);
+  return StartOpenCodeBridge(app, desired_model_folder_norm, desired_requested_model, error_out);
+}
+
+static bool EnsureOpenCodeBridgeRunning(AppState& app, std::string* error_out) {
+  const bool ok = RestartOpenCodeBridgeIfModelChanged(app, error_out);
+  if (!ok && error_out != nullptr && error_out->empty()) {
+    *error_out = "Failed to ensure OpenCode bridge is running.";
+  }
+  if (!ok) {
+    app.opencode_bridge.healthy = false;
+  }
+  return ok;
+}
+
 static fs::path SettingsFilePath(const AppState& app) {
   return AppPaths::SettingsFilePath(app.data_root);
 }
@@ -1952,7 +2783,8 @@ static bool MigrateProviderProfilesToFixedModeIds(AppState& app) {
       if (Trim(profile.prompt_bootstrap_path).empty()) {
         assign_if_changed(profile.prompt_bootstrap_path, std::string("@.gemini/gemini.md"));
       }
-    } else if (mapped_id == "codex-cli" || mapped_id == "claude-cli" || mapped_id == "opencode-cli") {
+    } else if (mapped_id == "codex-cli" || mapped_id == "claude-cli" || mapped_id == "opencode-cli" ||
+               mapped_id == "opencode-local") {
       assign_if_changed(profile.output_mode, std::string("cli"));
       assign_if_changed(profile.supports_interactive, true);
     } else if (mapped_id == "ollama-engine") {
@@ -2272,6 +3104,20 @@ static void SaveSettings(AppState& app) {
   app.settings.rag_scan_max_tokens = std::clamp(app.settings.rag_scan_max_tokens, 0, 32768);
   ClampWindowSettings(app.settings);
   SyncRagServiceConfig(app);
+  if (app.opencode_bridge.running) {
+    fs::path desired_model_folder = NormalizeAbsolutePath(ResolveRagModelFolder(app));
+    if (desired_model_folder.empty()) {
+      desired_model_folder = ResolveRagModelFolder(app);
+    }
+    const std::string desired_model = Trim(app.settings.selected_model_id);
+    if (app.opencode_bridge.model_folder != desired_model_folder.string() ||
+        app.opencode_bridge.requested_model != desired_model) {
+      std::string bridge_error;
+      if (!RestartOpenCodeBridgeIfModelChanged(app, &bridge_error) && !bridge_error.empty()) {
+        app.status_line = bridge_error;
+      }
+    }
+  }
   RefreshRememberedSelection(app);
   SettingsStore::Save(SettingsFilePath(app), app.settings, app.center_view_mode);
 }
@@ -2526,6 +3372,40 @@ static bool EnsureLocalRuntimeModelLoaded(AppState& app, std::string* error_out 
   return true;
 }
 
+static bool ProviderUsesOpenCodeLocalBridge(const ProviderProfile& provider) {
+  return ToLowerAscii(Trim(provider.id)) == "opencode-local";
+}
+
+static bool EnsureSelectedLocalRuntimeModelForProvider(AppState& app) {
+  const fs::path model_folder = ResolveRagModelFolder(app);
+  app.local_runtime_engine.SetModelFolder(model_folder);
+  const std::vector<std::string> runtime_models = app.local_runtime_engine.ListModels();
+  const std::string selected_model = Trim(app.settings.selected_model_id);
+  const bool selected_model_valid =
+      !selected_model.empty() &&
+      std::find(runtime_models.begin(), runtime_models.end(), selected_model) != runtime_models.end();
+  if (selected_model_valid) {
+    return true;
+  }
+
+  if (runtime_models.empty()) {
+    app.runtime_model_selection_id.clear();
+    app.status_line = "No local runtime models found. Add one, then retry.";
+  } else {
+    if (Trim(app.runtime_model_selection_id).empty() ||
+        std::find(runtime_models.begin(), runtime_models.end(), app.runtime_model_selection_id) == runtime_models.end()) {
+      app.runtime_model_selection_id = runtime_models.front();
+    }
+    if (selected_model.empty()) {
+      app.status_line = "Select a local runtime model to continue.";
+    } else {
+      app.status_line = "Selected model is unavailable. Choose a local runtime model to continue.";
+    }
+  }
+  app.open_runtime_model_selection_popup = true;
+  return false;
+}
+
 enum class TemplatePreflightOutcome {
   ReadyWithTemplate,
   ReadyWithoutTemplate,
@@ -2608,6 +3488,7 @@ static bool QueueGeminiPromptForChat(AppState& app,
 
   const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
   const bool use_local_runtime = ChatUsesInternalEngine(app, chat);
+  const bool use_opencode_local_bridge = ProviderUsesOpenCodeLocalBridge(provider);
   std::string template_status;
   std::string bootstrap_prompt;
   TemplatePreflightOutcome template_outcome = TemplatePreflightOutcome::ReadyWithoutTemplate;
@@ -2632,21 +3513,7 @@ static bool QueueGeminiPromptForChat(AppState& app,
     runtime_prompt = bootstrap_prompt + "\n\n" + runtime_prompt;
   }
 
-  if (use_local_runtime && Trim(app.settings.selected_model_id).empty()) {
-    const fs::path model_folder = ResolveRagModelFolder(app);
-    app.local_runtime_engine.SetModelFolder(model_folder);
-    const std::vector<std::string> runtime_models = app.local_runtime_engine.ListModels();
-    if (runtime_models.empty()) {
-      app.runtime_model_selection_id.clear();
-      app.status_line = "No local runtime models found. Add one, then retry.";
-    } else {
-      if (Trim(app.runtime_model_selection_id).empty() ||
-          std::find(runtime_models.begin(), runtime_models.end(), app.runtime_model_selection_id) == runtime_models.end()) {
-        app.runtime_model_selection_id = runtime_models.front();
-      }
-      app.status_line = "Select a local runtime model to continue.";
-    }
-    app.open_runtime_model_selection_popup = true;
+  if ((use_local_runtime || use_opencode_local_bridge) && !EnsureSelectedLocalRuntimeModelForProvider(app)) {
     return false;
   }
 
@@ -3091,6 +3958,16 @@ static void ApplyWindowIcon(SDL_Window* window) {
 
 int main(int, char**) {
   AppState app;
+  const CURLcode curl_init_code = curl_global_init(CURL_GLOBAL_DEFAULT);
+  if (curl_init_code != CURLE_OK) {
+    std::fprintf(stderr, "Failed to initialize libcurl: %s\n", curl_easy_strerror(curl_init_code));
+    return 1;
+  }
+  struct CurlGlobalCleanupGuard {
+    ~CurlGlobalCleanupGuard() {
+      curl_global_cleanup();
+    }
+  } curl_cleanup_guard;
   std::vector<fs::path> data_root_candidates;
   if (const char* data_dir_env = std::getenv("UAM_DATA_DIR")) {
     const std::string env_root = Trim(data_dir_env);
@@ -3404,6 +4281,7 @@ int main(int, char**) {
   if (!terminals_stopped_for_shutdown) {
     StopAllCliTerminals(app, true);
   }
+  StopOpenCodeBridge(app);
 
   ImGui_ImplOpenGL3_Shutdown();
   ImGui_ImplSDL2_Shutdown();

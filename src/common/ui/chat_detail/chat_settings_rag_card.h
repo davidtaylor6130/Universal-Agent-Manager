@@ -15,8 +15,19 @@ static void DrawChatSettingsRagCard(AppState& app, ChatSession& chat) {
     EnsureRagManualQueryWorkspaceState(app, workspace_key);
 
     ImGui::TextColored(ui::kTextMuted, "Project source directory");
-    ImGui::SetNextItemWidth(-1.0f);
-    ImGui::InputText("##rag_project_source_directory", &app.settings.rag_project_source_directory);
+    std::string browse_error;
+    DrawPathInputWithBrowseButton(
+        "##rag_project_source_directory",
+        app.settings.rag_project_source_directory,
+        "rag_card_source_directory_picker",
+        PathBrowseTarget::Directory,
+        -1.0f,
+        nullptr,
+        nullptr,
+        &browse_error);
+    if (!browse_error.empty()) {
+      app.status_line = browse_error;
+    }
     if (Trim(app.settings.rag_project_source_directory).empty()) {
       ImGui::TextColored(ui::kTextMuted, "(empty uses current chat workspace)");
     }

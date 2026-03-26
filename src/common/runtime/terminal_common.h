@@ -747,6 +747,32 @@ static void SyncChatsFromNative(AppState& app, const std::string& preferred_chat
   FinalizeChatSyncSelection(app, selected_before, preferred_chat_id, preserve_selection);
 }
 
+static std::vector<std::string> ForceOpenCodeModelFlag(std::vector<std::string> argv,
+                                                        const std::string& provider_model_id) {
+  if (argv.empty() || Trim(provider_model_id).empty()) {
+    return argv;
+  }
+
+  std::vector<std::string> filtered;
+  filtered.reserve(argv.size() + 2);
+  for (std::size_t i = 0; i < argv.size(); ++i) {
+    const std::string& arg = argv[i];
+    if (arg == "--model" || arg == "-m") {
+      if (i + 1 < argv.size()) {
+        ++i;
+      }
+      continue;
+    }
+    if (arg.rfind("--model=", 0) == 0 || arg.rfind("-m=", 0) == 0) {
+      continue;
+    }
+    filtered.push_back(arg);
+  }
+  filtered.push_back("--model");
+  filtered.push_back(provider_model_id);
+  return filtered;
+}
+
 static std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const ChatSession& chat) {
   const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
   ChatSession effective_chat = chat;
@@ -757,12 +783,35 @@ static std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app
       effective_chat.native_session_id = resume_id;
     }
   }
-  return ProviderRuntime::BuildInteractiveArgv(provider, effective_chat, app.settings);
+  std::vector<std::string> argv = ProviderRuntime::BuildInteractiveArgv(provider, effective_chat, app.settings);
+  if (ProviderUsesOpenCodeLocalBridge(provider)) {
+    std::string selected_model = Trim(app.opencode_bridge.selected_model);
+    if (selected_model.empty()) {
+      selected_model = Trim(app.settings.selected_model_id);
+    }
+    if (!selected_model.empty()) {
+      std::string provider_model_id = selected_model;
+      if (provider_model_id.rfind("uam_local/", 0) != 0) {
+        provider_model_id = "uam_local/" + provider_model_id;
+      }
+      argv = ForceOpenCodeModelFlag(std::move(argv), provider_model_id);
+    }
+  }
+  return argv;
 }
 
 static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, const ChatSession& chat, const int rows, const int cols);
 
 static bool SendPromptToCliRuntime(AppState& app, ChatSession& chat, const std::string& prompt, std::string* error_out = nullptr) {
+  const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
+  if (ProviderUsesOpenCodeLocalBridge(provider)) {
+    if (!EnsureOpenCodeBridgeRunning(app, error_out)) {
+      if (error_out != nullptr && error_out->empty()) {
+        *error_out = "Failed to start OpenCode bridge.";
+      }
+      return false;
+    }
+  }
   CliTerminalState& terminal = EnsureCliTerminalForChat(app, chat);
   if (!terminal.running) {
     if (!StartCliTerminalForChat(app, terminal, chat, 30, 120)) {
@@ -809,6 +858,17 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
   if (!provider.supports_interactive) {
     terminal.last_error = "Active provider does not expose an interactive runtime command.";
     return false;
+  }
+  if (ProviderUsesOpenCodeLocalBridge(provider)) {
+    if (!EnsureSelectedLocalRuntimeModelForProvider(app)) {
+      terminal.last_error = "Select a local runtime model to continue.";
+      return false;
+    }
+    std::string bridge_error;
+    if (!EnsureOpenCodeBridgeRunning(app, &bridge_error)) {
+      terminal.last_error = bridge_error.empty() ? "Failed to start OpenCode bridge." : bridge_error;
+      return false;
+    }
   }
   if (ChatUsesGeminiHistory(app, chat)) {
     RefreshGeminiChatsDir(app);

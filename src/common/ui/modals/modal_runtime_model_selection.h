@@ -14,15 +14,28 @@ static void DrawRuntimeModelSelectionModal(AppState& app) {
 
   ImGui::TextColored(ui::kTextPrimary, "Select Runtime Model");
   ImGui::Dummy(ImVec2(0.0f, ui::kSpace4));
-  ImGui::TextWrapped("Ollama Engine (Structured) needs a runtime model before sending prompts.");
+  ImGui::TextWrapped("This local runtime provider needs a model before sending prompts.");
   ImGui::TextColored(ui::kTextMuted, "Models folder directory");
-  ImGui::SetNextItemWidth(-1.0f);
-  const bool folder_changed = ImGui::InputText("##runtime_model_folder_directory", &app.settings.models_folder_directory);
+  bool input_deactivated_after_edit = false;
+  bool picked_with_dialog = false;
+  std::string browse_error;
+  const bool folder_changed = DrawPathInputWithBrowseButton(
+      "##runtime_model_folder_directory",
+      app.settings.models_folder_directory,
+      "runtime_model_folder_picker",
+      PathBrowseTarget::Directory,
+      -1.0f,
+      &input_deactivated_after_edit,
+      &picked_with_dialog,
+      &browse_error);
+  if (!browse_error.empty()) {
+    app.status_line = browse_error;
+  }
   if (folder_changed) {
     app.settings.models_folder_directory = Trim(app.settings.models_folder_directory);
     app.loaded_runtime_model_id.clear();
   }
-  if (ImGui::IsItemDeactivatedAfterEdit()) {
+  if (input_deactivated_after_edit || picked_with_dialog) {
     SaveSettings(app);
   }
 

@@ -130,12 +130,12 @@ static SidebarItemAction DrawSidebarItem(AppState& app,
 
   if (hovered || selected) {
     ImGui::SetCursorScreenPos(ImVec2(max.x - options_x_offset, min.y + delete_y_offset));
-    if (DrawMiniIconButton("chat_options_menu", "...", ImVec2(16.0f, 16.0f), true)) {
+    if (DrawMiniIconButton("chat_options_menu", "icon:menu", ImVec2(16.0f, 16.0f), true)) {
       action.request_open_options = true;
       action.select = false;
     }
     ImGui::SetCursorScreenPos(ImVec2(max.x - delete_x_offset, min.y + delete_y_offset));
-    if (DrawMiniIconButton("delete_chat", "x", ImVec2(16.0f, 16.0f), true)) {
+    if (DrawMiniIconButton("delete_chat", "icon:delete", ImVec2(16.0f, 16.0f), true)) {
       action.request_delete = true;
       action.select = false;
     }

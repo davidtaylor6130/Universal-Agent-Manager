@@ -25,8 +25,19 @@ static void DrawAppSettingsBehaviorSection(AppState& app, AppSettings& draft_set
   ImGui::TextColored(ui::kTextMuted, "Last selected: %s", active_label.c_str());
 
   ImGui::TextColored(ui::kTextMuted, "Models folder directory (Ollama Engine)");
-  ImGui::SetNextItemWidth(-1.0f);
-  ImGui::InputText("##models_folder_directory", &draft_settings.models_folder_directory);
+  std::string browse_error;
+  DrawPathInputWithBrowseButton(
+      "##models_folder_directory",
+      draft_settings.models_folder_directory,
+      "app_settings_models_folder_picker",
+      PathBrowseTarget::Directory,
+      -1.0f,
+      nullptr,
+      nullptr,
+      &browse_error);
+  if (!browse_error.empty()) {
+    app.status_line = browse_error;
+  }
   ImGui::TextColored(ui::kTextMuted, "Leave empty to auto-detect models folder.");
 
   ImGui::TextColored(ui::kTextMuted, "Model id (runtime)");

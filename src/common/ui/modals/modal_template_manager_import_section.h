@@ -6,8 +6,19 @@
 static void DrawTemplateManagerImportSection(AppState& app, const fs::path& global_root) {
   ImGui::TextColored(ui::kTextSecondary, "Import Markdown Template");
   PushInputChrome();
-  ImGui::SetNextItemWidth(560.0f);
-  ImGui::InputText("Path", &app.template_import_path_input);
+  std::string browse_error;
+  DrawPathInputWithBrowseButton(
+      "Path",
+      app.template_import_path_input,
+      "template_import_file_picker",
+      PathBrowseTarget::File,
+      560.0f,
+      nullptr,
+      nullptr,
+      &browse_error);
+  if (!browse_error.empty()) {
+    app.status_line = browse_error;
+  }
   PopInputChrome();
   if (DrawButton("Import", ImVec2(96.0f, 30.0f), ButtonKind::Primary)) {
     std::string imported_id;

@@ -33,8 +33,19 @@ static void DrawFolderSettingsModal(AppState& app) {
   PushInputChrome();
   ImGui::SetNextItemWidth(460.0f);
   ImGui::InputText("Title##folder_settings_title", &app.folder_settings_title_input);
-  ImGui::SetNextItemWidth(460.0f);
-  ImGui::InputText("Directory##folder_settings_directory", &app.folder_settings_directory_input);
+  std::string browse_error;
+  DrawPathInputWithBrowseButton(
+      "Directory##folder_settings_directory",
+      app.folder_settings_directory_input,
+      "folder_settings_directory_picker",
+      PathBrowseTarget::Directory,
+      460.0f,
+      nullptr,
+      nullptr,
+      &browse_error);
+  if (!browse_error.empty()) {
+    app.status_line = browse_error;
+  }
   PopInputChrome();
 
   ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));

@@ -13,8 +13,19 @@ static void DrawSidebarNewFolderPopup(AppState& app) {
     ImGui::SetNextItemWidth(420.0f);
     PushInputChrome();
     ImGui::InputText("Title", &app.new_folder_title_input);
-    ImGui::SetNextItemWidth(420.0f);
-    ImGui::InputText("Directory", &app.new_folder_directory_input);
+    std::string browse_error;
+    DrawPathInputWithBrowseButton(
+        "Directory",
+        app.new_folder_directory_input,
+        "new_folder_directory_picker",
+        PathBrowseTarget::Directory,
+        420.0f,
+        nullptr,
+        nullptr,
+        &browse_error);
+    if (!browse_error.empty()) {
+      app.status_line = browse_error;
+    }
     PopInputChrome();
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
     if (DrawButton("Create", ImVec2(96.0f, 32.0f), ButtonKind::Primary)) {

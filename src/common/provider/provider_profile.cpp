@@ -178,6 +178,22 @@ std::vector<ProviderProfile> ProviderProfileStore::BuiltInProfiles() {
   opencode.assistant_message_types = {"assistant"};
   profiles.push_back(std::move(opencode));
 
+  ProviderProfile opencode_local;
+  opencode_local.id = "opencode-local";
+  opencode_local.title = "OpenCode (Fully Local)";
+  opencode_local.execution_mode = "cli";
+  opencode_local.output_mode = "cli";
+  opencode_local.command_template = "opencode {flags} {prompt}";
+  opencode_local.interactive_command = "opencode";
+  opencode_local.supports_interactive = true;
+  opencode_local.supports_resume = false;
+  opencode_local.resume_argument.clear();
+  opencode_local.history_adapter = "local-only";
+  opencode_local.prompt_bootstrap = "prepend";
+  opencode_local.user_message_types = {"user"};
+  opencode_local.assistant_message_types = {"assistant"};
+  profiles.push_back(std::move(opencode_local));
+
   ProviderProfile ollama_engine;
   ollama_engine.id = "ollama-engine";
   ollama_engine.title = "Ollama Engine (Local)";
