@@ -152,6 +152,7 @@ struct AsyncNativeChatLoadTask {
 #endif
 
 struct AppState {
+  fs::path portable_app_root;
   fs::path data_root;
   fs::path gemini_chats_dir;
   AppSettings settings;
@@ -1216,7 +1217,7 @@ static std::optional<fs::path> ResolveExecutableDirectory(const int argc, char**
   return std::nullopt;
 }
 
-static fs::path ResolvePortableDataRootPath(const fs::path& executable_directory) {
+static fs::path ResolvePortableAppRootPath(const fs::path& executable_directory) {
   fs::path root = executable_directory;
 #if defined(__APPLE__)
   if (!root.empty() &&
@@ -1226,7 +1227,7 @@ static fs::path ResolvePortableDataRootPath(const fs::path& executable_directory
     root = root.parent_path().parent_path();
   }
 #endif
-  return root / "data";
+  return root;
 }
 
 static bool EnsureDataRootLayout(const fs::path& data_root, std::string* error_out) {
@@ -1468,7 +1469,11 @@ static void EnsureDefaultFolder(AppState& app) {
   ChatFolder folder;
   folder.id = kDefaultFolderId;
   folder.title = kDefaultFolderTitle;
-  folder.directory = fs::current_path().string();
+  if (!app.portable_app_root.empty()) {
+    folder.directory = app.portable_app_root.string();
+  } else {
+    folder.directory = fs::current_path().string();
+  }
   folder.collapsed = false;
   app.folders.push_back(std::move(folder));
 }
@@ -2041,34 +2046,116 @@ static void ApplyLocalOverrides(AppState& app, std::vector<ChatSession>& native_
 }
 
 static fs::path ResolveGeminiWorkspaceRootForHistory(const AppState& app) {
-  if (const ChatSession* selected_chat = SelectedChat(app); selected_chat != nullptr) {
-    if (const ChatFolder* selected_folder = FindFolderById(app, selected_chat->folder_id); selected_folder != nullptr) {
-      const fs::path selected_root = ExpandLeadingTildePath(selected_folder->directory);
-      if (!selected_root.empty()) {
-        std::error_code abs_ec;
-        const fs::path absolute_root = fs::absolute(selected_root, abs_ec);
-        return abs_ec ? selected_root : absolute_root;
-      }
-    }
+  if (!app.portable_app_root.empty()) {
+    return app.portable_app_root;
   }
-
-  if (const ChatFolder* default_folder = FindFolderById(app, kDefaultFolderId); default_folder != nullptr) {
-    const fs::path default_root = ExpandLeadingTildePath(default_folder->directory);
-    if (!default_root.empty()) {
-      std::error_code abs_ec;
-      const fs::path absolute_root = fs::absolute(default_root, abs_ec);
-      return abs_ec ? default_root : absolute_root;
-    }
-  }
-
   std::error_code cwd_ec;
   const fs::path cwd = fs::current_path(cwd_ec);
-  return cwd_ec ? fs::path{} : cwd;
+  if (cwd_ec) {
+    return fs::path{};
+  }
+  std::error_code abs_ec;
+  const fs::path absolute_cwd = fs::absolute(cwd, abs_ec);
+  return abs_ec ? cwd : absolute_cwd;
+}
+
+static std::optional<fs::path> ResolveFallbackGeminiProjectTmpDir(const AppState& app) {
+  const fs::path tmp_root = AppPaths::GeminiHomePath() / "tmp";
+  std::error_code tmp_ec;
+  if (!fs::exists(tmp_root, tmp_ec) || tmp_ec || !fs::is_directory(tmp_root, tmp_ec) || tmp_ec) {
+    return std::nullopt;
+  }
+
+  std::unordered_set<std::string> known_session_ids;
+  const std::vector<ChatSession> local_chats = LoadChats(app);
+  for (const ChatSession& chat : local_chats) {
+    if (!chat.native_session_id.empty()) {
+      known_session_ids.insert(chat.native_session_id);
+    } else if (chat.uses_native_session && !chat.id.empty()) {
+      known_session_ids.insert(chat.id);
+    }
+  }
+
+  std::optional<fs::path> best_tmp_dir;
+  std::size_t best_matching_session_count = 0;
+  std::size_t best_chat_file_count = 0;
+  fs::file_time_type best_latest_write = fs::file_time_type::min();
+  bool best_has_timestamp = false;
+
+  std::error_code dir_ec;
+  for (const auto& project_dir : fs::directory_iterator(tmp_root, dir_ec)) {
+    if (dir_ec || !project_dir.is_directory()) {
+      continue;
+    }
+    const fs::path chats_dir = project_dir.path() / "chats";
+    std::error_code chats_ec;
+    if (!fs::exists(chats_dir, chats_ec) || chats_ec || !fs::is_directory(chats_dir, chats_ec) || chats_ec) {
+      continue;
+    }
+
+    std::size_t chat_file_count = 0;
+    std::size_t matching_session_count = 0;
+    fs::file_time_type latest_write = fs::file_time_type::min();
+    bool has_timestamp = false;
+
+    std::error_code files_ec;
+    for (const auto& chat_file : fs::directory_iterator(chats_dir, files_ec)) {
+      if (files_ec || !chat_file.is_regular_file()) {
+        continue;
+      }
+      if (chat_file.path().extension() != ".json") {
+        continue;
+      }
+      ++chat_file_count;
+
+      if (!known_session_ids.empty()) {
+        const std::string file_text = ReadTextFile(chat_file.path());
+        const std::optional<JsonValue> root_opt = ParseJson(file_text);
+        if (root_opt.has_value() && root_opt->type == JsonValue::Type::Object) {
+          const std::string session_id = JsonStringOrEmpty(root_opt->Find("sessionId"));
+          if (!session_id.empty() && known_session_ids.find(session_id) != known_session_ids.end()) {
+            ++matching_session_count;
+          }
+        }
+      }
+
+      std::error_code write_ec;
+      const fs::file_time_type write_time = fs::last_write_time(chat_file.path(), write_ec);
+      if (!write_ec && (!has_timestamp || write_time > latest_write)) {
+        latest_write = write_time;
+        has_timestamp = true;
+      }
+    }
+    if (chat_file_count == 0) {
+      continue;
+    }
+
+    const bool better_match_count = matching_session_count > best_matching_session_count;
+    const bool better_count = (matching_session_count == best_matching_session_count) &&
+                              (chat_file_count > best_chat_file_count);
+    const bool better_recency =
+        (matching_session_count == best_matching_session_count) &&
+        (chat_file_count == best_chat_file_count) &&
+        has_timestamp &&
+        (!best_has_timestamp || latest_write > best_latest_write);
+    if (better_match_count || better_count || better_recency) {
+      best_tmp_dir = project_dir.path();
+      best_matching_session_count = matching_session_count;
+      best_chat_file_count = chat_file_count;
+      best_latest_write = latest_write;
+      best_has_timestamp = has_timestamp;
+    }
+  }
+
+  return best_tmp_dir;
 }
 
 static void RefreshGeminiChatsDir(AppState& app) {
   const fs::path workspace_root = ResolveGeminiWorkspaceRootForHistory(app);
-  const auto tmp_dir = ResolveGeminiProjectTmpDir(workspace_root);
+  std::optional<fs::path> tmp_dir = ResolveGeminiProjectTmpDir(workspace_root);
+  if (!tmp_dir.has_value()) {
+    tmp_dir = ResolveFallbackGeminiProjectTmpDir(app);
+  }
   if (tmp_dir.has_value()) {
     app.gemini_chats_dir = tmp_dir.value() / "chats";
     std::error_code ec;
@@ -7116,7 +7203,8 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "Failed to resolve executable directory for portable data root.\n");
     return 1;
   }
-  app.data_root = ResolvePortableDataRootPath(executable_directory.value());
+  app.portable_app_root = ResolvePortableAppRootPath(executable_directory.value());
+  app.data_root = app.portable_app_root / "data";
   std::string data_root_error;
   if (!EnsureDataRootLayout(app.data_root, &data_root_error)) {
     std::fprintf(stderr, "Failed to initialize portable data directory '%s': %s\n",
