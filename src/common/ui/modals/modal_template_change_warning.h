@@ -8,7 +8,9 @@ static void DrawTemplateChangeWarningModal(AppState& app) {
     ImGui::OpenPopup("template_change_warning_popup");
     app.open_template_change_warning_popup = false;
   }
-  if (ImGui::BeginPopupModal("template_change_warning_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (BeginCenteredPopupModal("Confirm Prompt Profile Change###template_change_warning_popup",
+                              nullptr,
+                              ImGuiWindowFlags_AlwaysAutoResize)) {
     const int chat_index = FindChatIndexById(app, app.pending_template_change_chat_id);
     const bool has_chat = (chat_index >= 0);
     const std::string chat_title = has_chat ? CompactPreview(app.chats[chat_index].title, 42) : "Unknown chat";
@@ -16,7 +18,7 @@ static void DrawTemplateChangeWarningModal(AppState& app) {
                                                ? "Use global default"
                                                : TemplateLabelOrFallback(app, app.pending_template_change_override_id);
 
-    ImGui::TextColored(ui::kTextPrimary, "Apply template change?");
+    ImGui::TextColored(ui::kTextPrimary, "Apply Prompt Profile Change");
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace4));
     ImGui::TextWrapped("This chat already has messages. Template changes may not fully affect prior context.");
     ImGui::TextColored(ui::kTextMuted, "Chat: %s", chat_title.c_str());
@@ -31,7 +33,7 @@ static void DrawTemplateChangeWarningModal(AppState& app) {
     }
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
 
-    if (DrawButton("Apply + Send", ImVec2(126.0f, 32.0f), ButtonKind::Primary)) {
+    if (DrawButton("Apply and Send", ImVec2(144.0f, 32.0f), ButtonKind::Primary)) {
       if (has_chat) {
         ApplyChatTemplateOverride(app, app.chats[chat_index], app.pending_template_change_override_id, true);
       } else {

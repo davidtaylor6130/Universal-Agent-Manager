@@ -110,6 +110,7 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file,
   lines << "selected_vector_model_id=" << settings.selected_vector_model_id << '\n';
   lines << "vector_database_name_override=" << settings.vector_database_name_override << '\n';
   lines << "cli_idle_timeout_seconds=" << settings.cli_idle_timeout_seconds << '\n';
+  lines << "cli_max_columns=" << settings.cli_max_columns << '\n';
   lines << "prompt_profile_root_path=" << settings.prompt_profile_root_path << '\n';
   lines << "default_prompt_profile_id=" << settings.default_prompt_profile_id << '\n';
   // Backward-compatible legacy keys.
@@ -187,6 +188,8 @@ void SettingsStore::Load(const std::filesystem::path& settings_file,
       settings.vector_database_name_override = value;
     } else if (key == "cli_idle_timeout_seconds") {
       settings.cli_idle_timeout_seconds = ParseInt(value, settings.cli_idle_timeout_seconds);
+    } else if (key == "cli_max_columns") {
+      settings.cli_max_columns = ParseInt(value, settings.cli_max_columns);
     } else if (key == "gemini_global_root_path") {
       settings.gemini_global_root_path = value;
     } else if (key == "prompt_profile_root_path") {
@@ -267,6 +270,7 @@ void SettingsStore::Load(const std::filesystem::path& settings_file,
   settings.gemini_global_root_path = settings.prompt_profile_root_path;
   settings.default_gemini_template_id = settings.default_prompt_profile_id;
   settings.cli_idle_timeout_seconds = std::clamp(settings.cli_idle_timeout_seconds, 30, 3600);
+  settings.cli_max_columns = std::clamp(settings.cli_max_columns, 40, 512);
   settings.rag_top_k = std::clamp(settings.rag_top_k, 1, 20);
   settings.rag_max_snippet_chars = std::clamp(settings.rag_max_snippet_chars, 120, 4000);
   settings.rag_max_file_bytes = std::clamp(settings.rag_max_file_bytes, 16 * 1024, 20 * 1024 * 1024);

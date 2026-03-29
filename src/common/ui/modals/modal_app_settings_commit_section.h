@@ -7,7 +7,7 @@ static void DrawAppSettingsCommitSection(AppState& app,
                                          AppSettings& draft_settings,
                                          const float platform_scale,
                                          bool& initialized) {
-  if (DrawButton("Save Preferences", ImVec2(138.0f, 34.0f), ButtonKind::Primary)) {
+  if (DrawButton("Save Settings", ImVec2(132.0f, 34.0f), ButtonKind::Primary)) {
     const std::string previous_global_root = app.settings.prompt_profile_root_path;
     draft_settings.ui_theme = NormalizeThemeChoice(draft_settings.ui_theme);
     draft_settings.vector_db_backend = (draft_settings.vector_db_backend == "none") ? "none" : "ollama-engine";
@@ -33,7 +33,7 @@ static void DrawAppSettingsCommitSection(AppState& app,
       MarkTemplateCatalogDirty(app);
       RefreshTemplateCatalog(app, true);
     }
-    app.status_line = "Preferences saved.";
+    app.status_line = "Settings saved.";
     initialized = false;
     ImGui::CloseCurrentPopup();
   }

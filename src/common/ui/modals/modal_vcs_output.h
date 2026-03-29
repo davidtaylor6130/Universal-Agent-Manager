@@ -8,7 +8,11 @@ static void DrawVcsOutputModal(AppState& app) {
     ImGui::OpenPopup("vcs_output_popup");
     app.open_vcs_output_popup = false;
   }
-  if (!ImGui::BeginPopupModal("vcs_output_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!BeginCenteredPopupModal("Repository Output###vcs_output_popup",
+                               nullptr,
+                               ImGuiWindowFlags_NoResize,
+                               ImVec2(820.0f, 540.0f),
+                               ImGuiCond_Appearing)) {
     return;
   }
 

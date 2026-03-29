@@ -79,6 +79,15 @@ struct CliTerminalState {
   std::deque<std::string> pending_structured_prompts;
   bool generation_in_progress = false;
   std::string last_error;
+  bool cursor_visible = true;
+  bool cursor_blink = true;
+  int cursor_shape = VTERM_PROP_CURSORSHAPE_BLOCK;
+  bool selection_active = false;
+  bool selection_dragging = false;
+  int selection_anchor_row = 0;
+  int selection_anchor_col = 0;
+  int selection_current_row = 0;
+  int selection_current_col = 0;
 };
 
 /// <summary>
@@ -208,6 +217,10 @@ struct AppState {
   std::string vcs_output_popup_content;
   bool open_runtime_model_selection_popup = false;
   std::string runtime_model_selection_id;
+  std::string import_gemini_path_input;
+  std::string import_legacy_data_root_input;
+  std::string import_status_message;
+  int app_settings_tab_index = 0;
 
   std::vector<PendingGeminiCall> pending_calls;
   std::unordered_map<std::string, std::string> resolved_native_sessions_by_chat_id;

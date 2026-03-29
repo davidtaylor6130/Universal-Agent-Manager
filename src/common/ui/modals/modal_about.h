@@ -8,7 +8,7 @@ static void DrawAboutModal(AppState& app) {
     ImGui::OpenPopup("about_popup");
     app.open_about_popup = false;
   }
-  if (!ImGui::BeginPopupModal("about_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!BeginCenteredPopupModal("About###about_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
     return;
   }
 
@@ -44,7 +44,7 @@ static void DrawAboutModal(AppState& app) {
   ImGui::TextWrapped("%s", kAppCopyright);
   ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
 
-  if (DrawButton("OK", ImVec2(96.0f, 32.0f), ButtonKind::Primary)) {
+  if (DrawButton("Close", ImVec2(96.0f, 32.0f), ButtonKind::Primary)) {
     ImGui::CloseCurrentPopup();
   }
   ImGui::EndPopup();

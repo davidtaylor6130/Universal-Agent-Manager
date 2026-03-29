@@ -17,9 +17,6 @@ static void DrawChatDetailPane(AppState& app, ChatSession& chat) {
 
   const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
   if (ProviderRuntime::UsesCliOutput(provider)) {
-    if (!ProviderRuntime::UsesInternalEngine(provider) && provider.supports_interactive) {
-      MarkSelectedCliTerminalForLaunch(app);
-    }
     DrawChatDetailCliConsoleBody(app, chat);
     EndPanel();
     return;

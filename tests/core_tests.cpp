@@ -1,14 +1,18 @@
 #include "common/app_models.h"
 #include "common/app_paths.h"
 #include "common/chat_branching.h"
+#include "common/chat_folder_store.h"
 #include "common/chat_repository.h"
+#include "common/constants/app_constants.h"
 #include "common/frontend_actions.h"
 #include "common/gemini_command_builder.h"
 #include "common/gemini_template_catalog.h"
+#include "common/import_service.h"
 #include "common/provider_profile.h"
 #include "common/provider_runtime.h"
 #include "common/rag_index_service.h"
 #include "common/settings_store.h"
+#include "common/terminal_text_utils.h"
 #include "common/ollama_engine_client.h"
 #include "common/vcs_workspace_service.h"
 
@@ -331,6 +335,7 @@ UAM_TEST(TestSettingsStoreRoundTripExtendedPreferences) {
   write_settings.selected_vector_model_id = "embed-model.gguf";
   write_settings.vector_database_name_override = "team_index_v1";
   write_settings.cli_idle_timeout_seconds = 420;
+  write_settings.cli_max_columns = 123;
   write_settings.prompt_profile_root_path = "/tmp/.Gemini_universal_agent_manager";
   write_settings.default_prompt_profile_id = "baseline.md";
   write_settings.ui_theme = "system";
@@ -360,6 +365,7 @@ UAM_TEST(TestSettingsStoreRoundTripExtendedPreferences) {
   UAM_ASSERT_EQ(std::string("embed-model.gguf"), loaded.selected_vector_model_id);
   UAM_ASSERT_EQ(std::string("team_index_v1"), loaded.vector_database_name_override);
   UAM_ASSERT_EQ(420, loaded.cli_idle_timeout_seconds);
+  UAM_ASSERT_EQ(123, loaded.cli_max_columns);
   UAM_ASSERT_EQ(std::string("/tmp/.Gemini_universal_agent_manager"), loaded.prompt_profile_root_path);
   UAM_ASSERT_EQ(std::string("baseline.md"), loaded.default_prompt_profile_id);
   UAM_ASSERT(!loaded.confirm_delete_chat);
@@ -383,6 +389,7 @@ UAM_TEST(TestSettingsStoreClampsInvalidValues) {
                            "runtime_backend=unsupported\n"
                            "vector_db_backend=unsupported\n"
                            "cli_idle_timeout_seconds=1\n"
+                           "cli_max_columns=9999\n"
                            "remember_last_chat=0\n"
                            "last_selected_chat_id=stale-chat\n"));
 
@@ -394,6 +401,7 @@ UAM_TEST(TestSettingsStoreClampsInvalidValues) {
   UAM_ASSERT_EQ(std::string("provider-cli"), loaded.runtime_backend);
   UAM_ASSERT_EQ(std::string("ollama-engine"), loaded.vector_db_backend);
   UAM_ASSERT_EQ(30, loaded.cli_idle_timeout_seconds);
+  UAM_ASSERT_EQ(512, loaded.cli_max_columns);
   UAM_ASSERT(std::fabs(loaded.ui_scale_multiplier - 1.75f) < 0.0001f);
   UAM_ASSERT_EQ(960, loaded.window_width);
   UAM_ASSERT_EQ(620, loaded.window_height);
@@ -434,6 +442,29 @@ UAM_TEST(TestSettingsStoreLoadsLowScaleClamp) {
   UAM_ASSERT(std::fabs(loaded.ui_scale_multiplier - 0.85f) < 0.0001f);
   UAM_ASSERT(loaded.remember_last_chat);
   UAM_ASSERT_EQ(std::string("chat-keep"), loaded.last_selected_chat_id);
+}
+
+UAM_TEST(TestTerminalTextUtilsClampAndExtractSelection) {
+  UAM_ASSERT_EQ(160, uam::ClampCliTerminalColumns(220, 160));
+  UAM_ASSERT_EQ(20, uam::ClampCliTerminalColumns(12, 999));
+
+  const std::vector<std::vector<uam::TerminalTextCell>> rows = {
+      {uam::TerminalTextCell{"h", 1}, uam::TerminalTextCell{"i", 1}, uam::TerminalTextCell{"", 1}},
+      {uam::TerminalTextCell{"t", 1}, uam::TerminalTextCell{"h", 1}, uam::TerminalTextCell{"e", 1},
+       uam::TerminalTextCell{"r", 1}, uam::TerminalTextCell{"e", 1}},
+  };
+
+  const std::string extracted = uam::ExtractTerminalSelectionText(
+      rows,
+      uam::TerminalSelectionPoint{0, 0},
+      uam::TerminalSelectionPoint{1, 2});
+  UAM_ASSERT_EQ(std::string("hi\nthe"), extracted);
+
+  const std::string reversed = uam::ExtractTerminalSelectionText(
+      rows,
+      uam::TerminalSelectionPoint{1, 2},
+      uam::TerminalSelectionPoint{0, 0});
+  UAM_ASSERT_EQ(std::string("hi\nthe"), reversed);
 }
 
 UAM_TEST(TestGeminiCommandBuilderReplacesPlaceholders) {
@@ -509,6 +540,186 @@ UAM_TEST(TestChatRepositoryPersistsTemplateOverride) {
   UAM_ASSERT_EQ(2u, loaded.front().rag_source_directories.size());
   UAM_ASSERT_EQ(std::string("/tmp/workspace-a"), loaded.front().rag_source_directories[0]);
   UAM_ASSERT_EQ(std::string("/tmp/workspace-b"), loaded.front().rag_source_directories[1]);
+}
+
+UAM_TEST(TestChatRepositoryPersistsImportProvenance) {
+  TempDir data_root("uam-chat-import-provenance");
+
+  ChatSession chat;
+  chat.id = "chat-imported-1";
+  chat.provider_id = "gemini-structured";
+  chat.folder_id = uam::constants::kDefaultFolderId;
+  chat.title = "Imported Chat";
+  chat.created_at = "2026-03-25 10:00:00";
+  chat.updated_at = "2026-03-25 10:00:01";
+  chat.import_source_kind = "gemini-json";
+  chat.import_source_ref = "/tmp/session.json::session::abc123";
+  chat.messages.push_back(Message{MessageRole::User, "hello", "2026-03-25 10:00:01"});
+
+  UAM_ASSERT(ChatRepository::SaveChat(data_root.root, chat));
+  const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(data_root.root);
+  UAM_ASSERT_EQ(1u, loaded.size());
+  UAM_ASSERT_EQ(std::string("gemini-json"), loaded.front().import_source_kind);
+  UAM_ASSERT_EQ(std::string("/tmp/session.json::session::abc123"), loaded.front().import_source_ref);
+}
+
+UAM_TEST(TestChatFolderStorePersistsImportProvenance) {
+  TempDir data_root("uam-folder-import-provenance");
+
+  ChatFolder default_folder;
+  default_folder.id = uam::constants::kDefaultFolderId;
+  default_folder.title = uam::constants::kDefaultFolderTitle;
+  default_folder.directory = "/tmp/default";
+
+  ChatFolder imported_folder;
+  imported_folder.id = "folder-imported-1";
+  imported_folder.title = "Imported Folder";
+  imported_folder.directory = "/tmp/imported";
+  imported_folder.import_source_kind = "uam-v1-folder";
+  imported_folder.import_source_ref = "/tmp/legacy::folder::folder-1";
+
+  UAM_ASSERT(ChatFolderStore::Save(data_root.root, {default_folder, imported_folder}));
+  const std::vector<ChatFolder> loaded = ChatFolderStore::Load(data_root.root);
+  UAM_ASSERT_EQ(2u, loaded.size());
+  const auto it = std::find_if(loaded.begin(), loaded.end(), [](const ChatFolder& folder) {
+    return folder.id == "folder-imported-1";
+  });
+  UAM_ASSERT(it != loaded.end());
+  UAM_ASSERT_EQ(std::string("uam-v1-folder"), it->import_source_kind);
+  UAM_ASSERT_EQ(std::string("/tmp/legacy::folder::folder-1"), it->import_source_ref);
+}
+
+UAM_TEST(TestImportGeminiChatsCreatesLocalChatsAndDedupes) {
+  TempDir source_root("uam-import-gemini-source");
+  TempDir destination_root("uam-import-gemini-destination");
+  const fs::path source_file = source_root.root / "session-one.json";
+
+  UAM_ASSERT(WriteTextFile(source_file,
+                           "{\n"
+                           "  \"sessionId\": \"native-session-1\",\n"
+                           "  \"startTime\": \"2026-03-26 10:00:00\",\n"
+                           "  \"lastUpdated\": \"2026-03-26 10:00:10\",\n"
+                           "  \"messages\": [\n"
+                           "    {\"type\": \"user\", \"timestamp\": \"2026-03-26 10:00:01\", \"content\": \"Plan alpha\"},\n"
+                           "    {\"type\": \"assistant\", \"timestamp\": \"2026-03-26 10:00:02\", \"content\": \"Acknowledged.\"}\n"
+                           "  ]\n"
+                           "}\n"));
+
+  const uam::ImportSummary first =
+      uam::ImportGeminiChatsIntoLocalData(source_root.root, destination_root.root, "gemini-structured");
+  UAM_ASSERT(first.ok);
+  UAM_ASSERT_EQ(1, first.chats_imported);
+
+  std::vector<ChatSession> imported = ChatRepository::LoadLocalChats(destination_root.root);
+  UAM_ASSERT_EQ(1u, imported.size());
+  const std::string imported_chat_id = imported.front().id;
+  UAM_ASSERT(imported_chat_id != "native-session-1");
+  UAM_ASSERT_EQ(std::string("gemini-structured"), imported.front().provider_id);
+  UAM_ASSERT(!imported.front().uses_native_session);
+  UAM_ASSERT_EQ(std::string("gemini-json"), imported.front().import_source_kind);
+  UAM_ASSERT(imported.front().import_source_ref.find("native-session-1") != std::string::npos);
+  UAM_ASSERT_EQ(std::string("Plan alpha"), imported.front().messages.front().content);
+
+  UAM_ASSERT(WriteTextFile(source_file,
+                           "{\n"
+                           "  \"sessionId\": \"native-session-1\",\n"
+                           "  \"startTime\": \"2026-03-26 10:00:00\",\n"
+                           "  \"lastUpdated\": \"2026-03-26 10:05:00\",\n"
+                           "  \"messages\": [\n"
+                           "    {\"type\": \"user\", \"timestamp\": \"2026-03-26 10:00:01\", \"content\": \"Plan beta\"},\n"
+                           "    {\"type\": \"assistant\", \"timestamp\": \"2026-03-26 10:05:00\", \"content\": \"Updated.\"}\n"
+                           "  ]\n"
+                           "}\n"));
+
+  const uam::ImportSummary second =
+      uam::ImportGeminiChatsIntoLocalData(source_root.root, destination_root.root, "gemini-structured");
+  UAM_ASSERT(second.ok);
+  UAM_ASSERT_EQ(1, second.chats_updated);
+
+  imported = ChatRepository::LoadLocalChats(destination_root.root);
+  UAM_ASSERT_EQ(1u, imported.size());
+  UAM_ASSERT_EQ(imported_chat_id, imported.front().id);
+  UAM_ASSERT_EQ(std::string("Plan beta"), imported.front().messages.front().content);
+}
+
+UAM_TEST(TestImportLegacyUamDataUpdatesExistingImportedChats) {
+  TempDir legacy_root("uam-import-legacy-source");
+  TempDir destination_root("uam-import-legacy-destination");
+
+  AppSettings legacy_settings;
+  legacy_settings.prompt_profile_root_path = (legacy_root.root / "prompt-profiles").string();
+  UAM_ASSERT(SettingsStore::Save(legacy_root.root / "settings.txt", legacy_settings, CenterViewMode::Structured));
+
+  std::vector<ProviderProfile> legacy_profiles = ProviderProfileStore::BuiltInProfiles();
+  UAM_ASSERT(ProviderProfileStore::Save(legacy_root.root, legacy_profiles));
+
+  ChatFolder default_folder;
+  default_folder.id = uam::constants::kDefaultFolderId;
+  default_folder.title = uam::constants::kDefaultFolderTitle;
+  default_folder.directory = "/tmp/default";
+
+  ChatFolder legacy_folder;
+  legacy_folder.id = "folder-old";
+  legacy_folder.title = "Legacy Workspace";
+  legacy_folder.directory = "/tmp/legacy-workspace";
+  legacy_folder.collapsed = false;
+  UAM_ASSERT(ChatFolderStore::Save(legacy_root.root, {default_folder, legacy_folder}));
+
+  ChatSession legacy_chat;
+  legacy_chat.id = "legacy-chat-1";
+  legacy_chat.provider_id = "codex";
+  legacy_chat.folder_id = "folder-old";
+  legacy_chat.title = "Legacy Title";
+  legacy_chat.created_at = "2026-03-26 09:00:00";
+  legacy_chat.updated_at = "2026-03-26 09:00:01";
+  legacy_chat.messages.push_back(Message{MessageRole::User, "First import", "2026-03-26 09:00:01"});
+  UAM_ASSERT(ChatRepository::SaveChat(legacy_root.root, legacy_chat));
+
+  const uam::ImportSummary first =
+      uam::ImportLegacyUamDataIntoLocalData(legacy_root.root, destination_root.root, destination_root.root / "prompts");
+  UAM_ASSERT(first.ok);
+  UAM_ASSERT_EQ(1, first.chats_imported);
+
+  std::vector<ChatSession> imported_chats = ChatRepository::LoadLocalChats(destination_root.root);
+  std::vector<ChatFolder> imported_folders = ChatFolderStore::Load(destination_root.root);
+  UAM_ASSERT_EQ(1u, imported_chats.size());
+  const std::string imported_chat_id = imported_chats.front().id;
+  UAM_ASSERT(imported_chat_id != "legacy-chat-1");
+  UAM_ASSERT_EQ(std::string("uam-v1-chat"), imported_chats.front().import_source_kind);
+  UAM_ASSERT_EQ(std::string("codex-cli"), imported_chats.front().provider_id);
+  UAM_ASSERT(imported_chats.front().folder_id != "folder-old");
+  const std::string imported_folder_id = imported_chats.front().folder_id;
+
+  const auto imported_folder_it = std::find_if(imported_folders.begin(), imported_folders.end(), [&](const ChatFolder& folder) {
+    return folder.id == imported_folder_id;
+  });
+  UAM_ASSERT(imported_folder_it != imported_folders.end());
+  UAM_ASSERT_EQ(std::string("Legacy Workspace"), imported_folder_it->title);
+
+  legacy_folder.title = "Legacy Workspace Updated";
+  UAM_ASSERT(ChatFolderStore::Save(legacy_root.root, {default_folder, legacy_folder}));
+  legacy_chat.title = "Legacy Title Updated";
+  legacy_chat.messages.front().content = "Second import";
+  legacy_chat.updated_at = "2026-03-26 09:05:00";
+  UAM_ASSERT(ChatRepository::SaveChat(legacy_root.root, legacy_chat));
+
+  const uam::ImportSummary second =
+      uam::ImportLegacyUamDataIntoLocalData(legacy_root.root, destination_root.root, destination_root.root / "prompts");
+  UAM_ASSERT(second.ok);
+  UAM_ASSERT_EQ(1, second.chats_updated);
+
+  imported_chats = ChatRepository::LoadLocalChats(destination_root.root);
+  imported_folders = ChatFolderStore::Load(destination_root.root);
+  UAM_ASSERT_EQ(1u, imported_chats.size());
+  UAM_ASSERT_EQ(imported_chat_id, imported_chats.front().id);
+  UAM_ASSERT_EQ(std::string("Legacy Title Updated"), imported_chats.front().title);
+  UAM_ASSERT_EQ(std::string("Second import"), imported_chats.front().messages.front().content);
+
+  const auto updated_folder_it = std::find_if(imported_folders.begin(), imported_folders.end(), [&](const ChatFolder& folder) {
+    return folder.id == imported_folder_id;
+  });
+  UAM_ASSERT(updated_folder_it != imported_folders.end());
+  UAM_ASSERT_EQ(std::string("Legacy Workspace Updated"), updated_folder_it->title);
 }
 
 UAM_TEST(TestChatRepositoryPersistsBranchMetadata) {

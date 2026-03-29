@@ -8,10 +8,10 @@ static void DrawDeleteChatConfirmationModal(AppState& app) {
     ImGui::OpenPopup("confirm_delete_chat_popup");
     app.open_delete_chat_popup = false;
   }
-  if (ImGui::BeginPopupModal("confirm_delete_chat_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (BeginCenteredPopupModal("Delete Chat###confirm_delete_chat_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
     const int chat_index = FindChatIndexById(app, app.pending_delete_chat_id);
     const std::string chat_title = (chat_index >= 0) ? CompactPreview(app.chats[chat_index].title, 42) : "Unknown chat";
-    ImGui::TextColored(ui::kTextPrimary, "Delete chat?");
+    ImGui::TextColored(ui::kTextPrimary, "Delete Chat");
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace4));
     ImGui::TextWrapped("This will remove local metadata and any linked native Gemini session.");
     ImGui::TextColored(ui::kTextMuted, "Target: %s", chat_title.c_str());

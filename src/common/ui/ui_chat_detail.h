@@ -3,6 +3,8 @@
 /// <summary>
 /// Role-specific bubble renderers for conversation history rows.
 /// </summary>
+#include "common/terminal_text_utils.h"
+#include "common/ui/modals/modal_window_state.h"
 #include "common/ui/chat_bubbles/chat_bubble_renderer.h"
 
 /// <summary>

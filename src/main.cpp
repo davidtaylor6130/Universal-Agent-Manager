@@ -14,6 +14,7 @@
 #include "common/frontend_actions.h"
 #include "common/gemini_command_builder.h"
 #include "common/gemini_template_catalog.h"
+#include "common/import_service.h"
 #include "common/provider_profile.h"
 #include "common/provider_runtime.h"
 #include "common/rag_index_service.h"
@@ -152,7 +153,11 @@ static void MarkSelectedCliTerminalForLaunch(AppState& app);
 static void SelectChatById(AppState& app, const std::string& chat_id);
 static void SaveSettings(AppState& app);
 static bool SaveChat(const AppState& app, const ChatSession& chat);
+static void ReloadPersistedAppData(AppState& app);
+static bool MigrateChatProviderBindingsToFixedModes(AppState& app);
 static bool ProviderUsesOpenCodeLocalBridge(const ProviderProfile& provider);
+static bool HasValidSelectedLocalRuntimeModel(AppState& app, std::vector<std::string>* runtime_models_out = nullptr);
+static bool SelectedChatNeedsLocalRuntimeModel(AppState& app);
 static bool EnsureSelectedLocalRuntimeModelForProvider(AppState& app);
 static bool SendPromptToCliRuntime(AppState& app, ChatSession& chat, const std::string& prompt, std::string* error_out);
 static bool EnsureOpenCodeBridgeRunning(AppState& app, std::string* error_out = nullptr);
@@ -170,6 +175,7 @@ static bool IsLocalDraftChatId(const std::string& chat_id);
 static std::optional<std::string> InferNativeSessionIdForLocalDraft(const ChatSession& local_chat,
                                                                     const std::vector<ChatSession>& native_chats);
 static bool PersistLocalDraftNativeSessionLink(const AppState& app, ChatSession& local_chat, const std::string& native_session_id);
+static void ApplyLocalOverrides(AppState& app, std::vector<ChatSession>& native_chats);
 static std::string ResolveResumeSessionIdForChat(const AppState& app, const ChatSession& chat);
 static bool HasPendingCallForChat(const AppState& app, const std::string& chat_id);
 static bool HasAnyPendingCall(const AppState& app);
@@ -729,6 +735,11 @@ static fs::path ResolveRagModelFolder(const AppState& app, const AppSettings* se
   if (!cwd_ec) {
     candidates.push_back(cwd / "models");
     candidates.push_back(cwd / "build" / "models");
+    candidates.push_back(cwd / "build" / "ollama_engine" / "models");
+    candidates.push_back(cwd / "build-release" / "models");
+    candidates.push_back(cwd / "build-release" / "ollama_engine" / "models");
+    candidates.push_back(cwd / "build-codex" / "models");
+    candidates.push_back(cwd / "build-codex" / "ollama_engine" / "models");
   }
   for (const fs::path& candidate : candidates) {
     if (DirectoryContainsGguf(candidate)) {
@@ -3098,6 +3109,7 @@ static void SaveSettings(AppState& app) {
   app.settings.selected_vector_model_id = Trim(app.settings.selected_vector_model_id);
   app.settings.vector_database_name_override = NormalizeVectorDatabaseName(app.settings.vector_database_name_override);
   app.settings.cli_idle_timeout_seconds = std::clamp(app.settings.cli_idle_timeout_seconds, 30, 3600);
+  app.settings.cli_max_columns = std::clamp(app.settings.cli_max_columns, 40, 512);
   app.settings.rag_top_k = std::clamp(app.settings.rag_top_k, 1, 20);
   app.settings.rag_max_snippet_chars = std::clamp(app.settings.rag_max_snippet_chars, 120, 4000);
   app.settings.rag_max_file_bytes = std::clamp(app.settings.rag_max_file_bytes, 16 * 1024, 20 * 1024 * 1024);
@@ -3130,6 +3142,7 @@ static void LoadSettings(AppState& app) {
   app.settings.selected_vector_model_id = Trim(app.settings.selected_vector_model_id);
   app.settings.vector_database_name_override = NormalizeVectorDatabaseName(app.settings.vector_database_name_override);
   app.settings.cli_idle_timeout_seconds = std::clamp(app.settings.cli_idle_timeout_seconds, 30, 3600);
+  app.settings.cli_max_columns = std::clamp(app.settings.cli_max_columns, 40, 512);
   if (Trim(app.settings.prompt_profile_root_path).empty()) {
     app.settings.prompt_profile_root_path = AppPaths::DefaultGeminiUniversalRootPath().string();
   }
@@ -3144,6 +3157,53 @@ static bool SaveChat(const AppState& app, const ChatSession& chat) {
 
 static std::vector<ChatSession> LoadChats(const AppState& app) {
   return ChatRepository::LoadLocalChats(app.data_root);
+}
+
+static void ReloadPersistedAppData(AppState& app) {
+  const std::string previously_selected_chat_id =
+      (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : std::string{};
+
+  app.provider_profiles = ProviderProfileStore::Load(app.data_root);
+  ProviderProfileStore::EnsureDefaultProfile(app.provider_profiles);
+  const bool providers_dirty = MigrateProviderProfilesToFixedModeIds(app);
+  if (ProviderProfileStore::FindById(app.provider_profiles, app.settings.active_provider_id) == nullptr &&
+      !app.provider_profiles.empty()) {
+    app.settings.active_provider_id = app.provider_profiles.front().id;
+  }
+  if (providers_dirty) {
+    SaveProviders(app);
+  }
+
+  RefreshTemplateCatalog(app, true);
+  app.folders = ChatFolderStore::Load(app.data_root);
+  EnsureDefaultFolder(app);
+  SaveFolders(app);
+
+  if (ActiveProviderUsesGeminiHistory(app)) {
+    RefreshGeminiChatsDir(app);
+    app.chats = LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app));
+    ApplyLocalOverrides(app, app.chats);
+  } else {
+    app.chats = LoadChats(app);
+  }
+
+  NormalizeChatBranchMetadata(app);
+  NormalizeChatFolderAssignments(app);
+  MigrateChatProviderBindingsToFixedModes(app);
+
+  app.selected_chat_index = -1;
+  if (!previously_selected_chat_id.empty()) {
+    app.selected_chat_index = FindChatIndexById(app, previously_selected_chat_id);
+  }
+  if (app.selected_chat_index < 0 &&
+      app.settings.remember_last_chat &&
+      !app.settings.last_selected_chat_id.empty()) {
+    app.selected_chat_index = FindChatIndexById(app, app.settings.last_selected_chat_id);
+  }
+  if (app.selected_chat_index < 0 && !app.chats.empty()) {
+    app.selected_chat_index = 0;
+  }
+  RefreshRememberedSelection(app);
 }
 
 static bool MigrateChatProviderBindingsToFixedModes(AppState& app) {
@@ -3310,6 +3370,9 @@ static void SelectChatById(AppState& app, const std::string& chat_id) {
   app.selected_chat_index = FindChatIndexById(app, chat_id);
   if (app.selected_chat_index >= 0) {
     app.chats_with_unseen_updates.erase(app.chats[app.selected_chat_index].id);
+    if (SelectedChatNeedsLocalRuntimeModel(app)) {
+      app.open_runtime_model_selection_popup = true;
+    }
   }
   if (previous_id != chat_id) {
     app.composer_text.clear();
@@ -3376,17 +3439,36 @@ static bool ProviderUsesOpenCodeLocalBridge(const ProviderProfile& provider) {
   return ToLowerAscii(Trim(provider.id)) == "opencode-local";
 }
 
-static bool EnsureSelectedLocalRuntimeModelForProvider(AppState& app) {
+static bool HasValidSelectedLocalRuntimeModel(AppState& app, std::vector<std::string>* runtime_models_out) {
   const fs::path model_folder = ResolveRagModelFolder(app);
   app.local_runtime_engine.SetModelFolder(model_folder);
   const std::vector<std::string> runtime_models = app.local_runtime_engine.ListModels();
+  if (runtime_models_out != nullptr) {
+    *runtime_models_out = runtime_models;
+  }
   const std::string selected_model = Trim(app.settings.selected_model_id);
-  const bool selected_model_valid =
-      !selected_model.empty() &&
-      std::find(runtime_models.begin(), runtime_models.end(), selected_model) != runtime_models.end();
-  if (selected_model_valid) {
+  return !selected_model.empty() &&
+         std::find(runtime_models.begin(), runtime_models.end(), selected_model) != runtime_models.end();
+}
+
+static bool SelectedChatNeedsLocalRuntimeModel(AppState& app) {
+  ChatSession* selected_chat = SelectedChat(app);
+  if (selected_chat == nullptr) {
+    return false;
+  }
+  const ProviderProfile& provider = ProviderForChatOrDefault(app, *selected_chat);
+  if (!ChatUsesInternalEngine(app, *selected_chat) && !ProviderUsesOpenCodeLocalBridge(provider)) {
+    return false;
+  }
+  return !HasValidSelectedLocalRuntimeModel(app, nullptr);
+}
+
+static bool EnsureSelectedLocalRuntimeModelForProvider(AppState& app) {
+  std::vector<std::string> runtime_models;
+  if (HasValidSelectedLocalRuntimeModel(app, &runtime_models)) {
     return true;
   }
+  const std::string selected_model = Trim(app.settings.selected_model_id);
 
   if (runtime_models.empty()) {
     app.runtime_model_selection_id.clear();

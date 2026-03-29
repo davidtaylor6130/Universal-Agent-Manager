@@ -7,8 +7,8 @@ static void DrawSidebarNewFolderPopup(AppState& app) {
   if (!ImGui::IsPopupOpen("new_folder_popup") && !app.pending_move_chat_to_new_folder_id.empty()) {
     app.pending_move_chat_to_new_folder_id.clear();
   }
-  if (ImGui::BeginPopupModal("new_folder_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-    ImGui::TextColored(ui::kTextPrimary, "Create chat folder");
+  if (BeginCenteredPopupModal("New Folder###new_folder_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::TextColored(ui::kTextPrimary, "New Folder");
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
     ImGui::SetNextItemWidth(420.0f);
     PushInputChrome();

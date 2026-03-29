@@ -4,14 +4,18 @@
 #include <httplib.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cctype>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -24,11 +28,15 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <unordered_map>
 #include <vector>
 
 #if defined(_WIN32)
+#include <windows.h>
 #include <process.h>
 #else
+#include <sys/select.h>
 #include <unistd.h>
 #endif
 
@@ -95,6 +103,25 @@ std::string ReadTextFile(const fs::path& path) {
 std::int64_t UnixEpochSecondsNow() {
   const auto now = std::chrono::system_clock::now();
   return static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count());
+}
+
+std::int64_t UnixEpochMillisecondsNow() {
+  const auto now = std::chrono::system_clock::now();
+  return static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
+}
+
+std::string TimestampIso8601Now() {
+  const auto now = std::chrono::system_clock::now();
+  const std::time_t tt = std::chrono::system_clock::to_time_t(now);
+  std::tm tm_snapshot{};
+#if defined(_WIN32)
+  gmtime_s(&tm_snapshot, &tt);
+#else
+  gmtime_r(&tt, &tm_snapshot);
+#endif
+  std::ostringstream out;
+  out << std::put_time(&tm_snapshot, "%Y-%m-%dT%H:%M:%SZ");
+  return out.str();
 }
 
 std::string RandomHex(std::size_t digits) {
@@ -574,6 +601,17 @@ bool JsonBoolOrDefault(const JsonValue* value, const bool default_value) {
     return default_value;
   }
   return value->bool_value;
+}
+
+int JsonIntOrDefault(const JsonValue* value, const int default_value) {
+  if (value == nullptr || value->type != JsonType::Number) {
+    return default_value;
+  }
+  if (value->number_value < static_cast<double>(std::numeric_limits<int>::min()) ||
+      value->number_value > static_cast<double>(std::numeric_limits<int>::max())) {
+    return default_value;
+  }
+  return static_cast<int>(value->number_value);
 }
 
 std::string ExtractContentText(const JsonValue* content) {
@@ -1351,6 +1389,231 @@ std::string ResolveRequestedModelAgainstAvailable(const std::string& raw_model,
   return requested;
 }
 
+struct ApiKeyConfig {
+  std::string id;
+  std::string name;
+  std::string secret;
+  bool enabled = true;
+  int priority = 0;
+  bool allow_all_models = true;
+  std::vector<std::string> allowed_models;
+};
+
+struct BridgeServerConfig {
+  std::string host = "127.0.0.1";
+  int port = 0;
+  fs::path model_folder = fs::current_path() / "models";
+  std::string default_model;
+  fs::path tls_cert;
+  fs::path tls_key;
+  std::vector<ApiKeyConfig> api_keys;
+};
+
+bool ModelSpecMatches(const std::string& allowed_model, const std::string& candidate_model) {
+  const std::string allowed = Trim(allowed_model);
+  const std::string candidate = Trim(candidate_model);
+  if (allowed.empty() || candidate.empty()) {
+    return false;
+  }
+  if (allowed == "*" || allowed == candidate) {
+    return true;
+  }
+  return ModelBasename(allowed) == ModelBasename(candidate);
+}
+
+std::vector<std::string> ParseAllowedModelList(const JsonValue* value, bool* allow_all_models_out) {
+  std::vector<std::string> models;
+  bool allow_all = false;
+  if (value == nullptr) {
+    allow_all = true;
+  } else if (value->type == JsonType::String) {
+    const std::string model = Trim(value->string_value);
+    if (model.empty() || model == "*") {
+      allow_all = true;
+    } else {
+      models.push_back(model);
+    }
+  } else if (value->type == JsonType::Array) {
+    for (const JsonValue& entry : value->array_value) {
+      if (entry.type != JsonType::String) {
+        continue;
+      }
+      const std::string model = Trim(entry.string_value);
+      if (model.empty()) {
+        continue;
+      }
+      if (model == "*") {
+        allow_all = true;
+        models.clear();
+        break;
+      }
+      models.push_back(model);
+    }
+    if (models.empty() && !allow_all) {
+      allow_all = true;
+    }
+  } else {
+    allow_all = true;
+  }
+  if (allow_all_models_out != nullptr) {
+    *allow_all_models_out = allow_all;
+  }
+  return models;
+}
+
+bool ParseApiKeyConfig(const JsonValue& value, ApiKeyConfig* config_out, std::string* error_out) {
+  if (config_out == nullptr || value.type != JsonType::Object) {
+    if (error_out != nullptr) {
+      *error_out = "Each api_keys entry must be an object.";
+    }
+    return false;
+  }
+
+  ApiKeyConfig config;
+  config.id = Trim(JsonStringOrEmpty(value.Find("id")));
+  config.name = Trim(JsonStringOrEmpty(value.Find("name")));
+  config.secret = Trim(JsonStringOrEmpty(value.Find("secret")));
+  config.enabled = JsonBoolOrDefault(value.Find("enabled"), true);
+  config.priority = JsonIntOrDefault(value.Find("priority"), 0);
+  config.allowed_models = ParseAllowedModelList(value.Find("allowed_models"), &config.allow_all_models);
+
+  if (config.id.empty()) {
+    if (error_out != nullptr) {
+      *error_out = "Each api_keys entry must include a non-empty id.";
+    }
+    return false;
+  }
+  if (config.secret.empty()) {
+    if (error_out != nullptr) {
+      *error_out = "API key '" + config.id + "' is missing secret.";
+    }
+    return false;
+  }
+  if (config.name.empty()) {
+    config.name = config.id;
+  }
+
+  *config_out = std::move(config);
+  return true;
+}
+
+bool ParseBridgeServerConfig(const JsonValue& root, BridgeServerConfig* config_out, std::string* error_out) {
+  if (config_out == nullptr || root.type != JsonType::Object) {
+    if (error_out != nullptr) {
+      *error_out = "Bridge server config must be a JSON object.";
+    }
+    return false;
+  }
+
+  BridgeServerConfig config;
+  if (const std::string host = Trim(JsonStringOrEmpty(root.Find("host"))); !host.empty()) {
+    config.host = host;
+  }
+  config.port = JsonIntOrDefault(root.Find("port"), config.port);
+  if (config.port < 0 || config.port > 65535) {
+    if (error_out != nullptr) {
+      *error_out = "Config port must be between 0 and 65535.";
+    }
+    return false;
+  }
+
+  const std::string model_folder = Trim(JsonStringOrEmpty(root.Find("model_folder")));
+  if (!model_folder.empty()) {
+    config.model_folder = fs::path(model_folder);
+  }
+  config.default_model = Trim(JsonStringOrEmpty(root.Find("default_model")));
+
+  if (const JsonValue* tls = root.Find("tls"); tls != nullptr && tls->type == JsonType::Object) {
+    const std::string cert = Trim(JsonStringOrEmpty(tls->Find("cert")));
+    const std::string key = Trim(JsonStringOrEmpty(tls->Find("key")));
+    if (!cert.empty()) {
+      config.tls_cert = fs::path(cert);
+    }
+    if (!key.empty()) {
+      config.tls_key = fs::path(key);
+    }
+  }
+  if (config.tls_cert.empty()) {
+    const std::string cert = Trim(JsonStringOrEmpty(root.Find("tls_cert")));
+    if (!cert.empty()) {
+      config.tls_cert = fs::path(cert);
+    }
+  }
+  if (config.tls_key.empty()) {
+    const std::string key = Trim(JsonStringOrEmpty(root.Find("tls_key")));
+    if (!key.empty()) {
+      config.tls_key = fs::path(key);
+    }
+  }
+
+  std::set<std::string> seen_key_ids;
+  const JsonValue* api_keys = root.Find("api_keys");
+  if (api_keys == nullptr || api_keys->type != JsonType::Array || api_keys->array_value.empty()) {
+    if (error_out != nullptr) {
+      *error_out = "Config must include a non-empty api_keys array.";
+    }
+    return false;
+  }
+  for (const JsonValue& entry : api_keys->array_value) {
+    ApiKeyConfig key;
+    if (!ParseApiKeyConfig(entry, &key, error_out)) {
+      return false;
+    }
+    if (!seen_key_ids.insert(key.id).second) {
+      if (error_out != nullptr) {
+        *error_out = "Duplicate api_keys id found: " + key.id;
+      }
+      return false;
+    }
+    config.api_keys.push_back(std::move(key));
+  }
+
+  *config_out = std::move(config);
+  return true;
+}
+
+bool LoadBridgeServerConfigSource(const std::string& config_source,
+                                  BridgeServerConfig* config_out,
+                                  std::string* error_out) {
+  if (config_out == nullptr) {
+    if (error_out != nullptr) {
+      *error_out = "Internal config output state is null.";
+    }
+    return false;
+  }
+
+  const std::string trimmed_source = Trim(config_source);
+  if (trimmed_source.empty()) {
+    if (error_out != nullptr) {
+      *error_out = "--config value cannot be empty.";
+    }
+    return false;
+  }
+
+  std::string json_text = trimmed_source;
+  std::error_code ec;
+  const fs::path candidate_path(trimmed_source);
+  if (fs::exists(candidate_path, ec) && fs::is_regular_file(candidate_path, ec)) {
+    json_text = ReadTextFile(candidate_path);
+    if (json_text.empty()) {
+      if (error_out != nullptr) {
+        *error_out = "Failed to read config file: " + candidate_path.string();
+      }
+      return false;
+    }
+  }
+
+  const std::optional<JsonValue> parsed = ParseJson(json_text);
+  if (!parsed.has_value() || parsed->type != JsonType::Object) {
+    if (error_out != nullptr) {
+      *error_out = "Config must be valid JSON object.";
+    }
+    return false;
+  }
+
+  return ParseBridgeServerConfig(parsed.value(), config_out, error_out);
+}
+
 struct BridgeArgs {
   std::string host = "127.0.0.1";
   int port = 0;
@@ -1360,6 +1623,18 @@ struct BridgeArgs {
   fs::path tls_cert;
   fs::path tls_key;
   fs::path ready_file;
+  std::string config_source;
+  fs::path log_file;
+  bool admin_cli = false;
+  bool config_mode = false;
+  BridgeServerConfig config;
+  bool host_set = false;
+  bool port_set = false;
+  bool model_folder_set = false;
+  bool default_model_set = false;
+  bool token_set = false;
+  bool tls_cert_set = false;
+  bool tls_key_set = false;
 };
 
 void PrintUsage() {
@@ -1369,6 +1644,9 @@ void PrintUsage() {
                "  --model-folder <path>\n"
                "  --default-model <model-name>\n"
                "  --token <bearer-token>\n"
+               "  --config <path-or-json>\n"
+               "  --log-file <jsonl-path>\n"
+               "  --admin-cli\n"
                "  --tls-cert <pem-path>\n"
                "  --tls-key <pem-path>\n"
                "  --ready-file <json-path>\n"
@@ -1421,6 +1699,7 @@ bool ParseArgs(int argc, char** argv, BridgeArgs* args_out, std::string* error_o
         return false;
       }
       args.host = Trim(value.value());
+      args.host_set = true;
       if (args.host.empty()) {
         if (error_out != nullptr) {
           *error_out = "--host cannot be empty.";
@@ -1442,6 +1721,7 @@ bool ParseArgs(int argc, char** argv, BridgeArgs* args_out, std::string* error_o
         return false;
       }
       args.port = parsed;
+      args.port_set = true;
       continue;
     }
     if (flag == "--model-folder") {
@@ -1450,6 +1730,7 @@ bool ParseArgs(int argc, char** argv, BridgeArgs* args_out, std::string* error_o
         return false;
       }
       args.model_folder = fs::path(value.value());
+      args.model_folder_set = true;
       continue;
     }
     if (flag == "--default-model") {
@@ -1458,6 +1739,7 @@ bool ParseArgs(int argc, char** argv, BridgeArgs* args_out, std::string* error_o
         return false;
       }
       args.default_model = Trim(value.value());
+      args.default_model_set = true;
       continue;
     }
     if (flag == "--token") {
@@ -1466,6 +1748,27 @@ bool ParseArgs(int argc, char** argv, BridgeArgs* args_out, std::string* error_o
         return false;
       }
       args.token = value.value();
+      args.token_set = true;
+      continue;
+    }
+    if (flag == "--config") {
+      const auto value = read_value(flag);
+      if (!value.has_value()) {
+        return false;
+      }
+      args.config_source = value.value();
+      continue;
+    }
+    if (flag == "--log-file") {
+      const auto value = read_value(flag);
+      if (!value.has_value()) {
+        return false;
+      }
+      args.log_file = fs::path(value.value());
+      continue;
+    }
+    if (flag == "--admin-cli") {
+      args.admin_cli = true;
       continue;
     }
     if (flag == "--tls-cert") {
@@ -1474,6 +1777,7 @@ bool ParseArgs(int argc, char** argv, BridgeArgs* args_out, std::string* error_o
         return false;
       }
       args.tls_cert = fs::path(value.value());
+      args.tls_cert_set = true;
       continue;
     }
     if (flag == "--tls-key") {
@@ -1482,6 +1786,7 @@ bool ParseArgs(int argc, char** argv, BridgeArgs* args_out, std::string* error_o
         return false;
       }
       args.tls_key = fs::path(value.value());
+      args.tls_key_set = true;
       continue;
     }
     if (flag == "--ready-file") {
@@ -1505,6 +1810,39 @@ bool ParseArgs(int argc, char** argv, BridgeArgs* args_out, std::string* error_o
       *error_out = "Bridge host cannot be empty.";
     }
     return false;
+  }
+  if (!args.config_source.empty()) {
+    if (args.token_set) {
+      if (error_out != nullptr) {
+        *error_out = "--token cannot be combined with --config.";
+      }
+      return false;
+    }
+
+    BridgeServerConfig config;
+    if (!LoadBridgeServerConfigSource(args.config_source, &config, error_out)) {
+      return false;
+    }
+    args.config_mode = true;
+    args.config = config;
+    if (!args.host_set) {
+      args.host = config.host;
+    }
+    if (!args.port_set) {
+      args.port = config.port;
+    }
+    if (!args.model_folder_set) {
+      args.model_folder = config.model_folder;
+    }
+    if (!args.default_model_set) {
+      args.default_model = config.default_model;
+    }
+    if (!args.tls_cert_set) {
+      args.tls_cert = config.tls_cert;
+    }
+    if (!args.tls_key_set) {
+      args.tls_key = config.tls_key;
+    }
   }
   if ((args.tls_cert.empty() && !args.tls_key.empty()) || (!args.tls_cert.empty() && args.tls_key.empty())) {
     if (error_out != nullptr) {
@@ -1549,9 +1887,18 @@ void SetJsonError(httplib::Response& response,
   response.set_content(SerializeJsonCompact(BuildErrorObject(message, type, code, param)), "application/json");
 }
 
-bool AuthorizeRequest(const httplib::Request& request, const std::string& token) {
-  if (token.empty()) {
-    return true;
+struct RequestAuthContext {
+  bool config_mode = false;
+  bool allow_all_models = true;
+  std::string api_key_id;
+  std::string api_key_name;
+  int priority = 0;
+  std::vector<std::string> allowed_models;
+};
+
+bool TryExtractBearerToken(const httplib::Request& request, std::string* token_out) {
+  if (token_out == nullptr) {
+    return false;
   }
   const std::string auth_header = request.get_header_value("Authorization");
   if (auth_header.size() <= 7) {
@@ -1560,7 +1907,133 @@ bool AuthorizeRequest(const httplib::Request& request, const std::string& token)
   if (!EqualsIgnoreCase(auth_header.substr(0, 7), "Bearer ")) {
     return false;
   }
-  return auth_header.substr(7) == token;
+  *token_out = auth_header.substr(7);
+  return true;
+}
+
+const ApiKeyConfig* FindApiKeyBySecret(const std::vector<ApiKeyConfig>& api_keys, const std::string& secret) {
+  for (const ApiKeyConfig& api_key : api_keys) {
+    if (api_key.secret == secret) {
+      return &api_key;
+    }
+  }
+  return nullptr;
+}
+
+bool IsModelAllowedForAuth(const RequestAuthContext& auth, const std::string& model) {
+  if (auth.allow_all_models) {
+    return true;
+  }
+  for (const std::string& allowed_model : auth.allowed_models) {
+    if (ModelSpecMatches(allowed_model, model)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::vector<std::string> FilterModelsForAuth(const RequestAuthContext& auth, const std::vector<std::string>& models) {
+  if (auth.allow_all_models) {
+    return models;
+  }
+  std::vector<std::string> filtered;
+  for (const std::string& model : models) {
+    if (IsModelAllowedForAuth(auth, model)) {
+      filtered.push_back(model);
+    }
+  }
+  return filtered;
+}
+
+bool AuthorizeRequest(const httplib::Request& request,
+                      const BridgeArgs& args,
+                      RequestAuthContext* auth_out,
+                      std::string* error_out,
+                      int* status_out,
+                      std::string* code_out) {
+  if (auth_out == nullptr) {
+    if (error_out != nullptr) {
+      *error_out = "Internal auth output state is null.";
+    }
+    if (status_out != nullptr) {
+      *status_out = 500;
+    }
+    if (code_out != nullptr) {
+      *code_out = "internal_error";
+    }
+    return false;
+  }
+
+  RequestAuthContext auth;
+  auth.config_mode = args.config_mode;
+
+  if (!args.config_mode) {
+    if (!args.token.empty()) {
+      std::string bearer_token;
+      if (!TryExtractBearerToken(request, &bearer_token) || bearer_token != args.token) {
+        if (error_out != nullptr) {
+          *error_out = "Missing or invalid bearer token.";
+        }
+        if (status_out != nullptr) {
+          *status_out = 401;
+        }
+        if (code_out != nullptr) {
+          *code_out = "unauthorized";
+        }
+        return false;
+      }
+    }
+    *auth_out = std::move(auth);
+    return true;
+  }
+
+  std::string bearer_token;
+  if (!TryExtractBearerToken(request, &bearer_token)) {
+    if (error_out != nullptr) {
+      *error_out = "Missing bearer token.";
+    }
+    if (status_out != nullptr) {
+      *status_out = 401;
+    }
+    if (code_out != nullptr) {
+      *code_out = "unauthorized";
+    }
+    return false;
+  }
+
+  const ApiKeyConfig* api_key = FindApiKeyBySecret(args.config.api_keys, bearer_token);
+  if (api_key == nullptr) {
+    if (error_out != nullptr) {
+      *error_out = "Unknown API key.";
+    }
+    if (status_out != nullptr) {
+      *status_out = 401;
+    }
+    if (code_out != nullptr) {
+      *code_out = "unauthorized";
+    }
+    return false;
+  }
+  if (!api_key->enabled) {
+    if (error_out != nullptr) {
+      *error_out = "API key is disabled.";
+    }
+    if (status_out != nullptr) {
+      *status_out = 403;
+    }
+    if (code_out != nullptr) {
+      *code_out = "api_key_disabled";
+    }
+    return false;
+  }
+
+  auth.api_key_id = api_key->id;
+  auth.api_key_name = api_key->name;
+  auth.priority = api_key->priority;
+  auth.allow_all_models = api_key->allow_all_models;
+  auth.allowed_models = api_key->allowed_models;
+  *auth_out = std::move(auth);
+  return true;
 }
 
 struct CompletionResult {
@@ -1907,6 +2380,475 @@ class BridgeRuntime {
   std::string loaded_model_;
 };
 
+struct QueuedCompletionResult {
+  bool ok = false;
+  CompletionResult completion;
+  std::string error;
+  int status = 500;
+  int queue_wait_ms = 0;
+  int latency_ms = 0;
+};
+
+struct PendingBridgeRequest {
+  std::string request_id;
+  JsonValue request;
+  RequestAuthContext auth;
+  std::string remote_address;
+  std::string user_agent;
+  std::uint64_t sequence = 0;
+  std::int64_t enqueued_unix = 0;
+  std::chrono::steady_clock::time_point enqueued_at{};
+  std::promise<QueuedCompletionResult> promise;
+};
+
+struct ClientActivity {
+  std::string api_key_id;
+  std::string api_key_name;
+  std::string remote_address;
+  std::string user_agent;
+  std::string last_model;
+  std::int64_t last_request_unix = 0;
+  std::size_t total_requests = 0;
+  std::size_t auth_failures = 0;
+  int last_prompt_tokens = 0;
+  int last_completion_tokens = 0;
+};
+
+class BridgeServerCoordinator {
+ public:
+  BridgeServerCoordinator(ollama_engine::EngineOptions options, fs::path log_file)
+      : runtime_(std::move(options)), log_file_(std::move(log_file)), started_at_(std::chrono::steady_clock::now()) {}
+
+  ~BridgeServerCoordinator() {
+    Stop();
+  }
+
+  bool Initialize(const std::string& preferred_model, std::string* error_out) {
+    if (!runtime_.Initialize(preferred_model, error_out)) {
+      return false;
+    }
+    worker_thread_ = std::thread([this]() { WorkerMain(); });
+    return true;
+  }
+
+  void Stop() {
+    const bool already_stopping = stop_requested_.exchange(true);
+    std::vector<std::shared_ptr<PendingBridgeRequest>> cancelled;
+    {
+      std::lock_guard<std::mutex> lock(queue_mutex_);
+      cancelled.swap(pending_requests_);
+    }
+    for (const auto& request : cancelled) {
+      if (request == nullptr) {
+        continue;
+      }
+      QueuedCompletionResult result;
+      result.ok = false;
+      result.status = 503;
+      result.error = "Bridge server is shutting down.";
+      request->promise.set_value(std::move(result));
+    }
+    queue_cv_.notify_all();
+    if (!already_stopping && worker_thread_.joinable()) {
+      worker_thread_.join();
+    } else if (already_stopping && worker_thread_.joinable()) {
+      worker_thread_.join();
+    }
+  }
+
+  bool StopRequested() const {
+    return stop_requested_.load();
+  }
+
+  std::vector<std::string> ListModels(std::string* error_out) {
+    return runtime_.ListModels(error_out);
+  }
+
+  std::string LoadedModel() const {
+    return runtime_.LoadedModel();
+  }
+
+  bool ResolveAuthorizedModel(const RequestAuthContext& auth,
+                              const std::string& requested_model,
+                              std::string* resolved_model_out,
+                              std::string* error_out,
+                              int* status_out) {
+    if (resolved_model_out == nullptr) {
+      if (error_out != nullptr) {
+        *error_out = "Internal model output state is null.";
+      }
+      if (status_out != nullptr) {
+        *status_out = 500;
+      }
+      return false;
+    }
+
+    std::string list_error;
+    const std::vector<std::string> models = runtime_.ListModels(&list_error);
+    if (!list_error.empty()) {
+      if (error_out != nullptr) {
+        *error_out = list_error;
+      }
+      if (status_out != nullptr) {
+        *status_out = 500;
+      }
+      return false;
+    }
+
+    if (auth.allow_all_models) {
+      if (!requested_model.empty()) {
+        *resolved_model_out = ResolveRequestedModelAgainstAvailable(requested_model, models);
+      } else {
+        resolved_model_out->clear();
+      }
+      return true;
+    }
+
+    if (!requested_model.empty()) {
+      const std::string resolved_model = ResolveRequestedModelAgainstAvailable(requested_model, models);
+      if (!IsModelAllowedForAuth(auth, resolved_model)) {
+        if (error_out != nullptr) {
+          *error_out = "Requested model is not allowed for this API key.";
+        }
+        if (status_out != nullptr) {
+          *status_out = 403;
+        }
+        return false;
+      }
+      *resolved_model_out = resolved_model;
+      return true;
+    }
+
+    const std::string loaded_model = runtime_.LoadedModel();
+    if (!loaded_model.empty() && IsModelAllowedForAuth(auth, loaded_model)) {
+      *resolved_model_out = loaded_model;
+      return true;
+    }
+    for (const std::string& model : models) {
+      if (IsModelAllowedForAuth(auth, model)) {
+        *resolved_model_out = model;
+        return true;
+      }
+    }
+
+    if (error_out != nullptr) {
+      *error_out = "No allowed models are available for this API key.";
+    }
+    if (status_out != nullptr) {
+      *status_out = 403;
+    }
+    return false;
+  }
+
+  std::future<QueuedCompletionResult> EnqueueCompletion(JsonValue request,
+                                                        const RequestAuthContext& auth,
+                                                        const std::string& remote_address,
+                                                        const std::string& user_agent) {
+    auto pending = std::make_shared<PendingBridgeRequest>();
+    pending->request_id = BuildId("chatcmpl");
+    pending->request = std::move(request);
+    pending->auth = auth;
+    pending->remote_address = remote_address;
+    pending->user_agent = user_agent;
+    pending->enqueued_unix = UnixEpochSecondsNow();
+    pending->enqueued_at = std::chrono::steady_clock::now();
+
+    std::future<QueuedCompletionResult> future = pending->promise.get_future();
+    std::size_t queue_depth = 0;
+    {
+      std::lock_guard<std::mutex> lock(queue_mutex_);
+      pending->sequence = next_sequence_++;
+      pending_requests_.push_back(pending);
+      queue_depth = pending_requests_.size();
+    }
+    queue_cv_.notify_one();
+
+    JsonValue event = MakeJsonObject();
+    event.object_value["event"] = MakeJsonString("request_enqueued");
+    event.object_value["timestamp"] = MakeJsonString(TimestampIso8601Now());
+    event.object_value["timestamp_unix_ms"] = MakeJsonNumber(static_cast<double>(UnixEpochMillisecondsNow()));
+    event.object_value["request_id"] = MakeJsonString(pending->request_id);
+    event.object_value["api_key_id"] = MakeJsonString(auth.api_key_id);
+    event.object_value["api_key_name"] = MakeJsonString(auth.api_key_name);
+    event.object_value["priority"] = MakeJsonNumber(static_cast<double>(auth.priority));
+    event.object_value["queue_depth"] = MakeJsonNumber(static_cast<double>(queue_depth));
+    event.object_value["remote_address"] = MakeJsonString(remote_address);
+    event.object_value["user_agent"] = MakeJsonString(user_agent);
+    RecordEvent(std::move(event));
+    return future;
+  }
+
+  void RecordAuthFailure(const std::string& remote_address,
+                         const std::string& user_agent,
+                         const std::string& message,
+                         const std::string& code) {
+    {
+      std::lock_guard<std::mutex> lock(telemetry_mutex_);
+      const std::string client_key = std::string("unauthenticated@") + remote_address;
+      ClientActivity& client = clients_[client_key];
+      client.api_key_id = "unauthenticated";
+      client.api_key_name = "unauthenticated";
+      client.remote_address = remote_address;
+      client.user_agent = user_agent;
+      client.last_request_unix = UnixEpochSecondsNow();
+      ++client.auth_failures;
+    }
+
+    JsonValue event = MakeJsonObject();
+    event.object_value["event"] = MakeJsonString("auth_failure");
+    event.object_value["timestamp"] = MakeJsonString(TimestampIso8601Now());
+    event.object_value["timestamp_unix_ms"] = MakeJsonNumber(static_cast<double>(UnixEpochMillisecondsNow()));
+    event.object_value["remote_address"] = MakeJsonString(remote_address);
+    event.object_value["user_agent"] = MakeJsonString(user_agent);
+    event.object_value["message"] = MakeJsonString(message);
+    event.object_value["code"] = MakeJsonString(code);
+    RecordEvent(std::move(event));
+  }
+
+  void RecordEvent(JsonValue event) {
+    if (event.type != JsonType::Object) {
+      return;
+    }
+    if (event.Find("timestamp") == nullptr) {
+      event.object_value["timestamp"] = MakeJsonString(TimestampIso8601Now());
+    }
+    if (event.Find("timestamp_unix_ms") == nullptr) {
+      event.object_value["timestamp_unix_ms"] = MakeJsonNumber(static_cast<double>(UnixEpochMillisecondsNow()));
+    }
+    const std::string line = SerializeJsonCompact(event);
+
+    std::lock_guard<std::mutex> lock(telemetry_mutex_);
+    recent_events_.push_back(line);
+    static constexpr std::size_t kMaxRecentEvents = 64;
+    while (recent_events_.size() > kMaxRecentEvents) {
+      recent_events_.pop_front();
+    }
+    if (!log_file_.empty()) {
+      std::error_code ec;
+      if (!log_file_.parent_path().empty()) {
+        fs::create_directories(log_file_.parent_path(), ec);
+      }
+      std::ofstream out(log_file_, std::ios::binary | std::ios::app);
+      if (out.good()) {
+        out << line << "\n";
+      }
+    }
+  }
+
+  std::size_t QueueDepth() const {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    return pending_requests_.size();
+  }
+
+  std::string BuildStatusReport() const {
+    const auto uptime_seconds =
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - started_at_).count();
+    std::ostringstream out;
+    out << "loaded_model=" << LoadedModel() << "\n";
+    out << "queue_depth=" << QueueDepth() << "\n";
+    out << "uptime_seconds=" << uptime_seconds << "\n";
+    {
+      std::lock_guard<std::mutex> lock(queue_mutex_);
+      if (active_request_ != nullptr) {
+        out << "active_request=" << active_request_->request_id << " key=" << active_request_->auth.api_key_id
+            << " priority=" << active_request_->auth.priority << "\n";
+      } else {
+        out << "active_request=(none)\n";
+      }
+    }
+    return out.str();
+  }
+
+  std::vector<std::string> BuildQueueReport() const {
+    std::vector<std::shared_ptr<PendingBridgeRequest>> queued;
+    {
+      std::lock_guard<std::mutex> lock(queue_mutex_);
+      queued = pending_requests_;
+    }
+    std::sort(queued.begin(), queued.end(), [](const auto& lhs, const auto& rhs) {
+      if (lhs->auth.priority != rhs->auth.priority) {
+        return lhs->auth.priority > rhs->auth.priority;
+      }
+      return lhs->sequence < rhs->sequence;
+    });
+
+    std::vector<std::string> lines;
+    if (queued.empty()) {
+      lines.push_back("queue is empty");
+      return lines;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    for (const auto& request : queued) {
+      std::ostringstream out;
+      out << request->request_id << " key=" << request->auth.api_key_id << " priority=" << request->auth.priority
+          << " wait_ms="
+          << std::chrono::duration_cast<std::chrono::milliseconds>(now - request->enqueued_at).count()
+          << " remote=" << request->remote_address;
+      lines.push_back(out.str());
+    }
+    return lines;
+  }
+
+  std::vector<std::string> BuildClientReport() const {
+    std::vector<ClientActivity> clients;
+    {
+      std::lock_guard<std::mutex> lock(telemetry_mutex_);
+      for (const auto& entry : clients_) {
+        clients.push_back(entry.second);
+      }
+    }
+    std::sort(clients.begin(), clients.end(), [](const ClientActivity& lhs, const ClientActivity& rhs) {
+      return lhs.last_request_unix > rhs.last_request_unix;
+    });
+
+    std::vector<std::string> lines;
+    if (clients.empty()) {
+      lines.push_back("no clients recorded");
+      return lines;
+    }
+    for (const ClientActivity& client : clients) {
+      std::ostringstream out;
+      out << client.api_key_id << " (" << client.api_key_name << ")"
+          << " remote=" << client.remote_address << " requests=" << client.total_requests
+          << " auth_failures=" << client.auth_failures << " last_model=" << client.last_model
+          << " last_request_unix=" << client.last_request_unix;
+      if (!client.user_agent.empty()) {
+        out << " user_agent=" << client.user_agent;
+      }
+      lines.push_back(out.str());
+    }
+    return lines;
+  }
+
+  std::vector<std::string> RecentEventLines() const {
+    std::lock_guard<std::mutex> lock(telemetry_mutex_);
+    return std::vector<std::string>(recent_events_.begin(), recent_events_.end());
+  }
+
+ private:
+  void WorkerMain() {
+    for (;;) {
+      std::shared_ptr<PendingBridgeRequest> request;
+      {
+        std::unique_lock<std::mutex> lock(queue_mutex_);
+        queue_cv_.wait(lock, [&]() { return stop_requested_.load() || !pending_requests_.empty(); });
+        if (stop_requested_.load() && pending_requests_.empty()) {
+          break;
+        }
+        auto best_it = std::max_element(pending_requests_.begin(), pending_requests_.end(), [](const auto& lhs, const auto& rhs) {
+          if (lhs->auth.priority != rhs->auth.priority) {
+            return lhs->auth.priority < rhs->auth.priority;
+          }
+          return lhs->sequence > rhs->sequence;
+        });
+        request = *best_it;
+        pending_requests_.erase(best_it);
+        active_request_ = request;
+      }
+
+      const auto started_at = std::chrono::steady_clock::now();
+      const int queue_wait_ms =
+          static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(started_at - request->enqueued_at).count());
+      JsonValue start_event = MakeJsonObject();
+      start_event.object_value["event"] = MakeJsonString("request_start");
+      start_event.object_value["request_id"] = MakeJsonString(request->request_id);
+      start_event.object_value["api_key_id"] = MakeJsonString(request->auth.api_key_id);
+      start_event.object_value["api_key_name"] = MakeJsonString(request->auth.api_key_name);
+      start_event.object_value["priority"] = MakeJsonNumber(static_cast<double>(request->auth.priority));
+      start_event.object_value["queue_wait_ms"] = MakeJsonNumber(static_cast<double>(queue_wait_ms));
+      start_event.object_value["remote_address"] = MakeJsonString(request->remote_address);
+      start_event.object_value["user_agent"] = MakeJsonString(request->user_agent);
+      RecordEvent(std::move(start_event));
+
+      QueuedCompletionResult result;
+      result.queue_wait_ms = queue_wait_ms;
+      CompletionResult completion;
+      int status = 500;
+      std::string error;
+      const bool ok = runtime_.GenerateCompletion(request->request, &completion, &error, &status);
+      const auto finished_at = std::chrono::steady_clock::now();
+      result.ok = ok;
+      result.status = status;
+      result.error = error;
+      result.latency_ms =
+          static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(finished_at - started_at).count());
+      if (ok) {
+        completion.request_id = request->request_id;
+        result.completion = completion;
+      }
+      UpdateClientActivity(*request, result);
+      LogRequestCompletion(*request, result);
+      request->promise.set_value(std::move(result));
+
+      {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        if (active_request_ != nullptr && active_request_->request_id == request->request_id) {
+          active_request_.reset();
+        }
+      }
+    }
+  }
+
+  void UpdateClientActivity(const PendingBridgeRequest& request, const QueuedCompletionResult& result) {
+    if (request.auth.api_key_id.empty()) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(telemetry_mutex_);
+    const std::string client_key = request.auth.api_key_id + "@" + request.remote_address;
+    ClientActivity& client = clients_[client_key];
+    client.api_key_id = request.auth.api_key_id;
+    client.api_key_name = request.auth.api_key_name;
+    client.remote_address = request.remote_address;
+    client.user_agent = request.user_agent;
+    client.last_request_unix = UnixEpochSecondsNow();
+    ++client.total_requests;
+    if (result.ok) {
+      client.last_model = result.completion.model;
+      client.last_prompt_tokens = result.completion.prompt_tokens;
+      client.last_completion_tokens = result.completion.completion_tokens;
+    }
+  }
+
+  void LogRequestCompletion(const PendingBridgeRequest& request, const QueuedCompletionResult& result) {
+    JsonValue event = MakeJsonObject();
+    event.object_value["event"] = MakeJsonString(result.ok ? "request_finish" : "request_fail");
+    event.object_value["request_id"] = MakeJsonString(request.request_id);
+    event.object_value["api_key_id"] = MakeJsonString(request.auth.api_key_id);
+    event.object_value["api_key_name"] = MakeJsonString(request.auth.api_key_name);
+    event.object_value["priority"] = MakeJsonNumber(static_cast<double>(request.auth.priority));
+    event.object_value["queue_wait_ms"] = MakeJsonNumber(static_cast<double>(result.queue_wait_ms));
+    event.object_value["latency_ms"] = MakeJsonNumber(static_cast<double>(result.latency_ms));
+    event.object_value["remote_address"] = MakeJsonString(request.remote_address);
+    event.object_value["user_agent"] = MakeJsonString(request.user_agent);
+    event.object_value["status"] = MakeJsonNumber(static_cast<double>(result.status));
+    if (result.ok) {
+      event.object_value["model"] = MakeJsonString(result.completion.model);
+      event.object_value["prompt_tokens"] = MakeJsonNumber(static_cast<double>(result.completion.prompt_tokens));
+      event.object_value["completion_tokens"] = MakeJsonNumber(static_cast<double>(result.completion.completion_tokens));
+      event.object_value["total_tokens"] =
+          MakeJsonNumber(static_cast<double>(result.completion.prompt_tokens + result.completion.completion_tokens));
+    } else {
+      event.object_value["message"] = MakeJsonString(result.error.empty() ? "unknown error" : result.error);
+    }
+    RecordEvent(std::move(event));
+  }
+
+  BridgeRuntime runtime_;
+  fs::path log_file_;
+  std::chrono::steady_clock::time_point started_at_;
+  std::atomic<bool> stop_requested_{false};
+  mutable std::mutex queue_mutex_;
+  std::condition_variable queue_cv_;
+  std::vector<std::shared_ptr<PendingBridgeRequest>> pending_requests_;
+  std::shared_ptr<PendingBridgeRequest> active_request_;
+  std::thread worker_thread_;
+  std::uint64_t next_sequence_ = 1;
+
+  mutable std::mutex telemetry_mutex_;
+  std::deque<std::string> recent_events_;
+  std::unordered_map<std::string, ClientActivity> clients_;
+};
+
 JsonValue BuildModelsResponse(const std::vector<std::string>& models) {
   JsonValue root = MakeJsonObject();
   root.object_value["object"] = MakeJsonString("list");
@@ -2045,11 +2987,141 @@ std::string BuildStreamingSsePayload(const CompletionResult& completion) {
   return out.str();
 }
 
-JsonValue BuildHealthPayload(const BridgeRuntime& runtime) {
+bool TryReadAdminLine(std::string* line_out, const int timeout_ms) {
+  if (line_out == nullptr) {
+    return false;
+  }
+#if defined(_WIN32)
+  HANDLE input_handle = GetStdHandle(STD_INPUT_HANDLE);
+  if (input_handle == INVALID_HANDLE_VALUE || input_handle == nullptr) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(timeout_ms));
+    return false;
+  }
+  const DWORD wait_result = WaitForSingleObject(input_handle, static_cast<DWORD>(std::max(timeout_ms, 1)));
+  if (wait_result != WAIT_OBJECT_0) {
+    return false;
+  }
+#else
+  fd_set read_set;
+  FD_ZERO(&read_set);
+  FD_SET(STDIN_FILENO, &read_set);
+  timeval timeout{};
+  timeout.tv_sec = timeout_ms / 1000;
+  timeout.tv_usec = static_cast<suseconds_t>((timeout_ms % 1000) * 1000);
+  const int ready = select(STDIN_FILENO + 1, &read_set, nullptr, nullptr, &timeout);
+  if (ready <= 0 || !FD_ISSET(STDIN_FILENO, &read_set)) {
+    return false;
+  }
+#endif
+  return static_cast<bool>(std::getline(std::cin, *line_out));
+}
+
+void PrintAdminLines(const std::vector<std::string>& lines) {
+  for (const std::string& line : lines) {
+    std::cout << line << "\n";
+  }
+}
+
+template <typename StopFn>
+void RunAdminCli(BridgeServerCoordinator& coordinator, const BridgeArgs& args, StopFn stop_server) {
+  std::cout << "Admin CLI ready. Commands: help, status, models, keys, queue, clients, recent, quit\n";
+  while (!coordinator.StopRequested()) {
+    std::string line;
+    if (!TryReadAdminLine(&line, 250)) {
+      continue;
+    }
+    const std::string command = ToLowerAscii(Trim(line));
+    if (command.empty()) {
+      continue;
+    }
+
+    if (command == "help") {
+      std::cout << "help    Show commands\n";
+      std::cout << "status  Show runtime status\n";
+      std::cout << "models  List available models\n";
+      std::cout << "keys    List configured API keys\n";
+      std::cout << "queue   Show queued requests\n";
+      std::cout << "clients Show recent client activity\n";
+      std::cout << "recent  Show recent log events\n";
+      std::cout << "quit    Stop the bridge server\n";
+      continue;
+    }
+    if (command == "status") {
+      std::cout << coordinator.BuildStatusReport();
+      continue;
+    }
+    if (command == "models") {
+      std::string error;
+      const std::vector<std::string> models = coordinator.ListModels(&error);
+      if (!error.empty()) {
+        std::cout << "error: " << error << "\n";
+      } else if (models.empty()) {
+        std::cout << "(no models found)\n";
+      } else {
+        PrintAdminLines(models);
+      }
+      continue;
+    }
+    if (command == "keys") {
+      if (!args.config_mode) {
+        std::cout << "legacy token mode\n";
+        continue;
+      }
+      if (args.config.api_keys.empty()) {
+        std::cout << "(no api keys configured)\n";
+        continue;
+      }
+      for (const ApiKeyConfig& api_key : args.config.api_keys) {
+        std::ostringstream out;
+        out << api_key.id << " (" << api_key.name << ")"
+            << " enabled=" << (api_key.enabled ? "true" : "false")
+            << " priority=" << api_key.priority
+            << " models=";
+        if (api_key.allow_all_models) {
+          out << "*";
+        } else {
+          for (std::size_t i = 0; i < api_key.allowed_models.size(); ++i) {
+            if (i > 0) {
+              out << ",";
+            }
+            out << api_key.allowed_models[i];
+          }
+        }
+        std::cout << out.str() << "\n";
+      }
+      continue;
+    }
+    if (command == "queue") {
+      PrintAdminLines(coordinator.BuildQueueReport());
+      continue;
+    }
+    if (command == "clients") {
+      PrintAdminLines(coordinator.BuildClientReport());
+      continue;
+    }
+    if (command == "recent") {
+      PrintAdminLines(coordinator.RecentEventLines());
+      continue;
+    }
+    if (command == "quit") {
+      JsonValue event = MakeJsonObject();
+      event.object_value["event"] = MakeJsonString("admin_quit");
+      coordinator.RecordEvent(std::move(event));
+      stop_server();
+      return;
+    }
+
+    std::cout << "unknown command: " << command << "\n";
+  }
+}
+
+JsonValue BuildHealthPayload(const BridgeServerCoordinator& coordinator, const BridgeArgs& args) {
   JsonValue root = MakeJsonObject();
   root.object_value["ok"] = MakeJsonBool(true);
   root.object_value["status"] = MakeJsonString("ready");
-  root.object_value["model"] = MakeJsonString(runtime.LoadedModel());
+  root.object_value["model"] = MakeJsonString(coordinator.LoadedModel());
+  root.object_value["queue_depth"] = MakeJsonNumber(static_cast<double>(coordinator.QueueDepth()));
+  root.object_value["auth_mode"] = MakeJsonString(args.config_mode ? "api_keys" : (args.token.empty() ? "open" : "token"));
   root.object_value["timestamp"] = MakeJsonNumber(static_cast<double>(UnixEpochSecondsNow()));
   return root;
 }
@@ -2070,7 +3142,8 @@ bool WriteReadyFileSuccess(const BridgeArgs& args,
   payload.object_value["host"] = MakeJsonString(args.host);
   payload.object_value["port"] = MakeJsonNumber(static_cast<double>(port));
   payload.object_value["model"] = MakeJsonString(model);
-  payload.object_value["token_set"] = MakeJsonBool(!args.token.empty());
+  payload.object_value["token_set"] = MakeJsonBool(!args.token.empty() || args.config_mode);
+  payload.object_value["auth_mode"] = MakeJsonString(args.config_mode ? "api_keys" : (!args.token.empty() ? "token" : "open"));
   payload.object_value["pid"] = MakeJsonNumber(static_cast<double>(
 #if defined(_WIN32)
       _getpid()
@@ -2092,29 +3165,41 @@ void WriteReadyFileFailure(const BridgeArgs& args, const std::string& error_mess
   WriteTextFile(args.ready_file, SerializeJsonCompact(payload) + "\n", &ignored);
 }
 
-void AttachRoutes(httplib::Server& server, BridgeRuntime& runtime, const BridgeArgs& args) {
+template <typename ServerT>
+void AttachRoutes(ServerT& server, BridgeServerCoordinator& coordinator, const BridgeArgs& args) {
   server.Get("/healthz", [&](const httplib::Request&, httplib::Response& response) {
-    response.set_content(SerializeJsonCompact(BuildHealthPayload(runtime)), "application/json");
+    response.set_content(SerializeJsonCompact(BuildHealthPayload(coordinator, args)), "application/json");
   });
 
   server.Get("/v1/models", [&](const httplib::Request& request, httplib::Response& response) {
-    if (!AuthorizeRequest(request, args.token)) {
-      SetJsonError(response, 401, "Missing or invalid bearer token.", "invalid_request_error", "unauthorized");
+    RequestAuthContext auth;
+    std::string auth_error;
+    std::string auth_code;
+    int auth_status = 500;
+    if (!AuthorizeRequest(request, args, &auth, &auth_error, &auth_status, &auth_code)) {
+      coordinator.RecordAuthFailure(request.remote_addr, request.get_header_value("User-Agent"), auth_error, auth_code);
+      SetJsonError(response, auth_status, auth_error, "invalid_request_error", auth_code);
       return;
     }
 
     std::string list_error;
-    const std::vector<std::string> models = runtime.ListModels(&list_error);
+    std::vector<std::string> models = coordinator.ListModels(&list_error);
     if (!list_error.empty()) {
       SetJsonError(response, 500, list_error, "server_error", "list_models_failed");
       return;
     }
+    models = FilterModelsForAuth(auth, models);
     response.set_content(SerializeJsonCompact(BuildModelsResponse(models)), "application/json");
   });
 
   server.Post("/v1/chat/completions", [&](const httplib::Request& request, httplib::Response& response) {
-    if (!AuthorizeRequest(request, args.token)) {
-      SetJsonError(response, 401, "Missing or invalid bearer token.", "invalid_request_error", "unauthorized");
+    RequestAuthContext auth;
+    std::string auth_error;
+    std::string auth_code;
+    int auth_status = 500;
+    if (!AuthorizeRequest(request, args, &auth, &auth_error, &auth_status, &auth_code)) {
+      coordinator.RecordAuthFailure(request.remote_addr, request.get_header_value("User-Agent"), auth_error, auth_code);
+      SetJsonError(response, auth_status, auth_error, "invalid_request_error", auth_code);
       return;
     }
 
@@ -2128,17 +3213,37 @@ void AttachRoutes(httplib::Server& server, BridgeRuntime& runtime, const BridgeA
       return;
     }
 
-    const bool stream = JsonBoolOrDefault(parsed->Find("stream"), false);
+    JsonValue request_body = parsed.value();
+    const bool stream = JsonBoolOrDefault(request_body.Find("stream"), false);
 
-    CompletionResult completion;
-    std::string generate_error;
-    int status = 500;
-    if (!runtime.GenerateCompletion(parsed.value(), &completion, &generate_error, &status)) {
-      const std::string code = (status >= 500) ? "engine_failure" : "invalid_request";
+    std::string resolved_model;
+    std::string model_error;
+    int model_status = 500;
+    if (!coordinator.ResolveAuthorizedModel(auth,
+                                            NormalizeRequestedModel(JsonStringOrEmpty(request_body.Find("model"))),
+                                            &resolved_model,
+                                            &model_error,
+                                            &model_status)) {
       SetJsonError(response,
-                   status,
-                   generate_error.empty() ? std::string("Unknown bridge generation failure.") : generate_error,
-                   (status >= 500) ? "server_error" : "invalid_request_error",
+                   model_status,
+                   model_error.empty() ? std::string("Model is not available for this request.") : model_error,
+                   (model_status >= 500) ? "server_error" : "invalid_request_error",
+                   (model_status == 403) ? "model_not_allowed" : "invalid_model");
+      return;
+    }
+    if (!resolved_model.empty()) {
+      request_body.object_value["model"] = MakeJsonString(resolved_model);
+    }
+
+    std::future<QueuedCompletionResult> future =
+        coordinator.EnqueueCompletion(std::move(request_body), auth, request.remote_addr, request.get_header_value("User-Agent"));
+    QueuedCompletionResult queued_result = future.get();
+    if (!queued_result.ok) {
+      const std::string code = (queued_result.status >= 500) ? "engine_failure" : "invalid_request";
+      SetJsonError(response,
+                   queued_result.status,
+                   queued_result.error.empty() ? std::string("Unknown bridge generation failure.") : queued_result.error,
+                   (queued_result.status >= 500) ? "server_error" : "invalid_request_error",
                    code);
       return;
     }
@@ -2146,12 +3251,70 @@ void AttachRoutes(httplib::Server& server, BridgeRuntime& runtime, const BridgeA
     if (stream) {
       response.set_header("Cache-Control", "no-cache");
       response.set_header("Connection", "keep-alive");
-      response.set_content(BuildStreamingSsePayload(completion), "text/event-stream");
+      response.set_content(BuildStreamingSsePayload(queued_result.completion), "text/event-stream");
       return;
     }
 
-    response.set_content(SerializeJsonCompact(BuildNonStreamingChatResponse(completion)), "application/json");
+    response.set_content(SerializeJsonCompact(BuildNonStreamingChatResponse(queued_result.completion)), "application/json");
   });
+}
+
+template <typename ServerT>
+int RunBoundBridgeServer(ServerT& server, BridgeServerCoordinator& coordinator, const BridgeArgs& args, const std::string& scheme) {
+  AttachRoutes(server, coordinator, args);
+  int bound_port = -1;
+  if (args.port == 0) {
+    bound_port = server.bind_to_any_port(args.host.c_str());
+  } else if (server.bind_to_port(args.host.c_str(), args.port)) {
+    bound_port = args.port;
+  }
+  if (bound_port <= 0) {
+    const std::string error = "Failed to bind " + ToLowerAscii(scheme) + " bridge server to " + args.host + ":" +
+                              std::to_string(args.port);
+    WriteReadyFileFailure(args, error);
+    std::cerr << error << "\n";
+    return 1;
+  }
+
+  const std::string endpoint = scheme + "://" + args.host + ":" + std::to_string(bound_port);
+  const std::string api_base = endpoint + "/v1";
+  std::string ready_error;
+  if (!WriteReadyFileSuccess(args, endpoint, api_base, bound_port, coordinator.LoadedModel(), &ready_error)) {
+    std::cerr << ready_error << "\n";
+    return 1;
+  }
+
+  JsonValue start_event = MakeJsonObject();
+  start_event.object_value["event"] = MakeJsonString("server_start");
+  start_event.object_value["endpoint"] = MakeJsonString(endpoint);
+  start_event.object_value["api_base"] = MakeJsonString(api_base);
+  start_event.object_value["model"] = MakeJsonString(coordinator.LoadedModel());
+  start_event.object_value["auth_mode"] = MakeJsonString(args.config_mode ? "api_keys" : (!args.token.empty() ? "token" : "open"));
+  coordinator.RecordEvent(std::move(start_event));
+
+  std::thread admin_thread;
+  if (args.admin_cli) {
+    admin_thread = std::thread([&coordinator, &args, &server]() {
+      RunAdminCli(coordinator, args, [&server]() { server.stop(); });
+    });
+  }
+
+  const bool ok = server.listen_after_bind();
+  coordinator.Stop();
+  if (admin_thread.joinable()) {
+    admin_thread.join();
+  }
+
+  JsonValue stop_event = MakeJsonObject();
+  stop_event.object_value["event"] = MakeJsonString("server_stop");
+  stop_event.object_value["status"] = MakeJsonString(ok ? "stopped" : "listen_failed");
+  coordinator.RecordEvent(std::move(stop_event));
+
+  if (!ok) {
+    std::cerr << scheme << " bridge server exited unexpectedly.\n";
+    return 1;
+  }
+  return 0;
 }
 
 int RunBridgeServer(const BridgeArgs& args) {
@@ -2159,9 +3322,9 @@ int RunBridgeServer(const BridgeArgs& args) {
   engine_options.pPathModelFolder = args.model_folder;
   engine_options.piEmbeddingDimensions = 256;
 
-  BridgeRuntime runtime(engine_options);
+  BridgeServerCoordinator coordinator(engine_options, args.log_file);
   std::string init_error;
-  if (!runtime.Initialize(args.default_model, &init_error)) {
+  if (!coordinator.Initialize(args.default_model, &init_error)) {
     WriteReadyFileFailure(args, init_error);
     std::cerr << init_error << "\n";
     return 1;
@@ -2183,64 +3346,11 @@ int RunBridgeServer(const BridgeArgs& args) {
       std::cerr << error << "\n";
       return 1;
     }
-
-    AttachRoutes(server, runtime, args);
-    int bound_port = -1;
-    if (args.port == 0) {
-      bound_port = server.bind_to_any_port(args.host.c_str());
-    } else if (server.bind_to_port(args.host.c_str(), args.port)) {
-      bound_port = args.port;
-    }
-    if (bound_port <= 0) {
-      const std::string error = "Failed to bind HTTPS bridge server to " + args.host + ":" + std::to_string(args.port);
-      WriteReadyFileFailure(args, error);
-      std::cerr << error << "\n";
-      return 1;
-    }
-
-    const std::string endpoint = scheme + "://" + args.host + ":" + std::to_string(bound_port);
-    const std::string api_base = endpoint + "/v1";
-    std::string ready_error;
-    if (!WriteReadyFileSuccess(args, endpoint, api_base, bound_port, runtime.LoadedModel(), &ready_error)) {
-      std::cerr << ready_error << "\n";
-      return 1;
-    }
-
-    if (!server.listen_after_bind()) {
-      std::cerr << "HTTPS bridge server exited unexpectedly.\n";
-      return 1;
-    }
-    return 0;
+    return RunBoundBridgeServer(server, coordinator, args, scheme);
   }
 
   httplib::Server server;
-  AttachRoutes(server, runtime, args);
-  int bound_port = -1;
-  if (args.port == 0) {
-    bound_port = server.bind_to_any_port(args.host.c_str());
-  } else if (server.bind_to_port(args.host.c_str(), args.port)) {
-    bound_port = args.port;
-  }
-  if (bound_port <= 0) {
-    const std::string error = "Failed to bind HTTP bridge server to " + args.host + ":" + std::to_string(args.port);
-    WriteReadyFileFailure(args, error);
-    std::cerr << error << "\n";
-    return 1;
-  }
-
-  const std::string endpoint = scheme + "://" + args.host + ":" + std::to_string(bound_port);
-  const std::string api_base = endpoint + "/v1";
-  std::string ready_error;
-  if (!WriteReadyFileSuccess(args, endpoint, api_base, bound_port, runtime.LoadedModel(), &ready_error)) {
-    std::cerr << ready_error << "\n";
-    return 1;
-  }
-
-  if (!server.listen_after_bind()) {
-    std::cerr << "HTTP bridge server exited unexpectedly.\n";
-    return 1;
-  }
-  return 0;
+  return RunBoundBridgeServer(server, coordinator, args, scheme);
 }
 
 }  // namespace

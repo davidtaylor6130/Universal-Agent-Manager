@@ -8,7 +8,9 @@ static void DrawRuntimeModelSelectionModal(AppState& app) {
     ImGui::OpenPopup("runtime_model_selection_popup");
     app.open_runtime_model_selection_popup = false;
   }
-  if (!ImGui::BeginPopupModal("runtime_model_selection_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!BeginCenteredPopupModal("Select Local Runtime Model###runtime_model_selection_popup",
+                               nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
     return;
   }
 
@@ -90,6 +92,10 @@ static void DrawRuntimeModelSelectionModal(AppState& app) {
     } else {
       SaveSettings(app);
       app.status_line = "Loaded local runtime model: " + app.settings.selected_model_id + ".";
+      if (const ChatSession* selected_chat = SelectedChat(app);
+          selected_chat != nullptr && ChatUsesCliOutput(app, *selected_chat)) {
+        MarkSelectedCliTerminalForLaunch(app);
+      }
       ImGui::CloseCurrentPopup();
     }
   }

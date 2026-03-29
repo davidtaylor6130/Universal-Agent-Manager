@@ -46,11 +46,13 @@ static FolderHeaderAction DrawFolderHeaderItem(const ChatFolder& folder, const i
 #endif
   const ImVec2 row_size(ImGui::GetContentRegionAvail().x, row_h);
   const ImVec2 min = ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("folder_row", row_size);
-  ImGui::SetItemAllowOverlap();
-  const bool hovered = ImGui::IsItemHovered();
-  action.toggle = ImGui::IsItemClicked();
   const ImVec2 max(min.x + row_size.x, min.y + row_size.y);
+  const float trailing_action_w = std::max(icon_new_x_offset + ScaleUiLength(18.0f), ScaleUiLength(60.0f));
+  const float row_click_max_x = std::max(min.x + 1.0f, max.x - trailing_action_w);
+  ImGui::SetCursorScreenPos(min);
+  ImGui::InvisibleButton("folder_row", ImVec2(row_click_max_x - min.x, row_h));
+  const bool hovered = ImGui::IsMouseHoveringRect(min, max);
+  action.toggle = ImGui::IsItemClicked();
 
   ImDrawList* draw = ImGui::GetWindowDrawList();
   if (hovered || !folder.collapsed) {

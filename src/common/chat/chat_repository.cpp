@@ -88,6 +88,8 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
   meta << "template_override=" << chat.template_override_id << '\n';
   meta << "gemini_md_bootstrapped=" << (chat.gemini_md_bootstrapped ? "1" : "0") << '\n';
   meta << "rag_enabled=" << (chat.rag_enabled ? "1" : "0") << '\n';
+  meta << "import_source_kind=" << chat.import_source_kind << '\n';
+  meta << "import_source_ref=" << chat.import_source_ref << '\n';
   meta << "title=" << chat.title << '\n';
   meta << "created_at=" << chat.created_at << '\n';
   meta << "updated_at=" << chat.updated_at << '\n';
@@ -174,6 +176,10 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
           chat.gemini_md_bootstrapped = (value == "1" || value == "true");
         } else if (key == "rag_enabled") {
           chat.rag_enabled = (value == "1" || value == "true");
+        } else if (key == "import_source_kind") {
+          chat.import_source_kind = value;
+        } else if (key == "import_source_ref") {
+          chat.import_source_ref = value;
         } else if (key == "title") {
           chat.title = value;
         } else if (key == "created_at") {

@@ -156,6 +156,8 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/chat/chat_branching.cpp
   src/common/config/settings_store.cpp
   src/common/utils/command_line_words.cpp
+  src/common/terminal/terminal_text_utils.cpp
+  src/common/import/import_service.cpp
   src/common/provider/gemini_command_builder.cpp
   src/common/provider/gemini_template_catalog.cpp
   src/common/config/frontend_actions.cpp
@@ -227,9 +229,12 @@ if(UAM_BUILD_TESTS)
     src/common/paths/app_paths.cpp
     src/common/config/frontend_actions.cpp
     src/common/utils/command_line_words.cpp
+    src/common/terminal/terminal_text_utils.cpp
+    src/common/import/import_service.cpp
     src/common/provider/gemini_command_builder.cpp
     src/common/provider/gemini_template_catalog.cpp
     src/common/chat/chat_repository.cpp
+    src/common/chat/chat_folder_store.cpp
     src/common/chat/chat_branching.cpp
     src/common/provider/provider_profile.cpp
     src/common/provider/provider_runtime.cpp

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "common/ui/modals/modal_window_state.h"
+
 /// <summary>
 /// Sidebar chat row renderer and action contract.
 /// </summary>

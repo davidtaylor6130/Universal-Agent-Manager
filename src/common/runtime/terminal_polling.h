@@ -28,7 +28,7 @@ static void ResizeCliTerminal(CliTerminalState& terminal, const int rows, const 
   }
   terminal.rows = safe_rows;
   terminal.cols = safe_cols;
-  if (terminal.vt != nullptr) {
+  if (CliTerminalRuntimeReady(terminal)) {
     vterm_set_size(terminal.vt, terminal.rows, terminal.cols);
   }
 #if defined(__unix__) || defined(__APPLE__)
@@ -96,7 +96,15 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
     }
   };
 #if defined(_WIN32)
-  if (!terminal.running || terminal.pipe_output == INVALID_HANDLE_VALUE || terminal.vt == nullptr) {
+  if (!terminal.running || terminal.pipe_output == INVALID_HANDLE_VALUE) {
+    return;
+  }
+  if (!CliTerminalRuntimeReady(terminal)) {
+    ReportDroppedQueuedStructuredPromptsForTerminal(app, terminal, "Provider terminal VT state became invalid.");
+    StopCliTerminal(terminal);
+    terminal.should_launch = false;
+    terminal.last_error = "Provider terminal state became invalid. Relaunch the terminal.";
+    app.status_line = terminal.last_error;
     return;
   }
   char buffer[8192];
@@ -121,18 +129,20 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
     if (read_bytes == 0) {
       mark_unseen_if_background();
       ReportDroppedQueuedStructuredPromptsForTerminal(app, terminal, "Provider terminal exited before input was ready.");
+      terminal.last_error = "Provider terminal exited.";
       StopCliTerminal(terminal);
       terminal.should_launch = false;
-      app.status_line = "Provider terminal exited.";
+      app.status_line = terminal.last_error;
       break;
     }
     if (read_bytes == -2) {
       break;
     }
     ReportDroppedQueuedStructuredPromptsForTerminal(app, terminal, "Provider terminal read failed before input was ready.");
+    terminal.last_error = "Provider terminal read failed.";
     StopCliTerminal(terminal);
     terminal.should_launch = false;
-    app.status_line = "Provider terminal read failed.";
+    app.status_line = terminal.last_error;
     break;
   }
 
@@ -140,12 +150,21 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
       WaitForSingleObject(terminal.process_info.hProcess, 0) == WAIT_OBJECT_0) {
     mark_unseen_if_background();
     ReportDroppedQueuedStructuredPromptsForTerminal(app, terminal, "Provider terminal exited before input was ready.");
+    terminal.last_error = "Provider terminal exited.";
     StopCliTerminal(terminal);
     terminal.should_launch = false;
-    app.status_line = "Provider terminal exited.";
+    app.status_line = terminal.last_error;
   }
 #else
-  if (!terminal.running || terminal.master_fd < 0 || terminal.vt == nullptr) {
+  if (!terminal.running || terminal.master_fd < 0) {
+    return;
+  }
+  if (!CliTerminalRuntimeReady(terminal)) {
+    ReportDroppedQueuedStructuredPromptsForTerminal(app, terminal, "Provider terminal VT state became invalid.");
+    StopCliTerminal(terminal);
+    terminal.should_launch = false;
+    terminal.last_error = "Provider terminal state became invalid. Relaunch the terminal.";
+    app.status_line = terminal.last_error;
     return;
   }
 
@@ -171,9 +190,10 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
     if (read_bytes == 0) {
       mark_unseen_if_background();
       ReportDroppedQueuedStructuredPromptsForTerminal(app, terminal, "Provider terminal exited before input was ready.");
+      terminal.last_error = "Provider terminal exited.";
       StopCliTerminal(terminal);
       terminal.should_launch = false;
-      app.status_line = "Provider terminal exited.";
+      app.status_line = terminal.last_error;
       break;
     }
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -183,9 +203,10 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
       continue;
     }
     ReportDroppedQueuedStructuredPromptsForTerminal(app, terminal, "Provider terminal read failed before input was ready.");
+    terminal.last_error = "Provider terminal read failed.";
     StopCliTerminal(terminal);
     terminal.should_launch = false;
-    app.status_line = "Provider terminal read failed.";
+    app.status_line = terminal.last_error;
     break;
   }
 
@@ -193,9 +214,10 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
   if (terminal.child_pid > 0 && waitpid(terminal.child_pid, &status, WNOHANG) > 0) {
     mark_unseen_if_background();
     ReportDroppedQueuedStructuredPromptsForTerminal(app, terminal, "Provider terminal exited before input was ready.");
+    terminal.last_error = "Provider terminal exited.";
     StopCliTerminal(terminal);
     terminal.should_launch = false;
-    app.status_line = "Provider terminal exited.";
+    app.status_line = terminal.last_error;
   }
 #endif
 

@@ -8,7 +8,7 @@ static void DrawFolderSettingsModal(AppState& app) {
     ImGui::OpenPopup("folder_settings_popup");
     app.open_folder_settings_popup = false;
   }
-  if (!ImGui::BeginPopupModal("folder_settings_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!BeginCenteredPopupModal("Folder Settings###folder_settings_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
     return;
   }
 

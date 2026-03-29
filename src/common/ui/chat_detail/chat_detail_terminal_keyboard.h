@@ -22,7 +22,7 @@ static VTermModifier ActiveVTermModifiers() {
 /// Feeds keyboard input from Dear ImGui into the embedded terminal session.
 /// </summary>
 static void FeedCliTerminalKeyboard(CliTerminalState& terminal) {
-  if (terminal.vt == nullptr) {
+  if (!CliTerminalRuntimeReady(terminal)) {
     return;
   }
 #if defined(_WIN32)

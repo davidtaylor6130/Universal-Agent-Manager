@@ -52,15 +52,20 @@ static SidebarItemAction DrawSidebarItem(AppState& app,
   title_x_offset += depth_indent + (has_children ? ScaleUiLength(18.0f) : 0.0f);
   const ImVec2 row_size(ImGui::GetContentRegionAvail().x, row_h);
   const ImVec2 min = ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("chat_row", row_size);
-  ImGui::SetItemAllowOverlap();
-  const bool hovered = ImGui::IsItemHovered();
+  const ImVec2 max(min.x + row_size.x, min.y + row_size.y);
+  const float leading_control_w =
+      has_children ? (depth_indent + ScaleUiLength(18.0f)) : ((tree_depth > 0) ? (depth_indent + ScaleUiLength(10.0f)) : 0.0f);
+  const float trailing_action_w = std::max(options_x_offset + ScaleUiLength(18.0f), ScaleUiLength(54.0f));
+  const float row_click_min_x = min.x + leading_control_w;
+  const float row_click_max_x = std::max(row_click_min_x + 1.0f, max.x - trailing_action_w);
+  ImGui::SetCursorScreenPos(ImVec2(row_click_min_x, min.y));
+  ImGui::InvisibleButton("chat_row", ImVec2(row_click_max_x - row_click_min_x, row_h));
+  const bool hovered = ImGui::IsMouseHoveringRect(min, max);
   action.select = ImGui::IsItemClicked();
-  if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+  if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
     action.request_open_options = true;
     action.select = false;
   }
-  const ImVec2 max(min.x + row_size.x, min.y + row_size.y);
 
   ImDrawList* draw = ImGui::GetWindowDrawList();
   const ImVec4 row_bg = selected ? (light ? Rgb(66, 126, 228, 0.13f) : Rgb(94, 160, 255, 0.15f))

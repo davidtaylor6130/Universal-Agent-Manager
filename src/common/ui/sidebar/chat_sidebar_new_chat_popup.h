@@ -10,7 +10,7 @@ static void DrawSidebarNewChatPopup(AppState& app) {
     app.open_new_chat_popup = false;
   }
 
-  if (!ImGui::BeginPopupModal("new_chat_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!BeginCenteredPopupModal("New Chat###new_chat_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
     return;
   }
 
@@ -23,7 +23,7 @@ static void DrawSidebarNewChatPopup(AppState& app) {
     folder_label = FolderTitleOrFallback(*folder);
   }
 
-  ImGui::TextColored(ui::kTextPrimary, "Create chat");
+  ImGui::TextColored(ui::kTextPrimary, "New Chat");
   ImGui::Dummy(ImVec2(0.0f, ui::kSpace6));
   ImGui::TextColored(ui::kTextMuted, "Folder: %s", folder_label.c_str());
   ImGui::Dummy(ImVec2(0.0f, ui::kSpace6));

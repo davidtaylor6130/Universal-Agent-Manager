@@ -47,6 +47,10 @@ static void CloseCliTerminalHandles(CliTerminalState& terminal) {
 #endif
 }
 
+static bool CliTerminalRuntimeReady(const CliTerminalState& terminal) {
+  return terminal.vt != nullptr && terminal.screen != nullptr && terminal.state != nullptr;
+}
+
 static bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, const size_t len) {
   if (bytes == nullptr || len == 0) {
     return true;
@@ -106,9 +110,9 @@ static bool InjectPromptAsPasteAndSubmit(CliTerminalState& terminal,
     }
     return false;
   }
-  if (terminal.vt == nullptr) {
+  if (!CliTerminalRuntimeReady(terminal)) {
     if (error_out != nullptr) {
-      *error_out = "Provider terminal VT is not initialized.";
+      *error_out = "Provider terminal VT state is not initialized.";
     }
     return false;
   }
@@ -200,6 +204,28 @@ static int OnVTermMoveCursor(VTermPos, VTermPos, int, void* user) {
   return 1;
 }
 
+static int OnVTermSetTermProp(VTermProp prop, VTermValue* value, void* user) {
+  if (user == nullptr || value == nullptr) {
+    return 1;
+  }
+  auto* terminal = static_cast<CliTerminalState*>(user);
+  switch (prop) {
+    case VTERM_PROP_CURSORVISIBLE:
+      terminal->cursor_visible = value->boolean != 0;
+      break;
+    case VTERM_PROP_CURSORBLINK:
+      terminal->cursor_blink = value->boolean != 0;
+      break;
+    case VTERM_PROP_CURSORSHAPE:
+      terminal->cursor_shape = value->number;
+      break;
+    default:
+      break;
+  }
+  terminal->needs_full_refresh = true;
+  return 1;
+}
+
 static int OnVTermResize(int rows, int cols, void* user) {
   if (user != nullptr) {
     auto* terminal = static_cast<CliTerminalState*>(user);
@@ -274,7 +300,7 @@ static const VTermScreenCallbacks kVTermScreenCallbacks = {
     OnVTermDamage,
     OnVTermMoveRect,
     OnVTermMoveCursor,
-    nullptr,
+    OnVTermSetTermProp,
     nullptr,
     OnVTermResize,
     OnVTermScrollbackPushLine,
@@ -383,6 +409,11 @@ static void FastStopCliTerminalWindows(CliTerminalState& terminal, const bool cl
   terminal.pending_structured_prompts.clear();
   terminal.generation_in_progress = false;
   terminal.last_output_time_s = 0.0;
+  terminal.selection_active = false;
+  terminal.selection_dragging = false;
+  terminal.cursor_visible = true;
+  terminal.cursor_blink = true;
+  terminal.cursor_shape = VTERM_PROP_CURSORSHAPE_BLOCK;
   if (clear_identity) {
     terminal.attached_chat_id.clear();
     terminal.attached_session_id.clear();
@@ -491,6 +522,11 @@ static void StopCliTerminal(CliTerminalState& terminal,
   terminal.pending_structured_prompts.clear();
   terminal.generation_in_progress = false;
   terminal.last_output_time_s = 0.0;
+  terminal.selection_active = false;
+  terminal.selection_dragging = false;
+  terminal.cursor_visible = true;
+  terminal.cursor_blink = true;
+  terminal.cursor_shape = VTERM_PROP_CURSORSHAPE_BLOCK;
   if (clear_identity) {
     terminal.attached_chat_id.clear();
     terminal.attached_session_id.clear();
@@ -527,7 +563,7 @@ static bool ForwardEscapeToSelectedCliTerminal(AppState& app, const SDL_Event& e
     return true;
   }
   CliTerminalState* terminal = FindCliTerminalForChat(app, selected->id);
-  if (terminal == nullptr || !terminal->running || terminal->vt == nullptr) {
+  if (terminal == nullptr || !terminal->running || !CliTerminalRuntimeReady(*terminal)) {
     return true;
   }
 
@@ -677,6 +713,9 @@ static void MarkSelectedCliTerminalForLaunch(AppState& app) {
   }
   if (ProviderRuntime::UsesInternalEngine(provider) || !provider.supports_interactive) {
     app.status_line = "Provider does not expose an interactive CLI runtime.";
+    return;
+  }
+  if (ProviderUsesOpenCodeLocalBridge(provider) && !EnsureSelectedLocalRuntimeModelForProvider(app)) {
     return;
   }
   CliTerminalState& terminal = EnsureCliTerminalForChat(app, *selected);
@@ -909,6 +948,11 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
   terminal.startup_time_s = ImGui::GetTime();
   terminal.pending_structured_prompts.clear();
   terminal.generation_in_progress = false;
+  terminal.selection_active = false;
+  terminal.selection_dragging = false;
+  terminal.cursor_visible = true;
+  terminal.cursor_blink = true;
+  terminal.cursor_shape = VTERM_PROP_CURSORSHAPE_BLOCK;
 
   terminal.vt = vterm_new(terminal.rows, terminal.cols);
   if (terminal.vt == nullptr) {
@@ -919,6 +963,11 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
   vterm_set_utf8(terminal.vt, 1);
   terminal.screen = vterm_obtain_screen(terminal.vt);
   terminal.state = vterm_obtain_state(terminal.vt);
+  if (!CliTerminalRuntimeReady(terminal)) {
+    terminal.last_error = "Failed to initialize libvterm screen state.";
+    StopCliTerminal(terminal, false);
+    return false;
+  }
   vterm_screen_set_callbacks(terminal.screen, &kVTermScreenCallbacks, &terminal);
   vterm_screen_set_damage_merge(terminal.screen, VTERM_DAMAGE_CELL);
   vterm_output_set_callback(terminal.vt, WriteBytesToPty, &terminal);

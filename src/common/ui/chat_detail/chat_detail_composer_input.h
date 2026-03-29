@@ -1,5 +1,21 @@
 #pragma once
 
+struct StructuredComposerCallbackContext {
+  bool send_requested = false;
+};
+
+static int StructuredComposerInputCallback(ImGuiInputTextCallbackData* data) {
+  if (data == nullptr || data->UserData == nullptr || data->EventFlag != ImGuiInputTextFlags_CallbackCharFilter) {
+    return 0;
+  }
+  auto* context = static_cast<StructuredComposerCallbackContext*>(data->UserData);
+  if ((data->EventChar == '\n' || data->EventChar == '\r') && !ImGui::GetIO().KeyShift) {
+    context->send_requested = true;
+    return 1;
+  }
+  return 0;
+}
+
 /// <summary>
 /// Draws the structured composer container and send actions.
 /// </summary>
@@ -146,9 +162,10 @@ static void DrawInputContainer(AppState& app, ChatSession& chat) {
   }
   ImGui::PopID();
   ImGui::SameLine();
-  ImGui::TextColored(ui::kTextMuted, "Ctrl+Enter to send");
+  ImGui::TextColored(ui::kTextMuted, "Enter to send  Shift+Enter for newline");
   PushInputChrome(ui::kRadiusInput);
   const bool send_visible = FrontendActionVisible(app, "send_prompt", true);
+  StructuredComposerCallbackContext callback_context;
 #if defined(_WIN32)
   // Windows-only composer fit: reserve right-side width for the SEND button so
   // the multiline input shrinks first at larger UI scales. If this appears on
@@ -158,9 +175,19 @@ static void DrawInputContainer(AppState& app, ChatSession& chat) {
   const float composer_h = std::max(ScaleUiLength(110.0f), ImGui::GetTextLineHeight() * 5.2f);
   const float reserved_send_w = send_visible ? (send_button_w + send_gap + ScaleUiLength(2.0f)) : 0.0f;
   const float input_w = std::max(ScaleUiLength(180.0f), ImGui::GetContentRegionAvail().x - reserved_send_w);
-  ImGui::InputTextMultiline("##composer", &app.composer_text, ImVec2(input_w, composer_h), ImGuiInputTextFlags_AllowTabInput);
+  ImGui::InputTextMultiline("##composer",
+                            &app.composer_text,
+                            ImVec2(input_w, composer_h),
+                            ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_CallbackCharFilter,
+                            StructuredComposerInputCallback,
+                            &callback_context);
 #else
-  ImGui::InputTextMultiline("##composer", &app.composer_text, ImVec2(-96.0f, 110.0f), ImGuiInputTextFlags_AllowTabInput);
+  ImGui::InputTextMultiline("##composer",
+                            &app.composer_text,
+                            ImVec2(-96.0f, 110.0f),
+                            ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_CallbackCharFilter,
+                            StructuredComposerInputCallback,
+                            &callback_context);
 #endif
   PopInputChrome();
 
@@ -189,10 +216,7 @@ static void DrawInputContainer(AppState& app, ChatSession& chat) {
     ImGui::EndDisabled();
   }
 
-  if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
-      ImGui::IsKeyPressed(ImGuiKey_Enter) &&
-      ImGui::GetIO().KeyCtrl &&
-      !HasPendingCallForChat(app, chat.id)) {
+  if (callback_context.send_requested && !HasPendingCallForChat(app, chat.id)) {
     StartGeminiRequest(app);
   }
   EndPanel();

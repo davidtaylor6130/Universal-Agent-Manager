@@ -8,8 +8,11 @@ static void DrawRagConsoleModal(AppState& app) {
     ImGui::OpenPopup("rag_console_popup");
     app.open_rag_console_popup = false;
   }
-  ImGui::SetNextWindowSize(ImVec2(980.0f, 760.0f), ImGuiCond_Appearing);
-  if (!ImGui::BeginPopupModal("rag_console_popup", nullptr, ImGuiWindowFlags_NoResize)) {
+  if (!BeginCenteredPopupModal("RAG Console###rag_console_popup",
+                               nullptr,
+                               ImGuiWindowFlags_NoResize,
+                               ImVec2(980.0f, 760.0f),
+                               ImGuiCond_Appearing)) {
     return;
   }
 

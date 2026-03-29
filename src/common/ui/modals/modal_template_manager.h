@@ -15,7 +15,11 @@ static void DrawTemplateManagerModal(AppState& app) {
     ImGui::OpenPopup("template_manager_popup");
     app.open_template_manager_popup = false;
   }
-  if (!ImGui::BeginPopupModal("template_manager_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!BeginCenteredPopupModal("Prompt Profile Manager###template_manager_popup",
+                               nullptr,
+                               ImGuiWindowFlags_NoResize,
+                               ImVec2(860.0f, 700.0f),
+                               ImGuiCond_Appearing)) {
     return;
   }
 
@@ -23,7 +27,7 @@ static void DrawTemplateManagerModal(AppState& app) {
   const fs::path global_root = ResolveGeminiGlobalRootPath(app.settings);
   const fs::path catalog_path = GeminiTemplateCatalog::CatalogPath(global_root);
 
-  ImGui::TextColored(ui::kTextPrimary, "Template Manager");
+  ImGui::TextColored(ui::kTextPrimary, "Prompt Profile Manager");
   ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
   DrawSoftDivider();
 
