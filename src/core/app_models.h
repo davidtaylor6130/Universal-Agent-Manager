@@ -20,6 +20,8 @@ struct Message {
 struct ChatSession {
   std::string id;
   std::string native_session_id;
+  std::string native_session_file_name;
+  std::string native_project_root;
   bool uses_native_session = false;
   std::string folder_id;
   std::string template_override_id;
@@ -50,7 +52,8 @@ struct AppSettings {
   bool confirm_delete_folder = true;
   bool remember_last_chat = true;
   bool mirror_native_gemini_history_to_local = true;
-  int native_history_mirror_idle_seconds = 30;
+  bool delete_empty_native_gemini_chats_on_import = true;
+  int native_history_mirror_idle_seconds = 60;
   std::string last_selected_chat_id;
   float ui_scale_multiplier = 1.0f;
   int window_width = 1440;
@@ -66,6 +69,7 @@ enum class CenterViewMode {
 struct PendingGeminiCall {
   std::string chat_id;
   std::string resume_session_id;
+  std::string native_chats_dir;
   std::vector<std::string> session_ids_before;
   std::string command_preview;
   std::shared_ptr<std::atomic<bool>> completed;

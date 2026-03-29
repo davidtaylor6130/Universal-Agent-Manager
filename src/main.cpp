@@ -6,8 +6,10 @@
 #include "core/app_models.h"
 #include "core/app_paths.h"
 #include "core/chat_folder_store.h"
+#include "core/chat_import_utils.h"
 #include "core/chat_repository.h"
 #include "core/frontend_actions.h"
+#include "core/gemini_cli_compat.h"
 #include "core/gemini_command_builder.h"
 #include "core/gemini_template_catalog.h"
 #include "core/provider_profile.h"
@@ -56,6 +58,7 @@
 #include <future>
 #include <iomanip>
 #include <initializer_list>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <random>
@@ -108,6 +111,7 @@ struct CliTerminalState {
   bool running = false;
   std::string attached_chat_id;
   std::string attached_session_id;
+  fs::path native_chats_dir;
   std::vector<std::string> session_ids_before;
   std::vector<std::string> linked_files_snapshot;
   VTerm* vt = nullptr;
@@ -145,6 +149,7 @@ struct AsyncCommandTask {
 #if defined(_WIN32)
 struct AsyncNativeChatLoadTask {
   bool running = false;
+  fs::path chats_dir;
   std::shared_ptr<std::atomic<bool>> completed;
   std::shared_ptr<std::vector<ChatSession>> chats;
   std::shared_ptr<std::string> error;
@@ -189,8 +194,12 @@ struct AppState {
   bool template_catalog_dirty = true;
   std::vector<TemplateCatalogEntry> template_catalog;
   bool open_template_change_warning_popup = false;
+  bool open_native_import_popup = false;
   std::string pending_template_change_chat_id;
   std::string pending_template_change_override_id;
+  bool pending_native_import_delete_empty = true;
+  std::size_t pending_native_import_prunable_count = 0;
+  std::vector<ChatSession> pending_native_import_chats;
   std::unordered_set<std::string> chats_with_unseen_updates;
   std::string status_line;
   CenterViewMode center_view_mode = CenterViewMode::Structured;
@@ -233,7 +242,6 @@ static constexpr const char* kDefaultFolderTitle = "General";
 static constexpr const char* kAppDisplayName = "Universal Agent Manager";
 static constexpr const char* kAppVersion = "1.0.0";
 static constexpr const char* kAppCopyright = "(c) 2026 David Taylor (davidtaylor6130). All rights reserved.";
-static constexpr const char* kSupportedGeminiVersion = "0.30.0";
 
 static void SortChatsByRecent(std::vector<ChatSession>& chats);
 static std::vector<ChatSession> DeduplicateChatsById(std::vector<ChatSession> chats);
@@ -254,17 +262,30 @@ static std::string BuildGeminiDowngradeCommand();
 static void StartGeminiVersionCheck(AppState& app, const bool force);
 static void StartGeminiDowngradeToSupported(AppState& app);
 static void PollGeminiCompatibilityTasks(AppState& app);
+static void DrawNativeImportModal(AppState& app);
+static std::optional<fs::path> ResolveGeminiProjectTmpDir(const fs::path& project_root);
 static bool IsLocalDraftChatId(const std::string& chat_id);
 static std::string ResolveResumeSessionIdForChat(const AppState& app, const ChatSession& chat);
 static bool HasPendingCallForChat(const AppState& app, const std::string& chat_id);
 static bool HasAnyPendingCall(const AppState& app);
 static void MirrorNativeGeminiHistoryToLocal(AppState& app, const std::vector<ChatSession>* native_hint = nullptr);
 static const PendingGeminiCall* FirstPendingCallForChat(const AppState& app, const std::string& chat_id);
+static std::optional<fs::path> FindNativeSessionFilePathInDirectory(const fs::path& chats_dir, const ChatSession& chat);
+static void DeleteImportedNativeChatArtifacts(const AppState& app,
+                                              const ChatSession& chat,
+                                              const bool delete_native_artifacts);
+static std::size_t ApplyNativeImportRetentionPolicy(AppState& app,
+                                                    std::vector<ChatSession>& chats,
+                                                    const bool delete_native_artifacts);
 static float PlatformUiSpacingScale();
 static float ScaleUiLength(float value);
 static ImVec2 ScaleUiSize(const ImVec2& value);
 static void CaptureUiScaleBaseStyle();
 static void ApplyUserUiScale(ImGuiIO& io, float user_scale_multiplier);
+#if defined(_WIN32)
+static std::wstring WideFromUtf8(const std::string& value);
+static std::wstring EscapeCmdPercentExpansion(const std::wstring& value);
+#endif
 
 static std::string Trim(const std::string& value) {
   const auto start = value.find_first_not_of(" \t\r\n");
@@ -278,6 +299,29 @@ static std::string Trim(const std::string& value) {
 static std::string TimestampNow() {
   const auto now = std::chrono::system_clock::now();
   const std::time_t tt = std::chrono::system_clock::to_time_t(now);
+  std::tm tm_snapshot{};
+#if defined(_WIN32)
+  localtime_s(&tm_snapshot, &tt);
+#else
+  localtime_r(&tt, &tm_snapshot);
+#endif
+  std::ostringstream out;
+  out << std::put_time(&tm_snapshot, "%Y-%m-%d %H:%M:%S");
+  return out.str();
+}
+
+static std::string FormatFilesystemTimestamp(const fs::path& path) {
+  std::error_code ec;
+  const auto file_time = fs::last_write_time(path, ec);
+  if (ec) {
+    return "";
+  }
+  const auto system_now = std::chrono::system_clock::now();
+  const auto file_now = fs::file_time_type::clock::now();
+  const auto adjusted = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+      file_time - file_now + system_now);
+  const std::time_t tt = std::chrono::system_clock::to_time_t(adjusted);
+
   std::tm tm_snapshot{};
 #if defined(_WIN32)
   localtime_s(&tm_snapshot, &tt);
@@ -387,17 +431,93 @@ static fs::path ResolveGeminiGlobalRootPath(const AppSettings& settings) {
   return AppPaths::DefaultGeminiUniversalRootPath();
 }
 
-static fs::path ResolveWorkspaceRootPath(const AppState& app, const ChatSession& chat) {
-  fs::path workspace_root;
-  if (const ChatFolder* folder = FindFolderById(app, chat.folder_id); folder != nullptr) {
-    workspace_root = ExpandLeadingTildePath(folder->directory);
-  }
-  if (workspace_root.empty()) {
-    workspace_root = fs::current_path();
+static fs::path AbsolutePathOrOriginal(const fs::path& path) {
+  if (path.empty()) {
+    return {};
   }
   std::error_code ec;
-  const fs::path absolute_root = fs::absolute(workspace_root, ec);
-  return ec ? workspace_root : absolute_root;
+  const fs::path absolute_path = fs::absolute(path, ec);
+  return ec ? path : absolute_path;
+}
+
+static fs::path DefaultWorkspaceRootPath(const AppState& app) {
+  std::error_code cwd_ec;
+  const fs::path cwd = fs::current_path(cwd_ec);
+  if (!cwd_ec && !cwd.empty()) {
+    return AbsolutePathOrOriginal(cwd);
+  }
+#if defined(_WIN32)
+  if (const std::optional<fs::path> home = ResolveWindowsHomePath(); home.has_value()) {
+    return AbsolutePathOrOriginal(home.value());
+  }
+#else
+  if (const char* home = std::getenv("HOME")) {
+    const fs::path home_path = fs::path(home);
+    if (!home_path.empty()) {
+      return AbsolutePathOrOriginal(home_path);
+    }
+  }
+#endif
+  return AbsolutePathOrOriginal(app.portable_app_root);
+}
+
+static std::string ReadGeminiProjectRootFromTmpDir(const fs::path& tmp_dir) {
+  return Trim(ReadTextFile(tmp_dir / ".project_root"));
+}
+
+static std::optional<fs::path> ResolveGeminiChatsDirForWorkspaceRoot(const fs::path& workspace_root) {
+  if (workspace_root.empty()) {
+    return std::nullopt;
+  }
+  const std::optional<fs::path> tmp_dir = ResolveGeminiProjectTmpDir(workspace_root);
+  if (!tmp_dir.has_value()) {
+    return std::nullopt;
+  }
+  const fs::path chats_dir = tmp_dir.value() / "chats";
+  std::error_code ec;
+  if (!fs::exists(chats_dir, ec) || ec || !fs::is_directory(chats_dir, ec) || ec) {
+    return std::nullopt;
+  }
+  return chats_dir;
+}
+
+static std::vector<fs::path> EnumerateAllGeminiChatsDirs() {
+  std::vector<fs::path> chats_dirs;
+  const fs::path tmp_root = AppPaths::GeminiHomePath() / "tmp";
+  std::error_code ec;
+  if (!fs::exists(tmp_root, ec) || ec || !fs::is_directory(tmp_root, ec) || ec) {
+    return chats_dirs;
+  }
+
+  for (const auto& item : fs::directory_iterator(tmp_root, ec)) {
+    if (ec || !item.is_directory()) {
+      continue;
+    }
+    const fs::path chats_dir = item.path() / "chats";
+    std::error_code chats_ec;
+    if (!fs::exists(chats_dir, chats_ec) || chats_ec || !fs::is_directory(chats_dir, chats_ec) || chats_ec) {
+      continue;
+    }
+    chats_dirs.push_back(chats_dir);
+  }
+  return chats_dirs;
+}
+
+static fs::path ResolveWorkspaceRootPath(const AppState& app, const ChatSession& chat) {
+  fs::path workspace_root;
+  if (chat.uses_native_session && !Trim(chat.native_project_root).empty()) {
+    workspace_root = ExpandLeadingTildePath(chat.native_project_root);
+  }
+  if (const ChatFolder* folder = FindFolderById(app, chat.folder_id); folder != nullptr) {
+    const fs::path folder_root = ExpandLeadingTildePath(folder->directory);
+    if (workspace_root.empty()) {
+      workspace_root = folder_root;
+    }
+  }
+  if (workspace_root.empty()) {
+    workspace_root = DefaultWorkspaceRootPath(app);
+  }
+  return AbsolutePathOrOriginal(workspace_root);
 }
 
 static fs::path WorkspaceGeminiRootPath(const AppState& app, const ChatSession& chat) {
@@ -983,13 +1103,132 @@ static std::string ExtractGeminiContentText(const JsonValue* value) {
   return "";
 }
 
-static std::string ExecuteCommandCaptureOutput(const std::string& command) {
-  const std::string full_command = command + " 2>&1";
 #if defined(_WIN32)
-  FILE* pipe = _popen(full_command.c_str(), "r");
-#else
-  FILE* pipe = popen(full_command.c_str(), "r");
+static std::string ExecuteCommandCaptureOutputHiddenWindows(const std::string& command) {
+  SECURITY_ATTRIBUTES sa{};
+  sa.nLength = sizeof(sa);
+  sa.bInheritHandle = TRUE;
+
+  HANDLE read_pipe = INVALID_HANDLE_VALUE;
+  HANDLE write_pipe = INVALID_HANDLE_VALUE;
+  HANDLE stdin_handle = INVALID_HANDLE_VALUE;
+  PROCESS_INFORMATION process_info{};
+
+  auto close_handle = [](HANDLE& handle) {
+    if (handle != nullptr && handle != INVALID_HANDLE_VALUE) {
+      CloseHandle(handle);
+      handle = INVALID_HANDLE_VALUE;
+    }
+  };
+
+  auto fail = [&](const std::string& message) {
+    close_handle(stdin_handle);
+    close_handle(write_pipe);
+    close_handle(read_pipe);
+    close_handle(process_info.hThread);
+    close_handle(process_info.hProcess);
+    return message;
+  };
+
+  if (!CreatePipe(&read_pipe, &write_pipe, &sa, 0)) {
+    return "Failed to launch Gemini CLI command (Win32 error " + std::to_string(GetLastError()) + ").";
+  }
+  if (!SetHandleInformation(read_pipe, HANDLE_FLAG_INHERIT, 0)) {
+    return fail("Failed to prepare Gemini CLI output capture (Win32 error " + std::to_string(GetLastError()) + ").");
+  }
+
+  stdin_handle = CreateFileW(L"NUL",
+                             GENERIC_READ,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE,
+                             &sa,
+                             OPEN_EXISTING,
+                             FILE_ATTRIBUTE_NORMAL,
+                             nullptr);
+  if (stdin_handle == INVALID_HANDLE_VALUE) {
+    return fail("Failed to prepare Gemini CLI stdin handle (Win32 error " + std::to_string(GetLastError()) + ").");
+  }
+
+  const std::wstring wide_command = WideFromUtf8(command);
+  if (wide_command.empty() && !command.empty()) {
+    return fail("Failed to encode Gemini CLI command for hidden launch.");
+  }
+  const wchar_t* comspec_env = _wgetenv(L"ComSpec");
+  const std::wstring comspec =
+      (comspec_env != nullptr && *comspec_env != L'\0') ? std::wstring(comspec_env) : L"C:\\Windows\\System32\\cmd.exe";
+  const std::wstring shell_args =
+      L"/d /s /c \"\"" + EscapeCmdPercentExpansion(wide_command) + L"\"\"";
+  std::vector<wchar_t> shell_args_mutable(shell_args.begin(), shell_args.end());
+  shell_args_mutable.push_back(L'\0');
+
+  STARTUPINFOW startup_info{};
+  startup_info.cb = sizeof(startup_info);
+  startup_info.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+  startup_info.wShowWindow = SW_HIDE;
+  startup_info.hStdInput = stdin_handle;
+  startup_info.hStdOutput = write_pipe;
+  startup_info.hStdError = write_pipe;
+
+  const bool launched = CreateProcessW(comspec.c_str(),
+                                       shell_args_mutable.data(),
+                                       nullptr,
+                                       nullptr,
+                                       TRUE,
+                                       CREATE_NO_WINDOW,
+                                       nullptr,
+                                       nullptr,
+                                       &startup_info,
+                                       &process_info) != 0;
+  close_handle(write_pipe);
+  close_handle(stdin_handle);
+  if (!launched) {
+    return fail("Failed to launch Gemini CLI command (Win32 error " + std::to_string(GetLastError()) + ").");
+  }
+
+  std::array<char, 4096> buffer{};
+  std::string output;
+  for (;;) {
+    DWORD bytes_read = 0;
+    if (ReadFile(read_pipe, buffer.data(), static_cast<DWORD>(buffer.size()), &bytes_read, nullptr) != 0) {
+      if (bytes_read == 0) {
+        break;
+      }
+      output.append(buffer.data(), buffer.data() + bytes_read);
+      continue;
+    }
+    const DWORD read_error = GetLastError();
+    if (read_error == ERROR_BROKEN_PIPE) {
+      break;
+    }
+    output += "\n\n[Failed to read Gemini CLI output (Win32 error " + std::to_string(read_error) + ")]";
+    break;
+  }
+
+  WaitForSingleObject(process_info.hProcess, INFINITE);
+  DWORD exit_code = 1;
+  if (!GetExitCodeProcess(process_info.hProcess, &exit_code)) {
+    exit_code = 1;
+  }
+
+  close_handle(read_pipe);
+  close_handle(process_info.hThread);
+  close_handle(process_info.hProcess);
+
+  if (output.empty()) {
+    output = "(Gemini CLI returned no output.)";
+  }
+  if (exit_code != 0) {
+    output += "\n\n[Gemini CLI exited with code " + std::to_string(exit_code) + "]";
+  }
+  return output;
+}
 #endif
+
+static std::string ExecuteCommandCaptureOutput(const std::string& command) {
+#if defined(_WIN32)
+  return ExecuteCommandCaptureOutputHiddenWindows(command);
+#else
+  const std::string full_command = command + " 2>&1";
+  FILE* pipe = popen(full_command.c_str(), "r");
   if (pipe == nullptr) {
     std::ostringstream message;
     message << "Failed to launch Gemini CLI command";
@@ -1026,6 +1265,7 @@ static std::string ExecuteCommandCaptureOutput(const std::string& command) {
   }
 
   return output;
+#endif
 }
 
 static void StartAsyncCommandTask(AsyncCommandTask& task, const std::string& command) {
@@ -1078,12 +1318,13 @@ static std::string BuildGeminiVersionCheckCommand() {
 }
 
 static std::string BuildGeminiDowngradeCommand() {
+  const std::string preferred_version(uam::PreferredGeminiCliVersion());
 #if defined(__APPLE__)
-  return "brew install gemini-cli@0.30.0";
+  return "brew install gemini-cli@" + preferred_version;
 #elif defined(_WIN32)
-  return "npm install -g @google/gemini-cli@0.30.0";
+  return "npm install -g @google/gemini-cli@" + preferred_version;
 #else
-  return "npm install -g @google/gemini-cli@0.30.0";
+  return "npm install -g @google/gemini-cli@" + preferred_version;
 #endif
 }
 
@@ -1105,7 +1346,7 @@ static void StartGeminiDowngradeToSupported(AppState& app) {
   const std::string command = BuildGeminiDowngradeCommand();
   StartAsyncCommandTask(app.gemini_downgrade_task, command);
   app.gemini_downgrade_output.clear();
-  app.status_line = "Running Gemini downgrade command...";
+  app.status_line = "Running Gemini CLI install command...";
 }
 
 static bool OutputContainsNonZeroExit(const std::string& output) {
@@ -1123,7 +1364,7 @@ static void PollGeminiCompatibilityTasks(AppState& app) {
     const std::optional<std::string> parsed = ExtractSemverVersion(output);
     if (parsed.has_value()) {
       app.gemini_installed_version = parsed.value();
-      app.gemini_version_supported = (app.gemini_installed_version == kSupportedGeminiVersion);
+      app.gemini_version_supported = uam::IsSupportedGeminiCliVersion(app.gemini_installed_version);
       if (app.gemini_version_supported) {
         app.gemini_version_message = "Gemini version is supported.";
       } else {
@@ -1142,10 +1383,10 @@ static void PollGeminiCompatibilityTasks(AppState& app) {
   if (TryConsumeAsyncCommandTaskOutput(app.gemini_downgrade_task, output)) {
     app.gemini_downgrade_output = output;
     if (OutputContainsNonZeroExit(output)) {
-      app.status_line = "Gemini downgrade command failed. Review output in Settings.";
-      app.gemini_version_message = "Downgrade command failed.";
+      app.status_line = "Gemini CLI install command failed. Review output in Settings.";
+      app.gemini_version_message = "Gemini CLI install command failed.";
     } else {
-      app.status_line = "Gemini downgrade completed. Re-checking installed version.";
+      app.status_line = "Gemini CLI install completed. Re-checking installed version.";
       StartGeminiVersionCheck(app, true);
     }
   }
@@ -1276,11 +1517,20 @@ static std::optional<ChatSession> ParseGeminiSessionFile(const fs::path& file_pa
   ChatSession chat;
   chat.id = session_id;
   chat.native_session_id = session_id;
+  chat.native_session_file_name = file_path.filename().string();
+  chat.native_project_root = ReadGeminiProjectRootFromTmpDir(file_path.parent_path().parent_path());
   chat.uses_native_session = true;
   chat.created_at = JsonStringOrEmpty(root.Find("startTime"));
   chat.updated_at = JsonStringOrEmpty(root.Find("lastUpdated"));
+  const std::string file_timestamp = FormatFilesystemTimestamp(file_path);
   if (chat.created_at.empty()) {
-    chat.created_at = TimestampNow();
+    chat.created_at = file_timestamp;
+  }
+  if (chat.updated_at.empty()) {
+    chat.updated_at = !file_timestamp.empty() ? file_timestamp : chat.created_at;
+  }
+  if (chat.created_at.empty()) {
+    chat.created_at = "1970-01-01 00:00:00";
   }
   if (chat.updated_at.empty()) {
     chat.updated_at = chat.created_at;
@@ -1315,19 +1565,7 @@ static std::optional<ChatSession> ParseGeminiSessionFile(const fs::path& file_pa
     }
   }
 
-  chat.title = "Session " + chat.created_at;
-  for (const Message& message : chat.messages) {
-    if (message.role == MessageRole::User) {
-      std::string title = Trim(message.content);
-      if (title.size() > 48) {
-        title = title.substr(0, 45) + "...";
-      }
-      if (!title.empty()) {
-        chat.title = title;
-      }
-      break;
-    }
-  }
+  chat.title = uam::BuildImportedChatTitle(chat.messages, chat.created_at);
   return chat;
 }
 
@@ -1361,16 +1599,27 @@ static std::vector<ChatSession> LoadNativeGeminiChats(const fs::path& chats_dir,
   return DeduplicateChatsById(std::move(chats));
 }
 
+static std::vector<ChatSession> LoadNativeGeminiChatsFromDirectories(const std::vector<fs::path>& chats_dirs,
+                                                                     const ProviderProfile& provider) {
+  std::vector<ChatSession> chats;
+  for (const fs::path& chats_dir : chats_dirs) {
+    std::vector<ChatSession> loaded = LoadNativeGeminiChats(chats_dir, provider);
+    chats.insert(chats.end(),
+                 std::make_move_iterator(loaded.begin()),
+                 std::make_move_iterator(loaded.end()));
+  }
+  return DeduplicateChatsById(std::move(chats));
+}
+
 #if defined(_WIN32)
-static bool StartAsyncNativeChatLoad(AppState& app) {
-  if (!ActiveProviderUsesGeminiHistory(app) || app.native_chat_load_task.running) {
+static bool StartAsyncNativeChatLoad(AppState& app, const fs::path& chats_dir) {
+  if (!ActiveProviderUsesGeminiHistory(app) || app.native_chat_load_task.running || chats_dir.empty()) {
     return false;
   }
-  RefreshGeminiChatsDir(app);
-  const fs::path chats_dir = app.gemini_chats_dir;
   const ProviderProfile provider = ActiveProviderOrDefault(app);
 
   app.native_chat_load_task.running = true;
+  app.native_chat_load_task.chats_dir = chats_dir;
   app.native_chat_load_task.completed = std::make_shared<std::atomic<bool>>(false);
   app.native_chat_load_task.chats = std::make_shared<std::vector<ChatSession>>();
   app.native_chat_load_task.error = std::make_shared<std::string>();
@@ -1392,15 +1641,20 @@ static bool StartAsyncNativeChatLoad(AppState& app) {
 }
 
 static bool TryConsumeAsyncNativeChatLoad(AppState& app,
+                                          const fs::path& chats_dir,
                                           std::vector<ChatSession>& chats_out,
                                           std::string& error_out) {
   if (!app.native_chat_load_task.running) {
+    return false;
+  }
+  if (!chats_dir.empty() && app.native_chat_load_task.chats_dir != chats_dir) {
     return false;
   }
   if (app.native_chat_load_task.completed == nullptr ||
       app.native_chat_load_task.chats == nullptr ||
       app.native_chat_load_task.error == nullptr) {
     app.native_chat_load_task.running = false;
+    app.native_chat_load_task.chats_dir.clear();
     app.native_chat_load_task.completed.reset();
     app.native_chat_load_task.chats.reset();
     app.native_chat_load_task.error.reset();
@@ -1415,6 +1669,7 @@ static bool TryConsumeAsyncNativeChatLoad(AppState& app,
   chats_out = *app.native_chat_load_task.chats;
   error_out = *app.native_chat_load_task.error;
   app.native_chat_load_task.running = false;
+  app.native_chat_load_task.chats_dir.clear();
   app.native_chat_load_task.completed.reset();
   app.native_chat_load_task.chats.reset();
   app.native_chat_load_task.error.reset();
@@ -1469,11 +1724,7 @@ static void EnsureDefaultFolder(AppState& app) {
   ChatFolder folder;
   folder.id = kDefaultFolderId;
   folder.title = kDefaultFolderTitle;
-  if (!app.portable_app_root.empty()) {
-    folder.directory = app.portable_app_root.string();
-  } else {
-    folder.directory = fs::current_path().string();
-  }
+  folder.directory = DefaultWorkspaceRootPath(app).string();
   folder.collapsed = false;
   app.folders.push_back(std::move(folder));
 }
@@ -1606,6 +1857,147 @@ static std::string FolderTitleOrFallback(const ChatFolder& folder) {
   return trimmed.empty() ? "Untitled Folder" : trimmed;
 }
 
+static std::string NormalizeDirectoryKey(const fs::path& path) {
+  std::string key = AbsolutePathOrOriginal(path).lexically_normal().generic_string();
+#if defined(_WIN32)
+  std::transform(key.begin(), key.end(), key.begin(), [](const unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+#endif
+  return key;
+}
+
+static std::string MakeUniqueFolderTitle(const AppState& app, const std::string& base_title, const fs::path& project_root) {
+  std::string candidate = Trim(base_title);
+  if (candidate.empty()) {
+    candidate = "Imported Gemini";
+  }
+
+  auto title_taken = [&](const std::string& title) {
+    for (const ChatFolder& folder : app.folders) {
+      if (FolderTitleOrFallback(folder) == title) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  if (!title_taken(candidate)) {
+    return candidate;
+  }
+
+  const std::string parent_title = Trim(project_root.parent_path().filename().string());
+  if (!parent_title.empty()) {
+    const std::string with_parent = parent_title + " / " + candidate;
+    if (!title_taken(with_parent)) {
+      return with_parent;
+    }
+  }
+
+  for (int suffix = 2; suffix < 1000; ++suffix) {
+    const std::string numbered = candidate + " (" + std::to_string(suffix) + ")";
+    if (!title_taken(numbered)) {
+      return numbered;
+    }
+  }
+  return candidate;
+}
+
+static std::string FindBestFolderForProjectRoot(const AppState& app, const fs::path& project_root) {
+  const fs::path normalized_project_root = AbsolutePathOrOriginal(project_root).lexically_normal();
+  for (const ChatFolder& folder : app.folders) {
+    const fs::path folder_root = AbsolutePathOrOriginal(ExpandLeadingTildePath(folder.directory)).lexically_normal();
+    if (folder_root.empty()) {
+      continue;
+    }
+    if (NormalizeDirectoryKey(folder_root) == NormalizeDirectoryKey(normalized_project_root)) {
+      return folder.id;
+    }
+  }
+  return "";
+}
+
+static std::string EnsureFolderForImportedProjectRoot(AppState& app, const fs::path& project_root, bool* created_out = nullptr) {
+  if (created_out != nullptr) {
+    *created_out = false;
+  }
+  if (project_root.empty()) {
+    return kDefaultFolderId;
+  }
+
+  const std::string existing = FindBestFolderForProjectRoot(app, project_root);
+  if (!existing.empty()) {
+    return existing;
+  }
+
+  ChatFolder folder;
+  folder.id = NewFolderId();
+  folder.title = MakeUniqueFolderTitle(app, uam::BuildFolderTitleFromProjectRoot(project_root), project_root);
+  folder.directory = AbsolutePathOrOriginal(project_root).string();
+  folder.collapsed = false;
+  app.folders.push_back(std::move(folder));
+  if (created_out != nullptr) {
+    *created_out = true;
+  }
+  return app.folders.back().id;
+}
+
+static bool ShouldRefreshImportedChatTitle(const ChatSession& chat) {
+  const std::string trimmed = Trim(chat.title);
+  if (trimmed.empty() || trimmed == "Untitled Chat") {
+    return true;
+  }
+  if (!chat.created_at.empty() && trimmed == ("Session " + chat.created_at)) {
+    return true;
+  }
+  return trimmed.rfind("Retrieved context:", 0) == 0;
+}
+
+static bool HasMeaningfulUserMessage(const ChatSession& chat) {
+  for (const Message& message : chat.messages) {
+    if (message.role == MessageRole::User && !Trim(message.content).empty()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool ShouldPruneImportedNativeChat(const ChatSession& chat) {
+  return (chat.uses_native_session || !chat.native_session_id.empty()) && !HasMeaningfulUserMessage(chat);
+}
+
+static bool ApplyImportedNativeChatDefaults(AppState& app, ChatSession& chat) {
+  bool changed = false;
+  if (chat.uses_native_session && ShouldRefreshImportedChatTitle(chat)) {
+    const std::string inferred_title = uam::BuildImportedChatTitle(chat.messages, chat.created_at);
+    if (!inferred_title.empty() && inferred_title != chat.title) {
+      chat.title = inferred_title;
+      changed = true;
+    }
+  }
+
+  if (chat.uses_native_session && !Trim(chat.native_project_root).empty()) {
+    const fs::path project_root = ExpandLeadingTildePath(chat.native_project_root);
+    if (!project_root.empty()) {
+      const bool should_infer_folder =
+          chat.folder_id.empty() ||
+          chat.folder_id == kDefaultFolderId ||
+          FindFolderById(app, chat.folder_id) == nullptr;
+      if (should_infer_folder) {
+        bool created_folder = false;
+        const std::string inferred_folder_id = EnsureFolderForImportedProjectRoot(app, project_root, &created_folder);
+        if (!inferred_folder_id.empty() && inferred_folder_id != chat.folder_id) {
+          chat.folder_id = inferred_folder_id;
+          changed = true;
+        }
+        changed = changed || created_folder;
+      }
+    }
+  }
+
+  return changed;
+}
+
 static int FindChatIndexById(const AppState& app, const std::string& chat_id) {
   for (int i = 0; i < static_cast<int>(app.chats.size()); ++i) {
     if (app.chats[i].id == chat_id) {
@@ -1630,8 +2022,21 @@ static const ChatSession* SelectedChat(const AppState& app) {
 }
 
 static void SortChatsByRecent(std::vector<ChatSession>& chats) {
-  std::sort(chats.begin(), chats.end(), [](const ChatSession& a, const ChatSession& b) {
-    return a.updated_at > b.updated_at;
+  std::stable_sort(chats.begin(), chats.end(), [](const ChatSession& a, const ChatSession& b) {
+    const std::string a_updated = a.updated_at.empty() ? a.created_at : a.updated_at;
+    const std::string b_updated = b.updated_at.empty() ? b.created_at : b.updated_at;
+    if (a_updated != b_updated) {
+      return a_updated > b_updated;
+    }
+    if (a.created_at != b.created_at) {
+      return a.created_at > b.created_at;
+    }
+    const std::string a_title = Trim(a.title);
+    const std::string b_title = Trim(b.title);
+    if (a_title != b_title) {
+      return a_title < b_title;
+    }
+    return a.id < b.id;
   });
 }
 
@@ -1712,6 +2117,111 @@ static bool SaveChat(const AppState& app, const ChatSession& chat) {
 
 static std::vector<ChatSession> LoadChats(const AppState& app) {
   return ChatRepository::LoadLocalChats(app.data_root);
+}
+
+static void AddUniquePath(std::vector<fs::path>& paths, const fs::path& candidate) {
+  const fs::path normalized = candidate.lexically_normal();
+  for (const fs::path& existing : paths) {
+    if (existing.lexically_normal() == normalized) {
+      return;
+    }
+  }
+  paths.push_back(candidate);
+}
+
+static std::vector<fs::path> CollectGeminiChatsDirsMatchingSessionIds(const std::unordered_set<std::string>& session_ids) {
+  std::vector<fs::path> chats_dirs;
+  if (session_ids.empty()) {
+    return chats_dirs;
+  }
+
+  for (const fs::path& candidate_dir : EnumerateAllGeminiChatsDirs()) {
+    std::error_code ec;
+    bool matched = false;
+    for (const auto& item : fs::directory_iterator(candidate_dir, ec)) {
+      if (ec || !item.is_regular_file() || item.path().extension() != ".json") {
+        continue;
+      }
+      const std::string file_text = ReadTextFile(item.path());
+      if (file_text.empty()) {
+        continue;
+      }
+      const std::optional<JsonValue> root_opt = ParseJson(file_text);
+      if (!root_opt.has_value() || root_opt->type != JsonValue::Type::Object) {
+        continue;
+      }
+      const std::string session_id = JsonStringOrEmpty(root_opt->Find("sessionId"));
+      if (!session_id.empty() && session_ids.find(session_id) != session_ids.end()) {
+        AddUniquePath(chats_dirs, candidate_dir);
+        matched = true;
+        break;
+      }
+    }
+    if (matched) {
+      continue;
+    }
+  }
+  return chats_dirs;
+}
+
+static std::vector<fs::path> CollectRelevantGeminiChatsDirs(const AppState& app) {
+  std::vector<fs::path> chats_dirs;
+
+  for (const ChatFolder& folder : app.folders) {
+    const fs::path folder_root = AbsolutePathOrOriginal(ExpandLeadingTildePath(folder.directory));
+    if (const auto chats_dir = ResolveGeminiChatsDirForWorkspaceRoot(folder_root); chats_dir.has_value()) {
+      AddUniquePath(chats_dirs, chats_dir.value());
+    }
+  }
+
+  const std::vector<ChatSession> known_chats = app.chats.empty() ? LoadChats(app) : app.chats;
+  std::unordered_set<std::string> session_ids;
+  for (const ChatSession& chat : known_chats) {
+    if (chat.uses_native_session && !chat.native_project_root.empty()) {
+      if (const auto chats_dir = ResolveGeminiChatsDirForWorkspaceRoot(ExpandLeadingTildePath(chat.native_project_root));
+          chats_dir.has_value()) {
+        AddUniquePath(chats_dirs, chats_dir.value());
+      }
+    }
+    if (!chat.native_session_id.empty()) {
+      session_ids.insert(chat.native_session_id);
+    } else if (chat.uses_native_session && !chat.id.empty()) {
+      session_ids.insert(chat.id);
+    }
+  }
+
+  if (!session_ids.empty()) {
+    for (const fs::path& chats_dir : CollectGeminiChatsDirsMatchingSessionIds(session_ids)) {
+      AddUniquePath(chats_dirs, chats_dir);
+    }
+  }
+
+  if (chats_dirs.empty()) {
+    const fs::path default_root = DefaultWorkspaceRootPath(app);
+    if (const auto chats_dir = ResolveGeminiChatsDirForWorkspaceRoot(default_root); chats_dir.has_value()) {
+      AddUniquePath(chats_dirs, chats_dir.value());
+    }
+  }
+
+  return chats_dirs;
+}
+
+static std::optional<fs::path> ResolveNativeChatsDirForChat(const AppState& app, const ChatSession& chat) {
+  const fs::path workspace_root = ResolveWorkspaceRootPath(app, chat);
+  if (const auto chats_dir = ResolveGeminiChatsDirForWorkspaceRoot(workspace_root); chats_dir.has_value()) {
+    return chats_dir;
+  }
+  for (const fs::path& chats_dir : CollectRelevantGeminiChatsDirs(app)) {
+    if (FindNativeSessionFilePathInDirectory(chats_dir, chat).has_value()) {
+      return chats_dir;
+    }
+  }
+  for (const fs::path& chats_dir : EnumerateAllGeminiChatsDirs()) {
+    if (FindNativeSessionFilePathInDirectory(chats_dir, chat).has_value()) {
+      return chats_dir;
+    }
+  }
+  return std::nullopt;
 }
 
 static ChatSession CreateNewChat(const std::string& folder_id) {
@@ -1874,9 +2384,9 @@ static bool QueueGeminiPromptForChat(AppState& app,
 
   const ProviderProfile& provider = ActiveProviderOrDefault(app);
   std::vector<ChatSession> native_before;
+  const std::optional<fs::path> native_chats_dir = ResolveNativeChatsDirForChat(app, chat);
   if (ActiveProviderUsesGeminiHistory(app)) {
-    RefreshGeminiChatsDir(app);
-    native_before = LoadNativeGeminiChats(app.gemini_chats_dir, provider);
+    native_before = LoadNativeGeminiChats(native_chats_dir.value_or(fs::path{}), provider);
   }
   const std::string resume_session_id = ResolveResumeSessionIdForChat(app, chat);
   const std::string runtime_prompt =
@@ -1889,6 +2399,7 @@ static bool QueueGeminiPromptForChat(AppState& app,
   PendingGeminiCall pending;
   pending.chat_id = chat_id;
   pending.resume_session_id = resume_session_id;
+  pending.native_chats_dir = native_chats_dir.has_value() ? native_chats_dir->string() : "";
   pending.session_ids_before = SessionIdsFromChats(native_before);
   pending.command_preview = command;
   pending.completed = std::make_shared<std::atomic<bool>>(false);
@@ -1942,6 +2453,12 @@ static void ApplyLocalMetadataOverrides(const ChatSession& local, ChatSession& c
     chat.native_session_id = chat.id;
     chat.uses_native_session = true;
   }
+  if (!local.native_session_file_name.empty()) {
+    chat.native_session_file_name = local.native_session_file_name;
+  }
+  if (!local.native_project_root.empty()) {
+    chat.native_project_root = local.native_project_root;
+  }
   if (local.gemini_md_bootstrapped) {
     chat.gemini_md_bootstrapped = true;
   }
@@ -1965,9 +2482,9 @@ static void MirrorNativeGeminiHistoryToLocal(AppState& app, const std::vector<Ch
   if (native_hint != nullptr) {
     native_chats = DeduplicateChatsById(*native_hint);
   } else {
-    RefreshGeminiChatsDir(app);
-    native_chats = LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app));
+    native_chats = LoadNativeGeminiChatsFromDirectories(CollectRelevantGeminiChatsDirs(app), ActiveProviderOrDefault(app));
   }
+  ApplyNativeImportRetentionPolicy(app, native_chats, true);
   if (native_chats.empty()) {
     return;
   }
@@ -1978,6 +2495,7 @@ static void MirrorNativeGeminiHistoryToLocal(AppState& app, const std::vector<Ch
     local_map[local.id] = &local;
   }
 
+  bool folders_changed = false;
   for (ChatSession& native : native_chats) {
     const auto it = local_map.find(native.id);
     if (it != local_map.end()) {
@@ -1993,7 +2511,11 @@ static void MirrorNativeGeminiHistoryToLocal(AppState& app, const std::vector<Ch
     if (native.updated_at.empty()) {
       native.updated_at = native.created_at;
     }
+    folders_changed = ApplyImportedNativeChatDefaults(app, native) || folders_changed;
     SaveChat(app, native);
+  }
+  if (folders_changed) {
+    SaveFolders(app);
   }
 }
 
@@ -2006,13 +2528,16 @@ static void ApplyLocalOverrides(AppState& app, std::vector<ChatSession>& native_
   }
 
   std::unordered_set<std::string> native_ids;
+  bool folders_changed = false;
   for (ChatSession& native : native_chats) {
     native_ids.insert(native.id);
     const auto it = local_map.find(native.id);
     if (it == local_map.end()) {
+      folders_changed = ApplyImportedNativeChatDefaults(app, native) || folders_changed;
       continue;
     }
     ApplyLocalMetadataOverrides(*it->second, native);
+    folders_changed = ApplyImportedNativeChatDefaults(app, native) || folders_changed;
   }
 
   std::vector<ChatSession> merged = native_chats;
@@ -2022,6 +2547,10 @@ static void ApplyLocalOverrides(AppState& app, std::vector<ChatSession>& native_
     }
     const bool mirrored_native_session = chat.uses_native_session || !chat.native_session_id.empty();
     if (mirrored_native_session) {
+      if (app.settings.delete_empty_native_gemini_chats_on_import && ShouldPruneImportedNativeChat(chat)) {
+        DeleteImportedNativeChatArtifacts(app, chat, false);
+        continue;
+      }
       // Optional one-way mirror fallback: if native JSON history is unavailable on
       // relaunch, recover mirrored sessions from local storage.
       if (app.settings.mirror_native_gemini_history_to_local) {
@@ -2043,6 +2572,50 @@ static void ApplyLocalOverrides(AppState& app, std::vector<ChatSession>& native_
 
   app.chats = DeduplicateChatsById(std::move(merged));
   NormalizeChatFolderAssignments(app);
+  if (folders_changed) {
+    SaveFolders(app);
+  }
+}
+
+static std::unordered_set<std::string> ImportedNativeChatIds(const std::vector<ChatSession>& local_chats) {
+  std::unordered_set<std::string> ids;
+  for (const ChatSession& chat : local_chats) {
+    if (chat.uses_native_session || !chat.native_session_id.empty()) {
+      if (!chat.id.empty()) {
+        ids.insert(chat.id);
+      }
+      if (!chat.native_session_id.empty()) {
+        ids.insert(chat.native_session_id);
+      }
+    }
+  }
+  return ids;
+}
+
+static void PartitionNativeChatsForStartupImport(const std::vector<ChatSession>& native_chats,
+                                                 const std::vector<ChatSession>& local_chats,
+                                                 std::vector<ChatSession>* already_imported_out,
+                                                 std::vector<ChatSession>* new_imports_out) {
+  if (already_imported_out != nullptr) {
+    already_imported_out->clear();
+  }
+  if (new_imports_out != nullptr) {
+    new_imports_out->clear();
+  }
+
+  const std::unordered_set<std::string> imported_ids = ImportedNativeChatIds(local_chats);
+  for (const ChatSession& chat : native_chats) {
+    const bool already_imported =
+        (!chat.id.empty() && imported_ids.find(chat.id) != imported_ids.end()) ||
+        (!chat.native_session_id.empty() && imported_ids.find(chat.native_session_id) != imported_ids.end());
+    if (already_imported) {
+      if (already_imported_out != nullptr) {
+        already_imported_out->push_back(chat);
+      }
+    } else if (new_imports_out != nullptr) {
+      new_imports_out->push_back(chat);
+    }
+  }
 }
 
 static fs::path ResolveGeminiWorkspaceRootForHistory(const AppState& app) {
@@ -2151,18 +2724,8 @@ static std::optional<fs::path> ResolveFallbackGeminiProjectTmpDir(const AppState
 }
 
 static void RefreshGeminiChatsDir(AppState& app) {
-  const fs::path workspace_root = ResolveGeminiWorkspaceRootForHistory(app);
-  std::optional<fs::path> tmp_dir = ResolveGeminiProjectTmpDir(workspace_root);
-  if (!tmp_dir.has_value()) {
-    tmp_dir = ResolveFallbackGeminiProjectTmpDir(app);
-  }
-  if (tmp_dir.has_value()) {
-    app.gemini_chats_dir = tmp_dir.value() / "chats";
-    std::error_code ec;
-    fs::create_directories(app.gemini_chats_dir, ec);
-  } else {
-    app.gemini_chats_dir.clear();
-  }
+  const std::vector<fs::path> chats_dirs = CollectRelevantGeminiChatsDirs(app);
+  app.gemini_chats_dir = chats_dirs.empty() ? fs::path{} : chats_dirs.front();
 }
 
 static std::vector<std::string> CollectNewSessionIds(
@@ -2201,10 +2764,32 @@ static bool SessionIdExistsInLoadedChats(const std::vector<ChatSession>& loaded_
   return false;
 }
 
-static std::optional<fs::path> FindNativeSessionFilePathInDirectory(const fs::path& chats_dir, const std::string& session_id) {
-  if (session_id.empty() || chats_dir.empty() || !fs::exists(chats_dir)) {
+static std::optional<fs::path> FindNativeSessionFilePathInDirectory(const fs::path& chats_dir, const ChatSession& chat) {
+  if (chats_dir.empty() || !fs::exists(chats_dir)) {
     return std::nullopt;
   }
+
+  if (!chat.native_session_file_name.empty()) {
+    const fs::path candidate = chats_dir / chat.native_session_file_name;
+    std::error_code candidate_ec;
+    if (fs::exists(candidate, candidate_ec) && !candidate_ec && fs::is_regular_file(candidate, candidate_ec) && !candidate_ec) {
+      if (chat.native_session_id.empty()) {
+        return candidate;
+      }
+      const std::string file_text = ReadTextFile(candidate);
+      const std::optional<JsonValue> root_opt = ParseJson(file_text);
+      if (root_opt.has_value() &&
+          root_opt->type == JsonValue::Type::Object &&
+          JsonStringOrEmpty(root_opt->Find("sessionId")) == chat.native_session_id) {
+        return candidate;
+      }
+    }
+  }
+
+  if (chat.native_session_id.empty()) {
+    return std::nullopt;
+  }
+
   std::error_code ec;
   for (const auto& item : fs::directory_iterator(chats_dir, ec)) {
     if (ec || !item.is_regular_file() || item.path().extension() != ".json") {
@@ -2218,15 +2803,67 @@ static std::optional<fs::path> FindNativeSessionFilePathInDirectory(const fs::pa
     if (!root_opt.has_value() || root_opt->type != JsonValue::Type::Object) {
       continue;
     }
-    if (JsonStringOrEmpty(root_opt->Find("sessionId")) == session_id) {
+    if (JsonStringOrEmpty(root_opt->Find("sessionId")) == chat.native_session_id) {
       return item.path();
     }
   }
   return std::nullopt;
 }
 
-static std::optional<fs::path> FindNativeSessionFilePath(const AppState& app, const std::string& session_id) {
-  return FindNativeSessionFilePathInDirectory(app.gemini_chats_dir, session_id);
+static std::optional<fs::path> FindNativeSessionFilePath(const AppState& app, const ChatSession& chat) {
+  if (const auto chats_dir = ResolveNativeChatsDirForChat(app, chat); chats_dir.has_value()) {
+    if (const auto session_file = FindNativeSessionFilePathInDirectory(chats_dir.value(), chat); session_file.has_value()) {
+      return session_file;
+    }
+  }
+
+  for (const fs::path& chats_dir : CollectRelevantGeminiChatsDirs(app)) {
+    if (const auto session_file = FindNativeSessionFilePathInDirectory(chats_dir, chat); session_file.has_value()) {
+      return session_file;
+    }
+  }
+
+  for (const fs::path& chats_dir : EnumerateAllGeminiChatsDirs()) {
+    if (const auto session_file = FindNativeSessionFilePathInDirectory(chats_dir, chat); session_file.has_value()) {
+      return session_file;
+    }
+  }
+
+  return std::nullopt;
+}
+
+static void DeleteImportedNativeChatArtifacts(const AppState& app,
+                                              const ChatSession& chat,
+                                              const bool delete_native_artifacts) {
+  std::error_code local_delete_ec;
+  fs::remove_all(ChatPath(app, chat), local_delete_ec);
+  if (!delete_native_artifacts) {
+    return;
+  }
+  if (const auto native_file = FindNativeSessionFilePath(app, chat); native_file.has_value()) {
+    std::error_code native_delete_ec;
+    fs::remove(native_file.value(), native_delete_ec);
+  }
+}
+
+static std::size_t ApplyNativeImportRetentionPolicy(AppState& app,
+                                                    std::vector<ChatSession>& chats,
+                                                    const bool delete_native_artifacts) {
+  if (!app.settings.delete_empty_native_gemini_chats_on_import) {
+    return 0;
+  }
+
+  std::size_t removed = 0;
+  chats.erase(std::remove_if(chats.begin(), chats.end(), [&](const ChatSession& chat) {
+               if (!ShouldPruneImportedNativeChat(chat)) {
+                 return false;
+               }
+               DeleteImportedNativeChatArtifacts(app, chat, delete_native_artifacts);
+               ++removed;
+               return true;
+             }),
+             chats.end());
+  return removed;
 }
 
 static MessageRole NativeMessageRoleFromType(const ProviderProfile& provider, const std::string& type) {
@@ -2244,7 +2881,7 @@ static bool TruncateNativeSessionFromDisplayedMessage(const AppState& app,
     return false;
   }
 
-  const auto session_file = FindNativeSessionFilePath(app, chat.native_session_id);
+  const auto session_file = FindNativeSessionFilePath(app, chat);
   if (!session_file.has_value()) {
     if (error_out != nullptr) {
       *error_out = "Could not locate native Gemini session file.";
@@ -2650,6 +3287,7 @@ static void FastStopCliTerminalWindows(CliTerminalState& terminal, const bool cl
   if (clear_identity) {
     terminal.attached_chat_id.clear();
     terminal.attached_session_id.clear();
+    terminal.native_chats_dir.clear();
     terminal.session_ids_before.clear();
     terminal.linked_files_snapshot.clear();
     terminal.should_launch = false;
@@ -2711,6 +3349,7 @@ static void StopCliTerminal(CliTerminalState& terminal, const bool clear_identit
   if (clear_identity) {
     terminal.attached_chat_id.clear();
     terminal.attached_session_id.clear();
+    terminal.native_chats_dir.clear();
     terminal.session_ids_before.clear();
     terminal.linked_files_snapshot.clear();
     terminal.should_launch = false;
@@ -2916,14 +3555,45 @@ static void SyncChatsFromNative(AppState& app, const std::string& preferred_chat
   const std::string selected_before = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
 
   if (ActiveProviderUsesGeminiHistory(app)) {
-    RefreshGeminiChatsDir(app);
-    std::vector<ChatSession> native = LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app));
+    std::vector<ChatSession> native =
+        LoadNativeGeminiChatsFromDirectories(CollectRelevantGeminiChatsDirs(app), ActiveProviderOrDefault(app));
+    ApplyNativeImportRetentionPolicy(app, native, true);
     ApplyLocalOverrides(app, native);
   } else {
     app.chats = LoadChats(app);
     NormalizeChatFolderAssignments(app);
   }
   FinalizeChatSyncSelection(app, selected_before, preferred_chat_id, preserve_selection);
+}
+
+static void FinalizePendingNativeImport(AppState& app) {
+  if (app.pending_native_import_chats.empty()) {
+    return;
+  }
+
+  app.settings.delete_empty_native_gemini_chats_on_import = app.pending_native_import_delete_empty;
+  SaveSettings(app);
+
+  std::vector<ChatSession> native_chats = DeduplicateChatsById(std::move(app.pending_native_import_chats));
+  const std::size_t discovered_count = native_chats.size();
+  app.pending_native_import_chats.clear();
+  app.pending_native_import_prunable_count = 0;
+
+  const std::size_t removed_count = ApplyNativeImportRetentionPolicy(app, native_chats, true);
+  MirrorNativeGeminiHistoryToLocal(app, &native_chats);
+
+  const std::string preferred_chat_id = app.settings.remember_last_chat ? app.settings.last_selected_chat_id : "";
+  SyncChatsFromLoadedNative(app, std::move(native_chats), preferred_chat_id, false);
+
+  if (removed_count > 0) {
+    app.status_line = "Imported " + std::to_string(discovered_count) + " Gemini chats and deleted " +
+                      std::to_string(removed_count) + " empty sessions.";
+  } else {
+    app.status_line = "Imported " + std::to_string(discovered_count) + " Gemini chats.";
+  }
+  if (app.settings.mirror_native_gemini_history_to_local && ActiveProviderUsesGeminiHistory(app)) {
+    app.last_native_history_mirror_time_s = ImGui::GetTime();
+  }
 }
 
 static std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const ChatSession& chat) {
@@ -2950,9 +3620,6 @@ static bool SetFdNonBlocking(const int fd) {
 
 static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, const ChatSession& chat, const int rows, const int cols) {
   StopCliTerminal(terminal);
-  if (ActiveProviderUsesGeminiHistory(app)) {
-    RefreshGeminiChatsDir(app);
-  }
 
   std::string template_status;
   const TemplatePreflightOutcome template_outcome = PreflightWorkspaceTemplateForChat(app, chat, &template_status);
@@ -2968,9 +3635,11 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
   terminal.cols = std::max(20, cols);
   terminal.attached_chat_id = chat.id;
   terminal.attached_session_id = ResolveResumeSessionIdForChat(app, chat);
+  terminal.native_chats_dir = ResolveNativeChatsDirForChat(app, chat).value_or(fs::path{});
   terminal.linked_files_snapshot = chat.linked_files;
   if (ActiveProviderUsesGeminiHistory(app)) {
-    terminal.session_ids_before = SessionIdsFromChats(LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app)));
+    terminal.session_ids_before =
+        SessionIdsFromChats(LoadNativeGeminiChats(terminal.native_chats_dir, ActiveProviderOrDefault(app)));
   } else {
     terminal.session_ids_before.clear();
   }
@@ -3569,6 +4238,15 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
       MarkChatUnseen(app, terminal.attached_chat_id);
     }
   };
+  const auto sync_history_after_terminal_stop = [&]() {
+    if (!ActiveProviderUsesGeminiHistory(app)) {
+      return;
+    }
+    const std::string preferred_id =
+        terminal.attached_session_id.empty() ? terminal.attached_chat_id : terminal.attached_session_id;
+    SyncChatsFromNative(app, preferred_id, preserve_selection);
+    app.last_native_history_mirror_time_s = ImGui::GetTime();
+  };
 #if defined(_WIN32)
   if (!terminal.running || terminal.pipe_output == INVALID_HANDLE_VALUE || terminal.vt == nullptr) {
     return;
@@ -3594,6 +4272,7 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
       mark_unseen_if_background();
       StopCliTerminal(terminal);
       terminal.should_launch = false;
+      sync_history_after_terminal_stop();
       app.status_line = "Gemini terminal exited.";
       break;
     }
@@ -3602,6 +4281,7 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
     }
     StopCliTerminal(terminal);
     terminal.should_launch = false;
+    sync_history_after_terminal_stop();
     app.status_line = "Gemini terminal read failed.";
     break;
   }
@@ -3611,6 +4291,7 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
     mark_unseen_if_background();
     StopCliTerminal(terminal);
     terminal.should_launch = false;
+    sync_history_after_terminal_stop();
     app.status_line = "Gemini terminal exited.";
   }
 #else
@@ -3639,6 +4320,7 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
       mark_unseen_if_background();
       StopCliTerminal(terminal);
       terminal.should_launch = false;
+      sync_history_after_terminal_stop();
       app.status_line = "Gemini terminal exited.";
       break;
     }
@@ -3650,6 +4332,7 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
     }
     StopCliTerminal(terminal);
     terminal.should_launch = false;
+    sync_history_after_terminal_stop();
     app.status_line = "Gemini terminal read failed.";
     break;
   }
@@ -3659,100 +4342,11 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
     mark_unseen_if_background();
     StopCliTerminal(terminal);
     terminal.should_launch = false;
+    sync_history_after_terminal_stop();
     app.status_line = "Gemini terminal exited.";
   }
 #endif
-
   const double now = ImGui::GetTime();
-  if (now - terminal.last_sync_time_s > 1.25) {
-    terminal.last_sync_time_s = now;
-    if (ActiveProviderUsesGeminiHistory(app)) {
-#if defined(_WIN32)
-      // Windows-only: run native session scanning off the UI thread to prevent
-      // this port from freezing when a large or malformed chat JSON appears.
-      // macOS is currently stable with synchronous loading; if it starts to show
-      // the same behavior, we can make this path universal.
-      std::vector<ChatSession> native_now;
-      std::string native_load_error;
-      const bool has_loaded_snapshot = TryConsumeAsyncNativeChatLoad(app, native_now, native_load_error);
-      StartAsyncNativeChatLoad(app);
-
-      if (!native_load_error.empty()) {
-        app.status_line = "Native chat refresh failed: " + native_load_error;
-      }
-      if (has_loaded_snapshot && native_load_error.empty()) {
-        if (terminal.attached_session_id.empty()) {
-          const std::vector<std::string> candidates = CollectNewSessionIds(native_now, terminal.session_ids_before);
-          std::unordered_set<std::string> blocked_ids;
-          for (const auto& other_terminal : app.cli_terminals) {
-            if (other_terminal == nullptr || other_terminal.get() == &terminal || other_terminal->attached_session_id.empty()) {
-              continue;
-            }
-            blocked_ids.insert(other_terminal->attached_session_id);
-          }
-          for (const auto& resolved : app.resolved_native_sessions_by_chat_id) {
-            if (!resolved.second.empty()) {
-              blocked_ids.insert(resolved.second);
-            }
-          }
-          const std::string discovered = PickFirstUnblockedSessionId(candidates, blocked_ids);
-          if (!discovered.empty()) {
-            const std::string previous_chat_id = terminal.attached_chat_id;
-            terminal.attached_session_id = discovered;
-            terminal.attached_chat_id = discovered;
-            if (!previous_chat_id.empty()) {
-              app.resolved_native_sessions_by_chat_id[previous_chat_id] = discovered;
-            }
-            app.chats.erase(std::remove_if(app.chats.begin(), app.chats.end(),
-                                           [&](const ChatSession& c) {
-                                             return !c.uses_native_session && c.id == previous_chat_id;
-                                           }),
-                            app.chats.end());
-          }
-        }
-        const std::string preferred_id =
-            terminal.attached_session_id.empty() ? terminal.attached_chat_id : terminal.attached_session_id;
-        SyncChatsFromLoadedNative(app, std::move(native_now), preferred_id, preserve_selection);
-      }
-#else
-      RefreshGeminiChatsDir(app);
-      const std::vector<ChatSession> native_now = LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app));
-      if (terminal.attached_session_id.empty()) {
-        const std::vector<std::string> candidates = CollectNewSessionIds(native_now, terminal.session_ids_before);
-        std::unordered_set<std::string> blocked_ids;
-        for (const auto& other_terminal : app.cli_terminals) {
-          if (other_terminal == nullptr || other_terminal.get() == &terminal || other_terminal->attached_session_id.empty()) {
-            continue;
-          }
-          blocked_ids.insert(other_terminal->attached_session_id);
-        }
-        for (const auto& resolved : app.resolved_native_sessions_by_chat_id) {
-          if (!resolved.second.empty()) {
-            blocked_ids.insert(resolved.second);
-          }
-        }
-        const std::string discovered = PickFirstUnblockedSessionId(candidates, blocked_ids);
-        if (!discovered.empty()) {
-          const std::string previous_chat_id = terminal.attached_chat_id;
-          terminal.attached_session_id = discovered;
-          terminal.attached_chat_id = discovered;
-          if (!previous_chat_id.empty()) {
-            app.resolved_native_sessions_by_chat_id[previous_chat_id] = discovered;
-          }
-          app.chats.erase(std::remove_if(app.chats.begin(), app.chats.end(),
-                                         [&](const ChatSession& c) {
-                                           return !c.uses_native_session && c.id == previous_chat_id;
-                                         }),
-                          app.chats.end());
-        }
-      }
-      std::string preferred_id = terminal.attached_session_id.empty() ? terminal.attached_chat_id : terminal.attached_session_id;
-      SyncChatsFromNative(app, preferred_id, preserve_selection);
-#endif
-    } else {
-      SyncChatsFromNative(app, terminal.attached_chat_id, preserve_selection);
-    }
-  }
 
   if (terminal.running &&
       terminal.generation_in_progress &&
@@ -3791,6 +4385,9 @@ static bool AnyCliTerminalGenerationInProgress(const AppState& app) {
 
 static void MirrorNativeGeminiHistoryOnIdle(AppState& app) {
   if (!app.settings.mirror_native_gemini_history_to_local || !ActiveProviderUsesGeminiHistory(app)) {
+    return;
+  }
+  if (!app.pending_native_import_chats.empty()) {
     return;
   }
   if (HasAnyPendingCall(app) || AnyCliTerminalGenerationInProgress(app)) {
@@ -3956,8 +4553,11 @@ static void PollPendingGeminiCall(AppState& app) {
       continue;
     }
 
-    RefreshGeminiChatsDir(app);
-    std::vector<ChatSession> native_after = LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app));
+    fs::path native_chats_dir = fs::path(call.native_chats_dir);
+    if (native_chats_dir.empty() && pending_chat_index >= 0) {
+      native_chats_dir = ResolveNativeChatsDirForChat(app, app.chats[pending_chat_index]).value_or(fs::path{});
+    }
+    std::vector<ChatSession> native_after = LoadNativeGeminiChats(native_chats_dir, ActiveProviderOrDefault(app));
     ApplyLocalOverrides(app, native_after);
 
     std::string selected_id = call.resume_session_id;
@@ -4071,22 +4671,28 @@ static bool RemoveChatById(AppState& app, const std::string& chat_id) {
   bool native_delete_attempted = false;
   bool native_delete_async_scheduled = false;
   if (ActiveProviderUsesGeminiHistory(app) && !native_session_id.empty()) {
-    RefreshGeminiChatsDir(app);
     native_delete_attempted = true;
 #if defined(_WIN32)
-    const fs::path chats_dir_snapshot = app.gemini_chats_dir;
-    const std::string native_session_id_snapshot = native_session_id;
-    std::thread([chats_dir_snapshot, native_session_id_snapshot]() {
-      const auto native_file = FindNativeSessionFilePathInDirectory(chats_dir_snapshot, native_session_id_snapshot);
-      if (!native_file.has_value()) {
+    const ChatSession chat_snapshot = chat;
+    std::vector<fs::path> candidate_dirs = CollectRelevantGeminiChatsDirs(app);
+    for (const fs::path& chats_dir : EnumerateAllGeminiChatsDirs()) {
+      AddUniquePath(candidate_dirs, chats_dir);
+    }
+    std::thread([chat_snapshot, candidate_dirs = std::move(candidate_dirs)]() {
+      for (const fs::path& chats_dir : candidate_dirs) {
+        const auto native_file = FindNativeSessionFilePathInDirectory(chats_dir, chat_snapshot);
+        if (!native_file.has_value()) {
+          continue;
+        }
+        std::error_code async_delete_ec;
+        fs::remove(native_file.value(), async_delete_ec);
         return;
       }
-      std::error_code async_delete_ec;
-      fs::remove(native_file.value(), async_delete_ec);
+      return;
     }).detach();
     native_delete_async_scheduled = true;
 #else
-    if (const auto native_file = FindNativeSessionFilePath(app, native_session_id); native_file.has_value()) {
+    if (const auto native_file = FindNativeSessionFilePath(app, chat); native_file.has_value()) {
       fs::remove(native_file.value(), native_delete_ec);
     }
 #endif
@@ -6879,6 +7485,50 @@ static void DrawTemplateManagerModal(AppState& app) {
   ImGui::EndPopup();
 }
 
+static void DrawNativeImportModal(AppState& app) {
+  if (app.open_native_import_popup) {
+    app.pending_native_import_delete_empty = app.settings.delete_empty_native_gemini_chats_on_import;
+    ImGui::OpenPopup("native_import_popup");
+    app.open_native_import_popup = false;
+  } else if (!app.pending_native_import_chats.empty() && !ImGui::IsPopupOpen("native_import_popup")) {
+    ImGui::OpenPopup("native_import_popup");
+  }
+  if (app.pending_native_import_chats.empty()) {
+    return;
+  }
+  if (!ImGui::BeginPopupModal("native_import_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    return;
+  }
+
+  PushFontIfAvailable(g_font_title);
+  ImGui::TextColored(ui::kTextPrimary, "Import Gemini History");
+  PopFontIfAvailable(g_font_title);
+  ImGui::TextWrapped("Wait a second, we're importing all found Gemini chat history.");
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
+  DrawSoftDivider();
+
+  ImGui::TextColored(ui::kTextMuted,
+                     "Found %zu native chats across the detected Gemini history directories.",
+                     app.pending_native_import_chats.size());
+  if (app.pending_native_import_prunable_count > 0) {
+    ImGui::TextWrapped("%zu sessions do not contain a real user prompt. Leave the checkbox on to delete those empty sessions during import so they stop reappearing in the sidebar.",
+                       app.pending_native_import_prunable_count);
+  } else {
+    ImGui::TextColored(ui::kTextMuted, "No empty Gemini sessions were detected in this import batch.");
+  }
+
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
+  ImGui::Checkbox("Delete sessions with no user prompt while importing", &app.pending_native_import_delete_empty);
+  ImGui::TextColored(ui::kTextMuted, "This preference is saved and reused for later Gemini imports.");
+
+  ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
+  if (DrawButton("Import History", ImVec2(130.0f, 34.0f), ButtonKind::Primary)) {
+    ImGui::CloseCurrentPopup();
+    FinalizePendingNativeImport(app);
+  }
+  ImGui::EndPopup();
+}
+
 static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
   static AppSettings draft_settings{};
   static CenterViewMode draft_center_mode = CenterViewMode::Structured;
@@ -6897,7 +7547,16 @@ static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
     StartGeminiVersionCheck(app, true);
   }
 
-  if (ImGui::BeginPopupModal("app_settings_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  const ImVec2 min_modal_size = ScaleUiSize(ImVec2(700.0f, 620.0f));
+  ImVec2 max_modal_size = ScaleUiSize(ImVec2(1120.0f, 960.0f));
+  if (const ImGuiViewport* viewport = ImGui::GetMainViewport(); viewport != nullptr) {
+    max_modal_size.x = std::max(min_modal_size.x, viewport->WorkSize.x * 0.96f);
+    max_modal_size.y = std::max(min_modal_size.y, viewport->WorkSize.y * 0.94f);
+  }
+  ImGui::SetNextWindowSize(ScaleUiSize(ImVec2(780.0f, 840.0f)), ImGuiCond_Appearing);
+  ImGui::SetNextWindowSizeConstraints(min_modal_size, max_modal_size);
+
+  if (ImGui::BeginPopupModal("app_settings_popup", nullptr, ImGuiWindowFlags_NoCollapse)) {
     if (!initialized) {
       draft_settings = app.settings;
       if (Trim(draft_settings.gemini_global_root_path).empty()) {
@@ -6909,174 +7568,226 @@ static void DrawAppSettingsModal(AppState& app, const float platform_scale) {
       StartGeminiVersionCheck(app, false);
     }
     RefreshTemplateCatalog(app);
+    const fs::path global_root = ResolveGeminiGlobalRootPath(draft_settings);
+    const fs::path catalog_path = GeminiTemplateCatalog::CatalogPath(global_root);
+    const std::string current_default_template = TemplateLabelOrFallback(app, draft_settings.default_gemini_template_id);
+    const std::string supported_versions_label = uam::SupportedGeminiCliVersionsLabel();
+    const std::string preferred_version(uam::PreferredGeminiCliVersion());
+    const std::string install_button_label = "Install " + preferred_version;
 
+    PushFontIfAvailable(g_font_title);
     ImGui::TextColored(ui::kTextPrimary, "Application Settings");
+    PopFontIfAvailable(g_font_title);
+    ImGui::TextColored(ui::kTextMuted,
+                       "Appearance, Gemini templates, compatibility, startup defaults, and diagnostics.");
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
     DrawSoftDivider();
 
-    ImGui::TextColored(ui::kTextSecondary, "Appearance");
-    const char* theme_preview = "Dark";
-    if (draft_settings.ui_theme == "light") {
-      theme_preview = "Light";
-    } else if (draft_settings.ui_theme == "system") {
-      theme_preview = "System";
-    }
-    if (ImGui::BeginCombo("Theme", theme_preview)) {
-      const std::array<std::pair<const char*, const char*>, 3> theme_options{{
-          {"dark", "Dark"},
-          {"light", "Light"},
-          {"system", "System"},
-      }};
-      for (const auto& option : theme_options) {
-        const bool selected = (draft_settings.ui_theme == option.first);
-        if (ImGui::Selectable(option.second, selected)) {
-          draft_settings.ui_theme = option.first;
-          app.settings.ui_theme = option.first;
-          ApplyThemeFromSettings(app);
-          SaveSettings(app);
-          app.status_line = "Theme updated.";
-        }
-        if (selected) {
-          ImGui::SetItemDefaultFocus();
-        }
+    const float scroll_height = std::max(ScaleUiLength(420.0f), ImGui::GetContentRegionAvail().y - ScaleUiLength(52.0f));
+    ImGui::BeginChild("app_settings_scroll", ImVec2(0.0f, scroll_height), false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+
+    DrawSectionHeader("Appearance");
+    if (BeginSectionCard("app_settings_appearance_card")) {
+      const char* theme_preview = "Dark";
+      if (draft_settings.ui_theme == "light") {
+        theme_preview = "Light";
+      } else if (draft_settings.ui_theme == "system") {
+        theme_preview = "System";
       }
-      ImGui::EndCombo();
+      if (ImGui::BeginCombo("Theme", theme_preview)) {
+        const std::array<std::pair<const char*, const char*>, 3> theme_options{{
+            {"dark", "Dark"},
+            {"light", "Light"},
+            {"system", "System"},
+        }};
+        for (const auto& option : theme_options) {
+          const bool selected = (draft_settings.ui_theme == option.first);
+          if (ImGui::Selectable(option.second, selected)) {
+            draft_settings.ui_theme = option.first;
+            app.settings.ui_theme = option.first;
+            ApplyThemeFromSettings(app);
+            SaveSettings(app);
+            app.status_line = "Theme updated.";
+          }
+          if (selected) {
+            ImGui::SetItemDefaultFocus();
+          }
+        }
+        ImGui::EndCombo();
+      }
+      ImGui::SetNextItemWidth(280.0f);
+      ImGui::SliderFloat("UI Scale", &draft_settings.ui_scale_multiplier, 0.85f, 1.75f, "%.2fx");
+      ImGui::TextColored(ui::kTextMuted, "Platform scale: %.2fx", platform_scale);
     }
-    ImGui::SetNextItemWidth(280.0f);
-    ImGui::SliderFloat("UI Scale", &draft_settings.ui_scale_multiplier, 0.85f, 1.75f, "%.2fx");
-    ImGui::TextColored(ui::kTextMuted, "Platform scale: %.2fx", platform_scale);
+    EndPanel();
 
-    ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
-    DrawSoftDivider();
-    ImGui::TextColored(ui::kTextSecondary, "Behavior");
-    ImGui::Checkbox("Confirm before deleting chat", &draft_settings.confirm_delete_chat);
-    ImGui::Checkbox("Confirm before deleting folder", &draft_settings.confirm_delete_folder);
-    ImGui::Checkbox("Remember last selected chat", &draft_settings.remember_last_chat);
-    ImGui::Checkbox("Mirror native Gemini chats into local data folder", &draft_settings.mirror_native_gemini_history_to_local);
-    if (!draft_settings.mirror_native_gemini_history_to_local) {
-      ImGui::BeginDisabled();
-    }
-    ImGui::SetNextItemWidth(180.0f);
-    ImGui::InputInt("Mirror idle interval (seconds)", &draft_settings.native_history_mirror_idle_seconds);
-    draft_settings.native_history_mirror_idle_seconds =
-        std::clamp(draft_settings.native_history_mirror_idle_seconds, 5, 3600);
-    if (!draft_settings.mirror_native_gemini_history_to_local) {
-      ImGui::EndDisabled();
-    }
-    ImGui::TextColored(ui::kTextMuted, "Mirror triggers: startup, idle interval, and shutdown.");
-
-    ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
-    DrawSoftDivider();
-    ImGui::TextColored(ui::kTextSecondary, "Gemini Templates");
-    PushInputChrome();
-    ImGui::SetNextItemWidth(520.0f);
-    ImGui::InputText("Global Root", &draft_settings.gemini_global_root_path);
-    PopInputChrome();
-    ImGui::TextColored(ui::kTextMuted, "Catalog folder: <root>/Markdown_Templates");
-    const std::string current_default_template = TemplateLabelOrFallback(app, app.settings.default_gemini_template_id);
-    ImGui::TextColored(ui::kTextMuted, "Current default: %s", current_default_template.c_str());
-    if (DrawButton("Open Template Manager", ImVec2(164.0f, 30.0f), ButtonKind::Ghost)) {
-      app.open_template_manager_popup = true;
-    }
-
-    ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
-    DrawSoftDivider();
-    ImGui::TextColored(ui::kTextSecondary, "Gemini CLI Compatibility");
-    ImGui::TextColored(ui::kTextMuted, "Supported version: %s", kSupportedGeminiVersion);
-
-    if (app.gemini_version_check_task.running) {
-      ImGui::TextColored(ui::kTextMuted, "Checking installed Gemini version...");
-    } else if (!app.gemini_version_checked) {
-      ImGui::TextColored(ui::kTextMuted, "Installed Gemini version has not been checked yet.");
-    } else if (!app.gemini_installed_version.empty()) {
-      const bool supported = app.gemini_version_supported;
-      ImGui::TextColored(supported ? ui::kSuccess : ui::kWarning,
-                         "Installed: %s (%s)",
-                         app.gemini_installed_version.c_str(),
-                         supported ? "supported" : "unsupported");
-    } else {
-      ImGui::TextColored(ui::kWarning, "Installed Gemini version could not be detected.");
-    }
-    if (!app.gemini_version_message.empty()) {
-      ImGui::TextWrapped("%s", app.gemini_version_message.c_str());
-    }
-
-    if (app.gemini_version_check_task.running) {
-      ImGui::BeginDisabled();
-    }
-    if (DrawButton("Re-check Version", ImVec2(130.0f, 30.0f), ButtonKind::Ghost)) {
-      StartGeminiVersionCheck(app, true);
-    }
-    if (app.gemini_version_check_task.running) {
-      ImGui::EndDisabled();
-    }
-
-    const bool show_downgrade_action = app.gemini_version_checked &&
-                                       !app.gemini_installed_version.empty() &&
-                                       !app.gemini_version_supported;
-    if (show_downgrade_action) {
-      ImGui::SameLine();
-      if (app.gemini_downgrade_task.running) {
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
+    DrawSectionHeader("Behavior");
+    if (BeginSectionCard("app_settings_behavior_card")) {
+      ImGui::Checkbox("Confirm before deleting chat", &draft_settings.confirm_delete_chat);
+      ImGui::Checkbox("Confirm before deleting folder", &draft_settings.confirm_delete_folder);
+      ImGui::Checkbox("Remember last selected chat", &draft_settings.remember_last_chat);
+      ImGui::Checkbox("Mirror native Gemini chats into local data folder", &draft_settings.mirror_native_gemini_history_to_local);
+      ImGui::Checkbox("Delete imported Gemini sessions with no user prompt", &draft_settings.delete_empty_native_gemini_chats_on_import);
+      if (!draft_settings.mirror_native_gemini_history_to_local) {
         ImGui::BeginDisabled();
       }
-      if (DrawButton("Downgrade to 0.30.0", ImVec2(166.0f, 30.0f), ButtonKind::Primary)) {
-        StartGeminiDowngradeToSupported(app);
-      }
-      if (app.gemini_downgrade_task.running) {
+      ImGui::SetNextItemWidth(180.0f);
+      ImGui::InputInt("Mirror idle interval (seconds)", &draft_settings.native_history_mirror_idle_seconds);
+      draft_settings.native_history_mirror_idle_seconds =
+          std::clamp(draft_settings.native_history_mirror_idle_seconds, 5, 3600);
+      if (!draft_settings.mirror_native_gemini_history_to_local) {
         ImGui::EndDisabled();
       }
-      ImGui::TextColored(ui::kTextMuted, "Downgrade command: %s", BuildGeminiDowngradeCommand().c_str());
+      ImGui::TextColored(ui::kTextMuted, "Mirror triggers: startup, idle interval, and shutdown.");
     }
+    EndPanel();
 
-    if (app.gemini_downgrade_task.running) {
-      ImGui::TextColored(ui::kTextMuted, "Downgrade in progress...");
-    } else if (!app.gemini_downgrade_output.empty()) {
-      ImGui::TextColored(ui::kTextMuted, "Last downgrade output");
-      std::string downgrade_output_preview = app.gemini_downgrade_output;
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
+    DrawSectionHeader("Gemini Templates");
+    if (BeginSectionCard("app_settings_templates_card")) {
       PushInputChrome();
-      ImGui::InputTextMultiline("##gemini_downgrade_output",
-                                &downgrade_output_preview,
-                                ImVec2(520.0f, 88.0f),
-                                ImGuiInputTextFlags_ReadOnly);
+      ImGui::SetNextItemWidth(-1.0f);
+      ImGui::InputText("Global Root", &draft_settings.gemini_global_root_path);
       PopInputChrome();
+      ImGui::TextColored(ui::kTextMuted, "Catalog folder");
+      ImGui::TextWrapped("%s", catalog_path.string().c_str());
+      ImGui::TextColored(ui::kTextMuted, "Current default");
+      ImGui::TextWrapped("%s", current_default_template.c_str());
+      ImGui::Dummy(ImVec2(0.0f, ui::kSpace6));
+      if (DrawButton("Open Template Manager", ImVec2(164.0f, 30.0f), ButtonKind::Ghost)) {
+        app.open_template_manager_popup = true;
+      }
+      ImGui::SameLine();
+      if (DrawButton("Open Catalog Folder", ImVec2(156.0f, 30.0f), ButtonKind::Ghost)) {
+        std::string error;
+        if (!OpenFolderInFileManager(catalog_path, &error)) {
+          app.status_line = error;
+        }
+      }
     }
+    EndPanel();
 
-    ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
-    DrawSoftDivider();
-    ImGui::TextColored(ui::kTextSecondary, "Startup / Window");
-    bool start_structured = (draft_center_mode == CenterViewMode::Structured);
-    if (ImGui::RadioButton("Structured mode", start_structured)) {
-      draft_center_mode = CenterViewMode::Structured;
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
+    DrawSectionHeader("Gemini CLI");
+    if (BeginSectionCard("app_settings_cli_card")) {
+      ImGui::TextColored(ui::kTextMuted, "Preferred version");
+      ImGui::TextWrapped("%s", preferred_version.c_str());
+      ImGui::TextColored(ui::kTextMuted, "Supported versions");
+      ImGui::TextWrapped("%s", supported_versions_label.c_str());
+      ImGui::Dummy(ImVec2(0.0f, ui::kSpace6));
+
+      if (app.gemini_version_check_task.running) {
+        ImGui::TextColored(ui::kTextMuted, "Checking installed Gemini version...");
+      } else if (!app.gemini_version_checked) {
+        ImGui::TextColored(ui::kTextMuted, "Installed Gemini version has not been checked yet.");
+      } else if (!app.gemini_installed_version.empty()) {
+        const bool supported = app.gemini_version_supported;
+        ImGui::TextColored(supported ? ui::kSuccess : ui::kWarning,
+                           "Installed: %s (%s)",
+                           app.gemini_installed_version.c_str(),
+                           supported ? "supported" : "unsupported");
+      } else {
+        ImGui::TextColored(ui::kWarning, "Installed Gemini version could not be detected.");
+      }
+
+      if (!app.gemini_version_message.empty()) {
+        ImGui::TextWrapped("%s", app.gemini_version_message.c_str());
+      }
+
+      if (app.gemini_version_check_task.running) {
+        ImGui::BeginDisabled();
+      }
+      if (DrawButton("Re-check Version", ImVec2(130.0f, 30.0f), ButtonKind::Ghost)) {
+        StartGeminiVersionCheck(app, true);
+      }
+      if (app.gemini_version_check_task.running) {
+        ImGui::EndDisabled();
+      }
+
+      const bool show_downgrade_action = app.gemini_version_checked &&
+                                         !app.gemini_installed_version.empty() &&
+                                         !app.gemini_version_supported;
+      if (show_downgrade_action) {
+        ImGui::SameLine();
+        if (app.gemini_downgrade_task.running) {
+          ImGui::BeginDisabled();
+        }
+        if (DrawButton(install_button_label.c_str(), ImVec2(150.0f, 30.0f), ButtonKind::Primary)) {
+          StartGeminiDowngradeToSupported(app);
+        }
+        if (app.gemini_downgrade_task.running) {
+          ImGui::EndDisabled();
+        }
+        ImGui::TextColored(ui::kTextMuted, "Install command: %s", BuildGeminiDowngradeCommand().c_str());
+      }
+
+      if (app.gemini_downgrade_task.running) {
+        ImGui::TextColored(ui::kTextMuted, "Install in progress...");
+      } else if (!app.gemini_downgrade_output.empty()) {
+        ImGui::TextColored(ui::kTextMuted, "Last install output");
+        std::string downgrade_output_preview = app.gemini_downgrade_output;
+        PushInputChrome();
+        ImGui::InputTextMultiline("##gemini_downgrade_output",
+                                  &downgrade_output_preview,
+                                  ImVec2(-1.0f, ScaleUiLength(92.0f)),
+                                  ImGuiInputTextFlags_ReadOnly);
+        PopInputChrome();
+      }
     }
-    ImGui::SameLine();
-    if (ImGui::RadioButton("Terminal mode", !start_structured)) {
-      draft_center_mode = CenterViewMode::CliConsole;
+    EndPanel();
+
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
+    DrawSectionHeader("Startup");
+    if (BeginSectionCard("app_settings_startup_card")) {
+      bool start_structured = (draft_center_mode == CenterViewMode::Structured);
+      ImGui::TextColored(ui::kTextMuted, "Default center view");
+      if (ImGui::RadioButton("Structured mode", start_structured)) {
+        draft_center_mode = CenterViewMode::Structured;
+      }
+      ImGui::SameLine();
+      if (ImGui::RadioButton("Terminal mode", !start_structured)) {
+        draft_center_mode = CenterViewMode::CliConsole;
+      }
+      ImGui::Dummy(ImVec2(0.0f, ui::kSpace6));
+      ImGui::SetNextItemWidth(140.0f);
+      ImGui::InputInt("Window Width", &draft_settings.window_width);
+      ImGui::SetNextItemWidth(140.0f);
+      ImGui::InputInt("Window Height", &draft_settings.window_height);
+      ImGui::Checkbox("Start maximized", &draft_settings.window_maximized);
     }
-    ImGui::SetNextItemWidth(140.0f);
-    ImGui::InputInt("Window Width", &draft_settings.window_width);
-    ImGui::SetNextItemWidth(140.0f);
-    ImGui::InputInt("Window Height", &draft_settings.window_height);
-    ImGui::Checkbox("Start maximized", &draft_settings.window_maximized);
+    EndPanel();
 
-    ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
-    DrawSoftDivider();
-    ImGui::TextColored(ui::kTextSecondary, "Diagnostics / About");
-    ImGui::TextWrapped("Data Root: %s", app.data_root.string().c_str());
-    ImGui::TextWrapped("Provider Profiles: %s", ProviderProfileFilePath(app).string().c_str());
-    ImGui::TextWrapped("Action Map: %s", FrontendActionFilePath(app).string().c_str());
-    ImGui::TextWrapped("Gemini Home: %s", AppPaths::GeminiHomePath().string().c_str());
-    ImGui::TextWrapped("Gemini Global Root: %s", ResolveGeminiGlobalRootPath(draft_settings).string().c_str());
-    ImGui::TextColored(ui::kTextMuted, "Build: %s %s", __DATE__, __TIME__);
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
+    DrawSectionHeader("Diagnostics");
+    if (BeginSectionCard("app_settings_diagnostics_card")) {
+      ImGui::TextColored(ui::kTextMuted, "Data Root");
+      ImGui::TextWrapped("%s", app.data_root.string().c_str());
+      ImGui::TextColored(ui::kTextMuted, "Provider Profiles");
+      ImGui::TextWrapped("%s", ProviderProfileFilePath(app).string().c_str());
+      ImGui::TextColored(ui::kTextMuted, "Action Map");
+      ImGui::TextWrapped("%s", FrontendActionFilePath(app).string().c_str());
+      ImGui::TextColored(ui::kTextMuted, "Gemini Home");
+      ImGui::TextWrapped("%s", AppPaths::GeminiHomePath().string().c_str());
+      ImGui::TextColored(ui::kTextMuted, "Gemini Global Root");
+      ImGui::TextWrapped("%s", global_root.string().c_str());
+      ImGui::TextColored(ui::kTextMuted, "Build");
+      ImGui::TextWrapped("%s %s", __DATE__, __TIME__);
+    }
+    EndPanel();
 
-    ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
-    DrawSoftDivider();
-    ImGui::TextColored(ui::kTextSecondary, "Shortcuts");
-    ImGui::TextColored(ui::kTextMuted, "Ctrl+,  Open App Settings");
-    ImGui::TextColored(ui::kTextMuted, "Ctrl+N  Create chat");
-    ImGui::TextColored(ui::kTextMuted, "Ctrl+R  Refresh history");
-    ImGui::TextColored(ui::kTextMuted, "Ctrl+M  Toggle Structured/Terminal mode");
-    ImGui::TextColored(ui::kTextMuted, "Ctrl+Enter  Send message");
-    ImGui::TextColored(ui::kTextMuted, "Ctrl+Y  YOLO mode toggle (provider settings)");
+    ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
+    DrawSectionHeader("Shortcuts");
+    if (BeginSectionCard("app_settings_shortcuts_card")) {
+      ImGui::TextColored(ui::kTextMuted, "Ctrl+,  Open App Settings");
+      ImGui::TextColored(ui::kTextMuted, "Ctrl+N  Create chat");
+      ImGui::TextColored(ui::kTextMuted, "Ctrl+R  Refresh history");
+      ImGui::TextColored(ui::kTextMuted, "Ctrl+M  Toggle Structured/Terminal mode");
+      ImGui::TextColored(ui::kTextMuted, "Ctrl+Enter  Send message");
+      ImGui::TextColored(ui::kTextMuted, "Ctrl+Y  YOLO mode toggle (provider settings)");
+    }
+    EndPanel();
+    ImGui::EndChild();
 
     ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
     if (DrawButton("Save Preferences", ImVec2(138.0f, 34.0f), ButtonKind::Primary)) {
@@ -7236,12 +7947,46 @@ int main(int argc, char** argv) {
   SaveFolders(app);
   if (ActiveProviderUsesGeminiHistory(app)) {
     RefreshGeminiChatsDir(app);
-    std::vector<ChatSession> native_chats = LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app));
-    MirrorNativeGeminiHistoryToLocal(app, &native_chats);
-    app.chats = std::move(native_chats);
-    ApplyLocalOverrides(app, app.chats);
-    NormalizeChatFolderAssignments(app);
-    if (app.gemini_chats_dir.empty()) {
+    const std::vector<ChatSession> local_chats = DeduplicateChatsById(LoadChats(app));
+    const std::vector<fs::path> native_chats_dirs = CollectRelevantGeminiChatsDirs(app);
+    std::vector<ChatSession> native_chats =
+        LoadNativeGeminiChatsFromDirectories(native_chats_dirs, ActiveProviderOrDefault(app));
+    if (!native_chats.empty()) {
+      native_chats = DeduplicateChatsById(std::move(native_chats));
+      std::vector<ChatSession> startup_known_native_chats;
+      std::vector<ChatSession> startup_new_native_chats;
+      PartitionNativeChatsForStartupImport(native_chats, local_chats, &startup_known_native_chats, &startup_new_native_chats);
+
+      app.pending_native_import_prunable_count = 0;
+      for (const ChatSession& chat : startup_new_native_chats) {
+        if (ShouldPruneImportedNativeChat(chat)) {
+          ++app.pending_native_import_prunable_count;
+        }
+      }
+
+      if (!startup_new_native_chats.empty()) {
+        app.pending_native_import_chats = std::move(startup_new_native_chats);
+        app.pending_native_import_delete_empty = app.settings.delete_empty_native_gemini_chats_on_import;
+        app.open_native_import_popup = true;
+
+        if (!startup_known_native_chats.empty()) {
+          app.chats = std::move(startup_known_native_chats);
+          ApplyLocalOverrides(app, app.chats);
+        } else {
+          app.chats = local_chats;
+        }
+        NormalizeChatFolderAssignments(app);
+        app.status_line = "Found new Gemini history ready to import.";
+      } else {
+        app.chats = std::move(native_chats);
+        ApplyLocalOverrides(app, app.chats);
+        NormalizeChatFolderAssignments(app);
+      }
+    } else {
+      app.chats = local_chats;
+      NormalizeChatFolderAssignments(app);
+    }
+    if (native_chats_dirs.empty()) {
       if (app.settings.mirror_native_gemini_history_to_local && !app.chats.empty()) {
         app.status_line = "Gemini native session directory not found. Restored mirrored local history.";
       } else {
@@ -7451,6 +8196,7 @@ int main(int argc, char** argv) {
     DrawFolderSettingsModal(app);
     DrawTemplateChangeWarningModal(app);
     DrawTemplateManagerModal(app);
+    DrawNativeImportModal(app);
     DrawAppSettingsModal(app, platform_ui_scale);
 
     ImGui::Render();

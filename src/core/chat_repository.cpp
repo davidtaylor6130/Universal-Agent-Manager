@@ -66,6 +66,8 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
   std::ostringstream meta;
   meta << "id=" << chat.id << '\n';
   meta << "native_session_id=" << chat.native_session_id << '\n';
+  meta << "native_session_file_name=" << chat.native_session_file_name << '\n';
+  meta << "native_project_root=" << chat.native_project_root << '\n';
   meta << "uses_native_session=" << (chat.uses_native_session ? "1" : "0") << '\n';
   meta << "folder=" << chat.folder_id << '\n';
   meta << "template_override=" << chat.template_override_id << '\n';
@@ -135,6 +137,10 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
           chat.id = value;
         } else if (key == "native_session_id") {
           chat.native_session_id = value;
+        } else if (key == "native_session_file_name") {
+          chat.native_session_file_name = value;
+        } else if (key == "native_project_root") {
+          chat.native_project_root = value;
         } else if (key == "uses_native_session") {
           chat.uses_native_session = (value == "1" || value == "true");
         } else if (key == "folder") {

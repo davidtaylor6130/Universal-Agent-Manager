@@ -1,7 +1,9 @@
 #include "core/app_models.h"
 #include "core/app_paths.h"
 #include "core/chat_repository.h"
+#include "core/chat_import_utils.h"
 #include "core/frontend_actions.h"
+#include "core/gemini_cli_compat.h"
 #include "core/gemini_command_builder.h"
 #include "core/gemini_template_catalog.h"
 #include "core/provider_profile.h"
@@ -326,6 +328,7 @@ UAM_TEST(TestSettingsStoreRoundTripExtendedPreferences) {
   write_settings.confirm_delete_chat = false;
   write_settings.confirm_delete_folder = false;
   write_settings.remember_last_chat = true;
+  write_settings.delete_empty_native_gemini_chats_on_import = false;
   write_settings.last_selected_chat_id = "chat-123";
   write_settings.ui_scale_multiplier = 1.35f;
   write_settings.window_width = 1680;
@@ -347,6 +350,7 @@ UAM_TEST(TestSettingsStoreRoundTripExtendedPreferences) {
   UAM_ASSERT(!loaded.confirm_delete_chat);
   UAM_ASSERT(!loaded.confirm_delete_folder);
   UAM_ASSERT(loaded.remember_last_chat);
+  UAM_ASSERT(!loaded.delete_empty_native_gemini_chats_on_import);
   UAM_ASSERT_EQ(std::string("chat-123"), loaded.last_selected_chat_id);
   UAM_ASSERT(std::fabs(loaded.ui_scale_multiplier - 1.35f) < 0.0001f);
   UAM_ASSERT_EQ(1680, loaded.window_width);
@@ -427,6 +431,10 @@ UAM_TEST(TestChatRepositoryPersistsTemplateOverride) {
 
   ChatSession chat;
   chat.id = "chat-test-1";
+  chat.native_session_id = "native-session-1";
+  chat.native_session_file_name = "session-2026-03-27T12-00-native.json";
+  chat.native_project_root = "/tmp/native-project";
+  chat.uses_native_session = true;
   chat.folder_id = "folder-default";
   chat.template_override_id = "custom-template.md";
   chat.title = "Template Test";
@@ -437,7 +445,56 @@ UAM_TEST(TestChatRepositoryPersistsTemplateOverride) {
   UAM_ASSERT(ChatRepository::SaveChat(data_root.root, chat));
   const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(data_root.root);
   UAM_ASSERT_EQ(1u, loaded.size());
+  UAM_ASSERT_EQ(std::string("native-session-1"), loaded.front().native_session_id);
+  UAM_ASSERT_EQ(std::string("session-2026-03-27T12-00-native.json"), loaded.front().native_session_file_name);
+  UAM_ASSERT_EQ(std::string("/tmp/native-project"), loaded.front().native_project_root);
   UAM_ASSERT_EQ(std::string("custom-template.md"), loaded.front().template_override_id);
+}
+
+UAM_TEST(TestBuildImportedChatTitleUsesUserPromptSection) {
+  std::vector<Message> messages;
+  messages.push_back(Message{
+      MessageRole::User,
+      "Retrieved context:\n1. snippet\n\nUser prompt:\nwhat is the difference between setup wizard and testing suite?",
+      "2026-03-19 10:11:13"});
+
+  const std::string title = uam::BuildImportedChatTitle(messages, "2026-03-19 10:11:12", 120);
+  UAM_ASSERT_EQ(std::string("what is the difference between setup wizard and testing suite?"), title);
+}
+
+UAM_TEST(TestBuildImportedChatTitleFallsBackToFirstPromptLine) {
+  std::vector<Message> messages;
+  messages.push_back(Message{MessageRole::System, "ignored", "2026-03-19 10:11:13"});
+  messages.push_back(Message{
+      MessageRole::User,
+      "@.gemini/gemini.md\n\nEnsure the directory structure '.gemini/Memory/Lessons/' and '.gemini/Memory/Failures/' is present.",
+      "2026-03-19 10:11:13"});
+
+  const std::string title = uam::BuildImportedChatTitle(messages, "2026-03-19 10:11:12", 120);
+  UAM_ASSERT_EQ(std::string("Ensure the directory structure '.gemini/Memory/Lessons/' and '.gemini/Memory/Failures/' is present."),
+                title);
+}
+
+UAM_TEST(TestBuildImportedChatTitleTruncatesLongPrompt) {
+  std::vector<Message> messages;
+  messages.push_back(Message{MessageRole::User, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", "2026-03-19 10:11:13"});
+
+  const std::string title = uam::BuildImportedChatTitle(messages, "2026-03-19 10:11:12", 12);
+  UAM_ASSERT_EQ(std::string("abcdefghi..."), title);
+}
+
+UAM_TEST(TestBuildFolderTitleFromProjectRootUsesLeafDirectory) {
+  const std::string title = uam::BuildFolderTitleFromProjectRoot(
+      fs::path("/Users/davidtaylormacbookpro/Documents/GitHub/Universal Agent Manager"));
+  UAM_ASSERT_EQ(std::string("Universal Agent Manager"), title);
+}
+
+UAM_TEST(TestGeminiCliCompatSupportsAllowlistedVersions) {
+  UAM_ASSERT_EQ("0.34.0", std::string(uam::PreferredGeminiCliVersion()));
+  UAM_ASSERT(uam::IsSupportedGeminiCliVersion("0.34.0"));
+  UAM_ASSERT(uam::IsSupportedGeminiCliVersion("0.30.0"));
+  UAM_ASSERT(!uam::IsSupportedGeminiCliVersion("0.35.0"));
+  UAM_ASSERT_EQ("0.34.0, 0.30.0", uam::SupportedGeminiCliVersionsLabel());
 }
 
 UAM_TEST(TestGeminiTemplateCatalogImportCollisionAndFiltering) {
