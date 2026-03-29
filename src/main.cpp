@@ -239,6 +239,7 @@ static float g_platform_layout_scale = 1.0f;
 
 static constexpr const char* kDefaultFolderId = "folder-default";
 static constexpr const char* kDefaultFolderTitle = "General";
+static constexpr const char* kNoDirectoryChatsFolderTitle = "No Directory Chats";
 static constexpr const char* kAppDisplayName = "Universal Agent Manager";
 static constexpr const char* kAppVersion = "1.0.0";
 static constexpr const char* kAppCopyright = "(c) 2026 David Taylor (davidtaylor6130). All rights reserved.";
@@ -461,6 +462,13 @@ static fs::path DefaultWorkspaceRootPath(const AppState& app) {
   return AbsolutePathOrOriginal(app.portable_app_root);
 }
 
+static fs::path AppLocationRootPath(const AppState& app) {
+  if (!app.portable_app_root.empty()) {
+    return AbsolutePathOrOriginal(app.portable_app_root);
+  }
+  return DefaultWorkspaceRootPath(app);
+}
+
 static std::string ReadGeminiProjectRootFromTmpDir(const fs::path& tmp_dir) {
   return Trim(ReadTextFile(tmp_dir / ".project_root"));
 }
@@ -505,8 +513,9 @@ static std::vector<fs::path> EnumerateAllGeminiChatsDirs() {
 
 static fs::path ResolveWorkspaceRootPath(const AppState& app, const ChatSession& chat) {
   fs::path workspace_root;
-  if (chat.uses_native_session && !Trim(chat.native_project_root).empty()) {
-    workspace_root = ExpandLeadingTildePath(chat.native_project_root);
+  if (chat.uses_native_session) {
+    workspace_root = uam::ResolveImportedProjectRootOrFallback(ExpandLeadingTildePath(chat.native_project_root),
+                                                               AppLocationRootPath(app));
   }
   if (const ChatFolder* folder = FindFolderById(app, chat.folder_id); folder != nullptr) {
     const fs::path folder_root = ExpandLeadingTildePath(folder->directory);
@@ -1857,6 +1866,15 @@ static std::string FolderTitleOrFallback(const ChatFolder& folder) {
   return trimmed.empty() ? "Untitled Folder" : trimmed;
 }
 
+static bool IsNoDirectoryChatsFolder(const ChatFolder& folder) {
+  return Trim(folder.title) == kNoDirectoryChatsFolderTitle;
+}
+
+static bool IsNoDirectoryChatsFolder(const AppState& app, const std::string& folder_id) {
+  const ChatFolder* folder = FindFolderById(app, folder_id);
+  return folder != nullptr && IsNoDirectoryChatsFolder(*folder);
+}
+
 static std::string NormalizeDirectoryKey(const fs::path& path) {
   std::string key = AbsolutePathOrOriginal(path).lexically_normal().generic_string();
 #if defined(_WIN32)
@@ -1942,6 +1960,44 @@ static std::string EnsureFolderForImportedProjectRoot(AppState& app, const fs::p
   return app.folders.back().id;
 }
 
+static std::string EnsureNoDirectoryChatsFolder(AppState& app,
+                                                bool* created_out = nullptr,
+                                                bool* updated_out = nullptr) {
+  if (created_out != nullptr) {
+    *created_out = false;
+  }
+  if (updated_out != nullptr) {
+    *updated_out = false;
+  }
+
+  const fs::path fallback_root = AppLocationRootPath(app);
+  const std::string normalized_fallback_root = NormalizeDirectoryKey(fallback_root);
+  for (ChatFolder& folder : app.folders) {
+    if (!IsNoDirectoryChatsFolder(folder)) {
+      continue;
+    }
+    if (!fallback_root.empty() &&
+        NormalizeDirectoryKey(ExpandLeadingTildePath(folder.directory)) != normalized_fallback_root) {
+      folder.directory = fallback_root.string();
+      if (updated_out != nullptr) {
+        *updated_out = true;
+      }
+    }
+    return folder.id;
+  }
+
+  ChatFolder folder;
+  folder.id = NewFolderId();
+  folder.title = kNoDirectoryChatsFolderTitle;
+  folder.directory = fallback_root.string();
+  folder.collapsed = false;
+  app.folders.push_back(std::move(folder));
+  if (created_out != nullptr) {
+    *created_out = true;
+  }
+  return app.folders.back().id;
+}
+
 static bool ShouldRefreshImportedChatTitle(const ChatSession& chat) {
   const std::string trimmed = Trim(chat.title);
   if (trimmed.empty() || trimmed == "Untitled Chat") {
@@ -1976,13 +2032,14 @@ static bool ApplyImportedNativeChatDefaults(AppState& app, ChatSession& chat) {
     }
   }
 
-  if (chat.uses_native_session && !Trim(chat.native_project_root).empty()) {
+  if (chat.uses_native_session) {
     const fs::path project_root = ExpandLeadingTildePath(chat.native_project_root);
-    if (!project_root.empty()) {
+    if (uam::ImportedProjectRootExists(project_root)) {
       const bool should_infer_folder =
           chat.folder_id.empty() ||
           chat.folder_id == kDefaultFolderId ||
-          FindFolderById(app, chat.folder_id) == nullptr;
+          FindFolderById(app, chat.folder_id) == nullptr ||
+          IsNoDirectoryChatsFolder(app, chat.folder_id);
       if (should_infer_folder) {
         bool created_folder = false;
         const std::string inferred_folder_id = EnsureFolderForImportedProjectRoot(app, project_root, &created_folder);
@@ -1992,6 +2049,15 @@ static bool ApplyImportedNativeChatDefaults(AppState& app, ChatSession& chat) {
         }
         changed = changed || created_folder;
       }
+    } else {
+      bool created_folder = false;
+      bool updated_folder = false;
+      const std::string fallback_folder_id = EnsureNoDirectoryChatsFolder(app, &created_folder, &updated_folder);
+      if (!fallback_folder_id.empty() && fallback_folder_id != chat.folder_id) {
+        chat.folder_id = fallback_folder_id;
+        changed = true;
+      }
+      changed = changed || created_folder || updated_folder;
     }
   }
 
@@ -2454,9 +2520,11 @@ static void ApplyLocalMetadataOverrides(const ChatSession& local, ChatSession& c
     chat.uses_native_session = true;
   }
   if (!local.native_session_file_name.empty()) {
-    chat.native_session_file_name = local.native_session_file_name;
+    if (chat.native_session_file_name.empty()) {
+      chat.native_session_file_name = local.native_session_file_name;
+    }
   }
-  if (!local.native_project_root.empty()) {
+  if (Trim(chat.native_project_root).empty() && !local.native_project_root.empty()) {
     chat.native_project_root = local.native_project_root;
   }
   if (local.gemini_md_bootstrapped) {

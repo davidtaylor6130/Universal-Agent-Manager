@@ -489,6 +489,24 @@ UAM_TEST(TestBuildFolderTitleFromProjectRootUsesLeafDirectory) {
   UAM_ASSERT_EQ(std::string("Universal Agent Manager"), title);
 }
 
+UAM_TEST(TestResolveImportedProjectRootOrFallbackUsesExistingDirectory) {
+  TempDir existing_root("uam-import-existing-root");
+  TempDir fallback_root("uam-import-fallback-root");
+
+  UAM_ASSERT(uam::ImportedProjectRootExists(existing_root.root));
+  const fs::path resolved = uam::ResolveImportedProjectRootOrFallback(existing_root.root, fallback_root.root);
+  UAM_ASSERT_EQ(existing_root.root.lexically_normal(), resolved);
+}
+
+UAM_TEST(TestResolveImportedProjectRootOrFallbackUsesFallbackForMissingDirectory) {
+  TempDir fallback_root("uam-import-missing-fallback-root");
+  const fs::path missing_root = fallback_root.root / "missing-workspace";
+
+  UAM_ASSERT(!uam::ImportedProjectRootExists(missing_root));
+  const fs::path resolved = uam::ResolveImportedProjectRootOrFallback(missing_root, fallback_root.root);
+  UAM_ASSERT_EQ(fallback_root.root.lexically_normal(), resolved);
+}
+
 UAM_TEST(TestGeminiCliCompatSupportsAllowlistedVersions) {
   UAM_ASSERT_EQ("0.34.0", std::string(uam::PreferredGeminiCliVersion()));
   UAM_ASSERT(uam::IsSupportedGeminiCliVersion("0.34.0"));

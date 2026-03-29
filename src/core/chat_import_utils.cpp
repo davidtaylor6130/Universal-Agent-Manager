@@ -97,4 +97,25 @@ std::string BuildFolderTitleFromProjectRoot(const std::filesystem::path& project
   return title.empty() ? "Imported Gemini" : title;
 }
 
+bool ImportedProjectRootExists(const std::filesystem::path& project_root) {
+  if (project_root.empty()) {
+    return false;
+  }
+  const std::filesystem::path normalized = project_root.lexically_normal();
+  std::error_code ec;
+  return std::filesystem::exists(normalized, ec) && !ec &&
+         std::filesystem::is_directory(normalized, ec) && !ec;
+}
+
+std::filesystem::path ResolveImportedProjectRootOrFallback(const std::filesystem::path& project_root,
+                                                           const std::filesystem::path& fallback_root) {
+  if (ImportedProjectRootExists(project_root)) {
+    return project_root.lexically_normal();
+  }
+  if (fallback_root.empty()) {
+    return {};
+  }
+  return fallback_root.lexically_normal();
+}
+
 }  // namespace uam
