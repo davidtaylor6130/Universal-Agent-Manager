@@ -19,3 +19,7 @@
 /.vectorised_rag
 /build-tests/.vectorised_rag
 /build-tests
+/third_party/_deps/
+/subprojects/ollama_engine/third_party/
+/.gemini
+/.idea
