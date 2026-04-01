@@ -83,8 +83,10 @@ std::vector<std::string> ProviderRuntime::BuildInteractiveArgv(const ProviderPro
                                                                const ChatSession& chat,
                                                                const AppSettings& settings) {
   const AppSettings provider_settings = MergeProviderSettings(profile, settings);
+  const bool uses_default_gemini_resume_flag =
+      profile.resume_argument.empty() || profile.resume_argument == "-r" || profile.resume_argument == "--resume";
   if ((profile.interactive_command.empty() || EqualsIgnoreCase(profile.interactive_command, "gemini")) &&
-      (profile.resume_argument.empty() || profile.resume_argument == "--resume") &&
+      uses_default_gemini_resume_flag &&
       profile.supports_resume) {
     return GeminiCommandBuilder::BuildInteractiveArgv(chat, provider_settings);
   }

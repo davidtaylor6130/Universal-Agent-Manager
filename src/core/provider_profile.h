@@ -11,7 +11,7 @@ struct ProviderProfile {
   std::string interactive_command;
   bool supports_resume = true;
   std::vector<std::string> runtime_flags;
-  std::string resume_argument = "--resume";
+  std::string resume_argument = "-r";
   std::string history_adapter = "gemini-cli-json";
   std::vector<std::string> user_message_types;
   std::vector<std::string> assistant_message_types;

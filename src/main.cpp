@@ -3684,6 +3684,82 @@ static bool SetFdNonBlocking(const int fd) {
   }
   return fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
 }
+
+static bool IsUnixExecutablePath(const fs::path& candidate) {
+  if (candidate.empty()) {
+    return false;
+  }
+  std::error_code ec;
+  if (!fs::exists(candidate, ec) || ec) {
+    return false;
+  }
+  if (fs::is_directory(candidate, ec) || ec) {
+    return false;
+  }
+  return access(candidate.c_str(), X_OK) == 0;
+}
+
+static void AddUniqueUnixSearchPath(std::vector<fs::path>& paths, const fs::path& candidate) {
+  if (candidate.empty()) {
+    return;
+  }
+  const fs::path normalized = candidate.lexically_normal();
+  for (const fs::path& existing : paths) {
+    if (existing.lexically_normal() == normalized) {
+      return;
+    }
+  }
+  paths.push_back(candidate);
+}
+
+static std::vector<fs::path> BuildUnixExecutableSearchPaths() {
+  std::vector<fs::path> paths;
+  if (const char* path_env = std::getenv("PATH")) {
+    std::string value(path_env);
+    std::size_t start = 0;
+    while (start <= value.size()) {
+      const std::size_t sep = value.find(':', start);
+      const std::size_t end = (sep == std::string::npos) ? value.size() : sep;
+      const std::string component = value.substr(start, end - start);
+      if (!component.empty()) {
+        AddUniqueUnixSearchPath(paths, fs::path(component));
+      }
+      if (sep == std::string::npos) {
+        break;
+      }
+      start = sep + 1;
+    }
+  }
+#if defined(__APPLE__)
+  // Finder-launched apps often do not inherit Homebrew PATH entries.
+  AddUniqueUnixSearchPath(paths, fs::path("/opt/homebrew/bin"));
+  AddUniqueUnixSearchPath(paths, fs::path("/opt/homebrew/sbin"));
+  AddUniqueUnixSearchPath(paths, fs::path("/usr/local/bin"));
+  AddUniqueUnixSearchPath(paths, fs::path("/usr/local/sbin"));
+#endif
+  return paths;
+}
+
+static std::optional<fs::path> ResolveUnixExecutable(const std::string& executable_name) {
+  if (executable_name.empty()) {
+    return std::nullopt;
+  }
+  if (executable_name.find('/') != std::string::npos) {
+    const fs::path explicit_path(executable_name);
+    if (IsUnixExecutablePath(explicit_path)) {
+      return explicit_path;
+    }
+    return std::nullopt;
+  }
+
+  for (const fs::path& dir : BuildUnixExecutableSearchPaths()) {
+    const fs::path candidate = dir / executable_name;
+    if (IsUnixExecutablePath(candidate)) {
+      return candidate;
+    }
+  }
+  return std::nullopt;
+}
 #endif
 
 static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, const ChatSession& chat, const int rows, const int cols) {
@@ -3767,6 +3843,20 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
 #if defined(__unix__) || defined(__APPLE__)
 static bool StartCliTerminalUnix(AppState& app, CliTerminalState& terminal, const ChatSession& chat) {
   const fs::path workspace_root = ResolveWorkspaceRootPath(app, chat);
+  std::vector<std::string> argv_vec = BuildProviderInteractiveArgv(app, chat);
+  if (argv_vec.empty()) {
+    terminal.last_error = "Interactive provider command is empty.";
+    return false;
+  }
+
+  const std::optional<fs::path> resolved_executable = ResolveUnixExecutable(argv_vec.front());
+  if (!resolved_executable.has_value()) {
+    terminal.last_error = "Could not locate executable '" + argv_vec.front() +
+                          "'. Ensure it is installed and available on PATH.";
+    return false;
+  }
+  argv_vec.front() = resolved_executable->string();
+
   int master_fd = -1;
   int slave_fd = -1;
   struct winsize ws {};
@@ -3801,7 +3891,6 @@ static bool StartCliTerminalUnix(AppState& app, CliTerminalState& terminal, cons
       chdir(workspace_root.c_str());
     }
     setenv("TERM", "xterm-256color", 1);
-    const std::vector<std::string> argv_vec = BuildProviderInteractiveArgv(app, chat);
     std::vector<char*> argv_ptrs;
     argv_ptrs.reserve(argv_vec.size() + 1);
     for (const std::string& arg : argv_vec) {
@@ -3809,6 +3898,9 @@ static bool StartCliTerminalUnix(AppState& app, CliTerminalState& terminal, cons
     }
     argv_ptrs.push_back(nullptr);
     execvp(argv_ptrs[0], argv_ptrs.data());
+    const std::string launch_error =
+        "Failed to start interactive provider command '" + argv_vec[0] + "': " + std::strerror(errno) + "\n";
+    write(STDERR_FILENO, launch_error.c_str(), launch_error.size());
     _exit(127);
   }
 

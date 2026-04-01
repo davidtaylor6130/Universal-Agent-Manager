@@ -110,7 +110,7 @@ std::string GeminiCommandBuilder::BuildCommand(const AppSettings& settings,
   const bool has_prompt_placeholder = command.find("{prompt}") != std::string::npos;
   const bool has_resume_placeholder = command.find("{resume}") != std::string::npos;
   const bool has_flags_placeholder = command.find("{flags}") != std::string::npos;
-  const std::string resume_fragment = resume_session_id.empty() ? "" : ("--resume " + ShellEscape(resume_session_id));
+  const std::string resume_fragment = resume_session_id.empty() ? "" : ("-r " + ShellEscape(resume_session_id));
   const std::string flags_fragment = BuildFlagsShell(settings);
 
   command = ReplaceAll(command, "{prompt}", ShellEscape(prompt));
@@ -141,7 +141,7 @@ std::vector<std::string> GeminiCommandBuilder::BuildInteractiveArgv(const ChatSe
   const std::vector<std::string> flags = BuildFlagsArgv(settings);
   argv.insert(argv.end(), flags.begin(), flags.end());
   if (chat.uses_native_session && !chat.native_session_id.empty()) {
-    argv.push_back("--resume");
+    argv.push_back("-r");
     argv.push_back(chat.native_session_id);
   }
   return argv;

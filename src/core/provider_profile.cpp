@@ -93,7 +93,7 @@ ProviderProfile ProviderProfileStore::DefaultGeminiProfile() {
   profile.command_template = "gemini {resume} {flags} {prompt}";
   profile.interactive_command = "gemini";
   profile.supports_resume = true;
-  profile.resume_argument = "--resume";
+  profile.resume_argument = "-r";
   profile.history_adapter = "gemini-cli-json";
   profile.user_message_types = {"user"};
   profile.assistant_message_types = {"assistant", "model", "gemini"};

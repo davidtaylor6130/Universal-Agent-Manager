@@ -561,7 +561,7 @@ UAM_TEST(TestGeminiCommandBuilderInteractiveArgvIncludesResumeAndFlags) {
       "--profile",
       "nightly",
       "--dry-run",
-      "--resume",
+      "-r",
       "session-123",
   };
   UAM_ASSERT(argv == expected);
