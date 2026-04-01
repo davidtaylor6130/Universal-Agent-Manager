@@ -104,13 +104,9 @@ std::string GeminiCommandBuilder::BuildCommand(const AppSettings& settings,
                                                const std::string& prompt,
                                                const std::vector<std::string>& files,
                                                const std::string& resume_session_id) {
-  std::string command = settings.provider_command_template.empty()
-                            ? "gemini {resume} {flags} -p {prompt}"
-                            : settings.provider_command_template;
-  const bool has_prompt_placeholder = command.find("{prompt}") != std::string::npos;
-  const bool has_resume_placeholder = command.find("{resume}") != std::string::npos;
-  const bool has_flags_placeholder = command.find("{flags}") != std::string::npos;
-  const std::string resume_fragment = resume_session_id.empty() ? "" : ("--resume " + ShellEscape(resume_session_id));
+  std::string command = "gemini -r \"{resume}\" {flags} -p {prompt}";
+
+  const std::string resume_fragment = resume_session_id.empty() ? "" : (ShellEscape(resume_session_id));
   const std::string flags_fragment = BuildFlagsShell(settings);
   const std::string model_fragment = settings.selected_model_id.empty() ? "" : ShellEscape(settings.selected_model_id);
 
@@ -120,15 +116,15 @@ std::string GeminiCommandBuilder::BuildCommand(const AppSettings& settings,
   command = ReplaceAll(command, "{flags}", flags_fragment);
   command = ReplaceAll(command, "{model}", model_fragment);
 
-  if (!has_prompt_placeholder) {
+  if (!command.find("{prompt}")) {
     command += " ";
     command += ShellEscape(prompt);
   }
-  if (!has_resume_placeholder && !resume_fragment.empty()) {
+  if (!command.find("{resume}")) {
     command += " ";
     command += resume_fragment;
   }
-  if (!has_flags_placeholder && !flags_fragment.empty()) {
+  if (!command.find("{flags}")) {
     command += " ";
     command += flags_fragment;
   }
