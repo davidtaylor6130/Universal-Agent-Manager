@@ -1,4 +1,5 @@
 #pragma once
+#include "common/platform/platform_services.h"
 
 /// <summary>
 /// Draws the structured composer container and send actions.
@@ -216,25 +217,33 @@ static void DrawInputContainer(AppState& app, ChatSession& chat)
 	ImGui::TextColored(ui::kTextMuted, "Ctrl+Enter to send");
 	PushInputChrome(ui::kRadiusInput);
 	const bool send_visible = FrontendActionVisible(app, "send_prompt", true);
-#if defined(_WIN32)
-	// Windows-only composer fit: reserve right-side width for the SEND button so
-	// the multiline input shrinks first at larger UI scales. If this appears on
-	// macOS later, we can move this logic to all platforms.
-	const float send_gap = ScaleUiLength(8.0f);
-	const float send_button_w = ScaleUiLength(80.0f);
-	const float composer_h = std::max(ScaleUiLength(110.0f), ImGui::GetTextLineHeight() * 5.2f);
-	const float reserved_send_w = send_visible ? (send_button_w + send_gap + ScaleUiLength(2.0f)) : 0.0f;
-	const float input_w = std::max(ScaleUiLength(180.0f), ImGui::GetContentRegionAvail().x - reserved_send_w);
-	ImGui::InputTextMultiline("##composer", &app.composer_text, ImVec2(input_w, composer_h), ImGuiInputTextFlags_AllowTabInput);
-#else
-	ImGui::InputTextMultiline("##composer", &app.composer_text, ImVec2(-96.0f, 110.0f), ImGuiInputTextFlags_AllowTabInput);
-#endif
+
+	if (PlatformServicesFactory::Instance().ui_traits.UseWindowsLayoutAdjustments())
+	{
+		// Windows-only composer fit: reserve right-side width for the SEND button so
+		// the multiline input shrinks first at larger UI scales. If this starts to
+		// happen on macOS later, we can make this universal.
+		const float send_gap = ScaleUiLength(8.0f);
+		const float send_button_w = ScaleUiLength(80.0f);
+		const float composer_h = std::max(ScaleUiLength(110.0f), ImGui::GetTextLineHeight() * 5.2f);
+		const float reserved_send_w = send_visible ? (send_button_w + send_gap + ScaleUiLength(2.0f)) : 0.0f;
+		const float input_w = std::max(ScaleUiLength(180.0f), ImGui::GetContentRegionAvail().x - reserved_send_w);
+		ImGui::InputTextMultiline("##composer", &app.composer_text, ImVec2(input_w, composer_h), ImGuiInputTextFlags_AllowTabInput);
+	}
+	else
+	{
+		ImGui::InputTextMultiline("##composer", &app.composer_text, ImVec2(-96.0f, 110.0f), ImGuiInputTextFlags_AllowTabInput);
+	}
+
 	PopInputChrome();
 
 	float send_same_line_gap = 0.0f;
-#if defined(_WIN32)
-	send_same_line_gap = ScaleUiLength(8.0f);
-#endif
+
+	if (PlatformServicesFactory::Instance().ui_traits.UseWindowsLayoutAdjustments())
+	{
+		send_same_line_gap = ScaleUiLength(8.0f);
+	}
+
 	ImGui::SameLine(0.0f, send_same_line_gap);
 	const bool can_send = !HasPendingCallForChat(app, chat.id);
 
@@ -246,11 +255,14 @@ static void DrawInputContainer(AppState& app, ChatSession& chat)
 	if (send_visible)
 	{
 		float send_y_nudge = 36.0f;
-#if defined(_WIN32)
-		const float composer_h = std::max(ScaleUiLength(110.0f), ImGui::GetTextLineHeight() * 5.2f);
-		const float send_h = ScaleUiLength(42.0f);
-		send_y_nudge = std::max(0.0f, (composer_h - send_h) * 0.5f);
-#endif
+
+		if (PlatformServicesFactory::Instance().ui_traits.UseWindowsLayoutAdjustments())
+		{
+			const float composer_h = std::max(ScaleUiLength(110.0f), ImGui::GetTextLineHeight() * 5.2f);
+			const float send_h = ScaleUiLength(42.0f);
+			send_y_nudge = std::max(0.0f, (composer_h - send_h) * 0.5f);
+		}
+
 		ImGui::SetCursorPosY(ImGui::GetCursorPosY() + send_y_nudge);
 
 		if (DrawButton("SEND", ImVec2(80.0f, 42.0f), ButtonKind::Accent))

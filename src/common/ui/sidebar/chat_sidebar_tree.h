@@ -1,4 +1,5 @@
 #pragma once
+#include "common/platform/platform_services.h"
 
 /// <summary>
 /// Draws the folder list and nested chat tree region in the sidebar.
@@ -34,9 +35,12 @@ static void DrawChatSidebarTree(AppState& app, std::string& chat_to_delete, std:
 		if (!folder.collapsed)
 		{
 			float folder_indent = 8.0f;
-#if defined(_WIN32)
-			folder_indent = ScaleUiLength(8.0f);
-#endif
+
+			if (PlatformServicesFactory::Instance().ui_traits.UseWindowsLayoutAdjustments())
+			{
+				folder_indent = ScaleUiLength(8.0f);
+			}
+
 			ImGui::Indent(folder_indent);
 
 			std::vector<int> folder_chat_indices;
@@ -148,9 +152,12 @@ static void DrawChatSidebarTree(AppState& app, std::string& chat_to_delete, std:
 			{
 				ImGui::TextColored(ui::kTextMuted, "No chats in folder");
 				float empty_spacing = 4.0f;
-#if defined(_WIN32)
-				empty_spacing = ScaleUiLength(4.0f);
-#endif
+
+				if (PlatformServicesFactory::Instance().ui_traits.UseWindowsLayoutAdjustments())
+				{
+					empty_spacing = ScaleUiLength(4.0f);
+				}
+
 				ImGui::Dummy(ImVec2(0.0f, empty_spacing));
 			}
 

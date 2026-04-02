@@ -30,6 +30,47 @@ endif()
 option(UAM_FETCH_DEPS "Fetch SDL2 and Dear ImGui from GitHub during configure." ON)
 option(UAM_FETCH_LLAMA_CPP "Fetch pinned llama.cpp fork during configure." ON)
 option(UAM_BUILD_TESTS "Build UAM core tests executable." OFF)
+option(UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED "Enable gemini-structured runtime backend." ON)
+option(UAM_ENABLE_RUNTIME_GEMINI_CLI "Enable gemini-cli runtime backend." ON)
+option(UAM_ENABLE_RUNTIME_CODEX_CLI "Enable codex-cli runtime backend." ON)
+option(UAM_ENABLE_RUNTIME_CLAUDE_CLI "Enable claude-cli runtime backend." ON)
+option(UAM_ENABLE_RUNTIME_OPENCODE_CLI "Enable opencode-cli runtime backend." ON)
+option(UAM_ENABLE_RUNTIME_OPENCODE_LOCAL "Enable opencode-local runtime backend." ON)
+option(UAM_ENABLE_RUNTIME_OLLAMA_ENGINE "Enable ollama-engine runtime backend." ON)
+
+if(NOT UAM_ENABLE_RUNTIME_OLLAMA_ENGINE AND UAM_ENABLE_RUNTIME_OPENCODE_LOCAL)
+  message(STATUS "UAM_ENABLE_RUNTIME_OLLAMA_ENGINE=OFF, forcing UAM_ENABLE_RUNTIME_OPENCODE_LOCAL=OFF.")
+  set(UAM_ENABLE_RUNTIME_OPENCODE_LOCAL OFF CACHE BOOL "Enable opencode-local runtime backend." FORCE)
+endif()
+
+if(UAM_ENABLE_RUNTIME_OPENCODE_LOCAL AND NOT UAM_ENABLE_RUNTIME_OPENCODE_CLI)
+  message(FATAL_ERROR "UAM_ENABLE_RUNTIME_OPENCODE_LOCAL requires UAM_ENABLE_RUNTIME_OPENCODE_CLI=ON.")
+endif()
+
+if(UAM_ENABLE_RUNTIME_OPENCODE_LOCAL AND NOT UAM_ENABLE_RUNTIME_OLLAMA_ENGINE)
+  message(FATAL_ERROR "UAM_ENABLE_RUNTIME_OPENCODE_LOCAL requires UAM_ENABLE_RUNTIME_OLLAMA_ENGINE=ON.")
+endif()
+
+set(_uam_runtime_enabled_count 0)
+foreach(_runtime_toggle
+  UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED
+  UAM_ENABLE_RUNTIME_GEMINI_CLI
+  UAM_ENABLE_RUNTIME_CODEX_CLI
+  UAM_ENABLE_RUNTIME_CLAUDE_CLI
+  UAM_ENABLE_RUNTIME_OPENCODE_CLI
+  UAM_ENABLE_RUNTIME_OPENCODE_LOCAL
+  UAM_ENABLE_RUNTIME_OLLAMA_ENGINE
+)
+  if(${_runtime_toggle})
+    math(EXPR _uam_runtime_enabled_count "${_uam_runtime_enabled_count} + 1")
+  endif()
+endforeach()
+
+if(_uam_runtime_enabled_count EQUAL 0)
+  message(FATAL_ERROR "At least one UAM runtime backend must be enabled.")
+endif()
+
+set(UAM_ENABLE_ENGINE_RAG ${UAM_ENABLE_RUNTIME_OLLAMA_ENGINE})
 set(UAM_OLLAMA_ENGINE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/subprojects/ollama_engine" CACHE PATH
   "Path to the ollama_engine source repository.")
 set(UAM_THIRD_PARTY_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party" CACHE PATH
@@ -185,10 +226,16 @@ if(WIN32)
   )
 endif()
 
-if(EXISTS "${UAM_OLLAMA_ENGINE_SOURCE_DIR}/CMakeLists.txt")
-  add_subdirectory("${UAM_OLLAMA_ENGINE_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/ollama_engine")
+set(UAM_ENGINE_LINK_TARGET "")
+if(UAM_ENABLE_RUNTIME_OLLAMA_ENGINE)
+  if(EXISTS "${UAM_OLLAMA_ENGINE_SOURCE_DIR}/CMakeLists.txt")
+    add_subdirectory("${UAM_OLLAMA_ENGINE_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/ollama_engine")
+    set(UAM_ENGINE_LINK_TARGET uam_ollama_engine)
+  else()
+    message(FATAL_ERROR "ollama_engine source not found at ${UAM_OLLAMA_ENGINE_SOURCE_DIR}.")
+  endif()
 else()
-  message(FATAL_ERROR "ollama_engine source not found at ${UAM_OLLAMA_ENGINE_SOURCE_DIR}.")
+  message(STATUS "UAM_ENABLE_RUNTIME_OLLAMA_ENGINE=OFF: skipping ollama_engine subproject/link targets.")
 endif()
 
 add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
@@ -200,6 +247,8 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/paths/app_paths.cpp
   src/common/chat/chat_folder_store.cpp
   src/common/chat/chat_repository.cpp
+  src/common/chat/local_chat_store.cpp
+  src/common/chat/gemini_native_history_store.cpp
   src/common/chat/chat_branching.cpp
   src/common/config/settings_store.cpp
   src/common/utils/command_line_words.cpp
@@ -208,9 +257,11 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/config/frontend_actions.cpp
   src/common/provider/provider_profile.cpp
   src/common/provider/provider_runtime.cpp
+  src/common/platform/platform_services.cpp
   src/common/vcs/vcs_workspace_service.cpp
   src/common/rag/rag_index_service.cpp
   src/common/rag/ollama_engine_client.cpp
+  src/common/rag/ollama_engine_service.cpp
   src/common/provider/provider_profiles.cpp
 )
 target_include_directories(universal_agent_manager
@@ -223,7 +274,17 @@ target_include_directories(universal_agent_manager
     ${VTERM_DIR}/include
     ${VTERM_DIR}/src
 )
-target_link_libraries(universal_agent_manager PRIVATE ${UAM_SDL_TARGET} OpenGL::GL CURL::libcurl uam_ollama_engine)
+target_link_libraries(universal_agent_manager PRIVATE ${UAM_SDL_TARGET} OpenGL::GL CURL::libcurl ${UAM_ENGINE_LINK_TARGET})
+target_compile_definitions(universal_agent_manager PRIVATE
+  UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED}>
+  UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
+  UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>
+  UAM_ENABLE_RUNTIME_CLAUDE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CLAUDE_CLI}>
+  UAM_ENABLE_RUNTIME_OPENCODE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_OPENCODE_CLI}>
+  UAM_ENABLE_RUNTIME_OPENCODE_LOCAL=$<BOOL:${UAM_ENABLE_RUNTIME_OPENCODE_LOCAL}>
+  UAM_ENABLE_RUNTIME_OLLAMA_ENGINE=$<BOOL:${UAM_ENABLE_RUNTIME_OLLAMA_ENGINE}>
+  UAM_ENABLE_ENGINE_RAG=$<BOOL:${UAM_ENABLE_ENGINE_RAG}>
+)
 set_target_properties(universal_agent_manager PROPERTIES FOLDER "App")
 if(TARGET uam_ollama_engine_bridge)
   add_dependencies(universal_agent_manager uam_ollama_engine_bridge)
@@ -277,17 +338,42 @@ if(UAM_BUILD_TESTS)
     src/common/provider/gemini_command_builder.cpp
     src/common/provider/gemini_template_catalog.cpp
     src/common/chat/chat_repository.cpp
+    src/common/chat/local_chat_store.cpp
+    src/common/chat/gemini_native_history_store.cpp
     src/common/chat/chat_branching.cpp
     src/common/provider/provider_profile.cpp
     src/common/provider/provider_runtime.cpp
     src/common/config/settings_store.cpp
+    src/common/platform/platform_services.cpp
     src/common/vcs/vcs_workspace_service.cpp
     src/common/rag/rag_index_service.cpp
     src/common/rag/ollama_engine_client.cpp
+    src/common/rag/ollama_engine_service.cpp
     src/common/provider/provider_profiles.cpp
   )
-  target_include_directories(uam_core_tests PRIVATE src src/common)
-  target_link_libraries(uam_core_tests PRIVATE uam_ollama_engine)
+  target_include_directories(uam_core_tests
+    PRIVATE
+      src
+      src/common
+      ${VTERM_DIR}/include
+      ${VTERM_DIR}/src
+      $<TARGET_PROPERTY:${UAM_SDL_TARGET},INTERFACE_INCLUDE_DIRECTORIES>
+  )
+  target_link_libraries(uam_core_tests PRIVATE ${UAM_SDL_TARGET} ${UAM_ENGINE_LINK_TARGET})
+  target_compile_definitions(uam_core_tests PRIVATE
+    UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED}>
+    UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
+    UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>
+    UAM_ENABLE_RUNTIME_CLAUDE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CLAUDE_CLI}>
+    UAM_ENABLE_RUNTIME_OPENCODE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_OPENCODE_CLI}>
+    UAM_ENABLE_RUNTIME_OPENCODE_LOCAL=$<BOOL:${UAM_ENABLE_RUNTIME_OPENCODE_LOCAL}>
+    UAM_ENABLE_RUNTIME_OLLAMA_ENGINE=$<BOOL:${UAM_ENABLE_RUNTIME_OLLAMA_ENGINE}>
+    UAM_ENABLE_ENGINE_RAG=$<BOOL:${UAM_ENABLE_ENGINE_RAG}>
+  )
   set_target_properties(uam_core_tests PROPERTIES FOLDER "Tests")
   add_test(NAME uam_core_tests COMMAND uam_core_tests)
+  add_test(
+    NAME uam_platform_ifdef_guard
+    COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/check_platform_ifdefs.cmake
+  )
 endif()

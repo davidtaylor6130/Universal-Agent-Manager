@@ -1,6 +1,7 @@
 #include "rag_index_service.h"
 
 #include "ollama_engine_client.h"
+#include "ollama_engine_service.h"
 
 #include <algorithm>
 #include <cctype>
@@ -266,16 +267,24 @@ namespace
 
 } // namespace
 
-RagIndexService::RagIndexService() : config_(Config{}), model_folder_(std::filesystem::current_path() / "models"), model_engine_client_(std::make_unique<OllamaEngineClient>())
+RagIndexService::RagIndexService() : config_(Config{}), model_folder_(std::filesystem::current_path() / "models"), model_engine_client_(&OllamaEngineService::Instance().Client())
 {
 	SetConfig(config_);
-	model_engine_client_->SetModelFolder(model_folder_);
+
+	if (model_engine_client_ != nullptr)
+	{
+		model_engine_client_->SetModelFolder(model_folder_);
+	}
 }
 
-RagIndexService::RagIndexService(const Config& config) : config_(config), model_folder_(std::filesystem::current_path() / "models"), model_engine_client_(std::make_unique<OllamaEngineClient>())
+RagIndexService::RagIndexService(const Config& config) : config_(config), model_folder_(std::filesystem::current_path() / "models"), model_engine_client_(&OllamaEngineService::Instance().Client())
 {
 	SetConfig(config_);
-	model_engine_client_->SetModelFolder(model_folder_);
+
+	if (model_engine_client_ != nullptr)
+	{
+		model_engine_client_->SetModelFolder(model_folder_);
+	}
 }
 
 RagIndexService::~RagIndexService() = default;
@@ -324,7 +333,7 @@ std::vector<std::string> RagIndexService::ListModels()
 
 	if (model_engine_client_ == nullptr)
 	{
-		model_engine_client_ = std::make_unique<OllamaEngineClient>();
+		model_engine_client_ = &OllamaEngineService::Instance().Client();
 	}
 
 	model_engine_client_->SetModelFolder(model_folder_);
@@ -347,7 +356,7 @@ bool RagIndexService::LoadModel(const std::string& model_name, std::string* erro
 
 	if (model_engine_client_ == nullptr)
 	{
-		model_engine_client_ = std::make_unique<OllamaEngineClient>();
+		model_engine_client_ = &OllamaEngineService::Instance().Client();
 	}
 
 	model_engine_client_->SetModelFolder(model_folder_);
@@ -468,7 +477,7 @@ RagRefreshResult RagIndexService::ScanWorkspace(const std::filesystem::path& wor
 
 	if (model_engine_client_ == nullptr)
 	{
-		model_engine_client_ = std::make_unique<OllamaEngineClient>();
+		model_engine_client_ = &OllamaEngineService::Instance().Client();
 		model_engine_client_->SetModelFolder(model_folder_);
 		model_engine_client_->SetEmbeddingDimensions(config_.vector_dimensions);
 		model_engine_client_->SetEmbeddingMaxTokens(config_.vector_max_tokens);
@@ -588,7 +597,7 @@ std::vector<RagSnippet> RagIndexService::Retrieve(const std::filesystem::path& w
 
 	if (model_engine_client_ == nullptr)
 	{
-		model_engine_client_ = std::make_unique<OllamaEngineClient>();
+		model_engine_client_ = &OllamaEngineService::Instance().Client();
 		model_engine_client_->SetModelFolder(model_folder_);
 		model_engine_client_->SetEmbeddingDimensions(config_.vector_dimensions);
 		model_engine_client_->SetEmbeddingMaxTokens(config_.vector_max_tokens);
@@ -704,7 +713,7 @@ bool RagIndexService::ConfigureWorkspaceDatabase(const std::filesystem::path& wo
 {
 	if (model_engine_client_ == nullptr)
 	{
-		model_engine_client_ = std::make_unique<OllamaEngineClient>();
+		model_engine_client_ = &OllamaEngineService::Instance().Client();
 		model_engine_client_->SetModelFolder(model_folder_);
 		model_engine_client_->SetEmbeddingDimensions(config_.vector_dimensions);
 		model_engine_client_->SetEmbeddingMaxTokens(config_.vector_max_tokens);

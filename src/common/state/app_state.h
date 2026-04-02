@@ -4,9 +4,9 @@
 
 #include "common/app_models.h"
 #include "common/frontend_actions.h"
+#include "common/platform/platform_state_fields.h"
 #include "common/provider_profile.h"
 #include "common/rag_index_service.h"
-#include "common/ollama_engine_client.h"
 #include "common/vcs_workspace_service.h"
 
 #include <atomic>
@@ -17,13 +17,6 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-
-#if defined(_WIN32)
-#include <windows.h>
-#include <wincontypes.h>
-#else
-#include <sys/types.h>
-#endif
 
 namespace uam
 {
@@ -46,18 +39,8 @@ namespace uam
 	/// <summary>
 	/// Runtime state for one embedded provider CLI terminal instance.
 	/// </summary>
-	struct CliTerminalState
+	struct CliTerminalState : public platform::CliTerminalPlatformFields
 	{
-#if defined(_WIN32)
-		HANDLE pipe_input = INVALID_HANDLE_VALUE;
-		HANDLE pipe_output = INVALID_HANDLE_VALUE;
-		PROCESS_INFORMATION process_info = {INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, 0, 0};
-		HPCON pseudo_console = nullptr;
-		LPPROC_THREAD_ATTRIBUTE_LIST attr_list = nullptr;
-#else
-		int master_fd = -1;
-		pid_t child_pid = -1;
-#endif
 		bool running = false;
 		std::string attached_chat_id;
 		std::string attached_session_id;
@@ -98,15 +81,8 @@ namespace uam
 	/// <summary>
 	/// Runtime state for the UAM-managed OpenCode bridge process.
 	/// </summary>
-	struct OpenCodeBridgeState
+	struct OpenCodeBridgeState : public platform::OpenCodeBridgePlatformFields
 	{
-#if defined(_WIN32)
-		HANDLE process_handle = INVALID_HANDLE_VALUE;
-		HANDLE process_thread = INVALID_HANDLE_VALUE;
-		DWORD process_id = 0;
-#else
-		pid_t process_id = -1;
-#endif
 		bool running = false;
 		bool healthy = false;
 		std::string endpoint;
@@ -118,20 +94,6 @@ namespace uam
 		std::string ready_file;
 		std::string last_error;
 	};
-
-#if defined(_WIN32)
-	/// <summary>
-	/// Windows-only async loader for native Gemini chat history.
-	/// </summary>
-	struct AsyncNativeChatLoadTask
-	{
-		bool running = false;
-		std::shared_ptr<std::atomic<bool>> completed;
-		std::shared_ptr<std::vector<ChatSession>> chats;
-		std::shared_ptr<std::string> error;
-	};
-
-#endif
 
 	/// <summary>
 	/// Shared application state for runtime services and all Dear ImGui views.
@@ -189,7 +151,6 @@ namespace uam
 		CenterViewMode center_view_mode = CenterViewMode::Structured;
 		std::vector<std::unique_ptr<CliTerminalState>> cli_terminals;
 		RagIndexService rag_index_service;
-		OllamaEngineClient local_runtime_engine;
 		OpenCodeBridgeState opencode_bridge;
 		std::string loaded_runtime_model_id;
 		std::unordered_map<std::string, VcsSnapshot> vcs_snapshot_by_workspace;
@@ -228,9 +189,7 @@ namespace uam
 		std::string gemini_version_message;
 		std::string gemini_downgrade_output;
 		bool scroll_to_bottom = false;
-#if defined(_WIN32)
-		AsyncNativeChatLoadTask native_chat_load_task;
-#endif
+		platform::AsyncNativeChatLoadTask native_chat_load_task;
 	};
 
 } // namespace uam

@@ -1,4 +1,5 @@
 #pragma once
+#include "common/platform/platform_services.h"
 
 /// <summary>
 /// Chat deletion flow, including local/native history cleanup and selection repair.
@@ -28,19 +29,23 @@ static bool RemoveChatById(AppState& app, const std::string& chat_id)
 
 	std::error_code local_delete_ec;
 	bool local_delete_async_scheduled = false;
-#if defined(_WIN32)
-	const fs::path local_chat_path = ChatPath(app, chat);
-	auto delete_local_chat_path = [local_chat_path]()
-	{
-		std::error_code async_local_delete_ec;
-		fs::remove_all(local_chat_path, async_local_delete_ec);
-	};
 
-	std::thread(delete_local_chat_path).detach();
-	local_delete_async_scheduled = true;
-#else
-	fs::remove_all(ChatPath(app, chat), local_delete_ec);
-#endif
+	if (PlatformServicesFactory::Instance().ui_traits.UseWindowsLayoutAdjustments())
+	{
+		const fs::path local_chat_path = ChatPath(app, chat);
+		auto delete_local_chat_path = [local_chat_path]()
+		{
+			std::error_code async_local_delete_ec;
+			fs::remove_all(local_chat_path, async_local_delete_ec);
+		};
+
+		std::thread(delete_local_chat_path).detach();
+		local_delete_async_scheduled = true;
+	}
+	else
+	{
+		fs::remove_all(ChatPath(app, chat), local_delete_ec);
+	}
 
 	const std::string native_session_id = chat.uses_native_session ? chat.native_session_id : "";
 	std::error_code native_delete_ec;
@@ -51,32 +56,32 @@ static bool RemoveChatById(AppState& app, const std::string& chat_id)
 	{
 		RefreshGeminiChatsDir(app);
 		native_delete_attempted = true;
-#if defined(_WIN32)
-		const fs::path chats_dir_snapshot = app.gemini_chats_dir;
-		const std::string native_session_id_snapshot = native_session_id;
-		auto delete_native_session_file = [chats_dir_snapshot, native_session_id_snapshot]()
+
+		if (PlatformServicesFactory::Instance().ui_traits.UseWindowsLayoutAdjustments())
 		{
-			const auto native_file = FindNativeSessionFilePathInDirectory(chats_dir_snapshot, native_session_id_snapshot);
-
-			if (!native_file.has_value())
+			const fs::path chats_dir_snapshot = app.gemini_chats_dir;
+			const std::string native_session_id_snapshot = native_session_id;
+			auto delete_native_session_file = [chats_dir_snapshot, native_session_id_snapshot]()
 			{
-				return;
-			}
+				const auto native_file = FindNativeSessionFilePathInDirectory(chats_dir_snapshot, native_session_id_snapshot);
 
-			std::error_code async_delete_ec;
-			fs::remove(native_file.value(), async_delete_ec);
-		};
+				if (!native_file.has_value())
+				{
+					return;
+				}
 
-		std::thread(delete_native_session_file).detach();
-		native_delete_async_scheduled = true;
-#else
+				std::error_code async_delete_ec;
+				fs::remove(native_file.value(), async_delete_ec);
+			};
 
-		if (const auto native_file = FindNativeSessionFilePath(app, native_session_id); native_file.has_value())
+			std::thread(delete_native_session_file).detach();
+			native_delete_async_scheduled = true;
+		}
+		else if (const auto native_file = FindNativeSessionFilePath(app, native_session_id); native_file.has_value())
 		{
 			fs::remove(native_file.value(), native_delete_ec);
 		}
 
-#endif
 	}
 
 	ChatBranching::ReparentChildrenAfterDelete(app.chats, chat.id);

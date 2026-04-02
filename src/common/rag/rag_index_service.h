@@ -2,7 +2,6 @@
 
 #include <cstddef>
 #include <filesystem>
-#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -130,5 +129,5 @@ class RagIndexService
 	std::string active_workspace_key_;
 	std::string loaded_vector_model_id_;
 	std::string last_scan_error_;
-	std::unique_ptr<OllamaEngineClient> model_engine_client_;
+	OllamaEngineClient* model_engine_client_ = nullptr;
 };

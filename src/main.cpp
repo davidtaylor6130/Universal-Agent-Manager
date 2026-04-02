@@ -11,37 +11,24 @@
 #include "common/chat_branching.h"
 #include "common/chat_folder_store.h"
 #include "common/chat_repository.h"
+#include "common/local_chat_store.h"
 #include "common/frontend_actions.h"
 #include "common/gemini_command_builder.h"
+#include "common/gemini_native_history_store.h"
 #include "common/gemini_template_catalog.h"
 #include "common/provider_profile.h"
 #include "common/provider_runtime.h"
+#include "common/ollama_engine_service.h"
 #include "common/rag_index_service.h"
 #include "common/settings_store.h"
 #include "common/vcs_workspace_service.h"
+#include "common/platform/platform_services.h"
 
 #ifndef SDL_MAIN_HANDLED
 #define SDL_MAIN_HANDLED
 #endif
 #include "common/platform/sdl_includes.h"
-#if defined(_WIN32)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#include <wincontypes.h>
-#include <shellapi.h>
-#endif
-
-#if defined(__APPLE__)
-#include <OpenGL/gl3.h>
-#include <mach-o/dyld.h>
-#else
-#include <GL/gl.h>
-#endif
+#include "common/platform/gl_includes.h"
 
 #include <algorithm>
 #include <atomic>
@@ -76,40 +63,19 @@
 #include <unordered_set>
 #include <vector>
 
-#if defined(__unix__) || defined(__APPLE__)
-#include <fcntl.h>
-#include <signal.h>
-#include <sys/ioctl.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <unistd.h>
-#if defined(__APPLE__)
-#include <util.h>
-#else
-#include <pty.h>
-#endif
+#ifndef UAM_ENABLE_ENGINE_RAG
+#define UAM_ENABLE_ENGINE_RAG 1
 #endif
 
 namespace fs = std::filesystem;
 
-#if defined(_WIN32)
-static void ClosePseudoConsoleSafe(HPCON handle);
-#endif
-
 using uam::AppState;
 using uam::AsyncCommandTask;
-#if defined(_WIN32)
-using uam::AsyncNativeChatLoadTask;
-#endif
 using uam::CliTerminalState;
 using uam::kTerminalScrollbackMaxLines;
 using uam::TerminalScrollbackLine;
 
-#if defined(_WIN32)
-static bool StartCliTerminalWindows(AppState& app, CliTerminalState& terminal, const ChatSession& chat);
-#else
-static bool StartCliTerminalUnix(AppState& p_app, CliTerminalState& p_terminal, const ChatSession& p_chat);
-#endif
+static bool StartCliTerminalPlatform(AppState& app, CliTerminalState& terminal, const ChatSession& chat);
 
 static ImFont* g_font_ui = nullptr;
 static ImFont* g_font_title = nullptr;
@@ -153,6 +119,7 @@ static void SelectChatById(AppState& p_app, const std::string& p_chatId);
 static void SaveSettings(AppState& p_app);
 static bool SaveChat(const AppState& p_app, const ChatSession& p_chat);
 static bool ProviderUsesOpenCodeLocalBridge(const ProviderProfile& p_provider);
+static bool IsRuntimeEnabledForProvider(const ProviderProfile& p_provider, std::string* p_reasonOut = nullptr);
 static bool EnsureSelectedLocalRuntimeModelForProvider(AppState& p_app);
 static bool SendPromptToCliRuntime(AppState& p_app, ChatSession& p_chat, const std::string& p_prompt, std::string* p_errorOut);
 static bool EnsureOpenCodeBridgeRunning(AppState& p_app, std::string* p_errorOut = nullptr);
@@ -290,6 +257,7 @@ static fs::path DefaultDataRootPath();
 static fs::path TempFallbackDataRootPath();
 static bool EnsureDataRootLayout(const fs::path& p_dataRoot, std::string* p_errorOut);
 static std::optional<fs::path> ResolveGeminiProjectTmpDir(const fs::path& p_projectRoot);
+static ProviderRuntimeHistoryLoadOptions RuntimeHistoryLoadOptions();
 static std::optional<ChatSession> ParseGeminiSessionFile(const fs::path& p_filePath, const ProviderProfile& p_provider);
 static bool StartAsyncNativeChatLoad(AppState& app);
 static bool TryConsumeAsyncNativeChatLoad(AppState& app, std::vector<ChatSession>& chats_out, std::string& error_out);
@@ -369,11 +337,12 @@ static std::string TimestampNow()
 	const auto l_now = std::chrono::system_clock::now();
 	const std::time_t l_tt = std::chrono::system_clock::to_time_t(l_now);
 	std::tm l_tmSnapshot{};
-#if defined(_WIN32)
-	localtime_s(&tm_snapshot, &tt);
-#else
-	localtime_r(&l_tt, &l_tmSnapshot);
-#endif
+
+	if (!PlatformServicesFactory::Instance().process_service.PopulateLocalTime(l_tt, &l_tmSnapshot))
+	{
+		return "";
+	}
+
 	std::ostringstream l_out;
 	l_out << std::put_time(&l_tmSnapshot, "%Y-%m-%d %H:%M:%S");
 	return l_out.str();
@@ -423,94 +392,9 @@ static bool WriteTextFile(const fs::path& p_path, const std::string& p_content)
 	return l_out.good();
 }
 
-#if defined(_WIN32)
-static std::optional<fs::path> ResolveWindowsHomePath()
-{
-	if (const char* user_profile = std::getenv("USERPROFILE"))
-	{
-		const std::string value = Trim(user_profile);
-
-		if (!value.empty())
-		{
-			return fs::path(value);
-		}
-	}
-
-	if (const char* home_drive = std::getenv("HOMEDRIVE"))
-	{
-		if (const char* home_path = std::getenv("HOMEPATH"))
-		{
-			const std::string drive = Trim(home_drive);
-			const std::string path = Trim(home_path);
-
-			if (!drive.empty() && !path.empty())
-			{
-				return fs::path(drive + path);
-			}
-		}
-	}
-
-	if (const char* home = std::getenv("HOME"))
-	{
-		const std::string value = Trim(home);
-
-		if (!value.empty())
-		{
-			return fs::path(value);
-		}
-	}
-
-	return std::nullopt;
-}
-
-#endif
-
 static fs::path ExpandLeadingTildePath(const std::string& p_rawPath)
 {
-	const std::string l_trimmed = Trim(p_rawPath);
-
-	if (l_trimmed.empty())
-	{
-		return {};
-	}
-
-	if (l_trimmed[0] != '~')
-	{
-		return fs::path(l_trimmed);
-	}
-
-#if defined(_WIN32)
-
-	if (const std::optional<fs::path> home = ResolveWindowsHomePath(); home.has_value())
-	{
-		if (trimmed.size() == 1)
-		{
-			return home.value();
-		}
-
-		if (trimmed[1] == '\\' || trimmed[1] == '/')
-		{
-			return home.value() / trimmed.substr(2);
-		}
-	}
-
-#else
-
-	if (const char* lcp_home = std::getenv("HOME"))
-	{
-		if (l_trimmed.size() == 1)
-		{
-			return fs::path(lcp_home);
-		}
-
-		if (l_trimmed[1] == '/')
-		{
-			return fs::path(lcp_home) / l_trimmed.substr(2);
-		}
-	}
-
-#endif
-	return fs::path(l_trimmed);
+	return PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(p_rawPath);
 }
 
 static fs::path ResolveGeminiGlobalRootPath(const AppSettings& p_settings)
@@ -1061,8 +945,13 @@ static RagIndexService::Config RagConfigFromSettings(const AppSettings& p_settin
 {
 	RagIndexService::Config l_config;
 	l_config.enabled = p_settings.rag_enabled;
+#if UAM_ENABLE_ENGINE_RAG
 	l_config.vector_backend = (p_settings.vector_db_backend == "none") ? "none" : "ollama-engine";
 	l_config.vector_enabled = (l_config.vector_backend != "none");
+#else
+	l_config.vector_backend = "none";
+	l_config.vector_enabled = false;
+#endif
 	l_config.top_k = std::clamp(p_settings.rag_top_k, 1, 20);
 	l_config.max_snippet_chars = static_cast<std::size_t>(std::clamp(p_settings.rag_max_snippet_chars, 120, 4000));
 	l_config.max_file_bytes = static_cast<std::size_t>(std::clamp(p_settings.rag_max_file_bytes, 16 * 1024, 20 * 1024 * 1024));
@@ -1743,49 +1632,7 @@ static void ConsumePendingBranchRequest(AppState& p_app)
 
 static std::string BuildShellCommandWithWorkingDirectory(const fs::path& p_workingDirectory, const std::string& p_command)
 {
-#if defined(_WIN32)
-	std::string escaped = "\"";
-
-	for (const char ch : working_directory.string())
-	{
-		if (ch == '"')
-		{
-			escaped += "\"\"";
-		}
-		else if (ch == '%')
-		{
-			escaped += "%%";
-		}
-		else if (ch == '\r' || ch == '\n')
-		{
-			escaped.push_back(' ');
-		}
-		else
-		{
-			escaped.push_back(ch);
-		}
-	}
-
-	escaped.push_back('"');
-	return "cd /d " + escaped + " && " + command;
-#else
-	std::string l_escaped = "'";
-
-	for (const char l_ch : p_workingDirectory.string())
-	{
-		if (l_ch == '\'')
-		{
-			l_escaped += "'\\''";
-		}
-		else
-		{
-			l_escaped.push_back(l_ch);
-		}
-	}
-
-	l_escaped.push_back('\'');
-	return "cd " + l_escaped + " && " + p_command;
-#endif
+	return PlatformServicesFactory::Instance().process_service.BuildShellCommandWithWorkingDirectory(p_workingDirectory, p_command);
 }
 
 static bool EnsureWorkspaceGeminiLayout(const AppState& p_app, const ChatSession& p_chat, std::string* p_errorOut = nullptr)
@@ -1922,13 +1769,12 @@ static std::string TemplateLabelOrFallback(const AppState& p_app, const std::str
 static std::string ExecuteCommandCaptureOutput(const std::string& p_command)
 {
 	const std::string l_fullCommand = p_command + " 2>&1";
-#if defined(_WIN32)
-	std::unique_ptr<FILE, int (*)(FILE*)> lp_pipe(_popen(l_fullCommand.c_str(), "r"), _pclose);
-#else
-	std::unique_ptr<FILE, int (*)(FILE*)> lp_pipe(popen(l_fullCommand.c_str(), "r"), pclose);
-#endif
+	const IPlatformProcessService& process_service = PlatformServicesFactory::Instance().process_service;
+	std::string l_output;
+	int l_rawStatus = -1;
+	std::string l_captureError;
 
-	if (lp_pipe == nullptr)
+	if (!process_service.CaptureCommandOutput(l_fullCommand, &l_output, &l_rawStatus, &l_captureError))
 	{
 		std::ostringstream l_message;
 		l_message << "Failed to launch Gemini CLI command";
@@ -1942,24 +1788,7 @@ static std::string ExecuteCommandCaptureOutput(const std::string& p_command)
 		return l_message.str();
 	}
 
-	std::array<char, 4096> l_buffer{};
-	std::string l_output;
-
-	while (fgets(l_buffer.data(), static_cast<int>(l_buffer.size()), lp_pipe.get()) != nullptr)
-	{
-		l_output += l_buffer.data();
-	}
-
-	const int l_closeCode = lp_pipe.get_deleter()(lp_pipe.release());
-	int l_exitCode = l_closeCode;
-#if defined(__unix__) || defined(__APPLE__)
-
-	if (WIFEXITED(l_closeCode))
-	{
-		l_exitCode = WEXITSTATUS(l_closeCode);
-	}
-
-#endif
+	const int l_exitCode = process_service.NormalizeCapturedCommandExitCode(l_rawStatus);
 
 	if (l_output.empty())
 	{
@@ -2041,13 +1870,7 @@ static std::string BuildGeminiVersionCheckCommand()
 
 static std::string BuildGeminiDowngradeCommand()
 {
-#if defined(__APPLE__)
-	return "brew install gemini-cli@0.30.0";
-#elif defined(_WIN32)
-	return "npm install -g @google/gemini-cli@0.30.0";
-#else
-	return "npm install -g @google/gemini-cli@0.30.0";
-#endif
+	return PlatformServicesFactory::Instance().process_service.GeminiDowngradeCommand();
 }
 
 static void StartGeminiVersionCheck(AppState& p_app, const bool p_force)
@@ -2164,11 +1987,12 @@ static std::string OpenCodeBridgeTimestampStamp()
 	const auto l_now = std::chrono::system_clock::now();
 	const std::time_t l_tt = std::chrono::system_clock::to_time_t(l_now);
 	std::tm l_tmSnapshot{};
-#if defined(_WIN32)
-	localtime_s(&tm_snapshot, &tt);
-#else
-	localtime_r(&l_tt, &l_tmSnapshot);
-#endif
+
+	if (!PlatformServicesFactory::Instance().process_service.PopulateLocalTime(l_tt, &l_tmSnapshot))
+	{
+		return "";
+	}
+
 	std::ostringstream l_out;
 	l_out << std::put_time(&l_tmSnapshot, "%Y%m%d-%H%M%S");
 	return l_out.str();
@@ -2176,57 +2000,12 @@ static std::string OpenCodeBridgeTimestampStamp()
 
 static fs::path ResolveCurrentExecutablePathForBridge()
 {
-#if defined(_WIN32)
-	std::wstring lWBuffer(static_cast<std::size_t>(MAX_PATH), L'\0');
-	const DWORD lDwLength = GetModuleFileNameW(nullptr, lWBuffer.data(), static_cast<DWORD>(lWBuffer.size()));
-
-	if (lDwLength == 0 || lDwLength >= lWBuffer.size())
-	{
-		return {};
-	}
-
-	lWBuffer.resize(static_cast<std::size_t>(lDwLength));
-	return fs::path(lWBuffer);
-#elif defined(__APPLE__)
-	uint32_t l_lUiBufferSize = 0;
-	(void)_NSGetExecutablePath(nullptr, &l_lUiBufferSize);
-
-	if (l_lUiBufferSize == 0)
-	{
-		return {};
-	}
-
-	std::string l_lSBuffer(static_cast<std::size_t>(l_lUiBufferSize), '\0');
-
-	if (_NSGetExecutablePath(l_lSBuffer.data(), &l_lUiBufferSize) != 0)
-	{
-		return {};
-	}
-
-	return fs::path(l_lSBuffer.c_str());
-#elif defined(__linux__)
-	std::array<char, 4096> lBuffer{};
-	const ssize_t lRead = readlink("/proc/self/exe", lBuffer.data(), lBuffer.size() - 1);
-
-	if (lRead <= 0)
-	{
-		return {};
-	}
-
-	lBuffer[static_cast<std::size_t>(lRead)] = '\0';
-	return fs::path(lBuffer.data());
-#else
-	return {};
-#endif
+	return PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath();
 }
 
 static fs::path ResolveOpenCodeBridgeExecutablePath()
 {
-#if defined(_WIN32)
-	const std::string lSBridgeBinaryName = "uam_ollama_engine_bridge.exe";
-#else
-	const std::string l_lSBridgeBinaryName = "uam_ollama_engine_bridge";
-#endif
+	const std::string l_lSBridgeBinaryName = PlatformServicesFactory::Instance().process_service.OpenCodeBridgeBinaryName();
 
 	std::vector<fs::path> l_lVecPathCandidates;
 
@@ -2274,28 +2053,7 @@ static fs::path ResolveOpenCodeBridgeExecutablePath()
 
 static fs::path ResolveOpenCodeConfigPath()
 {
-#if defined(_WIN32)
-
-	if (const std::optional<fs::path> lOptPathHome = ResolveWindowsHomePath(); lOptPathHome.has_value())
-	{
-		return lOptPathHome.value() / ".config" / "opencode" / "opencode.json";
-	}
-
-#endif
-
-	if (const char* lcp_lPtrCHome = std::getenv("HOME"))
-	{
-		const std::string l_lSHome = Trim(lcp_lPtrCHome);
-
-		if (!l_lSHome.empty())
-		{
-			return fs::path(l_lSHome) / ".config" / "opencode" / "opencode.json";
-		}
-	}
-
-	std::error_code l_lEcCwd;
-	const fs::path l_lPathCwd = fs::current_path(l_lEcCwd);
-	return l_lEcCwd ? fs::path("opencode.json") : (l_lPathCwd / ".config" / "opencode" / "opencode.json");
+	return PlatformServicesFactory::Instance().path_service.ResolveOpenCodeConfigPath();
 }
 
 static fs::path BuildOpenCodeBridgeReadyFilePath(const AppState& p_app)
@@ -2559,254 +2317,18 @@ static bool ProbeOpenCodeBridgeHealth(const AppState& p_app, std::string* p_erro
 	return true;
 }
 
-#if defined(_WIN32)
-static std::wstring OpenCodeBridgeWideFromUtf8(const std::string& value)
-{
-	if (value.empty())
-	{
-		return std::wstring();
-	}
-
-	const int wide_len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), nullptr, 0);
-
-	if (wide_len <= 0)
-	{
-		return std::wstring();
-	}
-
-	std::wstring wide(static_cast<std::size_t>(wide_len), L'\0');
-
-	if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), wide.data(), wide_len) <= 0)
-	{
-		return std::wstring();
-	}
-
-	return wide;
-}
-
-static std::string OpenCodeBridgeQuoteWindowsArg(const std::string& arg)
-{
-	if (arg.empty())
-	{
-		return "\"\"";
-	}
-
-	const bool needs_quotes = (arg.find_first_of(" \t\"") != std::string::npos);
-
-	if (!needs_quotes)
-	{
-		return arg;
-	}
-
-	std::string result = "\"";
-	int backslashes = 0;
-
-	for (const char ch : arg)
-	{
-		if (ch == '\\')
-		{
-			backslashes++;
-		}
-		else if (ch == '"')
-		{
-			result.append(backslashes * 2 + 1, '\\');
-			result.push_back('"');
-			backslashes = 0;
-		}
-		else
-		{
-			if (backslashes > 0)
-			{
-				result.append(backslashes, '\\');
-				backslashes = 0;
-			}
-
-			result.push_back(ch);
-		}
-	}
-
-	if (backslashes > 0)
-	{
-		result.append(backslashes * 2, '\\');
-	}
-
-	result.push_back('"');
-	return result;
-}
-
-static std::string OpenCodeBridgeBuildWindowsCommandLine(const std::vector<std::string>& argv)
-{
-	std::ostringstream out;
-	bool first = true;
-
-	for (const std::string& arg : argv)
-	{
-		if (!first)
-		{
-			out << ' ';
-		}
-
-		out << OpenCodeBridgeQuoteWindowsArg(arg);
-		first = false;
-	}
-
-	return out.str();
-}
-
-#endif
-
 static bool StartOpenCodeBridgeProcess(AppState& p_app, const std::vector<std::string>& p_argv, std::string* p_errorOut = nullptr)
 {
-	if (p_argv.empty() || Trim(p_argv.front()).empty())
-	{
-		if (p_errorOut != nullptr)
-		{
-			*p_errorOut = "OpenCode bridge command is empty.";
-		}
-
-		return false;
-	}
-
-#if defined(_WIN32)
-	std::vector<wchar_t> command_line;
-	const std::wstring command_w = OpenCodeBridgeWideFromUtf8(OpenCodeBridgeBuildWindowsCommandLine(argv));
-
-	if (command_w.empty())
-	{
-		if (error_out != nullptr)
-		{
-			*error_out = "Failed to encode OpenCode bridge command line.";
-		}
-
-		return false;
-	}
-
-	command_line.assign(command_w.begin(), command_w.end());
-	command_line.push_back(L'\0');
-
-	STARTUPINFOW startup_info{};
-	startup_info.cb = sizeof(startup_info);
-	PROCESS_INFORMATION process_info{};
-	const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup_info, &process_info);
-
-	if (!created)
-	{
-		const DWORD launch_error = GetLastError();
-
-		if (error_out != nullptr)
-		{
-			*error_out = "Failed to launch OpenCode bridge process (Win32 error " + std::to_string(launch_error) + ").";
-		}
-
-		return false;
-	}
-
-	app.opencode_bridge.process_handle = process_info.hProcess;
-	app.opencode_bridge.process_thread = process_info.hThread;
-	app.opencode_bridge.process_id = process_info.dwProcessId;
-#else
-	const pid_t l_childPid = fork();
-
-	if (l_childPid < 0)
-	{
-		if (p_errorOut != nullptr)
-		{
-			*p_errorOut = "fork failed while starting OpenCode bridge.";
-		}
-
-		return false;
-	}
-
-	if (l_childPid == 0)
-	{
-		setsid();
-		const int l_nullFd = open("/dev/null", O_RDWR);
-
-		if (l_nullFd >= 0)
-		{
-			dup2(l_nullFd, STDIN_FILENO);
-			dup2(l_nullFd, STDOUT_FILENO);
-			dup2(l_nullFd, STDERR_FILENO);
-
-			if (l_nullFd > STDERR_FILENO)
-			{
-				close(l_nullFd);
-			}
-		}
-
-		std::vector<char*> lp_argvPtrs;
-		lp_argvPtrs.reserve(p_argv.size() + 1);
-
-		for (const std::string& l_arg : p_argv)
-		{
-			lp_argvPtrs.push_back(const_cast<char*>(l_arg.c_str()));
-		}
-
-		lp_argvPtrs.push_back(nullptr);
-
-		if (p_argv.front().find('/') != std::string::npos)
-		{
-			execv(lp_argvPtrs.front(), lp_argvPtrs.data());
-		}
-		else
-		{
-			execvp(lp_argvPtrs.front(), lp_argvPtrs.data());
-		}
-
-		_exit(127);
-	}
-
-	p_app.opencode_bridge.process_id = l_childPid;
-#endif
-
-	p_app.opencode_bridge.running = true;
-	return true;
+	const bool l_started = PlatformServicesFactory::Instance().process_service.StartOpenCodeBridgeProcess(p_argv, p_app.opencode_bridge, p_errorOut);
+	p_app.opencode_bridge.running = l_started;
+	return l_started;
 }
 
 static bool IsOpenCodeBridgeProcessRunning(AppState& p_app)
 {
-#if defined(_WIN32)
-
-	if (app.opencode_bridge.process_handle == INVALID_HANDLE_VALUE || app.opencode_bridge.process_handle == nullptr)
-	{
-		app.opencode_bridge.running = false;
-		return false;
-	}
-
-	const DWORD wait_result = WaitForSingleObject(app.opencode_bridge.process_handle, 0);
-
-	if (wait_result == WAIT_TIMEOUT)
-	{
-		return true;
-	}
-
-	app.opencode_bridge.running = false;
-	return false;
-#else
-
-	if (p_app.opencode_bridge.process_id <= 0)
-	{
-		p_app.opencode_bridge.running = false;
-		return false;
-	}
-
-	int l_status = 0;
-	const pid_t l_waitResult = waitpid(p_app.opencode_bridge.process_id, &l_status, WNOHANG);
-
-	if (l_waitResult == 0)
-	{
-		return true;
-	}
-
-	if (l_waitResult == p_app.opencode_bridge.process_id || (l_waitResult < 0 && errno == ECHILD))
-	{
-		p_app.opencode_bridge.process_id = -1;
-		p_app.opencode_bridge.running = false;
-		return false;
-	}
-
-	return true;
-#endif
+	const bool l_running = PlatformServicesFactory::Instance().process_service.IsOpenCodeBridgeProcessRunning(p_app.opencode_bridge);
+	p_app.opencode_bridge.running = l_running;
+	return l_running;
 }
 
 static void ResetOpenCodeBridgeRuntimeFields(AppState& p_app, const bool p_keepToken = true)
@@ -3150,61 +2672,7 @@ static bool StartOpenCodeBridge(AppState& p_app, const fs::path& p_modelFolder, 
 
 static void StopOpenCodeBridge(AppState& p_app)
 {
-#if defined(_WIN32)
-
-	if (app.opencode_bridge.process_handle != INVALID_HANDLE_VALUE && app.opencode_bridge.process_handle != nullptr)
-	{
-		const DWORD wait_result = WaitForSingleObject(app.opencode_bridge.process_handle, 0);
-
-		if (wait_result == WAIT_TIMEOUT)
-		{
-			TerminateProcess(app.opencode_bridge.process_handle, 1);
-			WaitForSingleObject(app.opencode_bridge.process_handle, 1000);
-		}
-
-		CloseHandle(app.opencode_bridge.process_handle);
-		app.opencode_bridge.process_handle = INVALID_HANDLE_VALUE;
-	}
-
-	if (app.opencode_bridge.process_thread != INVALID_HANDLE_VALUE && app.opencode_bridge.process_thread != nullptr)
-	{
-		CloseHandle(app.opencode_bridge.process_thread);
-		app.opencode_bridge.process_thread = INVALID_HANDLE_VALUE;
-	}
-
-	app.opencode_bridge.process_id = 0;
-#else
-
-	if (p_app.opencode_bridge.process_id > 0)
-	{
-		const pid_t l_pid = p_app.opencode_bridge.process_id;
-		int l_status = 0;
-		kill(l_pid, SIGTERM);
-		const auto l_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(700);
-
-		while (std::chrono::steady_clock::now() < l_deadline)
-		{
-			const pid_t l_waitResult = waitpid(l_pid, &l_status, WNOHANG);
-
-			if (l_waitResult == l_pid || (l_waitResult < 0 && errno == ECHILD))
-			{
-				break;
-			}
-
-			std::this_thread::sleep_for(std::chrono::milliseconds(20));
-		}
-
-		const pid_t l_waitResult = waitpid(l_pid, &l_status, WNOHANG);
-
-		if (l_waitResult == 0)
-		{
-			kill(l_pid, SIGKILL);
-			waitpid(l_pid, &l_status, WNOHANG);
-		}
-	}
-
-	p_app.opencode_bridge.process_id = -1;
-#endif
+	PlatformServicesFactory::Instance().process_service.StopOpenCodeBridgeProcess(p_app.opencode_bridge);
 
 	const std::string l_preservedToken = p_app.opencode_bridge.token;
 	ResetOpenCodeBridgeRuntimeFields(p_app, true);
@@ -3349,165 +2817,40 @@ static std::optional<fs::path> ResolveGeminiProjectTmpDir(const fs::path& p_proj
 	return AppPaths::ResolveGeminiProjectTmpDir(p_projectRoot);
 }
 
-#if defined(_WIN32)
-static constexpr uintmax_t kWindowsNativeSessionMaxFileBytes = 12ULL * 1024ULL * 1024ULL;
-static constexpr std::size_t kWindowsNativeSessionMaxMessages = 12000;
-#endif
+static GeminiNativeHistoryStoreOptions NativeGeminiHistoryOptions()
+{
+	GeminiNativeHistoryStoreOptions options;
+	options.max_file_bytes = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxFileBytes();
+	options.max_messages = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxMessages();
+	return options;
+}
+
+static ProviderRuntimeHistoryLoadOptions RuntimeHistoryLoadOptions()
+{
+	const GeminiNativeHistoryStoreOptions native_options = NativeGeminiHistoryOptions();
+	ProviderRuntimeHistoryLoadOptions options;
+	options.native_max_file_bytes = native_options.max_file_bytes;
+	options.native_max_messages = native_options.max_messages;
+	return options;
+}
 
 static std::optional<ChatSession> ParseGeminiSessionFile(const fs::path& p_filePath, const ProviderProfile& p_provider)
 {
-	const std::string l_fileText = ReadTextFile(p_filePath);
-
-	if (l_fileText.empty())
-	{
-		return std::nullopt;
-	}
-
-	const std::optional<JsonValue> l_rootOpt = ParseJson(l_fileText);
-
-	if (!l_rootOpt.has_value() || l_rootOpt->type != JsonValue::Type::Object)
-	{
-		return std::nullopt;
-	}
-
-	const JsonValue& l_root = l_rootOpt.value();
-	const std::string l_sessionId = JsonStringOrEmpty(l_root.Find("sessionId"));
-
-	if (l_sessionId.empty())
-	{
-		return std::nullopt;
-	}
-
-	ChatSession l_chat;
-	l_chat.id = l_sessionId;
-	l_chat.provider_id = p_provider.id;
-	l_chat.native_session_id = l_sessionId;
-	l_chat.uses_native_session = true;
-	l_chat.parent_chat_id.clear();
-	l_chat.branch_root_chat_id = l_sessionId;
-	l_chat.branch_from_message_index = -1;
-	l_chat.created_at = JsonStringOrEmpty(l_root.Find("startTime"));
-	l_chat.updated_at = JsonStringOrEmpty(l_root.Find("lastUpdated"));
-
-	if (l_chat.created_at.empty())
-	{
-		l_chat.created_at = TimestampNow();
-	}
-
-	if (l_chat.updated_at.empty())
-	{
-		l_chat.updated_at = l_chat.created_at;
-	}
-
-	const JsonValue* lcp_messages = l_root.Find("messages");
-
-	if (lcp_messages != nullptr && lcp_messages->type == JsonValue::Type::Array)
-	{
-		for (const JsonValue& l_rawMessage : lcp_messages->array_value)
-		{
-			if (l_rawMessage.type != JsonValue::Type::Object)
-			{
-				continue;
-			}
-
-			const std::string l_type = JsonStringOrEmpty(l_rawMessage.Find("type"));
-			const std::string l_timestamp = JsonStringOrEmpty(l_rawMessage.Find("timestamp"));
-			const std::string l_content = Trim(ExtractGeminiContentText(l_rawMessage.Find("content")));
-
-			if (l_content.empty())
-			{
-				continue;
-			}
-
-			Message l_message;
-			l_message.role = ProviderRuntime::RoleFromNativeType(p_provider, l_type);
-			l_message.content = l_content;
-			l_message.created_at = l_timestamp.empty() ? l_chat.updated_at : l_timestamp;
-			l_chat.messages.push_back(std::move(l_message));
-#if defined(_WIN32)
-			// Windows-only guardrail: if a native session JSON explodes in
-			// size, avoid unbounded message expansion in the UI thread path. If
-			// macOS starts showing the same symptom, we can make this limit
-			// universal.
-			if (chat.messages.size() >= kWindowsNativeSessionMaxMessages)
-			{
-				break;
-			}
-
-#endif
-		}
-	}
-
-	l_chat.title = "Session " + l_chat.created_at;
-
-	for (const Message& l_message : l_chat.messages)
-	{
-		if (l_message.role == MessageRole::User)
-		{
-			std::string l_title = Trim(l_message.content);
-
-			if (l_title.size() > 48)
-			{
-				l_title = l_title.substr(0, 45) + "...";
-			}
-
-			if (!l_title.empty())
-			{
-				l_chat.title = l_title;
-			}
-
-			break;
-		}
-	}
-
-	return l_chat;
+	return GeminiNativeHistoryStore::ParseFile(p_filePath, p_provider, NativeGeminiHistoryOptions());
 }
 
 static std::vector<ChatSession> LoadNativeGeminiChats(const fs::path& p_chatsDir, const ProviderProfile& p_provider)
 {
-	std::vector<ChatSession> l_chats;
-
-	if (p_chatsDir.empty() || !fs::exists(p_chatsDir) || !fs::is_directory(p_chatsDir))
-	{
-		return l_chats;
-	}
-
-	std::error_code l_ec;
-
-	for (const auto& l_item : fs::directory_iterator(p_chatsDir, l_ec))
-	{
-		if (l_ec || !l_item.is_regular_file() || l_item.path().extension() != ".json")
-		{
-			continue;
-		}
-
-#if defined(_WIN32)
-		// Windows-only guardrail to keep a single pathological native session
-		// file from stalling this port. If macOS begins exhibiting this issue,
-		// promote this check to all platforms.
-		std::error_code size_ec;
-		const uintmax_t file_size = fs::file_size(item.path(), size_ec);
-
-		if (!size_ec && file_size > kWindowsNativeSessionMaxFileBytes)
-		{
-			continue;
-		}
-
-#endif
-		const auto l_parsed = ParseGeminiSessionFile(l_item.path(), p_provider);
-
-		if (l_parsed.has_value())
-		{
-			l_chats.push_back(l_parsed.value());
-		}
-	}
-
-	return DeduplicateChatsById(std::move(l_chats));
+	return DeduplicateChatsById(ProviderRuntime::LoadHistory(p_provider, fs::path{}, p_chatsDir, RuntimeHistoryLoadOptions()));
 }
 
-#if defined(_WIN32)
 static bool StartAsyncNativeChatLoad(AppState& app)
 {
+	if (!PlatformServicesFactory::Instance().terminal_runtime.SupportsAsyncNativeGeminiHistoryRefresh())
+	{
+		return false;
+	}
+
 	if (!ActiveProviderUsesGeminiHistory(app) || app.native_chat_load_task.running)
 	{
 		return false;
@@ -3549,6 +2892,11 @@ static bool StartAsyncNativeChatLoad(AppState& app)
 
 static bool TryConsumeAsyncNativeChatLoad(AppState& app, std::vector<ChatSession>& chats_out, std::string& error_out)
 {
+	if (!PlatformServicesFactory::Instance().terminal_runtime.SupportsAsyncNativeGeminiHistoryRefresh())
+	{
+		return false;
+	}
+
 	if (!app.native_chat_load_task.running)
 	{
 		return false;
@@ -3578,8 +2926,6 @@ static bool TryConsumeAsyncNativeChatLoad(AppState& app, std::vector<ChatSession
 	app.native_chat_load_task.error.reset();
 	return true;
 }
-
-#endif
 
 static std::vector<std::string> SessionIdsFromChats(const std::vector<ChatSession>& p_chats)
 {
@@ -4007,7 +3353,7 @@ static const ProviderProfile& ProviderForChatOrDefault(const AppState& p_app, co
 static bool ActiveProviderUsesGeminiHistory(const AppState& p_app)
 {
 	const ProviderProfile* lcp_profile = ActiveProvider(p_app);
-	return lcp_profile != nullptr && ProviderRuntime::SupportsGeminiJsonHistory(*lcp_profile);
+	return lcp_profile != nullptr && ProviderRuntime::UsesNativeOverlayHistory(*lcp_profile);
 }
 
 static bool ActiveProviderUsesInternalEngine(const AppState& p_app)
@@ -4019,7 +3365,7 @@ static bool ActiveProviderUsesInternalEngine(const AppState& p_app)
 static bool ChatUsesGeminiHistory(const AppState& p_app, const ChatSession& p_chat)
 {
 	const ProviderProfile* lcp_profile = ProviderForChat(p_app, p_chat);
-	return lcp_profile != nullptr && ProviderRuntime::SupportsGeminiJsonHistory(*lcp_profile);
+	return lcp_profile != nullptr && ProviderRuntime::UsesNativeOverlayHistory(*lcp_profile);
 }
 
 static bool ChatUsesInternalEngine(const AppState& p_app, const ChatSession& p_chat)
@@ -4307,7 +3653,12 @@ static void SaveSettings(AppState& p_app)
 {
 	p_app.settings.ui_theme = NormalizeThemeChoice(p_app.settings.ui_theme);
 	p_app.settings.runtime_backend = ActiveProviderUsesInternalEngine(p_app) ? "ollama-engine" : "provider-cli";
+#if UAM_ENABLE_ENGINE_RAG
 	p_app.settings.vector_db_backend = (p_app.settings.vector_db_backend == "none") ? "none" : "ollama-engine";
+#else
+	p_app.settings.vector_db_backend = "none";
+	p_app.settings.selected_vector_model_id.clear();
+#endif
 	p_app.settings.selected_model_id = Trim(p_app.settings.selected_model_id);
 	p_app.settings.models_folder_directory = Trim(p_app.settings.models_folder_directory);
 	p_app.settings.selected_vector_model_id = Trim(p_app.settings.selected_vector_model_id);
@@ -4349,7 +3700,12 @@ static void SaveSettings(AppState& p_app)
 static void LoadSettings(AppState& p_app)
 {
 	SettingsStore::Load(SettingsFilePath(p_app), p_app.settings, p_app.center_view_mode);
+#if UAM_ENABLE_ENGINE_RAG
 	p_app.settings.vector_db_backend = (p_app.settings.vector_db_backend == "none") ? "none" : "ollama-engine";
+#else
+	p_app.settings.vector_db_backend = "none";
+	p_app.settings.selected_vector_model_id.clear();
+#endif
 	p_app.settings.selected_model_id = Trim(p_app.settings.selected_model_id);
 	p_app.settings.models_folder_directory = Trim(p_app.settings.models_folder_directory);
 	p_app.settings.selected_vector_model_id = Trim(p_app.settings.selected_vector_model_id);
@@ -4368,12 +3724,13 @@ static void LoadSettings(AppState& p_app)
 
 static bool SaveChat(const AppState& p_app, const ChatSession& p_chat)
 {
-	return ChatRepository::SaveChat(p_app.data_root, p_chat);
+	const ProviderProfile& l_provider = ProviderForChatOrDefault(p_app, p_chat);
+	return ProviderRuntime::SaveHistory(l_provider, p_app.data_root, p_chat);
 }
 
 static std::vector<ChatSession> LoadChats(const AppState& p_app)
 {
-	return ChatRepository::LoadLocalChats(p_app.data_root);
+	return LocalChatStore::Load(p_app.data_root);
 }
 
 static bool MigrateChatProviderBindingsToFixedModes(AppState& p_app)
@@ -4652,6 +4009,11 @@ static std::string BuildProviderCommand(const ProviderProfile& p_provider, const
 	return ProviderRuntime::BuildCommand(p_provider, p_settings, p_prompt, p_files, p_resumeSessionId);
 }
 
+static OllamaEngineClient& SharedOllamaEngineClient()
+{
+	return OllamaEngineService::Instance().Client();
+}
+
 static bool RuntimeUsesLocalEngine(const AppState& p_app)
 {
 	return ActiveProviderUsesInternalEngine(p_app);
@@ -4660,8 +4022,9 @@ static bool RuntimeUsesLocalEngine(const AppState& p_app)
 static bool EnsureLocalRuntimeModelLoaded(AppState& p_app, std::string* p_errorOut = nullptr)
 {
 	const fs::path l_modelFolder = ResolveRagModelFolder(p_app);
-	p_app.local_runtime_engine.SetModelFolder(l_modelFolder);
-	p_app.local_runtime_engine.SetEmbeddingDimensions(256);
+	OllamaEngineClient& l_engine = SharedOllamaEngineClient();
+	l_engine.SetModelFolder(l_modelFolder);
+	l_engine.SetEmbeddingDimensions(256);
 
 	if (Trim(p_app.settings.selected_model_id).empty())
 	{
@@ -4673,13 +4036,35 @@ static bool EnsureLocalRuntimeModelLoaded(AppState& p_app, std::string* p_errorO
 		return true;
 	}
 
-	if (!p_app.local_runtime_engine.Load(p_app.settings.selected_model_id, p_errorOut))
+	if (!l_engine.Load(p_app.settings.selected_model_id, p_errorOut))
 	{
 		return false;
 	}
 
 	p_app.loaded_runtime_model_id = p_app.settings.selected_model_id;
 	return true;
+}
+
+static bool IsRuntimeEnabledForProvider(const ProviderProfile& p_provider, std::string* p_reasonOut)
+{
+	const bool l_enabled = ProviderRuntime::IsRuntimeEnabled(p_provider);
+
+	if (p_reasonOut != nullptr)
+	{
+		p_reasonOut->clear();
+
+		if (!l_enabled)
+		{
+			*p_reasonOut = ProviderRuntime::DisabledReason(p_provider);
+
+			if (p_reasonOut->empty())
+			{
+				*p_reasonOut = "Runtime '" + p_provider.id + "' is disabled in this build.";
+			}
+		}
+	}
+
+	return l_enabled;
 }
 
 static bool ProviderUsesOpenCodeLocalBridge(const ProviderProfile& p_provider)
@@ -4690,8 +4075,9 @@ static bool ProviderUsesOpenCodeLocalBridge(const ProviderProfile& p_provider)
 static bool EnsureSelectedLocalRuntimeModelForProvider(AppState& p_app)
 {
 	const fs::path l_modelFolder = ResolveRagModelFolder(p_app);
-	p_app.local_runtime_engine.SetModelFolder(l_modelFolder);
-	const std::vector<std::string> l_runtimeModels = p_app.local_runtime_engine.ListModels();
+	OllamaEngineClient& l_engine = SharedOllamaEngineClient();
+	l_engine.SetModelFolder(l_modelFolder);
+	const std::vector<std::string> l_runtimeModels = l_engine.ListModels();
 	const std::string l_selectedModel = Trim(p_app.settings.selected_model_id);
 	const bool l_selectedModelValid = !l_selectedModel.empty() && std::find(l_runtimeModels.begin(), l_runtimeModels.end(), l_selectedModel) != l_runtimeModels.end();
 
@@ -4829,6 +4215,14 @@ static bool QueueGeminiPromptForChat(AppState& p_app, ChatSession& p_chat, const
 	}
 
 	const ProviderProfile& l_provider = ProviderForChatOrDefault(p_app, p_chat);
+	std::string l_runtimeDisabledReason;
+
+	if (!IsRuntimeEnabledForProvider(l_provider, &l_runtimeDisabledReason))
+	{
+		p_app.status_line = l_runtimeDisabledReason;
+		return false;
+	}
+
 	const bool l_useLocalRuntime = ChatUsesInternalEngine(p_app, p_chat);
 	const bool l_useOpencodeLocalBridge = ProviderUsesOpenCodeLocalBridge(l_provider);
 	std::string l_templateStatus;
@@ -4920,7 +4314,7 @@ static bool QueueGeminiPromptForChat(AppState& p_app, ChatSession& p_chat, const
 			return false;
 		}
 
-		const ollama_engine::SendMessageResponse l_response = p_app.local_runtime_engine.SendMessage(l_runtimePrompt);
+		const ollama_engine::SendMessageResponse l_response = SharedOllamaEngineClient().SendMessage(l_runtimePrompt);
 
 		if (l_response.pbOk)
 		{
@@ -5018,7 +4412,7 @@ static void ApplyLocalOverrides(AppState& p_app, std::vector<ChatSession>& p_nat
 
 		const std::string l_normalizedProviderId = MapLegacyProviderId(l_local.provider_id, false);
 		const ProviderProfile* lcp_localProvider = ProviderProfileStore::FindById(p_app.provider_profiles, l_normalizedProviderId);
-		const bool l_localChatUsesGeminiHistory = Trim(l_local.provider_id).empty() || (lcp_localProvider != nullptr && ProviderRuntime::SupportsGeminiJsonHistory(*lcp_localProvider));
+		const bool l_localChatUsesGeminiHistory = Trim(l_local.provider_id).empty() || (lcp_localProvider != nullptr && ProviderRuntime::UsesNativeOverlayHistory(*lcp_localProvider));
 
 		if (!l_localChatUsesGeminiHistory)
 		{
@@ -5160,7 +4554,7 @@ static void ApplyLocalOverrides(AppState& p_app, std::vector<ChatSession>& p_nat
 
 		const std::string l_normalizedProviderId = MapLegacyProviderId(l_chat.provider_id, false);
 		const ProviderProfile* lcp_localProvider = ProviderProfileStore::FindById(p_app.provider_profiles, l_normalizedProviderId);
-		const bool l_localChatUsesGeminiHistory = (lcp_localProvider == nullptr) ? true : ProviderRuntime::SupportsGeminiJsonHistory(*lcp_localProvider);
+		const bool l_localChatUsesGeminiHistory = (lcp_localProvider == nullptr) ? true : ProviderRuntime::UsesNativeOverlayHistory(*lcp_localProvider);
 		// In Gemini-history mode, only explicit in-app drafts (chat-*) should
 		// appear as local-only chats.
 		if (l_localChatUsesGeminiHistory && !IsLocalDraftChatId(l_chat.id) && !Trim(l_chat.provider_id).empty())
@@ -5482,9 +4876,10 @@ static void ApplyWindowIcon(SDL_Window* p_window)
 	SDL_SetWindowIcon(p_window, lp_iconSurface.get());
 }
 
-int main(int, char**)
+static int RunLegacyApplicationMain()
 {
 	AppState l_app;
+	PlatformServices& l_platformServices = PlatformServicesFactory::Instance();
 	const CURLcode l_curlInitCode = curl_global_init(CURL_GLOBAL_DEFAULT);
 
 	if (l_curlInitCode != CURLE_OK)
@@ -5523,7 +4918,7 @@ int main(int, char**)
 			l_dataRootCandidates.push_back(l_cwd / "data");
 		}
 
-		l_dataRootCandidates.push_back(DefaultDataRootPath());
+		l_dataRootCandidates.push_back(l_platformServices.path_service.DefaultDataRootPath());
 	}
 
 	l_dataRootCandidates.push_back(TempFallbackDataRootPath());
@@ -5594,6 +4989,12 @@ int main(int, char**)
 		l_app.settings.provider_command_template = lp_activeProfile->command_template;
 		l_app.settings.gemini_command_template = l_app.settings.provider_command_template;
 		l_app.settings.runtime_backend = ProviderRuntime::UsesInternalEngine(*lp_activeProfile) ? "ollama-engine" : "provider-cli";
+
+		if (!ProviderRuntime::IsRuntimeEnabled(*lp_activeProfile))
+		{
+			const std::string l_disabledReason = ProviderRuntime::DisabledReason(*lp_activeProfile);
+			l_app.status_line = l_disabledReason.empty() ? "Active provider runtime is disabled in this build." : l_disabledReason;
+		}
 	}
 
 	if (!l_hadProviderFile || l_providersDirty)
@@ -5606,11 +5007,13 @@ int main(int, char**)
 	l_app.folders = ChatFolderStore::Load(l_app.data_root);
 	EnsureDefaultFolder(l_app);
 	SaveFolders(l_app);
+	const ProviderProfile& l_activeProvider = ActiveProviderOrDefault(l_app);
+	const ProviderRuntimeHistoryLoadOptions l_historyOptions = RuntimeHistoryLoadOptions();
 
 	if (ActiveProviderUsesGeminiHistory(l_app))
 	{
 		RefreshGeminiChatsDir(l_app);
-		l_app.chats = LoadNativeGeminiChats(l_app.gemini_chats_dir, ActiveProviderOrDefault(l_app));
+		l_app.chats = DeduplicateChatsById(ProviderRuntime::LoadHistory(l_activeProvider, l_app.data_root, l_app.gemini_chats_dir, l_historyOptions));
 		ApplyLocalOverrides(l_app, l_app.chats);
 		NormalizeChatBranchMetadata(l_app);
 		NormalizeChatFolderAssignments(l_app);
@@ -5623,7 +5026,7 @@ int main(int, char**)
 	}
 	else
 	{
-		l_app.chats = LoadChats(l_app);
+		l_app.chats = DeduplicateChatsById(ProviderRuntime::LoadHistory(l_activeProvider, l_app.data_root, l_app.gemini_chats_dir, l_historyOptions));
 		NormalizeChatBranchMetadata(l_app);
 		NormalizeChatFolderAssignments(l_app);
 	}
@@ -5658,9 +5061,7 @@ int main(int, char**)
 		SaveSettings(l_app);
 	}
 
-#if defined(_WIN32)
-	SetProcessDPIAware();
-#endif
+	l_platformServices.ui_traits.ApplyProcessDpiAwareness();
 
 	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) != 0)
 	{
@@ -5668,19 +5069,8 @@ int main(int, char**)
 		return 1;
 	}
 
-#if defined(__APPLE__)
-	const char* lcp_glslVersion = "#version 150";
-	SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
-	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
-#else
-	const char* glsl_version = "#version 130";
-	SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
-	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
-#endif
+	l_platformServices.ui_traits.ConfigureOpenGlAttributes();
+	const char* lcp_glslVersion = l_platformServices.ui_traits.OpenGlGlslVersion();
 
 	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 	SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
@@ -5812,16 +5202,7 @@ int main(int, char**)
 			l_sidebarW = std::clamp(l_layoutW * 0.30f, 230.0f, 320.0f);
 		}
 
-#if defined(_WIN32)
-		// Windows-only split tuning: keep chat list readable at larger DPI/user
-		// scales without changing the macOS baseline layout.
-		const float effective_scale = std::max(1.0f, EffectiveUiScale());
-		const float width_bias = 1.0f + ((effective_scale - 1.0f) * 0.36f);
-		const float sidebar_ratio = (layout_w < 1180.0f) ? 0.35f : 0.30f;
-		sidebar_w = std::clamp(layout_w * sidebar_ratio, 280.0f * width_bias, 470.0f * width_bias);
-		const float max_sidebar_from_main_floor = std::max(220.0f, layout_w - 560.0f);
-		sidebar_w = std::clamp(sidebar_w, 220.0f, max_sidebar_from_main_floor);
-#endif
+		l_sidebarW = l_platformServices.ui_traits.AdjustSidebarWidth(l_layoutW, l_sidebarW, EffectiveUiScale());
 
 		if (ImGui::BeginTable("layout_split", 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoBordersInBody))
 		{
@@ -5894,4 +5275,43 @@ int main(int, char**)
 	SDL_Quit();
 
 	return 0;
+}
+
+class Application
+{
+  public:
+	int Initialize()
+	{
+		return 0;
+	}
+
+	int Run()
+	{
+		return RunLegacyApplicationMain();
+	}
+
+	bool RunFrame()
+	{
+		// Frame ownership remains in the legacy main loop during migration.
+		return false;
+	}
+
+	void Shutdown()
+	{
+	}
+};
+
+int main(int, char**)
+{
+	Application application;
+	const int init_rc = application.Initialize();
+
+	if (init_rc != 0)
+	{
+		return init_rc;
+	}
+
+	const int run_rc = application.Run();
+	application.Shutdown();
+	return run_rc;
 }

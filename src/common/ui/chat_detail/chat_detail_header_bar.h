@@ -1,4 +1,5 @@
 #pragma once
+#include "common/platform/platform_services.h"
 
 /// <summary>
 /// Draws the chat title/status header block above the main conversation content.
@@ -10,9 +11,12 @@ static void DrawChatDetailHeaderBar(AppState& app, ChatSession& chat)
 		if (ImGui::BeginTable("chat_header_layout", 2, ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoPadOuterX | ImGuiTableFlags_NoBordersInBody))
 		{
 			float mode_column_w = 164.0f;
-#if defined(_WIN32)
-			mode_column_w = ScaleUiLength(164.0f);
-#endif
+
+			if (PlatformServicesFactory::Instance().ui_traits.UseWindowsLayoutAdjustments())
+			{
+				mode_column_w = ScaleUiLength(164.0f);
+			}
+
 			ImGui::TableSetupColumn("meta", ImGuiTableColumnFlags_WidthStretch, 0.72f);
 			ImGui::TableSetupColumn("mode", ImGuiTableColumnFlags_WidthFixed, mode_column_w);
 			ImGui::TableNextRow();
@@ -52,9 +56,12 @@ static void DrawChatDetailHeaderBar(AppState& app, ChatSession& chat)
 			const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
 			const char* mode_label = ProviderRuntime::UsesCliOutput(provider) ? "CLI" : "Structured";
 			float mode_y_nudge = 3.0f;
-#if defined(_WIN32)
-			mode_y_nudge = ScaleUiLength(3.0f);
-#endif
+
+			if (PlatformServicesFactory::Instance().ui_traits.UseWindowsLayoutAdjustments())
+			{
+				mode_y_nudge = ScaleUiLength(3.0f);
+			}
+
 			ImGui::SetCursorPosY(ImGui::GetCursorPosY() + mode_y_nudge);
 			ImGui::TextColored(ui::kTextMuted, "Output");
 			ImGui::SameLine();

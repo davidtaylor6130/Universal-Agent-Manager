@@ -9,7 +9,12 @@ static void DrawAppSettingsCommitSection(AppState& app, AppSettings& draft_setti
 	{
 		const std::string previous_global_root = app.settings.prompt_profile_root_path;
 		draft_settings.ui_theme = NormalizeThemeChoice(draft_settings.ui_theme);
+#if UAM_ENABLE_ENGINE_RAG
 		draft_settings.vector_db_backend = (draft_settings.vector_db_backend == "none") ? "none" : "ollama-engine";
+#else
+		draft_settings.vector_db_backend = "none";
+		draft_settings.selected_vector_model_id.clear();
+#endif
 		draft_settings.cli_idle_timeout_seconds = std::clamp(draft_settings.cli_idle_timeout_seconds, 30, 3600);
 
 		if (Trim(draft_settings.prompt_profile_root_path).empty())

@@ -1,4 +1,5 @@
 #pragma once
+#include "common/platform/platform_services.h"
 
 /// <summary>
 /// Converts active ImGui modifier keys into libvterm modifiers.
@@ -36,21 +37,11 @@ static void FeedCliTerminalKeyboard(CliTerminalState& terminal)
 		return;
 	}
 
-#if defined(_WIN32)
-
-	if (terminal.pipe_input == INVALID_HANDLE_VALUE)
+	if (!uam::platform::CliTerminalHasWritableInput(terminal))
 	{
 		return;
 	}
 
-#else
-
-	if (terminal.master_fd < 0)
-	{
-		return;
-	}
-
-#endif
 	ImGuiIO& io = ImGui::GetIO();
 	const VTermModifier mod = ActiveVTermModifiers();
 

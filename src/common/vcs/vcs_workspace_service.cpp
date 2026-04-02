@@ -1,17 +1,12 @@
 #include "vcs_workspace_service.h"
+#include "common/platform/platform_services.h"
 
 #include <array>
 #include <chrono>
-#include <cstdio>
 #include <future>
-#include <memory>
 #include <thread>
 #include <sstream>
 #include <string>
-
-#if !defined(_WIN32)
-#include <sys/wait.h>
-#endif
 
 namespace
 {
@@ -34,60 +29,9 @@ namespace
 		return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
 	}
 
-	std::string ShellQuote(const std::string& value)
-	{
-#if defined(_WIN32)
-		std::string escaped = "\"";
-
-		for (const char ch : value)
-		{
-			if (ch == '\"')
-			{
-				escaped += "\"\"";
-			}
-			else if (ch == '%')
-			{
-				escaped += "%%";
-			}
-			else if (ch == '\r' || ch == '\n')
-			{
-				escaped.push_back(' ');
-			}
-			else
-			{
-				escaped.push_back(ch);
-			}
-		}
-
-		escaped.push_back('\"');
-		return escaped;
-#else
-		std::string escaped = "'";
-
-		for (const char ch : value)
-		{
-			if (ch == '\'')
-			{
-				escaped += "'\\''";
-			}
-			else
-			{
-				escaped.push_back(ch);
-			}
-		}
-
-		escaped.push_back('\'');
-		return escaped;
-#endif
-	}
-
 	std::string BuildWorkingDirectoryCommand(const std::filesystem::path& working_directory, const std::string& command)
 	{
-#if defined(_WIN32)
-		return "cd /d " + ShellQuote(working_directory.string()) + " && " + command;
-#else
-		return "cd " + ShellQuote(working_directory.string()) + " && " + command;
-#endif
+		return PlatformServicesFactory::Instance().process_service.BuildShellCommandWithWorkingDirectory(working_directory, command);
 	}
 
 	VcsCommandResult RunCommand(const std::filesystem::path& working_directory, const std::string& command, const int timeout_ms, const std::size_t output_limit_bytes)
@@ -104,63 +48,30 @@ namespace
 		auto run_command_task = [full_command, output_limit_bytes, promise = std::move(promise)]() mutable
 		{
 			VcsCommandResult result;
-#if defined(_WIN32)
-			std::unique_ptr<FILE, int (*)(FILE*)> pipe(_popen(full_command.c_str(), "r"), _pclose);
-#else
-			std::unique_ptr<FILE, int (*)(FILE*)> pipe(popen(full_command.c_str(), "r"), pclose);
-#endif
+			std::string output;
+			std::string error;
+			int raw_status = -1;
+			const IPlatformProcessService& process_service = PlatformServicesFactory::Instance().process_service;
 
-			if (pipe == nullptr)
+			if (!process_service.CaptureCommandOutput(full_command, &output, &raw_status, &error))
 			{
-				result.error = "Failed to launch command.";
+				result.error = error.empty() ? "Failed to launch command." : error;
 				promise.set_value(std::move(result));
 				return;
 			}
 
-			std::array<char, 4096> buffer{};
-			std::size_t captured = 0;
-
-			while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe.get()) != nullptr)
+			if (output.size() > output_limit_bytes)
 			{
-				const std::string chunk(buffer.data());
-
-				if (captured < output_limit_bytes)
-				{
-					const std::size_t allowed = output_limit_bytes - captured;
-
-					if (chunk.size() <= allowed)
-					{
-						result.output += chunk;
-						captured += chunk.size();
-					}
-					else
-					{
-						result.output.append(chunk.data(), allowed);
-						captured += allowed;
-						result.truncated = true;
-					}
-				}
-				else
-				{
-					result.truncated = true;
-				}
+				result.output = output.substr(0, output_limit_bytes);
+				result.truncated = true;
+			}
+			else
+			{
+				result.output = std::move(output);
 			}
 
-			const int status = pipe.get_deleter()(pipe.release());
-#if defined(_WIN32)
-			result.exit_code = status;
-			result.ok = (status == 0);
-#else
-			int exit_code = status;
-
-			if (WIFEXITED(status))
-			{
-				exit_code = WEXITSTATUS(status);
-			}
-
-			result.exit_code = exit_code;
-			result.ok = (exit_code == 0);
-#endif
+			result.exit_code = process_service.NormalizeCapturedCommandExitCode(raw_status);
+			result.ok = (result.exit_code == 0);
 
 			if (result.truncated)
 			{

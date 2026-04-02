@@ -49,9 +49,10 @@ static void DrawAppSettingsBehaviorSection(AppState& app, AppSettings& draft_set
 	if (last_model_refresh_s < 0.0 || (now_s - last_model_refresh_s) > 1.0)
 	{
 		const fs::path model_folder = ResolveRagModelFolder(app, &draft_settings);
-		app.local_runtime_engine.SetModelFolder(model_folder);
+		auto& runtime_engine = OllamaEngineService::Instance().Client();
+		runtime_engine.SetModelFolder(model_folder);
 		app.rag_index_service.SetModelFolder(model_folder);
-		runtime_models_cache = app.local_runtime_engine.ListModels();
+		runtime_models_cache = runtime_engine.ListModels();
 		vector_models_cache = app.rag_index_service.ListModels();
 		last_model_refresh_s = now_s;
 	}
@@ -90,6 +91,7 @@ static void DrawAppSettingsBehaviorSection(AppState& app, AppSettings& draft_set
 
 	ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
 	ImGui::TextColored(ui::kTextSecondary, "Vector Retrieval");
+#if UAM_ENABLE_ENGINE_RAG
 	const bool vector_none = (draft_settings.vector_db_backend == "none");
 
 	if (ImGui::RadioButton("Ollama Engine Vector DB", !vector_none))
@@ -142,4 +144,9 @@ static void DrawAppSettingsBehaviorSection(AppState& app, AppSettings& draft_set
 	ImGui::TextColored(ui::kTextMuted, "Vector database name override");
 	ImGui::SetNextItemWidth(-1.0f);
 	ImGui::InputText("##vector_database_name_override", &draft_settings.vector_database_name_override);
+#else
+	draft_settings.vector_db_backend = "none";
+	draft_settings.selected_vector_model_id.clear();
+	ImGui::TextColored(ui::kTextMuted, "Vector retrieval is disabled in this build.");
+#endif
 }

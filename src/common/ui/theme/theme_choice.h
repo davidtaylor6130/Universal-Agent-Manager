@@ -3,6 +3,8 @@
 /// <summary>
 /// Theme choice normalization, system detection, and palette application.
 /// </summary>
+#include "common/platform/platform_services.h"
+
 static std::string ToLowerCopy(std::string value)
 {
 	std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
@@ -26,84 +28,9 @@ static std::string NormalizeThemeChoice(std::string value)
 	return "dark";
 }
 
-static bool ContainsInsensitive(const std::string& haystack, const std::string& needle)
-{
-	const std::string lowered_haystack = ToLowerCopy(haystack);
-	const std::string lowered_needle = ToLowerCopy(needle);
-	return lowered_haystack.find(lowered_needle) != std::string::npos;
-}
-
 static std::optional<bool> DetectSystemPrefersLightTheme()
 {
-#if defined(_WIN32)
-	DWORD value = 1;
-	DWORD value_size = sizeof(value);
-	const LONG rc = RegGetValueA(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", "AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &value, &value_size);
-
-	if (rc == ERROR_SUCCESS)
-	{
-		return value != 0;
-	}
-
-	return std::nullopt;
-#elif defined(__APPLE__)
-
-	if (const char* env_style = std::getenv("AppleInterfaceStyle"))
-	{
-		return ContainsInsensitive(env_style, "dark") ? std::optional<bool>(false) : std::optional<bool>(true);
-	}
-
-	FILE* pipe = popen("defaults read -g AppleInterfaceStyle 2>/dev/null", "r");
-
-	if (pipe == nullptr)
-	{
-		return std::nullopt;
-	}
-
-	std::array<char, 128> buffer{};
-	std::string output;
-
-	while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr)
-	{
-		output += buffer.data();
-	}
-
-	pclose(pipe);
-	const std::string trimmed = Trim(output);
-
-	if (trimmed.empty())
-	{
-		return std::nullopt;
-	}
-
-	return ContainsInsensitive(trimmed, "dark") ? std::optional<bool>(false) : std::optional<bool>(true);
-#else
-	const std::array<const char*, 4> env_candidates = {"GTK_THEME", "QT_STYLE_OVERRIDE", "KDE_COLOR_SCHEME", "COLORFGBG"};
-
-	for (const char* env_key : env_candidates)
-	{
-		const char* value = std::getenv(env_key);
-
-		if (value == nullptr || *value == '\0')
-		{
-			continue;
-		}
-
-		const std::string text = value;
-
-		if (ContainsInsensitive(text, "dark"))
-		{
-			return false;
-		}
-
-		if (ContainsInsensitive(text, "light"))
-		{
-			return true;
-		}
-	}
-
-	return std::nullopt;
-#endif
+	return PlatformServicesFactory::Instance().ui_traits.DetectSystemPrefersLightTheme();
 }
 
 static UiThemeResolved ResolveUiTheme(const AppSettings& settings)

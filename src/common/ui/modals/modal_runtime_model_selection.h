@@ -42,8 +42,9 @@ static void DrawRuntimeModelSelectionModal(AppState& app)
 	}
 
 	const fs::path model_folder = ResolveRagModelFolder(app);
-	app.local_runtime_engine.SetModelFolder(model_folder);
-	const std::vector<std::string> runtime_models = app.local_runtime_engine.ListModels();
+	auto& runtime_engine = OllamaEngineService::Instance().Client();
+	runtime_engine.SetModelFolder(model_folder);
+	const std::vector<std::string> runtime_models = runtime_engine.ListModels();
 	const bool has_models = !runtime_models.empty();
 
 	ImGui::TextColored(ui::kTextMuted, "Resolved folder: %s", model_folder.string().c_str());

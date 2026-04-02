@@ -1,4 +1,5 @@
 #pragma once
+#include "common/platform/platform_services.h"
 
 /// <summary>
 /// UI actions emitted by a sidebar chat row.
@@ -30,20 +31,22 @@ static SidebarItemAction DrawSidebarItem(AppState& app, const ChatSession& chat,
 	float row_bottom_gap = 4.0f;
 	int title_limit = 46;
 	const float depth_indent = static_cast<float>(tree_depth) * ScaleUiLength(14.0f);
-#if defined(_WIN32)
-	// Windows-only DPI/layout mitigation: ensure row geometry scales with text so
-	// large user scale values do not cause sidebar overlap. If this starts to
-	// happen on macOS later, we can make this universal.
-	row_h = std::max(ScaleUiLength(30.0f), ImGui::GetTextLineHeight() + ScaleUiLength(12.0f));
-	row_rounding = ScaleUiLength(ui::kRadiusSmall);
-	accent_w = std::max(2.0f, ScaleUiLength(3.0f));
-	title_x_offset = ScaleUiLength(11.0f);
-	title_y_offset = (row_h - ImGui::GetTextLineHeight()) * 0.5f;
-	options_x_offset = ScaleUiLength(42.0f);
-	delete_x_offset = ScaleUiLength(22.0f);
-	delete_y_offset = std::max(ScaleUiLength(3.0f), (row_h - ScaleUiLength(16.0f)) * 0.5f);
-	row_bottom_gap = ScaleUiLength(4.0f);
-#endif
+
+	if (PlatformServicesFactory::Instance().ui_traits.UseWindowsLayoutAdjustments())
+	{
+		// Windows-only DPI/layout mitigation: ensure row geometry scales with text so
+		// large user scale values do not cause sidebar overlap. If this starts to
+		// happen on macOS later, we can make this universal.
+		row_h = std::max(ScaleUiLength(30.0f), ImGui::GetTextLineHeight() + ScaleUiLength(12.0f));
+		row_rounding = ScaleUiLength(ui::kRadiusSmall);
+		accent_w = std::max(2.0f, ScaleUiLength(3.0f));
+		title_x_offset = ScaleUiLength(11.0f);
+		title_y_offset = (row_h - ImGui::GetTextLineHeight()) * 0.5f;
+		options_x_offset = ScaleUiLength(42.0f);
+		delete_x_offset = ScaleUiLength(22.0f);
+		delete_y_offset = std::max(ScaleUiLength(3.0f), (row_h - ScaleUiLength(16.0f)) * 0.5f);
+		row_bottom_gap = ScaleUiLength(4.0f);
+	}
 	title_x_offset += depth_indent + (has_children ? ScaleUiLength(18.0f) : 0.0f);
 	const ImVec2 row_size(ImGui::GetContentRegionAvail().x, row_h);
 	const ImVec2 min = ImGui::GetCursorScreenPos();

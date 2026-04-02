@@ -1,5 +1,16 @@
 #pragma once
 
+#include <algorithm>
+#include <cctype>
+#include <cstring>
+#include <iomanip>
+#include <optional>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
+
 /// <summary>
 /// Minimal JSON value model used for Gemini native session parsing and rewriting.
 /// </summary>
@@ -614,6 +625,19 @@ static std::string JsonStringOrEmpty(const JsonValue* value)
 	return value->string_value;
 }
 
+static std::string JsonTrim(const std::string& value)
+{
+	const std::size_t start = value.find_first_not_of(" \t\r\n");
+
+	if (start == std::string::npos)
+	{
+		return "";
+	}
+
+	const std::size_t end = value.find_last_not_of(" \t\r\n");
+	return value.substr(start, end - start + 1);
+}
+
 /// <summary>
 /// Extracts Gemini message text from either string, object, or mixed-array JSON content shapes.
 /// </summary>
@@ -647,7 +671,7 @@ static std::string ExtractGeminiContentText(const JsonValue* value)
 				piece = JsonStringOrEmpty(item.Find("text"));
 			}
 
-			piece = Trim(piece);
+			piece = JsonTrim(piece);
 
 			if (!piece.empty())
 			{

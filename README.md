@@ -58,27 +58,202 @@ The current default provider is Gemini CLI, and the runtime already supports pro
 ## Architecture
 
 ```mermaid
-flowchart LR
+flowchart TB
+  subgraph APP["Boot + App Shell"]
+    MAIN["main.cpp"]
+    APPLICATION["Application\nInitialize/Run/RunFrame/Shutdown"]
+    LEGACY["RunLegacyApplicationMain"]
+    STATE["uam::AppState"]
+    MAIN --> APPLICATION --> LEGACY --> STATE
+  end
 
-UI["SDL2 + OpenGL + Dear ImGui"] --> CORE["Application Core"]
+  subgraph PROVIDERS["Provider Runtime Polymorphism"]
+    PROFILES["ProviderProfileStore\nproviders.txt"]
+    RUNTIME["ProviderRuntime"]
+    REGISTRY["ProviderRuntimeRegistry"]
+    IPR["IProviderRuntime"]
+    GSTRUCT["GeminiStructuredProviderRuntime\n(gemini-structured)"]
+    GCLI["GeminiCliProviderRuntime\n(gemini-cli)"]
+    CODEX["CodexCliProviderRuntime\n(codex-cli)"]
+    CLAUDE["ClaudeCliProviderRuntime\n(claude-cli)"]
+    OPENCODE["OpenCodeCliProviderRuntime\n(opencode-cli)"]
+    OPLocal["OpenCodeLocalProviderRuntime\n(opencode-local)"]
+    OLLAMA_RT["OllamaEngineProviderRuntime\n(ollama-engine)"]
+    UNKNOWN["UnknownProviderRuntime\n(custom IDs)"]
+    PROFILES --> RUNTIME --> REGISTRY --> IPR
+    REGISTRY --> GSTRUCT
+    REGISTRY --> GCLI
+    REGISTRY --> CODEX
+    REGISTRY --> CLAUDE
+    REGISTRY --> OPENCODE
+    REGISTRY --> OPLocal
+    REGISTRY --> OLLAMA_RT
+    REGISTRY --> UNKNOWN
+  end
 
-CORE --> SETTINGS["SettingsStore\nsettings.txt"]
-CORE --> FOLDERS["ChatFolderStore\nfolders.txt"]
-CORE --> ACTIONS["FrontendActionMap\nfrontend_actions.txt"]
-CORE --> PROFILES["Provider Profiles\nproviders.txt"]
-CORE --> TEMPLATES["GeminiTemplateCatalog\nMarkdown_Templates/*.md"]
+  subgraph HISTORY["History + Persistence"]
+    LOCAL["LocalChatStore"]
+    CHAT_REPO["ChatRepository"]
+    GEM_HISTORY["GeminiNativeHistoryStore"]
+    SETTINGS["SettingsStore\nsettings.txt"]
+    FOLDERS["ChatFolderStore\nfolders.txt"]
+    TEMPLATES["GeminiTemplateCatalog\nMarkdown_Templates/*.md"]
+    PATHS["AppPaths / data root"]
+    LOCAL --> CHAT_REPO
+    GEM_HISTORY --> RUNTIME
+    STATE --> SETTINGS
+    STATE --> FOLDERS
+    STATE --> TEMPLATES
+    STATE --> PATHS
+    IPR --> LOCAL
+    IPR --> GEM_HISTORY
+  end
 
-CORE --> HISTORY{"History Adapter"}
-HISTORY -->|gemini-cli-json| GEMINI_JSON["Gemini native sessions\n~/.gemini/tmp/.../chats/*.json"]
-HISTORY -->|local-only| LOCAL_STORE["Local chats\n<data-root>/chats/<chat-id>/..."]
+  subgraph PLATFORM["Strict Platform Boundary"]
+    FACTORY["PlatformServicesFactory::Instance()"]
+    SERVICES["PlatformServices"]
+    ITERM["IPlatformTerminalRuntime"]
+    IPROC["IPlatformProcessService"]
+    IFD["IPlatformFileDialogService"]
+    IPATH["IPlatformPathService"]
+    IUI["IPlatformUiTraits"]
+    DTR["DesktopTerminalRuntime"]
+    DPS["DesktopProcessService"]
+    DFDS["DesktopFileDialogService"]
+    DPAS["DesktopPathService"]
+    DUT["DesktopUiTraits"]
+    TERM_START["StartCliTerminalPlatform\n(platform/terminal_startup_dispatch.h)"]
+    TERM_UNIX["terminal_unix.h"]
+    TERM_WIN["terminal_windows.h"]
+    FACTORY --> SERVICES
+    SERVICES --> ITERM
+    SERVICES --> IPROC
+    SERVICES --> IFD
+    SERVICES --> IPATH
+    SERVICES --> IUI
+    DTR --> ITERM
+    DPS --> IPROC
+    DFDS --> IFD
+    DPAS --> IPATH
+    DUT --> IUI
+    TERM_START --> TERM_UNIX
+    TERM_START --> TERM_WIN
+  end
 
-CORE --> RUNTIME["ProviderRuntime + GeminiCommandBuilder"]
-RUNTIME --> BATCH["Batch commands\npopen/_popen"]
-RUNTIME --> INTERACTIVE["Interactive terminal"]
-INTERACTIVE --> UNIX_PTY["macOS\nopenpty + fork + execvp"]
-INTERACTIVE --> WIN_PTY["Windows\nConPTY + CreateProcessW"]
+  subgraph ENGINE["RAG + Engine Services"]
+    RAG["RagIndexService"]
+    OES["OllamaEngineService\n(process-local singleton)"]
+    OEC["OllamaEngineClient"]
+    VCS["VcsWorkspaceService"]
+    STATE --> RAG --> OES --> OEC
+    VCS --> IPROC
+  end
 
-CORE --> FILES["Linked File References"] --> WORKSPACE["Workspace Files\n(no attachment copy)"]
+  subgraph BUILD["Build-Time Gating (CMake)"]
+    TOGGLES["UAM_ENABLE_RUNTIME_*"]
+    RAGFLAG["UAM_ENABLE_ENGINE_RAG"]
+    TOGGLES --> RUNTIME
+    TOGGLES --> OLLAMA_RT
+    TOGGLES --> OPLocal
+    RAGFLAG --> RAG
+  end
+```
+
+```mermaid
+flowchart TB
+  subgraph APP_CLASSES["App + Runtime Core"]
+    APPLICATION["Application"]
+    APPSTATE["AppState"]
+    PRUNTIME["ProviderRuntime"]
+    PREGISTRY["ProviderRuntimeRegistry"]
+    PPROFILES["ProviderProfileStore"]
+    APPLICATION --> APPSTATE
+    APPSTATE --> PRUNTIME
+    PRUNTIME --> PREGISTRY
+    PRUNTIME --> PPROFILES
+  end
+
+  subgraph RUNTIME_CLASSES["Provider Runtime Interface + Implementations"]
+    IPR["IProviderRuntime (interface)"]
+    GSTRUCT["GeminiStructuredProviderRuntime"]
+    GCLI["GeminiCliProviderRuntime"]
+    CODEX["CodexCliProviderRuntime"]
+    CLAUDE["ClaudeCliProviderRuntime"]
+    OC_CLI["OpenCodeCliProviderRuntime"]
+    OC_LOCAL["OpenCodeLocalProviderRuntime"]
+    OLLAMA_RT["OllamaEngineProviderRuntime"]
+    UNKNOWN_RT["UnknownProviderRuntime"]
+    PREGISTRY --> GSTRUCT
+    PREGISTRY --> GCLI
+    PREGISTRY --> CODEX
+    PREGISTRY --> CLAUDE
+    PREGISTRY --> OC_CLI
+    PREGISTRY --> OC_LOCAL
+    PREGISTRY --> OLLAMA_RT
+    PREGISTRY --> UNKNOWN_RT
+    GSTRUCT -. "implements" .-> IPR
+    GCLI -. "implements" .-> IPR
+    CODEX -. "implements" .-> IPR
+    CLAUDE -. "implements" .-> IPR
+    OC_CLI -. "implements" .-> IPR
+    OC_LOCAL -. "implements" .-> IPR
+    OLLAMA_RT -. "implements" .-> IPR
+    UNKNOWN_RT -. "implements" .-> IPR
+  end
+
+  subgraph HISTORY_CLASSES["History + Persistence"]
+    LOCAL["LocalChatStore"]
+    GEM["GeminiNativeHistoryStore"]
+    CHAT_REPO["ChatRepository"]
+    SETTINGS["SettingsStore"]
+    FOLDERS["ChatFolderStore"]
+    TEMPLATES["GeminiTemplateCatalog"]
+    PATHS["AppPaths"]
+    IPR --> LOCAL
+    IPR --> GEM
+    LOCAL --> CHAT_REPO
+    APPSTATE --> SETTINGS
+    APPSTATE --> FOLDERS
+    APPSTATE --> TEMPLATES
+    APPSTATE --> PATHS
+  end
+
+  subgraph PLATFORM_CLASSES["Platform Services Interfaces + Adapters"]
+    PSFACTORY["PlatformServicesFactory"]
+    PSVC["PlatformServices"]
+    ITERM["IPlatformTerminalRuntime (interface)"]
+    IPROC["IPlatformProcessService (interface)"]
+    IFD["IPlatformFileDialogService (interface)"]
+    IPATH["IPlatformPathService (interface)"]
+    IUI["IPlatformUiTraits (interface)"]
+    DTR["DesktopTerminalRuntime"]
+    DPS["DesktopProcessService"]
+    DFD["DesktopFileDialogService"]
+    DPATH["DesktopPathService"]
+    DUI["DesktopUiTraits"]
+    PSFACTORY --> PSVC
+    PSVC --> ITERM
+    PSVC --> IPROC
+    PSVC --> IFD
+    PSVC --> IPATH
+    PSVC --> IUI
+    DTR -. "implements" .-> ITERM
+    DPS -. "implements" .-> IPROC
+    DFD -. "implements" .-> IFD
+    DPATH -. "implements" .-> IPATH
+    DUI -. "implements" .-> IUI
+  end
+
+  subgraph ENGINE_CLASSES["RAG + Engine"]
+    RAG["RagIndexService"]
+    OES["OllamaEngineService"]
+    OEC["OllamaEngineClient"]
+    VCS["VcsWorkspaceService"]
+    APPSTATE --> RAG
+    RAG --> OES
+    OES --> OEC
+    VCS --> IPROC
+  end
 ```
 
 ## How It Works

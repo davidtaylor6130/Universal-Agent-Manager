@@ -1,4 +1,5 @@
 #pragma once
+#include "common/platform/platform_services.h"
 
 /// <summary>
 /// Font range and font-loading configuration helpers for Dear ImGui.
@@ -94,17 +95,13 @@ static void ConfigureFonts(ImGuiIO& io, const float dpi_scale = 1.0f)
 		g_font_mono = g_font_ui;
 	}
 
-#if defined(_WIN32)
-
-	if (g_font_mono != nullptr)
+	if (PlatformServicesFactory::Instance().ui_traits.UseWindowsLayoutAdjustments() && g_font_mono != nullptr)
 	{
 		const std::initializer_list<const char*> lFontFallbacks = {
 		    "C:/Windows/Fonts/seguisym.ttf", "C:/Windows/Fonts/segoeui.ttf", "C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/meiryo.ttc", "C:/Windows/Fonts/malgun.ttf", "C:/Windows/Fonts/simsun.ttc",
 		};
 		MergeFontIntoLast(io, mono_font_size, lFontFallbacks, terminal_ranges);
 	}
-
-#endif
 
 	if (g_font_ui != nullptr)
 	{

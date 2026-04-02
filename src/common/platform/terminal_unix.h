@@ -1,6 +1,17 @@
 #pragma once
 
 #if defined(__unix__) || defined(__APPLE__)
+#include <cstdlib>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <sys/types.h>
+#include <unistd.h>
+#if defined(__APPLE__)
+#include <util.h>
+#else
+#include <pty.h>
+#endif
+
 static bool StartCliTerminalUnix(AppState& app, CliTerminalState& terminal, const ChatSession& chat)
 {
 	const fs::path workspace_root = ResolveWorkspaceRootPath(app, chat);
@@ -65,7 +76,13 @@ static bool StartCliTerminalUnix(AppState& app, CliTerminalState& terminal, cons
 	close(slave_fd);
 	terminal.master_fd = master_fd;
 	terminal.child_pid = pid;
-	SetFdNonBlocking(terminal.master_fd);
+	const int flags = fcntl(terminal.master_fd, F_GETFL, 0);
+
+	if (flags >= 0)
+	{
+		(void)fcntl(terminal.master_fd, F_SETFL, flags | O_NONBLOCK);
+	}
+
 	return true;
 }
 

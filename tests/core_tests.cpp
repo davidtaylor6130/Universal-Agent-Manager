@@ -1135,6 +1135,7 @@ UAM_TEST(TestProviderRuntimeParsesWindowsInteractiveCommandPath)
 UAM_TEST(TestProviderRuntimeOutputModeHelpers)
 {
 	ProviderProfile profile = ProviderProfileStore::DefaultGeminiProfile();
+	profile.id = "custom-runtime";
 	UAM_ASSERT(ProviderRuntime::UsesStructuredOutput(profile));
 	UAM_ASSERT(!ProviderRuntime::UsesCliOutput(profile));
 
@@ -1142,6 +1143,51 @@ UAM_TEST(TestProviderRuntimeOutputModeHelpers)
 	profile.supports_interactive = true;
 	UAM_ASSERT(ProviderRuntime::UsesCliOutput(profile));
 	UAM_ASSERT(!ProviderRuntime::UsesStructuredOutput(profile));
+}
+
+UAM_TEST(TestProviderRuntimeBuiltInPolicyLocks)
+{
+	ProviderProfile gemini_structured = ProviderProfileStore::DefaultGeminiProfile();
+	gemini_structured.id = "gemini-structured";
+	gemini_structured.output_mode = "cli";
+	gemini_structured.supports_interactive = true;
+	gemini_structured.history_adapter = "local-only";
+	gemini_structured.prompt_bootstrap = "prepend";
+	UAM_ASSERT(ProviderRuntime::SupportsGeminiJsonHistory(gemini_structured));
+	UAM_ASSERT(!ProviderRuntime::UsesLocalHistory(gemini_structured));
+	UAM_ASSERT(!ProviderRuntime::UsesCliOutput(gemini_structured));
+	UAM_ASSERT(ProviderRuntime::UsesStructuredOutput(gemini_structured));
+	UAM_ASSERT(ProviderRuntime::UsesGeminiPathBootstrap(gemini_structured));
+
+	ProviderProfile gemini_cli = ProviderProfileStore::DefaultGeminiProfile();
+	gemini_cli.id = "gemini-cli";
+	gemini_cli.output_mode = "structured";
+	gemini_cli.supports_interactive = false;
+	gemini_cli.history_adapter = "local-only";
+	gemini_cli.prompt_bootstrap = "prepend";
+	UAM_ASSERT(ProviderRuntime::SupportsGeminiJsonHistory(gemini_cli));
+	UAM_ASSERT(!ProviderRuntime::UsesLocalHistory(gemini_cli));
+	UAM_ASSERT(ProviderRuntime::UsesCliOutput(gemini_cli));
+	UAM_ASSERT(!ProviderRuntime::UsesStructuredOutput(gemini_cli));
+	UAM_ASSERT(ProviderRuntime::UsesGeminiPathBootstrap(gemini_cli));
+
+	ProviderProfile codex = ProviderProfileStore::DefaultGeminiProfile();
+	codex.id = "codex-cli";
+	codex.history_adapter = "gemini-cli-json";
+	codex.execution_mode = "internal-engine";
+	UAM_ASSERT(!ProviderRuntime::SupportsGeminiJsonHistory(codex));
+	UAM_ASSERT(ProviderRuntime::UsesLocalHistory(codex));
+	UAM_ASSERT(!ProviderRuntime::UsesInternalEngine(codex));
+
+	ProviderProfile ollama = ProviderProfileStore::DefaultGeminiProfile();
+	ollama.id = "ollama-engine";
+	ollama.output_mode = "cli";
+	ollama.execution_mode = "cli";
+	UAM_ASSERT(!ProviderRuntime::SupportsGeminiJsonHistory(ollama));
+	UAM_ASSERT(ProviderRuntime::UsesLocalHistory(ollama));
+	UAM_ASSERT(ProviderRuntime::UsesInternalEngine(ollama));
+	UAM_ASSERT(!ProviderRuntime::UsesCliOutput(ollama));
+	UAM_ASSERT(ProviderRuntime::UsesStructuredOutput(ollama));
 }
 
 UAM_TEST(TestProviderRuntimeRoleMappingHonorsProfileTypes)
@@ -1158,6 +1204,7 @@ UAM_TEST(TestProviderRuntimeRoleMappingHonorsProfileTypes)
 UAM_TEST(TestProviderRuntimeMergesProfileFlags)
 {
 	ProviderProfile profile = ProviderProfileStore::DefaultGeminiProfile();
+	profile.id = "custom-runtime";
 	profile.runtime_flags = {"--profile", "nightly"};
 
 	AppSettings settings;
@@ -1168,6 +1215,164 @@ UAM_TEST(TestProviderRuntimeMergesProfileFlags)
 	UAM_ASSERT(command.find("--profile") != std::string::npos);
 	UAM_ASSERT(command.find("nightly") != std::string::npos);
 	UAM_ASSERT(command.find("--dry-run") != std::string::npos);
+}
+
+UAM_TEST(TestProviderRuntimeRegistryMapsBuiltInIds)
+{
+	const std::vector<std::string> ids = {
+	    "gemini-structured",
+	    "gemini-cli",
+	    "codex-cli",
+	    "claude-cli",
+	    "opencode-cli",
+	    "opencode-local",
+	    "ollama-engine",
+	};
+
+	for (const std::string& id : ids)
+	{
+		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(id);
+		UAM_ASSERT_EQ(id, std::string(runtime.RuntimeId()));
+		UAM_ASSERT(ProviderRuntimeRegistry::IsKnownRuntimeId(id));
+	}
+
+	UAM_ASSERT(!ProviderRuntimeRegistry::IsKnownRuntimeId("custom-runtime"));
+}
+
+UAM_TEST(TestProviderRuntimeBuildToggleReporting)
+{
+	ProviderProfile gemini_cli = ProviderProfileStore::DefaultGeminiProfile();
+	gemini_cli.id = "gemini-cli";
+	gemini_cli.output_mode = "cli";
+	gemini_cli.supports_interactive = true;
+	gemini_cli.interactive_command = "gemini";
+
+	const bool enabled = ProviderRuntime::IsRuntimeEnabled(gemini_cli);
+	const std::string disabled_reason = ProviderRuntime::DisabledReason(gemini_cli);
+
+	if (enabled)
+	{
+		UAM_ASSERT(disabled_reason.empty());
+	}
+	else
+	{
+		UAM_ASSERT(!disabled_reason.empty());
+		UAM_ASSERT(ProviderRuntime::BuildCommand(gemini_cli, AppSettings{}, "hello", std::vector<std::string>{}, std::string{}).empty());
+		UAM_ASSERT(ProviderRuntime::BuildInteractiveArgv(gemini_cli, ChatSession{}, AppSettings{}).empty());
+	}
+
+	ProviderProfile custom = ProviderProfileStore::DefaultGeminiProfile();
+	custom.id = "custom-runtime";
+	UAM_ASSERT(ProviderRuntime::IsRuntimeEnabled(custom));
+	UAM_ASSERT(ProviderRuntime::DisabledReason(custom).empty());
+}
+
+UAM_TEST(TestProviderRuntimeHistoryPolicyLocalOnly)
+{
+	TempDir data_root("uam-runtime-history-local");
+	TempDir native_root("uam-runtime-history-local-native");
+
+	ProviderProfile profile = ProviderProfileStore::DefaultGeminiProfile();
+	profile.id = "codex-cli";
+
+	ChatSession chat;
+	chat.id = "chat-local-1";
+	chat.provider_id = profile.id;
+	chat.title = "Local chat";
+	chat.created_at = "2026-04-02 10:00:00";
+	chat.updated_at = "2026-04-02 10:00:01";
+	chat.messages.push_back(Message{MessageRole::User, "hello local", "2026-04-02 10:00:01"});
+	UAM_ASSERT(ProviderRuntime::SaveHistory(profile, data_root.root, chat));
+
+	const std::vector<ChatSession> loaded = ProviderRuntime::LoadHistory(profile, data_root.root, native_root.root, ProviderRuntimeHistoryLoadOptions{});
+	UAM_ASSERT_EQ(1u, loaded.size());
+	UAM_ASSERT_EQ(std::string("chat-local-1"), loaded.front().id);
+	UAM_ASSERT_EQ(std::string("hello local"), loaded.front().messages.front().content);
+	UAM_ASSERT(ProviderRuntime::UsesLocalHistory(profile));
+	UAM_ASSERT(!ProviderRuntime::UsesNativeOverlayHistory(profile));
+}
+
+UAM_TEST(TestProviderRuntimeHistoryPolicyGeminiNativeOverlay)
+{
+	TempDir data_root("uam-runtime-history-gemini");
+	TempDir native_root("uam-runtime-history-gemini-native");
+	const fs::path chats_dir = native_root.root / "chats";
+	fs::create_directories(chats_dir);
+
+	const std::string native_json = "{\n"
+	                                "  \"sessionId\": \"native-session-1\",\n"
+	                                "  \"startTime\": \"2026-04-02 09:00:00\",\n"
+	                                "  \"lastUpdated\": \"2026-04-02 09:00:01\",\n"
+	                                "  \"messages\": [\n"
+	                                "    {\"type\": \"user\", \"timestamp\": \"2026-04-02 09:00:00\", \"content\": \"Hello native\"},\n"
+	                                "    {\"type\": \"assistant\", \"timestamp\": \"2026-04-02 09:00:01\", \"content\": \"Hi from native\"}\n"
+	                                "  ]\n"
+	                                "}\n";
+	UAM_ASSERT(WriteTextFile(chats_dir / "native-session-1.json", native_json));
+
+	ProviderProfile profile = ProviderProfileStore::DefaultGeminiProfile();
+	profile.id = "gemini-cli";
+	profile.history_adapter = "local-only";
+	profile.output_mode = "structured";
+
+	const std::vector<ChatSession> loaded_native = ProviderRuntime::LoadHistory(profile, data_root.root, chats_dir, ProviderRuntimeHistoryLoadOptions{});
+	UAM_ASSERT_EQ(1u, loaded_native.size());
+	UAM_ASSERT_EQ(std::string("native-session-1"), loaded_native.front().id);
+	UAM_ASSERT(loaded_native.front().uses_native_session);
+	UAM_ASSERT_EQ(std::string("native-session-1"), loaded_native.front().native_session_id);
+	UAM_ASSERT_EQ(std::string("Hello native"), loaded_native.front().messages.front().content);
+	UAM_ASSERT(ProviderRuntime::SupportsGeminiJsonHistory(profile));
+	UAM_ASSERT(!ProviderRuntime::UsesLocalHistory(profile));
+	UAM_ASSERT(ProviderRuntime::UsesNativeOverlayHistory(profile));
+
+	ChatSession overlay_chat;
+	overlay_chat.id = "chat-overlay-1";
+	overlay_chat.provider_id = profile.id;
+	overlay_chat.title = "Overlay";
+	overlay_chat.created_at = "2026-04-02 09:05:00";
+	overlay_chat.updated_at = "2026-04-02 09:05:01";
+	overlay_chat.messages.push_back(Message{MessageRole::User, "overlay msg", "2026-04-02 09:05:01"});
+	UAM_ASSERT(ProviderRuntime::SaveHistory(profile, data_root.root, overlay_chat));
+
+	const std::vector<ChatSession> local_loaded = ChatRepository::LoadLocalChats(data_root.root);
+	UAM_ASSERT_EQ(1u, local_loaded.size());
+	UAM_ASSERT_EQ(std::string("chat-overlay-1"), local_loaded.front().id);
+}
+
+UAM_TEST(TestProviderRuntimeBuildToggleMatrixContracts)
+{
+	struct RuntimeExpectation
+	{
+		const char* runtime_id;
+		bool enabled;
+	};
+
+	const std::vector<RuntimeExpectation> expectations = {
+	    {"gemini-structured", UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED != 0},
+	    {"gemini-cli", UAM_ENABLE_RUNTIME_GEMINI_CLI != 0},
+	    {"codex-cli", UAM_ENABLE_RUNTIME_CODEX_CLI != 0},
+	    {"claude-cli", UAM_ENABLE_RUNTIME_CLAUDE_CLI != 0},
+	    {"opencode-cli", UAM_ENABLE_RUNTIME_OPENCODE_CLI != 0},
+	    {"opencode-local", UAM_ENABLE_RUNTIME_OPENCODE_LOCAL != 0},
+	    {"ollama-engine", UAM_ENABLE_RUNTIME_OLLAMA_ENGINE != 0},
+	};
+
+	for (const RuntimeExpectation& expected : expectations)
+	{
+		const bool enabled = ProviderRuntime::IsRuntimeEnabled(expected.runtime_id);
+		UAM_ASSERT_EQ(expected.enabled, enabled);
+		const std::string reason = ProviderRuntime::DisabledReason(expected.runtime_id);
+
+		if (expected.enabled)
+		{
+			UAM_ASSERT(reason.empty());
+		}
+		else
+		{
+			UAM_ASSERT(!reason.empty());
+			UAM_ASSERT(reason.find(expected.runtime_id) != std::string::npos);
+		}
+	}
 }
 
 UAM_TEST(TestFrontendActionMapRoundTrip)

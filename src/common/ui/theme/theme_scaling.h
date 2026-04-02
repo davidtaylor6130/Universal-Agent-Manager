@@ -1,4 +1,5 @@
 #pragma once
+#include "common/platform/platform_services.h"
 #include "common/platform/sdl_includes.h"
 
 /// <summary>
@@ -6,12 +7,14 @@
 /// </summary>
 static float DetectUiScale(SDL_Window* window)
 {
-#if defined(__APPLE__)
-	// macOS windows use logical points (not raw pixels), so additional
-	// DPI-based scaling causes the UI to be oversized on Retina displays.
-	(void)window;
-	return 1.0f;
-#else
+	if (PlatformServicesFactory::Instance().ui_traits.UsesLogicalPointsForUiScale())
+	{
+		// macOS windows use logical points (not raw pixels), so additional
+		// DPI-based scaling causes the UI to be oversized on Retina displays.
+		(void)window;
+		return 1.0f;
+	}
+
 	int display_index = 0;
 
 	if (window != nullptr)
@@ -34,16 +37,11 @@ static float DetectUiScale(SDL_Window* window)
 	}
 
 	return 1.0f;
-#endif
 }
 
 static float PlatformUiSpacingScale()
 {
-#if defined(_WIN32)
-	return 1.14f;
-#else
-	return 1.0f;
-#endif
+	return PlatformServicesFactory::Instance().ui_traits.PlatformUiSpacingScale();
 }
 
 static float EffectiveUiScale()

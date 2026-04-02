@@ -1,5 +1,6 @@
 #pragma once
 #include "common/platform/sdl_includes.h"
+#include "common/platform/platform_services.h"
 
 static void FreeCliTerminalVTerm(CliTerminalState& terminal)
 {
@@ -14,115 +15,19 @@ static void FreeCliTerminalVTerm(CliTerminalState& terminal)
 
 static void CloseCliTerminalHandles(CliTerminalState& terminal)
 {
-#if defined(_WIN32)
-
-	if (terminal.pipe_input != INVALID_HANDLE_VALUE)
-	{
-		CloseHandle(terminal.pipe_input);
-		terminal.pipe_input = INVALID_HANDLE_VALUE;
-	}
-
-	if (terminal.pipe_output != INVALID_HANDLE_VALUE)
-	{
-		CloseHandle(terminal.pipe_output);
-		terminal.pipe_output = INVALID_HANDLE_VALUE;
-	}
-
-	if (terminal.attr_list != nullptr)
-	{
-		DeleteProcThreadAttributeList(terminal.attr_list);
-		HeapFree(GetProcessHeap(), 0, terminal.attr_list);
-		terminal.attr_list = nullptr;
-	}
-
-	if (terminal.process_info.hThread != INVALID_HANDLE_VALUE)
-	{
-		CloseHandle(terminal.process_info.hThread);
-		terminal.process_info.hThread = INVALID_HANDLE_VALUE;
-	}
-
-	if (terminal.process_info.hProcess != INVALID_HANDLE_VALUE)
-	{
-		CloseHandle(terminal.process_info.hProcess);
-		terminal.process_info.hProcess = INVALID_HANDLE_VALUE;
-	}
-
-	if (terminal.pseudo_console != nullptr)
-	{
-		ClosePseudoConsoleSafe(terminal.pseudo_console);
-		terminal.pseudo_console = nullptr;
-	}
-
-	terminal.process_info.dwProcessId = 0;
-	terminal.process_info.dwThreadId = 0;
-#else
-
-	if (terminal.master_fd >= 0)
-	{
-		close(terminal.master_fd);
-		terminal.master_fd = -1;
-	}
-
-	terminal.child_pid = -1;
-#endif
+	PlatformServicesFactory::Instance().terminal_runtime.CloseCliTerminalHandles(terminal);
 }
 
 static bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, const size_t len)
 {
-	if (bytes == nullptr || len == 0)
+	const bool wrote = PlatformServicesFactory::Instance().terminal_runtime.WriteToCliTerminal(terminal, bytes, len);
+
+	if (wrote && bytes != nullptr && len > 0)
 	{
-		return true;
+		terminal.last_activity_time_s = ImGui::GetTime();
 	}
 
-#if defined(_WIN32)
-
-	if (terminal.pipe_input == INVALID_HANDLE_VALUE)
-	{
-		return false;
-	}
-
-	size_t offset = 0;
-
-	while (offset < len)
-	{
-		const size_t remaining = len - offset;
-		const DWORD chunk = static_cast<DWORD>(std::min<size_t>(remaining, static_cast<size_t>(MAXDWORD)));
-		DWORD written = 0;
-
-		if (!WriteFile(terminal.pipe_input, bytes + offset, chunk, &written, nullptr) || written == 0)
-		{
-			return false;
-		}
-
-		offset += written;
-	}
-
-	terminal.last_activity_time_s = ImGui::GetTime();
-	return true;
-#else
-	std::size_t offset = 0;
-
-	while (offset < len)
-	{
-		const ssize_t written = write(terminal.master_fd, bytes + offset, len - offset);
-
-		if (written > 0)
-		{
-			offset += static_cast<std::size_t>(written);
-			continue;
-		}
-
-		if (written < 0 && errno == EINTR)
-		{
-			continue;
-		}
-
-		return false;
-	}
-
-	terminal.last_activity_time_s = ImGui::GetTime();
-	return true;
-#endif
+	return wrote;
 }
 
 static void QueueStructuredPromptForTerminal(CliTerminalState& terminal, const std::string& prompt)
@@ -389,10 +294,9 @@ static int OnVTermScrollbackClear(void* user)
 
 static const VTermScreenCallbacks kVTermScreenCallbacks = {OnVTermDamage, OnVTermMoveRect, OnVTermMoveCursor, nullptr, nullptr, OnVTermResize, OnVTermScrollbackPushLine, OnVTermScrollbackPopLine, OnVTermScrollbackClear, nullptr};
 
-#if defined(_WIN32)
-static void RequestCliTerminalQuitWindows(CliTerminalState& terminal)
+static void RequestCliTerminalQuit(CliTerminalState& terminal)
 {
-	if (!terminal.running || terminal.pipe_input == INVALID_HANDLE_VALUE)
+	if (!terminal.running || !uam::platform::CliTerminalHasWritableInput(terminal))
 	{
 		return;
 	}
@@ -400,170 +304,6 @@ static void RequestCliTerminalQuitWindows(CliTerminalState& terminal)
 	static constexpr char kQuitCommand[] = "/quit\r\n";
 	(void)WriteToCliTerminal(terminal, kQuitCommand, sizeof(kQuitCommand) - 1);
 }
-
-static void RequestCliTerminalQuitAsyncWindows(CliTerminalState& terminal)
-{
-	if (!terminal.running || terminal.pipe_input == INVALID_HANDLE_VALUE)
-	{
-		return;
-	}
-
-	HANDLE duplicated_pipe = INVALID_HANDLE_VALUE;
-
-	if (!DuplicateHandle(GetCurrentProcess(), terminal.pipe_input, GetCurrentProcess(), &duplicated_pipe, 0, FALSE, DUPLICATE_SAME_ACCESS))
-	{
-		return;
-	}
-
-	auto run_quit_write = [duplicated_pipe]()
-	{
-		static constexpr char kQuitCommand[] = "/quit\r\n";
-		DWORD written = 0;
-		WriteFile(duplicated_pipe, kQuitCommand, static_cast<DWORD>(sizeof(kQuitCommand) - 1), &written, nullptr);
-		CloseHandle(duplicated_pipe);
-	};
-
-	std::thread(run_quit_write).detach();
-}
-
-struct DetachedCliHandleSnapshotWindows
-{
-	HANDLE pipe_input = INVALID_HANDLE_VALUE;
-	HANDLE pipe_output = INVALID_HANDLE_VALUE;
-	HANDLE process_thread = INVALID_HANDLE_VALUE;
-	HANDLE process_handle = INVALID_HANDLE_VALUE;
-	LPPROC_THREAD_ATTRIBUTE_LIST attr_list = nullptr;
-	HPCON pseudo_console = nullptr;
-};
-
-static DetachedCliHandleSnapshotWindows DetachCliTerminalHandlesWindows(CliTerminalState& terminal)
-{
-	DetachedCliHandleSnapshotWindows snapshot{};
-	snapshot.pipe_input = terminal.pipe_input;
-	snapshot.pipe_output = terminal.pipe_output;
-	snapshot.process_thread = terminal.process_info.hThread;
-	snapshot.process_handle = terminal.process_info.hProcess;
-	snapshot.attr_list = terminal.attr_list;
-	snapshot.pseudo_console = terminal.pseudo_console;
-
-	terminal.pipe_input = INVALID_HANDLE_VALUE;
-	terminal.pipe_output = INVALID_HANDLE_VALUE;
-	terminal.process_info.hThread = INVALID_HANDLE_VALUE;
-	terminal.process_info.hProcess = INVALID_HANDLE_VALUE;
-	terminal.process_info.dwProcessId = 0;
-	terminal.process_info.dwThreadId = 0;
-	terminal.attr_list = nullptr;
-	terminal.pseudo_console = nullptr;
-	return snapshot;
-}
-
-static void CloseDetachedCliHandleSnapshotWindows(DetachedCliHandleSnapshotWindows snapshot)
-{
-	if (snapshot.pipe_input != INVALID_HANDLE_VALUE)
-	{
-		CloseHandle(snapshot.pipe_input);
-	}
-
-	if (snapshot.pipe_output != INVALID_HANDLE_VALUE)
-	{
-		CloseHandle(snapshot.pipe_output);
-	}
-
-	if (snapshot.attr_list != nullptr)
-	{
-		DeleteProcThreadAttributeList(snapshot.attr_list);
-		HeapFree(GetProcessHeap(), 0, snapshot.attr_list);
-	}
-
-	if (snapshot.process_thread != INVALID_HANDLE_VALUE)
-	{
-		CloseHandle(snapshot.process_thread);
-	}
-
-	if (snapshot.process_handle != INVALID_HANDLE_VALUE)
-	{
-		CloseHandle(snapshot.process_handle);
-	}
-
-	if (snapshot.pseudo_console != nullptr)
-	{
-		ClosePseudoConsoleSafe(snapshot.pseudo_console);
-	}
-}
-
-static void FastStopCliTerminalWindows(CliTerminalState& terminal, const bool clear_identity = false)
-{
-	// Windows-only fast stop path for UI-triggered actions (close/delete): never
-	// block the render thread waiting for ConPTY child shutdown. If macOS starts
-	// exhibiting similar UI stalls, we can promote this to a cross-platform path.
-	RequestCliTerminalQuitAsyncWindows(terminal);
-
-	if (terminal.process_info.hProcess != INVALID_HANDLE_VALUE)
-	{
-		TerminateProcess(terminal.process_info.hProcess, 1);
-	}
-
-	DetachedCliHandleSnapshotWindows snapshot = DetachCliTerminalHandlesWindows(terminal);
-	FreeCliTerminalVTerm(terminal);
-	terminal.running = false;
-	terminal.scrollback_lines.clear();
-	terminal.scrollback_view_offset = 0;
-	terminal.needs_full_refresh = true;
-	terminal.input_ready = false;
-	terminal.startup_time_s = 0.0;
-	terminal.pending_structured_prompts.clear();
-	terminal.generation_in_progress = false;
-	terminal.last_output_time_s = 0.0;
-
-	if (clear_identity)
-	{
-		terminal.attached_chat_id.clear();
-		terminal.attached_session_id.clear();
-		terminal.session_ids_before.clear();
-		terminal.linked_files_snapshot.clear();
-		terminal.should_launch = false;
-	}
-
-	std::thread([snapshot]() mutable { CloseDetachedCliHandleSnapshotWindows(std::move(snapshot)); }).detach();
-}
-
-static void FastStopCliTerminalsForExitWindows(AppState& app)
-{
-	for (const auto& terminal_ptr : app.cli_terminals)
-	{
-		if (terminal_ptr == nullptr)
-		{
-			continue;
-		}
-
-		CliTerminalState& terminal = *terminal_ptr;
-		FastStopCliTerminalWindows(terminal, true);
-	}
-}
-
-static void StopCliTerminalProcessWindows(CliTerminalState& terminal)
-{
-	if (terminal.process_info.hProcess == INVALID_HANDLE_VALUE)
-	{
-		return;
-	}
-
-	RequestCliTerminalQuitWindows(terminal);
-	DWORD wait_result = WaitForSingleObject(terminal.process_info.hProcess, 700);
-
-	if (wait_result == WAIT_TIMEOUT)
-	{
-		TerminateProcess(terminal.process_info.hProcess, 1);
-		wait_result = WaitForSingleObject(terminal.process_info.hProcess, 1200);
-	}
-
-	if (wait_result == WAIT_TIMEOUT)
-	{
-		TerminateProcess(terminal.process_info.hProcess, 1);
-	}
-}
-
-#endif
 
 enum class CliTerminalStopMode
 {
@@ -573,79 +313,7 @@ enum class CliTerminalStopMode
 
 static void StopCliTerminal(CliTerminalState& terminal, const bool clear_identity = false, const CliTerminalStopMode stop_mode = CliTerminalStopMode::Graceful)
 {
-#if defined(_WIN32)
-	StopCliTerminalProcessWindows(terminal);
-#else
-
-	if (terminal.child_pid > 0)
-	{
-		const pid_t child_pid = terminal.child_pid;
-		int status = 0;
-		const auto has_exited = [&](const bool wait_for_exit, const double timeout_seconds) -> bool
-		{
-			const auto wait_start = std::chrono::steady_clock::now();
-			const auto wait_timeout = std::chrono::duration<double>(std::max(0.0, timeout_seconds));
-
-			while (true)
-			{
-				const pid_t wait_result = waitpid(child_pid, &status, WNOHANG);
-
-				if (wait_result == child_pid)
-				{
-					return true;
-				}
-
-				if (wait_result < 0)
-				{
-					if (errno == EINTR)
-					{
-						continue;
-					}
-
-					return errno == ECHILD;
-				}
-
-				if (!wait_for_exit)
-				{
-					return false;
-				}
-
-				if ((std::chrono::steady_clock::now() - wait_start) >= wait_timeout)
-				{
-					return false;
-				}
-
-				std::this_thread::sleep_for(std::chrono::milliseconds(8));
-			}
-		};
-
-		if (stop_mode == CliTerminalStopMode::FastExit)
-		{
-			kill(child_pid, SIGHUP);
-			kill(child_pid, SIGTERM);
-			kill(child_pid, SIGKILL);
-			has_exited(false, 0.0);
-		}
-		else
-		{
-			kill(child_pid, SIGHUP);
-
-			if (!has_exited(true, 0.25))
-			{
-				kill(child_pid, SIGTERM);
-
-				if (!has_exited(true, 0.35))
-				{
-					kill(child_pid, SIGKILL);
-					has_exited(true, 0.15);
-				}
-			}
-		}
-
-		terminal.child_pid = -1;
-	}
-
-#endif
+	PlatformServicesFactory::Instance().terminal_runtime.StopCliTerminalProcess(terminal, stop_mode == CliTerminalStopMode::FastExit);
 
 	CloseCliTerminalHandles(terminal);
 	FreeCliTerminalVTerm(terminal);
@@ -826,7 +494,7 @@ static CliTerminalState& EnsureCliTerminalForChat(AppState& app, const ChatSessi
 {
 	const std::string resume_id = ResolveResumeSessionIdForChat(app, chat);
 	const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
-	const bool can_launch_terminal = ProviderRuntime::UsesCliOutput(provider) && !ProviderRuntime::UsesInternalEngine(provider) && provider.supports_interactive;
+	const bool can_launch_terminal = ProviderRuntime::IsRuntimeEnabled(provider) && ProviderRuntime::UsesCliOutput(provider) && !ProviderRuntime::UsesInternalEngine(provider) && provider.supports_interactive;
 
 	if (CliTerminalState* existing = FindCliTerminalForChat(app, chat.id))
 	{
@@ -860,11 +528,7 @@ static void StopAndEraseCliTerminalForChat(AppState& app, const std::string& cha
 			return false;
 		}
 
-#if defined(_WIN32)
-		FastStopCliTerminalWindows(*terminal, true);
-#else
-		StopCliTerminal(*terminal, true);
-#endif
+		StopCliTerminal(*terminal, true, CliTerminalStopMode::FastExit);
 		return true;
 	};
 
@@ -891,11 +555,7 @@ static void FastStopCliTerminalsForExit(AppState& app)
 			continue;
 		}
 
-#if defined(_WIN32)
-		FastStopCliTerminalWindows(*terminal_ptr, true);
-#else
 		StopCliTerminal(*terminal_ptr, true, CliTerminalStopMode::FastExit);
-#endif
 	}
 }
 
@@ -909,6 +569,13 @@ static void MarkSelectedCliTerminalForLaunch(AppState& app)
 	}
 
 	const ProviderProfile& provider = ProviderForChatOrDefault(app, *selected);
+
+	if (!ProviderRuntime::IsRuntimeEnabled(provider))
+	{
+		std::string reason = ProviderRuntime::DisabledReason(provider);
+		app.status_line = reason.empty() ? "Selected provider runtime is disabled in this build." : reason;
+		return;
+	}
 
 	if (!ProviderRuntime::UsesCliOutput(provider))
 	{
@@ -1101,6 +768,21 @@ static bool SendPromptToCliRuntime(AppState& app, ChatSession& chat, const std::
 {
 	const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
 
+	if (!ProviderRuntime::IsRuntimeEnabled(provider))
+	{
+		if (error_out != nullptr)
+		{
+			*error_out = ProviderRuntime::DisabledReason(provider);
+
+			if (error_out->empty())
+			{
+				*error_out = "Selected provider runtime is disabled in this build.";
+			}
+		}
+
+		return false;
+	}
+
 	if (ProviderUsesOpenCodeLocalBridge(provider))
 	{
 		if (!EnsureOpenCodeBridgeRunning(app, error_out))
@@ -1149,25 +831,22 @@ static bool SendPromptToCliRuntime(AppState& app, ChatSession& chat, const std::
 	return true;
 }
 
-#if defined(__unix__) || defined(__APPLE__)
-static bool SetFdNonBlocking(const int fd)
-{
-	const int flags = fcntl(fd, F_GETFL, 0);
-
-	if (flags < 0)
-	{
-		return false;
-	}
-
-	return fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
-}
-
-#endif
-
 static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, const ChatSession& chat, const int rows, const int cols)
 {
 	StopCliTerminal(terminal);
 	const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
+
+	if (!ProviderRuntime::IsRuntimeEnabled(provider))
+	{
+		terminal.last_error = ProviderRuntime::DisabledReason(provider);
+
+		if (terminal.last_error.empty())
+		{
+			terminal.last_error = "Selected provider runtime is disabled in this build.";
+		}
+
+		return false;
+	}
 
 	if (!ProviderRuntime::UsesCliOutput(provider))
 	{
@@ -1272,25 +951,12 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
 	vterm_output_set_callback(terminal.vt, WriteBytesToPty, &terminal);
 	vterm_screen_reset(terminal.screen, 1);
 
-#if defined(_WIN32)
-
-	if (!StartCliTerminalWindows(app, terminal, chat))
+	if (!StartCliTerminalPlatform(app, terminal, chat))
 	{
 		terminal.last_error = terminal.last_error.empty() ? "Failed to start provider terminal." : terminal.last_error;
 		StopCliTerminal(terminal, false);
 		return false;
 	}
-
-#else
-
-	if (!StartCliTerminalUnix(app, terminal, chat))
-	{
-		terminal.last_error = terminal.last_error.empty() ? "Failed to start provider terminal." : terminal.last_error;
-		StopCliTerminal(terminal, false);
-		return false;
-	}
-
-#endif
 
 	terminal.running = true;
 	terminal.should_launch = false;

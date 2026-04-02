@@ -1,4 +1,5 @@
 #pragma once
+#include "common/platform/platform_services.h"
 
 /// <summary>
 /// UI actions emitted by a sidebar folder header row.
@@ -30,22 +31,24 @@ static FolderHeaderAction DrawFolderHeaderItem(const ChatFolder& folder, const i
 	float icon_y_offset = 6.0f;
 	float row_bottom_gap = 4.0f;
 	int title_limit = 22;
-#if defined(_WIN32)
-	// Windows-only DPI/layout mitigation for folder rows. Keeps controls and
-	// count text from colliding when text scale is increased.
-	row_h = std::max(ScaleUiLength(30.0f), ImGui::GetTextLineHeight() + ScaleUiLength(12.0f));
-	row_rounding = ScaleUiLength(ui::kRadiusSmall);
-	marker_x_offset = ScaleUiLength(8.0f);
-	title_x_offset = ScaleUiLength(22.0f);
-	text_y_offset = (row_h - ImGui::GetTextLineHeight()) * 0.5f;
-	const float icon_size = ScaleUiLength(16.0f);
-	const float icon_gap = ScaleUiLength(4.0f);
-	const float icon_right_padding = ScaleUiLength(6.0f);
-	icon_settings_x_offset = icon_size + icon_right_padding;
-	icon_new_x_offset = icon_settings_x_offset + icon_gap + icon_size;
-	icon_y_offset = std::max(ScaleUiLength(3.0f), (row_h - icon_size) * 0.5f);
-	row_bottom_gap = ScaleUiLength(4.0f);
-#endif
+
+	if (PlatformServicesFactory::Instance().ui_traits.UseWindowsLayoutAdjustments())
+	{
+		// Windows-only DPI/layout mitigation for folder rows. Keeps controls and
+		// count text from colliding when text scale is increased.
+		row_h = std::max(ScaleUiLength(30.0f), ImGui::GetTextLineHeight() + ScaleUiLength(12.0f));
+		row_rounding = ScaleUiLength(ui::kRadiusSmall);
+		marker_x_offset = ScaleUiLength(8.0f);
+		title_x_offset = ScaleUiLength(22.0f);
+		text_y_offset = (row_h - ImGui::GetTextLineHeight()) * 0.5f;
+		const float icon_size = ScaleUiLength(16.0f);
+		const float icon_gap = ScaleUiLength(4.0f);
+		const float icon_right_padding = ScaleUiLength(6.0f);
+		icon_settings_x_offset = icon_size + icon_right_padding;
+		icon_new_x_offset = icon_settings_x_offset + icon_gap + icon_size;
+		icon_y_offset = std::max(ScaleUiLength(3.0f), (row_h - icon_size) * 0.5f);
+		row_bottom_gap = ScaleUiLength(4.0f);
+	}
 	const ImVec2 row_size(ImGui::GetContentRegionAvail().x, row_h);
 	const ImVec2 min = ImGui::GetCursorScreenPos();
 	ImGui::InvisibleButton("folder_row", row_size);
@@ -66,7 +69,8 @@ static FolderHeaderAction DrawFolderHeaderItem(const ChatFolder& folder, const i
 	const std::string title = FolderTitleOrFallback(folder);
 	const std::string count_text = std::to_string(chat_count);
 	float count_x = max.x - count_x_offset;
-#if defined(_WIN32)
+
+	if (PlatformServicesFactory::Instance().ui_traits.UseWindowsLayoutAdjustments())
 	{
 		const ImVec2 count_size = ImGui::CalcTextSize(count_text.c_str());
 		count_x = max.x - icon_new_x_offset - ScaleUiLength(8.0f) - count_size.x;
@@ -74,8 +78,6 @@ static FolderHeaderAction DrawFolderHeaderItem(const ChatFolder& folder, const i
 		const float available_title_w = std::max(40.0f, count_x - (min.x + title_x_offset) - ScaleUiLength(8.0f));
 		title_limit = std::max(8, static_cast<int>(std::floor(available_title_w / avg_char_w)));
 	}
-
-#endif
 	draw->AddText(ImVec2(min.x + marker_x_offset, min.y + text_y_offset), ImGui::GetColorU32(ui::kTextMuted), marker.c_str());
 	draw->AddText(ImVec2(min.x + title_x_offset, min.y + text_y_offset), ImGui::GetColorU32(ui::kTextSecondary), CompactPreview(title, title_limit).c_str());
 	draw->AddText(ImVec2(count_x, min.y + text_y_offset), ImGui::GetColorU32(ui::kTextMuted), count_text.c_str());
