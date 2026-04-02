@@ -1,25 +1,16 @@
-# Build output directories
-/build/
-/build_*/
-/cmake-build-*/
-/out/build/
+# Build outputs (enforced in CMake)
+/Builds/
 
-# Data/runtime output
+# Runtime/data outputs
 /data/
+/.vectorised_rag/
+/subprojects/ollama_engine/models/
+/subprojects/ollama_engine/evaluation/reference_repos/
+
+# Local tool state
+/.gemini/
 
 # IDE/system files
 /.vs/
+/.idea/
 .DS_Store
-/subprojects/ollama_engine/models
-/.idea
-/subprojects/ollama_engine/build
-/.idea
-/build-release
-/subprojects/ollama_engine/evaluation/reference_repos
-/.vectorised_rag
-/build-tests/.vectorised_rag
-/build-tests
-/third_party/_deps/
-/subprojects/ollama_engine/third_party/
-/.gemini
-/.idea

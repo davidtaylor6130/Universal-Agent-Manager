@@ -167,26 +167,28 @@ When `UAM_FETCH_DEPS=ON`, CMake fetches:
 
 ## Build
 
+Build directory location is enforced: all CMake build trees must live under `Builds/`.
+
 ### Self-Contained (Fetch Dependencies)
 
 ```bash
-cmake -S . -B build -DUAM_FETCH_DEPS=ON
-cmake --build build --config Release
+cmake -S . -B Builds -DUAM_FETCH_DEPS=ON
+cmake --build Builds --config Release
 ```
 
 ### Custom Dependencies
 
 ```bash
-cmake -S . -B build -DUAM_FETCH_DEPS=OFF -DIMGUI_DIR=/path/to/imgui
-cmake --build build --config Release
+cmake -S . -B Builds -DUAM_FETCH_DEPS=OFF -DIMGUI_DIR=/path/to/imgui
+cmake --build Builds --config Release
 ```
 
 ### Tests
 
 ```bash
-cmake -S . -B build-tests -DUAM_FETCH_DEPS=ON -DUAM_BUILD_TESTS=ON
-cmake --build build-tests --config Debug
-ctest --test-dir build-tests -C Debug --output-on-failure
+cmake -S . -B Builds/tests -DUAM_FETCH_DEPS=ON -DUAM_BUILD_TESTS=ON
+cmake --build Builds/tests --config Debug
+ctest --test-dir Builds/tests -C Debug --output-on-failure
 ```
 
 ### Visual Studio
@@ -199,20 +201,20 @@ For project/target layout guidance, see:
 
 ```bash
 # macOS
-./build/universal_agent_manager
+./Builds/universal_agent_manager
 
 # Windows (Visual Studio generator example)
-.\build\Release\universal_agent_manager.exe
+.\Builds\Release\universal_agent_manager.exe
 ```
 
 Optional data-root override:
 
 ```bash
 # macOS
-UAM_DATA_DIR=/tmp/uam-data ./build/universal_agent_manager
+UAM_DATA_DIR=/tmp/uam-data ./Builds/universal_agent_manager
 
 # Windows PowerShell
-$env:UAM_DATA_DIR='C:\temp\uam-data'; .\build\Release\universal_agent_manager.exe
+$env:UAM_DATA_DIR='C:\temp\uam-data'; .\Builds\Release\universal_agent_manager.exe
 ```
 
 ## Platform Notes

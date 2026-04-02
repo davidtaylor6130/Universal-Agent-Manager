@@ -9,11 +9,39 @@ set(CMAKE_SUPPRESS_REGENERATION ON)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 set_property(GLOBAL PROPERTY PREDEFINED_TARGETS_FOLDER "_CMake")
 
+set(UAM_REQUIRED_BUILD_ROOT "${CMAKE_SOURCE_DIR}/Builds")
+file(MAKE_DIRECTORY "${UAM_REQUIRED_BUILD_ROOT}")
+file(REAL_PATH "${UAM_REQUIRED_BUILD_ROOT}" UAM_REQUIRED_BUILD_ROOT_REAL)
+file(REAL_PATH "${CMAKE_BINARY_DIR}" UAM_BINARY_DIR_REAL)
+cmake_path(
+  RELATIVE_PATH UAM_BINARY_DIR_REAL
+  BASE_DIRECTORY "${UAM_REQUIRED_BUILD_ROOT_REAL}"
+  OUTPUT_VARIABLE UAM_BINARY_DIR_RELATIVE_TO_REQUIRED_ROOT
+)
+if(UAM_BINARY_DIR_RELATIVE_TO_REQUIRED_ROOT MATCHES "^\\.\\.")
+  message(FATAL_ERROR
+    "Build directory must be inside '${UAM_REQUIRED_BUILD_ROOT}'.\n"
+    "Use one of:\n"
+    "  cmake -S . -B Builds\n"
+    "  cmake -S . -B Builds/<name>\n"
+  )
+endif()
+
 option(UAM_FETCH_DEPS "Fetch SDL2 and Dear ImGui from GitHub during configure." ON)
 option(UAM_FETCH_LLAMA_CPP "Fetch pinned llama.cpp fork during configure." ON)
 option(UAM_BUILD_TESTS "Build UAM core tests executable." OFF)
 set(UAM_OLLAMA_ENGINE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/subprojects/ollama_engine" CACHE PATH
   "Path to the ollama_engine source repository.")
+set(UAM_THIRD_PARTY_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party" CACHE PATH
+  "Directory that stores local third-party source checkouts.")
+set(UAM_FETCHCONTENT_BASE_DIR "${CMAKE_BINARY_DIR}/_deps" CACHE PATH
+  "Directory used for FetchContent source checkouts.")
+set(UAM_SDL2_SOURCE_DIR "${UAM_THIRD_PARTY_SOURCE_DIR}/SDL" CACHE PATH
+  "Path to a local SDL source tree.")
+set(UAM_IMGUI_SOURCE_DIR "${UAM_THIRD_PARTY_SOURCE_DIR}/imgui" CACHE PATH
+  "Path to a local Dear ImGui source tree.")
+set(UAM_LLAMA_CPP_SOURCE_DIR "${UAM_THIRD_PARTY_SOURCE_DIR}/llama.cpp-uam" CACHE PATH
+  "Path to a local llama.cpp fork source tree.")
 if(APPLE)
   option(UAM_MACOS_BUNDLE "Build as a macOS .app bundle (no Terminal window needed)." ON)
 endif()
@@ -23,6 +51,9 @@ set(UAM_LLAMA_CPP_REPOSITORY "https://github.com/davidtaylor6130/llama.cpp-UAM-F
 set(UAM_LLAMA_CPP_GIT_TAG "990e4d96980d0b016a2b07049cc9031642fb9903" CACHE STRING
   "Pinned git commit for llama.cpp fork.")
 
+file(MAKE_DIRECTORY "${UAM_FETCHCONTENT_BASE_DIR}")
+set(FETCHCONTENT_BASE_DIR "${UAM_FETCHCONTENT_BASE_DIR}")
+
 function(uam_set_target_folder target_name folder_name)
   if(TARGET ${target_name})
     set_property(TARGET ${target_name} PROPERTY FOLDER ${folder_name})
@@ -30,8 +61,6 @@ function(uam_set_target_folder target_name folder_name)
 endfunction()
 
 if(UAM_FETCH_LLAMA_CPP)
-  include(FetchContent)
-
   set(GGML_CCACHE OFF CACHE BOOL "" FORCE)
   set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
   set(LLAMA_BUILD_COMMON OFF CACHE BOOL "" FORCE)
@@ -44,20 +73,25 @@ if(UAM_FETCH_LLAMA_CPP)
   set(LLAMA_OPENSSL OFF CACHE BOOL "" FORCE)
 
   set(CMAKE_FOLDER "ThirdParty/llama.cpp")
-  FetchContent_Declare(
-    llama_cpp_uam
-    GIT_REPOSITORY ${UAM_LLAMA_CPP_REPOSITORY}
-    GIT_TAG ${UAM_LLAMA_CPP_GIT_TAG}
-    GIT_SHALLOW TRUE
-    GIT_PROGRESS TRUE
-  )
-  FetchContent_MakeAvailable(llama_cpp_uam)
+  if(EXISTS "${UAM_LLAMA_CPP_SOURCE_DIR}/CMakeLists.txt")
+    add_subdirectory("${UAM_LLAMA_CPP_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/llama_cpp_uam")
+  else()
+    include(FetchContent)
+    FetchContent_Declare(
+      llama_cpp_uam
+      GIT_REPOSITORY ${UAM_LLAMA_CPP_REPOSITORY}
+      GIT_TAG ${UAM_LLAMA_CPP_GIT_TAG}
+      GIT_SHALLOW TRUE
+      GIT_PROGRESS TRUE
+    )
+    FetchContent_MakeAvailable(llama_cpp_uam)
+    set(UAM_LLAMA_CPP_SOURCE_DIR "${llama_cpp_uam_SOURCE_DIR}" CACHE PATH
+      "Path to a local llama.cpp fork source tree." FORCE)
+  endif()
   set(CMAKE_FOLDER "")
 endif()
 
 if(UAM_FETCH_DEPS)
-  include(FetchContent)
-
   set(SDL_TEST OFF CACHE BOOL "" FORCE)
   set(SDL_SHARED OFF CACHE BOOL "" FORCE)
   set(SDL_STATIC ON CACHE BOOL "" FORCE)
@@ -67,28 +101,41 @@ if(UAM_FETCH_DEPS)
   set(SDL2_DISABLE_UNINSTALL ON CACHE BOOL "" FORCE)
 
   set(CMAKE_FOLDER "ThirdParty/SDL2")
-  FetchContent_Declare(
-    sdl2
-    GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
-    GIT_TAG release-2.30.11
-  )
-  FetchContent_MakeAvailable(sdl2)
+  if(EXISTS "${UAM_SDL2_SOURCE_DIR}/CMakeLists.txt")
+    add_subdirectory("${UAM_SDL2_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/sdl2")
+  else()
+    include(FetchContent)
+    FetchContent_Declare(
+      sdl2
+      GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+      GIT_TAG release-2.30.11
+    )
+    FetchContent_MakeAvailable(sdl2)
+    set(UAM_SDL2_SOURCE_DIR "${sdl2_SOURCE_DIR}" CACHE PATH
+      "Path to a local SDL source tree." FORCE)
+  endif()
 
   set(CMAKE_FOLDER "ThirdParty/ImGui")
-  FetchContent_Declare(
-    imgui
-    GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG v1.91.8
-  )
-  FetchContent_MakeAvailable(imgui)
+  if(EXISTS "${UAM_IMGUI_SOURCE_DIR}/imgui.cpp")
+    set(IMGUI_DIR "${UAM_IMGUI_SOURCE_DIR}")
+  else()
+    include(FetchContent)
+    FetchContent_Declare(
+      imgui
+      GIT_REPOSITORY https://github.com/ocornut/imgui.git
+      GIT_TAG v1.91.8
+    )
+    FetchContent_MakeAvailable(imgui)
+    set(IMGUI_DIR "${imgui_SOURCE_DIR}")
+    set(UAM_IMGUI_SOURCE_DIR "${imgui_SOURCE_DIR}" CACHE PATH
+      "Path to a local Dear ImGui source tree." FORCE)
+  endif()
   set(CMAKE_FOLDER "")
-
-  set(IMGUI_DIR "${imgui_SOURCE_DIR}")
 else()
   find_package(SDL2 REQUIRED)
-  set(IMGUI_DIR "" CACHE PATH "Path to Dear ImGui source directory")
-  if(IMGUI_DIR STREQUAL "")
-    message(FATAL_ERROR "Set IMGUI_DIR when UAM_FETCH_DEPS=OFF.")
+  set(IMGUI_DIR "${UAM_IMGUI_SOURCE_DIR}" CACHE PATH "Path to Dear ImGui source directory")
+  if(IMGUI_DIR STREQUAL "" OR NOT EXISTS "${IMGUI_DIR}/imgui.cpp")
+    message(FATAL_ERROR "Set IMGUI_DIR (or UAM_IMGUI_SOURCE_DIR) to a local Dear ImGui source directory when UAM_FETCH_DEPS=OFF.")
   endif()
 endif()
 

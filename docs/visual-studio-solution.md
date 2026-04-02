@@ -2,7 +2,7 @@
 
 This repository generates a single canonical Visual Studio solution:
 
-- `build/universal_agent_manager.sln`
+- `Builds/universal_agent_manager.sln`
 
 Open that solution when working on the app in Visual Studio. The main executable is the only project you normally need to run.
 
@@ -51,6 +51,6 @@ These are created by CMake or Visual Studio to support builds and testing:
 
 ## Folder And File Noise
 
-You may also see additional `.sln` files under `build/_deps/` or `out/build/`. Those belong to fetched dependencies or alternate build trees and are not the main UAM solution.
+You may also see additional `.sln` files under `Builds/_deps/`. Those belong to fetched dependencies and are not the main UAM solution.
 
-If the workspace starts to feel crowded, focus on `build/universal_agent_manager.sln` and ignore the generated dependency solutions.
+If the workspace starts to feel crowded, focus on `Builds/universal_agent_manager.sln` and ignore the generated dependency solutions.
