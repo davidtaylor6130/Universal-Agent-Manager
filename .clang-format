@@ -5,7 +5,7 @@ TabWidth: 4
 UseTab: Never
 PointerAlignment: Left
 SortIncludes: false
-ColumnLimit: 0
+ColumnLimit: 10000
 AllowShortFunctionsOnASingleLine: None
 AllowShortIfStatementsOnASingleLine: Never
 AllowShortLoopsOnASingleLine: false
