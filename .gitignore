@@ -1,5 +1,6 @@
 # Build outputs (enforced in CMake)
 /Builds/
+/build
 
 # Runtime/data outputs
 /data/
