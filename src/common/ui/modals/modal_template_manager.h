@@ -6,7 +6,7 @@
 #include "common/ui/modals/modal_template_manager_selection_section.h"
 
 /// <summary>
-/// Draws the template manager modal using section-level component renderers.
+/// Draws the markdown template manager modal using section-level component renderers.
 /// </summary>
 static void DrawTemplateManagerModal(AppState& app)
 {
@@ -25,9 +25,9 @@ static void DrawTemplateManagerModal(AppState& app)
 
 	RefreshTemplateCatalog(app);
 	const fs::path global_root = ResolveGeminiGlobalRootPath(app.settings);
-	const fs::path catalog_path = GeminiTemplateCatalog::CatalogPath(global_root);
+	const fs::path catalog_path = MarkdownTemplateCatalog::CatalogPath(global_root);
 
-	ImGui::TextColored(ui::kTextPrimary, "Template Manager");
+	ImGui::TextColored(ui::kTextPrimary, "Markdown Template Manager");
 	ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
 	DrawSoftDivider();
 

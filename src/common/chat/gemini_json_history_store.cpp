@@ -1,4 +1,4 @@
-#include "gemini_native_history_store.h"
+#include "gemini_json_history_store.h"
 
 #include "provider_runtime.h"
 #include "runtime/json_runtime.h"
@@ -58,7 +58,7 @@ namespace
 
 } // namespace
 
-std::optional<ChatSession> GeminiNativeHistoryStore::ParseFile(const std::filesystem::path& file_path, const ProviderProfile& provider, const GeminiNativeHistoryStoreOptions& options)
+std::optional<ChatSession> GeminiJsonHistoryStore::ParseFile(const std::filesystem::path& file_path, const ProviderProfile& provider, const GeminiJsonHistoryStoreOptions& options)
 {
 	const std::string file_text = ReadTextFile(file_path);
 
@@ -161,7 +161,7 @@ std::optional<ChatSession> GeminiNativeHistoryStore::ParseFile(const std::filesy
 	return chat;
 }
 
-std::vector<ChatSession> GeminiNativeHistoryStore::Load(const std::filesystem::path& chats_dir, const ProviderProfile& provider, const GeminiNativeHistoryStoreOptions& options)
+std::vector<ChatSession> GeminiJsonHistoryStore::Load(const std::filesystem::path& chats_dir, const ProviderProfile& provider, const GeminiJsonHistoryStoreOptions& options)
 {
 	namespace fs = std::filesystem;
 	std::vector<ChatSession> chats;

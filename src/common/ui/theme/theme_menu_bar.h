@@ -109,7 +109,7 @@ static void DrawDesktopMenuBar(AppState& app, bool& done)
 		if (ImGui::MenuItem("Open Template Folder"))
 		{
 			std::string error;
-			const fs::path template_path = GeminiTemplateCatalog::CatalogPath(ResolveGeminiGlobalRootPath(app.settings));
+			const fs::path template_path = MarkdownTemplateCatalog::CatalogPath(ResolveGeminiGlobalRootPath(app.settings));
 
 			if (!OpenFolderInFileManager(template_path, &error))
 			{

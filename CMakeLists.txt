@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
 project(universal_agent_manager LANGUAGES C CXX)
 
+if(NOT WIN32 AND NOT APPLE)
+  message(FATAL_ERROR "universal_agent_manager supports only Windows and macOS builds.")
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -248,12 +252,13 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/chat/chat_folder_store.cpp
   src/common/chat/chat_repository.cpp
   src/common/chat/local_chat_store.cpp
-  src/common/chat/gemini_native_history_store.cpp
+  src/common/chat/gemini_json_history_store.cpp
   src/common/chat/chat_branching.cpp
   src/common/config/settings_store.cpp
   src/common/utils/command_line_words.cpp
   src/common/provider/gemini_command_builder.cpp
-  src/common/provider/gemini_template_catalog.cpp
+  src/common/provider/gemini_history_loader.cpp
+  src/common/provider/markdown_template_catalog.cpp
   src/common/config/frontend_actions.cpp
   src/common/provider/provider_profile.cpp
   src/common/provider/provider_runtime.cpp
@@ -336,10 +341,11 @@ if(UAM_BUILD_TESTS)
     src/common/config/frontend_actions.cpp
     src/common/utils/command_line_words.cpp
     src/common/provider/gemini_command_builder.cpp
-    src/common/provider/gemini_template_catalog.cpp
+    src/common/provider/gemini_history_loader.cpp
+    src/common/provider/markdown_template_catalog.cpp
     src/common/chat/chat_repository.cpp
     src/common/chat/local_chat_store.cpp
-    src/common/chat/gemini_native_history_store.cpp
+    src/common/chat/gemini_json_history_store.cpp
     src/common/chat/chat_branching.cpp
     src/common/provider/provider_profile.cpp
     src/common/provider/provider_runtime.cpp

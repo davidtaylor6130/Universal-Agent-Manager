@@ -1,18 +1,14 @@
 #pragma once
 
-#if defined(__unix__) || defined(__APPLE__)
+#if defined(__APPLE__)
 #include <cstdlib>
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <unistd.h>
-#if defined(__APPLE__)
 #include <util.h>
-#else
-#include <pty.h>
-#endif
 
-static bool StartCliTerminalUnix(AppState& app, CliTerminalState& terminal, const ChatSession& chat)
+static bool StartCliTerminalMac(AppState& app, CliTerminalState& terminal, const ChatSession& chat)
 {
 	const fs::path workspace_root = ResolveWorkspaceRootPath(app, chat);
 	int master_fd = -1;
@@ -86,4 +82,6 @@ static bool StartCliTerminalUnix(AppState& app, CliTerminalState& terminal, cons
 	return true;
 }
 
+#else
+#error "terminal_mac.h is only supported on macOS builds."
 #endif

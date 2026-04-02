@@ -1,4 +1,4 @@
-#include "gemini_template_catalog.h"
+#include "markdown_template_catalog.h"
 
 #include <algorithm>
 #include <chrono>
@@ -128,12 +128,12 @@ namespace
 
 } // namespace
 
-std::filesystem::path GeminiTemplateCatalog::CatalogPath(const std::filesystem::path& global_root)
+std::filesystem::path MarkdownTemplateCatalog::CatalogPath(const std::filesystem::path& global_root)
 {
 	return global_root / "Markdown_Templates";
 }
 
-bool GeminiTemplateCatalog::EnsureCatalogPath(const std::filesystem::path& global_root, std::string* error_out)
+bool MarkdownTemplateCatalog::EnsureCatalogPath(const std::filesystem::path& global_root, std::string* error_out)
 {
 	std::error_code ec;
 	fs::create_directories(CatalogPath(global_root), ec);
@@ -146,7 +146,7 @@ bool GeminiTemplateCatalog::EnsureCatalogPath(const std::filesystem::path& globa
 	return !ec;
 }
 
-std::vector<TemplateCatalogEntry> GeminiTemplateCatalog::List(const std::filesystem::path& global_root)
+std::vector<TemplateCatalogEntry> MarkdownTemplateCatalog::List(const std::filesystem::path& global_root)
 {
 	std::vector<TemplateCatalogEntry> entries;
 	std::error_code ec;
@@ -196,13 +196,13 @@ std::vector<TemplateCatalogEntry> GeminiTemplateCatalog::List(const std::filesys
 	return entries;
 }
 
-bool GeminiTemplateCatalog::HasTemplate(const std::filesystem::path& global_root, const std::string& id)
+bool MarkdownTemplateCatalog::HasTemplate(const std::filesystem::path& global_root, const std::string& id)
 {
 	std::filesystem::path resolved;
 	return ResolveTemplatePath(global_root, id, resolved, nullptr);
 }
 
-bool GeminiTemplateCatalog::ResolveTemplatePath(const std::filesystem::path& global_root, const std::string& id, std::filesystem::path& path_out, std::string* error_out)
+bool MarkdownTemplateCatalog::ResolveTemplatePath(const std::filesystem::path& global_root, const std::string& id, std::filesystem::path& path_out, std::string* error_out)
 {
 	if (!IsValidTemplateId(id))
 	{
@@ -230,7 +230,7 @@ bool GeminiTemplateCatalog::ResolveTemplatePath(const std::filesystem::path& glo
 	return true;
 }
 
-bool GeminiTemplateCatalog::ImportMarkdownTemplate(const std::filesystem::path& global_root, const std::filesystem::path& source_file, std::string* imported_id_out, std::string* error_out)
+bool MarkdownTemplateCatalog::ImportMarkdownTemplate(const std::filesystem::path& global_root, const std::filesystem::path& source_file, std::string* imported_id_out, std::string* error_out)
 {
 	if (source_file.empty())
 	{
@@ -290,7 +290,7 @@ bool GeminiTemplateCatalog::ImportMarkdownTemplate(const std::filesystem::path& 
 	return true;
 }
 
-bool GeminiTemplateCatalog::RenameTemplate(const std::filesystem::path& global_root, const std::string& id, const std::string& new_name, std::string* new_id_out, std::string* error_out)
+bool MarkdownTemplateCatalog::RenameTemplate(const std::filesystem::path& global_root, const std::string& id, const std::string& new_name, std::string* new_id_out, std::string* error_out)
 {
 	fs::path current_path;
 
@@ -362,7 +362,7 @@ bool GeminiTemplateCatalog::RenameTemplate(const std::filesystem::path& global_r
 	return true;
 }
 
-bool GeminiTemplateCatalog::RemoveTemplate(const std::filesystem::path& global_root, const std::string& id, std::string* error_out)
+bool MarkdownTemplateCatalog::RemoveTemplate(const std::filesystem::path& global_root, const std::string& id, std::string* error_out)
 {
 	fs::path existing_path;
 

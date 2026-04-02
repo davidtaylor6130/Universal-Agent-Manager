@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common/platform/terminal_unix.h"
+#include "common/platform/terminal_mac.h"
 #include "common/platform/terminal_windows.h"
 
 /// <summary>
@@ -10,7 +10,9 @@ static bool StartCliTerminalPlatform(AppState& app, CliTerminalState& terminal, 
 {
 #if defined(_WIN32)
 	return StartCliTerminalWindows(app, terminal, chat);
+#elif defined(__APPLE__)
+	return StartCliTerminalMac(app, terminal, chat);
 #else
-	return StartCliTerminalUnix(app, terminal, chat);
+#error "StartCliTerminalPlatform is only supported on Windows and macOS."
 #endif
 }

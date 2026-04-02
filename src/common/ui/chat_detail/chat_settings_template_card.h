@@ -78,7 +78,7 @@ static void DrawChatSettingsTemplateCard(AppState& app, ChatSession& chat)
 		if (DrawButton("Open Catalog", ImVec2(120.0f, 32.0f), ButtonKind::Ghost))
 		{
 			std::string error;
-			const fs::path catalog_path = GeminiTemplateCatalog::CatalogPath(ResolveGeminiGlobalRootPath(app.settings));
+			const fs::path catalog_path = MarkdownTemplateCatalog::CatalogPath(ResolveGeminiGlobalRootPath(app.settings));
 
 			if (!OpenFolderInFileManager(catalog_path, &error))
 			{

@@ -1,8 +1,8 @@
 #include "provider_runtime.h"
 
 #include "command_line_words.h"
+#include "gemini_history_loader.h"
 #include "gemini_command_builder.h"
-#include "gemini_native_history_store.h"
 #include "local_chat_store.h"
 
 #include <algorithm>
@@ -62,6 +62,22 @@ namespace
 	{
 		std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
 		return value;
+	}
+
+	bool RequestsGeminiJsonHistory(const ProviderProfile& profile)
+	{
+		return EqualsIgnoreCase(profile.history_adapter, "gemini-cli-json");
+	}
+
+	std::string RuntimeConfigurationError(const ProviderProfile& profile, const IProviderRuntime& runtime)
+	{
+		if (RequestsGeminiJsonHistory(profile) && !runtime.SupportsGeminiJsonHistory(profile))
+		{
+			const std::string provider_id = profile.id.empty() ? std::string(runtime.RuntimeId()) : profile.id;
+			return "Provider '" + provider_id + "' has history_adapter=gemini-cli-json, but only gemini-structured and gemini-cli support Gemini JSON history.";
+		}
+
+		return "";
 	}
 
 	bool AnyTypeMatches(const std::vector<std::string>& types, const std::string& value)
@@ -218,14 +234,9 @@ namespace
 
 		std::vector<ChatSession> LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path& gemini_chats_dir, const ProviderRuntimeHistoryLoadOptions& options) const override
 		{
-			if (UsesNativeOverlayHistory(profile))
-			{
-				GeminiNativeHistoryStoreOptions native_options;
-				native_options.max_file_bytes = options.native_max_file_bytes;
-				native_options.max_messages = options.native_max_messages;
-				return GeminiNativeHistoryStore::Load(gemini_chats_dir, profile, native_options);
-			}
-
+			(void)profile;
+			(void)gemini_chats_dir;
+			(void)options;
 			return LocalChatStore::Load(data_root);
 		}
 
@@ -236,17 +247,20 @@ namespace
 
 		bool UsesNativeOverlayHistory(const ProviderProfile& profile) const override
 		{
-			return SupportsGeminiJsonHistory(profile) && !UsesLocalHistory(profile);
+			(void)profile;
+			return false;
 		}
 
 		bool SupportsGeminiJsonHistory(const ProviderProfile& profile) const override
 		{
-			return EqualsIgnoreCase(profile.history_adapter, "gemini-cli-json");
+			(void)profile;
+			return false;
 		}
 
 		bool UsesLocalHistory(const ProviderProfile& profile) const override
 		{
-			return EqualsIgnoreCase(profile.history_adapter, "local-only") || profile.history_adapter.empty();
+			(void)profile;
+			return true;
 		}
 
 		bool UsesInternalEngine(const ProviderProfile& profile) const override
@@ -285,21 +299,16 @@ namespace
 		std::string disabled_reason_;
 	};
 
-	class FixedPolicyProviderRuntime : public StandardProviderRuntime
+	class LocalOnlyProviderRuntime : public StandardProviderRuntime
 	{
 	  public:
-		FixedPolicyProviderRuntime(const char* runtime_id,
-		                           const bool enabled,
-		                           const char* disabled_reason,
-		                           const bool supports_gemini_json_history,
-		                           const bool uses_local_history,
-		                           const bool uses_internal_engine,
-		                           const bool uses_cli_output,
-		                           const bool uses_gemini_path_bootstrap) :
+		LocalOnlyProviderRuntime(const char* runtime_id,
+		                         const bool enabled,
+		                         const char* disabled_reason,
+		                         const bool uses_internal_engine,
+		                         const bool uses_cli_output,
+		                         const bool uses_gemini_path_bootstrap) :
 		    StandardProviderRuntime(runtime_id, enabled, disabled_reason),
-		    supports_gemini_json_history_(supports_gemini_json_history),
-		    uses_local_history_(uses_local_history),
-		    uses_native_overlay_history_(supports_gemini_json_history && !uses_local_history),
 		    uses_internal_engine_(uses_internal_engine),
 		    uses_cli_output_(uses_cli_output),
 		    uses_gemini_path_bootstrap_(uses_gemini_path_bootstrap)
@@ -308,24 +317,16 @@ namespace
 
 		bool SupportsGeminiJsonHistory(const ProviderProfile&) const override
 		{
-			return supports_gemini_json_history_;
+			return false;
 		}
 
 		bool UsesLocalHistory(const ProviderProfile&) const override
 		{
-			return uses_local_history_;
+			return true;
 		}
 
-		std::vector<ChatSession> LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path& gemini_chats_dir, const ProviderRuntimeHistoryLoadOptions& options) const override
+		std::vector<ChatSession> LoadHistory(const ProviderProfile&, const std::filesystem::path& data_root, const std::filesystem::path&, const ProviderRuntimeHistoryLoadOptions&) const override
 		{
-			if (uses_native_overlay_history_)
-			{
-				GeminiNativeHistoryStoreOptions native_options;
-				native_options.max_file_bytes = options.native_max_file_bytes;
-				native_options.max_messages = options.native_max_messages;
-				return GeminiNativeHistoryStore::Load(gemini_chats_dir, profile, native_options);
-			}
-
 			return LocalChatStore::Load(data_root);
 		}
 
@@ -336,7 +337,7 @@ namespace
 
 		bool UsesNativeOverlayHistory(const ProviderProfile&) const override
 		{
-			return uses_native_overlay_history_;
+			return false;
 		}
 
 		bool UsesInternalEngine(const ProviderProfile&) const override
@@ -360,67 +361,122 @@ namespace
 		}
 
 	  private:
-		bool supports_gemini_json_history_ = false;
-		bool uses_local_history_ = true;
-		bool uses_native_overlay_history_ = false;
 		bool uses_internal_engine_ = false;
 		bool uses_cli_output_ = true;
 		bool uses_gemini_path_bootstrap_ = false;
 	};
 
-	class GeminiStructuredProviderRuntime final : public FixedPolicyProviderRuntime
+	class GeminiHistoryProviderRuntime : public StandardProviderRuntime
 	{
 	  public:
-		GeminiStructuredProviderRuntime() : FixedPolicyProviderRuntime("gemini-structured",
-		                                                               UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED != 0,
-		                                                               "Runtime 'gemini-structured' is disabled in this build (UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED=OFF).",
-		                                                               true,
-		                                                               false,
-		                                                               false,
-		                                                               false,
-		                                                               true)
+		GeminiHistoryProviderRuntime(const char* runtime_id, const bool enabled, const char* disabled_reason, const bool uses_cli_output) :
+		    StandardProviderRuntime(runtime_id, enabled, disabled_reason), uses_cli_output_(uses_cli_output)
+		{
+		}
+
+		bool SupportsGeminiJsonHistory(const ProviderProfile&) const override
+		{
+			return true;
+		}
+
+		bool UsesLocalHistory(const ProviderProfile&) const override
+		{
+			return false;
+		}
+
+		std::vector<ChatSession> LoadHistory(const ProviderProfile& profile, const std::filesystem::path&, const std::filesystem::path& gemini_chats_dir, const ProviderRuntimeHistoryLoadOptions& options) const override
+		{
+			return LoadGeminiJsonHistoryForRuntime(gemini_chats_dir, profile, options);
+		}
+
+		bool SaveHistory(const ProviderProfile&, const std::filesystem::path& data_root, const ChatSession& chat) const override
+		{
+			return LocalChatStore::Save(data_root, chat);
+		}
+
+		bool UsesNativeOverlayHistory(const ProviderProfile&) const override
+		{
+			return true;
+		}
+
+		bool UsesInternalEngine(const ProviderProfile&) const override
+		{
+			return false;
+		}
+
+		bool UsesCliOutput(const ProviderProfile&) const override
+		{
+			return uses_cli_output_;
+		}
+
+		bool UsesStructuredOutput(const ProviderProfile&) const override
+		{
+			return !uses_cli_output_;
+		}
+
+		bool UsesGeminiPathBootstrap(const ProviderProfile&) const override
+		{
+			return true;
+		}
+
+	  private:
+		bool uses_cli_output_ = false;
+	};
+
+	class GeminiStructuredProviderRuntime final : public GeminiHistoryProviderRuntime
+	{
+	  public:
+		GeminiStructuredProviderRuntime() : GeminiHistoryProviderRuntime("gemini-structured",
+		                                                                 UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED != 0,
+		                                                                 "Runtime 'gemini-structured' is disabled in this build (UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED=OFF).",
+		                                                                 false)
 		{
 		}
 	};
 
-	class GeminiCliProviderRuntime final : public FixedPolicyProviderRuntime
+	class GeminiCliProviderRuntime final : public GeminiHistoryProviderRuntime
 	{
 	  public:
-		GeminiCliProviderRuntime() : FixedPolicyProviderRuntime("gemini-cli",
-		                                                        UAM_ENABLE_RUNTIME_GEMINI_CLI != 0,
-		                                                        "Runtime 'gemini-cli' is disabled in this build (UAM_ENABLE_RUNTIME_GEMINI_CLI=OFF).",
-		                                                        true,
-		                                                        false,
-		                                                        false,
-		                                                        true,
-		                                                        true)
+		GeminiCliProviderRuntime() : GeminiHistoryProviderRuntime("gemini-cli",
+		                                                          UAM_ENABLE_RUNTIME_GEMINI_CLI != 0,
+		                                                          "Runtime 'gemini-cli' is disabled in this build (UAM_ENABLE_RUNTIME_GEMINI_CLI=OFF).",
+		                                                          true)
 		{
 		}
 	};
 
-	class CodexCliProviderRuntime final : public FixedPolicyProviderRuntime
+	class CodexCliProviderRuntime final : public LocalOnlyProviderRuntime
 	{
 	  public:
-		CodexCliProviderRuntime() : FixedPolicyProviderRuntime("codex-cli",
-		                                                       UAM_ENABLE_RUNTIME_CODEX_CLI != 0,
-		                                                       "Runtime 'codex-cli' is disabled in this build (UAM_ENABLE_RUNTIME_CODEX_CLI=OFF).",
-		                                                       false,
-		                                                       true,
-		                                                       false,
-		                                                       true,
-		                                                       false)
+		CodexCliProviderRuntime() : LocalOnlyProviderRuntime("codex-cli",
+		                                                     UAM_ENABLE_RUNTIME_CODEX_CLI != 0,
+		                                                     "Runtime 'codex-cli' is disabled in this build (UAM_ENABLE_RUNTIME_CODEX_CLI=OFF).",
+		                                                     false,
+		                                                     true,
+		                                                     false)
 		{
 		}
 	};
 
-	class ClaudeCliProviderRuntime final : public FixedPolicyProviderRuntime
+	class ClaudeCliProviderRuntime final : public LocalOnlyProviderRuntime
 	{
 	  public:
-		ClaudeCliProviderRuntime() : FixedPolicyProviderRuntime("claude-cli",
-		                                                        UAM_ENABLE_RUNTIME_CLAUDE_CLI != 0,
-		                                                        "Runtime 'claude-cli' is disabled in this build (UAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF).",
-		                                                        false,
-		                                                        true,
+		ClaudeCliProviderRuntime() : LocalOnlyProviderRuntime("claude-cli",
+		                                                      UAM_ENABLE_RUNTIME_CLAUDE_CLI != 0,
+		                                                      "Runtime 'claude-cli' is disabled in this build (UAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF).",
+		                                                      false,
+		                                                      true,
+		                                                      false)
+		{
+		}
+	};
+
+	class OpenCodeCliProviderRuntime final : public LocalOnlyProviderRuntime
+	{
+	  public:
+		OpenCodeCliProviderRuntime() : LocalOnlyProviderRuntime("opencode-cli",
+		                                                        UAM_ENABLE_RUNTIME_OPENCODE_CLI != 0,
+		                                                        "Runtime 'opencode-cli' is disabled in this build (UAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF).",
 		                                                        false,
 		                                                        true,
 		                                                        false)
@@ -428,14 +484,12 @@ namespace
 		}
 	};
 
-	class OpenCodeCliProviderRuntime final : public FixedPolicyProviderRuntime
+	class OpenCodeLocalProviderRuntime final : public LocalOnlyProviderRuntime
 	{
 	  public:
-		OpenCodeCliProviderRuntime() : FixedPolicyProviderRuntime("opencode-cli",
-		                                                          UAM_ENABLE_RUNTIME_OPENCODE_CLI != 0,
-		                                                          "Runtime 'opencode-cli' is disabled in this build (UAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF).",
-		                                                          false,
-		                                                          true,
+		OpenCodeLocalProviderRuntime() : LocalOnlyProviderRuntime("opencode-local",
+		                                                          UAM_ENABLE_RUNTIME_OPENCODE_LOCAL != 0,
+		                                                          "Runtime 'opencode-local' is disabled in this build (UAM_ENABLE_RUNTIME_OPENCODE_LOCAL=OFF).",
 		                                                          false,
 		                                                          true,
 		                                                          false)
@@ -443,32 +497,15 @@ namespace
 		}
 	};
 
-	class OpenCodeLocalProviderRuntime final : public FixedPolicyProviderRuntime
+	class OllamaEngineProviderRuntime final : public LocalOnlyProviderRuntime
 	{
 	  public:
-		OpenCodeLocalProviderRuntime() : FixedPolicyProviderRuntime("opencode-local",
-		                                                            UAM_ENABLE_RUNTIME_OPENCODE_LOCAL != 0,
-		                                                            "Runtime 'opencode-local' is disabled in this build (UAM_ENABLE_RUNTIME_OPENCODE_LOCAL=OFF).",
-		                                                            false,
-		                                                            true,
-		                                                            false,
-		                                                            true,
-		                                                            false)
-		{
-		}
-	};
-
-	class OllamaEngineProviderRuntime final : public FixedPolicyProviderRuntime
-	{
-	  public:
-		OllamaEngineProviderRuntime() : FixedPolicyProviderRuntime("ollama-engine",
-		                                                           UAM_ENABLE_RUNTIME_OLLAMA_ENGINE != 0,
-		                                                           "Runtime 'ollama-engine' is disabled in this build (UAM_ENABLE_RUNTIME_OLLAMA_ENGINE=OFF).",
-		                                                           false,
-		                                                           true,
-		                                                           true,
-		                                                           false,
-		                                                           false)
+		OllamaEngineProviderRuntime() : LocalOnlyProviderRuntime("ollama-engine",
+		                                                         UAM_ENABLE_RUNTIME_OLLAMA_ENGINE != 0,
+		                                                         "Runtime 'ollama-engine' is disabled in this build (UAM_ENABLE_RUNTIME_OLLAMA_ENGINE=OFF).",
+		                                                         true,
+		                                                         false,
+		                                                         false)
 		{
 		}
 	};
@@ -555,17 +592,34 @@ std::string ProviderRuntime::BuildPrompt(const ProviderProfile& profile, const s
 
 std::string ProviderRuntime::BuildCommand(const ProviderProfile& profile, const AppSettings& settings, const std::string& prompt, const std::vector<std::string>& files, const std::string& resume_session_id)
 {
+	if (!IsRuntimeEnabled(profile))
+	{
+		return "";
+	}
+
 	return ProviderRuntimeRegistry::Resolve(profile).BuildCommand(profile, settings, prompt, files, resume_session_id);
 }
 
 std::vector<std::string> ProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings)
 {
+	if (!IsRuntimeEnabled(profile))
+	{
+		return {};
+	}
+
 	return ProviderRuntimeRegistry::Resolve(profile).BuildInteractiveArgv(profile, chat, settings);
 }
 
 bool ProviderRuntime::IsRuntimeEnabled(const ProviderProfile& profile)
 {
-	return ProviderRuntimeRegistry::Resolve(profile).IsEnabled();
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(profile);
+
+	if (!runtime.IsEnabled())
+	{
+		return false;
+	}
+
+	return RuntimeConfigurationError(profile, runtime).empty();
 }
 
 bool ProviderRuntime::IsRuntimeEnabled(const std::string& provider_id)
@@ -579,6 +633,13 @@ std::string ProviderRuntime::DisabledReason(const ProviderProfile& profile)
 
 	if (runtime.IsEnabled())
 	{
+		const std::string config_error = RuntimeConfigurationError(profile, runtime);
+
+		if (!config_error.empty())
+		{
+			return config_error;
+		}
+
 		return "";
 	}
 

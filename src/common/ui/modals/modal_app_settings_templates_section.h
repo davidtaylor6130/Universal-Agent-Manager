@@ -20,7 +20,7 @@ static void DrawAppSettingsTemplatesSection(AppState& app, AppSettings& draft_se
 	const std::string current_default_template = TemplateLabelOrFallback(app, app.settings.default_prompt_profile_id);
 	ImGui::TextColored(ui::kTextMuted, "Current default: %s", current_default_template.c_str());
 
-	if (DrawButton("Open Template Manager", ImVec2(164.0f, 30.0f), ButtonKind::Ghost))
+	if (DrawButton("Open Markdown Template Manager", ImVec2(264.0f, 30.0f), ButtonKind::Ghost))
 	{
 		app.open_template_manager_popup = true;
 	}

@@ -22,7 +22,7 @@ static void DrawTemplateManagerImportSection(AppState& app, const fs::path& glob
 		std::string imported_id;
 		std::string error;
 
-		if (GeminiTemplateCatalog::ImportMarkdownTemplate(global_root, fs::path(Trim(app.template_import_path_input)), &imported_id, &error))
+		if (MarkdownTemplateCatalog::ImportMarkdownTemplate(global_root, fs::path(Trim(app.template_import_path_input)), &imported_id, &error))
 		{
 			MarkTemplateCatalogDirty(app);
 			RefreshTemplateCatalog(app, true);

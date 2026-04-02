@@ -1,0 +1,110 @@
+flowchart TB
+  subgraph APP["Boot + App Shell"]
+    MAIN["main.cpp"]
+    APPLICATION["Application\nInitialize/Run/RunFrame/Shutdown"]
+    LEGACY["RunLegacyApplicationMain"]
+    STATE["uam::AppState"]
+    MAIN --> APPLICATION --> LEGACY --> STATE
+  end
+
+  subgraph PROVIDERS["Provider Runtime Polymorphism"]
+    PROFILES["ProviderProfileStore\nproviders.txt"]
+    RUNTIME["ProviderRuntime"]
+    REGISTRY["ProviderRuntimeRegistry"]
+    IPR["IProviderRuntime"]
+    GSTRUCT["GeminiStructuredProviderRuntime\n(gemini-structured)"]
+    GCLI["GeminiCliProviderRuntime\n(gemini-cli)"]
+    CODEX["CodexCliProviderRuntime\n(codex-cli)"]
+    CLAUDE["ClaudeCliProviderRuntime\n(claude-cli)"]
+    OPENCODE["OpenCodeCliProviderRuntime\n(opencode-cli)"]
+    OPLocal["OpenCodeLocalProviderRuntime\n(opencode-local)"]
+    OLLAMA_RT["OllamaEngineProviderRuntime\n(ollama-engine)"]
+    UNKNOWN["UnknownProviderRuntime\n(custom IDs)"]
+    PROFILES --> RUNTIME --> REGISTRY --> IPR
+    REGISTRY --> GSTRUCT
+    REGISTRY --> GCLI
+    REGISTRY --> CODEX
+    REGISTRY --> CLAUDE
+    REGISTRY --> OPENCODE
+    REGISTRY --> OPLocal
+    REGISTRY --> OLLAMA_RT
+    REGISTRY --> UNKNOWN
+  end
+
+  subgraph HISTORY["History + Persistence"]
+    LOCAL["LocalChatStore"]
+    CHAT_REPO["ChatRepository"]
+    GEM_HISTORY["GeminiJsonHistoryStore"]
+    SETTINGS["SettingsStore\nsettings.txt"]
+    FOLDERS["ChatFolderStore\nfolders.txt"]
+    TEMPLATES["MarkdownTemplateCatalog\nMarkdown_Templates/*.md"]
+    PATHS["AppPaths / data root"]
+    LOCAL --> CHAT_REPO
+    GEM_HISTORY --> RUNTIME
+    STATE --> SETTINGS
+    STATE --> FOLDERS
+    STATE --> TEMPLATES
+    STATE --> PATHS
+    IPR --> LOCAL
+    GSTRUCT --> GEM_HISTORY
+    GCLI --> GEM_HISTORY
+  end
+
+  subgraph PLATFORM["Strict Platform Boundary"]
+    FACTORY["PlatformServicesFactory::Instance()"]
+    SERVICES["PlatformServices"]
+    ITERM["IPlatformTerminalRuntime"]
+    IPROC["IPlatformProcessService"]
+    IFD["IPlatformFileDialogService"]
+    IPATH["IPlatformPathService"]
+    IUI["IPlatformUiTraits"]
+    WTR["WindowsTerminalRuntime"]
+    MTR["MacTerminalRuntime"]
+    WPS["WindowsProcessService"]
+    MPS["MacProcessService"]
+    WFDS["WindowsFileDialogService"]
+    MFDS["MacFileDialogService"]
+    WPATH["WindowsPathService"]
+    MPATH["MacPathService"]
+    WUI["WindowsUiTraits"]
+    MUI["MacUiTraits"]
+    TERM_START["StartCliTerminalPlatform\n(platform/terminal_startup_dispatch.h)"]
+    TERM_MAC["terminal_mac.h"]
+    TERM_WIN["terminal_windows.h"]
+    FACTORY --> SERVICES
+    SERVICES --> ITERM
+    SERVICES --> IPROC
+    SERVICES --> IFD
+    SERVICES --> IPATH
+    SERVICES --> IUI
+    WTR --> ITERM
+    MTR --> ITERM
+    WPS --> IPROC
+    MPS --> IPROC
+    WFDS --> IFD
+    MFDS --> IFD
+    WPATH --> IPATH
+    MPATH --> IPATH
+    WUI --> IUI
+    MUI --> IUI
+    TERM_START --> TERM_MAC
+    TERM_START --> TERM_WIN
+  end
+
+  subgraph ENGINE["RAG + Engine Services"]
+    RAG["RagIndexService"]
+    OES["OllamaEngineService\n(process-local singleton)"]
+    OEC["OllamaEngineClient"]
+    VCS["VcsWorkspaceService"]
+    STATE --> RAG --> OES --> OEC
+    VCS --> IPROC
+  end
+
+  subgraph BUILD["Build-Time Gating (CMake)"]
+    TOGGLES["UAM_ENABLE_RUNTIME_*"]
+    RAGFLAG["UAM_ENABLE_ENGINE_RAG"]
+    TOGGLES --> RUNTIME
+    TOGGLES --> OLLAMA_RT
+    TOGGLES --> OPLocal
+    RAGFLAG --> RAG
+  end

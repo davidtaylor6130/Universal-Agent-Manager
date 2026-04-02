@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <thread>
 
@@ -23,41 +24,27 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
-#include <windows.h>
 #include <shellapi.h>
 #include <shobjidl.h>
 #include <wincontypes.h>
+#include <windows.h>
 #pragma comment(lib, "Ole32.lib")
 #pragma comment(lib, "Shell32.lib")
-#endif
-
-#if defined(__APPLE__)
-#include <mach-o/dyld.h>
-#endif
-
-#if defined(__unix__) || defined(__APPLE__)
+#elif defined(__APPLE__)
 #include <fcntl.h>
+#include <mach-o/dyld.h>
 #include <signal.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#else
+#error "PlatformServices supports only Windows and macOS."
 #endif
 
 namespace
 {
 
-	std::string ToLowerCopy(std::string value)
-	{
-		std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-		return value;
-	}
-
-	bool ContainsInsensitive(const std::string& haystack, const std::string& needle)
-	{
-		const std::string lowered_haystack = ToLowerCopy(haystack);
-		const std::string lowered_needle = ToLowerCopy(needle);
-		return lowered_haystack.find(lowered_needle) != std::string::npos;
-	}
+#if defined(_WIN32)
 
 	std::string TrimAsciiWhitespace(const std::string& value)
 	{
@@ -70,26 +57,6 @@ namespace
 
 		const std::size_t end = value.find_last_not_of(" \t\r\n");
 		return value.substr(start, end - start + 1);
-	}
-
-	std::string ShellQuotePosix(const std::string& value)
-	{
-		std::string escaped = "'";
-
-		for (const char ch : value)
-		{
-			if (ch == '\'')
-			{
-				escaped += "'\\''";
-			}
-			else
-			{
-				escaped.push_back(ch);
-			}
-		}
-
-		escaped.push_back('\'');
-		return escaped;
 	}
 
 	std::string ShellQuoteWindowsForCmd(const std::string& value)
@@ -119,86 +86,6 @@ namespace
 		escaped.push_back('"');
 		return escaped;
 	}
-
-	bool RunShellCommand(const std::string& command)
-	{
-		return std::system(command.c_str()) == 0;
-	}
-
-	bool RunShellCommandCapture(const std::string& command, std::string* output_out = nullptr)
-	{
-#if defined(_WIN32)
-		FILE* pipe = _popen(command.c_str(), "r");
-#else
-		FILE* pipe = popen(command.c_str(), "r");
-#endif
-
-		if (pipe == nullptr)
-		{
-			if (output_out != nullptr)
-			{
-				output_out->clear();
-			}
-
-			return false;
-		}
-
-		std::string output;
-		std::array<char, 512> buffer{};
-
-		while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr)
-		{
-			output.append(buffer.data());
-		}
-
-#if defined(_WIN32)
-		const int status = _pclose(pipe);
-#else
-		const int status = pclose(pipe);
-#endif
-
-		if (output_out != nullptr)
-		{
-			*output_out = TrimAsciiWhitespace(output);
-		}
-
-		return status == 0;
-	}
-
-	bool IsShellCommandAvailable(const std::string& command)
-	{
-#if defined(_WIN32)
-		return RunShellCommand("where " + command + " >nul 2>nul");
-#else
-		return RunShellCommand("command -v " + command + " >/dev/null 2>&1");
-#endif
-	}
-
-	std::string EscapeAppleScriptQuotedString(const std::string& value)
-	{
-		std::string escaped;
-		escaped.reserve(value.size());
-
-		for (const char ch : value)
-		{
-			if (ch == '\\')
-			{
-				escaped += "\\\\";
-			}
-			else if (ch == '"')
-			{
-				escaped += "\\\"";
-			}
-			else
-			{
-				escaped.push_back(ch);
-			}
-		}
-
-		return escaped;
-	}
-
-#if defined(_WIN32)
 
 	std::wstring WideFromUtf8(const std::string& value)
 	{
@@ -576,9 +463,7 @@ namespace
 		return true;
 	}
 
-#endif
-
-	class DesktopTerminalRuntime final : public IPlatformTerminalRuntime
+	class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 	{
 	  public:
 		bool IsAvailable() const override
@@ -588,8 +473,6 @@ namespace
 
 		void CloseCliTerminalHandles(uam::CliTerminalState& terminal) const override
 		{
-#if defined(_WIN32)
-
 			if (terminal.pipe_input != INVALID_HANDLE_VALUE)
 			{
 				CloseHandle(terminal.pipe_input);
@@ -629,15 +512,6 @@ namespace
 
 			terminal.process_info.dwProcessId = 0;
 			terminal.process_info.dwThreadId = 0;
-#else
-			if (terminal.master_fd >= 0)
-			{
-				close(terminal.master_fd);
-				terminal.master_fd = -1;
-			}
-
-			terminal.child_pid = -1;
-#endif
 		}
 
 		bool WriteToCliTerminal(uam::CliTerminalState& terminal, const char* bytes, const std::size_t len) const override
@@ -647,7 +521,6 @@ namespace
 				return true;
 			}
 
-#if defined(_WIN32)
 			if (terminal.pipe_input == INVALID_HANDLE_VALUE)
 			{
 				return false;
@@ -670,34 +543,10 @@ namespace
 			}
 
 			return true;
-#else
-			std::size_t offset = 0;
-
-			while (offset < len)
-			{
-				const ssize_t written = write(terminal.master_fd, bytes + offset, len - offset);
-
-				if (written > 0)
-				{
-					offset += static_cast<std::size_t>(written);
-					continue;
-				}
-
-				if (written < 0 && errno == EINTR)
-				{
-					continue;
-				}
-
-				return false;
-			}
-
-			return true;
-#endif
 		}
 
 		void StopCliTerminalProcess(uam::CliTerminalState& terminal, const bool fast_exit) const override
 		{
-#if defined(_WIN32)
 			if (terminal.process_info.hProcess == INVALID_HANDLE_VALUE)
 			{
 				return;
@@ -728,7 +577,656 @@ namespace
 			{
 				TerminateProcess(terminal.process_info.hProcess, 1);
 			}
-#else
+		}
+
+		void ResizeCliTerminal(uam::CliTerminalState& terminal) const override
+		{
+			if (terminal.pseudo_console != nullptr)
+			{
+				COORD size{static_cast<SHORT>(terminal.cols), static_cast<SHORT>(terminal.rows)};
+				ResizePseudoConsoleSafe(terminal.pseudo_console, size);
+			}
+		}
+
+		std::ptrdiff_t ReadCliTerminalOutput(uam::CliTerminalState& terminal, char* buffer, const std::size_t buffer_size) const override
+		{
+			if (terminal.pipe_output == INVALID_HANDLE_VALUE)
+			{
+				return -1;
+			}
+
+			DWORD available = 0;
+
+			if (!PeekNamedPipe(terminal.pipe_output, nullptr, 0, nullptr, &available, nullptr))
+			{
+				const DWORD err = GetLastError();
+
+				if (err == ERROR_BROKEN_PIPE)
+				{
+					return 0;
+				}
+
+				return -1;
+			}
+
+			if (available == 0)
+			{
+				return -2;
+			}
+
+			const DWORD to_read = static_cast<DWORD>(std::min<std::size_t>(buffer_size, available));
+			DWORD bytes_read = 0;
+
+			if (!ReadFile(terminal.pipe_output, buffer, to_read, &bytes_read, nullptr))
+			{
+				const DWORD err = GetLastError();
+
+				if (err == ERROR_BROKEN_PIPE)
+				{
+					return 0;
+				}
+
+				return -1;
+			}
+
+			if (bytes_read == 0)
+			{
+				return -2;
+			}
+
+			return static_cast<std::ptrdiff_t>(bytes_read);
+		}
+
+		bool HasReadableTerminalOutputHandle(const uam::CliTerminalState& terminal) const override
+		{
+			return terminal.pipe_output != INVALID_HANDLE_VALUE;
+		}
+
+		bool PollCliTerminalProcessExited(uam::CliTerminalState& terminal) const override
+		{
+			if (terminal.process_info.hProcess == INVALID_HANDLE_VALUE)
+			{
+				return true;
+			}
+
+			return WaitForSingleObject(terminal.process_info.hProcess, 0) == WAIT_OBJECT_0;
+		}
+
+		bool SupportsAsyncNativeGeminiHistoryRefresh() const override
+		{
+			return true;
+		}
+	};
+
+	class WindowsProcessService final : public IPlatformProcessService
+	{
+	  public:
+		bool SupportsDetachedProcesses() const override
+		{
+			return true;
+		}
+
+		bool PopulateLocalTime(const std::time_t timestamp, std::tm* tm_out) const override
+		{
+			if (tm_out == nullptr)
+			{
+				return false;
+			}
+
+			return localtime_s(tm_out, &timestamp) == 0;
+		}
+
+		std::string BuildShellCommandWithWorkingDirectory(const std::filesystem::path& working_directory, const std::string& command) const override
+		{
+			return "cd /d " + ShellQuoteWindowsForCmd(working_directory.string()) + " && " + command;
+		}
+
+		bool CaptureCommandOutput(const std::string& command, std::string* output_out, int* raw_status_out, std::string* error_out = nullptr) const override
+		{
+			std::unique_ptr<FILE, int (*)(FILE*)> pipe(_popen(command.c_str(), "r"), _pclose);
+
+			if (pipe == nullptr)
+			{
+				if (output_out != nullptr)
+				{
+					output_out->clear();
+				}
+
+				if (raw_status_out != nullptr)
+				{
+					*raw_status_out = -1;
+				}
+
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to launch command.";
+				}
+
+				return false;
+			}
+
+			std::array<char, 4096> buffer{};
+			std::string output;
+
+			while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe.get()) != nullptr)
+			{
+				output += buffer.data();
+			}
+
+			const int raw_status = pipe.get_deleter()(pipe.release());
+
+			if (output_out != nullptr)
+			{
+				*output_out = output;
+			}
+
+			if (raw_status_out != nullptr)
+			{
+				*raw_status_out = raw_status;
+			}
+
+			if (error_out != nullptr)
+			{
+				error_out->clear();
+			}
+
+			return true;
+		}
+
+		int NormalizeCapturedCommandExitCode(const int raw_status) const override
+		{
+			return raw_status;
+		}
+
+		std::string GeminiDowngradeCommand() const override
+		{
+			return "npm install -g @google/gemini-cli@0.30.0";
+		}
+
+		std::filesystem::path ResolveCurrentExecutablePath() const override
+		{
+			std::wstring buffer(static_cast<std::size_t>(MAX_PATH), L'\0');
+			const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+
+			if (length == 0 || length >= buffer.size())
+			{
+				return {};
+			}
+
+			buffer.resize(static_cast<std::size_t>(length));
+			return std::filesystem::path(buffer);
+		}
+
+		std::string OpenCodeBridgeBinaryName() const override
+		{
+			return "uam_ollama_engine_bridge.exe";
+		}
+
+		bool StartOpenCodeBridgeProcess(const std::vector<std::string>& argv, uam::OpenCodeBridgeState& state, std::string* error_out = nullptr) const override
+		{
+			if (argv.empty() || TrimAsciiWhitespace(argv.front()).empty())
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "OpenCode bridge command is empty.";
+				}
+
+				return false;
+			}
+
+			const std::wstring command_w = WideFromUtf8(BuildWindowsCommandLine(argv));
+
+			if (command_w.empty())
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to encode OpenCode bridge command line.";
+				}
+
+				return false;
+			}
+
+			std::vector<wchar_t> command_line(command_w.begin(), command_w.end());
+			command_line.push_back(L'\0');
+
+			STARTUPINFOW startup_info{};
+			startup_info.cb = sizeof(startup_info);
+			PROCESS_INFORMATION process_info{};
+			const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup_info, &process_info);
+
+			if (!created)
+			{
+				const DWORD launch_error = GetLastError();
+
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to launch OpenCode bridge process (Win32 error " + std::to_string(launch_error) + ").";
+				}
+
+				return false;
+			}
+
+			state.process_handle = process_info.hProcess;
+			state.process_thread = process_info.hThread;
+			state.process_id = process_info.dwProcessId;
+			return true;
+		}
+
+		bool IsOpenCodeBridgeProcessRunning(uam::OpenCodeBridgeState& state) const override
+		{
+			if (state.process_handle == INVALID_HANDLE_VALUE || state.process_handle == nullptr)
+			{
+				return false;
+			}
+
+			return WaitForSingleObject(state.process_handle, 0) == WAIT_TIMEOUT;
+		}
+
+		void StopOpenCodeBridgeProcess(uam::OpenCodeBridgeState& state) const override
+		{
+			if (state.process_handle != INVALID_HANDLE_VALUE && state.process_handle != nullptr)
+			{
+				const DWORD wait_result = WaitForSingleObject(state.process_handle, 0);
+
+				if (wait_result == WAIT_TIMEOUT)
+				{
+					TerminateProcess(state.process_handle, 1);
+					WaitForSingleObject(state.process_handle, 1000);
+				}
+
+				CloseHandle(state.process_handle);
+				state.process_handle = INVALID_HANDLE_VALUE;
+			}
+
+			if (state.process_thread != INVALID_HANDLE_VALUE && state.process_thread != nullptr)
+			{
+				CloseHandle(state.process_thread);
+				state.process_thread = INVALID_HANDLE_VALUE;
+			}
+
+			state.process_id = 0;
+		}
+
+		uintmax_t NativeGeminiSessionMaxFileBytes() const override
+		{
+			return 12ULL * 1024ULL * 1024ULL;
+		}
+
+		std::size_t NativeGeminiSessionMaxMessages() const override
+		{
+			return 12000;
+		}
+	};
+
+	class WindowsFileDialogService final : public IPlatformFileDialogService
+	{
+	  public:
+		bool SupportsNativeDialogs() const override
+		{
+			return true;
+		}
+
+		bool BrowsePath(const PlatformPathBrowseTarget target, const std::filesystem::path& initial_path, std::string* selected_path_out, std::string* error_out = nullptr) const override
+		{
+			return BrowsePathWithNativeDialogWindows(target, initial_path, selected_path_out, error_out);
+		}
+
+		bool OpenFolderInFileManager(const std::filesystem::path& folder_path, std::string* error_out = nullptr) const override
+		{
+			if (folder_path.empty())
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Folder path is empty.";
+				}
+
+				return false;
+			}
+
+			std::error_code ec;
+			std::filesystem::create_directories(folder_path, ec);
+
+			if (ec)
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to create folder: " + ec.message();
+				}
+
+				return false;
+			}
+
+			const HINSTANCE result = ShellExecuteW(nullptr, L"open", folder_path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+
+			if (reinterpret_cast<INT_PTR>(result) <= 32)
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to open folder in file manager.";
+				}
+
+				return false;
+			}
+
+			return true;
+		}
+
+		bool RevealPathInFileManager(const std::filesystem::path& file_path, std::string* error_out = nullptr) const override
+		{
+			if (file_path.empty())
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "File path is empty.";
+				}
+
+				return false;
+			}
+
+			if (!std::filesystem::exists(file_path))
+			{
+				return OpenFolderInFileManager(file_path.parent_path(), error_out);
+			}
+
+			const std::wstring params = L"/select,\"" + file_path.wstring() + L"\"";
+			const HINSTANCE result = ShellExecuteW(nullptr, L"open", L"explorer.exe", params.c_str(), nullptr, SW_SHOWNORMAL);
+
+			if (reinterpret_cast<INT_PTR>(result) <= 32)
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to reveal file in file manager.";
+				}
+
+				return false;
+			}
+
+			return true;
+		}
+	};
+
+	class WindowsPathService final : public IPlatformPathService
+	{
+	  public:
+		std::filesystem::path DefaultDataRootPath() const override
+		{
+			return AppPaths::DefaultDataRootPath();
+		}
+
+		std::optional<std::filesystem::path> ResolveUserHomePath() const override
+		{
+			return ResolveWindowsHomePath();
+		}
+
+		std::filesystem::path ExpandLeadingTildePath(const std::string& raw_path) const override
+		{
+			const std::string trimmed = TrimAsciiWhitespace(raw_path);
+
+			if (trimmed.empty())
+			{
+				return {};
+			}
+
+			if (trimmed[0] != '~')
+			{
+				return std::filesystem::path(trimmed);
+			}
+
+			if (const std::optional<std::filesystem::path> home = ResolveUserHomePath(); home.has_value())
+			{
+				if (trimmed.size() == 1)
+				{
+					return home.value();
+				}
+
+				if (trimmed[1] == '\\' || trimmed[1] == '/')
+				{
+					return home.value() / trimmed.substr(2);
+				}
+			}
+
+			return std::filesystem::path(trimmed);
+		}
+
+		std::filesystem::path ResolveOpenCodeConfigPath() const override
+		{
+			if (const std::optional<std::filesystem::path> home = ResolveUserHomePath(); home.has_value())
+			{
+				return home.value() / ".config" / "opencode" / "opencode.json";
+			}
+
+			std::error_code cwd_ec;
+			const std::filesystem::path cwd = std::filesystem::current_path(cwd_ec);
+			return cwd_ec ? std::filesystem::path("opencode.json") : (cwd / ".config" / "opencode" / "opencode.json");
+		}
+	};
+
+	class WindowsUiTraits final : public IPlatformUiTraits
+	{
+	  public:
+		void ApplyProcessDpiAwareness() const override
+		{
+			SetProcessDPIAware();
+		}
+
+		void ConfigureOpenGlAttributes() const override
+		{
+			SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
+			SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+			SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+			SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+		}
+
+		const char* OpenGlGlslVersion() const override
+		{
+			return "#version 130";
+		}
+
+		float AdjustSidebarWidth(const float layout_width, const float current_sidebar_width, const float effective_ui_scale) const override
+		{
+			(void)current_sidebar_width;
+			const float width_bias = 1.0f + ((std::max(1.0f, effective_ui_scale) - 1.0f) * 0.36f);
+			const float sidebar_ratio = (layout_width < 1180.0f) ? 0.35f : 0.30f;
+			float sidebar_width = std::clamp(layout_width * sidebar_ratio, 280.0f * width_bias, 470.0f * width_bias);
+			const float max_sidebar_from_main_floor = std::max(220.0f, layout_width - 560.0f);
+			return std::clamp(sidebar_width, 220.0f, max_sidebar_from_main_floor);
+		}
+
+		bool UseWindowsLayoutAdjustments() const override
+		{
+			return true;
+		}
+
+		bool UsesLogicalPointsForUiScale() const override
+		{
+			return false;
+		}
+
+		float PlatformUiSpacingScale() const override
+		{
+			return 1.14f;
+		}
+
+		std::optional<bool> DetectSystemPrefersLightTheme() const override
+		{
+			DWORD value = 1;
+			DWORD value_size = sizeof(value);
+			const LONG rc = RegGetValueA(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", "AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &value, &value_size);
+
+			if (rc == ERROR_SUCCESS)
+			{
+				return value != 0;
+			}
+
+			return std::nullopt;
+		}
+	};
+
+#elif defined(__APPLE__)
+
+	std::string ToLowerCopy(std::string value)
+	{
+		std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+		return value;
+	}
+
+	bool ContainsInsensitive(const std::string& haystack, const std::string& needle)
+	{
+		const std::string lowered_haystack = ToLowerCopy(haystack);
+		const std::string lowered_needle = ToLowerCopy(needle);
+		return lowered_haystack.find(lowered_needle) != std::string::npos;
+	}
+
+	std::string TrimAsciiWhitespace(const std::string& value)
+	{
+		const std::size_t start = value.find_first_not_of(" \t\r\n");
+
+		if (start == std::string::npos)
+		{
+			return "";
+		}
+
+		const std::size_t end = value.find_last_not_of(" \t\r\n");
+		return value.substr(start, end - start + 1);
+	}
+
+	std::string ShellQuotePosix(const std::string& value)
+	{
+		std::string escaped = "'";
+
+		for (const char ch : value)
+		{
+			if (ch == '\'')
+			{
+				escaped += "'\\''";
+			}
+			else
+			{
+				escaped.push_back(ch);
+			}
+		}
+
+		escaped.push_back('\'');
+		return escaped;
+	}
+
+	bool RunShellCommand(const std::string& command)
+	{
+		return std::system(command.c_str()) == 0;
+	}
+
+	bool RunShellCommandCapture(const std::string& command, std::string* output_out = nullptr)
+	{
+		FILE* pipe = popen(command.c_str(), "r");
+
+		if (pipe == nullptr)
+		{
+			if (output_out != nullptr)
+			{
+				output_out->clear();
+			}
+
+			return false;
+		}
+
+		std::string output;
+		std::array<char, 512> buffer{};
+
+		while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr)
+		{
+			output.append(buffer.data());
+		}
+
+		const int status = pclose(pipe);
+
+		if (output_out != nullptr)
+		{
+			*output_out = TrimAsciiWhitespace(output);
+		}
+
+		return status == 0;
+	}
+
+	bool IsShellCommandAvailable(const std::string& command)
+	{
+		return RunShellCommand("command -v " + command + " >/dev/null 2>&1");
+	}
+
+	std::string EscapeAppleScriptQuotedString(const std::string& value)
+	{
+		std::string escaped;
+		escaped.reserve(value.size());
+
+		for (const char ch : value)
+		{
+			if (ch == '\\')
+			{
+				escaped += "\\\\";
+			}
+			else if (ch == '"')
+			{
+				escaped += "\\\"";
+			}
+			else
+			{
+				escaped.push_back(ch);
+			}
+		}
+
+		return escaped;
+	}
+
+	class MacTerminalRuntime final : public IPlatformTerminalRuntime
+	{
+	  public:
+		bool IsAvailable() const override
+		{
+			return true;
+		}
+
+		void CloseCliTerminalHandles(uam::CliTerminalState& terminal) const override
+		{
+			if (terminal.master_fd >= 0)
+			{
+				close(terminal.master_fd);
+				terminal.master_fd = -1;
+			}
+
+			terminal.child_pid = -1;
+		}
+
+		bool WriteToCliTerminal(uam::CliTerminalState& terminal, const char* bytes, const std::size_t len) const override
+		{
+			if (bytes == nullptr || len == 0)
+			{
+				return true;
+			}
+
+			std::size_t offset = 0;
+
+			while (offset < len)
+			{
+				const ssize_t written = write(terminal.master_fd, bytes + offset, len - offset);
+
+				if (written > 0)
+				{
+					offset += static_cast<std::size_t>(written);
+					continue;
+				}
+
+				if (written < 0 && errno == EINTR)
+				{
+					continue;
+				}
+
+				return false;
+			}
+
+			return true;
+		}
+
+		void StopCliTerminalProcess(uam::CliTerminalState& terminal, const bool fast_exit) const override
+		{
 			if (terminal.child_pid <= 0)
 			{
 				return;
@@ -798,18 +1296,10 @@ namespace
 			}
 
 			terminal.child_pid = -1;
-#endif
 		}
 
 		void ResizeCliTerminal(uam::CliTerminalState& terminal) const override
 		{
-#if defined(_WIN32)
-			if (terminal.pseudo_console != nullptr)
-			{
-				COORD size{static_cast<SHORT>(terminal.cols), static_cast<SHORT>(terminal.rows)};
-				ResizePseudoConsoleSafe(terminal.pseudo_console, size);
-			}
-#else
 			if (terminal.master_fd >= 0)
 			{
 				struct winsize ws
@@ -820,58 +1310,10 @@ namespace
 				ws.ws_col = static_cast<unsigned short>(terminal.cols);
 				ioctl(terminal.master_fd, TIOCSWINSZ, &ws);
 			}
-#endif
 		}
 
 		std::ptrdiff_t ReadCliTerminalOutput(uam::CliTerminalState& terminal, char* buffer, const std::size_t buffer_size) const override
 		{
-#if defined(_WIN32)
-			if (terminal.pipe_output == INVALID_HANDLE_VALUE)
-			{
-				return -1;
-			}
-
-			DWORD available = 0;
-
-			if (!PeekNamedPipe(terminal.pipe_output, nullptr, 0, nullptr, &available, nullptr))
-			{
-				const DWORD err = GetLastError();
-
-				if (err == ERROR_BROKEN_PIPE)
-				{
-					return 0;
-				}
-
-				return -1;
-			}
-
-			if (available == 0)
-			{
-				return -2;
-			}
-
-			const DWORD to_read = static_cast<DWORD>(std::min<std::size_t>(buffer_size, available));
-			DWORD bytes_read = 0;
-
-			if (!ReadFile(terminal.pipe_output, buffer, to_read, &bytes_read, nullptr))
-			{
-				const DWORD err = GetLastError();
-
-				if (err == ERROR_BROKEN_PIPE)
-				{
-					return 0;
-				}
-
-				return -1;
-			}
-
-			if (bytes_read == 0)
-			{
-				return -2;
-			}
-
-			return static_cast<std::ptrdiff_t>(bytes_read);
-#else
 			while (true)
 			{
 				const ssize_t read_bytes = read(terminal.master_fd, buffer, buffer_size);
@@ -898,28 +1340,15 @@ namespace
 
 				return -1;
 			}
-#endif
 		}
 
 		bool HasReadableTerminalOutputHandle(const uam::CliTerminalState& terminal) const override
 		{
-#if defined(_WIN32)
-			return terminal.pipe_output != INVALID_HANDLE_VALUE;
-#else
 			return terminal.master_fd >= 0;
-#endif
 		}
 
 		bool PollCliTerminalProcessExited(uam::CliTerminalState& terminal) const override
 		{
-#if defined(_WIN32)
-			if (terminal.process_info.hProcess == INVALID_HANDLE_VALUE)
-			{
-				return true;
-			}
-
-			return WaitForSingleObject(terminal.process_info.hProcess, 0) == WAIT_OBJECT_0;
-#else
 			if (terminal.child_pid <= 0)
 			{
 				return true;
@@ -940,20 +1369,15 @@ namespace
 			}
 
 			return false;
-#endif
 		}
 
 		bool SupportsAsyncNativeGeminiHistoryRefresh() const override
 		{
-#if defined(_WIN32)
-			return true;
-#else
 			return false;
-#endif
 		}
 	};
 
-	class DesktopProcessService final : public IPlatformProcessService
+	class MacProcessService final : public IPlatformProcessService
 	{
 	  public:
 		bool SupportsDetachedProcesses() const override
@@ -968,29 +1392,17 @@ namespace
 				return false;
 			}
 
-#if defined(_WIN32)
-			return localtime_s(tm_out, &timestamp) == 0;
-#else
 			return localtime_r(&timestamp, tm_out) != nullptr;
-#endif
 		}
 
 		std::string BuildShellCommandWithWorkingDirectory(const std::filesystem::path& working_directory, const std::string& command) const override
 		{
-#if defined(_WIN32)
-			return "cd /d " + ShellQuoteWindowsForCmd(working_directory.string()) + " && " + command;
-#else
 			return "cd " + ShellQuotePosix(working_directory.string()) + " && " + command;
-#endif
 		}
 
 		bool CaptureCommandOutput(const std::string& command, std::string* output_out, int* raw_status_out, std::string* error_out = nullptr) const override
 		{
-#if defined(_WIN32)
-			std::unique_ptr<FILE, int (*)(FILE*)> pipe(_popen(command.c_str(), "r"), _pclose);
-#else
 			std::unique_ptr<FILE, int (*)(FILE*)> pipe(popen(command.c_str(), "r"), pclose);
-#endif
 
 			if (pipe == nullptr)
 			{
@@ -1042,38 +1454,21 @@ namespace
 
 		int NormalizeCapturedCommandExitCode(const int raw_status) const override
 		{
-#if defined(__unix__) || defined(__APPLE__)
 			if (WIFEXITED(raw_status))
 			{
 				return WEXITSTATUS(raw_status);
 			}
-#endif
+
 			return raw_status;
 		}
 
 		std::string GeminiDowngradeCommand() const override
 		{
-#if defined(__APPLE__)
 			return "brew install gemini-cli@0.30.0";
-#else
-			return "npm install -g @google/gemini-cli@0.30.0";
-#endif
 		}
 
 		std::filesystem::path ResolveCurrentExecutablePath() const override
 		{
-#if defined(_WIN32)
-			std::wstring buffer(static_cast<std::size_t>(MAX_PATH), L'\0');
-			const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-
-			if (length == 0 || length >= buffer.size())
-			{
-				return {};
-			}
-
-			buffer.resize(static_cast<std::size_t>(length));
-			return std::filesystem::path(buffer);
-#elif defined(__APPLE__)
 			uint32_t buffer_size = 0;
 			(void)_NSGetExecutablePath(nullptr, &buffer_size);
 
@@ -1090,29 +1485,11 @@ namespace
 			}
 
 			return std::filesystem::path(buffer.c_str());
-#elif defined(__linux__)
-			std::array<char, 4096> buffer{};
-			const ssize_t read_len = readlink("/proc/self/exe", buffer.data(), buffer.size() - 1);
-
-			if (read_len <= 0)
-			{
-				return {};
-			}
-
-			buffer[static_cast<std::size_t>(read_len)] = '\0';
-			return std::filesystem::path(buffer.data());
-#else
-			return {};
-#endif
 		}
 
 		std::string OpenCodeBridgeBinaryName() const override
 		{
-#if defined(_WIN32)
-			return "uam_ollama_engine_bridge.exe";
-#else
 			return "uam_ollama_engine_bridge";
-#endif
 		}
 
 		bool StartOpenCodeBridgeProcess(const std::vector<std::string>& argv, uam::OpenCodeBridgeState& state, std::string* error_out = nullptr) const override
@@ -1127,44 +1504,6 @@ namespace
 				return false;
 			}
 
-#if defined(_WIN32)
-			const std::wstring command_w = WideFromUtf8(BuildWindowsCommandLine(argv));
-
-			if (command_w.empty())
-			{
-				if (error_out != nullptr)
-				{
-					*error_out = "Failed to encode OpenCode bridge command line.";
-				}
-
-				return false;
-			}
-
-			std::vector<wchar_t> command_line(command_w.begin(), command_w.end());
-			command_line.push_back(L'\0');
-
-			STARTUPINFOW startup_info{};
-			startup_info.cb = sizeof(startup_info);
-			PROCESS_INFORMATION process_info{};
-			const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup_info, &process_info);
-
-			if (!created)
-			{
-				const DWORD launch_error = GetLastError();
-
-				if (error_out != nullptr)
-				{
-					*error_out = "Failed to launch OpenCode bridge process (Win32 error " + std::to_string(launch_error) + ").";
-				}
-
-				return false;
-			}
-
-			state.process_handle = process_info.hProcess;
-			state.process_thread = process_info.hThread;
-			state.process_id = process_info.dwProcessId;
-			return true;
-#else
 			const pid_t child_pid = fork();
 
 			if (child_pid < 0)
@@ -1218,19 +1557,10 @@ namespace
 
 			state.process_id = child_pid;
 			return true;
-#endif
 		}
 
 		bool IsOpenCodeBridgeProcessRunning(uam::OpenCodeBridgeState& state) const override
 		{
-#if defined(_WIN32)
-			if (state.process_handle == INVALID_HANDLE_VALUE || state.process_handle == nullptr)
-			{
-				return false;
-			}
-
-			return WaitForSingleObject(state.process_handle, 0) == WAIT_TIMEOUT;
-#else
 			if (state.process_id <= 0)
 			{
 				return false;
@@ -1251,34 +1581,10 @@ namespace
 			}
 
 			return true;
-#endif
 		}
 
 		void StopOpenCodeBridgeProcess(uam::OpenCodeBridgeState& state) const override
 		{
-#if defined(_WIN32)
-			if (state.process_handle != INVALID_HANDLE_VALUE && state.process_handle != nullptr)
-			{
-				const DWORD wait_result = WaitForSingleObject(state.process_handle, 0);
-
-				if (wait_result == WAIT_TIMEOUT)
-				{
-					TerminateProcess(state.process_handle, 1);
-					WaitForSingleObject(state.process_handle, 1000);
-				}
-
-				CloseHandle(state.process_handle);
-				state.process_handle = INVALID_HANDLE_VALUE;
-			}
-
-			if (state.process_thread != INVALID_HANDLE_VALUE && state.process_thread != nullptr)
-			{
-				CloseHandle(state.process_thread);
-				state.process_thread = INVALID_HANDLE_VALUE;
-			}
-
-			state.process_id = 0;
-#else
 			if (state.process_id > 0)
 			{
 				const pid_t pid = state.process_id;
@@ -1308,29 +1614,20 @@ namespace
 			}
 
 			state.process_id = -1;
-#endif
 		}
 
 		uintmax_t NativeGeminiSessionMaxFileBytes() const override
 		{
-#if defined(_WIN32)
-			return 12ULL * 1024ULL * 1024ULL;
-#else
 			return 0;
-#endif
 		}
 
 		std::size_t NativeGeminiSessionMaxMessages() const override
 		{
-#if defined(_WIN32)
-			return 12000;
-#else
 			return 0;
-#endif
 		}
 	};
 
-	class DesktopFileDialogService final : public IPlatformFileDialogService
+	class MacFileDialogService final : public IPlatformFileDialogService
 	{
 	  public:
 		bool SupportsNativeDialogs() const override
@@ -1340,9 +1637,6 @@ namespace
 
 		bool BrowsePath(const PlatformPathBrowseTarget target, const std::filesystem::path& initial_path, std::string* selected_path_out, std::string* error_out = nullptr) const override
 		{
-#if defined(_WIN32)
-			return BrowsePathWithNativeDialogWindows(target, initial_path, selected_path_out, error_out);
-#elif defined(__APPLE__)
 			if (!IsShellCommandAvailable("osascript"))
 			{
 				if (error_out != nullptr)
@@ -1375,67 +1669,6 @@ namespace
 			}
 
 			return true;
-#else
-			const bool has_zenity = IsShellCommandAvailable("zenity");
-			const bool has_kdialog = IsShellCommandAvailable("kdialog");
-
-			if (!has_zenity && !has_kdialog)
-			{
-				if (error_out != nullptr)
-				{
-					*error_out = "Native path picker is unavailable (install zenity or kdialog).";
-				}
-
-				return false;
-			}
-
-			std::string command;
-
-			if (has_zenity)
-			{
-				command = "zenity --file-selection --title=" + ShellQuotePosix(target == PlatformPathBrowseTarget::Directory ? "Select folder" : "Select file");
-
-				if (target == PlatformPathBrowseTarget::Directory)
-				{
-					command += " --directory";
-				}
-
-				if (!initial_path.empty())
-				{
-					std::string filename_hint = initial_path.string();
-
-					if (target == PlatformPathBrowseTarget::Directory && !filename_hint.empty() && filename_hint.back() != '/' && filename_hint.back() != '\\')
-					{
-						filename_hint.push_back('/');
-					}
-
-					command += " --filename=" + ShellQuotePosix(filename_hint);
-				}
-			}
-			else
-			{
-				command = std::string("kdialog ") + (target == PlatformPathBrowseTarget::Directory ? "--getexistingdirectory" : "--getopenfilename");
-
-				if (!initial_path.empty())
-				{
-					command += " " + ShellQuotePosix(initial_path.string());
-				}
-			}
-
-			std::string selected_path;
-
-			if (!RunShellCommandCapture(command, &selected_path) || selected_path.empty())
-			{
-				return false;
-			}
-
-			if (selected_path_out != nullptr)
-			{
-				*selected_path_out = selected_path;
-			}
-
-			return true;
-#endif
 		}
 
 		bool OpenFolderInFileManager(const std::filesystem::path& folder_path, std::string* error_out = nullptr) const override
@@ -1463,27 +1696,8 @@ namespace
 				return false;
 			}
 
-#if defined(_WIN32)
-			const HINSTANCE result = ShellExecuteW(nullptr, L"open", folder_path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-
-			if (reinterpret_cast<INT_PTR>(result) <= 32)
-			{
-				if (error_out != nullptr)
-				{
-					*error_out = "Failed to open folder in file manager.";
-				}
-
-				return false;
-			}
-
-			return true;
-#elif defined(__APPLE__)
 			const std::string command = "open " + ShellQuotePosix(folder_path.string());
-#else
-			const std::string command = "xdg-open " + ShellQuotePosix(folder_path.string()) + " >/dev/null 2>&1";
-#endif
 
-#if !defined(_WIN32)
 			if (!RunShellCommand(command))
 			{
 				if (error_out != nullptr)
@@ -1495,7 +1709,6 @@ namespace
 			}
 
 			return true;
-#endif
 		}
 
 		bool RevealPathInFileManager(const std::filesystem::path& file_path, std::string* error_out = nullptr) const override
@@ -1515,28 +1728,8 @@ namespace
 				return OpenFolderInFileManager(file_path.parent_path(), error_out);
 			}
 
-#if defined(_WIN32)
-			const std::wstring params = L"/select,\"" + file_path.wstring() + L"\"";
-			const HINSTANCE result = ShellExecuteW(nullptr, L"open", L"explorer.exe", params.c_str(), nullptr, SW_SHOWNORMAL);
-
-			if (reinterpret_cast<INT_PTR>(result) <= 32)
-			{
-				if (error_out != nullptr)
-				{
-					*error_out = "Failed to reveal file in file manager.";
-				}
-
-				return false;
-			}
-
-			return true;
-#elif defined(__APPLE__)
 			const std::string command = "open -R " + ShellQuotePosix(file_path.string());
-#else
-			return OpenFolderInFileManager(file_path.parent_path(), error_out);
-#endif
 
-#if !defined(_WIN32)
 			if (!RunShellCommand(command))
 			{
 				if (error_out != nullptr)
@@ -1548,11 +1741,10 @@ namespace
 			}
 
 			return true;
-#endif
 		}
 	};
 
-	class DesktopPathService final : public IPlatformPathService
+	class MacPathService final : public IPlatformPathService
 	{
 	  public:
 		std::filesystem::path DefaultDataRootPath() const override
@@ -1562,9 +1754,6 @@ namespace
 
 		std::optional<std::filesystem::path> ResolveUserHomePath() const override
 		{
-#if defined(_WIN32)
-			return ResolveWindowsHomePath();
-#else
 			if (const char* home = std::getenv("HOME"))
 			{
 				const std::string value = TrimAsciiWhitespace(home);
@@ -1576,7 +1765,6 @@ namespace
 			}
 
 			return std::nullopt;
-#endif
 		}
 
 		std::filesystem::path ExpandLeadingTildePath(const std::string& raw_path) const override
@@ -1600,17 +1788,10 @@ namespace
 					return home.value();
 				}
 
-#if defined(_WIN32)
-				if (trimmed[1] == '\\' || trimmed[1] == '/')
-				{
-					return home.value() / trimmed.substr(2);
-				}
-#else
 				if (trimmed[1] == '/')
 				{
 					return home.value() / trimmed.substr(2);
 				}
-#endif
 			}
 
 			return std::filesystem::path(trimmed);
@@ -1629,96 +1810,50 @@ namespace
 		}
 	};
 
-	class DesktopUiTraits final : public IPlatformUiTraits
+	class MacUiTraits final : public IPlatformUiTraits
 	{
 	  public:
 		void ApplyProcessDpiAwareness() const override
 		{
-#if defined(_WIN32)
-			SetProcessDPIAware();
-#endif
 		}
 
 		void ConfigureOpenGlAttributes() const override
 		{
-#if defined(__APPLE__)
 			SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
 			SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
 			SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
 			SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
-#else
-			SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
-			SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-			SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-			SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
-#endif
 		}
 
 		const char* OpenGlGlslVersion() const override
 		{
-#if defined(__APPLE__)
 			return "#version 150";
-#else
-			return "#version 130";
-#endif
 		}
 
 		float AdjustSidebarWidth(const float layout_width, const float current_sidebar_width, const float effective_ui_scale) const override
 		{
-#if defined(_WIN32)
-			const float width_bias = 1.0f + ((std::max(1.0f, effective_ui_scale) - 1.0f) * 0.36f);
-			const float sidebar_ratio = (layout_width < 1180.0f) ? 0.35f : 0.30f;
-			float sidebar_width = std::clamp(layout_width * sidebar_ratio, 280.0f * width_bias, 470.0f * width_bias);
-			const float max_sidebar_from_main_floor = std::max(220.0f, layout_width - 560.0f);
-			return std::clamp(sidebar_width, 220.0f, max_sidebar_from_main_floor);
-#else
 			(void)layout_width;
 			(void)effective_ui_scale;
 			return current_sidebar_width;
-#endif
 		}
 
 		bool UseWindowsLayoutAdjustments() const override
 		{
-#if defined(_WIN32)
-			return true;
-#else
 			return false;
-#endif
 		}
 
 		bool UsesLogicalPointsForUiScale() const override
 		{
-#if defined(__APPLE__)
 			return true;
-#else
-			return false;
-#endif
 		}
 
 		float PlatformUiSpacingScale() const override
 		{
-#if defined(_WIN32)
-			return 1.14f;
-#else
 			return 1.0f;
-#endif
 		}
 
 		std::optional<bool> DetectSystemPrefersLightTheme() const override
 		{
-#if defined(_WIN32)
-			DWORD value = 1;
-			DWORD value_size = sizeof(value);
-			const LONG rc = RegGetValueA(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", "AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &value, &value_size);
-
-			if (rc == ERROR_SUCCESS)
-			{
-				return value != 0;
-			}
-
-			return std::nullopt;
-#elif defined(__APPLE__)
 			if (const char* env_style = std::getenv("AppleInterfaceStyle"))
 			{
 				return ContainsInsensitive(env_style, "dark") ? std::optional<bool>(false) : std::optional<bool>(true);
@@ -1748,45 +1883,30 @@ namespace
 			}
 
 			return ContainsInsensitive(trimmed, "dark") ? std::optional<bool>(false) : std::optional<bool>(true);
-#else
-			const std::array<const char*, 4> env_candidates = {"GTK_THEME", "QT_STYLE_OVERRIDE", "KDE_COLOR_SCHEME", "COLORFGBG"};
-
-			for (const char* env_key : env_candidates)
-			{
-				const char* value = std::getenv(env_key);
-
-				if (value == nullptr || *value == '\0')
-				{
-					continue;
-				}
-
-				const std::string text = value;
-
-				if (ContainsInsensitive(text, "dark"))
-				{
-					return false;
-				}
-
-				if (ContainsInsensitive(text, "light"))
-				{
-					return true;
-				}
-			}
-
-			return std::nullopt;
-#endif
 		}
 	};
+
+#endif
 
 } // namespace
 
 PlatformServices& PlatformServicesFactory::Instance()
 {
-	static DesktopTerminalRuntime terminal_runtime;
-	static DesktopProcessService process_service;
-	static DesktopFileDialogService file_dialog_service;
-	static DesktopPathService path_service;
-	static DesktopUiTraits ui_traits;
+#if defined(_WIN32)
+	static WindowsTerminalRuntime terminal_runtime;
+	static WindowsProcessService process_service;
+	static WindowsFileDialogService file_dialog_service;
+	static WindowsPathService path_service;
+	static WindowsUiTraits ui_traits;
+#elif defined(__APPLE__)
+	static MacTerminalRuntime terminal_runtime;
+	static MacProcessService process_service;
+	static MacFileDialogService file_dialog_service;
+	static MacPathService path_service;
+	static MacUiTraits ui_traits;
+#else
+#error "PlatformServicesFactory supports only Windows and macOS."
+#endif
 	static PlatformServices services{
 	    terminal_runtime,
 	    process_service,

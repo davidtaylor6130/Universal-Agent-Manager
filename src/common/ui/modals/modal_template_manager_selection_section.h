@@ -77,7 +77,7 @@ static void DrawTemplateManagerSelectionSection(AppState& app, const fs::path& g
 		std::string new_id;
 		std::string error;
 
-		if (GeminiTemplateCatalog::RenameTemplate(global_root, selected_entry->id, app.template_rename_input, &new_id, &error))
+		if (MarkdownTemplateCatalog::RenameTemplate(global_root, selected_entry->id, app.template_rename_input, &new_id, &error))
 		{
 			if (app.settings.default_prompt_profile_id == selected_entry->id)
 			{
@@ -112,7 +112,7 @@ static void DrawTemplateManagerSelectionSection(AppState& app, const fs::path& g
 		std::string error;
 		const std::string removed_id = selected_entry->id;
 
-		if (GeminiTemplateCatalog::RemoveTemplate(global_root, removed_id, &error))
+		if (MarkdownTemplateCatalog::RemoveTemplate(global_root, removed_id, &error))
 		{
 			if (app.settings.default_prompt_profile_id == removed_id)
 			{

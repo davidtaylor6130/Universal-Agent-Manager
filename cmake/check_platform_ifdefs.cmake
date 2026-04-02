@@ -14,9 +14,9 @@ set(UAM_ALLOWED_PREFIXES
 
 set(UAM_ALLOWED_FILES
   "src/common/chat/chat_repository.cpp"
-  "src/common/chat/gemini_native_history_store.cpp"
+  "src/common/chat/gemini_json_history_store.cpp"
   "src/common/provider/gemini_command_builder.cpp"
-  "src/common/provider/gemini_template_catalog.cpp"
+  "src/common/provider/markdown_template_catalog.cpp"
   "src/common/utils/command_line_words.cpp"
 )
 
@@ -48,7 +48,7 @@ foreach(UAM_FILE IN LISTS UAM_SOURCE_FILES)
 
   file(READ "${UAM_FILE}" UAM_CONTENTS)
 
-  string(REGEX MATCH "(#[ \t]*if[^\\n]*(_WIN32|__APPLE__|__linux__|__unix__)|\\b(_WIN32|__APPLE__|__linux__|__unix__)\\b)" UAM_HAS_PLATFORM_MACRO "${UAM_CONTENTS}")
+  string(REGEX MATCH "(#[ \t]*if[^\\n]*(_WIN32|__APPLE__)|\\b(_WIN32|__APPLE__)\\b)" UAM_HAS_PLATFORM_MACRO "${UAM_CONTENTS}")
 
   if(UAM_HAS_PLATFORM_MACRO)
     list(APPEND UAM_VIOLATIONS "${UAM_REL_PATH}")

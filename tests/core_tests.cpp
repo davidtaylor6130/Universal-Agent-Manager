@@ -1205,6 +1205,7 @@ UAM_TEST(TestProviderRuntimeMergesProfileFlags)
 {
 	ProviderProfile profile = ProviderProfileStore::DefaultGeminiProfile();
 	profile.id = "custom-runtime";
+	profile.history_adapter = "local-only";
 	profile.runtime_flags = {"--profile", "nightly"};
 
 	AppSettings settings;
@@ -1263,8 +1264,23 @@ UAM_TEST(TestProviderRuntimeBuildToggleReporting)
 
 	ProviderProfile custom = ProviderProfileStore::DefaultGeminiProfile();
 	custom.id = "custom-runtime";
+	custom.history_adapter = "local-only";
 	UAM_ASSERT(ProviderRuntime::IsRuntimeEnabled(custom));
 	UAM_ASSERT(ProviderRuntime::DisabledReason(custom).empty());
+}
+
+UAM_TEST(TestProviderRuntimeBlocksNonGeminiGeminiHistoryAdapter)
+{
+	ProviderProfile codex = ProviderProfileStore::DefaultGeminiProfile();
+	codex.id = "codex-cli";
+	codex.history_adapter = "gemini-cli-json";
+
+	UAM_ASSERT(!ProviderRuntime::IsRuntimeEnabled(codex));
+	const std::string reason = ProviderRuntime::DisabledReason(codex);
+	UAM_ASSERT(!reason.empty());
+	UAM_ASSERT(reason.find("gemini-cli-json") != std::string::npos);
+	UAM_ASSERT(ProviderRuntime::BuildCommand(codex, AppSettings{}, "hello", std::vector<std::string>{}, std::string{}).empty());
+	UAM_ASSERT(ProviderRuntime::BuildInteractiveArgv(codex, ChatSession{}, AppSettings{}).empty());
 }
 
 UAM_TEST(TestProviderRuntimeHistoryPolicyLocalOnly)

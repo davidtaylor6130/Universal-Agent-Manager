@@ -124,7 +124,7 @@ struct PendingGeminiCall
 };
 
 /// <summary>
-/// One template entry discovered in the Gemini Markdown catalog.
+/// One template entry discovered in the Markdown template catalog.
 /// </summary>
 struct TemplateCatalogEntry
 {

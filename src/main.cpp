@@ -14,8 +14,7 @@
 #include "common/local_chat_store.h"
 #include "common/frontend_actions.h"
 #include "common/gemini_command_builder.h"
-#include "common/gemini_native_history_store.h"
-#include "common/gemini_template_catalog.h"
+#include "common/markdown_template_catalog.h"
 #include "common/provider_profile.h"
 #include "common/provider_runtime.h"
 #include "common/ollama_engine_service.h"
@@ -258,7 +257,6 @@ static fs::path TempFallbackDataRootPath();
 static bool EnsureDataRootLayout(const fs::path& p_dataRoot, std::string* p_errorOut);
 static std::optional<fs::path> ResolveGeminiProjectTmpDir(const fs::path& p_projectRoot);
 static ProviderRuntimeHistoryLoadOptions RuntimeHistoryLoadOptions();
-static std::optional<ChatSession> ParseGeminiSessionFile(const fs::path& p_filePath, const ProviderProfile& p_provider);
 static bool StartAsyncNativeChatLoad(AppState& app);
 static bool TryConsumeAsyncNativeChatLoad(AppState& app, std::vector<ChatSession>& chats_out, std::string& error_out);
 static std::vector<std::string> SessionIdsFromChats(const std::vector<ChatSession>& p_chats);
@@ -1718,7 +1716,7 @@ static bool RefreshTemplateCatalog(AppState& p_app, const bool p_force)
 	const fs::path l_globalRoot = ResolveGeminiGlobalRootPath(p_app.settings);
 	std::string l_error;
 
-	if (!GeminiTemplateCatalog::EnsureCatalogPath(l_globalRoot, &l_error))
+	if (!MarkdownTemplateCatalog::EnsureCatalogPath(l_globalRoot, &l_error))
 	{
 		p_app.template_catalog.clear();
 		p_app.template_catalog_dirty = false;
@@ -1731,7 +1729,7 @@ static bool RefreshTemplateCatalog(AppState& p_app, const bool p_force)
 		return false;
 	}
 
-	p_app.template_catalog = GeminiTemplateCatalog::List(l_globalRoot);
+	p_app.template_catalog = MarkdownTemplateCatalog::List(l_globalRoot);
 	p_app.template_catalog_dirty = false;
 	return true;
 }
@@ -2817,26 +2815,12 @@ static std::optional<fs::path> ResolveGeminiProjectTmpDir(const fs::path& p_proj
 	return AppPaths::ResolveGeminiProjectTmpDir(p_projectRoot);
 }
 
-static GeminiNativeHistoryStoreOptions NativeGeminiHistoryOptions()
-{
-	GeminiNativeHistoryStoreOptions options;
-	options.max_file_bytes = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxFileBytes();
-	options.max_messages = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxMessages();
-	return options;
-}
-
 static ProviderRuntimeHistoryLoadOptions RuntimeHistoryLoadOptions()
 {
-	const GeminiNativeHistoryStoreOptions native_options = NativeGeminiHistoryOptions();
 	ProviderRuntimeHistoryLoadOptions options;
-	options.native_max_file_bytes = native_options.max_file_bytes;
-	options.native_max_messages = native_options.max_messages;
+	options.native_max_file_bytes = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxFileBytes();
+	options.native_max_messages = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxMessages();
 	return options;
-}
-
-static std::optional<ChatSession> ParseGeminiSessionFile(const fs::path& p_filePath, const ProviderProfile& p_provider)
-{
-	return GeminiNativeHistoryStore::ParseFile(p_filePath, p_provider, NativeGeminiHistoryOptions());
 }
 
 static std::vector<ChatSession> LoadNativeGeminiChats(const fs::path& p_chatsDir, const ProviderProfile& p_provider)

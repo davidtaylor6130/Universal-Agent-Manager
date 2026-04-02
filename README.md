@@ -94,10 +94,10 @@ flowchart TB
   subgraph HISTORY["History + Persistence"]
     LOCAL["LocalChatStore"]
     CHAT_REPO["ChatRepository"]
-    GEM_HISTORY["GeminiNativeHistoryStore"]
+    GEM_HISTORY["GeminiJsonHistoryStore"]
     SETTINGS["SettingsStore\nsettings.txt"]
     FOLDERS["ChatFolderStore\nfolders.txt"]
-    TEMPLATES["GeminiTemplateCatalog\nMarkdown_Templates/*.md"]
+    TEMPLATES["MarkdownTemplateCatalog\nMarkdown_Templates/*.md"]
     PATHS["AppPaths / data root"]
     LOCAL --> CHAT_REPO
     GEM_HISTORY --> RUNTIME
@@ -106,7 +106,8 @@ flowchart TB
     STATE --> TEMPLATES
     STATE --> PATHS
     IPR --> LOCAL
-    IPR --> GEM_HISTORY
+    GSTRUCT --> GEM_HISTORY
+    GCLI --> GEM_HISTORY
   end
 
   subgraph PLATFORM["Strict Platform Boundary"]
@@ -117,13 +118,18 @@ flowchart TB
     IFD["IPlatformFileDialogService"]
     IPATH["IPlatformPathService"]
     IUI["IPlatformUiTraits"]
-    DTR["DesktopTerminalRuntime"]
-    DPS["DesktopProcessService"]
-    DFDS["DesktopFileDialogService"]
-    DPAS["DesktopPathService"]
-    DUT["DesktopUiTraits"]
+    WTR["WindowsTerminalRuntime"]
+    MTR["MacTerminalRuntime"]
+    WPS["WindowsProcessService"]
+    MPS["MacProcessService"]
+    WFDS["WindowsFileDialogService"]
+    MFDS["MacFileDialogService"]
+    WPATH["WindowsPathService"]
+    MPATH["MacPathService"]
+    WUI["WindowsUiTraits"]
+    MUI["MacUiTraits"]
     TERM_START["StartCliTerminalPlatform\n(platform/terminal_startup_dispatch.h)"]
-    TERM_UNIX["terminal_unix.h"]
+    TERM_MAC["terminal_mac.h"]
     TERM_WIN["terminal_windows.h"]
     FACTORY --> SERVICES
     SERVICES --> ITERM
@@ -131,12 +137,17 @@ flowchart TB
     SERVICES --> IFD
     SERVICES --> IPATH
     SERVICES --> IUI
-    DTR --> ITERM
-    DPS --> IPROC
-    DFDS --> IFD
-    DPAS --> IPATH
-    DUT --> IUI
-    TERM_START --> TERM_UNIX
+    WTR --> ITERM
+    MTR --> ITERM
+    WPS --> IPROC
+    MPS --> IPROC
+    WFDS --> IFD
+    MFDS --> IFD
+    WPATH --> IPATH
+    MPATH --> IPATH
+    WUI --> IUI
+    MUI --> IUI
+    TERM_START --> TERM_MAC
     TERM_START --> TERM_WIN
   end
 
@@ -203,14 +214,15 @@ flowchart TB
 
   subgraph HISTORY_CLASSES["History + Persistence"]
     LOCAL["LocalChatStore"]
-    GEM["GeminiNativeHistoryStore"]
+    GEM["GeminiJsonHistoryStore"]
     CHAT_REPO["ChatRepository"]
     SETTINGS["SettingsStore"]
     FOLDERS["ChatFolderStore"]
-    TEMPLATES["GeminiTemplateCatalog"]
+    TEMPLATES["MarkdownTemplateCatalog"]
     PATHS["AppPaths"]
     IPR --> LOCAL
-    IPR --> GEM
+    GSTRUCT --> GEM
+    GCLI --> GEM
     LOCAL --> CHAT_REPO
     APPSTATE --> SETTINGS
     APPSTATE --> FOLDERS
@@ -226,22 +238,32 @@ flowchart TB
     IFD["IPlatformFileDialogService (interface)"]
     IPATH["IPlatformPathService (interface)"]
     IUI["IPlatformUiTraits (interface)"]
-    DTR["DesktopTerminalRuntime"]
-    DPS["DesktopProcessService"]
-    DFD["DesktopFileDialogService"]
-    DPATH["DesktopPathService"]
-    DUI["DesktopUiTraits"]
+    WTR["WindowsTerminalRuntime"]
+    MTR["MacTerminalRuntime"]
+    WPS["WindowsProcessService"]
+    MPS["MacProcessService"]
+    WFD["WindowsFileDialogService"]
+    MFD["MacFileDialogService"]
+    WPATH["WindowsPathService"]
+    MPATH["MacPathService"]
+    WUI["WindowsUiTraits"]
+    MUI["MacUiTraits"]
     PSFACTORY --> PSVC
     PSVC --> ITERM
     PSVC --> IPROC
     PSVC --> IFD
     PSVC --> IPATH
     PSVC --> IUI
-    DTR -. "implements" .-> ITERM
-    DPS -. "implements" .-> IPROC
-    DFD -. "implements" .-> IFD
-    DPATH -. "implements" .-> IPATH
-    DUI -. "implements" .-> IUI
+    WTR -. "implements" .-> ITERM
+    MTR -. "implements" .-> ITERM
+    WPS -. "implements" .-> IPROC
+    MPS -. "implements" .-> IPROC
+    WFD -. "implements" .-> IFD
+    MFD -. "implements" .-> IFD
+    WPATH -. "implements" .-> IPATH
+    MPATH -. "implements" .-> IPATH
+    WUI -. "implements" .-> IUI
+    MUI -. "implements" .-> IUI
   end
 
   subgraph ENGINE_CLASSES["RAG + Engine"]
@@ -298,7 +320,7 @@ gemini {resume} {flags} {prompt}
 
 ### 3) History Modes
 
-- `gemini-cli-json`: reads Gemini native session JSON files from the project tmp mapping under `~/.gemini/tmp/.../chats`.
+- `gemini-cli-json`: valid only for `gemini-structured` and `gemini-cli`; reads Gemini native session JSON files from `~/.gemini/tmp/.../chats`.
 - `local-only`: appends responses to local chat files in `<data-root>/chats/...`.
 
 ### 4) Workspace Template Preflight
