@@ -138,8 +138,8 @@ CLI targets:
 From repository root:
 
 ```bash
-cmake -S . -B build -DUAM_FETCH_DEPS=ON -DUAM_FETCH_LLAMA_CPP=ON
-cmake --build build --target \
+cmake -S . -B Builds -DUAM_FETCH_DEPS=ON -DUAM_FETCH_LLAMA_CPP=ON
+cmake --build Builds --target \
   uam_ollama_engine_cli \
   uam_ollama_engine_cli_finetune_wizard \
   uam_ollama_engine_cli_auto_test \
@@ -151,11 +151,11 @@ cmake --build build --target \
 Run one of:
 
 ```bash
-./build/subprojects/ollama_engine/uam_ollama_engine_cli [model_folder]
-./build/subprojects/ollama_engine/uam_ollama_engine_cli_finetune_wizard [model_folder]
-./build/subprojects/ollama_engine/uam_ollama_engine_cli_auto_test [model_folder]
-./build/subprojects/ollama_engine/uam_ollama_engine_cli_custom_tests [model_folder] [tests_directory]
-./build/subprojects/ollama_engine/uam_ollama_engine_cli_eval_suite [model_folder] [evaluation_root]
+./Builds/subprojects/ollama_engine/uam_ollama_engine_cli [model_folder]
+./Builds/subprojects/ollama_engine/uam_ollama_engine_cli_finetune_wizard [model_folder]
+./Builds/subprojects/ollama_engine/uam_ollama_engine_cli_auto_test [model_folder]
+./Builds/subprojects/ollama_engine/uam_ollama_engine_cli_custom_tests [model_folder] [tests_directory]
+./Builds/subprojects/ollama_engine/uam_ollama_engine_cli_eval_suite [model_folder] [evaluation_root]
 ```
 
 If `[model_folder]` is omitted, each CLI uses `<current-working-directory>/models`.
@@ -215,7 +215,7 @@ Recursive discovery is enabled, so both work:
 ### 2) Use the model root when launching CLI
 
 ```bash
-./build/subprojects/ollama_engine/uam_ollama_engine_cli /absolute/path/to/my_models
+./Builds/subprojects/ollama_engine/uam_ollama_engine_cli /absolute/path/to/my_models
 ```
 
 ### 3) Select model by displayed relative path
@@ -233,7 +233,7 @@ CLI will list relative model paths discovered under that root.
 With the current repository content:
 
 ```bash
-./build/subprojects/ollama_engine/uam_ollama_engine_cli \
+./Builds/subprojects/ollama_engine/uam_ollama_engine_cli \
   ./subprojects/ollama_engine/models
 ```
 
@@ -245,8 +245,8 @@ This should list:
 
 `subprojects/ollama_engine/CMakeLists.txt` creates `uam_ollama_engine_copy_models` (runs in `ALL`) and copies model assets to:
 
-- `build/models`
-- and next to each CLI target dir (`build/subprojects/ollama_engine/models`)
+- `Builds/models`
+- and next to each CLI target dir (`Builds/subprojects/ollama_engine/models`)
 
 This helps local runs, but explicit `model_folder` argument is still the most predictable way to run.
 

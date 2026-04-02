@@ -9,27 +9,35 @@
 /// <summary>
 /// Draws the center chat detail pane by composing header, body mode, history, and composer components.
 /// </summary>
-static void DrawChatDetailPane(AppState& app, ChatSession& chat) {
-  MarkSelectedChatSeen(app);
-  BeginPanel("main_chat_panel", ImVec2(0.0f, 0.0f), PanelTone::Primary, true, 0, ImVec2(ui::kSpace16, ui::kSpace16));
+static void DrawChatDetailPane(AppState& app, ChatSession& chat)
+{
+	MarkSelectedChatSeen(app);
+	BeginPanel("main_chat_panel", ImVec2(0.0f, 0.0f), PanelTone::Primary, true, 0, ImVec2(ui::kSpace16, ui::kSpace16));
 
-  DrawChatDetailHeaderBar(app, chat);
+	DrawChatDetailHeaderBar(app, chat);
 
-  const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
-  if (ProviderRuntime::UsesCliOutput(provider)) {
-    if (!ProviderRuntime::UsesInternalEngine(provider) && provider.supports_interactive) {
-      MarkSelectedCliTerminalForLaunch(app);
-    }
-    DrawChatDetailCliConsoleBody(app, chat);
-    EndPanel();
-    return;
-  }
+	const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
 
-  DrawChatDetailConversationHistory(app, chat);
-  DrawEditUserMessagePopup(app, chat);
-  DrawInputContainer(app, chat);
-  if (!app.status_line.empty()) {
-    ImGui::TextColored(ui::kTextSecondary, "%s", app.status_line.c_str());
-  }
-  EndPanel();
+	if (ProviderRuntime::UsesCliOutput(provider))
+	{
+		if (!ProviderRuntime::UsesInternalEngine(provider) && provider.supports_interactive)
+		{
+			MarkSelectedCliTerminalForLaunch(app);
+		}
+
+		DrawChatDetailCliConsoleBody(app, chat);
+		EndPanel();
+		return;
+	}
+
+	DrawChatDetailConversationHistory(app, chat);
+	DrawEditUserMessagePopup(app, chat);
+	DrawInputContainer(app, chat);
+
+	if (!app.status_line.empty())
+	{
+		ImGui::TextColored(ui::kTextSecondary, "%s", app.status_line.c_str());
+	}
+
+	EndPanel();
 }

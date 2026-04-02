@@ -23,1281 +23,1545 @@
 #include "llama.h"
 #endif
 
-namespace ollama_engine::internal {
-namespace {
-namespace fs = std::filesystem;
+namespace ollama_engine::internal
+{
+	namespace
+	{
+		namespace fs = std::filesystem;
 
-constexpr std::size_t ki_DefaultContextTokens = 2048;
-constexpr std::size_t ki_DefaultMaxGeneratedTokens = 256;
-constexpr int32_t ki_DefaultGpuLayers = 99;
+		constexpr std::size_t ki_DefaultContextTokens = 2048;
+		constexpr std::size_t ki_DefaultMaxGeneratedTokens = 256;
+		constexpr int32_t ki_DefaultGpuLayers = 99;
 
-std::string ToLowerAscii(std::string pSInput);
+		std::string ToLowerAscii(std::string pSInput);
 
-/// <summary>Clamps generation settings into safe operational ranges.</summary>
-/// <param name="pGenerationSettings">Input settings.</param>
-/// <returns>Clamped settings values.</returns>
-GenerationSettings ClampGenerationSettings(const GenerationSettings& pGenerationSettings) {
-  GenerationSettings lGenerationSettings = pGenerationSettings;
-  lGenerationSettings.pfTemperature = std::clamp(lGenerationSettings.pfTemperature, 0.0f, 2.0f);
-  lGenerationSettings.pfTopP = std::clamp(lGenerationSettings.pfTopP, 0.05f, 1.0f);
-  lGenerationSettings.pfMinP = std::clamp(lGenerationSettings.pfMinP, 0.0f, 1.0f);
-  if (lGenerationSettings.pfMinP > lGenerationSettings.pfTopP) {
-    lGenerationSettings.pfMinP = lGenerationSettings.pfTopP;
-  }
-  lGenerationSettings.piTopK = std::clamp(lGenerationSettings.piTopK, 1, 200);
-  lGenerationSettings.pfRepeatPenalty = std::clamp(lGenerationSettings.pfRepeatPenalty, 0.8f, 2.0f);
-  return lGenerationSettings;
-}
+		/// <summary>Clamps generation settings into safe operational ranges.</summary>
+		/// <param name="pGenerationSettings">Input settings.</param>
+		/// <returns>Clamped settings values.</returns>
+		GenerationSettings ClampGenerationSettings(const GenerationSettings& pGenerationSettings)
+		{
+			GenerationSettings lGenerationSettings = pGenerationSettings;
+			lGenerationSettings.pfTemperature = std::clamp(lGenerationSettings.pfTemperature, 0.0f, 2.0f);
+			lGenerationSettings.pfTopP = std::clamp(lGenerationSettings.pfTopP, 0.05f, 1.0f);
+			lGenerationSettings.pfMinP = std::clamp(lGenerationSettings.pfMinP, 0.0f, 1.0f);
 
-/// <summary>Builds runtime options for internal vectorised RAG calls.</summary>
-/// <param name="pEngineOptions">Engine runtime options.</param>
-/// <param name="pPathLoadedModelFile">Currently loaded model path, if any.</param>
-/// <returns>Vectorised RAG runtime options.</returns>
-vectorised_rag::RuntimeOptions BuildVectorisedRagRuntimeOptions(
-    const EngineOptions& pEngineOptions,
-    const std::filesystem::path& pPathLoadedModelFile,
-    const std::string& pSRagOutputDatabaseName) {
-  vectorised_rag::RuntimeOptions lRuntimeOptions;
-  lRuntimeOptions.pPathModelFolder = pEngineOptions.pPathModelFolder;
-  lRuntimeOptions.pPathEmbeddingModelFile = pPathLoadedModelFile;
-  lRuntimeOptions.piDeterministicEmbeddingDimensions = pEngineOptions.piEmbeddingDimensions;
-  lRuntimeOptions.piEmbeddingMaxTokens = pEngineOptions.piEmbeddingMaxTokens;
-  lRuntimeOptions.pSDatabaseName = pSRagOutputDatabaseName;
-  const char* lPtrServerUrl = std::getenv("UAM_LLAMA_SERVER_URL");
-  if (lPtrServerUrl != nullptr && *lPtrServerUrl != '\0') {
-    lRuntimeOptions.pSLlamaServerUrl = lPtrServerUrl;
-  }
-  return lRuntimeOptions;
-}
+			if (lGenerationSettings.pfMinP > lGenerationSettings.pfTopP)
+			{
+				lGenerationSettings.pfMinP = lGenerationSettings.pfTopP;
+			}
 
-bool IsAllowedDatabaseNameCharacter(const char pCChar) {
-  const unsigned char lCUChar = static_cast<unsigned char>(pCChar);
-  return std::isalnum(lCUChar) != 0 || pCChar == '_' || pCChar == '-' || pCChar == '.';
-}
+			lGenerationSettings.piTopK = std::clamp(lGenerationSettings.piTopK, 1, 200);
+			lGenerationSettings.pfRepeatPenalty = std::clamp(lGenerationSettings.pfRepeatPenalty, 0.8f, 2.0f);
+			return lGenerationSettings;
+		}
 
-bool IsValidRagDatabaseName(const std::string& pSDatabaseName) {
-  if (pSDatabaseName.empty()) {
-    return true;
-  }
-  return std::all_of(pSDatabaseName.begin(), pSDatabaseName.end(),
-                     [](const char pCChar) { return IsAllowedDatabaseNameCharacter(pCChar); });
-}
+		/// <summary>Builds runtime options for internal vectorised RAG calls.</summary>
+		/// <param name="pEngineOptions">Engine runtime options.</param>
+		/// <param name="pPathLoadedModelFile">Currently loaded model path, if any.</param>
+		/// <returns>Vectorised RAG runtime options.</returns>
+		vectorised_rag::RuntimeOptions BuildVectorisedRagRuntimeOptions(const EngineOptions& pEngineOptions, const std::filesystem::path& pPathLoadedModelFile, const std::string& pSRagOutputDatabaseName)
+		{
+			vectorised_rag::RuntimeOptions lRuntimeOptions;
+			lRuntimeOptions.pPathModelFolder = pEngineOptions.pPathModelFolder;
+			lRuntimeOptions.pPathEmbeddingModelFile = pPathLoadedModelFile;
+			lRuntimeOptions.piDeterministicEmbeddingDimensions = pEngineOptions.piEmbeddingDimensions;
+			lRuntimeOptions.piEmbeddingMaxTokens = pEngineOptions.piEmbeddingMaxTokens;
+			lRuntimeOptions.pSDatabaseName = pSRagOutputDatabaseName;
+			const char* lPtrServerUrl = std::getenv("UAM_LLAMA_SERVER_URL");
 
-/// <summary>Resolves runtime mode with optional environment override.</summary>
-/// <param name="pRagRuntimeMode">Mode configured in engine options.</param>
-/// <returns>Resolved mode.</returns>
-RagRuntimeMode ResolveRagRuntimeMode(const RagRuntimeMode pRagRuntimeMode) {
-  const char* lPtrModeEnv = std::getenv("UAM_RAG_MODE");
-  if (lPtrModeEnv == nullptr || *lPtrModeEnv == '\0') {
-    return pRagRuntimeMode;
-  }
-  const std::string lSMode = ToLowerAscii(lPtrModeEnv);
-  if (lSMode == "deterministic") {
-    return RagRuntimeMode::Deterministic;
-  }
-  if (lSMode == "vectorised" || lSMode == "vectorized") {
-    return RagRuntimeMode::Vectorised;
-  }
-  return pRagRuntimeMode;
-}
+			if (lPtrServerUrl != nullptr && *lPtrServerUrl != '\0')
+			{
+				lRuntimeOptions.pSLlamaServerUrl = lPtrServerUrl;
+			}
+
+			return lRuntimeOptions;
+		}
+
+		bool IsAllowedDatabaseNameCharacter(const char pCChar)
+		{
+			const unsigned char lCUChar = static_cast<unsigned char>(pCChar);
+			return std::isalnum(lCUChar) != 0 || pCChar == '_' || pCChar == '-' || pCChar == '.';
+		}
+
+		bool IsValidRagDatabaseName(const std::string& pSDatabaseName)
+		{
+			if (pSDatabaseName.empty())
+			{
+				return true;
+			}
+
+			return std::all_of(pSDatabaseName.begin(), pSDatabaseName.end(), [](const char pCChar) { return IsAllowedDatabaseNameCharacter(pCChar); });
+		}
+
+		/// <summary>Resolves runtime mode with optional environment override.</summary>
+		/// <param name="pRagRuntimeMode">Mode configured in engine options.</param>
+		/// <returns>Resolved mode.</returns>
+		RagRuntimeMode ResolveRagRuntimeMode(const RagRuntimeMode pRagRuntimeMode)
+		{
+			const char* lPtrModeEnv = std::getenv("UAM_RAG_MODE");
+
+			if (lPtrModeEnv == nullptr || *lPtrModeEnv == '\0')
+			{
+				return pRagRuntimeMode;
+			}
+
+			const std::string lSMode = ToLowerAscii(lPtrModeEnv);
+
+			if (lSMode == "deterministic")
+			{
+				return RagRuntimeMode::Deterministic;
+			}
+
+			if (lSMode == "vectorised" || lSMode == "vectorized")
+			{
+				return RagRuntimeMode::Vectorised;
+			}
+
+			return pRagRuntimeMode;
+		}
 
 #ifdef UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP
-std::once_flag g_OnceLlamaRuntimeInit;
+		std::once_flag g_OnceLlamaRuntimeInit;
 
-/// <summary>Filters llama.cpp logs so the CLI remains readable.</summary>
-/// <param name="pLogLevel">Log severity emitted by llama.cpp.</param>
-/// <param name="pSMessage">Log message bytes.</param>
-/// <param name="pPtrUserData">Unused callback user data pointer.</param>
-void LlamaLogCallback(enum ggml_log_level pLogLevel, const char* pSMessage, void* pPtrUserData) {
-  (void)pPtrUserData;
-  if (pLogLevel >= GGML_LOG_LEVEL_ERROR && pSMessage != nullptr) {
-    std::fputs(pSMessage, stderr);
-  }
-}
+		/// <summary>Filters llama.cpp logs so the CLI remains readable.</summary>
+		/// <param name="pLogLevel">Log severity emitted by llama.cpp.</param>
+		/// <param name="pSMessage">Log message bytes.</param>
+		/// <param name="pPtrUserData">Unused callback user data pointer.</param>
+		void LlamaLogCallback(enum ggml_log_level pLogLevel, const char* pSMessage, void* pPtrUserData)
+		{
+			(void)pPtrUserData;
 
-/// <summary>
-/// Keeps llama.cpp model-load progress internal so CLI output stays focused on prompts/responses.
-/// </summary>
-/// <param name="pfProgress">Progress value in the range [0.0, 1.0].</param>
-/// <param name="pPtrUserData">Unused callback user data pointer.</param>
-/// <returns>Always true to continue loading.</returns>
-bool LlamaLoadProgressCallback(float pfProgress, void* pPtrUserData) {
-  (void)pfProgress;
-  (void)pPtrUserData;
-  return true;
-}
+			if (pLogLevel >= GGML_LOG_LEVEL_ERROR && pSMessage != nullptr)
+			{
+				std::fputs(pSMessage, stderr);
+			}
+		}
 
-/// <summary>Creates a sampler chain from active generation settings.</summary>
-/// <param name="pGenerationSettings">Settings used to assemble the chain.</param>
-/// <returns>Owned sampler chain pointer or null on allocation failure.</returns>
-llama_sampler* BuildSamplerFromGenerationSettings(const GenerationSettings& pGenerationSettings) {
-  llama_sampler_chain_params lSamplerChainParams = llama_sampler_chain_default_params();
-  llama_sampler* lPtrSamplerChain = llama_sampler_chain_init(lSamplerChainParams);
-  if (lPtrSamplerChain == nullptr) {
-    return nullptr;
-  }
+		/// <summary>
+		/// Keeps llama.cpp model-load progress internal so CLI output stays focused on prompts/responses.
+		/// </summary>
+		/// <param name="pfProgress">Progress value in the range [0.0, 1.0].</param>
+		/// <param name="pPtrUserData">Unused callback user data pointer.</param>
+		/// <returns>Always true to continue loading.</returns>
+		bool LlamaLoadProgressCallback(float pfProgress, void* pPtrUserData)
+		{
+			(void)pfProgress;
+			(void)pPtrUserData;
+			return true;
+		}
 
-  auto AddOwnedSamplerOrFail = [&](llama_sampler* pPtrSampler) -> bool {
-    if (pPtrSampler == nullptr) {
-      llama_sampler_free(lPtrSamplerChain);
-      return false;
-    }
-    llama_sampler_chain_add(lPtrSamplerChain, pPtrSampler);
-    return true;
-  };
+		/// <summary>Creates a sampler chain from active generation settings.</summary>
+		/// <param name="pGenerationSettings">Settings used to assemble the chain.</param>
+		/// <returns>Owned sampler chain pointer or null on allocation failure.</returns>
+		llama_sampler* BuildSamplerFromGenerationSettings(const GenerationSettings& pGenerationSettings)
+		{
+			llama_sampler_chain_params lSamplerChainParams = llama_sampler_chain_default_params();
+			llama_sampler* lPtrSamplerChain = llama_sampler_chain_init(lSamplerChainParams);
 
-  if (!AddOwnedSamplerOrFail(llama_sampler_init_top_k(pGenerationSettings.piTopK)) ||
-      !AddOwnedSamplerOrFail(llama_sampler_init_top_p(pGenerationSettings.pfTopP, 1)) ||
-      !AddOwnedSamplerOrFail(llama_sampler_init_min_p(pGenerationSettings.pfMinP, 1)) ||
-      !AddOwnedSamplerOrFail(llama_sampler_init_penalties(64, pGenerationSettings.pfRepeatPenalty, 0.0f, 0.0f))) {
-    return nullptr;
-  }
+			if (lPtrSamplerChain == nullptr)
+			{
+				return nullptr;
+			}
 
-  if (pGenerationSettings.pfTemperature <= 0.0f) {
-    if (!AddOwnedSamplerOrFail(llama_sampler_init_greedy())) {
-      return nullptr;
-    }
-  } else {
-    if (!AddOwnedSamplerOrFail(llama_sampler_init_temp(pGenerationSettings.pfTemperature)) ||
-        !AddOwnedSamplerOrFail(llama_sampler_init_dist(pGenerationSettings.piSeed))) {
-      return nullptr;
-    }
-  }
+			auto AddOwnedSamplerOrFail = [&](llama_sampler* pPtrSampler) -> bool
+			{
+				if (pPtrSampler == nullptr)
+				{
+					llama_sampler_free(lPtrSamplerChain);
+					return false;
+				}
 
-  return lPtrSamplerChain;
-}
+				llama_sampler_chain_add(lPtrSamplerChain, pPtrSampler);
+				return true;
+			};
+
+			if (!AddOwnedSamplerOrFail(llama_sampler_init_top_k(pGenerationSettings.piTopK)) || !AddOwnedSamplerOrFail(llama_sampler_init_top_p(pGenerationSettings.pfTopP, 1)) || !AddOwnedSamplerOrFail(llama_sampler_init_min_p(pGenerationSettings.pfMinP, 1)) || !AddOwnedSamplerOrFail(llama_sampler_init_penalties(64, pGenerationSettings.pfRepeatPenalty, 0.0f, 0.0f)))
+			{
+				return nullptr;
+			}
+
+			if (pGenerationSettings.pfTemperature <= 0.0f)
+			{
+				if (!AddOwnedSamplerOrFail(llama_sampler_init_greedy()))
+				{
+					return nullptr;
+				}
+			}
+			else
+			{
+				if (!AddOwnedSamplerOrFail(llama_sampler_init_temp(pGenerationSettings.pfTemperature)) || !AddOwnedSamplerOrFail(llama_sampler_init_dist(pGenerationSettings.piSeed)))
+				{
+					return nullptr;
+				}
+			}
+
+			return lPtrSamplerChain;
+		}
+
 #endif
 
-/// <summary>Returns true when a filename is hidden on Unix-like systems.</summary>
-/// <param name="pSFileName">Name to inspect.</param>
-/// <returns>True if the name starts with a dot.</returns>
-bool IsHiddenFileName(const std::string& pSFileName) {
-  return !pSFileName.empty() && pSFileName.front() == '.';
-}
+		/// <summary>Returns true when a filename is hidden on Unix-like systems.</summary>
+		/// <param name="pSFileName">Name to inspect.</param>
+		/// <returns>True if the name starts with a dot.</returns>
+		bool IsHiddenFileName(const std::string& pSFileName)
+		{
+			return !pSFileName.empty() && pSFileName.front() == '.';
+		}
 
-/// <summary>Lowercases ASCII characters for extension comparisons.</summary>
-/// <param name="pSInput">Input text.</param>
-/// <returns>Lowercased copy.</returns>
-std::string ToLowerAscii(std::string pSInput) {
-  std::transform(pSInput.begin(), pSInput.end(), pSInput.begin(),
-                 [](unsigned char pCChar) { return static_cast<char>(std::tolower(pCChar)); });
-  return pSInput;
-}
+		/// <summary>Lowercases ASCII characters for extension comparisons.</summary>
+		/// <param name="pSInput">Input text.</param>
+		/// <returns>Lowercased copy.</returns>
+		std::string ToLowerAscii(std::string pSInput)
+		{
+			std::transform(pSInput.begin(), pSInput.end(), pSInput.begin(), [](unsigned char pCChar) { return static_cast<char>(std::tolower(pCChar)); });
+			return pSInput;
+		}
 
-/// <summary>Checks whether a file path points to a GGUF model file.</summary>
-/// <param name="pPathFile">Path to inspect.</param>
-/// <returns>True for supported model extensions.</returns>
-bool IsSupportedModelFile(const fs::path& pPathFile) {
-  return ToLowerAscii(pPathFile.extension().string()) == ".gguf";
-}
+		/// <summary>Checks whether a file path points to a GGUF model file.</summary>
+		/// <param name="pPathFile">Path to inspect.</param>
+		/// <returns>True for supported model extensions.</returns>
+		bool IsSupportedModelFile(const fs::path& pPathFile)
+		{
+			return ToLowerAscii(pPathFile.extension().string()) == ".gguf";
+		}
 
-/// <summary>
-/// Lists GGUF files under a directory recursively while skipping hidden files/folders.
-/// </summary>
-/// <param name="pPathRootDirectory">Directory to scan.</param>
-/// <returns>Absolute file paths for discovered model files.</returns>
-std::vector<fs::path> DiscoverModelFilesRecursively(const fs::path& pPathRootDirectory) {
-  std::vector<fs::path> lVecPathModelFiles;
-  std::error_code lErrorCode;
-  if (!fs::exists(pPathRootDirectory, lErrorCode) || !fs::is_directory(pPathRootDirectory, lErrorCode)) {
-    return lVecPathModelFiles;
-  }
+		/// <summary>
+		/// Lists GGUF files under a directory recursively while skipping hidden files/folders.
+		/// </summary>
+		/// <param name="pPathRootDirectory">Directory to scan.</param>
+		/// <returns>Absolute file paths for discovered model files.</returns>
+		std::vector<fs::path> DiscoverModelFilesRecursively(const fs::path& pPathRootDirectory)
+		{
+			std::vector<fs::path> lVecPathModelFiles;
+			std::error_code lErrorCode;
 
-  const fs::directory_options lDirectoryOptions = fs::directory_options::skip_permission_denied;
-  fs::recursive_directory_iterator lIterator(pPathRootDirectory, lDirectoryOptions, lErrorCode);
-  const fs::recursive_directory_iterator lEndIterator;
-  for (; lIterator != lEndIterator; lIterator.increment(lErrorCode)) {
-    if (lErrorCode) {
-      lErrorCode.clear();
-      continue;
-    }
+			if (!fs::exists(pPathRootDirectory, lErrorCode) || !fs::is_directory(pPathRootDirectory, lErrorCode))
+			{
+				return lVecPathModelFiles;
+			}
 
-    const fs::directory_entry& lDirectoryEntry = *lIterator;
-    const std::string lSName = lDirectoryEntry.path().filename().string();
-    if (IsHiddenFileName(lSName)) {
-      if (lDirectoryEntry.is_directory(lErrorCode) && !lErrorCode) {
-        lIterator.disable_recursion_pending();
-      }
-      continue;
-    }
+			const fs::directory_options lDirectoryOptions = fs::directory_options::skip_permission_denied;
+			fs::recursive_directory_iterator lIterator(pPathRootDirectory, lDirectoryOptions, lErrorCode);
+			const fs::recursive_directory_iterator lEndIterator;
 
-    if (!lDirectoryEntry.is_regular_file(lErrorCode) || lErrorCode) {
-      lErrorCode.clear();
-      continue;
-    }
+			for (; lIterator != lEndIterator; lIterator.increment(lErrorCode))
+			{
+				if (lErrorCode)
+				{
+					lErrorCode.clear();
+					continue;
+				}
 
-    if (!IsSupportedModelFile(lDirectoryEntry.path())) {
-      continue;
-    }
+				const fs::directory_entry& lDirectoryEntry = *lIterator;
+				const std::string lSName = lDirectoryEntry.path().filename().string();
 
-    lVecPathModelFiles.push_back(lDirectoryEntry.path());
-  }
+				if (IsHiddenFileName(lSName))
+				{
+					if (lDirectoryEntry.is_directory(lErrorCode) && !lErrorCode)
+					{
+						lIterator.disable_recursion_pending();
+					}
 
-  std::sort(lVecPathModelFiles.begin(), lVecPathModelFiles.end());
-  return lVecPathModelFiles;
-}
+					continue;
+				}
+
+				if (!lDirectoryEntry.is_regular_file(lErrorCode) || lErrorCode)
+				{
+					lErrorCode.clear();
+					continue;
+				}
+
+				if (!IsSupportedModelFile(lDirectoryEntry.path()))
+				{
+					continue;
+				}
+
+				lVecPathModelFiles.push_back(lDirectoryEntry.path());
+			}
+
+			std::sort(lVecPathModelFiles.begin(), lVecPathModelFiles.end());
+			return lVecPathModelFiles;
+		}
 
 #ifdef UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP
-/// <summary>Initializes llama.cpp backend APIs once for the current process.</summary>
-void EnsureLlamaRuntimeInitialized() {
-  std::call_once(g_OnceLlamaRuntimeInit, []() {
-    llama_log_set(LlamaLogCallback, nullptr);
-    llama_backend_init();
-    ggml_backend_load_all();
-  });
-}
+		/// <summary>Initializes llama.cpp backend APIs once for the current process.</summary>
+		void EnsureLlamaRuntimeInitialized()
+		{
+			const auto lFnInitializeLlamaRuntime = []()
+			{
+				llama_log_set(LlamaLogCallback, nullptr);
+				llama_backend_init();
+				ggml_backend_load_all();
+			};
+			std::call_once(g_OnceLlamaRuntimeInit, lFnInitializeLlamaRuntime);
+		}
 
-/// <summary>Formats a user prompt with the model's chat template when available.</summary>
-/// <param name="pPtrModel">Loaded llama model.</param>
-/// <param name="pSPrompt">Raw user prompt.</param>
-/// <returns>Formatted prompt for generation, or nullopt on formatting failure.</returns>
-std::optional<std::string> BuildPromptWithChatTemplate(const llama_model* pPtrModel,
-                                                       const std::string& pSPrompt) {
-  if (pPtrModel == nullptr) {
-    return std::nullopt;
-  }
-  const char* lPtrTemplate = llama_model_chat_template(pPtrModel, nullptr);
-  if (lPtrTemplate == nullptr) {
-    return pSPrompt;
-  }
+		/// <summary>Formats a user prompt with the model's chat template when available.</summary>
+		/// <param name="pPtrModel">Loaded llama model.</param>
+		/// <param name="pSPrompt">Raw user prompt.</param>
+		/// <returns>Formatted prompt for generation, or nullopt on formatting failure.</returns>
+		std::optional<std::string> BuildPromptWithChatTemplate(const llama_model* pPtrModel, const std::string& pSPrompt)
+		{
+			if (pPtrModel == nullptr)
+			{
+				return std::nullopt;
+			}
 
-  llama_chat_message lChatMessage{};
-  lChatMessage.role = "user";
-  lChatMessage.content = pSPrompt.c_str();
+			const char* lPtrTemplate = llama_model_chat_template(pPtrModel, nullptr);
 
-  std::vector<char> lVecCBuffer(std::max<std::size_t>(1024, (pSPrompt.size() * 2) + 512));
-  int32_t liWrittenBytes =
-      llama_chat_apply_template(lPtrTemplate, &lChatMessage, 1, true, lVecCBuffer.data(), lVecCBuffer.size());
-  if (liWrittenBytes > static_cast<int32_t>(lVecCBuffer.size())) {
-    lVecCBuffer.resize(static_cast<std::size_t>(liWrittenBytes));
-    liWrittenBytes =
-        llama_chat_apply_template(lPtrTemplate, &lChatMessage, 1, true, lVecCBuffer.data(), lVecCBuffer.size());
-  }
-  if (liWrittenBytes < 0) {
-    return std::nullopt;
-  }
-  return std::string(lVecCBuffer.data(), static_cast<std::size_t>(liWrittenBytes));
-}
+			if (lPtrTemplate == nullptr)
+			{
+				return pSPrompt;
+			}
 
-/// <summary>Converts one sampled token to text bytes.</summary>
-/// <param name="pPtrVocab">Vocabulary associated with the loaded model.</param>
-/// <param name="piToken">Sampled token id.</param>
-/// <returns>Decoded token bytes, or nullopt on conversion failure.</returns>
-std::optional<std::string> TokenToPieceText(const llama_vocab* pPtrVocab, const llama_token piToken) {
-  if (pPtrVocab == nullptr) {
-    return std::nullopt;
-  }
+			llama_chat_message lChatMessage{};
+			lChatMessage.role = "user";
+			lChatMessage.content = pSPrompt.c_str();
 
-  std::array<char, 256> lArrCBuffer{};
-  int32_t liPieceLength =
-      llama_token_to_piece(pPtrVocab, piToken, lArrCBuffer.data(), lArrCBuffer.size(), 0, false);
-  if (liPieceLength < 0) {
-    const int32_t liRequiredBufferLength = -liPieceLength;
-    if (liRequiredBufferLength <= 0) {
-      return std::nullopt;
-    }
-    std::vector<char> lVecCBuffer(static_cast<std::size_t>(liRequiredBufferLength));
-    liPieceLength =
-        llama_token_to_piece(pPtrVocab, piToken, lVecCBuffer.data(), lVecCBuffer.size(), 0, false);
-    if (liPieceLength < 0) {
-      return std::nullopt;
-    }
-    return std::string(lVecCBuffer.data(), static_cast<std::size_t>(liPieceLength));
-  }
+			std::vector<char> lVecCBuffer(std::max<std::size_t>(1024, (pSPrompt.size() * 2) + 512));
+			int32_t liWrittenBytes = llama_chat_apply_template(lPtrTemplate, &lChatMessage, 1, true, lVecCBuffer.data(), lVecCBuffer.size());
 
-  return std::string(lArrCBuffer.data(), static_cast<std::size_t>(liPieceLength));
-}
+			if (liWrittenBytes > static_cast<int32_t>(lVecCBuffer.size()))
+			{
+				lVecCBuffer.resize(static_cast<std::size_t>(liWrittenBytes));
+				liWrittenBytes = llama_chat_apply_template(lPtrTemplate, &lChatMessage, 1, true, lVecCBuffer.data(), lVecCBuffer.size());
+			}
 
-/// <summary>Trims ASCII whitespace from both ends.</summary>
-/// <param name="pSInput">Input text.</param>
-/// <returns>Trimmed text.</returns>
-std::string TrimAsciiWhitespace(const std::string& pSInput) {
-  std::size_t liBegin = 0;
-  while (liBegin < pSInput.size() && std::isspace(static_cast<unsigned char>(pSInput[liBegin])) != 0) {
-    ++liBegin;
-  }
-  std::size_t liEnd = pSInput.size();
-  while (liEnd > liBegin && std::isspace(static_cast<unsigned char>(pSInput[liEnd - 1])) != 0) {
-    --liEnd;
-  }
-  return pSInput.substr(liBegin, liEnd - liBegin);
-}
+			if (liWrittenBytes < 0)
+			{
+				return std::nullopt;
+			}
 
-/// <summary>Normalizes token marker text for comparisons.</summary>
-/// <param name="pSInput">Token text.</param>
-/// <returns>Lowercased and trimmed marker text.</returns>
-std::string NormalizeTokenMarkerText(const std::string& pSInput) {
-  return TrimAsciiWhitespace(ToLowerAscii(pSInput));
-}
+			return std::string(lVecCBuffer.data(), static_cast<std::size_t>(liWrittenBytes));
+		}
 
-/// <summary>Returns true when token text is an explicit stop marker.</summary>
-/// <param name="pSNormalizedTokenText">Normalized marker text.</param>
-/// <returns>True for known end-of-generation marker forms.</returns>
-bool IsKnownStopTokenText(const std::string& pSNormalizedTokenText) {
-  return pSNormalizedTokenText == "</s>" || pSNormalizedTokenText == "<|eot_id|>" ||
-         pSNormalizedTokenText == "<|eom_id|>" || pSNormalizedTokenText == "<|end|>" ||
-         pSNormalizedTokenText == "<|endoftext|>" || pSNormalizedTokenText == "<|end_of_text|>" ||
-         pSNormalizedTokenText == "<end_of_turn>" || pSNormalizedTokenText == "<|im_end|>";
-}
+		/// <summary>Converts one sampled token to text bytes.</summary>
+		/// <param name="pPtrVocab">Vocabulary associated with the loaded model.</param>
+		/// <param name="piToken">Sampled token id.</param>
+		/// <returns>Decoded token bytes, or nullopt on conversion failure.</returns>
+		std::optional<std::string> TokenToPieceText(const llama_vocab* pPtrVocab, const llama_token piToken)
+		{
+			if (pPtrVocab == nullptr)
+			{
+				return std::nullopt;
+			}
 
-/// <summary>Returns true when token text represents a reasoning/thinking marker.</summary>
-/// <param name="pSNormalizedTokenText">Normalized marker text.</param>
-/// <returns>True for known think/reasoning marker tokens.</returns>
-bool IsKnownThinkingMarkerTokenText(const std::string& pSNormalizedTokenText) {
-  return pSNormalizedTokenText == "<think>" || pSNormalizedTokenText == "</think>" ||
-         pSNormalizedTokenText == "<thinking>" || pSNormalizedTokenText == "</thinking>" ||
-         pSNormalizedTokenText == "<|start_think|>" || pSNormalizedTokenText == "<|end_think|>" ||
-         pSNormalizedTokenText == "<|thinking|>" || pSNormalizedTokenText == "<reasoning>" ||
-         pSNormalizedTokenText == "</reasoning>";
-}
+			std::array<char, 256> lArrCBuffer{};
+			int32_t liPieceLength = llama_token_to_piece(pPtrVocab, piToken, lArrCBuffer.data(), lArrCBuffer.size(), 0, false);
 
-/// <summary>Returns true when a marker token opens a thinking section.</summary>
-/// <param name="pSNormalizedTokenText">Normalized marker text.</param>
-/// <returns>True if this token starts reasoning mode.</returns>
-bool IsThinkingStartTokenText(const std::string& pSNormalizedTokenText) {
-  return pSNormalizedTokenText == "<think>" || pSNormalizedTokenText == "<thinking>" ||
-         pSNormalizedTokenText == "<|start_think|>" || pSNormalizedTokenText == "<|thinking|>" ||
-         pSNormalizedTokenText == "<reasoning>";
-}
+			if (liPieceLength < 0)
+			{
+				const int32_t liRequiredBufferLength = -liPieceLength;
 
-/// <summary>Returns true when a marker token closes a thinking section.</summary>
-/// <param name="pSNormalizedTokenText">Normalized marker text.</param>
-/// <returns>True if this token ends reasoning mode.</returns>
-bool IsThinkingEndTokenText(const std::string& pSNormalizedTokenText) {
-  return pSNormalizedTokenText == "</think>" || pSNormalizedTokenText == "</thinking>" ||
-         pSNormalizedTokenText == "<|end_think|>" || pSNormalizedTokenText == "</reasoning>";
-}
+				if (liRequiredBufferLength <= 0)
+				{
+					return std::nullopt;
+				}
 
-/// <summary>Reads normalized marker text for a token id from the vocab.</summary>
-/// <param name="pPtrVocab">Vocabulary associated with the loaded model.</param>
-/// <param name="piToken">Token id.</param>
-/// <returns>Normalized token marker text (possibly empty).</returns>
-std::string GetNormalizedTokenMarkerText(const llama_vocab* pPtrVocab, const llama_token piToken) {
-  if (pPtrVocab == nullptr) {
-    return {};
-  }
-  const char* pSRawTokenText = llama_vocab_get_text(pPtrVocab, piToken);
-  if (pSRawTokenText == nullptr) {
-    return {};
-  }
-  return NormalizeTokenMarkerText(pSRawTokenText);
-}
+				std::vector<char> lVecCBuffer(static_cast<std::size_t>(liRequiredBufferLength));
+				liPieceLength = llama_token_to_piece(pPtrVocab, piToken, lVecCBuffer.data(), lVecCBuffer.size(), 0, false);
 
-/// <summary>Removes all case-insensitive marker occurrences.</summary>
-/// <param name="pSText">Source text.</param>
-/// <param name="pSMarkerLower">Marker text in lowercase.</param>
-/// <returns>Text with marker removed.</returns>
-std::string RemoveAllCaseInsensitive(std::string pSText, const std::string& pSMarkerLower) {
-  if (pSMarkerLower.empty()) {
-    return pSText;
-  }
+				if (liPieceLength < 0)
+				{
+					return std::nullopt;
+				}
 
-  std::string lSLower = ToLowerAscii(pSText);
-  std::size_t liPosition = 0;
-  while (true) {
-    liPosition = lSLower.find(pSMarkerLower, liPosition);
-    if (liPosition == std::string::npos) {
-      break;
-    }
-    pSText.erase(liPosition, pSMarkerLower.size());
-    lSLower.erase(liPosition, pSMarkerLower.size());
-  }
-  return pSText;
-}
+				return std::string(lVecCBuffer.data(), static_cast<std::size_t>(liPieceLength));
+			}
 
-/// <summary>Removes case-insensitive delimited sections such as think blocks.</summary>
-/// <param name="pSText">Source text.</param>
-/// <param name="pSStartLower">Start marker in lowercase.</param>
-/// <param name="pSEndLower">End marker in lowercase.</param>
-/// <returns>Text with delimited segments removed.</returns>
-std::string RemoveDelimitedSegmentsCaseInsensitive(std::string pSText,
-                                                   const std::string& pSStartLower,
-                                                   const std::string& pSEndLower) {
-  if (pSStartLower.empty() || pSEndLower.empty()) {
-    return pSText;
-  }
+			return std::string(lArrCBuffer.data(), static_cast<std::size_t>(liPieceLength));
+		}
 
-  std::string lSLower = ToLowerAscii(pSText);
-  std::size_t liSearchPosition = 0;
-  while (true) {
-    const std::size_t liStart = lSLower.find(pSStartLower, liSearchPosition);
-    if (liStart == std::string::npos) {
-      break;
-    }
-    const std::size_t liEnd = lSLower.find(pSEndLower, liStart + pSStartLower.size());
-    const std::size_t liEraseEnd =
-        (liEnd == std::string::npos) ? pSText.size() : (liEnd + pSEndLower.size());
-    pSText.erase(liStart, liEraseEnd - liStart);
-    lSLower.erase(liStart, liEraseEnd - liStart);
-    liSearchPosition = liStart;
-  }
-  return pSText;
-}
+		/// <summary>Trims ASCII whitespace from both ends.</summary>
+		/// <param name="pSInput">Input text.</param>
+		/// <returns>Trimmed text.</returns>
+		std::string TrimAsciiWhitespace(const std::string& pSInput)
+		{
+			std::size_t liBegin = 0;
 
-/// <summary>Strips known reasoning blocks/markers from generated text.</summary>
-/// <param name="pSText">Generated text.</param>
-/// <returns>Visible assistant response text.</returns>
-std::string StripReasoningSections(const std::string& pSText) {
-  std::string lSOutput = pSText;
-  lSOutput = RemoveDelimitedSegmentsCaseInsensitive(lSOutput, "<think>", "</think>");
-  lSOutput = RemoveDelimitedSegmentsCaseInsensitive(lSOutput, "<thinking>", "</thinking>");
-  lSOutput = RemoveDelimitedSegmentsCaseInsensitive(lSOutput, "<|start_think|>", "<|end_think|>");
-  lSOutput = RemoveDelimitedSegmentsCaseInsensitive(lSOutput, "<reasoning>", "</reasoning>");
+			while (liBegin < pSInput.size() && std::isspace(static_cast<unsigned char>(pSInput[liBegin])) != 0)
+			{
+				++liBegin;
+			}
 
-  lSOutput = RemoveAllCaseInsensitive(lSOutput, "<think>");
-  lSOutput = RemoveAllCaseInsensitive(lSOutput, "</think>");
-  lSOutput = RemoveAllCaseInsensitive(lSOutput, "<thinking>");
-  lSOutput = RemoveAllCaseInsensitive(lSOutput, "</thinking>");
-  lSOutput = RemoveAllCaseInsensitive(lSOutput, "<|start_think|>");
-  lSOutput = RemoveAllCaseInsensitive(lSOutput, "<|end_think|>");
-  lSOutput = RemoveAllCaseInsensitive(lSOutput, "<|thinking|>");
-  lSOutput = RemoveAllCaseInsensitive(lSOutput, "<reasoning>");
-  lSOutput = RemoveAllCaseInsensitive(lSOutput, "</reasoning>");
-  return lSOutput;
-}
+			std::size_t liEnd = pSInput.size();
 
-enum class SampledTokenBehavior {
-  Stop,
-  Thinking,
-  Hidden,
-  Emit
-};
+			while (liEnd > liBegin && std::isspace(static_cast<unsigned char>(pSInput[liEnd - 1])) != 0)
+			{
+				--liEnd;
+			}
 
-/// <summary>Classifies sampled tokens as stop/thinking/hidden/emit for robust generation.</summary>
-/// <param name="pPtrVocab">Vocabulary for the loaded model.</param>
-/// <param name="piToken">Sampled token id.</param>
-/// <returns>Behavior classification for this token.</returns>
-SampledTokenBehavior ClassifySampledToken(const llama_vocab* pPtrVocab, const llama_token piToken) {
-  if (pPtrVocab == nullptr) {
-    return SampledTokenBehavior::Stop;
-  }
-  if (llama_vocab_is_eog(pPtrVocab, piToken)) {
-    return SampledTokenBehavior::Stop;
-  }
+			return pSInput.substr(liBegin, liEnd - liBegin);
+		}
 
-  const std::string lSNormalizedTokenText = GetNormalizedTokenMarkerText(pPtrVocab, piToken);
-  if (IsKnownStopTokenText(lSNormalizedTokenText)) {
-    return SampledTokenBehavior::Stop;
-  }
-  if (IsKnownThinkingMarkerTokenText(lSNormalizedTokenText)) {
-    return SampledTokenBehavior::Thinking;
-  }
-  if (llama_vocab_is_control(pPtrVocab, piToken)) {
-    return SampledTokenBehavior::Hidden;
-  }
-  return SampledTokenBehavior::Emit;
-}
+		/// <summary>Normalizes token marker text for comparisons.</summary>
+		/// <param name="pSInput">Token text.</param>
+		/// <returns>Lowercased and trimmed marker text.</returns>
+		std::string NormalizeTokenMarkerText(const std::string& pSInput)
+		{
+			return TrimAsciiWhitespace(ToLowerAscii(pSInput));
+		}
 
-/// <summary>
-/// Chooses a highest-logit fallback token from the latest decoder output.
-/// First pass prefers visible tokens; second pass allows hidden non-stop tokens.
-/// </summary>
-/// <param name="pPtrVocab">Vocabulary associated with the loaded model.</param>
-/// <param name="pPtrContext">Active llama context with current logits.</param>
-/// <returns>Best fallback token id when available.</returns>
-std::optional<llama_token> SelectBestFallbackToken(const llama_vocab* pPtrVocab, llama_context* pPtrContext) {
-  if (pPtrVocab == nullptr || pPtrContext == nullptr) {
-    return std::nullopt;
-  }
+		/// <summary>Returns true when token text is an explicit stop marker.</summary>
+		/// <param name="pSNormalizedTokenText">Normalized marker text.</param>
+		/// <returns>True for known end-of-generation marker forms.</returns>
+		bool IsKnownStopTokenText(const std::string& pSNormalizedTokenText)
+		{
+			return pSNormalizedTokenText == "</s>" || pSNormalizedTokenText == "<|eot_id|>" || pSNormalizedTokenText == "<|eom_id|>" || pSNormalizedTokenText == "<|end|>" || pSNormalizedTokenText == "<|endoftext|>" || pSNormalizedTokenText == "<|end_of_text|>" || pSNormalizedTokenText == "<end_of_turn>" || pSNormalizedTokenText == "<|im_end|>";
+		}
 
-  float* lPtrfLogits = llama_get_logits_ith(pPtrContext, -1);
-  if (lPtrfLogits == nullptr) {
-    return std::nullopt;
-  }
+		/// <summary>Returns true when token text represents a reasoning/thinking marker.</summary>
+		/// <param name="pSNormalizedTokenText">Normalized marker text.</param>
+		/// <returns>True for known think/reasoning marker tokens.</returns>
+		bool IsKnownThinkingMarkerTokenText(const std::string& pSNormalizedTokenText)
+		{
+			return pSNormalizedTokenText == "<think>" || pSNormalizedTokenText == "</think>" || pSNormalizedTokenText == "<thinking>" || pSNormalizedTokenText == "</thinking>" || pSNormalizedTokenText == "<|start_think|>" || pSNormalizedTokenText == "<|end_think|>" || pSNormalizedTokenText == "<|thinking|>" || pSNormalizedTokenText == "<reasoning>" || pSNormalizedTokenText == "</reasoning>";
+		}
 
-  const int32_t liVocabSize = llama_vocab_n_tokens(pPtrVocab);
-  if (liVocabSize <= 0) {
-    return std::nullopt;
-  }
+		/// <summary>Returns true when a marker token opens a thinking section.</summary>
+		/// <param name="pSNormalizedTokenText">Normalized marker text.</param>
+		/// <returns>True if this token starts reasoning mode.</returns>
+		bool IsThinkingStartTokenText(const std::string& pSNormalizedTokenText)
+		{
+			return pSNormalizedTokenText == "<think>" || pSNormalizedTokenText == "<thinking>" || pSNormalizedTokenText == "<|start_think|>" || pSNormalizedTokenText == "<|thinking|>" || pSNormalizedTokenText == "<reasoning>";
+		}
 
-  auto lFindBestByBehavior = [&](const SampledTokenBehavior pDesiredBehavior) -> std::optional<llama_token> {
-    bool lbFound = false;
-    llama_token liBestToken = LLAMA_TOKEN_NULL;
-    float lfBestLogit = -std::numeric_limits<float>::infinity();
-    for (int32_t liTokenIndex = 0; liTokenIndex < liVocabSize; ++liTokenIndex) {
-      const llama_token liToken = static_cast<llama_token>(liTokenIndex);
-      const SampledTokenBehavior lTokenBehavior = ClassifySampledToken(pPtrVocab, liToken);
-      if (lTokenBehavior != pDesiredBehavior) {
-        continue;
-      }
+		/// <summary>Returns true when a marker token closes a thinking section.</summary>
+		/// <param name="pSNormalizedTokenText">Normalized marker text.</param>
+		/// <returns>True if this token ends reasoning mode.</returns>
+		bool IsThinkingEndTokenText(const std::string& pSNormalizedTokenText)
+		{
+			return pSNormalizedTokenText == "</think>" || pSNormalizedTokenText == "</thinking>" || pSNormalizedTokenText == "<|end_think|>" || pSNormalizedTokenText == "</reasoning>";
+		}
 
-      const float lfLogit = lPtrfLogits[liTokenIndex];
-      if (!lbFound || lfLogit > lfBestLogit) {
-        lbFound = true;
-        liBestToken = liToken;
-        lfBestLogit = lfLogit;
-      }
-    }
-    if (!lbFound) {
-      return std::nullopt;
-    }
-    return liBestToken;
-  };
+		/// <summary>Reads normalized marker text for a token id from the vocab.</summary>
+		/// <param name="pPtrVocab">Vocabulary associated with the loaded model.</param>
+		/// <param name="piToken">Token id.</param>
+		/// <returns>Normalized token marker text (possibly empty).</returns>
+		std::string GetNormalizedTokenMarkerText(const llama_vocab* pPtrVocab, const llama_token piToken)
+		{
+			if (pPtrVocab == nullptr)
+			{
+				return {};
+			}
 
-  const std::optional<llama_token> lOptVisibleToken = lFindBestByBehavior(SampledTokenBehavior::Emit);
-  if (lOptVisibleToken.has_value()) {
-    return lOptVisibleToken;
-  }
-  const std::optional<llama_token> lOptThinkingToken = lFindBestByBehavior(SampledTokenBehavior::Thinking);
-  if (lOptThinkingToken.has_value()) {
-    return lOptThinkingToken;
-  }
-  return lFindBestByBehavior(SampledTokenBehavior::Hidden);
-}
+			const char* pSRawTokenText = llama_vocab_get_text(pPtrVocab, piToken);
+
+			if (pSRawTokenText == nullptr)
+			{
+				return {};
+			}
+
+			return NormalizeTokenMarkerText(pSRawTokenText);
+		}
+
+		/// <summary>Removes all case-insensitive marker occurrences.</summary>
+		/// <param name="pSText">Source text.</param>
+		/// <param name="pSMarkerLower">Marker text in lowercase.</param>
+		/// <returns>Text with marker removed.</returns>
+		std::string RemoveAllCaseInsensitive(std::string pSText, const std::string& pSMarkerLower)
+		{
+			if (pSMarkerLower.empty())
+			{
+				return pSText;
+			}
+
+			std::string lSLower = ToLowerAscii(pSText);
+			std::size_t liPosition = 0;
+
+			while (true)
+			{
+				liPosition = lSLower.find(pSMarkerLower, liPosition);
+
+				if (liPosition == std::string::npos)
+				{
+					break;
+				}
+
+				pSText.erase(liPosition, pSMarkerLower.size());
+				lSLower.erase(liPosition, pSMarkerLower.size());
+			}
+
+			return pSText;
+		}
+
+		/// <summary>Removes case-insensitive delimited sections such as think blocks.</summary>
+		/// <param name="pSText">Source text.</param>
+		/// <param name="pSStartLower">Start marker in lowercase.</param>
+		/// <param name="pSEndLower">End marker in lowercase.</param>
+		/// <returns>Text with delimited segments removed.</returns>
+		std::string RemoveDelimitedSegmentsCaseInsensitive(std::string pSText, const std::string& pSStartLower, const std::string& pSEndLower)
+		{
+			if (pSStartLower.empty() || pSEndLower.empty())
+			{
+				return pSText;
+			}
+
+			std::string lSLower = ToLowerAscii(pSText);
+			std::size_t liSearchPosition = 0;
+
+			while (true)
+			{
+				const std::size_t liStart = lSLower.find(pSStartLower, liSearchPosition);
+
+				if (liStart == std::string::npos)
+				{
+					break;
+				}
+
+				const std::size_t liEnd = lSLower.find(pSEndLower, liStart + pSStartLower.size());
+				const std::size_t liEraseEnd = (liEnd == std::string::npos) ? pSText.size() : (liEnd + pSEndLower.size());
+				pSText.erase(liStart, liEraseEnd - liStart);
+				lSLower.erase(liStart, liEraseEnd - liStart);
+				liSearchPosition = liStart;
+			}
+
+			return pSText;
+		}
+
+		/// <summary>Strips known reasoning blocks/markers from generated text.</summary>
+		/// <param name="pSText">Generated text.</param>
+		/// <returns>Visible assistant response text.</returns>
+		std::string StripReasoningSections(const std::string& pSText)
+		{
+			std::string lSOutput = pSText;
+			lSOutput = RemoveDelimitedSegmentsCaseInsensitive(lSOutput, "<think>", "</think>");
+			lSOutput = RemoveDelimitedSegmentsCaseInsensitive(lSOutput, "<thinking>", "</thinking>");
+			lSOutput = RemoveDelimitedSegmentsCaseInsensitive(lSOutput, "<|start_think|>", "<|end_think|>");
+			lSOutput = RemoveDelimitedSegmentsCaseInsensitive(lSOutput, "<reasoning>", "</reasoning>");
+
+			lSOutput = RemoveAllCaseInsensitive(lSOutput, "<think>");
+			lSOutput = RemoveAllCaseInsensitive(lSOutput, "</think>");
+			lSOutput = RemoveAllCaseInsensitive(lSOutput, "<thinking>");
+			lSOutput = RemoveAllCaseInsensitive(lSOutput, "</thinking>");
+			lSOutput = RemoveAllCaseInsensitive(lSOutput, "<|start_think|>");
+			lSOutput = RemoveAllCaseInsensitive(lSOutput, "<|end_think|>");
+			lSOutput = RemoveAllCaseInsensitive(lSOutput, "<|thinking|>");
+			lSOutput = RemoveAllCaseInsensitive(lSOutput, "<reasoning>");
+			lSOutput = RemoveAllCaseInsensitive(lSOutput, "</reasoning>");
+			return lSOutput;
+		}
+
+		enum class SampledTokenBehavior
+		{
+			Stop,
+			Thinking,
+			Hidden,
+			Emit
+		};
+
+		/// <summary>Classifies sampled tokens as stop/thinking/hidden/emit for robust generation.</summary>
+		/// <param name="pPtrVocab">Vocabulary for the loaded model.</param>
+		/// <param name="piToken">Sampled token id.</param>
+		/// <returns>Behavior classification for this token.</returns>
+		SampledTokenBehavior ClassifySampledToken(const llama_vocab* pPtrVocab, const llama_token piToken)
+		{
+			if (pPtrVocab == nullptr)
+			{
+				return SampledTokenBehavior::Stop;
+			}
+
+			if (llama_vocab_is_eog(pPtrVocab, piToken))
+			{
+				return SampledTokenBehavior::Stop;
+			}
+
+			const std::string lSNormalizedTokenText = GetNormalizedTokenMarkerText(pPtrVocab, piToken);
+
+			if (IsKnownStopTokenText(lSNormalizedTokenText))
+			{
+				return SampledTokenBehavior::Stop;
+			}
+
+			if (IsKnownThinkingMarkerTokenText(lSNormalizedTokenText))
+			{
+				return SampledTokenBehavior::Thinking;
+			}
+
+			if (llama_vocab_is_control(pPtrVocab, piToken))
+			{
+				return SampledTokenBehavior::Hidden;
+			}
+
+			return SampledTokenBehavior::Emit;
+		}
+
+		/// <summary>
+		/// Chooses a highest-logit fallback token from the latest decoder output.
+		/// First pass prefers visible tokens; second pass allows hidden non-stop tokens.
+		/// </summary>
+		/// <param name="pPtrVocab">Vocabulary associated with the loaded model.</param>
+		/// <param name="pPtrContext">Active llama context with current logits.</param>
+		/// <returns>Best fallback token id when available.</returns>
+		std::optional<llama_token> SelectBestFallbackToken(const llama_vocab* pPtrVocab, llama_context* pPtrContext)
+		{
+			if (pPtrVocab == nullptr || pPtrContext == nullptr)
+			{
+				return std::nullopt;
+			}
+
+			float* lPtrfLogits = llama_get_logits_ith(pPtrContext, -1);
+
+			if (lPtrfLogits == nullptr)
+			{
+				return std::nullopt;
+			}
+
+			const int32_t liVocabSize = llama_vocab_n_tokens(pPtrVocab);
+
+			if (liVocabSize <= 0)
+			{
+				return std::nullopt;
+			}
+
+			auto lFindBestByBehavior = [&](const SampledTokenBehavior pDesiredBehavior) -> std::optional<llama_token>
+			{
+				bool lbFound = false;
+				llama_token liBestToken = LLAMA_TOKEN_NULL;
+				float lfBestLogit = -std::numeric_limits<float>::infinity();
+
+				for (int32_t liTokenIndex = 0; liTokenIndex < liVocabSize; ++liTokenIndex)
+				{
+					const llama_token liToken = static_cast<llama_token>(liTokenIndex);
+					const SampledTokenBehavior lTokenBehavior = ClassifySampledToken(pPtrVocab, liToken);
+
+					if (lTokenBehavior != pDesiredBehavior)
+					{
+						continue;
+					}
+
+					const float lfLogit = lPtrfLogits[liTokenIndex];
+
+					if (!lbFound || lfLogit > lfBestLogit)
+					{
+						lbFound = true;
+						liBestToken = liToken;
+						lfBestLogit = lfLogit;
+					}
+				}
+
+				if (!lbFound)
+				{
+					return std::nullopt;
+				}
+
+				return liBestToken;
+			};
+
+			const std::optional<llama_token> lOptVisibleToken = lFindBestByBehavior(SampledTokenBehavior::Emit);
+
+			if (lOptVisibleToken.has_value())
+			{
+				return lOptVisibleToken;
+			}
+
+			const std::optional<llama_token> lOptThinkingToken = lFindBestByBehavior(SampledTokenBehavior::Thinking);
+
+			if (lOptThinkingToken.has_value())
+			{
+				return lOptThinkingToken;
+			}
+
+			return lFindBestByBehavior(SampledTokenBehavior::Hidden);
+		}
+
 #endif
 
-}  // namespace
+	} // namespace
 
-struct RagRuntimeInterface {
-  virtual ~RagRuntimeInterface() = default;
-  virtual bool Scan(const std::optional<std::string>& pOptSVectorFile,
-                    const vectorised_rag::RuntimeOptions& pRuntimeOptions,
-                    std::string* pSErrorOut) = 0;
-  virtual bool LoadRagDatabases(const std::vector<std::string>& pVecSDatabaseInputs,
-                                const vectorised_rag::RuntimeOptions& pRuntimeOptions,
-                                std::string* pSErrorOut) = 0;
-  virtual std::vector<std::string> Fetch_Relevant_Info(const std::string& pSPrompt,
-                                                       std::size_t piMax,
-                                                       std::size_t piMin,
-                                                       const vectorised_rag::RuntimeOptions& pRuntimeOptions) = 0;
-  virtual VectorisationStateResponse Fetch_state() = 0;
-};
+	struct RagRuntimeInterface
+	{
+		virtual ~RagRuntimeInterface() = default;
+		virtual bool Scan(const std::optional<std::string>& pOptSVectorFile, const vectorised_rag::RuntimeOptions& pRuntimeOptions, std::string* pSErrorOut) = 0;
+		virtual bool LoadRagDatabases(const std::vector<std::string>& pVecSDatabaseInputs, const vectorised_rag::RuntimeOptions& pRuntimeOptions, std::string* pSErrorOut) = 0;
+		virtual std::vector<std::string> Fetch_Relevant_Info(const std::string& pSPrompt, std::size_t piMax, std::size_t piMin, const vectorised_rag::RuntimeOptions& pRuntimeOptions) = 0;
+		virtual VectorisationStateResponse Fetch_state() = 0;
+	};
 
-namespace {
+	namespace
+	{
 
-VectorisationStateResponse ToVectorisationStateResponse(const vectorised_rag::ScanStateSnapshot& pScanStateSnapshot) {
-  VectorisationStateResponse lVectorisationStateResponse;
-  lVectorisationStateResponse.piVectorDatabaseSize = pScanStateSnapshot.piVectorDatabaseSize;
-  lVectorisationStateResponse.piFilesProcessed = pScanStateSnapshot.piFilesProcessed;
-  lVectorisationStateResponse.piTotalFiles = pScanStateSnapshot.piTotalFiles;
-  switch (pScanStateSnapshot.pState) {
-    case vectorised_rag::StateValue::Running:
-      lVectorisationStateResponse.pVectorisationLifecycleState = VectorisationLifecycleState::Running;
-      break;
-    case vectorised_rag::StateValue::Finished:
-      lVectorisationStateResponse.pVectorisationLifecycleState = VectorisationLifecycleState::Finished;
-      break;
-    case vectorised_rag::StateValue::Stopped:
-    default:
-      lVectorisationStateResponse.pVectorisationLifecycleState = VectorisationLifecycleState::Stopped;
-      break;
-  }
-  return lVectorisationStateResponse;
-}
+		VectorisationStateResponse ToVectorisationStateResponse(const vectorised_rag::ScanStateSnapshot& pScanStateSnapshot)
+		{
+			VectorisationStateResponse lVectorisationStateResponse;
+			lVectorisationStateResponse.piVectorDatabaseSize = pScanStateSnapshot.piVectorDatabaseSize;
+			lVectorisationStateResponse.piFilesProcessed = pScanStateSnapshot.piFilesProcessed;
+			lVectorisationStateResponse.piTotalFiles = pScanStateSnapshot.piTotalFiles;
 
-class VectorisedRagRuntime final : public RagRuntimeInterface {
- public:
-  ~VectorisedRagRuntime() override {
-    vectorised_rag::Shutdown(mContext);
-  }
+			switch (pScanStateSnapshot.pState)
+			{
+			case vectorised_rag::StateValue::Running:
+				lVectorisationStateResponse.pVectorisationLifecycleState = VectorisationLifecycleState::Running;
+				break;
+			case vectorised_rag::StateValue::Finished:
+				lVectorisationStateResponse.pVectorisationLifecycleState = VectorisationLifecycleState::Finished;
+				break;
+			case vectorised_rag::StateValue::Stopped:
+			default:
+				lVectorisationStateResponse.pVectorisationLifecycleState = VectorisationLifecycleState::Stopped;
+				break;
+			}
 
-  bool Scan(const std::optional<std::string>& pOptSVectorFile,
-            const vectorised_rag::RuntimeOptions& pRuntimeOptions,
-            std::string* pSErrorOut) override {
-    vectorised_rag::RuntimeOptions lRuntimeOptions = pRuntimeOptions;
-    lRuntimeOptions.pbUseDeterministicEmbeddings = false;
-    lRuntimeOptions.pSStorageFolderName = ".vectorised_rag";
-    return vectorised_rag::Scan(mContext, pOptSVectorFile, lRuntimeOptions, pSErrorOut);
-  }
+			return lVectorisationStateResponse;
+		}
 
-  bool LoadRagDatabases(const std::vector<std::string>& pVecSDatabaseInputs,
-                        const vectorised_rag::RuntimeOptions& pRuntimeOptions,
-                        std::string* pSErrorOut) override {
-    vectorised_rag::RuntimeOptions lRuntimeOptions = pRuntimeOptions;
-    lRuntimeOptions.pbUseDeterministicEmbeddings = false;
-    lRuntimeOptions.pSStorageFolderName = ".vectorised_rag";
-    return vectorised_rag::LoadRagDatabases(mContext, pVecSDatabaseInputs, lRuntimeOptions, pSErrorOut);
-  }
+		class VectorisedRagRuntime final : public RagRuntimeInterface
+		{
+		  public:
+			~VectorisedRagRuntime() override
+			{
+				vectorised_rag::Shutdown(mContext);
+			}
 
-  std::vector<std::string> Fetch_Relevant_Info(const std::string& pSPrompt,
-                                               const std::size_t piMax,
-                                               const std::size_t piMin,
-                                               const vectorised_rag::RuntimeOptions& pRuntimeOptions) override {
-    vectorised_rag::RuntimeOptions lRuntimeOptions = pRuntimeOptions;
-    lRuntimeOptions.pbUseDeterministicEmbeddings = false;
-    lRuntimeOptions.pSStorageFolderName = ".vectorised_rag";
-    return vectorised_rag::Fetch_Relevant_Info(mContext, pSPrompt, piMax, piMin, lRuntimeOptions);
-  }
+			bool Scan(const std::optional<std::string>& pOptSVectorFile, const vectorised_rag::RuntimeOptions& pRuntimeOptions, std::string* pSErrorOut) override
+			{
+				vectorised_rag::RuntimeOptions lRuntimeOptions = pRuntimeOptions;
+				lRuntimeOptions.pbUseDeterministicEmbeddings = false;
+				lRuntimeOptions.pSStorageFolderName = ".vectorised_rag";
+				return vectorised_rag::Scan(mContext, pOptSVectorFile, lRuntimeOptions, pSErrorOut);
+			}
 
-  VectorisationStateResponse Fetch_state() override {
-    return ToVectorisationStateResponse(vectorised_rag::Fetch_state(mContext));
-  }
+			bool LoadRagDatabases(const std::vector<std::string>& pVecSDatabaseInputs, const vectorised_rag::RuntimeOptions& pRuntimeOptions, std::string* pSErrorOut) override
+			{
+				vectorised_rag::RuntimeOptions lRuntimeOptions = pRuntimeOptions;
+				lRuntimeOptions.pbUseDeterministicEmbeddings = false;
+				lRuntimeOptions.pSStorageFolderName = ".vectorised_rag";
+				return vectorised_rag::LoadRagDatabases(mContext, pVecSDatabaseInputs, lRuntimeOptions, pSErrorOut);
+			}
 
- private:
-  vectorised_rag::Context mContext;
-};
+			std::vector<std::string> Fetch_Relevant_Info(const std::string& pSPrompt, const std::size_t piMax, const std::size_t piMin, const vectorised_rag::RuntimeOptions& pRuntimeOptions) override
+			{
+				vectorised_rag::RuntimeOptions lRuntimeOptions = pRuntimeOptions;
+				lRuntimeOptions.pbUseDeterministicEmbeddings = false;
+				lRuntimeOptions.pSStorageFolderName = ".vectorised_rag";
+				return vectorised_rag::Fetch_Relevant_Info(mContext, pSPrompt, piMax, piMin, lRuntimeOptions);
+			}
 
-class DeterministicRagRuntime final : public RagRuntimeInterface {
- public:
-  ~DeterministicRagRuntime() override {
-    vectorised_rag::Shutdown(mContext);
-  }
+			VectorisationStateResponse Fetch_state() override
+			{
+				return ToVectorisationStateResponse(vectorised_rag::Fetch_state(mContext));
+			}
 
-  bool Scan(const std::optional<std::string>& pOptSVectorFile,
-            const vectorised_rag::RuntimeOptions& pRuntimeOptions,
-            std::string* pSErrorOut) override {
-    vectorised_rag::RuntimeOptions lRuntimeOptions = pRuntimeOptions;
-    lRuntimeOptions.pbUseDeterministicEmbeddings = true;
-    lRuntimeOptions.pSStorageFolderName = ".deterministic_rag";
-    return vectorised_rag::Scan(mContext, pOptSVectorFile, lRuntimeOptions, pSErrorOut);
-  }
+		  private:
+			vectorised_rag::Context mContext;
+		};
 
-  bool LoadRagDatabases(const std::vector<std::string>& pVecSDatabaseInputs,
-                        const vectorised_rag::RuntimeOptions& pRuntimeOptions,
-                        std::string* pSErrorOut) override {
-    vectorised_rag::RuntimeOptions lRuntimeOptions = pRuntimeOptions;
-    lRuntimeOptions.pbUseDeterministicEmbeddings = true;
-    lRuntimeOptions.pSStorageFolderName = ".deterministic_rag";
-    return vectorised_rag::LoadRagDatabases(mContext, pVecSDatabaseInputs, lRuntimeOptions, pSErrorOut);
-  }
+		class DeterministicRagRuntime final : public RagRuntimeInterface
+		{
+		  public:
+			~DeterministicRagRuntime() override
+			{
+				vectorised_rag::Shutdown(mContext);
+			}
 
-  std::vector<std::string> Fetch_Relevant_Info(const std::string& pSPrompt,
-                                               const std::size_t piMax,
-                                               const std::size_t piMin,
-                                               const vectorised_rag::RuntimeOptions& pRuntimeOptions) override {
-    vectorised_rag::RuntimeOptions lRuntimeOptions = pRuntimeOptions;
-    lRuntimeOptions.pbUseDeterministicEmbeddings = true;
-    lRuntimeOptions.pSStorageFolderName = ".deterministic_rag";
-    return vectorised_rag::Fetch_Relevant_Info(mContext, pSPrompt, piMax, piMin, lRuntimeOptions);
-  }
+			bool Scan(const std::optional<std::string>& pOptSVectorFile, const vectorised_rag::RuntimeOptions& pRuntimeOptions, std::string* pSErrorOut) override
+			{
+				vectorised_rag::RuntimeOptions lRuntimeOptions = pRuntimeOptions;
+				lRuntimeOptions.pbUseDeterministicEmbeddings = true;
+				lRuntimeOptions.pSStorageFolderName = ".deterministic_rag";
+				return vectorised_rag::Scan(mContext, pOptSVectorFile, lRuntimeOptions, pSErrorOut);
+			}
 
-  VectorisationStateResponse Fetch_state() override {
-    return ToVectorisationStateResponse(vectorised_rag::Fetch_state(mContext));
-  }
+			bool LoadRagDatabases(const std::vector<std::string>& pVecSDatabaseInputs, const vectorised_rag::RuntimeOptions& pRuntimeOptions, std::string* pSErrorOut) override
+			{
+				vectorised_rag::RuntimeOptions lRuntimeOptions = pRuntimeOptions;
+				lRuntimeOptions.pbUseDeterministicEmbeddings = true;
+				lRuntimeOptions.pSStorageFolderName = ".deterministic_rag";
+				return vectorised_rag::LoadRagDatabases(mContext, pVecSDatabaseInputs, lRuntimeOptions, pSErrorOut);
+			}
 
- private:
-  vectorised_rag::Context mContext;
-};
+			std::vector<std::string> Fetch_Relevant_Info(const std::string& pSPrompt, const std::size_t piMax, const std::size_t piMin, const vectorised_rag::RuntimeOptions& pRuntimeOptions) override
+			{
+				vectorised_rag::RuntimeOptions lRuntimeOptions = pRuntimeOptions;
+				lRuntimeOptions.pbUseDeterministicEmbeddings = true;
+				lRuntimeOptions.pSStorageFolderName = ".deterministic_rag";
+				return vectorised_rag::Fetch_Relevant_Info(mContext, pSPrompt, piMax, piMin, lRuntimeOptions);
+			}
 
-std::unique_ptr<RagRuntimeInterface> CreateRagRuntime(const RagRuntimeMode pRagRuntimeMode) {
-  if (pRagRuntimeMode == RagRuntimeMode::Deterministic) {
-    return std::make_unique<DeterministicRagRuntime>();
-  }
-  return std::make_unique<VectorisedRagRuntime>();
-}
+			VectorisationStateResponse Fetch_state() override
+			{
+				return ToVectorisationStateResponse(vectorised_rag::Fetch_state(mContext));
+			}
 
-}  // namespace
+		  private:
+			vectorised_rag::Context mContext;
+		};
 
-/// <summary>
-/// Initializes the local engine and normalizes runtime options.
-/// </summary>
-/// <param name="pEngineOptions">Runtime options used by this engine instance.</param>
-LocalOllamaCppEngine::LocalOllamaCppEngine(EngineOptions pEngineOptions)
-    : mEngineOptions(std::move(pEngineOptions)) {
-  if (mEngineOptions.pPathModelFolder.empty()) {
-    mEngineOptions.pPathModelFolder = fs::current_path() / "models";
-  }
-  mEngineOptions.piEmbeddingDimensions =
-      std::clamp<std::size_t>(mEngineOptions.piEmbeddingDimensions, 32, 4096);
-  mEngineOptions.piEmbeddingMaxTokens =
-      std::clamp<std::size_t>(mEngineOptions.piEmbeddingMaxTokens, 0, 32768);
-  mGenerationSettings = ClampGenerationSettings(mEngineOptions.pGenerationSettings);
-  mEngineOptions.pGenerationSettings = mGenerationSettings;
-  mEngineOptions.pRagRuntimeMode = ResolveRagRuntimeMode(mEngineOptions.pRagRuntimeMode);
-  mPtrRagRuntime = CreateRagRuntime(mEngineOptions.pRagRuntimeMode);
-}
+		std::unique_ptr<RagRuntimeInterface> CreateRagRuntime(const RagRuntimeMode pRagRuntimeMode)
+		{
+			if (pRagRuntimeMode == RagRuntimeMode::Deterministic)
+			{
+				return std::make_unique<DeterministicRagRuntime>();
+			}
 
-/// <summary>Releases loaded runtime resources.</summary>
-LocalOllamaCppEngine::~LocalOllamaCppEngine() {
-  mPtrRagRuntime.reset();
-  std::lock_guard<std::mutex> lGuard(mMutexEngineRuntime);
-  ReleaseRuntimeLocked();
-}
+			return std::make_unique<VectorisedRagRuntime>();
+		}
 
-/// <summary>Enumerates model files from the configured model folder.</summary>
-/// <returns>Sorted model file names.</returns>
-std::vector<std::string> LocalOllamaCppEngine::ListModels() {
-  std::vector<std::string> lVecSModels;
-  const std::vector<fs::path> lVecPathModelFiles = DiscoverModelFilesRecursively(mEngineOptions.pPathModelFolder);
-  std::error_code lErrorCode;
-  for (const fs::path& lPathModelFile : lVecPathModelFiles) {
-    const fs::path lPathRelative = fs::relative(lPathModelFile, mEngineOptions.pPathModelFolder, lErrorCode);
-    if (lErrorCode) {
-      lErrorCode.clear();
-      continue;
-    }
-    lVecSModels.push_back(lPathRelative.generic_string());
-  }
-  std::sort(lVecSModels.begin(), lVecSModels.end());
-  return lVecSModels;
-}
+	} // namespace
 
-/// <summary>Frees active llama model/context/sampler pointers.</summary>
-void LocalOllamaCppEngine::ReleaseRuntimeLocked() {
+	/// <summary>
+	/// Initializes the local engine and normalizes runtime options.
+	/// </summary>
+	/// <param name="pEngineOptions">Runtime options used by this engine instance.</param>
+	LocalOllamaCppEngine::LocalOllamaCppEngine(EngineOptions pEngineOptions) : mEngineOptions(std::move(pEngineOptions))
+	{
+		if (mEngineOptions.pPathModelFolder.empty())
+		{
+			mEngineOptions.pPathModelFolder = fs::current_path() / "models";
+		}
+
+		mEngineOptions.piEmbeddingDimensions = std::clamp<std::size_t>(mEngineOptions.piEmbeddingDimensions, 32, 4096);
+		mEngineOptions.piEmbeddingMaxTokens = std::clamp<std::size_t>(mEngineOptions.piEmbeddingMaxTokens, 0, 32768);
+		mGenerationSettings = ClampGenerationSettings(mEngineOptions.pGenerationSettings);
+		mEngineOptions.pGenerationSettings = mGenerationSettings;
+		mEngineOptions.pRagRuntimeMode = ResolveRagRuntimeMode(mEngineOptions.pRagRuntimeMode);
+		mPtrRagRuntime = CreateRagRuntime(mEngineOptions.pRagRuntimeMode);
+	}
+
+	/// <summary>Releases loaded runtime resources.</summary>
+	LocalOllamaCppEngine::~LocalOllamaCppEngine()
+	{
+		mPtrRagRuntime.reset();
+		std::lock_guard<std::mutex> lGuard(mMutexEngineRuntime);
+		ReleaseRuntimeLocked();
+	}
+
+	/// <summary>Enumerates model files from the configured model folder.</summary>
+	/// <returns>Sorted model file names.</returns>
+	std::vector<std::string> LocalOllamaCppEngine::ListModels()
+	{
+		std::vector<std::string> lVecSModels;
+		const std::vector<fs::path> lVecPathModelFiles = DiscoverModelFilesRecursively(mEngineOptions.pPathModelFolder);
+		std::error_code lErrorCode;
+
+		for (const fs::path& lPathModelFile : lVecPathModelFiles)
+		{
+			const fs::path lPathRelative = fs::relative(lPathModelFile, mEngineOptions.pPathModelFolder, lErrorCode);
+
+			if (lErrorCode)
+			{
+				lErrorCode.clear();
+				continue;
+			}
+
+			lVecSModels.push_back(lPathRelative.generic_string());
+		}
+
+		std::sort(lVecSModels.begin(), lVecSModels.end());
+		return lVecSModels;
+	}
+
+	/// <summary>Frees active llama model/context/sampler pointers.</summary>
+	void LocalOllamaCppEngine::ReleaseRuntimeLocked()
+	{
 #ifdef UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP
-  if (mPtrSampler != nullptr) {
-    llama_sampler_free(mPtrSampler);
-    mPtrSampler = nullptr;
-  }
-  if (mPtrContext != nullptr) {
-    llama_free(mPtrContext);
-    mPtrContext = nullptr;
-  }
-  if (mPtrModel != nullptr) {
-    llama_model_free(mPtrModel);
-    mPtrModel = nullptr;
-  }
-  mPathLoadedModelFile.clear();
+
+		if (mPtrSampler != nullptr)
+		{
+			llama_sampler_free(mPtrSampler);
+			mPtrSampler = nullptr;
+		}
+
+		if (mPtrContext != nullptr)
+		{
+			llama_free(mPtrContext);
+			mPtrContext = nullptr;
+		}
+
+		if (mPtrModel != nullptr)
+		{
+			llama_model_free(mPtrModel);
+			mPtrModel = nullptr;
+		}
+
+		mPathLoadedModelFile.clear();
 #endif
-}
+	}
 
-/// <summary>Loads a model file and updates progress state.</summary>
-/// <param name="pSModelName">Model file name in the configured model folder.</param>
-/// <param name="pSErrorOut">Optional output pointer for error details.</param>
-/// <returns>True when the model load succeeds.</returns>
-bool LocalOllamaCppEngine::Load(const std::string& pSModelName, std::string* pSErrorOut) {
-  if (pSModelName.empty()) {
-    if (pSErrorOut != nullptr) {
-      *pSErrorOut = "Model name is empty.";
-    }
-    return false;
-  }
+	/// <summary>Loads a model file and updates progress state.</summary>
+	/// <param name="pSModelName">Model file name in the configured model folder.</param>
+	/// <param name="pSErrorOut">Optional output pointer for error details.</param>
+	/// <returns>True when the model load succeeds.</returns>
+	bool LocalOllamaCppEngine::Load(const std::string& pSModelName, std::string* pSErrorOut)
+	{
+		if (pSModelName.empty())
+		{
+			if (pSErrorOut != nullptr)
+			{
+				*pSErrorOut = "Model name is empty.";
+			}
 
-  const fs::path lPathModelCandidate = mEngineOptions.pPathModelFolder / pSModelName;
-  fs::path lPathModel = lPathModelCandidate;
-  std::string lSModelDisplayName = pSModelName;
-  std::error_code lErrorCode;
-  if (!fs::exists(lPathModelCandidate, lErrorCode)) {
-    if (pSErrorOut != nullptr) {
-      *pSErrorOut = "Model not found in model folder: " + pSModelName;
-    }
-    return false;
-  }
-  lErrorCode.clear();
+			return false;
+		}
 
-  if (fs::is_directory(lPathModelCandidate, lErrorCode) && !lErrorCode) {
-    const std::vector<fs::path> lVecPathModelFiles = DiscoverModelFilesRecursively(lPathModelCandidate);
-    if (lVecPathModelFiles.empty()) {
-      if (pSErrorOut != nullptr) {
-        *pSErrorOut = "No .gguf model file found inside directory: " + pSModelName;
-      }
-      return false;
-    }
-    lPathModel = lVecPathModelFiles.front();
-  } else if (!fs::is_regular_file(lPathModelCandidate, lErrorCode) || lErrorCode) {
-    if (pSErrorOut != nullptr) {
-      *pSErrorOut = "Model selection is not a regular file: " + pSModelName;
-    }
-    return false;
-  }
+		const fs::path lPathModelCandidate = mEngineOptions.pPathModelFolder / pSModelName;
+		fs::path lPathModel = lPathModelCandidate;
+		std::string lSModelDisplayName = pSModelName;
+		std::error_code lErrorCode;
 
-  if (!IsSupportedModelFile(lPathModel)) {
-    if (pSErrorOut != nullptr) {
-      *pSErrorOut = "Unsupported model extension. Expected .gguf";
-    }
-    return false;
-  }
+		if (!fs::exists(lPathModelCandidate, lErrorCode))
+		{
+			if (pSErrorOut != nullptr)
+			{
+				*pSErrorOut = "Model not found in model folder: " + pSModelName;
+			}
 
-  const fs::path lPathRelativeModel = fs::relative(lPathModel, mEngineOptions.pPathModelFolder, lErrorCode);
-  if (!lErrorCode && !lPathRelativeModel.empty()) {
-    lSModelDisplayName = lPathRelativeModel.generic_string();
-  }
+			return false;
+		}
 
-  const std::size_t liFileUnits = static_cast<std::size_t>(fs::file_size(lPathModel, lErrorCode));
-  const std::size_t liTotalUnits = (lErrorCode || liFileUnits == 0) ? static_cast<std::size_t>(1) : liFileUnits;
+		lErrorCode.clear();
 
-  std::lock_guard<std::mutex> lRuntimeGuard(mMutexEngineRuntime);
-  ReleaseRuntimeLocked();
+		if (fs::is_directory(lPathModelCandidate, lErrorCode) && !lErrorCode)
+		{
+			const std::vector<fs::path> lVecPathModelFiles = DiscoverModelFilesRecursively(lPathModelCandidate);
 
-  {
-    std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
-    mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Loading;
-    mCurrentStateResponse.pSLoadedModelName.clear();
-    mCurrentStateResponse.pOptLoadingStructure =
-        LoadingStructure{lSModelDisplayName, 0, liTotalUnits, "Loading model from disk"};
-    mCurrentStateResponse.pOptRunningStructure.reset();
-  }
+			if (lVecPathModelFiles.empty())
+			{
+				if (pSErrorOut != nullptr)
+				{
+					*pSErrorOut = "No .gguf model file found inside directory: " + pSModelName;
+				}
+
+				return false;
+			}
+
+			lPathModel = lVecPathModelFiles.front();
+		}
+		else if (!fs::is_regular_file(lPathModelCandidate, lErrorCode) || lErrorCode)
+		{
+			if (pSErrorOut != nullptr)
+			{
+				*pSErrorOut = "Model selection is not a regular file: " + pSModelName;
+			}
+
+			return false;
+		}
+
+		if (!IsSupportedModelFile(lPathModel))
+		{
+			if (pSErrorOut != nullptr)
+			{
+				*pSErrorOut = "Unsupported model extension. Expected .gguf";
+			}
+
+			return false;
+		}
+
+		const fs::path lPathRelativeModel = fs::relative(lPathModel, mEngineOptions.pPathModelFolder, lErrorCode);
+
+		if (!lErrorCode && !lPathRelativeModel.empty())
+		{
+			lSModelDisplayName = lPathRelativeModel.generic_string();
+		}
+
+		const std::size_t liFileUnits = static_cast<std::size_t>(fs::file_size(lPathModel, lErrorCode));
+		const std::size_t liTotalUnits = (lErrorCode || liFileUnits == 0) ? static_cast<std::size_t>(1) : liFileUnits;
+
+		std::lock_guard<std::mutex> lRuntimeGuard(mMutexEngineRuntime);
+		ReleaseRuntimeLocked();
+
+		{
+			std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
+			mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Loading;
+			mCurrentStateResponse.pSLoadedModelName.clear();
+			mCurrentStateResponse.pOptLoadingStructure = LoadingStructure{lSModelDisplayName, 0, liTotalUnits, "Loading model from disk"};
+			mCurrentStateResponse.pOptRunningStructure.reset();
+		}
 
 #ifdef UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP
-  EnsureLlamaRuntimeInitialized();
+		EnsureLlamaRuntimeInitialized();
 
-  llama_model_params lModelParams = llama_model_default_params();
-  lModelParams.n_gpu_layers = ki_DefaultGpuLayers;
-  lModelParams.progress_callback = LlamaLoadProgressCallback;
-  lModelParams.progress_callback_user_data = nullptr;
+		llama_model_params lModelParams = llama_model_default_params();
+		lModelParams.n_gpu_layers = ki_DefaultGpuLayers;
+		lModelParams.progress_callback = LlamaLoadProgressCallback;
+		lModelParams.progress_callback_user_data = nullptr;
 
-  llama_model* lPtrModel = llama_model_load_from_file(lPathModel.string().c_str(), lModelParams);
-  if (lPtrModel == nullptr) {
-    if (pSErrorOut != nullptr) {
-      *pSErrorOut = "Failed to load GGUF model via llama.cpp: " + lPathModel.string();
-    }
-    std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
-    mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Idle;
-    mCurrentStateResponse.pOptLoadingStructure.reset();
-    mCurrentStateResponse.pOptRunningStructure.reset();
-    return false;
-  }
+		llama_model* lPtrModel = llama_model_load_from_file(lPathModel.string().c_str(), lModelParams);
 
-  llama_context_params lContextParams = llama_context_default_params();
-  lContextParams.n_ctx = ki_DefaultContextTokens;
-  lContextParams.n_batch = std::min<std::size_t>(ki_DefaultContextTokens, 512);
-  lContextParams.n_ubatch = lContextParams.n_batch;
+		if (lPtrModel == nullptr)
+		{
+			if (pSErrorOut != nullptr)
+			{
+				*pSErrorOut = "Failed to load GGUF model via llama.cpp: " + lPathModel.string();
+			}
 
-  llama_context* lPtrContext = llama_init_from_model(lPtrModel, lContextParams);
-  if (lPtrContext == nullptr) {
-    llama_model_free(lPtrModel);
-    if (pSErrorOut != nullptr) {
-      *pSErrorOut = "Failed to create llama.cpp context.";
-    }
-    std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
-    mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Idle;
-    mCurrentStateResponse.pOptLoadingStructure.reset();
-    mCurrentStateResponse.pOptRunningStructure.reset();
-    return false;
-  }
+			std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
+			mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Idle;
+			mCurrentStateResponse.pOptLoadingStructure.reset();
+			mCurrentStateResponse.pOptRunningStructure.reset();
+			return false;
+		}
 
-  llama_sampler* lPtrSampler = BuildSamplerFromGenerationSettings(mGenerationSettings);
-  if (lPtrSampler == nullptr) {
-    llama_free(lPtrContext);
-    llama_model_free(lPtrModel);
-    if (pSErrorOut != nullptr) {
-      *pSErrorOut = "Failed to create llama.cpp sampler chain.";
-    }
-    std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
-    mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Idle;
-    mCurrentStateResponse.pOptLoadingStructure.reset();
-    mCurrentStateResponse.pOptRunningStructure.reset();
-    return false;
-  }
+		llama_context_params lContextParams = llama_context_default_params();
+		lContextParams.n_ctx = ki_DefaultContextTokens;
+		lContextParams.n_batch = std::min<std::size_t>(ki_DefaultContextTokens, 512);
+		lContextParams.n_ubatch = lContextParams.n_batch;
 
-  mPtrModel = lPtrModel;
-  mPtrContext = lPtrContext;
-  mPtrSampler = lPtrSampler;
-  mPathLoadedModelFile = lPathModel;
+		llama_context* lPtrContext = llama_init_from_model(lPtrModel, lContextParams);
 
-  {
-    std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
-    ms_LoadedModelName = lSModelDisplayName;
-    mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Loaded;
-    mCurrentStateResponse.pSLoadedModelName = lSModelDisplayName;
-    mCurrentStateResponse.pOptLoadingStructure.reset();
-    mCurrentStateResponse.pOptRunningStructure.reset();
-  }
-  return true;
+		if (lPtrContext == nullptr)
+		{
+			llama_model_free(lPtrModel);
+
+			if (pSErrorOut != nullptr)
+			{
+				*pSErrorOut = "Failed to create llama.cpp context.";
+			}
+
+			std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
+			mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Idle;
+			mCurrentStateResponse.pOptLoadingStructure.reset();
+			mCurrentStateResponse.pOptRunningStructure.reset();
+			return false;
+		}
+
+		llama_sampler* lPtrSampler = BuildSamplerFromGenerationSettings(mGenerationSettings);
+
+		if (lPtrSampler == nullptr)
+		{
+			llama_free(lPtrContext);
+			llama_model_free(lPtrModel);
+
+			if (pSErrorOut != nullptr)
+			{
+				*pSErrorOut = "Failed to create llama.cpp sampler chain.";
+			}
+
+			std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
+			mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Idle;
+			mCurrentStateResponse.pOptLoadingStructure.reset();
+			mCurrentStateResponse.pOptRunningStructure.reset();
+			return false;
+		}
+
+		mPtrModel = lPtrModel;
+		mPtrContext = lPtrContext;
+		mPtrSampler = lPtrSampler;
+		mPathLoadedModelFile = lPathModel;
+
+		{
+			std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
+			ms_LoadedModelName = lSModelDisplayName;
+			mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Loaded;
+			mCurrentStateResponse.pSLoadedModelName = lSModelDisplayName;
+			mCurrentStateResponse.pOptLoadingStructure.reset();
+			mCurrentStateResponse.pOptRunningStructure.reset();
+		}
+
+		return true;
 #else
-  (void)lPathModel;
-  (void)liTotalUnits;
-  if (pSErrorOut != nullptr) {
-    *pSErrorOut = "llama.cpp is not linked. Reconfigure with UAM_FETCH_LLAMA_CPP=ON.";
-  }
-  std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
-  mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Idle;
-  mCurrentStateResponse.pOptLoadingStructure.reset();
-  mCurrentStateResponse.pOptRunningStructure.reset();
-  return false;
-#endif
-}
+		(void)lPathModel;
+		(void)liTotalUnits;
 
-/// <summary>Applies generation settings and rebuilds the sampler chain when needed.</summary>
-/// <param name="pGenerationSettings">Requested generation settings.</param>
-/// <param name="pSErrorOut">Optional output pointer for error details.</param>
-/// <returns>True when settings were applied.</returns>
-bool LocalOllamaCppEngine::SetGenerationSettings(const GenerationSettings& pGenerationSettings,
-                                                 std::string* pSErrorOut) {
-  const GenerationSettings lGenerationSettings = ClampGenerationSettings(pGenerationSettings);
-  std::lock_guard<std::mutex> lRuntimeGuard(mMutexEngineRuntime);
+		if (pSErrorOut != nullptr)
+		{
+			*pSErrorOut = "llama.cpp is not linked. Reconfigure with UAM_FETCH_LLAMA_CPP=ON.";
+		}
+
+		std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
+		mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Idle;
+		mCurrentStateResponse.pOptLoadingStructure.reset();
+		mCurrentStateResponse.pOptRunningStructure.reset();
+		return false;
+#endif
+	}
+
+	/// <summary>Applies generation settings and rebuilds the sampler chain when needed.</summary>
+	/// <param name="pGenerationSettings">Requested generation settings.</param>
+	/// <param name="pSErrorOut">Optional output pointer for error details.</param>
+	/// <returns>True when settings were applied.</returns>
+	bool LocalOllamaCppEngine::SetGenerationSettings(const GenerationSettings& pGenerationSettings, std::string* pSErrorOut)
+	{
+		const GenerationSettings lGenerationSettings = ClampGenerationSettings(pGenerationSettings);
+		std::lock_guard<std::mutex> lRuntimeGuard(mMutexEngineRuntime);
 
 #ifdef UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP
-  llama_sampler* lPtrNewSampler = nullptr;
-  if (mPtrModel != nullptr && mPtrContext != nullptr) {
-    lPtrNewSampler = BuildSamplerFromGenerationSettings(lGenerationSettings);
-    if (lPtrNewSampler == nullptr) {
-      if (pSErrorOut != nullptr) {
-        *pSErrorOut = "Failed to build sampler chain from generation settings.";
-      }
-      return false;
-    }
-  }
+		llama_sampler* lPtrNewSampler = nullptr;
 
-  if (lPtrNewSampler != nullptr) {
-    if (mPtrSampler != nullptr) {
-      llama_sampler_free(mPtrSampler);
-    }
-    mPtrSampler = lPtrNewSampler;
-  }
+		if (mPtrModel != nullptr && mPtrContext != nullptr)
+		{
+			lPtrNewSampler = BuildSamplerFromGenerationSettings(lGenerationSettings);
+
+			if (lPtrNewSampler == nullptr)
+			{
+				if (pSErrorOut != nullptr)
+				{
+					*pSErrorOut = "Failed to build sampler chain from generation settings.";
+				}
+
+				return false;
+			}
+		}
+
+		if (lPtrNewSampler != nullptr)
+		{
+			if (mPtrSampler != nullptr)
+			{
+				llama_sampler_free(mPtrSampler);
+			}
+
+			mPtrSampler = lPtrNewSampler;
+		}
+
 #else
-  (void)pSErrorOut;
+		(void)pSErrorOut;
 #endif
 
-  mGenerationSettings = lGenerationSettings;
-  mEngineOptions.pGenerationSettings = lGenerationSettings;
-  return true;
-}
+		mGenerationSettings = lGenerationSettings;
+		mEngineOptions.pGenerationSettings = lGenerationSettings;
+		return true;
+	}
 
-/// <summary>Reads the currently active generation settings.</summary>
-/// <returns>Current generation settings.</returns>
-GenerationSettings LocalOllamaCppEngine::GetGenerationSettings() const {
-  std::lock_guard<std::mutex> lRuntimeGuard(mMutexEngineRuntime);
-  return mGenerationSettings;
-}
+	/// <summary>Reads the currently active generation settings.</summary>
+	/// <returns>Current generation settings.</returns>
+	GenerationSettings LocalOllamaCppEngine::GetGenerationSettings() const
+	{
+		std::lock_guard<std::mutex> lRuntimeGuard(mMutexEngineRuntime);
+		return mGenerationSettings;
+	}
 
-/// <summary>Processes a prompt and returns a model response and optional embedding.</summary>
-/// <param name="pSPrompt">Prompt text to process.</param>
-/// <returns>Response payload with status, text, embedding, and error fields.</returns>
-SendMessageResponse LocalOllamaCppEngine::SendMessage(const std::string& pSPrompt) {
-  SendMessageResponse lSendMessageResponse;
+	/// <summary>Processes a prompt and returns a model response and optional embedding.</summary>
+	/// <param name="pSPrompt">Prompt text to process.</param>
+	/// <returns>Response payload with status, text, embedding, and error fields.</returns>
+	SendMessageResponse LocalOllamaCppEngine::SendMessage(const std::string& pSPrompt)
+	{
+		SendMessageResponse lSendMessageResponse;
 
 #ifdef UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP
-  std::lock_guard<std::mutex> lRuntimeGuard(mMutexEngineRuntime);
-  if (mPtrModel == nullptr || mPtrContext == nullptr || mPtrSampler == nullptr || ms_LoadedModelName.empty()) {
-    lSendMessageResponse.pSError = "No model is loaded.";
-    return lSendMessageResponse;
-  }
+		std::lock_guard<std::mutex> lRuntimeGuard(mMutexEngineRuntime);
 
-  const llama_vocab* lPtrVocab = llama_model_get_vocab(mPtrModel);
-  if (lPtrVocab == nullptr) {
-    lSendMessageResponse.pSError = "Loaded model has no vocabulary.";
-    return lSendMessageResponse;
-  }
+		if (mPtrModel == nullptr || mPtrContext == nullptr || mPtrSampler == nullptr || ms_LoadedModelName.empty())
+		{
+			lSendMessageResponse.pSError = "No model is loaded.";
+			return lSendMessageResponse;
+		}
 
-  std::string lSPromptForModel = pSPrompt;
-  const std::optional<std::string> lOptFormattedPrompt = BuildPromptWithChatTemplate(mPtrModel, pSPrompt);
-  if (lOptFormattedPrompt.has_value() && !lOptFormattedPrompt->empty()) {
-    lSPromptForModel = *lOptFormattedPrompt;
-  }
+		const llama_vocab* lPtrVocab = llama_model_get_vocab(mPtrModel);
 
-  const int32_t liPromptTokenCountWanted = -llama_tokenize(
-      lPtrVocab, lSPromptForModel.c_str(), static_cast<int32_t>(lSPromptForModel.size()), nullptr, 0, true, true);
-  if (liPromptTokenCountWanted <= 0) {
-    lSendMessageResponse.pSError = "Prompt tokenization failed.";
-    return lSendMessageResponse;
-  }
+		if (lPtrVocab == nullptr)
+		{
+			lSendMessageResponse.pSError = "Loaded model has no vocabulary.";
+			return lSendMessageResponse;
+		}
 
-  std::vector<llama_token> lVeciPromptTokens(static_cast<std::size_t>(liPromptTokenCountWanted));
-  const int32_t liPromptTokenCountWritten = llama_tokenize(lPtrVocab, lSPromptForModel.c_str(),
-                                                           static_cast<int32_t>(lSPromptForModel.size()),
-                                                           lVeciPromptTokens.data(),
-                                                           static_cast<int32_t>(lVeciPromptTokens.size()), true, true);
-  if (liPromptTokenCountWritten < 0) {
-    lSendMessageResponse.pSError = "Prompt tokenization write pass failed.";
-    return lSendMessageResponse;
-  }
-  lVeciPromptTokens.resize(static_cast<std::size_t>(liPromptTokenCountWritten));
+		std::string lSPromptForModel = pSPrompt;
+		const std::optional<std::string> lOptFormattedPrompt = BuildPromptWithChatTemplate(mPtrModel, pSPrompt);
 
-  const int32_t liContextSize = static_cast<int32_t>(llama_n_ctx(mPtrContext));
-  if (liContextSize <= 2) {
-    lSendMessageResponse.pSError = "Context size is too small for generation.";
-    return lSendMessageResponse;
-  }
+		if (lOptFormattedPrompt.has_value() && !lOptFormattedPrompt->empty())
+		{
+			lSPromptForModel = *lOptFormattedPrompt;
+		}
 
-  if (static_cast<int32_t>(lVeciPromptTokens.size()) >= liContextSize) {
-    const std::size_t liKeepTokenCount = static_cast<std::size_t>(liContextSize - 1);
-    const std::size_t liDropTokenCount = lVeciPromptTokens.size() - liKeepTokenCount;
-    lVeciPromptTokens.erase(lVeciPromptTokens.begin(), lVeciPromptTokens.begin() + liDropTokenCount);
-  }
+		const int32_t liPromptTokenCountWanted = -llama_tokenize(lPtrVocab, lSPromptForModel.c_str(), static_cast<int32_t>(lSPromptForModel.size()), nullptr, 0, true, true);
 
-  llama_memory_clear(llama_get_memory(mPtrContext), true);
-  llama_sampler_reset(mPtrSampler);
+		if (liPromptTokenCountWanted <= 0)
+		{
+			lSendMessageResponse.pSError = "Prompt tokenization failed.";
+			return lSendMessageResponse;
+		}
 
-  const int32_t liDecodeBatchSize = std::max<int32_t>(1, static_cast<int32_t>(llama_n_batch(mPtrContext)));
+		std::vector<llama_token> lVeciPromptTokens(static_cast<std::size_t>(liPromptTokenCountWanted));
+		const int32_t liPromptTokenCountWritten = llama_tokenize(lPtrVocab, lSPromptForModel.c_str(), static_cast<int32_t>(lSPromptForModel.size()), lVeciPromptTokens.data(), static_cast<int32_t>(lVeciPromptTokens.size()), true, true);
 
-  const std::size_t liTotalUnits = lVeciPromptTokens.size() + ki_DefaultMaxGeneratedTokens;
-  {
-    std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
-    mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Running;
-    mCurrentStateResponse.pOptRunningStructure =
-        RunningStructure{ms_LoadedModelName, 0, liTotalUnits, "Tokenizing and evaluating prompt"};
-    mCurrentStateResponse.pOptLoadingStructure.reset();
-  }
+		if (liPromptTokenCountWritten < 0)
+		{
+			lSendMessageResponse.pSError = "Prompt tokenization write pass failed.";
+			return lSendMessageResponse;
+		}
 
-  std::size_t liPromptOffset = 0;
-  while (liPromptOffset < lVeciPromptTokens.size()) {
-    const std::size_t liRemainingPromptTokens = lVeciPromptTokens.size() - liPromptOffset;
-    const std::size_t liChunkSize =
-        std::min<std::size_t>(liRemainingPromptTokens, static_cast<std::size_t>(liDecodeBatchSize));
-    llama_batch lPromptBatch = llama_batch_get_one(
-        lVeciPromptTokens.data() + liPromptOffset, static_cast<int32_t>(liChunkSize));
-    if (llama_decode(mPtrContext, lPromptBatch) != 0) {
-      lSendMessageResponse.pSError = "llama_decode failed while evaluating prompt.";
-      std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
-      mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Loaded;
-      mCurrentStateResponse.pSLoadedModelName = ms_LoadedModelName;
-      mCurrentStateResponse.pOptRunningStructure.reset();
-      return lSendMessageResponse;
-    }
+		lVeciPromptTokens.resize(static_cast<std::size_t>(liPromptTokenCountWritten));
 
-    liPromptOffset += liChunkSize;
-    {
-      std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
-      if (mCurrentStateResponse.pOptRunningStructure.has_value()) {
-        mCurrentStateResponse.pOptRunningStructure->piProcessedUnits = liPromptOffset;
-      }
-    }
-  }
+		const int32_t liContextSize = static_cast<int32_t>(llama_n_ctx(mPtrContext));
 
-  std::size_t liProcessedUnits = lVeciPromptTokens.size();
-  std::string lSResponseText;
-  lSResponseText.reserve(1024);
-  bool lbThinkingMode = false;
+		if (liContextSize <= 2)
+		{
+			lSendMessageResponse.pSError = "Context size is too small for generation.";
+			return lSendMessageResponse;
+		}
 
-  auto UpdateGenerationState = [&](const EngineLifecycleState pEngineLifecycleState, const std::string& pSDetail,
-                                   const std::size_t piProcessedUnits) {
-    std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
-    mCurrentStateResponse.pEngineLifecycleState = pEngineLifecycleState;
-    if (mCurrentStateResponse.pOptRunningStructure.has_value()) {
-      mCurrentStateResponse.pOptRunningStructure->piProcessedUnits = piProcessedUnits;
-      mCurrentStateResponse.pOptRunningStructure->pSDetail = pSDetail;
-    }
-  };
+		if (static_cast<int32_t>(lVeciPromptTokens.size()) >= liContextSize)
+		{
+			const std::size_t liKeepTokenCount = static_cast<std::size_t>(liContextSize - 1);
+			const std::size_t liDropTokenCount = lVeciPromptTokens.size() - liKeepTokenCount;
+			lVeciPromptTokens.erase(lVeciPromptTokens.begin(), lVeciPromptTokens.begin() + liDropTokenCount);
+		}
 
-  UpdateGenerationState(EngineLifecycleState::Running, "Generating response", liProcessedUnits);
+		llama_memory_clear(llama_get_memory(mPtrContext), true);
+		llama_sampler_reset(mPtrSampler);
 
-  for (std::size_t liStep = 0; liStep < ki_DefaultMaxGeneratedTokens; ++liStep) {
-    const llama_pos liSeqPosMax = llama_memory_seq_pos_max(llama_get_memory(mPtrContext), 0);
-    if ((liSeqPosMax + 1) >= liContextSize) {
-      break;
-    }
+		const int32_t liDecodeBatchSize = std::max<int32_t>(1, static_cast<int32_t>(llama_n_batch(mPtrContext)));
 
-    llama_token liNextToken = llama_sampler_sample(mPtrSampler, mPtrContext, -1);
-    SampledTokenBehavior lTokenBehavior = ClassifySampledToken(lPtrVocab, liNextToken);
-    if (lTokenBehavior == SampledTokenBehavior::Stop) {
-      if (liStep == 0 && lSResponseText.empty()) {
-        // First-token stop markers can happen with stochastic samplers; retry before giving up.
-        bool lbRecoveredWithResample = false;
-        constexpr int kiMaxResampleAttempts = 4;
-        for (int liAttempt = 0; liAttempt < kiMaxResampleAttempts; ++liAttempt) {
-          const llama_token liRetryToken = llama_sampler_sample(mPtrSampler, mPtrContext, -1);
-          const SampledTokenBehavior lRetryBehavior = ClassifySampledToken(lPtrVocab, liRetryToken);
-          if (lRetryBehavior != SampledTokenBehavior::Stop) {
-            liNextToken = liRetryToken;
-            lTokenBehavior = lRetryBehavior;
-            lbRecoveredWithResample = true;
-            break;
-          }
-        }
+		const std::size_t liTotalUnits = lVeciPromptTokens.size() + ki_DefaultMaxGeneratedTokens;
+		{
+			std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
+			mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Running;
+			mCurrentStateResponse.pOptRunningStructure = RunningStructure{ms_LoadedModelName, 0, liTotalUnits, "Tokenizing and evaluating prompt"};
+			mCurrentStateResponse.pOptLoadingStructure.reset();
+		}
 
-        if (!lbRecoveredWithResample) {
-          const std::optional<llama_token> lOptFallbackToken = SelectBestFallbackToken(lPtrVocab, mPtrContext);
-          if (!lOptFallbackToken.has_value()) {
-            break;
-          }
-          liNextToken = *lOptFallbackToken;
-          lTokenBehavior = ClassifySampledToken(lPtrVocab, liNextToken);
-          if (lTokenBehavior == SampledTokenBehavior::Stop) {
-            break;
-          }
-        }
-      } else {
-        break;
-      }
-    }
+		std::size_t liPromptOffset = 0;
 
-    if (lTokenBehavior == SampledTokenBehavior::Thinking) {
-      const std::string lSThinkingMarker = GetNormalizedTokenMarkerText(lPtrVocab, liNextToken);
-      if (IsThinkingStartTokenText(lSThinkingMarker)) {
-        lbThinkingMode = true;
-      } else if (IsThinkingEndTokenText(lSThinkingMarker)) {
-        lbThinkingMode = false;
-      } else {
-        lbThinkingMode = true;
-      }
-    }
+		while (liPromptOffset < lVeciPromptTokens.size())
+		{
+			const std::size_t liRemainingPromptTokens = lVeciPromptTokens.size() - liPromptOffset;
+			const std::size_t liChunkSize = std::min<std::size_t>(liRemainingPromptTokens, static_cast<std::size_t>(liDecodeBatchSize));
+			llama_batch lPromptBatch = llama_batch_get_one(lVeciPromptTokens.data() + liPromptOffset, static_cast<int32_t>(liChunkSize));
 
-    if (lTokenBehavior == SampledTokenBehavior::Emit && !lbThinkingMode) {
-      const std::optional<std::string> lOptPiece = TokenToPieceText(lPtrVocab, liNextToken);
-      if (!lOptPiece.has_value()) {
-        lSendMessageResponse.pSError = "Failed to decode sampled token bytes.";
-        std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
-        mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Loaded;
-        mCurrentStateResponse.pSLoadedModelName = ms_LoadedModelName;
-        mCurrentStateResponse.pOptRunningStructure.reset();
-        return lSendMessageResponse;
-      }
-      lSResponseText += *lOptPiece;
-    }
+			if (llama_decode(mPtrContext, lPromptBatch) != 0)
+			{
+				lSendMessageResponse.pSError = "llama_decode failed while evaluating prompt.";
+				std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
+				mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Loaded;
+				mCurrentStateResponse.pSLoadedModelName = ms_LoadedModelName;
+				mCurrentStateResponse.pOptRunningStructure.reset();
+				return lSendMessageResponse;
+			}
 
-    ++liProcessedUnits;
-    UpdateGenerationState(lbThinkingMode ? EngineLifecycleState::Thinking : EngineLifecycleState::Running,
-                          lbThinkingMode ? "Reasoning about response" : "Generating response", liProcessedUnits);
+			liPromptOffset += liChunkSize;
+			{
+				std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
 
-    llama_token liTokenForDecode = liNextToken;
-    llama_batch lNextTokenBatch = llama_batch_get_one(&liTokenForDecode, 1);
-    if (llama_decode(mPtrContext, lNextTokenBatch) != 0) {
-      lSendMessageResponse.pSError = "llama_decode failed during generation.";
-      std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
-      mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Loaded;
-      mCurrentStateResponse.pSLoadedModelName = ms_LoadedModelName;
-      mCurrentStateResponse.pOptRunningStructure.reset();
-      return lSendMessageResponse;
-    }
-  }
+				if (mCurrentStateResponse.pOptRunningStructure.has_value())
+				{
+					mCurrentStateResponse.pOptRunningStructure->piProcessedUnits = liPromptOffset;
+				}
+			}
+		}
 
-  const std::string lSVisibleResponse = TrimAsciiWhitespace(StripReasoningSections(lSResponseText));
-  const std::string lSRawTrimmedResponse = TrimAsciiWhitespace(lSResponseText);
+		std::size_t liProcessedUnits = lVeciPromptTokens.size();
+		std::string lSResponseText;
+		lSResponseText.reserve(1024);
+		bool lbThinkingMode = false;
 
-  lSendMessageResponse.pbOk = true;
-  if (!lSVisibleResponse.empty()) {
-    lSendMessageResponse.pSText = lSVisibleResponse;
-  } else if (!lSRawTrimmedResponse.empty()) {
-    lSendMessageResponse.pSText = lSRawTrimmedResponse;
-  } else {
-    lSendMessageResponse.pSText = "(no textual response)";
-  }
-  lSendMessageResponse.pVecfEmbedding = BuildEmbedding(pSPrompt, mEngineOptions.piEmbeddingDimensions);
+		auto UpdateGenerationState = [&](const EngineLifecycleState pEngineLifecycleState, const std::string& pSDetail, const std::size_t piProcessedUnits)
+		{
+			std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
+			mCurrentStateResponse.pEngineLifecycleState = pEngineLifecycleState;
 
-  {
-    std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
-    mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Finished;
-    mCurrentStateResponse.pSLoadedModelName = ms_LoadedModelName;
-    if (mCurrentStateResponse.pOptRunningStructure.has_value()) {
-      mCurrentStateResponse.pOptRunningStructure->piProcessedUnits = liProcessedUnits;
-      mCurrentStateResponse.pOptRunningStructure->piTotalUnits = liProcessedUnits;
-      mCurrentStateResponse.pOptRunningStructure->pSDetail = "Response ready; awaiting fetch";
-    }
-    mCurrentStateResponse.pOptLoadingStructure.reset();
-  }
-  std::this_thread::sleep_for(std::chrono::milliseconds(6));
+			if (mCurrentStateResponse.pOptRunningStructure.has_value())
+			{
+				mCurrentStateResponse.pOptRunningStructure->piProcessedUnits = piProcessedUnits;
+				mCurrentStateResponse.pOptRunningStructure->pSDetail = pSDetail;
+			}
+		};
 
-  {
-    std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
-    mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Loaded;
-    mCurrentStateResponse.pSLoadedModelName = ms_LoadedModelName;
-    mCurrentStateResponse.pOptRunningStructure.reset();
-    mCurrentStateResponse.pOptLoadingStructure.reset();
-  }
+		UpdateGenerationState(EngineLifecycleState::Running, "Generating response", liProcessedUnits);
 
-  return lSendMessageResponse;
+		for (std::size_t liStep = 0; liStep < ki_DefaultMaxGeneratedTokens; ++liStep)
+		{
+			const llama_pos liSeqPosMax = llama_memory_seq_pos_max(llama_get_memory(mPtrContext), 0);
+
+			if ((liSeqPosMax + 1) >= liContextSize)
+			{
+				break;
+			}
+
+			llama_token liNextToken = llama_sampler_sample(mPtrSampler, mPtrContext, -1);
+			SampledTokenBehavior lTokenBehavior = ClassifySampledToken(lPtrVocab, liNextToken);
+
+			if (lTokenBehavior == SampledTokenBehavior::Stop)
+			{
+				if (liStep == 0 && lSResponseText.empty())
+				{
+					// First-token stop markers can happen with stochastic samplers; retry before giving up.
+					bool lbRecoveredWithResample = false;
+					constexpr int kiMaxResampleAttempts = 4;
+
+					for (int liAttempt = 0; liAttempt < kiMaxResampleAttempts; ++liAttempt)
+					{
+						const llama_token liRetryToken = llama_sampler_sample(mPtrSampler, mPtrContext, -1);
+						const SampledTokenBehavior lRetryBehavior = ClassifySampledToken(lPtrVocab, liRetryToken);
+
+						if (lRetryBehavior != SampledTokenBehavior::Stop)
+						{
+							liNextToken = liRetryToken;
+							lTokenBehavior = lRetryBehavior;
+							lbRecoveredWithResample = true;
+							break;
+						}
+					}
+
+					if (!lbRecoveredWithResample)
+					{
+						const std::optional<llama_token> lOptFallbackToken = SelectBestFallbackToken(lPtrVocab, mPtrContext);
+
+						if (!lOptFallbackToken.has_value())
+						{
+							break;
+						}
+
+						liNextToken = *lOptFallbackToken;
+						lTokenBehavior = ClassifySampledToken(lPtrVocab, liNextToken);
+
+						if (lTokenBehavior == SampledTokenBehavior::Stop)
+						{
+							break;
+						}
+					}
+				}
+				else
+				{
+					break;
+				}
+			}
+
+			if (lTokenBehavior == SampledTokenBehavior::Thinking)
+			{
+				const std::string lSThinkingMarker = GetNormalizedTokenMarkerText(lPtrVocab, liNextToken);
+
+				if (IsThinkingStartTokenText(lSThinkingMarker))
+				{
+					lbThinkingMode = true;
+				}
+				else if (IsThinkingEndTokenText(lSThinkingMarker))
+				{
+					lbThinkingMode = false;
+				}
+				else
+				{
+					lbThinkingMode = true;
+				}
+			}
+
+			if (lTokenBehavior == SampledTokenBehavior::Emit && !lbThinkingMode)
+			{
+				const std::optional<std::string> lOptPiece = TokenToPieceText(lPtrVocab, liNextToken);
+
+				if (!lOptPiece.has_value())
+				{
+					lSendMessageResponse.pSError = "Failed to decode sampled token bytes.";
+					std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
+					mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Loaded;
+					mCurrentStateResponse.pSLoadedModelName = ms_LoadedModelName;
+					mCurrentStateResponse.pOptRunningStructure.reset();
+					return lSendMessageResponse;
+				}
+
+				lSResponseText += *lOptPiece;
+			}
+
+			++liProcessedUnits;
+			UpdateGenerationState(lbThinkingMode ? EngineLifecycleState::Thinking : EngineLifecycleState::Running, lbThinkingMode ? "Reasoning about response" : "Generating response", liProcessedUnits);
+
+			llama_token liTokenForDecode = liNextToken;
+			llama_batch lNextTokenBatch = llama_batch_get_one(&liTokenForDecode, 1);
+
+			if (llama_decode(mPtrContext, lNextTokenBatch) != 0)
+			{
+				lSendMessageResponse.pSError = "llama_decode failed during generation.";
+				std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
+				mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Loaded;
+				mCurrentStateResponse.pSLoadedModelName = ms_LoadedModelName;
+				mCurrentStateResponse.pOptRunningStructure.reset();
+				return lSendMessageResponse;
+			}
+		}
+
+		const std::string lSVisibleResponse = TrimAsciiWhitespace(StripReasoningSections(lSResponseText));
+		const std::string lSRawTrimmedResponse = TrimAsciiWhitespace(lSResponseText);
+
+		lSendMessageResponse.pbOk = true;
+
+		if (!lSVisibleResponse.empty())
+		{
+			lSendMessageResponse.pSText = lSVisibleResponse;
+		}
+		else if (!lSRawTrimmedResponse.empty())
+		{
+			lSendMessageResponse.pSText = lSRawTrimmedResponse;
+		}
+		else
+		{
+			lSendMessageResponse.pSText = "(no textual response)";
+		}
+
+		lSendMessageResponse.pVecfEmbedding = BuildEmbedding(pSPrompt, mEngineOptions.piEmbeddingDimensions);
+
+		{
+			std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
+			mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Finished;
+			mCurrentStateResponse.pSLoadedModelName = ms_LoadedModelName;
+
+			if (mCurrentStateResponse.pOptRunningStructure.has_value())
+			{
+				mCurrentStateResponse.pOptRunningStructure->piProcessedUnits = liProcessedUnits;
+				mCurrentStateResponse.pOptRunningStructure->piTotalUnits = liProcessedUnits;
+				mCurrentStateResponse.pOptRunningStructure->pSDetail = "Response ready; awaiting fetch";
+			}
+
+			mCurrentStateResponse.pOptLoadingStructure.reset();
+		}
+
+		std::this_thread::sleep_for(std::chrono::milliseconds(6));
+
+		{
+			std::lock_guard<std::mutex> lStateGuard(mMutexCurrentState);
+			mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Loaded;
+			mCurrentStateResponse.pSLoadedModelName = ms_LoadedModelName;
+			mCurrentStateResponse.pOptRunningStructure.reset();
+			mCurrentStateResponse.pOptLoadingStructure.reset();
+		}
+
+		return lSendMessageResponse;
 #else
-  std::string lSModelNameSnapshot;
-  {
-    std::lock_guard<std::mutex> lGuard(mMutexCurrentState);
-    lSModelNameSnapshot = ms_LoadedModelName;
-    if (lSModelNameSnapshot.empty()) {
-      lSendMessageResponse.pSError = "No model is loaded.";
-      return lSendMessageResponse;
-    }
-    mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Running;
-    mCurrentStateResponse.pOptRunningStructure =
-        RunningStructure{lSModelNameSnapshot, 0, pSPrompt.size(), "Running inference"};
-    mCurrentStateResponse.pOptLoadingStructure.reset();
-  }
+		std::string lSModelNameSnapshot;
+		{
+			std::lock_guard<std::mutex> lGuard(mMutexCurrentState);
+			lSModelNameSnapshot = ms_LoadedModelName;
 
-  lSendMessageResponse.pbOk = true;
-  lSendMessageResponse.pSText = "llama.cpp runtime is not linked in this build.";
-  lSendMessageResponse.pVecfEmbedding = BuildEmbedding(pSPrompt, mEngineOptions.piEmbeddingDimensions);
+			if (lSModelNameSnapshot.empty())
+			{
+				lSendMessageResponse.pSError = "No model is loaded.";
+				return lSendMessageResponse;
+			}
 
-  {
-    std::lock_guard<std::mutex> lGuard(mMutexCurrentState);
-    mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Finished;
-    mCurrentStateResponse.pSLoadedModelName = ms_LoadedModelName;
-    if (mCurrentStateResponse.pOptRunningStructure.has_value()) {
-      mCurrentStateResponse.pOptRunningStructure->piProcessedUnits =
-          std::max<std::size_t>(pSPrompt.size(), static_cast<std::size_t>(1));
-      mCurrentStateResponse.pOptRunningStructure->piTotalUnits =
-          std::max<std::size_t>(pSPrompt.size(), static_cast<std::size_t>(1));
-      mCurrentStateResponse.pOptRunningStructure->pSDetail = "Response ready; awaiting fetch";
-    }
-    mCurrentStateResponse.pOptLoadingStructure.reset();
-  }
-  std::this_thread::sleep_for(std::chrono::milliseconds(6));
+			mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Running;
+			mCurrentStateResponse.pOptRunningStructure = RunningStructure{lSModelNameSnapshot, 0, pSPrompt.size(), "Running inference"};
+			mCurrentStateResponse.pOptLoadingStructure.reset();
+		}
 
-  {
-    std::lock_guard<std::mutex> lGuard(mMutexCurrentState);
-    mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Loaded;
-    mCurrentStateResponse.pSLoadedModelName = ms_LoadedModelName;
-    mCurrentStateResponse.pOptRunningStructure.reset();
-    mCurrentStateResponse.pOptLoadingStructure.reset();
-  }
-  return lSendMessageResponse;
+		lSendMessageResponse.pbOk = true;
+		lSendMessageResponse.pSText = "llama.cpp runtime is not linked in this build.";
+		lSendMessageResponse.pVecfEmbedding = BuildEmbedding(pSPrompt, mEngineOptions.piEmbeddingDimensions);
+
+		{
+			std::lock_guard<std::mutex> lGuard(mMutexCurrentState);
+			mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Finished;
+			mCurrentStateResponse.pSLoadedModelName = ms_LoadedModelName;
+
+			if (mCurrentStateResponse.pOptRunningStructure.has_value())
+			{
+				mCurrentStateResponse.pOptRunningStructure->piProcessedUnits = std::max<std::size_t>(pSPrompt.size(), static_cast<std::size_t>(1));
+				mCurrentStateResponse.pOptRunningStructure->piTotalUnits = std::max<std::size_t>(pSPrompt.size(), static_cast<std::size_t>(1));
+				mCurrentStateResponse.pOptRunningStructure->pSDetail = "Response ready; awaiting fetch";
+			}
+
+			mCurrentStateResponse.pOptLoadingStructure.reset();
+		}
+
+		std::this_thread::sleep_for(std::chrono::milliseconds(6));
+
+		{
+			std::lock_guard<std::mutex> lGuard(mMutexCurrentState);
+			mCurrentStateResponse.pEngineLifecycleState = EngineLifecycleState::Loaded;
+			mCurrentStateResponse.pSLoadedModelName = ms_LoadedModelName;
+			mCurrentStateResponse.pOptRunningStructure.reset();
+			mCurrentStateResponse.pOptLoadingStructure.reset();
+		}
+
+		return lSendMessageResponse;
 #endif
-}
+	}
 
-/// <summary>Returns a thread-safe snapshot of current engine state.</summary>
-/// <returns>Current lifecycle/progress state.</returns>
-CurrentStateResponse LocalOllamaCppEngine::QueryCurrentState() const {
-  std::lock_guard<std::mutex> lGuard(mMutexCurrentState);
-  return mCurrentStateResponse;
-}
+	/// <summary>Returns a thread-safe snapshot of current engine state.</summary>
+	/// <returns>Current lifecycle/progress state.</returns>
+	CurrentStateResponse LocalOllamaCppEngine::QueryCurrentState() const
+	{
+		std::lock_guard<std::mutex> lGuard(mMutexCurrentState);
+		return mCurrentStateResponse;
+	}
 
-/// <summary>Starts asynchronous repository scan + vectorisation.</summary>
-/// <param name="pOptSVectorFile">Optional scan target path/URL.</param>
-/// <param name="pSErrorOut">Optional output pointer for error details.</param>
-/// <returns>True when the scan worker starts successfully.</returns>
-bool LocalOllamaCppEngine::Scan(const std::optional<std::string>& pOptSVectorFile, std::string* pSErrorOut) {
-  if (mPtrRagRuntime == nullptr) {
-    if (pSErrorOut != nullptr) {
-      *pSErrorOut = "RAG runtime is not initialized.";
-    }
-    return false;
-  }
-  vectorised_rag::RuntimeOptions lRuntimeOptions;
-  {
-    std::lock_guard<std::mutex> lGuard(mMutexEngineRuntime);
+	/// <summary>Starts asynchronous repository scan + vectorisation.</summary>
+	/// <param name="pOptSVectorFile">Optional scan target path/URL.</param>
+	/// <param name="pSErrorOut">Optional output pointer for error details.</param>
+	/// <returns>True when the scan worker starts successfully.</returns>
+	bool LocalOllamaCppEngine::Scan(const std::optional<std::string>& pOptSVectorFile, std::string* pSErrorOut)
+	{
+		if (mPtrRagRuntime == nullptr)
+		{
+			if (pSErrorOut != nullptr)
+			{
+				*pSErrorOut = "RAG runtime is not initialized.";
+			}
+
+			return false;
+		}
+
+		vectorised_rag::RuntimeOptions lRuntimeOptions;
+		{
+			std::lock_guard<std::mutex> lGuard(mMutexEngineRuntime);
 #ifdef UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP
-    lRuntimeOptions =
-        BuildVectorisedRagRuntimeOptions(mEngineOptions, mPathLoadedModelFile, ms_RagOutputDatabaseName);
+			lRuntimeOptions = BuildVectorisedRagRuntimeOptions(mEngineOptions, mPathLoadedModelFile, ms_RagOutputDatabaseName);
 #else
-    lRuntimeOptions =
-        BuildVectorisedRagRuntimeOptions(mEngineOptions, std::filesystem::path{}, ms_RagOutputDatabaseName);
+			lRuntimeOptions = BuildVectorisedRagRuntimeOptions(mEngineOptions, std::filesystem::path{}, ms_RagOutputDatabaseName);
 #endif
-  }
-  return mPtrRagRuntime->Scan(pOptSVectorFile, lRuntimeOptions, pSErrorOut);
-}
+		}
 
-bool LocalOllamaCppEngine::SetRagOutputDatabase(const std::string& pSDatabaseName, std::string* pSErrorOut) {
-  if (!IsValidRagDatabaseName(pSDatabaseName)) {
-    if (pSErrorOut != nullptr) {
-      *pSErrorOut =
-          "Invalid database name. Only [A-Za-z0-9._-] are allowed. Use empty string to reset default naming.";
-    }
-    return false;
-  }
-  std::lock_guard<std::mutex> lGuard(mMutexEngineRuntime);
-  ms_RagOutputDatabaseName = pSDatabaseName;
-  return true;
-}
+		return mPtrRagRuntime->Scan(pOptSVectorFile, lRuntimeOptions, pSErrorOut);
+	}
 
-bool LocalOllamaCppEngine::LoadRagDatabases(const std::vector<std::string>& pVecSDatabaseInputs,
-                                            std::string* pSErrorOut) {
-  if (mPtrRagRuntime == nullptr) {
-    if (pSErrorOut != nullptr) {
-      *pSErrorOut = "RAG runtime is not initialized.";
-    }
-    return false;
-  }
-  vectorised_rag::RuntimeOptions lRuntimeOptions;
-  {
-    std::lock_guard<std::mutex> lGuard(mMutexEngineRuntime);
+	bool LocalOllamaCppEngine::SetRagOutputDatabase(const std::string& pSDatabaseName, std::string* pSErrorOut)
+	{
+		if (!IsValidRagDatabaseName(pSDatabaseName))
+		{
+			if (pSErrorOut != nullptr)
+			{
+				*pSErrorOut = "Invalid database name. Only [A-Za-z0-9._-] are allowed. Use empty string to reset default naming.";
+			}
+
+			return false;
+		}
+
+		std::lock_guard<std::mutex> lGuard(mMutexEngineRuntime);
+		ms_RagOutputDatabaseName = pSDatabaseName;
+		return true;
+	}
+
+	bool LocalOllamaCppEngine::LoadRagDatabases(const std::vector<std::string>& pVecSDatabaseInputs, std::string* pSErrorOut)
+	{
+		if (mPtrRagRuntime == nullptr)
+		{
+			if (pSErrorOut != nullptr)
+			{
+				*pSErrorOut = "RAG runtime is not initialized.";
+			}
+
+			return false;
+		}
+
+		vectorised_rag::RuntimeOptions lRuntimeOptions;
+		{
+			std::lock_guard<std::mutex> lGuard(mMutexEngineRuntime);
 #ifdef UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP
-    lRuntimeOptions =
-        BuildVectorisedRagRuntimeOptions(mEngineOptions, mPathLoadedModelFile, ms_RagOutputDatabaseName);
+			lRuntimeOptions = BuildVectorisedRagRuntimeOptions(mEngineOptions, mPathLoadedModelFile, ms_RagOutputDatabaseName);
 #else
-    lRuntimeOptions =
-        BuildVectorisedRagRuntimeOptions(mEngineOptions, std::filesystem::path{}, ms_RagOutputDatabaseName);
+			lRuntimeOptions = BuildVectorisedRagRuntimeOptions(mEngineOptions, std::filesystem::path{}, ms_RagOutputDatabaseName);
 #endif
-  }
-  return mPtrRagRuntime->LoadRagDatabases(pVecSDatabaseInputs, lRuntimeOptions, pSErrorOut);
-}
+		}
 
-/// <summary>Fetches semantically relevant snippets from the vectorised index.</summary>
-/// <param name="pSPrompt">Query prompt.</param>
-/// <param name="piMax">Maximum material to return.</param>
-/// <param name="piMin">Minimum material to return.</param>
-/// <returns>Snippet list.</returns>
-std::vector<std::string> LocalOllamaCppEngine::Fetch_Relevant_Info(const std::string& pSPrompt,
-                                                                    const std::size_t piMax,
-                                                                    const std::size_t piMin) {
-  if (mPtrRagRuntime == nullptr) {
-    return {};
-  }
-  vectorised_rag::RuntimeOptions lRuntimeOptions;
-  {
-    std::lock_guard<std::mutex> lGuard(mMutexEngineRuntime);
+		return mPtrRagRuntime->LoadRagDatabases(pVecSDatabaseInputs, lRuntimeOptions, pSErrorOut);
+	}
+
+	/// <summary>Fetches semantically relevant snippets from the vectorised index.</summary>
+	/// <param name="pSPrompt">Query prompt.</param>
+	/// <param name="piMax">Maximum material to return.</param>
+	/// <param name="piMin">Minimum material to return.</param>
+	/// <returns>Snippet list.</returns>
+	std::vector<std::string> LocalOllamaCppEngine::Fetch_Relevant_Info(const std::string& pSPrompt, const std::size_t piMax, const std::size_t piMin)
+	{
+		if (mPtrRagRuntime == nullptr)
+		{
+			return {};
+		}
+
+		vectorised_rag::RuntimeOptions lRuntimeOptions;
+		{
+			std::lock_guard<std::mutex> lGuard(mMutexEngineRuntime);
 #ifdef UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP
-    lRuntimeOptions =
-        BuildVectorisedRagRuntimeOptions(mEngineOptions, mPathLoadedModelFile, ms_RagOutputDatabaseName);
+			lRuntimeOptions = BuildVectorisedRagRuntimeOptions(mEngineOptions, mPathLoadedModelFile, ms_RagOutputDatabaseName);
 #else
-    lRuntimeOptions =
-        BuildVectorisedRagRuntimeOptions(mEngineOptions, std::filesystem::path{}, ms_RagOutputDatabaseName);
+			lRuntimeOptions = BuildVectorisedRagRuntimeOptions(mEngineOptions, std::filesystem::path{}, ms_RagOutputDatabaseName);
 #endif
-  }
-  return mPtrRagRuntime->Fetch_Relevant_Info(pSPrompt, piMax, piMin, lRuntimeOptions);
-}
+		}
 
-/// <summary>Returns current vectorisation state.</summary>
-/// <returns>Vectorisation state response snapshot.</returns>
-VectorisationStateResponse LocalOllamaCppEngine::Fetch_state() {
-  return (mPtrRagRuntime != nullptr) ? mPtrRagRuntime->Fetch_state() : VectorisationStateResponse{};
-}
+		return mPtrRagRuntime->Fetch_Relevant_Info(pSPrompt, piMax, piMin, lRuntimeOptions);
+	}
 
-}  // namespace ollama_engine::internal
+	/// <summary>Returns current vectorisation state.</summary>
+	/// <returns>Vectorisation state response snapshot.</returns>
+	VectorisationStateResponse LocalOllamaCppEngine::Fetch_state()
+	{
+		return (mPtrRagRuntime != nullptr) ? mPtrRagRuntime->Fetch_state() : VectorisationStateResponse{};
+	}
+
+} // namespace ollama_engine::internal

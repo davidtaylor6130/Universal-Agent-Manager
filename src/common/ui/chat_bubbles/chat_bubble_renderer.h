@@ -7,22 +7,29 @@
 /// <summary>
 /// Dispatches message rendering to role-specific bubble renderers.
 /// </summary>
-static void DrawMessageBubble(AppState& app, ChatSession& chat, const int message_index, const float content_width) {
-  if (message_index < 0 || message_index >= static_cast<int>(chat.messages.size())) {
-    return;
-  }
+static void DrawMessageBubble(AppState& app, ChatSession& chat, const int message_index, const float content_width)
+{
+	if (message_index < 0 || message_index >= static_cast<int>(chat.messages.size()))
+	{
+		return;
+	}
 
-  const Message& message = chat.messages[message_index];
-  const bool align_right = (message.role == MessageRole::User);
-  const ChatBubbleLayout layout = BuildChatBubbleLayout(message.content, content_width, align_right);
+	const Message& message = chat.messages[message_index];
+	const bool align_right = (message.role == MessageRole::User);
+	const ChatBubbleLayout layout = BuildChatBubbleLayout(message.content, content_width, align_right);
 
-  if (message.role == MessageRole::User) {
-    DrawUserMessageBubble(app, chat, message_index, message, layout);
-  } else if (message.role == MessageRole::Assistant) {
-    DrawAssistantMessageBubble(message, layout);
-  } else {
-    DrawSystemMessageBubble(message, layout);
-  }
+	if (message.role == MessageRole::User)
+	{
+		DrawUserMessageBubble(app, chat, message_index, message, layout);
+	}
+	else if (message.role == MessageRole::Assistant)
+	{
+		DrawAssistantMessageBubble(message, layout);
+	}
+	else
+	{
+		DrawSystemMessageBubble(message, layout);
+	}
 
-  EndChatBubbleRow(layout);
+	EndChatBubbleRow(layout);
 }

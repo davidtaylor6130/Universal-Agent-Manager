@@ -2,7 +2,8 @@ BasedOnStyle: LLVM
 BreakBeforeBraces: Allman
 IndentWidth: 4
 TabWidth: 4
-UseTab: Never
+UseTab: ForIndentation
+NamespaceIndentation: All
 PointerAlignment: Left
 SortIncludes: false
 ColumnLimit: 10000

@@ -3,123 +3,174 @@
 /// <summary>
 /// Chat deletion flow, including local/native history cleanup and selection repair.
 /// </summary>
-static bool RemoveChatById(AppState& app, const std::string& chat_id) {
-  const int chat_index = FindChatIndexById(app, chat_id);
-  if (chat_index < 0) {
-    app.status_line = "Chat no longer exists.";
-    return false;
-  }
+static bool RemoveChatById(AppState& app, const std::string& chat_id)
+{
+	const int chat_index = FindChatIndexById(app, chat_id);
 
-  const ChatSession chat = app.chats[chat_index];
-  if (HasPendingCallForChat(app, chat.id)) {
-    app.status_line = "Cannot delete a chat while Gemini is still running for it.";
-    return false;
-  }
+	if (chat_index < 0)
+	{
+		app.status_line = "Chat no longer exists.";
+		return false;
+	}
 
-  // Stop any attached CLI first so history file deletion does not race an
-  // active process. Windows uses a non-blocking fast-stop path in
-  // StopAndEraseCliTerminalForChat; macOS retains the existing behavior.
-  StopAndEraseCliTerminalForChat(app, chat.id);
+	const ChatSession chat = app.chats[chat_index];
 
-  std::error_code local_delete_ec;
-  bool local_delete_async_scheduled = false;
+	if (HasPendingCallForChat(app, chat.id))
+	{
+		app.status_line = "Cannot delete a chat while Gemini is still running for it.";
+		return false;
+	}
+
+	// Stop any attached CLI first so history file deletion does not race an
+	// active process. Windows uses a non-blocking fast-stop path in
+	// StopAndEraseCliTerminalForChat; macOS retains the existing behavior.
+	StopAndEraseCliTerminalForChat(app, chat.id);
+
+	std::error_code local_delete_ec;
+	bool local_delete_async_scheduled = false;
 #if defined(_WIN32)
-  const fs::path local_chat_path = ChatPath(app, chat);
-  std::thread([local_chat_path]() {
-    std::error_code async_local_delete_ec;
-    fs::remove_all(local_chat_path, async_local_delete_ec);
-  }).detach();
-  local_delete_async_scheduled = true;
+	const fs::path local_chat_path = ChatPath(app, chat);
+	auto delete_local_chat_path = [local_chat_path]()
+	{
+		std::error_code async_local_delete_ec;
+		fs::remove_all(local_chat_path, async_local_delete_ec);
+	};
+
+	std::thread(delete_local_chat_path).detach();
+	local_delete_async_scheduled = true;
 #else
-  fs::remove_all(ChatPath(app, chat), local_delete_ec);
+	fs::remove_all(ChatPath(app, chat), local_delete_ec);
 #endif
 
-  const std::string native_session_id = chat.uses_native_session ? chat.native_session_id : "";
-  std::error_code native_delete_ec;
-  bool native_delete_attempted = false;
-  bool native_delete_async_scheduled = false;
-  if (ActiveProviderUsesGeminiHistory(app) && !native_session_id.empty()) {
-    RefreshGeminiChatsDir(app);
-    native_delete_attempted = true;
+	const std::string native_session_id = chat.uses_native_session ? chat.native_session_id : "";
+	std::error_code native_delete_ec;
+	bool native_delete_attempted = false;
+	bool native_delete_async_scheduled = false;
+
+	if (ActiveProviderUsesGeminiHistory(app) && !native_session_id.empty())
+	{
+		RefreshGeminiChatsDir(app);
+		native_delete_attempted = true;
 #if defined(_WIN32)
-    const fs::path chats_dir_snapshot = app.gemini_chats_dir;
-    const std::string native_session_id_snapshot = native_session_id;
-    std::thread([chats_dir_snapshot, native_session_id_snapshot]() {
-      const auto native_file = FindNativeSessionFilePathInDirectory(chats_dir_snapshot, native_session_id_snapshot);
-      if (!native_file.has_value()) {
-        return;
-      }
-      std::error_code async_delete_ec;
-      fs::remove(native_file.value(), async_delete_ec);
-    }).detach();
-    native_delete_async_scheduled = true;
+		const fs::path chats_dir_snapshot = app.gemini_chats_dir;
+		const std::string native_session_id_snapshot = native_session_id;
+		auto delete_native_session_file = [chats_dir_snapshot, native_session_id_snapshot]()
+		{
+			const auto native_file = FindNativeSessionFilePathInDirectory(chats_dir_snapshot, native_session_id_snapshot);
+
+			if (!native_file.has_value())
+			{
+				return;
+			}
+
+			std::error_code async_delete_ec;
+			fs::remove(native_file.value(), async_delete_ec);
+		};
+
+		std::thread(delete_native_session_file).detach();
+		native_delete_async_scheduled = true;
 #else
-    if (const auto native_file = FindNativeSessionFilePath(app, native_session_id); native_file.has_value()) {
-      fs::remove(native_file.value(), native_delete_ec);
-    }
+
+		if (const auto native_file = FindNativeSessionFilePath(app, native_session_id); native_file.has_value())
+		{
+			fs::remove(native_file.value(), native_delete_ec);
+		}
+
 #endif
-  }
+	}
 
-  ChatBranching::ReparentChildrenAfterDelete(app.chats, chat.id);
-  for (const ChatSession& existing_chat : app.chats) {
-    if (existing_chat.id == chat.id) {
-      continue;
-    }
-    SaveChat(app, existing_chat);
-  }
+	ChatBranching::ReparentChildrenAfterDelete(app.chats, chat.id);
 
-  app.chats.erase(app.chats.begin() + chat_index);
-  NormalizeChatBranchMetadata(app);
-  if (app.chats.empty()) {
-    app.selected_chat_index = -1;
-  } else if (app.selected_chat_index > chat_index) {
-    --app.selected_chat_index;
-  } else if (app.selected_chat_index == chat_index) {
-    app.selected_chat_index = std::min(chat_index, static_cast<int>(app.chats.size()) - 1);
-  }
-  app.composer_text.clear();
+	for (const ChatSession& existing_chat : app.chats)
+	{
+		if (existing_chat.id == chat.id)
+		{
+			continue;
+		}
 
-  app.pending_calls.erase(
-      std::remove_if(app.pending_calls.begin(), app.pending_calls.end(),
-                     [&](const PendingGeminiCall& call) { return call.chat_id == chat.id; }),
-      app.pending_calls.end());
-  app.resolved_native_sessions_by_chat_id.erase(chat.id);
-  for (auto it = app.resolved_native_sessions_by_chat_id.begin();
-       it != app.resolved_native_sessions_by_chat_id.end();) {
-    if (it->second == chat.id) {
-      it = app.resolved_native_sessions_by_chat_id.erase(it);
-    } else {
-      ++it;
-    }
-  }
-  app.chats_with_unseen_updates.erase(chat.id);
-  app.collapsed_branch_chat_ids.erase(chat.id);
-  if (app.editing_chat_id == chat.id) {
-    ClearEditMessageState(app);
-  }
-  if (app.pending_branch_chat_id == chat.id) {
-    app.pending_branch_chat_id.clear();
-    app.pending_branch_message_index = -1;
-  }
-  if (app.sidebar_chat_options_popup_chat_id == chat.id) {
-    app.sidebar_chat_options_popup_chat_id.clear();
-    app.open_sidebar_chat_options_popup = false;
-  }
-  RefreshRememberedSelection(app);
-  SaveSettings(app);
+		SaveChat(app, existing_chat);
+	}
 
-  if (local_delete_ec) {
-    app.status_line = "Chat removed from UI, but deleting local history failed.";
-  } else if (local_delete_async_scheduled && native_delete_async_scheduled) {
-    app.status_line = "Chat deleted. Local and native history cleanup are running in background.";
-  } else if (local_delete_async_scheduled) {
-    app.status_line = "Chat deleted. Local history cleanup is running in background.";
-  } else if (native_delete_async_scheduled) {
-    app.status_line = "Chat deleted. Native Gemini history cleanup is running in background.";
-  } else if (native_delete_attempted && native_delete_ec) {
-    app.status_line = "Chat removed from UI, but deleting native Gemini history failed.";
-  } else {
-    app.status_line = "Chat deleted.";
-  }
-  return true;
+	app.chats.erase(app.chats.begin() + chat_index);
+	NormalizeChatBranchMetadata(app);
+
+	if (app.chats.empty())
+	{
+		app.selected_chat_index = -1;
+	}
+	else if (app.selected_chat_index > chat_index)
+	{
+		--app.selected_chat_index;
+	}
+	else if (app.selected_chat_index == chat_index)
+	{
+		app.selected_chat_index = std::min(chat_index, static_cast<int>(app.chats.size()) - 1);
+	}
+
+	app.composer_text.clear();
+
+	app.pending_calls.erase(std::remove_if(app.pending_calls.begin(), app.pending_calls.end(), [&](const PendingGeminiCall& call) { return call.chat_id == chat.id; }), app.pending_calls.end());
+	app.resolved_native_sessions_by_chat_id.erase(chat.id);
+
+	for (auto it = app.resolved_native_sessions_by_chat_id.begin(); it != app.resolved_native_sessions_by_chat_id.end();)
+	{
+		if (it->second == chat.id)
+		{
+			it = app.resolved_native_sessions_by_chat_id.erase(it);
+		}
+		else
+		{
+			++it;
+		}
+	}
+
+	app.chats_with_unseen_updates.erase(chat.id);
+	app.collapsed_branch_chat_ids.erase(chat.id);
+
+	if (app.editing_chat_id == chat.id)
+	{
+		ClearEditMessageState(app);
+	}
+
+	if (app.pending_branch_chat_id == chat.id)
+	{
+		app.pending_branch_chat_id.clear();
+		app.pending_branch_message_index = -1;
+	}
+
+	if (app.sidebar_chat_options_popup_chat_id == chat.id)
+	{
+		app.sidebar_chat_options_popup_chat_id.clear();
+		app.open_sidebar_chat_options_popup = false;
+	}
+
+	RefreshRememberedSelection(app);
+	SaveSettings(app);
+
+	if (local_delete_ec)
+	{
+		app.status_line = "Chat removed from UI, but deleting local history failed.";
+	}
+	else if (local_delete_async_scheduled && native_delete_async_scheduled)
+	{
+		app.status_line = "Chat deleted. Local and native history cleanup are running in background.";
+	}
+	else if (local_delete_async_scheduled)
+	{
+		app.status_line = "Chat deleted. Local history cleanup is running in background.";
+	}
+	else if (native_delete_async_scheduled)
+	{
+		app.status_line = "Chat deleted. Native Gemini history cleanup is running in background.";
+	}
+	else if (native_delete_attempted && native_delete_ec)
+	{
+		app.status_line = "Chat removed from UI, but deleting native Gemini history failed.";
+	}
+	else
+	{
+		app.status_line = "Chat deleted.";
+	}
+
+	return true;
 }

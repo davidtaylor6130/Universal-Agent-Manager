@@ -11,31 +11,39 @@
 /// <summary>
 /// Draws the full left chat sidebar pane and related popups.
 /// </summary>
-static void DrawLeftPane(AppState& app) {
-  BeginPanel("left_sidebar", ImVec2(0.0f, 0.0f), PanelTone::Secondary, true, 0, ImVec2(ui::kSpace12, ui::kSpace12));
-  EnsureNewChatFolderSelection(app);
+static void DrawLeftPane(AppState& app)
+{
+	BeginPanel("left_sidebar", ImVec2(0.0f, 0.0f), PanelTone::Secondary, true, 0, ImVec2(ui::kSpace12, ui::kSpace12));
+	EnsureNewChatFolderSelection(app);
 
-  DrawChatSidebarHeader(app);
+	DrawChatSidebarHeader(app);
 
-  std::string chat_to_delete;
-  std::string chat_to_open_options;
-  DrawChatSidebarTree(app, chat_to_delete, chat_to_open_options);
+	std::string chat_to_delete;
+	std::string chat_to_open_options;
+	DrawChatSidebarTree(app, chat_to_delete, chat_to_open_options);
 
-  if (!chat_to_delete.empty()) {
-    if (app.settings.confirm_delete_chat) {
-      app.pending_delete_chat_id = chat_to_delete;
-      app.open_delete_chat_popup = true;
-    } else {
-      RemoveChatById(app, chat_to_delete);
-    }
-  }
-  if (!chat_to_open_options.empty()) {
-    app.sidebar_chat_options_popup_chat_id = chat_to_open_options;
-    app.open_sidebar_chat_options_popup = true;
-  }
-  DrawSidebarChatOptionsPopup(app);
-  DrawSidebarNewChatPopup(app);
-  DrawSidebarNewFolderPopup(app);
+	if (!chat_to_delete.empty())
+	{
+		if (app.settings.confirm_delete_chat)
+		{
+			app.pending_delete_chat_id = chat_to_delete;
+			app.open_delete_chat_popup = true;
+		}
+		else
+		{
+			RemoveChatById(app, chat_to_delete);
+		}
+	}
 
-  EndPanel();
+	if (!chat_to_open_options.empty())
+	{
+		app.sidebar_chat_options_popup_chat_id = chat_to_open_options;
+		app.open_sidebar_chat_options_popup = true;
+	}
+
+	DrawSidebarChatOptionsPopup(app);
+	DrawSidebarNewChatPopup(app);
+	DrawSidebarNewFolderPopup(app);
+
+	EndPanel();
 }
