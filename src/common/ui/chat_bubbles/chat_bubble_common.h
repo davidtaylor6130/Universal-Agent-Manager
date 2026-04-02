@@ -1,14 +1,14 @@
 #pragma once
 
 /// <summary>
-/// Shared geometry and rendering helpers for chat message bubbles.
+/// Shared geometry and rendering helpers for chat message rows (flat Codex/T3 style).
 /// </summary>
 struct ChatBubbleLayout
 {
 	float mf_contentWidth = 0.0f;
 	float mf_maxWidth = 0.0f;
-	float mf_padX = 16.0f;
-	float mf_padY = 14.0f;
+	float mf_padX = 10.0f;
+	float mf_padY = 8.0f;
 	float mf_textWrapWidth = 0.0f;
 	float mf_headerHeight = 0.0f;
 	float mf_metaHeight = 0.0f;
@@ -20,7 +20,7 @@ struct ChatBubbleLayout
 };
 
 /// <summary>
-/// Computes message bubble placement and dimensions for a row.
+/// Computes message row placement and dimensions.
 /// </summary>
 static ChatBubbleLayout BuildChatBubbleLayout(const std::string& content, const float content_width, const bool align_right)
 {
@@ -30,10 +30,10 @@ static ChatBubbleLayout BuildChatBubbleLayout(const std::string& content, const 
 	layout.mf_textWrapWidth = layout.mf_maxWidth - (layout.mf_padX * 2.0f);
 
 	const ImVec2 text_size = ImGui::CalcTextSize(content.c_str(), nullptr, false, layout.mf_textWrapWidth);
-	layout.mf_headerHeight = ImGui::GetTextLineHeight();
+	layout.mf_headerHeight = 0.0f; // No header row in flat style
 	layout.mf_metaHeight = ImGui::GetTextLineHeight();
-	layout.mf_bubbleWidth = std::max(220.0f, std::min(layout.mf_maxWidth, text_size.x + layout.mf_padX * 2.0f));
-	layout.mf_bubbleHeight = layout.mf_padY + layout.mf_headerHeight + 8.0f + text_size.y + 10.0f + layout.mf_metaHeight + layout.mf_padY;
+	layout.mf_bubbleWidth = std::max(180.0f, std::min(layout.mf_maxWidth, text_size.x + layout.mf_padX * 2.0f));
+	layout.mf_bubbleHeight = layout.mf_padY + text_size.y + 8.0f + layout.mf_metaHeight + layout.mf_padY;
 
 	layout.m_cursor = ImGui::GetCursorScreenPos();
 	const float bubble_x = align_right ? (layout.m_cursor.x + content_width - layout.mf_bubbleWidth) : layout.m_cursor.x;
@@ -43,31 +43,22 @@ static ChatBubbleLayout BuildChatBubbleLayout(const std::string& content, const 
 }
 
 /// <summary>
-/// Draws the bubble card background and border.
+/// Draws a subtle filled pill for user messages (no shadow, no border).
 /// </summary>
-static void DrawChatBubbleFrame(const ChatBubbleLayout& layout, const ImVec4& background, const ImVec4& border)
+static void DrawUserBubblePill(const ChatBubbleLayout& layout)
 {
 	ImDrawList* draw = ImGui::GetWindowDrawList();
-	draw->AddRectFilled(ImVec2(layout.m_min.x + 1.0f, layout.m_min.y + 3.0f), ImVec2(layout.m_max.x + 1.0f, layout.m_max.y + 3.0f), ImGui::GetColorU32(ui::kShadowSoft), 12.0f);
-	draw->AddRectFilled(layout.m_min, layout.m_max, ImGui::GetColorU32(background), 12.0f);
-	draw->AddRect(layout.m_min, layout.m_max, ImGui::GetColorU32(border), 12.0f, 0, 1.1f);
+	const bool light = IsLightPaletteActive();
+	const ImVec4 fill = light ? Rgb(66, 126, 228, 0.10f) : Rgb(94, 160, 255, 0.10f);
+	draw->AddRectFilled(layout.m_min, layout.m_max, ImGui::GetColorU32(fill), 10.0f);
 }
 
 /// <summary>
-/// Draws a role label at the top-left of the bubble.
-/// </summary>
-static void DrawChatBubbleRoleLabel(const ChatBubbleLayout& layout, const char* role_label, const ImVec4& role_color)
-{
-	ImGui::SetCursorScreenPos(ImVec2(layout.m_min.x + layout.mf_padX, layout.m_min.y + layout.mf_padY));
-	ImGui::TextColored(role_color, "%s", role_label);
-}
-
-/// <summary>
-/// Draws wrapped message content inside the bubble.
+/// Draws wrapped message content inside the row.
 /// </summary>
 static void DrawChatBubbleContent(const ChatBubbleLayout& layout, const std::string& content)
 {
-	ImGui::SetCursorScreenPos(ImVec2(layout.m_min.x + layout.mf_padX, layout.m_min.y + layout.mf_padY + layout.mf_headerHeight + 2.0f));
+	ImGui::SetCursorScreenPos(ImVec2(layout.m_min.x + layout.mf_padX, layout.m_min.y + layout.mf_padY));
 	const float wrap_pos_x = ImGui::GetCursorPosX() + (layout.mf_bubbleWidth - (layout.mf_padX * 2.0f));
 	ImGui::PushTextWrapPos(wrap_pos_x);
 	ImGui::TextUnformatted(content.c_str());
@@ -75,19 +66,21 @@ static void DrawChatBubbleContent(const ChatBubbleLayout& layout, const std::str
 }
 
 /// <summary>
-/// Draws message metadata (timestamp) at the bottom-left of the bubble.
+/// Draws a muted timestamp below the content.
 /// </summary>
-static void DrawChatBubbleTimestamp(const ChatBubbleLayout& layout, const std::string& created_at)
+static void DrawChatBubbleTimestamp(const ChatBubbleLayout& layout, const std::string& created_at, const bool right_align = false)
 {
-	ImGui::SetCursorScreenPos(ImVec2(layout.m_min.x + layout.mf_padX, layout.m_max.y - layout.mf_padY - layout.mf_metaHeight));
+	const ImVec2 ts_size = ImGui::CalcTextSize(created_at.c_str());
+	const float ts_x = right_align ? (layout.m_max.x - layout.mf_padX - ts_size.x) : (layout.m_min.x + layout.mf_padX);
+	ImGui::SetCursorScreenPos(ImVec2(ts_x, layout.m_max.y - layout.mf_padY - layout.mf_metaHeight));
 	ImGui::TextColored(ui::kTextMuted, "%s", created_at.c_str());
 }
 
 /// <summary>
-/// Ends the current bubble row and advances cursor to the next row.
+/// Ends the current message row and advances cursor to the next row.
 /// </summary>
-static void EndChatBubbleRow(const ChatBubbleLayout& layout)
+static void EndChatBubbleRow(const ChatBubbleLayout& layout, const float extra_bottom = 0.0f)
 {
-	ImGui::SetCursorScreenPos(ImVec2(layout.m_cursor.x, layout.m_max.y + ui::kSpace16));
+	ImGui::SetCursorScreenPos(ImVec2(layout.m_cursor.x, layout.m_max.y + extra_bottom + ui::kSpace16));
 	ImGui::Dummy(ImVec2(layout.mf_contentWidth, 0.0f));
 }

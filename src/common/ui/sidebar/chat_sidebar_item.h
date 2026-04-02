@@ -20,7 +20,7 @@ static SidebarItemAction DrawSidebarItem(AppState& app, const ChatSession& chat,
 	SidebarItemAction action;
 
 	ImGui::PushID(item_id.c_str());
-	float row_h = 30.0f;
+	float row_h = 32.0f;
 	float row_rounding = ui::kRadiusSmall;
 	float accent_w = 3.0f;
 	float title_x_offset = 11.0f;
@@ -37,7 +37,7 @@ static SidebarItemAction DrawSidebarItem(AppState& app, const ChatSession& chat,
 		// Windows-only DPI/layout mitigation: ensure row geometry scales with text so
 		// large user scale values do not cause sidebar overlap. If this starts to
 		// happen on macOS later, we can make this universal.
-		row_h = std::max(ScaleUiLength(30.0f), ImGui::GetTextLineHeight() + ScaleUiLength(12.0f));
+		row_h = std::max(ScaleUiLength(32.0f), ImGui::GetTextLineHeight() + ScaleUiLength(14.0f));
 		row_rounding = ScaleUiLength(ui::kRadiusSmall);
 		accent_w = std::max(2.0f, ScaleUiLength(3.0f));
 		title_x_offset = ScaleUiLength(11.0f);
@@ -67,7 +67,12 @@ static SidebarItemAction DrawSidebarItem(AppState& app, const ChatSession& chat,
 	const ImVec4 row_bg = selected ? (light ? Rgb(66, 126, 228, 0.13f) : Rgb(94, 160, 255, 0.15f)) : (hovered ? (light ? Rgb(9, 31, 63, 0.06f) : Rgb(255, 255, 255, 0.06f)) : ui::kTransparent);
 	const ImVec4 row_border = selected ? ui::kBorderStrong : ui::kBorder;
 
-	if (selected || hovered)
+	if (hovered && !selected)
+	{
+		draw->AddRectFilled(min, max, ImGui::GetColorU32(row_bg), row_rounding);
+	}
+
+	if (selected)
 	{
 		draw->AddRectFilled(min, max, ImGui::GetColorU32(row_bg), row_rounding);
 		draw->AddRect(min, max, ImGui::GetColorU32(row_border), row_rounding);

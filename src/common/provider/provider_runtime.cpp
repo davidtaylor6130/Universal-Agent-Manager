@@ -188,7 +188,7 @@ namespace
 				return {};
 			}
 
-			if ((profile.interactive_command.empty() || EqualsIgnoreCase(profile.interactive_command, "gemini")) && (profile.resume_argument.empty() || profile.resume_argument == "--resume") && profile.supports_resume)
+			if ((profile.interactive_command.empty() || EqualsIgnoreCase(profile.interactive_command, "gemini")) && (profile.resume_argument.empty() || profile.resume_argument == "-r") && profile.supports_resume)
 			{
 				return GeminiCommandBuilder::BuildInteractiveArgv(chat, provider_settings);
 			}

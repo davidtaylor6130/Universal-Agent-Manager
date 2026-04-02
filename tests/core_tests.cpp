@@ -1012,7 +1012,7 @@ UAM_TEST(TestGeminiCommandBuilderInteractiveArgvIncludesResumeAndFlags)
 	chat.native_session_id = "session-123";
 
 	const std::vector<std::string> argv = GeminiCommandBuilder::BuildInteractiveArgv(chat, settings);
-	const std::vector<std::string> expected = {"gemini", "--yolo", "--profile", "nightly", "--dry-run", "--resume", "session-123"};
+	const std::vector<std::string> expected = {"gemini", "--yolo", "--profile", "nightly", "--dry-run", "-r", "session-123"};
 
 	UAM_ASSERT(argv == expected);
 }

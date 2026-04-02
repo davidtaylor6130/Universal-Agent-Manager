@@ -18,7 +18,7 @@ struct ProviderProfile
 	bool supports_interactive = true;
 	bool supports_resume = true;
 	std::vector<std::string> runtime_flags;
-	std::string resume_argument = "--resume";
+	std::string resume_argument = "-r";
 	std::string history_adapter = "gemini-cli-json";
 	std::string prompt_bootstrap = "prepend";
 	std::string prompt_bootstrap_path;

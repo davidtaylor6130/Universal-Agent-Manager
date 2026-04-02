@@ -208,7 +208,7 @@ std::vector<std::string> GeminiCommandBuilder::BuildInteractiveArgv(const ChatSe
 
 	if (chat.uses_native_session && !chat.native_session_id.empty())
 	{
-		argv.push_back("--resume");
+		argv.push_back("-r");
 		argv.push_back(chat.native_session_id);
 	}
 

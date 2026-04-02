@@ -2,73 +2,59 @@
 #include "common/platform/platform_services.h"
 
 /// <summary>
-/// Draws the chat title/status header block above the main conversation content.
+/// Draws the slim chat title/status header row above the main conversation content.
 /// </summary>
 static void DrawChatDetailHeaderBar(AppState& app, ChatSession& chat)
 {
-	if (BeginPanel("chat_header_bar", ImVec2(0.0f, 92.0f), PanelTone::Secondary, true, 0, ImVec2(12.0f, 10.0f), ui::kRadiusInput))
+	if (BeginPanel("chat_header_bar", ImVec2(0.0f, 52.0f), PanelTone::Primary, false, 0, ImVec2(12.0f, 10.0f), ui::kRadiusInput))
 	{
-		if (ImGui::BeginTable("chat_header_layout", 2, ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoPadOuterX | ImGuiTableFlags_NoBordersInBody))
+		ImDrawList* draw = ImGui::GetWindowDrawList();
+		const float line_h = ImGui::GetTextLineHeight();
+		const ImVec2 panel_pos = ImGui::GetWindowPos();
+		const float row_y = panel_pos.y + 10.0f + line_h * 0.5f;
+
+		// Status dot — animated when running
+		const bool running = HasPendingCallForChat(app, chat.id);
+		const ImVec4 dot_color = running ? ui::kWarning : ui::kSuccess;
+		const float base_r = 4.0f;
+		const float dot_r = running ? (base_r + 1.2f * std::abs(std::sin(static_cast<float>(ImGui::GetTime()) * 3.0f))) : base_r;
+		const float dot_x = panel_pos.x + 12.0f + dot_r;
+		draw->AddCircleFilled(ImVec2(dot_x, row_y), dot_r, ImGui::GetColorU32(dot_color), 16);
+
+		// Transparent-chrome title input (no visible border/background until focused)
+		ImGui::SetCursorPos(ImVec2(dot_r * 2.0f + 20.0f, 8.0f));
+		ImGui::PushStyleColor(ImGuiCol_FrameBg, ui::kTransparent);
+		ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IsLightPaletteActive() ? Rgb(0, 0, 0, 0.04f) : Rgb(255, 255, 255, 0.04f));
+		ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IsLightPaletteActive() ? Rgb(0, 0, 0, 0.07f) : Rgb(255, 255, 255, 0.06f));
+		ImGui::PushStyleColor(ImGuiCol_Border, ui::kTransparent);
+		ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 3.0f));
+
+		const float title_max_w = ImGui::GetContentRegionAvail().x * 0.55f;
+		ImGui::SetNextItemWidth(title_max_w);
+		const std::string title_id = "##chat_title_" + chat.id;
+
+		if (ImGui::InputText(title_id.c_str(), &chat.title))
 		{
-			float mode_column_w = 164.0f;
+			chat.updated_at = TimestampNow();
+			SaveAndUpdateStatus(app, chat, "Chat title updated.", "Chat title changed in UI, but failed to save.");
+		}
 
-			if (PlatformServicesFactory::Instance().ui_traits.UseWindowsLayoutAdjustments())
-			{
-				mode_column_w = ScaleUiLength(164.0f);
-			}
+		ImGui::PopStyleVar(2);
+		ImGui::PopStyleColor(4);
 
-			ImGui::TableSetupColumn("meta", ImGuiTableColumnFlags_WidthStretch, 0.72f);
-			ImGui::TableSetupColumn("mode", ImGuiTableColumnFlags_WidthFixed, mode_column_w);
-			ImGui::TableNextRow();
+		// Inline mode + timestamp chips
+		ImGui::SameLine(0.0f, 10.0f);
+		const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
+		const char* mode_label = ProviderRuntime::UsesCliOutput(provider) ? "· CLI" : "· Structured";
+		ImGui::TextColored(ui::kTextMuted, "%s", mode_label);
+		ImGui::SameLine(0.0f, 12.0f);
+		ImGui::TextColored(ui::kTextMuted, "· %s", CompactPreview(chat.updated_at, 20).c_str());
 
-			ImGui::TableSetColumnIndex(0);
-			PushInputChrome();
-			ImGui::SetNextItemWidth(-1.0f);
-			const std::string chat_title_input_id = "##chat_title_" + chat.id;
-
-			if (ImGui::InputText(chat_title_input_id.c_str(), &chat.title))
-			{
-				chat.updated_at = TimestampNow();
-				SaveAndUpdateStatus(app, chat, "Chat title updated.", "Chat title changed in UI, but failed to save.");
-			}
-
-			PopInputChrome();
-
-			if (HasPendingCallForChat(app, chat.id))
-			{
-				static constexpr const char kSpinnerFrames[4] = {'|', '/', '-', '\\'};
-				const int spinner_index = static_cast<int>(ImGui::GetTime() * 8.0) & 3;
-				ImGui::TextColored(ui::kWarning, "Provider running %c", kSpinnerFrames[spinner_index]);
-			}
-			else if (HasAnyPendingCall(app))
-			{
-				ImGui::TextColored(ui::kTextSecondary, "Provider running in another chat");
-			}
-			else
-			{
-				ImGui::TextColored(ui::kSuccess, "Ready");
-			}
-
-			ImGui::SameLine();
-			ImGui::TextColored(ui::kTextMuted, "Updated %s", CompactPreview(chat.updated_at, 20).c_str());
-
-			ImGui::TableSetColumnIndex(1);
-			const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
-			const char* mode_label = ProviderRuntime::UsesCliOutput(provider) ? "CLI" : "Structured";
-			float mode_y_nudge = 3.0f;
-
-			if (PlatformServicesFactory::Instance().ui_traits.UseWindowsLayoutAdjustments())
-			{
-				mode_y_nudge = ScaleUiLength(3.0f);
-			}
-
-			ImGui::SetCursorPosY(ImGui::GetCursorPosY() + mode_y_nudge);
-			ImGui::TextColored(ui::kTextMuted, "Output");
-			ImGui::SameLine();
-			ImGui::TextColored(ui::kTextPrimary, "%s", mode_label);
-			ImGui::TextColored(ui::kTextMuted, "Locked by provider");
-
-			ImGui::EndTable();
+		if (HasAnyPendingCall(app) && !running)
+		{
+			ImGui::SameLine(0.0f, 12.0f);
+			ImGui::TextColored(ui::kTextMuted, "· busy");
 		}
 	}
 

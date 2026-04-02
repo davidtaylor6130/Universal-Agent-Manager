@@ -364,7 +364,8 @@ When `UAM_FETCH_DEPS=ON`, CMake fetches:
 
 ## Build
 
-Build directory location is enforced: all CMake build trees must live under `Builds/`.
+Build directory location is enforced: CMake build trees should live under `Builds/`.
+CLion's default local profile directories (`cmake-build-*` under the source root) are accepted for IDE compatibility.
 
 ### Self-Contained (Fetch Dependencies)
 

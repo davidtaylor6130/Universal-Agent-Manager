@@ -15,6 +15,7 @@ set_property(GLOBAL PROPERTY PREDEFINED_TARGETS_FOLDER "_CMake")
 
 set(UAM_REQUIRED_BUILD_ROOT "${CMAKE_SOURCE_DIR}/Builds")
 file(MAKE_DIRECTORY "${UAM_REQUIRED_BUILD_ROOT}")
+file(REAL_PATH "${CMAKE_SOURCE_DIR}" UAM_SOURCE_DIR_REAL)
 file(REAL_PATH "${UAM_REQUIRED_BUILD_ROOT}" UAM_REQUIRED_BUILD_ROOT_REAL)
 file(REAL_PATH "${CMAKE_BINARY_DIR}" UAM_BINARY_DIR_REAL)
 cmake_path(
@@ -22,13 +23,39 @@ cmake_path(
   BASE_DIRECTORY "${UAM_REQUIRED_BUILD_ROOT_REAL}"
   OUTPUT_VARIABLE UAM_BINARY_DIR_RELATIVE_TO_REQUIRED_ROOT
 )
+cmake_path(
+  RELATIVE_PATH UAM_BINARY_DIR_REAL
+  BASE_DIRECTORY "${UAM_SOURCE_DIR_REAL}"
+  OUTPUT_VARIABLE UAM_BINARY_DIR_RELATIVE_TO_SOURCE_ROOT
+)
+
+set(UAM_BUILD_DIR_IN_REQUIRED_ROOT TRUE)
 if(UAM_BINARY_DIR_RELATIVE_TO_REQUIRED_ROOT MATCHES "^\\.\\.")
-  message(FATAL_ERROR
-    "Build directory must be inside '${UAM_REQUIRED_BUILD_ROOT}'.\n"
-    "Use one of:\n"
-    "  cmake -S . -B Builds\n"
-    "  cmake -S . -B Builds/<name>\n"
-  )
+  set(UAM_BUILD_DIR_IN_REQUIRED_ROOT FALSE)
+endif()
+
+set(UAM_BUILD_DIR_IS_CLION_DEFAULT FALSE)
+if(NOT UAM_BINARY_DIR_RELATIVE_TO_SOURCE_ROOT MATCHES "^\\.\\." AND
+   UAM_BINARY_DIR_RELATIVE_TO_SOURCE_ROOT MATCHES "^cmake-build-")
+  set(UAM_BUILD_DIR_IS_CLION_DEFAULT TRUE)
+endif()
+
+if(NOT UAM_BUILD_DIR_IN_REQUIRED_ROOT)
+  if(UAM_BUILD_DIR_IS_CLION_DEFAULT)
+    message(STATUS
+      "Using CLion default build directory '${CMAKE_BINARY_DIR}'. "
+      "Preferred location is '${UAM_REQUIRED_BUILD_ROOT}'."
+    )
+  else()
+    message(FATAL_ERROR
+      "Build directory must be inside '${UAM_REQUIRED_BUILD_ROOT}'.\n"
+      "Use one of:\n"
+      "  cmake -S . -B Builds\n"
+      "  cmake -S . -B Builds/<name>\n"
+      "\n"
+      "CLion default profiles are also accepted (for example: cmake-build-debug)."
+    )
+  endif()
 endif()
 
 option(UAM_FETCH_DEPS "Fetch SDL2 and Dear ImGui from GitHub during configure." ON)

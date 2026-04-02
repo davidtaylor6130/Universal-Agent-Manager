@@ -98,11 +98,8 @@ static bool BeginPanel(const char* id, const ImVec2& size, const PanelTone tone,
 		draw->AddRect(min, max, ImGui::GetColorU32(PanelStrokeColor(tone)), scaled_rounding, 0, border_thickness);
 	}
 
-	if (tone != PanelTone::Elevated)
-	{
-		draw->AddRectFilledMultiColor(min, ImVec2(max.x, min.y + accent_h), ImGui::GetColorU32(light ? Rgb(66, 126, 228, 0.22f) : Rgb(94, 160, 255, 0.22f)), ImGui::GetColorU32(light ? Rgb(66, 126, 228, 0.08f) : Rgb(94, 160, 255, 0.08f)), ImGui::GetColorU32(ui::kTransparent), ImGui::GetColorU32(ui::kTransparent));
-	}
-
+	(void)accent_h;
+	(void)light;
 	return is_open;
 }
 

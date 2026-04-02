@@ -5,8 +5,16 @@
 /// </summary>
 static void DrawDesktopMenuBar(AppState& app, bool& done)
 {
+	ImGui::PushStyleColor(ImGuiCol_MenuBarBg, ui::kSecondarySurface);
+	ImGui::PushStyleColor(ImGuiCol_PopupBg, ui::kElevatedSurface);
+	ImGui::PushStyleColor(ImGuiCol_Header, ui::kAccentSoft);
+	ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ui::kAccentSoft);
+	ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 6.0f));
+
 	if (!ImGui::BeginMainMenuBar())
 	{
+		ImGui::PopStyleVar();
+		ImGui::PopStyleColor(4);
 		return;
 	}
 
@@ -224,5 +232,31 @@ static void DrawDesktopMenuBar(AppState& app, bool& done)
 		ImGui::EndMenu();
 	}
 
+	// Right-aligned runtime status indicator
+	{
+		const bool pending_any = HasAnyPendingCall(app);
+		const ChatSession* selected = SelectedChat(app);
+		const bool pending_here = (selected != nullptr) && HasPendingCallForChat(app, selected->id);
+		const ProviderProfile* active_provider = (selected != nullptr) ? ProviderForChat(app, *selected) : ActiveProvider(app);
+		std::string provider_label = (active_provider != nullptr && !Trim(active_provider->title).empty()) ? CompactPreview(active_provider->title, 22) : "No Provider";
+		const std::string status_text = pending_here ? (provider_label + "  Running") : (pending_any ? (provider_label + "  Busy") : (provider_label + "  Ready"));
+		const ImVec4 status_color = pending_here ? ui::kWarning : (pending_any ? ui::kAccent : ui::kSuccess);
+		const float status_w = ImGui::CalcTextSize(status_text.c_str()).x + 28.0f;
+		const float bar_w = ImGui::GetWindowSize().x;
+		ImGui::SetCursorPosX(bar_w - status_w);
+
+		// Draw colored dot
+		const ImVec2 dot_cursor = ImGui::GetCursorScreenPos();
+		const float line_h = ImGui::GetTextLineHeight();
+		const float dot_r = 3.5f;
+		const float dot_cx = dot_cursor.x + dot_r + 2.0f;
+		const float dot_cy = dot_cursor.y + line_h * 0.5f;
+		ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(dot_cx, dot_cy), dot_r, ImGui::GetColorU32(status_color), 12);
+		ImGui::SetCursorPosX(ImGui::GetCursorPosX() + dot_r * 2.0f + 8.0f);
+		ImGui::TextColored(ui::kTextMuted, "%s", status_text.c_str());
+	}
+
 	ImGui::EndMainMenuBar();
+	ImGui::PopStyleVar();
+	ImGui::PopStyleColor(4);
 }

@@ -2,35 +2,124 @@
 #include "common/platform/platform_services.h"
 
 /// <summary>
-/// Draws the structured composer container and send actions.
+/// Draws an inline RAG toggle chip that acts as a clickable pill button.
+/// Returns true if the toggle state changed.
+/// </summary>
+static bool DrawRagToggleChip(const char* chip_id, const bool enabled)
+{
+	ImGui::PushID(chip_id);
+	const bool light = IsLightPaletteActive();
+	const char* label = enabled ? "\xe2\x97\x8f RAG" : "\xe2\x97\x8b RAG";
+	const ImVec2 text_size = ImGui::CalcTextSize(label);
+	const float pad_x = ScaleUiLength(8.0f);
+	const float pad_y = ScaleUiLength(3.0f);
+	const ImVec2 chip_size(text_size.x + pad_x * 2.0f, text_size.y + pad_y * 2.0f);
+	const ImVec2 min = ImGui::GetCursorScreenPos();
+	ImGui::InvisibleButton("rag_chip", chip_size);
+	const bool clicked = ImGui::IsItemClicked();
+	const bool hovered = ImGui::IsItemHovered();
+	const ImVec2 max(min.x + chip_size.x, min.y + chip_size.y);
+	ImDrawList* draw = ImGui::GetWindowDrawList();
+	const float rounding = ScaleUiLength(ui::kRadiusSmall);
+
+	if (enabled)
+	{
+		draw->AddRectFilled(min, max, ImGui::GetColorU32(ui::kAccentSoft), rounding);
+		draw->AddRect(min, max, ImGui::GetColorU32(light ? Rgb(66, 126, 228, 0.35f) : Rgb(94, 160, 255, 0.30f)), rounding, 0, 1.0f);
+		draw->AddText(ImVec2(min.x + pad_x, min.y + pad_y), ImGui::GetColorU32(ui::kAccent), label);
+	}
+	else
+	{
+		const ImVec4 hover_fill = light ? Rgb(0, 0, 0, 0.04f) : Rgb(255, 255, 255, 0.04f);
+		draw->AddRectFilled(min, max, ImGui::GetColorU32(hovered ? hover_fill : ui::kTransparent), rounding);
+		draw->AddRect(min, max, ImGui::GetColorU32(ui::kBorder), rounding, 0, 1.0f);
+		draw->AddText(ImVec2(min.x + pad_x, min.y + pad_y), ImGui::GetColorU32(ui::kTextMuted), label);
+	}
+
+	ImGui::PopID();
+	return clicked;
+}
+
+/// <summary>
+/// Draws the composer container — text area + single-row bottom chip toolbar (T3-style).
 /// </summary>
 static void DrawInputContainer(AppState& app, ChatSession& chat)
 {
-	BeginPanel("input_container", ImVec2(0.0f, 166.0f), PanelTone::Secondary, true, 0, ImVec2(12.0f, 12.0f), ui::kRadiusInput);
-	ImDrawList* draw = ImGui::GetWindowDrawList();
-	const ImVec2 min = ImGui::GetWindowPos();
-	const ImVec2 max(min.x + ImGui::GetWindowSize().x, min.y + ImGui::GetWindowSize().y);
-	draw->AddRectFilled(ImVec2(min.x + 2.0f, min.y + 4.0f), ImVec2(max.x + 2.0f, max.y + 4.0f), ImGui::GetColorU32(ui::kShadowSoft), ui::kRadiusInput);
+	BeginPanel("input_container", ImVec2(0.0f, 162.0f), PanelTone::Secondary, true, 0, ImVec2(10.0f, 10.0f), ui::kRadiusInput);
 
-	ImGui::TextColored(ui::kTextSecondary, "Composer");
-	ImGui::SameLine();
 	ImGui::PushID(chat.id.c_str());
+
+	// --- Status line (if any) ---
+	if (!app.status_line.empty())
+	{
+		ImGui::TextColored(ui::kTextMuted, "%s", app.status_line.c_str());
+	}
+
+	// --- Text area ---
+	PushInputChrome(ui::kRadiusInput);
+
+	const bool send_visible = FrontendActionVisible(app, "send_prompt", true);
+	// Reserve chip_h + 14px overhead (covers 2x ImGui ItemSpacing + bottom padding rounding)
+	const float chip_h = ScaleUiLength(26.0f);
+	const float input_h = std::max(ScaleUiLength(60.0f), ImGui::GetContentRegionAvail().y - chip_h - ScaleUiLength(14.0f));
+
+	ImGui::InputTextMultiline("##composer", &app.composer_text, ImVec2(-1.0f, input_h), ImGuiInputTextFlags_AllowTabInput);
+
+	PopInputChrome();
+
+	// --- Bottom chip toolbar (single layout line, no extra Dummy spacer) ---
+
+	// Left: RAG toggle chip
 	bool rag_enabled_for_chat = chat.rag_enabled;
 
-	if (ImGui::Checkbox("RAG", &rag_enabled_for_chat))
+	if (DrawRagToggleChip("rag_toggle", rag_enabled_for_chat))
 	{
-		chat.rag_enabled = rag_enabled_for_chat;
+		chat.rag_enabled = !chat.rag_enabled;
 		chat.updated_at = TimestampNow();
 		SaveAndUpdateStatus(app, chat, chat.rag_enabled ? "RAG enabled for this chat." : "RAG disabled for this chat.", "Failed to save chat RAG setting.");
 	}
 
-	ImGui::SameLine();
+	ImGui::SameLine(0.0f, ScaleUiLength(6.0f));
 
-	if (DrawButton("Sources", ImVec2(92.0f, 28.0f), ButtonKind::Ghost))
+	// Left: Sources button
+	if (DrawButton("Sources \xe2\x96\xbe", ImVec2(ScaleUiLength(82.0f), chip_h), ButtonKind::Ghost))
 	{
 		ImGui::OpenPopup("composer_rag_sources_popup");
 	}
 
+	// Right: hint text + send button — all on the same SameLine row
+	if (send_visible)
+	{
+		const float send_btn_w = ScaleUiLength(32.0f);
+		const float hint_w = ImGui::CalcTextSize("\xe2\x8c\x83\xe2\x86\xb5").x + ScaleUiLength(8.0f);
+		const float gap = ScaleUiLength(8.0f);
+		const float right_edge = ImGui::GetContentRegionMax().x;
+
+		// Right-align hint then send button on the same row
+		ImGui::SameLine(right_edge - send_btn_w - hint_w - gap);
+		ImGui::TextColored(ui::kTextMuted, "\xe2\x8c\x83\xe2\x86\xb5");
+
+		const bool can_send = !HasPendingCallForChat(app, chat.id);
+
+		if (!can_send)
+		{
+			ImGui::BeginDisabled();
+		}
+
+		ImGui::SameLine(right_edge - send_btn_w);
+
+		if (DrawButton("\xe2\x86\x91", ImVec2(send_btn_w, chip_h), ButtonKind::Accent))
+		{
+			StartGeminiRequest(app);
+		}
+
+		if (!can_send)
+		{
+			ImGui::EndDisabled();
+		}
+	}
+
+	// Sources popup (logic unchanged)
 	if (ImGui::BeginPopup("composer_rag_sources_popup"))
 	{
 		const fs::path workspace_root = ResolveWorkspaceRootPath(app, chat);
@@ -213,69 +302,8 @@ static void DrawInputContainer(AppState& app, ChatSession& chat)
 	}
 
 	ImGui::PopID();
-	ImGui::SameLine();
-	ImGui::TextColored(ui::kTextMuted, "Ctrl+Enter to send");
-	PushInputChrome(ui::kRadiusInput);
-	const bool send_visible = FrontendActionVisible(app, "send_prompt", true);
 
-	if (PlatformServicesFactory::Instance().ui_traits.UseWindowsLayoutAdjustments())
-	{
-		// Windows-only composer fit: reserve right-side width for the SEND button so
-		// the multiline input shrinks first at larger UI scales. If this starts to
-		// happen on macOS later, we can make this universal.
-		const float send_gap = ScaleUiLength(8.0f);
-		const float send_button_w = ScaleUiLength(80.0f);
-		const float composer_h = std::max(ScaleUiLength(110.0f), ImGui::GetTextLineHeight() * 5.2f);
-		const float reserved_send_w = send_visible ? (send_button_w + send_gap + ScaleUiLength(2.0f)) : 0.0f;
-		const float input_w = std::max(ScaleUiLength(180.0f), ImGui::GetContentRegionAvail().x - reserved_send_w);
-		ImGui::InputTextMultiline("##composer", &app.composer_text, ImVec2(input_w, composer_h), ImGuiInputTextFlags_AllowTabInput);
-	}
-	else
-	{
-		ImGui::InputTextMultiline("##composer", &app.composer_text, ImVec2(-96.0f, 110.0f), ImGuiInputTextFlags_AllowTabInput);
-	}
-
-	PopInputChrome();
-
-	float send_same_line_gap = 0.0f;
-
-	if (PlatformServicesFactory::Instance().ui_traits.UseWindowsLayoutAdjustments())
-	{
-		send_same_line_gap = ScaleUiLength(8.0f);
-	}
-
-	ImGui::SameLine(0.0f, send_same_line_gap);
-	const bool can_send = !HasPendingCallForChat(app, chat.id);
-
-	if (!can_send)
-	{
-		ImGui::BeginDisabled();
-	}
-
-	if (send_visible)
-	{
-		float send_y_nudge = 36.0f;
-
-		if (PlatformServicesFactory::Instance().ui_traits.UseWindowsLayoutAdjustments())
-		{
-			const float composer_h = std::max(ScaleUiLength(110.0f), ImGui::GetTextLineHeight() * 5.2f);
-			const float send_h = ScaleUiLength(42.0f);
-			send_y_nudge = std::max(0.0f, (composer_h - send_h) * 0.5f);
-		}
-
-		ImGui::SetCursorPosY(ImGui::GetCursorPosY() + send_y_nudge);
-
-		if (DrawButton("SEND", ImVec2(80.0f, 42.0f), ButtonKind::Accent))
-		{
-			StartGeminiRequest(app);
-		}
-	}
-
-	if (!can_send)
-	{
-		ImGui::EndDisabled();
-	}
-
+	// Ctrl+Enter shortcut
 	if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && ImGui::IsKeyPressed(ImGuiKey_Enter) && ImGui::GetIO().KeyCtrl && !HasPendingCallForChat(app, chat.id))
 	{
 		StartGeminiRequest(app);

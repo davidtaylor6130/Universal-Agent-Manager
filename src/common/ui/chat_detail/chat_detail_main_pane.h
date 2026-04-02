@@ -12,7 +12,7 @@
 static void DrawChatDetailPane(AppState& app, ChatSession& chat)
 {
 	MarkSelectedChatSeen(app);
-	BeginPanel("main_chat_panel", ImVec2(0.0f, 0.0f), PanelTone::Primary, true, 0, ImVec2(ui::kSpace16, ui::kSpace16));
+	BeginPanel("main_chat_panel", ImVec2(0.0f, 0.0f), PanelTone::Primary, true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse, ImVec2(ui::kSpace16, ui::kSpace16));
 
 	DrawChatDetailHeaderBar(app, chat);
 
@@ -33,11 +33,6 @@ static void DrawChatDetailPane(AppState& app, ChatSession& chat)
 	DrawChatDetailConversationHistory(app, chat);
 	DrawEditUserMessagePopup(app, chat);
 	DrawInputContainer(app, chat);
-
-	if (!app.status_line.empty())
-	{
-		ImGui::TextColored(ui::kTextSecondary, "%s", app.status_line.c_str());
-	}
 
 	EndPanel();
 }

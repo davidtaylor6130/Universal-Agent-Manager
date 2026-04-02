@@ -128,7 +128,7 @@ ProviderProfile ProviderProfileStore::DefaultGeminiProfile()
 	profile.interactive_command = "gemini";
 	profile.supports_interactive = false;
 	profile.supports_resume = true;
-	profile.resume_argument = "--resume";
+	profile.resume_argument = "-r";
 	profile.history_adapter = "gemini-cli-json";
 	profile.prompt_bootstrap = "gemini-at-path";
 	profile.prompt_bootstrap_path = "@.gemini/gemini.md";
@@ -151,7 +151,7 @@ std::vector<ProviderProfile> ProviderProfileStore::BuiltInProfiles()
 	gemini_cli.interactive_command = "gemini";
 	gemini_cli.supports_interactive = true;
 	gemini_cli.supports_resume = true;
-	gemini_cli.resume_argument = "--resume";
+	gemini_cli.resume_argument = "-r";
 	gemini_cli.history_adapter = "gemini-cli-json";
 	gemini_cli.prompt_bootstrap = "gemini-at-path";
 	gemini_cli.prompt_bootstrap_path = "@.gemini/gemini.md";

@@ -31,5 +31,6 @@ static void DrawMessageBubble(AppState& app, ChatSession& chat, const int messag
 		DrawSystemMessageBubble(message, layout);
 	}
 
-	EndChatBubbleRow(layout);
+	const float extra_bottom = (message.role == MessageRole::User) ? 26.0f : 0.0f;
+	EndChatBubbleRow(layout, extra_bottom);
 }
