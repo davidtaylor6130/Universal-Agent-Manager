@@ -1,17 +1,62 @@
 cmake_minimum_required(VERSION 3.20)
 
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  project(ollama_engine LANGUAGES C CXX)
+endif()
+
+set(_uam_default_fetch_llama ON)
+if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  set(_uam_default_fetch_llama OFF)
+endif()
+option(UAM_FETCH_LLAMA_CPP "Fetch pinned llama.cpp fork during configure." ${_uam_default_fetch_llama})
+
 set(UAM_OLLAMA_THIRD_PARTY_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party" CACHE PATH
   "Directory that stores local ollama_engine third-party source checkouts.")
+set(UAM_LLAMA_CPP_SOURCE_DIR "${UAM_OLLAMA_THIRD_PARTY_SOURCE_DIR}/llama.cpp-uam" CACHE PATH
+  "Path to a local llama.cpp fork source tree.")
 set(UAM_TREE_SITTER_SOURCE_DIR "${UAM_OLLAMA_THIRD_PARTY_SOURCE_DIR}/tree-sitter" CACHE PATH
   "Path to a local tree-sitter source tree.")
 set(UAM_TREE_SITTER_CPP_SOURCE_DIR "${UAM_OLLAMA_THIRD_PARTY_SOURCE_DIR}/tree-sitter-cpp" CACHE PATH
   "Path to a local tree-sitter-cpp source tree.")
 set(UAM_CPP_HTTPLIB_SOURCE_DIR "${UAM_OLLAMA_THIRD_PARTY_SOURCE_DIR}/cpp-httplib" CACHE PATH
   "Path to a local cpp-httplib source tree.")
+set(UAM_LLAMA_CPP_REPOSITORY "https://github.com/davidtaylor6130/llama.cpp-UAM-Fork.git" CACHE STRING
+  "Git repository URL for llama.cpp fork.")
+set(UAM_LLAMA_CPP_GIT_TAG "990e4d96980d0b016a2b07049cc9031642fb9903" CACHE STRING
+  "Pinned git commit for llama.cpp fork.")
 
 set(_uam_fetch_tree_sitter FALSE)
 set(_uam_fetch_tree_sitter_cpp FALSE)
 set(_uam_fetch_cpp_httplib FALSE)
+
+if(UAM_FETCH_LLAMA_CPP AND NOT TARGET llama)
+  set(GGML_CCACHE OFF CACHE BOOL "" FORCE)
+  set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+  set(LLAMA_BUILD_COMMON OFF CACHE BOOL "" FORCE)
+  set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+  set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+  set(LLAMA_TOOLS_INSTALL OFF CACHE BOOL "" FORCE)
+  set(LLAMA_TESTS_INSTALL OFF CACHE BOOL "" FORCE)
+  set(LLAMA_OPENSSL OFF CACHE BOOL "" FORCE)
+
+  include(FetchContent)
+  if(EXISTS "${UAM_LLAMA_CPP_SOURCE_DIR}/CMakeLists.txt")
+    add_subdirectory("${UAM_LLAMA_CPP_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/llama_cpp_uam")
+  else()
+    FetchContent_Declare(
+      llama_cpp_uam
+      GIT_REPOSITORY ${UAM_LLAMA_CPP_REPOSITORY}
+      GIT_TAG ${UAM_LLAMA_CPP_GIT_TAG}
+      GIT_SHALLOW TRUE
+      GIT_PROGRESS TRUE
+    )
+    FetchContent_MakeAvailable(llama_cpp_uam)
+    set(UAM_LLAMA_CPP_SOURCE_DIR "${llama_cpp_uam_SOURCE_DIR}" CACHE PATH
+      "Path to a local llama.cpp fork source tree." FORCE)
+  endif()
+endif()
 
 if(NOT EXISTS "${UAM_TREE_SITTER_SOURCE_DIR}/lib/src/lib.c")
   set(_uam_fetch_tree_sitter TRUE)

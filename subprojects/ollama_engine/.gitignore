@@ -1,0 +1,27 @@
+# Build outputs
+/build/
+/Builds/
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/compile_commands.json
+/CTestTestfile.cmake
+/Testing/
+/Makefile
+/install_manifest.txt
+/_deps/
+
+# Runtime/data outputs
+/models/
+/third_party/
+/evaluation/reference_repos/
+/.vectorised_rag/
+/.deterministic_rag/
+
+# IDE/system files
+/.vs/
+/.idea/
+.DS_Store
+
+# Misc local logs
+*.log

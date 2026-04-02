@@ -1,31 +1,77 @@
 # ollama_engine
 
-`ollama_engine` is the local model runtime subproject used by Universal Agent Manager (UAM).
+`ollama_engine` is a standalone C++ local-model runtime that powers Universal Agent Manager (UAM).
 
-It exposes a small engine API and a CLI for:
+It provides:
 
-- discovering local `.gguf` models
-- loading models and reporting lifecycle state
-- running prompt inference
-- returning response text + embedding payload
-- quick benchmark probes and file-based prompt tests
+- a small engine API for model discovery, load, inference, and lifecycle polling
+- CLI tools for chat, autotuning, benchmark probes, custom prompt tests, and evaluation suite runs
+- optional bridge server target for local integration workflows
 
-## Current Behavior (Latest)
+## Features
 
-This project now supports **real GGUF token inference** through llama.cpp when linked.
+- Recursive `.gguf` model discovery from a configurable model root.
+- Real llama.cpp-backed token inference when the `llama` target is available.
+- Deterministic embedding payload generation for stable tests and app behavior.
+- Built-in regression harness (`Question_N.txt` + expected answer files).
+- Evaluation suite that builds an indexed code corpus and runs deterministic RAG checks.
 
-- `Load()` opens a real `.gguf` model via llama.cpp.
-- `SendMessage()` tokenizes, decodes, samples tokens, and returns generated text.
-- Response text is post-processed to strip known reasoning markers/blocks.
+## Runtime Modes
 
-Important: there are two runtime modes depending on build linkage:
+- `UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP=1` (llama.cpp linked): real GGUF model load and generation.
+- llama.cpp not linked: engine still builds, but `Load()` fails with a linkage/configuration error.
 
-- **llama.cpp linked** (`UAM_OLLAMA_ENGINE_WITH_LLAMA_CPP=1`): real model load + generation.
-- **llama.cpp not linked**: no real inference path; `Load()` fails with a linkage/config error.
+## Requirements
+
+- CMake `>= 3.20`
+- C++20 compiler
+- SQLite3 development package
+- OpenSSL development package
+
+## Build (Standalone)
+
+Configure from this repository root:
+
+```bash
+cmake -S . -B build -DUAM_FETCH_LLAMA_CPP=ON
+```
+
+Build all runtime targets:
+
+```bash
+cmake --build build --target \
+  uam_ollama_engine_cli \
+  uam_ollama_engine_cli_finetune_wizard \
+  uam_ollama_engine_cli_auto_test \
+  uam_ollama_engine_cli_custom_tests \
+  uam_ollama_engine_cli_eval_suite \
+  uam_ollama_engine_bridge \
+  --config Release --parallel
+```
+
+## CLI Targets
+
+- `uam_ollama_engine_cli`: basic model load + chat loop (`/quit` to exit)
+- `uam_ollama_engine_cli_finetune_wizard`: interactive autotune wizard and profile/template persistence
+- `uam_ollama_engine_cli_auto_test`: built-in benchmark probes
+- `uam_ollama_engine_cli_custom_tests`: `Question_N`/answer folder regression tests
+- `uam_ollama_engine_cli_eval_suite`: deterministic LLM/RAG evaluation run
+
+Run examples:
+
+```bash
+./build/uam_ollama_engine_cli [model_folder]
+./build/uam_ollama_engine_cli_finetune_wizard [model_folder]
+./build/uam_ollama_engine_cli_auto_test [model_folder]
+./build/uam_ollama_engine_cli_custom_tests [model_folder] [tests_directory]
+./build/uam_ollama_engine_cli_eval_suite [model_folder] [evaluation_root]
+```
+
+If `[model_folder]` is omitted, each CLI defaults to `<current-working-directory>/models`.
 
 ## Public API
 
-Main interface:
+Primary methods:
 
 - `ListModels()`
 - `Load(model_name, error_out)`
@@ -39,230 +85,19 @@ Headers:
 - `include/ollama_engine/engine_factory.h`
 - `include/ollama_engine/engine_api.h`
 
-## Internal Layout
-
-- `src/internal/local_ollama_engine.cpp`
-  - local runtime implementation
-- `src/internal/embedding_utils.cpp`
-  - deterministic embedding helper
-- `src/ollama_engine_cli_common.cpp`
-  - truly shared CLI primitives (I/O helpers, model selection, prompt metrics, session bootstrap)
-- `src/ollama_engine_cli_tests.cpp`
-  - benchmark probes + Question_N custom test harness
-- `src/ollama_engine_cli_autotune.cpp`
-  - finetune/autotune wizard + profile/template persistence and matching
-- `src/ollama_engine_cli_modes.cpp`
-  - mode orchestration used by each CLI entrypoint
-- `src/ollama_engine_cli_main.cpp`
-  - basic load + chat executable entrypoint
-- `src/ollama_engine_cli_finetune_wizard_main.cpp`
-  - finetune/autotune wizard executable entrypoint
-- `src/ollama_engine_cli_auto_test_main.cpp`
-  - built-in benchmark auto-test executable entrypoint
-- `src/ollama_engine_cli_custom_tests_main.cpp`
-  - Question_N custom test executable entrypoint
-- `models/`
-  - local model storage used by this subproject
-
-## Model Discovery and Loading
-
-### Discovery rules
+## Model Discovery and Load Rules
 
 `ListModels()`:
 
 - scans recursively from configured model folder
-- includes only files with `.gguf` extension (case-insensitive)
+- includes only `.gguf` files (case-insensitive)
 - skips hidden files/folders (names starting with `.`)
-- returns sorted **relative paths** (not absolute)
+- returns sorted relative paths
 
-Example returned name from nested folder:
+`Load(model_name)` accepts:
 
-`NVIDIA-Nemotron-3-Nano-4B-GGUF/NVIDIA-Nemotron-3-Nano-4B-Q4_K_M.gguf`
-
-### Load rules
-
-`Load(model_name)` supports:
-
-- relative file path returned by `ListModels()`
-- directory path relative to model root (first discovered `.gguf` inside is selected)
-
-During load:
-
-- lifecycle becomes `Loading`
-- model/context/sampler are created with llama.cpp
-- lifecycle becomes `Loaded` on success
-
-## Generation Pipeline
-
-When llama.cpp is linked, `SendMessage()` does:
-
-1. Verifies model/context/sampler are loaded.
-2. Applies model chat template when available.
-3. Tokenizes prompt and trims prompt tokens to fit context if needed.
-4. Evaluates prompt tokens with `llama_decode`.
-5. Generates up to 256 tokens (default cap).
-6. Classifies sampled tokens as `Stop`, `Hidden`, or `Emit`.
-7. Uses retry + fallback strategy if first sampled token is stop-like.
-8. Strips known reasoning blocks/markers from output text.
-9. Returns text + embedding.
-
-Current defaults in code:
-
-- context tokens: `2048`
-- max generated tokens: `256`
-- GPU layers hint: `99`
-- sampler chain: `min_p(0.05)`, `temp(0.8)`, `dist(LLAMA_DEFAULT_SEED)`
-
-## Embeddings
-
-The embedding returned in `SendMessageResponse.pVecfEmbedding` is currently generated by local deterministic hashing (`embedding_utils.cpp`), not by model-native embedding inference.
-
-This is useful for stable app-level behavior/tests.
-
-## Lifecycle States
-
-`EngineLifecycleState` values:
-
-- `Idle`
-- `Loading`
-- `Loaded`
-- `Running`
-- `Finished`
-
-The engine updates these states during load and prompt generation so callers can poll progress.
-
-## CLI Usage
-
-CLI targets:
-
-From repository root:
-
-```bash
-cmake -S . -B Builds -DUAM_FETCH_DEPS=ON -DUAM_FETCH_LLAMA_CPP=ON
-cmake --build Builds --target \
-  uam_ollama_engine_cli \
-  uam_ollama_engine_cli_finetune_wizard \
-  uam_ollama_engine_cli_auto_test \
-  uam_ollama_engine_cli_custom_tests \
-  uam_ollama_engine_cli_eval_suite \
-  --config Release --parallel
-```
-
-Run one of:
-
-```bash
-./Builds/subprojects/ollama_engine/uam_ollama_engine_cli [model_folder]
-./Builds/subprojects/ollama_engine/uam_ollama_engine_cli_finetune_wizard [model_folder]
-./Builds/subprojects/ollama_engine/uam_ollama_engine_cli_auto_test [model_folder]
-./Builds/subprojects/ollama_engine/uam_ollama_engine_cli_custom_tests [model_folder] [tests_directory]
-./Builds/subprojects/ollama_engine/uam_ollama_engine_cli_eval_suite [model_folder] [evaluation_root]
-```
-
-If `[model_folder]` is omitted, each CLI uses `<current-working-directory>/models`.
-
-Modes:
-
-- `uam_ollama_engine_cli`: basic model load + chat loop (`/quit` to exit)
-- `uam_ollama_engine_cli_finetune_wizard`: interactive autotune wizard for finetuning profiles/templates
-- `uam_ollama_engine_cli_auto_test`: built-in benchmark probes for quick auto testing
-- `uam_ollama_engine_cli_custom_tests`: Question_N/Answer folder regression tests
-- `uam_ollama_engine_cli_eval_suite`: fetches C++ reference repos, builds an indexed corpus, runs 50 deterministic LLM/RAG evaluation tests, and prints one line per test as `Test N: TITLE (Pass/Fail)`
-
-## Auto Testing: Why It Matters
-
-You asked specifically about automated testing.
-
-This subproject is a contract boundary for the rest of UAM. If model listing, load semantics, lifecycle transitions, or payload format regress, UI/runtime code can break quickly. Auto tests are there to catch that early.
-
-### Layer 1: CI + CTest
-
-At repository level:
-
-- GitHub Actions build matrix runs on Linux/macOS/Windows.
-- CMake test target (`uam_core_tests`) is run through `ctest`.
-
-Why it helps:
-
-- catches cross-platform regressions
-- catches state-machine regressions
-- protects downstream UAM features that call this engine
-
-### Layer 2: CLI regression harness
-
-`uam_ollama_engine_cli_custom_tests [model_folder] [directory]` executes text-pair prompt checks:
-
-- `Question_N.txt`
-- `Question_N_Answer.txt` (or legacy `Question_N_Anser.txt`)
-
-Comparison is normalized loose text matching.
-
-Why it helps:
-
-- fast smoke checks after model/runtime changes
-- easy repeatable prompt validations without editing C++ test code
-
-## Adding `.gguf` Models (Recommended Workflow)
-
-This section is intentionally practical.
-
-### 1) Put model files anywhere under a chosen model root
-
-Recursive discovery is enabled, so both work:
-
-- `my_models/model.gguf`
-- `my_models/vendor/family/model.gguf`
-
-### 2) Use the model root when launching CLI
-
-```bash
-./Builds/subprojects/ollama_engine/uam_ollama_engine_cli /absolute/path/to/my_models
-```
-
-### 3) Select model by displayed relative path
-
-CLI will list relative model paths discovered under that root.
-
-### 4) Validate load and first prompt
-
-- select model
-- send short prompt
-- confirm generated response + metrics output
-
-### Your current example
-
-With the current repository content:
-
-```bash
-./Builds/subprojects/ollama_engine/uam_ollama_engine_cli \
-  ./subprojects/ollama_engine/models
-```
-
-This should list:
-
-`NVIDIA-Nemotron-3-Nano-4B-GGUF/NVIDIA-Nemotron-3-Nano-4B-Q4_K_M.gguf`
-
-## CMake Model Copy Behavior
-
-`subprojects/ollama_engine/CMakeLists.txt` creates `uam_ollama_engine_copy_models` (runs in `ALL`) and copies model assets to:
-
-- `Builds/models`
-- and next to each CLI target dir (`Builds/subprojects/ollama_engine/models`)
-
-This helps local runs, but explicit `model_folder` argument is still the most predictable way to run.
-
-## Troubleshooting
-
-- `No models found in folder ...`
-  - wrong folder path, no `.gguf` files found, or hidden-path filtering excluded files
-
-- `Failed to load model ... Failed to load GGUF model via llama.cpp ...`
-  - invalid/corrupt/incompatible gguf file
-
-- `llama.cpp is not linked. Reconfigure with UAM_FETCH_LLAMA_CPP=ON.`
-  - build was configured without llama target linkage
-
-- custom test runner reports no cases
-  - filenames do not match `Question_N.txt` + `Question_N_Answer.txt` (or `_Anser.txt`)
+- the relative file path returned by `ListModels()`
+- a directory path relative to model root (first discovered `.gguf` is selected)
 
 ## Minimal C++ Example
 
@@ -286,6 +121,34 @@ if (!models.empty()) {
 }
 ```
 
-## Summary
+## Repository Layout
 
-`ollama_engine` now provides real llama.cpp-backed GGUF inference when linked, plus recursive `.gguf` discovery, lifecycle polling, deterministic embeddings, and built-in regression tooling for safer iteration.
+- `include/ollama_engine/`: public headers
+- `src/internal/`: runtime implementation (`local_ollama_engine`, embeddings, deterministic hash, vectorised RAG)
+- `src/ollama_engine_cli_*.cpp`: CLI mode orchestration and entrypoints
+- `models/`: local model storage for development runs
+- `evaluation/`: indexed corpus assets and evaluation outputs
+
+## Integration Notes
+
+This repository can be consumed as a subdirectory dependency:
+
+```cmake
+add_subdirectory(path/to/ollama_engine)
+```
+
+If the parent project already defines a `llama` target, `ollama_engine` links against it automatically.
+
+## Troubleshooting
+
+- `No models found in folder ...`
+  - wrong folder path, no `.gguf` files, or hidden-path filtering excluded files
+- `Failed to load GGUF model via llama.cpp ...`
+  - invalid/corrupt/incompatible GGUF, or llama.cpp linkage not present
+- custom tests report no cases
+  - filenames must match `Question_N.txt` + `Question_N_Answer.txt` (legacy `_Anser.txt` is also accepted)
+
+## License
+
+Licensed under the Universal Agent Manager License (UAML) v1.0. See `LICENSE`.
+Originally created by David Taylor (davidtaylor6130).
