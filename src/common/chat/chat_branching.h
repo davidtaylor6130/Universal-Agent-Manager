@@ -1,6 +1,6 @@
 #pragma once
 
-#include "app_models.h"
+#include "common/models/app_models.h"
 
 #include <string>
 #include <vector>

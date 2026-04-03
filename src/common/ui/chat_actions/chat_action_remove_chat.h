@@ -5,10 +5,10 @@
 #include "app/persistence_coordinator.h"
 #include "app/provider_resolution_service.h"
 #include "app/runtime_orchestration_services.h"
-#include "common/app_paths.h"
-#include "common/chat_branching.h"
+#include "common/paths/app_paths.h"
+#include "common/chat/chat_branching.h"
 #include "common/platform/platform_services.h"
-#include "common/provider_runtime.h"
+#include "common/provider/provider_runtime.h"
 #include "common/runtime/terminal_common.h"
 #include "common/ui/chat_actions/chat_action_editing.h"
 

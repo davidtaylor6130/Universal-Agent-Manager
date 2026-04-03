@@ -1,4 +1,4 @@
-#include "app_paths.h"
+#include "common/paths/app_paths.h"
 
 #include <algorithm>
 #include <cctype>

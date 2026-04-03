@@ -1,4 +1,4 @@
-#include "vcs_workspace_service.h"
+#include "common/vcs/vcs_workspace_service.h"
 #include "common/platform/platform_services.h"
 #include "common/state/app_state.h"
 

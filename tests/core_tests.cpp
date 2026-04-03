@@ -1,16 +1,18 @@
-#include "common/app_models.h"
-#include "common/app_paths.h"
-#include "common/chat_branching.h"
-#include "common/chat_repository.h"
-#include "common/frontend_actions.h"
-#include "common/gemini_command_builder.h"
-#include "common/gemini_template_catalog.h"
-#include "common/provider_profile.h"
-#include "common/provider_runtime.h"
-#include "common/rag_index_service.h"
-#include "common/settings_store.h"
-#include "common/ollama_engine_client.h"
-#include "common/vcs_workspace_service.h"
+#include "common/models/app_models.h"
+#include "common/paths/app_paths.h"
+#include "common/chat/chat_branching.h"
+#include "common/chat/chat_repository.h"
+#include "common/config/frontend_actions.h"
+#include "common/provider/gemini/base/gemini_base_provider_runtime.h"
+#include "common/provider/gemini/base/gemini_command_builder.h"
+#include "common/provider/opencode/base/opencode_base_provider_runtime.h"
+#include "common/provider/markdown_template_catalog.h"
+#include "common/provider/provider_profile.h"
+#include "common/provider/provider_runtime.h"
+#include "common/rag/rag_index_service.h"
+#include "common/config/settings_store.h"
+#include "common/rag/ollama_engine_client.h"
+#include "common/vcs/vcs_workspace_service.h"
 
 #include <filesystem>
 #include <fstream>
@@ -970,7 +972,7 @@ UAM_TEST(TestVcsWorkspaceServiceAppliesOutputCapsAndTimeout)
 #endif
 }
 
-UAM_TEST(TestGeminiTemplateCatalogImportCollisionAndFiltering)
+UAM_TEST(TestMarkdownTemplateCatalogImportCollisionAndFiltering)
 {
 	TempDir global_root("uam-template-global-root");
 	TempDir source_a("uam-template-source-a");
@@ -986,19 +988,19 @@ UAM_TEST(TestGeminiTemplateCatalogImportCollisionAndFiltering)
 	std::string imported_a;
 	std::string imported_b;
 	std::string error;
-	UAM_ASSERT(GeminiTemplateCatalog::ImportMarkdownTemplate(global_root.root, file_a, &imported_a, &error));
-	UAM_ASSERT(GeminiTemplateCatalog::ImportMarkdownTemplate(global_root.root, file_b, &imported_b, &error));
+	UAM_ASSERT(MarkdownTemplateCatalog::ImportMarkdownTemplate(global_root.root, file_a, &imported_a, &error));
+	UAM_ASSERT(MarkdownTemplateCatalog::ImportMarkdownTemplate(global_root.root, file_b, &imported_b, &error));
 	UAM_ASSERT(imported_a != imported_b);
 
-	UAM_ASSERT(!GeminiTemplateCatalog::ImportMarkdownTemplate(global_root.root, non_markdown, nullptr, &error));
+	UAM_ASSERT(!MarkdownTemplateCatalog::ImportMarkdownTemplate(global_root.root, non_markdown, nullptr, &error));
 
-	const fs::path catalog_path = GeminiTemplateCatalog::CatalogPath(global_root.root);
+	const fs::path catalog_path = MarkdownTemplateCatalog::CatalogPath(global_root.root);
 	UAM_ASSERT(WriteTextFile(catalog_path / "not-a-template.txt", "ignored"));
 
-	const std::vector<TemplateCatalogEntry> entries = GeminiTemplateCatalog::List(global_root.root);
+	const std::vector<TemplateCatalogEntry> entries = MarkdownTemplateCatalog::List(global_root.root);
 	UAM_ASSERT_EQ(2u, entries.size());
-	UAM_ASSERT(GeminiTemplateCatalog::HasTemplate(global_root.root, imported_a));
-	UAM_ASSERT(GeminiTemplateCatalog::HasTemplate(global_root.root, imported_b));
+	UAM_ASSERT(MarkdownTemplateCatalog::HasTemplate(global_root.root, imported_a));
+	UAM_ASSERT(MarkdownTemplateCatalog::HasTemplate(global_root.root, imported_b));
 }
 
 UAM_TEST(TestGeminiCommandBuilderInteractiveArgvIncludesResumeAndFlags)
@@ -1238,6 +1240,22 @@ UAM_TEST(TestProviderRuntimeRegistryMapsBuiltInIds)
 	}
 
 	UAM_ASSERT(!ProviderRuntimeRegistry::IsKnownRuntimeId("custom-runtime"));
+}
+
+UAM_TEST(TestProviderRuntimeFamilyBaseTypes)
+{
+	const IProviderRuntime& gemini_cli = ProviderRuntimeRegistry::ResolveById("gemini-cli");
+	const IProviderRuntime& gemini_structured = ProviderRuntimeRegistry::ResolveById("gemini-structured");
+	const IProviderRuntime& opencode_cli = ProviderRuntimeRegistry::ResolveById("opencode-cli");
+	const IProviderRuntime& opencode_local = ProviderRuntimeRegistry::ResolveById("opencode-local");
+	const IProviderRuntime& codex = ProviderRuntimeRegistry::ResolveById("codex-cli");
+
+	UAM_ASSERT(dynamic_cast<const GeminiBaseProviderRuntime*>(&gemini_cli) != nullptr);
+	UAM_ASSERT(dynamic_cast<const GeminiBaseProviderRuntime*>(&gemini_structured) != nullptr);
+	UAM_ASSERT(dynamic_cast<const OpenCodeBaseProviderRuntime*>(&opencode_cli) != nullptr);
+	UAM_ASSERT(dynamic_cast<const OpenCodeBaseProviderRuntime*>(&opencode_local) != nullptr);
+	UAM_ASSERT(dynamic_cast<const GeminiBaseProviderRuntime*>(&codex) == nullptr);
+	UAM_ASSERT(dynamic_cast<const OpenCodeBaseProviderRuntime*>(&codex) == nullptr);
 }
 
 UAM_TEST(TestProviderRuntimeBuildToggleReporting)

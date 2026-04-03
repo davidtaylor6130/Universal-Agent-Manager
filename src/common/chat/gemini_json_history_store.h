@@ -1,7 +1,7 @@
 #pragma once
 
-#include "app_models.h"
-#include "provider_profile.h"
+#include "common/models/app_models.h"
+#include "common/provider/provider_profile.h"
 
 #include <cstddef>
 #include <cstdint>

@@ -1,4 +1,4 @@
-#include "ollama_engine_client.h"
+#include "common/rag/ollama_engine_client.h"
 
 #include <algorithm>
 #include <fstream>

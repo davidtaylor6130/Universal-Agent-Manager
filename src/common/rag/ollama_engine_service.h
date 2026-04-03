@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ollama_engine_client.h"
+#include "common/rag/ollama_engine_client.h"
 
 /// <summary>
 /// Process-local singleton for the shared Ollama engine client.

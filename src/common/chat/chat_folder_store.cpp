@@ -1,4 +1,4 @@
-#include "chat_folder_store.h"
+#include "common/chat/chat_folder_store.h"
 
 #include <fstream>
 #include <sstream>

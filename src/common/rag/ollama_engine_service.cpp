@@ -1,4 +1,4 @@
-#include "ollama_engine_service.h"
+#include "common/rag/ollama_engine_service.h"
 
 OllamaEngineService& OllamaEngineService::Instance()
 {

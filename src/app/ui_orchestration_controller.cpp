@@ -6,7 +6,7 @@
 #include <imgui.h>
 #include <misc/cpp/imgui_stdlib.h>
 
-#include "common/markdown_template_catalog.h"
+#include "common/provider/markdown_template_catalog.h"
 #include "common/runtime/terminal_common.h"
 #include "common/ui/ui_sections.h"
 

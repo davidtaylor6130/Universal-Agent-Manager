@@ -4,7 +4,7 @@
 #include "app/persistence_coordinator.h"
 #include "app/provider_resolution_service.h"
 #include "common/constants/app_constants.h"
-#include "common/chat_branching.h"
+#include "common/chat/chat_branching.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/terminal_common.h"
 

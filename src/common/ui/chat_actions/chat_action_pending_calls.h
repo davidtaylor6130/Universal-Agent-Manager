@@ -5,7 +5,7 @@
 #include "app/provider_profile_migration_service.h"
 #include "app/provider_resolution_service.h"
 #include "app/runtime_orchestration_services.h"
-#include "common/chat_branching.h"
+#include "common/chat/chat_branching.h"
 #include "common/provider/provider_runtime.h"
 
 /// <summary>

@@ -1,6 +1,6 @@
-#include "chat_repository.h"
+#include "common/chat/chat_repository.h"
 
-#include "app_paths.h"
+#include "common/paths/app_paths.h"
 
 #include <algorithm>
 #include <chrono>

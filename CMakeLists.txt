@@ -293,13 +293,24 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/chat/chat_branching.cpp
   src/common/config/settings_store.cpp
   src/common/utils/command_line_words.cpp
-  src/common/provider/gemini_command_builder.cpp
-  src/common/provider/gemini_history_loader.cpp
+  src/common/provider/gemini/base/gemini_command_builder.cpp
+  src/common/provider/gemini/base/gemini_history_loader.cpp
+  src/common/provider/gemini/base/gemini_base_provider_runtime.cpp
+  src/common/provider/gemini/cli/gemini_cli_provider_runtime.cpp
+  src/common/provider/gemini/structured/gemini_structured_provider_runtime.cpp
   src/common/provider/markdown_template_catalog.cpp
   src/common/config/frontend_actions.cpp
   src/common/provider/provider_profile.cpp
-  src/common/provider/provider_runtime.cpp
-  src/common/runtime/opencode_bridge_runtime.cpp
+  src/common/provider/runtime/provider_runtime_facade.cpp
+  src/common/provider/runtime/provider_runtime_registry.cpp
+  src/common/provider/codex/cli/codex_cli_provider_runtime.cpp
+  src/common/provider/claude/cli/claude_cli_provider_runtime.cpp
+  src/common/provider/opencode/base/opencode_base_provider_runtime.cpp
+  src/common/provider/opencode/cli/opencode_cli_provider_runtime.cpp
+  src/common/provider/opencode/local/opencode_local_provider_runtime.cpp
+  src/common/provider/opencode/local/opencode_local_bridge_service.cpp
+  src/common/provider/ollama/structured/ollama_engine_provider_runtime.cpp
+  src/common/provider/custom/unknown_provider_runtime.cpp
   src/common/runtime/local_engine_runtime_service.cpp
   src/common/runtime/provider_cli_compatibility_service.cpp
   src/common/platform/platform_services.cpp
@@ -308,7 +319,6 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/rag/rag_index_service.cpp
   src/common/rag/ollama_engine_client.cpp
   src/common/rag/ollama_engine_service.cpp
-  src/common/provider/provider_profiles.cpp
 )
 target_include_directories(universal_agent_manager
   PRIVATE
@@ -381,21 +391,31 @@ if(UAM_BUILD_TESTS)
     src/common/paths/app_paths.cpp
     src/common/config/frontend_actions.cpp
     src/common/utils/command_line_words.cpp
-    src/common/provider/gemini_command_builder.cpp
-    src/common/provider/gemini_history_loader.cpp
+    src/common/provider/gemini/base/gemini_command_builder.cpp
+    src/common/provider/gemini/base/gemini_history_loader.cpp
+    src/common/provider/gemini/base/gemini_base_provider_runtime.cpp
+    src/common/provider/gemini/cli/gemini_cli_provider_runtime.cpp
+    src/common/provider/gemini/structured/gemini_structured_provider_runtime.cpp
     src/common/provider/markdown_template_catalog.cpp
     src/common/chat/chat_repository.cpp
       src/common/chat/gemini_json_history_store.cpp
     src/common/chat/chat_branching.cpp
     src/common/provider/provider_profile.cpp
-    src/common/provider/provider_runtime.cpp
+    src/common/provider/runtime/provider_runtime_facade.cpp
+    src/common/provider/runtime/provider_runtime_registry.cpp
+    src/common/provider/codex/cli/codex_cli_provider_runtime.cpp
+    src/common/provider/claude/cli/claude_cli_provider_runtime.cpp
+    src/common/provider/opencode/base/opencode_base_provider_runtime.cpp
+    src/common/provider/opencode/cli/opencode_cli_provider_runtime.cpp
+    src/common/provider/opencode/local/opencode_local_provider_runtime.cpp
+    src/common/provider/ollama/structured/ollama_engine_provider_runtime.cpp
+    src/common/provider/custom/unknown_provider_runtime.cpp
     src/common/config/settings_store.cpp
     src/common/platform/platform_services.cpp
     src/common/vcs/vcs_workspace_service.cpp
     src/common/rag/rag_index_service.cpp
     src/common/rag/ollama_engine_client.cpp
     src/common/rag/ollama_engine_service.cpp
-    src/common/provider/provider_profiles.cpp
   )
   target_include_directories(uam_core_tests
     PRIVATE

@@ -1,6 +1,6 @@
 #include "local_engine_runtime_service.h"
 
-#include "common/ollama_engine_service.h"
+#include "common/rag/ollama_engine_service.h"
 
 namespace
 {

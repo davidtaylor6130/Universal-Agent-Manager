@@ -1,6 +1,6 @@
 #include "platform_services.h"
 
-#include "common/app_paths.h"
+#include "common/paths/app_paths.h"
 #include "common/platform/sdl_includes.h"
 #include "common/state/app_state.h"
 

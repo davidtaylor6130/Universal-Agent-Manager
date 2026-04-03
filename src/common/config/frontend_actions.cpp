@@ -1,4 +1,4 @@
-#include "frontend_actions.h"
+#include "common/config/frontend_actions.h"
 
 #include <algorithm>
 #include <cctype>

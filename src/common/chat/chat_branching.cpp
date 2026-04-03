@@ -1,4 +1,4 @@
-#include "chat_branching.h"
+#include "common/chat/chat_branching.h"
 
 #include <unordered_map>
 #include <unordered_set>

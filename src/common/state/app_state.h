@@ -2,13 +2,13 @@
 
 #include <vterm.h>
 
-#include "common/app_models.h"
-#include "common/frontend_actions.h"
+#include "common/models/app_models.h"
+#include "common/config/frontend_actions.h"
 #include "common/platform/platform_state_fields.h"
-#include "common/provider_profile.h"
-#include "common/rag_index_service.h"
+#include "common/provider/provider_profile.h"
+#include "common/rag/rag_index_service.h"
 #include "common/runtime/local_engine_runtime_service.h"
-#include "common/vcs_workspace_service.h"
+#include "common/vcs/vcs_workspace_service.h"
 
 #include <atomic>
 #include <deque>

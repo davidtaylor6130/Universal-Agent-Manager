@@ -9,9 +9,9 @@
 #include "app/runtime_local_service.h"
 #include "app/template_runtime_service.h"
 
-#include "common/app_paths.h"
-#include "common/chat_branching.h"
-#include "common/chat_repository.h"
+#include "common/paths/app_paths.h"
+#include "common/chat/chat_branching.h"
+#include "common/chat/chat_repository.h"
 #include "common/platform/platform_services.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/json_runtime.h"

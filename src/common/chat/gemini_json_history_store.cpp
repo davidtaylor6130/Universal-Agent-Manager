@@ -1,6 +1,6 @@
-#include "gemini_json_history_store.h"
+#include "common/chat/gemini_json_history_store.h"
 
-#include "provider_runtime.h"
+#include "common/provider/provider_runtime.h"
 #include "runtime/json_runtime.h"
 
 #include <chrono>

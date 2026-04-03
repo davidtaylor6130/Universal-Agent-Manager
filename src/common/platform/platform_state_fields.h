@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common/app_models.h"
+#include "common/models/app_models.h"
 
 #include <atomic>
 #include <memory>

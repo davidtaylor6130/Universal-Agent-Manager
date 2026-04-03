@@ -2,7 +2,7 @@
 
 #include "app/application_core_helpers.h"
 
-#include "common/runtime/local_bridge_runtime.h"
+#include "common/provider/opencode/local/opencode_local_bridge_service.h"
 
 #include <algorithm>
 
@@ -71,13 +71,12 @@ bool RuntimeLocalService::RestartLocalBridgeIfModelChanged(uam::AppState& app, s
 	}
 
 	const std::string desired_requested_model = Trim(app.settings.selected_model_id);
-	LocalBridgeRuntime bridge_runtime;
+	OpenCodeLocalBridgeService bridge_runtime;
 	return bridge_runtime.EnsureRunning(app, desired_model_folder_norm, desired_requested_model, error_out);
 }
 
 void RuntimeLocalService::StopLocalBridge(uam::AppState& app) const
 {
-	LocalBridgeRuntime bridge_runtime;
+	OpenCodeLocalBridgeService bridge_runtime;
 	bridge_runtime.Stop(app, true);
 }
-

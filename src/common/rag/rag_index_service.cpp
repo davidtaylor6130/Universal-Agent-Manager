@@ -1,7 +1,7 @@
-#include "rag_index_service.h"
+#include "common/rag/rag_index_service.h"
 
-#include "ollama_engine_client.h"
-#include "ollama_engine_service.h"
+#include "common/rag/ollama_engine_client.h"
+#include "common/rag/ollama_engine_service.h"
 
 #include <algorithm>
 #include <cctype>

@@ -72,10 +72,12 @@ flowchart TB
     RUNTIME["ProviderRuntime"]
     REGISTRY["ProviderRuntimeRegistry"]
     IPR["IProviderRuntime"]
+    GBASE["GeminiBaseProviderRuntime"]
     GSTRUCT["GeminiStructuredProviderRuntime\n(gemini-structured)"]
     GCLI["GeminiCliProviderRuntime\n(gemini-cli)"]
     CODEX["CodexCliProviderRuntime\n(codex-cli)"]
     CLAUDE["ClaudeCliProviderRuntime\n(claude-cli)"]
+    OC_BASE["OpenCodeBaseProviderRuntime"]
     OPENCODE["OpenCodeCliProviderRuntime\n(opencode-cli)"]
     OPLocal["OpenCodeLocalProviderRuntime\n(opencode-local)"]
     OLLAMA_RT["OllamaEngineProviderRuntime\n(ollama-engine)"]
@@ -89,6 +91,12 @@ flowchart TB
     REGISTRY --> OPLocal
     REGISTRY --> OLLAMA_RT
     REGISTRY --> UNKNOWN
+    GBASE --> IPR
+    GSTRUCT --> GBASE
+    GCLI --> GBASE
+    OC_BASE --> IPR
+    OPENCODE --> OC_BASE
+    OPLocal --> OC_BASE
   end
 
   subgraph HISTORY["History + Persistence"]
@@ -186,10 +194,12 @@ flowchart TB
 
   subgraph RUNTIME_CLASSES["Provider Runtime Interface + Implementations"]
     IPR["IProviderRuntime (interface)"]
+    GBASE["GeminiBaseProviderRuntime"]
     GSTRUCT["GeminiStructuredProviderRuntime"]
     GCLI["GeminiCliProviderRuntime"]
     CODEX["CodexCliProviderRuntime"]
     CLAUDE["ClaudeCliProviderRuntime"]
+    OC_BASE["OpenCodeBaseProviderRuntime"]
     OC_CLI["OpenCodeCliProviderRuntime"]
     OC_LOCAL["OpenCodeLocalProviderRuntime"]
     OLLAMA_RT["OllamaEngineProviderRuntime"]
@@ -202,12 +212,14 @@ flowchart TB
     PREGISTRY --> OC_LOCAL
     PREGISTRY --> OLLAMA_RT
     PREGISTRY --> UNKNOWN_RT
-    GSTRUCT -. "implements" .-> IPR
-    GCLI -. "implements" .-> IPR
+    GBASE -. "implements" .-> IPR
+    GSTRUCT -. "inherits" .-> GBASE
+    GCLI -. "inherits" .-> GBASE
     CODEX -. "implements" .-> IPR
     CLAUDE -. "implements" .-> IPR
-    OC_CLI -. "implements" .-> IPR
-    OC_LOCAL -. "implements" .-> IPR
+    OC_BASE -. "implements" .-> IPR
+    OC_CLI -. "inherits" .-> OC_BASE
+    OC_LOCAL -. "inherits" .-> OC_BASE
     OLLAMA_RT -. "implements" .-> IPR
     UNKNOWN_RT -. "implements" .-> IPR
   end

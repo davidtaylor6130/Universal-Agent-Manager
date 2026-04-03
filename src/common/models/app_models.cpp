@@ -1,4 +1,4 @@
-#include "app_models.h"
+#include "common/models/app_models.h"
 
 std::string RoleToString(const MessageRole role)
 {

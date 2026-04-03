@@ -2,7 +2,7 @@
 
 #include <imgui.h>
 
-#include "common/app_paths.h"
+#include "common/paths/app_paths.h"
 #include "common/platform/platform_services.h"
 
 #include <algorithm>

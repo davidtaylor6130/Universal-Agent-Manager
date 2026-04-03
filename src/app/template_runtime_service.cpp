@@ -2,7 +2,7 @@
 
 #include "app/application_core_helpers.h"
 
-#include "common/markdown_template_catalog.h"
+#include "common/provider/markdown_template_catalog.h"
 #include "common/platform/platform_services.h"
 
 namespace fs = std::filesystem;

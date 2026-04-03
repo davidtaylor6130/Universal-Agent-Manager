@@ -7,9 +7,9 @@
 #include "app/persistence_coordinator.h"
 #include "app/provider_profile_migration_service.h"
 #include "app/provider_resolution_service.h"
-#include "common/chat_folder_store.h"
+#include "common/chat/chat_folder_store.h"
 #include "common/constants/app_constants.h"
-#include "common/provider_runtime.h"
+#include "common/provider/provider_runtime.h"
 #include "common/runtime/terminal_common.h"
 
 /// <summary>
