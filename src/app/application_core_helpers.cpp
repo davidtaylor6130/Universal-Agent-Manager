@@ -137,18 +137,13 @@ bool WriteTextFile(const fs::path& p_path, const std::string& p_content)
 	return l_out.good();
 }
 
-fs::path ExpandLeadingTildePath(const std::string& p_rawPath)
-{
-	return PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(p_rawPath);
-}
-
 fs::path ResolvePromptProfileRootPath(const AppSettings& p_settings)
 {
-	fs::path l_candidate = ExpandLeadingTildePath(p_settings.prompt_profile_root_path);
+	fs::path l_candidate = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(p_settings.prompt_profile_root_path);
 
 	if (l_candidate.empty())
 	{
-		l_candidate = ExpandLeadingTildePath(p_settings.gemini_global_root_path);
+		l_candidate = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(p_settings.gemini_global_root_path);
 	}
 
 	if (!l_candidate.empty())
@@ -165,7 +160,7 @@ fs::path ResolveWorkspaceRootPath(const AppState& p_app, const ChatSession& p_ch
 
 	if (const ChatFolder* lcp_folder = FindFolderByIdForRag(p_app, p_chat.folder_id); lcp_folder != nullptr)
 	{
-		l_workspaceRoot = ExpandLeadingTildePath(lcp_folder->directory);
+		l_workspaceRoot = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(lcp_folder->directory);
 	}
 
 	if (l_workspaceRoot.empty())
@@ -399,7 +394,7 @@ bool BuildRagTokenCappedStagingTree(const std::filesystem::path& p_sourceRoot, c
 
 fs::path ResolveProjectRagSourceRoot(const AppState& p_app, const fs::path& p_fallbackSourceRoot)
 {
-	fs::path l_sourceRoot = ExpandLeadingTildePath(p_app.settings.rag_project_source_directory);
+	fs::path l_sourceRoot = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(p_app.settings.rag_project_source_directory);
 
 	if (l_sourceRoot.empty())
 	{
@@ -437,7 +432,7 @@ std::vector<fs::path> ResolveRagSourceRootsForChat(const AppState& p_app, const 
 
 	for (const std::string& l_rawSource : p_chat.rag_source_directories)
 	{
-		fs::path l_sourceRoot = NormalizeAbsolutePath(ExpandLeadingTildePath(l_rawSource));
+		fs::path l_sourceRoot = NormalizeAbsolutePath(PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(l_rawSource));
 
 		if (l_sourceRoot.empty())
 		{
@@ -534,7 +529,7 @@ bool ChatHasRagSourceDirectory(const ChatSession& p_chat, const fs::path& p_sour
 
 	for (const std::string& l_existingSource : p_chat.rag_source_directories)
 	{
-		const fs::path l_existingPath = NormalizeAbsolutePath(ExpandLeadingTildePath(l_existingSource));
+		const fs::path l_existingPath = NormalizeAbsolutePath(PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(l_existingSource));
 
 		if (!l_existingPath.empty() && l_existingPath.generic_string() == l_candidateKey)
 		{
@@ -586,7 +581,7 @@ bool RemoveChatRagSourceDirectory(ChatSession& p_chat, const fs::path& p_sourceR
 
 	for (std::size_t l_i = 0; l_i < p_chat.rag_source_directories.size(); ++l_i)
 	{
-		const fs::path l_existing = NormalizeAbsolutePath(ExpandLeadingTildePath(p_chat.rag_source_directories[l_i]));
+		const fs::path l_existing = NormalizeAbsolutePath(PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(p_chat.rag_source_directories[l_i]));
 
 		if (!l_existing.empty() && l_existing.generic_string() == l_removeKey)
 		{
@@ -641,7 +636,7 @@ bool DirectoryContainsGguf(const fs::path& p_directory)
 fs::path ResolveRagModelFolder(const AppState& p_app, const AppSettings* p_settingsOverride)
 {
 	const AppSettings& l_settings = (p_settingsOverride != nullptr) ? *p_settingsOverride : p_app.settings;
-	const fs::path l_configuredModelFolder = NormalizeAbsolutePath(ExpandLeadingTildePath(l_settings.models_folder_directory));
+	const fs::path l_configuredModelFolder = NormalizeAbsolutePath(PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(l_settings.models_folder_directory));
 
 	if (!l_configuredModelFolder.empty())
 	{
@@ -659,7 +654,7 @@ fs::path ResolveRagModelFolder(const AppState& p_app, const AppSettings* p_setti
 
 		if (!l_value.empty())
 		{
-			l_candidates.push_back(ExpandLeadingTildePath(l_value));
+			l_candidates.push_back(PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(l_value));
 		}
 	}
 

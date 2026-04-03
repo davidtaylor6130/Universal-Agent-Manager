@@ -3,32 +3,16 @@
 
 
 #include "common/state/app_state.h"
-#include "common/platform/sdl_includes.h"
 
+#include <filesystem>
 #include <string>
+#include <vector>
 
-class TerminalSessionManager
+enum class TemplatePreflightOutcome
 {
-  public:
-	bool ForwardEscapeToSelectedTerminal(uam::AppState& p_app, const SDL_Event& p_event) const;
-	void MarkSelectedTerminalForLaunch(uam::AppState& p_app) const;
-	void StopAllTerminals(uam::AppState& p_app, bool p_clearIdentity = true) const;
-	void FastStopTerminalsForExit(uam::AppState& p_app) const;
-};
-
-class TerminalPollingService
-{
-  public:
-	void PollAllTerminals(uam::AppState& p_app) const;
-};
-
-class PendingRuntimeCallService
-{
-  public:
-	void Poll(uam::AppState& p_app) const;
-	bool HasPendingCallForChat(const uam::AppState& p_app, const std::string& p_chatId) const;
-	bool HasAnyPendingCall(const uam::AppState& p_app) const;
-	const PendingRuntimeCall* FirstPendingCallForChat(const uam::AppState& p_app, const std::string& p_chatId) const;
+	ReadyWithTemplate,
+	ReadyWithoutTemplate,
+	BlockingError
 };
 
 class ProviderRequestService
@@ -39,12 +23,34 @@ class ProviderRequestService
 	                        ChatSession& p_chat,
 	                        const std::string& p_prompt,
 	                        bool p_templateControlMessage = false) const;
+	TemplatePreflightOutcome PreflightWorkspaceTemplateForChat(uam::AppState& p_app,
+	                                                          const ProviderProfile& p_provider,
+	                                                          const ChatSession& p_chat,
+	                                                          std::string* p_bootstrapPromptOut = nullptr,
+	                                                          std::string* p_statusOut = nullptr) const;
 };
 
 class ChatHistorySyncService
 {
   public:
 	void RefreshChatHistory(uam::AppState& p_app) const;
+	std::vector<ChatSession> LoadNativeSessionChats(const std::filesystem::path& p_chatsDir,
+	                                                const ProviderProfile& p_provider) const;
+	void RefreshNativeSessionDirectory(uam::AppState& p_app) const;
+	bool StartAsyncNativeChatLoad(uam::AppState& p_app) const;
+	bool TryConsumeAsyncNativeChatLoad(uam::AppState& p_app,
+	                                   std::vector<ChatSession>& p_chatsOut,
+	                                   std::string& p_errorOut) const;
+	std::vector<std::string> SessionIdsFromChats(const std::vector<ChatSession>& p_chats) const;
+	bool PersistLocalDraftNativeSessionLink(const uam::AppState& p_app,
+	                                        ChatSession& p_localChat,
+	                                        const std::string& p_nativeSessionId) const;
+	std::string ResolveResumeSessionIdForChat(const uam::AppState& p_app, const ChatSession& p_chat) const;
+	void ApplyLocalOverrides(uam::AppState& p_app, std::vector<ChatSession>& p_nativeChats) const;
+	bool TruncateNativeSessionFromDisplayedMessage(const uam::AppState& p_app,
+	                                               const ChatSession& p_chat,
+	                                               int p_displayedMessageIndex,
+	                                               std::string* p_errorOut) const;
 };
 
 #endif // UAM_APP_RUNTIME_ORCHESTRATION_SERVICES_H

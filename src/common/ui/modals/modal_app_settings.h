@@ -30,7 +30,7 @@ inline void DrawAppSettingsModal(AppState& app, const float platform_scale)
 		initialized = true;
 		ImGui::OpenPopup("app_settings_popup");
 		app.open_app_settings_popup = false;
-		GetProviderCliCompatibilityService().StartVersionCheck(app, true);
+		ProviderCliCompatibilityService().StartVersionCheck(app, true);
 	}
 
 	if (ImGui::BeginPopupModal("app_settings_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
@@ -46,10 +46,10 @@ inline void DrawAppSettingsModal(AppState& app, const float platform_scale)
 
 			draft_settings.ui_theme = NormalizeThemeChoice(draft_settings.ui_theme);
 			initialized = true;
-			GetProviderCliCompatibilityService().StartVersionCheck(app, false);
+			ProviderCliCompatibilityService().StartVersionCheck(app, false);
 		}
 
-		RefreshTemplateCatalog(app);
+		TemplateRuntimeService().RefreshTemplateCatalog(app);
 
 		ImGui::TextColored(ui::kTextPrimary, "Application Settings");
 		ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
@@ -69,7 +69,7 @@ inline void DrawAppSettingsModal(AppState& app, const float platform_scale)
 		DrawSoftDivider();
 		const ProviderProfile* active_profile = ProviderProfileStore::FindById(app.provider_profiles, draft_settings.active_provider_id);
 
-		if (active_profile != nullptr && IsNativeHistoryProviderId(active_profile->id))
+		if (active_profile != nullptr && ProviderProfileMigrationService().IsNativeHistoryProviderId(active_profile->id))
 		{
 			DrawAppSettingsCompatibilitySection(app);
 		}

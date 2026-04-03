@@ -14,7 +14,7 @@
 inline void DrawLeftPane(AppState& app)
 {
 	BeginPanel("left_sidebar", ImVec2(0.0f, 0.0f), PanelTone::Secondary, true, 0, ImVec2(ui::kSpace12, ui::kSpace12));
-	EnsureNewChatFolderSelection(app);
+	ChatDomainService().EnsureNewChatFolderSelection(app);
 
 	DrawChatSidebarHeader(app);
 

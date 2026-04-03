@@ -113,7 +113,7 @@ inline void EndPanel()
 inline bool DrawButton(const char* label, const ImVec2& size, const ButtonKind kind)
 {
 	const bool light = IsLightPaletteActive();
-	const float spacing_scale = PlatformUiSpacingScale();
+	const float spacing_scale = PlatformServicesFactory::Instance().ui_traits.PlatformUiSpacingScale();
 	const ImVec2 scaled_size = ScaleUiSize(size);
 	const float scaled_rounding = ScaleUiLength(ui::kRadiusSmall);
 	const ImVec2 frame_padding(ScaleUiLength(13.0f * spacing_scale), ScaleUiLength(7.5f * spacing_scale));

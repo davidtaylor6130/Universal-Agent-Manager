@@ -17,7 +17,7 @@ inline void DrawAppSettingsTemplatesSection(AppState& app, AppSettings& draft_se
 
 	PopInputChrome();
 	ImGui::TextColored(ui::kTextMuted, "Catalog folder: <root>/Markdown_Templates");
-	const std::string current_default_template = TemplateLabelOrFallback(app, app.settings.default_prompt_profile_id);
+	const std::string current_default_template = TemplateRuntimeService().TemplateLabelOrFallback(app, app.settings.default_prompt_profile_id);
 	ImGui::TextColored(ui::kTextMuted, "Current default: %s", current_default_template.c_str());
 
 	if (DrawButton("Open Markdown Template Manager", ImVec2(264.0f, 30.0f), ButtonKind::Ghost))

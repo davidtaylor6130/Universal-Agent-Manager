@@ -18,7 +18,7 @@ inline void DrawRagConsoleModal(AppState& app)
 		return;
 	}
 
-	const ChatSession* selected_chat = SelectedChat(app);
+	const ChatSession* selected_chat = ChatDomainService().SelectedChat(app);
 	const bool has_selected_chat = (selected_chat != nullptr);
 	const fs::path selected_chat_workspace = has_selected_chat ? ResolveWorkspaceRootPath(app, *selected_chat) : fs::path{};
 	const fs::path fallback_source_root = ResolveCurrentRagFallbackSourceRoot(app);

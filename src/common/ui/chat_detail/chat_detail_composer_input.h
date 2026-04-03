@@ -110,7 +110,7 @@ inline void DrawInputContainer(AppState& app, ChatSession& chat)
 
 		if (DrawButton("\xe2\x86\x91", ImVec2(send_btn_w, chip_h), ButtonKind::Accent))
 		{
-			StartGeminiRequest(app);
+			ProviderRequestService().StartSelectedChatRequest(app);
 		}
 
 		if (!can_send)
@@ -151,7 +151,7 @@ inline void DrawInputContainer(AppState& app, ChatSession& chat)
 
 		for (const std::string& selected_source : chat.rag_source_directories)
 		{
-			append_unique_path(candidate_folders, ExpandLeadingTildePath(selected_source));
+			append_unique_path(candidate_folders, PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(selected_source));
 		}
 
 		std::sort(candidate_folders.begin(), candidate_folders.end(), [](const fs::path& lhs, const fs::path& rhs) { return lhs.generic_string() < rhs.generic_string(); });
@@ -221,7 +221,7 @@ inline void DrawInputContainer(AppState& app, ChatSession& chat)
 
 			for (std::size_t i = 0; i < chat.rag_source_directories.size(); ++i)
 			{
-				const fs::path source_root = NormalizeAbsolutePath(ExpandLeadingTildePath(chat.rag_source_directories[i]));
+				const fs::path source_root = NormalizeAbsolutePath(PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(chat.rag_source_directories[i]));
 				const std::string source_display = source_root.string();
 				const std::string database_name = RagDatabaseNameForSourceRoot(app.settings, source_root);
 
@@ -306,7 +306,7 @@ inline void DrawInputContainer(AppState& app, ChatSession& chat)
 	// Ctrl+Enter shortcut
 	if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && ImGui::IsKeyPressed(ImGuiKey_Enter) && ImGui::GetIO().KeyCtrl && !HasPendingCallForChat(app, chat.id))
 	{
-		StartGeminiRequest(app);
+		ProviderRequestService().StartSelectedChatRequest(app);
 	}
 
 	EndPanel();

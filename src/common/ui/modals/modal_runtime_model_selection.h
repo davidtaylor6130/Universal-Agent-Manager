@@ -101,7 +101,7 @@ inline void DrawRuntimeModelSelectionModal(AppState& app)
 		app.settings.selected_model_id = Trim(app.runtime_model_selection_id);
 		std::string load_error;
 
-		if (!EnsureLocalRuntimeModelLoaded(app, &load_error))
+		if (!RuntimeLocalService().EnsureLocalRuntimeModelLoaded(app, &load_error))
 		{
 			app.status_line = "Local runtime model load failed: " + (load_error.empty() ? std::string("unknown error") : load_error);
 		}

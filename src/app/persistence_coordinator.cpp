@@ -5,7 +5,7 @@
 #include "common/app_paths.h"
 #include "common/chat_folder_store.h"
 #include "common/frontend_actions.h"
-#include "common/local_chat_store.h"
+#include "common/chat_repository.h"
 #include "common/platform/platform_services.h"
 #include "common/provider_profile.h"
 
@@ -54,26 +54,6 @@ std::string PersistenceCoordinator::ExecuteCommandCaptureOutput(const std::strin
 	return output;
 }
 
-fs::path PersistenceCoordinator::SettingsFilePath(const AppState& app) const
-{
-	return AppPaths::SettingsFilePath(app.data_root);
-}
-
-fs::path PersistenceCoordinator::ChatsRootPath(const AppState& app) const
-{
-	return AppPaths::ChatsRootPath(app.data_root);
-}
-
-fs::path PersistenceCoordinator::ChatPath(const AppState& app, const ChatSession& chat) const
-{
-	return AppPaths::ChatPath(app.data_root, chat.id);
-}
-
-fs::path PersistenceCoordinator::DefaultDataRootPath() const
-{
-	return AppPaths::DefaultDataRootPath();
-}
-
 fs::path PersistenceCoordinator::TempFallbackDataRootPath() const
 {
 	std::error_code ec;
@@ -117,35 +97,16 @@ bool PersistenceCoordinator::EnsureDataRootLayout(const fs::path& data_root, std
 	return true;
 }
 
-void PersistenceCoordinator::SaveFolders(const AppState& app) const
-{
-	ChatFolderStore::Save(app.data_root, app.folders);
-}
-
-void PersistenceCoordinator::SaveProviders(const AppState& app) const
-{
-	ProviderProfileStore::Save(app.data_root, app.provider_profiles);
-}
-
-fs::path PersistenceCoordinator::ProviderProfileFilePath(const AppState& app) const
-{
-	return app.data_root / "providers.txt";
-}
-
-fs::path PersistenceCoordinator::FrontendActionFilePath(const AppState& app) const
-{
-	return app.data_root / "frontend_actions.txt";
-}
-
 void PersistenceCoordinator::LoadFrontendActions(AppState& app) const
 {
 	std::string error;
+	const fs::path l_actionMapPath = app.data_root / "frontend_actions.txt";
 
-	if (!uam::LoadFrontendActionMap(FrontendActionFilePath(app), app.frontend_actions, &error))
+	if (!uam::LoadFrontendActionMap(l_actionMapPath, app.frontend_actions, &error))
 	{
 		app.frontend_actions = uam::DefaultFrontendActionMap();
 
-		if (!uam::SaveFrontendActionMap(FrontendActionFilePath(app), app.frontend_actions, &error) && !error.empty())
+		if (!uam::SaveFrontendActionMap(l_actionMapPath, app.frontend_actions, &error) && !error.empty())
 		{
 			app.status_line = "Frontend action map reset, but saving failed: " + error;
 		}
@@ -160,13 +121,3 @@ void PersistenceCoordinator::LoadFrontendActions(AppState& app) const
 	uam::NormalizeFrontendActionMap(app.frontend_actions);
 }
 
-std::vector<ChatSession> PersistenceCoordinator::LoadChats(const AppState& app) const
-{
-	return LocalChatStore::Load(app.data_root);
-}
-
-PersistenceCoordinator& GetPersistenceCoordinator()
-{
-	static PersistenceCoordinator coordinator;
-	return coordinator;
-}

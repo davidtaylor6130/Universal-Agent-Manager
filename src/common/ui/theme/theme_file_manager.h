@@ -1,4 +1,5 @@
-#pragma once
+#ifndef UAM_COMMON_UI_THEME_THEME_FILE_MANAGER_H
+#define UAM_COMMON_UI_THEME_THEME_FILE_MANAGER_H
 
 #include "common/platform/platform_services.h"
 
@@ -111,18 +112,4 @@ inline bool DrawPathInputWithBrowseButton(const char* label, std::string& value,
 	return text_changed || picked_with_dialog;
 }
 
-/// <summary>
-/// Opens a folder path in the native file manager.
-/// </summary>
-inline bool OpenFolderInFileManager(const fs::path& folder_path, std::string* error_out = nullptr)
-{
-	return PlatformServicesFactory::Instance().file_dialog_service.OpenFolderInFileManager(folder_path, error_out);
-}
-
-/// <summary>
-/// Reveals a file path in the native file manager.
-/// </summary>
-inline bool RevealPathInFileManager(const fs::path& file_path, std::string* error_out = nullptr)
-{
-	return PlatformServicesFactory::Instance().file_dialog_service.RevealPathInFileManager(file_path, error_out);
-}
+#endif // UAM_COMMON_UI_THEME_THEME_FILE_MANAGER_H

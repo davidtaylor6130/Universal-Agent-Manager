@@ -24,7 +24,7 @@ inline const TemplateCatalogEntry* DrawMarkdownTemplateManagerCatalogSection(App
 
 	ImGui::EndChild();
 
-	const TemplateCatalogEntry* selected_entry = FindTemplateEntryById(app, app.template_manager_selected_id);
+	const TemplateCatalogEntry* selected_entry = TemplateRuntimeService().FindTemplateEntryById(app, app.template_manager_selected_id);
 	has_selection_out = (selected_entry != nullptr);
 
 	if (!has_selection_out)

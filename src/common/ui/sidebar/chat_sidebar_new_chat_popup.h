@@ -1,5 +1,8 @@
 #pragma once
 
+#include "app/chat_domain_service.h"
+#include "app/provider_profile_migration_service.h"
+
 /// <summary>
 /// Draws duplicate-draft conflict handling when creating a new chat.
 /// </summary>
@@ -23,9 +26,9 @@ inline void DrawDuplicateNewChatPopup(AppState& app)
 	std::string provider_label = provider_id.empty() ? "(none)" : provider_id;
 	std::string existing_label = existing_chat_id.empty() ? "(none)" : CompactPreview(existing_chat_id, 42);
 
-	if (const ChatFolder* folder = FindFolderById(app, folder_id); folder != nullptr)
+	if (const ChatFolder* folder = ChatDomainService().FindFolderById(app, folder_id); folder != nullptr)
 	{
-		folder_label = FolderTitleOrFallback(*folder);
+		folder_label = ChatDomainService().FolderTitleOrFallback(*folder);
 	}
 
 	if (const ProviderProfile* profile = ProviderProfileStore::FindById(app.provider_profiles, provider_id); profile != nullptr)
@@ -33,7 +36,7 @@ inline void DrawDuplicateNewChatPopup(AppState& app)
 		provider_label = profile->title.empty() ? profile->id : profile->title;
 	}
 
-	if (const int chat_index = FindChatIndexById(app, existing_chat_id); chat_index >= 0)
+	if (const int chat_index = ChatDomainService().FindChatIndexById(app, existing_chat_id); chat_index >= 0)
 	{
 		existing_label = CompactPreview(app.chats[chat_index].title, 42);
 	}
@@ -53,7 +56,7 @@ inline void DrawDuplicateNewChatPopup(AppState& app)
 			app.new_chat_folder_id = folder_id;
 		}
 
-		EnsureNewChatFolderSelection(app);
+		ChatDomainService().EnsureNewChatFolderSelection(app);
 		CreateAndSelectChatWithProvider(app, provider_id, NewChatDuplicatePolicy::CreateNew);
 		ImGui::CloseCurrentPopup();
 	}
@@ -68,7 +71,7 @@ inline void DrawDuplicateNewChatPopup(AppState& app)
 			app.new_chat_folder_id = folder_id;
 		}
 
-		EnsureNewChatFolderSelection(app);
+		ChatDomainService().EnsureNewChatFolderSelection(app);
 		CreateAndSelectChatWithProvider(app, provider_id, NewChatDuplicatePolicy::ReuseExisting);
 		ImGui::CloseCurrentPopup();
 	}
@@ -103,15 +106,15 @@ inline void DrawSidebarNewChatPopup(AppState& app)
 		return;
 	}
 
-	EnsureNewChatFolderSelection(app);
+	ChatDomainService().EnsureNewChatFolderSelection(app);
 	const std::string provider_id = ResolveNewChatProviderId(app, app.pending_new_chat_provider_id);
 	app.pending_new_chat_provider_id = provider_id;
 
 	std::string folder_label = "General";
 
-	if (const ChatFolder* folder = FindFolderById(app, FolderForNewChat(app)); folder != nullptr)
+	if (const ChatFolder* folder = ChatDomainService().FindFolderById(app, ChatDomainService().FolderForNewChat(app)); folder != nullptr)
 	{
-		folder_label = FolderTitleOrFallback(*folder);
+		folder_label = ChatDomainService().FolderTitleOrFallback(*folder);
 	}
 
 	ImGui::TextColored(ui::kTextPrimary, "Create chat");
@@ -131,7 +134,7 @@ inline void DrawSidebarNewChatPopup(AppState& app)
 	{
 		for (const ProviderProfile& profile : app.provider_profiles)
 		{
-			if (!ShouldShowProviderProfileInUi(profile))
+			if (!ProviderProfileMigrationService().ShouldShowProviderProfileInUi(profile))
 			{
 				continue;
 			}

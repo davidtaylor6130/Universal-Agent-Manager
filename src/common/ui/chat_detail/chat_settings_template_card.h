@@ -9,12 +9,12 @@ inline void DrawChatSettingsTemplateCard(AppState& app, ChatSession& chat)
 
 	if (BeginSectionCard("template_card"))
 	{
-		const std::string global_label = TemplateLabelOrFallback(app, app.settings.default_prompt_profile_id);
+		const std::string global_label = TemplateRuntimeService().TemplateLabelOrFallback(app, app.settings.default_prompt_profile_id);
 		ImGui::TextColored(ui::kTextMuted, "Global default");
 		ImGui::TextWrapped("%s", global_label.c_str());
 		ImGui::Dummy(ImVec2(0.0f, ui::kSpace6));
 
-		const std::string override_preview = chat.template_override_id.empty() ? "Use global default" : TemplateLabelOrFallback(app, chat.template_override_id);
+		const std::string override_preview = chat.template_override_id.empty() ? "Use global default" : TemplateRuntimeService().TemplateLabelOrFallback(app, chat.template_override_id);
 
 		if (ImGui::BeginCombo("Per-chat override", override_preview.c_str()))
 		{
@@ -65,7 +65,7 @@ inline void DrawChatSettingsTemplateCard(AppState& app, ChatSession& chat)
 
 		std::string effective_template_id = chat.template_override_id.empty() ? app.settings.default_prompt_profile_id : chat.template_override_id;
 		ImGui::TextColored(ui::kTextMuted, "Effective template");
-		ImGui::TextWrapped("%s", TemplateLabelOrFallback(app, effective_template_id).c_str());
+		ImGui::TextWrapped("%s", TemplateRuntimeService().TemplateLabelOrFallback(app, effective_template_id).c_str());
 		ImGui::Dummy(ImVec2(0.0f, ui::kSpace6));
 
 		if (DrawButton("Manage Templates", ImVec2(140.0f, 32.0f), ButtonKind::Ghost))
@@ -80,7 +80,7 @@ inline void DrawChatSettingsTemplateCard(AppState& app, ChatSession& chat)
 			std::string error;
 			const fs::path catalog_path = MarkdownTemplateCatalog::CatalogPath(ResolvePromptProfileRootPath(app.settings));
 
-			if (!OpenFolderInFileManager(catalog_path, &error))
+			if (!PlatformServicesFactory::Instance().file_dialog_service.OpenFolderInFileManager(catalog_path, &error))
 			{
 				app.status_line = error;
 			}

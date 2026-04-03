@@ -1,4 +1,5 @@
-#pragma once
+#ifndef UAM_COMMON_UI_MODALS_MODAL_APP_SETTINGS_COMMIT_SECTION_H
+#define UAM_COMMON_UI_MODALS_MODAL_APP_SETTINGS_COMMIT_SECTION_H
 
 /// <summary>
 /// Draws save/cancel actions and applies app settings draft values.
@@ -45,8 +46,8 @@ inline void DrawAppSettingsCommitSection(AppState& app, AppSettings& draft_setti
 
 		if (previous_global_root != app.settings.prompt_profile_root_path)
 		{
-			MarkTemplateCatalogDirty(app);
-			RefreshTemplateCatalog(app, true);
+			app.template_catalog_dirty = true;
+			TemplateRuntimeService().RefreshTemplateCatalog(app, true);
 		}
 
 		app.status_line = "Preferences saved.";
@@ -62,3 +63,5 @@ inline void DrawAppSettingsCommitSection(AppState& app, AppSettings& draft_setti
 		ImGui::CloseCurrentPopup();
 	}
 }
+
+#endif // UAM_COMMON_UI_MODALS_MODAL_APP_SETTINGS_COMMIT_SECTION_H

@@ -16,7 +16,7 @@ inline void DrawFolderSettingsModal(AppState& app)
 		return;
 	}
 
-	const int folder_index = FindFolderIndexById(app, app.pending_folder_settings_id);
+	const int folder_index = ChatDomainService().FindFolderIndexById(app, app.pending_folder_settings_id);
 
 	if (folder_index < 0)
 	{
@@ -58,7 +58,7 @@ inline void DrawFolderSettingsModal(AppState& app)
 	{
 		std::string error;
 
-		if (!OpenFolderInFileManager(ExpandLeadingTildePath(app.folder_settings_directory_input), &error))
+		if (!PlatformServicesFactory::Instance().file_dialog_service.OpenFolderInFileManager(PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(app.folder_settings_directory_input), &error))
 		{
 			app.status_line = error;
 		}
@@ -83,7 +83,7 @@ inline void DrawFolderSettingsModal(AppState& app)
 		{
 			folder.title = title;
 			folder.directory = directory;
-			SaveFolders(app);
+			ChatFolderStore::Save(app.data_root, app.folders);
 			app.status_line = "Folder settings saved.";
 			ImGui::CloseCurrentPopup();
 		}

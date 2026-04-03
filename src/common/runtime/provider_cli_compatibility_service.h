@@ -1,4 +1,5 @@
-#pragma once
+#ifndef UAM_COMMON_RUNTIME_PROVIDER_CLI_COMPATIBILITY_SERVICE_H
+#define UAM_COMMON_RUNTIME_PROVIDER_CLI_COMPATIBILITY_SERVICE_H
 
 #include <string>
 
@@ -10,11 +11,9 @@ namespace uam
 class ProviderCliCompatibilityService
 {
   public:
-	std::string BuildVersionCheckCommand() const;
-	std::string BuildPinCommand() const;
 	void StartVersionCheck(uam::AppState& app, bool force) const;
 	void StartPinToSupported(uam::AppState& app) const;
 	void Poll(uam::AppState& app) const;
 };
 
-ProviderCliCompatibilityService& GetProviderCliCompatibilityService();
+#endif // UAM_COMMON_RUNTIME_PROVIDER_CLI_COMPATIBILITY_SERVICE_H

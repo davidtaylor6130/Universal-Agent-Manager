@@ -1,5 +1,8 @@
 #pragma once
 
+#include "app/chat_domain_service.h"
+#include "app/provider_resolution_service.h"
+
 /// <summary>
 /// Status chip and global top-bar rendering helpers.
 /// </summary>
@@ -27,17 +30,17 @@ inline void DrawGlobalTopBar(AppState& app)
 		return;
 	}
 
-	const ChatSession* selected = SelectedChat(app);
+	const ChatSession* selected = ChatDomainService().SelectedChat(app);
 	const ProviderProfile* active_provider = nullptr;
 
 	if (selected != nullptr)
 	{
-		active_provider = ProviderForChat(app, *selected);
+		active_provider = ProviderResolutionService().ProviderForChat(app, *selected);
 	}
 
 	if (active_provider == nullptr)
 	{
-		active_provider = ActiveProvider(app);
+		active_provider = ProviderResolutionService().ActiveProvider(app);
 	}
 
 	std::string provider_label = "No Provider";
@@ -83,7 +86,7 @@ inline void DrawGlobalTopBar(AppState& app)
 		const float row_w = ImGui::GetContentRegionAvail().x;
 		const bool show_create = FrontendActionVisible(app, "create_chat");
 		const bool show_refresh = FrontendActionVisible(app, "refresh_history");
-		const float row_spacing_base = ui::kSpace8 * PlatformUiSpacingScale();
+		const float row_spacing_base = ui::kSpace8 * PlatformServicesFactory::Instance().ui_traits.PlatformUiSpacingScale();
 		const float row_spacing = ScaleUiLength(row_spacing_base);
 		const float action_w = show_create && show_refresh ? 96.0f : 106.0f;
 		const float settings_w = 96.0f;
@@ -105,7 +108,7 @@ inline void DrawGlobalTopBar(AppState& app)
 		{
 			if (DrawButton(refresh_label.c_str(), ImVec2(action_w, 34.0f), ButtonKind::Ghost))
 			{
-				RefreshChatHistory(app);
+				ChatHistorySyncService().RefreshChatHistory(app);
 			}
 
 			ImGui::SameLine(0.0f, row_spacing);

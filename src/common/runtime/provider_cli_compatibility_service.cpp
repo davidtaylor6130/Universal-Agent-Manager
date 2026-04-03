@@ -133,16 +133,6 @@ namespace
 
 } // namespace
 
-std::string ProviderCliCompatibilityService::BuildVersionCheckCommand() const
-{
-	return kRuntimeVersionProbeCommand;
-}
-
-std::string ProviderCliCompatibilityService::BuildPinCommand() const
-{
-	return PlatformServicesFactory::Instance().process_service.GeminiDowngradeCommand();
-}
-
 void ProviderCliCompatibilityService::StartVersionCheck(uam::AppState& app, const bool force) const
 {
 	if (app.runtime_cli_version_check_task.running)
@@ -155,7 +145,7 @@ void ProviderCliCompatibilityService::StartVersionCheck(uam::AppState& app, cons
 		return;
 	}
 
-	StartAsyncCommandTask(app.runtime_cli_version_check_task, BuildVersionCheckCommand());
+	StartAsyncCommandTask(app.runtime_cli_version_check_task, kRuntimeVersionProbeCommand);
 	app.runtime_cli_version_message = "Checking installed provider CLI version...";
 }
 
@@ -166,7 +156,7 @@ void ProviderCliCompatibilityService::StartPinToSupported(uam::AppState& app) co
 		return;
 	}
 
-	const std::string command = BuildPinCommand();
+	const std::string command = PlatformServicesFactory::Instance().process_service.GeminiDowngradeCommand();
 	StartAsyncCommandTask(app.runtime_cli_pin_task, command);
 	app.runtime_cli_pin_output.clear();
 	app.status_line = "Running provider CLI pin command...";
@@ -229,10 +219,4 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 			StartVersionCheck(app, true);
 		}
 	}
-}
-
-ProviderCliCompatibilityService& GetProviderCliCompatibilityService()
-{
-	static ProviderCliCompatibilityService service;
-	return service;
 }

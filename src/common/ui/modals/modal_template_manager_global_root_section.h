@@ -1,4 +1,5 @@
-#pragma once
+#ifndef UAM_COMMON_UI_MODALS_MODAL_TEMPLATE_MANAGER_GLOBAL_ROOT_SECTION_H
+#define UAM_COMMON_UI_MODALS_MODAL_TEMPLATE_MANAGER_GLOBAL_ROOT_SECTION_H
 
 /// <summary>
 /// Draws template-manager controls for global root selection and catalog folder access.
@@ -26,8 +27,8 @@ inline void DrawMarkdownTemplateManagerGlobalRootSection(AppState& app, const fs
 		}
 
 		SaveSettings(app);
-		MarkTemplateCatalogDirty(app);
-		RefreshTemplateCatalog(app, true);
+		app.template_catalog_dirty = true;
+		TemplateRuntimeService().RefreshTemplateCatalog(app, true);
 		app.status_line = "Global prompt-profile root saved.";
 	}
 
@@ -37,7 +38,7 @@ inline void DrawMarkdownTemplateManagerGlobalRootSection(AppState& app, const fs
 	{
 		std::string error;
 
-		if (!OpenFolderInFileManager(catalog_path, &error))
+		if (!PlatformServicesFactory::Instance().file_dialog_service.OpenFolderInFileManager(catalog_path, &error))
 		{
 			app.status_line = error;
 		}
@@ -45,3 +46,5 @@ inline void DrawMarkdownTemplateManagerGlobalRootSection(AppState& app, const fs
 
 	ImGui::TextColored(ui::kTextMuted, "%s", catalog_path.string().c_str());
 }
+
+#endif // UAM_COMMON_UI_MODALS_MODAL_TEMPLATE_MANAGER_GLOBAL_ROOT_SECTION_H

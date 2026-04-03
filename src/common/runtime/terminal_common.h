@@ -1,7 +1,25 @@
-#pragma once
+#ifndef UAM_COMMON_RUNTIME_TERMINAL_COMMON_H
+#define UAM_COMMON_RUNTIME_TERMINAL_COMMON_H
+
 #include "common/platform/sdl_includes.h"
 #include "common/platform/platform_services.h"
+#include "app/chat_domain_service.h"
+#include "app/application_core_helpers.h"
+#include "app/provider_resolution_service.h"
+#include "app/native_session_link_service.h"
+#include "app/persistence_coordinator.h"
+#include "app/runtime_local_service.h"
+#include "app/provider_profile_migration_service.h"
+#include "app/runtime_orchestration_services.h"
+#include "common/chat_branching.h"
+#include "common/chat_repository.h"
+#include "common/provider/provider_runtime.h"
 #include <filesystem>
+
+using uam::AppState;
+using uam::CliTerminalState;
+using uam::TerminalScrollbackLine;
+using uam::kTerminalScrollbackMaxLines;
 
 inline void FreeCliTerminalVTerm(CliTerminalState& terminal)
 {
@@ -142,12 +160,12 @@ inline void ReportDroppedQueuedStructuredPromptsForTerminal(AppState& app, const
 		message += " Reason: " + reason;
 	}
 
-	const int chat_index = FindChatIndexById(app, terminal.attached_chat_id);
+	const int chat_index = ChatDomainService().FindChatIndexById(app, terminal.attached_chat_id);
 
 	if (chat_index >= 0)
 	{
-		AddMessage(app.chats[chat_index], MessageRole::System, message);
-		SaveChat(app, app.chats[chat_index]);
+		ChatDomainService().AddMessage(app.chats[chat_index], MessageRole::System, message);
+		ProviderRuntime::SaveHistory(ProviderResolutionService().ProviderForChatOrDefault(app, app.chats[chat_index]), app.data_root, app.chats[chat_index]);
 	}
 
 	app.status_line = message;
@@ -373,7 +391,7 @@ inline bool ForwardEscapeToSelectedCliTerminal(AppState& app, const SDL_Event& e
 		return true;
 	}
 
-	ChatSession* selected = SelectedChat(app);
+	ChatSession* selected = ChatDomainService().SelectedChat(app);
 
 	if (selected == nullptr)
 	{
@@ -471,7 +489,7 @@ inline void MarkChatUnseen(AppState& app, const std::string& chat_id)
 		return;
 	}
 
-	const ChatSession* selected = SelectedChat(app);
+	const ChatSession* selected = ChatDomainService().SelectedChat(app);
 
 	if (selected != nullptr && selected->id == chat_id)
 	{
@@ -483,7 +501,7 @@ inline void MarkChatUnseen(AppState& app, const std::string& chat_id)
 
 inline void MarkSelectedChatSeen(AppState& app)
 {
-	const ChatSession* selected = SelectedChat(app);
+	const ChatSession* selected = ChatDomainService().SelectedChat(app);
 
 	if (selected != nullptr)
 	{
@@ -493,8 +511,8 @@ inline void MarkSelectedChatSeen(AppState& app)
 
 inline CliTerminalState& EnsureCliTerminalForChat(AppState& app, const ChatSession& chat)
 {
-	const std::string resume_id = ResolveResumeSessionIdForChat(app, chat);
-	const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
+	const std::string resume_id = ChatHistorySyncService().ResolveResumeSessionIdForChat(app, chat);
+	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 	const bool can_launch_terminal = ProviderRuntime::IsRuntimeEnabled(provider) && ProviderRuntime::UsesCliOutput(provider) && !ProviderRuntime::UsesInternalEngine(provider) && provider.supports_interactive;
 
 	if (CliTerminalState* existing = FindCliTerminalForChat(app, chat.id))
@@ -562,14 +580,14 @@ inline void FastStopCliTerminalsForExit(AppState& app)
 
 inline void MarkSelectedCliTerminalForLaunch(AppState& app)
 {
-	ChatSession* selected = SelectedChat(app);
+	ChatSession* selected = ChatDomainService().SelectedChat(app);
 
 	if (selected == nullptr)
 	{
 		return;
 	}
 
-	const ProviderProfile& provider = ProviderForChatOrDefault(app, *selected);
+	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, *selected);
 
 	if (!ProviderRuntime::IsRuntimeEnabled(provider))
 	{
@@ -598,17 +616,17 @@ inline void FinalizeChatSyncSelection(AppState& app, const std::string& selected
 {
 	const std::string previous_selected = !selected_before.empty() ? selected_before : preferred_chat_id;
 
-	if (preserve_selection && !selected_before.empty() && FindChatIndexById(app, selected_before) >= 0)
+	if (preserve_selection && !selected_before.empty() && ChatDomainService().FindChatIndexById(app, selected_before) >= 0)
 	{
-		SelectChatById(app, selected_before);
+		ChatDomainService().SelectChatById(app, selected_before);
 	}
-	else if (!preferred_chat_id.empty() && FindChatIndexById(app, preferred_chat_id) >= 0)
+	else if (!preferred_chat_id.empty() && ChatDomainService().FindChatIndexById(app, preferred_chat_id) >= 0)
 	{
-		SelectChatById(app, preferred_chat_id);
+		ChatDomainService().SelectChatById(app, preferred_chat_id);
 	}
-	else if (!previous_selected.empty() && FindChatIndexById(app, previous_selected) >= 0)
+	else if (!previous_selected.empty() && ChatDomainService().FindChatIndexById(app, previous_selected) >= 0)
 	{
-		SelectChatById(app, previous_selected);
+		ChatDomainService().SelectChatById(app, previous_selected);
 	}
 	else if (!app.chats.empty())
 	{
@@ -621,7 +639,7 @@ inline void FinalizeChatSyncSelection(AppState& app, const std::string& selected
 
 	for (auto it = app.chats_with_unseen_updates.begin(); it != app.chats_with_unseen_updates.end();)
 	{
-		if (FindChatIndexById(app, *it) < 0)
+		if (ChatDomainService().FindChatIndexById(app, *it) < 0)
 		{
 			it = app.chats_with_unseen_updates.erase(it);
 		}
@@ -633,7 +651,7 @@ inline void FinalizeChatSyncSelection(AppState& app, const std::string& selected
 
 	for (auto it = app.collapsed_branch_chat_ids.begin(); it != app.collapsed_branch_chat_ids.end();)
 	{
-		if (FindChatIndexById(app, *it) < 0)
+		if (ChatDomainService().FindChatIndexById(app, *it) < 0)
 		{
 			it = app.collapsed_branch_chat_ids.erase(it);
 		}
@@ -643,7 +661,7 @@ inline void FinalizeChatSyncSelection(AppState& app, const std::string& selected
 		}
 	}
 
-	const ChatSession* selected_now = SelectedChat(app);
+	const ChatSession* selected_now = ChatDomainService().SelectedChat(app);
 	const std::string selected_now_id = (selected_now != nullptr) ? selected_now->id : "";
 
 	if (selected_now_id != selected_before)
@@ -656,30 +674,30 @@ inline void FinalizeChatSyncSelection(AppState& app, const std::string& selected
 
 inline void SyncChatsFromLoadedNative(AppState& app, std::vector<ChatSession> native_chats, const std::string& preferred_chat_id, const bool preserve_selection = false)
 {
-	const std::string selected_before = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
-	ApplyLocalOverrides(app, native_chats);
-	MigrateChatProviderBindingsToFixedModes(app);
+	const std::string selected_before = (ChatDomainService().SelectedChat(app) != nullptr) ? ChatDomainService().SelectedChat(app)->id : "";
+	ChatHistorySyncService().ApplyLocalOverrides(app, native_chats);
+	ProviderProfileMigrationService().MigrateChatProviderBindingsToFixedModes(app);
 	FinalizeChatSyncSelection(app, selected_before, preferred_chat_id, preserve_selection);
 }
 
 inline void SyncChatsFromNative(AppState& app, const std::string& preferred_chat_id, const bool preserve_selection = false)
 {
-	const std::string selected_before = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
+	const std::string selected_before = (ChatDomainService().SelectedChat(app) != nullptr) ? ChatDomainService().SelectedChat(app)->id : "";
 
-	if (ActiveProviderUsesNativeOverlayHistory(app))
+	if (ProviderResolutionService().ActiveProviderUsesNativeOverlayHistory(app))
 	{
-		RefreshNativeSessionDirectory(app);
-		std::vector<ChatSession> native = LoadNativeSessionChats(app.native_history_chats_dir, ActiveProviderOrDefault(app));
-		ApplyLocalOverrides(app, native);
+		ChatHistorySyncService().RefreshNativeSessionDirectory(app);
+		std::vector<ChatSession> native = ChatHistorySyncService().LoadNativeSessionChats(app.native_history_chats_dir, ProviderResolutionService().ActiveProviderOrDefault(app));
+		ChatHistorySyncService().ApplyLocalOverrides(app, native);
 	}
 	else
 	{
-		app.chats = LoadChats(app);
-		NormalizeChatBranchMetadata(app);
-		NormalizeChatFolderAssignments(app);
+		app.chats = ChatRepository::LoadLocalChats(app.data_root);
+		ChatBranching::Normalize(app.chats);
+		ChatDomainService().NormalizeChatFolderAssignments(app);
 	}
 
-	MigrateChatProviderBindingsToFixedModes(app);
+	ProviderProfileMigrationService().MigrateChatProviderBindingsToFixedModes(app);
 	FinalizeChatSyncSelection(app, selected_before, preferred_chat_id, preserve_selection);
 }
 
@@ -722,12 +740,12 @@ inline std::vector<std::string> ForceOpenCodeModelFlag(std::vector<std::string> 
 
 inline std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const ChatSession& chat)
 {
-	const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
+	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 	ChatSession effective_chat = chat;
 
 	if (!effective_chat.uses_native_session)
 	{
-		const std::string resume_id = ResolveResumeSessionIdForChat(app, chat);
+		const std::string resume_id = ChatHistorySyncService().ResolveResumeSessionIdForChat(app, chat);
 
 		if (!resume_id.empty())
 		{
@@ -738,7 +756,7 @@ inline std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app
 
 	std::vector<std::string> argv = ProviderRuntime::BuildInteractiveArgv(provider, effective_chat, app.settings);
 
-	if (ProviderUsesLocalBridgeRuntime(provider))
+	if (RuntimeLocalService().ProviderUsesLocalBridgeRuntime(provider))
 	{
 		std::string selected_model = Trim(app.opencode_bridge.selected_model);
 
@@ -767,7 +785,7 @@ inline bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
 
 inline bool SendPromptToCliRuntime(AppState& app, ChatSession& chat, const std::string& prompt, std::string* error_out = nullptr)
 {
-	const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
+	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 
 	if (!ProviderRuntime::IsRuntimeEnabled(provider))
 	{
@@ -784,9 +802,9 @@ inline bool SendPromptToCliRuntime(AppState& app, ChatSession& chat, const std::
 		return false;
 	}
 
-	if (ProviderUsesLocalBridgeRuntime(provider))
+	if (RuntimeLocalService().ProviderUsesLocalBridgeRuntime(provider))
 	{
-		if (!EnsureLocalBridgeRunning(app, error_out))
+		if (!RuntimeLocalService().RestartLocalBridgeIfModelChanged(app, error_out))
 		{
 			if (error_out != nullptr && error_out->empty())
 			{
@@ -835,7 +853,7 @@ inline bool SendPromptToCliRuntime(AppState& app, ChatSession& chat, const std::
 inline bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, const ChatSession& chat, const int rows, const int cols)
 {
 	StopCliTerminal(terminal);
-	const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
+	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 
 	if (!ProviderRuntime::IsRuntimeEnabled(provider))
 	{
@@ -867,9 +885,9 @@ inline bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
 		return false;
 	}
 
-	if (ProviderUsesLocalBridgeRuntime(provider))
+	if (RuntimeLocalService().ProviderUsesLocalBridgeRuntime(provider))
 	{
-		if (!EnsureSelectedLocalRuntimeModelForProvider(app))
+		if (!RuntimeLocalService().EnsureSelectedLocalRuntimeModelForProvider(app))
 		{
 			terminal.last_error = "Select a local runtime model to continue.";
 			return false;
@@ -877,21 +895,21 @@ inline bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
 
 		std::string bridge_error;
 
-		if (!EnsureLocalBridgeRunning(app, &bridge_error))
+		if (!RuntimeLocalService().RestartLocalBridgeIfModelChanged(app, &bridge_error))
 		{
 			terminal.last_error = bridge_error.empty() ? "Failed to start OpenCode bridge." : bridge_error;
 			return false;
 		}
 	}
 
-	if (ChatUsesNativeOverlayHistory(app, chat))
+	if (ProviderResolutionService().ChatUsesNativeOverlayHistory(app, chat))
 	{
-		RefreshNativeSessionDirectory(app);
+		ChatHistorySyncService().RefreshNativeSessionDirectory(app);
 	}
 
 	std::string template_status;
 	std::string bootstrap_prompt;
-	const TemplatePreflightOutcome template_outcome = PreflightWorkspaceTemplateForChat(app, provider, chat, &bootstrap_prompt, &template_status);
+	const TemplatePreflightOutcome template_outcome = ProviderRequestService().PreflightWorkspaceTemplateForChat(app, provider, chat, &bootstrap_prompt, &template_status);
 
 	if (template_outcome == TemplatePreflightOutcome::BlockingError)
 	{
@@ -915,12 +933,12 @@ inline bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
 	terminal.rows = std::max(8, rows);
 	terminal.cols = std::max(20, cols);
 	terminal.attached_chat_id = chat.id;
-	terminal.attached_session_id = ResolveResumeSessionIdForChat(app, chat);
+	terminal.attached_session_id = ChatHistorySyncService().ResolveResumeSessionIdForChat(app, chat);
 	terminal.linked_files_snapshot = chat.linked_files;
 
-	if (ChatUsesNativeOverlayHistory(app, chat))
+	if (ProviderResolutionService().ChatUsesNativeOverlayHistory(app, chat))
 	{
-		terminal.session_ids_before = SessionIdsFromChats(LoadNativeSessionChats(app.native_history_chats_dir, provider));
+		terminal.session_ids_before = ChatHistorySyncService().SessionIdsFromChats(ChatHistorySyncService().LoadNativeSessionChats(app.native_history_chats_dir, provider));
 	}
 	else
 	{
@@ -979,14 +997,16 @@ inline bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
 			WriteToCliTerminal(terminal, bootstrap_command.c_str(), bootstrap_command.size());
 		}
 
-		const int chat_index = FindChatIndexById(app, chat.id);
+		const int chat_index = ChatDomainService().FindChatIndexById(app, chat.id);
 
 		if (chat_index >= 0)
 		{
 			app.chats[chat_index].prompt_profile_bootstrapped = true;
-			SaveChat(app, app.chats[chat_index]);
+			ProviderRuntime::SaveHistory(ProviderResolutionService().ProviderForChatOrDefault(app, app.chats[chat_index]), app.data_root, app.chats[chat_index]);
 		}
 	}
 
 	return true;
 }
+
+#endif // UAM_COMMON_RUNTIME_TERMINAL_COMMON_H

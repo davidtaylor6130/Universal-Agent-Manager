@@ -45,7 +45,7 @@ inline void DrawChatDetailHeaderBar(AppState& app, ChatSession& chat)
 
 		// Inline mode + timestamp chips
 		ImGui::SameLine(0.0f, 10.0f);
-		const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
+		const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 		const char* mode_label = ProviderRuntime::UsesCliOutput(provider) ? "· CLI" : "· Structured";
 		ImGui::TextColored(ui::kTextMuted, "%s", mode_label);
 		ImGui::SameLine(0.0f, 12.0f);

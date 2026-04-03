@@ -75,19 +75,9 @@ bool RuntimeLocalService::RestartLocalBridgeIfModelChanged(uam::AppState& app, s
 	return bridge_runtime.EnsureRunning(app, desired_model_folder_norm, desired_requested_model, error_out);
 }
 
-bool RuntimeLocalService::EnsureLocalBridgeRunning(uam::AppState& app, std::string* error_out) const
-{
-	return RestartLocalBridgeIfModelChanged(app, error_out);
-}
-
 void RuntimeLocalService::StopLocalBridge(uam::AppState& app) const
 {
 	LocalBridgeRuntime bridge_runtime;
 	bridge_runtime.Stop(app, true);
 }
 
-RuntimeLocalService& GetRuntimeLocalService()
-{
-	static RuntimeLocalService service;
-	return service;
-}

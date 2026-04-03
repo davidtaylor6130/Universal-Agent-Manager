@@ -1,5 +1,9 @@
 #pragma once
 
+#include "app/chat_domain_service.h"
+#include "app/provider_resolution_service.h"
+#include "app/template_runtime_service.h"
+
 /// <summary>
 /// Desktop menu bar rendering and command dispatch.
 /// </summary>
@@ -34,7 +38,7 @@ inline void DrawDesktopMenuBar(AppState& app, bool& done)
 
 		if (ImGui::MenuItem("Refresh Chats", "Ctrl+R"))
 		{
-			RefreshChatHistory(app);
+			ChatHistorySyncService().RefreshChatHistory(app);
 		}
 
 		ImGui::Separator();
@@ -56,7 +60,7 @@ inline void DrawDesktopMenuBar(AppState& app, bool& done)
 
 	if (ImGui::BeginMenu("Edit"))
 	{
-		ChatSession* selected = SelectedChat(app);
+		ChatSession* selected = ChatDomainService().SelectedChat(app);
 		const bool can_delete = (selected != nullptr);
 
 		if (!can_delete)
@@ -79,7 +83,7 @@ inline void DrawDesktopMenuBar(AppState& app, bool& done)
 
 	if (ImGui::BeginMenu("Templates"))
 	{
-		RefreshTemplateCatalog(app);
+		TemplateRuntimeService().RefreshTemplateCatalog(app);
 
 		if (ImGui::BeginMenu("Default Template"))
 		{
@@ -119,7 +123,7 @@ inline void DrawDesktopMenuBar(AppState& app, bool& done)
 			std::string error;
 			const fs::path template_path = MarkdownTemplateCatalog::CatalogPath(ResolvePromptProfileRootPath(app.settings));
 
-			if (!OpenFolderInFileManager(template_path, &error))
+			if (!PlatformServicesFactory::Instance().file_dialog_service.OpenFolderInFileManager(template_path, &error))
 			{
 				app.status_line = error;
 			}
@@ -130,7 +134,7 @@ inline void DrawDesktopMenuBar(AppState& app, bool& done)
 
 	if (ImGui::BeginMenu("RAG"))
 	{
-		const ChatSession* selected_chat = SelectedChat(app);
+		const ChatSession* selected_chat = ChatDomainService().SelectedChat(app);
 		const bool has_selected_chat = (selected_chat != nullptr);
 		const fs::path fallback_source_root = ResolveCurrentRagFallbackSourceRoot(app);
 
@@ -235,9 +239,9 @@ inline void DrawDesktopMenuBar(AppState& app, bool& done)
 	// Right-aligned runtime status indicator
 	{
 		const bool pending_any = HasAnyPendingCall(app);
-		const ChatSession* selected = SelectedChat(app);
+		const ChatSession* selected = ChatDomainService().SelectedChat(app);
 		const bool pending_here = (selected != nullptr) && HasPendingCallForChat(app, selected->id);
-		const ProviderProfile* active_provider = (selected != nullptr) ? ProviderForChat(app, *selected) : ActiveProvider(app);
+		const ProviderProfile* active_provider = (selected != nullptr) ? ProviderResolutionService().ProviderForChat(app, *selected) : ProviderResolutionService().ActiveProvider(app);
 		std::string provider_label = (active_provider != nullptr && !Trim(active_provider->title).empty()) ? CompactPreview(active_provider->title, 22) : "No Provider";
 		const std::string status_text = pending_here ? (provider_label + "  Running") : (pending_any ? (provider_label + "  Busy") : (provider_label + "  Ready"));
 		const ImVec4 status_color = pending_here ? ui::kWarning : (pending_any ? ui::kAccent : ui::kSuccess);

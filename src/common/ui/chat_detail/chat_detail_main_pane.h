@@ -16,7 +16,7 @@ inline void DrawChatDetailPane(AppState& app, ChatSession& chat)
 
 	DrawChatDetailHeaderBar(app, chat);
 
-	const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
+	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 
 	if (ProviderRuntime::UsesCliOutput(provider))
 	{

@@ -2,7 +2,6 @@
 #define UAM_APP_APPLICATION_H
 
 
-#include "app/runtime_orchestration_services.h"
 #include "app/ui_orchestration_controller.h"
 
 #include "common/platform/platform_services.h"
@@ -21,19 +20,10 @@ class Application
 
 	int Run();
 
-  private:
+ private:
 	uam::AppState m_app;
-	TerminalSessionManager m_terminalSessionManager;
-	TerminalPollingService m_terminalPollingService;
-	PendingRuntimeCallService m_pendingRuntimeCallService;
-	ProviderRequestService m_providerRequestService;
-	ChatHistorySyncService m_chatHistorySyncService;
-	MainMenuBarView m_mainMenuBarView;
-	SidebarView m_sidebarView;
 	ChatDetailView m_chatDetailView;
 	ModalHostView m_modalHostView;
-	ShortcutHandler m_shortcutHandler;
-	ThemeController m_themeController;
 	UiController m_uiController;
 	PlatformServices* m_platformServices = nullptr;
 	SDL_Window* m_window = nullptr;

@@ -1,4 +1,10 @@
-#pragma once
+#ifndef UAM_COMMON_RUNTIME_TERMINAL_POLLING_H
+#define UAM_COMMON_RUNTIME_TERMINAL_POLLING_H
+
+#include "app/chat_domain_service.h"
+#include "app/provider_resolution_service.h"
+#include "app/native_session_link_service.h"
+#include "app/runtime_orchestration_services.h"
 
 inline std::string CodepointToUtf8(const uint32_t cp)
 {
@@ -56,11 +62,12 @@ inline void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
 	constexpr double kStructuredInputReadyFallbackSeconds = 1.5;
 	constexpr int kReadBudgetChunksPerTick = 72;
 	constexpr std::size_t kReadBudgetBytesPerTick = 512 * 1024;
-	const std::string selected_chat_id = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
-	const int terminal_chat_index = FindChatIndexById(app, terminal.attached_chat_id);
+	const ChatSession* lcp_selectedChat = ChatDomainService().SelectedChat(app);
+	const std::string selected_chat_id = (lcp_selectedChat != nullptr) ? lcp_selectedChat->id : "";
+	const int terminal_chat_index = ChatDomainService().FindChatIndexById(app, terminal.attached_chat_id);
 	const ChatSession* terminal_chat = (terminal_chat_index >= 0) ? &app.chats[terminal_chat_index] : nullptr;
-	const bool terminal_uses_gemini_history = (terminal_chat != nullptr) && ChatUsesNativeOverlayHistory(app, *terminal_chat);
-	const ProviderProfile terminal_provider = (terminal_chat != nullptr) ? ProviderForChatOrDefault(app, *terminal_chat) : ActiveProviderOrDefault(app);
+	const bool terminal_uses_gemini_history = (terminal_chat != nullptr) && ProviderResolutionService().ChatUsesNativeOverlayHistory(app, *terminal_chat);
+	const ProviderProfile terminal_provider = (terminal_chat != nullptr) ? ProviderResolutionService().ProviderForChatOrDefault(app, *terminal_chat) : ProviderResolutionService().ActiveProviderOrDefault(app);
 	const auto mark_unseen_if_background = [&]()
 	{
 		if (!terminal.attached_chat_id.empty() && terminal.attached_chat_id != selected_chat_id)
@@ -159,8 +166,8 @@ inline void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
 			{
 				std::vector<ChatSession> native_now;
 				std::string native_load_error;
-				const bool has_loaded_snapshot = TryConsumeAsyncNativeChatLoad(app, native_now, native_load_error);
-				StartAsyncNativeChatLoad(app);
+				const bool has_loaded_snapshot = ChatHistorySyncService().TryConsumeAsyncNativeChatLoad(app, native_now, native_load_error);
+				ChatHistorySyncService().StartAsyncNativeChatLoad(app);
 
 				if (!native_load_error.empty())
 				{
@@ -171,7 +178,7 @@ inline void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
 				{
 					if (terminal.attached_session_id.empty())
 					{
-						const std::vector<std::string> candidates = CollectNewSessionIds(native_now, terminal.session_ids_before);
+						const std::vector<std::string> candidates = NativeSessionLinkService().CollectNewSessionIds(native_now, terminal.session_ids_before);
 						std::unordered_set<std::string> blocked_ids;
 
 						for (const auto& other_terminal : app.cli_terminals)
@@ -192,16 +199,16 @@ inline void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
 							}
 						}
 
-						const std::string discovered = PickFirstUnblockedSessionId(candidates, blocked_ids);
+						const std::string discovered = NativeSessionLinkService().PickFirstUnblockedSessionId(candidates, blocked_ids);
 
 						if (!discovered.empty())
 						{
 							const std::string previous_chat_id = terminal.attached_chat_id;
-							const int previous_chat_index = FindChatIndexById(app, previous_chat_id);
+							const int previous_chat_index = ChatDomainService().FindChatIndexById(app, previous_chat_id);
 
-							if (previous_chat_index >= 0 && IsLocalDraftChatId(previous_chat_id) && !app.chats[previous_chat_index].uses_native_session)
+							if (previous_chat_index >= 0 && NativeSessionLinkService().IsLocalDraftChatId(previous_chat_id) && !app.chats[previous_chat_index].uses_native_session)
 							{
-								PersistLocalDraftNativeSessionLink(app, app.chats[previous_chat_index], discovered);
+								ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, app.chats[previous_chat_index], discovered);
 							}
 
 							terminal.attached_session_id = discovered;
@@ -222,12 +229,12 @@ inline void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
 			}
 			else
 			{
-				RefreshNativeSessionDirectory(app);
-				const std::vector<ChatSession> native_now = LoadNativeSessionChats(app.native_history_chats_dir, terminal_provider);
+				ChatHistorySyncService().RefreshNativeSessionDirectory(app);
+				const std::vector<ChatSession> native_now = ChatHistorySyncService().LoadNativeSessionChats(app.native_history_chats_dir, terminal_provider);
 
 				if (terminal.attached_session_id.empty())
 				{
-					const std::vector<std::string> candidates = CollectNewSessionIds(native_now, terminal.session_ids_before);
+					const std::vector<std::string> candidates = NativeSessionLinkService().CollectNewSessionIds(native_now, terminal.session_ids_before);
 					std::unordered_set<std::string> blocked_ids;
 
 					for (const auto& other_terminal : app.cli_terminals)
@@ -248,16 +255,16 @@ inline void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
 						}
 					}
 
-					const std::string discovered = PickFirstUnblockedSessionId(candidates, blocked_ids);
+					const std::string discovered = NativeSessionLinkService().PickFirstUnblockedSessionId(candidates, blocked_ids);
 
 					if (!discovered.empty())
 					{
 						const std::string previous_chat_id = terminal.attached_chat_id;
-						const int previous_chat_index = FindChatIndexById(app, previous_chat_id);
+						const int previous_chat_index = ChatDomainService().FindChatIndexById(app, previous_chat_id);
 
-						if (previous_chat_index >= 0 && IsLocalDraftChatId(previous_chat_id) && !app.chats[previous_chat_index].uses_native_session)
+						if (previous_chat_index >= 0 && NativeSessionLinkService().IsLocalDraftChatId(previous_chat_id) && !app.chats[previous_chat_index].uses_native_session)
 						{
-							PersistLocalDraftNativeSessionLink(app, app.chats[previous_chat_index], discovered);
+							ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, app.chats[previous_chat_index], discovered);
 						}
 
 						terminal.attached_session_id = discovered;
@@ -289,16 +296,10 @@ inline void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
 	}
 }
 
-inline void RefreshChatHistory(AppState& app)
-{
-	const std::string selected_id = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
-	SyncChatsFromNative(app, selected_id, true);
-	app.status_line = "Chat history refreshed.";
-}
-
 inline void PollAllCliTerminals(AppState& app)
 {
-	const std::string selected_chat_id = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
+	const ChatSession* lcp_selectedChat = ChatDomainService().SelectedChat(app);
+	const std::string selected_chat_id = (lcp_selectedChat != nullptr) ? lcp_selectedChat->id : "";
 	const double now = ImGui::GetTime();
 
 	for (auto& terminal : app.cli_terminals)
@@ -338,25 +339,10 @@ inline void PollAllCliTerminals(AppState& app)
 			ReportDroppedQueuedStructuredPromptsForTerminal(app, *terminal, "Provider terminal stopped due to idle timeout before queued prompt delivery.");
 			StopCliTerminal(*terminal, false);
 			terminal->should_launch = false;
-			app.status_line = "Stopped idle background terminal for chat " + CompactPreview(terminal->attached_chat_id, 36) + ".";
+			const std::string l_chatLabel = (terminal->attached_chat_id.size() > 36) ? (terminal->attached_chat_id.substr(0, 36) + "...") : terminal->attached_chat_id;
+			app.status_line = "Stopped idle background terminal for chat " + l_chatLabel + ".";
 		}
 	}
 }
 
-inline void StartGeminiRequest(AppState& app)
-{
-	ChatSession* chat = SelectedChat(app);
-
-	if (chat == nullptr)
-	{
-		app.status_line = "Select or create a chat first.";
-		return;
-	}
-
-	const std::string prompt_text = Trim(app.composer_text);
-
-	if (QueueProviderPromptForChat(app, *chat, prompt_text, false))
-	{
-		app.composer_text.clear();
-	}
-}
+#endif // UAM_COMMON_RUNTIME_TERMINAL_POLLING_H

@@ -34,6 +34,4 @@ class ChatDomainService
 	void AddMessage(ChatSession& chat, MessageRole role, const std::string& text) const;
 };
 
-ChatDomainService& GetChatDomainService();
-
 #endif // UAM_APP_CHAT_DOMAIN_SERVICE_H

@@ -1,4 +1,5 @@
 #pragma once
+#include "app/chat_domain_service.h"
 #include "common/platform/platform_services.h"
 
 /// <summary>
@@ -66,7 +67,7 @@ inline FolderHeaderAction DrawFolderHeaderItem(const ChatFolder& folder, const i
 	}
 
 	const std::string marker = folder.collapsed ? ">" : "v";
-	const std::string title = FolderTitleOrFallback(folder);
+	const std::string title = ChatDomainService().FolderTitleOrFallback(folder);
 	const std::string count_text = std::to_string(chat_count);
 	float count_x = max.x - count_x_offset;
 

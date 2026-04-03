@@ -10,7 +10,7 @@ inline void DrawChatSettingsMoveFolderCard(AppState& app, ChatSession& chat)
 
 	if (BeginSectionCard("folder_card"))
 	{
-		const ChatFolder* active_folder = FindFolderById(app, chat.folder_id);
+		const ChatFolder* active_folder = ChatDomainService().FindFolderById(app, chat.folder_id);
 		const char* active_label = (active_folder != nullptr) ? active_folder->title.c_str() : "(Unassigned)";
 
 		if (ImGui::BeginCombo("Folder", active_label))
@@ -18,7 +18,7 @@ inline void DrawChatSettingsMoveFolderCard(AppState& app, ChatSession& chat)
 			for (const ChatFolder& folder : app.folders)
 			{
 				const bool selected = (chat.folder_id == folder.id);
-				const std::string folder_name = FolderTitleOrFallback(folder);
+				const std::string folder_name = ChatDomainService().FolderTitleOrFallback(folder);
 
 				if (ImGui::Selectable(folder_name.c_str(), selected))
 				{

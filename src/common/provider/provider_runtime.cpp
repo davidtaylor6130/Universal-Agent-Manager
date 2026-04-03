@@ -3,7 +3,7 @@
 #include "command_line_words.h"
 #include "gemini_history_loader.h"
 #include "gemini_command_builder.h"
-#include "local_chat_store.h"
+#include "chat_repository.h"
 
 #include <algorithm>
 #include <cctype>
@@ -237,12 +237,12 @@ namespace
 			(void)profile;
 			(void)native_history_chats_dir;
 			(void)options;
-			return LocalChatStore::Load(data_root);
+			return ChatRepository::LoadLocalChats(data_root);
 		}
 
 		bool SaveHistory(const ProviderProfile&, const std::filesystem::path& data_root, const ChatSession& chat) const override
 		{
-			return LocalChatStore::Save(data_root, chat);
+			return ChatRepository::SaveChat(data_root, chat);
 		}
 
 		bool UsesNativeOverlayHistory(const ProviderProfile& profile) const override
@@ -327,12 +327,12 @@ namespace
 
 		std::vector<ChatSession> LoadHistory(const ProviderProfile&, const std::filesystem::path& data_root, const std::filesystem::path&, const ProviderRuntimeHistoryLoadOptions&) const override
 		{
-			return LocalChatStore::Load(data_root);
+			return ChatRepository::LoadLocalChats(data_root);
 		}
 
 		bool SaveHistory(const ProviderProfile&, const std::filesystem::path& data_root, const ChatSession& chat) const override
 		{
-			return LocalChatStore::Save(data_root, chat);
+			return ChatRepository::SaveChat(data_root, chat);
 		}
 
 		bool UsesNativeOverlayHistory(const ProviderProfile&) const override
@@ -391,7 +391,7 @@ namespace
 
 		bool SaveHistory(const ProviderProfile&, const std::filesystem::path& data_root, const ChatSession& chat) const override
 		{
-			return LocalChatStore::Save(data_root, chat);
+			return ChatRepository::SaveChat(data_root, chat);
 		}
 
 		bool UsesNativeOverlayHistory(const ProviderProfile&) const override

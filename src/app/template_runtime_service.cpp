@@ -8,12 +8,6 @@
 namespace fs = std::filesystem;
 using uam::AppState;
 
-std::string TemplateRuntimeService::BuildShellCommandWithWorkingDirectory(const fs::path& working_directory,
-	                                                                       const std::string& command) const
-{
-	return PlatformServicesFactory::Instance().process_service.BuildShellCommandWithWorkingDirectory(working_directory, command);
-}
-
 bool TemplateRuntimeService::EnsureWorkspaceProviderLayout(const AppState& app, const ChatSession& chat, std::string* error_out) const
 {
 	std::error_code ec;
@@ -82,11 +76,6 @@ bool TemplateRuntimeService::EnsureWorkspaceProviderLayout(const AppState& app, 
 	return true;
 }
 
-void TemplateRuntimeService::MarkTemplateCatalogDirty(AppState& app) const
-{
-	app.template_catalog_dirty = true;
-}
-
 bool TemplateRuntimeService::RefreshTemplateCatalog(AppState& app, const bool force) const
 {
 	if (!force && !app.template_catalog_dirty)
@@ -143,10 +132,4 @@ std::string TemplateRuntimeService::TemplateLabelOrFallback(const AppState& app,
 	}
 
 	return template_id.empty() ? "None" : ("Missing: " + template_id);
-}
-
-TemplateRuntimeService& GetTemplateRuntimeService()
-{
-	static TemplateRuntimeService service;
-	return service;
 }

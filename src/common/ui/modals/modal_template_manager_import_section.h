@@ -1,4 +1,5 @@
-#pragma once
+#ifndef UAM_COMMON_UI_MODALS_MODAL_TEMPLATE_MANAGER_IMPORT_SECTION_H
+#define UAM_COMMON_UI_MODALS_MODAL_TEMPLATE_MANAGER_IMPORT_SECTION_H
 
 /// <summary>
 /// Draws template-manager import controls for markdown template ingestion.
@@ -24,10 +25,10 @@ inline void DrawMarkdownTemplateManagerImportSection(AppState& app, const fs::pa
 
 		if (MarkdownTemplateCatalog::ImportMarkdownTemplate(global_root, fs::path(Trim(app.template_import_path_input)), &imported_id, &error))
 		{
-			MarkTemplateCatalogDirty(app);
-			RefreshTemplateCatalog(app, true);
+			app.template_catalog_dirty = true;
+			TemplateRuntimeService().RefreshTemplateCatalog(app, true);
 			app.template_manager_selected_id = imported_id;
-			const TemplateCatalogEntry* imported = FindTemplateEntryById(app, imported_id);
+			const TemplateCatalogEntry* imported = TemplateRuntimeService().FindTemplateEntryById(app, imported_id);
 			app.template_rename_input = (imported != nullptr) ? imported->display_name : "";
 			app.status_line = "Template imported.";
 			app.template_import_path_input.clear();
@@ -38,3 +39,5 @@ inline void DrawMarkdownTemplateManagerImportSection(AppState& app, const fs::pa
 		}
 	}
 }
+
+#endif // UAM_COMMON_UI_MODALS_MODAL_TEMPLATE_MANAGER_IMPORT_SECTION_H

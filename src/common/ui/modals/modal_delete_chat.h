@@ -13,7 +13,7 @@ inline void DrawDeleteChatConfirmationModal(AppState& app)
 
 	if (ImGui::BeginPopupModal("confirm_delete_chat_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
 	{
-		const int chat_index = FindChatIndexById(app, app.pending_delete_chat_id);
+		const int chat_index = ChatDomainService().FindChatIndexById(app, app.pending_delete_chat_id);
 		const std::string chat_title = (chat_index >= 0) ? CompactPreview(app.chats[chat_index].title, 42) : "Unknown chat";
 		ImGui::TextColored(ui::kTextPrimary, "Delete chat?");
 		ImGui::Dummy(ImVec2(0.0f, ui::kSpace4));

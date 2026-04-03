@@ -6,7 +6,7 @@
 inline void ApplyModernTheme()
 {
 	const bool light = IsLightPaletteActive();
-	const float spacing_scale = PlatformUiSpacingScale();
+	const float spacing_scale = PlatformServicesFactory::Instance().ui_traits.PlatformUiSpacingScale();
 	ImGuiStyle& style = ImGui::GetStyle();
 	style.WindowPadding = ImVec2(ui::kSpace16, ui::kSpace16);
 	style.FramePadding = ImVec2(10.0f * spacing_scale, 7.0f * spacing_scale);

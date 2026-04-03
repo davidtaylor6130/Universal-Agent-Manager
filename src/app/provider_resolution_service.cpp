@@ -91,8 +91,3 @@ bool ProviderResolutionService::ChatUsesCliOutput(const uam::AppState& app, cons
 	return profile != nullptr && ProviderRuntime::UsesCliOutput(*profile);
 }
 
-ProviderResolutionService& GetProviderResolutionService()
-{
-	static ProviderResolutionService service;
-	return service;
-}

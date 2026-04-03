@@ -1,4 +1,5 @@
-#pragma once
+#ifndef UAM_COMMON_UI_MODALS_MODAL_TEMPLATE_MANAGER_SELECTION_SECTION_H
+#define UAM_COMMON_UI_MODALS_MODAL_TEMPLATE_MANAGER_SELECTION_SECTION_H
 
 /// <summary>
 /// Draws template-manager actions for selected template mutation and assignment.
@@ -23,7 +24,7 @@ inline void DrawMarkdownTemplateManagerSelectionSection(AppState& app, const fs:
 
 	if (DrawButton("Use for This Chat", ImVec2(126.0f, 30.0f), ButtonKind::Ghost) && selected_entry != nullptr)
 	{
-		ChatSession* selected_chat = SelectedChat(app);
+		ChatSession* selected_chat = ChatDomainService().SelectedChat(app);
 
 		if (selected_chat != nullptr)
 		{
@@ -50,7 +51,7 @@ inline void DrawMarkdownTemplateManagerSelectionSection(AppState& app, const fs:
 	{
 		std::string error;
 
-		if (!RevealPathInFileManager(fs::path(selected_entry->absolute_path), &error))
+		if (!PlatformServicesFactory::Instance().file_dialog_service.RevealPathInFileManager(fs::path(selected_entry->absolute_path), &error))
 		{
 			app.status_line = error;
 		}
@@ -90,12 +91,12 @@ inline void DrawMarkdownTemplateManagerSelectionSection(AppState& app, const fs:
 				if (chat.template_override_id == selected_entry->id)
 				{
 					chat.template_override_id = new_id;
-					SaveChat(app, chat);
+					ProviderRuntime::SaveHistory(ProviderResolutionService().ProviderForChatOrDefault(app, chat), app.data_root, chat);
 				}
 			}
 
-			MarkTemplateCatalogDirty(app);
-			RefreshTemplateCatalog(app, true);
+			app.template_catalog_dirty = true;
+			TemplateRuntimeService().RefreshTemplateCatalog(app, true);
 			app.template_manager_selected_id = new_id;
 			app.status_line = "Template renamed.";
 		}
@@ -125,14 +126,14 @@ inline void DrawMarkdownTemplateManagerSelectionSection(AppState& app, const fs:
 				if (chat.template_override_id == removed_id)
 				{
 					chat.template_override_id.clear();
-					SaveChat(app, chat);
+					ProviderRuntime::SaveHistory(ProviderResolutionService().ProviderForChatOrDefault(app, chat), app.data_root, chat);
 				}
 			}
 
 			app.template_manager_selected_id.clear();
 			app.template_rename_input.clear();
-			MarkTemplateCatalogDirty(app);
-			RefreshTemplateCatalog(app, true);
+			app.template_catalog_dirty = true;
+			TemplateRuntimeService().RefreshTemplateCatalog(app, true);
 			app.status_line = "Template deleted.";
 		}
 		else
@@ -146,3 +147,5 @@ inline void DrawMarkdownTemplateManagerSelectionSection(AppState& app, const fs:
 		ImGui::EndDisabled();
 	}
 }
+
+#endif // UAM_COMMON_UI_MODALS_MODAL_TEMPLATE_MANAGER_SELECTION_SECTION_H

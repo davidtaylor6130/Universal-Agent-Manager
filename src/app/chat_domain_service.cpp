@@ -390,8 +390,3 @@ void ChatDomainService::AddMessage(ChatSession& chat, const MessageRole role, co
 	}
 }
 
-ChatDomainService& GetChatDomainService()
-{
-	static ChatDomainService service;
-	return service;
-}

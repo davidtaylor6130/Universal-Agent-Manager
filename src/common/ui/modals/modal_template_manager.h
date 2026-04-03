@@ -12,7 +12,7 @@ inline void DrawMarkdownTemplateManagerModal(AppState& app)
 {
 	if (app.open_template_manager_popup)
 	{
-		RefreshTemplateCatalog(app, true);
+		TemplateRuntimeService().RefreshTemplateCatalog(app, true);
 		app.template_import_path_input.clear();
 		ImGui::OpenPopup("template_manager_popup");
 		app.open_template_manager_popup = false;
@@ -23,7 +23,7 @@ inline void DrawMarkdownTemplateManagerModal(AppState& app)
 		return;
 	}
 
-	RefreshTemplateCatalog(app);
+	TemplateRuntimeService().RefreshTemplateCatalog(app);
 	const fs::path global_root = ResolvePromptProfileRootPath(app.settings);
 	const fs::path catalog_path = MarkdownTemplateCatalog::CatalogPath(global_root);
 

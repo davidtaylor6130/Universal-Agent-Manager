@@ -1,4 +1,7 @@
 #pragma once
+#include "app/chat_domain_service.h"
+#include "app/provider_resolution_service.h"
+#include "app/runtime_orchestration_services.h"
 #include "common/platform/platform_services.h"
 
 /// <summary>
@@ -6,7 +9,7 @@
 /// </summary>
 inline bool RemoveChatById(AppState& app, const std::string& chat_id)
 {
-	const int chat_index = FindChatIndexById(app, chat_id);
+	const int chat_index = ChatDomainService().FindChatIndexById(app, chat_id);
 
 	if (chat_index < 0)
 	{
@@ -32,7 +35,7 @@ inline bool RemoveChatById(AppState& app, const std::string& chat_id)
 
 	if (PlatformServicesFactory::Instance().ui_traits.UseWindowsLayoutAdjustments())
 	{
-		const fs::path local_chat_path = ChatPath(app, chat);
+		const fs::path local_chat_path = AppPaths::ChatPath(app.data_root, chat.id);
 		auto delete_local_chat_path = [local_chat_path]()
 		{
 			std::error_code async_local_delete_ec;
@@ -44,7 +47,7 @@ inline bool RemoveChatById(AppState& app, const std::string& chat_id)
 	}
 	else
 	{
-		fs::remove_all(ChatPath(app, chat), local_delete_ec);
+		fs::remove_all(AppPaths::ChatPath(app.data_root, chat.id), local_delete_ec);
 	}
 
 	const std::string native_session_id = chat.uses_native_session ? chat.native_session_id : "";
@@ -52,9 +55,9 @@ inline bool RemoveChatById(AppState& app, const std::string& chat_id)
 	bool native_delete_attempted = false;
 	bool native_delete_async_scheduled = false;
 
-	if (ActiveProviderUsesNativeOverlayHistory(app) && !native_session_id.empty())
+	if (ProviderResolutionService().ActiveProviderUsesNativeOverlayHistory(app) && !native_session_id.empty())
 	{
-		RefreshNativeSessionDirectory(app);
+		ChatHistorySyncService().RefreshNativeSessionDirectory(app);
 		native_delete_attempted = true;
 
 		if (PlatformServicesFactory::Instance().ui_traits.UseWindowsLayoutAdjustments())
@@ -77,7 +80,7 @@ inline bool RemoveChatById(AppState& app, const std::string& chat_id)
 			std::thread(delete_native_session_file).detach();
 			native_delete_async_scheduled = true;
 		}
-		else if (const auto native_file = FindNativeSessionFilePath(app, native_session_id); native_file.has_value())
+		else if (const auto native_file = FindNativeSessionFilePathInDirectory(app.native_history_chats_dir, native_session_id); native_file.has_value())
 		{
 			fs::remove(native_file.value(), native_delete_ec);
 		}
@@ -93,11 +96,11 @@ inline bool RemoveChatById(AppState& app, const std::string& chat_id)
 			continue;
 		}
 
-		SaveChat(app, existing_chat);
+		ProviderRuntime::SaveHistory(ProviderResolutionService().ProviderForChatOrDefault(app, existing_chat), app.data_root, existing_chat);
 	}
 
 	app.chats.erase(app.chats.begin() + chat_index);
-	NormalizeChatBranchMetadata(app);
+	ChatBranching::Normalize(app.chats);
 
 	if (app.chats.empty())
 	{
@@ -149,7 +152,7 @@ inline bool RemoveChatById(AppState& app, const std::string& chat_id)
 		app.open_sidebar_chat_options_popup = false;
 	}
 
-	RefreshRememberedSelection(app);
+	ChatDomainService().RefreshRememberedSelection(app);
 	SaveSettings(app);
 
 	if (local_delete_ec)

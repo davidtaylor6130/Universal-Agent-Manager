@@ -1,5 +1,8 @@
 #pragma once
 
+#include "app/provider_resolution_service.h"
+#include "app/runtime_orchestration_services.h"
+
 /// <summary>
 /// Draws the local Gemini workspace card in the chat settings side pane.
 /// </summary>
@@ -22,7 +25,7 @@ inline void DrawChatSettingsLocalGeminiCard(AppState& app, ChatSession& chat)
 		{
 			std::string error;
 
-			if (!OpenFolderInFileManager(local_root, &error))
+			if (!PlatformServicesFactory::Instance().file_dialog_service.OpenFolderInFileManager(local_root, &error))
 			{
 				app.status_line = error;
 			}
@@ -34,7 +37,7 @@ inline void DrawChatSettingsLocalGeminiCard(AppState& app, ChatSession& chat)
 		{
 			std::string error;
 
-			if (!RevealPathInFileManager(local_template, &error))
+			if (!PlatformServicesFactory::Instance().file_dialog_service.RevealPathInFileManager(local_template, &error))
 			{
 				app.status_line = error;
 			}
@@ -44,7 +47,7 @@ inline void DrawChatSettingsLocalGeminiCard(AppState& app, ChatSession& chat)
 		{
 			std::string error;
 
-			if (!OpenFolderInFileManager(local_root / "Lessons", &error))
+			if (!PlatformServicesFactory::Instance().file_dialog_service.OpenFolderInFileManager(local_root / "Lessons", &error))
 			{
 				app.status_line = error;
 			}
@@ -56,7 +59,7 @@ inline void DrawChatSettingsLocalGeminiCard(AppState& app, ChatSession& chat)
 		{
 			std::string error;
 
-			if (!OpenFolderInFileManager(local_root / "Failures", &error))
+			if (!PlatformServicesFactory::Instance().file_dialog_service.OpenFolderInFileManager(local_root / "Failures", &error))
 			{
 				app.status_line = error;
 			}
@@ -68,7 +71,7 @@ inline void DrawChatSettingsLocalGeminiCard(AppState& app, ChatSession& chat)
 		{
 			std::string error;
 
-			if (!OpenFolderInFileManager(local_root / "auto-test", &error))
+			if (!PlatformServicesFactory::Instance().file_dialog_service.OpenFolderInFileManager(local_root / "auto-test", &error))
 			{
 				app.status_line = error;
 			}
@@ -77,8 +80,8 @@ inline void DrawChatSettingsLocalGeminiCard(AppState& app, ChatSession& chat)
 		if (DrawButton("Sync Template Now", ImVec2(132.0f, 32.0f), ButtonKind::Primary))
 		{
 			std::string sync_status;
-			const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
-			const TemplatePreflightOutcome outcome = PreflightWorkspaceTemplateForChat(app, provider, chat, nullptr, &sync_status);
+			const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+			const TemplatePreflightOutcome outcome = ProviderRequestService().PreflightWorkspaceTemplateForChat(app, provider, chat, nullptr, &sync_status);
 
 			if (outcome == TemplatePreflightOutcome::BlockingError)
 			{

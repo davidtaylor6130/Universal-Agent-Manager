@@ -5,6 +5,9 @@
 #include <curl/curl.h>
 
 #include "runtime_local_service.h"
+#include "common/runtime/terminal_common.h"
+#include "common/runtime/terminal_polling.h"
+#include "common/ui/chat_actions/chat_action_pending_calls.h"
 
 #include "common/runtime/provider_cli_compatibility_service.h"
 
@@ -81,7 +84,7 @@ int Application::Run()
 		while (SDL_PollEvent(&l_event))
 		{
 			// Let an embedded terminal consume Escape first so app-level handlers do not steal it.
-			if (m_terminalSessionManager.ForwardEscapeToSelectedTerminal(m_app, l_event))
+			if (ForwardEscapeToSelectedCliTerminal(m_app, l_event))
 			{
 				continue;
 			}
@@ -153,15 +156,15 @@ bool Application::Update()
 	if (m_done)
 	{
 		// Stop terminal work immediately once shutdown has been requested.
-		m_terminalSessionManager.FastStopTerminalsForExit(m_app);
+		FastStopCliTerminalsForExit(m_app);
 		m_terminalsStoppedForShutdown = true;
 		return false;
 	}
 
 	// Poll runtime work before drawing the next frame.
-	m_pendingRuntimeCallService.Poll(m_app);
-	m_terminalPollingService.PollAllTerminals(m_app);
-	GetProviderCliCompatibilityService().Poll(m_app);
+	PollPendingRuntimeCall(m_app);
+	PollAllCliTerminals(m_app);
+	ProviderCliCompatibilityService().Poll(m_app);
 
 	ImGui_ImplOpenGL3_NewFrame();
 	ImGui_ImplSDL2_NewFrame();
@@ -170,10 +173,6 @@ bool Application::Update()
 	                         m_done,
 	                         m_platformUiScale,
 	                         m_platformServices->ui_traits,
-	                         m_shortcutHandler,
-	                         m_themeController,
-	                         m_mainMenuBarView,
-	                         m_sidebarView,
 	                         m_chatDetailView,
 	                         m_modalHostView);
 
@@ -191,9 +190,9 @@ void Application::Shutdown()
 
 	if (!m_terminalsStoppedForShutdown)
 	{
-		m_terminalSessionManager.StopAllTerminals(m_app, true);
+		StopAllCliTerminals(m_app, true);
 		m_terminalsStoppedForShutdown = true;
 	}
 
-	GetRuntimeLocalService().StopLocalBridge(m_app);
+	RuntimeLocalService().StopLocalBridge(m_app);
 }

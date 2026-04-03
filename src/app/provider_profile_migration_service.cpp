@@ -119,11 +119,6 @@ std::string ProviderProfileMigrationService::DefaultRuntimeIdForLegacyViewHint(c
 	return (app.center_view_mode == CenterViewMode::CliConsole) ? kRuntimeIdCli : kRuntimeIdStructured;
 }
 
-bool ProviderProfileMigrationService::ChatHasCliViewHint(const uam::AppState& app, const ChatSession& chat) const
-{
-	return ChatHasCliRuntimeHints(app, chat);
-}
-
 bool ProviderProfileMigrationService::ShouldShowProviderProfileInUi(const ProviderProfile& profile) const
 {
 	return !IsLegacyBuiltInProviderId(profile.id);
@@ -301,7 +296,7 @@ bool ProviderProfileMigrationService::MigrateChatProviderBindingsToFixedModes(ua
 	for (ChatSession& chat : app.chats)
 	{
 		const std::string original_provider_id = chat.provider_id;
-		const bool prefer_cli_for_legacy_runtime = ChatHasCliViewHint(app, chat) || app.center_view_mode == CenterViewMode::CliConsole;
+		const bool prefer_cli_for_legacy_runtime = ChatHasCliRuntimeHints(app, chat) || app.center_view_mode == CenterViewMode::CliConsole;
 		std::string mapped_provider_id = MapLegacyRuntimeId(original_provider_id, prefer_cli_for_legacy_runtime);
 
 		if (mapped_provider_id.empty())
@@ -340,8 +335,3 @@ bool ProviderProfileMigrationService::MigrateChatProviderBindingsToFixedModes(ua
 	return changed;
 }
 
-ProviderProfileMigrationService& GetProviderProfileMigrationService()
-{
-	static ProviderProfileMigrationService service;
-	return service;
-}

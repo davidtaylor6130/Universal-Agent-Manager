@@ -1,5 +1,7 @@
 #pragma once
 
+#include "app/chat_domain_service.h"
+
 /// <summary>
 /// Draws the sidebar chat context menu popup.
 /// </summary>
@@ -16,7 +18,7 @@ inline void DrawSidebarChatOptionsPopup(AppState& app)
 		return;
 	}
 
-	const int chat_index = FindChatIndexById(app, app.sidebar_chat_options_popup_chat_id);
+	const int chat_index = ChatDomainService().FindChatIndexById(app, app.sidebar_chat_options_popup_chat_id);
 
 	if (chat_index < 0)
 	{
@@ -30,7 +32,7 @@ inline void DrawSidebarChatOptionsPopup(AppState& app)
 	{
 		if (app.selected_chat_index != chat_index)
 		{
-			SelectChatById(app, popup_chat.id);
+			ChatDomainService().SelectChatById(app, popup_chat.id);
 			SaveSettings(app);
 		}
 	};
@@ -144,7 +146,7 @@ inline void DrawSidebarChatOptionsPopup(AppState& app)
 		for (const ChatFolder& folder : app.folders)
 		{
 			const bool selected = (popup_chat.folder_id == folder.id);
-			const std::string folder_name = FolderTitleOrFallback(folder);
+			const std::string folder_name = ChatDomainService().FolderTitleOrFallback(folder);
 
 			if (ImGui::MenuItem(folder_name.c_str(), nullptr, selected))
 			{

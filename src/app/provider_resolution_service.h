@@ -19,6 +19,4 @@ class ProviderResolutionService
 	bool ChatUsesCliOutput(const uam::AppState& app, const ChatSession& chat) const;
 };
 
-ProviderResolutionService& GetProviderResolutionService();
-
 #endif // UAM_APP_PROVIDER_RESOLUTION_SERVICE_H

@@ -1,4 +1,5 @@
-#pragma once
+#ifndef UAM_COMMON_UI_THEME_THEME_CHOICE_H
+#define UAM_COMMON_UI_THEME_THEME_CHOICE_H
 
 /// <summary>
 /// Theme choice normalization, system detection, and palette application.
@@ -28,11 +29,6 @@ inline std::string NormalizeThemeChoice(std::string value)
 	return "dark";
 }
 
-inline std::optional<bool> DetectSystemPrefersLightTheme()
-{
-	return PlatformServicesFactory::Instance().ui_traits.DetectSystemPrefersLightTheme();
-}
-
 inline UiThemeResolved ResolveUiTheme(const AppSettings& settings)
 {
 	const std::string mode = NormalizeThemeChoice(settings.ui_theme);
@@ -47,7 +43,7 @@ inline UiThemeResolved ResolveUiTheme(const AppSettings& settings)
 		return UiThemeResolved::Dark;
 	}
 
-	if (const std::optional<bool> system_prefers_light = DetectSystemPrefersLightTheme(); system_prefers_light.has_value())
+	if (const std::optional<bool> system_prefers_light = PlatformServicesFactory::Instance().ui_traits.DetectSystemPrefersLightTheme(); system_prefers_light.has_value())
 	{
 		return system_prefers_light.value() ? UiThemeResolved::Light : UiThemeResolved::Dark;
 	}
@@ -97,3 +93,5 @@ inline void ApplyResolvedPalette(const UiThemeResolved theme)
 	ui::kError = Rgb(255, 107, 107, 1.0f);
 	ui::kWarning = Rgb(245, 158, 11, 1.0f);
 }
+
+#endif // UAM_COMMON_UI_THEME_THEME_CHOICE_H

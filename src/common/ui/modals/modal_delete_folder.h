@@ -13,8 +13,8 @@ inline void DrawDeleteFolderConfirmationModal(AppState& app)
 
 	if (ImGui::BeginPopupModal("confirm_delete_folder_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
 	{
-		const ChatFolder* folder = FindFolderById(app, app.pending_delete_folder_id);
-		const std::string folder_name = (folder != nullptr) ? FolderTitleOrFallback(*folder) : "Unknown folder";
+		const ChatFolder* folder = ChatDomainService().FindFolderById(app, app.pending_delete_folder_id);
+		const std::string folder_name = (folder != nullptr) ? ChatDomainService().FolderTitleOrFallback(*folder) : "Unknown folder";
 		ImGui::TextColored(ui::kTextPrimary, "Delete folder?");
 		ImGui::Dummy(ImVec2(0.0f, ui::kSpace4));
 		ImGui::TextWrapped("Chats in this folder will be moved to General.");

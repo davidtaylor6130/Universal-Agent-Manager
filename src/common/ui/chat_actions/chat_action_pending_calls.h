@@ -1,5 +1,13 @@
 #pragma once
 
+#include "app/chat_domain_service.h"
+#include "app/native_session_link_service.h"
+#include "app/provider_profile_migration_service.h"
+#include "app/provider_resolution_service.h"
+#include "app/runtime_orchestration_services.h"
+#include "common/chat_branching.h"
+#include "common/provider/provider_runtime.h"
+
 /// <summary>
 /// Polls asynchronous provider calls and syncs results back into chat state.
 /// </summary>
@@ -46,8 +54,9 @@ inline void PollPendingRuntimeCall(AppState& app)
 
 		const std::string output = *call.output;
 		const std::string pending_chat_id = call.chat_id;
-		const std::string selected_before_id = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
-		const int pending_chat_index = FindChatIndexById(app, pending_chat_id);
+		const ChatSession* lcp_selectedBefore = ChatDomainService().SelectedChat(app);
+		const std::string selected_before_id = (lcp_selectedBefore != nullptr) ? lcp_selectedBefore->id : "";
+		const int pending_chat_index = ChatDomainService().FindChatIndexById(app, pending_chat_id);
 		ChatSession pending_chat_snapshot;
 
 		if (pending_chat_index >= 0)
@@ -55,12 +64,12 @@ inline void PollPendingRuntimeCall(AppState& app)
 			pending_chat_snapshot = app.chats[pending_chat_index];
 		}
 
-		if (!ActiveProviderUsesNativeOverlayHistory(app))
+		if (!ProviderResolutionService().ActiveProviderUsesNativeOverlayHistory(app))
 		{
 			if (pending_chat_index >= 0)
 			{
-				AddMessage(app.chats[pending_chat_index], MessageRole::Assistant, output);
-				SaveChat(app, app.chats[pending_chat_index]);
+				ChatDomainService().AddMessage(app.chats[pending_chat_index], MessageRole::Assistant, output);
+				ProviderRuntime::SaveHistory(ProviderResolutionService().ProviderForChatOrDefault(app, app.chats[pending_chat_index]), app.data_root, app.chats[pending_chat_index]);
 
 				if (pending_chat_id != selected_before_id)
 				{
@@ -80,9 +89,9 @@ inline void PollPendingRuntimeCall(AppState& app)
 			continue;
 		}
 
-		RefreshNativeSessionDirectory(app);
-		std::vector<ChatSession> native_after = LoadNativeSessionChats(app.native_history_chats_dir, ActiveProviderOrDefault(app));
-		ApplyLocalOverrides(app, native_after);
+		ChatHistorySyncService().RefreshNativeSessionDirectory(app);
+		std::vector<ChatSession> native_after = ChatHistorySyncService().LoadNativeSessionChats(app.native_history_chats_dir, ProviderResolutionService().ActiveProviderOrDefault(app));
+		ChatHistorySyncService().ApplyLocalOverrides(app, native_after);
 
 		std::string selected_id = call.resume_session_id;
 
@@ -90,15 +99,15 @@ inline void PollPendingRuntimeCall(AppState& app)
 		{
 			const auto resolved_it = app.resolved_native_sessions_by_chat_id.find(pending_chat_id);
 
-			if (resolved_it != app.resolved_native_sessions_by_chat_id.end() && SessionIdExistsInLoadedChats(native_after, resolved_it->second))
+			if (resolved_it != app.resolved_native_sessions_by_chat_id.end() && NativeSessionLinkService().SessionIdExistsInLoadedChats(native_after, resolved_it->second))
 			{
 				selected_id = resolved_it->second;
 			}
 
 			if (selected_id.empty())
 			{
-				const std::vector<std::string> candidates = CollectNewSessionIds(native_after, call.session_ids_before);
-				selected_id = PickFirstUnblockedSessionId(candidates, claimed_new_session_ids);
+				const std::vector<std::string> candidates = NativeSessionLinkService().CollectNewSessionIds(native_after, call.session_ids_before);
+				selected_id = NativeSessionLinkService().PickFirstUnblockedSessionId(candidates, claimed_new_session_ids);
 			}
 		}
 
@@ -112,14 +121,14 @@ inline void PollPendingRuntimeCall(AppState& app)
 			}
 
 			const bool should_follow_to_result = (selected_before_id == pending_chat_id);
-			const int selected_index = FindChatIndexById(app, selected_id);
+			const int selected_index = ChatDomainService().FindChatIndexById(app, selected_id);
 
-			if (pending_chat_index >= 0 && selected_id != pending_chat_id && IsLocalDraftChatId(pending_chat_id) && !app.chats[pending_chat_index].uses_native_session)
+			if (pending_chat_index >= 0 && selected_id != pending_chat_id && NativeSessionLinkService().IsLocalDraftChatId(pending_chat_id) && !app.chats[pending_chat_index].uses_native_session)
 			{
-				PersistLocalDraftNativeSessionLink(app, app.chats[pending_chat_index], selected_id);
+				ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, app.chats[pending_chat_index], selected_id);
 			}
 
-			const bool transfer_overrides_to_resolved_chat = pending_chat_index >= 0 && selected_index >= 0 && selected_id != pending_chat_id && IsLocalDraftChatId(pending_chat_id);
+			const bool transfer_overrides_to_resolved_chat = pending_chat_index >= 0 && selected_index >= 0 && selected_id != pending_chat_id && NativeSessionLinkService().IsLocalDraftChatId(pending_chat_id);
 
 			if (transfer_overrides_to_resolved_chat)
 			{
@@ -135,7 +144,7 @@ inline void PollPendingRuntimeCall(AppState& app)
 					app.chats[selected_index].folder_id = pending_chat_snapshot.folder_id;
 				}
 
-				SaveChat(app, app.chats[selected_index]);
+				ProviderRuntime::SaveHistory(ProviderResolutionService().ProviderForChatOrDefault(app, app.chats[selected_index]), app.data_root, app.chats[selected_index]);
 			}
 
 			if (selected_id != pending_chat_id)
@@ -145,20 +154,20 @@ inline void PollPendingRuntimeCall(AppState& app)
 
 			if (should_follow_to_result)
 			{
-				SelectChatById(app, selected_id);
+				ChatDomainService().SelectChatById(app, selected_id);
 				app.scroll_to_bottom = true;
 			}
 			else
 			{
 				if (!selected_before_id.empty())
 				{
-					const int keep_index = FindChatIndexById(app, selected_before_id);
+					const int keep_index = ChatDomainService().FindChatIndexById(app, selected_before_id);
 
 					if (keep_index >= 0)
 					{
 						app.selected_chat_index = keep_index;
 						app.chats_with_unseen_updates.erase(selected_before_id);
-						RefreshRememberedSelection(app);
+						ChatDomainService().RefreshRememberedSelection(app);
 					}
 				}
 
@@ -173,11 +182,11 @@ inline void PollPendingRuntimeCall(AppState& app)
 		else
 		{
 			app.resolved_native_sessions_by_chat_id.erase(pending_chat_id);
-			const int fallback_index = FindChatIndexById(app, pending_chat_id);
+			const int fallback_index = ChatDomainService().FindChatIndexById(app, pending_chat_id);
 
 			if (fallback_index >= 0)
 			{
-				AddMessage(app.chats[fallback_index], MessageRole::System, output);
+				ChatDomainService().AddMessage(app.chats[fallback_index], MessageRole::System, output);
 
 				if (pending_chat_id != selected_before_id)
 				{
@@ -193,7 +202,7 @@ inline void PollPendingRuntimeCall(AppState& app)
 			}
 		}
 
-		NormalizeChatBranchMetadata(app);
+		ChatBranching::Normalize(app.chats);
 		app.pending_calls.erase(app.pending_calls.begin() + static_cast<std::ptrdiff_t>(i));
 	}
 }

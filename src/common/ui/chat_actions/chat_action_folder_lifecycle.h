@@ -1,5 +1,10 @@
 #pragma once
 
+#include "app/chat_domain_service.h"
+#include "app/native_session_link_service.h"
+#include "app/provider_profile_migration_service.h"
+#include "app/provider_resolution_service.h"
+
 /// <summary>
 /// Folder deletion, chat creation, and delete-request dispatch actions.
 /// </summary>
@@ -11,7 +16,7 @@ inline bool DeleteFolderById(AppState& app, const std::string& folder_id)
 		return false;
 	}
 
-	const int folder_index = FindFolderIndexById(app, folder_id);
+	const int folder_index = ChatDomainService().FindFolderIndexById(app, folder_id);
 
 	if (folder_index < 0)
 	{
@@ -32,7 +37,7 @@ inline bool DeleteFolderById(AppState& app, const std::string& folder_id)
 		existing_chat.folder_id = kDefaultFolderId;
 		existing_chat.updated_at = TimestampNow();
 
-		if (!SaveChat(app, existing_chat))
+		if (!ProviderRuntime::SaveHistory(ProviderResolutionService().ProviderForChatOrDefault(app, existing_chat), app.data_root, existing_chat))
 		{
 			all_chat_saves_ok = false;
 		}
@@ -41,14 +46,14 @@ inline bool DeleteFolderById(AppState& app, const std::string& folder_id)
 	}
 
 	app.folders.erase(app.folders.begin() + folder_index);
-	EnsureDefaultFolder(app);
+	ChatDomainService().EnsureDefaultFolder(app);
 
 	if (app.new_chat_folder_id == folder_id)
 	{
 		app.new_chat_folder_id = kDefaultFolderId;
 	}
 
-	SaveFolders(app);
+	ChatFolderStore::Save(app.data_root, app.folders);
 
 	if (all_chat_saves_ok)
 	{
@@ -90,7 +95,7 @@ inline std::string FindExistingEmptyDraftChatIdForFolderProvider(const AppState&
 			continue;
 		}
 
-		if (!IsLocalDraftChatId(existing.id) || !existing.messages.empty() || HasPendingCallForChat(app, existing.id))
+		if (!NativeSessionLinkService().IsLocalDraftChatId(existing.id) || !existing.messages.empty() || HasPendingCallForChat(app, existing.id))
 		{
 			continue;
 		}
@@ -116,7 +121,7 @@ inline std::string ResolveNewChatProviderId(const AppState& app, const std::stri
 
 	if (!preferred.empty())
 	{
-		if (const ProviderProfile* preferred_profile = ProviderProfileStore::FindById(app.provider_profiles, preferred); preferred_profile != nullptr && ShouldShowProviderProfileInUi(*preferred_profile))
+		if (const ProviderProfile* preferred_profile = ProviderProfileStore::FindById(app.provider_profiles, preferred); preferred_profile != nullptr && ProviderProfileMigrationService().ShouldShowProviderProfileInUi(*preferred_profile))
 		{
 			return preferred_profile->id;
 		}
@@ -126,7 +131,7 @@ inline std::string ResolveNewChatProviderId(const AppState& app, const std::stri
 
 	if (!active.empty())
 	{
-		if (const ProviderProfile* active_profile = ProviderProfileStore::FindById(app.provider_profiles, active); active_profile != nullptr && ShouldShowProviderProfileInUi(*active_profile))
+		if (const ProviderProfile* active_profile = ProviderProfileStore::FindById(app.provider_profiles, active); active_profile != nullptr && ProviderProfileMigrationService().ShouldShowProviderProfileInUi(*active_profile))
 		{
 			return active_profile->id;
 		}
@@ -134,7 +139,7 @@ inline std::string ResolveNewChatProviderId(const AppState& app, const std::stri
 
 	for (const ProviderProfile& profile : app.provider_profiles)
 	{
-		if (ShouldShowProviderProfileInUi(profile))
+		if (ProviderProfileMigrationService().ShouldShowProviderProfileInUi(profile))
 		{
 			return profile.id;
 		}
@@ -150,7 +155,7 @@ inline void OpenNewChatPopup(AppState& app, const std::string& target_folder_id 
 		app.new_chat_folder_id = target_folder_id;
 	}
 
-	EnsureNewChatFolderSelection(app);
+	ChatDomainService().EnsureNewChatFolderSelection(app);
 	ClearPendingDuplicateNewChatDecision(app);
 	app.pending_new_chat_provider_id = ResolveNewChatProviderId(app, app.pending_new_chat_provider_id);
 	app.open_new_chat_popup = true;
@@ -166,7 +171,7 @@ inline bool CreateAndSelectChatWithProvider(AppState& app, const std::string& pr
 		return false;
 	}
 
-	const std::string target_folder = FolderForNewChat(app);
+	const std::string target_folder = ChatDomainService().FolderForNewChat(app);
 	const std::string existing_draft_chat_id = FindExistingEmptyDraftChatIdForFolderProvider(app, target_folder, selected_provider_id);
 
 	if (!existing_draft_chat_id.empty())
@@ -183,10 +188,10 @@ inline bool CreateAndSelectChatWithProvider(AppState& app, const std::string& pr
 
 		if (duplicate_policy == NewChatDuplicatePolicy::ReuseExisting)
 		{
-			SelectChatById(app, existing_draft_chat_id);
+			ChatDomainService().SelectChatById(app, existing_draft_chat_id);
 			SaveSettings(app);
 
-			if (const ChatSession* selected = SelectedChat(app); selected != nullptr && ChatUsesCliOutput(app, *selected))
+			if (const ChatSession* selected = ChatDomainService().SelectedChat(app); selected != nullptr && ProviderResolutionService().ChatUsesCliOutput(app, *selected))
 			{
 				MarkSelectedCliTerminalForLaunch(app);
 			}
@@ -197,21 +202,21 @@ inline bool CreateAndSelectChatWithProvider(AppState& app, const std::string& pr
 		}
 	}
 
-	ChatSession chat = CreateNewChat(target_folder, selected_provider_id);
+	ChatSession chat = ChatDomainService().CreateNewChat(target_folder, selected_provider_id);
 	app.settings.active_provider_id = selected_provider_id;
 	chat.rag_enabled = app.settings.rag_enabled;
 	app.chats.push_back(chat);
-	NormalizeChatBranchMetadata(app);
-	SortChatsByRecent(app.chats);
-	SelectChatById(app, chat.id);
+	ChatBranching::Normalize(app.chats);
+	ChatDomainService().SortChatsByRecent(app.chats);
+	ChatDomainService().SelectChatById(app, chat.id);
 	SaveSettings(app);
 
-	if (const ChatSession* selected = SelectedChat(app); selected != nullptr && ChatUsesCliOutput(app, *selected))
+	if (const ChatSession* selected = ChatDomainService().SelectedChat(app); selected != nullptr && ProviderResolutionService().ChatUsesCliOutput(app, *selected))
 	{
 		MarkSelectedCliTerminalForLaunch(app);
 	}
 
-	if (!SaveChat(app, app.chats[app.selected_chat_index]))
+	if (!ProviderRuntime::SaveHistory(ProviderResolutionService().ProviderForChatOrDefault(app, app.chats[app.selected_chat_index]), app.data_root, app.chats[app.selected_chat_index]))
 	{
 		ClearPendingDuplicateNewChatDecision(app);
 		app.status_line = "Created chat in memory, but failed to persist.";
@@ -225,7 +230,7 @@ inline bool CreateAndSelectChatWithProvider(AppState& app, const std::string& pr
 
 inline void CreateAndSelectChat(AppState& app)
 {
-	OpenNewChatPopup(app, FolderForNewChat(app));
+	OpenNewChatPopup(app, ChatDomainService().FolderForNewChat(app));
 }
 
 inline void CreateAndSelectChatInFolder(AppState& app, const std::string& folder_id)
@@ -251,7 +256,7 @@ inline bool ConfirmCreateNewChat(AppState& app)
 
 inline void RequestDeleteSelectedChat(AppState& app)
 {
-	const ChatSession* chat = SelectedChat(app);
+	const ChatSession* chat = ChatDomainService().SelectedChat(app);
 
 	if (chat == nullptr)
 	{

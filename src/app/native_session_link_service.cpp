@@ -140,8 +140,3 @@ bool NativeSessionLinkService::SessionIdExistsInLoadedChats(const std::vector<Ch
 	return false;
 }
 
-NativeSessionLinkService& GetNativeSessionLinkService()
-{
-	static NativeSessionLinkService service;
-	return service;
-}

@@ -1,5 +1,9 @@
 #pragma once
 
+#include "app/provider_resolution_service.h"
+#include "app/template_runtime_service.h"
+#include "app/runtime_orchestration_services.h"
+
 /// <summary>
 /// Template override actions and pending template-change state reset.
 /// </summary>
@@ -12,7 +16,7 @@ inline void ClearPendingTemplateChange(AppState& app)
 
 inline bool ApplyChatTemplateOverride(AppState& app, ChatSession& chat, const std::string& override_id, const bool send_control_message_for_started_chat)
 {
-	if (!override_id.empty() && FindTemplateEntryById(app, override_id) == nullptr)
+	if (!override_id.empty() && TemplateRuntimeService().FindTemplateEntryById(app, override_id) == nullptr)
 	{
 		app.status_line = "Template not found in catalog: " + override_id;
 		app.open_template_manager_popup = true;
@@ -29,8 +33,8 @@ inline bool ApplyChatTemplateOverride(AppState& app, ChatSession& chat, const st
 	SaveAndUpdateStatus(app, chat, "Chat template updated.", "Template changed in UI, but failed to save chat.");
 
 	std::string template_status;
-	const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
-	const TemplatePreflightOutcome outcome = PreflightWorkspaceTemplateForChat(app, provider, chat, nullptr, &template_status);
+	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+	const TemplatePreflightOutcome outcome = ProviderRequestService().PreflightWorkspaceTemplateForChat(app, provider, chat, nullptr, &template_status);
 
 	if (outcome == TemplatePreflightOutcome::BlockingError)
 	{

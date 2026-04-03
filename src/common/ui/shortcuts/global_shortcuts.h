@@ -23,7 +23,7 @@ inline void HandleGlobalShortcuts(AppState& app)
 
 	if (allow_global_action && ctrl && ImGui::IsKeyPressed(ImGuiKey_R, false))
 	{
-		RefreshChatHistory(app);
+		ChatHistorySyncService().RefreshChatHistory(app);
 	}
 
 	if (allow_global_action && ctrl && ImGui::IsKeyPressed(ImGuiKey_Y, false))

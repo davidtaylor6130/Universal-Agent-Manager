@@ -1,5 +1,7 @@
 #pragma once
 
+#include "app/chat_domain_service.h"
+
 /// <summary>
 /// Draws the create-folder modal used by the sidebar.
 /// </summary>
@@ -44,15 +46,15 @@ inline void DrawSidebarNewFolderPopup(AppState& app)
 			else
 			{
 				ChatFolder folder;
-				folder.id = NewFolderId();
+				folder.id = ChatDomainService().NewFolderId();
 				folder.title = folder_title;
 				folder.directory = folder_dir;
 				folder.collapsed = false;
 				app.folders.push_back(std::move(folder));
 				app.new_chat_folder_id = app.folders.back().id;
-				SaveFolders(app);
+				ChatFolderStore::Save(app.data_root, app.folders);
 				const std::string created_folder_id = app.folders.back().id;
-				const int move_chat_index = FindChatIndexById(app, app.pending_move_chat_to_new_folder_id);
+				const int move_chat_index = ChatDomainService().FindChatIndexById(app, app.pending_move_chat_to_new_folder_id);
 
 				if (move_chat_index >= 0)
 				{

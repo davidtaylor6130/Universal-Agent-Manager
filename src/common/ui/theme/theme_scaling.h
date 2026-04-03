@@ -1,4 +1,5 @@
-#pragma once
+#ifndef UAM_COMMON_UI_THEME_THEME_SCALING_H
+#define UAM_COMMON_UI_THEME_THEME_SCALING_H
 #include "common/platform/platform_services.h"
 #include "common/platform/sdl_includes.h"
 
@@ -37,11 +38,6 @@ inline float DetectUiScale(SDL_Window* window)
 	}
 
 	return 1.0f;
-}
-
-inline float PlatformUiSpacingScale()
-{
-	return PlatformServicesFactory::Instance().ui_traits.PlatformUiSpacingScale();
 }
 
 inline float EffectiveUiScale()
@@ -89,3 +85,5 @@ inline void ApplyUserUiScale(ImGuiIO& io, float user_scale_multiplier)
 
 	io.FontGlobalScale = clamped;
 }
+
+#endif // UAM_COMMON_UI_THEME_THEME_SCALING_H

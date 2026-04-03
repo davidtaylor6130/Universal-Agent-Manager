@@ -16,7 +16,6 @@ std::string TimestampNow();
 std::string NewSessionId();
 std::string ReadTextFile(const std::filesystem::path& p_path);
 bool WriteTextFile(const std::filesystem::path& p_path, const std::string& p_content);
-std::filesystem::path ExpandLeadingTildePath(const std::string& p_rawPath);
 std::filesystem::path ResolvePromptProfileRootPath(const AppSettings& p_settings);
 std::filesystem::path ResolveWorkspaceRootPath(const uam::AppState& p_app, const ChatSession& p_chat);
 std::filesystem::path WorkspacePromptProfileRootPath(const uam::AppState& p_app, const ChatSession& p_chat);

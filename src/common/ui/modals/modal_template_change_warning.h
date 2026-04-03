@@ -13,10 +13,10 @@ inline void DrawTemplateChangeWarningModal(AppState& app)
 
 	if (ImGui::BeginPopupModal("template_change_warning_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
 	{
-		const int chat_index = FindChatIndexById(app, app.pending_template_change_chat_id);
+		const int chat_index = ChatDomainService().FindChatIndexById(app, app.pending_template_change_chat_id);
 		const bool has_chat = (chat_index >= 0);
 		const std::string chat_title = has_chat ? CompactPreview(app.chats[chat_index].title, 42) : "Unknown chat";
-		const std::string new_template_label = app.pending_template_change_override_id.empty() ? "Use global default" : TemplateLabelOrFallback(app, app.pending_template_change_override_id);
+		const std::string new_template_label = app.pending_template_change_override_id.empty() ? "Use global default" : TemplateRuntimeService().TemplateLabelOrFallback(app, app.pending_template_change_override_id);
 
 		ImGui::TextColored(ui::kTextPrimary, "Apply template change?");
 		ImGui::Dummy(ImVec2(0.0f, ui::kSpace4));
@@ -26,7 +26,7 @@ inline void DrawTemplateChangeWarningModal(AppState& app)
 
 		if (has_chat)
 		{
-			const ProviderProfile& provider = ProviderForChatOrDefault(app, app.chats[chat_index]);
+			const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, app.chats[chat_index]);
 
 			if (ProviderRuntime::UsesGeminiPathBootstrap(provider))
 			{

@@ -1,5 +1,8 @@
-#pragma once
+#ifndef UAM_COMMON_UI_MODALS_MODAL_APP_SETTINGS_COMPATIBILITY_SECTION_H
+#define UAM_COMMON_UI_MODALS_MODAL_APP_SETTINGS_COMPATIBILITY_SECTION_H
+
 #include "common/constants/app_constants.h"
+#include "common/platform/platform_services.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
 
 /// <summary>
@@ -40,7 +43,7 @@ inline void DrawAppSettingsCompatibilitySection(AppState& app)
 
 	if (DrawButton("Re-check Version", ImVec2(130.0f, 30.0f), ButtonKind::Ghost))
 	{
-		GetProviderCliCompatibilityService().StartVersionCheck(app, true);
+		ProviderCliCompatibilityService().StartVersionCheck(app, true);
 	}
 
 	if (app.runtime_cli_version_check_task.running)
@@ -61,7 +64,7 @@ inline void DrawAppSettingsCompatibilitySection(AppState& app)
 
 		if (DrawButton("Downgrade to 0.30.0", ImVec2(166.0f, 30.0f), ButtonKind::Primary))
 		{
-			GetProviderCliCompatibilityService().StartPinToSupported(app);
+			ProviderCliCompatibilityService().StartPinToSupported(app);
 		}
 
 		if (app.runtime_cli_pin_task.running)
@@ -69,7 +72,9 @@ inline void DrawAppSettingsCompatibilitySection(AppState& app)
 			ImGui::EndDisabled();
 		}
 
-		ImGui::TextColored(ui::kTextMuted, "Downgrade command: %s", GetProviderCliCompatibilityService().BuildPinCommand().c_str());
+		ImGui::TextColored(ui::kTextMuted,
+		                   "Downgrade command: %s",
+		                   PlatformServicesFactory::Instance().process_service.GeminiDowngradeCommand().c_str());
 	}
 
 	if (app.runtime_cli_pin_task.running)
@@ -85,3 +90,5 @@ inline void DrawAppSettingsCompatibilitySection(AppState& app)
 		PopInputChrome();
 	}
 }
+
+#endif // UAM_COMMON_UI_MODALS_MODAL_APP_SETTINGS_COMPATIBILITY_SECTION_H

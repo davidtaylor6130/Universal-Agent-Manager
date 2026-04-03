@@ -14,8 +14,8 @@
 /// </summary>
 inline void DrawSessionSidePane(AppState& app, ChatSession& chat)
 {
-	RefreshTemplateCatalog(app);
-	const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
+	TemplateRuntimeService().RefreshTemplateCatalog(app);
+	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 	BeginPanel("right_settings", ImVec2(0.0f, 0.0f), PanelTone::Secondary, true, 0, ImVec2(ui::kSpace16, ui::kSpace16));
 	PushFontIfAvailable(g_font_title);
 	ImGui::TextColored(ui::kTextPrimary, "Chat Settings");

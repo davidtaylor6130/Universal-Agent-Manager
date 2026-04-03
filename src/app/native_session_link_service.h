@@ -23,6 +23,4 @@ class NativeSessionLinkService
 	                                 const std::string& session_id) const;
 };
 
-NativeSessionLinkService& GetNativeSessionLinkService();
-
 #endif // UAM_APP_NATIVE_SESSION_LINK_SERVICE_H

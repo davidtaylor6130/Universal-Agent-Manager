@@ -13,10 +13,7 @@ class RuntimeLocalService
 	bool EnsureSelectedLocalRuntimeModelForProvider(uam::AppState& app) const;
 	bool EnsureLocalRuntimeModelLoaded(uam::AppState& app, std::string* error_out = nullptr) const;
 	bool RestartLocalBridgeIfModelChanged(uam::AppState& app, std::string* error_out = nullptr) const;
-	bool EnsureLocalBridgeRunning(uam::AppState& app, std::string* error_out = nullptr) const;
 	void StopLocalBridge(uam::AppState& app) const;
 };
-
-RuntimeLocalService& GetRuntimeLocalService();
 
 #endif // UAM_APP_RUNTIME_LOCAL_SERVICE_H

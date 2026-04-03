@@ -5,6 +5,7 @@
 #include "persistence_coordinator.h"
 #include "provider_resolution_service.h"
 #include "provider_profile_migration_service.h"
+#include "runtime_orchestration_services.h"
 #include "runtime_local_service.h"
 #include "template_runtime_service.h"
 
@@ -21,7 +22,6 @@
 #include "common/chat_branching.h"
 #include "common/chat_folder_store.h"
 #include "common/chat_repository.h"
-#include "common/local_chat_store.h"
 #include "common/frontend_actions.h"
 #include "common/markdown_template_catalog.h"
 #include "common/provider_profile.h"
@@ -104,67 +104,23 @@ namespace
 	constexpr const char* kPromptBootstrapPath = "@.gemini/gemini.md";
 } // namespace
 
-static void SortChatsByRecent(std::vector<ChatSession>& p_chats);
-static std::vector<ChatSession> DeduplicateChatsById(std::vector<ChatSession> p_chats);
 static void ClampWindowSettings(AppSettings& p_settings);
 static std::string NormalizeThemeChoice(std::string p_value);
 static void DrawSessionSidePane(AppState& p_app, ChatSession& p_chat);
 static void SaveAndUpdateStatus(AppState& p_app, const ChatSession& p_chat, const std::string& p_success, const std::string& p_failure);
-static void RefreshNativeSessionDirectory(AppState& p_app);
-static const ChatFolder* FindFolderById(const AppState& p_app, const std::string& p_folderId);
-static const ProviderProfile& ActiveProviderOrDefault(const AppState& p_app);
-static const ProviderProfile* ProviderForChat(const AppState& p_app, const ChatSession& p_chat);
-static const ProviderProfile& ProviderForChatOrDefault(const AppState& p_app, const ChatSession& p_chat);
-static bool ActiveProviderUsesNativeOverlayHistory(const AppState& p_app);
-static bool ActiveProviderUsesInternalEngine(const AppState& p_app);
-static bool ChatUsesNativeOverlayHistory(const AppState& p_app, const ChatSession& p_chat);
-static bool ChatUsesInternalEngine(const AppState& p_app, const ChatSession& p_chat);
-static bool ChatUsesCliOutput(const AppState& p_app, const ChatSession& p_chat);
-static int FindChatIndexById(const AppState& p_app, const std::string& p_chatId);
-static ChatSession* SelectedChat(AppState& p_app);
-static const ChatSession* SelectedChat(const AppState& p_app);
-static ChatSession CreateNewChat(const std::string& p_folderId, const std::string& p_providerId);
 static std::string CompactPreview(const std::string& p_text, std::size_t p_maxLen);
 static void MarkSelectedCliTerminalForLaunch(AppState& p_app);
-static void SelectChatById(AppState& p_app, const std::string& p_chatId);
 static void SaveSettings(AppState& p_app);
-static bool SaveChat(const AppState& p_app, const ChatSession& p_chat);
-static bool ProviderUsesLocalBridgeRuntime(const ProviderProfile& p_provider);
 static bool IsRuntimeEnabledForProvider(const ProviderProfile& p_provider, std::string* p_reasonOut = nullptr);
-static bool EnsureSelectedLocalRuntimeModelForProvider(AppState& p_app);
 static bool SendPromptToCliRuntime(AppState& p_app, ChatSession& p_chat, const std::string& p_prompt, std::string* p_errorOut);
-static bool EnsureLocalBridgeRunning(AppState& p_app, std::string* p_errorOut = nullptr);
-static std::vector<ChatSession> LoadNativeSessionChats(const std::filesystem::path& p_chatsDir, const ProviderProfile& p_provider);
-static std::vector<ChatSession> LoadChats(const AppState& p_app);
-static bool MigrateChatProviderBindingsToFixedModes(AppState& p_app);
-static void NormalizeChatFolderAssignments(AppState& p_app);
-static bool IsLocalDraftChatId(const std::string& p_chatId);
-static std::optional<std::string> InferNativeSessionIdForLocalDraft(const ChatSession& p_localChat, const std::vector<ChatSession>& p_nativeChats);
-static bool PersistLocalDraftNativeSessionLink(const AppState& p_app, ChatSession& p_localChat, const std::string& p_nativeSessionId);
-static std::string ResolveResumeSessionIdForChat(const AppState& p_app, const ChatSession& p_chat);
 static bool HasPendingCallForChat(const AppState& p_app, const std::string& p_chatId);
 static bool HasAnyPendingCall(const AppState& p_app);
 static const PendingRuntimeCall* FirstPendingCallForChat(const AppState& p_app, const std::string& p_chatId);
-static void NormalizeChatBranchMetadata(AppState& p_app);
 static bool CreateBranchFromMessage(AppState& p_app, const std::string& p_sourceChatId, int p_messageIndex);
 static void ConsumePendingBranchRequest(AppState& p_app);
-static void ApplyLocalOverrides(AppState& p_app, std::vector<ChatSession>& p_nativeChats);
-static std::vector<std::string> CollectNewSessionIds(const std::vector<ChatSession>& p_loadedChats, const std::vector<std::string>& p_existingIds);
-static std::string PickFirstUnblockedSessionId(const std::vector<std::string>& p_candidateIds, const std::unordered_set<std::string>& p_blockedIds);
 static bool RefreshWorkspaceVcsSnapshot(AppState& p_app, const std::filesystem::path& p_workspaceRoot, bool p_force);
 static void ShowVcsCommandOutput(AppState& p_app, const std::string& p_title, const VcsCommandResult& p_result);
-enum class TemplatePreflightOutcome
-{
-	ReadyWithTemplate,
-	ReadyWithoutTemplate,
-	BlockingError
-};
 
-static TemplatePreflightOutcome PreflightWorkspaceTemplateForChat(AppState& p_app, const ProviderProfile& p_provider, const ChatSession& p_chat, std::string* p_bootstrapPromptOut, std::string* p_statusOut);
-static bool QueueProviderPromptForChat(AppState& p_app, ChatSession& p_chat, const std::string& p_prompt, const bool p_templateControlMessage);
-static bool TruncateNativeSessionFromDisplayedMessage(const AppState& p_app, const ChatSession& p_chat, const int p_displayedMessageIndex, std::string* p_errorOut);
-static void AddMessage(ChatSession& p_chat, const MessageRole p_role, const std::string& p_text);
-static float PlatformUiSpacingScale();
 static float ScaleUiLength(float p_value);
 static ImVec2 ScaleUiSize(const ImVec2& p_value);
 static void CaptureUiScaleBaseStyle();
@@ -172,130 +128,41 @@ static void ApplyUserUiScale(ImGuiIO& p_io, float p_userScaleMultiplier);
 
 #include "common/runtime/json_runtime.h"
 
-static std::string BuildShellCommandWithWorkingDirectory(const fs::path& p_workingDirectory, const std::string& p_command);
-static bool EnsureWorkspaceProviderLayout(const AppState& p_app, const ChatSession& p_chat, std::string* p_errorOut);
-static void MarkTemplateCatalogDirty(AppState& p_app);
-static bool RefreshTemplateCatalog(AppState& p_app, const bool p_force = false);
-static const TemplateCatalogEntry* FindTemplateEntryById(const AppState& p_app, const std::string& p_templateId);
-static std::string TemplateLabelOrFallback(const AppState& p_app, const std::string& p_templateId);
-static std::string ExecuteCommandCaptureOutput(const std::string& p_command);
-static fs::path SettingsFilePath(const AppState& p_app);
-static fs::path ChatsRootPath(const AppState& p_app);
-static fs::path ChatPath(const AppState& p_app, const ChatSession& p_chat);
-static fs::path DefaultDataRootPath();
-static fs::path TempFallbackDataRootPath();
-static bool EnsureDataRootLayout(const fs::path& p_dataRoot, std::string* p_errorOut);
-static std::optional<fs::path> ResolveProjectNativeSessionRootPath(const fs::path& p_projectRoot);
 static ProviderRuntimeHistoryLoadOptions RuntimeHistoryLoadOptions();
-static bool StartAsyncNativeChatLoad(AppState& app);
-static bool TryConsumeAsyncNativeChatLoad(AppState& app, std::vector<ChatSession>& chats_out, std::string& error_out);
-static std::vector<std::string> SessionIdsFromChats(const std::vector<ChatSession>& p_chats);
-static std::string NewFolderId();
-static int FindFolderIndexById(const AppState& p_app, const std::string& p_folderId);
-static void EnsureDefaultFolder(AppState& p_app);
-static void EnsureNewChatFolderSelection(AppState& p_app);
-static void SaveFolders(const AppState& p_app);
-static void SaveProviders(const AppState& p_app);
-static fs::path ProviderProfileFilePath(const AppState& p_app);
-static fs::path FrontendActionFilePath(const AppState& p_app);
-static bool IsNativeHistoryProviderId(const std::string& p_providerId);
-static bool ShouldShowProviderProfileInUi(const ProviderProfile& p_profile);
-static ProviderProfile* ActiveProvider(AppState& p_app);
-static const uam::FrontendAction* FindFrontendAction(const AppState& p_app, const std::string& p_key);
 static bool FrontendActionVisible(const AppState& p_app, const std::string& p_key, const bool p_fallbackVisible = true);
 static std::string FrontendActionLabel(const AppState& p_app, const std::string& p_key, const std::string& p_fallbackLabel);
-static void LoadFrontendActions(AppState& p_app);
-static std::string FolderForNewChat(const AppState& p_app);
-static int CountChatsInFolder(const AppState& p_app, const std::string& p_folderId);
-static std::string FolderTitleOrFallback(const ChatFolder& p_folder);
-static bool ShouldReplaceChatForDuplicateId(const ChatSession& p_candidate, const ChatSession& p_existing);
-static void RefreshRememberedSelection(AppState& p_app);
 static void LoadSettings(AppState& p_app);
-static std::string BuildProviderPrompt(const ProviderProfile& p_provider, const std::string& p_userPrompt, const std::vector<std::string>& p_files);
-static std::string BuildProviderCommand(const ProviderProfile& p_provider, const AppSettings& p_settings, const std::string& p_prompt, const std::vector<std::string>& p_files, const std::string& p_resumeSessionId);
-static bool RuntimeUsesLocalEngine(const AppState& p_app);
-static bool EnsureLocalRuntimeModelLoaded(AppState& p_app, std::string* p_errorOut);
-static bool SessionIdExistsInLoadedChats(const std::vector<ChatSession>& p_loadedChats, const std::string& p_sessionId);
 static std::optional<fs::path> FindNativeSessionFilePathInDirectory(const fs::path& p_chatsDir, const std::string& p_sessionId);
-static std::optional<fs::path> FindNativeSessionFilePath(const AppState& p_app, const std::string& p_sessionId);
-static MessageRole NativeMessageRoleFromType(const ProviderProfile& p_provider, const std::string& p_type);
 static fs::path ResolveWindowIconPath();
 static void ApplyWindowIcon(SDL_Window* p_window);
 
 #include "common/runtime/terminal_runtime.h"
 #include "common/ui/ui_sections.h"
 
-bool TerminalSessionManager::ForwardEscapeToSelectedTerminal(uam::AppState& p_app, const SDL_Event& p_event) const
-{
-	return ForwardEscapeToSelectedCliTerminal(p_app, p_event);
-}
-
-void TerminalSessionManager::MarkSelectedTerminalForLaunch(uam::AppState& p_app) const
-{
-	MarkSelectedCliTerminalForLaunch(p_app);
-}
-
-void TerminalSessionManager::StopAllTerminals(uam::AppState& p_app, const bool p_clearIdentity) const
-{
-	StopAllCliTerminals(p_app, p_clearIdentity);
-}
-
-void TerminalSessionManager::FastStopTerminalsForExit(uam::AppState& p_app) const
-{
-	FastStopCliTerminalsForExit(p_app);
-}
-
-void TerminalPollingService::PollAllTerminals(uam::AppState& p_app) const
-{
-	PollAllCliTerminals(p_app);
-}
-
-void PendingRuntimeCallService::Poll(uam::AppState& p_app) const
-{
-	PollPendingRuntimeCall(p_app);
-}
-
-bool PendingRuntimeCallService::HasPendingCallForChat(const uam::AppState& p_app, const std::string& p_chatId) const
-{
-	return ::HasPendingCallForChat(p_app, p_chatId);
-}
-
-bool PendingRuntimeCallService::HasAnyPendingCall(const uam::AppState& p_app) const
-{
-	return ::HasAnyPendingCall(p_app);
-}
-
-const PendingRuntimeCall* PendingRuntimeCallService::FirstPendingCallForChat(const uam::AppState& p_app, const std::string& p_chatId) const
-{
-	return ::FirstPendingCallForChat(p_app, p_chatId);
-}
-
 void ProviderRequestService::StartSelectedChatRequest(uam::AppState& p_app) const
 {
-	StartGeminiRequest(p_app);
-}
+	ChatSession* lp_chat = ChatDomainService().SelectedChat(p_app);
 
-bool ProviderRequestService::QueuePromptForChat(uam::AppState& p_app,
-                                                ChatSession& p_chat,
-                                                const std::string& p_prompt,
-                                                const bool p_templateControlMessage) const
-{
-	return QueueProviderPromptForChat(p_app, p_chat, p_prompt, p_templateControlMessage);
+	if (lp_chat == nullptr)
+	{
+		p_app.status_line = "Select or create a chat first.";
+		return;
+	}
+
+	const std::string l_promptText = Trim(p_app.composer_text);
+
+	if (QueuePromptForChat(p_app, *lp_chat, l_promptText, false))
+	{
+		p_app.composer_text.clear();
+	}
 }
 
 void ChatHistorySyncService::RefreshChatHistory(uam::AppState& p_app) const
 {
-	::RefreshChatHistory(p_app);
-}
-
-void MainMenuBarView::Draw(uam::AppState& p_app, bool& p_done) const
-{
-	DrawDesktopMenuBar(p_app, p_done);
-}
-
-void SidebarView::Draw(uam::AppState& p_app) const
-{
-	DrawLeftPane(p_app);
+	const ChatSession* lcp_selected = ChatDomainService().SelectedChat(p_app);
+	const std::string l_selectedId = (lcp_selected != nullptr) ? lcp_selected->id : "";
+	SyncChatsFromNative(p_app, l_selectedId, true);
+	p_app.status_line = "Chat history refreshed.";
 }
 
 void ChatDetailView::Draw(uam::AppState& p_app, ChatSession* p_selectedChat) const
@@ -326,48 +193,19 @@ void ModalHostView::Draw(uam::AppState& p_app, const float p_platformUiScale) co
 	ConsumePendingBranchRequest(p_app);
 }
 
-void ShortcutHandler::Handle(uam::AppState& p_app) const
-{
-	HandleGlobalShortcuts(p_app);
-}
-
-void ThemeController::ApplyFromSettings(uam::AppState& p_app) const
-{
-	ApplyThemeFromSettings(p_app);
-}
-
-void ThemeController::CaptureScaleBaseStyle() const
-{
-	CaptureUiScaleBaseStyle();
-}
-
-void ThemeController::ApplyUserScale(ImGuiIO& p_io, const float p_userScaleMultiplier) const
-{
-	ApplyUserUiScale(p_io, p_userScaleMultiplier);
-}
-
-float ThemeController::EffectiveScale() const
-{
-	return EffectiveUiScale();
-}
-
 void UiController::DrawFrame(uam::AppState& p_app,
                              bool& p_done,
                              const float p_platformUiScale,
                              const IPlatformUiTraits& p_uiTraits,
-                             const ShortcutHandler& p_shortcuts,
-                             const ThemeController& p_theme,
-                             const MainMenuBarView& p_menuBar,
-                             const SidebarView& p_sidebar,
                              const ChatDetailView& p_chatDetail,
                              const ModalHostView& p_modalHost) const
 {
 	ImGuiIO& l_io = ImGui::GetIO();
-	p_theme.ApplyUserScale(l_io, p_app.settings.ui_scale_multiplier);
+	ApplyUserUiScale(l_io, p_app.settings.ui_scale_multiplier);
 	PollRagScanState(p_app);
 
-	p_shortcuts.Handle(p_app);
-	p_menuBar.Draw(p_app, p_done);
+	HandleGlobalShortcuts(p_app);
+	DrawDesktopMenuBar(p_app, p_done);
 
 	const ImGuiViewport* lcp_viewport = ImGui::GetMainViewport();
 	DrawAmbientBackdrop(lcp_viewport->Pos, lcp_viewport->Size, static_cast<float>(ImGui::GetTime()));
@@ -386,7 +224,7 @@ void UiController::DrawFrame(uam::AppState& p_app,
 		l_sidebarWidth = std::clamp(l_layoutWidth * 0.30f, 230.0f, 320.0f);
 	}
 
-	l_sidebarWidth = p_uiTraits.AdjustSidebarWidth(l_layoutWidth, l_sidebarWidth, p_theme.EffectiveScale());
+	l_sidebarWidth = p_uiTraits.AdjustSidebarWidth(l_layoutWidth, l_sidebarWidth, EffectiveUiScale());
 
 	if (ImGui::BeginTable("layout_split", 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoBordersInBody))
 	{
@@ -395,9 +233,9 @@ void UiController::DrawFrame(uam::AppState& p_app,
 		ImGui::TableNextRow();
 
 		ImGui::TableSetColumnIndex(0);
-		p_sidebar.Draw(p_app);
+		DrawLeftPane(p_app);
 
-		ChatSession* lp_selectedChat = SelectedChat(p_app);
+		ChatSession* lp_selectedChat = ChatDomainService().SelectedChat(p_app);
 		ImGui::TableSetColumnIndex(1);
 		p_chatDetail.Draw(p_app, lp_selectedChat);
 		ImGui::EndTable();
@@ -405,11 +243,6 @@ void UiController::DrawFrame(uam::AppState& p_app,
 
 	ImGui::End();
 	p_modalHost.Draw(p_app, p_platformUiScale);
-}
-
-static void NormalizeChatBranchMetadata(AppState& p_app)
-{
-	ChatBranching::Normalize(p_app.chats);
 }
 
 static bool RefreshWorkspaceVcsSnapshot(AppState& p_app, const std::filesystem::path& p_workspaceRoot, const bool p_force)
@@ -493,7 +326,7 @@ static void ShowVcsCommandOutput(AppState& p_app, const std::string& p_title, co
 
 static bool CreateBranchFromMessage(AppState& p_app, const std::string& p_sourceChatId, const int p_messageIndex)
 {
-	const int l_sourceIndex = FindChatIndexById(p_app, p_sourceChatId);
+	const int l_sourceIndex = ChatDomainService().FindChatIndexById(p_app, p_sourceChatId);
 
 	if (l_sourceIndex < 0)
 	{
@@ -515,7 +348,7 @@ static bool CreateBranchFromMessage(AppState& p_app, const std::string& p_source
 		return false;
 	}
 
-	ChatSession l_branch = CreateNewChat(l_source.folder_id, l_source.provider_id);
+	ChatSession l_branch = ChatDomainService().CreateNewChat(l_source.folder_id, l_source.provider_id);
 	l_branch.uses_native_session = false;
 	l_branch.native_session_id.clear();
 	l_branch.parent_chat_id = l_source.id;
@@ -536,17 +369,19 @@ static bool CreateBranchFromMessage(AppState& p_app, const std::string& p_source
 	}
 
 	p_app.chats.push_back(l_branch);
-	NormalizeChatBranchMetadata(p_app);
-	SortChatsByRecent(p_app.chats);
-	SelectChatById(p_app, l_branch.id);
+	ChatBranching::Normalize(p_app.chats);
+	ChatDomainService().SortChatsByRecent(p_app.chats);
+	ChatDomainService().SelectChatById(p_app, l_branch.id);
 	SaveSettings(p_app);
 
-	if (ChatUsesCliOutput(p_app, p_app.chats[p_app.selected_chat_index]))
+	if (ProviderResolutionService().ChatUsesCliOutput(p_app, p_app.chats[p_app.selected_chat_index]))
 	{
 		MarkSelectedCliTerminalForLaunch(p_app);
 	}
 
-	if (!SaveChat(p_app, l_branch))
+	const ProviderProfile& l_branchProvider = ProviderResolutionService().ProviderForChatOrDefault(p_app, l_branch);
+
+	if (!ProviderRuntime::SaveHistory(l_branchProvider, p_app.data_root, l_branch))
 	{
 		p_app.status_line = "Branch created in memory, but failed to save.";
 		return false;
@@ -570,76 +405,6 @@ static void ConsumePendingBranchRequest(AppState& p_app)
 	CreateBranchFromMessage(p_app, l_chatId, l_messageIndex);
 }
 
-static std::string BuildShellCommandWithWorkingDirectory(const fs::path& p_workingDirectory, const std::string& p_command)
-{
-	return GetTemplateRuntimeService().BuildShellCommandWithWorkingDirectory(p_workingDirectory, p_command);
-}
-
-static bool EnsureWorkspaceProviderLayout(const AppState& p_app, const ChatSession& p_chat, std::string* p_errorOut = nullptr)
-{
-	return GetTemplateRuntimeService().EnsureWorkspaceProviderLayout(p_app, p_chat, p_errorOut);
-}
-
-static void MarkTemplateCatalogDirty(AppState& p_app)
-{
-	GetTemplateRuntimeService().MarkTemplateCatalogDirty(p_app);
-}
-
-static bool RefreshTemplateCatalog(AppState& p_app, const bool p_force)
-{
-	return GetTemplateRuntimeService().RefreshTemplateCatalog(p_app, p_force);
-}
-
-static const TemplateCatalogEntry* FindTemplateEntryById(const AppState& p_app, const std::string& p_templateId)
-{
-	return GetTemplateRuntimeService().FindTemplateEntryById(p_app, p_templateId);
-}
-
-static std::string TemplateLabelOrFallback(const AppState& p_app, const std::string& p_templateId)
-{
-	return GetTemplateRuntimeService().TemplateLabelOrFallback(p_app, p_templateId);
-}
-
-static std::string ExecuteCommandCaptureOutput(const std::string& p_command)
-{
-	return GetPersistenceCoordinator().ExecuteCommandCaptureOutput(p_command);
-}
-
-static fs::path SettingsFilePath(const AppState& p_app)
-{
-	return GetPersistenceCoordinator().SettingsFilePath(p_app);
-}
-
-static fs::path ChatsRootPath(const AppState& p_app)
-{
-	return GetPersistenceCoordinator().ChatsRootPath(p_app);
-}
-
-static fs::path ChatPath(const AppState& p_app, const ChatSession& p_chat)
-{
-	return GetPersistenceCoordinator().ChatPath(p_app, p_chat);
-}
-
-static fs::path DefaultDataRootPath()
-{
-	return GetPersistenceCoordinator().DefaultDataRootPath();
-}
-
-static fs::path TempFallbackDataRootPath()
-{
-	return GetPersistenceCoordinator().TempFallbackDataRootPath();
-}
-
-static bool EnsureDataRootLayout(const fs::path& p_dataRoot, std::string* p_errorOut)
-{
-	return GetPersistenceCoordinator().EnsureDataRootLayout(p_dataRoot, p_errorOut);
-}
-
-static std::optional<fs::path> ResolveProjectNativeSessionRootPath(const fs::path& p_projectRoot)
-{
-	return AppPaths::ResolveGeminiProjectTmpDir(p_projectRoot);
-}
-
 static ProviderRuntimeHistoryLoadOptions RuntimeHistoryLoadOptions()
 {
 	ProviderRuntimeHistoryLoadOptions options;
@@ -648,26 +413,26 @@ static ProviderRuntimeHistoryLoadOptions RuntimeHistoryLoadOptions()
 	return options;
 }
 
-static std::vector<ChatSession> LoadNativeSessionChats(const fs::path& p_chatsDir, const ProviderProfile& p_provider)
+std::vector<ChatSession> ChatHistorySyncService::LoadNativeSessionChats(const fs::path& p_chatsDir, const ProviderProfile& p_provider) const
 {
-	return DeduplicateChatsById(ProviderRuntime::LoadHistory(p_provider, fs::path{}, p_chatsDir, RuntimeHistoryLoadOptions()));
+	return ChatDomainService().DeduplicateChatsById(ProviderRuntime::LoadHistory(p_provider, fs::path{}, p_chatsDir, RuntimeHistoryLoadOptions()));
 }
 
-static bool StartAsyncNativeChatLoad(AppState& app)
+bool ChatHistorySyncService::StartAsyncNativeChatLoad(AppState& app) const
 {
 	if (!PlatformServicesFactory::Instance().terminal_runtime.SupportsAsyncNativeGeminiHistoryRefresh())
 	{
 		return false;
 	}
 
-	if (!ActiveProviderUsesNativeOverlayHistory(app) || app.native_chat_load_task.running)
+	if (!ProviderResolutionService().ActiveProviderUsesNativeOverlayHistory(app) || app.native_chat_load_task.running)
 	{
 		return false;
 	}
 
 	RefreshNativeSessionDirectory(app);
 	const fs::path chats_dir = app.native_history_chats_dir;
-	const ProviderProfile provider = ActiveProviderOrDefault(app);
+	const ProviderProfile provider = ProviderResolutionService().ActiveProviderOrDefault(app);
 
 	app.native_chat_load_task.running = true;
 	app.native_chat_load_task.completed = std::make_shared<std::atomic<bool>>(false);
@@ -677,7 +442,7 @@ static bool StartAsyncNativeChatLoad(AppState& app)
 	std::shared_ptr<std::vector<ChatSession>> chats = app.native_chat_load_task.chats;
 	std::shared_ptr<std::string> error = app.native_chat_load_task.error;
 
-	auto l_loadNativeChatsTask = [chats_dir, provider, completed, chats, error]()
+	auto l_loadNativeChatsTask = [this, chats_dir, provider, completed, chats, error]()
 	{
 		try
 		{
@@ -699,7 +464,7 @@ static bool StartAsyncNativeChatLoad(AppState& app)
 	return true;
 }
 
-static bool TryConsumeAsyncNativeChatLoad(AppState& app, std::vector<ChatSession>& chats_out, std::string& error_out)
+bool ChatHistorySyncService::TryConsumeAsyncNativeChatLoad(AppState& app, std::vector<ChatSession>& chats_out, std::string& error_out) const
 {
 	if (!PlatformServicesFactory::Instance().terminal_runtime.SupportsAsyncNativeGeminiHistoryRefresh())
 	{
@@ -736,7 +501,7 @@ static bool TryConsumeAsyncNativeChatLoad(AppState& app, std::vector<ChatSession
 	return true;
 }
 
-static std::vector<std::string> SessionIdsFromChats(const std::vector<ChatSession>& p_chats)
+std::vector<std::string> ChatHistorySyncService::SessionIdsFromChats(const std::vector<ChatSession>& p_chats) const
 {
 	std::vector<std::string> l_ids;
 	l_ids.reserve(p_chats.size());
@@ -752,135 +517,15 @@ static std::vector<std::string> SessionIdsFromChats(const std::vector<ChatSessio
 	return l_ids;
 }
 
-static std::string NewFolderId()
-{
-	return GetChatDomainService().NewFolderId();
-}
-
-static int FindFolderIndexById(const AppState& p_app, const std::string& p_folderId)
-{
-	return GetChatDomainService().FindFolderIndexById(p_app, p_folderId);
-}
-
-static ChatFolder* FindFolderById(AppState& p_app, const std::string& p_folderId)
-{
-	return GetChatDomainService().FindFolderById(p_app, p_folderId);
-}
-
-static const ChatFolder* FindFolderById(const AppState& p_app, const std::string& p_folderId)
-{
-	return GetChatDomainService().FindFolderById(p_app, p_folderId);
-}
-
-static void EnsureDefaultFolder(AppState& p_app)
-{
-	GetChatDomainService().EnsureDefaultFolder(p_app);
-}
-
-static void EnsureNewChatFolderSelection(AppState& p_app)
-{
-	GetChatDomainService().EnsureNewChatFolderSelection(p_app);
-}
-
-static void NormalizeChatFolderAssignments(AppState& p_app)
-{
-	GetChatDomainService().NormalizeChatFolderAssignments(p_app);
-}
-
-static void SaveFolders(const AppState& p_app)
-{
-	GetPersistenceCoordinator().SaveFolders(p_app);
-}
-
-static void SaveProviders(const AppState& p_app)
-{
-	GetPersistenceCoordinator().SaveProviders(p_app);
-}
-
-static fs::path ProviderProfileFilePath(const AppState& p_app)
-{
-	return GetPersistenceCoordinator().ProviderProfileFilePath(p_app);
-}
-
-static fs::path FrontendActionFilePath(const AppState& p_app)
-{
-	return GetPersistenceCoordinator().FrontendActionFilePath(p_app);
-}
-
-static bool IsNativeHistoryProviderId(const std::string& p_providerId)
-{
-	return GetProviderProfileMigrationService().IsNativeHistoryProviderId(p_providerId);
-}
-
-static bool ShouldShowProviderProfileInUi(const ProviderProfile& p_profile)
-{
-	return GetProviderProfileMigrationService().ShouldShowProviderProfileInUi(p_profile);
-}
-
-static ProviderProfile* ActiveProvider(AppState& p_app)
-{
-	return GetProviderResolutionService().ActiveProvider(p_app);
-}
-
-static const ProviderProfile* ActiveProvider(const AppState& p_app)
-{
-	return GetProviderResolutionService().ActiveProvider(p_app);
-}
-
-static const ProviderProfile& ActiveProviderOrDefault(const AppState& p_app)
-{
-	return GetProviderResolutionService().ActiveProviderOrDefault(p_app);
-}
-
-static const ProviderProfile* ProviderForChat(const AppState& p_app, const ChatSession& p_chat)
-{
-	return GetProviderResolutionService().ProviderForChat(p_app, p_chat);
-}
-
-static const ProviderProfile& ProviderForChatOrDefault(const AppState& p_app, const ChatSession& p_chat)
-{
-	return GetProviderResolutionService().ProviderForChatOrDefault(p_app, p_chat);
-}
-
-static bool ActiveProviderUsesNativeOverlayHistory(const AppState& p_app)
-{
-	return GetProviderResolutionService().ActiveProviderUsesNativeOverlayHistory(p_app);
-}
-
-static bool ActiveProviderUsesInternalEngine(const AppState& p_app)
-{
-	return GetProviderResolutionService().ActiveProviderUsesInternalEngine(p_app);
-}
-
-static bool ChatUsesNativeOverlayHistory(const AppState& p_app, const ChatSession& p_chat)
-{
-	return GetProviderResolutionService().ChatUsesNativeOverlayHistory(p_app, p_chat);
-}
-
-static bool ChatUsesInternalEngine(const AppState& p_app, const ChatSession& p_chat)
-{
-	return GetProviderResolutionService().ChatUsesInternalEngine(p_app, p_chat);
-}
-
-static bool ChatUsesCliOutput(const AppState& p_app, const ChatSession& p_chat)
-{
-	return GetProviderResolutionService().ChatUsesCliOutput(p_app, p_chat);
-}
-
-static const uam::FrontendAction* FindFrontendAction(const AppState& p_app, const std::string& p_key)
-{
-	return uam::FindAction(p_app.frontend_actions, p_key);
-}
-
 static bool FrontendActionVisible(const AppState& p_app, const std::string& p_key, const bool p_fallbackVisible)
 {
-	const uam::FrontendAction* lcp_action = FindFrontendAction(p_app, p_key);
+	const uam::FrontendAction* lcp_action = uam::FindAction(p_app.frontend_actions, p_key);
 	return (lcp_action == nullptr) ? p_fallbackVisible : lcp_action->visible;
 }
 
 static std::string FrontendActionLabel(const AppState& p_app, const std::string& p_key, const std::string& p_fallbackLabel)
 {
-	const uam::FrontendAction* lcp_action = FindFrontendAction(p_app, p_key);
+	const uam::FrontendAction* lcp_action = uam::FindAction(p_app.frontend_actions, p_key);
 
 	if (lcp_action == nullptr || Trim(lcp_action->label).empty())
 	{
@@ -890,65 +535,10 @@ static std::string FrontendActionLabel(const AppState& p_app, const std::string&
 	return lcp_action->label;
 }
 
-static void LoadFrontendActions(AppState& p_app)
-{
-	GetPersistenceCoordinator().LoadFrontendActions(p_app);
-}
-
-static std::string FolderForNewChat(const AppState& p_app)
-{
-	return GetChatDomainService().FolderForNewChat(p_app);
-}
-
-static int CountChatsInFolder(const AppState& p_app, const std::string& p_folderId)
-{
-	return GetChatDomainService().CountChatsInFolder(p_app, p_folderId);
-}
-
-static std::string FolderTitleOrFallback(const ChatFolder& p_folder)
-{
-	return GetChatDomainService().FolderTitleOrFallback(p_folder);
-}
-
-static int FindChatIndexById(const AppState& p_app, const std::string& p_chatId)
-{
-	return GetChatDomainService().FindChatIndexById(p_app, p_chatId);
-}
-
-static ChatSession* SelectedChat(AppState& p_app)
-{
-	return GetChatDomainService().SelectedChat(p_app);
-}
-
-static const ChatSession* SelectedChat(const AppState& p_app)
-{
-	return GetChatDomainService().SelectedChat(p_app);
-}
-
-static void SortChatsByRecent(std::vector<ChatSession>& p_chats)
-{
-	GetChatDomainService().SortChatsByRecent(p_chats);
-}
-
-static bool ShouldReplaceChatForDuplicateId(const ChatSession& p_candidate, const ChatSession& p_existing)
-{
-	return GetChatDomainService().ShouldReplaceChatForDuplicateId(p_candidate, p_existing);
-}
-
-static std::vector<ChatSession> DeduplicateChatsById(std::vector<ChatSession> p_chats)
-{
-	return GetChatDomainService().DeduplicateChatsById(std::move(p_chats));
-}
-
-static void RefreshRememberedSelection(AppState& p_app)
-{
-	GetChatDomainService().RefreshRememberedSelection(p_app);
-}
-
 static void SaveSettings(AppState& p_app)
 {
 	p_app.settings.ui_theme = NormalizeThemeChoice(p_app.settings.ui_theme);
-	p_app.settings.runtime_backend = ActiveProviderUsesInternalEngine(p_app) ? kRuntimeIdLocalEngine : kRuntimeBackendProviderCli;
+	p_app.settings.runtime_backend = ProviderResolutionService().ActiveProviderUsesInternalEngine(p_app) ? kRuntimeIdLocalEngine : kRuntimeBackendProviderCli;
 #if UAM_ENABLE_ENGINE_RAG
 	p_app.settings.vector_db_backend = (p_app.settings.vector_db_backend == "none") ? "none" : kRuntimeIdLocalEngine;
 #else
@@ -982,20 +572,20 @@ static void SaveSettings(AppState& p_app)
 		{
 			std::string l_bridgeError;
 
-			if (!GetRuntimeLocalService().RestartLocalBridgeIfModelChanged(p_app, &l_bridgeError) && !l_bridgeError.empty())
+			if (!RuntimeLocalService().RestartLocalBridgeIfModelChanged(p_app, &l_bridgeError) && !l_bridgeError.empty())
 			{
 				p_app.status_line = l_bridgeError;
 			}
 		}
 	}
 
-	RefreshRememberedSelection(p_app);
-	SettingsStore::Save(SettingsFilePath(p_app), p_app.settings, p_app.center_view_mode);
+	ChatDomainService().RefreshRememberedSelection(p_app);
+	SettingsStore::Save(AppPaths::SettingsFilePath(p_app.data_root), p_app.settings, p_app.center_view_mode);
 }
 
 static void LoadSettings(AppState& p_app)
 {
-	SettingsStore::Load(SettingsFilePath(p_app), p_app.settings, p_app.center_view_mode);
+	SettingsStore::Load(AppPaths::SettingsFilePath(p_app.data_root), p_app.settings, p_app.center_view_mode);
 #if UAM_ENABLE_ENGINE_RAG
 	p_app.settings.vector_db_backend = (p_app.settings.vector_db_backend == "none") ? "none" : kRuntimeIdLocalEngine;
 #else
@@ -1018,42 +608,11 @@ static void LoadSettings(AppState& p_app)
 	p_app.rag_manual_query_min = 1;
 }
 
-static bool SaveChat(const AppState& p_app, const ChatSession& p_chat)
-{
-	const ProviderProfile& l_provider = ProviderForChatOrDefault(p_app, p_chat);
-	return ProviderRuntime::SaveHistory(l_provider, p_app.data_root, p_chat);
-}
-
-static std::vector<ChatSession> LoadChats(const AppState& p_app)
-{
-	return GetPersistenceCoordinator().LoadChats(p_app);
-}
-
-static bool MigrateChatProviderBindingsToFixedModes(AppState& p_app)
-{
-	return GetProviderProfileMigrationService().MigrateChatProviderBindingsToFixedModes(p_app);
-}
-
-static ChatSession CreateNewChat(const std::string& p_folderId, const std::string& p_providerId)
-{
-	return GetChatDomainService().CreateNewChat(p_folderId, p_providerId);
-}
-
-static bool IsLocalDraftChatId(const std::string& p_chatId)
-{
-	return GetNativeSessionLinkService().IsLocalDraftChatId(p_chatId);
-}
-
-static std::optional<std::string> InferNativeSessionIdForLocalDraft(const ChatSession& p_localChat, const std::vector<ChatSession>& p_nativeChats)
-{
-	return GetNativeSessionLinkService().InferNativeSessionIdForLocalDraft(p_localChat, p_nativeChats);
-}
-
-static bool PersistLocalDraftNativeSessionLink(const AppState& p_app, ChatSession& p_localChat, const std::string& p_nativeSessionId)
+bool ChatHistorySyncService::PersistLocalDraftNativeSessionLink(const AppState& p_app, ChatSession& p_localChat, const std::string& p_nativeSessionId) const
 {
 	const std::string l_sessionId = Trim(p_nativeSessionId);
 
-	if (l_sessionId.empty() || !IsLocalDraftChatId(p_localChat.id))
+	if (l_sessionId.empty() || !NativeSessionLinkService().IsLocalDraftChatId(p_localChat.id))
 	{
 		return false;
 	}
@@ -1082,12 +641,13 @@ static bool PersistLocalDraftNativeSessionLink(const AppState& p_app, ChatSessio
 		p_localChat.updated_at = TimestampNow();
 	}
 
-	return SaveChat(p_app, p_localChat);
+	const ProviderProfile& l_provider = ProviderResolutionService().ProviderForChatOrDefault(p_app, p_localChat);
+	return ProviderRuntime::SaveHistory(l_provider, p_app.data_root, p_localChat);
 }
 
-static std::string ResolveResumeSessionIdForChat(const AppState& p_app, const ChatSession& p_chat)
+std::string ChatHistorySyncService::ResolveResumeSessionIdForChat(const AppState& p_app, const ChatSession& p_chat) const
 {
-	if (!ChatUsesNativeOverlayHistory(p_app, p_chat))
+	if (!ProviderResolutionService().ChatUsesNativeOverlayHistory(p_app, p_chat))
 	{
 		return "";
 	}
@@ -1120,44 +680,13 @@ static std::string ResolveResumeSessionIdForChat(const AppState& p_app, const Ch
 
 	// Legacy compatibility: older local snapshots of native chats may not
 	// persist native flags.
-	if (!p_chat.messages.empty() && !p_chat.id.empty() && !IsLocalDraftChatId(p_chat.id))
+	if (!p_chat.messages.empty() && !p_chat.id.empty() && !NativeSessionLinkService().IsLocalDraftChatId(p_chat.id))
 	{
 		return l_sessionExists(p_chat.id) ? p_chat.id : "";
 	}
 
 	return "";
 }
-
-static void SelectChatById(AppState& p_app, const std::string& p_chatId)
-{
-	GetChatDomainService().SelectChatById(p_app, p_chatId);
-}
-
-static void AddMessage(ChatSession& p_chat, const MessageRole p_role, const std::string& p_text)
-{
-	GetChatDomainService().AddMessage(p_chat, p_role, p_text);
-}
-
-static std::string BuildProviderPrompt(const ProviderProfile& p_provider, const std::string& p_userPrompt, const std::vector<std::string>& p_files)
-{
-	return ProviderRuntime::BuildPrompt(p_provider, p_userPrompt, p_files);
-}
-
-static std::string BuildProviderCommand(const ProviderProfile& p_provider, const AppSettings& p_settings, const std::string& p_prompt, const std::vector<std::string>& p_files, const std::string& p_resumeSessionId)
-{
-	return ProviderRuntime::BuildCommand(p_provider, p_settings, p_prompt, p_files, p_resumeSessionId);
-}
-
-static bool RuntimeUsesLocalEngine(const AppState& p_app)
-{
-	return ActiveProviderUsesInternalEngine(p_app);
-}
-
-static bool EnsureLocalRuntimeModelLoaded(AppState& p_app, std::string* p_errorOut)
-{
-	return GetRuntimeLocalService().EnsureLocalRuntimeModelLoaded(p_app, p_errorOut);
-}
-
 static bool IsRuntimeEnabledForProvider(const ProviderProfile& p_provider, std::string* p_reasonOut)
 {
 	const bool l_enabled = ProviderRuntime::IsRuntimeEnabled(p_provider);
@@ -1180,25 +709,10 @@ static bool IsRuntimeEnabledForProvider(const ProviderProfile& p_provider, std::
 	return l_enabled;
 }
 
-static bool ProviderUsesLocalBridgeRuntime(const ProviderProfile& p_provider)
-{
-	return GetRuntimeLocalService().ProviderUsesLocalBridgeRuntime(p_provider);
-}
 
-static bool EnsureSelectedLocalRuntimeModelForProvider(AppState& p_app)
+TemplatePreflightOutcome ProviderRequestService::PreflightWorkspaceTemplateForChat(AppState& p_app, const ProviderProfile& p_provider, const ChatSession& p_chat, std::string* p_bootstrapPromptOut, std::string* p_statusOut) const
 {
-	return GetRuntimeLocalService().EnsureSelectedLocalRuntimeModelForProvider(p_app);
-}
-
-static bool EnsureLocalBridgeRunning(AppState& p_app, std::string* p_errorOut)
-{
-	return GetRuntimeLocalService().EnsureLocalBridgeRunning(p_app, p_errorOut);
-}
-
-
-static TemplatePreflightOutcome PreflightWorkspaceTemplateForChat(AppState& p_app, const ProviderProfile& p_provider, const ChatSession& p_chat, std::string* p_bootstrapPromptOut = nullptr, std::string* p_statusOut = nullptr)
-{
-	RefreshTemplateCatalog(p_app);
+	TemplateRuntimeService().RefreshTemplateCatalog(p_app);
 
 	std::string l_effectiveTemplateId = p_chat.template_override_id;
 
@@ -1222,7 +736,7 @@ static TemplatePreflightOutcome PreflightWorkspaceTemplateForChat(AppState& p_ap
 		return TemplatePreflightOutcome::ReadyWithoutTemplate;
 	}
 
-	const TemplateCatalogEntry* lcp_entry = FindTemplateEntryById(p_app, l_effectiveTemplateId);
+	const TemplateCatalogEntry* lcp_entry = TemplateRuntimeService().FindTemplateEntryById(p_app, l_effectiveTemplateId);
 
 	if (lcp_entry == nullptr)
 	{
@@ -1237,7 +751,7 @@ static TemplatePreflightOutcome PreflightWorkspaceTemplateForChat(AppState& p_ap
 
 	if (ProviderRuntime::UsesGeminiPathBootstrap(p_provider))
 	{
-		if (!EnsureWorkspaceProviderLayout(p_app, p_chat, p_statusOut))
+		if (!TemplateRuntimeService().EnsureWorkspaceProviderLayout(p_app, p_chat, p_statusOut))
 		{
 			return TemplatePreflightOutcome::BlockingError;
 		}
@@ -1281,7 +795,7 @@ static TemplatePreflightOutcome PreflightWorkspaceTemplateForChat(AppState& p_ap
 	return TemplatePreflightOutcome::ReadyWithTemplate;
 }
 
-static bool QueueProviderPromptForChat(AppState& p_app, ChatSession& p_chat, const std::string& p_prompt, const bool p_templateControlMessage = false)
+bool ProviderRequestService::QueuePromptForChat(AppState& p_app, ChatSession& p_chat, const std::string& p_prompt, const bool p_templateControlMessage) const
 {
 	if (HasPendingCallForChat(p_app, p_chat.id))
 	{
@@ -1297,7 +811,7 @@ static bool QueueProviderPromptForChat(AppState& p_app, ChatSession& p_chat, con
 		return false;
 	}
 
-	const ProviderProfile& l_provider = ProviderForChatOrDefault(p_app, p_chat);
+	const ProviderProfile& l_provider = ProviderResolutionService().ProviderForChatOrDefault(p_app, p_chat);
 	std::string l_runtimeDisabledReason;
 
 	if (!IsRuntimeEnabledForProvider(l_provider, &l_runtimeDisabledReason))
@@ -1306,8 +820,8 @@ static bool QueueProviderPromptForChat(AppState& p_app, ChatSession& p_chat, con
 		return false;
 	}
 
-	const bool l_useLocalRuntime = ChatUsesInternalEngine(p_app, p_chat);
-	const bool l_useLocalBridgeRuntime = GetRuntimeLocalService().ProviderUsesLocalBridgeRuntime(l_provider);
+	const bool l_useLocalRuntime = ProviderResolutionService().ChatUsesInternalEngine(p_app, p_chat);
+	const bool l_useLocalBridgeRuntime = RuntimeLocalService().ProviderUsesLocalBridgeRuntime(l_provider);
 	std::string l_templateStatus;
 	std::string l_bootstrapPrompt;
 	TemplatePreflightOutcome l_templateOutcome = TemplatePreflightOutcome::ReadyWithoutTemplate;
@@ -1336,20 +850,20 @@ static bool QueueProviderPromptForChat(AppState& p_app, ChatSession& p_chat, con
 		l_runtimePrompt = l_bootstrapPrompt + "\n\n" + l_runtimePrompt;
 	}
 
-	if ((l_useLocalRuntime || l_useLocalBridgeRuntime) && !GetRuntimeLocalService().EnsureSelectedLocalRuntimeModelForProvider(p_app))
+	if ((l_useLocalRuntime || l_useLocalBridgeRuntime) && !RuntimeLocalService().EnsureSelectedLocalRuntimeModelForProvider(p_app))
 	{
 		return false;
 	}
 
-	AddMessage(p_chat, MessageRole::User, l_promptText);
+	ChatDomainService().AddMessage(p_chat, MessageRole::User, l_promptText);
 	SaveAndUpdateStatus(p_app, p_chat, "Prompt queued for provider runtime.", "Saved message locally, but failed to persist chat data.");
 
 	const bool l_useSharedCliSession = !l_useLocalRuntime && ProviderRuntime::UsesCliOutput(l_provider) && l_provider.supports_interactive;
 
 	if (!l_useLocalRuntime && ProviderRuntime::UsesCliOutput(l_provider) && !l_provider.supports_interactive)
 	{
-		AddMessage(p_chat, MessageRole::System, "Provider is configured for CLI output but has no interactive runtime command.");
-		SaveChat(p_app, p_chat);
+		ChatDomainService().AddMessage(p_chat, MessageRole::System, "Provider is configured for CLI output but has no interactive runtime command.");
+		ProviderRuntime::SaveHistory(l_provider, p_app.data_root, p_chat);
 		p_app.status_line = "Provider runtime configuration error.";
 		return false;
 	}
@@ -1360,8 +874,8 @@ static bool QueueProviderPromptForChat(AppState& p_app, ChatSession& p_chat, con
 
 		if (!SendPromptToCliRuntime(p_app, p_chat, l_runtimePrompt, &l_terminalError))
 		{
-			AddMessage(p_chat, MessageRole::System, "Provider terminal send failed: " + (l_terminalError.empty() ? std::string("unknown error") : l_terminalError));
-			SaveChat(p_app, p_chat);
+			ChatDomainService().AddMessage(p_chat, MessageRole::System, "Provider terminal send failed: " + (l_terminalError.empty() ? std::string("unknown error") : l_terminalError));
+			ProviderRuntime::SaveHistory(l_provider, p_app.data_root, p_chat);
 			p_app.status_line = "Provider terminal send failed.";
 			return false;
 		}
@@ -1369,7 +883,7 @@ static bool QueueProviderPromptForChat(AppState& p_app, ChatSession& p_chat, con
 		if (l_shouldBootstrapTemplate)
 		{
 			p_chat.prompt_profile_bootstrapped = true;
-			SaveChat(p_app, p_chat);
+			ProviderRuntime::SaveHistory(l_provider, p_app.data_root, p_chat);
 		}
 
 		if (p_templateControlMessage)
@@ -1389,10 +903,10 @@ static bool QueueProviderPromptForChat(AppState& p_app, ChatSession& p_chat, con
 	{
 		std::string l_loadError;
 
-		if (!GetRuntimeLocalService().EnsureLocalRuntimeModelLoaded(p_app, &l_loadError))
+		if (!RuntimeLocalService().EnsureLocalRuntimeModelLoaded(p_app, &l_loadError))
 		{
-			AddMessage(p_chat, MessageRole::System, "Local runtime model load failed: " + (l_loadError.empty() ? std::string("unknown error") : l_loadError));
-			SaveChat(p_app, p_chat);
+			ChatDomainService().AddMessage(p_chat, MessageRole::System, "Local runtime model load failed: " + (l_loadError.empty() ? std::string("unknown error") : l_loadError));
+			ProviderRuntime::SaveHistory(l_provider, p_app.data_root, p_chat);
 			p_app.status_line = "Local runtime model load failed.";
 			return false;
 		}
@@ -1401,14 +915,14 @@ static bool QueueProviderPromptForChat(AppState& p_app, ChatSession& p_chat, con
 
 		if (l_response.ok)
 		{
-			AddMessage(p_chat, MessageRole::Assistant, l_response.text);
+			ChatDomainService().AddMessage(p_chat, MessageRole::Assistant, l_response.text);
 			SaveAndUpdateStatus(p_app, p_chat, "Local response generated.", "Local response generated, but chat save failed.");
 			p_app.scroll_to_bottom = true;
 			return true;
 		}
 
-		AddMessage(p_chat, MessageRole::System, "Local runtime error: " + l_response.error);
-		SaveChat(p_app, p_chat);
+		ChatDomainService().AddMessage(p_chat, MessageRole::System, "Local runtime error: " + l_response.error);
+		ProviderRuntime::SaveHistory(l_provider, p_app.data_root, p_chat);
 		p_app.status_line = "Local runtime command failed.";
 		p_app.scroll_to_bottom = true;
 		return false;
@@ -1416,22 +930,22 @@ static bool QueueProviderPromptForChat(AppState& p_app, ChatSession& p_chat, con
 
 	std::vector<ChatSession> l_nativeBefore;
 
-	if (ChatUsesNativeOverlayHistory(p_app, p_chat))
+	if (ProviderResolutionService().ChatUsesNativeOverlayHistory(p_app, p_chat))
 	{
-		RefreshNativeSessionDirectory(p_app);
-		l_nativeBefore = LoadNativeSessionChats(p_app.native_history_chats_dir, l_provider);
+		ChatHistorySyncService().RefreshNativeSessionDirectory(p_app);
+		l_nativeBefore = ChatHistorySyncService().LoadNativeSessionChats(p_app.native_history_chats_dir, l_provider);
 	}
 
-	const std::string l_resumeSessionId = ResolveResumeSessionIdForChat(p_app, p_chat);
-	const std::string l_providerPrompt = BuildProviderPrompt(l_provider, l_runtimePrompt, p_chat.linked_files);
-	const std::string l_providerCommand = BuildProviderCommand(l_provider, p_app.settings, l_providerPrompt, p_chat.linked_files, l_resumeSessionId);
-	const std::string l_command = BuildShellCommandWithWorkingDirectory(ResolveWorkspaceRootPath(p_app, p_chat), l_providerCommand);
+	const std::string l_resumeSessionId = ChatHistorySyncService().ResolveResumeSessionIdForChat(p_app, p_chat);
+	const std::string l_providerPrompt = ProviderRuntime::BuildPrompt(l_provider, l_runtimePrompt, p_chat.linked_files);
+	const std::string l_providerCommand = ProviderRuntime::BuildCommand(l_provider, p_app.settings, l_providerPrompt, p_chat.linked_files, l_resumeSessionId);
+	const std::string l_command = PlatformServicesFactory::Instance().process_service.BuildShellCommandWithWorkingDirectory(ResolveWorkspaceRootPath(p_app, p_chat), l_providerCommand);
 	const std::string l_chatId = p_chat.id;
 
 	PendingRuntimeCall l_pending;
 	l_pending.chat_id = l_chatId;
 	l_pending.resume_session_id = l_resumeSessionId;
-	l_pending.session_ids_before = SessionIdsFromChats(l_nativeBefore);
+	l_pending.session_ids_before = ChatHistorySyncService().SessionIdsFromChats(l_nativeBefore);
 	l_pending.command_preview = l_command;
 	l_pending.completed = std::make_shared<std::atomic<bool>>(false);
 	l_pending.output = std::make_shared<std::string>();
@@ -1440,7 +954,7 @@ static bool QueueProviderPromptForChat(AppState& p_app, ChatSession& p_chat, con
 		std::shared_ptr<std::string> l_output = l_pending.output;
 		auto l_runPendingCallTask = [l_command, l_completed, l_output]()
 		{
-			*l_output = ExecuteCommandCaptureOutput(l_command);
+			*l_output = PersistenceCoordinator().ExecuteCommandCaptureOutput(l_command);
 			l_completed->store(true, std::memory_order_release);
 		};
 
@@ -1452,7 +966,7 @@ static bool QueueProviderPromptForChat(AppState& p_app, ChatSession& p_chat, con
 	if (l_shouldBootstrapTemplate)
 	{
 		p_chat.prompt_profile_bootstrapped = true;
-		SaveChat(p_app, p_chat);
+		ProviderRuntime::SaveHistory(l_provider, p_app.data_root, p_chat);
 	}
 
 	if (p_templateControlMessage)
@@ -1470,7 +984,9 @@ static bool QueueProviderPromptForChat(AppState& p_app, ChatSession& p_chat, con
 
 static void SaveAndUpdateStatus(AppState& p_app, const ChatSession& p_chat, const std::string& p_success, const std::string& p_failure)
 {
-	if (SaveChat(p_app, p_chat))
+	const ProviderProfile& l_provider = ProviderResolutionService().ProviderForChatOrDefault(p_app, p_chat);
+
+	if (ProviderRuntime::SaveHistory(l_provider, p_app.data_root, p_chat))
 	{
 		p_app.status_line = p_success;
 	}
@@ -1480,20 +996,20 @@ static void SaveAndUpdateStatus(AppState& p_app, const ChatSession& p_chat, cons
 	}
 }
 
-static void ApplyLocalOverrides(AppState& p_app, std::vector<ChatSession>& p_nativeChats)
+void ChatHistorySyncService::ApplyLocalOverrides(AppState& p_app, std::vector<ChatSession>& p_nativeChats) const
 {
-	const std::string l_selectedChatId = (SelectedChat(p_app) != nullptr) ? SelectedChat(p_app)->id : "";
-	p_nativeChats = DeduplicateChatsById(std::move(p_nativeChats));
-	std::vector<ChatSession> l_localChats = LoadChats(p_app);
+	const std::string l_selectedChatId = (ChatDomainService().SelectedChat(p_app) != nullptr) ? ChatDomainService().SelectedChat(p_app)->id : "";
+	p_nativeChats = ChatDomainService().DeduplicateChatsById(std::move(p_nativeChats));
+	std::vector<ChatSession> l_localChats = ChatRepository::LoadLocalChats(p_app.data_root);
 
 	for (ChatSession& l_local : l_localChats)
 	{
-		if (l_local.uses_native_session || !l_local.native_session_id.empty() || !IsLocalDraftChatId(l_local.id))
+		if (l_local.uses_native_session || !l_local.native_session_id.empty() || !NativeSessionLinkService().IsLocalDraftChatId(l_local.id))
 		{
 			continue;
 		}
 
-		const std::string l_normalizedProviderId = GetProviderProfileMigrationService().MapLegacyRuntimeId(l_local.provider_id, false);
+		const std::string l_normalizedProviderId = ProviderProfileMigrationService().MapLegacyRuntimeId(l_local.provider_id, false);
 		const ProviderProfile* lcp_localProvider = ProviderProfileStore::FindById(p_app.provider_profiles, l_normalizedProviderId);
 		const bool l_localChatUsesNativeOverlayHistory = Trim(l_local.provider_id).empty() || (lcp_localProvider != nullptr && ProviderRuntime::UsesNativeOverlayHistory(*lcp_localProvider));
 
@@ -1502,7 +1018,7 @@ static void ApplyLocalOverrides(AppState& p_app, std::vector<ChatSession>& p_nat
 			continue;
 		}
 
-		const auto l_inferredSessionId = InferNativeSessionIdForLocalDraft(l_local, p_nativeChats);
+		const auto l_inferredSessionId = NativeSessionLinkService().InferNativeSessionIdForLocalDraft(l_local, p_nativeChats);
 
 		if (l_inferredSessionId.has_value())
 		{
@@ -1510,7 +1026,7 @@ static void ApplyLocalOverrides(AppState& p_app, std::vector<ChatSession>& p_nat
 		}
 	}
 
-	l_localChats = DeduplicateChatsById(std::move(l_localChats));
+	l_localChats = ChatDomainService().DeduplicateChatsById(std::move(l_localChats));
 	std::unordered_map<std::string, const ChatSession*> lcp_localMap;
 
 	for (const ChatSession& l_local : l_localChats)
@@ -1635,12 +1151,12 @@ static void ApplyLocalOverrides(AppState& p_app, std::vector<ChatSession>& p_nat
 			continue;
 		}
 
-		const std::string l_normalizedProviderId = GetProviderProfileMigrationService().MapLegacyRuntimeId(l_chat.provider_id, false);
+		const std::string l_normalizedProviderId = ProviderProfileMigrationService().MapLegacyRuntimeId(l_chat.provider_id, false);
 		const ProviderProfile* lcp_localProvider = ProviderProfileStore::FindById(p_app.provider_profiles, l_normalizedProviderId);
 		const bool l_localChatUsesNativeOverlayHistory = (lcp_localProvider == nullptr) ? true : ProviderRuntime::UsesNativeOverlayHistory(*lcp_localProvider);
 		// In native-overlay history mode, only explicit in-app drafts (chat-*) should
 		// appear as local-only chats.
-		if (l_localChatUsesNativeOverlayHistory && !IsLocalDraftChatId(l_chat.id) && !Trim(l_chat.provider_id).empty())
+		if (l_localChatUsesNativeOverlayHistory && !NativeSessionLinkService().IsLocalDraftChatId(l_chat.id) && !Trim(l_chat.provider_id).empty())
 		{
 			continue;
 		}
@@ -1664,14 +1180,14 @@ static void ApplyLocalOverrides(AppState& p_app, std::vector<ChatSession>& p_nat
 		l_merged.push_back(l_chat);
 	}
 
-	p_app.chats = DeduplicateChatsById(std::move(l_merged));
-	NormalizeChatBranchMetadata(p_app);
-	NormalizeChatFolderAssignments(p_app);
+	p_app.chats = ChatDomainService().DeduplicateChatsById(std::move(l_merged));
+	ChatBranching::Normalize(p_app.chats);
+	ChatDomainService().NormalizeChatFolderAssignments(p_app);
 }
 
-static void RefreshNativeSessionDirectory(AppState& p_app)
+void ChatHistorySyncService::RefreshNativeSessionDirectory(AppState& p_app) const
 {
-	const auto l_tmpDir = ResolveProjectNativeSessionRootPath(fs::current_path());
+	const auto l_tmpDir = AppPaths::ResolveGeminiProjectTmpDir(fs::current_path());
 
 	if (l_tmpDir.has_value())
 	{
@@ -1683,21 +1199,6 @@ static void RefreshNativeSessionDirectory(AppState& p_app)
 	{
 		p_app.native_history_chats_dir.clear();
 	}
-}
-
-static std::vector<std::string> CollectNewSessionIds(const std::vector<ChatSession>& p_loadedChats, const std::vector<std::string>& p_existingIds)
-{
-	return GetNativeSessionLinkService().CollectNewSessionIds(p_loadedChats, p_existingIds);
-}
-
-static std::string PickFirstUnblockedSessionId(const std::vector<std::string>& p_candidateIds, const std::unordered_set<std::string>& p_blockedIds)
-{
-	return GetNativeSessionLinkService().PickFirstUnblockedSessionId(p_candidateIds, p_blockedIds);
-}
-
-static bool SessionIdExistsInLoadedChats(const std::vector<ChatSession>& p_loadedChats, const std::string& p_sessionId)
-{
-	return GetNativeSessionLinkService().SessionIdExistsInLoadedChats(p_loadedChats, p_sessionId);
 }
 
 static std::optional<fs::path> FindNativeSessionFilePathInDirectory(const fs::path& p_chatsDir, const std::string& p_sessionId)
@@ -1739,17 +1240,7 @@ static std::optional<fs::path> FindNativeSessionFilePathInDirectory(const fs::pa
 	return std::nullopt;
 }
 
-static std::optional<fs::path> FindNativeSessionFilePath(const AppState& p_app, const std::string& p_sessionId)
-{
-	return FindNativeSessionFilePathInDirectory(p_app.native_history_chats_dir, p_sessionId);
-}
-
-static MessageRole NativeMessageRoleFromType(const ProviderProfile& p_provider, const std::string& p_type)
-{
-	return ProviderRuntime::RoleFromNativeType(p_provider, p_type);
-}
-
-static bool TruncateNativeSessionFromDisplayedMessage(const AppState& p_app, const ChatSession& p_chat, const int p_displayedMessageIndex, std::string* p_errorOut)
+bool ChatHistorySyncService::TruncateNativeSessionFromDisplayedMessage(const AppState& p_app, const ChatSession& p_chat, const int p_displayedMessageIndex, std::string* p_errorOut) const
 {
 	if (!p_chat.uses_native_session || p_chat.native_session_id.empty())
 	{
@@ -1761,7 +1252,7 @@ static bool TruncateNativeSessionFromDisplayedMessage(const AppState& p_app, con
 		return false;
 	}
 
-	const auto l_sessionFile = FindNativeSessionFilePath(p_app, p_chat.native_session_id);
+	const auto l_sessionFile = FindNativeSessionFilePathInDirectory(p_app.native_history_chats_dir, p_chat.native_session_id);
 
 	if (!l_sessionFile.has_value())
 	{
@@ -1812,7 +1303,7 @@ static bool TruncateNativeSessionFromDisplayedMessage(const AppState& p_app, con
 	}
 
 	JsonValue& l_messagesArray = l_messagesIt->second;
-	const ProviderProfile& l_provider = ActiveProviderOrDefault(p_app);
+	const ProviderProfile& l_provider = ProviderResolutionService().ActiveProviderOrDefault(p_app);
 
 	std::vector<int> l_visibleRawIndices;
 	std::vector<MessageRole> l_visibleRoles;
@@ -1836,7 +1327,7 @@ static bool TruncateNativeSessionFromDisplayedMessage(const AppState& p_app, con
 		}
 
 		l_visibleRawIndices.push_back(l_i);
-		l_visibleRoles.push_back(NativeMessageRoleFromType(l_provider, JsonStringOrEmpty(l_rawMessage.Find("type"))));
+		l_visibleRoles.push_back(ProviderRuntime::RoleFromNativeType(l_provider, JsonStringOrEmpty(l_rawMessage.Find("type"))));
 	}
 
 	if (p_displayedMessageIndex < 0 || p_displayedMessageIndex >= static_cast<int>(l_visibleRawIndices.size()))
@@ -1964,7 +1455,7 @@ bool Application::InitializeState()
 		l_dataRootCandidates.push_back(m_platformServices->path_service.DefaultDataRootPath());
 	}
 
-	l_dataRootCandidates.push_back(TempFallbackDataRootPath());
+	l_dataRootCandidates.push_back(PersistenceCoordinator().TempFallbackDataRootPath());
 
 	std::unordered_set<std::string> l_triedRoots;
 	std::string l_lastDataRootError = "Unknown data directory initialization failure.";
@@ -1987,7 +1478,7 @@ bool Application::InitializeState()
 		l_triedRoots.insert(l_key);
 		std::string l_error;
 
-		if (EnsureDataRootLayout(l_candidateRoot, &l_error))
+		if (PersistenceCoordinator().EnsureDataRootLayout(l_candidateRoot, &l_error))
 		{
 			m_app.data_root = l_candidateRoot;
 			l_initializedDataRoot = true;
@@ -2006,24 +1497,24 @@ bool Application::InitializeState()
 
 	LoadSettings(m_app);
 	bool l_settingsDirty = false;
-	const bool l_hadProviderFile = fs::exists(ProviderProfileFilePath(m_app));
+	const bool l_hadProviderFile = fs::exists(m_app.data_root / "providers.txt");
 	m_app.provider_profiles = ProviderProfileStore::Load(m_app.data_root);
-	bool l_providersDirty = GetProviderProfileMigrationService().MigrateProviderProfilesToFixedModeIds(m_app);
+	bool l_providersDirty = ProviderProfileMigrationService().MigrateProviderProfilesToFixedModeIds(m_app);
 
-	if (GetProviderProfileMigrationService().MigrateActiveProviderIdToFixedModes(m_app))
+	if (ProviderProfileMigrationService().MigrateActiveProviderIdToFixedModes(m_app))
 	{
 		l_settingsDirty = true;
 	}
 
-	if (ActiveProvider(m_app) == nullptr && !m_app.provider_profiles.empty())
+	if (ProviderResolutionService().ActiveProvider(m_app) == nullptr && !m_app.provider_profiles.empty())
 	{
 		m_app.settings.active_provider_id = m_app.provider_profiles.front().id;
 		l_settingsDirty = true;
 	}
 
-	if (ProviderProfile* lp_activeProfile = ActiveProvider(m_app); lp_activeProfile != nullptr)
+	if (ProviderProfile* lp_activeProfile = ProviderResolutionService().ActiveProvider(m_app); lp_activeProfile != nullptr)
 	{
-		if (!l_hadProviderFile && !m_app.settings.provider_command_template.empty() && GetProviderProfileMigrationService().IsNativeHistoryProviderId(lp_activeProfile->id) && ProviderRuntime::UsesStructuredOutput(*lp_activeProfile))
+		if (!l_hadProviderFile && !m_app.settings.provider_command_template.empty() && ProviderProfileMigrationService().IsNativeHistoryProviderId(lp_activeProfile->id) && ProviderRuntime::UsesStructuredOutput(*lp_activeProfile))
 		{
 			lp_activeProfile->command_template = m_app.settings.provider_command_template;
 			l_providersDirty = true;
@@ -2042,24 +1533,24 @@ bool Application::InitializeState()
 
 	if (!l_hadProviderFile || l_providersDirty)
 	{
-		SaveProviders(m_app);
+		ProviderProfileStore::Save(m_app.data_root, m_app.provider_profiles);
 	}
 
-	LoadFrontendActions(m_app);
-	RefreshTemplateCatalog(m_app, true);
+	PersistenceCoordinator().LoadFrontendActions(m_app);
+	TemplateRuntimeService().RefreshTemplateCatalog(m_app, true);
 	m_app.folders = ChatFolderStore::Load(m_app.data_root);
-	EnsureDefaultFolder(m_app);
-	SaveFolders(m_app);
-	const ProviderProfile& l_activeProvider = ActiveProviderOrDefault(m_app);
+	ChatDomainService().EnsureDefaultFolder(m_app);
+	ChatFolderStore::Save(m_app.data_root, m_app.folders);
+	const ProviderProfile& l_activeProvider = ProviderResolutionService().ActiveProviderOrDefault(m_app);
 	const ProviderRuntimeHistoryLoadOptions l_historyOptions = RuntimeHistoryLoadOptions();
 
-	if (ActiveProviderUsesNativeOverlayHistory(m_app))
+	if (ProviderResolutionService().ActiveProviderUsesNativeOverlayHistory(m_app))
 	{
-		RefreshNativeSessionDirectory(m_app);
-		m_app.chats = DeduplicateChatsById(ProviderRuntime::LoadHistory(l_activeProvider, m_app.data_root, m_app.native_history_chats_dir, l_historyOptions));
-		ApplyLocalOverrides(m_app, m_app.chats);
-		NormalizeChatBranchMetadata(m_app);
-		NormalizeChatFolderAssignments(m_app);
+		ChatHistorySyncService().RefreshNativeSessionDirectory(m_app);
+		m_app.chats = ChatDomainService().DeduplicateChatsById(ProviderRuntime::LoadHistory(l_activeProvider, m_app.data_root, m_app.native_history_chats_dir, l_historyOptions));
+		ChatHistorySyncService().ApplyLocalOverrides(m_app, m_app.chats);
+		ChatBranching::Normalize(m_app.chats);
+		ChatDomainService().NormalizeChatFolderAssignments(m_app);
 
 		if (m_app.native_history_chats_dir.empty())
 		{
@@ -2068,12 +1559,12 @@ bool Application::InitializeState()
 	}
 	else
 	{
-		m_app.chats = DeduplicateChatsById(ProviderRuntime::LoadHistory(l_activeProvider, m_app.data_root, m_app.native_history_chats_dir, l_historyOptions));
-		NormalizeChatBranchMetadata(m_app);
-		NormalizeChatFolderAssignments(m_app);
+		m_app.chats = ChatDomainService().DeduplicateChatsById(ProviderRuntime::LoadHistory(l_activeProvider, m_app.data_root, m_app.native_history_chats_dir, l_historyOptions));
+		ChatBranching::Normalize(m_app.chats);
+		ChatDomainService().NormalizeChatFolderAssignments(m_app);
 	}
 
-	if (GetProviderProfileMigrationService().MigrateChatProviderBindingsToFixedModes(m_app))
+	if (ProviderProfileMigrationService().MigrateChatProviderBindingsToFixedModes(m_app))
 	{
 		l_settingsDirty = true;
 	}
@@ -2082,7 +1573,7 @@ bool Application::InitializeState()
 	{
 		if (m_app.settings.remember_last_chat && !m_app.settings.last_selected_chat_id.empty())
 		{
-			m_app.selected_chat_index = FindChatIndexById(m_app, m_app.settings.last_selected_chat_id);
+			m_app.selected_chat_index = ChatDomainService().FindChatIndexById(m_app, m_app.settings.last_selected_chat_id);
 		}
 
 		if (m_app.selected_chat_index < 0 || m_app.selected_chat_index >= static_cast<int>(m_app.chats.size()))
@@ -2090,12 +1581,12 @@ bool Application::InitializeState()
 			m_app.selected_chat_index = 0;
 		}
 
-		RefreshRememberedSelection(m_app);
+		ChatDomainService().RefreshRememberedSelection(m_app);
 	}
 
-	if (const ChatSession* lcp_selectedChat = SelectedChat(m_app); lcp_selectedChat != nullptr && ChatUsesCliOutput(m_app, *lcp_selectedChat))
+	if (const ChatSession* lcp_selectedChat = ChatDomainService().SelectedChat(m_app); lcp_selectedChat != nullptr && ProviderResolutionService().ChatUsesCliOutput(m_app, *lcp_selectedChat))
 	{
-		m_terminalSessionManager.MarkSelectedTerminalForLaunch(m_app);
+		MarkSelectedCliTerminalForLaunch(m_app);
 	}
 
 	if (l_settingsDirty)
@@ -2155,15 +1646,15 @@ bool Application::InitializeWindowAndUi()
 	m_platformUiScale = DetectUiScale(m_window);
 	g_platform_layout_scale = std::clamp(m_platformUiScale, 1.0f, 2.25f);
 	ConfigureFonts(l_io, m_platformUiScale);
-	m_themeController.ApplyFromSettings(m_app);
+	ApplyThemeFromSettings(m_app);
 
 	if (m_platformUiScale > 1.01f)
 	{
 		ImGui::GetStyle().ScaleAllSizes(m_platformUiScale);
 	}
 
-	m_themeController.CaptureScaleBaseStyle();
-	m_themeController.ApplyUserScale(l_io, m_app.settings.ui_scale_multiplier);
+	CaptureUiScaleBaseStyle();
+	ApplyUserUiScale(l_io, m_app.settings.ui_scale_multiplier);
 
 	ImGui_ImplSDL2_InitForOpenGL(m_window, m_glContext);
 	ImGui_ImplOpenGL3_Init(m_glslVersion);

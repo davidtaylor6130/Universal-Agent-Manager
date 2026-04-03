@@ -1,5 +1,8 @@
 #pragma once
 
+#include "app/provider_resolution_service.h"
+#include "app/runtime_orchestration_services.h"
+
 /// <summary>
 /// Edit-message workflow actions for user message rewinds and resend.
 /// </summary>
@@ -74,11 +77,11 @@ inline bool ContinueFromEditedUserMessage(AppState& app, ChatSession& chat)
 		}
 	}
 
-	if (ActiveProviderUsesNativeOverlayHistory(app) && chat.uses_native_session && !chat.native_session_id.empty())
+	if (ProviderResolutionService().ActiveProviderUsesNativeOverlayHistory(app) && chat.uses_native_session && !chat.native_session_id.empty())
 	{
 		std::string native_error;
 
-		if (!TruncateNativeSessionFromDisplayedMessage(app, chat, message_index, &native_error))
+		if (!ChatHistorySyncService().TruncateNativeSessionFromDisplayedMessage(app, chat, message_index, &native_error))
 		{
 			app.status_line = "Failed to trim native Gemini session: " + native_error;
 			return false;
@@ -103,6 +106,6 @@ inline bool ContinueFromEditedUserMessage(AppState& app, ChatSession& chat)
 	SaveAndUpdateStatus(app, chat, "Chat rewound to edited message.", "Chat rewound in UI, but failed to save chat data.");
 
 	app.composer_text = prompt_text;
-	StartGeminiRequest(app);
+	ProviderRequestService().StartSelectedChatRequest(app);
 	return true;
 }
