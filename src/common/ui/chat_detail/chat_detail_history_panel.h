@@ -3,7 +3,7 @@
 /// <summary>
 /// Draws the structured conversation history list and bottom-scroll behavior.
 /// </summary>
-static void DrawChatDetailConversationHistory(AppState& app, ChatSession& chat)
+inline void DrawChatDetailConversationHistory(AppState& app, ChatSession& chat)
 {
 	ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
 	// Reserve exactly the composer height (162px) plus one item-spacing gap so the

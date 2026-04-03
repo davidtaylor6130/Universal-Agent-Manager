@@ -5,7 +5,7 @@
 /// <summary>
 /// Draws a flat system message row with a subtle warning-tinted pill background.
 /// </summary>
-static void DrawSystemMessageBubble(const Message& message, const ChatBubbleLayout& layout)
+inline void DrawSystemMessageBubble(const Message& message, const ChatBubbleLayout& layout)
 {
 	// Subtle warning-tinted pill for system messages
 	ImDrawList* draw = ImGui::GetWindowDrawList();

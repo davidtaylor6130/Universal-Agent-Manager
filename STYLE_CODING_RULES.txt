@@ -38,8 +38,18 @@ Scope:
 - All `#include` and `#define` directives must be in the top section of the file.
 - Do not place includes/defines inside implementation/body sections.
 - Keep the top-of-file declaration/prototype block coherent so top includes can resolve dependencies.
+- Header files must use conventional include guards, not `#pragma once`.
+- Include guard names should be project-scoped uppercase identifiers derived from the file path when practical (example: `UAM_APP_APPLICATION_H`).
+- Keep header guard structure conventional: `#ifndef`, then `#define`, then includes/declarations, then a closing `#endif` comment.
 
-4) Ownership and Pointer Rules
+4) Member Initialization Rules
+- Do not use blanket `{}` member initialization for class members as a default style.
+- Class/object members that are default-constructible should usually be declared without an explicit initializer.
+- Pointer members should use `= nullptr`.
+- Scalar state members should use explicit defaults that show intent, for example `= false`, `= 0`, or `= 1.0f`.
+- Use brace initialization for members only when it is intentionally required for clarity or construction semantics, not as a generic zero/value-init habit.
+
+5) Ownership and Pointer Rules
 - Prefer smart pointers for owned resources whenever possible.
 - Use `std::unique_ptr` by default for single ownership.
 - Use `std::shared_ptr` only when shared ownership is required.
@@ -52,12 +62,12 @@ Scope:
   - `curl_slist_free_all`
   - `pclose` / `_pclose`
 
-5) Behavioral Safety Rules
+6) Behavioral Safety Rules
 - Style refactors must preserve runtime behavior.
 - Changes must remain compile-safe.
 - Prefer readability improvements without changing public/runtime behavior.
 
-6) Third-Party Boundary Rules
+7) Third-Party Boundary Rules
 - Do not modify third-party/vendor code as part of feature work, refactors, formatting, or cleanup.
 - Protected paths include:
   - `third_party/`

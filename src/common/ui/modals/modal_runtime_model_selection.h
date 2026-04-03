@@ -1,9 +1,11 @@
 #pragma once
 
+#include "common/runtime/local_engine_runtime_service.h"
+
 /// <summary>
 /// Runtime model picker modal shown when local structured runtime has no selected model.
 /// </summary>
-static void DrawRuntimeModelSelectionModal(AppState& app)
+inline void DrawRuntimeModelSelectionModal(AppState& app)
 {
 	if (app.open_runtime_model_selection_popup)
 	{
@@ -42,9 +44,7 @@ static void DrawRuntimeModelSelectionModal(AppState& app)
 	}
 
 	const fs::path model_folder = ResolveRagModelFolder(app);
-	auto& runtime_engine = OllamaEngineService::Instance().Client();
-	runtime_engine.SetModelFolder(model_folder);
-	const std::vector<std::string> runtime_models = runtime_engine.ListModels();
+	const std::vector<std::string> runtime_models = app.runtime_model_service.ListModels(model_folder);
 	const bool has_models = !runtime_models.empty();
 
 	ImGui::TextColored(ui::kTextMuted, "Resolved folder: %s", model_folder.string().c_str());

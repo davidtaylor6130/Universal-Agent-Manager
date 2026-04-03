@@ -3,7 +3,7 @@
 /// <summary>
 /// Draws appearance controls in the app settings modal.
 /// </summary>
-static void DrawAppSettingsAppearanceSection(AppState& app, AppSettings& draft_settings, const float platform_scale)
+inline void DrawAppSettingsAppearanceSection(AppState& app, AppSettings& draft_settings, const float platform_scale)
 {
 	ImGui::TextColored(ui::kTextSecondary, "Appearance");
 	const char* theme_preview = "Dark";

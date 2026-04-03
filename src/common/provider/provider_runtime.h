@@ -42,7 +42,7 @@ class IProviderRuntime
 	/// <summary>Maps provider-native message types to app message roles.</summary>
 	virtual MessageRole RoleFromNativeType(const ProviderProfile& profile, const std::string& native_type) const = 0;
 	/// <summary>Loads history according to runtime policy.</summary>
-	virtual std::vector<ChatSession> LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path& gemini_chats_dir, const ProviderRuntimeHistoryLoadOptions& options) const = 0;
+	virtual std::vector<ChatSession> LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path& native_history_chats_dir, const ProviderRuntimeHistoryLoadOptions& options) const = 0;
 	/// <summary>Saves chat according to runtime history policy.</summary>
 	virtual bool SaveHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const ChatSession& chat) const = 0;
 	/// <summary>Returns true when runtime uses Gemini-native history plus local overlay.</summary>
@@ -102,7 +102,7 @@ class ProviderRuntime
 	/// <summary>Maps provider-native message types to app message roles.</summary>
 	static MessageRole RoleFromNativeType(const ProviderProfile& profile, const std::string& native_type);
 	/// <summary>Loads history according to runtime policy.</summary>
-	static std::vector<ChatSession> LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path& gemini_chats_dir, const ProviderRuntimeHistoryLoadOptions& options = {});
+	static std::vector<ChatSession> LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path& native_history_chats_dir, const ProviderRuntimeHistoryLoadOptions& options = {});
 	/// <summary>Saves chat according to runtime history policy.</summary>
 	static bool SaveHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const ChatSession& chat);
 	/// <summary>Returns true when runtime uses Gemini-native history plus local overlay.</summary>

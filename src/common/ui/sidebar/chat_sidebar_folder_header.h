@@ -14,7 +14,7 @@ struct FolderHeaderAction
 /// <summary>
 /// Draws the folder header row with count and quick actions.
 /// </summary>
-static FolderHeaderAction DrawFolderHeaderItem(const ChatFolder& folder, const int chat_count)
+inline FolderHeaderAction DrawFolderHeaderItem(const ChatFolder& folder, const int chat_count)
 {
 	const bool light = IsLightPaletteActive();
 	FolderHeaderAction action;

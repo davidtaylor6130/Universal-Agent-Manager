@@ -6,9 +6,8 @@
 #include "common/runtime/terminal_common.h"
 
 /// <summary>
-/// Platform startup dispatch for PTY/ConPTY process attachment.
+/// Platform startup is handled via IPlatformTerminalRuntime implementations.
 /// </summary>
-#include "common/platform/terminal_startup_dispatch.h"
 
 /// <summary>
 /// Terminal rendering/polling integration and Gemini request orchestration.

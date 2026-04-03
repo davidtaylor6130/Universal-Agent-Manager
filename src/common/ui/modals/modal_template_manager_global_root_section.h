@@ -3,7 +3,7 @@
 /// <summary>
 /// Draws template-manager controls for global root selection and catalog folder access.
 /// </summary>
-static void DrawTemplateManagerGlobalRootSection(AppState& app, const fs::path& global_root, const fs::path& catalog_path)
+inline void DrawMarkdownTemplateManagerGlobalRootSection(AppState& app, const fs::path& global_root, const fs::path& catalog_path)
 {
 	(void)global_root;
 	ImGui::TextColored(ui::kTextSecondary, "Global Root");

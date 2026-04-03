@@ -105,7 +105,8 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 	meta << "branch_from_index=" << chat.branch_from_message_index << '\n';
 	meta << "folder=" << chat.folder_id << '\n';
 	meta << "template_override=" << chat.template_override_id << '\n';
-	meta << "gemini_md_bootstrapped=" << (chat.gemini_md_bootstrapped ? "1" : "0") << '\n';
+	// Persist legacy key name to preserve existing local chat schema.
+	meta << "gemini_md_bootstrapped=" << (chat.prompt_profile_bootstrapped ? "1" : "0") << '\n';
 	meta << "rag_enabled=" << (chat.rag_enabled ? "1" : "0") << '\n';
 	meta << "title=" << chat.title << '\n';
 	meta << "created_at=" << chat.created_at << '\n';
@@ -236,9 +237,9 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
 				{
 					chat.template_override_id = value;
 				}
-				else if (key == "gemini_md_bootstrapped")
+				else if (key == "prompt_profile_bootstrapped" || key == "gemini_md_bootstrapped")
 				{
-					chat.gemini_md_bootstrapped = (value == "1" || value == "true");
+					chat.prompt_profile_bootstrapped = (value == "1" || value == "true");
 				}
 				else if (key == "rag_enabled")
 				{

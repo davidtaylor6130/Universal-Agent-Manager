@@ -3,7 +3,7 @@
 /// <summary>
 /// Draws save/cancel actions and applies app settings draft values.
 /// </summary>
-static void DrawAppSettingsCommitSection(AppState& app, AppSettings& draft_settings, const float platform_scale, bool& initialized)
+inline void DrawAppSettingsCommitSection(AppState& app, AppSettings& draft_settings, const float platform_scale, bool& initialized)
 {
 	if (DrawButton("Save Preferences", ImVec2(138.0f, 34.0f), ButtonKind::Primary))
 	{

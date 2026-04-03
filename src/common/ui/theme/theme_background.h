@@ -3,7 +3,7 @@
 /// <summary>
 /// Global animated backdrop renderer.
 /// </summary>
-static void DrawAmbientBackdrop(const ImVec2& pos, const ImVec2& size, const float time_s)
+inline void DrawAmbientBackdrop(const ImVec2& pos, const ImVec2& size, const float time_s)
 {
 	const bool light = IsLightPaletteActive();
 	ImDrawList* draw = ImGui::GetBackgroundDrawList();

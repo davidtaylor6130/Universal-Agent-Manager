@@ -14,7 +14,7 @@ struct SidebarItemAction
 /// <summary>
 /// Draws one chat row in the sidebar tree and returns requested UI actions.
 /// </summary>
-static SidebarItemAction DrawSidebarItem(AppState& app, const ChatSession& chat, const bool selected, const std::string& item_id, const int tree_depth = 0, const bool has_children = false, const bool children_collapsed = false, bool* toggle_children = nullptr)
+inline SidebarItemAction DrawSidebarItem(AppState& app, const ChatSession& chat, const bool selected, const std::string& item_id, const int tree_depth = 0, const bool has_children = false, const bool children_collapsed = false, bool* toggle_children = nullptr)
 {
 	const bool light = IsLightPaletteActive();
 	SidebarItemAction action;

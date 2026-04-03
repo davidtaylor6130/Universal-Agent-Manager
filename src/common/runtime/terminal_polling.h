@@ -1,6 +1,6 @@
 #pragma once
 
-static std::string CodepointToUtf8(const uint32_t cp)
+inline std::string CodepointToUtf8(const uint32_t cp)
 {
 	std::string out;
 
@@ -30,7 +30,7 @@ static std::string CodepointToUtf8(const uint32_t cp)
 	return out;
 }
 
-static void ResizeCliTerminal(CliTerminalState& terminal, const int rows, const int cols)
+inline void ResizeCliTerminal(CliTerminalState& terminal, const int rows, const int cols)
 {
 	const int safe_rows = std::max(8, rows);
 	const int safe_cols = std::max(20, cols);
@@ -50,7 +50,7 @@ static void ResizeCliTerminal(CliTerminalState& terminal, const int rows, const 
 	PlatformServicesFactory::Instance().terminal_runtime.ResizeCliTerminal(terminal);
 }
 
-static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const bool preserve_selection)
+inline void PollCliTerminal(AppState& app, CliTerminalState& terminal, const bool preserve_selection)
 {
 	constexpr double kGenerationIdleSeconds = 1.15;
 	constexpr double kStructuredInputReadyFallbackSeconds = 1.5;
@@ -59,7 +59,7 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
 	const std::string selected_chat_id = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
 	const int terminal_chat_index = FindChatIndexById(app, terminal.attached_chat_id);
 	const ChatSession* terminal_chat = (terminal_chat_index >= 0) ? &app.chats[terminal_chat_index] : nullptr;
-	const bool terminal_uses_gemini_history = (terminal_chat != nullptr) && ChatUsesGeminiHistory(app, *terminal_chat);
+	const bool terminal_uses_gemini_history = (terminal_chat != nullptr) && ChatUsesNativeOverlayHistory(app, *terminal_chat);
 	const ProviderProfile terminal_provider = (terminal_chat != nullptr) ? ProviderForChatOrDefault(app, *terminal_chat) : ActiveProviderOrDefault(app);
 	const auto mark_unseen_if_background = [&]()
 	{
@@ -222,8 +222,8 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
 			}
 			else
 			{
-				RefreshGeminiChatsDir(app);
-				const std::vector<ChatSession> native_now = LoadNativeGeminiChats(app.gemini_chats_dir, terminal_provider);
+				RefreshNativeSessionDirectory(app);
+				const std::vector<ChatSession> native_now = LoadNativeSessionChats(app.native_history_chats_dir, terminal_provider);
 
 				if (terminal.attached_session_id.empty())
 				{
@@ -289,14 +289,14 @@ static void PollCliTerminal(AppState& app, CliTerminalState& terminal, const boo
 	}
 }
 
-static void RefreshChatHistory(AppState& app)
+inline void RefreshChatHistory(AppState& app)
 {
 	const std::string selected_id = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
 	SyncChatsFromNative(app, selected_id, true);
 	app.status_line = "Chat history refreshed.";
 }
 
-static void PollAllCliTerminals(AppState& app)
+inline void PollAllCliTerminals(AppState& app)
 {
 	const std::string selected_chat_id = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
 	const double now = ImGui::GetTime();
@@ -343,7 +343,7 @@ static void PollAllCliTerminals(AppState& app)
 	}
 }
 
-static void StartGeminiRequest(AppState& app)
+inline void StartGeminiRequest(AppState& app)
 {
 	ChatSession* chat = SelectedChat(app);
 
@@ -355,7 +355,7 @@ static void StartGeminiRequest(AppState& app)
 
 	const std::string prompt_text = Trim(app.composer_text);
 
-	if (QueueGeminiPromptForChat(app, *chat, prompt_text, false))
+	if (QueueProviderPromptForChat(app, *chat, prompt_text, false))
 	{
 		app.composer_text.clear();
 	}

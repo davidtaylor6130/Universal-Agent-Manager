@@ -4,7 +4,7 @@
 /// <summary>
 /// Converts active ImGui modifier keys into libvterm modifiers.
 /// </summary>
-static VTermModifier ActiveVTermModifiers()
+inline VTermModifier ActiveVTermModifiers()
 {
 	VTermModifier mod = VTERM_MOD_NONE;
 	ImGuiIO& io = ImGui::GetIO();
@@ -30,7 +30,7 @@ static VTermModifier ActiveVTermModifiers()
 /// <summary>
 /// Feeds keyboard input from Dear ImGui into the embedded terminal session.
 /// </summary>
-static void FeedCliTerminalKeyboard(CliTerminalState& terminal)
+inline void FeedCliTerminalKeyboard(CliTerminalState& terminal)
 {
 	if (terminal.vt == nullptr)
 	{

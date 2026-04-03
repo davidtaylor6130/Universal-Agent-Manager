@@ -3,7 +3,7 @@
 /// <summary>
 /// Draws template-related controls in the app settings modal.
 /// </summary>
-static void DrawAppSettingsTemplatesSection(AppState& app, AppSettings& draft_settings)
+inline void DrawAppSettingsTemplatesSection(AppState& app, AppSettings& draft_settings)
 {
 	ImGui::TextColored(ui::kTextSecondary, "Prompt Profiles");
 	PushInputChrome();

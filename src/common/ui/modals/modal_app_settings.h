@@ -12,7 +12,7 @@
 /// <summary>
 /// Draws the application settings modal using section-level UI components.
 /// </summary>
-static void DrawAppSettingsModal(AppState& app, const float platform_scale)
+inline void DrawAppSettingsModal(AppState& app, const float platform_scale)
 {
 	static AppSettings draft_settings{};
 	static bool initialized = false;
@@ -30,7 +30,7 @@ static void DrawAppSettingsModal(AppState& app, const float platform_scale)
 		initialized = true;
 		ImGui::OpenPopup("app_settings_popup");
 		app.open_app_settings_popup = false;
-		StartGeminiVersionCheck(app, true);
+		GetProviderCliCompatibilityService().StartVersionCheck(app, true);
 	}
 
 	if (ImGui::BeginPopupModal("app_settings_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
@@ -46,7 +46,7 @@ static void DrawAppSettingsModal(AppState& app, const float platform_scale)
 
 			draft_settings.ui_theme = NormalizeThemeChoice(draft_settings.ui_theme);
 			initialized = true;
-			StartGeminiVersionCheck(app, false);
+			GetProviderCliCompatibilityService().StartVersionCheck(app, false);
 		}
 
 		RefreshTemplateCatalog(app);
@@ -69,7 +69,7 @@ static void DrawAppSettingsModal(AppState& app, const float platform_scale)
 		DrawSoftDivider();
 		const ProviderProfile* active_profile = ProviderProfileStore::FindById(app.provider_profiles, draft_settings.active_provider_id);
 
-		if (active_profile != nullptr && IsGeminiProviderId(active_profile->id))
+		if (active_profile != nullptr && IsNativeHistoryProviderId(active_profile->id))
 		{
 			DrawAppSettingsCompatibilitySection(app);
 		}

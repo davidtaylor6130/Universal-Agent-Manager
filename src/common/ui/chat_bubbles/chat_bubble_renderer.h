@@ -7,7 +7,7 @@
 /// <summary>
 /// Dispatches message rendering to role-specific bubble renderers.
 /// </summary>
-static void DrawMessageBubble(AppState& app, ChatSession& chat, const int message_index, const float content_width)
+inline void DrawMessageBubble(AppState& app, ChatSession& chat, const int message_index, const float content_width)
 {
 	if (message_index < 0 || message_index >= static_cast<int>(chat.messages.size()))
 	{

@@ -3,7 +3,7 @@
 /// <summary>
 /// Delete-folder confirmation modal renderer.
 /// </summary>
-static void DrawDeleteFolderConfirmationModal(AppState& app)
+inline void DrawDeleteFolderConfirmationModal(AppState& app)
 {
 	if (app.open_delete_folder_popup)
 	{

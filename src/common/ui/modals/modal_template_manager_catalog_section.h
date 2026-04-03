@@ -3,7 +3,7 @@
 /// <summary>
 /// Draws the template-manager catalog list and selected template state.
 /// </summary>
-static const TemplateCatalogEntry* DrawTemplateManagerCatalogSection(AppState& app, bool& has_selection_out)
+inline const TemplateCatalogEntry* DrawMarkdownTemplateManagerCatalogSection(AppState& app, bool& has_selection_out)
 {
 	ImGui::TextColored(ui::kTextSecondary, "Catalog Entries (%zu)", app.template_catalog.size());
 

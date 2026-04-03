@@ -3,7 +3,7 @@
 /// <summary>
 /// Status chip and global top-bar rendering helpers.
 /// </summary>
-static void DrawStatusChip(const std::string& chip_id, const std::string& label, const ImVec4& fill, const ImVec4& text_color)
+inline void DrawStatusChip(const std::string& chip_id, const std::string& label, const ImVec4& fill, const ImVec4& text_color)
 {
 	ImGui::PushID(chip_id.c_str());
 	const ImVec2 text_size = ImGui::CalcTextSize(label.c_str());
@@ -19,7 +19,7 @@ static void DrawStatusChip(const std::string& chip_id, const std::string& label,
 	ImGui::PopID();
 }
 
-static void DrawGlobalTopBar(AppState& app)
+inline void DrawGlobalTopBar(AppState& app)
 {
 	if (!BeginPanel("global_top_bar", ImVec2(0.0f, ui::kTopBarHeight), PanelTone::Secondary, true, 0, ImVec2(ui::kSpace16, ui::kSpace12), ui::kRadiusPanel))
 	{

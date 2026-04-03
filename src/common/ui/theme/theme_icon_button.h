@@ -4,7 +4,7 @@
 /// Draws a lightweight vector icon centered inside a mini icon button.
 /// Returns false when glyph does not map to a vector icon token.
 /// </summary>
-static bool DrawMiniIconGlyph(ImDrawList* draw, const ImVec2& min, const ImVec2& max, const char* glyph, const ImU32 color)
+inline bool DrawMiniIconGlyph(ImDrawList* draw, const ImVec2& min, const ImVec2& max, const char* glyph, const ImU32 color)
 {
 	if (draw == nullptr || glyph == nullptr)
 	{
@@ -77,7 +77,7 @@ static bool DrawMiniIconGlyph(ImDrawList* draw, const ImVec2& min, const ImVec2&
 /// <summary>
 /// Compact icon button used in sidebar and row actions.
 /// </summary>
-static bool DrawMiniIconButton(const char* id, const char* glyph, const ImVec2& size = ImVec2(22.0f, 22.0f), const bool danger = false)
+inline bool DrawMiniIconButton(const char* id, const char* glyph, const ImVec2& size = ImVec2(22.0f, 22.0f), const bool danger = false)
 {
 	const bool light = IsLightPaletteActive();
 	const ImVec2 scaled_size = ScaleUiSize(size);
@@ -109,7 +109,7 @@ static bool DrawMiniIconButton(const char* id, const char* glyph, const ImVec2& 
 /// <summary>
 /// Compact folder icon button used next to directory/file inputs.
 /// </summary>
-static bool DrawFolderIconButton(const char* id, const ImVec2& size = ImVec2(22.0f, 22.0f))
+inline bool DrawFolderIconButton(const char* id, const ImVec2& size = ImVec2(22.0f, 22.0f))
 {
 	const bool light = IsLightPaletteActive();
 	const ImVec2 scaled_size = ScaleUiSize(size);

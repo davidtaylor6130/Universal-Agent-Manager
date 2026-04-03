@@ -3,7 +3,7 @@
 /// <summary>
 /// Draws shortcut hints in the app settings modal.
 /// </summary>
-static void DrawAppSettingsShortcutsSection()
+inline void DrawAppSettingsShortcutsSection()
 {
 	ImGui::TextColored(ui::kTextSecondary, "Shortcuts");
 	ImGui::TextColored(ui::kTextMuted, "Ctrl+,  Open App Settings");

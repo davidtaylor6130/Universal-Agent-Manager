@@ -3,7 +3,7 @@
 /// <summary>
 /// Shared panel, input, button, divider, and compact-text UI primitives.
 /// </summary>
-static void PushFontIfAvailable(ImFont* font)
+inline void PushFontIfAvailable(ImFont* font)
 {
 	if (font != nullptr)
 	{
@@ -11,7 +11,7 @@ static void PushFontIfAvailable(ImFont* font)
 	}
 }
 
-static void PopFontIfAvailable(ImFont* font)
+inline void PopFontIfAvailable(ImFont* font)
 {
 	if (font != nullptr)
 	{
@@ -19,12 +19,12 @@ static void PopFontIfAvailable(ImFont* font)
 	}
 }
 
-static bool IsLightPaletteActive()
+inline bool IsLightPaletteActive()
 {
 	return ui::kMainBackground.x > 0.55f;
 }
 
-static ImVec4 PanelColor(const PanelTone tone)
+inline ImVec4 PanelColor(const PanelTone tone)
 {
 	switch (tone)
 	{
@@ -39,7 +39,7 @@ static ImVec4 PanelColor(const PanelTone tone)
 	return ui::kPrimarySurface;
 }
 
-static ImVec4 PanelStrokeColor(const PanelTone tone)
+inline ImVec4 PanelStrokeColor(const PanelTone tone)
 {
 	const bool light = IsLightPaletteActive();
 
@@ -56,7 +56,7 @@ static ImVec4 PanelStrokeColor(const PanelTone tone)
 	return ui::kBorder;
 }
 
-static void PushInputChrome(const float rounding = ui::kRadiusSmall)
+inline void PushInputChrome(const float rounding = ui::kRadiusSmall)
 {
 	const bool light = IsLightPaletteActive();
 	ImGui::PushStyleColor(ImGuiCol_FrameBg, ui::kInputSurface);
@@ -66,13 +66,13 @@ static void PushInputChrome(const float rounding = ui::kRadiusSmall)
 	ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ScaleUiLength(rounding));
 }
 
-static void PopInputChrome()
+inline void PopInputChrome()
 {
 	ImGui::PopStyleVar();
 	ImGui::PopStyleColor(4);
 }
 
-static bool BeginPanel(const char* id, const ImVec2& size, const PanelTone tone, const bool border = true, const ImGuiWindowFlags flags = 0, const ImVec2 padding = ImVec2(ui::kSpace16, ui::kSpace16), const float rounding = ui::kRadiusPanel)
+inline bool BeginPanel(const char* id, const ImVec2& size, const PanelTone tone, const bool border = true, const ImGuiWindowFlags flags = 0, const ImVec2 padding = ImVec2(ui::kSpace16, ui::kSpace16), const float rounding = ui::kRadiusPanel)
 {
 	const bool light = IsLightPaletteActive();
 	const ImVec2 scaled_size = ScaleUiSize(size);
@@ -103,14 +103,14 @@ static bool BeginPanel(const char* id, const ImVec2& size, const PanelTone tone,
 	return is_open;
 }
 
-static void EndPanel()
+inline void EndPanel()
 {
 	ImGui::EndChild();
 	ImGui::PopStyleColor(2);
 	ImGui::PopStyleVar(2);
 }
 
-static bool DrawButton(const char* label, const ImVec2& size, const ButtonKind kind)
+inline bool DrawButton(const char* label, const ImVec2& size, const ButtonKind kind)
 {
 	const bool light = IsLightPaletteActive();
 	const float spacing_scale = PlatformUiSpacingScale();
@@ -160,7 +160,7 @@ static bool DrawButton(const char* label, const ImVec2& size, const ButtonKind k
 	return clicked;
 }
 
-static void DrawSoftDivider()
+inline void DrawSoftDivider()
 {
 	ImDrawList* draw = ImGui::GetWindowDrawList();
 	const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -173,7 +173,7 @@ static void DrawSoftDivider()
 	ImGui::Dummy(ImVec2(0.0f, ScaleUiLength(ui::kSpace12)));
 }
 
-static std::string CompactPreview(const std::string& text, const std::size_t max_len)
+inline std::string CompactPreview(const std::string& text, const std::size_t max_len)
 {
 	std::string compact = text;
 	std::replace(compact.begin(), compact.end(), '\n', ' ');

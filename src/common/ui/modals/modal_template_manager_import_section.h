@@ -3,7 +3,7 @@
 /// <summary>
 /// Draws template-manager import controls for markdown template ingestion.
 /// </summary>
-static void DrawTemplateManagerImportSection(AppState& app, const fs::path& global_root)
+inline void DrawMarkdownTemplateManagerImportSection(AppState& app, const fs::path& global_root)
 {
 	ImGui::TextColored(ui::kTextSecondary, "Import Markdown Template");
 	PushInputChrome();

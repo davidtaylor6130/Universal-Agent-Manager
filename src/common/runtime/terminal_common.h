@@ -1,8 +1,9 @@
 #pragma once
 #include "common/platform/sdl_includes.h"
 #include "common/platform/platform_services.h"
+#include <filesystem>
 
-static void FreeCliTerminalVTerm(CliTerminalState& terminal)
+inline void FreeCliTerminalVTerm(CliTerminalState& terminal)
 {
 	if (terminal.vt != nullptr)
 	{
@@ -13,12 +14,12 @@ static void FreeCliTerminalVTerm(CliTerminalState& terminal)
 	}
 }
 
-static void CloseCliTerminalHandles(CliTerminalState& terminal)
+inline void CloseCliTerminalHandles(CliTerminalState& terminal)
 {
 	PlatformServicesFactory::Instance().terminal_runtime.CloseCliTerminalHandles(terminal);
 }
 
-static bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, const size_t len)
+inline bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, const size_t len)
 {
 	const bool wrote = PlatformServicesFactory::Instance().terminal_runtime.WriteToCliTerminal(terminal, bytes, len);
 
@@ -30,7 +31,7 @@ static bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, co
 	return wrote;
 }
 
-static void QueueStructuredPromptForTerminal(CliTerminalState& terminal, const std::string& prompt)
+inline void QueueStructuredPromptForTerminal(CliTerminalState& terminal, const std::string& prompt)
 {
 	if (prompt.empty())
 	{
@@ -42,7 +43,7 @@ static void QueueStructuredPromptForTerminal(CliTerminalState& terminal, const s
 	terminal.last_activity_time_s = ImGui::GetTime();
 }
 
-static bool InjectPromptAsPasteAndSubmit(CliTerminalState& terminal, const std::string& prompt, std::string* error_out = nullptr)
+inline bool InjectPromptAsPasteAndSubmit(CliTerminalState& terminal, const std::string& prompt, std::string* error_out = nullptr)
 {
 	if (prompt.empty())
 	{
@@ -108,7 +109,7 @@ static bool InjectPromptAsPasteAndSubmit(CliTerminalState& terminal, const std::
 	return true;
 }
 
-static bool FlushQueuedStructuredPromptsForTerminal(CliTerminalState& terminal, std::string* error_out = nullptr)
+inline bool FlushQueuedStructuredPromptsForTerminal(CliTerminalState& terminal, std::string* error_out = nullptr)
 {
 	while (!terminal.pending_structured_prompts.empty())
 	{
@@ -127,7 +128,7 @@ static bool FlushQueuedStructuredPromptsForTerminal(CliTerminalState& terminal, 
 	return true;
 }
 
-static void ReportDroppedQueuedStructuredPromptsForTerminal(AppState& app, const CliTerminalState& terminal, const std::string& reason)
+inline void ReportDroppedQueuedStructuredPromptsForTerminal(AppState& app, const CliTerminalState& terminal, const std::string& reason)
 {
 	if (terminal.pending_structured_prompts.empty() || terminal.attached_chat_id.empty())
 	{
@@ -152,7 +153,7 @@ static void ReportDroppedQueuedStructuredPromptsForTerminal(AppState& app, const
 	app.status_line = message;
 }
 
-static void WriteBytesToPty(const char* bytes, const size_t len, void* user)
+inline void WriteBytesToPty(const char* bytes, const size_t len, void* user)
 {
 	if (user == nullptr || bytes == nullptr || len == 0)
 	{
@@ -167,7 +168,7 @@ static void WriteBytesToPty(const char* bytes, const size_t len, void* user)
 	}
 }
 
-static int OnVTermDamage(VTermRect, void* user)
+inline int OnVTermDamage(VTermRect, void* user)
 {
 	if (user != nullptr)
 	{
@@ -177,7 +178,7 @@ static int OnVTermDamage(VTermRect, void* user)
 	return 1;
 }
 
-static int OnVTermMoveRect(VTermRect, VTermRect, void* user)
+inline int OnVTermMoveRect(VTermRect, VTermRect, void* user)
 {
 	if (user != nullptr)
 	{
@@ -187,7 +188,7 @@ static int OnVTermMoveRect(VTermRect, VTermRect, void* user)
 	return 1;
 }
 
-static int OnVTermMoveCursor(VTermPos, VTermPos, int, void* user)
+inline int OnVTermMoveCursor(VTermPos, VTermPos, int, void* user)
 {
 	if (user != nullptr)
 	{
@@ -197,7 +198,7 @@ static int OnVTermMoveCursor(VTermPos, VTermPos, int, void* user)
 	return 1;
 }
 
-static int OnVTermResize(int rows, int cols, void* user)
+inline int OnVTermResize(int rows, int cols, void* user)
 {
 	if (user != nullptr)
 	{
@@ -211,14 +212,14 @@ static int OnVTermResize(int rows, int cols, void* user)
 	return 1;
 }
 
-static VTermScreenCell BlankTerminalCell()
+inline VTermScreenCell BlankTerminalCell()
 {
 	VTermScreenCell cell{};
 	cell.width = 1;
 	return cell;
 }
 
-static int OnVTermScrollbackPushLine(int cols, const VTermScreenCell* cells, void* user)
+inline int OnVTermScrollbackPushLine(int cols, const VTermScreenCell* cells, void* user)
 {
 	if (user == nullptr || cells == nullptr || cols <= 0)
 	{
@@ -244,7 +245,7 @@ static int OnVTermScrollbackPushLine(int cols, const VTermScreenCell* cells, voi
 	return 1;
 }
 
-static int OnVTermScrollbackPopLine(int cols, VTermScreenCell* cells, void* user)
+inline int OnVTermScrollbackPopLine(int cols, VTermScreenCell* cells, void* user)
 {
 	if (user == nullptr || cells == nullptr || cols <= 0)
 	{
@@ -278,7 +279,7 @@ static int OnVTermScrollbackPopLine(int cols, VTermScreenCell* cells, void* user
 	return 1;
 }
 
-static int OnVTermScrollbackClear(void* user)
+inline int OnVTermScrollbackClear(void* user)
 {
 	if (user == nullptr)
 	{
@@ -292,9 +293,9 @@ static int OnVTermScrollbackClear(void* user)
 	return 1;
 }
 
-static const VTermScreenCallbacks kVTermScreenCallbacks = {OnVTermDamage, OnVTermMoveRect, OnVTermMoveCursor, nullptr, nullptr, OnVTermResize, OnVTermScrollbackPushLine, OnVTermScrollbackPopLine, OnVTermScrollbackClear, nullptr};
+inline const VTermScreenCallbacks kVTermScreenCallbacks = {OnVTermDamage, OnVTermMoveRect, OnVTermMoveCursor, nullptr, nullptr, OnVTermResize, OnVTermScrollbackPushLine, OnVTermScrollbackPopLine, OnVTermScrollbackClear, nullptr};
 
-static void RequestCliTerminalQuit(CliTerminalState& terminal)
+inline void RequestCliTerminalQuit(CliTerminalState& terminal)
 {
 	if (!terminal.running || !uam::platform::CliTerminalHasWritableInput(terminal))
 	{
@@ -311,7 +312,7 @@ enum class CliTerminalStopMode
 	FastExit,
 };
 
-static void StopCliTerminal(CliTerminalState& terminal, const bool clear_identity = false, const CliTerminalStopMode stop_mode = CliTerminalStopMode::Graceful)
+inline void StopCliTerminal(CliTerminalState& terminal, const bool clear_identity = false, const CliTerminalStopMode stop_mode = CliTerminalStopMode::Graceful)
 {
 	PlatformServicesFactory::Instance().terminal_runtime.StopCliTerminalProcess(terminal, stop_mode == CliTerminalStopMode::FastExit);
 
@@ -337,7 +338,7 @@ static void StopCliTerminal(CliTerminalState& terminal, const bool clear_identit
 	}
 }
 
-static CliTerminalState* FindCliTerminalForChat(AppState& app, const std::string& chat_id)
+inline CliTerminalState* FindCliTerminalForChat(AppState& app, const std::string& chat_id)
 {
 	for (auto& terminal : app.cli_terminals)
 	{
@@ -350,7 +351,7 @@ static CliTerminalState* FindCliTerminalForChat(AppState& app, const std::string
 	return nullptr;
 }
 
-static bool ForwardEscapeToSelectedCliTerminal(AppState& app, const SDL_Event& event)
+inline bool ForwardEscapeToSelectedCliTerminal(AppState& app, const SDL_Event& event)
 {
 	if (event.type != SDL_KEYDOWN && event.type != SDL_KEYUP)
 	{
@@ -409,9 +410,9 @@ static bool ForwardEscapeToSelectedCliTerminal(AppState& app, const SDL_Event& e
 	return true;
 }
 
-static bool HasPendingCallForChat(const AppState& app, const std::string& chat_id)
+inline bool HasPendingCallForChat(const AppState& app, const std::string& chat_id)
 {
-	for (const PendingGeminiCall& call : app.pending_calls)
+	for (const PendingRuntimeCall& call : app.pending_calls)
 	{
 		if (call.chat_id == chat_id)
 		{
@@ -422,14 +423,14 @@ static bool HasPendingCallForChat(const AppState& app, const std::string& chat_i
 	return false;
 }
 
-static bool HasAnyPendingCall(const AppState& app)
+inline bool HasAnyPendingCall(const AppState& app)
 {
 	return !app.pending_calls.empty();
 }
 
-static const PendingGeminiCall* FirstPendingCallForChat(const AppState& app, const std::string& chat_id)
+inline const PendingRuntimeCall* FirstPendingCallForChat(const AppState& app, const std::string& chat_id)
 {
-	for (const PendingGeminiCall& call : app.pending_calls)
+	for (const PendingRuntimeCall& call : app.pending_calls)
 	{
 		if (call.chat_id == chat_id)
 		{
@@ -440,7 +441,7 @@ static const PendingGeminiCall* FirstPendingCallForChat(const AppState& app, con
 	return nullptr;
 }
 
-static bool ChatHasRunningGemini(const AppState& app, const std::string& chat_id)
+inline bool ChatHasRunningGemini(const AppState& app, const std::string& chat_id)
 {
 	if (chat_id.empty())
 	{
@@ -463,7 +464,7 @@ static bool ChatHasRunningGemini(const AppState& app, const std::string& chat_id
 	return false;
 }
 
-static void MarkChatUnseen(AppState& app, const std::string& chat_id)
+inline void MarkChatUnseen(AppState& app, const std::string& chat_id)
 {
 	if (chat_id.empty())
 	{
@@ -480,7 +481,7 @@ static void MarkChatUnseen(AppState& app, const std::string& chat_id)
 	app.chats_with_unseen_updates.insert(chat_id);
 }
 
-static void MarkSelectedChatSeen(AppState& app)
+inline void MarkSelectedChatSeen(AppState& app)
 {
 	const ChatSession* selected = SelectedChat(app);
 
@@ -490,7 +491,7 @@ static void MarkSelectedChatSeen(AppState& app)
 	}
 }
 
-static CliTerminalState& EnsureCliTerminalForChat(AppState& app, const ChatSession& chat)
+inline CliTerminalState& EnsureCliTerminalForChat(AppState& app, const ChatSession& chat)
 {
 	const std::string resume_id = ResolveResumeSessionIdForChat(app, chat);
 	const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
@@ -519,7 +520,7 @@ static CliTerminalState& EnsureCliTerminalForChat(AppState& app, const ChatSessi
 	return *app.cli_terminals.back();
 }
 
-static void StopAndEraseCliTerminalForChat(AppState& app, const std::string& chat_id)
+inline void StopAndEraseCliTerminalForChat(AppState& app, const std::string& chat_id)
 {
 	auto matches_chat_terminal = [&](std::unique_ptr<CliTerminalState>& terminal)
 	{
@@ -535,7 +536,7 @@ static void StopAndEraseCliTerminalForChat(AppState& app, const std::string& cha
 	app.cli_terminals.erase(std::remove_if(app.cli_terminals.begin(), app.cli_terminals.end(), matches_chat_terminal), app.cli_terminals.end());
 }
 
-static void StopAllCliTerminals(AppState& app, const bool clear_identity = true)
+inline void StopAllCliTerminals(AppState& app, const bool clear_identity = true)
 {
 	for (auto& terminal : app.cli_terminals)
 	{
@@ -546,7 +547,7 @@ static void StopAllCliTerminals(AppState& app, const bool clear_identity = true)
 	}
 }
 
-static void FastStopCliTerminalsForExit(AppState& app)
+inline void FastStopCliTerminalsForExit(AppState& app)
 {
 	for (const auto& terminal_ptr : app.cli_terminals)
 	{
@@ -559,7 +560,7 @@ static void FastStopCliTerminalsForExit(AppState& app)
 	}
 }
 
-static void MarkSelectedCliTerminalForLaunch(AppState& app)
+inline void MarkSelectedCliTerminalForLaunch(AppState& app)
 {
 	ChatSession* selected = SelectedChat(app);
 
@@ -593,7 +594,7 @@ static void MarkSelectedCliTerminalForLaunch(AppState& app)
 	terminal.should_launch = true;
 }
 
-static void FinalizeChatSyncSelection(AppState& app, const std::string& selected_before, const std::string& preferred_chat_id, const bool preserve_selection)
+inline void FinalizeChatSyncSelection(AppState& app, const std::string& selected_before, const std::string& preferred_chat_id, const bool preserve_selection)
 {
 	const std::string previous_selected = !selected_before.empty() ? selected_before : preferred_chat_id;
 
@@ -653,7 +654,7 @@ static void FinalizeChatSyncSelection(AppState& app, const std::string& selected
 	MarkSelectedChatSeen(app);
 }
 
-static void SyncChatsFromLoadedNative(AppState& app, std::vector<ChatSession> native_chats, const std::string& preferred_chat_id, const bool preserve_selection = false)
+inline void SyncChatsFromLoadedNative(AppState& app, std::vector<ChatSession> native_chats, const std::string& preferred_chat_id, const bool preserve_selection = false)
 {
 	const std::string selected_before = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
 	ApplyLocalOverrides(app, native_chats);
@@ -661,14 +662,14 @@ static void SyncChatsFromLoadedNative(AppState& app, std::vector<ChatSession> na
 	FinalizeChatSyncSelection(app, selected_before, preferred_chat_id, preserve_selection);
 }
 
-static void SyncChatsFromNative(AppState& app, const std::string& preferred_chat_id, const bool preserve_selection = false)
+inline void SyncChatsFromNative(AppState& app, const std::string& preferred_chat_id, const bool preserve_selection = false)
 {
 	const std::string selected_before = (SelectedChat(app) != nullptr) ? SelectedChat(app)->id : "";
 
-	if (ActiveProviderUsesGeminiHistory(app))
+	if (ActiveProviderUsesNativeOverlayHistory(app))
 	{
-		RefreshGeminiChatsDir(app);
-		std::vector<ChatSession> native = LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app));
+		RefreshNativeSessionDirectory(app);
+		std::vector<ChatSession> native = LoadNativeSessionChats(app.native_history_chats_dir, ActiveProviderOrDefault(app));
 		ApplyLocalOverrides(app, native);
 	}
 	else
@@ -682,7 +683,7 @@ static void SyncChatsFromNative(AppState& app, const std::string& preferred_chat
 	FinalizeChatSyncSelection(app, selected_before, preferred_chat_id, preserve_selection);
 }
 
-static std::vector<std::string> ForceOpenCodeModelFlag(std::vector<std::string> argv, const std::string& provider_model_id)
+inline std::vector<std::string> ForceOpenCodeModelFlag(std::vector<std::string> argv, const std::string& provider_model_id)
 {
 	if (argv.empty() || Trim(provider_model_id).empty())
 	{
@@ -719,7 +720,7 @@ static std::vector<std::string> ForceOpenCodeModelFlag(std::vector<std::string> 
 	return filtered;
 }
 
-static std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const ChatSession& chat)
+inline std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const ChatSession& chat)
 {
 	const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
 	ChatSession effective_chat = chat;
@@ -737,7 +738,7 @@ static std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app
 
 	std::vector<std::string> argv = ProviderRuntime::BuildInteractiveArgv(provider, effective_chat, app.settings);
 
-	if (ProviderUsesOpenCodeLocalBridge(provider))
+	if (ProviderUsesLocalBridgeRuntime(provider))
 	{
 		std::string selected_model = Trim(app.opencode_bridge.selected_model);
 
@@ -762,9 +763,9 @@ static std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app
 	return argv;
 }
 
-static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, const ChatSession& chat, const int rows, const int cols);
+inline bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, const ChatSession& chat, const int rows, const int cols);
 
-static bool SendPromptToCliRuntime(AppState& app, ChatSession& chat, const std::string& prompt, std::string* error_out = nullptr)
+inline bool SendPromptToCliRuntime(AppState& app, ChatSession& chat, const std::string& prompt, std::string* error_out = nullptr)
 {
 	const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
 
@@ -783,9 +784,9 @@ static bool SendPromptToCliRuntime(AppState& app, ChatSession& chat, const std::
 		return false;
 	}
 
-	if (ProviderUsesOpenCodeLocalBridge(provider))
+	if (ProviderUsesLocalBridgeRuntime(provider))
 	{
-		if (!EnsureOpenCodeBridgeRunning(app, error_out))
+		if (!EnsureLocalBridgeRunning(app, error_out))
 		{
 			if (error_out != nullptr && error_out->empty())
 			{
@@ -831,7 +832,7 @@ static bool SendPromptToCliRuntime(AppState& app, ChatSession& chat, const std::
 	return true;
 }
 
-static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, const ChatSession& chat, const int rows, const int cols)
+inline bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, const ChatSession& chat, const int rows, const int cols)
 {
 	StopCliTerminal(terminal);
 	const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);
@@ -866,7 +867,7 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
 		return false;
 	}
 
-	if (ProviderUsesOpenCodeLocalBridge(provider))
+	if (ProviderUsesLocalBridgeRuntime(provider))
 	{
 		if (!EnsureSelectedLocalRuntimeModelForProvider(app))
 		{
@@ -876,16 +877,16 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
 
 		std::string bridge_error;
 
-		if (!EnsureOpenCodeBridgeRunning(app, &bridge_error))
+		if (!EnsureLocalBridgeRunning(app, &bridge_error))
 		{
 			terminal.last_error = bridge_error.empty() ? "Failed to start OpenCode bridge." : bridge_error;
 			return false;
 		}
 	}
 
-	if (ChatUsesGeminiHistory(app, chat))
+	if (ChatUsesNativeOverlayHistory(app, chat))
 	{
-		RefreshGeminiChatsDir(app);
+		RefreshNativeSessionDirectory(app);
 	}
 
 	std::string template_status;
@@ -903,7 +904,9 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
 		app.status_line = template_status;
 	}
 
-	if (BuildProviderInteractiveArgv(app, chat).empty())
+	const std::vector<std::string> interactive_argv = BuildProviderInteractiveArgv(app, chat);
+
+	if (interactive_argv.empty())
 	{
 		terminal.last_error = "Active provider does not expose an interactive CLI command.";
 		return false;
@@ -915,9 +918,9 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
 	terminal.attached_session_id = ResolveResumeSessionIdForChat(app, chat);
 	terminal.linked_files_snapshot = chat.linked_files;
 
-	if (ChatUsesGeminiHistory(app, chat))
+	if (ChatUsesNativeOverlayHistory(app, chat))
 	{
-		terminal.session_ids_before = SessionIdsFromChats(LoadNativeGeminiChats(app.gemini_chats_dir, provider));
+		terminal.session_ids_before = SessionIdsFromChats(LoadNativeSessionChats(app.native_history_chats_dir, provider));
 	}
 	else
 	{
@@ -950,10 +953,16 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
 	vterm_screen_set_damage_merge(terminal.screen, VTERM_DAMAGE_CELL);
 	vterm_output_set_callback(terminal.vt, WriteBytesToPty, &terminal);
 	vterm_screen_reset(terminal.screen, 1);
+	const std::filesystem::path workspace_root = ResolveWorkspaceRootPath(app, chat);
+	std::string startup_error;
 
-	if (!StartCliTerminalPlatform(app, terminal, chat))
+	if (!PlatformServicesFactory::Instance().terminal_runtime.StartCliTerminalProcess(terminal, workspace_root, interactive_argv, &startup_error))
 	{
-		terminal.last_error = terminal.last_error.empty() ? "Failed to start provider terminal." : terminal.last_error;
+		if (terminal.last_error.empty())
+		{
+			terminal.last_error = startup_error.empty() ? "Failed to start provider terminal." : startup_error;
+		}
+
 		StopCliTerminal(terminal, false);
 		return false;
 	}
@@ -962,7 +971,7 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
 	terminal.should_launch = false;
 	terminal.needs_full_refresh = true;
 
-	if (!chat.gemini_md_bootstrapped && chat.messages.empty() && template_outcome == TemplatePreflightOutcome::ReadyWithTemplate)
+	if (!chat.prompt_profile_bootstrapped && chat.messages.empty() && template_outcome == TemplatePreflightOutcome::ReadyWithTemplate)
 	{
 		if (!bootstrap_prompt.empty())
 		{
@@ -974,7 +983,7 @@ static bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, c
 
 		if (chat_index >= 0)
 		{
-			app.chats[chat_index].gemini_md_bootstrapped = true;
+			app.chats[chat_index].prompt_profile_bootstrapped = true;
 			SaveChat(app, app.chats[chat_index]);
 		}
 	}

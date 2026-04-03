@@ -3,7 +3,7 @@
 /// <summary>
 /// Draws the sidebar chat context menu popup.
 /// </summary>
-static void DrawSidebarChatOptionsPopup(AppState& app)
+inline void DrawSidebarChatOptionsPopup(AppState& app)
 {
 	if (app.open_sidebar_chat_options_popup && !app.sidebar_chat_options_popup_chat_id.empty())
 	{

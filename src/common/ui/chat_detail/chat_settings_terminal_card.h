@@ -3,7 +3,7 @@
 /// <summary>
 /// Draws a live terminal inspector card that reuses the same CLI instance as terminal mode.
 /// </summary>
-static void DrawChatSettingsTerminalCard(AppState& app, ChatSession& chat)
+inline void DrawChatSettingsTerminalCard(AppState& app, ChatSession& chat)
 {
 	ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
 	DrawSectionHeader("Live Terminal");

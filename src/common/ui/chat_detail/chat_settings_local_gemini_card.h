@@ -3,15 +3,15 @@
 /// <summary>
 /// Draws the local Gemini workspace card in the chat settings side pane.
 /// </summary>
-static void DrawChatSettingsLocalGeminiCard(AppState& app, ChatSession& chat)
+inline void DrawChatSettingsLocalGeminiCard(AppState& app, ChatSession& chat)
 {
 	ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
 	DrawSectionHeader("Local Gemini");
 
 	if (BeginSectionCard("local_gemini_card"))
 	{
-		const fs::path local_root = WorkspaceGeminiRootPath(app, chat);
-		const fs::path local_template = WorkspaceGeminiTemplatePath(app, chat);
+		const fs::path local_root = WorkspacePromptProfileRootPath(app, chat);
+		const fs::path local_template = WorkspacePromptProfileTemplatePath(app, chat);
 		ImGui::TextColored(ui::kTextMuted, "Workspace root");
 		ImGui::TextWrapped("%s", local_root.string().c_str());
 		ImGui::TextColored(ui::kTextMuted, "Template file");

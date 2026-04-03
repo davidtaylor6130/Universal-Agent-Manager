@@ -3,7 +3,7 @@
 /// <summary>
 /// Folder settings modal renderer.
 /// </summary>
-static void DrawFolderSettingsModal(AppState& app)
+inline void DrawFolderSettingsModal(AppState& app)
 {
 	if (app.open_folder_settings_popup)
 	{

@@ -3,7 +3,7 @@
 /// <summary>
 /// Converts libvterm cell colors into ImGui draw-list colors.
 /// </summary>
-static ImU32 VTermColorToImU32(const VTermScreen* screen, VTermColor color, const bool background)
+inline ImU32 VTermColorToImU32(const VTermScreen* screen, VTermColor color, const bool background)
 {
 	if ((background && VTERM_COLOR_IS_DEFAULT_BG(&color)) || (!background && VTERM_COLOR_IS_DEFAULT_FG(&color)))
 	{
@@ -18,7 +18,7 @@ static ImU32 VTermColorToImU32(const VTermScreen* screen, VTermColor color, cons
 /// <summary>
 /// Draws the embedded CLI terminal viewport for the selected chat.
 /// </summary>
-static void DrawCliTerminalSurface(AppState& app, ChatSession& chat, const bool show_footer = false)
+inline void DrawCliTerminalSurface(AppState& app, ChatSession& chat, const bool show_footer = false)
 {
 	CliTerminalState& terminal = EnsureCliTerminalForChat(app, chat);
 

@@ -3,7 +3,7 @@
 /// <summary>
 /// Core UI color helpers, spacing constants, and shared UI enums.
 /// </summary>
-static ImVec4 Rgb(const int r, const int g, const int b, const float a = 1.0f)
+inline ImVec4 Rgb(const int r, const int g, const int b, const float a = 1.0f)
 {
 	return ImVec4(static_cast<float>(r) / 255.0f, static_cast<float>(g) / 255.0f, static_cast<float>(b) / 255.0f, a);
 }

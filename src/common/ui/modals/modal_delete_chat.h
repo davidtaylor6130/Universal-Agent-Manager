@@ -3,7 +3,7 @@
 /// <summary>
 /// Delete-chat confirmation modal renderer.
 /// </summary>
-static void DrawDeleteChatConfirmationModal(AppState& app)
+inline void DrawDeleteChatConfirmationModal(AppState& app)
 {
 	if (app.open_delete_chat_popup)
 	{

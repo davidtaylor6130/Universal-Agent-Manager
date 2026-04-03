@@ -1,9 +1,11 @@
 #pragma once
 
+#include "common/runtime/local_engine_runtime_service.h"
+
 /// <summary>
 /// Draws behavior toggles in the app settings modal.
 /// </summary>
-static void DrawAppSettingsBehaviorSection(AppState& app, AppSettings& draft_settings)
+inline void DrawAppSettingsBehaviorSection(AppState& app, AppSettings& draft_settings)
 {
 	ImGui::TextColored(ui::kTextSecondary, "Behavior");
 	ImGui::Checkbox("Confirm before deleting chat", &draft_settings.confirm_delete_chat);
@@ -49,10 +51,8 @@ static void DrawAppSettingsBehaviorSection(AppState& app, AppSettings& draft_set
 	if (last_model_refresh_s < 0.0 || (now_s - last_model_refresh_s) > 1.0)
 	{
 		const fs::path model_folder = ResolveRagModelFolder(app, &draft_settings);
-		auto& runtime_engine = OllamaEngineService::Instance().Client();
-		runtime_engine.SetModelFolder(model_folder);
 		app.rag_index_service.SetModelFolder(model_folder);
-		runtime_models_cache = runtime_engine.ListModels();
+		runtime_models_cache = app.runtime_model_service.ListModels(model_folder);
 		vector_models_cache = app.rag_index_service.ListModels();
 		last_model_refresh_s = now_s;
 	}

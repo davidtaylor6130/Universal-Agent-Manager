@@ -4,7 +4,7 @@
 /// <summary>
 /// Font range and font-loading configuration helpers for Dear ImGui.
 /// </summary>
-static const ImWchar* BuildTerminalGlyphRanges(ImGuiIO& io)
+inline const ImWchar* BuildTerminalGlyphRanges(ImGuiIO& io)
 {
 	static ImVector<ImWchar> ranges;
 
@@ -40,7 +40,7 @@ static const ImWchar* BuildTerminalGlyphRanges(ImGuiIO& io)
 	return ranges.Data;
 }
 
-static bool MergeFontIntoLast(ImGuiIO& io, const float size, std::initializer_list<const char*> paths, const ImWchar* glyph_ranges)
+inline bool MergeFontIntoLast(ImGuiIO& io, const float size, std::initializer_list<const char*> paths, const ImWchar* glyph_ranges)
 {
 	ImFontConfig merge_cfg{};
 	merge_cfg.MergeMode = true;
@@ -62,7 +62,7 @@ static bool MergeFontIntoLast(ImGuiIO& io, const float size, std::initializer_li
 	return false;
 }
 
-static ImFont* TryLoadFont(ImGuiIO& io, const float size, std::initializer_list<const char*> paths, const ImWchar* glyph_ranges = nullptr)
+inline ImFont* TryLoadFont(ImGuiIO& io, const float size, std::initializer_list<const char*> paths, const ImWchar* glyph_ranges = nullptr)
 {
 	for (const char* path : paths)
 	{
@@ -78,7 +78,7 @@ static ImFont* TryLoadFont(ImGuiIO& io, const float size, std::initializer_list<
 	return nullptr;
 }
 
-static void ConfigureFonts(ImGuiIO& io, const float dpi_scale = 1.0f)
+inline void ConfigureFonts(ImGuiIO& io, const float dpi_scale = 1.0f)
 {
 	const float scale = std::clamp(dpi_scale, 1.0f, 2.25f);
 	const float ui_font_size = 14.0f * scale;

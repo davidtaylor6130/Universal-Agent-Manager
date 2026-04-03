@@ -4,7 +4,7 @@
 /// <summary>
 /// Draws the slim chat title/status header row above the main conversation content.
 /// </summary>
-static void DrawChatDetailHeaderBar(AppState& app, ChatSession& chat)
+inline void DrawChatDetailHeaderBar(AppState& app, ChatSession& chat)
 {
 	if (BeginPanel("chat_header_bar", ImVec2(0.0f, 52.0f), PanelTone::Primary, false, 0, ImVec2(12.0f, 10.0f), ui::kRadiusInput))
 	{

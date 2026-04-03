@@ -27,6 +27,10 @@ class IPlatformTerminalRuntime
   public:
 	virtual ~IPlatformTerminalRuntime() = default;
 	virtual bool IsAvailable() const = 0;
+	virtual bool StartCliTerminalProcess(uam::CliTerminalState& terminal,
+	                                     const std::filesystem::path& working_directory,
+	                                     const std::vector<std::string>& argv,
+	                                     std::string* error_out = nullptr) const = 0;
 	virtual void CloseCliTerminalHandles(uam::CliTerminalState& terminal) const = 0;
 	virtual bool WriteToCliTerminal(uam::CliTerminalState& terminal, const char* bytes, std::size_t len) const = 0;
 	virtual void StopCliTerminalProcess(uam::CliTerminalState& terminal, bool fast_exit) const = 0;
@@ -55,7 +59,7 @@ class IPlatformProcessService
 	virtual std::string OpenCodeBridgeBinaryName() const = 0;
 	virtual bool StartOpenCodeBridgeProcess(const std::vector<std::string>& argv, uam::OpenCodeBridgeState& state, std::string* error_out = nullptr) const = 0;
 	virtual bool IsOpenCodeBridgeProcessRunning(uam::OpenCodeBridgeState& state) const = 0;
-	virtual void StopOpenCodeBridgeProcess(uam::OpenCodeBridgeState& state) const = 0;
+	virtual void StopLocalBridgeProcess(uam::OpenCodeBridgeState& state) const = 0;
 	virtual uintmax_t NativeGeminiSessionMaxFileBytes() const = 0;
 	virtual std::size_t NativeGeminiSessionMaxMessages() const = 0;
 };

@@ -3,7 +3,7 @@
 /// <summary>
 /// Draws startup and window controls in the app settings modal.
 /// </summary>
-static void DrawAppSettingsStartupSection(AppSettings& draft_settings)
+inline void DrawAppSettingsStartupSection(AppSettings& draft_settings)
 {
 	ImGui::TextColored(ui::kTextSecondary, "Startup / Window");
 	ImGui::SetNextItemWidth(140.0f);

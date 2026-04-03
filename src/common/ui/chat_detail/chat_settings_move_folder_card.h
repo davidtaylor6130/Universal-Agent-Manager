@@ -3,7 +3,7 @@
 /// <summary>
 /// Draws the folder assignment card in the chat settings side pane.
 /// </summary>
-static void DrawChatSettingsMoveFolderCard(AppState& app, ChatSession& chat)
+inline void DrawChatSettingsMoveFolderCard(AppState& app, ChatSession& chat)
 {
 	ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
 	DrawSectionHeader("Move to Folder");

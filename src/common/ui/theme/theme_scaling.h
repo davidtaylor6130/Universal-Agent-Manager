@@ -5,7 +5,7 @@
 /// <summary>
 /// Platform/UI scaling helpers and runtime scale application.
 /// </summary>
-static float DetectUiScale(SDL_Window* window)
+inline float DetectUiScale(SDL_Window* window)
 {
 	if (PlatformServicesFactory::Instance().ui_traits.UsesLogicalPointsForUiScale())
 	{
@@ -39,22 +39,22 @@ static float DetectUiScale(SDL_Window* window)
 	return 1.0f;
 }
 
-static float PlatformUiSpacingScale()
+inline float PlatformUiSpacingScale()
 {
 	return PlatformServicesFactory::Instance().ui_traits.PlatformUiSpacingScale();
 }
 
-static float EffectiveUiScale()
+inline float EffectiveUiScale()
 {
 	return g_ui_layout_scale * g_platform_layout_scale;
 }
 
-static float ScaleUiLength(const float value)
+inline float ScaleUiLength(const float value)
 {
 	return value * EffectiveUiScale();
 }
 
-static ImVec2 ScaleUiSize(const ImVec2& value)
+inline ImVec2 ScaleUiSize(const ImVec2& value)
 {
 	const float scale = EffectiveUiScale();
 	const float scaled_x = (value.x > 0.0f) ? (value.x * scale) : value.x;
@@ -62,14 +62,14 @@ static ImVec2 ScaleUiSize(const ImVec2& value)
 	return ImVec2(scaled_x, scaled_y);
 }
 
-static void CaptureUiScaleBaseStyle()
+inline void CaptureUiScaleBaseStyle()
 {
 	g_user_scale_base_style = ImGui::GetStyle();
 	g_user_scale_base_style_ready = true;
 	g_last_applied_user_scale = -1.0f;
 }
 
-static void ApplyUserUiScale(ImGuiIO& io, float user_scale_multiplier)
+inline void ApplyUserUiScale(ImGuiIO& io, float user_scale_multiplier)
 {
 	const float clamped = std::clamp(user_scale_multiplier, 0.85f, 1.75f);
 	g_ui_layout_scale = clamped;

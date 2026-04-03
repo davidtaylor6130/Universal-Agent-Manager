@@ -4,7 +4,7 @@
 /// <summary>
 /// Chat deletion flow, including local/native history cleanup and selection repair.
 /// </summary>
-static bool RemoveChatById(AppState& app, const std::string& chat_id)
+inline bool RemoveChatById(AppState& app, const std::string& chat_id)
 {
 	const int chat_index = FindChatIndexById(app, chat_id);
 
@@ -52,14 +52,14 @@ static bool RemoveChatById(AppState& app, const std::string& chat_id)
 	bool native_delete_attempted = false;
 	bool native_delete_async_scheduled = false;
 
-	if (ActiveProviderUsesGeminiHistory(app) && !native_session_id.empty())
+	if (ActiveProviderUsesNativeOverlayHistory(app) && !native_session_id.empty())
 	{
-		RefreshGeminiChatsDir(app);
+		RefreshNativeSessionDirectory(app);
 		native_delete_attempted = true;
 
 		if (PlatformServicesFactory::Instance().ui_traits.UseWindowsLayoutAdjustments())
 		{
-			const fs::path chats_dir_snapshot = app.gemini_chats_dir;
+			const fs::path chats_dir_snapshot = app.native_history_chats_dir;
 			const std::string native_session_id_snapshot = native_session_id;
 			auto delete_native_session_file = [chats_dir_snapshot, native_session_id_snapshot]()
 			{
@@ -114,7 +114,7 @@ static bool RemoveChatById(AppState& app, const std::string& chat_id)
 
 	app.composer_text.clear();
 
-	app.pending_calls.erase(std::remove_if(app.pending_calls.begin(), app.pending_calls.end(), [&](const PendingGeminiCall& call) { return call.chat_id == chat.id; }), app.pending_calls.end());
+	app.pending_calls.erase(std::remove_if(app.pending_calls.begin(), app.pending_calls.end(), [&](const PendingRuntimeCall& call) { return call.chat_id == chat.id; }), app.pending_calls.end());
 	app.resolved_native_sessions_by_chat_id.erase(chat.id);
 
 	for (auto it = app.resolved_native_sessions_by_chat_id.begin(); it != app.resolved_native_sessions_by_chat_id.end();)

@@ -3,7 +3,7 @@
 /// <summary>
 /// Draws the project-wide RAG console modal with scan progress and manual retrieval testing.
 /// </summary>
-static void DrawRagConsoleModal(AppState& app)
+inline void DrawRagConsoleModal(AppState& app)
 {
 	if (app.open_rag_console_popup)
 	{

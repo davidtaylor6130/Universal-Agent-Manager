@@ -3,7 +3,7 @@
 /// <summary>
 /// Applies modern Dear ImGui style and selected palette mode.
 /// </summary>
-static void ApplyModernTheme()
+inline void ApplyModernTheme()
 {
 	const bool light = IsLightPaletteActive();
 	const float spacing_scale = PlatformUiSpacingScale();
@@ -79,7 +79,7 @@ static void ApplyModernTheme()
 	colors[ImGuiCol_ModalWindowDimBg] = light ? Rgb(20, 30, 45, 0.26f) : Rgb(0, 0, 0, 0.45f);
 }
 
-static void ApplyThemeFromSettings(AppState& app)
+inline void ApplyThemeFromSettings(AppState& app)
 {
 	app.settings.ui_theme = NormalizeThemeChoice(app.settings.ui_theme);
 	ApplyResolvedPalette(ResolveUiTheme(app.settings));

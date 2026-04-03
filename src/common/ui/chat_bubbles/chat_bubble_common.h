@@ -22,7 +22,7 @@ struct ChatBubbleLayout
 /// <summary>
 /// Computes message row placement and dimensions.
 /// </summary>
-static ChatBubbleLayout BuildChatBubbleLayout(const std::string& content, const float content_width, const bool align_right)
+inline ChatBubbleLayout BuildChatBubbleLayout(const std::string& content, const float content_width, const bool align_right)
 {
 	ChatBubbleLayout layout;
 	layout.mf_contentWidth = content_width;
@@ -45,7 +45,7 @@ static ChatBubbleLayout BuildChatBubbleLayout(const std::string& content, const 
 /// <summary>
 /// Draws a subtle filled pill for user messages (no shadow, no border).
 /// </summary>
-static void DrawUserBubblePill(const ChatBubbleLayout& layout)
+inline void DrawUserBubblePill(const ChatBubbleLayout& layout)
 {
 	ImDrawList* draw = ImGui::GetWindowDrawList();
 	const bool light = IsLightPaletteActive();
@@ -56,7 +56,7 @@ static void DrawUserBubblePill(const ChatBubbleLayout& layout)
 /// <summary>
 /// Draws wrapped message content inside the row.
 /// </summary>
-static void DrawChatBubbleContent(const ChatBubbleLayout& layout, const std::string& content)
+inline void DrawChatBubbleContent(const ChatBubbleLayout& layout, const std::string& content)
 {
 	ImGui::SetCursorScreenPos(ImVec2(layout.m_min.x + layout.mf_padX, layout.m_min.y + layout.mf_padY));
 	const float wrap_pos_x = ImGui::GetCursorPosX() + (layout.mf_bubbleWidth - (layout.mf_padX * 2.0f));
@@ -68,7 +68,7 @@ static void DrawChatBubbleContent(const ChatBubbleLayout& layout, const std::str
 /// <summary>
 /// Draws a muted timestamp below the content.
 /// </summary>
-static void DrawChatBubbleTimestamp(const ChatBubbleLayout& layout, const std::string& created_at, const bool right_align = false)
+inline void DrawChatBubbleTimestamp(const ChatBubbleLayout& layout, const std::string& created_at, const bool right_align = false)
 {
 	const ImVec2 ts_size = ImGui::CalcTextSize(created_at.c_str());
 	const float ts_x = right_align ? (layout.m_max.x - layout.mf_padX - ts_size.x) : (layout.m_min.x + layout.mf_padX);
@@ -79,7 +79,7 @@ static void DrawChatBubbleTimestamp(const ChatBubbleLayout& layout, const std::s
 /// <summary>
 /// Ends the current message row and advances cursor to the next row.
 /// </summary>
-static void EndChatBubbleRow(const ChatBubbleLayout& layout, const float extra_bottom = 0.0f)
+inline void EndChatBubbleRow(const ChatBubbleLayout& layout, const float extra_bottom = 0.0f)
 {
 	ImGui::SetCursorScreenPos(ImVec2(layout.m_cursor.x, layout.m_max.y + extra_bottom + ui::kSpace16));
 	ImGui::Dummy(ImVec2(layout.mf_contentWidth, 0.0f));

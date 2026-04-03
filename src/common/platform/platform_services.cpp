@@ -37,6 +37,7 @@
 #include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <util.h>
 #else
 #error "PlatformServices supports only Windows and macOS."
 #endif
@@ -471,6 +472,181 @@ namespace
 			return true;
 		}
 
+		bool StartCliTerminalProcess(uam::CliTerminalState& terminal,
+		                             const std::filesystem::path& working_directory,
+		                             const std::vector<std::string>& argv,
+		                             std::string* error_out = nullptr) const override
+		{
+			if (argv.empty() || TrimAsciiWhitespace(argv.front()).empty())
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Interactive provider command is empty.";
+				}
+
+				return false;
+			}
+
+			SECURITY_ATTRIBUTES sa{};
+			sa.nLength = sizeof(sa);
+			sa.bInheritHandle = TRUE;
+
+			HANDLE pipe_pty_in = INVALID_HANDLE_VALUE;
+			HANDLE pipe_pty_out = INVALID_HANDLE_VALUE;
+			HANDLE pipe_con_in = INVALID_HANDLE_VALUE;
+			HANDLE pipe_con_out = INVALID_HANDLE_VALUE;
+
+			if (!CreatePipe(&pipe_pty_in, &pipe_con_out, &sa, 0) || !CreatePipe(&pipe_con_in, &pipe_pty_out, &sa, 0))
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to create ConPTY pipes.";
+				}
+
+				if (pipe_pty_in != INVALID_HANDLE_VALUE)
+				{
+					CloseHandle(pipe_pty_in);
+				}
+
+				if (pipe_pty_out != INVALID_HANDLE_VALUE)
+				{
+					CloseHandle(pipe_pty_out);
+				}
+
+				if (pipe_con_in != INVALID_HANDLE_VALUE)
+				{
+					CloseHandle(pipe_con_in);
+				}
+
+				if (pipe_con_out != INVALID_HANDLE_VALUE)
+				{
+					CloseHandle(pipe_con_out);
+				}
+
+				return false;
+			}
+
+			const COORD size{static_cast<SHORT>(terminal.cols), static_cast<SHORT>(terminal.rows)};
+			HPCON pseudo_console = nullptr;
+			const auto create_pseudo_console = reinterpret_cast<HRESULT(WINAPI*)(COORD, HANDLE, HANDLE, DWORD, HPCON*)>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "CreatePseudoConsole"));
+
+			if (create_pseudo_console == nullptr || create_pseudo_console(size, pipe_con_in, pipe_con_out, 0, &pseudo_console) != S_OK)
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "CreatePseudoConsole failed.";
+				}
+
+				CloseHandle(pipe_pty_in);
+				CloseHandle(pipe_pty_out);
+				CloseHandle(pipe_con_in);
+				CloseHandle(pipe_con_out);
+				return false;
+			}
+
+			CloseHandle(pipe_con_in);
+			CloseHandle(pipe_con_out);
+
+			SIZE_T attr_size = 0;
+			InitializeProcThreadAttributeList(nullptr, 1, 0, &attr_size);
+			terminal.attr_list = static_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(HeapAlloc(GetProcessHeap(), 0, attr_size));
+
+			if (terminal.attr_list == nullptr || !InitializeProcThreadAttributeList(terminal.attr_list, 1, 0, &attr_size))
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to initialize attribute list.";
+				}
+
+				ClosePseudoConsoleSafe(pseudo_console);
+				CloseHandle(pipe_pty_in);
+				CloseHandle(pipe_pty_out);
+				return false;
+			}
+
+			if (!UpdateProcThreadAttribute(terminal.attr_list, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, pseudo_console, sizeof(HPCON), nullptr, nullptr))
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to attach pseudo console.";
+				}
+
+				DeleteProcThreadAttributeList(terminal.attr_list);
+				HeapFree(GetProcessHeap(), 0, terminal.attr_list);
+				terminal.attr_list = nullptr;
+				ClosePseudoConsoleSafe(pseudo_console);
+				CloseHandle(pipe_pty_in);
+				CloseHandle(pipe_pty_out);
+				return false;
+			}
+
+			STARTUPINFOEXW si{};
+			si.StartupInfo.cb = sizeof(si);
+			si.lpAttributeList = terminal.attr_list;
+			PROCESS_INFORMATION pi{};
+			const std::wstring command_w = WideFromUtf8(BuildWindowsCommandLine(argv));
+
+			if (command_w.empty())
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to encode interactive command line.";
+				}
+
+				DeleteProcThreadAttributeList(terminal.attr_list);
+				HeapFree(GetProcessHeap(), 0, terminal.attr_list);
+				terminal.attr_list = nullptr;
+				ClosePseudoConsoleSafe(pseudo_console);
+				CloseHandle(pipe_pty_in);
+				CloseHandle(pipe_pty_out);
+				return false;
+			}
+
+			std::vector<wchar_t> command_line(command_w.begin(), command_w.end());
+			command_line.push_back(L'\0');
+			const std::wstring working_directory_w = working_directory.empty() ? std::wstring() : working_directory.wstring();
+			const BOOL created = CreateProcessW(nullptr,
+			                                    command_line.data(),
+			                                    nullptr,
+			                                    nullptr,
+			                                    TRUE,
+			                                    EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+			                                    nullptr,
+			                                    working_directory.empty() ? nullptr : working_directory_w.c_str(),
+			                                    &si.StartupInfo,
+			                                    &pi);
+
+			if (!created)
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to start provider process.";
+				}
+
+				DeleteProcThreadAttributeList(terminal.attr_list);
+				HeapFree(GetProcessHeap(), 0, terminal.attr_list);
+				terminal.attr_list = nullptr;
+				ClosePseudoConsoleSafe(pseudo_console);
+				CloseHandle(pipe_pty_in);
+				CloseHandle(pipe_pty_out);
+				return false;
+			}
+
+			DWORD mode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
+
+			if (!SetNamedPipeHandleState(pipe_pty_in, &mode, nullptr, nullptr))
+			{
+				mode = PIPE_READMODE_BYTE;
+				(void)SetNamedPipeHandleState(pipe_pty_in, &mode, nullptr, nullptr);
+			}
+
+			terminal.pipe_input = pipe_pty_out;
+			terminal.pipe_output = pipe_pty_in;
+			terminal.process_info = pi;
+			terminal.pseudo_console = pseudo_console;
+			return true;
+		}
+
 		void CloseCliTerminalHandles(uam::CliTerminalState& terminal) const override
 		{
 			if (terminal.pipe_input != INVALID_HANDLE_VALUE)
@@ -822,7 +998,7 @@ namespace
 			return WaitForSingleObject(state.process_handle, 0) == WAIT_TIMEOUT;
 		}
 
-		void StopOpenCodeBridgeProcess(uam::OpenCodeBridgeState& state) const override
+		void StopLocalBridgeProcess(uam::OpenCodeBridgeState& state) const override
 		{
 			if (state.process_handle != INVALID_HANDLE_VALUE && state.process_handle != nullptr)
 			{
@@ -1181,6 +1357,97 @@ namespace
 	  public:
 		bool IsAvailable() const override
 		{
+			return true;
+		}
+
+		bool StartCliTerminalProcess(uam::CliTerminalState& terminal,
+		                             const std::filesystem::path& working_directory,
+		                             const std::vector<std::string>& argv,
+		                             std::string* error_out = nullptr) const override
+		{
+			if (argv.empty() || TrimAsciiWhitespace(argv.front()).empty())
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Interactive provider command is empty.";
+				}
+
+				return false;
+			}
+
+			int master_fd = -1;
+			int slave_fd = -1;
+			struct winsize ws
+			{
+			};
+			ws.ws_row = static_cast<unsigned short>(terminal.rows);
+			ws.ws_col = static_cast<unsigned short>(terminal.cols);
+
+			if (openpty(&master_fd, &slave_fd, nullptr, nullptr, &ws) != 0)
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "openpty failed.";
+				}
+
+				return false;
+			}
+
+			const pid_t pid = fork();
+
+			if (pid < 0)
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "fork failed.";
+				}
+
+				close(master_fd);
+				close(slave_fd);
+				return false;
+			}
+
+			if (pid == 0)
+			{
+				setsid();
+				ioctl(slave_fd, TIOCSCTTY, 0);
+				dup2(slave_fd, STDIN_FILENO);
+				dup2(slave_fd, STDOUT_FILENO);
+				dup2(slave_fd, STDERR_FILENO);
+				close(master_fd);
+				close(slave_fd);
+
+				if (!working_directory.empty())
+				{
+					std::error_code ec;
+					std::filesystem::create_directories(working_directory, ec);
+					(void)chdir(working_directory.c_str());
+				}
+
+				setenv("TERM", "xterm-256color", 1);
+				std::vector<char*> argv_ptrs;
+				argv_ptrs.reserve(argv.size() + 1);
+
+				for (const std::string& arg : argv)
+				{
+					argv_ptrs.push_back(const_cast<char*>(arg.c_str()));
+				}
+
+				argv_ptrs.push_back(nullptr);
+				execvp(argv_ptrs[0], argv_ptrs.data());
+				_exit(127);
+			}
+
+			close(slave_fd);
+			terminal.master_fd = master_fd;
+			terminal.child_pid = pid;
+			const int flags = fcntl(terminal.master_fd, F_GETFL, 0);
+
+			if (flags >= 0)
+			{
+				(void)fcntl(terminal.master_fd, F_SETFL, flags | O_NONBLOCK);
+			}
+
 			return true;
 		}
 
@@ -1583,7 +1850,7 @@ namespace
 			return true;
 		}
 
-		void StopOpenCodeBridgeProcess(uam::OpenCodeBridgeState& state) const override
+		void StopLocalBridgeProcess(uam::OpenCodeBridgeState& state) const override
 		{
 			if (state.process_id > 0)
 			{

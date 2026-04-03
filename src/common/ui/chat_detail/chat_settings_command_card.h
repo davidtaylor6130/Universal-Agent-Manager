@@ -3,9 +3,9 @@
 /// <summary>
 /// Draws the current provider command preview card when a call is active.
 /// </summary>
-static void DrawChatSettingsCommandPreviewCard(AppState& app, ChatSession& chat)
+inline void DrawChatSettingsCommandPreviewCard(AppState& app, ChatSession& chat)
 {
-	if (const PendingGeminiCall* pending = FirstPendingCallForChat(app, chat.id); pending != nullptr)
+	if (const PendingRuntimeCall* pending = FirstPendingCallForChat(app, chat.id); pending != nullptr)
 	{
 		ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
 		DrawSectionHeader("Current Command");

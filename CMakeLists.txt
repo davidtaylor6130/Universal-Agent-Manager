@@ -274,6 +274,16 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   ${UAM_VTERM_SOURCES}
   ${UAM_PLATFORM_SOURCES}
   src/main.cpp
+  src/app/application.cpp
+  src/app/application_support.cpp
+  src/app/application_core_helpers.cpp
+  src/app/chat_domain_service.cpp
+  src/app/native_session_link_service.cpp
+  src/app/persistence_coordinator.cpp
+  src/app/provider_resolution_service.cpp
+  src/app/provider_profile_migration_service.cpp
+  src/app/runtime_local_service.cpp
+  src/app/template_runtime_service.cpp
   src/common/models/app_models.cpp
   src/common/paths/app_paths.cpp
   src/common/chat/chat_folder_store.cpp
@@ -289,6 +299,9 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/config/frontend_actions.cpp
   src/common/provider/provider_profile.cpp
   src/common/provider/provider_runtime.cpp
+  src/common/runtime/opencode_bridge_runtime.cpp
+  src/common/runtime/local_engine_runtime_service.cpp
+  src/common/runtime/provider_cli_compatibility_service.cpp
   src/common/platform/platform_services.cpp
   src/common/vcs/vcs_workspace_service.cpp
   src/common/rag/rag_index_service.cpp

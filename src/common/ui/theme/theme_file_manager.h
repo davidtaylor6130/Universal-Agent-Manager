@@ -11,7 +11,7 @@ enum class PathBrowseTarget
 /// <summary>
 /// Opens a native directory/file picker and returns the selected path.
 /// </summary>
-static bool BrowsePathWithNativeDialog(const PathBrowseTarget target, const std::string& current_value, std::string* selected_path_out, std::string* error_out = nullptr)
+inline bool BrowsePathWithNativeDialog(const PathBrowseTarget target, const std::string& current_value, std::string* selected_path_out, std::string* error_out = nullptr)
 {
 	if (selected_path_out == nullptr)
 	{
@@ -48,7 +48,7 @@ static bool BrowsePathWithNativeDialog(const PathBrowseTarget target, const std:
 /// <summary>
 /// Draws a path input with a folder picker button to its right.
 /// </summary>
-static bool DrawPathInputWithBrowseButton(const char* label, std::string& value, const char* browse_button_id, const PathBrowseTarget target, const float total_width = -1.0f, bool* input_deactivated_after_edit_out = nullptr, bool* picked_with_dialog_out = nullptr, std::string* error_out = nullptr)
+inline bool DrawPathInputWithBrowseButton(const char* label, std::string& value, const char* browse_button_id, const PathBrowseTarget target, const float total_width = -1.0f, bool* input_deactivated_after_edit_out = nullptr, bool* picked_with_dialog_out = nullptr, std::string* error_out = nullptr)
 {
 	if (input_deactivated_after_edit_out != nullptr)
 	{
@@ -114,7 +114,7 @@ static bool DrawPathInputWithBrowseButton(const char* label, std::string& value,
 /// <summary>
 /// Opens a folder path in the native file manager.
 /// </summary>
-static bool OpenFolderInFileManager(const fs::path& folder_path, std::string* error_out = nullptr)
+inline bool OpenFolderInFileManager(const fs::path& folder_path, std::string* error_out = nullptr)
 {
 	return PlatformServicesFactory::Instance().file_dialog_service.OpenFolderInFileManager(folder_path, error_out);
 }
@@ -122,7 +122,7 @@ static bool OpenFolderInFileManager(const fs::path& folder_path, std::string* er
 /// <summary>
 /// Reveals a file path in the native file manager.
 /// </summary>
-static bool RevealPathInFileManager(const fs::path& file_path, std::string* error_out = nullptr)
+inline bool RevealPathInFileManager(const fs::path& file_path, std::string* error_out = nullptr)
 {
 	return PlatformServicesFactory::Instance().file_dialog_service.RevealPathInFileManager(file_path, error_out);
 }

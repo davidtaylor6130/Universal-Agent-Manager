@@ -3,7 +3,7 @@
 /// <summary>
 /// Draws the create-folder modal used by the sidebar.
 /// </summary>
-static void DrawSidebarNewFolderPopup(AppState& app)
+inline void DrawSidebarNewFolderPopup(AppState& app)
 {
 	if (!ImGui::IsPopupOpen("new_folder_popup") && !app.pending_move_chat_to_new_folder_id.empty())
 	{

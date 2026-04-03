@@ -3,7 +3,7 @@
 /// <summary>
 /// Draws the edit-user-message popup used for rewind-and-continue flow.
 /// </summary>
-static void DrawEditUserMessagePopup(AppState& app, ChatSession& chat)
+inline void DrawEditUserMessagePopup(AppState& app, ChatSession& chat)
 {
 	if (app.open_edit_message_popup)
 	{

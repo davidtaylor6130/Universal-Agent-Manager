@@ -3,14 +3,14 @@
 /// <summary>
 /// Template override actions and pending template-change state reset.
 /// </summary>
-static void ClearPendingTemplateChange(AppState& app)
+inline void ClearPendingTemplateChange(AppState& app)
 {
 	app.pending_template_change_chat_id.clear();
 	app.pending_template_change_override_id.clear();
 	app.open_template_change_warning_popup = false;
 }
 
-static bool ApplyChatTemplateOverride(AppState& app, ChatSession& chat, const std::string& override_id, const bool send_control_message_for_started_chat)
+inline bool ApplyChatTemplateOverride(AppState& app, ChatSession& chat, const std::string& override_id, const bool send_control_message_for_started_chat)
 {
 	if (!override_id.empty() && FindTemplateEntryById(app, override_id) == nullptr)
 	{

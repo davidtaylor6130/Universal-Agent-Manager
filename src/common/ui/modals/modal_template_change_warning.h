@@ -3,7 +3,7 @@
 /// <summary>
 /// Template-change warning modal renderer for started chats.
 /// </summary>
-static void DrawTemplateChangeWarningModal(AppState& app)
+inline void DrawTemplateChangeWarningModal(AppState& app)
 {
 	if (app.open_template_change_warning_popup)
 	{

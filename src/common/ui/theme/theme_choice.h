@@ -5,13 +5,13 @@
 /// </summary>
 #include "common/platform/platform_services.h"
 
-static std::string ToLowerCopy(std::string value)
+inline std::string ToLowerCopy(std::string value)
 {
 	std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
 	return value;
 }
 
-static std::string NormalizeThemeChoice(std::string value)
+inline std::string NormalizeThemeChoice(std::string value)
 {
 	value = ToLowerCopy(std::move(value));
 
@@ -28,12 +28,12 @@ static std::string NormalizeThemeChoice(std::string value)
 	return "dark";
 }
 
-static std::optional<bool> DetectSystemPrefersLightTheme()
+inline std::optional<bool> DetectSystemPrefersLightTheme()
 {
 	return PlatformServicesFactory::Instance().ui_traits.DetectSystemPrefersLightTheme();
 }
 
-static UiThemeResolved ResolveUiTheme(const AppSettings& settings)
+inline UiThemeResolved ResolveUiTheme(const AppSettings& settings)
 {
 	const std::string mode = NormalizeThemeChoice(settings.ui_theme);
 
@@ -55,7 +55,7 @@ static UiThemeResolved ResolveUiTheme(const AppSettings& settings)
 	return UiThemeResolved::Dark;
 }
 
-static void ApplyResolvedPalette(const UiThemeResolved theme)
+inline void ApplyResolvedPalette(const UiThemeResolved theme)
 {
 	if (theme == UiThemeResolved::Light)
 	{

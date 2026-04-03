@@ -232,10 +232,10 @@ namespace
 			return MessageRole::System;
 		}
 
-		std::vector<ChatSession> LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path& gemini_chats_dir, const ProviderRuntimeHistoryLoadOptions& options) const override
+		std::vector<ChatSession> LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path& native_history_chats_dir, const ProviderRuntimeHistoryLoadOptions& options) const override
 		{
 			(void)profile;
-			(void)gemini_chats_dir;
+			(void)native_history_chats_dir;
 			(void)options;
 			return LocalChatStore::Load(data_root);
 		}
@@ -384,9 +384,9 @@ namespace
 			return false;
 		}
 
-		std::vector<ChatSession> LoadHistory(const ProviderProfile& profile, const std::filesystem::path&, const std::filesystem::path& gemini_chats_dir, const ProviderRuntimeHistoryLoadOptions& options) const override
+		std::vector<ChatSession> LoadHistory(const ProviderProfile& profile, const std::filesystem::path&, const std::filesystem::path& native_history_chats_dir, const ProviderRuntimeHistoryLoadOptions& options) const override
 		{
-			return LoadGeminiJsonHistoryForRuntime(gemini_chats_dir, profile, options);
+			return LoadGeminiJsonHistoryForRuntime(native_history_chats_dir, profile, options);
 		}
 
 		bool SaveHistory(const ProviderProfile&, const std::filesystem::path& data_root, const ChatSession& chat) const override
@@ -676,9 +676,9 @@ MessageRole ProviderRuntime::RoleFromNativeType(const ProviderProfile& profile, 
 	return ProviderRuntimeRegistry::Resolve(profile).RoleFromNativeType(profile, native_type);
 }
 
-std::vector<ChatSession> ProviderRuntime::LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path& gemini_chats_dir, const ProviderRuntimeHistoryLoadOptions& options)
+std::vector<ChatSession> ProviderRuntime::LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path& native_history_chats_dir, const ProviderRuntimeHistoryLoadOptions& options)
 {
-	return ProviderRuntimeRegistry::Resolve(profile).LoadHistory(profile, data_root, gemini_chats_dir, options);
+	return ProviderRuntimeRegistry::Resolve(profile).LoadHistory(profile, data_root, native_history_chats_dir, options);
 }
 
 bool ProviderRuntime::SaveHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const ChatSession& chat)

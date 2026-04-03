@@ -3,7 +3,7 @@
 /// <summary>
 /// Desktop menu bar rendering and command dispatch.
 /// </summary>
-static void DrawDesktopMenuBar(AppState& app, bool& done)
+inline void DrawDesktopMenuBar(AppState& app, bool& done)
 {
 	ImGui::PushStyleColor(ImGuiCol_MenuBarBg, ui::kSecondarySurface);
 	ImGui::PushStyleColor(ImGuiCol_PopupBg, ui::kElevatedSurface);
@@ -117,7 +117,7 @@ static void DrawDesktopMenuBar(AppState& app, bool& done)
 		if (ImGui::MenuItem("Open Template Folder"))
 		{
 			std::string error;
-			const fs::path template_path = MarkdownTemplateCatalog::CatalogPath(ResolveGeminiGlobalRootPath(app.settings));
+			const fs::path template_path = MarkdownTemplateCatalog::CatalogPath(ResolvePromptProfileRootPath(app.settings));
 
 			if (!OpenFolderInFileManager(template_path, &error))
 			{

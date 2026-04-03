@@ -3,7 +3,7 @@
 /// <summary>
 /// Edit-message workflow actions for user message rewinds and resend.
 /// </summary>
-static void ClearEditMessageState(AppState& app)
+inline void ClearEditMessageState(AppState& app)
 {
 	app.editing_chat_id.clear();
 	app.editing_message_index = -1;
@@ -11,7 +11,7 @@ static void ClearEditMessageState(AppState& app)
 	app.open_edit_message_popup = false;
 }
 
-static void BeginEditMessage(AppState& app, const ChatSession& chat, const int message_index)
+inline void BeginEditMessage(AppState& app, const ChatSession& chat, const int message_index)
 {
 	if (message_index < 0 || message_index >= static_cast<int>(chat.messages.size()))
 	{
@@ -29,7 +29,7 @@ static void BeginEditMessage(AppState& app, const ChatSession& chat, const int m
 	app.open_edit_message_popup = true;
 }
 
-static bool ContinueFromEditedUserMessage(AppState& app, ChatSession& chat)
+inline bool ContinueFromEditedUserMessage(AppState& app, ChatSession& chat)
 {
 	if (HasPendingCallForChat(app, chat.id))
 	{
@@ -74,7 +74,7 @@ static bool ContinueFromEditedUserMessage(AppState& app, ChatSession& chat)
 		}
 	}
 
-	if (ActiveProviderUsesGeminiHistory(app) && chat.uses_native_session && !chat.native_session_id.empty())
+	if (ActiveProviderUsesNativeOverlayHistory(app) && chat.uses_native_session && !chat.native_session_id.empty())
 	{
 		std::string native_error;
 

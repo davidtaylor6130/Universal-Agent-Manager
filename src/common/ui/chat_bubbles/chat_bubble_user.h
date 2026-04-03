@@ -6,7 +6,7 @@
 /// Draws a flat right-aligned user message row with a subtle pill background.
 /// Action buttons (Branch, Edit) are placed BELOW the pill to avoid text overlap.
 /// </summary>
-static void DrawUserMessageBubble(AppState& app, ChatSession& chat, const int message_index, const Message& message, const ChatBubbleLayout& layout)
+inline void DrawUserMessageBubble(AppState& app, ChatSession& chat, const int message_index, const Message& message, const ChatBubbleLayout& layout)
 {
 	DrawUserBubblePill(layout);
 	DrawChatBubbleContent(layout, message.content);

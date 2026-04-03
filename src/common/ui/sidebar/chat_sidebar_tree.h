@@ -4,7 +4,7 @@
 /// <summary>
 /// Draws the folder list and nested chat tree region in the sidebar.
 /// </summary>
-static void DrawChatSidebarTree(AppState& app, std::string& chat_to_delete, std::string& chat_to_open_options)
+inline void DrawChatSidebarTree(AppState& app, std::string& chat_to_delete, std::string& chat_to_open_options)
 {
 	BeginPanel("sidebar_folder_scroll", ImVec2(0.0f, 0.0f), PanelTone::Primary, false, ImGuiWindowFlags_AlwaysVerticalScrollbar, ImVec2(4.0f, 4.0f), ui::kRadiusSmall);
 	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));

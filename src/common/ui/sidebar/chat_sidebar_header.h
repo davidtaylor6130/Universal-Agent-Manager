@@ -4,7 +4,7 @@
 /// <summary>
 /// Draws the sidebar header: "Chats · N" title with compact icon buttons on the right.
 /// </summary>
-static void DrawChatSidebarHeader(AppState& app)
+inline void DrawChatSidebarHeader(AppState& app)
 {
 	const float btn_w = ScaleUiLength(22.0f);
 	const float btn_gap = ScaleUiLength(6.0f);

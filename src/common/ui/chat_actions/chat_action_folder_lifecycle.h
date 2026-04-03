@@ -3,7 +3,7 @@
 /// <summary>
 /// Folder deletion, chat creation, and delete-request dispatch actions.
 /// </summary>
-static bool DeleteFolderById(AppState& app, const std::string& folder_id)
+inline bool DeleteFolderById(AppState& app, const std::string& folder_id)
 {
 	if (folder_id.empty() || folder_id == kDefaultFolderId)
 	{
@@ -62,7 +62,55 @@ static bool DeleteFolderById(AppState& app, const std::string& folder_id)
 	return true;
 }
 
-static std::string ResolveNewChatProviderId(const AppState& app, const std::string& preferred_provider_id = std::string())
+enum class NewChatDuplicatePolicy
+{
+	Prompt,
+	CreateNew,
+	ReuseExisting
+};
+
+inline void ClearPendingDuplicateNewChatDecision(AppState& app)
+{
+	app.open_duplicate_new_chat_popup = false;
+	app.pending_duplicate_new_chat_existing_id.clear();
+	app.pending_duplicate_new_chat_provider_id.clear();
+	app.pending_duplicate_new_chat_folder_id.clear();
+}
+
+inline std::string FindExistingEmptyDraftChatIdForFolderProvider(const AppState& app, const std::string& folder_id, const std::string& provider_id)
+{
+	std::string best_chat_id;
+	std::string best_updated_at;
+	std::string best_created_at;
+
+	for (const ChatSession& existing : app.chats)
+	{
+		if (existing.folder_id != folder_id || existing.provider_id != provider_id)
+		{
+			continue;
+		}
+
+		if (!IsLocalDraftChatId(existing.id) || !existing.messages.empty() || HasPendingCallForChat(app, existing.id))
+		{
+			continue;
+		}
+
+		const bool prefer_current = best_chat_id.empty() || existing.updated_at > best_updated_at || (existing.updated_at == best_updated_at && (existing.created_at > best_created_at || (existing.created_at == best_created_at && existing.id < best_chat_id)));
+
+		if (!prefer_current)
+		{
+			continue;
+		}
+
+		best_chat_id = existing.id;
+		best_updated_at = existing.updated_at;
+		best_created_at = existing.created_at;
+	}
+
+	return best_chat_id;
+}
+
+inline std::string ResolveNewChatProviderId(const AppState& app, const std::string& preferred_provider_id = std::string())
 {
 	const std::string preferred = Trim(preferred_provider_id);
 
@@ -95,7 +143,7 @@ static std::string ResolveNewChatProviderId(const AppState& app, const std::stri
 	return active.empty() ? std::string("gemini-structured") : active;
 }
 
-static void OpenNewChatPopup(AppState& app, const std::string& target_folder_id = std::string())
+inline void OpenNewChatPopup(AppState& app, const std::string& target_folder_id = std::string())
 {
 	if (!target_folder_id.empty())
 	{
@@ -103,20 +151,39 @@ static void OpenNewChatPopup(AppState& app, const std::string& target_folder_id 
 	}
 
 	EnsureNewChatFolderSelection(app);
+	ClearPendingDuplicateNewChatDecision(app);
 	app.pending_new_chat_provider_id = ResolveNewChatProviderId(app, app.pending_new_chat_provider_id);
 	app.open_new_chat_popup = true;
 }
 
-static void CreateAndSelectChatWithProvider(AppState& app, const std::string& provider_id)
+inline bool CreateAndSelectChatWithProvider(AppState& app, const std::string& provider_id, const NewChatDuplicatePolicy duplicate_policy = NewChatDuplicatePolicy::Prompt)
 {
 	const std::string selected_provider_id = ResolveNewChatProviderId(app, provider_id);
-	const std::string target_folder = FolderForNewChat(app);
 
-	for (const ChatSession& existing : app.chats)
+	if (selected_provider_id.empty())
 	{
-		if (existing.folder_id == target_folder && existing.provider_id == selected_provider_id && IsLocalDraftChatId(existing.id) && existing.messages.empty() && !HasPendingCallForChat(app, existing.id))
+		app.status_line = "No provider available for new chat.";
+		return false;
+	}
+
+	const std::string target_folder = FolderForNewChat(app);
+	const std::string existing_draft_chat_id = FindExistingEmptyDraftChatIdForFolderProvider(app, target_folder, selected_provider_id);
+
+	if (!existing_draft_chat_id.empty())
+	{
+		if (duplicate_policy == NewChatDuplicatePolicy::Prompt)
 		{
-			SelectChatById(app, existing.id);
+			app.pending_duplicate_new_chat_existing_id = existing_draft_chat_id;
+			app.pending_duplicate_new_chat_provider_id = selected_provider_id;
+			app.pending_duplicate_new_chat_folder_id = target_folder;
+			app.open_duplicate_new_chat_popup = true;
+			app.status_line = "An empty draft already exists for this folder and provider.";
+			return true;
+		}
+
+		if (duplicate_policy == NewChatDuplicatePolicy::ReuseExisting)
+		{
+			SelectChatById(app, existing_draft_chat_id);
 			SaveSettings(app);
 
 			if (const ChatSession* selected = SelectedChat(app); selected != nullptr && ChatUsesCliOutput(app, *selected))
@@ -124,8 +191,9 @@ static void CreateAndSelectChatWithProvider(AppState& app, const std::string& pr
 				MarkSelectedCliTerminalForLaunch(app);
 			}
 
+			ClearPendingDuplicateNewChatDecision(app);
 			app.status_line = "Reused existing empty chat draft.";
-			return;
+			return true;
 		}
 	}
 
@@ -145,25 +213,27 @@ static void CreateAndSelectChatWithProvider(AppState& app, const std::string& pr
 
 	if (!SaveChat(app, app.chats[app.selected_chat_index]))
 	{
+		ClearPendingDuplicateNewChatDecision(app);
 		app.status_line = "Created chat in memory, but failed to persist.";
+		return false;
 	}
-	else
-	{
-		app.status_line = "New chat created.";
-	}
+
+	ClearPendingDuplicateNewChatDecision(app);
+	app.status_line = "New chat created.";
+	return true;
 }
 
-static void CreateAndSelectChat(AppState& app)
+inline void CreateAndSelectChat(AppState& app)
 {
 	OpenNewChatPopup(app, FolderForNewChat(app));
 }
 
-static void CreateAndSelectChatInFolder(AppState& app, const std::string& folder_id)
+inline void CreateAndSelectChatInFolder(AppState& app, const std::string& folder_id)
 {
 	OpenNewChatPopup(app, folder_id);
 }
 
-static bool ConfirmCreateNewChat(AppState& app)
+inline bool ConfirmCreateNewChat(AppState& app)
 {
 	const std::string provider_id = ResolveNewChatProviderId(app, app.pending_new_chat_provider_id);
 
@@ -174,12 +244,12 @@ static bool ConfirmCreateNewChat(AppState& app)
 	}
 
 	app.pending_new_chat_provider_id = provider_id;
-	CreateAndSelectChatWithProvider(app, provider_id);
+	const bool handled = CreateAndSelectChatWithProvider(app, provider_id, NewChatDuplicatePolicy::Prompt);
 	app.pending_new_chat_provider_id.clear();
-	return true;
+	return handled;
 }
 
-static void RequestDeleteSelectedChat(AppState& app)
+inline void RequestDeleteSelectedChat(AppState& app)
 {
 	const ChatSession* chat = SelectedChat(app);
 
@@ -199,7 +269,7 @@ static void RequestDeleteSelectedChat(AppState& app)
 	RemoveChatById(app, chat->id);
 }
 
-static void RequestDeleteFolder(AppState& app, const std::string& folder_id)
+inline void RequestDeleteFolder(AppState& app, const std::string& folder_id)
 {
 	if (folder_id.empty())
 	{

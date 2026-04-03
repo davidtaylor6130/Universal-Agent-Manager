@@ -5,7 +5,7 @@
 /// Draws an inline RAG toggle chip that acts as a clickable pill button.
 /// Returns true if the toggle state changed.
 /// </summary>
-static bool DrawRagToggleChip(const char* chip_id, const bool enabled)
+inline bool DrawRagToggleChip(const char* chip_id, const bool enabled)
 {
 	ImGui::PushID(chip_id);
 	const bool light = IsLightPaletteActive();
@@ -43,7 +43,7 @@ static bool DrawRagToggleChip(const char* chip_id, const bool enabled)
 /// <summary>
 /// Draws the composer container — text area + single-row bottom chip toolbar (T3-style).
 /// </summary>
-static void DrawInputContainer(AppState& app, ChatSession& chat)
+inline void DrawInputContainer(AppState& app, ChatSession& chat)
 {
 	BeginPanel("input_container", ImVec2(0.0f, 162.0f), PanelTone::Secondary, true, 0, ImVec2(10.0f, 10.0f), ui::kRadiusInput);
 

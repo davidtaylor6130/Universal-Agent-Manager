@@ -3,7 +3,7 @@
 /// <summary>
 /// Repository command output modal renderer.
 /// </summary>
-static void DrawVcsOutputModal(AppState& app)
+inline void DrawVcsOutputModal(AppState& app)
 {
 	if (app.open_vcs_output_popup)
 	{

@@ -7,6 +7,7 @@
 #include "common/platform/platform_state_fields.h"
 #include "common/provider_profile.h"
 #include "common/rag_index_service.h"
+#include "common/runtime/local_engine_runtime_service.h"
 #include "common/vcs_workspace_service.h"
 
 #include <atomic>
@@ -101,7 +102,7 @@ namespace uam
 	struct AppState
 	{
 		fs::path data_root;
-		fs::path gemini_chats_dir;
+		fs::path native_history_chats_dir;
 		AppSettings settings;
 		std::vector<ChatFolder> folders;
 		std::vector<ProviderProfile> provider_profiles;
@@ -115,6 +116,10 @@ namespace uam
 		std::string new_chat_folder_id;
 		bool open_new_chat_popup = false;
 		std::string pending_new_chat_provider_id;
+		bool open_duplicate_new_chat_popup = false;
+		std::string pending_duplicate_new_chat_existing_id;
+		std::string pending_duplicate_new_chat_provider_id;
+		std::string pending_duplicate_new_chat_folder_id;
 		std::string new_folder_title_input;
 		std::string new_folder_directory_input;
 		std::string pending_move_chat_to_new_folder_id;
@@ -151,6 +156,7 @@ namespace uam
 		CenterViewMode center_view_mode = CenterViewMode::Structured;
 		std::vector<std::unique_ptr<CliTerminalState>> cli_terminals;
 		RagIndexService rag_index_service;
+		LocalEngineRuntimeService runtime_model_service;
 		OpenCodeBridgeState opencode_bridge;
 		std::string loaded_runtime_model_id;
 		std::unordered_map<std::string, VcsSnapshot> vcs_snapshot_by_workspace;
@@ -178,16 +184,16 @@ namespace uam
 		bool open_runtime_model_selection_popup = false;
 		std::string runtime_model_selection_id;
 
-		std::vector<PendingGeminiCall> pending_calls;
+		std::vector<PendingRuntimeCall> pending_calls;
 		std::unordered_map<std::string, std::string> resolved_native_sessions_by_chat_id;
-		AsyncCommandTask gemini_version_check_task;
-		AsyncCommandTask gemini_downgrade_task;
-		bool gemini_version_checked = false;
-		bool gemini_version_supported = false;
-		std::string gemini_installed_version;
-		std::string gemini_version_raw_output;
-		std::string gemini_version_message;
-		std::string gemini_downgrade_output;
+		AsyncCommandTask runtime_cli_version_check_task;
+		AsyncCommandTask runtime_cli_pin_task;
+		bool runtime_cli_version_checked = false;
+		bool runtime_cli_version_supported = false;
+		std::string runtime_cli_installed_version;
+		std::string runtime_cli_version_raw_output;
+		std::string runtime_cli_version_message;
+		std::string runtime_cli_pin_output;
 		bool scroll_to_bottom = false;
 		platform::AsyncNativeChatLoadTask native_chat_load_task;
 	};

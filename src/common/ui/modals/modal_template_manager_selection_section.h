@@ -3,7 +3,7 @@
 /// <summary>
 /// Draws template-manager actions for selected template mutation and assignment.
 /// </summary>
-static void DrawTemplateManagerSelectionSection(AppState& app, const fs::path& global_root, const TemplateCatalogEntry* selected_entry, const bool has_selection)
+inline void DrawMarkdownTemplateManagerSelectionSection(AppState& app, const fs::path& global_root, const TemplateCatalogEntry* selected_entry, const bool has_selection)
 {
 	ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
 

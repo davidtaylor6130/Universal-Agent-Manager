@@ -5,7 +5,7 @@
 /// <summary>
 /// Draws a flat left-aligned assistant message row with no background — just a small dot indicator.
 /// </summary>
-static void DrawAssistantMessageBubble(const Message& message, const ChatBubbleLayout& layout)
+inline void DrawAssistantMessageBubble(const Message& message, const ChatBubbleLayout& layout)
 {
 	// Small colored dot indicator instead of a role label/card
 	ImDrawList* draw = ImGui::GetWindowDrawList();

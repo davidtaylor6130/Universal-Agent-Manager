@@ -9,7 +9,7 @@
 /// <summary>
 /// Draws the center chat detail pane by composing header, body mode, history, and composer components.
 /// </summary>
-static void DrawChatDetailPane(AppState& app, ChatSession& chat)
+inline void DrawChatDetailPane(AppState& app, ChatSession& chat)
 {
 	MarkSelectedChatSeen(app);
 	BeginPanel("main_chat_panel", ImVec2(0.0f, 0.0f), PanelTone::Primary, true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse, ImVec2(ui::kSpace16, ui::kSpace16));

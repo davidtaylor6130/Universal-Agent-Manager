@@ -4,7 +4,7 @@
 /// <summary>
 /// Handles global keyboard shortcuts for app-level chat actions.
 /// </summary>
-static void HandleGlobalShortcuts(AppState& app)
+inline void HandleGlobalShortcuts(AppState& app)
 {
 	ImGuiIO& io = ImGui::GetIO();
 	const bool ctrl = io.KeyCtrl;

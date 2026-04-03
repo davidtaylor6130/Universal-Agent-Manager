@@ -8,7 +8,7 @@
 /// <summary>
 /// Draws the markdown template manager modal using section-level component renderers.
 /// </summary>
-static void DrawTemplateManagerModal(AppState& app)
+inline void DrawMarkdownTemplateManagerModal(AppState& app)
 {
 	if (app.open_template_manager_popup)
 	{
@@ -24,24 +24,24 @@ static void DrawTemplateManagerModal(AppState& app)
 	}
 
 	RefreshTemplateCatalog(app);
-	const fs::path global_root = ResolveGeminiGlobalRootPath(app.settings);
+	const fs::path global_root = ResolvePromptProfileRootPath(app.settings);
 	const fs::path catalog_path = MarkdownTemplateCatalog::CatalogPath(global_root);
 
 	ImGui::TextColored(ui::kTextPrimary, "Markdown Template Manager");
 	ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
 	DrawSoftDivider();
 
-	DrawTemplateManagerGlobalRootSection(app, global_root, catalog_path);
+	DrawMarkdownTemplateManagerGlobalRootSection(app, global_root, catalog_path);
 
 	ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
 	DrawSoftDivider();
-	DrawTemplateManagerImportSection(app, global_root);
+	DrawMarkdownTemplateManagerImportSection(app, global_root);
 
 	ImGui::Dummy(ImVec2(0.0f, ui::kSpace10));
 	DrawSoftDivider();
 	bool has_selection = false;
-	const TemplateCatalogEntry* selected_entry = DrawTemplateManagerCatalogSection(app, has_selection);
-	DrawTemplateManagerSelectionSection(app, global_root, selected_entry, has_selection);
+	const TemplateCatalogEntry* selected_entry = DrawMarkdownTemplateManagerCatalogSection(app, has_selection);
+	DrawMarkdownTemplateManagerSelectionSection(app, global_root, selected_entry, has_selection);
 
 	ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
 

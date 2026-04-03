@@ -441,13 +441,13 @@ class JsonParser
 /// <summary>
 /// Parses JSON text into a JsonValue tree.
 /// </summary>
-static std::optional<JsonValue> ParseJson(const std::string& text)
+inline std::optional<JsonValue> ParseJson(const std::string& text)
 {
 	JsonParser parser(text);
 	return parser.Parse();
 }
 
-static void AppendJsonEscapedString(const std::string& value, std::string& out)
+inline void AppendJsonEscapedString(const std::string& value, std::string& out)
 {
 	out.push_back('"');
 
@@ -496,7 +496,7 @@ static void AppendJsonEscapedString(const std::string& value, std::string& out)
 	out.push_back('"');
 }
 
-static void AppendJsonIndent(const int depth, std::string& out)
+inline void AppendJsonIndent(const int depth, std::string& out)
 {
 	for (int i = 0; i < depth; ++i)
 	{
@@ -504,7 +504,7 @@ static void AppendJsonIndent(const int depth, std::string& out)
 	}
 }
 
-static void AppendJsonValue(const JsonValue& value, std::string& out, const int depth)
+inline void AppendJsonValue(const JsonValue& value, std::string& out, const int depth)
 {
 	switch (value.type)
 	{
@@ -604,7 +604,7 @@ static void AppendJsonValue(const JsonValue& value, std::string& out, const int 
 /// <summary>
 /// Serializes a JsonValue tree into normalized JSON text.
 /// </summary>
-static std::string SerializeJson(const JsonValue& value)
+inline std::string SerializeJson(const JsonValue& value)
 {
 	std::string out;
 	AppendJsonValue(value, out, 0);
@@ -615,7 +615,7 @@ static std::string SerializeJson(const JsonValue& value)
 /// <summary>
 /// Returns the string value when the node is a JSON string, otherwise an empty string.
 /// </summary>
-static std::string JsonStringOrEmpty(const JsonValue* value)
+inline std::string JsonStringOrEmpty(const JsonValue* value)
 {
 	if (value == nullptr || value->type != JsonValue::Type::String)
 	{
@@ -625,7 +625,7 @@ static std::string JsonStringOrEmpty(const JsonValue* value)
 	return value->string_value;
 }
 
-static std::string JsonTrim(const std::string& value)
+inline std::string JsonTrim(const std::string& value)
 {
 	const std::size_t start = value.find_first_not_of(" \t\r\n");
 
@@ -641,7 +641,7 @@ static std::string JsonTrim(const std::string& value)
 /// <summary>
 /// Extracts Gemini message text from either string, object, or mixed-array JSON content shapes.
 /// </summary>
-static std::string ExtractGeminiContentText(const JsonValue* value)
+inline std::string ExtractGeminiContentText(const JsonValue* value)
 {
 	if (value == nullptr)
 	{

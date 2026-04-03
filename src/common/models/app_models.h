@@ -39,7 +39,7 @@ struct ChatSession
 	int branch_from_message_index = -1;
 	std::string folder_id;
 	std::string template_override_id;
-	bool gemini_md_bootstrapped = false;
+	bool prompt_profile_bootstrapped = false;
 	bool rag_enabled = true;
 	std::vector<std::string> rag_source_directories;
 	std::string title;
@@ -113,7 +113,7 @@ enum class CenterViewMode
 /// <summary>
 /// In-flight provider command state used by async polling.
 /// </summary>
-struct PendingGeminiCall
+struct PendingRuntimeCall
 {
 	std::string chat_id;
 	std::string resume_session_id;

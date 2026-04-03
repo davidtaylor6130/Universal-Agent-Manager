@@ -3,7 +3,7 @@
 /// <summary>
 /// About dialog modal renderer.
 /// </summary>
-static void DrawAboutModal(AppState& app)
+inline void DrawAboutModal(AppState& app)
 {
 	if (app.open_about_popup)
 	{

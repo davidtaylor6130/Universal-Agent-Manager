@@ -3,7 +3,7 @@
 /// <summary>
 /// Polls asynchronous provider calls and syncs results back into chat state.
 /// </summary>
-static void PollPendingGeminiCall(AppState& app)
+inline void PollPendingRuntimeCall(AppState& app)
 {
 	if (app.pending_calls.empty())
 	{
@@ -30,7 +30,7 @@ static void PollPendingGeminiCall(AppState& app)
 
 	for (std::size_t i = 0; i < app.pending_calls.size();)
 	{
-		PendingGeminiCall& call = app.pending_calls[i];
+		PendingRuntimeCall& call = app.pending_calls[i];
 
 		if (call.completed == nullptr || call.output == nullptr)
 		{
@@ -55,7 +55,7 @@ static void PollPendingGeminiCall(AppState& app)
 			pending_chat_snapshot = app.chats[pending_chat_index];
 		}
 
-		if (!ActiveProviderUsesGeminiHistory(app))
+		if (!ActiveProviderUsesNativeOverlayHistory(app))
 		{
 			if (pending_chat_index >= 0)
 			{
@@ -80,8 +80,8 @@ static void PollPendingGeminiCall(AppState& app)
 			continue;
 		}
 
-		RefreshGeminiChatsDir(app);
-		std::vector<ChatSession> native_after = LoadNativeGeminiChats(app.gemini_chats_dir, ActiveProviderOrDefault(app));
+		RefreshNativeSessionDirectory(app);
+		std::vector<ChatSession> native_after = LoadNativeSessionChats(app.native_history_chats_dir, ActiveProviderOrDefault(app));
 		ApplyLocalOverrides(app, native_after);
 
 		std::string selected_id = call.resume_session_id;
@@ -125,7 +125,7 @@ static void PollPendingGeminiCall(AppState& app)
 			{
 				app.chats[selected_index].linked_files = pending_chat_snapshot.linked_files;
 				app.chats[selected_index].template_override_id = pending_chat_snapshot.template_override_id;
-				app.chats[selected_index].gemini_md_bootstrapped = pending_chat_snapshot.gemini_md_bootstrapped;
+				app.chats[selected_index].prompt_profile_bootstrapped = pending_chat_snapshot.prompt_profile_bootstrapped;
 				app.chats[selected_index].parent_chat_id = pending_chat_snapshot.parent_chat_id;
 				app.chats[selected_index].branch_root_chat_id = pending_chat_snapshot.branch_root_chat_id;
 				app.chats[selected_index].branch_from_message_index = pending_chat_snapshot.branch_from_message_index;

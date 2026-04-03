@@ -12,7 +12,7 @@
 /// <summary>
 /// Draws the right-side chat settings pane by composing card-level components.
 /// </summary>
-static void DrawSessionSidePane(AppState& app, ChatSession& chat)
+inline void DrawSessionSidePane(AppState& app, ChatSession& chat)
 {
 	RefreshTemplateCatalog(app);
 	const ProviderProfile& provider = ProviderForChatOrDefault(app, chat);

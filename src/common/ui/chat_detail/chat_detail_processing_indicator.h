@@ -3,7 +3,7 @@
 /// <summary>
 /// Draws the structured-mode processing indicator while a provider call is running.
 /// </summary>
-static void DrawStructuredProcessingIndicator(const AppState& app, const ChatSession& chat)
+inline void DrawStructuredProcessingIndicator(const AppState& app, const ChatSession& chat)
 {
 	if (!HasPendingCallForChat(app, chat.id))
 	{
