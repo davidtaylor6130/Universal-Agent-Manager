@@ -11,7 +11,7 @@ inline void DrawChatSettingsRepositoryCard(AppState& app, ChatSession& chat)
 	if (BeginSectionCard("repository_card"))
 	{
 		const fs::path workspace_root = ResolveWorkspaceRootPath(app, chat);
-		RefreshWorkspaceVcsSnapshot(app, workspace_root, false);
+		VcsWorkspaceService::RefreshSnapshot(app, workspace_root, false);
 		const std::string workspace_key = workspace_root.lexically_normal().generic_string();
 		VcsSnapshot snapshot;
 
@@ -44,7 +44,7 @@ inline void DrawChatSettingsRepositoryCard(AppState& app, ChatSession& chat)
 
 		if (DrawButton("Refresh", ImVec2(90.0f, 30.0f), ButtonKind::Ghost))
 		{
-			if (RefreshWorkspaceVcsSnapshot(app, workspace_root, true))
+			if (VcsWorkspaceService::RefreshSnapshot(app, workspace_root, true))
 			{
 				app.status_line = "Repository snapshot refreshed.";
 			}
@@ -62,7 +62,7 @@ inline void DrawChatSettingsRepositoryCard(AppState& app, ChatSession& chat)
 		if (DrawButton("Status", ImVec2(90.0f, 30.0f), ButtonKind::Ghost))
 		{
 			const VcsCommandResult result = VcsWorkspaceService::ReadStatus(workspace_root);
-			ShowVcsCommandOutput(app, "SVN Status", result);
+			VcsWorkspaceService::ShowCommandOutput(app, "SVN Status", result);
 			app.status_line = result.ok ? "SVN status loaded." : "SVN status command failed.";
 		}
 
@@ -71,7 +71,7 @@ inline void DrawChatSettingsRepositoryCard(AppState& app, ChatSession& chat)
 		if (DrawButton("Diff", ImVec2(90.0f, 30.0f), ButtonKind::Ghost))
 		{
 			const VcsCommandResult result = VcsWorkspaceService::ReadDiff(workspace_root);
-			ShowVcsCommandOutput(app, "SVN Diff", result);
+			VcsWorkspaceService::ShowCommandOutput(app, "SVN Diff", result);
 			app.status_line = result.ok ? "SVN diff loaded." : "SVN diff command failed.";
 		}
 
@@ -80,7 +80,7 @@ inline void DrawChatSettingsRepositoryCard(AppState& app, ChatSession& chat)
 		if (DrawButton("Log", ImVec2(90.0f, 30.0f), ButtonKind::Ghost))
 		{
 			const VcsCommandResult result = VcsWorkspaceService::ReadLog(workspace_root);
-			ShowVcsCommandOutput(app, "SVN Log", result);
+			VcsWorkspaceService::ShowCommandOutput(app, "SVN Log", result);
 			app.status_line = result.ok ? "SVN log loaded." : "SVN log command failed.";
 		}
 

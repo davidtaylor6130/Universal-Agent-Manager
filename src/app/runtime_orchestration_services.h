@@ -5,6 +5,7 @@
 #include "common/state/app_state.h"
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -34,6 +35,10 @@ class ChatHistorySyncService
 {
   public:
 	void RefreshChatHistory(uam::AppState& p_app) const;
+	void SaveChatWithStatus(uam::AppState& p_app,
+	                        const ChatSession& p_chat,
+	                        const std::string& p_success,
+	                        const std::string& p_failure) const;
 	std::vector<ChatSession> LoadNativeSessionChats(const std::filesystem::path& p_chatsDir,
 	                                                const ProviderProfile& p_provider) const;
 	void RefreshNativeSessionDirectory(uam::AppState& p_app) const;
@@ -42,6 +47,8 @@ class ChatHistorySyncService
 	                                   std::vector<ChatSession>& p_chatsOut,
 	                                   std::string& p_errorOut) const;
 	std::vector<std::string> SessionIdsFromChats(const std::vector<ChatSession>& p_chats) const;
+	std::optional<std::filesystem::path> FindNativeSessionFilePath(const std::filesystem::path& p_chatsDir,
+	                                                               const std::string& p_sessionId) const;
 	bool PersistLocalDraftNativeSessionLink(const uam::AppState& p_app,
 	                                        ChatSession& p_localChat,
 	                                        const std::string& p_nativeSessionId) const;

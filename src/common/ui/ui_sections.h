@@ -1,4 +1,5 @@
-#pragma once
+#ifndef UAM_COMMON_UI_UI_SECTIONS_H
+#define UAM_COMMON_UI_UI_SECTIONS_H
 
 #include "app/chat_domain_service.h"
 #include "app/persistence_coordinator.h"
@@ -10,7 +11,9 @@
 #include "common/app_paths.h"
 #include "common/chat_branching.h"
 #include "common/chat_folder_store.h"
+#include "common/frontend_actions.h"
 #include "common/provider_runtime.h"
+#include "common/vcs_workspace_service.h"
 
 /// <summary>
 /// Chat actions and mutation helpers used by sidebar and detail views.
@@ -41,3 +44,5 @@
 /// Global keyboard shortcut handlers.
 /// </summary>
 #include "common/ui/ui_shortcuts.h"
+
+#endif // UAM_COMMON_UI_UI_SECTIONS_H

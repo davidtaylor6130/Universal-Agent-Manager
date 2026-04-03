@@ -122,7 +122,7 @@ inline void DrawChatSidebarTree(AppState& app, std::string& chat_to_delete, std:
 					if (item_action.select)
 					{
 						ChatDomainService().SelectChatById(app, sidebar_chat.id);
-						SaveSettings(app);
+						PersistenceCoordinator().SaveSettings(app);
 
 						if (const ChatSession* selected = ChatDomainService().SelectedChat(app); selected != nullptr && ProviderResolutionService().ChatUsesCliOutput(app, *selected))
 						{

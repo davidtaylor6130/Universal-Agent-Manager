@@ -40,7 +40,7 @@ inline void DrawRuntimeModelSelectionModal(AppState& app)
 
 	if (input_deactivated_after_edit || picked_with_dialog)
 	{
-		SaveSettings(app);
+		PersistenceCoordinator().SaveSettings(app);
 	}
 
 	const fs::path model_folder = ResolveRagModelFolder(app);
@@ -107,7 +107,7 @@ inline void DrawRuntimeModelSelectionModal(AppState& app)
 		}
 		else
 		{
-			SaveSettings(app);
+			PersistenceCoordinator().SaveSettings(app);
 			app.status_line = "Loaded local runtime model: " + app.settings.selected_model_id + ".";
 			ImGui::CloseCurrentPopup();
 		}

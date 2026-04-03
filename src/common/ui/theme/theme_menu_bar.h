@@ -92,7 +92,7 @@ inline void DrawDesktopMenuBar(AppState& app, bool& done)
 			if (ImGui::MenuItem("None", nullptr, none_selected))
 			{
 				app.settings.default_prompt_profile_id.clear();
-				SaveSettings(app);
+				PersistenceCoordinator().SaveSettings(app);
 				app.status_line = "Default prompt profile cleared.";
 			}
 
@@ -105,7 +105,7 @@ inline void DrawDesktopMenuBar(AppState& app, bool& done)
 				if (ImGui::MenuItem(entry.display_name.c_str(), nullptr, selected))
 				{
 					app.settings.default_prompt_profile_id = entry.id;
-					SaveSettings(app);
+					PersistenceCoordinator().SaveSettings(app);
 					app.status_line = "Default prompt profile set to " + entry.display_name + ".";
 				}
 			}
@@ -153,7 +153,7 @@ inline void DrawDesktopMenuBar(AppState& app, bool& done)
 		if (ImGui::MenuItem("Use Selected Chat Workspace As Source"))
 		{
 			app.settings.rag_project_source_directory = ResolveWorkspaceRootPath(app, *selected_chat).string();
-			SaveSettings(app);
+			PersistenceCoordinator().SaveSettings(app);
 			app.status_line = "RAG source directory set from selected chat workspace.";
 			AppendRagScanReport(app, "Source directory set from selected chat workspace.");
 		}
@@ -166,7 +166,7 @@ inline void DrawDesktopMenuBar(AppState& app, bool& done)
 		if (ImGui::MenuItem("Clear Project Source"))
 		{
 			app.settings.rag_project_source_directory.clear();
-			SaveSettings(app);
+			PersistenceCoordinator().SaveSettings(app);
 			app.status_line = "RAG source directory cleared.";
 			AppendRagScanReport(app, "Source directory cleared.");
 		}
@@ -212,7 +212,7 @@ inline void DrawDesktopMenuBar(AppState& app, bool& done)
 			{
 				app.settings.ui_theme = choice;
 				ApplyThemeFromSettings(app);
-				SaveSettings(app);
+				PersistenceCoordinator().SaveSettings(app);
 			};
 
 			if (ImGui::MenuItem("Dark", nullptr, app.settings.ui_theme == "dark"))

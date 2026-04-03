@@ -33,7 +33,7 @@ inline void DrawChatSettingsRagCard(AppState& app, ChatSession& chat)
 		if (DrawButton("Use Chat Workspace", ImVec2(156.0f, 30.0f), ButtonKind::Ghost))
 		{
 			app.settings.rag_project_source_directory = chat_workspace_root.string();
-			SaveSettings(app);
+			PersistenceCoordinator().SaveSettings(app);
 			app.status_line = "RAG source directory set from chat workspace.";
 			AppendRagScanReport(app, "Source directory set from chat workspace.");
 		}
@@ -42,7 +42,7 @@ inline void DrawChatSettingsRagCard(AppState& app, ChatSession& chat)
 
 		if (DrawButton("Save Source", ImVec2(108.0f, 30.0f), ButtonKind::Ghost))
 		{
-			SaveSettings(app);
+			PersistenceCoordinator().SaveSettings(app);
 			app.status_line = "RAG source directory saved.";
 			AppendRagScanReport(app, "Source directory saved.");
 		}
@@ -97,7 +97,7 @@ inline void DrawChatSettingsRagCard(AppState& app, ChatSession& chat)
 			if (rag_scan_max_tokens != app.settings.rag_scan_max_tokens)
 			{
 				app.settings.rag_scan_max_tokens = rag_scan_max_tokens;
-				SaveSettings(app);
+				PersistenceCoordinator().SaveSettings(app);
 
 				if (rag_scan_max_tokens > 0)
 				{

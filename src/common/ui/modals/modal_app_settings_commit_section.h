@@ -42,7 +42,7 @@ inline void DrawAppSettingsCommitSection(AppState& app, AppSettings& draft_setti
 
 		CaptureUiScaleBaseStyle();
 		ApplyUserUiScale(ImGui::GetIO(), app.settings.ui_scale_multiplier);
-		SaveSettings(app);
+		PersistenceCoordinator().SaveSettings(app);
 
 		if (previous_global_root != app.settings.prompt_profile_root_path)
 		{

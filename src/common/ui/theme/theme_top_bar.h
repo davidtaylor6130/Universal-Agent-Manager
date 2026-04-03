@@ -80,12 +80,12 @@ inline void DrawGlobalTopBar(AppState& app)
 		DrawStatusChip("chat_count_chip", "Chats: " + std::to_string(app.chats.size()), IsLightPaletteActive() ? Rgb(9, 31, 63, 0.08f) : Rgb(255, 255, 255, 0.06f), ui::kTextSecondary);
 
 		ImGui::TableSetColumnIndex(1);
-		const std::string new_chat_label = FrontendActionLabel(app, "create_chat", "New Chat");
-		const std::string refresh_label = FrontendActionLabel(app, "refresh_history", "Refresh");
+		const std::string new_chat_label = uam::FrontendActionLabel(app.frontend_actions, "create_chat", "New Chat");
+		const std::string refresh_label = uam::FrontendActionLabel(app.frontend_actions, "refresh_history", "Refresh");
 
 		const float row_w = ImGui::GetContentRegionAvail().x;
-		const bool show_create = FrontendActionVisible(app, "create_chat");
-		const bool show_refresh = FrontendActionVisible(app, "refresh_history");
+		const bool show_create = uam::FrontendActionVisible(app.frontend_actions, "create_chat");
+		const bool show_refresh = uam::FrontendActionVisible(app.frontend_actions, "refresh_history");
 		const float row_spacing_base = ui::kSpace8 * PlatformServicesFactory::Instance().ui_traits.PlatformUiSpacingScale();
 		const float row_spacing = ScaleUiLength(row_spacing_base);
 		const float action_w = show_create && show_refresh ? 96.0f : 106.0f;

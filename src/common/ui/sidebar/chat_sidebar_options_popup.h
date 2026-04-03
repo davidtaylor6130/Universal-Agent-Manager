@@ -33,14 +33,14 @@ inline void DrawSidebarChatOptionsPopup(AppState& app)
 		if (app.selected_chat_index != chat_index)
 		{
 			ChatDomainService().SelectChatById(app, popup_chat.id);
-			SaveSettings(app);
+			PersistenceCoordinator().SaveSettings(app);
 		}
 	};
 
 	if (ImGui::BeginMenu("Repository"))
 	{
 		const fs::path workspace_root = ResolveWorkspaceRootPath(app, popup_chat);
-		RefreshWorkspaceVcsSnapshot(app, workspace_root, false);
+		VcsWorkspaceService::RefreshSnapshot(app, workspace_root, false);
 		const std::string workspace_key = workspace_root.lexically_normal().generic_string();
 		VcsSnapshot snapshot;
 
@@ -53,7 +53,7 @@ inline void DrawSidebarChatOptionsPopup(AppState& app)
 
 		if (ImGui::MenuItem("Refresh"))
 		{
-			RefreshWorkspaceVcsSnapshot(app, workspace_root, true);
+			VcsWorkspaceService::RefreshSnapshot(app, workspace_root, true);
 			ImGui::CloseCurrentPopup();
 		}
 
@@ -65,21 +65,21 @@ inline void DrawSidebarChatOptionsPopup(AppState& app)
 		if (ImGui::MenuItem("Status"))
 		{
 			const VcsCommandResult result = VcsWorkspaceService::ReadStatus(workspace_root);
-			ShowVcsCommandOutput(app, "SVN Status", result);
+			VcsWorkspaceService::ShowCommandOutput(app, "SVN Status", result);
 			ImGui::CloseCurrentPopup();
 		}
 
 		if (ImGui::MenuItem("Diff"))
 		{
 			const VcsCommandResult result = VcsWorkspaceService::ReadDiff(workspace_root);
-			ShowVcsCommandOutput(app, "SVN Diff", result);
+			VcsWorkspaceService::ShowCommandOutput(app, "SVN Diff", result);
 			ImGui::CloseCurrentPopup();
 		}
 
 		if (ImGui::MenuItem("Log"))
 		{
 			const VcsCommandResult result = VcsWorkspaceService::ReadLog(workspace_root);
-			ShowVcsCommandOutput(app, "SVN Log", result);
+			VcsWorkspaceService::ShowCommandOutput(app, "SVN Log", result);
 			ImGui::CloseCurrentPopup();
 		}
 
@@ -154,7 +154,7 @@ inline void DrawSidebarChatOptionsPopup(AppState& app)
 				{
 					popup_chat.folder_id = folder.id;
 					popup_chat.updated_at = TimestampNow();
-					SaveAndUpdateStatus(app, popup_chat, "Chat moved to folder.", "Moved chat in UI, but failed to save.");
+					ChatHistorySyncService().SaveChatWithStatus(app, popup_chat, "Chat moved to folder.", "Moved chat in UI, but failed to save.");
 				}
 
 				moved_to_existing_folder = true;

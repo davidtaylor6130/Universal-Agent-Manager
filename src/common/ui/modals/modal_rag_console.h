@@ -61,7 +61,7 @@ inline void DrawRagConsoleModal(AppState& app)
 	if (DrawButton("Use Chat Workspace", ImVec2(160.0f, 30.0f), ButtonKind::Ghost))
 	{
 		app.settings.rag_project_source_directory = selected_chat_workspace.string();
-		SaveSettings(app);
+		PersistenceCoordinator().SaveSettings(app);
 		app.status_line = "RAG source directory set from chat workspace.";
 		AppendRagScanReport(app, "Source directory set from selected chat workspace.");
 	}
@@ -75,7 +75,7 @@ inline void DrawRagConsoleModal(AppState& app)
 
 	if (DrawButton("Save Source", ImVec2(108.0f, 30.0f), ButtonKind::Ghost))
 	{
-		SaveSettings(app);
+		PersistenceCoordinator().SaveSettings(app);
 		app.status_line = "RAG source directory saved.";
 		AppendRagScanReport(app, "Source directory saved.");
 	}
@@ -85,7 +85,7 @@ inline void DrawRagConsoleModal(AppState& app)
 	if (DrawButton("Clear Source", ImVec2(112.0f, 30.0f), ButtonKind::Ghost))
 	{
 		app.settings.rag_project_source_directory.clear();
-		SaveSettings(app);
+		PersistenceCoordinator().SaveSettings(app);
 		app.status_line = "RAG source directory cleared.";
 		AppendRagScanReport(app, "Source directory cleared; fallback source is now selected chat workspace or current working directory.");
 	}
@@ -166,7 +166,7 @@ inline void DrawRagConsoleModal(AppState& app)
 		if (rag_scan_max_tokens != app.settings.rag_scan_max_tokens)
 		{
 			app.settings.rag_scan_max_tokens = rag_scan_max_tokens;
-			SaveSettings(app);
+			PersistenceCoordinator().SaveSettings(app);
 
 			if (rag_scan_max_tokens > 0)
 			{

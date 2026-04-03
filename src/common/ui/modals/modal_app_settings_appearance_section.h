@@ -34,7 +34,7 @@ inline void DrawAppSettingsAppearanceSection(AppState& app, AppSettings& draft_s
 				draft_settings.ui_theme = option.first;
 				app.settings.ui_theme = option.first;
 				ApplyThemeFromSettings(app);
-				SaveSettings(app);
+				PersistenceCoordinator().SaveSettings(app);
 				app.status_line = "Theme updated.";
 			}
 

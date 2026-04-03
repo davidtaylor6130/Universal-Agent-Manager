@@ -1,4 +1,9 @@
-#pragma once
+#ifndef UAM_COMMON_UI_CHAT_DETAIL_CHAT_DETAIL_TERMINAL_SURFACE_H
+#define UAM_COMMON_UI_CHAT_DETAIL_CHAT_DETAIL_TERMINAL_SURFACE_H
+
+#include "common/runtime/terminal_common.h"
+#include "common/runtime/terminal_polling.h"
+#include "common/ui/theme/theme_runtime_state.h"
 
 /// <summary>
 /// Converts libvterm cell colors into ImGui draw-list colors.
@@ -213,3 +218,5 @@ inline void DrawCliTerminalSurface(AppState& app, ChatSession& chat, const bool 
 		}
 	}
 }
+
+#endif // UAM_COMMON_UI_CHAT_DETAIL_CHAT_DETAIL_TERMINAL_SURFACE_H

@@ -1,7 +1,13 @@
-#pragma once
+#ifndef UAM_COMMON_VCS_VCS_WORKSPACE_SERVICE_H
+#define UAM_COMMON_VCS_VCS_WORKSPACE_SERVICE_H
 
 #include <filesystem>
 #include <string>
+
+namespace uam
+{
+	struct AppState;
+}
 
 /// <summary>
 /// Supported workspace repository types.
@@ -55,4 +61,8 @@ class VcsWorkspaceService
 	static VcsCommandResult ReadDiff(const std::filesystem::path& workspace_root);
 	/// <summary>Reads repository log output.</summary>
 	static VcsCommandResult ReadLog(const std::filesystem::path& workspace_root);
+	static bool RefreshSnapshot(uam::AppState& app, const std::filesystem::path& workspace_root, bool force);
+	static void ShowCommandOutput(uam::AppState& app, const std::string& title, const VcsCommandResult& result);
 };
+
+#endif // UAM_COMMON_VCS_VCS_WORKSPACE_SERVICE_H

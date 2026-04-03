@@ -4,7 +4,14 @@
 /// <summary>
 /// Theme choice normalization, system detection, and palette application.
 /// </summary>
+#include "common/app_models.h"
 #include "common/platform/platform_services.h"
+#include "common/ui/theme/theme_foundation.h"
+
+#include <algorithm>
+#include <cctype>
+#include <optional>
+#include <string>
 
 inline std::string ToLowerCopy(std::string value)
 {

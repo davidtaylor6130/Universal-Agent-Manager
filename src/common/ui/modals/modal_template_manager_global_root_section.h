@@ -26,7 +26,7 @@ inline void DrawMarkdownTemplateManagerGlobalRootSection(AppState& app, const fs
 			app.settings.prompt_profile_root_path = AppPaths::DefaultGeminiUniversalRootPath().string();
 		}
 
-		SaveSettings(app);
+		PersistenceCoordinator().SaveSettings(app);
 		app.template_catalog_dirty = true;
 		TemplateRuntimeService().RefreshTemplateCatalog(app, true);
 		app.status_line = "Global prompt-profile root saved.";

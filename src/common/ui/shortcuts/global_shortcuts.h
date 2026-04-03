@@ -30,7 +30,7 @@ inline void HandleGlobalShortcuts(AppState& app)
 	{
 		app.settings.provider_yolo_mode = !app.settings.provider_yolo_mode;
 		app.settings.gemini_yolo_mode = app.settings.provider_yolo_mode;
-		SaveSettings(app);
+		PersistenceCoordinator().SaveSettings(app);
 		app.status_line = app.settings.provider_yolo_mode ? "YOLO mode enabled." : "YOLO mode disabled.";
 	}
 

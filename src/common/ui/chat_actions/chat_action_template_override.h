@@ -30,7 +30,7 @@ inline bool ApplyChatTemplateOverride(AppState& app, ChatSession& chat, const st
 
 	chat.template_override_id = override_id;
 	chat.updated_at = TimestampNow();
-	SaveAndUpdateStatus(app, chat, "Chat template updated.", "Template changed in UI, but failed to save chat.");
+	ChatHistorySyncService().SaveChatWithStatus(app, chat, "Chat template updated.", "Template changed in UI, but failed to save chat.");
 
 	std::string template_status;
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);

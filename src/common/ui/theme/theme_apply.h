@@ -1,11 +1,15 @@
-#pragma once
+#ifndef UAM_COMMON_UI_THEME_THEME_APPLY_H
+#define UAM_COMMON_UI_THEME_THEME_APPLY_H
+
+#include "common/state/app_state.h"
+#include "common/ui/theme/theme_choice.h"
 
 /// <summary>
 /// Applies modern Dear ImGui style and selected palette mode.
 /// </summary>
 inline void ApplyModernTheme()
 {
-	const bool light = IsLightPaletteActive();
+	const bool light = ui::kMainBackground.x > 0.55f;
 	const float spacing_scale = PlatformServicesFactory::Instance().ui_traits.PlatformUiSpacingScale();
 	ImGuiStyle& style = ImGui::GetStyle();
 	style.WindowPadding = ImVec2(ui::kSpace16, ui::kSpace16);
@@ -79,9 +83,11 @@ inline void ApplyModernTheme()
 	colors[ImGuiCol_ModalWindowDimBg] = light ? Rgb(20, 30, 45, 0.26f) : Rgb(0, 0, 0, 0.45f);
 }
 
-inline void ApplyThemeFromSettings(AppState& app)
+inline void ApplyThemeFromSettings(uam::AppState& app)
 {
 	app.settings.ui_theme = NormalizeThemeChoice(app.settings.ui_theme);
 	ApplyResolvedPalette(ResolveUiTheme(app.settings));
 	ApplyModernTheme();
 }
+
+#endif // UAM_COMMON_UI_THEME_THEME_APPLY_H

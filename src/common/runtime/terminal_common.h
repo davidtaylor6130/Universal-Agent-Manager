@@ -1,6 +1,8 @@
 #ifndef UAM_COMMON_RUNTIME_TERMINAL_COMMON_H
 #define UAM_COMMON_RUNTIME_TERMINAL_COMMON_H
 
+#include <imgui.h>
+
 #include "common/platform/sdl_includes.h"
 #include "common/platform/platform_services.h"
 #include "app/chat_domain_service.h"

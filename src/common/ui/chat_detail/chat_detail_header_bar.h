@@ -37,7 +37,7 @@ inline void DrawChatDetailHeaderBar(AppState& app, ChatSession& chat)
 		if (ImGui::InputText(title_id.c_str(), &chat.title))
 		{
 			chat.updated_at = TimestampNow();
-			SaveAndUpdateStatus(app, chat, "Chat title updated.", "Chat title changed in UI, but failed to save.");
+			ChatHistorySyncService().SaveChatWithStatus(app, chat, "Chat title updated.", "Chat title changed in UI, but failed to save.");
 		}
 
 		ImGui::PopStyleVar(2);

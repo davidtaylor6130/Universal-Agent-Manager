@@ -1,4 +1,7 @@
-#pragma once
+#ifndef UAM_COMMON_UI_MODALS_MODAL_ABOUT_H
+#define UAM_COMMON_UI_MODALS_MODAL_ABOUT_H
+
+#include "common/constants/app_constants.h"
 
 /// <summary>
 /// About dialog modal renderer.
@@ -17,7 +20,7 @@ inline void DrawAboutModal(AppState& app)
 	}
 
 	PushFontIfAvailable(g_font_title);
-	ImGui::TextColored(ui::kTextPrimary, "%s", kAppDisplayName);
+	ImGui::TextColored(ui::kTextPrimary, "%s", uam::constants::kAppDisplayName);
 	PopFontIfAvailable(g_font_title);
 	ImGui::TextColored(ui::kTextMuted, "Desktop application");
 	ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
@@ -29,7 +32,7 @@ inline void DrawAboutModal(AppState& app)
 		ImGui::TableSetColumnIndex(0);
 		ImGui::TextColored(ui::kTextSecondary, "Version");
 		ImGui::TableSetColumnIndex(1);
-		ImGui::TextColored(ui::kTextPrimary, "%s", kAppVersion);
+		ImGui::TextColored(ui::kTextPrimary, "%s", uam::constants::kAppVersion);
 
 		ImGui::TableNextRow();
 		ImGui::TableSetColumnIndex(0);
@@ -46,7 +49,7 @@ inline void DrawAboutModal(AppState& app)
 	}
 
 	ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
-	ImGui::TextWrapped("%s", kAppCopyright);
+	ImGui::TextWrapped("%s", uam::constants::kAppCopyright);
 	ImGui::Dummy(ImVec2(0.0f, ui::kSpace12));
 
 	if (DrawButton("OK", ImVec2(96.0f, 32.0f), ButtonKind::Primary))
@@ -56,3 +59,5 @@ inline void DrawAboutModal(AppState& app)
 
 	ImGui::EndPopup();
 }
+
+#endif // UAM_COMMON_UI_MODALS_MODAL_ABOUT_H

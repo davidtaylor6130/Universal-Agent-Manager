@@ -1,5 +1,6 @@
 #include "vcs_workspace_service.h"
 #include "common/platform/platform_services.h"
+#include "common/state/app_state.h"
 
 #include <array>
 #include <chrono>
@@ -209,4 +210,86 @@ VcsCommandResult VcsWorkspaceService::ReadDiff(const std::filesystem::path& work
 VcsCommandResult VcsWorkspaceService::ReadLog(const std::filesystem::path& workspace_root)
 {
 	return RunCommand(workspace_root, "svn log -l 20 --non-interactive", 5000, 384 * 1024);
+}
+
+bool VcsWorkspaceService::RefreshSnapshot(uam::AppState& app, const std::filesystem::path& workspace_root, const bool force)
+{
+	if (workspace_root.empty())
+	{
+		return false;
+	}
+
+	const std::string workspace_key = workspace_root.lexically_normal().generic_string();
+
+	if (!force && app.vcs_snapshot_loaded_workspaces.find(workspace_key) != app.vcs_snapshot_loaded_workspaces.end())
+	{
+		return true;
+	}
+
+	VcsSnapshot snapshot;
+	snapshot.working_copy_root = workspace_key;
+	snapshot.repo_type = DetectRepo(workspace_root);
+
+	if (snapshot.repo_type == VcsRepoType::Svn)
+	{
+		const VcsCommandResult result = ReadSnapshot(workspace_root, snapshot);
+
+		if (!result.ok)
+		{
+			if (!result.error.empty())
+			{
+				app.status_line = result.error;
+			}
+
+			app.vcs_snapshot_by_workspace[workspace_key] = snapshot;
+			app.vcs_snapshot_loaded_workspaces.insert(workspace_key);
+			return false;
+		}
+	}
+
+	app.vcs_snapshot_by_workspace[workspace_key] = snapshot;
+	app.vcs_snapshot_loaded_workspaces.insert(workspace_key);
+	return true;
+}
+
+void VcsWorkspaceService::ShowCommandOutput(uam::AppState& app, const std::string& title, const VcsCommandResult& result)
+{
+	std::ostringstream out;
+
+	if (result.ok)
+	{
+		out << "[exit code 0]";
+	}
+	else if (result.timed_out)
+	{
+		out << "[timed out]";
+	}
+	else
+	{
+		out << "[exit code " << result.exit_code << "]";
+	}
+
+	if (!result.error.empty())
+	{
+		out << "\nError: " << result.error;
+	}
+
+	if (result.truncated)
+	{
+		out << "\nOutput was truncated.";
+	}
+
+	if (!result.output.empty())
+	{
+		if (out.tellp() > 0)
+		{
+			out << "\n\n";
+		}
+
+		out << result.output;
+	}
+
+	app.vcs_output_popup_title = title;
+	app.vcs_output_popup_content = out.str();
+	app.open_vcs_output_popup = true;
 }

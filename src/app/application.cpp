@@ -130,7 +130,7 @@ int Application::Run()
 bool Application::OnLoad()
 {
 	// Reset application-owned state before runtime/services initialize.
-	m_app = uam::AppState{};
+	m_app = uam::AppState();
 	m_platformServices = &PlatformServicesFactory::Instance();
 	m_window = nullptr;
 	m_glContext = nullptr;

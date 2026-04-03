@@ -1,5 +1,10 @@
-#pragma once
+#ifndef UAM_COMMON_UI_SIDEBAR_CHAT_SIDEBAR_HEADER_H
+#define UAM_COMMON_UI_SIDEBAR_CHAT_SIDEBAR_HEADER_H
+
+#include "common/constants/app_constants.h"
 #include "common/platform/platform_services.h"
+
+#include <filesystem>
 
 /// <summary>
 /// Draws the sidebar header: "Chats · N" title with compact icon buttons on the right.
@@ -21,7 +26,7 @@ inline void DrawChatSidebarHeader(AppState& app)
 
 	if (DrawMiniIconButton("new_chat_global", "icon:new_chat", ImVec2(btn_w, btn_w)))
 	{
-		CreateAndSelectChatInFolder(app, kDefaultFolderId);
+		CreateAndSelectChatInFolder(app, uam::constants::kDefaultFolderId);
 	}
 
 	ImGui::SameLine(0.0f, btn_gap);
@@ -30,10 +35,12 @@ inline void DrawChatSidebarHeader(AppState& app)
 	{
 		app.pending_move_chat_to_new_folder_id.clear();
 		app.new_folder_title_input.clear();
-		app.new_folder_directory_input = fs::current_path().string();
+		app.new_folder_directory_input = std::filesystem::current_path().string();
 		ImGui::OpenPopup("new_folder_popup");
 	}
 
 	ImGui::Dummy(ImVec2(0.0f, ui::kSpace6));
 	DrawSoftDivider();
 }
+
+#endif // UAM_COMMON_UI_SIDEBAR_CHAT_SIDEBAR_HEADER_H

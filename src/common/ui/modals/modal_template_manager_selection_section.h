@@ -16,7 +16,7 @@ inline void DrawMarkdownTemplateManagerSelectionSection(AppState& app, const fs:
 	if (DrawButton("Set as Default", ImVec2(122.0f, 30.0f), ButtonKind::Ghost) && selected_entry != nullptr)
 	{
 		app.settings.default_prompt_profile_id = selected_entry->id;
-		SaveSettings(app);
+		PersistenceCoordinator().SaveSettings(app);
 		app.status_line = "Default prompt profile updated.";
 	}
 
@@ -83,7 +83,7 @@ inline void DrawMarkdownTemplateManagerSelectionSection(AppState& app, const fs:
 			if (app.settings.default_prompt_profile_id == selected_entry->id)
 			{
 				app.settings.default_prompt_profile_id = new_id;
-				SaveSettings(app);
+				PersistenceCoordinator().SaveSettings(app);
 			}
 
 			for (ChatSession& chat : app.chats)
@@ -118,7 +118,7 @@ inline void DrawMarkdownTemplateManagerSelectionSection(AppState& app, const fs:
 			if (app.settings.default_prompt_profile_id == removed_id)
 			{
 				app.settings.default_prompt_profile_id.clear();
-				SaveSettings(app);
+				PersistenceCoordinator().SaveSettings(app);
 			}
 
 			for (ChatSession& chat : app.chats)

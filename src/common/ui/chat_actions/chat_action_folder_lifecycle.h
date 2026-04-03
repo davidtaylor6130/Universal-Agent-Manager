@@ -1,16 +1,23 @@
-#pragma once
+#ifndef UAM_COMMON_UI_CHAT_ACTIONS_CHAT_ACTION_FOLDER_LIFECYCLE_H
+#define UAM_COMMON_UI_CHAT_ACTIONS_CHAT_ACTION_FOLDER_LIFECYCLE_H
 
+#include "app/application_core_helpers.h"
 #include "app/chat_domain_service.h"
 #include "app/native_session_link_service.h"
+#include "app/persistence_coordinator.h"
 #include "app/provider_profile_migration_service.h"
 #include "app/provider_resolution_service.h"
+#include "common/chat_folder_store.h"
+#include "common/constants/app_constants.h"
+#include "common/provider_runtime.h"
+#include "common/runtime/terminal_common.h"
 
 /// <summary>
 /// Folder deletion, chat creation, and delete-request dispatch actions.
 /// </summary>
 inline bool DeleteFolderById(AppState& app, const std::string& folder_id)
 {
-	if (folder_id.empty() || folder_id == kDefaultFolderId)
+	if (folder_id.empty() || folder_id == uam::constants::kDefaultFolderId)
 	{
 		app.status_line = "The default folder cannot be deleted.";
 		return false;
@@ -34,7 +41,7 @@ inline bool DeleteFolderById(AppState& app, const std::string& folder_id)
 			continue;
 		}
 
-		existing_chat.folder_id = kDefaultFolderId;
+		existing_chat.folder_id = uam::constants::kDefaultFolderId;
 		existing_chat.updated_at = TimestampNow();
 
 		if (!ProviderRuntime::SaveHistory(ProviderResolutionService().ProviderForChatOrDefault(app, existing_chat), app.data_root, existing_chat))
@@ -50,7 +57,7 @@ inline bool DeleteFolderById(AppState& app, const std::string& folder_id)
 
 	if (app.new_chat_folder_id == folder_id)
 	{
-		app.new_chat_folder_id = kDefaultFolderId;
+		app.new_chat_folder_id = uam::constants::kDefaultFolderId;
 	}
 
 	ChatFolderStore::Save(app.data_root, app.folders);
@@ -161,6 +168,8 @@ inline void OpenNewChatPopup(AppState& app, const std::string& target_folder_id 
 	app.open_new_chat_popup = true;
 }
 
+#endif // UAM_COMMON_UI_CHAT_ACTIONS_CHAT_ACTION_FOLDER_LIFECYCLE_H
+
 inline bool CreateAndSelectChatWithProvider(AppState& app, const std::string& provider_id, const NewChatDuplicatePolicy duplicate_policy = NewChatDuplicatePolicy::Prompt)
 {
 	const std::string selected_provider_id = ResolveNewChatProviderId(app, provider_id);
@@ -189,7 +198,7 @@ inline bool CreateAndSelectChatWithProvider(AppState& app, const std::string& pr
 		if (duplicate_policy == NewChatDuplicatePolicy::ReuseExisting)
 		{
 			ChatDomainService().SelectChatById(app, existing_draft_chat_id);
-			SaveSettings(app);
+			PersistenceCoordinator().SaveSettings(app);
 
 			if (const ChatSession* selected = ChatDomainService().SelectedChat(app); selected != nullptr && ProviderResolutionService().ChatUsesCliOutput(app, *selected))
 			{
@@ -209,7 +218,7 @@ inline bool CreateAndSelectChatWithProvider(AppState& app, const std::string& pr
 	ChatBranching::Normalize(app.chats);
 	ChatDomainService().SortChatsByRecent(app.chats);
 	ChatDomainService().SelectChatById(app, chat.id);
-	SaveSettings(app);
+	PersistenceCoordinator().SaveSettings(app);
 
 	if (const ChatSession* selected = ChatDomainService().SelectedChat(app); selected != nullptr && ProviderResolutionService().ChatUsesCliOutput(app, *selected))
 	{

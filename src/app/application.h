@@ -8,6 +8,8 @@
 #include "common/platform/sdl_includes.h"
 #include "common/state/app_state.h"
 
+#include <filesystem>
+
 class Application
 {
   public:
@@ -44,6 +46,8 @@ class Application
 	bool InitializeWindowAndUi();
 	void PersistWindowStateAndSettings();
 	void PresentFrame();
+	std::filesystem::path ResolveWindowIconPath() const;
+	void ApplyWindowIcon() const;
 };
 
 #endif // UAM_APP_APPLICATION_H

@@ -61,7 +61,7 @@ inline void DrawSidebarNewFolderPopup(AppState& app)
 					ChatSession& moved_chat = app.chats[move_chat_index];
 					moved_chat.folder_id = created_folder_id;
 					moved_chat.updated_at = TimestampNow();
-					SaveAndUpdateStatus(app, moved_chat, "Project folder created and chat moved.", "Folder created, chat moved in UI, but failed to save.");
+					ChatHistorySyncService().SaveChatWithStatus(app, moved_chat, "Project folder created and chat moved.", "Folder created, chat moved in UI, but failed to save.");
 				}
 				else
 				{

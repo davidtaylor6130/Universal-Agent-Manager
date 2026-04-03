@@ -1,7 +1,12 @@
 #include "chat_domain_service.h"
 
 #include "app/application_core_helpers.h"
+#include "app/persistence_coordinator.h"
+#include "app/provider_resolution_service.h"
 #include "common/constants/app_constants.h"
+#include "common/chat_branching.h"
+#include "common/provider/provider_runtime.h"
+#include "common/runtime/terminal_common.h"
 
 #include <algorithm>
 #include <chrono>
@@ -365,6 +370,89 @@ ChatSession ChatDomainService::CreateNewChat(const std::string& folder_id, const
 	return chat;
 }
 
+bool ChatDomainService::CreateBranchFromMessage(AppState& app, const std::string& source_chat_id, const int message_index) const
+{
+	const int source_index = FindChatIndexById(app, source_chat_id);
+
+	if (source_index < 0)
+	{
+		app.status_line = "Branch source chat no longer exists.";
+		return false;
+	}
+
+	const ChatSession source = app.chats[source_index];
+
+	if (message_index < 0 || message_index >= static_cast<int>(source.messages.size()))
+	{
+		app.status_line = "Branch source message is no longer valid.";
+		return false;
+	}
+
+	if (source.messages[message_index].role != MessageRole::User)
+	{
+		app.status_line = "Branching is currently supported for user messages only.";
+		return false;
+	}
+
+	ChatSession branch = CreateNewChat(source.folder_id, source.provider_id);
+	branch.uses_native_session = false;
+	branch.native_session_id.clear();
+	branch.parent_chat_id = source.id;
+	branch.branch_root_chat_id = source.branch_root_chat_id.empty() ? source.id : source.branch_root_chat_id;
+	branch.branch_from_message_index = message_index;
+	branch.template_override_id = source.template_override_id;
+	branch.prompt_profile_bootstrapped = source.prompt_profile_bootstrapped;
+	branch.rag_enabled = source.rag_enabled;
+	branch.rag_source_directories = source.rag_source_directories;
+	branch.linked_files = source.linked_files;
+	branch.messages.assign(source.messages.begin(), source.messages.begin() + message_index + 1);
+	branch.updated_at = TimestampNow();
+	branch.title = Trim(source.messages[message_index].content);
+
+	if (branch.title.size() > 40)
+	{
+		branch.title = branch.title.substr(0, 37) + "...";
+	}
+
+	branch.title = branch.title.empty() ? "Branch Chat" : ("Branch: " + branch.title);
+
+	app.chats.push_back(branch);
+	ChatBranching::Normalize(app.chats);
+	SortChatsByRecent(app.chats);
+	SelectChatById(app, branch.id);
+	PersistenceCoordinator().SaveSettings(app);
+
+	if (app.selected_chat_index >= 0 && app.selected_chat_index < static_cast<int>(app.chats.size()) && ProviderResolutionService().ChatUsesCliOutput(app, app.chats[app.selected_chat_index]))
+	{
+		MarkSelectedCliTerminalForLaunch(app);
+	}
+
+	const ProviderProfile& branch_provider = ProviderResolutionService().ProviderForChatOrDefault(app, branch);
+
+	if (!ProviderRuntime::SaveHistory(branch_provider, app.data_root, branch))
+	{
+		app.status_line = "Branch created in memory, but failed to save.";
+		return false;
+	}
+
+	app.status_line = "Branch chat created.";
+	return true;
+}
+
+void ChatDomainService::ConsumePendingBranchRequest(AppState& app) const
+{
+	if (app.pending_branch_chat_id.empty())
+	{
+		return;
+	}
+
+	const std::string chat_id = app.pending_branch_chat_id;
+	const int message_index = app.pending_branch_message_index;
+	app.pending_branch_chat_id.clear();
+	app.pending_branch_message_index = -1;
+	CreateBranchFromMessage(app, chat_id, message_index);
+}
+
 void ChatDomainService::AddMessage(ChatSession& chat, const MessageRole role, const std::string& text) const
 {
 	Message message;
@@ -389,4 +477,3 @@ void ChatDomainService::AddMessage(ChatSession& chat, const MessageRole role, co
 		}
 	}
 }
-

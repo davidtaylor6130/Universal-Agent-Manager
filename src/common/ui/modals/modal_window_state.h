@@ -1,5 +1,10 @@
-#pragma once
+#ifndef UAM_COMMON_UI_MODALS_MODAL_WINDOW_STATE_H
+#define UAM_COMMON_UI_MODALS_MODAL_WINDOW_STATE_H
+
+#include "common/state/app_state.h"
 #include "common/platform/sdl_includes.h"
+
+#include <algorithm>
 
 /// <summary>
 /// Window bounds and scale clamping helpers used by app settings and shutdown capture.
@@ -11,7 +16,7 @@ inline void ClampWindowSettings(AppSettings& settings)
 	settings.ui_scale_multiplier = std::clamp(settings.ui_scale_multiplier, 0.85f, 1.75f);
 }
 
-inline void CaptureWindowState(AppState& app, SDL_Window* window)
+inline void CaptureWindowState(uam::AppState& app, SDL_Window* window)
 {
 	if (window == nullptr)
 	{
@@ -26,3 +31,5 @@ inline void CaptureWindowState(AppState& app, SDL_Window* window)
 	app.settings.window_maximized = (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) != 0;
 	ClampWindowSettings(app.settings);
 }
+
+#endif // UAM_COMMON_UI_MODALS_MODAL_WINDOW_STATE_H

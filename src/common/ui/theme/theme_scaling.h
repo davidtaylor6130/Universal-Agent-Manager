@@ -2,6 +2,7 @@
 #define UAM_COMMON_UI_THEME_THEME_SCALING_H
 #include "common/platform/platform_services.h"
 #include "common/platform/sdl_includes.h"
+#include "common/ui/theme/theme_runtime_state.h"
 
 /// <summary>
 /// Platform/UI scaling helpers and runtime scale application.

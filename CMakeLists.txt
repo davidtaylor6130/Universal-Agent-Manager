@@ -283,6 +283,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/provider_resolution_service.cpp
   src/app/provider_profile_migration_service.cpp
   src/app/runtime_local_service.cpp
+  src/app/runtime_orchestration_services.cpp
   src/app/template_runtime_service.cpp
   src/common/models/app_models.cpp
   src/common/paths/app_paths.cpp
@@ -303,6 +304,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/runtime/provider_cli_compatibility_service.cpp
   src/common/platform/platform_services.cpp
   src/common/vcs/vcs_workspace_service.cpp
+  src/common/ui/theme/theme_runtime_state.cpp
   src/common/rag/rag_index_service.cpp
   src/common/rag/ollama_engine_client.cpp
   src/common/rag/ollama_engine_service.cpp

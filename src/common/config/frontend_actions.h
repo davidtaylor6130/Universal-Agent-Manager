@@ -1,4 +1,5 @@
-#pragma once
+#ifndef UAM_COMMON_CONFIG_FRONTEND_ACTIONS_H
+#define UAM_COMMON_CONFIG_FRONTEND_ACTIONS_H
 
 #include <filesystem>
 #include <map>
@@ -53,4 +54,34 @@ namespace uam
 	/// <summary>Saves a frontend action map to disk.</summary>
 	bool SaveFrontendActionMap(const std::filesystem::path& path, const FrontendActionMap& action_map, std::string* error_out = nullptr);
 
+	/// <summary>Returns visibility for a UI action with fallback when missing.</summary>
+	inline bool FrontendActionVisible(const FrontendActionMap& action_map, const std::string& key, const bool fallback_visible = true)
+	{
+		const FrontendAction* action = FindAction(action_map, key);
+		return (action == nullptr) ? fallback_visible : action->visible;
+	}
+
+	/// <summary>Returns label text for a UI action with fallback when missing.</summary>
+	inline std::string FrontendActionLabel(const FrontendActionMap& action_map, const std::string& key, const std::string& fallback_label)
+	{
+		const FrontendAction* action = FindAction(action_map, key);
+
+		if (action == nullptr)
+		{
+			return fallback_label;
+		}
+
+		const std::size_t start = action->label.find_first_not_of(" \t\r\n");
+
+		if (start == std::string::npos)
+		{
+			return fallback_label;
+		}
+
+		const std::size_t end = action->label.find_last_not_of(" \t\r\n");
+		return action->label.substr(start, end - start + 1);
+	}
+
 } // namespace uam
+
+#endif // UAM_COMMON_CONFIG_FRONTEND_ACTIONS_H

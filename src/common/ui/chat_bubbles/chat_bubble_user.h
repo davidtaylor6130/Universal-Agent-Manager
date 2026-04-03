@@ -25,7 +25,7 @@ inline void DrawUserMessageBubble(AppState& app, ChatSession& chat, const int me
 
 	ImGui::SetCursorScreenPos(ImVec2(layout.m_max.x - 78.0f, btn_y));
 
-	if (FrontendActionVisible(app, "edit_resubmit", true) && DrawButton("Edit", ImVec2(68.0f, 20.0f), ButtonKind::Ghost))
+	if (uam::FrontendActionVisible(app.frontend_actions, "edit_resubmit", true) && DrawButton("Edit", ImVec2(68.0f, 20.0f), ButtonKind::Ghost))
 	{
 		BeginEditMessage(app, chat, message_index);
 	}

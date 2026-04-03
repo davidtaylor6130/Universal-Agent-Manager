@@ -103,7 +103,7 @@ inline bool ContinueFromEditedUserMessage(AppState& app, ChatSession& chat)
 		chat.title = title;
 	}
 
-	SaveAndUpdateStatus(app, chat, "Chat rewound to edited message.", "Chat rewound in UI, but failed to save chat data.");
+	ChatHistorySyncService().SaveChatWithStatus(app, chat, "Chat rewound to edited message.", "Chat rewound in UI, but failed to save chat data.");
 
 	app.composer_text = prompt_text;
 	ProviderRequestService().StartSelectedChatRequest(app);

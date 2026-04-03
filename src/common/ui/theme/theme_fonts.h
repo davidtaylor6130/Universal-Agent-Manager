@@ -1,5 +1,14 @@
-#pragma once
+#ifndef UAM_COMMON_UI_THEME_THEME_FONTS_H
+#define UAM_COMMON_UI_THEME_THEME_FONTS_H
+
 #include "common/platform/platform_services.h"
+#include "common/ui/theme/theme_runtime_state.h"
+
+#include <algorithm>
+#include <filesystem>
+#include <initializer_list>
+
+namespace fs = std::filesystem;
 
 /// <summary>
 /// Font range and font-loading configuration helpers for Dear ImGui.
@@ -108,3 +117,5 @@ inline void ConfigureFonts(ImGuiIO& io, const float dpi_scale = 1.0f)
 		io.FontDefault = g_font_ui;
 	}
 }
+
+#endif // UAM_COMMON_UI_THEME_THEME_FONTS_H

@@ -58,7 +58,7 @@ inline void DrawInputContainer(AppState& app, ChatSession& chat)
 	// --- Text area ---
 	PushInputChrome(ui::kRadiusInput);
 
-	const bool send_visible = FrontendActionVisible(app, "send_prompt", true);
+	const bool send_visible = uam::FrontendActionVisible(app.frontend_actions, "send_prompt", true);
 	// Reserve chip_h + 14px overhead (covers 2x ImGui ItemSpacing + bottom padding rounding)
 	const float chip_h = ScaleUiLength(26.0f);
 	const float input_h = std::max(ScaleUiLength(60.0f), ImGui::GetContentRegionAvail().y - chip_h - ScaleUiLength(14.0f));
@@ -76,7 +76,7 @@ inline void DrawInputContainer(AppState& app, ChatSession& chat)
 	{
 		chat.rag_enabled = !chat.rag_enabled;
 		chat.updated_at = TimestampNow();
-		SaveAndUpdateStatus(app, chat, chat.rag_enabled ? "RAG enabled for this chat." : "RAG disabled for this chat.", "Failed to save chat RAG setting.");
+		ChatHistorySyncService().SaveChatWithStatus(app, chat, chat.rag_enabled ? "RAG enabled for this chat." : "RAG disabled for this chat.", "Failed to save chat RAG setting.");
 	}
 
 	ImGui::SameLine(0.0f, ScaleUiLength(6.0f));
@@ -193,7 +193,7 @@ inline void DrawInputContainer(AppState& app, ChatSession& chat)
 					if (changed)
 					{
 						chat.updated_at = TimestampNow();
-						SaveAndUpdateStatus(app, chat, "Updated chat RAG folder selection.", "Failed to save chat RAG sources.");
+						ChatHistorySyncService().SaveChatWithStatus(app, chat, "Updated chat RAG folder selection.", "Failed to save chat RAG sources.");
 					}
 				}
 			}
@@ -290,7 +290,7 @@ inline void DrawInputContainer(AppState& app, ChatSession& chat)
 		{
 			chat.rag_source_directories.clear();
 			chat.updated_at = TimestampNow();
-			SaveAndUpdateStatus(app, chat, "Reset to default RAG source folder.", "Failed to save chat RAG sources.");
+			ChatHistorySyncService().SaveChatWithStatus(app, chat, "Reset to default RAG source folder.", "Failed to save chat RAG sources.");
 		}
 
 		if (!has_custom_sources)

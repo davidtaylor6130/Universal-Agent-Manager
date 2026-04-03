@@ -24,7 +24,7 @@ inline void DrawChatSettingsMoveFolderCard(AppState& app, ChatSession& chat)
 				{
 					chat.folder_id = folder.id;
 					chat.updated_at = TimestampNow();
-					SaveAndUpdateStatus(app, chat, "Chat moved to folder.", "Moved chat in UI, but failed to save.");
+					ChatHistorySyncService().SaveChatWithStatus(app, chat, "Chat moved to folder.", "Moved chat in UI, but failed to save.");
 				}
 
 				if (selected)
