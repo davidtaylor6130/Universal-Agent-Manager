@@ -117,6 +117,8 @@ struct PendingRuntimeCall
 {
 	std::string chat_id;
 	std::string resume_session_id;
+	std::string provider_id_snapshot;
+	std::string native_history_chats_dir_snapshot;
 	std::vector<std::string> session_ids_before;
 	std::string command_preview;
 	std::shared_ptr<std::atomic<bool>> completed;

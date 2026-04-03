@@ -1,5 +1,6 @@
 #include "common/config/settings_store.h"
 
+#include "common/config/line_value_codec.h"
 #include "common/paths/app_paths.h"
 
 #include <algorithm>
@@ -133,37 +134,37 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	std::filesystem::create_directories(settings_file.parent_path(), ec);
 	std::ostringstream lines;
 	const std::string runtime_backend_compat = (ToLower(settings.active_provider_id) == "ollama-engine") ? "ollama-engine" : "provider-cli";
-	lines << "active_provider_id=" << settings.active_provider_id << '\n';
-	lines << "provider_command_template=" << settings.provider_command_template << '\n';
+	lines << "active_provider_id=" << uam::EncodeLineValue(settings.active_provider_id) << '\n';
+	lines << "provider_command_template=" << uam::EncodeLineValue(settings.provider_command_template) << '\n';
 	lines << "provider_yolo_mode=" << (settings.provider_yolo_mode ? "1" : "0") << '\n';
-	lines << "provider_extra_flags=" << settings.provider_extra_flags << '\n';
+	lines << "provider_extra_flags=" << uam::EncodeLineValue(settings.provider_extra_flags) << '\n';
 	lines << "runtime_backend=" << NormalizeRuntimeBackendId(runtime_backend_compat) << '\n';
-	lines << "selected_model_id=" << settings.selected_model_id << '\n';
-	lines << "models_folder_directory=" << settings.models_folder_directory << '\n';
+	lines << "selected_model_id=" << uam::EncodeLineValue(settings.selected_model_id) << '\n';
+	lines << "models_folder_directory=" << uam::EncodeLineValue(settings.models_folder_directory) << '\n';
 	lines << "vector_db_backend=" << NormalizeVectorDbBackendId(settings.vector_db_backend) << '\n';
-	lines << "selected_vector_model_id=" << settings.selected_vector_model_id << '\n';
-	lines << "vector_database_name_override=" << settings.vector_database_name_override << '\n';
+	lines << "selected_vector_model_id=" << uam::EncodeLineValue(settings.selected_vector_model_id) << '\n';
+	lines << "vector_database_name_override=" << uam::EncodeLineValue(settings.vector_database_name_override) << '\n';
 	lines << "cli_idle_timeout_seconds=" << settings.cli_idle_timeout_seconds << '\n';
-	lines << "prompt_profile_root_path=" << settings.prompt_profile_root_path << '\n';
-	lines << "default_prompt_profile_id=" << settings.default_prompt_profile_id << '\n';
+	lines << "prompt_profile_root_path=" << uam::EncodeLineValue(settings.prompt_profile_root_path) << '\n';
+	lines << "default_prompt_profile_id=" << uam::EncodeLineValue(settings.default_prompt_profile_id) << '\n';
 	// Backward-compatible legacy keys.
-	lines << "gemini_command_template=" << settings.provider_command_template << '\n';
+	lines << "gemini_command_template=" << uam::EncodeLineValue(settings.provider_command_template) << '\n';
 	lines << "gemini_yolo_mode=" << (settings.provider_yolo_mode ? "1" : "0") << '\n';
-	lines << "gemini_extra_flags=" << settings.provider_extra_flags << '\n';
-	lines << "gemini_global_root_path=" << settings.prompt_profile_root_path << '\n';
-	lines << "default_gemini_template_id=" << settings.default_prompt_profile_id << '\n';
+	lines << "gemini_extra_flags=" << uam::EncodeLineValue(settings.provider_extra_flags) << '\n';
+	lines << "gemini_global_root_path=" << uam::EncodeLineValue(settings.prompt_profile_root_path) << '\n';
+	lines << "default_gemini_template_id=" << uam::EncodeLineValue(settings.default_prompt_profile_id) << '\n';
 	lines << "rag_enabled=" << (settings.rag_enabled ? "1" : "0") << '\n';
 	lines << "rag_top_k=" << settings.rag_top_k << '\n';
 	lines << "rag_max_snippet_chars=" << settings.rag_max_snippet_chars << '\n';
 	lines << "rag_max_file_bytes=" << settings.rag_max_file_bytes << '\n';
 	lines << "rag_scan_max_tokens=" << settings.rag_scan_max_tokens << '\n';
-	lines << "rag_project_source_directory=" << settings.rag_project_source_directory << '\n';
+	lines << "rag_project_source_directory=" << uam::EncodeLineValue(settings.rag_project_source_directory) << '\n';
 	lines << "center_view_mode=" << ViewModeToString(center_view_mode) << '\n';
-	lines << "ui_theme=" << NormalizeThemeId(settings.ui_theme) << '\n';
+	lines << "ui_theme=" << uam::EncodeLineValue(NormalizeThemeId(settings.ui_theme)) << '\n';
 	lines << "confirm_delete_chat=" << (settings.confirm_delete_chat ? "1" : "0") << '\n';
 	lines << "confirm_delete_folder=" << (settings.confirm_delete_folder ? "1" : "0") << '\n';
 	lines << "remember_last_chat=" << (settings.remember_last_chat ? "1" : "0") << '\n';
-	lines << "last_selected_chat_id=" << settings.last_selected_chat_id << '\n';
+	lines << "last_selected_chat_id=" << uam::EncodeLineValue(settings.last_selected_chat_id) << '\n';
 	lines << "ui_scale_multiplier=" << settings.ui_scale_multiplier << '\n';
 	lines << "window_width=" << settings.window_width << '\n';
 	lines << "window_height=" << settings.window_height << '\n';
@@ -195,15 +196,16 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 
 		const std::string key = line.substr(0, equals_at);
 		const std::string value = line.substr(equals_at + 1);
+		const std::string decoded_value = uam::DecodeLineValue(value);
 
 		if (key == "active_provider_id")
 		{
-			settings.active_provider_id = value;
+			settings.active_provider_id = decoded_value;
 			has_active_provider_id = true;
 		}
 		else if (key == "provider_command_template")
 		{
-			settings.provider_command_template = value;
+			settings.provider_command_template = decoded_value;
 			has_provider_command_template = true;
 		}
 		else if (key == "provider_yolo_mode")
@@ -212,11 +214,11 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		}
 		else if (key == "provider_extra_flags")
 		{
-			settings.provider_extra_flags = value;
+			settings.provider_extra_flags = decoded_value;
 		}
 		else if (key == "gemini_command_template")
 		{
-			settings.gemini_command_template = value;
+			settings.gemini_command_template = decoded_value;
 		}
 		else if (key == "gemini_yolo_mode")
 		{
@@ -224,7 +226,7 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		}
 		else if (key == "gemini_extra_flags")
 		{
-			settings.gemini_extra_flags = value;
+			settings.gemini_extra_flags = decoded_value;
 		}
 		else if (key == "runtime_backend")
 		{
@@ -233,11 +235,11 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		}
 		else if (key == "selected_model_id")
 		{
-			settings.selected_model_id = value;
+			settings.selected_model_id = decoded_value;
 		}
 		else if (key == "models_folder_directory")
 		{
-			settings.models_folder_directory = value;
+			settings.models_folder_directory = decoded_value;
 		}
 		else if (key == "vector_db_backend")
 		{
@@ -245,11 +247,11 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		}
 		else if (key == "selected_vector_model_id")
 		{
-			settings.selected_vector_model_id = value;
+			settings.selected_vector_model_id = decoded_value;
 		}
 		else if (key == "vector_database_name_override")
 		{
-			settings.vector_database_name_override = value;
+			settings.vector_database_name_override = decoded_value;
 		}
 		else if (key == "cli_idle_timeout_seconds")
 		{
@@ -257,19 +259,19 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		}
 		else if (key == "gemini_global_root_path")
 		{
-			settings.gemini_global_root_path = value;
+			settings.gemini_global_root_path = decoded_value;
 		}
 		else if (key == "prompt_profile_root_path")
 		{
-			settings.prompt_profile_root_path = value;
+			settings.prompt_profile_root_path = decoded_value;
 		}
 		else if (key == "default_gemini_template_id")
 		{
-			settings.default_gemini_template_id = value;
+			settings.default_gemini_template_id = decoded_value;
 		}
 		else if (key == "default_prompt_profile_id")
 		{
-			settings.default_prompt_profile_id = value;
+			settings.default_prompt_profile_id = decoded_value;
 		}
 		else if (key == "rag_enabled")
 		{
@@ -293,7 +295,7 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		}
 		else if (key == "rag_project_source_directory")
 		{
-			settings.rag_project_source_directory = value;
+			settings.rag_project_source_directory = decoded_value;
 		}
 		else if (key == "center_view_mode")
 		{
@@ -301,7 +303,7 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		}
 		else if (key == "ui_theme")
 		{
-			settings.ui_theme = NormalizeThemeId(value);
+			settings.ui_theme = NormalizeThemeId(decoded_value);
 		}
 		else if (key == "confirm_delete_chat")
 		{
@@ -317,7 +319,7 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		}
 		else if (key == "last_selected_chat_id")
 		{
-			settings.last_selected_chat_id = value;
+			settings.last_selected_chat_id = decoded_value;
 		}
 		else if (key == "ui_scale_multiplier")
 		{

@@ -164,20 +164,8 @@ inline void SyncChatsFromLoadedNative(uam::AppState& app, std::vector<ChatSessio
 inline void SyncChatsFromNative(uam::AppState& app, const std::string& preferred_chat_id, const bool preserve_selection = false)
 {
 	const std::string selected_before = (ChatDomainService().SelectedChat(app) != nullptr) ? ChatDomainService().SelectedChat(app)->id : "";
-
-	if (ProviderResolutionService().ActiveProviderUsesNativeOverlayHistory(app))
-	{
-		ChatHistorySyncService().RefreshNativeSessionDirectory(app);
-		std::vector<ChatSession> native = ChatHistorySyncService().LoadNativeSessionChats(app.native_history_chats_dir, ProviderResolutionService().ActiveProviderOrDefault(app));
-		ChatHistorySyncService().ApplyLocalOverrides(app, native);
-	}
-	else
-	{
-		app.chats = ChatRepository::LoadLocalChats(app.data_root);
-		ChatBranching::Normalize(app.chats);
-		ChatDomainService().NormalizeChatFolderAssignments(app);
-	}
-
+	ChatHistorySyncService().LoadSidebarChats(app);
 	ProviderProfileMigrationService().MigrateChatProviderBindingsToFixedModes(app);
 	FinalizeChatSyncSelection(app, selected_before, preferred_chat_id, preserve_selection);
+	ChatHistorySyncService().RefreshNativeSessionDirectory(app);
 }

@@ -373,30 +373,7 @@ bool Application::InitializeState()
 	m_app.folders = ChatFolderStore::Load(m_app.data_root);
 	ChatDomainService().EnsureDefaultFolder(m_app);
 	ChatFolderStore::Save(m_app.data_root, m_app.folders);
-	const ProviderProfile& l_activeProvider = ProviderResolutionService().ActiveProviderOrDefault(m_app);
-	ProviderRuntimeHistoryLoadOptions l_historyOptions;
-	l_historyOptions.native_max_file_bytes = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxFileBytes();
-	l_historyOptions.native_max_messages = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxMessages();
-
-	if (ProviderResolutionService().ActiveProviderUsesNativeOverlayHistory(m_app))
-	{
-		ChatHistorySyncService().RefreshNativeSessionDirectory(m_app);
-		m_app.chats = ChatDomainService().DeduplicateChatsById(ProviderRuntime::LoadHistory(l_activeProvider, m_app.data_root, m_app.native_history_chats_dir, l_historyOptions));
-		ChatHistorySyncService().ApplyLocalOverrides(m_app, m_app.chats);
-		ChatBranching::Normalize(m_app.chats);
-		ChatDomainService().NormalizeChatFolderAssignments(m_app);
-
-		if (m_app.native_history_chats_dir.empty())
-		{
-			m_app.status_line = "Native session directory not found yet. Run the provider CLI in this project once.";
-		}
-	}
-	else
-	{
-		m_app.chats = ChatDomainService().DeduplicateChatsById(ProviderRuntime::LoadHistory(l_activeProvider, m_app.data_root, m_app.native_history_chats_dir, l_historyOptions));
-		ChatBranching::Normalize(m_app.chats);
-		ChatDomainService().NormalizeChatFolderAssignments(m_app);
-	}
+	ChatHistorySyncService().LoadSidebarChats(m_app);
 
 	if (ProviderProfileMigrationService().MigrateChatProviderBindingsToFixedModes(m_app))
 	{
@@ -416,6 +393,13 @@ bool Application::InitializeState()
 		}
 
 		ChatDomainService().RefreshRememberedSelection(m_app);
+	}
+
+	ChatHistorySyncService().RefreshNativeSessionDirectory(m_app);
+
+	if (ProviderResolutionService().ActiveProviderUsesNativeOverlayHistory(m_app) && m_app.native_history_chats_dir.empty())
+	{
+		m_app.status_line = "Native session directory not found yet. Run the provider CLI in this project once.";
 	}
 
 	if (const ChatSession* lcp_selectedChat = ChatDomainService().SelectedChat(m_app); lcp_selectedChat != nullptr && ProviderResolutionService().ChatUsesCliOutput(m_app, *lcp_selectedChat))

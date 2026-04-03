@@ -396,9 +396,21 @@ if(UAM_BUILD_TESTS)
   enable_testing()
   add_executable(uam_core_tests
     tests/core_tests.cpp
+    ${UAM_IMGUI_SOURCES}
+    ${UAM_VTERM_SOURCES}
     ${UAM_PLATFORM_IMPL_SOURCES}
+    src/app/application_core_helpers.cpp
+    src/app/chat_domain_service.cpp
+    src/app/native_session_link_service.cpp
+    src/app/persistence_coordinator.cpp
+    src/app/provider_resolution_service.cpp
+    src/app/provider_profile_migration_service.cpp
+    src/app/runtime_local_service.cpp
+    src/app/runtime_orchestration_services.cpp
+    src/app/template_runtime_service.cpp
     src/common/models/app_models.cpp
     src/common/paths/app_paths.cpp
+    src/common/chat/chat_folder_store.cpp
     src/common/config/frontend_actions.cpp
     src/common/utils/command_line_words.cpp
     src/common/provider/gemini/base/gemini_command_builder.cpp
@@ -417,10 +429,12 @@ if(UAM_BUILD_TESTS)
     src/common/provider/claude/cli/claude_cli_provider_runtime.cpp
     src/common/provider/opencode/base/opencode_base_provider_runtime.cpp
     src/common/provider/opencode/cli/opencode_cli_provider_runtime.cpp
+    src/common/provider/opencode/local/opencode_local_bridge_service.cpp
     src/common/provider/opencode/local/opencode_local_provider_runtime.cpp
     src/common/provider/ollama/structured/ollama_engine_provider_runtime.cpp
     src/common/provider/custom/unknown_provider_runtime.cpp
     src/common/config/settings_store.cpp
+    src/common/runtime/local_engine_runtime_service.cpp
     src/common/platform/platform_services.cpp
     src/common/vcs/vcs_workspace_service.cpp
     src/common/rag/rag_index_service.cpp
@@ -431,11 +445,14 @@ if(UAM_BUILD_TESTS)
     PRIVATE
       src
       src/common
+      ${IMGUI_DIR}
+      ${IMGUI_DIR}/backends
+      ${IMGUI_DIR}/misc/cpp
       ${VTERM_DIR}/include
       ${VTERM_DIR}/src
       $<TARGET_PROPERTY:${UAM_SDL_TARGET},INTERFACE_INCLUDE_DIRECTORIES>
   )
-  target_link_libraries(uam_core_tests PRIVATE ${UAM_SDL_TARGET} ${UAM_ENGINE_LINK_TARGET})
+  target_link_libraries(uam_core_tests PRIVATE ${UAM_SDL_TARGET} OpenGL::GL CURL::libcurl ${UAM_ENGINE_LINK_TARGET})
   target_compile_definitions(uam_core_tests PRIVATE
     UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED}>
     UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>

@@ -1,7 +1,9 @@
+#include "app/runtime_orchestration_services.h"
 #include "common/models/app_models.h"
 #include "common/paths/app_paths.h"
 #include "common/chat/chat_branching.h"
 #include "common/chat/chat_repository.h"
+#include "common/chat/chat_folder_store.h"
 #include "common/config/frontend_actions.h"
 #include "common/provider/gemini/base/gemini_base_provider_runtime.h"
 #include "common/provider/gemini/base/gemini_command_builder.h"
@@ -12,6 +14,8 @@
 #include "common/rag/rag_index_service.h"
 #include "common/config/settings_store.h"
 #include "common/rag/ollama_engine_client.h"
+#include "common/state/app_state.h"
+#include "common/ui/chat_actions/chat_action_pending_calls.h"
 #include "common/vcs/vcs_workspace_service.h"
 
 #include <filesystem>
@@ -253,6 +257,75 @@ namespace
 		UAM_ASSERT(WriteTextFile(tmp_chat_dir / ".project_root", project_root.generic_string() + "\n"));
 	}
 
+	void WriteGeminiNativeSession(const fs::path& chats_dir,
+	                              const std::string& session_id,
+	                              const std::vector<std::pair<std::string, std::string>>& messages,
+	                              const std::string& start_time = "2026-03-21 10:00:00",
+	                              const std::string& updated_time = "2026-03-21 10:00:01")
+	{
+		std::ostringstream out;
+		out << "{\n";
+		out << "  \"sessionId\": " << JsonString(session_id) << ",\n";
+		out << "  \"startTime\": " << JsonString(start_time) << ",\n";
+		out << "  \"lastUpdated\": " << JsonString(updated_time) << ",\n";
+		out << "  \"messages\": [\n";
+
+		for (std::size_t i = 0; i < messages.size(); ++i)
+		{
+			out << "    {\n";
+			out << "      \"type\": " << JsonString(messages[i].first) << ",\n";
+			out << "      \"timestamp\": " << JsonString(updated_time) << ",\n";
+			out << "      \"content\": { \"text\": " << JsonString(messages[i].second) << " }\n";
+			out << "    }";
+
+			if (i + 1 < messages.size())
+			{
+				out << ",";
+			}
+
+			out << "\n";
+		}
+
+		out << "  ]\n";
+		out << "}\n";
+		UAM_ASSERT(WriteTextFile(chats_dir / (session_id + ".json"), out.str()));
+	}
+
+	uam::AppState MakeTestAppState(const fs::path& data_root)
+	{
+		uam::AppState app;
+		app.data_root = data_root;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		app.settings.active_provider_id = "codex-cli";
+		return app;
+	}
+
+	ChatSession* FindChatById(std::vector<ChatSession>& chats, const std::string& id)
+	{
+		for (ChatSession& chat : chats)
+		{
+			if (chat.id == id)
+			{
+				return &chat;
+			}
+		}
+
+		return nullptr;
+	}
+
+	void WaitForFileMissing(const fs::path& path)
+	{
+		for (int i = 0; i < 100; ++i)
+		{
+			if (!fs::exists(path))
+			{
+				return;
+			}
+
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+	}
+
 } // namespace
 
 UAM_TEST(TestGeminiHomeResolutionPrecedence)
@@ -486,6 +559,47 @@ UAM_TEST(TestSettingsStoreLoadsLowScaleClamp)
 	UAM_ASSERT_EQ(std::string("chat-keep"), loaded.last_selected_chat_id);
 }
 
+UAM_TEST(TestSettingsStoreRoundTripsEscapedStringValues)
+{
+	TempDir data_root("uam-settings-escaped");
+	const fs::path settings_file = data_root.root / "settings.txt";
+
+	AppSettings write_settings;
+	write_settings.provider_command_template = "gemini -p line one\\ntext\nline two\tindent";
+	write_settings.provider_extra_flags = R"(--config C:\temp\gemini --literal \n)";
+	write_settings.prompt_profile_root_path = R"(C:\Users\david\.Gemini_universal_agent_manager)";
+	write_settings.last_selected_chat_id = "chat=42";
+
+	UAM_ASSERT(SettingsStore::Save(settings_file, write_settings, CenterViewMode::Structured));
+
+	AppSettings loaded;
+	CenterViewMode loaded_mode = CenterViewMode::CliConsole;
+	SettingsStore::Load(settings_file, loaded, loaded_mode);
+
+	UAM_ASSERT_EQ(write_settings.provider_command_template, loaded.provider_command_template);
+	UAM_ASSERT_EQ(write_settings.provider_extra_flags, loaded.provider_extra_flags);
+	UAM_ASSERT_EQ(write_settings.prompt_profile_root_path, loaded.prompt_profile_root_path);
+	UAM_ASSERT_EQ(write_settings.last_selected_chat_id, loaded.last_selected_chat_id);
+	UAM_ASSERT(loaded_mode == CenterViewMode::Structured);
+}
+
+UAM_TEST(TestSettingsStoreLoadsLegacyUnescapedStringValues)
+{
+	TempDir data_root("uam-settings-legacy-raw");
+	const fs::path settings_file = data_root.root / "settings.txt";
+	UAM_ASSERT(WriteTextFile(settings_file, "provider_extra_flags=--config C:\\temp\\gemini\n"
+	                                        "prompt_profile_root_path=C:\\Users\\david\\.Gemini_universal_agent_manager\n"
+	                                        "last_selected_chat_id=chat-legacy\n"));
+
+	AppSettings loaded;
+	CenterViewMode loaded_mode = CenterViewMode::Structured;
+	SettingsStore::Load(settings_file, loaded, loaded_mode);
+
+	UAM_ASSERT_EQ(std::string("--config C:\\temp\\gemini"), loaded.provider_extra_flags);
+	UAM_ASSERT_EQ(std::string("C:\\Users\\david\\.Gemini_universal_agent_manager"), loaded.prompt_profile_root_path);
+	UAM_ASSERT_EQ(std::string("chat-legacy"), loaded.last_selected_chat_id);
+}
+
 UAM_TEST(TestGeminiCommandBuilderReplacesPlaceholders)
 {
 	AppSettings settings;
@@ -602,6 +716,191 @@ UAM_TEST(TestChatRepositoryDefaultsMissingBranchMetadata)
 	UAM_ASSERT_EQ(-1, loaded.front().branch_from_message_index);
 	UAM_ASSERT_EQ(true, loaded.front().rag_enabled);
 	UAM_ASSERT(loaded.front().rag_source_directories.empty());
+}
+
+UAM_TEST(TestResolveNativeHistoryChatsDirUsesChatWorkspace)
+{
+	TempDir gemini_home("uam-native-dir-gemini-home");
+	TempDir project_a("uam-native-dir-project-a");
+	TempDir project_b("uam-native-dir-project-b");
+
+	const fs::path tmp_a = gemini_home.root / "tmp" / "release-a";
+	const fs::path tmp_b = gemini_home.root / "tmp" / "release-b";
+	fs::create_directories(tmp_a / "chats");
+	fs::create_directories(tmp_b / "chats");
+	WriteNativeProjectRoot(tmp_a, project_a.root);
+	WriteNativeProjectRoot(tmp_b, project_b.root);
+
+	ScopedEnvVar cli("GEMINI_CLI_HOME", gemini_home.root.string());
+	ScopedEnvVar gemini("GEMINI_HOME", std::nullopt);
+
+	uam::AppState app = MakeTestAppState(project_a.root);
+	app.folders.push_back(ChatFolder{"folder-a", "Folder A", project_a.root.string(), false});
+	app.folders.push_back(ChatFolder{"folder-b", "Folder B", project_b.root.string(), false});
+
+	ChatSession chat_a;
+	chat_a.id = "session-a";
+	chat_a.provider_id = "gemini-cli";
+	chat_a.folder_id = "folder-a";
+
+	ChatSession chat_b;
+	chat_b.id = "session-b";
+	chat_b.provider_id = "gemini-cli";
+	chat_b.folder_id = "folder-b";
+
+	const fs::path resolved_a = ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(app, chat_a);
+	const fs::path resolved_b = ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(app, chat_b);
+
+	UAM_ASSERT_EQ((tmp_a / "chats").lexically_normal().generic_string(), resolved_a.lexically_normal().generic_string());
+	UAM_ASSERT_EQ((tmp_b / "chats").lexically_normal().generic_string(), resolved_b.lexically_normal().generic_string());
+}
+
+UAM_TEST(TestLoadSidebarChatsKeepsMixedProviderHistoryVisible)
+{
+	TempDir data_root("uam-sidebar-load-data");
+	TempDir gemini_home("uam-sidebar-load-gemini-home");
+	TempDir project_a("uam-sidebar-load-project-a");
+	TempDir project_b("uam-sidebar-load-project-b");
+
+	const fs::path tmp_a = gemini_home.root / "tmp" / "release-a";
+	const fs::path tmp_b = gemini_home.root / "tmp" / "release-b";
+	fs::create_directories(tmp_a / "chats");
+	fs::create_directories(tmp_b / "chats");
+	WriteNativeProjectRoot(tmp_a, project_a.root);
+	WriteNativeProjectRoot(tmp_b, project_b.root);
+	WriteGeminiNativeSession(tmp_a / "chats", "session-structured", {{"user", "structured prompt"}, {"assistant", "structured reply"}});
+	WriteGeminiNativeSession(tmp_b / "chats", "session-orphan", {{"user", "orphan prompt"}, {"assistant", "orphan reply"}});
+
+	ChatSession overlay_chat;
+	overlay_chat.id = "session-structured";
+	overlay_chat.provider_id = "gemini-structured";
+	overlay_chat.uses_native_session = true;
+	overlay_chat.native_session_id = "session-structured";
+	overlay_chat.folder_id = "folder-a";
+	overlay_chat.title = "Structured Overlay";
+	overlay_chat.created_at = "2026-03-21 10:00:00";
+	overlay_chat.updated_at = "2026-03-21 10:00:01";
+	UAM_ASSERT(ChatRepository::SaveChat(data_root.root, overlay_chat));
+
+	ChatSession local_chat;
+	local_chat.id = "codex-local";
+	local_chat.provider_id = "codex-cli";
+	local_chat.folder_id = "folder-b";
+	local_chat.title = "Local Chat";
+	local_chat.created_at = "2026-03-21 10:00:00";
+	local_chat.updated_at = "2026-03-21 10:00:01";
+	local_chat.messages.push_back(Message{MessageRole::User, "hello local", "2026-03-21 10:00:01"});
+	UAM_ASSERT(ChatRepository::SaveChat(data_root.root, local_chat));
+
+	ScopedEnvVar cli("GEMINI_CLI_HOME", gemini_home.root.string());
+	ScopedEnvVar gemini("GEMINI_HOME", std::nullopt);
+
+	uam::AppState app = MakeTestAppState(data_root.root);
+	app.folders.push_back(ChatFolder{"folder-a", "Folder A", project_a.root.string(), false});
+	app.folders.push_back(ChatFolder{"folder-b", "Folder B", project_b.root.string(), false});
+	app.settings.active_provider_id = "codex-cli";
+
+	ChatHistorySyncService().LoadSidebarChats(app);
+
+	ChatSession* structured = FindChatById(app.chats, "session-structured");
+	ChatSession* orphan = FindChatById(app.chats, "session-orphan");
+	ChatSession* local = FindChatById(app.chats, "codex-local");
+
+	UAM_ASSERT(structured != nullptr);
+	UAM_ASSERT(orphan != nullptr);
+	UAM_ASSERT(local != nullptr);
+	UAM_ASSERT_EQ(std::string("gemini-structured"), structured->provider_id);
+	UAM_ASSERT_EQ(std::string("gemini-cli"), orphan->provider_id);
+	UAM_ASSERT_EQ(std::string("codex-cli"), local->provider_id);
+}
+
+UAM_TEST(TestPendingCallCompletionUsesLaunchTimeProviderSnapshot)
+{
+	TempDir data_root("uam-pending-call-data");
+	TempDir gemini_home("uam-pending-call-gemini-home");
+	TempDir project("uam-pending-call-project");
+
+	const fs::path tmp_dir = gemini_home.root / "tmp" / "release";
+	const fs::path chats_dir = tmp_dir / "chats";
+	fs::create_directories(chats_dir);
+	WriteNativeProjectRoot(tmp_dir, project.root);
+	WriteGeminiNativeSession(chats_dir, "session-202", {{"user", "queued prompt"}, {"assistant", "native reply"}});
+
+	ScopedEnvVar cli("GEMINI_CLI_HOME", gemini_home.root.string());
+	ScopedEnvVar gemini("GEMINI_HOME", std::nullopt);
+
+	uam::AppState app = MakeTestAppState(data_root.root);
+	app.folders.push_back(ChatFolder{"folder-a", "Folder A", project.root.string(), false});
+
+	ChatSession draft;
+	draft.id = "chat-202";
+	draft.provider_id = "gemini-cli";
+	draft.folder_id = "folder-a";
+	draft.title = "Draft";
+	draft.created_at = "2026-03-21 10:00:00";
+	draft.updated_at = "2026-03-21 10:00:01";
+	draft.messages.push_back(Message{MessageRole::User, "queued prompt", "2026-03-21 10:00:01"});
+	app.chats.push_back(draft);
+	app.selected_chat_index = 0;
+	app.settings.active_provider_id = "codex-cli";
+
+	PendingRuntimeCall call;
+	call.chat_id = draft.id;
+	call.provider_id_snapshot = "gemini-cli";
+	call.native_history_chats_dir_snapshot = chats_dir.string();
+	call.completed = std::make_shared<std::atomic<bool>>(true);
+	call.output = std::make_shared<std::string>("raw local fallback output");
+	app.pending_calls.push_back(call);
+
+	PollPendingRuntimeCall(app);
+
+	UAM_ASSERT(app.pending_calls.empty());
+	UAM_ASSERT_EQ(std::string("Provider response synced from native session."), app.status_line);
+	UAM_ASSERT_EQ(1u, app.chats.size());
+	UAM_ASSERT_EQ(std::string("session-202"), app.chats.front().id);
+	UAM_ASSERT_EQ(std::string("gemini-cli"), app.chats.front().provider_id);
+	UAM_ASSERT_EQ(2u, app.chats.front().messages.size());
+	UAM_ASSERT_EQ(std::string("native reply"), app.chats.front().messages.back().content);
+	UAM_ASSERT_EQ(0, app.selected_chat_index);
+}
+
+UAM_TEST(TestRemoveChatUsesDeletedChatProviderForNativeCleanup)
+{
+	TempDir data_root("uam-remove-chat-data");
+	TempDir gemini_home("uam-remove-chat-gemini-home");
+	TempDir project("uam-remove-chat-project");
+
+	const fs::path tmp_dir = gemini_home.root / "tmp" / "release";
+	const fs::path chats_dir = tmp_dir / "chats";
+	fs::create_directories(chats_dir);
+	WriteNativeProjectRoot(tmp_dir, project.root);
+	WriteGeminiNativeSession(chats_dir, "session-delete", {{"user", "delete me"}, {"assistant", "done"}});
+
+	ScopedEnvVar cli("GEMINI_CLI_HOME", gemini_home.root.string());
+	ScopedEnvVar gemini("GEMINI_HOME", std::nullopt);
+
+	uam::AppState app = MakeTestAppState(data_root.root);
+	app.folders.push_back(ChatFolder{"folder-a", "Folder A", project.root.string(), false});
+	app.settings.active_provider_id = "codex-cli";
+
+	ChatSession chat;
+	chat.id = "session-delete";
+	chat.provider_id = "gemini-cli";
+	chat.folder_id = "folder-a";
+	chat.uses_native_session = true;
+	chat.native_session_id = "session-delete";
+	chat.title = "Delete Me";
+	chat.created_at = "2026-03-21 10:00:00";
+	chat.updated_at = "2026-03-21 10:00:01";
+	chat.messages.push_back(Message{MessageRole::User, "delete me", "2026-03-21 10:00:01"});
+	app.chats.push_back(chat);
+	app.selected_chat_index = 0;
+
+	std::error_code delete_ec;
+	UAM_ASSERT(ChatHistorySyncService().DeleteNativeSessionFileForChat(app, chat, &delete_ec));
+	UAM_ASSERT(!delete_ec);
+	WaitForFileMissing(chats_dir / "session-delete.json");
+	UAM_ASSERT(!fs::exists(chats_dir / "session-delete.json"));
 }
 
 UAM_TEST(TestChatBranchingReparentChildrenAfterDelete)

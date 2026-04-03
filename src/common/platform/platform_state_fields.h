@@ -62,6 +62,8 @@ namespace uam::platform
 	struct AsyncNativeChatLoadTask
 	{
 		bool running = false;
+		std::string provider_id_snapshot;
+		std::string chats_dir_snapshot;
 		std::shared_ptr<std::atomic<bool>> completed;
 		std::shared_ptr<std::vector<ChatSession>> chats;
 		std::shared_ptr<std::string> error;

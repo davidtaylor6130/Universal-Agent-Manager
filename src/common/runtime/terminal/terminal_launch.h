@@ -195,7 +195,7 @@ inline bool StartCliTerminalForChat(uam::AppState& app, uam::CliTerminalState& t
 
 	if (ProviderResolutionService().ChatUsesNativeOverlayHistory(app, chat))
 	{
-		ChatHistorySyncService().RefreshNativeSessionDirectory(app);
+		app.native_history_chats_dir = ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(app, chat);
 	}
 
 	std::string template_status;
@@ -229,7 +229,7 @@ inline bool StartCliTerminalForChat(uam::AppState& app, uam::CliTerminalState& t
 
 	if (ProviderResolutionService().ChatUsesNativeOverlayHistory(app, chat))
 	{
-		terminal.session_ids_before = ChatHistorySyncService().SessionIdsFromChats(ChatHistorySyncService().LoadNativeSessionChats(app.native_history_chats_dir, provider));
+		terminal.session_ids_before = ChatHistorySyncService().SessionIdsFromChats(ChatHistorySyncService().LoadNativeSessionChats(ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(app, chat), provider));
 	}
 	else
 	{

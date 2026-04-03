@@ -21,6 +21,7 @@ inline void PollCliTerminal(uam::AppState& app, uam::CliTerminalState& terminal,
 	const ChatSession* terminal_chat = (terminal_chat_index >= 0) ? &app.chats[terminal_chat_index] : nullptr;
 	const bool terminal_uses_gemini_history = (terminal_chat != nullptr) && ProviderResolutionService().ChatUsesNativeOverlayHistory(app, *terminal_chat);
 	const ProviderProfile terminal_provider = (terminal_chat != nullptr) ? ProviderResolutionService().ProviderForChatOrDefault(app, *terminal_chat) : ProviderResolutionService().ActiveProviderOrDefault(app);
+	const std::filesystem::path terminal_native_history_chats_dir = (terminal_chat != nullptr) ? ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(app, *terminal_chat) : std::filesystem::path{};
 	const auto mark_unseen_if_background = [&]()
 	{
 		if (!terminal.attached_chat_id.empty() && terminal.attached_chat_id != selected_chat_id)
@@ -120,7 +121,7 @@ inline void PollCliTerminal(uam::AppState& app, uam::CliTerminalState& terminal,
 				std::vector<ChatSession> native_now;
 				std::string native_load_error;
 				const bool has_loaded_snapshot = ChatHistorySyncService().TryConsumeAsyncNativeChatLoad(app, native_now, native_load_error);
-				ChatHistorySyncService().StartAsyncNativeChatLoad(app);
+				ChatHistorySyncService().StartAsyncNativeChatLoad(app, terminal_provider, terminal_native_history_chats_dir);
 
 				if (!native_load_error.empty())
 				{
@@ -182,8 +183,7 @@ inline void PollCliTerminal(uam::AppState& app, uam::CliTerminalState& terminal,
 			}
 			else
 			{
-				ChatHistorySyncService().RefreshNativeSessionDirectory(app);
-				const std::vector<ChatSession> native_now = ChatHistorySyncService().LoadNativeSessionChats(app.native_history_chats_dir, terminal_provider);
+				const std::vector<ChatSession> native_now = ChatHistorySyncService().LoadNativeSessionChats(terminal_native_history_chats_dir, terminal_provider);
 
 				if (terminal.attached_session_id.empty())
 				{

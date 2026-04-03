@@ -7,11 +7,25 @@
 #include "app/runtime_orchestration_services.h"
 #include "common/chat/chat_branching.h"
 #include "common/provider/provider_runtime.h"
+#include "common/runtime/terminal/terminal_chat_sync.h"
+
+inline const ProviderProfile& ResolvePendingCallProviderOrDefault(const uam::AppState& app, const PendingRuntimeCall& call)
+{
+	if (!call.provider_id_snapshot.empty())
+	{
+		if (const ProviderProfile* profile = ProviderProfileStore::FindById(app.provider_profiles, call.provider_id_snapshot); profile != nullptr)
+		{
+			return *profile;
+		}
+	}
+
+	return ProviderResolutionService().ActiveProviderOrDefault(app);
+}
 
 /// <summary>
 /// Polls asynchronous provider calls and syncs results back into chat state.
 /// </summary>
-inline void PollPendingRuntimeCall(AppState& app)
+inline void PollPendingRuntimeCall(uam::AppState& app)
 {
 	if (app.pending_calls.empty())
 	{
@@ -57,6 +71,7 @@ inline void PollPendingRuntimeCall(AppState& app)
 		const ChatSession* lcp_selectedBefore = ChatDomainService().SelectedChat(app);
 		const std::string selected_before_id = (lcp_selectedBefore != nullptr) ? lcp_selectedBefore->id : "";
 		const int pending_chat_index = ChatDomainService().FindChatIndexById(app, pending_chat_id);
+		const ProviderProfile& call_provider = ResolvePendingCallProviderOrDefault(app, call);
 		ChatSession pending_chat_snapshot;
 
 		if (pending_chat_index >= 0)
@@ -64,7 +79,7 @@ inline void PollPendingRuntimeCall(AppState& app)
 			pending_chat_snapshot = app.chats[pending_chat_index];
 		}
 
-		if (!ProviderResolutionService().ActiveProviderUsesNativeOverlayHistory(app))
+		if (!ProviderRuntime::UsesNativeOverlayHistory(call_provider))
 		{
 			if (pending_chat_index >= 0)
 			{
@@ -89,8 +104,8 @@ inline void PollPendingRuntimeCall(AppState& app)
 			continue;
 		}
 
-		ChatHistorySyncService().RefreshNativeSessionDirectory(app);
-		std::vector<ChatSession> native_after = ChatHistorySyncService().LoadNativeSessionChats(app.native_history_chats_dir, ProviderResolutionService().ActiveProviderOrDefault(app));
+		const std::filesystem::path native_history_chats_dir = call.native_history_chats_dir_snapshot.empty() ? std::filesystem::path{} : std::filesystem::path(call.native_history_chats_dir_snapshot);
+		std::vector<ChatSession> native_after = ChatHistorySyncService().LoadNativeSessionChats(native_history_chats_dir, call_provider);
 		ChatHistorySyncService().ApplyLocalOverrides(app, native_after);
 
 		std::string selected_id = call.resume_session_id;
