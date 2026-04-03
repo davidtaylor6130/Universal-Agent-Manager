@@ -64,6 +64,44 @@ namespace
 {
 	constexpr const char* kRuntimeBackendProviderCli = "provider-cli";
 	constexpr const char* kRuntimeIdLocalEngine = "ollama-engine";
+
+	void ResetAsyncCommandTask(uam::AsyncCommandTask& task)
+	{
+		if (task.worker != nullptr)
+		{
+			task.worker->request_stop();
+			task.worker.reset();
+		}
+
+		task.running = false;
+		task.command_preview.clear();
+		task.state.reset();
+	}
+
+	void ResetPendingRuntimeCall(PendingRuntimeCall& call)
+	{
+		if (call.worker != nullptr)
+		{
+			call.worker->request_stop();
+			call.worker.reset();
+		}
+
+		call.state.reset();
+	}
+
+	void ResetNativeChatLoadTask(uam::platform::AsyncNativeChatLoadTask& task)
+	{
+		if (task.worker != nullptr)
+		{
+			task.worker->request_stop();
+			task.worker.reset();
+		}
+
+		task.running = false;
+		task.provider_id_snapshot.clear();
+		task.chats_dir_snapshot.clear();
+		task.state.reset();
+	}
 } // namespace
 
 Application::Application()
@@ -238,8 +276,15 @@ void Application::Shutdown()
 {
 	// Shutdown only app-owned runtime state; low-level teardown stays in the destructor.
 	PersistWindowStateAndSettings();
+	for (PendingRuntimeCall& call : m_app.pending_calls)
+	{
+		ResetPendingRuntimeCall(call);
+	}
 	m_app.pending_calls.clear();
 	m_app.resolved_native_sessions_by_chat_id.clear();
+	ResetAsyncCommandTask(m_app.runtime_cli_version_check_task);
+	ResetAsyncCommandTask(m_app.runtime_cli_pin_task);
+	ResetNativeChatLoadTask(m_app.native_chat_load_task);
 
 	if (!m_terminalsStoppedForShutdown)
 	{

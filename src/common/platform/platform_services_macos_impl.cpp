@@ -140,6 +140,207 @@ namespace
 		return escaped;
 	}
 
+	bool ReadAvailablePipeData(const int fd, std::string* output_out, std::string* error_out = nullptr)
+	{
+		if (output_out == nullptr)
+		{
+			return false;
+		}
+
+		std::array<char, 4096> buffer{};
+
+		for (;;)
+		{
+			const ssize_t bytes_read = read(fd, buffer.data(), buffer.size());
+
+			if (bytes_read > 0)
+			{
+				output_out->append(buffer.data(), static_cast<std::size_t>(bytes_read));
+				continue;
+			}
+
+			if (bytes_read == 0)
+			{
+				return true;
+			}
+
+			if (errno == EINTR)
+			{
+				continue;
+			}
+
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
+			{
+				return true;
+			}
+
+			if (error_out != nullptr)
+			{
+				*error_out = std::strerror(errno);
+			}
+
+			return false;
+		}
+	}
+
+	ProcessExecutionResult ExecuteCapturedCommandPosix(const std::string& command, const int timeout_ms, std::stop_token stop_token)
+	{
+		ProcessExecutionResult result;
+		int pipe_fds[2] = {-1, -1};
+
+		if (pipe(pipe_fds) != 0)
+		{
+			result.error = "Failed to create capture pipe.";
+			return result;
+		}
+
+		const pid_t pid = fork();
+
+		if (pid < 0)
+		{
+			close(pipe_fds[0]);
+			close(pipe_fds[1]);
+			result.error = "fork failed.";
+			return result;
+		}
+
+		if (pid == 0)
+		{
+			dup2(pipe_fds[1], STDOUT_FILENO);
+			dup2(pipe_fds[1], STDERR_FILENO);
+			close(pipe_fds[0]);
+			close(pipe_fds[1]);
+			execl("/bin/sh", "sh", "-lc", command.c_str(), static_cast<char*>(nullptr));
+			_exit(127);
+		}
+
+		close(pipe_fds[1]);
+		const int read_fd = pipe_fds[0];
+		const int original_flags = fcntl(read_fd, F_GETFL, 0);
+
+		if (original_flags >= 0)
+		{
+			(void)fcntl(read_fd, F_SETFL, original_flags | O_NONBLOCK);
+		}
+
+		const auto started_at = std::chrono::steady_clock::now();
+		int raw_status = -1;
+		bool finished = false;
+
+		while (!finished)
+		{
+			std::string read_error;
+			(void)ReadAvailablePipeData(read_fd, &result.output, &read_error);
+
+			if (stop_token.stop_requested())
+			{
+				result.canceled = true;
+				result.error = "Command canceled.";
+				kill(pid, SIGTERM);
+				(void)waitpid(pid, &raw_status, 0);
+				finished = true;
+				break;
+			}
+
+			if (timeout_ms >= 0)
+			{
+				const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_at).count();
+
+				if (elapsed_ms > timeout_ms)
+				{
+					result.timed_out = true;
+					result.error = "Command timed out.";
+					kill(pid, SIGTERM);
+					(void)waitpid(pid, &raw_status, 0);
+					finished = true;
+					break;
+				}
+			}
+
+			const pid_t wait_result = waitpid(pid, &raw_status, WNOHANG);
+
+			if (wait_result == pid)
+			{
+				finished = true;
+				break;
+			}
+
+			if (wait_result < 0)
+			{
+				result.error = "waitpid failed.";
+				kill(pid, SIGTERM);
+				(void)waitpid(pid, &raw_status, 0);
+				finished = true;
+				break;
+			}
+
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+
+		std::string final_read_error;
+		(void)ReadAvailablePipeData(read_fd, &result.output, &final_read_error);
+		close(read_fd);
+
+		if (result.canceled || result.timed_out)
+		{
+			result.exit_code = -1;
+			return result;
+		}
+
+		if (raw_status == -1)
+		{
+			if (result.error.empty())
+			{
+				result.error = "Command did not produce an exit status.";
+			}
+
+			return result;
+		}
+
+		if (WIFEXITED(raw_status))
+		{
+			result.exit_code = WEXITSTATUS(raw_status);
+		}
+		else if (WIFSIGNALED(raw_status))
+		{
+			result.exit_code = 128 + WTERMSIG(raw_status);
+		}
+		else
+		{
+			result.exit_code = raw_status;
+		}
+
+		result.ok = (result.exit_code == 0);
+		return result;
+	}
+
+	void TerminateChildProcess(const pid_t pid)
+	{
+		if (pid <= 0)
+		{
+			return;
+		}
+
+		int status = 0;
+		kill(pid, SIGTERM);
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(700);
+
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			const pid_t wait_result = waitpid(pid, &status, WNOHANG);
+
+			if (wait_result == pid || (wait_result < 0 && errno == ECHILD))
+			{
+				return;
+			}
+
+			std::this_thread::sleep_for(std::chrono::milliseconds(20));
+		}
+
+		kill(pid, SIGKILL);
+		waitpid(pid, &status, WNOHANG);
+	}
+
 	class MacTerminalRuntime final : public IPlatformTerminalRuntime
 	{
 	  public:
@@ -455,67 +656,44 @@ namespace
 			return "cd " + ShellQuotePosix(working_directory.string()) + " && " + command;
 		}
 
-		bool CaptureCommandOutput(const std::string& command, std::string* output_out, int* raw_status_out, std::string* error_out = nullptr) const override
-		{
-			std::unique_ptr<FILE, int (*)(FILE*)> pipe(popen(command.c_str(), "r"), pclose);
-
-			if (pipe == nullptr)
+			bool CaptureCommandOutput(const std::string& command, std::string* output_out, int* raw_status_out, std::string* error_out = nullptr) const override
 			{
+				const ProcessExecutionResult result = ExecuteCommand(command);
+
 				if (output_out != nullptr)
 				{
-					output_out->clear();
+					*output_out = result.output;
 				}
 
 				if (raw_status_out != nullptr)
 				{
-					*raw_status_out = -1;
+					*raw_status_out = result.exit_code;
 				}
 
 				if (error_out != nullptr)
 				{
-					*error_out = "Failed to launch command.";
+					*error_out = result.error;
 				}
 
-				return false;
+				return !result.timed_out && !result.canceled && result.error.empty();
 			}
 
-			std::array<char, 4096> buffer{};
-			std::string output;
-
-			while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe.get()) != nullptr)
+			int NormalizeCapturedCommandExitCode(const int raw_status) const override
 			{
-				output += buffer.data();
+				if (WIFEXITED(raw_status))
+				{
+					return WEXITSTATUS(raw_status);
+				}
+
+				return raw_status;
 			}
 
-			const int raw_status = pipe.get_deleter()(pipe.release());
-
-			if (output_out != nullptr)
+			ProcessExecutionResult ExecuteCommand(const std::string& command,
+			                                     const int timeout_ms = -1,
+			                                     std::stop_token stop_token = {}) const override
 			{
-				*output_out = output;
+				return ExecuteCapturedCommandPosix(command, timeout_ms, stop_token);
 			}
-
-			if (raw_status_out != nullptr)
-			{
-				*raw_status_out = raw_status;
-			}
-
-			if (error_out != nullptr)
-			{
-				error_out->clear();
-			}
-
-			return true;
-		}
-
-		int NormalizeCapturedCommandExitCode(const int raw_status) const override
-		{
-			if (WIFEXITED(raw_status))
-			{
-				return WEXITSTATUS(raw_status);
-			}
-
-			return raw_status;
-		}
 
 		std::string GeminiDowngradeCommand() const override
 		{
@@ -638,35 +816,12 @@ namespace
 			return true;
 		}
 
-		void StopLocalBridgeProcess(uam::OpenCodeBridgeState& state) const override
-		{
-			if (state.process_id > 0)
+			void StopLocalBridgeProcess(uam::OpenCodeBridgeState& state) const override
 			{
-				const pid_t pid = state.process_id;
-				int status = 0;
-				kill(pid, SIGTERM);
-				const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(700);
-
-				while (std::chrono::steady_clock::now() < deadline)
+				if (state.process_id > 0)
 				{
-					const pid_t wait_result = waitpid(pid, &status, WNOHANG);
-
-					if (wait_result == pid || (wait_result < 0 && errno == ECHILD))
-					{
-						break;
-					}
-
-					std::this_thread::sleep_for(std::chrono::milliseconds(20));
+					TerminateChildProcess(state.process_id);
 				}
-
-				const pid_t wait_result = waitpid(pid, &status, WNOHANG);
-
-				if (wait_result == 0)
-				{
-					kill(pid, SIGKILL);
-					waitpid(pid, &status, WNOHANG);
-				}
-			}
 
 			state.process_id = -1;
 		}

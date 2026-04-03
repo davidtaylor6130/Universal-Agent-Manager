@@ -3,9 +3,6 @@
 #include "common/state/app_state.h"
 
 #include <array>
-#include <chrono>
-#include <future>
-#include <thread>
 #include <sstream>
 #include <string>
 
@@ -43,64 +40,47 @@ namespace
 		}
 
 		const std::string full_command = BuildWorkingDirectoryCommand(working_directory, command) + " 2>&1";
+		const IPlatformProcessService& process_service = PlatformServicesFactory::Instance().process_service;
+		const ProcessExecutionResult execution = process_service.ExecuteCommand(full_command, timeout_ms);
+		VcsCommandResult result;
 
-		std::promise<VcsCommandResult> promise;
-		std::future<VcsCommandResult> future = promise.get_future();
-		auto run_command_task = [full_command, output_limit_bytes, promise = std::move(promise)]() mutable
+		if (execution.timed_out)
 		{
-			VcsCommandResult result;
-			std::string output;
-			std::string error;
-			int raw_status = -1;
-			const IPlatformProcessService& process_service = PlatformServicesFactory::Instance().process_service;
-
-			if (!process_service.CaptureCommandOutput(full_command, &output, &raw_status, &error))
-			{
-				result.error = error.empty() ? "Failed to launch command." : error;
-				promise.set_value(std::move(result));
-				return;
-			}
-
-			if (output.size() > output_limit_bytes)
-			{
-				result.output = output.substr(0, output_limit_bytes);
-				result.truncated = true;
-			}
-			else
-			{
-				result.output = std::move(output);
-			}
-
-			result.exit_code = process_service.NormalizeCapturedCommandExitCode(raw_status);
-			result.ok = (result.exit_code == 0);
-
-			if (result.truncated)
-			{
-				result.output += "\n\n[Output truncated due to size limit.]\n";
-			}
-
-			if (!result.ok && result.output.empty())
-			{
-				result.error = "Command failed with no output.";
-			}
-
-			promise.set_value(std::move(result));
-		};
-
-		std::thread(std::move(run_command_task)).detach();
-
-		const auto wait_status = future.wait_for(std::chrono::milliseconds(timeout_ms));
-
-		if (wait_status != std::future_status::ready)
-		{
-			VcsCommandResult timed_out;
-			timed_out.ok = false;
-			timed_out.timed_out = true;
-			timed_out.error = "Command timed out.";
-			return timed_out;
+			result.timed_out = true;
+			result.error = execution.error.empty() ? "Command timed out." : execution.error;
+			return result;
 		}
 
-		return future.get();
+		if (!execution.error.empty() && execution.output.empty())
+		{
+			result.error = execution.error;
+			return result;
+		}
+
+		if (execution.output.size() > output_limit_bytes)
+		{
+			result.output = execution.output.substr(0, output_limit_bytes);
+			result.truncated = true;
+		}
+		else
+		{
+			result.output = execution.output;
+		}
+
+		result.exit_code = execution.exit_code;
+		result.ok = execution.ok;
+
+		if (result.truncated)
+		{
+			result.output += "\n\n[Output truncated due to size limit.]\n";
+		}
+
+		if (!result.ok && result.output.empty())
+		{
+			result.error = execution.error.empty() ? "Command failed with no output." : execution.error;
+		}
+
+		return result;
 	}
 
 	std::string DeriveBranchPath(const std::string& url, const std::string& relative_url)

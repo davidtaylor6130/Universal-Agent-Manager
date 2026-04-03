@@ -5,6 +5,7 @@
 #include <atomic>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #if defined(_WIN32)
@@ -64,9 +65,14 @@ namespace uam::platform
 		bool running = false;
 		std::string provider_id_snapshot;
 		std::string chats_dir_snapshot;
-		std::shared_ptr<std::atomic<bool>> completed;
-		std::shared_ptr<std::vector<ChatSession>> chats;
-		std::shared_ptr<std::string> error;
+		struct State
+		{
+			std::atomic<bool> completed{false};
+			std::vector<ChatSession> chats;
+			std::string error;
+		};
+		std::shared_ptr<State> state;
+		std::unique_ptr<std::jthread> worker;
 	};
 
 } // namespace uam::platform

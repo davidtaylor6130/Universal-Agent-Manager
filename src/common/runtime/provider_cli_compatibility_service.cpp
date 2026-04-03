@@ -10,7 +10,6 @@
 #include <regex>
 #include <sstream>
 #include <string>
-#include <thread>
 
 namespace
 {
@@ -30,57 +29,60 @@ namespace
 		return value.substr(start, end - start + 1);
 	}
 
-	std::string ExecuteCommandCaptureOutput(const std::string& command)
+	void ResetAsyncCommandTask(uam::AsyncCommandTask& task)
 	{
-		std::string output;
-		int raw_status = -1;
-		std::string error_message;
-		auto& process_service = PlatformServicesFactory::Instance().process_service;
-		const bool captured = process_service.CaptureCommandOutput(command, &output, &raw_status, &error_message);
-
-		if (!captured)
+		if (task.worker != nullptr)
 		{
-			std::ostringstream message;
-			message << "Failed to run command: " << command;
-
-			if (!error_message.empty())
-			{
-				message << "\n\n" << error_message;
-			}
-
-			return message.str();
+			task.worker->request_stop();
+			task.worker.reset();
 		}
 
-		const int exit_code = process_service.NormalizeCapturedCommandExitCode(raw_status);
-
-		if (output.empty())
-		{
-			output = "(Provider CLI returned no output.)";
-		}
-
-		if (exit_code != 0)
-		{
-			output += "\n\n[Provider CLI exited with code " + std::to_string(exit_code) + "]";
-		}
-
-		return output;
+		task.running = false;
+		task.command_preview.clear();
+		task.state.reset();
 	}
 
 	void StartAsyncCommandTask(uam::AsyncCommandTask& task, const std::string& command)
 	{
+		ResetAsyncCommandTask(task);
 		task.running = true;
 		task.command_preview = command;
-		task.completed = std::make_shared<std::atomic<bool>>(false);
-		task.output = std::make_shared<std::string>();
-		std::shared_ptr<std::atomic<bool>> completed = task.completed;
-		std::shared_ptr<std::string> output = task.output;
-		auto run_command_task = [command, completed, output]()
+		task.state = std::make_shared<AsyncProcessTaskState>();
+		std::shared_ptr<AsyncProcessTaskState> state = task.state;
+		task.worker = std::make_unique<std::jthread>([command, state](std::stop_token stop_token)
 		{
-			*output = ExecuteCommandCaptureOutput(command);
-			completed->store(true, std::memory_order_release);
-		};
+			state->result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(command, -1, stop_token);
 
-		std::thread(run_command_task).detach();
+			if (!state->result.error.empty() && state->result.output.empty())
+			{
+				std::ostringstream message;
+				message << "Failed to run command: " << command;
+				message << "\n\n" << state->result.error;
+				state->result.output = message.str();
+			}
+			else
+			{
+				if (state->result.output.empty())
+				{
+					state->result.output = "(Provider CLI returned no output.)";
+				}
+
+				if (state->result.timed_out)
+				{
+					state->result.output += "\n\n[Provider CLI command timed out]";
+				}
+				else if (state->result.canceled)
+				{
+					state->result.output += "\n\n[Provider CLI command canceled]";
+				}
+				else if (state->result.exit_code != 0)
+				{
+					state->result.output += "\n\n[Provider CLI exited with code " + std::to_string(state->result.exit_code) + "]";
+				}
+			}
+
+			state->completed.store(true, std::memory_order_release);
+		});
 	}
 
 	bool TryConsumeAsyncCommandTaskOutput(uam::AsyncCommandTask& task, std::string& output_out)
@@ -90,26 +92,20 @@ namespace
 			return false;
 		}
 
-		if (task.completed == nullptr || task.output == nullptr)
+		if (task.state == nullptr)
 		{
-			task.running = false;
-			task.command_preview.clear();
-			task.completed.reset();
-			task.output.reset();
+			ResetAsyncCommandTask(task);
 			output_out.clear();
 			return true;
 		}
 
-		if (!task.completed->load(std::memory_order_acquire))
+		if (!task.state->completed.load(std::memory_order_acquire))
 		{
 			return false;
 		}
 
-		output_out = *task.output;
-		task.running = false;
-		task.command_preview.clear();
-		task.completed.reset();
-		task.output.reset();
+		output_out = task.state->result.output;
+		ResetAsyncCommandTask(task);
 		return true;
 	}
 

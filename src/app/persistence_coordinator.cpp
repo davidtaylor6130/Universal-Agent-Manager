@@ -26,13 +26,10 @@ using uam::AppState;
 
 std::string PersistenceCoordinator::ExecuteCommandCaptureOutput(const std::string& command) const
 {
-	const std::string full_command = command + " 2>&1";
 	const IPlatformProcessService& process_service = PlatformServicesFactory::Instance().process_service;
-	std::string output;
-	int raw_status = -1;
-	std::string capture_error;
+	const ProcessExecutionResult result = process_service.ExecuteCommand(command);
 
-	if (!process_service.CaptureCommandOutput(full_command, &output, &raw_status, &capture_error))
+	if (!result.error.empty() && result.output.empty())
 	{
 		std::ostringstream message;
 		message << "Failed to launch provider CLI command";
@@ -46,7 +43,8 @@ std::string PersistenceCoordinator::ExecuteCommandCaptureOutput(const std::strin
 		return message.str();
 	}
 
-	const int exit_code = process_service.NormalizeCapturedCommandExitCode(raw_status);
+	std::string output = result.output;
+	const int exit_code = result.exit_code;
 
 	if (output.empty())
 	{

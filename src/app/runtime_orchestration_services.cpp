@@ -13,6 +13,7 @@
 #include "common/chat/chat_branching.h"
 #include "common/chat/chat_repository.h"
 #include "common/platform/platform_services.h"
+#include "common/provider/gemini/base/gemini_history_loader.h"
 #include "common/rag/rag_app_helpers.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/json_runtime.h"
@@ -25,6 +26,7 @@
 #include <filesystem>
 #include <iterator>
 #include <memory>
+#include <sstream>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -36,6 +38,20 @@ namespace
 {
 	constexpr const char* kPromptBootstrapPath = "@.gemini/gemini.md";
 	constexpr const char* kDefaultNativeHistoryProviderId = "gemini-cli";
+
+	void ResetAsyncNativeChatLoadTask(uam::platform::AsyncNativeChatLoadTask& task)
+	{
+		if (task.worker != nullptr)
+		{
+			task.worker->request_stop();
+			task.worker.reset();
+		}
+
+		task.running = false;
+		task.provider_id_snapshot.clear();
+		task.chats_dir_snapshot.clear();
+		task.state.reset();
+	}
 
 	const ProviderProfile& DefaultNativeHistoryProvider(const AppState& app)
 	{
@@ -150,11 +166,18 @@ void ChatHistorySyncService::SaveChatWithStatus(uam::AppState& p_app,
 	}
 }
 
-std::vector<ChatSession> ChatHistorySyncService::LoadNativeSessionChats(const fs::path& p_chatsDir, const ProviderProfile& p_provider) const
+std::vector<ChatSession> ChatHistorySyncService::LoadNativeSessionChats(const fs::path& p_chatsDir,
+                                                                        const ProviderProfile& p_provider,
+                                                                        std::stop_token p_stopToken) const
 {
 	ProviderRuntimeHistoryLoadOptions l_options;
 	l_options.native_max_file_bytes = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxFileBytes();
 	l_options.native_max_messages = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxMessages();
+	if (ProviderRuntime::SupportsGeminiJsonHistory(p_provider))
+	{
+		return ChatDomainService().DeduplicateChatsById(LoadGeminiJsonHistoryForRuntime(p_chatsDir, p_provider, l_options, p_stopToken));
+	}
+
 	return ChatDomainService().DeduplicateChatsById(ProviderRuntime::LoadHistory(p_provider, fs::path{}, p_chatsDir, l_options));
 }
 
@@ -223,37 +246,31 @@ bool ChatHistorySyncService::StartAsyncNativeChatLoad(AppState& app, const Provi
 		return false;
 	}
 
+	ResetAsyncNativeChatLoadTask(app.native_chat_load_task);
 	app.native_chat_load_task.running = true;
 	app.native_chat_load_task.provider_id_snapshot = p_provider.id;
 	app.native_chat_load_task.chats_dir_snapshot = p_chatsDir.string();
-	app.native_chat_load_task.completed = std::make_shared<std::atomic<bool>>(false);
-	app.native_chat_load_task.chats = std::make_shared<std::vector<ChatSession>>();
-	app.native_chat_load_task.error = std::make_shared<std::string>();
-	std::shared_ptr<std::atomic<bool>> completed = app.native_chat_load_task.completed;
-	std::shared_ptr<std::vector<ChatSession>> chats = app.native_chat_load_task.chats;
-	std::shared_ptr<std::string> error = app.native_chat_load_task.error;
+	app.native_chat_load_task.state = std::make_shared<uam::platform::AsyncNativeChatLoadTask::State>();
+	std::shared_ptr<uam::platform::AsyncNativeChatLoadTask::State> state = app.native_chat_load_task.state;
 	const fs::path chats_dir = p_chatsDir;
 	const ProviderProfile provider = p_provider;
-
-	auto l_loadNativeChatsTask = [this, chats_dir, provider, completed, chats, error]()
+	app.native_chat_load_task.worker = std::make_unique<std::jthread>([this, chats_dir, provider, state](std::stop_token stop_token)
 	{
 		try
 		{
-			*chats = LoadNativeSessionChats(chats_dir, provider);
+			state->chats = LoadNativeSessionChats(chats_dir, provider, stop_token);
 		}
 		catch (const std::exception& ex)
 		{
-			*error = ex.what();
+			state->error = ex.what();
 		}
 		catch (...)
 		{
-			*error = "Unknown native chat load failure.";
+			state->error = "Unknown native chat load failure.";
 		}
 
-		completed->store(true, std::memory_order_release);
-	};
-
-	std::thread(l_loadNativeChatsTask).detach();
+		state->completed.store(true, std::memory_order_release);
+	});
 	return true;
 }
 
@@ -269,32 +286,22 @@ bool ChatHistorySyncService::TryConsumeAsyncNativeChatLoad(AppState& app, std::v
 		return false;
 	}
 
-	if (app.native_chat_load_task.completed == nullptr || app.native_chat_load_task.chats == nullptr || app.native_chat_load_task.error == nullptr)
+	if (app.native_chat_load_task.state == nullptr)
 	{
-		app.native_chat_load_task.running = false;
-		app.native_chat_load_task.provider_id_snapshot.clear();
-		app.native_chat_load_task.chats_dir_snapshot.clear();
-		app.native_chat_load_task.completed.reset();
-		app.native_chat_load_task.chats.reset();
-		app.native_chat_load_task.error.reset();
+		ResetAsyncNativeChatLoadTask(app.native_chat_load_task);
 		chats_out.clear();
 		error_out.clear();
 		return true;
 	}
 
-	if (!app.native_chat_load_task.completed->load(std::memory_order_acquire))
+	if (!app.native_chat_load_task.state->completed.load(std::memory_order_acquire))
 	{
 		return false;
 	}
 
-	chats_out = *app.native_chat_load_task.chats;
-	error_out = *app.native_chat_load_task.error;
-	app.native_chat_load_task.running = false;
-	app.native_chat_load_task.provider_id_snapshot.clear();
-	app.native_chat_load_task.chats_dir_snapshot.clear();
-	app.native_chat_load_task.completed.reset();
-	app.native_chat_load_task.chats.reset();
-	app.native_chat_load_task.error.reset();
+	chats_out = app.native_chat_load_task.state->chats;
+	error_out = app.native_chat_load_task.state->error;
+	ResetAsyncNativeChatLoadTask(app.native_chat_load_task);
 	return true;
 }
 
@@ -371,7 +378,7 @@ bool ChatHistorySyncService::DeleteNativeSessionFileForChat(const AppState& p_ap
 		*p_errorOut = l_ec;
 	}
 
-	return l_removed || static_cast<bool>(l_ec);
+	return l_removed && !l_ec;
 }
 
 bool ChatHistorySyncService::PersistLocalDraftNativeSessionLink(const AppState& p_app, ChatSession& p_localChat, const std::string& p_nativeSessionId) const
@@ -623,6 +630,12 @@ bool ProviderRequestService::QueuePromptForChat(AppState& p_app, ChatSession& p_
 
 		if (!SendPromptToCliRuntime(p_app, p_chat, l_runtimePrompt, &l_terminalError))
 		{
+			if (l_terminalError == "OpenCode bridge is starting.")
+			{
+				p_app.status_line = l_terminalError;
+				return false;
+			}
+
 			ChatDomainService().AddMessage(p_chat, MessageRole::System, "Provider terminal send failed: " + (l_terminalError.empty() ? std::string("unknown error") : l_terminalError));
 			ProviderRuntime::SaveHistory(l_provider, p_app.data_root, p_chat);
 			p_app.status_line = "Provider terminal send failed.";
@@ -698,19 +711,42 @@ bool ProviderRequestService::QueuePromptForChat(AppState& p_app, ChatSession& p_
 	l_pending.native_history_chats_dir_snapshot = ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(p_app, p_chat).string();
 	l_pending.session_ids_before = ChatHistorySyncService().SessionIdsFromChats(l_nativeBefore);
 	l_pending.command_preview = l_command;
-	l_pending.completed = std::make_shared<std::atomic<bool>>(false);
-	l_pending.output = std::make_shared<std::string>();
+	l_pending.state = std::make_shared<AsyncProcessTaskState>();
+	std::shared_ptr<AsyncProcessTaskState> l_state = l_pending.state;
+	l_pending.worker = std::make_unique<std::jthread>([l_command, l_state](std::stop_token stop_token)
 	{
-		std::shared_ptr<std::atomic<bool>> l_completed = l_pending.completed;
-		std::shared_ptr<std::string> l_output = l_pending.output;
-		auto l_runPendingCallTask = [l_command, l_completed, l_output]()
-		{
-			*l_output = PersistenceCoordinator().ExecuteCommandCaptureOutput(l_command);
-			l_completed->store(true, std::memory_order_release);
-		};
+		l_state->result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(l_command, -1, stop_token);
 
-		std::thread(l_runPendingCallTask).detach();
-	}
+		if (!l_state->result.error.empty() && l_state->result.output.empty())
+		{
+			std::ostringstream message;
+			message << "Failed to launch provider CLI command";
+			message << ".";
+			l_state->result.output = message.str();
+		}
+		else
+		{
+			if (l_state->result.output.empty())
+			{
+				l_state->result.output = "(Provider CLI returned no output.)";
+			}
+
+			if (l_state->result.timed_out)
+			{
+				l_state->result.output += "\n\n[Provider CLI command timed out]";
+			}
+			else if (l_state->result.canceled)
+			{
+				l_state->result.output += "\n\n[Provider CLI command canceled]";
+			}
+			else if (l_state->result.exit_code != 0)
+			{
+				l_state->result.output += "\n\n[Provider CLI exited with code " + std::to_string(l_state->result.exit_code) + "]";
+			}
+		}
+
+		l_state->completed.store(true, std::memory_order_release);
+	});
 
 	p_app.pending_calls.push_back(std::move(l_pending));
 

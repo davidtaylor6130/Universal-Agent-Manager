@@ -3,6 +3,7 @@
 #include <atomic>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 /// <summary>
@@ -113,6 +114,22 @@ enum class CenterViewMode
 /// <summary>
 /// In-flight provider command state used by async polling.
 /// </summary>
+struct ProcessExecutionResult
+{
+	bool ok = false;
+	bool timed_out = false;
+	bool canceled = false;
+	int exit_code = -1;
+	std::string output;
+	std::string error;
+};
+
+struct AsyncProcessTaskState
+{
+	std::atomic<bool> completed{false};
+	ProcessExecutionResult result;
+};
+
 struct PendingRuntimeCall
 {
 	std::string chat_id;
@@ -121,8 +138,8 @@ struct PendingRuntimeCall
 	std::string native_history_chats_dir_snapshot;
 	std::vector<std::string> session_ids_before;
 	std::string command_preview;
-	std::shared_ptr<std::atomic<bool>> completed;
-	std::shared_ptr<std::string> output;
+	std::shared_ptr<AsyncProcessTaskState> state;
+	std::unique_ptr<std::jthread> worker;
 };
 
 /// <summary>

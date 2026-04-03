@@ -189,6 +189,10 @@ inline bool StartCliTerminalForChat(uam::AppState& app, uam::CliTerminalState& t
 		if (!RuntimeLocalService().RestartLocalBridgeIfModelChanged(app, &bridge_error))
 		{
 			terminal.last_error = bridge_error.empty() ? "Failed to start OpenCode bridge." : bridge_error;
+			if (terminal.last_error == "OpenCode bridge is starting.")
+			{
+				app.status_line = terminal.last_error;
+			}
 			return false;
 		}
 	}

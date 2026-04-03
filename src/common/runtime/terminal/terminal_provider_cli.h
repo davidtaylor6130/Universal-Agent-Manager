@@ -185,6 +185,11 @@ inline bool SendPromptToCliRuntime(uam::AppState& app, ChatSession& chat, const 
 				*error_out = "Failed to start OpenCode bridge.";
 			}
 
+			if (error_out != nullptr && *error_out == "OpenCode bridge is starting.")
+			{
+				app.status_line = *error_out;
+			}
+
 			return false;
 		}
 	}

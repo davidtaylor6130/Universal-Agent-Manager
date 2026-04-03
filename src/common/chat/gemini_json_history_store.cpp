@@ -161,7 +161,10 @@ std::optional<ChatSession> GeminiJsonHistoryStore::ParseFile(const std::filesyst
 	return chat;
 }
 
-std::vector<ChatSession> GeminiJsonHistoryStore::Load(const std::filesystem::path& chats_dir, const ProviderProfile& provider, const GeminiJsonHistoryStoreOptions& options)
+std::vector<ChatSession> GeminiJsonHistoryStore::Load(const std::filesystem::path& chats_dir,
+                                                      const ProviderProfile& provider,
+                                                      const GeminiJsonHistoryStoreOptions& options,
+                                                      std::stop_token stop_token)
 {
 	namespace fs = std::filesystem;
 	std::vector<ChatSession> chats;
@@ -175,6 +178,11 @@ std::vector<ChatSession> GeminiJsonHistoryStore::Load(const std::filesystem::pat
 
 	for (const auto& item : fs::directory_iterator(chats_dir, ec))
 	{
+		if (stop_token.stop_requested())
+		{
+			break;
+		}
+
 		if (ec || !item.is_regular_file() || item.path().extension() != ".json")
 		{
 			continue;

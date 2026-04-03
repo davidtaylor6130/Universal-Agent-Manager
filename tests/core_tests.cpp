@@ -13,6 +13,7 @@
 #include "common/provider/provider_runtime.h"
 #include "common/rag/rag_index_service.h"
 #include "common/config/settings_store.h"
+#include "common/platform/platform_services.h"
 #include "common/rag/ollama_engine_client.h"
 #include "common/state/app_state.h"
 #include "common/ui/chat_actions/chat_action_pending_calls.h"
@@ -848,9 +849,10 @@ UAM_TEST(TestPendingCallCompletionUsesLaunchTimeProviderSnapshot)
 	call.chat_id = draft.id;
 	call.provider_id_snapshot = "gemini-cli";
 	call.native_history_chats_dir_snapshot = chats_dir.string();
-	call.completed = std::make_shared<std::atomic<bool>>(true);
-	call.output = std::make_shared<std::string>("raw local fallback output");
-	app.pending_calls.push_back(call);
+	call.state = std::make_shared<AsyncProcessTaskState>();
+	call.state->result.output = "raw local fallback output";
+	call.state->completed.store(true, std::memory_order_release);
+	app.pending_calls.push_back(std::move(call));
 
 	PollPendingRuntimeCall(app);
 
@@ -901,6 +903,61 @@ UAM_TEST(TestRemoveChatUsesDeletedChatProviderForNativeCleanup)
 	UAM_ASSERT(!delete_ec);
 	WaitForFileMissing(chats_dir / "session-delete.json");
 	UAM_ASSERT(!fs::exists(chats_dir / "session-delete.json"));
+}
+
+UAM_TEST(TestDeleteNativeSessionFileForChatReturnsFalseWhenRemoveFails)
+{
+	TempDir data_root("uam-remove-chat-delete-error-data");
+	TempDir gemini_home("uam-remove-chat-delete-error-gemini-home");
+	TempDir project("uam-remove-chat-delete-error-project");
+
+	const fs::path tmp_dir = gemini_home.root / "tmp" / "release";
+	const fs::path chats_dir = tmp_dir / "chats";
+	fs::create_directories(chats_dir);
+	WriteNativeProjectRoot(tmp_dir, project.root);
+	WriteGeminiNativeSession(chats_dir, "session-delete-error", {{"user", "delete me"}, {"assistant", "done"}});
+
+	ScopedEnvVar cli("GEMINI_CLI_HOME", gemini_home.root.string());
+	ScopedEnvVar gemini("GEMINI_HOME", std::nullopt);
+
+	uam::AppState app = MakeTestAppState(data_root.root);
+	app.folders.push_back(ChatFolder{"folder-a", "Folder A", project.root.string(), false});
+	app.settings.active_provider_id = "codex-cli";
+
+	ChatSession chat;
+	chat.id = "session-delete-error";
+	chat.provider_id = "gemini-cli";
+	chat.folder_id = "folder-a";
+	chat.uses_native_session = true;
+	chat.native_session_id = "session-delete-error";
+
+#if defined(_WIN32)
+	std::error_code delete_ec;
+	UAM_ASSERT(ChatHistorySyncService().DeleteNativeSessionFileForChat(app, chat, &delete_ec));
+	UAM_ASSERT(!delete_ec);
+#else
+	fs::permissions(chats_dir, fs::perms::owner_read | fs::perms::owner_exec, fs::perm_options::replace);
+
+	std::error_code delete_ec;
+	const bool deleted = ChatHistorySyncService().DeleteNativeSessionFileForChat(app, chat, &delete_ec);
+	fs::permissions(chats_dir, fs::perms::owner_all, fs::perm_options::replace);
+
+	UAM_ASSERT(!deleted);
+	UAM_ASSERT(static_cast<bool>(delete_ec));
+	UAM_ASSERT(fs::exists(chats_dir / "session-delete-error.json"));
+#endif
+}
+
+UAM_TEST(TestProcessServiceExecuteCommandTimesOut)
+{
+#if defined(_WIN32)
+	const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand("powershell -Command \"Start-Sleep -Seconds 2\"", 100);
+#else
+	const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand("sleep 2", 100);
+#endif
+
+	UAM_ASSERT(result.timed_out);
+	UAM_ASSERT(!result.ok);
 }
 
 UAM_TEST(TestChatBranchingReparentChildrenAfterDelete)

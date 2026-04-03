@@ -23,6 +23,13 @@ namespace
 	using uam::AppState;
 	using uam::OpenCodeBridgeState;
 
+	enum class BridgeEnsureStatus
+	{
+		Ready,
+		Starting,
+		Failed
+	};
+
 	std::string Trim(const std::string& value)
 	{
 		const auto start = value.find_first_not_of(" \t\r\n");
@@ -197,6 +204,14 @@ namespace
 	fs::path ResolveOpenCodeConfigPath()
 	{
 		return PlatformServicesFactory::Instance().path_service.ResolveOpenCodeConfigPath();
+	}
+
+	bool EnsureOpenCodeConfigProvisioned(AppState& app, std::string* error_out = nullptr);
+	void StopOpenCodeBridge(AppState& app, const bool keep_token);
+
+	bool BridgeSignatureMatches(const AppState& app, const fs::path& model_folder, const std::string& requested_model)
+	{
+		return Trim(app.opencode_bridge.model_folder) == model_folder.string() && Trim(app.opencode_bridge.requested_model) == Trim(requested_model);
 	}
 
 	fs::path BuildOpenCodeBridgeReadyFilePath(const AppState& app)
@@ -497,69 +512,130 @@ namespace
 		}
 	}
 
-	bool WaitForOpenCodeBridgeReadyFile(AppState& app, const fs::path& ready_file, OpenCodeBridgeReadyInfo* info_out, std::string* error_out = nullptr)
+	BridgeEnsureStatus FailOpenCodeBridgeStartup(AppState& app, const std::string& error, std::string* error_out = nullptr)
 	{
-		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(12);
-
-		while (std::chrono::steady_clock::now() < deadline)
-		{
-			std::error_code ec;
-
-			if (fs::exists(ready_file, ec) && !ec)
-			{
-				const std::string text = Trim(ReadTextFile(ready_file));
-
-				if (!text.empty())
-				{
-					const std::optional<OpenCodeBridgeReadyInfo> info = ParseOpenCodeBridgeReadyInfo(text);
-
-					if (info.has_value())
-					{
-						if (!info->ok && !info->error.empty())
-						{
-							if (error_out != nullptr)
-							{
-								*error_out = info->error;
-							}
-
-							return false;
-						}
-
-						if (!info->endpoint.empty())
-						{
-							if (info_out != nullptr)
-							{
-								*info_out = info.value();
-							}
-
-							return true;
-						}
-					}
-				}
-			}
-
-			if (!IsOpenCodeBridgeProcessRunning(app))
-			{
-				if (error_out != nullptr)
-				{
-					*error_out = "OpenCode bridge process exited before readiness handshake.";
-				}
-
-				return false;
-			}
-
-			std::this_thread::sleep_for(std::chrono::milliseconds(40));
-		}
+		StopOpenCodeBridge(app, true);
+		app.opencode_bridge.last_error = error;
 
 		if (error_out != nullptr)
 		{
-			*error_out = "Timed out waiting for OpenCode bridge ready file.";
+			*error_out = error;
 		}
 
-		return false;
+		return BridgeEnsureStatus::Failed;
 	}
 
-	bool EnsureOpenCodeConfigProvisioned(AppState& app, std::string* error_out = nullptr)
+	BridgeEnsureStatus RefreshStartedBridgeState(AppState& app, std::string* error_out = nullptr)
+	{
+		if (!IsOpenCodeBridgeProcessRunning(app))
+		{
+			app.opencode_bridge.healthy = false;
+			app.opencode_bridge.running = false;
+			std::string error = app.opencode_bridge.last_error;
+
+			if (error.empty() || error == "OpenCode bridge is starting.")
+			{
+				error = "OpenCode bridge process exited before readiness handshake.";
+			}
+
+			if (error_out != nullptr)
+			{
+				*error_out = error;
+			}
+
+			app.opencode_bridge.last_error = error;
+
+			return BridgeEnsureStatus::Failed;
+		}
+
+		const fs::path ready_file = app.opencode_bridge.ready_file.empty() ? fs::path{} : fs::path(app.opencode_bridge.ready_file);
+
+		if (ready_file.empty())
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "OpenCode bridge is starting.";
+			}
+
+			return BridgeEnsureStatus::Starting;
+		}
+
+		std::error_code ec;
+
+		if (!fs::exists(ready_file, ec) || ec)
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "OpenCode bridge is starting.";
+			}
+
+			return BridgeEnsureStatus::Starting;
+		}
+
+		const std::string text = Trim(ReadTextFile(ready_file));
+
+		if (text.empty())
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "OpenCode bridge is starting.";
+			}
+
+			return BridgeEnsureStatus::Starting;
+		}
+
+		const std::optional<OpenCodeBridgeReadyInfo> info = ParseOpenCodeBridgeReadyInfo(text);
+
+		if (!info.has_value())
+		{
+			return FailOpenCodeBridgeStartup(app, "OpenCode bridge ready file is invalid.", error_out);
+		}
+
+		if (!info->ok && !info->error.empty())
+		{
+			return FailOpenCodeBridgeStartup(app, info->error, error_out);
+		}
+
+		if (info->endpoint.empty())
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "OpenCode bridge is starting.";
+			}
+
+			return BridgeEnsureStatus::Starting;
+		}
+
+		app.opencode_bridge.endpoint = info->endpoint;
+		app.opencode_bridge.api_base = info->api_base.empty() ? (info->endpoint + "/v1") : info->api_base;
+		app.opencode_bridge.selected_model = info->model.empty() ? Trim(app.opencode_bridge.requested_model) : info->model;
+		app.opencode_bridge.running = true;
+		app.opencode_bridge.healthy = false;
+
+		std::string health_error;
+
+		if (!ProbeOpenCodeBridgeHealth(app, &health_error))
+		{
+			return FailOpenCodeBridgeStartup(app, health_error.empty() ? "OpenCode bridge health check failed." : health_error, error_out);
+		}
+
+		app.opencode_bridge.healthy = true;
+		std::string config_error;
+
+		if (!EnsureOpenCodeConfigProvisioned(app, &config_error))
+		{
+			return FailOpenCodeBridgeStartup(app, config_error.empty() ? "OpenCode config provisioning failed." : config_error, error_out);
+		}
+
+		app.opencode_bridge.last_error.clear();
+		if (error_out != nullptr)
+		{
+			error_out->clear();
+		}
+		return BridgeEnsureStatus::Ready;
+	}
+
+	bool EnsureOpenCodeConfigProvisioned(AppState& app, std::string* error_out)
 	{
 		const std::string api_base = Trim(app.opencode_bridge.api_base);
 		std::string model_id = Trim(app.opencode_bridge.selected_model);
@@ -718,7 +794,7 @@ namespace
 		bridge_service.Stop(app, keep_token);
 	}
 
-	bool StartOpenCodeBridge(AppState& app, const fs::path& model_folder, const std::string& requested_model, std::string* error_out = nullptr)
+	BridgeEnsureStatus StartOpenCodeBridge(AppState& app, const fs::path& model_folder, const std::string& requested_model, std::string* error_out = nullptr)
 	{
 		const fs::path normalized_model_folder = NormalizeAbsolutePath(model_folder).empty() ? model_folder : NormalizeAbsolutePath(model_folder);
 		const fs::path bridge_executable = ResolveOpenCodeBridgeExecutablePath();
@@ -730,7 +806,8 @@ namespace
 				*error_out = "Could not resolve uam_ollama_engine_bridge executable.";
 			}
 
-			return false;
+			app.opencode_bridge.last_error = (error_out != nullptr) ? *error_out : "Could not resolve uam_ollama_engine_bridge executable.";
+			return BridgeEnsureStatus::Failed;
 		}
 
 		if (app.opencode_bridge.token.empty())
@@ -747,105 +824,33 @@ namespace
 		if (!StartOpenCodeBridgeProcess(app, argv, error_out))
 		{
 			app.opencode_bridge.last_error = (error_out != nullptr) ? *error_out : "OpenCode bridge process launch failed.";
-			return false;
+			return BridgeEnsureStatus::Failed;
 		}
 
-		OpenCodeBridgeReadyInfo ready_info;
-		std::string ready_error;
-
-		if (!WaitForOpenCodeBridgeReadyFile(app, ready_file, &ready_info, &ready_error))
-		{
-			StopOpenCodeBridge(app, true);
-
-			if (error_out != nullptr)
-			{
-				*error_out = ready_error.empty() ? "OpenCode bridge did not become ready." : ready_error;
-			}
-
-			app.opencode_bridge.last_error = (error_out != nullptr) ? *error_out : "OpenCode bridge startup failed.";
-			return false;
-		}
-
-		app.opencode_bridge.endpoint = ready_info.endpoint;
-		app.opencode_bridge.api_base = ready_info.api_base.empty() ? (ready_info.endpoint + "/v1") : ready_info.api_base;
-		app.opencode_bridge.selected_model = ready_info.model.empty() ? Trim(requested_model) : ready_info.model;
+		app.opencode_bridge.endpoint.clear();
+		app.opencode_bridge.api_base.clear();
+		app.opencode_bridge.selected_model.clear();
 		app.opencode_bridge.requested_model = Trim(requested_model);
 		app.opencode_bridge.model_folder = normalized_model_folder.string();
 		app.opencode_bridge.ready_file = ready_file.string();
 		app.opencode_bridge.running = true;
 		app.opencode_bridge.healthy = false;
-
-		std::string health_error;
-
-		if (!ProbeOpenCodeBridgeHealth(app, &health_error))
+		app.opencode_bridge.last_error = "OpenCode bridge is starting.";
+		if (error_out != nullptr)
 		{
-			StopOpenCodeBridge(app, true);
-
-			if (error_out != nullptr)
-			{
-				*error_out = health_error.empty() ? "OpenCode bridge health check failed." : health_error;
-			}
-
-			app.opencode_bridge.last_error = (error_out != nullptr) ? *error_out : "OpenCode bridge health check failed.";
-			return false;
+			*error_out = app.opencode_bridge.last_error;
 		}
-
-		app.opencode_bridge.healthy = true;
-		std::string config_error;
-
-		if (!EnsureOpenCodeConfigProvisioned(app, &config_error))
-		{
-			StopOpenCodeBridge(app, true);
-
-			if (error_out != nullptr)
-			{
-				*error_out = config_error.empty() ? "OpenCode config provisioning failed." : config_error;
-			}
-
-			app.opencode_bridge.last_error = (error_out != nullptr) ? *error_out : "OpenCode config provisioning failed.";
-			return false;
-		}
-
-		app.opencode_bridge.last_error.clear();
-		return true;
+		return BridgeEnsureStatus::Starting;
 	}
 
-	bool RestartLocalBridgeIfModelChanged(AppState& app, const fs::path& desired_model_folder, const std::string& desired_requested_model, std::string* error_out)
+	BridgeEnsureStatus RestartLocalBridgeIfModelChanged(AppState& app, const fs::path& desired_model_folder, const std::string& desired_requested_model, std::string* error_out)
 	{
 		const bool process_running = IsOpenCodeBridgeProcessRunning(app);
-		const bool signature_matches = process_running && app.opencode_bridge.model_folder == desired_model_folder.string() && app.opencode_bridge.requested_model == desired_requested_model && !Trim(app.opencode_bridge.endpoint).empty() && !Trim(app.opencode_bridge.api_base).empty();
+		const bool signature_matches = process_running && BridgeSignatureMatches(app, desired_model_folder, desired_requested_model);
 
 		if (signature_matches)
 		{
-			std::string health_error;
-
-			if (!ProbeOpenCodeBridgeHealth(app, &health_error))
-			{
-				StopOpenCodeBridge(app, true);
-
-				if (!StartOpenCodeBridge(app, desired_model_folder, desired_requested_model, error_out))
-				{
-					return false;
-				}
-
-				return true;
-			}
-
-			app.opencode_bridge.healthy = true;
-			std::string config_error;
-
-			if (!EnsureOpenCodeConfigProvisioned(app, &config_error))
-			{
-				if (error_out != nullptr)
-				{
-					*error_out = config_error;
-				}
-
-				app.opencode_bridge.last_error = config_error;
-				return false;
-			}
-
-			return true;
+			return RefreshStartedBridgeState(app, error_out);
 		}
 
 		StopOpenCodeBridge(app, true);
@@ -861,14 +866,15 @@ bool OpenCodeLocalBridgeService::EnsureRunning(AppState& app,
 {
 	const fs::path desired_model_folder = NormalizeAbsolutePath(model_folder).empty() ? model_folder : NormalizeAbsolutePath(model_folder);
 	const std::string desired_requested_model = Trim(requested_model);
-	const bool ok = RestartLocalBridgeIfModelChanged(app, desired_model_folder, desired_requested_model, error_out);
+	const BridgeEnsureStatus status = RestartLocalBridgeIfModelChanged(app, desired_model_folder, desired_requested_model, error_out);
+	const bool ok = (status == BridgeEnsureStatus::Ready);
 
 	if (!ok && error_out != nullptr && error_out->empty())
 	{
-		*error_out = "Failed to ensure OpenCode bridge is running.";
+		*error_out = (status == BridgeEnsureStatus::Starting) ? "OpenCode bridge is starting." : "Failed to ensure OpenCode bridge is running.";
 	}
 
-	if (!ok)
+	if (!ok && status == BridgeEnsureStatus::Failed)
 	{
 		app.opencode_bridge.healthy = false;
 	}

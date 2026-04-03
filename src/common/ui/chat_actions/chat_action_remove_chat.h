@@ -14,7 +14,6 @@
 
 #include <algorithm>
 #include <filesystem>
-#include <thread>
 
 /// <summary>
 /// Chat deletion flow, including local/native history cleanup and selection repair.
@@ -43,29 +42,11 @@ inline bool RemoveChatById(AppState& app, const std::string& chat_id)
 	StopAndEraseCliTerminalForChat(app, chat.id);
 
 	std::error_code local_delete_ec;
-	bool local_delete_async_scheduled = false;
-
-	if (PlatformServicesFactory::Instance().ui_traits.UseWindowsLayoutAdjustments())
-	{
-		const std::filesystem::path local_chat_path = AppPaths::ChatPath(app.data_root, chat.id);
-		auto delete_local_chat_path = [local_chat_path]()
-		{
-			std::error_code async_local_delete_ec;
-			std::filesystem::remove_all(local_chat_path, async_local_delete_ec);
-		};
-
-		std::thread(delete_local_chat_path).detach();
-		local_delete_async_scheduled = true;
-	}
-	else
-	{
-		std::filesystem::remove_all(AppPaths::ChatPath(app.data_root, chat.id), local_delete_ec);
-	}
+	std::filesystem::remove_all(AppPaths::ChatPath(app.data_root, chat.id), local_delete_ec);
 
 	const std::string native_session_id = chat.uses_native_session ? chat.native_session_id : "";
 	std::error_code native_delete_ec;
 	bool native_delete_attempted = false;
-	bool native_delete_async_scheduled = false;
 	const ProviderProfile& chat_provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 	const std::filesystem::path native_history_chats_dir = ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(app, chat);
 
@@ -73,31 +54,10 @@ inline bool RemoveChatById(AppState& app, const std::string& chat_id)
 	{
 		native_delete_attempted = true;
 
-		if (PlatformServicesFactory::Instance().ui_traits.UseWindowsLayoutAdjustments())
+		if (const auto native_file = ChatHistorySyncService().FindNativeSessionFilePath(native_history_chats_dir, native_session_id); native_file.has_value())
 		{
-			const std::filesystem::path chats_dir_snapshot = native_history_chats_dir;
-			const std::string native_session_id_snapshot = native_session_id;
-			auto delete_native_session_file = [chats_dir_snapshot, native_session_id_snapshot]()
-			{
-				const auto native_file = ChatHistorySyncService().FindNativeSessionFilePath(chats_dir_snapshot, native_session_id_snapshot);
-
-				if (!native_file.has_value())
-				{
-					return;
-				}
-
-				std::error_code async_delete_ec;
-				std::filesystem::remove(native_file.value(), async_delete_ec);
-			};
-
-			std::thread(delete_native_session_file).detach();
-			native_delete_async_scheduled = true;
+			ChatHistorySyncService().DeleteNativeSessionFileForChat(app, chat, &native_delete_ec);
 		}
-	else if (const auto native_file = ChatHistorySyncService().FindNativeSessionFilePath(native_history_chats_dir, native_session_id); native_file.has_value())
-	{
-		ChatHistorySyncService().DeleteNativeSessionFileForChat(app, chat, &native_delete_ec);
-	}
-
 	}
 
 	ChatBranching::ReparentChildrenAfterDelete(app.chats, chat.id);
@@ -130,7 +90,25 @@ inline bool RemoveChatById(AppState& app, const std::string& chat_id)
 
 	app.composer_text.clear();
 
-	app.pending_calls.erase(std::remove_if(app.pending_calls.begin(), app.pending_calls.end(), [&](const PendingRuntimeCall& call) { return call.chat_id == chat.id; }), app.pending_calls.end());
+	app.pending_calls.erase(std::remove_if(app.pending_calls.begin(),
+	                                      app.pending_calls.end(),
+	                                      [&](PendingRuntimeCall& call)
+	                                      {
+		                                      if (call.chat_id != chat.id)
+		                                      {
+			                                      return false;
+		                                      }
+
+		                                      if (call.worker != nullptr)
+		                                      {
+			                                      call.worker->request_stop();
+			                                      call.worker.reset();
+		                                      }
+
+		                                      call.state.reset();
+		                                      return true;
+	                                      }),
+	                      app.pending_calls.end());
 	app.resolved_native_sessions_by_chat_id.erase(chat.id);
 
 	for (auto it = app.resolved_native_sessions_by_chat_id.begin(); it != app.resolved_native_sessions_by_chat_id.end();)
@@ -171,18 +149,6 @@ inline bool RemoveChatById(AppState& app, const std::string& chat_id)
 	if (local_delete_ec)
 	{
 		app.status_line = "Chat removed from UI, but deleting local history failed.";
-	}
-	else if (local_delete_async_scheduled && native_delete_async_scheduled)
-	{
-		app.status_line = "Chat deleted. Local and native history cleanup are running in background.";
-	}
-	else if (local_delete_async_scheduled)
-	{
-		app.status_line = "Chat deleted. Local history cleanup is running in background.";
-	}
-	else if (native_delete_async_scheduled)
-	{
-		app.status_line = "Chat deleted. Native Gemini history cleanup is running in background.";
 	}
 	else if (native_delete_attempted && native_delete_ec)
 	{

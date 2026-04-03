@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <stop_token>
 #include <vector>
 
 /// <summary>
@@ -28,5 +29,8 @@ class GeminiJsonHistoryStore
 	static std::optional<ChatSession> ParseFile(const std::filesystem::path& file_path, const ProviderProfile& provider, const GeminiJsonHistoryStoreOptions& options = {});
 
 	/// <summary>Loads all Gemini native sessions from a chats directory.</summary>
-	static std::vector<ChatSession> Load(const std::filesystem::path& chats_dir, const ProviderProfile& provider, const GeminiJsonHistoryStoreOptions& options = {});
+	static std::vector<ChatSession> Load(const std::filesystem::path& chats_dir,
+	                                     const ProviderProfile& provider,
+	                                     const GeminiJsonHistoryStoreOptions& options = {},
+	                                     std::stop_token stop_token = {});
 };

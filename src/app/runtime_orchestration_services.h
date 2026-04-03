@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -40,7 +41,8 @@ class ChatHistorySyncService
 	                        const std::string& p_success,
 	                        const std::string& p_failure) const;
 	std::vector<ChatSession> LoadNativeSessionChats(const std::filesystem::path& p_chatsDir,
-	                                                const ProviderProfile& p_provider) const;
+	                                                const ProviderProfile& p_provider,
+	                                                std::stop_token p_stopToken = {}) const;
 	std::optional<std::filesystem::path> ResolveNativeHistoryChatsDirForWorkspace(const std::filesystem::path& p_workspaceRoot) const;
 	std::filesystem::path ResolveNativeHistoryChatsDirForChat(const uam::AppState& p_app, const ChatSession& p_chat) const;
 	void LoadSidebarChats(uam::AppState& p_app) const;

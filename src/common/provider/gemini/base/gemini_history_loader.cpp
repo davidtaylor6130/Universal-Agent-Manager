@@ -2,10 +2,13 @@
 
 #include "common/chat/gemini_json_history_store.h"
 
-std::vector<ChatSession> LoadGeminiJsonHistoryForRuntime(const std::filesystem::path& chats_dir, const ProviderProfile& profile, const ProviderRuntimeHistoryLoadOptions& options)
+std::vector<ChatSession> LoadGeminiJsonHistoryForRuntime(const std::filesystem::path& chats_dir,
+                                                         const ProviderProfile& profile,
+                                                         const ProviderRuntimeHistoryLoadOptions& options,
+                                                         std::stop_token stop_token)
 {
 	GeminiJsonHistoryStoreOptions native_options;
 	native_options.max_file_bytes = options.native_max_file_bytes;
 	native_options.max_messages = options.native_max_messages;
-	return GeminiJsonHistoryStore::Load(chats_dir, profile, native_options);
+	return GeminiJsonHistoryStore::Load(chats_dir, profile, native_options, stop_token);
 }

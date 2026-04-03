@@ -22,6 +22,17 @@ inline const ProviderProfile& ResolvePendingCallProviderOrDefault(const uam::App
 	return ProviderResolutionService().ActiveProviderOrDefault(app);
 }
 
+inline void ResetPendingRuntimeCallWorker(PendingRuntimeCall& call)
+{
+	if (call.worker != nullptr)
+	{
+		call.worker->request_stop();
+		call.worker.reset();
+	}
+
+	call.state.reset();
+}
+
 /// <summary>
 /// Polls asynchronous provider calls and syncs results back into chat state.
 /// </summary>
@@ -54,19 +65,20 @@ inline void PollPendingRuntimeCall(uam::AppState& app)
 	{
 		PendingRuntimeCall& call = app.pending_calls[i];
 
-		if (call.completed == nullptr || call.output == nullptr)
+		if (call.state == nullptr)
 		{
+			ResetPendingRuntimeCallWorker(call);
 			app.pending_calls.erase(app.pending_calls.begin() + static_cast<std::ptrdiff_t>(i));
 			continue;
 		}
 
-		if (!call.completed->load(std::memory_order_acquire))
+		if (!call.state->completed.load(std::memory_order_acquire))
 		{
 			++i;
 			continue;
 		}
 
-		const std::string output = *call.output;
+		const std::string output = call.state->result.output;
 		const std::string pending_chat_id = call.chat_id;
 		const ChatSession* lcp_selectedBefore = ChatDomainService().SelectedChat(app);
 		const std::string selected_before_id = (lcp_selectedBefore != nullptr) ? lcp_selectedBefore->id : "";
@@ -100,6 +112,7 @@ inline void PollPendingRuntimeCall(uam::AppState& app)
 			}
 
 			app.resolved_native_sessions_by_chat_id.erase(pending_chat_id);
+			ResetPendingRuntimeCallWorker(call);
 			app.pending_calls.erase(app.pending_calls.begin() + static_cast<std::ptrdiff_t>(i));
 			continue;
 		}
@@ -218,6 +231,7 @@ inline void PollPendingRuntimeCall(uam::AppState& app)
 		}
 
 		ChatBranching::Normalize(app.chats);
+		ResetPendingRuntimeCallWorker(call);
 		app.pending_calls.erase(app.pending_calls.begin() + static_cast<std::ptrdiff_t>(i));
 	}
 }

@@ -1,9 +1,12 @@
 #pragma once
 
+#include "common/models/app_models.h"
+
 #include <filesystem>
 #include <ctime>
 #include <optional>
 #include <cstddef>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -54,6 +57,9 @@ class IPlatformProcessService
 	virtual std::string BuildShellCommandWithWorkingDirectory(const std::filesystem::path& working_directory, const std::string& command) const = 0;
 	virtual bool CaptureCommandOutput(const std::string& command, std::string* output_out, int* raw_status_out, std::string* error_out = nullptr) const = 0;
 	virtual int NormalizeCapturedCommandExitCode(int raw_status) const = 0;
+	virtual ProcessExecutionResult ExecuteCommand(const std::string& command,
+	                                              int timeout_ms = -1,
+	                                              std::stop_token stop_token = {}) const = 0;
 	virtual std::string GeminiDowngradeCommand() const = 0;
 	virtual std::filesystem::path ResolveCurrentExecutablePath() const = 0;
 	virtual std::string OpenCodeBridgeBinaryName() const = 0;

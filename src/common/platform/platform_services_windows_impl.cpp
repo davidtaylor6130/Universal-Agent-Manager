@@ -842,62 +842,187 @@ namespace
 			return "cd /d " + ShellQuoteWindowsForCmd(working_directory.string()) + " && " + command;
 		}
 
-		bool CaptureCommandOutput(const std::string& command, std::string* output_out, int* raw_status_out, std::string* error_out = nullptr) const override
-		{
-			std::unique_ptr<FILE, int (*)(FILE*)> pipe(_popen(command.c_str(), "r"), _pclose);
-
-			if (pipe == nullptr)
+			bool CaptureCommandOutput(const std::string& command, std::string* output_out, int* raw_status_out, std::string* error_out = nullptr) const override
 			{
+				const ProcessExecutionResult result = ExecuteCommand(command);
+
 				if (output_out != nullptr)
 				{
-					output_out->clear();
+					*output_out = result.output;
 				}
 
 				if (raw_status_out != nullptr)
 				{
-					*raw_status_out = -1;
+					*raw_status_out = result.exit_code;
 				}
 
 				if (error_out != nullptr)
 				{
-					*error_out = "Failed to launch command.";
+					*error_out = result.error;
 				}
 
-				return false;
+				return !result.timed_out && !result.canceled && result.error.empty();
 			}
 
-			std::array<char, 4096> buffer{};
-			std::string output;
-
-			while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe.get()) != nullptr)
+			int NormalizeCapturedCommandExitCode(const int raw_status) const override
 			{
-				output += buffer.data();
+				return raw_status;
 			}
 
-			const int raw_status = pipe.get_deleter()(pipe.release());
-
-			if (output_out != nullptr)
+			ProcessExecutionResult ExecuteCommand(const std::string& command,
+			                                     const int timeout_ms = -1,
+			                                     std::stop_token stop_token = {}) const override
 			{
-				*output_out = output;
+				ProcessExecutionResult result;
+				SECURITY_ATTRIBUTES sa{};
+				sa.nLength = sizeof(sa);
+				sa.bInheritHandle = TRUE;
+
+				HANDLE stdout_read = INVALID_HANDLE_VALUE;
+				HANDLE stdout_write = INVALID_HANDLE_VALUE;
+
+				if (!CreatePipe(&stdout_read, &stdout_write, &sa, 0))
+				{
+					result.error = "Failed to create command output pipe.";
+					return result;
+				}
+
+				SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
+				const std::wstring command_w = WideFromUtf8("cmd.exe /C " + command);
+
+				if (command_w.empty())
+				{
+					CloseHandle(stdout_read);
+					CloseHandle(stdout_write);
+					result.error = "Failed to encode command line.";
+					return result;
+				}
+
+				std::vector<wchar_t> command_line(command_w.begin(), command_w.end());
+				command_line.push_back(L'\0');
+
+				STARTUPINFOW startup_info{};
+				startup_info.cb = sizeof(startup_info);
+				startup_info.dwFlags = STARTF_USESTDHANDLES;
+				startup_info.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+				startup_info.hStdOutput = stdout_write;
+				startup_info.hStdError = stdout_write;
+
+				PROCESS_INFORMATION process_info{};
+				const BOOL created = CreateProcessW(nullptr,
+				                                   command_line.data(),
+				                                   nullptr,
+				                                   nullptr,
+				                                   TRUE,
+				                                   CREATE_NO_WINDOW,
+				                                   nullptr,
+				                                   nullptr,
+				                                   &startup_info,
+				                                   &process_info);
+				CloseHandle(stdout_write);
+
+				if (!created)
+				{
+					const DWORD launch_error = GetLastError();
+					CloseHandle(stdout_read);
+					result.error = "Failed to launch command (Win32 error " + std::to_string(launch_error) + ").";
+					return result;
+				}
+
+				std::array<char, 4096> buffer{};
+				const auto deadline = (timeout_ms >= 0)
+				    ? (std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms))
+				    : std::chrono::steady_clock::time_point::max();
+				bool process_finished = false;
+				bool pipe_closed = false;
+
+				while (!process_finished || !pipe_closed)
+				{
+					DWORD available = 0;
+
+					if (!pipe_closed && PeekNamedPipe(stdout_read, nullptr, 0, nullptr, &available, nullptr))
+					{
+						while (available > 0)
+						{
+							DWORD bytes_read = 0;
+							const DWORD to_read = static_cast<DWORD>(std::min<std::size_t>(buffer.size(), available));
+
+							if (!ReadFile(stdout_read, buffer.data(), to_read, &bytes_read, nullptr))
+							{
+								pipe_closed = true;
+								break;
+							}
+
+							if (bytes_read == 0)
+							{
+								pipe_closed = true;
+								break;
+							}
+
+							result.output.append(buffer.data(), static_cast<std::size_t>(bytes_read));
+							available -= bytes_read;
+						}
+					}
+
+					const DWORD wait_result = WaitForSingleObject(process_info.hProcess, 0);
+
+					if (wait_result == WAIT_OBJECT_0)
+					{
+						process_finished = true;
+					}
+
+					if (!process_finished && stop_token.stop_requested())
+					{
+						result.canceled = true;
+						result.error = "Command canceled.";
+						TerminateProcess(process_info.hProcess, 1);
+						WaitForSingleObject(process_info.hProcess, 1000);
+						process_finished = true;
+					}
+
+					if (!process_finished && timeout_ms >= 0 && std::chrono::steady_clock::now() >= deadline)
+					{
+						result.timed_out = true;
+						result.error = "Command timed out.";
+						TerminateProcess(process_info.hProcess, 1);
+						WaitForSingleObject(process_info.hProcess, 1000);
+						process_finished = true;
+					}
+
+					if (process_finished && !pipe_closed)
+					{
+						DWORD bytes_read = 0;
+
+						while (ReadFile(stdout_read, buffer.data(), static_cast<DWORD>(buffer.size()), &bytes_read, nullptr) && bytes_read > 0)
+						{
+							result.output.append(buffer.data(), static_cast<std::size_t>(bytes_read));
+						}
+
+						pipe_closed = true;
+					}
+
+					if (process_finished && pipe_closed)
+					{
+						break;
+					}
+
+					std::this_thread::sleep_for(std::chrono::milliseconds(10));
+				}
+
+				DWORD exit_code = 1;
+				GetExitCodeProcess(process_info.hProcess, &exit_code);
+				CloseHandle(stdout_read);
+				CloseHandle(process_info.hProcess);
+				CloseHandle(process_info.hThread);
+
+				if (!result.timed_out && !result.canceled)
+				{
+					result.exit_code = static_cast<int>(exit_code);
+					result.ok = result.error.empty() && result.exit_code == 0;
+				}
+
+				return result;
 			}
-
-			if (raw_status_out != nullptr)
-			{
-				*raw_status_out = raw_status;
-			}
-
-			if (error_out != nullptr)
-			{
-				error_out->clear();
-			}
-
-			return true;
-		}
-
-		int NormalizeCapturedCommandExitCode(const int raw_status) const override
-		{
-			return raw_status;
-		}
 
 		std::string GeminiDowngradeCommand() const override
 		{

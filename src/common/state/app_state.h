@@ -75,8 +75,8 @@ namespace uam
 	{
 		bool running = false;
 		std::string command_preview;
-		std::shared_ptr<std::atomic<bool>> completed;
-		std::shared_ptr<std::string> output;
+		std::shared_ptr<AsyncProcessTaskState> state;
+		std::unique_ptr<std::jthread> worker;
 	};
 
 	/// <summary>
