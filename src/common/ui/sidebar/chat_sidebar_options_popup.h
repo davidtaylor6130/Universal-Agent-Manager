@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/chat_domain_service.h"
+#include "common/rag/rag_app_helpers.h"
 
 /// <summary>
 /// Draws the sidebar chat context menu popup.

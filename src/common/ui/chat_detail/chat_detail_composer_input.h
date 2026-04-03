@@ -1,4 +1,5 @@
 #pragma once
+#include "common/rag/rag_app_helpers.h"
 #include "common/platform/platform_services.h"
 
 /// <summary>

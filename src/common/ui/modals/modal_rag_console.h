@@ -1,5 +1,7 @@
 #pragma once
 
+#include "common/rag/rag_app_helpers.h"
+
 /// <summary>
 /// Draws the project-wide RAG console modal with scan progress and manual retrieval testing.
 /// </summary>

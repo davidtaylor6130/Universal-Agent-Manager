@@ -3,6 +3,7 @@
 #include "app/application_core_helpers.h"
 
 #include "common/provider/opencode/local/opencode_local_bridge_service.h"
+#include "common/rag/rag_app_helpers.h"
 
 #include <algorithm>
 

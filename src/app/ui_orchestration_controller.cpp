@@ -7,6 +7,7 @@
 #include <misc/cpp/imgui_stdlib.h>
 
 #include "common/provider/markdown_template_catalog.h"
+#include "common/rag/rag_app_helpers.h"
 #include "common/runtime/terminal_common.h"
 #include "common/ui/ui_sections.h"
 

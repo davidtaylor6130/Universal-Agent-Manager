@@ -3,6 +3,7 @@
 #include "app/chat_domain_service.h"
 #include "app/provider_resolution_service.h"
 #include "app/template_runtime_service.h"
+#include "common/rag/rag_app_helpers.h"
 
 /// <summary>
 /// Desktop menu bar rendering and command dispatch.

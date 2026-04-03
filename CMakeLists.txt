@@ -251,9 +251,17 @@ if(APPLE AND UAM_MACOS_BUNDLE)
 endif()
 
 set(UAM_PLATFORM_SOURCES)
+set(UAM_PLATFORM_IMPL_SOURCES)
 if(WIN32)
   list(APPEND UAM_PLATFORM_SOURCES
     src/uam.rc
+  )
+  list(APPEND UAM_PLATFORM_IMPL_SOURCES
+    src/common/platform/platform_services_windows_impl.cpp
+  )
+elseif(APPLE)
+  list(APPEND UAM_PLATFORM_IMPL_SOURCES
+    src/common/platform/platform_services_macos_impl.cpp
   )
 endif()
 
@@ -273,6 +281,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   ${UAM_IMGUI_SOURCES}
   ${UAM_VTERM_SOURCES}
   ${UAM_PLATFORM_SOURCES}
+  ${UAM_PLATFORM_IMPL_SOURCES}
   src/main.cpp
   src/app/application.cpp
   src/app/application_core_helpers.cpp
@@ -387,6 +396,7 @@ if(UAM_BUILD_TESTS)
   enable_testing()
   add_executable(uam_core_tests
     tests/core_tests.cpp
+    ${UAM_PLATFORM_IMPL_SOURCES}
     src/common/models/app_models.cpp
     src/common/paths/app_paths.cpp
     src/common/config/frontend_actions.cpp

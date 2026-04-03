@@ -1,6 +1,7 @@
 # Build outputs (enforced in CMake)
 /Builds/
 /build
+/cmake-build-*/
 
 # Runtime/data outputs
 /data/
@@ -10,6 +11,8 @@
 
 # Local tool state
 /.gemini/
+/imgui.ini
+/msbuild_uam.log
 
 # IDE/system files
 /.vs/

@@ -13,6 +13,7 @@
 #include "common/chat/chat_branching.h"
 #include "common/chat/chat_repository.h"
 #include "common/platform/platform_services.h"
+#include "common/rag/rag_app_helpers.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/json_runtime.h"
 #include "common/runtime/terminal_common.h"

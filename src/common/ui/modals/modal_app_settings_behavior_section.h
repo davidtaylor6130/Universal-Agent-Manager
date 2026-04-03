@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/runtime/local_engine_runtime_service.h"
+#include "common/rag/rag_app_helpers.h"
 
 /// <summary>
 /// Draws behavior toggles in the app settings modal.

@@ -3,7 +3,6 @@
 
 
 #include "common/state/app_state.h"
-#include "common/rag/rag_app_helpers.h"
 
 #include <cstddef>
 #include <cstdint>

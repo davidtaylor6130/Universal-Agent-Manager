@@ -1,5 +1,7 @@
 #pragma once
 
+#include "common/rag/rag_app_helpers.h"
+
 /// <summary>
 /// Draws RAG configuration and rebuild controls in the chat settings side pane.
 /// </summary>

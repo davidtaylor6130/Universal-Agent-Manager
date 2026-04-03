@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/runtime/local_engine_runtime_service.h"
+#include "common/rag/rag_app_helpers.h"
 
 /// <summary>
 /// Runtime model picker modal shown when local structured runtime has no selected model.

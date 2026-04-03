@@ -9,6 +9,7 @@
 #include "common/chat/chat_folder_store.h"
 #include "common/config/frontend_actions.h"
 #include "common/chat/chat_repository.h"
+#include "common/rag/rag_app_helpers.h"
 #include "common/platform/platform_services.h"
 #include "common/provider/provider_profile.h"
 #include "common/config/settings_store.h"
