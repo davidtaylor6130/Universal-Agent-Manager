@@ -3,6 +3,10 @@
 #include "app/application_core_helpers.h"
 #include "app/chat_domain_service.h"
 
+#include <imgui.h>
+#include <misc/cpp/imgui_stdlib.h>
+
+#include "common/markdown_template_catalog.h"
 #include "common/runtime/terminal_common.h"
 #include "common/ui/ui_sections.h"
 

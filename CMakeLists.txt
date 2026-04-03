@@ -275,7 +275,6 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   ${UAM_PLATFORM_SOURCES}
   src/main.cpp
   src/app/application.cpp
-  src/app/application_support.cpp
   src/app/application_core_helpers.cpp
   src/app/chat_domain_service.cpp
   src/app/native_session_link_service.cpp
@@ -285,6 +284,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/runtime_local_service.cpp
   src/app/runtime_orchestration_services.cpp
   src/app/template_runtime_service.cpp
+  src/app/ui_orchestration_controller.cpp
   src/common/models/app_models.cpp
   src/common/paths/app_paths.cpp
   src/common/chat/chat_folder_store.cpp
