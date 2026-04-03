@@ -8,8 +8,11 @@
 
 #include "common/runtime/provider_cli_compatibility_service.h"
 
+#define UAM_TARGET_FPS 30
+
 Application::Application()
 {
+	// Constructor owns startup for the app lifetime.
 	if (!OnLoad())
 	{
 		m_done = true;
@@ -19,6 +22,7 @@ Application::Application()
 
 Application::~Application()
 {
+	// Destructor owns final app shutdown and low-level cleanup.
 	Shutdown();
 
 	if (m_imguiInitialized)
@@ -61,12 +65,22 @@ Application::~Application()
 
 int Application::Run()
 {
+	//Figure the time for the fps wanted defined by UAM_TARGET_FPS
+	constexpr Uint64 kFrameDurationMs = 1000 / UAM_TARGET_FPS;
+
+	// Run owns the SDL event pump and frame loop.
 	while (!m_done && m_window != nullptr)
 	{
+		//GetFrame time start
+		const Uint64 l_frameStartMs = SDL_GetTicks64();
+
+		// The outer loop drives frames until shutdown is requested or the window is gone.
 		SDL_Event l_event;
 
+		// SDL may queue multiple input/window events between frames, so drain them before Update().
 		while (SDL_PollEvent(&l_event))
 		{
+			// Let an embedded terminal consume Escape first so app-level handlers do not steal it.
 			if (m_terminalSessionManager.ForwardEscapeToSelectedTerminal(m_app, l_event))
 			{
 				continue;
@@ -90,14 +104,20 @@ int Application::Run()
 
 				if (l_windowEvent == SDL_WINDOWEVENT_SIZE_CHANGED || l_windowEvent == SDL_WINDOWEVENT_RESIZED || l_windowEvent == SDL_WINDOWEVENT_MAXIMIZED || l_windowEvent == SDL_WINDOWEVENT_RESTORED)
 				{
+					// Persist size/state changes as they happen.
 					PersistWindowStateAndSettings();
 				}
 			}
 		}
 
-		if (!Update())
+		//Call the actual apps logic and update loop.
+		Update();
+
+		//Enforce a strick fps set at the start of run.
+		const Uint64 l_frameElapsedMs = SDL_GetTicks64() - l_frameStartMs;
+		if (l_frameElapsedMs < kFrameDurationMs)
 		{
-			break;
+			SDL_Delay(static_cast<Uint32>(kFrameDurationMs - l_frameElapsedMs));
 		}
 	}
 
@@ -106,6 +126,7 @@ int Application::Run()
 
 bool Application::OnLoad()
 {
+	// Reset application-owned state before runtime/services initialize.
 	m_app = uam::AppState{};
 	m_platformServices = &PlatformServicesFactory::Instance();
 	m_window = nullptr;
@@ -131,11 +152,13 @@ bool Application::Update()
 {
 	if (m_done)
 	{
+		// Stop terminal work immediately once shutdown has been requested.
 		m_terminalSessionManager.FastStopTerminalsForExit(m_app);
 		m_terminalsStoppedForShutdown = true;
 		return false;
 	}
 
+	// Poll runtime work before drawing the next frame.
 	m_pendingRuntimeCallService.Poll(m_app);
 	m_terminalPollingService.PollAllTerminals(m_app);
 	GetProviderCliCompatibilityService().Poll(m_app);
@@ -161,6 +184,7 @@ bool Application::Update()
 
 void Application::Shutdown()
 {
+	// Shutdown only app-owned runtime state; low-level teardown stays in the destructor.
 	PersistWindowStateAndSettings();
 	m_app.pending_calls.clear();
 	m_app.resolved_native_sessions_by_chat_id.clear();
