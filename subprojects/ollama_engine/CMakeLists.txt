@@ -164,6 +164,10 @@ add_library(uam_ollama_engine STATIC
   src/internal/determanistic_hash/determanistic_hash.cpp
   src/internal/embedding_utils.cpp
   src/internal/local_ollama_engine.cpp
+  src/internal/local_ollama_engine/execution.cpp
+  src/internal/local_ollama_engine/generation_helpers.cpp
+  src/internal/local_ollama_engine/rag_runtime.cpp
+  src/internal/local_ollama_engine/token_classification.cpp
   src/internal/vectorised_rag/vectorised_rag.cpp
 )
 

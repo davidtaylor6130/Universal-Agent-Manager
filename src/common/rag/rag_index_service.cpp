@@ -10,6 +10,10 @@
 #include <optional>
 #include <sstream>
 
+namespace fs = std::filesystem;
+
+#if 0
+
 namespace
 {
 	namespace fs = std::filesystem;
@@ -825,3 +829,10 @@ std::string RagIndexService::NormalizeWorkspaceKey(const std::filesystem::path& 
 	const fs::path normalized = ec ? workspace_root.lexically_normal() : absolute.lexically_normal();
 	return normalized.generic_string();
 }
+#endif
+
+#include "common/rag/rag_index_service_common.inl"
+#include "common/rag/rag_index_service_snippet.inl"
+#include "common/rag/rag_index_service_lexical.inl"
+#include "common/rag/rag_index_service_scan.inl"
+#include "common/rag/rag_index_service_retrieval.inl"
