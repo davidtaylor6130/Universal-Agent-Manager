@@ -15,7 +15,11 @@ class GeminiCliProviderRuntime final : public IProviderRuntime
 	std::vector<ChatSession> LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path& native_history_chats_dir, const ProviderRuntimeHistoryLoadOptions& options) const override;
 	bool SaveHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const ChatSession& chat) const override;
 	bool UsesNativeOverlayHistory(const ProviderProfile& profile) const override;
-	bool PortSessionToWorkspace(const ProviderProfile& profile, const std::string& sessionId, const std::filesystem::path& fromWorkspace, const std::filesystem::path& toWorkspace) const override;
+	std::string GenerateSessionUUID() const override;
+	std::string BuildSessionFilename(const ChatSession& chat) const override;
+	std::string NativeTypeFromRole(MessageRole role) const override;
+	std::filesystem::path GetNativeSessionDirectory(const std::filesystem::path& workspacePath) const override;
+	bool RebuildNativeSessionFile(const ProviderProfile& profile, const ChatSession& chat, const std::filesystem::path& workspacePath) const override;
 	bool SupportsGeminiJsonHistory(const ProviderProfile& profile) const override;
 	bool UsesLocalHistory(const ProviderProfile& profile) const override;
 	bool UsesInternalEngine(const ProviderProfile& profile) const override;

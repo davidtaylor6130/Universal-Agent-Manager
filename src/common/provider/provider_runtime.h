@@ -66,21 +66,43 @@ class IProviderRuntime
 	virtual bool SaveHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const ChatSession& chat) const = 0;
 	/// <summary>Returns true when runtime uses Gemini-native history plus local overlay.</summary>
 	virtual bool UsesNativeOverlayHistory(const ProviderProfile& profile) const = 0;
-	/// <summary>Ports a session file from one workspace to another (for session resume after folder move).</summary>
-	virtual bool PortSessionToWorkspace(const ProviderProfile& profile, const std::string& sessionId, const std::filesystem::path& fromWorkspace, const std::filesystem::path& toWorkspace) const
-	{
-		(void)profile;
-		(void)sessionId;
-		(void)fromWorkspace;
-		(void)toWorkspace;
-		return false;
-	}
-
 	/// <summary>Discovers all chat sources this runtime manages. Returns empty result when not supported.</summary>
 	virtual ProviderDiscoveryResult DiscoverChatSources(const ProviderProfile& profile) const
 	{
 		(void)profile;
 		return ProviderDiscoveryResult{};
+	}
+
+	/// <summary>Generates a UUID in the provider's native format.</summary>
+	virtual std::string GenerateSessionUUID() const
+	{
+		return "";
+	}
+	/// <summary>Builds a session filename from chat data.</summary>
+	virtual std::string BuildSessionFilename(const ChatSession& chat) const
+	{
+		(void)chat;
+		return "session.json";
+	}
+	/// <summary>Maps UAM MessageRole to provider-native type string.</summary>
+	virtual std::string NativeTypeFromRole(MessageRole role) const
+	{
+		(void)role;
+		return "unknown";
+	}
+	/// <summary>Returns the native session directory for a workspace path.</summary>
+	virtual std::filesystem::path GetNativeSessionDirectory(const std::filesystem::path& workspacePath) const
+	{
+		(void)workspacePath;
+		return {};
+	}
+	/// <summary>Rebuilds a provider-native session file from UAM source of truth. Returns true on success.</summary>
+	virtual bool RebuildNativeSessionFile(const ProviderProfile& profile, const ChatSession& chat, const std::filesystem::path& workspacePath) const
+	{
+		(void)profile;
+		(void)chat;
+		(void)workspacePath;
+		return true;
 	}
 
 	/// <summary>Returns true when provider uses Gemini JSON history files.</summary>
@@ -142,12 +164,6 @@ class ProviderRuntime
 	static bool SaveHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const ChatSession& chat);
 	/// <summary>Returns true when runtime uses Gemini-native history plus local overlay.</summary>
 	static bool UsesNativeOverlayHistory(const ProviderProfile& profile);
-	/// <summary>Ports a session file from one workspace to another (for session resume after folder move).</summary>
-	static bool PortSessionToWorkspace(const ProviderProfile& profile, const std::string& sessionId, const std::filesystem::path& fromWorkspace, const std::filesystem::path& toWorkspace);
-
-	/// <summary>Discovers all chat sources this runtime manages.</summary>
-	static ProviderDiscoveryResult DiscoverChatSources(const ProviderProfile& profile);
-
 	/// <summary>Returns true when provider uses Gemini JSON history files.</summary>
 	static bool SupportsGeminiJsonHistory(const ProviderProfile& profile);
 	/// <summary>Returns true when provider persists via local chat storage only.</summary>
@@ -160,4 +176,8 @@ class ProviderRuntime
 	static bool UsesStructuredOutput(const ProviderProfile& profile);
 	/// <summary>Returns true when prompt bootstrap should use @.gemini path injection.</summary>
 	static bool UsesGeminiPathBootstrap(const ProviderProfile& profile);
+	/// <summary>Discovers all chat sources this runtime manages.</summary>
+	static ProviderDiscoveryResult DiscoverChatSources(const ProviderProfile& profile);
+	/// <summary>Rebuilds a provider-native session file from UAM source of truth.</summary>
+	static bool RebuildNativeSessionFile(const ProviderProfile& profile, const ChatSession& chat, const std::filesystem::path& workspacePath);
 };

@@ -138,9 +138,9 @@ bool ProviderRuntime::UsesGeminiPathBootstrap(const ProviderProfile& profile)
 	return ProviderRuntimeRegistry::Resolve(profile).UsesGeminiPathBootstrap(profile);
 }
 
-bool ProviderRuntime::PortSessionToWorkspace(const ProviderProfile& profile, const std::string& sessionId, const std::filesystem::path& fromWorkspace, const std::filesystem::path& toWorkspace)
+bool ProviderRuntime::RebuildNativeSessionFile(const ProviderProfile& profile, const ChatSession& chat, const std::filesystem::path& workspacePath)
 {
-	return ProviderRuntimeRegistry::Resolve(profile).PortSessionToWorkspace(profile, sessionId, fromWorkspace, toWorkspace);
+	return ProviderRuntimeRegistry::Resolve(profile).RebuildNativeSessionFile(profile, chat, workspacePath);
 }
 
 ProviderDiscoveryResult ProviderRuntime::DiscoverChatSources(const ProviderProfile& profile)

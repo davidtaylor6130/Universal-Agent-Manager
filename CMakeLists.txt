@@ -336,7 +336,7 @@ target_include_directories(universal_agent_manager
     ${VTERM_DIR}/include
     ${VTERM_DIR}/src
 )
-target_link_libraries(universal_agent_manager PRIVATE ${UAM_SDL_TARGET} OpenGL::GL CURL::libcurl ${UAM_ENGINE_LINK_TARGET})
+target_link_libraries(universal_agent_manager PRIVATE ${UAM_SDL_TARGET} OpenGL::GL CURL::libcurl ${UAM_ENGINE_LINK_TARGET} "-Wl,-framework,Security")
 target_compile_definitions(universal_agent_manager PRIVATE
   UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED}>
   UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>

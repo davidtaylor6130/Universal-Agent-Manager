@@ -542,7 +542,6 @@ bool ChatHistorySyncService::MoveChatToFolder(AppState& p_app, ChatSession& p_ch
 	p_chat.updated_at = TimestampNow();
 
 	const ProviderProfile& l_provider = ProviderResolutionService().ProviderForChatOrDefault(p_app, p_chat);
-
 	const std::string l_sessionId = p_chat.native_session_id;
 
 	fs::path normalizedOld = fs::weakly_canonical(l_oldWorkspace);
@@ -553,10 +552,8 @@ bool ChatHistorySyncService::MoveChatToFolder(AppState& p_app, ChatSession& p_ch
 	if (l_workspacesDifferent)
 	{
 		StopAndEraseCliTerminalForChat(p_app, p_chat.id);
-
-		bool portResult = ProviderRuntime::PortSessionToWorkspace(l_provider, l_sessionId, l_oldWorkspace, l_newFolder->directory);
-
-		if (!portResult)
+		bool rebuildResult = ProviderRuntime::RebuildNativeSessionFile(l_provider, p_chat, l_newFolder->directory);
+		if (!rebuildResult)
 		{
 			l_portingSucceeded = false;
 			p_app.move_chat_pending_id = p_chat.id;
