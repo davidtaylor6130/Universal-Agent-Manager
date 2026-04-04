@@ -44,7 +44,7 @@ inline bool RemoveChatById(AppState& app, const std::string& chat_id)
 	std::error_code local_delete_ec;
 	std::filesystem::remove_all(AppPaths::ChatPath(app.data_root, chat.id), local_delete_ec);
 
-	const std::string native_session_id = chat.uses_native_session ? chat.native_session_id : "";
+	const std::string native_session_id = chat.native_session_id;
 	std::error_code native_delete_ec;
 	bool native_delete_attempted = false;
 	const ProviderProfile& chat_provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
@@ -90,25 +90,24 @@ inline bool RemoveChatById(AppState& app, const std::string& chat_id)
 
 	app.composer_text.clear();
 
-	app.pending_calls.erase(std::remove_if(app.pending_calls.begin(),
-	                                      app.pending_calls.end(),
-	                                      [&](PendingRuntimeCall& call)
-	                                      {
-		                                      if (call.chat_id != chat.id)
-		                                      {
-			                                      return false;
-		                                      }
+	app.pending_calls.erase(std::remove_if(app.pending_calls.begin(), app.pending_calls.end(),
+	                                       [&](PendingRuntimeCall& call)
+	                                       {
+		                                       if (call.chat_id != chat.id)
+		                                       {
+			                                       return false;
+		                                       }
 
-		                                      if (call.worker != nullptr)
-		                                      {
-			                                      call.worker->request_stop();
-			                                      call.worker.reset();
-		                                      }
+		                                       if (call.worker != nullptr)
+		                                       {
+			                                       call.worker->request_stop();
+			                                       call.worker.reset();
+		                                       }
 
-		                                      call.state.reset();
-		                                      return true;
-	                                      }),
-	                      app.pending_calls.end());
+		                                       call.state.reset();
+		                                       return true;
+	                                       }),
+	                        app.pending_calls.end());
 	app.resolved_native_sessions_by_chat_id.erase(chat.id);
 
 	for (auto it = app.resolved_native_sessions_by_chat_id.begin(); it != app.resolved_native_sessions_by_chat_id.end();)

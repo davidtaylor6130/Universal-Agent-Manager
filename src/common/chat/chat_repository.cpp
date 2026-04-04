@@ -188,9 +188,6 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 	root.object_value["native_session_id"].type = JsonValue::Type::String;
 	root.object_value["native_session_id"].string_value = chat.native_session_id;
 
-	root.object_value["uses_native_session"].type = JsonValue::Type::Bool;
-	root.object_value["uses_native_session"].bool_value = chat.uses_native_session;
-
 	root.object_value["parent_chat_id"].type = JsonValue::Type::String;
 	root.object_value["parent_chat_id"].string_value = chat.parent_chat_id;
 
@@ -300,8 +297,6 @@ ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
 				chat.provider_id = value;
 			else if (key == "native_session_id")
 				chat.native_session_id = value;
-			else if (key == "uses_native_session")
-				chat.uses_native_session = (value == "1" || value == "true");
 			else if (key == "parent_chat")
 				chat.parent_chat_id = value;
 			else if (key == "branch_root")
@@ -334,9 +329,7 @@ ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
 	if (chat.updated_at.empty())
 		chat.updated_at = chat.created_at;
 
-	if (!chat.native_session_id.empty())
-		chat.uses_native_session = true;
-	else if (chat.uses_native_session)
+	if (chat.native_session_id.empty() && !chat.id.empty())
 		chat.native_session_id = chat.id;
 
 	if (chat.branch_root_chat_id.empty())
@@ -438,7 +431,6 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
 
 		chat.provider_id = JsonStringOrEmpty(root.Find("provider_id"));
 		chat.native_session_id = JsonStringOrEmpty(root.Find("native_session_id"));
-		chat.uses_native_session = JsonBoolOrDefault(root.Find("uses_native_session"), false);
 		chat.parent_chat_id = JsonStringOrEmpty(root.Find("parent_chat_id"));
 		chat.branch_root_chat_id = JsonStringOrEmpty(root.Find("branch_root_chat_id"));
 		chat.branch_from_message_index = static_cast<int>(JsonNumberOrDefault(root.Find("branch_from_message_index"), -1));
@@ -478,11 +470,6 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
 			chat.created_at = TimestampNow();
 		if (chat.updated_at.empty())
 			chat.updated_at = chat.created_at;
-
-		if (!chat.native_session_id.empty())
-			chat.uses_native_session = true;
-		else if (chat.uses_native_session)
-			chat.native_session_id = chat.id;
 
 		if (chat.branch_root_chat_id.empty())
 			chat.branch_root_chat_id = chat.id;

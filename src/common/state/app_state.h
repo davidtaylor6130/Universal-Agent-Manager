@@ -110,6 +110,8 @@ namespace uam
 
 		std::vector<ChatSession> chats;
 		int selected_chat_index = -1;
+		int latest_imported_count = 0;
+		int latest_import_total_count = 0;
 
 		std::string composer_text;
 		std::string attach_file_input;

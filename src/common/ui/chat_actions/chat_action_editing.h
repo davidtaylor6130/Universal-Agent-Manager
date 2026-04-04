@@ -77,7 +77,7 @@ inline bool ContinueFromEditedUserMessage(AppState& app, ChatSession& chat)
 		}
 	}
 
-	if (ProviderResolutionService().ActiveProviderUsesNativeOverlayHistory(app) && chat.uses_native_session && !chat.native_session_id.empty())
+	if (ProviderResolutionService().ActiveProviderUsesNativeOverlayHistory(app) && !chat.native_session_id.empty())
 	{
 		std::string native_error;
 

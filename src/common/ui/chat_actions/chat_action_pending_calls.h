@@ -6,6 +6,7 @@
 #include "app/provider_resolution_service.h"
 #include "app/runtime_orchestration_services.h"
 #include "common/chat/chat_branching.h"
+#include "common/chat/chat_repository.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 
@@ -128,7 +129,14 @@ inline void PollPendingRuntimeCall(uam::AppState& app)
 
 		const std::filesystem::path native_history_chats_dir = call.native_history_chats_dir_snapshot.empty() ? std::filesystem::path{} : std::filesystem::path(call.native_history_chats_dir_snapshot);
 		std::vector<ChatSession> native_after = ChatHistorySyncService().LoadNativeSessionChats(native_history_chats_dir, call_provider);
-		ChatHistorySyncService().ApplyLocalOverrides(app, native_after);
+		for (ChatSession& chat : native_after)
+		{
+			ChatRepository::SaveChat(app.data_root, chat);
+		}
+		app.chats = ChatRepository::LoadLocalChats(app.data_root);
+		app.chats = ChatDomainService().DeduplicateChatsById(std::move(app.chats));
+		ChatBranching::Normalize(app.chats);
+		ChatDomainService().NormalizeChatFolderAssignments(app);
 
 		std::string selected_id = call.resume_session_id;
 
@@ -160,7 +168,7 @@ inline void PollPendingRuntimeCall(uam::AppState& app)
 			const bool should_follow_to_result = (selected_before_id == pending_chat_id);
 			const int selected_index = ChatDomainService().FindChatIndexById(app, selected_id);
 
-			if (pending_chat_index >= 0 && selected_id != pending_chat_id && NativeSessionLinkService().IsLocalDraftChatId(pending_chat_id) && !app.chats[pending_chat_index].uses_native_session)
+			if (pending_chat_index >= 0 && selected_id != pending_chat_id && NativeSessionLinkService().IsLocalDraftChatId(pending_chat_id) && app.chats[pending_chat_index].native_session_id.empty())
 			{
 				ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, app.chats[pending_chat_index], selected_id);
 			}

@@ -160,13 +160,13 @@ Application::~Application()
 
 int Application::Run()
 {
-	//Figure the time for the fps wanted defined by UAM_TARGET_FPS
+	// Figure the time for the fps wanted defined by UAM_TARGET_FPS
 	constexpr Uint64 kFrameDurationMs = 1000 / UAM_TARGET_FPS;
 
 	// Run owns the SDL event pump and frame loop.
 	while (!m_done && m_window != nullptr)
 	{
-		//GetFrame time start
+		// GetFrame time start
 		const Uint64 l_frameStartMs = SDL_GetTicks64();
 
 		// The outer loop drives frames until shutdown is requested or the window is gone.
@@ -205,10 +205,10 @@ int Application::Run()
 			}
 		}
 
-		//Call the actual apps logic and update loop.
+		// Call the actual apps logic and update loop.
 		Update();
 
-		//Enforce a strick fps set at the start of run.
+		// Enforce a strick fps set at the start of run.
 		const Uint64 l_frameElapsedMs = SDL_GetTicks64() - l_frameStartMs;
 		if (l_frameElapsedMs < kFrameDurationMs)
 		{
@@ -261,12 +261,7 @@ bool Application::Update()
 	ImGui_ImplOpenGL3_NewFrame();
 	ImGui_ImplSDL2_NewFrame();
 	ImGui::NewFrame();
-	m_uiController.DrawFrame(m_app,
-	                         m_done,
-	                         m_platformUiScale,
-	                         m_platformServices->ui_traits,
-	                         m_chatDetailView,
-	                         m_modalHostView);
+	m_uiController.DrawFrame(m_app, m_done, m_platformUiScale, m_platformServices->ui_traits, m_chatDetailView, m_modalHostView);
 
 	ImGui::Render();
 	PresentFrame();
@@ -420,6 +415,10 @@ bool Application::InitializeState()
 	ChatDomainService().EnsureDefaultFolder(m_app);
 	ChatFolderStore::Save(m_app.data_root, m_app.folders);
 	ChatHistorySyncService().LoadSidebarChats(m_app);
+
+	auto import_result = ChatHistorySyncService().ImportAllNativeChatsToLocal(m_app, false);
+	m_app.latest_imported_count = import_result.imported_count;
+	m_app.latest_import_total_count = import_result.total_count;
 
 	if (ProviderProfileMigrationService().MigrateChatProviderBindingsToFixedModes(m_app))
 	{

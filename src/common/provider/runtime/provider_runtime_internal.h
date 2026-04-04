@@ -276,11 +276,7 @@ namespace provider_runtime_internal
 		return prompt.str();
 	}
 
-	inline std::string BuildCommandFromTemplate(const AppSettings& settings,
-	                                            const std::string& prompt,
-	                                            const std::vector<std::string>& files,
-	                                            const std::string& resume_session_id,
-	                                            const std::string& default_template)
+	inline std::string BuildCommandFromTemplate(const AppSettings& settings, const std::string& prompt, const std::vector<std::string>& files, const std::string& resume_session_id, const std::string& default_template)
 	{
 		std::string command = settings.provider_command_template.empty() ? default_template : settings.provider_command_template;
 		const bool has_prompt_placeholder = (command.find("{prompt}") != std::string::npos);
@@ -346,7 +342,7 @@ namespace provider_runtime_internal
 		const std::vector<std::string> flags = BuildFlagsArgv(settings);
 		argv.insert(argv.end(), flags.begin(), flags.end());
 
-		if (profile.supports_resume && chat.uses_native_session && !chat.native_session_id.empty() && !profile.resume_argument.empty())
+		if (profile.supports_resume && !chat.native_session_id.empty() && !profile.resume_argument.empty())
 		{
 			argv.push_back(profile.resume_argument);
 			argv.push_back(chat.native_session_id);

@@ -111,7 +111,6 @@ std::optional<ChatSession> GeminiJsonHistoryStore::ParseFile(const std::filesyst
 	chat.id = short_id.empty() ? session_id.substr(0, 8) : short_id;
 	chat.provider_id = provider.id;
 	chat.native_session_id = session_id;
-	chat.uses_native_session = true;
 	chat.parent_chat_id.clear();
 	chat.branch_root_chat_id = session_id;
 	chat.branch_from_message_index = -1;

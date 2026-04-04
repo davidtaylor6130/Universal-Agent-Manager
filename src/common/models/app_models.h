@@ -41,7 +41,6 @@ struct ChatSession
 	std::string id;
 	std::string provider_id;
 	std::string native_session_id;
-	bool uses_native_session = false;
 	std::string parent_chat_id;
 	std::string branch_root_chat_id;
 	int branch_from_message_index = -1;

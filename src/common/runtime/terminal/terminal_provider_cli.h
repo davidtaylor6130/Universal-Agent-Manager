@@ -56,13 +56,12 @@ inline std::vector<std::string> BuildProviderInteractiveArgv(const uam::AppState
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 	ChatSession effective_chat = chat;
 
-	if (!effective_chat.uses_native_session)
+	if (effective_chat.native_session_id.empty())
 	{
 		const std::string resume_id = ChatHistorySyncService().ResolveResumeSessionIdForChat(app, chat);
 
 		if (!resume_id.empty())
 		{
-			effective_chat.uses_native_session = true;
 			effective_chat.native_session_id = resume_id;
 		}
 	}

@@ -46,8 +46,7 @@ bool NativeSessionLinkService::IsLocalDraftChatId(const std::string& chat_id) co
 	return chat_id.rfind("chat-", 0) == 0;
 }
 
-std::optional<std::string> NativeSessionLinkService::InferNativeSessionIdForLocalDraft(const ChatSession& local_chat,
-	                                                                                      const std::vector<ChatSession>& native_chats) const
+std::optional<std::string> NativeSessionLinkService::InferNativeSessionIdForLocalDraft(const ChatSession& local_chat, const std::vector<ChatSession>& native_chats) const
 {
 	if (!IsLocalDraftChatId(local_chat.id) || local_chat.messages.size() < 2)
 	{
@@ -59,7 +58,7 @@ std::optional<std::string> NativeSessionLinkService::InferNativeSessionIdForLoca
 
 	for (const ChatSession& native_chat : native_chats)
 	{
-		if (!native_chat.uses_native_session || native_chat.native_session_id.empty())
+		if (native_chat.native_session_id.empty())
 		{
 			continue;
 		}
@@ -90,8 +89,7 @@ std::optional<std::string> NativeSessionLinkService::InferNativeSessionIdForLoca
 	return std::nullopt;
 }
 
-std::vector<std::string> NativeSessionLinkService::CollectNewSessionIds(const std::vector<ChatSession>& loaded_chats,
-	                                                                      const std::vector<std::string>& existing_ids) const
+std::vector<std::string> NativeSessionLinkService::CollectNewSessionIds(const std::vector<ChatSession>& loaded_chats, const std::vector<std::string>& existing_ids) const
 {
 	std::unordered_set<std::string> seen(existing_ids.begin(), existing_ids.end());
 	std::vector<std::string> discovered;
@@ -107,8 +105,7 @@ std::vector<std::string> NativeSessionLinkService::CollectNewSessionIds(const st
 	return discovered;
 }
 
-std::string NativeSessionLinkService::PickFirstUnblockedSessionId(const std::vector<std::string>& candidate_ids,
-	                                                                const std::unordered_set<std::string>& blocked_ids) const
+std::string NativeSessionLinkService::PickFirstUnblockedSessionId(const std::vector<std::string>& candidate_ids, const std::unordered_set<std::string>& blocked_ids) const
 {
 	for (const std::string& candidate : candidate_ids)
 	{
@@ -121,8 +118,7 @@ std::string NativeSessionLinkService::PickFirstUnblockedSessionId(const std::vec
 	return "";
 }
 
-bool NativeSessionLinkService::SessionIdExistsInLoadedChats(const std::vector<ChatSession>& loaded_chats,
-	                                                        const std::string& session_id) const
+bool NativeSessionLinkService::SessionIdExistsInLoadedChats(const std::vector<ChatSession>& loaded_chats, const std::string& session_id) const
 {
 	if (session_id.empty())
 	{
@@ -131,7 +127,7 @@ bool NativeSessionLinkService::SessionIdExistsInLoadedChats(const std::vector<Ch
 
 	for (const ChatSession& chat : loaded_chats)
 	{
-		if (chat.uses_native_session && chat.native_session_id == session_id)
+		if (!chat.native_session_id.empty() && chat.native_session_id == session_id)
 		{
 			return true;
 		}
@@ -139,4 +135,3 @@ bool NativeSessionLinkService::SessionIdExistsInLoadedChats(const std::vector<Ch
 
 	return false;
 }
-

@@ -162,7 +162,7 @@ inline void PollCliTerminal(uam::AppState& app, uam::CliTerminalState& terminal,
 							const std::string previous_chat_id = terminal.attached_chat_id;
 							const int previous_chat_index = ChatDomainService().FindChatIndexById(app, previous_chat_id);
 
-							if (previous_chat_index >= 0 && NativeSessionLinkService().IsLocalDraftChatId(previous_chat_id) && !app.chats[previous_chat_index].uses_native_session)
+							if (previous_chat_index >= 0 && NativeSessionLinkService().IsLocalDraftChatId(previous_chat_id) && app.chats[previous_chat_index].native_session_id.empty())
 							{
 								ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, app.chats[previous_chat_index], discovered);
 							}
@@ -174,8 +174,6 @@ inline void PollCliTerminal(uam::AppState& app, uam::CliTerminalState& terminal,
 							{
 								app.resolved_native_sessions_by_chat_id[previous_chat_id] = discovered;
 							}
-
-							app.chats.erase(std::remove_if(app.chats.begin(), app.chats.end(), [&](const ChatSession& c) { return !c.uses_native_session && c.id == previous_chat_id; }), app.chats.end());
 						}
 					}
 
@@ -217,7 +215,7 @@ inline void PollCliTerminal(uam::AppState& app, uam::CliTerminalState& terminal,
 						const std::string previous_chat_id = terminal.attached_chat_id;
 						const int previous_chat_index = ChatDomainService().FindChatIndexById(app, previous_chat_id);
 
-						if (previous_chat_index >= 0 && NativeSessionLinkService().IsLocalDraftChatId(previous_chat_id) && !app.chats[previous_chat_index].uses_native_session)
+						if (previous_chat_index >= 0 && NativeSessionLinkService().IsLocalDraftChatId(previous_chat_id) && app.chats[previous_chat_index].native_session_id.empty())
 						{
 							ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, app.chats[previous_chat_index], discovered);
 						}
@@ -229,8 +227,6 @@ inline void PollCliTerminal(uam::AppState& app, uam::CliTerminalState& terminal,
 						{
 							app.resolved_native_sessions_by_chat_id[previous_chat_id] = discovered;
 						}
-
-						app.chats.erase(std::remove_if(app.chats.begin(), app.chats.end(), [&](const ChatSession& c) { return !c.uses_native_session && c.id == previous_chat_id; }), app.chats.end());
 					}
 				}
 

@@ -184,11 +184,6 @@ void ChatDomainService::SortChatsByRecent(std::vector<ChatSession>& chats) const
 
 bool ChatDomainService::ShouldReplaceChatForDuplicateId(const ChatSession& candidate, const ChatSession& existing) const
 {
-	if (candidate.uses_native_session != existing.uses_native_session)
-	{
-		return candidate.uses_native_session && !existing.uses_native_session;
-	}
-
 	if (candidate.messages.size() != existing.messages.size())
 	{
 		return candidate.messages.size() > existing.messages.size();
@@ -254,7 +249,7 @@ std::vector<ChatSession> ChatDomainService::DeduplicateChatsById(std::vector<Cha
 		}
 
 		const std::string native_session_id = Trim(chat.native_session_id);
-		const bool has_native_identity = chat.uses_native_session && !native_session_id.empty();
+		const bool has_native_identity = !native_session_id.empty();
 		const std::string native_key = has_native_identity ? ("native:" + native_session_id) : std::string{};
 
 		if (has_native_identity)
@@ -308,13 +303,13 @@ std::vector<ChatSession> ChatDomainService::DeduplicateChatsById(std::vector<Cha
 		{
 			existing = std::move(chat);
 
-			if (existing.uses_native_session && !existing.native_session_id.empty() && existing.id != existing.native_session_id)
+			if (!existing.native_session_id.empty() && existing.id != existing.native_session_id)
 			{
 				existing.id = existing.native_session_id;
 			}
 		}
 
-		if (existing.uses_native_session && !existing.native_session_id.empty())
+		if (!existing.native_session_id.empty())
 		{
 			index_by_native_session_id["native:" + existing.native_session_id] = it->second;
 		}
@@ -395,7 +390,6 @@ bool ChatDomainService::CreateBranchFromMessage(AppState& app, const std::string
 	}
 
 	ChatSession branch = CreateNewChat(source.folder_id, source.provider_id);
-	branch.uses_native_session = false;
 	branch.native_session_id.clear();
 	branch.parent_chat_id = source.id;
 	branch.branch_root_chat_id = source.branch_root_chat_id.empty() ? source.id : source.branch_root_chat_id;
