@@ -124,7 +124,7 @@ ProviderProfile ProviderProfileStore::DefaultGeminiProfile()
 	profile.title = "Gemini (Structured)";
 	profile.execution_mode = "cli";
 	profile.output_mode = "structured";
-	profile.command_template = "gemini {resume} {flags} -p {prompt}";
+	profile.command_template = "gemini -r {resume} {flags} -p {prompt}";
 	profile.interactive_command = "gemini";
 	profile.supports_interactive = false;
 	profile.supports_resume = true;
@@ -147,7 +147,7 @@ std::vector<ProviderProfile> ProviderProfileStore::BuiltInProfiles()
 	gemini_cli.title = "Gemini CLI";
 	gemini_cli.execution_mode = "cli";
 	gemini_cli.output_mode = "cli";
-	gemini_cli.command_template = "gemini {resume} {flags} {prompt}";
+	gemini_cli.command_template = "gemini -r {resume} {flags} {prompt}";
 	gemini_cli.interactive_command = "gemini";
 	gemini_cli.supports_interactive = true;
 	gemini_cli.supports_resume = true;

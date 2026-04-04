@@ -15,7 +15,6 @@ set(UAM_ALLOWED_PREFIXES
 set(UAM_ALLOWED_FILES
   "src/common/chat/chat_repository.cpp"
   "src/common/chat/gemini_json_history_store.cpp"
-  "src/common/provider/gemini_command_builder.cpp"
   "src/common/provider/markdown_template_catalog.cpp"
   "src/common/utils/command_line_words.cpp"
 )

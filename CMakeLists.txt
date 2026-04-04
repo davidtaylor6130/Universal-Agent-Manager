@@ -298,13 +298,10 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/paths/app_paths.cpp
   src/common/chat/chat_folder_store.cpp
   src/common/chat/chat_repository.cpp
-  src/common/chat/gemini_json_history_store.cpp
   src/common/chat/chat_branching.cpp
   src/common/config/settings_store.cpp
   src/common/utils/command_line_words.cpp
-  src/common/provider/gemini/base/gemini_command_builder.cpp
   src/common/provider/gemini/base/gemini_history_loader.cpp
-  src/common/provider/gemini/base/gemini_base_provider_runtime.cpp
   src/common/provider/gemini/cli/gemini_cli_provider_runtime.cpp
   src/common/provider/gemini/structured/gemini_structured_provider_runtime.cpp
   src/common/provider/markdown_template_catalog.cpp
@@ -413,14 +410,11 @@ if(UAM_BUILD_TESTS)
     src/common/chat/chat_folder_store.cpp
     src/common/config/frontend_actions.cpp
     src/common/utils/command_line_words.cpp
-    src/common/provider/gemini/base/gemini_command_builder.cpp
     src/common/provider/gemini/base/gemini_history_loader.cpp
-    src/common/provider/gemini/base/gemini_base_provider_runtime.cpp
     src/common/provider/gemini/cli/gemini_cli_provider_runtime.cpp
     src/common/provider/gemini/structured/gemini_structured_provider_runtime.cpp
     src/common/provider/markdown_template_catalog.cpp
     src/common/chat/chat_repository.cpp
-      src/common/chat/gemini_json_history_store.cpp
     src/common/chat/chat_branching.cpp
     src/common/provider/provider_profile.cpp
     src/common/provider/runtime/provider_runtime_facade.cpp

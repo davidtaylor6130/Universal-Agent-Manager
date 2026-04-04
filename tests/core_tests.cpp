@@ -5,8 +5,9 @@
 #include "common/chat/chat_repository.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/config/frontend_actions.h"
-#include "common/provider/gemini/base/gemini_base_provider_runtime.h"
-#include "common/provider/gemini/base/gemini_command_builder.h"
+#include "common/provider/gemini/cli/gemini_cli_provider_runtime.h"
+#include "common/provider/gemini/structured/gemini_structured_provider_runtime.h"
+#include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/provider/opencode/base/opencode_base_provider_runtime.h"
 #include "common/provider/markdown_template_catalog.h"
 #include "common/provider/provider_profile.h"
@@ -258,11 +259,7 @@ namespace
 		UAM_ASSERT(WriteTextFile(tmp_chat_dir / ".project_root", project_root.generic_string() + "\n"));
 	}
 
-	void WriteGeminiNativeSession(const fs::path& chats_dir,
-	                              const std::string& session_id,
-	                              const std::vector<std::pair<std::string, std::string>>& messages,
-	                              const std::string& start_time = "2026-03-21 10:00:00",
-	                              const std::string& updated_time = "2026-03-21 10:00:01")
+	void WriteGeminiNativeSession(const fs::path& chats_dir, const std::string& session_id, const std::vector<std::pair<std::string, std::string>>& messages, const std::string& start_time = "2026-03-21 10:00:00", const std::string& updated_time = "2026-03-21 10:00:01")
 	{
 		std::ostringstream out;
 		out << "{\n";
@@ -601,15 +598,15 @@ UAM_TEST(TestSettingsStoreLoadsLegacyUnescapedStringValues)
 	UAM_ASSERT_EQ(std::string("chat-legacy"), loaded.last_selected_chat_id);
 }
 
-UAM_TEST(TestGeminiCommandBuilderReplacesPlaceholders)
+UAM_TEST(TestProviderRuntimeBuildCommandReplacesPlaceholders)
 {
 	AppSettings settings;
-	settings.provider_command_template = "gemini --mode test {resume} {flags} --model {model} --prompt {prompt} --files {files}";
+	settings.provider_command_template = "gemini -r {resume} --mode test {flags} --model {model} --prompt {prompt} --files {files}";
 	settings.provider_yolo_mode = true;
 	settings.provider_extra_flags = "--profile nightly --dry-run";
 	settings.selected_model_id = "gpt-local.gguf";
 
-	const std::string command = GeminiCommandBuilder::BuildCommand(settings, "Review this patch", {"notes one.txt", "more/files.md"}, "resume-42");
+	const std::string command = provider_runtime_internal::BuildCommandFromTemplate(settings, "Review this patch", {"notes one.txt", "more/files.md"}, "resume-42", "gemini -r {resume} {flags} {prompt}");
 
 	UAM_ASSERT(command.find("{resume}") == std::string::npos);
 	UAM_ASSERT(command.find("{flags}") == std::string::npos);
@@ -1359,7 +1356,7 @@ UAM_TEST(TestMarkdownTemplateCatalogImportCollisionAndFiltering)
 	UAM_ASSERT(MarkdownTemplateCatalog::HasTemplate(global_root.root, imported_b));
 }
 
-UAM_TEST(TestGeminiCommandBuilderInteractiveArgvIncludesResumeAndFlags)
+UAM_TEST(TestProviderRuntimeInteractiveArgvIncludesResumeAndFlags)
 {
 	AppSettings settings;
 	settings.provider_yolo_mode = true;
@@ -1369,20 +1366,30 @@ UAM_TEST(TestGeminiCommandBuilderInteractiveArgvIncludesResumeAndFlags)
 	chat.uses_native_session = true;
 	chat.native_session_id = "session-123";
 
-	const std::vector<std::string> argv = GeminiCommandBuilder::BuildInteractiveArgv(chat, settings);
+	ProviderProfile profile;
+	profile.interactive_command = "gemini";
+	profile.supports_resume = true;
+	profile.resume_argument = "-r";
+
+	const std::vector<std::string> argv = provider_runtime_internal::BuildInteractiveArgv(profile, chat, settings);
 	const std::vector<std::string> expected = {"gemini", "--yolo", "--profile", "nightly", "--dry-run", "-r", "session-123"};
 
 	UAM_ASSERT(argv == expected);
 }
 
-UAM_TEST(TestGeminiCommandBuilderParsesWindowsPathFlags)
+UAM_TEST(TestProviderRuntimeParsesWindowsPathFlags)
 {
 #if defined(_WIN32)
 	AppSettings settings;
 	settings.provider_extra_flags = R"(--config "C:\Users\david\gemini\settings.json" --profile nightly)";
 
 	ChatSession chat;
-	const std::vector<std::string> argv = GeminiCommandBuilder::BuildInteractiveArgv(chat, settings);
+	ProviderProfile profile;
+	profile.interactive_command = "gemini";
+	profile.supports_resume = false;
+	profile.resume_argument = "";
+
+	const std::vector<std::string> argv = provider_runtime_internal::BuildInteractiveArgv(profile, chat, settings);
 	const std::vector<std::string> expected = {"gemini", "--config", R"(C:\Users\david\gemini\settings.json)", "--profile", "nightly"};
 
 	UAM_ASSERT(argv == expected);
@@ -1443,7 +1450,7 @@ UAM_TEST(TestProviderProfileStoreIncludesFixedGeminiModes)
 	UAM_ASSERT(gemini_structured != nullptr);
 	UAM_ASSERT(gemini_cli != nullptr);
 	UAM_ASSERT_EQ(std::string("structured"), gemini_structured->output_mode);
-	UAM_ASSERT_EQ(std::string("gemini {resume} {flags} -p {prompt}"), gemini_structured->command_template);
+	UAM_ASSERT_EQ(std::string("gemini -r {resume} {flags} -p {prompt}"), gemini_structured->command_template);
 	UAM_ASSERT(!gemini_structured->supports_interactive);
 	UAM_ASSERT_EQ(std::string("cli"), gemini_cli->output_mode);
 	UAM_ASSERT(gemini_cli->supports_interactive);
@@ -1579,13 +1586,7 @@ UAM_TEST(TestProviderRuntimeMergesProfileFlags)
 UAM_TEST(TestProviderRuntimeRegistryMapsBuiltInIds)
 {
 	const std::vector<std::string> ids = {
-	    "gemini-structured",
-	    "gemini-cli",
-	    "codex-cli",
-	    "claude-cli",
-	    "opencode-cli",
-	    "opencode-local",
-	    "ollama-engine",
+	    "gemini-structured", "gemini-cli", "codex-cli", "claude-cli", "opencode-cli", "opencode-local", "ollama-engine",
 	};
 
 	for (const std::string& id : ids)
@@ -1606,11 +1607,11 @@ UAM_TEST(TestProviderRuntimeFamilyBaseTypes)
 	const IProviderRuntime& opencode_local = ProviderRuntimeRegistry::ResolveById("opencode-local");
 	const IProviderRuntime& codex = ProviderRuntimeRegistry::ResolveById("codex-cli");
 
-	UAM_ASSERT(dynamic_cast<const GeminiBaseProviderRuntime*>(&gemini_cli) != nullptr);
-	UAM_ASSERT(dynamic_cast<const GeminiBaseProviderRuntime*>(&gemini_structured) != nullptr);
+	UAM_ASSERT(dynamic_cast<const GeminiCliProviderRuntime*>(&gemini_cli) != nullptr);
+	UAM_ASSERT(dynamic_cast<const GeminiStructuredProviderRuntime*>(&gemini_structured) != nullptr);
 	UAM_ASSERT(dynamic_cast<const OpenCodeBaseProviderRuntime*>(&opencode_cli) != nullptr);
 	UAM_ASSERT(dynamic_cast<const OpenCodeBaseProviderRuntime*>(&opencode_local) != nullptr);
-	UAM_ASSERT(dynamic_cast<const GeminiBaseProviderRuntime*>(&codex) == nullptr);
+	UAM_ASSERT(dynamic_cast<const GeminiCliProviderRuntime*>(&codex) == nullptr);
 	UAM_ASSERT(dynamic_cast<const OpenCodeBaseProviderRuntime*>(&codex) == nullptr);
 }
 
@@ -1738,13 +1739,7 @@ UAM_TEST(TestProviderRuntimeBuildToggleMatrixContracts)
 	};
 
 	const std::vector<RuntimeExpectation> expectations = {
-	    {"gemini-structured", UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED != 0},
-	    {"gemini-cli", UAM_ENABLE_RUNTIME_GEMINI_CLI != 0},
-	    {"codex-cli", UAM_ENABLE_RUNTIME_CODEX_CLI != 0},
-	    {"claude-cli", UAM_ENABLE_RUNTIME_CLAUDE_CLI != 0},
-	    {"opencode-cli", UAM_ENABLE_RUNTIME_OPENCODE_CLI != 0},
-	    {"opencode-local", UAM_ENABLE_RUNTIME_OPENCODE_LOCAL != 0},
-	    {"ollama-engine", UAM_ENABLE_RUNTIME_OLLAMA_ENGINE != 0},
+	    {"gemini-structured", UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED != 0}, {"gemini-cli", UAM_ENABLE_RUNTIME_GEMINI_CLI != 0}, {"codex-cli", UAM_ENABLE_RUNTIME_CODEX_CLI != 0}, {"claude-cli", UAM_ENABLE_RUNTIME_CLAUDE_CLI != 0}, {"opencode-cli", UAM_ENABLE_RUNTIME_OPENCODE_CLI != 0}, {"opencode-local", UAM_ENABLE_RUNTIME_OPENCODE_LOCAL != 0}, {"ollama-engine", UAM_ENABLE_RUNTIME_OLLAMA_ENGINE != 0},
 	};
 
 	for (const RuntimeExpectation& expected : expectations)

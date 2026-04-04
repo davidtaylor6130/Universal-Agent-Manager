@@ -121,3 +121,4 @@ class ProviderRuntime
 	/// <summary>Returns true when prompt bootstrap should use @.gemini path injection.</summary>
 	static bool UsesGeminiPathBootstrap(const ProviderProfile& profile);
 };
+
