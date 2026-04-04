@@ -1,7 +1,6 @@
 #ifndef UAM_APP_CHAT_DOMAIN_SERVICE_H
 #define UAM_APP_CHAT_DOMAIN_SERVICE_H
 
-
 #include "common/state/app_state.h"
 
 #include <cstddef>
@@ -34,6 +33,7 @@ class ChatDomainService
 	bool CreateBranchFromMessage(uam::AppState& app, const std::string& source_chat_id, int message_index) const;
 	void ConsumePendingBranchRequest(uam::AppState& app) const;
 	void AddMessage(ChatSession& chat, MessageRole role, const std::string& text) const;
+	void AddMessageWithAnalytics(ChatSession& chat, MessageRole role, const std::string& text, const std::string& provider, int64_t input_tokens, int64_t output_chars, int64_t time_to_first_token_ms, int64_t processing_time_ms, bool interrupted) const;
 };
 
 #endif // UAM_APP_CHAT_DOMAIN_SERVICE_H

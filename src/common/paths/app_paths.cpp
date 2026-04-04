@@ -447,3 +447,13 @@ std::optional<std::filesystem::path> AppPaths::ResolveGeminiProjectTmpDir(const 
 
 	return std::nullopt;
 }
+
+std::filesystem::path AppPaths::UamChatsRootPath(const std::filesystem::path& data_root)
+{
+	return data_root / "uam_chats";
+}
+
+std::filesystem::path AppPaths::UamChatFilePath(const std::filesystem::path& data_root, const std::string& chat_id)
+{
+	return UamChatsRootPath(data_root) / (chat_id + ".json");
+}

@@ -97,13 +97,14 @@ inline void PollPendingRuntimeCall(uam::AppState& app)
 			{
 				// Use System role for any failure so that shell errors, timeouts,
 				// and cancellations are never displayed as model replies (Bug #2 fix).
-				const bool call_failed = call.state->result.exit_code != 0
-				    || call.state->result.timed_out
-				    || call.state->result.canceled
-				    || !call.state->result.error.empty();
+				const bool call_failed = call.state->result.exit_code != 0 || call.state->result.timed_out || call.state->result.canceled || !call.state->result.error.empty();
 				const MessageRole result_role = call_failed ? MessageRole::System : MessageRole::Assistant;
 
-				ChatDomainService().AddMessage(app.chats[pending_chat_index], result_role, output);
+				const auto completion_time = std::chrono::steady_clock::now();
+				const int64_t processing_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(completion_time - call.state->launch_time).count();
+				const int64_t output_chars = static_cast<int64_t>(output.size());
+
+				ChatDomainService().AddMessageWithAnalytics(app.chats[pending_chat_index], result_role, output, call.state->provider_id, call.state->estimated_input_tokens, output_chars, 0, processing_time_ms, call.state->result.canceled || call.state->result.timed_out);
 				ProviderRuntime::SaveHistory(ProviderResolutionService().ProviderForChatOrDefault(app, app.chats[pending_chat_index]), app.data_root, app.chats[pending_chat_index]);
 
 				if (pending_chat_id != selected_before_id)

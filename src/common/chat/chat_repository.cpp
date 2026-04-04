@@ -1,6 +1,7 @@
 #include "common/chat/chat_repository.h"
 
 #include "common/paths/app_paths.h"
+#include "runtime/json_runtime.h"
 
 #include <algorithm>
 #include <chrono>
@@ -13,15 +14,50 @@ namespace
 {
 	namespace fs = std::filesystem;
 
+	std::string RoleToStringLocal(MessageRole role)
+	{
+		switch (role)
+		{
+		case MessageRole::User:
+			return "user";
+		case MessageRole::Assistant:
+			return "assistant";
+		case MessageRole::System:
+			return "system";
+		default:
+			return "user";
+		}
+	}
+
+	std::string RoleToString(MessageRole role)
+	{
+		switch (role)
+		{
+		case MessageRole::User:
+			return "user";
+		case MessageRole::Assistant:
+			return "assistant";
+		case MessageRole::System:
+			return "system";
+		default:
+			return "user";
+		}
+	}
+
+	MessageRole ParseMessageRole(const std::string& role)
+	{
+		if (role == "assistant")
+			return MessageRole::Assistant;
+		if (role == "system")
+			return MessageRole::System;
+		return MessageRole::User;
+	}
+
 	bool WriteTextFile(const fs::path& path, const std::string& content)
 	{
 		std::ofstream out(path, std::ios::binary | std::ios::trunc);
-
 		if (!out.good())
-		{
 			return false;
-		}
-
 		out << content;
 		return out.good();
 	}
@@ -29,20 +65,11 @@ namespace
 	std::string ReadTextFile(const fs::path& path)
 	{
 		std::ifstream in(path, std::ios::binary);
-
 		if (!in.good())
-		{
 			return "";
-		}
-
 		std::ostringstream buffer;
 		buffer << in.rdbuf();
 		return buffer.str();
-	}
-
-	void SortChatsByRecent(std::vector<ChatSession>& chats)
-	{
-		std::sort(chats.begin(), chats.end(), [](const ChatSession& a, const ChatSession& b) { return a.updated_at > b.updated_at; });
 	}
 
 	std::string TimestampNow()
@@ -60,282 +87,419 @@ namespace
 		return out.str();
 	}
 
-	int ParseIntOrDefault(const std::string& value, const int fallback)
+	JsonValue MessageToJson(const Message& msg)
 	{
-		try
-		{
-			std::size_t index = 0;
-			const int parsed = std::stoi(value, &index, 10);
+		JsonValue obj;
+		obj.type = JsonValue::Type::Object;
 
-			if (index != value.size())
-			{
-				return fallback;
-			}
+		obj.object_value["role"].type = JsonValue::Type::String;
+		obj.object_value["role"].string_value = RoleToStringLocal(msg.role);
 
-			return parsed;
-		}
-		catch (...)
+		obj.object_value["content"].type = JsonValue::Type::String;
+		obj.object_value["content"].string_value = msg.content;
+
+		obj.object_value["created_at"].type = JsonValue::Type::String;
+		obj.object_value["created_at"].string_value = msg.created_at;
+
+		if (!msg.provider.empty())
 		{
-			return fallback;
+			obj.object_value["provider"].type = JsonValue::Type::String;
+			obj.object_value["provider"].string_value = msg.provider;
 		}
+		if (msg.tokens_input > 0)
+		{
+			obj.object_value["tokens_input"].type = JsonValue::Type::Number;
+			obj.object_value["tokens_input"].number_value = static_cast<double>(msg.tokens_input);
+		}
+		if (msg.tokens_output > 0)
+		{
+			obj.object_value["tokens_output"].type = JsonValue::Type::Number;
+			obj.object_value["tokens_output"].number_value = static_cast<double>(msg.tokens_output);
+		}
+		if (msg.estimated_cost_usd > 0.0)
+		{
+			obj.object_value["estimated_cost_usd"].type = JsonValue::Type::Number;
+			obj.object_value["estimated_cost_usd"].number_value = msg.estimated_cost_usd;
+		}
+		if (msg.time_to_first_token_ms > 0)
+		{
+			obj.object_value["time_to_first_token_ms"].type = JsonValue::Type::Number;
+			obj.object_value["time_to_first_token_ms"].number_value = static_cast<double>(msg.time_to_first_token_ms);
+		}
+		if (msg.processing_time_ms > 0)
+		{
+			obj.object_value["processing_time_ms"].type = JsonValue::Type::Number;
+			obj.object_value["processing_time_ms"].number_value = static_cast<double>(msg.processing_time_ms);
+		}
+		if (msg.interrupted)
+		{
+			obj.object_value["interrupted"].type = JsonValue::Type::Bool;
+			obj.object_value["interrupted"].bool_value = true;
+		}
+		return obj;
+	}
+
+	Message JsonToMessage(const JsonValue& obj)
+	{
+		Message msg;
+		if (obj.object_value.contains("role"))
+			msg.role = ParseMessageRole(JsonStringOrEmpty(obj.Find("role")));
+		if (obj.object_value.contains("content"))
+			msg.content = JsonStringOrEmpty(obj.Find("content"));
+		if (obj.object_value.contains("created_at"))
+			msg.created_at = JsonStringOrEmpty(obj.Find("created_at"));
+		if (obj.object_value.contains("provider"))
+			msg.provider = JsonStringOrEmpty(obj.Find("provider"));
+		if (obj.object_value.contains("tokens_input"))
+			msg.tokens_input = static_cast<int>(JsonNumberOrDefault(obj.Find("tokens_input"), 0));
+		if (obj.object_value.contains("tokens_output"))
+			msg.tokens_output = static_cast<int>(JsonNumberOrDefault(obj.Find("tokens_output"), 0));
+		if (obj.object_value.contains("estimated_cost_usd"))
+			msg.estimated_cost_usd = JsonNumberOrDefault(obj.Find("estimated_cost_usd"), 0);
+		if (obj.object_value.contains("time_to_first_token_ms"))
+			msg.time_to_first_token_ms = static_cast<int>(JsonNumberOrDefault(obj.Find("time_to_first_token_ms"), 0));
+		if (obj.object_value.contains("processing_time_ms"))
+			msg.processing_time_ms = static_cast<int>(JsonNumberOrDefault(obj.Find("processing_time_ms"), 0));
+		if (obj.object_value.contains("interrupted"))
+			msg.interrupted = obj.Find("interrupted")->type == JsonValue::Type::Bool && obj.Find("interrupted")->bool_value;
+		return msg;
 	}
 
 } // namespace
 
 bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const ChatSession& chat)
 {
-	const fs::path chat_root = AppPaths::ChatPath(data_root, chat.id);
-	const fs::path messages_dir = chat_root / "messages";
+	const fs::path file_path = AppPaths::UamChatFilePath(data_root, chat.id);
 
 	std::error_code ec;
-	fs::create_directories(messages_dir, ec);
-
+	fs::create_directories(file_path.parent_path(), ec);
 	if (ec)
-	{
 		return false;
-	}
 
-	std::ostringstream meta;
-	meta << "id=" << chat.id << '\n';
-	meta << "provider_id=" << chat.provider_id << '\n';
-	meta << "native_session_id=" << chat.native_session_id << '\n';
-	meta << "uses_native_session=" << (chat.uses_native_session ? "1" : "0") << '\n';
-	meta << "parent_chat=" << chat.parent_chat_id << '\n';
-	meta << "branch_root=" << chat.branch_root_chat_id << '\n';
-	meta << "branch_from_index=" << chat.branch_from_message_index << '\n';
-	meta << "folder=" << chat.folder_id << '\n';
-	meta << "template_override=" << chat.template_override_id << '\n';
-	// Persist legacy key name to preserve existing local chat schema.
-	meta << "gemini_md_bootstrapped=" << (chat.prompt_profile_bootstrapped ? "1" : "0") << '\n';
-	meta << "rag_enabled=" << (chat.rag_enabled ? "1" : "0") << '\n';
-	meta << "title=" << chat.title << '\n';
-	meta << "created_at=" << chat.created_at << '\n';
-	meta << "updated_at=" << chat.updated_at << '\n';
+	JsonValue root;
+	root.type = JsonValue::Type::Object;
 
-	for (const std::string& source_dir : chat.rag_source_directories)
+	root.object_value["id"].type = JsonValue::Type::String;
+	root.object_value["id"].string_value = chat.id;
+
+	root.object_value["provider_id"].type = JsonValue::Type::String;
+	root.object_value["provider_id"].string_value = chat.provider_id;
+
+	root.object_value["native_session_id"].type = JsonValue::Type::String;
+	root.object_value["native_session_id"].string_value = chat.native_session_id;
+
+	root.object_value["uses_native_session"].type = JsonValue::Type::Bool;
+	root.object_value["uses_native_session"].bool_value = chat.uses_native_session;
+
+	root.object_value["parent_chat_id"].type = JsonValue::Type::String;
+	root.object_value["parent_chat_id"].string_value = chat.parent_chat_id;
+
+	root.object_value["branch_root_chat_id"].type = JsonValue::Type::String;
+	root.object_value["branch_root_chat_id"].string_value = chat.branch_root_chat_id;
+
+	root.object_value["branch_from_message_index"].type = JsonValue::Type::Number;
+	root.object_value["branch_from_message_index"].number_value = static_cast<double>(chat.branch_from_message_index);
+
+	root.object_value["folder_id"].type = JsonValue::Type::String;
+	root.object_value["folder_id"].string_value = chat.folder_id;
+
+	root.object_value["template_override_id"].type = JsonValue::Type::String;
+	root.object_value["template_override_id"].string_value = chat.template_override_id;
+
+	root.object_value["prompt_profile_bootstrapped"].type = JsonValue::Type::Bool;
+	root.object_value["prompt_profile_bootstrapped"].bool_value = chat.prompt_profile_bootstrapped;
+
+	root.object_value["rag_enabled"].type = JsonValue::Type::Bool;
+	root.object_value["rag_enabled"].bool_value = chat.rag_enabled;
+
+	root.object_value["title"].type = JsonValue::Type::String;
+	root.object_value["title"].string_value = chat.title;
+
+	root.object_value["created_at"].type = JsonValue::Type::String;
+	root.object_value["created_at"].string_value = chat.created_at;
+
+	root.object_value["updated_at"].type = JsonValue::Type::String;
+	root.object_value["updated_at"].string_value = chat.updated_at;
+
+	root.object_value["workspace_directory"].type = JsonValue::Type::String;
+	root.object_value["workspace_directory"].string_value = chat.workspace_directory;
+
+	root.object_value["approval_mode"].type = JsonValue::Type::String;
+	root.object_value["approval_mode"].string_value = chat.approval_mode;
+
+	root.object_value["model_id"].type = JsonValue::Type::String;
+	root.object_value["model_id"].string_value = chat.model_id;
+
+	root.object_value["extra_flags"].type = JsonValue::Type::String;
+	root.object_value["extra_flags"].string_value = chat.extra_flags;
+
+	if (!chat.rag_source_directories.empty())
 	{
-		meta << "rag_source_directory=" << source_dir << '\n';
-	}
-
-	for (const std::string& file_path : chat.linked_files)
-	{
-		meta << "file=" << file_path << '\n';
-	}
-
-	if (!WriteTextFile(chat_root / "meta.txt", meta.str()))
-	{
-		return false;
-	}
-
-	for (const auto& item : fs::directory_iterator(messages_dir, ec))
-	{
-		if (ec)
+		JsonValue dirs;
+		dirs.type = JsonValue::Type::Array;
+		for (const auto& d : chat.rag_source_directories)
 		{
-			return false;
+			JsonValue item;
+			item.type = JsonValue::Type::String;
+			item.string_value = d;
+			dirs.array_value.push_back(item);
+		}
+		root.object_value["rag_source_directories"] = std::move(dirs);
+	}
+
+	if (!chat.linked_files.empty())
+	{
+		JsonValue files;
+		files.type = JsonValue::Type::Array;
+		for (const auto& f : chat.linked_files)
+		{
+			JsonValue item;
+			item.type = JsonValue::Type::String;
+			item.string_value = f;
+			files.array_value.push_back(item);
+		}
+		root.object_value["linked_files"] = std::move(files);
+	}
+
+	if (!chat.messages.empty())
+	{
+		JsonValue msgs;
+		msgs.type = JsonValue::Type::Array;
+		for (const auto& m : chat.messages)
+			msgs.array_value.push_back(MessageToJson(m));
+		root.object_value["messages"] = std::move(msgs);
+	}
+
+	const std::string json = SerializeJson(root);
+	return WriteTextFile(file_path, json);
+}
+
+ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
+{
+	ChatSession chat;
+	chat.id = chat_root.filename().string();
+	chat.title = "Imported Chat";
+
+	const fs::path meta_file = chat_root / "meta.txt";
+
+	if (fs::exists(meta_file))
+	{
+		std::istringstream lines(ReadTextFile(meta_file));
+		std::string line;
+
+		while (std::getline(lines, line))
+		{
+			const auto equals_at = line.find('=');
+			if (equals_at == std::string::npos)
+				continue;
+
+			const std::string key = line.substr(0, equals_at);
+			const std::string value = line.substr(equals_at + 1);
+
+			if (key == "provider_id")
+				chat.provider_id = value;
+			else if (key == "native_session_id")
+				chat.native_session_id = value;
+			else if (key == "uses_native_session")
+				chat.uses_native_session = (value == "1" || value == "true");
+			else if (key == "parent_chat")
+				chat.parent_chat_id = value;
+			else if (key == "branch_root")
+				chat.branch_root_chat_id = value;
+			else if (key == "branch_from_index")
+				chat.branch_from_message_index = static_cast<int>(JsonNumberOrDefault(nullptr, -1));
+			else if (key == "folder")
+				chat.folder_id = value;
+			else if (key == "template_override")
+				chat.template_override_id = value;
+			else if (key == "prompt_profile_bootstrapped" || key == "gemini_md_bootstrapped")
+				chat.prompt_profile_bootstrapped = (value == "1" || value == "true");
+			else if (key == "rag_enabled")
+				chat.rag_enabled = (value == "1" || value == "true");
+			else if (key == "title")
+				chat.title = value;
+			else if (key == "created_at")
+				chat.created_at = value;
+			else if (key == "updated_at")
+				chat.updated_at = value;
+			else if (key == "rag_source_directory" && !value.empty())
+				chat.rag_source_directories.push_back(value);
+			else if (key == "file" && !value.empty())
+				chat.linked_files.push_back(value);
+		}
+	}
+
+	if (chat.created_at.empty())
+		chat.created_at = TimestampNow();
+	if (chat.updated_at.empty())
+		chat.updated_at = chat.created_at;
+
+	if (!chat.native_session_id.empty())
+		chat.uses_native_session = true;
+	else if (chat.uses_native_session)
+		chat.native_session_id = chat.id;
+
+	if (chat.branch_root_chat_id.empty())
+		chat.branch_root_chat_id = chat.id;
+
+	const fs::path messages_dir = chat_root / "messages";
+	if (fs::exists(messages_dir))
+	{
+		std::vector<fs::path> message_files;
+		std::error_code ec;
+		for (const auto& file : fs::directory_iterator(messages_dir, ec))
+		{
+			if (!ec && file.is_regular_file() && file.path().extension() == ".txt")
+				message_files.push_back(file.path());
 		}
 
-		if (item.is_regular_file())
-		{
-			fs::remove(item.path(), ec);
+		std::sort(message_files.begin(), message_files.end());
 
-			if (ec)
-			{
-				return false;
-			}
+		for (const auto& message_file : message_files)
+		{
+			const std::string file_name = message_file.filename().string();
+			const auto underscore = file_name.find('_');
+			const auto dot = file_name.find_last_of('.');
+			std::string role_str = "user";
+
+			if (underscore != std::string::npos && dot != std::string::npos && dot > underscore)
+				role_str = file_name.substr(underscore + 1, dot - underscore - 1);
+
+			Message message;
+			message.role = ParseMessageRole(role_str);
+			message.content = ReadTextFile(message_file);
+			message.created_at = chat.updated_at;
+			chat.messages.push_back(std::move(message));
 		}
 	}
 
-	for (std::size_t i = 0; i < chat.messages.size(); ++i)
-	{
-		std::ostringstream filename;
-		filename << std::setfill('0') << std::setw(6) << (i + 1) << "_" << RoleToString(chat.messages[i].role) << ".txt";
-
-		if (!WriteTextFile(messages_dir / filename.str(), chat.messages[i].content))
-		{
-			return false;
-		}
-	}
-
-	return true;
+	return chat;
 }
 
 std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::path& data_root)
 {
 	std::vector<ChatSession> chats;
-	const fs::path chats_root = AppPaths::ChatsRootPath(data_root);
+
+	// Migration: Check for old-style chats in data_root/chats/ and convert to new JSON format
+	const fs::path old_chats_root = AppPaths::ChatsRootPath(data_root);
+	if (fs::exists(old_chats_root))
+	{
+		std::error_code ec;
+		for (const auto& folder : fs::directory_iterator(old_chats_root, ec))
+		{
+			if (ec || !folder.is_directory())
+				continue;
+
+			const std::string chat_id = folder.path().filename().string();
+			const fs::path new_chat_file = AppPaths::UamChatFilePath(data_root, chat_id);
+
+			// Only migrate if not already migrated
+			if (!fs::exists(new_chat_file))
+			{
+				ChatSession chat = LoadLegacyChatFromDirectory(folder.path());
+				if (!chat.id.empty())
+				{
+					// Save in new format
+					SaveChat(data_root, chat);
+					chats.push_back(chat);
+					continue;
+				}
+			}
+		}
+	}
+
+	// Load new JSON format chats
+	const fs::path chats_root = AppPaths::UamChatsRootPath(data_root);
 
 	if (!fs::exists(chats_root))
-	{
 		return chats;
-	}
 
 	std::error_code ec;
 
-	for (const auto& folder : fs::directory_iterator(chats_root, ec))
+	for (const auto& entry : fs::directory_iterator(chats_root, ec))
 	{
-		if (ec || !folder.is_directory())
-		{
+		if (ec || !entry.is_regular_file() || entry.path().extension() != ".json")
 			continue;
-		}
 
+		const std::string file_text = ReadTextFile(entry.path());
+		if (file_text.empty())
+			continue;
+
+		const auto root_opt = ParseJson(file_text);
+		if (!root_opt.has_value() || root_opt->type != JsonValue::Type::Object)
+			continue;
+
+		const JsonValue& root = root_opt.value();
 		ChatSession chat;
-		chat.id = folder.path().filename().string();
-		chat.title = "Untitled Chat";
 
-		const fs::path meta_file = folder.path() / "meta.txt";
+		chat.id = JsonStringOrEmpty(root.Find("id"));
+		if (chat.id.empty())
+			continue;
 
-		if (fs::exists(meta_file))
+		chat.provider_id = JsonStringOrEmpty(root.Find("provider_id"));
+		chat.native_session_id = JsonStringOrEmpty(root.Find("native_session_id"));
+		chat.uses_native_session = JsonBoolOrDefault(root.Find("uses_native_session"), false);
+		chat.parent_chat_id = JsonStringOrEmpty(root.Find("parent_chat_id"));
+		chat.branch_root_chat_id = JsonStringOrEmpty(root.Find("branch_root_chat_id"));
+		chat.branch_from_message_index = static_cast<int>(JsonNumberOrDefault(root.Find("branch_from_message_index"), -1));
+		chat.folder_id = JsonStringOrEmpty(root.Find("folder_id"));
+		chat.template_override_id = JsonStringOrEmpty(root.Find("template_override_id"));
+		chat.prompt_profile_bootstrapped = JsonBoolOrDefault(root.Find("prompt_profile_bootstrapped"), false);
+		chat.rag_enabled = JsonBoolOrDefault(root.Find("rag_enabled"), true);
+
+		const JsonValue* dirs = root.Find("rag_source_directories");
+		if (dirs != nullptr && dirs->type == JsonValue::Type::Array)
 		{
-			std::istringstream lines(ReadTextFile(meta_file));
-			std::string line;
-
-			while (std::getline(lines, line))
+			for (const auto& d : dirs->array_value)
 			{
-				const auto equals_at = line.find('=');
-
-				if (equals_at == std::string::npos)
-				{
-					continue;
-				}
-
-				const std::string key = line.substr(0, equals_at);
-				const std::string value = line.substr(equals_at + 1);
-
-				if (key == "id")
-				{
-					chat.id = value;
-				}
-				else if (key == "provider_id")
-				{
-					chat.provider_id = value;
-				}
-				else if (key == "native_session_id")
-				{
-					chat.native_session_id = value;
-				}
-				else if (key == "uses_native_session")
-				{
-					chat.uses_native_session = (value == "1" || value == "true");
-				}
-				else if (key == "parent_chat")
-				{
-					chat.parent_chat_id = value;
-				}
-				else if (key == "branch_root")
-				{
-					chat.branch_root_chat_id = value;
-				}
-				else if (key == "branch_from_index")
-				{
-					chat.branch_from_message_index = ParseIntOrDefault(value, -1);
-				}
-				else if (key == "folder")
-				{
-					chat.folder_id = value;
-				}
-				else if (key == "template_override")
-				{
-					chat.template_override_id = value;
-				}
-				else if (key == "prompt_profile_bootstrapped" || key == "gemini_md_bootstrapped")
-				{
-					chat.prompt_profile_bootstrapped = (value == "1" || value == "true");
-				}
-				else if (key == "rag_enabled")
-				{
-					chat.rag_enabled = (value == "1" || value == "true");
-				}
-				else if (key == "title")
-				{
-					chat.title = value;
-				}
-				else if (key == "created_at")
-				{
-					chat.created_at = value;
-				}
-				else if (key == "updated_at")
-				{
-					chat.updated_at = value;
-				}
-				else if (key == "rag_source_directory" && !value.empty())
-				{
-					chat.rag_source_directories.push_back(value);
-				}
-				else if (key == "file" && !value.empty())
-				{
-					chat.linked_files.push_back(value);
-				}
+				if (d.type == JsonValue::Type::String)
+					chat.rag_source_directories.push_back(d.string_value);
 			}
 		}
+
+		const JsonValue* files = root.Find("linked_files");
+		if (files != nullptr && files->type == JsonValue::Type::Array)
+		{
+			for (const auto& f : files->array_value)
+			{
+				if (f.type == JsonValue::Type::String)
+					chat.linked_files.push_back(f.string_value);
+			}
+		}
+		chat.title = JsonStringOrEmpty(root.Find("title"));
+		chat.created_at = JsonStringOrEmpty(root.Find("created_at"));
+		chat.updated_at = JsonStringOrEmpty(root.Find("updated_at"));
+		chat.workspace_directory = JsonStringOrEmpty(root.Find("workspace_directory"));
+		chat.approval_mode = JsonStringOrEmpty(root.Find("approval_mode"));
+		chat.model_id = JsonStringOrEmpty(root.Find("model_id"));
+		chat.extra_flags = JsonStringOrEmpty(root.Find("extra_flags"));
 
 		if (chat.created_at.empty())
-		{
-			chat.created_at = chat.updated_at.empty() ? TimestampNow() : chat.updated_at;
-		}
-
+			chat.created_at = TimestampNow();
 		if (chat.updated_at.empty())
-		{
 			chat.updated_at = chat.created_at;
-		}
 
 		if (!chat.native_session_id.empty())
-		{
 			chat.uses_native_session = true;
-		}
 		else if (chat.uses_native_session)
-		{
 			chat.native_session_id = chat.id;
-		}
 
 		if (chat.branch_root_chat_id.empty())
-		{
 			chat.branch_root_chat_id = chat.id;
-		}
 
-		if (chat.parent_chat_id.empty())
+		const JsonValue* msgs = root.Find("messages");
+		if (msgs != nullptr && msgs->type == JsonValue::Type::Array)
 		{
-			chat.branch_from_message_index = -1;
-		}
-
-		const fs::path messages_dir = folder.path() / "messages";
-
-		if (fs::exists(messages_dir))
-		{
-			std::vector<fs::path> message_files;
-
-			for (const auto& file : fs::directory_iterator(messages_dir, ec))
+			for (const auto& m : msgs->array_value)
 			{
-				if (!ec && file.is_regular_file() && file.path().extension() == ".txt")
-				{
-					message_files.push_back(file.path());
-				}
-			}
-
-			std::sort(message_files.begin(), message_files.end());
-
-			for (const auto& message_file : message_files)
-			{
-				const std::string file_name = message_file.filename().string();
-				const auto underscore = file_name.find('_');
-				const auto dot = file_name.find_last_of('.');
-				std::string role = "user";
-
-				if (underscore != std::string::npos && dot != std::string::npos && dot > underscore)
-				{
-					role = file_name.substr(underscore + 1, dot - underscore - 1);
-				}
-
-				Message message;
-				message.role = RoleFromString(role);
-				message.content = ReadTextFile(message_file);
-				message.created_at = chat.updated_at;
-				chat.messages.push_back(std::move(message));
+				if (m.type == JsonValue::Type::Object)
+					chat.messages.push_back(JsonToMessage(m));
 			}
 		}
 
 		chats.push_back(std::move(chat));
 	}
 
-	SortChatsByRecent(chats);
+	std::sort(chats.begin(), chats.end(), [](const ChatSession& a, const ChatSession& b) { return a.updated_at > b.updated_at; });
 	return chats;
 }

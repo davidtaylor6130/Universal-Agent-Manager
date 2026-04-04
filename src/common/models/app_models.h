@@ -24,6 +24,13 @@ struct Message
 	MessageRole role = MessageRole::User;
 	std::string content;
 	std::string created_at;
+	std::string provider;
+	int tokens_input = 0;
+	int tokens_output = 0;
+	double estimated_cost_usd = 0.0;
+	int time_to_first_token_ms = 0;
+	int processing_time_ms = 0;
+	bool interrupted = false;
 };
 
 /// <summary>
@@ -48,6 +55,10 @@ struct ChatSession
 	std::string updated_at;
 	std::vector<std::string> linked_files;
 	std::vector<Message> messages;
+	std::string workspace_directory;
+	std::string approval_mode;
+	std::string model_id;
+	std::string extra_flags;
 };
 
 /// <summary>
@@ -128,6 +139,9 @@ struct AsyncProcessTaskState
 {
 	std::atomic<bool> completed{false};
 	ProcessExecutionResult result;
+	std::chrono::steady_clock::time_point launch_time;
+	std::string provider_id;
+	int64_t estimated_input_tokens = 0;
 };
 
 struct PendingRuntimeCall

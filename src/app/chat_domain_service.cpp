@@ -477,3 +477,39 @@ void ChatDomainService::AddMessage(ChatSession& chat, const MessageRole role, co
 		}
 	}
 }
+
+void ChatDomainService::AddMessageWithAnalytics(ChatSession& chat, const MessageRole role, const std::string& text, const std::string& provider, const int64_t input_tokens, const int64_t output_chars, const int64_t time_to_first_token_ms, const int64_t processing_time_ms, const bool interrupted) const
+{
+	Message message;
+	message.role = role;
+	message.content = text;
+	message.created_at = TimestampNow();
+	message.provider = provider;
+	message.tokens_input = static_cast<int>(input_tokens);
+	message.tokens_output = static_cast<int>(output_chars / 4);
+	message.time_to_first_token_ms = static_cast<int>(time_to_first_token_ms);
+	message.processing_time_ms = static_cast<int>(processing_time_ms);
+	message.interrupted = interrupted;
+
+	static const double kCostPerMillionInputTokens = 0.075;
+	static const double kCostPerMillionOutputTokens = 0.30;
+	message.estimated_cost_usd = (input_tokens * kCostPerMillionInputTokens + (output_chars / 4) * kCostPerMillionOutputTokens) / 1000000.0;
+
+	chat.messages.push_back(std::move(message));
+	chat.updated_at = TimestampNow();
+
+	if (chat.messages.size() == 1 && role == MessageRole::User)
+	{
+		std::string maybe_title = Trim(text);
+
+		if (maybe_title.size() > 48)
+		{
+			maybe_title = maybe_title.substr(0, 45) + "...";
+		}
+
+		if (!maybe_title.empty())
+		{
+			chat.title = maybe_title;
+		}
+	}
+}

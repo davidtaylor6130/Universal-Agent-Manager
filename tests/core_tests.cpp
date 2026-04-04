@@ -698,14 +698,10 @@ UAM_TEST(TestChatRepositoryPersistsBranchMetadata)
 UAM_TEST(TestChatRepositoryDefaultsMissingBranchMetadata)
 {
 	TempDir data_root("uam-chat-branch-defaults");
-	const fs::path chat_root = data_root.root / "chats" / "chat-legacy";
-	const fs::path messages_root = chat_root / "messages";
-	fs::create_directories(messages_root);
-	UAM_ASSERT(WriteTextFile(chat_root / "meta.txt", "id=chat-legacy\n"
-	                                                 "title=Legacy\n"
-	                                                 "created_at=2026-03-21 11:00:00\n"
-	                                                 "updated_at=2026-03-21 11:00:01\n"));
-	UAM_ASSERT(WriteTextFile(messages_root / "000001_user.txt", "hello"));
+	const fs::path chats_root = AppPaths::UamChatsRootPath(data_root.root);
+	const fs::path chat_file = chats_root / "chat-legacy.json";
+	fs::create_directories(chats_root);
+	UAM_ASSERT(WriteTextFile(chat_file, R"({"id":"chat-legacy","title":"Legacy","created_at":"2026-03-21 11:00:00","updated_at":"2026-03-21 11:00:01","messages":[{"role":"user","content":"hello","created_at":"2026-03-21 11:00:01"}]})"));
 
 	const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(data_root.root);
 	UAM_ASSERT_EQ(1u, loaded.size());

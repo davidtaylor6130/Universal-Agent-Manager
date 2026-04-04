@@ -24,4 +24,8 @@ class AppPaths
 	static std::filesystem::path DefaultGeminiUniversalRootPath();
 	/// <summary>Resolves Gemini's per-project temp directory for a workspace, when available.</summary>
 	static std::optional<std::filesystem::path> ResolveGeminiProjectTmpDir(const std::filesystem::path& project_root);
+	/// <summary>Returns the UAM chat files root directory (separate from native history).</summary>
+	static std::filesystem::path UamChatsRootPath(const std::filesystem::path& data_root);
+	/// <summary>Returns the UAM chat JSON file path for a specific chat id.</summary>
+	static std::filesystem::path UamChatFilePath(const std::filesystem::path& data_root, const std::string& chat_id);
 };

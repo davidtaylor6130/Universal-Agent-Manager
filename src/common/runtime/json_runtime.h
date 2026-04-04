@@ -695,3 +695,35 @@ inline std::string ExtractGeminiContentText(const JsonValue* value)
 
 	return "";
 }
+
+inline double JsonNumberOrDefault(const JsonValue* value, const double fallback)
+{
+	if (value == nullptr)
+		return fallback;
+	if (value->type == JsonValue::Type::Number)
+		return value->number_value;
+	if (value->type == JsonValue::Type::String)
+	{
+		try
+		{
+			return std::stod(value->string_value);
+		}
+		catch (...)
+		{
+		}
+	}
+	return fallback;
+}
+
+inline bool JsonBoolOrDefault(const JsonValue* value, const bool fallback)
+{
+	if (value == nullptr)
+		return fallback;
+	if (value->type == JsonValue::Type::Bool)
+		return value->bool_value;
+	if (value->type == JsonValue::Type::Number)
+		return value->number_value != 0.0;
+	if (value->type == JsonValue::Type::String)
+		return value->string_value == "true" || value->string_value == "1";
+	return fallback;
+}
