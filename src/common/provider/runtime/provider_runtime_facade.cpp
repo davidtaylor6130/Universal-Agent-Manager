@@ -137,3 +137,13 @@ bool ProviderRuntime::UsesGeminiPathBootstrap(const ProviderProfile& profile)
 {
 	return ProviderRuntimeRegistry::Resolve(profile).UsesGeminiPathBootstrap(profile);
 }
+
+bool ProviderRuntime::PortSessionToWorkspace(const ProviderProfile& profile, const std::string& sessionId, const std::filesystem::path& fromWorkspace, const std::filesystem::path& toWorkspace)
+{
+	return ProviderRuntimeRegistry::Resolve(profile).PortSessionToWorkspace(profile, sessionId, fromWorkspace, toWorkspace);
+}
+
+ProviderDiscoveryResult ProviderRuntime::DiscoverChatSources(const ProviderProfile& profile)
+{
+	return ProviderRuntimeRegistry::Resolve(profile).DiscoverChatSources(profile);
+}

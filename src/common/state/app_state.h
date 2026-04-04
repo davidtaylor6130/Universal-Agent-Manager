@@ -125,6 +125,10 @@ namespace uam
 		std::string new_folder_title_input;
 		std::string new_folder_directory_input;
 		std::string pending_move_chat_to_new_folder_id;
+		std::string move_chat_pending_id;
+		std::string move_chat_original_folder_id;
+		std::string move_chat_original_workspace;
+		bool move_chat_show_missing_session_warning = false;
 		std::string template_import_path_input;
 		std::string template_manager_selected_id;
 		std::string template_rename_input;

@@ -11,6 +11,7 @@
 
 #include "common/paths/app_paths.h"
 #include "common/chat/chat_branching.h"
+#include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
 #include "common/platform/platform_services.h"
 #include "common/provider/gemini/base/gemini_history_loader.h"
@@ -268,6 +269,92 @@ void ChatHistorySyncService::LoadSidebarChats(AppState& p_app) const
 	ChatDomainService().NormalizeChatFolderAssignments(p_app);
 }
 
+void ChatHistorySyncService::LoadSidebarChatsByDiscovery(AppState& p_app) const
+{
+	ImportAllNativeChatsByDiscovery(p_app, false);
+
+	p_app.chats = ChatRepository::LoadLocalChats(p_app.data_root);
+	p_app.chats = ChatDomainService().DeduplicateChatsById(std::move(p_app.chats));
+	ChatBranching::Normalize(p_app.chats);
+	ChatDomainService().NormalizeChatFolderAssignments(p_app);
+}
+
+ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChatsByDiscovery(AppState& p_app, const bool p_delete_native_after_import) const
+{
+	ImportResult result;
+	const ProviderProfile& l_nativeProvider = DefaultNativeHistoryProvider(p_app);
+
+	const ProviderDiscoveryResult l_discovery = ProviderRuntime::DiscoverChatSources(l_nativeProvider);
+	if (!l_discovery.error.empty())
+	{
+		return result;
+	}
+
+	std::vector<ChatSession> l_localChats = ChatRepository::LoadLocalChats(p_app.data_root);
+	std::unordered_set<std::string> l_existingIds;
+	l_existingIds.reserve(l_localChats.size());
+	for (const ChatSession& chat : l_localChats)
+	{
+		l_existingIds.insert(chat.id);
+	}
+
+	for (const ProviderChatSource& l_source : l_discovery.sources)
+	{
+		ChatFolder* lp_folder = nullptr;
+		for (ChatFolder& folder : p_app.folders)
+		{
+			if (folder.directory == l_source.folder_directory)
+			{
+				lp_folder = &folder;
+				break;
+			}
+		}
+
+		if (lp_folder == nullptr)
+		{
+			ChatFolder new_folder;
+			new_folder.id = "folder_" + std::to_string(p_app.folders.size()) + "_" + l_source.folder_title;
+			new_folder.title = l_source.folder_title;
+			new_folder.directory = l_source.folder_directory;
+			new_folder.collapsed = false;
+			p_app.folders.push_back(std::move(new_folder));
+			lp_folder = &p_app.folders.back();
+		}
+
+		std::vector<ChatSession> l_nativeChats = LoadNativeSessionChats(l_source.chats_dir, l_nativeProvider);
+
+		for (ChatSession& l_nativeChat : l_nativeChats)
+		{
+			++result.total_count;
+
+			if (l_existingIds.contains(l_nativeChat.id))
+			{
+				continue;
+			}
+
+			l_nativeChat.folder_id = lp_folder->id;
+			l_nativeChat.workspace_directory = l_source.folder_directory;
+
+			if (ChatRepository::SaveChat(p_app.data_root, l_nativeChat))
+			{
+				++result.imported_count;
+				l_existingIds.insert(l_nativeChat.id);
+
+				if (p_delete_native_after_import && !l_nativeChat.native_session_id.empty())
+				{
+					std::error_code l_ec;
+					const fs::path l_nativeFile = l_source.chats_dir / (l_nativeChat.native_session_id + ".json");
+					fs::remove(l_nativeFile, l_ec);
+				}
+			}
+		}
+	}
+
+	ChatFolderStore::Save(p_app.data_root, p_app.folders);
+
+	return result;
+}
+
 bool ChatHistorySyncService::StartAsyncNativeChatLoad(AppState& app, const ProviderProfile& p_provider, const fs::path& p_chatsDir) const
 {
 	if (!PlatformServicesFactory::Instance().terminal_runtime.SupportsAsyncNativeGeminiHistoryRefresh())
@@ -428,6 +515,48 @@ bool ChatHistorySyncService::PersistLocalDraftNativeSessionLink(const AppState& 
 	p_localChat.native_session_id = l_sessionId;
 	ChatRepository::SaveChat(p_app.data_root, p_localChat);
 	return true;
+}
+
+bool ChatHistorySyncService::MoveChatToFolder(AppState& p_app, ChatSession& p_chat, const std::string& p_newFolderId) const
+{
+	if (p_newFolderId.empty())
+	{
+		return false;
+	}
+
+	const ChatFolder* l_newFolder = ChatDomainService().FindFolderById(p_app, p_newFolderId);
+	if (l_newFolder == nullptr)
+	{
+		return false;
+	}
+
+	StopAndEraseCliTerminalForChat(p_app, p_chat.id);
+
+	const std::string l_oldWorkspace = p_chat.workspace_directory;
+	const std::string l_oldFolderId = p_chat.folder_id;
+	p_app.move_chat_original_folder_id = l_oldFolderId;
+	p_app.move_chat_original_workspace = l_oldWorkspace;
+	p_chat.folder_id = p_newFolderId;
+	p_chat.workspace_directory = l_newFolder->directory;
+	p_chat.updated_at = TimestampNow();
+
+	const ProviderProfile& l_provider = ProviderResolutionService().ProviderForChatOrDefault(p_app, p_chat);
+
+	const std::string l_sessionId = p_chat.native_session_id;
+	if (!l_sessionId.empty() && !l_oldWorkspace.empty() && l_oldWorkspace != l_newFolder->directory)
+	{
+		if (!ProviderRuntime::PortSessionToWorkspace(l_provider, l_sessionId, l_oldWorkspace, l_newFolder->directory))
+		{
+			p_app.move_chat_pending_id = p_chat.id;
+			p_app.move_chat_show_missing_session_warning = true;
+			p_chat.folder_id = l_oldFolderId;
+			p_chat.workspace_directory = l_oldWorkspace;
+			p_chat.updated_at = TimestampNow();
+			return false;
+		}
+	}
+
+	return ChatRepository::SaveChat(p_app.data_root, p_chat);
 }
 
 std::string ChatHistorySyncService::ResolveResumeSessionIdForChat(const AppState& p_app, const ChatSession& p_chat) const

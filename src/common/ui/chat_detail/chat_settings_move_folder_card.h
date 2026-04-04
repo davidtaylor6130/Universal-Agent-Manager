@@ -22,9 +22,7 @@ inline void DrawChatSettingsMoveFolderCard(AppState& app, ChatSession& chat)
 
 				if (ImGui::Selectable(folder_name.c_str(), selected))
 				{
-					chat.folder_id = folder.id;
-					chat.updated_at = TimestampNow();
-					ChatHistorySyncService().SaveChatWithStatus(app, chat, "Chat moved to folder.", "Moved chat in UI, but failed to save.");
+					ChatHistorySyncService().MoveChatToFolder(app, chat, folder.id);
 				}
 
 				if (selected)

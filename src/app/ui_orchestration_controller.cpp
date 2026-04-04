@@ -44,15 +44,11 @@ void ModalHostView::Draw(uam::AppState& p_app, const float p_platformUiScale) co
 	DrawRuntimeModelSelectionModal(p_app);
 	DrawRagConsoleModal(p_app);
 	DrawAppSettingsModal(p_app, p_platformUiScale);
+	DrawMoveChatMissingSessionModal(p_app);
 	ChatDomainService().ConsumePendingBranchRequest(p_app);
 }
 
-void UiController::DrawFrame(uam::AppState& p_app,
-                             bool& p_done,
-                             const float p_platformUiScale,
-                             const IPlatformUiTraits& p_uiTraits,
-                             const ChatDetailView& p_chatDetail,
-                             const ModalHostView& p_modalHost) const
+void UiController::DrawFrame(uam::AppState& p_app, bool& p_done, const float p_platformUiScale, const IPlatformUiTraits& p_uiTraits, const ChatDetailView& p_chatDetail, const ModalHostView& p_modalHost) const
 {
 	ImGuiIO& l_io = ImGui::GetIO();
 	ApplyUserUiScale(l_io, p_app.settings.ui_scale_multiplier);

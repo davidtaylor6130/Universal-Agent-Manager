@@ -97,3 +97,10 @@ const IProviderRuntime& GetGeminiStructuredProviderRuntime()
 	static const GeminiStructuredProviderRuntime runtime;
 	return runtime;
 }
+
+ProviderDiscoveryResult GeminiStructuredProviderRuntime::DiscoverChatSources(const ProviderProfile&) const
+{
+	ProviderDiscoveryResult result;
+	result.sources = DiscoverGeminiTmpChatSources();
+	return result;
+}

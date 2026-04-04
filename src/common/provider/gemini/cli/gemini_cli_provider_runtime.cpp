@@ -1,7 +1,10 @@
 #include "common/provider/gemini/cli/gemini_cli_provider_runtime.h"
 
+#include "common/paths/app_paths.h"
 #include "common/provider/gemini/base/gemini_history_loader.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
+
+namespace fs = std::filesystem;
 
 using namespace provider_runtime_internal;
 
@@ -92,8 +95,62 @@ bool GeminiCliProviderRuntime::UsesGeminiPathBootstrap(const ProviderProfile&) c
 	return true;
 }
 
+bool GeminiCliProviderRuntime::PortSessionToWorkspace(const ProviderProfile&, const std::string& sessionId, const std::filesystem::path& fromWorkspace, const std::filesystem::path& toWorkspace) const
+{
+	if (sessionId.empty() || fromWorkspace.empty() || toWorkspace.empty())
+	{
+		return false;
+	}
+
+	if (fromWorkspace == toWorkspace)
+	{
+		return true;
+	}
+
+	const auto fromTmpDir = AppPaths::ResolveGeminiProjectTmpDir(fromWorkspace);
+	const auto toTmpDir = AppPaths::ResolveGeminiProjectTmpDir(toWorkspace);
+
+	if (!fromTmpDir.has_value() || !toTmpDir.has_value())
+	{
+		return false;
+	}
+
+	const fs::path fromChatsDir = fromTmpDir.value() / "chats";
+	const fs::path toChatsDir = toTmpDir.value() / "chats";
+
+	std::error_code l_ec;
+	fs::create_directories(toChatsDir, l_ec);
+	if (l_ec)
+	{
+		return false;
+	}
+
+	fs::path sourceFile = fromChatsDir / (sessionId + ".json");
+	if (!fs::exists(sourceFile))
+	{
+		sourceFile = fromChatsDir / (sessionId + ".txt");
+	}
+
+	if (!fs::exists(sourceFile))
+	{
+		return false;
+	}
+
+	const fs::path destFile = toChatsDir / sourceFile.filename();
+	fs::copy_file(sourceFile, destFile, fs::copy_options::overwrite_existing, l_ec);
+
+	return !l_ec;
+}
+
 const IProviderRuntime& GetGeminiCliProviderRuntime()
 {
 	static const GeminiCliProviderRuntime runtime;
 	return runtime;
+}
+
+ProviderDiscoveryResult GeminiCliProviderRuntime::DiscoverChatSources(const ProviderProfile&) const
+{
+	ProviderDiscoveryResult result;
+	result.sources = DiscoverGeminiTmpChatSources();
+	return result;
 }

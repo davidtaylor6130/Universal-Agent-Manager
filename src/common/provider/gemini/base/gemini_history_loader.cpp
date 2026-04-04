@@ -1,5 +1,6 @@
 #include "common/provider/gemini/base/gemini_history_loader.h"
 
+#include "common/paths/app_paths.h"
 #include "common/provider/provider_runtime.h"
 #include "runtime/json_runtime.h"
 
@@ -237,4 +238,51 @@ std::vector<ChatSession> LoadGeminiJsonHistoryForRuntime(const std::filesystem::
 	native_options.max_file_bytes = options.native_max_file_bytes;
 	native_options.max_messages = options.native_max_messages;
 	return GeminiJsonHistoryStore::Load(chats_dir, profile, native_options, stop_token);
+}
+
+std::vector<ProviderChatSource> DiscoverGeminiTmpChatSources()
+{
+	namespace fs = std::filesystem;
+	std::vector<ProviderChatSource> sources;
+	const fs::path gemini_home = AppPaths::GeminiHomePath();
+	const fs::path tmp_root = gemini_home / "tmp";
+
+	if (!fs::exists(tmp_root) || !fs::is_directory(tmp_root))
+	{
+		return sources;
+	}
+
+	std::error_code ec;
+	for (const auto& item : fs::directory_iterator(tmp_root, ec))
+	{
+		if (ec || !item.is_directory())
+		{
+			continue;
+		}
+
+		const fs::path project_root_file = item.path() / ".project_root";
+		if (!fs::exists(project_root_file))
+		{
+			continue;
+		}
+
+		const fs::path chats_dir = item.path() / "chats";
+		if (!fs::exists(chats_dir) || !fs::is_directory(chats_dir))
+		{
+			continue;
+		}
+
+		const std::string project_root = Trim(ReadTextFile(project_root_file));
+		if (project_root.empty())
+		{
+			continue;
+		}
+
+		ProviderChatSource source;
+		source.folder_title = item.path().filename().string();
+		source.folder_directory = project_root;
+		source.chats_dir = chats_dir;
+		sources.push_back(std::move(source));
+	}
+	return sources;
 }

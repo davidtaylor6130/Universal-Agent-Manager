@@ -17,6 +17,11 @@
 #include "common/ui/modals/modal_delete_folder.h"
 
 /// <summary>
+/// Move chat missing session warning modal.
+/// </summary>
+#include "common/ui/modals/modal_move_chat_missing_session.h"
+
+/// <summary>
 /// Folder settings modal.
 /// </summary>
 #include "common/ui/modals/modal_folder_settings.h"

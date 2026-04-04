@@ -414,9 +414,9 @@ bool Application::InitializeState()
 	m_app.folders = ChatFolderStore::Load(m_app.data_root);
 	ChatDomainService().EnsureDefaultFolder(m_app);
 	ChatFolderStore::Save(m_app.data_root, m_app.folders);
-	ChatHistorySyncService().LoadSidebarChats(m_app);
+	ChatHistorySyncService().LoadSidebarChatsByDiscovery(m_app);
 
-	auto import_result = ChatHistorySyncService().ImportAllNativeChatsToLocal(m_app, false);
+	auto import_result = ChatHistorySyncService().ImportAllNativeChatsByDiscovery(m_app, false);
 	m_app.latest_imported_count = import_result.imported_count;
 	m_app.latest_import_total_count = import_result.total_count;
 

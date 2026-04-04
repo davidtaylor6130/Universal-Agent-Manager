@@ -153,9 +153,7 @@ inline void DrawSidebarChatOptionsPopup(AppState& app)
 			{
 				if (!selected)
 				{
-					popup_chat.folder_id = folder.id;
-					popup_chat.updated_at = TimestampNow();
-					ChatHistorySyncService().SaveChatWithStatus(app, popup_chat, "Chat moved to folder.", "Moved chat in UI, but failed to save.");
+					ChatHistorySyncService().MoveChatToFolder(app, popup_chat, folder.id);
 				}
 
 				moved_to_existing_folder = true;
