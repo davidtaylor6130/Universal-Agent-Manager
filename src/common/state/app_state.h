@@ -128,6 +128,8 @@ namespace uam
 		std::string move_chat_pending_id;
 		std::string move_chat_original_folder_id;
 		std::string move_chat_original_workspace;
+		std::string move_chat_target_folder_id;
+		std::string move_chat_target_workspace;
 		bool move_chat_show_missing_session_warning = false;
 		std::string template_import_path_input;
 		std::string template_manager_selected_id;

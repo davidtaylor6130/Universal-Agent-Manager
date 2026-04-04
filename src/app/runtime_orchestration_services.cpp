@@ -530,12 +530,13 @@ bool ChatHistorySyncService::MoveChatToFolder(AppState& p_app, ChatSession& p_ch
 		return false;
 	}
 
-	StopAndEraseCliTerminalForChat(p_app, p_chat.id);
-
 	const std::string l_oldWorkspace = p_chat.workspace_directory;
 	const std::string l_oldFolderId = p_chat.folder_id;
 	p_app.move_chat_original_folder_id = l_oldFolderId;
 	p_app.move_chat_original_workspace = l_oldWorkspace;
+	p_app.move_chat_target_folder_id = p_newFolderId;
+	p_app.move_chat_target_workspace = l_newFolder->directory;
+
 	p_chat.folder_id = p_newFolderId;
 	p_chat.workspace_directory = l_newFolder->directory;
 	p_chat.updated_at = TimestampNow();
@@ -543,20 +544,31 @@ bool ChatHistorySyncService::MoveChatToFolder(AppState& p_app, ChatSession& p_ch
 	const ProviderProfile& l_provider = ProviderResolutionService().ProviderForChatOrDefault(p_app, p_chat);
 
 	const std::string l_sessionId = p_chat.native_session_id;
-	if (!l_sessionId.empty() && !l_oldWorkspace.empty() && l_oldWorkspace != l_newFolder->directory)
+
+	fs::path normalizedOld = fs::weakly_canonical(l_oldWorkspace);
+	fs::path normalizedNew = fs::weakly_canonical(l_newFolder->directory);
+	bool l_workspacesDifferent = !l_sessionId.empty() && !l_oldWorkspace.empty() && normalizedOld != normalizedNew;
+	bool l_portingSucceeded = true;
+
+	if (l_workspacesDifferent)
 	{
-		if (!ProviderRuntime::PortSessionToWorkspace(l_provider, l_sessionId, l_oldWorkspace, l_newFolder->directory))
+		StopAndEraseCliTerminalForChat(p_app, p_chat.id);
+
+		bool portResult = ProviderRuntime::PortSessionToWorkspace(l_provider, l_sessionId, l_oldWorkspace, l_newFolder->directory);
+
+		if (!portResult)
 		{
+			l_portingSucceeded = false;
 			p_app.move_chat_pending_id = p_chat.id;
 			p_app.move_chat_show_missing_session_warning = true;
-			p_chat.folder_id = l_oldFolderId;
-			p_chat.workspace_directory = l_oldWorkspace;
-			p_chat.updated_at = TimestampNow();
-			return false;
 		}
 	}
+	else
+	{
+		StopAndEraseCliTerminalForChat(p_app, p_chat.id);
+	}
 
-	return ChatRepository::SaveChat(p_app.data_root, p_chat);
+	return ChatRepository::SaveChat(p_app.data_root, p_chat) && l_portingSucceeded;
 }
 
 std::string ChatHistorySyncService::ResolveResumeSessionIdForChat(const AppState& p_app, const ChatSession& p_chat) const

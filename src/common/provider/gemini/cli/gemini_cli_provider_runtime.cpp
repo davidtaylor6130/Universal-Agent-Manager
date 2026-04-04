@@ -1,5 +1,6 @@
 #include "common/provider/gemini/cli/gemini_cli_provider_runtime.h"
 
+#include "app/application_core_helpers.h"
 #include "common/paths/app_paths.h"
 #include "common/provider/gemini/base/gemini_history_loader.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
@@ -102,7 +103,9 @@ bool GeminiCliProviderRuntime::PortSessionToWorkspace(const ProviderProfile&, co
 		return false;
 	}
 
-	if (fromWorkspace == toWorkspace)
+	fs::path normalizedFrom = fs::weakly_canonical(fromWorkspace);
+	fs::path normalizedTo = fs::weakly_canonical(toWorkspace);
+	if (normalizedFrom == normalizedTo)
 	{
 		return true;
 	}
@@ -110,36 +113,79 @@ bool GeminiCliProviderRuntime::PortSessionToWorkspace(const ProviderProfile&, co
 	const auto fromTmpDir = AppPaths::ResolveGeminiProjectTmpDir(fromWorkspace);
 	const auto toTmpDir = AppPaths::ResolveGeminiProjectTmpDir(toWorkspace);
 
-	if (!fromTmpDir.has_value() || !toTmpDir.has_value())
+	if (!fromTmpDir.has_value())
 	{
 		return false;
 	}
 
 	const fs::path fromChatsDir = fromTmpDir.value() / "chats";
-	const fs::path toChatsDir = toTmpDir.value() / "chats";
+	if (!fs::exists(fromChatsDir))
+	{
+		return false;
+	}
+
+	fs::path targetChatsDir;
+	fs::path targetTmpDir;
+
+	if (toTmpDir.has_value())
+	{
+		targetTmpDir = toTmpDir.value();
+		targetChatsDir = targetTmpDir / "chats";
+	}
+	else
+	{
+		targetTmpDir = AppPaths::GeminiHomePath() / "tmp" / toWorkspace.filename();
+		targetChatsDir = targetTmpDir / "chats";
+	}
 
 	std::error_code l_ec;
-	fs::create_directories(toChatsDir, l_ec);
+	fs::create_directories(targetChatsDir, l_ec);
 	if (l_ec)
 	{
 		return false;
 	}
 
-	fs::path sourceFile = fromChatsDir / (sessionId + ".json");
-	if (!fs::exists(sourceFile))
+	std::string searchPart = sessionId;
+	if (sessionId.length() > 8)
 	{
-		sourceFile = fromChatsDir / (sessionId + ".txt");
+		searchPart = sessionId.substr(0, 8);
 	}
 
-	if (!fs::exists(sourceFile))
+	fs::path sourceFile;
+	for (const auto& l_entry : fs::directory_iterator(fromChatsDir, l_ec))
+	{
+		if (l_ec || !l_entry.is_regular_file())
+		{
+			continue;
+		}
+
+		const std::string l_filename = l_entry.path().string();
+		if (l_filename.find(searchPart) != std::string::npos)
+		{
+			sourceFile = l_entry.path();
+			break;
+		}
+	}
+
+	if (sourceFile.empty())
 	{
 		return false;
 	}
 
-	const fs::path destFile = toChatsDir / sourceFile.filename();
+	const fs::path destFile = targetChatsDir / sourceFile.filename();
 	fs::copy_file(sourceFile, destFile, fs::copy_options::overwrite_existing, l_ec);
+	if (l_ec)
+	{
+		return false;
+	}
 
-	return !l_ec;
+	if (!toTmpDir.has_value())
+	{
+		const fs::path projectRootFile = targetTmpDir / ".project_root";
+		WriteTextFile(projectRootFile, toWorkspace.string());
+	}
+
+	return true;
 }
 
 const IProviderRuntime& GetGeminiCliProviderRuntime()
