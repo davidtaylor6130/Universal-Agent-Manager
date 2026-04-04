@@ -3,42 +3,80 @@
   Universal Agent Manager (UAM)
 </h1>
 
-> [!WARNING]
-> THIS IS VIBE CODED! I STILL NEED TO GO THROUGH CODE BY HAND AND REVIEW!!
+A local-first desktop application for managing CLI-driven AI agent workflows across multiple providers.
 
-<img src="https://img.shields.io/badge/status-in%20development-orange" />
-<img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue" />
-<img src="https://img.shields.io/badge/language-C%2B%2B20-green" />
-<img src="https://img.shields.io/badge/UI-Dear%20ImGui-purple" />
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue)](https://github.com/davidtaylor6130/Universal-Agent-Manager)
+[![Language](https://img.shields.io/badge/language-C%2B%2B20-green)](https://github.com/davidtaylor6130/Universal-Agent-Manager)
+[![UI Framework](https://img.shields.io/badge/UI-Dear%20ImGui-purple)](https://github.com/ocornut/imgui)
+[![License](https://img.shields.io/badge/license-UAML%20v1.0-orange)](LICENSE)
 
-Universal Agent Manager is a local-first desktop app for CLI-driven AI workflows.
+## Support Matrix
 
-The current default provider is Gemini CLI, and the runtime already supports provider profiles so other CLI providers can be configured without changing core app code.
+### Provider Feature Support
 
-## UI Screenshots
+| Provider | ID | Output Mode | Structured View | CLI Console View | Interactive Mode | Native History | Local History | Session Resume | Path Bootstrap |
+|----------|:--:|:-----------:|:---------------:|:----------------:|:----------------:|:-------------:|:-------------:|:--------------:|:--------------:|
+| **Gemini Structured** | `gemini-structured` | Structured | ✅ | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ |
+| **Gemini CLI** | `gemini-cli` | CLI | ❌ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
+| **Codex CLI** | `codex-cli` | CLI | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| **Claude CLI** | `claude-cli` | CLI | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| **OpenCode CLI** | `opencode-cli` | CLI | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| **OpenCode Local** | `opencode-local` | CLI (Engine) | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ |
+| **Ollama Engine** | `ollama-engine` | Structured | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
 
-### Current: v0.0.3
+### Table Legend
 
-#### Windows
+| Symbol | Meaning |
+|--------|---------|
+| ✅ | Supported |
+| ❌ | Not Supported |
+| **Structured** | Provider uses structured (JSON/API) output mode |
+| **CLI** | Provider uses CLI terminal output mode |
+| **CLI (Engine)** | Provider uses local engine (no external CLI required) |
 
-![Windows UI v0.0.3](docs/images/windows-v0.0.3-terminal.png)
+### View Descriptions
 
-#### macOS
+| View | Description |
+|------|-------------|
+| **Structured View** | Chat bubble interface with message history, tool calls, and inline responses |
+| **CLI Console View** | Embedded terminal (libvterm/ConPTY) running the provider's CLI directly |
 
-![macOS UI v0.0.3 (Terminal 01)](docs/images/macos-v0.0.3-terminal-01.png)
+### Interactive Mode
 
-<details>
-<summary>Previous Releases (v0.0.1 / v0.0.2)</summary>
+**Interactive Mode** allows providers to launch a full terminal session within the embedded console, enabling:
+- Multi-turn conversations with persistent state
+- Real-time CLI output streaming
+- Interactive prompts (e.g., confirmation dialogs, file selection)
+- Provider-controlled terminal features (colors, cursor movement)
 
-### v0.0.2
+When Interactive Mode is disabled for a provider, UAM executes single-shot batch commands only.
 
-![macOS UI v0.0.2 (Terminal 02)](docs/images/macos-v0.0.2-terminal.png)
+### History Mode Definitions
 
-### v0.0.1
+| Mode | Description |
+|------|-------------|
+| **Native History** | Reads from provider's native session files (Gemini JSON format in `~/.gemini/tmp/`) with local overlay |
+| **Local History** | UAM-managed chat storage in `<data-root>/chats/` |
 
-![macOS UI v0.0.1](docs/images/macos-builds-ui.png)
+## Quick Start
 
-</details>
+```bash
+# Build with dependencies
+cmake -S . -B Builds -DUAM_FETCH_DEPS=ON
+cmake --build Builds --config Release
+
+# Run
+./Builds/universal_agent_manager
+```
+
+## Key Features
+
+- **Multi-Provider Support** — Seamlessly switch between Gemini, Codex, Claude, OpenCode, and Ollama
+- **Flexible Views** — Structured chat UI or embedded terminal for each provider
+- **Local-First Storage** — Plain-text state with no cloud dependencies
+- **Provider Profiles** — Configure providers via `providers.txt` without modifying code
+- **Workspace Templates** — Materialize markdown templates into workspace `.gemini` directories
+- **RAG Support** — Optional retrieval-augmented generation via Ollama engine
 
 ## Project Goals
 
@@ -48,350 +86,155 @@ The current default provider is Gemini CLI, and the runtime already supports pro
 - No cloud backend, no telemetry, no sync service
 - Reproducible workspace-driven CLI runs
 
-## Current Scope
-
-- Gemini is the default out-of-box provider profile.
-- Provider profiles are stored in `providers.txt` and support custom command templates, interactive commands, resume flags, and message role mappings.
-- Native Gemini JSON session history is supported through the `gemini-cli-json` adapter.
-- Providers without a native history adapter run in local-only mode using UAM's local chat store.
-
 ## Architecture
+
+### Diagram Legend
+
+```text
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   Subgraph      │ ──▶ │   Component     │ ──▶ │   Component     │
+│   (Module)      │     │   (Class/File)  │     │   (Class/File)  │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+```
 
 ```mermaid
 flowchart TB
   subgraph APP["Boot + App Shell"]
     MAIN["main.cpp"]
-    APPLICATION["Application\nInitialize/Run/RunFrame/Shutdown"]
-    LEGACY["RunLegacyApplicationMain"]
+    APPLICATION["Application"]
     STATE["uam::AppState"]
-    MAIN --> APPLICATION --> LEGACY --> STATE
+    MAIN --> APPLICATION --> STATE
   end
 
-  subgraph PROVIDERS["Provider Runtime Polymorphism"]
-    PROFILES["ProviderProfileStore\nproviders.txt"]
+  subgraph PROVIDERS["Provider Runtime"]
+    PROFILES["ProviderProfileStore"]
     RUNTIME["ProviderRuntime"]
     REGISTRY["ProviderRuntimeRegistry"]
     IPR["IProviderRuntime"]
-    GBASE["GeminiBaseProviderRuntime"]
-    GSTRUCT["GeminiStructuredProviderRuntime\n(gemini-structured)"]
-    GCLI["GeminiCliProviderRuntime\n(gemini-cli)"]
-    CODEX["CodexCliProviderRuntime\n(codex-cli)"]
-    CLAUDE["ClaudeCliProviderRuntime\n(claude-cli)"]
-    OC_BASE["OpenCodeBaseProviderRuntime"]
-    OPENCODE["OpenCodeCliProviderRuntime\n(opencode-cli)"]
-    OPLocal["OpenCodeLocalProviderRuntime\n(opencode-local)"]
-    OLLAMA_RT["OllamaEngineProviderRuntime\n(ollama-engine)"]
-    UNKNOWN["UnknownProviderRuntime\n(custom IDs)"]
-    PROFILES --> RUNTIME --> REGISTRY --> IPR
-    REGISTRY --> GSTRUCT
-    REGISTRY --> GCLI
-    REGISTRY --> CODEX
-    REGISTRY --> CLAUDE
-    REGISTRY --> OPENCODE
-    REGISTRY --> OPLocal
-    REGISTRY --> OLLAMA_RT
-    REGISTRY --> UNKNOWN
-    GBASE --> IPR
-    GSTRUCT --> GBASE
-    GCLI --> GBASE
-    OC_BASE --> IPR
-    OPENCODE --> OC_BASE
-    OPLocal --> OC_BASE
-  end
-
-  subgraph HISTORY["History + Persistence"]
-    LOCAL["LocalChatStore"]
-    CHAT_REPO["ChatRepository"]
-    GEM_HISTORY["GeminiJsonHistoryStore"]
-    SETTINGS["SettingsStore\nsettings.txt"]
-    FOLDERS["ChatFolderStore\nfolders.txt"]
-    TEMPLATES["MarkdownTemplateCatalog\nMarkdown_Templates/*.md"]
-    PATHS["AppPaths / data root"]
-    LOCAL --> CHAT_REPO
-    GEM_HISTORY --> RUNTIME
-    STATE --> SETTINGS
-    STATE --> FOLDERS
-    STATE --> TEMPLATES
-    STATE --> PATHS
-    IPR --> LOCAL
-    GSTRUCT --> GEM_HISTORY
-    GCLI --> GEM_HISTORY
-  end
-
-  subgraph PLATFORM["Strict Platform Boundary"]
-    FACTORY["PlatformServicesFactory::Instance()"]
-    SERVICES["PlatformServices"]
-    ITERM["IPlatformTerminalRuntime"]
-    IPROC["IPlatformProcessService"]
-    IFD["IPlatformFileDialogService"]
-    IPATH["IPlatformPathService"]
-    IUI["IPlatformUiTraits"]
-    WTR["WindowsTerminalRuntime"]
-    MTR["MacTerminalRuntime"]
-    WPS["WindowsProcessService"]
-    MPS["MacProcessService"]
-    WFDS["WindowsFileDialogService"]
-    MFDS["MacFileDialogService"]
-    WPATH["WindowsPathService"]
-    MPATH["MacPathService"]
-    WUI["WindowsUiTraits"]
-    MUI["MacUiTraits"]
-    TERM_START["StartCliTerminalPlatform\n(platform/terminal_startup_dispatch.h)"]
-    TERM_MAC["terminal_mac.h"]
-    TERM_WIN["terminal_windows.h"]
-    FACTORY --> SERVICES
-    SERVICES --> ITERM
-    SERVICES --> IPROC
-    SERVICES --> IFD
-    SERVICES --> IPATH
-    SERVICES --> IUI
-    WTR --> ITERM
-    MTR --> ITERM
-    WPS --> IPROC
-    MPS --> IPROC
-    WFDS --> IFD
-    MFDS --> IFD
-    WPATH --> IPATH
-    MPATH --> IPATH
-    WUI --> IUI
-    MUI --> IUI
-    TERM_START --> TERM_MAC
-    TERM_START --> TERM_WIN
-  end
-
-  subgraph ENGINE["RAG + Engine Services"]
-    RAG["RagIndexService"]
-    OES["OllamaEngineService\n(process-local singleton)"]
-    OEC["OllamaEngineClient"]
-    VCS["VcsWorkspaceService"]
-    STATE --> RAG --> OES --> OEC
-    VCS --> IPROC
-  end
-
-  subgraph BUILD["Build-Time Gating (CMake)"]
-    TOGGLES["UAM_ENABLE_RUNTIME_*"]
-    RAGFLAG["UAM_ENABLE_ENGINE_RAG"]
-    TOGGLES --> RUNTIME
-    TOGGLES --> OLLAMA_RT
-    TOGGLES --> OPLocal
-    RAGFLAG --> RAG
-  end
-```
-
-```mermaid
-flowchart TB
-  subgraph APP_CLASSES["App + Runtime Core"]
-    APPLICATION["Application"]
-    APPSTATE["AppState"]
-    PRUNTIME["ProviderRuntime"]
-    PREGISTRY["ProviderRuntimeRegistry"]
-    PPROFILES["ProviderProfileStore"]
-    APPLICATION --> APPSTATE
-    APPSTATE --> PRUNTIME
-    PRUNTIME --> PREGISTRY
-    PRUNTIME --> PPROFILES
-  end
-
-  subgraph RUNTIME_CLASSES["Provider Runtime Interface + Implementations"]
-    IPR["IProviderRuntime (interface)"]
     GBASE["GeminiBaseProviderRuntime"]
     GSTRUCT["GeminiStructuredProviderRuntime"]
     GCLI["GeminiCliProviderRuntime"]
     CODEX["CodexCliProviderRuntime"]
     CLAUDE["ClaudeCliProviderRuntime"]
     OC_BASE["OpenCodeBaseProviderRuntime"]
-    OC_CLI["OpenCodeCliProviderRuntime"]
-    OC_LOCAL["OpenCodeLocalProviderRuntime"]
+    OPENCODE["OpenCodeCliProviderRuntime"]
+    OPLocal["OpenCodeLocalProviderRuntime"]
     OLLAMA_RT["OllamaEngineProviderRuntime"]
-    UNKNOWN_RT["UnknownProviderRuntime"]
-    PREGISTRY --> GSTRUCT
-    PREGISTRY --> GCLI
-    PREGISTRY --> CODEX
-    PREGISTRY --> CLAUDE
-    PREGISTRY --> OC_CLI
-    PREGISTRY --> OC_LOCAL
-    PREGISTRY --> OLLAMA_RT
-    PREGISTRY --> UNKNOWN_RT
-    GBASE -. "implements" .-> IPR
-    GSTRUCT -. "inherits" .-> GBASE
-    GCLI -. "inherits" .-> GBASE
-    CODEX -. "implements" .-> IPR
-    CLAUDE -. "implements" .-> IPR
-    OC_BASE -. "implements" .-> IPR
-    OC_CLI -. "inherits" .-> OC_BASE
-    OC_LOCAL -. "inherits" .-> OC_BASE
-    OLLAMA_RT -. "implements" .-> IPR
-    UNKNOWN_RT -. "implements" .-> IPR
+    PROFILES --> RUNTIME --> REGISTRY --> IPR
+    REGISTRY --> GSTRUCT & GCLI & CODEX & CLAUDE & OPENCODE & OPLocal & OLLAMA_RT
+    GBASE --> IPR
+    GSTRUCT & GCLI --> GBASE
+    OC_BASE --> IPR
+    OPENCODE & OPLocal --> OC_BASE
   end
 
-  subgraph HISTORY_CLASSES["History + Persistence"]
+  subgraph HISTORY["History + Persistence"]
     LOCAL["LocalChatStore"]
-    GEM["GeminiJsonHistoryStore"]
     CHAT_REPO["ChatRepository"]
+    GEM_HISTORY["GeminiJsonHistoryStore"]
     SETTINGS["SettingsStore"]
     FOLDERS["ChatFolderStore"]
     TEMPLATES["MarkdownTemplateCatalog"]
-    PATHS["AppPaths"]
     IPR --> LOCAL
-    GSTRUCT --> GEM
-    GCLI --> GEM
+    GSTRUCT & GCLI --> GEM_HISTORY
     LOCAL --> CHAT_REPO
-    APPSTATE --> SETTINGS
-    APPSTATE --> FOLDERS
-    APPSTATE --> TEMPLATES
-    APPSTATE --> PATHS
+    STATE --> SETTINGS & FOLDERS & TEMPLATES
   end
 
-  subgraph PLATFORM_CLASSES["Platform Services Interfaces + Adapters"]
-    PSFACTORY["PlatformServicesFactory"]
-    PSVC["PlatformServices"]
-    ITERM["IPlatformTerminalRuntime (interface)"]
-    IPROC["IPlatformProcessService (interface)"]
-    IFD["IPlatformFileDialogService (interface)"]
-    IPATH["IPlatformPathService (interface)"]
-    IUI["IPlatformUiTraits (interface)"]
-    WTR["WindowsTerminalRuntime"]
-    MTR["MacTerminalRuntime"]
-    WPS["WindowsProcessService"]
-    MPS["MacProcessService"]
-    WFD["WindowsFileDialogService"]
-    MFD["MacFileDialogService"]
-    WPATH["WindowsPathService"]
-    MPATH["MacPathService"]
-    WUI["WindowsUiTraits"]
-    MUI["MacUiTraits"]
-    PSFACTORY --> PSVC
-    PSVC --> ITERM
-    PSVC --> IPROC
-    PSVC --> IFD
-    PSVC --> IPATH
-    PSVC --> IUI
-    WTR -. "implements" .-> ITERM
-    MTR -. "implements" .-> ITERM
-    WPS -. "implements" .-> IPROC
-    MPS -. "implements" .-> IPROC
-    WFD -. "implements" .-> IFD
-    MFD -. "implements" .-> IFD
-    WPATH -. "implements" .-> IPATH
-    MPATH -. "implements" .-> IPATH
-    WUI -. "implements" .-> IUI
-    MUI -. "implements" .-> IUI
-  end
-
-  subgraph ENGINE_CLASSES["RAG + Engine"]
-    RAG["RagIndexService"]
-    OES["OllamaEngineService"]
-    OEC["OllamaEngineClient"]
-    VCS["VcsWorkspaceService"]
-    APPSTATE --> RAG
-    RAG --> OES
-    OES --> OEC
-    VCS --> IPROC
+  subgraph PLATFORM["Platform Services"]
+    FACTORY["PlatformServicesFactory"]
+    ITERM["IPlatformTerminalRuntime"]
+    IPROC["IPlatformProcessService"]
+    IFD["IPlatformFileDialogService"]
+    WTR & MTR["TerminalRuntimes"] --> ITERM
+    WPS & MPS["ProcessServices"] --> IPROC
   end
 ```
 
-## How It Works
+## Data Layout
 
-### 1) Data Root Resolution and Layout
+```
+<data-root>/
+├── settings.txt
+├── folders.txt
+├── providers.txt
+└── chats/
+    └── <chat-id>/
+        ├── meta.txt
+        └── messages/
+            ├── 000001_user.txt
+            └── 000002_assistant.txt
+```
 
-At startup, UAM tries data roots in this order:
+### Data Root Resolution
 
-1. `UAM_DATA_DIR` (if set)
+1. `UAM_DATA_DIR` environment variable (if set)
 2. `<current-working-directory>/data`
 3. OS default app-data location
-4. temp fallback (`.../universal_agent_manager_data`)
-
-Primary local layout:
-
-```text
-<data-root>/
-  settings.txt
-  folders.txt
-  providers.txt
-  frontend_actions.txt
-  chats/
-    <chat-id>/
-      meta.txt
-      messages/
-        000001_user.txt
-        000002_assistant.txt
-```
-
-### 2) Provider Runtime
-
-The app merges provider profile settings with user settings, then builds either:
-
-- A batch command for one-shot execution
-- An interactive argv for terminal mode
-
-Default Gemini template:
-
-```text
-gemini {resume} {flags} {prompt}
-```
-
-### 3) History Modes
-
-- `gemini-cli-json`: valid only for `gemini-structured` and `gemini-cli`; reads Gemini native session JSON files from `~/.gemini/tmp/.../chats`.
-- `local-only`: appends responses to local chat files in `<data-root>/chats/...`.
-
-### 4) Workspace Template Preflight
-
-Before request execution, UAM ensures workspace `.gemini` scaffolding exists and can materialize a selected markdown template into:
-
-```text
-<workspace>/.gemini/gemini.md
-```
-
-Template catalog root defaults to:
-
-```text
-~/.Gemini_universal_agent_manager/Markdown_Templates/
-```
-
-(Overridable in app settings.)
-
-### 5) Embedded Terminal
-
-Interactive mode is backed by `libvterm` and launches provider CLIs in a PTY:
-
-- macOS: `openpty`, `fork`, `execvp`
-- Windows: ConPTY (`CreatePseudoConsole`) + `CreateProcessW`
+4. Temp fallback
 
 ## Dependencies
-
-### Build and Runtime
 
 - CMake 3.20+
 - C++20 compiler
 - OpenGL
 - SDL2
 - Dear ImGui
-- `libvterm` (vendored under `third_party/libvterm`)
-
-When `UAM_FETCH_DEPS=ON`, CMake fetches:
-
-- SDL2 `release-2.30.11`
-- Dear ImGui `v1.91.8`
+- libvterm (vendored)
+- libcurl
 
 ## Build
 
-Build directory location is enforced: CMake build trees should live under `Builds/`.
-CLion's default local profile directories (`cmake-build-*` under the source root) are accepted for IDE compatibility.
-
-### Self-Contained (Fetch Dependencies)
-
 ```bash
+# Self-contained (fetches dependencies)
 cmake -S . -B Builds -DUAM_FETCH_DEPS=ON
 cmake --build Builds --config Release
-```
 
-### Custom Dependencies
-
-```bash
+# Custom dependencies
 cmake -S . -B Builds -DUAM_FETCH_DEPS=OFF -DIMGUI_DIR=/path/to/imgui
 cmake --build Builds --config Release
 ```
+
+### Runtime Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `UAM_FETCH_DEPS` | ON | Fetch SDL2 and Dear ImGui |
+| `UAM_FETCH_LLAMA_CPP` | ON | Fetch pinned llama.cpp fork |
+| `UAM_BUILD_TESTS` | OFF | Build test executable |
+
+## ⚠️ Critical: Provider Disable Flags
+
+**If you do not want UAM to be able to call or use a specific provider, you MUST disable it at build time.** Disabled providers are completely excluded from the binary and cannot be invoked.
+
+### Disable All External Provider Calls
+
+To build UAM with **no external CLI providers** (only Ollama Engine):
+
+```bash
+cmake -S . -B Builds -DUAM_FETCH_DEPS=ON \
+  -DUAM_ENABLE_RUNTIME_GEMINI_STRUCTURED=OFF \
+  -DUAM_ENABLE_RUNTIME_GEMINI_CLI=OFF \
+  -DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF \
+  -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF \
+  -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF \
+  -DUAM_ENABLE_RUNTIME_OPENCODE_LOCAL=OFF
+cmake --build Builds --config Release
+```
+
+### Disable Individual Providers
+
+| Provider | ID | CMake Flag |
+|----------|----|------------|
+| Gemini Structured | `gemini-structured` | `-DUAM_ENABLE_RUNTIME_GEMINI_STRUCTURED=OFF` |
+| Gemini CLI | `gemini-cli` | `-DUAM_ENABLE_RUNTIME_GEMINI_CLI=OFF` |
+| Codex CLI | `codex-cli` | `-DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF` |
+| Claude CLI | `claude-cli` | `-DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF` |
+| OpenCode CLI | `opencode-cli` | `-DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF` |
+| OpenCode Local | `opencode-local` | `-DUAM_ENABLE_RUNTIME_OPENCODE_LOCAL=OFF` |
+| Ollama Engine | `ollama-engine` | `-DUAM_ENABLE_RUNTIME_OLLAMA_ENGINE=OFF` |
+
+> **Note:** `opencode-local` requires both `opencode-cli` and `ollama-engine` to be enabled.
 
 ### Tests
 
@@ -401,49 +244,32 @@ cmake --build Builds/tests --config Debug
 ctest --test-dir Builds/tests -C Debug --output-on-failure
 ```
 
-### Visual Studio
-
-For project/target layout guidance, see:
-
-- [Visual Studio Solution Layout](docs/visual-studio-solution.md)
-
 ## Run
 
 ```bash
 # macOS
 ./Builds/universal_agent_manager
 
-# Windows (Visual Studio generator example)
+# Windows
 .\Builds\Release\universal_agent_manager.exe
-```
 
-Optional data-root override:
-
-```bash
-# macOS
+# Custom data root
 UAM_DATA_DIR=/tmp/uam-data ./Builds/universal_agent_manager
-
-# Windows PowerShell
-$env:UAM_DATA_DIR='C:\temp\uam-data'; .\Builds\Release\universal_agent_manager.exe
 ```
 
 ## Platform Notes
 
-- macOS: supported
-- Windows: requires ConPTY support (Windows 10 1809 or newer)
-
-## Status
-
-Active prototype.
-
-The architecture is already modular (provider profiles + runtime adapter model), while UI workflows and defaults continue to evolve.
+| Platform | Minimum Version | Terminal |
+|----------|-----------------|----------|
+| macOS | Current | openpty/fork/execvp |
+| Windows | Windows 10 1809+ | ConPTY/CreatePseudoConsole |
 
 ## License
 
 This project is licensed under the Universal Agent Manager License (UAML) v1.0.
 See [LICENSE](LICENSE) for full terms.
 
-- Copyright remains with David Taylor (davidtaylor6130).
-- Free to use and modify.
-- You cannot sell the software as-is.
-- If you redistribute it, include attribution: "Originally created by David Taylor (davidtaylor6130)."
+- Copyright remains with David Taylor (davidtaylor6130)
+- Free to use and modify
+- Cannot be sold as-is
+- Redistribution requires attribution
