@@ -66,6 +66,11 @@ namespace uam
 		std::deque<std::string> pending_structured_prompts;
 		bool generation_in_progress = false;
 		std::string last_error;
+		int sel_start_row = -1;
+		int sel_start_col = -1;
+		int sel_end_row = -1;
+		int sel_end_col = -1;
+		bool has_selection = false;
 	};
 
 	/// <summary>

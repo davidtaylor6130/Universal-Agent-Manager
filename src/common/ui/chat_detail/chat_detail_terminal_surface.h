@@ -91,6 +91,34 @@ inline void DrawCliTerminalSurface(AppState& app, ChatSession& chat, const bool 
 			const int delta = (wheel > 0.0f) ? lines : -lines;
 			terminal.scrollback_view_offset = std::clamp(terminal.scrollback_view_offset + delta, 0, max_scrollback_offset);
 		}
+
+		const ImVec2 mouse_pos = ImGui::GetMousePos();
+		const int mouse_col = static_cast<int>((mouse_pos.x - origin.x) / cell_w);
+		const int mouse_row = static_cast<int>((mouse_pos.y - origin.y) / cell_h);
+		const int scrollback_count = static_cast<int>(terminal.scrollback_lines.size());
+		const int absolute_mouse_row = scrollback_count - terminal.scrollback_view_offset + mouse_row;
+
+		if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+		{
+			if (mouse_col >= 0 && mouse_col < terminal.cols && mouse_row >= 0 && mouse_row < terminal.rows && absolute_mouse_row >= 0)
+			{
+				terminal.sel_start_row = absolute_mouse_row;
+				terminal.sel_start_col = std::clamp(mouse_col, 0, terminal.cols - 1);
+				terminal.sel_end_row = absolute_mouse_row;
+				terminal.sel_end_col = std::clamp(mouse_col, 0, terminal.cols - 1);
+				terminal.has_selection = false;
+			}
+		}
+
+		if (ImGui::IsMouseDragging(ImGuiMouseButton_Left))
+		{
+			if (mouse_col >= 0 && mouse_col < terminal.cols && mouse_row >= 0 && mouse_row < terminal.rows && absolute_mouse_row >= 0)
+			{
+				terminal.sel_end_row = absolute_mouse_row;
+				terminal.sel_end_col = std::clamp(mouse_col, 0, terminal.cols - 1);
+				terminal.has_selection = true;
+			}
+		}
 	}
 
 	if (focused)
@@ -140,6 +168,7 @@ inline void DrawCliTerminalSurface(AppState& app, ChatSession& chat, const bool 
 		for (int row = 0; row < terminal.rows; ++row)
 		{
 			const int virtual_row = start_virtual_row + row;
+			const int absolute_row = scrollback_count - terminal.scrollback_view_offset + row;
 
 			for (int col = 0; col < terminal.cols; ++col)
 			{
@@ -168,7 +197,26 @@ inline void DrawCliTerminalSurface(AppState& app, ChatSession& chat, const bool 
 				const ImVec2 cell_min(origin.x + col * cell_w, origin.y + row * cell_h);
 				const ImVec2 cell_max(cell_min.x + cell_w * std::max<int>(1, cell.width), cell_min.y + cell_h);
 
-				const ImU32 bg = VTermColorToImU32(terminal.screen, cell.bg, true);
+				ImU32 bg = VTermColorToImU32(terminal.screen, cell.bg, true);
+
+				if (terminal.has_selection)
+				{
+					const int min_sel_row = std::min(terminal.sel_start_row, terminal.sel_end_row);
+					const int max_sel_row = std::max(terminal.sel_start_row, terminal.sel_end_row);
+					const int min_sel_col = std::min(terminal.sel_start_col, terminal.sel_end_col);
+					const int max_sel_col = std::max(terminal.sel_start_col, terminal.sel_end_col);
+
+					if (absolute_row >= min_sel_row && absolute_row <= max_sel_row)
+					{
+						const bool in_range = (absolute_row > min_sel_row && absolute_row < max_sel_row) || (absolute_row == min_sel_row && absolute_row == max_sel_row && col >= min_sel_col && col <= max_sel_col) || (absolute_row == min_sel_row && absolute_row != max_sel_row && col >= min_sel_col) || (absolute_row == max_sel_row && absolute_row != min_sel_row && col <= max_sel_col);
+
+						if (in_range)
+						{
+							bg = ImGui::GetColorU32(ImVec4(0.3f, 0.5f, 0.8f, 0.4f));
+						}
+					}
+				}
+
 				draw->AddRectFilled(cell_min, cell_max, bg);
 
 				if (cell.chars[0] == 0 || cell.width == 0)
