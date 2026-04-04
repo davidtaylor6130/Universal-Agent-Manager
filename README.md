@@ -101,14 +101,14 @@ cmake --build Builds --config Release
 
 - **Multi-Provider Support** — Seamlessly switch between Gemini, Codex, Claude, OpenCode, and Ollama
 - **Flexible Views** — Structured chat UI or embedded terminal for each provider
-- **Local-First Storage** — Plain-text state with no cloud dependencies
+- **Local-First Storage** — JSON-based local storage with no cloud dependencies
 - **Provider Profiles** — Configure providers via `providers.txt` without modifying code
 - **Workspace Templates** — Materialize markdown templates into workspace `.gemini` directories
 - **RAG Support** — Optional retrieval-augmented generation via Ollama engine
 
 ## Project Goals
 
-- Local-first operation with plain-text state
+- Local-first operation with JSON-based state
 - Auditable behavior with explicit command execution
 - Provider-native history when an adapter is available
 - No cloud backend, no telemetry, no sync service
@@ -187,11 +187,9 @@ flowchart TB
 ├── folders.txt
 ├── providers.txt
 └── chats/
-    └── <chat-id>/
-        ├── meta.txt
-        └── messages/
-            ├── 000001_user.txt
-            └── 000002_assistant.txt
+    ├── <chat-id-1>.json    # Full chat session (metadata + messages)
+    ├── <chat-id-2>.json
+    └── ...
 ```
 
 ### Data Root Resolution
@@ -210,6 +208,7 @@ flowchart TB
 - Dear ImGui
 - libvterm (vendored)
 - libcurl
+- llama.cpp (fetched via `UAM_FETCH_LLAMA_CPP`, required for Ollama Engine)
 
 ## Build
 
@@ -287,10 +286,10 @@ UAM_DATA_DIR=/tmp/uam-data ./Builds/universal_agent_manager
 
 ## Platform Notes
 
-| Platform | Minimum Version | Terminal |
-|----------|-----------------|----------|
-| macOS | Current | openpty/fork/execvp |
-| Windows | Windows 10 1809+ | ConPTY/CreatePseudoConsole |
+| Platform | Minimum Version | Terminal Implementation |
+|----------|-----------------|------------------------|
+| macOS | Current | libvterm (openpty/fork/execvp) |
+| Windows | Windows 10 1809+ | ConPTY (CreatePseudoConsole) |
 
 ## License
 
