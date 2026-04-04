@@ -113,6 +113,7 @@ cmake --build Builds --config Release
 - Provider-native history when an adapter is available
 - No cloud backend, no telemetry, no sync service
 - Reproducible workspace-driven CLI runs
+- Singular re-peatable interface and features so that swapping AI hassle free.
 
 ## Architecture
 
