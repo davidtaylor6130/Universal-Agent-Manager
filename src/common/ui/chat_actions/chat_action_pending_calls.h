@@ -95,7 +95,15 @@ inline void PollPendingRuntimeCall(uam::AppState& app)
 		{
 			if (pending_chat_index >= 0)
 			{
-				ChatDomainService().AddMessage(app.chats[pending_chat_index], MessageRole::Assistant, output);
+				// Use System role for any failure so that shell errors, timeouts,
+				// and cancellations are never displayed as model replies (Bug #2 fix).
+				const bool call_failed = call.state->result.exit_code != 0
+				    || call.state->result.timed_out
+				    || call.state->result.canceled
+				    || !call.state->result.error.empty();
+				const MessageRole result_role = call_failed ? MessageRole::System : MessageRole::Assistant;
+
+				ChatDomainService().AddMessage(app.chats[pending_chat_index], result_role, output);
 				ProviderRuntime::SaveHistory(ProviderResolutionService().ProviderForChatOrDefault(app, app.chats[pending_chat_index]), app.data_root, app.chats[pending_chat_index]);
 
 				if (pending_chat_id != selected_before_id)
@@ -103,7 +111,7 @@ inline void PollPendingRuntimeCall(uam::AppState& app)
 					MarkChatUnseen(app, pending_chat_id);
 				}
 
-				app.status_line = "Provider response appended to local chat history.";
+				app.status_line = call_failed ? "Provider command failed." : "Provider response appended to local chat history.";
 				app.scroll_to_bottom = true;
 			}
 			else

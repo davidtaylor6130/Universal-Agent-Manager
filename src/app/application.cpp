@@ -43,6 +43,7 @@
 #ifndef SDL_MAIN_HANDLED
 #define SDL_MAIN_HANDLED
 #endif
+
 #include "common/platform/sdl_includes.h"
 #include "common/platform/gl_includes.h"
 

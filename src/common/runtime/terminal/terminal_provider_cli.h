@@ -154,6 +154,12 @@ inline void MarkSelectedCliTerminalForLaunch(uam::AppState& app)
 	}
 
 	uam::CliTerminalState& terminal = EnsureCliTerminalForChat(app, *selected);
+
+	if (!terminal.last_error.empty())
+	{
+		return;
+	}
+
 	terminal.should_launch = true;
 }
 

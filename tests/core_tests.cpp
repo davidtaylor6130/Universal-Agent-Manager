@@ -1784,6 +1784,205 @@ UAM_TEST(TestFrontendActionMapRoundTrip)
 	UAM_ASSERT_EQ(std::string("Ctrl+Enter"), parsed_send->properties.at("hotkey"));
 }
 
+// ---------------------------------------------------------------------------
+// Regression tests: Bug #1 — failed dispatches must not persist user messages
+// ---------------------------------------------------------------------------
+
+UAM_TEST(TestQueuePromptEmptyDoesNotAddMessage)
+{
+	// An empty (or whitespace-only) prompt must return false without touching
+	// the chat's message list. Previously, AddMessage was called before the
+	// guard in some dispatch paths.
+	TempDir data_root("uam-queue-empty-prompt");
+	uam::AppState app = MakeTestAppState(data_root.root);
+
+	ChatSession chat;
+	chat.id = "chat-empty-1";
+	chat.provider_id = "codex-cli";
+	chat.title = "Empty Prompt Test";
+	chat.created_at = "2026-04-01 10:00:00";
+	chat.updated_at = "2026-04-01 10:00:01";
+	app.chats.push_back(chat);
+	app.selected_chat_index = 0;
+
+	const bool l_result = ProviderRequestService().QueuePromptForChat(app, app.chats[0], "   ", false);
+
+	UAM_ASSERT(!l_result);
+	UAM_ASSERT(app.chats[0].messages.empty());
+	UAM_ASSERT_EQ(std::string("Prompt is empty."), app.status_line);
+}
+
+UAM_TEST(TestQueuePromptAlreadyPendingDoesNotAddMessage)
+{
+	// When a pending call already exists for a chat the function must reject
+	// the new submission without appending a user message or spawning a worker.
+	TempDir data_root("uam-queue-already-pending");
+	uam::AppState app = MakeTestAppState(data_root.root);
+
+	ChatSession chat;
+	chat.id = "chat-pending-1";
+	chat.provider_id = "codex-cli";
+	chat.title = "Already Pending Test";
+	chat.created_at = "2026-04-01 10:00:00";
+	chat.updated_at = "2026-04-01 10:00:01";
+	app.chats.push_back(chat);
+	app.selected_chat_index = 0;
+
+	PendingRuntimeCall l_existing;
+	l_existing.chat_id = "chat-pending-1";
+	l_existing.state = std::make_shared<AsyncProcessTaskState>();
+	app.pending_calls.push_back(std::move(l_existing));
+
+	const bool l_result = ProviderRequestService().QueuePromptForChat(app, app.chats[0], "hello", false);
+
+	UAM_ASSERT(!l_result);
+	UAM_ASSERT(app.chats[0].messages.empty());
+	UAM_ASSERT_EQ(std::string("Provider command already running for this chat."), app.status_line);
+	UAM_ASSERT_EQ(1u, app.pending_calls.size());
+}
+
+// ---------------------------------------------------------------------------
+// Regression tests: Bug #2 — local-history CLI failures must use System role
+// ---------------------------------------------------------------------------
+
+UAM_TEST(TestPollPendingCallNonZeroExitCodeUsesSystemRole)
+{
+	// A completed pending call with a non-zero exit code must be appended as
+	// a System message, not as an Assistant message. Previously all CLI output
+	// was always appended as Assistant regardless of whether the command failed.
+	TempDir data_root("uam-poll-nonzero-exit");
+	uam::AppState app = MakeTestAppState(data_root.root);
+
+	ChatSession chat;
+	chat.id = "chat-codex-fail";
+	chat.provider_id = "codex-cli";
+	chat.title = "Codex Fail";
+	chat.created_at = "2026-04-01 10:00:00";
+	chat.updated_at = "2026-04-01 10:00:01";
+	chat.messages.push_back(Message{MessageRole::User, "run failing command", "2026-04-01 10:00:01"});
+	app.chats.push_back(chat);
+	app.selected_chat_index = 0;
+
+	PendingRuntimeCall l_call;
+	l_call.chat_id = "chat-codex-fail";
+	l_call.provider_id_snapshot = "codex-cli";
+	l_call.state = std::make_shared<AsyncProcessTaskState>();
+	l_call.state->result.output = "command: not found";
+	l_call.state->result.exit_code = 1;
+	l_call.state->completed.store(true, std::memory_order_release);
+	app.pending_calls.push_back(std::move(l_call));
+
+	PollPendingRuntimeCall(app);
+
+	UAM_ASSERT(app.pending_calls.empty());
+	UAM_ASSERT_EQ(2u, app.chats[0].messages.size());
+	UAM_ASSERT(app.chats[0].messages.back().role == MessageRole::System);
+	UAM_ASSERT_EQ(std::string("command: not found"), app.chats[0].messages.back().content);
+	UAM_ASSERT_EQ(std::string("Provider command failed."), app.status_line);
+}
+
+UAM_TEST(TestPollPendingCallTimedOutUsesSystemRole)
+{
+	// A timed-out pending call must be appended as System, not Assistant.
+	TempDir data_root("uam-poll-timeout");
+	uam::AppState app = MakeTestAppState(data_root.root);
+
+	ChatSession chat;
+	chat.id = "chat-codex-timeout";
+	chat.provider_id = "codex-cli";
+	chat.title = "Codex Timeout";
+	chat.created_at = "2026-04-01 10:00:00";
+	chat.updated_at = "2026-04-01 10:00:01";
+	chat.messages.push_back(Message{MessageRole::User, "slow command", "2026-04-01 10:00:01"});
+	app.chats.push_back(chat);
+	app.selected_chat_index = 0;
+
+	PendingRuntimeCall l_call;
+	l_call.chat_id = "chat-codex-timeout";
+	l_call.provider_id_snapshot = "codex-cli";
+	l_call.state = std::make_shared<AsyncProcessTaskState>();
+	l_call.state->result.output = "[Provider CLI command timed out]";
+	l_call.state->result.timed_out = true;
+	l_call.state->completed.store(true, std::memory_order_release);
+	app.pending_calls.push_back(std::move(l_call));
+
+	PollPendingRuntimeCall(app);
+
+	UAM_ASSERT(app.pending_calls.empty());
+	UAM_ASSERT_EQ(2u, app.chats[0].messages.size());
+	UAM_ASSERT(app.chats[0].messages.back().role == MessageRole::System);
+	UAM_ASSERT_EQ(std::string("Provider command failed."), app.status_line);
+}
+
+UAM_TEST(TestPollPendingCallCanceledUsesSystemRole)
+{
+	// A canceled pending call must be appended as System, not Assistant.
+	TempDir data_root("uam-poll-canceled");
+	uam::AppState app = MakeTestAppState(data_root.root);
+
+	ChatSession chat;
+	chat.id = "chat-codex-canceled";
+	chat.provider_id = "codex-cli";
+	chat.title = "Codex Canceled";
+	chat.created_at = "2026-04-01 10:00:00";
+	chat.updated_at = "2026-04-01 10:00:01";
+	chat.messages.push_back(Message{MessageRole::User, "interrupted command", "2026-04-01 10:00:01"});
+	app.chats.push_back(chat);
+	app.selected_chat_index = 0;
+
+	PendingRuntimeCall l_call;
+	l_call.chat_id = "chat-codex-canceled";
+	l_call.provider_id_snapshot = "codex-cli";
+	l_call.state = std::make_shared<AsyncProcessTaskState>();
+	l_call.state->result.output = "[Provider CLI command canceled]";
+	l_call.state->result.canceled = true;
+	l_call.state->completed.store(true, std::memory_order_release);
+	app.pending_calls.push_back(std::move(l_call));
+
+	PollPendingRuntimeCall(app);
+
+	UAM_ASSERT(app.pending_calls.empty());
+	UAM_ASSERT_EQ(2u, app.chats[0].messages.size());
+	UAM_ASSERT(app.chats[0].messages.back().role == MessageRole::System);
+	UAM_ASSERT_EQ(std::string("Provider command failed."), app.status_line);
+}
+
+UAM_TEST(TestPollPendingCallSuccessUsesAssistantRole)
+{
+	// A successful (exit_code == 0) pending call must be appended as Assistant.
+	// This is the counterpart to the three failure tests above: confirming that
+	// the role selection only uses System for the error cases.
+	TempDir data_root("uam-poll-success-role");
+	uam::AppState app = MakeTestAppState(data_root.root);
+
+	ChatSession chat;
+	chat.id = "chat-codex-ok";
+	chat.provider_id = "codex-cli";
+	chat.title = "Codex Success";
+	chat.created_at = "2026-04-01 10:00:00";
+	chat.updated_at = "2026-04-01 10:00:01";
+	chat.messages.push_back(Message{MessageRole::User, "working command", "2026-04-01 10:00:01"});
+	app.chats.push_back(chat);
+	app.selected_chat_index = 0;
+
+	PendingRuntimeCall l_call;
+	l_call.chat_id = "chat-codex-ok";
+	l_call.provider_id_snapshot = "codex-cli";
+	l_call.state = std::make_shared<AsyncProcessTaskState>();
+	l_call.state->result.output = "successful output";
+	l_call.state->result.exit_code = 0;
+	l_call.state->completed.store(true, std::memory_order_release);
+	app.pending_calls.push_back(std::move(l_call));
+
+	PollPendingRuntimeCall(app);
+
+	UAM_ASSERT(app.pending_calls.empty());
+	UAM_ASSERT_EQ(2u, app.chats[0].messages.size());
+	UAM_ASSERT(app.chats[0].messages.back().role == MessageRole::Assistant);
+	UAM_ASSERT_EQ(std::string("successful output"), app.chats[0].messages.back().content);
+	UAM_ASSERT_EQ(std::string("Provider response appended to local chat history."), app.status_line);
+}
+
 int main()
 {
 	int failures = 0;

@@ -68,7 +68,8 @@ inline void PollCliTerminal(uam::AppState& app, uam::CliTerminalState& terminal,
 			ReportDroppedQueuedStructuredPromptsForTerminal(app, terminal, "Provider terminal exited before input was ready.");
 			StopCliTerminal(terminal);
 			terminal.should_launch = false;
-			app.status_line = "Provider terminal exited.";
+			terminal.last_error = "Provider terminal exited.";
+			app.status_line = terminal.last_error;
 			break;
 		}
 
@@ -90,7 +91,8 @@ inline void PollCliTerminal(uam::AppState& app, uam::CliTerminalState& terminal,
 		ReportDroppedQueuedStructuredPromptsForTerminal(app, terminal, "Provider terminal exited before input was ready.");
 		StopCliTerminal(terminal);
 		terminal.should_launch = false;
-		app.status_line = "Provider terminal exited.";
+		terminal.last_error = "Provider terminal exited.";
+		app.status_line = terminal.last_error;
 	}
 
 	const double now = ImGui::GetTime();

@@ -611,16 +611,15 @@ bool ProviderRequestService::QueuePromptForChat(AppState& p_app, ChatSession& p_
 		return false;
 	}
 
-	ChatDomainService().AddMessage(p_chat, MessageRole::User, l_promptText);
-	ChatHistorySyncService().SaveChatWithStatus(p_app, p_chat, "Prompt queued for provider runtime.", "Saved message locally, but failed to persist chat data.");
+	// NOTE: AddMessage(User) is intentionally deferred below each success path so
+	// that a failed dispatch never leaves an unsent prompt persisted in history
+	// while the text simultaneously remains in the composer (Bug #1 fix).
 
 	const bool l_useSharedCliSession = !l_useLocalRuntime && ProviderRuntime::UsesCliOutput(l_provider) && l_provider.supports_interactive;
 
 	if (!l_useLocalRuntime && ProviderRuntime::UsesCliOutput(l_provider) && !l_provider.supports_interactive)
 	{
-		ChatDomainService().AddMessage(p_chat, MessageRole::System, "Provider is configured for CLI output but has no interactive runtime command.");
-		ProviderRuntime::SaveHistory(l_provider, p_app.data_root, p_chat);
-		p_app.status_line = "Provider runtime configuration error.";
+		p_app.status_line = "Provider runtime configuration error: provider has no interactive command.";
 		return false;
 	}
 
@@ -636,11 +635,13 @@ bool ProviderRequestService::QueuePromptForChat(AppState& p_app, ChatSession& p_
 				return false;
 			}
 
-			ChatDomainService().AddMessage(p_chat, MessageRole::System, "Provider terminal send failed: " + (l_terminalError.empty() ? std::string("unknown error") : l_terminalError));
-			ProviderRuntime::SaveHistory(l_provider, p_app.data_root, p_chat);
-			p_app.status_line = "Provider terminal send failed.";
+			p_app.status_line = "Provider terminal send failed: " + (l_terminalError.empty() ? std::string("unknown error") : l_terminalError);
 			return false;
 		}
+
+		// Prompt reached the terminal — record it now so the composer can be cleared.
+		ChatDomainService().AddMessage(p_chat, MessageRole::User, l_promptText);
+		ChatHistorySyncService().SaveChatWithStatus(p_app, p_chat, "Prompt sent to provider terminal.", "Prompt sent, but chat save failed.");
 
 		if (l_shouldBootstrapTemplate)
 		{
@@ -667,11 +668,14 @@ bool ProviderRequestService::QueuePromptForChat(AppState& p_app, ChatSession& p_
 
 		if (!RuntimeLocalService().EnsureLocalRuntimeModelLoaded(p_app, &l_loadError))
 		{
-			ChatDomainService().AddMessage(p_chat, MessageRole::System, "Local runtime model load failed: " + (l_loadError.empty() ? std::string("unknown error") : l_loadError));
-			ProviderRuntime::SaveHistory(l_provider, p_app.data_root, p_chat);
-			p_app.status_line = "Local runtime model load failed.";
+			p_app.status_line = "Local runtime model load failed: " + (l_loadError.empty() ? std::string("unknown error") : l_loadError);
 			return false;
 		}
+
+		// Model is loaded — record the user prompt before inference so the
+		// conversation history is correct for both success and error replies.
+		ChatDomainService().AddMessage(p_chat, MessageRole::User, l_promptText);
+		ChatHistorySyncService().SaveChatWithStatus(p_app, p_chat, "Prompt queued for local runtime.", "Prompt queued, but chat save failed.");
 
 		const LocalEngineResponse l_response = p_app.runtime_model_service.SendPrompt(ResolveRagModelFolder(p_app), l_runtimePrompt);
 
@@ -749,6 +753,12 @@ bool ProviderRequestService::QueuePromptForChat(AppState& p_app, ChatSession& p_
 	});
 
 	p_app.pending_calls.push_back(std::move(l_pending));
+
+	// Async dispatch is now in flight — record the user prompt so the composer
+	// can be cleared.  Deferring to this point means a launch failure (caught
+	// earlier by the empty-command guard) never leaves an orphaned history entry.
+	ChatDomainService().AddMessage(p_chat, MessageRole::User, l_promptText);
+	ChatHistorySyncService().SaveChatWithStatus(p_app, p_chat, "Prompt queued for async provider.", "Prompt queued, but chat save failed.");
 
 	if (l_shouldBootstrapTemplate)
 	{
@@ -959,7 +969,6 @@ bool ChatHistorySyncService::TruncateNativeSessionFromDisplayedMessage(const App
 	}
 
 	JsonValue l_root;
-	std::string l_parseError;
 
 	const std::string l_fileText = ReadTextFile(l_sessionFile.value());
 	const std::optional<JsonValue> l_parsedRoot = ParseJson(l_fileText);
@@ -968,7 +977,7 @@ bool ChatHistorySyncService::TruncateNativeSessionFromDisplayedMessage(const App
 	{
 		if (p_errorOut != nullptr)
 		{
-			*p_errorOut = l_parseError.empty() ? "Failed to parse native runtime session file." : l_parseError;
+			*p_errorOut = "Failed to parse native runtime session file.";
 		}
 
 		return false;
@@ -1026,13 +1035,12 @@ bool ChatHistorySyncService::TruncateNativeSessionFromDisplayedMessage(const App
 	}
 
 	lp_contents->array_value.erase(lp_contents->array_value.begin() + static_cast<std::ptrdiff_t>(l_truncateIndex), lp_contents->array_value.end());
-	std::string l_saveError;
 
 	if (!WriteTextFile(l_sessionFile.value(), SerializeJson(l_root)))
 	{
 		if (p_errorOut != nullptr)
 		{
-			*p_errorOut = l_saveError.empty() ? "Failed to write updated native runtime session." : l_saveError;
+			*p_errorOut = "Failed to write updated native runtime session.";
 		}
 
 		return false;
