@@ -14,15 +14,15 @@ A local-first desktop application for managing CLI-driven AI agent workflows acr
 
 ### Provider Feature Support
 
-| Provider | Structured View | CLI View | Interactive |
-|----------|:--------------:|:--------:|:-----------:|
-| **Gemini Structured** | ✅ | ❌ | 🔜 |
-| **Gemini CLI** | ❌ | ✅ | 🔜 |
-| **Codex CLI** | ❌ | ✅ | 🔜 |
-| **Claude CLI** | ❌ | ✅ | 🔜 |
-| **OpenCode CLI** | ❌ | ✅ | 🔜 |
-| **OpenCode Local** | ❌ | ✅ | 🚫 |
-| **Ollama Engine** | ✅ | ❌ | 🚫 |
+| Provider | ID | Structured | CLI | Interactive | Universal History |
+|----------|:--:|:---------:|:---:|:-----------:|:----------------:|
+| **Gemini Structured** | `gemini-structured` | ✅ | ❌ | 🔜 | 🔜🛠️ |
+| **Gemini CLI** | `gemini-cli` | ❌ | ✅ | 🔜 | 🔜🛠️ |
+| **Codex CLI** | `codex-cli` | ❌ | ✅ | 🔜 | 🔜 |
+| **Claude CLI** | `claude-cli` | ❌ | ✅ | 🔜 | 🔜 |
+| **OpenCode CLI** | `opencode-cli` | ❌ | ✅ | 🔜 | 🔜 |
+| **OpenCode Local** | `opencode-local` | ❌ | ✅ | 🚫 | 🔜 |
+| **Ollama Engine** | `ollama-engine` | ✅ | ❌ | 🚫 | 🔜 |
 
 ### Symbol Legend
 
@@ -31,6 +31,7 @@ A local-first desktop application for managing CLI-driven AI agent workflows acr
 | ✅ | **Current** | Implemented and working |
 | ❌ | **Current** | Not available for this provider |
 | 🔜 | **Future** | Planned, not yet implemented |
+| 🔜🛠️ | **Future** | In active development |
 | 🚫 | **Future** | Explicitly not planned |
 
 ### View Definitions
@@ -60,6 +61,28 @@ A local-first desktop application for managing CLI-driven AI agent workflows acr
 | **Local History** | **UAM source of truth** | All chats stored in `<data-root>/chats/`. This is where chats live long-term. |
 | **Native History** | **Active session only** | Provider's native format (e.g., Gemini JSON). Only used while actively using the AI. Not for long-term storage. |
 | **Path Bootstrap** | **Active session only** | Injects `@.gemini/path` references. Only during active sessions, not for storage. |
+| **Universal History** | **Cross-provider chats** | UAM-normalized chat format that works across CLI agents. One chat, swap providers. |
+
+### What is Universal Chat History?
+
+UAM stores chats in its own format, enabling provider switching:
+
+- **Start a chat with Gemini CLI**
+- **Switch mid-conversation to Claude or Codex**
+- **Continue the same chat with a different provider**
+
+Context and conversation history are preserved across providers.
+
+**How it works (architecture-driven):**
+- UAM stores chats in its own normalized format
+- Tool calls, decisions, and context are captured uniformly
+- When you switch providers, UAM reconstructs context for the new CLI
+
+**Current support:**
+- Gemini: **Partial** — basic conversation continuity works
+  - 🛠️ Tool use: In progress
+  - 🛠️ Sub-agents: In progress
+- Other providers: **Future** — core switching works, deeper integration planned
 
 > ⚠️ **Important:** Native History and Path Bootstrap are temporary — they exist only while you're actively using the AI. For long-term chat storage, always use Local History (UAM's format).
 
