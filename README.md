@@ -14,15 +14,15 @@ A local-first desktop application for managing CLI-driven AI agent workflows acr
 
 ### Provider Feature Support
 
-| Provider | ID | Output Mode | Structured View | CLI Console View | Interactive Mode | Native History | Local History | Session Resume | Path Bootstrap |
-|----------|:--:|:-----------:|:---------------:|:----------------:|:----------------:|:-------------:|:-------------:|:--------------:|:--------------:|
-| **Gemini Structured** | `gemini-structured` | Structured | ✅ | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ |
-| **Gemini CLI** | `gemini-cli` | CLI | ❌ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
-| **Codex CLI** | `codex-cli` | CLI | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
-| **Claude CLI** | `claude-cli` | CLI | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
-| **OpenCode CLI** | `opencode-cli` | CLI | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
-| **OpenCode Local** | `opencode-local` | CLI (Engine) | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ |
-| **Ollama Engine** | `ollama-engine` | Structured | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
+| Provider | Structured View | CLI Console | Interactive | Native History | Local History | Resume | Path Bootstrap |
+|----------|:----------------:|:-----------:|:-----------:|:--------------:|:-------------:|:------:|:-------------:|
+| **Gemini Structured** | ✅ | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ |
+| **Gemini CLI** | ❌ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
+| **Codex CLI** | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| **Claude CLI** | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| **OpenCode CLI** | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| **OpenCode Local** | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ |
+| **Ollama Engine** | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
 
 ### Table Legend
 
@@ -30,9 +30,6 @@ A local-first desktop application for managing CLI-driven AI agent workflows acr
 |--------|---------|
 | ✅ | Supported |
 | ❌ | Not Supported |
-| **Structured** | Provider uses structured (JSON/API) output mode |
-| **CLI** | Provider uses CLI terminal output mode |
-| **CLI (Engine)** | Provider uses local engine (no external CLI required) |
 
 ### View Descriptions
 
@@ -41,15 +38,24 @@ A local-first desktop application for managing CLI-driven AI agent workflows acr
 | **Structured View** | Chat bubble interface with message history, tool calls, and inline responses |
 | **CLI Console View** | Embedded terminal (libvterm/ConPTY) running the provider's CLI directly |
 
-### Interactive Mode
+### What is Interactive Mode?
 
-**Interactive Mode** allows providers to launch a full terminal session within the embedded console, enabling:
-- Multi-turn conversations with persistent state
-- Real-time CLI output streaming
-- Interactive prompts (e.g., confirmation dialogs, file selection)
-- Provider-controlled terminal features (colors, cursor movement)
+**Short answer:** When enabled, UAM opens a real terminal window inside the app and runs the provider's CLI directly, just like if you opened Terminal and typed `gemini` yourself.
 
-When Interactive Mode is disabled for a provider, UAM executes single-shot batch commands only.
+**When disabled:** UAM runs a single command, sends your prompt, captures the response, and closes — like calling a function.
+
+**Interactive Mode ON (CLI Console View):**
+- Provider runs in a full terminal (libvterm on macOS, ConPTY on Windows)
+- You see real-time streaming output, progress bars, and terminal colors
+- Multi-turn conversation happens inside the same terminal session
+- Provider can show interactive prompts ("Continue? Y/n", etc.)
+- Like SSH-ing into a server and running commands interactively
+
+**Interactive Mode OFF (Structured View):**
+- UAM sends a prompt and waits for a complete response
+- No persistent terminal session
+- Clean chat bubble UI with message history
+- Works better for API-based providers or when you don't need terminal features
 
 ### History Mode Definitions
 
