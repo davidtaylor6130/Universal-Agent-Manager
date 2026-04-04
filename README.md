@@ -14,55 +14,54 @@ A local-first desktop application for managing CLI-driven AI agent workflows acr
 
 ### Provider Feature Support
 
-| Provider | Structured View | CLI Console | Interactive | Native History | Local History | Resume | Path Bootstrap |
-|----------|:----------------:|:-----------:|:-----------:|:--------------:|:-------------:|:------:|:-------------:|
-| **Gemini Structured** | ✅ | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ |
-| **Gemini CLI** | ❌ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
-| **Codex CLI** | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
-| **Claude CLI** | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
-| **OpenCode CLI** | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
-| **OpenCode Local** | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ |
-| **Ollama Engine** | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
+| Provider | Structured View | CLI View | Interactive |
+|----------|:--------------:|:--------:|:-----------:|
+| **Gemini Structured** | ✅ | ❌ | 🔜 |
+| **Gemini CLI** | ❌ | ✅ | 🔜 |
+| **Codex CLI** | ❌ | ✅ | 🔜 |
+| **Claude CLI** | ❌ | ✅ | 🔜 |
+| **OpenCode CLI** | ❌ | ✅ | 🔜 |
+| **OpenCode Local** | ❌ | ✅ | 🚫 |
+| **Ollama Engine** | ✅ | ❌ | 🚫 |
 
-### Table Legend
+### Symbol Legend
 
-| Symbol | Meaning |
-|--------|---------|
-| ✅ | Supported |
-| ❌ | Not Supported |
+| Symbol | Status | Meaning |
+|:------:|:------:|---------|
+| ✅ | **Current** | Implemented and working |
+| ❌ | **Current** | Not available for this provider |
+| 🔜 | **Future** | Planned, not yet implemented |
+| 🚫 | **Future** | Explicitly not planned |
 
-### View Descriptions
+### View Definitions
 
 | View | Description |
 |------|-------------|
-| **Structured View** | Chat bubble interface with message history, tool calls, and inline responses |
-| **CLI Console View** | Embedded terminal (libvterm/ConPTY) running the provider's CLI directly |
+| **Structured View** | Simple LLM query (e.g., `gemini -p "prompt"`). No tool use, no agents, just a prompt → response. Chat bubble UI with history. |
+| **CLI View** | Embedded terminal (libvterm/ConPTY) running the provider's CLI directly. Full terminal experience, real-time output, progress bars, streaming. |
+| **Interactive** *(future)* | CLI View but with a polished UI overlay. Terminal power with chat UI convenience — stream output to bubbles, capture tool calls, show progress, but still have full CLI capability. |
 
 ### What is Interactive Mode?
 
-**Short answer:** When enabled, UAM opens a real terminal window inside the app and runs the provider's CLI directly, just like if you opened Terminal and typed `gemini` yourself.
+**Structured View** = Single-shot prompt → response. Like calling a function with text in, text out.
 
-**When disabled:** UAM runs a single command, sends your prompt, captures the response, and closes — like calling a function.
+**CLI View** = Full terminal running the provider's CLI. Real terminal window inside the app, streaming output, multi-turn, interactive prompts.
 
-**Interactive Mode ON (CLI Console View):**
-- Provider runs in a full terminal (libvterm on macOS, ConPTY on Windows)
-- You see real-time streaming output, progress bars, and terminal colors
-- Multi-turn conversation happens inside the same terminal session
-- Provider can show interactive prompts ("Continue? Y/n", etc.)
-- Like SSH-ing into a server and running commands interactively
+**Interactive Mode** (future) = The best of both. CLI power with UI polish:
+- Terminal output streams into chat bubbles
+- Tool calls captured and displayed beautifully
+- Progress indicators and streaming text
+- But still full CLI capability underneath
 
-**Interactive Mode OFF (Structured View):**
-- UAM sends a prompt and waits for a complete response
-- No persistent terminal session
-- Clean chat bubble UI with message history
-- Works better for API-based providers or when you don't need terminal features
+### History & Storage
 
-### History Mode Definitions
+| Mode | Purpose | Notes |
+|------|---------|-------|
+| **Local History** | **UAM source of truth** | All chats stored in `<data-root>/chats/`. This is where chats live long-term. |
+| **Native History** | **Active session only** | Provider's native format (e.g., Gemini JSON). Only used while actively using the AI. Not for long-term storage. |
+| **Path Bootstrap** | **Active session only** | Injects `@.gemini/path` references. Only during active sessions, not for storage. |
 
-| Mode | Description |
-|------|-------------|
-| **Native History** | Reads from provider's native session files (Gemini JSON format in `~/.gemini/tmp/`) with local overlay |
-| **Local History** | UAM-managed chat storage in `<data-root>/chats/` |
+> ⚠️ **Important:** Native History and Path Bootstrap are temporary — they exist only while you're actively using the AI. For long-term chat storage, always use Local History (UAM's format).
 
 ## Quick Start
 
