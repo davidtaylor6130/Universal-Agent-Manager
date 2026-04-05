@@ -129,9 +129,9 @@ std::string GeminiCliProviderRuntime::BuildSessionFilename(const ChatSession& ch
 	{
 		std::string ts = chat.created_at;
 		std::size_t tPos = ts.find('T');
-		if (tPos != std::string::npos && tPos + 8 <= ts.size())
+		if (tPos != std::string::npos && tPos + 6 <= ts.size())
 		{
-			datePart = ts.substr(0, tPos + 8);
+			datePart = ts.substr(0, tPos + 6);
 			for (char& c : datePart)
 			{
 				if (c == ':')
