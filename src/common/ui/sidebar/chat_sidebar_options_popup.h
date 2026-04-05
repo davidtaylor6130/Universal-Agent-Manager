@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/chat_domain_service.h"
+#include "common/provider/runtime/provider_build_config.h"
 #include "common/rag/rag_app_helpers.h"
 
 /// <summary>
@@ -92,6 +93,7 @@ inline void DrawSidebarChatOptionsPopup(AppState& app)
 		ImGui::EndMenu();
 	}
 
+#if UAM_ENABLE_ENGINE_RAG
 	if (ImGui::BeginMenu("RAG"))
 	{
 		if (ImGui::MenuItem("Open RAG Console..."))
@@ -139,6 +141,7 @@ inline void DrawSidebarChatOptionsPopup(AppState& app)
 
 		ImGui::EndMenu();
 	}
+#endif
 
 	if (ImGui::BeginMenu("Move folder"))
 	{

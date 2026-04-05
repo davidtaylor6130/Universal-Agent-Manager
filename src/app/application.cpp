@@ -373,8 +373,7 @@ bool Application::InitializeState()
 
 	PersistenceCoordinator().LoadSettings(m_app);
 	bool l_settingsDirty = false;
-	const bool l_hadProviderFile = fs::exists(m_app.data_root / "providers.txt");
-	m_app.provider_profiles = ProviderProfileStore::Load(m_app.data_root);
+	m_app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
 	bool l_providersDirty = ProviderProfileMigrationService().MigrateProviderProfilesToFixedModeIds(m_app);
 
 	if (ProviderProfileMigrationService().MigrateActiveProviderIdToFixedModes(m_app))
@@ -390,12 +389,6 @@ bool Application::InitializeState()
 
 	if (ProviderProfile* lp_activeProfile = ProviderResolutionService().ActiveProvider(m_app); lp_activeProfile != nullptr)
 	{
-		if (!l_hadProviderFile && !m_app.settings.provider_command_template.empty() && ProviderProfileMigrationService().IsNativeHistoryProviderId(lp_activeProfile->id) && ProviderRuntime::UsesStructuredOutput(*lp_activeProfile))
-		{
-			lp_activeProfile->command_template = m_app.settings.provider_command_template;
-			l_providersDirty = true;
-		}
-
 		m_app.settings.provider_command_template = lp_activeProfile->command_template;
 		m_app.settings.gemini_command_template = m_app.settings.provider_command_template;
 #if UAM_ENABLE_RUNTIME_OLLAMA_ENGINE
@@ -409,11 +402,6 @@ bool Application::InitializeState()
 			const std::string l_disabledReason = ProviderRuntime::DisabledReason(*lp_activeProfile);
 			m_app.status_line = l_disabledReason.empty() ? "Active provider runtime is disabled in this build." : l_disabledReason;
 		}
-	}
-
-	if (!l_hadProviderFile || l_providersDirty)
-	{
-		ProviderProfileStore::Save(m_app.data_root, m_app.provider_profiles);
 	}
 
 	PersistenceCoordinator().LoadFrontendActions(m_app);

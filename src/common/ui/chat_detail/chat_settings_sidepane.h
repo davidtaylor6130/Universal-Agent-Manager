@@ -1,5 +1,6 @@
 #pragma once
 
+#include "common/provider/runtime/provider_build_config.h"
 #include "common/ui/chat_detail/chat_settings_section_basics.h"
 #include "common/ui/chat_detail/chat_settings_command_card.h"
 #include "common/ui/chat_detail/chat_settings_local_gemini_card.h"
@@ -33,7 +34,10 @@ inline void DrawSessionSidePane(AppState& app, ChatSession& chat)
 	}
 
 	DrawChatSettingsRepositoryCard(app, chat);
+
+#if UAM_ENABLE_ENGINE_RAG
 	DrawChatSettingsRagCard(app, chat);
+#endif
 
 	if (ProviderRuntime::UsesCliOutput(provider))
 	{

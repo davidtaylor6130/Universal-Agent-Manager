@@ -42,7 +42,9 @@ void ModalHostView::Draw(uam::AppState& p_app, const float p_platformUiScale) co
 	DrawMarkdownTemplateManagerModal(p_app);
 	DrawVcsOutputModal(p_app);
 	DrawRuntimeModelSelectionModal(p_app);
+#if UAM_ENABLE_ENGINE_RAG
 	DrawRagConsoleModal(p_app);
+#endif
 	DrawAppSettingsModal(p_app, p_platformUiScale);
 	DrawMoveChatMissingSessionModal(p_app);
 	ChatDomainService().ConsumePendingBranchRequest(p_app);

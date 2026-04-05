@@ -102,7 +102,7 @@ cmake --build Builds --config Release
 - **Multi-Provider Support** — Seamlessly switch between Gemini, Codex, Claude, OpenCode, and Ollama
 - **Flexible Views** — Structured chat UI or embedded terminal for each provider
 - **Local-First Storage** — JSON-based local storage with no cloud dependencies
-- **Provider Profiles** — Configure providers via `providers.txt` without modifying code
+- **Built-in Provider Profiles** — Providers configured at build time via CMake
 - **Workspace Templates** — Materialize markdown templates into workspace `.gemini` directories
 - **RAG Support** — Optional retrieval-augmented generation via Ollama engine
 
@@ -184,7 +184,6 @@ flowchart TB
 <data-root>/
 ├── settings.txt
 ├── folders.txt
-├── providers.txt
 └── chats/
     ├── <chat-id-1>.json    # Full chat session (metadata + messages)
     ├── <chat-id-2>.json

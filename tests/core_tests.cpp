@@ -1392,57 +1392,15 @@ UAM_TEST(TestProviderRuntimeParsesWindowsPathFlags)
 #endif
 }
 
-UAM_TEST(TestProviderProfileStoreRoundTrip)
+UAM_TEST(TestProviderProfileStoreBuiltInProfiles)
 {
-	TempDir data_root("uam-provider-profiles");
-	std::vector<ProviderProfile> profiles;
-
-	ProviderProfile custom = ProviderProfileStore::DefaultGeminiProfile();
-	custom.id = "custom-cli";
-	custom.title = "Custom CLI";
-	custom.command_template = "custom-cli {prompt}";
-	custom.interactive_command = "custom-cli --interactive";
-	custom.supports_resume = false;
-	custom.resume_argument = "--continue";
-	custom.history_adapter = "local-only";
-	custom.user_message_types = {"user"};
-	custom.assistant_message_types = {"assistant", "bot"};
-	profiles.push_back(custom);
-
-	UAM_ASSERT(ProviderProfileStore::Save(data_root.root, profiles));
-
-	const std::vector<ProviderProfile> loaded = ProviderProfileStore::Load(data_root.root);
-	const ProviderProfile* found = ProviderProfileStore::FindById(loaded, "custom-cli");
-	UAM_ASSERT(found != nullptr);
-	UAM_ASSERT_EQ(std::string("Custom CLI"), found->title);
-	UAM_ASSERT_EQ(std::string("custom-cli {prompt}"), found->command_template);
-	UAM_ASSERT(found->supports_resume == false);
-	UAM_ASSERT_EQ(std::string("--continue"), found->resume_argument);
-	UAM_ASSERT_EQ(std::string("local-only"), found->history_adapter);
-}
-
-UAM_TEST(TestProviderProfileStoreIncludesBuiltInEngineProvider)
-{
-	TempDir data_root("uam-provider-builtins");
-	const std::vector<ProviderProfile> loaded = ProviderProfileStore::Load(data_root.root);
-	const ProviderProfile* engine = ProviderProfileStore::FindById(loaded, "ollama-engine");
-	UAM_ASSERT(engine != nullptr);
-	UAM_ASSERT_EQ(std::string("internal-engine"), engine->execution_mode);
-	UAM_ASSERT_EQ(std::string("structured"), engine->output_mode);
-	UAM_ASSERT_EQ(std::string("local-only"), engine->history_adapter);
-	UAM_ASSERT(!engine->supports_interactive);
-}
-
-UAM_TEST(TestProviderProfileStoreIncludesFixedGeminiModes)
-{
-	TempDir data_root("uam-provider-gemini-modes");
-	const std::vector<ProviderProfile> loaded = ProviderProfileStore::Load(data_root.root);
-	const ProviderProfile* gemini_structured = ProviderProfileStore::FindById(loaded, "gemini-structured");
-	const ProviderProfile* gemini_cli = ProviderProfileStore::FindById(loaded, "gemini-cli");
-	UAM_ASSERT(ProviderProfileStore::FindById(loaded, "gemini") == nullptr);
-	UAM_ASSERT(ProviderProfileStore::FindById(loaded, "codex-cli") != nullptr);
-	UAM_ASSERT(ProviderProfileStore::FindById(loaded, "claude-cli") != nullptr);
-	UAM_ASSERT(ProviderProfileStore::FindById(loaded, "opencode-cli") != nullptr);
+	const std::vector<ProviderProfile> profiles = ProviderProfileStore::BuiltInProfiles();
+	const ProviderProfile* gemini_structured = ProviderProfileStore::FindById(profiles, "gemini-structured");
+	const ProviderProfile* gemini_cli = ProviderProfileStore::FindById(profiles, "gemini-cli");
+	UAM_ASSERT(ProviderProfileStore::FindById(profiles, "gemini") == nullptr);
+	UAM_ASSERT(ProviderProfileStore::FindById(profiles, "codex-cli") != nullptr);
+	UAM_ASSERT(ProviderProfileStore::FindById(profiles, "claude-cli") != nullptr);
+	UAM_ASSERT(ProviderProfileStore::FindById(profiles, "opencode-cli") != nullptr);
 	UAM_ASSERT(gemini_structured != nullptr);
 	UAM_ASSERT(gemini_cli != nullptr);
 	UAM_ASSERT_EQ(std::string("structured"), gemini_structured->output_mode);
@@ -1450,28 +1408,6 @@ UAM_TEST(TestProviderProfileStoreIncludesFixedGeminiModes)
 	UAM_ASSERT(!gemini_structured->supports_interactive);
 	UAM_ASSERT_EQ(std::string("cli"), gemini_cli->output_mode);
 	UAM_ASSERT(gemini_cli->supports_interactive);
-}
-
-UAM_TEST(TestProviderProfileStoreHydratesStructuredGeminiDefaults)
-{
-	TempDir data_root("uam-provider-legacy-gemini");
-	const fs::path file = data_root.root / "providers.txt";
-	UAM_ASSERT(WriteTextFile(file, "[provider]\n"
-	                               "id=gemini-structured\n"
-	                               "title=Gemini (Structured)\n"
-	                               "command_template=gemini {resume} {flags} -p {prompt}\n"
-	                               "user_types=user\n"
-	                               "assistant_types=assistant,model,gemini\n"));
-
-	const std::vector<ProviderProfile> loaded = ProviderProfileStore::Load(data_root.root);
-	const ProviderProfile* gemini = ProviderProfileStore::FindById(loaded, "gemini-structured");
-	UAM_ASSERT(gemini != nullptr);
-	UAM_ASSERT_EQ(std::string("cli"), gemini->execution_mode);
-	UAM_ASSERT_EQ(std::string("structured"), gemini->output_mode);
-	UAM_ASSERT_EQ(std::string("gemini-cli-json"), gemini->history_adapter);
-	UAM_ASSERT_EQ(std::string("gemini-at-path"), gemini->prompt_bootstrap);
-	UAM_ASSERT_EQ(std::string("@.gemini/gemini.md"), gemini->prompt_bootstrap_path);
-	UAM_ASSERT(!gemini->supports_interactive);
 }
 
 UAM_TEST(TestProviderRuntimeParsesWindowsInteractiveCommandPath)

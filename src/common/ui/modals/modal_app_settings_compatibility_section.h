@@ -10,7 +10,6 @@
 /// </summary>
 inline void DrawAppSettingsCompatibilitySection(AppState& app)
 {
-	ImGui::TextColored(ui::kTextSecondary, "Gemini CLI Compatibility");
 	ImGui::TextColored(ui::kTextMuted, "Supported version: %s", uam::constants::kSupportedGeminiVersion);
 
 	if (app.runtime_cli_version_check_task.running)

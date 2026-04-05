@@ -5,7 +5,6 @@
 /// </summary>
 inline void DrawAppSettingsAppearanceSection(AppState& app, AppSettings& draft_settings, const float platform_scale)
 {
-	ImGui::TextColored(ui::kTextSecondary, "Appearance");
 	const char* theme_preview = "Dark";
 
 	if (draft_settings.ui_theme == "light")

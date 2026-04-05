@@ -5,7 +5,6 @@
 /// </summary>
 inline void DrawAppSettingsTemplatesSection(AppState& app, AppSettings& draft_settings)
 {
-	ImGui::TextColored(ui::kTextSecondary, "Prompt Profiles");
 	PushInputChrome();
 	std::string browse_error;
 	DrawPathInputWithBrowseButton("Global Root", draft_settings.prompt_profile_root_path, "app_settings_prompt_profile_root_picker", PathBrowseTarget::Directory, 520.0f, nullptr, nullptr, &browse_error);

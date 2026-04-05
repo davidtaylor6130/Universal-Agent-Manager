@@ -3,6 +3,7 @@
 #include "app/chat_domain_service.h"
 #include "app/provider_resolution_service.h"
 #include "app/template_runtime_service.h"
+#include "common/provider/runtime/provider_build_config.h"
 #include "common/rag/rag_app_helpers.h"
 
 /// <summary>
@@ -133,6 +134,7 @@ inline void DrawDesktopMenuBar(AppState& app, bool& done)
 		ImGui::EndMenu();
 	}
 
+#if UAM_ENABLE_ENGINE_RAG
 	if (ImGui::BeginMenu("RAG"))
 	{
 		const ChatSession* selected_chat = ChatDomainService().SelectedChat(app);
@@ -204,6 +206,7 @@ inline void DrawDesktopMenuBar(AppState& app, bool& done)
 
 		ImGui::EndMenu();
 	}
+#endif
 
 	if (ImGui::BeginMenu("View"))
 	{

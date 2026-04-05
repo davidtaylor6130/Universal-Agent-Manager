@@ -34,11 +34,6 @@ struct ProviderProfile
 class ProviderProfileStore
 {
   public:
-	/// <summary>Loads provider profiles from disk for the current data root.</summary>
-	static std::vector<ProviderProfile> Load(const std::filesystem::path& data_root);
-	/// <summary>Saves provider profiles to disk for the current data root.</summary>
-	static bool Save(const std::filesystem::path& data_root, const std::vector<ProviderProfile>& profiles);
-
 	/// <summary>Returns the built-in default Gemini profile.</summary>
 	static ProviderProfile DefaultGeminiProfile();
 	/// <summary>Returns built-in CLI defaults plus internal engine profile.</summary>

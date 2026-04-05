@@ -759,6 +759,46 @@ namespace
 			{
 				TerminateProcess(terminal.process_info.hProcess, 1);
 			}
+
+			if (terminal.pipe_input != INVALID_HANDLE_VALUE)
+			{
+				CloseHandle(terminal.pipe_input);
+				terminal.pipe_input = INVALID_HANDLE_VALUE;
+			}
+
+			if (terminal.pipe_output != INVALID_HANDLE_VALUE)
+			{
+				CloseHandle(terminal.pipe_output);
+				terminal.pipe_output = INVALID_HANDLE_VALUE;
+			}
+
+			if (terminal.process_info.hThread != INVALID_HANDLE_VALUE)
+			{
+				CloseHandle(terminal.process_info.hThread);
+				terminal.process_info.hThread = INVALID_HANDLE_VALUE;
+			}
+
+			if (terminal.process_info.hProcess != INVALID_HANDLE_VALUE)
+			{
+				CloseHandle(terminal.process_info.hProcess);
+				terminal.process_info.hProcess = INVALID_HANDLE_VALUE;
+			}
+
+			if (terminal.pseudo_console != nullptr)
+			{
+				ClosePseudoConsoleSafe(terminal.pseudo_console);
+				terminal.pseudo_console = nullptr;
+			}
+
+			if (terminal.attr_list != nullptr)
+			{
+				DeleteProcThreadAttributeList(terminal.attr_list);
+				HeapFree(GetProcessHeap(), 0, terminal.attr_list);
+				terminal.attr_list = nullptr;
+			}
+
+			terminal.process_info.dwProcessId = 0;
+			terminal.process_info.dwThreadId = 0;
 		}
 
 		void ResizeCliTerminal(uam::CliTerminalState& terminal) const override
@@ -927,7 +967,7 @@ namespace
 			STARTUPINFOW startup_info{};
 			startup_info.cb = sizeof(startup_info);
 			startup_info.dwFlags = STARTF_USESTDHANDLES;
-			startup_info.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+			startup_info.hStdInput = INVALID_HANDLE_VALUE;
 			startup_info.hStdOutput = stdout_write;
 			startup_info.hStdError = stdout_write;
 

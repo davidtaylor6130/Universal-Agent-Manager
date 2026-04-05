@@ -1,5 +1,7 @@
 #pragma once
 
+#include "common/provider/runtime/provider_build_config.h"
+
 /// <summary>
 /// Window size/state helper functions.
 /// </summary>
@@ -46,10 +48,12 @@
 /// </summary>
 #include "common/ui/modals/modal_runtime_model_selection.h"
 
+#if UAM_ENABLE_ENGINE_RAG
 /// <summary>
 /// Project-wide RAG console modal.
 /// </summary>
 #include "common/ui/modals/modal_rag_console.h"
+#endif
 
 /// <summary>
 /// App settings modal and section components.

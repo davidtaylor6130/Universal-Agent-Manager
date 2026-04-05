@@ -5,7 +5,6 @@
 /// </summary>
 inline void DrawAppSettingsStartupSection(AppSettings& draft_settings)
 {
-	ImGui::TextColored(ui::kTextSecondary, "Startup / Window");
 	ImGui::SetNextItemWidth(140.0f);
 	ImGui::InputInt("Window Width", &draft_settings.window_width);
 	ImGui::SetNextItemWidth(140.0f);
