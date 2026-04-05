@@ -136,6 +136,33 @@ namespace
 			obj.object_value["interrupted"].type = JsonValue::Type::Bool;
 			obj.object_value["interrupted"].bool_value = true;
 		}
+		if (!msg.thoughts.empty())
+		{
+			obj.object_value["thoughts"].type = JsonValue::Type::String;
+			obj.object_value["thoughts"].string_value = msg.thoughts;
+		}
+		if (!msg.tool_calls.empty())
+		{
+			JsonValue tc_arr;
+			tc_arr.type = JsonValue::Type::Array;
+			for (const auto& tc : msg.tool_calls)
+			{
+				JsonValue tc_obj;
+				tc_obj.type = JsonValue::Type::Object;
+				tc_obj.object_value["id"].type = JsonValue::Type::String;
+				tc_obj.object_value["id"].string_value = tc.id;
+				tc_obj.object_value["name"].type = JsonValue::Type::String;
+				tc_obj.object_value["name"].string_value = tc.name;
+				tc_obj.object_value["args_json"].type = JsonValue::Type::String;
+				tc_obj.object_value["args_json"].string_value = tc.args_json;
+				tc_obj.object_value["result_text"].type = JsonValue::Type::String;
+				tc_obj.object_value["result_text"].string_value = tc.result_text;
+				tc_obj.object_value["status"].type = JsonValue::Type::String;
+				tc_obj.object_value["status"].string_value = tc.status;
+				tc_arr.array_value.push_back(tc_obj);
+			}
+			obj.object_value["tool_calls"] = std::move(tc_arr);
+		}
 		return obj;
 	}
 
@@ -162,6 +189,27 @@ namespace
 			msg.processing_time_ms = static_cast<int>(JsonNumberOrDefault(obj.Find("processing_time_ms"), 0));
 		if (obj.object_value.contains("interrupted"))
 			msg.interrupted = obj.Find("interrupted")->type == JsonValue::Type::Bool && obj.Find("interrupted")->bool_value;
+		if (obj.object_value.contains("thoughts"))
+			msg.thoughts = JsonStringOrEmpty(obj.Find("thoughts"));
+		if (obj.object_value.contains("tool_calls"))
+		{
+			const JsonValue* tc_arr = obj.Find("tool_calls");
+			if (tc_arr && tc_arr->type == JsonValue::Type::Array)
+			{
+				for (const auto& tc : tc_arr->array_value)
+				{
+					if (tc.type != JsonValue::Type::Object)
+						continue;
+					ToolCall tool_call;
+					tool_call.id = JsonStringOrEmpty(tc.Find("id"));
+					tool_call.name = JsonStringOrEmpty(tc.Find("name"));
+					tool_call.args_json = JsonStringOrEmpty(tc.Find("args_json"));
+					tool_call.result_text = JsonStringOrEmpty(tc.Find("result_text"));
+					tool_call.status = JsonStringOrEmpty(tc.Find("status"));
+					msg.tool_calls.push_back(std::move(tool_call));
+				}
+			}
+		}
 		return msg;
 	}
 

@@ -17,6 +17,18 @@ enum class MessageRole
 };
 
 /// <summary>
+/// A single tool call execution record.
+/// </summary>
+struct ToolCall
+{
+	std::string id;
+	std::string name;
+	std::string args_json;
+	std::string result_text;
+	std::string status;
+};
+
+/// <summary>
 /// One persisted chat message payload.
 /// </summary>
 struct Message
@@ -31,6 +43,8 @@ struct Message
 	int time_to_first_token_ms = 0;
 	int processing_time_ms = 0;
 	bool interrupted = false;
+	std::vector<ToolCall> tool_calls;
+	std::string thoughts;
 };
 
 /// <summary>

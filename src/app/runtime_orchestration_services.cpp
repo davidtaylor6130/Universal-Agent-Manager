@@ -184,6 +184,7 @@ std::optional<fs::path> ChatHistorySyncService::ResolveNativeHistoryChatsDirForW
 		return std::nullopt;
 	}
 
+	// TODO: Remove this gmeini specific call through the dam interface!!! Bloody AI.
 	const auto l_tmpDir = AppPaths::ResolveGeminiProjectTmpDir(p_workspaceRoot);
 
 	if (!l_tmpDir.has_value())
@@ -451,6 +452,11 @@ std::optional<fs::path> ChatHistorySyncService::FindNativeSessionFilePath(const 
 	}
 
 	std::error_code l_ec;
+	std::string searchPart = p_sessionId;
+	if (searchPart.length() > 8)
+	{
+		searchPart = searchPart.substr(0, 8);
+	}
 
 	for (const auto& l_item : fs::directory_iterator(p_chatsDir, l_ec))
 	{
@@ -459,9 +465,8 @@ std::optional<fs::path> ChatHistorySyncService::FindNativeSessionFilePath(const 
 			continue;
 		}
 
-		const std::string l_name = l_item.path().stem().string();
-
-		if (l_name == p_sessionId)
+		const std::string l_filename = l_item.path().filename().string();
+		if (l_filename.find(searchPart) != std::string::npos)
 		{
 			return l_item.path();
 		}
@@ -552,6 +557,28 @@ bool ChatHistorySyncService::MoveChatToFolder(AppState& p_app, ChatSession& p_ch
 	if (l_workspacesDifferent)
 	{
 		StopAndEraseCliTerminalForChat(p_app, p_chat.id);
+
+		const auto l_oldChatsDir = ResolveNativeHistoryChatsDirForWorkspace(normalizedOld);
+		if (l_oldChatsDir.has_value() && !l_sessionId.empty())
+		{
+			const auto l_sessionFile = FindNativeSessionFilePath(l_oldChatsDir.value(), l_sessionId);
+			if (l_sessionFile.has_value())
+			{
+				GeminiJsonHistoryStoreOptions l_opts;
+				l_opts.max_messages = 0;
+				l_opts.max_file_bytes = 0;
+				const auto l_parsed = GeminiJsonHistoryStore::ParseFile(l_sessionFile.value(), l_provider, l_opts);
+				if (l_parsed.has_value() && !l_parsed->messages.empty())
+				{
+					p_chat.messages = l_parsed->messages;
+					if (!l_parsed->updated_at.empty())
+					{
+						p_chat.updated_at = l_parsed->updated_at;
+					}
+				}
+			}
+		}
+
 		bool rebuildResult = ProviderRuntime::RebuildNativeSessionFile(l_provider, p_chat, l_newFolder->directory);
 		if (!rebuildResult)
 		{

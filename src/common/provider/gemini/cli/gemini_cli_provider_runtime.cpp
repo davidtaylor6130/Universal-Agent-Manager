@@ -7,6 +7,7 @@
 #include "common/runtime/json_runtime.h"
 
 #include <Security/Security.h>
+#include <sstream>
 
 namespace fs = std::filesystem;
 
@@ -186,6 +187,16 @@ bool GeminiCliProviderRuntime::RebuildNativeSessionFile(const ProviderProfile&, 
 	{
 		return false;
 	}
+	bool has_tool_calls = false;
+	for (const auto& m : chat.messages)
+	{
+		if (!m.tool_calls.empty())
+		{
+			has_tool_calls = true;
+			break;
+		}
+	}
+	bool is_subagent = !chat.parent_chat_id.empty();
 	JsonValue root;
 	root.type = JsonValue::Type::Object;
 	root.object_value["sessionId"].type = JsonValue::Type::String;
@@ -196,6 +207,39 @@ bool GeminiCliProviderRuntime::RebuildNativeSessionFile(const ProviderProfile&, 
 	root.object_value["lastUpdated"].string_value = chat.updated_at;
 	JsonValue msgs;
 	msgs.type = JsonValue::Type::Array;
+	if (has_tool_calls || is_subagent)
+	{
+		std::string note_text = "Note: This session was rebuilt from UAM's source of truth.";
+		if (has_tool_calls)
+		{
+			note_text += " Tool execution details and results were preserved but subagent conversations were stripped to reduce context.";
+		}
+		if (is_subagent)
+		{
+			note_text += " This is a subagent session extracted from a parent conversation.";
+		}
+		note_text += " The main conversation thread contains the essential information.";
+		JsonValue note_msg;
+		note_msg.type = JsonValue::Type::Object;
+		note_msg.object_value["id"].type = JsonValue::Type::String;
+		note_msg.object_value["id"].string_value = GenerateSessionUUID();
+		note_msg.object_value["timestamp"].type = JsonValue::Type::String;
+		note_msg.object_value["timestamp"].string_value = chat.created_at;
+		note_msg.object_value["type"].type = JsonValue::Type::String;
+		note_msg.object_value["type"].string_value = "info";
+		JsonValue note_content;
+		note_content.type = JsonValue::Type::Object;
+		note_content.object_value["text"].type = JsonValue::Type::String;
+		note_content.object_value["text"].string_value = note_text;
+		note_msg.object_value["content"] = note_content;
+		JsonValue note_thoughts;
+		note_thoughts.type = JsonValue::Type::Array;
+		note_msg.object_value["thoughts"] = note_thoughts;
+		JsonValue note_tool_calls;
+		note_tool_calls.type = JsonValue::Type::Array;
+		note_msg.object_value["toolCalls"] = note_tool_calls;
+		msgs.array_value.push_back(std::move(note_msg));
+	}
 	for (const auto& m : chat.messages)
 	{
 		JsonValue msg;
@@ -211,12 +255,73 @@ bool GeminiCliProviderRuntime::RebuildNativeSessionFile(const ProviderProfile&, 
 		content.object_value["text"].type = JsonValue::Type::String;
 		content.object_value["text"].string_value = m.content;
 		msg.object_value["content"] = content;
-		JsonValue thoughts;
-		thoughts.type = JsonValue::Type::Array;
-		msg.object_value["thoughts"] = thoughts;
-		JsonValue toolCalls;
-		toolCalls.type = JsonValue::Type::Array;
-		msg.object_value["toolCalls"] = toolCalls;
+		if (!m.thoughts.empty())
+		{
+			JsonValue thoughts;
+			thoughts.type = JsonValue::Type::Array;
+			std::istringstream thought_stream(m.thoughts);
+			std::string line;
+			while (std::getline(thought_stream, line))
+			{
+				if (!line.empty())
+				{
+					JsonValue thought_obj;
+					thought_obj.type = JsonValue::Type::Object;
+					thought_obj.object_value["text"].type = JsonValue::Type::String;
+					thought_obj.object_value["text"].string_value = line;
+					thoughts.array_value.push_back(std::move(thought_obj));
+				}
+			}
+			msg.object_value["thoughts"] = std::move(thoughts);
+		}
+		else
+		{
+			JsonValue thoughts;
+			thoughts.type = JsonValue::Type::Array;
+			msg.object_value["thoughts"] = thoughts;
+		}
+		if (!m.tool_calls.empty())
+		{
+			JsonValue toolCalls;
+			toolCalls.type = JsonValue::Type::Array;
+			for (const auto& tc : m.tool_calls)
+			{
+				JsonValue tc_obj;
+				tc_obj.type = JsonValue::Type::Object;
+				tc_obj.object_value["id"].type = JsonValue::Type::String;
+				tc_obj.object_value["id"].string_value = tc.id;
+				tc_obj.object_value["name"].type = JsonValue::Type::String;
+				tc_obj.object_value["name"].string_value = tc.name;
+				tc_obj.object_value["status"].type = JsonValue::Type::String;
+				tc_obj.object_value["status"].string_value = tc.status;
+				tc_obj.object_value["timestamp"].type = JsonValue::Type::String;
+				tc_obj.object_value["timestamp"].string_value = m.created_at;
+				const auto args_opt = ParseJson(tc.args_json);
+				if (args_opt.has_value())
+				{
+					tc_obj.object_value["args"] = args_opt.value();
+				}
+				else
+				{
+					JsonValue args;
+					args.type = JsonValue::Type::Object;
+					tc_obj.object_value["args"] = args;
+				}
+				JsonValue result;
+				result.type = JsonValue::Type::Object;
+				result.object_value["text"].type = JsonValue::Type::String;
+				result.object_value["text"].string_value = tc.result_text;
+				tc_obj.object_value["result"] = result;
+				toolCalls.array_value.push_back(std::move(tc_obj));
+			}
+			msg.object_value["toolCalls"] = std::move(toolCalls);
+		}
+		else
+		{
+			JsonValue toolCalls;
+			toolCalls.type = JsonValue::Type::Array;
+			msg.object_value["toolCalls"] = toolCalls;
+		}
 		msgs.array_value.push_back(std::move(msg));
 	}
 	root.object_value["messages"] = std::move(msgs);

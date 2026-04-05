@@ -152,6 +152,52 @@ std::optional<ChatSession> GeminiJsonHistoryStore::ParseFile(const std::filesyst
 			message.role = ProviderRuntime::RoleFromNativeType(provider, type);
 			message.content = content;
 			message.created_at = timestamp.empty() ? chat.updated_at : timestamp;
+
+			const JsonValue* tool_calls = raw_message.Find("toolCalls");
+			if (tool_calls && tool_calls->type == JsonValue::Type::Array)
+			{
+				for (const auto& tc : tool_calls->array_value)
+				{
+					if (tc.type != JsonValue::Type::Object)
+						continue;
+					ToolCall tool_call;
+					tool_call.id = JsonStringOrEmpty(tc.Find("id"));
+					tool_call.name = JsonStringOrEmpty(tc.Find("name"));
+					tool_call.status = JsonStringOrEmpty(tc.Find("status"));
+
+					const JsonValue* args = tc.Find("args");
+					if (args && args->type == JsonValue::Type::Object)
+					{
+						tool_call.args_json = SerializeJson(*args);
+					}
+
+					const JsonValue* result = tc.Find("result");
+					if (result)
+					{
+						tool_call.result_text = ExtractGeminiContentText(result);
+					}
+
+					message.tool_calls.push_back(std::move(tool_call));
+				}
+			}
+
+			const JsonValue* thoughts = raw_message.Find("thoughts");
+			if (thoughts && thoughts->type == JsonValue::Type::Array)
+			{
+				std::ostringstream thought_out;
+				for (const auto& t : thoughts->array_value)
+				{
+					std::string thought_text = ExtractGeminiContentText(&t);
+					if (!thought_text.empty())
+					{
+						if (!thought_out.str().empty())
+							thought_out << "\n";
+						thought_out << thought_text;
+					}
+				}
+				message.thoughts = thought_out.str();
+			}
+
 			chat.messages.push_back(std::move(message));
 
 			if (options.max_messages > 0 && chat.messages.size() >= options.max_messages)
