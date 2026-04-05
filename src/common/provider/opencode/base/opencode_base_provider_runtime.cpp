@@ -1,12 +1,30 @@
 #include "common/provider/opencode/base/opencode_base_provider_runtime.h"
 
+#include "common/provider/opencode/opencode_history_service.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
+
+#include <chrono>
+#include <iomanip>
+#include <random>
 
 using namespace provider_runtime_internal;
 
-OpenCodeBaseProviderRuntime::OpenCodeBaseProviderRuntime(const char* runtime_id, const bool enabled, const char* disabled_reason) :
-    runtime_id_(runtime_id), enabled_(enabled), disabled_reason_(disabled_reason == nullptr ? "" : disabled_reason)
+OpenCodeBaseProviderRuntime::OpenCodeBaseProviderRuntime(const char* runtime_id, const bool enabled, const char* disabled_reason) : runtime_id_(runtime_id), enabled_(enabled), disabled_reason_(disabled_reason == nullptr ? "" : disabled_reason), rng_(std::random_device{}())
 {
+}
+
+std::string OpenCodeBaseProviderRuntime::GenerateOpenCodeSessionId() const
+{
+	std::uniform_int_distribution<int> dist(0, 61);
+	static const char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+	std::string result = "ses_";
+
+	for (int i = 0; i < 20; ++i)
+	{
+		result += charset[dist(rng_)];
+	}
+
+	return result;
 }
 
 const char* OpenCodeBaseProviderRuntime::RuntimeId() const
@@ -43,7 +61,29 @@ std::vector<std::string> OpenCodeBaseProviderRuntime::BuildInteractiveArgv(const
 		return {};
 	}
 
-	return provider_runtime_internal::BuildInteractiveArgv(profile, chat, MergeProviderSettings(profile, settings));
+	std::vector<std::string> argv = provider_runtime_internal::BuildInteractiveArgv(profile, chat, MergeProviderSettings(profile, settings));
+
+	const std::string model_id = settings.selected_model_id;
+	if (!model_id.empty())
+	{
+		bool has_model = false;
+		for (const auto& arg : argv)
+		{
+			if (arg == "--model" || arg == "-m" || arg.rfind("--model=", 0) == 0 || arg.rfind("-m=", 0) == 0)
+			{
+				has_model = true;
+				break;
+			}
+		}
+
+		if (!has_model)
+		{
+			argv.push_back("--model");
+			argv.push_back(model_id);
+		}
+	}
+
+	return argv;
 }
 
 MessageRole OpenCodeBaseProviderRuntime::RoleFromNativeType(const ProviderProfile& profile, const std::string& native_type) const
@@ -51,9 +91,34 @@ MessageRole OpenCodeBaseProviderRuntime::RoleFromNativeType(const ProviderProfil
 	return provider_runtime_internal::RoleFromNativeType(profile, native_type);
 }
 
-std::vector<ChatSession> OpenCodeBaseProviderRuntime::LoadHistory(const ProviderProfile&, const std::filesystem::path& data_root, const std::filesystem::path&, const ProviderRuntimeHistoryLoadOptions&) const
+std::vector<ChatSession> OpenCodeBaseProviderRuntime::LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path& native_history_chats_dir, const ProviderRuntimeHistoryLoadOptions&) const
 {
-	return LoadLocalChats(data_root);
+	std::vector<ChatSession> local_chats = LoadLocalChats(data_root);
+
+	if (!native_history_chats_dir.empty())
+	{
+		std::vector<ChatSession> opencode_chats = OpenCodeHistoryService::LoadOpenCodeHistory(data_root, native_history_chats_dir);
+
+		for (auto& chat : opencode_chats)
+		{
+			bool found = false;
+			for (const auto& local : local_chats)
+			{
+				if (local.native_session_id == chat.native_session_id)
+				{
+					found = true;
+					break;
+				}
+			}
+
+			if (!found)
+			{
+				local_chats.push_back(chat);
+			}
+		}
+	}
+
+	return local_chats;
 }
 
 bool OpenCodeBaseProviderRuntime::SaveHistory(const ProviderProfile&, const std::filesystem::path& data_root, const ChatSession& chat) const
@@ -94,4 +159,9 @@ bool OpenCodeBaseProviderRuntime::UsesStructuredOutput(const ProviderProfile&) c
 bool OpenCodeBaseProviderRuntime::UsesGeminiPathBootstrap(const ProviderProfile&) const
 {
 	return false;
+}
+
+std::string OpenCodeBaseProviderRuntime::GenerateSessionUUID() const
+{
+	return GenerateOpenCodeSessionId();
 }

@@ -206,18 +206,17 @@ std::optional<fs::path> ChatHistorySyncService::ResolveNativeHistoryChatsDirForW
 		return std::nullopt;
 	}
 
-	// TODO: Remove this gmeini specific call through the dam interface!!! Bloody AI.
 	const auto l_tmpDir = AppPaths::ResolveGeminiProjectTmpDir(p_workspaceRoot);
 
-	if (!l_tmpDir.has_value())
+	if (l_tmpDir.has_value())
 	{
-		return std::nullopt;
+		const fs::path l_chatsDir = l_tmpDir.value() / "chats";
+		std::error_code l_ec;
+		fs::create_directories(l_chatsDir, l_ec);
+		return l_ec ? std::nullopt : std::optional<fs::path>(l_chatsDir);
 	}
 
-	const fs::path l_chatsDir = l_tmpDir.value() / "chats";
-	std::error_code l_ec;
-	fs::create_directories(l_chatsDir, l_ec);
-	return l_ec ? std::nullopt : std::optional<fs::path>(l_chatsDir);
+	return std::optional<fs::path>(p_workspaceRoot);
 }
 
 fs::path ChatHistorySyncService::ResolveNativeHistoryChatsDirForChat(const AppState& p_app, const ChatSession& p_chat) const

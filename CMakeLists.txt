@@ -334,6 +334,7 @@ endif()
 if(UAM_ENABLE_RUNTIME_OPENCODE_CLI OR UAM_ENABLE_RUNTIME_OPENCODE_LOCAL)
   list(APPEND UAM_PROVIDER_SOURCES
     src/common/provider/opencode/base/opencode_base_provider_runtime.cpp
+    src/common/provider/opencode/opencode_history_service.cpp
   )
 endif()
 

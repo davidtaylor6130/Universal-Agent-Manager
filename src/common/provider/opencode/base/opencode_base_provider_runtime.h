@@ -2,6 +2,9 @@
 
 #include "common/provider/provider_runtime.h"
 
+#include <random>
+#include <sstream>
+
 class OpenCodeBaseProviderRuntime : public IProviderRuntime
 {
   public:
@@ -21,12 +24,15 @@ class OpenCodeBaseProviderRuntime : public IProviderRuntime
 	bool UsesCliOutput(const ProviderProfile& profile) const override;
 	bool UsesStructuredOutput(const ProviderProfile& profile) const override;
 	bool UsesGeminiPathBootstrap(const ProviderProfile& profile) const override;
+	std::string GenerateSessionUUID() const override;
 
   protected:
 	OpenCodeBaseProviderRuntime(const char* runtime_id, bool enabled, const char* disabled_reason);
+	std::string GenerateOpenCodeSessionId() const;
 
   private:
 	const char* runtime_id_ = "";
 	bool enabled_ = true;
 	const char* disabled_reason_ = "";
+	mutable std::mt19937 rng_;
 };

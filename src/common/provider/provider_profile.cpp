@@ -210,8 +210,8 @@ std::vector<ProviderProfile> ProviderProfileStore::BuiltInProfiles()
 	opencode.command_template = "opencode {flags} {prompt}";
 	opencode.interactive_command = "opencode";
 	opencode.supports_interactive = true;
-	opencode.supports_resume = false;
-	opencode.resume_argument.clear();
+	opencode.supports_resume = true;
+	opencode.resume_argument = "--session";
 	opencode.history_adapter = "local-only";
 	opencode.prompt_bootstrap = "prepend";
 	opencode.user_message_types = {"user"};
@@ -228,8 +228,8 @@ std::vector<ProviderProfile> ProviderProfileStore::BuiltInProfiles()
 	opencode_local.command_template = "opencode {flags} {prompt}";
 	opencode_local.interactive_command = "opencode";
 	opencode_local.supports_interactive = true;
-	opencode_local.supports_resume = false;
-	opencode_local.resume_argument.clear();
+	opencode_local.supports_resume = true;
+	opencode_local.resume_argument = "--session";
 	opencode_local.history_adapter = "local-only";
 	opencode_local.prompt_bootstrap = "prepend";
 	opencode_local.user_message_types = {"user"};
