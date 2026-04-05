@@ -3,6 +3,7 @@
 #include "app/application_core_helpers.h"
 
 #include "common/provider/provider_runtime.h"
+#include "common/provider/runtime/provider_build_config.h"
 
 ProviderProfile* ProviderResolutionService::ActiveProvider(uam::AppState& app) const
 {
@@ -14,7 +15,7 @@ ProviderProfile* ProviderResolutionService::ActiveProvider(uam::AppState& app) c
 	}
 
 	ProviderProfileStore::EnsureDefaultProfile(app.provider_profiles);
-	app.settings.active_provider_id = "gemini-structured";
+	app.settings.active_provider_id = provider_build_config::FirstEnabledProviderId();
 	return ProviderProfileStore::FindById(app.provider_profiles, app.settings.active_provider_id);
 }
 
@@ -32,7 +33,13 @@ const ProviderProfile& ProviderResolutionService::ActiveProviderOrDefault(const 
 		return *profile;
 	}
 
-	static const ProviderProfile fallback = ProviderProfileStore::DefaultGeminiProfile();
+	static const ProviderProfile fallback = []()
+	{
+		ProviderProfile profile;
+		profile.id = provider_build_config::FirstEnabledProviderId();
+		profile.title = profile.id;
+		return profile;
+	}();
 	return fallback;
 }
 
@@ -90,4 +97,3 @@ bool ProviderResolutionService::ChatUsesCliOutput(const uam::AppState& app, cons
 	const ProviderProfile* profile = ProviderForChat(app, chat);
 	return profile != nullptr && ProviderRuntime::UsesCliOutput(*profile);
 }
-

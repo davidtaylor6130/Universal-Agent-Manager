@@ -14,7 +14,10 @@
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
 #include "common/platform/platform_services.h"
+#if UAM_ENABLE_ANY_GEMINI_PROVIDER
 #include "common/provider/gemini/base/gemini_history_loader.h"
+#endif
+#include "common/provider/runtime/provider_build_config.h"
 #include "common/rag/rag_app_helpers.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/json_runtime.h"
@@ -38,7 +41,7 @@ using uam::AppState;
 namespace
 {
 	constexpr const char* kPromptBootstrapPath = "@.gemini/gemini.md";
-	constexpr const char* kDefaultNativeHistoryProviderId = "gemini-cli";
+	constexpr const char* kDefaultNativeHistoryProviderId = provider_build_config::DefaultNativeHistoryProviderId();
 
 	void ResetAsyncNativeChatLoadTask(uam::platform::AsyncNativeChatLoadTask& task)
 	{
@@ -61,21 +64,33 @@ namespace
 			return *profile;
 		}
 
+		for (const ProviderProfile& profile : ProviderProfileStore::BuiltInProfiles())
+		{
+			if (profile.id == kDefaultNativeHistoryProviderId)
+			{
+				static const ProviderProfile result = profile;
+				return result;
+			}
+		}
+
+		if (!app.provider_profiles.empty())
+		{
+			static const ProviderProfile result = []()
+			{
+				ProviderProfile profile;
+				profile.id = "fallback";
+				profile.title = "Fallback";
+				return profile;
+			}();
+			(void)result;
+			return app.provider_profiles.front();
+		}
+
 		static const ProviderProfile fallback = []()
 		{
-			for (const ProviderProfile& profile : ProviderProfileStore::BuiltInProfiles())
-			{
-				if (profile.id == kDefaultNativeHistoryProviderId)
-				{
-					return profile;
-				}
-			}
-
-			ProviderProfile profile = ProviderProfileStore::DefaultGeminiProfile();
-			profile.id = kDefaultNativeHistoryProviderId;
-			profile.title = "Gemini CLI";
-			profile.output_mode = "cli";
-			profile.supports_interactive = true;
+			ProviderProfile profile;
+			profile.id = provider_build_config::FirstEnabledProviderId();
+			profile.title = profile.id;
 			return profile;
 		}();
 		return fallback;
@@ -171,7 +186,14 @@ std::vector<ChatSession> ChatHistorySyncService::LoadNativeSessionChats(const fs
 	l_options.native_max_messages = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxMessages();
 	if (ProviderRuntime::SupportsGeminiJsonHistory(p_provider))
 	{
+#if UAM_ENABLE_ANY_GEMINI_PROVIDER
 		return ChatDomainService().DeduplicateChatsById(LoadGeminiJsonHistoryForRuntime(p_chatsDir, p_provider, l_options, p_stopToken));
+#else
+		(void)p_chatsDir;
+		(void)p_provider;
+		(void)p_stopToken;
+		return {};
+#endif
 	}
 
 	return ChatDomainService().DeduplicateChatsById(ProviderRuntime::LoadHistory(p_provider, fs::path{}, p_chatsDir, l_options));
@@ -564,6 +586,7 @@ bool ChatHistorySyncService::MoveChatToFolder(AppState& p_app, ChatSession& p_ch
 			const auto l_sessionFile = FindNativeSessionFilePath(l_oldChatsDir.value(), l_sessionId);
 			if (l_sessionFile.has_value())
 			{
+#if UAM_ENABLE_ANY_GEMINI_PROVIDER
 				GeminiJsonHistoryStoreOptions l_opts;
 				l_opts.max_messages = 0;
 				l_opts.max_file_bytes = 0;
@@ -576,6 +599,7 @@ bool ChatHistorySyncService::MoveChatToFolder(AppState& p_app, ChatSession& p_ch
 						p_chat.updated_at = l_parsed->updated_at;
 					}
 				}
+#endif
 			}
 		}
 

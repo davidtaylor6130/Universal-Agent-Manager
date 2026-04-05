@@ -1,5 +1,7 @@
 #pragma once
 
+#include "common/provider/runtime/provider_build_config.h"
+
 #include <atomic>
 #include <memory>
 #include <string>
@@ -90,14 +92,14 @@ struct ChatFolder
 /// </summary>
 struct AppSettings
 {
-	std::string active_provider_id = "gemini-structured";
+	std::string active_provider_id = provider_build_config::FirstEnabledProviderId();
 	std::string provider_command_template = "gemini {resume} {flags} -p {prompt}";
 	bool provider_yolo_mode = false;
 	std::string provider_extra_flags;
 	std::string runtime_backend = "provider-cli";
 	std::string selected_model_id;
 	std::string models_folder_directory;
-	std::string vector_db_backend = "ollama-engine";
+	std::string vector_db_backend = provider_build_config::DefaultVectorDbBackend();
 	std::string selected_vector_model_id;
 	std::string vector_database_name_override;
 	int cli_idle_timeout_seconds = 300;

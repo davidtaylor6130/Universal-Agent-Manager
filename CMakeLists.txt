@@ -102,6 +102,10 @@ if(_uam_runtime_enabled_count EQUAL 0)
 endif()
 
 set(UAM_ENABLE_ENGINE_RAG ${UAM_ENABLE_RUNTIME_OLLAMA_ENGINE})
+set(UAM_ENABLE_ANY_GEMINI_PROVIDER OFF)
+if(UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED OR UAM_ENABLE_RUNTIME_GEMINI_CLI)
+  set(UAM_ENABLE_ANY_GEMINI_PROVIDER ON)
+endif()
 set(UAM_OLLAMA_ENGINE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/subprojects/ollama_engine" CACHE PATH
   "Path to the ollama_engine source repository.")
 set(UAM_THIRD_PARTY_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party" CACHE PATH
@@ -277,6 +281,81 @@ else()
   message(STATUS "UAM_ENABLE_RUNTIME_OLLAMA_ENGINE=OFF: skipping ollama_engine subproject/link targets.")
 endif()
 
+set(UAM_PROVIDER_SOURCES)
+
+# Gemini providers
+if(UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED)
+  list(APPEND UAM_PROVIDER_SOURCES
+    src/common/provider/gemini/structured/gemini_structured_provider_runtime.cpp
+  )
+endif()
+
+if(UAM_ENABLE_RUNTIME_GEMINI_CLI)
+  list(APPEND UAM_PROVIDER_SOURCES
+    src/common/provider/gemini/cli/gemini_cli_provider_runtime.cpp
+  )
+endif()
+
+# Gemini base (needed by both Gemini providers for history loading)
+if(UAM_ENABLE_ANY_GEMINI_PROVIDER OR UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED OR UAM_ENABLE_RUNTIME_GEMINI_CLI)
+  list(APPEND UAM_PROVIDER_SOURCES
+    src/common/provider/gemini/base/gemini_history_loader.cpp
+  )
+endif()
+
+# CLI providers
+if(UAM_ENABLE_RUNTIME_CODEX_CLI)
+  list(APPEND UAM_PROVIDER_SOURCES
+    src/common/provider/codex/cli/codex_cli_provider_runtime.cpp
+  )
+endif()
+
+if(UAM_ENABLE_RUNTIME_CLAUDE_CLI)
+  list(APPEND UAM_PROVIDER_SOURCES
+    src/common/provider/claude/cli/claude_cli_provider_runtime.cpp
+  )
+endif()
+
+# OpenCode providers
+if(UAM_ENABLE_RUNTIME_OPENCODE_CLI)
+  list(APPEND UAM_PROVIDER_SOURCES
+    src/common/provider/opencode/cli/opencode_cli_provider_runtime.cpp
+  )
+endif()
+
+if(UAM_ENABLE_RUNTIME_OPENCODE_LOCAL)
+  list(APPEND UAM_PROVIDER_SOURCES
+    src/common/provider/opencode/local/opencode_local_provider_runtime.cpp
+    src/common/provider/opencode/local/opencode_local_bridge_service.cpp
+  )
+endif()
+
+# OpenCode base (needed by both OpenCode providers)
+if(UAM_ENABLE_RUNTIME_OPENCODE_CLI OR UAM_ENABLE_RUNTIME_OPENCODE_LOCAL)
+  list(APPEND UAM_PROVIDER_SOURCES
+    src/common/provider/opencode/base/opencode_base_provider_runtime.cpp
+  )
+endif()
+
+# Ollama engine
+if(UAM_ENABLE_RUNTIME_OLLAMA_ENGINE)
+  list(APPEND UAM_PROVIDER_SOURCES
+    src/common/provider/ollama/structured/ollama_engine_provider_runtime.cpp
+  )
+endif()
+
+# Custom/unknown (always included as fallback)
+list(APPEND UAM_PROVIDER_SOURCES
+  src/common/provider/custom/unknown_provider_runtime.cpp
+)
+
+# RAG sources (always compiled - they are infrastructure, not provider-specific)
+set(UAM_RAG_SOURCES
+  src/common/rag/rag_index_service.cpp
+  src/common/rag/ollama_engine_client.cpp
+  src/common/rag/ollama_engine_service.cpp
+)
+
 add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   ${UAM_IMGUI_SOURCES}
   ${UAM_VTERM_SOURCES}
@@ -301,30 +380,18 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/chat/chat_branching.cpp
   src/common/config/settings_store.cpp
   src/common/utils/command_line_words.cpp
-  src/common/provider/gemini/base/gemini_history_loader.cpp
-  src/common/provider/gemini/cli/gemini_cli_provider_runtime.cpp
-  src/common/provider/gemini/structured/gemini_structured_provider_runtime.cpp
   src/common/provider/markdown_template_catalog.cpp
   src/common/config/frontend_actions.cpp
   src/common/provider/provider_profile.cpp
   src/common/provider/runtime/provider_runtime_facade.cpp
   src/common/provider/runtime/provider_runtime_registry.cpp
-  src/common/provider/codex/cli/codex_cli_provider_runtime.cpp
-  src/common/provider/claude/cli/claude_cli_provider_runtime.cpp
-  src/common/provider/opencode/base/opencode_base_provider_runtime.cpp
-  src/common/provider/opencode/cli/opencode_cli_provider_runtime.cpp
-  src/common/provider/opencode/local/opencode_local_provider_runtime.cpp
-  src/common/provider/opencode/local/opencode_local_bridge_service.cpp
-  src/common/provider/ollama/structured/ollama_engine_provider_runtime.cpp
-  src/common/provider/custom/unknown_provider_runtime.cpp
+  ${UAM_PROVIDER_SOURCES}
   src/common/runtime/local_engine_runtime_service.cpp
   src/common/runtime/provider_cli_compatibility_service.cpp
   src/common/platform/platform_services.cpp
   src/common/vcs/vcs_workspace_service.cpp
   src/common/ui/theme/theme_runtime_state.cpp
-  src/common/rag/rag_index_service.cpp
-  src/common/rag/ollama_engine_client.cpp
-  src/common/rag/ollama_engine_service.cpp
+  ${UAM_RAG_SOURCES}
 )
 target_include_directories(universal_agent_manager
   PRIVATE
@@ -346,6 +413,7 @@ target_compile_definitions(universal_agent_manager PRIVATE
   UAM_ENABLE_RUNTIME_OPENCODE_LOCAL=$<BOOL:${UAM_ENABLE_RUNTIME_OPENCODE_LOCAL}>
   UAM_ENABLE_RUNTIME_OLLAMA_ENGINE=$<BOOL:${UAM_ENABLE_RUNTIME_OLLAMA_ENGINE}>
   UAM_ENABLE_ENGINE_RAG=$<BOOL:${UAM_ENABLE_ENGINE_RAG}>
+  UAM_ENABLE_ANY_GEMINI_PROVIDER=$<BOOL:${UAM_ENABLE_ANY_GEMINI_PROVIDER}>
 )
 set_target_properties(universal_agent_manager PROPERTIES FOLDER "App")
 if(TARGET uam_ollama_engine_bridge)
@@ -410,30 +478,18 @@ if(UAM_BUILD_TESTS)
     src/common/chat/chat_folder_store.cpp
     src/common/config/frontend_actions.cpp
     src/common/utils/command_line_words.cpp
-    src/common/provider/gemini/base/gemini_history_loader.cpp
-    src/common/provider/gemini/cli/gemini_cli_provider_runtime.cpp
-    src/common/provider/gemini/structured/gemini_structured_provider_runtime.cpp
-    src/common/provider/markdown_template_catalog.cpp
     src/common/chat/chat_repository.cpp
     src/common/chat/chat_branching.cpp
+    src/common/provider/markdown_template_catalog.cpp
     src/common/provider/provider_profile.cpp
     src/common/provider/runtime/provider_runtime_facade.cpp
     src/common/provider/runtime/provider_runtime_registry.cpp
-    src/common/provider/codex/cli/codex_cli_provider_runtime.cpp
-    src/common/provider/claude/cli/claude_cli_provider_runtime.cpp
-    src/common/provider/opencode/base/opencode_base_provider_runtime.cpp
-    src/common/provider/opencode/cli/opencode_cli_provider_runtime.cpp
-    src/common/provider/opencode/local/opencode_local_bridge_service.cpp
-    src/common/provider/opencode/local/opencode_local_provider_runtime.cpp
-    src/common/provider/ollama/structured/ollama_engine_provider_runtime.cpp
-    src/common/provider/custom/unknown_provider_runtime.cpp
+    ${UAM_PROVIDER_SOURCES}
     src/common/config/settings_store.cpp
     src/common/runtime/local_engine_runtime_service.cpp
     src/common/platform/platform_services.cpp
     src/common/vcs/vcs_workspace_service.cpp
-    src/common/rag/rag_index_service.cpp
-    src/common/rag/ollama_engine_client.cpp
-    src/common/rag/ollama_engine_service.cpp
+    ${UAM_RAG_SOURCES}
   )
   target_include_directories(uam_core_tests
     PRIVATE
@@ -456,6 +512,7 @@ if(UAM_BUILD_TESTS)
     UAM_ENABLE_RUNTIME_OPENCODE_LOCAL=$<BOOL:${UAM_ENABLE_RUNTIME_OPENCODE_LOCAL}>
     UAM_ENABLE_RUNTIME_OLLAMA_ENGINE=$<BOOL:${UAM_ENABLE_RUNTIME_OLLAMA_ENGINE}>
     UAM_ENABLE_ENGINE_RAG=$<BOOL:${UAM_ENABLE_ENGINE_RAG}>
+    UAM_ENABLE_ANY_GEMINI_PROVIDER=$<BOOL:${UAM_ENABLE_ANY_GEMINI_PROVIDER}>
   )
   set_target_properties(uam_core_tests PROPERTIES FOLDER "Tests")
   add_test(NAME uam_core_tests COMMAND uam_core_tests)

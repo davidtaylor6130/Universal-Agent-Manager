@@ -2,6 +2,7 @@
 
 #include "common/config/line_value_codec.h"
 #include "common/paths/app_paths.h"
+#include "common/provider/runtime/provider_build_config.h"
 
 #include <algorithm>
 #include <cctype>
@@ -106,10 +107,14 @@ namespace
 	{
 		value = ToLower(value);
 
+#if UAM_ENABLE_RUNTIME_OLLAMA_ENGINE
 		if (value == "ollama-engine")
 		{
 			return "ollama-engine";
 		}
+#else
+		(void)value;
+#endif
 
 		return "provider-cli";
 	}
@@ -123,7 +128,11 @@ namespace
 			return "none";
 		}
 
+#if UAM_ENABLE_RUNTIME_OLLAMA_ENGINE
 		return "ollama-engine";
+#else
+		return "none";
+#endif
 	}
 
 } // namespace
@@ -373,12 +382,16 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 
 	if (!has_active_provider_id && has_runtime_backend && NormalizeRuntimeBackendId(settings.runtime_backend) == "ollama-engine")
 	{
+#if UAM_ENABLE_RUNTIME_OLLAMA_ENGINE
 		settings.active_provider_id = "ollama-engine";
+#else
+		settings.active_provider_id = provider_build_config::FirstEnabledProviderId();
+#endif
 	}
 
 	if (settings.active_provider_id.empty())
 	{
-		settings.active_provider_id = "gemini-structured";
+		settings.active_provider_id = provider_build_config::FirstEnabledProviderId();
 	}
 
 	settings.runtime_backend = NormalizeRuntimeBackendId(settings.runtime_backend);

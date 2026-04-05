@@ -1,5 +1,7 @@
 #pragma once
 
+#include "common/provider/runtime/provider_build_config.h"
+
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -19,7 +21,7 @@ struct ProviderProfile
 	bool supports_resume = true;
 	std::vector<std::string> runtime_flags;
 	std::string resume_argument = "-r";
-	std::string history_adapter = "gemini-cli-json";
+	std::string history_adapter = provider_build_config::DefaultHistoryAdapter();
 	std::string prompt_bootstrap = "prepend";
 	std::string prompt_bootstrap_path;
 	std::vector<std::string> user_message_types;

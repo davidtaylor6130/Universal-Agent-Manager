@@ -1,5 +1,7 @@
 #include "common/provider/provider_profile.h"
 
+#include "common/provider/runtime/provider_build_config.h"
+
 #include <algorithm>
 #include <cctype>
 #include <fstream>
@@ -140,8 +142,11 @@ ProviderProfile ProviderProfileStore::DefaultGeminiProfile()
 std::vector<ProviderProfile> ProviderProfileStore::BuiltInProfiles()
 {
 	std::vector<ProviderProfile> profiles;
+#if UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED
 	profiles.push_back(DefaultGeminiProfile());
+#endif
 
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
 	ProviderProfile gemini_cli;
 	gemini_cli.id = "gemini-cli";
 	gemini_cli.title = "Gemini CLI";
@@ -158,7 +163,9 @@ std::vector<ProviderProfile> ProviderProfileStore::BuiltInProfiles()
 	gemini_cli.user_message_types = {"user"};
 	gemini_cli.assistant_message_types = {"assistant", "model", "gemini"};
 	profiles.push_back(std::move(gemini_cli));
+#endif
 
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
 	ProviderProfile codex;
 	codex.id = "codex-cli";
 	codex.title = "OpenAI Codex CLI";
@@ -174,7 +181,9 @@ std::vector<ProviderProfile> ProviderProfileStore::BuiltInProfiles()
 	codex.user_message_types = {"user"};
 	codex.assistant_message_types = {"assistant"};
 	profiles.push_back(std::move(codex));
+#endif
 
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 	ProviderProfile claude;
 	claude.id = "claude-cli";
 	claude.title = "Claude CLI";
@@ -190,7 +199,9 @@ std::vector<ProviderProfile> ProviderProfileStore::BuiltInProfiles()
 	claude.user_message_types = {"user", "human"};
 	claude.assistant_message_types = {"assistant", "model"};
 	profiles.push_back(std::move(claude));
+#endif
 
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	ProviderProfile opencode;
 	opencode.id = "opencode-cli";
 	opencode.title = "OpenCode CLI";
@@ -206,7 +217,9 @@ std::vector<ProviderProfile> ProviderProfileStore::BuiltInProfiles()
 	opencode.user_message_types = {"user"};
 	opencode.assistant_message_types = {"assistant"};
 	profiles.push_back(std::move(opencode));
+#endif
 
+#if UAM_ENABLE_RUNTIME_OPENCODE_LOCAL
 	ProviderProfile opencode_local;
 	opencode_local.id = "opencode-local";
 	opencode_local.title = "OpenCode (Fully Local)";
@@ -222,7 +235,9 @@ std::vector<ProviderProfile> ProviderProfileStore::BuiltInProfiles()
 	opencode_local.user_message_types = {"user"};
 	opencode_local.assistant_message_types = {"assistant"};
 	profiles.push_back(std::move(opencode_local));
+#endif
 
+#if UAM_ENABLE_RUNTIME_OLLAMA_ENGINE
 	ProviderProfile ollama_engine;
 	ollama_engine.id = "ollama-engine";
 	ollama_engine.title = "Ollama Engine (Local)";
@@ -238,6 +253,7 @@ std::vector<ProviderProfile> ProviderProfileStore::BuiltInProfiles()
 	ollama_engine.user_message_types = {"user"};
 	ollama_engine.assistant_message_types = {"assistant"};
 	profiles.push_back(std::move(ollama_engine));
+#endif
 
 	return profiles;
 }

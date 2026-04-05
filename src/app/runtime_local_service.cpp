@@ -2,23 +2,39 @@
 
 #include "app/application_core_helpers.h"
 
-#include "common/provider/opencode/local/opencode_local_bridge_service.h"
+#include "common/provider/runtime/provider_build_config.h"
 #include "common/rag/rag_app_helpers.h"
+
+#if UAM_ENABLE_RUNTIME_OPENCODE_LOCAL
+#include "common/provider/opencode/local/opencode_local_bridge_service.h"
+#endif
 
 #include <algorithm>
 
 namespace
 {
+#if UAM_ENABLE_RUNTIME_OPENCODE_LOCAL
 	constexpr const char* kRuntimeIdCliLocalBridge = "opencode-local";
-}
+#endif
+} // namespace
 
 bool RuntimeLocalService::ProviderUsesLocalBridgeRuntime(const ProviderProfile& provider) const
 {
+#if UAM_ENABLE_RUNTIME_OPENCODE_LOCAL
 	return ToLowerAscii(Trim(provider.id)) == kRuntimeIdCliLocalBridge;
+#else
+	(void)provider;
+	return false;
+#endif
 }
 
 bool RuntimeLocalService::EnsureSelectedLocalRuntimeModelForProvider(uam::AppState& app) const
 {
+#if !UAM_ENABLE_RUNTIME_OPENCODE_LOCAL
+	(void)app;
+	app.status_line = "Local runtime bridge is not available in this build.";
+	return false;
+#else
 	const std::filesystem::path model_folder = ResolveRagModelFolder(app);
 	const std::vector<std::string> runtime_models = app.runtime_model_service.ListModels(model_folder);
 	const std::string selected_model = Trim(app.settings.selected_model_id);
@@ -53,16 +69,34 @@ bool RuntimeLocalService::EnsureSelectedLocalRuntimeModelForProvider(uam::AppSta
 
 	app.open_runtime_model_selection_popup = true;
 	return false;
+#endif
 }
 
 bool RuntimeLocalService::EnsureLocalRuntimeModelLoaded(uam::AppState& app, std::string* error_out) const
 {
+#if !UAM_ENABLE_RUNTIME_OPENCODE_LOCAL
+	(void)app;
+	if (error_out)
+	{
+		*error_out = "Local runtime bridge is not available in this build.";
+	}
+	return false;
+#else
 	const std::filesystem::path model_folder = ResolveRagModelFolder(app);
 	return app.runtime_model_service.LoadModelIfNeeded(model_folder, app.settings.selected_model_id, app.loaded_runtime_model_id, error_out);
+#endif
 }
 
 bool RuntimeLocalService::RestartLocalBridgeIfModelChanged(uam::AppState& app, std::string* error_out) const
 {
+#if !UAM_ENABLE_RUNTIME_OPENCODE_LOCAL
+	(void)app;
+	if (error_out)
+	{
+		*error_out = "Local runtime bridge is not available in this build.";
+	}
+	return false;
+#else
 	const std::filesystem::path desired_model_folder_path = ResolveRagModelFolder(app);
 	std::filesystem::path desired_model_folder_norm = NormalizeAbsolutePath(desired_model_folder_path);
 
@@ -74,10 +108,15 @@ bool RuntimeLocalService::RestartLocalBridgeIfModelChanged(uam::AppState& app, s
 	const std::string desired_requested_model = Trim(app.settings.selected_model_id);
 	OpenCodeLocalBridgeService bridge_runtime;
 	return bridge_runtime.EnsureRunning(app, desired_model_folder_norm, desired_requested_model, error_out);
+#endif
 }
 
 void RuntimeLocalService::StopLocalBridge(uam::AppState& app) const
 {
+#if UAM_ENABLE_RUNTIME_OPENCODE_LOCAL
 	OpenCodeLocalBridgeService bridge_runtime;
 	bridge_runtime.Stop(app, true);
+#else
+	(void)app;
+#endif
 }

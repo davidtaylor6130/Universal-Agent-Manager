@@ -3,34 +3,70 @@
 #include "app/application_core_helpers.h"
 
 #include "common/provider/provider_runtime.h"
+#include "common/provider/runtime/provider_build_config.h"
 
 #include <algorithm>
 #include <unordered_set>
 
 namespace
 {
+#if UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED || UAM_ENABLE_RUNTIME_GEMINI_CLI
 	constexpr const char* kRuntimeIdLegacy = "gemini";
+#endif
+#if UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED
 	constexpr const char* kRuntimeIdStructured = "gemini-structured";
+#endif
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
 	constexpr const char* kRuntimeIdCli = "gemini-cli";
+#endif
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
 	constexpr const char* kRuntimeIdLegacyCliA = "codex";
-	constexpr const char* kRuntimeIdLegacyCliB = "claude";
-	constexpr const char* kRuntimeIdLegacyCliC = "opencode";
 	constexpr const char* kRuntimeIdCliA = "codex-cli";
+#endif
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	constexpr const char* kRuntimeIdLegacyCliB = "claude";
 	constexpr const char* kRuntimeIdCliB = "claude-cli";
+#endif
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI || UAM_ENABLE_RUNTIME_OPENCODE_LOCAL
+	constexpr const char* kRuntimeIdLegacyCliC = "opencode";
+#endif
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	constexpr const char* kRuntimeIdCliC = "opencode-cli";
+#endif
+#if UAM_ENABLE_RUNTIME_OPENCODE_LOCAL
 	constexpr const char* kRuntimeIdCliLocalBridge = "opencode-local";
+#endif
+#if UAM_ENABLE_RUNTIME_OLLAMA_ENGINE
 	constexpr const char* kRuntimeIdLocalEngine = "ollama-engine";
+#endif
 
+#if UAM_ENABLE_ANY_GEMINI_PROVIDER
 	constexpr const char* kHistoryAdapterNativeJson = "gemini-cli-json";
 	constexpr const char* kPromptBootstrapAtPath = "gemini-at-path";
 	constexpr const char* kPromptBootstrapPath = "@.gemini/gemini.md";
+#endif
+#if UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED
 	constexpr const char* kLegacyRuntimeCommandTemplate = "gemini {resume} {flags} {prompt}";
 	constexpr const char* kRuntimeCommandTemplate = "gemini {resume} {flags} -p {prompt}";
+#endif
 
 	bool IsLegacyBuiltInProviderId(const std::string& provider_id)
 	{
 		const std::string lowered = ToLowerAscii(Trim(provider_id));
-		return lowered == kRuntimeIdLegacy || lowered == kRuntimeIdLegacyCliA || lowered == kRuntimeIdLegacyCliB || lowered == kRuntimeIdLegacyCliC;
+		bool is_legacy = false;
+#if UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED || UAM_ENABLE_RUNTIME_GEMINI_CLI
+		is_legacy = is_legacy || (lowered == kRuntimeIdLegacy);
+#endif
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+		is_legacy = is_legacy || (lowered == kRuntimeIdLegacyCliA);
+#endif
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+		is_legacy = is_legacy || (lowered == kRuntimeIdLegacyCliB);
+#endif
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI || UAM_ENABLE_RUNTIME_OPENCODE_LOCAL
+		is_legacy = is_legacy || (lowered == kRuntimeIdLegacyCliC);
+#endif
+		return is_legacy;
 	}
 
 	bool SaveChatByMappedProvider(const uam::AppState& app, const ChatSession& chat)
@@ -82,8 +118,23 @@ namespace
 
 bool ProviderProfileMigrationService::IsNativeHistoryProviderId(const std::string& provider_id) const
 {
+#if !UAM_ENABLE_ANY_GEMINI_PROVIDER
+	(void)provider_id;
+	return false;
+#else
 	const std::string lowered = ToLowerAscii(Trim(provider_id));
-	return lowered == kRuntimeIdLegacy || lowered == kRuntimeIdCli || lowered == kRuntimeIdStructured;
+	bool matches = false;
+#if UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED || UAM_ENABLE_RUNTIME_GEMINI_CLI
+	matches = matches || (lowered == kRuntimeIdLegacy);
+#endif
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+	matches = matches || (lowered == kRuntimeIdCli);
+#endif
+#if UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED
+	matches = matches || (lowered == kRuntimeIdStructured);
+#endif
+	return matches;
+#endif
 }
 
 std::string ProviderProfileMigrationService::MapLegacyRuntimeId(const std::string& provider_id, const bool prefer_cli_for_native_history) const
@@ -91,32 +142,50 @@ std::string ProviderProfileMigrationService::MapLegacyRuntimeId(const std::strin
 	const std::string trimmed = Trim(provider_id);
 	const std::string lowered = ToLowerAscii(trimmed);
 
+#if UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED || UAM_ENABLE_RUNTIME_GEMINI_CLI
 	if (lowered == kRuntimeIdLegacy)
 	{
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
 		return prefer_cli_for_native_history ? kRuntimeIdCli : kRuntimeIdStructured;
+#else
+		(void)prefer_cli_for_native_history;
+		return kRuntimeIdStructured;
+#endif
 	}
+#endif
 
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
 	if (lowered == kRuntimeIdLegacyCliA)
 	{
 		return kRuntimeIdCliA;
 	}
+#endif
 
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 	if (lowered == kRuntimeIdLegacyCliB)
 	{
 		return kRuntimeIdCliB;
 	}
+#endif
 
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI || UAM_ENABLE_RUNTIME_OPENCODE_LOCAL
 	if (lowered == kRuntimeIdLegacyCliC)
 	{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 		return kRuntimeIdCliC;
+#else
+		return kRuntimeIdCliLocalBridge;
+#endif
 	}
+#endif
 
 	return trimmed;
 }
 
 std::string ProviderProfileMigrationService::DefaultRuntimeIdForLegacyViewHint(const uam::AppState& app) const
 {
-	return (app.center_view_mode == CenterViewMode::CliConsole) ? kRuntimeIdCli : kRuntimeIdStructured;
+	(void)app.center_view_mode;
+	return provider_build_config::FirstEnabledProviderId();
 }
 
 bool ProviderProfileMigrationService::ShouldShowProviderProfileInUi(const ProviderProfile& profile) const
@@ -157,6 +226,7 @@ bool ProviderProfileMigrationService::MigrateProviderProfilesToFixedModeIds(uam:
 			}
 		};
 
+#if UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED
 		if (mapped_id == kRuntimeIdStructured)
 		{
 			assign_if_changed(profile.output_mode, std::string("structured"));
@@ -182,7 +252,10 @@ bool ProviderProfileMigrationService::MigrateProviderProfilesToFixedModeIds(uam:
 				assign_if_changed(profile.prompt_bootstrap_path, std::string(kPromptBootstrapPath));
 			}
 		}
-		else if (mapped_id == kRuntimeIdCli)
+		else
+#endif
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+		    if (mapped_id == kRuntimeIdCli)
 		{
 			assign_if_changed(profile.output_mode, std::string("cli"));
 			assign_if_changed(profile.supports_interactive, true);
@@ -207,15 +280,55 @@ bool ProviderProfileMigrationService::MigrateProviderProfilesToFixedModeIds(uam:
 				assign_if_changed(profile.prompt_bootstrap_path, std::string(kPromptBootstrapPath));
 			}
 		}
-		else if (mapped_id == kRuntimeIdCliA || mapped_id == kRuntimeIdCliB || mapped_id == kRuntimeIdCliC || mapped_id == kRuntimeIdCliLocalBridge)
+		else
+#endif
+#if UAM_ENABLE_RUNTIME_CODEX_CLI || UAM_ENABLE_RUNTIME_CLAUDE_CLI || UAM_ENABLE_RUNTIME_OPENCODE_CLI || UAM_ENABLE_RUNTIME_OPENCODE_LOCAL
+		    if (false)
+		{
+		}
+		else
+#endif
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+		    if (mapped_id == kRuntimeIdCliA)
 		{
 			assign_if_changed(profile.output_mode, std::string("cli"));
 			assign_if_changed(profile.supports_interactive, true);
 		}
-		else if (mapped_id == kRuntimeIdLocalEngine)
+		else
+#endif
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+		    if (mapped_id == kRuntimeIdCliB)
+		{
+			assign_if_changed(profile.output_mode, std::string("cli"));
+			assign_if_changed(profile.supports_interactive, true);
+		}
+		else
+#endif
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+		    if (mapped_id == kRuntimeIdCliC)
+		{
+			assign_if_changed(profile.output_mode, std::string("cli"));
+			assign_if_changed(profile.supports_interactive, true);
+		}
+		else
+#endif
+#if UAM_ENABLE_RUNTIME_OPENCODE_LOCAL
+		    if (mapped_id == kRuntimeIdCliLocalBridge)
+		{
+			assign_if_changed(profile.output_mode, std::string("cli"));
+			assign_if_changed(profile.supports_interactive, true);
+		}
+		else
+#endif
+#if UAM_ENABLE_RUNTIME_OLLAMA_ENGINE
+		    if (mapped_id == kRuntimeIdLocalEngine)
 		{
 			assign_if_changed(profile.output_mode, std::string("structured"));
 			assign_if_changed(profile.supports_interactive, false);
+		}
+		else
+#endif
+		{
 		}
 
 		const std::string dedupe_key = ToLowerAscii(profile.id);
@@ -334,4 +447,3 @@ bool ProviderProfileMigrationService::MigrateChatProviderBindingsToFixedModes(ua
 
 	return changed;
 }
-

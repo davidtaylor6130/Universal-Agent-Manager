@@ -26,6 +26,7 @@
 #include "common/provider/markdown_template_catalog.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
+#include "common/provider/runtime/provider_build_config.h"
 #include "common/rag/rag_index_service.h"
 #include "common/runtime/terminal_common.h"
 #include "common/runtime/local_engine_runtime_service.h"
@@ -64,7 +65,9 @@ namespace fs = std::filesystem;
 namespace
 {
 	constexpr const char* kRuntimeBackendProviderCli = "provider-cli";
+#if UAM_ENABLE_RUNTIME_OLLAMA_ENGINE
 	constexpr const char* kRuntimeIdLocalEngine = "ollama-engine";
+#endif
 
 	void ResetAsyncCommandTask(uam::AsyncCommandTask& task)
 	{
@@ -395,7 +398,11 @@ bool Application::InitializeState()
 
 		m_app.settings.provider_command_template = lp_activeProfile->command_template;
 		m_app.settings.gemini_command_template = m_app.settings.provider_command_template;
+#if UAM_ENABLE_RUNTIME_OLLAMA_ENGINE
 		m_app.settings.runtime_backend = ProviderRuntime::UsesInternalEngine(*lp_activeProfile) ? kRuntimeIdLocalEngine : kRuntimeBackendProviderCli;
+#else
+		m_app.settings.runtime_backend = kRuntimeBackendProviderCli;
+#endif
 
 		if (!ProviderRuntime::IsRuntimeEnabled(*lp_activeProfile))
 		{

@@ -10,6 +10,7 @@
 #include "common/chat/chat_folder_store.h"
 #include "common/constants/app_constants.h"
 #include "common/provider/provider_runtime.h"
+#include "common/provider/runtime/provider_build_config.h"
 #include "common/runtime/terminal_common.h"
 
 /// <summary>
@@ -152,7 +153,7 @@ inline std::string ResolveNewChatProviderId(const AppState& app, const std::stri
 		}
 	}
 
-	return active.empty() ? std::string("gemini-structured") : active;
+	return active.empty() ? std::string(provider_build_config::FirstEnabledProviderId()) : active;
 }
 
 inline void OpenNewChatPopup(AppState& app, const std::string& target_folder_id = std::string())

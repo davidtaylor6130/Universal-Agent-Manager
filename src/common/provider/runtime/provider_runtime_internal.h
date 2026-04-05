@@ -10,33 +10,7 @@
 #include <cctype>
 #include <sstream>
 
-#ifndef UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED
-#define UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED 1
-#endif
-
-#ifndef UAM_ENABLE_RUNTIME_GEMINI_CLI
-#define UAM_ENABLE_RUNTIME_GEMINI_CLI 1
-#endif
-
-#ifndef UAM_ENABLE_RUNTIME_CODEX_CLI
-#define UAM_ENABLE_RUNTIME_CODEX_CLI 1
-#endif
-
-#ifndef UAM_ENABLE_RUNTIME_CLAUDE_CLI
-#define UAM_ENABLE_RUNTIME_CLAUDE_CLI 1
-#endif
-
-#ifndef UAM_ENABLE_RUNTIME_OPENCODE_CLI
-#define UAM_ENABLE_RUNTIME_OPENCODE_CLI 1
-#endif
-
-#ifndef UAM_ENABLE_RUNTIME_OPENCODE_LOCAL
-#define UAM_ENABLE_RUNTIME_OPENCODE_LOCAL 1
-#endif
-
-#ifndef UAM_ENABLE_RUNTIME_OLLAMA_ENGINE
-#define UAM_ENABLE_RUNTIME_OLLAMA_ENGINE 1
-#endif
+#include "common/provider/runtime/provider_build_config.h"
 
 namespace provider_runtime_internal
 {
@@ -371,7 +345,7 @@ namespace provider_runtime_internal
 		if (RequestsGeminiJsonHistory(profile) && !runtime.SupportsGeminiJsonHistory(profile))
 		{
 			const std::string provider_id = profile.id.empty() ? std::string(runtime.RuntimeId()) : profile.id;
-			return "Provider '" + provider_id + "' has history_adapter=gemini-cli-json, but only gemini-structured and gemini-cli support Gemini JSON history.";
+			return "Provider '" + provider_id + "' has history_adapter=gemini-cli-json, but the configured runtime does not support Gemini JSON history.";
 		}
 
 		return "";
