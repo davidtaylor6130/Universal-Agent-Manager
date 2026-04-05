@@ -140,7 +140,6 @@ flowchart TB
     RUNTIME["ProviderRuntime"]
     REGISTRY["ProviderRuntimeRegistry"]
     IPR["IProviderRuntime"]
-    GBASE["GeminiBaseProviderRuntime"]
     GSTRUCT["GeminiStructuredProviderRuntime"]
     GCLI["GeminiCliProviderRuntime"]
     CODEX["CodexCliProviderRuntime"]
@@ -151,8 +150,7 @@ flowchart TB
     OLLAMA_RT["OllamaEngineProviderRuntime"]
     PROFILES --> RUNTIME --> REGISTRY --> IPR
     REGISTRY --> GSTRUCT & GCLI & CODEX & CLAUDE & OPENCODE & OPLocal & OLLAMA_RT
-    GBASE --> IPR
-    GSTRUCT & GCLI --> GBASE
+    GSTRUCT & GCLI --> IPR
     OC_BASE --> IPR
     OPENCODE & OPLocal --> OC_BASE
   end
