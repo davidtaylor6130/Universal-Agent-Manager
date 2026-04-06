@@ -24,8 +24,6 @@ set(UAM_SQLITE3_SOURCE_DIR "${UAM_OLLAMA_THIRD_PARTY_SOURCE_DIR}/sqlite3" CACHE 
   "Path to a local SQLite3 source tree.")
 set(UAM_OPENSSL_SOURCE_DIR "${UAM_OLLAMA_THIRD_PARTY_SOURCE_DIR}/openssl" CACHE PATH
   "Path to a local OpenSSL source tree.")
-set(UAM_LLAMA_CPP_REPOSITORY "https://github.com/davidtaylor6130/llama.cpp-UAM-Fork.git" CACHE STRING
-  "Git repository URL for llama.cpp fork.")
 set(UAM_LLAMA_CPP_GIT_TAG "990e4d96980d0b016a2b07049cc9031642fb9903" CACHE STRING
   "Pinned git commit for llama.cpp fork.")
 
@@ -51,10 +49,7 @@ if(UAM_FETCH_LLAMA_CPP AND NOT TARGET llama)
   else()
     FetchContent_Declare(
       llama_cpp_uam
-      GIT_REPOSITORY ${UAM_LLAMA_CPP_REPOSITORY}
-      GIT_TAG ${UAM_LLAMA_CPP_GIT_TAG}
-      GIT_SHALLOW TRUE
-      GIT_PROGRESS TRUE
+      URL "https://github.com/davidtaylor6130/llama.cpp-UAM-Fork/archive/${UAM_LLAMA_CPP_GIT_TAG}.tar.gz"
     )
     FetchContent_MakeAvailable(llama_cpp_uam)
     set(UAM_LLAMA_CPP_SOURCE_DIR "${llama_cpp_uam_SOURCE_DIR}" CACHE PATH
@@ -85,9 +80,7 @@ endif()
 if(_uam_fetch_tree_sitter)
   FetchContent_Declare(
     tree_sitter
-    GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter.git
-    GIT_TAG v0.22.6
-    GIT_SHALLOW TRUE
+    URL https://github.com/tree-sitter/tree-sitter/archive/refs/tags/v0.22.6.tar.gz
   )
   FetchContent_MakeAvailable(tree_sitter)
   set(UAM_TREE_SITTER_SOURCE_DIR "${tree_sitter_SOURCE_DIR}" CACHE PATH
@@ -97,9 +90,7 @@ endif()
 if(_uam_fetch_tree_sitter_cpp)
   FetchContent_Declare(
     tree_sitter_cpp
-    GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter-cpp.git
-    GIT_TAG v0.22.3
-    GIT_SHALLOW TRUE
+    URL https://github.com/tree-sitter/tree-sitter-cpp/archive/refs/tags/v0.22.3.tar.gz
   )
   FetchContent_MakeAvailable(tree_sitter_cpp)
   set(UAM_TREE_SITTER_CPP_SOURCE_DIR "${tree_sitter_cpp_SOURCE_DIR}" CACHE PATH
@@ -109,9 +100,7 @@ endif()
 if(_uam_fetch_cpp_httplib)
   FetchContent_Declare(
     cpp_httplib
-    GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
-    GIT_TAG v0.20.1
-    GIT_SHALLOW TRUE
+    URL https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.20.1.tar.gz
   )
   FetchContent_MakeAvailable(cpp_httplib)
   set(UAM_CPP_HTTPLIB_SOURCE_DIR "${cpp_httplib_SOURCE_DIR}" CACHE PATH

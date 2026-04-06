@@ -125,8 +125,6 @@ if(APPLE)
   option(UAM_MACOS_BUNDLE "Build as a macOS .app bundle (no Terminal window needed)." ON)
 endif()
 
-set(UAM_LLAMA_CPP_REPOSITORY "https://github.com/davidtaylor6130/llama.cpp-UAM-Fork.git" CACHE STRING
-  "Git repository URL for llama.cpp fork.")
 set(UAM_LLAMA_CPP_GIT_TAG "990e4d96980d0b016a2b07049cc9031642fb9903" CACHE STRING
   "Pinned git commit for llama.cpp fork.")
 
@@ -158,10 +156,7 @@ if(UAM_FETCH_LLAMA_CPP)
     include(FetchContent)
     FetchContent_Declare(
       llama_cpp_uam
-      GIT_REPOSITORY ${UAM_LLAMA_CPP_REPOSITORY}
-      GIT_TAG ${UAM_LLAMA_CPP_GIT_TAG}
-      GIT_SHALLOW TRUE
-      GIT_PROGRESS TRUE
+      URL "https://github.com/davidtaylor6130/llama.cpp-UAM-Fork/archive/${UAM_LLAMA_CPP_GIT_TAG}.tar.gz"
     )
     FetchContent_MakeAvailable(llama_cpp_uam)
     set(UAM_LLAMA_CPP_SOURCE_DIR "${llama_cpp_uam_SOURCE_DIR}" CACHE PATH
@@ -186,8 +181,7 @@ if(UAM_FETCH_DEPS)
     include(FetchContent)
     FetchContent_Declare(
       sdl2
-      GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
-      GIT_TAG release-2.30.11
+      URL https://github.com/libsdl-org/SDL/archive/refs/tags/release-2.30.11.tar.gz
     )
     FetchContent_MakeAvailable(sdl2)
     set(UAM_SDL2_SOURCE_DIR "${sdl2_SOURCE_DIR}" CACHE PATH
@@ -201,8 +195,7 @@ if(UAM_FETCH_DEPS)
     include(FetchContent)
     FetchContent_Declare(
       imgui
-      GIT_REPOSITORY https://github.com/ocornut/imgui.git
-      GIT_TAG v1.91.8
+      URL https://github.com/ocornut/imgui/archive/refs/tags/v1.91.8.tar.gz
     )
     FetchContent_MakeAvailable(imgui)
     set(IMGUI_DIR "${imgui_SOURCE_DIR}")
@@ -214,8 +207,7 @@ if(UAM_FETCH_DEPS)
   include(FetchContent)
   FetchContent_Declare(
     curl
-    GIT_REPOSITORY https://github.com/curl/curl.git
-    GIT_TAG curl-8_11_1
+    URL https://github.com/curl/curl/archive/refs/tags/curl-8_11_1.tar.gz
   )
   FetchContent_MakeAvailable(curl)
   set(UAM_CURL_SOURCE_DIR "${curl_SOURCE_DIR}" CACHE PATH
