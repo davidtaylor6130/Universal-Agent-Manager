@@ -156,6 +156,7 @@ inline void FinalizeChatSyncSelection(uam::AppState& app, const std::string& sel
 inline void SyncChatsFromLoadedNative(uam::AppState& app, std::vector<ChatSession> native_chats, const std::string& preferred_chat_id, const bool preserve_selection = false)
 {
 	const std::string selected_before = (ChatDomainService().SelectedChat(app) != nullptr) ? ChatDomainService().SelectedChat(app)->id : "";
+	ChatHistorySyncService().ApplyLocalOverrides(app, native_chats);
 	for (ChatSession& chat : native_chats)
 	{
 		ChatRepository::SaveChat(app.data_root, chat);

@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <string>
 
 namespace
 {
@@ -70,6 +71,15 @@ namespace
 		std::ostringstream buffer;
 		buffer << in.rdbuf();
 		return buffer.str();
+	}
+
+	std::string StripCarriageReturn(const std::string& line)
+	{
+		if (!line.empty() && line.back() == '\r')
+		{
+			return line.substr(0, line.size() - 1);
+		}
+		return line;
 	}
 
 	std::string TimestampNow()
@@ -334,6 +344,9 @@ ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
 
 		while (std::getline(lines, line))
 		{
+			// Strip carriage return for Windows compatibility
+			line = StripCarriageReturn(line);
+			
 			const auto equals_at = line.find('=');
 			if (equals_at == std::string::npos)
 				continue;

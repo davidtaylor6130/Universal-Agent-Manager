@@ -2,6 +2,7 @@
 
 #include <fstream>
 #include <sstream>
+#include <string>
 
 namespace
 {
@@ -39,6 +40,15 @@ namespace
 		return buffer.str();
 	}
 
+	std::string StripCarriageReturn(const std::string& line)
+	{
+		if (!line.empty() && line.back() == '\r')
+		{
+			return line.substr(0, line.size() - 1);
+		}
+		return line;
+	}
+
 } // namespace
 
 std::vector<ChatFolder> ChatFolderStore::Load(const std::filesystem::path& data_root)
@@ -58,6 +68,9 @@ std::vector<ChatFolder> ChatFolderStore::Load(const std::filesystem::path& data_
 
 	while (std::getline(lines, line))
 	{
+		// Strip carriage return for Windows compatibility
+		line = StripCarriageReturn(line);
+		
 		if (line == "[folder]")
 		{
 			if (in_folder && !current.id.empty())

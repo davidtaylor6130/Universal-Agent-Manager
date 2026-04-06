@@ -263,6 +263,16 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 				continue;
 			}
 
+			for (const ChatFolder& folder : p_app.folders)
+			{
+				if (FolderDirectoryMatches(folder.directory, l_workspaceRoot))
+				{
+					l_nativeChat.folder_id = folder.id;
+					l_nativeChat.workspace_directory = folder.directory;
+					break;
+				}
+			}
+
 			if (ChatRepository::SaveChat(p_app.data_root, l_nativeChat))
 			{
 				++result.imported_count;
