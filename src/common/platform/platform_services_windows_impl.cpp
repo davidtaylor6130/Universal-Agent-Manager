@@ -532,6 +532,11 @@ namespace
 				return false;
 			}
 
+			// Ensure our end of the pipes are not inherited by the child process.
+			// This prevents the child from keeping the pipes alive and causing hangs on ClosePseudoConsole.
+			SetHandleInformation(pipe_pty_in, HANDLE_FLAG_INHERIT, 0);
+			SetHandleInformation(pipe_pty_out, HANDLE_FLAG_INHERIT, 0);
+
 			const COORD size{static_cast<SHORT>(terminal.cols), static_cast<SHORT>(terminal.rows)};
 			HPCON pseudo_console = nullptr;
 			const auto create_pseudo_console = reinterpret_cast<HRESULT(WINAPI*)(COORD, HANDLE, HANDLE, DWORD, HPCON*)>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "CreatePseudoConsole"));
@@ -742,15 +747,14 @@ namespace
 			{
 				TerminateProcess(terminal.process_info.hProcess, 1);
 				
-				// Wait for process termination with proper error handling
-				DWORD wait_result = WaitForSingleObject(terminal.process_info.hProcess, 500);
-				if (wait_result == WAIT_FAILED)
+				// Very short wait for process termination.
+				(void)WaitForSingleObject(terminal.process_info.hProcess, 50);
+
+				if (terminal.pseudo_console != nullptr)
 				{
-					// Log the error but continue with cleanup
-					DWORD lastError = GetLastError();
-					// Continue with handle cleanup even if wait failed
+					ClosePseudoConsoleSafe(terminal.pseudo_console);
+					terminal.pseudo_console = nullptr;
 				}
-				// If wait_result is WAIT_TIMEOUT or WAIT_OBJECT_0, we continue with cleanup
 
 				if (terminal.pipe_input != INVALID_HANDLE_VALUE)
 				{
@@ -776,12 +780,6 @@ namespace
 					terminal.process_info.hProcess = INVALID_HANDLE_VALUE;
 				}
 
-				if (terminal.pseudo_console != nullptr)
-				{
-					ClosePseudoConsoleSafe(terminal.pseudo_console);
-					terminal.pseudo_console = nullptr;
-				}
-
 				terminal.process_info.dwProcessId = 0;
 				terminal.process_info.dwThreadId = 0;
 				return;
@@ -793,17 +791,18 @@ namespace
 				(void)WriteToCliTerminal(terminal, kQuitCommand, sizeof(kQuitCommand) - 1);
 			}
 
-			DWORD wait_result = WaitForSingleObject(terminal.process_info.hProcess, 700);
+			DWORD wait_result = WaitForSingleObject(terminal.process_info.hProcess, 250);
 
 			if (wait_result == WAIT_TIMEOUT)
 			{
 				TerminateProcess(terminal.process_info.hProcess, 1);
-				wait_result = WaitForSingleObject(terminal.process_info.hProcess, 1200);
+				wait_result = WaitForSingleObject(terminal.process_info.hProcess, 250);
 			}
 
-			if (wait_result == WAIT_TIMEOUT)
+			if (terminal.pseudo_console != nullptr)
 			{
-				TerminateProcess(terminal.process_info.hProcess, 1);
+				ClosePseudoConsoleSafe(terminal.pseudo_console);
+				terminal.pseudo_console = nullptr;
 			}
 
 			if (terminal.pipe_input != INVALID_HANDLE_VALUE)
@@ -828,12 +827,6 @@ namespace
 			{
 				CloseHandle(terminal.process_info.hProcess);
 				terminal.process_info.hProcess = INVALID_HANDLE_VALUE;
-			}
-
-			if (terminal.pseudo_console != nullptr)
-			{
-				ClosePseudoConsoleSafe(terminal.pseudo_console);
-				terminal.pseudo_console = nullptr;
 			}
 
 			if (terminal.attr_list != nullptr)
@@ -1074,7 +1067,7 @@ namespace
 					result.canceled = true;
 					result.error = "Command canceled.";
 					TerminateProcess(process_info.hProcess, 1);
-					WaitForSingleObject(process_info.hProcess, 1000);
+					WaitForSingleObject(process_info.hProcess, 250);
 					process_finished = true;
 				}
 
@@ -1083,7 +1076,7 @@ namespace
 					result.timed_out = true;
 					result.error = "Command timed out.";
 					TerminateProcess(process_info.hProcess, 1);
-					WaitForSingleObject(process_info.hProcess, 1000);
+					WaitForSingleObject(process_info.hProcess, 250);
 					process_finished = true;
 				}
 
@@ -1215,7 +1208,7 @@ namespace
 				if (wait_result == WAIT_TIMEOUT)
 				{
 					TerminateProcess(state.process_handle, 1);
-					WaitForSingleObject(state.process_handle, 1000);
+					WaitForSingleObject(state.process_handle, 250);
 				}
 
 				CloseHandle(state.process_handle);

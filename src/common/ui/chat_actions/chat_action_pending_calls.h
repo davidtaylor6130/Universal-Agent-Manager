@@ -28,6 +28,7 @@ inline void ResetPendingRuntimeCallWorker(PendingRuntimeCall& call)
 	if (call.worker != nullptr)
 	{
 		call.worker->request_stop();
+		call.worker->detach();
 		call.worker.reset();
 	}
 

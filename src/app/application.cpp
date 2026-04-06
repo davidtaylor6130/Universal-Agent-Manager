@@ -74,6 +74,7 @@ namespace
 		if (task.worker != nullptr)
 		{
 			task.worker->request_stop();
+			task.worker->detach();
 			task.worker.reset();
 		}
 
@@ -87,6 +88,7 @@ namespace
 		if (call.worker != nullptr)
 		{
 			call.worker->request_stop();
+			call.worker->detach();
 			call.worker.reset();
 		}
 
@@ -98,6 +100,7 @@ namespace
 		if (task.worker != nullptr)
 		{
 			task.worker->request_stop();
+			task.worker->detach();
 			task.worker.reset();
 		}
 
@@ -120,7 +123,7 @@ Application::Application()
 
 Application::~Application()
 {
-	// Destructor owns final app shutdown and low-level cleanup.
+	// Destructor owns final app shutdown and low-level teardown.
 	Shutdown();
 
 	// Pump events to ensure window destruction completes on Windows.
@@ -260,9 +263,6 @@ bool Application::Update()
 {
 	if (m_done)
 	{
-		// Stop terminal work immediately once shutdown has been requested.
-		FastStopCliTerminalsForExit(m_app);
-		m_terminalsStoppedForShutdown = true;
 		return false;
 	}
 
@@ -297,7 +297,7 @@ void Application::Shutdown()
 
 	if (!m_terminalsStoppedForShutdown)
 	{
-		StopAllCliTerminals(m_app, true);
+		FastStopCliTerminalsForExit(m_app);
 		m_terminalsStoppedForShutdown = true;
 	}
 

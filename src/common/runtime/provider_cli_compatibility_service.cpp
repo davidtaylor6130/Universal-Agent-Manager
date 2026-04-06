@@ -34,6 +34,7 @@ namespace
 		if (task.worker != nullptr)
 		{
 			task.worker->request_stop();
+			task.worker->detach();
 			task.worker.reset();
 		}
 
