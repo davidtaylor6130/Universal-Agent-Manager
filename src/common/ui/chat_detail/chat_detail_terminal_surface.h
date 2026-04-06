@@ -243,9 +243,21 @@ inline void DrawCliTerminalSurface(AppState& app, ChatSession& chat, const bool 
 
 			if (cursor.row >= 0 && cursor.row < terminal.rows && cursor.col >= 0 && cursor.col < terminal.cols)
 			{
-				const ImVec2 cursor_min(origin.x + cursor.col * cell_w, origin.y + cursor.row * cell_h);
-				const ImVec2 cursor_max(cursor_min.x + cell_w, cursor_min.y + cell_h);
-				draw->AddRect(cursor_min, cursor_max, ImGui::GetColorU32(ui::kAccent), 0.0f, 0, 1.2f);
+				const double current_time = ImGui::GetTime();
+				if (current_time - terminal.cursor_blink_last_time > 0.53)
+				{
+					terminal.cursor_blink_last_time = current_time;
+					terminal.cursor_visible = !terminal.cursor_visible;
+				}
+
+				if (terminal.cursor_visible)
+				{
+					const ImVec2 cursor_min(origin.x + cursor.col * cell_w, origin.y + cursor.row * cell_h);
+					const ImVec2 cursor_max(cursor_min.x + cell_w, cursor_min.y + cell_h);
+					const float bar_width = 2.0f;
+					const ImVec2 bar_max(cursor_min.x + bar_width, cursor_max.y);
+					draw->AddRectFilled(cursor_min, bar_max, ImGui::GetColorU32(ui::kAccent));
+				}
 			}
 		}
 	}

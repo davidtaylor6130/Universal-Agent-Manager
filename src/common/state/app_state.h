@@ -71,6 +71,8 @@ namespace uam
 		int sel_end_row = -1;
 		int sel_end_col = -1;
 		bool has_selection = false;
+		double cursor_blink_last_time = 0.0;
+		bool cursor_visible = true;
 	};
 
 	/// <summary>
