@@ -206,6 +206,17 @@ if(UAM_FETCH_DEPS)
     set(UAM_IMGUI_SOURCE_DIR "${imgui_SOURCE_DIR}" CACHE PATH
       "Path to a local Dear ImGui source tree." FORCE)
   endif()
+
+  set(CMAKE_FOLDER "ThirdParty/curl")
+  include(FetchContent)
+  FetchContent_Declare(
+    curl
+    GIT_REPOSITORY https://github.com/curl/curl.git
+    GIT_TAG curl-8_11_1
+  )
+  FetchContent_MakeAvailable(curl)
+  set(UAM_CURL_SOURCE_DIR "${curl_SOURCE_DIR}" CACHE PATH
+    "Path to a local curl source tree." FORCE)
   set(CMAKE_FOLDER "")
 else()
   find_package(SDL2 REQUIRED)
@@ -216,7 +227,20 @@ else()
 endif()
 
 find_package(OpenGL REQUIRED)
-find_package(CURL REQUIRED)
+
+if(UAM_FETCH_DEPS)
+  set(CURL_INCLUDE_DIR "${UAM_CURL_SOURCE_DIR}/include" CACHE PATH "curl include directory")
+  set(CURL_LIBRARY "${UAM_CURL_SOURCE_DIR}/lib/libcurl_a.lib" CACHE PATH "curl library")
+  if(NOT TARGET CURL::libcurl)
+    add_library(CURL::libcurl STATIC IMPORTED)
+    set_target_properties(CURL::libcurl PROPERTIES
+      IMPORTED_LOCATION "${CURL_LIBRARY}"
+      INTERFACE_INCLUDE_DIRECTORIES "${CURL_INCLUDE_DIR}"
+    )
+  endif()
+else()
+  find_package(CURL REQUIRED)
+endif()
 
 if(APPLE)
   set(UAM_SDL_TARGET SDL2::SDL2)

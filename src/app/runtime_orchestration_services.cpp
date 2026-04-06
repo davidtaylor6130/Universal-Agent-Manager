@@ -325,7 +325,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 		ChatFolder* lp_folder = nullptr;
 		for (ChatFolder& folder : p_app.folders)
 		{
-			if (folder.directory == l_source.folder_directory)
+			if (FolderDirectoryMatches(folder.directory, l_source.folder_directory))
 			{
 				lp_folder = &folder;
 				break;

@@ -20,6 +20,10 @@ set(UAM_TREE_SITTER_CPP_SOURCE_DIR "${UAM_OLLAMA_THIRD_PARTY_SOURCE_DIR}/tree-si
   "Path to a local tree-sitter-cpp source tree.")
 set(UAM_CPP_HTTPLIB_SOURCE_DIR "${UAM_OLLAMA_THIRD_PARTY_SOURCE_DIR}/cpp-httplib" CACHE PATH
   "Path to a local cpp-httplib source tree.")
+set(UAM_SQLITE3_SOURCE_DIR "${UAM_OLLAMA_THIRD_PARTY_SOURCE_DIR}/sqlite3" CACHE PATH
+  "Path to a local SQLite3 source tree.")
+set(UAM_OPENSSL_SOURCE_DIR "${UAM_OLLAMA_THIRD_PARTY_SOURCE_DIR}/openssl" CACHE PATH
+  "Path to a local OpenSSL source tree.")
 set(UAM_LLAMA_CPP_REPOSITORY "https://github.com/davidtaylor6130/llama.cpp-UAM-Fork.git" CACHE STRING
   "Git repository URL for llama.cpp fork.")
 set(UAM_LLAMA_CPP_GIT_TAG "990e4d96980d0b016a2b07049cc9031642fb9903" CACHE STRING
@@ -67,8 +71,14 @@ endif()
 if(NOT EXISTS "${UAM_CPP_HTTPLIB_SOURCE_DIR}/httplib.h")
   set(_uam_fetch_cpp_httplib TRUE)
 endif()
+if(NOT EXISTS "${UAM_SQLITE3_SOURCE_DIR}/sqlite3.c")
+  set(_uam_fetch_sqlite3 TRUE)
+endif()
+if(NOT EXISTS "${UAM_OPENSSL_SOURCE_DIR}/include/openssl/opensslv.h")
+  set(_uam_fetch_openssl TRUE)
+endif()
 
-if(_uam_fetch_tree_sitter OR _uam_fetch_tree_sitter_cpp OR _uam_fetch_cpp_httplib)
+if(_uam_fetch_tree_sitter OR _uam_fetch_tree_sitter_cpp OR _uam_fetch_cpp_httplib OR _uam_fetch_sqlite3 OR _uam_fetch_openssl)
   include(FetchContent)
 endif()
 
@@ -111,6 +121,36 @@ elseif(EXISTS "${UAM_CPP_HTTPLIB_SOURCE_DIR}/CMakeLists.txt")
 else()
   add_library(httplib INTERFACE)
   target_include_directories(httplib INTERFACE "${UAM_CPP_HTTPLIB_SOURCE_DIR}")
+endif()
+
+if(_uam_fetch_sqlite3)
+  set(CMAKE_FOLDER "ThirdParty/SQLite3")
+  include(FetchContent)
+  FetchContent_Declare(
+    sqlite3
+    URL https://www.sqlite.org/2024/sqlite-amalgamation-3460000.zip
+    URL_MD5 "78c40a42c3d2e2a52ab011edb33e99cf"
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  )
+  FetchContent_MakeAvailable(sqlite3)
+  set(UAM_SQLITE3_SOURCE_DIR "${sqlite3_SOURCE_DIR}" CACHE PATH
+    "Path to a local SQLite3 source tree." FORCE)
+  set(CMAKE_FOLDER "")
+endif()
+
+if(_uam_fetch_openssl)
+  set(CMAKE_FOLDER "ThirdParty/openssl")
+  include(FetchContent)
+  FetchContent_Declare(
+    openssl
+    URL https://github.com/openssl/openssl/releases/download/openssl-3.4.1/openssl-3.4.1.tar.gz
+    URL_MD5 "fb7a747ac6793a7ad7118eaba45db379"
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  )
+  FetchContent_MakeAvailable(openssl)
+  set(UAM_OPENSSL_SOURCE_DIR "${openssl_SOURCE_DIR}" CACHE PATH
+    "Path to a local OpenSSL source tree." FORCE)
+  set(CMAKE_FOLDER "")
 endif()
 
 if(NOT TARGET httplib::httplib)
@@ -156,8 +196,23 @@ set_target_properties(uam_tree_sitter_cpp_grammar PROPERTIES
   FOLDER "Subprojects/OllamaEngine/ThirdParty"
 )
 
-find_package(SQLite3 REQUIRED)
-find_package(OpenSSL REQUIRED)
+if(EXISTS "${UAM_SQLITE3_SOURCE_DIR}/sqlite3.c")
+  add_library(SQLite3 STATIC "${UAM_SQLITE3_SOURCE_DIR}/sqlite3.c")
+  target_include_directories(SQLite3 PUBLIC "${UAM_SQLITE3_SOURCE_DIR}")
+  if(NOT TARGET SQLite::SQLite3)
+    add_library(SQLite::SQLite3 ALIAS SQLite3)
+  endif()
+elseif(EXISTS "${UAM_SQLITE3_SOURCE_DIR}/CMakeLists.txt")
+  add_subdirectory("${UAM_SQLITE3_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/sqlite3")
+else()
+  find_package(SQLite3 REQUIRED)
+endif()
+
+if(EXISTS "${UAM_OPENSSL_SOURCE_DIR}/CMakeLists.txt")
+  add_subdirectory("${UAM_OPENSSL_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/openssl")
+else()
+  find_package(OpenSSL REQUIRED)
+endif()
 
 add_library(uam_ollama_engine STATIC
   src/engine_factory.cpp

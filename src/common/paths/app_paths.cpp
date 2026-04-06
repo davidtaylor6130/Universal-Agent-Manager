@@ -457,3 +457,8 @@ std::filesystem::path AppPaths::UamChatFilePath(const std::filesystem::path& dat
 {
 	return UamChatsRootPath(data_root) / (chat_id + ".json");
 }
+
+bool FolderDirectoryMatches(const std::filesystem::path& lhs, const std::filesystem::path& rhs)
+{
+	return PathsEquivalent(lhs, rhs);
+}

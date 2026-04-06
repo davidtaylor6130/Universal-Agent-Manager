@@ -123,6 +123,13 @@ Application::~Application()
 	// Destructor owns final app shutdown and low-level cleanup.
 	Shutdown();
 
+	// Pump events to ensure window destruction completes on Windows.
+	// SDL_DestroyWindow can block waiting for window messages to be processed.
+	SDL_Event drain_event;
+	while (SDL_PollEvent(&drain_event))
+	{
+	}
+
 	if (m_imguiInitialized)
 	{
 		ImGui_ImplOpenGL3_Shutdown();
@@ -209,7 +216,10 @@ int Application::Run()
 		}
 
 		// Call the actual apps logic and update loop.
-		Update();
+		if (!Update())
+		{
+			break;
+		}
 
 		// Enforce a strick fps set at the start of run.
 		const Uint64 l_frameElapsedMs = SDL_GetTicks64() - l_frameStartMs;
@@ -316,6 +326,13 @@ bool Application::InitializeState()
 		{
 			l_dataRootCandidates.push_back(fs::path(l_envRoot));
 		}
+	}
+
+	std::error_code l_exeEc;
+	const fs::path l_exePath = m_platformServices->process_service.ResolveCurrentExecutablePath();
+	if (!l_exeEc && !l_exePath.empty())
+	{
+		l_dataRootCandidates.push_back(l_exePath.parent_path() / "data");
 	}
 
 	if (l_dataRootCandidates.empty())

@@ -741,7 +741,16 @@ namespace
 			if (fast_exit)
 			{
 				TerminateProcess(terminal.process_info.hProcess, 1);
-				(void)WaitForSingleObject(terminal.process_info.hProcess, 60);
+				
+				// Wait for process termination with proper error handling
+				DWORD wait_result = WaitForSingleObject(terminal.process_info.hProcess, 500);
+				if (wait_result == WAIT_FAILED)
+				{
+					// Log the error but continue with cleanup
+					DWORD lastError = GetLastError();
+					// Continue with handle cleanup even if wait failed
+				}
+				// If wait_result is WAIT_TIMEOUT or WAIT_OBJECT_0, we continue with cleanup
 
 				if (terminal.pipe_input != INVALID_HANDLE_VALUE)
 				{

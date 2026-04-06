@@ -29,3 +29,5 @@ class AppPaths
 	/// <summary>Returns the UAM chat JSON file path for a specific chat id.</summary>
 	static std::filesystem::path UamChatFilePath(const std::filesystem::path& data_root, const std::string& chat_id);
 };
+
+bool FolderDirectoryMatches(const std::filesystem::path& lhs, const std::filesystem::path& rhs);
