@@ -11,6 +11,10 @@
 #include <sstream>
 #include <thread>
 
+#if defined(_WIN32)
+#include <cstdio>
+#endif
+
 namespace
 {
 	namespace fs = std::filesystem;
@@ -66,9 +70,17 @@ namespace
 #endif
 		}
 
+#if defined(_WIN32)
+		cmd += " 2>NUL";
+#else
 		cmd += " 2>/dev/null";
+#endif
 
+#if defined(_WIN32)
+		FILE* pipe = _popen(cmd.c_str(), "r");
+#else
 		FILE* pipe = popen(cmd.c_str(), "r");
+#endif
 		if (!pipe)
 		{
 			return "";
@@ -80,7 +92,11 @@ namespace
 		{
 			result += buffer;
 		}
+#if defined(_WIN32)
+		_pclose(pipe);
+#else
 		pclose(pipe);
+#endif
 		return result;
 	}
 

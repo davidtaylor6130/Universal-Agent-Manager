@@ -68,6 +68,7 @@ class IPlatformProcessService
 	virtual void StopLocalBridgeProcess(uam::OpenCodeBridgeState& state) const = 0;
 	virtual uintmax_t NativeGeminiSessionMaxFileBytes() const = 0;
 	virtual std::size_t NativeGeminiSessionMaxMessages() const = 0;
+	virtual std::string GenerateUuid() const = 0;
 };
 
 /// <summary>

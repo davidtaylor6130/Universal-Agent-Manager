@@ -1,4 +1,6 @@
 #pragma once
+#include <array>
+#include <utility>
 
 /// <summary>
 /// Draws appearance controls in the app settings modal.

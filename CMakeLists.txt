@@ -218,12 +218,17 @@ endif()
 find_package(OpenGL REQUIRED)
 find_package(CURL REQUIRED)
 
-if(TARGET SDL2::SDL2)
+if(APPLE)
   set(UAM_SDL_TARGET SDL2::SDL2)
-elseif(TARGET SDL2::SDL2-static)
-  set(UAM_SDL_TARGET SDL2::SDL2-static)
+elseif(WIN32)
+  set(UAM_SDL_TARGET "SDL2::SDL2-static")
 else()
-  message(FATAL_ERROR "Could not find SDL2 target.")
+  message(FATAL_ERROR "Unsupported platform")
+endif()
+
+set(UAM_SDL2MAIN_TARGET "")
+if(WIN32)
+  set(UAM_SDL2MAIN_TARGET SDL2main)
 endif()
 
 set(UAM_IMGUI_SOURCES
@@ -404,8 +409,15 @@ target_include_directories(universal_agent_manager
     ${VTERM_DIR}/include
     ${VTERM_DIR}/src
 )
-target_link_libraries(universal_agent_manager PRIVATE ${UAM_SDL_TARGET} OpenGL::GL CURL::libcurl ${UAM_ENGINE_LINK_TARGET} "-Wl,-framework,Security")
+if(APPLE)
+  target_link_libraries(universal_agent_manager PRIVATE ${UAM_SDL_TARGET} OpenGL::GL CURL::libcurl ${UAM_ENGINE_LINK_TARGET} "-Wl,-framework,Security")
+elseif(WIN32)
+  target_link_libraries(universal_agent_manager PRIVATE ${UAM_SDL_TARGET} ${UAM_SDL2MAIN_TARGET} OpenGL::GL CURL::libcurl ${UAM_ENGINE_LINK_TARGET})
+else()
+  target_link_libraries(universal_agent_manager PRIVATE ${UAM_SDL_TARGET} OpenGL::GL CURL::libcurl ${UAM_ENGINE_LINK_TARGET})
+endif()
 target_compile_definitions(universal_agent_manager PRIVATE
+  NOMINMAX
   UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED}>
   UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
   UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>
@@ -503,8 +515,15 @@ if(UAM_BUILD_TESTS)
       ${VTERM_DIR}/src
       $<TARGET_PROPERTY:${UAM_SDL_TARGET},INTERFACE_INCLUDE_DIRECTORIES>
   )
-  target_link_libraries(uam_core_tests PRIVATE ${UAM_SDL_TARGET} OpenGL::GL CURL::libcurl ${UAM_ENGINE_LINK_TARGET})
+  if(APPLE)
+    target_link_libraries(uam_core_tests PRIVATE ${UAM_SDL_TARGET} OpenGL::GL CURL::libcurl ${UAM_ENGINE_LINK_TARGET} "-Wl,-framework,Security")
+  elseif(WIN32)
+    target_link_libraries(uam_core_tests PRIVATE ${UAM_SDL_TARGET} ${UAM_SDL2MAIN_TARGET} OpenGL::GL CURL::libcurl ${UAM_ENGINE_LINK_TARGET})
+  else()
+    target_link_libraries(uam_core_tests PRIVATE ${UAM_SDL_TARGET} OpenGL::GL CURL::libcurl ${UAM_ENGINE_LINK_TARGET})
+  endif()
   target_compile_definitions(uam_core_tests PRIVATE
+    NOMINMAX
     UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED}>
     UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
     UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>

@@ -109,6 +109,30 @@ namespace
 		return convert(CP_ACP, 0);
 	}
 
+	std::string WideToUtf8(const std::wstring& value)
+	{
+		if (value.empty())
+		{
+			return std::string();
+		}
+
+		const int utf8_len = WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+
+		if (utf8_len <= 0)
+		{
+			return std::string();
+		}
+
+		std::string utf8(static_cast<std::size_t>(utf8_len), '\0');
+
+		if (WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), utf8.data(), utf8_len, nullptr, nullptr) <= 0)
+		{
+			return std::string();
+		}
+
+		return utf8;
+	}
+
 	std::string QuoteWindowsArg(const std::string& arg)
 	{
 		if (arg.empty())
@@ -566,7 +590,10 @@ namespace
 			si.StartupInfo.cb = sizeof(si);
 			si.lpAttributeList = terminal.attr_list;
 			PROCESS_INFORMATION pi{};
-			const std::wstring command_w = WideFromUtf8(BuildWindowsCommandLine(argv));
+			
+			std::string command_str = BuildWindowsCommandLine(argv);
+			command_str = "cmd.exe /C " + command_str;
+			const std::wstring command_w = WideFromUtf8(command_str);
 
 			if (command_w.empty())
 			{
@@ -589,21 +616,31 @@ namespace
 			const std::wstring working_directory_w = working_directory.empty() ? std::wstring() : working_directory.wstring();
 			const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT, nullptr, working_directory.empty() ? nullptr : working_directory_w.c_str(), &si.StartupInfo, &pi);
 
-			if (!created)
+		if (!created)
+		{
+			const DWORD last_error = GetLastError();
+			std::string cmd_line_str;
+			if (command_w.empty())
 			{
-				if (error_out != nullptr)
-				{
-					*error_out = "Failed to start provider process.";
-				}
-
-				DeleteProcThreadAttributeList(terminal.attr_list);
-				HeapFree(GetProcessHeap(), 0, terminal.attr_list);
-				terminal.attr_list = nullptr;
-				ClosePseudoConsoleSafe(pseudo_console);
-				CloseHandle(pipe_pty_in);
-				CloseHandle(pipe_pty_out);
-				return false;
+				cmd_line_str = "(empty)";
 			}
+			else
+			{
+				cmd_line_str = WideToUtf8(command_w);
+			}
+			if (error_out != nullptr)
+			{
+				*error_out = "Failed to start provider process. Error code: " + std::to_string(last_error) + ". Command: " + cmd_line_str;
+			}
+
+			DeleteProcThreadAttributeList(terminal.attr_list);
+			HeapFree(GetProcessHeap(), 0, terminal.attr_list);
+			terminal.attr_list = nullptr;
+			ClosePseudoConsoleSafe(pseudo_console);
+			CloseHandle(pipe_pty_in);
+			CloseHandle(pipe_pty_out);
+			return false;
+		}
 
 			DWORD mode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
 
@@ -1193,6 +1230,22 @@ namespace
 		std::size_t NativeGeminiSessionMaxMessages() const override
 		{
 			return 12000;
+		}
+
+		std::string GenerateUuid() const override
+		{
+			GUID guid;
+			if (CoCreateGuid(&guid) != S_OK)
+			{
+				return "";
+			}
+			char uuid[37];
+			sprintf_s(uuid, sizeof(uuid),
+				"%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+				guid.Data1, guid.Data2, guid.Data3,
+				guid.Data4[0], guid.Data4[1], guid.Data4[2], guid.Data4[3],
+				guid.Data4[4], guid.Data4[5], guid.Data4[6], guid.Data4[7]);
+			return std::string(uuid);
 		}
 	};
 

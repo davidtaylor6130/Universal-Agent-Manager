@@ -2,11 +2,11 @@
 
 #include "app/application_core_helpers.h"
 #include "common/paths/app_paths.h"
+#include "common/platform/platform_services.h"
 #include "common/provider/gemini/base/gemini_history_loader.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/runtime/json_runtime.h"
 
-#include <Security/Security.h>
 #include <sstream>
 
 namespace fs = std::filesystem;
@@ -102,24 +102,7 @@ bool GeminiCliProviderRuntime::UsesGeminiPathBootstrap(const ProviderProfile&) c
 
 std::string GeminiCliProviderRuntime::GenerateSessionUUID() const
 {
-	uint8_t randomBytes[16];
-	if (SecRandomCopyBytes(kSecRandomDefault, 16, randomBytes) != errSecSuccess)
-	{
-		return "";
-	}
-	randomBytes[6] = (randomBytes[6] & 0x0f) | 0x40;
-	randomBytes[8] = (randomBytes[8] & 0x3f) | 0x80;
-	const char* hexDigits = "0123456789abcdef";
-	char uuid[37];
-	for (int i = 0; i < 16; ++i)
-	{
-		int byte = randomBytes[i];
-		uuid[i * 2] = hexDigits[(byte >> 4) & 0x0f];
-		uuid[i * 2 + 1] = hexDigits[byte & 0x0f];
-	}
-	uuid[8] = uuid[13] = uuid[18] = uuid[23] = '-';
-	uuid[36] = '\0';
-	return std::string(uuid);
+	return PlatformServicesFactory::Instance().process_service.GenerateUuid();
 }
 
 std::string GeminiCliProviderRuntime::BuildSessionFilename(const ChatSession& chat) const

@@ -1,4 +1,6 @@
 #pragma once
+#include <algorithm>
+#include <functional>
 #include "app/chat_domain_service.h"
 #include "common/platform/platform_services.h"
 

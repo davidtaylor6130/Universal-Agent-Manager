@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include "app/chat_domain_service.h"
 #include "common/platform/platform_services.h"
 
@@ -56,25 +57,25 @@ inline FolderHeaderAction DrawFolderHeaderItem(const ChatFolder& folder, const i
 	ImGui::SetItemAllowOverlap();
 	const bool hovered = ImGui::IsItemHovered();
 	action.toggle = ImGui::IsItemClicked();
-	const ImVec2 max(min.x + row_size.x, min.y + row_size.y);
+	const ImVec2 max_pos(min.x + row_size.x, min.y + row_size.y);
 
 	ImDrawList* draw = ImGui::GetWindowDrawList();
 
 	if (hovered || !folder.collapsed)
 	{
-		draw->AddRectFilled(min, max, ImGui::GetColorU32(light ? Rgb(9, 31, 63, 0.05f) : Rgb(255, 255, 255, 0.04f)), row_rounding);
-		draw->AddRect(min, max, ImGui::GetColorU32(ui::kBorder), row_rounding);
+		draw->AddRectFilled(min, max_pos, ImGui::GetColorU32(light ? Rgb(9, 31, 63, 0.05f) : Rgb(255, 255, 255, 0.04f)), row_rounding);
+		draw->AddRect(min, max_pos, ImGui::GetColorU32(ui::kBorder), row_rounding);
 	}
 
 	const std::string marker = folder.collapsed ? ">" : "v";
 	const std::string title = ChatDomainService().FolderTitleOrFallback(folder);
 	const std::string count_text = std::to_string(chat_count);
-	float count_x = max.x - count_x_offset;
+	float count_x = max_pos.x - count_x_offset;
 
 	if (PlatformServicesFactory::Instance().ui_traits.UseWindowsLayoutAdjustments())
 	{
 		const ImVec2 count_size = ImGui::CalcTextSize(count_text.c_str());
-		count_x = max.x - icon_new_x_offset - ScaleUiLength(8.0f) - count_size.x;
+		count_x = max_pos.x - icon_new_x_offset - ScaleUiLength(8.0f) - count_size.x;
 		const float avg_char_w = std::max(4.0f, ImGui::CalcTextSize("ABCDEFGHIJKLMNOPQRSTUVWXYZ").x / 26.0f);
 		const float available_title_w = std::max(40.0f, count_x - (min.x + title_x_offset) - ScaleUiLength(8.0f));
 		title_limit = std::max(8, static_cast<int>(std::floor(available_title_w / avg_char_w)));
@@ -83,7 +84,7 @@ inline FolderHeaderAction DrawFolderHeaderItem(const ChatFolder& folder, const i
 	draw->AddText(ImVec2(min.x + title_x_offset, min.y + text_y_offset), ImGui::GetColorU32(ui::kTextSecondary), CompactPreview(title, title_limit).c_str());
 	draw->AddText(ImVec2(count_x, min.y + text_y_offset), ImGui::GetColorU32(ui::kTextMuted), count_text.c_str());
 
-	ImGui::SetCursorScreenPos(ImVec2(max.x - icon_new_x_offset, min.y + icon_y_offset));
+	ImGui::SetCursorScreenPos(ImVec2(max_pos.x - icon_new_x_offset, min.y + icon_y_offset));
 
 	if (DrawMiniIconButton("folder_new_chat", "icon:new_chat", ImVec2(16.0f, 16.0f), false))
 	{
@@ -91,7 +92,7 @@ inline FolderHeaderAction DrawFolderHeaderItem(const ChatFolder& folder, const i
 		action.toggle = false;
 	}
 
-	ImGui::SetCursorScreenPos(ImVec2(max.x - icon_settings_x_offset, min.y + icon_y_offset));
+	ImGui::SetCursorScreenPos(ImVec2(max_pos.x - icon_settings_x_offset, min.y + icon_y_offset));
 
 	if (DrawMiniIconButton("folder_settings", "icon:menu", ImVec2(16.0f, 16.0f), false))
 	{
@@ -99,7 +100,7 @@ inline FolderHeaderAction DrawFolderHeaderItem(const ChatFolder& folder, const i
 		action.toggle = false;
 	}
 
-	ImGui::SetCursorScreenPos(ImVec2(min.x, max.y + row_bottom_gap));
+	ImGui::SetCursorScreenPos(ImVec2(min.x, max_pos.y + row_bottom_gap));
 	ImGui::Dummy(ImVec2(0.0f, 0.0f));
 	ImGui::PopID();
 	return action;
