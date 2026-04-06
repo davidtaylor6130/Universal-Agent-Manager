@@ -126,6 +126,11 @@ namespace ollama_engine::internal::vectorised_rag
 		return lSQuoted;
 	}
 
+#ifdef _WIN32
+#define popen _popen
+#define pclose _pclose
+#endif
+
 	inline int RunShellCommand(const std::string& pSCommand, std::string* pSOutput = nullptr)
 	{
 		std::array<char, 4096> lArrCBuffer{};
