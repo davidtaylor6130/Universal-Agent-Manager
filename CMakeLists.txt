@@ -448,6 +448,22 @@ if(EXISTS "${UAM_WINDOW_ICON_BMP}")
   )
 endif()
 
+if(WIN32)
+  set(VCPKG_DLL_DIR "C:/vcpkg/installed/x64-windows/bin")
+  add_custom_command(TARGET universal_agent_manager POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${VCPKG_DLL_DIR}/libcurl.dll" "$<TARGET_FILE_DIR:universal_agent_manager>/"
+  )
+  add_custom_command(TARGET universal_agent_manager POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${VCPKG_DLL_DIR}/libcrypto-3-x64.dll" "$<TARGET_FILE_DIR:universal_agent_manager>/"
+  )
+  add_custom_command(TARGET universal_agent_manager POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${VCPKG_DLL_DIR}/libssl-3-x64.dll" "$<TARGET_FILE_DIR:universal_agent_manager>/"
+  )
+  add_custom_command(TARGET universal_agent_manager POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${VCPKG_DLL_DIR}/zlib1.dll" "$<TARGET_FILE_DIR:universal_agent_manager>/"
+  )
+endif()
+
 if(MSVC)
   set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT universal_agent_manager)
 endif()
