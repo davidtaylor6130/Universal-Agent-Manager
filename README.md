@@ -16,8 +16,8 @@ A local-first desktop application for managing CLI-driven AI agent workflows acr
 
 | Provider | ID | Structured | CLI | Interactive | Universal History |
 |----------|:--:|:---------:|:---:|:-----------:|:----------------:|
-| **Gemini Structured** | `gemini-structured` | ✅ | ❌ | 🔜 | 🔜🛠️ |
-| **Gemini CLI** | `gemini-cli` | ❌ | ✅ | 🔜 | 🔜🛠️ |
+| **Gemini Structured** | `gemini-structured` | ✅ | ❌ | 🔜 | ✅ |
+| **Gemini CLI** | `gemini-cli` | ❌ | ✅ | 🔜 | ✅ |
 | **Codex CLI** | `codex-cli` | ❌ | ✅ | 🔜 | 🔜 |
 | **Claude CLI** | `claude-cli` | ❌ | ✅ | 🔜 | 🔜 |
 | **OpenCode CLI** | `opencode-cli` | ❌ | ✅ | 🔜 | 🔜 |
