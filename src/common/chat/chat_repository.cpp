@@ -15,36 +15,6 @@ namespace
 {
 	namespace fs = std::filesystem;
 
-	std::string RoleToStringLocal(MessageRole role)
-	{
-		switch (role)
-		{
-		case MessageRole::User:
-			return "user";
-		case MessageRole::Assistant:
-			return "assistant";
-		case MessageRole::System:
-			return "system";
-		default:
-			return "user";
-		}
-	}
-
-	std::string RoleToString(MessageRole role)
-	{
-		switch (role)
-		{
-		case MessageRole::User:
-			return "user";
-		case MessageRole::Assistant:
-			return "assistant";
-		case MessageRole::System:
-			return "system";
-		default:
-			return "user";
-		}
-	}
-
 	MessageRole ParseMessageRole(const std::string& role)
 	{
 		if (role == "assistant")
@@ -103,7 +73,7 @@ namespace
 		obj.type = JsonValue::Type::Object;
 
 		obj.object_value["role"].type = JsonValue::Type::String;
-		obj.object_value["role"].string_value = RoleToStringLocal(msg.role);
+		obj.object_value["role"].string_value = RoleToString(msg.role);
 
 		obj.object_value["content"].type = JsonValue::Type::String;
 		obj.object_value["content"].string_value = msg.content;
