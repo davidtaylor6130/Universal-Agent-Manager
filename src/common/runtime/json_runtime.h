@@ -704,12 +704,11 @@ inline double JsonNumberOrDefault(const JsonValue* value, const double fallback)
 		return value->number_value;
 	if (value->type == JsonValue::Type::String)
 	{
-		try
+		char* end = nullptr;
+		double result = std::strtod(value->string_value.c_str(), &end);
+		if (end != value->string_value.c_str())
 		{
-			return std::stod(value->string_value);
-		}
-		catch (...)
-		{
+			return result;
 		}
 	}
 	return fallback;
