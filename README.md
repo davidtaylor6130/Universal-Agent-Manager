@@ -12,7 +12,7 @@ A local-first desktop application for managing CLI-driven AI agent workflows acr
 
 ## Support Matrix
 
-### Provider Feature Support
+### Provider Feature Support (Mac)
 
 | Provider | ID | Structured | CLI | Interactive | Universal History |
 |----------|:--:|:---------:|:---:|:-----------:|:----------------:|
@@ -23,6 +23,20 @@ A local-first desktop application for managing CLI-driven AI agent workflows acr
 | **OpenCode CLI** | `opencode-cli` | ❌ | ✅ | 🔜 | 🔜 |
 | **OpenCode Local** | `opencode-local` | ❌ | ✅ | 🚫 | 🔜 |
 | **Ollama Engine** | `ollama-engine` | ✅ | ❌ | 🚫 | 🔜 |
+
+
+### Provider Feature Support (Windows) 
+
+| Provider | ID | Structured | CLI | Interactive | Universal History |
+|----------|:--:|:---------:|:---:|:-----------:|:----------------:|
+| **Gemini Structured** | `gemini-structured` | ✅ | ❌ | 🔜 | 🔜🛠️ |
+| **Gemini CLI** | `gemini-cli` | ❌ | ✅ | 🔜 | 🔜🛠️ |
+| **Codex CLI** | `codex-cli` | ❌ | 🔜🛠️ | 🔜 | 🔜 |
+| **Claude CLI** | `claude-cli` | ❌ | 🔜🛠️ | 🔜 | 🔜 |
+| **OpenCode CLI** | `opencode-cli` | ❌ | 🔜🛠️ | 🔜 | 🔜 |
+| **OpenCode Local** | `opencode-local` | ❌ | 🔜🛠️ | 🚫 | 🔜 |
+| **Ollama Engine** | `ollama-engine` | 🔜🛠️ | ❌ | 🚫 | 🔜 |
+Note: less support on windows due to main personal dev enviroment is mac, So port features to windows after and will update as and when I confirm windows features work.
 
 ### Symbol Legend
 
