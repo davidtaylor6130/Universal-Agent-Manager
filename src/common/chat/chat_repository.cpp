@@ -2,6 +2,7 @@
 
 #include "common/paths/app_paths.h"
 #include "common/utils/io_utils.h"
+#include "common/utils/time_utils.h"
 #include "common/runtime/json_runtime.h"
 
 #include <algorithm>
@@ -16,6 +17,7 @@ namespace
 {
 	namespace fs = std::filesystem;
 	using namespace uam::io;
+	using namespace uam::time;
 
 	MessageRole ParseMessageRole(const std::string& role)
 	{
@@ -33,21 +35,6 @@ namespace
 			return line.substr(0, line.size() - 1);
 		}
 		return line;
-	}
-
-	std::string TimestampNow()
-	{
-		const auto now = std::chrono::system_clock::now();
-		const std::time_t tt = std::chrono::system_clock::to_time_t(now);
-		std::tm tm_snapshot{};
-#if defined(_WIN32)
-		localtime_s(&tm_snapshot, &tt);
-#else
-		localtime_r(&tt, &tm_snapshot);
-#endif
-		std::ostringstream out;
-		out << std::put_time(&tm_snapshot, "%Y-%m-%d %H:%M:%S");
-		return out.str();
 	}
 
 	JsonValue MessageToJson(const Message& msg)
