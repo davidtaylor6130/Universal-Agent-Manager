@@ -768,7 +768,6 @@ UAM_TEST(TestLoadSidebarChatsKeepsMixedProviderHistoryVisible)
 	ChatSession overlay_chat;
 	overlay_chat.id = "session-structured";
 	overlay_chat.provider_id = "gemini-structured";
-	overlay_chat.uses_native_session = true;
 	overlay_chat.native_session_id = "session-structured";
 	overlay_chat.folder_id = "folder-a";
 	overlay_chat.title = "Structured Overlay";
@@ -882,7 +881,6 @@ UAM_TEST(TestRemoveChatUsesDeletedChatProviderForNativeCleanup)
 	chat.id = "session-delete";
 	chat.provider_id = "gemini-cli";
 	chat.folder_id = "folder-a";
-	chat.uses_native_session = true;
 	chat.native_session_id = "session-delete";
 	chat.title = "Delete Me";
 	chat.created_at = "2026-03-21 10:00:00";
@@ -921,7 +919,6 @@ UAM_TEST(TestDeleteNativeSessionFileForChatReturnsFalseWhenRemoveFails)
 	chat.id = "session-delete-error";
 	chat.provider_id = "gemini-cli";
 	chat.folder_id = "folder-a";
-	chat.uses_native_session = true;
 	chat.native_session_id = "session-delete-error";
 
 #if defined(_WIN32)
@@ -1359,7 +1356,6 @@ UAM_TEST(TestProviderRuntimeInteractiveArgvIncludesResumeAndFlags)
 	settings.provider_extra_flags = "--profile nightly --dry-run";
 
 	ChatSession chat;
-	chat.uses_native_session = true;
 	chat.native_session_id = "session-123";
 
 	ProviderProfile profile;
@@ -1641,7 +1637,6 @@ UAM_TEST(TestProviderRuntimeHistoryPolicyGeminiNativeOverlay)
 	const std::vector<ChatSession> loaded_native = ProviderRuntime::LoadHistory(profile, data_root.root, chats_dir, ProviderRuntimeHistoryLoadOptions{});
 	UAM_ASSERT_EQ(1u, loaded_native.size());
 	UAM_ASSERT_EQ(std::string("native-session-1"), loaded_native.front().id);
-	UAM_ASSERT(loaded_native.front().uses_native_session);
 	UAM_ASSERT_EQ(std::string("native-session-1"), loaded_native.front().native_session_id);
 	UAM_ASSERT_EQ(std::string("Hello native"), loaded_native.front().messages.front().content);
 	UAM_ASSERT(ProviderRuntime::SupportsGeminiJsonHistory(profile));

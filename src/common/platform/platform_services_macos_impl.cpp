@@ -1,4 +1,5 @@
 #include "platform_services_macos_impl.h"
+#include <Security/Security.h>
 
 #include "common/paths/app_paths.h"
 #include "common/platform/sdl_includes.h"
