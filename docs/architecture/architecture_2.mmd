@@ -1,0 +1,105 @@
+flowchart TB
+  subgraph APP_CLASSES["App + Runtime Core"]
+    APPLICATION["Application"]
+    APPSTATE["AppState"]
+    PRUNTIME["ProviderRuntime"]
+    PREGISTRY["ProviderRuntimeRegistry"]
+    PPROFILES["ProviderProfileStore"]
+    APPLICATION --> APPSTATE
+    APPSTATE --> PRUNTIME
+    PRUNTIME --> PREGISTRY
+    PRUNTIME --> PPROFILES
+  end
+
+  subgraph RUNTIME_CLASSES["Provider Runtime Interface + Implementations"]
+    IPR["IProviderRuntime (interface)"]
+    GSTRUCT["GeminiStructuredProviderRuntime"]
+    GCLI["GeminiCliProviderRuntime"]
+    CODEX["CodexCliProviderRuntime"]
+    CLAUDE["ClaudeCliProviderRuntime"]
+    OC_CLI["OpenCodeCliProviderRuntime"]
+    OC_LOCAL["OpenCodeLocalProviderRuntime"]
+    OLLAMA_RT["OllamaEngineProviderRuntime"]
+    UNKNOWN_RT["UnknownProviderRuntime"]
+    PREGISTRY --> GSTRUCT
+    PREGISTRY --> GCLI
+    PREGISTRY --> CODEX
+    PREGISTRY --> CLAUDE
+    PREGISTRY --> OC_CLI
+    PREGISTRY --> OC_LOCAL
+    PREGISTRY --> OLLAMA_RT
+    PREGISTRY --> UNKNOWN_RT
+    GSTRUCT -. "implements" .-> IPR
+    GCLI -. "implements" .-> IPR
+    CODEX -. "implements" .-> IPR
+    CLAUDE -. "implements" .-> IPR
+    OC_CLI -. "implements" .-> IPR
+    OC_LOCAL -. "implements" .-> IPR
+    OLLAMA_RT -. "implements" .-> IPR
+    UNKNOWN_RT -. "implements" .-> IPR
+  end
+
+  subgraph HISTORY_CLASSES["History + Persistence"]
+    LOCAL["LocalChatStore"]
+    GEM["GeminiJsonHistoryStore"]
+    CHAT_REPO["ChatRepository"]
+    SETTINGS["SettingsStore"]
+    FOLDERS["ChatFolderStore"]
+    TEMPLATES["MarkdownTemplateCatalog"]
+    PATHS["AppPaths"]
+    IPR --> LOCAL
+    GSTRUCT --> GEM
+    GCLI --> GEM
+    LOCAL --> CHAT_REPO
+    APPSTATE --> SETTINGS
+    APPSTATE --> FOLDERS
+    APPSTATE --> TEMPLATES
+    APPSTATE --> PATHS
+  end
+
+  subgraph PLATFORM_CLASSES["Platform Services Interfaces + Adapters"]
+    PSFACTORY["PlatformServicesFactory"]
+    PSVC["PlatformServices"]
+    ITERM["IPlatformTerminalRuntime (interface)"]
+    IPROC["IPlatformProcessService (interface)"]
+    IFD["IPlatformFileDialogService (interface)"]
+    IPATH["IPlatformPathService (interface)"]
+    IUI["IPlatformUiTraits (interface)"]
+    WTR["WindowsTerminalRuntime"]
+    MTR["MacTerminalRuntime"]
+    WPS["WindowsProcessService"]
+    MPS["MacProcessService"]
+    WFD["WindowsFileDialogService"]
+    MFD["MacFileDialogService"]
+    WPATH["WindowsPathService"]
+    MPATH["MacPathService"]
+    WUI["WindowsUiTraits"]
+    MUI["MacUiTraits"]
+    PSFACTORY --> PSVC
+    PSVC --> ITERM
+    PSVC --> IPROC
+    PSVC --> IFD
+    PSVC --> IPATH
+    PSVC --> IUI
+    WTR -. "implements" .-> ITERM
+    MTR -. "implements" .-> ITERM
+    WPS -. "implements" .-> IPROC
+    MPS -. "implements" .-> IPROC
+    WFD -. "implements" .-> IFD
+    MFD -. "implements" .-> IFD
+    WPATH -. "implements" .-> IPATH
+    MPATH -. "implements" .-> IPATH
+    WUI -. "implements" .-> IUI
+    MUI -. "implements" .-> IUI
+  end
+
+  subgraph ENGINE_CLASSES["RAG + Engine"]
+    RAG["RagIndexService"]
+    OES["OllamaEngineService"]
+    OEC["OllamaEngineClient"]
+    VCS["VcsWorkspaceService"]
+    APPSTATE --> RAG
+    RAG --> OES
+    OES --> OEC
+    VCS --> IPROC
+  end

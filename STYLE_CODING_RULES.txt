@@ -1,0 +1,80 @@
+Universal Agent Manager Style/Coding Rules (Current)
+
+Scope:
+- These rules reflect the style/coding conventions applied in the main.cpp style migration and follow-up updates.
+
+1) Formatting Rules
+- Use Allman brace style.
+- Use one indentation level for every `{}` scope (namespace, class/struct, function, and control-flow blocks).
+- Default indentation is 4 spaces per level.
+- Tabs are allowed (and preferred where configured), but never mix tabs and spaces within the same block.
+- Use left pointer alignment: `Type* name` (example: `char* p_name`).
+- Do not auto-sort or reorder includes.
+- Do not collapse functions/blocks/ifs/loops to single-line compressed forms.
+- Keep one statement/expression per line for readability.
+- Avoid multi-line `if (...)` conditions.
+- Avoid multi-line function-call argument lists.
+- Keep blank lines between logical code sections (avoid wall-of-text layout).
+- Add vertical spacing around standalone in-function brace blocks (`{}`), including:
+  - `if` / `else if` / `else`
+  - `switch`
+  - loops (`for`, range-for, `while`, `do`)
+  - local `struct` / `class` / lambda blocks
+  - any other explicit scope block used as a logical unit
+- Rule of use:
+  - Put a blank line before a new brace block when it starts a separate logical step.
+  - Put a blank line after that brace block before continuing with the next logical step.
+
+2) Naming Rules
+- Local non-pointer variables: `l_` + lowerCamel
+- Local mutable pointers: `lp_` + lowerCamel
+- Local pointers-to-const: `lcp_` + lowerCamel
+- Parameters: `p_` + lowerCamel
+- Members: `m_` + lowerCamel
+- Existing globals/statics keep `g_` convention unless explicitly refactored.
+- Base names after prefixes are lowerCamel.
+
+3) File Organization Rules
+- All `#include` and `#define` directives must be in the top section of the file.
+- Do not place includes/defines inside implementation/body sections.
+- Keep the top-of-file declaration/prototype block coherent so top includes can resolve dependencies.
+- Header files must use conventional include guards, not `#pragma once`.
+- Include guard names should be project-scoped uppercase identifiers derived from the file path when practical (example: `UAM_APP_APPLICATION_H`).
+- Keep header guard structure conventional: `#ifndef`, then `#define`, then includes/declarations, then a closing `#endif` comment.
+
+4) Member Initialization Rules
+- Do not use blanket `{}` member initialization for class members as a default style.
+- Class/object members that are default-constructible should usually be declared without an explicit initializer.
+- Pointer members should use `= nullptr`.
+- Scalar state members should use explicit defaults that show intent, for example `= false`, `= 0`, or `= 1.0f`.
+- Use brace initialization for members only when it is intentionally required for clarity or construction semantics, not as a generic zero/value-init habit.
+
+5) Ownership and Pointer Rules
+- Prefer smart pointers for owned resources whenever possible.
+- Use `std::unique_ptr` by default for single ownership.
+- Use `std::shared_ptr` only when shared ownership is required.
+- Keep raw pointers for non-owning references and API/view pointers.
+- For C-library resources, use smart pointers with custom deleters (RAII), for example:
+  - `SDL_free`
+  - `SDL_DestroyWindow`
+  - `SDL_FreeSurface`
+  - `curl_easy_cleanup`
+  - `curl_slist_free_all`
+  - `pclose` / `_pclose`
+
+6) Behavioral Safety Rules
+- Style refactors must preserve runtime behavior.
+- Changes must remain compile-safe.
+- Prefer readability improvements without changing public/runtime behavior.
+
+7) Third-Party Boundary Rules
+- Do not modify third-party/vendor code as part of feature work, refactors, formatting, or cleanup.
+- Protected paths include:
+  - `third_party/`
+  - `subprojects/ollama_engine/third_party/`
+  - generated dependency trees under build outputs (for example `Builds/_deps/`)
+- Do not run mass-formatting over vendor trees.
+- If a third-party change is absolutely required, it must be done as an explicit vendor update only:
+  - isolated commit
+  - clear reason in commit message
+  - version/source reference in PR/commit notes

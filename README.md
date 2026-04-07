@@ -3,272 +3,298 @@
   Universal Agent Manager (UAM)
 </h1>
 
-> [!WARNING]
-> THIS IS VIBE CODED! I STILL NEED TO GO THROUGH CODE BY HAND AND REVIEW!!
+A local-first desktop application for managing CLI-driven AI agent workflows across multiple providers.
 
-<img src="https://img.shields.io/badge/status-in%20development-orange" />
-<img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue" />
-<img src="https://img.shields.io/badge/language-C%2B%2B20-green" />
-<img src="https://img.shields.io/badge/UI-Dear%20ImGui-purple" />
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue)](https://github.com/davidtaylor6130/Universal-Agent-Manager)
+[![Language](https://img.shields.io/badge/language-C%2B%2B20-green)](https://github.com/davidtaylor6130/Universal-Agent-Manager)
+[![UI Framework](https://img.shields.io/badge/UI-Dear%20ImGui-purple)](https://github.com/ocornut/imgui)
+[![License](https://img.shields.io/badge/license-UAML%20v1.0-orange)](LICENSE)
 
-Universal Agent Manager is a local-first desktop app for CLI-driven AI workflows.
+## Support Matrix
 
-The current default provider is Gemini CLI, and the runtime already supports provider profiles so other CLI providers can be configured without changing core app code.
+### Provider Feature Support
 
-## UI Screenshots
+| Provider | ID | Structured | CLI | Interactive | Universal History |
+|----------|:--:|:---------:|:---:|:-----------:|:----------------:|
+| **Gemini Structured** | `gemini-structured` | ✅ | ❌ | 🔜 | 🔜🛠️ |
+| **Gemini CLI** | `gemini-cli` | ❌ | ✅ | 🔜 | 🔜🛠️ |
+| **Codex CLI** | `codex-cli` | ❌ | ✅ | 🔜 | 🔜 |
+| **Claude CLI** | `claude-cli` | ❌ | ✅ | 🔜 | 🔜 |
+| **OpenCode CLI** | `opencode-cli` | ❌ | ✅ | 🔜 | 🔜 |
+| **OpenCode Local** | `opencode-local` | ❌ | ✅ | 🚫 | 🔜 |
+| **Ollama Engine** | `ollama-engine` | ✅ | ❌ | 🚫 | 🔜 |
 
-### Current: v0.0.3
+### Symbol Legend
 
-#### Windows
+| Symbol | Status | Meaning |
+|:------:|:------:|---------|
+| ✅ | **Current** | Implemented and working |
+| ❌ | **Current** | Not available for this provider |
+| 🔜 | **Future** | Planned, not yet implemented |
+| 🔜🛠️ | **Future** | In active development |
+| 🚫 | **Future** | Explicitly not planned |
 
-![Windows UI v0.0.3](docs/images/windows-v0.0.3-terminal.png)
+### View Definitions
 
-#### macOS
+| View | Description |
+|------|-------------|
+| **Structured View** | Simple LLM query (e.g., `gemini -p "prompt"`). No tool use, no agents, just a prompt → response. Chat bubble UI with history. |
+| **CLI View** | Embedded terminal (libvterm/ConPTY) running the provider's CLI directly. Full terminal experience, real-time output, progress bars, streaming. |
+| **Interactive** *(future)* | CLI View but with a polished UI overlay. Terminal power with chat UI convenience — stream output to bubbles, capture tool calls, show progress, but still have full CLI capability. |
 
-![macOS UI v0.0.3 (Terminal 01)](docs/images/macos-v0.0.3-terminal-01.png)
+### What is Interactive Mode?
 
-<details>
-<summary>Previous Releases (v0.0.1 / v0.0.2)</summary>
+**Structured View** = Single-shot prompt → response. Like calling a function with text in, text out.
 
-### v0.0.2
+**CLI View** = Full terminal running the provider's CLI. Real terminal window inside the app, streaming output, multi-turn, interactive prompts.
 
-![macOS UI v0.0.2 (Terminal 02)](docs/images/macos-v0.0.2-terminal.png)
+**Interactive Mode** (future) = The best of both. CLI power with UI polish:
+- Terminal output streams into chat bubbles
+- Tool calls captured and displayed beautifully
+- Progress indicators and streaming text
+- But still full CLI capability underneath
 
-### v0.0.1
+### History & Storage
 
-![macOS UI v0.0.1](docs/images/macos-builds-ui.png)
+| Mode | Purpose | Notes |
+|------|---------|-------|
+| **Local History** | **UAM source of truth** | All chats stored in `<data-root>/chats/`. This is where chats live long-term. |
+| **Native History** | **Active session only** | Provider's native format (e.g., Gemini JSON). Only used while actively using the AI. Not for long-term storage. |
+| **Path Bootstrap** | **Active session only** | Injects `@.gemini/path` references. Only during active sessions, not for storage. |
+| **Universal History** | **Cross-provider chats** | UAM-normalized chat format that works across CLI agents. One chat, swap providers. |
 
-</details>
+### What is Universal Chat History?
+
+UAM stores chats in its own format, enabling provider switching:
+
+- **Start a chat with Gemini CLI**
+- **Switch mid-conversation to Claude or Codex**
+- **Continue the same chat with a different provider**
+
+Context and conversation history are preserved across providers.
+
+**How it works (architecture-driven):**
+- UAM stores chats in its own normalized format
+- Tool calls, decisions, and context are captured uniformly
+- When you switch providers, UAM reconstructs context for the new CLI
+
+**Current support:**
+- Gemini: **Partial** — basic conversation continuity works
+  - 🛠️ Tool use: In progress
+  - 🛠️ Sub-agents: In progress
+- Other providers: **Future** — core switching works, deeper integration planned
+
+> ⚠️ **Important:** Native History and Path Bootstrap are temporary — they exist only while you're actively using the AI. For long-term chat storage, always use Local History (UAM's format).
+
+## Quick Start
+
+```bash
+# Build with dependencies
+cmake -S . -B Builds -DUAM_FETCH_DEPS=ON
+cmake --build Builds --config Release
+
+# Run
+./Builds/universal_agent_manager
+```
+
+## Key Features
+
+- **Multi-Provider Support** — Seamlessly switch between Gemini, Codex, Claude, OpenCode, and Ollama
+- **Flexible Views** — Structured chat UI or embedded terminal for each provider
+- **Local-First Storage** — JSON-based local storage with no cloud dependencies
+- **Built-in Provider Profiles** — Providers configured at build time via CMake
+- **Workspace Templates** — Materialize markdown templates into workspace `.gemini` directories
+- **RAG Support** — Optional retrieval-augmented generation via Ollama engine
 
 ## Project Goals
 
-- Local-first operation with plain-text state
+- Local-first operation with JSON-based state
 - Auditable behavior with explicit command execution
 - Provider-native history when an adapter is available
 - No cloud backend, no telemetry, no sync service
 - Reproducible workspace-driven CLI runs
-
-## Current Scope
-
-- Gemini is the default out-of-box provider profile.
-- Provider profiles are stored in `providers.txt` and support custom command templates, interactive commands, resume flags, and message role mappings.
-- Native Gemini JSON session history is supported through the `gemini-cli-json` adapter.
-- Providers without a native history adapter run in local-only mode using UAM's local chat store.
-
-## Development Roadmap
-
-### Long Shot Goals
-
-- Re-design the UI around Tailwind-style React components using an embedded Chromium-style GUI layer instead of Dear ImGui
-
-### New Features / Fixes
-
-- Get fully local basic messaging + RAG working cleanly
-- Make the inspector and terminal views use the same live CLI instance
-- Fix the issue where chats can spawn themselves
-- Add proper model, vector DB, and vector model selection
-- Get the testing suite properly in place
-- Split `ollama_engine` into its own separate GitHub repository
-- Improve performance
-- Improve CLI instance handling so background processes are not left open doing nothing
-
-### Done, But Still Needs Testing / Sanity Checking / Windows Port Before Main Merge
-
-- Local LLM support via custom `ollama_engine`
-- Local RAG
-- Auto-testing for local LLMs
-- Basic passthrough chat and model selection
-- Basic RAG via deterministic hash
-- Advanced RAG via GGUF model
-- Improved running animation
-- Fixed moving folders in the new GUI layout
-- RAG model selection popup
-- Refactored the monolithic structure into much cleaner project and file layouts
-- Started automatic model testing
-- Started a model wizard to help min-max performance
-- Included standard benchmark tests for LLM model wizard / model comparisons
-- Added model token context window passthrough
-- Fixed the UI to run at 30 FPS
-- Added a custom file format to store optimised model and hardware data so known hardware does not need to be benchmarked again
+- Singular re-peatable interface and features so that swapping AI hassle free.
 
 ## Architecture
 
+### Diagram Legend
+
+```text
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   Subgraph      │ ──▶ │   Component     │ ──▶ │   Component     │
+│   (Module)      │     │   (Class/File)  │     │   (Class/File)  │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+```
+
 ```mermaid
-flowchart LR
+flowchart TB
+  subgraph APP["Boot + App Shell"]
+    MAIN["main.cpp"]
+    APPLICATION["Application"]
+    STATE["uam::AppState"]
+    MAIN --> APPLICATION --> STATE
+  end
 
-UI["SDL2 + OpenGL + Dear ImGui"] --> CORE["Application Core"]
+  subgraph PROVIDERS["Provider Runtime"]
+    PROFILES["ProviderProfileStore"]
+    RUNTIME["ProviderRuntime"]
+    REGISTRY["ProviderRuntimeRegistry"]
+    IPR["IProviderRuntime"]
+    GSTRUCT["GeminiStructuredProviderRuntime"]
+    GCLI["GeminiCliProviderRuntime"]
+    CODEX["CodexCliProviderRuntime"]
+    CLAUDE["ClaudeCliProviderRuntime"]
+    OC_BASE["OpenCodeBaseProviderRuntime"]
+    OPENCODE["OpenCodeCliProviderRuntime"]
+    OPLocal["OpenCodeLocalProviderRuntime"]
+    OLLAMA_RT["OllamaEngineProviderRuntime"]
+    PROFILES --> RUNTIME --> REGISTRY --> IPR
+    REGISTRY --> GSTRUCT & GCLI & CODEX & CLAUDE & OPENCODE & OPLocal & OLLAMA_RT
+    GSTRUCT & GCLI --> IPR
+    OC_BASE --> IPR
+    OPENCODE & OPLocal --> OC_BASE
+  end
 
-CORE --> SETTINGS["SettingsStore\nsettings.txt"]
-CORE --> FOLDERS["ChatFolderStore\nfolders.txt"]
-CORE --> ACTIONS["FrontendActionMap\nfrontend_actions.txt"]
-CORE --> PROFILES["Provider Profiles\nproviders.txt"]
-CORE --> TEMPLATES["GeminiTemplateCatalog\nMarkdown_Templates/*.md"]
+  subgraph HISTORY["History + Persistence"]
+    LOCAL["LocalChatStore"]
+    CHAT_REPO["ChatRepository"]
+    GEM_HISTORY["GeminiJsonHistoryStore"]
+    SETTINGS["SettingsStore"]
+    FOLDERS["ChatFolderStore"]
+    TEMPLATES["MarkdownTemplateCatalog"]
+    IPR --> LOCAL
+    GSTRUCT & GCLI --> GEM_HISTORY
+    LOCAL --> CHAT_REPO
+    STATE --> SETTINGS & FOLDERS & TEMPLATES
+  end
 
-CORE --> HISTORY{"History Adapter"}
-HISTORY -->|gemini-cli-json| GEMINI_JSON["Gemini native sessions\n~/.gemini/tmp/.../chats/*.json"]
-HISTORY -->|local-only| LOCAL_STORE["Local chats\n<data-root>/chats/<chat-id>/..."]
-
-CORE --> RUNTIME["ProviderRuntime + GeminiCommandBuilder"]
-RUNTIME --> BATCH["Batch commands\npopen/_popen"]
-RUNTIME --> INTERACTIVE["Interactive terminal"]
-INTERACTIVE --> UNIX_PTY["macOS\nopenpty + fork + execvp"]
-INTERACTIVE --> WIN_PTY["Windows\nConPTY + CreateProcessW"]
-
-CORE --> FILES["Linked File References"] --> WORKSPACE["Workspace Files\n(no attachment copy)"]
+  subgraph PLATFORM["Platform Services"]
+    FACTORY["PlatformServicesFactory"]
+    ITERM["IPlatformTerminalRuntime"]
+    IPROC["IPlatformProcessService"]
+    IFD["IPlatformFileDialogService"]
+    WTR & MTR["TerminalRuntimes"] --> ITERM
+    WPS & MPS["ProcessServices"] --> IPROC
+  end
 ```
 
-## How It Works
+## Data Layout
 
-### 1) Data Root Resolution and Layout
-
-At startup, UAM uses a strict portable data root:
-
-1. `<exe-folder>/data` on Windows/Linux
-2. `<YourApp>.app/data` on macOS bundles (bundle root, not `Contents/MacOS`)
-
-No user-profile, temp, or CWD fallback paths are used.
-
-Primary local layout:
-
-```text
+```
 <data-root>/
-  settings.txt
-  folders.txt
-  providers.txt
-  frontend_actions.txt
-  chats/
-    <chat-id>/
-      meta.txt
-      messages/
-        000001_user.txt
-        000002_assistant.txt
+├── settings.txt
+├── folders.txt
+└── chats/
+    ├── <chat-id-1>.json    # Full chat session (metadata + messages)
+    ├── <chat-id-2>.json
+    └── ...
 ```
 
-### 2) Provider Runtime
+### Data Root Resolution
 
-The app merges provider profile settings with user settings, then builds either:
-
-- A batch command for one-shot execution
-- An interactive argv for terminal mode
-
-Default Gemini template:
-
-```text
-gemini {resume} {flags} {prompt}
-```
-
-### 3) History Modes
-
-- `gemini-cli-json`: reads Gemini native session JSON files from the project tmp mapping under `~/.gemini/tmp/.../chats`.
-- `local-only`: appends responses to local chat files in `<data-root>/chats/...`.
-- Optional in-app mirror: when enabled in Settings, Gemini native chats are copied into `<data-root>/chats/...` at startup, on idle intervals, and on shutdown.
-
-### 4) Workspace Template Preflight
-
-Before request execution, UAM ensures workspace `.gemini` scaffolding exists and can materialize a selected markdown template into:
-
-```text
-<workspace>/.gemini/gemini.md
-```
-
-Template catalog root defaults to:
-
-```text
-~/.Gemini_universal_agent_manager/Markdown_Templates/
-```
-
-(Overridable in app settings.)
-
-### 5) Embedded Terminal
-
-Interactive mode is backed by `libvterm` and launches provider CLIs in a PTY:
-
-- macOS: `openpty`, `fork`, `execvp`
-- Windows: ConPTY (`CreatePseudoConsole`) + `CreateProcessW`
+1. `UAM_DATA_DIR` environment variable (if set)
+2. `<current-working-directory>/data`
+3. OS default app-data location
+4. Temp fallback
 
 ## Dependencies
-
-### Build and Runtime
 
 - CMake 3.20+
 - C++20 compiler
 - OpenGL
 - SDL2
 - Dear ImGui
-- `libvterm` (vendored under `third_party/libvterm`)
-
-When `UAM_FETCH_DEPS=ON`, CMake fetches:
-
-- SDL2 `release-2.30.11`
-- Dear ImGui `v1.91.8`
+- libvterm (vendored)
+- libcurl
+- llama.cpp (fetched via `UAM_FETCH_LLAMA_CPP`, required for Ollama Engine)
 
 ## Build
 
-### Self-Contained (Fetch Dependencies)
-
 ```bash
-cmake -S . -B build -DUAM_FETCH_DEPS=ON
-cmake --build build --config Release
+# Self-contained (fetches dependencies)
+cmake -S . -B Builds -DUAM_FETCH_DEPS=ON
+cmake --build Builds --config Release
+
+# Custom dependencies
+cmake -S . -B Builds -DUAM_FETCH_DEPS=OFF -DIMGUI_DIR=/path/to/imgui
+cmake --build Builds --config Release
 ```
 
-### Custom Dependencies
+### Runtime Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `UAM_FETCH_DEPS` | ON | Fetch SDL2 and Dear ImGui |
+| `UAM_FETCH_LLAMA_CPP` | ON | Fetch pinned llama.cpp fork |
+| `UAM_BUILD_TESTS` | OFF | Build test executable |
+
+## ⚠️ Critical: Provider Disable Flags
+
+**If you do not want UAM to be able to call or use a specific provider, you MUST disable it at build time.** Disabled providers are completely excluded from the binary and cannot be invoked.
+
+### Disable All External Provider Calls
+
+To build UAM with **no external CLI providers** (only Ollama Engine):
 
 ```bash
-cmake -S . -B build -DUAM_FETCH_DEPS=OFF -DIMGUI_DIR=/path/to/imgui
-cmake --build build --config Release
+cmake -S . -B Builds -DUAM_FETCH_DEPS=ON \
+  -DUAM_ENABLE_RUNTIME_GEMINI_STRUCTURED=OFF \
+  -DUAM_ENABLE_RUNTIME_GEMINI_CLI=OFF \
+  -DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF \
+  -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF \
+  -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF \
+  -DUAM_ENABLE_RUNTIME_OPENCODE_LOCAL=OFF
+cmake --build Builds --config Release
 ```
+
+### Disable Individual Providers
+
+| Provider | ID | CMake Flag |
+|----------|----|------------|
+| Gemini Structured | `gemini-structured` | `-DUAM_ENABLE_RUNTIME_GEMINI_STRUCTURED=OFF` |
+| Gemini CLI | `gemini-cli` | `-DUAM_ENABLE_RUNTIME_GEMINI_CLI=OFF` |
+| Codex CLI | `codex-cli` | `-DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF` |
+| Claude CLI | `claude-cli` | `-DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF` |
+| OpenCode CLI | `opencode-cli` | `-DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF` |
+| OpenCode Local | `opencode-local` | `-DUAM_ENABLE_RUNTIME_OPENCODE_LOCAL=OFF` |
+| Ollama Engine | `ollama-engine` | `-DUAM_ENABLE_RUNTIME_OLLAMA_ENGINE=OFF` |
+
+> **Note:** `opencode-local` requires both `opencode-cli` and `ollama-engine` to be enabled.
 
 ### Tests
 
 ```bash
-cmake -S . -B build-tests -DUAM_FETCH_DEPS=ON -DUAM_BUILD_TESTS=ON
-cmake --build build-tests --config Debug
-ctest --test-dir build-tests -C Debug --output-on-failure
+cmake -S . -B Builds/tests -DUAM_FETCH_DEPS=ON -DUAM_BUILD_TESTS=ON
+cmake --build Builds/tests --config Debug
+ctest --test-dir Builds/tests -C Debug --output-on-failure
 ```
-
-### Visual Studio
-
-For project/target layout guidance, see:
-
-- [Visual Studio Solution Layout](docs/visual-studio-solution.md)
 
 ## Run
 
 ```bash
 # macOS
-./build/universal_agent_manager
+./Builds/universal_agent_manager
 
-# Windows (Visual Studio generator example)
-.\build\Release\universal_agent_manager.exe
-```
+# Windows
+.\Builds\Release\universal_agent_manager.exe
 
-Optional data-root override:
-
-```bash
-# macOS
-UAM_DATA_DIR=/tmp/uam-data ./build/universal_agent_manager
-
-# Windows PowerShell
-$env:UAM_DATA_DIR='C:\temp\uam-data'; .\build\Release\universal_agent_manager.exe
+# Custom data root
+UAM_DATA_DIR=/tmp/uam-data ./Builds/universal_agent_manager
 ```
 
 ## Platform Notes
 
-- macOS: supported
-- Windows: requires ConPTY support (Windows 10 1809 or newer)
-
-## Status
-
-Active prototype.
-
-The architecture is already modular (provider profiles + runtime adapter model), while UI workflows and defaults continue to evolve.
+| Platform | Minimum Version | Terminal Implementation |
+|----------|-----------------|------------------------|
+| macOS | Current | libvterm (openpty/fork/execvp) |
+| Windows | Windows 10 1809+ | ConPTY (CreatePseudoConsole) |
 
 ## License
 
 This project is licensed under the Universal Agent Manager License (UAML) v1.0.
 See [LICENSE](LICENSE) for full terms.
 
-- Copyright remains with David Taylor (davidtaylor6130).
-- Free to use and modify.
-- You cannot sell the software as-is.
-- If you redistribute it, include attribution: "Originally created by David Taylor (davidtaylor6130)."
+- Copyright remains with David Taylor (davidtaylor6130)
+- Free to use and modify
+- Cannot be sold as-is
+- Redistribution requires attribution

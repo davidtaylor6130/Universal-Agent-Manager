@@ -1,14 +1,22 @@
-# Build output directories
-/build/
-/build_*/
+# Build outputs (enforced in CMake)
+/Builds/
+/build
 /cmake-build-*/
-/out/build/
 
-# Data/runtime output
+# Runtime/data outputs
 /data/
+/.vectorised_rag/
+/subprojects/ollama_engine/models/
+/subprojects/ollama_engine/evaluation/reference_repos/
+
+# Local tool state
+/.gemini/
+/imgui.ini
+/msbuild_uam.log
 
 # IDE/system files
 /.vs/
+/.idea/
 .DS_Store
-build-release/_deps/llama_cpp_uam-src/
-/build-release
+/.github
+/Builds_New
