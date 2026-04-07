@@ -13,6 +13,10 @@
 #include <string>
 #include <vector>
 
+#if defined(_WIN32)
+#undef SendMessage
+#endif
+
 namespace ollama_engine
 {
 	enum class EngineLifecycleState

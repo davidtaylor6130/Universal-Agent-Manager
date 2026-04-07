@@ -89,6 +89,12 @@ inline void PollCliTerminal(uam::AppState& app, uam::CliTerminalState& terminal,
 	{
 		mark_unseen_if_background();
 		ReportDroppedQueuedStructuredPromptsForTerminal(app, terminal, "Provider terminal exited before input was ready.");
+
+		if (!terminal.attached_chat_id.empty())
+		{
+			SyncChatsFromNative(app, terminal.attached_chat_id, true);
+		}
+
 		StopCliTerminal(terminal);
 		terminal.should_launch = false;
 		terminal.last_error = "Provider terminal exited.";
@@ -112,79 +118,26 @@ inline void PollCliTerminal(uam::AppState& app, uam::CliTerminalState& terminal,
 		}
 	}
 
-	if (now - terminal.last_sync_time_s > 1.25)
+	const bool needs_session_discovery = terminal_uses_gemini_history && terminal.attached_session_id.empty();
+	
+	if (needs_session_discovery && (now - terminal.last_sync_time_s > 1.25))
 	{
 		terminal.last_sync_time_s = now;
 
-		if (terminal_uses_gemini_history)
+		if (platform_terminal_runtime.SupportsAsyncNativeGeminiHistoryRefresh())
 		{
-			if (platform_terminal_runtime.SupportsAsyncNativeGeminiHistoryRefresh())
+			std::vector<ChatSession> native_now;
+			std::string native_load_error;
+			const bool has_loaded_snapshot = ChatHistorySyncService().TryConsumeAsyncNativeChatLoad(app, native_now, native_load_error);
+			ChatHistorySyncService().StartAsyncNativeChatLoad(app, terminal_provider, terminal_native_history_chats_dir);
+
+			if (!native_load_error.empty())
 			{
-				std::vector<ChatSession> native_now;
-				std::string native_load_error;
-				const bool has_loaded_snapshot = ChatHistorySyncService().TryConsumeAsyncNativeChatLoad(app, native_now, native_load_error);
-				ChatHistorySyncService().StartAsyncNativeChatLoad(app, terminal_provider, terminal_native_history_chats_dir);
-
-				if (!native_load_error.empty())
-				{
-					app.status_line = "Native chat refresh failed: " + native_load_error;
-				}
-
-				if (has_loaded_snapshot && native_load_error.empty())
-				{
-					if (terminal.attached_session_id.empty())
-					{
-						const std::vector<std::string> candidates = NativeSessionLinkService().CollectNewSessionIds(native_now, terminal.session_ids_before);
-						std::unordered_set<std::string> blocked_ids;
-
-						for (const auto& other_terminal : app.cli_terminals)
-						{
-							if (other_terminal == nullptr || other_terminal.get() == &terminal || other_terminal->attached_session_id.empty())
-							{
-								continue;
-							}
-
-							blocked_ids.insert(other_terminal->attached_session_id);
-						}
-
-						for (const auto& resolved : app.resolved_native_sessions_by_chat_id)
-						{
-							if (!resolved.second.empty())
-							{
-								blocked_ids.insert(resolved.second);
-							}
-						}
-
-						const std::string discovered = NativeSessionLinkService().PickFirstUnblockedSessionId(candidates, blocked_ids);
-
-						if (!discovered.empty())
-						{
-							const std::string previous_chat_id = terminal.attached_chat_id;
-							const int previous_chat_index = ChatDomainService().FindChatIndexById(app, previous_chat_id);
-
-							if (previous_chat_index >= 0 && NativeSessionLinkService().IsLocalDraftChatId(previous_chat_id) && app.chats[previous_chat_index].native_session_id.empty())
-							{
-								ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, app.chats[previous_chat_index], discovered);
-							}
-
-							terminal.attached_session_id = discovered;
-							terminal.attached_chat_id = discovered;
-
-							if (!previous_chat_id.empty())
-							{
-								app.resolved_native_sessions_by_chat_id[previous_chat_id] = discovered;
-							}
-						}
-					}
-
-					const std::string preferred_id = terminal.attached_session_id.empty() ? terminal.attached_chat_id : terminal.attached_session_id;
-					SyncChatsFromLoadedNative(app, std::move(native_now), preferred_id, preserve_selection);
-				}
+				app.status_line = "Native chat refresh failed: " + native_load_error;
 			}
-			else
-			{
-				const std::vector<ChatSession> native_now = ChatHistorySyncService().LoadNativeSessionChats(terminal_native_history_chats_dir, terminal_provider);
 
+			if (has_loaded_snapshot && native_load_error.empty())
+			{
 				if (terminal.attached_session_id.empty())
 				{
 					const std::vector<std::string> candidates = NativeSessionLinkService().CollectNewSessionIds(native_now, terminal.session_ids_before);
@@ -231,12 +184,60 @@ inline void PollCliTerminal(uam::AppState& app, uam::CliTerminalState& terminal,
 				}
 
 				const std::string preferred_id = terminal.attached_session_id.empty() ? terminal.attached_chat_id : terminal.attached_session_id;
-				SyncChatsFromNative(app, preferred_id, preserve_selection);
+				SyncChatsFromLoadedNative(app, std::move(native_now), preferred_id, preserve_selection);
 			}
 		}
 		else
 		{
-			SyncChatsFromNative(app, terminal.attached_chat_id, preserve_selection);
+			const std::vector<ChatSession> native_now = ChatHistorySyncService().LoadNativeSessionChats(terminal_native_history_chats_dir, terminal_provider);
+
+			if (terminal.attached_session_id.empty())
+			{
+				const std::vector<std::string> candidates = NativeSessionLinkService().CollectNewSessionIds(native_now, terminal.session_ids_before);
+				std::unordered_set<std::string> blocked_ids;
+
+				for (const auto& other_terminal : app.cli_terminals)
+				{
+					if (other_terminal == nullptr || other_terminal.get() == &terminal || other_terminal->attached_session_id.empty())
+					{
+						continue;
+					}
+
+					blocked_ids.insert(other_terminal->attached_session_id);
+				}
+
+				for (const auto& resolved : app.resolved_native_sessions_by_chat_id)
+				{
+					if (!resolved.second.empty())
+					{
+						blocked_ids.insert(resolved.second);
+					}
+				}
+
+				const std::string discovered = NativeSessionLinkService().PickFirstUnblockedSessionId(candidates, blocked_ids);
+
+				if (!discovered.empty())
+				{
+					const std::string previous_chat_id = terminal.attached_chat_id;
+					const int previous_chat_index = ChatDomainService().FindChatIndexById(app, previous_chat_id);
+
+					if (previous_chat_index >= 0 && NativeSessionLinkService().IsLocalDraftChatId(previous_chat_id) && app.chats[previous_chat_index].native_session_id.empty())
+					{
+						ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, app.chats[previous_chat_index], discovered);
+					}
+
+					terminal.attached_session_id = discovered;
+					terminal.attached_chat_id = discovered;
+
+					if (!previous_chat_id.empty())
+					{
+						app.resolved_native_sessions_by_chat_id[previous_chat_id] = discovered;
+					}
+				}
+			}
+
+			const std::string preferred_id = terminal.attached_session_id.empty() ? terminal.attached_chat_id : terminal.attached_session_id;
+			SyncChatsFromNative(app, preferred_id, preserve_selection);
 		}
 	}
 

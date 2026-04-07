@@ -597,7 +597,7 @@ namespace
 			PROCESS_INFORMATION pi{};
 			
 			std::string command_str = BuildWindowsCommandLine(argv);
-			command_str = "cmd.exe /C " + command_str;
+			command_str = "cmd.exe /C \"" + command_str + "\"";
 			const std::wstring command_w = WideFromUtf8(command_str);
 
 			if (command_w.empty())
@@ -659,6 +659,19 @@ namespace
 			terminal.pipe_output = pipe_pty_in;
 			terminal.process_info = pi;
 			terminal.pseudo_console = pseudo_console;
+
+			HANDLE job = CreateJobObjectW(nullptr, nullptr);
+			if (job != nullptr)
+			{
+				JOBOBJECT_EXTENDED_LIMIT_INFORMATION limit_info{};
+				limit_info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+				if (SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limit_info, sizeof(limit_info)))
+				{
+					AssignProcessToJobObject(job, pi.hProcess);
+				}
+				terminal.job_object = job;
+			}
+
 			return true;
 		}
 
@@ -803,6 +816,12 @@ namespace
 			{
 				ClosePseudoConsoleSafe(terminal.pseudo_console);
 				terminal.pseudo_console = nullptr;
+			}
+
+			if (terminal.job_object != nullptr)
+			{
+				CloseHandle(terminal.job_object);
+				terminal.job_object = nullptr;
 			}
 
 			if (terminal.pipe_input != INVALID_HANDLE_VALUE)

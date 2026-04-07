@@ -162,6 +162,11 @@ inline void StopAndEraseCliTerminalForChat(uam::AppState& app, const std::string
 			return false;
 		}
 
+		if (!terminal->attached_chat_id.empty())
+		{
+			SyncChatsFromNative(app, terminal->attached_chat_id, true);
+		}
+
 		StopCliTerminal(*terminal, true, CliTerminalStopMode::FastExit);
 		return true;
 	};
@@ -175,6 +180,11 @@ inline void StopAllCliTerminals(uam::AppState& app, const bool clear_identity = 
 	{
 		if (terminal != nullptr)
 		{
+			if (!terminal->attached_chat_id.empty())
+			{
+				SyncChatsFromNative(app, terminal->attached_chat_id, true);
+			}
+
 			StopCliTerminal(*terminal, clear_identity);
 		}
 	}
@@ -187,6 +197,11 @@ inline void FastStopCliTerminalsForExit(uam::AppState& app)
 		if (terminal_ptr == nullptr)
 		{
 			continue;
+		}
+
+		if (!terminal_ptr->attached_chat_id.empty())
+		{
+			SyncChatsFromNative(app, terminal_ptr->attached_chat_id, true);
 		}
 
 		StopCliTerminal(*terminal_ptr, true, CliTerminalStopMode::FastExit);

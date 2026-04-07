@@ -1905,6 +1905,45 @@ UAM_TEST(TestPollPendingCallSuccessUsesAssistantRole)
 	UAM_ASSERT_EQ(std::string("Provider response appended to local chat history."), app.status_line);
 }
 
+UAM_TEST(WindowsConPtyLifecycleTest)
+{
+	uam::CliTerminalState terminal;
+	terminal.rows = 24;
+	terminal.cols = 80;
+
+	std::vector<std::string> args = {"cmd.exe", "/C", "echo", "Hello UAM ConPTY test"};
+	std::string error_out;
+	
+	const bool started = PlatformServicesFactory::Instance().terminal_runtime.StartCliTerminalProcess(terminal, std::filesystem::current_path(), args, &error_out);
+	UAM_ASSERT(started);
+	UAM_ASSERT(error_out.empty());
+	
+	char buffer[1024];
+	std::ptrdiff_t bytes_read = 0;
+	bool found_output = false;
+
+	for (int i = 0; i < 50; ++i)
+	{
+		bytes_read = PlatformServicesFactory::Instance().terminal_runtime.ReadCliTerminalOutput(terminal, buffer, sizeof(buffer) - 1);
+		if (bytes_read > 0)
+		{
+			buffer[bytes_read] = '\0';
+			std::string out_str(buffer);
+			if (out_str.find("Hello UAM") != std::string::npos)
+			{
+				found_output = true;
+				break;
+			}
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	
+	UAM_ASSERT(found_output);
+
+	PlatformServicesFactory::Instance().terminal_runtime.StopCliTerminalProcess(terminal, true);
+	UAM_ASSERT(!PlatformServicesFactory::Instance().terminal_runtime.HasReadableTerminalOutputHandle(terminal));
+}
+
 int main()
 {
 	int failures = 0;

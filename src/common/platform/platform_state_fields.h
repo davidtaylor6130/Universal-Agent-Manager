@@ -28,6 +28,7 @@ namespace uam::platform
 		PROCESS_INFORMATION process_info = {INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, 0, 0};
 		HPCON pseudo_console = nullptr;
 		LPPROC_THREAD_ATTRIBUTE_LIST attr_list = nullptr;
+		HANDLE job_object = nullptr;
 #elif defined(__APPLE__)
 		int master_fd = -1;
 		pid_t child_pid = -1;
