@@ -1,7 +1,8 @@
 #include "common/chat/chat_repository.h"
 
 #include "common/paths/app_paths.h"
-#include "runtime/json_runtime.h"
+#include "common/utils/io_utils.h"
+#include "common/runtime/json_runtime.h"
 
 #include <algorithm>
 #include <chrono>
@@ -14,6 +15,7 @@
 namespace
 {
 	namespace fs = std::filesystem;
+	using namespace uam::io;
 
 	MessageRole ParseMessageRole(const std::string& role)
 	{
@@ -22,25 +24,6 @@ namespace
 		if (role == "system")
 			return MessageRole::System;
 		return MessageRole::User;
-	}
-
-	bool WriteTextFile(const fs::path& path, const std::string& content)
-	{
-		std::ofstream out(path, std::ios::binary | std::ios::trunc);
-		if (!out.good())
-			return false;
-		out << content;
-		return out.good();
-	}
-
-	std::string ReadTextFile(const fs::path& path)
-	{
-		std::ifstream in(path, std::ios::binary);
-		if (!in.good())
-			return "";
-		std::ostringstream buffer;
-		buffer << in.rdbuf();
-		return buffer.str();
 	}
 
 	std::string StripCarriageReturn(const std::string& line)
