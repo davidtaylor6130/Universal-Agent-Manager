@@ -32,8 +32,8 @@ class ChatHistorySyncService
 		int imported_count = 0;
 		int total_count = 0;
 	};
-	ImportResult ImportAllNativeChatsToLocal(uam::AppState& p_app, bool p_delete_native_after_import) const;
-	ImportResult ImportAllNativeChatsByDiscovery(uam::AppState& p_app, bool p_delete_native_after_import) const;
+	ImportResult ImportAllNativeChatsToLocal(uam::AppState& p_app, bool p_delete_native_after_import, const std::string& p_targetChatId = "") const;
+	ImportResult ImportAllNativeChatsByDiscovery(uam::AppState& p_app, bool p_delete_native_after_import, const std::string& p_targetChatId = "") const;
 	void RefreshChatHistory(uam::AppState& p_app) const;
 	void SaveChatWithStatus(uam::AppState& p_app, const ChatSession& p_chat, const std::string& p_success, const std::string& p_failure) const;
 	std::vector<ChatSession> LoadNativeSessionChats(const std::filesystem::path& p_chatsDir, const ProviderProfile& p_provider, std::stop_token p_stopToken = {}) const;
@@ -52,6 +52,7 @@ class ChatHistorySyncService
 	void ApplyLocalOverrides(uam::AppState& p_app, std::vector<ChatSession>& p_nativeChats) const;
 	bool TruncateNativeSessionFromDisplayedMessage(const uam::AppState& p_app, const ChatSession& p_chat, int p_displayedMessageIndex, std::string* p_errorOut) const;
 	bool MoveChatToFolder(uam::AppState& p_app, ChatSession& p_chat, const std::string& p_newFolderId) const;
+	bool ExportChatToNative(const uam::AppState& p_app, const ChatSession& p_chat) const;
 };
 
 #endif // UAM_APP_RUNTIME_ORCHESTRATION_SERVICES_H

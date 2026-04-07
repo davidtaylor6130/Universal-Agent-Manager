@@ -157,10 +157,17 @@ inline void SyncChatsFromLoadedNative(uam::AppState& app, std::vector<ChatSessio
 {
 	const std::string selected_before = (ChatDomainService().SelectedChat(app) != nullptr) ? ChatDomainService().SelectedChat(app)->id : "";
 	ChatHistorySyncService().ApplyLocalOverrides(app, native_chats);
+	
+	// Only save the specifically requested chat (e.g. the one just discovered)
 	for (ChatSession& chat : native_chats)
 	{
-		ChatRepository::SaveChat(app.data_root, chat);
+		if (chat.id == preferred_chat_id || chat.native_session_id == preferred_chat_id)
+		{
+			ChatRepository::SaveChat(app.data_root, chat);
+			break;
+		}
 	}
+
 	app.chats = ChatRepository::LoadLocalChats(app.data_root);
 	app.chats = ChatDomainService().DeduplicateChatsById(std::move(app.chats));
 	ChatBranching::Normalize(app.chats);
@@ -172,6 +179,11 @@ inline void SyncChatsFromLoadedNative(uam::AppState& app, std::vector<ChatSessio
 inline void SyncChatsFromNative(uam::AppState& app, const std::string& preferred_chat_id, const bool preserve_selection = false)
 {
 	const std::string selected_before = (ChatDomainService().SelectedChat(app) != nullptr) ? ChatDomainService().SelectedChat(app)->id : "";
+	
+	// Import from native to local before reloading the sidebar.
+	// We only import the target chat to avoid re-importing chats the user manually deleted.
+	ChatHistorySyncService().ImportAllNativeChatsToLocal(app, false, preferred_chat_id);
+	
 	ChatHistorySyncService().LoadSidebarChats(app);
 	ProviderProfileMigrationService().MigrateChatProviderBindingsToFixedModes(app);
 	FinalizeChatSyncSelection(app, selected_before, preferred_chat_id, preserve_selection);

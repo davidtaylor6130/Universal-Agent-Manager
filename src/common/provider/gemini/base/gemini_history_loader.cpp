@@ -278,6 +278,51 @@ std::vector<ChatSession> GeminiJsonHistoryStore::Load(const std::filesystem::pat
 	return chats;
 }
 
+bool GeminiJsonHistoryStore::SaveFile(const std::filesystem::path& file_path, const ChatSession& chat)
+{
+	JsonValue root;
+	root.type = JsonValue::Type::Object;
+
+	const std::string session_id = chat.native_session_id.empty() ? chat.id : chat.native_session_id;
+	
+	auto make_string = [](const std::string& val) {
+		JsonValue j;
+		j.type = JsonValue::Type::String;
+		j.string_value = val;
+		return j;
+	};
+
+	root.object_value["sessionId"] = make_string(session_id);
+	root.object_value["startTime"] = make_string(chat.created_at.empty() ? TimestampNow() : chat.created_at);
+	root.object_value["lastUpdated"] = make_string(chat.updated_at.empty() ? TimestampNow() : chat.updated_at);
+
+	JsonValue messages_arr;
+	messages_arr.type = JsonValue::Type::Array;
+
+	for (const Message& msg : chat.messages)
+	{
+		JsonValue msg_obj;
+		msg_obj.type = JsonValue::Type::Object;
+		msg_obj.object_value["role"] = make_string(msg.role == MessageRole::User ? "user" : "model");
+		msg_obj.object_value["content"] = make_string(msg.content);
+		messages_arr.array_value.push_back(std::move(msg_obj));
+	}
+
+	root.object_value["messages"] = std::move(messages_arr);
+
+	std::error_code ec;
+	fs::create_directories(file_path.parent_path(), ec);
+
+	std::ofstream out(file_path, std::ios::binary | std::ios::trunc);
+	if (!out.good())
+	{
+		return false;
+	}
+
+	out << SerializeJson(root);
+	return out.good();
+}
+
 std::vector<ChatSession> LoadGeminiJsonHistoryForRuntime(const std::filesystem::path& chats_dir, const ProviderProfile& profile, const ProviderRuntimeHistoryLoadOptions& options, std::stop_token stop_token)
 {
 	GeminiJsonHistoryStoreOptions native_options;

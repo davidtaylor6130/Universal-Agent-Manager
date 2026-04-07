@@ -231,7 +231,7 @@ fs::path ChatHistorySyncService::ResolveNativeHistoryChatsDirForChat(const AppSt
 	return l_chatsDir.has_value() ? l_chatsDir.value() : fs::path{};
 }
 
-ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChatsToLocal(AppState& p_app, const bool p_delete_native_after_import) const
+ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChatsToLocal(AppState& p_app, const bool p_delete_native_after_import, const std::string& p_targetChatId) const
 {
 	ImportResult result;
 	const ProviderProfile& l_nativeProvider = DefaultNativeHistoryProvider(p_app);
@@ -256,9 +256,14 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 
 		for (ChatSession& l_nativeChat : l_nativeChats)
 		{
+			if (!p_targetChatId.empty() && l_nativeChat.id != p_targetChatId && l_nativeChat.native_session_id != p_targetChatId)
+			{
+				continue;
+			}
+
 			++result.total_count;
 
-			if (l_existingIds.contains(l_nativeChat.id))
+			if (p_targetChatId.empty() && l_existingIds.contains(l_nativeChat.id))
 			{
 				continue;
 			}
@@ -293,8 +298,6 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 
 void ChatHistorySyncService::LoadSidebarChats(AppState& p_app) const
 {
-	ImportAllNativeChatsToLocal(p_app, false);
-
 	p_app.chats = ChatRepository::LoadLocalChats(p_app.data_root);
 	p_app.chats = ChatDomainService().DeduplicateChatsById(std::move(p_app.chats));
 	ChatBranching::Normalize(p_app.chats);
@@ -303,15 +306,13 @@ void ChatHistorySyncService::LoadSidebarChats(AppState& p_app) const
 
 void ChatHistorySyncService::LoadSidebarChatsByDiscovery(AppState& p_app) const
 {
-	ImportAllNativeChatsByDiscovery(p_app, false);
-
 	p_app.chats = ChatRepository::LoadLocalChats(p_app.data_root);
 	p_app.chats = ChatDomainService().DeduplicateChatsById(std::move(p_app.chats));
 	ChatBranching::Normalize(p_app.chats);
 	ChatDomainService().NormalizeChatFolderAssignments(p_app);
 }
 
-ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChatsByDiscovery(AppState& p_app, const bool p_delete_native_after_import) const
+ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChatsByDiscovery(AppState& p_app, const bool p_delete_native_after_import, const std::string& p_targetChatId) const
 {
 	ImportResult result;
 	const ProviderProfile& l_nativeProvider = DefaultNativeHistoryProvider(p_app);
@@ -357,9 +358,14 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 
 		for (ChatSession& l_nativeChat : l_nativeChats)
 		{
+			if (!p_targetChatId.empty() && l_nativeChat.id != p_targetChatId && l_nativeChat.native_session_id != p_targetChatId)
+			{
+				continue;
+			}
+
 			++result.total_count;
 
-			if (l_existingIds.contains(l_nativeChat.id))
+			if (p_targetChatId.empty() && l_existingIds.contains(l_nativeChat.id))
 			{
 				continue;
 			}
@@ -1244,6 +1250,31 @@ void ChatHistorySyncService::RefreshNativeSessionDirectory(AppState& p_app) cons
 	{
 		p_app.native_history_chats_dir.clear();
 	}
+}
+
+bool ChatHistorySyncService::ExportChatToNative(const AppState& p_app, const ChatSession& p_chat) const
+{
+	const ProviderProfile& l_provider = ProviderResolutionService().ProviderForChatOrDefault(p_app, p_chat);
+
+	if (!ProviderRuntime::SupportsGeminiJsonHistory(l_provider))
+	{
+		return false;
+	}
+
+	const fs::path l_chatsDir = ResolveNativeHistoryChatsDirForChat(p_app, p_chat);
+	if (l_chatsDir.empty())
+	{
+		return false;
+	}
+
+	const std::string l_sessionId = p_chat.native_session_id.empty() ? p_chat.id : p_chat.native_session_id;
+	const fs::path l_destFile = l_chatsDir / (l_sessionId + ".json");
+
+#if UAM_ENABLE_ANY_GEMINI_PROVIDER
+	return GeminiJsonHistoryStore::SaveFile(l_destFile, p_chat);
+#else
+	return false;
+#endif
 }
 
 bool ChatHistorySyncService::TruncateNativeSessionFromDisplayedMessage(const AppState& p_app, const ChatSession& p_chat, const int p_displayedMessageIndex, std::string* p_errorOut) const

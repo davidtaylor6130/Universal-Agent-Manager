@@ -428,9 +428,17 @@ bool Application::InitializeState()
 	ChatFolderStore::Save(m_app.data_root, m_app.folders);
 	ChatHistorySyncService().LoadSidebarChatsByDiscovery(m_app);
 
-	auto import_result = ChatHistorySyncService().ImportAllNativeChatsByDiscovery(m_app, false);
-	m_app.latest_imported_count = import_result.imported_count;
-	m_app.latest_import_total_count = import_result.total_count;
+	if (m_app.chats.empty())
+	{
+		auto import_result = ChatHistorySyncService().ImportAllNativeChatsByDiscovery(m_app, false);
+		m_app.latest_imported_count = import_result.imported_count;
+		m_app.latest_import_total_count = import_result.total_count;
+
+		if (import_result.imported_count > 0)
+		{
+			ChatHistorySyncService().LoadSidebarChatsByDiscovery(m_app);
+		}
+	}
 
 	if (ProviderProfileMigrationService().MigrateChatProviderBindingsToFixedModes(m_app))
 	{

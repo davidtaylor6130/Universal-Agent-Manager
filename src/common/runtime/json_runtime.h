@@ -52,6 +52,7 @@ class JsonParser
 
 	std::optional<JsonValue> Parse()
 	{
+		SkipBOM();
 		SkipWhitespace();
 		JsonValue value = ParseValue();
 
@@ -71,6 +72,17 @@ class JsonParser
 	}
 
   private:
+	void SkipBOM()
+	{
+		if (pos_ + 2 < input_.size() &&
+		    static_cast<unsigned char>(input_[pos_]) == 0xEF &&
+		    static_cast<unsigned char>(input_[pos_ + 1]) == 0xBB &&
+		    static_cast<unsigned char>(input_[pos_ + 2]) == 0xBF)
+		{
+			pos_ += 3;
+		}
+	}
+
 	JsonValue ParseValue()
 	{
 		SkipWhitespace();

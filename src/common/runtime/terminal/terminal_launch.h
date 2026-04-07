@@ -233,6 +233,7 @@ inline bool StartCliTerminalForChat(uam::AppState& app, uam::CliTerminalState& t
 
 	if (ProviderResolutionService().ChatUsesNativeOverlayHistory(app, chat))
 	{
+		ChatHistorySyncService().ExportChatToNative(app, chat);
 		terminal.session_ids_before = ChatHistorySyncService().SessionIdsFromChats(ChatHistorySyncService().LoadNativeSessionChats(ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(app, chat), provider));
 	}
 	else
