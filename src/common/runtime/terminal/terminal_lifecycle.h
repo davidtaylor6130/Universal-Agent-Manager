@@ -153,7 +153,7 @@ inline bool ForwardEscapeToSelectedCliTerminal(uam::AppState& app, const SDL_Eve
 	return true;
 }
 
-inline void StopAndEraseCliTerminalForChat(uam::AppState& app, const std::string& chat_id)
+inline void StopAndEraseCliTerminalForChat(uam::AppState& app, const std::string& chat_id, const bool sync_to_history = true)
 {
 	auto matches_chat_terminal = [&](std::unique_ptr<uam::CliTerminalState>& terminal)
 	{
@@ -162,7 +162,7 @@ inline void StopAndEraseCliTerminalForChat(uam::AppState& app, const std::string
 			return false;
 		}
 
-		if (!terminal->attached_chat_id.empty())
+		if (sync_to_history && !terminal->attached_chat_id.empty())
 		{
 			SyncChatsFromNative(app, terminal->attached_chat_id, true);
 		}

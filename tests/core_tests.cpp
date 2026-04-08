@@ -909,6 +909,33 @@ UAM_TEST(TestRemoveChatUsesDeletedChatProviderForNativeCleanup)
 	UAM_ASSERT(!fs::exists(chats_dir / "session-delete.json"));
 }
 
+UAM_TEST(TestRemoveChatDeletesUamJsonMetadataFile)
+{
+	TempDir data_root("uam-remove-chat-metadata-data");
+	uam::AppState app = MakeTestAppState(data_root.root);
+
+	ChatSession chat;
+	chat.id = "chat-to-delete";
+	chat.title = "Delete Me";
+	app.chats.push_back(chat);
+	app.selected_chat_index = 0;
+
+	// Manually create the UAM JSON file
+	const std::filesystem::path json_path = AppPaths::UamChatFilePath(data_root.root, chat.id);
+	std::filesystem::create_directories(json_path.parent_path());
+	std::ofstream f(json_path);
+	f << "{}";
+	f.close();
+
+	UAM_ASSERT(std::filesystem::exists(json_path));
+
+	// Perform deletion
+	UAM_ASSERT(RemoveChatById(app, chat.id));
+
+	// Confirm file is gone
+	UAM_ASSERT(!std::filesystem::exists(json_path));
+}
+
 UAM_TEST(TestDeleteNativeSessionFileForChatReturnsFalseWhenRemoveFails)
 {
 	TempDir data_root("uam-remove-chat-delete-error-data");

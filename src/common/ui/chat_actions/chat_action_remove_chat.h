@@ -39,10 +39,15 @@ inline bool RemoveChatById(AppState& app, const std::string& chat_id)
 	// Stop any attached CLI first so history file deletion does not race an
 	// active process. Windows uses a non-blocking fast-stop path in
 	// StopAndEraseCliTerminalForChat; macOS retains the existing behavior.
-	StopAndEraseCliTerminalForChat(app, chat.id);
+	// We pass false to skip the automatic SyncChatsFromNative call, which
+	// prevents the chat from being re-added to the UI list while it is being deleted.
+	StopAndEraseCliTerminalForChat(app, chat.id, false);
 
 	std::error_code local_delete_ec;
 	std::filesystem::remove_all(AppPaths::ChatPath(app.data_root, chat.id), local_delete_ec);
+
+	std::error_code uam_json_delete_ec;
+	std::filesystem::remove(AppPaths::UamChatFilePath(app.data_root, chat.id), uam_json_delete_ec);
 
 	const std::string native_session_id = chat.native_session_id;
 	std::error_code native_delete_ec;
@@ -124,6 +129,7 @@ inline bool RemoveChatById(AppState& app, const std::string& chat_id)
 
 	app.chats_with_unseen_updates.erase(chat.id);
 	app.collapsed_branch_chat_ids.erase(chat.id);
+	app.filtered_chat_ids.erase(chat.id);
 
 	if (app.editing_chat_id == chat.id)
 	{
