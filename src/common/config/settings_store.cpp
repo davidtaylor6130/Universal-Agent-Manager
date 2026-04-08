@@ -175,6 +175,7 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	lines << "remember_last_chat=" << (settings.remember_last_chat ? "1" : "0") << '\n';
 	lines << "last_selected_chat_id=" << uam::EncodeLineValue(settings.last_selected_chat_id) << '\n';
 	lines << "ui_scale_multiplier=" << settings.ui_scale_multiplier << '\n';
+	lines << "sidebar_width=" << settings.sidebar_width << '\n';
 	lines << "window_width=" << settings.window_width << '\n';
 	lines << "window_height=" << settings.window_height << '\n';
 	lines << "window_maximized=" << (settings.window_maximized ? "1" : "0") << '\n';
@@ -334,6 +335,10 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		{
 			settings.ui_scale_multiplier = ParseFloat(value, settings.ui_scale_multiplier);
 		}
+		else if (key == "sidebar_width")
+		{
+			settings.sidebar_width = ParseFloat(value, settings.sidebar_width);
+		}
 		else if (key == "window_width")
 		{
 			settings.window_width = ParseInt(value, settings.window_width);
@@ -414,6 +419,7 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 	settings.rag_scan_max_tokens = std::clamp(settings.rag_scan_max_tokens, 0, 32768);
 	settings.ui_theme = NormalizeThemeId(settings.ui_theme);
 	settings.ui_scale_multiplier = std::clamp(settings.ui_scale_multiplier, 0.85f, 1.75f);
+	settings.sidebar_width = std::clamp(settings.sidebar_width, 220.0f, 600.0f);
 	settings.window_width = std::clamp(settings.window_width, 960, 8192);
 	settings.window_height = std::clamp(settings.window_height, 620, 8192);
 

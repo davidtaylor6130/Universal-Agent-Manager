@@ -1418,7 +1418,20 @@ namespace
 	  public:
 		void ApplyProcessDpiAwareness() const override
 		{
-			SetProcessDPIAware();
+			// Try to set Per-Monitor V2 awareness (Windows 10 1703+)
+			// This is the most modern and robust DPI awareness mode for multi-monitor setups.
+			const auto set_dpi_context = reinterpret_cast<BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT)>(GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetProcessDpiAwarenessContext"));
+
+			if (set_dpi_context != nullptr)
+			{
+				// DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 is (-4)
+				(void)set_dpi_context(reinterpret_cast<DPI_AWARENESS_CONTEXT>(-4));
+			}
+			else
+			{
+				// Fallback for older versions of Windows (Vista through Windows 10 < 1703).
+				SetProcessDPIAware();
+			}
 		}
 
 		void ConfigureOpenGlAttributes() const override
@@ -1436,12 +1449,18 @@ namespace
 
 		float AdjustSidebarWidth(const float layout_width, const float current_sidebar_width, const float effective_ui_scale) const override
 		{
-			(void)current_sidebar_width;
 			const float width_bias = 1.0f + ((std::max(1.0f, effective_ui_scale) - 1.0f) * 0.36f);
-			const float sidebar_ratio = (layout_width < 1180.0f) ? 0.35f : 0.30f;
-			float sidebar_width = std::clamp(layout_width * sidebar_ratio, 280.0f * width_bias, 470.0f * width_bias);
-			const float max_sidebar_from_main_floor = std::max(220.0f, layout_width - 560.0f);
-			return std::clamp(sidebar_width, 220.0f, max_sidebar_from_main_floor);
+			const float min_w = 220.0f * width_bias;
+			const float max_sidebar_from_main_floor = std::max(min_w, layout_width - 560.0f);
+			
+			float sidebar_width = current_sidebar_width;
+			if (sidebar_width <= 0.0f)
+			{
+				const float sidebar_ratio = (layout_width < 1180.0f) ? 0.35f : 0.30f;
+				sidebar_width = std::clamp(layout_width * sidebar_ratio, 280.0f * width_bias, 470.0f * width_bias);
+			}
+
+			return std::clamp(sidebar_width, min_w, max_sidebar_from_main_floor);
 		}
 
 		bool UseWindowsLayoutAdjustments() const override

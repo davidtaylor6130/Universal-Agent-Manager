@@ -1069,9 +1069,16 @@ namespace
 
 		float AdjustSidebarWidth(const float layout_width, const float current_sidebar_width, const float effective_ui_scale) const override
 		{
-			(void)layout_width;
-			(void)effective_ui_scale;
-			return current_sidebar_width;
+			const float min_w = 220.0f;
+			const float max_sidebar_from_main_floor = std::max(min_w, layout_width - 400.0f);
+			
+			float sidebar_width = current_sidebar_width;
+			if (sidebar_width <= 0.0f)
+			{
+				sidebar_width = 280.0f;
+			}
+
+			return std::clamp(sidebar_width, min_w, max_sidebar_from_main_floor);
 		}
 
 		bool UseWindowsLayoutAdjustments() const override

@@ -1,6 +1,8 @@
 #ifndef UAM_COMMON_UI_CHAT_DETAIL_CHAT_DETAIL_TERMINAL_SURFACE_H
 #define UAM_COMMON_UI_CHAT_DETAIL_CHAT_DETAIL_TERMINAL_SURFACE_H
 
+#include <imgui.h>
+#include <imgui_internal.h>
 #include "common/runtime/terminal_common.h"
 #include "common/runtime/terminal_polling.h"
 #include "common/ui/theme/theme_runtime_state.h"
@@ -194,10 +196,11 @@ inline void DrawCliTerminalSurface(AppState& app, ChatSession& chat, const bool 
 					}
 				}
 
-				const ImVec2 cell_min(origin.x + col * cell_w, origin.y + row * cell_h);
-				const ImVec2 cell_max(cell_min.x + cell_w * std::max<int>(1, cell.width), cell_min.y + cell_h);
+				const ImVec2 cell_min(ImFloor(origin.x + col * cell_w), ImFloor(origin.y + row * cell_h));
+				const ImVec2 cell_max(ImFloor(cell_min.x + cell_w * std::max<int>(1, cell.width)), ImFloor(cell_min.y + cell_h));
 
 				ImU32 bg = VTermColorToImU32(terminal.screen, cell.bg, true);
+				const ImU32 default_bg = ImGui::GetColorU32(ui::kInputSurface);
 
 				if (terminal.has_selection)
 				{
@@ -217,7 +220,11 @@ inline void DrawCliTerminalSurface(AppState& app, ChatSession& chat, const bool 
 					}
 				}
 
-				draw->AddRectFilled(cell_min, cell_max, bg);
+				// Only draw a cell-specific background if it differs from the main terminal surface color.
+				if (bg != default_bg)
+				{
+					draw->AddRectFilled(cell_min, cell_max, bg);
+				}
 
 				if (cell.chars[0] == 0 || cell.width == 0)
 				{
@@ -252,10 +259,9 @@ inline void DrawCliTerminalSurface(AppState& app, ChatSession& chat, const bool 
 
 				if (terminal.cursor_visible)
 				{
-					const ImVec2 cursor_min(origin.x + cursor.col * cell_w, origin.y + cursor.row * cell_h);
-					const ImVec2 cursor_max(cursor_min.x + cell_w, cursor_min.y + cell_h);
+					const ImVec2 cursor_min(ImFloor(origin.x + cursor.col * cell_w), ImFloor(origin.y + cursor.row * cell_h));
 					const float bar_width = 2.0f;
-					const ImVec2 bar_max(cursor_min.x + bar_width, cursor_max.y);
+					const ImVec2 bar_max(ImFloor(cursor_min.x + bar_width), ImFloor(cursor_min.y + cell_h));
 					draw->AddRectFilled(cursor_min, bar_max, ImGui::GetColorU32(ui::kAccent));
 				}
 			}

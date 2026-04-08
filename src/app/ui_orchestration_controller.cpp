@@ -69,22 +69,17 @@ void UiController::DrawFrame(uam::AppState& p_app, bool& p_done, const float p_p
 	ImGui::Begin("Universal Agent Manager", nullptr, l_windowFlags);
 
 	const float l_layoutWidth = ImGui::GetContentRegionAvail().x;
-	float l_sidebarWidth = std::clamp(l_layoutWidth * 0.25f, 250.0f, 360.0f);
+	p_app.settings.sidebar_width = p_uiTraits.AdjustSidebarWidth(l_layoutWidth, p_app.settings.sidebar_width, EffectiveUiScale());
 
-	if (l_layoutWidth < 1020.0f)
+	if (ImGui::BeginTable("layout_split", 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoBordersInBody))
 	{
-		l_sidebarWidth = std::clamp(l_layoutWidth * 0.30f, 230.0f, 320.0f);
-	}
-
-	l_sidebarWidth = p_uiTraits.AdjustSidebarWidth(l_layoutWidth, l_sidebarWidth, EffectiveUiScale());
-
-	if (ImGui::BeginTable("layout_split", 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoBordersInBody))
-	{
-		ImGui::TableSetupColumn("Chats", ImGuiTableColumnFlags_WidthFixed, l_sidebarWidth);
+		ImGui::TableSetupColumn("Chats", ImGuiTableColumnFlags_WidthFixed, p_app.settings.sidebar_width);
 		ImGui::TableSetupColumn("Conversation", ImGuiTableColumnFlags_WidthStretch, 0.72f);
 		ImGui::TableNextRow();
 
 		ImGui::TableSetColumnIndex(0);
+		// Capture the actual width after resizing and update settings.
+		p_app.settings.sidebar_width = ImGui::GetColumnWidth(0);
 		DrawLeftPane(p_app);
 
 		ChatSession* lp_selectedChat = ChatDomainService().SelectedChat(p_app);

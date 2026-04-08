@@ -123,6 +123,7 @@ struct AppSettings
 	bool remember_last_chat = true;
 	std::string last_selected_chat_id;
 	float ui_scale_multiplier = 1.0f;
+	float sidebar_width = 280.0f;
 	int window_width = 1440;
 	int window_height = 860;
 	bool window_maximized = false;

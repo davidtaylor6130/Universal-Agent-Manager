@@ -58,8 +58,6 @@
 #include <unordered_set>
 #include <vector>
 
-#define UAM_TARGET_FPS 30
-
 namespace fs = std::filesystem;
 
 namespace
@@ -173,62 +171,72 @@ Application::~Application()
 
 int Application::Run()
 {
-	// Figure the time for the fps wanted defined by UAM_TARGET_FPS
-	constexpr Uint64 kFrameDurationMs = 1000 / UAM_TARGET_FPS;
+	// Detect target FPS from the current display mode, fallback to 60 if unavailable.
+	int l_targetFps = 60;
+	SDL_DisplayMode l_dm;
+	if (m_window != nullptr && SDL_GetCurrentDisplayMode(SDL_GetWindowDisplayIndex(m_window), &l_dm) == 0 && l_dm.refresh_rate > 0)
+	{
+		l_targetFps = l_dm.refresh_rate;
+	}
+
+	// We aim for at least 60 FPS for smooth interactions even on low-refresh displays.
+	l_targetFps = std::max(60, l_targetFps);
+	const Uint64 l_frameDurationMs = 1000 / static_cast<Uint64>(l_targetFps);
 
 	// Run owns the SDL event pump and frame loop.
 	while (!m_done && m_window != nullptr)
 	{
-		// GetFrame time start
 		const Uint64 l_frameStartMs = SDL_GetTicks64();
-
-		// The outer loop drives frames until shutdown is requested or the window is gone.
 		SDL_Event l_event;
 
-		// SDL may queue multiple input/window events between frames, so drain them before Update().
-		while (SDL_PollEvent(&l_event))
+		// Use a short timeout to maintain terminal responsiveness even when no SDL events occur.
+		// If we have high-frequency animations or terminal output, we effectively poll.
+		if (SDL_WaitEventTimeout(&l_event, static_cast<int>(l_frameDurationMs)))
 		{
-			// Let an embedded terminal consume Escape first so app-level handlers do not steal it.
-			if (ForwardEscapeToSelectedCliTerminal(m_app, l_event))
+			do
 			{
-				continue;
-			}
-
-			ImGui_ImplSDL2_ProcessEvent(&l_event);
-
-			if (l_event.type == SDL_QUIT)
-			{
-				m_done = true;
-			}
-
-			if (l_event.type == SDL_WINDOWEVENT && l_event.window.event == SDL_WINDOWEVENT_CLOSE && l_event.window.windowID == SDL_GetWindowID(m_window))
-			{
-				m_done = true;
-			}
-
-			if (l_event.type == SDL_WINDOWEVENT && l_event.window.windowID == SDL_GetWindowID(m_window))
-			{
-				const Uint8 l_windowEvent = l_event.window.event;
-
-				if (l_windowEvent == SDL_WINDOWEVENT_SIZE_CHANGED || l_windowEvent == SDL_WINDOWEVENT_RESIZED || l_windowEvent == SDL_WINDOWEVENT_MAXIMIZED || l_windowEvent == SDL_WINDOWEVENT_RESTORED)
+				// Let an embedded terminal consume Escape first so app-level handlers do not steal it.
+				if (ForwardEscapeToSelectedCliTerminal(m_app, l_event))
 				{
-					// Persist size/state changes as they happen.
-					PersistWindowStateAndSettings();
+					continue;
 				}
-			}
+
+				ImGui_ImplSDL2_ProcessEvent(&l_event);
+
+				if (l_event.type == SDL_QUIT)
+				{
+					m_done = true;
+				}
+
+				if (l_event.type == SDL_WINDOWEVENT && l_event.window.event == SDL_WINDOWEVENT_CLOSE && l_event.window.windowID == SDL_GetWindowID(m_window))
+				{
+					m_done = true;
+				}
+
+				if (l_event.type == SDL_WINDOWEVENT && l_event.window.windowID == SDL_GetWindowID(m_window))
+				{
+					const Uint8 l_windowEvent = l_event.window.event;
+
+					if (l_windowEvent == SDL_WINDOWEVENT_SIZE_CHANGED || l_windowEvent == SDL_WINDOWEVENT_RESIZED || l_windowEvent == SDL_WINDOWEVENT_MAXIMIZED || l_windowEvent == SDL_WINDOWEVENT_RESTORED)
+					{
+						// Persist size/state changes as they happen.
+						PersistWindowStateAndSettings();
+					}
+				}
+			} while (SDL_PollEvent(&l_event));
 		}
 
-		// Call the actual apps logic and update loop.
+		// Call the actual app's logic and update loop.
 		if (!Update())
 		{
 			break;
 		}
 
-		// Enforce a strick fps set at the start of run.
+		// Enforce the target FPS to prevent high CPU usage.
 		const Uint64 l_frameElapsedMs = SDL_GetTicks64() - l_frameStartMs;
-		if (l_frameElapsedMs < kFrameDurationMs)
+		if (l_frameElapsedMs < l_frameDurationMs)
 		{
-			SDL_Delay(static_cast<Uint32>(kFrameDurationMs - l_frameElapsedMs));
+			SDL_Delay(static_cast<Uint32>(l_frameDurationMs - l_frameElapsedMs));
 		}
 	}
 
@@ -271,6 +279,8 @@ bool Application::Update()
 	PollAllCliTerminals(m_app);
 	ProviderCliCompatibilityService().Poll(m_app);
 
+	// For now, we still render every frame to ensure animations (like cursor blinking) and 
+	// other reactive UI elements stay smooth. The main CPU savings come from SDL_WaitEventTimeout.
 	ImGui_ImplOpenGL3_NewFrame();
 	ImGui_ImplSDL2_NewFrame();
 	ImGui::NewFrame();

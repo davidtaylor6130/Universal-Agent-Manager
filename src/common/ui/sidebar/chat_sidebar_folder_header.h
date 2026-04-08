@@ -61,11 +61,12 @@ inline FolderHeaderAction DrawFolderHeaderItem(const ChatFolder& folder, const i
 
 	ImDrawList* draw = ImGui::GetWindowDrawList();
 
-	if (hovered || !folder.collapsed)
-	{
-		draw->AddRectFilled(min, max_pos, ImGui::GetColorU32(light ? Rgb(9, 31, 63, 0.05f) : Rgb(255, 255, 255, 0.04f)), row_rounding);
-		draw->AddRect(min, max_pos, ImGui::GetColorU32(ui::kBorder), row_rounding);
-	}
+	const ImU32 bg_color = (hovered || !folder.collapsed) 
+		? ImGui::GetColorU32(light ? Rgb(9, 31, 63, 0.08f) : Rgb(255, 255, 255, 0.07f))
+		: ImGui::GetColorU32(light ? Rgb(9, 31, 63, 0.04f) : Rgb(255, 255, 255, 0.03f));
+
+	draw->AddRectFilled(min, max_pos, bg_color, row_rounding);
+	draw->AddRect(min, max_pos, ImGui::GetColorU32(ui::kBorder), row_rounding);
 
 	const std::string marker = folder.collapsed ? ">" : "v";
 	const std::string title = ChatDomainService().FolderTitleOrFallback(folder);
