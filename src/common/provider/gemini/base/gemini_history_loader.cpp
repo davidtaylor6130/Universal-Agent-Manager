@@ -303,7 +303,8 @@ bool GeminiJsonHistoryStore::SaveFile(const std::filesystem::path& file_path, co
 	{
 		JsonValue msg_obj;
 		msg_obj.type = JsonValue::Type::Object;
-		msg_obj.object_value["role"] = make_string(msg.role == MessageRole::User ? "user" : "model");
+		msg_obj.object_value["type"] = make_string(msg.role == MessageRole::User ? "user" : "model");
+		msg_obj.object_value["timestamp"] = make_string(msg.created_at.empty() ? TimestampNow() : msg.created_at);
 		msg_obj.object_value["content"] = make_string(msg.content);
 		messages_arr.array_value.push_back(std::move(msg_obj));
 	}
