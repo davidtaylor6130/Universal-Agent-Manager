@@ -481,7 +481,7 @@ UAM_TEST(TestSettingsStoreRoundTripExtendedPreferences)
 	UAM_ASSERT_EQ(std::string("ollama-engine"), loaded.vector_db_backend);
 	UAM_ASSERT_EQ(std::string("embed-model.gguf"), loaded.selected_vector_model_id);
 	UAM_ASSERT_EQ(std::string("team_index_v1"), loaded.vector_database_name_override);
-	UAM_ASSERT_EQ(420, loaded.cli_idle_timeout_seconds);
+	UAM_ASSERT_EQ(600, loaded.cli_idle_timeout_seconds);
 	UAM_ASSERT_EQ(std::string("/tmp/.Gemini_universal_agent_manager"), loaded.prompt_profile_root_path);
 	UAM_ASSERT_EQ(std::string("baseline.md"), loaded.default_prompt_profile_id);
 	UAM_ASSERT(!loaded.confirm_delete_chat);
@@ -2086,3 +2086,4 @@ int main()
 	std::cout << Registry().size() << " test(s) passed.\n";
 	return 0;
 }
+

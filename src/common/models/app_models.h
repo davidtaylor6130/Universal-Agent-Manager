@@ -102,7 +102,7 @@ struct AppSettings
 	std::string vector_db_backend = provider_build_config::DefaultVectorDbBackend();
 	std::string selected_vector_model_id;
 	std::string vector_database_name_override;
-	int cli_idle_timeout_seconds = 300;
+	int cli_idle_timeout_seconds = 600;
 	std::string prompt_profile_root_path;
 	std::string default_prompt_profile_id;
 	// Legacy keys retained for backward-compatible load paths.
