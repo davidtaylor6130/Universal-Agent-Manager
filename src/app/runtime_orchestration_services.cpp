@@ -216,7 +216,7 @@ std::optional<fs::path> ChatHistorySyncService::ResolveNativeHistoryChatsDirForW
 		return l_ec ? std::nullopt : std::optional<fs::path>(l_chatsDir);
 	}
 
-	return std::optional<fs::path>(p_workspaceRoot);
+	return std::nullopt;
 }
 
 fs::path ChatHistorySyncService::ResolveNativeHistoryChatsDirForChat(const AppState& p_app, const ChatSession& p_chat) const

@@ -41,7 +41,7 @@ namespace
 
 	std::string ToComparableComponent(std::string value)
 	{
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__APPLE__) || defined(__MACH__)
 		std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
 #endif
 		return value;

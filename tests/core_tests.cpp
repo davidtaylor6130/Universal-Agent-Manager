@@ -749,6 +749,18 @@ UAM_TEST(TestResolveNativeHistoryChatsDirUsesChatWorkspace)
 	UAM_ASSERT_EQ((tmp_b / "chats").lexically_normal().generic_string(), resolved_b.lexically_normal().generic_string());
 }
 
+UAM_TEST(TestResolveNativeHistoryChatsDirReturnsNulloptForMissingTmpDir)
+{
+	TempDir gemini_home("uam-native-dir-empty-home");
+	TempDir project("uam-native-dir-project");
+
+	ScopedEnvVar cli("GEMINI_CLI_HOME", gemini_home.root.string());
+	ScopedEnvVar gemini("GEMINI_HOME", std::nullopt);
+
+	const std::optional<fs::path> resolved = ChatHistorySyncService().ResolveNativeHistoryChatsDirForWorkspace(project.root);
+	UAM_ASSERT(!resolved.has_value());
+}
+
 UAM_TEST(TestLoadSidebarChatsKeepsMixedProviderHistoryVisible)
 {
 	TempDir data_root("uam-sidebar-load-data");
