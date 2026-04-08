@@ -184,17 +184,28 @@ int Application::Run()
 	const Uint64 l_frameDurationMs = 1000 / static_cast<Uint64>(l_targetFps);
 
 	// Run owns the SDL event pump and frame loop.
+	bool l_fastMode = false;
 	while (!m_done && m_window != nullptr)
 	{
 		const Uint64 l_frameStartMs = SDL_GetTicks64();
 		SDL_Event l_event;
+		bool l_hasKeyboardEvent = false;
 
 		// Use a short timeout to maintain terminal responsiveness even when no SDL events occur.
 		// If we have high-frequency animations or terminal output, we effectively poll.
-		if (SDL_WaitEventTimeout(&l_event, static_cast<int>(l_frameDurationMs)))
+		const int l_waitTimeout = l_fastMode ? 0 : static_cast<int>(l_frameDurationMs);
+		l_fastMode = false;
+
+		if (SDL_WaitEventTimeout(&l_event, l_waitTimeout))
 		{
 			do
 			{
+				if (l_event.type == SDL_KEYDOWN || l_event.type == SDL_KEYUP || l_event.type == SDL_TEXTINPUT)
+				{
+					l_hasKeyboardEvent = true;
+					l_fastMode = true;
+				}
+
 				// Let an embedded terminal consume Escape first so app-level handlers do not steal it.
 				if (ForwardEscapeToSelectedCliTerminal(m_app, l_event))
 				{
@@ -234,7 +245,7 @@ int Application::Run()
 
 		// Enforce the target FPS to prevent high CPU usage.
 		const Uint64 l_frameElapsedMs = SDL_GetTicks64() - l_frameStartMs;
-		if (l_frameElapsedMs < l_frameDurationMs)
+		if (!l_hasKeyboardEvent && l_frameElapsedMs < l_frameDurationMs)
 		{
 			SDL_Delay(static_cast<Uint32>(l_frameDurationMs - l_frameElapsedMs));
 		}
