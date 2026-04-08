@@ -3,18 +3,83 @@
 #include <functional>
 #include "app/chat_domain_service.h"
 #include "common/platform/platform_services.h"
+#include "common/utils/string_utils.h"
 
 /// <summary>
 /// Draws the folder list and nested chat tree region in the sidebar.
 /// </summary>
 inline void DrawChatSidebarTree(AppState& app, std::string& chat_to_delete, std::string& chat_to_open_options)
 {
+	if (app.sidebar_search_query != app.last_sidebar_search_query)
+	{
+		app.last_sidebar_search_query = app.sidebar_search_query;
+		app.filtered_chat_ids.clear();
+		if (!app.sidebar_search_query.empty())
+		{
+			for (const auto& chat : app.chats)
+			{
+				bool match = uam::strings::ContainsCaseInsensitive(chat.title, app.sidebar_search_query);
+				if (!match)
+				{
+					for (const auto& msg : chat.messages)
+					{
+						if (uam::strings::ContainsCaseInsensitive(msg.content, app.sidebar_search_query))
+						{
+							match = true;
+							break;
+						}
+					}
+				}
+				if (match)
+				{
+					app.filtered_chat_ids.insert(chat.id);
+				}
+			}
+
+			// Include ancestors to preserve tree structure
+			std::vector<std::string> ancestors_to_add;
+			for (const auto& id : app.filtered_chat_ids)
+			{
+				int current_idx = ChatDomainService().FindChatIndexById(app, id);
+				while (current_idx >= 0 && !app.chats[current_idx].parent_chat_id.empty())
+				{
+					std::string parent_id = app.chats[current_idx].parent_chat_id;
+					if (app.filtered_chat_ids.find(parent_id) != app.filtered_chat_ids.end()) break;
+					ancestors_to_add.push_back(parent_id);
+					current_idx = ChatDomainService().FindChatIndexById(app, parent_id);
+				}
+			}
+			for (const auto& id : ancestors_to_add) app.filtered_chat_ids.insert(id);
+		}
+	}
+
 	BeginPanel("sidebar_folder_scroll", ImVec2(0.0f, 0.0f), PanelTone::Primary, false, ImGuiWindowFlags_AlwaysVerticalScrollbar, ImVec2(4.0f, 4.0f), ui::kRadiusSmall);
 	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
+
+	const bool is_searching = !app.sidebar_search_query.empty();
+	bool any_folder_visible = false;
 
 	for (ChatFolder& folder : app.folders)
 	{
 		const int chat_count = ChatDomainService().CountChatsInFolder(app, folder.id);
+		
+		bool should_show_folder = (chat_count > 0);
+		if (is_searching)
+		{
+			should_show_folder = false;
+			for (const auto& chat : app.chats)
+			{
+				if (chat.folder_id == folder.id && app.filtered_chat_ids.find(chat.id) != app.filtered_chat_ids.end())
+				{
+					should_show_folder = true;
+					break;
+				}
+			}
+		}
+
+		if (!should_show_folder) continue;
+		any_folder_visible = true;
+
 		const FolderHeaderAction folder_action = DrawFolderHeaderItem(folder, chat_count);
 
 		if (folder_action.quick_create)
@@ -35,7 +100,7 @@ inline void DrawChatSidebarTree(AppState& app, std::string& chat_to_delete, std:
 			ChatFolderStore::Save(app.data_root, app.folders);
 		}
 
-		if (!folder.collapsed)
+		if (!folder.collapsed || is_searching)
 		{
 			float folder_indent = 8.0f;
 
@@ -53,6 +118,10 @@ inline void DrawChatSidebarTree(AppState& app, std::string& chat_to_delete, std:
 			{
 				if (app.chats[i].folder_id == folder.id)
 				{
+					if (is_searching && app.filtered_chat_ids.find(app.chats[i].id) == app.filtered_chat_ids.end())
+					{
+						continue;
+					}
 					folder_chat_indices.push_back(i);
 					folder_chat_ids.insert(app.chats[i].id);
 				}
@@ -102,7 +171,7 @@ inline void DrawChatSidebarTree(AppState& app, std::string& chat_to_delete, std:
 					ChatSession& sidebar_chat = app.chats[chat_index];
 					const auto children_it = children_by_parent.find(sidebar_chat.id);
 					const bool has_children = (children_it != children_by_parent.end() && !children_it->second.empty());
-					bool collapsed_children = (app.collapsed_branch_chat_ids.find(sidebar_chat.id) != app.collapsed_branch_chat_ids.end());
+					bool collapsed_children = !is_searching && (app.collapsed_branch_chat_ids.find(sidebar_chat.id) != app.collapsed_branch_chat_ids.end());
 					bool toggle_children = false;
 					const std::string sidebar_item_id = "session_" + sidebar_chat.id + "##" + std::to_string(chat_index);
 					const SidebarItemAction item_action = DrawSidebarItem(app, sidebar_chat, chat_index == app.selected_chat_index, sidebar_item_id, depth, has_children, collapsed_children, &toggle_children);
@@ -166,6 +235,14 @@ inline void DrawChatSidebarTree(AppState& app, std::string& chat_to_delete, std:
 
 			ImGui::Unindent(folder_indent);
 		}
+	}
+
+	if (is_searching && !any_folder_visible)
+	{
+		ImGui::Dummy(ImVec2(0.0f, ui::kSpace16));
+		ImGui::Indent(ui::kSpace12);
+		ImGui::TextColored(ui::kTextMuted, "No chats found matching \"%s\"", app.sidebar_search_query.c_str());
+		ImGui::Unindent(ui::kSpace12);
 	}
 
 	ImGui::PopStyleVar();

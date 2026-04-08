@@ -167,6 +167,9 @@ namespace uam
 		std::string pending_template_change_override_id;
 		std::unordered_set<std::string> collapsed_branch_chat_ids;
 		std::unordered_set<std::string> chats_with_unseen_updates;
+		std::string sidebar_search_query;
+		std::string last_sidebar_search_query;
+		std::unordered_set<std::string> filtered_chat_ids;
 		std::string status_line;
 		CenterViewMode center_view_mode = CenterViewMode::Structured;
 		std::vector<std::unique_ptr<CliTerminalState>> cli_terminals;

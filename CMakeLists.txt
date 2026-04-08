@@ -342,6 +342,12 @@ if(UAM_ENABLE_RUNTIME_CLAUDE_CLI)
   )
 endif()
 
+# OpenCode base (always included as tests reference them)
+list(APPEND UAM_PROVIDER_SOURCES
+  src/common/provider/opencode/base/opencode_base_provider_runtime.cpp
+  src/common/provider/opencode/opencode_history_service.cpp
+)
+
 # OpenCode providers
 if(UAM_ENABLE_RUNTIME_OPENCODE_CLI)
   list(APPEND UAM_PROVIDER_SOURCES
@@ -353,14 +359,6 @@ if(UAM_ENABLE_RUNTIME_OPENCODE_LOCAL)
   list(APPEND UAM_PROVIDER_SOURCES
     src/common/provider/opencode/local/opencode_local_provider_runtime.cpp
     src/common/provider/opencode/local/opencode_local_bridge_service.cpp
-  )
-endif()
-
-# OpenCode base (needed by both OpenCode providers)
-if(UAM_ENABLE_RUNTIME_OPENCODE_CLI OR UAM_ENABLE_RUNTIME_OPENCODE_LOCAL)
-  list(APPEND UAM_PROVIDER_SOURCES
-    src/common/provider/opencode/base/opencode_base_provider_runtime.cpp
-    src/common/provider/opencode/opencode_history_service.cpp
   )
 endif()
 

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <string>
+#include <algorithm>
+#include <cctype>
 
 namespace uam::strings
 {
@@ -14,5 +16,18 @@ namespace uam::strings
 
 		const auto end = value.find_last_not_of(" \t\r\n");
 		return value.substr(start, end - start + 1);
+	}
+
+	inline bool ContainsCaseInsensitive(const std::string& haystack, const std::string& needle)
+	{
+		if (needle.empty()) return true;
+		auto it = std::search(
+			haystack.begin(), haystack.end(),
+			needle.begin(), needle.end(),
+			[](unsigned char ch1, unsigned char ch2) {
+				return std::tolower(ch1) == std::tolower(ch2);
+			}
+		);
+		return it != haystack.end();
 	}
 }

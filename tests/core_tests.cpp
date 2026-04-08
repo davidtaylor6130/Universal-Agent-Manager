@@ -15,6 +15,7 @@
 #include "common/rag/rag_index_service.h"
 #include "common/config/settings_store.h"
 #include "common/platform/platform_services.h"
+#include "common/utils/string_utils.h"
 #include "common/rag/ollama_engine_client.h"
 #include "common/state/app_state.h"
 #include "common/ui/chat_actions/chat_action_pending_calls.h"
@@ -1915,6 +1916,98 @@ UAM_TEST(TestPollPendingCallSuccessUsesAssistantRole)
 	UAM_ASSERT(app.chats[0].messages.back().role == MessageRole::Assistant);
 	UAM_ASSERT_EQ(std::string("successful output"), app.chats[0].messages.back().content);
 	UAM_ASSERT_EQ(std::string("Provider response appended to local chat history."), app.status_line);
+}
+
+UAM_TEST(TestSidebarSearchFiltering)
+{
+	uam::AppState app;
+	ChatSession s1; s1.id = "match-title"; s1.title = "Search Target";
+	ChatSession s2; s2.id = "match-message"; s2.title = "Other"; Message m; m.content = "find me in history"; s2.messages.push_back(m);
+	ChatSession s3; s3.id = "no-match"; s3.title = "Unrelated";
+	app.chats.push_back(s1);
+	app.chats.push_back(s2);
+	app.chats.push_back(s3);
+
+	auto update_filter = [&](const std::string& query) {
+		app.sidebar_search_query = query;
+		if (app.sidebar_search_query != app.last_sidebar_search_query) {
+			app.last_sidebar_search_query = app.sidebar_search_query;
+			app.filtered_chat_ids.clear();
+			if (!app.sidebar_search_query.empty()) {
+				for (const auto& chat : app.chats) {
+					bool match = uam::strings::ContainsCaseInsensitive(chat.title, app.sidebar_search_query);
+					if (!match) {
+						for (const auto& msg : chat.messages) {
+							if (uam::strings::ContainsCaseInsensitive(msg.content, app.sidebar_search_query)) {
+								match = true;
+								break;
+							}
+						}
+					}
+					if (match) app.filtered_chat_ids.insert(chat.id);
+				}
+			}
+		}
+	};
+
+	update_filter("target");
+	UAM_ASSERT(app.filtered_chat_ids.count("match-title"));
+	UAM_ASSERT(!app.filtered_chat_ids.count("match-message"));
+	UAM_ASSERT(!app.filtered_chat_ids.count("no-match"));
+
+	update_filter("history");
+	UAM_ASSERT(!app.filtered_chat_ids.count("match-title"));
+	UAM_ASSERT(app.filtered_chat_ids.count("match-message"));
+	UAM_ASSERT(!app.filtered_chat_ids.count("no-match"));
+
+	update_filter("FIND"); // case insensitive
+	UAM_ASSERT(app.filtered_chat_ids.count("match-message"));
+
+	update_filter("");
+	UAM_ASSERT(app.filtered_chat_ids.empty());
+}
+
+UAM_TEST(TestSidebarSearchAncestorPreservation)
+{
+	uam::AppState app;
+	ChatSession s1; s1.id = "parent"; s1.title = "Parent";
+	ChatSession s2; s2.id = "child"; s2.parent_chat_id = "parent"; s2.title = "Target Child";
+	ChatSession s3; s3.id = "unrelated"; s3.title = "Other";
+	app.chats.push_back(s1);
+	app.chats.push_back(s2);
+	app.chats.push_back(s3);
+
+	auto update_filter = [&](const std::string& query) {
+		app.sidebar_search_query = query;
+		if (app.sidebar_search_query != app.last_sidebar_search_query) {
+			app.last_sidebar_search_query = app.sidebar_search_query;
+			app.filtered_chat_ids.clear();
+			if (!app.sidebar_search_query.empty()) {
+				for (const auto& chat : app.chats) {
+					bool match = uam::strings::ContainsCaseInsensitive(chat.title, app.sidebar_search_query);
+					if (match) app.filtered_chat_ids.insert(chat.id);
+				}
+				std::vector<std::string> ancestors_to_add;
+				for (const auto& id : app.filtered_chat_ids) {
+					int current_idx = -1;
+					for (int i = 0; i < (int)app.chats.size(); ++i) if (app.chats[i].id == id) { current_idx = i; break; }
+					while (current_idx >= 0 && !app.chats[current_idx].parent_chat_id.empty()) {
+						std::string p_id = app.chats[current_idx].parent_chat_id;
+						if (app.filtered_chat_ids.count(p_id)) break;
+						ancestors_to_add.push_back(p_id);
+						current_idx = -1;
+						for (int i = 0; i < (int)app.chats.size(); ++i) if (app.chats[i].id == p_id) { current_idx = i; break; }
+					}
+				}
+				for (const auto& id : ancestors_to_add) app.filtered_chat_ids.insert(id);
+			}
+		}
+	};
+
+	update_filter("child");
+	UAM_ASSERT(app.filtered_chat_ids.count("child"));
+	UAM_ASSERT(app.filtered_chat_ids.count("parent")); // Ancestor preserved
+	UAM_ASSERT(!app.filtered_chat_ids.count("unrelated"));
 }
 
 UAM_TEST(WindowsConPtyLifecycleTest)

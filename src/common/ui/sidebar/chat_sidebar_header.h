@@ -40,6 +40,14 @@ inline void DrawChatSidebarHeader(AppState& app)
 		ImGui::OpenPopup("new_folder_popup");
 	}
 
+	ImGui::Dummy(ImVec2(0.0f, ui::kSpace8));
+
+	// Search bar
+	PushInputChrome();
+	ImGui::SetNextItemWidth(-1.0f);
+	ImGui::InputTextWithHint("##sidebar_search", "Search chats...", &app.sidebar_search_query);
+	PopInputChrome();
+
 	ImGui::Dummy(ImVec2(0.0f, ui::kSpace6));
 	DrawSoftDivider();
 }
