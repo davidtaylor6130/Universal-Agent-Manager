@@ -72,6 +72,64 @@ inline void PopInputChrome()
 	ImGui::PopStyleColor(4);
 }
 
+struct VerticalSplitterResult
+{
+	bool hovered = false;
+	bool active = false;
+	bool released = false;
+	float drag_delta_x = 0.0f;
+};
+
+inline VerticalSplitterResult DrawVerticalSplitter(const char* id,
+                                                   const float height,
+                                                   bool* was_active_last_frame = nullptr,
+                                                   const float visible_thickness = 1.5f,
+                                                   const float hit_thickness = 10.0f)
+{
+	VerticalSplitterResult result;
+	const bool light = IsLightPaletteActive();
+	const bool was_active = (was_active_last_frame != nullptr) ? *was_active_last_frame : false;
+	const float scaled_height = std::max(0.0f, height);
+	const float scaled_visible = std::max(1.0f, ScaleUiLength(visible_thickness));
+	const float scaled_hit = std::max(scaled_visible, ScaleUiLength(hit_thickness));
+	const float line_inset = ScaleUiLength(ui::kSpace8);
+	const ImVec2 splitter_pos = ImGui::GetCursorScreenPos();
+
+	ImGui::InvisibleButton(id, ImVec2(scaled_hit, scaled_height), ImGuiButtonFlags_MouseButtonLeft);
+	result.hovered = ImGui::IsItemHovered();
+	result.active = ImGui::IsItemActive();
+	result.released = was_active && !result.active && ImGui::IsMouseReleased(ImGuiMouseButton_Left);
+
+	if (result.hovered || result.active)
+	{
+		ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+	}
+
+	if (result.active)
+	{
+		result.drag_delta_x = ImGui::GetIO().MouseDelta.x;
+	}
+
+	if (was_active_last_frame != nullptr)
+	{
+		*was_active_last_frame = result.active;
+	}
+
+	const float line_x = splitter_pos.x + (scaled_hit - scaled_visible) * 0.5f;
+	const float line_top = splitter_pos.y + line_inset;
+	const float line_bottom = splitter_pos.y + std::max(line_inset, scaled_height - line_inset);
+	const ImVec4 line_color = result.active
+		? ui::kAccent
+		: (result.hovered ? (light ? Rgb(66, 126, 228, 0.58f) : Rgb(94, 160, 255, 0.52f)) : ui::kBorder);
+
+	ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(line_x, line_top),
+	                                          ImVec2(line_x + scaled_visible, line_bottom),
+	                                          ImGui::GetColorU32(line_color),
+	                                          ScaleUiLength(ui::kRadiusSmall));
+
+	return result;
+}
+
 inline bool BeginPanel(const char* id, const ImVec2& size, const PanelTone tone, const bool border = true, const ImGuiWindowFlags flags = 0, const ImVec2 padding = ImVec2(ui::kSpace16, ui::kSpace16), const float rounding = ui::kRadiusPanel)
 {
 	const bool light = IsLightPaletteActive();

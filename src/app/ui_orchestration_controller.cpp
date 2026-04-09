@@ -68,25 +68,37 @@ void UiController::DrawFrame(uam::AppState& p_app, bool& p_done, const float p_p
 	const ImGuiWindowFlags l_windowFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
 	ImGui::Begin("Universal Agent Manager", nullptr, l_windowFlags);
 
-	const float l_layoutWidth = ImGui::GetContentRegionAvail().x;
+	const ImVec2 l_layoutSize = ImGui::GetContentRegionAvail();
+	const float l_layoutWidth = l_layoutSize.x;
+	const float l_layoutHeight = l_layoutSize.y;
 	p_app.settings.sidebar_width = p_uiTraits.AdjustSidebarWidth(l_layoutWidth, p_app.settings.sidebar_width, EffectiveUiScale());
 
-	if (ImGui::BeginTable("layout_split", 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoBordersInBody))
+	const ImGuiWindowFlags l_hostFlags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+	ImGui::BeginChild("left_pane_host", ImVec2(p_app.settings.sidebar_width, l_layoutHeight), false, l_hostFlags);
+	DrawLeftPane(p_app);
+	ImGui::EndChild();
+
+	ImGui::SameLine(0.0f, 0.0f);
+	const VerticalSplitterResult l_splitter = DrawVerticalSplitter("main_sidebar_splitter", l_layoutHeight, &p_app.sidebar_resize_drag_active);
+
+	if (l_splitter.active && l_splitter.drag_delta_x != 0.0f)
 	{
-		ImGui::TableSetupColumn("Chats", ImGuiTableColumnFlags_WidthFixed, p_app.settings.sidebar_width);
-		ImGui::TableSetupColumn("Conversation", ImGuiTableColumnFlags_WidthStretch, 0.72f);
-		ImGui::TableNextRow();
-
-		ImGui::TableSetColumnIndex(0);
-		// Capture the actual width after resizing and update settings.
-		p_app.settings.sidebar_width = ImGui::GetColumnWidth(0);
-		DrawLeftPane(p_app);
-
-		ChatSession* lp_selectedChat = ChatDomainService().SelectedChat(p_app);
-		ImGui::TableSetColumnIndex(1);
-		p_chatDetail.Draw(p_app, lp_selectedChat);
-		ImGui::EndTable();
+		const float l_proposedWidth = p_app.settings.sidebar_width + l_splitter.drag_delta_x;
+		p_app.settings.sidebar_width = p_uiTraits.AdjustSidebarWidth(l_layoutWidth, l_proposedWidth, EffectiveUiScale());
 	}
+
+	if (l_splitter.released)
+	{
+		PersistenceCoordinator().SaveSettings(p_app);
+	}
+
+	ImGui::SameLine(0.0f, 0.0f);
+	ImGui::BeginChild("main_pane_host", ImVec2(0.0f, l_layoutHeight), false, l_hostFlags);
+	ChatSession* lp_selectedChat = ChatDomainService().SelectedChat(p_app);
+	p_chatDetail.Draw(p_app, lp_selectedChat);
+	ImGui::EndChild();
+	ImGui::PopStyleVar();
 
 	ImGui::End();
 	p_modalHost.Draw(p_app, p_platformUiScale);

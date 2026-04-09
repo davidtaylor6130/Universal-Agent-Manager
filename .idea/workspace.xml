@@ -473,17 +473,10 @@
     </configurations>
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="ffe6d37f-c4ac-469e-bf1d-15541ad30312" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/app/application.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/src/app/application.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/app/native_session_link_service.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/src/app/native_session_link_service.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/app/native_session_link_service.h" beforeDir="false" afterPath="$PROJECT_DIR$/src/app/native_session_link_service.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/app/runtime_orchestration_services.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/src/app/runtime_orchestration_services.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/app/runtime_orchestration_services.h" beforeDir="false" afterPath="$PROJECT_DIR$/src/app/runtime_orchestration_services.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/common/runtime/terminal/terminal_provider_cli.h" beforeDir="false" afterPath="$PROJECT_DIR$/src/common/runtime/terminal/terminal_provider_cli.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/common/runtime/terminal_polling.h" beforeDir="false" afterPath="$PROJECT_DIR$/src/common/runtime/terminal_polling.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/common/ui/chat_actions/chat_action_editing.h" beforeDir="false" afterPath="$PROJECT_DIR$/src/common/ui/chat_actions/chat_action_editing.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/common/ui/chat_actions/chat_action_pending_calls.h" beforeDir="false" afterPath="$PROJECT_DIR$/src/common/ui/chat_actions/chat_action_pending_calls.h" afterDir="false" />
+    <list default="true" id="ffe6d37f-c4ac-469e-bf1d-15541ad30312" name="Changes" comment="Introduce enhanced native session ID matching for local drafts&#10;&#10;- Adds new functions to `NativeSessionLinkService` for improved native session ID reconciliation: `HasRealNativeSessionId` and `MatchNativeSessionIdForLocalDraft`.  &#10;- Refactors handling of local draft chats to prioritize matching existing native session IDs before fallback to candidate collection.  &#10;- Updates logic in `terminal_polling` and CLI terminal provider for better synchronization and draft resolution through new APIs.  &#10;- Includes a cleanup of redundant code paths and safer initialization for unresolved chat links.">
+      <change beforePath="$PROJECT_DIR$/src/app/ui_orchestration_controller.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/src/app/ui_orchestration_controller.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/common/state/app_state.h" beforeDir="false" afterPath="$PROJECT_DIR$/src/common/state/app_state.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/common/ui/theme/theme_widgets.h" beforeDir="false" afterPath="$PROJECT_DIR$/src/common/ui/theme/theme_widgets.h" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -3254,6 +3247,15 @@
       <updated>1775065195318</updated>
       <workItem from="1775065196482" duration="937000" />
     </task>
+    <task id="LOCAL-00001" summary="Introduce enhanced native session ID matching for local drafts&#10;&#10;- Adds new functions to `NativeSessionLinkService` for improved native session ID reconciliation: `HasRealNativeSessionId` and `MatchNativeSessionIdForLocalDraft`.  &#10;- Refactors handling of local draft chats to prioritize matching existing native session IDs before fallback to candidate collection.  &#10;- Updates logic in `terminal_polling` and CLI terminal provider for better synchronization and draft resolution through new APIs.  &#10;- Includes a cleanup of redundant code paths and safer initialization for unresolved chat links.">
+      <option name="closed" value="true" />
+      <created>1775765497318</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1775765497318</updated>
+    </task>
+    <option name="localTasksCounter" value="2" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -3264,5 +3266,9 @@
     <isAutomaticFoundErrors value="true" />
     <isAutomaticReloadCMake value="true" />
     <isAutomaticBootstrapAfterUpdate value="false" />
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="Introduce enhanced native session ID matching for local drafts&#10;&#10;- Adds new functions to `NativeSessionLinkService` for improved native session ID reconciliation: `HasRealNativeSessionId` and `MatchNativeSessionIdForLocalDraft`.  &#10;- Refactors handling of local draft chats to prioritize matching existing native session IDs before fallback to candidate collection.  &#10;- Updates logic in `terminal_polling` and CLI terminal provider for better synchronization and draft resolution through new APIs.  &#10;- Includes a cleanup of redundant code paths and safer initialization for unresolved chat links." />
+    <option name="LAST_COMMIT_MESSAGE" value="Introduce enhanced native session ID matching for local drafts&#10;&#10;- Adds new functions to `NativeSessionLinkService` for improved native session ID reconciliation: `HasRealNativeSessionId` and `MatchNativeSessionIdForLocalDraft`.  &#10;- Refactors handling of local draft chats to prioritize matching existing native session IDs before fallback to candidate collection.  &#10;- Updates logic in `terminal_polling` and CLI terminal provider for better synchronization and draft resolution through new APIs.  &#10;- Includes a cleanup of redundant code paths and safer initialization for unresolved chat links." />
   </component>
 </project>

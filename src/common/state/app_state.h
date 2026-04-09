@@ -169,6 +169,7 @@ namespace uam
 		std::unordered_set<std::string> chats_with_unseen_updates;
 		std::string sidebar_search_query;
 		std::string last_sidebar_search_query;
+		bool sidebar_resize_drag_active = false;
 		std::unordered_set<std::string> filtered_chat_ids;
 		std::string status_line;
 		CenterViewMode center_view_mode = CenterViewMode::Structured;
