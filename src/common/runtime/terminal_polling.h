@@ -140,7 +140,6 @@ inline void PollCliTerminal(uam::AppState& app, uam::CliTerminalState& terminal,
 			{
 				if (terminal.attached_session_id.empty())
 				{
-					const std::vector<std::string> candidates = NativeSessionLinkService().CollectNewSessionIds(native_now, terminal.session_ids_before);
 					std::unordered_set<std::string> blocked_ids;
 
 					for (const auto& other_terminal : app.cli_terminals)
@@ -161,14 +160,28 @@ inline void PollCliTerminal(uam::AppState& app, uam::CliTerminalState& terminal,
 						}
 					}
 
-					const std::string discovered = NativeSessionLinkService().PickFirstUnblockedSessionId(candidates, blocked_ids);
+					const std::string previous_chat_id = terminal.attached_chat_id;
+					const int previous_chat_index = ChatDomainService().FindChatIndexById(app, previous_chat_id);
+					std::string discovered;
+
+					if (previous_chat_index >= 0 && NativeSessionLinkService().IsLocalDraftChatId(previous_chat_id))
+					{
+						if (const auto matched = NativeSessionLinkService().MatchNativeSessionIdForLocalDraft(app.chats[previous_chat_index], native_now, blocked_ids); matched.has_value())
+						{
+							discovered = matched.value();
+						}
+					}
+					else
+					{
+						const std::vector<std::string> candidates = NativeSessionLinkService().CollectNewSessionIds(native_now, terminal.session_ids_before);
+						discovered = NativeSessionLinkService().PickFirstUnblockedSessionId(candidates, blocked_ids);
+					}
 
 					if (!discovered.empty())
 					{
-						const std::string previous_chat_id = terminal.attached_chat_id;
-						const int previous_chat_index = ChatDomainService().FindChatIndexById(app, previous_chat_id);
-
-						if (previous_chat_index >= 0 && NativeSessionLinkService().IsLocalDraftChatId(previous_chat_id) && app.chats[previous_chat_index].native_session_id.empty())
+						if (previous_chat_index >= 0 &&
+						    NativeSessionLinkService().IsLocalDraftChatId(previous_chat_id) &&
+						    !NativeSessionLinkService().HasRealNativeSessionId(app.chats[previous_chat_index]))
 						{
 							ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, app.chats[previous_chat_index], discovered);
 						}
@@ -193,7 +206,6 @@ inline void PollCliTerminal(uam::AppState& app, uam::CliTerminalState& terminal,
 
 			if (terminal.attached_session_id.empty())
 			{
-				const std::vector<std::string> candidates = NativeSessionLinkService().CollectNewSessionIds(native_now, terminal.session_ids_before);
 				std::unordered_set<std::string> blocked_ids;
 
 				for (const auto& other_terminal : app.cli_terminals)
@@ -214,14 +226,28 @@ inline void PollCliTerminal(uam::AppState& app, uam::CliTerminalState& terminal,
 					}
 				}
 
-				const std::string discovered = NativeSessionLinkService().PickFirstUnblockedSessionId(candidates, blocked_ids);
+				const std::string previous_chat_id = terminal.attached_chat_id;
+				const int previous_chat_index = ChatDomainService().FindChatIndexById(app, previous_chat_id);
+				std::string discovered;
+
+				if (previous_chat_index >= 0 && NativeSessionLinkService().IsLocalDraftChatId(previous_chat_id))
+				{
+					if (const auto matched = NativeSessionLinkService().MatchNativeSessionIdForLocalDraft(app.chats[previous_chat_index], native_now, blocked_ids); matched.has_value())
+					{
+						discovered = matched.value();
+					}
+				}
+				else
+				{
+					const std::vector<std::string> candidates = NativeSessionLinkService().CollectNewSessionIds(native_now, terminal.session_ids_before);
+					discovered = NativeSessionLinkService().PickFirstUnblockedSessionId(candidates, blocked_ids);
+				}
 
 				if (!discovered.empty())
 				{
-					const std::string previous_chat_id = terminal.attached_chat_id;
-					const int previous_chat_index = ChatDomainService().FindChatIndexById(app, previous_chat_id);
-
-					if (previous_chat_index >= 0 && NativeSessionLinkService().IsLocalDraftChatId(previous_chat_id) && app.chats[previous_chat_index].native_session_id.empty())
+					if (previous_chat_index >= 0 &&
+					    NativeSessionLinkService().IsLocalDraftChatId(previous_chat_id) &&
+					    !NativeSessionLinkService().HasRealNativeSessionId(app.chats[previous_chat_index]))
 					{
 						ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, app.chats[previous_chat_index], discovered);
 					}

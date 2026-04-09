@@ -13,6 +13,10 @@ class NativeSessionLinkService
 {
   public:
 	bool IsLocalDraftChatId(const std::string& chat_id) const;
+	bool HasRealNativeSessionId(const ChatSession& chat) const;
+	std::optional<std::string> MatchNativeSessionIdForLocalDraft(const ChatSession& local_chat,
+	                                                            const std::vector<ChatSession>& native_chats,
+	                                                            const std::unordered_set<std::string>& blocked_ids = {}) const;
 	std::optional<std::string> InferNativeSessionIdForLocalDraft(const ChatSession& local_chat,
 	                                                            const std::vector<ChatSession>& native_chats) const;
 	std::vector<std::string> CollectNewSessionIds(const std::vector<ChatSession>& loaded_chats,

@@ -141,6 +141,11 @@ inline void PollPendingRuntimeCall(uam::AppState& app)
 
 		std::string selected_id = call.resume_session_id;
 
+		if (NativeSessionLinkService().IsLocalDraftChatId(selected_id))
+		{
+			selected_id.clear();
+		}
+
 		if (selected_id.empty())
 		{
 			const auto resolved_it = app.resolved_native_sessions_by_chat_id.find(pending_chat_id);
@@ -152,8 +157,18 @@ inline void PollPendingRuntimeCall(uam::AppState& app)
 
 			if (selected_id.empty())
 			{
-				const std::vector<std::string> candidates = NativeSessionLinkService().CollectNewSessionIds(native_after, call.session_ids_before);
-				selected_id = NativeSessionLinkService().PickFirstUnblockedSessionId(candidates, claimed_new_session_ids);
+				if (NativeSessionLinkService().IsLocalDraftChatId(pending_chat_id))
+				{
+					if (const auto matched = NativeSessionLinkService().MatchNativeSessionIdForLocalDraft(pending_chat_snapshot, native_after, claimed_new_session_ids); matched.has_value())
+					{
+						selected_id = matched.value();
+					}
+				}
+				else
+				{
+					const std::vector<std::string> candidates = NativeSessionLinkService().CollectNewSessionIds(native_after, call.session_ids_before);
+					selected_id = NativeSessionLinkService().PickFirstUnblockedSessionId(candidates, claimed_new_session_ids);
+				}
 			}
 		}
 
@@ -168,10 +183,14 @@ inline void PollPendingRuntimeCall(uam::AppState& app)
 
 			const bool should_follow_to_result = (selected_before_id == pending_chat_id);
 			const int selected_index = ChatDomainService().FindChatIndexById(app, selected_id);
+			const int refreshed_pending_chat_index = ChatDomainService().FindChatIndexById(app, pending_chat_id);
 
-			if (pending_chat_index >= 0 && selected_id != pending_chat_id && NativeSessionLinkService().IsLocalDraftChatId(pending_chat_id) && app.chats[pending_chat_index].native_session_id.empty())
+			if (refreshed_pending_chat_index >= 0 &&
+			    selected_id != pending_chat_id &&
+			    NativeSessionLinkService().IsLocalDraftChatId(pending_chat_id) &&
+			    !NativeSessionLinkService().HasRealNativeSessionId(app.chats[refreshed_pending_chat_index]))
 			{
-				ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, app.chats[pending_chat_index], selected_id);
+				ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, app.chats[refreshed_pending_chat_index], selected_id);
 			}
 
 			const bool transfer_overrides_to_resolved_chat = pending_chat_index >= 0 && selected_index >= 0 && selected_id != pending_chat_id && NativeSessionLinkService().IsLocalDraftChatId(pending_chat_id);

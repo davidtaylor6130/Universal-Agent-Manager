@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app/native_session_link_service.h"
 #include "app/provider_resolution_service.h"
 #include "app/runtime_orchestration_services.h"
 
@@ -77,7 +78,7 @@ inline bool ContinueFromEditedUserMessage(AppState& app, ChatSession& chat)
 		}
 	}
 
-	if (ProviderResolutionService().ActiveProviderUsesNativeOverlayHistory(app) && !chat.native_session_id.empty())
+	if (ProviderResolutionService().ActiveProviderUsesNativeOverlayHistory(app) && NativeSessionLinkService().HasRealNativeSessionId(chat))
 	{
 		std::string native_error;
 

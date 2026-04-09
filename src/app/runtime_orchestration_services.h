@@ -39,6 +39,7 @@ class ChatHistorySyncService
 	std::vector<ChatSession> LoadNativeSessionChats(const std::filesystem::path& p_chatsDir, const ProviderProfile& p_provider, std::stop_token p_stopToken = {}) const;
 	std::optional<std::filesystem::path> ResolveNativeHistoryChatsDirForWorkspace(const std::filesystem::path& p_workspaceRoot) const;
 	std::filesystem::path ResolveNativeHistoryChatsDirForChat(const uam::AppState& p_app, const ChatSession& p_chat) const;
+	void ReconcileUnresolvedDraftLinksByDiscovery(uam::AppState& p_app) const;
 	void LoadSidebarChats(uam::AppState& p_app) const;
 	void LoadSidebarChatsByDiscovery(uam::AppState& p_app) const;
 	void RefreshNativeSessionDirectory(uam::AppState& p_app) const;

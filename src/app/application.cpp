@@ -449,6 +449,12 @@ bool Application::InitializeState()
 	ChatFolderStore::Save(m_app.data_root, m_app.folders);
 	ChatHistorySyncService().LoadSidebarChatsByDiscovery(m_app);
 
+	if (!m_app.chats.empty())
+	{
+		ChatHistorySyncService().ReconcileUnresolvedDraftLinksByDiscovery(m_app);
+		ChatHistorySyncService().LoadSidebarChatsByDiscovery(m_app);
+	}
+
 	if (m_app.chats.empty())
 	{
 		auto import_result = ChatHistorySyncService().ImportAllNativeChatsByDiscovery(m_app, false);

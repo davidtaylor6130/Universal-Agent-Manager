@@ -7,6 +7,7 @@
 
 #include "app/application_core_helpers.h"
 #include "app/chat_domain_service.h"
+#include "app/native_session_link_service.h"
 #include "app/provider_resolution_service.h"
 #include "app/runtime_local_service.h"
 #include "common/provider/provider_runtime.h"
@@ -56,8 +57,9 @@ inline std::vector<std::string> BuildProviderInteractiveArgv(const uam::AppState
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 	ChatSession effective_chat = chat;
 
-	if (effective_chat.native_session_id.empty())
+	if (!NativeSessionLinkService().HasRealNativeSessionId(effective_chat))
 	{
+		effective_chat.native_session_id.clear();
 		const std::string resume_id = ChatHistorySyncService().ResolveResumeSessionIdForChat(app, chat);
 
 		if (!resume_id.empty())
