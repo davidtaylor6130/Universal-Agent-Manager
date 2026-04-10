@@ -1,7 +1,5 @@
 #include "application_core_helpers.h"
 
-#include <imgui.h>
-
 #include "common/paths/app_paths.h"
 #include "common/rag/rag_app_helpers.h"
 #include "common/platform/platform_services.h"
@@ -425,4 +423,5 @@ fs::path NormalizeAbsolutePath(const fs::path& p_path)
 	return l_ec ? p_path.lexically_normal() : l_absolute.lexically_normal();
 }
 
+#include "common/runtime/app_time.h"
 #include "common/rag/rag_app_helpers.inl"

@@ -1,4 +1,5 @@
 #pragma once
+#include "app/runtime_orchestration_services.h"
 #include "common/platform/platform_services.h"
 
 /// <summary>
@@ -21,27 +22,45 @@ inline void DrawChatDetailHeaderBar(AppState& app, ChatSession& chat)
 		const float dot_x = panel_pos.x + 12.0f + dot_r;
 		draw->AddCircleFilled(ImVec2(dot_x, row_y), dot_r, ImGui::GetColorU32(dot_color), 16);
 
-		// Transparent-chrome title input (no visible border/background until focused)
-		ImGui::SetCursorPos(ImVec2(dot_r * 2.0f + 20.0f, 8.0f));
-		ImGui::PushStyleColor(ImGuiCol_FrameBg, ui::kTransparent);
-		ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IsLightPaletteActive() ? Rgb(0, 0, 0, 0.04f) : Rgb(255, 255, 255, 0.04f));
-		ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IsLightPaletteActive() ? Rgb(0, 0, 0, 0.07f) : Rgb(255, 255, 255, 0.06f));
-		ImGui::PushStyleColor(ImGuiCol_Border, ui::kTransparent);
-		ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
-		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 3.0f));
-
-		const float title_max_w = ImGui::GetContentRegionAvail().x * 0.55f;
-		ImGui::SetNextItemWidth(title_max_w);
-		const std::string title_id = "##chat_title_" + chat.id;
-
-		if (ImGui::InputText(title_id.c_str(), &chat.title))
+		if (app.inline_title_editing_chat_id != chat.id)
 		{
-			chat.updated_at = TimestampNow();
-			ChatHistorySyncService().SaveChatWithStatus(app, chat, "Chat title updated.", "Chat title changed in UI, but failed to save.");
+			app.inline_title_editing_chat_id = chat.id;
+			app.rename_chat_input = chat.title;
 		}
 
-		ImGui::PopStyleVar(2);
-		ImGui::PopStyleColor(4);
+		ImGui::SetCursorPos(ImVec2(dot_r * 2.0f + 20.0f, 8.0f));
+		ImGui::AlignTextToFramePadding();
+		ImGui::TextColored(ui::kTextMuted, "Title");
+		ImGui::SameLine(0.0f, 10.0f);
+		const bool request_focus = DrawButton("Rename", ImVec2(78.0f, 28.0f), ButtonKind::Ghost);
+		ImGui::SameLine(0.0f, 10.0f);
+		PushInputChrome();
+
+		const float title_max_w = ImGui::GetContentRegionAvail().x * 0.40f;
+		ImGui::SetNextItemWidth(title_max_w);
+		const std::string title_id = "##chat_title_buffered_" + chat.id;
+
+		if (request_focus)
+		{
+			ImGui::SetKeyboardFocusHere();
+		}
+
+		const bool commit_from_enter = ImGui::InputText(title_id.c_str(), &app.rename_chat_input, ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+		const bool commit_from_blur = !commit_from_enter && ImGui::IsItemDeactivatedAfterEdit();
+
+		if (ImGui::IsItemFocused() && ImGui::IsKeyPressed(ImGuiKey_Escape))
+		{
+			app.rename_chat_input = chat.title;
+			ImGui::ClearActiveID();
+		}
+
+		if (commit_from_enter || commit_from_blur)
+		{
+			ChatHistorySyncService().RenameChat(app, chat, app.rename_chat_input);
+			app.rename_chat_input = chat.title;
+		}
+
+		PopInputChrome();
 
 		// Inline mode + timestamp chips
 		ImGui::SameLine(0.0f, 10.0f);

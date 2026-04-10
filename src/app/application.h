@@ -1,53 +1,58 @@
 #ifndef UAM_APP_APPLICATION_H
 #define UAM_APP_APPLICATION_H
 
-
-#include "app/ui_orchestration_controller.h"
-
+#include "cef/cef_includes.h"
 #include "common/platform/platform_services.h"
-#include "common/platform/sdl_includes.h"
 #include "common/state/app_state.h"
 
 #include <filesystem>
 
+/// <summary>
+/// Top-level application lifetime manager for the CEF build.
+/// Owns AppState and all service orchestration.  The SDL + Dear ImGui +
+/// libvterm pipeline has been replaced by CEF / xterm.js.
+/// </summary>
 class Application
 {
   public:
 	Application();
 	~Application();
-	Application(const Application&) = delete;
+	Application(const Application&)            = delete;
 	Application& operator=(const Application&) = delete;
-	Application(Application&&) = delete;
-	Application& operator=(Application&&) = delete;
+	Application(Application&&)                 = delete;
+	Application& operator=(Application&&)      = delete;
 
-	int Run();
+	/// <summary>
+	/// Called from main() once CEF has been initialized.
+	/// Runs CefRunMessageLoop() until the window is closed.
+	/// </summary>
+	int Run(CefMainArgs main_args);
 
- private:
-	uam::AppState m_app;
-	ChatDetailView m_chatDetailView;
-	ModalHostView m_modalHostView;
-	UiController m_uiController;
-	PlatformServices* m_platformServices = nullptr;
-	SDL_Window* m_window = nullptr;
-	SDL_GLContext m_glContext = nullptr;
-	const char* m_glslVersion = nullptr;
-	float m_platformUiScale = 1.0f;
-	bool m_done = false;
-	bool m_terminalsStoppedForShutdown = false;
-	bool m_sdlInitialized = false;
-	bool m_imguiInitialized = false;
-	bool m_curlInitialized = false;
-	int m_exitCode = 0;
+	/// <summary>
+	/// Called periodically from a CefTask on the UI thread.
+	/// Polls runtime state and pushes updates to the React frontend.
+	/// </summary>
+	void PollTick();
 
-	bool OnLoad();
-	bool Update();
-	void Shutdown();
+  private:
+	uam::AppState        m_app;
+	PlatformServices*    m_platformServices  = nullptr;
+	CefRefPtr<CefBrowser> m_browser;
+	bool                 m_curlInitialized   = false;
+	bool                 m_done              = false;
+	int                  m_exitCode          = 0;
+
+	// ---- startup / teardown -----------------------------------------------
 	bool InitializeState();
-	bool InitializeWindowAndUi();
-	void PersistWindowStateAndSettings();
-	void PresentFrame();
-	std::filesystem::path ResolveWindowIconPath() const;
-	void ApplyWindowIcon() const;
+	bool InitializeCef(CefMainArgs main_args);
+	void Shutdown();
+
+	// ---- periodic work (posted to CEF UI thread) --------------------------
+	void Update();
+	void ScheduleNextUpdate();
+
+	// ---- CEF ready callback -----------------------------------------------
+	void OnBrowserReady(CefRefPtr<CefBrowser> browser);
 };
 
 #endif // UAM_APP_APPLICATION_H

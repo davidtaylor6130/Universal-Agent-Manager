@@ -27,13 +27,16 @@ CLion default `cmake-build-*` directories are also accepted.
 
 ```bash
 # macOS
-./Builds/universal_agent_manager
+open Builds/universal_agent_manager.app
+
+# Or use the helper launcher
+./run_uam.sh
 
 # Windows
 .\Builds\Release\universal_agent_manager.exe
 
-# Custom data root
-UAM_DATA_DIR=/tmp/uam-data ./Builds/universal_agent_manager
+# Custom data root on macOS
+UAM_DATA_DIR=/tmp/uam-data ./Builds/universal_agent_manager.app/Contents/MacOS/universal_agent_manager
 ```
 
 ## Provider Disable Flags

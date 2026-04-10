@@ -473,10 +473,15 @@
     </configurations>
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="ffe6d37f-c4ac-469e-bf1d-15541ad30312" name="Changes" comment="Introduce enhanced native session ID matching for local drafts&#10;&#10;- Adds new functions to `NativeSessionLinkService` for improved native session ID reconciliation: `HasRealNativeSessionId` and `MatchNativeSessionIdForLocalDraft`.  &#10;- Refactors handling of local draft chats to prioritize matching existing native session IDs before fallback to candidate collection.  &#10;- Updates logic in `terminal_polling` and CLI terminal provider for better synchronization and draft resolution through new APIs.  &#10;- Includes a cleanup of redundant code paths and safer initialization for unresolved chat links.">
+    <list default="true" id="ffe6d37f-c4ac-469e-bf1d-15541ad30312" name="Changes" comment="Refactor UI layout for improved sidebar resizing and state handling&#10;&#10;- Reworked sidebar resizing using a vertical splitter component.&#10;- Added `sidebar_resize_drag_active` to app state for better drag tracking.&#10;- Updated `ui_orchestration_controller.cpp` with a cleaner layout split between left and main panes.&#10;- Introduced `VerticalSplitterResult` for reusable splitter logic in UI.">
+      <change beforePath="$PROJECT_DIR$/src/app/runtime_orchestration_services.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/src/app/runtime_orchestration_services.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/app/runtime_orchestration_services.h" beforeDir="false" afterPath="$PROJECT_DIR$/src/app/runtime_orchestration_services.h" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/app/ui_orchestration_controller.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/src/app/ui_orchestration_controller.cpp" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/common/state/app_state.h" beforeDir="false" afterPath="$PROJECT_DIR$/src/common/state/app_state.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/common/ui/theme/theme_widgets.h" beforeDir="false" afterPath="$PROJECT_DIR$/src/common/ui/theme/theme_widgets.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/common/ui/chat_detail/chat_detail_header_bar.h" beforeDir="false" afterPath="$PROJECT_DIR$/src/common/ui/chat_detail/chat_detail_header_bar.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/common/ui/sidebar/chat_sidebar_options_popup.h" beforeDir="false" afterPath="$PROJECT_DIR$/src/common/ui/sidebar/chat_sidebar_options_popup.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/common/ui/ui_modals.h" beforeDir="false" afterPath="$PROJECT_DIR$/src/common/ui/ui_modals.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/core_tests.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/tests/core_tests.cpp" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -3255,7 +3260,15 @@
       <option name="project" value="LOCAL" />
       <updated>1775765497318</updated>
     </task>
-    <option name="localTasksCounter" value="2" />
+    <task id="LOCAL-00002" summary="Refactor UI layout for improved sidebar resizing and state handling&#10;&#10;- Reworked sidebar resizing using a vertical splitter component.&#10;- Added `sidebar_resize_drag_active` to app state for better drag tracking.&#10;- Updated `ui_orchestration_controller.cpp` with a cleaner layout split between left and main panes.&#10;- Introduced `VerticalSplitterResult` for reusable splitter logic in UI.">
+      <option name="closed" value="true" />
+      <created>1775766425345</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1775766425345</updated>
+    </task>
+    <option name="localTasksCounter" value="3" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -3269,6 +3282,7 @@
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="Introduce enhanced native session ID matching for local drafts&#10;&#10;- Adds new functions to `NativeSessionLinkService` for improved native session ID reconciliation: `HasRealNativeSessionId` and `MatchNativeSessionIdForLocalDraft`.  &#10;- Refactors handling of local draft chats to prioritize matching existing native session IDs before fallback to candidate collection.  &#10;- Updates logic in `terminal_polling` and CLI terminal provider for better synchronization and draft resolution through new APIs.  &#10;- Includes a cleanup of redundant code paths and safer initialization for unresolved chat links." />
-    <option name="LAST_COMMIT_MESSAGE" value="Introduce enhanced native session ID matching for local drafts&#10;&#10;- Adds new functions to `NativeSessionLinkService` for improved native session ID reconciliation: `HasRealNativeSessionId` and `MatchNativeSessionIdForLocalDraft`.  &#10;- Refactors handling of local draft chats to prioritize matching existing native session IDs before fallback to candidate collection.  &#10;- Updates logic in `terminal_polling` and CLI terminal provider for better synchronization and draft resolution through new APIs.  &#10;- Includes a cleanup of redundant code paths and safer initialization for unresolved chat links." />
+    <MESSAGE value="Refactor UI layout for improved sidebar resizing and state handling&#10;&#10;- Reworked sidebar resizing using a vertical splitter component.&#10;- Added `sidebar_resize_drag_active` to app state for better drag tracking.&#10;- Updated `ui_orchestration_controller.cpp` with a cleaner layout split between left and main panes.&#10;- Introduced `VerticalSplitterResult` for reusable splitter logic in UI." />
+    <option name="LAST_COMMIT_MESSAGE" value="Refactor UI layout for improved sidebar resizing and state handling&#10;&#10;- Reworked sidebar resizing using a vertical splitter component.&#10;- Added `sidebar_resize_drag_active` to app state for better drag tracking.&#10;- Updated `ui_orchestration_controller.cpp` with a cleaner layout split between left and main panes.&#10;- Introduced `VerticalSplitterResult` for reusable splitter logic in UI." />
   </component>
 </project>

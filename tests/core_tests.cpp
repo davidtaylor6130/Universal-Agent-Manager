@@ -19,6 +19,7 @@
 #include "common/rag/ollama_engine_client.h"
 #include "common/state/app_state.h"
 #include "common/ui/chat_actions/chat_action_pending_calls.h"
+#include "common/ui/chat_actions/chat_action_remove_chat.h"
 #include "common/vcs/vcs_workspace_service.h"
 
 #include <filesystem>
@@ -101,6 +102,8 @@ namespace
 		out << file << ":" << line << ": " << message;
 		throw TestFailure(out.str());
 	}
+
+#define WriteTextFile WriteTestTextFile
 
 	bool WriteTextFile(const fs::path& path, const std::string& content)
 	{
@@ -711,6 +714,118 @@ UAM_TEST(TestChatRepositoryDefaultsMissingBranchMetadata)
 	UAM_ASSERT_EQ(-1, loaded.front().branch_from_message_index);
 	UAM_ASSERT_EQ(true, loaded.front().rag_enabled);
 	UAM_ASSERT(loaded.front().rag_source_directories.empty());
+}
+
+UAM_TEST(TestChatRenameRejectsBlankTitle)
+{
+	TempDir data_root("uam-chat-rename-blank");
+
+	ChatSession chat;
+	chat.id = "chat-rename-blank";
+	chat.provider_id = "codex-cli";
+	chat.folder_id = "folder-default";
+	chat.title = "Keep Me";
+	chat.created_at = "2026-04-09 10:00:00";
+	chat.updated_at = "2026-04-09 10:00:01";
+	UAM_ASSERT(ChatRepository::SaveChat(data_root.root, chat));
+
+	uam::AppState app = MakeTestAppState(data_root.root);
+	std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(data_root.root);
+	UAM_ASSERT_EQ(1u, loaded.size());
+	UAM_ASSERT(!ChatHistorySyncService().RenameChat(app, loaded.front(), "   \t  "));
+	UAM_ASSERT_EQ(std::string("Keep Me"), loaded.front().title);
+	UAM_ASSERT_EQ(std::string("Chat title is required."), app.status_line);
+
+	const std::vector<ChatSession> reloaded = ChatRepository::LoadLocalChats(data_root.root);
+	UAM_ASSERT_EQ(1u, reloaded.size());
+	UAM_ASSERT_EQ(std::string("Keep Me"), reloaded.front().title);
+}
+
+UAM_TEST(TestChatRenamePersistsAcrossNativeOverlaySync)
+{
+	TempDir data_root("uam-chat-rename-overlay");
+
+	ChatSession overlay_chat;
+	overlay_chat.id = "native-session-rename";
+	overlay_chat.provider_id = "gemini-structured";
+	overlay_chat.native_session_id = "native-session-rename";
+	overlay_chat.folder_id = "folder-default";
+	overlay_chat.title = "Native Derived Title";
+	overlay_chat.created_at = "2026-04-09 10:00:00";
+	overlay_chat.updated_at = "2026-04-09 10:00:01";
+	overlay_chat.messages.push_back(Message{MessageRole::User, "hello native", "2026-04-09 10:00:00"});
+	overlay_chat.messages.push_back(Message{MessageRole::Assistant, "hello back", "2026-04-09 10:00:01"});
+	UAM_ASSERT(ChatRepository::SaveChat(data_root.root, overlay_chat));
+
+	uam::AppState app = MakeTestAppState(data_root.root);
+	std::vector<ChatSession> local_loaded = ChatRepository::LoadLocalChats(data_root.root);
+	UAM_ASSERT_EQ(1u, local_loaded.size());
+	UAM_ASSERT(ChatHistorySyncService().RenameChat(app, local_loaded.front(), "  Renamed in UAM  "));
+
+	std::vector<ChatSession> renamed_loaded = ChatRepository::LoadLocalChats(data_root.root);
+	UAM_ASSERT_EQ(1u, renamed_loaded.size());
+	UAM_ASSERT_EQ(std::string("Renamed in UAM"), renamed_loaded.front().title);
+
+	ChatSession native_chat;
+	native_chat.id = "native-session-rename";
+	native_chat.provider_id = "gemini-cli";
+	native_chat.native_session_id = "native-session-rename";
+	native_chat.folder_id = "folder-default";
+	native_chat.title = "Native Derived Title";
+	native_chat.created_at = "2026-04-09 10:00:00";
+	native_chat.updated_at = "2026-04-09 10:00:01";
+	native_chat.messages = overlay_chat.messages;
+
+	std::vector<ChatSession> native_chats{native_chat};
+	ChatHistorySyncService().ApplyLocalOverrides(app, native_chats);
+
+	UAM_ASSERT_EQ(1u, native_chats.size());
+	UAM_ASSERT_EQ(std::string("Renamed in UAM"), native_chats.front().title);
+
+	for (const ChatSession& chat_to_save : native_chats)
+	{
+		UAM_ASSERT(ChatRepository::SaveChat(data_root.root, chat_to_save));
+	}
+
+	const std::vector<ChatSession> reloaded = ChatRepository::LoadLocalChats(data_root.root);
+	UAM_ASSERT_EQ(1u, reloaded.size());
+	UAM_ASSERT_EQ(std::string("Renamed in UAM"), reloaded.front().title);
+}
+
+UAM_TEST(TestApplyLocalOverridesPreservesMetadataOnlyRenameTimestamp)
+{
+	TempDir data_root("uam-chat-rename-metadata");
+
+	ChatSession local_chat;
+	local_chat.id = "native-session-metadata";
+	local_chat.provider_id = "gemini-structured";
+	local_chat.native_session_id = "native-session-metadata";
+	local_chat.folder_id = "folder-default";
+	local_chat.title = "Renamed Title";
+	local_chat.created_at = "2026-04-09 10:00:00";
+	local_chat.updated_at = "2026-04-09 10:05:00";
+	local_chat.messages.push_back(Message{MessageRole::User, "hello native", "2026-04-09 10:00:00"});
+	local_chat.messages.push_back(Message{MessageRole::Assistant, "hello back", "2026-04-09 10:00:01"});
+	UAM_ASSERT(ChatRepository::SaveChat(data_root.root, local_chat));
+
+	uam::AppState app = MakeTestAppState(data_root.root);
+
+	ChatSession native_chat;
+	native_chat.id = "native-session-metadata";
+	native_chat.provider_id = "gemini-cli";
+	native_chat.native_session_id = "native-session-metadata";
+	native_chat.folder_id = "folder-default";
+	native_chat.title = "Native Title";
+	native_chat.created_at = "2026-04-09 10:00:00";
+	native_chat.updated_at = "2026-04-09 10:00:01";
+	native_chat.messages = local_chat.messages;
+
+	std::vector<ChatSession> native_chats{native_chat};
+	ChatHistorySyncService().ApplyLocalOverrides(app, native_chats);
+
+	UAM_ASSERT_EQ(1u, native_chats.size());
+	UAM_ASSERT_EQ(std::string("Renamed Title"), native_chats.front().title);
+	UAM_ASSERT_EQ(std::string("2026-04-09 10:05:00"), native_chats.front().updated_at);
 }
 
 UAM_TEST(TestResolveNativeHistoryChatsDirUsesChatWorkspace)
@@ -1446,6 +1561,40 @@ UAM_TEST(TestProviderProfileStoreBuiltInProfiles)
 	UAM_ASSERT(gemini_cli->supports_interactive);
 }
 
+UAM_TEST(TestStateSerializerIncludesProviderOutputMode)
+{
+	AppState app;
+	app.settings.active_provider_id = "gemini-structured";
+
+	ProviderProfile structured = ProviderProfileStore::DefaultGeminiProfile();
+	structured.id = "gemini-structured";
+	structured.title = "Gemini (Structured)";
+	structured.output_mode = "structured";
+
+	ProviderProfile cli = ProviderProfileStore::DefaultGeminiProfile();
+	cli.id = "gemini-cli";
+	cli.title = "Gemini CLI";
+	cli.output_mode = "cli";
+
+	app.provider_profiles = {structured, cli};
+
+	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	UAM_ASSERT(serialized.contains("providers"));
+	UAM_ASSERT_EQ(std::string("structured"), serialized["providers"][0]["outputMode"].get<std::string>());
+	UAM_ASSERT_EQ(std::string("cli"), serialized["providers"][1]["outputMode"].get<std::string>());
+}
+
+UAM_TEST(TestProviderRuntimeBuildCommandUsesStructuredGeminiPromptTemplate)
+{
+	ProviderProfile profile = ProviderProfileStore::DefaultGeminiProfile();
+	AppSettings settings;
+	settings.provider_command_template = "gemini -r {resume} {flags} -p {prompt}";
+	settings.provider_extra_flags = "--alpha --beta";
+
+	const std::string command = ProviderRuntime::BuildCommand(profile, settings, "Review this patch", {}, "resume-42");
+	UAM_ASSERT_EQ(std::string("gemini -r resume-42 --alpha --beta -p 'Review this patch'"), command);
+}
+
 UAM_TEST(TestProviderRuntimeParsesWindowsInteractiveCommandPath)
 {
 #if defined(_WIN32)
@@ -2113,4 +2262,3 @@ int main()
 	std::cout << Registry().size() << " test(s) passed.\n";
 	return 0;
 }
-

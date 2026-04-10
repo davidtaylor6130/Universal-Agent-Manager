@@ -29,6 +29,11 @@
 #include "common/ui/modals/modal_folder_settings.h"
 
 /// <summary>
+/// Chat rename modal.
+/// </summary>
+#include "common/ui/modals/modal_rename_chat.h"
+
+/// <summary>
 /// Template change warning modal.
 /// </summary>
 #include "common/ui/modals/modal_template_change_warning.h"

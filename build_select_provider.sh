@@ -137,6 +137,8 @@ cmake --build "${out_dir}" -j8
 echo ""
 echo "============================================"
 echo "  Build complete: ${config_name}"
+echo "  Bundle: ${out_dir}/universal_agent_manager.app"
 echo "  Binary: ${out_dir}/universal_agent_manager.app/Contents/MacOS/universal_agent_manager"
+echo "  Launch: open ${out_dir}/universal_agent_manager.app"
 echo "============================================"
 echo ""

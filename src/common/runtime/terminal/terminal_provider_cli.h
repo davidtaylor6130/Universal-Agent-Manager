@@ -103,6 +103,16 @@ inline uam::CliTerminalState& EnsureCliTerminalForChat(uam::AppState& app, const
 
 	if (uam::CliTerminalState* existing = FindCliTerminalForChat(app, chat.id))
 	{
+		if (existing->frontend_chat_id.empty())
+		{
+			existing->frontend_chat_id = chat.id;
+		}
+
+		if (existing->terminal_id.empty())
+		{
+			existing->terminal_id = "term-" + chat.id;
+		}
+
 		if (existing->attached_session_id.empty() && !resume_id.empty())
 		{
 			existing->attached_session_id = resume_id;
@@ -117,6 +127,8 @@ inline uam::CliTerminalState& EnsureCliTerminalForChat(uam::AppState& app, const
 	}
 
 	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->terminal_id = "term-" + chat.id;
+	terminal->frontend_chat_id = chat.id;
 	terminal->attached_chat_id = chat.id;
 	terminal->attached_session_id = resume_id;
 	terminal->should_launch = can_launch_terminal;

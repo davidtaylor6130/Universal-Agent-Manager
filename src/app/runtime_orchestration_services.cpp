@@ -137,6 +137,24 @@ namespace
 
 		return roots;
 	}
+
+	bool MessagesEquivalent(const std::vector<Message>& lhs, const std::vector<Message>& rhs)
+	{
+		if (lhs.size() != rhs.size())
+		{
+			return false;
+		}
+
+		for (std::size_t i = 0; i < lhs.size(); ++i)
+		{
+			if (lhs[i].role != rhs[i].role || lhs[i].content != rhs[i].content || lhs[i].created_at != rhs[i].created_at)
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
 } // namespace
 
 void ProviderRequestService::StartSelectedChatRequest(uam::AppState& p_app) const
@@ -165,18 +183,48 @@ void ChatHistorySyncService::RefreshChatHistory(uam::AppState& p_app) const
 	p_app.status_line = "Chat history refreshed.";
 }
 
-void ChatHistorySyncService::SaveChatWithStatus(uam::AppState& p_app, const ChatSession& p_chat, const std::string& p_success, const std::string& p_failure) const
+bool ChatHistorySyncService::SaveChatWithStatus(uam::AppState& p_app, const ChatSession& p_chat, const std::string& p_success, const std::string& p_failure) const
 {
 	const ProviderProfile& l_provider = ProviderResolutionService().ProviderForChatOrDefault(p_app, p_chat);
 
 	if (ProviderRuntime::SaveHistory(l_provider, p_app.data_root, p_chat))
 	{
 		p_app.status_line = p_success;
+		return true;
 	}
-	else
+
+	p_app.status_line = p_failure;
+	return false;
+}
+
+bool ChatHistorySyncService::RenameChat(AppState& p_app, ChatSession& p_chat, const std::string& p_requestedTitle) const
+{
+	const std::string l_previousTitle = p_chat.title;
+	const std::string l_previousUpdatedAt = p_chat.updated_at;
+	const std::string l_trimmedTitle = Trim(p_requestedTitle);
+
+	if (l_trimmedTitle.empty())
 	{
-		p_app.status_line = p_failure;
+		p_app.status_line = "Chat title is required.";
+		return false;
 	}
+
+	if (l_trimmedTitle == l_previousTitle)
+	{
+		return true;
+	}
+
+	p_chat.title = l_trimmedTitle;
+	p_chat.updated_at = TimestampNow();
+
+	if (SaveChatWithStatus(p_app, p_chat, "Chat title updated.", "Chat title changed in UI, but failed to save."))
+	{
+		return true;
+	}
+
+	p_chat.title = l_previousTitle;
+	p_chat.updated_at = l_previousUpdatedAt;
+	return false;
 }
 
 std::vector<ChatSession> ChatHistorySyncService::LoadNativeSessionChats(const fs::path& p_chatsDir, const ProviderProfile& p_provider, std::stop_token p_stopToken) const
@@ -1180,6 +1228,7 @@ void ChatHistorySyncService::ApplyLocalOverrides(AppState& p_app, std::vector<Ch
 		{
 			l_native.provider_id = l_local.provider_id;
 		}
+		l_native.title = l_local.title;
 		l_native.folder_id = l_local.folder_id;
 		l_native.template_override_id = l_local.template_override_id;
 		l_native.linked_files = l_local.linked_files;
@@ -1205,6 +1254,10 @@ void ChatHistorySyncService::ApplyLocalOverrides(AppState& p_app, std::vector<Ch
 			{
 				l_native.created_at = l_local.created_at;
 			}
+		}
+		else if (MessagesEquivalent(l_local.messages, l_native.messages) && !l_local.updated_at.empty() && (l_native.updated_at.empty() || l_local.updated_at > l_native.updated_at))
+		{
+			l_native.updated_at = l_local.updated_at;
 		}
 	}
 

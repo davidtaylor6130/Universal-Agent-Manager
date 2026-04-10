@@ -38,6 +38,7 @@ void ModalHostView::Draw(uam::AppState& p_app, const float p_platformUiScale) co
 	DrawDeleteChatConfirmationModal(p_app);
 	DrawDeleteFolderConfirmationModal(p_app);
 	DrawFolderSettingsModal(p_app);
+	DrawRenameChatModal(p_app);
 	DrawTemplateChangeWarningModal(p_app);
 	DrawMarkdownTemplateManagerModal(p_app);
 	DrawVcsOutputModal(p_app);

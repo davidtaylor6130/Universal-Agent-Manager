@@ -545,7 +545,7 @@ bool TriggerProjectRagScan(AppState& p_app, const bool p_reusePreviousSource, co
 
 	p_app.rag_scan_workspace_key = l_workspaceKey;
 	p_app.rag_scan_state = p_app.rag_index_service.FetchState();
-	p_app.rag_scan_status_last_emit_s = ImGui::GetTime();
+	p_app.rag_scan_status_last_emit_s = GetAppTimeSeconds();
 	p_app.rag_finished_visible_until_s = 0.0;
 	p_app.rag_last_refresh_by_workspace[l_workspaceKey] = p_reusePreviousSource ? "RAG rescan started (previous source)." : "RAG scan started.";
 	p_app.status_line = p_reusePreviousSource ? "RAG rescan started (previous source)." : "RAG scan started.";
@@ -570,7 +570,7 @@ void PollRagScanState(AppState& p_app)
 {
 	const RagScanState l_previousState = p_app.rag_scan_state;
 	p_app.rag_scan_state = p_app.rag_index_service.FetchState();
-	const double l_now = ImGui::GetTime();
+	const double l_now = GetAppTimeSeconds();
 	const bool l_transitionedToFinished = l_previousState.lifecycle != RagScanLifecycleState::Finished && p_app.rag_scan_state.lifecycle == RagScanLifecycleState::Finished;
 
 	if (l_transitionedToFinished)
@@ -661,7 +661,7 @@ RagScanState EffectiveRagScanState(const AppState& p_app)
 {
 	RagScanState l_state = p_app.rag_scan_state;
 
-	if (l_state.lifecycle == RagScanLifecycleState::Stopped && p_app.rag_finished_visible_until_s > ImGui::GetTime())
+	if (l_state.lifecycle == RagScanLifecycleState::Stopped && p_app.rag_finished_visible_until_s > GetAppTimeSeconds())
 	{
 		l_state.lifecycle = RagScanLifecycleState::Finished;
 	}

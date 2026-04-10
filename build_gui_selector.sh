@@ -165,13 +165,16 @@ echo ""
 cmake --build "${out_dir}" -j8
 
 # ── Step 7: Done ───────────────────────────────────────────────────────
-binary="${out_dir}/universal_agent_manager.app/Contents/MacOS/universal_agent_manager"
+bundle="${out_dir}/universal_agent_manager.app"
+binary="${bundle}/Contents/MacOS/universal_agent_manager"
 
 osascript -e "
-display dialog \"Build complete!\" & return & return & \"Configuration: ${config_name}\" & return & \"Binary: ${binary}\" buttons {\"OK\"} default button 1 with title \"UAM Build Complete\" with icon note
+display dialog \"Build complete!\" & return & return & \"Configuration: ${config_name}\" & return & \"Bundle: ${bundle}\" & return & \"Launch: open ${bundle}\" buttons {\"OK\"} default button 1 with title \"UAM Build Complete\" with icon note
 "
 
 echo ""
 echo "Build complete: ${config_name}"
+echo "Bundle: ${bundle}"
 echo "Binary: ${binary}"
+echo "Launch: open ${bundle}"
 echo ""

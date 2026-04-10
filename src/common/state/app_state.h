@@ -1,7 +1,5 @@
 #pragma once
 
-#include <vterm.h>
-
 #include "common/models/app_models.h"
 #include "common/config/frontend_actions.h"
 #include "common/platform/platform_state_fields.h"
@@ -25,37 +23,36 @@ namespace uam
 	namespace fs = std::filesystem;
 
 	/// <summary>
-	/// Immutable snapshot of one scrollback line used by the embedded terminal renderer.
+	/// Scrollback line stub — libvterm cells are replaced by xterm.js rendering.
+	/// Retained so that code referencing TerminalScrollbackLine still compiles.
 	/// </summary>
 	struct TerminalScrollbackLine
 	{
-		std::vector<VTermScreenCell> cells;
+		// Previously held std::vector<VTermScreenCell>. Now empty — xterm.js handles rendering.
 	};
 
 	/// <summary>
-	/// Maximum number of scrollback lines preserved per embedded terminal.
+	/// Maximum number of scrollback lines (kept for backward compatibility).
 	/// </summary>
 	inline constexpr std::size_t kTerminalScrollbackMaxLines = 5000;
 
 	/// <summary>
 	/// Runtime state for one embedded provider CLI terminal instance.
+	/// PTY output is forwarded to xterm.js in the React frontend via
+	/// uam::PushCliOutput() — libvterm is no longer used for rendering.
 	/// </summary>
 	struct CliTerminalState : public platform::CliTerminalPlatformFields
 	{
+		std::string terminal_id;
+		std::string frontend_chat_id;
 		bool running = false;
 		std::string attached_chat_id;
 		std::string attached_session_id;
 		std::vector<std::string> session_ids_before;
 		std::vector<std::string> linked_files_snapshot;
-		VTerm* vt = nullptr;
-		VTermScreen* screen = nullptr;
-		VTermState* state = nullptr;
 		int rows = 24;
 		int cols = 80;
-		std::deque<TerminalScrollbackLine> scrollback_lines;
-		int scrollback_view_offset = 0;
 		bool scroll_to_bottom = false;
-		bool needs_full_refresh = true;
 		bool should_launch = false;
 		double last_sync_time_s = 0.0;
 		double last_output_time_s = 0.0;
@@ -65,14 +62,8 @@ namespace uam
 		double startup_time_s = 0.0;
 		std::deque<std::string> pending_structured_prompts;
 		bool generation_in_progress = false;
+		std::string recent_output_bytes;
 		std::string last_error;
-		int sel_start_row = -1;
-		int sel_start_col = -1;
-		int sel_end_row = -1;
-		int sel_end_col = -1;
-		bool has_selection = false;
-		double cursor_blink_last_time = 0.0;
-		bool cursor_visible = true;
 	};
 
 	/// <summary>
@@ -144,6 +135,10 @@ namespace uam
 		std::string editing_chat_id;
 		int editing_message_index = -1;
 		std::string editing_message_text;
+		std::string rename_chat_target_id;
+		std::string rename_chat_input;
+		bool open_rename_chat_popup = false;
+		std::string inline_title_editing_chat_id;
 		std::string pending_branch_chat_id;
 		int pending_branch_message_index = -1;
 		bool open_sidebar_chat_options_popup = false;

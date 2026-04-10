@@ -2,7 +2,6 @@
 #include <Security/Security.h>
 
 #include "common/paths/app_paths.h"
-#include "common/platform/sdl_includes.h"
 #include "common/state/app_state.h"
 
 #include <algorithm>
@@ -13,6 +12,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -115,6 +115,186 @@ namespace
 	bool IsShellCommandAvailable(const std::string& command)
 	{
 		return RunShellCommand("command -v " + command + " >/dev/null 2>&1");
+	}
+
+	bool IsExecutableFile(const std::filesystem::path& candidate)
+	{
+		std::error_code ec;
+		if (!std::filesystem::exists(candidate, ec) || !std::filesystem::is_regular_file(candidate, ec))
+		{
+			return false;
+		}
+
+		return access(candidate.c_str(), X_OK) == 0;
+	}
+
+	std::vector<std::string> SplitPathEnv(const std::string& value)
+	{
+		std::vector<std::string> entries;
+		std::string current;
+		for (const char ch : value)
+		{
+			if (ch == ':')
+			{
+				if (!current.empty())
+				{
+					entries.push_back(current);
+					current.clear();
+				}
+
+				continue;
+			}
+
+			current.push_back(ch);
+		}
+
+		if (!current.empty())
+		{
+			entries.push_back(current);
+		}
+
+		return entries;
+	}
+
+	void AppendUniquePathEntry(std::vector<std::string>& entries, const std::string& entry)
+	{
+		if (entry.empty())
+		{
+			return;
+		}
+
+		if (std::find(entries.begin(), entries.end(), entry) == entries.end())
+		{
+			entries.push_back(entry);
+		}
+	}
+
+	std::vector<std::string> CollectTerminalPathSearchDirs()
+	{
+		std::vector<std::string> candidate_dirs;
+		if (const char* path_env = std::getenv("PATH"); path_env != nullptr)
+		{
+			candidate_dirs = SplitPathEnv(path_env);
+		}
+
+		const std::array<const char*, 8> fallback_dirs = {
+			"/opt/homebrew/bin",
+			"/opt/homebrew/sbin",
+			"/usr/local/bin",
+			"/usr/local/sbin",
+			"/usr/bin",
+			"/bin",
+			"/usr/sbin",
+			"/sbin",
+		};
+		for (const char* dir : fallback_dirs)
+		{
+			AppendUniquePathEntry(candidate_dirs, dir);
+		}
+
+		if (const char* home = std::getenv("HOME"); home != nullptr)
+		{
+			const std::filesystem::path home_path(home);
+			AppendUniquePathEntry(candidate_dirs, (home_path / ".volta" / "bin").string());
+			AppendUniquePathEntry(candidate_dirs, (home_path / ".asdf" / "shims").string());
+			AppendUniquePathEntry(candidate_dirs, (home_path / ".fnm").string());
+
+			const std::filesystem::path nvm_versions_dir = home_path / ".nvm" / "versions" / "node";
+			std::error_code ec;
+			if (std::filesystem::exists(nvm_versions_dir, ec) && std::filesystem::is_directory(nvm_versions_dir, ec))
+			{
+				for (const auto& entry : std::filesystem::directory_iterator(nvm_versions_dir, ec))
+				{
+					if (ec || !entry.is_directory())
+					{
+						continue;
+					}
+
+					const std::filesystem::path bin_dir = entry.path() / "bin";
+					if (std::filesystem::exists(bin_dir, ec) && std::filesystem::is_directory(bin_dir, ec))
+					{
+						AppendUniquePathEntry(candidate_dirs, bin_dir.string());
+					}
+				}
+			}
+		}
+
+		return candidate_dirs;
+	}
+
+	std::string JoinPathEntries(const std::vector<std::string>& entries)
+	{
+		std::string joined;
+		for (const std::string& entry : entries)
+		{
+			if (entry.empty())
+			{
+				continue;
+			}
+
+			if (!joined.empty())
+			{
+				joined.push_back(':');
+			}
+			joined += entry;
+		}
+		return joined;
+	}
+
+	std::string ResolveExecutablePathForTerminal(const std::string& command, const std::vector<std::string>& search_dirs)
+	{
+		if (command.empty())
+		{
+			return "";
+		}
+
+		if (command.find('/') != std::string::npos)
+		{
+			return IsExecutableFile(command) ? command : "";
+		}
+
+		for (const std::string& dir : search_dirs)
+		{
+			if (dir.empty())
+			{
+				continue;
+			}
+
+			const std::filesystem::path candidate = std::filesystem::path(dir) / command;
+			if (IsExecutableFile(candidate))
+			{
+				return candidate.string();
+			}
+		}
+
+		return "";
+	}
+
+	std::string ResolveExecutablePathForTerminal(const std::string& command)
+	{
+		return ResolveExecutablePathForTerminal(command, CollectTerminalPathSearchDirs());
+	}
+
+	bool ScriptShebangMentionsNode(const std::filesystem::path& executable_path)
+	{
+		std::ifstream stream(executable_path);
+		if (!stream.is_open())
+		{
+			return false;
+		}
+
+		std::string first_line;
+		if (!std::getline(stream, first_line))
+		{
+			return false;
+		}
+
+		if (first_line.rfind("#!", 0) != 0)
+		{
+			return false;
+		}
+
+		return first_line.find("node") != std::string::npos;
 	}
 
 	std::string EscapeAppleScriptQuotedString(const std::string& value)
@@ -383,6 +563,35 @@ namespace
 				return false;
 			}
 
+				const std::vector<std::string> terminal_path_dirs = CollectTerminalPathSearchDirs();
+				const std::string terminal_path_env = JoinPathEntries(terminal_path_dirs);
+				const std::string resolved_executable = ResolveExecutablePathForTerminal(argv.front(), terminal_path_dirs);
+				if (resolved_executable.empty())
+				{
+					if (error_out != nullptr)
+					{
+						*error_out = "gemini not found on PATH in app environment";
+					}
+					close(master_fd);
+					close(slave_fd);
+					return false;
+				}
+
+				if (ScriptShebangMentionsNode(resolved_executable))
+				{
+					const std::string resolved_node = ResolveExecutablePathForTerminal("node", terminal_path_dirs);
+					if (resolved_node.empty())
+					{
+						if (error_out != nullptr)
+						{
+							*error_out = "node not found on PATH in app environment (required by gemini CLI)";
+						}
+						close(master_fd);
+						close(slave_fd);
+						return false;
+					}
+				}
+
 			const pid_t pid = fork();
 
 			if (pid < 0)
@@ -414,17 +623,23 @@ namespace
 					(void)chdir(working_directory.c_str());
 				}
 
-				setenv("TERM", "xterm-256color", 1);
+					setenv("TERM", "xterm-256color", 1);
+					if (!terminal_path_env.empty())
+					{
+						setenv("PATH", terminal_path_env.c_str(), 1);
+					}
+					std::vector<std::string> resolved_argv = argv;
+					resolved_argv[0] = resolved_executable;
 				std::vector<char*> argv_ptrs;
-				argv_ptrs.reserve(argv.size() + 1);
+				argv_ptrs.reserve(resolved_argv.size() + 1);
 
-				for (const std::string& arg : argv)
+				for (const std::string& arg : resolved_argv)
 				{
 					argv_ptrs.push_back(const_cast<char*>(arg.c_str()));
 				}
 
 				argv_ptrs.push_back(nullptr);
-				execvp(argv_ptrs[0], argv_ptrs.data());
+				execv(argv_ptrs[0], argv_ptrs.data());
 				_exit(127);
 			}
 
@@ -1056,15 +1271,12 @@ namespace
 
 		void ConfigureOpenGlAttributes() const override
 		{
-			SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
-			SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-			SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-			SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+			// No-op — OpenGL replaced by CEF/Chromium rendering.
 		}
 
 		const char* OpenGlGlslVersion() const override
 		{
-			return "#version 150";
+			return "";
 		}
 
 		float AdjustSidebarWidth(const float layout_width, const float current_sidebar_width, const float effective_ui_scale) const override

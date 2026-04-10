@@ -93,8 +93,14 @@ Context and conversation history are preserved across providers.
 cmake -S . -B Builds -DUAM_FETCH_DEPS=ON
 cmake --build Builds --config Release
 
-# Run
-./Builds/universal_agent_manager
+# Run on macOS without browser chrome
+open Builds/universal_agent_manager.app
+
+# Or use the helper launcher
+./run_uam.sh
+
+# Run on Windows
+.\Builds\Release\universal_agent_manager.exe
 ```
 
 ## Key Features
@@ -220,6 +226,24 @@ cmake -S . -B Builds -DUAM_FETCH_DEPS=OFF -DIMGUI_DIR=/path/to/imgui
 cmake --build Builds --config Release
 ```
 
+### Run
+
+```bash
+# macOS: launch the native bundle so the React UI stays inside the CEF shell
+open Builds/universal_agent_manager.app
+
+# Optional helper launcher
+./run_uam.sh
+
+# Windows
+.\Builds\Release\universal_agent_manager.exe
+
+# Custom data root on macOS
+UAM_DATA_DIR=/tmp/uam-data ./Builds/universal_agent_manager.app/Contents/MacOS/universal_agent_manager
+```
+
+Do not open `UI-V2/dist/index.html` directly in a browser. That path is only the packaged web asset bundle and will show normal browser tabs and the URL bar.
+
 ### Runtime Options
 
 | Option | Default | Description |
@@ -273,13 +297,16 @@ ctest --test-dir Builds/tests -C Debug --output-on-failure
 
 ```bash
 # macOS
-./Builds/universal_agent_manager
+open Builds/universal_agent_manager.app
+
+# Or use the helper launcher
+./run_uam.sh
 
 # Windows
 .\Builds\Release\universal_agent_manager.exe
 
-# Custom data root
-UAM_DATA_DIR=/tmp/uam-data ./Builds/universal_agent_manager
+# Custom data root on macOS
+UAM_DATA_DIR=/tmp/uam-data ./Builds/universal_agent_manager.app/Contents/MacOS/universal_agent_manager
 ```
 
 ## Platform Notes

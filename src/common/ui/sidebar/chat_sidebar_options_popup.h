@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/chat_domain_service.h"
+#include "app/runtime_orchestration_services.h"
 #include "common/provider/runtime/provider_build_config.h"
 #include "common/rag/rag_app_helpers.h"
 
@@ -38,6 +39,20 @@ inline void DrawSidebarChatOptionsPopup(AppState& app)
 			PersistenceCoordinator().SaveSettings(app);
 		}
 	};
+
+	if (ImGui::MenuItem("Rename..."))
+	{
+		ensure_selected_chat();
+		app.rename_chat_target_id = popup_chat.id;
+		app.rename_chat_input = popup_chat.title;
+		app.inline_title_editing_chat_id = popup_chat.id;
+		app.open_rename_chat_popup = true;
+		ImGui::CloseCurrentPopup();
+		ImGui::EndPopup();
+		return;
+	}
+
+	ImGui::Separator();
 
 	if (ImGui::BeginMenu("Repository"))
 	{

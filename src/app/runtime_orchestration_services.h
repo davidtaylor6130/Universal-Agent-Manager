@@ -35,7 +35,8 @@ class ChatHistorySyncService
 	ImportResult ImportAllNativeChatsToLocal(uam::AppState& p_app, bool p_delete_native_after_import, const std::string& p_targetChatId = "") const;
 	ImportResult ImportAllNativeChatsByDiscovery(uam::AppState& p_app, bool p_delete_native_after_import, const std::string& p_targetChatId = "") const;
 	void RefreshChatHistory(uam::AppState& p_app) const;
-	void SaveChatWithStatus(uam::AppState& p_app, const ChatSession& p_chat, const std::string& p_success, const std::string& p_failure) const;
+	bool SaveChatWithStatus(uam::AppState& p_app, const ChatSession& p_chat, const std::string& p_success, const std::string& p_failure) const;
+	bool RenameChat(uam::AppState& p_app, ChatSession& p_chat, const std::string& p_requestedTitle) const;
 	std::vector<ChatSession> LoadNativeSessionChats(const std::filesystem::path& p_chatsDir, const ProviderProfile& p_provider, std::stop_token p_stopToken = {}) const;
 	std::optional<std::filesystem::path> ResolveNativeHistoryChatsDirForWorkspace(const std::filesystem::path& p_workspaceRoot) const;
 	std::filesystem::path ResolveNativeHistoryChatsDirForChat(const uam::AppState& p_app, const ChatSession& p_chat) const;
