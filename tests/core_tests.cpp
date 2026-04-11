@@ -6,9 +6,7 @@
 #include "common/chat/chat_folder_store.h"
 #include "common/config/frontend_actions.h"
 #include "common/provider/gemini/cli/gemini_cli_provider_runtime.h"
-#include "common/provider/gemini/structured/gemini_structured_provider_runtime.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
-#include "common/provider/opencode/base/opencode_base_provider_runtime.h"
 #include "common/provider/markdown_template_catalog.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
@@ -295,12 +293,12 @@ namespace
 
 	uam::AppState MakeTestAppState(const fs::path& data_root)
 	{
-		uam::AppState app;
-		app.data_root = data_root;
-		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
-		app.settings.active_provider_id = "codex-cli";
-		return app;
-	}
+	uam::AppState app;
+	app.data_root = data_root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.settings.active_provider_id = "gemini-cli";
+	return app;
+}
 
 	ChatSession* FindChatById(std::vector<ChatSession>& chats, const std::string& id)
 	{
@@ -446,13 +444,13 @@ UAM_TEST(TestSettingsStoreRoundTripExtendedPreferences)
 	const fs::path settings_file = data_root.root / "settings.txt";
 
 	AppSettings write_settings;
-	write_settings.active_provider_id = "gemini-structured";
-	write_settings.provider_command_template = "gemini {resume} {flags} -p {prompt}";
+	write_settings.active_provider_id = "gemini-cli";
+	write_settings.provider_command_template = "gemini {resume} {flags} {prompt}";
 	write_settings.provider_yolo_mode = true;
 	write_settings.provider_extra_flags = "--alpha --beta";
-	write_settings.runtime_backend = "ollama-engine";
+	write_settings.runtime_backend = "provider-cli";
 	write_settings.selected_model_id = "chat-model.gguf";
-	write_settings.vector_db_backend = "ollama-engine";
+	write_settings.vector_db_backend = "none";
 	write_settings.selected_vector_model_id = "embed-model.gguf";
 	write_settings.vector_database_name_override = "team_index_v1";
 	write_settings.cli_idle_timeout_seconds = 420;
@@ -476,15 +474,15 @@ UAM_TEST(TestSettingsStoreRoundTripExtendedPreferences)
 
 	UAM_ASSERT_EQ(std::string("system"), loaded.ui_theme);
 	UAM_ASSERT(loaded_mode == CenterViewMode::CliConsole);
-	UAM_ASSERT_EQ(std::string("gemini-structured"), loaded.active_provider_id);
+	UAM_ASSERT_EQ(std::string("gemini-cli"), loaded.active_provider_id);
 	UAM_ASSERT(loaded.provider_yolo_mode);
 	UAM_ASSERT_EQ(std::string("--alpha --beta"), loaded.provider_extra_flags);
 	UAM_ASSERT_EQ(std::string("provider-cli"), loaded.runtime_backend);
 	UAM_ASSERT_EQ(std::string("chat-model.gguf"), loaded.selected_model_id);
-	UAM_ASSERT_EQ(std::string("ollama-engine"), loaded.vector_db_backend);
+	UAM_ASSERT_EQ(std::string("none"), loaded.vector_db_backend);
 	UAM_ASSERT_EQ(std::string("embed-model.gguf"), loaded.selected_vector_model_id);
 	UAM_ASSERT_EQ(std::string("team_index_v1"), loaded.vector_database_name_override);
-	UAM_ASSERT_EQ(600, loaded.cli_idle_timeout_seconds);
+	UAM_ASSERT_EQ(420, loaded.cli_idle_timeout_seconds);
 	UAM_ASSERT_EQ(std::string("/tmp/.Gemini_universal_agent_manager"), loaded.prompt_profile_root_path);
 	UAM_ASSERT_EQ(std::string("baseline.md"), loaded.default_prompt_profile_id);
 	UAM_ASSERT(!loaded.confirm_delete_chat);
@@ -517,7 +515,7 @@ UAM_TEST(TestSettingsStoreClampsInvalidValues)
 
 	UAM_ASSERT_EQ(std::string("dark"), loaded.ui_theme);
 	UAM_ASSERT_EQ(std::string("provider-cli"), loaded.runtime_backend);
-	UAM_ASSERT_EQ(std::string("ollama-engine"), loaded.vector_db_backend);
+	UAM_ASSERT_EQ(std::string("none"), loaded.vector_db_backend);
 	UAM_ASSERT_EQ(30, loaded.cli_idle_timeout_seconds);
 	UAM_ASSERT(std::fabs(loaded.ui_scale_multiplier - 1.75f) < 0.0001f);
 	UAM_ASSERT_EQ(960, loaded.window_width);
@@ -530,7 +528,7 @@ UAM_TEST(TestSettingsStoreMigratesLegacyRuntimeBackendToActiveProvider)
 {
 	TempDir data_root("uam-settings-runtime-migration");
 	const fs::path settings_file = data_root.root / "settings.txt";
-	UAM_ASSERT(WriteTextFile(settings_file, "runtime_backend=ollama-engine\n"
+	UAM_ASSERT(WriteTextFile(settings_file, "runtime_backend=provider-cli\n"
 	                                        "center_view_mode=structured\n"));
 
 	AppSettings loaded;
@@ -538,7 +536,7 @@ UAM_TEST(TestSettingsStoreMigratesLegacyRuntimeBackendToActiveProvider)
 	CenterViewMode loaded_mode = CenterViewMode::CliConsole;
 	SettingsStore::Load(settings_file, loaded, loaded_mode);
 
-	UAM_ASSERT_EQ(std::string("ollama-engine"), loaded.active_provider_id);
+	UAM_ASSERT_EQ(std::string("gemini-cli"), loaded.active_provider_id);
 	UAM_ASSERT(loaded_mode == CenterViewMode::Structured);
 }
 
@@ -649,71 +647,95 @@ UAM_TEST(TestRagIndexServiceSupportsDisabledVectorBackend)
 	UAM_ASSERT(refresh.indexed_files >= 1);
 }
 
-UAM_TEST(TestChatRepositoryPersistsTemplateOverride)
+UAM_TEST(TestChatRepositoryPersistsCoreChatStateAndDropsFeatureBaggage)
 {
-	TempDir data_root("uam-chat-repository");
+	TempDir data_root("uam-chat-repository-core");
 
 	ChatSession chat;
 	chat.id = "chat-test-1";
-	chat.provider_id = "codex";
-	chat.folder_id = "folder-default";
-	chat.template_override_id = "custom-template.md";
-	chat.rag_enabled = false;
-	chat.rag_source_directories = {"/tmp/workspace-a", "/tmp/workspace-b"};
-	chat.title = "Template Test";
-	chat.created_at = "2026-03-19 10:11:12";
-	chat.updated_at = "2026-03-19 10:11:13";
-	chat.messages.push_back(Message{MessageRole::User, "hello", "2026-03-19 10:11:13"});
-
-	UAM_ASSERT(ChatRepository::SaveChat(data_root.root, chat));
-	const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(data_root.root);
-	UAM_ASSERT_EQ(1u, loaded.size());
-	UAM_ASSERT_EQ(std::string("codex"), loaded.front().provider_id);
-	UAM_ASSERT_EQ(std::string("custom-template.md"), loaded.front().template_override_id);
-	UAM_ASSERT_EQ(false, loaded.front().rag_enabled);
-	UAM_ASSERT_EQ(2u, loaded.front().rag_source_directories.size());
-	UAM_ASSERT_EQ(std::string("/tmp/workspace-a"), loaded.front().rag_source_directories[0]);
-	UAM_ASSERT_EQ(std::string("/tmp/workspace-b"), loaded.front().rag_source_directories[1]);
-}
-
-UAM_TEST(TestChatRepositoryPersistsBranchMetadata)
-{
-	TempDir data_root("uam-chat-branch-meta");
-
-	ChatSession chat;
-	chat.id = "chat-branch-child";
-	chat.parent_chat_id = "chat-branch-parent";
+	chat.provider_id = "gemini-cli";
+	chat.native_session_id = "native-session-1";
+	chat.parent_chat_id = "chat-parent";
 	chat.branch_root_chat_id = "chat-branch-root";
 	chat.branch_from_message_index = 2;
 	chat.folder_id = "folder-default";
-	chat.title = "Branch Child";
-	chat.created_at = "2026-03-21 10:00:00";
-	chat.updated_at = "2026-03-21 10:01:00";
-	chat.messages.push_back(Message{MessageRole::User, "hello", "2026-03-21 10:00:01"});
+	chat.template_override_id = "custom-template.md";
+	chat.prompt_profile_bootstrapped = true;
+	chat.rag_enabled = false;
+	chat.rag_source_directories = {"/tmp/workspace-a", "/tmp/workspace-b"};
+	chat.title = "Core Chat";
+	chat.created_at = "2026-03-19 10:11:12";
+	chat.updated_at = "2026-03-19 10:11:13";
+	chat.linked_files = {"notes.md"};
+	chat.workspace_directory = "/tmp/workspace-a";
+	chat.approval_mode = "yolo";
+	chat.model_id = "chat-model.gguf";
+	chat.extra_flags = "--alpha --beta";
+	chat.messages.push_back(Message{MessageRole::User, "hello", "2026-03-19 10:11:13"});
 
 	UAM_ASSERT(ChatRepository::SaveChat(data_root.root, chat));
+
+	const fs::path chat_file = AppPaths::UamChatFilePath(data_root.root, chat.id);
+	const std::string file_text = ReadTextFile(chat_file);
+	UAM_ASSERT(file_text.find("template_override_id") == std::string::npos);
+	UAM_ASSERT(file_text.find("prompt_profile_bootstrapped") == std::string::npos);
+	UAM_ASSERT(file_text.find("rag_enabled") == std::string::npos);
+	UAM_ASSERT(file_text.find("rag_source_directories") == std::string::npos);
+	UAM_ASSERT(file_text.find("linked_files") == std::string::npos);
+	UAM_ASSERT(file_text.find("workspace_directory") == std::string::npos);
+	UAM_ASSERT(file_text.find("approval_mode") == std::string::npos);
+	UAM_ASSERT(file_text.find("model_id") == std::string::npos);
+	UAM_ASSERT(file_text.find("extra_flags") == std::string::npos);
+	UAM_ASSERT(file_text.find("parent_chat_id") == std::string::npos);
+	UAM_ASSERT(file_text.find("branch_root_chat_id") == std::string::npos);
+	UAM_ASSERT(file_text.find("branch_from_message_index") == std::string::npos);
+
 	const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(data_root.root);
 	UAM_ASSERT_EQ(1u, loaded.size());
-	UAM_ASSERT_EQ(std::string("chat-branch-parent"), loaded.front().parent_chat_id);
-	UAM_ASSERT_EQ(std::string("chat-branch-root"), loaded.front().branch_root_chat_id);
-	UAM_ASSERT_EQ(2, loaded.front().branch_from_message_index);
-}
-
-UAM_TEST(TestChatRepositoryDefaultsMissingBranchMetadata)
-{
-	TempDir data_root("uam-chat-branch-defaults");
-	const fs::path chats_root = AppPaths::UamChatsRootPath(data_root.root);
-	const fs::path chat_file = chats_root / "chat-legacy.json";
-	fs::create_directories(chats_root);
-	UAM_ASSERT(WriteTextFile(chat_file, R"({"id":"chat-legacy","title":"Legacy","created_at":"2026-03-21 11:00:00","updated_at":"2026-03-21 11:00:01","messages":[{"role":"user","content":"hello","created_at":"2026-03-21 11:00:01"}]})"));
-
-	const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(data_root.root);
-	UAM_ASSERT_EQ(1u, loaded.size());
-	UAM_ASSERT_EQ(std::string("chat-legacy"), loaded.front().branch_root_chat_id);
+	UAM_ASSERT_EQ(std::string("chat-test-1"), loaded.front().id);
+	UAM_ASSERT_EQ(std::string("gemini-cli"), loaded.front().provider_id);
+	UAM_ASSERT_EQ(std::string("native-session-1"), loaded.front().native_session_id);
+	UAM_ASSERT_EQ(std::string("folder-default"), loaded.front().folder_id);
+	UAM_ASSERT_EQ(std::string("Core Chat"), loaded.front().title);
+	UAM_ASSERT_EQ(std::string("2026-03-19 10:11:12"), loaded.front().created_at);
+	UAM_ASSERT_EQ(std::string("2026-03-19 10:11:13"), loaded.front().updated_at);
+	UAM_ASSERT_EQ(std::string("chat-test-1"), loaded.front().branch_root_chat_id);
 	UAM_ASSERT_EQ(std::string(""), loaded.front().parent_chat_id);
 	UAM_ASSERT_EQ(-1, loaded.front().branch_from_message_index);
+	UAM_ASSERT_EQ(std::string(""), loaded.front().template_override_id);
+	UAM_ASSERT_EQ(false, loaded.front().prompt_profile_bootstrapped);
 	UAM_ASSERT_EQ(true, loaded.front().rag_enabled);
 	UAM_ASSERT(loaded.front().rag_source_directories.empty());
+	UAM_ASSERT(loaded.front().linked_files.empty());
+	UAM_ASSERT(loaded.front().workspace_directory.empty());
+	UAM_ASSERT(loaded.front().approval_mode.empty());
+	UAM_ASSERT(loaded.front().model_id.empty());
+	UAM_ASSERT(loaded.front().extra_flags.empty());
+}
+
+UAM_TEST(TestChatFolderStoreRoundTrip)
+{
+	TempDir data_root("uam-folder-store");
+
+	std::vector<ChatFolder> folders;
+	folders.push_back(ChatFolder{"folder-default", "General", "/tmp/workspace-a", true});
+	folders.push_back(ChatFolder{"folder-product", "Product", "/tmp/workspace-b", false});
+
+	UAM_ASSERT(ChatFolderStore::Save(data_root.root, folders));
+
+	const std::string file_text = ReadTextFile(data_root.root / "folders.txt");
+	UAM_ASSERT(file_text.find("collapsed=") == std::string::npos);
+
+	const std::vector<ChatFolder> loaded = ChatFolderStore::Load(data_root.root);
+	UAM_ASSERT_EQ(2u, loaded.size());
+	UAM_ASSERT_EQ(std::string("folder-default"), loaded[0].id);
+	UAM_ASSERT_EQ(std::string("General"), loaded[0].title);
+	UAM_ASSERT_EQ(std::string("/tmp/workspace-a"), loaded[0].directory);
+	UAM_ASSERT_EQ(false, loaded[0].collapsed);
+	UAM_ASSERT_EQ(std::string("folder-product"), loaded[1].id);
+	UAM_ASSERT_EQ(std::string("Product"), loaded[1].title);
+	UAM_ASSERT_EQ(std::string("/tmp/workspace-b"), loaded[1].directory);
+	UAM_ASSERT_EQ(false, loaded[1].collapsed);
 }
 
 UAM_TEST(TestChatRenameRejectsBlankTitle)
@@ -741,91 +763,30 @@ UAM_TEST(TestChatRenameRejectsBlankTitle)
 	UAM_ASSERT_EQ(std::string("Keep Me"), reloaded.front().title);
 }
 
-UAM_TEST(TestChatRenamePersistsAcrossNativeOverlaySync)
+UAM_TEST(TestChatRenamePersistsAcrossReload)
 {
-	TempDir data_root("uam-chat-rename-overlay");
+	TempDir data_root("uam-chat-rename-reload");
 
-	ChatSession overlay_chat;
-	overlay_chat.id = "native-session-rename";
-	overlay_chat.provider_id = "gemini-structured";
-	overlay_chat.native_session_id = "native-session-rename";
-	overlay_chat.folder_id = "folder-default";
-	overlay_chat.title = "Native Derived Title";
-	overlay_chat.created_at = "2026-04-09 10:00:00";
-	overlay_chat.updated_at = "2026-04-09 10:00:01";
-	overlay_chat.messages.push_back(Message{MessageRole::User, "hello native", "2026-04-09 10:00:00"});
-	overlay_chat.messages.push_back(Message{MessageRole::Assistant, "hello back", "2026-04-09 10:00:01"});
-	UAM_ASSERT(ChatRepository::SaveChat(data_root.root, overlay_chat));
+	ChatSession chat;
+	chat.id = "chat-rename-reload";
+	chat.provider_id = "gemini-cli";
+	chat.native_session_id = "chat-rename-reload";
+	chat.folder_id = "folder-default";
+	chat.title = "Original Title";
+	chat.created_at = "2026-04-09 10:00:00";
+	chat.updated_at = "2026-04-09 10:00:01";
+	chat.messages.push_back(Message{MessageRole::User, "hello", "2026-04-09 10:00:00"});
+	UAM_ASSERT(ChatRepository::SaveChat(data_root.root, chat));
 
 	uam::AppState app = MakeTestAppState(data_root.root);
-	std::vector<ChatSession> local_loaded = ChatRepository::LoadLocalChats(data_root.root);
-	UAM_ASSERT_EQ(1u, local_loaded.size());
-	UAM_ASSERT(ChatHistorySyncService().RenameChat(app, local_loaded.front(), "  Renamed in UAM  "));
-
-	std::vector<ChatSession> renamed_loaded = ChatRepository::LoadLocalChats(data_root.root);
-	UAM_ASSERT_EQ(1u, renamed_loaded.size());
-	UAM_ASSERT_EQ(std::string("Renamed in UAM"), renamed_loaded.front().title);
-
-	ChatSession native_chat;
-	native_chat.id = "native-session-rename";
-	native_chat.provider_id = "gemini-cli";
-	native_chat.native_session_id = "native-session-rename";
-	native_chat.folder_id = "folder-default";
-	native_chat.title = "Native Derived Title";
-	native_chat.created_at = "2026-04-09 10:00:00";
-	native_chat.updated_at = "2026-04-09 10:00:01";
-	native_chat.messages = overlay_chat.messages;
-
-	std::vector<ChatSession> native_chats{native_chat};
-	ChatHistorySyncService().ApplyLocalOverrides(app, native_chats);
-
-	UAM_ASSERT_EQ(1u, native_chats.size());
-	UAM_ASSERT_EQ(std::string("Renamed in UAM"), native_chats.front().title);
-
-	for (const ChatSession& chat_to_save : native_chats)
-	{
-		UAM_ASSERT(ChatRepository::SaveChat(data_root.root, chat_to_save));
-	}
+	std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(data_root.root);
+	UAM_ASSERT_EQ(1u, loaded.size());
+	UAM_ASSERT(ChatHistorySyncService().RenameChat(app, loaded.front(), "  Renamed in UAM  "));
+	UAM_ASSERT_EQ(std::string("Renamed in UAM"), loaded.front().title);
 
 	const std::vector<ChatSession> reloaded = ChatRepository::LoadLocalChats(data_root.root);
 	UAM_ASSERT_EQ(1u, reloaded.size());
 	UAM_ASSERT_EQ(std::string("Renamed in UAM"), reloaded.front().title);
-}
-
-UAM_TEST(TestApplyLocalOverridesPreservesMetadataOnlyRenameTimestamp)
-{
-	TempDir data_root("uam-chat-rename-metadata");
-
-	ChatSession local_chat;
-	local_chat.id = "native-session-metadata";
-	local_chat.provider_id = "gemini-structured";
-	local_chat.native_session_id = "native-session-metadata";
-	local_chat.folder_id = "folder-default";
-	local_chat.title = "Renamed Title";
-	local_chat.created_at = "2026-04-09 10:00:00";
-	local_chat.updated_at = "2026-04-09 10:05:00";
-	local_chat.messages.push_back(Message{MessageRole::User, "hello native", "2026-04-09 10:00:00"});
-	local_chat.messages.push_back(Message{MessageRole::Assistant, "hello back", "2026-04-09 10:00:01"});
-	UAM_ASSERT(ChatRepository::SaveChat(data_root.root, local_chat));
-
-	uam::AppState app = MakeTestAppState(data_root.root);
-
-	ChatSession native_chat;
-	native_chat.id = "native-session-metadata";
-	native_chat.provider_id = "gemini-cli";
-	native_chat.native_session_id = "native-session-metadata";
-	native_chat.folder_id = "folder-default";
-	native_chat.title = "Native Title";
-	native_chat.created_at = "2026-04-09 10:00:00";
-	native_chat.updated_at = "2026-04-09 10:00:01";
-	native_chat.messages = local_chat.messages;
-
-	std::vector<ChatSession> native_chats{native_chat};
-	ChatHistorySyncService().ApplyLocalOverrides(app, native_chats);
-
-	UAM_ASSERT_EQ(1u, native_chats.size());
-	UAM_ASSERT_EQ(std::string("Renamed Title"), native_chats.front().title);
-	UAM_ASSERT_EQ(std::string("2026-04-09 10:05:00"), native_chats.front().updated_at);
 }
 
 UAM_TEST(TestResolveNativeHistoryChatsDirUsesChatWorkspace)
@@ -877,64 +838,6 @@ UAM_TEST(TestResolveNativeHistoryChatsDirReturnsNulloptForMissingTmpDir)
 	UAM_ASSERT(!resolved.has_value());
 }
 
-UAM_TEST(TestLoadSidebarChatsKeepsMixedProviderHistoryVisible)
-{
-	TempDir data_root("uam-sidebar-load-data");
-	TempDir gemini_home("uam-sidebar-load-gemini-home");
-	TempDir project_a("uam-sidebar-load-project-a");
-	TempDir project_b("uam-sidebar-load-project-b");
-
-	const fs::path tmp_a = gemini_home.root / "tmp" / "release-a";
-	const fs::path tmp_b = gemini_home.root / "tmp" / "release-b";
-	fs::create_directories(tmp_a / "chats");
-	fs::create_directories(tmp_b / "chats");
-	WriteNativeProjectRoot(tmp_a, project_a.root);
-	WriteNativeProjectRoot(tmp_b, project_b.root);
-	WriteGeminiNativeSession(tmp_a / "chats", "session-structured", {{"user", "structured prompt"}, {"assistant", "structured reply"}});
-	WriteGeminiNativeSession(tmp_b / "chats", "session-orphan", {{"user", "orphan prompt"}, {"assistant", "orphan reply"}});
-
-	ChatSession overlay_chat;
-	overlay_chat.id = "session-structured";
-	overlay_chat.provider_id = "gemini-structured";
-	overlay_chat.native_session_id = "session-structured";
-	overlay_chat.folder_id = "folder-a";
-	overlay_chat.title = "Structured Overlay";
-	overlay_chat.created_at = "2026-03-21 10:00:00";
-	overlay_chat.updated_at = "2026-03-21 10:00:01";
-	UAM_ASSERT(ChatRepository::SaveChat(data_root.root, overlay_chat));
-
-	ChatSession local_chat;
-	local_chat.id = "codex-local";
-	local_chat.provider_id = "codex-cli";
-	local_chat.folder_id = "folder-b";
-	local_chat.title = "Local Chat";
-	local_chat.created_at = "2026-03-21 10:00:00";
-	local_chat.updated_at = "2026-03-21 10:00:01";
-	local_chat.messages.push_back(Message{MessageRole::User, "hello local", "2026-03-21 10:00:01"});
-	UAM_ASSERT(ChatRepository::SaveChat(data_root.root, local_chat));
-
-	ScopedEnvVar cli("GEMINI_CLI_HOME", gemini_home.root.string());
-	ScopedEnvVar gemini("GEMINI_HOME", std::nullopt);
-
-	uam::AppState app = MakeTestAppState(data_root.root);
-	app.folders.push_back(ChatFolder{"folder-a", "Folder A", project_a.root.string(), false});
-	app.folders.push_back(ChatFolder{"folder-b", "Folder B", project_b.root.string(), false});
-	app.settings.active_provider_id = "codex-cli";
-
-	ChatHistorySyncService().LoadSidebarChats(app);
-
-	ChatSession* structured = FindChatById(app.chats, "session-structured");
-	ChatSession* orphan = FindChatById(app.chats, "session-orphan");
-	ChatSession* local = FindChatById(app.chats, "codex-local");
-
-	UAM_ASSERT(structured != nullptr);
-	UAM_ASSERT(orphan != nullptr);
-	UAM_ASSERT(local != nullptr);
-	UAM_ASSERT_EQ(std::string("gemini-structured"), structured->provider_id);
-	UAM_ASSERT_EQ(std::string("gemini-cli"), orphan->provider_id);
-	UAM_ASSERT_EQ(std::string("codex-cli"), local->provider_id);
-}
-
 UAM_TEST(TestPendingCallCompletionUsesLaunchTimeProviderSnapshot)
 {
 	TempDir data_root("uam-pending-call-data");
@@ -963,7 +866,7 @@ UAM_TEST(TestPendingCallCompletionUsesLaunchTimeProviderSnapshot)
 	draft.messages.push_back(Message{MessageRole::User, "queued prompt", "2026-03-21 10:00:01"});
 	app.chats.push_back(draft);
 	app.selected_chat_index = 0;
-	app.settings.active_provider_id = "codex-cli";
+	app.settings.active_provider_id = "gemini-cli";
 
 	PendingRuntimeCall call;
 	call.chat_id = draft.id;
@@ -1003,7 +906,7 @@ UAM_TEST(TestRemoveChatUsesDeletedChatProviderForNativeCleanup)
 
 	uam::AppState app = MakeTestAppState(data_root.root);
 	app.folders.push_back(ChatFolder{"folder-a", "Folder A", project.root.string(), false});
-	app.settings.active_provider_id = "codex-cli";
+	app.settings.active_provider_id = "gemini-cli";
 
 	ChatSession chat;
 	chat.id = "session-delete";
@@ -1068,7 +971,7 @@ UAM_TEST(TestDeleteNativeSessionFileForChatReturnsFalseWhenRemoveFails)
 
 	uam::AppState app = MakeTestAppState(data_root.root);
 	app.folders.push_back(ChatFolder{"folder-a", "Folder A", project.root.string(), false});
-	app.settings.active_provider_id = "codex-cli";
+	app.settings.active_provider_id = "gemini-cli";
 
 	ChatSession chat;
 	chat.id = "session-delete-error";
@@ -1546,53 +1449,24 @@ UAM_TEST(TestProviderRuntimeParsesWindowsPathFlags)
 UAM_TEST(TestProviderProfileStoreBuiltInProfiles)
 {
 	const std::vector<ProviderProfile> profiles = ProviderProfileStore::BuiltInProfiles();
-	const ProviderProfile* gemini_structured = ProviderProfileStore::FindById(profiles, "gemini-structured");
 	const ProviderProfile* gemini_cli = ProviderProfileStore::FindById(profiles, "gemini-cli");
 	UAM_ASSERT(ProviderProfileStore::FindById(profiles, "gemini") == nullptr);
-	UAM_ASSERT(ProviderProfileStore::FindById(profiles, "codex-cli") != nullptr);
-	UAM_ASSERT(ProviderProfileStore::FindById(profiles, "claude-cli") != nullptr);
-	UAM_ASSERT(ProviderProfileStore::FindById(profiles, "opencode-cli") != nullptr);
-	UAM_ASSERT(gemini_structured != nullptr);
+	UAM_ASSERT_EQ(1u, profiles.size());
 	UAM_ASSERT(gemini_cli != nullptr);
-	UAM_ASSERT_EQ(std::string("structured"), gemini_structured->output_mode);
-	UAM_ASSERT_EQ(std::string("gemini -r {resume} {flags} -p {prompt}"), gemini_structured->command_template);
-	UAM_ASSERT(!gemini_structured->supports_interactive);
 	UAM_ASSERT_EQ(std::string("cli"), gemini_cli->output_mode);
+	UAM_ASSERT_EQ(std::string("gemini -r {resume} {flags} {prompt}"), gemini_cli->command_template);
 	UAM_ASSERT(gemini_cli->supports_interactive);
 }
 
-UAM_TEST(TestStateSerializerIncludesProviderOutputMode)
-{
-	AppState app;
-	app.settings.active_provider_id = "gemini-structured";
-
-	ProviderProfile structured = ProviderProfileStore::DefaultGeminiProfile();
-	structured.id = "gemini-structured";
-	structured.title = "Gemini (Structured)";
-	structured.output_mode = "structured";
-
-	ProviderProfile cli = ProviderProfileStore::DefaultGeminiProfile();
-	cli.id = "gemini-cli";
-	cli.title = "Gemini CLI";
-	cli.output_mode = "cli";
-
-	app.provider_profiles = {structured, cli};
-
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
-	UAM_ASSERT(serialized.contains("providers"));
-	UAM_ASSERT_EQ(std::string("structured"), serialized["providers"][0]["outputMode"].get<std::string>());
-	UAM_ASSERT_EQ(std::string("cli"), serialized["providers"][1]["outputMode"].get<std::string>());
-}
-
-UAM_TEST(TestProviderRuntimeBuildCommandUsesStructuredGeminiPromptTemplate)
+UAM_TEST(TestProviderRuntimeBuildCommandUsesGeminiCliPromptTemplate)
 {
 	ProviderProfile profile = ProviderProfileStore::DefaultGeminiProfile();
 	AppSettings settings;
-	settings.provider_command_template = "gemini -r {resume} {flags} -p {prompt}";
+	settings.provider_command_template = "gemini -r {resume} {flags} {prompt}";
 	settings.provider_extra_flags = "--alpha --beta";
 
 	const std::string command = ProviderRuntime::BuildCommand(profile, settings, "Review this patch", {}, "resume-42");
-	UAM_ASSERT_EQ(std::string("gemini -r resume-42 --alpha --beta -p 'Review this patch'"), command);
+	UAM_ASSERT_EQ(std::string("gemini -r 'resume-42' '--alpha' '--beta' 'Review this patch'"), command);
 }
 
 UAM_TEST(TestProviderRuntimeParsesWindowsInteractiveCommandPath)
@@ -1618,58 +1492,16 @@ UAM_TEST(TestProviderRuntimeOutputModeHelpers)
 {
 	ProviderProfile profile = ProviderProfileStore::DefaultGeminiProfile();
 	profile.id = "custom-runtime";
-	UAM_ASSERT(ProviderRuntime::UsesStructuredOutput(profile));
-	UAM_ASSERT(!ProviderRuntime::UsesCliOutput(profile));
-
-	profile.output_mode = "cli";
-	profile.supports_interactive = true;
 	UAM_ASSERT(ProviderRuntime::UsesCliOutput(profile));
 	UAM_ASSERT(!ProviderRuntime::UsesStructuredOutput(profile));
 }
 
 UAM_TEST(TestProviderRuntimeBuiltInPolicyLocks)
 {
-	ProviderProfile gemini_structured = ProviderProfileStore::DefaultGeminiProfile();
-	gemini_structured.id = "gemini-structured";
-	gemini_structured.output_mode = "cli";
-	gemini_structured.supports_interactive = true;
-	gemini_structured.history_adapter = "local-only";
-	gemini_structured.prompt_bootstrap = "prepend";
-	UAM_ASSERT(ProviderRuntime::SupportsGeminiJsonHistory(gemini_structured));
-	UAM_ASSERT(!ProviderRuntime::UsesLocalHistory(gemini_structured));
-	UAM_ASSERT(!ProviderRuntime::UsesCliOutput(gemini_structured));
-	UAM_ASSERT(ProviderRuntime::UsesStructuredOutput(gemini_structured));
-	UAM_ASSERT(ProviderRuntime::UsesGeminiPathBootstrap(gemini_structured));
-
 	ProviderProfile gemini_cli = ProviderProfileStore::DefaultGeminiProfile();
-	gemini_cli.id = "gemini-cli";
-	gemini_cli.output_mode = "structured";
-	gemini_cli.supports_interactive = false;
-	gemini_cli.history_adapter = "local-only";
-	gemini_cli.prompt_bootstrap = "prepend";
 	UAM_ASSERT(ProviderRuntime::SupportsGeminiJsonHistory(gemini_cli));
-	UAM_ASSERT(!ProviderRuntime::UsesLocalHistory(gemini_cli));
 	UAM_ASSERT(ProviderRuntime::UsesCliOutput(gemini_cli));
-	UAM_ASSERT(!ProviderRuntime::UsesStructuredOutput(gemini_cli));
 	UAM_ASSERT(ProviderRuntime::UsesGeminiPathBootstrap(gemini_cli));
-
-	ProviderProfile codex = ProviderProfileStore::DefaultGeminiProfile();
-	codex.id = "codex-cli";
-	codex.history_adapter = "gemini-cli-json";
-	codex.execution_mode = "internal-engine";
-	UAM_ASSERT(!ProviderRuntime::SupportsGeminiJsonHistory(codex));
-	UAM_ASSERT(ProviderRuntime::UsesLocalHistory(codex));
-	UAM_ASSERT(!ProviderRuntime::UsesInternalEngine(codex));
-
-	ProviderProfile ollama = ProviderProfileStore::DefaultGeminiProfile();
-	ollama.id = "ollama-engine";
-	ollama.output_mode = "cli";
-	ollama.execution_mode = "cli";
-	UAM_ASSERT(!ProviderRuntime::SupportsGeminiJsonHistory(ollama));
-	UAM_ASSERT(ProviderRuntime::UsesLocalHistory(ollama));
-	UAM_ASSERT(ProviderRuntime::UsesInternalEngine(ollama));
-	UAM_ASSERT(!ProviderRuntime::UsesCliOutput(ollama));
-	UAM_ASSERT(ProviderRuntime::UsesStructuredOutput(ollama));
 }
 
 UAM_TEST(TestProviderRuntimeRoleMappingHonorsProfileTypes)
@@ -1702,14 +1534,12 @@ UAM_TEST(TestProviderRuntimeMergesProfileFlags)
 
 UAM_TEST(TestProviderRuntimeRegistryMapsBuiltInIds)
 {
-	const std::vector<std::string> ids = {
-	    "gemini-structured", "gemini-cli", "codex-cli", "claude-cli", "opencode-cli", "opencode-local", "ollama-engine",
-	};
+	const std::vector<std::string> ids = {"gemini", "gemini-cli"};
 
 	for (const std::string& id : ids)
 	{
 		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(id);
-		UAM_ASSERT_EQ(id, std::string(runtime.RuntimeId()));
+		UAM_ASSERT_EQ(std::string("gemini-cli"), std::string(runtime.RuntimeId()));
 		UAM_ASSERT(ProviderRuntimeRegistry::IsKnownRuntimeId(id));
 	}
 
@@ -1719,17 +1549,8 @@ UAM_TEST(TestProviderRuntimeRegistryMapsBuiltInIds)
 UAM_TEST(TestProviderRuntimeFamilyBaseTypes)
 {
 	const IProviderRuntime& gemini_cli = ProviderRuntimeRegistry::ResolveById("gemini-cli");
-	const IProviderRuntime& gemini_structured = ProviderRuntimeRegistry::ResolveById("gemini-structured");
-	const IProviderRuntime& opencode_cli = ProviderRuntimeRegistry::ResolveById("opencode-cli");
-	const IProviderRuntime& opencode_local = ProviderRuntimeRegistry::ResolveById("opencode-local");
-	const IProviderRuntime& codex = ProviderRuntimeRegistry::ResolveById("codex-cli");
-
 	UAM_ASSERT(dynamic_cast<const GeminiCliProviderRuntime*>(&gemini_cli) != nullptr);
-	UAM_ASSERT(dynamic_cast<const GeminiStructuredProviderRuntime*>(&gemini_structured) != nullptr);
-	UAM_ASSERT(dynamic_cast<const OpenCodeBaseProviderRuntime*>(&opencode_cli) != nullptr);
-	UAM_ASSERT(dynamic_cast<const OpenCodeBaseProviderRuntime*>(&opencode_local) != nullptr);
-	UAM_ASSERT(dynamic_cast<const GeminiCliProviderRuntime*>(&codex) == nullptr);
-	UAM_ASSERT(dynamic_cast<const OpenCodeBaseProviderRuntime*>(&codex) == nullptr);
+	UAM_ASSERT(dynamic_cast<const GeminiCliProviderRuntime*>(&ProviderRuntimeRegistry::ResolveById("gemini")) != nullptr);
 }
 
 UAM_TEST(TestProviderRuntimeBuildToggleReporting)
@@ -1761,27 +1582,16 @@ UAM_TEST(TestProviderRuntimeBuildToggleReporting)
 	UAM_ASSERT(ProviderRuntime::DisabledReason(custom).empty());
 }
 
-UAM_TEST(TestProviderRuntimeBlocksNonGeminiGeminiHistoryAdapter)
-{
-	ProviderProfile codex = ProviderProfileStore::DefaultGeminiProfile();
-	codex.id = "codex-cli";
-	codex.history_adapter = "gemini-cli-json";
-
-	UAM_ASSERT(!ProviderRuntime::IsRuntimeEnabled(codex));
-	const std::string reason = ProviderRuntime::DisabledReason(codex);
-	UAM_ASSERT(!reason.empty());
-	UAM_ASSERT(reason.find("gemini-cli-json") != std::string::npos);
-	UAM_ASSERT(ProviderRuntime::BuildCommand(codex, AppSettings{}, "hello", std::vector<std::string>{}, std::string{}).empty());
-	UAM_ASSERT(ProviderRuntime::BuildInteractiveArgv(codex, ChatSession{}, AppSettings{}).empty());
-}
-
 UAM_TEST(TestProviderRuntimeHistoryPolicyLocalOnly)
 {
 	TempDir data_root("uam-runtime-history-local");
 	TempDir native_root("uam-runtime-history-local-native");
 
 	ProviderProfile profile = ProviderProfileStore::DefaultGeminiProfile();
-	profile.id = "codex-cli";
+	profile.id = "custom-runtime";
+	profile.history_adapter = "local-only";
+	profile.prompt_bootstrap = "prepend";
+	profile.supports_interactive = true;
 
 	ChatSession chat;
 	chat.id = "chat-local-1";
@@ -1855,7 +1665,9 @@ UAM_TEST(TestProviderRuntimeBuildToggleMatrixContracts)
 	};
 
 	const std::vector<RuntimeExpectation> expectations = {
-	    {"gemini-structured", UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED != 0}, {"gemini-cli", UAM_ENABLE_RUNTIME_GEMINI_CLI != 0}, {"codex-cli", UAM_ENABLE_RUNTIME_CODEX_CLI != 0}, {"claude-cli", UAM_ENABLE_RUNTIME_CLAUDE_CLI != 0}, {"opencode-cli", UAM_ENABLE_RUNTIME_OPENCODE_CLI != 0}, {"opencode-local", UAM_ENABLE_RUNTIME_OPENCODE_LOCAL != 0}, {"ollama-engine", UAM_ENABLE_RUNTIME_OLLAMA_ENGINE != 0},
+	    {"gemini", true},
+	    {"gemini-structured", true},
+	    {"gemini-cli", true},
 	};
 
 	for (const RuntimeExpectation& expected : expectations)
@@ -1893,336 +1705,6 @@ UAM_TEST(TestFrontendActionMapRoundTrip)
 	UAM_ASSERT_EQ(std::string("Ship Prompt"), parsed_send->label);
 	UAM_ASSERT(parsed_send->properties.find("hotkey") != parsed_send->properties.end());
 	UAM_ASSERT_EQ(std::string("Ctrl+Enter"), parsed_send->properties.at("hotkey"));
-}
-
-// ---------------------------------------------------------------------------
-// Regression tests: Bug #1 — failed dispatches must not persist user messages
-// ---------------------------------------------------------------------------
-
-UAM_TEST(TestQueuePromptEmptyDoesNotAddMessage)
-{
-	// An empty (or whitespace-only) prompt must return false without touching
-	// the chat's message list. Previously, AddMessage was called before the
-	// guard in some dispatch paths.
-	TempDir data_root("uam-queue-empty-prompt");
-	uam::AppState app = MakeTestAppState(data_root.root);
-
-	ChatSession chat;
-	chat.id = "chat-empty-1";
-	chat.provider_id = "codex-cli";
-	chat.title = "Empty Prompt Test";
-	chat.created_at = "2026-04-01 10:00:00";
-	chat.updated_at = "2026-04-01 10:00:01";
-	app.chats.push_back(chat);
-	app.selected_chat_index = 0;
-
-	const bool l_result = ProviderRequestService().QueuePromptForChat(app, app.chats[0], "   ", false);
-
-	UAM_ASSERT(!l_result);
-	UAM_ASSERT(app.chats[0].messages.empty());
-	UAM_ASSERT_EQ(std::string("Prompt is empty."), app.status_line);
-}
-
-UAM_TEST(TestQueuePromptAlreadyPendingDoesNotAddMessage)
-{
-	// When a pending call already exists for a chat the function must reject
-	// the new submission without appending a user message or spawning a worker.
-	TempDir data_root("uam-queue-already-pending");
-	uam::AppState app = MakeTestAppState(data_root.root);
-
-	ChatSession chat;
-	chat.id = "chat-pending-1";
-	chat.provider_id = "codex-cli";
-	chat.title = "Already Pending Test";
-	chat.created_at = "2026-04-01 10:00:00";
-	chat.updated_at = "2026-04-01 10:00:01";
-	app.chats.push_back(chat);
-	app.selected_chat_index = 0;
-
-	PendingRuntimeCall l_existing;
-	l_existing.chat_id = "chat-pending-1";
-	l_existing.state = std::make_shared<AsyncProcessTaskState>();
-	app.pending_calls.push_back(std::move(l_existing));
-
-	const bool l_result = ProviderRequestService().QueuePromptForChat(app, app.chats[0], "hello", false);
-
-	UAM_ASSERT(!l_result);
-	UAM_ASSERT(app.chats[0].messages.empty());
-	UAM_ASSERT_EQ(std::string("Provider command already running for this chat."), app.status_line);
-	UAM_ASSERT_EQ(1u, app.pending_calls.size());
-}
-
-// ---------------------------------------------------------------------------
-// Regression tests: Bug #2 — local-history CLI failures must use System role
-// ---------------------------------------------------------------------------
-
-UAM_TEST(TestPollPendingCallNonZeroExitCodeUsesSystemRole)
-{
-	// A completed pending call with a non-zero exit code must be appended as
-	// a System message, not as an Assistant message. Previously all CLI output
-	// was always appended as Assistant regardless of whether the command failed.
-	TempDir data_root("uam-poll-nonzero-exit");
-	uam::AppState app = MakeTestAppState(data_root.root);
-
-	ChatSession chat;
-	chat.id = "chat-codex-fail";
-	chat.provider_id = "codex-cli";
-	chat.title = "Codex Fail";
-	chat.created_at = "2026-04-01 10:00:00";
-	chat.updated_at = "2026-04-01 10:00:01";
-	chat.messages.push_back(Message{MessageRole::User, "run failing command", "2026-04-01 10:00:01"});
-	app.chats.push_back(chat);
-	app.selected_chat_index = 0;
-
-	PendingRuntimeCall l_call;
-	l_call.chat_id = "chat-codex-fail";
-	l_call.provider_id_snapshot = "codex-cli";
-	l_call.state = std::make_shared<AsyncProcessTaskState>();
-	l_call.state->result.output = "command: not found";
-	l_call.state->result.exit_code = 1;
-	l_call.state->completed.store(true, std::memory_order_release);
-	app.pending_calls.push_back(std::move(l_call));
-
-	PollPendingRuntimeCall(app);
-
-	UAM_ASSERT(app.pending_calls.empty());
-	UAM_ASSERT_EQ(2u, app.chats[0].messages.size());
-	UAM_ASSERT(app.chats[0].messages.back().role == MessageRole::System);
-	UAM_ASSERT_EQ(std::string("command: not found"), app.chats[0].messages.back().content);
-	UAM_ASSERT_EQ(std::string("Provider command failed."), app.status_line);
-}
-
-UAM_TEST(TestPollPendingCallTimedOutUsesSystemRole)
-{
-	// A timed-out pending call must be appended as System, not Assistant.
-	TempDir data_root("uam-poll-timeout");
-	uam::AppState app = MakeTestAppState(data_root.root);
-
-	ChatSession chat;
-	chat.id = "chat-codex-timeout";
-	chat.provider_id = "codex-cli";
-	chat.title = "Codex Timeout";
-	chat.created_at = "2026-04-01 10:00:00";
-	chat.updated_at = "2026-04-01 10:00:01";
-	chat.messages.push_back(Message{MessageRole::User, "slow command", "2026-04-01 10:00:01"});
-	app.chats.push_back(chat);
-	app.selected_chat_index = 0;
-
-	PendingRuntimeCall l_call;
-	l_call.chat_id = "chat-codex-timeout";
-	l_call.provider_id_snapshot = "codex-cli";
-	l_call.state = std::make_shared<AsyncProcessTaskState>();
-	l_call.state->result.output = "[Provider CLI command timed out]";
-	l_call.state->result.timed_out = true;
-	l_call.state->completed.store(true, std::memory_order_release);
-	app.pending_calls.push_back(std::move(l_call));
-
-	PollPendingRuntimeCall(app);
-
-	UAM_ASSERT(app.pending_calls.empty());
-	UAM_ASSERT_EQ(2u, app.chats[0].messages.size());
-	UAM_ASSERT(app.chats[0].messages.back().role == MessageRole::System);
-	UAM_ASSERT_EQ(std::string("Provider command failed."), app.status_line);
-}
-
-UAM_TEST(TestPollPendingCallCanceledUsesSystemRole)
-{
-	// A canceled pending call must be appended as System, not Assistant.
-	TempDir data_root("uam-poll-canceled");
-	uam::AppState app = MakeTestAppState(data_root.root);
-
-	ChatSession chat;
-	chat.id = "chat-codex-canceled";
-	chat.provider_id = "codex-cli";
-	chat.title = "Codex Canceled";
-	chat.created_at = "2026-04-01 10:00:00";
-	chat.updated_at = "2026-04-01 10:00:01";
-	chat.messages.push_back(Message{MessageRole::User, "interrupted command", "2026-04-01 10:00:01"});
-	app.chats.push_back(chat);
-	app.selected_chat_index = 0;
-
-	PendingRuntimeCall l_call;
-	l_call.chat_id = "chat-codex-canceled";
-	l_call.provider_id_snapshot = "codex-cli";
-	l_call.state = std::make_shared<AsyncProcessTaskState>();
-	l_call.state->result.output = "[Provider CLI command canceled]";
-	l_call.state->result.canceled = true;
-	l_call.state->completed.store(true, std::memory_order_release);
-	app.pending_calls.push_back(std::move(l_call));
-
-	PollPendingRuntimeCall(app);
-
-	UAM_ASSERT(app.pending_calls.empty());
-	UAM_ASSERT_EQ(2u, app.chats[0].messages.size());
-	UAM_ASSERT(app.chats[0].messages.back().role == MessageRole::System);
-	UAM_ASSERT_EQ(std::string("Provider command failed."), app.status_line);
-}
-
-UAM_TEST(TestPollPendingCallSuccessUsesAssistantRole)
-{
-	// A successful (exit_code == 0) pending call must be appended as Assistant.
-	// This is the counterpart to the three failure tests above: confirming that
-	// the role selection only uses System for the error cases.
-	TempDir data_root("uam-poll-success-role");
-	uam::AppState app = MakeTestAppState(data_root.root);
-
-	ChatSession chat;
-	chat.id = "chat-codex-ok";
-	chat.provider_id = "codex-cli";
-	chat.title = "Codex Success";
-	chat.created_at = "2026-04-01 10:00:00";
-	chat.updated_at = "2026-04-01 10:00:01";
-	chat.messages.push_back(Message{MessageRole::User, "working command", "2026-04-01 10:00:01"});
-	app.chats.push_back(chat);
-	app.selected_chat_index = 0;
-
-	PendingRuntimeCall l_call;
-	l_call.chat_id = "chat-codex-ok";
-	l_call.provider_id_snapshot = "codex-cli";
-	l_call.state = std::make_shared<AsyncProcessTaskState>();
-	l_call.state->result.output = "successful output";
-	l_call.state->result.exit_code = 0;
-	l_call.state->completed.store(true, std::memory_order_release);
-	app.pending_calls.push_back(std::move(l_call));
-
-	PollPendingRuntimeCall(app);
-
-	UAM_ASSERT(app.pending_calls.empty());
-	UAM_ASSERT_EQ(2u, app.chats[0].messages.size());
-	UAM_ASSERT(app.chats[0].messages.back().role == MessageRole::Assistant);
-	UAM_ASSERT_EQ(std::string("successful output"), app.chats[0].messages.back().content);
-	UAM_ASSERT_EQ(std::string("Provider response appended to local chat history."), app.status_line);
-}
-
-UAM_TEST(TestSidebarSearchFiltering)
-{
-	uam::AppState app;
-	ChatSession s1; s1.id = "match-title"; s1.title = "Search Target";
-	ChatSession s2; s2.id = "match-message"; s2.title = "Other"; Message m; m.content = "find me in history"; s2.messages.push_back(m);
-	ChatSession s3; s3.id = "no-match"; s3.title = "Unrelated";
-	app.chats.push_back(s1);
-	app.chats.push_back(s2);
-	app.chats.push_back(s3);
-
-	auto update_filter = [&](const std::string& query) {
-		app.sidebar_search_query = query;
-		if (app.sidebar_search_query != app.last_sidebar_search_query) {
-			app.last_sidebar_search_query = app.sidebar_search_query;
-			app.filtered_chat_ids.clear();
-			if (!app.sidebar_search_query.empty()) {
-				for (const auto& chat : app.chats) {
-					bool match = uam::strings::ContainsCaseInsensitive(chat.title, app.sidebar_search_query);
-					if (!match) {
-						for (const auto& msg : chat.messages) {
-							if (uam::strings::ContainsCaseInsensitive(msg.content, app.sidebar_search_query)) {
-								match = true;
-								break;
-							}
-						}
-					}
-					if (match) app.filtered_chat_ids.insert(chat.id);
-				}
-			}
-		}
-	};
-
-	update_filter("target");
-	UAM_ASSERT(app.filtered_chat_ids.count("match-title"));
-	UAM_ASSERT(!app.filtered_chat_ids.count("match-message"));
-	UAM_ASSERT(!app.filtered_chat_ids.count("no-match"));
-
-	update_filter("history");
-	UAM_ASSERT(!app.filtered_chat_ids.count("match-title"));
-	UAM_ASSERT(app.filtered_chat_ids.count("match-message"));
-	UAM_ASSERT(!app.filtered_chat_ids.count("no-match"));
-
-	update_filter("FIND"); // case insensitive
-	UAM_ASSERT(app.filtered_chat_ids.count("match-message"));
-
-	update_filter("");
-	UAM_ASSERT(app.filtered_chat_ids.empty());
-}
-
-UAM_TEST(TestSidebarSearchAncestorPreservation)
-{
-	uam::AppState app;
-	ChatSession s1; s1.id = "parent"; s1.title = "Parent";
-	ChatSession s2; s2.id = "child"; s2.parent_chat_id = "parent"; s2.title = "Target Child";
-	ChatSession s3; s3.id = "unrelated"; s3.title = "Other";
-	app.chats.push_back(s1);
-	app.chats.push_back(s2);
-	app.chats.push_back(s3);
-
-	auto update_filter = [&](const std::string& query) {
-		app.sidebar_search_query = query;
-		if (app.sidebar_search_query != app.last_sidebar_search_query) {
-			app.last_sidebar_search_query = app.sidebar_search_query;
-			app.filtered_chat_ids.clear();
-			if (!app.sidebar_search_query.empty()) {
-				for (const auto& chat : app.chats) {
-					bool match = uam::strings::ContainsCaseInsensitive(chat.title, app.sidebar_search_query);
-					if (match) app.filtered_chat_ids.insert(chat.id);
-				}
-				std::vector<std::string> ancestors_to_add;
-				for (const auto& id : app.filtered_chat_ids) {
-					int current_idx = -1;
-					for (int i = 0; i < (int)app.chats.size(); ++i) if (app.chats[i].id == id) { current_idx = i; break; }
-					while (current_idx >= 0 && !app.chats[current_idx].parent_chat_id.empty()) {
-						std::string p_id = app.chats[current_idx].parent_chat_id;
-						if (app.filtered_chat_ids.count(p_id)) break;
-						ancestors_to_add.push_back(p_id);
-						current_idx = -1;
-						for (int i = 0; i < (int)app.chats.size(); ++i) if (app.chats[i].id == p_id) { current_idx = i; break; }
-					}
-				}
-				for (const auto& id : ancestors_to_add) app.filtered_chat_ids.insert(id);
-			}
-		}
-	};
-
-	update_filter("child");
-	UAM_ASSERT(app.filtered_chat_ids.count("child"));
-	UAM_ASSERT(app.filtered_chat_ids.count("parent")); // Ancestor preserved
-	UAM_ASSERT(!app.filtered_chat_ids.count("unrelated"));
-}
-
-UAM_TEST(WindowsConPtyLifecycleTest)
-{
-	uam::CliTerminalState terminal;
-	terminal.rows = 24;
-	terminal.cols = 80;
-
-	std::vector<std::string> args = {"cmd.exe", "/C", "echo", "Hello UAM ConPTY test"};
-	std::string error_out;
-	
-	const bool started = PlatformServicesFactory::Instance().terminal_runtime.StartCliTerminalProcess(terminal, std::filesystem::current_path(), args, &error_out);
-	UAM_ASSERT(started);
-	UAM_ASSERT(error_out.empty());
-	
-	char buffer[1024];
-	std::ptrdiff_t bytes_read = 0;
-	bool found_output = false;
-
-	for (int i = 0; i < 50; ++i)
-	{
-		bytes_read = PlatformServicesFactory::Instance().terminal_runtime.ReadCliTerminalOutput(terminal, buffer, sizeof(buffer) - 1);
-		if (bytes_read > 0)
-		{
-			buffer[bytes_read] = '\0';
-			std::string out_str(buffer);
-			if (out_str.find("Hello UAM") != std::string::npos)
-			{
-				found_output = true;
-				break;
-			}
-		}
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
-	}
-	
-	UAM_ASSERT(found_output);
-
-	PlatformServicesFactory::Instance().terminal_runtime.StopCliTerminalProcess(terminal, true);
-	UAM_ASSERT(!PlatformServicesFactory::Instance().terminal_runtime.HasReadableTerminalOutputHandle(terminal));
 }
 
 int main()

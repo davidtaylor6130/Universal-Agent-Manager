@@ -377,7 +377,7 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 
 	if (settings.provider_command_template.empty())
 	{
-		settings.provider_command_template = "gemini {resume} {flags} -p {prompt}";
+		settings.provider_command_template = "gemini {resume} {flags} {prompt}";
 	}
 
 	if (settings.gemini_command_template.empty())

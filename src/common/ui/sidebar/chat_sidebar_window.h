@@ -4,7 +4,6 @@
 #include "common/ui/sidebar/chat_sidebar_header.h"
 #include "common/ui/sidebar/chat_sidebar_item.h"
 #include "common/ui/sidebar/chat_sidebar_new_chat_popup.h"
-#include "common/ui/sidebar/chat_sidebar_new_folder_popup.h"
 #include "common/ui/sidebar/chat_sidebar_options_popup.h"
 #include "common/ui/sidebar/chat_sidebar_tree.h"
 
@@ -18,22 +17,8 @@ inline void DrawLeftPane(AppState& app)
 
 	DrawChatSidebarHeader(app);
 
-	std::string chat_to_delete;
 	std::string chat_to_open_options;
-	DrawChatSidebarTree(app, chat_to_delete, chat_to_open_options);
-
-	if (!chat_to_delete.empty())
-	{
-		if (app.settings.confirm_delete_chat)
-		{
-			app.pending_delete_chat_id = chat_to_delete;
-			app.open_delete_chat_popup = true;
-		}
-		else
-		{
-			RemoveChatById(app, chat_to_delete);
-		}
-	}
+	DrawChatSidebarTree(app, chat_to_open_options);
 
 	if (!chat_to_open_options.empty())
 	{
@@ -43,7 +28,6 @@ inline void DrawLeftPane(AppState& app)
 
 	DrawSidebarChatOptionsPopup(app);
 	DrawSidebarNewChatPopup(app);
-	DrawSidebarNewFolderPopup(app);
 
 	EndPanel();
 }

@@ -3,11 +3,9 @@
 #include "application_core_helpers.h"
 #include "chat_domain_service.h"
 #include "persistence_coordinator.h"
-#include "provider_profile_migration_service.h"
 #include "provider_resolution_service.h"
 #include "runtime_local_service.h"
 #include "runtime_orchestration_services.h"
-#include "template_runtime_service.h"
 
 #include <curl/curl.h>
 
@@ -18,11 +16,9 @@
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
 #include "common/config/frontend_actions.h"
-#include "common/provider/markdown_template_catalog.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
 #include "common/provider/runtime/provider_build_config.h"
-#include "common/rag/rag_index_service.h"
 #include "common/runtime/terminal_common.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
 #include "common/runtime/local_engine_runtime_service.h"
@@ -30,7 +26,6 @@
 #include "common/ui/chat_actions/chat_action_pending_calls.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/config/settings_store.h"
-#include "common/vcs/vcs_workspace_service.h"
 #include "common/platform/platform_services.h"
 
 #include "cef/cef_push.h"
@@ -72,11 +67,6 @@ namespace uam_cef_globals
 
 namespace
 {
-
-constexpr const char* kRuntimeBackendProviderCli = "provider-cli";
-#if UAM_ENABLE_RUNTIME_OLLAMA_ENGINE
-constexpr const char* kRuntimeIdLocalEngine = "ollama-engine";
-#endif
 
 void ResetAsyncCommandTask(uam::AsyncCommandTask& task)
 {
@@ -285,11 +275,6 @@ bool Application::InitializeState()
 	PersistenceCoordinator().LoadSettings(m_app);
 	bool l_settingsDirty = false;
 	m_app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
-	bool l_providersDirty = ProviderProfileMigrationService().MigrateProviderProfilesToFixedModeIds(m_app);
-
-	if (ProviderProfileMigrationService().MigrateActiveProviderIdToFixedModes(m_app))
-		l_settingsDirty = true;
-
 	if (ProviderResolutionService().ActiveProvider(m_app) == nullptr && !m_app.provider_profiles.empty())
 	{
 		m_app.settings.active_provider_id = m_app.provider_profiles.front().id;
@@ -300,11 +285,7 @@ bool Application::InitializeState()
 	{
 		m_app.settings.provider_command_template = lp_activeProfile->command_template;
 		m_app.settings.gemini_command_template = m_app.settings.provider_command_template;
-#if UAM_ENABLE_RUNTIME_OLLAMA_ENGINE
-		m_app.settings.runtime_backend = ProviderRuntime::UsesInternalEngine(*lp_activeProfile) ? kRuntimeIdLocalEngine : kRuntimeBackendProviderCli;
-#else
-		m_app.settings.runtime_backend = kRuntimeBackendProviderCli;
-#endif
+		m_app.settings.runtime_backend = "provider-cli";
 
 		if (!ProviderRuntime::IsRuntimeEnabled(*lp_activeProfile))
 		{
@@ -313,31 +294,10 @@ bool Application::InitializeState()
 		}
 	}
 
-	PersistenceCoordinator().LoadFrontendActions(m_app);
-	TemplateRuntimeService().RefreshTemplateCatalog(m_app, true);
 	m_app.folders = ChatFolderStore::Load(m_app.data_root);
 	ChatDomainService().EnsureDefaultFolder(m_app);
 	ChatFolderStore::Save(m_app.data_root, m_app.folders);
 	ChatHistorySyncService().LoadSidebarChatsByDiscovery(m_app);
-
-	if (!m_app.chats.empty())
-	{
-		ChatHistorySyncService().ReconcileUnresolvedDraftLinksByDiscovery(m_app);
-		ChatHistorySyncService().LoadSidebarChatsByDiscovery(m_app);
-	}
-
-	if (m_app.chats.empty())
-	{
-		auto import_result = ChatHistorySyncService().ImportAllNativeChatsByDiscovery(m_app, false);
-		m_app.latest_imported_count = import_result.imported_count;
-		m_app.latest_import_total_count = import_result.total_count;
-
-		if (import_result.imported_count > 0)
-			ChatHistorySyncService().LoadSidebarChatsByDiscovery(m_app);
-	}
-
-	if (ProviderProfileMigrationService().MigrateChatProviderBindingsToFixedModes(m_app))
-		l_settingsDirty = true;
 
 	if (!m_app.chats.empty())
 	{
@@ -349,11 +309,6 @@ bool Application::InitializeState()
 
 		ChatDomainService().RefreshRememberedSelection(m_app);
 	}
-
-	ChatHistorySyncService().RefreshNativeSessionDirectory(m_app);
-
-	if (ProviderResolutionService().ActiveProviderUsesNativeOverlayHistory(m_app) && m_app.native_history_chats_dir.empty())
-		m_app.status_line = "Native session directory not found yet. Run the provider CLI in this project once.";
 
 	if (l_settingsDirty)
 		PersistenceCoordinator().SaveSettings(m_app);

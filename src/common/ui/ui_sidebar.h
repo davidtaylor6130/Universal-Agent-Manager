@@ -16,11 +16,6 @@
 #include "common/ui/sidebar/chat_sidebar_options_popup.h"
 
 /// <summary>
-/// Sidebar new-folder popup modal.
-/// </summary>
-#include "common/ui/sidebar/chat_sidebar_new_folder_popup.h"
-
-/// <summary>
 /// Sidebar new-chat popup modal.
 /// </summary>
 #include "common/ui/sidebar/chat_sidebar_new_chat_popup.h"

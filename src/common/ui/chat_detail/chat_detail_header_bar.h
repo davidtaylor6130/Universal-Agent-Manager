@@ -1,6 +1,5 @@
 #pragma once
 #include "app/runtime_orchestration_services.h"
-#include "common/platform/platform_services.h"
 
 /// <summary>
 /// Draws the slim chat title/status header row above the main conversation content.
@@ -62,12 +61,7 @@ inline void DrawChatDetailHeaderBar(AppState& app, ChatSession& chat)
 
 		PopInputChrome();
 
-		// Inline mode + timestamp chips
 		ImGui::SameLine(0.0f, 10.0f);
-		const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
-		const char* mode_label = ProviderRuntime::UsesCliOutput(provider) ? "· CLI" : "· Structured";
-		ImGui::TextColored(ui::kTextMuted, "%s", mode_label);
-		ImGui::SameLine(0.0f, 12.0f);
 		ImGui::TextColored(ui::kTextMuted, "· %s", CompactPreview(chat.updated_at, 20).c_str());
 
 		if (HasAnyPendingCall(app) && !running)

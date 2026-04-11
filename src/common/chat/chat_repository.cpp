@@ -187,26 +187,8 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 	root.object_value["native_session_id"].type = JsonValue::Type::String;
 	root.object_value["native_session_id"].string_value = chat.native_session_id;
 
-	root.object_value["parent_chat_id"].type = JsonValue::Type::String;
-	root.object_value["parent_chat_id"].string_value = chat.parent_chat_id;
-
-	root.object_value["branch_root_chat_id"].type = JsonValue::Type::String;
-	root.object_value["branch_root_chat_id"].string_value = chat.branch_root_chat_id;
-
-	root.object_value["branch_from_message_index"].type = JsonValue::Type::Number;
-	root.object_value["branch_from_message_index"].number_value = static_cast<double>(chat.branch_from_message_index);
-
 	root.object_value["folder_id"].type = JsonValue::Type::String;
 	root.object_value["folder_id"].string_value = chat.folder_id;
-
-	root.object_value["template_override_id"].type = JsonValue::Type::String;
-	root.object_value["template_override_id"].string_value = chat.template_override_id;
-
-	root.object_value["prompt_profile_bootstrapped"].type = JsonValue::Type::Bool;
-	root.object_value["prompt_profile_bootstrapped"].bool_value = chat.prompt_profile_bootstrapped;
-
-	root.object_value["rag_enabled"].type = JsonValue::Type::Bool;
-	root.object_value["rag_enabled"].bool_value = chat.rag_enabled;
 
 	root.object_value["title"].type = JsonValue::Type::String;
 	root.object_value["title"].string_value = chat.title;
@@ -216,46 +198,6 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 
 	root.object_value["updated_at"].type = JsonValue::Type::String;
 	root.object_value["updated_at"].string_value = chat.updated_at;
-
-	root.object_value["workspace_directory"].type = JsonValue::Type::String;
-	root.object_value["workspace_directory"].string_value = chat.workspace_directory;
-
-	root.object_value["approval_mode"].type = JsonValue::Type::String;
-	root.object_value["approval_mode"].string_value = chat.approval_mode;
-
-	root.object_value["model_id"].type = JsonValue::Type::String;
-	root.object_value["model_id"].string_value = chat.model_id;
-
-	root.object_value["extra_flags"].type = JsonValue::Type::String;
-	root.object_value["extra_flags"].string_value = chat.extra_flags;
-
-	if (!chat.rag_source_directories.empty())
-	{
-		JsonValue dirs;
-		dirs.type = JsonValue::Type::Array;
-		for (const auto& d : chat.rag_source_directories)
-		{
-			JsonValue item;
-			item.type = JsonValue::Type::String;
-			item.string_value = d;
-			dirs.array_value.push_back(item);
-		}
-		root.object_value["rag_source_directories"] = std::move(dirs);
-	}
-
-	if (!chat.linked_files.empty())
-	{
-		JsonValue files;
-		files.type = JsonValue::Type::Array;
-		for (const auto& f : chat.linked_files)
-		{
-			JsonValue item;
-			item.type = JsonValue::Type::String;
-			item.string_value = f;
-			files.array_value.push_back(item);
-		}
-		root.object_value["linked_files"] = std::move(files);
-	}
 
 	if (!chat.messages.empty())
 	{
@@ -433,46 +375,18 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
 
 		chat.provider_id = JsonStringOrEmpty(root.Find("provider_id"));
 		chat.native_session_id = JsonStringOrEmpty(root.Find("native_session_id"));
-		chat.parent_chat_id = JsonStringOrEmpty(root.Find("parent_chat_id"));
-		chat.branch_root_chat_id = JsonStringOrEmpty(root.Find("branch_root_chat_id"));
-		chat.branch_from_message_index = static_cast<int>(JsonNumberOrDefault(root.Find("branch_from_message_index"), -1));
 		chat.folder_id = JsonStringOrEmpty(root.Find("folder_id"));
-		chat.template_override_id = JsonStringOrEmpty(root.Find("template_override_id"));
-		chat.prompt_profile_bootstrapped = JsonBoolOrDefault(root.Find("prompt_profile_bootstrapped"), false);
-		chat.rag_enabled = JsonBoolOrDefault(root.Find("rag_enabled"), true);
-
-		const JsonValue* dirs = root.Find("rag_source_directories");
-		if (dirs != nullptr && dirs->type == JsonValue::Type::Array)
-		{
-			for (const auto& d : dirs->array_value)
-			{
-				if (d.type == JsonValue::Type::String)
-					chat.rag_source_directories.push_back(d.string_value);
-			}
-		}
-
-		const JsonValue* files = root.Find("linked_files");
-		if (files != nullptr && files->type == JsonValue::Type::Array)
-		{
-			for (const auto& f : files->array_value)
-			{
-				if (f.type == JsonValue::Type::String)
-					chat.linked_files.push_back(f.string_value);
-			}
-		}
 		chat.title = JsonStringOrEmpty(root.Find("title"));
 		chat.created_at = JsonStringOrEmpty(root.Find("created_at"));
 		chat.updated_at = JsonStringOrEmpty(root.Find("updated_at"));
-		chat.workspace_directory = JsonStringOrEmpty(root.Find("workspace_directory"));
-		chat.approval_mode = JsonStringOrEmpty(root.Find("approval_mode"));
-		chat.model_id = JsonStringOrEmpty(root.Find("model_id"));
-		chat.extra_flags = JsonStringOrEmpty(root.Find("extra_flags"));
 
 		if (chat.created_at.empty())
 			chat.created_at = TimestampNow();
 		if (chat.updated_at.empty())
 			chat.updated_at = chat.created_at;
 
+		if (chat.native_session_id.empty())
+			chat.native_session_id = chat.id;
 		if (chat.branch_root_chat_id.empty())
 			chat.branch_root_chat_id = chat.id;
 

@@ -185,9 +185,7 @@ void ChatHistorySyncService::RefreshChatHistory(uam::AppState& p_app) const
 
 bool ChatHistorySyncService::SaveChatWithStatus(uam::AppState& p_app, const ChatSession& p_chat, const std::string& p_success, const std::string& p_failure) const
 {
-	const ProviderProfile& l_provider = ProviderResolutionService().ProviderForChatOrDefault(p_app, p_chat);
-
-	if (ProviderRuntime::SaveHistory(l_provider, p_app.data_root, p_chat))
+	if (ChatRepository::SaveChat(p_app.data_root, p_chat))
 	{
 		p_app.status_line = p_success;
 		return true;

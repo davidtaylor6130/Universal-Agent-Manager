@@ -93,7 +93,7 @@ struct ChatFolder
 struct AppSettings
 {
 	std::string active_provider_id = provider_build_config::FirstEnabledProviderId();
-	std::string provider_command_template = "gemini {resume} {flags} -p {prompt}";
+	std::string provider_command_template = "gemini {resume} {flags} {prompt}";
 	bool provider_yolo_mode = false;
 	std::string provider_extra_flags;
 	std::string runtime_backend = "provider-cli";
@@ -106,7 +106,7 @@ struct AppSettings
 	std::string prompt_profile_root_path;
 	std::string default_prompt_profile_id;
 	// Legacy keys retained for backward-compatible load paths.
-	std::string gemini_command_template = "gemini {resume} {flags} -p {prompt}";
+	std::string gemini_command_template = "gemini {resume} {flags} {prompt}";
 	bool gemini_yolo_mode = false;
 	std::string gemini_extra_flags;
 	std::string gemini_global_root_path;

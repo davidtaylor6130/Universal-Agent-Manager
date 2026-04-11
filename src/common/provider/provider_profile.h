@@ -34,11 +34,11 @@ struct ProviderProfile
 class ProviderProfileStore
 {
   public:
-	/// <summary>Returns the built-in default Gemini profile.</summary>
+	/// <summary>Returns the built-in default Gemini CLI profile.</summary>
 	static ProviderProfile DefaultGeminiProfile();
-	/// <summary>Returns built-in CLI defaults plus internal engine profile.</summary>
+	/// <summary>Returns the built-in provider profiles for this build.</summary>
 	static std::vector<ProviderProfile> BuiltInProfiles();
-	/// <summary>Ensures the default Gemini profile exists in the profile list.</summary>
+	/// <summary>Ensures the default Gemini CLI profile exists in the profile list.</summary>
 	static void EnsureDefaultProfile(std::vector<ProviderProfile>& profiles);
 
 	/// <summary>Finds a provider profile by id in a read-only collection.</summary>

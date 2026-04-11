@@ -110,10 +110,6 @@ std::vector<ChatFolder> ChatFolderStore::Load(const std::filesystem::path& data_
 		{
 			current.directory = value;
 		}
-		else if (key == "collapsed")
-		{
-			current.collapsed = (value == "1" || value == "true" || value == "on");
-		}
 	}
 
 	if (in_folder && !current.id.empty())
@@ -142,7 +138,7 @@ bool ChatFolderStore::Save(const std::filesystem::path& data_root, const std::ve
 		out << "id=" << folder.id << "\n";
 		out << "title=" << folder.title << "\n";
 		out << "directory=" << folder.directory << "\n";
-		out << "collapsed=" << (folder.collapsed ? "1" : "0") << "\n\n";
+		out << "\n";
 	}
 
 	return WriteTextFile(FolderFilePath(data_root), out.str());

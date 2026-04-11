@@ -7,7 +7,6 @@
 struct SidebarItemAction
 {
 	bool select = false;
-	bool request_delete = false;
 	bool request_open_options = false;
 };
 
@@ -26,7 +25,6 @@ inline SidebarItemAction DrawSidebarItem(AppState& app, const ChatSession& chat,
 	float title_x_offset = 11.0f;
 	float title_y_offset = 7.0f;
 	float options_x_offset = 42.0f;
-	float delete_x_offset = 22.0f;
 	float delete_y_offset = 6.0f;
 	float row_bottom_gap = 4.0f;
 	int title_limit = 46;
@@ -43,7 +41,6 @@ inline SidebarItemAction DrawSidebarItem(AppState& app, const ChatSession& chat,
 		title_x_offset = ScaleUiLength(11.0f);
 		title_y_offset = (row_h - ImGui::GetTextLineHeight()) * 0.5f;
 		options_x_offset = ScaleUiLength(42.0f);
-		delete_x_offset = ScaleUiLength(22.0f);
 		delete_y_offset = std::max(ScaleUiLength(3.0f), (row_h - ScaleUiLength(16.0f)) * 0.5f);
 		row_bottom_gap = ScaleUiLength(4.0f);
 	}
@@ -152,14 +149,6 @@ inline SidebarItemAction DrawSidebarItem(AppState& app, const ChatSession& chat,
 		if (DrawMiniIconButton("chat_options_menu", "icon:menu", ImVec2(16.0f, 16.0f), true))
 		{
 			action.request_open_options = true;
-			action.select = false;
-		}
-
-		ImGui::SetCursorScreenPos(ImVec2(max.x - delete_x_offset, min.y + delete_y_offset));
-
-		if (DrawMiniIconButton("delete_chat", "icon:delete", ImVec2(16.0f, 16.0f), true))
-		{
-			action.request_delete = true;
 			action.select = false;
 		}
 	}

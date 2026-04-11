@@ -6,9 +6,6 @@
 #include <imgui.h>
 #include <misc/cpp/imgui_stdlib.h>
 
-#include "common/provider/markdown_template_catalog.h"
-#include "common/rag/rag_app_helpers.h"
-#include "common/runtime/terminal_common.h"
 #include "common/ui/ui_sections.h"
 
 #include <algorithm>
@@ -34,31 +31,15 @@ void ChatDetailView::Draw(uam::AppState& p_app, ChatSession* p_selectedChat) con
 
 void ModalHostView::Draw(uam::AppState& p_app, const float p_platformUiScale) const
 {
-	DrawAboutModal(p_app);
-	DrawDeleteChatConfirmationModal(p_app);
-	DrawDeleteFolderConfirmationModal(p_app);
-	DrawFolderSettingsModal(p_app);
+	(void)p_platformUiScale;
 	DrawRenameChatModal(p_app);
-	DrawTemplateChangeWarningModal(p_app);
-	DrawMarkdownTemplateManagerModal(p_app);
-	DrawVcsOutputModal(p_app);
-	DrawRuntimeModelSelectionModal(p_app);
-#if UAM_ENABLE_ENGINE_RAG
-	DrawRagConsoleModal(p_app);
-#endif
-	DrawAppSettingsModal(p_app, p_platformUiScale);
-	DrawMoveChatMissingSessionModal(p_app);
-	ChatDomainService().ConsumePendingBranchRequest(p_app);
 }
 
 void UiController::DrawFrame(uam::AppState& p_app, bool& p_done, const float p_platformUiScale, const IPlatformUiTraits& p_uiTraits, const ChatDetailView& p_chatDetail, const ModalHostView& p_modalHost) const
 {
+	(void)p_done;
 	ImGuiIO& l_io = ImGui::GetIO();
 	ApplyUserUiScale(l_io, p_app.settings.ui_scale_multiplier);
-	PollRagScanState(p_app);
-
-	HandleGlobalShortcuts(p_app);
-	DrawDesktopMenuBar(p_app, p_done);
 
 	const ImGuiViewport* lcp_viewport = ImGui::GetMainViewport();
 	DrawAmbientBackdrop(lcp_viewport->Pos, lcp_viewport->Size, float(ImGui::GetTime()));

@@ -68,51 +68,16 @@ endif()
 
 option(UAM_BUILD_TESTS "Build UAM core tests executable." OFF)
 option(UAM_BUILD_UI_V2 "Build UI-V2 (React) before packaging/copying dist assets." ON)
-option(UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED "Enable gemini-structured runtime backend." ON)
-option(UAM_ENABLE_RUNTIME_GEMINI_CLI "Enable gemini-cli runtime backend." ON)
-option(UAM_ENABLE_RUNTIME_CODEX_CLI "Enable codex-cli runtime backend." OFF)
-option(UAM_ENABLE_RUNTIME_CLAUDE_CLI "Enable claude-cli runtime backend." OFF)
-option(UAM_ENABLE_RUNTIME_OPENCODE_CLI "Enable opencode-cli runtime backend." OFF)
-option(UAM_ENABLE_RUNTIME_OPENCODE_LOCAL "Enable opencode-local runtime backend." OFF)
-option(UAM_ENABLE_RUNTIME_OLLAMA_ENGINE "Enable ollama-engine runtime backend." OFF)
+set(UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED OFF)
+set(UAM_ENABLE_RUNTIME_GEMINI_CLI ON)
+set(UAM_ENABLE_RUNTIME_CODEX_CLI OFF)
+set(UAM_ENABLE_RUNTIME_CLAUDE_CLI OFF)
+set(UAM_ENABLE_RUNTIME_OPENCODE_CLI OFF)
+set(UAM_ENABLE_RUNTIME_OPENCODE_LOCAL OFF)
+set(UAM_ENABLE_RUNTIME_OLLAMA_ENGINE OFF)
 
-if(NOT UAM_ENABLE_RUNTIME_OLLAMA_ENGINE AND UAM_ENABLE_RUNTIME_OPENCODE_LOCAL)
-  message(STATUS "UAM_ENABLE_RUNTIME_OLLAMA_ENGINE=OFF, forcing UAM_ENABLE_RUNTIME_OPENCODE_LOCAL=OFF.")
-  set(UAM_ENABLE_RUNTIME_OPENCODE_LOCAL OFF CACHE BOOL "Enable opencode-local runtime backend." FORCE)
-endif()
-
-if(UAM_ENABLE_RUNTIME_OPENCODE_LOCAL AND NOT UAM_ENABLE_RUNTIME_OPENCODE_CLI)
-  message(FATAL_ERROR "UAM_ENABLE_RUNTIME_OPENCODE_LOCAL requires UAM_ENABLE_RUNTIME_OPENCODE_CLI=ON.")
-endif()
-
-if(UAM_ENABLE_RUNTIME_OPENCODE_LOCAL AND NOT UAM_ENABLE_RUNTIME_OLLAMA_ENGINE)
-  message(FATAL_ERROR "UAM_ENABLE_RUNTIME_OPENCODE_LOCAL requires UAM_ENABLE_RUNTIME_OLLAMA_ENGINE=ON.")
-endif()
-
-set(_uam_runtime_enabled_count 0)
-foreach(_runtime_toggle
-  UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED
-  UAM_ENABLE_RUNTIME_GEMINI_CLI
-  UAM_ENABLE_RUNTIME_CODEX_CLI
-  UAM_ENABLE_RUNTIME_CLAUDE_CLI
-  UAM_ENABLE_RUNTIME_OPENCODE_CLI
-  UAM_ENABLE_RUNTIME_OPENCODE_LOCAL
-  UAM_ENABLE_RUNTIME_OLLAMA_ENGINE
-)
-  if(${_runtime_toggle})
-    math(EXPR _uam_runtime_enabled_count "${_uam_runtime_enabled_count} + 1")
-  endif()
-endforeach()
-
-if(_uam_runtime_enabled_count EQUAL 0)
-  message(FATAL_ERROR "At least one UAM runtime backend must be enabled.")
-endif()
-
-set(UAM_ENABLE_ENGINE_RAG ${UAM_ENABLE_RUNTIME_OLLAMA_ENGINE})
-set(UAM_ENABLE_ANY_GEMINI_PROVIDER OFF)
-if(UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED OR UAM_ENABLE_RUNTIME_GEMINI_CLI)
-  set(UAM_ENABLE_ANY_GEMINI_PROVIDER ON)
-endif()
+set(UAM_ENABLE_ENGINE_RAG OFF)
+set(UAM_ENABLE_ANY_GEMINI_PROVIDER ON)
 
 set(UAM_OLLAMA_ENGINE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/subprojects/ollama_engine" CACHE PATH
   "Path to the ollama_engine source repository.")
@@ -139,12 +104,12 @@ function(uam_set_target_folder target_name folder_name)
 endfunction()
 
 # ---------------------------------------------------------------------------
-# llama.cpp (optional — only needed for ollama engine)
+# llama.cpp (disabled for the Gemini CLI-only slice)
 # ---------------------------------------------------------------------------
 
 option(UAM_FETCH_LLAMA_CPP "Fetch pinned llama.cpp fork during configure." ON)
 
-if(UAM_FETCH_LLAMA_CPP)
+if(UAM_ENABLE_RUNTIME_OLLAMA_ENGINE AND UAM_FETCH_LLAMA_CPP)
   set(GGML_CCACHE OFF CACHE BOOL "" FORCE)
   set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
   set(LLAMA_BUILD_COMMON OFF CACHE BOOL "" FORCE)
@@ -265,57 +230,13 @@ endif()
 
 set(UAM_PROVIDER_SOURCES)
 
-if(UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED)
-  list(APPEND UAM_PROVIDER_SOURCES
-    src/common/provider/gemini/structured/gemini_structured_provider_runtime.cpp
-  )
-endif()
-
-if(UAM_ENABLE_RUNTIME_GEMINI_CLI)
-  list(APPEND UAM_PROVIDER_SOURCES
-    src/common/provider/gemini/cli/gemini_cli_provider_runtime.cpp
-  )
-endif()
-
-if(UAM_ENABLE_ANY_GEMINI_PROVIDER OR UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED OR UAM_ENABLE_RUNTIME_GEMINI_CLI)
-  list(APPEND UAM_PROVIDER_SOURCES
-    src/common/provider/gemini/base/gemini_history_loader.cpp
-  )
-endif()
-
-if(UAM_ENABLE_RUNTIME_CODEX_CLI)
-  list(APPEND UAM_PROVIDER_SOURCES
-    src/common/provider/codex/cli/codex_cli_provider_runtime.cpp
-  )
-endif()
-
-if(UAM_ENABLE_RUNTIME_CLAUDE_CLI)
-  list(APPEND UAM_PROVIDER_SOURCES
-    src/common/provider/claude/cli/claude_cli_provider_runtime.cpp
-  )
-endif()
-
 list(APPEND UAM_PROVIDER_SOURCES
-  src/common/provider/opencode/base/opencode_base_provider_runtime.cpp
-  src/common/provider/opencode/opencode_history_service.cpp
+  src/common/provider/gemini/cli/gemini_cli_provider_runtime.cpp
 )
 
-if(UAM_ENABLE_RUNTIME_OPENCODE_CLI)
+if(UAM_ENABLE_ANY_GEMINI_PROVIDER)
   list(APPEND UAM_PROVIDER_SOURCES
-    src/common/provider/opencode/cli/opencode_cli_provider_runtime.cpp
-  )
-endif()
-
-if(UAM_ENABLE_RUNTIME_OPENCODE_LOCAL)
-  list(APPEND UAM_PROVIDER_SOURCES
-    src/common/provider/opencode/local/opencode_local_provider_runtime.cpp
-    src/common/provider/opencode/local/opencode_local_bridge_service.cpp
-  )
-endif()
-
-if(UAM_ENABLE_RUNTIME_OLLAMA_ENGINE)
-  list(APPEND UAM_PROVIDER_SOURCES
-    src/common/provider/ollama/structured/ollama_engine_provider_runtime.cpp
+    src/common/provider/gemini/base/gemini_history_loader.cpp
   )
 endif()
 
