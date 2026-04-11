@@ -14,5 +14,5 @@ class ChatRepository
 	/// <summary>Saves one chat session to disk.</summary>
 	static bool SaveChat(const std::filesystem::path& data_root, const ChatSession& chat);
 	/// <summary>Loads locally persisted chat sessions from disk.</summary>
-	static std::vector<ChatSession> LoadLocalChats(const std::filesystem::path& data_root);
+	static std::vector<ChatSession> LoadLocalChats(const std::filesystem::path& data_root, std::string* warning_out = nullptr);
 };

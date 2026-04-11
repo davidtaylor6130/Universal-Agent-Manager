@@ -3,6 +3,7 @@
 #include "common/config/line_value_codec.h"
 #include "common/paths/app_paths.h"
 #include "common/provider/runtime/provider_build_config.h"
+#include "common/utils/io_utils.h"
 
 #include <algorithm>
 #include <cctype>
@@ -11,19 +12,6 @@
 
 namespace
 {
-
-	bool WriteTextFile(const std::filesystem::path& path, const std::string& content)
-	{
-		std::ofstream out(path, std::ios::binary | std::ios::trunc);
-
-		if (!out.good())
-		{
-			return false;
-		}
-
-		out << content;
-		return out.good();
-	}
 
 	std::string ReadTextFile(const std::filesystem::path& path)
 	{
@@ -179,7 +167,7 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	lines << "window_width=" << settings.window_width << '\n';
 	lines << "window_height=" << settings.window_height << '\n';
 	lines << "window_maximized=" << (settings.window_maximized ? "1" : "0") << '\n';
-	return WriteTextFile(settings_file, lines.str());
+	return uam::io::WriteTextFile(settings_file, lines.str());
 }
 
 void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings& settings, CenterViewMode& center_view_mode)

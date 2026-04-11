@@ -1,6 +1,6 @@
 #include "common/chat/chat_folder_store.h"
+#include "common/utils/io_utils.h"
 
-#include <fstream>
 #include <sstream>
 #include <string>
 
@@ -11,19 +11,6 @@ namespace
 	fs::path FolderFilePath(const fs::path& data_root)
 	{
 		return data_root / "folders.txt";
-	}
-
-	bool WriteTextFile(const fs::path& path, const std::string& content)
-	{
-		std::ofstream out(path, std::ios::binary | std::ios::trunc);
-
-		if (!out.good())
-		{
-			return false;
-		}
-
-		out << content;
-		return out.good();
 	}
 
 	std::string ReadTextFile(const fs::path& path)
@@ -141,5 +128,5 @@ bool ChatFolderStore::Save(const std::filesystem::path& data_root, const std::ve
 		out << "\n";
 	}
 
-	return WriteTextFile(FolderFilePath(data_root), out.str());
+	return uam::io::WriteTextFile(FolderFilePath(data_root), out.str());
 }

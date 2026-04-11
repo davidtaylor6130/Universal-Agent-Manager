@@ -1,4 +1,5 @@
 #include "common/config/frontend_actions.h"
+#include "common/utils/io_utils.h"
 
 #include <algorithm>
 #include <cctype>
@@ -569,21 +570,8 @@ namespace uam
 			}
 		}
 
-		std::ofstream output(path, std::ios::binary | std::ios::trunc);
-
-		if (!output.good())
-		{
-			if (error_out != nullptr)
-			{
-				*error_out = "Failed to open '" + path.string() + "' for writing.";
-			}
-
-			return false;
-		}
-
-		output << SerializeFrontendActionMap(action_map);
-
-		if (!output.good())
+		const std::string text = SerializeFrontendActionMap(action_map);
+		if (!uam::io::WriteTextFile(path, text))
 		{
 			if (error_out != nullptr)
 			{

@@ -3,6 +3,7 @@
 #include "common/paths/app_paths.h"
 #include "common/rag/rag_app_helpers.h"
 #include "common/platform/platform_services.h"
+#include "common/utils/io_utils.h"
 
 #include <algorithm>
 #include <array>
@@ -125,15 +126,7 @@ std::string ReadTextFile(const fs::path& p_path)
 
 bool WriteTextFile(const fs::path& p_path, const std::string& p_content)
 {
-	std::ofstream l_out(p_path, std::ios::binary | std::ios::trunc);
-
-	if (!l_out.good())
-	{
-		return false;
-	}
-
-	l_out << p_content;
-	return l_out.good();
+	return uam::io::WriteTextFile(p_path, p_content);
 }
 
 fs::path ResolvePromptProfileRootPath(const AppSettings& p_settings)

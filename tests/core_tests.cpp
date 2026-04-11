@@ -713,6 +713,156 @@ UAM_TEST(TestChatRepositoryPersistsCoreChatStateAndDropsFeatureBaggage)
 	UAM_ASSERT(loaded.front().extra_flags.empty());
 }
 
+UAM_TEST(TestChatRepositoryRecoversFromBackupFileWhenPrimaryIsCorrupt)
+{
+	TempDir data_root("uam-chat-repository-recover");
+	const fs::path chats_root = AppPaths::UamChatsRootPath(data_root.root);
+	fs::create_directories(chats_root);
+
+	const fs::path primary = chats_root / "chat-recover.json";
+	const fs::path backup = chats_root / "chat-recover.json.bak";
+
+	UAM_ASSERT(WriteTextFile(primary, "{"));
+	UAM_ASSERT(WriteTextFile(backup, "{\n"
+	                               "  \"id\": \"chat-recover\",\n"
+	                               "  \"provider_id\": \"gemini-cli\",\n"
+	                               "  \"native_session_id\": \"chat-recover\",\n"
+	                               "  \"folder_id\": \"folder-default\",\n"
+	                               "  \"title\": \"Recovered Chat\",\n"
+	                               "  \"created_at\": \"2026-04-10 10:00:00\",\n"
+	                               "  \"updated_at\": \"2026-04-10 10:00:01\",\n"
+	                               "  \"messages\": [\n"
+	                               "    {\"role\": \"user\", \"content\": \"hello\", \"created_at\": \"2026-04-10 10:00:01\"}\n"
+	                               "  ]\n"
+	                               "}\n"));
+
+	const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(data_root.root);
+	UAM_ASSERT_EQ(1u, loaded.size());
+	UAM_ASSERT_EQ(std::string("chat-recover"), loaded.front().id);
+	UAM_ASSERT_EQ(std::string("Recovered Chat"), loaded.front().title);
+	UAM_ASSERT_EQ(1u, loaded.front().messages.size());
+	UAM_ASSERT_EQ(std::string("hello"), loaded.front().messages.front().content);
+
+	const std::string repaired = ReadTextFile(primary);
+	UAM_ASSERT(repaired.find("Recovered Chat") != std::string::npos);
+	UAM_ASSERT(!fs::exists(backup));
+}
+
+UAM_TEST(TestChatRepositoryRecoversWhenPrimaryMissingAndBackupExists)
+{
+	TempDir data_root("uam-chat-repository-missing-primary");
+	const fs::path chats_root = AppPaths::UamChatsRootPath(data_root.root);
+	fs::create_directories(chats_root);
+
+	const fs::path primary = chats_root / "chat-recover-missing.json";
+	const fs::path backup = chats_root / "chat-recover-missing.json.bak";
+
+	UAM_ASSERT(WriteTextFile(backup, "{\n"
+	                               "  \"id\": \"chat-wrong-backup-id\",\n"
+	                               "  \"provider_id\": \"gemini-cli\",\n"
+	                               "  \"native_session_id\": \"chat-wrong-backup-id\",\n"
+	                               "  \"folder_id\": \"folder-default\",\n"
+	                               "  \"title\": \"Recovered Missing Primary\",\n"
+	                               "  \"created_at\": \"2026-04-10 11:00:00\",\n"
+	                               "  \"updated_at\": \"2026-04-10 11:00:01\",\n"
+	                               "  \"messages\": [\n"
+	                               "    {\"role\": \"user\", \"content\": \"hello again\", \"created_at\": \"2026-04-10 11:00:01\"}\n"
+	                               "  ]\n"
+	                               "}\n"));
+
+	const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(data_root.root);
+	UAM_ASSERT_EQ(1u, loaded.size());
+	UAM_ASSERT_EQ(std::string("chat-recover-missing"), loaded.front().id);
+	UAM_ASSERT_EQ(std::string("chat-recover-missing"), loaded.front().native_session_id);
+	UAM_ASSERT_EQ(std::string("Recovered Missing Primary"), loaded.front().title);
+	UAM_ASSERT(fs::exists(primary));
+	UAM_ASSERT(!fs::exists(backup));
+}
+
+UAM_TEST(TestChatRepositoryWarnsWhenPrimaryAndBackupDiverge)
+{
+	TempDir data_root("uam-chat-repository-diverge");
+	const fs::path chats_root = AppPaths::UamChatsRootPath(data_root.root);
+	fs::create_directories(chats_root);
+
+	const fs::path primary = chats_root / "chat-diverge.json";
+	const fs::path backup = chats_root / "chat-diverge.json.bak";
+
+	UAM_ASSERT(WriteTextFile(primary, "{\n"
+	                               "  \"id\": \"chat-diverge\",\n"
+	                               "  \"provider_id\": \"gemini-cli\",\n"
+	                               "  \"native_session_id\": \"chat-diverge\",\n"
+	                               "  \"folder_id\": \"folder-default\",\n"
+	                               "  \"title\": \"Primary Title\",\n"
+	                               "  \"created_at\": \"2026-04-10 12:00:00\",\n"
+	                               "  \"updated_at\": \"2026-04-10 12:00:01\",\n"
+	                               "  \"messages\": [\n"
+	                               "    {\"role\": \"user\", \"content\": \"primary\", \"created_at\": \"2026-04-10 12:00:01\"}\n"
+	                               "  ]\n"
+	                               "}\n"));
+	UAM_ASSERT(WriteTextFile(backup, "{\n"
+	                               "  \"id\": \"chat-diverge\",\n"
+	                               "  \"provider_id\": \"gemini-cli\",\n"
+	                               "  \"native_session_id\": \"chat-diverge\",\n"
+	                               "  \"folder_id\": \"folder-default\",\n"
+	                               "  \"title\": \"Backup Title\",\n"
+	                               "  \"created_at\": \"2026-04-10 12:00:00\",\n"
+	                               "  \"updated_at\": \"2026-04-10 12:00:02\",\n"
+	                               "  \"messages\": [\n"
+	                               "    {\"role\": \"user\", \"content\": \"backup\", \"created_at\": \"2026-04-10 12:00:02\"}\n"
+	                               "  ]\n"
+	                               "}\n"));
+
+	std::string warning;
+	const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(data_root.root, &warning);
+	UAM_ASSERT_EQ(1u, loaded.size());
+	UAM_ASSERT_EQ(std::string("Primary Title"), loaded.front().title);
+	UAM_ASSERT(!warning.empty());
+	UAM_ASSERT(warning.find("chat-diverge.json") != std::string::npos);
+	UAM_ASSERT(warning.find("chat-diverge.json.bak") != std::string::npos);
+}
+
+UAM_TEST(TestChatRepositoryParsesLegacyBranchIndex)
+{
+	TempDir data_root("uam-chat-repository-legacy-branch");
+	const fs::path legacy_root = AppPaths::ChatsRootPath(data_root.root);
+	const fs::path legacy_chat = legacy_root / "legacy-branch";
+	const fs::path messages_dir = legacy_chat / "messages";
+	fs::create_directories(messages_dir);
+	UAM_ASSERT(WriteTextFile(legacy_chat / "meta.txt",
+	                         "provider_id=gemini-cli\n"
+	                         "native_session_id=legacy-native\n"
+	                         "branch_root=legacy-root\n"
+	                         "branch_from_index=7\n"
+	                         "title=Legacy Branch\n"
+	                         "created_at=2026-04-10 10:00:00\n"
+	                         "updated_at=2026-04-10 10:00:01\n"));
+	UAM_ASSERT(WriteTextFile(messages_dir / "0001_user.txt", "hello\n"));
+
+	const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(data_root.root);
+	UAM_ASSERT_EQ(1u, loaded.size());
+	UAM_ASSERT_EQ(7, loaded.front().branch_from_message_index);
+	UAM_ASSERT_EQ(std::string("legacy-root"), loaded.front().branch_root_chat_id);
+}
+
+UAM_TEST(TestNativeSessionFileLookupRequiresExactFilename)
+{
+	TempDir data_root("uam-native-session-exact");
+	const fs::path chats_dir = data_root.root / "chats";
+	fs::create_directories(chats_dir);
+	UAM_ASSERT(WriteTextFile(chats_dir / "session-12345.json", "{}"));
+	UAM_ASSERT(WriteTextFile(chats_dir / "session-123.json", "{}"));
+
+	uam::AppState app = MakeTestAppState(data_root.root);
+	ChatHistorySyncService sync;
+	const auto exact = sync.FindNativeSessionFilePath(chats_dir, "session-123");
+	const auto missing = sync.FindNativeSessionFilePath(chats_dir, "session-12");
+
+	UAM_ASSERT(exact.has_value());
+	UAM_ASSERT_EQ((chats_dir / "session-123.json").lexically_normal().generic_string(), exact->lexically_normal().generic_string());
+	UAM_ASSERT(!missing.has_value());
+}
+
 UAM_TEST(TestChatFolderStoreRoundTrip)
 {
 	TempDir data_root("uam-folder-store");

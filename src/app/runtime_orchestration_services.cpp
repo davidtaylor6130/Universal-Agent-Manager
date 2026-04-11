@@ -222,6 +222,7 @@ bool ChatHistorySyncService::RenameChat(AppState& p_app, ChatSession& p_chat, co
 
 	p_chat.title = l_previousTitle;
 	p_chat.updated_at = l_previousUpdatedAt;
+	p_app.status_line = "Failed to save renamed chat file: " + AppPaths::UamChatFilePath(p_app.data_root, p_chat.id).string();
 	return false;
 }
 
@@ -344,18 +345,28 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 
 void ChatHistorySyncService::LoadSidebarChats(AppState& p_app) const
 {
-	p_app.chats = ChatRepository::LoadLocalChats(p_app.data_root);
+	std::string warning;
+	p_app.chats = ChatRepository::LoadLocalChats(p_app.data_root, &warning);
 	p_app.chats = ChatDomainService().DeduplicateChatsById(std::move(p_app.chats));
 	ChatBranching::Normalize(p_app.chats);
 	ChatDomainService().NormalizeChatFolderAssignments(p_app);
+	if (!warning.empty())
+	{
+		p_app.status_line = warning;
+	}
 }
 
 void ChatHistorySyncService::LoadSidebarChatsByDiscovery(AppState& p_app) const
 {
-	p_app.chats = ChatRepository::LoadLocalChats(p_app.data_root);
+	std::string warning;
+	p_app.chats = ChatRepository::LoadLocalChats(p_app.data_root, &warning);
 	p_app.chats = ChatDomainService().DeduplicateChatsById(std::move(p_app.chats));
 	ChatBranching::Normalize(p_app.chats);
 	ChatDomainService().NormalizeChatFolderAssignments(p_app);
+	if (!warning.empty())
+	{
+		p_app.status_line = warning;
+	}
 }
 
 void ChatHistorySyncService::ReconcileUnresolvedDraftLinksByDiscovery(AppState& p_app) const
@@ -558,11 +569,7 @@ std::optional<fs::path> ChatHistorySyncService::FindNativeSessionFilePath(const 
 	}
 
 	std::error_code l_ec;
-	std::string searchPart = p_sessionId;
-	if (searchPart.length() > 8)
-	{
-		searchPart = searchPart.substr(0, 8);
-	}
+	const fs::path expected_name = fs::path(p_sessionId + ".json");
 
 	for (const auto& l_item : fs::directory_iterator(p_chatsDir, l_ec))
 	{
@@ -571,8 +578,7 @@ std::optional<fs::path> ChatHistorySyncService::FindNativeSessionFilePath(const 
 			continue;
 		}
 
-		const std::string l_filename = l_item.path().filename().string();
-		if (l_filename.find(searchPart) != std::string::npos)
+		if (l_item.path().filename() == expected_name)
 		{
 			return l_item.path();
 		}
@@ -743,8 +749,7 @@ std::string ChatHistorySyncService::ResolveResumeSessionIdForChat(const AppState
 				continue;
 			}
 
-			const std::string l_filename = l_entry.path().filename().string();
-			if (l_filename.find(p_candidateId) != std::string::npos)
+			if (l_entry.path().filename() == fs::path(p_candidateId + ".json"))
 			{
 				return p_candidateId;
 			}
@@ -781,7 +786,7 @@ std::string ChatHistorySyncService::ResolveResumeSessionIdForChat(const AppState
 			}
 
 			const std::string l_filename = l_entry.path().filename().string();
-			if (l_filename.find(p_candidateId) != std::string::npos)
+			if (l_filename == (p_candidateId + ".json"))
 			{
 				const fs::path l_dest = l_chatsDir / l_filename;
 				fs::copy_file(l_entry.path(), l_dest, fs::copy_options::overwrite_existing, l_ec);
