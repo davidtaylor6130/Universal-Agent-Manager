@@ -70,6 +70,7 @@ inline void DrawFolderSettingsModal(AppState& app)
 	{
 		const std::string title = Trim(app.folder_settings_title_input);
 		const std::string directory = Trim(app.folder_settings_directory_input);
+		const ChatFolder original_folder = folder;
 
 		if (title.empty())
 		{
@@ -83,9 +84,18 @@ inline void DrawFolderSettingsModal(AppState& app)
 		{
 			folder.title = title;
 			folder.directory = directory;
-			ChatFolderStore::Save(app.data_root, app.folders);
-			app.status_line = "Folder settings saved.";
-			ImGui::CloseCurrentPopup();
+			if (!ChatFolderStore::Save(app.data_root, app.folders))
+			{
+				folder = original_folder;
+				app.folder_settings_title_input = original_folder.title;
+				app.folder_settings_directory_input = original_folder.directory;
+				app.status_line = "Failed to persist folder settings.";
+			}
+			else
+			{
+				app.status_line = "Folder settings saved.";
+				ImGui::CloseCurrentPopup();
+			}
 		}
 	}
 

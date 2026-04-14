@@ -4,6 +4,7 @@
 #include "cef/uam_cef_security.h"
 
 #include "app/chat_domain_service.h"
+#include "app/application_core_helpers.h"
 #include "app/persistence_coordinator.h"
 #include "app/runtime_orchestration_services.h"
 
@@ -273,6 +274,7 @@ void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser>  browser,
 {
 	const std::string chat_id = payload.value("chatId", "");
 	ChatDomainService().SelectChatById(m_app, chat_id);
+	PersistenceCoordinator().SaveSettings(m_app);
 	uam::PushStateUpdate(browser, m_app);
 	cb->Success("{}");
 }
@@ -287,6 +289,8 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser>  browser,
 	const std::string provider_id = payload.value(
 		"providerId",
 		preferred_provider != nullptr ? preferred_provider->id : m_app.settings.active_provider_id);
+	const std::string previous_selected_chat_id = (ChatDomainService().SelectedChat(m_app) != nullptr) ? ChatDomainService().SelectedChat(m_app)->id : std::string{};
+	const std::string previous_active_provider_id = m_app.settings.active_provider_id;
 
 	const std::string target_folder_id = ResolveRequestedNewChatFolderId(m_app, requested_folder_id);
 
@@ -294,6 +298,7 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser>  browser,
 	EnsureChatUsesPreferredCliProvider(m_app, chat);
 	if (!title.empty())
 		chat.title = title;
+	chat.workspace_directory = ResolveWorkspaceRootPath(m_app, chat).string();
 
 	m_app.chats.push_back(std::move(chat));
 
@@ -302,7 +307,27 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser>  browser,
 
 	// Persist
 	ChatHistorySyncService sync;
-	sync.SaveChatWithStatus(m_app, m_app.chats.back(), "", "");
+	if (!sync.SaveChatWithStatus(m_app, m_app.chats.back(), "", ""))
+	{
+		const std::string created_chat_id = m_app.chats.back().id;
+		const int created_chat_index = ChatDomainService().FindChatIndexById(m_app, created_chat_id);
+		if (created_chat_index >= 0)
+		{
+			m_app.chats.erase(m_app.chats.begin() + created_chat_index);
+		}
+		m_app.settings.active_provider_id = previous_active_provider_id;
+		ChatDomainService().SelectChatById(m_app, previous_selected_chat_id);
+		PersistenceCoordinator().SaveSettings(m_app);
+		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist new chat." : m_app.status_line);
+		return;
+	}
+
+	if (const ChatSession* selected = ChatDomainService().SelectedChat(m_app); selected != nullptr && ProviderResolutionService().ChatUsesCliOutput(m_app, *selected))
+	{
+		MarkSelectedCliTerminalForLaunch(m_app);
+	}
+
+	PersistenceCoordinator().SaveSettings(m_app);
 
 	uam::PushStateUpdate(browser, m_app);
 	cb->Success("{}");
@@ -323,7 +348,11 @@ void UamQueryHandler::HandleRenameSession(CefRefPtr<CefBrowser>  browser,
 	}
 
 	ChatSession& chat = m_app.chats[static_cast<std::size_t>(idx)];
-	ChatHistorySyncService().RenameChat(m_app, chat, title);
+	if (!ChatHistorySyncService().RenameChat(m_app, chat, title))
+	{
+		cb->Failure(500, m_app.status_line.empty() ? ("Failed to rename chat: " + chat_id) : m_app.status_line);
+		return;
+	}
 
 	uam::PushStateUpdate(browser, m_app);
 	cb->Success("{}");
@@ -372,7 +401,11 @@ void UamQueryHandler::HandleSendMessage(CefRefPtr<CefBrowser>  browser,
 	// ProviderRequestService will drive the async generation loop; stream tokens
 	// are delivered to the frontend via PushStreamToken() / PushStreamDone()
 	// from the polling path in Application::Update().
-	ProviderRequestService().QueuePromptForChat(m_app, chat, content);
+	if (!ProviderRequestService().QueuePromptForChat(m_app, chat, content))
+	{
+		cb->Failure(409, m_app.status_line.empty() ? "Failed to queue message." : m_app.status_line);
+		return;
+	}
 
 	// Immediately push state so the user message appears in the UI.
 	uam::PushStateUpdate(browser, m_app);

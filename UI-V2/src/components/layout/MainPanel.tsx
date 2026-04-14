@@ -1,9 +1,46 @@
+import { memo } from 'react'
 import { useAppStore } from '../../store/useAppStore'
+import { useShallow } from 'zustand/react/shallow'
 import { CLIView } from '../views/CLIView'
+import { isCefContext } from '../../ipc/cefBridge'
+
+const PushStatusDot = memo(function PushStatusDot() {
+  const pushChannelStatus = useAppStore((s) => s.pushChannelStatus)
+  const pushChannelError = useAppStore((s) => s.pushChannelError)
+  const lastPushAtMs = useAppStore((s) => s.lastPushAtMs)
+  const uiBuildId = useAppStore((s) => s.uiBuildId)
+
+  const color =
+    pushChannelStatus === 'connected' ? '#22c55e'
+    : pushChannelStatus === 'no-push-yet' ? '#eab308'
+    : '#ef4444'
+
+  const timeLabel = lastPushAtMs
+    ? new Date(lastPushAtMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : ''
+
+  const tooltip =
+    pushChannelStatus === 'connected'
+      ? `Push connected • last update ${lastPushAtMs ? new Date(lastPushAtMs).toLocaleTimeString() : '—'} • UI ${uiBuildId}`
+      : pushChannelStatus === 'no-push-yet'
+        ? `Waiting for backend push channel • UI ${uiBuildId}`
+        : `Push error: ${pushChannelError}`
+
+  return (
+    <div
+      className="flex items-center gap-1 flex-shrink-0 mr-3"
+      style={{ color, fontSize: 11, opacity: 0.9 }}
+      title={tooltip}
+    >
+      <span style={{ fontSize: 7, lineHeight: 1 }}>●</span>
+      {timeLabel && <span style={{ opacity: 0.8 }}>{timeLabel}</span>}
+    </div>
+  )
+})
 
 export function MainPanel() {
-  const { activeSessionId, sessions } = useAppStore()
-  const session = sessions.find((s) => s.id === activeSessionId)
+  const activeSessionId = useAppStore((s) => s.activeSessionId)
+  const session = useAppStore(useShallow((s) => s.sessions.find((x) => x.id === activeSessionId) ?? null))
 
   if (!session) {
     return (
@@ -44,9 +81,7 @@ export function MainPanel() {
           {session.name}
         </div>
 
-        <div className="mr-3 text-xs" style={{ color: 'var(--text-3)' }}>
-          CLI
-        </div>
+        {isCefContext() && <PushStatusDot />}
       </div>
 
       {/* View content */}

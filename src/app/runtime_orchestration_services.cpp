@@ -156,6 +156,13 @@ namespace
 		return true;
 	}
 
+	bool LocalMessagesShouldOverrideNative(const ChatSession& local_chat, const ChatSession& native_chat)
+	{
+		return !local_chat.messages.empty() &&
+		       (local_chat.messages.size() > native_chat.messages.size() ||
+		        (local_chat.messages.size() == native_chat.messages.size() && local_chat.updated_at > native_chat.updated_at));
+	}
+
 	void OverlayLocalChatState(const ChatSession& local, ChatSession& native)
 	{
 		if (!Trim(local.provider_id).empty())
@@ -389,8 +396,10 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 				if (p_delete_native_after_import && !l_nativeChat.native_session_id.empty())
 				{
 					std::error_code l_ec;
-					const fs::path l_nativeFile = l_chatsDir.value() / (l_nativeChat.native_session_id + ".json");
-					fs::remove(l_nativeFile, l_ec);
+					if (const auto l_nativeFile = FindNativeSessionFilePath(l_chatsDir.value(), l_nativeChat.native_session_id); l_nativeFile.has_value())
+					{
+						fs::remove(l_nativeFile.value(), l_ec);
+					}
 				}
 			}
 		}
@@ -512,8 +521,10 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 				if (p_delete_native_after_import && !l_nativeChat.native_session_id.empty())
 				{
 					std::error_code l_ec;
-					const fs::path l_nativeFile = l_source.chats_dir / (l_nativeChat.native_session_id + ".json");
-					fs::remove(l_nativeFile, l_ec);
+					if (const auto l_nativeFile = FindNativeSessionFilePath(l_source.chats_dir, l_nativeChat.native_session_id); l_nativeFile.has_value())
+					{
+						fs::remove(l_nativeFile.value(), l_ec);
+					}
 				}
 			}
 		}
@@ -620,7 +631,11 @@ std::optional<fs::path> ChatHistorySyncService::FindNativeSessionFilePath(const 
 	}
 
 	std::error_code l_ec;
-	const fs::path expected_name = fs::path(p_sessionId + ".json");
+	const fs::path canonical_name = p_chatsDir / (p_sessionId + ".json");
+	if (fs::exists(canonical_name, l_ec) && !l_ec)
+	{
+		return canonical_name;
+	}
 
 	for (const auto& l_item : fs::directory_iterator(p_chatsDir, l_ec))
 	{
@@ -629,10 +644,26 @@ std::optional<fs::path> ChatHistorySyncService::FindNativeSessionFilePath(const 
 			continue;
 		}
 
-		if (l_item.path().filename() == expected_name)
+		const std::string l_text = ReadTextFile(l_item.path());
+		const auto l_json = ParseJson(l_text);
+		if (!l_json.has_value() || l_json->type != JsonValue::Type::Object)
 		{
-			return l_item.path();
+			continue;
 		}
+
+		if (JsonStringOrEmpty(l_json->Find("sessionId")) != p_sessionId)
+		{
+			continue;
+		}
+
+		std::error_code l_copyEc;
+		fs::copy_file(l_item.path(), canonical_name, fs::copy_options::overwrite_existing, l_copyEc);
+		if (l_copyEc)
+		{
+			return std::nullopt;
+		}
+
+		return canonical_name;
 	}
 
 	return std::nullopt;
@@ -716,6 +747,7 @@ bool ChatHistorySyncService::MoveChatToFolder(AppState& p_app, ChatSession& p_ch
 		return false;
 	}
 
+	const ChatSession l_originalChat = p_chat;
 	const std::string l_oldWorkspace = p_chat.workspace_directory;
 	const std::string l_oldFolderId = p_chat.folder_id;
 	p_app.move_chat_original_folder_id = l_oldFolderId;
@@ -730,16 +762,17 @@ bool ChatHistorySyncService::MoveChatToFolder(AppState& p_app, ChatSession& p_ch
 	const ProviderProfile& l_provider = ProviderResolutionService().ProviderForChatOrDefault(p_app, p_chat);
 	const std::string l_sessionId = NativeSessionLinkService().HasRealNativeSessionId(p_chat) ? p_chat.native_session_id : "";
 
-	fs::path normalizedOld = fs::weakly_canonical(l_oldWorkspace);
-	fs::path normalizedNew = fs::weakly_canonical(l_newFolder->directory);
+	const fs::path normalizedOld = l_oldWorkspace.empty() ? fs::path{} : fs::weakly_canonical(l_oldWorkspace);
+	const fs::path normalizedNew = l_newFolder->directory.empty() ? fs::path{} : fs::weakly_canonical(l_newFolder->directory);
 	bool l_workspacesDifferent = !l_sessionId.empty() && !l_oldWorkspace.empty() && normalizedOld != normalizedNew;
 	bool l_portingSucceeded = true;
+	std::optional<fs::path> l_oldChatsDir;
 
 	if (l_workspacesDifferent)
 	{
 		StopAndEraseCliTerminalForChat(p_app, p_chat.id);
 
-		const auto l_oldChatsDir = ResolveNativeHistoryChatsDirForWorkspace(normalizedOld);
+		l_oldChatsDir = ResolveNativeHistoryChatsDirForWorkspace(normalizedOld);
 		if (l_oldChatsDir.has_value() && !l_sessionId.empty())
 		{
 			const auto l_sessionFile = FindNativeSessionFilePath(l_oldChatsDir.value(), l_sessionId);
@@ -750,7 +783,7 @@ bool ChatHistorySyncService::MoveChatToFolder(AppState& p_app, ChatSession& p_ch
 				l_opts.max_messages = 0;
 				l_opts.max_file_bytes = 0;
 				const auto l_parsed = GeminiJsonHistoryStore::ParseFile(l_sessionFile.value(), l_provider, l_opts);
-				if (l_parsed.has_value() && !l_parsed->messages.empty())
+				if (l_parsed.has_value() && !l_parsed->messages.empty() && !LocalMessagesShouldOverrideNative(l_originalChat, *l_parsed))
 				{
 					p_chat.messages = l_parsed->messages;
 					if (!l_parsed->updated_at.empty())
@@ -762,8 +795,7 @@ bool ChatHistorySyncService::MoveChatToFolder(AppState& p_app, ChatSession& p_ch
 			}
 		}
 
-		bool rebuildResult = ProviderRuntime::RebuildNativeSessionFile(l_provider, p_chat, l_newFolder->directory);
-		if (!rebuildResult)
+		if (!ProviderRuntime::RebuildNativeSessionFile(l_provider, p_chat, l_newFolder->directory))
 		{
 			l_portingSucceeded = false;
 			p_app.move_chat_pending_id = p_chat.id;
@@ -775,7 +807,28 @@ bool ChatHistorySyncService::MoveChatToFolder(AppState& p_app, ChatSession& p_ch
 		StopAndEraseCliTerminalForChat(p_app, p_chat.id);
 	}
 
-	return ChatRepository::SaveChat(p_app.data_root, p_chat) && l_portingSucceeded;
+	if (!ChatRepository::SaveChat(p_app.data_root, p_chat))
+	{
+		p_chat = l_originalChat;
+		p_app.move_chat_pending_id.clear();
+		p_app.move_chat_original_folder_id.clear();
+		p_app.move_chat_original_workspace.clear();
+		p_app.move_chat_target_folder_id.clear();
+		p_app.move_chat_target_workspace.clear();
+		p_app.move_chat_show_missing_session_warning = false;
+		return false;
+	}
+
+	if (l_workspacesDifferent && l_portingSucceeded && l_oldChatsDir.has_value() && !l_sessionId.empty())
+	{
+		std::error_code l_cleanupEc;
+		if (const auto l_oldSessionFile = FindNativeSessionFilePath(l_oldChatsDir.value(), l_sessionId); l_oldSessionFile.has_value())
+		{
+			fs::remove(l_oldSessionFile.value(), l_cleanupEc);
+		}
+	}
+
+	return l_portingSucceeded;
 }
 
 std::string ChatHistorySyncService::ResolveResumeSessionIdForChat(const AppState& p_app, const ChatSession& p_chat) const
@@ -791,77 +844,6 @@ std::string ChatHistorySyncService::ResolveResumeSessionIdForChat(const AppState
 	{
 		return "";
 	}
-
-	const auto l_findSessionFile = [&](const std::string& p_candidateId, const fs::path& p_searchDir) -> std::string
-	{
-		if (p_candidateId.empty() || p_searchDir.empty())
-		{
-			return "";
-		}
-
-		std::error_code l_ec;
-		if (fs::exists(p_searchDir / (p_candidateId + ".json"), l_ec) && !l_ec)
-		{
-			return p_candidateId;
-		}
-
-		for (const auto& l_entry : fs::directory_iterator(p_searchDir, l_ec))
-		{
-			if (!l_entry.is_regular_file(l_ec) || l_ec)
-			{
-				continue;
-			}
-
-			if (l_entry.path().filename() == fs::path(p_candidateId + ".json"))
-			{
-				return p_candidateId;
-			}
-		}
-
-		return "";
-	};
-
-	const auto l_tryPortSession = [&](const std::string& p_candidateId, const fs::path& p_sourceDir) -> bool
-	{
-		if (p_candidateId.empty() || p_sourceDir.empty() || l_chatsDir.empty())
-		{
-			return false;
-		}
-
-		if (p_sourceDir == l_chatsDir)
-		{
-			return false;
-		}
-
-		std::error_code l_ec;
-		fs::create_directories(l_chatsDir, l_ec);
-		if (l_ec)
-		{
-			return false;
-		}
-
-		bool l_copiedAny = false;
-		for (const auto& l_entry : fs::directory_iterator(p_sourceDir, l_ec))
-		{
-			if (l_ec || !l_entry.is_regular_file())
-			{
-				continue;
-			}
-
-			const std::string l_filename = l_entry.path().filename().string();
-			if (l_filename == (p_candidateId + ".json"))
-			{
-				const fs::path l_dest = l_chatsDir / l_filename;
-				fs::copy_file(l_entry.path(), l_dest, fs::copy_options::overwrite_existing, l_ec);
-				if (!l_ec)
-				{
-					l_copiedAny = true;
-				}
-			}
-		}
-
-		return l_copiedAny;
-	};
 
 	std::string l_candidateId;
 
@@ -879,7 +861,7 @@ std::string ChatHistorySyncService::ResolveResumeSessionIdForChat(const AppState
 		return "";
 	}
 
-	if (!l_findSessionFile(l_candidateId, l_chatsDir).empty())
+	if (FindNativeSessionFilePath(l_chatsDir, l_candidateId).has_value())
 	{
 		return l_candidateId;
 	}
@@ -898,12 +880,24 @@ std::string ChatHistorySyncService::ResolveResumeSessionIdForChat(const AppState
 			continue;
 		}
 
-		if (!l_findSessionFile(l_candidateId, l_otherChatsDir.value()).empty())
+		const auto l_sourceSessionFile = FindNativeSessionFilePath(l_otherChatsDir.value(), l_candidateId);
+		if (!l_sourceSessionFile.has_value())
 		{
-			if (l_tryPortSession(l_candidateId, l_otherChatsDir.value()))
-			{
-				return l_candidateId;
-			}
+			continue;
+		}
+
+		std::error_code l_ec;
+		fs::create_directories(l_chatsDir, l_ec);
+		if (l_ec)
+		{
+			continue;
+		}
+
+		const fs::path l_dest = l_chatsDir / (l_candidateId + ".json");
+		fs::copy_file(l_sourceSessionFile.value(), l_dest, fs::copy_options::overwrite_existing, l_ec);
+		if (!l_ec)
+		{
+			return l_candidateId;
 		}
 	}
 
@@ -1315,13 +1309,11 @@ void ChatHistorySyncService::ApplyLocalOverrides(AppState& p_app, std::vector<Ch
 		const ChatSession& l_local = *lcp_local;
 		OverlayLocalChatState(l_local, l_native);
 
-		const bool l_localMessagesAreNewer = !l_local.messages.empty() && (l_local.messages.size() > l_native.messages.size() || (l_local.messages.size() == l_native.messages.size() && l_local.updated_at > l_native.updated_at));
+			if (LocalMessagesShouldOverrideNative(l_local, l_native))
+			{
+				l_native.messages = l_local.messages;
 
-		if (l_localMessagesAreNewer)
-		{
-			l_native.messages = l_local.messages;
-
-			if (!l_local.updated_at.empty())
+				if (!l_local.updated_at.empty())
 			{
 				l_native.updated_at = l_local.updated_at;
 			}

@@ -128,12 +128,13 @@ inline void PollPendingRuntimeCall(uam::AppState& app)
 			continue;
 		}
 
-		const std::filesystem::path native_history_chats_dir = call.native_history_chats_dir_snapshot.empty() ? std::filesystem::path{} : std::filesystem::path(call.native_history_chats_dir_snapshot);
-		std::vector<ChatSession> native_after = ChatHistorySyncService().LoadNativeSessionChats(native_history_chats_dir, call_provider);
-		for (ChatSession& chat : native_after)
-		{
-			ChatRepository::SaveChat(app.data_root, chat);
-		}
+			const std::filesystem::path native_history_chats_dir = call.native_history_chats_dir_snapshot.empty() ? std::filesystem::path{} : std::filesystem::path(call.native_history_chats_dir_snapshot);
+			std::vector<ChatSession> native_after = ChatHistorySyncService().LoadNativeSessionChats(native_history_chats_dir, call_provider);
+			ChatHistorySyncService().ApplyLocalOverrides(app, native_after);
+			for (ChatSession& chat : native_after)
+			{
+				ChatRepository::SaveChat(app.data_root, chat);
+			}
 		app.chats = ChatRepository::LoadLocalChats(app.data_root);
 		app.chats = ChatDomainService().DeduplicateChatsById(std::move(app.chats));
 		ChatBranching::Normalize(app.chats);

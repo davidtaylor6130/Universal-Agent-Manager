@@ -1,17 +1,17 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useAppStore } from '../../store/useAppStore'
+import { useShallow } from 'zustand/react/shallow'
 import { SessionItem } from './SessionItem'
 
 export function FolderTree() {
-  const {
-    folders,
-    sessions,
-    toggleFolder,
-    addFolder,
-    renameFolder,
-    deleteFolder,
-    browseFolderDirectory,
-  } = useAppStore()
+  const folders  = useAppStore(useShallow((s) => s.folders))
+  const sessions = useAppStore(useShallow((s) => s.sessions))
+  const toggleFolder        = useAppStore((s) => s.toggleFolder)
+  const addFolder           = useAppStore((s) => s.addFolder)
+  const renameFolder        = useAppStore((s) => s.renameFolder)
+  const deleteFolder        = useAppStore((s) => s.deleteFolder)
+  const browseFolderDirectory = useAppStore((s) => s.browseFolderDirectory)
+
   const [addingFolder, setAddingFolder] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
   const [newFolderDirectory, setNewFolderDirectory] = useState('')
@@ -19,7 +19,11 @@ export function FolderTree() {
   const [editFolderName, setEditFolderName] = useState('')
   const [editFolderDirectory, setEditFolderDirectory] = useState('')
 
-  const rootFolders = folders.filter((f) => f.parentId === null)
+  const rootFolders = useMemo(() => folders.filter((f) => f.parentId === null), [folders])
+  const unfolderedSessionIds = useMemo(
+    () => sessions.filter((s) => s.folderId === null).map((s) => s.id),
+    [sessions]
+  )
 
   const commitAddFolder = () => {
     const name = newFolderName.trim()
@@ -69,201 +73,40 @@ export function FolderTree() {
 
   return (
     <div className="select-none">
-      {rootFolders.map((folder) => {
-        const folderSessions = sessions.filter((s) => s.folderId === folder.id)
-        const isEditing = editingFolderId === folder.id
-
-        return (
-          <div key={folder.id} className="mb-1 rounded-md">
-            {/* Folder header */}
-            <div
-              className="flex items-center gap-1.5 px-3 py-1 cursor-pointer group"
-              style={{ color: 'var(--text-3)' }}
-              onClick={() => toggleFolder(folder.id)}
-            >
-              <span
-                className="transition-transform duration-150 text-xs"
-                style={{
-                  display: 'inline-block',
-                  transform: folder.isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
-                  fontSize: 9,
-                }}
-              >
-                ▶
-              </span>
-              <span className="text-xs font-medium tracking-wider uppercase" style={{ letterSpacing: '0.08em', fontSize: 10 }}>
-                {folder.name}
-              </span>
-              <span className="text-xs ml-auto opacity-50" style={{ fontSize: 10 }}>
-                {folderSessions.length}
-              </span>
-              <div
-                className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-100"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <button
-                  type="button"
-                  className="text-[10px] px-1.5 py-0.5 rounded"
-                  style={{
-                    background: 'transparent',
-                    color: 'var(--text-3)',
-                    border: '1px solid var(--border)',
-                    cursor: 'pointer',
-                    fontFamily: 'inherit',
-                  }}
-                  onClick={() => startRenameFolder(folder)}
-                >
-                  Rename
-                </button>
-                <button
-                  type="button"
-                  className="text-[10px] px-1.5 py-0.5 rounded"
-                  style={{
-                    background: 'transparent',
-                    color: 'var(--red)',
-                    border: '1px solid var(--border)',
-                    cursor: 'pointer',
-                    fontFamily: 'inherit',
-                  }}
-                  onClick={() => {
-                    if (window.confirm(`Delete folder "${folder.name}" and move its chats to General?`)) {
-                      deleteFolder(folder.id)
-                    }
-                  }}
-                >
-                  Delete
-                </button>
-              </div>
-            </div>
-
-            <div className="px-3 pb-1 text-[10px] truncate" style={{ color: 'var(--text-3)', opacity: 0.65 }}>
-              {folder.directory}
-            </div>
-
-            {isEditing && (
-              <div
-                className="mx-3 mb-2 rounded-md p-2 space-y-2"
-                style={{
-                  background: 'var(--surface-up)',
-                  border: '1px solid var(--border)',
-                }}
-              >
-                <input
-                  autoFocus
-                  value={editFolderName}
-                  onChange={(e) => setEditFolderName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') commitRenameFolder(folder.id)
-                    if (e.key === 'Escape') setEditingFolderId(null)
-                  }}
-                  placeholder="Folder name"
-                  className="w-full rounded px-2 py-1 text-xs outline-none"
-                  style={{
-                    background: 'var(--surface)',
-                    border: '1px solid var(--border)',
-                    color: 'var(--text)',
-                    fontFamily: 'inherit',
-                  }}
-                />
-                <div className="flex items-center gap-2">
-                  <input
-                    value={editFolderDirectory}
-                    onChange={(e) => setEditFolderDirectory(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') commitRenameFolder(folder.id)
-                      if (e.key === 'Escape') setEditingFolderId(null)
-                    }}
-                    placeholder="Workspace directory"
-                    className="w-full flex-1 rounded px-2 py-1 text-xs outline-none"
-                    style={{
-                      background: 'var(--surface)',
-                      border: '1px solid var(--border)',
-                      color: 'var(--text)',
-                      fontFamily: 'inherit',
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="px-2 py-1 rounded text-[10px] whitespace-nowrap"
-                    style={{
-                      background: 'transparent',
-                      color: 'var(--text-3)',
-                      border: '1px solid var(--border)',
-                      cursor: 'pointer',
-                      fontFamily: 'inherit',
-                    }}
-                    onClick={() => {
-                      void chooseEditFolderDirectory()
-                    }}
-                  >
-                    Browse
-                  </button>
-                </div>
-                <div className="flex items-center justify-end gap-2">
-                  <button
-                    type="button"
-                    className="px-2 py-1 rounded text-[10px]"
-                    style={{
-                      background: 'transparent',
-                      color: 'var(--text-3)',
-                      border: '1px solid var(--border)',
-                      cursor: 'pointer',
-                      fontFamily: 'inherit',
-                    }}
-                    onClick={() => setEditingFolderId(null)}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    className="px-2 py-1 rounded text-[10px]"
-                    style={{
-                      background: 'var(--accent)',
-                      color: '#fff',
-                      border: 'none',
-                      cursor: 'pointer',
-                      fontFamily: 'inherit',
-                    }}
-                    disabled={!editFolderName.trim() || !editFolderDirectory.trim()}
-                    onClick={() => commitRenameFolder(folder.id)}
-                  >
-                    Save
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Sessions */}
-            {folder.isExpanded && (
-              <div>
-                {folderSessions.length === 0 ? (
-                  <div className="px-6 py-1 text-xs" style={{ color: 'var(--text-3)', opacity: 0.5, fontSize: 11 }}>
-                    Empty
-                  </div>
-                ) : (
-                  folderSessions.map((session) => (
-                    <SessionItem key={session.id} session={session} />
-                  ))
-                )}
-              </div>
-            )}
-          </div>
-        )
-      })}
+      {rootFolders.map((folder) => (
+        <FolderRow
+          key={folder.id}
+          folder={folder}
+          sessions={sessions}
+          isEditing={editingFolderId === folder.id}
+          editFolderName={editFolderName}
+          editFolderDirectory={editFolderDirectory}
+          onToggle={() => toggleFolder(folder.id)}
+          onStartRename={() => startRenameFolder(folder)}
+          onDelete={() => {
+            if (window.confirm(`Delete folder "${folder.name}" and move its chats to General?`)) {
+              deleteFolder(folder.id)
+            }
+          }}
+          onEditNameChange={setEditFolderName}
+          onEditDirectoryChange={setEditFolderDirectory}
+          onCommitRename={() => commitRenameFolder(folder.id)}
+          onCancelEdit={() => setEditingFolderId(null)}
+          onChooseDirectory={() => void chooseEditFolderDirectory()}
+        />
+      ))}
 
       {/* Unfoldered sessions */}
-      {sessions.filter((s) => s.folderId === null).length > 0 && (
+      {unfolderedSessionIds.length > 0 && (
         <div className="mt-1">
           <div className="px-3 py-1" style={{ color: 'var(--text-3)' }}>
             <span className="text-xs font-medium tracking-wider uppercase" style={{ letterSpacing: '0.08em', fontSize: 10 }}>
               Unsorted
             </span>
           </div>
-          {sessions
-            .filter((s) => s.folderId === null)
-            .map((session) => (
-              <SessionItem key={session.id} session={session} />
-            ))}
+          {unfolderedSessionIds.map((id) => (
+            <SessionItem key={id} sessionId={id} />
+          ))}
         </div>
       )}
 
@@ -329,9 +172,7 @@ export function FolderTree() {
                   cursor: 'pointer',
                   fontFamily: 'inherit',
                 }}
-                onClick={() => {
-                  void chooseNewFolderDirectory()
-                }}
+                onClick={() => { void chooseNewFolderDirectory() }}
               >
                 Browse
               </button>
@@ -395,3 +236,229 @@ export function FolderTree() {
     </div>
   )
 }
+
+// ---------------------------------------------------------------------------
+// FolderRow — memoized so it only re-renders when its own folder/sessions change
+// ---------------------------------------------------------------------------
+
+import { memo } from 'react'
+import { Folder } from '../../types/session'
+import { Session } from '../../types/session'
+
+interface FolderRowProps {
+  folder: Folder
+  sessions: Session[]
+  isEditing: boolean
+  editFolderName: string
+  editFolderDirectory: string
+  onToggle: () => void
+  onStartRename: () => void
+  onDelete: () => void
+  onEditNameChange: (v: string) => void
+  onEditDirectoryChange: (v: string) => void
+  onCommitRename: () => void
+  onCancelEdit: () => void
+  onChooseDirectory: () => void
+}
+
+const FolderRow = memo(function FolderRow({
+  folder,
+  sessions,
+  isEditing,
+  editFolderName,
+  editFolderDirectory,
+  onToggle,
+  onStartRename,
+  onDelete,
+  onEditNameChange,
+  onEditDirectoryChange,
+  onCommitRename,
+  onCancelEdit,
+  onChooseDirectory,
+}: FolderRowProps) {
+  const folderSessionIds = useMemo(
+    () => sessions.filter((s) => s.folderId === folder.id).map((s) => s.id),
+    [sessions, folder.id]
+  )
+
+  return (
+    <div className="mb-2">
+      {/* Folder header */}
+      <div
+        className="relative flex items-center gap-2 px-2.5 py-1.5 cursor-pointer group rounded-md mx-1"
+        style={{
+          background: 'var(--surface-up)',
+          color: 'var(--text-2)',
+        }}
+        onClick={onToggle}
+      >
+        <svg
+          width="13"
+          height="13"
+          viewBox="0 0 16 16"
+          fill="currentColor"
+          style={{ flexShrink: 0, color: 'var(--accent)', opacity: 0.85 }}
+        >
+          {folder.isExpanded ? (
+            <>
+              <path d="M1 5.5A1.5 1.5 0 012.5 4H6l1.5 1.5H14A1.5 1.5 0 0115.5 7v.5H.5V5.5A1 1 0 011 5.5z" />
+              <path d="M.5 8h15l-1.5 5.5H2L.5 8z" opacity="0.85" />
+            </>
+          ) : (
+            <path d="M1 5.5A1.5 1.5 0 012.5 4H6l1.5 1.5H13.5A1.5 1.5 0 0115 7v5.5A1.5 1.5 0 0113.5 14h-11A1.5 1.5 0 011 12.5v-7z" />
+          )}
+        </svg>
+        <span className="font-semibold truncate flex-1" style={{ fontSize: 13 }}>
+          {folder.name}
+        </span>
+        {/* Count */}
+        <span
+          className="text-xs flex-shrink-0 rounded px-1 group-hover:opacity-0 transition-opacity duration-100"
+          style={{ fontSize: 10, background: 'var(--surface-high)', color: 'var(--text-3)' }}
+        >
+          {folderSessionIds.length}
+        </span>
+        {/* Action buttons */}
+        <div
+          className="absolute right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-100"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            className="text-[10px] px-1.5 py-0.5 rounded"
+            style={{
+              background: 'var(--surface-up)',
+              color: 'var(--text-3)',
+              border: '1px solid var(--border)',
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+            }}
+            onClick={onStartRename}
+          >
+            Rename
+          </button>
+          <button
+            type="button"
+            className="text-[10px] px-1.5 py-0.5 rounded"
+            style={{
+              background: 'var(--surface-up)',
+              color: 'var(--red)',
+              border: '1px solid var(--border)',
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+            }}
+            onClick={onDelete}
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+
+      {isEditing && (
+        <div
+          className="mx-3 mb-2 rounded-md p-2 space-y-2"
+          style={{
+            background: 'var(--surface-up)',
+            border: '1px solid var(--border)',
+          }}
+        >
+          <input
+            autoFocus
+            value={editFolderName}
+            onChange={(e) => onEditNameChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') onCommitRename()
+              if (e.key === 'Escape') onCancelEdit()
+            }}
+            placeholder="Folder name"
+            className="w-full rounded px-2 py-1 text-xs outline-none"
+            style={{
+              background: 'var(--surface)',
+              border: '1px solid var(--border)',
+              color: 'var(--text)',
+              fontFamily: 'inherit',
+            }}
+          />
+          <div className="flex items-center gap-2">
+            <input
+              value={editFolderDirectory}
+              onChange={(e) => onEditDirectoryChange(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') onCommitRename()
+                if (e.key === 'Escape') onCancelEdit()
+              }}
+              placeholder="Workspace directory"
+              className="w-full flex-1 rounded px-2 py-1 text-xs outline-none"
+              style={{
+                background: 'var(--surface)',
+                border: '1px solid var(--border)',
+                color: 'var(--text)',
+                fontFamily: 'inherit',
+              }}
+            />
+            <button
+              type="button"
+              className="px-2 py-1 rounded text-[10px] whitespace-nowrap"
+              style={{
+                background: 'transparent',
+                color: 'var(--text-3)',
+                border: '1px solid var(--border)',
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+              }}
+              onClick={onChooseDirectory}
+            >
+              Browse
+            </button>
+          </div>
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              className="px-2 py-1 rounded text-[10px]"
+              style={{
+                background: 'transparent',
+                color: 'var(--text-3)',
+                border: '1px solid var(--border)',
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+              }}
+              onClick={onCancelEdit}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="px-2 py-1 rounded text-[10px]"
+              style={{
+                background: 'var(--accent)',
+                color: '#fff',
+                border: 'none',
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+              }}
+              disabled={!editFolderName.trim() || !editFolderDirectory.trim()}
+              onClick={onCommitRename}
+            >
+              Save
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Sessions */}
+      {folder.isExpanded && (
+        <div>
+          {folderSessionIds.length === 0 ? (
+            <div className="px-6 py-1 text-xs" style={{ color: 'var(--text-3)', opacity: 0.5, fontSize: 11 }}>
+              Empty
+            </div>
+          ) : (
+            folderSessionIds.map((id) => (
+              <SessionItem key={id} sessionId={id} />
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  )
+})

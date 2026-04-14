@@ -18,9 +18,9 @@
   --text:            #111118;
   --text-2:          #5a5a78;
   --text-3:          #9898b8;
-  --accent:          #f97316;
-  --accent-dim:      rgba(249, 115, 22, 0.10);
-  --accent-glow:     rgba(249, 115, 22, 0.20);
+  --accent:          #e8793a;
+  --accent-dim:      rgba(232, 121, 58, 0.10);
+  --accent-glow:     rgba(232, 121, 58, 0.18);
   --blue:            #3b82f6;
   --blue-dim:        rgba(59, 130, 246, 0.10);
   --green:           #22c55e;
@@ -30,7 +30,7 @@
   /* Sidebar */
   --sidebar-bg:      #eeeeF3;
   --sidebar-item-hover: rgba(0,0,0,0.05);
-  --sidebar-item-active: rgba(249,115,22,0.08);
+  --sidebar-item-active: rgba(232,121,58,0.08);
 
   /* Scrollbar */
   --scroll-thumb:    rgba(0,0,0,0.15);
@@ -39,8 +39,8 @@
   /* Terminal */
   --term-bg:         #f0f0f5;
   --term-fg:         #111118;
-  --term-cursor:     #f97316;
-  --term-selection:  rgba(249,115,22,0.25);
+  --term-cursor:     #e8793a;
+  --term-selection:  rgba(232,121,58,0.22);
 }
 
 [data-theme="dark"] {
@@ -53,9 +53,9 @@
   --text:            #e6e6ef;
   --text-2:          #8888aa;
   --text-3:          #44445a;
-  --accent:          #f97316;
-  --accent-dim:      rgba(249, 115, 22, 0.12);
-  --accent-glow:     rgba(249, 115, 22, 0.25);
+  --accent:          #e8793a;
+  --accent-dim:      rgba(232, 121, 58, 0.12);
+  --accent-glow:     rgba(232, 121, 58, 0.22);
   --blue:            #3b82f6;
   --blue-dim:        rgba(59, 130, 246, 0.10);
   --green:           #4ade80;
@@ -64,15 +64,15 @@
 
   --sidebar-bg:      #0e0e12;
   --sidebar-item-hover: rgba(255,255,255,0.04);
-  --sidebar-item-active: rgba(249,115,22,0.10);
+  --sidebar-item-active: rgba(232,121,58,0.10);
 
   --scroll-thumb:    rgba(255,255,255,0.10);
   --scroll-track:    transparent;
 
   --term-bg:         #0b0b0e;
   --term-fg:         #e6e6ef;
-  --term-cursor:     #f97316;
-  --term-selection:  rgba(249,115,22,0.30);
+  --term-cursor:     #e8793a;
+  --term-selection:  rgba(232,121,58,0.28);
 }
 
 /* ── Base Reset ───────────────────────────────────────────── */
@@ -254,6 +254,7 @@ body {
   border-radius: 999px;
   background: var(--yellow);
   animation: sessionStatusWave 0.9s ease-in-out infinite;
+  will-change: transform, opacity;
 }
 
 .session-status--processing > span:nth-child(2) {

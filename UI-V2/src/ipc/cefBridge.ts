@@ -28,12 +28,23 @@ export function isCefContext(): boolean {
 export interface CEFRequest {
   action: string
   payload?: unknown
+  requestId?: string
 }
 
 export interface CEFResponse<T = unknown> {
   ok: boolean
   data?: T
   error?: string
+  requestId?: string
+}
+
+export function createRequestId(prefix = 'cef'): string {
+  const cryptoObj = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined
+  if (cryptoObj && typeof cryptoObj.randomUUID === 'function') {
+    return cryptoObj.randomUUID()
+  }
+
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
 /**
@@ -44,11 +55,14 @@ export interface CEFResponse<T = unknown> {
 export async function sendToCEF<T = unknown>(
   request: CEFRequest
 ): Promise<CEFResponse<T>> {
+  const requestId = request.requestId ?? createRequestId()
+  const envelope: CEFRequest = { ...request, requestId }
+
   if (typeof window !== 'undefined' && typeof window.cefQuery === 'function') {
     // Production path — real CEF
     return new Promise((resolve) => {
       window.cefQuery!({
-        request: JSON.stringify(request),
+        request: JSON.stringify(envelope),
         onSuccess: (response) => {
           try {
             const parsed = JSON.parse(response)
@@ -57,27 +71,27 @@ export async function sendToCEF<T = unknown>(
             // object explicitly carries a boolean `ok` field it's already wrapped;
             // otherwise treat the whole object as `data`.
             if (parsed && typeof parsed.ok === 'boolean') {
-              resolve(parsed as CEFResponse<T>)
+              resolve({ ...(parsed as CEFResponse<T>), requestId })
             } else {
-              resolve({ ok: true, data: parsed as T })
+              resolve({ ok: true, data: parsed as T, requestId })
             }
           } catch {
             // Non-JSON string response
-            resolve({ ok: true, data: response as T })
+            resolve({ ok: true, data: response as T, requestId })
           }
         },
         onFailure: (code, message) => {
           console.error(`[CEF] Error ${code}: ${message}`)
-          resolve({ ok: false, error: message })
+          resolve({ ok: false, error: message, requestId })
         },
       })
     })
   }
 
   // Dev/mock path
-  console.debug('[CEF stub] Request:', request)
+  console.debug('[CEF stub] Request:', envelope)
   await new Promise((r) => setTimeout(r, 80))
-  const mock: CEFResponse<T> = { ok: true, data: null as T }
+  const mock: CEFResponse<T> = { ok: true, data: null as T, requestId }
   console.debug('[CEF stub] Response:', mock)
   return mock
 }

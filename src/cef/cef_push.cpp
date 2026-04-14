@@ -11,7 +11,7 @@
 
 namespace
 {
-std::string g_last_pushed_state_message;
+std::string g_last_pushed_state_fingerprint;
 
 /// Escapes a raw string so it can be safely embedded inside a JS string literal.
 std::string JsEscape(const std::string& s)
@@ -64,6 +64,18 @@ std::string BuildStateUpdateMessage(const uam::AppState& app)
 	msg["type"] = "stateUpdate";
 	msg["data"] = state;
 	return msg.dump();
+}
+
+std::string BuildStateFingerprint(const uam::AppState& app)
+{
+	nlohmann::json state = uam::StateSerializer::Serialize(app);
+	state.erase("stateRevision");
+	return state.dump();
+}
+
+void BumpStateRevision(uam::AppState& app)
+{
+	++app.state_revision;
 }
 
 /// Simple base64 encoder for raw binary data from PTY reads.
@@ -120,21 +132,24 @@ namespace uam
 
 bool PushStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, const AppState& app)
 {
-	const std::string message = BuildStateUpdateMessage(app);
-	if (message == g_last_pushed_state_message)
+	const std::string fingerprint = BuildStateFingerprint(app);
+	if (fingerprint == g_last_pushed_state_fingerprint)
 	{
 		return false;
 	}
 
-	g_last_pushed_state_message = message;
+	BumpStateRevision(const_cast<AppState&>(app));
+	const std::string message = BuildStateUpdateMessage(app);
+	g_last_pushed_state_fingerprint = fingerprint;
 	PostPush(browser, message);
 	return true;
 }
 
 void PushStateUpdate(CefRefPtr<CefBrowser> browser, const AppState& app)
 {
+	BumpStateRevision(const_cast<AppState&>(app));
 	const std::string message = BuildStateUpdateMessage(app);
-	g_last_pushed_state_message = message;
+	g_last_pushed_state_fingerprint = BuildStateFingerprint(app);
 	PostPush(browser, message);
 }
 

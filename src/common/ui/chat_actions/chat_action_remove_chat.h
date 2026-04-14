@@ -43,6 +43,25 @@ inline bool RemoveChatById(AppState& app, const std::string& chat_id)
 	// prevents the chat from being re-added to the UI list while it is being deleted.
 	StopAndEraseCliTerminalForChat(app, chat.id, false);
 
+	const ProviderProfile& chat_provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+	std::vector<ChatSession> next_chats = app.chats;
+	ChatBranching::ReparentChildrenAfterDelete(next_chats, chat.id);
+	next_chats.erase(std::remove_if(next_chats.begin(), next_chats.end(), [&](const ChatSession& existing_chat) { return existing_chat.id == chat.id; }), next_chats.end());
+
+	for (const ChatSession& existing_chat : next_chats)
+	{
+		if (!ProviderRuntime::SaveHistory(ProviderResolutionService().ProviderForChatOrDefault(app, existing_chat), app.data_root, existing_chat))
+		{
+			for (const ChatSession& original_chat : app.chats)
+			{
+				ProviderRuntime::SaveHistory(ProviderResolutionService().ProviderForChatOrDefault(app, original_chat), app.data_root, original_chat);
+			}
+
+			app.status_line = "Failed to persist chat reparenting before delete.";
+			return false;
+		}
+	}
+
 	std::error_code local_delete_ec;
 	std::filesystem::remove_all(AppPaths::ChatPath(app.data_root, chat.id), local_delete_ec);
 
@@ -52,7 +71,6 @@ inline bool RemoveChatById(AppState& app, const std::string& chat_id)
 	const std::string native_session_id = chat.native_session_id;
 	std::error_code native_delete_ec;
 	bool native_delete_attempted = false;
-	const ProviderProfile& chat_provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 
 	if (ProviderRuntime::UsesNativeOverlayHistory(chat_provider) && !native_session_id.empty())
 	{
@@ -60,19 +78,23 @@ inline bool RemoveChatById(AppState& app, const std::string& chat_id)
 		ChatHistorySyncService().DeleteNativeSessionFileForChat(app, chat, &native_delete_ec);
 	}
 
-	ChatBranching::ReparentChildrenAfterDelete(app.chats, chat.id);
-
-	for (const ChatSession& existing_chat : app.chats)
+	if (local_delete_ec || uam_json_delete_ec || (native_delete_attempted && native_delete_ec))
 	{
-		if (existing_chat.id == chat.id)
+		for (const ChatSession& original_chat : app.chats)
 		{
-			continue;
+			ProviderRuntime::SaveHistory(ProviderResolutionService().ProviderForChatOrDefault(app, original_chat), app.data_root, original_chat);
 		}
 
-		ProviderRuntime::SaveHistory(ProviderResolutionService().ProviderForChatOrDefault(app, existing_chat), app.data_root, existing_chat);
+		ProviderRuntime::SaveHistory(chat_provider, app.data_root, chat);
+		app.status_line = local_delete_ec ? "Chat removed from UI, but deleting local history failed." : "Chat removed from UI, but deleting chat metadata failed.";
+		if (native_delete_attempted && native_delete_ec)
+		{
+			app.status_line = "Chat removed from UI, but deleting native Gemini history failed.";
+		}
+		return false;
 	}
 
-	app.chats.erase(app.chats.begin() + chat_index);
+	app.chats = std::move(next_chats);
 	ChatBranching::Normalize(app.chats);
 
 	if (app.chats.empty())

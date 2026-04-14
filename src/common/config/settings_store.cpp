@@ -27,6 +27,23 @@ namespace
 		return buffer.str();
 	}
 
+	std::string ReadTextFileWithBackup(const std::filesystem::path& path)
+	{
+		const std::string primary = ReadTextFile(path);
+		if (!primary.empty())
+		{
+			return primary;
+		}
+
+		const std::filesystem::path backup = std::filesystem::path(path.string() + ".bak");
+		if (std::filesystem::exists(backup))
+		{
+			return ReadTextFile(backup);
+		}
+
+		return primary;
+	}
+
 	std::string ToLower(std::string value)
 	{
 		std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
@@ -177,7 +194,7 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		return;
 	}
 
-	std::istringstream lines(ReadTextFile(settings_file));
+	std::istringstream lines(ReadTextFileWithBackup(settings_file));
 	std::string line;
 	bool has_active_provider_id = false;
 	bool has_provider_command_template = false;

@@ -260,15 +260,9 @@ std::vector<ChatSession> ChatDomainService::DeduplicateChatsById(std::vector<Cha
 			{
 				ChatSession& existing = deduped[native_it->second];
 
-				if (ShouldReplaceChatForDuplicateId(chat, existing) || existing.id != existing.native_session_id)
+				if (ShouldReplaceChatForDuplicateId(chat, existing))
 				{
 					existing = std::move(chat);
-
-					if (existing.id != existing.native_session_id && !existing.native_session_id.empty())
-					{
-						existing.id = existing.native_session_id;
-					}
-
 					index_by_id[existing.id] = native_it->second;
 				}
 
@@ -276,17 +270,12 @@ std::vector<ChatSession> ChatDomainService::DeduplicateChatsById(std::vector<Cha
 			}
 		}
 
-		const auto it = index_by_id.find(chat.id);
+			const auto it = index_by_id.find(chat.id);
 
-		if (it == index_by_id.end())
-		{
-			if (has_native_identity && chat.id != native_session_id)
+			if (it == index_by_id.end())
 			{
-				chat.id = native_session_id;
-			}
-
-			const std::size_t next_index = deduped.size();
-			index_by_id[chat.id] = next_index;
+				const std::size_t next_index = deduped.size();
+				index_by_id[chat.id] = next_index;
 
 			if (has_native_identity)
 			{
@@ -299,15 +288,10 @@ std::vector<ChatSession> ChatDomainService::DeduplicateChatsById(std::vector<Cha
 
 		ChatSession& existing = deduped[it->second];
 
-		if (ShouldReplaceChatForDuplicateId(chat, existing))
-		{
-			existing = std::move(chat);
-
-			if (!existing.native_session_id.empty() && existing.id != existing.native_session_id)
+			if (ShouldReplaceChatForDuplicateId(chat, existing))
 			{
-				existing.id = existing.native_session_id;
+				existing = std::move(chat);
 			}
-		}
 
 		if (!existing.native_session_id.empty())
 		{
@@ -399,6 +383,7 @@ bool ChatDomainService::CreateBranchFromMessage(AppState& app, const std::string
 	branch.rag_enabled = source.rag_enabled;
 	branch.rag_source_directories = source.rag_source_directories;
 	branch.linked_files = source.linked_files;
+	branch.workspace_directory = ResolveWorkspaceRootPath(app, source).string();
 	branch.messages.assign(source.messages.begin(), source.messages.begin() + message_index + 1);
 	branch.updated_at = TimestampNow();
 	branch.title = Trim(source.messages[message_index].content);

@@ -150,9 +150,17 @@ fs::path ResolveWorkspaceRootPath(const AppState& p_app, const ChatSession& p_ch
 {
 	fs::path l_workspaceRoot;
 
+	if (!Trim(p_chat.workspace_directory).empty())
+	{
+		l_workspaceRoot = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(p_chat.workspace_directory);
+	}
+
 	if (const ChatFolder* lcp_folder = FindFolderByIdForRag(p_app, p_chat.folder_id); lcp_folder != nullptr)
 	{
-		l_workspaceRoot = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(lcp_folder->directory);
+		if (l_workspaceRoot.empty())
+		{
+			l_workspaceRoot = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(lcp_folder->directory);
+		}
 	}
 
 	if (l_workspaceRoot.empty())

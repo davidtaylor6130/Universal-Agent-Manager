@@ -45,29 +45,31 @@ inline void DrawSidebarNewFolderPopup(AppState& app)
 			}
 			else
 			{
-				ChatFolder folder;
-				folder.id = ChatDomainService().NewFolderId();
-				folder.title = folder_title;
-				folder.directory = folder_dir;
-				folder.collapsed = false;
-				app.folders.push_back(std::move(folder));
-				app.new_chat_folder_id = app.folders.back().id;
-				ChatFolderStore::Save(app.data_root, app.folders);
-				const std::string created_folder_id = app.folders.back().id;
+				std::string created_folder_id;
+
+				if (!CreateFolder(app, folder_title, folder_dir, &created_folder_id))
+				{
+					return;
+				}
+
 				const int move_chat_index = ChatDomainService().FindChatIndexById(app, app.pending_move_chat_to_new_folder_id);
+				bool should_close = true;
 
 				if (move_chat_index >= 0)
 				{
 					ChatSession& moved_chat = app.chats[move_chat_index];
-					ChatHistorySyncService().MoveChatToFolder(app, moved_chat, created_folder_id);
+					should_close = ChatHistorySyncService().MoveChatToFolder(app, moved_chat, created_folder_id) || app.move_chat_show_missing_session_warning;
 				}
 				else
 				{
 					app.status_line = "Project folder created.";
 				}
 
-				app.pending_move_chat_to_new_folder_id.clear();
-				ImGui::CloseCurrentPopup();
+				if (should_close)
+				{
+					app.pending_move_chat_to_new_folder_id.clear();
+					ImGui::CloseCurrentPopup();
+				}
 			}
 		}
 

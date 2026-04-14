@@ -40,6 +40,18 @@ namespace
 		return line;
 	}
 
+	bool IsSafeChatId(const std::string& chat_id)
+	{
+		if (chat_id.empty() || chat_id == "." || chat_id == "..")
+		{
+			return false;
+		}
+
+		return chat_id.find('/') == std::string::npos &&
+		       chat_id.find('\\') == std::string::npos &&
+		       chat_id.find("..") == std::string::npos;
+	}
+
 	JsonValue MessageToJson(const Message& msg)
 	{
 		JsonValue obj;
@@ -306,11 +318,16 @@ namespace
 		const JsonValue& root = root_opt.value();
 		ChatSession chat;
 
-		chat.id = JsonStringOrEmpty(root.Find("id"));
-		if (chat.id.empty())
-		{
-			return {std::nullopt, "is missing a chat id"};
-		}
+			chat.id = JsonStringOrEmpty(root.Find("id"));
+			if (chat.id.empty())
+			{
+				return {std::nullopt, "is missing a chat id"};
+			}
+
+			if (!IsSafeChatId(chat.id))
+			{
+				return {std::nullopt, "contains an unsafe chat id"};
+			}
 
 		chat.provider_id = JsonStringOrEmpty(root.Find("provider_id"));
 		chat.native_session_id = JsonStringOrEmpty(root.Find("native_session_id"));
@@ -366,6 +383,11 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 	std::lock_guard<std::mutex> lock(save_mutex);
 
 	const fs::path file_path = AppPaths::UamChatFilePath(data_root, chat.id);
+
+	if (!IsSafeChatId(chat.id))
+	{
+		return false;
+	}
 
 	std::error_code ec;
 	fs::create_directories(file_path.parent_path(), ec);
@@ -641,13 +663,16 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
 					continue;
 				}
 
-				ChatSession recovered = backup_chat.chat.value();
-				const std::string recovered_id = entry.path().stem().string();
-				const std::string previous_id = recovered.id;
-				recovered.id = recovered_id;
-				recovered.native_session_id = recovered.id;
-				if (recovered.branch_root_chat_id.empty() || recovered.branch_root_chat_id == previous_id)
-					recovered.branch_root_chat_id = recovered.id;
+					ChatSession recovered = backup_chat.chat.value();
+					const std::string recovered_id = entry.path().stem().string();
+					recovered.id = recovered_id;
+					if (recovered.native_session_id.empty())
+					{
+						recovered.native_session_id = recovered.id;
+					}
+					const std::string previous_id = backup_chat.chat->id;
+					if (recovered.branch_root_chat_id.empty() || recovered.branch_root_chat_id == previous_id)
+						recovered.branch_root_chat_id = recovered.id;
 
 				if (SaveChat(data_root, recovered))
 				{
@@ -690,13 +715,16 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
 			continue;
 		}
 
-		ChatSession recovered = backup_chat.chat.value();
-		const std::string recovered_id = primary_path.stem().string();
-		const std::string previous_id = recovered.id;
-		recovered.id = recovered_id;
-		recovered.native_session_id = recovered_id;
-		if (recovered.branch_root_chat_id.empty() || recovered.branch_root_chat_id == previous_id)
-			recovered.branch_root_chat_id = recovered.id;
+			ChatSession recovered = backup_chat.chat.value();
+			const std::string recovered_id = primary_path.stem().string();
+			recovered.id = recovered_id;
+			if (recovered.native_session_id.empty())
+			{
+				recovered.native_session_id = recovered.id;
+			}
+			const std::string previous_id = backup_chat.chat->id;
+			if (recovered.branch_root_chat_id.empty() || recovered.branch_root_chat_id == previous_id)
+				recovered.branch_root_chat_id = recovered.id;
 
 		if (migrated_chat_ids.find(recovered.id) != migrated_chat_ids.end())
 		{

@@ -123,6 +123,7 @@ nlohmann::json SerializeCliDebugState(const AppState& app)
 nlohmann::json StateSerializer::Serialize(const AppState& app)
 {
 	nlohmann::json j;
+	j["stateRevision"] = app.state_revision;
 
 	// Folders
 	auto folders_arr = nlohmann::json::array();

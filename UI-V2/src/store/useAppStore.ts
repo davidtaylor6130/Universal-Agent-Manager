@@ -11,7 +11,7 @@ import {
   AgentStep,
   mockAgentSteps,
 } from '../mock/mockData'
-import { sendToCEF, isCefContext } from '../ipc/cefBridge'
+import { sendToCEF, isCefContext, createRequestId } from '../ipc/cefBridge'
 
 const GEMINI_CLI_PROVIDER_ID = 'gemini-cli'
 const UI_RUNTIME_BUILD_MARKER = (() => {
@@ -107,6 +107,7 @@ interface CppSettings {
 }
 
 export interface CppAppState {
+  stateRevision?: number
   folders: CppFolder[]
   chats: CppChat[]
   cliDebug?: CppCliDebugState
@@ -167,6 +168,12 @@ function isCppAppState(value: unknown): value is CppAppState {
   )
 }
 
+function cppStateRevision(state: CppAppState): number {
+  return typeof state.stateRevision === 'number' && Number.isFinite(state.stateRevision)
+    ? state.stateRevision
+    : 0
+}
+
 const MAX_CLI_TRANSCRIPT_BYTES = 1024 * 1024
 
 function decodeCliChunk(encoded: string): string {
@@ -214,6 +221,22 @@ function normalizeCliTranscript(
   return {
     terminalId: terminalId || existing.terminalId || '',
     content: clampCliTranscript(existing.content),
+  }
+}
+
+const pendingRequestIdsByKey = new Map<string, string>()
+
+function rememberPendingRequest(key: string, requestId: string) {
+  pendingRequestIdsByKey.set(key, requestId)
+}
+
+function isLatestPendingRequest(key: string, requestId?: string) {
+  return typeof requestId === 'string' && pendingRequestIdsByKey.get(key) === requestId
+}
+
+function clearPendingRequest(key: string, requestId?: string) {
+  if (typeof requestId === 'string' && pendingRequestIdsByKey.get(key) === requestId) {
+    pendingRequestIdsByKey.delete(key)
   }
 }
 
@@ -285,38 +308,68 @@ function deserializeState(
   cpp: CppAppState,
   existing: {
     sessions: Session[]
+    folders: Folder[]
     messages: Record<string, Message[]>
     agentSteps: Record<string, AgentStep[]>
     activeSessionId: string | null
     cliTranscriptBySessionId: Record<string, CliTranscript>
+    cliBindingBySessionId: Record<string, CliBinding>
   }
 ) {
   let msgCounter = 50000 // high enough not to clash with mock IDs
 
-  const folders: Folder[] = cpp.folders.map((f) => ({
-    id: f.id,
-    name: f.title,
-    parentId: null,
-    directory: f.directory ?? '',
-    isExpanded: !f.collapsed,
-    createdAt: new Date(),
-  }))
+  // Build lookup maps for reference-identity preservation
+  const existingSessionsById = Object.fromEntries(existing.sessions.map((s) => [s.id, s]))
+  const existingFoldersById = Object.fromEntries(existing.folders.map((f) => [f.id, f]))
+
+  const newFolders: Folder[] = cpp.folders.map((f) => {
+    const prev = existingFoldersById[f.id]
+    const name = f.title
+    const directory = f.directory ?? ''
+    const isExpanded = !f.collapsed
+    // Reuse reference if nothing changed — keeps memoized children stable
+    if (prev && prev.name === name && prev.directory === directory && prev.isExpanded === isExpanded) {
+      return prev
+    }
+    return {
+      id: f.id,
+      name,
+      parentId: null,
+      directory,
+      isExpanded,
+      createdAt: prev?.createdAt ?? new Date(),
+    }
+  })
+  const folders: Folder[] = newFolders.length === existing.folders.length && newFolders.every((f) => f === existingFoldersById[f.id])
+    ? existing.folders
+    : newFolders
 
   const geminiCliProviders = cpp.providers.filter((p) => p.id === GEMINI_CLI_PROVIDER_ID)
   const visibleProviders = geminiCliProviders.length > 0 ? geminiCliProviders : cpp.providers
   const fallbackProviderId =
     visibleProviders[0]?.id || cpp.settings.activeProviderId || GEMINI_CLI_PROVIDER_ID
 
-  const sessions: Session[] = cpp.chats.map((c) => {
+  const newSessions: Session[] = cpp.chats.map((c) => {
+    const prev = existingSessionsById[c.id]
+    const name = c.title || 'Untitled'
+    const folderId = c.folderId || null
+    // Reuse reference if nothing changed — keeps memoized children stable
+    if (prev && prev.name === name && prev.folderId === folderId && prev.viewMode === 'cli') {
+      return prev
+    }
     return {
       id: c.id,
-      name: c.title || 'Untitled',
+      name,
       viewMode: 'cli',
-      folderId: c.folderId || null,
+      folderId,
       createdAt: new Date(c.createdAt || Date.now()),
       updatedAt: new Date(c.updatedAt || Date.now()),
     }
   })
+  // Reuse array reference if all elements are identical
+  const sessions: Session[] = newSessions.length === existing.sessions.length && newSessions.every((s, i) => s === existing.sessions[i])
+    ? existing.sessions
+    : newSessions
 
   const messages: Record<string, Message[]> = {}
   for (const c of cpp.chats) {
@@ -363,12 +416,12 @@ function deserializeState(
       ? existing.activeSessionId
       : null
   const effectiveActiveSessionId = selectedByBackend ?? selectedFromCurrent ?? sessions[0]?.id ?? null
+  const existingBindings = existing.cliBindingBySessionId
   const cliBindingBySessionId = Object.fromEntries(
     cpp.chats
       .filter((c) => c.cliTerminal)
-      .map((c) => [
-        c.id,
-        {
+      .map((c) => {
+        const next: CliBinding = {
           terminalId: c.cliTerminal?.terminalId ?? '',
           boundChatId: c.cliTerminal?.sourceChatId ?? c.id,
           running: Boolean(c.cliTerminal?.running),
@@ -377,8 +430,24 @@ function deserializeState(
           readySinceLastSelect: Boolean(c.cliTerminal?.readySinceLastSelect),
           active: Boolean(c.cliTerminal?.active),
           lastError: c.cliTerminal?.lastError ?? '',
-        } satisfies CliBinding,
-      ])
+        }
+        const prev = existingBindings[c.id]
+        // Reuse reference if all fields match — prevents SessionItem re-renders
+        if (
+          prev &&
+          prev.terminalId === next.terminalId &&
+          prev.boundChatId === next.boundChatId &&
+          prev.running === next.running &&
+          prev.turnState === next.turnState &&
+          prev.processing === next.processing &&
+          prev.readySinceLastSelect === next.readySinceLastSelect &&
+          prev.active === next.active &&
+          prev.lastError === next.lastError
+        ) {
+          return [c.id, prev]
+        }
+        return [c.id, next]
+      })
   ) as Record<string, CliBinding>
 
   const cliTranscriptBySessionId = Object.fromEntries(
@@ -399,6 +468,7 @@ function deserializeState(
     agentSteps,
     providers,
     activeSessionId: effectiveActiveSessionId,
+    lastAppliedStateRevision: cppStateRevision(cpp),
     theme: (cpp.settings.theme as 'dark' | 'light') || 'dark',
     activeProviderId: Object.fromEntries(
       sessions.map((s) => [
@@ -430,6 +500,10 @@ function cliDebugSignature(debug: CppCliDebugState | null | undefined) {
   )
 }
 
+function isNewerStateRevision(nextRevision: number, currentRevision: number) {
+  return nextRevision > currentRevision
+}
+
 // ---------------------------------------------------------------------------
 // Mock responses (dev mode only)
 // ---------------------------------------------------------------------------
@@ -457,6 +531,7 @@ interface AppState {
   folders: Folder[]
   sessions: Session[]
   activeSessionId: string | null
+  lastAppliedStateRevision: number
   messages: Record<string, Message[]>
   agentSteps: Record<string, AgentStep[]>
 
@@ -522,18 +597,23 @@ export const useAppStore = create<AppState>((set, get) => {
       // resp.data is the raw CppAppState object. Validate shape before deserializing.
       if (resp.ok && isCppAppState(resp.data)) {
         const current = get()
-        const deserialized = deserializeState(resp.data, {
-          sessions: current.sessions,
-          messages: current.messages,
-          agentSteps: current.agentSteps,
-          activeSessionId: current.activeSessionId,
-          cliTranscriptBySessionId: current.cliTranscriptBySessionId,
-        })
-        set(deserialized)
-        // Sync theme to DOM
-        if (deserialized.theme) {
-          document.documentElement.setAttribute('data-theme', deserialized.theme)
-          localStorage.setItem('uam-theme', deserialized.theme)
+        const nextRevision = cppStateRevision(resp.data)
+        if (isNewerStateRevision(nextRevision, current.lastAppliedStateRevision)) {
+          const deserialized = deserializeState(resp.data, {
+            sessions: current.sessions,
+            folders: current.folders,
+            messages: current.messages,
+            agentSteps: current.agentSteps,
+            activeSessionId: current.activeSessionId,
+            cliTranscriptBySessionId: current.cliTranscriptBySessionId,
+            cliBindingBySessionId: current.cliBindingBySessionId,
+          })
+          set(deserialized)
+          // Sync theme to DOM
+          if (deserialized.theme) {
+            document.documentElement.setAttribute('data-theme', deserialized.theme)
+            localStorage.setItem('uam-theme', deserialized.theme)
+          }
         }
       }
     })
@@ -565,10 +645,6 @@ export const useAppStore = create<AppState>((set, get) => {
 
       switch (msg.type) {
         case 'stateUpdate':
-          console.debug('[cli-diag][stateUpdate]', {
-            selectedChatId: msg.data.selectedChatId,
-            cliDebug: msg.data.cliDebug ?? null,
-          })
           store.loadFromCef(msg.data)
           break
         case 'streamToken':
@@ -586,6 +662,19 @@ export const useAppStore = create<AppState>((set, get) => {
               set((state) => {
                 const currentBinding = state.cliBindingBySessionId[sessionId]
                 const terminalId = msg.terminalId ?? currentBinding?.terminalId ?? ''
+                const boundChatId = msg.sourceChatId ?? currentBinding?.boundChatId ?? sessionId
+
+                // Reuse cliBinding reference if it's already in the expected state
+                const bindingUnchanged =
+                  currentBinding &&
+                  currentBinding.terminalId === terminalId &&
+                  currentBinding.boundChatId === boundChatId &&
+                  currentBinding.running === true &&
+                  currentBinding.turnState === 'busy' &&
+                  currentBinding.processing === true &&
+                  currentBinding.readySinceLastSelect === false &&
+                  currentBinding.active === false &&
+                  currentBinding.lastError === ''
 
                 return {
                   cliTranscriptBySessionId: {
@@ -596,29 +685,25 @@ export const useAppStore = create<AppState>((set, get) => {
                       decodedData
                     ),
                   },
-                  cliBindingBySessionId: {
-                    ...state.cliBindingBySessionId,
-                    [sessionId]: {
-                      terminalId,
-                      boundChatId: msg.sourceChatId ?? currentBinding?.boundChatId ?? sessionId,
-                      running: true,
-                      turnState: 'busy',
-                      processing: true,
-                      readySinceLastSelect: false,
-                      active: false,
-                      lastError: '',
+                  ...(bindingUnchanged ? {} : {
+                    cliBindingBySessionId: {
+                      ...state.cliBindingBySessionId,
+                      [sessionId]: {
+                        terminalId,
+                        boundChatId,
+                        running: true,
+                        turnState: 'busy',
+                        processing: true,
+                        readySinceLastSelect: false,
+                        active: false,
+                        lastError: '',
+                      },
                     },
-                  },
+                  }),
                 }
               })
             }
 
-            console.debug('[cli-diag][cliOutput]', {
-              sessionId: msg.sessionId ?? '',
-              sourceChatId: msg.sourceChatId ?? '',
-              terminalId: msg.terminalId ?? '',
-              bytes: msg.data.length,
-            })
             window.dispatchEvent(
               new CustomEvent('uam-cli-output', {
                 detail: {
@@ -643,6 +728,7 @@ export const useAppStore = create<AppState>((set, get) => {
     folders: inCef ? [] : initialFolders,
     sessions: inCef ? [] : initialSessions,
     activeSessionId: inCef ? null : 's1',
+    lastAppliedStateRevision: -1,
     messages: inCef ? {} : initialMessages,
     agentSteps: inCef ? {} : mockAgentSteps,
 
@@ -667,19 +753,17 @@ export const useAppStore = create<AppState>((set, get) => {
     loadFromCef: (cppState) => {
       if (!cppState || !Array.isArray(cppState.chats)) return
       const current = get()
+      const nextRevision = cppStateRevision(cppState)
+      if (!isNewerStateRevision(nextRevision, current.lastAppliedStateRevision)) return
       const deserialized = deserializeState(cppState, {
         sessions: current.sessions,
+        folders: current.folders,
         messages: current.messages,
         agentSteps: current.agentSteps,
         activeSessionId: current.activeSessionId,
         cliTranscriptBySessionId: current.cliTranscriptBySessionId,
+        cliBindingBySessionId: current.cliBindingBySessionId,
       })
-      if (cliDebugSignature(current.cliDebugState) !== cliDebugSignature(deserialized.cliDebugState)) {
-        console.debug('[cli-diag][loadFromCef]', {
-          previous: current.cliDebugState,
-          next: deserialized.cliDebugState,
-        })
-      }
       set(deserialized)
       if (deserialized.theme) {
         document.documentElement.setAttribute('data-theme', deserialized.theme)
@@ -690,10 +774,29 @@ export const useAppStore = create<AppState>((set, get) => {
     // ---- Session actions ----
 
     setActiveSession: (id) => {
-      set({ activeSessionId: id })
       if (isCefContext()) {
-        sendToCEF({ action: 'selectSession', payload: { chatId: id } })
+        const previousActiveSessionId = get().activeSessionId
+        const requestKey = 'selectSession'
+        const requestId = createRequestId('selectSession')
+        rememberPendingRequest(requestKey, requestId)
+        set({ activeSessionId: id })
+        sendToCEF({ action: 'selectSession', payload: { chatId: id }, requestId }).then((resp) => {
+          if (resp.ok) {
+            clearPendingRequest(requestKey, resp.requestId)
+            return
+          }
+
+          if (!isLatestPendingRequest(requestKey, resp.requestId)) {
+            return
+          }
+
+          set({ activeSessionId: previousActiveSessionId })
+          pendingRequestIdsByKey.delete(requestKey)
+        })
+        return
       }
+
+      set({ activeSessionId: id })
     },
 
     addSession: (name, _viewMode, folderId) => {
@@ -708,9 +811,13 @@ export const useAppStore = create<AppState>((set, get) => {
           action: 'createSession',
           payload: { title: name, folderId: folderId ?? '', providerId: selectedProviderId },
         }).then((resp) => {
-          if (!resp.ok) console.error('[CEF] createSession failed:', resp.error)
+          if (!resp.ok) {
+            console.error('[CEF] createSession failed:', resp.error)
+            return
+          }
+
+          set({ isNewChatModalOpen: false })
         })
-        set({ isNewChatModalOpen: false })
         return
       }
 
@@ -728,17 +835,117 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     renameSession: (id, name) => {
+      if (isCefContext()) {
+        const previousSession = get().sessions.find((s) => s.id === id)
+        if (!previousSession) {
+          return
+        }
+
+        const requestKey = `renameSession:${id}`
+        const requestId = createRequestId('renameSession')
+        rememberPendingRequest(requestKey, requestId)
+        set((state) => ({
+          sessions: state.sessions.map((s) =>
+            s.id === id ? { ...s, name, updatedAt: new Date() } : s
+          ),
+        }))
+        sendToCEF({ action: 'renameSession', payload: { chatId: id, title: name }, requestId }).then(
+          (resp) => {
+            if (resp.ok) {
+              clearPendingRequest(requestKey, resp.requestId)
+              return
+            }
+
+            if (!isLatestPendingRequest(requestKey, resp.requestId)) {
+              return
+            }
+
+            set((state) => ({
+              sessions: state.sessions.map((s) => (s.id === id ? previousSession : s)),
+            }))
+            pendingRequestIdsByKey.delete(requestKey)
+          }
+        )
+        return
+      }
+
       set((state) => ({
         sessions: state.sessions.map((s) =>
           s.id === id ? { ...s, name, updatedAt: new Date() } : s
         ),
       }))
-      if (isCefContext()) {
-        sendToCEF({ action: 'renameSession', payload: { chatId: id, title: name } })
-      }
     },
 
     deleteSession: (id) => {
+      if (isCefContext()) {
+        const current = get()
+        const deletedSession = current.sessions.find((s) => s.id === id)
+        if (!deletedSession) {
+          return
+        }
+
+        const deletedIndex = current.sessions.findIndex((s) => s.id === id)
+        const deletedMessages = current.messages[id] ?? []
+        const deletedBinding = current.cliBindingBySessionId[id]
+        const deletedTranscript = current.cliTranscriptBySessionId[id]
+        const previousActiveSessionId = current.activeSessionId
+        const requestKey = `deleteSession:${id}`
+        const requestId = createRequestId('deleteSession')
+        rememberPendingRequest(requestKey, requestId)
+        set((state) => {
+          const remaining = state.sessions.filter((s) => s.id !== id)
+          const { [id]: _, ...msgs } = state.messages
+          const { [id]: __, ...bindings } = state.cliBindingBySessionId
+          const { [id]: ___, ...transcripts } = state.cliTranscriptBySessionId
+          return {
+            sessions: remaining,
+            messages: msgs,
+            cliBindingBySessionId: bindings,
+            cliTranscriptBySessionId: transcripts,
+            activeSessionId:
+              state.activeSessionId === id ? (remaining[0]?.id ?? null) : state.activeSessionId,
+          }
+        })
+
+        sendToCEF({ action: 'deleteSession', payload: { chatId: id }, requestId }).then((resp) => {
+          if (resp.ok) {
+            clearPendingRequest(requestKey, resp.requestId)
+            return
+          }
+
+          if (!isLatestPendingRequest(requestKey, resp.requestId)) {
+            return
+          }
+
+          set((state) => {
+            const sessions = state.sessions.some((s) => s.id === id)
+              ? state.sessions
+              : [
+                  ...state.sessions.slice(0, Math.min(deletedIndex, state.sessions.length)),
+                  deletedSession,
+                  ...state.sessions.slice(Math.min(deletedIndex, state.sessions.length)),
+                ]
+
+            return {
+              sessions,
+              messages: {
+                ...state.messages,
+                [id]: deletedMessages,
+              },
+              cliBindingBySessionId: deletedBinding
+                ? { ...state.cliBindingBySessionId, [id]: deletedBinding }
+                : state.cliBindingBySessionId,
+              cliTranscriptBySessionId: deletedTranscript
+                ? { ...state.cliTranscriptBySessionId, [id]: deletedTranscript }
+                : state.cliTranscriptBySessionId,
+              activeSessionId: previousActiveSessionId,
+            }
+          })
+          pendingRequestIdsByKey.delete(requestKey)
+        })
+        return
+      }
+
       set((state) => {
         const remaining = state.sessions.filter((s) => s.id !== id)
         const { [id]: _, ...msgs } = state.messages
@@ -753,9 +960,6 @@ export const useAppStore = create<AppState>((set, get) => {
             state.activeSessionId === id ? (remaining[0]?.id ?? null) : state.activeSessionId,
         }
       })
-      if (isCefContext()) {
-        sendToCEF({ action: 'deleteSession', payload: { chatId: id } })
-      }
     },
 
     setViewMode: (id, viewMode) =>
@@ -866,6 +1070,9 @@ export const useAppStore = create<AppState>((set, get) => {
     // ---- Message actions ----
 
     sendMessage: (sessionId, content) => {
+      const previousMessages = get().messages[sessionId] ?? []
+      const previousStreamingMessageId = get().streamingMessageId
+
       msgCounter++
       const userMsg: Message = {
         id: makeId('m', msgCounter),
@@ -895,7 +1102,30 @@ export const useAppStore = create<AppState>((set, get) => {
       }))
 
       if (isCefContext()) {
-        sendToCEF({ action: 'sendMessage', payload: { chatId: sessionId, content } })
+        const requestKey = `sendMessage:${sessionId}`
+        const requestId = createRequestId('sendMessage')
+        rememberPendingRequest(requestKey, requestId)
+        sendToCEF({ action: 'sendMessage', payload: { chatId: sessionId, content }, requestId }).then(
+          (resp) => {
+            if (resp.ok) {
+              clearPendingRequest(requestKey, resp.requestId)
+              return
+            }
+
+            if (!isLatestPendingRequest(requestKey, resp.requestId)) {
+              return
+            }
+
+            set((state) => ({
+              messages: {
+                ...state.messages,
+                [sessionId]: previousMessages,
+              },
+              streamingMessageId: previousStreamingMessageId,
+            }))
+            pendingRequestIdsByKey.delete(requestKey)
+          }
+        )
         // Streaming tokens arrive via window.uamPush → appendStreamToken / finalizeStream
         return
       }

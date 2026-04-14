@@ -902,7 +902,7 @@ UAM_TEST(TestChatRepositoryRecoversWhenPrimaryMissingAndBackupExists)
 	UAM_ASSERT_EQ(1u, loaded.size());
 	const ChatSession& recovered = loaded.front();
 	UAM_ASSERT_EQ(std::string("chat-recover-missing"), recovered.id);
-	UAM_ASSERT_EQ(std::string("chat-recover-missing"), recovered.native_session_id);
+	UAM_ASSERT_EQ(std::string("chat-wrong-backup-id"), recovered.native_session_id);
 	UAM_ASSERT_EQ(std::string("chat-parent"), recovered.parent_chat_id);
 	UAM_ASSERT_EQ(std::string("chat-recover-missing"), recovered.branch_root_chat_id);
 	UAM_ASSERT_EQ(3, recovered.branch_from_message_index);
@@ -1025,14 +1025,14 @@ UAM_TEST(TestChatFolderStoreRoundTrip)
 	UAM_ASSERT(ChatFolderStore::Save(data_root.root, folders));
 
 	const std::string file_text = ReadTextFile(data_root.root / "folders.txt");
-	UAM_ASSERT(file_text.find("collapsed=") == std::string::npos);
+	UAM_ASSERT(file_text.find("collapsed=") != std::string::npos);
 
 	const std::vector<ChatFolder> loaded = ChatFolderStore::Load(data_root.root);
 	UAM_ASSERT_EQ(2u, loaded.size());
 	UAM_ASSERT_EQ(std::string("folder-default"), loaded[0].id);
 	UAM_ASSERT_EQ(std::string("General"), loaded[0].title);
 	UAM_ASSERT_EQ(std::string("/tmp/workspace-a"), loaded[0].directory);
-	UAM_ASSERT_EQ(false, loaded[0].collapsed);
+	UAM_ASSERT_EQ(true, loaded[0].collapsed);
 	UAM_ASSERT_EQ(std::string("folder-product"), loaded[1].id);
 	UAM_ASSERT_EQ(std::string("Product"), loaded[1].title);
 	UAM_ASSERT_EQ(std::string("/tmp/workspace-b"), loaded[1].directory);

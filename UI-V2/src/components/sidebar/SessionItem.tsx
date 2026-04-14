@@ -1,6 +1,7 @@
-import { useState, useRef, useEffect } from 'react'
-import { Session, ViewMode } from '../../types/session'
+import { useState, useRef, useEffect, memo } from 'react'
+import { ViewMode } from '../../types/session'
 import { useAppStore } from '../../store/useAppStore'
+import { useShallow } from 'zustand/react/shallow'
 
 const MODE_ICON: Record<ViewMode, string> = {
   structured: '◈',
@@ -15,16 +16,21 @@ const MODE_COLOR: Record<ViewMode, string> = {
 }
 
 interface SessionItemProps {
-  session: Session
+  sessionId: string
 }
 
-export function SessionItem({ session }: SessionItemProps) {
-  const { activeSessionId, cliBindingBySessionId, setActiveSession, renameSession, deleteSession } =
-    useAppStore()
-  const isActive = activeSessionId === session.id
-  const cliBinding = cliBindingBySessionId[session.id]
+export const SessionItem = memo(function SessionItem({ sessionId }: SessionItemProps) {
+  // Fine-grained selectors — each only re-renders when its specific value changes
+  const sessionName     = useAppStore((s) => s.sessions.find((x) => x.id === sessionId)?.name ?? '')
+  const sessionViewMode = useAppStore((s) => s.sessions.find((x) => x.id === sessionId)?.viewMode ?? 'cli')
+  const isActive        = useAppStore((s) => s.activeSessionId === sessionId)
+  const cliBinding      = useAppStore(useShallow((s) => s.cliBindingBySessionId[sessionId]))
+  const setActiveSession = useAppStore((s) => s.setActiveSession)
+  const renameSession    = useAppStore((s) => s.renameSession)
+  const deleteSession    = useAppStore((s) => s.deleteSession)
+
   const [editing, setEditing] = useState(false)
-  const [editValue, setEditValue] = useState(session.name)
+  const [editValue, setEditValue] = useState(sessionName)
   const [showMenu, setShowMenu] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -59,8 +65,8 @@ export function SessionItem({ session }: SessionItemProps) {
 
   const commitRename = () => {
     const trimmed = editValue.trim()
-    if (trimmed && trimmed !== session.name) renameSession(session.id, trimmed)
-    else setEditValue(session.name)
+    if (trimmed && trimmed !== sessionName) renameSession(sessionId, trimmed)
+    else setEditValue(sessionName)
     setEditing(false)
   }
 
@@ -75,10 +81,10 @@ export function SessionItem({ session }: SessionItemProps) {
           background: isActive ? 'var(--sidebar-item-active)' : 'transparent',
           borderLeft: isActive ? '2px solid var(--accent)' : '2px solid transparent',
         }}
-        onClick={() => !editing && setActiveSession(session.id)}
+        onClick={() => !editing && setActiveSession(sessionId)}
         onDoubleClick={() => {
           setEditing(true)
-          setEditValue(session.name)
+          setEditValue(sessionName)
         }}
         onMouseEnter={(e) => {
           if (!isActive) e.currentTarget.style.background = 'var(--sidebar-item-hover)'
@@ -94,9 +100,9 @@ export function SessionItem({ session }: SessionItemProps) {
         {/* Mode icon */}
         <span
           className="flex-shrink-0 text-xs"
-          style={{ color: isActive ? MODE_COLOR[session.viewMode] : 'var(--text-3)', fontSize: 10 }}
+          style={{ color: isActive ? MODE_COLOR[sessionViewMode] : 'var(--text-3)', fontSize: 10 }}
         >
-          {MODE_ICON[session.viewMode]}
+          {MODE_ICON[sessionViewMode]}
         </span>
 
         {/* Name or edit input */}
@@ -109,7 +115,7 @@ export function SessionItem({ session }: SessionItemProps) {
             onKeyDown={(e) => {
               if (e.key === 'Enter') commitRename()
               if (e.key === 'Escape') {
-                setEditValue(session.name)
+                setEditValue(sessionName)
                 setEditing(false)
               }
             }}
@@ -124,9 +130,9 @@ export function SessionItem({ session }: SessionItemProps) {
         ) : (
           <span
             className="flex-1 text-xs truncate"
-            style={{ color: isActive ? 'var(--text)' : 'var(--text-2)' }}
+            style={{ color: isActive ? '#ffffff' : 'var(--text-2)' }}
           >
-            {session.name}
+            {sessionName}
           </span>
         )}
 
@@ -191,14 +197,14 @@ export function SessionItem({ session }: SessionItemProps) {
             style={{ background: 'transparent', color: 'var(--text-2)', cursor: 'pointer', border: 'none', fontFamily: 'inherit' }}
             onMouseEnter={(e) => e.currentTarget.style.color = 'var(--text)'}
             onMouseLeave={(e) => e.currentTarget.style.color = 'var(--text-2)'}
-            onClick={() => { setShowMenu(false); setEditing(true); setEditValue(session.name) }}
+            onClick={() => { setShowMenu(false); setEditing(true); setEditValue(sessionName) }}
           >
             Rename
           </button>
           <button
             className="w-full text-left px-3 py-1.5 text-xs transition-colors duration-100"
             style={{ background: 'transparent', color: 'var(--red)', cursor: 'pointer', border: 'none', fontFamily: 'inherit' }}
-            onClick={() => { setShowMenu(false); deleteSession(session.id) }}
+            onClick={() => { setShowMenu(false); deleteSession(sessionId) }}
           >
             Delete
           </button>
@@ -206,4 +212,4 @@ export function SessionItem({ session }: SessionItemProps) {
       )}
     </div>
   )
-}
+})

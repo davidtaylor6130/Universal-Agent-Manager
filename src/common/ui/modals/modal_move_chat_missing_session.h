@@ -21,18 +21,22 @@ inline void DrawMoveChatMissingSessionModal(AppState& app)
 			const int l_chatIndex = ChatDomainService().FindChatIndexById(app, l_chatId);
 			if (l_chatIndex >= 0)
 			{
-				app.chats[l_chatIndex].folder_id = app.move_chat_target_folder_id;
-				app.chats[l_chatIndex].workspace_directory = app.move_chat_target_workspace;
-				app.chats[l_chatIndex].updated_at = TimestampNow();
-				ChatRepository::SaveChat(app.data_root, app.chats[l_chatIndex]);
-				app.status_line = "Chat moved to new folder.";
+				ChatSession& chat = app.chats[l_chatIndex];
+				if (!ChatRepository::SaveChat(app.data_root, chat))
+				{
+					app.status_line = "Failed to persist moved chat.";
+				}
+				else
+				{
+					app.status_line = "Chat moved to new folder.";
+					app.move_chat_pending_id.clear();
+					app.move_chat_original_folder_id.clear();
+					app.move_chat_original_workspace.clear();
+					app.move_chat_target_folder_id.clear();
+					app.move_chat_target_workspace.clear();
+					ImGui::CloseCurrentPopup();
+				}
 			}
-			app.move_chat_pending_id.clear();
-			app.move_chat_original_folder_id.clear();
-			app.move_chat_original_workspace.clear();
-			app.move_chat_target_folder_id.clear();
-			app.move_chat_target_workspace.clear();
-			ImGui::CloseCurrentPopup();
 		}
 
 		ImGui::SameLine();
@@ -43,18 +47,27 @@ inline void DrawMoveChatMissingSessionModal(AppState& app)
 			const int l_chatIndex = ChatDomainService().FindChatIndexById(app, l_chatId);
 			if (l_chatIndex >= 0)
 			{
-				app.chats[l_chatIndex].folder_id = app.move_chat_original_folder_id;
-				app.chats[l_chatIndex].workspace_directory = app.move_chat_original_workspace;
-				app.chats[l_chatIndex].updated_at = TimestampNow();
-				ChatRepository::SaveChat(app.data_root, app.chats[l_chatIndex]);
-				app.status_line = "Move chat cancelled.";
+				ChatSession& chat = app.chats[l_chatIndex];
+				const ChatSession moved_chat = chat;
+				chat.folder_id = app.move_chat_original_folder_id;
+				chat.workspace_directory = app.move_chat_original_workspace;
+				chat.updated_at = TimestampNow();
+				if (!ChatRepository::SaveChat(app.data_root, chat))
+				{
+					chat = moved_chat;
+					app.status_line = "Failed to persist cancelled move.";
+				}
+				else
+				{
+					app.status_line = "Move chat cancelled.";
+					app.move_chat_pending_id.clear();
+					app.move_chat_original_folder_id.clear();
+					app.move_chat_original_workspace.clear();
+					app.move_chat_target_folder_id.clear();
+					app.move_chat_target_workspace.clear();
+					ImGui::CloseCurrentPopup();
+				}
 			}
-			app.move_chat_pending_id.clear();
-			app.move_chat_original_folder_id.clear();
-			app.move_chat_original_workspace.clear();
-			app.move_chat_target_folder_id.clear();
-			app.move_chat_target_workspace.clear();
-			ImGui::CloseCurrentPopup();
 		}
 
 		ImGui::EndPopup();

@@ -107,25 +107,7 @@ std::string GeminiCliProviderRuntime::GenerateSessionUUID() const
 
 std::string GeminiCliProviderRuntime::BuildSessionFilename(const ChatSession& chat) const
 {
-	std::string datePart = "unknown";
-	if (!chat.created_at.empty())
-	{
-		std::string ts = chat.created_at;
-		std::size_t tPos = ts.find('T');
-		if (tPos != std::string::npos && tPos + 6 <= ts.size())
-		{
-			datePart = ts.substr(0, tPos + 6);
-			for (char& c : datePart)
-			{
-				if (c == ':')
-				{
-					c = '-';
-				}
-			}
-		}
-	}
-	std::string shortId = chat.native_session_id.substr(0, 8);
-	return "session-" + datePart + "-" + shortId + ".json";
+	return chat.native_session_id + ".json";
 }
 
 std::string GeminiCliProviderRuntime::NativeTypeFromRole(MessageRole role) const

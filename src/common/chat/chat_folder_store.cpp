@@ -37,6 +37,23 @@ namespace
 		return line;
 	}
 
+	std::string ReadFolderFileText(const fs::path& path)
+	{
+		const std::string text = ReadTextFile(path);
+		if (!text.empty())
+		{
+			return text;
+		}
+
+		const fs::path backup = fs::path(path.string() + ".bak");
+		if (fs::exists(backup))
+		{
+			return ReadTextFile(backup);
+		}
+
+		return text;
+	}
+
 } // namespace
 
 std::vector<ChatFolder> ChatFolderStore::Load(const std::filesystem::path& data_root)
@@ -49,7 +66,7 @@ std::vector<ChatFolder> ChatFolderStore::Load(const std::filesystem::path& data_
 		return folders;
 	}
 
-	std::istringstream lines(ReadTextFile(file));
+	std::istringstream lines(ReadFolderFileText(file));
 	std::string line;
 	ChatFolder current;
 	bool in_folder = false;
@@ -94,11 +111,15 @@ std::vector<ChatFolder> ChatFolderStore::Load(const std::filesystem::path& data_
 		{
 			current.title = value;
 		}
-		else if (key == "directory")
-		{
-			current.directory = value;
+			else if (key == "directory")
+			{
+				current.directory = value;
+			}
+			else if (key == "collapsed")
+			{
+				current.collapsed = (value == "1" || value == "true");
+			}
 		}
-	}
 
 	if (in_folder && !current.id.empty())
 	{
@@ -123,11 +144,12 @@ bool ChatFolderStore::Save(const std::filesystem::path& data_root, const std::ve
 		}
 
 		out << "[folder]\n";
-		out << "id=" << uam::EncodeLineValue(folder.id) << "\n";
-		out << "title=" << uam::EncodeLineValue(folder.title) << "\n";
-		out << "directory=" << uam::EncodeLineValue(folder.directory) << "\n";
-		out << "\n";
-	}
+			out << "id=" << uam::EncodeLineValue(folder.id) << "\n";
+			out << "title=" << uam::EncodeLineValue(folder.title) << "\n";
+			out << "directory=" << uam::EncodeLineValue(folder.directory) << "\n";
+			out << "collapsed=" << (folder.collapsed ? "1" : "0") << "\n";
+			out << "\n";
+		}
 
 	return uam::io::WriteTextFile(FolderFilePath(data_root), out.str());
 }

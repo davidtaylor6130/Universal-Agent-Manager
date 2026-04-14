@@ -47,35 +47,12 @@ export function CLIView({ session }: CLIViewProps) {
   const terminalRef = useRef<HTMLDivElement>(null)
   const termInstanceRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
-  const {
-    theme,
-    cliBindingBySessionId,
-    cliTranscriptBySessionId,
-    setCliBinding,
-    pushChannelStatus,
-    pushChannelError,
-    lastPushAtMs,
-    uiBuildId,
-  } = useAppStore()
+  const theme = useAppStore((s) => s.theme)
+  const cliBindingBySessionId = useAppStore((s) => s.cliBindingBySessionId)
+  const cliTranscriptBySessionId = useAppStore((s) => s.cliTranscriptBySessionId)
+  const setCliBinding = useAppStore((s) => s.setCliBinding)
   const cliBinding = cliBindingBySessionId[session.id]
   const cliTranscript = cliTranscriptBySessionId[session.id]
-  const lastPushLabel = lastPushAtMs ? new Date(lastPushAtMs).toLocaleTimeString() : 'none yet'
-
-  const pushStatusMessage =
-    pushChannelStatus === 'connected'
-      ? `Push connected • last update ${lastPushLabel} • UI ${uiBuildId}`
-      : pushChannelStatus === 'no-push-yet'
-        ? `Waiting for backend push channel • UI ${uiBuildId}`
-        : pushChannelStatus === 'parse-error'
-          ? `Push parse error: ${pushChannelError}`
-          : `Push payload rejected: ${pushChannelError}`
-
-  const pushStatusStyle =
-    pushChannelStatus === 'connected'
-      ? { background: 'rgba(34, 197, 94, 0.10)', color: '#22c55e' }
-      : pushChannelStatus === 'no-push-yet'
-        ? { background: 'rgba(234, 179, 8, 0.12)', color: '#eab308' }
-        : { background: 'rgba(239, 68, 68, 0.10)', color: '#ef4444' }
 
   useEffect(() => {
     if (!terminalRef.current) return
@@ -311,18 +288,6 @@ export function CLIView({ session }: CLIViewProps) {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {isCefContext() && (
-        <div
-          className="flex-shrink-0 px-3 py-2 text-xs"
-          style={{
-            borderBottom: '1px solid var(--border)',
-            ...pushStatusStyle,
-          }}
-        >
-          {pushStatusMessage}
-        </div>
-      )}
-
       {!!cliBinding?.lastError && (
         <div
           className="flex-shrink-0 px-3 py-2 text-xs"
