@@ -149,6 +149,14 @@ body {
   0%, 100% { opacity: 1; }
   50%       { opacity: 0; }
 }
+@keyframes sessionStatusPulse {
+  0%, 100% { transform: scale(0.92); opacity: 0.55; }
+  50% { transform: scale(1.08); opacity: 1; }
+}
+@keyframes sessionStatusWave {
+  0%, 100% { opacity: 0.28; transform: translateY(0); }
+  50% { opacity: 1; transform: translateY(-1px); }
+}
 .cursor-blink {
   display: inline-block;
   width: 7px;
@@ -221,6 +229,54 @@ body {
 }
 .xterm .xterm-viewport {
   overflow-y: auto !important;
+}
+
+.session-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  pointer-events: none;
+}
+
+.session-status > span {
+  display: block;
+}
+
+.session-status--processing {
+  gap: 2px;
+}
+
+.session-status--processing > span {
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--yellow);
+  animation: sessionStatusWave 0.9s ease-in-out infinite;
+}
+
+.session-status--processing > span:nth-child(2) {
+  animation-delay: 0.12s;
+}
+
+.session-status--processing > span:nth-child(3) {
+  animation-delay: 0.24s;
+}
+
+.session-status--ready > span {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.session-status--active > span {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  border: 1.5px solid var(--green);
+  background: color-mix(in srgb, var(--green) 18%, transparent);
 }
 
 /* ── Highlight.js theme override (minimal) ───────────────── */

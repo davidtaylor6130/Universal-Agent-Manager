@@ -15,8 +15,21 @@ interface StartCliTerminalResponse {
   sessionId?: string
   sourceChatId?: string
   running?: boolean
+  turnState?: 'idle' | 'busy' | string
   lastError?: string
   replayData?: string
+}
+
+function binaryStringToUint8Array(data: string): Uint8Array {
+  return Uint8Array.from(data, (char) => char.charCodeAt(0))
+}
+
+function decodeReplayData(data: string): Uint8Array | string {
+  try {
+    return binaryStringToUint8Array(atob(data))
+  } catch {
+    return data
+  }
 }
 
 // Mock data for dev mode only
@@ -37,6 +50,7 @@ export function CLIView({ session }: CLIViewProps) {
   const {
     theme,
     cliBindingBySessionId,
+    cliTranscriptBySessionId,
     setCliBinding,
     pushChannelStatus,
     pushChannelError,
@@ -44,6 +58,7 @@ export function CLIView({ session }: CLIViewProps) {
     uiBuildId,
   } = useAppStore()
   const cliBinding = cliBindingBySessionId[session.id]
+  const cliTranscript = cliTranscriptBySessionId[session.id]
   const lastPushLabel = lastPushAtMs ? new Date(lastPushAtMs).toLocaleTimeString() : 'none yet'
 
   const pushStatusMessage =
@@ -106,6 +121,10 @@ export function CLIView({ session }: CLIViewProps) {
     term.open(terminalRef.current)
     fitAddon.fit()
 
+    if (cliTranscript?.content) {
+      term.write(binaryStringToUint8Array(cliTranscript.content))
+    }
+
     termInstanceRef.current = term
     fitAddonRef.current = fitAddon
 
@@ -123,18 +142,17 @@ export function CLIView({ session }: CLIViewProps) {
         const terminalMatch = Boolean(binding?.terminalId) && Boolean(terminalId) && binding?.terminalId === terminalId
 
         if ((sessionMatch || terminalMatch) && data) {
-          // data is base64-encoded raw PTY bytes — xterm.js decodes them.
-          try {
-            term.write(Uint8Array.from(atob(data), (c) => c.charCodeAt(0)))
-          } catch {
-            term.write(data)
-          }
+          term.write(binaryStringToUint8Array(data))
 
           if (sessionMatch) {
             setCliBinding(session.id, {
               terminalId: terminalId ?? binding?.terminalId ?? '',
               boundChatId: sourceChatId ?? binding?.boundChatId ?? session.id,
               running: true,
+              processing: true,
+              readySinceLastSelect: false,
+              active: false,
+              turnState: 'busy',
               lastError: '',
             })
           }
@@ -145,10 +163,21 @@ export function CLIView({ session }: CLIViewProps) {
       // Production path — request the C++ backend to start/attach a PTY.
       sendToCEF<StartCliTerminalResponse>({
         action: 'startCliTerminal',
-        payload: { chatId: session.id, terminalId: cliBinding?.terminalId ?? '' },
+        payload: {
+          chatId: session.id,
+          terminalId: cliBinding?.terminalId ?? cliTranscript?.terminalId ?? '',
+          rows: term.rows,
+          cols: term.cols,
+        },
       }).then((resp) => {
         if (!resp.ok) {
-          setCliBinding(session.id, { running: false, lastError: resp.error ?? 'Failed to start provider terminal.' })
+          setCliBinding(session.id, {
+            running: false,
+            processing: false,
+            active: false,
+            turnState: 'idle',
+            lastError: resp.error ?? 'Failed to start provider terminal.',
+          })
           return
         }
 
@@ -158,20 +187,25 @@ export function CLIView({ session }: CLIViewProps) {
             terminalId: data.terminalId ?? cliBinding?.terminalId ?? '',
             boundChatId: data.sourceChatId ?? session.id,
             running: Boolean(data.running),
+            processing: data.turnState === 'busy',
+            active: false,
+            turnState: data.turnState === 'busy' ? 'busy' : 'idle',
             lastError: data.lastError ?? '',
           })
 
-          if (data.replayData) {
-            try {
-              term.write(Uint8Array.from(atob(data.replayData), (c) => c.charCodeAt(0)))
-            } catch {
-              term.write(data.replayData)
-            }
+          if (!cliTranscript?.content && data.replayData) {
+            term.write(decodeReplayData(data.replayData))
           }
         }
       }).catch((e) => {
         console.error('[CEF] startCliTerminal error:', e)
-        setCliBinding(session.id, { running: false, lastError: 'Failed to start provider terminal.' })
+        setCliBinding(session.id, {
+          running: false,
+          processing: false,
+          active: false,
+          turnState: 'idle',
+          lastError: 'Failed to start provider terminal.',
+        })
       })
 
       // Forward xterm.js keystrokes → C++ PTY via cefQuery.
@@ -205,6 +239,14 @@ export function CLIView({ session }: CLIViewProps) {
         onData.dispose()
         window.removeEventListener('uam-cli-output', onCliOutput)
         resizeObserver.disconnect()
+        const binding = useAppStore.getState().cliBindingBySessionId[session.id]
+        sendToCEF({
+          action: 'stopCliTerminal',
+          payload: {
+            chatId: binding?.boundChatId ?? session.id,
+            terminalId: binding?.terminalId ?? '',
+          },
+        }).catch((e) => console.error('[CEF] stopCliTerminal error:', e))
         term.dispose()
       }
     }

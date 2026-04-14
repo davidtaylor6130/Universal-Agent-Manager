@@ -22,10 +22,11 @@ class UamCefClient : public CefClient,
                      public CefLoadHandler,
                      public CefDisplayHandler,
                      public CefContextMenuHandler,
-                     public CefKeyboardHandler
+                     public CefKeyboardHandler,
+                     public CefRequestHandler
 {
   public:
-	explicit UamCefClient(uam::AppState& app, BrowserReadyCallback on_ready = nullptr);
+	explicit UamCefClient(uam::AppState& app, std::string trusted_ui_index_url, BrowserReadyCallback on_ready = nullptr);
 	~UamCefClient() override = default;
 
 	// CefClient
@@ -34,11 +35,24 @@ class UamCefClient : public CefClient,
 	CefRefPtr<CefDisplayHandler>     GetDisplayHandler()     override { return this; }
 	CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override { return this; }
 	CefRefPtr<CefKeyboardHandler>    GetKeyboardHandler()    override { return this; }
+	CefRefPtr<CefRequestHandler>     GetRequestHandler()     override { return this; }
 
 	bool OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
 	                              CefRefPtr<CefFrame>   frame,
 	                              CefProcessId          source_process,
 	                              CefRefPtr<CefProcessMessage> message) override;
+
+	// CefRequestHandler — block bridge access and route external links safely.
+	bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
+	                    CefRefPtr<CefFrame>   frame,
+	                    CefRefPtr<CefRequest> request,
+	                    bool                  user_gesture,
+	                    bool                  is_redirect) override;
+	bool OnOpenURLFromTab(CefRefPtr<CefBrowser> browser,
+	                      CefRefPtr<CefFrame>   frame,
+	                      const CefString&      target_url,
+	                      WindowOpenDisposition target_disposition,
+	                      bool                  user_gesture) override;
 
 	// CefLifeSpanHandler
 	void OnAfterCreated(CefRefPtr<CefBrowser> browser) override;
@@ -74,10 +88,13 @@ class UamCefClient : public CefClient,
 
   private:
 	uam::AppState&                           m_app;
+	std::string                              m_trustedUiIndexUrl;
 	CefRefPtr<CefBrowser>                    m_browser;
 	CefRefPtr<CefMessageRouterBrowserSide>   m_router;
 	std::unique_ptr<UamQueryHandler>         m_queryHandler;
 	BrowserReadyCallback                     m_onReady;
+
+	bool IsTrustedMainFrame(CefRefPtr<CefFrame> frame) const;
 
 	IMPLEMENT_REFCOUNTING(UamCefClient);
 };

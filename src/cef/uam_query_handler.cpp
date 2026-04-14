@@ -1,23 +1,39 @@
 #include "cef/uam_query_handler.h"
 #include "cef/cef_push.h"
 #include "cef/state_serializer.h"
+#include "cef/uam_cef_security.h"
 
 #include "app/chat_domain_service.h"
 #include "app/persistence_coordinator.h"
 #include "app/runtime_orchestration_services.h"
 
 #include "common/platform/platform_services.h"
+#include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
+#include "common/chat/chat_folder_store.h"
+#include "common/ui/chat_actions/chat_action_remove_chat.h"
+#include "common/ui/chat_actions/chat_action_folder_lifecycle.h"
 
 #include "include/wrapper/cef_helpers.h"
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <utility>
 
 namespace
 {
 	constexpr const char* kPreferredProviderId = "gemini-cli";
 	constexpr std::size_t kRecentOutputReplayLimitBytes = 256 * 1024;
+
+	int FolderFailureCode(const std::string& status_line)
+	{
+		if (status_line.find("no longer exists") != std::string::npos || status_line.find("not found") != std::string::npos)
+		{
+			return 404;
+		}
+
+		return 400;
+	}
 
 	const ProviderProfile* ResolvePreferredCliProvider(const uam::AppState& app)
 	{
@@ -124,6 +140,11 @@ namespace
 		return nullptr;
 	}
 
+	bool CliInputLooksLikeTurnSubmit(const std::string& data)
+	{
+		return data.find('\r') != std::string::npos || data.find('\n') != std::string::npos;
+	}
+
 	nlohmann::json BuildCliBindingResponse(const uam::CliTerminalState& terminal)
 	{
 		nlohmann::json data;
@@ -131,6 +152,7 @@ namespace
 		data["sessionId"] = terminal.frontend_chat_id;
 		data["sourceChatId"] = terminal.attached_chat_id;
 		data["running"] = terminal.running;
+		data["turnState"] = terminal.turn_state == uam::CliTerminalTurnState::Busy ? "busy" : "idle";
 		data["lastError"] = terminal.last_error;
 
 		if (!terminal.recent_output_bytes.empty())
@@ -149,8 +171,9 @@ namespace
 // Construction
 // ---------------------------------------------------------------------------
 
-UamQueryHandler::UamQueryHandler(uam::AppState& app)
+UamQueryHandler::UamQueryHandler(uam::AppState& app, std::string trusted_ui_index_url)
 	: m_app(app)
+	, m_trustedUiIndexUrl(std::move(trusted_ui_index_url))
 {}
 
 // ---------------------------------------------------------------------------
@@ -158,13 +181,19 @@ UamQueryHandler::UamQueryHandler(uam::AppState& app)
 // ---------------------------------------------------------------------------
 
 bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser>  browser,
-                               CefRefPtr<CefFrame>    /*frame*/,
+                               CefRefPtr<CefFrame>    frame,
                                int64_t                /*query_id*/,
                                const CefString&       request,
                                bool                   /*persistent*/,
                                CefRefPtr<Callback>    callback)
 {
 	CEF_REQUIRE_UI_THREAD();
+
+	if (!frame->IsMain() || !uam::cef::IsTrustedUiUrl(frame->GetURL().ToString(), m_trustedUiIndexUrl))
+	{
+		callback->Failure(403, "Privileged bridge is restricted to the bundled UI.");
+		return true;
+	}
 
 	nlohmann::json req;
 	try
@@ -194,10 +223,18 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser>  browser,
 		HandleSendMessage(browser, payload, callback);
 	else if (action == "createFolder")
 		HandleCreateFolder(browser, payload, callback);
+	else if (action == "renameFolder")
+		HandleRenameFolder(browser, payload, callback);
+	else if (action == "deleteFolder")
+		HandleDeleteFolder(browser, payload, callback);
 	else if (action == "toggleFolder")
 		HandleToggleFolder(browser, payload, callback);
+	else if (action == "browseFolderDirectory")
+		HandleBrowseFolderDirectory(browser, payload, callback);
 	else if (action == "startCliTerminal")
 		HandleStartCli(browser, payload, callback);
+	else if (action == "stopCliTerminal")
+		HandleStopCli(browser, payload, callback);
 	else if (action == "resizeCliTerminal")
 		HandleResizeCli(payload, callback);
 	else if (action == "writeCliInput")
@@ -245,13 +282,15 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser>  browser,
                                            CefRefPtr<Callback>    cb)
 {
 	const std::string title      = payload.value("title",      "New Chat");
-	const std::string folder_id  = payload.value("folderId",   "");
+	const std::string requested_folder_id = payload.value("folderId", "");
 	const ProviderProfile* preferred_provider = ResolvePreferredCliProvider(m_app);
 	const std::string provider_id = payload.value(
 		"providerId",
 		preferred_provider != nullptr ? preferred_provider->id : m_app.settings.active_provider_id);
 
-	ChatSession chat = ChatDomainService().CreateNewChat(folder_id, provider_id);
+	const std::string target_folder_id = ResolveRequestedNewChatFolderId(m_app, requested_folder_id);
+
+	ChatSession chat = ChatDomainService().CreateNewChat(target_folder_id, provider_id);
 	EnsureChatUsesPreferredCliProvider(m_app, chat);
 	if (!title.empty())
 		chat.title = title;
@@ -302,13 +341,12 @@ void UamQueryHandler::HandleDeleteSession(CefRefPtr<CefBrowser>  browser,
 		return;
 	}
 
-	m_app.chats.erase(m_app.chats.begin() + idx);
+	if (!RemoveChatById(m_app, chat_id))
+	{
+		cb->Failure(409, m_app.status_line.empty() ? ("Failed to delete chat: " + chat_id) : m_app.status_line);
+		return;
+	}
 
-	// Adjust selection
-	if (m_app.selected_chat_index >= static_cast<int>(m_app.chats.size()))
-		m_app.selected_chat_index = static_cast<int>(m_app.chats.size()) - 1;
-
-	PersistenceCoordinator().SaveSettings(m_app);
 	uam::PushStateUpdate(browser, m_app);
 	cb->Success("{}");
 }
@@ -346,14 +384,56 @@ void UamQueryHandler::HandleCreateFolder(CefRefPtr<CefBrowser>  browser,
                                           CefRefPtr<Callback>    cb)
 {
 	const std::string title = payload.value("title", "New Folder");
+	const std::string directory = payload.value("directory", "");
+	std::string created_folder_id;
 
-	ChatFolder folder;
-	folder.id        = ChatDomainService().NewFolderId();
-	folder.title     = title;
-	folder.collapsed = false;
-	m_app.folders.push_back(std::move(folder));
+	if (!CreateFolder(m_app, title, directory, &created_folder_id))
+	{
+		cb->Failure(400, m_app.status_line);
+		return;
+	}
 
-	PersistenceCoordinator().SaveSettings(m_app);
+	uam::PushStateUpdate(browser, m_app);
+	ChatFolder* folder = ChatDomainService().FindFolderById(m_app, created_folder_id);
+	if (folder == nullptr)
+	{
+		cb->Success("{}");
+		return;
+	}
+
+	cb->Success(uam::StateSerializer::SerializeFolder(*folder).dump());
+}
+
+void UamQueryHandler::HandleRenameFolder(CefRefPtr<CefBrowser>  browser,
+                                          const nlohmann::json&  payload,
+                                          CefRefPtr<Callback>    cb)
+{
+	const std::string folder_id = payload.value("folderId", "");
+	const std::string title = payload.value("title", "");
+	const std::string directory = payload.value("directory", "");
+
+	if (!RenameFolderById(m_app, folder_id, title, directory))
+	{
+		cb->Failure(FolderFailureCode(m_app.status_line), m_app.status_line);
+		return;
+	}
+
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleDeleteFolder(CefRefPtr<CefBrowser>  browser,
+                                          const nlohmann::json&  payload,
+                                          CefRefPtr<Callback>    cb)
+{
+	const std::string folder_id = payload.value("folderId", "");
+
+	if (!DeleteFolderById(m_app, folder_id))
+	{
+		cb->Failure(FolderFailureCode(m_app.status_line), m_app.status_line);
+		return;
+	}
+
 	uam::PushStateUpdate(browser, m_app);
 	cb->Success("{}");
 }
@@ -372,9 +452,48 @@ void UamQueryHandler::HandleToggleFolder(CefRefPtr<CefBrowser>  browser,
 
 	folder->collapsed = !folder->collapsed;
 
-	PersistenceCoordinator().SaveSettings(m_app);
+	if (!ChatFolderStore::Save(m_app.data_root, m_app.folders))
+	{
+		folder->collapsed = !folder->collapsed;
+		cb->Failure(500, "Failed to persist folder state.");
+		return;
+	}
+
 	uam::PushStateUpdate(browser, m_app);
 	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleBrowseFolderDirectory(CefRefPtr<CefBrowser>  /*browser*/,
+                                                   const nlohmann::json&  payload,
+                                                   CefRefPtr<Callback>    cb)
+{
+	const std::string current_value = payload.value("currentValue", "");
+	const std::filesystem::path initial_path = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(current_value);
+
+	std::string selected_path;
+	std::string error;
+	if (!PlatformServicesFactory::Instance().file_dialog_service.BrowsePath(
+			PlatformPathBrowseTarget::Directory,
+			initial_path,
+			&selected_path,
+			&error))
+	{
+		if (!error.empty())
+		{
+			cb->Failure(500, error);
+		}
+		else
+		{
+			nlohmann::json result;
+			result["selectedPath"] = "";
+			cb->Success(result.dump());
+		}
+		return;
+	}
+
+	nlohmann::json result;
+	result["selectedPath"] = selected_path;
+	cb->Success(result.dump());
 }
 
 void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser>  browser,
@@ -385,10 +504,16 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser>  browser,
 	const int rows = payload.value("rows", 24);
 	const int cols = payload.value("cols", 80);
 	const std::string terminal_id = payload.value("terminalId", "");
+	uam::LogCliDiagnosticEvent(m_app, "handle_start_cli", "request_received", nullptr, "chat_id=" + chat_id + ", terminal_id=" + terminal_id);
 
 	// If a terminal for this chat is already running, nothing to do.
 	if (uam::CliTerminalState* existing = FindCliTerminalByRoutingKey(m_app, chat_id, terminal_id); existing != nullptr && existing->running)
 	{
+		existing->ui_attached = true;
+		existing->rows = std::max(1, rows);
+		existing->cols = std::max(1, cols);
+		PlatformServicesFactory::Instance().terminal_runtime.ResizeCliTerminal(*existing);
+		uam::LogCliDiagnosticEvent(m_app, "handle_start_cli", "reused_running_terminal", existing);
 		cb->Success(BuildCliBindingResponse(*existing).dump());
 		return;
 	}
@@ -401,25 +526,56 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser>  browser,
 	}
 
 	ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_idx)];
+	const std::string provider_before = chat.provider_id;
 	EnsureChatUsesPreferredCliProvider(m_app, chat);
+	if (chat.provider_id != provider_before)
+	{
+		uam::LogCliDiagnosticEvent(m_app, "handle_start_cli", "provider_override", nullptr, "chat_id=" + chat.id + ", from=" + provider_before + ", to=" + chat.provider_id);
+	}
+
 	uam::CliTerminalState& terminal = EnsureCliTerminalForChat(m_app, chat);
 	terminal.frontend_chat_id = chat.id;
+	terminal.ui_attached = true;
 	if (terminal.terminal_id.empty())
 	{
 		terminal.terminal_id = "term-" + chat.id;
 	}
+	uam::LogCliDiagnosticEvent(m_app, "handle_start_cli", "terminal_prepared", &terminal);
 
 	if (!terminal.running)
 	{
 		if (!StartCliTerminalForChat(m_app, terminal, chat, rows, cols))
 		{
+			uam::LogCliDiagnosticEvent(m_app, "handle_start_cli", "start_failed", &terminal, terminal.last_error);
 			cb->Success(BuildCliBindingResponse(terminal).dump());
 			return;
 		}
+
+		uam::LogCliDiagnosticEvent(m_app, "handle_start_cli", "started_terminal", &terminal);
 	}
 
 	uam::PushStateUpdate(browser, m_app);
 	cb->Success(BuildCliBindingResponse(terminal).dump());
+}
+
+void UamQueryHandler::HandleStopCli(CefRefPtr<CefBrowser>  browser,
+                                     const nlohmann::json&  payload,
+                                     CefRefPtr<Callback>    cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const std::string terminal_id = payload.value("terminalId", "");
+	uam::CliTerminalState* term = FindCliTerminalByRoutingKey(m_app, chat_id, terminal_id);
+
+	if (term == nullptr)
+	{
+		cb->Success("{}");
+		return;
+	}
+
+	term->ui_attached = false;
+	uam::LogCliDiagnosticEvent(m_app, "handle_stop_cli", "ui_detached", term);
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success("{}");
 }
 
 void UamQueryHandler::HandleResizeCli(const nlohmann::json& payload,
@@ -456,8 +612,13 @@ void UamQueryHandler::HandleWriteCliInput(const nlohmann::json& payload,
 			// must reach the child process unmodified — do NOT queue these as
 			// structured prompts (which wrap them in bracketed-paste sequences
 			// and append \r, breaking all interactive CLI communication).
-			PlatformServicesFactory::Instance().terminal_runtime.WriteToCliTerminal(
-				*term, data.c_str(), data.size());
+			const bool wrote = WriteToCliTerminal(*term, data.c_str(), data.size());
+			uam::LogCliDiagnosticEvent(m_app, "handle_write_cli_input", wrote ? "pty_write_ok" : "pty_write_failed", term, "", static_cast<long long>(data.size()));
+			if (wrote && CliInputLooksLikeTurnSubmit(data))
+			{
+				term->turn_state = uam::CliTerminalTurnState::Busy;
+				uam::LogCliDiagnosticEvent(m_app, "handle_write_cli_input", "turn_marked_busy_from_submit", term);
+			}
 		}
 	}
 

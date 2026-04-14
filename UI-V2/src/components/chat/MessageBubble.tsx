@@ -1,3 +1,4 @@
+import type { AnchorHTMLAttributes, ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
@@ -7,6 +8,19 @@ import { StreamingCursor } from './StreamingCursor'
 
 interface MessageBubbleProps {
   message: Message
+}
+
+const markdownComponents = {
+  a: ({
+    children,
+    ...props
+  }: AnchorHTMLAttributes<HTMLAnchorElement> & { children?: ReactNode }) => {
+    return (
+      <a {...props} target="_blank" rel="noreferrer noopener">
+        {children}
+      </a>
+    )
+  },
 }
 
 export function MessageBubble({ message }: MessageBubbleProps) {
@@ -81,6 +95,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 rehypePlugins={[rehypeHighlight]}
+                components={markdownComponents}
               >
                 {message.content}
               </ReactMarkdown>

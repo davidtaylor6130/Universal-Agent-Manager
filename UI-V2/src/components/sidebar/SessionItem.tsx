@@ -19,14 +19,24 @@ interface SessionItemProps {
 }
 
 export function SessionItem({ session }: SessionItemProps) {
-  const { activeSessionId, setActiveSession, renameSession, deleteSession } =
+  const { activeSessionId, cliBindingBySessionId, setActiveSession, renameSession, deleteSession } =
     useAppStore()
   const isActive = activeSessionId === session.id
+  const cliBinding = cliBindingBySessionId[session.id]
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(session.name)
   const [showMenu, setShowMenu] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+
+  const lifecycleStatus =
+    cliBinding?.processing
+      ? 'processing'
+      : cliBinding?.readySinceLastSelect
+        ? 'ready'
+        : cliBinding?.active
+          ? 'active'
+          : null
 
   useEffect(() => {
     if (editing && inputRef.current) {
@@ -122,25 +132,44 @@ export function SessionItem({ session }: SessionItemProps) {
 
         {/* Context menu trigger — visible on hover */}
         {!editing && (
-          <button
-            className="opacity-0 group-hover:opacity-100 flex-shrink-0 rounded transition-opacity duration-100"
-            style={{
-              width: 18,
-              height: 18,
-              background: 'transparent',
-              color: 'var(--text-3)',
-              border: 'none',
-              cursor: 'pointer',
-              fontSize: 12,
-              lineHeight: 1,
-            }}
-            onClick={(e) => {
-              e.stopPropagation()
-              setShowMenu((v) => !v)
-            }}
-          >
-            ···
-          </button>
+          <div className="ml-auto flex items-center gap-1">
+            {lifecycleStatus === 'processing' && (
+              <span className="session-status session-status--processing" aria-label="CLI processing">
+                <span />
+                <span />
+                <span />
+              </span>
+            )}
+            {lifecycleStatus === 'ready' && (
+              <span className="session-status session-status--ready" aria-label="CLI ready">
+                <span>✓</span>
+              </span>
+            )}
+            {lifecycleStatus === 'active' && (
+              <span className="session-status session-status--active" aria-label="CLI active">
+                <span />
+              </span>
+            )}
+            <button
+              className="opacity-0 group-hover:opacity-100 flex-shrink-0 rounded transition-opacity duration-100"
+              style={{
+                width: 18,
+                height: 18,
+                background: 'transparent',
+                color: 'var(--text-3)',
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: 12,
+                lineHeight: 1,
+              }}
+              onClick={(e) => {
+                e.stopPropagation()
+                setShowMenu((v) => !v)
+              }}
+            >
+              ···
+            </button>
+          </div>
         )}
       </div>
 

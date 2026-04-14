@@ -1,5 +1,6 @@
 #include "cef/uam_cef_app.h"
 #include "cef/uam_cef_client.h"
+#include "cef/uam_cef_security.h"
 
 #include "include/cef_browser.h"
 #include "include/cef_command_line.h"
@@ -120,6 +121,7 @@ void UamCefApp::OnBeforeCommandLineProcessing(const CefString& /*process_type*/,
 void UamCefApp::OnContextInitialized()
 {
 	CEF_REQUIRE_UI_THREAD();
+	m_trustedUiIndexUrl = uam::cef::ResolveTrustedUiIndexUrl();
 
 	// Reuse the pre-constructed client if Application already set it up
 	// (e.g. with a BrowserReadyCallback).  Fall back to a fresh client if not.
@@ -127,47 +129,13 @@ void UamCefApp::OnContextInitialized()
 	CefRefPtr<UamCefClient> client = uam_cef_globals::g_client;
 	if (!client)
 	{
-		client = new UamCefClient(*app_state);
+		client = new UamCefClient(*app_state, m_trustedUiIndexUrl);
 		uam_cef_globals::g_client = client;
 	}
 
 	CefBrowserSettings browser_settings;
 	browser_settings.javascript = STATE_ENABLED;
 	browser_settings.local_storage = STATE_ENABLED;
-
-	// Resolve the path to the React bundle.
-	// Search order:
-	//  1. Contents/Resources/UI-V2/dist/  (macOS bundle, correct location)
-	//  2. Contents/MacOS/UI-V2/dist/      (macOS bundle, legacy / flat fallback)
-	//  3. <exe_dir>/UI-V2/dist/           (Windows flat / dev build)
-	//  4. cwd-relative path               (last resort)
-	std::string url;
-
-	CefString exe_dir_str;
-	if (CefGetPath(PK_DIR_EXE, exe_dir_str))
-	{
-		const std::filesystem::path exe_dir(exe_dir_str.ToString());
-
-		// On macOS bundle the exe is in Contents/MacOS/; resources are in Contents/Resources/.
-		const auto resources_dist = exe_dir / ".." / "Resources" / "UI-V2" / "dist" / "index.html";
-		if (std::filesystem::exists(resources_dist))
-		{
-			url = "file://" + std::filesystem::canonical(resources_dist).string();
-		}
-
-		if (url.empty())
-		{
-			const auto macos_dist = exe_dir / "UI-V2" / "dist" / "index.html";
-			if (std::filesystem::exists(macos_dist))
-				url = "file://" + macos_dist.string();
-		}
-	}
-
-	if (url.empty())
-	{
-		// Last resort: cwd-relative (useful when running directly from build dir)
-		url = "file://" + std::filesystem::absolute("UI-V2/dist/index.html").string();
-	}
 
 	CefRect initial_bounds;
 	initial_bounds.x      = 100;
@@ -180,7 +148,7 @@ void UamCefApp::OnContextInitialized()
 
 	CefRefPtr<CefBrowserView> browser_view = CefBrowserView::CreateBrowserView(
 		client,
-		url,
+		m_trustedUiIndexUrl,
 		browser_settings,
 		nullptr,
 		nullptr,
@@ -202,6 +170,8 @@ void UamCefApp::OnBeforeChildProcessLaunch(CefRefPtr<CefCommandLine> /*command_l
 
 void UamCefApp::OnWebKitInitialized()
 {
+	m_trustedUiIndexUrl = uam::cef::ResolveTrustedUiIndexUrl();
+
 	// Create the renderer-side message router. This injects window.cefQuery
 	// into every page loaded by the renderer. Must use the same config as the
 	// browser-side router in UamCefClient.
@@ -213,14 +183,16 @@ void UamCefApp::OnContextCreated(CefRefPtr<CefBrowser>   browser,
                                   CefRefPtr<CefFrame>     frame,
                                   CefRefPtr<CefV8Context> context)
 {
-	m_renderer_router->OnContextCreated(browser, frame, context);
+	if (m_renderer_router != nullptr && uam::cef::IsTrustedUiUrl(frame->GetURL().ToString(), m_trustedUiIndexUrl))
+		m_renderer_router->OnContextCreated(browser, frame, context);
 }
 
 void UamCefApp::OnContextReleased(CefRefPtr<CefBrowser>   browser,
                                    CefRefPtr<CefFrame>     frame,
                                    CefRefPtr<CefV8Context> context)
 {
-	m_renderer_router->OnContextReleased(browser, frame, context);
+	if (m_renderer_router != nullptr && uam::cef::IsTrustedUiUrl(frame->GetURL().ToString(), m_trustedUiIndexUrl))
+		m_renderer_router->OnContextReleased(browser, frame, context);
 }
 
 bool UamCefApp::OnProcessMessageReceived(CefRefPtr<CefBrowser>        browser,
@@ -228,5 +200,8 @@ bool UamCefApp::OnProcessMessageReceived(CefRefPtr<CefBrowser>        browser,
                                           CefProcessId                 source_process,
                                           CefRefPtr<CefProcessMessage> message)
 {
+	if (m_renderer_router == nullptr || !uam::cef::IsTrustedUiUrl(frame->GetURL().ToString(), m_trustedUiIndexUrl))
+		return false;
+
 	return m_renderer_router->OnProcessMessageReceived(browser, frame, source_process, message);
 }

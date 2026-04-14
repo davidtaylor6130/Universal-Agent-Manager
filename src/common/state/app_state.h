@@ -41,6 +41,12 @@ namespace uam
 	/// PTY output is forwarded to xterm.js in the React frontend via
 	/// uam::PushCliOutput() — libvterm is no longer used for rendering.
 	/// </summary>
+	enum class CliTerminalTurnState
+	{
+		Idle,
+		Busy,
+	};
+
 	struct CliTerminalState : public platform::CliTerminalPlatformFields
 	{
 		std::string terminal_id;
@@ -54,14 +60,18 @@ namespace uam
 		int cols = 80;
 		bool scroll_to_bottom = false;
 		bool should_launch = false;
+		bool ui_attached = false;
 		double last_sync_time_s = 0.0;
 		double last_output_time_s = 0.0;
 		double last_activity_time_s = 0.0;
+		double last_user_input_time_s = 0.0;
+		double last_ai_output_time_s = 0.0;
 		double last_polled_time_s = 0.0;
 		bool input_ready = false;
 		double startup_time_s = 0.0;
 		std::deque<std::string> pending_structured_prompts;
 		bool generation_in_progress = false;
+		CliTerminalTurnState turn_state = CliTerminalTurnState::Idle;
 		std::string recent_output_bytes;
 		std::string last_error;
 	};

@@ -57,7 +57,25 @@ inline bool ChatHasRunningGemini(const uam::AppState& app, const std::string& ch
 
 	for (const auto& terminal : app.cli_terminals)
 	{
-		if (terminal != nullptr && terminal->running && terminal->attached_chat_id == chat_id && terminal->generation_in_progress)
+		if (terminal != nullptr && terminal->running && terminal->attached_chat_id == chat_id && terminal->turn_state == uam::CliTerminalTurnState::Busy)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+inline bool ChatHasActiveCliTerminal(const uam::AppState& app, const std::string& chat_id)
+{
+	if (chat_id.empty())
+	{
+		return false;
+	}
+
+	for (const auto& terminal : app.cli_terminals)
+	{
+		if (terminal != nullptr && terminal->running && terminal->attached_chat_id == chat_id)
 		{
 			return true;
 		}

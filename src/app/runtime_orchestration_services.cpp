@@ -155,6 +155,56 @@ namespace
 
 		return true;
 	}
+
+	void OverlayLocalChatState(const ChatSession& local, ChatSession& native)
+	{
+		if (!Trim(local.provider_id).empty())
+		{
+			native.provider_id = local.provider_id;
+		}
+
+		native.title = local.title;
+		native.folder_id = local.folder_id;
+		native.template_override_id = local.template_override_id;
+		native.linked_files = local.linked_files;
+		native.prompt_profile_bootstrapped = local.prompt_profile_bootstrapped;
+		native.rag_enabled = local.rag_enabled;
+		native.rag_source_directories = local.rag_source_directories;
+		native.parent_chat_id = local.parent_chat_id;
+		native.branch_root_chat_id = local.branch_root_chat_id;
+		native.branch_from_message_index = local.branch_from_message_index;
+		native.workspace_directory = local.workspace_directory;
+		native.approval_mode = local.approval_mode;
+		native.model_id = local.model_id;
+		native.extra_flags = local.extra_flags;
+	}
+
+	std::optional<fs::path> FindNativeSessionFileAcrossDiscoveredSources(const ProviderProfile& provider, const std::string& native_session_id)
+	{
+		if (Trim(native_session_id).empty())
+		{
+			return std::nullopt;
+		}
+
+		const ProviderDiscoveryResult discovery = ProviderRuntime::DiscoverChatSources(provider);
+
+		if (!discovery.error.empty())
+		{
+			return std::nullopt;
+		}
+
+		for (const ProviderChatSource& source : discovery.sources)
+		{
+			const auto session_file = ChatHistorySyncService().FindNativeSessionFilePath(source.chats_dir, native_session_id);
+
+			if (session_file.has_value())
+			{
+				return session_file;
+			}
+		}
+
+		return std::nullopt;
+	}
 } // namespace
 
 void ProviderRequestService::StartSelectedChatRequest(uam::AppState& p_app) const
@@ -300,6 +350,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 		}
 
 		std::vector<ChatSession> l_nativeChats = LoadNativeSessionChats(l_chatsDir.value(), l_nativeProvider);
+		ApplyLocalOverrides(p_app, l_nativeChats);
 
 		for (ChatSession& l_nativeChat : l_nativeChats)
 		{
@@ -310,18 +361,23 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 
 			++result.total_count;
 
-			if (p_targetChatId.empty() && l_existingIds.contains(l_nativeChat.id))
+			const bool has_local_chat = l_existingIds.contains(l_nativeChat.id);
+
+			if (p_targetChatId.empty() && has_local_chat)
 			{
 				continue;
 			}
 
-			for (const ChatFolder& folder : p_app.folders)
+			if (!has_local_chat)
 			{
-				if (FolderDirectoryMatches(folder.directory, l_workspaceRoot))
+				for (const ChatFolder& folder : p_app.folders)
 				{
-					l_nativeChat.folder_id = folder.id;
-					l_nativeChat.workspace_directory = folder.directory;
-					break;
+					if (FolderDirectoryMatches(folder.directory, l_workspaceRoot))
+					{
+						l_nativeChat.folder_id = folder.id;
+						l_nativeChat.workspace_directory = folder.directory;
+						break;
+					}
 				}
 			}
 
@@ -358,15 +414,9 @@ void ChatHistorySyncService::LoadSidebarChats(AppState& p_app) const
 
 void ChatHistorySyncService::LoadSidebarChatsByDiscovery(AppState& p_app) const
 {
-	std::string warning;
-	p_app.chats = ChatRepository::LoadLocalChats(p_app.data_root, &warning);
-	p_app.chats = ChatDomainService().DeduplicateChatsById(std::move(p_app.chats));
-	ChatBranching::Normalize(p_app.chats);
-	ChatDomainService().NormalizeChatFolderAssignments(p_app);
-	if (!warning.empty())
-	{
-		p_app.status_line = warning;
-	}
+	ReconcileUnresolvedDraftLinksByDiscovery(p_app);
+	ImportAllNativeChatsByDiscovery(p_app, false);
+	LoadSidebarChats(p_app);
 }
 
 void ChatHistorySyncService::ReconcileUnresolvedDraftLinksByDiscovery(AppState& p_app) const
@@ -435,6 +485,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 		}
 
 		std::vector<ChatSession> l_nativeChats = LoadNativeSessionChats(l_source.chats_dir, l_nativeProvider);
+		ApplyLocalOverrides(p_app, l_nativeChats);
 
 		for (ChatSession& l_nativeChat : l_nativeChats)
 		{
@@ -596,13 +647,25 @@ bool ChatHistorySyncService::DeleteNativeSessionFileForChat(const AppState& p_ap
 
 	const ProviderProfile& l_provider = ProviderResolutionService().ProviderForChatOrDefault(p_app, p_chat);
 
-	if (!ProviderRuntime::UsesNativeOverlayHistory(l_provider) || !NativeSessionLinkService().HasRealNativeSessionId(p_chat))
+	if (!ProviderRuntime::UsesNativeOverlayHistory(l_provider))
+	{
+		return false;
+	}
+
+	const std::string l_sessionId = !Trim(p_chat.native_session_id).empty() ? Trim(p_chat.native_session_id) : Trim(p_chat.id);
+
+	if (l_sessionId.empty())
 	{
 		return false;
 	}
 
 	const fs::path l_chatsDir = ResolveNativeHistoryChatsDirForChat(p_app, p_chat);
-	const auto l_sessionFile = FindNativeSessionFilePath(l_chatsDir, p_chat.native_session_id);
+	auto l_sessionFile = FindNativeSessionFilePath(l_chatsDir, l_sessionId);
+
+	if (!l_sessionFile.has_value())
+	{
+		l_sessionFile = FindNativeSessionFileAcrossDiscoveredSources(l_provider, l_sessionId);
+	}
 
 	if (!l_sessionFile.has_value())
 	{
@@ -1208,10 +1271,21 @@ void ChatHistorySyncService::ApplyLocalOverrides(AppState& p_app, std::vector<Ch
 
 	l_localChats = ChatDomainService().DeduplicateChatsById(std::move(l_localChats));
 	std::unordered_map<std::string, const ChatSession*> lcp_localMap;
+	std::unordered_map<std::string, const ChatSession*> lcp_localByNativeSessionIdMap;
 
 	for (const ChatSession& l_local : l_localChats)
 	{
 		lcp_localMap[l_local.id] = &l_local;
+
+		if (NativeSessionLinkService().HasRealNativeSessionId(l_local))
+		{
+			const std::string l_nativeSessionId = Trim(l_local.native_session_id);
+
+			if (!l_nativeSessionId.empty())
+			{
+				lcp_localByNativeSessionIdMap[l_nativeSessionId] = &l_local;
+			}
+		}
 	}
 
 	std::unordered_set<std::string> l_nativeIds;
@@ -1219,28 +1293,27 @@ void ChatHistorySyncService::ApplyLocalOverrides(AppState& p_app, std::vector<Ch
 	for (ChatSession& l_native : p_nativeChats)
 	{
 		l_nativeIds.insert(l_native.id);
-		const auto l_it = lcp_localMap.find(l_native.id);
+		const ChatSession* lcp_local = nullptr;
 
-		if (l_it == lcp_localMap.end())
+		if (const auto l_it = lcp_localMap.find(l_native.id); l_it != lcp_localMap.end())
+		{
+			lcp_local = l_it->second;
+		}
+		else if (!Trim(l_native.native_session_id).empty())
+		{
+			if (const auto l_nativeSessionIt = lcp_localByNativeSessionIdMap.find(Trim(l_native.native_session_id)); l_nativeSessionIt != lcp_localByNativeSessionIdMap.end())
+			{
+				lcp_local = l_nativeSessionIt->second;
+			}
+		}
+
+		if (lcp_local == nullptr)
 		{
 			continue;
 		}
 
-		const ChatSession& l_local = *l_it->second;
-		if (!Trim(l_local.provider_id).empty())
-		{
-			l_native.provider_id = l_local.provider_id;
-		}
-		l_native.title = l_local.title;
-		l_native.folder_id = l_local.folder_id;
-		l_native.template_override_id = l_local.template_override_id;
-		l_native.linked_files = l_local.linked_files;
-		l_native.prompt_profile_bootstrapped = l_local.prompt_profile_bootstrapped;
-		l_native.rag_enabled = l_local.rag_enabled;
-		l_native.rag_source_directories = l_local.rag_source_directories;
-		l_native.parent_chat_id = l_local.parent_chat_id;
-		l_native.branch_root_chat_id = l_local.branch_root_chat_id;
-		l_native.branch_from_message_index = l_local.branch_from_message_index;
+		const ChatSession& l_local = *lcp_local;
+		OverlayLocalChatState(l_local, l_native);
 
 		const bool l_localMessagesAreNewer = !l_local.messages.empty() && (l_local.messages.size() > l_native.messages.size() || (l_local.messages.size() == l_native.messages.size() && l_local.updated_at > l_native.updated_at));
 

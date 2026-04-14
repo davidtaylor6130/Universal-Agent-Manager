@@ -207,6 +207,14 @@ std::optional<ChatSession> GeminiJsonHistoryStore::ParseFile(const std::filesyst
 		}
 	}
 
+	// Empty Gemini sessions are placeholder artifacts, not user-visible chats.
+	// Importing or restoring them causes undeletable ghost entries that contain
+	// no user messages.
+	if (chat.messages.empty())
+	{
+		return std::nullopt;
+	}
+
 	chat.title = "Session " + chat.created_at;
 
 	for (const Message& message : chat.messages)

@@ -25,8 +25,37 @@ inline bool WriteToCliTerminal(uam::CliTerminalState& terminal, const char* byte
 {
 	const bool wrote = PlatformServicesFactory::Instance().terminal_runtime.WriteToCliTerminal(terminal, bytes, len);
 	if (wrote && bytes != nullptr && len > 0)
-		terminal.last_activity_time_s = GetAppTimeSeconds();
+	{
+		const double now = GetAppTimeSeconds();
+		terminal.last_activity_time_s = now;
+		terminal.last_user_input_time_s = now;
+	}
 	return wrote;
+}
+
+inline void MarkCliTerminalTurnBusy(uam::CliTerminalState& terminal)
+{
+	terminal.turn_state = uam::CliTerminalTurnState::Busy;
+}
+
+inline void MarkCliTerminalTurnIdle(uam::CliTerminalState& terminal)
+{
+	terminal.turn_state = uam::CliTerminalTurnState::Idle;
+}
+
+inline bool IsCliTerminalTurnBusy(const uam::CliTerminalState& terminal)
+{
+	return terminal.turn_state == uam::CliTerminalTurnState::Busy;
+}
+
+inline void ClearCliReadyForChat(uam::AppState& app, const std::string& chat_id)
+{
+	if (chat_id.empty())
+	{
+		return;
+	}
+
+	app.chats_with_unseen_updates.erase(chat_id);
 }
 
 inline void RequestCliTerminalQuit(uam::CliTerminalState& terminal)
@@ -55,6 +84,7 @@ inline void StopCliTerminal(uam::CliTerminalState& terminal, const bool clear_id
 	terminal.startup_time_s = 0.0;
 	terminal.pending_structured_prompts.clear();
 	terminal.generation_in_progress = false;
+	terminal.turn_state = uam::CliTerminalTurnState::Idle;
 	terminal.last_output_time_s = 0.0;
 	terminal.recent_output_bytes.clear();
 
@@ -67,6 +97,7 @@ inline void StopCliTerminal(uam::CliTerminalState& terminal, const bool clear_id
 		terminal.session_ids_before.clear();
 		terminal.linked_files_snapshot.clear();
 		terminal.should_launch = false;
+		terminal.ui_attached = false;
 	}
 }
 

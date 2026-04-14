@@ -13,6 +13,7 @@ export interface Folder {
   id: string
   name: string
   parentId: string | null
+  directory: string
   isExpanded: boolean
   createdAt: Date
 }

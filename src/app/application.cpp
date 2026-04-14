@@ -30,6 +30,7 @@
 
 #include "cef/cef_push.h"
 #include "cef/cef_includes.h"
+#include "cef/uam_cef_security.h"
 #include "cef/state_serializer.h"
 #include "cef/uam_cef_app.h"
 #include "cef/uam_cef_client.h"
@@ -67,6 +68,23 @@ namespace uam_cef_globals
 
 namespace
 {
+
+bool IsMacAppBundleExecutable(const fs::path& exe_path)
+{
+#if defined(__APPLE__)
+	const fs::path normalized = exe_path.lexically_normal();
+	const fs::path macos_dir = normalized.parent_path();
+	const fs::path contents_dir = macos_dir.parent_path();
+	const fs::path app_dir = contents_dir.parent_path();
+	return !app_dir.empty() &&
+	       macos_dir.filename() == "MacOS" &&
+	       contents_dir.filename() == "Contents" &&
+	       app_dir.extension() == ".app";
+#else
+	(void)exe_path;
+	return false;
+#endif
+}
 
 void ResetAsyncCommandTask(uam::AsyncCommandTask& task)
 {
@@ -215,6 +233,9 @@ bool Application::InitializeState()
 
 	m_curlInitialized = true;
 	std::vector<fs::path> l_dataRootCandidates;
+	std::error_code l_exeEc;
+	const fs::path l_exePath = m_platformServices->process_service.ResolveCurrentExecutablePath();
+	const bool l_runningFromMacAppBundle = !l_exeEc && !l_exePath.empty() && IsMacAppBundleExecutable(l_exePath);
 
 	if (const char* lcp_dataDirEnv = std::getenv("UAM_DATA_DIR"))
 	{
@@ -223,20 +244,18 @@ bool Application::InitializeState()
 			l_dataRootCandidates.push_back(fs::path(l_envRoot));
 	}
 
-	std::error_code l_exeEc;
-	const fs::path l_exePath = m_platformServices->process_service.ResolveCurrentExecutablePath();
-	if (!l_exeEc && !l_exePath.empty())
+	if (!l_exePath.empty() && !l_runningFromMacAppBundle)
 		l_dataRootCandidates.push_back(l_exePath.parent_path() / "data");
 
-	if (l_dataRootCandidates.empty())
+	if (!l_runningFromMacAppBundle)
 	{
 		std::error_code l_cwdEc;
 		const fs::path l_cwd = fs::current_path(l_cwdEc);
 		if (!l_cwdEc)
 			l_dataRootCandidates.push_back(l_cwd / "data");
-		l_dataRootCandidates.push_back(m_platformServices->path_service.DefaultDataRootPath());
 	}
 
+	l_dataRootCandidates.push_back(m_platformServices->path_service.DefaultDataRootPath());
 	l_dataRootCandidates.push_back(PersistenceCoordinator().TempFallbackDataRootPath());
 
 	std::unordered_set<std::string> l_triedRoots;
@@ -381,7 +400,8 @@ bool Application::InitializeCef(CefMainArgs main_args)
 	//
 	// Simplest approach: create UamCefClient now and stash it so OnContextInitialized
 	// can skip creating a new one.
-	auto client = CefRefPtr<UamCefClient>(new UamCefClient(m_app, on_browser_ready));
+	const fs::path exe_dir = m_platformServices->process_service.ResolveCurrentExecutablePath().parent_path();
+	auto client = CefRefPtr<UamCefClient>(new UamCefClient(m_app, uam::cef::ResolveTrustedUiIndexUrl(exe_dir), on_browser_ready));
 	uam_cef_globals::g_client = client;
 
 	if (!CefInitialize(main_args, settings, cef_app.get(), nullptr))

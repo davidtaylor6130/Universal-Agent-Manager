@@ -12,6 +12,9 @@
 #include "common/provider/provider_runtime.h"
 #include "common/provider/runtime/provider_build_config.h"
 #include "common/runtime/terminal_common.h"
+#include "common/ui/chat_actions/chat_action_remove_chat.h"
+
+#include <utility>
 
 /// <summary>
 /// Folder deletion, chat creation, and delete-request dispatch actions.
@@ -61,7 +64,11 @@ inline bool DeleteFolderById(AppState& app, const std::string& folder_id)
 		app.new_chat_folder_id = uam::constants::kDefaultFolderId;
 	}
 
-	ChatFolderStore::Save(app.data_root, app.folders);
+	if (!ChatFolderStore::Save(app.data_root, app.folders))
+	{
+		app.status_line = "Folder deleted in memory, but failed to persist folder state.";
+		return false;
+	}
 
 	if (all_chat_saves_ok)
 	{
@@ -72,6 +79,88 @@ inline bool DeleteFolderById(AppState& app, const std::string& folder_id)
 		app.status_line = "Folder deleted, but failed to persist one or more moved chats.";
 	}
 
+	return true;
+}
+
+inline bool CreateFolder(AppState& app, const std::string& title, const std::string& directory, std::string* created_folder_id = nullptr)
+{
+	const std::string trimmed_title = Trim(title);
+	const std::string trimmed_directory = Trim(directory);
+
+	if (trimmed_title.empty())
+	{
+		app.status_line = "Folder title is required.";
+		return false;
+	}
+
+	if (trimmed_directory.empty())
+	{
+		app.status_line = "Folder directory is required.";
+		return false;
+	}
+
+	ChatFolder folder;
+	folder.id = ChatDomainService().NewFolderId();
+	folder.title = trimmed_title;
+	folder.directory = trimmed_directory;
+	folder.collapsed = false;
+	app.folders.push_back(std::move(folder));
+	app.new_chat_folder_id = app.folders.back().id;
+
+	if (!ChatFolderStore::Save(app.data_root, app.folders))
+	{
+		app.folders.pop_back();
+		app.status_line = "Failed to persist the new folder.";
+		return false;
+	}
+
+	if (created_folder_id != nullptr)
+	{
+		*created_folder_id = app.folders.back().id;
+	}
+
+	app.status_line = "Folder created.";
+	return true;
+}
+
+inline bool RenameFolderById(AppState& app, const std::string& folder_id, const std::string& title, const std::string& directory)
+{
+	const int folder_index = ChatDomainService().FindFolderIndexById(app, folder_id);
+
+	if (folder_index < 0)
+	{
+		app.status_line = "Folder no longer exists.";
+		return false;
+	}
+
+	const std::string trimmed_title = Trim(title);
+	const std::string trimmed_directory = Trim(directory);
+
+	if (trimmed_title.empty())
+	{
+		app.status_line = "Folder title is required.";
+		return false;
+	}
+
+	if (trimmed_directory.empty())
+	{
+		app.status_line = "Folder directory is required.";
+		return false;
+	}
+
+	ChatFolder& folder = app.folders[folder_index];
+	const ChatFolder original = folder;
+	folder.title = trimmed_title;
+	folder.directory = trimmed_directory;
+
+	if (!ChatFolderStore::Save(app.data_root, app.folders))
+	{
+		folder = original;
+		app.status_line = "Failed to persist folder settings.";
+		return false;
+	}
+
+	app.status_line = "Folder settings saved.";
 	return true;
 }
 
@@ -156,14 +245,22 @@ inline std::string ResolveNewChatProviderId(const AppState& app, const std::stri
 	return active.empty() ? std::string(provider_build_config::FirstEnabledProviderId()) : active;
 }
 
-inline void OpenNewChatPopup(AppState& app, const std::string& target_folder_id = std::string())
+inline std::string ResolveRequestedNewChatFolderId(AppState& app, const std::string& requested_folder_id = std::string())
 {
-	if (!target_folder_id.empty())
+	ChatDomainService().EnsureNewChatFolderSelection(app);
+
+	if (!requested_folder_id.empty() && ChatDomainService().FindFolderById(app, requested_folder_id) != nullptr)
 	{
-		app.new_chat_folder_id = target_folder_id;
+		app.new_chat_folder_id = requested_folder_id;
 	}
 
 	ChatDomainService().EnsureNewChatFolderSelection(app);
+	return ChatDomainService().FolderForNewChat(app);
+}
+
+inline void OpenNewChatPopup(AppState& app, const std::string& target_folder_id = std::string())
+{
+	(void)ResolveRequestedNewChatFolderId(app, target_folder_id);
 	ClearPendingDuplicateNewChatDecision(app);
 	app.pending_new_chat_provider_id = ResolveNewChatProviderId(app, app.pending_new_chat_provider_id);
 	app.open_new_chat_popup = true;

@@ -5,6 +5,7 @@
 #include "common/chat/chat_repository.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/config/frontend_actions.h"
+#include "common/constants/app_constants.h"
 #include "common/provider/gemini/cli/gemini_cli_provider_runtime.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/provider/markdown_template_catalog.h"
@@ -16,9 +17,13 @@
 #include "common/utils/string_utils.h"
 #include "common/rag/ollama_engine_client.h"
 #include "common/state/app_state.h"
+#include "common/ui/chat_actions/chat_action_folder_lifecycle.h"
 #include "common/ui/chat_actions/chat_action_pending_calls.h"
 #include "common/ui/chat_actions/chat_action_remove_chat.h"
 #include "common/vcs/vcs_workspace_service.h"
+#include "cef/state_serializer.h"
+#include "cef/uam_cef_security.h"
+#include "common/runtime/terminal/terminal_provider_cli.h"
 
 #include <filesystem>
 #include <fstream>
@@ -647,7 +652,7 @@ UAM_TEST(TestRagIndexServiceSupportsDisabledVectorBackend)
 	UAM_ASSERT(refresh.indexed_files >= 1);
 }
 
-UAM_TEST(TestChatRepositoryPersistsCoreChatStateAndDropsFeatureBaggage)
+UAM_TEST(TestChatRepositoryRoundTripsRestoreSliceState)
 {
 	TempDir data_root("uam-chat-repository-core");
 
@@ -666,51 +671,83 @@ UAM_TEST(TestChatRepositoryPersistsCoreChatStateAndDropsFeatureBaggage)
 	chat.title = "Core Chat";
 	chat.created_at = "2026-03-19 10:11:12";
 	chat.updated_at = "2026-03-19 10:11:13";
-	chat.linked_files = {"notes.md"};
+	chat.linked_files = {"notes.md", "todo.md"};
 	chat.workspace_directory = "/tmp/workspace-a";
 	chat.approval_mode = "yolo";
 	chat.model_id = "chat-model.gguf";
 	chat.extra_flags = "--alpha --beta";
-	chat.messages.push_back(Message{MessageRole::User, "hello", "2026-03-19 10:11:13"});
+	Message message;
+	message.role = MessageRole::User;
+	message.content = "hello";
+	message.created_at = "2026-03-19 10:11:13";
+	message.provider = "gemini-cli";
+	message.tokens_input = 12;
+	message.tokens_output = 34;
+	message.estimated_cost_usd = 0.42;
+	message.time_to_first_token_ms = 55;
+	message.processing_time_ms = 1234;
+	message.interrupted = true;
+	message.thoughts = "ponder";
+	message.tool_calls.push_back(ToolCall{"tool-1", "search", "{\"query\":\"hello\"}", "ok", "done"});
+	chat.messages.push_back(std::move(message));
 
 	UAM_ASSERT(ChatRepository::SaveChat(data_root.root, chat));
 
 	const fs::path chat_file = AppPaths::UamChatFilePath(data_root.root, chat.id);
 	const std::string file_text = ReadTextFile(chat_file);
-	UAM_ASSERT(file_text.find("template_override_id") == std::string::npos);
-	UAM_ASSERT(file_text.find("prompt_profile_bootstrapped") == std::string::npos);
-	UAM_ASSERT(file_text.find("rag_enabled") == std::string::npos);
-	UAM_ASSERT(file_text.find("rag_source_directories") == std::string::npos);
-	UAM_ASSERT(file_text.find("linked_files") == std::string::npos);
-	UAM_ASSERT(file_text.find("workspace_directory") == std::string::npos);
-	UAM_ASSERT(file_text.find("approval_mode") == std::string::npos);
-	UAM_ASSERT(file_text.find("model_id") == std::string::npos);
-	UAM_ASSERT(file_text.find("extra_flags") == std::string::npos);
-	UAM_ASSERT(file_text.find("parent_chat_id") == std::string::npos);
-	UAM_ASSERT(file_text.find("branch_root_chat_id") == std::string::npos);
-	UAM_ASSERT(file_text.find("branch_from_message_index") == std::string::npos);
+	UAM_ASSERT(file_text.find("parent_chat_id") != std::string::npos);
+	UAM_ASSERT(file_text.find("branch_root_chat_id") != std::string::npos);
+	UAM_ASSERT(file_text.find("branch_from_message_index") != std::string::npos);
+	UAM_ASSERT(file_text.find("template_override_id") != std::string::npos);
+	UAM_ASSERT(file_text.find("prompt_profile_bootstrapped") != std::string::npos);
+	UAM_ASSERT(file_text.find("rag_enabled") != std::string::npos);
+	UAM_ASSERT(file_text.find("rag_source_directories") != std::string::npos);
+	UAM_ASSERT(file_text.find("linked_files") != std::string::npos);
+	UAM_ASSERT(file_text.find("workspace_directory") != std::string::npos);
+	UAM_ASSERT(file_text.find("approval_mode") != std::string::npos);
+	UAM_ASSERT(file_text.find("model_id") != std::string::npos);
+	UAM_ASSERT(file_text.find("extra_flags") != std::string::npos);
 
 	const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(data_root.root);
 	UAM_ASSERT_EQ(1u, loaded.size());
-	UAM_ASSERT_EQ(std::string("chat-test-1"), loaded.front().id);
-	UAM_ASSERT_EQ(std::string("gemini-cli"), loaded.front().provider_id);
-	UAM_ASSERT_EQ(std::string("native-session-1"), loaded.front().native_session_id);
-	UAM_ASSERT_EQ(std::string("folder-default"), loaded.front().folder_id);
-	UAM_ASSERT_EQ(std::string("Core Chat"), loaded.front().title);
-	UAM_ASSERT_EQ(std::string("2026-03-19 10:11:12"), loaded.front().created_at);
-	UAM_ASSERT_EQ(std::string("2026-03-19 10:11:13"), loaded.front().updated_at);
-	UAM_ASSERT_EQ(std::string("chat-test-1"), loaded.front().branch_root_chat_id);
-	UAM_ASSERT_EQ(std::string(""), loaded.front().parent_chat_id);
-	UAM_ASSERT_EQ(-1, loaded.front().branch_from_message_index);
-	UAM_ASSERT_EQ(std::string(""), loaded.front().template_override_id);
-	UAM_ASSERT_EQ(false, loaded.front().prompt_profile_bootstrapped);
-	UAM_ASSERT_EQ(true, loaded.front().rag_enabled);
-	UAM_ASSERT(loaded.front().rag_source_directories.empty());
-	UAM_ASSERT(loaded.front().linked_files.empty());
-	UAM_ASSERT(loaded.front().workspace_directory.empty());
-	UAM_ASSERT(loaded.front().approval_mode.empty());
-	UAM_ASSERT(loaded.front().model_id.empty());
-	UAM_ASSERT(loaded.front().extra_flags.empty());
+	const ChatSession& loaded_chat = loaded.front();
+	UAM_ASSERT_EQ(std::string("chat-test-1"), loaded_chat.id);
+	UAM_ASSERT_EQ(std::string("gemini-cli"), loaded_chat.provider_id);
+	UAM_ASSERT_EQ(std::string("native-session-1"), loaded_chat.native_session_id);
+	UAM_ASSERT_EQ(std::string("chat-parent"), loaded_chat.parent_chat_id);
+	UAM_ASSERT_EQ(std::string("chat-branch-root"), loaded_chat.branch_root_chat_id);
+	UAM_ASSERT_EQ(2, loaded_chat.branch_from_message_index);
+	UAM_ASSERT_EQ(std::string("folder-default"), loaded_chat.folder_id);
+	UAM_ASSERT_EQ(std::string("custom-template.md"), loaded_chat.template_override_id);
+	UAM_ASSERT_EQ(true, loaded_chat.prompt_profile_bootstrapped);
+	UAM_ASSERT_EQ(false, loaded_chat.rag_enabled);
+	UAM_ASSERT(loaded_chat.rag_source_directories == std::vector<std::string>({"/tmp/workspace-a", "/tmp/workspace-b"}));
+	UAM_ASSERT_EQ(std::string("Core Chat"), loaded_chat.title);
+	UAM_ASSERT_EQ(std::string("2026-03-19 10:11:12"), loaded_chat.created_at);
+	UAM_ASSERT_EQ(std::string("2026-03-19 10:11:13"), loaded_chat.updated_at);
+	UAM_ASSERT(loaded_chat.linked_files == std::vector<std::string>({"notes.md", "todo.md"}));
+	UAM_ASSERT_EQ(std::string("/tmp/workspace-a"), loaded_chat.workspace_directory);
+	UAM_ASSERT_EQ(std::string("yolo"), loaded_chat.approval_mode);
+	UAM_ASSERT_EQ(std::string("chat-model.gguf"), loaded_chat.model_id);
+	UAM_ASSERT_EQ(std::string("--alpha --beta"), loaded_chat.extra_flags);
+	UAM_ASSERT_EQ(1u, loaded_chat.messages.size());
+	UAM_ASSERT(loaded_chat.messages.front().role == MessageRole::User);
+	UAM_ASSERT_EQ(std::string("hello"), loaded_chat.messages.front().content);
+	UAM_ASSERT_EQ(std::string("2026-03-19 10:11:13"), loaded_chat.messages.front().created_at);
+	UAM_ASSERT_EQ(std::string("gemini-cli"), loaded_chat.messages.front().provider);
+	UAM_ASSERT_EQ(12, loaded_chat.messages.front().tokens_input);
+	UAM_ASSERT_EQ(34, loaded_chat.messages.front().tokens_output);
+	UAM_ASSERT_EQ(0.42, loaded_chat.messages.front().estimated_cost_usd);
+	UAM_ASSERT_EQ(55, loaded_chat.messages.front().time_to_first_token_ms);
+	UAM_ASSERT_EQ(1234, loaded_chat.messages.front().processing_time_ms);
+	UAM_ASSERT_EQ(true, loaded_chat.messages.front().interrupted);
+	UAM_ASSERT_EQ(std::string("ponder"), loaded_chat.messages.front().thoughts);
+	UAM_ASSERT_EQ(1u, loaded_chat.messages.front().tool_calls.size());
+	UAM_ASSERT_EQ(std::string("tool-1"), loaded_chat.messages.front().tool_calls.front().id);
+	UAM_ASSERT_EQ(std::string("search"), loaded_chat.messages.front().tool_calls.front().name);
+	UAM_ASSERT_EQ(std::string("{\"query\":\"hello\"}"), loaded_chat.messages.front().tool_calls.front().args_json);
+	UAM_ASSERT_EQ(std::string("ok"), loaded_chat.messages.front().tool_calls.front().result_text);
+	UAM_ASSERT_EQ(std::string("done"), loaded_chat.messages.front().tool_calls.front().status);
 }
 
 UAM_TEST(TestChatRepositoryRecoversFromBackupFileWhenPrimaryIsCorrupt)
@@ -723,28 +760,89 @@ UAM_TEST(TestChatRepositoryRecoversFromBackupFileWhenPrimaryIsCorrupt)
 	const fs::path backup = chats_root / "chat-recover.json.bak";
 
 	UAM_ASSERT(WriteTextFile(primary, "{"));
-	UAM_ASSERT(WriteTextFile(backup, "{\n"
-	                               "  \"id\": \"chat-recover\",\n"
-	                               "  \"provider_id\": \"gemini-cli\",\n"
-	                               "  \"native_session_id\": \"chat-recover\",\n"
-	                               "  \"folder_id\": \"folder-default\",\n"
-	                               "  \"title\": \"Recovered Chat\",\n"
-	                               "  \"created_at\": \"2026-04-10 10:00:00\",\n"
-	                               "  \"updated_at\": \"2026-04-10 10:00:01\",\n"
-	                               "  \"messages\": [\n"
-	                               "    {\"role\": \"user\", \"content\": \"hello\", \"created_at\": \"2026-04-10 10:00:01\"}\n"
-	                               "  ]\n"
-	                               "}\n"));
+	UAM_ASSERT(WriteTextFile(backup, R"({
+  "id": "chat-recover",
+  "provider_id": "gemini-cli",
+  "native_session_id": "chat-recover",
+  "parent_chat_id": "chat-parent",
+  "branch_root_chat_id": "chat-recover",
+  "branch_from_message_index": 1,
+  "folder_id": "folder-default",
+  "template_override_id": "template-recover.md",
+  "prompt_profile_bootstrapped": true,
+  "rag_enabled": false,
+  "rag_source_directories": [
+    "/tmp/workspace-a",
+    "/tmp/workspace-b"
+  ],
+  "title": "Recovered Chat",
+  "created_at": "2026-04-10 10:00:00",
+  "updated_at": "2026-04-10 10:00:01",
+  "linked_files": [
+    "notes.md"
+  ],
+  "workspace_directory": "/tmp/workspace-a",
+  "approval_mode": "yolo",
+  "model_id": "chat-model.gguf",
+  "extra_flags": "--alpha --beta",
+  "messages": [
+    {
+      "role": "user",
+      "content": "hello",
+      "created_at": "2026-04-10 10:00:01",
+      "provider": "gemini-cli",
+      "tokens_input": 4,
+      "tokens_output": 8,
+      "estimated_cost_usd": 0.12,
+      "time_to_first_token_ms": 50,
+      "processing_time_ms": 125,
+      "interrupted": true,
+      "thoughts": "ponder",
+      "tool_calls": [
+        {
+          "id": "tool-1",
+          "name": "search",
+          "args_json": "{\"query\":\"hello\"}",
+          "result_text": "ok",
+          "status": "done"
+        }
+      ]
+    }
+  ]
+})"));
 
 	const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(data_root.root);
 	UAM_ASSERT_EQ(1u, loaded.size());
-	UAM_ASSERT_EQ(std::string("chat-recover"), loaded.front().id);
-	UAM_ASSERT_EQ(std::string("Recovered Chat"), loaded.front().title);
-	UAM_ASSERT_EQ(1u, loaded.front().messages.size());
-	UAM_ASSERT_EQ(std::string("hello"), loaded.front().messages.front().content);
+	const ChatSession& recovered = loaded.front();
+	UAM_ASSERT_EQ(std::string("chat-recover"), recovered.id);
+	UAM_ASSERT_EQ(std::string("gemini-cli"), recovered.provider_id);
+	UAM_ASSERT_EQ(std::string("chat-recover"), recovered.native_session_id);
+	UAM_ASSERT_EQ(std::string("chat-parent"), recovered.parent_chat_id);
+	UAM_ASSERT_EQ(std::string("chat-recover"), recovered.branch_root_chat_id);
+	UAM_ASSERT_EQ(1, recovered.branch_from_message_index);
+	UAM_ASSERT_EQ(std::string("folder-default"), recovered.folder_id);
+	UAM_ASSERT_EQ(std::string("template-recover.md"), recovered.template_override_id);
+	UAM_ASSERT_EQ(true, recovered.prompt_profile_bootstrapped);
+	UAM_ASSERT_EQ(false, recovered.rag_enabled);
+	UAM_ASSERT(recovered.rag_source_directories == std::vector<std::string>({"/tmp/workspace-a", "/tmp/workspace-b"}));
+	UAM_ASSERT_EQ(std::string("Recovered Chat"), recovered.title);
+	UAM_ASSERT_EQ(std::string("2026-04-10 10:00:00"), recovered.created_at);
+	UAM_ASSERT_EQ(std::string("2026-04-10 10:00:01"), recovered.updated_at);
+	UAM_ASSERT(recovered.linked_files == std::vector<std::string>({"notes.md"}));
+	UAM_ASSERT_EQ(std::string("/tmp/workspace-a"), recovered.workspace_directory);
+	UAM_ASSERT_EQ(std::string("yolo"), recovered.approval_mode);
+	UAM_ASSERT_EQ(std::string("chat-model.gguf"), recovered.model_id);
+	UAM_ASSERT_EQ(std::string("--alpha --beta"), recovered.extra_flags);
+	UAM_ASSERT_EQ(1u, recovered.messages.size());
+	UAM_ASSERT_EQ(std::string("hello"), recovered.messages.front().content);
+	UAM_ASSERT_EQ(true, recovered.messages.front().interrupted);
+	UAM_ASSERT_EQ(1u, recovered.messages.front().tool_calls.size());
 
 	const std::string repaired = ReadTextFile(primary);
 	UAM_ASSERT(repaired.find("Recovered Chat") != std::string::npos);
+	UAM_ASSERT(repaired.find("branch_root_chat_id") != std::string::npos);
+	UAM_ASSERT(repaired.find("workspace_directory") != std::string::npos);
+	UAM_ASSERT(repaired.find("extra_flags") != std::string::npos);
 	UAM_ASSERT(!fs::exists(backup));
 }
 
@@ -757,26 +855,75 @@ UAM_TEST(TestChatRepositoryRecoversWhenPrimaryMissingAndBackupExists)
 	const fs::path primary = chats_root / "chat-recover-missing.json";
 	const fs::path backup = chats_root / "chat-recover-missing.json.bak";
 
-	UAM_ASSERT(WriteTextFile(backup, "{\n"
-	                               "  \"id\": \"chat-wrong-backup-id\",\n"
-	                               "  \"provider_id\": \"gemini-cli\",\n"
-	                               "  \"native_session_id\": \"chat-wrong-backup-id\",\n"
-	                               "  \"folder_id\": \"folder-default\",\n"
-	                               "  \"title\": \"Recovered Missing Primary\",\n"
-	                               "  \"created_at\": \"2026-04-10 11:00:00\",\n"
-	                               "  \"updated_at\": \"2026-04-10 11:00:01\",\n"
-	                               "  \"messages\": [\n"
-	                               "    {\"role\": \"user\", \"content\": \"hello again\", \"created_at\": \"2026-04-10 11:00:01\"}\n"
-	                               "  ]\n"
-	                               "}\n"));
+	UAM_ASSERT(WriteTextFile(backup, R"({
+  "id": "chat-wrong-backup-id",
+  "provider_id": "gemini-cli",
+  "native_session_id": "chat-wrong-backup-id",
+  "parent_chat_id": "chat-parent",
+  "branch_root_chat_id": "chat-wrong-backup-id",
+  "branch_from_message_index": 3,
+  "folder_id": "folder-default",
+  "template_override_id": "template-recover.md",
+  "prompt_profile_bootstrapped": true,
+  "rag_enabled": false,
+  "rag_source_directories": [
+    "/tmp/workspace-a"
+  ],
+  "title": "Recovered Missing Primary",
+  "created_at": "2026-04-10 11:00:00",
+  "updated_at": "2026-04-10 11:00:01",
+  "linked_files": [
+    "notes.md",
+    "todo.md"
+  ],
+  "workspace_directory": "/tmp/workspace-a",
+  "approval_mode": "yolo",
+  "model_id": "chat-model.gguf",
+  "extra_flags": "--gamma --delta",
+  "messages": [
+    {
+      "role": "user",
+      "content": "hello again",
+      "created_at": "2026-04-10 11:00:01",
+      "provider": "gemini-cli",
+      "tokens_input": 5,
+      "tokens_output": 9,
+      "estimated_cost_usd": 0.15,
+      "time_to_first_token_ms": 60,
+      "processing_time_ms": 140,
+      "interrupted": false,
+      "thoughts": "retry",
+      "tool_calls": []
+    }
+  ]
+})"));
 
 	const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(data_root.root);
 	UAM_ASSERT_EQ(1u, loaded.size());
-	UAM_ASSERT_EQ(std::string("chat-recover-missing"), loaded.front().id);
-	UAM_ASSERT_EQ(std::string("chat-recover-missing"), loaded.front().native_session_id);
-	UAM_ASSERT_EQ(std::string("Recovered Missing Primary"), loaded.front().title);
+	const ChatSession& recovered = loaded.front();
+	UAM_ASSERT_EQ(std::string("chat-recover-missing"), recovered.id);
+	UAM_ASSERT_EQ(std::string("chat-recover-missing"), recovered.native_session_id);
+	UAM_ASSERT_EQ(std::string("chat-parent"), recovered.parent_chat_id);
+	UAM_ASSERT_EQ(std::string("chat-recover-missing"), recovered.branch_root_chat_id);
+	UAM_ASSERT_EQ(3, recovered.branch_from_message_index);
+	UAM_ASSERT_EQ(std::string("Recovered Missing Primary"), recovered.title);
+	UAM_ASSERT_EQ(false, recovered.rag_enabled);
+	UAM_ASSERT(recovered.rag_source_directories == std::vector<std::string>({"/tmp/workspace-a"}));
+	UAM_ASSERT(recovered.linked_files == std::vector<std::string>({"notes.md", "todo.md"}));
+	UAM_ASSERT_EQ(std::string("/tmp/workspace-a"), recovered.workspace_directory);
+	UAM_ASSERT_EQ(std::string("yolo"), recovered.approval_mode);
+	UAM_ASSERT_EQ(std::string("chat-model.gguf"), recovered.model_id);
+	UAM_ASSERT_EQ(std::string("--gamma --delta"), recovered.extra_flags);
+	UAM_ASSERT_EQ(1u, recovered.messages.size());
+	UAM_ASSERT_EQ(std::string("hello again"), recovered.messages.front().content);
 	UAM_ASSERT(fs::exists(primary));
 	UAM_ASSERT(!fs::exists(backup));
+
+	const std::string repaired = ReadTextFile(primary);
+	UAM_ASSERT(repaired.find("chat-recover-missing") != std::string::npos);
+	UAM_ASSERT(repaired.find("branch_root_chat_id") != std::string::npos);
+	UAM_ASSERT(repaired.find("workspace_directory") != std::string::npos);
+	UAM_ASSERT(repaired.find("extra_flags") != std::string::npos);
 }
 
 UAM_TEST(TestChatRepositoryWarnsWhenPrimaryAndBackupDiverge)
@@ -792,7 +939,9 @@ UAM_TEST(TestChatRepositoryWarnsWhenPrimaryAndBackupDiverge)
 	                               "  \"id\": \"chat-diverge\",\n"
 	                               "  \"provider_id\": \"gemini-cli\",\n"
 	                               "  \"native_session_id\": \"chat-diverge\",\n"
+	                               "  \"branch_root_chat_id\": \"chat-diverge\",\n"
 	                               "  \"folder_id\": \"folder-default\",\n"
+	                               "  \"workspace_directory\": \"/tmp/workspace-a\",\n"
 	                               "  \"title\": \"Primary Title\",\n"
 	                               "  \"created_at\": \"2026-04-10 12:00:00\",\n"
 	                               "  \"updated_at\": \"2026-04-10 12:00:01\",\n"
@@ -804,12 +953,14 @@ UAM_TEST(TestChatRepositoryWarnsWhenPrimaryAndBackupDiverge)
 	                               "  \"id\": \"chat-diverge\",\n"
 	                               "  \"provider_id\": \"gemini-cli\",\n"
 	                               "  \"native_session_id\": \"chat-diverge\",\n"
+	                               "  \"branch_root_chat_id\": \"chat-diverge\",\n"
 	                               "  \"folder_id\": \"folder-default\",\n"
-	                               "  \"title\": \"Backup Title\",\n"
+	                               "  \"workspace_directory\": \"/tmp/workspace-b\",\n"
+	                               "  \"title\": \"Primary Title\",\n"
 	                               "  \"created_at\": \"2026-04-10 12:00:00\",\n"
-	                               "  \"updated_at\": \"2026-04-10 12:00:02\",\n"
+	                               "  \"updated_at\": \"2026-04-10 12:00:01\",\n"
 	                               "  \"messages\": [\n"
-	                               "    {\"role\": \"user\", \"content\": \"backup\", \"created_at\": \"2026-04-10 12:00:02\"}\n"
+	                               "    {\"role\": \"user\", \"content\": \"primary\", \"created_at\": \"2026-04-10 12:00:01\"}\n"
 	                               "  ]\n"
 	                               "}\n"));
 
@@ -888,6 +1039,112 @@ UAM_TEST(TestChatFolderStoreRoundTrip)
 	UAM_ASSERT_EQ(false, loaded[1].collapsed);
 }
 
+UAM_TEST(TestFolderLifecycleCreateRenameAndDeletePersistToFolderStore)
+{
+	TempDir data_root("uam-folder-lifecycle");
+	uam::AppState app = MakeTestAppState(data_root.root);
+
+	UAM_ASSERT(CreateFolder(app, "Project Folder", "/tmp/project-folder"));
+	UAM_ASSERT_EQ(1u, app.folders.size());
+
+	const std::string folder_id = app.folders.front().id;
+	UAM_ASSERT_EQ(std::string("Project Folder"), app.folders.front().title);
+	UAM_ASSERT_EQ(std::string("/tmp/project-folder"), app.folders.front().directory);
+
+	std::vector<ChatFolder> loaded = ChatFolderStore::Load(data_root.root);
+	UAM_ASSERT_EQ(1u, loaded.size());
+	UAM_ASSERT_EQ(folder_id, loaded.front().id);
+	UAM_ASSERT_EQ(std::string("Project Folder"), loaded.front().title);
+	UAM_ASSERT_EQ(std::string("/tmp/project-folder"), loaded.front().directory);
+
+	UAM_ASSERT(RenameFolderById(app, folder_id, "Renamed Folder", "/tmp/project-folder-renamed"));
+	loaded = ChatFolderStore::Load(data_root.root);
+	UAM_ASSERT_EQ(1u, loaded.size());
+	UAM_ASSERT_EQ(std::string("Renamed Folder"), loaded.front().title);
+	UAM_ASSERT_EQ(std::string("/tmp/project-folder-renamed"), loaded.front().directory);
+
+	ChatSession chat;
+	chat.id = "chat-folder-delete";
+	chat.provider_id = "gemini-cli";
+	chat.folder_id = folder_id;
+	chat.title = "Folder Chat";
+	chat.created_at = "2026-04-11 10:00:00";
+	chat.updated_at = "2026-04-11 10:00:01";
+	app.chats.push_back(chat);
+
+	UAM_ASSERT(DeleteFolderById(app, folder_id));
+	UAM_ASSERT_EQ(1u, app.folders.size());
+	UAM_ASSERT_EQ(std::string(uam::constants::kDefaultFolderId), app.folders.front().id);
+	UAM_ASSERT_EQ(std::string(uam::constants::kDefaultFolderId), app.chats.front().folder_id);
+
+	loaded = ChatFolderStore::Load(data_root.root);
+	UAM_ASSERT_EQ(1u, loaded.size());
+	UAM_ASSERT_EQ(std::string(uam::constants::kDefaultFolderId), loaded.front().id);
+}
+
+UAM_TEST(TestResolveRequestedNewChatFolderIdClampsMissingFolderToValidSelection)
+{
+	TempDir data_root("uam-new-chat-folder-selection");
+	uam::AppState app = MakeTestAppState(data_root.root);
+
+	ChatDomainService().EnsureDefaultFolder(app);
+	app.folders.push_back(ChatFolder{"folder-a", "Folder A", "/tmp/workspace-a", false});
+	app.new_chat_folder_id = "folder-a";
+
+	const std::string resolved_existing = ResolveRequestedNewChatFolderId(app, "folder-a");
+	UAM_ASSERT_EQ(std::string("folder-a"), resolved_existing);
+	UAM_ASSERT_EQ(std::string("folder-a"), app.new_chat_folder_id);
+
+	const std::string resolved_missing = ResolveRequestedNewChatFolderId(app, "folder-missing");
+	UAM_ASSERT_EQ(std::string("folder-a"), resolved_missing);
+	UAM_ASSERT_EQ(std::string("folder-a"), app.new_chat_folder_id);
+
+	app.new_chat_folder_id = "folder-missing";
+	const std::string resolved_default = ResolveRequestedNewChatFolderId(app, "");
+	UAM_ASSERT_EQ(std::string(uam::constants::kDefaultFolderId), resolved_default);
+	UAM_ASSERT_EQ(std::string(uam::constants::kDefaultFolderId), app.new_chat_folder_id);
+}
+
+UAM_TEST(TestTrustedUiUrlGatesBridgeAccess)
+{
+	const std::string trusted = "file:///Users/test/Universal Agent Manager/UI-V2/dist/index.html";
+
+	UAM_ASSERT(uam::cef::IsTrustedUiUrl("file:///Users/test/Universal Agent Manager/UI-V2/dist/index.html", trusted));
+	UAM_ASSERT(uam::cef::IsTrustedUiUrl("file:///Users/test/Universal%20Agent%20Manager/UI-V2/dist/index.html", trusted));
+	UAM_ASSERT(uam::cef::IsTrustedUiUrl("file:///Users/test/Universal%20Agent%20Manager/UI-V2/dist/index.html#chat-1", trusted));
+	UAM_ASSERT(!uam::cef::IsTrustedUiUrl("file:///Users/test/Downloads/index.html", trusted));
+	UAM_ASSERT(!uam::cef::IsTrustedUiUrl("https://example.com", trusted));
+	UAM_ASSERT(uam::cef::ShouldOpenExternally("https://example.com/docs"));
+	UAM_ASSERT(uam::cef::ShouldOpenExternally("mailto:support@example.com"));
+	UAM_ASSERT(!uam::cef::ShouldOpenExternally("file:///Users/test/UI-V2/dist/index.html"));
+}
+
+UAM_TEST(TestResolveTrustedUiIndexUrlFindsMainBundleResourcesFromRendererHelper)
+{
+	TempDir bundle_root("uam-cef-bundle-path");
+
+	const fs::path main_exe_dir =
+		bundle_root.root / "universal_agent_manager.app" / "Contents" / "MacOS";
+	const fs::path renderer_helper_exe_dir =
+		bundle_root.root / "universal_agent_manager.app" / "Contents" / "Frameworks" /
+		"universal_agent_manager Helper (Renderer).app" / "Contents" / "MacOS";
+	const fs::path ui_index =
+		bundle_root.root / "universal_agent_manager.app" / "Contents" / "Resources" /
+		"UI-V2" / "dist" / "index.html";
+
+	fs::create_directories(main_exe_dir);
+	fs::create_directories(renderer_helper_exe_dir);
+	fs::create_directories(ui_index.parent_path());
+	UAM_ASSERT(WriteTextFile(ui_index, "<!doctype html>\n"));
+
+	std::error_code ec;
+	const fs::path normalized_ui_index = fs::weakly_canonical(ui_index, ec);
+	const fs::path expected_path = ec ? ui_index.lexically_normal() : normalized_ui_index.lexically_normal();
+	const std::string expected_url = std::string("file://") + expected_path.generic_string();
+	UAM_ASSERT_EQ(expected_url, uam::cef::ResolveTrustedUiIndexUrl(main_exe_dir));
+	UAM_ASSERT_EQ(expected_url, uam::cef::ResolveTrustedUiIndexUrl(renderer_helper_exe_dir));
+}
+
 UAM_TEST(TestChatRenameRejectsBlankTitle)
 {
 	TempDir data_root("uam-chat-rename-blank");
@@ -937,6 +1194,171 @@ UAM_TEST(TestChatRenamePersistsAcrossReload)
 	const std::vector<ChatSession> reloaded = ChatRepository::LoadLocalChats(data_root.root);
 	UAM_ASSERT_EQ(1u, reloaded.size());
 	UAM_ASSERT_EQ(std::string("Renamed in UAM"), reloaded.front().title);
+}
+
+UAM_TEST(TestChatRenameSurvivesNativeSyncRefresh)
+{
+	TempDir data_root("uam-chat-rename-native-sync");
+	TempDir gemini_home("uam-chat-rename-native-sync-gemini-home");
+	TempDir project("uam-chat-rename-native-sync-project");
+
+	const fs::path tmp_dir = gemini_home.root / "tmp" / "release";
+	const fs::path chats_dir = tmp_dir / "chats";
+	fs::create_directories(chats_dir);
+	WriteNativeProjectRoot(tmp_dir, project.root);
+	WriteGeminiNativeSession(chats_dir, "session-rename-sync", {{"user", "hello there"}, {"assistant", "native reply"}});
+
+	ScopedEnvVar cli("GEMINI_CLI_HOME", gemini_home.root.string());
+	ScopedEnvVar gemini("GEMINI_HOME", std::nullopt);
+
+	ChatSession chat;
+	chat.id = "session-rename-sync";
+	chat.provider_id = "gemini-cli";
+	chat.native_session_id = "session-rename-sync";
+	chat.folder_id = "folder-a";
+	chat.title = "Original Title";
+	chat.created_at = "2026-03-21 10:00:00";
+	chat.updated_at = "2026-03-21 10:00:01";
+	chat.messages.push_back(Message{MessageRole::User, "hello there", "2026-03-21 10:00:01"});
+	UAM_ASSERT(ChatRepository::SaveChat(data_root.root, chat));
+
+	uam::AppState app = MakeTestAppState(data_root.root);
+	app.folders.push_back(ChatFolder{"folder-a", "Folder A", project.root.string(), false});
+
+	std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(data_root.root);
+	UAM_ASSERT_EQ(1u, loaded.size());
+	UAM_ASSERT(ChatHistorySyncService().RenameChat(app, loaded.front(), "  Renamed in UAM  "));
+	UAM_ASSERT_EQ(std::string("Renamed in UAM"), loaded.front().title);
+
+	SyncChatsFromNative(app, chat.id, true);
+
+	const std::vector<ChatSession> reloaded = ChatRepository::LoadLocalChats(data_root.root);
+	UAM_ASSERT_EQ(1u, reloaded.size());
+	UAM_ASSERT_EQ(std::string("Renamed in UAM"), reloaded.front().title);
+	UAM_ASSERT_EQ(std::string("folder-a"), reloaded.front().folder_id);
+	UAM_ASSERT_EQ(std::string("session-rename-sync"), reloaded.front().native_session_id);
+
+	uam::AppState restarted = MakeTestAppState(data_root.root);
+	restarted.folders.push_back(ChatFolder{"folder-a", "Folder A", project.root.string(), false});
+	ChatHistorySyncService().LoadSidebarChats(restarted);
+	UAM_ASSERT_EQ(1u, restarted.chats.size());
+	UAM_ASSERT_EQ(std::string("Renamed in UAM"), restarted.chats.front().title);
+}
+
+UAM_TEST(TestLocalOverridesApplyToLinkedNativeChatsByNativeSessionId)
+{
+	TempDir data_root("uam-linked-override");
+
+	uam::AppState app = MakeTestAppState(data_root.root);
+	app.folders.push_back(ChatFolder{"folder-a", "Folder A", "/tmp/project-a", false});
+
+	ChatSession local;
+	local.id = "chat-local-draft";
+	local.provider_id = "gemini-cli";
+	local.native_session_id = "session-linked";
+	local.folder_id = "folder-a";
+	local.title = "Renamed Locally";
+	local.created_at = "2026-04-09 10:00:00";
+	local.updated_at = "2026-04-09 10:00:01";
+	local.workspace_directory = "/tmp/project-a";
+	local.approval_mode = "yolo";
+	local.model_id = "gemini-2.0";
+	local.extra_flags = "--fast";
+	local.rag_enabled = false;
+	local.linked_files = {"notes.md"};
+	local.rag_source_directories = {"/tmp/project-a/src"};
+	app.chats.push_back(local);
+	UAM_ASSERT(ChatRepository::SaveChat(data_root.root, local));
+
+	ChatSession native;
+	native.id = "session-linked";
+	native.provider_id = "gemini-cli";
+	native.native_session_id = "session-linked";
+	native.folder_id = uam::constants::kDefaultFolderId;
+	native.title = "Gemini First Message";
+	native.created_at = "2026-04-09 10:00:00";
+	native.updated_at = "2026-04-09 10:05:00";
+	native.workspace_directory = "/tmp/project-b";
+	native.approval_mode = "safe";
+	native.model_id = "other-model";
+	native.extra_flags = "--slow";
+	native.rag_enabled = true;
+	native.messages.push_back(Message{MessageRole::User, "hello", "2026-04-09 10:00:00"});
+
+	std::vector<ChatSession> native_chats{native};
+	ChatHistorySyncService().ApplyLocalOverrides(app, native_chats);
+
+	UAM_ASSERT_EQ(1u, native_chats.size());
+	UAM_ASSERT_EQ(std::string("session-linked"), native_chats.front().id);
+	UAM_ASSERT_EQ(std::string("Renamed Locally"), native_chats.front().title);
+	UAM_ASSERT_EQ(std::string("folder-a"), native_chats.front().folder_id);
+	UAM_ASSERT_EQ(std::string("/tmp/project-a"), native_chats.front().workspace_directory);
+	UAM_ASSERT_EQ(std::string("yolo"), native_chats.front().approval_mode);
+	UAM_ASSERT_EQ(std::string("gemini-2.0"), native_chats.front().model_id);
+	UAM_ASSERT_EQ(std::string("--fast"), native_chats.front().extra_flags);
+	UAM_ASSERT_EQ(false, native_chats.front().rag_enabled);
+	UAM_ASSERT(native_chats.front().linked_files == std::vector<std::string>({"notes.md"}));
+	UAM_ASSERT(native_chats.front().rag_source_directories == std::vector<std::string>({"/tmp/project-a/src"}));
+}
+
+UAM_TEST(TestLoadSidebarChatsByDiscoveryImportsNativeGeminiChats)
+{
+	TempDir data_root("uam-discovery-import");
+	TempDir gemini_home("uam-discovery-import-gemini-home");
+	TempDir project("uam-discovery-import-project");
+
+	const fs::path tmp_dir = gemini_home.root / "tmp" / "release";
+	const fs::path chats_dir = tmp_dir / "chats";
+	fs::create_directories(chats_dir);
+	WriteNativeProjectRoot(tmp_dir, project.root);
+	WriteGeminiNativeSession(chats_dir, "session-discovery", {{"user", "hello from old gemini"}, {"assistant", "native reply"}});
+
+	ScopedEnvVar cli("GEMINI_CLI_HOME", gemini_home.root.string());
+	ScopedEnvVar gemini("GEMINI_HOME", std::nullopt);
+
+	uam::AppState app = MakeTestAppState(data_root.root);
+	ChatDomainService().EnsureDefaultFolder(app);
+	ChatHistorySyncService().LoadSidebarChatsByDiscovery(app);
+
+	UAM_ASSERT_EQ(1u, app.chats.size());
+	const ChatSession& imported = app.chats.front();
+	UAM_ASSERT_EQ(std::string("session-discovery"), imported.id);
+	UAM_ASSERT_EQ(std::string("session-discovery"), imported.native_session_id);
+	UAM_ASSERT_EQ(project.root.lexically_normal().generic_string(), fs::path(imported.workspace_directory).lexically_normal().generic_string());
+
+	const auto folder_it = std::find_if(app.folders.begin(), app.folders.end(), [&](const ChatFolder& folder)
+	{
+		return FolderDirectoryMatches(folder.directory, project.root);
+	});
+	UAM_ASSERT(folder_it != app.folders.end());
+	UAM_ASSERT_EQ(folder_it->id, imported.folder_id);
+
+	const std::vector<ChatSession> persisted = ChatRepository::LoadLocalChats(data_root.root);
+	UAM_ASSERT_EQ(1u, persisted.size());
+	UAM_ASSERT_EQ(std::string("session-discovery"), persisted.front().id);
+}
+
+UAM_TEST(TestLoadSidebarChatsByDiscoverySkipsEmptyNativeGeminiChats)
+{
+	TempDir data_root("uam-discovery-import-empty");
+	TempDir gemini_home("uam-discovery-import-empty-gemini-home");
+	TempDir project("uam-discovery-import-empty-project");
+
+	const fs::path tmp_dir = gemini_home.root / "tmp" / "release";
+	const fs::path chats_dir = tmp_dir / "chats";
+	fs::create_directories(chats_dir);
+	WriteNativeProjectRoot(tmp_dir, project.root);
+	WriteGeminiNativeSession(chats_dir, "chat-1775856499765-f3739f", {});
+
+	ScopedEnvVar cli("GEMINI_CLI_HOME", gemini_home.root.string());
+	ScopedEnvVar gemini("GEMINI_HOME", std::nullopt);
+
+	uam::AppState app = MakeTestAppState(data_root.root);
+	ChatDomainService().EnsureDefaultFolder(app);
+	ChatHistorySyncService().LoadSidebarChatsByDiscovery(app);
+
+	UAM_ASSERT(app.chats.empty());
+	UAM_ASSERT(ChatRepository::LoadLocalChats(data_root.root).empty());
 }
 
 UAM_TEST(TestResolveNativeHistoryChatsDirUsesChatWorkspace)
@@ -1039,6 +1461,112 @@ UAM_TEST(TestPendingCallCompletionUsesLaunchTimeProviderSnapshot)
 	UAM_ASSERT_EQ(0, app.selected_chat_index);
 }
 
+UAM_TEST(TestEnsureCliTerminalForChatKeepsDistinctTerminalPerChat)
+{
+	TempDir data_root("uam-cli-terminal-distinct-data");
+	uam::AppState app = MakeTestAppState(data_root.root);
+
+	ChatSession first;
+	first.id = "chat-a";
+	first.title = "Chat A";
+	first.provider_id = "gemini-cli";
+	first.created_at = "2026-04-12 10:00:00";
+	first.updated_at = "2026-04-12 10:00:00";
+
+	ChatSession second;
+	second.id = "chat-b";
+	second.title = "Chat B";
+	second.provider_id = "gemini-cli";
+	second.created_at = "2026-04-12 10:01:00";
+	second.updated_at = "2026-04-12 10:01:00";
+
+	app.chats.push_back(first);
+	app.chats.push_back(second);
+
+	uam::CliTerminalState& first_terminal = EnsureCliTerminalForChat(app, app.chats[0]);
+	uam::CliTerminalState& second_terminal = EnsureCliTerminalForChat(app, app.chats[1]);
+
+	UAM_ASSERT_EQ(2u, app.cli_terminals.size());
+	UAM_ASSERT(&first_terminal != &second_terminal);
+	UAM_ASSERT_EQ(std::string("term-chat-a"), first_terminal.terminal_id);
+	UAM_ASSERT_EQ(std::string("term-chat-b"), second_terminal.terminal_id);
+	UAM_ASSERT_EQ(std::string("chat-a"), first_terminal.frontend_chat_id);
+	UAM_ASSERT_EQ(std::string("chat-b"), second_terminal.frontend_chat_id);
+	UAM_ASSERT_EQ(std::string("chat-a"), first_terminal.attached_chat_id);
+	UAM_ASSERT_EQ(std::string("chat-b"), second_terminal.attached_chat_id);
+}
+
+UAM_TEST(TestStateSerializerIncludesDistinctCliDebugInventory)
+{
+	TempDir data_root("uam-cli-debug-state-data");
+	uam::AppState app = MakeTestAppState(data_root.root);
+
+	ChatSession first;
+	first.id = "chat-a";
+	first.title = "Chat A";
+	first.provider_id = "gemini-cli";
+	first.native_session_id = "session-a";
+	first.created_at = "2026-04-12 10:00:00";
+	first.updated_at = "2026-04-12 10:00:00";
+
+	ChatSession second;
+	second.id = "chat-b";
+	second.title = "Chat B";
+	second.provider_id = "gemini-cli";
+	second.native_session_id = "session-b";
+	second.created_at = "2026-04-12 10:01:00";
+	second.updated_at = "2026-04-12 10:01:00";
+
+	app.chats.push_back(first);
+	app.chats.push_back(second);
+	app.selected_chat_index = 0;
+
+	uam::CliTerminalState& first_terminal = EnsureCliTerminalForChat(app, app.chats[0]);
+	first_terminal.running = true;
+	first_terminal.ui_attached = true;
+	first_terminal.attached_session_id = "session-a";
+	first_terminal.last_user_input_time_s = 10.0;
+	first_terminal.last_ai_output_time_s = 12.0;
+
+	uam::CliTerminalState& second_terminal = EnsureCliTerminalForChat(app, app.chats[1]);
+	second_terminal.running = true;
+	second_terminal.ui_attached = false;
+	second_terminal.attached_session_id = "session-b";
+	second_terminal.turn_state = uam::CliTerminalTurnState::Busy;
+	second_terminal.generation_in_progress = true;
+	second_terminal.last_user_input_time_s = 20.0;
+	second_terminal.last_ai_output_time_s = 25.0;
+
+	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+
+	UAM_ASSERT(serialized.contains("cliDebug"));
+	const nlohmann::json& cli_debug = serialized["cliDebug"];
+	UAM_ASSERT_EQ(2u, cli_debug["terminalCount"].get<std::size_t>());
+	UAM_ASSERT_EQ(2u, cli_debug["runningTerminalCount"].get<std::size_t>());
+	UAM_ASSERT_EQ(1u, cli_debug["busyTerminalCount"].get<std::size_t>());
+	UAM_ASSERT_EQ(std::string("chat-a"), cli_debug["selectedChatId"].get<std::string>());
+	UAM_ASSERT(cli_debug["terminals"].is_array());
+	UAM_ASSERT_EQ(2u, cli_debug["terminals"].size());
+
+	const nlohmann::json& first_debug = cli_debug["terminals"][0];
+	const nlohmann::json& second_debug = cli_debug["terminals"][1];
+
+	UAM_ASSERT_EQ(std::string("term-chat-a"), first_debug["terminalId"].get<std::string>());
+	UAM_ASSERT_EQ(std::string("chat-a"), first_debug["frontendChatId"].get<std::string>());
+	UAM_ASSERT_EQ(std::string("session-a"), first_debug["attachedSessionId"].get<std::string>());
+	UAM_ASSERT_EQ(std::string("idle"), first_debug["turnState"].get<std::string>());
+
+	UAM_ASSERT_EQ(std::string("term-chat-b"), second_debug["terminalId"].get<std::string>());
+	UAM_ASSERT_EQ(std::string("chat-b"), second_debug["frontendChatId"].get<std::string>());
+	UAM_ASSERT_EQ(std::string("session-b"), second_debug["attachedSessionId"].get<std::string>());
+	UAM_ASSERT_EQ(std::string("busy"), second_debug["turnState"].get<std::string>());
+
+	UAM_ASSERT(serialized["chats"].is_array());
+	UAM_ASSERT_EQ(2u, serialized["chats"].size());
+	UAM_ASSERT_EQ(std::string("term-chat-a"), serialized["chats"][0]["cliTerminal"]["terminalId"].get<std::string>());
+	UAM_ASSERT_EQ(std::string("term-chat-b"), serialized["chats"][1]["cliTerminal"]["terminalId"].get<std::string>());
+}
+
 UAM_TEST(TestRemoveChatUsesDeletedChatProviderForNativeCleanup)
 {
 	TempDir data_root("uam-remove-chat-data");
@@ -1102,6 +1630,142 @@ UAM_TEST(TestRemoveChatDeletesUamJsonMetadataFile)
 
 	// Confirm file is gone
 	UAM_ASSERT(!std::filesystem::exists(json_path));
+}
+
+UAM_TEST(TestRemoveChatDeletesPersistedArtifactsAndStaysGoneAfterReload)
+{
+	TempDir data_root("uam-remove-chat-reload-data");
+	TempDir gemini_home("uam-remove-chat-reload-gemini-home");
+	TempDir project("uam-remove-chat-reload-project");
+
+	const fs::path tmp_dir = gemini_home.root / "tmp" / "release";
+	const fs::path chats_dir = tmp_dir / "chats";
+	fs::create_directories(chats_dir);
+	WriteNativeProjectRoot(tmp_dir, project.root);
+	WriteGeminiNativeSession(chats_dir, "session-delete-reload", {{"user", "delete me"}, {"assistant", "done"}});
+
+	ScopedEnvVar cli("GEMINI_CLI_HOME", gemini_home.root.string());
+	ScopedEnvVar gemini("GEMINI_HOME", std::nullopt);
+
+	ChatSession chat;
+	chat.id = "session-delete-reload";
+	chat.provider_id = "gemini-cli";
+	chat.native_session_id = "session-delete-reload";
+	chat.folder_id = "folder-a";
+	chat.title = "Delete Me";
+	chat.created_at = "2026-03-21 10:00:00";
+	chat.updated_at = "2026-03-21 10:00:01";
+	chat.messages.push_back(Message{MessageRole::User, "delete me", "2026-03-21 10:00:01"});
+	UAM_ASSERT(ChatRepository::SaveChat(data_root.root, chat));
+
+	const fs::path chat_root = AppPaths::ChatPath(data_root.root, chat.id);
+	fs::create_directories(chat_root / "messages");
+	UAM_ASSERT(WriteTextFile(chat_root / "messages" / "user.txt", "legacy local artifact"));
+
+	const fs::path json_path = AppPaths::UamChatFilePath(data_root.root, chat.id);
+	UAM_ASSERT(fs::exists(json_path));
+	UAM_ASSERT(fs::exists(chat_root));
+	UAM_ASSERT(fs::exists(chats_dir / "session-delete-reload.json"));
+
+	uam::AppState app = MakeTestAppState(data_root.root);
+	app.folders.push_back(ChatFolder{"folder-a", "Folder A", project.root.string(), false});
+	app.chats.push_back(chat);
+	app.selected_chat_index = 0;
+
+	UAM_ASSERT(RemoveChatById(app, chat.id));
+	UAM_ASSERT_EQ(-1, app.selected_chat_index);
+	WaitForFileMissing(json_path);
+	WaitForFileMissing(chats_dir / "session-delete-reload.json");
+	UAM_ASSERT(!fs::exists(json_path));
+	UAM_ASSERT(!fs::exists(chat_root));
+	UAM_ASSERT(!fs::exists(chats_dir / "session-delete-reload.json"));
+
+	uam::AppState reloaded = MakeTestAppState(data_root.root);
+	ChatHistorySyncService().LoadSidebarChats(reloaded);
+	UAM_ASSERT(reloaded.chats.empty());
+}
+
+UAM_TEST(TestRemoveChatDeletesNativeSessionFileWhenSessionIdLooksLikeLocalDraft)
+{
+	TempDir data_root("uam-remove-chat-draftlike-native-data");
+	TempDir gemini_home("uam-remove-chat-draftlike-native-gemini-home");
+	TempDir project("uam-remove-chat-draftlike-native-project");
+
+	const fs::path tmp_dir = gemini_home.root / "tmp" / "release";
+	const fs::path chats_dir = tmp_dir / "chats";
+	fs::create_directories(chats_dir);
+	WriteNativeProjectRoot(tmp_dir, project.root);
+	WriteGeminiNativeSession(chats_dir, "chat-1775856499765-f3739f", {});
+
+	ScopedEnvVar cli("GEMINI_CLI_HOME", gemini_home.root.string());
+	ScopedEnvVar gemini("GEMINI_HOME", std::nullopt);
+
+	uam::AppState app = MakeTestAppState(data_root.root);
+	app.folders.push_back(ChatFolder{"folder-a", "Folder A", project.root.string(), false});
+	app.settings.active_provider_id = "gemini-cli";
+
+	ChatSession chat;
+	chat.id = "chat-1775856499765-f3739f";
+	chat.provider_id = "gemini-cli";
+	chat.folder_id = "folder-a";
+	chat.native_session_id = "chat-1775856499765-f3739f";
+	chat.title = "Session 2026-04-10 22:28:19";
+	chat.created_at = "2026-04-10 22:28:19";
+	chat.updated_at = "2026-04-10 22:28:19";
+	chat.workspace_directory = project.root.string();
+	app.chats.push_back(chat);
+	app.selected_chat_index = 0;
+
+	UAM_ASSERT(RemoveChatById(app, chat.id));
+	WaitForFileMissing(chats_dir / "chat-1775856499765-f3739f.json");
+	UAM_ASSERT(!fs::exists(chats_dir / "chat-1775856499765-f3739f.json"));
+
+	uam::AppState reloaded = MakeTestAppState(data_root.root);
+	ChatDomainService().EnsureDefaultFolder(reloaded);
+	ChatHistorySyncService().LoadSidebarChatsByDiscovery(reloaded);
+	UAM_ASSERT(reloaded.chats.empty());
+}
+
+UAM_TEST(TestRemoveChatDeletesNativeSessionViaDiscoveryFallbackWhenWorkspaceDrifts)
+{
+	TempDir data_root("uam-remove-chat-fallback-data");
+	TempDir gemini_home("uam-remove-chat-fallback-gemini-home");
+	TempDir project("uam-remove-chat-fallback-project");
+
+	const fs::path tmp_dir = gemini_home.root / "tmp" / "release";
+	const fs::path chats_dir = tmp_dir / "chats";
+	fs::create_directories(chats_dir);
+	WriteNativeProjectRoot(tmp_dir, project.root);
+	WriteGeminiNativeSession(chats_dir, "session-delete-fallback", {{"user", "delete me"}, {"assistant", "done"}});
+
+	ScopedEnvVar cli("GEMINI_CLI_HOME", gemini_home.root.string());
+	ScopedEnvVar gemini("GEMINI_HOME", std::nullopt);
+
+	ChatSession chat;
+	chat.id = "session-delete-fallback";
+	chat.provider_id = "gemini-cli";
+	chat.native_session_id = "session-delete-fallback";
+	chat.folder_id = uam::constants::kDefaultFolderId;
+	chat.workspace_directory = (project.root.parent_path() / "wrong-workspace").string();
+	chat.title = "Delete Me";
+	chat.created_at = "2026-03-21 10:00:00";
+	chat.updated_at = "2026-03-21 10:00:01";
+	chat.messages.push_back(Message{MessageRole::User, "delete me", "2026-03-21 10:00:01"});
+	UAM_ASSERT(ChatRepository::SaveChat(data_root.root, chat));
+
+	uam::AppState app = MakeTestAppState(data_root.root);
+	ChatDomainService().EnsureDefaultFolder(app);
+	app.chats.push_back(chat);
+	app.selected_chat_index = 0;
+
+	UAM_ASSERT(RemoveChatById(app, chat.id));
+	WaitForFileMissing(chats_dir / "session-delete-fallback.json");
+	UAM_ASSERT(!fs::exists(chats_dir / "session-delete-fallback.json"));
+
+	uam::AppState reloaded = MakeTestAppState(data_root.root);
+	ChatDomainService().EnsureDefaultFolder(reloaded);
+	ChatHistorySyncService().LoadSidebarChatsByDiscovery(reloaded);
+	UAM_ASSERT(reloaded.chats.empty());
 }
 
 UAM_TEST(TestDeleteNativeSessionFileForChatReturnsFalseWhenRemoveFails)

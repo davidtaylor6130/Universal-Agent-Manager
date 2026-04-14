@@ -48,17 +48,49 @@ interface CppChat {
   updatedAt: string
   messages: CppMessage[]
   cliTerminal?: {
-    terminalId: string
-    frontendChatId: string
-    sourceChatId: string
+    terminalId?: string
+    frontendChatId?: string
+    sourceChatId?: string
     running: boolean
+    turnState?: 'idle' | 'busy' | string
+    processing?: boolean
+    readySinceLastSelect?: boolean
+    active?: boolean
     lastError: string
   }
+}
+
+interface CppCliDebugTerminal {
+  terminalId: string
+  frontendChatId: string
+  sourceChatId: string
+  attachedSessionId: string
+  providerId: string
+  nativeSessionId: string
+  processId: string
+  running: boolean
+  uiAttached: boolean
+  turnState: 'idle' | 'busy' | string
+  inputReady: boolean
+  generationInProgress: boolean
+  lastUserInputAt: number
+  lastAiOutputAt: number
+  lastPolledAt: number
+  lastError: string
+}
+
+interface CppCliDebugState {
+  selectedChatId: string | null
+  terminalCount: number
+  runningTerminalCount: number
+  busyTerminalCount: number
+  terminals: CppCliDebugTerminal[]
 }
 
 interface CppFolder {
   id: string
   title: string
+  directory: string
   collapsed: boolean
 }
 
@@ -77,6 +109,7 @@ interface CppSettings {
 export interface CppAppState {
   folders: CppFolder[]
   chats: CppChat[]
+  cliDebug?: CppCliDebugState
   selectedChatId: string | null
   providers: CppProvider[]
   settings: CppSettings
@@ -86,7 +119,16 @@ export interface CliBinding {
   terminalId: string
   boundChatId: string
   running: boolean
+  turnState: 'idle' | 'busy'
+  processing: boolean
+  readySinceLastSelect: boolean
+  active: boolean
   lastError: string
+}
+
+export interface CliTranscript {
+  terminalId: string
+  content: string
 }
 
 export type PushChannelStatus = 'no-push-yet' | 'connected' | 'parse-error' | 'invalid-message'
@@ -123,6 +165,56 @@ function isCppAppState(value: unknown): value is CppAppState {
     Array.isArray(value.providers) &&
     isRecord(value.settings)
   )
+}
+
+const MAX_CLI_TRANSCRIPT_BYTES = 1024 * 1024
+
+function decodeCliChunk(encoded: string): string {
+  try {
+    return atob(encoded)
+  } catch {
+    return encoded
+  }
+}
+
+function clampCliTranscript(content: string): string {
+  return content.length > MAX_CLI_TRANSCRIPT_BYTES
+    ? content.slice(content.length - MAX_CLI_TRANSCRIPT_BYTES)
+    : content
+}
+
+function appendCliTranscriptChunk(
+  existing: CliTranscript | undefined,
+  terminalId: string,
+  chunk: string
+): CliTranscript {
+  const nextTerminalId = terminalId || existing?.terminalId || ''
+  const resetTranscript =
+    Boolean(existing?.terminalId) && Boolean(terminalId) && existing?.terminalId !== terminalId
+  const nextContent = clampCliTranscript((resetTranscript ? '' : existing?.content ?? '') + chunk)
+
+  return {
+    terminalId: nextTerminalId,
+    content: nextContent,
+  }
+}
+
+function normalizeCliTranscript(
+  existing: CliTranscript | undefined,
+  terminalId: string
+): CliTranscript | undefined {
+  if (!existing) {
+    return undefined
+  }
+
+  if (existing.terminalId && terminalId && existing.terminalId !== terminalId) {
+    return undefined
+  }
+
+  return {
+    terminalId: terminalId || existing.terminalId || '',
+    content: clampCliTranscript(existing.content),
+  }
 }
 
 function parseUamPushPayload(payload: unknown): ParsedPushResult {
@@ -196,6 +288,7 @@ function deserializeState(
     messages: Record<string, Message[]>
     agentSteps: Record<string, AgentStep[]>
     activeSessionId: string | null
+    cliTranscriptBySessionId: Record<string, CliTranscript>
   }
 ) {
   let msgCounter = 50000 // high enough not to clash with mock IDs
@@ -204,6 +297,7 @@ function deserializeState(
     id: f.id,
     name: f.title,
     parentId: null,
+    directory: f.directory ?? '',
     isExpanded: !f.collapsed,
     createdAt: new Date(),
   }))
@@ -269,6 +363,34 @@ function deserializeState(
       ? existing.activeSessionId
       : null
   const effectiveActiveSessionId = selectedByBackend ?? selectedFromCurrent ?? sessions[0]?.id ?? null
+  const cliBindingBySessionId = Object.fromEntries(
+    cpp.chats
+      .filter((c) => c.cliTerminal)
+      .map((c) => [
+        c.id,
+        {
+          terminalId: c.cliTerminal?.terminalId ?? '',
+          boundChatId: c.cliTerminal?.sourceChatId ?? c.id,
+          running: Boolean(c.cliTerminal?.running),
+          turnState: c.cliTerminal?.turnState === 'busy' ? 'busy' : 'idle',
+          processing: Boolean(c.cliTerminal?.processing),
+          readySinceLastSelect: Boolean(c.cliTerminal?.readySinceLastSelect),
+          active: Boolean(c.cliTerminal?.active),
+          lastError: c.cliTerminal?.lastError ?? '',
+        } satisfies CliBinding,
+      ])
+  ) as Record<string, CliBinding>
+
+  const cliTranscriptBySessionId = Object.fromEntries(
+    sessions.flatMap((session) => {
+      const transcript = normalizeCliTranscript(
+        existing.cliTranscriptBySessionId[session.id],
+        cliBindingBySessionId[session.id]?.terminalId ?? ''
+      )
+
+      return transcript ? [[session.id, transcript]] : []
+    })
+  ) as Record<string, CliTranscript>
 
   return {
     folders,
@@ -284,20 +406,28 @@ function deserializeState(
         providers.find((p) => p.id === GEMINI_CLI_PROVIDER_ID)?.id ?? fallbackProviderId,
       ])
     ),
-    cliBindingBySessionId: Object.fromEntries(
-      cpp.chats
-        .filter((c) => c.cliTerminal)
-        .map((c) => [
-          c.id,
-          {
-            terminalId: c.cliTerminal?.terminalId ?? '',
-            boundChatId: c.cliTerminal?.sourceChatId ?? c.id,
-            running: Boolean(c.cliTerminal?.running),
-            lastError: c.cliTerminal?.lastError ?? '',
-          } satisfies CliBinding,
-        ])
-    ),
+    cliBindingBySessionId,
+    cliTranscriptBySessionId,
+    cliDebugState: cpp.cliDebug ?? null,
   }
+}
+
+function cliDebugSignature(debug: CppCliDebugState | null | undefined) {
+  if (!debug) return 'none'
+  return JSON.stringify(
+    debug.terminals.map((terminal) => ({
+      terminalId: terminal.terminalId,
+      frontendChatId: terminal.frontendChatId,
+      sourceChatId: terminal.sourceChatId,
+      attachedSessionId: terminal.attachedSessionId,
+      providerId: terminal.providerId,
+      nativeSessionId: terminal.nativeSessionId,
+      processId: terminal.processId,
+      running: terminal.running,
+      uiAttached: terminal.uiAttached,
+      turnState: terminal.turnState,
+    }))
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -335,6 +465,8 @@ interface AppState {
   features: ProviderFeature[]
   activeProviderId: Record<string, string>
   cliBindingBySessionId: Record<string, CliBinding>
+  cliTranscriptBySessionId: Record<string, CliTranscript>
+  cliDebugState: CppCliDebugState | null
 
   // UI
   theme: 'dark' | 'light'
@@ -354,9 +486,11 @@ interface AppState {
   setViewMode: (id: string, viewMode: ViewMode) => void
 
   // Folder actions
-  addFolder: (name: string, parentId: string | null) => void
+  addFolder: (name: string, parentId: string | null, directory: string) => void
   toggleFolder: (id: string) => void
-  renameFolder: (id: string, name: string) => void
+  renameFolder: (id: string, name: string, directory: string) => void
+  deleteFolder: (id: string) => void
+  browseFolderDirectory: (currentValue: string) => Promise<string | null>
 
   // Message actions
   sendMessage: (sessionId: string, content: string) => void
@@ -393,6 +527,7 @@ export const useAppStore = create<AppState>((set, get) => {
           messages: current.messages,
           agentSteps: current.agentSteps,
           activeSessionId: current.activeSessionId,
+          cliTranscriptBySessionId: current.cliTranscriptBySessionId,
         })
         set(deserialized)
         // Sync theme to DOM
@@ -430,6 +565,10 @@ export const useAppStore = create<AppState>((set, get) => {
 
       switch (msg.type) {
         case 'stateUpdate':
+          console.debug('[cli-diag][stateUpdate]', {
+            selectedChatId: msg.data.selectedChatId,
+            cliDebug: msg.data.cliDebug ?? null,
+          })
           store.loadFromCef(msg.data)
           break
         case 'streamToken':
@@ -439,28 +578,62 @@ export const useAppStore = create<AppState>((set, get) => {
           store.finalizeStream(msg.chatId)
           break
         case 'cliOutput':
-          window.dispatchEvent(
-            new CustomEvent('uam-cli-output', {
-              detail: {
-                sessionId: msg.sessionId ?? '',
-                sourceChatId: msg.sourceChatId ?? '',
-                terminalId: msg.terminalId ?? '',
-                data: msg.data,
-              },
-            })
-          )
-          if (msg.sessionId) {
-            store.setCliBinding(msg.sessionId, {
+          {
+            const decodedData = decodeCliChunk(msg.data)
+            const sessionId = msg.sessionId ?? msg.sourceChatId ?? ''
+
+            if (sessionId) {
+              set((state) => {
+                const currentBinding = state.cliBindingBySessionId[sessionId]
+                const terminalId = msg.terminalId ?? currentBinding?.terminalId ?? ''
+
+                return {
+                  cliTranscriptBySessionId: {
+                    ...state.cliTranscriptBySessionId,
+                    [sessionId]: appendCliTranscriptChunk(
+                      state.cliTranscriptBySessionId[sessionId],
+                      terminalId,
+                      decodedData
+                    ),
+                  },
+                  cliBindingBySessionId: {
+                    ...state.cliBindingBySessionId,
+                    [sessionId]: {
+                      terminalId,
+                      boundChatId: msg.sourceChatId ?? currentBinding?.boundChatId ?? sessionId,
+                      running: true,
+                      turnState: 'busy',
+                      processing: true,
+                      readySinceLastSelect: false,
+                      active: false,
+                      lastError: '',
+                    },
+                  },
+                }
+              })
+            }
+
+            console.debug('[cli-diag][cliOutput]', {
+              sessionId: msg.sessionId ?? '',
+              sourceChatId: msg.sourceChatId ?? '',
               terminalId: msg.terminalId ?? '',
-              boundChatId: msg.sourceChatId ?? msg.sessionId,
-              running: true,
-              lastError: '',
+              bytes: msg.data.length,
             })
+            window.dispatchEvent(
+              new CustomEvent('uam-cli-output', {
+                detail: {
+                  sessionId: msg.sessionId ?? '',
+                  sourceChatId: msg.sourceChatId ?? '',
+                  terminalId: msg.terminalId ?? '',
+                  data: decodedData,
+                },
+              })
+            )
           }
           break
+        }
       }
     }
-  }
 
   // In CEF context, start with empty state — real data arrives via getInitialState above.
   // In dev/browser mode, use mock data so the UI is immediately interactive.
@@ -477,6 +650,8 @@ export const useAppStore = create<AppState>((set, get) => {
     features: defaultFeatures,
     activeProviderId: {},
     cliBindingBySessionId: {},
+    cliTranscriptBySessionId: {},
+    cliDebugState: null,
 
     theme: (document.documentElement.getAttribute('data-theme') as 'dark' | 'light') || 'dark',
     isNewChatModalOpen: false,
@@ -497,7 +672,14 @@ export const useAppStore = create<AppState>((set, get) => {
         messages: current.messages,
         agentSteps: current.agentSteps,
         activeSessionId: current.activeSessionId,
+        cliTranscriptBySessionId: current.cliTranscriptBySessionId,
       })
+      if (cliDebugSignature(current.cliDebugState) !== cliDebugSignature(deserialized.cliDebugState)) {
+        console.debug('[cli-diag][loadFromCef]', {
+          previous: current.cliDebugState,
+          next: deserialized.cliDebugState,
+        })
+      }
       set(deserialized)
       if (deserialized.theme) {
         document.documentElement.setAttribute('data-theme', deserialized.theme)
@@ -561,10 +743,12 @@ export const useAppStore = create<AppState>((set, get) => {
         const remaining = state.sessions.filter((s) => s.id !== id)
         const { [id]: _, ...msgs } = state.messages
         const { [id]: __, ...bindings } = state.cliBindingBySessionId
+        const { [id]: ___, ...transcripts } = state.cliTranscriptBySessionId
         return {
           sessions: remaining,
           messages: msgs,
           cliBindingBySessionId: bindings,
+          cliTranscriptBySessionId: transcripts,
           activeSessionId:
             state.activeSessionId === id ? (remaining[0]?.id ?? null) : state.activeSessionId,
         }
@@ -583,9 +767,33 @@ export const useAppStore = create<AppState>((set, get) => {
 
     // ---- Folder actions ----
 
-    addFolder: (name, _parentId) => {
+    addFolder: (name, _parentId, directory) => {
       if (isCefContext()) {
-        sendToCEF({ action: 'createFolder', payload: { title: name } })
+        sendToCEF<CppFolder>({ action: 'createFolder', payload: { title: name, directory } }).then((resp) => {
+          if (!resp.ok || !resp.data?.id) {
+            if (!resp.ok) console.error('[CEF] createFolder failed:', resp.error)
+            return
+          }
+
+          set((state) => {
+            if (state.folders.some((folder) => folder.id === resp.data!.id)) {
+              return {}
+            }
+
+            const createdFolder: Folder = {
+              id: resp.data!.id,
+              name: resp.data!.title,
+              parentId: null,
+              directory: resp.data!.directory ?? '',
+              isExpanded: !resp.data!.collapsed,
+              createdAt: new Date(),
+            }
+
+            return {
+              folders: [...state.folders, createdFolder],
+            }
+          })
+        })
         return
       }
 
@@ -594,6 +802,7 @@ export const useAppStore = create<AppState>((set, get) => {
         id: makeId('f', folderCounter),
         name,
         parentId: _parentId,
+        directory,
         isExpanded: true,
         createdAt: new Date(),
       }
@@ -611,10 +820,48 @@ export const useAppStore = create<AppState>((set, get) => {
       }
     },
 
-    renameFolder: (id, name) =>
+    renameFolder: (id, name, directory) => {
+      if (isCefContext()) {
+        sendToCEF({ action: 'renameFolder', payload: { folderId: id, title: name, directory } })
+        return
+      }
+
       set((state) => ({
-        folders: state.folders.map((f) => (f.id === id ? { ...f, name } : f)),
-      })),
+        folders: state.folders.map((f) => (f.id === id ? { ...f, name, directory } : f)),
+      }))
+    },
+
+    deleteFolder: (id) => {
+      if (isCefContext()) {
+        sendToCEF({ action: 'deleteFolder', payload: { folderId: id } })
+        return
+      }
+
+      set((state) => {
+        const remainingFolders = state.folders.filter((f) => f.id !== id)
+        const sessions = state.sessions.map((session) =>
+          session.folderId === id ? { ...session, folderId: null } : session
+        )
+        return {
+          folders: remainingFolders,
+          sessions,
+        }
+      })
+    },
+
+    browseFolderDirectory: async (currentValue) => {
+      if (!isCefContext()) {
+        return null
+      }
+
+      const response = await sendToCEF<{ selectedPath?: string }>({
+        action: 'browseFolderDirectory',
+        payload: { currentValue },
+      })
+
+      const selectedPath = response.ok ? response.data?.selectedPath?.trim() ?? '' : ''
+      return selectedPath.length > 0 ? selectedPath : null
+    },
 
     // ---- Message actions ----
 
@@ -732,17 +979,49 @@ export const useAppStore = create<AppState>((set, get) => {
       })),
 
     setCliBinding: (sessionId, binding) =>
-      set((state) => ({
-        cliBindingBySessionId: {
-          ...state.cliBindingBySessionId,
-          [sessionId]: {
-            terminalId: binding.terminalId ?? state.cliBindingBySessionId[sessionId]?.terminalId ?? '',
-            boundChatId: binding.boundChatId ?? state.cliBindingBySessionId[sessionId]?.boundChatId ?? sessionId,
-            running: binding.running ?? state.cliBindingBySessionId[sessionId]?.running ?? false,
-            lastError: binding.lastError ?? state.cliBindingBySessionId[sessionId]?.lastError ?? '',
+      set((state) => {
+        const existingBinding = state.cliBindingBySessionId[sessionId]
+        const resolvedTerminalId = binding.terminalId ?? existingBinding?.terminalId ?? ''
+        let nextTranscripts = state.cliTranscriptBySessionId
+        const existingTranscript = state.cliTranscriptBySessionId[sessionId]
+
+        if (existingTranscript && resolvedTerminalId) {
+          if (existingTranscript.terminalId && existingTranscript.terminalId !== resolvedTerminalId) {
+            nextTranscripts = {
+              ...state.cliTranscriptBySessionId,
+              [sessionId]: {
+                terminalId: resolvedTerminalId,
+                content: '',
+              },
+            }
+          } else if (existingTranscript.terminalId !== resolvedTerminalId) {
+            nextTranscripts = {
+              ...state.cliTranscriptBySessionId,
+              [sessionId]: {
+                ...existingTranscript,
+                terminalId: resolvedTerminalId,
+              },
+            }
+          }
+        }
+
+        return {
+          cliBindingBySessionId: {
+            ...state.cliBindingBySessionId,
+            [sessionId]: {
+              terminalId: resolvedTerminalId,
+              boundChatId: binding.boundChatId ?? existingBinding?.boundChatId ?? sessionId,
+              running: binding.running ?? existingBinding?.running ?? false,
+              turnState: binding.turnState ?? existingBinding?.turnState ?? 'idle',
+              processing: binding.processing ?? existingBinding?.processing ?? false,
+              readySinceLastSelect: binding.readySinceLastSelect ?? existingBinding?.readySinceLastSelect ?? false,
+              active: binding.active ?? existingBinding?.active ?? false,
+              lastError: binding.lastError ?? existingBinding?.lastError ?? '',
+            },
           },
-        },
-      })),
+          cliTranscriptBySessionId: nextTranscripts,
+        }
+      }),
 
     // ---- UI actions ----
 

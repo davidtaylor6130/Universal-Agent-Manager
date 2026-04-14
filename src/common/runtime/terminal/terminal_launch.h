@@ -14,6 +14,7 @@
 #include "app/runtime_orchestration_services.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/app_time.h"
+#include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_vt_callbacks.h"
 
 inline std::vector<std::string> BuildProviderInteractiveArgv(const uam::AppState& app, const ChatSession& chat);
@@ -26,6 +27,7 @@ inline void QueueStructuredPromptForTerminal(uam::CliTerminalState& terminal, co
 	terminal.pending_structured_prompts.push_back(prompt);
 	terminal.generation_in_progress = true;
 	terminal.last_activity_time_s = GetAppTimeSeconds();
+	MarkCliTerminalTurnBusy(terminal);
 }
 
 inline bool InjectPromptAsPasteAndSubmit(uam::CliTerminalState& terminal, const std::string& prompt, std::string* error_out = nullptr)
@@ -72,6 +74,7 @@ inline bool InjectPromptAsPasteAndSubmit(uam::CliTerminalState& terminal, const 
 
 	terminal.generation_in_progress = true;
 	terminal.last_activity_time_s = GetAppTimeSeconds();
+	MarkCliTerminalTurnBusy(terminal);
 	return true;
 }
 
@@ -117,6 +120,7 @@ inline bool StartCliTerminalForChat(uam::AppState& app, uam::CliTerminalState& t
 {
 	StopCliTerminal(terminal);
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+	LogCliDiagnosticEvent(app, "start_cli_terminal_for_chat", "begin", &terminal, "chat_id=" + chat.id + ", provider_id=" + provider.id);
 
 	if (!ProviderRuntime::IsRuntimeEnabled(provider))
 	{
@@ -206,11 +210,14 @@ inline bool StartCliTerminalForChat(uam::AppState& app, uam::CliTerminalState& t
 	terminal.last_sync_time_s    = GetAppTimeSeconds();
 	terminal.last_output_time_s  = 0.0;
 	terminal.last_activity_time_s = GetAppTimeSeconds();
+	terminal.last_user_input_time_s = 0.0;
+	terminal.last_ai_output_time_s = 0.0;
 	terminal.last_polled_time_s  = 0.0;
 	terminal.input_ready         = false;
 	terminal.startup_time_s      = GetAppTimeSeconds();
 	terminal.pending_structured_prompts.clear();
 	terminal.generation_in_progress = false;
+	terminal.turn_state = uam::CliTerminalTurnState::Idle;
 
 	const std::filesystem::path workspace_root = ResolveWorkspaceRootPath(app, chat);
 	std::string startup_error;
@@ -219,12 +226,14 @@ inline bool StartCliTerminalForChat(uam::AppState& app, uam::CliTerminalState& t
 	{
 		if (terminal.last_error.empty())
 			terminal.last_error = startup_error.empty() ? "Failed to start provider terminal." : startup_error;
+		LogCliDiagnosticEvent(app, "start_cli_terminal_for_chat", "process_launch_failed", &terminal, terminal.last_error);
 		StopCliTerminal(terminal, false);
 		return false;
 	}
 
 	terminal.running      = true;
 	terminal.should_launch = false;
+	LogCliDiagnosticEvent(app, "start_cli_terminal_for_chat", "process_launched", &terminal, "argv0=" + interactive_argv.front());
 
 	if (!chat.prompt_profile_bootstrapped && chat.messages.empty() && template_outcome == TemplatePreflightOutcome::ReadyWithTemplate)
 	{

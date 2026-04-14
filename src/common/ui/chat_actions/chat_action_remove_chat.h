@@ -53,16 +53,11 @@ inline bool RemoveChatById(AppState& app, const std::string& chat_id)
 	std::error_code native_delete_ec;
 	bool native_delete_attempted = false;
 	const ProviderProfile& chat_provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
-	const std::filesystem::path native_history_chats_dir = ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(app, chat);
 
 	if (ProviderRuntime::UsesNativeOverlayHistory(chat_provider) && !native_session_id.empty())
 	{
 		native_delete_attempted = true;
-
-		if (const auto native_file = ChatHistorySyncService().FindNativeSessionFilePath(native_history_chats_dir, native_session_id); native_file.has_value())
-		{
-			ChatHistorySyncService().DeleteNativeSessionFileForChat(app, chat, &native_delete_ec);
-		}
+		ChatHistorySyncService().DeleteNativeSessionFileForChat(app, chat, &native_delete_ec);
 	}
 
 	ChatBranching::ReparentChildrenAfterDelete(app.chats, chat.id);

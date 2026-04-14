@@ -166,6 +166,99 @@ namespace
 		return msg;
 	}
 
+	JsonValue StringArrayToJson(const std::vector<std::string>& values)
+	{
+		JsonValue arr;
+		arr.type = JsonValue::Type::Array;
+
+		for (const std::string& value : values)
+		{
+			JsonValue item;
+			item.type = JsonValue::Type::String;
+			item.string_value = value;
+			arr.array_value.push_back(std::move(item));
+		}
+
+		return arr;
+	}
+
+	std::vector<std::string> JsonStringArrayOrEmpty(const JsonValue* value)
+	{
+		std::vector<std::string> out;
+
+		if (value == nullptr || value->type != JsonValue::Type::Array)
+		{
+			return out;
+		}
+
+		for (const JsonValue& item : value->array_value)
+		{
+			if (item.type == JsonValue::Type::String)
+			{
+				out.push_back(item.string_value);
+			}
+		}
+
+		return out;
+	}
+
+	bool ToolCallsEquivalentForRecovery(const std::vector<ToolCall>& lhs, const std::vector<ToolCall>& rhs)
+	{
+		if (lhs.size() != rhs.size())
+		{
+			return false;
+		}
+
+		for (std::size_t i = 0; i < lhs.size(); ++i)
+		{
+			const ToolCall& left = lhs[i];
+			const ToolCall& right = rhs[i];
+
+			if (left.id != right.id ||
+			    left.name != right.name ||
+			    left.args_json != right.args_json ||
+			    left.result_text != right.result_text ||
+			    left.status != right.status)
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	bool MessagesEquivalentForRecovery(const std::vector<Message>& lhs, const std::vector<Message>& rhs)
+	{
+		if (lhs.size() != rhs.size())
+		{
+			return false;
+		}
+
+		for (std::size_t i = 0; i < lhs.size(); ++i)
+		{
+			const Message& left = lhs[i];
+			const Message& right = rhs[i];
+
+			if (left.role != right.role ||
+			    left.content != right.content ||
+			    left.created_at != right.created_at ||
+			    left.provider != right.provider ||
+			    left.tokens_input != right.tokens_input ||
+			    left.tokens_output != right.tokens_output ||
+			    left.estimated_cost_usd != right.estimated_cost_usd ||
+			    left.time_to_first_token_ms != right.time_to_first_token_ms ||
+			    left.processing_time_ms != right.processing_time_ms ||
+			    left.interrupted != right.interrupted ||
+			    left.thoughts != right.thoughts ||
+			    !ToolCallsEquivalentForRecovery(left.tool_calls, right.tool_calls))
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
 	struct LoadChatResult
 	{
 		std::optional<ChatSession> chat;
@@ -177,11 +270,23 @@ namespace
 		return lhs.id == rhs.id &&
 		       lhs.provider_id == rhs.provider_id &&
 		       lhs.native_session_id == rhs.native_session_id &&
+		       lhs.parent_chat_id == rhs.parent_chat_id &&
+		       lhs.branch_root_chat_id == rhs.branch_root_chat_id &&
+		       lhs.branch_from_message_index == rhs.branch_from_message_index &&
 		       lhs.folder_id == rhs.folder_id &&
+		       lhs.template_override_id == rhs.template_override_id &&
+		       lhs.prompt_profile_bootstrapped == rhs.prompt_profile_bootstrapped &&
+		       lhs.rag_enabled == rhs.rag_enabled &&
+		       lhs.rag_source_directories == rhs.rag_source_directories &&
 		       lhs.title == rhs.title &&
 		       lhs.created_at == rhs.created_at &&
 		       lhs.updated_at == rhs.updated_at &&
-		       lhs.messages.size() == rhs.messages.size();
+		       lhs.linked_files == rhs.linked_files &&
+		       lhs.workspace_directory == rhs.workspace_directory &&
+		       lhs.approval_mode == rhs.approval_mode &&
+		       lhs.model_id == rhs.model_id &&
+		       lhs.extra_flags == rhs.extra_flags &&
+		       MessagesEquivalentForRecovery(lhs.messages, rhs.messages);
 	}
 
 	LoadChatResult ParseLocalChatFile(const fs::path& path)
@@ -209,10 +314,27 @@ namespace
 
 		chat.provider_id = JsonStringOrEmpty(root.Find("provider_id"));
 		chat.native_session_id = JsonStringOrEmpty(root.Find("native_session_id"));
+		chat.parent_chat_id = JsonStringOrEmpty(root.Find("parent_chat_id"));
+		chat.branch_root_chat_id = JsonStringOrEmpty(root.Find("branch_root_chat_id"));
+		if (root.object_value.contains("branch_from_message_index"))
+			chat.branch_from_message_index = static_cast<int>(JsonNumberOrDefault(root.Find("branch_from_message_index"), -1));
 		chat.folder_id = JsonStringOrEmpty(root.Find("folder_id"));
+		chat.template_override_id = JsonStringOrEmpty(root.Find("template_override_id"));
+		if (root.object_value.contains("prompt_profile_bootstrapped"))
+			chat.prompt_profile_bootstrapped = JsonBoolOrDefault(root.Find("prompt_profile_bootstrapped"), false);
+		if (root.object_value.contains("rag_enabled"))
+			chat.rag_enabled = JsonBoolOrDefault(root.Find("rag_enabled"), true);
+		if (const JsonValue* rag_source_directories = root.Find("rag_source_directories"))
+			chat.rag_source_directories = JsonStringArrayOrEmpty(rag_source_directories);
 		chat.title = JsonStringOrEmpty(root.Find("title"));
 		chat.created_at = JsonStringOrEmpty(root.Find("created_at"));
 		chat.updated_at = JsonStringOrEmpty(root.Find("updated_at"));
+		if (const JsonValue* linked_files = root.Find("linked_files"))
+			chat.linked_files = JsonStringArrayOrEmpty(linked_files);
+		chat.workspace_directory = JsonStringOrEmpty(root.Find("workspace_directory"));
+		chat.approval_mode = JsonStringOrEmpty(root.Find("approval_mode"));
+		chat.model_id = JsonStringOrEmpty(root.Find("model_id"));
+		chat.extra_flags = JsonStringOrEmpty(root.Find("extra_flags"));
 
 		if (chat.created_at.empty())
 			chat.created_at = TimestampNow();
@@ -262,8 +384,28 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 	root.object_value["native_session_id"].type = JsonValue::Type::String;
 	root.object_value["native_session_id"].string_value = chat.native_session_id;
 
+	root.object_value["parent_chat_id"].type = JsonValue::Type::String;
+	root.object_value["parent_chat_id"].string_value = chat.parent_chat_id;
+
+	root.object_value["branch_root_chat_id"].type = JsonValue::Type::String;
+	root.object_value["branch_root_chat_id"].string_value = chat.branch_root_chat_id;
+
+	root.object_value["branch_from_message_index"].type = JsonValue::Type::Number;
+	root.object_value["branch_from_message_index"].number_value = static_cast<double>(chat.branch_from_message_index);
+
 	root.object_value["folder_id"].type = JsonValue::Type::String;
 	root.object_value["folder_id"].string_value = chat.folder_id;
+
+	root.object_value["template_override_id"].type = JsonValue::Type::String;
+	root.object_value["template_override_id"].string_value = chat.template_override_id;
+
+	root.object_value["prompt_profile_bootstrapped"].type = JsonValue::Type::Bool;
+	root.object_value["prompt_profile_bootstrapped"].bool_value = chat.prompt_profile_bootstrapped;
+
+	root.object_value["rag_enabled"].type = JsonValue::Type::Bool;
+	root.object_value["rag_enabled"].bool_value = chat.rag_enabled;
+
+	root.object_value["rag_source_directories"] = StringArrayToJson(chat.rag_source_directories);
 
 	root.object_value["title"].type = JsonValue::Type::String;
 	root.object_value["title"].string_value = chat.title;
@@ -273,6 +415,20 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 
 	root.object_value["updated_at"].type = JsonValue::Type::String;
 	root.object_value["updated_at"].string_value = chat.updated_at;
+
+	root.object_value["linked_files"] = StringArrayToJson(chat.linked_files);
+
+	root.object_value["workspace_directory"].type = JsonValue::Type::String;
+	root.object_value["workspace_directory"].string_value = chat.workspace_directory;
+
+	root.object_value["approval_mode"].type = JsonValue::Type::String;
+	root.object_value["approval_mode"].string_value = chat.approval_mode;
+
+	root.object_value["model_id"].type = JsonValue::Type::String;
+	root.object_value["model_id"].string_value = chat.model_id;
+
+	root.object_value["extra_flags"].type = JsonValue::Type::String;
+	root.object_value["extra_flags"].string_value = chat.extra_flags;
 
 	if (!chat.messages.empty())
 	{
@@ -486,8 +642,12 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
 				}
 
 				ChatSession recovered = backup_chat.chat.value();
-				recovered.id = entry.path().stem().string();
+				const std::string recovered_id = entry.path().stem().string();
+				const std::string previous_id = recovered.id;
+				recovered.id = recovered_id;
 				recovered.native_session_id = recovered.id;
+				if (recovered.branch_root_chat_id.empty() || recovered.branch_root_chat_id == previous_id)
+					recovered.branch_root_chat_id = recovered.id;
 
 				if (SaveChat(data_root, recovered))
 				{
@@ -532,8 +692,11 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
 
 		ChatSession recovered = backup_chat.chat.value();
 		const std::string recovered_id = primary_path.stem().string();
+		const std::string previous_id = recovered.id;
 		recovered.id = recovered_id;
 		recovered.native_session_id = recovered_id;
+		if (recovered.branch_root_chat_id.empty() || recovered.branch_root_chat_id == previous_id)
+			recovered.branch_root_chat_id = recovered.id;
 
 		if (migrated_chat_ids.find(recovered.id) != migrated_chat_ids.end())
 		{

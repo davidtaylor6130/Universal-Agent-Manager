@@ -1,19 +1,31 @@
 #include "cef/uam_cef_client.h"
 #include "cef/cef_push.h"
 #include "cef/state_serializer.h"
+#include "cef/uam_cef_security.h"
 
 #include "include/wrapper/cef_helpers.h"
 #include "include/wrapper/cef_message_router.h"
 #include "include/cef_parser.h"
 
-UamCefClient::UamCefClient(uam::AppState& app, BrowserReadyCallback on_ready)
+#include <utility>
+
+UamCefClient::UamCefClient(uam::AppState& app, std::string trusted_ui_index_url, BrowserReadyCallback on_ready)
 	: m_app(app)
+	, m_trustedUiIndexUrl(std::move(trusted_ui_index_url))
 	, m_onReady(std::move(on_ready))
 {
 	CefMessageRouterConfig router_config;
 	m_router        = CefMessageRouterBrowserSide::Create(router_config);
-	m_queryHandler  = std::make_unique<UamQueryHandler>(app);
+	m_queryHandler  = std::make_unique<UamQueryHandler>(app, m_trustedUiIndexUrl);
 	m_router->AddHandler(m_queryHandler.get(), true);
+}
+
+bool UamCefClient::IsTrustedMainFrame(CefRefPtr<CefFrame> frame) const
+{
+	if (frame == nullptr || !frame->IsMain())
+		return false;
+
+	return uam::cef::IsTrustedUiUrl(frame->GetURL().ToString(), m_trustedUiIndexUrl);
 }
 
 // ---------------------------------------------------------------------------
@@ -51,7 +63,9 @@ void UamCefClient::OnLoadEnd(CefRefPtr<CefBrowser> browser,
                               CefRefPtr<CefFrame>   frame,
                               int                   http_status_code)
 {
-	if (!frame->IsMain())
+	(void)http_status_code;
+
+	if (!IsTrustedMainFrame(frame))
 		return;
 
 	// Push the full serialised application state as soon as the page is ready.
@@ -139,5 +153,56 @@ bool UamCefClient::OnProcessMessageReceived(CefRefPtr<CefBrowser>        browser
                                              CefProcessId                 source_process,
                                              CefRefPtr<CefProcessMessage> message)
 {
+	if (m_router == nullptr || !IsTrustedMainFrame(frame))
+		return false;
+
 	return m_router->OnProcessMessageReceived(browser, frame, source_process, message);
+}
+
+// ---------------------------------------------------------------------------
+// CefRequestHandler
+// ---------------------------------------------------------------------------
+
+bool UamCefClient::OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
+                                   CefRefPtr<CefFrame>   frame,
+                                   CefRefPtr<CefRequest> request,
+                                   bool                  /*user_gesture*/,
+                                   bool                  /*is_redirect*/)
+{
+	CEF_REQUIRE_UI_THREAD();
+	(void)browser;
+	(void)frame;
+
+	const std::string target_url = request->GetURL();
+	if (uam::cef::IsTrustedUiUrl(target_url, m_trustedUiIndexUrl))
+		return false;
+
+	if (uam::cef::ShouldOpenExternally(target_url))
+	{
+		(void)uam::cef::OpenUrlExternally(target_url);
+	}
+
+	return true;
+}
+
+bool UamCefClient::OnOpenURLFromTab(CefRefPtr<CefBrowser> browser,
+                                     CefRefPtr<CefFrame>   frame,
+                                     const CefString&      target_url,
+                                     WindowOpenDisposition /*target_disposition*/,
+                                     bool                  /*user_gesture*/)
+{
+	CEF_REQUIRE_UI_THREAD();
+	(void)browser;
+	(void)frame;
+
+	const std::string target = target_url.ToString();
+	if (uam::cef::IsTrustedUiUrl(target, m_trustedUiIndexUrl))
+		return false;
+
+	if (uam::cef::ShouldOpenExternally(target))
+	{
+		(void)uam::cef::OpenUrlExternally(target);
+	}
+
+	return true;
 }

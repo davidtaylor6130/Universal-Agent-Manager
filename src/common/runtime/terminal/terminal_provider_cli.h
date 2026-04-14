@@ -11,6 +11,7 @@
 #include "app/provider_resolution_service.h"
 #include "app/runtime_local_service.h"
 #include "common/provider/provider_runtime.h"
+#include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/runtime/terminal/terminal_launch.h"
 #include "common/runtime/terminal/terminal_lifecycle.h"
@@ -214,11 +215,13 @@ inline bool SendPromptToCliRuntime(uam::AppState& app, ChatSession& chat, const 
 	}
 
 	uam::CliTerminalState& terminal = EnsureCliTerminalForChat(app, chat);
+	LogCliDiagnosticEvent(app, "send_prompt_to_cli_runtime", "terminal_resolved", &terminal, "prompt_bytes=" + std::to_string(prompt.size()));
 
 	if (!terminal.running)
 	{
 		if (!StartCliTerminalForChat(app, terminal, chat, 30, 120))
 		{
+			LogCliDiagnosticEvent(app, "send_prompt_to_cli_runtime", "start_failed", &terminal, terminal.last_error);
 			if (error_out != nullptr)
 			{
 				*error_out = terminal.last_error.empty() ? "Failed to start provider terminal." : terminal.last_error;
@@ -229,6 +232,7 @@ inline bool SendPromptToCliRuntime(uam::AppState& app, ChatSession& chat, const 
 	}
 
 	QueueStructuredPromptForTerminal(terminal, prompt);
+	LogCliDiagnosticEvent(app, "send_prompt_to_cli_runtime", "prompt_queued", &terminal, "", static_cast<long long>(prompt.size()));
 
 	if (!terminal.input_ready)
 	{
@@ -237,6 +241,7 @@ inline bool SendPromptToCliRuntime(uam::AppState& app, ChatSession& chat, const 
 
 	if (!FlushQueuedStructuredPromptsForTerminal(terminal, error_out))
 	{
+		LogCliDiagnosticEvent(app, "send_prompt_to_cli_runtime", "prompt_flush_failed", &terminal, (error_out != nullptr) ? *error_out : "");
 		if (error_out != nullptr && error_out->empty())
 		{
 			*error_out = "Failed to flush queued prompt(s) to provider terminal.";
@@ -244,6 +249,8 @@ inline bool SendPromptToCliRuntime(uam::AppState& app, ChatSession& chat, const 
 
 		return false;
 	}
+
+	LogCliDiagnosticEvent(app, "send_prompt_to_cli_runtime", "prompt_flushed", &terminal);
 
 	return true;
 }

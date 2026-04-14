@@ -1,4 +1,5 @@
 #include "common/chat/chat_folder_store.h"
+#include "common/config/line_value_codec.h"
 #include "common/utils/io_utils.h"
 
 #include <sstream>
@@ -83,7 +84,7 @@ std::vector<ChatFolder> ChatFolderStore::Load(const std::filesystem::path& data_
 		}
 
 		const std::string key = line.substr(0, eq);
-		const std::string value = line.substr(eq + 1);
+		const std::string value = uam::DecodeLineValue(line.substr(eq + 1));
 
 		if (key == "id")
 		{
@@ -122,9 +123,9 @@ bool ChatFolderStore::Save(const std::filesystem::path& data_root, const std::ve
 		}
 
 		out << "[folder]\n";
-		out << "id=" << folder.id << "\n";
-		out << "title=" << folder.title << "\n";
-		out << "directory=" << folder.directory << "\n";
+		out << "id=" << uam::EncodeLineValue(folder.id) << "\n";
+		out << "title=" << uam::EncodeLineValue(folder.title) << "\n";
+		out << "directory=" << uam::EncodeLineValue(folder.directory) << "\n";
 		out << "\n";
 	}
 

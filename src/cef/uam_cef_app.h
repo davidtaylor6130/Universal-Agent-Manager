@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cef/cef_includes.h"
+#include <string>
 
 /// <summary>
 /// CefApp implementation for both the browser (main) process and renderer subprocesses.
@@ -39,6 +40,7 @@ class UamCefApp : public CefApp,
 	                              CefRefPtr<CefProcessMessage> message) override;
 
   private:
+	std::string m_trustedUiIndexUrl;
 	CefRefPtr<CefMessageRouterRendererSide> m_renderer_router;
 
 	IMPLEMENT_REFCOUNTING(UamCefApp);
