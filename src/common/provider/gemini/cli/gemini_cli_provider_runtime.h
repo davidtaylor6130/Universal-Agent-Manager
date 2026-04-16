@@ -24,7 +24,6 @@ class GeminiCliProviderRuntime final : public IProviderRuntime
 	bool UsesLocalHistory(const ProviderProfile& profile) const override;
 	bool UsesInternalEngine(const ProviderProfile& profile) const override;
 	bool UsesCliOutput(const ProviderProfile& profile) const override;
-	bool UsesStructuredOutput(const ProviderProfile& profile) const override;
 	bool UsesGeminiPathBootstrap(const ProviderProfile& profile) const override;
 	ProviderDiscoveryResult DiscoverChatSources(const ProviderProfile& profile) const override;
 };

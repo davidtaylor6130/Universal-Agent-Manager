@@ -257,11 +257,9 @@ namespace provider_runtime_internal
 		const bool has_files_placeholder = (command.find("{files}") != std::string::npos);
 		const bool has_resume_placeholder = (command.find("{resume}") != std::string::npos);
 		const bool has_flags_placeholder = (command.find("{flags}") != std::string::npos);
-		const bool has_model_placeholder = (command.find("{model}") != std::string::npos);
 
 		const std::string resume_fragment = resume_session_id.empty() ? "" : ShellEscape(resume_session_id);
 		const std::string flags_fragment = BuildFlagsShell(settings);
-		const std::string model_fragment = settings.selected_model_id.empty() ? "" : ShellEscape(settings.selected_model_id);
 		const std::string files_fragment = JoinShellEscapedFiles(files);
 		const std::string prompt_fragment = ShellEscape(prompt);
 
@@ -269,7 +267,7 @@ namespace provider_runtime_internal
 		command = ReplaceAll(command, "{files}", files_fragment);
 		command = ReplaceAll(command, "{resume}", resume_fragment);
 		command = ReplaceAll(command, "{flags}", flags_fragment);
-		command = ReplaceAll(command, "{model}", model_fragment);
+		command = ReplaceAll(command, "{model}", "");
 
 		if (!has_prompt_placeholder && !prompt_fragment.empty())
 		{
@@ -293,12 +291,6 @@ namespace provider_runtime_internal
 		{
 			command += " ";
 			command += flags_fragment;
-		}
-
-		if (!has_model_placeholder && !model_fragment.empty())
-		{
-			command += " ";
-			command += model_fragment;
 		}
 
 		return command;

@@ -20,12 +20,12 @@ const char* GeminiCliProviderRuntime::RuntimeId() const
 
 bool GeminiCliProviderRuntime::IsEnabled() const
 {
-	return UAM_ENABLE_RUNTIME_GEMINI_CLI != 0;
+	return true;
 }
 
 const char* GeminiCliProviderRuntime::DisabledReason() const
 {
-	return "Runtime 'gemini-cli' is disabled in this build (UAM_ENABLE_RUNTIME_GEMINI_CLI=OFF).";
+	return "";
 }
 
 std::string GeminiCliProviderRuntime::BuildPrompt(const ProviderProfile&, const std::string& user_prompt, const std::vector<std::string>& files) const
@@ -88,11 +88,6 @@ bool GeminiCliProviderRuntime::UsesInternalEngine(const ProviderProfile&) const
 bool GeminiCliProviderRuntime::UsesCliOutput(const ProviderProfile&) const
 {
 	return true;
-}
-
-bool GeminiCliProviderRuntime::UsesStructuredOutput(const ProviderProfile&) const
-{
-	return false;
 }
 
 bool GeminiCliProviderRuntime::UsesGeminiPathBootstrap(const ProviderProfile&) const

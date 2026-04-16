@@ -129,11 +129,12 @@ inline void FinalizeChatSyncSelection(uam::AppState& app, const std::string& sel
 	}
 	else if (!app.chats.empty())
 	{
-		app.selected_chat_index = 0;
+		ChatDomainService().SelectChatById(app, app.chats.front().id);
 	}
 	else
 	{
 		app.selected_chat_index = -1;
+		ChatDomainService().RefreshRememberedSelection(app);
 	}
 
 	for (auto it = app.chats_with_unseen_updates.begin(); it != app.chats_with_unseen_updates.end();)
@@ -171,7 +172,7 @@ inline void FinalizeChatSyncSelection(uam::AppState& app, const std::string& sel
 	MarkSelectedChatSeen(app);
 }
 
-inline void SyncChatsFromLoadedNative(uam::AppState& app, std::vector<ChatSession> native_chats, const std::string& preferred_chat_id, const bool preserve_selection = false)
+inline bool SyncChatsFromLoadedNative(uam::AppState& app, std::vector<ChatSession> native_chats, const std::string& preferred_chat_id, const bool preserve_selection = false)
 {
 	const std::string selected_before = (ChatDomainService().SelectedChat(app) != nullptr) ? ChatDomainService().SelectedChat(app)->id : "";
 	ChatHistorySyncService().ApplyLocalOverrides(app, native_chats);
@@ -192,9 +193,10 @@ inline void SyncChatsFromLoadedNative(uam::AppState& app, std::vector<ChatSessio
 	ChatDomainService().NormalizeChatFolderAssignments(app);
 	ProviderProfileMigrationService().MigrateChatProviderBindingsToFixedModes(app);
 	FinalizeChatSyncSelection(app, selected_before, preferred_chat_id, preserve_selection);
+	return true;
 }
 
-inline void SyncChatsFromNative(uam::AppState& app, const std::string& preferred_chat_id, const bool preserve_selection = false)
+inline bool SyncChatsFromNative(uam::AppState& app, const std::string& preferred_chat_id, const bool preserve_selection = false)
 {
 	const std::string selected_before = (ChatDomainService().SelectedChat(app) != nullptr) ? ChatDomainService().SelectedChat(app)->id : "";
 	
@@ -205,4 +207,5 @@ inline void SyncChatsFromNative(uam::AppState& app, const std::string& preferred
 	ChatHistorySyncService().LoadSidebarChats(app);
 	ProviderProfileMigrationService().MigrateChatProviderBindingsToFixedModes(app);
 	FinalizeChatSyncSelection(app, selected_before, preferred_chat_id, preserve_selection);
+	return true;
 }

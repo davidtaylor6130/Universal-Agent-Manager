@@ -68,31 +68,11 @@ endif()
 
 option(UAM_BUILD_TESTS "Build UAM core tests executable." OFF)
 option(UAM_BUILD_UI_V2 "Build UI-V2 (React) before packaging/copying dist assets." ON)
-set(UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED OFF)
-set(UAM_ENABLE_RUNTIME_GEMINI_CLI ON)
-set(UAM_ENABLE_RUNTIME_CODEX_CLI OFF)
-set(UAM_ENABLE_RUNTIME_CLAUDE_CLI OFF)
-set(UAM_ENABLE_RUNTIME_OPENCODE_CLI OFF)
-set(UAM_ENABLE_RUNTIME_OPENCODE_LOCAL OFF)
-set(UAM_ENABLE_RUNTIME_OLLAMA_ENGINE OFF)
-
-set(UAM_ENABLE_ENGINE_RAG OFF)
-set(UAM_ENABLE_ANY_GEMINI_PROVIDER ON)
-
-set(UAM_OLLAMA_ENGINE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/subprojects/ollama_engine" CACHE PATH
-  "Path to the ollama_engine source repository.")
-set(UAM_THIRD_PARTY_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party" CACHE PATH
-  "Directory that stores local third-party source checkouts.")
 set(UAM_FETCHCONTENT_BASE_DIR "${CMAKE_BINARY_DIR}/_deps" CACHE PATH
   "Directory used for FetchContent source checkouts.")
-set(UAM_LLAMA_CPP_SOURCE_DIR "${UAM_THIRD_PARTY_SOURCE_DIR}/llama.cpp-uam" CACHE PATH
-  "Path to a local llama.cpp fork source tree.")
 if(APPLE)
   option(UAM_MACOS_BUNDLE "Build as a macOS .app bundle (no Terminal window needed)." ON)
 endif()
-
-set(UAM_LLAMA_CPP_GIT_TAG "990e4d96980d0b016a2b07049cc9031642fb9903" CACHE STRING
-  "Pinned git commit for llama.cpp fork.")
 
 file(MAKE_DIRECTORY "${UAM_FETCHCONTENT_BASE_DIR}")
 set(FETCHCONTENT_BASE_DIR "${UAM_FETCHCONTENT_BASE_DIR}")
@@ -103,70 +83,7 @@ function(uam_set_target_folder target_name folder_name)
   endif()
 endfunction()
 
-# ---------------------------------------------------------------------------
-# llama.cpp (disabled for the Gemini CLI-only slice)
-# ---------------------------------------------------------------------------
-
-option(UAM_FETCH_LLAMA_CPP "Fetch pinned llama.cpp fork during configure." ON)
-
-if(UAM_ENABLE_RUNTIME_OLLAMA_ENGINE AND UAM_FETCH_LLAMA_CPP)
-  set(GGML_CCACHE OFF CACHE BOOL "" FORCE)
-  set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
-  set(LLAMA_BUILD_COMMON OFF CACHE BOOL "" FORCE)
-  set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-  set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
-  set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-  set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
-  set(LLAMA_TOOLS_INSTALL OFF CACHE BOOL "" FORCE)
-  set(LLAMA_TESTS_INSTALL OFF CACHE BOOL "" FORCE)
-  set(LLAMA_OPENSSL OFF CACHE BOOL "" FORCE)
-
-  set(CMAKE_FOLDER "ThirdParty/llama.cpp")
-  if(EXISTS "${UAM_LLAMA_CPP_SOURCE_DIR}/CMakeLists.txt")
-    add_subdirectory("${UAM_LLAMA_CPP_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/llama_cpp_uam")
-  else()
-    include(FetchContent)
-    FetchContent_Declare(
-      llama_cpp_uam
-      URL "https://github.com/davidtaylor6130/llama.cpp-UAM-Fork/archive/${UAM_LLAMA_CPP_GIT_TAG}.tar.gz"
-    )
-    FetchContent_MakeAvailable(llama_cpp_uam)
-    set(UAM_LLAMA_CPP_SOURCE_DIR "${llama_cpp_uam_SOURCE_DIR}" CACHE PATH
-      "Path to a local llama.cpp fork source tree." FORCE)
-  endif()
-  set(CMAKE_FOLDER "")
-endif()
-
-# ---------------------------------------------------------------------------
-# libcurl
-# ---------------------------------------------------------------------------
-
 include(FetchContent)
-set(CMAKE_FOLDER "ThirdParty/curl")
-set(BUILD_CURL_EXE OFF CACHE BOOL "" FORCE)
-set(BUILD_LIBCURL_DOCS OFF CACHE BOOL "" FORCE)
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-set(BUILD_STATIC_LIBS ON CACHE BOOL "" FORCE)
-set(BUILD_STATIC_CURL OFF CACHE BOOL "" FORCE)
-if(APPLE)
-  set(CURL_USE_PKGCONFIG OFF CACHE BOOL "" FORCE)
-  set(CURL_USE_OPENSSL OFF CACHE BOOL "" FORCE)
-  set(CURL_USE_SECTRANSP ON CACHE BOOL "" FORCE)
-  set(CURL_USE_LIBSSH2 OFF CACHE BOOL "" FORCE)
-  set(CURL_USE_LIBPSL OFF CACHE BOOL "" FORCE)
-  set(USE_NGHTTP2 OFF CACHE BOOL "" FORCE)
-  set(USE_LIBIDN2 OFF CACHE BOOL "" FORCE)
-  set(CURL_DISABLE_LDAP ON CACHE BOOL "" FORCE)
-  set(CURL_DISABLE_LDAPS ON CACHE BOOL "" FORCE)
-endif()
-FetchContent_Declare(
-  curl
-  URL https://github.com/curl/curl/archive/refs/tags/curl-8_11_1.tar.gz
-)
-FetchContent_MakeAvailable(curl)
-set(UAM_CURL_SOURCE_DIR "${curl_SOURCE_DIR}" CACHE PATH
-  "Path to a local curl source tree." FORCE)
-set(CMAKE_FOLDER "")
 
 # ---------------------------------------------------------------------------
 # nlohmann/json (header-only)
@@ -212,8 +129,8 @@ FetchContent_Declare(
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 # Force libcef_dll_wrapper to be a STATIC library regardless of BUILD_SHARED_LIBS.
-# If built as a shared lib (llama.cpp sets BUILD_SHARED_LIBS=ON) the C++ wrapper
-# symbols are hidden by -fvisibility=hidden and the linker cannot resolve them.
+# Shared wrapper builds can hide symbols and leave the app with unresolved CEF
+# references at link time.
 set(_saved_bsl ${BUILD_SHARED_LIBS})
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(cef_binary)
@@ -225,45 +142,12 @@ set(CMAKE_FOLDER "")
 # No explicit add_subdirectory needed.
 
 # ---------------------------------------------------------------------------
-# ollama engine (optional)
-# ---------------------------------------------------------------------------
-
-set(UAM_ENGINE_LINK_TARGET "")
-if(UAM_ENABLE_RUNTIME_OLLAMA_ENGINE)
-  if(EXISTS "${UAM_OLLAMA_ENGINE_SOURCE_DIR}/CMakeLists.txt")
-    add_subdirectory("${UAM_OLLAMA_ENGINE_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/ollama_engine")
-    set(UAM_ENGINE_LINK_TARGET uam_ollama_engine)
-  else()
-    message(FATAL_ERROR "ollama_engine source not found at ${UAM_OLLAMA_ENGINE_SOURCE_DIR}.")
-  endif()
-else()
-  message(STATUS "UAM_ENABLE_RUNTIME_OLLAMA_ENGINE=OFF: skipping ollama_engine subproject/link targets.")
-endif()
-
-# ---------------------------------------------------------------------------
 # Provider sources
 # ---------------------------------------------------------------------------
 
-set(UAM_PROVIDER_SOURCES)
-
-list(APPEND UAM_PROVIDER_SOURCES
+set(UAM_PROVIDER_SOURCES
   src/common/provider/gemini/cli/gemini_cli_provider_runtime.cpp
-)
-
-if(UAM_ENABLE_ANY_GEMINI_PROVIDER)
-  list(APPEND UAM_PROVIDER_SOURCES
-    src/common/provider/gemini/base/gemini_history_loader.cpp
-  )
-endif()
-
-list(APPEND UAM_PROVIDER_SOURCES
-  src/common/provider/custom/unknown_provider_runtime.cpp
-)
-
-set(UAM_RAG_SOURCES
-  src/common/rag/rag_index_service.cpp
-  src/common/rag/ollama_engine_client.cpp
-  src/common/rag/ollama_engine_service.cpp
+  src/common/provider/gemini/base/gemini_history_loader.cpp
 )
 
 # ---------------------------------------------------------------------------
@@ -301,13 +185,12 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/application.cpp
   src/app/application_core_helpers.cpp
   src/app/chat_domain_service.cpp
+  src/app/chat_lifecycle_service.cpp
   src/app/native_session_link_service.cpp
   src/app/persistence_coordinator.cpp
   src/app/provider_resolution_service.cpp
   src/app/provider_profile_migration_service.cpp
-  src/app/runtime_local_service.cpp
   src/app/runtime_orchestration_services.cpp
-  src/app/template_runtime_service.cpp
   src/cef/uam_cef_app.cpp
   src/cef/uam_cef_client.cpp
   src/cef/uam_query_handler.cpp
@@ -320,17 +203,13 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/chat/chat_branching.cpp
   src/common/config/settings_store.cpp
   src/common/utils/command_line_words.cpp
-  src/common/provider/markdown_template_catalog.cpp
   src/common/config/frontend_actions.cpp
   src/common/provider/provider_profile.cpp
   src/common/provider/runtime/provider_runtime_facade.cpp
   src/common/provider/runtime/provider_runtime_registry.cpp
   ${UAM_PROVIDER_SOURCES}
-  src/common/runtime/local_engine_runtime_service.cpp
   src/common/runtime/provider_cli_compatibility_service.cpp
   src/common/platform/platform_services.cpp
-  src/common/vcs/vcs_workspace_service.cpp
-  ${UAM_RAG_SOURCES}
 )
 
 target_include_directories(universal_agent_manager
@@ -353,8 +232,6 @@ if(APPLE)
   )
   target_link_libraries(universal_agent_manager PRIVATE
     libcef_dll_wrapper
-    CURL::libcurl
-    ${UAM_ENGINE_LINK_TARGET}
     "-Wl,-framework,Security"
     "-Wl,-framework,WebKit"
   )
@@ -362,22 +239,11 @@ elseif(WIN32)
   target_link_libraries(universal_agent_manager PRIVATE
     libcef_dll_wrapper
     "${cef_binary_SOURCE_DIR}/Release/libcef.lib"
-    CURL::libcurl
-    ${UAM_ENGINE_LINK_TARGET}
   )
 endif()
 
 target_compile_definitions(universal_agent_manager PRIVATE
   NOMINMAX
-  UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED}>
-  UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
-  UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>
-  UAM_ENABLE_RUNTIME_CLAUDE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CLAUDE_CLI}>
-  UAM_ENABLE_RUNTIME_OPENCODE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_OPENCODE_CLI}>
-  UAM_ENABLE_RUNTIME_OPENCODE_LOCAL=$<BOOL:${UAM_ENABLE_RUNTIME_OPENCODE_LOCAL}>
-  UAM_ENABLE_RUNTIME_OLLAMA_ENGINE=$<BOOL:${UAM_ENABLE_RUNTIME_OLLAMA_ENGINE}>
-  UAM_ENABLE_ENGINE_RAG=$<BOOL:${UAM_ENABLE_ENGINE_RAG}>
-  UAM_ENABLE_ANY_GEMINI_PROVIDER=$<BOOL:${UAM_ENABLE_ANY_GEMINI_PROVIDER}>
 )
 
 set_target_properties(universal_agent_manager PROPERTIES FOLDER "App")
@@ -626,20 +492,6 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
-# ollama bridge helper copy
-# ---------------------------------------------------------------------------
-
-if(TARGET uam_ollama_engine_bridge)
-  add_dependencies(universal_agent_manager uam_ollama_engine_bridge)
-  add_custom_command(TARGET universal_agent_manager POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      "$<TARGET_FILE:uam_ollama_engine_bridge>"
-      "$<TARGET_FILE_DIR:universal_agent_manager>/"
-    COMMENT "Copying OpenCode local bridge next to universal_agent_manager"
-  )
-endif()
-
-# ---------------------------------------------------------------------------
 # Window icon
 # ---------------------------------------------------------------------------
 
@@ -685,13 +537,12 @@ if(UAM_BUILD_TESTS)
     ${UAM_PLATFORM_IMPL_SOURCES}
     src/app/application_core_helpers.cpp
     src/app/chat_domain_service.cpp
+    src/app/chat_lifecycle_service.cpp
     src/app/native_session_link_service.cpp
     src/app/persistence_coordinator.cpp
     src/app/provider_resolution_service.cpp
     src/app/provider_profile_migration_service.cpp
-    src/app/runtime_local_service.cpp
     src/app/runtime_orchestration_services.cpp
-    src/app/template_runtime_service.cpp
     src/cef/state_serializer.cpp
     src/common/models/app_models.cpp
     src/common/paths/app_paths.cpp
@@ -700,16 +551,12 @@ if(UAM_BUILD_TESTS)
     src/common/utils/command_line_words.cpp
     src/common/chat/chat_repository.cpp
     src/common/chat/chat_branching.cpp
-    src/common/provider/markdown_template_catalog.cpp
     src/common/provider/provider_profile.cpp
     src/common/provider/runtime/provider_runtime_facade.cpp
     src/common/provider/runtime/provider_runtime_registry.cpp
     ${UAM_PROVIDER_SOURCES}
     src/common/config/settings_store.cpp
-    src/common/runtime/local_engine_runtime_service.cpp
     src/common/platform/platform_services.cpp
-    src/common/vcs/vcs_workspace_service.cpp
-    ${UAM_RAG_SOURCES}
   )
   target_include_directories(uam_core_tests
     PRIVATE
@@ -721,29 +568,16 @@ if(UAM_BUILD_TESTS)
   if(APPLE)
     target_link_libraries(uam_core_tests PRIVATE
       libcef_dll_wrapper
-      CURL::libcurl
-      ${UAM_ENGINE_LINK_TARGET}
       "-Wl,-framework,Security"
     )
   elseif(WIN32)
     target_link_libraries(uam_core_tests PRIVATE
       libcef_dll_wrapper
       "${cef_binary_SOURCE_DIR}/Release/libcef.lib"
-      CURL::libcurl
-      ${UAM_ENGINE_LINK_TARGET}
     )
   endif()
   target_compile_definitions(uam_core_tests PRIVATE
     NOMINMAX
-    UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED}>
-    UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
-    UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>
-    UAM_ENABLE_RUNTIME_CLAUDE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CLAUDE_CLI}>
-    UAM_ENABLE_RUNTIME_OPENCODE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_OPENCODE_CLI}>
-    UAM_ENABLE_RUNTIME_OPENCODE_LOCAL=$<BOOL:${UAM_ENABLE_RUNTIME_OPENCODE_LOCAL}>
-    UAM_ENABLE_RUNTIME_OLLAMA_ENGINE=$<BOOL:${UAM_ENABLE_RUNTIME_OLLAMA_ENGINE}>
-    UAM_ENABLE_ENGINE_RAG=$<BOOL:${UAM_ENABLE_ENGINE_RAG}>
-    UAM_ENABLE_ANY_GEMINI_PROVIDER=$<BOOL:${UAM_ENABLE_ANY_GEMINI_PROVIDER}>
   )
   set_target_properties(uam_core_tests PROPERTIES FOLDER "Tests")
   add_test(NAME uam_core_tests COMMAND uam_core_tests)

@@ -9,8 +9,7 @@
 
 /// <summary>
 /// Top-level application lifetime manager for the CEF build.
-/// Owns AppState and all service orchestration.  The SDL + Dear ImGui +
-/// libvterm pipeline has been replaced by CEF / xterm.js.
+/// Owns AppState and all service orchestration for React/CEF and xterm.js.
 /// </summary>
 class Application
 {
@@ -38,7 +37,6 @@ class Application
 	uam::AppState        m_app;
 	PlatformServices*    m_platformServices  = nullptr;
 	CefRefPtr<CefBrowser> m_browser;
-	bool                 m_curlInitialized   = false;
 	bool                 m_done              = false;
 	int                  m_exitCode          = 0;
 

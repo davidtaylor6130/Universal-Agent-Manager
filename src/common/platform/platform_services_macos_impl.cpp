@@ -29,19 +29,6 @@
 namespace
 {
 
-	std::string ToLowerCopy(std::string value)
-	{
-		std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-		return value;
-	}
-
-	bool ContainsInsensitive(const std::string& haystack, const std::string& needle)
-	{
-		const std::string lowered_haystack = ToLowerCopy(haystack);
-		const std::string lowered_needle = ToLowerCopy(needle);
-		return lowered_haystack.find(lowered_needle) != std::string::npos;
-	}
-
 	std::string TrimAsciiWhitespace(const std::string& value)
 	{
 		const std::size_t start = value.find_first_not_of(" \t\r\n");
@@ -936,112 +923,6 @@ namespace
 			return std::filesystem::path(buffer.c_str());
 		}
 
-		std::string OpenCodeBridgeBinaryName() const override
-		{
-			return "uam_ollama_engine_bridge";
-		}
-
-		bool StartOpenCodeBridgeProcess(const std::vector<std::string>& argv, uam::OpenCodeBridgeState& state, std::string* error_out = nullptr) const override
-		{
-			if (argv.empty() || TrimAsciiWhitespace(argv.front()).empty())
-			{
-				if (error_out != nullptr)
-				{
-					*error_out = "OpenCode bridge command is empty.";
-				}
-
-				return false;
-			}
-
-			const pid_t child_pid = fork();
-
-			if (child_pid < 0)
-			{
-				if (error_out != nullptr)
-				{
-					*error_out = "fork failed while starting OpenCode bridge.";
-				}
-
-				return false;
-			}
-
-			if (child_pid == 0)
-			{
-				setsid();
-				const int null_fd = open("/dev/null", O_RDWR);
-
-				if (null_fd >= 0)
-				{
-					dup2(null_fd, STDIN_FILENO);
-					dup2(null_fd, STDOUT_FILENO);
-					dup2(null_fd, STDERR_FILENO);
-
-					if (null_fd > STDERR_FILENO)
-					{
-						close(null_fd);
-					}
-				}
-
-				std::vector<char*> argv_ptrs;
-				argv_ptrs.reserve(argv.size() + 1);
-
-				for (const std::string& arg : argv)
-				{
-					argv_ptrs.push_back(const_cast<char*>(arg.c_str()));
-				}
-
-				argv_ptrs.push_back(nullptr);
-
-				if (argv.front().find('/') != std::string::npos)
-				{
-					execv(argv_ptrs.front(), argv_ptrs.data());
-				}
-				else
-				{
-					execvp(argv_ptrs.front(), argv_ptrs.data());
-				}
-
-				_exit(127);
-			}
-
-			state.process_id = child_pid;
-			return true;
-		}
-
-		bool IsOpenCodeBridgeProcessRunning(uam::OpenCodeBridgeState& state) const override
-		{
-			if (state.process_id <= 0)
-			{
-				return false;
-			}
-
-			int status = 0;
-			const pid_t wait_result = waitpid(state.process_id, &status, WNOHANG);
-
-			if (wait_result == 0)
-			{
-				return true;
-			}
-
-			if (wait_result == state.process_id || (wait_result < 0 && errno == ECHILD))
-			{
-				state.process_id = -1;
-				return false;
-			}
-
-			return true;
-		}
-
-			void StopLocalBridgeProcess(uam::OpenCodeBridgeState& state) const override
-			{
-				if (state.process_id > 0)
-				{
-					TerminateChildProcess(state.process_id);
-				}
-
-			state.process_id = -1;
-		}
-
 		uintmax_t NativeGeminiSessionMaxFileBytes() const override
 		{
 			return 0;
@@ -1248,98 +1129,6 @@ namespace
 
 			return std::filesystem::path(trimmed);
 		}
-
-		std::filesystem::path ResolveOpenCodeConfigPath() const override
-		{
-			if (const std::optional<std::filesystem::path> home = ResolveUserHomePath(); home.has_value())
-			{
-				return home.value() / ".config" / "opencode" / "opencode.json";
-			}
-
-			std::error_code cwd_ec;
-			const std::filesystem::path cwd = std::filesystem::current_path(cwd_ec);
-			return cwd_ec ? std::filesystem::path("opencode.json") : (cwd / ".config" / "opencode" / "opencode.json");
-		}
-	};
-
-	class MacUiTraits final : public IPlatformUiTraits
-	{
-	  public:
-		void ApplyProcessDpiAwareness() const override
-		{
-		}
-
-		void ConfigureOpenGlAttributes() const override
-		{
-			// No-op — OpenGL replaced by CEF/Chromium rendering.
-		}
-
-		const char* OpenGlGlslVersion() const override
-		{
-			return "";
-		}
-
-		float AdjustSidebarWidth(const float layout_width, const float current_sidebar_width, const float effective_ui_scale) const override
-		{
-			const float min_w = 220.0f;
-			const float max_sidebar_from_main_floor = std::max(min_w, layout_width - 400.0f);
-			
-			float sidebar_width = current_sidebar_width;
-			if (sidebar_width <= 0.0f)
-			{
-				sidebar_width = 280.0f;
-			}
-
-			return std::clamp(sidebar_width, min_w, max_sidebar_from_main_floor);
-		}
-
-		bool UseWindowsLayoutAdjustments() const override
-		{
-			return false;
-		}
-
-		bool UsesLogicalPointsForUiScale() const override
-		{
-			return true;
-		}
-
-		float PlatformUiSpacingScale() const override
-		{
-			return 1.0f;
-		}
-
-		std::optional<bool> DetectSystemPrefersLightTheme() const override
-		{
-			if (const char* env_style = std::getenv("AppleInterfaceStyle"))
-			{
-				return ContainsInsensitive(env_style, "dark") ? std::optional<bool>(false) : std::optional<bool>(true);
-			}
-
-			FILE* pipe = popen("defaults read -g AppleInterfaceStyle 2>/dev/null", "r");
-
-			if (pipe == nullptr)
-			{
-				return std::nullopt;
-			}
-
-			std::array<char, 128> buffer{};
-			std::string output;
-
-			while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr)
-			{
-				output += buffer.data();
-			}
-
-			pclose(pipe);
-			const std::string trimmed = TrimAsciiWhitespace(output);
-
-			if (trimmed.empty())
-			{
-				return std::nullopt;
-			}
-
-			return ContainsInsensitive(trimmed, "dark") ? std::optional<bool>(false) : std::optional<bool>(true);
-		}
 	};
 
 } // namespace
@@ -1350,13 +1139,11 @@ PlatformServices& CreatePlatformServices()
 	static MacProcessService process_service;
 	static MacFileDialogService file_dialog_service;
 	static MacPathService path_service;
-	static MacUiTraits ui_traits;
 	static PlatformServices services{
 	    terminal_runtime,
 	    process_service,
 	    file_dialog_service,
 	    path_service,
-	    ui_traits,
 	};
 	return services;
 }

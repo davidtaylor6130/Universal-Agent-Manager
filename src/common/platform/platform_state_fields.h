@@ -48,32 +48,20 @@ namespace uam::platform
 #endif
 	}
 
-	struct OpenCodeBridgePlatformFields
-	{
-#if defined(_WIN32)
-		HANDLE process_handle = INVALID_HANDLE_VALUE;
-		HANDLE process_thread = INVALID_HANDLE_VALUE;
-		DWORD process_id = 0;
-#elif defined(__APPLE__)
-		pid_t process_id = -1;
-#else
-#error "OpenCodeBridgePlatformFields is only supported on Windows and macOS."
-#endif
-	};
-
-	struct AsyncNativeChatLoadTask
-	{
-		bool running = false;
-		std::string provider_id_snapshot;
-		std::string chats_dir_snapshot;
-		struct State
+		struct AsyncNativeChatLoadTask
 		{
-			std::atomic<bool> completed{false};
-			std::vector<ChatSession> chats;
-			std::string error;
+			bool running = false;
+			std::string provider_id_snapshot;
+			std::string chats_dir_snapshot;
+			struct State
+			{
+				std::atomic<bool> completed{false};
+				std::vector<ChatSession> chats;
+				std::string snapshot_digest;
+				std::string error;
+			};
+			std::shared_ptr<State> state;
+			std::unique_ptr<std::jthread> worker;
 		};
-		std::shared_ptr<State> state;
-		std::unique_ptr<std::jthread> worker;
-	};
 
 } // namespace uam::platform

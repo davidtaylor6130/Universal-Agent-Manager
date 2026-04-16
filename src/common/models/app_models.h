@@ -1,7 +1,5 @@
 #pragma once
 
-#include "common/provider/runtime/provider_build_config.h"
-
 #include <atomic>
 #include <memory>
 #include <string>
@@ -61,10 +59,6 @@ struct ChatSession
 	std::string branch_root_chat_id;
 	int branch_from_message_index = -1;
 	std::string folder_id;
-	std::string template_override_id;
-	bool prompt_profile_bootstrapped = false;
-	bool rag_enabled = true;
-	std::vector<std::string> rag_source_directories;
 	std::string title;
 	std::string created_at;
 	std::string updated_at;
@@ -92,31 +86,16 @@ struct ChatFolder
 /// </summary>
 struct AppSettings
 {
-	std::string active_provider_id = provider_build_config::FirstEnabledProviderId();
+	std::string active_provider_id = "gemini-cli";
 	std::string provider_command_template = "gemini {resume} {flags} {prompt}";
 	bool provider_yolo_mode = false;
 	std::string provider_extra_flags;
 	std::string runtime_backend = "provider-cli";
-	std::string selected_model_id;
-	std::string models_folder_directory;
-	std::string vector_db_backend = provider_build_config::DefaultVectorDbBackend();
-	std::string selected_vector_model_id;
-	std::string vector_database_name_override;
 	int cli_idle_timeout_seconds = 600;
-	std::string prompt_profile_root_path;
-	std::string default_prompt_profile_id;
 	// Legacy keys retained for backward-compatible load paths.
 	std::string gemini_command_template = "gemini {resume} {flags} {prompt}";
 	bool gemini_yolo_mode = false;
 	std::string gemini_extra_flags;
-	std::string gemini_global_root_path;
-	std::string default_gemini_template_id;
-	bool rag_enabled = true;
-	int rag_top_k = 6;
-	int rag_max_snippet_chars = 600;
-	int rag_max_file_bytes = 1024 * 1024;
-	int rag_scan_max_tokens = 0;
-	std::string rag_project_source_directory;
 	std::string ui_theme = "dark";
 	bool confirm_delete_chat = true;
 	bool confirm_delete_folder = true;
@@ -134,7 +113,6 @@ struct AppSettings
 /// </summary>
 enum class CenterViewMode
 {
-	Structured,
 	CliConsole
 };
 
@@ -170,17 +148,6 @@ struct PendingRuntimeCall
 	std::string command_preview;
 	std::shared_ptr<AsyncProcessTaskState> state;
 	std::unique_ptr<std::jthread> worker;
-};
-
-/// <summary>
-/// One template entry discovered in the Markdown template catalog.
-/// </summary>
-struct TemplateCatalogEntry
-{
-	std::string id;
-	std::string display_name;
-	std::string absolute_path;
-	std::string updated_at;
 };
 
 /// <summary>

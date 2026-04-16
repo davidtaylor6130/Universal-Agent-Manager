@@ -2,27 +2,45 @@
 
 #include "app/application_core_helpers.h"
 #include "app/chat_domain_service.h"
-#include "app/provider_resolution_service.h"
-#include "app/runtime_local_service.h"
 
 #include "common/paths/app_paths.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/config/frontend_actions.h"
-#include "common/chat/chat_repository.h"
-#include "common/rag/rag_app_helpers.h"
-#include "common/platform/platform_services.h"
-#include "common/provider/provider_profile.h"
 #include "common/config/settings_store.h"
-#include "common/ui/modals/modal_window_state.h"
-#include "common/ui/theme/theme_choice.h"
+#include "common/platform/platform_services.h"
 
+#include <algorithm>
 #include <cerrno>
-#include <cstdio>
 #include <cstring>
 #include <sstream>
 
 namespace fs = std::filesystem;
 using uam::AppState;
+
+namespace
+{
+	std::string NormalizeThemeChoice(std::string value)
+	{
+		value = ToLowerAscii(Trim(value));
+		if (value == "light")
+		{
+			return "light";
+		}
+		if (value == "system")
+		{
+			return "system";
+		}
+		return "dark";
+	}
+
+	void ClampWindowSettings(AppSettings& settings)
+	{
+		settings.ui_scale_multiplier = std::clamp(settings.ui_scale_multiplier, 0.85f, 1.75f);
+		settings.sidebar_width = std::clamp(settings.sidebar_width, 220.0f, 600.0f);
+		settings.window_width = std::clamp(settings.window_width, 960, 8192);
+		settings.window_height = std::clamp(settings.window_height, 620, 8192);
+	}
+}
 
 std::string PersistenceCoordinator::ExecuteCommandCaptureOutput(const std::string& command) const
 {
@@ -102,89 +120,55 @@ bool PersistenceCoordinator::EnsureDataRootLayout(const fs::path& data_root, std
 	return true;
 }
 
-void PersistenceCoordinator::SaveSettings(AppState& app) const
+bool PersistenceCoordinator::SaveSettings(AppState& app) const
 {
+	app.settings.active_provider_id = "gemini-cli";
+	app.settings.runtime_backend = "provider-cli";
+	app.settings.provider_command_template = app.settings.provider_command_template.empty()
+		? "gemini {resume} {flags} {prompt}"
+		: app.settings.provider_command_template;
+	app.settings.gemini_command_template = app.settings.provider_command_template;
+	app.settings.gemini_yolo_mode = app.settings.provider_yolo_mode;
+	app.settings.gemini_extra_flags = Trim(app.settings.provider_extra_flags);
+	app.settings.provider_extra_flags = app.settings.gemini_extra_flags;
 	app.settings.ui_theme = NormalizeThemeChoice(app.settings.ui_theme);
-	app.settings.runtime_backend = ProviderResolutionService().ActiveProviderUsesInternalEngine(app) ? "ollama-engine" : "provider-cli";
-#if UAM_ENABLE_ENGINE_RAG
-	app.settings.vector_db_backend = (app.settings.vector_db_backend == "none") ? "none" : "ollama-engine";
-#else
-	app.settings.vector_db_backend = "none";
-	app.settings.selected_vector_model_id.clear();
-#endif
-	app.settings.selected_model_id = Trim(app.settings.selected_model_id);
-	app.settings.models_folder_directory = Trim(app.settings.models_folder_directory);
-	app.settings.selected_vector_model_id = Trim(app.settings.selected_vector_model_id);
-	app.settings.vector_database_name_override = NormalizeVectorDatabaseName(app.settings.vector_database_name_override);
 	app.settings.cli_idle_timeout_seconds = std::clamp(app.settings.cli_idle_timeout_seconds, 30, 3600);
-	app.settings.rag_top_k = std::clamp(app.settings.rag_top_k, 1, 20);
-	app.settings.rag_max_snippet_chars = std::clamp(app.settings.rag_max_snippet_chars, 120, 4000);
-	app.settings.rag_max_file_bytes = std::clamp(app.settings.rag_max_file_bytes, 16 * 1024, 20 * 1024 * 1024);
-	app.settings.rag_scan_max_tokens = std::clamp(app.settings.rag_scan_max_tokens, 0, 32768);
 	ClampWindowSettings(app.settings);
-	SyncRagServiceConfig(app);
-
-	if (app.opencode_bridge.running)
-	{
-		fs::path desired_model_folder = NormalizeAbsolutePath(ResolveRagModelFolder(app));
-
-		if (desired_model_folder.empty())
-		{
-			desired_model_folder = ResolveRagModelFolder(app);
-		}
-
-		const std::string desired_model = Trim(app.settings.selected_model_id);
-
-		if (app.opencode_bridge.model_folder != desired_model_folder.string() || app.opencode_bridge.requested_model != desired_model)
-		{
-			std::string bridge_error;
-
-			if (!RuntimeLocalService().RestartLocalBridgeIfModelChanged(app, &bridge_error) && !bridge_error.empty())
-			{
-				app.status_line = bridge_error;
-			}
-		}
-	}
 
 	ChatDomainService().RefreshRememberedSelection(app);
-	SettingsStore::Save(AppPaths::SettingsFilePath(app.data_root), app.settings, app.center_view_mode);
+	if (!SettingsStore::Save(AppPaths::SettingsFilePath(app.data_root), app.settings, app.center_view_mode))
+	{
+		app.status_line = "Failed to persist settings.";
+		return false;
+	}
+
+	return true;
 }
 
 void PersistenceCoordinator::LoadSettings(AppState& app) const
 {
 	SettingsStore::Load(AppPaths::SettingsFilePath(app.data_root), app.settings, app.center_view_mode);
-#if UAM_ENABLE_ENGINE_RAG
-	app.settings.vector_db_backend = (app.settings.vector_db_backend == "none") ? "none" : "ollama-engine";
-#else
-	app.settings.vector_db_backend = "none";
-	app.settings.selected_vector_model_id.clear();
-#endif
-	app.settings.selected_model_id = Trim(app.settings.selected_model_id);
-	app.settings.models_folder_directory = Trim(app.settings.models_folder_directory);
-	app.settings.selected_vector_model_id = Trim(app.settings.selected_vector_model_id);
-	app.settings.vector_database_name_override = NormalizeVectorDatabaseName(app.settings.vector_database_name_override);
+	app.settings.active_provider_id = "gemini-cli";
+	app.settings.runtime_backend = "provider-cli";
+	app.settings.provider_extra_flags = Trim(app.settings.provider_extra_flags);
+	app.settings.gemini_command_template = app.settings.provider_command_template;
+	app.settings.gemini_yolo_mode = app.settings.provider_yolo_mode;
+	app.settings.gemini_extra_flags = app.settings.provider_extra_flags;
+	app.settings.ui_theme = NormalizeThemeChoice(app.settings.ui_theme);
 	app.settings.cli_idle_timeout_seconds = std::clamp(app.settings.cli_idle_timeout_seconds, 30, 3600);
-
-	if (Trim(app.settings.prompt_profile_root_path).empty())
-	{
-		app.settings.prompt_profile_root_path = AppPaths::DefaultGeminiUniversalRootPath().string();
-	}
-
-	SyncRagServiceConfig(app);
-	app.rag_manual_query_max = std::clamp(app.settings.rag_top_k, 1, 20);
-	app.rag_manual_query_min = 1;
+	ClampWindowSettings(app.settings);
 }
 
 void PersistenceCoordinator::LoadFrontendActions(AppState& app) const
 {
 	std::string error;
-	const fs::path l_actionMapPath = app.data_root / "frontend_actions.txt";
+	const fs::path action_map_path = app.data_root / "frontend_actions.txt";
 
-	if (!uam::LoadFrontendActionMap(l_actionMapPath, app.frontend_actions, &error))
+	if (!uam::LoadFrontendActionMap(action_map_path, app.frontend_actions, &error))
 	{
 		app.frontend_actions = uam::DefaultFrontendActionMap();
 
-		if (!uam::SaveFrontendActionMap(l_actionMapPath, app.frontend_actions, &error) && !error.empty())
+		if (!uam::SaveFrontendActionMap(action_map_path, app.frontend_actions, &error) && !error.empty())
 		{
 			app.status_line = "Frontend action map reset, but saving failed: " + error;
 		}

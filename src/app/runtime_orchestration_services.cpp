@@ -6,19 +6,14 @@
 #include "app/persistence_coordinator.h"
 #include "app/provider_profile_migration_service.h"
 #include "app/provider_resolution_service.h"
-#include "app/runtime_local_service.h"
-#include "app/template_runtime_service.h"
 
 #include "common/paths/app_paths.h"
 #include "common/chat/chat_branching.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
 #include "common/platform/platform_services.h"
-#if UAM_ENABLE_ANY_GEMINI_PROVIDER
 #include "common/provider/gemini/base/gemini_history_loader.h"
-#endif
 #include "common/provider/runtime/provider_build_config.h"
-#include "common/rag/rag_app_helpers.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/json_runtime.h"
 #include "common/runtime/terminal_common.h"
@@ -26,6 +21,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <filesystem>
 #include <iterator>
@@ -40,8 +36,55 @@ using uam::AppState;
 
 namespace
 {
-	constexpr const char* kPromptBootstrapPath = "@.gemini/gemini.md";
 	constexpr const char* kDefaultNativeHistoryProviderId = provider_build_config::DefaultNativeHistoryProviderId();
+
+	std::string NormalizeNativeIdentityWorkspace(const std::string& workspace_directory)
+	{
+		const std::string trimmed = Trim(workspace_directory);
+
+		if (trimmed.empty())
+		{
+			return "";
+		}
+
+		std::error_code ec;
+		const fs::path canonical = fs::weakly_canonical(fs::path(trimmed), ec);
+		return (ec ? fs::path(trimmed).lexically_normal() : canonical).generic_string();
+	}
+
+	std::string NativeIdentityKey(const ChatSession& chat)
+	{
+		return Trim(chat.provider_id) + "|" + NormalizeNativeIdentityWorkspace(chat.workspace_directory) + "|" + Trim(chat.native_session_id);
+	}
+
+	std::string HashNativeIdentityKey(const std::string& key)
+	{
+		std::uint64_t hash = 1469598103934665603ull;
+
+		for (const unsigned char ch : key)
+		{
+			hash ^= ch;
+			hash *= 1099511628211ull;
+		}
+
+		std::ostringstream out;
+		out << std::hex << hash;
+		return out.str();
+	}
+
+	std::string MakeCollisionSafeImportedChatId(const ChatSession& chat, const std::unordered_set<std::string>& existing_ids)
+	{
+		const std::string base_id = Trim(chat.id).empty() ? Trim(chat.native_session_id) : Trim(chat.id);
+		const std::string suffix = HashNativeIdentityKey(NativeIdentityKey(chat));
+		std::string candidate = base_id + "--" + suffix;
+
+		while (existing_ids.find(candidate) != existing_ids.end())
+		{
+			candidate += "_";
+		}
+
+		return candidate;
+	}
 
 	void ResetAsyncNativeChatLoadTask(uam::platform::AsyncNativeChatLoadTask& task)
 	{
@@ -172,11 +215,7 @@ namespace
 
 		native.title = local.title;
 		native.folder_id = local.folder_id;
-		native.template_override_id = local.template_override_id;
 		native.linked_files = local.linked_files;
-		native.prompt_profile_bootstrapped = local.prompt_profile_bootstrapped;
-		native.rag_enabled = local.rag_enabled;
-		native.rag_source_directories = local.rag_source_directories;
 		native.parent_chat_id = local.parent_chat_id;
 		native.branch_root_chat_id = local.branch_root_chat_id;
 		native.branch_from_message_index = local.branch_from_message_index;
@@ -200,36 +239,290 @@ namespace
 			return std::nullopt;
 		}
 
+		std::optional<fs::path> matched_file;
+
 		for (const ProviderChatSource& source : discovery.sources)
 		{
 			const auto session_file = ChatHistorySyncService().FindNativeSessionFilePath(source.chats_dir, native_session_id);
 
 			if (session_file.has_value())
 			{
-				return session_file;
+				if (matched_file.has_value() && matched_file.value() != session_file.value())
+				{
+					return std::nullopt;
+				}
+
+				matched_file = session_file;
 			}
 		}
 
-		return std::nullopt;
+		return matched_file;
 	}
 } // namespace
 
-void ProviderRequestService::StartSelectedChatRequest(uam::AppState& p_app) const
+namespace
 {
-	ChatSession* lp_chat = ChatDomainService().SelectedChat(p_app);
-
-	if (lp_chat == nullptr)
+	const ProviderProfile& ResolvePendingCallProviderOrDefault(const AppState& app, const PendingRuntimeCall& call)
 	{
-		p_app.status_line = "Select or create a chat first.";
-		return;
+		if (!call.provider_id_snapshot.empty())
+		{
+			if (const ProviderProfile* profile = ProviderProfileStore::FindById(app.provider_profiles, call.provider_id_snapshot); profile != nullptr)
+			{
+				return *profile;
+			}
+		}
+
+		return ProviderResolutionService().ActiveProviderOrDefault(app);
 	}
 
-	const std::string l_promptText = Trim(p_app.composer_text);
-
-	if (QueuePromptForChat(p_app, *lp_chat, l_promptText, false))
+	void ResetPendingRuntimeCallWorker(PendingRuntimeCall& call)
 	{
-		p_app.composer_text.clear();
+		if (call.worker != nullptr)
+		{
+			call.worker->request_stop();
+			call.worker->detach();
+			call.worker.reset();
+		}
+
+		call.state.reset();
 	}
+}
+
+bool PollPendingRuntimeCall(AppState& app)
+{
+	if (app.pending_calls.empty())
+	{
+		return false;
+	}
+
+	bool changed = false;
+	std::unordered_set<std::string> claimed_new_session_ids;
+
+	for (const auto& resolved : app.resolved_native_sessions_by_chat_id)
+	{
+		if (!resolved.second.empty())
+		{
+			claimed_new_session_ids.insert(resolved.second);
+		}
+	}
+
+	for (const auto& terminal : app.cli_terminals)
+	{
+		if (terminal != nullptr && !terminal->attached_session_id.empty())
+		{
+			claimed_new_session_ids.insert(terminal->attached_session_id);
+		}
+	}
+
+	for (std::size_t i = 0; i < app.pending_calls.size();)
+	{
+		PendingRuntimeCall& call = app.pending_calls[i];
+
+		if (call.state == nullptr)
+		{
+			ResetPendingRuntimeCallWorker(call);
+			app.pending_calls.erase(app.pending_calls.begin() + static_cast<std::ptrdiff_t>(i));
+			changed = true;
+			continue;
+		}
+
+		if (!call.state->completed.load(std::memory_order_acquire))
+		{
+			++i;
+			continue;
+		}
+
+		const std::string output = call.state->result.output;
+		const std::string pending_chat_id = call.chat_id;
+		const ChatSession* selected_before = ChatDomainService().SelectedChat(app);
+		const std::string selected_before_id = (selected_before != nullptr) ? selected_before->id : "";
+		const int pending_chat_index = ChatDomainService().FindChatIndexById(app, pending_chat_id);
+		const ProviderProfile& call_provider = ResolvePendingCallProviderOrDefault(app, call);
+		ChatSession pending_chat_snapshot;
+
+		if (pending_chat_index >= 0)
+		{
+			pending_chat_snapshot = app.chats[pending_chat_index];
+		}
+
+		if (!ProviderRuntime::UsesNativeOverlayHistory(call_provider))
+		{
+			if (pending_chat_index >= 0)
+			{
+				const bool call_failed = call.state->result.exit_code != 0 || call.state->result.timed_out || call.state->result.canceled || !call.state->result.error.empty();
+				const MessageRole result_role = call_failed ? MessageRole::System : MessageRole::Assistant;
+				const auto completion_time = std::chrono::steady_clock::now();
+				const int64_t processing_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(completion_time - call.state->launch_time).count();
+				const int64_t output_chars = static_cast<int64_t>(output.size());
+
+				ChatDomainService().AddMessageWithAnalytics(app.chats[pending_chat_index], result_role, output, call.state->provider_id, call.state->estimated_input_tokens, output_chars, 0, processing_time_ms, call.state->result.canceled || call.state->result.timed_out);
+				ProviderRuntime::SaveHistory(ProviderResolutionService().ProviderForChatOrDefault(app, app.chats[pending_chat_index]), app.data_root, app.chats[pending_chat_index]);
+
+				if (pending_chat_id != selected_before_id)
+				{
+					MarkChatUnseen(app, pending_chat_id);
+				}
+
+				app.status_line = call_failed ? "Provider command failed." : "Provider response appended to local chat history.";
+				app.scroll_to_bottom = true;
+			}
+			else
+			{
+				app.status_line = "Provider command completed, but chat no longer exists.";
+			}
+
+			app.resolved_native_sessions_by_chat_id.erase(pending_chat_id);
+			ResetPendingRuntimeCallWorker(call);
+			app.pending_calls.erase(app.pending_calls.begin() + static_cast<std::ptrdiff_t>(i));
+			changed = true;
+			continue;
+		}
+
+		const std::filesystem::path native_history_chats_dir = call.native_history_chats_dir_snapshot.empty() ? std::filesystem::path{} : std::filesystem::path(call.native_history_chats_dir_snapshot);
+		std::vector<ChatSession> native_after = ChatHistorySyncService().LoadNativeSessionChats(native_history_chats_dir, call_provider);
+		ChatHistorySyncService().ApplyLocalOverrides(app, native_after);
+		for (ChatSession& chat : native_after)
+		{
+			ChatRepository::SaveChat(app.data_root, chat);
+		}
+		app.chats = ChatRepository::LoadLocalChats(app.data_root);
+		app.chats = ChatDomainService().DeduplicateChatsById(std::move(app.chats));
+		ChatBranching::Normalize(app.chats);
+		ChatDomainService().NormalizeChatFolderAssignments(app);
+
+		std::string selected_id = call.resume_session_id;
+
+		if (NativeSessionLinkService().IsLocalDraftChatId(selected_id))
+		{
+			selected_id.clear();
+		}
+
+		if (selected_id.empty())
+		{
+			const auto resolved_it = app.resolved_native_sessions_by_chat_id.find(pending_chat_id);
+
+			if (resolved_it != app.resolved_native_sessions_by_chat_id.end() && NativeSessionLinkService().SessionIdExistsInLoadedChats(native_after, resolved_it->second))
+			{
+				selected_id = resolved_it->second;
+			}
+
+			if (selected_id.empty())
+			{
+				if (NativeSessionLinkService().IsLocalDraftChatId(pending_chat_id))
+				{
+					if (const auto matched = NativeSessionLinkService().MatchNativeSessionIdForLocalDraft(pending_chat_snapshot, native_after, claimed_new_session_ids); matched.has_value())
+					{
+						selected_id = matched.value();
+					}
+				}
+				else
+				{
+					const std::vector<std::string> candidates = NativeSessionLinkService().CollectNewSessionIds(native_after, call.session_ids_before);
+					selected_id = NativeSessionLinkService().PickFirstUnblockedSessionId(candidates, claimed_new_session_ids);
+				}
+			}
+		}
+
+		if (!selected_id.empty())
+		{
+			claimed_new_session_ids.insert(selected_id);
+
+			if (call.resume_session_id.empty())
+			{
+				app.resolved_native_sessions_by_chat_id[pending_chat_id] = selected_id;
+			}
+
+			const bool should_follow_to_result = selected_before_id == pending_chat_id;
+			const int selected_index = ChatDomainService().FindChatIndexById(app, selected_id);
+			const int refreshed_pending_chat_index = ChatDomainService().FindChatIndexById(app, pending_chat_id);
+
+			if (refreshed_pending_chat_index >= 0 &&
+			    selected_id != pending_chat_id &&
+			    NativeSessionLinkService().IsLocalDraftChatId(pending_chat_id) &&
+			    !NativeSessionLinkService().HasRealNativeSessionId(app.chats[refreshed_pending_chat_index]))
+			{
+				changed |= ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, app.chats[refreshed_pending_chat_index], selected_id);
+			}
+
+			const bool transfer_overrides_to_resolved_chat = pending_chat_index >= 0 && selected_index >= 0 && selected_id != pending_chat_id && NativeSessionLinkService().IsLocalDraftChatId(pending_chat_id);
+
+			if (transfer_overrides_to_resolved_chat)
+			{
+				app.chats[selected_index].linked_files = pending_chat_snapshot.linked_files;
+				app.chats[selected_index].parent_chat_id = pending_chat_snapshot.parent_chat_id;
+				app.chats[selected_index].branch_root_chat_id = pending_chat_snapshot.branch_root_chat_id;
+				app.chats[selected_index].branch_from_message_index = pending_chat_snapshot.branch_from_message_index;
+
+				if (!pending_chat_snapshot.folder_id.empty())
+				{
+					app.chats[selected_index].folder_id = pending_chat_snapshot.folder_id;
+				}
+
+				ProviderRuntime::SaveHistory(ProviderResolutionService().ProviderForChatOrDefault(app, app.chats[selected_index]), app.data_root, app.chats[selected_index]);
+			}
+
+			if (selected_id != pending_chat_id)
+			{
+				app.chats.erase(std::remove_if(app.chats.begin(), app.chats.end(), [&](const ChatSession& chat) { return chat.id == pending_chat_id; }), app.chats.end());
+			}
+
+			if (should_follow_to_result)
+			{
+				ChatDomainService().SelectChatById(app, selected_id);
+				app.scroll_to_bottom = true;
+			}
+			else
+			{
+				if (!selected_before_id.empty())
+				{
+					const int keep_index = ChatDomainService().FindChatIndexById(app, selected_before_id);
+
+					if (keep_index >= 0)
+					{
+						app.selected_chat_index = keep_index;
+						app.chats_with_unseen_updates.erase(selected_before_id);
+						ChatDomainService().RefreshRememberedSelection(app);
+					}
+				}
+
+				if (selected_id != selected_before_id)
+				{
+					MarkChatUnseen(app, selected_id);
+				}
+			}
+
+			app.status_line = "Provider response synced from native session.";
+		}
+		else
+		{
+			app.resolved_native_sessions_by_chat_id.erase(pending_chat_id);
+			const int fallback_index = ChatDomainService().FindChatIndexById(app, pending_chat_id);
+
+			if (fallback_index >= 0)
+			{
+				ChatDomainService().AddMessage(app.chats[fallback_index], MessageRole::System, output);
+
+				if (pending_chat_id != selected_before_id)
+				{
+					MarkChatUnseen(app, pending_chat_id);
+				}
+
+				app.status_line = "Provider command completed, but no native session was detected.";
+				app.scroll_to_bottom = true;
+			}
+			else
+			{
+				app.status_line = "Provider command completed, but no native session was detected.";
+			}
+		}
+
+		ChatBranching::Normalize(app.chats);
+		ResetPendingRuntimeCallWorker(call);
+		app.pending_calls.erase(app.pending_calls.begin() + static_cast<std::ptrdiff_t>(i));
+		changed = true;
+	}
+
+	return changed;
 }
 
 void ChatHistorySyncService::RefreshChatHistory(uam::AppState& p_app) const
@@ -290,14 +583,7 @@ std::vector<ChatSession> ChatHistorySyncService::LoadNativeSessionChats(const fs
 	l_options.native_max_messages = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxMessages();
 	if (ProviderRuntime::SupportsGeminiJsonHistory(p_provider))
 	{
-#if UAM_ENABLE_ANY_GEMINI_PROVIDER
 		return ChatDomainService().DeduplicateChatsById(LoadGeminiJsonHistoryForRuntime(p_chatsDir, p_provider, l_options, p_stopToken));
-#else
-		(void)p_chatsDir;
-		(void)p_provider;
-		(void)p_stopToken;
-		return {};
-#endif
 	}
 
 	return ChatDomainService().DeduplicateChatsById(ProviderRuntime::LoadHistory(p_provider, fs::path{}, p_chatsDir, l_options));
@@ -343,9 +629,15 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 	std::vector<ChatSession> l_localChats = ChatRepository::LoadLocalChats(p_app.data_root);
 	std::unordered_set<std::string> l_existingIds;
 	l_existingIds.reserve(l_localChats.size());
+	std::unordered_map<std::string, std::string> l_existingIdByNativeKey;
+	l_existingIdByNativeKey.reserve(l_localChats.size());
 	for (const ChatSession& chat : l_localChats)
 	{
 		l_existingIds.insert(chat.id);
+		if (!Trim(chat.native_session_id).empty())
+		{
+			l_existingIdByNativeKey[NativeIdentityKey(chat)] = chat.id;
+		}
 	}
 
 	for (const fs::path& l_workspaceRoot : CollectWorkspaceRootsForNativeHistory(p_app))
@@ -368,14 +660,25 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 
 			++result.total_count;
 
-			const bool has_local_chat = l_existingIds.contains(l_nativeChat.id);
+			const std::string l_nativeKey = NativeIdentityKey(l_nativeChat);
+			const auto l_existingIdIt = l_existingIdByNativeKey.find(l_nativeKey);
+			const bool existing_same_native_identity = l_existingIdIt != l_existingIdByNativeKey.end();
 
-			if (p_targetChatId.empty() && has_local_chat)
+			if (p_targetChatId.empty() && existing_same_native_identity)
 			{
 				continue;
 			}
 
-			if (!has_local_chat)
+			if (existing_same_native_identity)
+			{
+				l_nativeChat.id = l_existingIdIt->second;
+			}
+			else if (l_existingIds.contains(l_nativeChat.id))
+			{
+				l_nativeChat.id = MakeCollisionSafeImportedChatId(l_nativeChat, l_existingIds);
+			}
+
+			if (!l_existingIds.contains(l_nativeChat.id))
 			{
 				for (const ChatFolder& folder : p_app.folders)
 				{
@@ -388,10 +691,11 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 				}
 			}
 
-			if (ChatRepository::SaveChat(p_app.data_root, l_nativeChat))
-			{
-				++result.imported_count;
-				l_existingIds.insert(l_nativeChat.id);
+				if (ChatRepository::SaveChat(p_app.data_root, l_nativeChat))
+				{
+					++result.imported_count;
+					l_existingIds.insert(l_nativeChat.id);
+					l_existingIdByNativeKey[l_nativeKey] = l_nativeChat.id;
 
 				if (p_delete_native_after_import && !l_nativeChat.native_session_id.empty())
 				{
@@ -465,9 +769,15 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 	std::vector<ChatSession> l_localChats = ChatRepository::LoadLocalChats(p_app.data_root);
 	std::unordered_set<std::string> l_existingIds;
 	l_existingIds.reserve(l_localChats.size());
+	std::unordered_map<std::string, std::string> l_existingIdByNativeKey;
+	l_existingIdByNativeKey.reserve(l_localChats.size());
 	for (const ChatSession& chat : l_localChats)
 	{
 		l_existingIds.insert(chat.id);
+		if (!Trim(chat.native_session_id).empty())
+		{
+			l_existingIdByNativeKey[NativeIdentityKey(chat)] = chat.id;
+		}
 	}
 
 	for (const ProviderChatSource& l_source : l_discovery.sources)
@@ -505,18 +815,32 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 
 			++result.total_count;
 
-			if (p_targetChatId.empty() && l_existingIds.contains(l_nativeChat.id))
+				const std::string l_nativeKey = NativeIdentityKey(l_nativeChat);
+				const auto l_existingIdIt = l_existingIdByNativeKey.find(l_nativeKey);
+				const bool existing_same_native_identity = l_existingIdIt != l_existingIdByNativeKey.end();
+
+			if (p_targetChatId.empty() && existing_same_native_identity)
 			{
 				continue;
 			}
 
+				if (existing_same_native_identity)
+				{
+					l_nativeChat.id = l_existingIdIt->second;
+				}
+				else if (l_existingIds.contains(l_nativeChat.id))
+				{
+					l_nativeChat.id = MakeCollisionSafeImportedChatId(l_nativeChat, l_existingIds);
+				}
+
 			l_nativeChat.folder_id = lp_folder->id;
 			l_nativeChat.workspace_directory = l_source.folder_directory;
 
-			if (ChatRepository::SaveChat(p_app.data_root, l_nativeChat))
-			{
-				++result.imported_count;
-				l_existingIds.insert(l_nativeChat.id);
+				if (ChatRepository::SaveChat(p_app.data_root, l_nativeChat))
+				{
+					++result.imported_count;
+					l_existingIds.insert(l_nativeChat.id);
+					l_existingIdByNativeKey[l_nativeKey] = l_nativeChat.id;
 
 				if (p_delete_native_after_import && !l_nativeChat.native_session_id.empty())
 				{
@@ -656,14 +980,7 @@ std::optional<fs::path> ChatHistorySyncService::FindNativeSessionFilePath(const 
 			continue;
 		}
 
-		std::error_code l_copyEc;
-		fs::copy_file(l_item.path(), canonical_name, fs::copy_options::overwrite_existing, l_copyEc);
-		if (l_copyEc)
-		{
-			return std::nullopt;
-		}
-
-		return canonical_name;
+		return l_item.path();
 	}
 
 	return std::nullopt;
@@ -755,9 +1072,10 @@ bool ChatHistorySyncService::MoveChatToFolder(AppState& p_app, ChatSession& p_ch
 	p_app.move_chat_target_folder_id = p_newFolderId;
 	p_app.move_chat_target_workspace = l_newFolder->directory;
 
-	p_chat.folder_id = p_newFolderId;
-	p_chat.workspace_directory = l_newFolder->directory;
-	p_chat.updated_at = TimestampNow();
+	ChatSession l_movedChat = p_chat;
+	l_movedChat.folder_id = p_newFolderId;
+	l_movedChat.workspace_directory = l_newFolder->directory;
+	l_movedChat.updated_at = TimestampNow();
 
 	const ProviderProfile& l_provider = ProviderResolutionService().ProviderForChatOrDefault(p_app, p_chat);
 	const std::string l_sessionId = NativeSessionLinkService().HasRealNativeSessionId(p_chat) ? p_chat.native_session_id : "";
@@ -765,50 +1083,52 @@ bool ChatHistorySyncService::MoveChatToFolder(AppState& p_app, ChatSession& p_ch
 	const fs::path normalizedOld = l_oldWorkspace.empty() ? fs::path{} : fs::weakly_canonical(l_oldWorkspace);
 	const fs::path normalizedNew = l_newFolder->directory.empty() ? fs::path{} : fs::weakly_canonical(l_newFolder->directory);
 	bool l_workspacesDifferent = !l_sessionId.empty() && !l_oldWorkspace.empty() && normalizedOld != normalizedNew;
-	bool l_portingSucceeded = true;
 	std::optional<fs::path> l_oldChatsDir;
 
 	if (l_workspacesDifferent)
 	{
-		StopAndEraseCliTerminalForChat(p_app, p_chat.id);
-
 		l_oldChatsDir = ResolveNativeHistoryChatsDirForWorkspace(normalizedOld);
 		if (l_oldChatsDir.has_value() && !l_sessionId.empty())
 		{
 			const auto l_sessionFile = FindNativeSessionFilePath(l_oldChatsDir.value(), l_sessionId);
 			if (l_sessionFile.has_value())
 			{
-#if UAM_ENABLE_ANY_GEMINI_PROVIDER
 				GeminiJsonHistoryStoreOptions l_opts;
 				l_opts.max_messages = 0;
 				l_opts.max_file_bytes = 0;
 				const auto l_parsed = GeminiJsonHistoryStore::ParseFile(l_sessionFile.value(), l_provider, l_opts);
 				if (l_parsed.has_value() && !l_parsed->messages.empty() && !LocalMessagesShouldOverrideNative(l_originalChat, *l_parsed))
 				{
-					p_chat.messages = l_parsed->messages;
+					l_movedChat.messages = l_parsed->messages;
 					if (!l_parsed->updated_at.empty())
 					{
-						p_chat.updated_at = l_parsed->updated_at;
+						l_movedChat.updated_at = l_parsed->updated_at;
+						}
 					}
 				}
-#endif
+		}
+
+		if (!ProviderRuntime::RebuildNativeSessionFile(l_provider, l_movedChat, l_newFolder->directory))
+		{
+			p_app.move_chat_pending_id = p_chat.id;
+			p_app.move_chat_show_missing_session_warning = true;
+			return true;
+		}
+
+	}
+
+	p_chat = l_movedChat;
+	if (!ChatRepository::SaveChat(p_app.data_root, p_chat))
+	{
+		if (l_workspacesDifferent && !l_sessionId.empty())
+		{
+			if (const auto l_targetChatsDir = ResolveNativeHistoryChatsDirForWorkspace(normalizedNew); l_targetChatsDir.has_value())
+			{
+				std::error_code l_removeTargetEc;
+				fs::remove(l_targetChatsDir.value() / (l_sessionId + ".json"), l_removeTargetEc);
 			}
 		}
 
-		if (!ProviderRuntime::RebuildNativeSessionFile(l_provider, p_chat, l_newFolder->directory))
-		{
-			l_portingSucceeded = false;
-			p_app.move_chat_pending_id = p_chat.id;
-			p_app.move_chat_show_missing_session_warning = true;
-		}
-	}
-	else
-	{
-		StopAndEraseCliTerminalForChat(p_app, p_chat.id);
-	}
-
-	if (!ChatRepository::SaveChat(p_app.data_root, p_chat))
-	{
 		p_chat = l_originalChat;
 		p_app.move_chat_pending_id.clear();
 		p_app.move_chat_original_folder_id.clear();
@@ -819,7 +1139,7 @@ bool ChatHistorySyncService::MoveChatToFolder(AppState& p_app, ChatSession& p_ch
 		return false;
 	}
 
-	if (l_workspacesDifferent && l_portingSucceeded && l_oldChatsDir.has_value() && !l_sessionId.empty())
+	if (l_workspacesDifferent && l_oldChatsDir.has_value() && !l_sessionId.empty())
 	{
 		std::error_code l_cleanupEc;
 		if (const auto l_oldSessionFile = FindNativeSessionFilePath(l_oldChatsDir.value(), l_sessionId); l_oldSessionFile.has_value())
@@ -828,7 +1148,15 @@ bool ChatHistorySyncService::MoveChatToFolder(AppState& p_app, ChatSession& p_ch
 		}
 	}
 
-	return l_portingSucceeded;
+	StopAndEraseCliTerminalForChat(p_app, p_chat.id);
+
+	p_app.move_chat_pending_id.clear();
+	p_app.move_chat_original_folder_id.clear();
+	p_app.move_chat_original_workspace.clear();
+	p_app.move_chat_target_folder_id.clear();
+	p_app.move_chat_target_workspace.clear();
+	p_app.move_chat_show_missing_session_warning = false;
+	return true;
 }
 
 std::string ChatHistorySyncService::ResolveResumeSessionIdForChat(const AppState& p_app, const ChatSession& p_chat) const
@@ -902,332 +1230,6 @@ std::string ChatHistorySyncService::ResolveResumeSessionIdForChat(const AppState
 	}
 
 	return "";
-}
-
-TemplatePreflightOutcome ProviderRequestService::PreflightWorkspaceTemplateForChat(AppState& p_app, const ProviderProfile& p_provider, const ChatSession& p_chat, std::string* p_bootstrapPromptOut, std::string* p_statusOut) const
-{
-	TemplateRuntimeService().RefreshTemplateCatalog(p_app);
-
-	std::string l_effectiveTemplateId = p_chat.template_override_id;
-
-	if (l_effectiveTemplateId.empty())
-	{
-		l_effectiveTemplateId = p_app.settings.default_prompt_profile_id;
-	}
-
-	if (l_effectiveTemplateId.empty())
-	{
-		l_effectiveTemplateId = p_app.settings.default_gemini_template_id;
-	}
-
-	if (l_effectiveTemplateId.empty())
-	{
-		if (p_statusOut != nullptr)
-		{
-			*p_statusOut = "No prompt profile selected. Set a default in Templates.";
-		}
-
-		return TemplatePreflightOutcome::ReadyWithoutTemplate;
-	}
-
-	const TemplateCatalogEntry* lcp_entry = TemplateRuntimeService().FindTemplateEntryById(p_app, l_effectiveTemplateId);
-
-	if (lcp_entry == nullptr)
-	{
-		if (p_statusOut != nullptr)
-		{
-			*p_statusOut = "Selected prompt profile is missing: " + l_effectiveTemplateId + ". Choose one in Templates.";
-		}
-
-		p_app.open_template_manager_popup = true;
-		return TemplatePreflightOutcome::BlockingError;
-	}
-
-	if (ProviderRuntime::UsesGeminiPathBootstrap(p_provider))
-	{
-		if (!TemplateRuntimeService().EnsureWorkspaceProviderLayout(p_app, p_chat, p_statusOut))
-		{
-			return TemplatePreflightOutcome::BlockingError;
-		}
-
-		std::error_code l_ec;
-		fs::copy_file(lcp_entry->absolute_path, WorkspacePromptProfileTemplatePath(p_app, p_chat), fs::copy_options::overwrite_existing, l_ec);
-
-		if (l_ec)
-		{
-			if (p_statusOut != nullptr)
-			{
-				*p_statusOut = "Failed to materialize workspace prompt profile file: " + l_ec.message();
-			}
-
-			return TemplatePreflightOutcome::BlockingError;
-		}
-
-		if (p_bootstrapPromptOut != nullptr)
-		{
-			*p_bootstrapPromptOut = p_provider.prompt_bootstrap_path.empty() ? kPromptBootstrapPath : p_provider.prompt_bootstrap_path;
-		}
-
-		return TemplatePreflightOutcome::ReadyWithTemplate;
-	}
-
-	if (p_bootstrapPromptOut != nullptr)
-	{
-		*p_bootstrapPromptOut = ReadTextFile(lcp_entry->absolute_path);
-
-		if (p_bootstrapPromptOut->empty())
-		{
-			if (p_statusOut != nullptr)
-			{
-				*p_statusOut = "Selected prompt profile is empty.";
-			}
-
-			return TemplatePreflightOutcome::ReadyWithoutTemplate;
-		}
-	}
-
-	return TemplatePreflightOutcome::ReadyWithTemplate;
-}
-
-bool ProviderRequestService::QueuePromptForChat(AppState& p_app, ChatSession& p_chat, const std::string& p_prompt, const bool p_templateControlMessage) const
-{
-	if (HasPendingCallForChat(p_app, p_chat.id))
-	{
-		p_app.status_line = "Provider command already running for this chat.";
-		return false;
-	}
-
-	const std::string l_promptText = Trim(p_prompt);
-
-	if (l_promptText.empty())
-	{
-		p_app.status_line = "Prompt is empty.";
-		return false;
-	}
-
-	const ProviderProfile& l_provider = ProviderResolutionService().ProviderForChatOrDefault(p_app, p_chat);
-
-	if (!ProviderRuntime::IsRuntimeEnabled(l_provider))
-	{
-		p_app.status_line = ProviderRuntime::DisabledReason(l_provider);
-
-		if (p_app.status_line.empty())
-		{
-			p_app.status_line = "Runtime '" + l_provider.id + "' is disabled in this build.";
-		}
-
-		return false;
-	}
-
-	const bool l_useLocalRuntime = ProviderResolutionService().ChatUsesInternalEngine(p_app, p_chat);
-	const bool l_useLocalBridgeRuntime = RuntimeLocalService().ProviderUsesLocalBridgeRuntime(l_provider);
-	std::string l_templateStatus;
-	std::string l_bootstrapPrompt;
-	TemplatePreflightOutcome l_templateOutcome = TemplatePreflightOutcome::ReadyWithoutTemplate;
-
-	if (!p_templateControlMessage || !p_chat.prompt_profile_bootstrapped)
-	{
-		l_templateOutcome = PreflightWorkspaceTemplateForChat(p_app, l_provider, p_chat, &l_bootstrapPrompt, &l_templateStatus);
-
-		if (l_templateOutcome == TemplatePreflightOutcome::BlockingError)
-		{
-			p_app.status_line = l_templateStatus.empty() ? "Prompt profile preflight failed." : l_templateStatus;
-			return false;
-		}
-	}
-
-	const bool l_shouldBootstrapTemplate = !p_templateControlMessage && !p_chat.prompt_profile_bootstrapped && p_chat.messages.empty() && l_templateOutcome == TemplatePreflightOutcome::ReadyWithTemplate;
-	std::string l_runtimePrompt = l_promptText;
-
-	if (!p_templateControlMessage)
-	{
-		l_runtimePrompt = BuildRagEnhancedPrompt(p_app, p_chat, l_promptText);
-	}
-
-	if (l_shouldBootstrapTemplate && !l_bootstrapPrompt.empty())
-	{
-		l_runtimePrompt = l_bootstrapPrompt + "\n\n" + l_runtimePrompt;
-	}
-
-	if ((l_useLocalRuntime || l_useLocalBridgeRuntime) && !RuntimeLocalService().EnsureSelectedLocalRuntimeModelForProvider(p_app))
-	{
-		return false;
-	}
-
-	// NOTE: AddMessage(User) is intentionally deferred below each success path so
-	// that a failed dispatch never leaves an unsent prompt persisted in history
-	// while the text simultaneously remains in the composer (Bug #1 fix).
-
-	const bool l_useSharedCliSession = !l_useLocalRuntime && ProviderRuntime::UsesCliOutput(l_provider) && l_provider.supports_interactive;
-
-	if (!l_useLocalRuntime && ProviderRuntime::UsesCliOutput(l_provider) && !l_provider.supports_interactive)
-	{
-		p_app.status_line = "Provider runtime configuration error: provider has no interactive command.";
-		return false;
-	}
-
-	if (l_useSharedCliSession)
-	{
-		std::string l_terminalError;
-
-		if (!SendPromptToCliRuntime(p_app, p_chat, l_runtimePrompt, &l_terminalError))
-		{
-			if (l_terminalError == "OpenCode bridge is starting.")
-			{
-				p_app.status_line = l_terminalError;
-				return false;
-			}
-
-			p_app.status_line = "Provider terminal send failed: " + (l_terminalError.empty() ? std::string("unknown error") : l_terminalError);
-			return false;
-		}
-
-		// Prompt reached the terminal — record it now so the composer can be cleared.
-		const int64_t user_prompt_tokens = static_cast<int64_t>(l_promptText.length() / 4);
-		ChatDomainService().AddMessageWithAnalytics(p_chat, MessageRole::User, l_promptText, l_provider.id, user_prompt_tokens, 0, 0, 0, false);
-		ChatHistorySyncService().SaveChatWithStatus(p_app, p_chat, "Prompt sent to provider terminal.", "Prompt sent, but chat save failed.");
-
-		if (l_shouldBootstrapTemplate)
-		{
-			p_chat.prompt_profile_bootstrapped = true;
-			ProviderRuntime::SaveHistory(l_provider, p_app.data_root, p_chat);
-		}
-
-		if (p_templateControlMessage)
-		{
-			p_app.status_line = "Prompt profile updated in live provider terminal session.";
-		}
-		else
-		{
-			p_app.status_line = "Prompt sent to live provider terminal session.";
-		}
-
-		p_app.scroll_to_bottom = true;
-		return true;
-	}
-
-	if (l_useLocalRuntime)
-	{
-		std::string l_loadError;
-
-		if (!RuntimeLocalService().EnsureLocalRuntimeModelLoaded(p_app, &l_loadError))
-		{
-			p_app.status_line = "Local runtime model load failed: " + (l_loadError.empty() ? std::string("unknown error") : l_loadError);
-			return false;
-		}
-
-		// Model is loaded — record the user prompt before inference so the
-		// conversation history is correct for both success and error replies.
-		const int64_t local_user_tokens = static_cast<int64_t>(l_promptText.length() / 4);
-		ChatDomainService().AddMessageWithAnalytics(p_chat, MessageRole::User, l_promptText, "ollama-local", local_user_tokens, 0, 0, 0, false);
-		ChatHistorySyncService().SaveChatWithStatus(p_app, p_chat, "Prompt queued for local runtime.", "Prompt queued, but chat save failed.");
-
-		const LocalEngineResponse l_response = p_app.runtime_model_service.SendPrompt(ResolveRagModelFolder(p_app), l_runtimePrompt);
-
-		if (l_response.ok)
-		{
-			const int64_t local_output_chars = static_cast<int64_t>(l_response.text.length());
-			ChatDomainService().AddMessageWithAnalytics(p_chat, MessageRole::Assistant, l_response.text, "ollama-local", 0, local_output_chars, 0, 0, false);
-			ChatHistorySyncService().SaveChatWithStatus(p_app, p_chat, "Local response generated.", "Local response generated, but chat save failed.");
-			p_app.scroll_to_bottom = true;
-			return true;
-		}
-
-		ChatDomainService().AddMessage(p_chat, MessageRole::System, "Local runtime error: " + l_response.error);
-		ProviderRuntime::SaveHistory(l_provider, p_app.data_root, p_chat);
-		p_app.status_line = "Local runtime command failed.";
-		p_app.scroll_to_bottom = true;
-		return false;
-	}
-
-	std::vector<ChatSession> l_nativeBefore;
-
-	if (ProviderResolutionService().ChatUsesNativeOverlayHistory(p_app, p_chat))
-	{
-		const fs::path l_nativeHistoryChatsDir = ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(p_app, p_chat);
-		l_nativeBefore = ChatHistorySyncService().LoadNativeSessionChats(l_nativeHistoryChatsDir, l_provider);
-	}
-
-	const std::string l_resumeSessionId = ChatHistorySyncService().ResolveResumeSessionIdForChat(p_app, p_chat);
-	const std::string l_providerPrompt = ProviderRuntime::BuildPrompt(l_provider, l_runtimePrompt, p_chat.linked_files);
-	const std::string l_providerCommand = ProviderRuntime::BuildCommand(l_provider, p_app.settings, l_providerPrompt, p_chat.linked_files, l_resumeSessionId);
-	const std::string l_command = PlatformServicesFactory::Instance().process_service.BuildShellCommandWithWorkingDirectory(ResolveWorkspaceRootPath(p_app, p_chat), l_providerCommand);
-	const std::string l_chatId = p_chat.id;
-
-	PendingRuntimeCall l_pending;
-	l_pending.chat_id = l_chatId;
-	l_pending.resume_session_id = l_resumeSessionId;
-	l_pending.provider_id_snapshot = l_provider.id;
-	l_pending.native_history_chats_dir_snapshot = ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(p_app, p_chat).string();
-	l_pending.session_ids_before = ChatHistorySyncService().SessionIdsFromChats(l_nativeBefore);
-	l_pending.command_preview = l_command;
-	l_pending.state = std::make_shared<AsyncProcessTaskState>();
-	l_pending.state->launch_time = std::chrono::steady_clock::now();
-	l_pending.state->provider_id = l_provider.id;
-	l_pending.state->estimated_input_tokens = static_cast<int64_t>(l_providerPrompt.length() / 4);
-	std::shared_ptr<AsyncProcessTaskState> l_state = l_pending.state;
-	l_pending.worker = std::make_unique<std::jthread>(
-	    [l_command, l_state](std::stop_token stop_token)
-	    {
-		    l_state->result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(l_command, -1, stop_token);
-
-		    if (!l_state->result.error.empty() && l_state->result.output.empty())
-		    {
-			    std::ostringstream message;
-			    message << "Failed to launch provider CLI command";
-			    message << ".";
-			    l_state->result.output = message.str();
-		    }
-		    else
-		    {
-			    if (l_state->result.output.empty())
-			    {
-				    l_state->result.output = "(Provider CLI returned no output.)";
-			    }
-
-			    if (l_state->result.timed_out)
-			    {
-				    l_state->result.output += "\n\n[Provider CLI command timed out]";
-			    }
-			    else if (l_state->result.canceled)
-			    {
-				    l_state->result.output += "\n\n[Provider CLI command canceled]";
-			    }
-			    else if (l_state->result.exit_code != 0)
-			    {
-				    l_state->result.output += "\n\n[Provider CLI exited with code " + std::to_string(l_state->result.exit_code) + "]";
-			    }
-		    }
-
-		    l_state->completed.store(true, std::memory_order_release);
-	    });
-
-	p_app.pending_calls.push_back(std::move(l_pending));
-
-	// Async dispatch is now in flight — record the user prompt so the composer
-	// can be cleared.  Deferring to this point means a launch failure (caught
-	// earlier by the empty-command guard) never leaves an orphaned history entry.
-	const int64_t user_prompt_tokens = static_cast<int64_t>(l_promptText.length() / 4);
-	ChatDomainService().AddMessageWithAnalytics(p_chat, MessageRole::User, l_promptText, l_provider.id, user_prompt_tokens, 0, 0, 0, false);
-	ChatHistorySyncService().SaveChatWithStatus(p_app, p_chat, "Prompt queued for async provider.", "Prompt queued, but chat save failed.");
-
-	if (l_shouldBootstrapTemplate)
-	{
-		p_chat.prompt_profile_bootstrapped = true;
-		ProviderRuntime::SaveHistory(l_provider, p_app.data_root, p_chat);
-	}
-
-	if (p_templateControlMessage)
-	{
-		p_app.status_line = "Prompt profile updated and synced to provider bootstrap flow.";
-	}
-	else if (l_templateOutcome == TemplatePreflightOutcome::ReadyWithoutTemplate && !l_templateStatus.empty())
-	{
-		p_app.status_line = l_templateStatus;
-	}
-
-	p_app.scroll_to_bottom = true;
-	return true;
 }
 
 void ChatHistorySyncService::ApplyLocalOverrides(AppState& p_app, std::vector<ChatSession>& p_nativeChats) const
@@ -1423,11 +1425,7 @@ bool ChatHistorySyncService::ExportChatToNative(const AppState& p_app, const Cha
 	const std::string l_sessionId = NativeSessionLinkService().HasRealNativeSessionId(p_chat) ? p_chat.native_session_id : p_chat.id;
 	const fs::path l_destFile = l_chatsDir / (l_sessionId + ".json");
 
-#if UAM_ENABLE_ANY_GEMINI_PROVIDER
 	return GeminiJsonHistoryStore::SaveFile(l_destFile, p_chat);
-#else
-	return false;
-#endif
 }
 
 bool ChatHistorySyncService::TruncateNativeSessionFromDisplayedMessage(const AppState& p_app, const ChatSession& p_chat, const int p_displayedMessageIndex, std::string* p_errorOut) const

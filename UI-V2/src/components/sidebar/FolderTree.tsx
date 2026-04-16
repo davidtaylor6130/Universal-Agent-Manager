@@ -33,10 +33,15 @@ export function FolderTree() {
       return
     }
 
-    addFolder(name, null, directory)
-    setNewFolderName('')
-    setNewFolderDirectory('')
-    setAddingFolder(false)
+    void addFolder(name, null, directory).then((created) => {
+      if (!created) {
+        return
+      }
+
+      setNewFolderName('')
+      setNewFolderDirectory('')
+      setAddingFolder(false)
+    })
   }
 
   const startRenameFolder = (folder: (typeof folders)[number]) => {

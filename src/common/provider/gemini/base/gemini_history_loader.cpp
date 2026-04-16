@@ -76,40 +76,15 @@ std::optional<ChatSession> GeminiJsonHistoryStore::ParseFile(const std::filesyst
 	}
 
 	const JsonValue& root = root_opt.value();
-	const std::string session_id = JsonStringOrEmpty(root.Find("sessionId"));
+	const std::string session_id = Trim(JsonStringOrEmpty(root.Find("sessionId")));
 
 	if (session_id.empty())
 	{
 		return std::nullopt;
 	}
 
-	std::string short_id;
-	const std::string filename = file_path.filename().string();
-
-	if (filename.length() >= 10 && filename.ends_with(".json"))
-	{
-		const std::string name_part = filename.substr(0, filename.length() - 5);
-		const std::string::size_type last_dash = name_part.rfind('-');
-
-		if (name_part.rfind("session-", 0) == 0)
-		{
-			if (last_dash != std::string::npos && last_dash >= 20)
-			{
-				short_id = name_part.substr(last_dash + 1, 8);
-			}
-			else
-			{
-				short_id = name_part;
-			}
-		}
-		else if (last_dash != std::string::npos && last_dash >= 7)
-		{
-			short_id = name_part;
-		}
-	}
-
 	ChatSession chat;
-	chat.id = short_id.empty() ? session_id.substr(0, 8) : short_id;
+	chat.id = session_id;
 	chat.provider_id = provider.id;
 	chat.native_session_id = session_id;
 	chat.parent_chat_id.clear();
@@ -291,7 +266,12 @@ bool GeminiJsonHistoryStore::SaveFile(const std::filesystem::path& file_path, co
 	JsonValue root;
 	root.type = JsonValue::Type::Object;
 
-	const std::string session_id = chat.native_session_id.empty() ? chat.id : chat.native_session_id;
+	const std::string session_id = Trim(chat.native_session_id.empty() ? chat.id : chat.native_session_id);
+
+	if (session_id.empty())
+	{
+		return false;
+	}
 	
 	auto make_string = [](const std::string& val) {
 		JsonValue j;

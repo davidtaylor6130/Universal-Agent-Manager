@@ -4,7 +4,7 @@
 
 /// <summary>
 /// Returns the number of seconds elapsed since the first call to this function.
-/// Provides the same contract as ImGui::GetTime() but without Dear ImGui.
+/// Provides a stable monotonic clock for app polling.
 /// Thread-safe: the epoch is captured on first call via a local static.
 /// </summary>
 inline double GetAppTimeSeconds()

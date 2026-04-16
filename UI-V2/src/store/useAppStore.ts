@@ -1,19 +1,39 @@
 import { create } from 'zustand'
-import { Session, Folder, ViewMode } from '../types/session'
+import { Session, Folder } from '../types/session'
 import { Message } from '../types/message'
-import { Provider, ProviderFeature } from '../types/provider'
-import {
-  initialFolders,
-  initialSessions,
-  initialMessages,
-  initialProviders,
-  defaultFeatures,
-  AgentStep,
-  mockAgentSteps,
-} from '../mock/mockData'
+import { Provider } from '../types/provider'
 import { sendToCEF, isCefContext, createRequestId } from '../ipc/cefBridge'
 
 const GEMINI_CLI_PROVIDER_ID = 'gemini-cli'
+const initialFolders: Folder[] = [
+  {
+    id: 'default',
+    name: 'General',
+    parentId: null,
+    directory: '',
+    isExpanded: true,
+    createdAt: new Date(),
+  },
+]
+const initialSessions: Session[] = [
+  {
+    id: 's1',
+    name: 'Gemini CLI',
+    viewMode: 'cli',
+    folderId: 'default',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  },
+]
+const initialProviders: Provider[] = [
+  {
+    id: GEMINI_CLI_PROVIDER_ID,
+    name: 'Gemini CLI',
+    shortName: 'Gemini',
+    color: '#f97316',
+    description: '',
+  },
+]
 const UI_RUNTIME_BUILD_MARKER = (() => {
   const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env
   const configured = env?.VITE_UAM_UI_BUILD_ID?.trim()
@@ -136,8 +156,6 @@ export type PushChannelStatus = 'no-push-yet' | 'connected' | 'parse-error' | 'i
 
 type ParsedPushMessage =
   | { type: 'stateUpdate'; data: CppAppState }
-  | { type: 'streamToken'; chatId: string; token: string }
-  | { type: 'streamDone'; chatId: string }
   | {
       type: 'cliOutput'
       data: string
@@ -218,10 +236,19 @@ function normalizeCliTranscript(
     return undefined
   }
 
-  return {
+  const nextTranscript: CliTranscript = {
     terminalId: terminalId || existing.terminalId || '',
     content: clampCliTranscript(existing.content),
   }
+
+  if (
+    existing.terminalId === nextTranscript.terminalId &&
+    existing.content === nextTranscript.content
+  ) {
+    return existing
+  }
+
+  return nextTranscript
 }
 
 const pendingRequestIdsByKey = new Map<string, string>()
@@ -232,6 +259,58 @@ function rememberPendingRequest(key: string, requestId: string) {
 
 function isLatestPendingRequest(key: string, requestId?: string) {
   return typeof requestId === 'string' && pendingRequestIdsByKey.get(key) === requestId
+}
+
+function sameRecordEntries<T>(existing: Record<string, T>, next: Record<string, T>) {
+  const existingKeys = Object.keys(existing)
+  const nextKeys = Object.keys(next)
+
+  if (existingKeys.length !== nextKeys.length) {
+    return false
+  }
+
+  for (const key of nextKeys) {
+    if (!Object.prototype.hasOwnProperty.call(existing, key)) {
+      return false
+    }
+
+    if (!Object.is(existing[key], next[key])) {
+      return false
+    }
+  }
+
+  return true
+}
+
+function sameArrayEntries<T>(existing: T[], next: T[]) {
+  if (existing.length !== next.length) {
+    return false
+  }
+
+  for (let i = 0; i < next.length; i++) {
+    if (!Object.is(existing[i], next[i])) {
+      return false
+    }
+  }
+
+  return true
+}
+
+function cppMessageCreatedAtMillis(message: CppMessage) {
+  if (!message.createdAt) {
+    return Date.now()
+  }
+
+  const timestamp = Date.parse(message.createdAt)
+  return Number.isFinite(timestamp) ? timestamp : Date.now()
+}
+
+function cppMessagesEquivalent(existing: Message, next: CppMessage) {
+  return (
+    existing.role === next.role &&
+    existing.content === next.content &&
+    existing.createdAt.getTime() === cppMessageCreatedAtMillis(next)
+  )
 }
 
 function clearPendingRequest(key: string, requestId?: string) {
@@ -268,20 +347,6 @@ function parseUamPushPayload(payload: unknown): ParsedPushResult {
     return { ok: true, message: { type, data: raw.data } }
   }
 
-  if (type === 'streamToken') {
-    if (!isString(raw.chatId) || !isString(raw.token)) {
-      return { ok: false, status: 'invalid-message', error: 'streamToken requires string chatId and token.' }
-    }
-    return { ok: true, message: { type, chatId: raw.chatId, token: raw.token } }
-  }
-
-  if (type === 'streamDone') {
-    if (!isString(raw.chatId)) {
-      return { ok: false, status: 'invalid-message', error: 'streamDone requires string chatId.' }
-    }
-    return { ok: true, message: { type, chatId: raw.chatId } }
-  }
-
   if (type === 'cliOutput') {
     if (!isString(raw.data)) {
       return { ok: false, status: 'invalid-message', error: 'cliOutput requires string data.' }
@@ -310,17 +375,29 @@ function deserializeState(
     sessions: Session[]
     folders: Folder[]
     messages: Record<string, Message[]>
-    agentSteps: Record<string, AgentStep[]>
+    providers: Provider[]
     activeSessionId: string | null
     cliTranscriptBySessionId: Record<string, CliTranscript>
     cliBindingBySessionId: Record<string, CliBinding>
+    cliDebugState: CppCliDebugState | null
   }
 ) {
-  let msgCounter = 50000 // high enough not to clash with mock IDs
+  const buildMessage = (chatId: string, message: CppMessage, index: number): Message => {
+    const createdAtMillis = cppMessageCreatedAtMillis(message)
+    return {
+      // Stable across refreshes (unlike an incrementing counter).
+      id: `cef-m-${chatId}-${createdAtMillis}-${index}-${message.role}`,
+      sessionId: chatId,
+      role: message.role,
+      content: message.content,
+      createdAt: new Date(createdAtMillis),
+    } satisfies Message
+  }
 
   // Build lookup maps for reference-identity preservation
   const existingSessionsById = Object.fromEntries(existing.sessions.map((s) => [s.id, s]))
   const existingFoldersById = Object.fromEntries(existing.folders.map((f) => [f.id, f]))
+  const existingProvidersById = Object.fromEntries(existing.providers.map((p) => [p.id, p]))
 
   const newFolders: Folder[] = cpp.folders.map((f) => {
     const prev = existingFoldersById[f.id]
@@ -346,9 +423,6 @@ function deserializeState(
 
   const geminiCliProviders = cpp.providers.filter((p) => p.id === GEMINI_CLI_PROVIDER_ID)
   const visibleProviders = geminiCliProviders.length > 0 ? geminiCliProviders : cpp.providers
-  const fallbackProviderId =
-    visibleProviders[0]?.id || cpp.settings.activeProviderId || GEMINI_CLI_PROVIDER_ID
-
   const newSessions: Session[] = cpp.chats.map((c) => {
     const prev = existingSessionsById[c.id]
     const name = c.title || 'Untitled'
@@ -371,41 +445,67 @@ function deserializeState(
     ? existing.sessions
     : newSessions
 
-  const messages: Record<string, Message[]> = {}
+  const nextMessages: Record<string, Message[]> = {}
   for (const c of cpp.chats) {
     const existingMsgs = existing.messages[c.id] ?? []
-    const isCurrentlyStreaming = existingMsgs.some((m) => m.isStreaming)
-    const existingRealCount = existingMsgs.filter((m) => !m.isStreaming).length
+    const existingRealMsgs = existingMsgs.filter((m) => !m.isStreaming)
+    const hasStreamingPlaceholder = existingMsgs.some((m) => m.isStreaming)
 
     // While C++ is processing a request, the React store holds an optimistic
     // streaming placeholder.  Preserve it until C++ delivers the response
     // (detected by the C++ message count exceeding our real message count).
-    if (isCurrentlyStreaming && c.messages.length <= existingRealCount) {
-      messages[c.id] = existingMsgs
-    } else {
-      messages[c.id] = c.messages.map((m) => {
-        msgCounter++
-        return {
-          id: `cef-m-${msgCounter}`,
-          sessionId: c.id,
-          role: m.role,
-          content: m.content,
-          createdAt: new Date(m.createdAt || Date.now()),
-        } satisfies Message
-      })
+    if (hasStreamingPlaceholder && c.messages.length <= existingRealMsgs.length) {
+      nextMessages[c.id] = existingMsgs
+      continue
     }
+
+    let prefixLength = 0
+    while (
+      prefixLength < existingRealMsgs.length &&
+      prefixLength < c.messages.length &&
+      cppMessagesEquivalent(existingRealMsgs[prefixLength], c.messages[prefixLength])
+    ) {
+      prefixLength++
+    }
+
+    if (!hasStreamingPlaceholder && prefixLength === existingRealMsgs.length && prefixLength === c.messages.length) {
+      nextMessages[c.id] = existingMsgs
+      continue
+    }
+
+    const reconciledMessages: Message[] = existingRealMsgs.slice(0, prefixLength)
+    for (let i = prefixLength; i < c.messages.length; i++) {
+      reconciledMessages.push(buildMessage(c.id, c.messages[i], i))
+    }
+    nextMessages[c.id] = reconciledMessages
   }
+  const messages = sameRecordEntries(existing.messages, nextMessages) ? existing.messages : nextMessages
 
-  // Preserve agentSteps for sessions that already have them.
-  const agentSteps: Record<string, AgentStep[]> = { ...existing.agentSteps }
+  const nextProviders: Provider[] = visibleProviders.map((p) => {
+    const prev = existingProvidersById[p.id]
+    const nextProvider: Provider = {
+      id: p.id,
+      name: p.name,
+      shortName: p.shortName,
+      // Preserve any UI-only provider metadata if it already exists.
+      color: prev?.color ?? '#f97316', // default accent; could be persisted later
+      description: prev?.description ?? '',
+    }
 
-  const providers: Provider[] = visibleProviders.map((p) => ({
-    id: p.id,
-    name: p.name,
-    shortName: p.shortName,
-    color: '#f97316',  // default accent; could be persisted later
-    description: '',
-  }))
+    if (
+      prev &&
+      prev.id === nextProvider.id &&
+      prev.name === nextProvider.name &&
+      prev.shortName === nextProvider.shortName &&
+      prev.color === nextProvider.color &&
+      prev.description === nextProvider.description
+    ) {
+      return prev
+    }
+
+    return nextProvider
+  })
+  const providers = sameArrayEntries(existing.providers, nextProviders) ? existing.providers : nextProviders
 
   const selectedByBackend =
     typeof cpp.selectedChatId === 'string' && sessions.some((s) => s.id === cpp.selectedChatId)
@@ -417,7 +517,7 @@ function deserializeState(
       : null
   const effectiveActiveSessionId = selectedByBackend ?? selectedFromCurrent ?? sessions[0]?.id ?? null
   const existingBindings = existing.cliBindingBySessionId
-  const cliBindingBySessionId = Object.fromEntries(
+  const nextCliBindingBySessionId = Object.fromEntries(
     cpp.chats
       .filter((c) => c.cliTerminal)
       .map((c) => {
@@ -449,8 +549,11 @@ function deserializeState(
         return [c.id, next]
       })
   ) as Record<string, CliBinding>
+  const cliBindingBySessionId = sameRecordEntries(existingBindings, nextCliBindingBySessionId)
+    ? existingBindings
+    : nextCliBindingBySessionId
 
-  const cliTranscriptBySessionId = Object.fromEntries(
+  const nextCliTranscriptBySessionId = Object.fromEntries(
     sessions.flatMap((session) => {
       const transcript = normalizeCliTranscript(
         existing.cliTranscriptBySessionId[session.id],
@@ -460,32 +563,42 @@ function deserializeState(
       return transcript ? [[session.id, transcript]] : []
     })
   ) as Record<string, CliTranscript>
+  const cliTranscriptBySessionId = sameRecordEntries(
+    existing.cliTranscriptBySessionId,
+    nextCliTranscriptBySessionId
+  )
+    ? existing.cliTranscriptBySessionId
+    : nextCliTranscriptBySessionId
+
+  const nextCliDebugState = cpp.cliDebug ?? null
+  const cliDebugState =
+    cliDebugSignature(existing.cliDebugState) === cliDebugSignature(nextCliDebugState)
+      ? existing.cliDebugState
+      : nextCliDebugState
 
   return {
     folders,
     sessions,
     messages,
-    agentSteps,
     providers,
     activeSessionId: effectiveActiveSessionId,
     lastAppliedStateRevision: cppStateRevision(cpp),
     theme: (cpp.settings.theme as 'dark' | 'light') || 'dark',
-    activeProviderId: Object.fromEntries(
-      sessions.map((s) => [
-        s.id,
-        providers.find((p) => p.id === GEMINI_CLI_PROVIDER_ID)?.id ?? fallbackProviderId,
-      ])
-    ),
     cliBindingBySessionId,
     cliTranscriptBySessionId,
-    cliDebugState: cpp.cliDebug ?? null,
+    cliDebugState,
   }
 }
 
 function cliDebugSignature(debug: CppCliDebugState | null | undefined) {
   if (!debug) return 'none'
-  return JSON.stringify(
-    debug.terminals.map((terminal) => ({
+  // Intentionally excludes volatile timestamps to avoid churn on stateUpdate pushes.
+  return JSON.stringify({
+    selectedChatId: debug.selectedChatId,
+    terminalCount: debug.terminalCount,
+    runningTerminalCount: debug.runningTerminalCount,
+    busyTerminalCount: debug.busyTerminalCount,
+    terminals: debug.terminals.map((terminal) => ({
       terminalId: terminal.terminalId,
       frontendChatId: terminal.frontendChatId,
       sourceChatId: terminal.sourceChatId,
@@ -496,25 +609,17 @@ function cliDebugSignature(debug: CppCliDebugState | null | undefined) {
       running: terminal.running,
       uiAttached: terminal.uiAttached,
       turnState: terminal.turnState,
-    }))
-  )
+      inputReady: terminal.inputReady,
+      generationInProgress: terminal.generationInProgress,
+      lastError: terminal.lastError,
+    })),
+  })
 }
 
 function isNewerStateRevision(nextRevision: number, currentRevision: number) {
   return nextRevision > currentRevision
 }
 
-// ---------------------------------------------------------------------------
-// Mock responses (dev mode only)
-// ---------------------------------------------------------------------------
-
-const MOCK_RESPONSES = [
-  "That's a great question. Let me walk through this carefully.\n\nThe key insight here is that you need to consider both the **immediate** and **long-term** implications. Starting with the immediate:\n\n1. The current approach works but has hidden complexity\n2. A cleaner abstraction would reduce cognitive load for future maintainers\n3. Performance characteristics are largely equivalent at this scale\n\nI'd recommend proceeding with option B — it aligns better with the existing patterns in your codebase.",
-  "Looking at this from first principles:\n\n```ts\n// Before\nconst result = items.reduce((acc, item) => {\n  acc[item.id] = item\n  return acc\n}, {} as Record<string, Item>)\n\n// After — same result, cleaner\nconst result = Object.fromEntries(items.map(i => [i.id, i]))\n```\n\nThe `Object.fromEntries` version is more idiomatic modern TypeScript. Both are O(n) — no performance difference.",
-  "Yes, this is a well-known pattern. The tradeoff is:\n\n- **Pros**: Simple, predictable, easy to test in isolation\n- **Cons**: Couples the caller to the implementation detail\n\nFor your use case I'd lean toward the event-driven approach since you already have an event bus in place. Reusing existing infrastructure reduces overall system complexity.",
-]
-
-let msgCounter = 100
 let sessionCounter = 10
 let folderCounter = 10
 
@@ -533,12 +638,9 @@ interface AppState {
   activeSessionId: string | null
   lastAppliedStateRevision: number
   messages: Record<string, Message[]>
-  agentSteps: Record<string, AgentStep[]>
 
   // Providers
   providers: Provider[]
-  features: ProviderFeature[]
-  activeProviderId: Record<string, string>
   cliBindingBySessionId: Record<string, CliBinding>
   cliTranscriptBySessionId: Record<string, CliTranscript>
   cliDebugState: CppCliDebugState | null
@@ -555,26 +657,18 @@ interface AppState {
 
   // Session actions
   setActiveSession: (id: string) => void
-  addSession: (name: string, viewMode: ViewMode, folderId: string | null) => void
+  addSession: (name: string, folderId: string | null) => void
   renameSession: (id: string, name: string) => void
   deleteSession: (id: string) => void
-  setViewMode: (id: string, viewMode: ViewMode) => void
 
   // Folder actions
-  addFolder: (name: string, parentId: string | null, directory: string) => void
+  addFolder: (name: string, parentId: string | null, directory: string) => Promise<boolean>
   toggleFolder: (id: string) => void
   renameFolder: (id: string, name: string, directory: string) => void
   deleteFolder: (id: string) => void
   browseFolderDirectory: (currentValue: string) => Promise<string | null>
 
-  // Message actions
-  sendMessage: (sessionId: string, content: string) => void
-  appendStreamToken: (chatId: string, token: string) => void
-  finalizeStream: (chatId: string) => void
-
-  // Provider actions
-  setActiveProvider: (sessionId: string, providerId: string) => void
-  toggleFeature: (featureId: string) => void
+  // CLI actions
   setCliBinding: (sessionId: string, binding: Partial<CliBinding>) => void
 
   // UI actions
@@ -590,6 +684,22 @@ interface AppState {
 // Store
 // ---------------------------------------------------------------------------
 
+function readDocumentTheme(): 'dark' | 'light' {
+  if (typeof document === 'undefined') return 'dark'
+  const value = document.documentElement.getAttribute('data-theme')
+  return value === 'light' ? 'light' : 'dark'
+}
+
+function persistTheme(theme: 'dark' | 'light'): void {
+  if (typeof document !== 'undefined' && document.documentElement) {
+    document.documentElement.setAttribute('data-theme', theme)
+  }
+
+  if (typeof localStorage !== 'undefined' && typeof localStorage.setItem === 'function') {
+    localStorage.setItem('uam-theme', theme)
+  }
+}
+
 export const useAppStore = create<AppState>((set, get) => {
   // Bootstrap from CEF if available (non-blocking — state arrives via uamPush later too)
   if (isCefContext()) {
@@ -603,16 +713,16 @@ export const useAppStore = create<AppState>((set, get) => {
             sessions: current.sessions,
             folders: current.folders,
             messages: current.messages,
-            agentSteps: current.agentSteps,
+            providers: current.providers,
             activeSessionId: current.activeSessionId,
             cliTranscriptBySessionId: current.cliTranscriptBySessionId,
             cliBindingBySessionId: current.cliBindingBySessionId,
+            cliDebugState: current.cliDebugState,
           })
           set(deserialized)
           // Sync theme to DOM
           if (deserialized.theme) {
-            document.documentElement.setAttribute('data-theme', deserialized.theme)
-            localStorage.setItem('uam-theme', deserialized.theme)
+            persistTheme(deserialized.theme)
           }
         }
       }
@@ -646,12 +756,6 @@ export const useAppStore = create<AppState>((set, get) => {
       switch (msg.type) {
         case 'stateUpdate':
           store.loadFromCef(msg.data)
-          break
-        case 'streamToken':
-          store.appendStreamToken(msg.chatId, msg.token)
-          break
-        case 'streamDone':
-          store.finalizeStream(msg.chatId)
           break
         case 'cliOutput':
           {
@@ -729,17 +833,14 @@ export const useAppStore = create<AppState>((set, get) => {
     sessions: inCef ? [] : initialSessions,
     activeSessionId: inCef ? null : 's1',
     lastAppliedStateRevision: -1,
-    messages: inCef ? {} : initialMessages,
-    agentSteps: inCef ? {} : mockAgentSteps,
+    messages: {},
 
     providers: inCef ? [] : initialProviders,
-    features: defaultFeatures,
-    activeProviderId: {},
     cliBindingBySessionId: {},
     cliTranscriptBySessionId: {},
     cliDebugState: null,
 
-    theme: (document.documentElement.getAttribute('data-theme') as 'dark' | 'light') || 'dark',
+    theme: readDocumentTheme(),
     isNewChatModalOpen: false,
     isSettingsOpen: false,
     streamingMessageId: null,
@@ -759,15 +860,15 @@ export const useAppStore = create<AppState>((set, get) => {
         sessions: current.sessions,
         folders: current.folders,
         messages: current.messages,
-        agentSteps: current.agentSteps,
+        providers: current.providers,
         activeSessionId: current.activeSessionId,
         cliTranscriptBySessionId: current.cliTranscriptBySessionId,
         cliBindingBySessionId: current.cliBindingBySessionId,
+        cliDebugState: current.cliDebugState,
       })
       set(deserialized)
       if (deserialized.theme) {
-        document.documentElement.setAttribute('data-theme', deserialized.theme)
-        localStorage.setItem('uam-theme', deserialized.theme)
+        persistTheme(deserialized.theme)
       }
     },
 
@@ -799,17 +900,11 @@ export const useAppStore = create<AppState>((set, get) => {
       set({ activeSessionId: id })
     },
 
-    addSession: (name, _viewMode, folderId) => {
+    addSession: (name, folderId) => {
       if (isCefContext()) {
-        const state = get()
-        const selectedProviderId =
-          state.providers.find((p) => p.id === GEMINI_CLI_PROVIDER_ID)?.id ??
-          state.activeProviderId[state.activeSessionId ?? ''] ??
-          state.providers[0]?.id ??
-          GEMINI_CLI_PROVIDER_ID
         sendToCEF({
           action: 'createSession',
-          payload: { title: name, folderId: folderId ?? '', providerId: selectedProviderId },
+          payload: { title: name, folderId: folderId ?? '', providerId: GEMINI_CLI_PROVIDER_ID },
         }).then((resp) => {
           if (!resp.ok) {
             console.error('[CEF] createSession failed:', resp.error)
@@ -962,21 +1057,14 @@ export const useAppStore = create<AppState>((set, get) => {
       })
     },
 
-    setViewMode: (id, viewMode) =>
-      set((state) => ({
-        sessions: state.sessions.map((s) =>
-          s.id === id ? { ...s, viewMode } : s
-        ),
-      })),
-
     // ---- Folder actions ----
 
     addFolder: (name, _parentId, directory) => {
       if (isCefContext()) {
-        sendToCEF<CppFolder>({ action: 'createFolder', payload: { title: name, directory } }).then((resp) => {
+        return sendToCEF<CppFolder>({ action: 'createFolder', payload: { title: name, directory } }).then((resp) => {
           if (!resp.ok || !resp.data?.id) {
             if (!resp.ok) console.error('[CEF] createFolder failed:', resp.error)
-            return
+            return false
           }
 
           set((state) => {
@@ -997,8 +1085,8 @@ export const useAppStore = create<AppState>((set, get) => {
               folders: [...state.folders, createdFolder],
             }
           })
+          return true
         })
-        return
       }
 
       folderCounter++
@@ -1011,35 +1099,135 @@ export const useAppStore = create<AppState>((set, get) => {
         createdAt: new Date(),
       }
       set((state) => ({ folders: [...state.folders, folder] }))
+      return Promise.resolve(true)
     },
 
-    toggleFolder: (id) => {
-      set((state) => ({
-        folders: state.folders.map((f) =>
-          f.id === id ? { ...f, isExpanded: !f.isExpanded } : f
-        ),
-      }))
-      if (isCefContext()) {
-        sendToCEF({ action: 'toggleFolder', payload: { folderId: id } })
-      }
-    },
+	    toggleFolder: (id) => {
+	      if (isCefContext()) {
+	        const currentFolder = get().folders.find((folder) => folder.id === id)
+	        if (!currentFolder) {
+	          return
+	        }
 
-    renameFolder: (id, name, directory) => {
-      if (isCefContext()) {
-        sendToCEF({ action: 'renameFolder', payload: { folderId: id, title: name, directory } })
-        return
-      }
+	        const requestKey = `toggleFolder:${id}`
+	        const requestId = createRequestId('toggleFolder')
+	        rememberPendingRequest(requestKey, requestId)
+	        const previousExpanded = currentFolder.isExpanded
+	        set((state) => ({
+	          folders: state.folders.map((f) =>
+	            f.id === id ? { ...f, isExpanded: !f.isExpanded } : f
+	          ),
+	        }))
+	        sendToCEF({ action: 'toggleFolder', payload: { folderId: id }, requestId }).then((resp) => {
+	          if (resp.ok) {
+	            clearPendingRequest(requestKey, resp.requestId)
+	            return
+	          }
+
+	          if (!isLatestPendingRequest(requestKey, resp.requestId)) {
+	            return
+	          }
+
+	          set((state) => ({
+	            folders: state.folders.map((f) =>
+	              f.id === id ? { ...f, isExpanded: previousExpanded } : f
+	            ),
+	          }))
+	          pendingRequestIdsByKey.delete(requestKey)
+	        })
+	        return
+	      }
+
+	      set((state) => ({
+	        folders: state.folders.map((f) =>
+	          f.id === id ? { ...f, isExpanded: !f.isExpanded } : f
+	        ),
+	      }))
+	    },
+
+	    renameFolder: (id, name, directory) => {
+	      if (isCefContext()) {
+	        const previousFolder = get().folders.find((folder) => folder.id === id)
+	        if (!previousFolder) {
+	          return
+	        }
+
+	        const requestKey = `renameFolder:${id}`
+	        const requestId = createRequestId('renameFolder')
+	        rememberPendingRequest(requestKey, requestId)
+	        set((state) => ({
+	          folders: state.folders.map((folder) =>
+	            folder.id === id ? { ...folder, name, directory } : folder
+	          ),
+	        }))
+	        sendToCEF({ action: 'renameFolder', payload: { folderId: id, title: name, directory }, requestId }).then(
+	          (resp) => {
+	            if (resp.ok) {
+	              clearPendingRequest(requestKey, resp.requestId)
+	              return
+	            }
+
+	            if (!isLatestPendingRequest(requestKey, resp.requestId)) {
+	              return
+	            }
+
+	            set((state) => ({
+	              folders: state.folders.map((folder) => (folder.id === id ? previousFolder : folder)),
+	            }))
+	            pendingRequestIdsByKey.delete(requestKey)
+	          }
+	        )
+	        return
+	      }
 
       set((state) => ({
         folders: state.folders.map((f) => (f.id === id ? { ...f, name, directory } : f)),
       }))
     },
 
-    deleteFolder: (id) => {
-      if (isCefContext()) {
-        sendToCEF({ action: 'deleteFolder', payload: { folderId: id } })
-        return
-      }
+	    deleteFolder: (id) => {
+	      if (isCefContext()) {
+	        const current = get()
+	        const deletedFolder = current.folders.find((folder) => folder.id === id)
+	        if (!deletedFolder) {
+	          return
+	        }
+
+	        const requestKey = `deleteFolder:${id}`
+	        const requestId = createRequestId('deleteFolder')
+	        rememberPendingRequest(requestKey, requestId)
+	        const previousFolders = current.folders
+	        const previousSessions = current.sessions
+	        const previousActiveSessionId = current.activeSessionId
+	        set((state) => {
+	          const remainingFolders = state.folders.filter((folder) => folder.id !== id)
+	          const sessions = state.sessions.map((session) =>
+	            session.folderId === id ? { ...session, folderId: null } : session
+	          )
+	          return {
+	            folders: remainingFolders,
+	            sessions,
+	          }
+	        })
+	        sendToCEF({ action: 'deleteFolder', payload: { folderId: id }, requestId }).then((resp) => {
+	          if (resp.ok) {
+	            clearPendingRequest(requestKey, resp.requestId)
+	            return
+	          }
+
+	          if (!isLatestPendingRequest(requestKey, resp.requestId)) {
+	            return
+	          }
+
+	          set({
+	            folders: previousFolders,
+	            sessions: previousSessions,
+	            activeSessionId: previousActiveSessionId,
+	          })
+	          pendingRequestIdsByKey.delete(requestKey)
+	        })
+	        return
+	      }
 
       set((state) => {
         const remainingFolders = state.folders.filter((f) => f.id !== id)
@@ -1066,147 +1254,6 @@ export const useAppStore = create<AppState>((set, get) => {
       const selectedPath = response.ok ? response.data?.selectedPath?.trim() ?? '' : ''
       return selectedPath.length > 0 ? selectedPath : null
     },
-
-    // ---- Message actions ----
-
-    sendMessage: (sessionId, content) => {
-      const previousMessages = get().messages[sessionId] ?? []
-      const previousStreamingMessageId = get().streamingMessageId
-
-      msgCounter++
-      const userMsg: Message = {
-        id: makeId('m', msgCounter),
-        sessionId,
-        role: 'user',
-        content,
-        createdAt: new Date(),
-      }
-
-      msgCounter++
-      const aiMsgId = makeId('m', msgCounter)
-      const aiMsg: Message = {
-        id: aiMsgId,
-        sessionId,
-        role: 'assistant',
-        content: '',
-        isStreaming: true,
-        createdAt: new Date(),
-      }
-
-      set((state) => ({
-        messages: {
-          ...state.messages,
-          [sessionId]: [...(state.messages[sessionId] ?? []), userMsg, aiMsg],
-        },
-        streamingMessageId: aiMsgId,
-      }))
-
-      if (isCefContext()) {
-        const requestKey = `sendMessage:${sessionId}`
-        const requestId = createRequestId('sendMessage')
-        rememberPendingRequest(requestKey, requestId)
-        sendToCEF({ action: 'sendMessage', payload: { chatId: sessionId, content }, requestId }).then(
-          (resp) => {
-            if (resp.ok) {
-              clearPendingRequest(requestKey, resp.requestId)
-              return
-            }
-
-            if (!isLatestPendingRequest(requestKey, resp.requestId)) {
-              return
-            }
-
-            set((state) => ({
-              messages: {
-                ...state.messages,
-                [sessionId]: previousMessages,
-              },
-              streamingMessageId: previousStreamingMessageId,
-            }))
-            pendingRequestIdsByKey.delete(requestKey)
-          }
-        )
-        // Streaming tokens arrive via window.uamPush → appendStreamToken / finalizeStream
-        return
-      }
-
-      // Dev/mock path — simulate streaming
-      const fullResponse = MOCK_RESPONSES[Math.floor(Math.random() * MOCK_RESPONSES.length)]
-      let index = 0
-      const chunkSize = 4
-      const interval = setInterval(() => {
-        index += chunkSize
-        const partial = fullResponse.slice(0, index)
-        const done = index >= fullResponse.length
-
-        set((state) => ({
-          messages: {
-            ...state.messages,
-            [sessionId]: state.messages[sessionId].map((m) =>
-              m.id === aiMsgId
-                ? { ...m, content: done ? fullResponse : partial, isStreaming: !done }
-                : m
-            ),
-          },
-          streamingMessageId: done ? null : aiMsgId,
-        }))
-
-        if (done) clearInterval(interval)
-      }, 20)
-    },
-
-    appendStreamToken: (chatId, token) => {
-      set((state) => {
-        const msgs = state.messages[chatId]
-        if (!msgs) return {}
-        // Append to the last streaming message (or last assistant message).
-        const lastIdx = msgs.length - 1
-        if (lastIdx < 0) return {}
-        const last = msgs[lastIdx]
-        if (last.role !== 'assistant') return {}
-        return {
-          messages: {
-            ...state.messages,
-            [chatId]: msgs.map((m, i) =>
-              i === lastIdx ? { ...m, content: m.content + token, isStreaming: true } : m
-            ),
-          },
-          streamingMessageId: last.id,
-        }
-      })
-    },
-
-    finalizeStream: (chatId) => {
-      set((state) => {
-        const msgs = state.messages[chatId]
-        if (!msgs) return {}
-        const lastIdx = msgs.length - 1
-        if (lastIdx < 0) return {}
-        return {
-          messages: {
-            ...state.messages,
-            [chatId]: msgs.map((m, i) =>
-              i === lastIdx ? { ...m, isStreaming: false } : m
-            ),
-          },
-          streamingMessageId: null,
-        }
-      })
-    },
-
-    // ---- Provider actions ----
-
-    setActiveProvider: (sessionId, providerId) =>
-      set((state) => ({
-        activeProviderId: { ...state.activeProviderId, [sessionId]: providerId },
-      })),
-
-    toggleFeature: (featureId) =>
-      set((state) => ({
-        features: state.features.map((f) =>
-          f.id === featureId ? { ...f, enabled: !f.enabled } : f
-        ),
-      })),
 
     setCliBinding: (sessionId, binding) =>
       set((state) => {
@@ -1256,11 +1303,27 @@ export const useAppStore = create<AppState>((set, get) => {
     // ---- UI actions ----
 
     setTheme: (theme) => {
-      document.documentElement.setAttribute('data-theme', theme)
-      localStorage.setItem('uam-theme', theme)
+      const previousTheme = get().theme
+      persistTheme(theme)
       set({ theme })
       if (isCefContext()) {
-        sendToCEF({ action: 'setTheme', payload: { theme } })
+        const requestKey = 'setTheme'
+        const requestId = createRequestId('setTheme')
+        rememberPendingRequest(requestKey, requestId)
+        sendToCEF({ action: 'setTheme', payload: { theme }, requestId }).then((resp) => {
+          if (resp.ok) {
+            clearPendingRequest(requestKey, resp.requestId)
+            return
+          }
+
+          if (!isLatestPendingRequest(requestKey, resp.requestId)) {
+            return
+          }
+
+          persistTheme(previousTheme)
+          set({ theme: previousTheme })
+          pendingRequestIdsByKey.delete(requestKey)
+        })
       }
     },
 

@@ -128,11 +128,6 @@ bool ProviderRuntime::UsesCliOutput(const ProviderProfile& profile)
 	return ProviderRuntimeRegistry::Resolve(profile).UsesCliOutput(profile);
 }
 
-bool ProviderRuntime::UsesStructuredOutput(const ProviderProfile& profile)
-{
-	return ProviderRuntimeRegistry::Resolve(profile).UsesStructuredOutput(profile);
-}
-
 bool ProviderRuntime::UsesGeminiPathBootstrap(const ProviderProfile& profile)
 {
 	return ProviderRuntimeRegistry::Resolve(profile).UsesGeminiPathBootstrap(profile);

@@ -1,19 +1,9 @@
 import { useState, useRef, useEffect, memo } from 'react'
-import { ViewMode } from '../../types/session'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 
-const MODE_ICON: Record<ViewMode, string> = {
-  structured: '◈',
-  cli: '⌃',
-  'coding-agent': '⚙',
-}
-
-const MODE_COLOR: Record<ViewMode, string> = {
-  structured: 'var(--accent)',
-  cli: 'var(--green)',
-  'coding-agent': 'var(--blue)',
-}
+const MODE_ICON = '⌃'
+const MODE_COLOR = 'var(--green)'
 
 interface SessionItemProps {
   sessionId: string
@@ -22,7 +12,6 @@ interface SessionItemProps {
 export const SessionItem = memo(function SessionItem({ sessionId }: SessionItemProps) {
   // Fine-grained selectors — each only re-renders when its specific value changes
   const sessionName     = useAppStore((s) => s.sessions.find((x) => x.id === sessionId)?.name ?? '')
-  const sessionViewMode = useAppStore((s) => s.sessions.find((x) => x.id === sessionId)?.viewMode ?? 'cli')
   const isActive        = useAppStore((s) => s.activeSessionId === sessionId)
   const cliBinding      = useAppStore(useShallow((s) => s.cliBindingBySessionId[sessionId]))
   const setActiveSession = useAppStore((s) => s.setActiveSession)
@@ -100,9 +89,9 @@ export const SessionItem = memo(function SessionItem({ sessionId }: SessionItemP
         {/* Mode icon */}
         <span
           className="flex-shrink-0 text-xs"
-          style={{ color: isActive ? MODE_COLOR[sessionViewMode] : 'var(--text-3)', fontSize: 10 }}
+          style={{ color: isActive ? MODE_COLOR : 'var(--text-3)', fontSize: 10 }}
         >
-          {MODE_ICON[sessionViewMode]}
+          {MODE_ICON}
         </span>
 
         {/* Name or edit input */}

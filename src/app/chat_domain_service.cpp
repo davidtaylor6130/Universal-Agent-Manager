@@ -10,12 +10,49 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <sstream>
 #include <unordered_map>
 
 using uam::AppState;
 using uam::constants::kDefaultFolderId;
 using uam::constants::kDefaultFolderTitle;
+
+namespace
+{
+	std::string NormalizeNativeIdentityWorkspace(const ChatSession& chat)
+	{
+		const std::string trimmed_workspace = Trim(chat.workspace_directory);
+
+		if (!trimmed_workspace.empty())
+		{
+			return std::filesystem::path(trimmed_workspace).lexically_normal().generic_string();
+		}
+
+		const std::string trimmed_folder = Trim(chat.folder_id);
+		return trimmed_folder.empty() ? "" : trimmed_folder;
+	}
+
+	std::string NativeIdentityKey(const ChatSession& chat)
+	{
+		return Trim(chat.provider_id) + "|" + NormalizeNativeIdentityWorkspace(chat) + "|" + Trim(chat.native_session_id);
+	}
+
+	std::string HashNativeIdentityKey(const std::string& key)
+	{
+		std::uint64_t hash = 1469598103934665603ull;
+
+		for (const unsigned char ch : key)
+		{
+			hash ^= ch;
+			hash *= 1099511628211ull;
+		}
+
+		std::ostringstream out;
+		out << std::hex << hash;
+		return out.str();
+	}
+} // namespace
 
 std::string ChatDomainService::NewFolderId() const
 {
@@ -209,11 +246,6 @@ bool ChatDomainService::ShouldReplaceChatForDuplicateId(const ChatSession& candi
 		return !candidate.provider_id.empty();
 	}
 
-	if (candidate.template_override_id != existing.template_override_id)
-	{
-		return !candidate.template_override_id.empty();
-	}
-
 	if (candidate.parent_chat_id != existing.parent_chat_id)
 	{
 		return !candidate.parent_chat_id.empty();
@@ -237,7 +269,7 @@ std::vector<ChatSession> ChatDomainService::DeduplicateChatsById(std::vector<Cha
 	std::vector<ChatSession> deduped;
 	deduped.reserve(chats.size());
 	std::unordered_map<std::string, std::size_t> index_by_id;
-	std::unordered_map<std::string, std::size_t> index_by_native_session_id;
+	std::unordered_map<std::string, std::size_t> index_by_native_identity;
 
 	for (ChatSession& chat : chats)
 	{
@@ -250,37 +282,73 @@ std::vector<ChatSession> ChatDomainService::DeduplicateChatsById(std::vector<Cha
 
 		const std::string native_session_id = Trim(chat.native_session_id);
 		const bool has_native_identity = !native_session_id.empty();
-		const std::string native_key = has_native_identity ? ("native:" + native_session_id) : std::string{};
+		const std::string native_key = has_native_identity ? NativeIdentityKey(chat) : std::string{};
 
 		if (has_native_identity)
 		{
-			const auto native_it = index_by_native_session_id.find(native_key);
+			const auto native_it = index_by_native_identity.find(native_key);
 
-			if (native_it != index_by_native_session_id.end())
+			if (native_it != index_by_native_identity.end())
 			{
 				ChatSession& existing = deduped[native_it->second];
 
 				if (ShouldReplaceChatForDuplicateId(chat, existing))
 				{
+					const std::string previous_id = existing.id;
 					existing = std::move(chat);
-					index_by_id[existing.id] = native_it->second;
+					if (existing.id != previous_id)
+					{
+						index_by_id.erase(previous_id);
+						index_by_id[existing.id] = native_it->second;
+					}
 				}
 
 				continue;
 			}
+
+			const auto id_it = index_by_id.find(chat.id);
+			if (id_it != index_by_id.end())
+			{
+				ChatSession& existing = deduped[id_it->second];
+				const std::string existing_native_key = Trim(existing.native_session_id).empty() ? std::string{} : NativeIdentityKey(existing);
+
+				if (!existing_native_key.empty() && existing_native_key == native_key)
+				{
+					if (ShouldReplaceChatForDuplicateId(chat, existing))
+					{
+						const std::string previous_id = existing.id;
+						existing = std::move(chat);
+						if (existing.id != previous_id)
+						{
+							index_by_id.erase(previous_id);
+							index_by_id[existing.id] = id_it->second;
+						}
+						index_by_native_identity[native_key] = id_it->second;
+					}
+
+					continue;
+				}
+
+				chat.id = chat.id + "--" + HashNativeIdentityKey(native_key);
+				while (index_by_id.find(chat.id) != index_by_id.end())
+				{
+					chat.id.push_back('_');
+				}
+			}
+
+			const std::size_t next_index = deduped.size();
+			index_by_native_identity[native_key] = next_index;
+			index_by_id[chat.id] = next_index;
+			deduped.push_back(std::move(chat));
+			continue;
 		}
 
-			const auto it = index_by_id.find(chat.id);
+		const auto it = index_by_id.find(chat.id);
 
-			if (it == index_by_id.end())
-			{
-				const std::size_t next_index = deduped.size();
-				index_by_id[chat.id] = next_index;
-
-			if (has_native_identity)
-			{
-				index_by_native_session_id[native_key] = next_index;
-			}
+		if (it == index_by_id.end())
+		{
+			const std::size_t next_index = deduped.size();
+			index_by_id[chat.id] = next_index;
 
 			deduped.push_back(std::move(chat));
 			continue;
@@ -288,14 +356,14 @@ std::vector<ChatSession> ChatDomainService::DeduplicateChatsById(std::vector<Cha
 
 		ChatSession& existing = deduped[it->second];
 
-			if (ShouldReplaceChatForDuplicateId(chat, existing))
-			{
-				existing = std::move(chat);
-			}
+		if (ShouldReplaceChatForDuplicateId(chat, existing))
+		{
+			existing = std::move(chat);
+		}
 
 		if (!existing.native_session_id.empty())
 		{
-			index_by_native_session_id["native:" + existing.native_session_id] = it->second;
+			index_by_native_identity[NativeIdentityKey(existing)] = it->second;
 		}
 	}
 
@@ -378,10 +446,6 @@ bool ChatDomainService::CreateBranchFromMessage(AppState& app, const std::string
 	branch.parent_chat_id = source.id;
 	branch.branch_root_chat_id = source.branch_root_chat_id.empty() ? source.id : source.branch_root_chat_id;
 	branch.branch_from_message_index = message_index;
-	branch.template_override_id = source.template_override_id;
-	branch.prompt_profile_bootstrapped = source.prompt_profile_bootstrapped;
-	branch.rag_enabled = source.rag_enabled;
-	branch.rag_source_directories = source.rag_source_directories;
 	branch.linked_files = source.linked_files;
 	branch.workspace_directory = ResolveWorkspaceRootPath(app, source).string();
 	branch.messages.assign(source.messages.begin(), source.messages.begin() + message_index + 1);

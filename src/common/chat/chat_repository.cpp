@@ -286,10 +286,6 @@ namespace
 		       lhs.branch_root_chat_id == rhs.branch_root_chat_id &&
 		       lhs.branch_from_message_index == rhs.branch_from_message_index &&
 		       lhs.folder_id == rhs.folder_id &&
-		       lhs.template_override_id == rhs.template_override_id &&
-		       lhs.prompt_profile_bootstrapped == rhs.prompt_profile_bootstrapped &&
-		       lhs.rag_enabled == rhs.rag_enabled &&
-		       lhs.rag_source_directories == rhs.rag_source_directories &&
 		       lhs.title == rhs.title &&
 		       lhs.created_at == rhs.created_at &&
 		       lhs.updated_at == rhs.updated_at &&
@@ -336,13 +332,6 @@ namespace
 		if (root.object_value.contains("branch_from_message_index"))
 			chat.branch_from_message_index = static_cast<int>(JsonNumberOrDefault(root.Find("branch_from_message_index"), -1));
 		chat.folder_id = JsonStringOrEmpty(root.Find("folder_id"));
-		chat.template_override_id = JsonStringOrEmpty(root.Find("template_override_id"));
-		if (root.object_value.contains("prompt_profile_bootstrapped"))
-			chat.prompt_profile_bootstrapped = JsonBoolOrDefault(root.Find("prompt_profile_bootstrapped"), false);
-		if (root.object_value.contains("rag_enabled"))
-			chat.rag_enabled = JsonBoolOrDefault(root.Find("rag_enabled"), true);
-		if (const JsonValue* rag_source_directories = root.Find("rag_source_directories"))
-			chat.rag_source_directories = JsonStringArrayOrEmpty(rag_source_directories);
 		chat.title = JsonStringOrEmpty(root.Find("title"));
 		chat.created_at = JsonStringOrEmpty(root.Find("created_at"));
 		chat.updated_at = JsonStringOrEmpty(root.Find("updated_at"));
@@ -417,17 +406,6 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 
 	root.object_value["folder_id"].type = JsonValue::Type::String;
 	root.object_value["folder_id"].string_value = chat.folder_id;
-
-	root.object_value["template_override_id"].type = JsonValue::Type::String;
-	root.object_value["template_override_id"].string_value = chat.template_override_id;
-
-	root.object_value["prompt_profile_bootstrapped"].type = JsonValue::Type::Bool;
-	root.object_value["prompt_profile_bootstrapped"].bool_value = chat.prompt_profile_bootstrapped;
-
-	root.object_value["rag_enabled"].type = JsonValue::Type::Bool;
-	root.object_value["rag_enabled"].bool_value = chat.rag_enabled;
-
-	root.object_value["rag_source_directories"] = StringArrayToJson(chat.rag_source_directories);
 
 	root.object_value["title"].type = JsonValue::Type::String;
 	root.object_value["title"].string_value = chat.title;
@@ -506,20 +484,12 @@ ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
 			}
 			else if (key == "folder")
 				chat.folder_id = value;
-			else if (key == "template_override")
-				chat.template_override_id = value;
-			else if (key == "prompt_profile_bootstrapped" || key == "gemini_md_bootstrapped")
-				chat.prompt_profile_bootstrapped = (value == "1" || value == "true");
-			else if (key == "rag_enabled")
-				chat.rag_enabled = (value == "1" || value == "true");
 			else if (key == "title")
 				chat.title = value;
 			else if (key == "created_at")
 				chat.created_at = value;
 			else if (key == "updated_at")
 				chat.updated_at = value;
-			else if (key == "rag_source_directory" && !value.empty())
-				chat.rag_source_directories.push_back(value);
 			else if (key == "file" && !value.empty())
 				chat.linked_files.push_back(value);
 		}

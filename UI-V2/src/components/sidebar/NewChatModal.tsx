@@ -58,7 +58,7 @@ export function NewChatModal() {
   const handleCreate = () => {
     const n = name.trim() || 'New Session'
     const selectedFolderId = folderId ?? folders[0]?.id ?? null
-    addSession(n, 'cli', selectedFolderId)
+    addSession(n, selectedFolderId)
   }
 
   const selectedFolder =

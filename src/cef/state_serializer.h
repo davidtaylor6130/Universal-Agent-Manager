@@ -15,13 +15,16 @@ namespace uam
 /// to window.uamPush() or returning from a getInitialState CEF query.
 ///
 /// Only the fields the React frontend needs are included — internal runtime
-/// state (pending calls, VCS snapshots, RAG scan state, etc.) is omitted.
+/// state such as pending calls and platform task handles is omitted.
 /// </summary>
 class StateSerializer
 {
   public:
 	/// Serialise the full application state.
 	static nlohmann::json Serialize(const AppState& app);
+
+	/// Serialise a compact state summary for push fingerprinting.
+	static nlohmann::json SerializeFingerprint(const AppState& app);
 
 	/// Serialise a single chat session (messages included).
 	static nlohmann::json SerializeSession(const ChatSession& session);

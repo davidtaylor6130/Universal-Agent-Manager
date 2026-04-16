@@ -66,10 +66,38 @@ std::string BuildStateUpdateMessage(const uam::AppState& app)
 	return msg.dump();
 }
 
+void StripVolatileCliDebugTelemetry(nlohmann::json& state)
+{
+	const auto cli_debug_it = state.find("cliDebug");
+	if (cli_debug_it == state.end() || !cli_debug_it->is_object())
+	{
+		return;
+	}
+
+	auto& cli_debug = *cli_debug_it;
+	const auto terminals_it = cli_debug.find("terminals");
+	if (terminals_it == cli_debug.end() || !terminals_it->is_array())
+	{
+		return;
+	}
+
+	for (auto& terminal : *terminals_it)
+	{
+		if (!terminal.is_object())
+		{
+			continue;
+		}
+
+		terminal.erase("lastUserInputAt");
+		terminal.erase("lastAiOutputAt");
+		terminal.erase("lastPolledAt");
+	}
+}
+
 std::string BuildStateFingerprint(const uam::AppState& app)
 {
-	nlohmann::json state = uam::StateSerializer::Serialize(app);
-	state.erase("stateRevision");
+	nlohmann::json state = uam::StateSerializer::SerializeFingerprint(app);
+	StripVolatileCliDebugTelemetry(state);
 	return state.dump();
 }
 

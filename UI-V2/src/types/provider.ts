@@ -5,10 +5,3 @@ export interface Provider {
   color: string
   description: string
 }
-
-export interface ProviderFeature {
-  id: string
-  label: string
-  enabled: boolean
-  icon: string
-}

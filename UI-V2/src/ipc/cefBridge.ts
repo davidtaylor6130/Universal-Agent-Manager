@@ -89,9 +89,14 @@ export async function sendToCEF<T = unknown>(
   }
 
   // Dev/mock path
-  console.debug('[CEF stub] Request:', envelope)
+      const isDev = (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV === true
+      if (isDev) {
+        console.debug('[CEF stub] Request:', envelope)
+      }
   await new Promise((r) => setTimeout(r, 80))
   const mock: CEFResponse<T> = { ok: true, data: null as T, requestId }
-  console.debug('[CEF stub] Response:', mock)
+          if (isDev) {
+            console.debug('[CEF stub] Response:', mock)
+          }
   return mock
 }

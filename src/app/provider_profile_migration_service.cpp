@@ -2,24 +2,15 @@
 
 #include "app/application_core_helpers.h"
 
-#include "common/provider/runtime/provider_build_config.h"
-
 namespace
 {
-#if UAM_ENABLE_RUNTIME_GEMINI_CLI
 	constexpr const char* kRuntimeIdCli = "gemini-cli";
-#endif
 } // namespace
 
 bool ProviderProfileMigrationService::IsNativeHistoryProviderId(const std::string& provider_id) const
 {
 	const std::string lowered = ToLowerAscii(Trim(provider_id));
-#if UAM_ENABLE_RUNTIME_GEMINI_CLI
 	return lowered == kRuntimeIdCli || lowered == "gemini";
-#else
-	(void)provider_id;
-	return false;
-#endif
 }
 
 std::string ProviderProfileMigrationService::MapLegacyRuntimeId(const std::string& provider_id, const bool prefer_cli_for_native_history) const
@@ -44,7 +35,7 @@ std::string ProviderProfileMigrationService::MapLegacyRuntimeId(const std::strin
 std::string ProviderProfileMigrationService::DefaultRuntimeIdForLegacyViewHint(const uam::AppState& app) const
 {
 	(void)app.center_view_mode;
-	return provider_build_config::FirstEnabledProviderId();
+	return kRuntimeIdCli;
 }
 
 bool ProviderProfileMigrationService::ShouldShowProviderProfileInUi(const ProviderProfile& profile) const
@@ -62,7 +53,7 @@ bool ProviderProfileMigrationService::MigrateActiveProviderIdToFixedModes(uam::A
 {
 	if (Trim(app.settings.active_provider_id).empty())
 	{
-		app.settings.active_provider_id = provider_build_config::FirstEnabledProviderId();
+		app.settings.active_provider_id = kRuntimeIdCli;
 		return true;
 	}
 

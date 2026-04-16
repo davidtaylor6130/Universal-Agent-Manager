@@ -32,10 +32,12 @@ MessageRole RoleFromString(const std::string& value)
 
 std::string ViewModeToString(const CenterViewMode mode)
 {
-	return (mode == CenterViewMode::CliConsole) ? "cli" : "structured";
+	(void)mode;
+	return "cli";
 }
 
 CenterViewMode ViewModeFromString(const std::string& value)
 {
-	return (value == "cli") ? CenterViewMode::CliConsole : CenterViewMode::Structured;
+	(void)value;
+	return CenterViewMode::CliConsole;
 }

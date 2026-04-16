@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cef/cef_includes.h"
+#include "cef/state_serializer.h"
 #include "common/state/app_state.h"
 
 #include <string>
@@ -14,6 +15,10 @@ namespace uam
 /// </summary>
 bool PushStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, const AppState& app);
 void PushStateUpdate(CefRefPtr<CefBrowser> browser, const AppState& app);
+inline std::string StateFingerprintForTests(const AppState& app)
+{
+	return StateSerializer::SerializeFingerprint(app).dump();
+}
 
 /// <summary>
 /// Delivers a single streaming token for the given chat session to the React frontend.

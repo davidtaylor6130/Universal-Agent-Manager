@@ -3,6 +3,10 @@
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 
+#include <cstdint>
+#include <iomanip>
+#include <sstream>
+
 namespace uam
 {
 
@@ -22,6 +26,61 @@ std::string RoleStr(MessageRole role)
 	case MessageRole::System:    return "system";
 	}
 	return "user";
+}
+
+constexpr std::uint64_t kFingerprintHashOffset = 1469598103934665603ull;
+constexpr std::uint64_t kFingerprintHashPrime = 1099511628211ull;
+
+void FingerprintHashBytes(std::uint64_t& hash, const unsigned char* data, const std::size_t len)
+{
+	for (std::size_t i = 0; i < len; ++i)
+	{
+		hash ^= static_cast<std::uint64_t>(data[i]);
+		hash *= kFingerprintHashPrime;
+	}
+}
+
+void FingerprintHashString(std::uint64_t& hash, const std::string& value)
+{
+	FingerprintHashBytes(hash, reinterpret_cast<const unsigned char*>(value.data()), value.size());
+
+	const unsigned char separator = 0xFF;
+	FingerprintHashBytes(hash, &separator, 1);
+}
+
+void FingerprintHashBool(std::uint64_t& hash, const bool value)
+{
+	const unsigned char byte = value ? 1u : 0u;
+	FingerprintHashBytes(hash, &byte, 1);
+}
+
+std::string FingerprintHashHex(const std::uint64_t hash)
+{
+	std::ostringstream out;
+	out << std::hex << std::setw(16) << std::setfill('0') << hash;
+	return out.str();
+}
+
+std::string MessageDigestForFingerprint(const ChatSession& session)
+{
+	std::uint64_t hash = kFingerprintHashOffset;
+
+	FingerprintHashString(hash, session.updated_at);
+	FingerprintHashString(hash, std::to_string(session.messages.size()));
+
+	if (!session.messages.empty())
+	{
+		const Message& last_message = session.messages.back();
+		FingerprintHashString(hash, RoleStr(last_message.role));
+		FingerprintHashString(hash, last_message.created_at);
+		FingerprintHashString(hash, last_message.provider);
+		FingerprintHashString(hash, std::to_string(last_message.content.size()));
+		FingerprintHashString(hash, std::to_string(last_message.tool_calls.size()));
+		FingerprintHashString(hash, std::to_string(last_message.thoughts.size()));
+		FingerprintHashBool(hash, last_message.interrupted);
+	}
+
+	return FingerprintHashHex(hash);
 }
 
 const uam::CliTerminalState* FindTerminalForChat(const uam::AppState& app, const ChatSession& chat)
@@ -58,6 +117,56 @@ const uam::CliTerminalState* FindTerminalForChat(const uam::AppState& app, const
 	}
 
 	return nullptr;
+}
+
+nlohmann::json SerializeChatTerminalSummary(const AppState& app, const ChatSession& chat)
+{
+	const bool ready_since_last_select = app.chats_with_unseen_updates.find(chat.id) != app.chats_with_unseen_updates.end();
+	const bool selected = chat.id == CliSelectedChatId(app);
+	const bool has_pending_call = HasPendingCallForChat(app, chat.id);
+
+	if (const CliTerminalState* terminal = FindTerminalForChat(app, chat); terminal != nullptr)
+	{
+		const bool terminal_processing = terminal->running &&
+			(terminal->turn_state == CliTerminalTurnState::Busy || terminal->generation_in_progress);
+		const bool processing = has_pending_call || terminal_processing;
+		nlohmann::json terminal_json;
+		terminal_json["terminalId"] = terminal->terminal_id;
+		terminal_json["frontendChatId"] = terminal->frontend_chat_id;
+		terminal_json["sourceChatId"] = terminal->attached_chat_id;
+		terminal_json["running"] = terminal->running;
+		terminal_json["turnState"] = terminal->turn_state == CliTerminalTurnState::Busy ? "busy" : "idle";
+		terminal_json["processing"] = processing;
+		terminal_json["readySinceLastSelect"] = ready_since_last_select;
+		terminal_json["active"] = terminal->running && !selected && !processing && !ready_since_last_select;
+		terminal_json["lastError"] = terminal->last_error;
+		return terminal_json;
+	}
+
+	const bool processing = has_pending_call;
+	nlohmann::json terminal_json;
+	terminal_json["running"] = false;
+	terminal_json["turnState"] = "idle";
+	terminal_json["processing"] = processing;
+	terminal_json["readySinceLastSelect"] = ready_since_last_select;
+	terminal_json["active"] = false;
+	terminal_json["lastError"] = "";
+	return terminal_json;
+}
+
+nlohmann::json SerializeFingerprintSession(const AppState& app, const ChatSession& chat)
+{
+	nlohmann::json chat_json;
+	chat_json["id"] = chat.id;
+	chat_json["title"] = chat.title;
+	chat_json["folderId"] = chat.folder_id;
+	chat_json["providerId"] = chat.provider_id;
+	chat_json["createdAt"] = chat.created_at;
+	chat_json["updatedAt"] = chat.updated_at;
+	chat_json["messageCount"] = chat.messages.size();
+	chat_json["messagesDigest"] = MessageDigestForFingerprint(chat);
+	chat_json["cliTerminal"] = SerializeChatTerminalSummary(app, chat);
+	return chat_json;
 }
 
 nlohmann::json SerializeCliDebugState(const AppState& app)
@@ -201,8 +310,52 @@ nlohmann::json StateSerializer::Serialize(const AppState& app)
 		nlohmann::json settings;
 		settings["activeProviderId"] = app.settings.active_provider_id;
 		settings["theme"]            = app.settings.ui_theme;
-		settings["ragEnabled"]       = app.settings.rag_enabled;
 		j["settings"]                = settings;
+	}
+
+	return j;
+}
+
+nlohmann::json StateSerializer::SerializeFingerprint(const AppState& app)
+{
+	nlohmann::json j;
+
+	auto folders_arr = nlohmann::json::array();
+	for (const auto& folder : app.folders)
+	{
+		folders_arr.push_back(SerializeFolder(folder));
+	}
+	j["folders"] = folders_arr;
+
+	auto chats_arr = nlohmann::json::array();
+	for (const auto& chat : app.chats)
+	{
+		chats_arr.push_back(SerializeFingerprintSession(app, chat));
+	}
+	j["chats"] = chats_arr;
+
+	if (app.selected_chat_index >= 0 &&
+	    app.selected_chat_index < static_cast<int>(app.chats.size()))
+	{
+		j["selectedChatId"] = app.chats[static_cast<std::size_t>(app.selected_chat_index)].id;
+	}
+	else
+	{
+		j["selectedChatId"] = nullptr;
+	}
+
+	auto providers_arr = nlohmann::json::array();
+	for (const auto& profile : app.provider_profiles)
+	{
+		providers_arr.push_back(SerializeProvider(profile));
+	}
+	j["providers"] = providers_arr;
+
+	{
+		nlohmann::json settings;
+		settings["activeProviderId"] = app.settings.active_provider_id;
+		settings["theme"] = app.settings.ui_theme;
+		j["settings"] = settings;
 	}
 
 	return j;

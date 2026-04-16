@@ -54,6 +54,24 @@ namespace
 		return text;
 	}
 
+	std::size_t CountFolderEntries(const std::string& text)
+	{
+		std::istringstream lines(text);
+		std::string line;
+		std::size_t count = 0;
+
+		while (std::getline(lines, line))
+		{
+			line = StripCarriageReturn(line);
+			if (line == "[folder]")
+			{
+				++count;
+			}
+		}
+
+		return count;
+	}
+
 } // namespace
 
 std::vector<ChatFolder> ChatFolderStore::Load(const std::filesystem::path& data_root)
@@ -66,7 +84,10 @@ std::vector<ChatFolder> ChatFolderStore::Load(const std::filesystem::path& data_
 		return folders;
 	}
 
-	std::istringstream lines(ReadFolderFileText(file));
+	const fs::path backup = fs::path(file.string() + ".bak");
+	const std::string primary_text = ReadTextFile(file);
+	const std::string text = (CountFolderEntries(primary_text) > 0 || !fs::exists(backup)) ? primary_text : ReadTextFile(backup);
+	std::istringstream lines(text);
 	std::string line;
 	ChatFolder current;
 	bool in_folder = false;

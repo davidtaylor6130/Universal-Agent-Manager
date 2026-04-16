@@ -1,12 +1,11 @@
 #include "common/config/settings_store.h"
 
 #include "common/config/line_value_codec.h"
-#include "common/paths/app_paths.h"
-#include "common/provider/runtime/provider_build_config.h"
 #include "common/utils/io_utils.h"
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
@@ -16,7 +15,6 @@ namespace
 	std::string ReadTextFile(const std::filesystem::path& path)
 	{
 		std::ifstream in(path, std::ios::binary);
-
 		if (!in.good())
 		{
 			return "";
@@ -25,23 +23,6 @@ namespace
 		std::ostringstream buffer;
 		buffer << in.rdbuf();
 		return buffer.str();
-	}
-
-	std::string ReadTextFileWithBackup(const std::filesystem::path& path)
-	{
-		const std::string primary = ReadTextFile(path);
-		if (!primary.empty())
-		{
-			return primary;
-		}
-
-		const std::filesystem::path backup = std::filesystem::path(path.string() + ".bak");
-		if (std::filesystem::exists(backup))
-		{
-			return ReadTextFile(backup);
-		}
-
-		return primary;
 	}
 
 	std::string ToLower(std::string value)
@@ -53,17 +34,14 @@ namespace
 	bool ParseBool(const std::string& value, const bool fallback)
 	{
 		const std::string lowered = ToLower(value);
-
 		if (lowered == "1" || lowered == "true" || lowered == "on" || lowered == "yes")
 		{
 			return true;
 		}
-
 		if (lowered == "0" || lowered == "false" || lowered == "off" || lowered == "no")
 		{
 			return false;
 		}
-
 		return fallback;
 	}
 
@@ -94,50 +72,44 @@ namespace
 	std::string NormalizeThemeId(std::string value)
 	{
 		value = ToLower(value);
-
 		if (value == "light")
 		{
 			return "light";
 		}
-
 		if (value == "system")
 		{
 			return "system";
 		}
-
 		return "dark";
 	}
 
-	std::string NormalizeRuntimeBackendId(std::string value)
+	std::string NormalizeProviderId(const std::string& value)
 	{
-		value = ToLower(value);
-
-#if UAM_ENABLE_RUNTIME_OLLAMA_ENGINE
-		if (value == "ollama-engine")
-		{
-			return "ollama-engine";
-		}
-#else
 		(void)value;
-#endif
-
-		return "provider-cli";
+		return "gemini-cli";
 	}
 
-	std::string NormalizeVectorDbBackendId(std::string value)
+	void ClampSettings(AppSettings& settings)
 	{
-		value = ToLower(value);
+		settings.active_provider_id = NormalizeProviderId(settings.active_provider_id);
+		settings.runtime_backend = "provider-cli";
+		settings.provider_command_template = settings.provider_command_template.empty()
+			? "gemini {resume} {flags} {prompt}"
+			: settings.provider_command_template;
+		settings.gemini_command_template = settings.provider_command_template;
+		settings.gemini_yolo_mode = settings.provider_yolo_mode;
+		settings.gemini_extra_flags = settings.provider_extra_flags;
+		settings.cli_idle_timeout_seconds = std::clamp(settings.cli_idle_timeout_seconds, 30, 3600);
+		settings.ui_theme = NormalizeThemeId(settings.ui_theme);
+		settings.ui_scale_multiplier = std::clamp(settings.ui_scale_multiplier, 0.85f, 1.75f);
+		settings.sidebar_width = std::clamp(settings.sidebar_width, 220.0f, 600.0f);
+		settings.window_width = std::clamp(settings.window_width, 960, 8192);
+		settings.window_height = std::clamp(settings.window_height, 620, 8192);
 
-		if (value == "none")
+		if (!settings.remember_last_chat)
 		{
-			return "none";
+			settings.last_selected_chat_id.clear();
 		}
-
-#if UAM_ENABLE_RUNTIME_OLLAMA_ENGINE
-		return "ollama-engine";
-#else
-		return "none";
-#endif
 	}
 
 } // namespace
@@ -146,44 +118,28 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 {
 	std::error_code ec;
 	std::filesystem::create_directories(settings_file.parent_path(), ec);
+
+	AppSettings normalized = settings;
+	ClampSettings(normalized);
+
 	std::ostringstream lines;
-	const std::string runtime_backend_compat = (ToLower(settings.active_provider_id) == "ollama-engine") ? "ollama-engine" : "provider-cli";
-	lines << "active_provider_id=" << uam::EncodeLineValue(settings.active_provider_id) << '\n';
-	lines << "provider_command_template=" << uam::EncodeLineValue(settings.provider_command_template) << '\n';
-	lines << "provider_yolo_mode=" << (settings.provider_yolo_mode ? "1" : "0") << '\n';
-	lines << "provider_extra_flags=" << uam::EncodeLineValue(settings.provider_extra_flags) << '\n';
-	lines << "runtime_backend=" << NormalizeRuntimeBackendId(runtime_backend_compat) << '\n';
-	lines << "selected_model_id=" << uam::EncodeLineValue(settings.selected_model_id) << '\n';
-	lines << "models_folder_directory=" << uam::EncodeLineValue(settings.models_folder_directory) << '\n';
-	lines << "vector_db_backend=" << NormalizeVectorDbBackendId(settings.vector_db_backend) << '\n';
-	lines << "selected_vector_model_id=" << uam::EncodeLineValue(settings.selected_vector_model_id) << '\n';
-	lines << "vector_database_name_override=" << uam::EncodeLineValue(settings.vector_database_name_override) << '\n';
-	lines << "cli_idle_timeout_seconds=" << settings.cli_idle_timeout_seconds << '\n';
-	lines << "prompt_profile_root_path=" << uam::EncodeLineValue(settings.prompt_profile_root_path) << '\n';
-	lines << "default_prompt_profile_id=" << uam::EncodeLineValue(settings.default_prompt_profile_id) << '\n';
-	// Backward-compatible legacy keys.
-	lines << "gemini_command_template=" << uam::EncodeLineValue(settings.provider_command_template) << '\n';
-	lines << "gemini_yolo_mode=" << (settings.provider_yolo_mode ? "1" : "0") << '\n';
-	lines << "gemini_extra_flags=" << uam::EncodeLineValue(settings.provider_extra_flags) << '\n';
-	lines << "gemini_global_root_path=" << uam::EncodeLineValue(settings.prompt_profile_root_path) << '\n';
-	lines << "default_gemini_template_id=" << uam::EncodeLineValue(settings.default_prompt_profile_id) << '\n';
-	lines << "rag_enabled=" << (settings.rag_enabled ? "1" : "0") << '\n';
-	lines << "rag_top_k=" << settings.rag_top_k << '\n';
-	lines << "rag_max_snippet_chars=" << settings.rag_max_snippet_chars << '\n';
-	lines << "rag_max_file_bytes=" << settings.rag_max_file_bytes << '\n';
-	lines << "rag_scan_max_tokens=" << settings.rag_scan_max_tokens << '\n';
-	lines << "rag_project_source_directory=" << uam::EncodeLineValue(settings.rag_project_source_directory) << '\n';
+	lines << "active_provider_id=gemini-cli\n";
+	lines << "provider_command_template=" << uam::EncodeLineValue(normalized.provider_command_template) << '\n';
+	lines << "provider_yolo_mode=" << (normalized.provider_yolo_mode ? "1" : "0") << '\n';
+	lines << "provider_extra_flags=" << uam::EncodeLineValue(normalized.provider_extra_flags) << '\n';
+	lines << "runtime_backend=provider-cli\n";
+	lines << "cli_idle_timeout_seconds=" << normalized.cli_idle_timeout_seconds << '\n';
 	lines << "center_view_mode=" << ViewModeToString(center_view_mode) << '\n';
-	lines << "ui_theme=" << uam::EncodeLineValue(NormalizeThemeId(settings.ui_theme)) << '\n';
-	lines << "confirm_delete_chat=" << (settings.confirm_delete_chat ? "1" : "0") << '\n';
-	lines << "confirm_delete_folder=" << (settings.confirm_delete_folder ? "1" : "0") << '\n';
-	lines << "remember_last_chat=" << (settings.remember_last_chat ? "1" : "0") << '\n';
-	lines << "last_selected_chat_id=" << uam::EncodeLineValue(settings.last_selected_chat_id) << '\n';
-	lines << "ui_scale_multiplier=" << settings.ui_scale_multiplier << '\n';
-	lines << "sidebar_width=" << settings.sidebar_width << '\n';
-	lines << "window_width=" << settings.window_width << '\n';
-	lines << "window_height=" << settings.window_height << '\n';
-	lines << "window_maximized=" << (settings.window_maximized ? "1" : "0") << '\n';
+	lines << "ui_theme=" << uam::EncodeLineValue(normalized.ui_theme) << '\n';
+	lines << "confirm_delete_chat=" << (normalized.confirm_delete_chat ? "1" : "0") << '\n';
+	lines << "confirm_delete_folder=" << (normalized.confirm_delete_folder ? "1" : "0") << '\n';
+	lines << "remember_last_chat=" << (normalized.remember_last_chat ? "1" : "0") << '\n';
+	lines << "last_selected_chat_id=" << uam::EncodeLineValue(normalized.last_selected_chat_id) << '\n';
+	lines << "ui_scale_multiplier=" << normalized.ui_scale_multiplier << '\n';
+	lines << "sidebar_width=" << normalized.sidebar_width << '\n';
+	lines << "window_width=" << normalized.window_width << '\n';
+	lines << "window_height=" << normalized.window_height << '\n';
+	lines << "window_maximized=" << (normalized.window_maximized ? "1" : "0") << '\n';
 	return uam::io::WriteTextFile(settings_file, lines.str());
 }
 
@@ -191,19 +147,19 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 {
 	if (!std::filesystem::exists(settings_file))
 	{
+		ClampSettings(settings);
+		center_view_mode = CenterViewMode::CliConsole;
 		return;
 	}
 
-	std::istringstream lines(ReadTextFileWithBackup(settings_file));
+	const std::string text = ReadTextFile(settings_file);
+	std::istringstream lines(text);
 	std::string line;
-	bool has_active_provider_id = false;
 	bool has_provider_command_template = false;
-	bool has_runtime_backend = false;
 
 	while (std::getline(lines, line))
 	{
 		const auto equals_at = line.find('=');
-
 		if (equals_at == std::string::npos)
 		{
 			continue;
@@ -216,7 +172,6 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		if (key == "active_provider_id")
 		{
 			settings.active_provider_id = decoded_value;
-			has_active_provider_id = true;
 		}
 		else if (key == "provider_command_template")
 		{
@@ -243,74 +198,9 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		{
 			settings.gemini_extra_flags = decoded_value;
 		}
-		else if (key == "runtime_backend")
-		{
-			settings.runtime_backend = value;
-			has_runtime_backend = true;
-		}
-		else if (key == "selected_model_id")
-		{
-			settings.selected_model_id = decoded_value;
-		}
-		else if (key == "models_folder_directory")
-		{
-			settings.models_folder_directory = decoded_value;
-		}
-		else if (key == "vector_db_backend")
-		{
-			settings.vector_db_backend = value;
-		}
-		else if (key == "selected_vector_model_id")
-		{
-			settings.selected_vector_model_id = decoded_value;
-		}
-		else if (key == "vector_database_name_override")
-		{
-			settings.vector_database_name_override = decoded_value;
-		}
 		else if (key == "cli_idle_timeout_seconds")
 		{
 			settings.cli_idle_timeout_seconds = ParseInt(value, settings.cli_idle_timeout_seconds);
-		}
-		else if (key == "gemini_global_root_path")
-		{
-			settings.gemini_global_root_path = decoded_value;
-		}
-		else if (key == "prompt_profile_root_path")
-		{
-			settings.prompt_profile_root_path = decoded_value;
-		}
-		else if (key == "default_gemini_template_id")
-		{
-			settings.default_gemini_template_id = decoded_value;
-		}
-		else if (key == "default_prompt_profile_id")
-		{
-			settings.default_prompt_profile_id = decoded_value;
-		}
-		else if (key == "rag_enabled")
-		{
-			settings.rag_enabled = ParseBool(value, settings.rag_enabled);
-		}
-		else if (key == "rag_top_k")
-		{
-			settings.rag_top_k = ParseInt(value, settings.rag_top_k);
-		}
-		else if (key == "rag_max_snippet_chars")
-		{
-			settings.rag_max_snippet_chars = ParseInt(value, settings.rag_max_snippet_chars);
-		}
-		else if (key == "rag_max_file_bytes")
-		{
-			settings.rag_max_file_bytes = ParseInt(value, settings.rag_max_file_bytes);
-		}
-		else if (key == "rag_scan_max_tokens")
-		{
-			settings.rag_scan_max_tokens = ParseInt(value, settings.rag_scan_max_tokens);
-		}
-		else if (key == "rag_project_source_directory")
-		{
-			settings.rag_project_source_directory = decoded_value;
 		}
 		else if (key == "center_view_mode")
 		{
@@ -358,78 +248,16 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		}
 	}
 
-	if (!has_provider_command_template)
+	if (!has_provider_command_template && !settings.gemini_command_template.empty())
 	{
 		settings.provider_command_template = settings.gemini_command_template;
 	}
-
 	settings.provider_yolo_mode = settings.provider_yolo_mode || settings.gemini_yolo_mode;
-
 	if (settings.provider_extra_flags.empty())
 	{
 		settings.provider_extra_flags = settings.gemini_extra_flags;
 	}
 
-	if (settings.prompt_profile_root_path.empty())
-	{
-		settings.prompt_profile_root_path = settings.gemini_global_root_path;
-	}
-
-	if (settings.default_prompt_profile_id.empty())
-	{
-		settings.default_prompt_profile_id = settings.default_gemini_template_id;
-	}
-
-	if (settings.provider_command_template.empty())
-	{
-		settings.provider_command_template = "gemini {resume} {flags} {prompt}";
-	}
-
-	if (settings.gemini_command_template.empty())
-	{
-		settings.gemini_command_template = settings.provider_command_template;
-	}
-
-	if (!has_active_provider_id && has_runtime_backend && NormalizeRuntimeBackendId(settings.runtime_backend) == "ollama-engine")
-	{
-#if UAM_ENABLE_RUNTIME_OLLAMA_ENGINE
-		settings.active_provider_id = "ollama-engine";
-#else
-		settings.active_provider_id = provider_build_config::FirstEnabledProviderId();
-#endif
-	}
-
-	if (settings.active_provider_id.empty())
-	{
-		settings.active_provider_id = provider_build_config::FirstEnabledProviderId();
-	}
-
-	settings.runtime_backend = NormalizeRuntimeBackendId(settings.runtime_backend);
-	settings.vector_db_backend = NormalizeVectorDbBackendId(settings.vector_db_backend);
-
-	if (settings.prompt_profile_root_path.empty())
-	{
-		settings.prompt_profile_root_path = AppPaths::DefaultGeminiUniversalRootPath().string();
-	}
-
-	settings.gemini_command_template = settings.provider_command_template;
-	settings.gemini_yolo_mode = settings.provider_yolo_mode;
-	settings.gemini_extra_flags = settings.provider_extra_flags;
-	settings.gemini_global_root_path = settings.prompt_profile_root_path;
-	settings.default_gemini_template_id = settings.default_prompt_profile_id;
-	settings.cli_idle_timeout_seconds = std::clamp(settings.cli_idle_timeout_seconds, 30, 3600);
-	settings.rag_top_k = std::clamp(settings.rag_top_k, 1, 20);
-	settings.rag_max_snippet_chars = std::clamp(settings.rag_max_snippet_chars, 120, 4000);
-	settings.rag_max_file_bytes = std::clamp(settings.rag_max_file_bytes, 16 * 1024, 20 * 1024 * 1024);
-	settings.rag_scan_max_tokens = std::clamp(settings.rag_scan_max_tokens, 0, 32768);
-	settings.ui_theme = NormalizeThemeId(settings.ui_theme);
-	settings.ui_scale_multiplier = std::clamp(settings.ui_scale_multiplier, 0.85f, 1.75f);
-	settings.sidebar_width = std::clamp(settings.sidebar_width, 220.0f, 600.0f);
-	settings.window_width = std::clamp(settings.window_width, 960, 8192);
-	settings.window_height = std::clamp(settings.window_height, 620, 8192);
-
-	if (!settings.remember_last_chat)
-	{
-		settings.last_selected_chat_id.clear();
-	}
+	center_view_mode = CenterViewMode::CliConsole;
+	ClampSettings(settings);
 }

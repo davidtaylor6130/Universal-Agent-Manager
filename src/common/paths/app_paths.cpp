@@ -450,7 +450,7 @@ std::optional<std::filesystem::path> AppPaths::ResolveGeminiProjectTmpDir(const 
 
 std::filesystem::path AppPaths::UamChatsRootPath(const std::filesystem::path& data_root)
 {
-	return data_root / "uam_chats";
+	return ChatsRootPath(data_root);
 }
 
 std::filesystem::path AppPaths::UamChatFilePath(const std::filesystem::path& data_root, const std::string& chat_id)

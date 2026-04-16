@@ -13,7 +13,6 @@
 namespace uam
 {
 	struct CliTerminalState;
-	struct OpenCodeBridgeState;
 } // namespace uam
 
 enum class PlatformPathBrowseTarget
@@ -62,10 +61,6 @@ class IPlatformProcessService
 	                                              std::stop_token stop_token = {}) const = 0;
 	virtual std::string GeminiDowngradeCommand() const = 0;
 	virtual std::filesystem::path ResolveCurrentExecutablePath() const = 0;
-	virtual std::string OpenCodeBridgeBinaryName() const = 0;
-	virtual bool StartOpenCodeBridgeProcess(const std::vector<std::string>& argv, uam::OpenCodeBridgeState& state, std::string* error_out = nullptr) const = 0;
-	virtual bool IsOpenCodeBridgeProcessRunning(uam::OpenCodeBridgeState& state) const = 0;
-	virtual void StopLocalBridgeProcess(uam::OpenCodeBridgeState& state) const = 0;
 	virtual uintmax_t NativeGeminiSessionMaxFileBytes() const = 0;
 	virtual std::size_t NativeGeminiSessionMaxMessages() const = 0;
 	virtual std::string GenerateUuid() const = 0;
@@ -94,24 +89,6 @@ class IPlatformPathService
 	virtual std::filesystem::path DefaultDataRootPath() const = 0;
 	virtual std::optional<std::filesystem::path> ResolveUserHomePath() const = 0;
 	virtual std::filesystem::path ExpandLeadingTildePath(const std::string& raw_path) const = 0;
-	virtual std::filesystem::path ResolveOpenCodeConfigPath() const = 0;
-};
-
-/// <summary>
-/// Platform UI/GL/DPI behavior abstraction boundary.
-/// </summary>
-class IPlatformUiTraits
-{
-  public:
-	virtual ~IPlatformUiTraits() = default;
-	virtual void ApplyProcessDpiAwareness() const = 0;
-	virtual void ConfigureOpenGlAttributes() const = 0;
-	virtual const char* OpenGlGlslVersion() const = 0;
-	virtual float AdjustSidebarWidth(float layout_width, float current_sidebar_width, float effective_ui_scale) const = 0;
-	virtual bool UseWindowsLayoutAdjustments() const = 0;
-	virtual bool UsesLogicalPointsForUiScale() const = 0;
-	virtual float PlatformUiSpacingScale() const = 0;
-	virtual std::optional<bool> DetectSystemPrefersLightTheme() const = 0;
 };
 
 /// <summary>
@@ -123,7 +100,6 @@ struct PlatformServices
 	IPlatformProcessService& process_service;
 	IPlatformFileDialogService& file_dialog_service;
 	IPlatformPathService& path_service;
-	IPlatformUiTraits& ui_traits;
 };
 
 /// <summary>

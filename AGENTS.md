@@ -1,23 +1,33 @@
 # AGENTS.md
 
+## Release Slice
+
+This repository is currently scoped to the Gemini CLI release slice. Keep the app focused on React/CEF, xterm.js terminal sessions, Gemini CLI save/resume, chat rename/delete/select/create, one-level workspace folders, and multiple concurrent CLI instances on macOS and Windows.
+
+Unsupported providers, structured prompt UI, RAG, templates, VCS panels, local engines, Dear ImGui, and checked-in frontend build output are intentionally removed.
+
 ## Build Commands
 
 ```bash
-# Build with dependencies (fetches SDL2, ImGui, llama.cpp)
-cmake -S . -B Builds -DUAM_FETCH_DEPS=ON
+npm --prefix UI-V2 ci
+npm --prefix UI-V2 run build
+
+cmake -S . -B Builds
 cmake --build Builds --config Release
+```
 
-# Windows: must initialize MSVC first
+Windows must initialize MSVC first:
+
+```bat
 call "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-cmake -S . -B Builds -DUAM_FETCH_DEPS=ON
-
-# Custom dependencies
-cmake -S . -B Builds -DUAM_FETCH_DEPS=OFF -DIMGUI_DIR=/path/to/imgui
+cmake -S . -B Builds
+cmake --build Builds --config Release
 ```
 
 ## Critical: Build Directory Restriction
 
-CMake **enforces** the build directory must be inside `Builds/`. Use one of:
+CMake enforces the build directory must be inside `Builds/`. Use one of:
+
 - `cmake -S . -B Builds`
 - `cmake -S . -B Builds/<name>`
 
@@ -29,9 +39,6 @@ CLion default `cmake-build-*` directories are also accepted.
 # macOS
 open Builds/universal_agent_manager.app
 
-# Or use the helper launcher
-./run_uam.sh
-
 # Windows
 .\Builds\Release\universal_agent_manager.exe
 
@@ -39,60 +46,39 @@ open Builds/universal_agent_manager.app
 UAM_DATA_DIR=/tmp/uam-data ./Builds/universal_agent_manager.app/Contents/MacOS/universal_agent_manager
 ```
 
-## Provider Disable Flags
-
-Disable providers at build time. Disabled providers are completely excluded from the binary.
-
-```bash
-# Disable all external CLI providers (Ollama Engine only)
-cmake -S . -B Builds -DUAM_FETCH_DEPS=ON \
-  -DUAM_ENABLE_RUNTIME_GEMINI_STRUCTURED=OFF \
-  -DUAM_ENABLE_RUNTIME_GEMINI_CLI=OFF \
-  -DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF \
-  -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF \
-  -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF \
-  -DUAM_ENABLE_RUNTIME_OPENCODE_LOCAL=OFF
-```
-
-| Provider | Flag |
-|----------|------|
-| Gemini Structured | `-DUAM_ENABLE_RUNTIME_GEMINI_STRUCTURED=OFF` |
-| Gemini CLI | `-DUAM_ENABLE_RUNTIME_GEMINI_CLI=OFF` |
-| Codex CLI | `-DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF` |
-| Claude CLI | `-DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF` |
-| OpenCode CLI | `-DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF` |
-| OpenCode Local | `-DUAM_ENABLE_RUNTIME_OPENCODE_LOCAL=OFF` |
-| Ollama Engine | `-DUAM_ENABLE_RUNTIME_OLLAMA_ENGINE=OFF` |
-
-**Note:** `opencode-local` requires both `opencode-cli` AND `ollama-engine` enabled.
-
 ## Tests
 
 ```bash
-cmake -S . -B Builds/tests -DUAM_FETCH_DEPS=ON -DUAM_BUILD_TESTS=ON
+npm --prefix UI-V2 ci
+npm --prefix UI-V2 run test
+npm --prefix UI-V2 run build
+
+cmake -S . -B Builds/tests -DUAM_BUILD_TESTS=ON
 cmake --build Builds/tests --config Debug
 ctest --test-dir Builds/tests -C Debug --output-on-failure
 ```
 
-Tests use a custom framework in `tests/core_tests.cpp` (not Catch2/GTest).
+Tests use a custom framework in `tests/core_tests.cpp` and Vitest for `UI-V2`.
 
 ## Code Style
 
-- **Brace style**: Allman
-- **Indentation**: 4 spaces, tabs for indentation
-- **Column limit**: 10000
-- Use `.clang-format` in project root
+- Brace style: Allman
+- Indentation: 4 spaces, tabs for indentation
+- Column limit: 10000
+- Use `.clang-format` in the project root
 
 ## Architecture
 
-- Entry point: `src/main.cpp` → `src/app/application.cpp` → `src/app/application.h`
-- Providers: `src/common/provider/*/`
-- Terminal runtime: `src/common/runtime/terminal/` (libvterm on macOS, ConPTY on Windows)
-- Data storage: `<data-root>/chats/` (JSON files)
+- Entry point: `src/main.cpp` -> `src/app/application.cpp` -> `src/app/application.h`
+- React UI: `UI-V2/src`
+- CEF bridge: `src/cef/uam_query_handler.cpp`
+- Gemini provider: `src/common/provider/gemini/`
+- Terminal runtime: `src/common/runtime/terminal/` plus platform services
+- Data storage: `<data-root>/chats/` JSON files
 
 ## Data Root Resolution
 
-1. `UAM_DATA_DIR` env var (if set)
+1. `UAM_DATA_DIR` env var
 2. `<cwd>/data`
 3. OS default app-data location
 4. Temp fallback

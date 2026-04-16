@@ -1,7 +1,6 @@
 #include "platform_services_windows_impl.h"
 
 #include "common/paths/app_paths.h"
-#include "common/platform/sdl_includes.h"
 #include "common/state/app_state.h"
 
 #include <algorithm>
@@ -1153,96 +1152,6 @@ namespace
 			return std::filesystem::path(buffer);
 		}
 
-		std::string OpenCodeBridgeBinaryName() const override
-		{
-			return "uam_ollama_engine_bridge.exe";
-		}
-
-		bool StartOpenCodeBridgeProcess(const std::vector<std::string>& argv, uam::OpenCodeBridgeState& state, std::string* error_out = nullptr) const override
-		{
-			if (argv.empty() || TrimAsciiWhitespace(argv.front()).empty())
-			{
-				if (error_out != nullptr)
-				{
-					*error_out = "OpenCode bridge command is empty.";
-				}
-
-				return false;
-			}
-
-			const std::wstring command_w = WideFromUtf8(BuildWindowsCommandLine(argv));
-
-			if (command_w.empty())
-			{
-				if (error_out != nullptr)
-				{
-					*error_out = "Failed to encode OpenCode bridge command line.";
-				}
-
-				return false;
-			}
-
-			std::vector<wchar_t> command_line(command_w.begin(), command_w.end());
-			command_line.push_back(L'\0');
-
-			STARTUPINFOW startup_info{};
-			startup_info.cb = sizeof(startup_info);
-			PROCESS_INFORMATION process_info{};
-			const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup_info, &process_info);
-
-			if (!created)
-			{
-				const DWORD launch_error = GetLastError();
-
-				if (error_out != nullptr)
-				{
-					*error_out = "Failed to launch OpenCode bridge process (Win32 error " + std::to_string(launch_error) + ").";
-				}
-
-				return false;
-			}
-
-			state.process_handle = process_info.hProcess;
-			state.process_thread = process_info.hThread;
-			state.process_id = process_info.dwProcessId;
-			return true;
-		}
-
-		bool IsOpenCodeBridgeProcessRunning(uam::OpenCodeBridgeState& state) const override
-		{
-			if (state.process_handle == INVALID_HANDLE_VALUE || state.process_handle == nullptr)
-			{
-				return false;
-			}
-
-			return WaitForSingleObject(state.process_handle, 0) == WAIT_TIMEOUT;
-		}
-
-		void StopLocalBridgeProcess(uam::OpenCodeBridgeState& state) const override
-		{
-			if (state.process_handle != INVALID_HANDLE_VALUE && state.process_handle != nullptr)
-			{
-				const DWORD wait_result = WaitForSingleObject(state.process_handle, 0);
-
-				if (wait_result == WAIT_TIMEOUT)
-				{
-					TerminateProcess(state.process_handle, 1);
-					WaitForSingleObject(state.process_handle, 250);
-				}
-
-				CloseHandle(state.process_handle);
-				state.process_handle = INVALID_HANDLE_VALUE;
-			}
-
-			if (state.process_thread != INVALID_HANDLE_VALUE && state.process_thread != nullptr)
-			{
-				CloseHandle(state.process_thread);
-				state.process_thread = INVALID_HANDLE_VALUE;
-			}
-
-			state.process_id = 0;
-		}
-
 		uintmax_t NativeGeminiSessionMaxFileBytes() const override
 		{
 			return 12ULL * 1024ULL * 1024ULL;
@@ -1399,98 +1308,6 @@ namespace
 
 			return std::filesystem::path(trimmed);
 		}
-
-		std::filesystem::path ResolveOpenCodeConfigPath() const override
-		{
-			if (const std::optional<std::filesystem::path> home = ResolveUserHomePath(); home.has_value())
-			{
-				return home.value() / ".config" / "opencode" / "opencode.json";
-			}
-
-			std::error_code cwd_ec;
-			const std::filesystem::path cwd = std::filesystem::current_path(cwd_ec);
-			return cwd_ec ? std::filesystem::path("opencode.json") : (cwd / ".config" / "opencode" / "opencode.json");
-		}
-	};
-
-	class WindowsUiTraits final : public IPlatformUiTraits
-	{
-	  public:
-		void ApplyProcessDpiAwareness() const override
-		{
-			// Try to set Per-Monitor V2 awareness (Windows 10 1703+)
-			// This is the most modern and robust DPI awareness mode for multi-monitor setups.
-			const auto set_dpi_context = reinterpret_cast<BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT)>(GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetProcessDpiAwarenessContext"));
-
-			if (set_dpi_context != nullptr)
-			{
-				// DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 is (-4)
-				(void)set_dpi_context(reinterpret_cast<DPI_AWARENESS_CONTEXT>(-4));
-			}
-			else
-			{
-				// Fallback for older versions of Windows (Vista through Windows 10 < 1703).
-				SetProcessDPIAware();
-			}
-		}
-
-		void ConfigureOpenGlAttributes() const override
-		{
-			SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
-			SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-			SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-			SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
-		}
-
-		const char* OpenGlGlslVersion() const override
-		{
-			return "#version 130";
-		}
-
-		float AdjustSidebarWidth(const float layout_width, const float current_sidebar_width, const float effective_ui_scale) const override
-		{
-			const float width_bias = 1.0f + ((std::max(1.0f, effective_ui_scale) - 1.0f) * 0.36f);
-			const float min_w = 220.0f * width_bias;
-			const float max_sidebar_from_main_floor = std::max(min_w, layout_width - 560.0f);
-			
-			float sidebar_width = current_sidebar_width;
-			if (sidebar_width <= 0.0f)
-			{
-				const float sidebar_ratio = (layout_width < 1180.0f) ? 0.35f : 0.30f;
-				sidebar_width = std::clamp(layout_width * sidebar_ratio, 280.0f * width_bias, 470.0f * width_bias);
-			}
-
-			return std::clamp(sidebar_width, min_w, max_sidebar_from_main_floor);
-		}
-
-		bool UseWindowsLayoutAdjustments() const override
-		{
-			return true;
-		}
-
-		bool UsesLogicalPointsForUiScale() const override
-		{
-			return false;
-		}
-
-		float PlatformUiSpacingScale() const override
-		{
-			return 1.14f;
-		}
-
-		std::optional<bool> DetectSystemPrefersLightTheme() const override
-		{
-			DWORD value = 1;
-			DWORD value_size = sizeof(value);
-			const LONG rc = RegGetValueA(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", "AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &value, &value_size);
-
-			if (rc == ERROR_SUCCESS)
-			{
-				return value != 0;
-			}
-
-			return std::nullopt;
-		}
 	};
 
 } // namespace
@@ -1501,9 +1318,8 @@ PlatformServices& CreatePlatformServices()
 	static WindowsProcessService process_service;
 	static WindowsFileDialogService file_dialog_service;
 	static WindowsPathService path_service;
-	static WindowsUiTraits ui_traits;
 	static PlatformServices services{
-	    terminal_runtime, process_service, file_dialog_service, path_service, ui_traits,
+	    terminal_runtime, process_service, file_dialog_service, path_service,
 	};
 	return services;
 }

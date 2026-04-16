@@ -6,6 +6,7 @@
 #include "app/chat_domain_service.h"
 #include "common/platform/platform_services.h"
 #include "common/runtime/app_time.h"
+#include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/state/app_state.h"
 
 // ---------------------------------------------------------------------------
@@ -13,7 +14,7 @@
 // ---------------------------------------------------------------------------
 inline void FreeCliTerminalVTerm(uam::CliTerminalState& /*terminal*/)
 {
-	// No-op: libvterm is not used in the CEF build.
+	// No-op: terminal rendering is handled by xterm.js in the frontend.
 }
 
 inline void CloseCliTerminalHandles(uam::CliTerminalState& terminal)
@@ -82,11 +83,11 @@ inline void StopCliTerminal(uam::CliTerminalState& terminal, const bool clear_id
 	terminal.running = false;
 	terminal.input_ready = false;
 	terminal.startup_time_s = 0.0;
-	terminal.pending_structured_prompts.clear();
 	terminal.generation_in_progress = false;
 	terminal.turn_state = uam::CliTerminalTurnState::Idle;
 	terminal.last_output_time_s = 0.0;
 	terminal.recent_output_bytes.clear();
+	terminal.last_native_history_snapshot_digest.clear();
 
 	if (clear_identity)
 	{

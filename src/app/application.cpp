@@ -4,10 +4,7 @@
 #include "chat_domain_service.h"
 #include "persistence_coordinator.h"
 #include "provider_resolution_service.h"
-#include "runtime_local_service.h"
 #include "runtime_orchestration_services.h"
-
-#include <curl/curl.h>
 
 #include "common/constants/app_constants.h"
 #include "common/models/app_models.h"
@@ -20,10 +17,7 @@
 #include "common/provider/provider_runtime.h"
 #include "common/provider/runtime/provider_build_config.h"
 #include "common/runtime/terminal_common.h"
-#include "common/runtime/terminal/terminal_provider_cli.h"
-#include "common/runtime/local_engine_runtime_service.h"
 #include "common/runtime/terminal_polling.h"
-#include "common/ui/chat_actions/chat_action_pending_calls.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/config/settings_store.h"
 #include "common/platform/platform_services.h"
@@ -47,6 +41,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -124,6 +119,51 @@ void ResetNativeChatLoadTask(uam::platform::AsyncNativeChatLoadTask& task)
 	task.state.reset();
 }
 
+void ResetNativeChatLoadTasks(std::unordered_map<std::string, uam::platform::AsyncNativeChatLoadTask>& tasks)
+{
+	for (auto& entry : tasks)
+	{
+		ResetNativeChatLoadTask(entry.second);
+	}
+
+	tasks.clear();
+}
+
+struct RuntimeCliCompatibilitySnapshot
+{
+	bool runtime_cli_version_checked = false;
+	bool runtime_cli_version_supported = false;
+	std::string runtime_cli_installed_version;
+	std::string runtime_cli_version_raw_output;
+	std::string runtime_cli_version_message;
+	std::string runtime_cli_pin_output;
+	std::string status_line;
+};
+
+RuntimeCliCompatibilitySnapshot CaptureRuntimeCliCompatibilitySnapshot(const uam::AppState& app)
+{
+	RuntimeCliCompatibilitySnapshot snapshot;
+	snapshot.runtime_cli_version_checked = app.runtime_cli_version_checked;
+	snapshot.runtime_cli_version_supported = app.runtime_cli_version_supported;
+	snapshot.runtime_cli_installed_version = app.runtime_cli_installed_version;
+	snapshot.runtime_cli_version_raw_output = app.runtime_cli_version_raw_output;
+	snapshot.runtime_cli_version_message = app.runtime_cli_version_message;
+	snapshot.runtime_cli_pin_output = app.runtime_cli_pin_output;
+	snapshot.status_line = app.status_line;
+	return snapshot;
+}
+
+bool RuntimeCliCompatibilitySnapshotChanged(const RuntimeCliCompatibilitySnapshot& before, const RuntimeCliCompatibilitySnapshot& after)
+{
+	return before.runtime_cli_version_checked != after.runtime_cli_version_checked ||
+	       before.runtime_cli_version_supported != after.runtime_cli_version_supported ||
+	       before.runtime_cli_installed_version != after.runtime_cli_installed_version ||
+	       before.runtime_cli_version_raw_output != after.runtime_cli_version_raw_output ||
+	       before.runtime_cli_version_message != after.runtime_cli_version_message ||
+	       before.runtime_cli_pin_output != after.runtime_cli_pin_output ||
+	       before.status_line != after.status_line;
+}
+
 // ---- Periodic poll task ---------------------------------------------------
 
 /// CefTask that calls Application::PollTick() on the CEF UI thread.
@@ -151,12 +191,6 @@ Application::Application()
 Application::~Application()
 {
 	Shutdown();
-
-	if (m_curlInitialized)
-	{
-		curl_global_cleanup();
-		m_curlInitialized = false;
-	}
 
 	m_platformServices = nullptr;
 }
@@ -191,12 +225,15 @@ void Application::PollTick()
 	if (m_done)
 		return;
 
-	PollPendingRuntimeCall(m_app);
-	PollAllCliTerminals(m_browser, m_app);
+	const RuntimeCliCompatibilitySnapshot provider_snapshot_before = CaptureRuntimeCliCompatibilitySnapshot(m_app);
+	const bool pending_calls_changed = PollPendingRuntimeCall(m_app);
+	const bool cli_terminals_changed = PollAllCliTerminals(m_browser, m_app);
 	ProviderCliCompatibilityService().Poll(m_app);
+	const bool provider_compatibility_changed = RuntimeCliCompatibilitySnapshotChanged(provider_snapshot_before, CaptureRuntimeCliCompatibilitySnapshot(m_app));
+	const bool ui_relevant_state_changed = pending_calls_changed || cli_terminals_changed || provider_compatibility_changed;
 
 	// Push only when the serialized app state actually changed.
-	if (m_browser)
+	if (m_browser && ui_relevant_state_changed)
 		uam::PushStateUpdateIfChanged(m_browser, m_app);
 
 	// Schedule the next tick at ~16 ms (≈60 fps polling).
@@ -222,16 +259,6 @@ void Application::OnBrowserReady(CefRefPtr<CefBrowser> browser)
 
 bool Application::InitializeState()
 {
-	const CURLcode l_curlInitCode = curl_global_init(CURL_GLOBAL_DEFAULT);
-
-	if (l_curlInitCode != CURLE_OK)
-	{
-		std::fprintf(stderr, "Failed to initialize libcurl: %s\n", curl_easy_strerror(l_curlInitCode));
-		m_exitCode = 1;
-		return false;
-	}
-
-	m_curlInitialized = true;
 	std::vector<fs::path> l_dataRootCandidates;
 	std::error_code l_exeEc;
 	const fs::path l_exePath = m_platformServices->process_service.ResolveCurrentExecutablePath();
@@ -430,8 +457,8 @@ void Application::Shutdown()
 	ResetAsyncCommandTask(m_app.runtime_cli_version_check_task);
 	ResetAsyncCommandTask(m_app.runtime_cli_pin_task);
 	ResetNativeChatLoadTask(m_app.native_chat_load_task);
+	ResetNativeChatLoadTasks(m_app.native_chat_load_tasks);
 	FastStopCliTerminalsForExit(m_app);
-	RuntimeLocalService().StopLocalBridge(m_app);
 
 	uam_cef_globals::g_app_state = nullptr;
 	uam_cef_globals::g_client    = nullptr;

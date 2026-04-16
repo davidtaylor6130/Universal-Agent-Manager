@@ -4,9 +4,6 @@
 #include "common/config/frontend_actions.h"
 #include "common/platform/platform_state_fields.h"
 #include "common/provider/provider_profile.h"
-#include "common/rag/rag_index_service.h"
-#include "common/runtime/local_engine_runtime_service.h"
-#include "common/vcs/vcs_workspace_service.h"
 
 #include <atomic>
 #include <deque>
@@ -23,12 +20,12 @@ namespace uam
 	namespace fs = std::filesystem;
 
 	/// <summary>
-	/// Scrollback line stub — libvterm cells are replaced by xterm.js rendering.
+	/// Scrollback line stub retained for legacy terminal state references.
 	/// Retained so that code referencing TerminalScrollbackLine still compiles.
 	/// </summary>
 	struct TerminalScrollbackLine
 	{
-		// Previously held std::vector<VTermScreenCell>. Now empty — xterm.js handles rendering.
+		// xterm.js handles rendering in the React frontend.
 	};
 
 	/// <summary>
@@ -39,7 +36,7 @@ namespace uam
 	/// <summary>
 	/// Runtime state for one embedded provider CLI terminal instance.
 	/// PTY output is forwarded to xterm.js in the React frontend via
-	/// uam::PushCliOutput() — libvterm is no longer used for rendering.
+	/// uam::PushCliOutput().
 	/// </summary>
 	enum class CliTerminalTurnState
 	{
@@ -66,15 +63,15 @@ namespace uam
 		double last_activity_time_s = 0.0;
 		double last_user_input_time_s = 0.0;
 		double last_ai_output_time_s = 0.0;
-		double last_polled_time_s = 0.0;
-		bool input_ready = false;
-		double startup_time_s = 0.0;
-		std::deque<std::string> pending_structured_prompts;
-		bool generation_in_progress = false;
-		CliTerminalTurnState turn_state = CliTerminalTurnState::Idle;
-		std::string recent_output_bytes;
-		std::string last_error;
-	};
+			double last_polled_time_s = 0.0;
+			bool input_ready = false;
+			double startup_time_s = 0.0;
+			bool generation_in_progress = false;
+			CliTerminalTurnState turn_state = CliTerminalTurnState::Idle;
+			std::string recent_output_bytes;
+			std::string last_native_history_snapshot_digest;
+			std::string last_error;
+		};
 
 	/// <summary>
 	/// Background command execution container for Gemini compatibility checks.
@@ -88,24 +85,7 @@ namespace uam
 	};
 
 	/// <summary>
-	/// Runtime state for the UAM-managed OpenCode bridge process.
-	/// </summary>
-	struct OpenCodeBridgeState : public platform::OpenCodeBridgePlatformFields
-	{
-		bool running = false;
-		bool healthy = false;
-		std::string endpoint;
-		std::string api_base;
-		std::string token;
-		std::string selected_model;
-		std::string requested_model;
-		std::string model_folder;
-		std::string ready_file;
-		std::string last_error;
-	};
-
-	/// <summary>
-	/// Shared application state for runtime services and all Dear ImGui views.
+	/// Shared application state for the CEF/React Gemini CLI release slice.
 	/// </summary>
 	struct AppState
 	{
@@ -140,9 +120,6 @@ namespace uam
 		std::string move_chat_target_folder_id;
 		std::string move_chat_target_workspace;
 		bool move_chat_show_missing_session_warning = false;
-		std::string template_import_path_input;
-		std::string template_manager_selected_id;
-		std::string template_rename_input;
 		std::string editing_chat_id;
 		int editing_message_index = -1;
 		std::string editing_message_text;
@@ -165,12 +142,6 @@ namespace uam
 		std::string pending_folder_settings_id;
 		std::string folder_settings_title_input;
 		std::string folder_settings_directory_input;
-		bool open_template_manager_popup = false;
-		bool template_catalog_dirty = true;
-		std::vector<TemplateCatalogEntry> template_catalog;
-		bool open_template_change_warning_popup = false;
-		std::string pending_template_change_chat_id;
-		std::string pending_template_change_override_id;
 		std::unordered_set<std::string> collapsed_branch_chat_ids;
 		std::unordered_set<std::string> chats_with_unseen_updates;
 		std::string sidebar_search_query;
@@ -178,36 +149,8 @@ namespace uam
 		bool sidebar_resize_drag_active = false;
 		std::unordered_set<std::string> filtered_chat_ids;
 		std::string status_line;
-		CenterViewMode center_view_mode = CenterViewMode::Structured;
+		CenterViewMode center_view_mode = CenterViewMode::CliConsole;
 		std::vector<std::unique_ptr<CliTerminalState>> cli_terminals;
-		RagIndexService rag_index_service;
-		LocalEngineRuntimeService runtime_model_service;
-		OpenCodeBridgeState opencode_bridge;
-		std::string loaded_runtime_model_id;
-		std::unordered_map<std::string, VcsSnapshot> vcs_snapshot_by_workspace;
-		std::unordered_set<std::string> vcs_snapshot_loaded_workspaces;
-		std::unordered_map<std::string, std::string> rag_last_refresh_by_workspace;
-		std::unordered_map<std::string, std::string> rag_last_rebuild_at_by_workspace;
-		RagScanState rag_scan_state;
-		double rag_finished_visible_until_s = 0.0;
-		double rag_scan_status_last_emit_s = 0.0;
-		std::string rag_scan_workspace_key;
-		bool open_rag_console_popup = false;
-		std::vector<std::string> rag_scan_reports;
-		bool rag_scan_reports_scroll_to_bottom = false;
-		std::string rag_manual_query_input;
-		int rag_manual_query_max = 6;
-		int rag_manual_query_min = 1;
-		bool rag_manual_query_running = false;
-		std::string rag_manual_query_error;
-		std::string rag_manual_query_last_query;
-		std::string rag_manual_query_workspace_key;
-		std::vector<RagSnippet> rag_manual_query_results;
-		bool open_vcs_output_popup = false;
-		std::string vcs_output_popup_title;
-		std::string vcs_output_popup_content;
-		bool open_runtime_model_selection_popup = false;
-		std::string runtime_model_selection_id;
 
 		std::vector<PendingRuntimeCall> pending_calls;
 		std::unordered_map<std::string, std::string> resolved_native_sessions_by_chat_id;
@@ -221,6 +164,7 @@ namespace uam
 		std::string runtime_cli_pin_output;
 		bool scroll_to_bottom = false;
 		platform::AsyncNativeChatLoadTask native_chat_load_task;
+		std::unordered_map<std::string, platform::AsyncNativeChatLoadTask> native_chat_load_tasks;
 	};
 
 } // namespace uam

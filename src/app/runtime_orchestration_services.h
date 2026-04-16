@@ -9,20 +9,7 @@
 #include <string>
 #include <vector>
 
-enum class TemplatePreflightOutcome
-{
-	ReadyWithTemplate,
-	ReadyWithoutTemplate,
-	BlockingError
-};
-
-class ProviderRequestService
-{
-  public:
-	void StartSelectedChatRequest(uam::AppState& p_app) const;
-	bool QueuePromptForChat(uam::AppState& p_app, ChatSession& p_chat, const std::string& p_prompt, bool p_templateControlMessage = false) const;
-	TemplatePreflightOutcome PreflightWorkspaceTemplateForChat(uam::AppState& p_app, const ProviderProfile& p_provider, const ChatSession& p_chat, std::string* p_bootstrapPromptOut = nullptr, std::string* p_statusOut = nullptr) const;
-};
+bool PollPendingRuntimeCall(uam::AppState& app);
 
 class ChatHistorySyncService
 {

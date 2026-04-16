@@ -1,7 +1,7 @@
 #pragma once
 
 /// <summary>
-/// Cross-platform terminal lifecycle management and shared libvterm plumbing.
+/// Cross-platform terminal lifecycle management for embedded provider CLIs.
 /// </summary>
 #include "common/runtime/terminal_common.h"
 

@@ -1,4 +1,4 @@
-export type ViewMode = 'structured' | 'cli' | 'coding-agent'
+export type ViewMode = 'cli'
 
 export interface Session {
   id: string

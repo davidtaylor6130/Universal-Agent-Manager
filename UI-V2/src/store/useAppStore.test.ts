@@ -1,255 +1,148 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { CppAppState, useAppStore } from './useAppStore'
 
-type CefCallbacks = {
-  onSuccess: (response: string) => void
-  onFailure: (errorCode: number, errorMessage: string) => void
+type TestWindow = Window & typeof globalThis & {
+  cefQuery?: Window['cefQuery']
 }
 
-type HarnessOptions = {
-  failActions?: Set<string>
-  holdInitialState?: boolean
-}
+function ensureTestWindow(): TestWindow {
+  if (typeof window !== 'undefined') {
+    return window as TestWindow
+  }
 
-type CppChatLike = {
-  id: string
-  title: string
-  folderId?: string
-  providerId?: string
-  createdAt?: string
-  updatedAt?: string
-  messages?: Array<{ role: 'user' | 'assistant' | 'system'; content: string; createdAt: string }>
-}
-
-type CppStateLike = {
-  stateRevision: number
-  folders: Array<{ id: string; title: string; directory: string; collapsed: boolean }>
-  chats: CppChatLike[]
-  selectedChatId: string | null
-  providers: Array<{ id: string; name: string; shortName: string }>
-  settings: { activeProviderId: string; theme: string }
-  cliDebug?: unknown
-}
-
-function installBrowserHarness(options: HarnessOptions = {}) {
-  const failActions = options.failActions ?? new Set<string>()
-  const documentElementState = new Map<string, string>()
-  let pendingInitialState: CefCallbacks | null = null
-  const requestLog: Array<{ action: string; requestId?: string }> = []
-
+  const testWindow = {} as TestWindow
   Object.defineProperty(globalThis, 'window', {
+    value: testWindow,
     configurable: true,
-    writable: true,
-    value: globalThis,
   })
+  return testWindow
+}
 
-  Object.defineProperty(globalThis, 'document', {
-    configurable: true,
-    writable: true,
-    value: {
-      documentElement: {
-        setAttribute(name: string, value: string) {
-          documentElementState.set(name, value)
-        },
-        getAttribute(name: string) {
-          return documentElementState.get(name) ?? null
+function makeCppState(revision: number, selectedChatId = 'chat-1'): CppAppState {
+  return {
+    stateRevision: revision,
+    folders: [
+      {
+        id: 'default',
+        title: 'General',
+        directory: '/tmp/project',
+        collapsed: false,
+      },
+    ],
+    chats: [
+      {
+        id: 'chat-1',
+        title: 'Gemini Session',
+        folderId: 'default',
+        providerId: 'gemini-cli',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:01.000Z',
+        messages: [],
+        cliTerminal: {
+          terminalId: 'term-chat-1',
+          sourceChatId: 'chat-1',
+          running: true,
+          turnState: 'idle',
+          processing: false,
+          readySinceLastSelect: false,
+          active: false,
+          lastError: '',
         },
       },
+    ],
+    selectedChatId,
+    providers: [
+      { id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', outputMode: 'cli' },
+      { id: 'codex-cli', name: 'Codex', shortName: 'Codex', outputMode: 'cli' },
+    ],
+    settings: {
+      activeProviderId: 'gemini-cli',
+      theme: 'dark',
     },
+  }
+}
+
+function resetStore() {
+  useAppStore.setState({
+    folders: [],
+    sessions: [],
+    activeSessionId: null,
+    lastAppliedStateRevision: -1,
+    messages: {},
+    providers: [],
+    cliBindingBySessionId: {},
+    cliTranscriptBySessionId: {},
+    cliDebugState: null,
+    theme: 'dark',
+    isNewChatModalOpen: false,
+    isSettingsOpen: false,
+    streamingMessageId: null,
+    pushChannelStatus: 'connected',
+    pushChannelError: '',
+    lastPushAtMs: null,
+  })
+}
+
+describe('useAppStore Gemini CLI slice', () => {
+  beforeEach(() => {
+    const testWindow = ensureTestWindow()
+    resetStore()
+    delete testWindow.cefQuery
+    vi.restoreAllMocks()
   })
 
-  Object.defineProperty(globalThis, 'localStorage', {
-    configurable: true,
-    writable: true,
-    value: {
-      getItem: vi.fn(() => null),
-      setItem: vi.fn(),
-      removeItem: vi.fn(),
-      clear: vi.fn(),
-    },
+  it('deserializes backend state as CLI-only sessions and providers', () => {
+    useAppStore.getState().loadFromCef(makeCppState(1))
+
+    const state = useAppStore.getState()
+    expect(state.sessions).toHaveLength(1)
+    expect(state.sessions[0]).toMatchObject({
+      id: 'chat-1',
+      name: 'Gemini Session',
+      viewMode: 'cli',
+      folderId: 'default',
+    })
+    expect(state.activeSessionId).toBe('chat-1')
+    expect(state.providers.map((provider) => provider.id)).toEqual(['gemini-cli'])
+    expect(state.cliBindingBySessionId['chat-1']).toMatchObject({
+      terminalId: 'term-chat-1',
+      running: true,
+      turnState: 'idle',
+    })
   })
 
-  ;(globalThis as unknown as { cefQuery?: (params: CefCallbacks & { request: string }) => void }).cefQuery =
-    ({ request, onSuccess, onFailure }) => {
-      const parsed = JSON.parse(request) as { action?: string; requestId?: string }
-      requestLog.push({ action: parsed.action ?? '', requestId: parsed.requestId })
+  it('ignores stale backend revisions', () => {
+    useAppStore.getState().loadFromCef(makeCppState(2))
+    useAppStore.getState().loadFromCef({
+      ...makeCppState(1),
+      chats: [{ ...makeCppState(1).chats[0], title: 'Stale' }],
+    })
 
-      if (parsed.action === 'getInitialState' && options.holdInitialState) {
-        pendingInitialState = { onSuccess, onFailure }
-        return
-      }
+    expect(useAppStore.getState().sessions[0].name).toBe('Gemini Session')
+    expect(useAppStore.getState().lastAppliedStateRevision).toBe(2)
+  })
 
-      if (parsed.action === 'getInitialState') {
-        onSuccess(JSON.stringify(makeCppState(0, [{ id: 'boot-chat', title: 'Boot Chat' }], 'boot-chat')))
-        return
-      }
-
-      if (failActions.has(parsed.action ?? '')) {
-        onFailure(500, `${parsed.action} failed`)
-        return
-      }
-
+  it('creates CEF sessions with the Gemini CLI provider', async () => {
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
       onSuccess('{}')
     }
 
-  return {
-    requestLog,
-    resolveInitialState(state: CppStateLike) {
-      if (!pendingInitialState) {
-        throw new Error('No pending getInitialState request to resolve.')
-      }
-
-      pendingInitialState.onSuccess(JSON.stringify(state))
-      pendingInitialState = null
-    },
-  }
-}
-
-function makeCppState(
-  revision: number,
-  chats: CppChatLike[],
-  selectedChatId: string | null = chats[0]?.id ?? null
-): CppStateLike {
-  return {
-    stateRevision: revision,
-    folders: [],
-    chats: chats.map((chat) => ({
-      id: chat.id,
-      title: chat.title,
-      folderId: chat.folderId ?? '',
-      providerId: chat.providerId ?? 'gemini-cli',
-      createdAt: chat.createdAt ?? '2025-01-01T00:00:00.000Z',
-      updatedAt: chat.updatedAt ?? '2025-01-01T00:00:00.000Z',
-      messages: chat.messages ?? [],
-    })),
-    selectedChatId,
-    providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini CLI' }],
-    settings: { activeProviderId: 'gemini-cli', theme: 'dark' },
-    cliDebug: {
-      selectedChatId,
-      terminalCount: 0,
-      runningTerminalCount: 0,
-      busyTerminalCount: 0,
-      terminals: [],
-    },
-  }
-}
-
-function flush() {
-  return new Promise<void>((resolve) => setTimeout(resolve, 0))
-}
-
-describe('useAppStore CEF reconciliation', () => {
-  beforeEach(() => {
-    vi.resetModules()
-    vi.spyOn(console, 'debug').mockImplementation(() => {})
-    vi.spyOn(console, 'error').mockImplementation(() => {})
-  })
-
-  afterEach(() => {
-    vi.restoreAllMocks()
-    delete (globalThis as unknown as { cefQuery?: unknown }).cefQuery
-  })
-
-  it('ignores a stale initial state after a newer push arrives', async () => {
-    const harness = installBrowserHarness({ holdInitialState: true })
-    const { useAppStore } = await import('./useAppStore')
-
-    const pushedState = makeCppState(5, [{ id: 'chat-1', title: 'Pushed Chat' }], 'chat-1')
-    window.uamPush?.({ type: 'stateUpdate', data: pushedState })
-    await flush()
-
-    expect(useAppStore.getState().sessions[0]?.name).toBe('Pushed Chat')
-    expect(useAppStore.getState().lastAppliedStateRevision).toBe(5)
-
-    harness.resolveInitialState(makeCppState(1, [{ id: 'chat-1', title: 'Stale Chat' }], 'chat-1'))
-    await flush()
-
-    expect(useAppStore.getState().sessions[0]?.name).toBe('Pushed Chat')
-    expect(useAppStore.getState().lastAppliedStateRevision).toBe(5)
-  })
-
-  it('rolls back renameSession when the backend rejects the matching request', async () => {
-    const harness = installBrowserHarness({
-      failActions: new Set(['renameSession']),
-      holdInitialState: true,
+    useAppStore.setState({
+      folders: [{ id: 'default', name: 'General', parentId: null, directory: '/tmp/project', isExpanded: true, createdAt: new Date() }],
+      providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#f97316', description: '' }],
     })
-    const { useAppStore } = await import('./useAppStore')
 
-    harness.resolveInitialState(makeCppState(1, [{ id: 'chat-1', title: 'Original' }], 'chat-1'))
-    await flush()
+    useAppStore.getState().addSession('New Chat', 'default')
+    await new Promise((resolve) => setTimeout(resolve, 0))
 
-    useAppStore.getState().renameSession('chat-1', 'Renamed')
-    expect(useAppStore.getState().sessions[0]?.name).toBe('Renamed')
-
-    await flush()
-
-    expect(useAppStore.getState().sessions[0]?.name).toBe('Original')
-  })
-
-  it('rolls back sendMessage when the backend rejects the matching request', async () => {
-    const harness = installBrowserHarness({
-      failActions: new Set(['sendMessage']),
-      holdInitialState: true,
+    expect(requests).toHaveLength(1)
+    expect(requests[0].action).toBe('createSession')
+    expect(requests[0].payload).toEqual({
+      title: 'New Chat',
+      folderId: 'default',
+      providerId: 'gemini-cli',
     })
-    const { useAppStore } = await import('./useAppStore')
-
-    harness.resolveInitialState(makeCppState(1, [{ id: 'chat-1', title: 'Original' }], 'chat-1'))
-    await flush()
-
-    useAppStore.getState().sendMessage('chat-1', 'Hello Gemini')
-    expect(useAppStore.getState().messages['chat-1']?.length).toBe(2)
-    expect(useAppStore.getState().streamingMessageId).toBeTruthy()
-
-    await flush()
-
-    expect(useAppStore.getState().messages['chat-1']?.length ?? 0).toBe(0)
-    expect(useAppStore.getState().streamingMessageId).toBeNull()
-  })
-
-  it('restores the previous selection when selectSession fails', async () => {
-    const harness = installBrowserHarness({
-      failActions: new Set(['selectSession']),
-      holdInitialState: true,
-    })
-    const { useAppStore } = await import('./useAppStore')
-
-    harness.resolveInitialState(
-      makeCppState(
-        1,
-        [
-          { id: 'chat-1', title: 'First' },
-          { id: 'chat-2', title: 'Second' },
-        ],
-        'chat-1'
-      )
-    )
-    await flush()
-
-    useAppStore.getState().setActiveSession('chat-2')
-    expect(useAppStore.getState().activeSessionId).toBe('chat-2')
-
-    await flush()
-
-    expect(useAppStore.getState().activeSessionId).toBe('chat-1')
-    expect(useAppStore.getState().lastAppliedStateRevision).toBe(1)
-    expect(harness.requestLog.some((entry) => entry.action === 'selectSession')).toBe(true)
-  })
-
-  it('keeps the new chat modal open when createSession fails', async () => {
-    const harness = installBrowserHarness({
-      failActions: new Set(['createSession']),
-      holdInitialState: true,
-    })
-    const { useAppStore } = await import('./useAppStore')
-
-    harness.resolveInitialState(makeCppState(1, [], null))
-    await flush()
-
-    useAppStore.setState({ isNewChatModalOpen: true })
-    useAppStore.getState().addSession('New Chat', 'cli', null)
-
-    await flush()
-
-    expect(useAppStore.getState().isNewChatModalOpen).toBe(true)
   })
 })

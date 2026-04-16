@@ -113,8 +113,6 @@ class IProviderRuntime
 	virtual bool UsesInternalEngine(const ProviderProfile& profile) const = 0;
 	/// <summary>Returns true when provider output is fixed to CLI terminal mode.</summary>
 	virtual bool UsesCliOutput(const ProviderProfile& profile) const = 0;
-	/// <summary>Returns true when provider output is fixed to structured chat mode.</summary>
-	virtual bool UsesStructuredOutput(const ProviderProfile& profile) const = 0;
 	/// <summary>Returns true when prompt bootstrap should use @.gemini path injection.</summary>
 	virtual bool UsesGeminiPathBootstrap(const ProviderProfile& profile) const = 0;
 };
@@ -172,8 +170,6 @@ class ProviderRuntime
 	static bool UsesInternalEngine(const ProviderProfile& profile);
 	/// <summary>Returns true when provider output is fixed to CLI terminal mode.</summary>
 	static bool UsesCliOutput(const ProviderProfile& profile);
-	/// <summary>Returns true when provider output is fixed to structured chat mode.</summary>
-	static bool UsesStructuredOutput(const ProviderProfile& profile);
 	/// <summary>Returns true when prompt bootstrap should use @.gemini path injection.</summary>
 	static bool UsesGeminiPathBootstrap(const ProviderProfile& profile);
 	/// <summary>Discovers all chat sources this runtime manages.</summary>
