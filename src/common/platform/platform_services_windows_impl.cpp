@@ -1135,7 +1135,7 @@ namespace
 
 		std::string GeminiDowngradeCommand() const override
 		{
-			return "npm install -g @google/gemini-cli@0.30.0";
+			return "npm install -g @google/gemini-cli@latest";
 		}
 
 		std::filesystem::path ResolveCurrentExecutablePath() const override

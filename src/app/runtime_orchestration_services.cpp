@@ -208,6 +208,11 @@ namespace
 
 	void OverlayLocalChatState(const ChatSession& local, ChatSession& native)
 	{
+		if (NativeSessionLinkService().HasRealNativeSessionId(local) && Trim(local.native_session_id) == Trim(native.native_session_id) && !Trim(local.id).empty())
+		{
+			native.id = local.id;
+		}
+
 		if (!Trim(local.provider_id).empty())
 		{
 			native.provider_id = local.provider_id;
@@ -1358,7 +1363,7 @@ void ChatHistorySyncService::ApplyLocalOverrides(AppState& p_app, std::vector<Ch
 
 		for (const auto& l_terminal : p_app.cli_terminals)
 		{
-			if (l_terminal != nullptr && l_terminal->attached_chat_id == l_chat.id && l_terminal->running)
+			if (l_terminal != nullptr && l_terminal->running && CliTerminalMatchesChatId(*l_terminal, l_chat.id))
 			{
 				l_hasRunningTerminal = true;
 				break;

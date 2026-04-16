@@ -18,7 +18,11 @@ function ensureTestWindow(): TestWindow {
   return testWindow
 }
 
-function makeCppState(revision: number, selectedChatId = 'chat-1'): CppAppState {
+function makeCppState(
+  revision: number,
+  selectedChatId = 'chat-1',
+  terminal: Partial<NonNullable<CppAppState['chats'][number]['cliTerminal']>> = {}
+): CppAppState {
   return {
     stateRevision: revision,
     folders: [
@@ -42,11 +46,13 @@ function makeCppState(revision: number, selectedChatId = 'chat-1'): CppAppState 
           terminalId: 'term-chat-1',
           sourceChatId: 'chat-1',
           running: true,
+          lifecycleState: 'idle',
           turnState: 'idle',
           processing: false,
           readySinceLastSelect: false,
           active: false,
           lastError: '',
+          ...terminal,
         },
       },
     ],
@@ -107,7 +113,71 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(state.cliBindingBySessionId['chat-1']).toMatchObject({
       terminalId: 'term-chat-1',
       running: true,
+      lifecycleState: 'idle',
       turnState: 'idle',
+    })
+  })
+
+  it('maps backend lifecycle states to CLI binding status', () => {
+    useAppStore.getState().loadFromCef(makeCppState(1, 'chat-1', {
+      lifecycleState: 'busy',
+      turnState: 'busy',
+      processing: true,
+    }))
+
+    expect(useAppStore.getState().cliBindingBySessionId['chat-1']).toMatchObject({
+      lifecycleState: 'busy',
+      turnState: 'busy',
+      processing: true,
+    })
+
+    useAppStore.getState().loadFromCef(makeCppState(2, 'chat-1', {
+      running: false,
+      lifecycleState: 'disabled',
+      turnState: 'idle',
+      processing: false,
+    }))
+
+    expect(useAppStore.getState().cliBindingBySessionId['chat-1']).toMatchObject({
+      running: false,
+      lifecycleState: 'disabled',
+      turnState: 'idle',
+      processing: false,
+    })
+  })
+
+  it('appends CLI output without forcing the session busy', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    testWindow.cefQuery = ({ onSuccess }) => {
+      onSuccess(JSON.stringify(makeCppState(1)))
+    }
+
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    cefStore.getState().loadFromCef(makeCppState(2))
+    expect(cefStore.getState().cliBindingBySessionId['chat-1']).toMatchObject({
+      lifecycleState: 'idle',
+      turnState: 'idle',
+      processing: false,
+    })
+
+    testWindow.uamPush?.({
+      type: 'cliOutput',
+      sessionId: 'chat-1',
+      sourceChatId: 'chat-1',
+      terminalId: 'term-chat-1',
+      data: btoa('hello'),
+    })
+
+    const state = cefStore.getState()
+    expect(state.cliTranscriptBySessionId['chat-1']?.content).toBe('hello')
+    expect(state.cliBindingBySessionId['chat-1']).toMatchObject({
+      lifecycleState: 'idle',
+      turnState: 'idle',
+      processing: false,
     })
   })
 

@@ -7,6 +7,7 @@
 #include "common/platform/platform_services.h"
 #include "common/runtime/app_time.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
+#include "common/runtime/terminal/terminal_identity.h"
 #include "common/state/app_state.h"
 
 // ---------------------------------------------------------------------------
@@ -34,19 +35,86 @@ inline bool WriteToCliTerminal(uam::CliTerminalState& terminal, const char* byte
 	return wrote;
 }
 
+inline const char* CliTerminalLifecycleStateLabel(const uam::CliTerminalLifecycleState state)
+{
+	switch (state)
+	{
+	case uam::CliTerminalLifecycleState::Disabled:     return "disabled";
+	case uam::CliTerminalLifecycleState::Stopped:      return "stopped";
+	case uam::CliTerminalLifecycleState::Idle:         return "idle";
+	case uam::CliTerminalLifecycleState::Busy:         return "busy";
+	case uam::CliTerminalLifecycleState::ShuttingDown: return "shuttingDown";
+	}
+
+	return "stopped";
+}
+
+inline const char* CliTerminalLifecycleStateLabel(const uam::CliTerminalState& terminal)
+{
+	return CliTerminalLifecycleStateLabel(terminal.lifecycle_state);
+}
+
+inline bool CliTerminalLifecycleIsProcessing(const uam::CliTerminalState& terminal)
+{
+	return terminal.running &&
+	       (terminal.lifecycle_state == uam::CliTerminalLifecycleState::Busy ||
+	        terminal.lifecycle_state == uam::CliTerminalLifecycleState::ShuttingDown);
+}
+
+inline bool CliTerminalLifecycleIsIdleLive(const uam::CliTerminalState& terminal)
+{
+	return terminal.running && terminal.lifecycle_state == uam::CliTerminalLifecycleState::Idle;
+}
+
 inline void MarkCliTerminalTurnBusy(uam::CliTerminalState& terminal)
 {
+	const double now = GetAppTimeSeconds();
+	terminal.lifecycle_state = uam::CliTerminalLifecycleState::Busy;
 	terminal.turn_state = uam::CliTerminalTurnState::Busy;
+	terminal.generation_in_progress = true;
+	terminal.last_busy_time_s = now;
+	terminal.shutdown_requested_time_s = 0.0;
 }
 
 inline void MarkCliTerminalTurnIdle(uam::CliTerminalState& terminal)
 {
+	const double now = GetAppTimeSeconds();
+	terminal.lifecycle_state = terminal.running ? uam::CliTerminalLifecycleState::Idle : uam::CliTerminalLifecycleState::Stopped;
 	terminal.turn_state = uam::CliTerminalTurnState::Idle;
+	terminal.generation_in_progress = false;
+	terminal.last_idle_confirmed_time_s = now;
+	terminal.shutdown_requested_time_s = 0.0;
 }
 
 inline bool IsCliTerminalTurnBusy(const uam::CliTerminalState& terminal)
 {
-	return terminal.turn_state == uam::CliTerminalTurnState::Busy;
+	return terminal.lifecycle_state == uam::CliTerminalLifecycleState::Busy ||
+	       terminal.turn_state == uam::CliTerminalTurnState::Busy;
+}
+
+inline void MarkCliTerminalShuttingDown(uam::CliTerminalState& terminal)
+{
+	const double now = GetAppTimeSeconds();
+	terminal.lifecycle_state = uam::CliTerminalLifecycleState::ShuttingDown;
+	terminal.turn_state = uam::CliTerminalTurnState::Busy;
+	terminal.generation_in_progress = false;
+	terminal.shutdown_requested_time_s = now;
+}
+
+inline void MarkCliTerminalStopped(uam::CliTerminalState& terminal)
+{
+	terminal.lifecycle_state = uam::CliTerminalLifecycleState::Stopped;
+	terminal.turn_state = uam::CliTerminalTurnState::Idle;
+	terminal.generation_in_progress = false;
+	terminal.last_idle_confirmed_time_s = 0.0;
+	terminal.last_busy_time_s = 0.0;
+	terminal.shutdown_requested_time_s = 0.0;
+}
+
+inline void MarkCliTerminalDisabled(uam::CliTerminalState& terminal)
+{
+	MarkCliTerminalStopped(terminal);
+	terminal.lifecycle_state = uam::CliTerminalLifecycleState::Disabled;
 }
 
 inline void ClearCliReadyForChat(uam::AppState& app, const std::string& chat_id)
@@ -68,6 +136,58 @@ inline void RequestCliTerminalQuit(uam::CliTerminalState& terminal)
 	(void)WriteToCliTerminal(terminal, kQuitCommand, sizeof(kQuitCommand) - 1);
 }
 
+inline void BeginCliTerminalIdleShutdown(uam::CliTerminalState& terminal)
+{
+	RequestCliTerminalQuit(terminal);
+	MarkCliTerminalShuttingDown(terminal);
+}
+
+inline bool CliTerminalHasPendingCall(const uam::AppState& app, const uam::CliTerminalState& terminal)
+{
+	const std::string primary_chat_id = CliTerminalPrimaryChatId(terminal);
+
+	if (!primary_chat_id.empty() && HasPendingCallForChat(app, primary_chat_id))
+	{
+		return true;
+	}
+
+	if (!terminal.attached_chat_id.empty() && terminal.attached_chat_id != primary_chat_id && HasPendingCallForChat(app, terminal.attached_chat_id))
+	{
+		return true;
+	}
+
+	return !terminal.attached_session_id.empty() && HasPendingCallForChat(app, terminal.attached_session_id);
+}
+
+inline bool IsCliTerminalEligibleForBackgroundIdleShutdown(const uam::AppState& app,
+                                                           const uam::CliTerminalState& terminal,
+                                                           const std::string& selected_chat_id,
+                                                           const double now,
+                                                           const double idle_timeout_seconds = 60.0)
+{
+	if (!terminal.running || terminal.ui_attached || terminal.lifecycle_state != uam::CliTerminalLifecycleState::Idle)
+	{
+		return false;
+	}
+
+	if (CliTerminalPrimaryChatId(terminal).empty())
+	{
+		return false;
+	}
+
+	if (!selected_chat_id.empty() && CliTerminalMatchesChatId(terminal, selected_chat_id))
+	{
+		return false;
+	}
+
+	if (CliTerminalHasPendingCall(app, terminal))
+	{
+		return false;
+	}
+
+	return terminal.last_idle_confirmed_time_s > 0.0 && (now - terminal.last_idle_confirmed_time_s) >= idle_timeout_seconds;
+}
+
 enum class CliTerminalStopMode
 {
 	Graceful,
@@ -83,8 +203,7 @@ inline void StopCliTerminal(uam::CliTerminalState& terminal, const bool clear_id
 	terminal.running = false;
 	terminal.input_ready = false;
 	terminal.startup_time_s = 0.0;
-	terminal.generation_in_progress = false;
-	terminal.turn_state = uam::CliTerminalTurnState::Idle;
+	MarkCliTerminalStopped(terminal);
 	terminal.last_output_time_s = 0.0;
 	terminal.recent_output_bytes.clear();
 	terminal.last_native_history_snapshot_digest.clear();
@@ -106,7 +225,7 @@ inline uam::CliTerminalState* FindCliTerminalForChat(uam::AppState& app, const s
 {
 	for (auto& terminal : app.cli_terminals)
 	{
-		if (terminal != nullptr && (terminal->frontend_chat_id == chat_id || terminal->attached_chat_id == chat_id))
+		if (terminal != nullptr && CliTerminalMatchesChatId(*terminal, chat_id))
 			return terminal.get();
 	}
 	return nullptr;
@@ -116,11 +235,12 @@ inline void StopAndEraseCliTerminalForChat(uam::AppState& app, const std::string
 {
 	auto matches_chat_terminal = [&](std::unique_ptr<uam::CliTerminalState>& terminal)
 	{
-		if (terminal == nullptr || (terminal->frontend_chat_id != chat_id && terminal->attached_chat_id != chat_id))
+		if (terminal == nullptr || !CliTerminalMatchesChatId(*terminal, chat_id))
 			return false;
 
-		if (sync_to_history && !terminal->attached_chat_id.empty())
-			SyncChatsFromNative(app, terminal->attached_chat_id, true);
+		const std::string sync_target_id = CliTerminalSyncTargetId(*terminal);
+		if (sync_to_history && !sync_target_id.empty())
+			SyncChatsFromNative(app, sync_target_id, true);
 
 		StopCliTerminal(*terminal, true, CliTerminalStopMode::FastExit);
 		return true;
@@ -135,8 +255,9 @@ inline void StopAllCliTerminals(uam::AppState& app, const bool clear_identity = 
 	{
 		if (terminal != nullptr)
 		{
-			if (!terminal->attached_chat_id.empty())
-				SyncChatsFromNative(app, terminal->attached_chat_id, true);
+			const std::string sync_target_id = CliTerminalSyncTargetId(*terminal);
+			if (!sync_target_id.empty())
+				SyncChatsFromNative(app, sync_target_id, true);
 			StopCliTerminal(*terminal, clear_identity);
 		}
 	}
@@ -148,8 +269,9 @@ inline void FastStopCliTerminalsForExit(uam::AppState& app)
 	{
 		if (terminal_ptr == nullptr)
 			continue;
-		if (!terminal_ptr->attached_chat_id.empty())
-			SyncChatsFromNative(app, terminal_ptr->attached_chat_id, true);
+		const std::string sync_target_id = CliTerminalSyncTargetId(*terminal_ptr);
+		if (!sync_target_id.empty())
+			SyncChatsFromNative(app, sync_target_id, true);
 		StopCliTerminal(*terminal_ptr, true, CliTerminalStopMode::FastExit);
 	}
 }

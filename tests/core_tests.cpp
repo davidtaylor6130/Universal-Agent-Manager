@@ -5,7 +5,11 @@
 #include "common/constants/app_constants.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
+#include "common/runtime/terminal/terminal_idle_classifier.h"
+#include "common/runtime/terminal/terminal_identity.h"
+#include "common/runtime/terminal/terminal_lifecycle.h"
 #include "common/utils/io_utils.h"
+#include "core/gemini_cli_compat.h"
 
 #include <chrono>
 #include <exception>
@@ -216,6 +220,82 @@ UAM_TEST(GeminiCliInteractiveArgvUsesResumeAndFlags)
 	UAM_ASSERT_EQ(argv[2], std::string("--checkpointing"));
 	UAM_ASSERT_EQ(argv[3], std::string("-r"));
 	UAM_ASSERT_EQ(argv[4], std::string("native-abc"));
+}
+
+UAM_TEST(GeminiCliCompatibilityAcceptsCurrentStableVersions)
+{
+	UAM_ASSERT_EQ(std::string(uam::PreferredGeminiCliVersion()), std::string("0.38.1"));
+	UAM_ASSERT(uam::IsSupportedGeminiCliVersion("0.38.1"));
+	UAM_ASSERT(uam::IsSupportedGeminiCliVersion("0.36.0"));
+	UAM_ASSERT(uam::IsSupportedGeminiCliVersion("0.39.0"));
+	UAM_ASSERT(!uam::IsSupportedGeminiCliVersion("0.30.0"));
+	UAM_ASSERT(!uam::IsSupportedGeminiCliVersion("not-a-version"));
+}
+
+UAM_TEST(GeminiPromptClassifierStripsAnsiAndDetectsPrompt)
+{
+	const std::string output = "\x1b[33mThinking...\x1b[0m\r\n\xe2\x94\x82 > Type your message or @path\r\n";
+	UAM_ASSERT(GeminiCliRecentOutputIndicatesInputPrompt(output));
+
+	const std::string stripped = StripTerminalControlSequencesForLifecycle("\x1b[31mhello\x1b[0m\b!");
+	UAM_ASSERT_EQ(stripped, std::string("hell!"));
+	UAM_ASSERT(!GeminiCliRecentOutputIndicatesInputPrompt("tool output is still streaming\nno prompt yet"));
+}
+
+UAM_TEST(CliLifecycleTransitionsDriveBackgroundShutdownEligibility)
+{
+	uam::AppState app;
+	uam::CliTerminalState terminal;
+	terminal.running = true;
+	terminal.frontend_chat_id = "chat-1";
+	terminal.attached_chat_id = "chat-1";
+	terminal.attached_session_id = "native-1";
+
+	MarkCliTerminalTurnBusy(terminal);
+	UAM_ASSERT_EQ(terminal.lifecycle_state, uam::CliTerminalLifecycleState::Busy);
+	UAM_ASSERT_EQ(terminal.turn_state, uam::CliTerminalTurnState::Busy);
+	UAM_ASSERT(terminal.generation_in_progress);
+	terminal.last_idle_confirmed_time_s = 1.0;
+	UAM_ASSERT(!IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "chat-2", 121.0));
+
+	MarkCliTerminalTurnIdle(terminal);
+	UAM_ASSERT_EQ(terminal.lifecycle_state, uam::CliTerminalLifecycleState::Idle);
+	UAM_ASSERT_EQ(terminal.turn_state, uam::CliTerminalTurnState::Idle);
+	UAM_ASSERT(!terminal.generation_in_progress);
+	terminal.last_idle_confirmed_time_s = 59.0;
+	UAM_ASSERT(IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "chat-2", 120.0));
+	UAM_ASSERT(!IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "chat-1", 120.0));
+	UAM_ASSERT(!IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "native-1", 120.0));
+
+	terminal.ui_attached = true;
+	UAM_ASSERT(!IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "chat-2", 120.0));
+	terminal.ui_attached = false;
+
+	PendingRuntimeCall pending;
+	pending.chat_id = "chat-1";
+	app.pending_calls.push_back(std::move(pending));
+	UAM_ASSERT(!IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "chat-2", 120.0));
+}
+
+UAM_TEST(CliTerminalIdentitySeparatesFrontendChatAndNativeSession)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "chat-local";
+	chat.native_session_id = "native-session";
+	app.chats.push_back(chat);
+
+	uam::CliTerminalState terminal;
+	terminal.frontend_chat_id = "chat-local";
+	terminal.attached_chat_id = "chat-local";
+	terminal.attached_session_id = "native-session";
+
+	UAM_ASSERT(CliTerminalMatchesChatId(terminal, "chat-local"));
+	UAM_ASSERT(CliTerminalMatchesChatId(terminal, "native-session"));
+	UAM_ASSERT(!CliTerminalMatchesChatId(terminal, "other-chat"));
+	UAM_ASSERT_EQ(CliTerminalPrimaryChatId(terminal), std::string("chat-local"));
+	UAM_ASSERT_EQ(CliTerminalSyncTargetId(terminal), std::string("native-session"));
+	UAM_ASSERT_EQ(FindChatIndexForCliTerminal(app, terminal), 0);
 }
 
 UAM_TEST(FolderLifecycleKeepsWorkspaceRootsMinimal)

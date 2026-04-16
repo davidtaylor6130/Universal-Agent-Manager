@@ -12,7 +12,9 @@
 
 #include "common/platform/platform_services.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
+#include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_launch.h"
+#include "common/runtime/terminal/terminal_lifecycle.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
 #include "common/chat/chat_folder_store.h"
 
@@ -132,7 +134,7 @@ namespace
 		{
 			for (auto& term : app.cli_terminals)
 			{
-				if (term && (term->frontend_chat_id == chat_id || term->attached_chat_id == chat_id))
+				if (term && CliTerminalMatchesChatId(*term, chat_id))
 				{
 					return term.get();
 				}
@@ -152,9 +154,10 @@ namespace
 		nlohmann::json data;
 		data["terminalId"] = terminal.terminal_id;
 		data["sessionId"] = terminal.frontend_chat_id;
-		data["sourceChatId"] = terminal.attached_chat_id;
+		data["sourceChatId"] = CliTerminalPrimaryChatId(terminal);
 		data["running"] = terminal.running;
-		data["turnState"] = terminal.turn_state == uam::CliTerminalTurnState::Busy ? "busy" : "idle";
+		data["lifecycleState"] = CliTerminalLifecycleStateLabel(terminal);
+		data["turnState"] = CliTerminalLifecycleIsProcessing(terminal) ? "busy" : "idle";
 		data["lastError"] = terminal.last_error;
 
 		if (!terminal.recent_output_bytes.empty())
@@ -238,7 +241,7 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser>  browser,
 	else if (action == "resizeCliTerminal")
 		HandleResizeCli(payload, callback);
 	else if (action == "writeCliInput")
-		HandleWriteCliInput(payload, callback);
+		HandleWriteCliInput(browser, payload, callback);
 	else if (action == "setTheme")
 		HandleSetTheme(browser, payload, callback);
 	else
@@ -524,16 +527,23 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser>  browser,
 	const std::string terminal_id = payload.value("terminalId", "");
 	uam::LogCliDiagnosticEvent(m_app, "handle_start_cli", "request_received", nullptr, "chat_id=" + chat_id + ", terminal_id=" + terminal_id);
 
-	// If a terminal for this chat is already running, nothing to do.
 	if (uam::CliTerminalState* existing = FindCliTerminalByRoutingKey(m_app, chat_id, terminal_id); existing != nullptr && existing->running)
 	{
-		existing->ui_attached = true;
-		existing->rows = std::max(1, rows);
-		existing->cols = std::max(1, cols);
-		PlatformServicesFactory::Instance().terminal_runtime.ResizeCliTerminal(*existing);
-		uam::LogCliDiagnosticEvent(m_app, "handle_start_cli", "reused_running_terminal", existing);
-		cb->Success(BuildCliBindingResponse(*existing).dump());
-		return;
+		if (existing->lifecycle_state == uam::CliTerminalLifecycleState::ShuttingDown)
+		{
+			uam::LogCliDiagnosticEvent(m_app, "handle_start_cli", "restart_shutting_down_terminal", existing);
+			StopCliTerminal(*existing, false, CliTerminalStopMode::FastExit);
+		}
+		else
+		{
+			existing->ui_attached = true;
+			existing->rows = std::max(1, rows);
+			existing->cols = std::max(1, cols);
+			PlatformServicesFactory::Instance().terminal_runtime.ResizeCliTerminal(*existing);
+			uam::LogCliDiagnosticEvent(m_app, "handle_start_cli", "reused_running_terminal", existing);
+			cb->Success(BuildCliBindingResponse(*existing).dump());
+			return;
+		}
 	}
 
 	const int chat_idx = ChatDomainService().FindChatIndexById(m_app, chat_id);
@@ -614,7 +624,8 @@ void UamQueryHandler::HandleResizeCli(const nlohmann::json& payload,
 	cb->Success("{}");
 }
 
-void UamQueryHandler::HandleWriteCliInput(const nlohmann::json& payload,
+void UamQueryHandler::HandleWriteCliInput(CefRefPtr<CefBrowser> browser,
+                                           const nlohmann::json& payload,
                                            CefRefPtr<Callback>   cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
@@ -623,7 +634,7 @@ void UamQueryHandler::HandleWriteCliInput(const nlohmann::json& payload,
 
 	if (!data.empty())
 	{
-		if (uam::CliTerminalState* term = FindCliTerminalByRoutingKey(m_app, chat_id, terminal_id); term != nullptr && term->running)
+		if (uam::CliTerminalState* term = FindCliTerminalByRoutingKey(m_app, chat_id, terminal_id); term != nullptr && term->running && term->lifecycle_state != uam::CliTerminalLifecycleState::ShuttingDown)
 		{
 			// Write raw PTY bytes directly to the terminal master fd.
 			// xterm.js sends individual keystrokes and escape sequences that
@@ -634,8 +645,9 @@ void UamQueryHandler::HandleWriteCliInput(const nlohmann::json& payload,
 			uam::LogCliDiagnosticEvent(m_app, "handle_write_cli_input", wrote ? "pty_write_ok" : "pty_write_failed", term, "", static_cast<long long>(data.size()));
 			if (wrote && CliInputLooksLikeTurnSubmit(data))
 			{
-				term->turn_state = uam::CliTerminalTurnState::Busy;
+				MarkCliTerminalTurnBusy(*term);
 				uam::LogCliDiagnosticEvent(m_app, "handle_write_cli_input", "turn_marked_busy_from_submit", term);
+				uam::PushStateUpdate(browser, m_app);
 			}
 		}
 	}

@@ -15,6 +15,20 @@ inline std::string CliTurnStateLabel(const CliTerminalState& terminal)
 	return terminal.turn_state == CliTerminalTurnState::Busy ? "busy" : "idle";
 }
 
+inline std::string CliLifecycleStateLabel(const CliTerminalState& terminal)
+{
+	switch (terminal.lifecycle_state)
+	{
+	case CliTerminalLifecycleState::Disabled:     return "disabled";
+	case CliTerminalLifecycleState::Stopped:      return "stopped";
+	case CliTerminalLifecycleState::Idle:         return "idle";
+	case CliTerminalLifecycleState::Busy:         return "busy";
+	case CliTerminalLifecycleState::ShuttingDown: return "shuttingDown";
+	}
+
+	return "stopped";
+}
+
 inline std::string CliSelectedChatId(const AppState& app)
 {
 	if (app.selected_chat_index < 0 || app.selected_chat_index >= static_cast<int>(app.chats.size()))
@@ -98,7 +112,8 @@ inline void LogCliDiagnosticEvent(const AppState&            app,
 		    << " process_id=" << CliProcessHandleLabel(*terminal)
 		    << " ui_attached=" << (terminal->ui_attached ? "true" : "false")
 		    << " running=" << (terminal->running ? "true" : "false")
-		    << " turn_state=" << CliTurnStateLabel(*terminal);
+		    << " turn_state=" << CliTurnStateLabel(*terminal)
+		    << " lifecycle_state=" << CliLifecycleStateLabel(*terminal);
 	}
 
 	if (bytes >= 0)

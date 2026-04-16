@@ -1,8 +1,8 @@
 #include "provider_cli_compatibility_service.h"
 
-#include "common/constants/app_constants.h"
 #include "common/platform/platform_services.h"
 #include "common/state/app_state.h"
+#include "core/gemini_cli_compat.h"
 
 #include <atomic>
 #include <memory>
@@ -14,7 +14,6 @@
 namespace
 {
 	constexpr const char* kRuntimeVersionProbeCommand = "gemini --version";
-	constexpr const char* kSupportedRuntimeCliVersion = uam::constants::kSupportedGeminiVersion;
 
 	std::string TrimAscii(const std::string& value)
 	{
@@ -156,7 +155,7 @@ void ProviderCliCompatibilityService::StartPinToSupported(uam::AppState& app) co
 	const std::string command = PlatformServicesFactory::Instance().process_service.GeminiDowngradeCommand();
 	StartAsyncCommandTask(app.runtime_cli_pin_task, command);
 	app.runtime_cli_pin_output.clear();
-	app.status_line = "Running provider CLI pin command...";
+	app.status_line = "Running provider CLI update command...";
 }
 
 void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
@@ -175,7 +174,7 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 		if (parsed.has_value())
 		{
 			app.runtime_cli_installed_version = parsed.value();
-			app.runtime_cli_version_supported = (app.runtime_cli_installed_version == kSupportedRuntimeCliVersion);
+			app.runtime_cli_version_supported = uam::IsSupportedGeminiCliVersion(app.runtime_cli_installed_version);
 
 			if (app.runtime_cli_version_supported)
 			{
@@ -183,7 +182,7 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 			}
 			else
 			{
-				app.runtime_cli_version_message = "Installed provider CLI version is unsupported for this app.";
+				app.runtime_cli_version_message = "Installed provider CLI version is unsupported for this app. Supported Gemini CLI versions: " + uam::SupportedGeminiCliVersionsLabel() + ".";
 			}
 		}
 		else
@@ -207,12 +206,12 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 
 		if (OutputContainsNonZeroExit(output))
 		{
-			app.status_line = "Provider CLI pin command failed. Review output in Settings.";
-			app.runtime_cli_version_message = "Downgrade command failed.";
+			app.status_line = "Provider CLI update command failed. Review output in Settings.";
+			app.runtime_cli_version_message = "Update command failed.";
 		}
 		else
 		{
-			app.status_line = "Provider CLI pin completed. Re-checking installed version.";
+			app.status_line = "Provider CLI update completed. Re-checking installed version.";
 			StartVersionCheck(app, true);
 		}
 	}

@@ -50,6 +50,6 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleStartCli       (CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleStopCli        (CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleResizeCli      (const nlohmann::json& payload, CefRefPtr<Callback> cb);
-	void HandleWriteCliInput  (const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleWriteCliInput  (CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetTheme       (CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 };

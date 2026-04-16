@@ -5,6 +5,7 @@ import '@xterm/xterm/css/xterm.css'
 import { Session } from '../../types/session'
 import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF, isCefContext } from '../../ipc/cefBridge'
+import type { CliLifecycleState } from '../../store/useAppStore'
 
 interface CLIViewProps {
   session: Session
@@ -15,6 +16,7 @@ interface StartCliTerminalResponse {
   sessionId?: string
   sourceChatId?: string
   running?: boolean
+  lifecycleState?: CliLifecycleState | string
   turnState?: 'idle' | 'busy' | string
   lastError?: string
   replayData?: string
@@ -30,6 +32,29 @@ function decodeReplayData(data: string): Uint8Array | string {
   } catch {
     return data
   }
+}
+
+function normalizeLifecycleState(
+  value: unknown,
+  running: boolean,
+  turnState?: string
+): CliLifecycleState {
+  if (
+    value === 'disabled' ||
+    value === 'stopped' ||
+    value === 'idle' ||
+    value === 'busy' ||
+    value === 'shuttingDown'
+  ) {
+    return value
+  }
+
+  if (!running) return 'stopped'
+  return turnState === 'busy' ? 'busy' : 'idle'
+}
+
+function lifecycleIsProcessing(lifecycleState: CliLifecycleState): boolean {
+  return lifecycleState === 'busy' || lifecycleState === 'shuttingDown'
 }
 
 // Mock data for dev mode only
@@ -120,19 +145,6 @@ export function CLIView({ session }: CLIViewProps) {
 
         if ((sessionMatch || terminalMatch) && data) {
           term.write(binaryStringToUint8Array(data))
-
-          if (sessionMatch) {
-            setCliBinding(session.id, {
-              terminalId: terminalId ?? binding?.terminalId ?? '',
-              boundChatId: sourceChatId ?? binding?.boundChatId ?? session.id,
-              running: true,
-              processing: true,
-              readySinceLastSelect: false,
-              active: false,
-              turnState: 'busy',
-              lastError: '',
-            })
-          }
         }
       }
       window.addEventListener('uam-cli-output', onCliOutput)
@@ -152,6 +164,7 @@ export function CLIView({ session }: CLIViewProps) {
             running: false,
             processing: false,
             active: false,
+            lifecycleState: 'stopped',
             turnState: 'idle',
             lastError: resp.error ?? 'Failed to start provider terminal.',
           })
@@ -160,13 +173,17 @@ export function CLIView({ session }: CLIViewProps) {
 
         const data = resp.data
         if (data) {
+          const running = Boolean(data.running)
+          const lifecycleState = normalizeLifecycleState(data.lifecycleState, running, data.turnState)
+          const processing = lifecycleIsProcessing(lifecycleState)
           setCliBinding(session.id, {
             terminalId: data.terminalId ?? cliBinding?.terminalId ?? '',
             boundChatId: data.sourceChatId ?? session.id,
-            running: Boolean(data.running),
-            processing: data.turnState === 'busy',
-            active: false,
-            turnState: data.turnState === 'busy' ? 'busy' : 'idle',
+            running,
+            lifecycleState,
+            processing,
+            active: lifecycleState === 'idle' && running,
+            turnState: processing ? 'busy' : 'idle',
             lastError: data.lastError ?? '',
           })
 
@@ -180,6 +197,7 @@ export function CLIView({ session }: CLIViewProps) {
           running: false,
           processing: false,
           active: false,
+          lifecycleState: 'stopped',
           turnState: 'idle',
           lastError: 'Failed to start provider terminal.',
         })

@@ -31,6 +31,6 @@ namespace uam::constants
 	/// <summary>
 	/// Supported Gemini CLI version expected by this build.
 	/// </summary>
-	inline constexpr const char* kSupportedGeminiVersion = "0.30.0";
+	inline constexpr const char* kSupportedGeminiVersion = "0.38.1";
 
 } // namespace uam::constants

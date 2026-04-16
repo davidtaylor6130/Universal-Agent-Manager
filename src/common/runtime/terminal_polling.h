@@ -5,6 +5,7 @@
 #include "common/runtime/app_time.h"
 #include "common/runtime/terminal_common.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
+#include "common/runtime/terminal/terminal_idle_classifier.h"
 
 #include <cstdint>
 #include <exception>
@@ -199,7 +200,7 @@ inline bool TryMarkCliTurnCompleteFromSyncedHistory(uam::AppState& app,
                                                     const int previous_message_count,
                                                     const std::string& selected_chat_id)
 {
-	if (terminal.turn_state != uam::CliTerminalTurnState::Busy)
+	if (terminal.lifecycle_state != uam::CliTerminalLifecycleState::Busy)
 	{
 		return false;
 	}
@@ -209,14 +210,7 @@ inline bool TryMarkCliTurnCompleteFromSyncedHistory(uam::AppState& app,
 		return false;
 	}
 
-	std::string resolved_chat_id = !terminal.attached_session_id.empty() ? terminal.attached_session_id : terminal.attached_chat_id;
-
-	if (resolved_chat_id.empty())
-	{
-		resolved_chat_id = terminal.frontend_chat_id;
-	}
-
-	const int synced_chat_index = ChatDomainService().FindChatIndexById(app, resolved_chat_id);
+	const int synced_chat_index = FindChatIndexForCliTerminal(app, terminal);
 
 	if (synced_chat_index < 0)
 	{
@@ -230,8 +224,7 @@ inline bool TryMarkCliTurnCompleteFromSyncedHistory(uam::AppState& app,
 		return false;
 	}
 
-	terminal.turn_state = uam::CliTerminalTurnState::Idle;
-	terminal.generation_in_progress = false;
+	MarkCliTerminalTurnIdle(terminal);
 	uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "turn_marked_idle_from_synced_history", &terminal, "message_count=" + std::to_string(synced_chat.messages.size()));
 
 	if (synced_chat.id != selected_chat_id)
@@ -245,7 +238,6 @@ inline bool TryMarkCliTurnCompleteFromSyncedHistory(uam::AppState& app,
 inline bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::CliTerminalState& terminal, const bool preserve_selection)
 {
 	constexpr std::size_t kRecentOutputBufferLimitBytes = 256 * 1024;
-	constexpr double kGenerationIdleSeconds = 1.15;
 	constexpr double kInputReadyFallbackSeconds = 1.5;
 	constexpr int kReadBudgetChunksPerTick = 72;
 	constexpr std::size_t kReadBudgetBytesPerTick = 512 * 1024;
@@ -253,7 +245,7 @@ inline bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, u
 	bool changed = false;
 	const ChatSession* lcp_selectedChat = ChatDomainService().SelectedChat(app);
 	const std::string selected_chat_id = (lcp_selectedChat != nullptr) ? lcp_selectedChat->id : "";
-	const int terminal_chat_index = ChatDomainService().FindChatIndexById(app, terminal.attached_chat_id);
+	const int terminal_chat_index = FindChatIndexForCliTerminal(app, terminal);
 	const ChatSession* terminal_chat = (terminal_chat_index >= 0) ? &app.chats[terminal_chat_index] : nullptr;
 	const int previous_chat_message_count = (terminal_chat != nullptr) ? static_cast<int>(terminal_chat->messages.size()) : -1;
 	const bool terminal_uses_gemini_history = (terminal_chat != nullptr) && ProviderResolutionService().ChatUsesNativeOverlayHistory(app, *terminal_chat);
@@ -303,15 +295,14 @@ inline bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, u
 			terminal.last_output_time_s = now;
 			terminal.last_activity_time_s = now;
 			terminal.last_ai_output_time_s = now;
-			terminal.generation_in_progress = true;
 			changed = true;
 			append_recent_output(buffer, static_cast<std::size_t>(read_bytes));
 			uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "pty_read", &terminal, "", static_cast<long long>(read_bytes));
 
 			uam::PushCliOutput(
 			    browser,
-			    terminal.frontend_chat_id.empty() ? terminal.attached_chat_id : terminal.frontend_chat_id,
-			    terminal.attached_chat_id,
+			    CliTerminalPrimaryChatId(terminal),
+			    CliTerminalPrimaryChatId(terminal),
 			    terminal.terminal_id,
 			    std::string(buffer, static_cast<std::size_t>(read_bytes)));
 			continue;
@@ -319,11 +310,19 @@ inline bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, u
 
 		if (read_bytes == 0)
 		{
+			const bool was_shutting_down = terminal.lifecycle_state == uam::CliTerminalLifecycleState::ShuttingDown;
 			uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "pty_exit_eof", &terminal);
 			StopCliTerminal(terminal);
 			terminal.should_launch = false;
-			terminal.last_error = "Provider terminal exited.";
-			app.status_line = terminal.last_error;
+			if (was_shutting_down)
+			{
+				terminal.last_error.clear();
+			}
+			else
+			{
+				terminal.last_error = "Provider terminal exited.";
+				app.status_line = terminal.last_error;
+			}
 			changed = true;
 			break;
 		}
@@ -333,27 +332,47 @@ inline bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, u
 			break;
 		}
 
+		const bool was_shutting_down = terminal.lifecycle_state == uam::CliTerminalLifecycleState::ShuttingDown;
 		uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "pty_read_failed", &terminal);
 		StopCliTerminal(terminal);
 		terminal.should_launch = false;
-		app.status_line = "Provider terminal read failed.";
+		if (!was_shutting_down)
+		{
+			app.status_line = "Provider terminal read failed.";
+		}
 		changed = true;
 		break;
 	}
 
-	if (platform_terminal_runtime.PollCliTerminalProcessExited(terminal))
+	if (terminal.running && terminal.lifecycle_state == uam::CliTerminalLifecycleState::Busy && GeminiCliRecentOutputIndicatesInputPrompt(terminal.recent_output_bytes))
 	{
+		MarkCliTerminalTurnIdle(terminal);
+		uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "turn_marked_idle_from_prompt", &terminal);
+		changed = true;
+	}
+
+	if (terminal.running && platform_terminal_runtime.PollCliTerminalProcessExited(terminal))
+	{
+		const bool was_shutting_down = terminal.lifecycle_state == uam::CliTerminalLifecycleState::ShuttingDown;
 		uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "process_exited", &terminal);
 
-		if (!terminal.attached_chat_id.empty())
+		const std::string sync_target_id = CliTerminalSyncTargetId(terminal);
+		if (!sync_target_id.empty())
 		{
-			changed |= SyncChatsFromNative(app, terminal.attached_chat_id, true);
+			changed |= SyncChatsFromNative(app, sync_target_id, true);
 		}
 
 		StopCliTerminal(terminal);
 		terminal.should_launch = false;
-		terminal.last_error = "Provider terminal exited.";
-		app.status_line = terminal.last_error;
+		if (was_shutting_down)
+		{
+			terminal.last_error.clear();
+		}
+		else
+		{
+			terminal.last_error = "Provider terminal exited.";
+			app.status_line = terminal.last_error;
+		}
 		changed = true;
 	}
 
@@ -437,7 +456,6 @@ inline bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, u
 						}
 
 						terminal.attached_session_id = discovered;
-						terminal.attached_chat_id = discovered;
 						changed = true;
 						uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "native_session_rebound", &terminal, "previous_chat_id=" + previous_chat_id + ", previous_session_id=" + previous_session_id + ", discovered=" + discovered);
 
@@ -448,7 +466,7 @@ inline bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, u
 					}
 				}
 
-				const std::string preferred_id = terminal.attached_session_id.empty() ? terminal.attached_chat_id : terminal.attached_session_id;
+				const std::string preferred_id = CliTerminalSyncTargetId(terminal);
 				changed |= SyncChatsFromLoadedNative(app, std::move(native_now), preferred_id, preserve_selection);
 				changed |= TryMarkCliTurnCompleteFromSyncedHistory(app, terminal, previous_chat_message_count, selected_chat_id);
 			}
@@ -511,7 +529,6 @@ inline bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, u
 							}
 
 							terminal.attached_session_id = discovered;
-							terminal.attached_chat_id = discovered;
 							changed = true;
 							uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "native_session_rebound", &terminal, "previous_chat_id=" + previous_chat_id + ", previous_session_id=" + previous_session_id + ", discovered=" + discovered);
 
@@ -522,17 +539,11 @@ inline bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, u
 						}
 					}
 
-					const std::string preferred_id = terminal.attached_session_id.empty() ? terminal.attached_chat_id : terminal.attached_session_id;
+					const std::string preferred_id = CliTerminalSyncTargetId(terminal);
 					changed |= SyncChatsFromNative(app, preferred_id, preserve_selection);
 					changed |= TryMarkCliTurnCompleteFromSyncedHistory(app, terminal, previous_chat_message_count, selected_chat_id);
 				}
 			}
-	}
-
-	if (terminal.running && terminal.generation_in_progress && terminal.last_output_time_s > 0.0 && (now - terminal.last_output_time_s) > kGenerationIdleSeconds)
-	{
-		terminal.generation_in_progress = false;
-		changed = true;
 	}
 
 	return changed;
@@ -540,6 +551,7 @@ inline bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, u
 
 inline bool PollAllCliTerminals(CefRefPtr<CefBrowser> browser, uam::AppState& app)
 {
+	constexpr double kShutdownFallbackSeconds = 2.5;
 	const ChatSession* lcp_selectedChat = ChatDomainService().SelectedChat(app);
 	const std::string selected_chat_id = (lcp_selectedChat != nullptr) ? lcp_selectedChat->id : "";
 	const double now = GetAppTimeSeconds();
@@ -552,7 +564,7 @@ inline bool PollAllCliTerminals(CefRefPtr<CefBrowser> browser, uam::AppState& ap
 			continue;
 		}
 
-		const bool selected_terminal = (!selected_chat_id.empty() && terminal->attached_chat_id == selected_chat_id);
+		const bool selected_terminal = (!selected_chat_id.empty() && CliTerminalMatchesChatId(*terminal, selected_chat_id));
 		const double min_poll_interval_s = selected_terminal ? 0.0 : 0.08;
 
 		if (terminal->last_polled_time_s > 0.0 && (now - terminal->last_polled_time_s) < min_poll_interval_s)
@@ -561,29 +573,36 @@ inline bool PollAllCliTerminals(CefRefPtr<CefBrowser> browser, uam::AppState& ap
 		}
 
 		terminal->last_polled_time_s = now;
-		const bool preserve_selection = !selected_chat_id.empty() && terminal->attached_chat_id != selected_chat_id;
+		const bool preserve_selection = !selected_chat_id.empty() && !CliTerminalMatchesChatId(*terminal, selected_chat_id);
 		changed |= PollCliTerminal(browser, app, *terminal, preserve_selection);
 
-		if (!terminal->running || selected_terminal || terminal->attached_chat_id.empty())
+		if (!terminal->running)
 		{
 			continue;
 		}
 
-		if (HasPendingCallForChat(app, terminal->attached_chat_id) || terminal->turn_state == uam::CliTerminalTurnState::Busy)
+		if (terminal->lifecycle_state == uam::CliTerminalLifecycleState::ShuttingDown)
 		{
+			if (terminal->shutdown_requested_time_s > 0.0 && (now - terminal->shutdown_requested_time_s) >= kShutdownFallbackSeconds)
+			{
+				uam::LogCliDiagnosticEvent(app, "poll_all_cli_terminals", "idle_shutdown_force_stop", terminal.get(), "shutdown_wait_seconds=" + std::to_string(now - terminal->shutdown_requested_time_s));
+				StopCliTerminal(*terminal, false, CliTerminalStopMode::FastExit);
+				terminal->should_launch = false;
+				terminal->last_error.clear();
+				changed = true;
+			}
 			continue;
 		}
 
-		const double terminal_activity = LatestCliTransportActivityTime(*terminal);
-		const double idle_timeout = static_cast<double>(std::clamp(app.settings.cli_idle_timeout_seconds, 30, 3600));
-
-		if (terminal_activity > 0.0 && (now - terminal_activity) > idle_timeout)
+		if (IsCliTerminalEligibleForBackgroundIdleShutdown(app, *terminal, selected_chat_id, now))
 		{
-			uam::LogCliDiagnosticEvent(app, "poll_all_cli_terminals", "idle_timeout_stop", terminal.get(), "idle_seconds=" + std::to_string(now - terminal_activity));
-			StopCliTerminal(*terminal, false);
+			const double idle_seconds = now - terminal->last_idle_confirmed_time_s;
+			uam::LogCliDiagnosticEvent(app, "poll_all_cli_terminals", "idle_timeout_shutdown", terminal.get(), "idle_seconds=" + std::to_string(idle_seconds));
+			BeginCliTerminalIdleShutdown(*terminal);
 			terminal->should_launch = false;
-			const std::string l_chatLabel = (terminal->attached_chat_id.size() > 36) ? (terminal->attached_chat_id.substr(0, 36) + "...") : terminal->attached_chat_id;
-			app.status_line = "Stopped idle background terminal for chat " + l_chatLabel + ".";
+			const std::string primary_chat_id = CliTerminalPrimaryChatId(*terminal);
+			const std::string l_chatLabel = (primary_chat_id.size() > 36) ? (primary_chat_id.substr(0, 36) + "...") : primary_chat_id;
+			app.status_line = "Stopping idle background terminal for chat " + l_chatLabel + ".";
 			changed = true;
 		}
 	}

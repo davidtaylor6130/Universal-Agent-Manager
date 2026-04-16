@@ -10,6 +10,7 @@
 #include "app/runtime_orchestration_services.h"
 #include "common/chat/chat_branching.h"
 #include "common/chat/chat_repository.h"
+#include "common/runtime/terminal/terminal_identity.h"
 #include "common/state/app_state.h"
 
 inline bool HasPendingCallForChat(const uam::AppState& app, const std::string& chat_id)
@@ -57,7 +58,12 @@ inline bool ChatHasRunningGemini(const uam::AppState& app, const std::string& ch
 
 	for (const auto& terminal : app.cli_terminals)
 	{
-		if (terminal != nullptr && terminal->running && terminal->attached_chat_id == chat_id && terminal->turn_state == uam::CliTerminalTurnState::Busy)
+		if (terminal != nullptr &&
+		    terminal->running &&
+		    CliTerminalMatchesChatId(*terminal, chat_id) &&
+		    (terminal->lifecycle_state == uam::CliTerminalLifecycleState::Busy ||
+		     terminal->lifecycle_state == uam::CliTerminalLifecycleState::ShuttingDown ||
+		     terminal->turn_state == uam::CliTerminalTurnState::Busy))
 		{
 			return true;
 		}
@@ -75,7 +81,7 @@ inline bool ChatHasActiveCliTerminal(const uam::AppState& app, const std::string
 
 	for (const auto& terminal : app.cli_terminals)
 	{
-		if (terminal != nullptr && terminal->running && terminal->attached_chat_id == chat_id)
+		if (terminal != nullptr && terminal->running && CliTerminalMatchesChatId(*terminal, chat_id))
 		{
 			return true;
 		}

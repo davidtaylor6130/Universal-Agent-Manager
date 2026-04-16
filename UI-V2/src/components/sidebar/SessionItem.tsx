@@ -25,13 +25,11 @@ export const SessionItem = memo(function SessionItem({ sessionId }: SessionItemP
   const menuRef = useRef<HTMLDivElement>(null)
 
   const lifecycleStatus =
-    cliBinding?.processing
+    cliBinding?.lifecycleState === 'busy' || cliBinding?.lifecycleState === 'shuttingDown'
       ? 'processing'
-      : cliBinding?.readySinceLastSelect
-        ? 'ready'
-        : cliBinding?.active
-          ? 'active'
-          : null
+      : cliBinding?.lifecycleState === 'idle'
+        ? 'idle'
+        : null
 
   useEffect(() => {
     if (editing && inputRef.current) {
@@ -129,19 +127,12 @@ export const SessionItem = memo(function SessionItem({ sessionId }: SessionItemP
         {!editing && (
           <div className="ml-auto flex items-center gap-1">
             {lifecycleStatus === 'processing' && (
-              <span className="session-status session-status--processing" aria-label="CLI processing">
-                <span />
-                <span />
+              <span className="session-status session-status--processing" aria-label="CLI running">
                 <span />
               </span>
             )}
-            {lifecycleStatus === 'ready' && (
-              <span className="session-status session-status--ready" aria-label="CLI ready">
-                <span>✓</span>
-              </span>
-            )}
-            {lifecycleStatus === 'active' && (
-              <span className="session-status session-status--active" aria-label="CLI active">
+            {lifecycleStatus === 'idle' && (
+              <span className="session-status session-status--idle" aria-label="CLI idle">
                 <span />
               </span>
             )}

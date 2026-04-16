@@ -2,6 +2,8 @@
 
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
+#include "common/runtime/terminal/terminal_identity.h"
+#include "common/runtime/terminal/terminal_lifecycle.h"
 
 #include <cstdint>
 #include <iomanip>
@@ -94,7 +96,7 @@ const uam::CliTerminalState* FindTerminalForChat(const uam::AppState& app, const
 			continue;
 		}
 
-		if (terminal->frontend_chat_id == chat.id || terminal->attached_chat_id == chat.id)
+		if (CliTerminalMatchesChat(*terminal, chat))
 		{
 			return terminal.get();
 		}
@@ -109,7 +111,7 @@ const uam::CliTerminalState* FindTerminalForChat(const uam::AppState& app, const
 				continue;
 			}
 
-			if (terminal->attached_session_id == native_session_id)
+			if (CliTerminalMatchesChatId(*terminal, native_session_id))
 			{
 				return terminal.get();
 			}
@@ -122,23 +124,22 @@ const uam::CliTerminalState* FindTerminalForChat(const uam::AppState& app, const
 nlohmann::json SerializeChatTerminalSummary(const AppState& app, const ChatSession& chat)
 {
 	const bool ready_since_last_select = app.chats_with_unseen_updates.find(chat.id) != app.chats_with_unseen_updates.end();
-	const bool selected = chat.id == CliSelectedChatId(app);
 	const bool has_pending_call = HasPendingCallForChat(app, chat.id);
 
 	if (const CliTerminalState* terminal = FindTerminalForChat(app, chat); terminal != nullptr)
 	{
-		const bool terminal_processing = terminal->running &&
-			(terminal->turn_state == CliTerminalTurnState::Busy || terminal->generation_in_progress);
+		const bool terminal_processing = CliTerminalLifecycleIsProcessing(*terminal);
 		const bool processing = has_pending_call || terminal_processing;
 		nlohmann::json terminal_json;
 		terminal_json["terminalId"] = terminal->terminal_id;
 		terminal_json["frontendChatId"] = terminal->frontend_chat_id;
-		terminal_json["sourceChatId"] = terminal->attached_chat_id;
+		terminal_json["sourceChatId"] = CliTerminalPrimaryChatId(*terminal);
 		terminal_json["running"] = terminal->running;
-		terminal_json["turnState"] = terminal->turn_state == CliTerminalTurnState::Busy ? "busy" : "idle";
+		terminal_json["lifecycleState"] = CliTerminalLifecycleStateLabel(*terminal);
+		terminal_json["turnState"] = terminal_processing ? "busy" : "idle";
 		terminal_json["processing"] = processing;
 		terminal_json["readySinceLastSelect"] = ready_since_last_select;
-		terminal_json["active"] = terminal->running && !selected && !processing && !ready_since_last_select;
+		terminal_json["active"] = CliTerminalLifecycleIsIdleLive(*terminal);
 		terminal_json["lastError"] = terminal->last_error;
 		return terminal_json;
 	}
@@ -146,6 +147,7 @@ nlohmann::json SerializeChatTerminalSummary(const AppState& app, const ChatSessi
 	const bool processing = has_pending_call;
 	nlohmann::json terminal_json;
 	terminal_json["running"] = false;
+	terminal_json["lifecycleState"] = "stopped";
 	terminal_json["turnState"] = "idle";
 	terminal_json["processing"] = processing;
 	terminal_json["readySinceLastSelect"] = ready_since_last_select;
@@ -192,7 +194,7 @@ nlohmann::json SerializeCliDebugState(const AppState& app)
 			++running_count;
 		}
 
-		if (terminal.turn_state == CliTerminalTurnState::Busy)
+		if (CliTerminalLifecycleIsProcessing(terminal))
 		{
 			++busy_count;
 		}
@@ -200,13 +202,14 @@ nlohmann::json SerializeCliDebugState(const AppState& app)
 		nlohmann::json terminal_json;
 		terminal_json["terminalId"] = terminal.terminal_id;
 		terminal_json["frontendChatId"] = terminal.frontend_chat_id;
-		terminal_json["sourceChatId"] = terminal.attached_chat_id;
+		terminal_json["sourceChatId"] = CliTerminalPrimaryChatId(terminal);
 		terminal_json["attachedSessionId"] = terminal.attached_session_id;
 		terminal_json["providerId"] = CliProviderIdForDiagnostics(app, terminal);
 		terminal_json["nativeSessionId"] = CliNativeSessionIdForDiagnostics(app, terminal);
 		terminal_json["processId"] = CliProcessHandleLabel(terminal);
 		terminal_json["running"] = terminal.running;
 		terminal_json["uiAttached"] = terminal.ui_attached;
+		terminal_json["lifecycleState"] = CliTerminalLifecycleStateLabel(terminal);
 		terminal_json["turnState"] = CliTurnStateLabel(terminal);
 		terminal_json["inputReady"] = terminal.input_ready;
 		terminal_json["generationInProgress"] = terminal.generation_in_progress;
@@ -242,31 +245,27 @@ nlohmann::json StateSerializer::Serialize(const AppState& app)
 
 	// Chat sessions
 	auto chats_arr = nlohmann::json::array();
-	const std::string selected_chat_id = (app.selected_chat_index >= 0 && app.selected_chat_index < static_cast<int>(app.chats.size()))
-		? app.chats[static_cast<std::size_t>(app.selected_chat_index)].id
-		: "";
 	for (const auto& chat : app.chats)
 	{
 		nlohmann::json chat_json = SerializeSession(chat);
 
 		const bool ready_since_last_select = app.chats_with_unseen_updates.find(chat.id) != app.chats_with_unseen_updates.end();
-		const bool selected = chat.id == selected_chat_id;
 		const bool has_pending_call = HasPendingCallForChat(app, chat.id);
 
 		if (const CliTerminalState* terminal = FindTerminalForChat(app, chat); terminal != nullptr)
 		{
-			const bool terminal_processing = terminal->running &&
-				(terminal->turn_state == CliTerminalTurnState::Busy || terminal->generation_in_progress);
+			const bool terminal_processing = CliTerminalLifecycleIsProcessing(*terminal);
 			const bool processing = has_pending_call || terminal_processing;
 			nlohmann::json terminal_json;
 			terminal_json["terminalId"] = terminal->terminal_id;
 			terminal_json["frontendChatId"] = terminal->frontend_chat_id;
-			terminal_json["sourceChatId"] = terminal->attached_chat_id;
+			terminal_json["sourceChatId"] = CliTerminalPrimaryChatId(*terminal);
 			terminal_json["running"] = terminal->running;
-			terminal_json["turnState"] = terminal->turn_state == CliTerminalTurnState::Busy ? "busy" : "idle";
+			terminal_json["lifecycleState"] = CliTerminalLifecycleStateLabel(*terminal);
+			terminal_json["turnState"] = terminal_processing ? "busy" : "idle";
 			terminal_json["processing"] = processing;
 			terminal_json["readySinceLastSelect"] = ready_since_last_select;
-			terminal_json["active"] = terminal->running && !selected && !processing && !ready_since_last_select;
+			terminal_json["active"] = CliTerminalLifecycleIsIdleLive(*terminal);
 			terminal_json["lastError"] = terminal->last_error;
 			chat_json["cliTerminal"] = terminal_json;
 		}
@@ -275,6 +274,7 @@ nlohmann::json StateSerializer::Serialize(const AppState& app)
 			const bool processing = has_pending_call;
 			nlohmann::json terminal_json;
 			terminal_json["running"] = false;
+			terminal_json["lifecycleState"] = "stopped";
 			terminal_json["turnState"] = "idle";
 			terminal_json["processing"] = processing;
 			terminal_json["readySinceLastSelect"] = ready_since_last_select;

@@ -26,6 +26,7 @@ inline bool StartCliTerminalForChat(uam::AppState& app, uam::CliTerminalState& t
 
 	if (!ProviderRuntime::IsRuntimeEnabled(provider))
 	{
+		MarkCliTerminalDisabled(terminal);
 		terminal.last_error = ProviderRuntime::DisabledReason(provider);
 		if (terminal.last_error.empty())
 			terminal.last_error = "Selected provider runtime is disabled in this build.";
@@ -34,18 +35,21 @@ inline bool StartCliTerminalForChat(uam::AppState& app, uam::CliTerminalState& t
 
 	if (!ProviderRuntime::UsesCliOutput(provider))
 	{
+		MarkCliTerminalDisabled(terminal);
 		terminal.last_error = "Selected provider is fixed to structured output.";
 		return false;
 	}
 
 	if (ProviderRuntime::UsesInternalEngine(provider))
 	{
+		MarkCliTerminalDisabled(terminal);
 		terminal.last_error = "Active provider does not support terminal mode.";
 		return false;
 	}
 
 	if (!provider.supports_interactive)
 	{
+		MarkCliTerminalDisabled(terminal);
 		terminal.last_error = "Active provider does not expose an interactive runtime command.";
 		return false;
 	}
@@ -57,6 +61,7 @@ inline bool StartCliTerminalForChat(uam::AppState& app, uam::CliTerminalState& t
 
 	if (interactive_argv.empty())
 	{
+		MarkCliTerminalStopped(terminal);
 		terminal.last_error = "Active provider does not expose an interactive CLI command.";
 		return false;
 	}
@@ -86,8 +91,7 @@ inline bool StartCliTerminalForChat(uam::AppState& app, uam::CliTerminalState& t
 	terminal.last_polled_time_s  = 0.0;
 	terminal.input_ready         = false;
 	terminal.startup_time_s      = GetAppTimeSeconds();
-	terminal.generation_in_progress = false;
-	terminal.turn_state = uam::CliTerminalTurnState::Idle;
+	MarkCliTerminalStopped(terminal);
 
 	const std::filesystem::path workspace_root = ResolveWorkspaceRootPath(app, chat);
 	std::string startup_error;
@@ -103,6 +107,7 @@ inline bool StartCliTerminalForChat(uam::AppState& app, uam::CliTerminalState& t
 
 	terminal.running      = true;
 	terminal.should_launch = false;
+	MarkCliTerminalTurnBusy(terminal);
 	LogCliDiagnosticEvent(app, "start_cli_terminal_for_chat", "process_launched", &terminal, "argv0=" + interactive_argv.front());
 
 	return true;

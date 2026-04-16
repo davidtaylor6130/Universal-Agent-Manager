@@ -57,6 +57,10 @@ inline uam::CliTerminalState& EnsureCliTerminalForChat(uam::AppState& app, const
 		if (!can_launch_terminal)
 		{
 			existing->should_launch = false;
+			if (!existing->running)
+			{
+				MarkCliTerminalDisabled(*existing);
+			}
 		}
 
 		return *existing;
@@ -68,6 +72,10 @@ inline uam::CliTerminalState& EnsureCliTerminalForChat(uam::AppState& app, const
 	terminal->attached_chat_id = chat.id;
 	terminal->attached_session_id = resume_id;
 	terminal->should_launch = can_launch_terminal;
+	if (!can_launch_terminal)
+	{
+		MarkCliTerminalDisabled(*terminal);
+	}
 	app.cli_terminals.push_back(std::move(terminal));
 	return *app.cli_terminals.back();
 }

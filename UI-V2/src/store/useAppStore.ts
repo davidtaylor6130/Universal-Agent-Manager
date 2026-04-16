@@ -53,6 +53,8 @@ const UI_RUNTIME_BUILD_MARKER = (() => {
 // C++ state serialisation types (mirrors state_serializer.cpp output)
 // ---------------------------------------------------------------------------
 
+export type CliLifecycleState = 'disabled' | 'stopped' | 'idle' | 'busy' | 'shuttingDown'
+
 interface CppMessage {
   role: 'user' | 'assistant' | 'system'
   content: string
@@ -72,6 +74,7 @@ interface CppChat {
     frontendChatId?: string
     sourceChatId?: string
     running: boolean
+    lifecycleState?: CliLifecycleState | string
     turnState?: 'idle' | 'busy' | string
     processing?: boolean
     readySinceLastSelect?: boolean
@@ -90,6 +93,7 @@ interface CppCliDebugTerminal {
   processId: string
   running: boolean
   uiAttached: boolean
+  lifecycleState?: CliLifecycleState | string
   turnState: 'idle' | 'busy' | string
   inputReady: boolean
   generationInProgress: boolean
@@ -140,6 +144,7 @@ export interface CliBinding {
   terminalId: string
   boundChatId: string
   running: boolean
+  lifecycleState: CliLifecycleState
   turnState: 'idle' | 'busy'
   processing: boolean
   readySinceLastSelect: boolean
@@ -222,6 +227,37 @@ function appendCliTranscriptChunk(
     terminalId: nextTerminalId,
     content: nextContent,
   }
+}
+
+function normalizeCliLifecycleState(
+  value: unknown,
+  running: boolean,
+  turnState?: string,
+  processing?: boolean
+): CliLifecycleState {
+  if (
+    value === 'disabled' ||
+    value === 'stopped' ||
+    value === 'idle' ||
+    value === 'busy' ||
+    value === 'shuttingDown'
+  ) {
+    return value
+  }
+
+  if (!running) {
+    return 'stopped'
+  }
+
+  if (turnState === 'busy' || processing) {
+    return 'busy'
+  }
+
+  return 'idle'
+}
+
+function cliLifecycleIsProcessing(lifecycleState: CliLifecycleState): boolean {
+  return lifecycleState === 'busy' || lifecycleState === 'shuttingDown'
 }
 
 function normalizeCliTranscript(
@@ -521,14 +557,23 @@ function deserializeState(
     cpp.chats
       .filter((c) => c.cliTerminal)
       .map((c) => {
+        const running = Boolean(c.cliTerminal?.running)
+        const lifecycleState = normalizeCliLifecycleState(
+          c.cliTerminal?.lifecycleState,
+          running,
+          c.cliTerminal?.turnState,
+          c.cliTerminal?.processing
+        )
+        const processing = Boolean(c.cliTerminal?.processing) || cliLifecycleIsProcessing(lifecycleState)
         const next: CliBinding = {
           terminalId: c.cliTerminal?.terminalId ?? '',
           boundChatId: c.cliTerminal?.sourceChatId ?? c.id,
-          running: Boolean(c.cliTerminal?.running),
-          turnState: c.cliTerminal?.turnState === 'busy' ? 'busy' : 'idle',
-          processing: Boolean(c.cliTerminal?.processing),
+          running,
+          lifecycleState,
+          turnState: processing ? 'busy' : 'idle',
+          processing,
           readySinceLastSelect: Boolean(c.cliTerminal?.readySinceLastSelect),
-          active: Boolean(c.cliTerminal?.active),
+          active: lifecycleState === 'idle' && running,
           lastError: c.cliTerminal?.lastError ?? '',
         }
         const prev = existingBindings[c.id]
@@ -538,6 +583,7 @@ function deserializeState(
           prev.terminalId === next.terminalId &&
           prev.boundChatId === next.boundChatId &&
           prev.running === next.running &&
+          prev.lifecycleState === next.lifecycleState &&
           prev.turnState === next.turnState &&
           prev.processing === next.processing &&
           prev.readySinceLastSelect === next.readySinceLastSelect &&
@@ -609,6 +655,7 @@ function cliDebugSignature(debug: CppCliDebugState | null | undefined) {
       running: terminal.running,
       uiAttached: terminal.uiAttached,
       turnState: terminal.turnState,
+      lifecycleState: terminal.lifecycleState,
       inputReady: terminal.inputReady,
       generationInProgress: terminal.generationInProgress,
       lastError: terminal.lastError,
@@ -767,18 +814,10 @@ export const useAppStore = create<AppState>((set, get) => {
                 const currentBinding = state.cliBindingBySessionId[sessionId]
                 const terminalId = msg.terminalId ?? currentBinding?.terminalId ?? ''
                 const boundChatId = msg.sourceChatId ?? currentBinding?.boundChatId ?? sessionId
-
-                // Reuse cliBinding reference if it's already in the expected state
-                const bindingUnchanged =
+                const bindingChanged =
                   currentBinding &&
-                  currentBinding.terminalId === terminalId &&
-                  currentBinding.boundChatId === boundChatId &&
-                  currentBinding.running === true &&
-                  currentBinding.turnState === 'busy' &&
-                  currentBinding.processing === true &&
-                  currentBinding.readySinceLastSelect === false &&
-                  currentBinding.active === false &&
-                  currentBinding.lastError === ''
+                  (currentBinding.terminalId !== terminalId ||
+                    currentBinding.boundChatId !== boundChatId)
 
                 return {
                   cliTranscriptBySessionId: {
@@ -789,21 +828,16 @@ export const useAppStore = create<AppState>((set, get) => {
                       decodedData
                     ),
                   },
-                  ...(bindingUnchanged ? {} : {
+                  ...(bindingChanged ? {
                     cliBindingBySessionId: {
                       ...state.cliBindingBySessionId,
                       [sessionId]: {
+                        ...(currentBinding as CliBinding),
                         terminalId,
                         boundChatId,
-                        running: true,
-                        turnState: 'busy',
-                        processing: true,
-                        readySinceLastSelect: false,
-                        active: false,
-                        lastError: '',
                       },
                     },
-                  }),
+                  } : {}),
                 }
               })
             }
@@ -1259,6 +1293,13 @@ export const useAppStore = create<AppState>((set, get) => {
       set((state) => {
         const existingBinding = state.cliBindingBySessionId[sessionId]
         const resolvedTerminalId = binding.terminalId ?? existingBinding?.terminalId ?? ''
+        const running = binding.running ?? existingBinding?.running ?? false
+        const turnState = binding.turnState ?? existingBinding?.turnState ?? 'idle'
+        const processing = binding.processing ?? existingBinding?.processing ?? false
+        const lifecycleState =
+          binding.lifecycleState ??
+          existingBinding?.lifecycleState ??
+          normalizeCliLifecycleState(undefined, running, turnState, processing)
         let nextTranscripts = state.cliTranscriptBySessionId
         const existingTranscript = state.cliTranscriptBySessionId[sessionId]
 
@@ -1288,9 +1329,10 @@ export const useAppStore = create<AppState>((set, get) => {
             [sessionId]: {
               terminalId: resolvedTerminalId,
               boundChatId: binding.boundChatId ?? existingBinding?.boundChatId ?? sessionId,
-              running: binding.running ?? existingBinding?.running ?? false,
-              turnState: binding.turnState ?? existingBinding?.turnState ?? 'idle',
-              processing: binding.processing ?? existingBinding?.processing ?? false,
+              running,
+              lifecycleState,
+              turnState: cliLifecycleIsProcessing(lifecycleState) ? 'busy' : turnState,
+              processing: processing || cliLifecycleIsProcessing(lifecycleState),
               readySinceLastSelect: binding.readySinceLastSelect ?? existingBinding?.readySinceLastSelect ?? false,
               active: binding.active ?? existingBinding?.active ?? false,
               lastError: binding.lastError ?? existingBinding?.lastError ?? '',

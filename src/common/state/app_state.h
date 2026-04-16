@@ -44,6 +44,15 @@ namespace uam
 		Busy,
 	};
 
+	enum class CliTerminalLifecycleState
+	{
+		Disabled,
+		Stopped,
+		Idle,
+		Busy,
+		ShuttingDown,
+	};
+
 	struct CliTerminalState : public platform::CliTerminalPlatformFields
 	{
 		std::string terminal_id;
@@ -63,15 +72,19 @@ namespace uam
 		double last_activity_time_s = 0.0;
 		double last_user_input_time_s = 0.0;
 		double last_ai_output_time_s = 0.0;
-			double last_polled_time_s = 0.0;
-			bool input_ready = false;
-			double startup_time_s = 0.0;
-			bool generation_in_progress = false;
-			CliTerminalTurnState turn_state = CliTerminalTurnState::Idle;
-			std::string recent_output_bytes;
-			std::string last_native_history_snapshot_digest;
-			std::string last_error;
-		};
+		double last_polled_time_s = 0.0;
+		double last_idle_confirmed_time_s = 0.0;
+		double last_busy_time_s = 0.0;
+		double shutdown_requested_time_s = 0.0;
+		bool input_ready = false;
+		double startup_time_s = 0.0;
+		bool generation_in_progress = false;
+		CliTerminalTurnState turn_state = CliTerminalTurnState::Idle;
+		CliTerminalLifecycleState lifecycle_state = CliTerminalLifecycleState::Stopped;
+		std::string recent_output_bytes;
+		std::string last_native_history_snapshot_digest;
+		std::string last_error;
+	};
 
 	/// <summary>
 	/// Background command execution container for Gemini compatibility checks.
