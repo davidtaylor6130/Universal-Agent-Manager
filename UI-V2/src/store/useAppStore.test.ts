@@ -118,6 +118,18 @@ describe('useAppStore Gemini CLI slice', () => {
     })
   })
 
+  it('hides legacy providers when the backend omits Gemini CLI', () => {
+    useAppStore.getState().loadFromCef({
+      ...makeCppState(1),
+      providers: [
+        { id: 'codex-cli', name: 'Codex', shortName: 'Codex', outputMode: 'cli' },
+        { id: 'claude-cli', name: 'Claude', shortName: 'Claude', outputMode: 'cli' },
+      ],
+    })
+
+    expect(useAppStore.getState().providers.map((provider) => provider.id)).toEqual(['gemini-cli'])
+  })
+
   it('maps backend lifecycle states to CLI binding status', () => {
     useAppStore.getState().loadFromCef(makeCppState(1, 'chat-1', {
       lifecycleState: 'busy',
@@ -263,7 +275,7 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(state.cliTranscriptBySessionId['chat-folder']).toBeUndefined()
   })
 
-  it('rolls back all folder delete optimistic state when CEF rejects it', async () => {
+  it('keeps folder state unchanged when CEF rejects folder delete', async () => {
     const now = new Date()
     const requests: Array<{ action: string; payload?: unknown }> = []
     window.cefQuery = ({ request, onFailure }) => {
@@ -315,5 +327,70 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(state.messages['chat-folder']).toHaveLength(1)
     expect(state.cliBindingBySessionId['chat-folder']).toMatchObject({ terminalId: 'term-folder' })
     expect(state.cliTranscriptBySessionId['chat-folder']).toMatchObject({ content: 'transcript' })
+  })
+
+  it('does not clobber newer backend state when folder delete fails later', async () => {
+    const now = new Date()
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    let rejectDelete: () => void = () => {
+      throw new Error('CEF delete request was not sent')
+    }
+    window.cefQuery = ({ request, onFailure }) => {
+      requests.push(JSON.parse(request))
+      rejectDelete = () => onFailure(409, 'Cannot delete while Gemini is running')
+    }
+
+    useAppStore.setState({
+      folders: [
+        { id: 'default', name: 'General', parentId: null, directory: '/tmp/general', isExpanded: true, createdAt: now },
+        { id: 'project', name: 'Project', parentId: null, directory: '/tmp/project', isExpanded: true, createdAt: now },
+      ],
+      sessions: [
+        { id: 'chat-folder', name: 'Folder chat', viewMode: 'cli', folderId: 'project', createdAt: now, updatedAt: now },
+        { id: 'chat-general', name: 'General chat', viewMode: 'cli', folderId: 'default', createdAt: now, updatedAt: now },
+      ],
+      activeSessionId: 'chat-folder',
+      lastAppliedStateRevision: 1,
+    })
+
+    useAppStore.getState().deleteFolder('project')
+    useAppStore.getState().loadFromCef({
+      ...makeCppState(2, 'chat-general'),
+      folders: [
+        { id: 'default', title: 'General', directory: '/tmp/general', collapsed: false },
+        { id: 'project', title: 'Project', directory: '/tmp/project', collapsed: false },
+      ],
+      chats: [
+        {
+          id: 'chat-folder',
+          title: 'Folder chat from backend',
+          folderId: 'project',
+          providerId: 'gemini-cli',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:02.000Z',
+          messages: [],
+        },
+        {
+          id: 'chat-general',
+          title: 'General chat from backend',
+          folderId: 'default',
+          providerId: 'gemini-cli',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:02.000Z',
+          messages: [],
+        },
+      ],
+    })
+    rejectDelete()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const state = useAppStore.getState()
+    expect(requests).toHaveLength(1)
+    expect(state.lastAppliedStateRevision).toBe(2)
+    expect(state.sessions.map((session) => session.name)).toEqual([
+      'Folder chat from backend',
+      'General chat from backend',
+    ])
+    expect(state.activeSessionId).toBe('chat-general')
   })
 })

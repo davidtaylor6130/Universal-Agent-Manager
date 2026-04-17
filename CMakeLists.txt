@@ -67,7 +67,6 @@ endif()
 # ---------------------------------------------------------------------------
 
 option(UAM_BUILD_TESTS "Build UAM core tests executable." OFF)
-option(UAM_BUILD_UI_V2 "Build UI-V2 (React) before packaging/copying dist assets." ON)
 set(UAM_FETCHCONTENT_BASE_DIR "${CMAKE_BINARY_DIR}/_deps" CACHE PATH
   "Directory used for FetchContent source checkouts.")
 if(APPLE)
@@ -430,45 +429,22 @@ endif()
 #           codesign to scan them as code objects and produce a broken signature.
 # On Windows: flat layout next to the executable.
 set(UAM_UI_DIST_SRC "${CMAKE_SOURCE_DIR}/UI-V2/dist")
-set(UAM_UI_BUILD_ID "manual-dist")
-
-if(UAM_BUILD_UI_V2)
-  find_program(UAM_NPM_EXECUTABLE NAMES npm npm.cmd REQUIRED)
-  string(TIMESTAMP UAM_UI_BUILD_TIMESTAMP "%Y%m%dT%H%M%SZ" UTC)
-  set(UAM_UI_BUILD_VERSION "${PROJECT_VERSION}")
-  if(UAM_UI_BUILD_VERSION STREQUAL "")
-    set(UAM_UI_BUILD_VERSION "local")
-  endif()
-  set(UAM_UI_BUILD_ID "${UAM_UI_BUILD_VERSION}-${CMAKE_SYSTEM_NAME}-${UAM_UI_BUILD_TIMESTAMP}")
-
-  file(GLOB_RECURSE UAM_UI_V2_SOURCE_FILES CONFIGURE_DEPENDS
-    "${CMAKE_SOURCE_DIR}/UI-V2/src/*"
-    "${CMAKE_SOURCE_DIR}/UI-V2/public/*"
-    "${CMAKE_SOURCE_DIR}/UI-V2/index.html"
-    "${CMAKE_SOURCE_DIR}/UI-V2/package.json"
-    "${CMAKE_SOURCE_DIR}/UI-V2/package-lock.json"
-    "${CMAKE_SOURCE_DIR}/UI-V2/tsconfig*.json"
-    "${CMAKE_SOURCE_DIR}/UI-V2/vite.config.*"
-    "${CMAKE_SOURCE_DIR}/UI-V2/postcss.config.*"
-    "${CMAKE_SOURCE_DIR}/UI-V2/tailwind.config.*"
-  )
-
-  set(UAM_UI_BUILD_STAMP "${CMAKE_BINARY_DIR}/UI-V2/ui-v2-build.stamp")
-  add_custom_command(
-    OUTPUT "${UAM_UI_BUILD_STAMP}"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/UI-V2"
-    COMMAND ${CMAKE_COMMAND} -E env "VITE_UAM_UI_BUILD_ID=${UAM_UI_BUILD_ID}" ${UAM_NPM_EXECUTABLE} run build
-    COMMAND ${CMAKE_COMMAND} -E touch "${UAM_UI_BUILD_STAMP}"
-    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/UI-V2"
-    DEPENDS ${UAM_UI_V2_SOURCE_FILES}
-    COMMENT "Building UI-V2/dist (build id: ${UAM_UI_BUILD_ID})"
-    VERBATIM
-  )
-  add_custom_target(uam_ui_v2_build DEPENDS "${UAM_UI_BUILD_STAMP}")
-  add_dependencies(universal_agent_manager uam_ui_v2_build)
-elseif(NOT EXISTS "${UAM_UI_DIST_SRC}/index.html")
-  message(FATAL_ERROR "UI-V2/dist not found and UAM_BUILD_UI_V2=OFF. Enable UAM_BUILD_UI_V2 or run 'npm run build' in UI-V2/.")
+find_program(UAM_NPM_EXECUTABLE NAMES npm npm.cmd REQUIRED)
+string(TIMESTAMP UAM_UI_BUILD_TIMESTAMP "%Y%m%dT%H%M%SZ" UTC)
+set(UAM_UI_BUILD_VERSION "${PROJECT_VERSION}")
+if(UAM_UI_BUILD_VERSION STREQUAL "")
+  set(UAM_UI_BUILD_VERSION "local")
 endif()
+set(UAM_UI_BUILD_ID "${UAM_UI_BUILD_VERSION}-${CMAKE_SYSTEM_NAME}-${UAM_UI_BUILD_TIMESTAMP}")
+
+add_custom_target(uam_ui_v2_build
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/UI-V2"
+  COMMAND ${CMAKE_COMMAND} -E env "VITE_UAM_UI_BUILD_ID=${UAM_UI_BUILD_ID}" ${UAM_NPM_EXECUTABLE} run build
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/UI-V2"
+  COMMENT "Building UI-V2/dist (build id: ${UAM_UI_BUILD_ID})"
+  VERBATIM
+)
+add_dependencies(universal_agent_manager uam_ui_v2_build)
 
 if(APPLE AND UAM_MACOS_BUNDLE)
   add_custom_command(TARGET universal_agent_manager POST_BUILD
@@ -497,11 +473,36 @@ endif()
 # ---------------------------------------------------------------------------
 
 set(UAM_WINDOW_ICON_BMP "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.bmp")
-if(EXISTS "${UAM_WINDOW_ICON_BMP}")
+if(APPLE AND UAM_MACOS_BUNDLE)
   add_custom_command(TARGET universal_agent_manager POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      "${UAM_WINDOW_ICON_BMP}"
-      "$<TARGET_FILE_DIR:universal_agent_manager>/app_icon.bmp"
+    COMMAND ${CMAKE_COMMAND} -E rm -f
+      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/MacOS/app_icon.bmp"
+    COMMENT "Removing stale executable-directory icon asset"
+  )
+endif()
+if(EXISTS "${UAM_WINDOW_ICON_BMP}")
+  if(APPLE AND UAM_MACOS_BUNDLE)
+    add_custom_command(TARGET universal_agent_manager POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${UAM_WINDOW_ICON_BMP}"
+        "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/app_icon.bmp"
+    )
+  else()
+    add_custom_command(TARGET universal_agent_manager POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${UAM_WINDOW_ICON_BMP}"
+        "$<TARGET_FILE_DIR:universal_agent_manager>/app_icon.bmp"
+    )
+  endif()
+endif()
+
+if(APPLE AND UAM_MACOS_BUNDLE)
+  add_custom_command(TARGET universal_agent_manager POST_BUILD
+    COMMAND codesign --force --deep --sign - --entitlements "${_jit_entitlements}"
+      "$<TARGET_BUNDLE_DIR:universal_agent_manager>"
+    COMMAND codesign --verify --deep --strict --verbose=2
+      "$<TARGET_BUNDLE_DIR:universal_agent_manager>"
+    COMMENT "Signing and verifying final macOS app bundle"
   )
 endif()
 

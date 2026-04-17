@@ -2,10 +2,10 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import { isCefContext } from './ipc/cefBridge'
+import { applyDocumentTheme, readStoredTheme } from './utils/themeStorage'
 
 // Apply persisted theme before first render to prevent flash
-const stored = localStorage.getItem('uam-theme') as 'dark' | 'light' | null
-document.documentElement.setAttribute('data-theme', stored ?? 'dark')
+applyDocumentTheme(readStoredTheme() ?? 'dark')
 
 const root = createRoot(document.getElementById('root')!)
 

@@ -1,9 +1,12 @@
 #include "app/chat_domain_service.h"
 #include "app/chat_lifecycle_service.h"
+#include "app/runtime_orchestration_services.h"
 #include "common/chat/chat_repository.h"
 #include "common/config/settings_store.h"
 #include "common/constants/app_constants.h"
 #include "common/paths/app_paths.h"
+#include "common/platform/platform_services.h"
+#include "common/provider/gemini/base/gemini_history_loader.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/terminal/terminal_idle_classifier.h"
@@ -19,6 +22,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -382,6 +386,122 @@ UAM_TEST(DeleteFolderBlocksWhenContainedChatIsRunning)
 	UAM_ASSERT(ChatDomainService().FindFolderById(app, created_id) != nullptr);
 	UAM_ASSERT(ChatDomainService().FindChatIndexById(app, folder_chat.id) >= 0);
 }
+
+UAM_TEST(DataRootLockRejectsSecondWriter)
+{
+	TempDir temp("uam-data-root-lock");
+	std::string first_error;
+	auto first_lock = PlatformServicesFactory::Instance().process_service.TryAcquireDataRootLock(temp.root, &first_error);
+	UAM_ASSERT(first_lock != nullptr);
+	UAM_ASSERT(first_error.empty());
+
+	std::string second_error;
+	auto second_lock = PlatformServicesFactory::Instance().process_service.TryAcquireDataRootLock(temp.root, &second_error);
+	UAM_ASSERT(second_lock == nullptr);
+	UAM_ASSERT(!second_error.empty());
+
+	first_lock.reset();
+	second_error.clear();
+	second_lock = PlatformServicesFactory::Instance().process_service.TryAcquireDataRootLock(temp.root, &second_error);
+	UAM_ASSERT(second_lock != nullptr);
+}
+
+UAM_TEST(CreateFolderGeneratesUniqueIds)
+{
+	TempDir temp("uam-folder-ids");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatDomainService().EnsureDefaultFolder(app);
+
+	std::unordered_set<std::string> ids;
+	for (int i = 0; i < 128; ++i)
+	{
+		std::string created_id;
+		UAM_ASSERT(CreateFolder(app, "Project " + std::to_string(i), temp.root.string(), &created_id));
+		UAM_ASSERT(!created_id.empty());
+		UAM_ASSERT(ids.insert(created_id).second);
+	}
+}
+
+UAM_TEST(MoveChatToFolderHandlesMissingWorkspacePaths)
+{
+	TempDir temp("uam-move-missing-workspace");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatDomainService().EnsureDefaultFolder(app);
+
+	std::string target_folder_id;
+	const fs::path missing_target = temp.root / "missing-target";
+	UAM_ASSERT(CreateFolder(app, "Missing Target", missing_target.string(), &target_folder_id));
+
+	ChatSession chat;
+	chat.id = "chat-missing-workspace";
+	chat.provider_id = "gemini-cli";
+	chat.folder_id = uam::constants::kDefaultFolderId;
+	chat.title = "Missing workspace";
+	chat.created_at = "2026-01-01T00:00:00.000Z";
+	chat.updated_at = "2026-01-01T00:00:00.000Z";
+	chat.workspace_directory = (temp.root / "missing-source").string();
+	app.chats.push_back(chat);
+
+	UAM_ASSERT(ChatHistorySyncService().MoveChatToFolder(app, app.chats.back(), target_folder_id));
+	UAM_ASSERT_EQ(app.chats.back().folder_id, target_folder_id);
+	UAM_ASSERT_EQ(app.chats.back().workspace_directory, missing_target.string());
+}
+
+UAM_TEST(NativeGeminiHistoryLoadCapsAreBounded)
+{
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxFileBytes() > 0);
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxMessages() > 0);
+}
+
+UAM_TEST(GeminiHistoryParseFileHonorsCaps)
+{
+	TempDir temp("uam-gemini-history-caps");
+	const fs::path history_file = temp.root / "session.json";
+	UAM_ASSERT(uam::io::WriteTextFile(history_file, R"({
+  "sessionId": "native-capped",
+  "startTime": "2026-01-01T00:00:00.000Z",
+  "lastUpdated": "2026-01-01T00:00:02.000Z",
+  "messages": [
+    {"type": "user", "timestamp": "2026-01-01T00:00:01.000Z", "content": "one"},
+    {"type": "model", "timestamp": "2026-01-01T00:00:02.000Z", "content": "two"}
+  ]
+})"));
+
+	GeminiJsonHistoryStoreOptions file_cap;
+	file_cap.max_file_bytes = 1;
+	UAM_ASSERT(!GeminiJsonHistoryStore::ParseFile(history_file, ProviderProfileStore::DefaultGeminiProfile(), file_cap).has_value());
+
+	GeminiJsonHistoryStoreOptions message_cap;
+	message_cap.max_messages = 1;
+	const auto parsed = GeminiJsonHistoryStore::ParseFile(history_file, ProviderProfileStore::DefaultGeminiProfile(), message_cap);
+	UAM_ASSERT(parsed.has_value());
+	UAM_ASSERT_EQ(parsed->messages.size(), static_cast<std::size_t>(1));
+}
+
+#if defined(__APPLE__)
+UAM_TEST(MacTerminalRejectsInvalidWorkingDirectory)
+{
+	TempDir temp("uam-mac-terminal-workdir");
+	const fs::path file_path = temp.root / "not-a-directory";
+	UAM_ASSERT(uam::io::WriteTextFile(file_path, "not a directory"));
+
+	uam::CliTerminalState terminal;
+	terminal.rows = 24;
+	terminal.cols = 80;
+	std::string error;
+	const bool started = PlatformServicesFactory::Instance().terminal_runtime.StartCliTerminalProcess(terminal, file_path, {"/bin/echo", "hello"}, &error);
+	if (started)
+	{
+		PlatformServicesFactory::Instance().terminal_runtime.StopCliTerminalProcess(terminal, true);
+		PlatformServicesFactory::Instance().terminal_runtime.CloseCliTerminalHandles(terminal);
+	}
+	UAM_ASSERT(!started);
+	UAM_ASSERT(!error.empty());
+}
+#endif
 
 int main()
 {

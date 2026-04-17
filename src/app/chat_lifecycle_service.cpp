@@ -31,7 +31,7 @@ namespace
 
 		call.state.reset();
 	}
-}
+} // namespace
 
 bool RemoveChatById(AppState& app, const std::string& chat_id)
 {
@@ -241,21 +241,14 @@ bool DeleteFolderById(AppState& app, const std::string& folder_id)
 		ChatBranching::ReparentChildrenAfterDelete(next_chats, deleted_chat.id);
 	}
 
-	next_chats.erase(std::remove_if(next_chats.begin(), next_chats.end(),
-	                                [&](const ChatSession& chat)
-	                                {
-		                                return deleted_chat_ids.contains(chat.id);
-	                                }),
-	                 next_chats.end());
+	next_chats.erase(std::remove_if(next_chats.begin(), next_chats.end(), [&](const ChatSession& chat) { return deleted_chat_ids.contains(chat.id); }), next_chats.end());
 	ChatBranching::Normalize(next_chats);
 
 	for (const ChatSession& remaining_chat : next_chats)
 	{
 		if (!ProviderRuntime::SaveHistory(ProviderResolutionService().ProviderForChatOrDefault(app, remaining_chat), app.data_root, remaining_chat))
 		{
-			app.status_line = restore_original_chats()
-				? "Failed to persist chat updates before folder delete."
-				: "Failed to persist chat updates before folder delete, and rollback also failed.";
+			app.status_line = restore_original_chats() ? "Failed to persist chat updates before folder delete." : "Failed to persist chat updates before folder delete, and rollback also failed.";
 			return false;
 		}
 	}
@@ -275,9 +268,7 @@ bool DeleteFolderById(AppState& app, const std::string& folder_id)
 
 	if (!ChatFolderStore::Save(app.data_root, next_folders))
 	{
-		app.status_line = restore_original_chats()
-			? "Failed to persist folder metadata before delete."
-			: "Failed to persist folder metadata before delete, and rollback also failed.";
+		app.status_line = restore_original_chats() ? "Failed to persist folder metadata before delete." : "Failed to persist folder metadata before delete, and rollback also failed.";
 		return false;
 	}
 
@@ -431,7 +422,22 @@ bool CreateFolder(AppState& app, const std::string& title, const std::string& di
 	}
 
 	ChatFolder folder;
-	folder.id = ChatDomainService().NewFolderId();
+	for (int attempt = 0; attempt < 16; ++attempt)
+	{
+		folder.id = ChatDomainService().NewFolderId();
+		if (!folder.id.empty() && ChatDomainService().FindFolderById(app, folder.id) == nullptr)
+		{
+			break;
+		}
+		folder.id.clear();
+	}
+
+	if (folder.id.empty())
+	{
+		app.status_line = "Failed to allocate a unique folder id.";
+		return false;
+	}
+
 	folder.title = trimmed_title;
 	folder.directory = trimmed_directory;
 	folder.collapsed = false;

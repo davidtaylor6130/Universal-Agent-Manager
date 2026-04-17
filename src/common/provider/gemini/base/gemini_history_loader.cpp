@@ -61,6 +61,17 @@ namespace
 
 std::optional<ChatSession> GeminiJsonHistoryStore::ParseFile(const std::filesystem::path& file_path, const ProviderProfile& provider, const GeminiJsonHistoryStoreOptions& options)
 {
+	if (options.max_file_bytes > 0)
+	{
+		std::error_code size_ec;
+		const std::uintmax_t file_size = std::filesystem::file_size(file_path, size_ec);
+
+		if (!size_ec && file_size > options.max_file_bytes)
+		{
+			return std::nullopt;
+		}
+	}
+
 	const std::string file_text = ReadTextFile(file_path);
 
 	if (file_text.empty())

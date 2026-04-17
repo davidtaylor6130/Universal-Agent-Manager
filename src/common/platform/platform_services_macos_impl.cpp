@@ -21,6 +21,7 @@
 #include <fcntl.h>
 #include <mach-o/dyld.h>
 #include <signal.h>
+#include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -532,6 +533,29 @@ namespace
 				return false;
 			}
 
+			if (!working_directory.empty())
+			{
+				std::error_code wd_ec;
+				std::filesystem::create_directories(working_directory, wd_ec);
+				if (wd_ec || !std::filesystem::is_directory(working_directory, wd_ec))
+				{
+					if (error_out != nullptr)
+					{
+						*error_out = "Failed to prepare provider working directory: " + (wd_ec ? wd_ec.message() : working_directory.string());
+					}
+					return false;
+				}
+
+				if (access(working_directory.c_str(), X_OK) != 0)
+				{
+					if (error_out != nullptr)
+					{
+						*error_out = "Provider working directory is not accessible: " + std::string(std::strerror(errno));
+					}
+					return false;
+				}
+			}
+
 			int master_fd = -1;
 			int slave_fd = -1;
 			struct winsize ws
@@ -550,34 +574,34 @@ namespace
 				return false;
 			}
 
-				const std::vector<std::string> terminal_path_dirs = CollectTerminalPathSearchDirs();
-				const std::string terminal_path_env = JoinPathEntries(terminal_path_dirs);
-				const std::string resolved_executable = ResolveExecutablePathForTerminal(argv.front(), terminal_path_dirs);
-				if (resolved_executable.empty())
+			const std::vector<std::string> terminal_path_dirs = CollectTerminalPathSearchDirs();
+			const std::string terminal_path_env = JoinPathEntries(terminal_path_dirs);
+			const std::string resolved_executable = ResolveExecutablePathForTerminal(argv.front(), terminal_path_dirs);
+			if (resolved_executable.empty())
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "gemini not found on PATH in app environment";
+				}
+				close(master_fd);
+				close(slave_fd);
+				return false;
+			}
+
+			if (ScriptShebangMentionsNode(resolved_executable))
+			{
+				const std::string resolved_node = ResolveExecutablePathForTerminal("node", terminal_path_dirs);
+				if (resolved_node.empty())
 				{
 					if (error_out != nullptr)
 					{
-						*error_out = "gemini not found on PATH in app environment";
+						*error_out = "node not found on PATH in app environment (required by gemini CLI)";
 					}
 					close(master_fd);
 					close(slave_fd);
 					return false;
 				}
-
-				if (ScriptShebangMentionsNode(resolved_executable))
-				{
-					const std::string resolved_node = ResolveExecutablePathForTerminal("node", terminal_path_dirs);
-					if (resolved_node.empty())
-					{
-						if (error_out != nullptr)
-						{
-							*error_out = "node not found on PATH in app environment (required by gemini CLI)";
-						}
-						close(master_fd);
-						close(slave_fd);
-						return false;
-					}
-				}
+			}
 
 			const pid_t pid = fork();
 
@@ -603,20 +627,18 @@ namespace
 				close(master_fd);
 				close(slave_fd);
 
-				if (!working_directory.empty())
+				if (!working_directory.empty() && chdir(working_directory.c_str()) != 0)
 				{
-					std::error_code ec;
-					std::filesystem::create_directories(working_directory, ec);
-					(void)chdir(working_directory.c_str());
+					_exit(126);
 				}
 
-					setenv("TERM", "xterm-256color", 1);
-					if (!terminal_path_env.empty())
-					{
-						setenv("PATH", terminal_path_env.c_str(), 1);
-					}
-					std::vector<std::string> resolved_argv = argv;
-					resolved_argv[0] = resolved_executable;
+				setenv("TERM", "xterm-256color", 1);
+				if (!terminal_path_env.empty())
+				{
+					setenv("PATH", terminal_path_env.c_str(), 1);
+				}
+				std::vector<std::string> resolved_argv = argv;
+				resolved_argv[0] = resolved_executable;
 				std::vector<char*> argv_ptrs;
 				argv_ptrs.reserve(resolved_argv.size() + 1);
 
@@ -832,8 +854,31 @@ namespace
 
 		bool SupportsAsyncNativeGeminiHistoryRefresh() const override
 		{
-			return false;
+			return true;
 		}
+	};
+
+	class MacDataRootLock final : public uam::platform::DataRootLock
+	{
+	  public:
+		explicit MacDataRootLock(const int fd) : m_fd(fd)
+		{
+		}
+
+		~MacDataRootLock() override
+		{
+			if (m_fd >= 0)
+			{
+				(void)flock(m_fd, LOCK_UN);
+				(void)close(m_fd);
+			}
+		}
+
+		MacDataRootLock(const MacDataRootLock&) = delete;
+		MacDataRootLock& operator=(const MacDataRootLock&) = delete;
+
+	  private:
+		int m_fd = -1;
 	};
 
 	class MacProcessService final : public IPlatformProcessService
@@ -859,44 +904,42 @@ namespace
 			return "cd " + ShellQuotePosix(working_directory.string()) + " && " + command;
 		}
 
-			bool CaptureCommandOutput(const std::string& command, std::string* output_out, int* raw_status_out, std::string* error_out = nullptr) const override
+		bool CaptureCommandOutput(const std::string& command, std::string* output_out, int* raw_status_out, std::string* error_out = nullptr) const override
+		{
+			const ProcessExecutionResult result = ExecuteCommand(command);
+
+			if (output_out != nullptr)
 			{
-				const ProcessExecutionResult result = ExecuteCommand(command);
-
-				if (output_out != nullptr)
-				{
-					*output_out = result.output;
-				}
-
-				if (raw_status_out != nullptr)
-				{
-					*raw_status_out = result.exit_code;
-				}
-
-				if (error_out != nullptr)
-				{
-					*error_out = result.error;
-				}
-
-				return !result.timed_out && !result.canceled && result.error.empty();
+				*output_out = result.output;
 			}
 
-			int NormalizeCapturedCommandExitCode(const int raw_status) const override
+			if (raw_status_out != nullptr)
 			{
-				if (WIFEXITED(raw_status))
-				{
-					return WEXITSTATUS(raw_status);
-				}
-
-				return raw_status;
+				*raw_status_out = result.exit_code;
 			}
 
-			ProcessExecutionResult ExecuteCommand(const std::string& command,
-			                                     const int timeout_ms = -1,
-			                                     std::stop_token stop_token = {}) const override
+			if (error_out != nullptr)
 			{
-				return ExecuteCapturedCommandPosix(command, timeout_ms, stop_token);
+				*error_out = result.error;
 			}
+
+			return !result.timed_out && !result.canceled && result.error.empty();
+		}
+
+		int NormalizeCapturedCommandExitCode(const int raw_status) const override
+		{
+			if (WIFEXITED(raw_status))
+			{
+				return WEXITSTATUS(raw_status);
+			}
+
+			return raw_status;
+		}
+
+		ProcessExecutionResult ExecuteCommand(const std::string& command, const int timeout_ms = -1, std::stop_token stop_token = {}) const override
+		{
+			return ExecuteCapturedCommandPosix(command, timeout_ms, stop_token);
+		}
 
 		std::string GeminiDowngradeCommand() const override
 		{
@@ -923,14 +966,54 @@ namespace
 			return std::filesystem::path(buffer.c_str());
 		}
 
+		std::unique_ptr<uam::platform::DataRootLock> TryAcquireDataRootLock(const std::filesystem::path& data_root, std::string* error_out = nullptr) const override
+		{
+			std::error_code ec;
+			std::filesystem::create_directories(data_root, ec);
+			if (ec)
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to create data root lock directory: " + ec.message();
+				}
+				return nullptr;
+			}
+
+			const std::filesystem::path lock_path = data_root / ".uam-data-root.lock";
+			const int fd = open(lock_path.c_str(), O_RDWR | O_CREAT, 0600);
+			if (fd < 0)
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to open data root lock file: " + std::string(std::strerror(errno));
+				}
+				return nullptr;
+			}
+
+			if (flock(fd, LOCK_EX | LOCK_NB) != 0)
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Another Universal Agent Manager instance is already using this data root.";
+				}
+				(void)close(fd);
+				return nullptr;
+			}
+
+			const std::string pid_text = std::to_string(static_cast<long long>(getpid())) + "\n";
+			(void)ftruncate(fd, 0);
+			(void)write(fd, pid_text.data(), pid_text.size());
+			return std::make_unique<MacDataRootLock>(fd);
+		}
+
 		uintmax_t NativeGeminiSessionMaxFileBytes() const override
 		{
-			return 0;
+			return 12ULL * 1024ULL * 1024ULL;
 		}
 
 		std::size_t NativeGeminiSessionMaxMessages() const override
 		{
-			return 0;
+			return 12000;
 		}
 
 		std::string GenerateUuid() const override

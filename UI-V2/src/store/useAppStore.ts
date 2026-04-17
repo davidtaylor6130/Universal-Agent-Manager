@@ -3,6 +3,7 @@ import { Session, Folder } from '../types/session'
 import { Message } from '../types/message'
 import { Provider } from '../types/provider'
 import { sendToCEF, isCefContext, createRequestId } from '../ipc/cefBridge'
+import { applyDocumentTheme, writeStoredTheme } from '../utils/themeStorage'
 
 const GEMINI_CLI_PROVIDER_ID = 'gemini-cli'
 const initialFolders: Folder[] = [
@@ -458,7 +459,9 @@ function deserializeState(
     : newFolders
 
   const geminiCliProviders = cpp.providers.filter((p) => p.id === GEMINI_CLI_PROVIDER_ID)
-  const visibleProviders = geminiCliProviders.length > 0 ? geminiCliProviders : cpp.providers
+  const visibleProviders = geminiCliProviders.length > 0
+    ? geminiCliProviders
+    : [{ id: GEMINI_CLI_PROVIDER_ID, name: 'Gemini CLI', shortName: 'Gemini', outputMode: 'cli' }]
   const newSessions: Session[] = cpp.chats.map((c) => {
     const prev = existingSessionsById[c.id]
     const name = c.title || 'Untitled'
@@ -738,13 +741,8 @@ function readDocumentTheme(): 'dark' | 'light' {
 }
 
 function persistTheme(theme: 'dark' | 'light'): void {
-  if (typeof document !== 'undefined' && document.documentElement) {
-    document.documentElement.setAttribute('data-theme', theme)
-  }
-
-  if (typeof localStorage !== 'undefined' && typeof localStorage.setItem === 'function') {
-    localStorage.setItem('uam-theme', theme)
-  }
+  applyDocumentTheme(theme)
+  writeStoredTheme(theme)
 }
 
 export const useAppStore = create<AppState>((set, get) => {
@@ -1221,68 +1219,16 @@ export const useAppStore = create<AppState>((set, get) => {
 
 	    deleteFolder: (id) => {
 	      if (isCefContext()) {
-	        const current = get()
-	        const deletedFolder = current.folders.find((folder) => folder.id === id)
+	        const deletedFolder = get().folders.find((folder) => folder.id === id)
 	        if (!deletedFolder) {
 	          return
 	        }
 
-	        const requestKey = `deleteFolder:${id}`
 	        const requestId = createRequestId('deleteFolder')
-	        rememberPendingRequest(requestKey, requestId)
-	        const previousFolders = current.folders
-	        const previousSessions = current.sessions
-	        const previousMessages = current.messages
-	        const previousCliBindingBySessionId = current.cliBindingBySessionId
-	        const previousCliTranscriptBySessionId = current.cliTranscriptBySessionId
-	        const previousActiveSessionId = current.activeSessionId
-	        set((state) => {
-	          const deletedSessionIds = new Set(
-	            state.sessions.filter((session) => session.folderId === id).map((session) => session.id)
-	          )
-	          const remainingFolders = state.folders.filter((folder) => folder.id !== id)
-	          const sessions = state.sessions.filter((session) => !deletedSessionIds.has(session.id))
-	          const messages = { ...state.messages }
-	          const cliBindingBySessionId = { ...state.cliBindingBySessionId }
-	          const cliTranscriptBySessionId = { ...state.cliTranscriptBySessionId }
-
-	          deletedSessionIds.forEach((sessionId) => {
-	            delete messages[sessionId]
-	            delete cliBindingBySessionId[sessionId]
-	            delete cliTranscriptBySessionId[sessionId]
-	          })
-
-	          return {
-	            folders: remainingFolders,
-	            sessions,
-	            messages,
-	            cliBindingBySessionId,
-	            cliTranscriptBySessionId,
-	            activeSessionId:
-	              state.activeSessionId !== null && deletedSessionIds.has(state.activeSessionId)
-	                ? (sessions[0]?.id ?? null)
-	                : state.activeSessionId,
-	          }
-	        })
 	        sendToCEF({ action: 'deleteFolder', payload: { folderId: id }, requestId }).then((resp) => {
-	          if (resp.ok) {
-	            clearPendingRequest(requestKey, resp.requestId)
-	            return
+	          if (!resp.ok) {
+	            console.error('[CEF] deleteFolder failed:', resp.error)
 	          }
-
-	          if (!isLatestPendingRequest(requestKey, resp.requestId)) {
-	            return
-	          }
-
-	          set({
-	            folders: previousFolders,
-	            sessions: previousSessions,
-	            messages: previousMessages,
-	            cliBindingBySessionId: previousCliBindingBySessionId,
-	            cliTranscriptBySessionId: previousCliTranscriptBySessionId,
-	            activeSessionId: previousActiveSessionId,
-	          })
-	          pendingRequestIdsByKey.delete(requestKey)
 	        })
 	        return
 	      }

@@ -52,6 +52,20 @@ namespace
 		return (ec ? fs::path(trimmed).lexically_normal() : canonical).generic_string();
 	}
 
+	fs::path NormalizeWorkspacePathForComparison(const std::string& workspace_directory)
+	{
+		const std::string trimmed = Trim(workspace_directory);
+		if (trimmed.empty())
+		{
+			return {};
+		}
+
+		const fs::path expanded = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(trimmed);
+		std::error_code ec;
+		const fs::path canonical = fs::weakly_canonical(expanded, ec);
+		return (ec ? expanded : canonical).lexically_normal();
+	}
+
 	std::string NativeIdentityKey(const ChatSession& chat)
 	{
 		return Trim(chat.provider_id) + "|" + NormalizeNativeIdentityWorkspace(chat.workspace_directory) + "|" + Trim(chat.native_session_id);
@@ -201,9 +215,7 @@ namespace
 
 	bool LocalMessagesShouldOverrideNative(const ChatSession& local_chat, const ChatSession& native_chat)
 	{
-		return !local_chat.messages.empty() &&
-		       (local_chat.messages.size() > native_chat.messages.size() ||
-		        (local_chat.messages.size() == native_chat.messages.size() && local_chat.updated_at > native_chat.updated_at));
+		return !local_chat.messages.empty() && (local_chat.messages.size() > native_chat.messages.size() || (local_chat.messages.size() == native_chat.messages.size() && local_chat.updated_at > native_chat.updated_at));
 	}
 
 	void OverlayLocalChatState(const ChatSession& local, ChatSession& native)
@@ -291,7 +303,7 @@ namespace
 
 		call.state.reset();
 	}
-}
+} // namespace
 
 bool PollPendingRuntimeCall(AppState& app)
 {
@@ -441,10 +453,7 @@ bool PollPendingRuntimeCall(AppState& app)
 			const int selected_index = ChatDomainService().FindChatIndexById(app, selected_id);
 			const int refreshed_pending_chat_index = ChatDomainService().FindChatIndexById(app, pending_chat_id);
 
-			if (refreshed_pending_chat_index >= 0 &&
-			    selected_id != pending_chat_id &&
-			    NativeSessionLinkService().IsLocalDraftChatId(pending_chat_id) &&
-			    !NativeSessionLinkService().HasRealNativeSessionId(app.chats[refreshed_pending_chat_index]))
+			if (refreshed_pending_chat_index >= 0 && selected_id != pending_chat_id && NativeSessionLinkService().IsLocalDraftChatId(pending_chat_id) && !NativeSessionLinkService().HasRealNativeSessionId(app.chats[refreshed_pending_chat_index]))
 			{
 				changed |= ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, app.chats[refreshed_pending_chat_index], selected_id);
 			}
@@ -696,11 +705,11 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 				}
 			}
 
-				if (ChatRepository::SaveChat(p_app.data_root, l_nativeChat))
-				{
-					++result.imported_count;
-					l_existingIds.insert(l_nativeChat.id);
-					l_existingIdByNativeKey[l_nativeKey] = l_nativeChat.id;
+			if (ChatRepository::SaveChat(p_app.data_root, l_nativeChat))
+			{
+				++result.imported_count;
+				l_existingIds.insert(l_nativeChat.id);
+				l_existingIdByNativeKey[l_nativeKey] = l_nativeChat.id;
 
 				if (p_delete_native_after_import && !l_nativeChat.native_session_id.empty())
 				{
@@ -820,32 +829,32 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 
 			++result.total_count;
 
-				const std::string l_nativeKey = NativeIdentityKey(l_nativeChat);
-				const auto l_existingIdIt = l_existingIdByNativeKey.find(l_nativeKey);
-				const bool existing_same_native_identity = l_existingIdIt != l_existingIdByNativeKey.end();
+			const std::string l_nativeKey = NativeIdentityKey(l_nativeChat);
+			const auto l_existingIdIt = l_existingIdByNativeKey.find(l_nativeKey);
+			const bool existing_same_native_identity = l_existingIdIt != l_existingIdByNativeKey.end();
 
 			if (p_targetChatId.empty() && existing_same_native_identity)
 			{
 				continue;
 			}
 
-				if (existing_same_native_identity)
-				{
-					l_nativeChat.id = l_existingIdIt->second;
-				}
-				else if (l_existingIds.contains(l_nativeChat.id))
-				{
-					l_nativeChat.id = MakeCollisionSafeImportedChatId(l_nativeChat, l_existingIds);
-				}
+			if (existing_same_native_identity)
+			{
+				l_nativeChat.id = l_existingIdIt->second;
+			}
+			else if (l_existingIds.contains(l_nativeChat.id))
+			{
+				l_nativeChat.id = MakeCollisionSafeImportedChatId(l_nativeChat, l_existingIds);
+			}
 
 			l_nativeChat.folder_id = lp_folder->id;
 			l_nativeChat.workspace_directory = l_source.folder_directory;
 
-				if (ChatRepository::SaveChat(p_app.data_root, l_nativeChat))
-				{
-					++result.imported_count;
-					l_existingIds.insert(l_nativeChat.id);
-					l_existingIdByNativeKey[l_nativeKey] = l_nativeChat.id;
+			if (ChatRepository::SaveChat(p_app.data_root, l_nativeChat))
+			{
+				++result.imported_count;
+				l_existingIds.insert(l_nativeChat.id);
+				l_existingIdByNativeKey[l_nativeKey] = l_nativeChat.id;
 
 				if (p_delete_native_after_import && !l_nativeChat.native_session_id.empty())
 				{
@@ -1040,9 +1049,7 @@ bool ChatHistorySyncService::PersistLocalDraftNativeSessionLink(const AppState& 
 {
 	const std::string l_sessionId = Trim(p_nativeSessionId);
 
-	if (l_sessionId.empty() ||
-	    NativeSessionLinkService().IsLocalDraftChatId(l_sessionId) ||
-	    !NativeSessionLinkService().IsLocalDraftChatId(p_localChat.id))
+	if (l_sessionId.empty() || NativeSessionLinkService().IsLocalDraftChatId(l_sessionId) || !NativeSessionLinkService().IsLocalDraftChatId(p_localChat.id))
 	{
 		return false;
 	}
@@ -1085,8 +1092,8 @@ bool ChatHistorySyncService::MoveChatToFolder(AppState& p_app, ChatSession& p_ch
 	const ProviderProfile& l_provider = ProviderResolutionService().ProviderForChatOrDefault(p_app, p_chat);
 	const std::string l_sessionId = NativeSessionLinkService().HasRealNativeSessionId(p_chat) ? p_chat.native_session_id : "";
 
-	const fs::path normalizedOld = l_oldWorkspace.empty() ? fs::path{} : fs::weakly_canonical(l_oldWorkspace);
-	const fs::path normalizedNew = l_newFolder->directory.empty() ? fs::path{} : fs::weakly_canonical(l_newFolder->directory);
+	const fs::path normalizedOld = NormalizeWorkspacePathForComparison(l_oldWorkspace);
+	const fs::path normalizedNew = NormalizeWorkspacePathForComparison(l_newFolder->directory);
 	bool l_workspacesDifferent = !l_sessionId.empty() && !l_oldWorkspace.empty() && normalizedOld != normalizedNew;
 	std::optional<fs::path> l_oldChatsDir;
 
@@ -1096,21 +1103,21 @@ bool ChatHistorySyncService::MoveChatToFolder(AppState& p_app, ChatSession& p_ch
 		if (l_oldChatsDir.has_value() && !l_sessionId.empty())
 		{
 			const auto l_sessionFile = FindNativeSessionFilePath(l_oldChatsDir.value(), l_sessionId);
-			if (l_sessionFile.has_value())
-			{
-				GeminiJsonHistoryStoreOptions l_opts;
-				l_opts.max_messages = 0;
-				l_opts.max_file_bytes = 0;
-				const auto l_parsed = GeminiJsonHistoryStore::ParseFile(l_sessionFile.value(), l_provider, l_opts);
+				if (l_sessionFile.has_value())
+				{
+					GeminiJsonHistoryStoreOptions l_opts;
+					l_opts.max_messages = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxMessages();
+					l_opts.max_file_bytes = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxFileBytes();
+					const auto l_parsed = GeminiJsonHistoryStore::ParseFile(l_sessionFile.value(), l_provider, l_opts);
 				if (l_parsed.has_value() && !l_parsed->messages.empty() && !LocalMessagesShouldOverrideNative(l_originalChat, *l_parsed))
 				{
 					l_movedChat.messages = l_parsed->messages;
 					if (!l_parsed->updated_at.empty())
 					{
 						l_movedChat.updated_at = l_parsed->updated_at;
-						}
 					}
 				}
+			}
 		}
 
 		if (!ProviderRuntime::RebuildNativeSessionFile(l_provider, l_movedChat, l_newFolder->directory))
@@ -1119,7 +1126,6 @@ bool ChatHistorySyncService::MoveChatToFolder(AppState& p_app, ChatSession& p_ch
 			p_app.move_chat_show_missing_session_warning = true;
 			return true;
 		}
-
 	}
 
 	p_chat = l_movedChat;
@@ -1316,11 +1322,11 @@ void ChatHistorySyncService::ApplyLocalOverrides(AppState& p_app, std::vector<Ch
 		const ChatSession& l_local = *lcp_local;
 		OverlayLocalChatState(l_local, l_native);
 
-			if (LocalMessagesShouldOverrideNative(l_local, l_native))
-			{
-				l_native.messages = l_local.messages;
+		if (LocalMessagesShouldOverrideNative(l_local, l_native))
+		{
+			l_native.messages = l_local.messages;
 
-				if (!l_local.updated_at.empty())
+			if (!l_local.updated_at.empty())
 			{
 				l_native.updated_at = l_local.updated_at;
 			}

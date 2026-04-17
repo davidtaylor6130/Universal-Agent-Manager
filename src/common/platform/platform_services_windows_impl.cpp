@@ -594,7 +594,7 @@ namespace
 			si.StartupInfo.cb = sizeof(si);
 			si.lpAttributeList = terminal.attr_list;
 			PROCESS_INFORMATION pi{};
-			
+
 			std::string command_str = BuildWindowsCommandLine(argv);
 			command_str = "cmd.exe /C \"" + command_str + "\"";
 			const std::wstring command_w = WideFromUtf8(command_str);
@@ -620,31 +620,31 @@ namespace
 			const std::wstring working_directory_w = working_directory.empty() ? std::wstring() : working_directory.wstring();
 			const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT, nullptr, working_directory.empty() ? nullptr : working_directory_w.c_str(), &si.StartupInfo, &pi);
 
-		if (!created)
-		{
-			const DWORD last_error = GetLastError();
-			std::string cmd_line_str;
-			if (command_w.empty())
+			if (!created)
 			{
-				cmd_line_str = "(empty)";
-			}
-			else
-			{
-				cmd_line_str = WideToUtf8(command_w);
-			}
-			if (error_out != nullptr)
-			{
-				*error_out = "Failed to start provider process. Error code: " + std::to_string(last_error) + ". Command: " + cmd_line_str;
-			}
+				const DWORD last_error = GetLastError();
+				std::string cmd_line_str;
+				if (command_w.empty())
+				{
+					cmd_line_str = "(empty)";
+				}
+				else
+				{
+					cmd_line_str = WideToUtf8(command_w);
+				}
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to start provider process. Error code: " + std::to_string(last_error) + ". Command: " + cmd_line_str;
+				}
 
-			DeleteProcThreadAttributeList(terminal.attr_list);
-			HeapFree(GetProcessHeap(), 0, terminal.attr_list);
-			terminal.attr_list = nullptr;
-			ClosePseudoConsoleSafe(pseudo_console);
-			CloseHandle(pipe_pty_in);
-			CloseHandle(pipe_pty_out);
-			return false;
-		}
+				DeleteProcThreadAttributeList(terminal.attr_list);
+				HeapFree(GetProcessHeap(), 0, terminal.attr_list);
+				terminal.attr_list = nullptr;
+				ClosePseudoConsoleSafe(pseudo_console);
+				CloseHandle(pipe_pty_in);
+				CloseHandle(pipe_pty_out);
+				return false;
+			}
 
 			DWORD mode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
 
@@ -758,7 +758,7 @@ namespace
 			if (fast_exit)
 			{
 				TerminateProcess(terminal.process_info.hProcess, 1);
-				
+
 				// Very short wait for process termination.
 				(void)WaitForSingleObject(terminal.process_info.hProcess, 50);
 
@@ -935,6 +935,28 @@ namespace
 		{
 			return true;
 		}
+	};
+
+	class WindowsDataRootLock final : public uam::platform::DataRootLock
+	{
+	  public:
+		explicit WindowsDataRootLock(HANDLE handle) : m_handle(handle)
+		{
+		}
+
+		~WindowsDataRootLock() override
+		{
+			if (m_handle != INVALID_HANDLE_VALUE)
+			{
+				CloseHandle(m_handle);
+			}
+		}
+
+		WindowsDataRootLock(const WindowsDataRootLock&) = delete;
+		WindowsDataRootLock& operator=(const WindowsDataRootLock&) = delete;
+
+	  private:
+		HANDLE m_handle = INVALID_HANDLE_VALUE;
 	};
 
 	class WindowsProcessService final : public IPlatformProcessService
@@ -1150,6 +1172,39 @@ namespace
 
 			buffer.resize(static_cast<std::size_t>(length));
 			return std::filesystem::path(buffer);
+		}
+
+		std::unique_ptr<uam::platform::DataRootLock> TryAcquireDataRootLock(const std::filesystem::path& data_root, std::string* error_out = nullptr) const override
+		{
+			std::error_code ec;
+			std::filesystem::create_directories(data_root, ec);
+			if (ec)
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to create data root lock directory: " + ec.message();
+				}
+				return nullptr;
+			}
+
+			const std::filesystem::path lock_path = data_root / ".uam-data-root.lock";
+			const HANDLE handle = CreateFileW(lock_path.wstring().c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_HIDDEN, nullptr);
+			if (handle == INVALID_HANDLE_VALUE)
+			{
+				if (error_out != nullptr)
+				{
+					const DWORD error = GetLastError();
+					*error_out = (error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION) ? "Another Universal Agent Manager instance is already using this data root." : "Failed to open data root lock file.";
+				}
+				return nullptr;
+			}
+
+			const std::string pid_text = std::to_string(static_cast<unsigned long>(GetCurrentProcessId())) + "\n";
+			DWORD written = 0;
+			SetFilePointer(handle, 0, nullptr, FILE_BEGIN);
+			SetEndOfFile(handle);
+			WriteFile(handle, pid_text.data(), static_cast<DWORD>(pid_text.size()), &written, nullptr);
+			return std::make_unique<WindowsDataRootLock>(handle);
 		}
 
 		uintmax_t NativeGeminiSessionMaxFileBytes() const override

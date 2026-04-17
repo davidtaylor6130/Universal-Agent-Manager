@@ -5,9 +5,9 @@ export default defineConfig({
   plugins: [react()],
   base: './',   // relative paths so file:// serving works in CEF
   test: {
-    environment: 'node',
+    environment: 'jsdom',
     globals: true,
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.{ts,tsx}'],
   },
   build: {
     outDir: 'dist',

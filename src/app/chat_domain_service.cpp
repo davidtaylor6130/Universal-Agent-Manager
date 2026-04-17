@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <random>
 #include <sstream>
 #include <unordered_map>
 
@@ -56,10 +57,24 @@ namespace
 
 std::string ChatDomainService::NewFolderId() const
 {
+	const std::string uuid = PlatformServicesFactory::Instance().process_service.GenerateUuid();
+	if (!uuid.empty())
+	{
+		return "folder-" + uuid;
+	}
+
 	const auto now = std::chrono::system_clock::now().time_since_epoch();
 	const auto epoch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+	std::mt19937 rng(std::random_device{}());
+	std::uniform_int_distribution<int> hex_digit(0, 15);
 	std::ostringstream id;
-	id << "folder-" << epoch_ms;
+	id << "folder-" << epoch_ms << "-";
+
+	for (int i = 0; i < 8; ++i)
+	{
+		id << std::hex << hex_digit(rng);
+	}
+
 	return id.str();
 }
 

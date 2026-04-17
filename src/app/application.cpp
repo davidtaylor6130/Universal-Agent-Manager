@@ -318,6 +318,19 @@ bool Application::InitializeState()
 		return false;
 	}
 
+	std::string data_root_lock_error;
+	m_dataRootLock = m_platformServices->process_service.TryAcquireDataRootLock(m_app.data_root, &data_root_lock_error);
+	if (m_dataRootLock == nullptr)
+	{
+		if (data_root_lock_error.empty())
+		{
+			data_root_lock_error = "Another Universal Agent Manager instance is already using this data root.";
+		}
+		std::fprintf(stderr, "%s\n", data_root_lock_error.c_str());
+		m_exitCode = 1;
+		return false;
+	}
+
 	PersistenceCoordinator().LoadSettings(m_app);
 	bool l_settingsDirty = false;
 	m_app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
@@ -465,4 +478,5 @@ void Application::Shutdown()
 	m_browser = nullptr;
 
 	CefShutdown();
+	m_dataRootLock.reset();
 }

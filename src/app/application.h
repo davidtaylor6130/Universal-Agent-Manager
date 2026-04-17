@@ -6,6 +6,7 @@
 #include "common/state/app_state.h"
 
 #include <filesystem>
+#include <memory>
 
 /// <summary>
 /// Top-level application lifetime manager for the CEF build.
@@ -36,6 +37,7 @@ class Application
   private:
 	uam::AppState        m_app;
 	PlatformServices*    m_platformServices  = nullptr;
+	std::unique_ptr<uam::platform::DataRootLock> m_dataRootLock;
 	CefRefPtr<CefBrowser> m_browser;
 	bool                 m_done              = false;
 	int                  m_exitCode          = 0;

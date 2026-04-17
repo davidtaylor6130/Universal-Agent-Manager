@@ -6,6 +6,7 @@
 #include <ctime>
 #include <optional>
 #include <cstddef>
+#include <memory>
 #include <stop_token>
 #include <string>
 #include <vector>
@@ -13,6 +14,15 @@
 namespace uam
 {
 	struct CliTerminalState;
+
+	namespace platform
+	{
+		class DataRootLock
+		{
+		  public:
+			virtual ~DataRootLock() = default;
+		};
+	} // namespace platform
 } // namespace uam
 
 enum class PlatformPathBrowseTarget
@@ -61,6 +71,7 @@ class IPlatformProcessService
 	                                              std::stop_token stop_token = {}) const = 0;
 	virtual std::string GeminiDowngradeCommand() const = 0;
 	virtual std::filesystem::path ResolveCurrentExecutablePath() const = 0;
+	virtual std::unique_ptr<uam::platform::DataRootLock> TryAcquireDataRootLock(const std::filesystem::path& data_root, std::string* error_out = nullptr) const = 0;
 	virtual uintmax_t NativeGeminiSessionMaxFileBytes() const = 0;
 	virtual std::size_t NativeGeminiSessionMaxMessages() const = 0;
 	virtual std::string GenerateUuid() const = 0;
