@@ -215,4 +215,105 @@ describe('useAppStore Gemini CLI slice', () => {
       providerId: 'gemini-cli',
     })
   })
+
+  it('deletes a folder and its sessions from local UI state', () => {
+    const now = new Date()
+    useAppStore.setState({
+      folders: [
+        { id: 'default', name: 'General', parentId: null, directory: '/tmp/general', isExpanded: true, createdAt: now },
+        { id: 'project', name: 'Project', parentId: null, directory: '/tmp/project', isExpanded: true, createdAt: now },
+      ],
+      sessions: [
+        { id: 'chat-folder', name: 'Folder chat', viewMode: 'cli', folderId: 'project', createdAt: now, updatedAt: now },
+        { id: 'chat-general', name: 'General chat', viewMode: 'cli', folderId: 'default', createdAt: now, updatedAt: now },
+      ],
+      activeSessionId: 'chat-folder',
+      messages: {
+        'chat-folder': [{ id: 'm-folder', sessionId: 'chat-folder', role: 'user', content: 'delete me', createdAt: now }],
+        'chat-general': [{ id: 'm-general', sessionId: 'chat-general', role: 'user', content: 'keep me', createdAt: now }],
+      },
+      cliBindingBySessionId: {
+        'chat-folder': {
+          terminalId: 'term-folder',
+          boundChatId: 'chat-folder',
+          running: true,
+          lifecycleState: 'idle',
+          turnState: 'idle',
+          processing: false,
+          readySinceLastSelect: false,
+          active: false,
+          lastError: '',
+        },
+      },
+      cliTranscriptBySessionId: {
+        'chat-folder': { terminalId: 'term-folder', content: 'transcript' },
+      },
+    })
+
+    useAppStore.getState().deleteFolder('project')
+
+    const state = useAppStore.getState()
+    expect(state.folders.map((folder) => folder.id)).toEqual(['default'])
+    expect(state.sessions.map((session) => session.id)).toEqual(['chat-general'])
+    expect(state.sessions[0].folderId).toBe('default')
+    expect(state.activeSessionId).toBe('chat-general')
+    expect(state.messages['chat-folder']).toBeUndefined()
+    expect(state.messages['chat-general']).toHaveLength(1)
+    expect(state.cliBindingBySessionId['chat-folder']).toBeUndefined()
+    expect(state.cliTranscriptBySessionId['chat-folder']).toBeUndefined()
+  })
+
+  it('rolls back all folder delete optimistic state when CEF rejects it', async () => {
+    const now = new Date()
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onFailure }) => {
+      requests.push(JSON.parse(request))
+      onFailure(409, 'Cannot delete while Gemini is running')
+    }
+
+    useAppStore.setState({
+      folders: [
+        { id: 'default', name: 'General', parentId: null, directory: '/tmp/general', isExpanded: true, createdAt: now },
+        { id: 'project', name: 'Project', parentId: null, directory: '/tmp/project', isExpanded: true, createdAt: now },
+      ],
+      sessions: [
+        { id: 'chat-folder', name: 'Folder chat', viewMode: 'cli', folderId: 'project', createdAt: now, updatedAt: now },
+        { id: 'chat-general', name: 'General chat', viewMode: 'cli', folderId: 'default', createdAt: now, updatedAt: now },
+      ],
+      activeSessionId: 'chat-folder',
+      messages: {
+        'chat-folder': [{ id: 'm-folder', sessionId: 'chat-folder', role: 'user', content: 'delete me', createdAt: now }],
+      },
+      cliBindingBySessionId: {
+        'chat-folder': {
+          terminalId: 'term-folder',
+          boundChatId: 'chat-folder',
+          running: true,
+          lifecycleState: 'idle',
+          turnState: 'idle',
+          processing: false,
+          readySinceLastSelect: false,
+          active: false,
+          lastError: '',
+        },
+      },
+      cliTranscriptBySessionId: {
+        'chat-folder': { terminalId: 'term-folder', content: 'transcript' },
+      },
+    })
+
+    useAppStore.getState().deleteFolder('project')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const state = useAppStore.getState()
+    expect(requests).toHaveLength(1)
+    expect(requests[0].action).toBe('deleteFolder')
+    expect(requests[0].payload).toEqual({ folderId: 'project' })
+    expect(state.folders.map((folder) => folder.id)).toEqual(['default', 'project'])
+    expect(state.sessions.map((session) => session.id)).toEqual(['chat-folder', 'chat-general'])
+    expect(state.activeSessionId).toBe('chat-folder')
+    expect(state.messages['chat-folder']).toHaveLength(1)
+    expect(state.cliBindingBySessionId['chat-folder']).toMatchObject({ terminalId: 'term-folder' })
+    expect(state.cliTranscriptBySessionId['chat-folder']).toMatchObject({ content: 'transcript' })
+  })
 })

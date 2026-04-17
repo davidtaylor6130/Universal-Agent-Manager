@@ -3,6 +3,7 @@
 #include "common/chat/chat_repository.h"
 #include "common/config/settings_store.h"
 #include "common/constants/app_constants.h"
+#include "common/paths/app_paths.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/terminal/terminal_idle_classifier.h"
@@ -311,15 +312,75 @@ UAM_TEST(FolderLifecycleKeepsWorkspaceRootsMinimal)
 	UAM_ASSERT(ChatDomainService().FindFolderById(app, created_id) != nullptr);
 
 	const fs::path renamed_root = temp.root / "renamed";
+	fs::create_directories(renamed_root);
 	UAM_ASSERT(RenameFolderById(app, created_id, "Renamed", renamed_root.string()));
 	const ChatFolder* renamed = ChatDomainService().FindFolderById(app, created_id);
 	UAM_ASSERT(renamed != nullptr);
 	UAM_ASSERT_EQ(renamed->title, std::string("Renamed"));
 	UAM_ASSERT_EQ(renamed->directory, renamed_root.string());
 
+	ChatSession folder_chat;
+	folder_chat.id = "chat-in-folder";
+	folder_chat.provider_id = "gemini-cli";
+	folder_chat.folder_id = created_id;
+	folder_chat.title = "Folder chat";
+	folder_chat.created_at = "2026-01-01T00:00:00.000Z";
+	folder_chat.updated_at = "2026-01-01T00:00:00.000Z";
+
+	ChatSession general_chat;
+	general_chat.id = "chat-in-general";
+	general_chat.provider_id = "gemini-cli";
+	general_chat.folder_id = uam::constants::kDefaultFolderId;
+	general_chat.title = "General chat";
+	general_chat.created_at = "2026-01-01T00:00:00.000Z";
+	general_chat.updated_at = "2026-01-01T00:00:00.000Z";
+
+	app.chats.push_back(folder_chat);
+	app.chats.push_back(general_chat);
+	app.selected_chat_index = 0;
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, folder_chat));
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, general_chat));
+
+	const fs::path folder_chat_file = AppPaths::UamChatFilePath(temp.root, folder_chat.id);
+	const fs::path general_chat_file = AppPaths::UamChatFilePath(temp.root, general_chat.id);
+	UAM_ASSERT(fs::exists(folder_chat_file));
+	UAM_ASSERT(fs::exists(general_chat_file));
+
 	UAM_ASSERT(DeleteFolderById(app, created_id));
 	UAM_ASSERT(ChatDomainService().FindFolderById(app, created_id) == nullptr);
 	UAM_ASSERT(ChatDomainService().FindFolderById(app, uam::constants::kDefaultFolderId) != nullptr);
+	UAM_ASSERT(ChatDomainService().FindChatIndexById(app, folder_chat.id) < 0);
+	UAM_ASSERT(ChatDomainService().FindChatIndexById(app, general_chat.id) >= 0);
+	UAM_ASSERT_EQ(app.chats[ChatDomainService().FindChatIndexById(app, general_chat.id)].folder_id, std::string(uam::constants::kDefaultFolderId));
+	UAM_ASSERT(fs::exists(renamed_root));
+	UAM_ASSERT(!fs::exists(folder_chat_file));
+	UAM_ASSERT(fs::exists(general_chat_file));
+}
+
+UAM_TEST(DeleteFolderBlocksWhenContainedChatIsRunning)
+{
+	TempDir temp("uam-folder-pending-delete");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatDomainService().EnsureDefaultFolder(app);
+
+	std::string created_id;
+	UAM_ASSERT(CreateFolder(app, "Project", temp.root.string(), &created_id));
+
+	ChatSession folder_chat;
+	folder_chat.id = "chat-running";
+	folder_chat.provider_id = "gemini-cli";
+	folder_chat.folder_id = created_id;
+	folder_chat.title = "Running chat";
+	app.chats.push_back(folder_chat);
+
+	PendingRuntimeCall call;
+	call.chat_id = folder_chat.id;
+	app.pending_calls.push_back(std::move(call));
+
+	UAM_ASSERT(!DeleteFolderById(app, created_id));
+	UAM_ASSERT(ChatDomainService().FindFolderById(app, created_id) != nullptr);
+	UAM_ASSERT(ChatDomainService().FindChatIndexById(app, folder_chat.id) >= 0);
 }
 
 int main()

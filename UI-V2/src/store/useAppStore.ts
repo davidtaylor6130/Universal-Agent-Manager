@@ -1232,15 +1232,36 @@ export const useAppStore = create<AppState>((set, get) => {
 	        rememberPendingRequest(requestKey, requestId)
 	        const previousFolders = current.folders
 	        const previousSessions = current.sessions
+	        const previousMessages = current.messages
+	        const previousCliBindingBySessionId = current.cliBindingBySessionId
+	        const previousCliTranscriptBySessionId = current.cliTranscriptBySessionId
 	        const previousActiveSessionId = current.activeSessionId
 	        set((state) => {
-	          const remainingFolders = state.folders.filter((folder) => folder.id !== id)
-	          const sessions = state.sessions.map((session) =>
-	            session.folderId === id ? { ...session, folderId: null } : session
+	          const deletedSessionIds = new Set(
+	            state.sessions.filter((session) => session.folderId === id).map((session) => session.id)
 	          )
+	          const remainingFolders = state.folders.filter((folder) => folder.id !== id)
+	          const sessions = state.sessions.filter((session) => !deletedSessionIds.has(session.id))
+	          const messages = { ...state.messages }
+	          const cliBindingBySessionId = { ...state.cliBindingBySessionId }
+	          const cliTranscriptBySessionId = { ...state.cliTranscriptBySessionId }
+
+	          deletedSessionIds.forEach((sessionId) => {
+	            delete messages[sessionId]
+	            delete cliBindingBySessionId[sessionId]
+	            delete cliTranscriptBySessionId[sessionId]
+	          })
+
 	          return {
 	            folders: remainingFolders,
 	            sessions,
+	            messages,
+	            cliBindingBySessionId,
+	            cliTranscriptBySessionId,
+	            activeSessionId:
+	              state.activeSessionId !== null && deletedSessionIds.has(state.activeSessionId)
+	                ? (sessions[0]?.id ?? null)
+	                : state.activeSessionId,
 	          }
 	        })
 	        sendToCEF({ action: 'deleteFolder', payload: { folderId: id }, requestId }).then((resp) => {
@@ -1256,6 +1277,9 @@ export const useAppStore = create<AppState>((set, get) => {
 	          set({
 	            folders: previousFolders,
 	            sessions: previousSessions,
+	            messages: previousMessages,
+	            cliBindingBySessionId: previousCliBindingBySessionId,
+	            cliTranscriptBySessionId: previousCliTranscriptBySessionId,
 	            activeSessionId: previousActiveSessionId,
 	          })
 	          pendingRequestIdsByKey.delete(requestKey)
@@ -1264,13 +1288,31 @@ export const useAppStore = create<AppState>((set, get) => {
 	      }
 
       set((state) => {
-        const remainingFolders = state.folders.filter((f) => f.id !== id)
-        const sessions = state.sessions.map((session) =>
-          session.folderId === id ? { ...session, folderId: null } : session
+        const deletedSessionIds = new Set(
+          state.sessions.filter((session) => session.folderId === id).map((session) => session.id)
         )
+        const remainingFolders = state.folders.filter((f) => f.id !== id)
+        const sessions = state.sessions.filter((session) => !deletedSessionIds.has(session.id))
+        const messages = { ...state.messages }
+        const cliBindingBySessionId = { ...state.cliBindingBySessionId }
+        const cliTranscriptBySessionId = { ...state.cliTranscriptBySessionId }
+
+        deletedSessionIds.forEach((sessionId) => {
+          delete messages[sessionId]
+          delete cliBindingBySessionId[sessionId]
+          delete cliTranscriptBySessionId[sessionId]
+        })
+
         return {
           folders: remainingFolders,
           sessions,
+          messages,
+          cliBindingBySessionId,
+          cliTranscriptBySessionId,
+          activeSessionId:
+            state.activeSessionId !== null && deletedSessionIds.has(state.activeSessionId)
+              ? (sessions[0]?.id ?? null)
+              : state.activeSessionId,
         }
       })
     },

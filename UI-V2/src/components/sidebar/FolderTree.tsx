@@ -1,4 +1,4 @@
-import { memo, useState, useMemo } from 'react'
+import { memo, useEffect, useState, useMemo } from 'react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { SessionItem } from './SessionItem'
@@ -29,6 +29,7 @@ export function FolderTree({ searchQuery }: FolderTreeProps) {
   const [editingFolderId, setEditingFolderId] = useState<string | null>(null)
   const [editFolderName, setEditFolderName] = useState('')
   const [editFolderDirectory, setEditFolderDirectory] = useState('')
+  const [pendingDeleteFolderId, setPendingDeleteFolderId] = useState<string | null>(null)
 
   const searchIndex = useMemo(
     () => buildChatSearchIndex(sessions, messages),
@@ -42,6 +43,20 @@ export function FolderTree({ searchQuery }: FolderTreeProps) {
     () => buildChatSearchModel(folders, sessions, searchIndex, searchTokens),
     [folders, sessions, searchIndex, searchTokens]
   )
+  const pendingDeleteFolder = useMemo(
+    () => folders.find((folder) => folder.id === pendingDeleteFolderId) ?? null,
+    [folders, pendingDeleteFolderId]
+  )
+  const pendingDeleteChatCount = useMemo(
+    () => sessions.filter((session) => session.folderId === pendingDeleteFolderId).length,
+    [sessions, pendingDeleteFolderId]
+  )
+
+  useEffect(() => {
+    if (pendingDeleteFolderId !== null && !pendingDeleteFolder) {
+      setPendingDeleteFolderId(null)
+    }
+  }, [pendingDeleteFolder, pendingDeleteFolderId])
 
   const commitAddFolder = () => {
     const name = newFolderName.trim()
@@ -107,11 +122,7 @@ export function FolderTree({ searchQuery }: FolderTreeProps) {
           editFolderDirectory={editFolderDirectory}
           onToggle={() => toggleFolder(folder.id)}
           onStartRename={() => startRenameFolder(folder)}
-          onDelete={() => {
-            if (window.confirm(`Delete folder "${folder.name}" and move its chats to General?`)) {
-              deleteFolder(folder.id)
-            }
-          }}
+          onDelete={() => setPendingDeleteFolderId(folder.id)}
           onEditNameChange={setEditFolderName}
           onEditDirectoryChange={setEditFolderDirectory}
           onCommitRename={() => commitRenameFolder(folder.id)}
@@ -262,6 +273,155 @@ export function FolderTree({ searchQuery }: FolderTreeProps) {
             <span>New folder</span>
           </button>
         )}
+      </div>
+
+      {pendingDeleteFolder && (
+        <DeleteFolderModal
+          folder={pendingDeleteFolder}
+          chatCount={pendingDeleteChatCount}
+          onCancel={() => setPendingDeleteFolderId(null)}
+          onConfirm={() => {
+            deleteFolder(pendingDeleteFolder.id)
+            setPendingDeleteFolderId(null)
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+interface DeleteFolderModalProps {
+  folder: Folder
+  chatCount: number
+  onCancel: () => void
+  onConfirm: () => void
+}
+
+function DeleteFolderModal({
+  folder,
+  chatCount,
+  onCancel,
+  onConfirm,
+}: DeleteFolderModalProps) {
+  const chatLabel = chatCount === 1 ? '1 chat' : `${chatCount} chats`
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onCancel()
+      }
+    }
+
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onCancel])
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center animate-fade-in"
+      style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onCancel()
+      }}
+    >
+      <div
+        className="rounded-xl shadow-2xl w-full max-w-md mx-4 animate-slide-in"
+        style={{
+          background: 'var(--surface)',
+          border: '1px solid var(--border-bright)',
+        }}
+      >
+        <div
+          className="flex items-center justify-between px-5 py-4"
+          style={{ borderBottom: '1px solid var(--border)' }}
+        >
+          <span className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
+            Delete folder and chats?
+          </span>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="text-xs rounded transition-colors duration-100"
+            style={{
+              background: 'transparent',
+              color: 'var(--text-3)',
+              border: 'none',
+              cursor: 'pointer',
+              padding: '2px 4px',
+              fontFamily: 'inherit',
+            }}
+          >
+            X
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          <p className="text-sm" style={{ color: 'var(--text)' }}>
+            This removes "{folder.name}" from Universal Agent Manager and deletes {chatLabel} inside it.
+            This will not delete the actual workspace directory from your computer.
+          </p>
+
+          {folder.directory && (
+            <div
+              className="rounded-md px-3 py-2"
+              style={{
+                background: 'var(--surface-up)',
+                border: '1px solid var(--border)',
+              }}
+            >
+              <div className="text-[10px] uppercase" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>
+                Directory stays on disk
+              </div>
+              <div className="truncate text-xs mt-1" style={{ color: 'var(--text-2)' }}>
+                {folder.directory}
+              </div>
+            </div>
+          )}
+
+          {chatCount > 0 && (
+            <p className="text-xs" style={{ color: 'var(--red)' }}>
+              Deleted chats cannot be restored from this app.
+            </p>
+          )}
+        </div>
+
+        <div
+          className="flex items-center justify-end gap-2 px-5 py-4"
+          style={{ borderTop: '1px solid var(--border)' }}
+        >
+          <button
+            type="button"
+            onClick={onCancel}
+            className="px-4 py-1.5 rounded-md text-xs transition-colors duration-150"
+            style={{
+              background: 'transparent',
+              color: 'var(--text-2)',
+              border: '1px solid var(--border)',
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.borderColor = 'var(--border-bright)'}
+            onMouseLeave={(e) => e.currentTarget.style.borderColor = 'var(--border)'}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="px-4 py-1.5 rounded-md text-xs font-medium transition-opacity duration-150"
+            style={{
+              background: 'var(--red)',
+              color: '#fff',
+              border: 'none',
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.opacity = '0.88' }}
+            onMouseLeave={(e) => { e.currentTarget.style.opacity = '1' }}
+          >
+            Delete Folder
+          </button>
+        </div>
       </div>
     </div>
   )

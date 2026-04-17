@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <unordered_set>
 #include <utility>
 
 using uam::AppState;
@@ -198,6 +199,26 @@ bool DeleteFolderById(AppState& app, const std::string& folder_id)
 	}
 
 	const std::vector<ChatSession> original_chats = app.chats;
+	std::vector<ChatSession> deleted_chats;
+	std::unordered_set<std::string> deleted_chat_ids;
+
+	for (const ChatSession& chat : app.chats)
+	{
+		if (chat.folder_id != folder_id)
+		{
+			continue;
+		}
+
+		if (HasPendingCallForChat(app, chat.id))
+		{
+			app.status_line = "Cannot delete a folder while Gemini is still running for one of its chats.";
+			return false;
+		}
+
+		deleted_chats.push_back(chat);
+		deleted_chat_ids.insert(chat.id);
+	}
+
 	const auto restore_original_chats = [&]()
 	{
 		bool restore_failed = false;
@@ -213,6 +234,32 @@ bool DeleteFolderById(AppState& app, const std::string& folder_id)
 		return !restore_failed;
 	};
 
+	std::vector<ChatSession> next_chats = app.chats;
+
+	for (const ChatSession& deleted_chat : deleted_chats)
+	{
+		ChatBranching::ReparentChildrenAfterDelete(next_chats, deleted_chat.id);
+	}
+
+	next_chats.erase(std::remove_if(next_chats.begin(), next_chats.end(),
+	                                [&](const ChatSession& chat)
+	                                {
+		                                return deleted_chat_ids.contains(chat.id);
+	                                }),
+	                 next_chats.end());
+	ChatBranching::Normalize(next_chats);
+
+	for (const ChatSession& remaining_chat : next_chats)
+	{
+		if (!ProviderRuntime::SaveHistory(ProviderResolutionService().ProviderForChatOrDefault(app, remaining_chat), app.data_root, remaining_chat))
+		{
+			app.status_line = restore_original_chats()
+				? "Failed to persist chat updates before folder delete."
+				: "Failed to persist chat updates before folder delete, and rollback also failed.";
+			return false;
+		}
+	}
+
 	std::vector<ChatFolder> next_folders = app.folders;
 	next_folders.erase(next_folders.begin() + folder_index);
 
@@ -226,46 +273,143 @@ bool DeleteFolderById(AppState& app, const std::string& folder_id)
 		next_folders.push_back(std::move(default_folder));
 	}
 
-	int moved_chat_count = 0;
-	std::vector<ChatSession> next_chats = app.chats;
-
-	for (ChatSession& next_chat : next_chats)
-	{
-		if (next_chat.folder_id != folder_id)
-		{
-			continue;
-		}
-
-		next_chat.folder_id = uam::constants::kDefaultFolderId;
-		next_chat.updated_at = TimestampNow();
-		++moved_chat_count;
-
-		if (!ProviderRuntime::SaveHistory(ProviderResolutionService().ProviderForChatOrDefault(app, next_chat), app.data_root, next_chat))
-		{
-			app.status_line = restore_original_chats()
-				? "Failed to persist chat reparenting before delete."
-				: "Failed to persist chat reparenting before delete, and rollback also failed.";
-			return false;
-		}
-	}
-
 	if (!ChatFolderStore::Save(app.data_root, next_folders))
 	{
 		app.status_line = restore_original_chats()
-			? "Folder deleted, but failed to persist folder metadata."
-			: "Folder deleted, and rollback also failed.";
+			? "Failed to persist folder metadata before delete."
+			: "Failed to persist folder metadata before delete, and rollback also failed.";
 		return false;
 	}
 
+	const ChatSession* selected_chat = ChatDomainService().SelectedChat(app);
+	const std::string selected_chat_id = (selected_chat != nullptr) ? selected_chat->id : "";
+	const int previous_selected_chat_index = app.selected_chat_index;
+
+	for (const ChatSession& deleted_chat : deleted_chats)
+	{
+		StopAndEraseCliTerminalForChat(app, deleted_chat.id, false);
+	}
+
 	app.chats = std::move(next_chats);
-	app.folders = std::move(next_folders);
+
+	if (app.chats.empty())
+	{
+		app.selected_chat_index = -1;
+	}
+	else if (!selected_chat_id.empty() && !deleted_chat_ids.contains(selected_chat_id))
+	{
+		app.selected_chat_index = ChatDomainService().FindChatIndexById(app, selected_chat_id);
+		if (app.selected_chat_index < 0)
+		{
+			app.selected_chat_index = 0;
+		}
+	}
+	else
+	{
+		app.selected_chat_index = std::min(previous_selected_chat_index, static_cast<int>(app.chats.size()) - 1);
+	}
+
+	if (!deleted_chats.empty())
+	{
+		app.composer_text.clear();
+	}
+
+	app.pending_calls.erase(std::remove_if(app.pending_calls.begin(), app.pending_calls.end(),
+	                                       [&](PendingRuntimeCall& call)
+	                                       {
+		                                       if (!deleted_chat_ids.contains(call.chat_id))
+		                                       {
+			                                       return false;
+		                                       }
+
+		                                       ResetPendingRuntimeCall(call);
+		                                       return true;
+	                                       }),
+	                        app.pending_calls.end());
+
+	for (const ChatSession& deleted_chat : deleted_chats)
+	{
+		app.resolved_native_sessions_by_chat_id.erase(deleted_chat.id);
+		app.chats_with_unseen_updates.erase(deleted_chat.id);
+		app.collapsed_branch_chat_ids.erase(deleted_chat.id);
+		app.filtered_chat_ids.erase(deleted_chat.id);
+	}
+
+	for (auto it = app.resolved_native_sessions_by_chat_id.begin(); it != app.resolved_native_sessions_by_chat_id.end();)
+	{
+		if (deleted_chat_ids.contains(it->second))
+		{
+			it = app.resolved_native_sessions_by_chat_id.erase(it);
+		}
+		else
+		{
+			++it;
+		}
+	}
+
+	if (deleted_chat_ids.contains(app.editing_chat_id))
+	{
+		app.editing_chat_id.clear();
+		app.editing_message_index = -1;
+		app.editing_message_text.clear();
+		app.open_edit_message_popup = false;
+	}
+
+	if (deleted_chat_ids.contains(app.pending_branch_chat_id))
+	{
+		app.pending_branch_chat_id.clear();
+		app.pending_branch_message_index = -1;
+	}
+
+	if (deleted_chat_ids.contains(app.sidebar_chat_options_popup_chat_id))
+	{
+		app.sidebar_chat_options_popup_chat_id.clear();
+		app.open_sidebar_chat_options_popup = false;
+	}
 
 	if (app.new_chat_folder_id == folder_id)
 	{
 		app.new_chat_folder_id = uam::constants::kDefaultFolderId;
 	}
 
-	app.status_line = "Folder deleted. Moved " + std::to_string(moved_chat_count) + " chat(s) to General.";
+	ChatDomainService().RefreshRememberedSelection(app);
+	const bool settings_saved = PersistenceCoordinator().SaveSettings(app);
+
+	bool chat_history_delete_failed = false;
+
+	for (const ChatSession& deleted_chat : deleted_chats)
+	{
+		const ProviderProfile& chat_provider = ProviderResolutionService().ProviderForChatOrDefault(app, deleted_chat);
+
+		std::error_code local_delete_ec;
+		std::filesystem::remove_all(AppPaths::ChatPath(app.data_root, deleted_chat.id), local_delete_ec);
+
+		std::error_code uam_json_delete_ec;
+		std::filesystem::remove(AppPaths::UamChatFilePath(app.data_root, deleted_chat.id), uam_json_delete_ec);
+
+		std::error_code native_delete_ec;
+		if (ProviderRuntime::UsesNativeOverlayHistory(chat_provider) && !deleted_chat.native_session_id.empty())
+		{
+			ChatHistorySyncService().DeleteNativeSessionFileForChat(app, deleted_chat, &native_delete_ec);
+		}
+
+		chat_history_delete_failed = chat_history_delete_failed || static_cast<bool>(local_delete_ec) || static_cast<bool>(uam_json_delete_ec) || static_cast<bool>(native_delete_ec);
+	}
+
+	app.folders = std::move(next_folders);
+
+	app.status_line = "Folder deleted. Deleted " + std::to_string(deleted_chats.size()) + " chat(s).";
+
+	if (chat_history_delete_failed)
+	{
+		app.status_line = "Folder removed from UI, but deleting some chat history failed.";
+	}
+
+	if (!settings_saved)
+	{
+		app.status_line += " Settings persistence also failed.";
+	}
+
 	return true;
 }
 
