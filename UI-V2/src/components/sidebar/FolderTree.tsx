@@ -1,11 +1,22 @@
-import { useState, useMemo } from 'react'
+import { memo, useState, useMemo } from 'react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { SessionItem } from './SessionItem'
+import {
+  buildChatSearchIndex,
+  buildChatSearchModel,
+  tokenizeChatSearchQuery,
+} from './chatSearch'
+import type { Folder } from '../../types/session'
 
-export function FolderTree() {
+interface FolderTreeProps {
+  searchQuery: string
+}
+
+export function FolderTree({ searchQuery }: FolderTreeProps) {
   const folders  = useAppStore(useShallow((s) => s.folders))
   const sessions = useAppStore(useShallow((s) => s.sessions))
+  const messages = useAppStore(useShallow((s) => s.messages))
   const toggleFolder        = useAppStore((s) => s.toggleFolder)
   const addFolder           = useAppStore((s) => s.addFolder)
   const renameFolder        = useAppStore((s) => s.renameFolder)
@@ -19,10 +30,17 @@ export function FolderTree() {
   const [editFolderName, setEditFolderName] = useState('')
   const [editFolderDirectory, setEditFolderDirectory] = useState('')
 
-  const rootFolders = useMemo(() => folders.filter((f) => f.parentId === null), [folders])
-  const unfolderedSessionIds = useMemo(
-    () => sessions.filter((s) => s.folderId === null).map((s) => s.id),
-    [sessions]
+  const searchIndex = useMemo(
+    () => buildChatSearchIndex(sessions, messages),
+    [sessions, messages]
+  )
+  const searchTokens = useMemo(
+    () => tokenizeChatSearchQuery(searchQuery),
+    [searchQuery]
+  )
+  const searchModel = useMemo(
+    () => buildChatSearchModel(folders, sessions, searchIndex, searchTokens),
+    [folders, sessions, searchIndex, searchTokens]
   )
 
   const commitAddFolder = () => {
@@ -78,11 +96,12 @@ export function FolderTree() {
 
   return (
     <div className="select-none">
-      {rootFolders.map((folder) => (
+      {searchModel.folderRows.map(({ folder, sessionIds, shouldShowSessions }) => (
         <FolderRow
           key={folder.id}
           folder={folder}
-          sessions={sessions}
+          sessionIds={sessionIds}
+          shouldShowSessions={shouldShowSessions}
           isEditing={editingFolderId === folder.id}
           editFolderName={editFolderName}
           editFolderDirectory={editFolderDirectory}
@@ -102,16 +121,22 @@ export function FolderTree() {
       ))}
 
       {/* Unfoldered sessions */}
-      {unfolderedSessionIds.length > 0 && (
+      {searchModel.unfolderedSessionIds.length > 0 && (
         <div className="mt-1">
           <div className="px-3 py-1" style={{ color: 'var(--text-3)' }}>
             <span className="text-xs font-medium tracking-wider uppercase" style={{ letterSpacing: '0.08em', fontSize: 10 }}>
               Unsorted
             </span>
           </div>
-          {unfolderedSessionIds.map((id) => (
+          {searchModel.unfolderedSessionIds.map((id) => (
             <SessionItem key={id} sessionId={id} />
           ))}
+        </div>
+      )}
+
+      {searchModel.isSearching && !searchModel.hasMatches && (
+        <div className="px-3 py-2 text-xs" style={{ color: 'var(--text-3)', fontSize: 11 }}>
+          No matching chats
         </div>
       )}
 
@@ -243,16 +268,13 @@ export function FolderTree() {
 }
 
 // ---------------------------------------------------------------------------
-// FolderRow — memoized so it only re-renders when its own folder/sessions change
+// FolderRow - memoized so it only re-renders when its own folder/session IDs change
 // ---------------------------------------------------------------------------
-
-import { memo } from 'react'
-import { Folder } from '../../types/session'
-import { Session } from '../../types/session'
 
 interface FolderRowProps {
   folder: Folder
-  sessions: Session[]
+  sessionIds: string[]
+  shouldShowSessions: boolean
   isEditing: boolean
   editFolderName: string
   editFolderDirectory: string
@@ -268,7 +290,8 @@ interface FolderRowProps {
 
 const FolderRow = memo(function FolderRow({
   folder,
-  sessions,
+  sessionIds,
+  shouldShowSessions,
   isEditing,
   editFolderName,
   editFolderDirectory,
@@ -281,11 +304,6 @@ const FolderRow = memo(function FolderRow({
   onCancelEdit,
   onChooseDirectory,
 }: FolderRowProps) {
-  const folderSessionIds = useMemo(
-    () => sessions.filter((s) => s.folderId === folder.id).map((s) => s.id),
-    [sessions, folder.id]
-  )
-
   return (
     <div className="mb-2">
       {/* Folder header */}
@@ -304,7 +322,7 @@ const FolderRow = memo(function FolderRow({
           fill="currentColor"
           style={{ flexShrink: 0, color: 'var(--accent)', opacity: 0.85 }}
         >
-          {folder.isExpanded ? (
+          {shouldShowSessions ? (
             <>
               <path d="M1 5.5A1.5 1.5 0 012.5 4H6l1.5 1.5H14A1.5 1.5 0 0115.5 7v.5H.5V5.5A1 1 0 011 5.5z" />
               <path d="M.5 8h15l-1.5 5.5H2L.5 8z" opacity="0.85" />
@@ -321,7 +339,7 @@ const FolderRow = memo(function FolderRow({
           className="text-xs flex-shrink-0 rounded px-1 group-hover:opacity-0 transition-opacity duration-100"
           style={{ fontSize: 10, background: 'var(--surface-high)', color: 'var(--text-3)' }}
         >
-          {folderSessionIds.length}
+          {sessionIds.length}
         </span>
         {/* Action buttons */}
         <div
@@ -451,14 +469,14 @@ const FolderRow = memo(function FolderRow({
       )}
 
       {/* Sessions */}
-      {folder.isExpanded && (
+      {shouldShowSessions && (
         <div>
-          {folderSessionIds.length === 0 ? (
+          {sessionIds.length === 0 ? (
             <div className="px-6 py-1 text-xs" style={{ color: 'var(--text-3)', opacity: 0.5, fontSize: 11 }}>
               Empty
             </div>
           ) : (
-            folderSessionIds.map((id) => (
+            sessionIds.map((id) => (
               <SessionItem key={id} sessionId={id} />
             ))
           )}
