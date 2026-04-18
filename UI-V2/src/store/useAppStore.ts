@@ -136,6 +136,18 @@ export interface AcpAgentInfo {
   version: string
 }
 
+export interface AcpDiagnosticEntry {
+  time: string
+  event: string
+  reason: string
+  method: string
+  requestId: string
+  code: number | null
+  message: string
+  detail: string
+  lifecycleState: string
+}
+
 export interface CppAcpSession {
   sessionId?: string
   running?: boolean
@@ -144,6 +156,8 @@ export interface CppAcpSession {
   lifecycleState?: AcpLifecycleState | string
   lastError?: string
   recentStderr?: string
+  lastExitCode?: number | null
+  diagnostics?: AcpDiagnosticEntry[]
   agentInfo?: Partial<AcpAgentInfo>
   toolCalls?: AcpToolCall[]
   planEntries?: AcpPlanEntry[]
@@ -232,6 +246,8 @@ export interface AcpBinding {
   processingStartedAtMs: number | null
   lastError: string
   recentStderr: string
+  lastExitCode: number | null
+  diagnostics: AcpDiagnosticEntry[]
   toolCalls: AcpToolCall[]
   planEntries: AcpPlanEntry[]
   turnEvents: AcpTurnEvent[]
@@ -378,6 +394,8 @@ function acpBindingSignature(binding: AcpBinding | undefined) {
     processingStartedAtMs: binding.processingStartedAtMs,
     lastError: binding.lastError,
     recentStderr: binding.recentStderr,
+    lastExitCode: binding.lastExitCode,
+    diagnostics: binding.diagnostics,
     toolCalls: binding.toolCalls,
     planEntries: binding.planEntries,
     turnEvents: binding.turnEvents,
@@ -764,6 +782,8 @@ function deserializeState(
           : null,
         lastError: acp?.lastError ?? '',
         recentStderr: acp?.recentStderr ?? '',
+        lastExitCode: typeof acp?.lastExitCode === 'number' ? acp.lastExitCode : null,
+        diagnostics: Array.isArray(acp?.diagnostics) ? acp!.diagnostics : [],
         toolCalls: Array.isArray(acp?.toolCalls) ? acp!.toolCalls : [],
         planEntries: Array.isArray(acp?.planEntries) ? acp!.planEntries : [],
         turnEvents: Array.isArray(acp?.turnEvents) ? acp!.turnEvents : [],
@@ -1560,10 +1580,12 @@ export const useAppStore = create<AppState>((set, get) => {
                   lifecycleState: 'error' as AcpLifecycleState,
                   processing: false,
                   readySinceLastSelect: false,
-                  processingStartedAtMs: null,
-                  lastError: '',
-                  recentStderr: '',
-                  toolCalls: [],
+	                  processingStartedAtMs: null,
+	                  lastError: '',
+	                  recentStderr: '',
+	                  lastExitCode: null,
+	                  diagnostics: [],
+	                  toolCalls: [],
                   planEntries: [],
                   turnEvents: [],
                   turnUserMessageIndex: -1,
@@ -1614,10 +1636,12 @@ export const useAppStore = create<AppState>((set, get) => {
             lifecycleState: 'ready',
             processing: false,
             readySinceLastSelect: false,
-            processingStartedAtMs: null,
-            lastError: '',
-            recentStderr: '',
-            toolCalls: [],
+	            processingStartedAtMs: null,
+	            lastError: '',
+	            recentStderr: '',
+	            lastExitCode: null,
+	            diagnostics: [],
+	            toolCalls: [],
             planEntries: [],
             turnEvents: [],
             turnUserMessageIndex: -1,
@@ -1650,10 +1674,12 @@ export const useAppStore = create<AppState>((set, get) => {
               lifecycleState: 'ready' as AcpLifecycleState,
               processing: false,
               readySinceLastSelect: false,
-              processingStartedAtMs: null,
-              lastError: '',
-              recentStderr: '',
-              toolCalls: [],
+	              processingStartedAtMs: null,
+	              lastError: '',
+	              recentStderr: '',
+	              lastExitCode: null,
+	              diagnostics: [],
+	              toolCalls: [],
               planEntries: [],
               turnEvents: [],
               turnUserMessageIndex: -1,
@@ -1696,10 +1722,12 @@ export const useAppStore = create<AppState>((set, get) => {
               lifecycleState: 'ready' as AcpLifecycleState,
               processing: false,
               readySinceLastSelect: false,
-              processingStartedAtMs: null,
-              lastError: '',
-              recentStderr: '',
-              toolCalls: [],
+	              processingStartedAtMs: null,
+	              lastError: '',
+	              recentStderr: '',
+	              lastExitCode: null,
+	              diagnostics: [],
+	              toolCalls: [],
               planEntries: [],
               turnEvents: [],
               turnUserMessageIndex: -1,
@@ -1735,10 +1763,12 @@ export const useAppStore = create<AppState>((set, get) => {
               lifecycleState: 'stopped' as AcpLifecycleState,
               processing: false,
               readySinceLastSelect: false,
-              processingStartedAtMs: null,
-              lastError: '',
-              recentStderr: '',
-              toolCalls: [],
+	              processingStartedAtMs: null,
+	              lastError: '',
+	              recentStderr: '',
+	              lastExitCode: null,
+	              diagnostics: [],
+	              toolCalls: [],
               planEntries: [],
               turnEvents: [],
               turnUserMessageIndex: -1,

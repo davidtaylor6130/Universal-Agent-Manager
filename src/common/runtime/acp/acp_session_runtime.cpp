@@ -16,6 +16,7 @@
 #include <exception>
 #include <filesystem>
 #include <iomanip>
+#include <iostream>
 #include <sstream>
 
 namespace uam
@@ -27,13 +28,17 @@ namespace
 	constexpr const char* kAcpLifecycleReady = "ready";
 	constexpr const char* kAcpLifecycleProcessing = "processing";
 	constexpr const char* kAcpLifecycleWaitingPermission = "waitingPermission";
-	constexpr const char* kAcpLifecycleStopped = "stopped";
-	constexpr const char* kAcpLifecycleError = "error";
-	constexpr std::size_t kMinAssistantReplayPrefixBytes = 32;
+		constexpr const char* kAcpLifecycleStopped = "stopped";
+		constexpr const char* kAcpLifecycleError = "error";
+		constexpr std::size_t kMinAssistantReplayPrefixBytes = 32;
+		constexpr std::size_t kMaxAcpDiagnosticEntries = 80;
+		constexpr std::size_t kMaxAcpDiagnosticFieldBytes = 4096;
+		constexpr std::size_t kMaxAcpDiagnosticDetailBytes = 8192;
+		constexpr std::size_t kMaxAcpLogFieldBytes = 512;
 
-	void CompletePromptTurn(AcpSessionState& session, const char* lifecycle_state);
-	void FailAcpTurnOrSession(AcpSessionState& session, const std::string& message);
-	void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat);
+		void CompletePromptTurn(AcpSessionState& session, const char* lifecycle_state);
+		void FailAcpTurnOrSession(AcpSessionState& session, const std::string& message);
+		void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat);
 
 	std::string TimestampNow()
 	{
@@ -46,11 +51,147 @@ namespace
 		localtime_r(&tt, &tm_snapshot);
 #endif
 		std::ostringstream out;
-		out << std::put_time(&tm_snapshot, "%Y-%m-%dT%H:%M:%S.000Z");
-		return out.str();
-	}
+			out << std::put_time(&tm_snapshot, "%Y-%m-%dT%H:%M:%S.000Z");
+			return out.str();
+		}
 
-	nlohmann::json BuildInitializeRequest(const int request_id)
+		std::string CapDiagnosticString(const std::string& value, const std::size_t max_bytes)
+		{
+			if (value.size() <= max_bytes)
+			{
+				return value;
+			}
+
+			std::ostringstream out;
+			out << value.substr(0, max_bytes) << "... [truncated " << (value.size() - max_bytes) << " bytes]";
+			return out.str();
+		}
+
+		std::string SanitizeLogField(const std::string& value)
+		{
+			std::string sanitized = CapDiagnosticString(value, kMaxAcpLogFieldBytes);
+			for (char& ch : sanitized)
+			{
+				if (ch == '\n' || ch == '\r' || ch == '\t')
+				{
+					ch = ' ';
+				}
+			}
+			return sanitized;
+		}
+
+		std::string QuoteLogField(const std::string& value)
+		{
+			std::string quoted;
+			quoted.reserve(value.size() + 2);
+			quoted.push_back('"');
+			for (const char ch : SanitizeLogField(value))
+			{
+				if (ch == '"' || ch == '\\')
+				{
+					quoted.push_back('\\');
+				}
+				quoted.push_back(ch);
+			}
+			quoted.push_back('"');
+			return quoted;
+		}
+
+		std::string JsonRpcIdToDiagnosticString(const nlohmann::json& id)
+		{
+			if (id.is_null())
+			{
+				return "";
+			}
+			if (id.is_string())
+			{
+				return id.get<std::string>();
+			}
+			return id.dump();
+		}
+
+		std::string AcpProcessHandleLabel(const AcpSessionState& session)
+		{
+	#if defined(_WIN32)
+			if (session.process_info.dwProcessId != 0)
+			{
+				return std::to_string(static_cast<unsigned long long>(session.process_info.dwProcessId));
+			}
+	#elif defined(__APPLE__)
+			if (session.child_pid > 0)
+			{
+				return std::to_string(static_cast<long long>(session.child_pid));
+			}
+	#endif
+			return session.last_process_id.empty() ? std::string("0") : session.last_process_id;
+		}
+
+		void AppendAcpDiagnostic(AcpSessionState& session,
+		                         const std::string& event,
+		                         const std::string& reason,
+		                         const std::string& method = "",
+		                         const std::string& request_id = "",
+		                         const bool has_code = false,
+		                         const int code = 0,
+		                         const std::string& message = "",
+		                         const std::string& detail = "")
+		{
+			AcpDiagnosticEntryState entry;
+			entry.time = TimestampNow();
+			entry.event = CapDiagnosticString(event, kMaxAcpDiagnosticFieldBytes);
+			entry.reason = CapDiagnosticString(reason, kMaxAcpDiagnosticFieldBytes);
+			entry.method = CapDiagnosticString(method, kMaxAcpDiagnosticFieldBytes);
+			entry.request_id = CapDiagnosticString(request_id, kMaxAcpDiagnosticFieldBytes);
+			entry.has_code = has_code;
+			entry.code = code;
+			entry.message = CapDiagnosticString(message, kMaxAcpDiagnosticFieldBytes);
+			entry.detail = CapDiagnosticString(detail, kMaxAcpDiagnosticDetailBytes);
+			entry.lifecycle_state = session.lifecycle_state;
+
+			std::ostringstream out;
+			out << "[acp-diag]"
+			    << " event=" << entry.event
+			    << " reason=" << entry.reason
+			    << " chat_id=" << session.chat_id
+			    << " session_id=" << session.session_id
+			    << " process_id=" << AcpProcessHandleLabel(session)
+			    << " lifecycle_state=" << entry.lifecycle_state;
+			if (!entry.method.empty())
+			{
+				out << " method=" << entry.method;
+			}
+			if (!entry.request_id.empty())
+			{
+				out << " request_id=" << entry.request_id;
+			}
+			if (entry.has_code)
+			{
+				out << " code=" << entry.code;
+			}
+			if (!entry.message.empty())
+			{
+				out << " message=" << QuoteLogField(entry.message);
+			}
+			if (!entry.detail.empty())
+			{
+				out << " detail=" << QuoteLogField(entry.detail);
+			}
+			out << " t=" << entry.time;
+			std::cerr << out.str() << std::endl;
+
+			session.diagnostics.push_back(std::move(entry));
+			if (session.diagnostics.size() > kMaxAcpDiagnosticEntries)
+			{
+				session.diagnostics.erase(session.diagnostics.begin(), session.diagnostics.begin() + static_cast<std::ptrdiff_t>(session.diagnostics.size() - kMaxAcpDiagnosticEntries));
+			}
+		}
+
+		std::string RecentStderrTail(const AcpSessionState& session)
+		{
+			return CapDiagnosticString(session.recent_stderr, kMaxAcpDiagnosticDetailBytes);
+		}
+
+		nlohmann::json BuildInitializeRequest(const int request_id)
 	{
 		return {
 			{"jsonrpc", "2.0"},
@@ -124,31 +265,113 @@ namespace
 		};
 	}
 
-	int NextAcpRequestId(AcpSessionState& session, const std::string& method)
-	{
-		const int id = session.next_request_id++;
-		session.pending_request_methods[id] = method;
-		return id;
-	}
-
-	bool WriteAcpMessage(AcpSessionState& session, const nlohmann::json& message, std::string* error_out = nullptr)
-	{
-		std::string line = message.dump();
-		line.push_back('\n');
-
-		if (!PlatformServicesFactory::Instance().process_service.WriteToStdioProcess(session, line.data(), line.size()))
+		int NextAcpRequestId(AcpSessionState& session, const std::string& method)
 		{
-			session.last_error = "Failed to write ACP message to Gemini CLI.";
-			session.lifecycle_state = kAcpLifecycleError;
-			if (error_out != nullptr)
-			{
-				*error_out = session.last_error;
-			}
-			return false;
+			const int id = session.next_request_id++;
+			session.pending_request_methods[id] = method;
+			return id;
 		}
 
-		return true;
-	}
+		std::string AcpMessageMethodForDiagnostics(const nlohmann::json& message)
+		{
+			return message.is_object() ? message.value("method", "") : "";
+		}
+
+		std::string AcpMessageRequestIdForDiagnostics(const nlohmann::json& message)
+		{
+			if (!message.is_object() || !message.contains("id"))
+			{
+				return "";
+			}
+			return JsonRpcIdToDiagnosticString(message["id"]);
+		}
+
+		std::string PromptLengthDetail(const nlohmann::json& params)
+		{
+			const nlohmann::json prompt = params.value("prompt", nlohmann::json::array());
+			std::size_t prompt_chars = 0;
+			if (prompt.is_array())
+			{
+				for (const nlohmann::json& part : prompt)
+				{
+					if (part.is_object() && part.contains("text") && part["text"].is_string())
+					{
+						prompt_chars += part["text"].get<std::string>().size();
+					}
+				}
+			}
+			std::ostringstream out;
+			out << "sessionId=" << params.value("sessionId", "") << ", prompt_chars=" << prompt_chars;
+			return out.str();
+		}
+
+		std::string AcpMessageDetailForDiagnostics(const nlohmann::json& message)
+		{
+			if (!message.is_object())
+			{
+				return "payload is not an object";
+			}
+
+			const std::string method = message.value("method", "");
+			const nlohmann::json params = message.value("params", nlohmann::json::object());
+			if (method == "initialize")
+			{
+				return "protocolVersion=" + std::to_string(params.value("protocolVersion", 0));
+			}
+			if (method == "session/new")
+			{
+				return "cwd=" + params.value("cwd", "");
+			}
+			if (method == "session/load")
+			{
+				return "sessionId=" + params.value("sessionId", "") + ", cwd=" + params.value("cwd", "");
+			}
+			if (method == "session/prompt")
+			{
+				return PromptLengthDetail(params);
+			}
+			if (method == "session/cancel")
+			{
+				return "sessionId=" + params.value("sessionId", "");
+			}
+			if (message.contains("error"))
+			{
+				const nlohmann::json error = message.value("error", nlohmann::json::object());
+				std::ostringstream out;
+				out << "error_code=" << error.value("code", 0) << ", error_message=" << error.value("message", "");
+				return out.str();
+			}
+			if (message.contains("result"))
+			{
+				return "response_result=" + CapDiagnosticString(message.value("result", nlohmann::json(nullptr)).dump(), kMaxAcpDiagnosticFieldBytes);
+			}
+			return "";
+		}
+
+		bool WriteAcpMessage(AcpSessionState& session, const nlohmann::json& message, std::string* error_out = nullptr)
+		{
+			std::string line = message.dump();
+			line.push_back('\n');
+
+			const std::string method = AcpMessageMethodForDiagnostics(message);
+			const std::string request_id = AcpMessageRequestIdForDiagnostics(message);
+			const std::string detail = AcpMessageDetailForDiagnostics(message);
+			std::string write_error;
+			if (!PlatformServicesFactory::Instance().process_service.WriteToStdioProcess(session, line.data(), line.size(), &write_error))
+			{
+				session.last_error = write_error.empty() ? "Failed to write ACP message to Gemini CLI." : "Failed to write ACP message to Gemini CLI: " + write_error;
+				session.lifecycle_state = kAcpLifecycleError;
+				AppendAcpDiagnostic(session, "write", "write_failed", method, request_id, false, 0, session.last_error, detail);
+				if (error_out != nullptr)
+				{
+					*error_out = session.last_error;
+				}
+				return false;
+			}
+
+			AppendAcpDiagnostic(session, "write", "sent", method, request_id, false, 0, "", detail);
+			return true;
+		}
 
 	bool SendInitialize(AcpSessionState& session, std::string* error_out = nullptr)
 	{
@@ -204,8 +427,8 @@ namespace
 			return out.str();
 		}
 
-		return "";
-	}
+			return "";
+		}
 
 	bool StartsWith(const std::string& value, const std::string& prefix)
 	{
@@ -554,12 +777,16 @@ namespace
 		session.turn_serial = 0;
 		session.queued_prompt.clear();
 		session.ignore_session_updates_until_ready = false;
-		session.stdout_buffer.clear();
-		session.stderr_buffer.clear();
+			session.stdout_buffer.clear();
+			session.stderr_buffer.clear();
 			session.recent_stderr.clear();
 			session.last_error.clear();
+			session.has_last_exit_code = false;
+			session.last_exit_code = 0;
+			session.last_process_id.clear();
 			session.assistant_replay_prefixes.clear();
 			session.load_history_replay_updates.clear();
+			session.diagnostics.clear();
 			session.pending_assistant_thoughts.clear();
 			session.agent_name.clear();
 		session.agent_title.clear();
@@ -595,26 +822,31 @@ namespace
 		ResetAcpRuntimeState(session);
 		session.chat_id = chat.id;
 		session.session_id = chat.native_session_id;
-		session.lifecycle_state = kAcpLifecycleStarting;
+			session.lifecycle_state = kAcpLifecycleStarting;
 
-		std::string startup_error;
-		const std::filesystem::path workspace_root = ResolveWorkspaceRootPath(app, chat);
-		if (!PlatformServicesFactory::Instance().process_service.StartStdioProcess(session, workspace_root, {"gemini", "--acp"}, &startup_error))
-		{
-			session.lifecycle_state = kAcpLifecycleError;
-			session.last_error = startup_error.empty() ? "Failed to start Gemini ACP process." : startup_error;
-			if (error_out != nullptr)
+			std::string startup_error;
+			const std::filesystem::path workspace_root = ResolveWorkspaceRootPath(app, chat);
+			const std::string launch_detail = "cwd=" + (workspace_root.empty() ? std::filesystem::current_path().string() : workspace_root.string()) + ", argv=gemini --acp, nativeSessionId=" + chat.native_session_id;
+			AppendAcpDiagnostic(session, "process_launch", "starting", "", "", false, 0, "", launch_detail);
+			if (!PlatformServicesFactory::Instance().process_service.StartStdioProcess(session, workspace_root, {"gemini", "--acp"}, &startup_error))
 			{
-				*error_out = session.last_error;
+				session.lifecycle_state = kAcpLifecycleError;
+				session.last_error = startup_error.empty() ? "Failed to start Gemini ACP process." : startup_error;
+				AppendAcpDiagnostic(session, "process_launch", "start_failed", "", "", false, 0, session.last_error, launch_detail);
+				if (error_out != nullptr)
+				{
+					*error_out = session.last_error;
+				}
+				return false;
 			}
-			return false;
-		}
 
-		session.running = true;
-		if (!SendInitialize(session, error_out))
-		{
-			PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
-			session.running = false;
+			session.running = true;
+			session.last_process_id = AcpProcessHandleLabel(session);
+			AppendAcpDiagnostic(session, "process_launch", "started", "", "", false, 0, "", launch_detail);
+			if (!SendInitialize(session, error_out))
+			{
+				PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
+				session.running = false;
 			return false;
 		}
 
@@ -1081,11 +1313,11 @@ namespace
 		session.lifecycle_state = kAcpLifecycleWaitingPermission;
 	}
 
-	void HandleAcpRequest(AppState&, AcpSessionState& session, const nlohmann::json& message)
-	{
-		const std::string method = message.value("method", "");
-		if (method == "session/update")
+		void HandleAcpRequest(AppState&, AcpSessionState& session, const nlohmann::json& message)
 		{
+			const std::string method = message.value("method", "");
+			if (method == "session/update")
+			{
 			return;
 		}
 
@@ -1095,22 +1327,91 @@ namespace
 			return;
 		}
 
-		if (message.contains("id"))
-		{
-			SendJsonRpcError(session, message["id"], -32601, "UAM ACP client does not implement method: " + method);
-		}
-	}
-
-	void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
-	{
-		const int id = JsonRpcNumericId(message.value("id", nlohmann::json(nullptr)));
-		if (id == 0)
-		{
-			return;
+			if (message.contains("id"))
+			{
+				AppendAcpDiagnostic(session, "request", "unsupported_method", method, JsonRpcIdToStableString(message["id"]), true, -32601, "UAM ACP client does not implement method: " + method);
+				SendJsonRpcError(session, message["id"], -32601, "UAM ACP client does not implement method: " + method);
+			}
 		}
 
-		std::string method;
-		if (const auto it = session.pending_request_methods.find(id); it != session.pending_request_methods.end())
+		std::string PendingRequestSummary(const AcpSessionState& session)
+		{
+			if (session.pending_request_methods.empty())
+			{
+				return "";
+			}
+
+			std::ostringstream out;
+			bool first = true;
+			for (const auto& entry : session.pending_request_methods)
+			{
+				if (!first)
+				{
+					out << ", ";
+				}
+				out << entry.first << ":" << entry.second;
+				first = false;
+			}
+			return out.str();
+		}
+
+		std::string ErrorDataForDiagnostics(const nlohmann::json& error)
+		{
+			if (!error.is_object() || !error.contains("data"))
+			{
+				return "";
+			}
+			return CapDiagnosticString(error["data"].dump(), kMaxAcpDiagnosticDetailBytes);
+		}
+
+		std::string FormatAcpFailureMessage(const std::string& method,
+		                                    const std::string& request_id,
+		                                    const bool has_code,
+		                                    const int code,
+		                                    const std::string& message,
+		                                    const bool has_detail)
+		{
+			std::ostringstream out;
+			out << "Gemini ACP " << (method.empty() ? "request" : method) << " failed";
+			if (!request_id.empty() || has_code)
+			{
+				out << " (";
+				bool first = true;
+				if (!request_id.empty())
+				{
+					out << "id=" << request_id;
+					first = false;
+				}
+				if (has_code)
+				{
+					if (!first)
+					{
+						out << ", ";
+					}
+					out << "code=" << code;
+				}
+				out << ")";
+			}
+			out << ": " << (message.empty() ? "Gemini ACP request failed." : message);
+			if (has_detail)
+			{
+				out << " See diagnostics/stderr details.";
+			}
+			return out.str();
+		}
+
+		void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
+		{
+			const std::string request_id = JsonRpcIdToStableString(message.value("id", nlohmann::json(nullptr)));
+			const int id = JsonRpcNumericId(message.value("id", nlohmann::json(nullptr)));
+			if (id == 0)
+			{
+				AppendAcpDiagnostic(session, "response", "ignored_invalid_id", "", request_id, false, 0, "", CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
+				return;
+			}
+
+			std::string method;
+			if (const auto it = session.pending_request_methods.find(id); it != session.pending_request_methods.end())
 		{
 			method = it->second;
 			session.pending_request_methods.erase(it);
@@ -1120,21 +1421,53 @@ namespace
 			method = "session/prompt";
 		}
 
-		if (message.contains("error"))
-		{
-			const nlohmann::json error = message["error"];
-			const std::string error_message = error.is_object() ? error.value("message", "Gemini ACP request failed.") : "Gemini ACP request failed.";
-			if (method == "session/prompt" || session.processing || session.waiting_for_permission || !session.queued_prompt.empty())
+			if (message.contains("error"))
 			{
-				FailAcpTurnOrSession(session, error_message);
-				MarkAcpChatUnseenIfBackground(app, chat);
-			}
-			else
-			{
-				session.last_error = error_message;
-				session.lifecycle_state = kAcpLifecycleError;
-			}
-			return;
+				const nlohmann::json error = message["error"];
+				const bool has_code = error.is_object() && error.contains("code") && error["code"].is_number_integer();
+				const int code = has_code ? error["code"].get<int>() : 0;
+				const std::string error_message = error.is_object() ? error.value("message", "Gemini ACP request failed.") : "Gemini ACP request failed.";
+				const std::string error_data = ErrorDataForDiagnostics(error);
+				std::ostringstream detail;
+				bool has_detail = false;
+				if (!error_data.empty())
+				{
+					detail << "error.data=" << error_data;
+					has_detail = true;
+				}
+				if (!session.recent_stderr.empty())
+				{
+					if (has_detail)
+					{
+						detail << "\n";
+					}
+					detail << "stderr_tail=" << RecentStderrTail(session);
+					has_detail = true;
+				}
+				const std::string pending_summary = PendingRequestSummary(session);
+				if (!pending_summary.empty())
+				{
+					if (has_detail)
+					{
+						detail << "\n";
+					}
+					detail << "pending_requests=" << pending_summary;
+					has_detail = true;
+				}
+				const std::string detail_text = detail.str();
+				const std::string formatted_error = FormatAcpFailureMessage(method, request_id, has_code, code, error_message, !detail_text.empty());
+				AppendAcpDiagnostic(session, "response", "jsonrpc_error", method, request_id, has_code, code, error_message, detail_text);
+				if (method == "session/prompt" || session.processing || session.waiting_for_permission || !session.queued_prompt.empty())
+				{
+					FailAcpTurnOrSession(session, formatted_error);
+					MarkAcpChatUnseenIfBackground(app, chat);
+				}
+				else
+				{
+					session.last_error = formatted_error;
+					session.lifecycle_state = kAcpLifecycleError;
+				}
+				return;
 		}
 
 		const nlohmann::json result = message.value("result", nlohmann::json(nullptr));
@@ -1173,13 +1506,15 @@ namespace
 				chat.native_session_id = session.session_id;
 			}
 			session.session_ready = !session.session_id.empty();
-			session.lifecycle_state = session.session_ready ? kAcpLifecycleReady : kAcpLifecycleError;
-			if (!session.session_ready)
-			{
-				session.last_error = "Gemini ACP did not return a session id.";
-			}
-			SaveChatQuietly(app, chat);
-			return;
+				session.lifecycle_state = session.session_ready ? kAcpLifecycleReady : kAcpLifecycleError;
+				if (!session.session_ready)
+				{
+					const std::string detail = "result=" + CapDiagnosticString(result.dump(), kMaxAcpDiagnosticDetailBytes) + (session.recent_stderr.empty() ? "" : "\nstderr_tail=" + RecentStderrTail(session));
+					session.last_error = FormatAcpFailureMessage(method, request_id, false, 0, "Gemini ACP did not return a session id.", true);
+					AppendAcpDiagnostic(session, "response", "missing_session_id", method, request_id, false, 0, session.last_error, detail);
+				}
+				SaveChatQuietly(app, chat);
+				return;
 		}
 
 		if (method == "session/load")
@@ -1199,11 +1534,14 @@ namespace
 			return;
 		}
 
-		if (method == "session/cancel")
-		{
-			session.cancel_request_id = 0;
+			if (method == "session/cancel")
+			{
+				session.cancel_request_id = 0;
+				return;
+			}
+
+			AppendAcpDiagnostic(session, "response", "unknown_request_id", method, request_id, false, 0, "", CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
 		}
-	}
 
 	bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& line)
 	{
@@ -1217,13 +1555,15 @@ namespace
 		try
 		{
 			message = nlohmann::json::parse(trimmed);
-		}
-		catch (const std::exception& ex)
-		{
-			FailAcpTurnOrSession(session, std::string("Invalid ACP JSON from Gemini CLI: ") + ex.what());
-			MarkAcpChatUnseenIfBackground(app, chat);
-			return true;
-		}
+			}
+			catch (const std::exception& ex)
+			{
+				const std::string error_message = std::string("Invalid ACP JSON from Gemini CLI: ") + ex.what();
+				AppendAcpDiagnostic(session, "parse", "invalid_json", "", "", false, 0, error_message, CapDiagnosticString(trimmed, kMaxAcpDiagnosticDetailBytes));
+				FailAcpTurnOrSession(session, error_message);
+				MarkAcpChatUnseenIfBackground(app, chat);
+				return true;
+			}
 
 		if (message.contains("method"))
 		{
@@ -1239,25 +1579,27 @@ namespace
 			return true;
 		}
 
-		if (message.contains("id"))
-		{
-			HandleAcpResponse(app, session, chat, message);
-			return true;
-		}
+			if (message.contains("id"))
+			{
+				HandleAcpResponse(app, session, chat, message);
+				return true;
+			}
 
-		return false;
-	}
+			AppendAcpDiagnostic(session, "message", "ignored_without_method_or_id", "", "", false, 0, "", CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
+			return false;
+		}
 
 	bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat)
 	{
 		bool changed = false;
-		std::array<char, 8192> buffer{};
-		while (true)
-		{
-			const std::ptrdiff_t read_bytes = PlatformServicesFactory::Instance().process_service.ReadStdioProcessStdout(session, buffer.data(), buffer.size());
-			if (read_bytes > 0)
+			std::array<char, 8192> buffer{};
+			while (true)
 			{
-				session.stdout_buffer.append(buffer.data(), static_cast<std::size_t>(read_bytes));
+				std::string read_error;
+				const std::ptrdiff_t read_bytes = PlatformServicesFactory::Instance().process_service.ReadStdioProcessStdout(session, buffer.data(), buffer.size(), &read_error);
+				if (read_bytes > 0)
+				{
+					session.stdout_buffer.append(buffer.data(), static_cast<std::size_t>(read_bytes));
 				std::size_t newline_pos = std::string::npos;
 				while ((newline_pos = session.stdout_buffer.find('\n')) != std::string::npos)
 				{
@@ -1275,13 +1617,15 @@ namespace
 
 			if (read_bytes == 0)
 			{
-				break;
-			}
+					break;
+				}
 
-			FailAcpTurnOrSession(session, "Failed to read Gemini ACP stdout.");
-			MarkAcpChatUnseenIfBackground(app, chat);
-			changed = true;
-			break;
+				const std::string message = read_error.empty() ? "Failed to read Gemini ACP stdout." : "Failed to read Gemini ACP stdout: " + read_error;
+				AppendAcpDiagnostic(session, "read", "stdout_read_failed", "", "", false, 0, message);
+				FailAcpTurnOrSession(session, message);
+				MarkAcpChatUnseenIfBackground(app, chat);
+				changed = true;
+				break;
 		}
 		return changed;
 	}
@@ -1289,36 +1633,72 @@ namespace
 	bool DrainStderr(AcpSessionState& session)
 	{
 		bool changed = false;
-		std::array<char, 4096> buffer{};
-		while (true)
-		{
-			const std::ptrdiff_t read_bytes = PlatformServicesFactory::Instance().process_service.ReadStdioProcessStderr(session, buffer.data(), buffer.size());
-			if (read_bytes > 0)
+			std::array<char, 4096> buffer{};
+			while (true)
 			{
-				AppendRecentStderr(session, std::string(buffer.data(), static_cast<std::size_t>(read_bytes)));
+				std::string read_error;
+				const std::ptrdiff_t read_bytes = PlatformServicesFactory::Instance().process_service.ReadStdioProcessStderr(session, buffer.data(), buffer.size(), &read_error);
+				if (read_bytes > 0)
+				{
+					AppendRecentStderr(session, std::string(buffer.data(), static_cast<std::size_t>(read_bytes)));
 				changed = true;
 				continue;
 			}
 
 			if (read_bytes == -2 || read_bytes == 0)
 			{
+					break;
+				}
+
+				const std::string message = read_error.empty() ? "Failed to read Gemini ACP stderr." : "Failed to read Gemini ACP stderr: " + read_error;
+				AppendAcpDiagnostic(session, "read", "stderr_read_failed", "", "", false, 0, message);
+				changed = true;
 				break;
 			}
-
-			break;
+			return changed;
 		}
-		return changed;
-	}
 
-	void MarkAcpProcessExited(AcpSessionState& session)
-	{
-		session.running = false;
-		session.initialized = false;
-		session.session_ready = false;
-		if (session.processing || session.waiting_for_permission || session.prompt_request_id != 0 || !session.queued_prompt.empty())
+		void MarkAcpProcessExited(AcpSessionState& session, const bool has_exit_code = false, const int exit_code = 0)
 		{
-			const std::string message = session.last_error.empty() ? "Gemini ACP process exited during an active turn." : session.last_error;
-			FailAcpTurnOrSession(session, message);
+			if (has_exit_code)
+			{
+				session.has_last_exit_code = true;
+				session.last_exit_code = exit_code;
+			}
+			const bool active_turn = session.processing || session.waiting_for_permission || session.prompt_request_id != 0 || !session.queued_prompt.empty();
+			std::ostringstream detail;
+			bool has_detail = false;
+			if (has_exit_code)
+			{
+				detail << "exit_code=" << exit_code;
+				has_detail = true;
+			}
+			if (!session.recent_stderr.empty())
+			{
+				if (has_detail)
+				{
+					detail << "\n";
+				}
+				detail << "stderr_tail=" << RecentStderrTail(session);
+				has_detail = true;
+			}
+			const std::string pending_summary = PendingRequestSummary(session);
+			if (!pending_summary.empty())
+			{
+				if (has_detail)
+				{
+					detail << "\n";
+				}
+				detail << "pending_requests=" << pending_summary;
+			}
+			AppendAcpDiagnostic(session, "process_exit", active_turn ? "active_turn" : "idle", "", "", has_exit_code, exit_code, "", detail.str());
+			session.running = false;
+			session.initialized = false;
+			session.session_ready = false;
+			if (active_turn)
+			{
+				const std::string message = session.last_error.empty() ? "Gemini ACP process exited during an active turn." : session.last_error;
+				FailAcpTurnOrSession(session, message);
 		}
 		else
 		{
@@ -1545,14 +1925,14 @@ bool PollAllAcpSessions(AppState& app)
 			continue;
 		}
 
-		const int chat_index = ChatDomainService().FindChatIndexById(app, session.chat_id);
-		if (chat_index < 0)
-		{
-			PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
-			MarkAcpProcessExited(session);
-			changed = true;
-			continue;
-		}
+			const int chat_index = ChatDomainService().FindChatIndexById(app, session.chat_id);
+			if (chat_index < 0)
+			{
+				PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
+				MarkAcpProcessExited(session, false, 0);
+				changed = true;
+				continue;
+			}
 
 		ChatSession& chat = app.chats[static_cast<std::size_t>(chat_index)];
 		changed = DrainStderr(session) || changed;
@@ -1572,12 +1952,13 @@ bool PollAllAcpSessions(AppState& app)
 			changed = true;
 		}
 
-		if (PlatformServicesFactory::Instance().process_service.PollStdioProcessExited(session))
-		{
-			MarkAcpProcessExited(session);
-			if (!session.last_error.empty())
+			int exit_code = 0;
+			if (PlatformServicesFactory::Instance().process_service.PollStdioProcessExited(session, &exit_code))
 			{
-				MarkAcpChatUnseenIfBackground(app, chat);
+				MarkAcpProcessExited(session, true, exit_code);
+				if (!session.last_error.empty())
+				{
+					MarkAcpChatUnseenIfBackground(app, chat);
 			}
 			changed = true;
 		}

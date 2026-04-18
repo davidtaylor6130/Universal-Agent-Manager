@@ -118,6 +118,20 @@ namespace uam
 		std::string title;
 	};
 
+	struct AcpDiagnosticEntryState
+	{
+		std::string time;
+		std::string event;
+		std::string reason;
+		std::string method;
+		std::string request_id;
+		bool has_code = false;
+		int code = 0;
+		std::string message;
+		std::string detail;
+		std::string lifecycle_state;
+	};
+
 	struct AcpPermissionOptionState
 	{
 		std::string id;
@@ -158,15 +172,19 @@ namespace uam
 		int turn_serial = 0;
 		std::string queued_prompt;
 		bool ignore_session_updates_until_ready = false;
-		std::string stdout_buffer;
-		std::string stderr_buffer;
-		std::string recent_stderr;
-		std::string last_error;
-		std::vector<std::string> assistant_replay_prefixes;
-		std::vector<AcpReplayUpdateState> load_history_replay_updates;
-		std::string pending_assistant_thoughts;
-		std::string agent_name;
-		std::string agent_title;
+			std::string stdout_buffer;
+			std::string stderr_buffer;
+			std::string recent_stderr;
+			std::string last_error;
+			bool has_last_exit_code = false;
+			int last_exit_code = 0;
+			std::string last_process_id;
+			std::vector<std::string> assistant_replay_prefixes;
+			std::vector<AcpReplayUpdateState> load_history_replay_updates;
+			std::vector<AcpDiagnosticEntryState> diagnostics;
+			std::string pending_assistant_thoughts;
+			std::string agent_name;
+			std::string agent_title;
 		std::string agent_version;
 		std::unordered_map<int, std::string> pending_request_methods;
 		std::vector<AcpToolCallState> tool_calls;

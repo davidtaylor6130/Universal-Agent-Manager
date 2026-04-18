@@ -58,10 +58,12 @@ describe('ChatView', () => {
           lifecycleState: 'waitingPermission',
           processing: true,
           readySinceLastSelect: false,
-          processingStartedAtMs: Date.now(),
-          lastError: '',
-          recentStderr: '',
-          toolCalls: [
+	          processingStartedAtMs: Date.now(),
+	          lastError: '',
+	          recentStderr: '',
+	          lastExitCode: null,
+	          diagnostics: [],
+	          toolCalls: [
             {
               id: 'tool-1',
               title: 'Search symbols',
@@ -255,13 +257,28 @@ describe('ChatView', () => {
         ...state.acpBindingBySessionId,
         'chat-1': {
           ...state.acpBindingBySessionId['chat-1'],
-          lifecycleState: 'error',
-          processing: false,
-          processingStartedAtMs: null,
-          lastError: 'Internal ACP failure',
-        },
-      },
-    }))
+	          lifecycleState: 'error',
+	          processing: false,
+	          processingStartedAtMs: null,
+	          lastError: 'Internal ACP failure',
+	          recentStderr: 'stderr stack trace',
+	          lastExitCode: 137,
+	          diagnostics: [
+	            {
+	              time: '2026-01-01T00:00:02.000Z',
+	              event: 'response',
+	              reason: 'jsonrpc_error',
+	              method: 'session/prompt',
+	              requestId: '42',
+	              code: -32603,
+	              message: 'Internal error',
+	              detail: 'error.data={"cause":"boom"}',
+	              lifecycleState: 'processing',
+	            },
+	          ],
+	        },
+	      },
+	    }))
 
     const host = document.createElement('div')
     document.body.appendChild(host)
@@ -272,9 +289,13 @@ describe('ChatView', () => {
     })
 
     const form = host.querySelector('form')
-    expect(form?.textContent).toContain('Gemini ACP error')
-    expect(form?.textContent).toContain('Internal ACP failure')
-    const text = host.textContent ?? ''
+	    expect(form?.textContent).toContain('Gemini ACP error')
+	    expect(form?.textContent).toContain('Internal ACP failure')
+	    expect(form?.textContent).toContain('Diagnostics')
+	    expect(form?.textContent).toContain('Exit code: 137')
+	    expect(form?.textContent).toContain('jsonrpc_error')
+	    expect(form?.textContent).toContain('stderr stack trace')
+	    const text = host.textContent ?? ''
     expect(text.indexOf('After tool.')).toBeLessThan(text.indexOf('Gemini ACP error'))
 
     act(() => {

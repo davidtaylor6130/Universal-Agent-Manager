@@ -510,10 +510,27 @@ namespace
 		waitpid(pid, &status, WNOHANG);
 	}
 
-	std::ptrdiff_t ReadNonBlockingFd(const int fd, char* buffer, const std::size_t buffer_size)
+	int ExitCodeFromWaitStatus(const int status)
+	{
+		if (WIFEXITED(status))
+		{
+			return WEXITSTATUS(status);
+		}
+		if (WIFSIGNALED(status))
+		{
+			return 128 + WTERMSIG(status);
+		}
+		return status;
+	}
+
+	std::ptrdiff_t ReadNonBlockingFd(const int fd, char* buffer, const std::size_t buffer_size, std::string* error_out = nullptr)
 	{
 		if (fd < 0)
 		{
+			if (error_out != nullptr)
+			{
+				*error_out = "stdio pipe handle is closed.";
+			}
 			return -1;
 		}
 
@@ -541,6 +558,10 @@ namespace
 				return -2;
 			}
 
+			if (error_out != nullptr)
+			{
+				*error_out = std::strerror(errno);
+			}
 			return -1;
 		}
 	}
@@ -1145,7 +1166,7 @@ namespace
 			process.child_pid = -1;
 		}
 
-		bool WriteToStdioProcess(uam::platform::StdioProcessPlatformFields& process, const char* bytes, const std::size_t len) const override
+		bool WriteToStdioProcess(uam::platform::StdioProcessPlatformFields& process, const char* bytes, const std::size_t len, std::string* error_out = nullptr) const override
 		{
 			if (bytes == nullptr || len == 0)
 			{
@@ -1153,6 +1174,10 @@ namespace
 			}
 			if (process.stdin_write_fd < 0)
 			{
+				if (error_out != nullptr)
+				{
+					*error_out = "stdin pipe handle is closed.";
+				}
 				return false;
 			}
 
@@ -1166,13 +1191,17 @@ namespace
 					continue;
 				}
 				if (written < 0 && errno == EINTR)
-				{
-					continue;
+					{
+						continue;
+					}
+					if (error_out != nullptr)
+					{
+						*error_out = std::strerror(errno);
+					}
+					return false;
 				}
-				return false;
+				return true;
 			}
-			return true;
-		}
 
 		void StopStdioProcess(uam::platform::StdioProcessPlatformFields& process, const bool fast_exit) const override
 		{
@@ -1210,20 +1239,24 @@ namespace
 			CloseStdioProcessHandles(process);
 		}
 
-		std::ptrdiff_t ReadStdioProcessStdout(uam::platform::StdioProcessPlatformFields& process, char* buffer, const std::size_t buffer_size) const override
+		std::ptrdiff_t ReadStdioProcessStdout(uam::platform::StdioProcessPlatformFields& process, char* buffer, const std::size_t buffer_size, std::string* error_out = nullptr) const override
 		{
-			return ReadNonBlockingFd(process.stdout_read_fd, buffer, buffer_size);
+			return ReadNonBlockingFd(process.stdout_read_fd, buffer, buffer_size, error_out);
 		}
 
-		std::ptrdiff_t ReadStdioProcessStderr(uam::platform::StdioProcessPlatformFields& process, char* buffer, const std::size_t buffer_size) const override
+		std::ptrdiff_t ReadStdioProcessStderr(uam::platform::StdioProcessPlatformFields& process, char* buffer, const std::size_t buffer_size, std::string* error_out = nullptr) const override
 		{
-			return ReadNonBlockingFd(process.stderr_read_fd, buffer, buffer_size);
+			return ReadNonBlockingFd(process.stderr_read_fd, buffer, buffer_size, error_out);
 		}
 
-		bool PollStdioProcessExited(uam::platform::StdioProcessPlatformFields& process) const override
+		bool PollStdioProcessExited(uam::platform::StdioProcessPlatformFields& process, int* exit_code_out = nullptr) const override
 		{
 			if (process.child_pid <= 0)
 			{
+				if (exit_code_out != nullptr)
+				{
+					*exit_code_out = -1;
+				}
 				return true;
 			}
 
@@ -1235,6 +1268,10 @@ namespace
 			}
 			if (wait_result == process.child_pid || (wait_result < 0 && errno == ECHILD))
 			{
+				if (exit_code_out != nullptr)
+				{
+					*exit_code_out = wait_result == process.child_pid ? ExitCodeFromWaitStatus(status) : -1;
+				}
 				process.child_pid = -1;
 				return true;
 			}

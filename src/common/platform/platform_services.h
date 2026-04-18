@@ -76,11 +76,11 @@ class IPlatformProcessService
 	                               const std::vector<std::string>& argv,
 	                               std::string* error_out = nullptr) const = 0;
 	virtual void CloseStdioProcessHandles(uam::platform::StdioProcessPlatformFields& process) const = 0;
-	virtual bool WriteToStdioProcess(uam::platform::StdioProcessPlatformFields& process, const char* bytes, std::size_t len) const = 0;
-	virtual void StopStdioProcess(uam::platform::StdioProcessPlatformFields& process, bool fast_exit) const = 0;
-	virtual std::ptrdiff_t ReadStdioProcessStdout(uam::platform::StdioProcessPlatformFields& process, char* buffer, std::size_t buffer_size) const = 0;
-	virtual std::ptrdiff_t ReadStdioProcessStderr(uam::platform::StdioProcessPlatformFields& process, char* buffer, std::size_t buffer_size) const = 0;
-	virtual bool PollStdioProcessExited(uam::platform::StdioProcessPlatformFields& process) const = 0;
+		virtual bool WriteToStdioProcess(uam::platform::StdioProcessPlatformFields& process, const char* bytes, std::size_t len, std::string* error_out = nullptr) const = 0;
+		virtual void StopStdioProcess(uam::platform::StdioProcessPlatformFields& process, bool fast_exit) const = 0;
+		virtual std::ptrdiff_t ReadStdioProcessStdout(uam::platform::StdioProcessPlatformFields& process, char* buffer, std::size_t buffer_size, std::string* error_out = nullptr) const = 0;
+		virtual std::ptrdiff_t ReadStdioProcessStderr(uam::platform::StdioProcessPlatformFields& process, char* buffer, std::size_t buffer_size, std::string* error_out = nullptr) const = 0;
+		virtual bool PollStdioProcessExited(uam::platform::StdioProcessPlatformFields& process, int* exit_code_out = nullptr) const = 0;
 	virtual std::string GeminiDowngradeCommand() const = 0;
 	virtual std::filesystem::path ResolveCurrentExecutablePath() const = 0;
 	virtual std::unique_ptr<uam::platform::DataRootLock> TryAcquireDataRootLock(const std::filesystem::path& data_root, std::string* error_out = nullptr) const = 0;

@@ -169,11 +169,14 @@ nlohmann::json SerializeAcpSessionSummary(const AppState& app, const ChatSession
 		acp_json["running"] = false;
 		acp_json["processing"] = false;
 		acp_json["readySinceLastSelect"] = ready_since_last_select;
-		acp_json["lifecycleState"] = "stopped";
-		acp_json["lastError"] = "";
-		acp_json["toolCalls"] = nlohmann::json::array();
-		acp_json["planEntries"] = nlohmann::json::array();
-		acp_json["turnEvents"] = nlohmann::json::array();
+			acp_json["lifecycleState"] = "stopped";
+			acp_json["lastError"] = "";
+			acp_json["recentStderr"] = "";
+			acp_json["lastExitCode"] = nullptr;
+			acp_json["diagnostics"] = nlohmann::json::array();
+			acp_json["toolCalls"] = nlohmann::json::array();
+			acp_json["planEntries"] = nlohmann::json::array();
+			acp_json["turnEvents"] = nlohmann::json::array();
 		acp_json["turnUserMessageIndex"] = -1;
 		acp_json["turnAssistantMessageIndex"] = -1;
 		acp_json["turnSerial"] = 0;
@@ -185,16 +188,34 @@ nlohmann::json SerializeAcpSessionSummary(const AppState& app, const ChatSession
 	acp_json["running"] = session->running;
 	acp_json["processing"] = session->processing;
 	acp_json["readySinceLastSelect"] = ready_since_last_select;
-	acp_json["lifecycleState"] = session->lifecycle_state;
-	acp_json["lastError"] = session->last_error;
-	acp_json["recentStderr"] = session->recent_stderr;
-	acp_json["agentInfo"] = {
-		{"name", session->agent_name},
-		{"title", session->agent_title},
-		{"version", session->agent_version},
-	};
+		acp_json["lifecycleState"] = session->lifecycle_state;
+		acp_json["lastError"] = session->last_error;
+		acp_json["recentStderr"] = session->recent_stderr;
+		acp_json["lastExitCode"] = session->has_last_exit_code ? nlohmann::json(session->last_exit_code) : nlohmann::json(nullptr);
+		acp_json["agentInfo"] = {
+			{"name", session->agent_name},
+			{"title", session->agent_title},
+			{"version", session->agent_version},
+		};
 
-	auto tool_calls = nlohmann::json::array();
+		auto diagnostics = nlohmann::json::array();
+		for (const AcpDiagnosticEntryState& diagnostic : session->diagnostics)
+		{
+			nlohmann::json diagnostic_json;
+			diagnostic_json["time"] = diagnostic.time;
+			diagnostic_json["event"] = diagnostic.event;
+			diagnostic_json["reason"] = diagnostic.reason;
+			diagnostic_json["method"] = diagnostic.method;
+			diagnostic_json["requestId"] = diagnostic.request_id;
+			diagnostic_json["code"] = diagnostic.has_code ? nlohmann::json(diagnostic.code) : nlohmann::json(nullptr);
+			diagnostic_json["message"] = diagnostic.message;
+			diagnostic_json["detail"] = diagnostic.detail;
+			diagnostic_json["lifecycleState"] = diagnostic.lifecycle_state;
+			diagnostics.push_back(std::move(diagnostic_json));
+		}
+		acp_json["diagnostics"] = std::move(diagnostics);
+
+		auto tool_calls = nlohmann::json::array();
 	for (const AcpToolCallState& tool_call : session->tool_calls)
 	{
 		tool_calls.push_back({

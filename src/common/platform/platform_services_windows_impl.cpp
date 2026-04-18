@@ -132,6 +132,31 @@ namespace
 		return utf8;
 	}
 
+	std::string FormatWindowsError(const DWORD error)
+	{
+		LPWSTR buffer = nullptr;
+		const DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
+		const DWORD len = FormatMessageW(flags, nullptr, error, 0, reinterpret_cast<LPWSTR>(&buffer), 0, nullptr);
+		std::string message;
+		if (len > 0 && buffer != nullptr)
+		{
+			message = WideToUtf8(std::wstring(buffer, buffer + len));
+			while (!message.empty() && (message.back() == '\r' || message.back() == '\n' || message.back() == '.'))
+			{
+				message.pop_back();
+			}
+		}
+		if (buffer != nullptr)
+		{
+			LocalFree(buffer);
+		}
+		if (message.empty())
+		{
+			message = "Windows error " + std::to_string(static_cast<unsigned long>(error));
+		}
+		return message + " (" + std::to_string(static_cast<unsigned long>(error)) + ")";
+	}
+
 	std::string QuoteWindowsArg(const std::string& arg)
 	{
 		if (arg.empty())
@@ -246,10 +271,14 @@ namespace
 		}
 	}
 
-	std::ptrdiff_t ReadPipeNonBlocking(HANDLE pipe, char* buffer, const std::size_t buffer_size)
+	std::ptrdiff_t ReadPipeNonBlocking(HANDLE pipe, char* buffer, const std::size_t buffer_size, std::string* error_out = nullptr)
 	{
 		if (pipe == INVALID_HANDLE_VALUE)
 		{
+			if (error_out != nullptr)
+			{
+				*error_out = "stdio pipe handle is closed.";
+			}
 			return -1;
 		}
 
@@ -257,6 +286,10 @@ namespace
 		if (!PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr))
 		{
 			const DWORD err = GetLastError();
+			if (err != ERROR_BROKEN_PIPE && error_out != nullptr)
+			{
+				*error_out = FormatWindowsError(err);
+			}
 			return err == ERROR_BROKEN_PIPE ? 0 : -1;
 		}
 
@@ -270,6 +303,10 @@ namespace
 		if (!ReadFile(pipe, buffer, to_read, &bytes_read, nullptr))
 		{
 			const DWORD err = GetLastError();
+			if (err != ERROR_BROKEN_PIPE && error_out != nullptr)
+			{
+				*error_out = FormatWindowsError(err);
+			}
 			return err == ERROR_BROKEN_PIPE ? 0 : -1;
 		}
 
@@ -1359,7 +1396,7 @@ namespace
 			process.process_info.dwThreadId = 0;
 		}
 
-		bool WriteToStdioProcess(uam::platform::StdioProcessPlatformFields& process, const char* bytes, const std::size_t len) const override
+		bool WriteToStdioProcess(uam::platform::StdioProcessPlatformFields& process, const char* bytes, const std::size_t len, std::string* error_out = nullptr) const override
 		{
 			if (bytes == nullptr || len == 0)
 			{
@@ -1367,6 +1404,10 @@ namespace
 			}
 			if (process.stdin_write == INVALID_HANDLE_VALUE)
 			{
+				if (error_out != nullptr)
+				{
+					*error_out = "stdin pipe handle is closed.";
+				}
 				return false;
 			}
 
@@ -1377,6 +1418,11 @@ namespace
 				DWORD written = 0;
 				if (!WriteFile(process.stdin_write, bytes + offset, chunk, &written, nullptr) || written == 0)
 				{
+					if (error_out != nullptr)
+					{
+						const DWORD err = GetLastError();
+						*error_out = written == 0 ? "stdin pipe write returned zero bytes." : FormatWindowsError(err);
+					}
 					return false;
 				}
 				offset += written;
@@ -1397,24 +1443,45 @@ namespace
 			CloseStdioProcessHandles(process);
 		}
 
-		std::ptrdiff_t ReadStdioProcessStdout(uam::platform::StdioProcessPlatformFields& process, char* buffer, const std::size_t buffer_size) const override
+		std::ptrdiff_t ReadStdioProcessStdout(uam::platform::StdioProcessPlatformFields& process, char* buffer, const std::size_t buffer_size, std::string* error_out = nullptr) const override
 		{
-			return ReadPipeNonBlocking(process.stdout_read, buffer, buffer_size);
+			return ReadPipeNonBlocking(process.stdout_read, buffer, buffer_size, error_out);
 		}
 
-		std::ptrdiff_t ReadStdioProcessStderr(uam::platform::StdioProcessPlatformFields& process, char* buffer, const std::size_t buffer_size) const override
+		std::ptrdiff_t ReadStdioProcessStderr(uam::platform::StdioProcessPlatformFields& process, char* buffer, const std::size_t buffer_size, std::string* error_out = nullptr) const override
 		{
-			return ReadPipeNonBlocking(process.stderr_read, buffer, buffer_size);
+			return ReadPipeNonBlocking(process.stderr_read, buffer, buffer_size, error_out);
 		}
 
-		bool PollStdioProcessExited(uam::platform::StdioProcessPlatformFields& process) const override
+		bool PollStdioProcessExited(uam::platform::StdioProcessPlatformFields& process, int* exit_code_out = nullptr) const override
 		{
 			if (process.process_info.hProcess == INVALID_HANDLE_VALUE)
 			{
+				if (exit_code_out != nullptr)
+				{
+					*exit_code_out = -1;
+				}
 				return true;
 			}
 
-			return WaitForSingleObject(process.process_info.hProcess, 0) == WAIT_OBJECT_0;
+			if (WaitForSingleObject(process.process_info.hProcess, 0) != WAIT_OBJECT_0)
+			{
+				return false;
+			}
+
+			if (exit_code_out != nullptr)
+			{
+				DWORD exit_code = 0;
+				if (GetExitCodeProcess(process.process_info.hProcess, &exit_code))
+				{
+					*exit_code_out = static_cast<int>(exit_code);
+				}
+				else
+				{
+					*exit_code_out = -1;
+				}
+			}
+			return true;
 		}
 
 		std::string GeminiDowngradeCommand() const override

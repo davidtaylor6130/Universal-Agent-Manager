@@ -51,6 +51,87 @@ function roleLabel(role: string) {
   return 'System'
 }
 
+function diagnosticTail(value: string, maxChars = 6000) {
+  if (value.length <= maxChars) return value
+  return `[showing last ${maxChars} chars]\n${value.slice(value.length - maxChars)}`
+}
+
+function formatDiagnosticLine(entry: AcpBinding['diagnostics'][number]) {
+  const parts = [
+    entry.time,
+    entry.event,
+    entry.reason,
+    entry.method ? `method=${entry.method}` : '',
+    entry.requestId ? `id=${entry.requestId}` : '',
+    typeof entry.code === 'number' ? `code=${entry.code}` : '',
+    entry.lifecycleState ? `state=${entry.lifecycleState}` : '',
+  ].filter(Boolean)
+  const headline = parts.join(' ')
+  const body = [entry.message, entry.detail].filter(Boolean).join('\n')
+  return body ? `${headline}\n${body}` : headline
+}
+
+function AcpErrorDetails({ acp }: { acp: AcpBinding }) {
+  const diagnostics = acp.diagnostics.slice(-12)
+  const hasDetails =
+    diagnostics.length > 0 ||
+    acp.recentStderr.trim().length > 0 ||
+    acp.lastExitCode !== null
+
+  if (!hasDetails) return null
+
+  return (
+    <details className="mt-2">
+      <summary className="cursor-pointer select-none" style={{ color: 'var(--text-2)' }}>
+        Diagnostics
+      </summary>
+      <div className="mt-2 grid gap-2">
+        {acp.lastExitCode !== null && (
+          <div style={{ color: 'var(--text-2)' }}>Exit code: {acp.lastExitCode}</div>
+        )}
+        {diagnostics.length > 0 && (
+          <pre
+            className="text-[11px]"
+            style={{
+              margin: 0,
+              maxHeight: 180,
+              overflow: 'auto',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              padding: 8,
+              background: 'var(--bg)',
+              color: 'var(--text-2)',
+            }}
+          >
+            {diagnostics.map(formatDiagnosticLine).join('\n\n')}
+          </pre>
+        )}
+        {acp.recentStderr.trim().length > 0 && (
+          <pre
+            className="text-[11px]"
+            style={{
+              margin: 0,
+              maxHeight: 180,
+              overflow: 'auto',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              padding: 8,
+              background: 'var(--bg)',
+              color: 'var(--text-2)',
+            }}
+          >
+            {diagnosticTail(acp.recentStderr)}
+          </pre>
+        )}
+      </div>
+    </details>
+  )
+}
+
 function GeminiIcon() {
   return (
     <span
@@ -1032,11 +1113,12 @@ export function ChatView({ session }: ChatViewProps) {
                   overflowWrap: 'anywhere',
                 }}
               >
-                <span style={{ color: 'var(--red)', fontWeight: 600 }}>Gemini ACP error</span>
-                <span style={{ color: 'var(--text-2)' }}> · </span>
-                {acp.lastError}
-              </div>
-            )}
+	                <span style={{ color: 'var(--red)', fontWeight: 600 }}>Gemini ACP error</span>
+	                <span style={{ color: 'var(--text-2)' }}> · </span>
+	                {acp.lastError}
+	                <AcpErrorDetails acp={acp} />
+	              </div>
+	            )}
             <div
               style={{
                 border: '1px solid var(--border-bright)',

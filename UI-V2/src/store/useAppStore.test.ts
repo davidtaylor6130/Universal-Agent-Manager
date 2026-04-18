@@ -104,10 +104,25 @@ describe('useAppStore Gemini CLI slice', () => {
       sessionId: 'native-1',
       running: true,
       lifecycleState: 'processing',
-      processing: true,
-      readySinceLastSelect: true,
-      lastError: '',
-      toolCalls: [{ id: 'tool-1', title: 'Read file', kind: 'read', status: 'in_progress', content: '' }],
+	      processing: true,
+	      readySinceLastSelect: true,
+	      lastError: '',
+	      recentStderr: 'stderr tail',
+	      lastExitCode: 137,
+	      diagnostics: [
+	        {
+	          time: '2026-01-01T00:00:00.000Z',
+	          event: 'response',
+	          reason: 'jsonrpc_error',
+	          method: 'session/prompt',
+	          requestId: '42',
+	          code: -32603,
+	          message: 'Internal error',
+	          detail: 'error.data={"cause":"boom"}',
+	          lifecycleState: 'processing',
+	        },
+	      ],
+	      toolCalls: [{ id: 'tool-1', title: 'Read file', kind: 'read', status: 'in_progress', content: '' }],
       planEntries: [{ content: 'Inspect project', priority: 'high', status: 'pending' }],
       turnSerial: 3,
       pendingPermission: null,
@@ -134,13 +149,20 @@ describe('useAppStore Gemini CLI slice', () => {
       sessionId: 'native-1',
       running: true,
       lifecycleState: 'processing',
-      processing: true,
-      readySinceLastSelect: true,
-      turnSerial: 3,
-    })
-    expect(typeof state.acpBindingBySessionId['chat-1'].processingStartedAtMs).toBe('number')
-    expect(state.acpBindingBySessionId['chat-1'].toolCalls[0]).toMatchObject({ title: 'Read file' })
-  })
+	      processing: true,
+	      readySinceLastSelect: true,
+	      turnSerial: 3,
+	      recentStderr: 'stderr tail',
+	      lastExitCode: 137,
+	    })
+	    expect(typeof state.acpBindingBySessionId['chat-1'].processingStartedAtMs).toBe('number')
+	    expect(state.acpBindingBySessionId['chat-1'].toolCalls[0]).toMatchObject({ title: 'Read file' })
+	    expect(state.acpBindingBySessionId['chat-1'].diagnostics[0]).toMatchObject({
+	      reason: 'jsonrpc_error',
+	      method: 'session/prompt',
+	      code: -32603,
+	    })
+	  })
 
   it('updates ACP bindings when only turn serial changes and keeps the timer stable', () => {
     const firstState = makeCppState(1)

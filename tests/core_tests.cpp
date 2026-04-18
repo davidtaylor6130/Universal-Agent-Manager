@@ -370,6 +370,113 @@ UAM_TEST(AcpPromptCompletionClearsProcessingByMethodAndPromptId)
 	UAM_ASSERT_EQ(raw_session->pending_permission.request_id_json, std::string(""));
 	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("error"));
 	UAM_ASSERT(raw_session->last_error.find("Invalid ACP JSON") != std::string::npos);
+	UAM_ASSERT(!raw_session->diagnostics.empty());
+	UAM_ASSERT_EQ(raw_session->diagnostics.back().reason, std::string("invalid_json"));
+	UAM_ASSERT(raw_session->diagnostics.back().detail.find(R"({"jsonrpc":)") != std::string::npos);
+}
+
+UAM_TEST(AcpJsonRpcErrorsIncludeRequestDiagnostics)
+{
+	TempDir temp("uam-acp-jsonrpc-diagnostics");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "gemini-cli";
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->running = true;
+	session->processing = true;
+	session->session_ready = true;
+	session->prompt_request_id = 42;
+	session->queued_prompt = "hello";
+	session->recent_stderr = "Gemini stderr stack trace";
+	session->pending_request_methods[42] = "session/prompt";
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":42,"error":{"code":-32603,"message":"Internal error","data":{"cause":"boom","trace":"hidden detail"}}})"));
+	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("error"));
+	UAM_ASSERT(!raw_session->processing);
+	UAM_ASSERT(raw_session->last_error.find("Gemini ACP session/prompt failed (id=42, code=-32603): Internal error") != std::string::npos);
+	UAM_ASSERT(raw_session->last_error.find("See diagnostics/stderr details.") != std::string::npos);
+	UAM_ASSERT(!raw_session->diagnostics.empty());
+
+	const uam::AcpDiagnosticEntryState& diagnostic = raw_session->diagnostics.back();
+	UAM_ASSERT_EQ(diagnostic.event, std::string("response"));
+	UAM_ASSERT_EQ(diagnostic.reason, std::string("jsonrpc_error"));
+	UAM_ASSERT_EQ(diagnostic.method, std::string("session/prompt"));
+	UAM_ASSERT_EQ(diagnostic.request_id, std::string("42"));
+	UAM_ASSERT(diagnostic.has_code);
+	UAM_ASSERT_EQ(diagnostic.code, -32603);
+	UAM_ASSERT_EQ(diagnostic.message, std::string("Internal error"));
+	UAM_ASSERT(diagnostic.detail.find("error.data=") != std::string::npos);
+	UAM_ASSERT(diagnostic.detail.find("Gemini stderr stack trace") != std::string::npos);
+
+	raw_session->has_last_exit_code = true;
+	raw_session->last_exit_code = 137;
+	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json acp = serialized["chats"][0]["acpSession"];
+	UAM_ASSERT_EQ(acp.value("lastExitCode", 0), 137);
+	UAM_ASSERT(!acp["diagnostics"].empty());
+	UAM_ASSERT_EQ(acp["diagnostics"].back().value("reason", ""), std::string("jsonrpc_error"));
+	UAM_ASSERT_EQ(acp["diagnostics"].back().value("method", ""), std::string("session/prompt"));
+	UAM_ASSERT_EQ(acp["diagnostics"].back().value("code", 0), -32603);
+}
+
+UAM_TEST(AcpMissingSessionIdRecordsDiagnostics)
+{
+	TempDir temp("uam-acp-missing-session-id");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "gemini-cli";
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->running = true;
+	session->initialized = true;
+	session->session_setup_request_id = 8;
+	session->pending_request_methods[8] = "session/new";
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":8,"result":{}})"));
+	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("error"));
+	UAM_ASSERT(raw_session->last_error.find("Gemini ACP session/new failed (id=8): Gemini ACP did not return a session id.") != std::string::npos);
+	UAM_ASSERT(!raw_session->diagnostics.empty());
+	UAM_ASSERT_EQ(raw_session->diagnostics.back().reason, std::string("missing_session_id"));
+	UAM_ASSERT(raw_session->diagnostics.back().detail.find("result={}") != std::string::npos);
+}
+
+UAM_TEST(AcpDiagnosticRingCapsEntriesAndLongDetails)
+{
+	TempDir temp("uam-acp-diagnostic-ring");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "gemini-cli";
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	const std::string long_invalid_line = std::string("{\"jsonrpc\":") + std::string(10000, 'x');
+	for (int i = 0; i < 90; ++i)
+	{
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), long_invalid_line));
+	}
+
+	UAM_ASSERT_EQ(raw_session->diagnostics.size(), static_cast<std::size_t>(80));
+	UAM_ASSERT(raw_session->diagnostics.back().detail.size() < long_invalid_line.size());
+	UAM_ASSERT(raw_session->diagnostics.back().detail.find("[truncated ") != std::string::npos);
 }
 
 UAM_TEST(AcpAssistantReplayIsStrippedFromNewTurn)
