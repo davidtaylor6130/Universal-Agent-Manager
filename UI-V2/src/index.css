@@ -200,6 +200,17 @@ body {
   margin: 0.5em 0;
   font-size: 0.9em;
 }
+.prose-msg-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 0.5em 0;
+}
+.prose-msg-table-scroll table {
+  width: max-content;
+  min-width: 100%;
+  max-width: none;
+  margin: 0;
+}
 .prose-msg th, .prose-msg td {
   border: 1px solid var(--border-bright);
   padding: 4px 10px;

@@ -6,6 +6,7 @@ import { sendToCEF, isCefContext, createRequestId } from '../ipc/cefBridge'
 import { applyDocumentTheme, writeStoredTheme } from '../utils/themeStorage'
 
 const GEMINI_CLI_PROVIDER_ID = 'gemini-cli'
+const ACP_APPROVAL_MODE_IDS = ['default', 'plan'] as const
 const initialFolders: Folder[] = [
   {
     id: 'default',
@@ -67,15 +68,18 @@ interface CppMessage {
   role: 'user' | 'assistant' | 'system'
   content: string
   thoughts?: string
+  toolCalls?: AcpToolCall[]
   createdAt: string
 }
 
 interface CppChat {
   id: string
   title: string
-  folderId: string
-  providerId: string
-  workspaceDirectory?: string
+	  folderId: string
+	  providerId: string
+	  modelId?: string
+	  approvalMode?: string
+	  workspaceDirectory?: string
   createdAt: string
   updatedAt: string
   messages: CppMessage[]
@@ -106,6 +110,18 @@ export interface AcpPlanEntry {
   content: string
   priority: string
   status: string
+}
+
+export interface AcpMode {
+  id: string
+  name: string
+  description: string
+}
+
+export interface AcpModel {
+  id: string
+  name: string
+  description: string
 }
 
 export type AcpTurnEvent =
@@ -159,9 +175,13 @@ export interface CppAcpSession {
   lastExitCode?: number | null
   diagnostics?: AcpDiagnosticEntry[]
   agentInfo?: Partial<AcpAgentInfo>
-  toolCalls?: AcpToolCall[]
-  planEntries?: AcpPlanEntry[]
-  turnEvents?: AcpTurnEvent[]
+	  toolCalls?: AcpToolCall[]
+	  planEntries?: AcpPlanEntry[]
+	  availableModes?: AcpMode[]
+	  currentModeId?: string
+	  availableModels?: AcpModel[]
+	  currentModelId?: string
+	  turnEvents?: AcpTurnEvent[]
   turnUserMessageIndex?: number
   turnAssistantMessageIndex?: number
   turnSerial?: number
@@ -221,6 +241,7 @@ export interface CppAppState {
   chats: CppChat[]
   cliDebug?: CppCliDebugState
   selectedChatId: string | null
+  selectedChatIndex?: number
   providers: CppProvider[]
   settings: CppSettings
 }
@@ -248,9 +269,13 @@ export interface AcpBinding {
   recentStderr: string
   lastExitCode: number | null
   diagnostics: AcpDiagnosticEntry[]
-  toolCalls: AcpToolCall[]
-  planEntries: AcpPlanEntry[]
-  turnEvents: AcpTurnEvent[]
+	  toolCalls: AcpToolCall[]
+	  planEntries: AcpPlanEntry[]
+	  availableModes: AcpMode[]
+	  currentModeId: string
+	  availableModels: AcpModel[]
+	  currentModelId: string
+	  turnEvents: AcpTurnEvent[]
   turnUserMessageIndex: number
   turnAssistantMessageIndex: number
   turnSerial: number
@@ -287,14 +312,412 @@ function isString(value: unknown): value is string {
   return typeof value === 'string'
 }
 
-function isCppAppState(value: unknown): value is CppAppState {
-  if (!isRecord(value)) return false
-  return (
-    Array.isArray(value.folders) &&
-    Array.isArray(value.chats) &&
-    Array.isArray(value.providers) &&
-    isRecord(value.settings)
-  )
+function stringOr(value: unknown, fallback = ''): string {
+  return isString(value) ? value : fallback
+}
+
+function finiteNumberOr(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+function booleanOr(value: unknown, fallback = false): boolean {
+  return typeof value === 'boolean' ? value : fallback
+}
+
+function normalizeAcpModelId(value: unknown): string {
+  const modelId = stringOr(value).trim()
+  return isAllowedAcpModelId(modelId) ? modelId : ''
+}
+
+function isAllowedAcpModelId(modelId: string): boolean {
+  if (modelId === '') return true
+  if (modelId.length > 160 || modelId.startsWith('-')) return false
+  return /^[A-Za-z0-9._:/-]+$/.test(modelId)
+}
+
+function normalizeAcpApprovalMode(value: unknown): string {
+  const modeId = stringOr(value).trim() || 'default'
+  return (ACP_APPROVAL_MODE_IDS as readonly string[]).includes(modeId) ? modeId : 'default'
+}
+
+function sanitizeCppMessage(value: unknown): CppMessage | null {
+  if (!isRecord(value)) return null
+  const role = value.role
+  if (role !== 'user' && role !== 'assistant' && role !== 'system') return null
+  if (!isString(value.content)) return null
+
+  return {
+    role,
+    content: value.content,
+    thoughts: isString(value.thoughts) ? value.thoughts : undefined,
+    toolCalls: Array.isArray(value.toolCalls)
+      ? value.toolCalls.flatMap((toolCall) => {
+          const sanitized = sanitizeToolCall(toolCall)
+          return sanitized ? [sanitized] : []
+        })
+      : [],
+    createdAt: stringOr(value.createdAt),
+  }
+}
+
+function sanitizeCppCliTerminal(value: unknown): CppChat['cliTerminal'] | undefined {
+  if (!isRecord(value)) return undefined
+
+  return {
+    terminalId: isString(value.terminalId) ? value.terminalId : undefined,
+    frontendChatId: isString(value.frontendChatId) ? value.frontendChatId : undefined,
+    sourceChatId: isString(value.sourceChatId) ? value.sourceChatId : undefined,
+    running: booleanOr(value.running),
+    lifecycleState: isString(value.lifecycleState) ? value.lifecycleState : undefined,
+    turnState: isString(value.turnState) ? value.turnState : undefined,
+    processing: typeof value.processing === 'boolean' ? value.processing : undefined,
+    readySinceLastSelect: typeof value.readySinceLastSelect === 'boolean' ? value.readySinceLastSelect : undefined,
+    active: typeof value.active === 'boolean' ? value.active : undefined,
+    lastError: stringOr(value.lastError),
+  }
+}
+
+function sanitizeDiagnostic(value: unknown): AcpDiagnosticEntry | null {
+  if (!isRecord(value)) return null
+  return {
+    time: stringOr(value.time),
+    event: stringOr(value.event),
+    reason: stringOr(value.reason),
+    method: stringOr(value.method),
+    requestId: stringOr(value.requestId),
+    code: typeof value.code === 'number' && Number.isFinite(value.code) ? value.code : null,
+    message: stringOr(value.message),
+    detail: stringOr(value.detail),
+    lifecycleState: stringOr(value.lifecycleState),
+  }
+}
+
+function sanitizeToolCall(value: unknown): AcpToolCall | null {
+  if (!isRecord(value)) return null
+  const id = stringOr(value.id)
+  if (!id) return null
+  return {
+    id,
+    title: stringOr(value.title),
+    kind: stringOr(value.kind),
+    status: stringOr(value.status),
+    content: stringOr(value.content),
+  }
+}
+
+function sanitizePlanEntry(value: unknown): AcpPlanEntry | null {
+  if (!isRecord(value)) return null
+  return {
+    content: stringOr(value.content),
+    priority: stringOr(value.priority),
+    status: stringOr(value.status),
+  }
+}
+
+function sanitizeAcpMode(value: unknown): AcpMode | null {
+  if (!isRecord(value)) return null
+  const id = stringOr(value.id).trim()
+  if (!id) return null
+  return {
+    id,
+    name: stringOr(value.name, id),
+    description: stringOr(value.description),
+  }
+}
+
+function sanitizeAcpModel(value: unknown): AcpModel | null {
+  if (!isRecord(value)) return null
+  const id = normalizeAcpModelId(value.id)
+  if (!id) return null
+  return {
+    id,
+    name: stringOr(value.name, id),
+    description: stringOr(value.description),
+  }
+}
+
+function sanitizeTurnEvent(value: unknown): AcpTurnEvent | null {
+  if (!isRecord(value)) return null
+  const type = value.type
+  if (type === 'assistant_text' || type === 'thought') {
+    return {
+      type,
+      text: stringOr(value.text),
+      toolCallId: isString(value.toolCallId) ? value.toolCallId : undefined,
+      requestId: isString(value.requestId) ? value.requestId : undefined,
+    }
+  }
+
+  if (type === 'tool_call') {
+    const toolCallId = stringOr(value.toolCallId)
+    if (!toolCallId) return null
+    return {
+      type,
+      toolCallId,
+      text: isString(value.text) ? value.text : undefined,
+      requestId: isString(value.requestId) ? value.requestId : undefined,
+    }
+  }
+
+  if (type === 'permission_request') {
+    const requestId = stringOr(value.requestId)
+    if (!requestId) return null
+    return {
+      type,
+      requestId,
+      toolCallId: isString(value.toolCallId) ? value.toolCallId : undefined,
+      text: isString(value.text) ? value.text : undefined,
+    }
+  }
+
+  return null
+}
+
+function sanitizePermissionOption(value: unknown): AcpPermissionOption | null {
+  if (!isRecord(value)) return null
+  const id = stringOr(value.id)
+  if (!id) return null
+  return {
+    id,
+    name: stringOr(value.name),
+    kind: stringOr(value.kind),
+  }
+}
+
+function sanitizePendingPermission(value: unknown): AcpPendingPermission | null {
+  if (value == null) return null
+  if (!isRecord(value)) return null
+  const requestId = stringOr(value.requestId)
+  if (!requestId) return null
+  return {
+    requestId,
+    toolCallId: stringOr(value.toolCallId),
+    title: stringOr(value.title),
+    kind: stringOr(value.kind),
+    status: stringOr(value.status),
+    content: stringOr(value.content),
+    options: Array.isArray(value.options)
+      ? value.options.flatMap((option) => {
+          const sanitized = sanitizePermissionOption(option)
+          return sanitized ? [sanitized] : []
+        })
+      : [],
+  }
+}
+
+function sanitizeAgentInfo(value: unknown): Partial<AcpAgentInfo> | undefined {
+  if (!isRecord(value)) return undefined
+  return {
+    name: stringOr(value.name),
+    title: stringOr(value.title),
+    version: stringOr(value.version),
+  }
+}
+
+function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined {
+  if (!isRecord(value)) return undefined
+
+  return {
+    sessionId: isString(value.sessionId) ? value.sessionId : undefined,
+    running: typeof value.running === 'boolean' ? value.running : undefined,
+    processing: typeof value.processing === 'boolean' ? value.processing : undefined,
+    readySinceLastSelect: typeof value.readySinceLastSelect === 'boolean' ? value.readySinceLastSelect : undefined,
+    lifecycleState: isString(value.lifecycleState) ? value.lifecycleState : undefined,
+    lastError: isString(value.lastError) ? value.lastError : undefined,
+    recentStderr: isString(value.recentStderr) ? value.recentStderr : undefined,
+    lastExitCode: typeof value.lastExitCode === 'number' && Number.isFinite(value.lastExitCode) ? value.lastExitCode : null,
+    diagnostics: Array.isArray(value.diagnostics)
+      ? value.diagnostics.flatMap((entry) => {
+          const sanitized = sanitizeDiagnostic(entry)
+          return sanitized ? [sanitized] : []
+        })
+      : [],
+    agentInfo: sanitizeAgentInfo(value.agentInfo),
+    toolCalls: Array.isArray(value.toolCalls)
+      ? value.toolCalls.flatMap((toolCall) => {
+          const sanitized = sanitizeToolCall(toolCall)
+          return sanitized ? [sanitized] : []
+        })
+      : [],
+	    planEntries: Array.isArray(value.planEntries)
+	      ? value.planEntries.flatMap((entry) => {
+	          const sanitized = sanitizePlanEntry(entry)
+	          return sanitized ? [sanitized] : []
+	        })
+	      : [],
+	    availableModes: Array.isArray(value.availableModes)
+	      ? value.availableModes.flatMap((mode) => {
+	          const sanitized = sanitizeAcpMode(mode)
+	          return sanitized ? [sanitized] : []
+	        })
+	      : [],
+	    currentModeId: normalizeAcpApprovalMode(value.currentModeId),
+	    availableModels: Array.isArray(value.availableModels)
+	      ? value.availableModels.flatMap((model) => {
+	          const sanitized = sanitizeAcpModel(model)
+	          return sanitized ? [sanitized] : []
+	        })
+	      : [],
+	    currentModelId: normalizeAcpModelId(value.currentModelId),
+	    turnEvents: Array.isArray(value.turnEvents)
+	      ? value.turnEvents.flatMap((event) => {
+	          const sanitized = sanitizeTurnEvent(event)
+          return sanitized ? [sanitized] : []
+        })
+      : [],
+    turnUserMessageIndex: finiteNumberOr(value.turnUserMessageIndex, -1),
+    turnAssistantMessageIndex: finiteNumberOr(value.turnAssistantMessageIndex, -1),
+    turnSerial: finiteNumberOr(value.turnSerial, 0),
+    pendingPermission: sanitizePendingPermission(value.pendingPermission),
+  }
+}
+
+function sanitizeCppFolder(value: unknown): CppFolder | null {
+  if (!isRecord(value)) return null
+  const id = stringOr(value.id).trim()
+  if (!id) return null
+  return {
+    id,
+    title: stringOr(value.title, 'Untitled'),
+    directory: stringOr(value.directory),
+    collapsed: booleanOr(value.collapsed),
+  }
+}
+
+function sanitizeCppChat(value: unknown): CppChat | null {
+  if (!isRecord(value)) return null
+  const id = stringOr(value.id).trim()
+  if (!id) return null
+  return {
+    id,
+	    title: stringOr(value.title, 'Untitled'),
+	    folderId: stringOr(value.folderId),
+	    providerId: stringOr(value.providerId, GEMINI_CLI_PROVIDER_ID),
+	    modelId: normalizeAcpModelId(value.modelId),
+	    approvalMode: normalizeAcpApprovalMode(value.approvalMode),
+	    workspaceDirectory: isString(value.workspaceDirectory) ? value.workspaceDirectory : undefined,
+    createdAt: stringOr(value.createdAt),
+    updatedAt: stringOr(value.updatedAt),
+    messages: Array.isArray(value.messages)
+      ? value.messages.flatMap((message) => {
+          const sanitized = sanitizeCppMessage(message)
+          return sanitized ? [sanitized] : []
+        })
+      : [],
+    cliTerminal: sanitizeCppCliTerminal(value.cliTerminal),
+    acpSession: sanitizeCppAcpSession(value.acpSession),
+  }
+}
+
+function sanitizeCppProvider(value: unknown): CppProvider | null {
+  if (!isRecord(value)) return null
+  const id = stringOr(value.id).trim()
+  if (!id) return null
+  return {
+    id,
+    name: stringOr(value.name, id),
+    shortName: stringOr(value.shortName, stringOr(value.name, id)),
+    outputMode: isString(value.outputMode) ? value.outputMode : undefined,
+  }
+}
+
+function sanitizeCliDebugTerminal(value: unknown): CppCliDebugTerminal | null {
+  if (!isRecord(value)) return null
+  const terminalId = stringOr(value.terminalId)
+  if (!terminalId) return null
+  return {
+    terminalId,
+    frontendChatId: stringOr(value.frontendChatId),
+    sourceChatId: stringOr(value.sourceChatId),
+    attachedSessionId: stringOr(value.attachedSessionId),
+    providerId: stringOr(value.providerId),
+    nativeSessionId: stringOr(value.nativeSessionId),
+    processId: stringOr(value.processId),
+    running: booleanOr(value.running),
+    uiAttached: booleanOr(value.uiAttached),
+    lifecycleState: isString(value.lifecycleState) ? value.lifecycleState : undefined,
+    turnState: isString(value.turnState) ? value.turnState : 'idle',
+    inputReady: booleanOr(value.inputReady),
+    generationInProgress: booleanOr(value.generationInProgress),
+    lastUserInputAt: finiteNumberOr(value.lastUserInputAt, 0),
+    lastAiOutputAt: finiteNumberOr(value.lastAiOutputAt, 0),
+    lastPolledAt: finiteNumberOr(value.lastPolledAt, 0),
+    lastError: stringOr(value.lastError),
+  }
+}
+
+function sanitizeCliDebugState(value: unknown): CppCliDebugState | undefined {
+  if (!isRecord(value)) return undefined
+  const terminals = Array.isArray(value.terminals)
+    ? value.terminals.flatMap((terminal) => {
+        const sanitized = sanitizeCliDebugTerminal(terminal)
+        return sanitized ? [sanitized] : []
+      })
+    : []
+
+  return {
+    selectedChatId: isString(value.selectedChatId) ? value.selectedChatId : null,
+    terminalCount: finiteNumberOr(value.terminalCount, terminals.length),
+    runningTerminalCount: finiteNumberOr(value.runningTerminalCount, terminals.filter((terminal) => terminal.running).length),
+    busyTerminalCount: finiteNumberOr(value.busyTerminalCount, terminals.filter((terminal) => terminal.turnState === 'busy').length),
+    terminals,
+  }
+}
+
+function sanitizeCppSettings(value: unknown): CppSettings {
+  if (!isRecord(value)) {
+    return { activeProviderId: GEMINI_CLI_PROVIDER_ID, theme: 'dark' }
+  }
+
+  const theme = value.theme === 'light' || value.theme === 'dark' ? value.theme : 'dark'
+  return {
+    activeProviderId: stringOr(value.activeProviderId, GEMINI_CLI_PROVIDER_ID),
+    theme,
+  }
+}
+
+function sanitizeCppAppState(value: unknown): CppAppState | null {
+  if (!isRecord(value)) return null
+
+  const folders = Array.isArray(value.folders)
+    ? value.folders.flatMap((folder) => {
+        const sanitized = sanitizeCppFolder(folder)
+        return sanitized ? [sanitized] : []
+      })
+    : []
+  const chats = Array.isArray(value.chats)
+    ? value.chats.flatMap((chat) => {
+        const sanitized = sanitizeCppChat(chat)
+        return sanitized ? [sanitized] : []
+      })
+    : []
+  const providers = Array.isArray(value.providers)
+    ? value.providers.flatMap((provider) => {
+        const sanitized = sanitizeCppProvider(provider)
+        return sanitized ? [sanitized] : []
+      })
+    : []
+
+  const selectedChatId =
+    isString(value.selectedChatId)
+      ? value.selectedChatId
+      : typeof value.selectedChatIndex === 'number' &&
+          Number.isInteger(value.selectedChatIndex) &&
+          value.selectedChatIndex >= 0 &&
+          value.selectedChatIndex < chats.length
+        ? chats[value.selectedChatIndex].id
+        : null
+
+  return {
+    stateRevision: finiteNumberOr(value.stateRevision, 0),
+    folders,
+    chats,
+    cliDebug: sanitizeCliDebugState(value.cliDebug),
+    selectedChatId,
+    selectedChatIndex: finiteNumberOr(value.selectedChatIndex, -1),
+    providers,
+    settings: sanitizeCppSettings(value.settings),
+  }
 }
 
 function cppStateRevision(state: CppAppState): number {
@@ -395,10 +818,14 @@ function acpBindingSignature(binding: AcpBinding | undefined) {
     lastError: binding.lastError,
     recentStderr: binding.recentStderr,
     lastExitCode: binding.lastExitCode,
-    diagnostics: binding.diagnostics,
-    toolCalls: binding.toolCalls,
-    planEntries: binding.planEntries,
-    turnEvents: binding.turnEvents,
+	    diagnostics: binding.diagnostics,
+	    toolCalls: binding.toolCalls,
+	    planEntries: binding.planEntries,
+	    availableModes: binding.availableModes,
+	    currentModeId: binding.currentModeId,
+	    availableModels: binding.availableModels,
+	    currentModelId: binding.currentModelId,
+	    turnEvents: binding.turnEvents,
     turnUserMessageIndex: binding.turnUserMessageIndex,
     turnAssistantMessageIndex: binding.turnAssistantMessageIndex,
     turnSerial: binding.turnSerial,
@@ -493,8 +920,23 @@ function cppMessagesEquivalent(existing: Message, next: CppMessage) {
     existing.role === next.role &&
     existing.content === next.content &&
     (existing.thoughts ?? '') === (next.thoughts ?? '') &&
+    toolCallsEquivalent(existing.toolCalls ?? [], next.toolCalls ?? []) &&
     existing.createdAt.getTime() === cppMessageCreatedAtMillis(next)
   )
+}
+
+function toolCallsEquivalent(existing: AcpToolCall[], next: AcpToolCall[]) {
+  if (existing.length !== next.length) return false
+  return existing.every((tool, index) => {
+    const other = next[index]
+    return (
+      tool.id === other.id &&
+      tool.title === other.title &&
+      tool.kind === other.kind &&
+      tool.status === other.status &&
+      tool.content === other.content
+    )
+  })
 }
 
 function clearPendingRequest(key: string, requestId?: string) {
@@ -525,10 +967,11 @@ function parseUamPushPayload(payload: unknown): ParsedPushResult {
   }
 
   if (type === 'stateUpdate') {
-    if (!isCppAppState(raw.data)) {
+    const sanitized = sanitizeCppAppState(raw.data)
+    if (!sanitized) {
       return { ok: false, status: 'invalid-message', error: 'stateUpdate.data does not match CppAppState shape.' }
     }
-    return { ok: true, message: { type, data: raw.data } }
+    return { ok: true, message: { type, data: sanitized } }
   }
 
   if (type === 'cliOutput') {
@@ -576,6 +1019,7 @@ function deserializeState(
       role: message.role,
       content: message.content,
       thoughts: message.thoughts ?? '',
+      toolCalls: message.toolCalls ?? [],
       createdAt: new Date(createdAtMillis),
     } satisfies Message
   }
@@ -615,23 +1059,29 @@ function deserializeState(
     const prev = existingSessionsById[c.id]
     const name = c.title || 'Untitled'
     const folderId = c.folderId || null
-    const workspaceDirectory = c.workspaceDirectory ?? ''
-    // Reuse reference if nothing changed — keeps memoized children stable
-    if (
-      prev &&
-      prev.name === name &&
-      prev.folderId === folderId &&
-      prev.workspaceDirectory === workspaceDirectory &&
-      prev.viewMode === 'chat'
-    ) {
+	    const workspaceDirectory = c.workspaceDirectory ?? ''
+	    const modelId = c.modelId ?? ''
+	    const approvalMode = normalizeAcpApprovalMode(c.approvalMode)
+	    // Reuse reference if nothing changed — keeps memoized children stable
+	    if (
+	      prev &&
+	      prev.name === name &&
+	      prev.folderId === folderId &&
+	      (prev.modelId ?? '') === modelId &&
+	      (prev.approvalMode ?? 'default') === approvalMode &&
+	      prev.workspaceDirectory === workspaceDirectory &&
+	      prev.viewMode === 'chat'
+	    ) {
       return prev
     }
     return {
       id: c.id,
       name,
       viewMode: 'chat',
-      folderId,
-      workspaceDirectory,
+	      folderId,
+	      modelId,
+	      approvalMode,
+	      workspaceDirectory,
       createdAt: new Date(c.createdAt || Date.now()),
       updatedAt: new Date(c.updatedAt || Date.now()),
     }
@@ -783,10 +1233,14 @@ function deserializeState(
         lastError: acp?.lastError ?? '',
         recentStderr: acp?.recentStderr ?? '',
         lastExitCode: typeof acp?.lastExitCode === 'number' ? acp.lastExitCode : null,
-        diagnostics: Array.isArray(acp?.diagnostics) ? acp!.diagnostics : [],
-        toolCalls: Array.isArray(acp?.toolCalls) ? acp!.toolCalls : [],
-        planEntries: Array.isArray(acp?.planEntries) ? acp!.planEntries : [],
-        turnEvents: Array.isArray(acp?.turnEvents) ? acp!.turnEvents : [],
+	        diagnostics: Array.isArray(acp?.diagnostics) ? acp!.diagnostics : [],
+	        toolCalls: Array.isArray(acp?.toolCalls) ? acp!.toolCalls : [],
+	        planEntries: Array.isArray(acp?.planEntries) ? acp!.planEntries : [],
+	        availableModes: Array.isArray(acp?.availableModes) ? acp!.availableModes : [],
+	        currentModeId: normalizeAcpApprovalMode(acp?.currentModeId ?? c.approvalMode),
+	        availableModels: Array.isArray(acp?.availableModels) ? acp!.availableModels : [],
+	        currentModelId: normalizeAcpModelId(acp?.currentModelId ?? c.modelId),
+	        turnEvents: Array.isArray(acp?.turnEvents) ? acp!.turnEvents : [],
         turnUserMessageIndex: typeof acp?.turnUserMessageIndex === 'number' ? acp.turnUserMessageIndex : -1,
         turnAssistantMessageIndex: typeof acp?.turnAssistantMessageIndex === 'number' ? acp.turnAssistantMessageIndex : -1,
         turnSerial: typeof acp?.turnSerial === 'number' ? acp.turnSerial : 0,
@@ -915,10 +1369,12 @@ interface AppState {
   uiBuildId: string
 
   // Session actions
-  setActiveSession: (id: string) => void
-  addSession: (name: string, folderId: string | null) => void
-  renameSession: (id: string, name: string) => void
-  deleteSession: (id: string) => void
+	  setActiveSession: (id: string) => void
+	  addSession: (name: string, folderId: string | null) => void
+	  renameSession: (id: string, name: string) => void
+	  setSessionModel: (id: string, modelId: string) => Promise<boolean>
+	  setSessionApprovalMode: (id: string, modeId: string) => Promise<boolean>
+	  deleteSession: (id: string) => void
 
   // Folder actions
   addFolder: (name: string, parentId: string | null, directory: string) => Promise<boolean>
@@ -962,15 +1418,16 @@ function persistTheme(theme: 'dark' | 'light'): void {
 
 export const useAppStore = create<AppState>((set, get) => {
   // Bootstrap from CEF if available (non-blocking — state arrives via uamPush later too)
-  if (isCefContext()) {
-    sendToCEF<CppAppState>({ action: 'getInitialState' }).then((resp) => {
-      // resp.data is the raw CppAppState object. Validate shape before deserializing.
-      if (resp.ok && isCppAppState(resp.data)) {
-        const current = get()
-        const nextRevision = cppStateRevision(resp.data)
-        if (isNewerStateRevision(nextRevision, current.lastAppliedStateRevision)) {
-          const deserialized = deserializeState(resp.data, {
-            sessions: current.sessions,
+	  if (isCefContext()) {
+	    sendToCEF<CppAppState>({ action: 'getInitialState' }).then((resp) => {
+	      // resp.data is the raw CppAppState object. Sanitize before deserializing.
+	      const sanitized = resp.ok ? sanitizeCppAppState(resp.data) : null
+	      if (sanitized) {
+	        const current = get()
+	        const nextRevision = cppStateRevision(sanitized)
+	        if (isNewerStateRevision(nextRevision, current.lastAppliedStateRevision)) {
+	          const deserialized = deserializeState(sanitized, {
+	            sessions: current.sessions,
             folders: current.folders,
             messages: current.messages,
             providers: current.providers,
@@ -1099,13 +1556,14 @@ export const useAppStore = create<AppState>((set, get) => {
 
     // ---- CEF bootstrap ----
 
-    loadFromCef: (cppState) => {
-      if (!cppState || !Array.isArray(cppState.chats)) return
-      const current = get()
-      const nextRevision = cppStateRevision(cppState)
-      if (!isNewerStateRevision(nextRevision, current.lastAppliedStateRevision)) return
-      const deserialized = deserializeState(cppState, {
-        sessions: current.sessions,
+	    loadFromCef: (cppState) => {
+	      const sanitized = sanitizeCppAppState(cppState)
+	      if (!sanitized) return
+	      const current = get()
+	      const nextRevision = cppStateRevision(sanitized)
+	      if (!isNewerStateRevision(nextRevision, current.lastAppliedStateRevision)) return
+	      const deserialized = deserializeState(sanitized, {
+	        sessions: current.sessions,
         folders: current.folders,
         messages: current.messages,
         providers: current.providers,
@@ -1220,7 +1678,113 @@ export const useAppStore = create<AppState>((set, get) => {
       }))
     },
 
-    deleteSession: (id) => {
+	    setSessionModel: async (id, modelId) => {
+	      const requestedModelId = modelId.trim()
+	      if (!isAllowedAcpModelId(requestedModelId)) {
+	        return false
+	      }
+
+      const previousSession = get().sessions.find((s) => s.id === id)
+      if (!previousSession) {
+        return false
+      }
+
+      if ((previousSession.modelId ?? '') === requestedModelId) {
+        return true
+      }
+
+      const applyModel = () => {
+        set((state) => ({
+          sessions: state.sessions.map((s) =>
+            s.id === id ? { ...s, modelId: requestedModelId, updatedAt: new Date() } : s
+          ),
+        }))
+      }
+
+      if (isCefContext()) {
+        const requestKey = `setSessionModel:${id}`
+        const requestId = createRequestId('setSessionModel')
+        rememberPendingRequest(requestKey, requestId)
+        applyModel()
+        const response = await sendToCEF({
+          action: 'setChatModel',
+          payload: { chatId: id, modelId: requestedModelId },
+          requestId,
+        })
+
+        if (response.ok) {
+          clearPendingRequest(requestKey, response.requestId)
+          return true
+        }
+
+        if (isLatestPendingRequest(requestKey, response.requestId)) {
+          set((state) => ({
+            sessions: state.sessions.map((s) => (s.id === id ? previousSession : s)),
+          }))
+          pendingRequestIdsByKey.delete(requestKey)
+        }
+
+        return false
+      }
+
+	      applyModel()
+	      return true
+	    },
+
+	    setSessionApprovalMode: async (id, modeId) => {
+	      const requestedModeId = modeId.trim() || 'default'
+	      if (!(ACP_APPROVAL_MODE_IDS as readonly string[]).includes(requestedModeId)) {
+	        return false
+	      }
+
+	      const previousSession = get().sessions.find((s) => s.id === id)
+	      if (!previousSession) {
+	        return false
+	      }
+
+	      if ((previousSession.approvalMode ?? 'default') === requestedModeId) {
+	        return true
+	      }
+
+	      const applyMode = () => {
+	        set((state) => ({
+	          sessions: state.sessions.map((s) =>
+	            s.id === id ? { ...s, approvalMode: requestedModeId, updatedAt: new Date() } : s
+	          ),
+	        }))
+	      }
+
+	      if (isCefContext()) {
+	        const requestKey = `setSessionApprovalMode:${id}`
+	        const requestId = createRequestId('setSessionApprovalMode')
+	        rememberPendingRequest(requestKey, requestId)
+	        applyMode()
+	        const response = await sendToCEF({
+	          action: 'setChatApprovalMode',
+	          payload: { chatId: id, modeId: requestedModeId },
+	          requestId,
+	        })
+
+	        if (response.ok) {
+	          clearPendingRequest(requestKey, response.requestId)
+	          return true
+	        }
+
+	        if (isLatestPendingRequest(requestKey, response.requestId)) {
+	          set((state) => ({
+	            sessions: state.sessions.map((s) => (s.id === id ? previousSession : s)),
+	          }))
+	          pendingRequestIdsByKey.delete(requestKey)
+	        }
+
+	        return false
+	      }
+
+	      applyMode()
+	      return true
+	    },
+
+	    deleteSession: (id) => {
       if (isCefContext()) {
         const current = get()
         const deletedSession = current.sessions.find((s) => s.id === id)
@@ -1587,6 +2151,10 @@ export const useAppStore = create<AppState>((set, get) => {
 	                  diagnostics: [],
 	                  toolCalls: [],
                   planEntries: [],
+                  availableModes: [],
+                  currentModeId: 'default',
+                  availableModels: [],
+                  currentModelId: '',
                   turnEvents: [],
                   turnUserMessageIndex: -1,
                   turnAssistantMessageIndex: -1,
@@ -1643,6 +2211,10 @@ export const useAppStore = create<AppState>((set, get) => {
 	            diagnostics: [],
 	            toolCalls: [],
             planEntries: [],
+            availableModes: [],
+            currentModeId: state.sessions.find((session) => session.id === sessionId)?.approvalMode ?? 'default',
+            availableModels: [],
+            currentModelId: state.sessions.find((session) => session.id === sessionId)?.modelId ?? '',
             turnEvents: [],
             turnUserMessageIndex: -1,
             turnAssistantMessageIndex: -1,
@@ -1681,6 +2253,10 @@ export const useAppStore = create<AppState>((set, get) => {
 	              diagnostics: [],
 	              toolCalls: [],
               planEntries: [],
+              availableModes: [],
+              currentModeId: state.sessions.find((session) => session.id === sessionId)?.approvalMode ?? 'default',
+              availableModels: [],
+              currentModelId: state.sessions.find((session) => session.id === sessionId)?.modelId ?? '',
               turnEvents: [],
               turnUserMessageIndex: -1,
               turnAssistantMessageIndex: -1,
@@ -1729,6 +2305,10 @@ export const useAppStore = create<AppState>((set, get) => {
 	              diagnostics: [],
 	              toolCalls: [],
               planEntries: [],
+              availableModes: [],
+              currentModeId: state.sessions.find((session) => session.id === sessionId)?.approvalMode ?? 'default',
+              availableModels: [],
+              currentModelId: state.sessions.find((session) => session.id === sessionId)?.modelId ?? '',
               turnEvents: [],
               turnUserMessageIndex: -1,
               turnAssistantMessageIndex: -1,
@@ -1770,6 +2350,10 @@ export const useAppStore = create<AppState>((set, get) => {
 	              diagnostics: [],
 	              toolCalls: [],
               planEntries: [],
+              availableModes: [],
+              currentModeId: state.sessions.find((session) => session.id === sessionId)?.approvalMode ?? 'default',
+              availableModels: [],
+              currentModelId: state.sessions.find((session) => session.id === sessionId)?.modelId ?? '',
               turnEvents: [],
               turnUserMessageIndex: -1,
               turnAssistantMessageIndex: -1,

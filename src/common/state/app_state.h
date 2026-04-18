@@ -95,12 +95,26 @@ namespace uam
 		std::string content;
 	};
 
-	struct AcpPlanEntryState
-	{
-		std::string content;
-		std::string priority;
-		std::string status;
-	};
+		struct AcpPlanEntryState
+		{
+			std::string content;
+			std::string priority;
+			std::string status;
+		};
+
+		struct AcpModeState
+		{
+			std::string id;
+			std::string name;
+			std::string description;
+		};
+
+		struct AcpModelState
+		{
+			std::string id;
+			std::string name;
+			std::string description;
+		};
 
 	struct AcpTurnEventState
 	{
@@ -186,12 +200,16 @@ namespace uam
 			std::string agent_name;
 			std::string agent_title;
 		std::string agent_version;
-		std::unordered_map<int, std::string> pending_request_methods;
-		std::vector<AcpToolCallState> tool_calls;
-		std::vector<AcpPlanEntryState> plan_entries;
-		std::vector<AcpTurnEventState> turn_events;
-		AcpPendingPermissionState pending_permission;
-	};
+			std::unordered_map<int, std::string> pending_request_methods;
+			std::vector<AcpToolCallState> tool_calls;
+			std::vector<AcpPlanEntryState> plan_entries;
+			std::vector<AcpModeState> available_modes;
+			std::string current_mode_id;
+			std::vector<AcpModelState> available_models;
+			std::string current_model_id;
+			std::vector<AcpTurnEventState> turn_events;
+			AcpPendingPermissionState pending_permission;
+		};
 
 	/// <summary>
 	/// Background command execution container for Gemini compatibility checks.

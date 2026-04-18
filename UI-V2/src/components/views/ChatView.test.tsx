@@ -73,6 +73,16 @@ describe('ChatView', () => {
             },
           ],
           planEntries: [],
+          availableModes: [
+            { id: 'default', name: 'Default', description: 'Run normally' },
+            { id: 'plan', name: 'Plan', description: 'Plan before editing' },
+          ],
+          currentModeId: 'default',
+          availableModels: [
+            { id: 'auto-gemini-3', name: 'Auto 3', description: 'Gemini 3 routing' },
+            { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash', description: 'Preview model' },
+          ],
+          currentModelId: 'auto-gemini-3',
           turnEvents: [
             { type: 'assistant_text', text: 'Before **tool**.\n\n```ts\nconst ok = true\n```' },
             { type: 'thought', text: 'Need to inspect the workspace first.' },
@@ -131,10 +141,13 @@ describe('ChatView', () => {
     expect(streamText.indexOf('Thinking')).toBeLessThan(streamText.indexOf('Tool call:'))
     expect(streamText.indexOf('Tool call:')).toBeLessThan(streamText.indexOf('Read file'))
     expect(streamText.indexOf('Read file')).toBeLessThan(streamText.indexOf('After tool.'))
-    const thinkingBlock = host.querySelector('details')
-    expect(host.querySelectorAll('details')).toHaveLength(1)
+    const thinkingBlock = host.querySelector('[data-testid="thinking-block"]') as HTMLDetailsElement | null
+    expect(host.querySelectorAll('[data-testid="thinking-block"]')).toHaveLength(1)
+    expect(thinkingBlock?.tagName).toBe('DETAILS')
     expect(thinkingBlock?.textContent).toContain('Thinking')
-    expect(thinkingBlock?.hasAttribute('open')).toBe(false)
+    expect(thinkingBlock?.textContent).toContain('Need to inspect the workspace first.')
+    expect(thinkingBlock?.hasAttribute('open')).toBe(true)
+    expect(host.querySelectorAll('details')).toHaveLength(1)
 
     const providerButton = host.querySelector('button[title="Select provider"]')
     expect(providerButton).toBeTruthy()
@@ -203,6 +216,205 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('renders dynamic ACP model options and applies the selected model id', () => {
+    const setSessionModel = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1' ? { ...session, modelId: 'auto-gemini-3' } : session
+      ),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+          processingStartedAtMs: null,
+          pendingPermission: null,
+          currentModelId: 'auto-gemini-3',
+          availableModels: [
+            { id: 'auto-gemini-3', name: 'Auto 3', description: 'Gemini 3 routing' },
+            { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash', description: 'Preview model' },
+          ],
+        },
+      },
+      setSessionModel,
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const modelButton = host.querySelector('button[title="Select model"]')
+    expect(modelButton).toBeTruthy()
+    expect(modelButton?.textContent).toContain('Model')
+    expect(modelButton?.textContent).toContain('Auto 3')
+
+    act(() => {
+      modelButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(host.textContent).toContain('Auto 3')
+    expect(host.textContent).toContain('Gemini 3 Flash')
+
+    const flashButton = Array.from(host.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Gemini 3 Flash')
+    )
+    expect(flashButton).toBeTruthy()
+    act(() => {
+      flashButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(setSessionModel).toHaveBeenCalledWith('chat-1', 'gemini-3-flash-preview')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('disables the model chip while ACP is processing', () => {
+    const setSessionModel = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState({ setSessionModel })
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const modelButton = host.querySelector('button[title="Select model"]') as HTMLButtonElement | null
+    expect(modelButton).toBeTruthy()
+    expect(modelButton?.disabled).toBe(true)
+    expect((host.querySelector('button[title="Toggle planning mode"]') as HTMLButtonElement | null)?.disabled).toBe(true)
+
+    act(() => {
+      modelButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(host.textContent).not.toContain('Gemini 3 Flash')
+    expect(setSessionModel).not.toHaveBeenCalled()
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('toggles the planning chip and reflects runtime plan state', () => {
+    const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1' ? { ...session, approvalMode: 'default' } : session
+      ),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+          processingStartedAtMs: null,
+          currentModeId: 'default',
+          pendingPermission: null,
+        },
+      },
+      setSessionApprovalMode,
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const planButton = host.querySelector('button[title="Toggle planning mode"]') as HTMLButtonElement | null
+    expect(planButton).toBeTruthy()
+    expect(planButton?.disabled).toBe(false)
+    expect(planButton?.getAttribute('aria-pressed')).toBe('false')
+
+    act(() => {
+      planButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'plan')
+
+    act(() => {
+      useAppStore.setState((state) => ({
+        sessions: state.sessions.map((session) =>
+          session.id === 'chat-1' ? { ...session, approvalMode: 'plan' } : session
+        ),
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          'chat-1': {
+            ...state.acpBindingBySessionId['chat-1'],
+            currentModeId: 'plan',
+          },
+        },
+      }))
+    })
+
+    expect(planButton?.getAttribute('aria-pressed')).toBe('true')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('renders pipe tables and leaves malformed table text alone', () => {
+    useAppStore.setState((state) => ({
+      messages: {
+        ...state.messages,
+        'chat-1': [
+          {
+            id: 'table-message',
+            sessionId: 'chat-1',
+            role: 'assistant',
+            content: '| Tool | Status |\n| --- | :---: |\n| `rg` | **ok** |\n\n| Bad | Row |\n| nope |',
+            createdAt: new Date('2026-01-01T00:00:02.000Z'),
+          },
+        ],
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+          processingStartedAtMs: null,
+          turnEvents: [],
+          pendingPermission: null,
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    expect(host.querySelectorAll('table')).toHaveLength(1)
+    expect(host.querySelector('th')?.textContent).toBe('Tool')
+    expect(host.querySelector('td code')?.textContent).toBe('rg')
+    expect(host.querySelector('td strong')?.textContent).toBe('ok')
+    expect(host.textContent).toContain('| Bad | Row |')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
   it('renders persisted assistant thoughts when no active ACP timeline is available', () => {
     useAppStore.setState((state) => {
       const currentMessages = state.messages['chat-1'] ?? []
@@ -241,9 +453,82 @@ describe('ChatView', () => {
     expect(host.textContent).toContain('Persisted reasoning')
     expect(host.textContent).toContain('with detail.')
     expect(host.textContent).toContain('Before tool. After tool.')
-    const thinkingBlock = host.querySelector('details')
+    const thinkingBlock = host.querySelector('[data-testid="thinking-block"]') as HTMLDetailsElement | null
+    expect(host.querySelectorAll('[data-testid="thinking-block"]')).toHaveLength(1)
+    expect(thinkingBlock?.tagName).toBe('DETAILS')
+    expect(thinkingBlock?.textContent).toContain('Persisted reasoning')
+    expect(thinkingBlock?.textContent).toContain('with detail.')
     expect(thinkingBlock?.hasAttribute('open')).toBe(false)
     expect(host.querySelectorAll('details')).toHaveLength(1)
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('renders persisted assistant tool calls after ACP turn state is gone', () => {
+    useAppStore.setState((state) => {
+      const currentMessages = state.messages['chat-1'] ?? []
+      return {
+        messages: {
+          ...state.messages,
+          'chat-1': currentMessages.map((message) =>
+            message.id === 'm-2'
+              ? {
+                  ...message,
+                  thoughts: '',
+                  toolCalls: [
+                    {
+                      id: 'persisted-tool-1',
+                      title: 'Read saved file',
+                      kind: 'read',
+                      status: 'completed',
+                      content: 'Saved tool output',
+                    },
+                  ],
+                }
+              : message
+          ),
+        },
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          'chat-1': {
+            ...state.acpBindingBySessionId['chat-1'],
+            lifecycleState: 'ready',
+            processing: false,
+            processingStartedAtMs: null,
+            toolCalls: [],
+            turnEvents: [],
+            turnUserMessageIndex: -1,
+            turnAssistantMessageIndex: -1,
+            pendingPermission: null,
+          },
+        },
+      }
+    })
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    expect(host.textContent).toContain('Tool call:')
+    expect(host.textContent).toContain('Read saved file')
+    expect(host.textContent).toContain('completed')
+
+    const toolButton = Array.from(host.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Read saved file')
+    )
+    expect(toolButton).toBeTruthy()
+    act(() => {
+      toolButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(host.textContent).toContain('Saved tool output')
+    expect(host.querySelector('[role="dialog"]')).toBeTruthy()
 
     act(() => {
       root.unmount()

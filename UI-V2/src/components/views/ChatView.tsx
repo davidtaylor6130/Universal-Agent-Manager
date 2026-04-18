@@ -4,6 +4,7 @@ import { Session } from '../../types/session'
 import {
   useAppStore,
   type AcpBinding,
+  type AcpModel,
   type AcpPendingPermission,
   type AcpToolCall,
   type AcpTurnEvent,
@@ -12,6 +13,99 @@ import type { Message } from '../../types/message'
 
 interface ChatViewProps {
   session: Session
+}
+
+interface SelectedToolCallRef {
+  id: string
+  messageId?: string
+}
+
+interface ModelOption {
+  id: string
+  label: string
+  shortLabel: string
+  detail: string
+}
+
+const FALLBACK_ACP_MODEL_OPTIONS: ModelOption[] = [
+  { id: '', label: 'CLI default', shortLabel: 'CLI default', detail: 'Use Gemini CLI settings' },
+  { id: 'auto-gemini-3', label: 'Auto 3', shortLabel: 'Auto 3', detail: 'Gemini 3 routing' },
+  { id: 'auto-gemini-2.5', label: 'Auto 2.5', shortLabel: 'Auto 2.5', detail: 'Gemini 2.5 routing' },
+  { id: 'pro', label: 'Pro', shortLabel: 'Pro', detail: 'Prioritize capability' },
+  { id: 'flash', label: 'Flash', shortLabel: 'Flash', detail: 'Prioritize speed' },
+  { id: 'flash-lite', label: 'Flash Lite', shortLabel: 'Flash Lite', detail: 'Fastest option' },
+]
+
+const FRIENDLY_MODEL_LABELS: Record<string, Pick<ModelOption, 'label' | 'shortLabel' | 'detail'>> = {
+  '': { label: 'CLI default', shortLabel: 'CLI default', detail: 'Use Gemini CLI settings' },
+  'auto-gemini-3': { label: 'Auto 3', shortLabel: 'Auto 3', detail: 'Gemini 3 routing' },
+  'auto-gemini-2.5': { label: 'Auto 2.5', shortLabel: 'Auto 2.5', detail: 'Gemini 2.5 routing' },
+  pro: { label: 'Pro', shortLabel: 'Pro', detail: 'Prioritize capability' },
+  flash: { label: 'Flash', shortLabel: 'Flash', detail: 'Prioritize speed' },
+  'flash-lite': { label: 'Flash Lite', shortLabel: 'Flash Lite', detail: 'Fastest option' },
+}
+
+function titleFromModelId(modelId: string) {
+  const source = modelId.split('/').pop() ?? modelId
+  return source
+    .split(/[-_.]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ') || modelId
+}
+
+function modelOptionFromRuntime(model: AcpModel): ModelOption | null {
+  const id = model.id.trim()
+  if (!id) return null
+  const friendly = FRIENDLY_MODEL_LABELS[id]
+  if (friendly) {
+    return { id, ...friendly, detail: model.description || friendly.detail }
+  }
+  const label = model.name.trim() || titleFromModelId(id)
+  return {
+    id,
+    label,
+    shortLabel: label.length <= 16 ? label : titleFromModelId(id),
+    detail: model.description.trim() || id,
+  }
+}
+
+function buildModelOptions(acp: AcpBinding | undefined, selectedModelId: string): ModelOption[] {
+  const runtimeOptions = (acp?.availableModels ?? []).flatMap((model) => {
+    const option = modelOptionFromRuntime(model)
+    return option ? [option] : []
+  })
+  const baseOptions = runtimeOptions.length > 0
+    ? [FALLBACK_ACP_MODEL_OPTIONS[0], ...runtimeOptions]
+    : FALLBACK_ACP_MODEL_OPTIONS
+  const options: ModelOption[] = []
+  const seen = new Set<string>()
+
+  for (const option of baseOptions) {
+    if (seen.has(option.id)) continue
+    seen.add(option.id)
+    options.push(option)
+  }
+
+  if (selectedModelId && !seen.has(selectedModelId)) {
+    const friendly = FRIENDLY_MODEL_LABELS[selectedModelId]
+    options.push(
+      friendly
+        ? { id: selectedModelId, ...friendly }
+        : {
+            id: selectedModelId,
+            label: titleFromModelId(selectedModelId),
+            shortLabel: titleFromModelId(selectedModelId),
+            detail: selectedModelId,
+          }
+    )
+  }
+
+  return options
+}
+
+function modelOptionFor(options: ModelOption[], modelId?: string) {
+  return options.find((option) => option.id === (modelId ?? '')) ?? options[0] ?? FALLBACK_ACP_MODEL_OPTIONS[0]
 }
 
 function statusLabel(acp?: AcpBinding) {
@@ -197,6 +291,60 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   return nodes
 }
 
+function splitTableRow(line: string) {
+  const trimmed = line.trim().replace(/^\|/, '').replace(/\|$/, '')
+  const cells: string[] = []
+  let cell = ''
+  let escaped = false
+
+  for (const char of trimmed) {
+    if (escaped) {
+      cell += char
+      escaped = false
+      continue
+    }
+
+    if (char === '\\') {
+      escaped = true
+      continue
+    }
+
+    if (char === '|') {
+      cells.push(cell.trim())
+      cell = ''
+      continue
+    }
+
+    cell += char
+  }
+
+  if (escaped) {
+    cell += '\\'
+  }
+  cells.push(cell.trim())
+  return cells
+}
+
+function parseTableSeparator(line: string, expectedCells: number): Array<'left' | 'center' | 'right'> | null {
+  const cells = splitTableRow(line)
+  if (cells.length !== expectedCells) return null
+
+  const alignments: Array<'left' | 'center' | 'right'> = []
+  for (const cell of cells) {
+    const normalized = cell.replace(/\s+/g, '')
+    if (!/^:?-{3,}:?$/.test(normalized)) return null
+    if (normalized.startsWith(':') && normalized.endsWith(':')) alignments.push('center')
+    else if (normalized.endsWith(':')) alignments.push('right')
+    else alignments.push('left')
+  }
+
+  return alignments
+}
+
+function isPotentialTableRow(line: string) {
+  return line.includes('|') && splitTableRow(line).length >= 2
+}
+
 function MarkdownTextBlock({ text, blockKey }: { text: string; blockKey: string }) {
   const lines = text.replace(/\r\n/g, '\n').split('\n')
   const nodes: ReactNode[] = []
@@ -218,6 +366,53 @@ function MarkdownTextBlock({ text, blockKey }: { text: string; blockKey: string 
       flushParagraph()
       index++
       continue
+    }
+
+    if (index + 1 < lines.length && isPotentialTableRow(trimmed)) {
+      const headerCells = splitTableRow(trimmed)
+      const alignments = parseTableSeparator(lines[index + 1].trim(), headerCells.length)
+      if (alignments) {
+        flushParagraph()
+        index += 2
+        const bodyRows: string[][] = []
+        while (index < lines.length && isPotentialTableRow(lines[index].trim())) {
+          const rowCells = splitTableRow(lines[index].trim())
+          if (rowCells.length !== headerCells.length) break
+          bodyRows.push(rowCells)
+          index++
+        }
+
+        nodes.push(
+          <div key={`${blockKey}-table-${index}`} className="prose-msg-table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  {headerCells.map((cell, cellIndex) => (
+                    <th key={`${blockKey}-th-${index}-${cellIndex}`} style={{ textAlign: alignments[cellIndex] }}>
+                      {renderInlineMarkdown(cell, `${blockKey}-th-${index}-${cellIndex}`)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {bodyRows.map((row, rowIndex) => (
+                  <tr key={`${blockKey}-tr-${index}-${rowIndex}`}>
+                    {row.map((cell, cellIndex) => (
+                      <td
+                        key={`${blockKey}-td-${index}-${rowIndex}-${cellIndex}`}
+                        style={{ textAlign: alignments[cellIndex] }}
+                      >
+                        {renderInlineMarkdown(cell, `${blockKey}-td-${index}-${rowIndex}-${cellIndex}`)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+        continue
+      }
     }
 
     const heading = trimmed.match(/^(#{1,3})\s+(.+)$/)
@@ -538,39 +733,43 @@ function MessageFrame({ role, children }: { role: Message['role']; children: Rea
   )
 }
 
-function ThinkingBlock({ text }: { text: string }) {
+function ThinkingBlock({ text, defaultOpen = false }: { text: string; defaultOpen?: boolean }) {
   if (!text.trim()) return null
 
   return (
     <details
-      className="group"
+      aria-label="Thinking"
+      data-testid="thinking-block"
+      open={defaultOpen}
       style={{
-        border: '1px solid color-mix(in srgb, var(--yellow) 35%, var(--border))',
-        borderRadius: 7,
-        background: 'color-mix(in srgb, var(--yellow) 8%, var(--surface))',
+        border: '1px solid color-mix(in srgb, var(--yellow) 58%, var(--border))',
+        borderLeft: '4px solid var(--yellow)',
+        borderRadius: 6,
+        background: 'color-mix(in srgb, var(--yellow) 12%, var(--surface))',
         color: 'var(--text-2)',
         overflow: 'hidden',
       }}
     >
       <summary
-        className="flex items-center gap-2 cursor-pointer select-none text-[11px] font-semibold"
+        className="flex items-center gap-2 text-[11px] font-semibold cursor-pointer select-none"
         style={{
-          minHeight: 30,
-          padding: '0 9px',
-          color: 'var(--yellow)',
+          minHeight: 34,
+          padding: '0 10px',
+          color: 'var(--text)',
           listStyle: 'none',
         }}
       >
-        <span style={{ fontSize: 9 }}>●</span>
+        <span aria-hidden="true" style={{ color: 'var(--yellow)', fontSize: 12, fontWeight: 700 }}>{'>'}</span>
+        <span style={{ color: 'var(--yellow)', fontSize: 9 }}>●</span>
         <span>Thinking</span>
-        <span className="ml-auto text-[10px]" style={{ color: 'var(--text-3)' }}>
-          click to expand
+        <span className="ml-auto text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>
+          details
         </span>
       </summary>
       <div
-        className="px-3 pb-3 pt-1 text-xs"
+        className="px-3 pb-3 pt-2 text-xs"
         style={{
-          borderTop: '1px solid color-mix(in srgb, var(--yellow) 25%, var(--border))',
+          borderTop: '1px solid color-mix(in srgb, var(--yellow) 35%, var(--border))',
           color: 'var(--text-2)',
         }}
       >
@@ -580,16 +779,24 @@ function ThinkingBlock({ text }: { text: string }) {
   )
 }
 
-function PersistedMessageContent({ message }: { message: Message }) {
+function PersistedMessageContent({
+  message,
+  onSelectTool,
+}: {
+  message: Message
+  onSelectTool: (messageId: string, toolId: string) => void
+}) {
   const thoughts = message.role === 'assistant' ? message.thoughts?.trim() ?? '' : ''
+  const toolCalls = message.role === 'assistant' ? message.toolCalls ?? [] : []
 
-  if (!thoughts) {
+  if (!thoughts && toolCalls.length === 0) {
     return <MarkdownContent content={message.content} />
   }
 
   return (
     <div className="space-y-2">
       <ThinkingBlock text={thoughts} />
+      <ToolCallInlineRows tools={toolCalls} onSelectTool={(toolId) => onSelectTool(message.id, toolId)} />
       <MarkdownContent content={message.content} />
     </div>
   )
@@ -622,7 +829,7 @@ function TurnTimelineContent({
         }
 
         if (event.type === 'thought') {
-          return <ThinkingBlock key={`thought-${index}`} text={event.text} />
+          return <ThinkingBlock key={`thought-${index}`} text={event.text} defaultOpen />
         }
 
         if (event.type === 'tool_call') {
@@ -668,25 +875,47 @@ function ComposerToolbar({
   acp,
   elapsedSeconds,
   canSend,
+  modelId,
+  approvalModeId,
   providerOpen,
+  modelOpen,
   settingsOpen,
   providerMenuRef,
+  modelMenuRef,
   settingsMenuRef,
   onToggleProvider,
+  onToggleModel,
   onToggleSettings,
+  onSelectModel,
+  onTogglePlan,
   onCancel,
 }: {
   acp?: AcpBinding
   elapsedSeconds: number
   canSend: boolean
+  modelId?: string
+  approvalModeId?: string
   providerOpen: boolean
+  modelOpen: boolean
   settingsOpen: boolean
   providerMenuRef: RefObject<HTMLDivElement>
+  modelMenuRef: RefObject<HTMLDivElement>
   settingsMenuRef: RefObject<HTMLDivElement>
   onToggleProvider: () => void
+  onToggleModel: () => void
   onToggleSettings: () => void
+  onSelectModel: (modelId: string) => void
+  onTogglePlan: () => void
   onCancel: () => void
 }) {
+  const modelOptions = buildModelOptions(acp, modelId ?? '')
+  const currentModel = modelOptionFor(modelOptions, modelId)
+  const modelDisabled = Boolean(acp?.processing || acp?.lifecycleState === 'waitingPermission')
+  const planActive = approvalModeId === 'plan'
+  const hasRuntimeModes = Boolean(acp?.running && acp.availableModes.length > 0)
+  const planAvailable = !hasRuntimeModes || acp?.availableModes.some((mode) => mode.id === 'plan')
+  const planDisabled = Boolean(modelDisabled || !planAvailable)
+  const modeLabel = planActive ? 'Plan' : 'Default'
   const chipStyle = {
     height: 26,
     borderRadius: 6,
@@ -753,6 +982,81 @@ function ComposerToolbar({
           </div>
         )}
       </div>
+      <div ref={modelMenuRef} className="relative">
+        <button
+          type="button"
+          title="Select model"
+          onClick={onToggleModel}
+          disabled={modelDisabled}
+          className="inline-flex items-center gap-1.5 px-2"
+          style={{
+            ...chipStyle,
+            color: modelOpen ? 'var(--text)' : 'var(--text-2)',
+            borderColor: modelOpen ? 'var(--border-bright)' : 'var(--border)',
+            opacity: modelDisabled ? 0.55 : 1,
+          }}
+        >
+          <span>Model</span>
+          <span style={{ color: 'var(--text)' }}>{currentModel.shortLabel}</span>
+        </button>
+        {modelOpen && !modelDisabled && (
+          <div
+            className="absolute left-0"
+            style={{
+              bottom: 32,
+              width: 260,
+              zIndex: 40,
+              border: '1px solid var(--border-bright)',
+              borderRadius: 8,
+              background: 'var(--surface)',
+              boxShadow: '0 14px 42px rgba(0, 0, 0, 0.28)',
+              padding: 6,
+            }}
+          >
+            <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>Model</div>
+            {modelOptions.map((option) => {
+              const selected = option.id === currentModel.id
+              return (
+                <button
+                  key={option.id || 'default'}
+                  type="button"
+                  onClick={() => onSelectModel(option.id)}
+                  className="w-full grid gap-0.5 text-left px-2 py-2"
+                  style={{
+                    borderRadius: 6,
+                    background: selected ? 'var(--accent-dim)' : 'transparent',
+                    color: selected ? 'var(--text)' : 'var(--text-2)',
+                  }}
+                >
+                  <span className="flex items-center gap-2">
+                    <span className="flex-1">{option.label}</span>
+                    {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
+                  </span>
+                  <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>{option.detail}</span>
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
+      <button
+        type="button"
+        title={planAvailable ? 'Toggle planning mode' : 'Planning mode unavailable'}
+        aria-pressed={planActive}
+        onClick={onTogglePlan}
+        disabled={planDisabled}
+        className="inline-flex items-center gap-1.5 px-2"
+        style={{
+          ...chipStyle,
+          borderColor: planActive ? 'color-mix(in srgb, var(--accent) 55%, var(--border))' : 'var(--border)',
+          background: planActive ? 'var(--accent-dim)' : chipStyle.background,
+          color: planActive ? 'var(--text)' : 'var(--text-2)',
+          opacity: planDisabled ? 0.55 : 1,
+        }}
+      >
+        <span style={{ color: planActive ? 'var(--accent)' : 'var(--text-3)', fontSize: 10 }}>●</span>
+        <span>Plan</span>
+      </button>
       <button type="button" title="Runtime" className="inline-flex items-center gap-1.5 px-2" style={chipStyle}>
         <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>
         <span>ACP</span>
@@ -814,6 +1118,14 @@ function ComposerToolbar({
                   <span>ACP</span>
                 </div>
                 <div className="flex justify-between gap-3">
+                  <span style={{ color: 'var(--text-3)' }}>Model</span>
+                  <span>{currentModel.label}</span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span style={{ color: 'var(--text-3)' }}>Mode</span>
+                  <span>{modeLabel}</span>
+                </div>
+                <div className="flex justify-between gap-3">
                   <span style={{ color: 'var(--text-3)' }}>Usage</span>
                   <span>Unavailable</span>
                 </div>
@@ -860,8 +1172,9 @@ function ComposerToolbar({
 export function ChatView({ session }: ChatViewProps) {
   const [draft, setDraft] = useState('')
   const [submitting, setSubmitting] = useState(false)
-  const [selectedToolCallId, setSelectedToolCallId] = useState<string | null>(null)
+  const [selectedToolCallRef, setSelectedToolCallRef] = useState<SelectedToolCallRef | null>(null)
   const [providerOpen, setProviderOpen] = useState(false)
+  const [modelOpen, setModelOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const messages = useAppStore(useShallow((s) => s.messages[session.id] ?? []))
@@ -872,8 +1185,11 @@ export function ChatView({ session }: ChatViewProps) {
   const sendAcpPrompt = useAppStore((s) => s.sendAcpPrompt)
   const cancelAcpTurn = useAppStore((s) => s.cancelAcpTurn)
   const resolveAcpPermission = useAppStore((s) => s.resolveAcpPermission)
+  const setSessionModel = useAppStore((s) => s.setSessionModel)
+  const setSessionApprovalMode = useAppStore((s) => s.setSessionApprovalMode)
   const bottomRef = useRef<HTMLDivElement>(null)
   const providerMenuRef = useRef<HTMLDivElement>(null)
+  const modelMenuRef = useRef<HTMLDivElement>(null)
   const settingsMenuRef = useRef<HTMLDivElement>(null)
 
   const canSend = useMemo(
@@ -882,8 +1198,17 @@ export function ChatView({ session }: ChatViewProps) {
   )
 
   const selectedToolCall = useMemo(
-    () => (acp?.toolCalls ?? []).find((tool) => tool.id === selectedToolCallId) ?? null,
-    [acp?.toolCalls, selectedToolCallId]
+    () => {
+      if (!selectedToolCallRef) return null
+
+      if (selectedToolCallRef.messageId) {
+        const message = messages.find((candidate) => candidate.id === selectedToolCallRef.messageId)
+        return message?.toolCalls?.find((tool) => tool.id === selectedToolCallRef.id) ?? null
+      }
+
+      return (acp?.toolCalls ?? []).find((tool) => tool.id === selectedToolCallRef.id) ?? null
+    },
+    [acp?.toolCalls, messages, selectedToolCallRef]
   )
 
   const turnEvents = acp?.turnEvents ?? []
@@ -918,14 +1243,20 @@ export function ChatView({ session }: ChatViewProps) {
   ])
 
   useEffect(() => {
-    if (selectedToolCallId && !(acp?.toolCalls ?? []).some((tool) => tool.id === selectedToolCallId)) {
-      setSelectedToolCallId(null)
+    if (selectedToolCallRef && !selectedToolCall) {
+      setSelectedToolCallRef(null)
     }
-  }, [acp?.toolCalls, selectedToolCallId])
+  }, [selectedToolCall, selectedToolCallRef])
 
   useEffect(() => {
-    setSelectedToolCallId(null)
+    setSelectedToolCallRef(null)
   }, [turnSerial])
+
+  useEffect(() => {
+    if (acp?.processing || acp?.lifecycleState === 'waitingPermission') {
+      setModelOpen(false)
+    }
+  }, [acp?.lifecycleState, acp?.processing])
 
   useEffect(() => {
     const onMouseDown = (event: MouseEvent) => {
@@ -936,6 +1267,10 @@ export function ChatView({ session }: ChatViewProps) {
         setProviderOpen(false)
       }
 
+      if (modelOpen && modelMenuRef.current && !modelMenuRef.current.contains(target)) {
+        setModelOpen(false)
+      }
+
       if (settingsOpen && settingsMenuRef.current && !settingsMenuRef.current.contains(target)) {
         setSettingsOpen(false)
       }
@@ -944,8 +1279,9 @@ export function ChatView({ session }: ChatViewProps) {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key !== 'Escape') return
       setProviderOpen(false)
+      setModelOpen(false)
       setSettingsOpen(false)
-      setSelectedToolCallId(null)
+      setSelectedToolCallRef(null)
     }
 
     document.addEventListener('mousedown', onMouseDown)
@@ -954,7 +1290,7 @@ export function ChatView({ session }: ChatViewProps) {
       document.removeEventListener('mousedown', onMouseDown)
       document.removeEventListener('keydown', onKeyDown)
     }
-  }, [providerOpen, settingsOpen])
+  }, [modelOpen, providerOpen, settingsOpen])
 
   useEffect(() => {
     if (processingStartedAtMs === null) {
@@ -989,14 +1325,16 @@ export function ChatView({ session }: ChatViewProps) {
 
   const pendingPermission = acp?.pendingPermission
   const workspaceDirectory = session.workspaceDirectory?.trim() || folderDirectory.trim()
+  const currentModelId = acp?.currentModelId || session.modelId || ''
+  const currentModeId = acp?.currentModeId || session.approvalMode || 'default'
 
   return (
     <div className="relative h-full flex overflow-hidden" style={{ background: 'var(--bg)' }}>
       {selectedToolCall && (
-        <ToolCallModal tool={selectedToolCall} onClose={() => setSelectedToolCallId(null)} />
+        <ToolCallModal tool={selectedToolCall} onClose={() => setSelectedToolCallRef(null)} />
       )}
       <div className="flex-1 flex flex-col min-w-0">
-        <div className="flex-1 overflow-auto">
+        <div className="flex-1 overflow-auto" data-copy-surface="chat">
           <div className="mx-auto w-full px-4 py-5" style={{ maxWidth: 940 }}>
             <div className="flex items-center gap-2 mb-5 text-xs" style={{ color: 'var(--text-2)' }}>
               <span style={{ color: statusColor(acp), fontSize: 9 }}>●</span>
@@ -1025,15 +1363,18 @@ export function ChatView({ session }: ChatViewProps) {
                         <TurnTimelineContent
                           key={`turn-${turnSerial}-assistant`}
                           events={turnEvents}
-                          tools={acp?.toolCalls ?? []}
-                          pendingPermission={pendingPermission ?? null}
-                          onSelectTool={setSelectedToolCallId}
-                          onResolvePermission={(requestId, optionId) => {
-                            void resolveAcpPermission(session.id, requestId, optionId)
-                          }}
+	                          tools={acp?.toolCalls ?? []}
+	                          pendingPermission={pendingPermission ?? null}
+	                          onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
+	                          onResolvePermission={(requestId, optionId) => {
+	                            void resolveAcpPermission(session.id, requestId, optionId)
+	                          }}
                         />
                       ) : (
-                        <PersistedMessageContent message={message} />
+                        <PersistedMessageContent
+                          message={message}
+                          onSelectTool={(messageId, toolId) => setSelectedToolCallRef({ id: toolId, messageId })}
+                        />
                       )}
                     </MessageFrame>
                     {renderTimelineAfterUser && index === turnUserMessageIndex && (
@@ -1041,12 +1382,12 @@ export function ChatView({ session }: ChatViewProps) {
                         <TurnTimelineContent
                           key={`turn-${turnSerial}-after-user-content`}
                           events={turnEvents}
-                          tools={acp?.toolCalls ?? []}
-                          pendingPermission={pendingPermission ?? null}
-                          onSelectTool={setSelectedToolCallId}
-                          onResolvePermission={(requestId, optionId) => {
-                            void resolveAcpPermission(session.id, requestId, optionId)
-                          }}
+	                          tools={acp?.toolCalls ?? []}
+	                          pendingPermission={pendingPermission ?? null}
+	                          onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
+	                          onResolvePermission={(requestId, optionId) => {
+	                            void resolveAcpPermission(session.id, requestId, optionId)
+	                          }}
                         />
                       </MessageFrame>
                     )}
@@ -1058,12 +1399,12 @@ export function ChatView({ session }: ChatViewProps) {
                   <TurnTimelineContent
                     key={`turn-${turnSerial}-fallback-content`}
                     events={turnEvents}
-                    tools={acp?.toolCalls ?? []}
-                    pendingPermission={pendingPermission ?? null}
-                    onSelectTool={setSelectedToolCallId}
-                    onResolvePermission={(requestId, optionId) => {
-                      void resolveAcpPermission(session.id, requestId, optionId)
-                    }}
+	                    tools={acp?.toolCalls ?? []}
+	                    pendingPermission={pendingPermission ?? null}
+	                    onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
+	                    onResolvePermission={(requestId, optionId) => {
+	                      void resolveAcpPermission(session.id, requestId, optionId)
+	                    }}
                   />
                 </MessageFrame>
               )}
@@ -1149,17 +1490,37 @@ export function ChatView({ session }: ChatViewProps) {
               acp={acp}
               elapsedSeconds={elapsedSeconds}
               canSend={canSend}
+              modelId={currentModelId}
+              approvalModeId={currentModeId}
               providerOpen={providerOpen}
+              modelOpen={modelOpen}
               settingsOpen={settingsOpen}
               providerMenuRef={providerMenuRef}
+              modelMenuRef={modelMenuRef}
               settingsMenuRef={settingsMenuRef}
               onToggleProvider={() => {
                 setProviderOpen((value) => !value)
+                setModelOpen(false)
+                setSettingsOpen(false)
+              }}
+              onToggleModel={() => {
+                if (acp?.processing || acp?.lifecycleState === 'waitingPermission') return
+                setModelOpen((value) => !value)
+                setProviderOpen(false)
                 setSettingsOpen(false)
               }}
               onToggleSettings={() => {
                 setSettingsOpen((value) => !value)
                 setProviderOpen(false)
+                setModelOpen(false)
+              }}
+              onSelectModel={(modelId) => {
+                setModelOpen(false)
+                void setSessionModel(session.id, modelId)
+              }}
+              onTogglePlan={() => {
+                const nextMode = currentModeId === 'plan' ? 'default' : 'plan'
+                void setSessionApprovalMode(session.id, nextMode)
               }}
               onCancel={() => void cancelAcpTurn(session.id)}
             />

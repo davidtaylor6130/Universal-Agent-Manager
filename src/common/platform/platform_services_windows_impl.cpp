@@ -236,6 +236,66 @@ namespace
 		return out.str();
 	}
 
+	void TerminateProcessTree(HANDLE job_object, HANDLE process_handle, const UINT exit_code)
+	{
+		if (job_object != nullptr)
+		{
+			TerminateJobObject(job_object, exit_code);
+			return;
+		}
+
+		if (process_handle != INVALID_HANDLE_VALUE)
+		{
+			TerminateProcess(process_handle, exit_code);
+		}
+	}
+
+	bool CreateKillOnCloseJobForProcess(HANDLE process_handle, HANDLE* job_out, std::string* error_out)
+	{
+		if (job_out != nullptr)
+		{
+			*job_out = nullptr;
+		}
+
+		HANDLE job = CreateJobObjectW(nullptr, nullptr);
+		if (job == nullptr)
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Failed to create process job object: " + FormatWindowsError(GetLastError()) + ".";
+			}
+			return false;
+		}
+
+		JOBOBJECT_EXTENDED_LIMIT_INFORMATION limit_info{};
+		limit_info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+		if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limit_info, sizeof(limit_info)))
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Failed to configure process job object: " + FormatWindowsError(GetLastError()) + ".";
+			}
+			CloseHandle(job);
+			return false;
+		}
+
+		if (!AssignProcessToJobObject(job, process_handle))
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Failed to assign process to job object: " + FormatWindowsError(GetLastError()) + ".";
+			}
+			CloseHandle(job);
+			return false;
+		}
+
+		if (job_out != nullptr)
+		{
+			*job_out = job;
+		}
+		return true;
+	}
+
 	using ResizePseudoConsoleFunc = HRESULT(WINAPI*)(HPCON, COORD);
 	using ClosePseudoConsoleFunc = void(WINAPI*)(HPCON);
 
@@ -667,8 +727,7 @@ namespace
 			si.lpAttributeList = terminal.attr_list;
 			PROCESS_INFORMATION pi{};
 
-			std::string command_str = BuildWindowsCommandLine(argv);
-			command_str = "cmd.exe /C \"" + command_str + "\"";
+			const std::string command_str = BuildWindowsCommandLine(argv);
 			const std::wstring command_w = WideFromUtf8(command_str);
 
 			if (command_w.empty())
@@ -718,6 +777,28 @@ namespace
 				return false;
 			}
 
+			HANDLE job = nullptr;
+			std::string job_error;
+			if (!CreateKillOnCloseJobForProcess(pi.hProcess, &job, &job_error))
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = job_error.empty() ? "Failed to protect provider process tree." : job_error;
+				}
+
+				TerminateProcess(pi.hProcess, 1);
+				WaitForSingleObject(pi.hProcess, 250);
+				CloseHandle(pi.hThread);
+				CloseHandle(pi.hProcess);
+				DeleteProcThreadAttributeList(terminal.attr_list);
+				HeapFree(GetProcessHeap(), 0, terminal.attr_list);
+				terminal.attr_list = nullptr;
+				ClosePseudoConsoleSafe(pseudo_console);
+				CloseHandle(pipe_pty_in);
+				CloseHandle(pipe_pty_out);
+				return false;
+			}
+
 			DWORD mode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
 
 			if (!SetNamedPipeHandleState(pipe_pty_in, &mode, nullptr, nullptr))
@@ -730,18 +811,7 @@ namespace
 			terminal.pipe_output = pipe_pty_in;
 			terminal.process_info = pi;
 			terminal.pseudo_console = pseudo_console;
-
-			HANDLE job = CreateJobObjectW(nullptr, nullptr);
-			if (job != nullptr)
-			{
-				JOBOBJECT_EXTENDED_LIMIT_INFORMATION limit_info{};
-				limit_info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-				if (SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limit_info, sizeof(limit_info)))
-				{
-					AssignProcessToJobObject(job, pi.hProcess);
-				}
-				terminal.job_object = job;
-			}
+			terminal.job_object = job;
 
 			return true;
 		}
@@ -785,6 +855,12 @@ namespace
 				terminal.pseudo_console = nullptr;
 			}
 
+			if (terminal.job_object != nullptr)
+			{
+				CloseHandle(terminal.job_object);
+				terminal.job_object = nullptr;
+			}
+
 			terminal.process_info.dwProcessId = 0;
 			terminal.process_info.dwThreadId = 0;
 		}
@@ -824,48 +900,15 @@ namespace
 		{
 			if (terminal.process_info.hProcess == INVALID_HANDLE_VALUE)
 			{
+				CloseCliTerminalHandles(terminal);
 				return;
 			}
 
 			if (fast_exit)
 			{
-				TerminateProcess(terminal.process_info.hProcess, 1);
-
-				// Very short wait for process termination.
+				TerminateProcessTree(terminal.job_object, terminal.process_info.hProcess, 1);
 				(void)WaitForSingleObject(terminal.process_info.hProcess, 50);
-
-				if (terminal.pseudo_console != nullptr)
-				{
-					ClosePseudoConsoleSafe(terminal.pseudo_console);
-					terminal.pseudo_console = nullptr;
-				}
-
-				if (terminal.pipe_input != INVALID_HANDLE_VALUE)
-				{
-					CloseHandle(terminal.pipe_input);
-					terminal.pipe_input = INVALID_HANDLE_VALUE;
-				}
-
-				if (terminal.pipe_output != INVALID_HANDLE_VALUE)
-				{
-					CloseHandle(terminal.pipe_output);
-					terminal.pipe_output = INVALID_HANDLE_VALUE;
-				}
-
-				if (terminal.process_info.hThread != INVALID_HANDLE_VALUE)
-				{
-					CloseHandle(terminal.process_info.hThread);
-					terminal.process_info.hThread = INVALID_HANDLE_VALUE;
-				}
-
-				if (terminal.process_info.hProcess != INVALID_HANDLE_VALUE)
-				{
-					CloseHandle(terminal.process_info.hProcess);
-					terminal.process_info.hProcess = INVALID_HANDLE_VALUE;
-				}
-
-				terminal.process_info.dwProcessId = 0;
-				terminal.process_info.dwThreadId = 0;
+				CloseCliTerminalHandles(terminal);
 				return;
 			}
 
@@ -879,55 +922,11 @@ namespace
 
 			if (wait_result == WAIT_TIMEOUT)
 			{
-				TerminateProcess(terminal.process_info.hProcess, 1);
+				TerminateProcessTree(terminal.job_object, terminal.process_info.hProcess, 1);
 				wait_result = WaitForSingleObject(terminal.process_info.hProcess, 250);
 			}
 
-			if (terminal.pseudo_console != nullptr)
-			{
-				ClosePseudoConsoleSafe(terminal.pseudo_console);
-				terminal.pseudo_console = nullptr;
-			}
-
-			if (terminal.job_object != nullptr)
-			{
-				CloseHandle(terminal.job_object);
-				terminal.job_object = nullptr;
-			}
-
-			if (terminal.pipe_input != INVALID_HANDLE_VALUE)
-			{
-				CloseHandle(terminal.pipe_input);
-				terminal.pipe_input = INVALID_HANDLE_VALUE;
-			}
-
-			if (terminal.pipe_output != INVALID_HANDLE_VALUE)
-			{
-				CloseHandle(terminal.pipe_output);
-				terminal.pipe_output = INVALID_HANDLE_VALUE;
-			}
-
-			if (terminal.process_info.hThread != INVALID_HANDLE_VALUE)
-			{
-				CloseHandle(terminal.process_info.hThread);
-				terminal.process_info.hThread = INVALID_HANDLE_VALUE;
-			}
-
-			if (terminal.process_info.hProcess != INVALID_HANDLE_VALUE)
-			{
-				CloseHandle(terminal.process_info.hProcess);
-				terminal.process_info.hProcess = INVALID_HANDLE_VALUE;
-			}
-
-			if (terminal.attr_list != nullptr)
-			{
-				DeleteProcThreadAttributeList(terminal.attr_list);
-				HeapFree(GetProcessHeap(), 0, terminal.attr_list);
-				terminal.attr_list = nullptr;
-			}
-
-			terminal.process_info.dwProcessId = 0;
-			terminal.process_info.dwThreadId = 0;
+			CloseCliTerminalHandles(terminal);
 		}
 
 		void ResizeCliTerminal(uam::CliTerminalState& terminal) const override
@@ -1134,6 +1133,19 @@ namespace
 				return result;
 			}
 
+			HANDLE job_object = nullptr;
+			std::string job_error;
+			if (!CreateKillOnCloseJobForProcess(process_info.hProcess, &job_object, &job_error))
+			{
+				TerminateProcess(process_info.hProcess, 1);
+				WaitForSingleObject(process_info.hProcess, 250);
+				CloseHandle(stdout_read);
+				CloseHandle(process_info.hProcess);
+				CloseHandle(process_info.hThread);
+				result.error = job_error.empty() ? "Failed to protect command process tree." : job_error;
+				return result;
+			}
+
 			std::array<char, 4096> buffer{};
 			const auto deadline = (timeout_ms >= 0) ? (std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms)) : std::chrono::steady_clock::time_point::max();
 			bool process_finished = false;
@@ -1178,7 +1190,7 @@ namespace
 				{
 					result.canceled = true;
 					result.error = "Command canceled.";
-					TerminateProcess(process_info.hProcess, 1);
+					TerminateProcessTree(job_object, process_info.hProcess, 1);
 					WaitForSingleObject(process_info.hProcess, 250);
 					process_finished = true;
 				}
@@ -1187,7 +1199,7 @@ namespace
 				{
 					result.timed_out = true;
 					result.error = "Command timed out.";
-					TerminateProcess(process_info.hProcess, 1);
+					TerminateProcessTree(job_object, process_info.hProcess, 1);
 					WaitForSingleObject(process_info.hProcess, 250);
 					process_finished = true;
 				}
@@ -1215,6 +1227,7 @@ namespace
 			DWORD exit_code = 1;
 			GetExitCodeProcess(process_info.hProcess, &exit_code);
 			CloseHandle(stdout_read);
+			CloseHandle(job_object);
 			CloseHandle(process_info.hProcess);
 			CloseHandle(process_info.hThread);
 
@@ -1227,10 +1240,7 @@ namespace
 			return result;
 		}
 
-		bool StartStdioProcess(uam::platform::StdioProcessPlatformFields& process,
-		                       const std::filesystem::path& working_directory,
-		                       const std::vector<std::string>& argv,
-		                       std::string* error_out = nullptr) const override
+		bool StartStdioProcess(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr) const override
 		{
 			if (argv.empty() || TrimAsciiWhitespace(argv.front()).empty())
 			{
@@ -1261,9 +1271,7 @@ namespace
 				}
 			};
 
-			if (!CreatePipe(&stdin_read, &stdin_write, &sa, 0) ||
-			    !CreatePipe(&stdout_read, &stdout_write, &sa, 0) ||
-			    !CreatePipe(&stderr_read, &stderr_write, &sa, 0))
+			if (!CreatePipe(&stdin_read, &stdin_write, &sa, 0) || !CreatePipe(&stdout_read, &stdout_write, &sa, 0) || !CreatePipe(&stderr_read, &stderr_write, &sa, 0))
 			{
 				if (error_out != nullptr)
 				{
@@ -1282,8 +1290,7 @@ namespace
 			SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
 			SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0);
 
-			std::string command_str = BuildWindowsCommandLine(argv);
-			command_str = "cmd.exe /C \"" + command_str + "\"";
+			const std::string command_str = BuildWindowsCommandLine(argv);
 			const std::wstring command_w = WideFromUtf8(command_str);
 			if (command_w.empty())
 			{
@@ -1312,16 +1319,7 @@ namespace
 			startup_info.hStdError = stderr_write;
 
 			PROCESS_INFORMATION process_info{};
-			const BOOL created = CreateProcessW(nullptr,
-			                                    command_line.data(),
-			                                    nullptr,
-			                                    nullptr,
-			                                    TRUE,
-			                                    CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
-			                                    nullptr,
-			                                    working_directory.empty() ? nullptr : working_directory_w.c_str(),
-			                                    &startup_info,
-			                                    &process_info);
+			const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, nullptr, working_directory.empty() ? nullptr : working_directory_w.c_str(), &startup_info, &process_info);
 
 			close_if_valid(stdin_read);
 			close_if_valid(stdout_write);
@@ -1340,22 +1338,29 @@ namespace
 				return false;
 			}
 
+			HANDLE job = nullptr;
+			std::string job_error;
+			if (!CreateKillOnCloseJobForProcess(process_info.hProcess, &job, &job_error))
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = job_error.empty() ? "Failed to protect stdio process tree." : job_error;
+				}
+				TerminateProcess(process_info.hProcess, 1);
+				WaitForSingleObject(process_info.hProcess, 250);
+				CloseHandle(process_info.hThread);
+				CloseHandle(process_info.hProcess);
+				close_if_valid(stdin_write);
+				close_if_valid(stdout_read);
+				close_if_valid(stderr_read);
+				return false;
+			}
+
 			process.stdin_write = stdin_write;
 			process.stdout_read = stdout_read;
 			process.stderr_read = stderr_read;
 			process.process_info = process_info;
-
-			HANDLE job = CreateJobObjectW(nullptr, nullptr);
-			if (job != nullptr)
-			{
-				JOBOBJECT_EXTENDED_LIMIT_INFORMATION limit_info{};
-				limit_info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-				if (SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limit_info, sizeof(limit_info)))
-				{
-					AssignProcessToJobObject(job, process_info.hProcess);
-				}
-				process.job_object = job;
-			}
+			process.job_object = job;
 
 			return true;
 		}
@@ -1438,7 +1443,7 @@ namespace
 				return;
 			}
 
-			TerminateProcess(process.process_info.hProcess, 1);
+			TerminateProcessTree(process.job_object, process.process_info.hProcess, 1);
 			WaitForSingleObject(process.process_info.hProcess, fast_exit ? 80 : 600);
 			CloseStdioProcessHandles(process);
 		}
@@ -1554,11 +1559,7 @@ namespace
 				return "";
 			}
 			char uuid[37];
-			sprintf_s(uuid, sizeof(uuid),
-				"%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-				guid.Data1, guid.Data2, guid.Data3,
-				guid.Data4[0], guid.Data4[1], guid.Data4[2], guid.Data4[3],
-				guid.Data4[4], guid.Data4[5], guid.Data4[6], guid.Data4[7]);
+			sprintf_s(uuid, sizeof(uuid), "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x", guid.Data1, guid.Data2, guid.Data3, guid.Data4[0], guid.Data4[1], guid.Data4[2], guid.Data4[3], guid.Data4[4], guid.Data4[5], guid.Data4[6], guid.Data4[7]);
 			return std::string(uuid);
 		}
 	};
@@ -1703,7 +1704,10 @@ PlatformServices& CreatePlatformServices()
 	static WindowsFileDialogService file_dialog_service;
 	static WindowsPathService path_service;
 	static PlatformServices services{
-	    terminal_runtime, process_service, file_dialog_service, path_service,
+	    terminal_runtime,
+	    process_service,
+	    file_dialog_service,
+	    path_service,
 	};
 	return services;
 }

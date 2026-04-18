@@ -33,7 +33,6 @@ namespace
 		if (task.worker != nullptr)
 		{
 			task.worker->request_stop();
-			task.worker->detach();
 			task.worker.reset();
 		}
 
@@ -49,40 +48,41 @@ namespace
 		task.command_preview = command;
 		task.state = std::make_shared<AsyncProcessTaskState>();
 		std::shared_ptr<AsyncProcessTaskState> state = task.state;
-		task.worker = std::make_unique<std::jthread>([command, state](std::stop_token stop_token)
-		{
-			state->result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(command, -1, stop_token);
+		task.worker = std::make_unique<std::jthread>(
+		    [command, state](std::stop_token stop_token)
+		    {
+			    state->result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(command, -1, stop_token);
 
-			if (!state->result.error.empty() && state->result.output.empty())
-			{
-				std::ostringstream message;
-				message << "Failed to run command: " << command;
-				message << "\n\n" << state->result.error;
-				state->result.output = message.str();
-			}
-			else
-			{
-				if (state->result.output.empty())
-				{
-					state->result.output = "(Provider CLI returned no output.)";
-				}
+			    if (!state->result.error.empty() && state->result.output.empty())
+			    {
+				    std::ostringstream message;
+				    message << "Failed to run command: " << command;
+				    message << "\n\n" << state->result.error;
+				    state->result.output = message.str();
+			    }
+			    else
+			    {
+				    if (state->result.output.empty())
+				    {
+					    state->result.output = "(Provider CLI returned no output.)";
+				    }
 
-				if (state->result.timed_out)
-				{
-					state->result.output += "\n\n[Provider CLI command timed out]";
-				}
-				else if (state->result.canceled)
-				{
-					state->result.output += "\n\n[Provider CLI command canceled]";
-				}
-				else if (state->result.exit_code != 0)
-				{
-					state->result.output += "\n\n[Provider CLI exited with code " + std::to_string(state->result.exit_code) + "]";
-				}
-			}
+				    if (state->result.timed_out)
+				    {
+					    state->result.output += "\n\n[Provider CLI command timed out]";
+				    }
+				    else if (state->result.canceled)
+				    {
+					    state->result.output += "\n\n[Provider CLI command canceled]";
+				    }
+				    else if (state->result.exit_code != 0)
+				    {
+					    state->result.output += "\n\n[Provider CLI exited with code " + std::to_string(state->result.exit_code) + "]";
+				    }
+			    }
 
-			state->completed.store(true, std::memory_order_release);
-		});
+			    state->completed.store(true, std::memory_order_release);
+		    });
 	}
 
 	bool TryConsumeAsyncCommandTaskOutput(uam::AsyncCommandTask& task, std::string& output_out)

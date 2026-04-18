@@ -166,14 +166,7 @@ namespace
 		}
 
 		const std::array<const char*, 8> fallback_dirs = {
-			"/opt/homebrew/bin",
-			"/opt/homebrew/sbin",
-			"/usr/local/bin",
-			"/usr/local/sbin",
-			"/usr/bin",
-			"/bin",
-			"/usr/sbin",
-			"/sbin",
+		    "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin", "/usr/bin", "/bin", "/usr/sbin", "/sbin",
 		};
 		for (const char* dir : fallback_dirs)
 		{
@@ -510,6 +503,67 @@ namespace
 		waitpid(pid, &status, WNOHANG);
 	}
 
+	enum class ChildWaitResult
+	{
+		Running,
+		Exited,
+		NoChild,
+	};
+
+	ChildWaitResult WaitForChildProcess(const pid_t child_pid, const bool wait_for_exit, const double timeout_seconds)
+	{
+		int status = 0;
+		const auto wait_start = std::chrono::steady_clock::now();
+		const auto wait_timeout = std::chrono::duration<double>(std::max(0.0, timeout_seconds));
+
+		while (true)
+		{
+			const pid_t wait_result = waitpid(child_pid, &status, WNOHANG);
+
+			if (wait_result == child_pid)
+			{
+				return ChildWaitResult::Exited;
+			}
+
+			if (wait_result < 0)
+			{
+				if (errno == EINTR)
+				{
+					continue;
+				}
+
+				return errno == ECHILD ? ChildWaitResult::NoChild : ChildWaitResult::Running;
+			}
+
+			if (!wait_for_exit)
+			{
+				return ChildWaitResult::Running;
+			}
+
+			if ((std::chrono::steady_clock::now() - wait_start) >= wait_timeout)
+			{
+				return ChildWaitResult::Running;
+			}
+
+			std::this_thread::sleep_for(std::chrono::milliseconds(8));
+		}
+	}
+
+	bool ChildWaitResultClearsPid(const ChildWaitResult result)
+	{
+		return result == ChildWaitResult::Exited || result == ChildWaitResult::NoChild;
+	}
+
+	void SignalTerminalProcessGroup(const pid_t child_pid, const int signal_number)
+	{
+		if (child_pid <= 0)
+		{
+			return;
+		}
+
+		(void)kill(-child_pid, signal_number);
+	}
+
 	int ExitCodeFromWaitStatus(const int status)
 	{
 		if (WIFEXITED(status))
@@ -574,10 +628,7 @@ namespace
 			return true;
 		}
 
-		bool StartCliTerminalProcess(uam::CliTerminalState& terminal,
-		                             const std::filesystem::path& working_directory,
-		                             const std::vector<std::string>& argv,
-		                             std::string* error_out = nullptr) const override
+		bool StartCliTerminalProcess(uam::CliTerminalState& terminal, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr) const override
 		{
 			if (argv.empty() || TrimAsciiWhitespace(argv.front()).empty())
 			{
@@ -729,7 +780,10 @@ namespace
 				terminal.master_fd = -1;
 			}
 
-			terminal.child_pid = -1;
+			if (terminal.child_pid > 0 && ChildWaitResultClearsPid(WaitForChildProcess(terminal.child_pid, false, 0.0)))
+			{
+				terminal.child_pid = -1;
+			}
 		}
 
 		bool WriteToCliTerminal(uam::CliTerminalState& terminal, const char* bytes, const std::size_t len) const override
@@ -770,69 +824,39 @@ namespace
 			}
 
 			const pid_t child_pid = terminal.child_pid;
-			int status = 0;
-			const auto has_exited = [&](const bool wait_for_exit, const double timeout_seconds) -> bool
+			const auto wait_and_clear = [&](const bool wait_for_exit, const double timeout_seconds) -> bool
 			{
-				const auto wait_start = std::chrono::steady_clock::now();
-				const auto wait_timeout = std::chrono::duration<double>(std::max(0.0, timeout_seconds));
-
-				while (true)
+				const ChildWaitResult result = WaitForChildProcess(child_pid, wait_for_exit, timeout_seconds);
+				if (ChildWaitResultClearsPid(result))
 				{
-					const pid_t wait_result = waitpid(child_pid, &status, WNOHANG);
-
-					if (wait_result == child_pid)
-					{
-						return true;
-					}
-
-					if (wait_result < 0)
-					{
-						if (errno == EINTR)
-						{
-							continue;
-						}
-
-						return errno == ECHILD;
-					}
-
-					if (!wait_for_exit)
-					{
-						return false;
-					}
-
-					if ((std::chrono::steady_clock::now() - wait_start) >= wait_timeout)
-					{
-						return false;
-					}
-
-					std::this_thread::sleep_for(std::chrono::milliseconds(8));
+					terminal.child_pid = -1;
+					return true;
 				}
+				return false;
 			};
 
 			if (fast_exit)
 			{
-				kill(child_pid, SIGHUP);
-				kill(child_pid, SIGTERM);
-				kill(child_pid, SIGKILL);
-				(void)has_exited(false, 0.0);
+				SignalTerminalProcessGroup(child_pid, SIGHUP);
+				SignalTerminalProcessGroup(child_pid, SIGTERM);
+				SignalTerminalProcessGroup(child_pid, SIGKILL);
+				(void)wait_and_clear(true, 1.0);
 			}
 			else
 			{
-				kill(child_pid, SIGHUP);
+				SignalTerminalProcessGroup(child_pid, SIGHUP);
 
-				if (!has_exited(true, 0.25))
+				if (!wait_and_clear(true, 0.25))
 				{
-					kill(child_pid, SIGTERM);
+					SignalTerminalProcessGroup(child_pid, SIGTERM);
 
-					if (!has_exited(true, 0.35))
+					if (!wait_and_clear(true, 0.35))
 					{
-						kill(child_pid, SIGKILL);
-						(void)has_exited(true, 0.15);
+						SignalTerminalProcessGroup(child_pid, SIGKILL);
+						(void)wait_and_clear(true, 1.0);
 					}
 				}
 			}
-
-			terminal.child_pid = -1;
 		}
 
 		void ResizeCliTerminal(uam::CliTerminalState& terminal) const override
@@ -891,15 +915,8 @@ namespace
 				return true;
 			}
 
-			int status = 0;
-			const pid_t wait_result = waitpid(terminal.child_pid, &status, WNOHANG);
-
-			if (wait_result == 0)
-			{
-				return false;
-			}
-
-			if (wait_result == terminal.child_pid || (wait_result < 0 && errno == ECHILD))
+			const ChildWaitResult result = WaitForChildProcess(terminal.child_pid, false, 0.0);
+			if (ChildWaitResultClearsPid(result))
 			{
 				terminal.child_pid = -1;
 				return true;
@@ -997,10 +1014,7 @@ namespace
 			return ExecuteCapturedCommandPosix(command, timeout_ms, stop_token);
 		}
 
-		bool StartStdioProcess(uam::platform::StdioProcessPlatformFields& process,
-		                       const std::filesystem::path& working_directory,
-		                       const std::vector<std::string>& argv,
-		                       std::string* error_out = nullptr) const override
+		bool StartStdioProcess(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr) const override
 		{
 			if (argv.empty() || TrimAsciiWhitespace(argv.front()).empty())
 			{
@@ -1028,7 +1042,7 @@ namespace
 			int stdin_pipe[2] = {-1, -1};
 			int stdout_pipe[2] = {-1, -1};
 			int stderr_pipe[2] = {-1, -1};
-			auto close_pipe = [](int (&pipe_fds)[2])
+			auto close_pipe = [](int(&pipe_fds)[2])
 			{
 				if (pipe_fds[0] >= 0)
 				{
@@ -1191,17 +1205,17 @@ namespace
 					continue;
 				}
 				if (written < 0 && errno == EINTR)
-					{
-						continue;
-					}
-					if (error_out != nullptr)
-					{
-						*error_out = std::strerror(errno);
-					}
-					return false;
+				{
+					continue;
 				}
-				return true;
+				if (error_out != nullptr)
+				{
+					*error_out = std::strerror(errno);
+				}
+				return false;
 			}
+			return true;
+		}
 
 		void StopStdioProcess(uam::platform::StdioProcessPlatformFields& process, const bool fast_exit) const override
 		{

@@ -110,10 +110,28 @@ void UamCefClient::OnTitleChange(CefRefPtr<CefBrowser> browser,
 
 void UamCefClient::OnBeforeContextMenu(CefRefPtr<CefBrowser>           /*browser*/,
                                         CefRefPtr<CefFrame>             /*frame*/,
-                                        CefRefPtr<CefContextMenuParams> /*params*/,
+                                        CefRefPtr<CefContextMenuParams> params,
                                         CefRefPtr<CefMenuModel>         model)
 {
 	model->Clear();
+	if (params != nullptr && !params->GetSelectionText().empty())
+	{
+		model->AddItem(MENU_ID_COPY, "Copy");
+	}
+}
+
+bool UamCefClient::OnContextMenuCommand(CefRefPtr<CefBrowser>           /*browser*/,
+                                         CefRefPtr<CefFrame>             frame,
+                                         CefRefPtr<CefContextMenuParams> /*params*/,
+                                         int                             command_id,
+                                         EventFlags                      /*event_flags*/)
+{
+	if (command_id == MENU_ID_COPY && frame != nullptr)
+	{
+		frame->Copy();
+		return true;
+	}
+	return false;
 }
 
 // ---------------------------------------------------------------------------

@@ -21,16 +21,40 @@ namespace uam
 namespace
 {
 
-std::string RoleStr(MessageRole role)
-{
-	switch (role)
+	std::string RoleStr(MessageRole role)
 	{
-	case MessageRole::User:      return "user";
+		switch (role)
+		{
+		case MessageRole::User:      return "user";
 	case MessageRole::Assistant: return "assistant";
 	case MessageRole::System:    return "system";
 	}
-	return "user";
-}
+		return "user";
+	}
+
+	std::string ToolCallContentForFrontend(const ToolCall& tool_call)
+	{
+		if (!tool_call.args_json.empty() && !tool_call.result_text.empty())
+		{
+			return "Arguments:\n" + tool_call.args_json + "\n\nResult:\n" + tool_call.result_text;
+		}
+		if (!tool_call.result_text.empty())
+		{
+			return tool_call.result_text;
+		}
+		return tool_call.args_json;
+	}
+
+	nlohmann::json SerializeToolCallForFrontend(const ToolCall& tool_call)
+	{
+		nlohmann::json tool_json;
+		tool_json["id"] = tool_call.id;
+		tool_json["title"] = tool_call.name;
+		tool_json["kind"] = tool_call.name.empty() ? "tool" : tool_call.name;
+		tool_json["status"] = tool_call.status;
+		tool_json["content"] = ToolCallContentForFrontend(tool_call);
+		return tool_json;
+	}
 
 constexpr std::uint64_t kFingerprintHashOffset = 1469598103934665603ull;
 constexpr std::uint64_t kFingerprintHashPrime = 1099511628211ull;
@@ -77,12 +101,20 @@ std::string MessageDigestForFingerprint(const ChatSession& session)
 		const Message& last_message = session.messages.back();
 		FingerprintHashString(hash, RoleStr(last_message.role));
 		FingerprintHashString(hash, last_message.created_at);
-		FingerprintHashString(hash, last_message.provider);
-		FingerprintHashString(hash, std::to_string(last_message.content.size()));
-		FingerprintHashString(hash, std::to_string(last_message.tool_calls.size()));
-		FingerprintHashString(hash, std::to_string(last_message.thoughts.size()));
-		FingerprintHashBool(hash, last_message.interrupted);
-	}
+			FingerprintHashString(hash, last_message.provider);
+			FingerprintHashString(hash, std::to_string(last_message.content.size()));
+			FingerprintHashString(hash, std::to_string(last_message.tool_calls.size()));
+			for (const ToolCall& tool_call : last_message.tool_calls)
+			{
+				FingerprintHashString(hash, tool_call.id);
+				FingerprintHashString(hash, tool_call.name);
+				FingerprintHashString(hash, tool_call.status);
+				FingerprintHashString(hash, std::to_string(tool_call.args_json.size()));
+				FingerprintHashString(hash, std::to_string(tool_call.result_text.size()));
+			}
+			FingerprintHashString(hash, std::to_string(last_message.thoughts.size()));
+			FingerprintHashBool(hash, last_message.interrupted);
+		}
 
 	return FingerprintHashHex(hash);
 }
@@ -176,8 +208,12 @@ nlohmann::json SerializeAcpSessionSummary(const AppState& app, const ChatSession
 			acp_json["diagnostics"] = nlohmann::json::array();
 			acp_json["toolCalls"] = nlohmann::json::array();
 			acp_json["planEntries"] = nlohmann::json::array();
+			acp_json["availableModes"] = nlohmann::json::array();
+			acp_json["currentModeId"] = chat.approval_mode;
+			acp_json["availableModels"] = nlohmann::json::array();
+			acp_json["currentModelId"] = chat.model_id;
 			acp_json["turnEvents"] = nlohmann::json::array();
-		acp_json["turnUserMessageIndex"] = -1;
+			acp_json["turnUserMessageIndex"] = -1;
 		acp_json["turnAssistantMessageIndex"] = -1;
 		acp_json["turnSerial"] = 0;
 		acp_json["pendingPermission"] = nullptr;
@@ -236,10 +272,34 @@ nlohmann::json SerializeAcpSessionSummary(const AppState& app, const ChatSession
 			{"priority", entry.priority},
 			{"status", entry.status},
 		});
-	}
-	acp_json["planEntries"] = std::move(plan_entries);
+		}
+		acp_json["planEntries"] = std::move(plan_entries);
 
-	auto turn_events = nlohmann::json::array();
+		auto available_modes = nlohmann::json::array();
+		for (const AcpModeState& mode : session->available_modes)
+		{
+			available_modes.push_back({
+				{"id", mode.id},
+				{"name", mode.name},
+				{"description", mode.description},
+			});
+		}
+		acp_json["availableModes"] = std::move(available_modes);
+		acp_json["currentModeId"] = session->current_mode_id.empty() ? chat.approval_mode : session->current_mode_id;
+
+		auto available_models = nlohmann::json::array();
+		for (const AcpModelState& model : session->available_models)
+		{
+			available_models.push_back({
+				{"id", model.id},
+				{"name", model.name},
+				{"description", model.description},
+			});
+		}
+		acp_json["availableModels"] = std::move(available_models);
+		acp_json["currentModelId"] = session->current_model_id.empty() ? chat.model_id : session->current_model_id;
+
+		auto turn_events = nlohmann::json::array();
 	for (const AcpTurnEventState& event : session->turn_events)
 	{
 		nlohmann::json event_json;
@@ -300,6 +360,8 @@ nlohmann::json SerializeFingerprintSession(const AppState& app, const ChatSessio
 	chat_json["title"] = chat.title;
 	chat_json["folderId"] = chat.folder_id;
 	chat_json["providerId"] = chat.provider_id;
+	chat_json["modelId"] = chat.model_id;
+	chat_json["approvalMode"] = chat.approval_mode;
 	chat_json["workspaceDirectory"] = ResolveWorkspaceRootPath(app, chat).string();
 	chat_json["createdAt"] = chat.created_at;
 	chat_json["updatedAt"] = chat.updated_at;
@@ -509,6 +571,8 @@ nlohmann::json StateSerializer::SerializeSession(const ChatSession& session)
 	j["title"]      = session.title;
 	j["folderId"]   = session.folder_id;
 	j["providerId"] = session.provider_id;
+	j["modelId"]    = session.model_id;
+	j["approvalMode"] = session.approval_mode;
 	j["workspaceDirectory"] = session.workspace_directory;
 	j["createdAt"]  = session.created_at;
 	j["updatedAt"]  = session.updated_at;
@@ -523,6 +587,15 @@ nlohmann::json StateSerializer::SerializeSession(const ChatSession& session)
 			if (!msg.thoughts.empty())
 			{
 				m["thoughts"] = msg.thoughts;
+			}
+			if (!msg.tool_calls.empty())
+			{
+				auto tool_calls = nlohmann::json::array();
+				for (const ToolCall& tool_call : msg.tool_calls)
+				{
+					tool_calls.push_back(SerializeToolCallForFrontend(tool_call));
+				}
+				m["toolCalls"] = std::move(tool_calls);
 			}
 			msgs.push_back(m);
 		}

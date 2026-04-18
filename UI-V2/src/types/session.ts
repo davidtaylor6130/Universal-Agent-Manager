@@ -6,6 +6,8 @@ export interface Session {
   viewMode: ViewMode
   folderId: string | null
   workspaceDirectory?: string
+  modelId?: string
+  approvalMode?: string
   createdAt: Date
   updatedAt: Date
 }

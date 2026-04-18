@@ -1,4 +1,5 @@
 #include "cef/uam_query_handler.h"
+#include "cef/uam_bridge_request.h"
 #include "cef/cef_push.h"
 #include "cef/state_serializer.h"
 #include "cef/uam_cef_security.h"
@@ -18,6 +19,7 @@
 #include "common/runtime/terminal/terminal_lifecycle.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
 #include "common/chat/chat_folder_store.h"
+#include "common/utils/string_utils.h"
 
 #include "include/wrapper/cef_helpers.h"
 
@@ -75,8 +77,59 @@ namespace
 		}
 	}
 
-	static const char kBase64Chars[] =
-		"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+		bool IsSafeAcpToken(const std::string& value)
+		{
+			if (value.empty() || value.size() > 160 || value.front() == '-')
+			{
+				return false;
+			}
+			for (const char ch : value)
+			{
+				const bool safe =
+				    (ch >= 'a' && ch <= 'z') ||
+				    (ch >= 'A' && ch <= 'Z') ||
+				    (ch >= '0' && ch <= '9') ||
+				    ch == '.' ||
+				    ch == '_' ||
+				    ch == '-' ||
+				    ch == ':' ||
+				    ch == '/';
+				if (!safe)
+				{
+					return false;
+				}
+			}
+			return true;
+		}
+
+		bool IsAllowedAcpModelId(const std::string& model_id)
+		{
+			return model_id.empty() || IsSafeAcpToken(model_id);
+		}
+
+		std::string NormalizeAcpApprovalMode(const std::string& mode_id)
+		{
+			const std::string trimmed = Trim(mode_id);
+			return trimmed.empty() ? "default" : trimmed;
+		}
+
+		bool IsAllowedAcpApprovalMode(const std::string& mode_id)
+		{
+			return mode_id == "default" || mode_id == "plan";
+		}
+
+	bool AcpSessionBlocksModelChange(const uam::AcpSessionState& session)
+	{
+		return session.processing ||
+		       session.waiting_for_permission ||
+		       session.initialize_request_id != 0 ||
+		       session.session_setup_request_id != 0 ||
+		       session.prompt_request_id != 0 ||
+		       session.cancel_request_id != 0 ||
+		       !session.queued_prompt.empty();
+	}
+
+	static const char kBase64Chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 	std::string Base64Encode(const std::string& input)
 	{
@@ -163,35 +216,27 @@ namespace
 
 		if (!terminal.recent_output_bytes.empty())
 		{
-			const std::size_t start_offset = terminal.recent_output_bytes.size() > kRecentOutputReplayLimitBytes
-				? terminal.recent_output_bytes.size() - kRecentOutputReplayLimitBytes
-				: 0;
+			const std::size_t start_offset = terminal.recent_output_bytes.size() > kRecentOutputReplayLimitBytes ? terminal.recent_output_bytes.size() - kRecentOutputReplayLimitBytes : 0;
 			data["replayData"] = Base64Encode(terminal.recent_output_bytes.substr(start_offset));
 		}
 
 		return data;
 	}
-}
+} // namespace
 
 // ---------------------------------------------------------------------------
 // Construction
 // ---------------------------------------------------------------------------
 
-UamQueryHandler::UamQueryHandler(uam::AppState& app, std::string trusted_ui_index_url)
-	: m_app(app)
-	, m_trustedUiIndexUrl(std::move(trusted_ui_index_url))
-{}
+UamQueryHandler::UamQueryHandler(uam::AppState& app, std::string trusted_ui_index_url) : m_app(app), m_trustedUiIndexUrl(std::move(trusted_ui_index_url))
+{
+}
 
 // ---------------------------------------------------------------------------
 // CefMessageRouterBrowserSide::Handler
 // ---------------------------------------------------------------------------
 
-bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser>  browser,
-                               CefRefPtr<CefFrame>    frame,
-                               int64_t                /*query_id*/,
-                               const CefString&       request,
-                               bool                   /*persistent*/,
-                               CefRefPtr<Callback>    callback)
+bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int64_t /*query_id*/, const CefString& request, bool /*persistent*/, CefRefPtr<Callback> callback)
 {
 	CEF_REQUIRE_UI_THREAD();
 
@@ -201,69 +246,78 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser>  browser,
 		return true;
 	}
 
-	nlohmann::json req;
-	try
+	const uam::cef::BridgeRequestParseResult parsed = uam::cef::ParseBridgeRequest(request.ToString());
+	if (!parsed.ok)
 	{
-		req = nlohmann::json::parse(request.ToString());
-	}
-	catch (const nlohmann::json::parse_error&)
-	{
-		callback->Failure(400, "Invalid JSON request");
+		callback->Failure(parsed.status, parsed.error);
 		return true;
 	}
 
-	const std::string action = req.value("action", "");
-	const nlohmann::json payload = req.value("payload", nlohmann::json::object());
+	const std::string& action = parsed.request.action;
+	const nlohmann::json& payload = parsed.request.payload;
 
-	if (action == "getInitialState")
-		HandleGetInitialState(browser, callback);
-	else if (action == "selectSession")
-		HandleSelectSession(browser, payload, callback);
-	else if (action == "createSession")
-		HandleCreateSession(browser, payload, callback);
-	else if (action == "renameSession")
-		HandleRenameSession(browser, payload, callback);
-	else if (action == "deleteSession")
-		HandleDeleteSession(browser, payload, callback);
-	else if (action == "createFolder")
-		HandleCreateFolder(browser, payload, callback);
-	else if (action == "renameFolder")
-		HandleRenameFolder(browser, payload, callback);
-	else if (action == "deleteFolder")
-		HandleDeleteFolder(browser, payload, callback);
-	else if (action == "toggleFolder")
-		HandleToggleFolder(browser, payload, callback);
-	else if (action == "browseFolderDirectory")
-		HandleBrowseFolderDirectory(browser, payload, callback);
-	else if (action == "startCliTerminal")
-		HandleStartCli(browser, payload, callback);
-	else if (action == "stopCliTerminal")
-		HandleStopCli(browser, payload, callback);
-	else if (action == "resizeCliTerminal")
-		HandleResizeCli(payload, callback);
-	else if (action == "writeCliInput")
-		HandleWriteCliInput(browser, payload, callback);
-	else if (action == "sendAcpPrompt")
-		HandleSendAcpPrompt(browser, payload, callback);
-	else if (action == "cancelAcpTurn")
-		HandleCancelAcpTurn(browser, payload, callback);
-	else if (action == "resolveAcpPermission")
-		HandleResolveAcpPermission(browser, payload, callback);
-	else if (action == "stopAcpSession")
-		HandleStopAcpSession(browser, payload, callback);
-	else if (action == "setTheme")
-		HandleSetTheme(browser, payload, callback);
-	else
+	try
 	{
-		callback->Failure(404, "Unknown action: " + action);
+		if (action == "getInitialState")
+			HandleGetInitialState(browser, callback);
+		else if (action == "selectSession")
+			HandleSelectSession(browser, payload, callback);
+		else if (action == "createSession")
+			HandleCreateSession(browser, payload, callback);
+		else if (action == "renameSession")
+			HandleRenameSession(browser, payload, callback);
+			else if (action == "setChatModel")
+				HandleSetChatModel(browser, payload, callback);
+			else if (action == "setChatApprovalMode")
+				HandleSetChatApprovalMode(browser, payload, callback);
+			else if (action == "deleteSession")
+				HandleDeleteSession(browser, payload, callback);
+		else if (action == "createFolder")
+			HandleCreateFolder(browser, payload, callback);
+		else if (action == "renameFolder")
+			HandleRenameFolder(browser, payload, callback);
+		else if (action == "deleteFolder")
+			HandleDeleteFolder(browser, payload, callback);
+		else if (action == "toggleFolder")
+			HandleToggleFolder(browser, payload, callback);
+		else if (action == "browseFolderDirectory")
+			HandleBrowseFolderDirectory(browser, payload, callback);
+		else if (action == "startCliTerminal")
+			HandleStartCli(browser, payload, callback);
+		else if (action == "stopCliTerminal")
+			HandleStopCli(browser, payload, callback);
+		else if (action == "resizeCliTerminal")
+			HandleResizeCli(payload, callback);
+		else if (action == "writeCliInput")
+			HandleWriteCliInput(browser, payload, callback);
+		else if (action == "sendAcpPrompt")
+			HandleSendAcpPrompt(browser, payload, callback);
+		else if (action == "cancelAcpTurn")
+			HandleCancelAcpTurn(browser, payload, callback);
+		else if (action == "resolveAcpPermission")
+			HandleResolveAcpPermission(browser, payload, callback);
+		else if (action == "stopAcpSession")
+			HandleStopAcpSession(browser, payload, callback);
+		else if (action == "setTheme")
+			HandleSetTheme(browser, payload, callback);
+		else
+		{
+			callback->Failure(404, "Unknown action: " + action);
+		}
+	}
+	catch (const nlohmann::json::exception& ex)
+	{
+		callback->Failure(400, std::string("Invalid bridge payload: ") + ex.what());
+	}
+	catch (const std::exception& ex)
+	{
+		callback->Failure(500, std::string("Bridge request failed: ") + ex.what());
 	}
 
 	return true;
 }
 
-void UamQueryHandler::OnQueryCanceled(CefRefPtr<CefBrowser> /*browser*/,
-                                       CefRefPtr<CefFrame>   /*frame*/,
-                                       int64_t               /*query_id*/)
+void UamQueryHandler::OnQueryCanceled(CefRefPtr<CefBrowser> /*browser*/, CefRefPtr<CefFrame> /*frame*/, int64_t /*query_id*/)
 {
 	// Persistent queries are not used; nothing to cancel.
 }
@@ -272,16 +326,13 @@ void UamQueryHandler::OnQueryCanceled(CefRefPtr<CefBrowser> /*browser*/,
 // Action handlers
 // ---------------------------------------------------------------------------
 
-void UamQueryHandler::HandleGetInitialState(CefRefPtr<CefBrowser>  /*browser*/,
-                                             CefRefPtr<Callback>    cb)
+void UamQueryHandler::HandleGetInitialState(CefRefPtr<CefBrowser> /*browser*/, CefRefPtr<Callback> cb)
 {
 	nlohmann::json state = uam::StateSerializer::Serialize(m_app);
 	cb->Success(state.dump());
 }
 
-void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser>  browser,
-                                           const nlohmann::json&  payload,
-                                           CefRefPtr<Callback>    cb)
+void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string previous_selected_chat_id = (ChatDomainService().SelectedChat(m_app) != nullptr) ? ChatDomainService().SelectedChat(m_app)->id : std::string{};
@@ -297,16 +348,12 @@ void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser>  browser,
 	cb->Success("{}");
 }
 
-void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser>  browser,
-                                           const nlohmann::json&  payload,
-                                           CefRefPtr<Callback>    cb)
+void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const std::string title      = payload.value("title",      "New Chat");
+	const std::string title = payload.value("title", "New Chat");
 	const std::string requested_folder_id = payload.value("folderId", "");
 	const ProviderProfile* preferred_provider = ResolvePreferredCliProvider(m_app);
-	const std::string provider_id = payload.value(
-		"providerId",
-		preferred_provider != nullptr ? preferred_provider->id : m_app.settings.active_provider_id);
+	const std::string provider_id = payload.value("providerId", preferred_provider != nullptr ? preferred_provider->id : m_app.settings.active_provider_id);
 	const std::string previous_selected_chat_id = (ChatDomainService().SelectedChat(m_app) != nullptr) ? ChatDomainService().SelectedChat(m_app)->id : std::string{};
 
 	const std::string target_folder_id = ResolveRequestedNewChatFolderId(m_app, requested_folder_id);
@@ -362,12 +409,10 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser>  browser,
 	cb->Success("{}");
 }
 
-void UamQueryHandler::HandleRenameSession(CefRefPtr<CefBrowser>  browser,
-                                           const nlohmann::json&  payload,
-                                           CefRefPtr<Callback>    cb)
+void UamQueryHandler::HandleRenameSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
-	const std::string title   = payload.value("title",   "");
+	const std::string title = payload.value("title", "");
 
 	const int idx = ChatDomainService().FindChatIndexById(m_app, chat_id);
 	if (idx < 0)
@@ -387,9 +432,154 @@ void UamQueryHandler::HandleRenameSession(CefRefPtr<CefBrowser>  browser,
 	cb->Success("{}");
 }
 
-void UamQueryHandler::HandleDeleteSession(CefRefPtr<CefBrowser>  browser,
-                                           const nlohmann::json&  payload,
-                                           CefRefPtr<Callback>    cb)
+void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const std::string model_id = Trim(payload.value("modelId", ""));
+
+	if (!IsAllowedAcpModelId(model_id))
+	{
+		cb->Failure(400, "Unsupported ACP model: " + model_id);
+		return;
+	}
+
+	const int idx = ChatDomainService().FindChatIndexById(m_app, chat_id);
+	if (idx < 0)
+	{
+		cb->Failure(404, "Chat not found: " + chat_id);
+		return;
+	}
+
+	ChatSession& chat = m_app.chats[static_cast<std::size_t>(idx)];
+	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat.id);
+	if (session != nullptr && AcpSessionBlocksModelChange(*session))
+	{
+		cb->Failure(409, "Cannot change model while Gemini ACP is busy.");
+		return;
+	}
+
+	if (chat.model_id == model_id)
+	{
+		if (session != nullptr && session->running && !model_id.empty() && session->current_model_id != model_id)
+		{
+			std::string acp_error;
+			if (!uam::SetAcpSessionModel(m_app, chat.id, model_id, &acp_error))
+			{
+				cb->Failure(409, acp_error.empty() ? "Failed to update live ACP model." : acp_error);
+				return;
+			}
+		}
+		uam::PushStateUpdate(browser, m_app);
+		cb->Success("{}");
+		return;
+	}
+
+	const std::string previous_model_id = chat.model_id;
+	const std::string previous_updated_at = chat.updated_at;
+	chat.model_id = model_id;
+	chat.updated_at = TimestampNow();
+
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, chat, "Chat model updated.", "Chat model changed in UI, but failed to save."))
+	{
+		chat.model_id = previous_model_id;
+		chat.updated_at = previous_updated_at;
+		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist chat model." : m_app.status_line);
+		return;
+	}
+
+	if (session != nullptr && session->running)
+	{
+		std::string acp_error;
+		const bool live_updated = model_id.empty()
+			? uam::StopAcpSession(m_app, chat.id)
+			: uam::SetAcpSessionModel(m_app, chat.id, model_id, &acp_error);
+		if (!live_updated)
+		{
+			chat.model_id = previous_model_id;
+			chat.updated_at = previous_updated_at;
+			(void)ChatHistorySyncService().SaveChatWithStatus(m_app, chat, "Chat model reverted.", "Chat model changed in UI, but failed to revert.");
+			cb->Failure(409, acp_error.empty() ? "Failed to update live ACP model." : acp_error);
+			return;
+		}
+	}
+
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleSetChatApprovalMode(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const std::string mode_id = NormalizeAcpApprovalMode(payload.value("modeId", ""));
+
+	if (!IsAllowedAcpApprovalMode(mode_id))
+	{
+		cb->Failure(400, "Unsupported ACP mode: " + mode_id);
+		return;
+	}
+
+	const int idx = ChatDomainService().FindChatIndexById(m_app, chat_id);
+	if (idx < 0)
+	{
+		cb->Failure(404, "Chat not found: " + chat_id);
+		return;
+	}
+
+	ChatSession& chat = m_app.chats[static_cast<std::size_t>(idx)];
+	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat.id);
+	if (session != nullptr && AcpSessionBlocksModelChange(*session))
+	{
+		cb->Failure(409, "Cannot change ACP mode while Gemini ACP is busy.");
+		return;
+	}
+
+	if (chat.approval_mode == mode_id)
+	{
+		if (session != nullptr && session->running && session->current_mode_id != mode_id)
+		{
+			std::string acp_error;
+			if (!uam::SetAcpSessionMode(m_app, chat.id, mode_id, &acp_error))
+			{
+				cb->Failure(409, acp_error.empty() ? "Failed to update live ACP mode." : acp_error);
+				return;
+			}
+		}
+		uam::PushStateUpdate(browser, m_app);
+		cb->Success("{}");
+		return;
+	}
+
+	const std::string previous_mode_id = chat.approval_mode;
+	const std::string previous_updated_at = chat.updated_at;
+	chat.approval_mode = mode_id;
+	chat.updated_at = TimestampNow();
+
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, chat, "Chat mode updated.", "Chat mode changed in UI, but failed to save."))
+	{
+		chat.approval_mode = previous_mode_id;
+		chat.updated_at = previous_updated_at;
+		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist chat mode." : m_app.status_line);
+		return;
+	}
+
+	if (session != nullptr && session->running)
+	{
+		std::string acp_error;
+		if (!uam::SetAcpSessionMode(m_app, chat.id, mode_id, &acp_error))
+		{
+			chat.approval_mode = previous_mode_id;
+			chat.updated_at = previous_updated_at;
+			(void)ChatHistorySyncService().SaveChatWithStatus(m_app, chat, "Chat mode reverted.", "Chat mode changed in UI, but failed to revert.");
+			cb->Failure(409, acp_error.empty() ? "Failed to update live ACP mode." : acp_error);
+			return;
+		}
+	}
+
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleDeleteSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const int idx = ChatDomainService().FindChatIndexById(m_app, chat_id);
@@ -409,9 +599,7 @@ void UamQueryHandler::HandleDeleteSession(CefRefPtr<CefBrowser>  browser,
 	cb->Success("{}");
 }
 
-void UamQueryHandler::HandleCreateFolder(CefRefPtr<CefBrowser>  browser,
-                                          const nlohmann::json&  payload,
-                                          CefRefPtr<Callback>    cb)
+void UamQueryHandler::HandleCreateFolder(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string title = payload.value("title", "New Folder");
 	const std::string directory = payload.value("directory", "");
@@ -434,9 +622,7 @@ void UamQueryHandler::HandleCreateFolder(CefRefPtr<CefBrowser>  browser,
 	cb->Success(uam::StateSerializer::SerializeFolder(*folder).dump());
 }
 
-void UamQueryHandler::HandleRenameFolder(CefRefPtr<CefBrowser>  browser,
-                                          const nlohmann::json&  payload,
-                                          CefRefPtr<Callback>    cb)
+void UamQueryHandler::HandleRenameFolder(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string folder_id = payload.value("folderId", "");
 	const std::string title = payload.value("title", "");
@@ -452,9 +638,7 @@ void UamQueryHandler::HandleRenameFolder(CefRefPtr<CefBrowser>  browser,
 	cb->Success("{}");
 }
 
-void UamQueryHandler::HandleDeleteFolder(CefRefPtr<CefBrowser>  browser,
-                                          const nlohmann::json&  payload,
-                                          CefRefPtr<Callback>    cb)
+void UamQueryHandler::HandleDeleteFolder(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string folder_id = payload.value("folderId", "");
 
@@ -468,9 +652,7 @@ void UamQueryHandler::HandleDeleteFolder(CefRefPtr<CefBrowser>  browser,
 	cb->Success("{}");
 }
 
-void UamQueryHandler::HandleToggleFolder(CefRefPtr<CefBrowser>  browser,
-                                          const nlohmann::json&  payload,
-                                          CefRefPtr<Callback>    cb)
+void UamQueryHandler::HandleToggleFolder(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string folder_id = payload.value("folderId", "");
 	ChatFolder* folder = ChatDomainService().FindFolderById(m_app, folder_id);
@@ -493,20 +675,14 @@ void UamQueryHandler::HandleToggleFolder(CefRefPtr<CefBrowser>  browser,
 	cb->Success("{}");
 }
 
-void UamQueryHandler::HandleBrowseFolderDirectory(CefRefPtr<CefBrowser>  /*browser*/,
-                                                   const nlohmann::json&  payload,
-                                                   CefRefPtr<Callback>    cb)
+void UamQueryHandler::HandleBrowseFolderDirectory(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string current_value = payload.value("currentValue", "");
 	const std::filesystem::path initial_path = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(current_value);
 
 	std::string selected_path;
 	std::string error;
-	if (!PlatformServicesFactory::Instance().file_dialog_service.BrowsePath(
-			PlatformPathBrowseTarget::Directory,
-			initial_path,
-			&selected_path,
-			&error))
+	if (!PlatformServicesFactory::Instance().file_dialog_service.BrowsePath(PlatformPathBrowseTarget::Directory, initial_path, &selected_path, &error))
 	{
 		if (!error.empty())
 		{
@@ -526,9 +702,7 @@ void UamQueryHandler::HandleBrowseFolderDirectory(CefRefPtr<CefBrowser>  /*brows
 	cb->Success(result.dump());
 }
 
-void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser>  browser,
-                                      const nlohmann::json&  payload,
-                                      CefRefPtr<Callback>    cb)
+void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const int rows = payload.value("rows", 24);
@@ -595,9 +769,7 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser>  browser,
 	cb->Success(BuildCliBindingResponse(terminal).dump());
 }
 
-void UamQueryHandler::HandleStopCli(CefRefPtr<CefBrowser>  browser,
-                                     const nlohmann::json&  payload,
-                                     CefRefPtr<Callback>    cb)
+void UamQueryHandler::HandleStopCli(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string terminal_id = payload.value("terminalId", "");
@@ -615,8 +787,7 @@ void UamQueryHandler::HandleStopCli(CefRefPtr<CefBrowser>  browser,
 	cb->Success("{}");
 }
 
-void UamQueryHandler::HandleResizeCli(const nlohmann::json& payload,
-                                       CefRefPtr<Callback>   cb)
+void UamQueryHandler::HandleResizeCli(const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string terminal_id = payload.value("terminalId", "");
@@ -633,13 +804,11 @@ void UamQueryHandler::HandleResizeCli(const nlohmann::json& payload,
 	cb->Success("{}");
 }
 
-void UamQueryHandler::HandleWriteCliInput(CefRefPtr<CefBrowser> browser,
-                                           const nlohmann::json& payload,
-                                           CefRefPtr<Callback>   cb)
+void UamQueryHandler::HandleWriteCliInput(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string terminal_id = payload.value("terminalId", "");
-	const std::string data    = payload.value("data",   "");
+	const std::string data = payload.value("data", "");
 
 	if (!data.empty())
 	{
@@ -664,9 +833,7 @@ void UamQueryHandler::HandleWriteCliInput(CefRefPtr<CefBrowser> browser,
 	cb->Success("{}");
 }
 
-void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser,
-                                           const nlohmann::json& payload,
-                                           CefRefPtr<Callback>   cb)
+void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string text = payload.value("text", "");
@@ -682,9 +849,7 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser,
 	cb->Success("{}");
 }
 
-void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser,
-                                           const nlohmann::json& payload,
-                                           CefRefPtr<Callback>   cb)
+void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
 
@@ -699,9 +864,7 @@ void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser,
 	cb->Success("{}");
 }
 
-void UamQueryHandler::HandleResolveAcpPermission(CefRefPtr<CefBrowser> browser,
-                                                  const nlohmann::json& payload,
-                                                  CefRefPtr<Callback>   cb)
+void UamQueryHandler::HandleResolveAcpPermission(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string request_id = payload.value("requestId", "");
@@ -719,9 +882,7 @@ void UamQueryHandler::HandleResolveAcpPermission(CefRefPtr<CefBrowser> browser,
 	cb->Success("{}");
 }
 
-void UamQueryHandler::HandleStopAcpSession(CefRefPtr<CefBrowser> browser,
-                                            const nlohmann::json& payload,
-                                            CefRefPtr<Callback>   cb)
+void UamQueryHandler::HandleStopAcpSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
 	uam::StopAcpSession(m_app, chat_id);
@@ -729,9 +890,7 @@ void UamQueryHandler::HandleStopAcpSession(CefRefPtr<CefBrowser> browser,
 	cb->Success("{}");
 }
 
-void UamQueryHandler::HandleSetTheme(CefRefPtr<CefBrowser>  browser,
-                                      const nlohmann::json&  payload,
-                                      CefRefPtr<Callback>    cb)
+void UamQueryHandler::HandleSetTheme(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string theme = payload.value("theme", "dark");
 	const std::string previous_theme = m_app.settings.ui_theme;

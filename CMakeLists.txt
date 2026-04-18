@@ -192,6 +192,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/runtime_orchestration_services.cpp
   src/cef/uam_cef_app.cpp
   src/cef/uam_cef_client.cpp
+  src/cef/uam_bridge_request.cpp
   src/cef/uam_query_handler.cpp
   src/cef/state_serializer.cpp
   src/cef/cef_push.cpp
@@ -429,7 +430,7 @@ endif()
 #           live beside the binary in Contents/MacOS/, which would cause
 #           codesign to scan them as code objects and produce a broken signature.
 # On Windows: flat layout next to the executable.
-set(UAM_UI_DIST_SRC "${CMAKE_SOURCE_DIR}/UI-V2/dist")
+set(UAM_UI_DIST_SRC "${CMAKE_BINARY_DIR}/UI-V2/dist")
 find_program(UAM_NPM_EXECUTABLE NAMES npm npm.cmd REQUIRED)
 string(TIMESTAMP UAM_UI_BUILD_TIMESTAMP "%Y%m%dT%H%M%SZ" UTC)
 set(UAM_UI_BUILD_VERSION "${PROJECT_VERSION}")
@@ -440,9 +441,9 @@ set(UAM_UI_BUILD_ID "${UAM_UI_BUILD_VERSION}-${CMAKE_SYSTEM_NAME}-${UAM_UI_BUILD
 
 add_custom_target(uam_ui_v2_build
   COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/UI-V2"
-  COMMAND ${CMAKE_COMMAND} -E env "VITE_UAM_UI_BUILD_ID=${UAM_UI_BUILD_ID}" ${UAM_NPM_EXECUTABLE} run build
+  COMMAND ${CMAKE_COMMAND} -E env "VITE_UAM_UI_BUILD_ID=${UAM_UI_BUILD_ID}" "VITE_UAM_OUT_DIR=${UAM_UI_DIST_SRC}" ${UAM_NPM_EXECUTABLE} run build
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/UI-V2"
-  COMMENT "Building UI-V2/dist (build id: ${UAM_UI_BUILD_ID})"
+  COMMENT "Building UI-V2 dist in ${UAM_UI_DIST_SRC} (build id: ${UAM_UI_BUILD_ID})"
   VERBATIM
 )
 add_dependencies(universal_agent_manager uam_ui_v2_build)
@@ -546,6 +547,7 @@ if(UAM_BUILD_TESTS)
     src/app/provider_resolution_service.cpp
     src/app/provider_profile_migration_service.cpp
     src/app/runtime_orchestration_services.cpp
+    src/cef/uam_bridge_request.cpp
     src/cef/state_serializer.cpp
     src/common/models/app_models.cpp
     src/common/paths/app_paths.cpp

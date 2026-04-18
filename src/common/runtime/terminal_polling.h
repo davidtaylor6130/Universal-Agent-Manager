@@ -77,9 +77,7 @@ inline std::string NativeHistorySnapshotDigest(const std::vector<ChatSession>& c
 	return out.str();
 }
 
-inline uam::platform::AsyncNativeChatLoadTask& AsyncNativeChatLoadTaskFor(uam::AppState& app,
-                                                                          const std::string& provider_id,
-                                                                          const std::filesystem::path& chats_dir)
+inline uam::platform::AsyncNativeChatLoadTask& AsyncNativeChatLoadTaskFor(uam::AppState& app, const std::string& provider_id, const std::filesystem::path& chats_dir)
 {
 	return app.native_chat_load_tasks[AsyncNativeChatLoadTaskKey(provider_id, chats_dir)];
 }
@@ -89,7 +87,6 @@ inline void ResetAsyncNativeChatLoadTask(uam::platform::AsyncNativeChatLoadTask&
 	if (task.worker != nullptr)
 	{
 		task.worker->request_stop();
-		task.worker->detach();
 		task.worker.reset();
 	}
 
@@ -148,12 +145,7 @@ inline bool StartAsyncNativeChatLoadForTerminal(uam::AppState& app, const Provid
 	return true;
 }
 
-inline bool TryConsumeAsyncNativeChatLoadForTerminal(uam::AppState& app,
-                                                     const ProviderProfile& provider,
-                                                     const std::filesystem::path& chats_dir,
-                                                     std::vector<ChatSession>& chats_out,
-                                                     std::string& digest_out,
-                                                     std::string& error_out)
+inline bool TryConsumeAsyncNativeChatLoadForTerminal(uam::AppState& app, const ProviderProfile& provider, const std::filesystem::path& chats_dir, std::vector<ChatSession>& chats_out, std::string& digest_out, std::string& error_out)
 {
 	const std::string key = AsyncNativeChatLoadTaskKey(provider.id, chats_dir);
 	const auto it = app.native_chat_load_tasks.find(key);
@@ -195,10 +187,7 @@ inline bool TryConsumeAsyncNativeChatLoadForTerminal(uam::AppState& app,
 	return true;
 }
 
-inline bool TryMarkCliTurnCompleteFromSyncedHistory(uam::AppState& app,
-                                                    uam::CliTerminalState& terminal,
-                                                    const int previous_message_count,
-                                                    const std::string& selected_chat_id)
+inline bool TryMarkCliTurnCompleteFromSyncedHistory(uam::AppState& app, uam::CliTerminalState& terminal, const int previous_message_count, const std::string& selected_chat_id)
 {
 	if (terminal.lifecycle_state != uam::CliTerminalLifecycleState::Busy)
 	{
@@ -299,12 +288,7 @@ inline bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, u
 			append_recent_output(buffer, static_cast<std::size_t>(read_bytes));
 			uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "pty_read", &terminal, "", static_cast<long long>(read_bytes));
 
-			uam::PushCliOutput(
-			    browser,
-			    CliTerminalPrimaryChatId(terminal),
-			    CliTerminalPrimaryChatId(terminal),
-			    terminal.terminal_id,
-			    std::string(buffer, static_cast<std::size_t>(read_bytes)));
+			uam::PushCliOutput(browser, CliTerminalPrimaryChatId(terminal), CliTerminalPrimaryChatId(terminal), terminal.terminal_id, std::string(buffer, static_cast<std::size_t>(read_bytes)));
 			continue;
 		}
 
@@ -390,13 +374,13 @@ inline bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, u
 	{
 		terminal.last_sync_time_s = now;
 
-			if (platform_terminal_runtime.SupportsAsyncNativeGeminiHistoryRefresh())
-			{
-				std::vector<ChatSession> native_now;
-				std::string native_snapshot_digest;
-				std::string native_load_error;
-				const bool has_loaded_snapshot = TryConsumeAsyncNativeChatLoadForTerminal(app, terminal_provider, terminal_native_history_chats_dir, native_now, native_snapshot_digest, native_load_error);
-				(void)StartAsyncNativeChatLoadForTerminal(app, terminal_provider, terminal_native_history_chats_dir);
+		if (platform_terminal_runtime.SupportsAsyncNativeGeminiHistoryRefresh())
+		{
+			std::vector<ChatSession> native_now;
+			std::string native_snapshot_digest;
+			std::string native_load_error;
+			const bool has_loaded_snapshot = TryConsumeAsyncNativeChatLoadForTerminal(app, terminal_provider, terminal_native_history_chats_dir, native_now, native_snapshot_digest, native_load_error);
+			(void)StartAsyncNativeChatLoadForTerminal(app, terminal_provider, terminal_native_history_chats_dir);
 
 			if (!native_load_error.empty())
 			{
@@ -404,11 +388,11 @@ inline bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, u
 				changed = true;
 			}
 
-				if (has_loaded_snapshot && native_load_error.empty() && native_snapshot_digest != terminal.last_native_history_snapshot_digest)
+			if (has_loaded_snapshot && native_load_error.empty() && native_snapshot_digest != terminal.last_native_history_snapshot_digest)
+			{
+				terminal.last_native_history_snapshot_digest = native_snapshot_digest;
+				if (terminal.attached_session_id.empty())
 				{
-					terminal.last_native_history_snapshot_digest = native_snapshot_digest;
-					if (terminal.attached_session_id.empty())
-					{
 					std::unordered_set<std::string> blocked_ids;
 
 					for (const auto& other_terminal : app.cli_terminals)
@@ -448,9 +432,7 @@ inline bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, u
 					if (!discovered.empty())
 					{
 						const std::string previous_session_id = terminal.attached_session_id;
-						if (previous_chat_index >= 0 &&
-						    NativeSessionLinkService().IsLocalDraftChatId(previous_chat_id) &&
-						    !NativeSessionLinkService().HasRealNativeSessionId(app.chats[previous_chat_index]))
+						if (previous_chat_index >= 0 && NativeSessionLinkService().IsLocalDraftChatId(previous_chat_id) && !NativeSessionLinkService().HasRealNativeSessionId(app.chats[previous_chat_index]))
 						{
 							changed |= ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, app.chats[previous_chat_index], discovered);
 						}
@@ -470,80 +452,78 @@ inline bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, u
 				changed |= SyncChatsFromLoadedNative(app, std::move(native_now), preferred_id, preserve_selection);
 				changed |= TryMarkCliTurnCompleteFromSyncedHistory(app, terminal, previous_chat_message_count, selected_chat_id);
 			}
-			}
-			else
+		}
+		else
+		{
+			const std::vector<ChatSession> native_now = ChatHistorySyncService().LoadNativeSessionChats(terminal_native_history_chats_dir, terminal_provider);
+			const std::string native_snapshot_digest = NativeHistorySnapshotDigest(native_now);
+
+			if (native_snapshot_digest != terminal.last_native_history_snapshot_digest)
 			{
-				const std::vector<ChatSession> native_now = ChatHistorySyncService().LoadNativeSessionChats(terminal_native_history_chats_dir, terminal_provider);
-				const std::string native_snapshot_digest = NativeHistorySnapshotDigest(native_now);
+				terminal.last_native_history_snapshot_digest = native_snapshot_digest;
 
-				if (native_snapshot_digest != terminal.last_native_history_snapshot_digest)
+				if (terminal.attached_session_id.empty())
 				{
-					terminal.last_native_history_snapshot_digest = native_snapshot_digest;
+					std::unordered_set<std::string> blocked_ids;
 
-					if (terminal.attached_session_id.empty())
+					for (const auto& other_terminal : app.cli_terminals)
 					{
-						std::unordered_set<std::string> blocked_ids;
-
-						for (const auto& other_terminal : app.cli_terminals)
+						if (other_terminal == nullptr || other_terminal.get() == &terminal || other_terminal->attached_session_id.empty())
 						{
-							if (other_terminal == nullptr || other_terminal.get() == &terminal || other_terminal->attached_session_id.empty())
-							{
-								continue;
-							}
-							blocked_ids.insert(other_terminal->attached_session_id);
+							continue;
 						}
+						blocked_ids.insert(other_terminal->attached_session_id);
+					}
 
-						for (const auto& resolved : app.resolved_native_sessions_by_chat_id)
+					for (const auto& resolved : app.resolved_native_sessions_by_chat_id)
+					{
+						if (!resolved.second.empty())
 						{
-							if (!resolved.second.empty())
-							{
-								blocked_ids.insert(resolved.second);
-							}
-						}
-
-						const std::string previous_chat_id = terminal.attached_chat_id;
-						const int previous_chat_index = ChatDomainService().FindChatIndexById(app, previous_chat_id);
-						std::string discovered;
-
-						if (previous_chat_index >= 0 && NativeSessionLinkService().IsLocalDraftChatId(previous_chat_id))
-						{
-							if (const auto matched = NativeSessionLinkService().MatchNativeSessionIdForLocalDraft(app.chats[previous_chat_index], native_now, blocked_ids); matched.has_value())
-							{
-								discovered = matched.value();
-							}
-						}
-						else
-						{
-							const std::vector<std::string> candidates = NativeSessionLinkService().CollectNewSessionIds(native_now, terminal.session_ids_before);
-							discovered = NativeSessionLinkService().PickFirstUnblockedSessionId(candidates, blocked_ids);
-						}
-
-						if (!discovered.empty())
-						{
-							const std::string previous_session_id = terminal.attached_session_id;
-							if (previous_chat_index >= 0 &&
-							    NativeSessionLinkService().IsLocalDraftChatId(previous_chat_id) &&
-							    !NativeSessionLinkService().HasRealNativeSessionId(app.chats[previous_chat_index]))
-							{
-								changed |= ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, app.chats[previous_chat_index], discovered);
-							}
-
-							terminal.attached_session_id = discovered;
-							changed = true;
-							uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "native_session_rebound", &terminal, "previous_chat_id=" + previous_chat_id + ", previous_session_id=" + previous_session_id + ", discovered=" + discovered);
-
-							if (!previous_chat_id.empty())
-							{
-								app.resolved_native_sessions_by_chat_id[previous_chat_id] = discovered;
-							}
+							blocked_ids.insert(resolved.second);
 						}
 					}
 
-					const std::string preferred_id = CliTerminalSyncTargetId(terminal);
-					changed |= SyncChatsFromNative(app, preferred_id, preserve_selection);
-					changed |= TryMarkCliTurnCompleteFromSyncedHistory(app, terminal, previous_chat_message_count, selected_chat_id);
+					const std::string previous_chat_id = terminal.attached_chat_id;
+					const int previous_chat_index = ChatDomainService().FindChatIndexById(app, previous_chat_id);
+					std::string discovered;
+
+					if (previous_chat_index >= 0 && NativeSessionLinkService().IsLocalDraftChatId(previous_chat_id))
+					{
+						if (const auto matched = NativeSessionLinkService().MatchNativeSessionIdForLocalDraft(app.chats[previous_chat_index], native_now, blocked_ids); matched.has_value())
+						{
+							discovered = matched.value();
+						}
+					}
+					else
+					{
+						const std::vector<std::string> candidates = NativeSessionLinkService().CollectNewSessionIds(native_now, terminal.session_ids_before);
+						discovered = NativeSessionLinkService().PickFirstUnblockedSessionId(candidates, blocked_ids);
+					}
+
+					if (!discovered.empty())
+					{
+						const std::string previous_session_id = terminal.attached_session_id;
+						if (previous_chat_index >= 0 && NativeSessionLinkService().IsLocalDraftChatId(previous_chat_id) && !NativeSessionLinkService().HasRealNativeSessionId(app.chats[previous_chat_index]))
+						{
+							changed |= ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, app.chats[previous_chat_index], discovered);
+						}
+
+						terminal.attached_session_id = discovered;
+						changed = true;
+						uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "native_session_rebound", &terminal, "previous_chat_id=" + previous_chat_id + ", previous_session_id=" + previous_session_id + ", discovered=" + discovered);
+
+						if (!previous_chat_id.empty())
+						{
+							app.resolved_native_sessions_by_chat_id[previous_chat_id] = discovered;
+						}
+					}
 				}
+
+				const std::string preferred_id = CliTerminalSyncTargetId(terminal);
+				changed |= SyncChatsFromNative(app, preferred_id, preserve_selection);
+				changed |= TryMarkCliTurnCompleteFromSyncedHistory(app, terminal, previous_chat_message_count, selected_chat_id);
 			}
+		}
 	}
 
 	return changed;

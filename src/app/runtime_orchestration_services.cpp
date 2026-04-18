@@ -11,6 +11,7 @@
 #include "common/chat/chat_branching.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
+#include "common/constants/app_constants.h"
 #include "common/platform/platform_services.h"
 #include "common/provider/gemini/base/gemini_history_loader.h"
 #include "common/provider/runtime/provider_build_config.h"
@@ -98,6 +99,37 @@ namespace
 		}
 
 		return candidate;
+	}
+
+	std::string ResolvePersistedImportFolderIdForSource(AppState& app, const ProviderChatSource& source)
+	{
+		ChatDomainService().EnsureDefaultFolder(app);
+
+		for (const ChatFolder& folder : app.folders)
+		{
+			if (FolderDirectoryMatches(folder.directory, source.folder_directory))
+			{
+				return folder.id;
+			}
+		}
+
+		ChatFolder new_folder;
+		new_folder.id = "folder_" + std::to_string(app.folders.size()) + "_" + source.folder_title;
+		new_folder.title = source.folder_title;
+		new_folder.directory = source.folder_directory;
+		new_folder.collapsed = false;
+
+		app.folders.push_back(std::move(new_folder));
+		const std::string created_folder_id = app.folders.back().id;
+
+		if (ChatFolderStore::Save(app.data_root, app.folders))
+		{
+			return created_folder_id;
+		}
+
+		app.folders.erase(std::remove_if(app.folders.begin(), app.folders.end(), [&](const ChatFolder& folder) { return folder.id == created_folder_id; }), app.folders.end());
+		app.status_line = "Imported chats into General because folder metadata could not be saved.";
+		return uam::constants::kDefaultFolderId;
 	}
 
 	void ResetAsyncNativeChatLoadTask(uam::platform::AsyncNativeChatLoadTask& task)
@@ -297,7 +329,6 @@ namespace
 		if (call.worker != nullptr)
 		{
 			call.worker->request_stop();
-			call.worker->detach();
 			call.worker.reset();
 		}
 
@@ -796,26 +827,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 
 	for (const ProviderChatSource& l_source : l_discovery.sources)
 	{
-		ChatFolder* lp_folder = nullptr;
-		for (ChatFolder& folder : p_app.folders)
-		{
-			if (FolderDirectoryMatches(folder.directory, l_source.folder_directory))
-			{
-				lp_folder = &folder;
-				break;
-			}
-		}
-
-		if (lp_folder == nullptr)
-		{
-			ChatFolder new_folder;
-			new_folder.id = "folder_" + std::to_string(p_app.folders.size()) + "_" + l_source.folder_title;
-			new_folder.title = l_source.folder_title;
-			new_folder.directory = l_source.folder_directory;
-			new_folder.collapsed = false;
-			p_app.folders.push_back(std::move(new_folder));
-			lp_folder = &p_app.folders.back();
-		}
+		const std::string import_folder_id = ResolvePersistedImportFolderIdForSource(p_app, l_source);
 
 		std::vector<ChatSession> l_nativeChats = LoadNativeSessionChats(l_source.chats_dir, l_nativeProvider);
 		ApplyLocalOverrides(p_app, l_nativeChats);
@@ -847,7 +859,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 				l_nativeChat.id = MakeCollisionSafeImportedChatId(l_nativeChat, l_existingIds);
 			}
 
-			l_nativeChat.folder_id = lp_folder->id;
+			l_nativeChat.folder_id = import_folder_id;
 			l_nativeChat.workspace_directory = l_source.folder_directory;
 
 			if (ChatRepository::SaveChat(p_app.data_root, l_nativeChat))
@@ -867,8 +879,6 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 			}
 		}
 	}
-
-	ChatFolderStore::Save(p_app.data_root, p_app.folders);
 
 	return result;
 }
@@ -1103,12 +1113,12 @@ bool ChatHistorySyncService::MoveChatToFolder(AppState& p_app, ChatSession& p_ch
 		if (l_oldChatsDir.has_value() && !l_sessionId.empty())
 		{
 			const auto l_sessionFile = FindNativeSessionFilePath(l_oldChatsDir.value(), l_sessionId);
-				if (l_sessionFile.has_value())
-				{
-					GeminiJsonHistoryStoreOptions l_opts;
-					l_opts.max_messages = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxMessages();
-					l_opts.max_file_bytes = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxFileBytes();
-					const auto l_parsed = GeminiJsonHistoryStore::ParseFile(l_sessionFile.value(), l_provider, l_opts);
+			if (l_sessionFile.has_value())
+			{
+				GeminiJsonHistoryStoreOptions l_opts;
+				l_opts.max_messages = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxMessages();
+				l_opts.max_file_bytes = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxFileBytes();
+				const auto l_parsed = GeminiJsonHistoryStore::ParseFile(l_sessionFile.value(), l_provider, l_opts);
 				if (l_parsed.has_value() && !l_parsed->messages.empty() && !LocalMessagesShouldOverrideNative(l_originalChat, *l_parsed))
 				{
 					l_movedChat.messages = l_parsed->messages;

@@ -54,8 +54,8 @@ namespace fs = std::filesystem;
 
 namespace uam_cef_globals
 {
-	uam::AppState*            g_app_state = nullptr;
-	CefRefPtr<UamCefClient>   g_client;
+	uam::AppState* g_app_state = nullptr;
+	CefRefPtr<UamCefClient> g_client;
 } // namespace uam_cef_globals
 
 // ---------------------------------------------------------------------------
@@ -65,118 +65,113 @@ namespace uam_cef_globals
 namespace
 {
 
-bool IsMacAppBundleExecutable(const fs::path& exe_path)
-{
+	bool IsMacAppBundleExecutable(const fs::path& exe_path)
+	{
 #if defined(__APPLE__)
-	const fs::path normalized = exe_path.lexically_normal();
-	const fs::path macos_dir = normalized.parent_path();
-	const fs::path contents_dir = macos_dir.parent_path();
-	const fs::path app_dir = contents_dir.parent_path();
-	return !app_dir.empty() &&
-	       macos_dir.filename() == "MacOS" &&
-	       contents_dir.filename() == "Contents" &&
-	       app_dir.extension() == ".app";
+		const fs::path normalized = exe_path.lexically_normal();
+		const fs::path macos_dir = normalized.parent_path();
+		const fs::path contents_dir = macos_dir.parent_path();
+		const fs::path app_dir = contents_dir.parent_path();
+		return !app_dir.empty() && macos_dir.filename() == "MacOS" && contents_dir.filename() == "Contents" && app_dir.extension() == ".app";
 #else
-	(void)exe_path;
-	return false;
+		(void)exe_path;
+		return false;
 #endif
-}
-
-void ResetAsyncCommandTask(uam::AsyncCommandTask& task)
-{
-	if (task.worker != nullptr)
-	{
-		task.worker->request_stop();
-		task.worker->detach();
-		task.worker.reset();
-	}
-	task.running = false;
-	task.command_preview.clear();
-	task.state.reset();
-}
-
-void ResetPendingRuntimeCall(PendingRuntimeCall& call)
-{
-	if (call.worker != nullptr)
-	{
-		call.worker->request_stop();
-		call.worker->detach();
-		call.worker.reset();
-	}
-	call.state.reset();
-}
-
-void ResetNativeChatLoadTask(uam::platform::AsyncNativeChatLoadTask& task)
-{
-	if (task.worker != nullptr)
-	{
-		task.worker->request_stop();
-		task.worker->detach();
-		task.worker.reset();
-	}
-	task.running = false;
-	task.provider_id_snapshot.clear();
-	task.chats_dir_snapshot.clear();
-	task.state.reset();
-}
-
-void ResetNativeChatLoadTasks(std::unordered_map<std::string, uam::platform::AsyncNativeChatLoadTask>& tasks)
-{
-	for (auto& entry : tasks)
-	{
-		ResetNativeChatLoadTask(entry.second);
 	}
 
-	tasks.clear();
-}
+	void ResetAsyncCommandTask(uam::AsyncCommandTask& task)
+	{
+		if (task.worker != nullptr)
+		{
+			task.worker->request_stop();
+			task.worker.reset();
+		}
+		task.running = false;
+		task.command_preview.clear();
+		task.state.reset();
+	}
 
-struct RuntimeCliCompatibilitySnapshot
-{
-	bool runtime_cli_version_checked = false;
-	bool runtime_cli_version_supported = false;
-	std::string runtime_cli_installed_version;
-	std::string runtime_cli_version_raw_output;
-	std::string runtime_cli_version_message;
-	std::string runtime_cli_pin_output;
-	std::string status_line;
-};
+	void ResetPendingRuntimeCall(PendingRuntimeCall& call)
+	{
+		if (call.worker != nullptr)
+		{
+			call.worker->request_stop();
+			call.worker.reset();
+		}
+		call.state.reset();
+	}
 
-RuntimeCliCompatibilitySnapshot CaptureRuntimeCliCompatibilitySnapshot(const uam::AppState& app)
-{
-	RuntimeCliCompatibilitySnapshot snapshot;
-	snapshot.runtime_cli_version_checked = app.runtime_cli_version_checked;
-	snapshot.runtime_cli_version_supported = app.runtime_cli_version_supported;
-	snapshot.runtime_cli_installed_version = app.runtime_cli_installed_version;
-	snapshot.runtime_cli_version_raw_output = app.runtime_cli_version_raw_output;
-	snapshot.runtime_cli_version_message = app.runtime_cli_version_message;
-	snapshot.runtime_cli_pin_output = app.runtime_cli_pin_output;
-	snapshot.status_line = app.status_line;
-	return snapshot;
-}
+	void ResetNativeChatLoadTask(uam::platform::AsyncNativeChatLoadTask& task)
+	{
+		if (task.worker != nullptr)
+		{
+			task.worker->request_stop();
+			task.worker.reset();
+		}
+		task.running = false;
+		task.provider_id_snapshot.clear();
+		task.chats_dir_snapshot.clear();
+		task.state.reset();
+	}
 
-bool RuntimeCliCompatibilitySnapshotChanged(const RuntimeCliCompatibilitySnapshot& before, const RuntimeCliCompatibilitySnapshot& after)
-{
-	return before.runtime_cli_version_checked != after.runtime_cli_version_checked ||
-	       before.runtime_cli_version_supported != after.runtime_cli_version_supported ||
-	       before.runtime_cli_installed_version != after.runtime_cli_installed_version ||
-	       before.runtime_cli_version_raw_output != after.runtime_cli_version_raw_output ||
-	       before.runtime_cli_version_message != after.runtime_cli_version_message ||
-	       before.runtime_cli_pin_output != after.runtime_cli_pin_output ||
-	       before.status_line != after.status_line;
-}
+	void ResetNativeChatLoadTasks(std::unordered_map<std::string, uam::platform::AsyncNativeChatLoadTask>& tasks)
+	{
+		for (auto& entry : tasks)
+		{
+			ResetNativeChatLoadTask(entry.second);
+		}
 
-// ---- Periodic poll task ---------------------------------------------------
+		tasks.clear();
+	}
 
-/// CefTask that calls Application::PollTick() on the CEF UI thread.
-class AppPollTask : public CefTask
-{
-  public:
-	explicit AppPollTask(Application* app) : m_app(app) {}
-	void Execute() override { if (m_app) m_app->PollTick(); }
-  private:
-	Application* m_app;
-	IMPLEMENT_REFCOUNTING(AppPollTask);
-};
+	struct RuntimeCliCompatibilitySnapshot
+	{
+		bool runtime_cli_version_checked = false;
+		bool runtime_cli_version_supported = false;
+		std::string runtime_cli_installed_version;
+		std::string runtime_cli_version_raw_output;
+		std::string runtime_cli_version_message;
+		std::string runtime_cli_pin_output;
+		std::string status_line;
+	};
+
+	RuntimeCliCompatibilitySnapshot CaptureRuntimeCliCompatibilitySnapshot(const uam::AppState& app)
+	{
+		RuntimeCliCompatibilitySnapshot snapshot;
+		snapshot.runtime_cli_version_checked = app.runtime_cli_version_checked;
+		snapshot.runtime_cli_version_supported = app.runtime_cli_version_supported;
+		snapshot.runtime_cli_installed_version = app.runtime_cli_installed_version;
+		snapshot.runtime_cli_version_raw_output = app.runtime_cli_version_raw_output;
+		snapshot.runtime_cli_version_message = app.runtime_cli_version_message;
+		snapshot.runtime_cli_pin_output = app.runtime_cli_pin_output;
+		snapshot.status_line = app.status_line;
+		return snapshot;
+	}
+
+	bool RuntimeCliCompatibilitySnapshotChanged(const RuntimeCliCompatibilitySnapshot& before, const RuntimeCliCompatibilitySnapshot& after)
+	{
+		return before.runtime_cli_version_checked != after.runtime_cli_version_checked || before.runtime_cli_version_supported != after.runtime_cli_version_supported || before.runtime_cli_installed_version != after.runtime_cli_installed_version || before.runtime_cli_version_raw_output != after.runtime_cli_version_raw_output || before.runtime_cli_version_message != after.runtime_cli_version_message || before.runtime_cli_pin_output != after.runtime_cli_pin_output || before.status_line != after.status_line;
+	}
+
+	// ---- Periodic poll task ---------------------------------------------------
+
+	/// CefTask that calls Application::PollTick() on the CEF UI thread.
+	class AppPollTask : public CefTask
+	{
+	  public:
+		explicit AppPollTask(Application* app) : m_app(app)
+		{
+		}
+		void Execute() override
+		{
+			if (m_app)
+				m_app->PollTick();
+		}
+
+	  private:
+		Application* m_app;
+		IMPLEMENT_REFCOUNTING(AppPollTask);
+	};
 
 } // anonymous namespace
 
@@ -396,15 +391,10 @@ bool Application::InitializeCef(CefMainArgs main_args)
 		// CEF framework.  Tell CEF exactly where to find it so it does not have
 		// to guess; this prevents the EXC_BREAKPOINT / SIGTRAP crash that occurs
 		// when Chromium cannot locate its renderer / GPU subprocesses.
-		const fs::path helper_path =
-		    exe_dir / ".." / "Frameworks"
-		             / "universal_agent_manager Helper.app"
-		             / "Contents" / "MacOS"
-		             / "universal_agent_manager Helper";
+		const fs::path helper_path = exe_dir / ".." / "Frameworks" / "universal_agent_manager Helper.app" / "Contents" / "MacOS" / "universal_agent_manager Helper";
 		if (fs::exists(helper_path))
 		{
-			CefString(&settings.browser_subprocess_path) =
-			    helper_path.lexically_normal().string();
+			CefString(&settings.browser_subprocess_path) = helper_path.lexically_normal().string();
 		}
 		// On macOS the CEF framework is self-contained; resource paths are
 		// resolved automatically from the framework bundle.  No need to set
@@ -414,13 +404,13 @@ bool Application::InitializeCef(CefMainArgs main_args)
 		if (fs::exists(resources_dir))
 		{
 			CefString(&settings.resources_dir_path) = resources_dir.string();
-			CefString(&settings.locales_dir_path)   = (resources_dir / "locales").string();
+			CefString(&settings.locales_dir_path) = (resources_dir / "locales").string();
 		}
 		else
 		{
 			// Flat layout (Windows)
 			CefString(&settings.resources_dir_path) = exe_dir.string();
-			CefString(&settings.locales_dir_path)   = (exe_dir / "locales").string();
+			CefString(&settings.locales_dir_path) = (exe_dir / "locales").string();
 		}
 #endif
 	}
@@ -429,10 +419,7 @@ bool Application::InitializeCef(CefMainArgs main_args)
 
 	// OnBrowserReady is called from UamCefClient::OnAfterCreated() via the
 	// callback we pass here, giving us the browser reference for PushCliOutput etc.
-	auto on_browser_ready = [this](CefRefPtr<CefBrowser> browser)
-	{
-		OnBrowserReady(browser);
-	};
+	auto on_browser_ready = [this](CefRefPtr<CefBrowser> browser) { OnBrowserReady(browser); };
 
 	// Store the ready callback so uam_cef_app.cpp can forward it to UamCefClient.
 	// We piggyback on the existing g_client mechanism — when UamCefApp creates the
@@ -477,7 +464,7 @@ void Application::Shutdown()
 	FastStopCliTerminalsForExit(m_app);
 
 	uam_cef_globals::g_app_state = nullptr;
-	uam_cef_globals::g_client    = nullptr;
+	uam_cef_globals::g_client = nullptr;
 	m_browser = nullptr;
 
 	CefShutdown();

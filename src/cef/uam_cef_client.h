@@ -77,6 +77,11 @@ class UamCefClient : public CefClient,
 	                         CefRefPtr<CefFrame>              frame,
 	                         CefRefPtr<CefContextMenuParams>  params,
 	                         CefRefPtr<CefMenuModel>          model) override;
+	bool OnContextMenuCommand(CefRefPtr<CefBrowser> browser,
+	                          CefRefPtr<CefFrame> frame,
+	                          CefRefPtr<CefContextMenuParams> params,
+	                          int command_id,
+	                          EventFlags event_flags) override;
 
 	// CefKeyboardHandler — block DevTools shortcuts (F12, Ctrl+Shift+I, Ctrl+U)
 	bool OnKeyEvent(CefRefPtr<CefBrowser>  browser,

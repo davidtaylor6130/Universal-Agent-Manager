@@ -126,17 +126,12 @@ std::optional<ChatSession> GeminiJsonHistoryStore::ParseFile(const std::filesyst
 			}
 
 			const std::string type = JsonStringOrEmpty(raw_message.Find("type"));
-			const std::string timestamp = JsonStringOrEmpty(raw_message.Find("timestamp"));
-			const std::string content = Trim(ExtractGeminiContentText(raw_message.Find("content")));
+				const std::string timestamp = JsonStringOrEmpty(raw_message.Find("timestamp"));
+				const std::string content = Trim(ExtractGeminiContentText(raw_message.Find("content")));
 
-			if (content.empty())
-			{
-				continue;
-			}
-
-			Message message;
-			message.role = ProviderRuntime::RoleFromNativeType(provider, type);
-			message.content = content;
+				Message message;
+				message.role = ProviderRuntime::RoleFromNativeType(provider, type);
+				message.content = content;
 			message.created_at = timestamp.empty() ? chat.updated_at : timestamp;
 
 			const JsonValue* tool_calls = raw_message.Find("toolCalls");
@@ -180,11 +175,16 @@ std::optional<ChatSession> GeminiJsonHistoryStore::ParseFile(const std::filesyst
 							thought_out << "\n";
 						thought_out << thought_text;
 					}
+					}
+					message.thoughts = thought_out.str();
 				}
-				message.thoughts = thought_out.str();
-			}
 
-			chat.messages.push_back(std::move(message));
+				if (message.content.empty() && Trim(message.thoughts).empty() && message.tool_calls.empty())
+				{
+					continue;
+				}
+
+				chat.messages.push_back(std::move(message));
 
 			if (options.max_messages > 0 && chat.messages.size() >= options.max_messages)
 			{

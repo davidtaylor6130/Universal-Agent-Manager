@@ -36,9 +36,10 @@ namespace
 		constexpr std::size_t kMaxAcpDiagnosticDetailBytes = 8192;
 		constexpr std::size_t kMaxAcpLogFieldBytes = 512;
 
-		void CompletePromptTurn(AcpSessionState& session, const char* lifecycle_state);
-		void FailAcpTurnOrSession(AcpSessionState& session, const std::string& message);
-		void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat);
+			void CompletePromptTurn(AcpSessionState& session, const char* lifecycle_state);
+			void FailAcpTurnOrSession(AcpSessionState& session, const std::string& message);
+			void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat);
+			bool SyncAcpToolCallsToAssistantMessage(ChatSession& chat, AcpSessionState& session, bool create_if_missing);
 
 	std::string TimestampNow()
 	{
@@ -254,15 +255,87 @@ namespace
 		};
 	}
 
-	nlohmann::json BuildCancelNotification(const std::string& session_id)
-	{
-		return {
-			{"jsonrpc", "2.0"},
-			{"method", "session/cancel"},
+		nlohmann::json BuildCancelNotification(const std::string& session_id)
+		{
+			return {
+				{"jsonrpc", "2.0"},
+				{"method", "session/cancel"},
 			{"params", {
 				{"sessionId", session_id},
-			}},
-		};
+				}},
+			};
+		}
+
+		nlohmann::json BuildSetModeRequest(const int request_id, const std::string& session_id, const std::string& mode_id)
+		{
+			return {
+				{"jsonrpc", "2.0"},
+				{"id", request_id},
+				{"method", "session/set_mode"},
+				{"params", {
+					{"sessionId", session_id},
+					{"modeId", mode_id},
+				}},
+			};
+		}
+
+		nlohmann::json BuildSetModelRequest(const int request_id, const std::string& session_id, const std::string& model_id)
+		{
+			return {
+				{"jsonrpc", "2.0"},
+				{"id", request_id},
+				{"method", "session/set_model"},
+				{"params", {
+					{"sessionId", session_id},
+					{"modelId", model_id},
+				}},
+			};
+		}
+
+		std::string LaunchApprovalMode(const ChatSession& chat)
+		{
+			const std::string mode = Trim(chat.approval_mode);
+			return (mode == "default" || mode == "plan") ? mode : "";
+		}
+
+		std::vector<std::string> BuildAcpLaunchArgv(const ChatSession& chat)
+		{
+			std::vector<std::string> argv = {"gemini", "--acp"};
+			const std::string approval_mode = LaunchApprovalMode(chat);
+			if (!approval_mode.empty())
+			{
+				argv.push_back("--approval-mode");
+				argv.push_back(approval_mode);
+			}
+			const std::string model_id = Trim(chat.model_id);
+			if (!model_id.empty())
+			{
+			argv.push_back("--model");
+			argv.push_back(model_id);
+		}
+		return argv;
+	}
+
+	std::string JoinAcpArgvForDiagnostics(const std::vector<std::string>& argv)
+	{
+		std::ostringstream out;
+		for (std::size_t i = 0; i < argv.size(); ++i)
+		{
+			if (i > 0)
+			{
+				out << ' ';
+			}
+			out << argv[i];
+		}
+		return out.str();
+	}
+
+	std::string BuildAcpLaunchDetail(const std::filesystem::path& workspace_root, const ChatSession& chat)
+	{
+		const std::vector<std::string> argv = BuildAcpLaunchArgv(chat);
+		return "cwd=" + (workspace_root.empty() ? std::filesystem::current_path().string() : workspace_root.string()) +
+		       ", argv=" + JoinAcpArgvForDiagnostics(argv) +
+		       ", nativeSessionId=" + chat.native_session_id;
 	}
 
 		int NextAcpRequestId(AcpSessionState& session, const std::string& method)
@@ -330,12 +403,20 @@ namespace
 			{
 				return PromptLengthDetail(params);
 			}
-			if (method == "session/cancel")
-			{
-				return "sessionId=" + params.value("sessionId", "");
-			}
-			if (message.contains("error"))
-			{
+				if (method == "session/cancel")
+				{
+					return "sessionId=" + params.value("sessionId", "");
+				}
+				if (method == "session/set_mode")
+				{
+					return "sessionId=" + params.value("sessionId", "") + ", modeId=" + params.value("modeId", "");
+				}
+				if (method == "session/set_model")
+				{
+					return "sessionId=" + params.value("sessionId", "") + ", modelId=" + params.value("modelId", "");
+				}
+				if (message.contains("error"))
+				{
 				const nlohmann::json error = message.value("error", nlohmann::json::object());
 				std::ostringstream out;
 				out << "error_code=" << error.value("code", 0) << ", error_message=" << error.value("message", "");
@@ -826,9 +907,10 @@ namespace
 
 			std::string startup_error;
 			const std::filesystem::path workspace_root = ResolveWorkspaceRootPath(app, chat);
-			const std::string launch_detail = "cwd=" + (workspace_root.empty() ? std::filesystem::current_path().string() : workspace_root.string()) + ", argv=gemini --acp, nativeSessionId=" + chat.native_session_id;
+			const std::vector<std::string> launch_argv = BuildAcpLaunchArgv(chat);
+			const std::string launch_detail = BuildAcpLaunchDetail(workspace_root, chat);
 			AppendAcpDiagnostic(session, "process_launch", "starting", "", "", false, 0, "", launch_detail);
-			if (!PlatformServicesFactory::Instance().process_service.StartStdioProcess(session, workspace_root, {"gemini", "--acp"}, &startup_error))
+			if (!PlatformServicesFactory::Instance().process_service.StartStdioProcess(session, workspace_root, launch_argv, &startup_error))
 			{
 				session.lifecycle_state = kAcpLifecycleError;
 				session.last_error = startup_error.empty() ? "Failed to start Gemini ACP process." : startup_error;
@@ -1057,12 +1139,12 @@ namespace
 			return false;
 		}
 
-		void AppendAssistantChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk)
-		{
-			if (chunk.empty())
+			void AppendAssistantChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk)
 			{
-				return;
-		}
+				if (chunk.empty())
+				{
+					return;
+			}
 
 		std::string current_assistant_text;
 		if (session.current_assistant_message_index >= 0 &&
@@ -1097,17 +1179,97 @@ namespace
 				AppendThoughtText(message.thoughts, session.pending_assistant_thoughts, !message.thoughts.empty());
 				session.pending_assistant_thoughts.clear();
 			}
-			message.content += delta;
-			chat.updated_at = TimestampNow();
-			if (session.turn_assistant_message_index < 0)
-			{
+				message.content += delta;
+				(void)SyncAcpToolCallsToAssistantMessage(chat, session, false);
+				chat.updated_at = TimestampNow();
+				if (session.turn_assistant_message_index < 0)
+				{
 				session.turn_assistant_message_index = session.current_assistant_message_index;
 		}
-		AppendAssistantTextTurnEvent(session, delta);
-	}
+			AppendAssistantTextTurnEvent(session, delta);
+		}
 
-	AcpToolCallState& UpsertToolCall(AcpSessionState& session, const std::string& id)
-	{
+		ToolCall PersistedToolCallFromAcpToolCall(const AcpToolCallState& tool_call)
+		{
+			ToolCall persisted;
+			persisted.id = tool_call.id;
+			persisted.name = !tool_call.title.empty() ? tool_call.title : (!tool_call.kind.empty() ? tool_call.kind : tool_call.id);
+			persisted.status = tool_call.status;
+			persisted.result_text = tool_call.content;
+			return persisted;
+		}
+
+		bool UpsertPersistedToolCall(std::vector<ToolCall>& tool_calls, const AcpToolCallState& tool_call)
+		{
+			if (tool_call.id.empty())
+			{
+				return false;
+			}
+
+			const ToolCall persisted = PersistedToolCallFromAcpToolCall(tool_call);
+			for (ToolCall& existing : tool_calls)
+			{
+				if (existing.id != persisted.id)
+				{
+					continue;
+				}
+
+				if (existing.name == persisted.name &&
+				    existing.args_json == persisted.args_json &&
+				    existing.result_text == persisted.result_text &&
+				    existing.status == persisted.status)
+				{
+					return false;
+				}
+
+				existing = persisted;
+				return true;
+			}
+
+			tool_calls.push_back(persisted);
+			return true;
+		}
+
+		bool SyncAcpToolCallsToAssistantMessage(ChatSession& chat, AcpSessionState& session, const bool create_if_missing)
+		{
+			if (session.tool_calls.empty())
+			{
+				return false;
+			}
+
+			if (session.current_assistant_message_index < 0 ||
+			    session.current_assistant_message_index >= static_cast<int>(chat.messages.size()) ||
+			    chat.messages[static_cast<std::size_t>(session.current_assistant_message_index)].role != MessageRole::Assistant)
+			{
+				if (!create_if_missing)
+				{
+					return false;
+				}
+
+				Message message;
+				message.role = MessageRole::Assistant;
+				message.provider = "gemini-cli";
+				message.created_at = TimestampNow();
+				chat.messages.push_back(std::move(message));
+				session.current_assistant_message_index = static_cast<int>(chat.messages.size()) - 1;
+				session.turn_assistant_message_index = session.current_assistant_message_index;
+			}
+
+			Message& message = chat.messages[static_cast<std::size_t>(session.current_assistant_message_index)];
+			bool changed = false;
+			for (const AcpToolCallState& tool_call : session.tool_calls)
+			{
+				changed |= UpsertPersistedToolCall(message.tool_calls, tool_call);
+			}
+			if (changed)
+			{
+				chat.updated_at = TimestampNow();
+			}
+			return changed;
+		}
+
+		AcpToolCallState& UpsertToolCall(AcpSessionState& session, const std::string& id)
+		{
 		for (AcpToolCallState& tool_call : session.tool_calls)
 		{
 			if (tool_call.id == id)
@@ -1138,12 +1300,21 @@ namespace
 			if (update_type.empty() && update.contains("toolCallId"))
 			{
 				update_type = "tool_call_update";
-			}
-			const std::string content_text = ContentTextFromJson(update.value("content", nlohmann::json::object()));
-			std::string live_text;
-			if (session.ignore_session_updates_until_ready)
-			{
-				(void)TryConsumeLoadHistoryReplayUpdate(session, update, update_type, content_text, live_text);
+				}
+				const std::string content_text = ContentTextFromJson(update.value("content", nlohmann::json::object()));
+				std::string live_text;
+				if (update_type == "current_mode_update")
+				{
+					const std::string current_mode_id = update.value("currentModeId", "");
+					if (!current_mode_id.empty())
+					{
+						session.current_mode_id = current_mode_id;
+					}
+					return;
+				}
+				if (session.ignore_session_updates_until_ready)
+				{
+					(void)TryConsumeLoadHistoryReplayUpdate(session, update, update_type, content_text, live_text);
 				return;
 			}
 
@@ -1201,14 +1372,18 @@ namespace
 				tool_call.title = update.value("title", tool_call.title);
 				tool_call.kind = update.value("kind", tool_call.kind.empty() ? "other" : tool_call.kind);
 				tool_call.status = update.value("status", tool_call.status.empty() ? "pending" : tool_call.status);
-				if (update.contains("content"))
-				{
-					tool_call.content = ContentTextFromJson(update["content"]);
+					if (update.contains("content"))
+					{
+						tool_call.content = ContentTextFromJson(update["content"]);
+					}
+					AppendToolTurnEventIfNeeded(session, id);
+					if (SyncAcpToolCallsToAssistantMessage(chat, session, false))
+					{
+						SaveChatQuietly(app, chat);
+					}
 				}
-				AppendToolTurnEventIfNeeded(session, id);
+				return;
 			}
-			return;
-		}
 
 		if (update_type == "plan" && update.contains("entries") && update["entries"].is_array())
 		{
@@ -1364,10 +1539,10 @@ namespace
 			return CapDiagnosticString(error["data"].dump(), kMaxAcpDiagnosticDetailBytes);
 		}
 
-		std::string FormatAcpFailureMessage(const std::string& method,
-		                                    const std::string& request_id,
-		                                    const bool has_code,
-		                                    const int code,
+			std::string FormatAcpFailureMessage(const std::string& method,
+			                                    const std::string& request_id,
+			                                    const bool has_code,
+			                                    const int code,
 		                                    const std::string& message,
 		                                    const bool has_detail)
 		{
@@ -1396,12 +1571,82 @@ namespace
 			if (has_detail)
 			{
 				out << " See diagnostics/stderr details.";
+				}
+				return out.str();
 			}
-			return out.str();
-		}
 
-		void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
-		{
+			void UpdateAcpModesFromJson(AcpSessionState& session, const nlohmann::json& modes)
+			{
+				if (!modes.is_object())
+				{
+					return;
+				}
+
+				if (const nlohmann::json available_modes = modes.value("availableModes", nlohmann::json::array()); available_modes.is_array())
+				{
+					session.available_modes.clear();
+					for (const nlohmann::json& mode : available_modes)
+					{
+						if (!mode.is_object())
+						{
+							continue;
+						}
+
+						AcpModeState parsed;
+						parsed.id = mode.value("id", "");
+						parsed.name = mode.value("name", parsed.id);
+						parsed.description = mode.value("description", "");
+						if (!parsed.id.empty())
+						{
+							session.available_modes.push_back(std::move(parsed));
+						}
+					}
+				}
+
+				const std::string current_mode_id = modes.value("currentModeId", "");
+				if (!current_mode_id.empty())
+				{
+					session.current_mode_id = current_mode_id;
+				}
+			}
+
+			void UpdateAcpModelsFromJson(AcpSessionState& session, const nlohmann::json& models)
+			{
+				if (!models.is_object())
+				{
+					return;
+				}
+
+				if (const nlohmann::json available_models = models.value("availableModels", nlohmann::json::array()); available_models.is_array())
+				{
+					session.available_models.clear();
+					for (const nlohmann::json& model : available_models)
+					{
+						if (!model.is_object())
+						{
+							continue;
+						}
+
+						AcpModelState parsed;
+						parsed.id = model.value("modelId", "");
+						parsed.name = model.value("name", parsed.id);
+						parsed.description = model.value("description", "");
+						if (!parsed.id.empty())
+						{
+							session.available_models.push_back(std::move(parsed));
+						}
+					}
+				}
+
+				const std::string current_model_id = models.value("currentModelId", "");
+				if (!current_model_id.empty())
+				{
+					session.current_model_id = current_model_id;
+				}
+			}
+
+			void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
+			{
 			const std::string request_id = JsonRpcIdToStableString(message.value("id", nlohmann::json(nullptr)));
 			const int id = JsonRpcNumericId(message.value("id", nlohmann::json(nullptr)));
 			if (id == 0)
@@ -1457,11 +1702,13 @@ namespace
 				const std::string detail_text = detail.str();
 				const std::string formatted_error = FormatAcpFailureMessage(method, request_id, has_code, code, error_message, !detail_text.empty());
 				AppendAcpDiagnostic(session, "response", "jsonrpc_error", method, request_id, has_code, code, error_message, detail_text);
-				if (method == "session/prompt" || session.processing || session.waiting_for_permission || !session.queued_prompt.empty())
-				{
-					FailAcpTurnOrSession(session, formatted_error);
-					MarkAcpChatUnseenIfBackground(app, chat);
-				}
+					if (method == "session/prompt" || session.processing || session.waiting_for_permission || !session.queued_prompt.empty())
+					{
+						(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
+						FailAcpTurnOrSession(session, formatted_error);
+						SaveChatQuietly(app, chat);
+						MarkAcpChatUnseenIfBackground(app, chat);
+					}
 				else
 				{
 					session.last_error = formatted_error;
@@ -1494,15 +1741,17 @@ namespace
 			return;
 		}
 
-		if (method == "session/new")
-		{
-			session.session_setup_request_id = 0;
-			if (result.is_object())
-			{
-				session.session_id = result.value("sessionId", session.session_id);
-			}
-			if (!session.session_id.empty() && chat.native_session_id != session.session_id)
-			{
+				if (method == "session/new")
+				{
+					session.session_setup_request_id = 0;
+					if (result.is_object())
+					{
+						session.session_id = result.value("sessionId", session.session_id);
+						UpdateAcpModesFromJson(session, result.value("modes", nlohmann::json::object()));
+						UpdateAcpModelsFromJson(session, result.value("models", nlohmann::json::object()));
+					}
+					if (!session.session_id.empty() && chat.native_session_id != session.session_id)
+					{
 				chat.native_session_id = session.session_id;
 			}
 			session.session_ready = !session.session_id.empty();
@@ -1517,28 +1766,39 @@ namespace
 				return;
 		}
 
-		if (method == "session/load")
-		{
-			session.session_setup_request_id = 0;
-			session.session_ready = true;
-			session.ignore_session_updates_until_ready = false;
-			session.lifecycle_state = kAcpLifecycleReady;
-			return;
-		}
+				if (method == "session/load")
+				{
+					session.session_setup_request_id = 0;
+					if (result.is_object())
+					{
+						UpdateAcpModesFromJson(session, result.value("modes", nlohmann::json::object()));
+						UpdateAcpModelsFromJson(session, result.value("models", nlohmann::json::object()));
+					}
+					session.session_ready = true;
+					session.ignore_session_updates_until_ready = false;
+					session.lifecycle_state = kAcpLifecycleReady;
+					return;
+				}
 
-		if (method == "session/prompt")
-		{
-			CompletePromptTurn(session, kAcpLifecycleReady);
-			SaveChatQuietly(app, chat);
-			MarkAcpChatUnseenIfBackground(app, chat);
-			return;
-		}
-
-			if (method == "session/cancel")
+			if (method == "session/prompt")
 			{
-				session.cancel_request_id = 0;
-				return;
-			}
+				(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
+				CompletePromptTurn(session, kAcpLifecycleReady);
+				SaveChatQuietly(app, chat);
+				MarkAcpChatUnseenIfBackground(app, chat);
+			return;
+		}
+
+				if (method == "session/cancel")
+				{
+					session.cancel_request_id = 0;
+					return;
+				}
+
+				if (method == "session/set_mode" || method == "session/set_model")
+				{
+					return;
+				}
 
 			AppendAcpDiagnostic(session, "response", "unknown_request_id", method, request_id, false, 0, "", CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
 		}
@@ -1838,10 +2098,10 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 	return true;
 }
 
-bool StopAcpSession(AppState& app, const std::string& chat_id)
-{
-	AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
-	if (session == nullptr)
+	bool StopAcpSession(AppState& app, const std::string& chat_id)
+	{
+		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
+		if (session == nullptr)
 	{
 		return true;
 	}
@@ -1868,12 +2128,80 @@ bool StopAcpSession(AppState& app, const std::string& chat_id)
 		session->load_history_replay_updates.clear();
 		session->pending_assistant_thoughts.clear();
 		session->pending_permission = AcpPendingPermissionState{};
-	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*session);
-	return true;
-}
+		PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*session);
+		return true;
+	}
 
-bool ResolveAcpPermission(AppState& app,
-                          const std::string& chat_id,
+	bool SetAcpSessionMode(AppState& app, const std::string& chat_id, const std::string& mode_id, std::string* error_out)
+	{
+		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
+		if (session == nullptr || !session->running)
+		{
+			return true;
+		}
+		if (session->processing || session->waiting_for_permission || !session->queued_prompt.empty() || session->prompt_request_id != 0 || session->cancel_request_id != 0)
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Cannot change ACP mode while Gemini ACP is busy.";
+			}
+			return false;
+		}
+		if (!session->session_ready || session->session_id.empty())
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "ACP session is not ready.";
+			}
+			return false;
+		}
+
+		const int id = NextAcpRequestId(*session, "session/set_mode");
+		if (!WriteAcpMessage(*session, BuildSetModeRequest(id, session->session_id, mode_id), error_out))
+		{
+			session->pending_request_methods.erase(id);
+			return false;
+		}
+		session->current_mode_id = mode_id;
+		return true;
+	}
+
+	bool SetAcpSessionModel(AppState& app, const std::string& chat_id, const std::string& model_id, std::string* error_out)
+	{
+		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
+		if (session == nullptr || !session->running)
+		{
+			return true;
+		}
+		if (session->processing || session->waiting_for_permission || !session->queued_prompt.empty() || session->prompt_request_id != 0 || session->cancel_request_id != 0)
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Cannot change ACP model while Gemini ACP is busy.";
+			}
+			return false;
+		}
+		if (!session->session_ready || session->session_id.empty())
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "ACP session is not ready.";
+			}
+			return false;
+		}
+
+		const int id = NextAcpRequestId(*session, "session/set_model");
+		if (!WriteAcpMessage(*session, BuildSetModelRequest(id, session->session_id, model_id), error_out))
+		{
+			session->pending_request_methods.erase(id);
+			return false;
+		}
+		session->current_model_id = model_id;
+		return true;
+	}
+
+	bool ResolveAcpPermission(AppState& app,
+	                          const std::string& chat_id,
                           const std::string& request_id_json,
                           const std::string& option_id,
                           const bool cancelled,
@@ -1981,6 +2309,16 @@ void FastStopAcpSessionsForExit(AppState& app)
 	app.acp_sessions.clear();
 }
 
+std::vector<std::string> BuildAcpLaunchArgvForTests(const ChatSession& chat)
+{
+	return BuildAcpLaunchArgv(chat);
+}
+
+std::string BuildAcpLaunchDetailForTests(const std::filesystem::path& workspace_root, const ChatSession& chat)
+{
+	return BuildAcpLaunchDetail(workspace_root, chat);
+}
+
 std::string BuildAcpInitializeRequestForTests(const int request_id)
 {
 	return BuildInitializeRequest(request_id).dump();
@@ -1991,13 +2329,23 @@ std::string BuildAcpNewSessionRequestForTests(const int request_id, const std::s
 	return BuildNewSessionRequest(request_id, cwd).dump();
 }
 
-std::string BuildAcpPromptRequestForTests(const int request_id, const std::string& session_id, const std::string& text)
-{
-	return BuildPromptRequest(request_id, session_id, text).dump();
-}
+	std::string BuildAcpPromptRequestForTests(const int request_id, const std::string& session_id, const std::string& text)
+	{
+		return BuildPromptRequest(request_id, session_id, text).dump();
+	}
 
-bool ProcessAcpLineForTests(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& line)
-{
+	std::string BuildAcpSetModeRequestForTests(const int request_id, const std::string& session_id, const std::string& mode_id)
+	{
+		return BuildSetModeRequest(request_id, session_id, mode_id).dump();
+	}
+
+	std::string BuildAcpSetModelRequestForTests(const int request_id, const std::string& session_id, const std::string& model_id)
+	{
+		return BuildSetModelRequest(request_id, session_id, model_id).dump();
+	}
+
+	bool ProcessAcpLineForTests(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& line)
+	{
 	return ProcessAcpLine(app, session, chat, line);
 }
 
