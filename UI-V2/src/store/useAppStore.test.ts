@@ -77,6 +77,7 @@ function resetStore() {
     messages: {},
     providers: [],
     cliBindingBySessionId: {},
+    acpBindingBySessionId: {},
     cliTranscriptBySessionId: {},
     cliDebugState: null,
     theme: 'dark',
@@ -97,15 +98,28 @@ describe('useAppStore Gemini CLI slice', () => {
     vi.restoreAllMocks()
   })
 
-  it('deserializes backend state as CLI-only sessions and providers', () => {
-    useAppStore.getState().loadFromCef(makeCppState(1))
+  it('deserializes backend state as ACP-first sessions and providers', () => {
+    const cppState = makeCppState(1)
+    cppState.chats[0].acpSession = {
+      sessionId: 'native-1',
+      running: true,
+      lifecycleState: 'processing',
+      processing: true,
+      readySinceLastSelect: true,
+      lastError: '',
+      toolCalls: [{ id: 'tool-1', title: 'Read file', kind: 'read', status: 'in_progress', content: '' }],
+      planEntries: [{ content: 'Inspect project', priority: 'high', status: 'pending' }],
+      turnSerial: 3,
+      pendingPermission: null,
+    }
+    useAppStore.getState().loadFromCef(cppState)
 
     const state = useAppStore.getState()
     expect(state.sessions).toHaveLength(1)
     expect(state.sessions[0]).toMatchObject({
       id: 'chat-1',
       name: 'Gemini Session',
-      viewMode: 'cli',
+      viewMode: 'chat',
       folderId: 'default',
     })
     expect(state.activeSessionId).toBe('chat-1')
@@ -116,6 +130,47 @@ describe('useAppStore Gemini CLI slice', () => {
       lifecycleState: 'idle',
       turnState: 'idle',
     })
+    expect(state.acpBindingBySessionId['chat-1']).toMatchObject({
+      sessionId: 'native-1',
+      running: true,
+      lifecycleState: 'processing',
+      processing: true,
+      readySinceLastSelect: true,
+      turnSerial: 3,
+    })
+    expect(typeof state.acpBindingBySessionId['chat-1'].processingStartedAtMs).toBe('number')
+    expect(state.acpBindingBySessionId['chat-1'].toolCalls[0]).toMatchObject({ title: 'Read file' })
+  })
+
+  it('updates ACP bindings when only turn serial changes and keeps the timer stable', () => {
+    const firstState = makeCppState(1)
+    firstState.chats[0].acpSession = {
+      sessionId: 'native-1',
+      running: true,
+      lifecycleState: 'processing',
+      processing: true,
+      readySinceLastSelect: false,
+      lastError: '',
+      turnEvents: [{ type: 'assistant_text', text: 'First answer' }],
+      turnUserMessageIndex: 0,
+      turnAssistantMessageIndex: 1,
+      turnSerial: 1,
+      pendingPermission: null,
+    }
+    useAppStore.getState().loadFromCef(firstState)
+    const firstBinding = useAppStore.getState().acpBindingBySessionId['chat-1']
+    const firstStartedAt = firstBinding.processingStartedAtMs
+
+    const secondState = makeCppState(2)
+    secondState.chats[0].acpSession = {
+      ...(firstState.chats[0].acpSession ?? {}),
+      turnSerial: 2,
+    }
+    useAppStore.getState().loadFromCef(secondState)
+
+    const secondBinding = useAppStore.getState().acpBindingBySessionId['chat-1']
+    expect(secondBinding.turnSerial).toBe(2)
+    expect(secondBinding.processingStartedAtMs).toBe(firstStartedAt)
   })
 
   it('hides legacy providers when the backend omits Gemini CLI', () => {

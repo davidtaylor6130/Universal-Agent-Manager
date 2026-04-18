@@ -12,6 +12,7 @@ export interface Message {
   sessionId: string
   role: Role
   content: string
+  thoughts?: string
   isStreaming?: boolean
   attachments?: Attachment[]
   createdAt: Date

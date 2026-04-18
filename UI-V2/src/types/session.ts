@@ -1,10 +1,11 @@
-export type ViewMode = 'cli'
+export type ViewMode = 'chat' | 'cli'
 
 export interface Session {
   id: string
   name: string
   viewMode: ViewMode
   folderId: string | null
+  workspaceDirectory?: string
   createdAt: Date
   updatedAt: Date
 }

@@ -14,6 +14,7 @@ export const SessionItem = memo(function SessionItem({ sessionId }: SessionItemP
   const sessionName     = useAppStore((s) => s.sessions.find((x) => x.id === sessionId)?.name ?? '')
   const isActive        = useAppStore((s) => s.activeSessionId === sessionId)
   const cliBinding      = useAppStore(useShallow((s) => s.cliBindingBySessionId[sessionId]))
+  const acpBinding      = useAppStore(useShallow((s) => s.acpBindingBySessionId[sessionId]))
   const setActiveSession = useAppStore((s) => s.setActiveSession)
   const renameSession    = useAppStore((s) => s.renameSession)
   const deleteSession    = useAppStore((s) => s.deleteSession)
@@ -25,11 +26,13 @@ export const SessionItem = memo(function SessionItem({ sessionId }: SessionItemP
   const menuRef = useRef<HTMLDivElement>(null)
 
   const lifecycleStatus =
-    cliBinding?.lifecycleState === 'busy' || cliBinding?.lifecycleState === 'shuttingDown'
+    acpBinding?.processing || acpBinding?.lifecycleState === 'waitingPermission'
       ? 'processing'
-      : cliBinding?.lifecycleState === 'idle'
+      : acpBinding?.readySinceLastSelect || cliBinding?.readySinceLastSelect
         ? 'idle'
-        : null
+        : cliBinding?.lifecycleState === 'busy' || cliBinding?.lifecycleState === 'shuttingDown'
+          ? 'processing'
+          : null
 
   useEffect(() => {
     if (editing && inputRef.current) {
@@ -127,12 +130,12 @@ export const SessionItem = memo(function SessionItem({ sessionId }: SessionItemP
         {!editing && (
           <div className="ml-auto flex items-center gap-1">
             {lifecycleStatus === 'processing' && (
-              <span className="session-status session-status--processing" aria-label="CLI running">
+              <span className="session-status session-status--processing" aria-label="Gemini running">
                 <span />
               </span>
             )}
             {lifecycleStatus === 'idle' && (
-              <span className="session-status session-status--idle" aria-label="CLI idle">
+              <span className="session-status session-status--idle" aria-label="Gemini idle">
                 <span />
               </span>
             )}

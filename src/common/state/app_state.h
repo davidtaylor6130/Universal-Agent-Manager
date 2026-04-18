@@ -86,6 +86,95 @@ namespace uam
 		std::string last_error;
 	};
 
+	struct AcpToolCallState
+	{
+		std::string id;
+		std::string title;
+		std::string kind;
+		std::string status;
+		std::string content;
+	};
+
+	struct AcpPlanEntryState
+	{
+		std::string content;
+		std::string priority;
+		std::string status;
+	};
+
+	struct AcpTurnEventState
+	{
+		std::string type;
+		std::string text;
+		std::string tool_call_id;
+		std::string request_id_json;
+	};
+
+	struct AcpReplayUpdateState
+	{
+		std::string session_update;
+		std::string text;
+		std::string tool_call_id;
+		std::string title;
+	};
+
+	struct AcpPermissionOptionState
+	{
+		std::string id;
+		std::string name;
+		std::string kind;
+	};
+
+	struct AcpPendingPermissionState
+	{
+		std::string request_id_json;
+		std::string tool_call_id;
+		std::string title;
+		std::string kind;
+		std::string status;
+		std::string content;
+		std::vector<AcpPermissionOptionState> options;
+	};
+
+	struct AcpSessionState : public platform::StdioProcessPlatformFields
+	{
+		std::string chat_id;
+		std::string session_id;
+		std::string lifecycle_state = "stopped";
+		bool running = false;
+		bool initialized = false;
+		bool session_ready = false;
+		bool load_session_supported = false;
+		bool processing = false;
+		bool waiting_for_permission = false;
+		int next_request_id = 1;
+		int initialize_request_id = 0;
+		int session_setup_request_id = 0;
+		int prompt_request_id = 0;
+		int cancel_request_id = 0;
+		int current_assistant_message_index = -1;
+		int turn_user_message_index = -1;
+		int turn_assistant_message_index = -1;
+		int turn_serial = 0;
+		std::string queued_prompt;
+		bool ignore_session_updates_until_ready = false;
+		std::string stdout_buffer;
+		std::string stderr_buffer;
+		std::string recent_stderr;
+		std::string last_error;
+		std::vector<std::string> assistant_replay_prefixes;
+		std::vector<AcpReplayUpdateState> load_history_replay_updates;
+		std::string pending_assistant_thoughts;
+		std::string agent_name;
+		std::string agent_title;
+		std::string agent_version;
+		std::unordered_map<int, std::string> pending_request_methods;
+		std::vector<AcpToolCallState> tool_calls;
+		std::vector<AcpPlanEntryState> plan_entries;
+		std::vector<AcpTurnEventState> turn_events;
+		AcpPendingPermissionState pending_permission;
+	};
+
 	/// <summary>
 	/// Background command execution container for Gemini compatibility checks.
 	/// </summary>
@@ -164,6 +253,7 @@ namespace uam
 		std::string status_line;
 		CenterViewMode center_view_mode = CenterViewMode::CliConsole;
 		std::vector<std::unique_ptr<CliTerminalState>> cli_terminals;
+		std::vector<std::unique_ptr<AcpSessionState>> acp_sessions;
 
 		std::vector<PendingRuntimeCall> pending_calls;
 		std::unordered_map<std::string, std::string> resolved_native_sessions_by_chat_id;

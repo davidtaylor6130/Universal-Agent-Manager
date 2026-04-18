@@ -1,5 +1,7 @@
 #include "cef/state_serializer.h"
 
+#include "app/application_core_helpers.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/runtime/terminal/terminal_identity.h"
@@ -156,6 +158,120 @@ nlohmann::json SerializeChatTerminalSummary(const AppState& app, const ChatSessi
 	return terminal_json;
 }
 
+nlohmann::json SerializeAcpSessionSummary(const AppState& app, const ChatSession& chat)
+{
+	nlohmann::json acp_json;
+	const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+	const bool ready_since_last_select = app.chats_with_unseen_updates.find(chat.id) != app.chats_with_unseen_updates.end();
+	if (session == nullptr)
+	{
+		acp_json["sessionId"] = chat.native_session_id;
+		acp_json["running"] = false;
+		acp_json["processing"] = false;
+		acp_json["readySinceLastSelect"] = ready_since_last_select;
+		acp_json["lifecycleState"] = "stopped";
+		acp_json["lastError"] = "";
+		acp_json["toolCalls"] = nlohmann::json::array();
+		acp_json["planEntries"] = nlohmann::json::array();
+		acp_json["turnEvents"] = nlohmann::json::array();
+		acp_json["turnUserMessageIndex"] = -1;
+		acp_json["turnAssistantMessageIndex"] = -1;
+		acp_json["turnSerial"] = 0;
+		acp_json["pendingPermission"] = nullptr;
+		return acp_json;
+	}
+
+	acp_json["sessionId"] = session->session_id;
+	acp_json["running"] = session->running;
+	acp_json["processing"] = session->processing;
+	acp_json["readySinceLastSelect"] = ready_since_last_select;
+	acp_json["lifecycleState"] = session->lifecycle_state;
+	acp_json["lastError"] = session->last_error;
+	acp_json["recentStderr"] = session->recent_stderr;
+	acp_json["agentInfo"] = {
+		{"name", session->agent_name},
+		{"title", session->agent_title},
+		{"version", session->agent_version},
+	};
+
+	auto tool_calls = nlohmann::json::array();
+	for (const AcpToolCallState& tool_call : session->tool_calls)
+	{
+		tool_calls.push_back({
+			{"id", tool_call.id},
+			{"title", tool_call.title},
+			{"kind", tool_call.kind},
+			{"status", tool_call.status},
+			{"content", tool_call.content},
+		});
+	}
+	acp_json["toolCalls"] = std::move(tool_calls);
+
+	auto plan_entries = nlohmann::json::array();
+	for (const AcpPlanEntryState& entry : session->plan_entries)
+	{
+		plan_entries.push_back({
+			{"content", entry.content},
+			{"priority", entry.priority},
+			{"status", entry.status},
+		});
+	}
+	acp_json["planEntries"] = std::move(plan_entries);
+
+	auto turn_events = nlohmann::json::array();
+	for (const AcpTurnEventState& event : session->turn_events)
+	{
+		nlohmann::json event_json;
+		event_json["type"] = event.type;
+		if (!event.text.empty())
+		{
+			event_json["text"] = event.text;
+		}
+		if (!event.tool_call_id.empty())
+		{
+			event_json["toolCallId"] = event.tool_call_id;
+		}
+		if (!event.request_id_json.empty())
+		{
+			event_json["requestId"] = event.request_id_json;
+		}
+		turn_events.push_back(std::move(event_json));
+	}
+	acp_json["turnEvents"] = std::move(turn_events);
+	acp_json["turnUserMessageIndex"] = session->turn_user_message_index;
+	acp_json["turnAssistantMessageIndex"] = session->turn_assistant_message_index;
+	acp_json["turnSerial"] = session->turn_serial;
+
+	if (!session->pending_permission.request_id_json.empty())
+	{
+		nlohmann::json permission_json;
+		permission_json["requestId"] = session->pending_permission.request_id_json;
+		permission_json["toolCallId"] = session->pending_permission.tool_call_id;
+		permission_json["title"] = session->pending_permission.title;
+		permission_json["kind"] = session->pending_permission.kind;
+		permission_json["status"] = session->pending_permission.status;
+		permission_json["content"] = session->pending_permission.content;
+
+		auto options = nlohmann::json::array();
+		for (const AcpPermissionOptionState& option : session->pending_permission.options)
+		{
+			options.push_back({
+				{"id", option.id},
+				{"name", option.name},
+				{"kind", option.kind},
+			});
+		}
+		permission_json["options"] = std::move(options);
+		acp_json["pendingPermission"] = std::move(permission_json);
+	}
+	else
+	{
+		acp_json["pendingPermission"] = nullptr;
+	}
+
+	return acp_json;
+}
+
 nlohmann::json SerializeFingerprintSession(const AppState& app, const ChatSession& chat)
 {
 	nlohmann::json chat_json;
@@ -163,11 +279,13 @@ nlohmann::json SerializeFingerprintSession(const AppState& app, const ChatSessio
 	chat_json["title"] = chat.title;
 	chat_json["folderId"] = chat.folder_id;
 	chat_json["providerId"] = chat.provider_id;
+	chat_json["workspaceDirectory"] = ResolveWorkspaceRootPath(app, chat).string();
 	chat_json["createdAt"] = chat.created_at;
 	chat_json["updatedAt"] = chat.updated_at;
 	chat_json["messageCount"] = chat.messages.size();
 	chat_json["messagesDigest"] = MessageDigestForFingerprint(chat);
 	chat_json["cliTerminal"] = SerializeChatTerminalSummary(app, chat);
+	chat_json["acpSession"] = SerializeAcpSessionSummary(app, chat);
 	return chat_json;
 }
 
@@ -248,6 +366,7 @@ nlohmann::json StateSerializer::Serialize(const AppState& app)
 	for (const auto& chat : app.chats)
 	{
 		nlohmann::json chat_json = SerializeSession(chat);
+		chat_json["workspaceDirectory"] = ResolveWorkspaceRootPath(app, chat).string();
 
 		const bool ready_since_last_select = app.chats_with_unseen_updates.find(chat.id) != app.chats_with_unseen_updates.end();
 		const bool has_pending_call = HasPendingCallForChat(app, chat.id);
@@ -283,6 +402,7 @@ nlohmann::json StateSerializer::Serialize(const AppState& app)
 			chat_json["cliTerminal"] = terminal_json;
 		}
 
+		chat_json["acpSession"] = SerializeAcpSessionSummary(app, chat);
 		chats_arr.push_back(std::move(chat_json));
 	}
 	j["chats"] = chats_arr;
@@ -368,18 +488,23 @@ nlohmann::json StateSerializer::SerializeSession(const ChatSession& session)
 	j["title"]      = session.title;
 	j["folderId"]   = session.folder_id;
 	j["providerId"] = session.provider_id;
+	j["workspaceDirectory"] = session.workspace_directory;
 	j["createdAt"]  = session.created_at;
 	j["updatedAt"]  = session.updated_at;
 
 	auto msgs = nlohmann::json::array();
-	for (const auto& msg : session.messages)
-	{
-		nlohmann::json m;
-		m["role"]      = RoleStr(msg.role);
-		m["content"]   = msg.content;
-		m["createdAt"] = msg.created_at;
-		msgs.push_back(m);
-	}
+		for (const auto& msg : session.messages)
+		{
+			nlohmann::json m;
+			m["role"]      = RoleStr(msg.role);
+			m["content"]   = msg.content;
+			m["createdAt"] = msg.created_at;
+			if (!msg.thoughts.empty())
+			{
+				m["thoughts"] = msg.thoughts;
+			}
+			msgs.push_back(m);
+		}
 	j["messages"] = msgs;
 
 	return j;

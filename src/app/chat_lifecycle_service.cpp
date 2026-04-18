@@ -10,6 +10,7 @@
 #include "common/constants/app_constants.h"
 #include "common/paths/app_paths.h"
 #include "common/provider/provider_runtime.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/terminal_common.h"
 
 #include <algorithm>
@@ -45,12 +46,13 @@ bool RemoveChatById(AppState& app, const std::string& chat_id)
 
 	const ChatSession chat = app.chats[chat_index];
 
-	if (HasPendingCallForChat(app, chat.id))
+	if (ChatHasRunningGemini(app, chat.id))
 	{
 		app.status_line = "Cannot delete a chat while Gemini is still running for it.";
 		return false;
 	}
 
+	StopAcpSession(app, chat.id);
 	StopAndEraseCliTerminalForChat(app, chat.id, false);
 
 	const ProviderProfile& chat_provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
@@ -209,7 +211,7 @@ bool DeleteFolderById(AppState& app, const std::string& folder_id)
 			continue;
 		}
 
-		if (HasPendingCallForChat(app, chat.id))
+		if (ChatHasRunningGemini(app, chat.id))
 		{
 			app.status_line = "Cannot delete a folder while Gemini is still running for one of its chats.";
 			return false;
@@ -278,6 +280,7 @@ bool DeleteFolderById(AppState& app, const std::string& folder_id)
 
 	for (const ChatSession& deleted_chat : deleted_chats)
 	{
+		StopAcpSession(app, deleted_chat.id);
 		StopAndEraseCliTerminalForChat(app, deleted_chat.id, false);
 	}
 

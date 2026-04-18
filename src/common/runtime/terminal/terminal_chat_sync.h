@@ -56,6 +56,17 @@ inline bool ChatHasRunningGemini(const uam::AppState& app, const std::string& ch
 		return true;
 	}
 
+	for (const auto& session : app.acp_sessions)
+	{
+		if (session != nullptr &&
+		    session->chat_id == chat_id &&
+		    session->running &&
+		    (session->processing || session->waiting_for_permission))
+		{
+			return true;
+		}
+	}
+
 	for (const auto& terminal : app.cli_terminals)
 	{
 		if (terminal != nullptr &&

@@ -246,6 +246,41 @@ namespace
 		}
 	}
 
+	std::ptrdiff_t ReadPipeNonBlocking(HANDLE pipe, char* buffer, const std::size_t buffer_size)
+	{
+		if (pipe == INVALID_HANDLE_VALUE)
+		{
+			return -1;
+		}
+
+		DWORD available = 0;
+		if (!PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr))
+		{
+			const DWORD err = GetLastError();
+			return err == ERROR_BROKEN_PIPE ? 0 : -1;
+		}
+
+		if (available == 0)
+		{
+			return -2;
+		}
+
+		const DWORD to_read = static_cast<DWORD>(std::min<std::size_t>(buffer_size, available));
+		DWORD bytes_read = 0;
+		if (!ReadFile(pipe, buffer, to_read, &bytes_read, nullptr))
+		{
+			const DWORD err = GetLastError();
+			return err == ERROR_BROKEN_PIPE ? 0 : -1;
+		}
+
+		if (bytes_read == 0)
+		{
+			return -2;
+		}
+
+		return static_cast<std::ptrdiff_t>(bytes_read);
+	}
+
 	std::optional<std::filesystem::path> ResolveWindowsHomePath()
 	{
 		if (const char* user_profile = std::getenv("USERPROFILE"))
@@ -1153,6 +1188,233 @@ namespace
 			}
 
 			return result;
+		}
+
+		bool StartStdioProcess(uam::platform::StdioProcessPlatformFields& process,
+		                       const std::filesystem::path& working_directory,
+		                       const std::vector<std::string>& argv,
+		                       std::string* error_out = nullptr) const override
+		{
+			if (argv.empty() || TrimAsciiWhitespace(argv.front()).empty())
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Stdio process command is empty.";
+				}
+				return false;
+			}
+
+			SECURITY_ATTRIBUTES sa{};
+			sa.nLength = sizeof(sa);
+			sa.bInheritHandle = TRUE;
+
+			HANDLE stdin_read = INVALID_HANDLE_VALUE;
+			HANDLE stdin_write = INVALID_HANDLE_VALUE;
+			HANDLE stdout_read = INVALID_HANDLE_VALUE;
+			HANDLE stdout_write = INVALID_HANDLE_VALUE;
+			HANDLE stderr_read = INVALID_HANDLE_VALUE;
+			HANDLE stderr_write = INVALID_HANDLE_VALUE;
+
+			auto close_if_valid = [](HANDLE& handle)
+			{
+				if (handle != INVALID_HANDLE_VALUE)
+				{
+					CloseHandle(handle);
+					handle = INVALID_HANDLE_VALUE;
+				}
+			};
+
+			if (!CreatePipe(&stdin_read, &stdin_write, &sa, 0) ||
+			    !CreatePipe(&stdout_read, &stdout_write, &sa, 0) ||
+			    !CreatePipe(&stderr_read, &stderr_write, &sa, 0))
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to create stdio process pipes.";
+				}
+				close_if_valid(stdin_read);
+				close_if_valid(stdin_write);
+				close_if_valid(stdout_read);
+				close_if_valid(stdout_write);
+				close_if_valid(stderr_read);
+				close_if_valid(stderr_write);
+				return false;
+			}
+
+			SetHandleInformation(stdin_write, HANDLE_FLAG_INHERIT, 0);
+			SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
+			SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0);
+
+			std::string command_str = BuildWindowsCommandLine(argv);
+			command_str = "cmd.exe /C \"" + command_str + "\"";
+			const std::wstring command_w = WideFromUtf8(command_str);
+			if (command_w.empty())
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to encode stdio command line.";
+				}
+				close_if_valid(stdin_read);
+				close_if_valid(stdin_write);
+				close_if_valid(stdout_read);
+				close_if_valid(stdout_write);
+				close_if_valid(stderr_read);
+				close_if_valid(stderr_write);
+				return false;
+			}
+
+			std::vector<wchar_t> command_line(command_w.begin(), command_w.end());
+			command_line.push_back(L'\0');
+			const std::wstring working_directory_w = working_directory.empty() ? std::wstring() : working_directory.wstring();
+
+			STARTUPINFOW startup_info{};
+			startup_info.cb = sizeof(startup_info);
+			startup_info.dwFlags = STARTF_USESTDHANDLES;
+			startup_info.hStdInput = stdin_read;
+			startup_info.hStdOutput = stdout_write;
+			startup_info.hStdError = stderr_write;
+
+			PROCESS_INFORMATION process_info{};
+			const BOOL created = CreateProcessW(nullptr,
+			                                    command_line.data(),
+			                                    nullptr,
+			                                    nullptr,
+			                                    TRUE,
+			                                    CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+			                                    nullptr,
+			                                    working_directory.empty() ? nullptr : working_directory_w.c_str(),
+			                                    &startup_info,
+			                                    &process_info);
+
+			close_if_valid(stdin_read);
+			close_if_valid(stdout_write);
+			close_if_valid(stderr_write);
+
+			if (!created)
+			{
+				const DWORD launch_error = GetLastError();
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to start stdio process. Error code: " + std::to_string(launch_error) + ".";
+				}
+				close_if_valid(stdin_write);
+				close_if_valid(stdout_read);
+				close_if_valid(stderr_read);
+				return false;
+			}
+
+			process.stdin_write = stdin_write;
+			process.stdout_read = stdout_read;
+			process.stderr_read = stderr_read;
+			process.process_info = process_info;
+
+			HANDLE job = CreateJobObjectW(nullptr, nullptr);
+			if (job != nullptr)
+			{
+				JOBOBJECT_EXTENDED_LIMIT_INFORMATION limit_info{};
+				limit_info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+				if (SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limit_info, sizeof(limit_info)))
+				{
+					AssignProcessToJobObject(job, process_info.hProcess);
+				}
+				process.job_object = job;
+			}
+
+			return true;
+		}
+
+		void CloseStdioProcessHandles(uam::platform::StdioProcessPlatformFields& process) const override
+		{
+			if (process.stdin_write != INVALID_HANDLE_VALUE)
+			{
+				CloseHandle(process.stdin_write);
+				process.stdin_write = INVALID_HANDLE_VALUE;
+			}
+			if (process.stdout_read != INVALID_HANDLE_VALUE)
+			{
+				CloseHandle(process.stdout_read);
+				process.stdout_read = INVALID_HANDLE_VALUE;
+			}
+			if (process.stderr_read != INVALID_HANDLE_VALUE)
+			{
+				CloseHandle(process.stderr_read);
+				process.stderr_read = INVALID_HANDLE_VALUE;
+			}
+			if (process.job_object != nullptr)
+			{
+				CloseHandle(process.job_object);
+				process.job_object = nullptr;
+			}
+			if (process.process_info.hThread != INVALID_HANDLE_VALUE)
+			{
+				CloseHandle(process.process_info.hThread);
+				process.process_info.hThread = INVALID_HANDLE_VALUE;
+			}
+			if (process.process_info.hProcess != INVALID_HANDLE_VALUE)
+			{
+				CloseHandle(process.process_info.hProcess);
+				process.process_info.hProcess = INVALID_HANDLE_VALUE;
+			}
+			process.process_info.dwProcessId = 0;
+			process.process_info.dwThreadId = 0;
+		}
+
+		bool WriteToStdioProcess(uam::platform::StdioProcessPlatformFields& process, const char* bytes, const std::size_t len) const override
+		{
+			if (bytes == nullptr || len == 0)
+			{
+				return true;
+			}
+			if (process.stdin_write == INVALID_HANDLE_VALUE)
+			{
+				return false;
+			}
+
+			std::size_t offset = 0;
+			while (offset < len)
+			{
+				const DWORD chunk = static_cast<DWORD>(std::min<std::size_t>(len - offset, static_cast<std::size_t>(MAXDWORD)));
+				DWORD written = 0;
+				if (!WriteFile(process.stdin_write, bytes + offset, chunk, &written, nullptr) || written == 0)
+				{
+					return false;
+				}
+				offset += written;
+			}
+			return true;
+		}
+
+		void StopStdioProcess(uam::platform::StdioProcessPlatformFields& process, const bool fast_exit) const override
+		{
+			if (process.process_info.hProcess == INVALID_HANDLE_VALUE)
+			{
+				CloseStdioProcessHandles(process);
+				return;
+			}
+
+			TerminateProcess(process.process_info.hProcess, 1);
+			WaitForSingleObject(process.process_info.hProcess, fast_exit ? 80 : 600);
+			CloseStdioProcessHandles(process);
+		}
+
+		std::ptrdiff_t ReadStdioProcessStdout(uam::platform::StdioProcessPlatformFields& process, char* buffer, const std::size_t buffer_size) const override
+		{
+			return ReadPipeNonBlocking(process.stdout_read, buffer, buffer_size);
+		}
+
+		std::ptrdiff_t ReadStdioProcessStderr(uam::platform::StdioProcessPlatformFields& process, char* buffer, const std::size_t buffer_size) const override
+		{
+			return ReadPipeNonBlocking(process.stderr_read, buffer, buffer_size);
+		}
+
+		bool PollStdioProcessExited(uam::platform::StdioProcessPlatformFields& process) const override
+		{
+			if (process.process_info.hProcess == INVALID_HANDLE_VALUE)
+			{
+				return true;
+			}
+
+			return WaitForSingleObject(process.process_info.hProcess, 0) == WAIT_OBJECT_0;
 		}
 
 		std::string GeminiDowngradeCommand() const override

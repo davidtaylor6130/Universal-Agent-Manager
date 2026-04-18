@@ -37,6 +37,24 @@ namespace uam::platform
 #endif
 	};
 
+	struct StdioProcessPlatformFields
+	{
+#if defined(_WIN32)
+		HANDLE stdin_write = INVALID_HANDLE_VALUE;
+		HANDLE stdout_read = INVALID_HANDLE_VALUE;
+		HANDLE stderr_read = INVALID_HANDLE_VALUE;
+		PROCESS_INFORMATION process_info = {INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, 0, 0};
+		HANDLE job_object = nullptr;
+#elif defined(__APPLE__)
+		int stdin_write_fd = -1;
+		int stdout_read_fd = -1;
+		int stderr_read_fd = -1;
+		pid_t child_pid = -1;
+#else
+#error "StdioProcessPlatformFields is only supported on Windows and macOS."
+#endif
+	};
+
 	inline bool CliTerminalHasWritableInput(const CliTerminalPlatformFields& fields)
 	{
 #if defined(_WIN32)

@@ -1,7 +1,8 @@
-import { memo } from 'react'
+import { memo, useState } from 'react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { CLIView } from '../views/CLIView'
+import { ChatView } from '../views/ChatView'
 import { isCefContext } from '../../ipc/cefBridge'
 
 const PushStatusDot = memo(function PushStatusDot() {
@@ -39,8 +40,18 @@ const PushStatusDot = memo(function PushStatusDot() {
 })
 
 export function MainPanel() {
+  const [view, setView] = useState<'chat' | 'cli'>('chat')
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const session = useAppStore(useShallow((s) => s.sessions.find((x) => x.id === activeSessionId) ?? null))
+  const acpBinding = useAppStore((s) => activeSessionId ? s.acpBindingBySessionId[activeSessionId] : undefined)
+  const cliBinding = useAppStore((s) => activeSessionId ? s.cliBindingBySessionId[activeSessionId] : undefined)
+  const viewSwitchLocked = Boolean(
+    acpBinding?.processing ||
+      acpBinding?.lifecycleState === 'waitingPermission' ||
+      cliBinding?.processing ||
+      cliBinding?.lifecycleState === 'busy' ||
+      cliBinding?.lifecycleState === 'shuttingDown'
+  )
 
   if (!session) {
     return (
@@ -81,12 +92,58 @@ export function MainPanel() {
           {session.name}
         </div>
 
+        <div
+          className="flex items-center p-0.5 mr-2"
+          style={{
+            border: '1px solid var(--border)',
+            borderRadius: 6,
+            background: 'var(--bg)',
+          }}
+        >
+          <button
+            type="button"
+            title={viewSwitchLocked && view !== 'chat' ? 'Wait for current output to finish' : 'Chat view'}
+            disabled={viewSwitchLocked && view !== 'chat'}
+            onClick={() => {
+              if (!viewSwitchLocked) setView('chat')
+            }}
+            className="h-7 px-3 text-xs"
+            style={{
+              borderRadius: 5,
+              color: view === 'chat' ? 'var(--text)' : 'var(--text-2)',
+              background: view === 'chat' ? 'var(--surface-up)' : 'transparent',
+              opacity: viewSwitchLocked && view !== 'chat' ? 0.5 : 1,
+              cursor: viewSwitchLocked && view !== 'chat' ? 'not-allowed' : 'default',
+            }}
+          >
+            Chat
+          </button>
+          <button
+            type="button"
+            title={viewSwitchLocked && view !== 'cli' ? 'Wait for current output to finish' : 'Terminal fallback'}
+            disabled={viewSwitchLocked && view !== 'cli'}
+            onClick={() => {
+              if (!viewSwitchLocked) setView('cli')
+            }}
+            className="h-7 px-3 text-xs"
+            style={{
+              borderRadius: 5,
+              color: view === 'cli' ? 'var(--text)' : 'var(--text-2)',
+              background: view === 'cli' ? 'var(--surface-up)' : 'transparent',
+              opacity: viewSwitchLocked && view !== 'cli' ? 0.5 : 1,
+              cursor: viewSwitchLocked && view !== 'cli' ? 'not-allowed' : 'default',
+            }}
+          >
+            CLI
+          </button>
+        </div>
+
         {isCefContext() && <PushStatusDot />}
       </div>
 
       {/* View content */}
       <div className="flex-1 overflow-hidden">
-        <CLIView session={session} />
+        {view === 'chat' ? <ChatView session={session} /> : <CLIView session={session} />}
       </div>
     </div>
   )

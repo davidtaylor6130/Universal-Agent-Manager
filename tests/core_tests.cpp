@@ -9,11 +9,15 @@
 #include "common/provider/gemini/base/gemini_history_loader.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/terminal/terminal_idle_classifier.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_lifecycle.h"
 #include "common/utils/io_utils.h"
+#include "cef/state_serializer.h"
 #include "core/gemini_cli_compat.h"
+
+#include <nlohmann/json.hpp>
 
 #include <chrono>
 #include <exception>
@@ -225,6 +229,419 @@ UAM_TEST(GeminiCliInteractiveArgvUsesResumeAndFlags)
 	UAM_ASSERT_EQ(argv[2], std::string("--checkpointing"));
 	UAM_ASSERT_EQ(argv[3], std::string("-r"));
 	UAM_ASSERT_EQ(argv[4], std::string("native-abc"));
+}
+
+UAM_TEST(AcpJsonRpcBuildersUseProtocolMethods)
+{
+	const nlohmann::json initialize = nlohmann::json::parse(uam::BuildAcpInitializeRequestForTests(7));
+	UAM_ASSERT_EQ(initialize.value("jsonrpc", ""), std::string("2.0"));
+	UAM_ASSERT_EQ(initialize.value("id", 0), 7);
+	UAM_ASSERT_EQ(initialize.value("method", ""), std::string("initialize"));
+	UAM_ASSERT_EQ(initialize["params"].value("protocolVersion", 0), 1);
+
+	const nlohmann::json session_new = nlohmann::json::parse(uam::BuildAcpNewSessionRequestForTests(8, "/tmp/project"));
+	UAM_ASSERT_EQ(session_new.value("method", ""), std::string("session/new"));
+	UAM_ASSERT_EQ(session_new["params"].value("cwd", ""), std::string("/tmp/project"));
+	UAM_ASSERT(session_new["params"]["mcpServers"].is_array());
+
+	const nlohmann::json prompt = nlohmann::json::parse(uam::BuildAcpPromptRequestForTests(9, "sess-1", "hello"));
+	UAM_ASSERT_EQ(prompt.value("method", ""), std::string("session/prompt"));
+	UAM_ASSERT_EQ(prompt["params"].value("sessionId", ""), std::string("sess-1"));
+	UAM_ASSERT_EQ(prompt["params"]["prompt"][0].value("type", ""), std::string("text"));
+	UAM_ASSERT_EQ(prompt["params"]["prompt"][0].value("text", ""), std::string("hello"));
+}
+
+UAM_TEST(AcpTurnTimelinePreservesStreamOrder)
+{
+	TempDir temp("uam-acp-turn-events");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "gemini-cli";
+	Message user;
+	user.role = MessageRole::User;
+	user.content = "Please inspect this.";
+	user.created_at = "2026-01-01T00:00:00.000Z";
+	chat.messages.push_back(std::move(user));
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->running = true;
+	session->processing = true;
+	session->session_ready = true;
+	session->turn_user_message_index = 0;
+	session->turn_serial = 4;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+	app.chats_with_unseen_updates.insert("chat-1");
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Before "}}}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Need to inspect the file first."}}}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call","toolCallId":"tool-1","title":"Read file","kind":"read","status":"in_progress","content":{"type":"text","text":"Reading"}}}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call","toolCallId":"tool-1","title":"Read file","kind":"read","status":"completed","content":{"type":"text","text":"Read complete"}}}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":5,"method":"session/request_permission","params":{"toolCall":{"toolCallId":"tool-1","title":"Read file","kind":"read","status":"pending","content":{"type":"text","text":"Read /tmp/file.txt"}},"options":[{"optionId":"allow-once","name":"Allow once","kind":"allow_once"}]}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"After"}}}})"));
+
+	UAM_ASSERT_EQ(raw_session->turn_events.size(), static_cast<std::size_t>(5));
+	UAM_ASSERT_EQ(raw_session->turn_events[0].type, std::string("assistant_text"));
+	UAM_ASSERT_EQ(raw_session->turn_events[0].text, std::string("Before "));
+	UAM_ASSERT_EQ(raw_session->turn_events[1].type, std::string("thought"));
+	UAM_ASSERT_EQ(raw_session->turn_events[1].text, std::string("Need to inspect the file first."));
+	UAM_ASSERT_EQ(raw_session->turn_events[2].type, std::string("tool_call"));
+	UAM_ASSERT_EQ(raw_session->turn_events[2].tool_call_id, std::string("tool-1"));
+	UAM_ASSERT_EQ(raw_session->turn_events[3].type, std::string("permission_request"));
+	UAM_ASSERT_EQ(raw_session->turn_events[3].request_id_json, std::string("5"));
+	UAM_ASSERT_EQ(raw_session->turn_events[4].type, std::string("assistant_text"));
+	UAM_ASSERT_EQ(raw_session->turn_events[4].text, std::string("After"));
+	UAM_ASSERT_EQ(app.chats.front().messages[1].content, std::string("Before After"));
+
+	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json acp = serialized["chats"][0]["acpSession"];
+	UAM_ASSERT_EQ(acp["turnEvents"].size(), static_cast<std::size_t>(5));
+	UAM_ASSERT_EQ(acp.value("turnUserMessageIndex", -2), 0);
+	UAM_ASSERT_EQ(acp.value("turnAssistantMessageIndex", -2), 1);
+	UAM_ASSERT_EQ(acp.value("turnSerial", -2), 4);
+	UAM_ASSERT(acp.value("readySinceLastSelect", false));
+	UAM_ASSERT_EQ(acp["turnEvents"][1].value("type", ""), std::string("thought"));
+	UAM_ASSERT_EQ(acp["turnEvents"][2].value("toolCallId", ""), std::string("tool-1"));
+	UAM_ASSERT_EQ(acp["turnEvents"][3].value("requestId", ""), std::string("5"));
+}
+
+UAM_TEST(AcpPromptCompletionClearsProcessingByMethodAndPromptId)
+{
+	TempDir temp("uam-acp-completion");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "gemini-cli";
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->processing = true;
+	session->waiting_for_permission = true;
+	session->prompt_request_id = 42;
+	session->queued_prompt = "hello";
+	session->current_assistant_message_index = 0;
+	session->pending_permission.request_id_json = "7";
+	session->pending_request_methods[42] = "session/prompt";
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":42,"result":{"stopReason":"end_turn"}})"));
+	UAM_ASSERT(!raw_session->processing);
+	UAM_ASSERT(!raw_session->waiting_for_permission);
+	UAM_ASSERT_EQ(raw_session->prompt_request_id, 0);
+	UAM_ASSERT_EQ(raw_session->queued_prompt, std::string(""));
+	UAM_ASSERT_EQ(raw_session->pending_permission.request_id_json, std::string(""));
+	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("ready"));
+	UAM_ASSERT(app.chats_with_unseen_updates.find("chat-1") != app.chats_with_unseen_updates.end());
+
+	raw_session->processing = true;
+	raw_session->waiting_for_permission = true;
+	raw_session->prompt_request_id = 99;
+	raw_session->queued_prompt = "again";
+	raw_session->current_assistant_message_index = 0;
+	raw_session->pending_permission.request_id_json = "8";
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":99,"result":{"stopReason":"end_turn"}})"));
+	UAM_ASSERT(!raw_session->processing);
+	UAM_ASSERT(!raw_session->waiting_for_permission);
+	UAM_ASSERT_EQ(raw_session->prompt_request_id, 0);
+	UAM_ASSERT_EQ(raw_session->queued_prompt, std::string(""));
+	UAM_ASSERT_EQ(raw_session->pending_permission.request_id_json, std::string(""));
+	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("ready"));
+
+	raw_session->processing = true;
+	raw_session->waiting_for_permission = true;
+	raw_session->prompt_request_id = 100;
+	raw_session->queued_prompt = "bad json";
+	raw_session->pending_permission.request_id_json = "9";
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":)"));
+	UAM_ASSERT(!raw_session->processing);
+	UAM_ASSERT(!raw_session->waiting_for_permission);
+	UAM_ASSERT_EQ(raw_session->prompt_request_id, 0);
+	UAM_ASSERT_EQ(raw_session->queued_prompt, std::string(""));
+	UAM_ASSERT_EQ(raw_session->pending_permission.request_id_json, std::string(""));
+	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("error"));
+	UAM_ASSERT(raw_session->last_error.find("Invalid ACP JSON") != std::string::npos);
+}
+
+UAM_TEST(AcpAssistantReplayIsStrippedFromNewTurn)
+{
+	TempDir temp("uam-acp-replay-strip");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	const std::string previous_response = "Previous Gemini response with enough content to identify a replayed assistant message.";
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "gemini-cli";
+	Message first_user;
+	first_user.role = MessageRole::User;
+	first_user.content = "First prompt";
+	first_user.created_at = "2026-01-01T00:00:00.000Z";
+	chat.messages.push_back(std::move(first_user));
+	Message first_assistant;
+	first_assistant.role = MessageRole::Assistant;
+	first_assistant.content = previous_response;
+	first_assistant.created_at = "2026-01-01T00:00:01.000Z";
+	chat.messages.push_back(std::move(first_assistant));
+	Message second_user;
+	second_user.role = MessageRole::User;
+	second_user.content = "Second prompt";
+	second_user.created_at = "2026-01-01T00:00:02.000Z";
+	chat.messages.push_back(std::move(second_user));
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->running = true;
+	session->processing = true;
+	session->session_ready = true;
+	session->turn_user_message_index = 2;
+	session->assistant_replay_prefixes.push_back(previous_response);
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), nlohmann::json({
+		{"jsonrpc", "2.0"},
+		{"method", "session/update"},
+		{"params", {
+			{"update", {
+				{"sessionUpdate", "agent_message_chunk"},
+				{"content", {{"type", "text"}, {"text", previous_response}}},
+			}},
+		}},
+	}).dump()));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(3));
+	UAM_ASSERT(raw_session->turn_events.empty());
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), nlohmann::json({
+		{"jsonrpc", "2.0"},
+		{"method", "session/update"},
+		{"params", {
+			{"update", {
+				{"sessionUpdate", "agent_message_chunk"},
+				{"content", {{"type", "text"}, {"text", previous_response + "\n\nSecond answer"}}},
+			}},
+		}},
+	}).dump()));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(4));
+	UAM_ASSERT_EQ(app.chats.front().messages[3].content, std::string("Second answer"));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), nlohmann::json({
+		{"jsonrpc", "2.0"},
+		{"method", "session/update"},
+		{"params", {
+			{"update", {
+				{"sessionUpdate", "agent_message_chunk"},
+				{"content", {{"type", "text"}, {"text", previous_response + "\n\nSecond answer with suffix"}}},
+			}},
+		}},
+	}).dump()));
+	UAM_ASSERT_EQ(app.chats.front().messages[3].content, std::string("Second answer with suffix"));
+	UAM_ASSERT_EQ(raw_session->turn_events.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(raw_session->turn_events[0].text, std::string("Second answer with suffix"));
+}
+
+UAM_TEST(AcpLoadHistoryReplaySuppressesShortAssistantResponse)
+{
+	TempDir temp("uam-acp-short-replay");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "gemini-cli";
+	Message first_user;
+	first_user.role = MessageRole::User;
+	first_user.content = "First prompt";
+	first_user.created_at = "2026-01-01T00:00:00.000Z";
+	chat.messages.push_back(std::move(first_user));
+	Message first_assistant;
+	first_assistant.role = MessageRole::Assistant;
+	first_assistant.content = "OK";
+	first_assistant.created_at = "2026-01-01T00:00:01.000Z";
+	chat.messages.push_back(std::move(first_assistant));
+	Message second_user;
+	second_user.role = MessageRole::User;
+	second_user.content = "Second prompt";
+	second_user.created_at = "2026-01-01T00:00:02.000Z";
+	chat.messages.push_back(std::move(second_user));
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->running = true;
+	session->processing = true;
+	session->session_ready = true;
+	session->turn_user_message_index = 2;
+	uam::AcpReplayUpdateState user_replay;
+	user_replay.session_update = "user_message_chunk";
+	user_replay.text = "First prompt";
+	session->load_history_replay_updates.push_back(std::move(user_replay));
+	uam::AcpReplayUpdateState assistant_replay;
+	assistant_replay.session_update = "agent_message_chunk";
+	assistant_replay.text = "OK";
+	session->load_history_replay_updates.push_back(std::move(assistant_replay));
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"First prompt"}}}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"OK"}}}})"));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(3));
+	UAM_ASSERT(raw_session->turn_events.empty());
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"New answer"}}}})"));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(4));
+	UAM_ASSERT_EQ(app.chats.front().messages[3].content, std::string("New answer"));
+}
+
+UAM_TEST(AcpLoadHistoryReplayStripsPrefixAndKeepsNewSuffix)
+{
+	TempDir temp("uam-acp-replay-suffix");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "gemini-cli";
+	Message user;
+	user.role = MessageRole::User;
+	user.content = "First prompt";
+	user.created_at = "2026-01-01T00:00:00.000Z";
+	chat.messages.push_back(std::move(user));
+	Message assistant;
+	assistant.role = MessageRole::Assistant;
+	assistant.content = "OK";
+	assistant.created_at = "2026-01-01T00:00:01.000Z";
+	chat.messages.push_back(std::move(assistant));
+	Message next_user;
+	next_user.role = MessageRole::User;
+	next_user.content = "Second prompt";
+	next_user.created_at = "2026-01-01T00:00:02.000Z";
+	chat.messages.push_back(std::move(next_user));
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->running = true;
+	session->processing = true;
+	session->session_ready = true;
+	session->turn_user_message_index = 2;
+	uam::AcpReplayUpdateState replay;
+	replay.session_update = "agent_message_chunk";
+	replay.text = "OK";
+	session->load_history_replay_updates.push_back(std::move(replay));
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"OK\n\nSecond answer"}}}})"));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(4));
+	UAM_ASSERT_EQ(app.chats.front().messages[3].content, std::string("Second answer"));
+}
+
+UAM_TEST(AcpThoughtsPersistOnAssistantMessage)
+{
+	TempDir temp("uam-acp-thought-persist");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "gemini-cli";
+	Message user;
+	user.role = MessageRole::User;
+	user.content = "Please inspect this.";
+	user.created_at = "2026-01-01T00:00:00.000Z";
+	chat.messages.push_back(std::move(user));
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->running = true;
+	session->processing = true;
+	session->session_ready = true;
+	session->turn_user_message_index = 0;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Need to inspect the file first."}}}})"));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Done."}}}})"));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(app.chats.front().messages[1].thoughts, std::string("Need to inspect the file first."));
+	UAM_ASSERT_EQ(app.chats.front().messages[1].content, std::string("Done."));
+
+	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][1].value("thoughts", ""), std::string("Need to inspect the file first."));
+}
+
+UAM_TEST(AcpLoadHistoryReplaySuppressesHistoricalThoughts)
+{
+	TempDir temp("uam-acp-thought-replay");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "gemini-cli";
+	Message first_user;
+	first_user.role = MessageRole::User;
+	first_user.content = "First prompt";
+	first_user.created_at = "2026-01-01T00:00:00.000Z";
+	chat.messages.push_back(std::move(first_user));
+	Message first_assistant;
+	first_assistant.role = MessageRole::Assistant;
+	first_assistant.content = "Previous answer";
+	first_assistant.thoughts = "Old thought";
+	first_assistant.created_at = "2026-01-01T00:00:01.000Z";
+	chat.messages.push_back(std::move(first_assistant));
+	Message second_user;
+	second_user.role = MessageRole::User;
+	second_user.content = "Second prompt";
+	second_user.created_at = "2026-01-01T00:00:02.000Z";
+	chat.messages.push_back(std::move(second_user));
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->running = true;
+	session->processing = true;
+	session->session_ready = true;
+	session->turn_user_message_index = 2;
+	uam::AcpReplayUpdateState user_replay;
+	user_replay.session_update = "user_message_chunk";
+	user_replay.text = "First prompt";
+	session->load_history_replay_updates.push_back(std::move(user_replay));
+	uam::AcpReplayUpdateState thought_replay;
+	thought_replay.session_update = "agent_thought_chunk";
+	thought_replay.text = "Old thought";
+	session->load_history_replay_updates.push_back(std::move(thought_replay));
+	uam::AcpReplayUpdateState assistant_replay;
+	assistant_replay.session_update = "agent_message_chunk";
+	assistant_replay.text = "Previous answer";
+	session->load_history_replay_updates.push_back(std::move(assistant_replay));
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"First prompt"}}}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Old thought"}}}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Previous answer"}}}})"));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(3));
+	UAM_ASSERT(raw_session->turn_events.empty());
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"New thought"}}}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"New answer"}}}})"));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(4));
+	UAM_ASSERT_EQ(app.chats.front().messages[3].thoughts, std::string("New thought"));
+	UAM_ASSERT_EQ(app.chats.front().messages[3].content, std::string("New answer"));
 }
 
 UAM_TEST(GeminiCliCompatibilityAcceptsCurrentStableVersions)

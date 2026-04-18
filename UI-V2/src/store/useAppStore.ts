@@ -20,7 +20,7 @@ const initialSessions: Session[] = [
   {
     id: 's1',
     name: 'Gemini CLI',
-    viewMode: 'cli',
+    viewMode: 'chat',
     folderId: 'default',
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -55,10 +55,18 @@ const UI_RUNTIME_BUILD_MARKER = (() => {
 // ---------------------------------------------------------------------------
 
 export type CliLifecycleState = 'disabled' | 'stopped' | 'idle' | 'busy' | 'shuttingDown'
+export type AcpLifecycleState =
+  | 'stopped'
+  | 'starting'
+  | 'ready'
+  | 'processing'
+  | 'waitingPermission'
+  | 'error'
 
 interface CppMessage {
   role: 'user' | 'assistant' | 'system'
   content: string
+  thoughts?: string
   createdAt: string
 }
 
@@ -67,6 +75,7 @@ interface CppChat {
   title: string
   folderId: string
   providerId: string
+  workspaceDirectory?: string
   createdAt: string
   updatedAt: string
   messages: CppMessage[]
@@ -82,6 +91,67 @@ interface CppChat {
     active?: boolean
     lastError: string
   }
+  acpSession?: CppAcpSession
+}
+
+export interface AcpToolCall {
+  id: string
+  title: string
+  kind: string
+  status: string
+  content: string
+}
+
+export interface AcpPlanEntry {
+  content: string
+  priority: string
+  status: string
+}
+
+export type AcpTurnEvent =
+  | { type: 'assistant_text'; text: string; toolCallId?: string; requestId?: string }
+  | { type: 'thought'; text: string; toolCallId?: string; requestId?: string }
+  | { type: 'tool_call'; toolCallId: string; text?: string; requestId?: string }
+  | { type: 'permission_request'; requestId: string; toolCallId?: string; text?: string }
+
+export interface AcpPermissionOption {
+  id: string
+  name: string
+  kind: string
+}
+
+export interface AcpPendingPermission {
+  requestId: string
+  toolCallId: string
+  title: string
+  kind: string
+  status: string
+  content: string
+  options: AcpPermissionOption[]
+}
+
+export interface AcpAgentInfo {
+  name: string
+  title: string
+  version: string
+}
+
+export interface CppAcpSession {
+  sessionId?: string
+  running?: boolean
+  processing?: boolean
+  readySinceLastSelect?: boolean
+  lifecycleState?: AcpLifecycleState | string
+  lastError?: string
+  recentStderr?: string
+  agentInfo?: Partial<AcpAgentInfo>
+  toolCalls?: AcpToolCall[]
+  planEntries?: AcpPlanEntry[]
+  turnEvents?: AcpTurnEvent[]
+  turnUserMessageIndex?: number
+  turnAssistantMessageIndex?: number
+  turnSerial?: number
+  pendingPermission?: AcpPendingPermission | null
 }
 
 interface CppCliDebugTerminal {
@@ -151,6 +221,25 @@ export interface CliBinding {
   readySinceLastSelect: boolean
   active: boolean
   lastError: string
+}
+
+export interface AcpBinding {
+  sessionId: string
+  running: boolean
+  lifecycleState: AcpLifecycleState
+  processing: boolean
+  readySinceLastSelect: boolean
+  processingStartedAtMs: number | null
+  lastError: string
+  recentStderr: string
+  toolCalls: AcpToolCall[]
+  planEntries: AcpPlanEntry[]
+  turnEvents: AcpTurnEvent[]
+  turnUserMessageIndex: number
+  turnAssistantMessageIndex: number
+  turnSerial: number
+  pendingPermission: AcpPendingPermission | null
+  agentInfo: AcpAgentInfo | null
 }
 
 export interface CliTranscript {
@@ -261,6 +350,45 @@ function cliLifecycleIsProcessing(lifecycleState: CliLifecycleState): boolean {
   return lifecycleState === 'busy' || lifecycleState === 'shuttingDown'
 }
 
+function normalizeAcpLifecycleState(value: unknown, running: boolean, processing: boolean): AcpLifecycleState {
+  if (
+    value === 'stopped' ||
+    value === 'starting' ||
+    value === 'ready' ||
+    value === 'processing' ||
+    value === 'waitingPermission' ||
+    value === 'error'
+  ) {
+    return value
+  }
+
+  if (processing) return 'processing'
+  if (running) return 'ready'
+  return 'stopped'
+}
+
+function acpBindingSignature(binding: AcpBinding | undefined) {
+  if (!binding) return ''
+  return JSON.stringify({
+    sessionId: binding.sessionId,
+    running: binding.running,
+    lifecycleState: binding.lifecycleState,
+    processing: binding.processing,
+    readySinceLastSelect: binding.readySinceLastSelect,
+    processingStartedAtMs: binding.processingStartedAtMs,
+    lastError: binding.lastError,
+    recentStderr: binding.recentStderr,
+    toolCalls: binding.toolCalls,
+    planEntries: binding.planEntries,
+    turnEvents: binding.turnEvents,
+    turnUserMessageIndex: binding.turnUserMessageIndex,
+    turnAssistantMessageIndex: binding.turnAssistantMessageIndex,
+    turnSerial: binding.turnSerial,
+    pendingPermission: binding.pendingPermission,
+    agentInfo: binding.agentInfo,
+  })
+}
+
 function normalizeCliTranscript(
   existing: CliTranscript | undefined,
   terminalId: string
@@ -346,6 +474,7 @@ function cppMessagesEquivalent(existing: Message, next: CppMessage) {
   return (
     existing.role === next.role &&
     existing.content === next.content &&
+    (existing.thoughts ?? '') === (next.thoughts ?? '') &&
     existing.createdAt.getTime() === cppMessageCreatedAtMillis(next)
   )
 }
@@ -416,6 +545,7 @@ function deserializeState(
     activeSessionId: string | null
     cliTranscriptBySessionId: Record<string, CliTranscript>
     cliBindingBySessionId: Record<string, CliBinding>
+    acpBindingBySessionId: Record<string, AcpBinding>
     cliDebugState: CppCliDebugState | null
   }
 ) {
@@ -427,6 +557,7 @@ function deserializeState(
       sessionId: chatId,
       role: message.role,
       content: message.content,
+      thoughts: message.thoughts ?? '',
       createdAt: new Date(createdAtMillis),
     } satisfies Message
   }
@@ -466,15 +597,23 @@ function deserializeState(
     const prev = existingSessionsById[c.id]
     const name = c.title || 'Untitled'
     const folderId = c.folderId || null
+    const workspaceDirectory = c.workspaceDirectory ?? ''
     // Reuse reference if nothing changed — keeps memoized children stable
-    if (prev && prev.name === name && prev.folderId === folderId && prev.viewMode === 'cli') {
+    if (
+      prev &&
+      prev.name === name &&
+      prev.folderId === folderId &&
+      prev.workspaceDirectory === workspaceDirectory &&
+      prev.viewMode === 'chat'
+    ) {
       return prev
     }
     return {
       id: c.id,
       name,
-      viewMode: 'cli',
+      viewMode: 'chat',
       folderId,
+      workspaceDirectory,
       createdAt: new Date(c.createdAt || Date.now()),
       updatedAt: new Date(c.updatedAt || Date.now()),
     }
@@ -602,6 +741,54 @@ function deserializeState(
     ? existingBindings
     : nextCliBindingBySessionId
 
+  const existingAcpBindings = existing.acpBindingBySessionId
+  const nextAcpBindingBySessionId = Object.fromEntries(
+    cpp.chats.map((c) => {
+      const acp = c.acpSession
+      const running = Boolean(acp?.running)
+      const processing = Boolean(acp?.processing)
+      const lifecycleState = normalizeAcpLifecycleState(acp?.lifecycleState, running, processing)
+      const effectiveProcessing =
+        lifecycleState === 'error' ? false : processing || lifecycleState === 'processing' || lifecycleState === 'waitingPermission'
+      const prev = existingAcpBindings[c.id]
+      const next: AcpBinding = {
+        sessionId: acp?.sessionId ?? '',
+        running,
+        lifecycleState,
+        processing: effectiveProcessing,
+        readySinceLastSelect: Boolean(acp?.readySinceLastSelect),
+        processingStartedAtMs: effectiveProcessing
+          ? prev?.processing
+            ? prev.processingStartedAtMs ?? Date.now()
+            : Date.now()
+          : null,
+        lastError: acp?.lastError ?? '',
+        recentStderr: acp?.recentStderr ?? '',
+        toolCalls: Array.isArray(acp?.toolCalls) ? acp!.toolCalls : [],
+        planEntries: Array.isArray(acp?.planEntries) ? acp!.planEntries : [],
+        turnEvents: Array.isArray(acp?.turnEvents) ? acp!.turnEvents : [],
+        turnUserMessageIndex: typeof acp?.turnUserMessageIndex === 'number' ? acp.turnUserMessageIndex : -1,
+        turnAssistantMessageIndex: typeof acp?.turnAssistantMessageIndex === 'number' ? acp.turnAssistantMessageIndex : -1,
+        turnSerial: typeof acp?.turnSerial === 'number' ? acp.turnSerial : 0,
+        pendingPermission: acp?.pendingPermission ?? null,
+        agentInfo: acp?.agentInfo
+          ? {
+              name: acp.agentInfo.name ?? '',
+              title: acp.agentInfo.title ?? '',
+              version: acp.agentInfo.version ?? '',
+            }
+          : null,
+      }
+      if (acpBindingSignature(prev) === acpBindingSignature(next)) {
+        return [c.id, prev]
+      }
+      return [c.id, next]
+    })
+  ) as Record<string, AcpBinding>
+  const acpBindingBySessionId = sameRecordEntries(existingAcpBindings, nextAcpBindingBySessionId)
+    ? existingAcpBindings
+    : nextAcpBindingBySessionId
+
   const nextCliTranscriptBySessionId = Object.fromEntries(
     sessions.flatMap((session) => {
       const transcript = normalizeCliTranscript(
@@ -634,6 +821,7 @@ function deserializeState(
     lastAppliedStateRevision: cppStateRevision(cpp),
     theme: (cpp.settings.theme as 'dark' | 'light') || 'dark',
     cliBindingBySessionId,
+    acpBindingBySessionId,
     cliTranscriptBySessionId,
     cliDebugState,
   }
@@ -692,6 +880,7 @@ interface AppState {
   // Providers
   providers: Provider[]
   cliBindingBySessionId: Record<string, CliBinding>
+  acpBindingBySessionId: Record<string, AcpBinding>
   cliTranscriptBySessionId: Record<string, CliTranscript>
   cliDebugState: CppCliDebugState | null
 
@@ -720,6 +909,12 @@ interface AppState {
 
   // CLI actions
   setCliBinding: (sessionId: string, binding: Partial<CliBinding>) => void
+
+  // ACP actions
+  sendAcpPrompt: (sessionId: string, text: string) => Promise<boolean>
+  cancelAcpTurn: (sessionId: string) => Promise<boolean>
+  resolveAcpPermission: (sessionId: string, requestId: string, optionId: string | 'cancelled') => Promise<boolean>
+  stopAcpSession: (sessionId: string) => Promise<boolean>
 
   // UI actions
   setTheme: (theme: 'dark' | 'light') => void
@@ -762,6 +957,7 @@ export const useAppStore = create<AppState>((set, get) => {
             activeSessionId: current.activeSessionId,
             cliTranscriptBySessionId: current.cliTranscriptBySessionId,
             cliBindingBySessionId: current.cliBindingBySessionId,
+            acpBindingBySessionId: current.acpBindingBySessionId,
             cliDebugState: current.cliDebugState,
           })
           set(deserialized)
@@ -855,7 +1051,6 @@ export const useAppStore = create<AppState>((set, get) => {
         }
       }
     }
-
   // In CEF context, start with empty state — real data arrives via getInitialState above.
   // In dev/browser mode, use mock data so the UI is immediately interactive.
   const inCef = isCefContext()
@@ -869,6 +1064,7 @@ export const useAppStore = create<AppState>((set, get) => {
 
     providers: inCef ? [] : initialProviders,
     cliBindingBySessionId: {},
+    acpBindingBySessionId: {},
     cliTranscriptBySessionId: {},
     cliDebugState: null,
 
@@ -896,6 +1092,7 @@ export const useAppStore = create<AppState>((set, get) => {
         activeSessionId: current.activeSessionId,
         cliTranscriptBySessionId: current.cliTranscriptBySessionId,
         cliBindingBySessionId: current.cliBindingBySessionId,
+        acpBindingBySessionId: current.acpBindingBySessionId,
         cliDebugState: current.cliDebugState,
       })
       set(deserialized)
@@ -952,7 +1149,7 @@ export const useAppStore = create<AppState>((set, get) => {
       sessionCounter++
       const id = makeId('s', sessionCounter)
       const now = new Date()
-      const session: Session = { id, name, viewMode: 'cli', folderId, createdAt: now, updatedAt: now }
+      const session: Session = { id, name, viewMode: 'chat', folderId, createdAt: now, updatedAt: now }
       set((state) => ({
         sessions: [...state.sessions, session],
         messages: { ...state.messages, [id]: [] },
@@ -1014,6 +1211,7 @@ export const useAppStore = create<AppState>((set, get) => {
         const deletedIndex = current.sessions.findIndex((s) => s.id === id)
         const deletedMessages = current.messages[id] ?? []
         const deletedBinding = current.cliBindingBySessionId[id]
+        const deletedAcpBinding = current.acpBindingBySessionId[id]
         const deletedTranscript = current.cliTranscriptBySessionId[id]
         const previousActiveSessionId = current.activeSessionId
         const requestKey = `deleteSession:${id}`
@@ -1023,11 +1221,13 @@ export const useAppStore = create<AppState>((set, get) => {
           const remaining = state.sessions.filter((s) => s.id !== id)
           const { [id]: _, ...msgs } = state.messages
           const { [id]: __, ...bindings } = state.cliBindingBySessionId
-          const { [id]: ___, ...transcripts } = state.cliTranscriptBySessionId
+          const { [id]: ___, ...acpBindings } = state.acpBindingBySessionId
+          const { [id]: ____, ...transcripts } = state.cliTranscriptBySessionId
           return {
             sessions: remaining,
             messages: msgs,
             cliBindingBySessionId: bindings,
+            acpBindingBySessionId: acpBindings,
             cliTranscriptBySessionId: transcripts,
             activeSessionId:
               state.activeSessionId === id ? (remaining[0]?.id ?? null) : state.activeSessionId,
@@ -1062,6 +1262,9 @@ export const useAppStore = create<AppState>((set, get) => {
               cliBindingBySessionId: deletedBinding
                 ? { ...state.cliBindingBySessionId, [id]: deletedBinding }
                 : state.cliBindingBySessionId,
+              acpBindingBySessionId: deletedAcpBinding
+                ? { ...state.acpBindingBySessionId, [id]: deletedAcpBinding }
+                : state.acpBindingBySessionId,
               cliTranscriptBySessionId: deletedTranscript
                 ? { ...state.cliTranscriptBySessionId, [id]: deletedTranscript }
                 : state.cliTranscriptBySessionId,
@@ -1077,11 +1280,13 @@ export const useAppStore = create<AppState>((set, get) => {
         const remaining = state.sessions.filter((s) => s.id !== id)
         const { [id]: _, ...msgs } = state.messages
         const { [id]: __, ...bindings } = state.cliBindingBySessionId
-        const { [id]: ___, ...transcripts } = state.cliTranscriptBySessionId
+        const { [id]: ___, ...acpBindings } = state.acpBindingBySessionId
+        const { [id]: ____, ...transcripts } = state.cliTranscriptBySessionId
         return {
           sessions: remaining,
           messages: msgs,
           cliBindingBySessionId: bindings,
+          acpBindingBySessionId: acpBindings,
           cliTranscriptBySessionId: transcripts,
           activeSessionId:
             state.activeSessionId === id ? (remaining[0]?.id ?? null) : state.activeSessionId,
@@ -1241,11 +1446,13 @@ export const useAppStore = create<AppState>((set, get) => {
         const sessions = state.sessions.filter((session) => !deletedSessionIds.has(session.id))
         const messages = { ...state.messages }
         const cliBindingBySessionId = { ...state.cliBindingBySessionId }
+        const acpBindingBySessionId = { ...state.acpBindingBySessionId }
         const cliTranscriptBySessionId = { ...state.cliTranscriptBySessionId }
 
         deletedSessionIds.forEach((sessionId) => {
           delete messages[sessionId]
           delete cliBindingBySessionId[sessionId]
+          delete acpBindingBySessionId[sessionId]
           delete cliTranscriptBySessionId[sessionId]
         })
 
@@ -1254,6 +1461,7 @@ export const useAppStore = create<AppState>((set, get) => {
           sessions,
           messages,
           cliBindingBySessionId,
+          acpBindingBySessionId,
           cliTranscriptBySessionId,
           activeSessionId:
             state.activeSessionId !== null && deletedSessionIds.has(state.activeSessionId)
@@ -1329,6 +1537,227 @@ export const useAppStore = create<AppState>((set, get) => {
           cliTranscriptBySessionId: nextTranscripts,
         }
       }),
+
+    sendAcpPrompt: async (sessionId, text) => {
+      const prompt = text.trim()
+      if (!prompt) {
+        return false
+      }
+
+      if (isCefContext()) {
+        const response = await sendToCEF({
+          action: 'sendAcpPrompt',
+          payload: { chatId: sessionId, text: prompt },
+        })
+        if (!response.ok) {
+          set((state) => ({
+            acpBindingBySessionId: {
+              ...state.acpBindingBySessionId,
+              [sessionId]: {
+                ...(state.acpBindingBySessionId[sessionId] ?? {
+                  sessionId: '',
+                  running: false,
+                  lifecycleState: 'error' as AcpLifecycleState,
+                  processing: false,
+                  readySinceLastSelect: false,
+                  processingStartedAtMs: null,
+                  lastError: '',
+                  recentStderr: '',
+                  toolCalls: [],
+                  planEntries: [],
+                  turnEvents: [],
+                  turnUserMessageIndex: -1,
+                  turnAssistantMessageIndex: -1,
+                  turnSerial: 0,
+                  pendingPermission: null,
+                  agentInfo: null,
+                }),
+                lifecycleState: 'error',
+                processing: false,
+                processingStartedAtMs: null,
+                lastError: response.error ?? 'Failed to send ACP prompt.',
+              },
+            },
+          }))
+          return false
+        }
+        return true
+      }
+
+      const now = new Date()
+      set((state) => ({
+        messages: {
+          ...state.messages,
+          [sessionId]: [
+            ...(state.messages[sessionId] ?? []),
+            {
+              id: `dev-user-${Date.now()}`,
+              sessionId,
+              role: 'user',
+              content: prompt,
+              createdAt: now,
+            },
+            {
+              id: `dev-assistant-${Date.now()}`,
+              sessionId,
+              role: 'assistant',
+              content: 'ACP dev mode response placeholder.',
+              createdAt: now,
+            },
+          ],
+        },
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          [sessionId]: {
+            sessionId: 'dev-acp-session',
+            running: true,
+            lifecycleState: 'ready',
+            processing: false,
+            readySinceLastSelect: false,
+            processingStartedAtMs: null,
+            lastError: '',
+            recentStderr: '',
+            toolCalls: [],
+            planEntries: [],
+            turnEvents: [],
+            turnUserMessageIndex: -1,
+            turnAssistantMessageIndex: -1,
+            turnSerial: (state.acpBindingBySessionId[sessionId]?.turnSerial ?? 0) + 1,
+            pendingPermission: null,
+            agentInfo: { name: 'dev', title: 'Dev ACP', version: 'local' },
+          },
+        },
+      }))
+      return true
+    },
+
+    cancelAcpTurn: async (sessionId) => {
+      if (isCefContext()) {
+        const response = await sendToCEF({
+          action: 'cancelAcpTurn',
+          payload: { chatId: sessionId },
+        })
+        return response.ok
+      }
+
+      set((state) => ({
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          [sessionId]: {
+            ...(state.acpBindingBySessionId[sessionId] ?? {
+              sessionId: 'dev-acp-session',
+              running: true,
+              lifecycleState: 'ready' as AcpLifecycleState,
+              processing: false,
+              readySinceLastSelect: false,
+              processingStartedAtMs: null,
+              lastError: '',
+              recentStderr: '',
+              toolCalls: [],
+              planEntries: [],
+              turnEvents: [],
+              turnUserMessageIndex: -1,
+              turnAssistantMessageIndex: -1,
+              turnSerial: 0,
+              pendingPermission: null,
+              agentInfo: null,
+            }),
+            lifecycleState: 'ready',
+            processing: false,
+            processingStartedAtMs: null,
+            pendingPermission: null,
+          },
+        },
+      }))
+      return true
+    },
+
+    resolveAcpPermission: async (sessionId, requestId, optionId) => {
+      if (isCefContext()) {
+        const response = await sendToCEF({
+          action: 'resolveAcpPermission',
+          payload: {
+            chatId: sessionId,
+            requestId,
+            optionId,
+            cancelled: optionId === 'cancelled',
+          },
+        })
+        return response.ok
+      }
+
+      set((state) => ({
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          [sessionId]: {
+            ...(state.acpBindingBySessionId[sessionId] ?? {
+              sessionId: 'dev-acp-session',
+              running: true,
+              lifecycleState: 'ready' as AcpLifecycleState,
+              processing: false,
+              readySinceLastSelect: false,
+              processingStartedAtMs: null,
+              lastError: '',
+              recentStderr: '',
+              toolCalls: [],
+              planEntries: [],
+              turnEvents: [],
+              turnUserMessageIndex: -1,
+              turnAssistantMessageIndex: -1,
+              turnSerial: 0,
+              pendingPermission: null,
+              agentInfo: null,
+            }),
+            lifecycleState: 'processing',
+            pendingPermission: null,
+          },
+        },
+      }))
+      return true
+    },
+
+    stopAcpSession: async (sessionId) => {
+      if (isCefContext()) {
+        const response = await sendToCEF({
+          action: 'stopAcpSession',
+          payload: { chatId: sessionId },
+        })
+        return response.ok
+      }
+
+      set((state) => ({
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          [sessionId]: {
+            ...(state.acpBindingBySessionId[sessionId] ?? {
+              sessionId: '',
+              running: false,
+              lifecycleState: 'stopped' as AcpLifecycleState,
+              processing: false,
+              readySinceLastSelect: false,
+              processingStartedAtMs: null,
+              lastError: '',
+              recentStderr: '',
+              toolCalls: [],
+              planEntries: [],
+              turnEvents: [],
+              turnUserMessageIndex: -1,
+              turnAssistantMessageIndex: -1,
+              turnSerial: 0,
+              pendingPermission: null,
+              agentInfo: null,
+            }),
+            running: false,
+            lifecycleState: 'stopped',
+            processing: false,
+            readySinceLastSelect: false,
+            processingStartedAtMs: null,
+            pendingPermission: null,
+          },
+        },
+      }))
+      return true
+    },
 
     // ---- UI actions ----
 

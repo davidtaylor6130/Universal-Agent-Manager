@@ -11,6 +11,7 @@
 #include "common/paths/app_paths.h"
 
 #include "common/platform/platform_services.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_launch.h"
@@ -242,6 +243,14 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser>  browser,
 		HandleResizeCli(payload, callback);
 	else if (action == "writeCliInput")
 		HandleWriteCliInput(browser, payload, callback);
+	else if (action == "sendAcpPrompt")
+		HandleSendAcpPrompt(browser, payload, callback);
+	else if (action == "cancelAcpTurn")
+		HandleCancelAcpTurn(browser, payload, callback);
+	else if (action == "resolveAcpPermission")
+		HandleResolveAcpPermission(browser, payload, callback);
+	else if (action == "stopAcpSession")
+		HandleStopAcpSession(browser, payload, callback);
 	else if (action == "setTheme")
 		HandleSetTheme(browser, payload, callback);
 	else
@@ -652,6 +661,71 @@ void UamQueryHandler::HandleWriteCliInput(CefRefPtr<CefBrowser> browser,
 		}
 	}
 
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser,
+                                           const nlohmann::json& payload,
+                                           CefRefPtr<Callback>   cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const std::string text = payload.value("text", "");
+
+	std::string error;
+	if (!uam::SendAcpPrompt(m_app, chat_id, text, &error))
+	{
+		cb->Failure(chat_id.empty() || text.empty() ? 400 : 500, error.empty() ? "Failed to send ACP prompt." : error);
+		return;
+	}
+
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser,
+                                           const nlohmann::json& payload,
+                                           CefRefPtr<Callback>   cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+
+	std::string error;
+	if (!uam::CancelAcpTurn(m_app, chat_id, &error))
+	{
+		cb->Failure(500, error.empty() ? "Failed to cancel ACP turn." : error);
+		return;
+	}
+
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleResolveAcpPermission(CefRefPtr<CefBrowser> browser,
+                                                  const nlohmann::json& payload,
+                                                  CefRefPtr<Callback>   cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const std::string request_id = payload.value("requestId", "");
+	const std::string option_id = payload.value("optionId", "");
+	const bool cancelled = payload.value("cancelled", false) || option_id == "cancelled";
+
+	std::string error;
+	if (!uam::ResolveAcpPermission(m_app, chat_id, request_id, option_id, cancelled, &error))
+	{
+		cb->Failure(409, error.empty() ? "Failed to resolve ACP permission request." : error);
+		return;
+	}
+
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleStopAcpSession(CefRefPtr<CefBrowser> browser,
+                                            const nlohmann::json& payload,
+                                            CefRefPtr<Callback>   cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	uam::StopAcpSession(m_app, chat_id);
+	uam::PushStateUpdate(browser, m_app);
 	cb->Success("{}");
 }
 

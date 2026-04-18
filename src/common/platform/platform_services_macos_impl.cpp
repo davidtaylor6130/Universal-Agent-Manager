@@ -510,6 +510,41 @@ namespace
 		waitpid(pid, &status, WNOHANG);
 	}
 
+	std::ptrdiff_t ReadNonBlockingFd(const int fd, char* buffer, const std::size_t buffer_size)
+	{
+		if (fd < 0)
+		{
+			return -1;
+		}
+
+		while (true)
+		{
+			const ssize_t read_bytes = read(fd, buffer, buffer_size);
+
+			if (read_bytes > 0)
+			{
+				return static_cast<std::ptrdiff_t>(read_bytes);
+			}
+
+			if (read_bytes == 0)
+			{
+				return 0;
+			}
+
+			if (errno == EINTR)
+			{
+				continue;
+			}
+
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
+			{
+				return -2;
+			}
+
+			return -1;
+		}
+	}
+
 	class MacTerminalRuntime final : public IPlatformTerminalRuntime
 	{
 	  public:
@@ -939,6 +974,271 @@ namespace
 		ProcessExecutionResult ExecuteCommand(const std::string& command, const int timeout_ms = -1, std::stop_token stop_token = {}) const override
 		{
 			return ExecuteCapturedCommandPosix(command, timeout_ms, stop_token);
+		}
+
+		bool StartStdioProcess(uam::platform::StdioProcessPlatformFields& process,
+		                       const std::filesystem::path& working_directory,
+		                       const std::vector<std::string>& argv,
+		                       std::string* error_out = nullptr) const override
+		{
+			if (argv.empty() || TrimAsciiWhitespace(argv.front()).empty())
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Stdio process command is empty.";
+				}
+				return false;
+			}
+
+			if (!working_directory.empty())
+			{
+				std::error_code wd_ec;
+				std::filesystem::create_directories(working_directory, wd_ec);
+				if (wd_ec || !std::filesystem::is_directory(working_directory, wd_ec))
+				{
+					if (error_out != nullptr)
+					{
+						*error_out = "Failed to prepare process working directory: " + (wd_ec ? wd_ec.message() : working_directory.string());
+					}
+					return false;
+				}
+			}
+
+			int stdin_pipe[2] = {-1, -1};
+			int stdout_pipe[2] = {-1, -1};
+			int stderr_pipe[2] = {-1, -1};
+			auto close_pipe = [](int (&pipe_fds)[2])
+			{
+				if (pipe_fds[0] >= 0)
+				{
+					close(pipe_fds[0]);
+					pipe_fds[0] = -1;
+				}
+				if (pipe_fds[1] >= 0)
+				{
+					close(pipe_fds[1]);
+					pipe_fds[1] = -1;
+				}
+			};
+
+			if (pipe(stdin_pipe) != 0 || pipe(stdout_pipe) != 0 || pipe(stderr_pipe) != 0)
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to create stdio process pipes.";
+				}
+				close_pipe(stdin_pipe);
+				close_pipe(stdout_pipe);
+				close_pipe(stderr_pipe);
+				return false;
+			}
+
+			const std::vector<std::string> path_dirs = CollectTerminalPathSearchDirs();
+			const std::string path_env = JoinPathEntries(path_dirs);
+			const std::string resolved_executable = ResolveExecutablePathForTerminal(argv.front(), path_dirs);
+			if (resolved_executable.empty())
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "gemini not found on PATH in app environment";
+				}
+				close_pipe(stdin_pipe);
+				close_pipe(stdout_pipe);
+				close_pipe(stderr_pipe);
+				return false;
+			}
+
+			if (ScriptShebangMentionsNode(resolved_executable) && ResolveExecutablePathForTerminal("node", path_dirs).empty())
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "node not found on PATH in app environment (required by gemini CLI)";
+				}
+				close_pipe(stdin_pipe);
+				close_pipe(stdout_pipe);
+				close_pipe(stderr_pipe);
+				return false;
+			}
+
+			const pid_t pid = fork();
+			if (pid < 0)
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "fork failed.";
+				}
+				close_pipe(stdin_pipe);
+				close_pipe(stdout_pipe);
+				close_pipe(stderr_pipe);
+				return false;
+			}
+
+			if (pid == 0)
+			{
+				dup2(stdin_pipe[0], STDIN_FILENO);
+				dup2(stdout_pipe[1], STDOUT_FILENO);
+				dup2(stderr_pipe[1], STDERR_FILENO);
+				close_pipe(stdin_pipe);
+				close_pipe(stdout_pipe);
+				close_pipe(stderr_pipe);
+
+				if (!working_directory.empty() && chdir(working_directory.c_str()) != 0)
+				{
+					_exit(126);
+				}
+
+				if (!path_env.empty())
+				{
+					setenv("PATH", path_env.c_str(), 1);
+				}
+
+				std::vector<std::string> resolved_argv = argv;
+				resolved_argv[0] = resolved_executable;
+				std::vector<char*> argv_ptrs;
+				argv_ptrs.reserve(resolved_argv.size() + 1);
+				for (const std::string& arg : resolved_argv)
+				{
+					argv_ptrs.push_back(const_cast<char*>(arg.c_str()));
+				}
+				argv_ptrs.push_back(nullptr);
+				execv(argv_ptrs[0], argv_ptrs.data());
+				_exit(127);
+			}
+
+			close(stdin_pipe[0]);
+			close(stdout_pipe[1]);
+			close(stderr_pipe[1]);
+			process.stdin_write_fd = stdin_pipe[1];
+			process.stdout_read_fd = stdout_pipe[0];
+			process.stderr_read_fd = stderr_pipe[0];
+			process.child_pid = pid;
+
+			for (const int fd : {process.stdout_read_fd, process.stderr_read_fd})
+			{
+				const int flags = fcntl(fd, F_GETFL, 0);
+				if (flags >= 0)
+				{
+					(void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+				}
+			}
+
+			return true;
+		}
+
+		void CloseStdioProcessHandles(uam::platform::StdioProcessPlatformFields& process) const override
+		{
+			if (process.stdin_write_fd >= 0)
+			{
+				close(process.stdin_write_fd);
+				process.stdin_write_fd = -1;
+			}
+			if (process.stdout_read_fd >= 0)
+			{
+				close(process.stdout_read_fd);
+				process.stdout_read_fd = -1;
+			}
+			if (process.stderr_read_fd >= 0)
+			{
+				close(process.stderr_read_fd);
+				process.stderr_read_fd = -1;
+			}
+			process.child_pid = -1;
+		}
+
+		bool WriteToStdioProcess(uam::platform::StdioProcessPlatformFields& process, const char* bytes, const std::size_t len) const override
+		{
+			if (bytes == nullptr || len == 0)
+			{
+				return true;
+			}
+			if (process.stdin_write_fd < 0)
+			{
+				return false;
+			}
+
+			std::size_t offset = 0;
+			while (offset < len)
+			{
+				const ssize_t written = write(process.stdin_write_fd, bytes + offset, len - offset);
+				if (written > 0)
+				{
+					offset += static_cast<std::size_t>(written);
+					continue;
+				}
+				if (written < 0 && errno == EINTR)
+				{
+					continue;
+				}
+				return false;
+			}
+			return true;
+		}
+
+		void StopStdioProcess(uam::platform::StdioProcessPlatformFields& process, const bool fast_exit) const override
+		{
+			if (process.child_pid <= 0)
+			{
+				CloseStdioProcessHandles(process);
+				return;
+			}
+
+			const pid_t child_pid = process.child_pid;
+			if (fast_exit)
+			{
+				kill(child_pid, SIGKILL);
+			}
+			else
+			{
+				kill(child_pid, SIGTERM);
+			}
+
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(fast_exit ? 80 : 600);
+			int status = 0;
+			while (std::chrono::steady_clock::now() < deadline)
+			{
+				const pid_t wait_result = waitpid(child_pid, &status, WNOHANG);
+				if (wait_result == child_pid || (wait_result < 0 && errno == ECHILD))
+				{
+					CloseStdioProcessHandles(process);
+					return;
+				}
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
+
+			kill(child_pid, SIGKILL);
+			(void)waitpid(child_pid, &status, WNOHANG);
+			CloseStdioProcessHandles(process);
+		}
+
+		std::ptrdiff_t ReadStdioProcessStdout(uam::platform::StdioProcessPlatformFields& process, char* buffer, const std::size_t buffer_size) const override
+		{
+			return ReadNonBlockingFd(process.stdout_read_fd, buffer, buffer_size);
+		}
+
+		std::ptrdiff_t ReadStdioProcessStderr(uam::platform::StdioProcessPlatformFields& process, char* buffer, const std::size_t buffer_size) const override
+		{
+			return ReadNonBlockingFd(process.stderr_read_fd, buffer, buffer_size);
+		}
+
+		bool PollStdioProcessExited(uam::platform::StdioProcessPlatformFields& process) const override
+		{
+			if (process.child_pid <= 0)
+			{
+				return true;
+			}
+
+			int status = 0;
+			const pid_t wait_result = waitpid(process.child_pid, &status, WNOHANG);
+			if (wait_result == 0)
+			{
+				return false;
+			}
+			if (wait_result == process.child_pid || (wait_result < 0 && errno == ECHILD))
+			{
+				process.child_pid = -1;
+				return true;
+			}
+			return false;
 		}
 
 		std::string GeminiDowngradeCommand() const override

@@ -17,6 +17,8 @@ namespace uam
 
 	namespace platform
 	{
+		struct StdioProcessPlatformFields;
+
 		class DataRootLock
 		{
 		  public:
@@ -69,6 +71,16 @@ class IPlatformProcessService
 	virtual ProcessExecutionResult ExecuteCommand(const std::string& command,
 	                                              int timeout_ms = -1,
 	                                              std::stop_token stop_token = {}) const = 0;
+	virtual bool StartStdioProcess(uam::platform::StdioProcessPlatformFields& process,
+	                               const std::filesystem::path& working_directory,
+	                               const std::vector<std::string>& argv,
+	                               std::string* error_out = nullptr) const = 0;
+	virtual void CloseStdioProcessHandles(uam::platform::StdioProcessPlatformFields& process) const = 0;
+	virtual bool WriteToStdioProcess(uam::platform::StdioProcessPlatformFields& process, const char* bytes, std::size_t len) const = 0;
+	virtual void StopStdioProcess(uam::platform::StdioProcessPlatformFields& process, bool fast_exit) const = 0;
+	virtual std::ptrdiff_t ReadStdioProcessStdout(uam::platform::StdioProcessPlatformFields& process, char* buffer, std::size_t buffer_size) const = 0;
+	virtual std::ptrdiff_t ReadStdioProcessStderr(uam::platform::StdioProcessPlatformFields& process, char* buffer, std::size_t buffer_size) const = 0;
+	virtual bool PollStdioProcessExited(uam::platform::StdioProcessPlatformFields& process) const = 0;
 	virtual std::string GeminiDowngradeCommand() const = 0;
 	virtual std::filesystem::path ResolveCurrentExecutablePath() const = 0;
 	virtual std::unique_ptr<uam::platform::DataRootLock> TryAcquireDataRootLock(const std::filesystem::path& data_root, std::string* error_out = nullptr) const = 0;

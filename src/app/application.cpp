@@ -16,6 +16,7 @@
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
 #include "common/provider/runtime/provider_build_config.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/terminal_common.h"
 #include "common/runtime/terminal_polling.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
@@ -227,10 +228,11 @@ void Application::PollTick()
 
 	const RuntimeCliCompatibilitySnapshot provider_snapshot_before = CaptureRuntimeCliCompatibilitySnapshot(m_app);
 	const bool pending_calls_changed = PollPendingRuntimeCall(m_app);
+	const bool acp_sessions_changed = uam::PollAllAcpSessions(m_app);
 	const bool cli_terminals_changed = PollAllCliTerminals(m_browser, m_app);
 	ProviderCliCompatibilityService().Poll(m_app);
 	const bool provider_compatibility_changed = RuntimeCliCompatibilitySnapshotChanged(provider_snapshot_before, CaptureRuntimeCliCompatibilitySnapshot(m_app));
-	const bool ui_relevant_state_changed = pending_calls_changed || cli_terminals_changed || provider_compatibility_changed;
+	const bool ui_relevant_state_changed = pending_calls_changed || acp_sessions_changed || cli_terminals_changed || provider_compatibility_changed;
 
 	// Push only when the serialized app state actually changed.
 	if (m_browser && ui_relevant_state_changed)
@@ -471,6 +473,7 @@ void Application::Shutdown()
 	ResetAsyncCommandTask(m_app.runtime_cli_pin_task);
 	ResetNativeChatLoadTask(m_app.native_chat_load_task);
 	ResetNativeChatLoadTasks(m_app.native_chat_load_tasks);
+	uam::FastStopAcpSessionsForExit(m_app);
 	FastStopCliTerminalsForExit(m_app);
 
 	uam_cef_globals::g_app_state = nullptr;
