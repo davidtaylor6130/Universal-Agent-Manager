@@ -62,6 +62,7 @@ struct ChatSession
 	std::string title;
 	std::string created_at;
 	std::string updated_at;
+	std::string last_opened_at;
 	std::vector<std::string> linked_files;
 	std::vector<Message> messages;
 	std::string workspace_directory;

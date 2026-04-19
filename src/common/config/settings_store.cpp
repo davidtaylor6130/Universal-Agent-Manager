@@ -85,7 +85,11 @@ namespace
 
 	std::string NormalizeProviderId(const std::string& value)
 	{
-		(void)value;
+		const std::string lowered = ToLower(value);
+		if (lowered == "codex" || lowered == "codex-cli")
+		{
+			return "codex-cli";
+		}
 		return "gemini-cli";
 	}
 
@@ -123,7 +127,7 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	ClampSettings(normalized);
 
 	std::ostringstream lines;
-	lines << "active_provider_id=gemini-cli\n";
+	lines << "active_provider_id=" << uam::EncodeLineValue(normalized.active_provider_id) << '\n';
 	lines << "provider_command_template=" << uam::EncodeLineValue(normalized.provider_command_template) << '\n';
 	lines << "provider_yolo_mode=" << (normalized.provider_yolo_mode ? "1" : "0") << '\n';
 	lines << "provider_extra_flags=" << uam::EncodeLineValue(normalized.provider_extra_flags) << '\n';

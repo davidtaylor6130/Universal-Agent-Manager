@@ -10,6 +10,8 @@ import {
   type AcpTurnEvent,
 } from '../../store/useAppStore'
 import type { Message } from '../../types/message'
+import type { Provider } from '../../types/provider'
+import { copyTextToClipboard } from '../../utils/copySelection'
 
 interface ChatViewProps {
   session: Session
@@ -27,7 +29,7 @@ interface ModelOption {
   detail: string
 }
 
-const FALLBACK_ACP_MODEL_OPTIONS: ModelOption[] = [
+const GEMINI_FALLBACK_ACP_MODEL_OPTIONS: ModelOption[] = [
   { id: '', label: 'CLI default', shortLabel: 'CLI default', detail: 'Use Gemini CLI settings' },
   { id: 'auto-gemini-3', label: 'Auto 3', shortLabel: 'Auto 3', detail: 'Gemini 3 routing' },
   { id: 'auto-gemini-2.5', label: 'Auto 2.5', shortLabel: 'Auto 2.5', detail: 'Gemini 2.5 routing' },
@@ -43,6 +45,33 @@ const FRIENDLY_MODEL_LABELS: Record<string, Pick<ModelOption, 'label' | 'shortLa
   pro: { label: 'Pro', shortLabel: 'Pro', detail: 'Prioritize capability' },
   flash: { label: 'Flash', shortLabel: 'Flash', detail: 'Prioritize speed' },
   'flash-lite': { label: 'Flash Lite', shortLabel: 'Flash Lite', detail: 'Fastest option' },
+}
+
+function providerDisplayName(provider?: Provider, fallbackId = '') {
+  if (provider?.shortName?.trim()) return provider.shortName.trim()
+  if (provider?.name?.trim()) return provider.name.trim()
+  if (fallbackId === 'codex-cli') return 'Codex'
+  return 'Gemini'
+}
+
+function providerDefaultModelOption(providerName: string): ModelOption {
+  return {
+    id: '',
+    label: 'CLI default',
+    shortLabel: 'CLI default',
+    detail: `Use ${providerName} CLI settings`,
+  }
+}
+
+function providerRuntimeLabel(provider?: Provider, acp?: AcpBinding) {
+  const protocol = acp?.protocolKind || provider?.structuredProtocol || 'gemini-acp'
+  if (protocol === 'codex-app-server') return 'App Server'
+  if (protocol === 'none') return 'CLI'
+  return 'ACP'
+}
+
+function isCodexProvider(provider?: Provider, providerId = '') {
+  return providerId === 'codex-cli' || provider?.structuredProtocol === 'codex-app-server'
 }
 
 function titleFromModelId(modelId: string) {
@@ -70,14 +99,24 @@ function modelOptionFromRuntime(model: AcpModel): ModelOption | null {
   }
 }
 
-function buildModelOptions(acp: AcpBinding | undefined, selectedModelId: string): ModelOption[] {
+function buildModelOptions(
+  acp: AcpBinding | undefined,
+  selectedModelId: string,
+  provider: Provider | undefined,
+  providerId: string
+): ModelOption[] {
+  const providerName = providerDisplayName(provider, providerId)
   const runtimeOptions = (acp?.availableModels ?? []).flatMap((model) => {
     const option = modelOptionFromRuntime(model)
     return option ? [option] : []
   })
+  const defaultOption = providerDefaultModelOption(providerName)
+  const fallbackOptions = isCodexProvider(provider, providerId)
+    ? [defaultOption]
+    : [defaultOption, ...GEMINI_FALLBACK_ACP_MODEL_OPTIONS.slice(1)]
   const baseOptions = runtimeOptions.length > 0
-    ? [FALLBACK_ACP_MODEL_OPTIONS[0], ...runtimeOptions]
-    : FALLBACK_ACP_MODEL_OPTIONS
+    ? [defaultOption, ...runtimeOptions]
+    : fallbackOptions
   const options: ModelOption[] = []
   const seen = new Set<string>()
 
@@ -105,7 +144,7 @@ function buildModelOptions(acp: AcpBinding | undefined, selectedModelId: string)
 }
 
 function modelOptionFor(options: ModelOption[], modelId?: string) {
-  return options.find((option) => option.id === (modelId ?? '')) ?? options[0] ?? FALLBACK_ACP_MODEL_OPTIONS[0]
+  return options.find((option) => option.id === (modelId ?? '')) ?? options[0] ?? providerDefaultModelOption('provider')
 }
 
 function statusLabel(acp?: AcpBinding) {
@@ -139,9 +178,9 @@ function roleAccent(role: string) {
   return 'var(--yellow)'
 }
 
-function roleLabel(role: string) {
+function roleLabel(role: string, assistantLabel: string) {
   if (role === 'user') return 'You'
-  if (role === 'assistant') return 'Gemini'
+  if (role === 'assistant') return assistantLabel
   return 'System'
 }
 
@@ -165,8 +204,71 @@ function formatDiagnosticLine(entry: AcpBinding['diagnostics'][number]) {
   return body ? `${headline}\n${body}` : headline
 }
 
-function AcpErrorDetails({ acp }: { acp: AcpBinding }) {
+function buildAcpErrorCopyText(acp: AcpBinding, title: string) {
+  const lines = [title]
+  if (acp.lastError.trim()) {
+    lines.push('', acp.lastError.trim())
+  }
+  if (acp.lastExitCode !== null) {
+    lines.push('', `Exit code: ${acp.lastExitCode}`)
+  }
+  if (acp.diagnostics.length > 0) {
+    lines.push('', 'Diagnostics', acp.diagnostics.map(formatDiagnosticLine).join('\n\n'))
+  }
+  if (acp.recentStderr.trim()) {
+    lines.push('', 'Recent stderr', diagnosticTail(acp.recentStderr))
+  }
+  return lines.join('\n')
+}
+
+function CopyTextButton({
+  text,
+  label = 'Copy',
+  title = 'Copy text',
+}: {
+  text: string
+  label?: string
+  title?: string
+}) {
+  const [status, setStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const resetTimerRef = useRef<number | null>(null)
+
+  useEffect(() => () => {
+    if (resetTimerRef.current !== null) {
+      window.clearTimeout(resetTimerRef.current)
+    }
+  }, [])
+
+  const onCopy = async () => {
+    const copied = await copyTextToClipboard(text, document)
+    setStatus(copied ? 'copied' : 'failed')
+    if (resetTimerRef.current !== null) {
+      window.clearTimeout(resetTimerRef.current)
+    }
+    resetTimerRef.current = window.setTimeout(() => setStatus('idle'), 1600)
+  }
+
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={onCopy}
+      className="px-2 h-6 text-[11px]"
+      style={{
+        borderRadius: 5,
+        border: '1px solid var(--border)',
+        background: status === 'failed' ? 'color-mix(in srgb, var(--red) 16%, var(--surface))' : 'var(--surface-up)',
+        color: status === 'copied' ? 'var(--green)' : status === 'failed' ? 'var(--red)' : 'var(--text-2)',
+      }}
+    >
+      {status === 'copied' ? 'Copied' : status === 'failed' ? 'Copy failed' : label}
+    </button>
+  )
+}
+
+function AcpErrorDetails({ acp, title }: { acp: AcpBinding; title: string }) {
   const diagnostics = acp.diagnostics.slice(-12)
+  const diagnosticsText = diagnostics.map(formatDiagnosticLine).join('\n\n')
   const hasDetails =
     diagnostics.length > 0 ||
     acp.recentStderr.trim().length > 0 ||
@@ -180,6 +282,9 @@ function AcpErrorDetails({ acp }: { acp: AcpBinding }) {
         Diagnostics
       </summary>
       <div className="mt-2 grid gap-2">
+        <div className="flex justify-end">
+          <CopyTextButton text={buildAcpErrorCopyText(acp, title)} label="Copy diagnostics" title="Copy diagnostics" />
+        </div>
         {acp.lastExitCode !== null && (
           <div style={{ color: 'var(--text-2)' }}>Exit code: {acp.lastExitCode}</div>
         )}
@@ -199,7 +304,7 @@ function AcpErrorDetails({ acp }: { acp: AcpBinding }) {
               color: 'var(--text-2)',
             }}
           >
-            {diagnostics.map(formatDiagnosticLine).join('\n\n')}
+            {diagnosticsText}
           </pre>
         )}
         {acp.recentStderr.trim().length > 0 && (
@@ -226,7 +331,8 @@ function AcpErrorDetails({ acp }: { acp: AcpBinding }) {
   )
 }
 
-function GeminiIcon() {
+function ProviderIcon({ providerId }: { providerId?: string }) {
+  const codex = providerId === 'codex-cli'
   return (
     <span
       aria-hidden="true"
@@ -235,13 +341,15 @@ function GeminiIcon() {
         width: 16,
         height: 16,
         borderRadius: 4,
-        background: 'linear-gradient(135deg, #8ab4ff 0%, #c58af9 48%, #4ade80 100%)',
+        background: codex
+          ? 'linear-gradient(135deg, #111827 0%, #3b82f6 52%, #22c55e 100%)'
+          : 'linear-gradient(135deg, #8ab4ff 0%, #c58af9 48%, #4ade80 100%)',
         color: '#ffffff',
         fontSize: 10,
         lineHeight: 1,
       }}
     >
-      ✦
+      {codex ? 'C' : '✦'}
     </span>
   )
 }
@@ -622,6 +730,15 @@ function PermissionInlineCard({
 }
 
 function ToolCallModal({ tool, onClose }: { tool: AcpToolCall; onClose: () => void }) {
+  const toolCopyText = [
+    tool.title || tool.id || 'Tool call',
+    `id: ${tool.id || 'unknown'}`,
+    `kind: ${tool.kind || 'unknown'}`,
+    `status: ${tool.status || 'unknown'}`,
+    '',
+    tool.content || 'No tool output yet.',
+  ].join('\n')
+
   return (
     <div
       className="absolute inset-0 flex items-center justify-center"
@@ -664,6 +781,7 @@ function ToolCallModal({ tool, onClose }: { tool: AcpToolCall; onClose: () => vo
               {[tool.kind, tool.status].filter(Boolean).join(' / ') || 'tool call'}
             </div>
           </div>
+          <CopyTextButton text={toolCopyText} label="Copy" title="Copy tool output" />
           <button
             type="button"
             title="Close tool details"
@@ -705,7 +823,17 @@ function ToolCallModal({ tool, onClose }: { tool: AcpToolCall; onClose: () => vo
   )
 }
 
-function MessageFrame({ role, children }: { role: Message['role']; children: ReactNode }) {
+function MessageFrame({
+  role,
+  children,
+  assistantLabel,
+  copyText = '',
+}: {
+  role: Message['role']
+  children: ReactNode
+  assistantLabel: string
+  copyText?: string
+}) {
   return (
     <div
       className="flex"
@@ -725,7 +853,12 @@ function MessageFrame({ role, children }: { role: Message['role']; children: Rea
       >
         <div className="flex items-center gap-1.5 text-[11px] mb-1" style={{ color: roleAccent(role) }}>
           <span style={{ fontSize: 8 }}>●</span>
-          <span>{roleLabel(role)}</span>
+          <span>{roleLabel(role, assistantLabel)}</span>
+          {copyText.trim() && (
+            <span className="ml-auto">
+              <CopyTextButton text={copyText} label="Copy" title="Copy message" />
+            </span>
+          )}
         </div>
         {children}
       </article>
@@ -873,10 +1006,16 @@ function TurnTimelineContent({
 
 function ComposerToolbar({
   acp,
+  provider,
+  providers,
+  providerId,
+  providerName,
+  runtimeLabel,
   elapsedSeconds,
   canSend,
   modelId,
   approvalModeId,
+  canChangeProvider,
   providerOpen,
   modelOpen,
   settingsOpen,
@@ -886,15 +1025,22 @@ function ComposerToolbar({
   onToggleProvider,
   onToggleModel,
   onToggleSettings,
+  onSelectProvider,
   onSelectModel,
   onTogglePlan,
   onCancel,
 }: {
   acp?: AcpBinding
+  provider: Provider
+  providers: Provider[]
+  providerId: string
+  providerName: string
+  runtimeLabel: string
   elapsedSeconds: number
   canSend: boolean
   modelId?: string
   approvalModeId?: string
+  canChangeProvider: boolean
   providerOpen: boolean
   modelOpen: boolean
   settingsOpen: boolean
@@ -904,12 +1050,14 @@ function ComposerToolbar({
   onToggleProvider: () => void
   onToggleModel: () => void
   onToggleSettings: () => void
+  onSelectProvider: (providerId: string) => void
   onSelectModel: (modelId: string) => void
   onTogglePlan: () => void
   onCancel: () => void
 }) {
-  const modelOptions = buildModelOptions(acp, modelId ?? '')
+  const modelOptions = buildModelOptions(acp, modelId ?? '', provider, providerId)
   const currentModel = modelOptionFor(modelOptions, modelId)
+  const providerOptions = providers.length > 0 ? providers : [provider]
   const modelDisabled = Boolean(acp?.processing || acp?.lifecycleState === 'waitingPermission')
   const planActive = approvalModeId === 'plan'
   const hasRuntimeModes = Boolean(acp?.running && acp.availableModes.length > 0)
@@ -944,8 +1092,8 @@ function ComposerToolbar({
             borderColor: providerOpen ? 'var(--border-bright)' : 'var(--border)',
           }}
         >
-          <GeminiIcon />
-          <span>Gemini</span>
+          <ProviderIcon providerId={providerId} />
+          <span>{providerName}</span>
         </button>
         {providerOpen && (
           <div
@@ -962,23 +1110,33 @@ function ComposerToolbar({
             }}
           >
             <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>Provider</div>
-            <button
-              type="button"
-              onClick={onToggleProvider}
-              className="w-full flex items-center gap-2 text-left px-2 py-2"
-              style={{
-                borderRadius: 6,
-                background: 'var(--accent-dim)',
-                color: 'var(--text)',
-              }}
-            >
-              <GeminiIcon />
-              <span className="flex-1">Gemini</span>
-              <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>
-            </button>
-            <div className="px-2 pt-2 pb-1 text-[11px]" style={{ color: 'var(--text-3)' }}>
-              Only available provider for this release.
-            </div>
+            {providerOptions.map((candidate) => {
+              const candidateName = providerDisplayName(candidate, candidate.id)
+              const selected = candidate.id === providerId
+              const disabled = !selected && !canChangeProvider
+              return (
+                <button
+                  key={candidate.id}
+                  type="button"
+                  onClick={() => {
+                    if (disabled) return
+                    onSelectProvider(candidate.id)
+                  }}
+                  disabled={disabled}
+                  className="w-full flex items-center gap-2 text-left px-2 py-2"
+                  style={{
+                    borderRadius: 6,
+                    background: selected ? 'var(--accent-dim)' : 'transparent',
+                    color: selected ? 'var(--text)' : 'var(--text-2)',
+                    opacity: disabled ? 0.5 : 1,
+                  }}
+                >
+                  <ProviderIcon providerId={candidate.id} />
+                  <span className="flex-1">{candidateName}</span>
+                  {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
+                </button>
+              )
+            })}
           </div>
         )}
       </div>
@@ -1059,7 +1217,7 @@ function ComposerToolbar({
       </button>
       <button type="button" title="Runtime" className="inline-flex items-center gap-1.5 px-2" style={chipStyle}>
         <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>
-        <span>ACP</span>
+        <span>{runtimeLabel}</span>
       </button>
       <button type="button" title="Usage" className="inline-flex items-center gap-1.5 px-2" style={chipStyle}>
         <span>Usage</span>
@@ -1111,11 +1269,11 @@ function ComposerToolbar({
               <div className="grid gap-2 text-[11px]" style={{ color: 'var(--text-2)' }}>
                 <div className="flex justify-between gap-3">
                   <span style={{ color: 'var(--text-3)' }}>Provider</span>
-                  <span>Gemini</span>
+                  <span>{providerName}</span>
                 </div>
                 <div className="flex justify-between gap-3">
                   <span style={{ color: 'var(--text-3)' }}>Runtime</span>
-                  <span>ACP</span>
+                  <span>{runtimeLabel}</span>
                 </div>
                 <div className="flex justify-between gap-3">
                   <span style={{ color: 'var(--text-3)' }}>Model</span>
@@ -1182,9 +1340,11 @@ export function ChatView({ session }: ChatViewProps) {
     session.folderId ? s.folders.find((folder) => folder.id === session.folderId)?.directory ?? '' : ''
   )
   const acp = useAppStore((s) => s.acpBindingBySessionId[session.id])
+  const providers = useAppStore((s) => s.providers)
   const sendAcpPrompt = useAppStore((s) => s.sendAcpPrompt)
   const cancelAcpTurn = useAppStore((s) => s.cancelAcpTurn)
   const resolveAcpPermission = useAppStore((s) => s.resolveAcpPermission)
+  const setSessionProvider = useAppStore((s) => s.setSessionProvider)
   const setSessionModel = useAppStore((s) => s.setSessionModel)
   const setSessionApprovalMode = useAppStore((s) => s.setSessionApprovalMode)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -1325,6 +1485,26 @@ export function ChatView({ session }: ChatViewProps) {
 
   const pendingPermission = acp?.pendingPermission
   const workspaceDirectory = session.workspaceDirectory?.trim() || folderDirectory.trim()
+  const currentProviderId = session.providerId || acp?.providerId || 'gemini-cli'
+  const currentProvider = useMemo<Provider>(
+    () =>
+      providers.find((candidate) => candidate.id === currentProviderId) ?? {
+        id: currentProviderId,
+        name: currentProviderId === 'codex-cli' ? 'Codex CLI' : 'Gemini CLI',
+        shortName: currentProviderId === 'codex-cli' ? 'Codex' : 'Gemini',
+        color: '#8ab4ff',
+        description: '',
+        outputMode: 'cli',
+        supportsCli: true,
+        supportsStructured: true,
+        structuredProtocol: currentProviderId === 'codex-cli' ? 'codex-app-server' : 'gemini-acp',
+      },
+    [currentProviderId, providers]
+  )
+  const currentProviderName = providerDisplayName(currentProvider, currentProviderId)
+  const currentRuntimeLabel = providerRuntimeLabel(currentProvider, acp)
+  const currentErrorTitle = `${currentProviderName} ${currentRuntimeLabel} error`
+  const canChangeProvider = messages.length === 0 && !acp?.running && !acp?.processing
   const currentModelId = acp?.currentModelId || session.modelId || ''
   const currentModeId = acp?.currentModeId || session.approvalMode || 'default'
 
@@ -1358,7 +1538,7 @@ export function ChatView({ session }: ChatViewProps) {
 
                 return (
                   <div key={message.id} className="space-y-2">
-                    <MessageFrame role={message.role}>
+                    <MessageFrame role={message.role} assistantLabel={currentProviderName} copyText={message.content}>
                       {shouldRenderTimelineAtAssistant ? (
                         <TurnTimelineContent
                           key={`turn-${turnSerial}-assistant`}
@@ -1378,7 +1558,7 @@ export function ChatView({ session }: ChatViewProps) {
                       )}
                     </MessageFrame>
                     {renderTimelineAfterUser && index === turnUserMessageIndex && (
-                      <MessageFrame key={`turn-${turnSerial}-after-user`} role="assistant">
+                      <MessageFrame key={`turn-${turnSerial}-after-user`} role="assistant" assistantLabel={currentProviderName}>
                         <TurnTimelineContent
                           key={`turn-${turnSerial}-after-user-content`}
                           events={turnEvents}
@@ -1395,7 +1575,7 @@ export function ChatView({ session }: ChatViewProps) {
                 )
               })}
               {turnEvents.length > 0 && !renderTimelineAfterUser && !renderTimelineAtAssistant && (
-                <MessageFrame key={`turn-${turnSerial}-fallback`} role="assistant">
+                <MessageFrame key={`turn-${turnSerial}-fallback`} role="assistant" assistantLabel={currentProviderName}>
                   <TurnTimelineContent
                     key={`turn-${turnSerial}-fallback-content`}
                     events={turnEvents}
@@ -1454,11 +1634,16 @@ export function ChatView({ session }: ChatViewProps) {
                   overflowWrap: 'anywhere',
                 }}
               >
-	                <span style={{ color: 'var(--red)', fontWeight: 600 }}>Gemini ACP error</span>
-	                <span style={{ color: 'var(--text-2)' }}> · </span>
-	                {acp.lastError}
-	                <AcpErrorDetails acp={acp} />
-	              </div>
+                <div className="flex items-start gap-2">
+                  <div className="min-w-0 flex-1">
+                    <span style={{ color: 'var(--red)', fontWeight: 600 }}>{currentErrorTitle}</span>
+                    <span style={{ color: 'var(--text-2)' }}> · </span>
+                    {acp.lastError}
+                  </div>
+                  <CopyTextButton text={buildAcpErrorCopyText(acp, currentErrorTitle)} label="Copy error" title="Copy error details" />
+                </div>
+                <AcpErrorDetails acp={acp} title={currentErrorTitle} />
+		              </div>
 	            )}
             <div
               style={{
@@ -1473,7 +1658,7 @@ export function ChatView({ session }: ChatViewProps) {
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={onComposerKeyDown}
               rows={3}
-              placeholder="Message Gemini"
+              placeholder={`Message ${currentProviderName}`}
               disabled={submitting}
               className="w-full resize-none text-sm"
               style={{
@@ -1488,10 +1673,16 @@ export function ChatView({ session }: ChatViewProps) {
             />
             <ComposerToolbar
               acp={acp}
+              provider={currentProvider}
+              providers={providers}
+              providerId={currentProviderId}
+              providerName={currentProviderName}
+              runtimeLabel={currentRuntimeLabel}
               elapsedSeconds={elapsedSeconds}
               canSend={canSend}
               modelId={currentModelId}
               approvalModeId={currentModeId}
+              canChangeProvider={canChangeProvider}
               providerOpen={providerOpen}
               modelOpen={modelOpen}
               settingsOpen={settingsOpen}
@@ -1513,6 +1704,11 @@ export function ChatView({ session }: ChatViewProps) {
                 setSettingsOpen((value) => !value)
                 setProviderOpen(false)
                 setModelOpen(false)
+              }}
+              onSelectProvider={(providerId) => {
+                setProviderOpen(false)
+                if (providerId === currentProviderId || !canChangeProvider) return
+                void setSessionProvider(session.id, providerId)
               }}
               onSelectModel={(modelId) => {
                 setModelOpen(false)

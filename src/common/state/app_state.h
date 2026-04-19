@@ -156,6 +156,9 @@ namespace uam
 	struct AcpPendingPermissionState
 	{
 		std::string request_id_json;
+		std::string provider_request_method;
+		std::string provider_request_kind;
+		std::string codex_approval_payload_json;
 		std::string tool_call_id;
 		std::string title;
 		std::string kind;
@@ -167,7 +170,11 @@ namespace uam
 	struct AcpSessionState : public platform::StdioProcessPlatformFields
 	{
 		std::string chat_id;
+		std::string provider_id;
+		std::string protocol_kind = "gemini-acp";
 		std::string session_id;
+		std::string codex_thread_id;
+		std::string codex_turn_id;
 		std::string lifecycle_state = "stopped";
 		bool running = false;
 		bool initialized = false;
@@ -184,9 +191,10 @@ namespace uam
 		int turn_user_message_index = -1;
 		int turn_assistant_message_index = -1;
 		int turn_serial = 0;
-		std::string queued_prompt;
-		bool ignore_session_updates_until_ready = false;
-			std::string stdout_buffer;
+			std::string queued_prompt;
+			bool ignore_session_updates_until_ready = false;
+			bool codex_resume_fallback_attempted = false;
+				std::string stdout_buffer;
 			std::string stderr_buffer;
 			std::string recent_stderr;
 			std::string last_error;

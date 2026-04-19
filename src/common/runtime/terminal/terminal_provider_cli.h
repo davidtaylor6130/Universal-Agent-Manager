@@ -8,6 +8,7 @@
 #include "app/chat_domain_service.h"
 #include "app/native_session_link_service.h"
 #include "app/provider_resolution_service.h"
+#include "common/provider/codex/cli/codex_thread_id.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/runtime/terminal/terminal_lifecycle.h"
@@ -16,6 +17,11 @@ inline std::vector<std::string> BuildProviderInteractiveArgv(const uam::AppState
 {
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 	ChatSession effective_chat = chat;
+	if (provider.id == "codex-cli")
+	{
+		effective_chat.native_session_id = uam::codex::ValidThreadIdOrEmpty(effective_chat.native_session_id);
+		return ProviderRuntime::BuildInteractiveArgv(provider, effective_chat, app.settings);
+	}
 
 	if (!NativeSessionLinkService().HasRealNativeSessionId(effective_chat))
 	{
@@ -33,8 +39,8 @@ inline std::vector<std::string> BuildProviderInteractiveArgv(const uam::AppState
 
 inline uam::CliTerminalState& EnsureCliTerminalForChat(uam::AppState& app, const ChatSession& chat)
 {
-	const std::string resume_id = ChatHistorySyncService().ResolveResumeSessionIdForChat(app, chat);
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+	const std::string resume_id = provider.id == "codex-cli" ? uam::codex::ValidThreadIdOrEmpty(chat.native_session_id) : ChatHistorySyncService().ResolveResumeSessionIdForChat(app, chat);
 	const bool can_launch_terminal = ProviderRuntime::IsRuntimeEnabled(provider) && ProviderRuntime::UsesCliOutput(provider) && !ProviderRuntime::UsesInternalEngine(provider) && provider.supports_interactive;
 
 	if (uam::CliTerminalState* existing = FindCliTerminalForChat(app, chat.id))

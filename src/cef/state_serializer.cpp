@@ -198,6 +198,9 @@ nlohmann::json SerializeAcpSessionSummary(const AppState& app, const ChatSession
 	if (session == nullptr)
 	{
 		acp_json["sessionId"] = chat.native_session_id;
+		acp_json["providerId"] = chat.provider_id;
+		acp_json["protocolKind"] = "";
+		acp_json["threadId"] = chat.native_session_id;
 		acp_json["running"] = false;
 		acp_json["processing"] = false;
 		acp_json["readySinceLastSelect"] = ready_since_last_select;
@@ -221,6 +224,9 @@ nlohmann::json SerializeAcpSessionSummary(const AppState& app, const ChatSession
 	}
 
 	acp_json["sessionId"] = session->session_id;
+	acp_json["providerId"] = session->provider_id;
+	acp_json["protocolKind"] = session->protocol_kind;
+	acp_json["threadId"] = session->codex_thread_id.empty() ? session->session_id : session->codex_thread_id;
 	acp_json["running"] = session->running;
 	acp_json["processing"] = session->processing;
 	acp_json["readySinceLastSelect"] = ready_since_last_select;
@@ -365,6 +371,7 @@ nlohmann::json SerializeFingerprintSession(const AppState& app, const ChatSessio
 	chat_json["workspaceDirectory"] = ResolveWorkspaceRootPath(app, chat).string();
 	chat_json["createdAt"] = chat.created_at;
 	chat_json["updatedAt"] = chat.updated_at;
+	chat_json["lastOpenedAt"] = chat.last_opened_at.empty() ? chat.updated_at : chat.last_opened_at;
 	chat_json["messageCount"] = chat.messages.size();
 	chat_json["messagesDigest"] = MessageDigestForFingerprint(chat);
 	chat_json["cliTerminal"] = SerializeChatTerminalSummary(app, chat);
@@ -576,6 +583,7 @@ nlohmann::json StateSerializer::SerializeSession(const ChatSession& session)
 	j["workspaceDirectory"] = session.workspace_directory;
 	j["createdAt"]  = session.created_at;
 	j["updatedAt"]  = session.updated_at;
+	j["lastOpenedAt"] = session.last_opened_at.empty() ? session.updated_at : session.last_opened_at;
 
 	auto msgs = nlohmann::json::array();
 		for (const auto& msg : session.messages)
@@ -621,6 +629,9 @@ nlohmann::json StateSerializer::SerializeProvider(const ProviderProfile& profile
 	j["name"]      = profile.title;
 	j["shortName"] = profile.title;  // React derives a short name from this
 	j["outputMode"] = profile.output_mode;
+	j["supportsCli"] = profile.supports_cli;
+	j["supportsStructured"] = profile.supports_structured;
+	j["structuredProtocol"] = profile.structured_protocol;
 	return j;
 }
 

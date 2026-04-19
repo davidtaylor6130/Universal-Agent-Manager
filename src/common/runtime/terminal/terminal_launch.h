@@ -12,6 +12,7 @@
 #include "app/provider_resolution_service.h"
 #include "app/runtime_orchestration_services.h"
 #include "common/provider/provider_runtime.h"
+#include "common/provider/codex/cli/codex_session_index.h"
 #include "common/runtime/app_time.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_vt_callbacks.h"
@@ -76,6 +77,10 @@ inline bool StartCliTerminalForChat(uam::AppState& app, uam::CliTerminalState& t
 	{
 		ChatHistorySyncService().ExportChatToNative(app, chat);
 		terminal.session_ids_before = ChatHistorySyncService().SessionIdsFromChats(ChatHistorySyncService().LoadNativeSessionChats(ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(app, chat), provider));
+	}
+	else if (provider.id == "codex-cli" && !uam::codex::IsValidThreadId(chat.native_session_id))
+	{
+		terminal.session_ids_before = uam::codex::ReadSessionIndexIds();
 	}
 	else
 	{

@@ -2,8 +2,10 @@
 
 #include "app/application_core_helpers.h"
 #include "app/chat_domain_service.h"
+#include "app/provider_resolution_service.h"
 #include "common/chat/chat_repository.h"
 #include "common/platform/platform_services.h"
+#include "common/provider/codex/cli/codex_thread_id.h"
 #include "common/utils/string_utils.h"
 
 #include <nlohmann/json.hpp>
@@ -35,11 +37,29 @@ namespace
 		constexpr std::size_t kMaxAcpDiagnosticFieldBytes = 4096;
 		constexpr std::size_t kMaxAcpDiagnosticDetailBytes = 8192;
 		constexpr std::size_t kMaxAcpLogFieldBytes = 512;
+		constexpr const char* kProtocolGeminiAcp = "gemini-acp";
+		constexpr const char* kProtocolCodexAppServer = "codex-app-server";
 
 			void CompletePromptTurn(AcpSessionState& session, const char* lifecycle_state);
 			void FailAcpTurnOrSession(AcpSessionState& session, const std::string& message);
 			void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat);
+			void SaveChatQuietly(AppState& app, const ChatSession& chat);
 			bool SyncAcpToolCallsToAssistantMessage(ChatSession& chat, AcpSessionState& session, bool create_if_missing);
+
+		bool IsCodexSession(const AcpSessionState& session)
+		{
+			return session.protocol_kind == kProtocolCodexAppServer || session.provider_id == "codex-cli";
+		}
+
+		const char* RuntimeDisplayName(const AcpSessionState& session)
+		{
+			return IsCodexSession(session) ? "Codex app-server" : "Gemini ACP";
+		}
+
+		std::string MessageProviderId(const AcpSessionState& session)
+		{
+			return session.provider_id.empty() ? std::string("gemini-cli") : session.provider_id;
+		}
 
 	std::string TimestampNow()
 	{
@@ -192,7 +212,7 @@ namespace
 			return CapDiagnosticString(session.recent_stderr, kMaxAcpDiagnosticDetailBytes);
 		}
 
-		nlohmann::json BuildInitializeRequest(const int request_id)
+	nlohmann::json BuildInitializeRequest(const int request_id)
 	{
 		return {
 			{"jsonrpc", "2.0"},
@@ -207,6 +227,43 @@ namespace
 					{"version", "1.0.1"},
 				}},
 			}},
+		};
+	}
+
+	nlohmann::json BuildCodexInitializeRequest(const int request_id)
+	{
+		return {
+			{"jsonrpc", "2.0"},
+			{"id", request_id},
+			{"method", "initialize"},
+			{"params", {
+					{"clientInfo", {
+						{"name", "universal-agent-manager"},
+						{"title", "Universal Agent Manager"},
+						{"version", "1.0.1"},
+					}},
+					{"capabilities", {
+						{"experimentalApi", true},
+					}},
+				}},
+			};
+		}
+
+	nlohmann::json BuildCodexInitializedNotification()
+	{
+		return {
+			{"jsonrpc", "2.0"},
+			{"method", "initialized"},
+		};
+	}
+
+	nlohmann::json BuildCodexModelListRequest(const int request_id)
+	{
+		return {
+			{"jsonrpc", "2.0"},
+			{"id", request_id},
+			{"method", "model/list"},
+			{"params", nlohmann::json::object()},
 		};
 	}
 
@@ -237,6 +294,73 @@ namespace
 		};
 	}
 
+	nlohmann::json BuildCodexThreadStartRequest(const int request_id, const ChatSession& chat, const std::string& cwd)
+	{
+		nlohmann::json params = {
+			{"cwd", cwd},
+			{"approvalPolicy", "on-request"},
+			{"sandbox", "workspace-write"},
+			{"serviceName", "universal-agent-manager"},
+			{"experimentalRawEvents", false},
+			{"persistExtendedHistory", true},
+		};
+
+		const std::string model_id = Trim(chat.model_id);
+		if (!model_id.empty())
+		{
+			params["model"] = model_id;
+		}
+
+		return {
+			{"jsonrpc", "2.0"},
+			{"id", request_id},
+			{"method", "thread/start"},
+			{"params", std::move(params)},
+		};
+	}
+
+	nlohmann::json BuildCodexThreadResumeRequest(const int request_id, const ChatSession& chat, const std::string& cwd)
+	{
+		nlohmann::json params = {
+			{"threadId", chat.native_session_id},
+			{"cwd", cwd},
+			{"approvalPolicy", "on-request"},
+			{"sandbox", "workspace-write"},
+			{"persistExtendedHistory", true},
+		};
+
+		const std::string model_id = Trim(chat.model_id);
+		if (!model_id.empty())
+		{
+			params["model"] = model_id;
+		}
+
+		return {
+			{"jsonrpc", "2.0"},
+			{"id", request_id},
+			{"method", "thread/resume"},
+			{"params", std::move(params)},
+		};
+	}
+
+	std::string ValidCodexResumeId(const ChatSession& chat)
+	{
+		return uam::codex::ValidThreadIdOrEmpty(chat.native_session_id);
+	}
+
+	nlohmann::json BuildCodexSessionSetupRequest(const int request_id, const ChatSession& chat, const std::string& cwd)
+	{
+		const std::string resume_id = ValidCodexResumeId(chat);
+		if (resume_id.empty())
+		{
+			return BuildCodexThreadStartRequest(request_id, chat, cwd);
+		}
+
+		ChatSession resume_chat = chat;
+		resume_chat.native_session_id = resume_id;
+		return BuildCodexThreadResumeRequest(request_id, resume_chat, cwd);
+	}
+
 	nlohmann::json BuildPromptRequest(const int request_id, const std::string& session_id, const std::string& text)
 	{
 		return {
@@ -255,6 +379,45 @@ namespace
 		};
 	}
 
+	nlohmann::json BuildCodexTurnStartRequest(const int request_id, const std::string& thread_id, const std::string& text, const ChatSession& chat)
+	{
+		nlohmann::json params = {
+			{"threadId", thread_id},
+			{"input", nlohmann::json::array({
+				{
+					{"type", "text"},
+					{"text", text},
+					{"text_elements", nlohmann::json::array()},
+				},
+			})},
+		};
+
+		const std::string model_id = Trim(chat.model_id);
+		if (!model_id.empty())
+		{
+			params["model"] = model_id;
+		}
+
+		if (Trim(chat.approval_mode) == "plan")
+		{
+			params["collaborationMode"] = {
+				{"mode", "plan"},
+				{"settings", {
+					{"model", model_id},
+					{"reasoning_effort", nullptr},
+					{"developer_instructions", nullptr},
+				}},
+			};
+		}
+
+		return {
+			{"jsonrpc", "2.0"},
+			{"id", request_id},
+			{"method", "turn/start"},
+			{"params", std::move(params)},
+		};
+	}
+
 		nlohmann::json BuildCancelNotification(const std::string& session_id)
 		{
 			return {
@@ -262,6 +425,19 @@ namespace
 				{"method", "session/cancel"},
 			{"params", {
 				{"sessionId", session_id},
+				}},
+			};
+		}
+
+		nlohmann::json BuildCodexTurnInterruptRequest(const int request_id, const std::string& thread_id, const std::string& turn_id)
+		{
+			return {
+				{"jsonrpc", "2.0"},
+				{"id", request_id},
+				{"method", "turn/interrupt"},
+				{"params", {
+					{"threadId", thread_id},
+					{"turnId", turn_id},
 				}},
 			};
 		}
@@ -300,6 +476,11 @@ namespace
 
 		std::vector<std::string> BuildAcpLaunchArgv(const ChatSession& chat)
 		{
+			if (Trim(chat.provider_id) == "codex-cli")
+			{
+				return {"codex", "app-server", "--listen", "stdio://"};
+			}
+
 			std::vector<std::string> argv = {"gemini", "--acp"};
 			const std::string approval_mode = LaunchApprovalMode(chat);
 			if (!approval_mode.empty())
@@ -440,7 +621,8 @@ namespace
 			std::string write_error;
 			if (!PlatformServicesFactory::Instance().process_service.WriteToStdioProcess(session, line.data(), line.size(), &write_error))
 			{
-				session.last_error = write_error.empty() ? "Failed to write ACP message to Gemini CLI." : "Failed to write ACP message to Gemini CLI: " + write_error;
+				const std::string runtime_name = RuntimeDisplayName(session);
+				session.last_error = write_error.empty() ? ("Failed to write message to " + runtime_name + ".") : ("Failed to write message to " + runtime_name + ": " + write_error);
 				session.lifecycle_state = kAcpLifecycleError;
 				AppendAcpDiagnostic(session, "write", "write_failed", method, request_id, false, 0, session.last_error, detail);
 				if (error_out != nullptr)
@@ -458,7 +640,7 @@ namespace
 	{
 		const int id = NextAcpRequestId(session, "initialize");
 		session.initialize_request_id = id;
-		return WriteAcpMessage(session, BuildInitializeRequest(id), error_out);
+		return WriteAcpMessage(session, IsCodexSession(session) ? BuildCodexInitializeRequest(id) : BuildInitializeRequest(id), error_out);
 	}
 
 	std::string ContentTextFromJson(const nlohmann::json& content)
@@ -858,6 +1040,7 @@ namespace
 		session.turn_serial = 0;
 		session.queued_prompt.clear();
 		session.ignore_session_updates_until_ready = false;
+		session.codex_resume_fallback_attempted = false;
 			session.stdout_buffer.clear();
 			session.stderr_buffer.clear();
 			session.recent_stderr.clear();
@@ -876,18 +1059,24 @@ namespace
 		session.tool_calls.clear();
 		session.plan_entries.clear();
 		session.turn_events.clear();
+		session.codex_turn_id.clear();
 		session.pending_permission = AcpPendingPermissionState{};
 	}
 
 	AcpSessionState& EnsureAcpSessionForChat(AppState& app, const ChatSession& chat)
 	{
+		const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 		if (AcpSessionState* existing = FindAcpSessionForChat(app, chat.id); existing != nullptr)
 		{
+			existing->provider_id = provider.id;
+			existing->protocol_kind = provider.structured_protocol.empty() ? kProtocolGeminiAcp : provider.structured_protocol;
 			return *existing;
 		}
 
 		auto session = std::make_unique<AcpSessionState>();
 		session->chat_id = chat.id;
+		session->provider_id = provider.id;
+		session->protocol_kind = provider.structured_protocol.empty() ? kProtocolGeminiAcp : provider.structured_protocol;
 		app.acp_sessions.push_back(std::move(session));
 		return *app.acp_sessions.back();
 	}
@@ -902,7 +1091,12 @@ namespace
 		PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
 		ResetAcpRuntimeState(session);
 		session.chat_id = chat.id;
-		session.session_id = chat.native_session_id;
+		const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+		session.provider_id = provider.id;
+		session.protocol_kind = provider.structured_protocol.empty() ? kProtocolGeminiAcp : provider.structured_protocol;
+		const std::string codex_resume_id = IsCodexSession(session) ? ValidCodexResumeId(chat) : std::string{};
+		session.session_id = IsCodexSession(session) ? codex_resume_id : chat.native_session_id;
+		session.codex_thread_id = codex_resume_id;
 			session.lifecycle_state = kAcpLifecycleStarting;
 
 			std::string startup_error;
@@ -913,7 +1107,7 @@ namespace
 			if (!PlatformServicesFactory::Instance().process_service.StartStdioProcess(session, workspace_root, launch_argv, &startup_error))
 			{
 				session.lifecycle_state = kAcpLifecycleError;
-				session.last_error = startup_error.empty() ? "Failed to start Gemini ACP process." : startup_error;
+				session.last_error = startup_error.empty() ? ("Failed to start " + std::string(RuntimeDisplayName(session)) + " process.") : startup_error;
 				AppendAcpDiagnostic(session, "process_launch", "start_failed", "", "", false, 0, session.last_error, launch_detail);
 				if (error_out != nullptr)
 				{
@@ -944,6 +1138,35 @@ namespace
 
 		const std::filesystem::path workspace_root = ResolveWorkspaceRootPath(app, chat);
 		const std::string cwd = workspace_root.empty() ? std::filesystem::current_path().string() : workspace_root.string();
+		if (IsCodexSession(session))
+		{
+			const std::string raw_resume_id = Trim(chat.native_session_id);
+			const std::string resume_id = ValidCodexResumeId(chat);
+			if (!raw_resume_id.empty() && resume_id.empty())
+			{
+				AppendAcpDiagnostic(session, "session_setup", "codex_invalid_resume_id_ignored", "", "", false, 0, "Ignoring invalid Codex thread id and starting a new thread.", "nativeSessionId=" + raw_resume_id);
+				chat.native_session_id.clear();
+				SaveChatQuietly(app, chat);
+			}
+			const bool can_resume = !resume_id.empty();
+			const int id = NextAcpRequestId(session, can_resume ? "thread/resume" : "thread/start");
+			session.session_setup_request_id = id;
+			session.ignore_session_updates_until_ready = false;
+			session.lifecycle_state = kAcpLifecycleStarting;
+			session.session_id = can_resume ? resume_id : "";
+			session.codex_thread_id = session.session_id;
+			ChatSession setup_chat = chat;
+			setup_chat.native_session_id = resume_id;
+			const bool written = WriteAcpMessage(session, can_resume ? BuildCodexThreadResumeRequest(id, setup_chat, cwd) : BuildCodexThreadStartRequest(id, setup_chat, cwd));
+			if (!written)
+			{
+				session.session_setup_request_id = 0;
+				FailAcpTurnOrSession(session, session.last_error.empty() ? "Failed to create Codex app-server thread." : session.last_error);
+				MarkAcpChatUnseenIfBackground(app, chat);
+			}
+			return written;
+		}
+
 		const bool can_load = !chat.native_session_id.empty() && session.load_session_supported;
 		const int id = NextAcpRequestId(session, can_load ? "session/load" : "session/new");
 		session.session_setup_request_id = id;
@@ -973,18 +1196,21 @@ namespace
 		return written;
 	}
 
-	bool SendQueuedPromptIfReady(AcpSessionState& session)
+	bool SendQueuedPromptIfReady(AcpSessionState& session, const ChatSession& chat)
 	{
 		if (!session.running || !session.session_ready || !session.processing || session.waiting_for_permission || session.prompt_request_id != 0 || session.queued_prompt.empty() || session.session_id.empty())
 		{
 			return false;
 		}
 
-		const int id = NextAcpRequestId(session, "session/prompt");
+		const int id = NextAcpRequestId(session, IsCodexSession(session) ? "turn/start" : "session/prompt");
 		const std::string prompt = session.queued_prompt;
 		session.prompt_request_id = id;
 		session.lifecycle_state = kAcpLifecycleProcessing;
-		if (!WriteAcpMessage(session, BuildPromptRequest(id, session.session_id, prompt)))
+		const nlohmann::json request = IsCodexSession(session)
+			? BuildCodexTurnStartRequest(id, session.session_id, prompt, chat)
+			: BuildPromptRequest(id, session.session_id, prompt);
+		if (!WriteAcpMessage(session, request))
 		{
 			session.prompt_request_id = 0;
 			CompletePromptTurn(session, kAcpLifecycleError);
@@ -1088,6 +1314,7 @@ namespace
 			session.waiting_for_permission = false;
 			session.queued_prompt.clear();
 			session.current_assistant_message_index = -1;
+			session.codex_turn_id.clear();
 			session.load_history_replay_updates.clear();
 			session.pending_assistant_thoughts.clear();
 			session.pending_permission = AcpPendingPermissionState{};
@@ -1166,7 +1393,7 @@ namespace
 		{
 			Message message;
 			message.role = MessageRole::Assistant;
-			message.provider = "gemini-cli";
+			message.provider = MessageProviderId(session);
 			message.created_at = TimestampNow();
 			chat.messages.push_back(std::move(message));
 			session.current_assistant_message_index = static_cast<int>(chat.messages.size()) - 1;
@@ -1248,7 +1475,7 @@ namespace
 
 				Message message;
 				message.role = MessageRole::Assistant;
-				message.provider = "gemini-cli";
+				message.provider = MessageProviderId(session);
 				message.created_at = TimestampNow();
 				chat.messages.push_back(std::move(message));
 				session.current_assistant_message_index = static_cast<int>(chat.messages.size()) - 1;
@@ -1424,6 +1651,48 @@ namespace
 		nlohmann::json response;
 		response["jsonrpc"] = "2.0";
 		response["id"] = StableStringToJsonRpcId(request_id_json);
+		if (IsCodexSession(session))
+		{
+			const std::string kind = session.pending_permission.provider_request_kind;
+			const bool deny = cancelled || option_id == "decline" || option_id == "cancelled";
+			if (kind == "codex-command")
+			{
+				response["result"] = {{"decision", cancelled ? "cancel" : (deny ? "decline" : (option_id.empty() ? "accept" : option_id))}};
+			}
+			else if (kind == "codex-file")
+			{
+				response["result"] = {{"decision", cancelled ? "cancel" : (deny ? "decline" : (option_id.empty() ? "accept" : option_id))}};
+			}
+			else if (kind == "codex-permissions")
+			{
+				nlohmann::json permissions = nlohmann::json::object();
+				if (!deny && !session.pending_permission.codex_approval_payload_json.empty())
+				{
+					try
+					{
+						const nlohmann::json payload = nlohmann::json::parse(session.pending_permission.codex_approval_payload_json);
+						if (payload.contains("permissions"))
+						{
+							permissions = payload["permissions"];
+						}
+					}
+					catch (...)
+					{
+						permissions = nlohmann::json::object();
+					}
+				}
+				response["result"] = {
+					{"permissions", permissions},
+					{"scope", "session"},
+				};
+			}
+			else
+			{
+				response["result"] = nlohmann::json::object();
+			}
+			return WriteAcpMessage(session, response, error_out);
+		}
+
 		if (cancelled)
 		{
 			response["result"] = {{"outcome", {{"outcome", "cancelled"}}}};
@@ -1488,6 +1757,303 @@ namespace
 		session.lifecycle_state = kAcpLifecycleWaitingPermission;
 	}
 
+	std::string CodexItemTitle(const nlohmann::json& item)
+	{
+		const std::string type = item.value("type", "tool");
+		if (type == "commandExecution")
+		{
+			const std::string command = item.value("command", "");
+			return command.empty() ? "Command" : command;
+		}
+		if (type == "fileChange")
+		{
+			return "File changes";
+		}
+		if (type == "mcpToolCall")
+		{
+			return item.value("tool", "MCP tool");
+		}
+		if (type == "dynamicToolCall")
+		{
+			return item.value("tool", "Tool");
+		}
+		return type;
+	}
+
+	std::string CodexItemContent(const nlohmann::json& item)
+	{
+		const std::string type = item.value("type", "");
+		if (type == "commandExecution")
+		{
+			return item.value("aggregatedOutput", "");
+		}
+		if (type == "agentMessage")
+		{
+			return item.value("text", "");
+		}
+		if (type == "plan")
+		{
+			return item.value("text", "");
+		}
+		if (type == "fileChange" || type == "mcpToolCall" || type == "dynamicToolCall")
+		{
+			return item.dump();
+		}
+		return "";
+	}
+
+	void HandleCodexToolItem(AcpSessionState& session, ChatSession& chat, const nlohmann::json& item)
+	{
+		const std::string item_id = item.value("id", "");
+		const std::string type = item.value("type", "");
+		if (item_id.empty())
+		{
+			return;
+		}
+		if (type == "agentMessage")
+		{
+			AppendAssistantChunk(chat, session, CodexItemContent(item));
+			return;
+		}
+		if (type == "plan")
+		{
+			AcpPlanEntryState& entry = [&]() -> AcpPlanEntryState&
+			{
+				for (AcpPlanEntryState& existing : session.plan_entries)
+				{
+					if (existing.priority == item_id)
+					{
+						return existing;
+					}
+				}
+				AcpPlanEntryState created;
+				created.priority = item_id;
+				created.status = "pending";
+				session.plan_entries.push_back(std::move(created));
+				return session.plan_entries.back();
+			}();
+			entry.content = CodexItemContent(item);
+			return;
+		}
+		if (type != "commandExecution" && type != "fileChange" && type != "mcpToolCall" && type != "dynamicToolCall")
+		{
+			return;
+		}
+
+		AcpToolCallState& tool_call = UpsertToolCall(session, item_id);
+		tool_call.title = CodexItemTitle(item);
+		tool_call.kind = type;
+		tool_call.status = item.value("status", tool_call.status.empty() ? "pending" : tool_call.status);
+		const std::string content = CodexItemContent(item);
+		if (!content.empty())
+		{
+			tool_call.content = content;
+		}
+		AppendToolTurnEventIfNeeded(session, item_id);
+		(void)SyncAcpToolCallsToAssistantMessage(chat, session, false);
+	}
+
+	void HandleCodexPendingPermission(AcpSessionState& session, const nlohmann::json& message, const std::string& kind)
+	{
+		const nlohmann::json params = message.value("params", nlohmann::json::object());
+		AcpPendingPermissionState pending;
+		pending.request_id_json = JsonRpcIdToStableString(message.value("id", nlohmann::json(nullptr)));
+		pending.provider_request_method = message.value("method", "");
+		pending.provider_request_kind = kind;
+		pending.codex_approval_payload_json = params.dump();
+		pending.tool_call_id = params.value("itemId", pending.request_id_json);
+		pending.status = "pending";
+
+		if (kind == "codex-command")
+		{
+			pending.title = "Command approval";
+			pending.kind = "commandExecution";
+			pending.content = params.value("command", params.value("reason", ""));
+			const nlohmann::json decisions = params.value("availableDecisions", nlohmann::json::array());
+			if (decisions.is_array())
+			{
+				for (const nlohmann::json& decision : decisions)
+				{
+					if (!decision.is_string())
+					{
+						continue;
+					}
+					const std::string id = decision.get<std::string>();
+					pending.options.push_back(AcpPermissionOptionState{id, id == "acceptForSession" ? "Allow for session" : (id == "accept" ? "Allow" : (id == "decline" ? "Deny" : id)), "decision"});
+				}
+			}
+		}
+		else if (kind == "codex-file")
+		{
+			pending.title = "File change approval";
+			pending.kind = "fileChange";
+			pending.content = params.value("reason", params.value("grantRoot", ""));
+		}
+		else
+		{
+			pending.title = "Permission approval";
+			pending.kind = "permissions";
+			pending.content = params.value("reason", "");
+		}
+
+		if (pending.options.empty())
+		{
+			pending.options.push_back(AcpPermissionOptionState{"accept", "Allow", "decision"});
+			pending.options.push_back(AcpPermissionOptionState{"decline", "Deny", "decision"});
+		}
+		pending.options.push_back(AcpPermissionOptionState{"cancelled", "Cancel", "cancel"});
+
+		if (!pending.tool_call_id.empty())
+		{
+			AcpToolCallState& tracked_tool_call = UpsertToolCall(session, pending.tool_call_id);
+			tracked_tool_call.title = pending.title;
+			tracked_tool_call.kind = pending.kind;
+			tracked_tool_call.status = pending.status;
+			tracked_tool_call.content = pending.content;
+		}
+		AppendPermissionTurnEventIfNeeded(session, pending.request_id_json, pending.tool_call_id);
+		session.pending_permission = std::move(pending);
+		session.waiting_for_permission = true;
+		session.processing = true;
+		session.lifecycle_state = kAcpLifecycleWaitingPermission;
+	}
+
+	void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
+	{
+		const std::string method = message.value("method", "");
+		const nlohmann::json params = message.value("params", nlohmann::json::object());
+
+		if (method == "turn/started")
+		{
+			const nlohmann::json turn = params.value("turn", nlohmann::json::object());
+			if (turn.is_object())
+			{
+				session.codex_turn_id = turn.value("id", session.codex_turn_id);
+			}
+			session.lifecycle_state = kAcpLifecycleProcessing;
+			return;
+		}
+		if (method == "turn/completed")
+		{
+			(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
+			CompletePromptTurn(session, kAcpLifecycleReady);
+			SaveChatQuietly(app, chat);
+			MarkAcpChatUnseenIfBackground(app, chat);
+			return;
+		}
+		if (method == "item/agentMessage/delta")
+		{
+			AppendAssistantChunk(chat, session, params.value("delta", ""));
+			SaveChatQuietly(app, chat);
+			return;
+		}
+		if (method == "item/plan/delta")
+		{
+			const std::string item_id = params.value("itemId", "");
+			AcpPlanEntryState* entry = nullptr;
+			for (AcpPlanEntryState& existing : session.plan_entries)
+			{
+				if (existing.priority == item_id)
+				{
+					entry = &existing;
+					break;
+				}
+			}
+			if (entry == nullptr)
+			{
+				AcpPlanEntryState created;
+				created.priority = item_id;
+				created.status = "pending";
+				session.plan_entries.push_back(std::move(created));
+				entry = &session.plan_entries.back();
+			}
+			entry->content += params.value("delta", "");
+			return;
+		}
+		if (method == "turn/plan/updated")
+		{
+			const nlohmann::json plan = params.value("plan", nlohmann::json::array());
+			if (plan.is_array())
+			{
+				session.plan_entries.clear();
+				for (const nlohmann::json& step : plan)
+				{
+					if (!step.is_object())
+					{
+						continue;
+					}
+					AcpPlanEntryState entry;
+					entry.content = step.value("step", "");
+					entry.status = step.value("status", "");
+					session.plan_entries.push_back(std::move(entry));
+				}
+			}
+			return;
+		}
+		if (method == "item/started" || method == "item/completed")
+		{
+			HandleCodexToolItem(session, chat, params.value("item", nlohmann::json::object()));
+			SaveChatQuietly(app, chat);
+			return;
+		}
+		if (method == "item/commandExecution/outputDelta" || method == "command/exec/outputDelta" || method == "item/fileChange/outputDelta")
+		{
+			const std::string item_id = params.value("itemId", "");
+			if (!item_id.empty())
+			{
+				AcpToolCallState& tool_call = UpsertToolCall(session, item_id);
+				if (tool_call.title.empty())
+				{
+					tool_call.title = method.find("fileChange") != std::string::npos ? "File changes" : "Command output";
+				}
+				if (tool_call.kind.empty())
+				{
+					tool_call.kind = method.find("fileChange") != std::string::npos ? "fileChange" : "commandExecution";
+				}
+				if (tool_call.status.empty())
+				{
+					tool_call.status = "running";
+				}
+				tool_call.content += params.value("delta", "");
+				AppendToolTurnEventIfNeeded(session, item_id);
+				(void)SyncAcpToolCallsToAssistantMessage(chat, session, false);
+				SaveChatQuietly(app, chat);
+			}
+			return;
+		}
+		if (method == "item/commandExecution/requestApproval")
+		{
+			HandleCodexPendingPermission(session, message, "codex-command");
+			return;
+		}
+		if (method == "item/fileChange/requestApproval")
+		{
+			HandleCodexPendingPermission(session, message, "codex-file");
+			return;
+		}
+		if (method == "item/permissions/requestApproval")
+		{
+			HandleCodexPendingPermission(session, message, "codex-permissions");
+			return;
+		}
+		if (method == "error")
+		{
+			session.last_error = params.value("message", "Codex app-server error.");
+			session.lifecycle_state = kAcpLifecycleError;
+			return;
+		}
+		if (method == "thread/started" || method == "thread/status/changed" || method == "serverRequest/resolved" || method == "thread/name/updated" || method == "thread/tokenUsage/updated")
+		{
+			return;
+		}
+
+		if (message.contains("id"))
+		{
+			AppendAcpDiagnostic(session, "request", "unsupported_method", method, JsonRpcIdToStableString(message["id"]), true, -32601, "UAM Codex app-server client does not implement method: " + method);
+			SendJsonRpcError(session, message["id"], -32601, "UAM Codex app-server client does not implement method: " + method);
+		}
+	}
+
 		void HandleAcpRequest(AppState&, AcpSessionState& session, const nlohmann::json& message)
 		{
 			const std::string method = message.value("method", "");
@@ -1539,7 +2105,8 @@ namespace
 			return CapDiagnosticString(error["data"].dump(), kMaxAcpDiagnosticDetailBytes);
 		}
 
-			std::string FormatAcpFailureMessage(const std::string& method,
+			std::string FormatAcpFailureMessage(const AcpSessionState& session,
+			                                    const std::string& method,
 			                                    const std::string& request_id,
 			                                    const bool has_code,
 			                                    const int code,
@@ -1547,7 +2114,7 @@ namespace
 		                                    const bool has_detail)
 		{
 			std::ostringstream out;
-			out << "Gemini ACP " << (method.empty() ? "request" : method) << " failed";
+			out << RuntimeDisplayName(session) << " " << (method.empty() ? "request" : method) << " failed";
 			if (!request_id.empty() || has_code)
 			{
 				out << " (";
@@ -1567,7 +2134,7 @@ namespace
 				}
 				out << ")";
 			}
-			out << ": " << (message.empty() ? "Gemini ACP request failed." : message);
+			out << ": " << (message.empty() ? (std::string(RuntimeDisplayName(session)) + " request failed.") : message);
 			if (has_detail)
 			{
 				out << " See diagnostics/stderr details.";
@@ -1663,7 +2230,7 @@ namespace
 		}
 		if (session.prompt_request_id != 0 && id == session.prompt_request_id)
 		{
-			method = "session/prompt";
+			method = IsCodexSession(session) ? "turn/start" : "session/prompt";
 		}
 
 			if (message.contains("error"))
@@ -1671,7 +2238,8 @@ namespace
 				const nlohmann::json error = message["error"];
 				const bool has_code = error.is_object() && error.contains("code") && error["code"].is_number_integer();
 				const int code = has_code ? error["code"].get<int>() : 0;
-				const std::string error_message = error.is_object() ? error.value("message", "Gemini ACP request failed.") : "Gemini ACP request failed.";
+				const std::string default_error = std::string(RuntimeDisplayName(session)) + " request failed.";
+				const std::string error_message = error.is_object() ? error.value("message", default_error) : default_error;
 				const std::string error_data = ErrorDataForDiagnostics(error);
 				std::ostringstream detail;
 				bool has_detail = false;
@@ -1699,11 +2267,42 @@ namespace
 					detail << "pending_requests=" << pending_summary;
 					has_detail = true;
 				}
-				const std::string detail_text = detail.str();
-				const std::string formatted_error = FormatAcpFailureMessage(method, request_id, has_code, code, error_message, !detail_text.empty());
-				AppendAcpDiagnostic(session, "response", "jsonrpc_error", method, request_id, has_code, code, error_message, detail_text);
-					if (method == "session/prompt" || session.processing || session.waiting_for_permission || !session.queued_prompt.empty())
+					const std::string detail_text = detail.str();
+					const std::string formatted_error = FormatAcpFailureMessage(session, method, request_id, has_code, code, error_message, !detail_text.empty());
+					AppendAcpDiagnostic(session, "response", "jsonrpc_error", method, request_id, has_code, code, error_message, detail_text);
+					if (IsCodexSession(session) &&
+					    method == "thread/resume" &&
+					    has_code &&
+					    code == -32600 &&
+					    uam::codex::ErrorLooksLikeInvalidThreadId(error_message) &&
+					    !session.codex_resume_fallback_attempted)
 					{
+						session.codex_resume_fallback_attempted = true;
+						session.session_setup_request_id = 0;
+						session.session_id.clear();
+						session.codex_thread_id.clear();
+						chat.native_session_id.clear();
+						SaveChatQuietly(app, chat);
+						AppendAcpDiagnostic(session, "response", "codex_invalid_resume_id_retry_start", method, request_id, has_code, code, "Codex rejected the stored thread id. Starting a new thread instead.", detail_text);
+
+						const std::filesystem::path workspace_root = ResolveWorkspaceRootPath(app, chat);
+						const std::string cwd = workspace_root.empty() ? std::filesystem::current_path().string() : workspace_root.string();
+						const int retry_id = NextAcpRequestId(session, "thread/start");
+						session.session_setup_request_id = retry_id;
+						session.lifecycle_state = kAcpLifecycleStarting;
+						if (!WriteAcpMessage(session, BuildCodexThreadStartRequest(retry_id, chat, cwd)))
+						{
+							session.pending_request_methods.erase(retry_id);
+							session.session_setup_request_id = 0;
+							(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
+							FailAcpTurnOrSession(session, session.last_error.empty() ? formatted_error : session.last_error);
+							SaveChatQuietly(app, chat);
+							MarkAcpChatUnseenIfBackground(app, chat);
+						}
+						return;
+					}
+						if (method == "session/prompt" || session.processing || session.waiting_for_permission || !session.queued_prompt.empty())
+						{
 						(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 						FailAcpTurnOrSession(session, formatted_error);
 						SaveChatQuietly(app, chat);
@@ -1723,6 +2322,20 @@ namespace
 			session.initialize_request_id = 0;
 			session.initialized = true;
 			session.lifecycle_state = kAcpLifecycleStarting;
+			if (IsCodexSession(session))
+			{
+				session.agent_name = "codex";
+				session.agent_title = "Codex";
+				if (result.is_object())
+				{
+					session.agent_version = result.value("userAgent", "");
+				}
+				session.load_session_supported = true;
+				(void)WriteAcpMessage(session, BuildCodexInitializedNotification());
+				const int model_list_id = NextAcpRequestId(session, "model/list");
+				(void)WriteAcpMessage(session, BuildCodexModelListRequest(model_list_id));
+				return;
+			}
 			if (result.is_object())
 			{
 				const nlohmann::json agent_info = result.value("agentInfo", nlohmann::json::object());
@@ -1740,6 +2353,97 @@ namespace
 			}
 			return;
 		}
+
+				if (method == "model/list")
+				{
+					if (result.is_object())
+					{
+						const nlohmann::json data = result.value("data", nlohmann::json::array());
+						if (data.is_array())
+						{
+							session.available_models.clear();
+							for (const nlohmann::json& model : data)
+							{
+								if (!model.is_object() || model.value("hidden", false))
+								{
+									continue;
+								}
+								AcpModelState parsed;
+								parsed.id = model.value("id", model.value("model", ""));
+								parsed.name = model.value("displayName", parsed.id);
+								parsed.description = model.value("description", "");
+								if (!parsed.id.empty())
+								{
+									if (model.value("isDefault", false))
+									{
+										session.current_model_id = parsed.id;
+									}
+									session.available_models.push_back(std::move(parsed));
+								}
+							}
+						}
+					}
+					return;
+				}
+
+					if (method == "thread/start" || method == "thread/resume")
+					{
+						session.session_setup_request_id = 0;
+						std::string returned_thread_id;
+						if (result.is_object())
+						{
+							const nlohmann::json thread = result.value("thread", nlohmann::json::object());
+							if (thread.is_object())
+							{
+								returned_thread_id = thread.value("id", "");
+							}
+							session.current_model_id = result.value("model", session.current_model_id);
+						}
+						if (uam::codex::IsValidThreadId(returned_thread_id))
+						{
+							session.codex_thread_id = returned_thread_id;
+							session.session_id = session.codex_thread_id;
+						}
+						else
+						{
+							session.codex_thread_id.clear();
+							session.session_id.clear();
+						}
+						if (!session.session_id.empty() && chat.native_session_id != session.session_id)
+						{
+							chat.native_session_id = session.session_id;
+					}
+					session.available_modes = {
+						AcpModeState{"default", "Default", "Use Codex default collaboration mode."},
+						AcpModeState{"plan", "Plan", "Ask Codex to plan before implementing."},
+					};
+					session.current_mode_id = chat.approval_mode.empty() ? "default" : chat.approval_mode;
+					session.session_ready = !session.session_id.empty();
+						session.lifecycle_state = session.session_ready ? kAcpLifecycleReady : kAcpLifecycleError;
+						if (!session.session_ready)
+						{
+							const std::string detail = "result=" + CapDiagnosticString(result.dump(), kMaxAcpDiagnosticDetailBytes) + (session.recent_stderr.empty() ? "" : "\nstderr_tail=" + RecentStderrTail(session));
+							session.last_error = FormatAcpFailureMessage(session, method, request_id, false, 0, "Codex app-server did not return a valid thread id.", true);
+							AppendAcpDiagnostic(session, "response", "missing_thread_id", method, request_id, false, 0, session.last_error, detail);
+						}
+					SaveChatQuietly(app, chat);
+					return;
+				}
+
+				if (method == "turn/start")
+				{
+					session.prompt_request_id = 0;
+					if (result.is_object())
+					{
+						const nlohmann::json turn = result.value("turn", nlohmann::json::object());
+						if (turn.is_object())
+						{
+							session.codex_turn_id = turn.value("id", session.codex_turn_id);
+						}
+					}
+					session.lifecycle_state = kAcpLifecycleProcessing;
+					return;
+				}
 
 				if (method == "session/new")
 				{
@@ -1759,7 +2463,7 @@ namespace
 				if (!session.session_ready)
 				{
 					const std::string detail = "result=" + CapDiagnosticString(result.dump(), kMaxAcpDiagnosticDetailBytes) + (session.recent_stderr.empty() ? "" : "\nstderr_tail=" + RecentStderrTail(session));
-					session.last_error = FormatAcpFailureMessage(method, request_id, false, 0, "Gemini ACP did not return a session id.", true);
+					session.last_error = FormatAcpFailureMessage(session, method, request_id, false, 0, std::string(RuntimeDisplayName(session)) + " did not return a session id.", true);
 					AppendAcpDiagnostic(session, "response", "missing_session_id", method, request_id, false, 0, session.last_error, detail);
 				}
 				SaveChatQuietly(app, chat);
@@ -1818,7 +2522,7 @@ namespace
 			}
 			catch (const std::exception& ex)
 			{
-				const std::string error_message = std::string("Invalid ACP JSON from Gemini CLI: ") + ex.what();
+				const std::string error_message = std::string("Invalid JSON from ") + RuntimeDisplayName(session) + ": " + ex.what();
 				AppendAcpDiagnostic(session, "parse", "invalid_json", "", "", false, 0, error_message, CapDiagnosticString(trimmed, kMaxAcpDiagnosticDetailBytes));
 				FailAcpTurnOrSession(session, error_message);
 				MarkAcpChatUnseenIfBackground(app, chat);
@@ -1828,7 +2532,11 @@ namespace
 		if (message.contains("method"))
 		{
 			const std::string method = message.value("method", "");
-			if (method == "session/update")
+			if (IsCodexSession(session))
+			{
+				HandleCodexMessage(app, session, chat, message);
+			}
+			else if (method == "session/update")
 			{
 				HandleSessionUpdate(app, session, chat, message.value("params", nlohmann::json::object()));
 			}
@@ -1880,7 +2588,7 @@ namespace
 					break;
 				}
 
-				const std::string message = read_error.empty() ? "Failed to read Gemini ACP stdout." : "Failed to read Gemini ACP stdout: " + read_error;
+				const std::string message = read_error.empty() ? ("Failed to read " + std::string(RuntimeDisplayName(session)) + " stdout.") : ("Failed to read " + std::string(RuntimeDisplayName(session)) + " stdout: " + read_error);
 				AppendAcpDiagnostic(session, "read", "stdout_read_failed", "", "", false, 0, message);
 				FailAcpTurnOrSession(session, message);
 				MarkAcpChatUnseenIfBackground(app, chat);
@@ -1910,7 +2618,7 @@ namespace
 					break;
 				}
 
-				const std::string message = read_error.empty() ? "Failed to read Gemini ACP stderr." : "Failed to read Gemini ACP stderr: " + read_error;
+				const std::string message = read_error.empty() ? ("Failed to read " + std::string(RuntimeDisplayName(session)) + " stderr.") : ("Failed to read " + std::string(RuntimeDisplayName(session)) + " stderr: " + read_error);
 				AppendAcpDiagnostic(session, "read", "stderr_read_failed", "", "", false, 0, message);
 				changed = true;
 				break;
@@ -1957,7 +2665,7 @@ namespace
 			session.session_ready = false;
 			if (active_turn)
 			{
-				const std::string message = session.last_error.empty() ? "Gemini ACP process exited during an active turn." : session.last_error;
+				const std::string message = session.last_error.empty() ? (std::string(RuntimeDisplayName(session)) + " process exited during an active turn.") : session.last_error;
 				FailAcpTurnOrSession(session, message);
 		}
 		else
@@ -2027,7 +2735,7 @@ bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string&
 	{
 		if (error_out != nullptr)
 		{
-			*error_out = "Gemini ACP is already processing this chat.";
+			*error_out = std::string(RuntimeDisplayName(session)) + " is already processing this chat.";
 		}
 		return false;
 	}
@@ -2037,7 +2745,7 @@ bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string&
 		return false;
 	}
 
-	ChatDomainService().AddMessageWithAnalytics(chat, MessageRole::User, prompt, "gemini-cli", 0, 0, 0, 0, false);
+	ChatDomainService().AddMessageWithAnalytics(chat, MessageRole::User, prompt, MessageProviderId(session), 0, 0, 0, 0, false);
 	SaveChatQuietly(app, chat);
 
 	session.queued_prompt = prompt;
@@ -2059,7 +2767,7 @@ bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string&
 
 	if (session.session_ready)
 	{
-		(void)SendQueuedPromptIfReady(session);
+		(void)SendQueuedPromptIfReady(session, chat);
 	}
 
 	return true;
@@ -2087,7 +2795,18 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 		session->pending_assistant_thoughts.clear();
 		session->lifecycle_state = session->session_ready ? kAcpLifecycleReady : kAcpLifecycleStopped;
 
-	if (!session->session_id.empty())
+	if (IsCodexSession(*session) && !session->session_id.empty() && !session->codex_turn_id.empty())
+	{
+		const int id = NextAcpRequestId(*session, "turn/interrupt");
+		session->cancel_request_id = id;
+		if (!WriteAcpMessage(*session, BuildCodexTurnInterruptRequest(id, session->session_id, session->codex_turn_id), error_out))
+		{
+			session->pending_request_methods.erase(id);
+			session->cancel_request_id = 0;
+			return false;
+		}
+	}
+	else if (!session->session_id.empty())
 	{
 		if (!WriteAcpMessage(*session, BuildCancelNotification(session->session_id), error_out))
 		{
@@ -2143,7 +2862,7 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 		{
 			if (error_out != nullptr)
 			{
-				*error_out = "Cannot change ACP mode while Gemini ACP is busy.";
+				*error_out = "Cannot change structured runtime mode while " + std::string(RuntimeDisplayName(*session)) + " is busy.";
 			}
 			return false;
 		}
@@ -2154,6 +2873,11 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 				*error_out = "ACP session is not ready.";
 			}
 			return false;
+		}
+		if (IsCodexSession(*session))
+		{
+			session->current_mode_id = mode_id;
+			return true;
 		}
 
 		const int id = NextAcpRequestId(*session, "session/set_mode");
@@ -2177,7 +2901,7 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 		{
 			if (error_out != nullptr)
 			{
-				*error_out = "Cannot change ACP model while Gemini ACP is busy.";
+				*error_out = "Cannot change structured runtime model while " + std::string(RuntimeDisplayName(*session)) + " is busy.";
 			}
 			return false;
 		}
@@ -2188,6 +2912,11 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 				*error_out = "ACP session is not ready.";
 			}
 			return false;
+		}
+		if (IsCodexSession(*session))
+		{
+			session->current_model_id = model_id;
+			return true;
 		}
 
 		const int id = NextAcpRequestId(*session, "session/set_model");
@@ -2271,7 +3000,7 @@ bool PollAllAcpSessions(AppState& app)
 			changed = true;
 		}
 
-		if (SendQueuedPromptIfReady(session))
+		if (SendQueuedPromptIfReady(session, chat))
 		{
 			if (!session.last_error.empty() && session.lifecycle_state == kAcpLifecycleError)
 			{
@@ -2344,9 +3073,54 @@ std::string BuildAcpNewSessionRequestForTests(const int request_id, const std::s
 		return BuildSetModelRequest(request_id, session_id, model_id).dump();
 	}
 
+	std::string BuildCodexInitializeRequestForTests(const int request_id)
+	{
+		return BuildCodexInitializeRequest(request_id).dump();
+	}
+
+	std::string BuildCodexInitializedNotificationForTests()
+	{
+		return BuildCodexInitializedNotification().dump();
+	}
+
+	std::string BuildCodexModelListRequestForTests(const int request_id)
+	{
+		return BuildCodexModelListRequest(request_id).dump();
+	}
+
+	std::string BuildCodexSessionSetupRequestForTests(const int request_id, const ChatSession& chat, const std::string& cwd)
+	{
+		return BuildCodexSessionSetupRequest(request_id, chat, cwd).dump();
+	}
+
+	std::string BuildCodexThreadStartRequestForTests(const int request_id, const ChatSession& chat, const std::string& cwd)
+	{
+		return BuildCodexThreadStartRequest(request_id, chat, cwd).dump();
+	}
+
+	std::string BuildCodexThreadResumeRequestForTests(const int request_id, const ChatSession& chat, const std::string& cwd)
+	{
+		return BuildCodexThreadResumeRequest(request_id, chat, cwd).dump();
+	}
+
+	std::string BuildCodexTurnStartRequestForTests(const int request_id, const std::string& thread_id, const std::string& text, const ChatSession& chat)
+	{
+		return BuildCodexTurnStartRequest(request_id, thread_id, text, chat).dump();
+	}
+
+	std::string BuildCodexTurnInterruptRequestForTests(const int request_id, const std::string& thread_id, const std::string& turn_id)
+	{
+		return BuildCodexTurnInterruptRequest(request_id, thread_id, turn_id).dump();
+	}
+
 	bool ProcessAcpLineForTests(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& line)
 	{
 	return ProcessAcpLine(app, session, chat, line);
-}
+	}
+
+	bool IsValidCodexThreadIdForTests(const std::string& thread_id)
+	{
+		return uam::codex::IsValidThreadId(thread_id);
+	}
 
 } // namespace uam

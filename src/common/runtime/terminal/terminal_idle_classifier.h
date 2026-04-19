@@ -198,3 +198,24 @@ inline bool GeminiCliRecentOutputIndicatesInputPrompt(const std::string_view rec
 
 	return false;
 }
+
+inline bool CodexCliRecentOutputIndicatesInputPrompt(const std::string_view recent_output)
+{
+	constexpr std::size_t kPromptScanLimit = 8192;
+	const std::size_t start = recent_output.size() > kPromptScanLimit ? recent_output.size() - kPromptScanLimit : 0;
+	const std::string stripped = StripTerminalControlSequencesForLifecycle(recent_output.substr(start));
+	if (stripped.empty())
+	{
+		return false;
+	}
+
+	if (stripped.find("\xE2\x80\xBA") != std::string::npos || stripped.find("> ") != std::string::npos)
+	{
+		if (stripped.find("Send") != std::string::npos || stripped.find("message") != std::string::npos || stripped.find("for shortcuts") != std::string::npos)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}

@@ -39,6 +39,11 @@ namespace
 		return Trim(chat.provider_id) + "|" + NormalizeNativeIdentityWorkspace(chat) + "|" + Trim(chat.native_session_id);
 	}
 
+	std::string RecentChatTimestamp(const ChatSession& chat)
+	{
+		return chat.last_opened_at.empty() ? chat.updated_at : chat.last_opened_at;
+	}
+
 	std::string HashNativeIdentityKey(const std::string& key)
 	{
 		std::uint64_t hash = 1469598103934665603ull;
@@ -231,7 +236,21 @@ const ChatSession* ChatDomainService::SelectedChat(const AppState& app) const
 
 void ChatDomainService::SortChatsByRecent(std::vector<ChatSession>& chats) const
 {
-	std::sort(chats.begin(), chats.end(), [](const ChatSession& a, const ChatSession& b) { return a.updated_at > b.updated_at; });
+	std::sort(chats.begin(), chats.end(), [](const ChatSession& a, const ChatSession& b) {
+		const std::string a_recent = RecentChatTimestamp(a);
+		const std::string b_recent = RecentChatTimestamp(b);
+		if (a_recent != b_recent)
+		{
+			return a_recent > b_recent;
+		}
+
+		if (a.updated_at != b.updated_at)
+		{
+			return a.updated_at > b.updated_at;
+		}
+
+		return a.created_at > b.created_at;
+	});
 }
 
 bool ChatDomainService::ShouldReplaceChatForDuplicateId(const ChatSession& candidate, const ChatSession& existing) const
@@ -428,6 +447,7 @@ ChatSession ChatDomainService::CreateNewChat(const std::string& folder_id, const
 	chat.folder_id = folder_id;
 	chat.created_at = TimestampNow();
 	chat.updated_at = chat.created_at;
+	chat.last_opened_at = chat.created_at;
 	chat.title = "Chat " + chat.created_at;
 	return chat;
 }
@@ -465,6 +485,7 @@ bool ChatDomainService::CreateBranchFromMessage(AppState& app, const std::string
 	branch.workspace_directory = ResolveWorkspaceRootPath(app, source).string();
 	branch.messages.assign(source.messages.begin(), source.messages.begin() + message_index + 1);
 	branch.updated_at = TimestampNow();
+	branch.last_opened_at = branch.updated_at;
 	branch.title = Trim(source.messages[message_index].content);
 
 	if (branch.title.size() > 40)

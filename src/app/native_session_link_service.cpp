@@ -2,6 +2,7 @@
 
 #include "app/application_core_helpers.h"
 #include "common/paths/app_paths.h"
+#include "common/provider/codex/cli/codex_thread_id.h"
 
 #include <algorithm>
 #include <cctype>
@@ -239,11 +240,19 @@ bool NativeSessionLinkService::IsLocalDraftChatId(const std::string& chat_id) co
 	return chat_id.rfind("chat-", 0) == 0;
 }
 
-bool NativeSessionLinkService::HasRealNativeSessionId(const ChatSession& chat) const
-{
-	const std::string native_session_id = Trim(chat.native_session_id);
-	return !native_session_id.empty() && !IsLocalDraftChatId(native_session_id);
-}
+	bool NativeSessionLinkService::HasRealNativeSessionId(const ChatSession& chat) const
+	{
+		const std::string native_session_id = Trim(chat.native_session_id);
+		if (native_session_id.empty() || IsLocalDraftChatId(native_session_id))
+		{
+			return false;
+		}
+		if (Trim(chat.provider_id) == "codex-cli")
+		{
+			return uam::codex::IsValidThreadId(native_session_id);
+		}
+		return true;
+	}
 
 std::optional<std::string> NativeSessionLinkService::MatchNativeSessionIdForLocalDraft(const ChatSession& local_chat,
                                                                                       const std::vector<ChatSession>& native_chats,

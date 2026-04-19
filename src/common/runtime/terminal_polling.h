@@ -3,6 +3,7 @@
 
 #include "cef/cef_push.h"
 #include "common/runtime/app_time.h"
+#include "common/provider/codex/cli/codex_session_index.h"
 #include "common/runtime/terminal_common.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_idle_classifier.h"
@@ -18,6 +19,7 @@
 #include <unordered_set>
 
 #include "app/chat_domain_service.h"
+#include "app/application_core_helpers.h"
 #include "app/native_session_link_service.h"
 #include "app/provider_resolution_service.h"
 #include "app/runtime_orchestration_services.h"
@@ -328,7 +330,10 @@ inline bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, u
 		break;
 	}
 
-	if (terminal.running && terminal.lifecycle_state == uam::CliTerminalLifecycleState::Busy && GeminiCliRecentOutputIndicatesInputPrompt(terminal.recent_output_bytes))
+	const bool prompt_indicates_idle = terminal_provider.id == "codex-cli"
+		? CodexCliRecentOutputIndicatesInputPrompt(terminal.recent_output_bytes)
+		: GeminiCliRecentOutputIndicatesInputPrompt(terminal.recent_output_bytes);
+	if (terminal.running && terminal.lifecycle_state == uam::CliTerminalLifecycleState::Busy && prompt_indicates_idle)
 	{
 		MarkCliTerminalTurnIdle(terminal);
 		uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "turn_marked_idle_from_prompt", &terminal);
@@ -369,6 +374,28 @@ inline bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, u
 	}
 
 	const bool should_refresh_native_history = terminal_uses_gemini_history && (now - terminal.last_sync_time_s > 1.25);
+	if (terminal.running &&
+	    !terminal_uses_gemini_history &&
+	    terminal_provider.id == "codex-cli" &&
+	    terminal.attached_session_id.empty() &&
+	    terminal_chat_index >= 0 &&
+	    (now - terminal.last_sync_time_s > 1.25))
+	{
+		terminal.last_sync_time_s = now;
+		ChatSession& codex_chat = app.chats[static_cast<std::size_t>(terminal_chat_index)];
+		const std::filesystem::path workspace_root = ResolveWorkspaceRootPath(app, codex_chat);
+		const std::string discovered = uam::codex::PickNewSessionId(terminal.session_ids_before, workspace_root);
+		if (!discovered.empty())
+		{
+			codex_chat.native_session_id = discovered;
+			codex_chat.updated_at = TimestampNow();
+			terminal.attached_session_id = discovered;
+			app.resolved_native_sessions_by_chat_id[codex_chat.id] = discovered;
+			(void)ProviderRuntime::SaveHistory(terminal_provider, app.data_root, codex_chat);
+			uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "codex_session_rebound", &terminal, "discovered=" + discovered);
+			changed = true;
+		}
+	}
 
 	if (should_refresh_native_history)
 	{

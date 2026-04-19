@@ -56,6 +56,35 @@ export function sessionMatchesChatSearch(
   return searchTokens.every((token) => indexedText.includes(token))
 }
 
+function sessionRecentTime(session: Session): number {
+  const lastOpenedAt = session.lastOpenedAt?.getTime()
+  if (typeof lastOpenedAt === 'number' && Number.isFinite(lastOpenedAt)) {
+    return lastOpenedAt
+  }
+
+  const updatedAt = session.updatedAt.getTime()
+  if (Number.isFinite(updatedAt)) {
+    return updatedAt
+  }
+
+  const createdAt = session.createdAt.getTime()
+  return Number.isFinite(createdAt) ? createdAt : 0
+}
+
+export function compareSessionsByRecent(a: Session, b: Session): number {
+  const recentDelta = sessionRecentTime(b) - sessionRecentTime(a)
+  if (recentDelta !== 0) {
+    return recentDelta
+  }
+
+  const updatedDelta = b.updatedAt.getTime() - a.updatedAt.getTime()
+  if (updatedDelta !== 0) {
+    return updatedDelta
+  }
+
+  return b.createdAt.getTime() - a.createdAt.getTime()
+}
+
 export function buildChatSearchModel(
   folders: Folder[],
   sessions: Session[],
@@ -64,8 +93,9 @@ export function buildChatSearchModel(
 ): ChatSearchModel {
   const isSearching = searchTokens.length > 0
   const rootFolders = folders.filter((folder) => folder.parentId === null)
+  const sortedSessions = [...sessions].sort(compareSessionsByRecent)
   const matchingSessionIds = new Set(
-    sessions
+    sortedSessions
       .filter((session) => sessionMatchesChatSearch(searchIndex[session.id], searchTokens))
       .map((session) => session.id)
   )
@@ -73,7 +103,7 @@ export function buildChatSearchModel(
   const sessionIdsByFolderId = new Map<string, string[]>()
   const unfolderedSessionIds: string[] = []
 
-  for (const session of sessions) {
+  for (const session of sortedSessions) {
     if (isSearching && !matchingSessionIds.has(session.id)) {
       continue
     }

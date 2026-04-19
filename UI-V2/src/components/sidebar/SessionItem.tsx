@@ -5,6 +5,43 @@ import { useShallow } from 'zustand/react/shallow'
 const MODE_ICON = '⌃'
 const MODE_COLOR = 'var(--green)'
 
+function formatSidebarTime(date: Date | null): string {
+  if (!date || Number.isNaN(date.getTime())) {
+    return ''
+  }
+
+  const now = new Date()
+  const isSameDay = date.toDateString() === now.toDateString()
+  if (isSameDay) {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  }
+
+  const yesterday = new Date(now)
+  yesterday.setDate(now.getDate() - 1)
+  if (date.toDateString() === yesterday.toDateString()) {
+    return 'Yesterday'
+  }
+
+  return date.toLocaleDateString([], {
+    month: 'short',
+    day: 'numeric',
+  })
+}
+
+function formatSidebarTimeTitle(date: Date | null): string {
+  if (!date || Number.isNaN(date.getTime())) {
+    return 'Last opened time unavailable'
+  }
+
+  return `Last opened ${date.toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })}`
+}
+
 interface SessionItemProps {
   sessionId: string
 }
@@ -12,6 +49,10 @@ interface SessionItemProps {
 export const SessionItem = memo(function SessionItem({ sessionId }: SessionItemProps) {
   // Fine-grained selectors — each only re-renders when its specific value changes
   const sessionName     = useAppStore((s) => s.sessions.find((x) => x.id === sessionId)?.name ?? '')
+  const sessionLastOpenedAt = useAppStore((s) => {
+    const session = s.sessions.find((x) => x.id === sessionId)
+    return session?.lastOpenedAt ?? session?.updatedAt ?? null
+  })
   const isActive        = useAppStore((s) => s.activeSessionId === sessionId)
   const cliBinding      = useAppStore(useShallow((s) => s.cliBindingBySessionId[sessionId]))
   const acpBinding      = useAppStore(useShallow((s) => s.acpBindingBySessionId[sessionId]))
@@ -24,6 +65,8 @@ export const SessionItem = memo(function SessionItem({ sessionId }: SessionItemP
   const [showMenu, setShowMenu] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const lastOpenedLabel = formatSidebarTime(sessionLastOpenedAt)
+  const lastOpenedTitle = formatSidebarTimeTitle(sessionLastOpenedAt)
 
   const lifecycleStatus =
     acpBinding?.processing || acpBinding?.lifecycleState === 'waitingPermission'
@@ -129,6 +172,18 @@ export const SessionItem = memo(function SessionItem({ sessionId }: SessionItemP
         {/* Context menu trigger — visible on hover */}
         {!editing && (
           <div className="ml-auto flex items-center gap-1">
+            {lastOpenedLabel && (
+              <span
+                className="max-w-[58px] truncate text-[10px] tabular-nums transition-opacity duration-100 group-hover:opacity-0"
+                title={lastOpenedTitle}
+                style={{
+                  color: isActive ? 'rgba(255,255,255,0.68)' : 'var(--text-3)',
+                  lineHeight: 1,
+                }}
+              >
+                {lastOpenedLabel}
+              </span>
+            )}
             {lifecycleStatus === 'processing' && (
               <span className="session-status session-status--processing" aria-label="Gemini running">
                 <span />

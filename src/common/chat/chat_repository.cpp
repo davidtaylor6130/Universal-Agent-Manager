@@ -1,6 +1,7 @@
 #include "common/chat/chat_repository.h"
 
 #include "common/paths/app_paths.h"
+#include "common/provider/codex/cli/codex_thread_id.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/time_utils.h"
 #include "common/runtime/json_runtime.h"
@@ -40,7 +41,7 @@ namespace
 		return line;
 	}
 
-	bool IsSafeChatId(const std::string& chat_id)
+		bool IsSafeChatId(const std::string& chat_id)
 	{
 		if (chat_id.empty() || chat_id == "." || chat_id == "..")
 		{
@@ -50,7 +51,21 @@ namespace
 		return chat_id.find('/') == std::string::npos &&
 		       chat_id.find('\\') == std::string::npos &&
 		       chat_id.find("..") == std::string::npos;
-	}
+		}
+
+		void NormalizeLoadedNativeSessionId(ChatSession& chat)
+		{
+			if (chat.provider_id == "codex-cli")
+			{
+				chat.native_session_id = uam::codex::ValidThreadIdOrEmpty(chat.native_session_id);
+				return;
+			}
+
+			if (chat.native_session_id.empty() && !chat.id.empty())
+			{
+				chat.native_session_id = chat.id;
+			}
+		}
 
 	JsonValue MessageToJson(const Message& msg)
 	{
@@ -289,6 +304,7 @@ namespace
 		       lhs.title == rhs.title &&
 		       lhs.created_at == rhs.created_at &&
 		       lhs.updated_at == rhs.updated_at &&
+		       lhs.last_opened_at == rhs.last_opened_at &&
 		       lhs.linked_files == rhs.linked_files &&
 		       lhs.workspace_directory == rhs.workspace_directory &&
 		       lhs.approval_mode == rhs.approval_mode &&
@@ -335,6 +351,7 @@ namespace
 		chat.title = JsonStringOrEmpty(root.Find("title"));
 		chat.created_at = JsonStringOrEmpty(root.Find("created_at"));
 		chat.updated_at = JsonStringOrEmpty(root.Find("updated_at"));
+		chat.last_opened_at = JsonStringOrEmpty(root.Find("last_opened_at"));
 		if (const JsonValue* linked_files = root.Find("linked_files"))
 			chat.linked_files = JsonStringArrayOrEmpty(linked_files);
 		chat.workspace_directory = JsonStringOrEmpty(root.Find("workspace_directory"));
@@ -346,8 +363,9 @@ namespace
 			chat.created_at = TimestampNow();
 		if (chat.updated_at.empty())
 			chat.updated_at = chat.created_at;
-		if (chat.native_session_id.empty())
-			chat.native_session_id = chat.id;
+		if (chat.last_opened_at.empty())
+			chat.last_opened_at = chat.updated_at;
+		NormalizeLoadedNativeSessionId(chat);
 		if (chat.branch_root_chat_id.empty())
 			chat.branch_root_chat_id = chat.id;
 
@@ -415,6 +433,9 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 
 	root.object_value["updated_at"].type = JsonValue::Type::String;
 	root.object_value["updated_at"].string_value = chat.updated_at;
+
+	root.object_value["last_opened_at"].type = JsonValue::Type::String;
+	root.object_value["last_opened_at"].string_value = chat.last_opened_at.empty() ? chat.updated_at : chat.last_opened_at;
 
 	root.object_value["linked_files"] = StringArrayToJson(chat.linked_files);
 
@@ -490,6 +511,8 @@ ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
 				chat.created_at = value;
 			else if (key == "updated_at")
 				chat.updated_at = value;
+			else if (key == "last_opened_at")
+				chat.last_opened_at = value;
 			else if (key == "file" && !value.empty())
 				chat.linked_files.push_back(value);
 		}
@@ -499,9 +522,10 @@ ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
 		chat.created_at = TimestampNow();
 	if (chat.updated_at.empty())
 		chat.updated_at = chat.created_at;
+	if (chat.last_opened_at.empty())
+		chat.last_opened_at = chat.updated_at;
 
-	if (chat.native_session_id.empty() && !chat.id.empty())
-		chat.native_session_id = chat.id;
+	NormalizeLoadedNativeSessionId(chat);
 
 	if (chat.branch_root_chat_id.empty())
 		chat.branch_root_chat_id = chat.id;
@@ -636,10 +660,7 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
 					ChatSession recovered = backup_chat.chat.value();
 					const std::string recovered_id = entry.path().stem().string();
 					recovered.id = recovered_id;
-					if (recovered.native_session_id.empty())
-					{
-						recovered.native_session_id = recovered.id;
-					}
+					NormalizeLoadedNativeSessionId(recovered);
 					const std::string previous_id = backup_chat.chat->id;
 					if (recovered.branch_root_chat_id.empty() || recovered.branch_root_chat_id == previous_id)
 						recovered.branch_root_chat_id = recovered.id;
@@ -688,10 +709,7 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
 			ChatSession recovered = backup_chat.chat.value();
 			const std::string recovered_id = primary_path.stem().string();
 			recovered.id = recovered_id;
-			if (recovered.native_session_id.empty())
-			{
-				recovered.native_session_id = recovered.id;
-			}
+			NormalizeLoadedNativeSessionId(recovered);
 			const std::string previous_id = backup_chat.chat->id;
 			if (recovered.branch_root_chat_id.empty() || recovered.branch_root_chat_id == previous_id)
 				recovered.branch_root_chat_id = recovered.id;

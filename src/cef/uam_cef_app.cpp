@@ -136,6 +136,7 @@ void UamCefApp::OnContextInitialized()
 	CefBrowserSettings browser_settings;
 	browser_settings.javascript = STATE_ENABLED;
 	browser_settings.local_storage = STATE_ENABLED;
+	browser_settings.javascript_access_clipboard = STATE_ENABLED;
 
 	CefRect initial_bounds;
 	initial_bounds.x      = 100;

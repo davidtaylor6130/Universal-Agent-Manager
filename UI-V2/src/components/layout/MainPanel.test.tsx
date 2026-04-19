@@ -47,6 +47,9 @@ describe('MainPanel', () => {
       acpBindingBySessionId: {
         'chat-1': {
           sessionId: 'native-1',
+          providerId: 'gemini-cli',
+          protocolKind: 'gemini-acp',
+          threadId: '',
           running: true,
           lifecycleState: 'processing',
           processing: true,

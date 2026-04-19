@@ -17,6 +17,9 @@ struct ProviderProfile
 	std::string output_mode = "structured";
 	std::string command_template;
 	std::string interactive_command;
+	bool supports_cli = true;
+	bool supports_structured = false;
+	std::string structured_protocol = "none";
 	bool supports_interactive = true;
 	bool supports_resume = true;
 	std::vector<std::string> runtime_flags;
@@ -36,6 +39,8 @@ class ProviderProfileStore
   public:
 	/// <summary>Returns the built-in default Gemini CLI profile.</summary>
 	static ProviderProfile DefaultGeminiProfile();
+	/// <summary>Returns the built-in Codex CLI profile.</summary>
+	static ProviderProfile DefaultCodexProfile();
 	/// <summary>Returns the built-in provider profiles for this build.</summary>
 	static std::vector<ProviderProfile> BuiltInProfiles();
 	/// <summary>Ensures the default Gemini CLI profile exists in the profile list.</summary>

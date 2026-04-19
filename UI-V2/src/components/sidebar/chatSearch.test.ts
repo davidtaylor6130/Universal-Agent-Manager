@@ -20,14 +20,21 @@ function makeFolder(id: string, isExpanded = true): Folder {
   }
 }
 
-function makeSession(id: string, name: string, folderId: string | null): Session {
+function makeSession(
+  id: string,
+  name: string,
+  folderId: string | null,
+  lastOpenedAt = now,
+  updatedAt = now
+): Session {
   return {
     id,
     name,
     viewMode: 'cli',
     folderId,
     createdAt: now,
-    updatedAt: now,
+    updatedAt,
+    lastOpenedAt,
   }
 }
 
@@ -139,6 +146,19 @@ describe('chatSearch', () => {
     expect(model.folderRows).toHaveLength(1)
     expect(model.folderRows[0].shouldShowSessions).toBe(true)
     expect(model.folderRows[0].sessionIds).toEqual(['s-match'])
+  })
+
+  it('orders folder chats by most recent opened time', () => {
+    const folders = [makeFolder('general')]
+    const sessions = [
+      makeSession('s-old', 'Old Chat', 'general', new Date('2026-01-01T09:00:00.000Z')),
+      makeSession('s-new', 'New Chat', 'general', new Date('2026-01-01T11:00:00.000Z')),
+      makeSession('s-middle', 'Middle Chat', 'general', new Date('2026-01-01T10:00:00.000Z')),
+    ]
+
+    const model = searchModel('', folders, sessions)
+
+    expect(model.folderRows[0].sessionIds).toEqual(['s-new', 's-middle', 's-old'])
   })
 
   it('requires every query token to match', () => {

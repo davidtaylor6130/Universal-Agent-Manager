@@ -34,6 +34,10 @@ const initialProviders: Provider[] = [
     shortName: 'Gemini',
     color: '#f97316',
     description: '',
+    outputMode: 'cli',
+    supportsCli: true,
+    supportsStructured: true,
+    structuredProtocol: 'gemini-acp',
   },
 ]
 const UI_RUNTIME_BUILD_MARKER = (() => {
@@ -82,6 +86,7 @@ interface CppChat {
 	  workspaceDirectory?: string
   createdAt: string
   updatedAt: string
+  lastOpenedAt?: string
   messages: CppMessage[]
   cliTerminal?: {
     terminalId?: string
@@ -166,6 +171,9 @@ export interface AcpDiagnosticEntry {
 
 export interface CppAcpSession {
   sessionId?: string
+  providerId?: string
+  protocolKind?: string
+  threadId?: string
   running?: boolean
   processing?: boolean
   readySinceLastSelect?: boolean
@@ -228,6 +236,9 @@ interface CppProvider {
   name: string
   shortName: string
   outputMode?: 'structured' | 'cli' | string
+  supportsCli?: boolean
+  supportsStructured?: boolean
+  structuredProtocol?: string
 }
 
 interface CppSettings {
@@ -260,6 +271,9 @@ export interface CliBinding {
 
 export interface AcpBinding {
   sessionId: string
+  providerId: string
+  protocolKind: string
+  threadId: string
   running: boolean
   lifecycleState: AcpLifecycleState
   processing: boolean
@@ -519,6 +533,9 @@ function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined {
 
   return {
     sessionId: isString(value.sessionId) ? value.sessionId : undefined,
+    providerId: isString(value.providerId) ? value.providerId : undefined,
+    protocolKind: isString(value.protocolKind) ? value.protocolKind : undefined,
+    threadId: isString(value.threadId) ? value.threadId : undefined,
     running: typeof value.running === 'boolean' ? value.running : undefined,
     processing: typeof value.processing === 'boolean' ? value.processing : undefined,
     readySinceLastSelect: typeof value.readySinceLastSelect === 'boolean' ? value.readySinceLastSelect : undefined,
@@ -598,6 +615,7 @@ function sanitizeCppChat(value: unknown): CppChat | null {
 	    workspaceDirectory: isString(value.workspaceDirectory) ? value.workspaceDirectory : undefined,
     createdAt: stringOr(value.createdAt),
     updatedAt: stringOr(value.updatedAt),
+    lastOpenedAt: isString(value.lastOpenedAt) ? value.lastOpenedAt : undefined,
     messages: Array.isArray(value.messages)
       ? value.messages.flatMap((message) => {
           const sanitized = sanitizeCppMessage(message)
@@ -618,6 +636,9 @@ function sanitizeCppProvider(value: unknown): CppProvider | null {
     name: stringOr(value.name, id),
     shortName: stringOr(value.shortName, stringOr(value.name, id)),
     outputMode: isString(value.outputMode) ? value.outputMode : undefined,
+    supportsCli: typeof value.supportsCli === 'boolean' ? value.supportsCli : undefined,
+    supportsStructured: typeof value.supportsStructured === 'boolean' ? value.supportsStructured : undefined,
+    structuredProtocol: isString(value.structuredProtocol) ? value.structuredProtocol : undefined,
   }
 }
 
@@ -810,6 +831,9 @@ function acpBindingSignature(binding: AcpBinding | undefined) {
   if (!binding) return ''
   return JSON.stringify({
     sessionId: binding.sessionId,
+    providerId: binding.providerId,
+    protocolKind: binding.protocolKind,
+    threadId: binding.threadId,
     running: binding.running,
     lifecycleState: binding.lifecycleState,
     processing: binding.processing,
@@ -1051,26 +1075,33 @@ function deserializeState(
     ? existing.folders
     : newFolders
 
-  const geminiCliProviders = cpp.providers.filter((p) => p.id === GEMINI_CLI_PROVIDER_ID)
-  const visibleProviders = geminiCliProviders.length > 0
-    ? geminiCliProviders
-    : [{ id: GEMINI_CLI_PROVIDER_ID, name: 'Gemini CLI', shortName: 'Gemini', outputMode: 'cli' }]
+  const visibleProviders = cpp.providers.length > 0
+    ? cpp.providers
+    : [{ id: GEMINI_CLI_PROVIDER_ID, name: 'Gemini CLI', shortName: 'Gemini', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }]
   const newSessions: Session[] = cpp.chats.map((c) => {
     const prev = existingSessionsById[c.id]
     const name = c.title || 'Untitled'
     const folderId = c.folderId || null
-	    const workspaceDirectory = c.workspaceDirectory ?? ''
-	    const modelId = c.modelId ?? ''
-	    const approvalMode = normalizeAcpApprovalMode(c.approvalMode)
+    const workspaceDirectory = c.workspaceDirectory ?? ''
+    const providerId = c.providerId || GEMINI_CLI_PROVIDER_ID
+    const modelId = c.modelId ?? ''
+    const approvalMode = normalizeAcpApprovalMode(c.approvalMode)
+    const createdAt = new Date(c.createdAt || Date.now())
+    const updatedAt = new Date(c.updatedAt || Date.now())
+    const lastOpenedAt = new Date(c.lastOpenedAt || c.updatedAt || c.createdAt || Date.now())
 	    // Reuse reference if nothing changed — keeps memoized children stable
 	    if (
 	      prev &&
 	      prev.name === name &&
 	      prev.folderId === folderId &&
+	      (prev.providerId ?? GEMINI_CLI_PROVIDER_ID) === providerId &&
 	      (prev.modelId ?? '') === modelId &&
 	      (prev.approvalMode ?? 'default') === approvalMode &&
 	      prev.workspaceDirectory === workspaceDirectory &&
-	      prev.viewMode === 'chat'
+	      prev.viewMode === 'chat' &&
+	      prev.createdAt.getTime() === createdAt.getTime() &&
+	      prev.updatedAt.getTime() === updatedAt.getTime() &&
+	      (prev.lastOpenedAt ?? prev.updatedAt).getTime() === lastOpenedAt.getTime()
 	    ) {
       return prev
     }
@@ -1079,11 +1110,13 @@ function deserializeState(
       name,
       viewMode: 'chat',
 	      folderId,
+	      providerId,
 	      modelId,
 	      approvalMode,
 	      workspaceDirectory,
-      createdAt: new Date(c.createdAt || Date.now()),
-      updatedAt: new Date(c.updatedAt || Date.now()),
+      createdAt,
+      updatedAt,
+      lastOpenedAt,
     }
   })
   // Reuse array reference if all elements are identical
@@ -1136,6 +1169,10 @@ function deserializeState(
       // Preserve any UI-only provider metadata if it already exists.
       color: prev?.color ?? '#f97316', // default accent; could be persisted later
       description: prev?.description ?? '',
+      outputMode: p.outputMode,
+      supportsCli: p.supportsCli,
+      supportsStructured: p.supportsStructured,
+      structuredProtocol: p.structuredProtocol,
     }
 
     if (
@@ -1144,7 +1181,11 @@ function deserializeState(
       prev.name === nextProvider.name &&
       prev.shortName === nextProvider.shortName &&
       prev.color === nextProvider.color &&
-      prev.description === nextProvider.description
+      prev.description === nextProvider.description &&
+      prev.outputMode === nextProvider.outputMode &&
+      prev.supportsCli === nextProvider.supportsCli &&
+      prev.supportsStructured === nextProvider.supportsStructured &&
+      prev.structuredProtocol === nextProvider.structuredProtocol
     ) {
       return prev
     }
@@ -1221,6 +1262,9 @@ function deserializeState(
       const prev = existingAcpBindings[c.id]
       const next: AcpBinding = {
         sessionId: acp?.sessionId ?? '',
+        providerId: acp?.providerId ?? c.providerId ?? GEMINI_CLI_PROVIDER_ID,
+        protocolKind: acp?.protocolKind ?? '',
+        threadId: acp?.threadId ?? '',
         running,
         lifecycleState,
         processing: effectiveProcessing,
@@ -1361,6 +1405,7 @@ interface AppState {
   // UI
   theme: 'dark' | 'light'
   isNewChatModalOpen: boolean
+  newChatFolderId: string | null
   isSettingsOpen: boolean
   streamingMessageId: string | null
   pushChannelStatus: PushChannelStatus
@@ -1370,8 +1415,9 @@ interface AppState {
 
   // Session actions
 	  setActiveSession: (id: string) => void
-	  addSession: (name: string, folderId: string | null) => void
+	  addSession: (name: string, folderId: string | null, providerId?: string) => void
 	  renameSession: (id: string, name: string) => void
+	  setSessionProvider: (id: string, providerId: string) => Promise<boolean>
 	  setSessionModel: (id: string, modelId: string) => Promise<boolean>
 	  setSessionApprovalMode: (id: string, modeId: string) => Promise<boolean>
 	  deleteSession: (id: string) => void
@@ -1394,7 +1440,7 @@ interface AppState {
 
   // UI actions
   setTheme: (theme: 'dark' | 'light') => void
-  setNewChatModalOpen: (open: boolean) => void
+  setNewChatModalOpen: (open: boolean, folderId?: string | null) => void
   setSettingsOpen: (open: boolean) => void
 
   // CEF bootstrap
@@ -1547,6 +1593,7 @@ export const useAppStore = create<AppState>((set, get) => {
 
     theme: readDocumentTheme(),
     isNewChatModalOpen: false,
+    newChatFolderId: null,
     isSettingsOpen: false,
     streamingMessageId: null,
     pushChannelStatus: inCef ? 'no-push-yet' : 'connected',
@@ -1587,7 +1634,14 @@ export const useAppStore = create<AppState>((set, get) => {
         const requestKey = 'selectSession'
         const requestId = createRequestId('selectSession')
         rememberPendingRequest(requestKey, requestId)
-        set({ activeSessionId: id })
+        const openedAt = new Date()
+        const previousSession = get().sessions.find((s) => s.id === id)
+        set((state) => ({
+          activeSessionId: id,
+          sessions: state.sessions.map((s) =>
+            s.id === id ? { ...s, lastOpenedAt: openedAt } : s
+          ),
+        }))
         sendToCEF({ action: 'selectSession', payload: { chatId: id }, requestId }).then((resp) => {
           if (resp.ok) {
             clearPendingRequest(requestKey, resp.requestId)
@@ -1598,27 +1652,42 @@ export const useAppStore = create<AppState>((set, get) => {
             return
           }
 
-          set({ activeSessionId: previousActiveSessionId })
+          set((state) => ({
+            activeSessionId: previousActiveSessionId,
+            sessions: previousSession
+              ? state.sessions.map((s) =>
+                  s.id === id ? { ...s, lastOpenedAt: previousSession.lastOpenedAt } : s
+                )
+              : state.sessions,
+          }))
           pendingRequestIdsByKey.delete(requestKey)
         })
         return
       }
 
-      set({ activeSessionId: id })
+      set((state) => {
+        const openedAt = new Date()
+        return {
+          activeSessionId: id,
+          sessions: state.sessions.map((s) =>
+            s.id === id ? { ...s, lastOpenedAt: openedAt } : s
+          ),
+        }
+      })
     },
 
-    addSession: (name, folderId) => {
+    addSession: (name, folderId, providerId = GEMINI_CLI_PROVIDER_ID) => {
       if (isCefContext()) {
         sendToCEF({
           action: 'createSession',
-          payload: { title: name, folderId: folderId ?? '', providerId: GEMINI_CLI_PROVIDER_ID },
+          payload: { title: name, folderId: folderId ?? '', providerId },
         }).then((resp) => {
           if (!resp.ok) {
             console.error('[CEF] createSession failed:', resp.error)
             return
           }
 
-          set({ isNewChatModalOpen: false })
+          set({ isNewChatModalOpen: false, newChatFolderId: null })
         })
         return
       }
@@ -1627,12 +1696,13 @@ export const useAppStore = create<AppState>((set, get) => {
       sessionCounter++
       const id = makeId('s', sessionCounter)
       const now = new Date()
-      const session: Session = { id, name, viewMode: 'chat', folderId, createdAt: now, updatedAt: now }
+      const session: Session = { id, name, viewMode: 'chat', folderId, providerId, createdAt: now, updatedAt: now, lastOpenedAt: now }
       set((state) => ({
         sessions: [...state.sessions, session],
         messages: { ...state.messages, [id]: [] },
         activeSessionId: id,
         isNewChatModalOpen: false,
+        newChatFolderId: null,
       }))
     },
 
@@ -1677,6 +1747,66 @@ export const useAppStore = create<AppState>((set, get) => {
         ),
       }))
     },
+
+	    setSessionProvider: async (id, providerId) => {
+	      const requestedProviderId = providerId.trim()
+	      const current = get()
+	      if (!requestedProviderId || !current.providers.some((provider) => provider.id === requestedProviderId)) {
+	        return false
+	      }
+
+	      const previousSession = current.sessions.find((s) => s.id === id)
+	      if (!previousSession) {
+	        return false
+	      }
+
+	      if ((previousSession.providerId ?? GEMINI_CLI_PROVIDER_ID) === requestedProviderId) {
+	        return true
+	      }
+
+	      const acp = current.acpBindingBySessionId[id]
+	      const messages = current.messages[id] ?? []
+	      if (messages.length > 0 || acp?.running || acp?.processing) {
+	        return false
+	      }
+
+	      const applyProvider = () => {
+	        set((state) => ({
+	          sessions: state.sessions.map((s) =>
+	            s.id === id ? { ...s, providerId: requestedProviderId, modelId: '', approvalMode: 'default', updatedAt: new Date() } : s
+	          ),
+	        }))
+	      }
+
+	      if (isCefContext()) {
+	        const requestKey = `setSessionProvider:${id}`
+	        const requestId = createRequestId('setSessionProvider')
+	        rememberPendingRequest(requestKey, requestId)
+	        applyProvider()
+	        const response = await sendToCEF({
+	          action: 'setChatProvider',
+	          payload: { chatId: id, providerId: requestedProviderId },
+	          requestId,
+	        })
+
+	        if (response.ok) {
+	          clearPendingRequest(requestKey, response.requestId)
+	          return true
+	        }
+
+	        if (isLatestPendingRequest(requestKey, response.requestId)) {
+	          set((state) => ({
+	            sessions: state.sessions.map((s) => (s.id === id ? previousSession : s)),
+	          }))
+	          pendingRequestIdsByKey.delete(requestKey)
+	        }
+
+	        return false
+	      }
+
+	      applyProvider()
+	      return true
+	    },
 
 	    setSessionModel: async (id, modelId) => {
 	      const requestedModelId = modelId.trim()
@@ -2140,6 +2270,9 @@ export const useAppStore = create<AppState>((set, get) => {
               [sessionId]: {
                 ...(state.acpBindingBySessionId[sessionId] ?? {
                   sessionId: '',
+                  providerId: state.sessions.find((session) => session.id === sessionId)?.providerId ?? GEMINI_CLI_PROVIDER_ID,
+                  protocolKind: 'gemini-acp',
+                  threadId: '',
                   running: false,
                   lifecycleState: 'error' as AcpLifecycleState,
                   processing: false,
@@ -2200,6 +2333,9 @@ export const useAppStore = create<AppState>((set, get) => {
           ...state.acpBindingBySessionId,
           [sessionId]: {
             sessionId: 'dev-acp-session',
+            providerId: state.sessions.find((session) => session.id === sessionId)?.providerId ?? GEMINI_CLI_PROVIDER_ID,
+            protocolKind: 'gemini-acp',
+            threadId: '',
             running: true,
             lifecycleState: 'ready',
             processing: false,
@@ -2400,7 +2536,10 @@ export const useAppStore = create<AppState>((set, get) => {
       }
     },
 
-    setNewChatModalOpen: (open) => set({ isNewChatModalOpen: open }),
+    setNewChatModalOpen: (open, folderId) => set({
+      isNewChatModalOpen: open,
+      newChatFolderId: open ? (folderId ?? null) : null,
+    }),
     setSettingsOpen: (open) => set({ isSettingsOpen: open }),
   }
 })

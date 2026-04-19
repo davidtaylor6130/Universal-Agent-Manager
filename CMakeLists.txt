@@ -145,6 +145,7 @@ set(CMAKE_FOLDER "")
 # ---------------------------------------------------------------------------
 
 set(UAM_PROVIDER_SOURCES
+  src/common/provider/codex/cli/codex_cli_provider_runtime.cpp
   src/common/provider/gemini/cli/gemini_cli_provider_runtime.cpp
   src/common/provider/gemini/base/gemini_history_loader.cpp
 )

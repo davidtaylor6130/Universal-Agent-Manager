@@ -1,11 +1,13 @@
 #include "app/chat_domain_service.h"
 #include "app/chat_lifecycle_service.h"
 #include "app/runtime_orchestration_services.h"
+#include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
 #include "common/config/settings_store.h"
 #include "common/constants/app_constants.h"
 #include "common/paths/app_paths.h"
 #include "common/platform/platform_services.h"
+#include "common/provider/codex/cli/codex_session_index.h"
 #include "common/provider/gemini/base/gemini_history_loader.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
@@ -203,7 +205,7 @@ UAM_TEST(SettingsStoreLoadsLegacyButWritesReleaseSliceOnly)
 	CenterViewMode mode = CenterViewMode::CliConsole;
 	SettingsStore::Load(settings_file, settings, mode);
 
-	UAM_ASSERT_EQ(settings.active_provider_id, std::string("gemini-cli"));
+	UAM_ASSERT_EQ(settings.active_provider_id, std::string("codex-cli"));
 	UAM_ASSERT_EQ(settings.provider_command_template, std::string("gemini -p {prompt}"));
 	UAM_ASSERT_EQ(settings.provider_yolo_mode, true);
 	UAM_ASSERT_EQ(settings.provider_extra_flags, std::string("--approval-mode yolo"));
@@ -213,7 +215,7 @@ UAM_TEST(SettingsStoreLoadsLegacyButWritesReleaseSliceOnly)
 
 	UAM_ASSERT(SettingsStore::Save(settings_file, settings, mode));
 	const std::string saved = ReadFile(settings_file);
-	UAM_ASSERT(saved.find("active_provider_id=gemini-cli") != std::string::npos);
+	UAM_ASSERT(saved.find("active_provider_id=codex-cli") != std::string::npos);
 	UAM_ASSERT(saved.find("provider_command_template=gemini -p {prompt}") != std::string::npos);
 	UAM_ASSERT(saved.find("rag_") == std::string::npos);
 	UAM_ASSERT(saved.find("selected_model_id") == std::string::npos);
@@ -232,7 +234,7 @@ UAM_TEST(ChatRepositoryToleratesLegacyFieldsAndDropsThemOnWrite)
   "id": "legacy-chat",
   "provider_id": "codex-cli",
   "model_id": "flash",
-  "native_session_id": "native-1",
+  "native_session_id": "6a6f0f3b-1a0b-4a9c-8a01-111111111111",
   "folder_id": "folder-a",
   "template_override_id": "removed-template.md",
   "prompt_profile_bootstrapped": true,
@@ -249,7 +251,7 @@ UAM_TEST(ChatRepositoryToleratesLegacyFieldsAndDropsThemOnWrite)
 	std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(temp.root);
 	UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(loaded.front().id, std::string("legacy-chat"));
-	UAM_ASSERT_EQ(loaded.front().native_session_id, std::string("native-1"));
+	UAM_ASSERT_EQ(loaded.front().native_session_id, std::string("6a6f0f3b-1a0b-4a9c-8a01-111111111111"));
 	UAM_ASSERT_EQ(loaded.front().model_id, std::string("flash"));
 	UAM_ASSERT_EQ(loaded.front().messages.size(), static_cast<std::size_t>(1));
 
@@ -261,6 +263,62 @@ UAM_TEST(ChatRepositoryToleratesLegacyFieldsAndDropsThemOnWrite)
 	UAM_ASSERT(rewritten.find("prompt_profile_bootstrapped") == std::string::npos);
 	UAM_ASSERT(rewritten.find("rag_enabled") == std::string::npos);
 	UAM_ASSERT(rewritten.find("rag_source_directories") == std::string::npos);
+}
+
+UAM_TEST(ChatRepositoryDoesNotSynthesizeInvalidCodexNativeIds)
+{
+	TempDir temp("uam-codex-native-normalize");
+	const fs::path chats_dir = temp.root / "chats";
+	fs::create_directories(chats_dir);
+
+	UAM_ASSERT(uam::io::WriteTextFile(chats_dir / "codex-missing.json", R"({
+  "id": "chat-codex-missing",
+  "provider_id": "codex-cli",
+  "title": "Codex Missing",
+  "created_at": "2026-01-01T00:00:00.000Z",
+  "updated_at": "2026-01-01T00:00:00.000Z",
+  "messages": []
+})"));
+	UAM_ASSERT(uam::io::WriteTextFile(chats_dir / "codex-invalid.json", R"({
+  "id": "chat-codex-invalid",
+  "provider_id": "codex-cli",
+  "native_session_id": "chat-codex-invalid",
+  "title": "Codex Invalid",
+  "created_at": "2026-01-01T00:00:00.000Z",
+  "updated_at": "2026-01-01T00:00:00.000Z",
+  "messages": []
+})"));
+	UAM_ASSERT(uam::io::WriteTextFile(chats_dir / "gemini-missing.json", R"({
+  "id": "gemini-missing",
+  "provider_id": "gemini-cli",
+  "title": "Gemini Missing",
+  "created_at": "2026-01-01T00:00:00.000Z",
+  "updated_at": "2026-01-01T00:00:00.000Z",
+  "messages": []
+})"));
+
+	const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(temp.root);
+	auto find_chat = [&](const std::string& id) -> const ChatSession*
+	{
+		for (const ChatSession& chat : loaded)
+		{
+			if (chat.id == id)
+			{
+				return &chat;
+			}
+		}
+		return nullptr;
+	};
+
+	const ChatSession* codex_missing = find_chat("chat-codex-missing");
+	const ChatSession* codex_invalid = find_chat("chat-codex-invalid");
+	const ChatSession* gemini_missing = find_chat("gemini-missing");
+	UAM_ASSERT(codex_missing != nullptr);
+	UAM_ASSERT(codex_invalid != nullptr);
+	UAM_ASSERT(gemini_missing != nullptr);
+	UAM_ASSERT_EQ(codex_missing->native_session_id, std::string(""));
+	UAM_ASSERT_EQ(codex_invalid->native_session_id, std::string(""));
+	UAM_ASSERT_EQ(gemini_missing->native_session_id, std::string("gemini-missing"));
 }
 
 UAM_TEST(StateSerializerIncludesChatModelId)
@@ -320,19 +378,35 @@ UAM_TEST(StateSerializerIncludesMessageToolCalls)
 	UAM_ASSERT(tool_json.value("content", "").find("file contents") != std::string::npos);
 }
 
-UAM_TEST(ProviderRegistryNormalizesEveryIdToGeminiCli)
+UAM_TEST(ProviderRegistryResolvesGeminiCodexAndUnknownExactly)
 {
-	const std::vector<std::string> legacy_ids = {
-	    "gemini", "gemini-structured", "codex-cli", "claude-cli", "opencode-local", "ollama-engine", "unknown",
-	};
+	const IProviderRuntime& gemini = ProviderRuntimeRegistry::ResolveById("gemini-cli");
+	UAM_ASSERT_EQ(std::string(gemini.RuntimeId()), std::string("gemini-cli"));
+	UAM_ASSERT(ProviderRuntimeRegistry::IsKnownRuntimeId("gemini-cli"));
+	UAM_ASSERT(ProviderRuntime::IsRuntimeEnabled("gemini-cli"));
 
-	for (const std::string& id : legacy_ids)
-	{
-		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(id);
-		UAM_ASSERT_EQ(std::string(runtime.RuntimeId()), std::string("gemini-cli"));
-		UAM_ASSERT(ProviderRuntimeRegistry::IsKnownRuntimeId(id));
-		UAM_ASSERT(ProviderRuntime::IsRuntimeEnabled(id));
-	}
+	const IProviderRuntime& codex = ProviderRuntimeRegistry::ResolveById("codex-cli");
+	UAM_ASSERT_EQ(std::string(codex.RuntimeId()), std::string("codex-cli"));
+	UAM_ASSERT(ProviderRuntimeRegistry::IsKnownRuntimeId("codex-cli"));
+	UAM_ASSERT(ProviderRuntime::IsRuntimeEnabled("codex-cli"));
+
+	const IProviderRuntime& unknown = ProviderRuntimeRegistry::ResolveById("unknown");
+	UAM_ASSERT_EQ(std::string(unknown.RuntimeId()), std::string("unsupported"));
+	UAM_ASSERT(!ProviderRuntimeRegistry::IsKnownRuntimeId("unknown"));
+	UAM_ASSERT(!ProviderRuntime::IsRuntimeEnabled("unknown"));
+	UAM_ASSERT(!ProviderRuntimeRegistry::IsKnownRuntimeId("gemini"));
+	UAM_ASSERT(!ProviderRuntimeRegistry::IsKnownRuntimeId("codex"));
+}
+
+UAM_TEST(CodexThreadIdValidatorAcceptsOnlyUuidThreadIds)
+{
+	UAM_ASSERT(uam::IsValidCodexThreadIdForTests("6a6f0f3b-1a0b-4a9c-8a01-111111111111"));
+	UAM_ASSERT(uam::IsValidCodexThreadIdForTests("urn:uuid:6a6f0f3b-1a0b-4a9c-8a01-111111111111"));
+	UAM_ASSERT(!uam::IsValidCodexThreadIdForTests(""));
+	UAM_ASSERT(!uam::IsValidCodexThreadIdForTests("chat-1"));
+	UAM_ASSERT(!uam::IsValidCodexThreadIdForTests("native-abc"));
+	UAM_ASSERT(!uam::IsValidCodexThreadIdForTests("thread-1"));
+	UAM_ASSERT(!uam::IsValidCodexThreadIdForTests("6a6f0f3b-1a0b-4a9c-8a01-zzzzzzzzzzzz"));
 }
 
 UAM_TEST(GeminiCliInteractiveArgvUsesResumeAndFlags)
@@ -354,6 +428,73 @@ UAM_TEST(GeminiCliInteractiveArgvUsesResumeAndFlags)
 	UAM_ASSERT_EQ(argv[2], std::string("--checkpointing"));
 	UAM_ASSERT_EQ(argv[3], std::string("-r"));
 	UAM_ASSERT_EQ(argv[4], std::string("native-abc"));
+}
+
+UAM_TEST(CodexCliInteractiveArgvUsesResumeModelAndFlags)
+{
+	ProviderProfile profile = ProviderProfileStore::DefaultCodexProfile();
+	AppSettings settings;
+	settings.provider_yolo_mode = true;
+	settings.provider_extra_flags = "--sandbox danger-full-access --ask-for-approval never";
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "codex-cli";
+	chat.model_id = "gpt-5.4";
+
+	const std::vector<std::string> fresh = ProviderRuntime::BuildInteractiveArgv(profile, chat, settings);
+	UAM_ASSERT_EQ(fresh.size(), static_cast<std::size_t>(9));
+	UAM_ASSERT_EQ(fresh[0], std::string("codex"));
+	UAM_ASSERT_EQ(fresh[1], std::string("--no-alt-screen"));
+	UAM_ASSERT_EQ(fresh[2], std::string("-m"));
+	UAM_ASSERT_EQ(fresh[3], std::string("gpt-5.4"));
+	UAM_ASSERT_EQ(fresh[4], std::string("--full-auto"));
+	UAM_ASSERT_EQ(fresh[5], std::string("--sandbox"));
+	UAM_ASSERT_EQ(fresh[6], std::string("danger-full-access"));
+	UAM_ASSERT_EQ(fresh[7], std::string("--ask-for-approval"));
+	UAM_ASSERT_EQ(fresh[8], std::string("never"));
+
+	chat.native_session_id = "6a6f0f3b-1a0b-4a9c-8a01-111111111111";
+	const std::vector<std::string> resumed = ProviderRuntime::BuildInteractiveArgv(profile, chat, AppSettings{});
+	UAM_ASSERT_EQ(resumed.size(), static_cast<std::size_t>(6));
+	UAM_ASSERT_EQ(resumed[0], std::string("codex"));
+	UAM_ASSERT_EQ(resumed[1], std::string("resume"));
+	UAM_ASSERT_EQ(resumed[2], std::string("--no-alt-screen"));
+	UAM_ASSERT_EQ(resumed[3], chat.native_session_id);
+	UAM_ASSERT_EQ(resumed[4], std::string("-m"));
+	UAM_ASSERT_EQ(resumed[5], std::string("gpt-5.4"));
+
+	chat.native_session_id = "chat-1";
+	const std::vector<std::string> invalid_resume = ProviderRuntime::BuildInteractiveArgv(profile, chat, AppSettings{});
+	UAM_ASSERT_EQ(invalid_resume.size(), static_cast<std::size_t>(4));
+	UAM_ASSERT_EQ(invalid_resume[0], std::string("codex"));
+	UAM_ASSERT_EQ(invalid_resume[1], std::string("--no-alt-screen"));
+	UAM_ASSERT_EQ(invalid_resume[2], std::string("-m"));
+	UAM_ASSERT_EQ(invalid_resume[3], std::string("gpt-5.4"));
+}
+
+UAM_TEST(CodexSessionIndexPicksNewestNewSessionForMatchingCwd)
+{
+	TempDir temp("uam-codex-index");
+	const fs::path cwd = temp.root / "workspace";
+	fs::create_directories(cwd);
+	fs::create_directories(temp.root / "sessions" / "2026");
+
+	const std::string old_id = "11111111-1111-4111-8111-111111111111";
+	const std::string wrong_id = "22222222-2222-4222-8222-222222222222";
+	const std::string match_id = "33333333-3333-4333-8333-333333333333";
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "session_index.jsonl",
+	                                  nlohmann::json({{"id", old_id}, {"updated_at", "2026-04-18T10:00:00Z"}}).dump() + "\n" +
+	                                      nlohmann::json({{"id", wrong_id}, {"updated_at", "2026-04-18T10:01:00Z"}}).dump() + "\n" +
+	                                      nlohmann::json({{"id", match_id}, {"updated_at", "2026-04-18T10:02:00Z"}}).dump() + "\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "sessions" / "2026" / ("rollout-" + wrong_id + ".jsonl"),
+	                                  nlohmann::json({{"type", "session_meta"}, {"payload", {{"id", wrong_id}, {"cwd", (temp.root / "other").string()}}}}).dump() + "\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "sessions" / "2026" / ("rollout-" + match_id + ".jsonl"),
+	                                  nlohmann::json({{"type", "session_meta"}, {"payload", {{"id", match_id}, {"cwd", cwd.string()}}}}).dump() + "\n"));
+
+	const std::vector<std::string> before = {old_id};
+	UAM_ASSERT_EQ(uam::codex::PickNewSessionId(before, cwd, temp.root), match_id);
+	UAM_ASSERT_EQ(uam::codex::PickNewSessionId({old_id, match_id}, cwd, temp.root), std::string(""));
 }
 
 UAM_TEST(AcpJsonRpcBuildersUseProtocolMethods)
@@ -384,6 +525,58 @@ UAM_TEST(AcpJsonRpcBuildersUseProtocolMethods)
 	UAM_ASSERT_EQ(set_model.value("method", ""), std::string("session/set_model"));
 	UAM_ASSERT_EQ(set_model["params"].value("sessionId", ""), std::string("sess-1"));
 	UAM_ASSERT_EQ(set_model["params"].value("modelId", ""), std::string("auto-gemini-3"));
+}
+
+UAM_TEST(CodexAppServerRequestBuildersUseCodexProtocolMethods)
+{
+	ChatSession chat;
+	chat.provider_id = "codex-cli";
+	chat.native_session_id = "6a6f0f3b-1a0b-4a9c-8a01-111111111111";
+	chat.model_id = "gpt-5.4";
+	chat.approval_mode = "plan";
+
+	const nlohmann::json initialize = nlohmann::json::parse(uam::BuildCodexInitializeRequestForTests(21));
+	UAM_ASSERT_EQ(initialize.value("method", ""), std::string("initialize"));
+	UAM_ASSERT(initialize["params"].contains("clientInfo"));
+	UAM_ASSERT(initialize["params"]["capabilities"].is_object());
+	UAM_ASSERT(initialize["params"]["capabilities"].value("experimentalApi", false));
+
+	const nlohmann::json initialized = nlohmann::json::parse(uam::BuildCodexInitializedNotificationForTests());
+	UAM_ASSERT_EQ(initialized.value("method", ""), std::string("initialized"));
+	UAM_ASSERT(!initialized.contains("id"));
+
+	const nlohmann::json model_list = nlohmann::json::parse(uam::BuildCodexModelListRequestForTests(22));
+	UAM_ASSERT_EQ(model_list.value("method", ""), std::string("model/list"));
+
+	ChatSession invalid_resume_chat = chat;
+	invalid_resume_chat.native_session_id = "chat-1";
+	const nlohmann::json invalid_setup = nlohmann::json::parse(uam::BuildCodexSessionSetupRequestForTests(20, invalid_resume_chat, "/tmp/project"));
+	UAM_ASSERT_EQ(invalid_setup.value("method", ""), std::string("thread/start"));
+
+	const nlohmann::json valid_setup = nlohmann::json::parse(uam::BuildCodexSessionSetupRequestForTests(20, chat, "/tmp/project"));
+	UAM_ASSERT_EQ(valid_setup.value("method", ""), std::string("thread/resume"));
+	UAM_ASSERT_EQ(valid_setup["params"].value("threadId", ""), chat.native_session_id);
+
+	const nlohmann::json thread_start = nlohmann::json::parse(uam::BuildCodexThreadStartRequestForTests(23, chat, "/tmp/project"));
+	UAM_ASSERT_EQ(thread_start.value("method", ""), std::string("thread/start"));
+	UAM_ASSERT_EQ(thread_start["params"].value("cwd", ""), std::string("/tmp/project"));
+	UAM_ASSERT_EQ(thread_start["params"].value("model", ""), std::string("gpt-5.4"));
+	UAM_ASSERT(thread_start["params"].value("persistExtendedHistory", false));
+
+	const nlohmann::json thread_resume = nlohmann::json::parse(uam::BuildCodexThreadResumeRequestForTests(24, chat, "/tmp/project"));
+	UAM_ASSERT_EQ(thread_resume.value("method", ""), std::string("thread/resume"));
+	UAM_ASSERT_EQ(thread_resume["params"].value("threadId", ""), chat.native_session_id);
+	UAM_ASSERT(thread_resume["params"].value("persistExtendedHistory", false));
+
+	const nlohmann::json turn_start = nlohmann::json::parse(uam::BuildCodexTurnStartRequestForTests(25, chat.native_session_id, "hello", chat));
+	UAM_ASSERT_EQ(turn_start.value("method", ""), std::string("turn/start"));
+	UAM_ASSERT_EQ(turn_start["params"].value("threadId", ""), chat.native_session_id);
+	UAM_ASSERT_EQ(turn_start["params"]["input"][0].value("text", ""), std::string("hello"));
+	UAM_ASSERT_EQ(turn_start["params"]["collaborationMode"].value("mode", ""), std::string("plan"));
+
+	const nlohmann::json interrupt = nlohmann::json::parse(uam::BuildCodexTurnInterruptRequestForTests(26, chat.native_session_id, "turn-1"));
+	UAM_ASSERT_EQ(interrupt.value("method", ""), std::string("turn/interrupt"));
+	UAM_ASSERT_EQ(interrupt["params"].value("turnId", ""), std::string("turn-1"));
 }
 
 UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
@@ -420,6 +613,21 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	UAM_ASSERT(detail.find("cwd=/tmp/project") != std::string::npos);
 	UAM_ASSERT(detail.find("argv=gemini --acp --approval-mode plan --model flash") != std::string::npos);
 	UAM_ASSERT(detail.find("nativeSessionId=native-1") != std::string::npos);
+
+	ChatSession codex_chat;
+	codex_chat.id = "codex-chat";
+	codex_chat.provider_id = "codex-cli";
+	codex_chat.native_session_id = "6a6f0f3b-1a0b-4a9c-8a01-111111111111";
+	codex_chat.model_id = "gpt-5.4";
+	const std::vector<std::string> codex_argv = uam::BuildAcpLaunchArgvForTests(codex_chat);
+	UAM_ASSERT_EQ(codex_argv.size(), static_cast<std::size_t>(4));
+	UAM_ASSERT_EQ(codex_argv[0], std::string("codex"));
+	UAM_ASSERT_EQ(codex_argv[1], std::string("app-server"));
+	UAM_ASSERT_EQ(codex_argv[2], std::string("--listen"));
+	UAM_ASSERT_EQ(codex_argv[3], std::string("stdio://"));
+	const std::string codex_detail = uam::BuildAcpLaunchDetailForTests("/tmp/project", codex_chat);
+	UAM_ASSERT(codex_detail.find("argv=codex app-server --listen stdio://") != std::string::npos);
+	UAM_ASSERT(codex_detail.find("nativeSessionId=6a6f0f3b-1a0b-4a9c-8a01-111111111111") != std::string::npos);
 }
 
 UAM_TEST(CefBridgeRequestValidationRejectsMalformedEnvelopes)
@@ -587,7 +795,7 @@ UAM_TEST(AcpPromptCompletionClearsProcessingByMethodAndPromptId)
 	UAM_ASSERT_EQ(raw_session->queued_prompt, std::string(""));
 	UAM_ASSERT_EQ(raw_session->pending_permission.request_id_json, std::string(""));
 	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("error"));
-	UAM_ASSERT(raw_session->last_error.find("Invalid ACP JSON") != std::string::npos);
+	UAM_ASSERT(raw_session->last_error.find("Invalid JSON from Gemini ACP") != std::string::npos);
 	UAM_ASSERT(!raw_session->diagnostics.empty());
 	UAM_ASSERT_EQ(raw_session->diagnostics.back().reason, std::string("invalid_json"));
 	UAM_ASSERT(raw_session->diagnostics.back().detail.find(R"({"jsonrpc":)") != std::string::npos);
@@ -642,6 +850,37 @@ UAM_TEST(AcpJsonRpcErrorsIncludeRequestDiagnostics)
 	UAM_ASSERT_EQ(acp["diagnostics"].back().value("reason", ""), std::string("jsonrpc_error"));
 	UAM_ASSERT_EQ(acp["diagnostics"].back().value("method", ""), std::string("session/prompt"));
 	UAM_ASSERT_EQ(acp["diagnostics"].back().value("code", 0), -32603);
+}
+
+UAM_TEST(CodexAppServerErrorsUseCodexRuntimeName)
+{
+	TempDir temp("uam-codex-app-server-error-name");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "codex-cli";
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->provider_id = "codex-cli";
+	session->protocol_kind = "codex-app-server";
+	session->running = true;
+	session->initialized = true;
+	session->session_setup_request_id = 3;
+	session->recent_stderr = "Codex app-server stderr";
+	session->pending_request_methods[3] = "thread/start";
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":3,"error":{"code":-32600,"message":"thread/start.persistFullHistory requires experimentalApi capability"}})"));
+	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("error"));
+	UAM_ASSERT(raw_session->last_error.find("Codex app-server thread/start failed (id=3, code=-32600): thread/start.persistFullHistory requires experimentalApi capability") != std::string::npos);
+	UAM_ASSERT(raw_session->last_error.find("Gemini") == std::string::npos);
+	UAM_ASSERT(!raw_session->diagnostics.empty());
+	UAM_ASSERT_EQ(raw_session->diagnostics.back().method, std::string("thread/start"));
+	UAM_ASSERT(raw_session->diagnostics.back().detail.find("Codex app-server stderr") != std::string::npos);
 }
 
 UAM_TEST(AcpMissingSessionIdRecordsDiagnostics)
@@ -743,6 +982,87 @@ UAM_TEST(AcpSessionNewParsesModesModelsAndModeUpdates)
 	UAM_ASSERT_EQ(acp.value("currentModeId", ""), std::string("plan"));
 	UAM_ASSERT_EQ(acp["availableModels"].size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(acp.value("currentModelId", ""), std::string("auto-gemini-3"));
+}
+
+UAM_TEST(CodexAppServerStateTransitionsMapModelsTurnsToolsAndApprovals)
+{
+	TempDir temp("uam-codex-app-server-state");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "codex-cli";
+	chat.approval_mode = "plan";
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->provider_id = "codex-cli";
+	session->protocol_kind = "codex-app-server";
+	session->running = true;
+	session->next_request_id = 100;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	raw_session->initialize_request_id = 1;
+	raw_session->pending_request_methods[1] = "initialize";
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":1,"result":{"userAgent":"codex-cli/1.2.3"}})"));
+	UAM_ASSERT(raw_session->initialized);
+	UAM_ASSERT_EQ(raw_session->agent_title, std::string("Codex"));
+	UAM_ASSERT_EQ(raw_session->agent_version, std::string("codex-cli/1.2.3"));
+
+	raw_session->pending_request_methods[2] = "model/list";
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":2,"result":{"data":[{"id":"gpt-5.4","displayName":"GPT 5.4","description":"Frontier","isDefault":true},{"id":"hidden","displayName":"Hidden","hidden":true}]}})"));
+	UAM_ASSERT_EQ(raw_session->available_models.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(raw_session->available_models[0].id, std::string("gpt-5.4"));
+	UAM_ASSERT_EQ(raw_session->current_model_id, std::string("gpt-5.4"));
+
+	raw_session->session_setup_request_id = 3;
+	raw_session->pending_request_methods[3] = "thread/start";
+	const std::string codex_thread_id = "6a6f0f3b-1a0b-4a9c-8a01-111111111111";
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), nlohmann::json({{"jsonrpc", "2.0"}, {"id", 3}, {"result", {{"thread", {{"id", codex_thread_id}}}, {"model", "gpt-5.4"}}}}).dump()));
+	UAM_ASSERT_EQ(raw_session->session_id, codex_thread_id);
+	UAM_ASSERT_EQ(raw_session->codex_thread_id, codex_thread_id);
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, codex_thread_id);
+	UAM_ASSERT_EQ(raw_session->available_modes.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(raw_session->current_mode_id, std::string("plan"));
+	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("ready"));
+
+	raw_session->processing = true;
+	raw_session->queued_prompt = "hello";
+	raw_session->prompt_request_id = 4;
+	raw_session->pending_request_methods[4] = "turn/start";
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":4,"result":{"turn":{"id":"turn-1"}}})"));
+	UAM_ASSERT_EQ(raw_session->codex_turn_id, std::string("turn-1"));
+	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("processing"));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"Hello from Codex."}})"));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().messages[0].provider, std::string("codex-cli"));
+	UAM_ASSERT_EQ(app.chats.front().messages[0].content, std::string("Hello from Codex."));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"turn/plan/updated","params":{"plan":[{"step":"Inspect files","status":"completed"},{"step":"Patch code","status":"pending"}]}})"));
+	UAM_ASSERT_EQ(raw_session->plan_entries.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(raw_session->plan_entries[1].content, std::string("Patch code"));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"cmd-1","type":"commandExecution","command":"ls","status":"running"}}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"item/commandExecution/outputDelta","params":{"itemId":"cmd-1","delta":"file.txt\n"}})"));
+	UAM_ASSERT_EQ(raw_session->tool_calls.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(raw_session->tool_calls[0].id, std::string("cmd-1"));
+	UAM_ASSERT(raw_session->tool_calls[0].content.find("file.txt") != std::string::npos);
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{"itemId":"cmd-1","command":"rm -rf build","availableDecisions":["accept","decline"]}})"));
+	UAM_ASSERT(raw_session->waiting_for_permission);
+	UAM_ASSERT_EQ(raw_session->pending_permission.request_id_json, std::string("7"));
+	UAM_ASSERT_EQ(raw_session->pending_permission.provider_request_kind, std::string("codex-command"));
+	UAM_ASSERT_EQ(raw_session->pending_permission.options[0].id, std::string("accept"));
+	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("waitingPermission"));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"turn/completed","params":{"turnId":"turn-1"}})"));
+	UAM_ASSERT(!raw_session->processing);
+	UAM_ASSERT(!raw_session->waiting_for_permission);
+	UAM_ASSERT_EQ(raw_session->codex_turn_id, std::string(""));
+	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("ready"));
 }
 
 UAM_TEST(AcpDiagnosticRingCapsEntriesAndLongDetails)
@@ -1363,6 +1683,39 @@ UAM_TEST(MoveChatToFolderHandlesMissingWorkspacePaths)
 	UAM_ASSERT(ChatHistorySyncService().MoveChatToFolder(app, app.chats.back(), target_folder_id));
 	UAM_ASSERT_EQ(app.chats.back().folder_id, target_folder_id);
 	UAM_ASSERT_EQ(app.chats.back().workspace_directory, missing_target.string());
+}
+
+UAM_TEST(ImportDiscoveryDoesNotRecreateFolderForEmptyNativeSource)
+{
+	TempDir temp("uam-import-empty-source");
+	const fs::path gemini_home = temp.root / "gemini-home";
+	const fs::path data_root = temp.root / "data";
+	const fs::path workspace_root = temp.root / "workspace";
+	const fs::path source_root = gemini_home / "tmp" / "workspace-source";
+	const fs::path source_chats = source_root / "chats";
+	fs::create_directories(workspace_root);
+	fs::create_directories(source_chats);
+	UAM_ASSERT(uam::io::WriteTextFile(source_root / ".project_root", workspace_root.string()));
+
+	ScopedEnvVar gemini_home_env("GEMINI_CLI_HOME", gemini_home.string());
+	uam::AppState app;
+	app.data_root = data_root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatDomainService().EnsureDefaultFolder(app);
+	UAM_ASSERT(ChatFolderStore::Save(data_root, app.folders));
+
+	const ChatHistorySyncService::ImportResult result = ChatHistorySyncService().ImportAllNativeChatsByDiscovery(app, false);
+	UAM_ASSERT_EQ(result.total_count, 0);
+	UAM_ASSERT_EQ(result.imported_count, 0);
+	UAM_ASSERT(ChatRepository::LoadLocalChats(data_root).empty());
+	for (const ChatFolder& folder : app.folders)
+	{
+		UAM_ASSERT(!FolderDirectoryMatches(folder.directory, workspace_root));
+	}
+	for (const ChatFolder& folder : ChatFolderStore::Load(data_root))
+	{
+		UAM_ASSERT(!FolderDirectoryMatches(folder.directory, workspace_root));
+	}
 }
 
 #if !defined(_WIN32)

@@ -5,11 +5,13 @@ export interface Session {
   name: string
   viewMode: ViewMode
   folderId: string | null
+  providerId?: string
   workspaceDirectory?: string
   modelId?: string
   approvalMode?: string
   createdAt: Date
   updatedAt: Date
+  lastOpenedAt?: Date
 }
 
 export interface Folder {

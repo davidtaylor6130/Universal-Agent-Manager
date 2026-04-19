@@ -272,6 +272,10 @@ namespace
 		native.approval_mode = local.approval_mode;
 		native.model_id = local.model_id;
 		native.extra_flags = local.extra_flags;
+		if (!Trim(local.last_opened_at).empty())
+		{
+			native.last_opened_at = local.last_opened_at;
+		}
 	}
 
 	std::optional<fs::path> FindNativeSessionFileAcrossDiscoveredSources(const ProviderProfile& provider, const std::string& native_session_id)
@@ -827,10 +831,9 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 
 	for (const ProviderChatSource& l_source : l_discovery.sources)
 	{
-		const std::string import_folder_id = ResolvePersistedImportFolderIdForSource(p_app, l_source);
-
 		std::vector<ChatSession> l_nativeChats = LoadNativeSessionChats(l_source.chats_dir, l_nativeProvider);
 		ApplyLocalOverrides(p_app, l_nativeChats);
+		std::optional<std::string> l_importFolderId;
 
 		for (ChatSession& l_nativeChat : l_nativeChats)
 		{
@@ -859,7 +862,12 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 				l_nativeChat.id = MakeCollisionSafeImportedChatId(l_nativeChat, l_existingIds);
 			}
 
-			l_nativeChat.folder_id = import_folder_id;
+			if (!l_importFolderId.has_value())
+			{
+				l_importFolderId = ResolvePersistedImportFolderIdForSource(p_app, l_source);
+			}
+
+			l_nativeChat.folder_id = l_importFolderId.value();
 			l_nativeChat.workspace_directory = l_source.folder_directory;
 
 			if (ChatRepository::SaveChat(p_app.data_root, l_nativeChat))

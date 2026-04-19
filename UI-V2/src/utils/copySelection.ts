@@ -1,3 +1,5 @@
+import { isCefContext, sendToCEF } from '../ipc/cefBridge'
+
 function elementForNode(node: Node | null): Element | null {
   if (!node) return null
   return node instanceof Element ? node : node.parentElement
@@ -9,7 +11,7 @@ function copySurfaceForNode(node: Node | null): Element | null {
 
 export function isEditableElement(target: EventTarget | null) {
   if (!(target instanceof Element)) return false
-  return Boolean(target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]'))
+  return Boolean(target.closest('input, textarea, select, [contenteditable]'))
 }
 
 export function selectedTextFromDocument(
@@ -19,7 +21,7 @@ export function selectedTextFromDocument(
   const selection = doc.getSelection()
   if (!selection || selection.isCollapsed) return ''
 
-  if (options.requireCopySurface ?? true) {
+  if (options.requireCopySurface ?? false) {
     const anchorSurface = copySurfaceForNode(selection.anchorNode)
     const focusSurface = copySurfaceForNode(selection.focusNode)
     if (!anchorSurface || anchorSurface !== focusSurface) return ''
@@ -30,6 +32,18 @@ export function selectedTextFromDocument(
 
 export async function copyTextToClipboard(text: string, doc: Document) {
   if (!text) return false
+
+  if (isCefContext()) {
+    try {
+      const response = await sendToCEF<{ copied?: boolean }>({
+        action: 'writeClipboardText',
+        payload: { text },
+      })
+      if (response.ok) return true
+    } catch {
+      // Continue to browser clipboard fallbacks below.
+    }
+  }
 
   const clipboard = globalThis.navigator?.clipboard
   if (clipboard?.writeText) {
@@ -60,6 +74,17 @@ export async function copyTextToClipboard(text: string, doc: Document) {
 }
 
 export function installCopySelectionFallback(doc: Document = document) {
+  const onCopy = (event: ClipboardEvent) => {
+    if (isEditableElement(event.target)) return
+
+    const text = selectedTextFromDocument(doc)
+    if (!text || !event.clipboardData) return
+
+    event.preventDefault()
+    event.clipboardData.setData('text/plain', text)
+    void copyTextToClipboard(text, doc)
+  }
+
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.key.toLowerCase() !== 'c') return
     if ((!event.metaKey && !event.ctrlKey) || event.altKey) return
@@ -72,8 +97,10 @@ export function installCopySelectionFallback(doc: Document = document) {
     void copyTextToClipboard(text, doc)
   }
 
-  doc.addEventListener('keydown', onKeyDown)
+  doc.addEventListener('copy', onCopy, true)
+  doc.addEventListener('keydown', onKeyDown, true)
   return () => {
-    doc.removeEventListener('keydown', onKeyDown)
+    doc.removeEventListener('copy', onCopy, true)
+    doc.removeEventListener('keydown', onKeyDown, true)
   }
 }

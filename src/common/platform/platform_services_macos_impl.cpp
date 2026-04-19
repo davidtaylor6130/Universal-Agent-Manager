@@ -278,6 +278,11 @@ namespace
 		return first_line.find("node") != std::string::npos;
 	}
 
+	bool CommandNeedsNodePreflight(const std::string& command, const std::filesystem::path& executable_path)
+	{
+		return command == "gemini" && ScriptShebangMentionsNode(executable_path);
+	}
+
 	std::string EscapeAppleScriptQuotedString(const std::string& value)
 	{
 		std::string escaped;
@@ -688,21 +693,21 @@ namespace
 			{
 				if (error_out != nullptr)
 				{
-					*error_out = "gemini not found on PATH in app environment";
+					*error_out = argv.front() + " not found on PATH in app environment";
 				}
 				close(master_fd);
 				close(slave_fd);
 				return false;
 			}
 
-			if (ScriptShebangMentionsNode(resolved_executable))
+			if (CommandNeedsNodePreflight(argv.front(), resolved_executable))
 			{
 				const std::string resolved_node = ResolveExecutablePathForTerminal("node", terminal_path_dirs);
 				if (resolved_node.empty())
 				{
 					if (error_out != nullptr)
 					{
-						*error_out = "node not found on PATH in app environment (required by gemini CLI)";
+						*error_out = "node not found on PATH in app environment (required by " + argv.front() + ")";
 					}
 					close(master_fd);
 					close(slave_fd);
@@ -1075,7 +1080,7 @@ namespace
 			{
 				if (error_out != nullptr)
 				{
-					*error_out = "gemini not found on PATH in app environment";
+					*error_out = argv.front() + " not found on PATH in app environment";
 				}
 				close_pipe(stdin_pipe);
 				close_pipe(stdout_pipe);
@@ -1083,11 +1088,11 @@ namespace
 				return false;
 			}
 
-			if (ScriptShebangMentionsNode(resolved_executable) && ResolveExecutablePathForTerminal("node", path_dirs).empty())
+			if (CommandNeedsNodePreflight(argv.front(), resolved_executable) && ResolveExecutablePathForTerminal("node", path_dirs).empty())
 			{
 				if (error_out != nullptr)
 				{
-					*error_out = "node not found on PATH in app environment (required by gemini CLI)";
+					*error_out = "node not found on PATH in app environment (required by " + argv.front() + ")";
 				}
 				close_pipe(stdin_pipe);
 				close_pipe(stdout_pipe);

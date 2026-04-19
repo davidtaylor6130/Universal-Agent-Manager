@@ -103,6 +103,7 @@ std::optional<ChatSession> GeminiJsonHistoryStore::ParseFile(const std::filesyst
 	chat.branch_from_message_index = -1;
 	chat.created_at = JsonStringOrEmpty(root.Find("startTime"));
 	chat.updated_at = JsonStringOrEmpty(root.Find("lastUpdated"));
+	chat.last_opened_at = chat.updated_at;
 
 	if (chat.created_at.empty())
 	{
@@ -112,6 +113,11 @@ std::optional<ChatSession> GeminiJsonHistoryStore::ParseFile(const std::filesyst
 	if (chat.updated_at.empty())
 	{
 		chat.updated_at = chat.created_at;
+	}
+
+	if (chat.last_opened_at.empty())
+	{
+		chat.last_opened_at = chat.updated_at;
 	}
 
 	const JsonValue* messages = root.Find("messages");

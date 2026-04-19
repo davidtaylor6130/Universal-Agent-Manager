@@ -51,9 +51,16 @@ describe('ChatView', () => {
           },
         ],
       },
+      providers: [
+        { id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' },
+        { id: 'codex-cli', name: 'Codex CLI', shortName: 'Codex', color: '#22c55e', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'codex-app-server' },
+      ],
       acpBindingBySessionId: {
         'chat-1': {
           sessionId: 'native-1',
+          providerId: 'gemini-cli',
+          protocolKind: 'gemini-acp',
+          threadId: '',
           running: true,
           lifecycleState: 'waitingPermission',
           processing: true,
@@ -155,7 +162,7 @@ describe('ChatView', () => {
       providerButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(host.textContent).toContain('Provider')
-    expect(host.textContent).toContain('Only available provider for this release.')
+    expect(host.textContent).toContain('Gemini')
 
     const settingsButton = host.querySelector('button[title="Settings"]')
     expect(settingsButton).toBeTruthy()
@@ -209,6 +216,45 @@ describe('ChatView', () => {
     })
     expect(host.textContent).not.toContain('Working')
     expect(host.querySelector('button[title="Cancel turn"]')).toBeNull()
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('renders Codex provider labels from backend provider metadata', () => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1' ? { ...session, providerId: 'codex-cli', modelId: '' } : session
+      ),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          providerId: 'codex-cli',
+          protocolKind: 'codex-app-server',
+          threadId: 'thread-1',
+          sessionId: 'thread-1',
+          availableModels: [],
+          currentModelId: '',
+          agentInfo: { name: 'codex', title: 'Codex', version: '1.0.0' },
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    expect(host.textContent).toContain('Codex')
+    expect(host.textContent).toContain('App Server')
+    expect(host.textContent).toContain('CLI default')
+    expect(host.querySelector('textarea')?.getAttribute('placeholder')).toBe('Message Codex')
 
     act(() => {
       root.unmount()
@@ -536,7 +582,13 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('renders ACP errors in the composer area', () => {
+  it('renders ACP errors in the composer area', async () => {
+    const writeText = vi.fn((_text: string) => Promise.resolve())
+    Object.defineProperty(globalThis.navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    })
+
     useAppStore.setState((state) => ({
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
@@ -580,6 +632,15 @@ describe('ChatView', () => {
 	    expect(form?.textContent).toContain('Exit code: 137')
 	    expect(form?.textContent).toContain('jsonrpc_error')
 	    expect(form?.textContent).toContain('stderr stack trace')
+	    const copyErrorButton = Array.from(form?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Copy error')
+	    expect(copyErrorButton).toBeTruthy()
+	    await act(async () => {
+	      copyErrorButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+	      await Promise.resolve()
+	    })
+	    expect(writeText).toHaveBeenCalled()
+	    expect(writeText.mock.calls[0][0]).toContain('Internal ACP failure')
+	    expect(writeText.mock.calls[0][0]).toContain('stderr stack trace')
 	    const text = host.textContent ?? ''
     expect(text.indexOf('After tool.')).toBeLessThan(text.indexOf('Gemini ACP error'))
 

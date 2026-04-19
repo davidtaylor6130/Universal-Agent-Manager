@@ -13,6 +13,8 @@ interface FolderTreeProps {
   searchQuery: string
 }
 
+const VISIBLE_SESSION_LIMIT = 5
+
 export function FolderTree({ searchQuery }: FolderTreeProps) {
   const folders  = useAppStore(useShallow((s) => s.folders))
   const sessions = useAppStore(useShallow((s) => s.sessions))
@@ -22,6 +24,7 @@ export function FolderTree({ searchQuery }: FolderTreeProps) {
   const renameFolder        = useAppStore((s) => s.renameFolder)
   const deleteFolder        = useAppStore((s) => s.deleteFolder)
   const browseFolderDirectory = useAppStore((s) => s.browseFolderDirectory)
+  const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
 
   const [addingFolder, setAddingFolder] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
@@ -117,6 +120,7 @@ export function FolderTree({ searchQuery }: FolderTreeProps) {
           folder={folder}
           sessionIds={sessionIds}
           shouldShowSessions={shouldShowSessions}
+          isSearching={searchModel.isSearching}
           isEditing={editingFolderId === folder.id}
           editFolderName={editFolderName}
           editFolderDirectory={editFolderDirectory}
@@ -128,6 +132,7 @@ export function FolderTree({ searchQuery }: FolderTreeProps) {
           onCommitRename={() => commitRenameFolder(folder.id)}
           onCancelEdit={() => setEditingFolderId(null)}
           onChooseDirectory={() => void chooseEditFolderDirectory()}
+          onCreateChat={() => setNewChatModalOpen(true, folder.id)}
         />
       ))}
 
@@ -435,6 +440,7 @@ interface FolderRowProps {
   folder: Folder
   sessionIds: string[]
   shouldShowSessions: boolean
+  isSearching: boolean
   isEditing: boolean
   editFolderName: string
   editFolderDirectory: string
@@ -446,12 +452,14 @@ interface FolderRowProps {
   onCommitRename: () => void
   onCancelEdit: () => void
   onChooseDirectory: () => void
+  onCreateChat: () => void
 }
 
 const FolderRow = memo(function FolderRow({
   folder,
   sessionIds,
   shouldShowSessions,
+  isSearching,
   isEditing,
   editFolderName,
   editFolderDirectory,
@@ -463,7 +471,21 @@ const FolderRow = memo(function FolderRow({
   onCommitRename,
   onCancelEdit,
   onChooseDirectory,
+  onCreateChat,
 }: FolderRowProps) {
+  const [showAllSessions, setShowAllSessions] = useState(false)
+  const shouldLimitSessions = !isSearching && sessionIds.length > VISIBLE_SESSION_LIMIT
+  const visibleSessionIds = shouldLimitSessions && !showAllSessions
+    ? sessionIds.slice(0, VISIBLE_SESSION_LIMIT)
+    : sessionIds
+  const hiddenSessionCount = sessionIds.length - visibleSessionIds.length
+
+  useEffect(() => {
+    if (sessionIds.length <= VISIBLE_SESSION_LIMIT && showAllSessions) {
+      setShowAllSessions(false)
+    }
+  }, [sessionIds.length, showAllSessions])
+
   return (
     <div className="mb-2">
       {/* Folder header */}
@@ -636,9 +658,66 @@ const FolderRow = memo(function FolderRow({
               Empty
             </div>
           ) : (
-            sessionIds.map((id) => (
+            visibleSessionIds.map((id) => (
               <SessionItem key={id} sessionId={id} />
             ))
+          )}
+          {shouldLimitSessions && (
+            <button
+              type="button"
+              onClick={() => setShowAllSessions((value) => !value)}
+              className="mx-5 mt-1 flex w-[calc(100%-2.5rem)] items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs transition-colors duration-100"
+              style={{
+                background: 'transparent',
+                color: 'var(--text-3)',
+                border: '1px solid var(--border)',
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.color = 'var(--text-2)'
+                e.currentTarget.style.borderColor = 'var(--border-bright)'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.color = 'var(--text-3)'
+                e.currentTarget.style.borderColor = 'var(--border)'
+              }}
+            >
+              <span>{showAllSessions ? 'Show less' : 'See more'}</span>
+              {!showAllSessions && (
+                <span className="text-[10px]" style={{ color: 'var(--text-3)' }}>
+                  +{hiddenSessionCount}
+                </span>
+              )}
+            </button>
+          )}
+          {folder.isExpanded && (
+            <button
+              type="button"
+              onClick={onCreateChat}
+              className="mx-5 mt-1 flex w-[calc(100%-2.5rem)] items-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors duration-100"
+              style={{
+                background: 'var(--surface-up)',
+                color: 'var(--text-3)',
+                border: '1px solid var(--border)',
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.color = 'var(--text-2)'
+                e.currentTarget.style.borderColor = 'var(--border-bright)'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.color = 'var(--text-3)'
+                e.currentTarget.style.borderColor = 'var(--border)'
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
+                <line x1="12" y1="5" x2="12" y2="19" />
+                <line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
+              <span>New chat</span>
+            </button>
           )}
         </div>
       )}

@@ -94,8 +94,25 @@ body {
   color: var(--text);
   font-size: 13px;
   line-height: 1.6;
+  user-select: text;
+  -webkit-user-select: text;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+pre,
+code,
+.prose-msg,
+[data-copy-surface='chat'] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+button,
+summary,
+.select-none {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 /* ── Scrollbar ────────────────────────────────────────────── */

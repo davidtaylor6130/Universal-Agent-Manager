@@ -174,7 +174,7 @@ describe('useAppStore Gemini CLI slice', () => {
       approvalMode: 'plan',
     })
     expect(state.activeSessionId).toBe('chat-1')
-    expect(state.providers.map((provider) => provider.id)).toEqual(['gemini-cli'])
+    expect(state.providers.map((provider) => provider.id)).toEqual(['gemini-cli', 'codex-cli'])
     expect(state.cliBindingBySessionId['chat-1']).toMatchObject({
       terminalId: 'term-chat-1',
       running: true,
@@ -316,7 +316,7 @@ describe('useAppStore Gemini CLI slice', () => {
     })
   })
 
-  it('hides legacy providers when the backend omits Gemini CLI', () => {
+  it('keeps backend providers when the backend omits Gemini CLI', () => {
     useAppStore.getState().loadFromCef({
       ...makeCppState(1),
       providers: [
@@ -325,7 +325,7 @@ describe('useAppStore Gemini CLI slice', () => {
       ],
     })
 
-    expect(useAppStore.getState().providers.map((provider) => provider.id)).toEqual(['gemini-cli'])
+    expect(useAppStore.getState().providers.map((provider) => provider.id)).toEqual(['codex-cli', 'claude-cli'])
   })
 
   it('maps backend lifecycle states to CLI binding status', () => {
@@ -424,6 +424,69 @@ describe('useAppStore Gemini CLI slice', () => {
       folderId: 'default',
       providerId: 'gemini-cli',
     })
+  })
+
+  it('creates CEF sessions with the selected Codex provider', async () => {
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
+      onSuccess('{}')
+    }
+
+    useAppStore.setState({
+      folders: [{ id: 'default', name: 'General', parentId: null, directory: '/tmp/project', isExpanded: true, createdAt: new Date() }],
+      providers: [
+        { id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#f97316', description: '' },
+        { id: 'codex-cli', name: 'Codex CLI', shortName: 'Codex', color: '#22c55e', description: '' },
+      ],
+    })
+
+    useAppStore.getState().addSession('Codex Chat', 'default', 'codex-cli')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0].action).toBe('createSession')
+    expect(requests[0].payload).toEqual({
+      title: 'Codex Chat',
+      folderId: 'default',
+      providerId: 'codex-cli',
+    })
+  })
+
+  it('changes providers only for empty stopped local sessions', async () => {
+    const now = new Date()
+    useAppStore.setState({
+      providers: [
+        { id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#f97316', description: '' },
+        { id: 'codex-cli', name: 'Codex CLI', shortName: 'Codex', color: '#22c55e', description: '' },
+      ],
+      sessions: [
+        {
+          id: 'chat-1',
+          name: 'Empty Session',
+          viewMode: 'chat',
+          folderId: null,
+          providerId: 'gemini-cli',
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      messages: { 'chat-1': [] },
+      acpBindingBySessionId: {},
+    })
+
+    await expect(useAppStore.getState().setSessionProvider('chat-1', 'codex-cli')).resolves.toBe(true)
+    expect(useAppStore.getState().sessions[0].providerId).toBe('codex-cli')
+
+    useAppStore.setState({
+      messages: {
+        'chat-1': [
+          { id: 'm-1', sessionId: 'chat-1', role: 'user', content: 'hello', createdAt: now },
+        ],
+      },
+    })
+    await expect(useAppStore.getState().setSessionProvider('chat-1', 'gemini-cli')).resolves.toBe(false)
+    expect(useAppStore.getState().sessions[0].providerId).toBe('codex-cli')
   })
 
   it('updates local session model state in dev mode', async () => {

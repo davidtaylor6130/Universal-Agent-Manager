@@ -25,12 +25,25 @@
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <cstdio>
+#include <cstring>
 #include <utility>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 namespace
 {
-	constexpr const char* kPreferredProviderId = "gemini-cli";
-	constexpr std::size_t kRecentOutputReplayLimitBytes = 256 * 1024;
+		constexpr const char* kPreferredProviderId = "gemini-cli";
+		constexpr std::size_t kRecentOutputReplayLimitBytes = 256 * 1024;
+		constexpr std::size_t kMaxClipboardTextBytes = 1024 * 1024;
 
 	int FolderFailureCode(const std::string& status_line)
 	{
@@ -61,20 +74,6 @@ namespace
 		}
 
 		return nullptr;
-	}
-
-	void EnsureChatUsesPreferredCliProvider(uam::AppState& app, ChatSession& chat)
-	{
-		const ProviderProfile* preferred = ResolvePreferredCliProvider(app);
-		if (preferred == nullptr || preferred->id.empty())
-		{
-			return;
-		}
-
-		if (chat.provider_id != preferred->id)
-		{
-			chat.provider_id = preferred->id;
-		}
 	}
 
 		bool IsSafeAcpToken(const std::string& value)
@@ -118,7 +117,7 @@ namespace
 			return mode_id == "default" || mode_id == "plan";
 		}
 
-	bool AcpSessionBlocksModelChange(const uam::AcpSessionState& session)
+		bool AcpSessionBlocksModelChange(const uam::AcpSessionState& session)
 	{
 		return session.processing ||
 		       session.waiting_for_permission ||
@@ -126,8 +125,129 @@ namespace
 		       session.session_setup_request_id != 0 ||
 		       session.prompt_request_id != 0 ||
 		       session.cancel_request_id != 0 ||
-		       !session.queued_prompt.empty();
-	}
+			       !session.queued_prompt.empty();
+		}
+
+#if defined(_WIN32)
+		std::wstring WideFromUtf8(const std::string& value)
+		{
+			if (value.empty())
+			{
+				return std::wstring();
+			}
+			const int wide_len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), nullptr, 0);
+			if (wide_len <= 0)
+			{
+				return std::wstring();
+			}
+			std::wstring wide(static_cast<std::size_t>(wide_len), L'\0');
+			if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), wide.data(), wide_len) <= 0)
+			{
+				return std::wstring();
+			}
+			return wide;
+		}
+#endif
+
+		bool WriteNativeClipboardText(const std::string& text, std::string* error_out)
+		{
+#if defined(__APPLE__)
+			FILE* pipe = popen("/usr/bin/pbcopy", "w");
+			if (pipe == nullptr)
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to launch pbcopy.";
+				}
+				return false;
+			}
+
+			const std::size_t written = std::fwrite(text.data(), 1, text.size(), pipe);
+			const int status = pclose(pipe);
+			if (written != text.size() || status != 0)
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to write clipboard text through pbcopy.";
+				}
+				return false;
+			}
+			return true;
+#elif defined(_WIN32)
+			const std::wstring wide = WideFromUtf8(text);
+			if (wide.empty() && !text.empty())
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Clipboard text is not valid UTF-8.";
+				}
+				return false;
+			}
+			if (!OpenClipboard(nullptr))
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to open the Windows clipboard.";
+				}
+				return false;
+			}
+
+			if (!EmptyClipboard())
+			{
+				CloseClipboard();
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to clear the Windows clipboard.";
+				}
+				return false;
+			}
+
+			const SIZE_T bytes = (wide.size() + 1) * sizeof(wchar_t);
+			HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+			if (memory == nullptr)
+			{
+				CloseClipboard();
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to allocate Windows clipboard memory.";
+				}
+				return false;
+			}
+
+			void* locked = GlobalLock(memory);
+			if (locked == nullptr)
+			{
+				GlobalFree(memory);
+				CloseClipboard();
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to lock Windows clipboard memory.";
+				}
+				return false;
+			}
+			std::memcpy(locked, wide.c_str(), bytes);
+			GlobalUnlock(memory);
+
+			if (SetClipboardData(CF_UNICODETEXT, memory) == nullptr)
+			{
+				GlobalFree(memory);
+				CloseClipboard();
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to set Windows clipboard text.";
+				}
+				return false;
+			}
+			CloseClipboard();
+			return true;
+#else
+			if (error_out != nullptr)
+			{
+				*error_out = "Native clipboard writes are not implemented for this platform.";
+			}
+			return false;
+#endif
+		}
 
 	static const char kBase64Chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -266,12 +386,14 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 			HandleCreateSession(browser, payload, callback);
 		else if (action == "renameSession")
 			HandleRenameSession(browser, payload, callback);
-			else if (action == "setChatModel")
-				HandleSetChatModel(browser, payload, callback);
-			else if (action == "setChatApprovalMode")
-				HandleSetChatApprovalMode(browser, payload, callback);
-			else if (action == "deleteSession")
-				HandleDeleteSession(browser, payload, callback);
+		else if (action == "setChatProvider")
+			HandleSetChatProvider(browser, payload, callback);
+		else if (action == "setChatModel")
+			HandleSetChatModel(browser, payload, callback);
+		else if (action == "setChatApprovalMode")
+			HandleSetChatApprovalMode(browser, payload, callback);
+		else if (action == "deleteSession")
+			HandleDeleteSession(browser, payload, callback);
 		else if (action == "createFolder")
 			HandleCreateFolder(browser, payload, callback);
 		else if (action == "renameFolder")
@@ -296,10 +418,12 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 			HandleCancelAcpTurn(browser, payload, callback);
 		else if (action == "resolveAcpPermission")
 			HandleResolveAcpPermission(browser, payload, callback);
-		else if (action == "stopAcpSession")
-			HandleStopAcpSession(browser, payload, callback);
-		else if (action == "setTheme")
-			HandleSetTheme(browser, payload, callback);
+			else if (action == "stopAcpSession")
+				HandleStopAcpSession(browser, payload, callback);
+			else if (action == "writeClipboardText")
+				HandleWriteClipboardText(payload, callback);
+			else if (action == "setTheme")
+				HandleSetTheme(browser, payload, callback);
 		else
 		{
 			callback->Failure(404, "Unknown action: " + action);
@@ -336,14 +460,44 @@ void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const n
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string previous_selected_chat_id = (ChatDomainService().SelectedChat(m_app) != nullptr) ? ChatDomainService().SelectedChat(m_app)->id : std::string{};
+	const int target_chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
+
+	if (target_chat_index < 0)
+	{
+		cb->Failure(404, "Selected chat no longer exists.");
+		return;
+	}
+
+	const std::string previous_last_opened_at = m_app.chats[static_cast<std::size_t>(target_chat_index)].last_opened_at;
 	ChatDomainService().SelectChatById(m_app, chat_id);
+
+	ChatSession* selected_chat = ChatDomainService().SelectedChat(m_app);
+	if (selected_chat == nullptr)
+	{
+		cb->Failure(404, "Selected chat no longer exists.");
+		return;
+	}
+
+	selected_chat->last_opened_at = TimestampNow();
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
+		selected_chat->last_opened_at = previous_last_opened_at;
 		ChatDomainService().SelectChatById(m_app, previous_selected_chat_id);
 		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist selected chat." : m_app.status_line);
 		return;
 	}
 
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *selected_chat, "", ""))
+	{
+		selected_chat->last_opened_at = previous_last_opened_at;
+		ChatDomainService().SelectChatById(m_app, previous_selected_chat_id);
+		(void)PersistenceCoordinator().SaveSettings(m_app);
+		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist selected chat." : m_app.status_line);
+		return;
+	}
+
+	ChatDomainService().SortChatsByRecent(m_app.chats);
+	ChatDomainService().SelectChatById(m_app, chat_id);
 	uam::PushStateUpdate(browser, m_app);
 	cb->Success("{}");
 }
@@ -353,13 +507,14 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 	const std::string title = payload.value("title", "New Chat");
 	const std::string requested_folder_id = payload.value("folderId", "");
 	const ProviderProfile* preferred_provider = ResolvePreferredCliProvider(m_app);
-	const std::string provider_id = payload.value("providerId", preferred_provider != nullptr ? preferred_provider->id : m_app.settings.active_provider_id);
+	const std::string requested_provider_id = payload.value("providerId", preferred_provider != nullptr ? preferred_provider->id : m_app.settings.active_provider_id);
+	const ProviderProfile* requested_provider = ProviderProfileStore::FindById(m_app.provider_profiles, requested_provider_id);
+	const std::string provider_id = requested_provider != nullptr ? requested_provider->id : (preferred_provider != nullptr ? preferred_provider->id : m_app.settings.active_provider_id);
 	const std::string previous_selected_chat_id = (ChatDomainService().SelectedChat(m_app) != nullptr) ? ChatDomainService().SelectedChat(m_app)->id : std::string{};
 
 	const std::string target_folder_id = ResolveRequestedNewChatFolderId(m_app, requested_folder_id);
 
 	ChatSession chat = ChatDomainService().CreateNewChat(target_folder_id, provider_id);
-	EnsureChatUsesPreferredCliProvider(m_app, chat);
 	if (!title.empty())
 		chat.title = title;
 	chat.workspace_directory = ResolveWorkspaceRootPath(m_app, chat).string();
@@ -454,7 +609,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat.id);
 	if (session != nullptr && AcpSessionBlocksModelChange(*session))
 	{
-		cb->Failure(409, "Cannot change model while Gemini ACP is busy.");
+		cb->Failure(409, "Cannot change model while the structured runtime is busy.");
 		return;
 	}
 
@@ -507,6 +662,77 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 	cb->Success("{}");
 }
 
+void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const std::string provider_id = Trim(payload.value("providerId", ""));
+
+	const ProviderProfile* provider = ProviderProfileStore::FindById(m_app.provider_profiles, provider_id);
+	if (provider == nullptr || !ProviderRuntime::IsRuntimeEnabled(*provider))
+	{
+		cb->Failure(400, "Unsupported provider: " + provider_id);
+		return;
+	}
+
+	const int idx = ChatDomainService().FindChatIndexById(m_app, chat_id);
+	if (idx < 0)
+	{
+		cb->Failure(404, "Chat not found: " + chat_id);
+		return;
+	}
+
+	ChatSession& chat = m_app.chats[static_cast<std::size_t>(idx)];
+	if (chat.provider_id == provider->id)
+	{
+		uam::PushStateUpdate(browser, m_app);
+		cb->Success("{}");
+		return;
+	}
+
+	if (!chat.messages.empty())
+	{
+		cb->Failure(409, "Cannot change provider after messages have been added.");
+		return;
+	}
+
+	if (uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat.id); session != nullptr && session->running)
+	{
+		cb->Failure(409, "Cannot change provider while the structured runtime is running.");
+		return;
+	}
+
+	if (uam::CliTerminalState* terminal = FindCliTerminalByRoutingKey(m_app, chat.id, ""); terminal != nullptr && terminal->running)
+	{
+		cb->Failure(409, "Cannot change provider while the CLI terminal is running.");
+		return;
+	}
+
+	const std::string previous_provider_id = chat.provider_id;
+	const std::string previous_model_id = chat.model_id;
+	const std::string previous_approval_mode = chat.approval_mode;
+	const std::string previous_native_session_id = chat.native_session_id;
+	const std::string previous_updated_at = chat.updated_at;
+	chat.provider_id = provider->id;
+	chat.model_id.clear();
+	chat.approval_mode = "default";
+	chat.native_session_id.clear();
+	chat.updated_at = TimestampNow();
+
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, chat, "Chat provider updated.", "Chat provider changed in UI, but failed to save."))
+	{
+		chat.provider_id = previous_provider_id;
+		chat.model_id = previous_model_id;
+		chat.approval_mode = previous_approval_mode;
+		chat.native_session_id = previous_native_session_id;
+		chat.updated_at = previous_updated_at;
+		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist chat provider." : m_app.status_line);
+		return;
+	}
+
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success("{}");
+}
+
 void UamQueryHandler::HandleSetChatApprovalMode(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
@@ -529,7 +755,7 @@ void UamQueryHandler::HandleSetChatApprovalMode(CefRefPtr<CefBrowser> browser, c
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat.id);
 	if (session != nullptr && AcpSessionBlocksModelChange(*session))
 	{
-		cb->Failure(409, "Cannot change ACP mode while Gemini ACP is busy.");
+		cb->Failure(409, "Cannot change structured runtime mode while the structured runtime is busy.");
 		return;
 	}
 
@@ -737,13 +963,6 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 	}
 
 	ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_idx)];
-	const std::string provider_before = chat.provider_id;
-	EnsureChatUsesPreferredCliProvider(m_app, chat);
-	if (chat.provider_id != provider_before)
-	{
-		uam::LogCliDiagnosticEvent(m_app, "handle_start_cli", "provider_override", nullptr, "chat_id=" + chat.id + ", from=" + provider_before + ", to=" + chat.provider_id);
-	}
-
 	uam::CliTerminalState& terminal = EnsureCliTerminalForChat(m_app, chat);
 	terminal.frontend_chat_id = chat.id;
 	terminal.ui_attached = true;
@@ -888,6 +1107,30 @@ void UamQueryHandler::HandleStopAcpSession(CefRefPtr<CefBrowser> browser, const 
 	uam::StopAcpSession(m_app, chat_id);
 	uam::PushStateUpdate(browser, m_app);
 	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleWriteClipboardText(const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string text = payload.value("text", "");
+	if (text.empty())
+	{
+		cb->Failure(400, "Clipboard text is empty.");
+		return;
+	}
+	if (text.size() > kMaxClipboardTextBytes)
+	{
+		cb->Failure(413, "Clipboard text is too large.");
+		return;
+	}
+
+	std::string error;
+	if (!WriteNativeClipboardText(text, &error))
+	{
+		cb->Failure(500, error.empty() ? "Failed to write clipboard text." : error);
+		return;
+	}
+
+	cb->Success(R"({"copied":true})");
 }
 
 void UamQueryHandler::HandleSetTheme(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

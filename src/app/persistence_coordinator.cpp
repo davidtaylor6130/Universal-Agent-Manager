@@ -122,7 +122,10 @@ bool PersistenceCoordinator::EnsureDataRootLayout(const fs::path& data_root, std
 
 bool PersistenceCoordinator::SaveSettings(AppState& app) const
 {
-	app.settings.active_provider_id = "gemini-cli";
+	if (Trim(app.settings.active_provider_id).empty())
+	{
+		app.settings.active_provider_id = "gemini-cli";
+	}
 	app.settings.runtime_backend = "provider-cli";
 	app.settings.provider_command_template = app.settings.provider_command_template.empty()
 		? "gemini {resume} {flags} {prompt}"
@@ -148,7 +151,10 @@ bool PersistenceCoordinator::SaveSettings(AppState& app) const
 void PersistenceCoordinator::LoadSettings(AppState& app) const
 {
 	SettingsStore::Load(AppPaths::SettingsFilePath(app.data_root), app.settings, app.center_view_mode);
-	app.settings.active_provider_id = "gemini-cli";
+	if (Trim(app.settings.active_provider_id).empty())
+	{
+		app.settings.active_provider_id = "gemini-cli";
+	}
 	app.settings.runtime_backend = "provider-cli";
 	app.settings.provider_extra_flags = Trim(app.settings.provider_extra_flags);
 	app.settings.gemini_command_template = app.settings.provider_command_template;

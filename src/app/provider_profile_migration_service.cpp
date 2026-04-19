@@ -4,13 +4,14 @@
 
 namespace
 {
-	constexpr const char* kRuntimeIdCli = "gemini-cli";
+	constexpr const char* kRuntimeIdGeminiCli = "gemini-cli";
+	constexpr const char* kRuntimeIdCodexCli = "codex-cli";
 } // namespace
 
 bool ProviderProfileMigrationService::IsNativeHistoryProviderId(const std::string& provider_id) const
 {
 	const std::string lowered = ToLowerAscii(Trim(provider_id));
-	return lowered == kRuntimeIdCli || lowered == "gemini";
+	return lowered == kRuntimeIdGeminiCli || lowered == "gemini";
 }
 
 std::string ProviderProfileMigrationService::MapLegacyRuntimeId(const std::string& provider_id, const bool prefer_cli_for_native_history) const
@@ -21,12 +22,17 @@ std::string ProviderProfileMigrationService::MapLegacyRuntimeId(const std::strin
 
 	if (lowered == "gemini")
 	{
-		return kRuntimeIdCli;
+		return kRuntimeIdGeminiCli;
 	}
 
-	if (lowered == kRuntimeIdCli)
+	if (lowered == kRuntimeIdGeminiCli)
 	{
-		return kRuntimeIdCli;
+		return kRuntimeIdGeminiCli;
+	}
+
+	if (lowered == "codex" || lowered == kRuntimeIdCodexCli)
+	{
+		return kRuntimeIdCodexCli;
 	}
 
 	return trimmed;
@@ -35,12 +41,13 @@ std::string ProviderProfileMigrationService::MapLegacyRuntimeId(const std::strin
 std::string ProviderProfileMigrationService::DefaultRuntimeIdForLegacyViewHint(const uam::AppState& app) const
 {
 	(void)app.center_view_mode;
-	return kRuntimeIdCli;
+	return kRuntimeIdGeminiCli;
 }
 
 bool ProviderProfileMigrationService::ShouldShowProviderProfileInUi(const ProviderProfile& profile) const
 {
-	return Trim(profile.id) == kRuntimeIdCli;
+	const std::string lowered = ToLowerAscii(Trim(profile.id));
+	return lowered == kRuntimeIdGeminiCli || lowered == kRuntimeIdCodexCli;
 }
 
 bool ProviderProfileMigrationService::MigrateProviderProfilesToFixedModeIds(uam::AppState& app) const
@@ -53,17 +60,30 @@ bool ProviderProfileMigrationService::MigrateActiveProviderIdToFixedModes(uam::A
 {
 	if (Trim(app.settings.active_provider_id).empty())
 	{
-		app.settings.active_provider_id = kRuntimeIdCli;
+		app.settings.active_provider_id = kRuntimeIdGeminiCli;
 		return true;
 	}
 
-	if (ToLowerAscii(Trim(app.settings.active_provider_id)) != kRuntimeIdCli)
+	const std::string lowered = ToLowerAscii(Trim(app.settings.active_provider_id));
+	if (lowered == kRuntimeIdGeminiCli || lowered == kRuntimeIdCodexCli)
 	{
-		app.settings.active_provider_id = kRuntimeIdCli;
+		return false;
+	}
+
+	if (lowered == "gemini")
+	{
+		app.settings.active_provider_id = kRuntimeIdGeminiCli;
 		return true;
 	}
 
-	return false;
+	if (lowered == "codex")
+	{
+		app.settings.active_provider_id = kRuntimeIdCodexCli;
+		return true;
+	}
+
+	app.settings.active_provider_id = kRuntimeIdGeminiCli;
+	return true;
 }
 
 bool ProviderProfileMigrationService::MigrateChatProviderBindingsToFixedModes(uam::AppState& app) const

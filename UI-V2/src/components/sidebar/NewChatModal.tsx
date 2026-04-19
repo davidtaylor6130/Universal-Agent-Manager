@@ -2,12 +2,19 @@ import { useState, useEffect, useRef } from 'react'
 import { useAppStore } from '../../store/useAppStore'
 
 export function NewChatModal() {
-  const { addSession, setNewChatModalOpen, folders } = useAppStore()
+  const { addSession, setNewChatModalOpen, folders, providers, newChatFolderId } = useAppStore()
+  const initialFolderId =
+    newChatFolderId !== null && folders.some((folder) => folder.id === newChatFolderId)
+      ? newChatFolderId
+      : folders[0]?.id ?? null
   const [name, setName] = useState('')
-  const [folderId, setFolderId] = useState<string | null>(folders[0]?.id ?? null)
+  const [folderId, setFolderId] = useState<string | null>(initialFolderId)
+  const [providerId, setProviderId] = useState<string>(providers[0]?.id ?? 'gemini-cli')
   const [folderMenuOpen, setFolderMenuOpen] = useState(false)
+  const [providerMenuOpen, setProviderMenuOpen] = useState(false)
   const nameRef = useRef<HTMLInputElement>(null)
   const folderMenuRef = useRef<HTMLDivElement>(null)
+  const providerMenuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     nameRef.current?.focus()
@@ -26,10 +33,29 @@ export function NewChatModal() {
     }
   }, [folders, folderId, folderMenuOpen])
 
+  useEffect(() => {
+    if (newChatFolderId === null) return
+    if (folders.some((folder) => folder.id === newChatFolderId)) {
+      setFolderId(newChatFolderId)
+    }
+  }, [folders, newChatFolderId])
+
+  useEffect(() => {
+    if (providers.length === 0) return
+    if (!providers.some((provider) => provider.id === providerId)) {
+      setProviderId(providers[0].id)
+    }
+  }, [providers, providerId])
+
   // Close on Escape
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (providerMenuOpen) {
+          setProviderMenuOpen(false)
+          return
+        }
+
         if (folderMenuOpen) {
           setFolderMenuOpen(false)
           return
@@ -40,29 +66,32 @@ export function NewChatModal() {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [folderMenuOpen, setNewChatModalOpen])
+  }, [folderMenuOpen, providerMenuOpen, setNewChatModalOpen])
 
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
-      if (!folderMenuOpen) return
-
-      if (folderMenuRef.current && event.target instanceof Node && !folderMenuRef.current.contains(event.target)) {
+      if (folderMenuOpen && folderMenuRef.current && event.target instanceof Node && !folderMenuRef.current.contains(event.target)) {
         setFolderMenuOpen(false)
+      }
+
+      if (providerMenuOpen && providerMenuRef.current && event.target instanceof Node && !providerMenuRef.current.contains(event.target)) {
+        setProviderMenuOpen(false)
       }
     }
 
     window.addEventListener('mousedown', handlePointerDown)
     return () => window.removeEventListener('mousedown', handlePointerDown)
-  }, [folderMenuOpen])
+  }, [folderMenuOpen, providerMenuOpen])
 
   const handleCreate = () => {
     const n = name.trim() || 'New Session'
     const selectedFolderId = folderId ?? folders[0]?.id ?? null
-    addSession(n, selectedFolderId)
+    addSession(n, selectedFolderId, providerId)
   }
 
   const selectedFolder =
     (folderId !== null ? folders.find((f) => f.id === folderId) : null) ?? folders[0] ?? null
+  const selectedProvider = providers.find((provider) => provider.id === providerId) ?? providers[0] ?? null
 
   return (
     <div
@@ -198,6 +227,73 @@ export function NewChatModal() {
                               {f.directory}
                             </div>
                           )}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {providers.length > 1 && (
+            <div>
+              <label className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--text-2)' }}>
+                Provider
+              </label>
+              <div className="relative" ref={providerMenuRef}>
+                <button
+                  type="button"
+                  onClick={() => setProviderMenuOpen((open) => !open)}
+                  className="w-full rounded-md px-3 py-2 text-left transition-colors duration-100"
+                  style={{
+                    background: 'var(--surface-up)',
+                    border: '1px solid var(--border)',
+                    color: 'var(--text)',
+                    cursor: 'pointer',
+                    fontFamily: 'inherit',
+                  }}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs">{selectedProvider?.shortName ?? selectedProvider?.name ?? 'Provider'}</span>
+                    <span className="text-[10px]" style={{ color: 'var(--text-3)' }}>
+                      {providerMenuOpen ? '▲' : '▼'}
+                    </span>
+                  </div>
+                </button>
+
+                {providerMenuOpen && (
+                  <div
+                    className="absolute left-0 right-0 top-full z-10 mt-1 max-h-52 overflow-y-auto rounded-md p-1 shadow-2xl"
+                    style={{
+                      background: 'var(--surface)',
+                      border: '1px solid var(--border-bright)',
+                    }}
+                  >
+                    {providers.map((provider) => {
+                      const isSelected = selectedProvider?.id === provider.id
+
+                      return (
+                        <button
+                          key={provider.id}
+                          type="button"
+                          onClick={() => {
+                            setProviderId(provider.id)
+                            setProviderMenuOpen(false)
+                          }}
+                          className="w-full rounded-md px-2 py-2 text-left transition-colors duration-100"
+                          style={{
+                            background: isSelected ? 'color-mix(in srgb, var(--accent) 16%, transparent)' : 'transparent',
+                            border: 'none',
+                            color: 'var(--text)',
+                            cursor: 'pointer',
+                            fontFamily: 'inherit',
+                          }}
+                        >
+                          <div className="text-xs">{provider.shortName || provider.name}</div>
+                          <div className="truncate text-[10px]" style={{ color: 'var(--text-3)' }}>
+                            {provider.structuredProtocol === 'codex-app-server' ? 'Codex app-server + CLI' : 'Gemini ACP + CLI'}
+                          </div>
                         </button>
                       )
                     })}

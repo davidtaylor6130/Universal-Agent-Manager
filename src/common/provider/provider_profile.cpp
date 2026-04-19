@@ -30,6 +30,9 @@ ProviderProfile ProviderProfileStore::DefaultGeminiProfile()
 	profile.output_mode = "cli";
 	profile.command_template = "gemini -r {resume} {flags} {prompt}";
 	profile.interactive_command = "gemini";
+	profile.supports_cli = true;
+	profile.supports_structured = true;
+	profile.structured_protocol = "gemini-acp";
 	profile.supports_interactive = true;
 	profile.supports_resume = true;
 	profile.resume_argument = "-r";
@@ -41,9 +44,32 @@ ProviderProfile ProviderProfileStore::DefaultGeminiProfile()
 	return profile;
 }
 
+ProviderProfile ProviderProfileStore::DefaultCodexProfile()
+{
+	ProviderProfile profile;
+	profile.id = "codex-cli";
+	profile.title = "Codex CLI";
+	profile.execution_mode = "cli";
+	profile.output_mode = "cli";
+	profile.command_template = "codex exec {flags} {prompt}";
+	profile.interactive_command = "codex --no-alt-screen";
+	profile.supports_cli = true;
+	profile.supports_structured = true;
+	profile.structured_protocol = "codex-app-server";
+	profile.supports_interactive = true;
+	profile.supports_resume = true;
+	profile.resume_argument.clear();
+	profile.history_adapter = "local-json";
+	profile.prompt_bootstrap = "none";
+	profile.prompt_bootstrap_path.clear();
+	profile.user_message_types = {"user"};
+	profile.assistant_message_types = {"assistant", "codex"};
+	return profile;
+}
+
 std::vector<ProviderProfile> ProviderProfileStore::BuiltInProfiles()
 {
-	return {DefaultGeminiProfile()};
+	return {DefaultGeminiProfile(), DefaultCodexProfile()};
 }
 
 void ProviderProfileStore::EnsureDefaultProfile(std::vector<ProviderProfile>& profiles)
