@@ -11,6 +11,7 @@ export interface ChatSearchFolderRow {
 
 export interface ChatSearchModel {
   isSearching: boolean
+  pinnedSessionIds: string[]
   folderRows: ChatSearchFolderRow[]
   unfolderedSessionIds: string[]
   hasMatches: boolean
@@ -93,6 +94,7 @@ export function buildChatSearchModel(
 ): ChatSearchModel {
   const isSearching = searchTokens.length > 0
   const rootFolders = folders.filter((folder) => folder.parentId === null)
+  const rootFolderIds = new Set(rootFolders.map((folder) => folder.id))
   const sortedSessions = [...sessions].sort(compareSessionsByRecent)
   const matchingSessionIds = new Set(
     sortedSessions
@@ -101,6 +103,7 @@ export function buildChatSearchModel(
   )
 
   const sessionIdsByFolderId = new Map<string, string[]>()
+  const pinnedSessionIds: string[] = []
   const unfolderedSessionIds: string[] = []
 
   for (const session of sortedSessions) {
@@ -108,7 +111,12 @@ export function buildChatSearchModel(
       continue
     }
 
-    if (session.folderId === null) {
+    if (session.isPinned) {
+      pinnedSessionIds.push(session.id)
+      continue
+    }
+
+    if (session.folderId === null || !rootFolderIds.has(session.folderId)) {
       unfolderedSessionIds.push(session.id)
       continue
     }
@@ -130,11 +138,13 @@ export function buildChatSearchModel(
     .filter((row) => !isSearching || row.sessionIds.length > 0)
 
   const hasMatches =
+    pinnedSessionIds.length > 0 ||
     folderRows.some((row) => row.sessionIds.length > 0) ||
     unfolderedSessionIds.length > 0
 
   return {
     isSearching,
+    pinnedSessionIds,
     folderRows,
     unfolderedSessionIds,
     hasMatches,

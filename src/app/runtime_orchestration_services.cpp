@@ -103,8 +103,6 @@ namespace
 
 	std::string ResolvePersistedImportFolderIdForSource(AppState& app, const ProviderChatSource& source)
 	{
-		ChatDomainService().EnsureDefaultFolder(app);
-
 		for (const ChatFolder& folder : app.folders)
 		{
 			if (FolderDirectoryMatches(folder.directory, source.folder_directory))
@@ -128,8 +126,8 @@ namespace
 		}
 
 		app.folders.erase(std::remove_if(app.folders.begin(), app.folders.end(), [&](const ChatFolder& folder) { return folder.id == created_folder_id; }), app.folders.end());
-		app.status_line = "Imported chats into General because folder metadata could not be saved.";
-		return uam::constants::kDefaultFolderId;
+		app.status_line = "Imported chats without a saved folder because folder metadata could not be saved.";
+		return "";
 	}
 
 	void ResetAsyncNativeChatLoadTask(uam::platform::AsyncNativeChatLoadTask& task)
@@ -264,6 +262,7 @@ namespace
 
 		native.title = local.title;
 		native.folder_id = local.folder_id;
+		native.pinned = local.pinned;
 		native.linked_files = local.linked_files;
 		native.parent_chat_id = local.parent_chat_id;
 		native.branch_root_chat_id = local.branch_root_chat_id;

@@ -18,8 +18,10 @@
 #include <exception>
 #include <filesystem>
 #include <iomanip>
+#include <map>
 #include <iostream>
 #include <sstream>
+#include <utility>
 
 namespace uam
 {
@@ -30,6 +32,7 @@ namespace
 	constexpr const char* kAcpLifecycleReady = "ready";
 	constexpr const char* kAcpLifecycleProcessing = "processing";
 	constexpr const char* kAcpLifecycleWaitingPermission = "waitingPermission";
+	constexpr const char* kAcpLifecycleWaitingUserInput = "waitingUserInput";
 		constexpr const char* kAcpLifecycleStopped = "stopped";
 		constexpr const char* kAcpLifecycleError = "error";
 		constexpr std::size_t kMinAssistantReplayPrefixBytes = 32;
@@ -44,6 +47,20 @@ namespace
 			void FailAcpTurnOrSession(AcpSessionState& session, const std::string& message);
 			void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat);
 			void SaveChatQuietly(AppState& app, const ChatSession& chat);
+			std::string JsonDiagnosticStringValue(const nlohmann::json& object, const char* key);
+			std::string JsonDiagnosticStringValueOr(const nlohmann::json& object, const char* key, const std::string& fallback);
+			bool JsonBooleanValueOr(const nlohmann::json& object, const char* key, bool fallback);
+			nlohmann::json JsonObjectValue(const nlohmann::json& object, const char* key);
+			nlohmann::json JsonArrayValue(const nlohmann::json& object, const char* key);
+			std::string CodexTurnErrorMessage(const nlohmann::json& error);
+			std::string CodexTurnErrorDetails(const AcpSessionState& session, const nlohmann::json& params, const nlohmann::json& error);
+			std::string FormatAcpFailureMessage(const AcpSessionState& session,
+			                                    const std::string& method,
+			                                    const std::string& request_id,
+			                                    bool has_code,
+			                                    int code,
+			                                    const std::string& message,
+			                                    bool has_detail);
 			bool SyncAcpToolCallsToAssistantMessage(ChatSession& chat, AcpSessionState& session, bool create_if_missing);
 
 		bool IsCodexSession(const AcpSessionState& session)
@@ -379,7 +396,7 @@ namespace
 		};
 	}
 
-	nlohmann::json BuildCodexTurnStartRequest(const int request_id, const std::string& thread_id, const std::string& text, const ChatSession& chat)
+	nlohmann::json BuildCodexTurnStartRequest(const int request_id, const std::string& thread_id, const std::string& text, const ChatSession& chat, const std::string& active_model_id)
 	{
 		nlohmann::json params = {
 			{"threadId", thread_id},
@@ -393,17 +410,19 @@ namespace
 		};
 
 		const std::string model_id = Trim(chat.model_id);
+		const std::string collaboration_model_id = model_id.empty() ? Trim(active_model_id) : model_id;
 		if (!model_id.empty())
 		{
 			params["model"] = model_id;
 		}
 
-		if (Trim(chat.approval_mode) == "plan")
+		const std::string requested_mode_id = Trim(chat.approval_mode) == "plan" ? "plan" : "default";
+		if (!collaboration_model_id.empty())
 		{
 			params["collaborationMode"] = {
-				{"mode", "plan"},
+				{"mode", requested_mode_id},
 				{"settings", {
-					{"model", model_id},
+					{"model", collaboration_model_id},
 					{"reasoning_effort", nullptr},
 					{"developer_instructions", nullptr},
 				}},
@@ -583,6 +602,40 @@ namespace
 			if (method == "session/prompt")
 			{
 				return PromptLengthDetail(params);
+			}
+			if (method == "turn/start")
+			{
+				std::size_t input_chars = 0;
+				const nlohmann::json input = params.value("input", nlohmann::json::array());
+				if (input.is_array())
+				{
+					for (const nlohmann::json& part : input)
+					{
+						if (part.is_object() && part.contains("text") && part["text"].is_string())
+						{
+							input_chars += part["text"].get<std::string>().size();
+						}
+					}
+				}
+				std::ostringstream out;
+				out << "threadId=" << JsonDiagnosticStringValue(params, "threadId") << ", input_chars=" << input_chars;
+				const std::string model = JsonDiagnosticStringValue(params, "model");
+				if (!model.empty())
+				{
+					out << ", model=" << model;
+				}
+				const nlohmann::json collaboration_mode = params.value("collaborationMode", nlohmann::json::object());
+				if (collaboration_mode.is_object())
+				{
+					out << ", collaborationMode=" << JsonDiagnosticStringValue(collaboration_mode, "mode");
+					const nlohmann::json settings = collaboration_mode.value("settings", nlohmann::json::object());
+					const std::string collaboration_model = JsonDiagnosticStringValue(settings, "model");
+					if (!collaboration_model.empty())
+					{
+						out << ", collaborationModel=" << collaboration_model;
+					}
+				}
+				return out.str();
 			}
 				if (method == "session/cancel")
 				{
@@ -1029,6 +1082,7 @@ namespace
 		session.load_session_supported = false;
 		session.processing = false;
 		session.waiting_for_permission = false;
+		session.waiting_for_user_input = false;
 		session.next_request_id = 1;
 		session.initialize_request_id = 0;
 		session.session_setup_request_id = 0;
@@ -1058,9 +1112,15 @@ namespace
 		session.pending_request_methods.clear();
 		session.tool_calls.clear();
 		session.plan_entries.clear();
+		session.plan_summary.clear();
+		session.codex_agent_message_text_by_item_id.clear();
+		session.codex_last_agent_message_item_id.clear();
+		session.codex_streamed_reasoning_keys.clear();
+		session.codex_last_reasoning_section.clear();
 		session.turn_events.clear();
 		session.codex_turn_id.clear();
 		session.pending_permission = AcpPendingPermissionState{};
+		session.pending_user_input = AcpPendingUserInputState{};
 	}
 
 	AcpSessionState& EnsureAcpSessionForChat(AppState& app, const ChatSession& chat)
@@ -1198,7 +1258,7 @@ namespace
 
 	bool SendQueuedPromptIfReady(AcpSessionState& session, const ChatSession& chat)
 	{
-		if (!session.running || !session.session_ready || !session.processing || session.waiting_for_permission || session.prompt_request_id != 0 || session.queued_prompt.empty() || session.session_id.empty())
+		if (!session.running || !session.session_ready || !session.processing || session.waiting_for_permission || session.waiting_for_user_input || session.prompt_request_id != 0 || session.queued_prompt.empty() || session.session_id.empty())
 		{
 			return false;
 		}
@@ -1208,7 +1268,7 @@ namespace
 		session.prompt_request_id = id;
 		session.lifecycle_state = kAcpLifecycleProcessing;
 		const nlohmann::json request = IsCodexSession(session)
-			? BuildCodexTurnStartRequest(id, session.session_id, prompt, chat)
+			? BuildCodexTurnStartRequest(id, session.session_id, prompt, chat, session.current_model_id)
 			: BuildPromptRequest(id, session.session_id, prompt);
 		if (!WriteAcpMessage(session, request))
 		{
@@ -1224,6 +1284,122 @@ namespace
 	void SaveChatQuietly(AppState& app, const ChatSession& chat)
 	{
 		(void)ChatRepository::SaveChat(app.data_root, chat);
+	}
+
+	bool MessageBlocksEqual(const std::vector<MessageBlock>& lhs, const std::vector<MessageBlock>& rhs)
+	{
+		if (lhs.size() != rhs.size())
+		{
+			return false;
+		}
+		for (std::size_t i = 0; i < lhs.size(); ++i)
+		{
+			if (lhs[i].type != rhs[i].type ||
+			    lhs[i].text != rhs[i].text ||
+			    lhs[i].tool_call_id != rhs[i].tool_call_id ||
+			    lhs[i].request_id_json != rhs[i].request_id_json)
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	bool PersistableTurnEvent(const AcpTurnEventState& event)
+	{
+		if (event.type == "assistant_text" || event.type == "thought")
+		{
+			return !event.text.empty();
+		}
+		if (event.type == "tool_call")
+		{
+			return !event.tool_call_id.empty();
+		}
+		if (event.type == "permission_request")
+		{
+			return !event.request_id_json.empty();
+		}
+		if (event.type == "user_input_request")
+		{
+			return !event.request_id_json.empty();
+		}
+		return event.type == "plan";
+	}
+
+	std::vector<MessageBlock> MessageBlocksFromTurnEvents(const AcpSessionState& session)
+	{
+		std::vector<MessageBlock> blocks;
+		blocks.reserve(session.turn_events.size());
+		for (const AcpTurnEventState& event : session.turn_events)
+		{
+			if (!PersistableTurnEvent(event))
+			{
+				continue;
+			}
+
+			if ((event.type == "assistant_text" || event.type == "thought") &&
+			    !blocks.empty() &&
+			    blocks.back().type == event.type)
+			{
+				blocks.back().text += event.text;
+				continue;
+			}
+
+			if ((event.type == "tool_call" && std::any_of(blocks.begin(), blocks.end(), [&](const MessageBlock& block) {
+				    return block.type == "tool_call" && block.tool_call_id == event.tool_call_id;
+			    })) ||
+			    (event.type == "permission_request" && std::any_of(blocks.begin(), blocks.end(), [&](const MessageBlock& block) {
+				    return block.type == "permission_request" && block.request_id_json == event.request_id_json;
+			    })) ||
+			    (event.type == "user_input_request" && std::any_of(blocks.begin(), blocks.end(), [&](const MessageBlock& block) {
+				    return block.type == "user_input_request" && block.request_id_json == event.request_id_json;
+			    })))
+			{
+				continue;
+			}
+
+			MessageBlock block;
+			block.type = event.type;
+			block.text = event.text;
+			block.tool_call_id = event.tool_call_id;
+			block.request_id_json = event.request_id_json;
+			blocks.push_back(std::move(block));
+		}
+		return blocks;
+	}
+
+	bool SyncMessageBlocksFromTurnEvents(Message& message, const AcpSessionState& session)
+	{
+		if (session.turn_events.empty())
+		{
+			return false;
+		}
+
+		std::vector<MessageBlock> blocks = MessageBlocksFromTurnEvents(session);
+		if (blocks.empty() || MessageBlocksEqual(message.blocks, blocks))
+		{
+			return false;
+		}
+
+		message.blocks = std::move(blocks);
+		return true;
+	}
+
+	bool SyncCurrentAssistantMessageBlocksFromTurnEvents(ChatSession& chat, AcpSessionState& session)
+	{
+		if (session.current_assistant_message_index < 0 ||
+		    session.current_assistant_message_index >= static_cast<int>(chat.messages.size()) ||
+		    chat.messages[static_cast<std::size_t>(session.current_assistant_message_index)].role != MessageRole::Assistant)
+		{
+			return false;
+		}
+
+		if (SyncMessageBlocksFromTurnEvents(chat.messages[static_cast<std::size_t>(session.current_assistant_message_index)], session))
+		{
+			chat.updated_at = TimestampNow();
+			return true;
+		}
+		return false;
 	}
 
 	void AppendAssistantTextTurnEvent(AcpSessionState& session, const std::string& chunk)
@@ -1307,17 +1483,56 @@ namespace
 		session.turn_events.push_back(std::move(event));
 	}
 
+	void AppendUserInputTurnEventIfNeeded(AcpSessionState& session, const std::string& request_id_json, const std::string& item_id)
+	{
+		if (request_id_json.empty())
+		{
+			return;
+		}
+
+		const bool exists = std::any_of(session.turn_events.begin(), session.turn_events.end(), [&](const AcpTurnEventState& event) {
+			return event.type == "user_input_request" && event.request_id_json == request_id_json;
+		});
+		if (exists)
+		{
+			return;
+		}
+
+		AcpTurnEventState event;
+		event.type = "user_input_request";
+		event.request_id_json = request_id_json;
+		event.tool_call_id = item_id;
+		session.turn_events.push_back(std::move(event));
+	}
+
+	void AppendPlanTurnEventIfNeeded(AcpSessionState& session)
+	{
+		const bool exists = std::any_of(session.turn_events.begin(), session.turn_events.end(), [](const AcpTurnEventState& event) {
+			return event.type == "plan";
+		});
+		if (exists)
+		{
+			return;
+		}
+
+		AcpTurnEventState event;
+		event.type = "plan";
+		session.turn_events.push_back(std::move(event));
+	}
+
 		void CompletePromptTurn(AcpSessionState& session, const char* lifecycle_state)
 		{
 			session.prompt_request_id = 0;
 			session.processing = false;
 			session.waiting_for_permission = false;
+			session.waiting_for_user_input = false;
 			session.queued_prompt.clear();
 			session.current_assistant_message_index = -1;
 			session.codex_turn_id.clear();
 			session.load_history_replay_updates.clear();
 			session.pending_assistant_thoughts.clear();
 			session.pending_permission = AcpPendingPermissionState{};
+			session.pending_user_input = AcpPendingUserInputState{};
 			session.lifecycle_state = lifecycle_state;
 		}
 
@@ -1344,6 +1559,25 @@ namespace
 			app.chats_with_unseen_updates.insert(chat.id);
 		}
 
+		Message& EnsureAssistantMessage(ChatSession& chat, AcpSessionState& session)
+		{
+			if (session.current_assistant_message_index >= 0 &&
+			    session.current_assistant_message_index < static_cast<int>(chat.messages.size()) &&
+			    chat.messages[static_cast<std::size_t>(session.current_assistant_message_index)].role == MessageRole::Assistant)
+			{
+				return chat.messages[static_cast<std::size_t>(session.current_assistant_message_index)];
+			}
+
+			Message message;
+			message.role = MessageRole::Assistant;
+			message.provider = MessageProviderId(session);
+			message.created_at = TimestampNow();
+			chat.messages.push_back(std::move(message));
+			session.current_assistant_message_index = static_cast<int>(chat.messages.size()) - 1;
+			session.turn_assistant_message_index = session.current_assistant_message_index;
+			return chat.messages.back();
+		}
+
 		bool AppendThoughtChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk)
 		{
 			if (chunk.empty())
@@ -1358,6 +1592,7 @@ namespace
 			{
 				Message& message = chat.messages[static_cast<std::size_t>(session.current_assistant_message_index)];
 				AppendThoughtText(message.thoughts, chunk, starts_new_block);
+				(void)SyncMessageBlocksFromTurnEvents(message, session);
 				chat.updated_at = TimestampNow();
 				return true;
 			}
@@ -1391,13 +1626,7 @@ namespace
 		    session.current_assistant_message_index >= static_cast<int>(chat.messages.size()) ||
 		    chat.messages[static_cast<std::size_t>(session.current_assistant_message_index)].role != MessageRole::Assistant)
 		{
-			Message message;
-			message.role = MessageRole::Assistant;
-			message.provider = MessageProviderId(session);
-			message.created_at = TimestampNow();
-			chat.messages.push_back(std::move(message));
-			session.current_assistant_message_index = static_cast<int>(chat.messages.size()) - 1;
-			session.turn_assistant_message_index = session.current_assistant_message_index;
+			(void)EnsureAssistantMessage(chat, session);
 		}
 
 			Message& message = chat.messages[static_cast<std::size_t>(session.current_assistant_message_index)];
@@ -1414,6 +1643,7 @@ namespace
 				session.turn_assistant_message_index = session.current_assistant_message_index;
 		}
 			AppendAssistantTextTurnEvent(session, delta);
+			(void)SyncCurrentAssistantMessageBlocksFromTurnEvents(chat, session);
 		}
 
 		ToolCall PersistedToolCallFromAcpToolCall(const AcpToolCallState& tool_call)
@@ -1473,13 +1703,7 @@ namespace
 					return false;
 				}
 
-				Message message;
-				message.role = MessageRole::Assistant;
-				message.provider = MessageProviderId(session);
-				message.created_at = TimestampNow();
-				chat.messages.push_back(std::move(message));
-				session.current_assistant_message_index = static_cast<int>(chat.messages.size()) - 1;
-				session.turn_assistant_message_index = session.current_assistant_message_index;
+				(void)EnsureAssistantMessage(chat, session);
 			}
 
 			Message& message = chat.messages[static_cast<std::size_t>(session.current_assistant_message_index)];
@@ -1488,6 +1712,81 @@ namespace
 			{
 				changed |= UpsertPersistedToolCall(message.tool_calls, tool_call);
 			}
+			changed |= SyncMessageBlocksFromTurnEvents(message, session);
+			if (changed)
+			{
+				chat.updated_at = TimestampNow();
+			}
+			return changed;
+		}
+
+		MessagePlanEntry PersistedPlanEntryFromAcpPlanEntry(const AcpPlanEntryState& entry)
+		{
+			MessagePlanEntry persisted;
+			persisted.content = entry.content;
+			persisted.priority = entry.priority;
+			persisted.status = entry.status;
+			return persisted;
+		}
+
+		std::vector<MessagePlanEntry> PersistedPlanEntriesFromAcpPlanEntries(const std::vector<AcpPlanEntryState>& entries)
+		{
+			std::vector<MessagePlanEntry> persisted;
+			persisted.reserve(entries.size());
+			for (const AcpPlanEntryState& entry : entries)
+			{
+				persisted.push_back(PersistedPlanEntryFromAcpPlanEntry(entry));
+			}
+			return persisted;
+		}
+
+		bool MessagePlanEntriesEqual(const std::vector<MessagePlanEntry>& lhs, const std::vector<MessagePlanEntry>& rhs)
+		{
+			if (lhs.size() != rhs.size())
+			{
+				return false;
+			}
+			for (std::size_t i = 0; i < lhs.size(); ++i)
+			{
+				if (lhs[i].content != rhs[i].content ||
+				    lhs[i].priority != rhs[i].priority ||
+				    lhs[i].status != rhs[i].status)
+				{
+					return false;
+				}
+			}
+			return true;
+		}
+
+		bool SyncAcpPlanToAssistantMessage(ChatSession& chat, AcpSessionState& session, const bool create_if_missing)
+		{
+			if (uam::strings::Trim(session.plan_summary).empty() && session.plan_entries.empty())
+			{
+				return false;
+			}
+
+			if (session.current_assistant_message_index < 0 ||
+			    session.current_assistant_message_index >= static_cast<int>(chat.messages.size()) ||
+			    chat.messages[static_cast<std::size_t>(session.current_assistant_message_index)].role != MessageRole::Assistant)
+			{
+				if (!create_if_missing)
+				{
+					return false;
+				}
+				(void)EnsureAssistantMessage(chat, session);
+			}
+
+			Message& message = chat.messages[static_cast<std::size_t>(session.current_assistant_message_index)];
+			const std::vector<MessagePlanEntry> persisted_entries = PersistedPlanEntriesFromAcpPlanEntries(session.plan_entries);
+			bool changed = false;
+			if (message.plan_summary != session.plan_summary ||
+			    !MessagePlanEntriesEqual(message.plan_entries, persisted_entries))
+			{
+				message.plan_summary = session.plan_summary;
+				message.plan_entries = persisted_entries;
+				changed = true;
+			}
+			changed |= SyncMessageBlocksFromTurnEvents(message, session);
 			if (changed)
 			{
 				chat.updated_at = TimestampNow();
@@ -1545,7 +1844,7 @@ namespace
 				return;
 			}
 
-			const bool active_turn = session.processing || session.waiting_for_permission || session.prompt_request_id != 0;
+			const bool active_turn = session.processing || session.waiting_for_permission || session.waiting_for_user_input || session.prompt_request_id != 0;
 			if (!active_turn)
 			{
 				return;
@@ -1614,6 +1913,7 @@ namespace
 
 		if (update_type == "plan" && update.contains("entries") && update["entries"].is_array())
 		{
+			session.plan_summary = JsonDiagnosticStringValueOr(update, "summary", JsonDiagnosticStringValue(update, "explanation"));
 			session.plan_entries.clear();
 			for (const nlohmann::json& entry : update["entries"])
 			{
@@ -1626,6 +1926,11 @@ namespace
 				plan_entry.priority = entry.value("priority", "");
 				plan_entry.status = entry.value("status", "");
 				session.plan_entries.push_back(std::move(plan_entry));
+			}
+			AppendPlanTurnEventIfNeeded(session);
+			if (SyncAcpPlanToAssistantMessage(chat, session, true))
+			{
+				SaveChatQuietly(app, chat);
 			}
 		}
 	}
@@ -1705,6 +2010,41 @@ namespace
 		return WriteAcpMessage(session, response, error_out);
 	}
 
+	nlohmann::json BuildCodexUserInputResponse(const std::string& request_id_json, const std::map<std::string, std::vector<std::string>>& answers)
+	{
+		nlohmann::json answer_map = nlohmann::json::object();
+		for (const auto& [question_id, values] : answers)
+		{
+			if (question_id.empty())
+			{
+				continue;
+			}
+
+			nlohmann::json answer_values = nlohmann::json::array();
+			for (const std::string& value : values)
+			{
+				answer_values.push_back(value);
+			}
+			answer_map[question_id] = {{"answers", std::move(answer_values)}};
+		}
+
+		return {
+			{"jsonrpc", "2.0"},
+			{"id", StableStringToJsonRpcId(request_id_json)},
+			{"result", {
+				{"answers", std::move(answer_map)},
+			}},
+		};
+	}
+
+	bool SendCodexUserInputResponse(AcpSessionState& session,
+	                                const std::string& request_id_json,
+	                                const std::map<std::string, std::vector<std::string>>& answers,
+	                                std::string* error_out = nullptr)
+	{
+		return WriteAcpMessage(session, BuildCodexUserInputResponse(request_id_json, answers), error_out);
+	}
+
 	void HandlePermissionRequest(AcpSessionState& session, const nlohmann::json& message)
 	{
 		const nlohmann::json params = message.value("params", nlohmann::json::object());
@@ -1759,10 +2099,10 @@ namespace
 
 	std::string CodexItemTitle(const nlohmann::json& item)
 	{
-		const std::string type = item.value("type", "tool");
+		const std::string type = JsonDiagnosticStringValueOr(item, "type", "tool");
 		if (type == "commandExecution")
 		{
-			const std::string command = item.value("command", "");
+			const std::string command = JsonDiagnosticStringValue(item, "command");
 			return command.empty() ? "Command" : command;
 		}
 		if (type == "fileChange")
@@ -1771,29 +2111,29 @@ namespace
 		}
 		if (type == "mcpToolCall")
 		{
-			return item.value("tool", "MCP tool");
+			return JsonDiagnosticStringValueOr(item, "tool", "MCP tool");
 		}
 		if (type == "dynamicToolCall")
 		{
-			return item.value("tool", "Tool");
+			return JsonDiagnosticStringValueOr(item, "tool", "Tool");
 		}
 		return type;
 	}
 
 	std::string CodexItemContent(const nlohmann::json& item)
 	{
-		const std::string type = item.value("type", "");
+		const std::string type = JsonDiagnosticStringValue(item, "type");
 		if (type == "commandExecution")
 		{
-			return item.value("aggregatedOutput", "");
+			return JsonDiagnosticStringValue(item, "aggregatedOutput");
 		}
 		if (type == "agentMessage")
 		{
-			return item.value("text", "");
+			return JsonDiagnosticStringValue(item, "text");
 		}
 		if (type == "plan")
 		{
-			return item.value("text", "");
+			return JsonDiagnosticStringValue(item, "text");
 		}
 		if (type == "fileChange" || type == "mcpToolCall" || type == "dynamicToolCall")
 		{
@@ -1802,37 +2142,267 @@ namespace
 		return "";
 	}
 
+	std::string CodexReasoningPartText(const nlohmann::json& value)
+	{
+		if (value.is_string())
+		{
+			return value.get<std::string>();
+		}
+		if (value.is_object())
+		{
+			return JsonDiagnosticStringValue(value, "text");
+		}
+		return value.is_null() ? "" : value.dump();
+	}
+
+	std::string CodexReasoningKey(const std::string& item_id, const std::string& section, const int index)
+	{
+		if (item_id.empty())
+		{
+			return "";
+		}
+		if (index < 0)
+		{
+			return item_id + "\n" + section;
+		}
+		return item_id + "\n" + section + "\n" + std::to_string(index);
+	}
+
+	int JsonIntValueOr(const nlohmann::json& object, const char* key, const int fallback)
+	{
+		if (!object.is_object())
+		{
+			return fallback;
+		}
+		const auto it = object.find(key);
+		if (it == object.end() || !it->is_number_integer())
+		{
+			return fallback;
+		}
+		return it->get<int>();
+	}
+
+	bool CodexReasoningWasStreamed(const AcpSessionState& session, const std::string& item_id, const std::string& section, const int index)
+	{
+		if (item_id.empty())
+		{
+			return false;
+		}
+		const std::string wildcard_key = CodexReasoningKey(item_id, section, -1);
+		const std::string indexed_key = CodexReasoningKey(item_id, section, index);
+		return session.codex_streamed_reasoning_keys.find(wildcard_key) != session.codex_streamed_reasoning_keys.end() ||
+		       session.codex_streamed_reasoning_keys.find(indexed_key) != session.codex_streamed_reasoning_keys.end();
+	}
+
+	std::string CodexCompletedReasoningSectionText(const AcpSessionState& session,
+	                                              const nlohmann::json& item,
+	                                              const char* key,
+	                                              const std::string& item_id,
+	                                              const std::string& section)
+	{
+		if (!item.is_object())
+		{
+			return "";
+		}
+		const auto it = item.find(key);
+		if (it == item.end() || it->is_null())
+		{
+			return "";
+		}
+		if (!it->is_array())
+		{
+			if (CodexReasoningWasStreamed(session, item_id, section, 0))
+			{
+				return "";
+			}
+			return JsonDiagnosticStringValue(item, key);
+		}
+
+		std::ostringstream out;
+		bool first = true;
+		for (std::size_t i = 0; i < it->size(); ++i)
+		{
+			if (CodexReasoningWasStreamed(session, item_id, section, static_cast<int>(i)))
+			{
+				continue;
+			}
+			const std::string text = CodexReasoningPartText((*it)[i]);
+			if (text.empty())
+			{
+				continue;
+			}
+			if (!first)
+			{
+				out << '\n';
+			}
+			out << text;
+			first = false;
+		}
+		return out.str();
+	}
+
+	bool AppendCodexReasoningThought(ChatSession& chat,
+	                                 AcpSessionState& session,
+	                                 const std::string& item_id,
+	                                 const std::string& section,
+	                                 const std::string& text,
+	                                 const int index,
+	                                 const bool streamed)
+	{
+		if (text.empty())
+		{
+			return false;
+		}
+
+		if (streamed && !item_id.empty())
+		{
+			session.codex_streamed_reasoning_keys.insert(CodexReasoningKey(item_id, section, index));
+		}
+
+		std::string chunk = text;
+		if (session.codex_last_reasoning_section != section)
+		{
+			chunk = (session.codex_last_reasoning_section.empty() ? "### " : "\n\n### ") + section + "\n" + text;
+			session.codex_last_reasoning_section = section;
+		}
+
+		(void)EnsureAssistantMessage(chat, session);
+		return AppendThoughtChunk(chat, session, chunk);
+	}
+
+	bool HandleCodexCompletedReasoningItem(ChatSession& chat, AcpSessionState& session, const nlohmann::json& item)
+	{
+		const std::string item_id = JsonDiagnosticStringValue(item, "id");
+		bool changed = false;
+		const std::string raw_content = CodexCompletedReasoningSectionText(session, item, "content", item_id, "Reasoning");
+		if (!raw_content.empty())
+		{
+			changed |= AppendCodexReasoningThought(chat, session, item_id, "Reasoning", raw_content, -1, false);
+		}
+
+		const std::string summary = CodexCompletedReasoningSectionText(session, item, "summary", item_id, "Summary");
+		if (!summary.empty())
+		{
+			changed |= AppendCodexReasoningThought(chat, session, item_id, "Summary", summary, -1, false);
+		}
+		return changed;
+	}
+
+	std::string CodexStreamedAgentMessageDelta(AcpSessionState& session, const std::string& item_id, const std::string& delta)
+	{
+		if (delta.empty())
+		{
+			return "";
+		}
+		if (!item_id.empty())
+		{
+			session.codex_agent_message_text_by_item_id[item_id] += delta;
+		}
+		return delta;
+	}
+
+	std::string CodexCompletedAgentMessageDelta(AcpSessionState& session, const std::string& item_id, const std::string& text)
+	{
+		if (text.empty())
+		{
+			return "";
+		}
+		if (item_id.empty())
+		{
+			return text;
+		}
+
+		std::string& streamed_text = session.codex_agent_message_text_by_item_id[item_id];
+		if (streamed_text.empty())
+		{
+			streamed_text = text;
+			return text;
+		}
+		if (text == streamed_text || StartsWith(streamed_text, text))
+		{
+			return "";
+		}
+		if (StartsWith(text, streamed_text))
+		{
+			const std::string suffix = text.substr(streamed_text.size());
+			streamed_text = text;
+			return suffix;
+		}
+
+		streamed_text = text;
+		return text;
+	}
+
+	bool CurrentAssistantMessageHasContent(const ChatSession& chat, const AcpSessionState& session)
+	{
+		return session.current_assistant_message_index >= 0 &&
+		       session.current_assistant_message_index < static_cast<int>(chat.messages.size()) &&
+		       chat.messages[static_cast<std::size_t>(session.current_assistant_message_index)].role == MessageRole::Assistant &&
+		       !chat.messages[static_cast<std::size_t>(session.current_assistant_message_index)].content.empty();
+	}
+
+	void AppendCodexAgentMessageText(ChatSession& chat, AcpSessionState& session, const std::string& item_id, const std::string& delta)
+	{
+		if (delta.empty())
+		{
+			return;
+		}
+
+		std::string chunk = delta;
+		if (!item_id.empty() &&
+		    !session.codex_last_agent_message_item_id.empty() &&
+		    session.codex_last_agent_message_item_id != item_id &&
+		    CurrentAssistantMessageHasContent(chat, session) &&
+		    !StartsWithLineBreak(delta))
+		{
+			chunk = "\n\n" + delta;
+		}
+		if (!item_id.empty())
+		{
+			session.codex_last_agent_message_item_id = item_id;
+		}
+		AppendAssistantChunk(chat, session, chunk);
+	}
+
+	void RemoveCodexPlanDeltaEntryForItem(AcpSessionState& session, const std::string& item_id)
+	{
+		if (item_id.empty())
+		{
+			return;
+		}
+		session.plan_entries.erase(std::remove_if(session.plan_entries.begin(), session.plan_entries.end(), [&](const AcpPlanEntryState& entry) {
+			return entry.priority == item_id;
+		}), session.plan_entries.end());
+	}
+
 	void HandleCodexToolItem(AcpSessionState& session, ChatSession& chat, const nlohmann::json& item)
 	{
-		const std::string item_id = item.value("id", "");
-		const std::string type = item.value("type", "");
+		const std::string item_id = JsonDiagnosticStringValue(item, "id");
+		const std::string type = JsonDiagnosticStringValue(item, "type");
 		if (item_id.empty())
 		{
 			return;
 		}
 		if (type == "agentMessage")
 		{
-			AppendAssistantChunk(chat, session, CodexItemContent(item));
+			const std::string content = CodexItemContent(item);
+			if (!content.empty())
+			{
+				AppendCodexAgentMessageText(chat, session, item_id, CodexCompletedAgentMessageDelta(session, item_id, content));
+			}
+			return;
+		}
+		if (type == "reasoning")
+		{
+			(void)HandleCodexCompletedReasoningItem(chat, session, item);
 			return;
 		}
 		if (type == "plan")
 		{
-			AcpPlanEntryState& entry = [&]() -> AcpPlanEntryState&
-			{
-				for (AcpPlanEntryState& existing : session.plan_entries)
-				{
-					if (existing.priority == item_id)
-					{
-						return existing;
-					}
-				}
-				AcpPlanEntryState created;
-				created.priority = item_id;
-				created.status = "pending";
-				session.plan_entries.push_back(std::move(created));
-				return session.plan_entries.back();
-			}();
-			entry.content = CodexItemContent(item);
+			session.plan_summary = CodexItemContent(item);
+			RemoveCodexPlanDeltaEntryForItem(session, item_id);
+			AppendPlanTurnEventIfNeeded(session);
+			(void)SyncAcpPlanToAssistantMessage(chat, session, true);
 			return;
 		}
 		if (type != "commandExecution" && type != "fileChange" && type != "mcpToolCall" && type != "dynamicToolCall")
@@ -1843,7 +2413,7 @@ namespace
 		AcpToolCallState& tool_call = UpsertToolCall(session, item_id);
 		tool_call.title = CodexItemTitle(item);
 		tool_call.kind = type;
-		tool_call.status = item.value("status", tool_call.status.empty() ? "pending" : tool_call.status);
+		tool_call.status = JsonDiagnosticStringValueOr(item, "status", tool_call.status.empty() ? "pending" : tool_call.status);
 		const std::string content = CodexItemContent(item);
 		if (!content.empty())
 		{
@@ -1855,21 +2425,21 @@ namespace
 
 	void HandleCodexPendingPermission(AcpSessionState& session, const nlohmann::json& message, const std::string& kind)
 	{
-		const nlohmann::json params = message.value("params", nlohmann::json::object());
+		const nlohmann::json params = JsonObjectValue(message, "params");
 		AcpPendingPermissionState pending;
 		pending.request_id_json = JsonRpcIdToStableString(message.value("id", nlohmann::json(nullptr)));
-		pending.provider_request_method = message.value("method", "");
+		pending.provider_request_method = JsonDiagnosticStringValue(message, "method");
 		pending.provider_request_kind = kind;
 		pending.codex_approval_payload_json = params.dump();
-		pending.tool_call_id = params.value("itemId", pending.request_id_json);
+		pending.tool_call_id = JsonDiagnosticStringValueOr(params, "itemId", pending.request_id_json);
 		pending.status = "pending";
 
 		if (kind == "codex-command")
 		{
 			pending.title = "Command approval";
 			pending.kind = "commandExecution";
-			pending.content = params.value("command", params.value("reason", ""));
-			const nlohmann::json decisions = params.value("availableDecisions", nlohmann::json::array());
+			pending.content = JsonDiagnosticStringValueOr(params, "command", JsonDiagnosticStringValue(params, "reason"));
+			const nlohmann::json decisions = JsonArrayValue(params, "availableDecisions");
 			if (decisions.is_array())
 			{
 				for (const nlohmann::json& decision : decisions)
@@ -1887,13 +2457,13 @@ namespace
 		{
 			pending.title = "File change approval";
 			pending.kind = "fileChange";
-			pending.content = params.value("reason", params.value("grantRoot", ""));
+			pending.content = JsonDiagnosticStringValueOr(params, "reason", JsonDiagnosticStringValue(params, "grantRoot"));
 		}
 		else
 		{
 			pending.title = "Permission approval";
 			pending.kind = "permissions";
-			pending.content = params.value("reason", "");
+			pending.content = JsonDiagnosticStringValue(params, "reason");
 		}
 
 		if (pending.options.empty())
@@ -1918,23 +2488,135 @@ namespace
 		session.lifecycle_state = kAcpLifecycleWaitingPermission;
 	}
 
+	std::string CodexUserInputContent(const AcpPendingUserInputState& pending)
+	{
+		std::ostringstream out;
+		bool first = true;
+		for (const AcpUserInputQuestionState& question : pending.questions)
+		{
+			if (!first)
+			{
+				out << "\n\n";
+			}
+			if (!question.header.empty())
+			{
+				out << question.header << "\n";
+			}
+			out << question.question;
+			first = false;
+		}
+		return out.str();
+	}
+
+	void HandleCodexUserInputRequest(AcpSessionState& session, const nlohmann::json& message)
+	{
+		const nlohmann::json params = JsonObjectValue(message, "params");
+		AcpPendingUserInputState pending;
+		pending.request_id_json = JsonRpcIdToStableString(message.value("id", nlohmann::json(nullptr)));
+		pending.item_id = JsonDiagnosticStringValue(params, "itemId");
+		pending.status = "pending";
+
+		const nlohmann::json questions = JsonArrayValue(params, "questions");
+		if (questions.is_array())
+		{
+			for (const nlohmann::json& question_json : questions)
+			{
+				if (!question_json.is_object())
+				{
+					continue;
+				}
+
+				AcpUserInputQuestionState question;
+				question.id = JsonDiagnosticStringValue(question_json, "id");
+				question.header = JsonDiagnosticStringValue(question_json, "header");
+				question.question = JsonDiagnosticStringValue(question_json, "question");
+				question.is_other = JsonBooleanValueOr(question_json, "isOther", false);
+				question.is_secret = JsonBooleanValueOr(question_json, "isSecret", false);
+
+				const nlohmann::json options = JsonArrayValue(question_json, "options");
+				if (options.is_array())
+				{
+					for (const nlohmann::json& option_json : options)
+					{
+						if (!option_json.is_object())
+						{
+							continue;
+						}
+
+						AcpUserInputOptionState option;
+						option.label = JsonDiagnosticStringValue(option_json, "label");
+						option.description = JsonDiagnosticStringValue(option_json, "description");
+						if (!option.label.empty() || !option.description.empty())
+						{
+							question.options.push_back(std::move(option));
+						}
+					}
+				}
+
+				if (!question.id.empty())
+				{
+					pending.questions.push_back(std::move(question));
+				}
+			}
+		}
+
+		if (!pending.item_id.empty())
+		{
+			AcpToolCallState& tracked_tool_call = UpsertToolCall(session, pending.item_id);
+			tracked_tool_call.title = "User input";
+			tracked_tool_call.kind = "userInput";
+			tracked_tool_call.status = pending.status;
+			tracked_tool_call.content = CodexUserInputContent(pending);
+		}
+
+		AppendUserInputTurnEventIfNeeded(session, pending.request_id_json, pending.item_id);
+		session.pending_user_input = std::move(pending);
+		session.waiting_for_user_input = true;
+		session.processing = true;
+		session.lifecycle_state = kAcpLifecycleWaitingUserInput;
+	}
+
 	void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
 	{
-		const std::string method = message.value("method", "");
-		const nlohmann::json params = message.value("params", nlohmann::json::object());
+		const std::string method = JsonDiagnosticStringValue(message, "method");
+		const nlohmann::json params = JsonObjectValue(message, "params");
 
 		if (method == "turn/started")
 		{
-			const nlohmann::json turn = params.value("turn", nlohmann::json::object());
+			const nlohmann::json turn = JsonObjectValue(params, "turn");
 			if (turn.is_object())
 			{
-				session.codex_turn_id = turn.value("id", session.codex_turn_id);
+				session.codex_turn_id = JsonDiagnosticStringValueOr(turn, "id", session.codex_turn_id);
 			}
 			session.lifecycle_state = kAcpLifecycleProcessing;
 			return;
 		}
 		if (method == "turn/completed")
 		{
+			const nlohmann::json turn = JsonObjectValue(params, "turn");
+			const nlohmann::json error = JsonObjectValue(turn, "error");
+			const std::string turn_status = JsonDiagnosticStringValue(turn, "status");
+			if ((error.is_object() && !error.empty()) || turn_status == "failed")
+			{
+				nlohmann::json error_params = {
+					{"willRetry", false},
+					{"threadId", JsonDiagnosticStringValue(params, "threadId")},
+					{"turnId", JsonDiagnosticStringValue(params, "turnId")},
+				};
+				if (JsonDiagnosticStringValue(error_params, "turnId").empty() && turn.is_object())
+				{
+					error_params["turnId"] = JsonDiagnosticStringValue(turn, "id");
+				}
+				const nlohmann::json normalized_error = error.is_object() ? error : nlohmann::json::object();
+				const std::string error_message = CodexTurnErrorMessage(normalized_error);
+				const std::string detail = CodexTurnErrorDetails(session, error_params, normalized_error);
+				AppendAcpDiagnostic(session, "notification", "codex_turn_completed_error", method, "", false, 0, error_message, detail);
+				(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
+				FailAcpTurnOrSession(session, FormatAcpFailureMessage(session, method, "", false, 0, error_message, !detail.empty()));
+				SaveChatQuietly(app, chat);
+				MarkAcpChatUnseenIfBackground(app, chat);
+				return;
+			}
 			(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 			CompletePromptTurn(session, kAcpLifecycleReady);
 			SaveChatQuietly(app, chat);
@@ -1943,13 +2625,53 @@ namespace
 		}
 		if (method == "item/agentMessage/delta")
 		{
-			AppendAssistantChunk(chat, session, params.value("delta", ""));
+			const std::string item_id = JsonDiagnosticStringValue(params, "itemId");
+			AppendCodexAgentMessageText(chat,
+			                            session,
+			                            item_id,
+			                            CodexStreamedAgentMessageDelta(session, item_id, JsonDiagnosticStringValue(params, "delta")));
 			SaveChatQuietly(app, chat);
+			return;
+		}
+		if (method == "item/reasoning/textDelta")
+		{
+			if (AppendCodexReasoningThought(chat,
+			                               session,
+			                               JsonDiagnosticStringValue(params, "itemId"),
+			                               "Reasoning",
+			                               JsonDiagnosticStringValue(params, "delta"),
+			                               JsonIntValueOr(params, "contentIndex", -1),
+			                               true))
+			{
+				SaveChatQuietly(app, chat);
+			}
+			return;
+		}
+		if (method == "item/reasoning/summaryTextDelta")
+		{
+			if (AppendCodexReasoningThought(chat,
+			                               session,
+			                               JsonDiagnosticStringValue(params, "itemId"),
+			                               "Summary",
+			                               JsonDiagnosticStringValue(params, "delta"),
+			                               JsonIntValueOr(params, "summaryIndex", -1),
+			                               true))
+			{
+				SaveChatQuietly(app, chat);
+			}
+			return;
+		}
+		if (method == "item/reasoning/summaryPartAdded")
+		{
 			return;
 		}
 		if (method == "item/plan/delta")
 		{
-			const std::string item_id = params.value("itemId", "");
+			const std::string item_id = JsonDiagnosticStringValue(params, "itemId");
+			if (item_id.empty())
+			{
+				return;
+			}
 			AcpPlanEntryState* entry = nullptr;
 			for (AcpPlanEntryState& existing : session.plan_entries)
 			{
@@ -1967,12 +2689,16 @@ namespace
 				session.plan_entries.push_back(std::move(created));
 				entry = &session.plan_entries.back();
 			}
-			entry->content += params.value("delta", "");
+			entry->content += JsonDiagnosticStringValue(params, "delta");
+			AppendPlanTurnEventIfNeeded(session);
+			(void)SyncAcpPlanToAssistantMessage(chat, session, true);
+			SaveChatQuietly(app, chat);
 			return;
 		}
 		if (method == "turn/plan/updated")
 		{
-			const nlohmann::json plan = params.value("plan", nlohmann::json::array());
+			session.plan_summary = JsonDiagnosticStringValue(params, "explanation");
+			const nlohmann::json plan = JsonArrayValue(params, "plan");
 			if (plan.is_array())
 			{
 				session.plan_entries.clear();
@@ -1983,22 +2709,27 @@ namespace
 						continue;
 					}
 					AcpPlanEntryState entry;
-					entry.content = step.value("step", "");
-					entry.status = step.value("status", "");
+					entry.content = JsonDiagnosticStringValue(step, "step");
+					entry.status = JsonDiagnosticStringValue(step, "status");
 					session.plan_entries.push_back(std::move(entry));
 				}
+			}
+			AppendPlanTurnEventIfNeeded(session);
+			if (SyncAcpPlanToAssistantMessage(chat, session, true))
+			{
+				SaveChatQuietly(app, chat);
 			}
 			return;
 		}
 		if (method == "item/started" || method == "item/completed")
 		{
-			HandleCodexToolItem(session, chat, params.value("item", nlohmann::json::object()));
+			HandleCodexToolItem(session, chat, JsonObjectValue(params, "item"));
 			SaveChatQuietly(app, chat);
 			return;
 		}
 		if (method == "item/commandExecution/outputDelta" || method == "command/exec/outputDelta" || method == "item/fileChange/outputDelta")
 		{
-			const std::string item_id = params.value("itemId", "");
+			const std::string item_id = JsonDiagnosticStringValue(params, "itemId");
 			if (!item_id.empty())
 			{
 				AcpToolCallState& tool_call = UpsertToolCall(session, item_id);
@@ -2014,7 +2745,7 @@ namespace
 				{
 					tool_call.status = "running";
 				}
-				tool_call.content += params.value("delta", "");
+				tool_call.content += JsonDiagnosticStringValue(params, "delta");
 				AppendToolTurnEventIfNeeded(session, item_id);
 				(void)SyncAcpToolCallsToAssistantMessage(chat, session, false);
 				SaveChatQuietly(app, chat);
@@ -2036,13 +2767,33 @@ namespace
 			HandleCodexPendingPermission(session, message, "codex-permissions");
 			return;
 		}
-		if (method == "error")
+		if (method == "item/tool/requestUserInput")
 		{
-			session.last_error = params.value("message", "Codex app-server error.");
-			session.lifecycle_state = kAcpLifecycleError;
+			HandleCodexUserInputRequest(session, message);
+			(void)SyncAcpToolCallsToAssistantMessage(chat, session, false);
+			(void)SyncCurrentAssistantMessageBlocksFromTurnEvents(chat, session);
+			SaveChatQuietly(app, chat);
 			return;
 		}
-		if (method == "thread/started" || method == "thread/status/changed" || method == "serverRequest/resolved" || method == "thread/name/updated" || method == "thread/tokenUsage/updated")
+		if (method == "error")
+		{
+			const nlohmann::json error = JsonObjectValue(params, "error");
+			const std::string error_message = CodexTurnErrorMessage(error);
+			const std::string detail = CodexTurnErrorDetails(session, params, error);
+			const bool will_retry = JsonBooleanValueOr(params, "willRetry", false);
+			AppendAcpDiagnostic(session, "notification", will_retry ? "codex_turn_error_retrying" : "codex_turn_error", method, "", false, 0, error_message, detail);
+			if (will_retry)
+			{
+				session.lifecycle_state = kAcpLifecycleProcessing;
+				return;
+			}
+			(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
+			FailAcpTurnOrSession(session, FormatAcpFailureMessage(session, "turn", "", false, 0, error_message, !detail.empty()));
+			SaveChatQuietly(app, chat);
+			MarkAcpChatUnseenIfBackground(app, chat);
+			return;
+		}
+		if (method == "thread/started" || method == "thread/status/changed" || method == "serverRequest/resolved" || method == "thread/name/updated" || method == "thread/tokenUsage/updated" || method == "account/rateLimits/updated" || method == "configWarning" || method == "deprecationNotice")
 		{
 			return;
 		}
@@ -2103,6 +2854,157 @@ namespace
 				return "";
 			}
 			return CapDiagnosticString(error["data"].dump(), kMaxAcpDiagnosticDetailBytes);
+		}
+
+		std::string JsonDiagnosticStringValue(const nlohmann::json& object, const char* key)
+		{
+			if (!object.is_object())
+			{
+				return "";
+			}
+			const auto it = object.find(key);
+			if (it == object.end() || it->is_null())
+			{
+				return "";
+			}
+			if (it->is_string())
+			{
+				return it->get<std::string>();
+			}
+			if (it->is_boolean())
+			{
+				return it->get<bool>() ? "true" : "false";
+			}
+			if (it->is_number_integer() || it->is_number_unsigned() || it->is_number_float())
+			{
+				return it->dump();
+			}
+			return CapDiagnosticString(it->dump(), kMaxAcpDiagnosticDetailBytes);
+		}
+
+		std::string JsonDiagnosticStringValueOr(const nlohmann::json& object, const char* key, const std::string& fallback)
+		{
+			const std::string value = JsonDiagnosticStringValue(object, key);
+			return value.empty() ? fallback : value;
+		}
+
+		bool JsonBooleanValueOr(const nlohmann::json& object, const char* key, const bool fallback)
+		{
+			if (!object.is_object())
+			{
+				return fallback;
+			}
+			const auto it = object.find(key);
+			if (it == object.end() || it->is_null())
+			{
+				return fallback;
+			}
+			if (it->is_boolean())
+			{
+				return it->get<bool>();
+			}
+			if (it->is_string())
+			{
+				const std::string value = it->get<std::string>();
+				if (value == "true")
+				{
+					return true;
+				}
+				if (value == "false")
+				{
+					return false;
+				}
+			}
+			return fallback;
+		}
+
+		nlohmann::json JsonObjectValue(const nlohmann::json& object, const char* key)
+		{
+			if (!object.is_object())
+			{
+				return nlohmann::json::object();
+			}
+			const auto it = object.find(key);
+			if (it == object.end() || !it->is_object())
+			{
+				return nlohmann::json::object();
+			}
+			return *it;
+		}
+
+		nlohmann::json JsonArrayValue(const nlohmann::json& object, const char* key)
+		{
+			if (!object.is_object())
+			{
+				return nlohmann::json::array();
+			}
+			const auto it = object.find(key);
+			if (it == object.end() || !it->is_array())
+			{
+				return nlohmann::json::array();
+			}
+			return *it;
+		}
+
+		std::string CodexTurnErrorMessage(const nlohmann::json& error)
+		{
+			if (!error.is_object())
+			{
+				return "Codex app-server error.";
+			}
+			const std::string message = JsonDiagnosticStringValue(error, "message");
+			return message.empty() ? "Codex app-server error." : message;
+		}
+
+		std::string CodexTurnErrorDetails(const AcpSessionState& session, const nlohmann::json& params, const nlohmann::json& error)
+		{
+			std::ostringstream detail;
+			bool has_detail = false;
+			const auto append_line = [&](const std::string& line)
+			{
+				if (line.empty())
+				{
+					return;
+				}
+				if (has_detail)
+				{
+					detail << "\n";
+				}
+				detail << line;
+				has_detail = true;
+			};
+
+			if (params.contains("willRetry") && params["willRetry"].is_boolean())
+			{
+				append_line(std::string("willRetry=") + (params["willRetry"].get<bool>() ? "true" : "false"));
+			}
+			const std::string thread_id = JsonDiagnosticStringValue(params, "threadId");
+			if (!thread_id.empty())
+			{
+				append_line("threadId=" + thread_id);
+			}
+			const std::string turn_id = JsonDiagnosticStringValue(params, "turnId");
+			if (!turn_id.empty())
+			{
+				append_line("turnId=" + turn_id);
+			}
+			if (error.is_object())
+			{
+				const std::string additional_details = JsonDiagnosticStringValue(error, "additionalDetails");
+				if (!additional_details.empty())
+				{
+					append_line("additionalDetails=" + additional_details);
+				}
+				if (error.contains("codexErrorInfo") && !error["codexErrorInfo"].is_null())
+				{
+					append_line("codexErrorInfo=" + CapDiagnosticString(error["codexErrorInfo"].dump(), kMaxAcpDiagnosticDetailBytes));
+				}
+			}
+			if (!session.recent_stderr.empty())
+			{
+				append_line("stderr_tail=" + RecentStderrTail(session));
+			}
+			return detail.str();
 		}
 
 			std::string FormatAcpFailureMessage(const AcpSessionState& session,
@@ -2301,7 +3203,7 @@ namespace
 						}
 						return;
 					}
-						if (method == "session/prompt" || session.processing || session.waiting_for_permission || !session.queued_prompt.empty())
+						if (method == "session/prompt" || session.processing || session.waiting_for_permission || session.waiting_for_user_input || !session.queued_prompt.empty())
 						{
 						(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 						FailAcpTurnOrSession(session, formatted_error);
@@ -2317,6 +3219,10 @@ namespace
 		}
 
 		const nlohmann::json result = message.value("result", nlohmann::json(nullptr));
+		if (method == "initialize" || method == "thread/start" || method == "thread/resume" || method == "turn/start" || method == "session/new" || method == "session/load")
+		{
+			AppendAcpDiagnostic(session, "response", "jsonrpc_result", method, request_id, false, 0, "", "result=" + CapDiagnosticString(result.dump(), kMaxAcpDiagnosticDetailBytes));
+		}
 		if (method == "initialize")
 		{
 			session.initialize_request_id = 0;
@@ -2531,10 +3437,20 @@ namespace
 
 		if (message.contains("method"))
 		{
-			const std::string method = message.value("method", "");
+			const std::string method = JsonDiagnosticStringValue(message, "method");
 			if (IsCodexSession(session))
 			{
-				HandleCodexMessage(app, session, chat, message);
+				try
+				{
+					HandleCodexMessage(app, session, chat, message);
+				}
+				catch (const std::exception& ex)
+				{
+					const std::string error_message = std::string("Codex app-server message handling failed: ") + ex.what();
+					AppendAcpDiagnostic(session, "parse", "codex_message_parse_error", method, "", false, 0, error_message, CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
+					FailAcpTurnOrSession(session, error_message);
+					MarkAcpChatUnseenIfBackground(app, chat);
+				}
 			}
 			else if (method == "session/update")
 			{
@@ -2633,7 +3549,7 @@ namespace
 				session.has_last_exit_code = true;
 				session.last_exit_code = exit_code;
 			}
-			const bool active_turn = session.processing || session.waiting_for_permission || session.prompt_request_id != 0 || !session.queued_prompt.empty();
+			const bool active_turn = session.processing || session.waiting_for_permission || session.waiting_for_user_input || session.prompt_request_id != 0 || !session.queued_prompt.empty();
 			std::ostringstream detail;
 			bool has_detail = false;
 			if (has_exit_code)
@@ -2674,11 +3590,13 @@ namespace
 		}
 		session.processing = false;
 		session.waiting_for_permission = false;
+		session.waiting_for_user_input = false;
 			session.prompt_request_id = 0;
 			session.cancel_request_id = 0;
 			session.current_assistant_message_index = -1;
 			session.pending_assistant_thoughts.clear();
 			session.pending_permission = AcpPendingPermissionState{};
+			session.pending_user_input = AcpPendingUserInputState{};
 		PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
 	}
 } // namespace
@@ -2751,6 +3669,7 @@ bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string&
 	session.queued_prompt = prompt;
 	session.processing = true;
 	session.waiting_for_permission = false;
+	session.waiting_for_user_input = false;
 	session.current_assistant_message_index = -1;
 	session.turn_user_message_index = static_cast<int>(chat.messages.size()) - 1;
 		session.turn_assistant_message_index = -1;
@@ -2758,10 +3677,16 @@ bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string&
 		RememberAssistantReplayPrefixes(session, chat, session.turn_user_message_index);
 		RememberLoadHistoryReplayUpdates(session, chat, session.turn_user_message_index);
 		session.pending_assistant_thoughts.clear();
-		session.tool_calls.clear();
+	session.tool_calls.clear();
 	session.plan_entries.clear();
+	session.plan_summary.clear();
+	session.codex_agent_message_text_by_item_id.clear();
+	session.codex_last_agent_message_item_id.clear();
+	session.codex_streamed_reasoning_keys.clear();
+	session.codex_last_reasoning_section.clear();
 	session.turn_events.clear();
 	session.pending_permission = AcpPendingPermissionState{};
+	session.pending_user_input = AcpPendingUserInputState{};
 	session.last_error.clear();
 	session.lifecycle_state = session.session_ready ? kAcpLifecycleProcessing : kAcpLifecycleStarting;
 
@@ -2786,11 +3711,18 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 	{
 		(void)SendPermissionResponse(*session, pending_permission_request_id, "", true, error_out);
 	}
+	const std::string pending_user_input_request_id = session->pending_user_input.request_id_json;
+	if (!pending_user_input_request_id.empty())
+	{
+		(void)SendCodexUserInputResponse(*session, pending_user_input_request_id, {}, error_out);
+	}
 
 	session->queued_prompt.clear();
 	session->processing = false;
 	session->waiting_for_permission = false;
+	session->waiting_for_user_input = false;
 		session->pending_permission = AcpPendingPermissionState{};
+		session->pending_user_input = AcpPendingUserInputState{};
 		session->current_assistant_message_index = -1;
 		session->pending_assistant_thoughts.clear();
 		session->lifecycle_state = session->session_ready ? kAcpLifecycleReady : kAcpLifecycleStopped;
@@ -2835,6 +3767,7 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 	session->session_ready = false;
 	session->processing = false;
 	session->waiting_for_permission = false;
+	session->waiting_for_user_input = false;
 	session->lifecycle_state = kAcpLifecycleStopped;
 	session->queued_prompt.clear();
 	session->prompt_request_id = 0;
@@ -2847,6 +3780,7 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 		session->load_history_replay_updates.clear();
 		session->pending_assistant_thoughts.clear();
 		session->pending_permission = AcpPendingPermissionState{};
+		session->pending_user_input = AcpPendingUserInputState{};
 		PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*session);
 		return true;
 	}
@@ -2858,7 +3792,7 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 		{
 			return true;
 		}
-		if (session->processing || session->waiting_for_permission || !session->queued_prompt.empty() || session->prompt_request_id != 0 || session->cancel_request_id != 0)
+		if (session->processing || session->waiting_for_permission || session->waiting_for_user_input || !session->queued_prompt.empty() || session->prompt_request_id != 0 || session->cancel_request_id != 0)
 		{
 			if (error_out != nullptr)
 			{
@@ -2897,7 +3831,7 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 		{
 			return true;
 		}
-		if (session->processing || session->waiting_for_permission || !session->queued_prompt.empty() || session->prompt_request_id != 0 || session->cancel_request_id != 0)
+		if (session->processing || session->waiting_for_permission || session->waiting_for_user_input || !session->queued_prompt.empty() || session->prompt_request_id != 0 || session->cancel_request_id != 0)
 		{
 			if (error_out != nullptr)
 			{
@@ -2929,7 +3863,7 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 		return true;
 	}
 
-	bool ResolveAcpPermission(AppState& app,
+bool ResolveAcpPermission(AppState& app,
 	                          const std::string& chat_id,
                           const std::string& request_id_json,
                           const std::string& option_id,
@@ -2962,6 +3896,42 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 
 	session->pending_permission = AcpPendingPermissionState{};
 	session->waiting_for_permission = false;
+	session->lifecycle_state = session->processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
+	return true;
+}
+
+bool ResolveAcpUserInput(AppState& app,
+                         const std::string& chat_id,
+                         const std::string& request_id_json,
+                         const std::map<std::string, std::vector<std::string>>& answers,
+                         std::string* error_out)
+{
+	AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
+	if (session == nullptr || !session->running)
+	{
+		if (error_out != nullptr)
+		{
+			*error_out = "ACP session is not running.";
+		}
+		return false;
+	}
+
+	if (session->pending_user_input.request_id_json != request_id_json)
+	{
+		if (error_out != nullptr)
+		{
+			*error_out = "ACP user input request is no longer active.";
+		}
+		return false;
+	}
+
+	if (!SendCodexUserInputResponse(*session, request_id_json, answers, error_out))
+	{
+		return false;
+	}
+
+	session->pending_user_input = AcpPendingUserInputState{};
+	session->waiting_for_user_input = false;
 	session->lifecycle_state = session->processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
 	return true;
 }
@@ -3103,14 +4073,19 @@ std::string BuildAcpNewSessionRequestForTests(const int request_id, const std::s
 		return BuildCodexThreadResumeRequest(request_id, chat, cwd).dump();
 	}
 
-	std::string BuildCodexTurnStartRequestForTests(const int request_id, const std::string& thread_id, const std::string& text, const ChatSession& chat)
+	std::string BuildCodexTurnStartRequestForTests(const int request_id, const std::string& thread_id, const std::string& text, const ChatSession& chat, const std::string& active_model_id)
 	{
-		return BuildCodexTurnStartRequest(request_id, thread_id, text, chat).dump();
+		return BuildCodexTurnStartRequest(request_id, thread_id, text, chat, active_model_id).dump();
 	}
 
 	std::string BuildCodexTurnInterruptRequestForTests(const int request_id, const std::string& thread_id, const std::string& turn_id)
 	{
 		return BuildCodexTurnInterruptRequest(request_id, thread_id, turn_id).dump();
+	}
+
+	std::string BuildCodexUserInputResponseForTests(const std::string& request_id_json, const std::map<std::string, std::vector<std::string>>& answers)
+	{
+		return BuildCodexUserInputResponse(request_id_json, answers).dump();
 	}
 
 	bool ProcessAcpLineForTests(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& line)

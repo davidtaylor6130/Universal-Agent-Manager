@@ -28,6 +28,21 @@ struct ToolCall
 	std::string status;
 };
 
+struct MessagePlanEntry
+{
+	std::string content;
+	std::string priority;
+	std::string status;
+};
+
+struct MessageBlock
+{
+	std::string type;
+	std::string text;
+	std::string tool_call_id;
+	std::string request_id_json;
+};
+
 /// <summary>
 /// One persisted chat message payload.
 /// </summary>
@@ -45,6 +60,9 @@ struct Message
 	bool interrupted = false;
 	std::vector<ToolCall> tool_calls;
 	std::string thoughts;
+	std::string plan_summary;
+	std::vector<MessagePlanEntry> plan_entries;
+	std::vector<MessageBlock> blocks;
 };
 
 /// <summary>
@@ -63,6 +81,7 @@ struct ChatSession
 	std::string created_at;
 	std::string updated_at;
 	std::string last_opened_at;
+	bool pinned = false;
 	std::vector<std::string> linked_files;
 	std::vector<Message> messages;
 	std::string workspace_directory;

@@ -107,6 +107,8 @@ describe('useAppStore Gemini CLI slice', () => {
         role: 'assistant',
         content: 'Final answer',
         thoughts: 'Persisted backend thought',
+        planSummary: 'Persisted plan summary',
+        planEntries: [{ content: 'Persisted plan step', priority: '1', status: 'completed' }],
         toolCalls: [
           {
             id: 'persisted-tool-1',
@@ -140,8 +142,9 @@ describe('useAppStore Gemini CLI slice', () => {
 	          detail: 'error.data={"cause":"boom"}',
 	          lifecycleState: 'processing',
 	        },
-      ],
+	      ],
 	      toolCalls: [{ id: 'tool-1', title: 'Read file', kind: 'read', status: 'in_progress', content: '' }],
+      planSummary: 'Live plan summary',
       planEntries: [{ content: 'Inspect project', priority: 'high', status: 'pending' }],
       availableModes: [
         { id: 'default', name: 'Default', description: 'Run normally' },
@@ -193,6 +196,11 @@ describe('useAppStore Gemini CLI slice', () => {
 	    })
 	    expect(typeof state.acpBindingBySessionId['chat-1'].processingStartedAtMs).toBe('number')
 	    expect(state.acpBindingBySessionId['chat-1'].toolCalls[0]).toMatchObject({ title: 'Read file' })
+    expect(state.acpBindingBySessionId['chat-1'].planSummary).toBe('Live plan summary')
+    expect(state.acpBindingBySessionId['chat-1'].planEntries[0]).toMatchObject({
+      content: 'Inspect project',
+      status: 'pending',
+    })
 	    expect(state.acpBindingBySessionId['chat-1'].availableModes.map((mode) => mode.id)).toEqual(['default', 'plan'])
 	    expect(state.acpBindingBySessionId['chat-1'].currentModeId).toBe('plan')
 	    expect(state.acpBindingBySessionId['chat-1'].availableModels.map((model) => model.id)).toEqual([
@@ -209,6 +217,11 @@ describe('useAppStore Gemini CLI slice', () => {
       role: 'assistant',
       content: 'Final answer',
       thoughts: 'Persisted backend thought',
+      planSummary: 'Persisted plan summary',
+    })
+    expect(state.messages['chat-1'][0].planEntries?.[0]).toMatchObject({
+      content: 'Persisted plan step',
+      status: 'completed',
     })
     expect(state.messages['chat-1'][0].toolCalls?.[0]).toMatchObject({
       id: 'persisted-tool-1',
@@ -274,6 +287,15 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().sessions[0]).toBe(firstSession)
   })
 
+  it('deserializes pinned backend sessions', () => {
+    const state = makeCppState(1)
+    state.chats[0].pinned = true
+
+    useAppStore.getState().loadFromCef(state)
+
+    expect(useAppStore.getState().sessions[0].isPinned).toBe(true)
+  })
+
   it('refreshes persisted messages when only tool calls change', () => {
     const firstState = makeCppState(1)
     firstState.chats[0].messages = [
@@ -313,6 +335,41 @@ describe('useAppStore Gemini CLI slice', () => {
       id: 'tool-1',
       title: 'Read file',
       content: 'file contents',
+    })
+  })
+
+  it('refreshes persisted messages when only plan fields change', () => {
+    const firstState = makeCppState(1)
+    firstState.chats[0].messages = [
+      {
+        role: 'assistant',
+        content: '',
+        thoughts: '',
+        createdAt: '2026-01-01T00:00:01.000Z',
+      },
+    ]
+    useAppStore.getState().loadFromCef(firstState)
+    const firstMessage = useAppStore.getState().messages['chat-1'][0]
+
+    const secondState = makeCppState(2)
+    secondState.chats[0].messages = [
+      {
+        role: 'assistant',
+        content: '',
+        thoughts: '',
+        planSummary: 'Plan summary',
+        planEntries: [{ content: 'Patch Codex plan rendering', priority: '1', status: 'inProgress' }],
+        createdAt: '2026-01-01T00:00:01.000Z',
+      },
+    ]
+    useAppStore.getState().loadFromCef(secondState)
+
+    const updatedMessage = useAppStore.getState().messages['chat-1'][0]
+    expect(updatedMessage).not.toBe(firstMessage)
+    expect(updatedMessage.planSummary).toBe('Plan summary')
+    expect(updatedMessage.planEntries?.[0]).toMatchObject({
+      content: 'Patch Codex plan rendering',
+      status: 'inProgress',
     })
   })
 
@@ -453,6 +510,55 @@ describe('useAppStore Gemini CLI slice', () => {
     })
   })
 
+  it('does not create sessions without a valid folder', async () => {
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
+      onSuccess('{}')
+    }
+
+    useAppStore.setState({
+      folders: [{ id: 'project', name: 'Project', parentId: null, directory: '/tmp/project', isExpanded: true, createdAt: new Date() }],
+      providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#f97316', description: '' }],
+    })
+
+    useAppStore.getState().addSession('New Chat', null)
+    useAppStore.getState().addSession('New Chat', 'missing')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(requests).toEqual([])
+    consoleSpy.mockRestore()
+  })
+
+  it('pins CEF sessions optimistically and rolls back when rejected', async () => {
+    const now = new Date()
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    let rejectPin: () => void = () => {
+      throw new Error('CEF pin request was not sent')
+    }
+    window.cefQuery = ({ request, onFailure }) => {
+      requests.push(JSON.parse(request))
+      rejectPin = () => onFailure(500, 'save failed')
+    }
+
+    useAppStore.setState({
+      sessions: [
+        { id: 'chat-1', name: 'Chat 1', viewMode: 'chat', folderId: 'project', isPinned: false, createdAt: now, updatedAt: now },
+      ],
+    })
+
+    const resultPromise = useAppStore.getState().setSessionPinned('chat-1', true)
+    expect(useAppStore.getState().sessions[0].isPinned).toBe(true)
+    rejectPin()
+
+    await expect(resultPromise).resolves.toBe(false)
+    expect(requests).toHaveLength(1)
+    expect(requests[0].action).toBe('setChatPinned')
+    expect(requests[0].payload).toEqual({ chatId: 'chat-1', pinned: true })
+    expect(useAppStore.getState().sessions[0].isPinned).toBe(false)
+  })
+
   it('changes providers only for empty stopped local sessions', async () => {
     const now = new Date()
     useAppStore.setState({
@@ -581,6 +687,70 @@ describe('useAppStore Gemini CLI slice', () => {
 
     await expect(useAppStore.getState().setSessionApprovalMode('chat-1', 'yolo')).resolves.toBe(false)
     expect(requests).toHaveLength(2)
+  })
+
+  it('sends planning mode changes when the live runtime mode differs from the saved chat mode', async () => {
+    const now = new Date()
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
+      onSuccess('{}')
+    }
+    useAppStore.setState({
+      sessions: [
+        {
+          id: 'chat-1',
+          name: 'Codex Session',
+          viewMode: 'chat',
+          folderId: 'default',
+          approvalMode: 'default',
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      acpBindingBySessionId: {
+        'chat-1': {
+          sessionId: 'native-1',
+          providerId: 'codex-cli',
+          protocolKind: 'codex-app-server',
+          threadId: '',
+          running: true,
+          lifecycleState: 'ready',
+          processing: false,
+          readySinceLastSelect: false,
+          processingStartedAtMs: null,
+          lastError: '',
+          recentStderr: '',
+          lastExitCode: null,
+          diagnostics: [],
+          toolCalls: [],
+          planSummary: '',
+          planEntries: [],
+          availableModes: [
+            { id: 'default', name: 'Default', description: 'Run normally' },
+            { id: 'plan', name: 'Plan', description: 'Plan before editing' },
+          ],
+          currentModeId: 'plan',
+          availableModels: [],
+          currentModelId: '',
+          turnEvents: [],
+          turnUserMessageIndex: -1,
+          turnAssistantMessageIndex: -1,
+          turnSerial: 0,
+          pendingPermission: null,
+          pendingUserInput: null,
+          agentInfo: null,
+        },
+      },
+    })
+
+    await expect(useAppStore.getState().setSessionApprovalMode('chat-1', 'default')).resolves.toBe(true)
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0].action).toBe('setChatApprovalMode')
+    expect(requests[0].payload).toEqual({ chatId: 'chat-1', modeId: 'default' })
+    expect(useAppStore.getState().sessions[0].approvalMode).toBe('default')
+    expect(useAppStore.getState().acpBindingBySessionId['chat-1'].currentModeId).toBe('default')
   })
 
   it('deletes a folder and its sessions from local UI state', () => {

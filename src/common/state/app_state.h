@@ -167,6 +167,30 @@ namespace uam
 		std::vector<AcpPermissionOptionState> options;
 	};
 
+	struct AcpUserInputOptionState
+	{
+		std::string label;
+		std::string description;
+	};
+
+	struct AcpUserInputQuestionState
+	{
+		std::string id;
+		std::string header;
+		std::string question;
+		bool is_other = false;
+		bool is_secret = false;
+		std::vector<AcpUserInputOptionState> options;
+	};
+
+	struct AcpPendingUserInputState
+	{
+		std::string request_id_json;
+		std::string item_id;
+		std::string status;
+		std::vector<AcpUserInputQuestionState> questions;
+	};
+
 	struct AcpSessionState : public platform::StdioProcessPlatformFields
 	{
 		std::string chat_id;
@@ -182,6 +206,7 @@ namespace uam
 		bool load_session_supported = false;
 		bool processing = false;
 		bool waiting_for_permission = false;
+		bool waiting_for_user_input = false;
 		int next_request_id = 1;
 		int initialize_request_id = 0;
 		int session_setup_request_id = 0;
@@ -211,12 +236,18 @@ namespace uam
 			std::unordered_map<int, std::string> pending_request_methods;
 			std::vector<AcpToolCallState> tool_calls;
 			std::vector<AcpPlanEntryState> plan_entries;
+			std::string plan_summary;
+			std::unordered_map<std::string, std::string> codex_agent_message_text_by_item_id;
+			std::string codex_last_agent_message_item_id;
+			std::unordered_set<std::string> codex_streamed_reasoning_keys;
+			std::string codex_last_reasoning_section;
 			std::vector<AcpModeState> available_modes;
 			std::string current_mode_id;
 			std::vector<AcpModelState> available_models;
 			std::string current_model_id;
 			std::vector<AcpTurnEventState> turn_events;
 			AcpPendingPermissionState pending_permission;
+			AcpPendingUserInputState pending_user_input;
 		};
 
 	/// <summary>

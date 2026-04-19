@@ -3,6 +3,7 @@
 #include "common/state/app_state.h"
 
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -23,6 +24,11 @@ bool ResolveAcpPermission(AppState& app,
                           const std::string& option_id,
                           bool cancelled,
                           std::string* error_out = nullptr);
+bool ResolveAcpUserInput(AppState& app,
+                         const std::string& chat_id,
+                         const std::string& request_id_json,
+                         const std::map<std::string, std::vector<std::string>>& answers,
+                         std::string* error_out = nullptr);
 
 bool PollAllAcpSessions(AppState& app);
 void FastStopAcpSessionsForExit(AppState& app);
@@ -40,8 +46,9 @@ std::string BuildCodexModelListRequestForTests(int request_id);
 std::string BuildCodexSessionSetupRequestForTests(int request_id, const ChatSession& chat, const std::string& cwd);
 std::string BuildCodexThreadStartRequestForTests(int request_id, const ChatSession& chat, const std::string& cwd);
 std::string BuildCodexThreadResumeRequestForTests(int request_id, const ChatSession& chat, const std::string& cwd);
-std::string BuildCodexTurnStartRequestForTests(int request_id, const std::string& thread_id, const std::string& text, const ChatSession& chat);
+std::string BuildCodexTurnStartRequestForTests(int request_id, const std::string& thread_id, const std::string& text, const ChatSession& chat, const std::string& active_model_id = "");
 std::string BuildCodexTurnInterruptRequestForTests(int request_id, const std::string& thread_id, const std::string& turn_id);
+std::string BuildCodexUserInputResponseForTests(const std::string& request_id_json, const std::map<std::string, std::vector<std::string>>& answers);
 bool ProcessAcpLineForTests(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& line);
 bool IsValidCodexThreadIdForTests(const std::string& thread_id);
 

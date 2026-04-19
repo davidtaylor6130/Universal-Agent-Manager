@@ -70,6 +70,7 @@ describe('MainPanel', () => {
           turnAssistantMessageIndex: -1,
           turnSerial: 0,
           pendingPermission: null,
+          pendingUserInput: null,
           agentInfo: null,
         },
       },

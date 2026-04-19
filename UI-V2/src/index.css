@@ -281,8 +281,8 @@ summary,
   width: 7px;
   height: 7px;
   border-radius: 999px;
-  background: #ffffff;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 18%, transparent);
+  background: var(--text-2);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--surface) 72%, transparent);
 }
 
 /* ── Highlight.js theme override (minimal) ───────────────── */

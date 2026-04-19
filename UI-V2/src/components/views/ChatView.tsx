@@ -6,10 +6,13 @@ import {
   type AcpBinding,
   type AcpModel,
   type AcpPendingPermission,
+  type AcpPendingUserInput,
+  type AcpPlanEntry,
   type AcpToolCall,
   type AcpTurnEvent,
+  type AcpUserInputAnswers,
 } from '../../store/useAppStore'
-import type { Message } from '../../types/message'
+import type { Message, MessageBlock } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import { copyTextToClipboard } from '../../utils/copySelection'
 
@@ -46,6 +49,9 @@ const FRIENDLY_MODEL_LABELS: Record<string, Pick<ModelOption, 'label' | 'shortLa
   flash: { label: 'Flash', shortLabel: 'Flash', detail: 'Prioritize speed' },
   'flash-lite': { label: 'Flash Lite', shortLabel: 'Flash Lite', detail: 'Fastest option' },
 }
+
+const PLAN_APPROVE_PROMPT = 'Proceed with the plan.'
+const PLAN_DENY_PROMPT = 'Do not proceed with this plan. Please revise it before making changes.'
 
 function providerDisplayName(provider?: Provider, fallbackId = '') {
   if (provider?.shortName?.trim()) return provider.shortName.trim()
@@ -150,6 +156,7 @@ function modelOptionFor(options: ModelOption[], modelId?: string) {
 function statusLabel(acp?: AcpBinding) {
   if (!acp) return 'Stopped'
   if (acp.lifecycleState === 'waitingPermission') return 'Permission'
+  if (acp.lifecycleState === 'waitingUserInput') return 'Input'
   if (acp.processing) return 'Running'
   if (acp.lifecycleState === 'error') return 'Error'
   if (acp.running) return 'Ready'
@@ -160,6 +167,7 @@ function statusColor(acp?: AcpBinding) {
   if (!acp) return 'var(--text-3)'
   if (acp.lifecycleState === 'error') return 'var(--red)'
   if (acp.lifecycleState === 'waitingPermission') return 'var(--yellow)'
+  if (acp.lifecycleState === 'waitingUserInput') return 'var(--yellow)'
   if (acp.processing) return 'var(--blue)'
   if (acp.running) return 'var(--green)'
   return 'var(--text-3)'
@@ -729,6 +737,154 @@ function PermissionInlineCard({
   )
 }
 
+function UserInputInlineCard({
+  input,
+  onResolve,
+}: {
+  input: AcpPendingUserInput
+  onResolve: (requestId: string, answers: AcpUserInputAnswers) => void
+}) {
+  const [values, setValues] = useState<Record<string, string>>(() => {
+    const initial: Record<string, string> = {}
+    for (const question of input.questions) {
+      initial[question.id] = ''
+    }
+    return initial
+  })
+
+  useEffect(() => {
+    setValues((current) => {
+      const next: Record<string, string> = {}
+      for (const question of input.questions) {
+        next[question.id] = current[question.id] ?? ''
+      }
+      return next
+    })
+  }, [input.requestId, input.questions])
+
+  const canSubmit = input.questions.every((question) => (values[question.id] ?? '').trim().length > 0)
+  const submit = () => {
+    if (!canSubmit) return
+    const answers: AcpUserInputAnswers = {}
+    for (const question of input.questions) {
+      answers[question.id] = [(values[question.id] ?? '').trim()]
+    }
+    onResolve(input.requestId, answers)
+  }
+
+  return (
+    <div
+      className="my-2"
+      data-testid="user-input-card"
+      style={{
+        border: '1px solid color-mix(in srgb, var(--yellow) 56%, var(--border-bright))',
+        borderLeft: '4px solid var(--yellow)',
+        borderRadius: 7,
+        padding: 10,
+        background: 'color-mix(in srgb, var(--yellow) 9%, var(--surface))',
+      }}
+    >
+      <div className="flex items-center gap-2 text-xs font-semibold mb-2" style={{ color: 'var(--text)' }}>
+        <span style={{ color: 'var(--yellow)', fontSize: 9 }}>●</span>
+        <span>Codex needs input</span>
+      </div>
+      <div className="space-y-3">
+        {input.questions.map((question) => {
+          const selected = values[question.id] ?? ''
+          const showTextInput = question.isOther || question.options.length === 0
+          return (
+            <fieldset key={question.id} className="space-y-2" style={{ minWidth: 0 }}>
+              {(question.header || question.question) && (
+                <legend className="text-xs font-medium" style={{ color: 'var(--text)' }}>
+                  {question.header || question.question}
+                </legend>
+              )}
+              {question.header && question.question && (
+                <div className="text-[11px]" style={{ color: 'var(--text-2)' }}>
+                  {question.question}
+                </div>
+              )}
+              {question.options.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {question.options.map((option) => {
+                    const active = selected === option.label
+                    return (
+                      <button
+                        key={`${question.id}-${option.label}`}
+                        type="button"
+                        className="px-3 py-1.5 text-[11px] text-left"
+                        style={{
+                          borderRadius: 6,
+                          border: active
+                            ? '1px solid color-mix(in srgb, var(--accent) 72%, var(--border-bright))'
+                            : '1px solid var(--border)',
+                          background: active ? 'var(--accent-dim)' : 'var(--surface-up)',
+                          color: 'var(--text)',
+                        }}
+                        onClick={() =>
+                          setValues((current) => ({
+                            ...current,
+                            [question.id]: option.label,
+                          }))
+                        }
+                      >
+                        <span className="block font-medium">{option.label}</span>
+                        {option.description && (
+                          <span className="block mt-0.5" style={{ color: 'var(--text-3)' }}>
+                            {option.description}
+                          </span>
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+              {showTextInput && (
+                <input
+                  type={question.isSecret ? 'password' : 'text'}
+                  value={selected}
+                  aria-label={question.question || question.header || question.id}
+                  className="w-full text-xs outline-none"
+                  style={{
+                    height: 30,
+                    borderRadius: 6,
+                    border: '1px solid var(--border)',
+                    background: 'var(--bg)',
+                    color: 'var(--text)',
+                    padding: '0 9px',
+                  }}
+                  onChange={(event) =>
+                    setValues((current) => ({
+                      ...current,
+                      [question.id]: event.target.value,
+                    }))
+                  }
+                />
+              )}
+            </fieldset>
+          )
+        })}
+      </div>
+      <div className="flex justify-end pt-3">
+        <button
+          type="button"
+          className="px-3 h-7 text-[11px] font-medium"
+          disabled={!canSubmit}
+          style={{
+            borderRadius: 6,
+            border: '1px solid var(--border-bright)',
+            background: canSubmit ? 'var(--accent)' : 'var(--surface-up)',
+            color: canSubmit ? '#ffffff' : 'var(--text-3)',
+          }}
+          onClick={submit}
+        >
+          Submit
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function ToolCallModal({ tool, onClose }: { tool: AcpToolCall; onClose: () => void }) {
   const toolCopyText = [
     tool.title || tool.id || 'Tool call',
@@ -912,25 +1068,239 @@ function ThinkingBlock({ text, defaultOpen = false }: { text: string; defaultOpe
   )
 }
 
+function planStatusLabel(status: string) {
+  if (status === 'inProgress') return 'in progress'
+  if (status === 'completed') return 'completed'
+  if (status === 'pending') return 'pending'
+  return status || 'pending'
+}
+
+function planStatusColor(status: string) {
+  if (status === 'completed') return 'var(--green)'
+  if (status === 'inProgress') return 'var(--blue)'
+  return 'var(--text-3)'
+}
+
+function PlanBlock({
+  summary,
+  entries,
+  showActions = false,
+  actionsDisabled = false,
+  disabledTitle = 'Codex is still working.',
+  onApprove,
+  onDeny,
+}: {
+  summary?: string
+  entries?: AcpPlanEntry[]
+  showActions?: boolean
+  actionsDisabled?: boolean
+  disabledTitle?: string
+  onApprove?: () => void
+  onDeny?: () => void
+}) {
+  const planSummary = summary?.trim() ?? ''
+  const planEntries = entries?.filter((entry) => {
+    const content = entry.content.trim()
+    return content && content !== planSummary
+  }) ?? []
+  if (!planSummary && planEntries.length === 0) return null
+
+  return (
+    <section
+      data-testid="plan-block"
+      className="space-y-3"
+      style={{
+        border: '1px solid color-mix(in srgb, var(--blue) 42%, var(--border))',
+        borderLeft: '4px solid var(--blue)',
+        borderRadius: 6,
+        background: 'color-mix(in srgb, var(--blue) 9%, var(--surface))',
+        color: 'var(--text)',
+        padding: 10,
+      }}
+    >
+      <div className="flex items-center gap-2 text-[11px] font-semibold" style={{ color: 'var(--text)' }}>
+        <span style={{ color: 'var(--blue)', fontSize: 9 }}>●</span>
+        <span>Plan</span>
+      </div>
+      {planSummary && <MarkdownContent content={planSummary} />}
+      {planEntries.length > 0 && (
+        <ol className="space-y-2">
+          {planEntries.map((entry, index) => (
+            <li key={`${entry.content}-${index}`} className="flex gap-2 text-xs" style={{ color: 'var(--text-2)' }}>
+              <span style={{ color: planStatusColor(entry.status), fontSize: 9, lineHeight: '20px' }}>●</span>
+              <div className="min-w-0 flex-1">
+                <div style={{ color: 'var(--text)' }}>{entry.content}</div>
+                <div className="text-[10px] uppercase" style={{ color: planStatusColor(entry.status) }}>
+                  {planStatusLabel(entry.status)}
+                </div>
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+      {showActions && (
+        <div className="flex flex-wrap gap-2 pt-1">
+          <button
+            type="button"
+            className="px-3 h-7 text-[11px] font-medium"
+            disabled={actionsDisabled}
+            title={actionsDisabled ? disabledTitle : 'Approve plan'}
+            style={{
+              borderRadius: 6,
+              border: '1px solid color-mix(in srgb, var(--green) 52%, var(--border-bright))',
+              background: actionsDisabled ? 'var(--surface-up)' : 'color-mix(in srgb, var(--green) 16%, var(--surface-up))',
+              color: actionsDisabled ? 'var(--text-3)' : 'var(--text)',
+              opacity: actionsDisabled ? 0.65 : 1,
+            }}
+            onClick={() => {
+              if (!actionsDisabled) onApprove?.()
+            }}
+          >
+            Approve
+          </button>
+          <button
+            type="button"
+            className="px-3 h-7 text-[11px] font-medium"
+            disabled={actionsDisabled}
+            title={actionsDisabled ? disabledTitle : 'Deny plan'}
+            style={{
+              borderRadius: 6,
+              border: '1px solid color-mix(in srgb, var(--red) 48%, var(--border-bright))',
+              background: actionsDisabled ? 'var(--surface-up)' : 'color-mix(in srgb, var(--red) 12%, var(--surface-up))',
+              color: actionsDisabled ? 'var(--text-3)' : 'var(--text)',
+              opacity: actionsDisabled ? 0.65 : 1,
+            }}
+            onClick={() => {
+              if (!actionsDisabled) onDeny?.()
+            }}
+          >
+            Deny
+          </button>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function PersistedMessageBlocksContent({
+  message,
+  blocks,
+  onSelectTool,
+  planActions,
+}: {
+  message: Message
+  blocks: MessageBlock[]
+  onSelectTool: (messageId: string, toolId: string) => void
+  planActions?: {
+    show: boolean
+    disabled: boolean
+    disabledTitle: string
+    onApprove: () => void
+    onDeny: () => void
+  }
+}) {
+  const toolById = new Map((message.toolCalls ?? []).map((tool) => [tool.id, tool]))
+  const lastPlanBlockIndex = blocks.reduce((latest, block, index) => block.type === 'plan' ? index : latest, -1)
+
+  return (
+    <div className="space-y-2">
+      {blocks.map((block, index) => {
+        if (block.type === 'assistant_text') {
+          return <MarkdownContent key={`block-text-${index}`} content={block.text} />
+        }
+
+        if (block.type === 'thought') {
+          return <ThinkingBlock key={`block-thought-${index}`} text={block.text} />
+        }
+
+        if (block.type === 'tool_call') {
+          const tool = toolById.get(block.toolCallId) ?? {
+            id: block.toolCallId,
+            title: block.toolCallId,
+            kind: 'tool',
+            status: 'pending',
+            content: '',
+          }
+          return (
+            <ToolCallInlineRows
+              key={`block-tool-${block.toolCallId}-${index}`}
+              tools={[tool]}
+              onSelectTool={(toolId) => onSelectTool(message.id, toolId)}
+            />
+          )
+        }
+
+        if (block.type === 'plan') {
+          return (
+            <PlanBlock
+              key={`block-plan-${index}`}
+              summary={message.planSummary ?? ''}
+              entries={message.planEntries ?? []}
+              showActions={index === lastPlanBlockIndex && planActions?.show}
+              actionsDisabled={planActions?.disabled}
+              disabledTitle={planActions?.disabledTitle}
+              onApprove={planActions?.onApprove}
+              onDeny={planActions?.onDeny}
+            />
+          )
+        }
+
+        return null
+      })}
+    </div>
+  )
+}
+
 function PersistedMessageContent({
   message,
   onSelectTool,
+  planActions,
 }: {
   message: Message
   onSelectTool: (messageId: string, toolId: string) => void
+  planActions?: {
+    show: boolean
+    disabled: boolean
+    disabledTitle: string
+    onApprove: () => void
+    onDeny: () => void
+  }
 }) {
   const thoughts = message.role === 'assistant' ? message.thoughts?.trim() ?? '' : ''
   const toolCalls = message.role === 'assistant' ? message.toolCalls ?? [] : []
+  const planSummary = message.role === 'assistant' ? message.planSummary ?? '' : ''
+  const planEntries = message.role === 'assistant' ? message.planEntries ?? [] : []
+  const blocks = message.role === 'assistant' ? message.blocks ?? [] : []
 
-  if (!thoughts && toolCalls.length === 0) {
+  if (blocks.length > 0) {
+    return (
+      <PersistedMessageBlocksContent
+        message={message}
+        blocks={blocks}
+        onSelectTool={onSelectTool}
+        planActions={planActions}
+      />
+    )
+  }
+
+  if (!thoughts && toolCalls.length === 0 && !planSummary.trim() && planEntries.length === 0) {
     return <MarkdownContent content={message.content} />
   }
 
   return (
     <div className="space-y-2">
+      {message.content.trim() && <MarkdownContent content={message.content} />}
       <ThinkingBlock text={thoughts} />
       <ToolCallInlineRows tools={toolCalls} onSelectTool={(toolId) => onSelectTool(message.id, toolId)} />
-      <MarkdownContent content={message.content} />
+      <PlanBlock
+        summary={planSummary}
+        entries={planEntries}
+        showActions={planActions?.show}
+        actionsDisabled={planActions?.disabled}
+        disabledTitle={planActions?.disabledTitle}
+        onApprove={planActions?.onApprove}
+        onDeny={planActions?.onDeny}
+      />
     </div>
   )
 }
@@ -938,20 +1308,46 @@ function PersistedMessageContent({
 function TurnTimelineContent({
   events,
   tools,
+  planSummary,
+  planEntries,
+  planActions,
   pendingPermission,
+  pendingUserInput,
   onSelectTool,
   onResolvePermission,
+  onResolveUserInput,
 }: {
   events: AcpTurnEvent[]
   tools: AcpToolCall[]
+  planSummary?: string
+  planEntries?: AcpPlanEntry[]
+  planActions?: {
+    show: boolean
+    disabled: boolean
+    disabledTitle: string
+    onApprove: () => void
+    onDeny: () => void
+  }
   pendingPermission: AcpPendingPermission | null
+  pendingUserInput: AcpPendingUserInput | null
   onSelectTool: (toolId: string) => void
   onResolvePermission: (requestId: string, optionId: string) => void
+  onResolveUserInput: (requestId: string, answers: AcpUserInputAnswers) => void
 }) {
   const toolById = new Map(tools.map((tool) => [tool.id, tool]))
+  const hasPlanEvent = events.some((event) => event.type === 'plan')
   const hasPendingPermissionEvent = Boolean(
     pendingPermission &&
       events.some((event) => event.type === 'permission_request' && event.requestId === pendingPermission.requestId)
+  )
+  const hasPendingUserInputEvent = Boolean(
+    pendingUserInput &&
+      events.some((event) => event.type === 'user_input_request' && event.requestId === pendingUserInput.requestId)
+  )
+  const hasPendingUserInputToolEvent = Boolean(
+    pendingUserInput &&
+      pendingUserInput.itemId &&
+      events.some((event) => event.type === 'tool_call' && event.toolCallId === pendingUserInput.itemId)
   )
 
   return (
@@ -963,6 +1359,21 @@ function TurnTimelineContent({
 
         if (event.type === 'thought') {
           return <ThinkingBlock key={`thought-${index}`} text={event.text} defaultOpen />
+        }
+
+        if (event.type === 'plan') {
+          return (
+            <PlanBlock
+              key={`plan-${index}`}
+              summary={planSummary}
+              entries={planEntries}
+              showActions={planActions?.show}
+              actionsDisabled={planActions?.disabled}
+              disabledTitle={planActions?.disabledTitle}
+              onApprove={planActions?.onApprove}
+              onDeny={planActions?.onDeny}
+            />
+          )
         }
 
         if (event.type === 'tool_call') {
@@ -977,12 +1388,19 @@ function TurnTimelineContent({
             pendingPermission &&
             !hasPendingPermissionEvent &&
             pendingPermission.toolCallId === event.toolCallId
+          const shouldRenderPendingUserInput =
+            pendingUserInput &&
+            !hasPendingUserInputEvent &&
+            pendingUserInput.itemId === event.toolCallId
 
           return (
             <div key={`tool-${event.toolCallId}-${index}`} className="space-y-2">
               <ToolCallInlineRows tools={[tool]} onSelectTool={onSelectTool} />
               {shouldRenderPendingPermission && (
                 <PermissionInlineCard permission={pendingPermission} onResolve={onResolvePermission} />
+              )}
+              {shouldRenderPendingUserInput && (
+                <UserInputInlineCard input={pendingUserInput} onResolve={onResolveUserInput} />
               )}
             </div>
           )
@@ -998,8 +1416,32 @@ function TurnTimelineContent({
           )
         }
 
+        if (event.type === 'user_input_request' && pendingUserInput?.requestId === event.requestId) {
+          return (
+            <UserInputInlineCard
+              key={`user-input-${event.requestId}-${index}`}
+              input={pendingUserInput}
+              onResolve={onResolveUserInput}
+            />
+          )
+        }
+
         return null
       })}
+      {!hasPlanEvent && ((planSummary?.trim() ?? '') || (planEntries?.length ?? 0) > 0) && (
+        <PlanBlock
+          summary={planSummary}
+          entries={planEntries}
+          showActions={planActions?.show}
+          actionsDisabled={planActions?.disabled}
+          disabledTitle={planActions?.disabledTitle}
+          onApprove={planActions?.onApprove}
+          onDeny={planActions?.onDeny}
+        />
+      )}
+      {pendingUserInput && !hasPendingUserInputEvent && !hasPendingUserInputToolEvent && (
+        <UserInputInlineCard input={pendingUserInput} onResolve={onResolveUserInput} />
+      )}
     </div>
   )
 }
@@ -1058,7 +1500,11 @@ function ComposerToolbar({
   const modelOptions = buildModelOptions(acp, modelId ?? '', provider, providerId)
   const currentModel = modelOptionFor(modelOptions, modelId)
   const providerOptions = providers.length > 0 ? providers : [provider]
-  const modelDisabled = Boolean(acp?.processing || acp?.lifecycleState === 'waitingPermission')
+  const modelDisabled = Boolean(
+    acp?.processing ||
+    acp?.lifecycleState === 'waitingPermission' ||
+    acp?.lifecycleState === 'waitingUserInput'
+  )
   const planActive = approvalModeId === 'plan'
   const hasRuntimeModes = Boolean(acp?.running && acp.availableModes.length > 0)
   const planAvailable = !hasRuntimeModes || acp?.availableModes.some((mode) => mode.id === 'plan')
@@ -1344,6 +1790,7 @@ export function ChatView({ session }: ChatViewProps) {
   const sendAcpPrompt = useAppStore((s) => s.sendAcpPrompt)
   const cancelAcpTurn = useAppStore((s) => s.cancelAcpTurn)
   const resolveAcpPermission = useAppStore((s) => s.resolveAcpPermission)
+  const resolveAcpUserInput = useAppStore((s) => s.resolveAcpUserInput)
   const setSessionProvider = useAppStore((s) => s.setSessionProvider)
   const setSessionModel = useAppStore((s) => s.setSessionModel)
   const setSessionApprovalMode = useAppStore((s) => s.setSessionApprovalMode)
@@ -1393,7 +1840,10 @@ export function ChatView({ session }: ChatViewProps) {
   }, [
     messages.length,
     messages[messages.length - 1]?.content,
+    messages[messages.length - 1]?.planSummary,
+    messages[messages.length - 1]?.planEntries?.length,
     acp?.toolCalls.length,
+    acp?.planSummary,
     acp?.planEntries.length,
     turnEvents.length,
     turnEvents[turnEvents.length - 1]?.type,
@@ -1413,7 +1863,7 @@ export function ChatView({ session }: ChatViewProps) {
   }, [turnSerial])
 
   useEffect(() => {
-    if (acp?.processing || acp?.lifecycleState === 'waitingPermission') {
+    if (acp?.processing || acp?.lifecycleState === 'waitingPermission' || acp?.lifecycleState === 'waitingUserInput') {
       setModelOpen(false)
     }
   }, [acp?.lifecycleState, acp?.processing])
@@ -1484,6 +1934,7 @@ export function ChatView({ session }: ChatViewProps) {
   }
 
   const pendingPermission = acp?.pendingPermission
+  const pendingUserInput = acp?.pendingUserInput
   const workspaceDirectory = session.workspaceDirectory?.trim() || folderDirectory.trim()
   const currentProviderId = session.providerId || acp?.providerId || 'gemini-cli'
   const currentProvider = useMemo<Provider>(
@@ -1507,6 +1958,43 @@ export function ChatView({ session }: ChatViewProps) {
   const canChangeProvider = messages.length === 0 && !acp?.running && !acp?.processing
   const currentModelId = acp?.currentModelId || session.modelId || ''
   const currentModeId = acp?.currentModeId || session.approvalMode || 'default'
+  const latestPlanMessageIndex = messages.reduce((latest, message, index) => {
+    const hasPlan = message.role === 'assistant' && (Boolean(message.planSummary?.trim()) || (message.planEntries?.length ?? 0) > 0)
+    return hasPlan ? index : latest
+  }, -1)
+  const latestPlanHasLaterUser =
+    latestPlanMessageIndex >= 0 && messages.slice(latestPlanMessageIndex + 1).some((message) => message.role === 'user')
+  const canShowPlanActions = isCodexProvider(currentProvider, currentProviderId) && latestPlanMessageIndex >= 0 && !latestPlanHasLaterUser
+  const planActionBlockedByRuntime =
+    acp?.processing ||
+    acp?.lifecycleState === 'waitingPermission' ||
+    acp?.lifecycleState === 'waitingUserInput'
+  const planActionsDisabled = Boolean(submitting || planActionBlockedByRuntime)
+  const planActionsDisabledTitle = planActionBlockedByRuntime
+    ? 'Codex is still working.'
+    : 'Plan action is unavailable.'
+  const sendPlanAction = async (prompt: string, nextModeId: 'default' | 'plan') => {
+    if (planActionsDisabled) return
+    setSubmitting(true)
+    const modeOk = await setSessionApprovalMode(session.id, nextModeId)
+    if (modeOk) {
+      await sendAcpPrompt(session.id, prompt)
+    }
+    setSubmitting(false)
+  }
+  const activePlanActions = canShowPlanActions
+    ? {
+        show: true,
+        disabled: planActionsDisabled,
+        disabledTitle: planActionsDisabledTitle,
+        onApprove: () => void sendPlanAction(PLAN_APPROVE_PROMPT, 'default'),
+        onDeny: () => void sendPlanAction(PLAN_DENY_PROMPT, 'plan'),
+      }
+    : undefined
+  const planActionsForMessage = (index: number) =>
+    canShowPlanActions && index === latestPlanMessageIndex
+      ? activePlanActions
+      : undefined
 
   return (
     <div className="relative h-full flex overflow-hidden" style={{ background: 'var(--bg)' }}>
@@ -1544,16 +2032,24 @@ export function ChatView({ session }: ChatViewProps) {
                           key={`turn-${turnSerial}-assistant`}
                           events={turnEvents}
 	                          tools={acp?.toolCalls ?? []}
+	                          planSummary={acp?.planSummary ?? ''}
+	                          planEntries={acp?.planEntries ?? []}
+	                          planActions={activePlanActions}
 	                          pendingPermission={pendingPermission ?? null}
+	                          pendingUserInput={pendingUserInput ?? null}
 	                          onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
 	                          onResolvePermission={(requestId, optionId) => {
 	                            void resolveAcpPermission(session.id, requestId, optionId)
 	                          }}
+                            onResolveUserInput={(requestId, answers) => {
+                              void resolveAcpUserInput(session.id, requestId, answers)
+                            }}
                         />
                       ) : (
                         <PersistedMessageContent
                           message={message}
                           onSelectTool={(messageId, toolId) => setSelectedToolCallRef({ id: toolId, messageId })}
+                          planActions={planActionsForMessage(index)}
                         />
                       )}
                     </MessageFrame>
@@ -1563,11 +2059,18 @@ export function ChatView({ session }: ChatViewProps) {
                           key={`turn-${turnSerial}-after-user-content`}
                           events={turnEvents}
 	                          tools={acp?.toolCalls ?? []}
+	                          planSummary={acp?.planSummary ?? ''}
+	                          planEntries={acp?.planEntries ?? []}
+	                          planActions={activePlanActions}
 	                          pendingPermission={pendingPermission ?? null}
+	                          pendingUserInput={pendingUserInput ?? null}
 	                          onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
 	                          onResolvePermission={(requestId, optionId) => {
 	                            void resolveAcpPermission(session.id, requestId, optionId)
 	                          }}
+                            onResolveUserInput={(requestId, answers) => {
+                              void resolveAcpUserInput(session.id, requestId, answers)
+                            }}
                         />
                       </MessageFrame>
                     )}
@@ -1580,11 +2083,18 @@ export function ChatView({ session }: ChatViewProps) {
                     key={`turn-${turnSerial}-fallback-content`}
                     events={turnEvents}
 	                    tools={acp?.toolCalls ?? []}
+	                    planSummary={acp?.planSummary ?? ''}
+	                    planEntries={acp?.planEntries ?? []}
+	                    planActions={activePlanActions}
 	                    pendingPermission={pendingPermission ?? null}
+	                    pendingUserInput={pendingUserInput ?? null}
 	                    onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
 	                    onResolvePermission={(requestId, optionId) => {
 	                      void resolveAcpPermission(session.id, requestId, optionId)
 	                    }}
+                      onResolveUserInput={(requestId, answers) => {
+                        void resolveAcpUserInput(session.id, requestId, answers)
+                      }}
                   />
                 </MessageFrame>
               )}
@@ -1695,7 +2205,7 @@ export function ChatView({ session }: ChatViewProps) {
                 setSettingsOpen(false)
               }}
               onToggleModel={() => {
-                if (acp?.processing || acp?.lifecycleState === 'waitingPermission') return
+                if (acp?.processing || acp?.lifecycleState === 'waitingPermission' || acp?.lifecycleState === 'waitingUserInput') return
                 setModelOpen((value) => !value)
                 setProviderOpen(false)
                 setSettingsOpen(false)

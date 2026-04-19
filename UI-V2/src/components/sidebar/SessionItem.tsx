@@ -2,9 +2,6 @@ import { useState, useRef, useEffect, memo } from 'react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 
-const MODE_ICON = '⌃'
-const MODE_COLOR = 'var(--green)'
-
 function formatSidebarTime(date: Date | null): string {
   if (!date || Number.isNaN(date.getTime())) {
     return ''
@@ -53,10 +50,12 @@ export const SessionItem = memo(function SessionItem({ sessionId }: SessionItemP
     const session = s.sessions.find((x) => x.id === sessionId)
     return session?.lastOpenedAt ?? session?.updatedAt ?? null
   })
+  const isPinned        = useAppStore((s) => s.sessions.find((x) => x.id === sessionId)?.isPinned ?? false)
   const isActive        = useAppStore((s) => s.activeSessionId === sessionId)
   const cliBinding      = useAppStore(useShallow((s) => s.cliBindingBySessionId[sessionId]))
   const acpBinding      = useAppStore(useShallow((s) => s.acpBindingBySessionId[sessionId]))
   const setActiveSession = useAppStore((s) => s.setActiveSession)
+  const setSessionPinned = useAppStore((s) => s.setSessionPinned)
   const renameSession    = useAppStore((s) => s.renameSession)
   const deleteSession    = useAppStore((s) => s.deleteSession)
 
@@ -130,13 +129,32 @@ export const SessionItem = memo(function SessionItem({ sessionId }: SessionItemP
           setShowMenu(true)
         }}
       >
-        {/* Mode icon */}
-        <span
-          className="flex-shrink-0 text-xs"
-          style={{ color: isActive ? MODE_COLOR : 'var(--text-3)', fontSize: 10 }}
-        >
-          {MODE_ICON}
-        </span>
+        {!editing && (
+          <button
+            type="button"
+            aria-label={isPinned ? 'Unpin chat' : 'Pin chat'}
+            title={isPinned ? 'Unpin chat' : 'Pin chat'}
+            className="flex flex-shrink-0 items-center justify-center rounded opacity-0 transition-opacity transition-colors duration-100 group-hover:opacity-100 group-focus-within:opacity-100"
+            style={{
+              width: 18,
+              height: 18,
+              background: 'transparent',
+              color: isPinned ? 'var(--accent)' : 'var(--text-3)',
+              border: 'none',
+              cursor: 'pointer',
+              padding: 0,
+            }}
+            onClick={(e) => {
+              e.stopPropagation()
+              void setSessionPinned(sessionId, !isPinned)
+            }}
+            onDoubleClick={(e) => e.stopPropagation()}
+          >
+            <svg width="12" height="12" viewBox="0 0 16 16" fill={isPinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M5.4 1.7h5.2l-.9 3.8 2.3 2.4v1.2H8.7L8 14.3 7.3 9.1H4V7.9l2.3-2.4-.9-3.8z" />
+            </svg>
+          </button>
+        )}
 
         {/* Name or edit input */}
         {editing ? (
@@ -163,7 +181,7 @@ export const SessionItem = memo(function SessionItem({ sessionId }: SessionItemP
         ) : (
           <span
             className="flex-1 text-xs truncate"
-            style={{ color: isActive ? '#ffffff' : 'var(--text-2)' }}
+            style={{ color: isActive ? 'var(--text)' : 'var(--text-2)' }}
           >
             {sessionName}
           </span>
@@ -177,7 +195,7 @@ export const SessionItem = memo(function SessionItem({ sessionId }: SessionItemP
                 className="max-w-[58px] truncate text-[10px] tabular-nums transition-opacity duration-100 group-hover:opacity-0"
                 title={lastOpenedTitle}
                 style={{
-                  color: isActive ? 'rgba(255,255,255,0.68)' : 'var(--text-3)',
+                  color: isActive ? 'var(--text-2)' : 'var(--text-3)',
                   lineHeight: 1,
                 }}
               >

@@ -6,7 +6,7 @@ export function NewChatModal() {
   const initialFolderId =
     newChatFolderId !== null && folders.some((folder) => folder.id === newChatFolderId)
       ? newChatFolderId
-      : folders[0]?.id ?? null
+      : null
   const [name, setName] = useState('')
   const [folderId, setFolderId] = useState<string | null>(initialFolderId)
   const [providerId, setProviderId] = useState<string>(providers[0]?.id ?? 'gemini-cli')
@@ -29,7 +29,7 @@ export function NewChatModal() {
 
     const folderExists = folderId !== null && folders.some((f) => f.id === folderId)
     if (!folderExists) {
-      setFolderId(folders[0]?.id ?? null)
+      setFolderId(null)
     }
   }, [folders, folderId, folderMenuOpen])
 
@@ -84,14 +84,18 @@ export function NewChatModal() {
   }, [folderMenuOpen, providerMenuOpen])
 
   const handleCreate = () => {
+    if (folderId === null || !folders.some((folder) => folder.id === folderId)) {
+      return
+    }
+
     const n = name.trim() || 'New Session'
-    const selectedFolderId = folderId ?? folders[0]?.id ?? null
-    addSession(n, selectedFolderId, providerId)
+    addSession(n, folderId, providerId)
   }
 
   const selectedFolder =
-    (folderId !== null ? folders.find((f) => f.id === folderId) : null) ?? folders[0] ?? null
+    (folderId !== null ? folders.find((f) => f.id === folderId) : null) ?? null
   const selectedProvider = providers.find((provider) => provider.id === providerId) ?? providers[0] ?? null
+  const canCreate = selectedFolder !== null
 
   return (
     <div
@@ -326,16 +330,18 @@ export function NewChatModal() {
           </button>
           <button
             onClick={handleCreate}
+            disabled={!canCreate}
             className="px-4 py-1.5 rounded-md text-xs font-medium transition-opacity duration-150"
             style={{
               background: 'var(--accent)',
               color: '#fff',
               border: 'none',
-              cursor: 'pointer',
+              cursor: canCreate ? 'pointer' : 'not-allowed',
               fontFamily: 'inherit',
+              opacity: canCreate ? 1 : 0.45,
             }}
-            onMouseEnter={(e) => { e.currentTarget.style.opacity = '0.88' }}
-            onMouseLeave={(e) => { e.currentTarget.style.opacity = '1' }}
+            onMouseEnter={(e) => { if (canCreate) e.currentTarget.style.opacity = '0.88' }}
+            onMouseLeave={(e) => { e.currentTarget.style.opacity = canCreate ? '1' : '0.45' }}
           >
             Create Session
           </button>

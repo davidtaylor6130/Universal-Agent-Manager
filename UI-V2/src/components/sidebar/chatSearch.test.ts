@@ -25,13 +25,15 @@ function makeSession(
   name: string,
   folderId: string | null,
   lastOpenedAt = now,
-  updatedAt = now
+  updatedAt = now,
+  isPinned = false
 ): Session {
   return {
     id,
     name,
     viewMode: 'cli',
     folderId,
+    isPinned,
     createdAt: now,
     updatedAt,
     lastOpenedAt,
@@ -65,6 +67,7 @@ function searchModel(
 
 function visibleSessionIds(model: ReturnType<typeof searchModel>): string[] {
   return [
+    ...model.pinnedSessionIds,
     ...model.folderRows.flatMap((row) => row.sessionIds),
     ...model.unfolderedSessionIds,
   ]
@@ -159,6 +162,56 @@ describe('chatSearch', () => {
     const model = searchModel('', folders, sessions)
 
     expect(model.folderRows[0].sessionIds).toEqual(['s-new', 's-middle', 's-old'])
+  })
+
+  it('lifts pinned chats into the top section without duplicating them in folders', () => {
+    const folders = [makeFolder('general'), makeFolder('work')]
+    const sessions = [
+      makeSession('s-pinned', 'Pinned Chat', 'general', now, now, true),
+      makeSession('s-folder', 'Folder Chat', 'general'),
+      makeSession('s-work', 'Work Chat', 'work'),
+    ]
+
+    const model = searchModel('', folders, sessions)
+
+    expect(model.pinnedSessionIds).toEqual(['s-pinned'])
+    expect(model.folderRows.map((row) => ({
+      folderId: row.folder.id,
+      sessionIds: row.sessionIds,
+    }))).toEqual([
+      { folderId: 'general', sessionIds: ['s-folder'] },
+      { folderId: 'work', sessionIds: ['s-work'] },
+    ])
+  })
+
+  it('searches pinned chats and hides the pinned section when none match', () => {
+    const folders = [makeFolder('general')]
+    const sessions = [
+      makeSession('s-pinned-match', 'Pinned Needle', 'general', now, now, true),
+      makeSession('s-pinned-miss', 'Pinned Other', 'general', now, now, true),
+      makeSession('s-folder-match', 'Folder Needle', 'general'),
+    ]
+
+    const matchModel = searchModel('needle', folders, sessions)
+    expect(matchModel.pinnedSessionIds).toEqual(['s-pinned-match'])
+    expect(matchModel.folderRows[0].sessionIds).toEqual(['s-folder-match'])
+
+    const folderOnlyModel = searchModel('folder', folders, sessions)
+    expect(folderOnlyModel.pinnedSessionIds).toEqual([])
+    expect(folderOnlyModel.folderRows[0].sessionIds).toEqual(['s-folder-match'])
+  })
+
+  it('keeps chats with missing folders in unsorted instead of dropping them', () => {
+    const folders = [makeFolder('general')]
+    const sessions = [
+      makeSession('s-valid', 'Valid Chat', 'general'),
+      makeSession('s-missing-folder', 'Missing Folder Chat', 'deleted-folder'),
+    ]
+
+    const model = searchModel('', folders, sessions)
+
+    expect(model.folderRows[0].sessionIds).toEqual(['s-valid'])
+    expect(model.unfolderedSessionIds).toEqual(['s-missing-folder'])
   })
 
   it('requires every query token to match', () => {

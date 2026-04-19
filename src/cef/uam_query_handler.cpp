@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <utility>
 
 #if defined(_WIN32)
@@ -121,6 +122,7 @@ namespace
 	{
 		return session.processing ||
 		       session.waiting_for_permission ||
+		       session.waiting_for_user_input ||
 		       session.initialize_request_id != 0 ||
 		       session.session_setup_request_id != 0 ||
 		       session.prompt_request_id != 0 ||
@@ -386,6 +388,8 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 			HandleCreateSession(browser, payload, callback);
 		else if (action == "renameSession")
 			HandleRenameSession(browser, payload, callback);
+		else if (action == "setChatPinned")
+			HandleSetChatPinned(browser, payload, callback);
 		else if (action == "setChatProvider")
 			HandleSetChatProvider(browser, payload, callback);
 		else if (action == "setChatModel")
@@ -418,6 +422,8 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 			HandleCancelAcpTurn(browser, payload, callback);
 		else if (action == "resolveAcpPermission")
 			HandleResolveAcpPermission(browser, payload, callback);
+		else if (action == "resolveAcpUserInput")
+			HandleResolveAcpUserInput(browser, payload, callback);
 			else if (action == "stopAcpSession")
 				HandleStopAcpSession(browser, payload, callback);
 			else if (action == "writeClipboardText")
@@ -513,6 +519,11 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 	const std::string previous_selected_chat_id = (ChatDomainService().SelectedChat(m_app) != nullptr) ? ChatDomainService().SelectedChat(m_app)->id : std::string{};
 
 	const std::string target_folder_id = ResolveRequestedNewChatFolderId(m_app, requested_folder_id);
+	if (target_folder_id.empty())
+	{
+		cb->Failure(400, m_app.status_line.empty() ? "A workspace folder is required to create a chat." : m_app.status_line);
+		return;
+	}
 
 	ChatSession chat = ChatDomainService().CreateNewChat(target_folder_id, provider_id);
 	if (!title.empty())
@@ -580,6 +591,40 @@ void UamQueryHandler::HandleRenameSession(CefRefPtr<CefBrowser> browser, const n
 	if (!ChatHistorySyncService().RenameChat(m_app, chat, title))
 	{
 		cb->Failure(500, m_app.status_line.empty() ? ("Failed to rename chat: " + chat_id) : m_app.status_line);
+		return;
+	}
+
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleSetChatPinned(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const bool pinned = payload.value("pinned", false);
+
+	const int idx = ChatDomainService().FindChatIndexById(m_app, chat_id);
+	if (idx < 0)
+	{
+		cb->Failure(404, "Chat not found: " + chat_id);
+		return;
+	}
+
+	ChatSession& chat = m_app.chats[static_cast<std::size_t>(idx)];
+	if (chat.pinned == pinned)
+	{
+		uam::PushStateUpdate(browser, m_app);
+		cb->Success("{}");
+		return;
+	}
+
+	const bool previous_pinned = chat.pinned;
+	chat.pinned = pinned;
+
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, chat, "Chat pin updated.", "Chat pin changed in UI, but failed to save."))
+	{
+		chat.pinned = previous_pinned;
+		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist chat pin." : m_app.status_line);
 		return;
 	}
 
@@ -1094,6 +1139,55 @@ void UamQueryHandler::HandleResolveAcpPermission(CefRefPtr<CefBrowser> browser, 
 	if (!uam::ResolveAcpPermission(m_app, chat_id, request_id, option_id, cancelled, &error))
 	{
 		cb->Failure(409, error.empty() ? "Failed to resolve ACP permission request." : error);
+		return;
+	}
+
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleResolveAcpUserInput(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const std::string request_id = payload.value("requestId", "");
+	std::map<std::string, std::vector<std::string>> answers;
+
+	const nlohmann::json raw_answers = payload.value("answers", nlohmann::json::object());
+	if (!raw_answers.is_object())
+	{
+		cb->Failure(400, "ACP user input answers must be an object.");
+		return;
+	}
+
+	for (auto it = raw_answers.begin(); it != raw_answers.end(); ++it)
+	{
+		if (it.key().empty())
+		{
+			continue;
+		}
+
+		std::vector<std::string> values;
+		if (it.value().is_array())
+		{
+			for (const nlohmann::json& value : it.value())
+			{
+				if (value.is_string())
+				{
+					values.push_back(value.get<std::string>());
+				}
+			}
+		}
+		else if (it.value().is_string())
+		{
+			values.push_back(it.value().get<std::string>());
+		}
+		answers[it.key()] = std::move(values);
+	}
+
+	std::string error;
+	if (!uam::ResolveAcpUserInput(m_app, chat_id, request_id, answers, &error))
+	{
+		cb->Failure(409, error.empty() ? "Failed to resolve ACP user input request." : error);
 		return;
 	}
 

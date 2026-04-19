@@ -7,7 +7,6 @@
 #include "app/runtime_orchestration_services.h"
 #include "common/chat/chat_branching.h"
 #include "common/chat/chat_folder_store.h"
-#include "common/constants/app_constants.h"
 #include "common/paths/app_paths.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/acp/acp_session_runtime.h"
@@ -186,9 +185,9 @@ bool RemoveChatById(AppState& app, const std::string& chat_id)
 
 bool DeleteFolderById(AppState& app, const std::string& folder_id)
 {
-	if (folder_id.empty() || folder_id == uam::constants::kDefaultFolderId)
+	if (folder_id.empty())
 	{
-		app.status_line = "The default folder cannot be deleted.";
+		app.status_line = "Folder id is required.";
 		return false;
 	}
 
@@ -257,16 +256,6 @@ bool DeleteFolderById(AppState& app, const std::string& folder_id)
 
 	std::vector<ChatFolder> next_folders = app.folders;
 	next_folders.erase(next_folders.begin() + folder_index);
-
-	if (std::none_of(next_folders.begin(), next_folders.end(), [](const ChatFolder& folder) { return folder.id == uam::constants::kDefaultFolderId; }))
-	{
-		ChatFolder default_folder;
-		default_folder.id = uam::constants::kDefaultFolderId;
-		default_folder.title = uam::constants::kDefaultFolderTitle;
-		default_folder.directory = std::filesystem::current_path().string();
-		default_folder.collapsed = false;
-		next_folders.push_back(std::move(default_folder));
-	}
 
 	if (!ChatFolderStore::Save(app.data_root, next_folders))
 	{
@@ -363,7 +352,7 @@ bool DeleteFolderById(AppState& app, const std::string& folder_id)
 
 	if (app.new_chat_folder_id == folder_id)
 	{
-		app.new_chat_folder_id = uam::constants::kDefaultFolderId;
+		app.new_chat_folder_id.clear();
 	}
 
 	ChatDomainService().RefreshRememberedSelection(app);
@@ -452,7 +441,7 @@ bool CreateFolder(AppState& app, const std::string& title, const std::string& di
 	if (!ChatFolderStore::Save(app.data_root, app.folders))
 	{
 		app.folders.pop_back();
-		app.new_chat_folder_id = previous_new_chat_folder_id.empty() ? uam::constants::kDefaultFolderId : previous_new_chat_folder_id;
+		app.new_chat_folder_id = previous_new_chat_folder_id;
 		app.status_line = "Failed to persist the new folder.";
 		return false;
 	}
@@ -512,11 +501,19 @@ std::string ResolveRequestedNewChatFolderId(AppState& app, const std::string& re
 {
 	ChatDomainService().EnsureNewChatFolderSelection(app);
 
-	if (!requested_folder_id.empty() && ChatDomainService().FindFolderById(app, requested_folder_id) != nullptr)
+	if (requested_folder_id.empty())
 	{
-		app.new_chat_folder_id = requested_folder_id;
+		app.status_line = "A workspace folder is required to create a chat.";
+		return "";
 	}
 
+	if (ChatDomainService().FindFolderById(app, requested_folder_id) == nullptr)
+	{
+		app.status_line = "Selected workspace folder no longer exists.";
+		return "";
+	}
+
+	app.new_chat_folder_id = requested_folder_id;
 	ChatDomainService().EnsureNewChatFolderSelection(app);
 	return ChatDomainService().FolderForNewChat(app);
 }

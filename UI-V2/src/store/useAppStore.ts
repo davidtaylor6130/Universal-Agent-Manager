@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { Session, Folder } from '../types/session'
-import { Message } from '../types/message'
+import { Message, MessageBlock } from '../types/message'
 import { Provider } from '../types/provider'
 import { sendToCEF, isCefContext, createRequestId } from '../ipc/cefBridge'
 import { applyDocumentTheme, writeStoredTheme } from '../utils/themeStorage'
@@ -66,24 +66,29 @@ export type AcpLifecycleState =
   | 'ready'
   | 'processing'
   | 'waitingPermission'
+  | 'waitingUserInput'
   | 'error'
 
 interface CppMessage {
   role: 'user' | 'assistant' | 'system'
   content: string
   thoughts?: string
+  planSummary?: string
+  planEntries?: AcpPlanEntry[]
   toolCalls?: AcpToolCall[]
+  blocks?: MessageBlock[]
   createdAt: string
 }
 
 interface CppChat {
   id: string
   title: string
-	  folderId: string
-	  providerId: string
-	  modelId?: string
-	  approvalMode?: string
-	  workspaceDirectory?: string
+  folderId: string
+  pinned?: boolean
+  providerId: string
+  modelId?: string
+  approvalMode?: string
+  workspaceDirectory?: string
   createdAt: string
   updatedAt: string
   lastOpenedAt?: string
@@ -132,8 +137,10 @@ export interface AcpModel {
 export type AcpTurnEvent =
   | { type: 'assistant_text'; text: string; toolCallId?: string; requestId?: string }
   | { type: 'thought'; text: string; toolCallId?: string; requestId?: string }
+  | { type: 'plan'; text?: string; toolCallId?: string; requestId?: string }
   | { type: 'tool_call'; toolCallId: string; text?: string; requestId?: string }
   | { type: 'permission_request'; requestId: string; toolCallId?: string; text?: string }
+  | { type: 'user_input_request'; requestId: string; toolCallId?: string; text?: string }
 
 export interface AcpPermissionOption {
   id: string
@@ -150,6 +157,29 @@ export interface AcpPendingPermission {
   content: string
   options: AcpPermissionOption[]
 }
+
+export interface AcpUserInputOption {
+  label: string
+  description: string
+}
+
+export interface AcpUserInputQuestion {
+  id: string
+  header: string
+  question: string
+  isOther: boolean
+  isSecret: boolean
+  options: AcpUserInputOption[]
+}
+
+export interface AcpPendingUserInput {
+  requestId: string
+  itemId: string
+  status: string
+  questions: AcpUserInputQuestion[]
+}
+
+export type AcpUserInputAnswers = Record<string, string[]>
 
 export interface AcpAgentInfo {
   name: string
@@ -184,6 +214,7 @@ export interface CppAcpSession {
   diagnostics?: AcpDiagnosticEntry[]
   agentInfo?: Partial<AcpAgentInfo>
 	  toolCalls?: AcpToolCall[]
+	  planSummary?: string
 	  planEntries?: AcpPlanEntry[]
 	  availableModes?: AcpMode[]
 	  currentModeId?: string
@@ -194,6 +225,7 @@ export interface CppAcpSession {
   turnAssistantMessageIndex?: number
   turnSerial?: number
   pendingPermission?: AcpPendingPermission | null
+  pendingUserInput?: AcpPendingUserInput | null
 }
 
 interface CppCliDebugTerminal {
@@ -284,6 +316,7 @@ export interface AcpBinding {
   lastExitCode: number | null
   diagnostics: AcpDiagnosticEntry[]
 	  toolCalls: AcpToolCall[]
+	  planSummary?: string
 	  planEntries: AcpPlanEntry[]
 	  availableModes: AcpMode[]
 	  currentModeId: string
@@ -294,6 +327,7 @@ export interface AcpBinding {
   turnAssistantMessageIndex: number
   turnSerial: number
   pendingPermission: AcpPendingPermission | null
+  pendingUserInput: AcpPendingUserInput | null
   agentInfo: AcpAgentInfo | null
 }
 
@@ -364,10 +398,23 @@ function sanitizeCppMessage(value: unknown): CppMessage | null {
     role,
     content: value.content,
     thoughts: isString(value.thoughts) ? value.thoughts : undefined,
+    planSummary: isString(value.planSummary) ? value.planSummary : undefined,
+    planEntries: Array.isArray(value.planEntries)
+      ? value.planEntries.flatMap((entry) => {
+          const sanitized = sanitizePlanEntry(entry)
+          return sanitized ? [sanitized] : []
+        })
+      : [],
     toolCalls: Array.isArray(value.toolCalls)
       ? value.toolCalls.flatMap((toolCall) => {
           const sanitized = sanitizeToolCall(toolCall)
           return sanitized ? [sanitized] : []
+        })
+      : [],
+    blocks: Array.isArray(value.blocks)
+      ? value.blocks.flatMap((block) => {
+          const sanitized = sanitizeTurnEvent(block)
+          return sanitized ? [sanitized as MessageBlock] : []
         })
       : [],
     createdAt: stringOr(value.createdAt),
@@ -462,6 +509,15 @@ function sanitizeTurnEvent(value: unknown): AcpTurnEvent | null {
     }
   }
 
+  if (type === 'plan') {
+    return {
+      type,
+      text: isString(value.text) ? value.text : undefined,
+      toolCallId: isString(value.toolCallId) ? value.toolCallId : undefined,
+      requestId: isString(value.requestId) ? value.requestId : undefined,
+    }
+  }
+
   if (type === 'tool_call') {
     const toolCallId = stringOr(value.toolCallId)
     if (!toolCallId) return null
@@ -474,6 +530,17 @@ function sanitizeTurnEvent(value: unknown): AcpTurnEvent | null {
   }
 
   if (type === 'permission_request') {
+    const requestId = stringOr(value.requestId)
+    if (!requestId) return null
+    return {
+      type,
+      requestId,
+      toolCallId: isString(value.toolCallId) ? value.toolCallId : undefined,
+      text: isString(value.text) ? value.text : undefined,
+    }
+  }
+
+  if (type === 'user_input_request') {
     const requestId = stringOr(value.requestId)
     if (!requestId) return null
     return {
@@ -519,6 +586,51 @@ function sanitizePendingPermission(value: unknown): AcpPendingPermission | null 
   }
 }
 
+function sanitizeUserInputOption(value: unknown): AcpUserInputOption | null {
+  if (!isRecord(value)) return null
+  return {
+    label: stringOr(value.label),
+    description: stringOr(value.description),
+  }
+}
+
+function sanitizeUserInputQuestion(value: unknown): AcpUserInputQuestion | null {
+  if (!isRecord(value)) return null
+  const id = stringOr(value.id)
+  if (!id) return null
+  return {
+    id,
+    header: stringOr(value.header),
+    question: stringOr(value.question),
+    isOther: booleanOr(value.isOther),
+    isSecret: booleanOr(value.isSecret),
+    options: Array.isArray(value.options)
+      ? value.options.flatMap((option) => {
+          const sanitized = sanitizeUserInputOption(option)
+          return sanitized ? [sanitized] : []
+        })
+      : [],
+  }
+}
+
+function sanitizePendingUserInput(value: unknown): AcpPendingUserInput | null {
+  if (value == null) return null
+  if (!isRecord(value)) return null
+  const requestId = stringOr(value.requestId)
+  if (!requestId) return null
+  return {
+    requestId,
+    itemId: stringOr(value.itemId),
+    status: stringOr(value.status),
+    questions: Array.isArray(value.questions)
+      ? value.questions.flatMap((question) => {
+          const sanitized = sanitizeUserInputQuestion(question)
+          return sanitized ? [sanitized] : []
+        })
+      : [],
+  }
+}
+
 function sanitizeAgentInfo(value: unknown): Partial<AcpAgentInfo> | undefined {
   if (!isRecord(value)) return undefined
   return {
@@ -550,12 +662,13 @@ function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined {
         })
       : [],
     agentInfo: sanitizeAgentInfo(value.agentInfo),
-    toolCalls: Array.isArray(value.toolCalls)
+  toolCalls: Array.isArray(value.toolCalls)
       ? value.toolCalls.flatMap((toolCall) => {
           const sanitized = sanitizeToolCall(toolCall)
           return sanitized ? [sanitized] : []
         })
       : [],
+	    planSummary: stringOr(value.planSummary),
 	    planEntries: Array.isArray(value.planEntries)
 	      ? value.planEntries.flatMap((entry) => {
 	          const sanitized = sanitizePlanEntry(entry)
@@ -586,6 +699,7 @@ function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined {
     turnAssistantMessageIndex: finiteNumberOr(value.turnAssistantMessageIndex, -1),
     turnSerial: finiteNumberOr(value.turnSerial, 0),
     pendingPermission: sanitizePendingPermission(value.pendingPermission),
+    pendingUserInput: sanitizePendingUserInput(value.pendingUserInput),
   }
 }
 
@@ -607,12 +721,13 @@ function sanitizeCppChat(value: unknown): CppChat | null {
   if (!id) return null
   return {
     id,
-	    title: stringOr(value.title, 'Untitled'),
-	    folderId: stringOr(value.folderId),
-	    providerId: stringOr(value.providerId, GEMINI_CLI_PROVIDER_ID),
-	    modelId: normalizeAcpModelId(value.modelId),
-	    approvalMode: normalizeAcpApprovalMode(value.approvalMode),
-	    workspaceDirectory: isString(value.workspaceDirectory) ? value.workspaceDirectory : undefined,
+    title: stringOr(value.title, 'Untitled'),
+    folderId: stringOr(value.folderId),
+    pinned: booleanOr(value.pinned),
+    providerId: stringOr(value.providerId, GEMINI_CLI_PROVIDER_ID),
+    modelId: normalizeAcpModelId(value.modelId),
+    approvalMode: normalizeAcpApprovalMode(value.approvalMode),
+    workspaceDirectory: isString(value.workspaceDirectory) ? value.workspaceDirectory : undefined,
     createdAt: stringOr(value.createdAt),
     updatedAt: stringOr(value.updatedAt),
     lastOpenedAt: isString(value.lastOpenedAt) ? value.lastOpenedAt : undefined,
@@ -817,6 +932,7 @@ function normalizeAcpLifecycleState(value: unknown, running: boolean, processing
     value === 'ready' ||
     value === 'processing' ||
     value === 'waitingPermission' ||
+    value === 'waitingUserInput' ||
     value === 'error'
   ) {
     return value
@@ -844,6 +960,7 @@ function acpBindingSignature(binding: AcpBinding | undefined) {
     lastExitCode: binding.lastExitCode,
 	    diagnostics: binding.diagnostics,
 	    toolCalls: binding.toolCalls,
+	    planSummary: binding.planSummary,
 	    planEntries: binding.planEntries,
 	    availableModes: binding.availableModes,
 	    currentModeId: binding.currentModeId,
@@ -854,6 +971,7 @@ function acpBindingSignature(binding: AcpBinding | undefined) {
     turnAssistantMessageIndex: binding.turnAssistantMessageIndex,
     turnSerial: binding.turnSerial,
     pendingPermission: binding.pendingPermission,
+    pendingUserInput: binding.pendingUserInput,
     agentInfo: binding.agentInfo,
   })
 }
@@ -944,9 +1062,20 @@ function cppMessagesEquivalent(existing: Message, next: CppMessage) {
     existing.role === next.role &&
     existing.content === next.content &&
     (existing.thoughts ?? '') === (next.thoughts ?? '') &&
+    (existing.planSummary ?? '') === (next.planSummary ?? '') &&
+    planEntriesEquivalent(existing.planEntries ?? [], next.planEntries ?? []) &&
     toolCallsEquivalent(existing.toolCalls ?? [], next.toolCalls ?? []) &&
+    messageBlocksEquivalent(existing.blocks ?? [], next.blocks ?? []) &&
     existing.createdAt.getTime() === cppMessageCreatedAtMillis(next)
   )
+}
+
+function planEntriesEquivalent(existing: AcpPlanEntry[], next: AcpPlanEntry[]) {
+  if (existing.length !== next.length) return false
+  return existing.every((entry, index) => {
+    const other = next[index]
+    return entry.content === other.content && entry.priority === other.priority && entry.status === other.status
+  })
 }
 
 function toolCallsEquivalent(existing: AcpToolCall[], next: AcpToolCall[]) {
@@ -959,6 +1088,19 @@ function toolCallsEquivalent(existing: AcpToolCall[], next: AcpToolCall[]) {
       tool.kind === other.kind &&
       tool.status === other.status &&
       tool.content === other.content
+    )
+  })
+}
+
+function messageBlocksEquivalent(existing: MessageBlock[], next: MessageBlock[]) {
+  if (existing.length !== next.length) return false
+  return existing.every((block, index) => {
+    const other = next[index]
+    return (
+      block.type === other.type &&
+      (block.text ?? '') === (other.text ?? '') &&
+      (block.toolCallId ?? '') === (other.toolCallId ?? '') &&
+      (block.requestId ?? '') === (other.requestId ?? '')
     )
   })
 }
@@ -1043,7 +1185,10 @@ function deserializeState(
       role: message.role,
       content: message.content,
       thoughts: message.thoughts ?? '',
+      planSummary: message.planSummary ?? '',
+      planEntries: message.planEntries ?? [],
       toolCalls: message.toolCalls ?? [],
+      blocks: message.blocks ?? [],
       createdAt: new Date(createdAtMillis),
     } satisfies Message
   }
@@ -1082,6 +1227,7 @@ function deserializeState(
     const prev = existingSessionsById[c.id]
     const name = c.title || 'Untitled'
     const folderId = c.folderId || null
+    const isPinned = c.pinned ?? false
     const workspaceDirectory = c.workspaceDirectory ?? ''
     const providerId = c.providerId || GEMINI_CLI_PROVIDER_ID
     const modelId = c.modelId ?? ''
@@ -1089,31 +1235,33 @@ function deserializeState(
     const createdAt = new Date(c.createdAt || Date.now())
     const updatedAt = new Date(c.updatedAt || Date.now())
     const lastOpenedAt = new Date(c.lastOpenedAt || c.updatedAt || c.createdAt || Date.now())
-	    // Reuse reference if nothing changed — keeps memoized children stable
-	    if (
-	      prev &&
-	      prev.name === name &&
-	      prev.folderId === folderId &&
-	      (prev.providerId ?? GEMINI_CLI_PROVIDER_ID) === providerId &&
-	      (prev.modelId ?? '') === modelId &&
-	      (prev.approvalMode ?? 'default') === approvalMode &&
-	      prev.workspaceDirectory === workspaceDirectory &&
-	      prev.viewMode === 'chat' &&
-	      prev.createdAt.getTime() === createdAt.getTime() &&
-	      prev.updatedAt.getTime() === updatedAt.getTime() &&
-	      (prev.lastOpenedAt ?? prev.updatedAt).getTime() === lastOpenedAt.getTime()
-	    ) {
+    // Reuse reference if nothing changed — keeps memoized children stable
+    if (
+      prev &&
+      prev.name === name &&
+      prev.folderId === folderId &&
+      (prev.isPinned ?? false) === isPinned &&
+      (prev.providerId ?? GEMINI_CLI_PROVIDER_ID) === providerId &&
+      (prev.modelId ?? '') === modelId &&
+      (prev.approvalMode ?? 'default') === approvalMode &&
+      prev.workspaceDirectory === workspaceDirectory &&
+      prev.viewMode === 'chat' &&
+      prev.createdAt.getTime() === createdAt.getTime() &&
+      prev.updatedAt.getTime() === updatedAt.getTime() &&
+      (prev.lastOpenedAt ?? prev.updatedAt).getTime() === lastOpenedAt.getTime()
+    ) {
       return prev
     }
     return {
       id: c.id,
       name,
       viewMode: 'chat',
-	      folderId,
-	      providerId,
-	      modelId,
-	      approvalMode,
-	      workspaceDirectory,
+      folderId,
+      isPinned,
+      providerId,
+      modelId,
+      approvalMode,
+      workspaceDirectory,
       createdAt,
       updatedAt,
       lastOpenedAt,
@@ -1258,7 +1406,12 @@ function deserializeState(
       const processing = Boolean(acp?.processing)
       const lifecycleState = normalizeAcpLifecycleState(acp?.lifecycleState, running, processing)
       const effectiveProcessing =
-        lifecycleState === 'error' ? false : processing || lifecycleState === 'processing' || lifecycleState === 'waitingPermission'
+        lifecycleState === 'error'
+          ? false
+          : processing ||
+            lifecycleState === 'processing' ||
+            lifecycleState === 'waitingPermission' ||
+            lifecycleState === 'waitingUserInput'
       const prev = existingAcpBindings[c.id]
       const next: AcpBinding = {
         sessionId: acp?.sessionId ?? '',
@@ -1279,6 +1432,7 @@ function deserializeState(
         lastExitCode: typeof acp?.lastExitCode === 'number' ? acp.lastExitCode : null,
 	        diagnostics: Array.isArray(acp?.diagnostics) ? acp!.diagnostics : [],
 	        toolCalls: Array.isArray(acp?.toolCalls) ? acp!.toolCalls : [],
+	        planSummary: acp?.planSummary ?? '',
 	        planEntries: Array.isArray(acp?.planEntries) ? acp!.planEntries : [],
 	        availableModes: Array.isArray(acp?.availableModes) ? acp!.availableModes : [],
 	        currentModeId: normalizeAcpApprovalMode(acp?.currentModeId ?? c.approvalMode),
@@ -1289,6 +1443,7 @@ function deserializeState(
         turnAssistantMessageIndex: typeof acp?.turnAssistantMessageIndex === 'number' ? acp.turnAssistantMessageIndex : -1,
         turnSerial: typeof acp?.turnSerial === 'number' ? acp.turnSerial : 0,
         pendingPermission: acp?.pendingPermission ?? null,
+        pendingUserInput: acp?.pendingUserInput ?? null,
         agentInfo: acp?.agentInfo
           ? {
               name: acp.agentInfo.name ?? '',
@@ -1417,6 +1572,7 @@ interface AppState {
 	  setActiveSession: (id: string) => void
 	  addSession: (name: string, folderId: string | null, providerId?: string) => void
 	  renameSession: (id: string, name: string) => void
+	  setSessionPinned: (id: string, pinned: boolean) => Promise<boolean>
 	  setSessionProvider: (id: string, providerId: string) => Promise<boolean>
 	  setSessionModel: (id: string, modelId: string) => Promise<boolean>
 	  setSessionApprovalMode: (id: string, modeId: string) => Promise<boolean>
@@ -1436,6 +1592,7 @@ interface AppState {
   sendAcpPrompt: (sessionId: string, text: string) => Promise<boolean>
   cancelAcpTurn: (sessionId: string) => Promise<boolean>
   resolveAcpPermission: (sessionId: string, requestId: string, optionId: string | 'cancelled') => Promise<boolean>
+  resolveAcpUserInput: (sessionId: string, requestId: string, answers: AcpUserInputAnswers) => Promise<boolean>
   stopAcpSession: (sessionId: string) => Promise<boolean>
 
   // UI actions
@@ -1677,10 +1834,18 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     addSession: (name, folderId, providerId = GEMINI_CLI_PROVIDER_ID) => {
+      const selectedFolderId = folderId && get().folders.some((folder) => folder.id === folderId)
+        ? folderId
+        : null
+      if (!selectedFolderId) {
+        console.error('[UAM] createSession requires a workspace folder')
+        return
+      }
+
       if (isCefContext()) {
         sendToCEF({
           action: 'createSession',
-          payload: { title: name, folderId: folderId ?? '', providerId },
+          payload: { title: name, folderId: selectedFolderId, providerId },
         }).then((resp) => {
           if (!resp.ok) {
             console.error('[CEF] createSession failed:', resp.error)
@@ -1696,7 +1861,7 @@ export const useAppStore = create<AppState>((set, get) => {
       sessionCounter++
       const id = makeId('s', sessionCounter)
       const now = new Date()
-      const session: Session = { id, name, viewMode: 'chat', folderId, providerId, createdAt: now, updatedAt: now, lastOpenedAt: now }
+      const session: Session = { id, name, viewMode: 'chat', folderId: selectedFolderId, providerId, createdAt: now, updatedAt: now, lastOpenedAt: now }
       set((state) => ({
         sessions: [...state.sessions, session],
         messages: { ...state.messages, [id]: [] },
@@ -1746,6 +1911,54 @@ export const useAppStore = create<AppState>((set, get) => {
           s.id === id ? { ...s, name, updatedAt: new Date() } : s
         ),
       }))
+    },
+
+    setSessionPinned: async (id, pinned) => {
+      const previousSession = get().sessions.find((s) => s.id === id)
+      if (!previousSession) {
+        return false
+      }
+
+      if ((previousSession.isPinned ?? false) === pinned) {
+        return true
+      }
+
+      const applyPinned = () => {
+        set((state) => ({
+          sessions: state.sessions.map((s) =>
+            s.id === id ? { ...s, isPinned: pinned } : s
+          ),
+        }))
+      }
+
+      if (isCefContext()) {
+        const requestKey = `setSessionPinned:${id}`
+        const requestId = createRequestId('setSessionPinned')
+        rememberPendingRequest(requestKey, requestId)
+        applyPinned()
+        const response = await sendToCEF({
+          action: 'setChatPinned',
+          payload: { chatId: id, pinned },
+          requestId,
+        })
+
+        if (response.ok) {
+          clearPendingRequest(requestKey, response.requestId)
+          return true
+        }
+
+        if (isLatestPendingRequest(requestKey, response.requestId)) {
+          set((state) => ({
+            sessions: state.sessions.map((s) => (s.id === id ? previousSession : s)),
+          }))
+          pendingRequestIdsByKey.delete(requestKey)
+        }
+
+        return false
+      }
+
+      applyPinned()
+      return true
     },
 
 	    setSessionProvider: async (id, providerId) => {
@@ -1872,7 +2085,10 @@ export const useAppStore = create<AppState>((set, get) => {
 	        return false
 	      }
 
-	      if ((previousSession.approvalMode ?? 'default') === requestedModeId) {
+	      const previousBinding = get().acpBindingBySessionId[id]
+	      const previousSessionModeId = normalizeAcpApprovalMode(previousSession.approvalMode)
+	      const previousRuntimeModeId = previousBinding ? normalizeAcpApprovalMode(previousBinding.currentModeId) : previousSessionModeId
+	      if (previousSessionModeId === requestedModeId && previousRuntimeModeId === requestedModeId) {
 	        return true
 	      }
 
@@ -1881,6 +2097,15 @@ export const useAppStore = create<AppState>((set, get) => {
 	          sessions: state.sessions.map((s) =>
 	            s.id === id ? { ...s, approvalMode: requestedModeId, updatedAt: new Date() } : s
 	          ),
+	          acpBindingBySessionId: state.acpBindingBySessionId[id]
+	            ? {
+	                ...state.acpBindingBySessionId,
+	                [id]: {
+	                  ...state.acpBindingBySessionId[id],
+	                  currentModeId: requestedModeId,
+	                },
+	              }
+	            : state.acpBindingBySessionId,
 	        }))
 	      }
 
@@ -1903,6 +2128,12 @@ export const useAppStore = create<AppState>((set, get) => {
 	        if (isLatestPendingRequest(requestKey, response.requestId)) {
 	          set((state) => ({
 	            sessions: state.sessions.map((s) => (s.id === id ? previousSession : s)),
+	            acpBindingBySessionId: previousBinding
+	              ? {
+	                  ...state.acpBindingBySessionId,
+	                  [id]: previousBinding,
+	                }
+	              : state.acpBindingBySessionId,
 	          }))
 	          pendingRequestIdsByKey.delete(requestKey)
 	        }
@@ -2283,6 +2514,7 @@ export const useAppStore = create<AppState>((set, get) => {
 	                  lastExitCode: null,
 	                  diagnostics: [],
 	                  toolCalls: [],
+                  planSummary: '',
                   planEntries: [],
                   availableModes: [],
                   currentModeId: 'default',
@@ -2293,6 +2525,7 @@ export const useAppStore = create<AppState>((set, get) => {
                   turnAssistantMessageIndex: -1,
                   turnSerial: 0,
                   pendingPermission: null,
+                  pendingUserInput: null,
                   agentInfo: null,
                 }),
                 lifecycleState: 'error',
@@ -2346,6 +2579,7 @@ export const useAppStore = create<AppState>((set, get) => {
 	            lastExitCode: null,
 	            diagnostics: [],
 	            toolCalls: [],
+            planSummary: '',
             planEntries: [],
             availableModes: [],
             currentModeId: state.sessions.find((session) => session.id === sessionId)?.approvalMode ?? 'default',
@@ -2356,6 +2590,7 @@ export const useAppStore = create<AppState>((set, get) => {
             turnAssistantMessageIndex: -1,
             turnSerial: (state.acpBindingBySessionId[sessionId]?.turnSerial ?? 0) + 1,
             pendingPermission: null,
+            pendingUserInput: null,
             agentInfo: { name: 'dev', title: 'Dev ACP', version: 'local' },
           },
         },
@@ -2388,6 +2623,7 @@ export const useAppStore = create<AppState>((set, get) => {
 	              lastExitCode: null,
 	              diagnostics: [],
 	              toolCalls: [],
+              planSummary: '',
               planEntries: [],
               availableModes: [],
               currentModeId: state.sessions.find((session) => session.id === sessionId)?.approvalMode ?? 'default',
@@ -2398,12 +2634,14 @@ export const useAppStore = create<AppState>((set, get) => {
               turnAssistantMessageIndex: -1,
               turnSerial: 0,
               pendingPermission: null,
+              pendingUserInput: null,
               agentInfo: null,
             }),
             lifecycleState: 'ready',
             processing: false,
             processingStartedAtMs: null,
             pendingPermission: null,
+            pendingUserInput: null,
           },
         },
       }))
@@ -2440,6 +2678,7 @@ export const useAppStore = create<AppState>((set, get) => {
 	              lastExitCode: null,
 	              diagnostics: [],
 	              toolCalls: [],
+              planSummary: '',
               planEntries: [],
               availableModes: [],
               currentModeId: state.sessions.find((session) => session.id === sessionId)?.approvalMode ?? 'default',
@@ -2450,10 +2689,67 @@ export const useAppStore = create<AppState>((set, get) => {
               turnAssistantMessageIndex: -1,
               turnSerial: 0,
               pendingPermission: null,
+              pendingUserInput: null,
               agentInfo: null,
             }),
             lifecycleState: 'processing',
             pendingPermission: null,
+            pendingUserInput: null,
+          },
+        },
+      }))
+      return true
+    },
+
+    resolveAcpUserInput: async (sessionId, requestId, answers) => {
+      if (isCefContext()) {
+        const response = await sendToCEF({
+          action: 'resolveAcpUserInput',
+          payload: {
+            chatId: sessionId,
+            requestId,
+            answers,
+          },
+        })
+        return response.ok
+      }
+
+      set((state) => ({
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          [sessionId]: {
+            ...(state.acpBindingBySessionId[sessionId] ?? {
+              sessionId: 'dev-acp-session',
+              providerId: state.sessions.find((session) => session.id === sessionId)?.providerId ?? GEMINI_CLI_PROVIDER_ID,
+              protocolKind: 'gemini-acp',
+              threadId: '',
+              running: true,
+              lifecycleState: 'ready' as AcpLifecycleState,
+              processing: false,
+              readySinceLastSelect: false,
+              processingStartedAtMs: null,
+              lastError: '',
+              recentStderr: '',
+              lastExitCode: null,
+              diagnostics: [],
+              toolCalls: [],
+              planSummary: '',
+              planEntries: [],
+              availableModes: [],
+              currentModeId: state.sessions.find((session) => session.id === sessionId)?.approvalMode ?? 'default',
+              availableModels: [],
+              currentModelId: state.sessions.find((session) => session.id === sessionId)?.modelId ?? '',
+              turnEvents: [],
+              turnUserMessageIndex: -1,
+              turnAssistantMessageIndex: -1,
+              turnSerial: 0,
+              pendingPermission: null,
+              pendingUserInput: null,
+              agentInfo: null,
+            }),
+            lifecycleState: 'processing',
+            processing: true,
+            pendingUserInput: null,
           },
         },
       }))
@@ -2485,6 +2781,7 @@ export const useAppStore = create<AppState>((set, get) => {
 	              lastExitCode: null,
 	              diagnostics: [],
 	              toolCalls: [],
+              planSummary: '',
               planEntries: [],
               availableModes: [],
               currentModeId: state.sessions.find((session) => session.id === sessionId)?.approvalMode ?? 'default',
@@ -2495,6 +2792,7 @@ export const useAppStore = create<AppState>((set, get) => {
               turnAssistantMessageIndex: -1,
               turnSerial: 0,
               pendingPermission: null,
+              pendingUserInput: null,
               agentInfo: null,
             }),
             running: false,
@@ -2503,6 +2801,7 @@ export const useAppStore = create<AppState>((set, get) => {
             readySinceLastSelect: false,
             processingStartedAtMs: null,
             pendingPermission: null,
+            pendingUserInput: null,
           },
         },
       }))

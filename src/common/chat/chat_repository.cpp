@@ -121,6 +121,29 @@ namespace
 			obj.object_value["thoughts"].type = JsonValue::Type::String;
 			obj.object_value["thoughts"].string_value = msg.thoughts;
 		}
+		if (!msg.plan_summary.empty())
+		{
+			obj.object_value["plan_summary"].type = JsonValue::Type::String;
+			obj.object_value["plan_summary"].string_value = msg.plan_summary;
+		}
+		if (!msg.plan_entries.empty())
+		{
+			JsonValue plan_arr;
+			plan_arr.type = JsonValue::Type::Array;
+			for (const MessagePlanEntry& entry : msg.plan_entries)
+			{
+				JsonValue entry_obj;
+				entry_obj.type = JsonValue::Type::Object;
+				entry_obj.object_value["content"].type = JsonValue::Type::String;
+				entry_obj.object_value["content"].string_value = entry.content;
+				entry_obj.object_value["priority"].type = JsonValue::Type::String;
+				entry_obj.object_value["priority"].string_value = entry.priority;
+				entry_obj.object_value["status"].type = JsonValue::Type::String;
+				entry_obj.object_value["status"].string_value = entry.status;
+				plan_arr.array_value.push_back(std::move(entry_obj));
+			}
+			obj.object_value["plan_entries"] = std::move(plan_arr);
+		}
 		if (!msg.tool_calls.empty())
 		{
 			JsonValue tc_arr;
@@ -142,6 +165,42 @@ namespace
 				tc_arr.array_value.push_back(tc_obj);
 			}
 			obj.object_value["tool_calls"] = std::move(tc_arr);
+		}
+		if (!msg.blocks.empty())
+		{
+			JsonValue block_arr;
+			block_arr.type = JsonValue::Type::Array;
+			for (const MessageBlock& block : msg.blocks)
+			{
+				if (block.type.empty())
+				{
+					continue;
+				}
+				JsonValue block_obj;
+				block_obj.type = JsonValue::Type::Object;
+				block_obj.object_value["type"].type = JsonValue::Type::String;
+				block_obj.object_value["type"].string_value = block.type;
+				if (!block.text.empty())
+				{
+					block_obj.object_value["text"].type = JsonValue::Type::String;
+					block_obj.object_value["text"].string_value = block.text;
+				}
+				if (!block.tool_call_id.empty())
+				{
+					block_obj.object_value["tool_call_id"].type = JsonValue::Type::String;
+					block_obj.object_value["tool_call_id"].string_value = block.tool_call_id;
+				}
+				if (!block.request_id_json.empty())
+				{
+					block_obj.object_value["request_id"].type = JsonValue::Type::String;
+					block_obj.object_value["request_id"].string_value = block.request_id_json;
+				}
+				block_arr.array_value.push_back(std::move(block_obj));
+			}
+			if (!block_arr.array_value.empty())
+			{
+				obj.object_value["blocks"] = std::move(block_arr);
+			}
 		}
 		return obj;
 	}
@@ -171,6 +230,25 @@ namespace
 			msg.interrupted = obj.Find("interrupted")->type == JsonValue::Type::Bool && obj.Find("interrupted")->bool_value;
 		if (obj.object_value.contains("thoughts"))
 			msg.thoughts = JsonStringOrEmpty(obj.Find("thoughts"));
+		if (obj.object_value.contains("plan_summary"))
+			msg.plan_summary = JsonStringOrEmpty(obj.Find("plan_summary"));
+		if (obj.object_value.contains("plan_entries"))
+		{
+			const JsonValue* plan_arr = obj.Find("plan_entries");
+			if (plan_arr && plan_arr->type == JsonValue::Type::Array)
+			{
+				for (const auto& entry : plan_arr->array_value)
+				{
+					if (entry.type != JsonValue::Type::Object)
+						continue;
+					MessagePlanEntry plan_entry;
+					plan_entry.content = JsonStringOrEmpty(entry.Find("content"));
+					plan_entry.priority = JsonStringOrEmpty(entry.Find("priority"));
+					plan_entry.status = JsonStringOrEmpty(entry.Find("status"));
+					msg.plan_entries.push_back(std::move(plan_entry));
+				}
+			}
+		}
 		if (obj.object_value.contains("tool_calls"))
 		{
 			const JsonValue* tc_arr = obj.Find("tool_calls");
@@ -187,6 +265,30 @@ namespace
 					tool_call.result_text = JsonStringOrEmpty(tc.Find("result_text"));
 					tool_call.status = JsonStringOrEmpty(tc.Find("status"));
 					msg.tool_calls.push_back(std::move(tool_call));
+				}
+			}
+		}
+		if (obj.object_value.contains("blocks"))
+		{
+			const JsonValue* block_arr = obj.Find("blocks");
+			if (block_arr && block_arr->type == JsonValue::Type::Array)
+			{
+				for (const JsonValue& block : block_arr->array_value)
+				{
+					if (block.type != JsonValue::Type::Object)
+					{
+						continue;
+					}
+					MessageBlock message_block;
+					message_block.type = JsonStringOrEmpty(block.Find("type"));
+					if (message_block.type.empty())
+					{
+						continue;
+					}
+					message_block.text = JsonStringOrEmpty(block.Find("text"));
+					message_block.tool_call_id = JsonStringOrEmpty(block.Find("tool_call_id"));
+					message_block.request_id_json = JsonStringOrEmpty(block.Find("request_id"));
+					msg.blocks.push_back(std::move(message_block));
 				}
 			}
 		}
@@ -254,6 +356,47 @@ namespace
 		return true;
 	}
 
+	bool PlanEntriesEquivalentForRecovery(const std::vector<MessagePlanEntry>& lhs, const std::vector<MessagePlanEntry>& rhs)
+	{
+		if (lhs.size() != rhs.size())
+		{
+			return false;
+		}
+
+		for (std::size_t i = 0; i < lhs.size(); ++i)
+		{
+			if (lhs[i].content != rhs[i].content ||
+			    lhs[i].priority != rhs[i].priority ||
+			    lhs[i].status != rhs[i].status)
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	bool MessageBlocksEquivalentForRecovery(const std::vector<MessageBlock>& lhs, const std::vector<MessageBlock>& rhs)
+	{
+		if (lhs.size() != rhs.size())
+		{
+			return false;
+		}
+
+		for (std::size_t i = 0; i < lhs.size(); ++i)
+		{
+			if (lhs[i].type != rhs[i].type ||
+			    lhs[i].text != rhs[i].text ||
+			    lhs[i].tool_call_id != rhs[i].tool_call_id ||
+			    lhs[i].request_id_json != rhs[i].request_id_json)
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
 	bool MessagesEquivalentForRecovery(const std::vector<Message>& lhs, const std::vector<Message>& rhs)
 	{
 		if (lhs.size() != rhs.size())
@@ -277,7 +420,10 @@ namespace
 			    left.processing_time_ms != right.processing_time_ms ||
 			    left.interrupted != right.interrupted ||
 			    left.thoughts != right.thoughts ||
-			    !ToolCallsEquivalentForRecovery(left.tool_calls, right.tool_calls))
+			    left.plan_summary != right.plan_summary ||
+			    !PlanEntriesEquivalentForRecovery(left.plan_entries, right.plan_entries) ||
+			    !ToolCallsEquivalentForRecovery(left.tool_calls, right.tool_calls) ||
+			    !MessageBlocksEquivalentForRecovery(left.blocks, right.blocks))
 			{
 				return false;
 			}
@@ -305,6 +451,7 @@ namespace
 		       lhs.created_at == rhs.created_at &&
 		       lhs.updated_at == rhs.updated_at &&
 		       lhs.last_opened_at == rhs.last_opened_at &&
+		       lhs.pinned == rhs.pinned &&
 		       lhs.linked_files == rhs.linked_files &&
 		       lhs.workspace_directory == rhs.workspace_directory &&
 		       lhs.approval_mode == rhs.approval_mode &&
@@ -352,6 +499,7 @@ namespace
 		chat.created_at = JsonStringOrEmpty(root.Find("created_at"));
 		chat.updated_at = JsonStringOrEmpty(root.Find("updated_at"));
 		chat.last_opened_at = JsonStringOrEmpty(root.Find("last_opened_at"));
+		chat.pinned = JsonBoolOrDefault(root.Find("pinned"), false);
 		if (const JsonValue* linked_files = root.Find("linked_files"))
 			chat.linked_files = JsonStringArrayOrEmpty(linked_files);
 		chat.workspace_directory = JsonStringOrEmpty(root.Find("workspace_directory"));
@@ -436,6 +584,9 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 
 	root.object_value["last_opened_at"].type = JsonValue::Type::String;
 	root.object_value["last_opened_at"].string_value = chat.last_opened_at.empty() ? chat.updated_at : chat.last_opened_at;
+
+	root.object_value["pinned"].type = JsonValue::Type::Bool;
+	root.object_value["pinned"].bool_value = chat.pinned;
 
 	root.object_value["linked_files"] = StringArrayToJson(chat.linked_files);
 

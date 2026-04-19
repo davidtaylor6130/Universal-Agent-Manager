@@ -22,12 +22,14 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -107,6 +109,23 @@ namespace
 	std::string ReadFile(const fs::path& path)
 	{
 		return uam::io::ReadTextFile(path);
+	}
+
+	std::size_t CountSubstring(const std::string& text, const std::string& needle)
+	{
+		if (needle.empty())
+		{
+			return 0;
+		}
+
+		std::size_t count = 0;
+		std::size_t pos = 0;
+		while ((pos = text.find(needle, pos)) != std::string::npos)
+		{
+			++count;
+			pos += needle.size();
+		}
+		return count;
 	}
 
 	struct ScopedEnvVar
@@ -265,6 +284,78 @@ UAM_TEST(ChatRepositoryToleratesLegacyFieldsAndDropsThemOnWrite)
 	UAM_ASSERT(rewritten.find("rag_source_directories") == std::string::npos);
 }
 
+UAM_TEST(ChatRepositoryPersistsPinnedFlag)
+{
+	TempDir temp("uam-chat-pinned");
+	ChatSession chat;
+	chat.id = "chat-pinned";
+	chat.provider_id = "gemini-cli";
+	chat.title = "Pinned";
+	chat.created_at = "2026-01-01T00:00:00.000Z";
+	chat.updated_at = "2026-01-01T00:00:01.000Z";
+	chat.pinned = true;
+
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+
+	const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(loaded.front().pinned);
+
+	const nlohmann::json persisted = nlohmann::json::parse(ReadFile(AppPaths::UamChatFilePath(temp.root, chat.id)));
+	UAM_ASSERT(persisted.value("pinned", false));
+}
+
+UAM_TEST(ChatRepositoryPersistsAssistantPlanFields)
+{
+	TempDir temp("uam-chat-plan-fields");
+	ChatSession chat;
+	chat.id = "chat-plan";
+	chat.provider_id = "codex-cli";
+	chat.title = "Plan Fields";
+	chat.created_at = "2026-01-01T00:00:00.000Z";
+	chat.updated_at = "2026-01-01T00:00:01.000Z";
+
+	Message assistant;
+	assistant.role = MessageRole::Assistant;
+	assistant.content = "";
+	assistant.created_at = "2026-01-01T00:00:01.000Z";
+	assistant.plan_summary = "Review the implementation path.";
+	MessagePlanEntry entry;
+	entry.content = "Patch Codex reasoning handling";
+	entry.priority = "1";
+	entry.status = "inProgress";
+	assistant.plan_entries.push_back(std::move(entry));
+	MessageBlock text_block;
+	text_block.type = "assistant_text";
+	text_block.text = "Review the implementation path.";
+	assistant.blocks.push_back(std::move(text_block));
+	MessageBlock plan_block;
+	plan_block.type = "plan";
+	assistant.blocks.push_back(std::move(plan_block));
+	chat.messages.push_back(std::move(assistant));
+
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+
+	const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(loaded.front().messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(loaded.front().messages[0].plan_summary, std::string("Review the implementation path."));
+	UAM_ASSERT_EQ(loaded.front().messages[0].plan_entries.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(loaded.front().messages[0].plan_entries[0].content, std::string("Patch Codex reasoning handling"));
+	UAM_ASSERT_EQ(loaded.front().messages[0].plan_entries[0].status, std::string("inProgress"));
+	UAM_ASSERT_EQ(loaded.front().messages[0].blocks.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(loaded.front().messages[0].blocks[0].type, std::string("assistant_text"));
+	UAM_ASSERT_EQ(loaded.front().messages[0].blocks[0].text, std::string("Review the implementation path."));
+	UAM_ASSERT_EQ(loaded.front().messages[0].blocks[1].type, std::string("plan"));
+
+	const nlohmann::json persisted = nlohmann::json::parse(ReadFile(AppPaths::UamChatFilePath(temp.root, chat.id)));
+	UAM_ASSERT_EQ(persisted["messages"][0].value("plan_summary", ""), std::string("Review the implementation path."));
+	UAM_ASSERT_EQ(persisted["messages"][0]["plan_entries"][0].value("content", ""), std::string("Patch Codex reasoning handling"));
+	UAM_ASSERT_EQ(persisted["messages"][0]["blocks"][0].value("type", ""), std::string("assistant_text"));
+	UAM_ASSERT_EQ(persisted["messages"][0]["blocks"][0].value("text", ""), std::string("Review the implementation path."));
+	UAM_ASSERT_EQ(persisted["messages"][0]["blocks"][1].value("type", ""), std::string("plan"));
+}
+
 UAM_TEST(ChatRepositoryDoesNotSynthesizeInvalidCodexNativeIds)
 {
 	TempDir temp("uam-codex-native-normalize");
@@ -330,18 +421,21 @@ UAM_TEST(StateSerializerIncludesChatModelId)
 	chat.provider_id = "gemini-cli";
 	chat.model_id = "auto-gemini-3";
 	chat.approval_mode = "plan";
+	chat.pinned = true;
 	chat.created_at = "2026-01-01T00:00:00.000Z";
 	chat.updated_at = "2026-01-01T00:00:01.000Z";
 	app.chats.push_back(std::move(chat));
 	app.selected_chat_index = 0;
 
 	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	UAM_ASSERT(serialized["chats"][0].value("pinned", false));
 	UAM_ASSERT_EQ(serialized["chats"][0].value("modelId", ""), std::string("auto-gemini-3"));
 	UAM_ASSERT_EQ(serialized["chats"][0].value("approvalMode", ""), std::string("plan"));
 	UAM_ASSERT_EQ(serialized["chats"][0]["acpSession"].value("currentModeId", ""), std::string("plan"));
 	UAM_ASSERT_EQ(serialized["chats"][0]["acpSession"].value("currentModelId", ""), std::string("auto-gemini-3"));
 
 	const nlohmann::json fingerprint = uam::StateSerializer::SerializeFingerprint(app);
+	UAM_ASSERT(fingerprint["chats"][0].value("pinned", false));
 	UAM_ASSERT_EQ(fingerprint["chats"][0].value("modelId", ""), std::string("auto-gemini-3"));
 	UAM_ASSERT_EQ(fingerprint["chats"][0].value("approvalMode", ""), std::string("plan"));
 }
@@ -366,6 +460,19 @@ UAM_TEST(StateSerializerIncludesMessageToolCalls)
 	tool_call.result_text = "file contents";
 	tool_call.status = "completed";
 	assistant.tool_calls.push_back(std::move(tool_call));
+	assistant.plan_summary = "Implement the focused fix.";
+	MessagePlanEntry plan_entry;
+	plan_entry.content = "Update Codex app-server handling";
+	plan_entry.priority = "1";
+	plan_entry.status = "completed";
+	assistant.plan_entries.push_back(std::move(plan_entry));
+	MessageBlock tool_block;
+	tool_block.type = "tool_call";
+	tool_block.tool_call_id = "tool-1";
+	assistant.blocks.push_back(std::move(tool_block));
+	MessageBlock plan_block;
+	plan_block.type = "plan";
+	assistant.blocks.push_back(std::move(plan_block));
 	chat.messages.push_back(std::move(assistant));
 	app.chats.push_back(std::move(chat));
 	app.selected_chat_index = 0;
@@ -376,6 +483,12 @@ UAM_TEST(StateSerializerIncludesMessageToolCalls)
 	UAM_ASSERT_EQ(tool_json.value("title", ""), std::string("Read file"));
 	UAM_ASSERT_EQ(tool_json.value("status", ""), std::string("completed"));
 	UAM_ASSERT(tool_json.value("content", "").find("file contents") != std::string::npos);
+	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][0].value("planSummary", ""), std::string("Implement the focused fix."));
+	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][0]["planEntries"][0].value("content", ""), std::string("Update Codex app-server handling"));
+	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][0]["planEntries"][0].value("status", ""), std::string("completed"));
+	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][0]["blocks"][0].value("type", ""), std::string("tool_call"));
+	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][0]["blocks"][0].value("toolCallId", ""), std::string("tool-1"));
+	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][0]["blocks"][1].value("type", ""), std::string("plan"));
 }
 
 UAM_TEST(ProviderRegistryResolvesGeminiCodexAndUnknownExactly)
@@ -573,6 +686,23 @@ UAM_TEST(CodexAppServerRequestBuildersUseCodexProtocolMethods)
 	UAM_ASSERT_EQ(turn_start["params"].value("threadId", ""), chat.native_session_id);
 	UAM_ASSERT_EQ(turn_start["params"]["input"][0].value("text", ""), std::string("hello"));
 	UAM_ASSERT_EQ(turn_start["params"]["collaborationMode"].value("mode", ""), std::string("plan"));
+	UAM_ASSERT_EQ(turn_start["params"]["collaborationMode"]["settings"].value("model", ""), std::string("gpt-5.4"));
+
+	ChatSession active_model_chat = chat;
+	active_model_chat.model_id.clear();
+	const nlohmann::json active_model_turn_start = nlohmann::json::parse(uam::BuildCodexTurnStartRequestForTests(250, chat.native_session_id, "hello", active_model_chat, "gpt-5.4"));
+	UAM_ASSERT(!active_model_turn_start["params"].contains("model"));
+	UAM_ASSERT_EQ(active_model_turn_start["params"]["collaborationMode"].value("mode", ""), std::string("plan"));
+	UAM_ASSERT_EQ(active_model_turn_start["params"]["collaborationMode"]["settings"].value("model", ""), std::string("gpt-5.4"));
+
+	active_model_chat.approval_mode = "default";
+	const nlohmann::json default_mode_turn_start = nlohmann::json::parse(uam::BuildCodexTurnStartRequestForTests(252, chat.native_session_id, "hello", active_model_chat, "gpt-5.4"));
+	UAM_ASSERT_EQ(default_mode_turn_start["params"]["collaborationMode"].value("mode", ""), std::string("default"));
+	UAM_ASSERT_EQ(default_mode_turn_start["params"]["collaborationMode"]["settings"].value("model", ""), std::string("gpt-5.4"));
+
+	const nlohmann::json missing_model_turn_start = nlohmann::json::parse(uam::BuildCodexTurnStartRequestForTests(251, chat.native_session_id, "hello", active_model_chat));
+	UAM_ASSERT(!missing_model_turn_start["params"].contains("model"));
+	UAM_ASSERT(!missing_model_turn_start["params"].contains("collaborationMode"));
 
 	const nlohmann::json interrupt = nlohmann::json::parse(uam::BuildCodexTurnInterruptRequestForTests(26, chat.native_session_id, "turn-1"));
 	UAM_ASSERT_EQ(interrupt.value("method", ""), std::string("turn/interrupt"));
@@ -883,6 +1013,396 @@ UAM_TEST(CodexAppServerErrorsUseCodexRuntimeName)
 	UAM_ASSERT(raw_session->diagnostics.back().detail.find("Codex app-server stderr") != std::string::npos);
 }
 
+UAM_TEST(CodexAppServerErrorNotificationsExposeRealMessage)
+{
+	TempDir temp("uam-codex-app-server-error-notification");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "codex-cli";
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->provider_id = "codex-cli";
+	session->protocol_kind = "codex-app-server";
+	session->running = true;
+	session->session_ready = true;
+	session->processing = true;
+	session->prompt_request_id = 4;
+	session->recent_stderr = "Codex warning detail";
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"error","params":{"error":{"message":"temporary upstream issue","codexErrorInfo":{"type":"server_error"},"additionalDetails":"retry detail"},"willRetry":true,"threadId":"6a6f0f3b-1a0b-4a9c-8a01-111111111111","turnId":"turn-1"}})"));
+	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("processing"));
+	UAM_ASSERT(raw_session->processing);
+	UAM_ASSERT_EQ(raw_session->last_error, std::string(""));
+	UAM_ASSERT(!raw_session->diagnostics.empty());
+	UAM_ASSERT_EQ(raw_session->diagnostics.back().reason, std::string("codex_turn_error_retrying"));
+	UAM_ASSERT_EQ(raw_session->diagnostics.back().message, std::string("temporary upstream issue"));
+	UAM_ASSERT(raw_session->diagnostics.back().detail.find("willRetry=true") != std::string::npos);
+	UAM_ASSERT(raw_session->diagnostics.back().detail.find("retry detail") != std::string::npos);
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"error","params":{"error":{"message":"fatal app-server failure","codexErrorInfo":{"type":"bad_request"},"additionalDetails":"fatal detail"},"willRetry":false,"threadId":"6a6f0f3b-1a0b-4a9c-8a01-111111111111","turnId":"turn-1"}})"));
+	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("error"));
+	UAM_ASSERT(!raw_session->processing);
+	UAM_ASSERT(raw_session->last_error.find("Codex app-server turn failed: fatal app-server failure") != std::string::npos);
+	UAM_ASSERT(raw_session->last_error.find("See diagnostics/stderr details.") != std::string::npos);
+	UAM_ASSERT_EQ(raw_session->diagnostics.back().reason, std::string("codex_turn_error"));
+	UAM_ASSERT_EQ(raw_session->diagnostics.back().message, std::string("fatal app-server failure"));
+	UAM_ASSERT(raw_session->diagnostics.back().detail.find("fatal detail") != std::string::npos);
+	UAM_ASSERT(raw_session->diagnostics.back().detail.find("Codex warning detail") != std::string::npos);
+}
+
+UAM_TEST(CodexAppServerErrorNotificationsTolerateStructuredDetails)
+{
+	TempDir temp("uam-codex-app-server-structured-error-notification");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "codex-cli";
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->provider_id = "codex-cli";
+	session->protocol_kind = "codex-app-server";
+	session->running = true;
+	session->session_ready = true;
+	session->processing = true;
+	session->prompt_request_id = 4;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"error","params":{"error":{"message":{"text":"structured plan failure"},"codexErrorInfo":null,"additionalDetails":{"reason":"plan payload was structured"}},"willRetry":false,"threadId":null,"turnId":42}})"));
+	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("error"));
+	UAM_ASSERT(!raw_session->processing);
+	UAM_ASSERT(raw_session->last_error.find(R"({"text":"structured plan failure"})") != std::string::npos);
+	UAM_ASSERT(!raw_session->diagnostics.empty());
+	UAM_ASSERT_EQ(raw_session->diagnostics.back().reason, std::string("codex_turn_error"));
+	UAM_ASSERT(raw_session->diagnostics.back().detail.find("turnId=42") != std::string::npos);
+	UAM_ASSERT(raw_session->diagnostics.back().detail.find(R"("reason":"plan payload was structured")") != std::string::npos);
+}
+
+UAM_TEST(CodexFailedTurnCompletionIsFatal)
+{
+	TempDir temp("uam-codex-failed-turn-completion");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "codex-cli";
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->provider_id = "codex-cli";
+	session->protocol_kind = "codex-app-server";
+	session->running = true;
+	session->session_ready = true;
+	session->processing = true;
+	session->prompt_request_id = 4;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"6a6f0f3b-1a0b-4a9c-8a01-111111111111","turn":{"id":"turn-1","items":[],"status":"failed","error":{"message":"turn failed after retries","additionalDetails":"completion detail","codexErrorInfo":null}}}})"));
+	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("error"));
+	UAM_ASSERT(!raw_session->processing);
+	UAM_ASSERT(raw_session->last_error.find("Codex app-server turn/completed failed: turn failed after retries") != std::string::npos);
+	UAM_ASSERT_EQ(raw_session->diagnostics.back().reason, std::string("codex_turn_completed_error"));
+	UAM_ASSERT(raw_session->diagnostics.back().detail.find("completion detail") != std::string::npos);
+}
+
+UAM_TEST(CodexAppServerItemsTolerateNullAndStructuredFields)
+{
+	TempDir temp("uam-codex-structured-items");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "codex-cli";
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->provider_id = "codex-cli";
+	session->protocol_kind = "codex-app-server";
+	session->running = true;
+	session->session_ready = true;
+	session->processing = true;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	const auto process = [&](const nlohmann::json& message)
+	{
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), message.dump()));
+	};
+
+	process({{"jsonrpc", "2.0"}, {"method", "item/started"}, {"params", {{"item", {{"id", "cmd-null"}, {"type", "commandExecution"}, {"command", "ls"}, {"status", nullptr}, {"aggregatedOutput", nullptr}}}}}});
+	UAM_ASSERT_EQ(raw_session->tool_calls.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(raw_session->tool_calls[0].id, std::string("cmd-null"));
+	UAM_ASSERT_EQ(raw_session->tool_calls[0].status, std::string("pending"));
+	UAM_ASSERT_EQ(raw_session->tool_calls[0].content, std::string(""));
+
+	process({{"jsonrpc", "2.0"}, {"method", "item/completed"}, {"params", {{"item", {{"id", "cmd-object"}, {"type", "commandExecution"}, {"command", "node"}, {"status", "completed"}, {"aggregatedOutput", {{"output", "done"}, {"exitCode", 0}}}}}}}});
+	UAM_ASSERT_EQ(raw_session->tool_calls.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT(raw_session->tool_calls[1].content.find(R"("output":"done")") != std::string::npos);
+	UAM_ASSERT(raw_session->tool_calls[1].content.find(R"("exitCode":0)") != std::string::npos);
+
+	process({{"jsonrpc", "2.0"}, {"method", "item/completed"}, {"params", {{"item", {{"id", "cmd-array"}, {"type", "commandExecution"}, {"command", "printf"}, {"status", "completed"}, {"aggregatedOutput", nlohmann::json::array({"line1", "line2"})}}}}}});
+	UAM_ASSERT_EQ(raw_session->tool_calls.size(), static_cast<std::size_t>(3));
+	UAM_ASSERT(raw_session->tool_calls[2].content.find("line1") != std::string::npos);
+
+	process({{"jsonrpc", "2.0"}, {"method", "item/completed"}, {"params", {{"item", {{"id", "msg-null"}, {"type", "agentMessage"}, {"text", nullptr}}}}}});
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(0));
+
+	process({{"jsonrpc", "2.0"}, {"method", "item/completed"}, {"params", {{"item", {{"id", "msg-object"}, {"type", "agentMessage"}, {"text", {{"text", "hello"}}}}}}}});
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(app.chats.front().messages[0].content.find(R"("text":"hello")") != std::string::npos);
+
+	process({{"jsonrpc", "2.0"}, {"method", "item/completed"}, {"params", {{"item", {{"id", "plan-object"}, {"type", "plan"}, {"text", {{"summary", "structured plan"}}}}}}}});
+	UAM_ASSERT(raw_session->plan_summary.find("structured plan") != std::string::npos);
+	UAM_ASSERT_EQ(raw_session->plan_entries.size(), static_cast<std::size_t>(0));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(app.chats.front().messages[0].plan_summary.find("structured plan") != std::string::npos);
+
+	process({{"jsonrpc", "2.0"}, {"method", "item/started"}, {"params", {{"item", {{"id", "user-1"}, {"type", "userMessage"}, {"text", "ignored"}}}}}});
+	process({{"jsonrpc", "2.0"}, {"method", "item/started"}, {"params", {{"item", {{"id", "reasoning-1"}, {"type", "reasoning"}, {"text", "ignored"}}}}}});
+	process({{"jsonrpc", "2.0"}, {"method", "item/started"}, {"params", {{"item", {{"id", "raw-1"}, {"type", "rawResponseItem"}, {"text", "ignored"}}}}}});
+	process({{"jsonrpc", "2.0"}, {"method", "item/started"}, {"params", {{"item", {{"id", "unknown-1"}, {"type", "futureItem"}, {"text", "ignored"}}}}}});
+	UAM_ASSERT_EQ(raw_session->tool_calls.size(), static_cast<std::size_t>(3));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(raw_session->last_error, std::string(""));
+
+	process({{"jsonrpc", "2.0"}, {"method", "item/started"}, {"params", "not-an-object"}});
+	UAM_ASSERT_EQ(raw_session->tool_calls.size(), static_cast<std::size_t>(3));
+	UAM_ASSERT_EQ(raw_session->last_error, std::string(""));
+}
+
+UAM_TEST(CodexAppServerReasoningAndPlansPersistToAssistantMessage)
+{
+	TempDir temp("uam-codex-reasoning-plan");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "codex-cli";
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->provider_id = "codex-cli";
+	session->protocol_kind = "codex-app-server";
+	session->running = true;
+	session->session_ready = true;
+	session->processing = true;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	const auto process = [&](const nlohmann::json& message)
+	{
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), message.dump()));
+	};
+
+	process({{"jsonrpc", "2.0"}, {"method", "item/completed"}, {"params", {{"item", {{"id", "reasoning-empty"}, {"type", "reasoning"}, {"content", nlohmann::json::array()}, {"summary", nlohmann::json::array()}}}}}});
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(0));
+	UAM_ASSERT_EQ(raw_session->turn_events.size(), static_cast<std::size_t>(0));
+
+	process({{"jsonrpc", "2.0"}, {"method", "item/reasoning/textDelta"}, {"params", {{"threadId", "thread-1"}, {"turnId", "turn-1"}, {"itemId", "reasoning-1"}, {"contentIndex", 0}, {"delta", "Inspecting files."}}}});
+	process({{"jsonrpc", "2.0"}, {"method", "item/reasoning/summaryPartAdded"}, {"params", {{"threadId", "thread-1"}, {"turnId", "turn-1"}, {"itemId", "reasoning-1"}, {"summaryIndex", 0}}}});
+	process({{"jsonrpc", "2.0"}, {"method", "item/reasoning/summaryTextDelta"}, {"params", {{"threadId", "thread-1"}, {"turnId", "turn-1"}, {"itemId", "reasoning-1"}, {"summaryIndex", 0}, {"delta", "Need to inspect."}}}});
+
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(raw_session->turn_events.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(raw_session->turn_events[0].type, std::string("thought"));
+	std::string thoughts = app.chats.front().messages[0].thoughts;
+	UAM_ASSERT(thoughts.find("### Reasoning") != std::string::npos);
+	UAM_ASSERT(thoughts.find("Inspecting files.") != std::string::npos);
+	UAM_ASSERT(thoughts.find("### Summary") != std::string::npos);
+	UAM_ASSERT(thoughts.find("Need to inspect.") != std::string::npos);
+	UAM_ASSERT(thoughts.find("[]") == std::string::npos);
+
+	process({{"jsonrpc", "2.0"}, {"method", "item/completed"}, {"params", {{"item", {{"id", "reasoning-1"}, {"type", "reasoning"}, {"content", nlohmann::json::array({"Duplicate raw"})}, {"summary", nlohmann::json::array({"Duplicate summary"})}}}}}});
+	thoughts = app.chats.front().messages[0].thoughts;
+	UAM_ASSERT_EQ(CountSubstring(thoughts, "Inspecting files."), static_cast<std::size_t>(1));
+	UAM_ASSERT(thoughts.find("Duplicate raw") == std::string::npos);
+	UAM_ASSERT(thoughts.find("Duplicate summary") == std::string::npos);
+
+	process({{"jsonrpc", "2.0"}, {"method", "item/reasoning/textDelta"}, {"params", {{"threadId", "thread-1"}, {"turnId", "turn-1"}, {"itemId", "reasoning-3"}, {"contentIndex", 0}, {"delta", "Streaming raw."}}}});
+	process({{"jsonrpc", "2.0"}, {"method", "item/completed"}, {"params", {{"item", {{"id", "reasoning-3"}, {"type", "reasoning"}, {"content", nlohmann::json::array({"Streaming raw."})}, {"summary", nlohmann::json::array({"Late completed summary"})}}}}}});
+	thoughts = app.chats.front().messages[0].thoughts;
+	UAM_ASSERT_EQ(CountSubstring(thoughts, "Streaming raw."), static_cast<std::size_t>(1));
+	UAM_ASSERT(thoughts.find("Late completed summary") != std::string::npos);
+
+	process({{"jsonrpc", "2.0"}, {"method", "item/completed"}, {"params", {{"item", {{"id", "reasoning-2"}, {"type", "reasoning"}, {"content", nlohmann::json::array({"Loaded raw reasoning"})}, {"summary", nlohmann::json::array({"Loaded summary"})}}}}}});
+	thoughts = app.chats.front().messages[0].thoughts;
+	UAM_ASSERT(thoughts.find("Loaded raw reasoning") != std::string::npos);
+	UAM_ASSERT(thoughts.find("Loaded summary") != std::string::npos);
+
+	process({{"jsonrpc", "2.0"}, {"method", "turn/plan/updated"}, {"params", {{"threadId", "thread-1"}, {"turnId", "turn-1"}, {"explanation", "Plan summary"}, {"plan", nlohmann::json::array({{{"step", "Inspect files"}, {"status", "completed"}}, {{"step", "Patch code"}, {"status", "pending"}}})}}}});
+	UAM_ASSERT_EQ(raw_session->plan_summary, std::string("Plan summary"));
+	UAM_ASSERT_EQ(raw_session->plan_entries.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(raw_session->plan_entries[0].status, std::string("completed"));
+	UAM_ASSERT_EQ(raw_session->plan_entries[1].content, std::string("Patch code"));
+	UAM_ASSERT_EQ(app.chats.front().messages[0].plan_summary, std::string("Plan summary"));
+	UAM_ASSERT_EQ(app.chats.front().messages[0].plan_entries.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(app.chats.front().messages[0].plan_entries[1].status, std::string("pending"));
+
+	const bool has_plan_event = std::any_of(raw_session->turn_events.begin(), raw_session->turn_events.end(), [](const uam::AcpTurnEventState& event) {
+		return event.type == "plan";
+	});
+	UAM_ASSERT(has_plan_event);
+
+	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	UAM_ASSERT_EQ(serialized["chats"][0]["acpSession"].value("planSummary", ""), std::string("Plan summary"));
+	UAM_ASSERT_EQ(serialized["chats"][0]["acpSession"]["planEntries"][0].value("content", ""), std::string("Inspect files"));
+	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][0].value("planSummary", ""), std::string("Plan summary"));
+	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][0]["planEntries"][1].value("content", ""), std::string("Patch code"));
+}
+
+UAM_TEST(CodexAppServerAgentMessagesDeduplicateAndSeparateItems)
+{
+	TempDir temp("uam-codex-agent-message-items");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "codex-cli";
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->provider_id = "codex-cli";
+	session->protocol_kind = "codex-app-server";
+	session->running = true;
+	session->session_ready = true;
+	session->processing = true;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	const auto process = [&](const nlohmann::json& message)
+	{
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), message.dump()));
+	};
+
+	process({{"jsonrpc", "2.0"}, {"method", "item/agentMessage/delta"}, {"params", {{"threadId", "thread-1"}, {"turnId", "turn-1"}, {"itemId", "msg-1"}, {"delta", "First update."}}}});
+	process({{"jsonrpc", "2.0"}, {"method", "item/completed"}, {"params", {{"threadId", "thread-1"}, {"turnId", "turn-1"}, {"item", {{"id", "msg-1"}, {"type", "agentMessage"}, {"text", "First update."}}}}}});
+
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().messages[0].content, std::string("First update."));
+
+	process({{"jsonrpc", "2.0"}, {"method", "item/agentMessage/delta"}, {"params", {{"threadId", "thread-1"}, {"turnId", "turn-1"}, {"itemId", "msg-2"}, {"delta", "Second update"}}}});
+	process({{"jsonrpc", "2.0"}, {"method", "item/completed"}, {"params", {{"threadId", "thread-1"}, {"turnId", "turn-1"}, {"item", {{"id", "msg-2"}, {"type", "agentMessage"}, {"text", "Second update with suffix."}}}}}});
+
+	UAM_ASSERT_EQ(app.chats.front().messages[0].content, std::string("First update.\n\nSecond update with suffix."));
+	UAM_ASSERT_EQ(CountSubstring(app.chats.front().messages[0].content, "First update."), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(CountSubstring(app.chats.front().messages[0].content, "Second update"), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().messages[0].blocks.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().messages[0].blocks[0].type, std::string("assistant_text"));
+	UAM_ASSERT_EQ(app.chats.front().messages[0].blocks[0].text, std::string("First update.\n\nSecond update with suffix."));
+}
+
+UAM_TEST(CodexAppServerCompletedPlanClearsDuplicateDeltaEntry)
+{
+	TempDir temp("uam-codex-plan-dedupe");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "codex-cli";
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->provider_id = "codex-cli";
+	session->protocol_kind = "codex-app-server";
+	session->running = true;
+	session->session_ready = true;
+	session->processing = true;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	const auto process = [&](const nlohmann::json& message)
+	{
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), message.dump()));
+	};
+
+	const std::string markdown_plan = "# Fix Plan\n\n## Summary\nUse only the formatted plan.";
+	process({{"jsonrpc", "2.0"}, {"method", "item/plan/delta"}, {"params", {{"threadId", "thread-1"}, {"turnId", "turn-1"}, {"itemId", "plan-1"}, {"delta", markdown_plan}}}});
+	UAM_ASSERT_EQ(raw_session->plan_entries.size(), static_cast<std::size_t>(1));
+
+	process({{"jsonrpc", "2.0"}, {"method", "item/completed"}, {"params", {{"threadId", "thread-1"}, {"turnId", "turn-1"}, {"item", {{"id", "plan-1"}, {"type", "plan"}, {"text", markdown_plan}}}}}});
+
+	UAM_ASSERT_EQ(raw_session->plan_summary, markdown_plan);
+	UAM_ASSERT_EQ(raw_session->plan_entries.size(), static_cast<std::size_t>(0));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().messages[0].plan_summary, markdown_plan);
+	UAM_ASSERT_EQ(app.chats.front().messages[0].plan_entries.size(), static_cast<std::size_t>(0));
+	UAM_ASSERT_EQ(app.chats.front().messages[0].blocks.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().messages[0].blocks[0].type, std::string("plan"));
+}
+
+UAM_TEST(CodexAppServerPersistsOrderedBlocksAcrossReload)
+{
+	TempDir temp("uam-codex-ordered-blocks");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "codex-cli";
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->provider_id = "codex-cli";
+	session->protocol_kind = "codex-app-server";
+	session->running = true;
+	session->session_ready = true;
+	session->processing = true;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	const auto process = [&](const nlohmann::json& message)
+	{
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), message.dump()));
+	};
+
+	process({{"jsonrpc", "2.0"}, {"method", "item/reasoning/textDelta"}, {"params", {{"itemId", "reasoning-1"}, {"contentIndex", 0}, {"delta", "First thought."}}}});
+	process({{"jsonrpc", "2.0"}, {"method", "item/agentMessage/delta"}, {"params", {{"itemId", "msg-1"}, {"delta", "First visible text."}}}});
+	process({{"jsonrpc", "2.0"}, {"method", "item/completed"}, {"params", {{"item", {{"id", "cmd-1"}, {"type", "commandExecution"}, {"status", "completed"}, {"command", "rg Foo"}, {"aggregatedOutput", "matches"}}}}}});
+	process({{"jsonrpc", "2.0"}, {"method", "item/reasoning/textDelta"}, {"params", {{"itemId", "reasoning-2"}, {"contentIndex", 0}, {"delta", "Second thought."}}}});
+	process({{"jsonrpc", "2.0"}, {"method", "turn/plan/updated"}, {"params", {{"explanation", "Ordered plan."}, {"plan", nlohmann::json::array({{{"step", "Ship ordered blocks"}, {"status", "pending"}}})}}}});
+
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(1));
+	const Message& assistant = app.chats.front().messages[0];
+	UAM_ASSERT_EQ(assistant.blocks.size(), static_cast<std::size_t>(5));
+	UAM_ASSERT_EQ(assistant.blocks[0].type, std::string("thought"));
+	UAM_ASSERT(assistant.blocks[0].text.find("First thought.") != std::string::npos);
+	UAM_ASSERT_EQ(assistant.blocks[1].type, std::string("assistant_text"));
+	UAM_ASSERT_EQ(assistant.blocks[1].text, std::string("First visible text."));
+	UAM_ASSERT_EQ(assistant.blocks[2].type, std::string("tool_call"));
+	UAM_ASSERT_EQ(assistant.blocks[2].tool_call_id, std::string("cmd-1"));
+	UAM_ASSERT_EQ(assistant.blocks[3].type, std::string("thought"));
+	UAM_ASSERT(assistant.blocks[3].text.find("Second thought.") != std::string::npos);
+	UAM_ASSERT_EQ(assistant.blocks[4].type, std::string("plan"));
+
+	const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(loaded.front().messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(loaded.front().messages[0].blocks.size(), static_cast<std::size_t>(5));
+	UAM_ASSERT_EQ(loaded.front().messages[0].blocks[2].tool_call_id, std::string("cmd-1"));
+	UAM_ASSERT_EQ(loaded.front().messages[0].blocks[4].type, std::string("plan"));
+
+	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][0]["blocks"][0].value("type", ""), std::string("thought"));
+	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][0]["blocks"][1].value("text", ""), std::string("First visible text."));
+	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][0]["blocks"][2].value("toolCallId", ""), std::string("cmd-1"));
+	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][0]["blocks"][4].value("type", ""), std::string("plan"));
+}
+
 UAM_TEST(AcpMissingSessionIdRecordsDiagnostics)
 {
 	TempDir temp("uam-acp-missing-session-id");
@@ -1041,9 +1561,12 @@ UAM_TEST(CodexAppServerStateTransitionsMapModelsTurnsToolsAndApprovals)
 	UAM_ASSERT_EQ(app.chats.front().messages[0].provider, std::string("codex-cli"));
 	UAM_ASSERT_EQ(app.chats.front().messages[0].content, std::string("Hello from Codex."));
 
-	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"turn/plan/updated","params":{"plan":[{"step":"Inspect files","status":"completed"},{"step":"Patch code","status":"pending"}]}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"turn/plan/updated","params":{"explanation":"State transition plan","plan":[{"step":"Inspect files","status":"completed"},{"step":"Patch code","status":"pending"}]}})"));
+	UAM_ASSERT_EQ(raw_session->plan_summary, std::string("State transition plan"));
 	UAM_ASSERT_EQ(raw_session->plan_entries.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(raw_session->plan_entries[1].content, std::string("Patch code"));
+	UAM_ASSERT_EQ(app.chats.front().messages[0].plan_summary, std::string("State transition plan"));
+	UAM_ASSERT_EQ(app.chats.front().messages[0].plan_entries.size(), static_cast<std::size_t>(2));
 
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"cmd-1","type":"commandExecution","command":"ls","status":"running"}}})"));
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"item/commandExecution/outputDelta","params":{"itemId":"cmd-1","delta":"file.txt\n"}})"));
@@ -1063,6 +1586,106 @@ UAM_TEST(CodexAppServerStateTransitionsMapModelsTurnsToolsAndApprovals)
 	UAM_ASSERT(!raw_session->waiting_for_permission);
 	UAM_ASSERT_EQ(raw_session->codex_turn_id, std::string(""));
 	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("ready"));
+}
+
+UAM_TEST(CodexAppServerUserInputRequestsSurfaceAndSerialize)
+{
+	TempDir temp("uam-codex-user-input");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "codex-cli";
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->provider_id = "codex-cli";
+	session->protocol_kind = "codex-app-server";
+	session->running = true;
+	session->session_ready = true;
+	session->processing = true;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	const nlohmann::json request =
+	    {
+	        {"jsonrpc", "2.0"},
+	        {"id", 11},
+	        {"method", "item/tool/requestUserInput"},
+	        {"params",
+	         {
+	             {"threadId", "thread-1"},
+	             {"turnId", "turn-1"},
+	             {"itemId", "input-1"},
+	             {"questions",
+	              nlohmann::json::array({
+	                  {
+	                      {"id", "scope"},
+	                      {"header", "Scope"},
+	                      {"question", "Which scope?"},
+	                      {"isOther", false},
+	                      {"isSecret", false},
+	                      {"options", nlohmann::json::array({{{"label", "Focused"}, {"description", "Only the bug"}}})},
+	                  },
+	                  {
+	                      {"id", "note"},
+	                      {"header", "Note"},
+	                      {"question", "Any extra detail?"},
+	                      {"isOther", true},
+	                      {"isSecret", false},
+	                      {"options", nullptr},
+	                  },
+	              })},
+	         }},
+	    };
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), request.dump()));
+	UAM_ASSERT(raw_session->processing);
+	UAM_ASSERT(raw_session->waiting_for_user_input);
+	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("waitingUserInput"));
+	UAM_ASSERT_EQ(raw_session->pending_user_input.request_id_json, std::string("11"));
+	UAM_ASSERT_EQ(raw_session->pending_user_input.item_id, std::string("input-1"));
+	UAM_ASSERT_EQ(raw_session->pending_user_input.questions.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(raw_session->pending_user_input.questions[0].id, std::string("scope"));
+	UAM_ASSERT_EQ(raw_session->pending_user_input.questions[0].options.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(raw_session->pending_user_input.questions[0].options[0].label, std::string("Focused"));
+	UAM_ASSERT(raw_session->pending_user_input.questions[1].is_other);
+	UAM_ASSERT_EQ(raw_session->turn_events.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(raw_session->turn_events[0].type, std::string("user_input_request"));
+	UAM_ASSERT_EQ(raw_session->turn_events[0].request_id_json, std::string("11"));
+	UAM_ASSERT_EQ(raw_session->turn_events[0].tool_call_id, std::string("input-1"));
+
+	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json pending = serialized["chats"][0]["acpSession"]["pendingUserInput"];
+	UAM_ASSERT_EQ(serialized["chats"][0]["acpSession"].value("lifecycleState", ""), std::string("waitingUserInput"));
+	UAM_ASSERT_EQ(pending.value("requestId", ""), std::string("11"));
+	UAM_ASSERT_EQ(pending.value("itemId", ""), std::string("input-1"));
+	UAM_ASSERT_EQ(pending["questions"][0].value("id", ""), std::string("scope"));
+	UAM_ASSERT_EQ(pending["questions"][0]["options"][0].value("label", ""), std::string("Focused"));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"turn/completed","params":{"turnId":"turn-1"}})"));
+	UAM_ASSERT(!raw_session->processing);
+	UAM_ASSERT(!raw_session->waiting_for_user_input);
+	UAM_ASSERT_EQ(raw_session->pending_user_input.request_id_json, std::string(""));
+	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("ready"));
+}
+
+UAM_TEST(CodexUserInputResponseBuilderMatchesProtocol)
+{
+	const std::map<std::string, std::vector<std::string>> answers =
+	    {
+	        {"scope", {"Focused"}},
+	        {"note", {"Extra context"}},
+	    };
+	const nlohmann::json response = nlohmann::json::parse(uam::BuildCodexUserInputResponseForTests("11", answers));
+
+	UAM_ASSERT_EQ(response.value("jsonrpc", ""), std::string("2.0"));
+	UAM_ASSERT_EQ(response.value("id", 0), 11);
+	UAM_ASSERT(response.contains("result"));
+	UAM_ASSERT(response["result"].contains("answers"));
+	UAM_ASSERT_EQ(response["result"]["answers"]["scope"]["answers"][0].get<std::string>(), std::string("Focused"));
+	UAM_ASSERT_EQ(response["result"]["answers"]["note"]["answers"][0].get<std::string>(), std::string("Extra context"));
 }
 
 UAM_TEST(AcpDiagnosticRingCapsEntriesAndLongDetails)
@@ -1546,13 +2169,63 @@ UAM_TEST(FolderLifecycleKeepsWorkspaceRootsMinimal)
 
 	UAM_ASSERT(DeleteFolderById(app, created_id));
 	UAM_ASSERT(ChatDomainService().FindFolderById(app, created_id) == nullptr);
-	UAM_ASSERT(ChatDomainService().FindFolderById(app, uam::constants::kDefaultFolderId) != nullptr);
+	UAM_ASSERT(ChatDomainService().FindFolderById(app, uam::constants::kDefaultFolderId) == nullptr);
 	UAM_ASSERT(ChatDomainService().FindChatIndexById(app, folder_chat.id) < 0);
 	UAM_ASSERT(ChatDomainService().FindChatIndexById(app, general_chat.id) >= 0);
 	UAM_ASSERT_EQ(app.chats[ChatDomainService().FindChatIndexById(app, general_chat.id)].folder_id, std::string(uam::constants::kDefaultFolderId));
 	UAM_ASSERT(fs::exists(renamed_root));
 	UAM_ASSERT(!fs::exists(folder_chat_file));
 	UAM_ASSERT(fs::exists(general_chat_file));
+}
+
+UAM_TEST(DefaultFolderIsNotSynthesized)
+{
+	uam::AppState app;
+	app.new_chat_folder_id = "missing-folder";
+
+	ChatSession chat;
+	chat.id = "chat-with-missing-folder";
+	chat.folder_id = "missing-folder";
+	app.chats.push_back(chat);
+
+	ChatDomainService().EnsureDefaultFolder(app);
+	ChatDomainService().NormalizeChatFolderAssignments(app);
+
+	UAM_ASSERT(app.folders.empty());
+	UAM_ASSERT_EQ(app.chats.front().folder_id, std::string("missing-folder"));
+	UAM_ASSERT(app.new_chat_folder_id.empty());
+}
+
+UAM_TEST(DeleteLegacyDefaultFolderDeletesContainedChats)
+{
+	TempDir temp("uam-delete-default-folder");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatFolder legacy_default;
+	legacy_default.id = uam::constants::kDefaultFolderId;
+	legacy_default.title = uam::constants::kDefaultFolderTitle;
+	legacy_default.directory = temp.root.string();
+	app.folders.push_back(legacy_default);
+
+	ChatSession chat;
+	chat.id = "chat-in-default";
+	chat.provider_id = "gemini-cli";
+	chat.folder_id = uam::constants::kDefaultFolderId;
+	chat.title = "Default chat";
+	chat.created_at = "2026-01-01T00:00:00.000Z";
+	chat.updated_at = "2026-01-01T00:00:00.000Z";
+	app.chats.push_back(chat);
+	app.selected_chat_index = 0;
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+
+	const fs::path chat_file = AppPaths::UamChatFilePath(temp.root, chat.id);
+	UAM_ASSERT(fs::exists(chat_file));
+
+	UAM_ASSERT(DeleteFolderById(app, uam::constants::kDefaultFolderId));
+	UAM_ASSERT(app.folders.empty());
+	UAM_ASSERT(app.chats.empty());
+	UAM_ASSERT(!fs::exists(chat_file));
 }
 
 UAM_TEST(DeleteFolderRefreshesRememberedSelectionToFallbackChat)
@@ -1658,6 +2331,23 @@ UAM_TEST(CreateFolderGeneratesUniqueIds)
 	}
 }
 
+UAM_TEST(NewChatFolderResolutionRequiresExistingFolder)
+{
+	TempDir temp("uam-new-chat-folder-required");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	UAM_ASSERT_EQ(ResolveRequestedNewChatFolderId(app, ""), std::string(""));
+	UAM_ASSERT_EQ(app.status_line, std::string("A workspace folder is required to create a chat."));
+
+	std::string created_id;
+	UAM_ASSERT(CreateFolder(app, "Project", temp.root.string(), &created_id));
+
+	UAM_ASSERT_EQ(ResolveRequestedNewChatFolderId(app, "missing-folder"), std::string(""));
+	UAM_ASSERT_EQ(app.status_line, std::string("Selected workspace folder no longer exists."));
+	UAM_ASSERT_EQ(ResolveRequestedNewChatFolderId(app, created_id), created_id);
+}
+
 UAM_TEST(MoveChatToFolderHandlesMissingWorkspacePaths)
 {
 	TempDir temp("uam-move-missing-workspace");
@@ -1719,7 +2409,7 @@ UAM_TEST(ImportDiscoveryDoesNotRecreateFolderForEmptyNativeSource)
 }
 
 #if !defined(_WIN32)
-UAM_TEST(ImportFallsBackToDefaultFolderWhenNewFolderMetadataSaveFails)
+UAM_TEST(ImportKeepsWorkspaceWhenNewFolderMetadataSaveFails)
 {
 	TempDir temp("uam-import-folder-save");
 	const fs::path gemini_home = temp.root / "gemini-home";
@@ -1755,7 +2445,7 @@ UAM_TEST(ImportFallsBackToDefaultFolderWhenNewFolderMetadataSaveFails)
 	const std::vector<ChatSession> imported = ChatRepository::LoadLocalChats(data_root);
 	UAM_ASSERT_EQ(imported.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(imported.front().id, std::string("native-1"));
-	UAM_ASSERT_EQ(imported.front().folder_id, std::string(uam::constants::kDefaultFolderId));
+	UAM_ASSERT_EQ(imported.front().folder_id, std::string(""));
 	UAM_ASSERT_EQ(imported.front().workspace_directory, workspace_root.string());
 	for (const ChatFolder& folder : app.folders)
 	{

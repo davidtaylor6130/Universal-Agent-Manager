@@ -351,8 +351,6 @@ bool Application::InitializeState()
 	}
 
 	m_app.folders = ChatFolderStore::Load(m_app.data_root);
-	ChatDomainService().EnsureDefaultFolder(m_app);
-	ChatFolderStore::Save(m_app.data_root, m_app.folders);
 	ChatHistorySyncService().LoadSidebarChatsByDiscovery(m_app);
 
 	if (!m_app.chats.empty())

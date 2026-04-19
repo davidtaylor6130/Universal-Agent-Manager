@@ -114,6 +114,19 @@ export function FolderTree({ searchQuery }: FolderTreeProps) {
 
   return (
     <div className="select-none">
+      {searchModel.pinnedSessionIds.length > 0 && (
+        <div className="mb-2">
+          <div className="px-3 py-1" style={{ color: 'var(--text-3)' }}>
+            <span className="text-xs font-medium tracking-wider uppercase" style={{ letterSpacing: '0.08em', fontSize: 10 }}>
+              Pinned chats
+            </span>
+          </div>
+          {searchModel.pinnedSessionIds.map((id) => (
+            <SessionItem key={id} sessionId={id} />
+          ))}
+        </div>
+      )}
+
       {searchModel.folderRows.map(({ folder, sessionIds, shouldShowSessions }) => (
         <FolderRow
           key={folder.id}

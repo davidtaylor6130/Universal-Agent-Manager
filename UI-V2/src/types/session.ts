@@ -5,6 +5,7 @@ export interface Session {
   name: string
   viewMode: ViewMode
   folderId: string | null
+  isPinned?: boolean
   providerId?: string
   workspaceDirectory?: string
   modelId?: string

@@ -3,7 +3,6 @@
 #include "app/application_core_helpers.h"
 #include "app/persistence_coordinator.h"
 #include "app/provider_resolution_service.h"
-#include "common/constants/app_constants.h"
 #include "common/chat/chat_branching.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/terminal_common.h"
@@ -16,9 +15,6 @@
 #include <unordered_map>
 
 using uam::AppState;
-using uam::constants::kDefaultFolderId;
-using uam::constants::kDefaultFolderTitle;
-
 namespace
 {
 	std::string NormalizeNativeIdentityWorkspace(const ChatSession& chat)
@@ -110,41 +106,19 @@ const ChatFolder* ChatDomainService::FindFolderById(const AppState& app, const s
 
 void ChatDomainService::EnsureDefaultFolder(AppState& app) const
 {
-	if (FindFolderIndexById(app, kDefaultFolderId) >= 0)
-	{
-		return;
-	}
-
-	ChatFolder folder;
-	folder.id = kDefaultFolderId;
-	folder.title = kDefaultFolderTitle;
-	folder.directory = std::filesystem::current_path().string();
-	folder.collapsed = false;
-	app.folders.push_back(std::move(folder));
+	(void)app;
 }
 
 void ChatDomainService::EnsureNewChatFolderSelection(AppState& app) const
 {
-	EnsureDefaultFolder(app);
-
-	if (app.new_chat_folder_id.empty() || FindFolderById(app, app.new_chat_folder_id) == nullptr)
+	if (!app.new_chat_folder_id.empty() && FindFolderById(app, app.new_chat_folder_id) == nullptr)
 	{
-		app.new_chat_folder_id = kDefaultFolderId;
+		app.new_chat_folder_id.clear();
 	}
 }
 
 void ChatDomainService::NormalizeChatFolderAssignments(AppState& app) const
 {
-	EnsureDefaultFolder(app);
-
-	for (ChatSession& chat : app.chats)
-	{
-		if (chat.folder_id.empty() || FindFolderById(app, chat.folder_id) == nullptr)
-		{
-			chat.folder_id = kDefaultFolderId;
-		}
-	}
-
 	bool any_expanded_with_chats = false;
 
 	for (const ChatFolder& folder : app.folders)
@@ -172,12 +146,12 @@ void ChatDomainService::NormalizeChatFolderAssignments(AppState& app) const
 
 std::string ChatDomainService::FolderForNewChat(const AppState& app) const
 {
-	if (!app.new_chat_folder_id.empty())
+	if (!app.new_chat_folder_id.empty() && FindFolderById(app, app.new_chat_folder_id) != nullptr)
 	{
 		return app.new_chat_folder_id;
 	}
 
-	return kDefaultFolderId;
+	return "";
 }
 
 int ChatDomainService::CountChatsInFolder(const AppState& app, const std::string& folder_id) const

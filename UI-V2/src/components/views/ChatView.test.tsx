@@ -109,6 +109,7 @@ describe('ChatView', () => {
             content: 'Read /tmp/project/file.txt',
             options: [{ id: 'allow-once', name: 'Allow once', kind: 'allow_once' }],
           },
+          pendingUserInput: null,
           agentInfo: { name: 'gemini', title: 'Gemini CLI', version: '0.36.0' },
         },
       },
@@ -216,6 +217,105 @@ describe('ChatView', () => {
     })
     expect(host.textContent).not.toContain('Working')
     expect(host.querySelector('button[title="Cancel turn"]')).toBeNull()
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('renders Codex user-input questions and submits answers', async () => {
+    const resolveAcpUserInput = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      resolveAcpUserInput,
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1' ? { ...session, providerId: 'codex-cli' } : session
+      ),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          providerId: 'codex-cli',
+          protocolKind: 'codex-app-server',
+          lifecycleState: 'waitingUserInput',
+          processing: true,
+          turnEvents: [
+            { type: 'assistant_text', text: 'I need one detail.' },
+            { type: 'user_input_request', requestId: '11', toolCallId: 'input-1' },
+          ],
+          pendingPermission: null,
+          pendingUserInput: {
+            requestId: '11',
+            itemId: 'input-1',
+            status: 'pending',
+            questions: [
+              {
+                id: 'scope',
+                header: 'Scope',
+                question: 'Which scope?',
+                isOther: false,
+                isSecret: false,
+                options: [
+                  { label: 'Focused', description: 'Only the bug' },
+                  { label: 'Broad', description: 'Include cleanup' },
+                ],
+              },
+              {
+                id: 'note',
+                header: 'Note',
+                question: 'Any extra detail?',
+                isOther: true,
+                isSecret: false,
+                options: [],
+              },
+            ],
+          },
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    expect(host.textContent).toContain('Codex needs input')
+    expect(host.textContent).toContain('Which scope?')
+    expect(host.textContent).toContain('Focused')
+    expect(host.textContent).toContain('Any extra detail?')
+
+    const focusedButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Focused'))
+    const noteInput = host.querySelector('input[aria-label="Any extra detail?"]') as HTMLInputElement | null
+    const submitButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Submit')
+    expect(focusedButton).toBeTruthy()
+    expect(noteInput).toBeTruthy()
+    expect(submitButton).toBeTruthy()
+
+    await act(async () => {
+      focusedButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      if (noteInput) {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+        setter?.call(noteInput, 'Extra context')
+        noteInput.dispatchEvent(new Event('input', { bubbles: true }))
+      }
+      await Promise.resolve()
+    })
+
+    const enabledSubmitButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Submit')
+    expect((enabledSubmitButton as HTMLButtonElement | undefined)?.disabled).toBe(false)
+
+    await act(async () => {
+      enabledSubmitButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(resolveAcpUserInput).toHaveBeenCalledWith('chat-1', '11', {
+      scope: ['Focused'],
+      note: ['Extra context'],
+    })
 
     act(() => {
       root.unmount()
@@ -409,6 +509,27 @@ describe('ChatView', () => {
     expect(planButton?.getAttribute('aria-pressed')).toBe('true')
 
     act(() => {
+      useAppStore.setState((state) => ({
+        sessions: state.sessions.map((session) =>
+          session.id === 'chat-1' ? { ...session, approvalMode: 'default' } : session
+        ),
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          'chat-1': {
+            ...state.acpBindingBySessionId['chat-1'],
+            currentModeId: 'plan',
+          },
+        },
+      }))
+    })
+
+    act(() => {
+      planButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(setSessionApprovalMode).toHaveBeenLastCalledWith('chat-1', 'default')
+
+    act(() => {
       root.unmount()
     })
     host.remove()
@@ -575,6 +696,330 @@ describe('ChatView', () => {
     })
     expect(host.textContent).toContain('Saved tool output')
     expect(host.querySelector('[role="dialog"]')).toBeTruthy()
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('renders persisted ordered message blocks instead of regrouping assistant fields', () => {
+    useAppStore.setState((state) => {
+      const currentMessages = state.messages['chat-1'] ?? []
+      return {
+        messages: {
+          ...state.messages,
+          'chat-1': currentMessages.map((message) =>
+            message.id === 'm-2'
+              ? {
+                  ...message,
+                  content: 'Grouped content should not render.',
+                  thoughts: 'Grouped thought should not render.',
+                  planSummary: 'Ordered plan summary.',
+                  planEntries: [{ content: 'Ordered plan step', priority: '', status: 'pending' }],
+                  toolCalls: [
+                    {
+                      id: 'persisted-tool-1',
+                      title: 'Ordered saved tool',
+                      kind: 'read',
+                      status: 'completed',
+                      content: 'Saved tool output',
+                    },
+                  ],
+                  blocks: [
+                    { type: 'thought', text: 'First thought marker.' },
+                    { type: 'assistant_text', text: 'First visible marker.' },
+                    { type: 'tool_call', toolCallId: 'persisted-tool-1' },
+                    { type: 'thought', text: 'Second thought marker.' },
+                    { type: 'assistant_text', text: 'Final visible marker.' },
+                    { type: 'plan' },
+                  ],
+                }
+              : message
+          ),
+        },
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          'chat-1': {
+            ...state.acpBindingBySessionId['chat-1'],
+            lifecycleState: 'ready',
+            processing: false,
+            processingStartedAtMs: null,
+            toolCalls: [],
+            turnEvents: [],
+            turnUserMessageIndex: -1,
+            turnAssistantMessageIndex: -1,
+            pendingPermission: null,
+          },
+        },
+      }
+    })
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const text = host.textContent ?? ''
+    const firstThought = text.indexOf('First thought marker.')
+    const firstVisible = text.indexOf('First visible marker.')
+    const tool = text.indexOf('Ordered saved tool')
+    const secondThought = text.indexOf('Second thought marker.')
+    const finalVisible = text.indexOf('Final visible marker.')
+    const plan = text.indexOf('Ordered plan summary.')
+    expect(firstThought).toBeGreaterThan(-1)
+    expect(firstVisible).toBeGreaterThan(firstThought)
+    expect(tool).toBeGreaterThan(firstVisible)
+    expect(secondThought).toBeGreaterThan(tool)
+    expect(finalVisible).toBeGreaterThan(secondThought)
+    expect(plan).toBeGreaterThan(finalVisible)
+    expect(text).not.toContain('Grouped content should not render.')
+    expect(text).not.toContain('Grouped thought should not render.')
+    expect(text.match(/Tool call:/g) ?? []).toHaveLength(1)
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('renders Codex thinking and persisted plan actions', async () => {
+    const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+    const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      sendAcpPrompt,
+      setSessionApprovalMode,
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1' ? { ...session, providerId: 'codex-cli' } : session
+      ),
+      messages: {
+        ...state.messages,
+        'chat-1': [
+          {
+            id: 'm-1',
+            sessionId: 'chat-1',
+            role: 'user',
+            content: 'Please make a plan',
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+          },
+          {
+            id: 'm-2',
+            sessionId: 'chat-1',
+            role: 'assistant',
+            content: '',
+            thoughts: '### Reasoning\nInspecting files.\n\n### Summary\nNeed to patch Codex handling.',
+            planSummary: 'Update Codex support.',
+            planEntries: [
+              { content: 'Update Codex support.', priority: 'duplicate', status: 'pending' },
+              { content: 'Inspect protocol events', priority: '', status: 'completed' },
+              { content: 'Patch rendering', priority: '', status: 'pending' },
+            ],
+            createdAt: new Date('2026-01-01T00:00:01.000Z'),
+          },
+        ],
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          providerId: 'codex-cli',
+          protocolKind: 'codex-app-server',
+          lifecycleState: 'ready',
+          processing: false,
+          processingStartedAtMs: null,
+          turnEvents: [],
+          turnUserMessageIndex: -1,
+          turnAssistantMessageIndex: -1,
+          pendingPermission: null,
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    expect(host.textContent).toContain('Thinking')
+    expect(host.textContent).toContain('Reasoning')
+    expect(host.textContent).toContain('Inspecting files.')
+    expect(host.textContent).toContain('Summary')
+    expect(host.textContent).toContain('Need to patch Codex handling.')
+    expect(host.textContent).toContain('Plan')
+    expect(host.textContent).toContain('Update Codex support.')
+    expect((host.textContent?.match(/Update Codex support\./g) ?? [])).toHaveLength(1)
+    expect(host.textContent).toContain('Inspect protocol events')
+    expect(host.textContent).toContain('completed')
+    expect(host.textContent).toContain('Patch rendering')
+    expect(host.textContent).toContain('pending')
+
+    const approveButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Approve')
+    const denyButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Deny')
+    expect(approveButton).toBeTruthy()
+    expect(denyButton).toBeTruthy()
+
+    await act(async () => {
+      approveButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(setSessionApprovalMode).toHaveBeenNthCalledWith(1, 'chat-1', 'default')
+    expect(sendAcpPrompt).toHaveBeenNthCalledWith(1, 'chat-1', 'Proceed with the plan.')
+    expect(setSessionApprovalMode.mock.invocationCallOrder[0]).toBeLessThan(sendAcpPrompt.mock.invocationCallOrder[0])
+
+    await act(async () => {
+      denyButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(setSessionApprovalMode).toHaveBeenNthCalledWith(2, 'chat-1', 'plan')
+    expect(sendAcpPrompt).toHaveBeenNthCalledWith(
+      2,
+      'chat-1',
+      'Do not proceed with this plan. Please revise it before making changes.'
+    )
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('hides plan actions for historical Codex plans after a later user message', () => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1' ? { ...session, providerId: 'codex-cli' } : session
+      ),
+      messages: {
+        ...state.messages,
+        'chat-1': [
+          {
+            id: 'm-1',
+            sessionId: 'chat-1',
+            role: 'user',
+            content: 'Plan this',
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+          },
+          {
+            id: 'm-2',
+            sessionId: 'chat-1',
+            role: 'assistant',
+            content: '',
+            planSummary: 'Historical plan.',
+            planEntries: [{ content: 'Old step', priority: '', status: 'pending' }],
+            createdAt: new Date('2026-01-01T00:00:01.000Z'),
+          },
+          {
+            id: 'm-3',
+            sessionId: 'chat-1',
+            role: 'user',
+            content: 'Actually revise it',
+            createdAt: new Date('2026-01-01T00:00:02.000Z'),
+          },
+        ],
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          providerId: 'codex-cli',
+          protocolKind: 'codex-app-server',
+          lifecycleState: 'ready',
+          processing: false,
+          processingStartedAtMs: null,
+          turnEvents: [],
+          turnUserMessageIndex: -1,
+          turnAssistantMessageIndex: -1,
+          pendingPermission: null,
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    expect(host.textContent).toContain('Historical plan.')
+    expect(host.textContent).toContain('Old step')
+    expect(Array.from(host.querySelectorAll('button')).some((button) => button.textContent === 'Approve')).toBe(false)
+    expect(Array.from(host.querySelectorAll('button')).some((button) => button.textContent === 'Deny')).toBe(false)
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('disables Codex plan actions while the active ACP plan is still processing', () => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1' ? { ...session, providerId: 'codex-cli' } : session
+      ),
+      messages: {
+        ...state.messages,
+        'chat-1': [
+          {
+            id: 'm-1',
+            sessionId: 'chat-1',
+            role: 'user',
+            content: 'Plan this',
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+          },
+          {
+            id: 'm-2',
+            sessionId: 'chat-1',
+            role: 'assistant',
+            content: '',
+            planSummary: 'Active plan.',
+            planEntries: [{ content: 'Working step', priority: '', status: 'inProgress' }],
+            createdAt: new Date('2026-01-01T00:00:01.000Z'),
+          },
+        ],
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          providerId: 'codex-cli',
+          protocolKind: 'codex-app-server',
+          lifecycleState: 'processing',
+          processing: true,
+          planSummary: 'Active plan.',
+          planEntries: [{ content: 'Working step', priority: '', status: 'inProgress' }],
+          turnEvents: [{ type: 'plan' }],
+          turnUserMessageIndex: 0,
+          turnAssistantMessageIndex: 1,
+          pendingPermission: null,
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    expect(host.textContent).toContain('Active plan.')
+    expect(host.textContent).toContain('Working step')
+    expect(host.textContent).toContain('in progress')
+    const approveButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Approve') as HTMLButtonElement | undefined
+    const denyButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Deny') as HTMLButtonElement | undefined
+    expect(approveButton).toBeTruthy()
+    expect(denyButton).toBeTruthy()
+    expect(approveButton?.disabled).toBe(true)
+    expect(denyButton?.disabled).toBe(true)
+    expect(approveButton?.getAttribute('title')).toBe('Codex is still working.')
 
     act(() => {
       root.unmount()

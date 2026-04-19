@@ -56,6 +56,43 @@ namespace
 		return tool_json;
 	}
 
+	nlohmann::json SerializePlanEntryForFrontend(const MessagePlanEntry& entry)
+	{
+		return {
+			{"content", entry.content},
+			{"priority", entry.priority},
+			{"status", entry.status},
+		};
+	}
+
+	nlohmann::json SerializePlanEntryForFrontend(const AcpPlanEntryState& entry)
+	{
+		return {
+			{"content", entry.content},
+			{"priority", entry.priority},
+			{"status", entry.status},
+		};
+	}
+
+	nlohmann::json SerializeMessageBlockForFrontend(const MessageBlock& block)
+	{
+		nlohmann::json block_json;
+		block_json["type"] = block.type;
+		if (!block.text.empty())
+		{
+			block_json["text"] = block.text;
+		}
+		if (!block.tool_call_id.empty())
+		{
+			block_json["toolCallId"] = block.tool_call_id;
+		}
+		if (!block.request_id_json.empty())
+		{
+			block_json["requestId"] = block.request_id_json;
+		}
+		return block_json;
+	}
+
 constexpr std::uint64_t kFingerprintHashOffset = 1469598103934665603ull;
 constexpr std::uint64_t kFingerprintHashPrime = 1099511628211ull;
 
@@ -113,6 +150,22 @@ std::string MessageDigestForFingerprint(const ChatSession& session)
 				FingerprintHashString(hash, std::to_string(tool_call.result_text.size()));
 			}
 			FingerprintHashString(hash, std::to_string(last_message.thoughts.size()));
+			FingerprintHashString(hash, std::to_string(last_message.plan_summary.size()));
+			FingerprintHashString(hash, std::to_string(last_message.plan_entries.size()));
+			for (const MessagePlanEntry& entry : last_message.plan_entries)
+			{
+				FingerprintHashString(hash, entry.content);
+				FingerprintHashString(hash, entry.priority);
+				FingerprintHashString(hash, entry.status);
+			}
+			FingerprintHashString(hash, std::to_string(last_message.blocks.size()));
+			for (const MessageBlock& block : last_message.blocks)
+			{
+				FingerprintHashString(hash, block.type);
+				FingerprintHashString(hash, block.text);
+				FingerprintHashString(hash, block.tool_call_id);
+				FingerprintHashString(hash, block.request_id_json);
+			}
 			FingerprintHashBool(hash, last_message.interrupted);
 		}
 
@@ -210,6 +263,7 @@ nlohmann::json SerializeAcpSessionSummary(const AppState& app, const ChatSession
 			acp_json["lastExitCode"] = nullptr;
 			acp_json["diagnostics"] = nlohmann::json::array();
 			acp_json["toolCalls"] = nlohmann::json::array();
+			acp_json["planSummary"] = "";
 			acp_json["planEntries"] = nlohmann::json::array();
 			acp_json["availableModes"] = nlohmann::json::array();
 			acp_json["currentModeId"] = chat.approval_mode;
@@ -220,6 +274,7 @@ nlohmann::json SerializeAcpSessionSummary(const AppState& app, const ChatSession
 		acp_json["turnAssistantMessageIndex"] = -1;
 		acp_json["turnSerial"] = 0;
 		acp_json["pendingPermission"] = nullptr;
+		acp_json["pendingUserInput"] = nullptr;
 		return acp_json;
 	}
 
@@ -270,15 +325,12 @@ nlohmann::json SerializeAcpSessionSummary(const AppState& app, const ChatSession
 	}
 	acp_json["toolCalls"] = std::move(tool_calls);
 
-	auto plan_entries = nlohmann::json::array();
-	for (const AcpPlanEntryState& entry : session->plan_entries)
-	{
-		plan_entries.push_back({
-			{"content", entry.content},
-			{"priority", entry.priority},
-			{"status", entry.status},
-		});
+		auto plan_entries = nlohmann::json::array();
+		for (const AcpPlanEntryState& entry : session->plan_entries)
+		{
+			plan_entries.push_back(SerializePlanEntryForFrontend(entry));
 		}
+		acp_json["planSummary"] = session->plan_summary;
 		acp_json["planEntries"] = std::move(plan_entries);
 
 		auto available_modes = nlohmann::json::array();
@@ -356,6 +408,42 @@ nlohmann::json SerializeAcpSessionSummary(const AppState& app, const ChatSession
 		acp_json["pendingPermission"] = nullptr;
 	}
 
+	if (!session->pending_user_input.request_id_json.empty())
+	{
+		nlohmann::json input_json;
+		input_json["requestId"] = session->pending_user_input.request_id_json;
+		input_json["itemId"] = session->pending_user_input.item_id;
+		input_json["status"] = session->pending_user_input.status;
+
+		auto questions = nlohmann::json::array();
+		for (const AcpUserInputQuestionState& question : session->pending_user_input.questions)
+		{
+			nlohmann::json question_json;
+			question_json["id"] = question.id;
+			question_json["header"] = question.header;
+			question_json["question"] = question.question;
+			question_json["isOther"] = question.is_other;
+			question_json["isSecret"] = question.is_secret;
+
+			auto options = nlohmann::json::array();
+			for (const AcpUserInputOptionState& option : question.options)
+			{
+				options.push_back({
+					{"label", option.label},
+					{"description", option.description},
+				});
+			}
+			question_json["options"] = std::move(options);
+			questions.push_back(std::move(question_json));
+		}
+		input_json["questions"] = std::move(questions);
+		acp_json["pendingUserInput"] = std::move(input_json);
+	}
+	else
+	{
+		acp_json["pendingUserInput"] = nullptr;
+	}
+
 	return acp_json;
 }
 
@@ -365,6 +453,7 @@ nlohmann::json SerializeFingerprintSession(const AppState& app, const ChatSessio
 	chat_json["id"] = chat.id;
 	chat_json["title"] = chat.title;
 	chat_json["folderId"] = chat.folder_id;
+	chat_json["pinned"] = chat.pinned;
 	chat_json["providerId"] = chat.provider_id;
 	chat_json["modelId"] = chat.model_id;
 	chat_json["approvalMode"] = chat.approval_mode;
@@ -577,6 +666,7 @@ nlohmann::json StateSerializer::SerializeSession(const ChatSession& session)
 	j["id"]         = session.id;
 	j["title"]      = session.title;
 	j["folderId"]   = session.folder_id;
+	j["pinned"]     = session.pinned;
 	j["providerId"] = session.provider_id;
 	j["modelId"]    = session.model_id;
 	j["approvalMode"] = session.approval_mode;
@@ -596,6 +686,19 @@ nlohmann::json StateSerializer::SerializeSession(const ChatSession& session)
 			{
 				m["thoughts"] = msg.thoughts;
 			}
+			if (!msg.plan_summary.empty())
+			{
+				m["planSummary"] = msg.plan_summary;
+			}
+			if (!msg.plan_entries.empty())
+			{
+				auto plan_entries = nlohmann::json::array();
+				for (const MessagePlanEntry& entry : msg.plan_entries)
+				{
+					plan_entries.push_back(SerializePlanEntryForFrontend(entry));
+				}
+				m["planEntries"] = std::move(plan_entries);
+			}
 			if (!msg.tool_calls.empty())
 			{
 				auto tool_calls = nlohmann::json::array();
@@ -604,6 +707,21 @@ nlohmann::json StateSerializer::SerializeSession(const ChatSession& session)
 					tool_calls.push_back(SerializeToolCallForFrontend(tool_call));
 				}
 				m["toolCalls"] = std::move(tool_calls);
+			}
+			if (!msg.blocks.empty())
+			{
+				auto blocks = nlohmann::json::array();
+				for (const MessageBlock& block : msg.blocks)
+				{
+					if (!block.type.empty())
+					{
+						blocks.push_back(SerializeMessageBlockForFrontend(block));
+					}
+				}
+				if (!blocks.empty())
+				{
+					m["blocks"] = std::move(blocks);
+				}
 			}
 			msgs.push_back(m);
 		}
