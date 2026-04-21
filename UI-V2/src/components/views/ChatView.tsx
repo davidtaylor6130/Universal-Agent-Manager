@@ -89,12 +89,14 @@ function titleFromModelId(modelId: string) {
     .join(' ') || modelId
 }
 
-function modelOptionFromRuntime(model: AcpModel): ModelOption | null {
+function modelOptionFromRuntime(model: AcpModel, useFriendlyLabels: boolean): ModelOption | null {
   const id = model.id.trim()
   if (!id) return null
-  const friendly = FRIENDLY_MODEL_LABELS[id]
-  if (friendly) {
-    return { id, ...friendly, detail: model.description || friendly.detail }
+  if (useFriendlyLabels) {
+    const friendly = FRIENDLY_MODEL_LABELS[id]
+    if (friendly) {
+      return { id, ...friendly, detail: model.description || friendly.detail }
+    }
   }
   const label = model.name.trim() || titleFromModelId(id)
   return {
@@ -112,12 +114,13 @@ function buildModelOptions(
   providerId: string
 ): ModelOption[] {
   const providerName = providerDisplayName(provider, providerId)
+  const codexProvider = isCodexProvider(provider, providerId)
   const runtimeOptions = (acp?.availableModels ?? []).flatMap((model) => {
-    const option = modelOptionFromRuntime(model)
+    const option = modelOptionFromRuntime(model, !codexProvider)
     return option ? [option] : []
   })
   const defaultOption = providerDefaultModelOption(providerName)
-  const fallbackOptions = isCodexProvider(provider, providerId)
+  const fallbackOptions = codexProvider
     ? [defaultOption]
     : [defaultOption, ...GEMINI_FALLBACK_ACP_MODEL_OPTIONS.slice(1)]
   const baseOptions = runtimeOptions.length > 0
@@ -133,7 +136,7 @@ function buildModelOptions(
   }
 
   if (selectedModelId && !seen.has(selectedModelId)) {
-    const friendly = FRIENDLY_MODEL_LABELS[selectedModelId]
+    const friendly = codexProvider ? undefined : FRIENDLY_MODEL_LABELS[selectedModelId]
     options.push(
       friendly
         ? { id: selectedModelId, ...friendly }

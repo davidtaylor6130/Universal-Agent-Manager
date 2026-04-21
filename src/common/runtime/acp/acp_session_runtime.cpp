@@ -20,6 +20,7 @@
 #include <exception>
 #include <filesystem>
 #include <iomanip>
+#include <initializer_list>
 #include <map>
 #include <iostream>
 #include <sstream>
@@ -3364,24 +3365,69 @@ namespace
 						if (data.is_array())
 						{
 							session.available_models.clear();
+							std::vector<std::string> seen_model_ids;
 							for (const nlohmann::json& model : data)
 							{
 								if (!model.is_object() || model.value("hidden", false))
 								{
 									continue;
 								}
+
+								const auto first_string = [&model](std::initializer_list<const char*> keys) -> std::string
+								{
+									for (const char* key : keys)
+									{
+										if (model.contains(key) && model[key].is_string())
+										{
+											const std::string value = Trim(model[key].get<std::string>());
+											if (!value.empty())
+											{
+												return value;
+											}
+										}
+									}
+									return "";
+								};
+
 								AcpModelState parsed;
-								parsed.id = model.value("id", model.value("model", ""));
-								parsed.name = model.value("displayName", parsed.id);
-								parsed.description = model.value("description", "");
+								parsed.id = first_string({"id", "model", "slug", "modelId"});
+								if (parsed.id.empty())
+								{
+									continue;
+								}
+
+								const bool is_default = model.value("isDefault", false);
+								const std::string visibility = first_string({"visibility"});
+								if (!visibility.empty() && visibility != "list" && !is_default)
+								{
+									continue;
+								}
+								if (std::find(seen_model_ids.begin(), seen_model_ids.end(), parsed.id) != seen_model_ids.end())
+								{
+									continue;
+								}
+
+								parsed.name = first_string({"displayName", "display_name", "name"});
+								if (parsed.name.empty())
+								{
+									parsed.name = parsed.id;
+								}
+								parsed.description = first_string({"description"});
 								if (!parsed.id.empty())
 								{
-									if (model.value("isDefault", false))
+									if (is_default)
 									{
 										session.current_model_id = parsed.id;
 									}
+									seen_model_ids.push_back(parsed.id);
 									session.available_models.push_back(std::move(parsed));
 								}
+							}
+
+							const std::string explicit_current_model = Trim(result.value("currentModelId", result.value("model", "")));
+							if (!explicit_current_model.empty())
+							{
+								session.current_model_id = explicit_current_model;
 							}
 						}
 					}

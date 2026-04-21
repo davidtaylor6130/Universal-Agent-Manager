@@ -2,14 +2,20 @@
 
 #include "app/application_core_helpers.h"
 #include "common/runtime/acp/acp_session_runtime.h"
+#include "common/provider/codex/cli/codex_session_index.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_lifecycle.h"
+#include "common/utils/string_utils.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <fstream>
 #include <iomanip>
+#include <initializer_list>
 #include <sstream>
+#include <vector>
 
 namespace uam
 {
@@ -43,6 +49,84 @@ namespace
 			return tool_call.result_text;
 		}
 		return tool_call.args_json;
+	}
+
+	std::string JsonStringValue(const nlohmann::json& object, std::initializer_list<const char*> keys)
+	{
+		for (const char* key : keys)
+		{
+			if (object.contains(key) && object[key].is_string())
+			{
+				const std::string value = uam::strings::Trim(object[key].get<std::string>());
+				if (!value.empty())
+				{
+					return value;
+				}
+			}
+		}
+		return "";
+	}
+
+	nlohmann::json ReadCachedCodexModelsForFrontend()
+	{
+		auto models_json = nlohmann::json::array();
+		std::ifstream in(uam::codex::CodexHomePath() / "models_cache.json", std::ios::binary);
+		if (!in.good())
+		{
+			return models_json;
+		}
+
+		try
+		{
+			const nlohmann::json cache = nlohmann::json::parse(in);
+			const nlohmann::json models = cache.value("models", nlohmann::json::array());
+			if (!models.is_array())
+			{
+				return models_json;
+			}
+
+			std::vector<std::string> seen_model_ids;
+			for (const nlohmann::json& model : models)
+			{
+				if (!model.is_object())
+				{
+					continue;
+				}
+				const std::string visibility = JsonStringValue(model, {"visibility"});
+				if (!visibility.empty() && visibility != "list")
+				{
+					continue;
+				}
+				const std::string id = JsonStringValue(model, {"id", "model", "slug", "modelId"});
+				if (id.empty() || std::find(seen_model_ids.begin(), seen_model_ids.end(), id) != seen_model_ids.end())
+				{
+					continue;
+				}
+
+				std::string name = JsonStringValue(model, {"displayName", "display_name", "name"});
+				if (name.empty())
+				{
+					name = id;
+				}
+				models_json.push_back({
+					{"id", id},
+					{"name", name},
+					{"description", JsonStringValue(model, {"description"})},
+				});
+				seen_model_ids.push_back(id);
+			}
+		}
+		catch (...)
+		{
+			return nlohmann::json::array();
+		}
+
+		return models_json;
+	}
+
+	nlohmann::json FallbackAcpModelsForChat(const ChatSession& chat)
+	{
+		return uam::strings::Trim(chat.provider_id) == "codex-cli" ? ReadCachedCodexModelsForFrontend() : nlohmann::json::array();
 	}
 
 	nlohmann::json SerializeToolCallForFrontend(const ToolCall& tool_call)
@@ -267,7 +351,7 @@ nlohmann::json SerializeAcpSessionSummary(const AppState& app, const ChatSession
 			acp_json["planEntries"] = nlohmann::json::array();
 			acp_json["availableModes"] = nlohmann::json::array();
 			acp_json["currentModeId"] = chat.approval_mode;
-			acp_json["availableModels"] = nlohmann::json::array();
+			acp_json["availableModels"] = FallbackAcpModelsForChat(chat);
 			acp_json["currentModelId"] = chat.model_id;
 			acp_json["turnEvents"] = nlohmann::json::array();
 			acp_json["turnUserMessageIndex"] = -1;
@@ -354,7 +438,7 @@ nlohmann::json SerializeAcpSessionSummary(const AppState& app, const ChatSession
 				{"description", model.description},
 			});
 		}
-		acp_json["availableModels"] = std::move(available_models);
+		acp_json["availableModels"] = available_models.empty() ? FallbackAcpModelsForChat(chat) : std::move(available_models);
 		acp_json["currentModelId"] = session->current_model_id.empty() ? chat.model_id : session->current_model_id;
 
 		auto turn_events = nlohmann::json::array();

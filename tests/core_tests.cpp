@@ -705,12 +705,19 @@ UAM_TEST(CodexAppServerRequestBuildersUseCodexProtocolMethods)
 	const nlohmann::json thread_resume = nlohmann::json::parse(uam::BuildCodexThreadResumeRequestForTests(24, chat, "/tmp/project"));
 	UAM_ASSERT_EQ(thread_resume.value("method", ""), std::string("thread/resume"));
 	UAM_ASSERT_EQ(thread_resume["params"].value("threadId", ""), chat.native_session_id);
+	UAM_ASSERT_EQ(thread_resume["params"].value("model", ""), std::string("gpt-5.4"));
 	UAM_ASSERT(thread_resume["params"].value("persistExtendedHistory", false));
+
+	ChatSession default_model_chat = chat;
+	default_model_chat.model_id.clear();
+	const nlohmann::json default_model_thread_start = nlohmann::json::parse(uam::BuildCodexThreadStartRequestForTests(240, default_model_chat, "/tmp/project"));
+	UAM_ASSERT(!default_model_thread_start["params"].contains("model"));
 
 	const nlohmann::json turn_start = nlohmann::json::parse(uam::BuildCodexTurnStartRequestForTests(25, chat.native_session_id, "hello", chat));
 	UAM_ASSERT_EQ(turn_start.value("method", ""), std::string("turn/start"));
 	UAM_ASSERT_EQ(turn_start["params"].value("threadId", ""), chat.native_session_id);
 	UAM_ASSERT_EQ(turn_start["params"]["input"][0].value("text", ""), std::string("hello"));
+	UAM_ASSERT_EQ(turn_start["params"].value("model", ""), std::string("gpt-5.4"));
 	UAM_ASSERT_EQ(turn_start["params"]["collaborationMode"].value("mode", ""), std::string("plan"));
 	UAM_ASSERT_EQ(turn_start["params"]["collaborationMode"]["settings"].value("model", ""), std::string("gpt-5.4"));
 
@@ -1596,6 +1603,36 @@ UAM_TEST(AcpSessionNewParsesModesModelsAndModeUpdates)
 	UAM_ASSERT_EQ(acp.value("currentModelId", ""), std::string("auto-gemini-3"));
 }
 
+UAM_TEST(CodexCachedModelsPopulateSelectorBeforeAppServerStarts)
+{
+	TempDir temp("uam-codex-model-cache");
+	ScopedEnvVar codex_home("CODEX_HOME", temp.root.string());
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "models_cache.json", R"({
+  "models": [
+    {"slug": "gpt-5.4", "display_name": "gpt-5.4", "description": "Latest frontier agentic coding model.", "visibility": "list"},
+    {"slug": "hidden-model", "display_name": "Hidden", "visibility": "hidden"},
+    {"slug": "gpt-5.4-mini", "display_name": "GPT-5.4-Mini", "description": "Smaller frontier agentic coding model.", "visibility": "list"},
+    {"slug": "gpt-5.4", "display_name": "Duplicate", "visibility": "list"}
+  ]
+})"));
+
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "codex-cli";
+	app.chats.push_back(std::move(chat));
+
+	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json acp = serialized["chats"][0]["acpSession"];
+	UAM_ASSERT_EQ(acp["availableModels"].size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(acp["availableModels"][0].value("id", ""), std::string("gpt-5.4"));
+	UAM_ASSERT_EQ(acp["availableModels"][0].value("name", ""), std::string("gpt-5.4"));
+	UAM_ASSERT_EQ(acp["availableModels"][1].value("id", ""), std::string("gpt-5.4-mini"));
+	UAM_ASSERT_EQ(acp["availableModels"][1].value("name", ""), std::string("GPT-5.4-Mini"));
+	UAM_ASSERT_EQ(acp.value("currentModelId", ""), std::string(""));
+}
+
 UAM_TEST(CodexAppServerStateTransitionsMapModelsTurnsToolsAndApprovals)
 {
 	TempDir temp("uam-codex-app-server-state");
@@ -1624,10 +1661,14 @@ UAM_TEST(CodexAppServerStateTransitionsMapModelsTurnsToolsAndApprovals)
 	UAM_ASSERT_EQ(raw_session->agent_version, std::string("codex-cli/1.2.3"));
 
 	raw_session->pending_request_methods[2] = "model/list";
-	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":2,"result":{"data":[{"id":"gpt-5.4","displayName":"GPT 5.4","description":"Frontier","isDefault":true},{"id":"hidden","displayName":"Hidden","hidden":true}]}})"));
-	UAM_ASSERT_EQ(raw_session->available_models.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":2,"result":{"currentModelId":"gpt-5.4-mini","data":[{"slug":"gpt-5.4","display_name":"gpt-5.4","description":"Latest frontier agentic coding model.","visibility":"list"},{"id":"gpt-5.4-mini","displayName":"GPT-5.4-Mini","description":"Smaller model","isDefault":true},{"slug":"hidden-model","display_name":"Hidden","visibility":"hidden"},{"id":"hidden","displayName":"Hidden","hidden":true},{"id":"gpt-5.4","displayName":"Duplicate","description":"Duplicate entry","visibility":"list"}]}})"));
+	UAM_ASSERT_EQ(raw_session->available_models.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(raw_session->available_models[0].id, std::string("gpt-5.4"));
-	UAM_ASSERT_EQ(raw_session->current_model_id, std::string("gpt-5.4"));
+	UAM_ASSERT_EQ(raw_session->available_models[0].name, std::string("gpt-5.4"));
+	UAM_ASSERT_EQ(raw_session->available_models[0].description, std::string("Latest frontier agentic coding model."));
+	UAM_ASSERT_EQ(raw_session->available_models[1].id, std::string("gpt-5.4-mini"));
+	UAM_ASSERT_EQ(raw_session->available_models[1].name, std::string("GPT-5.4-Mini"));
+	UAM_ASSERT_EQ(raw_session->current_model_id, std::string("gpt-5.4-mini"));
 
 	raw_session->session_setup_request_id = 3;
 	raw_session->pending_request_methods[3] = "thread/start";

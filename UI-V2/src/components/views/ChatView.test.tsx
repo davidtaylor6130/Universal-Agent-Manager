@@ -362,6 +362,73 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('renders Codex runtime model options without Gemini fallback labels', () => {
+    const setSessionModel = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1' ? { ...session, providerId: 'codex-cli', modelId: 'gpt-5.4' } : session
+      ),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          providerId: 'codex-cli',
+          protocolKind: 'codex-app-server',
+          lifecycleState: 'ready',
+          processing: false,
+          processingStartedAtMs: null,
+          pendingPermission: null,
+          availableModels: [
+            { id: 'gpt-5.4', name: 'gpt-5.4', description: 'Latest frontier agentic coding model.' },
+            { id: 'gpt-5.4-mini', name: 'GPT-5.4-Mini', description: 'Smaller frontier agentic coding model.' },
+          ],
+          currentModelId: 'gpt-5.4',
+          agentInfo: { name: 'codex', title: 'Codex', version: '1.0.0' },
+        },
+      },
+      setSessionModel,
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const modelButton = host.querySelector('button[title="Select model"]')
+    expect(modelButton).toBeTruthy()
+    expect(modelButton?.textContent).toContain('Model')
+    expect(modelButton?.textContent).toContain('gpt-5.4')
+
+    act(() => {
+      modelButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(host.textContent).toContain('CLI default')
+    expect(host.textContent).toContain('Use Codex CLI settings')
+    expect(host.textContent).toContain('gpt-5.4')
+    expect(host.textContent).toContain('GPT-5.4-Mini')
+    expect(host.textContent).not.toContain('Auto 3')
+    expect(host.textContent).not.toContain('Flash Lite')
+
+    const miniButton = Array.from(host.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('GPT-5.4-Mini')
+    )
+    expect(miniButton).toBeTruthy()
+    act(() => {
+      miniButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(setSessionModel).toHaveBeenCalledWith('chat-1', 'gpt-5.4-mini')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
   it('renders dynamic ACP model options and applies the selected model id', () => {
     const setSessionModel = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
