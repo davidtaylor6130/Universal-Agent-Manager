@@ -1,11 +1,10 @@
-import { FormEvent, KeyboardEvent, ReactNode, RefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { FormEvent, KeyboardEvent, ReactNode, RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { Session } from '../../types/session'
 import {
   useAppStore,
   type AcpBinding,
   type AcpModel,
-  type AcpPermissionOption,
   type AcpPendingPermission,
   type AcpPendingUserInput,
   type AcpPlanEntry,
@@ -54,23 +53,6 @@ const FRIENDLY_MODEL_LABELS: Record<string, Pick<ModelOption, 'label' | 'shortLa
 const PLAN_APPROVE_PROMPT = 'Proceed with the plan.'
 const PLAN_DENY_PROMPT = 'Do not proceed with this plan. Please revise it before making changes.'
 
-type PlanActions = {
-  kind: 'codex'
-  show: boolean
-  disabled: boolean
-  disabledTitle: string
-  onApprove: () => void
-  onDeny: () => void
-} | {
-  kind: 'permission'
-  show: boolean
-  disabled: boolean
-  disabledTitle: string
-  requestId: string
-  options: AcpPermissionOption[]
-  onResolve: (requestId: string, optionId: string) => void
-}
-
 function providerDisplayName(provider?: Provider, fallbackId = '') {
   if (provider?.shortName?.trim()) return provider.shortName.trim()
   if (provider?.name?.trim()) return provider.name.trim()
@@ -96,31 +78,6 @@ function providerRuntimeLabel(provider?: Provider, acp?: AcpBinding) {
 
 function isCodexProvider(provider?: Provider, providerId = '') {
   return providerId === 'codex-cli' || provider?.structuredProtocol === 'codex-app-server'
-}
-
-function permissionOptionLooksLikePlanModeTransition(option: AcpPermissionOption) {
-  const text = `${option.id}\n${option.name}\n${option.kind}`.toLowerCase()
-  return text.includes('reject') ||
-    text.includes('default') ||
-    text.includes('auto') ||
-    text.includes('edit') ||
-    text.includes('plan')
-}
-
-function isGeminiPlanPermission(permission: AcpPendingPermission | null | undefined, providerId: string) {
-  if (providerId === 'codex-cli' || !permission?.content.trim()) return false
-  if (permission.kind === 'switch_mode') return true
-
-  const title = permission.title.toLowerCase()
-  const titleMentionsPlan = title.includes('plan')
-  const titleMentionsApproval =
-    title.includes('approve') ||
-    title.includes('implementation') ||
-    title.includes('ready') ||
-    title.includes('exit')
-  if (titleMentionsPlan && titleMentionsApproval) return true
-
-  return permission.options.some(permissionOptionLooksLikePlanModeTransition)
 }
 
 function titleFromModelId(modelId: string) {
@@ -1115,7 +1072,7 @@ function ThinkingBlock({ text, defaultOpen = false }: { text: string; defaultOpe
 }
 
 function planStatusLabel(status: string) {
-  if (status === 'inProgress' || status === 'in_progress') return 'in progress'
+  if (status === 'inProgress') return 'in progress'
   if (status === 'completed') return 'completed'
   if (status === 'pending') return 'pending'
   return status || 'pending'
@@ -1123,7 +1080,7 @@ function planStatusLabel(status: string) {
 
 function planStatusColor(status: string) {
   if (status === 'completed') return 'var(--green)'
-  if (status === 'inProgress' || status === 'in_progress') return 'var(--blue)'
+  if (status === 'inProgress') return 'var(--blue)'
   return 'var(--text-3)'
 }
 
@@ -1135,7 +1092,6 @@ function PlanBlock({
   disabledTitle = 'Codex is still working.',
   onApprove,
   onDeny,
-  permissionActions,
 }: {
   summary?: string
   entries?: AcpPlanEntry[]
@@ -1144,7 +1100,6 @@ function PlanBlock({
   disabledTitle?: string
   onApprove?: () => void
   onDeny?: () => void
-  permissionActions?: Extract<PlanActions, { kind: 'permission' }>
 }) {
   const planSummary = summary?.trim() ?? ''
   const planEntries = entries?.filter((entry) => {
@@ -1186,65 +1141,7 @@ function PlanBlock({
           ))}
         </ol>
       )}
-      {permissionActions?.show && (
-        <div className="flex flex-wrap gap-2 pt-1">
-          {permissionActions.options.map((option) => {
-            const optionText = `${option.id} ${option.name} ${option.kind}`.toLowerCase()
-            const positive = option.kind.startsWith('allow') || optionText.includes('default') || optionText.includes('auto')
-            const negative = option.kind.includes('reject') || optionText.includes('reject') || optionText.includes('plan')
-            return (
-              <button
-                key={option.id}
-                type="button"
-                className="px-3 h-7 text-[11px] font-medium"
-                disabled={permissionActions.disabled}
-                title={permissionActions.disabled ? permissionActions.disabledTitle : option.name || option.id}
-                style={{
-                  borderRadius: 6,
-                  border: positive
-                    ? '1px solid color-mix(in srgb, var(--green) 52%, var(--border-bright))'
-                    : negative
-                      ? '1px solid color-mix(in srgb, var(--red) 48%, var(--border-bright))'
-                      : '1px solid var(--border-bright)',
-                  background: permissionActions.disabled
-                    ? 'var(--surface-up)'
-                    : positive
-                      ? 'color-mix(in srgb, var(--green) 16%, var(--surface-up))'
-                      : negative
-                        ? 'color-mix(in srgb, var(--red) 12%, var(--surface-up))'
-                        : 'var(--surface-up)',
-                  color: permissionActions.disabled ? 'var(--text-3)' : 'var(--text)',
-                  opacity: permissionActions.disabled ? 0.65 : 1,
-                }}
-                onClick={() => {
-                  if (!permissionActions.disabled) permissionActions.onResolve(permissionActions.requestId, option.id)
-                }}
-              >
-                {option.name || option.id}
-              </button>
-            )
-          })}
-          <button
-            type="button"
-            className="px-3 h-7 text-[11px]"
-            disabled={permissionActions.disabled}
-            title={permissionActions.disabled ? permissionActions.disabledTitle : 'Cancel'}
-            style={{
-              borderRadius: 6,
-              border: '1px solid var(--border)',
-              background: 'transparent',
-              color: permissionActions.disabled ? 'var(--text-3)' : 'var(--text-2)',
-              opacity: permissionActions.disabled ? 0.65 : 1,
-            }}
-            onClick={() => {
-              if (!permissionActions.disabled) permissionActions.onResolve(permissionActions.requestId, 'cancelled')
-            }}
-          >
-            Cancel
-          </button>
-        </div>
-      )}
-      {!permissionActions && showActions && (
+      {showActions && (
         <div className="flex flex-wrap gap-2 pt-1">
           <button
             type="button"
@@ -1297,7 +1194,13 @@ function PersistedMessageBlocksContent({
   message: Message
   blocks: MessageBlock[]
   onSelectTool: (messageId: string, toolId: string) => void
-  planActions?: PlanActions
+  planActions?: {
+    show: boolean
+    disabled: boolean
+    disabledTitle: string
+    onApprove: () => void
+    onDeny: () => void
+  }
 }) {
   const toolById = new Map((message.toolCalls ?? []).map((tool) => [tool.id, tool]))
   const lastPlanBlockIndex = blocks.reduce((latest, block, index) => block.type === 'plan' ? index : latest, -1)
@@ -1336,12 +1239,11 @@ function PersistedMessageBlocksContent({
               key={`block-plan-${index}`}
               summary={message.planSummary ?? ''}
               entries={message.planEntries ?? []}
-              showActions={index === lastPlanBlockIndex && planActions?.kind === 'codex' && planActions.show}
+              showActions={index === lastPlanBlockIndex && planActions?.show}
               actionsDisabled={planActions?.disabled}
               disabledTitle={planActions?.disabledTitle}
-              onApprove={planActions?.kind === 'codex' ? planActions.onApprove : undefined}
-              onDeny={planActions?.kind === 'codex' ? planActions.onDeny : undefined}
-              permissionActions={index === lastPlanBlockIndex && planActions?.kind === 'permission' ? planActions : undefined}
+              onApprove={planActions?.onApprove}
+              onDeny={planActions?.onDeny}
             />
           )
         }
@@ -1359,7 +1261,13 @@ function PersistedMessageContent({
 }: {
   message: Message
   onSelectTool: (messageId: string, toolId: string) => void
-  planActions?: PlanActions
+  planActions?: {
+    show: boolean
+    disabled: boolean
+    disabledTitle: string
+    onApprove: () => void
+    onDeny: () => void
+  }
 }) {
   const thoughts = message.role === 'assistant' ? message.thoughts?.trim() ?? '' : ''
   const toolCalls = message.role === 'assistant' ? message.toolCalls ?? [] : []
@@ -1390,12 +1298,11 @@ function PersistedMessageContent({
       <PlanBlock
         summary={planSummary}
         entries={planEntries}
-        showActions={planActions?.kind === 'codex' && planActions.show}
+        showActions={planActions?.show}
         actionsDisabled={planActions?.disabled}
         disabledTitle={planActions?.disabledTitle}
-        onApprove={planActions?.kind === 'codex' ? planActions.onApprove : undefined}
-        onDeny={planActions?.kind === 'codex' ? planActions.onDeny : undefined}
-        permissionActions={planActions?.kind === 'permission' ? planActions : undefined}
+        onApprove={planActions?.onApprove}
+        onDeny={planActions?.onDeny}
       />
     </div>
   )
@@ -1407,7 +1314,6 @@ function TurnTimelineContent({
   planSummary,
   planEntries,
   planActions,
-  providerId,
   pendingPermission,
   pendingUserInput,
   onSelectTool,
@@ -1418,8 +1324,13 @@ function TurnTimelineContent({
   tools: AcpToolCall[]
   planSummary?: string
   planEntries?: AcpPlanEntry[]
-  planActions?: PlanActions
-  providerId: string
+  planActions?: {
+    show: boolean
+    disabled: boolean
+    disabledTitle: string
+    onApprove: () => void
+    onDeny: () => void
+  }
   pendingPermission: AcpPendingPermission | null
   pendingUserInput: AcpPendingUserInput | null
   onSelectTool: (toolId: string) => void
@@ -1428,7 +1339,6 @@ function TurnTimelineContent({
 }) {
   const toolById = new Map(tools.map((tool) => [tool.id, tool]))
   const hasPlanEvent = events.some((event) => event.type === 'plan')
-  const pendingPlanPermission = isGeminiPlanPermission(pendingPermission, providerId)
   const hasPendingPermissionEvent = Boolean(
     pendingPermission &&
       events.some((event) => event.type === 'permission_request' && event.requestId === pendingPermission.requestId)
@@ -1460,12 +1370,11 @@ function TurnTimelineContent({
               key={`plan-${index}`}
               summary={planSummary}
               entries={planEntries}
-              showActions={planActions?.kind === 'codex' && planActions.show}
+              showActions={planActions?.show}
               actionsDisabled={planActions?.disabled}
               disabledTitle={planActions?.disabledTitle}
-              onApprove={planActions?.kind === 'codex' ? planActions.onApprove : undefined}
-              onDeny={planActions?.kind === 'codex' ? planActions.onDeny : undefined}
-              permissionActions={planActions?.kind === 'permission' ? planActions : undefined}
+              onApprove={planActions?.onApprove}
+              onDeny={planActions?.onDeny}
             />
           )
         }
@@ -1480,7 +1389,6 @@ function TurnTimelineContent({
           }
           const shouldRenderPendingPermission =
             pendingPermission &&
-            !pendingPlanPermission &&
             !hasPendingPermissionEvent &&
             pendingPermission.toolCallId === event.toolCallId
           const shouldRenderPendingUserInput =
@@ -1501,7 +1409,7 @@ function TurnTimelineContent({
           )
         }
 
-        if (event.type === 'permission_request' && pendingPermission?.requestId === event.requestId && !pendingPlanPermission) {
+        if (event.type === 'permission_request' && pendingPermission?.requestId === event.requestId) {
           return (
             <PermissionInlineCard
               key={`permission-${event.requestId}-${index}`}
@@ -1527,12 +1435,11 @@ function TurnTimelineContent({
         <PlanBlock
           summary={planSummary}
           entries={planEntries}
-          showActions={planActions?.kind === 'codex' && planActions.show}
+          showActions={planActions?.show}
           actionsDisabled={planActions?.disabled}
           disabledTitle={planActions?.disabledTitle}
-          onApprove={planActions?.kind === 'codex' ? planActions.onApprove : undefined}
-          onDeny={planActions?.kind === 'codex' ? planActions.onDeny : undefined}
-          permissionActions={planActions?.kind === 'permission' ? planActions : undefined}
+          onApprove={planActions?.onApprove}
+          onDeny={planActions?.onDeny}
         />
       )}
       {pendingUserInput && !hasPendingUserInputEvent && !hasPendingUserInputToolEvent && (
@@ -1914,90 +1821,6 @@ export function ChatView({ session }: ChatViewProps) {
     [acp?.toolCalls, messages, selectedToolCallRef]
   )
 
-  const pendingPermission = acp?.pendingPermission
-  const pendingUserInput = acp?.pendingUserInput
-  const workspaceDirectory = session.workspaceDirectory?.trim() || folderDirectory.trim()
-  const currentProviderId = session.providerId || acp?.providerId || 'gemini-cli'
-  const currentProvider = useMemo<Provider>(
-    () =>
-      providers.find((candidate) => candidate.id === currentProviderId) ?? {
-        id: currentProviderId,
-        name: currentProviderId === 'codex-cli' ? 'Codex CLI' : 'Gemini CLI',
-        shortName: currentProviderId === 'codex-cli' ? 'Codex' : 'Gemini',
-        color: '#8ab4ff',
-        description: '',
-        outputMode: 'cli',
-        supportsCli: true,
-        supportsStructured: true,
-        structuredProtocol: currentProviderId === 'codex-cli' ? 'codex-app-server' : 'gemini-acp',
-      },
-    [currentProviderId, providers]
-  )
-  const currentProviderName = providerDisplayName(currentProvider, currentProviderId)
-  const currentRuntimeLabel = providerRuntimeLabel(currentProvider, acp)
-  const currentErrorTitle = `${currentProviderName} ${currentRuntimeLabel} error`
-  const canChangeProvider = messages.length === 0 && !acp?.running && !acp?.processing
-  const currentModelId = acp?.currentModelId || session.modelId || ''
-  const currentModeId = acp?.currentModeId || session.approvalMode || 'default'
-  const latestPlanMessageIndex = messages.reduce((latest, message, index) => {
-    const hasPlan = message.role === 'assistant' && (Boolean(message.planSummary?.trim()) || (message.planEntries?.length ?? 0) > 0)
-    return hasPlan ? index : latest
-  }, -1)
-  const latestPlanHasLaterUser =
-    latestPlanMessageIndex >= 0 && messages.slice(latestPlanMessageIndex + 1).some((message) => message.role === 'user')
-  const pendingPlanPermission = isGeminiPlanPermission(pendingPermission, currentProviderId)
-  const canShowCodexPlanActions = isCodexProvider(currentProvider, currentProviderId) && latestPlanMessageIndex >= 0 && !latestPlanHasLaterUser
-  const canShowGeminiPlanActions = Boolean(
-    pendingPlanPermission &&
-      pendingPermission &&
-      ((acp?.planSummary?.trim() ?? '') || (acp?.planEntries.length ?? 0) > 0 || pendingPermission.content.trim())
-  )
-  const planActionBlockedByRuntime =
-    acp?.processing ||
-    acp?.lifecycleState === 'waitingPermission' ||
-    acp?.lifecycleState === 'waitingUserInput'
-  const codexPlanActionsDisabled = Boolean(submitting || planActionBlockedByRuntime)
-  const codexPlanActionsDisabledTitle = planActionBlockedByRuntime
-    ? 'Codex is still working.'
-    : 'Plan action is unavailable.'
-  const geminiPlanActionsDisabled = Boolean(submitting)
-  const sendPlanAction = async (prompt: string, nextModeId: 'default' | 'plan') => {
-    if (codexPlanActionsDisabled) return
-    setSubmitting(true)
-    const modeOk = await setSessionApprovalMode(session.id, nextModeId)
-    if (modeOk) {
-      await sendAcpPrompt(session.id, prompt)
-    }
-    setSubmitting(false)
-  }
-  const onTogglePlan = useCallback(() => {
-    const nextMode = currentModeId === 'plan' ? 'default' : 'plan'
-    void setSessionApprovalMode(session.id, nextMode)
-  }, [currentModeId, session.id, setSessionApprovalMode])
-
-  const activePlanActions: PlanActions | undefined = canShowGeminiPlanActions && pendingPermission
-    ? {
-        kind: 'permission',
-        show: true,
-        disabled: geminiPlanActionsDisabled,
-        disabledTitle: 'Plan action is unavailable.',
-        requestId: pendingPermission.requestId,
-        options: pendingPermission.options,
-        onResolve: (requestId, optionId) => {
-          void resolveAcpPermission(session.id, requestId, optionId)
-        },
-      }
-    : canShowCodexPlanActions
-      ? {
-        kind: 'codex',
-        show: true,
-        disabled: codexPlanActionsDisabled,
-        disabledTitle: codexPlanActionsDisabledTitle,
-        onApprove: () => void sendPlanAction(PLAN_APPROVE_PROMPT, 'default'),
-        onDeny: () => void sendPlanAction(PLAN_DENY_PROMPT, 'plan'),
-      }
-      : undefined
-
   const turnEvents = acp?.turnEvents ?? []
   const firstTurnEvent = turnEvents.find((event) => event.type === 'assistant_text' ? event.text.length > 0 : true)
   const turnAssistantMessageIndex = acp?.turnAssistantMessageIndex ?? -1
@@ -2067,15 +1890,11 @@ export function ChatView({ session }: ChatViewProps) {
     }
 
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setProviderOpen(false)
-        setModelOpen(false)
-        setSettingsOpen(false)
-        setSelectedToolCallRef(null)
-      } else if (event.key === 'Tab' && event.shiftKey) {
-        event.preventDefault()
-        onTogglePlan()
-      }
+      if (event.key !== 'Escape') return
+      setProviderOpen(false)
+      setModelOpen(false)
+      setSettingsOpen(false)
+      setSelectedToolCallRef(null)
     }
 
     document.addEventListener('mousedown', onMouseDown)
@@ -2084,7 +1903,7 @@ export function ChatView({ session }: ChatViewProps) {
       document.removeEventListener('mousedown', onMouseDown)
       document.removeEventListener('keydown', onKeyDown)
     }
-  }, [modelOpen, providerOpen, settingsOpen, onTogglePlan])
+  }, [modelOpen, providerOpen, settingsOpen])
 
   useEffect(() => {
     if (processingStartedAtMs === null) {
@@ -2117,11 +1936,68 @@ export function ChatView({ session }: ChatViewProps) {
     }
   }
 
+  const pendingPermission = acp?.pendingPermission
+  const pendingUserInput = acp?.pendingUserInput
+  const workspaceDirectory = session.workspaceDirectory?.trim() || folderDirectory.trim()
+  const currentProviderId = session.providerId || acp?.providerId || 'gemini-cli'
+  const currentProvider = useMemo<Provider>(
+    () =>
+      providers.find((candidate) => candidate.id === currentProviderId) ?? {
+        id: currentProviderId,
+        name: currentProviderId === 'codex-cli' ? 'Codex CLI' : 'Gemini CLI',
+        shortName: currentProviderId === 'codex-cli' ? 'Codex' : 'Gemini',
+        color: '#8ab4ff',
+        description: '',
+        outputMode: 'cli',
+        supportsCli: true,
+        supportsStructured: true,
+        structuredProtocol: currentProviderId === 'codex-cli' ? 'codex-app-server' : 'gemini-acp',
+      },
+    [currentProviderId, providers]
+  )
+  const currentProviderName = providerDisplayName(currentProvider, currentProviderId)
+  const currentRuntimeLabel = providerRuntimeLabel(currentProvider, acp)
+  const currentErrorTitle = `${currentProviderName} ${currentRuntimeLabel} error`
+  const canChangeProvider = messages.length === 0 && !acp?.running && !acp?.processing
+  const currentModelId = acp?.currentModelId || session.modelId || ''
+  const currentModeId = acp?.currentModeId || session.approvalMode || 'default'
+  const latestPlanMessageIndex = messages.reduce((latest, message, index) => {
+    const hasPlan = message.role === 'assistant' && (Boolean(message.planSummary?.trim()) || (message.planEntries?.length ?? 0) > 0)
+    return hasPlan ? index : latest
+  }, -1)
+  const latestPlanHasLaterUser =
+    latestPlanMessageIndex >= 0 && messages.slice(latestPlanMessageIndex + 1).some((message) => message.role === 'user')
+  const canShowPlanActions = isCodexProvider(currentProvider, currentProviderId) && latestPlanMessageIndex >= 0 && !latestPlanHasLaterUser
+  const planActionBlockedByRuntime =
+    acp?.processing ||
+    acp?.lifecycleState === 'waitingPermission' ||
+    acp?.lifecycleState === 'waitingUserInput'
+  const planActionsDisabled = Boolean(submitting || planActionBlockedByRuntime)
+  const planActionsDisabledTitle = planActionBlockedByRuntime
+    ? 'Codex is still working.'
+    : 'Plan action is unavailable.'
+  const sendPlanAction = async (prompt: string, nextModeId: 'default' | 'plan') => {
+    if (planActionsDisabled) return
+    setSubmitting(true)
+    const modeOk = await setSessionApprovalMode(session.id, nextModeId)
+    if (modeOk) {
+      await sendAcpPrompt(session.id, prompt)
+    }
+    setSubmitting(false)
+  }
+  const activePlanActions = canShowPlanActions
+    ? {
+        show: true,
+        disabled: planActionsDisabled,
+        disabledTitle: planActionsDisabledTitle,
+        onApprove: () => void sendPlanAction(PLAN_APPROVE_PROMPT, 'default'),
+        onDeny: () => void sendPlanAction(PLAN_DENY_PROMPT, 'plan'),
+      }
+    : undefined
   const planActionsForMessage = (index: number) =>
-    ((canShowCodexPlanActions || canShowGeminiPlanActions) && index === latestPlanMessageIndex)
+    canShowPlanActions && index === latestPlanMessageIndex
       ? activePlanActions
       : undefined
-  const livePlanSummary = acp?.planSummary || (pendingPlanPermission ? pendingPermission?.content ?? '' : '')
 
   return (
     <div className="relative h-full flex overflow-hidden" style={{ background: 'var(--bg)' }}>
@@ -2159,10 +2035,9 @@ export function ChatView({ session }: ChatViewProps) {
                           key={`turn-${turnSerial}-assistant`}
                           events={turnEvents}
 	                          tools={acp?.toolCalls ?? []}
-	                          planSummary={livePlanSummary}
+	                          planSummary={acp?.planSummary ?? ''}
 	                          planEntries={acp?.planEntries ?? []}
 	                          planActions={activePlanActions}
-	                          providerId={currentProviderId}
 	                          pendingPermission={pendingPermission ?? null}
 	                          pendingUserInput={pendingUserInput ?? null}
 	                          onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
@@ -2187,10 +2062,9 @@ export function ChatView({ session }: ChatViewProps) {
                           key={`turn-${turnSerial}-after-user-content`}
                           events={turnEvents}
 	                          tools={acp?.toolCalls ?? []}
-	                          planSummary={livePlanSummary}
+	                          planSummary={acp?.planSummary ?? ''}
 	                          planEntries={acp?.planEntries ?? []}
 	                          planActions={activePlanActions}
-	                          providerId={currentProviderId}
 	                          pendingPermission={pendingPermission ?? null}
 	                          pendingUserInput={pendingUserInput ?? null}
 	                          onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
@@ -2212,10 +2086,9 @@ export function ChatView({ session }: ChatViewProps) {
                     key={`turn-${turnSerial}-fallback-content`}
                     events={turnEvents}
 	                    tools={acp?.toolCalls ?? []}
-	                    planSummary={livePlanSummary}
+	                    planSummary={acp?.planSummary ?? ''}
 	                    planEntries={acp?.planEntries ?? []}
 	                    planActions={activePlanActions}
-	                    providerId={currentProviderId}
 	                    pendingPermission={pendingPermission ?? null}
 	                    pendingUserInput={pendingUserInput ?? null}
 	                    onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}

@@ -8,7 +8,6 @@
 #include "common/platform/platform_services.h"
 #include "common/provider/codex/cli/codex_thread_id.h"
 #include "common/utils/string_utils.h"
-#include "common/utils/io_utils.h"
 
 #include <nlohmann/json.hpp>
 
@@ -399,36 +398,6 @@ namespace
 		const std::string text = LowerAsciiCopy(error_message + "\n" + error_data);
 		return text.find("invalid session identifier") != std::string::npos ||
 		       text.find("use --list-sessions") != std::string::npos;
-	}
-
-	void TryResolvePlanSummaryPath(std::string& plan_summary, const std::filesystem::path& workspace_root)
-	{
-		const std::string trimmed = uam::strings::Trim(plan_summary);
-		if (trimmed.empty())
-		{
-			return;
-		}
-
-		if (trimmed.find('\n') == std::string::npos &&
-		    trimmed.size() > 3 &&
-		    LowerAsciiCopy(trimmed.substr(trimmed.size() - 3)) == ".md")
-		{
-			std::filesystem::path path(trimmed);
-			if (path.is_relative() && !workspace_root.empty())
-			{
-				path = workspace_root / path;
-			}
-
-			std::error_code ec;
-			if (std::filesystem::exists(path, ec) && !ec && std::filesystem::is_regular_file(path, ec))
-			{
-				const std::string content = uam::io::ReadTextFile(path);
-				if (!content.empty())
-				{
-					plan_summary = content;
-				}
-			}
-		}
 	}
 
 	nlohmann::json BuildCodexSessionSetupRequest(const int request_id, const ChatSession& chat, const std::string& cwd)
@@ -2038,7 +2007,6 @@ namespace
 		if (update_type == "plan" && update.contains("entries") && update["entries"].is_array())
 		{
 			session.plan_summary = JsonDiagnosticStringValueOr(update, "summary", JsonDiagnosticStringValue(update, "explanation"));
-			TryResolvePlanSummaryPath(session.plan_summary, ResolveWorkspaceRootPath(app, chat));
 			session.plan_entries.clear();
 			for (const nlohmann::json& entry : update["entries"])
 			{
@@ -2170,63 +2138,7 @@ namespace
 		return WriteAcpMessage(session, BuildCodexUserInputResponse(request_id_json, answers), error_out);
 	}
 
-	bool GeminiPermissionOptionLooksLikePlanModeTransition(const AcpPermissionOptionState& option)
-	{
-		const std::string text = LowerAsciiCopy(option.id + "\n" + option.name + "\n" + option.kind);
-		return text.find("reject") != std::string::npos ||
-		       text.find("default") != std::string::npos ||
-		       text.find("auto") != std::string::npos ||
-		       text.find("edit") != std::string::npos ||
-		       text.find("plan") != std::string::npos;
-	}
-
-	bool IsGeminiPlanApprovalPermission(const AcpSessionState& session, const AcpPendingPermissionState& pending)
-	{
-		if (IsCodexSession(session) || uam::strings::Trim(pending.content).empty())
-		{
-			return false;
-		}
-
-		if (pending.kind == "switch_mode")
-		{
-			return true;
-		}
-
-		const std::string title = LowerAsciiCopy(pending.title);
-		const bool title_mentions_plan = title.find("plan") != std::string::npos;
-		const bool title_mentions_approval =
-			title.find("approve") != std::string::npos ||
-			title.find("implementation") != std::string::npos ||
-			title.find("ready") != std::string::npos ||
-			title.find("exit") != std::string::npos;
-		if (title_mentions_plan && title_mentions_approval)
-		{
-			return true;
-		}
-
-		return std::any_of(pending.options.begin(), pending.options.end(), GeminiPermissionOptionLooksLikePlanModeTransition);
-	}
-
-	bool SyncGeminiPermissionPlanToAssistantMessage(AppState& app, ChatSession& chat, AcpSessionState& session, const AcpPendingPermissionState& pending)
-	{
-		if (!IsGeminiPlanApprovalPermission(session, pending))
-		{
-			return false;
-		}
-
-		session.plan_summary = pending.content;
-		TryResolvePlanSummaryPath(session.plan_summary, ResolveWorkspaceRootPath(app, chat));
-		session.plan_entries.clear();
-		AppendPlanTurnEventIfNeeded(session);
-		if (SyncAcpPlanToAssistantMessage(chat, session, true))
-		{
-			SaveChatQuietly(app, chat);
-			return true;
-		}
-		return false;
-	}
-
-	void HandlePermissionRequest(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
+	void HandlePermissionRequest(AcpSessionState& session, const nlohmann::json& message)
 	{
 		const nlohmann::json params = message.value("params", nlohmann::json::object());
 		const nlohmann::json tool_call = params.value("toolCall", nlohmann::json::object());
@@ -2262,9 +2174,6 @@ namespace
 			}
 		}
 
-		const bool is_gemini_plan_permission = IsGeminiPlanApprovalPermission(session, pending);
-		(void)SyncGeminiPermissionPlanToAssistantMessage(app, chat, session, pending);
-
 		if (!pending.tool_call_id.empty())
 		{
 			AcpToolCallState& tracked_tool_call = UpsertToolCall(session, pending.tool_call_id);
@@ -2273,10 +2182,7 @@ namespace
 			tracked_tool_call.status = pending.status;
 			tracked_tool_call.content = pending.content;
 		}
-		if (!is_gemini_plan_permission)
-		{
-			AppendPermissionTurnEventIfNeeded(session, pending.request_id_json, pending.tool_call_id);
-		}
+		AppendPermissionTurnEventIfNeeded(session, pending.request_id_json, pending.tool_call_id);
 
 		session.pending_permission = std::move(pending);
 		session.waiting_for_permission = true;
@@ -2562,7 +2468,7 @@ namespace
 		}), session.plan_entries.end());
 	}
 
-	void HandleCodexToolItem(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& item)
+	void HandleCodexToolItem(AcpSessionState& session, ChatSession& chat, const nlohmann::json& item)
 	{
 		const std::string item_id = JsonDiagnosticStringValue(item, "id");
 		const std::string type = JsonDiagnosticStringValue(item, "type");
@@ -2587,7 +2493,6 @@ namespace
 		if (type == "plan")
 		{
 			session.plan_summary = CodexItemContent(item);
-			TryResolvePlanSummaryPath(session.plan_summary, ResolveWorkspaceRootPath(app, chat));
 			RemoveCodexPlanDeltaEntryForItem(session, item_id);
 			AppendPlanTurnEventIfNeeded(session);
 			(void)SyncAcpPlanToAssistantMessage(chat, session, true);
@@ -2886,7 +2791,6 @@ namespace
 		if (method == "turn/plan/updated")
 		{
 			session.plan_summary = JsonDiagnosticStringValue(params, "explanation");
-			TryResolvePlanSummaryPath(session.plan_summary, ResolveWorkspaceRootPath(app, chat));
 			const nlohmann::json plan = JsonArrayValue(params, "plan");
 			if (plan.is_array())
 			{
@@ -2912,7 +2816,7 @@ namespace
 		}
 		if (method == "item/started" || method == "item/completed")
 		{
-			HandleCodexToolItem(app, session, chat, JsonObjectValue(params, "item"));
+			HandleCodexToolItem(session, chat, JsonObjectValue(params, "item"));
 			SaveChatQuietly(app, chat);
 			return;
 		}
@@ -2994,7 +2898,7 @@ namespace
 		}
 	}
 
-		void HandleAcpRequest(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
+		void HandleAcpRequest(AppState&, AcpSessionState& session, const nlohmann::json& message)
 		{
 			const std::string method = message.value("method", "");
 			if (method == "session/update")
@@ -3004,7 +2908,7 @@ namespace
 
 		if (method == "session/request_permission")
 		{
-			HandlePermissionRequest(app, session, chat, message);
+			HandlePermissionRequest(session, message);
 			return;
 		}
 
@@ -3696,7 +3600,7 @@ namespace
 			}
 			else
 			{
-				HandleAcpRequest(app, session, chat, message);
+				HandleAcpRequest(app, session, message);
 			}
 			return true;
 		}
