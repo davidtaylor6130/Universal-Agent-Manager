@@ -956,6 +956,145 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('renders Gemini plan permission content as a plan block with supplied options', async () => {
+    const resolveAcpPermission = vi.fn(() => Promise.resolve(true))
+    const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+    const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
+    const planMarkdown = '# Plan\n\n1. Inspect files\n2. Patch runtime'
+    useAppStore.setState((state) => ({
+      resolveAcpPermission,
+      sendAcpPrompt,
+      setSessionApprovalMode,
+      messages: {
+        ...state.messages,
+        'chat-1': [
+          {
+            id: 'm-1',
+            sessionId: 'chat-1',
+            role: 'user',
+            content: 'Plan this',
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+          },
+          {
+            id: 'm-2',
+            sessionId: 'chat-1',
+            role: 'assistant',
+            content: '',
+            planSummary: planMarkdown,
+            blocks: [{ type: 'plan' }],
+            createdAt: new Date('2026-01-01T00:00:01.000Z'),
+          },
+        ],
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          providerId: 'gemini-cli',
+          protocolKind: 'gemini-acp',
+          lifecycleState: 'waitingPermission',
+          processing: true,
+          processingStartedAtMs: Date.now(),
+          planSummary: planMarkdown,
+          planEntries: [],
+          turnEvents: [],
+          turnUserMessageIndex: -1,
+          turnAssistantMessageIndex: -1,
+          pendingPermission: {
+            requestId: '7',
+            toolCallId: 'plan-approval-1',
+            title: 'Ready for implementation',
+            kind: 'switch_mode',
+            status: 'pending',
+            content: planMarkdown,
+            options: [
+              { id: 'default', name: 'Approve plan', kind: 'allow_once' },
+              { id: 'plan', name: 'Keep planning', kind: 'reject' },
+            ],
+          },
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    expect(host.textContent).toContain('Plan')
+    expect(host.textContent).toContain('Inspect files')
+    expect(host.textContent).toContain('Patch runtime')
+    expect(host.textContent).toContain('Approve plan')
+    expect(host.textContent).toContain('Keep planning')
+    expect((host.textContent?.match(/Ready for implementation/g) ?? [])).toHaveLength(0)
+
+    const approveButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Approve plan')
+    await act(async () => {
+      approveButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(resolveAcpPermission).toHaveBeenCalledWith('chat-1', '7', 'default')
+    expect(sendAcpPrompt).not.toHaveBeenCalled()
+    expect(setSessionApprovalMode).not.toHaveBeenCalled()
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('labels ACP in_progress plan status as in progress', () => {
+    useAppStore.setState((state) => ({
+      messages: {
+        ...state.messages,
+        'chat-1': [
+          {
+            id: 'm-1',
+            sessionId: 'chat-1',
+            role: 'assistant',
+            content: '',
+            planSummary: 'Plan summary.',
+            planEntries: [{ content: 'Working step', priority: '', status: 'in_progress' }],
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+          },
+        ],
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+          processingStartedAtMs: null,
+          turnEvents: [],
+          turnUserMessageIndex: -1,
+          turnAssistantMessageIndex: -1,
+          pendingPermission: null,
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    expect(host.textContent).toContain('Working step')
+    expect(host.textContent).toContain('in progress')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
   it('hides plan actions for historical Codex plans after a later user message', () => {
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) =>
