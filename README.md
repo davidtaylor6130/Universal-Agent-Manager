@@ -101,12 +101,18 @@ Data root resolution:
 - Terminal runtime: `src/common/runtime/terminal` plus platform services
 - Local persistence: `src/common/chat`, `src/common/config`
 
+Security and enterprise deployment notes are tracked in `docs/security-enterprise.md`.
+
 CEF bridge actions in this slice:
 
 - `getInitialState`
 - `selectSession`
 - `createSession`
 - `renameSession`
+- `setChatPinned`
+- `setChatProvider`
+- `setChatModel`
+- `setChatApprovalMode`
 - `deleteSession`
 - `createFolder`
 - `renameFolder`
@@ -117,6 +123,12 @@ CEF bridge actions in this slice:
 - `stopCliTerminal`
 - `resizeCliTerminal`
 - `writeCliInput`
+- `sendAcpPrompt`
+- `cancelAcpTurn`
+- `resolveAcpPermission`
+- `resolveAcpUserInput`
+- `stopAcpSession`
+- `writeClipboardText`
 - `setTheme`
 
 ## Manual Release Checks

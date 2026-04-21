@@ -122,7 +122,7 @@ export function FolderTree({ searchQuery }: FolderTreeProps) {
             </span>
           </div>
           {searchModel.pinnedSessionIds.map((id) => (
-            <SessionItem key={id} sessionId={id} />
+            <SessionItem key={id} sessionId={id} forceShowPin={true} />
           ))}
         </div>
       )}

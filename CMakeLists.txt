@@ -519,10 +519,12 @@ endif()
 # ---------------------------------------------------------------------------
 
 set(UAM_WINDOW_ICON_BMP "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.bmp")
+set(UAM_WINDOW_ICON_PNG "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.png")
 if(APPLE AND UAM_MACOS_BUNDLE)
   add_custom_command(TARGET universal_agent_manager POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E rm -f
       "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/MacOS/app_icon.bmp"
+      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/MacOS/app_icon.png"
     COMMENT "Removing stale executable-directory icon asset"
   )
 endif()
@@ -538,6 +540,21 @@ if(EXISTS "${UAM_WINDOW_ICON_BMP}")
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${UAM_WINDOW_ICON_BMP}"
         "$<TARGET_FILE_DIR:universal_agent_manager>/app_icon.bmp"
+    )
+  endif()
+endif()
+if(EXISTS "${UAM_WINDOW_ICON_PNG}")
+  if(APPLE AND UAM_MACOS_BUNDLE)
+    add_custom_command(TARGET universal_agent_manager POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${UAM_WINDOW_ICON_PNG}"
+        "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/app_icon.png"
+    )
+  else()
+    add_custom_command(TARGET universal_agent_manager POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${UAM_WINDOW_ICON_PNG}"
+        "$<TARGET_FILE_DIR:universal_agent_manager>/app_icon.png"
     )
   endif()
 endif()

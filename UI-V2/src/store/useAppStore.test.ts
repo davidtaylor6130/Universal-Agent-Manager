@@ -1074,4 +1074,33 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(state.providers.map((provider) => provider.id)).toEqual(['gemini-cli'])
     expect(state.theme).toBe('dark')
   })
+
+  it('updates pinning state and sends setChatPinned through CEF', async () => {
+    const now = new Date()
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
+      onSuccess('{}')
+    }
+    useAppStore.setState({
+      sessions: [
+        {
+          id: 'chat-1',
+          name: 'Gemini Session',
+          viewMode: 'chat',
+          folderId: 'default',
+          isPinned: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    })
+
+    await expect(useAppStore.getState().setSessionPinned('chat-1', true)).resolves.toBe(true)
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0].action).toBe('setChatPinned')
+    expect(requests[0].payload).toEqual({ chatId: 'chat-1', pinned: true })
+    expect(useAppStore.getState().sessions[0].isPinned).toBe(true)
+  })
 })

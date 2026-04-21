@@ -41,9 +41,10 @@ function formatSidebarTimeTitle(date: Date | null): string {
 
 interface SessionItemProps {
   sessionId: string
+  forceShowPin?: boolean
 }
 
-export const SessionItem = memo(function SessionItem({ sessionId }: SessionItemProps) {
+export const SessionItem = memo(function SessionItem({ sessionId, forceShowPin }: SessionItemProps) {
   // Fine-grained selectors — each only re-renders when its specific value changes
   const sessionName     = useAppStore((s) => s.sessions.find((x) => x.id === sessionId)?.name ?? '')
   const sessionLastOpenedAt = useAppStore((s) => {
@@ -134,7 +135,9 @@ export const SessionItem = memo(function SessionItem({ sessionId }: SessionItemP
             type="button"
             aria-label={isPinned ? 'Unpin chat' : 'Pin chat'}
             title={isPinned ? 'Unpin chat' : 'Pin chat'}
-            className="flex flex-shrink-0 items-center justify-center rounded opacity-0 transition-opacity transition-colors duration-100 group-hover:opacity-100 group-focus-within:opacity-100"
+            className={`flex flex-shrink-0 items-center justify-center rounded transition-opacity transition-colors duration-100 ${
+              (forceShowPin || isPinned) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
+            }`}
             style={{
               width: 18,
               height: 18,

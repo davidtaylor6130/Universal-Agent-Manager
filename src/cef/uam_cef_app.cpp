@@ -4,14 +4,52 @@
 
 #include "include/cef_browser.h"
 #include "include/cef_command_line.h"
+#include "include/cef_image.h"
+#include "include/cef_path_util.h"
 #include "include/views/cef_browser_view.h"
 #include "include/views/cef_fill_layout.h"
 #include "include/views/cef_window.h"
 
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <vector>
 
 namespace
 {
+
+CefRefPtr<CefImage> LoadUamWindowIcon()
+{
+	CefString exe_dir_string;
+	if (!CefGetPath(PK_DIR_EXE, exe_dir_string))
+		return nullptr;
+
+	const std::filesystem::path exe_dir(exe_dir_string.ToString());
+	const std::vector<std::filesystem::path> icon_paths = {
+		exe_dir / "app_icon.png",
+		(exe_dir / ".." / "Resources" / "app_icon.png").lexically_normal(),
+	};
+
+	for (const std::filesystem::path& icon_path : icon_paths)
+	{
+		if (!std::filesystem::exists(icon_path))
+			continue;
+
+		std::ifstream icon_file(icon_path, std::ios::binary);
+		if (!icon_file)
+			continue;
+
+		std::vector<char> bytes((std::istreambuf_iterator<char>(icon_file)), std::istreambuf_iterator<char>());
+		if (bytes.empty())
+			continue;
+
+		CefRefPtr<CefImage> image = CefImage::CreateImage();
+		if (image != nullptr && image->AddPNG(1.0f, bytes.data(), bytes.size()))
+			return image;
+	}
+
+	return nullptr;
+}
 
 class UamRootWindowDelegate : public CefWindowDelegate,
                               public CefBrowserViewDelegate
@@ -32,6 +70,12 @@ class UamRootWindowDelegate : public CefWindowDelegate,
 		CEF_REQUIRE_UI_THREAD();
 
 		window->SetTitle("Universal Agent Manager");
+		if (CefRefPtr<CefImage> icon = LoadUamWindowIcon())
+		{
+			window->SetWindowIcon(icon);
+			window->SetWindowAppIcon(icon);
+		}
+
 		window->SetToFillLayout();
 
 		if (m_browserView)
