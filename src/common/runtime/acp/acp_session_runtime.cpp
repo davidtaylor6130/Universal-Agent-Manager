@@ -2,6 +2,7 @@
 
 #include "app/application_core_helpers.h"
 #include "app/chat_domain_service.h"
+#include "app/native_session_link_service.h"
 #include "app/provider_resolution_service.h"
 #include "common/chat/chat_repository.h"
 #include "common/platform/platform_services.h"
@@ -13,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cctype>
 #include <cstddef>
 #include <ctime>
 #include <exception>
@@ -363,6 +365,38 @@ namespace
 	std::string ValidCodexResumeId(const ChatSession& chat)
 	{
 		return uam::codex::ValidThreadIdOrEmpty(chat.native_session_id);
+	}
+
+	std::string ValidGeminiResumeId(const ChatSession& chat)
+	{
+		return NativeSessionLinkService().HasRealNativeSessionId(chat) ? Trim(chat.native_session_id) : std::string{};
+	}
+
+	nlohmann::json BuildGeminiSessionSetupRequest(const int request_id, const ChatSession& chat, const std::string& cwd, const bool load_session_supported)
+	{
+		const std::string resume_id = ValidGeminiResumeId(chat);
+		if (!resume_id.empty() && load_session_supported)
+		{
+			return BuildLoadSessionRequest(request_id, resume_id, cwd);
+		}
+
+		return BuildNewSessionRequest(request_id, cwd);
+	}
+
+	std::string LowerAsciiCopy(std::string value)
+	{
+		std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch)
+		{
+			return static_cast<char>(std::tolower(ch));
+		});
+		return value;
+	}
+
+	bool GeminiErrorLooksLikeInvalidSessionId(const std::string& error_message, const std::string& error_data)
+	{
+		const std::string text = LowerAsciiCopy(error_message + "\n" + error_data);
+		return text.find("invalid session identifier") != std::string::npos ||
+		       text.find("use --list-sessions") != std::string::npos;
 	}
 
 	nlohmann::json BuildCodexSessionSetupRequest(const int request_id, const ChatSession& chat, const std::string& cwd)
@@ -1095,6 +1129,7 @@ namespace
 		session.queued_prompt.clear();
 		session.ignore_session_updates_until_ready = false;
 		session.codex_resume_fallback_attempted = false;
+		session.gemini_resume_fallback_attempted = false;
 			session.stdout_buffer.clear();
 			session.stderr_buffer.clear();
 			session.recent_stderr.clear();
@@ -1155,7 +1190,8 @@ namespace
 		session.provider_id = provider.id;
 		session.protocol_kind = provider.structured_protocol.empty() ? kProtocolGeminiAcp : provider.structured_protocol;
 		const std::string codex_resume_id = IsCodexSession(session) ? ValidCodexResumeId(chat) : std::string{};
-		session.session_id = IsCodexSession(session) ? codex_resume_id : chat.native_session_id;
+		const std::string gemini_resume_id = IsCodexSession(session) ? std::string{} : ValidGeminiResumeId(chat);
+		session.session_id = IsCodexSession(session) ? codex_resume_id : gemini_resume_id;
 		session.codex_thread_id = codex_resume_id;
 			session.lifecycle_state = kAcpLifecycleStarting;
 
@@ -1227,16 +1263,25 @@ namespace
 			return written;
 		}
 
-		const bool can_load = !chat.native_session_id.empty() && session.load_session_supported;
+		const std::string raw_resume_id = Trim(chat.native_session_id);
+		const std::string resume_id = ValidGeminiResumeId(chat);
+		if (!raw_resume_id.empty() && resume_id.empty())
+		{
+			AppendAcpDiagnostic(session, "session_setup", "gemini_invalid_resume_id_ignored", "", "", false, 0, "Ignoring invalid Gemini session id and starting a new session.", "nativeSessionId=" + raw_resume_id);
+			chat.native_session_id.clear();
+			SaveChatQuietly(app, chat);
+		}
+
+		const bool can_load = !resume_id.empty() && session.load_session_supported;
 		const int id = NextAcpRequestId(session, can_load ? "session/load" : "session/new");
 		session.session_setup_request_id = id;
 		session.ignore_session_updates_until_ready = can_load;
 		session.lifecycle_state = kAcpLifecycleStarting;
-		session.session_id = can_load ? chat.native_session_id : "";
+		session.session_id = can_load ? resume_id : "";
 
 		if (can_load)
 		{
-			const bool written = WriteAcpMessage(session, BuildLoadSessionRequest(id, chat.native_session_id, cwd));
+			const bool written = WriteAcpMessage(session, BuildLoadSessionRequest(id, resume_id, cwd));
 			if (!written)
 			{
 				session.session_setup_request_id = 0;
@@ -1254,6 +1299,53 @@ namespace
 			MarkAcpChatUnseenIfBackground(app, chat);
 		}
 		return written;
+	}
+
+	bool RetryGeminiSessionNewAfterInvalidLoad(AppState& app,
+	                                           AcpSessionState& session,
+	                                           ChatSession& chat,
+	                                           const std::string& method,
+	                                           const std::string& request_id,
+	                                           const bool has_code,
+	                                           const int code,
+	                                           const std::string& error_message,
+	                                           const std::string& error_data,
+	                                           const std::string& detail_text,
+	                                           const std::string& formatted_error)
+	{
+		if (IsCodexSession(session) ||
+		    method != "session/load" ||
+		    session.gemini_resume_fallback_attempted ||
+		    !GeminiErrorLooksLikeInvalidSessionId(error_message, error_data))
+		{
+			return false;
+		}
+
+		session.gemini_resume_fallback_attempted = true;
+		session.session_setup_request_id = 0;
+		session.session_id.clear();
+		chat.native_session_id.clear();
+		SaveChatQuietly(app, chat);
+		AppendAcpDiagnostic(session, "response", "gemini_invalid_resume_id_retry_new", method, request_id, has_code, code, "Gemini rejected the stored session id. Starting a new session instead.", detail_text);
+
+		const std::filesystem::path workspace_root = ResolveWorkspaceRootPath(app, chat);
+		const std::string cwd = workspace_root.empty() ? std::filesystem::current_path().string() : workspace_root.string();
+		const int retry_id = NextAcpRequestId(session, "session/new");
+		session.session_setup_request_id = retry_id;
+		session.ignore_session_updates_until_ready = false;
+		session.lifecycle_state = kAcpLifecycleStarting;
+
+		if (!WriteAcpMessage(session, BuildNewSessionRequest(retry_id, cwd)))
+		{
+			session.pending_request_methods.erase(retry_id);
+			session.session_setup_request_id = 0;
+			(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
+			FailAcpTurnOrSession(session, session.last_error.empty() ? formatted_error : session.last_error);
+			SaveChatQuietly(app, chat);
+			MarkAcpChatUnseenIfBackground(app, chat);
+		}
+
+		return true;
 	}
 
 	bool SendQueuedPromptIfReady(AcpSessionState& session, const ChatSession& chat)
@@ -3203,6 +3295,10 @@ namespace
 						}
 						return;
 					}
+					if (RetryGeminiSessionNewAfterInvalidLoad(app, session, chat, method, request_id, has_code, code, error_message, error_data, detail_text, formatted_error))
+					{
+						return;
+					}
 						if (method == "session/prompt" || session.processing || session.waiting_for_permission || session.waiting_for_user_input || !session.queued_prompt.empty())
 						{
 						(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
@@ -4026,6 +4122,11 @@ std::string BuildAcpInitializeRequestForTests(const int request_id)
 std::string BuildAcpNewSessionRequestForTests(const int request_id, const std::string& cwd)
 {
 	return BuildNewSessionRequest(request_id, cwd).dump();
+}
+
+std::string BuildGeminiSessionSetupRequestForTests(const int request_id, const ChatSession& chat, const std::string& cwd, const bool load_session_supported)
+{
+	return BuildGeminiSessionSetupRequest(request_id, chat, cwd, load_session_supported).dump();
 }
 
 	std::string BuildAcpPromptRequestForTests(const int request_id, const std::string& session_id, const std::string& text)

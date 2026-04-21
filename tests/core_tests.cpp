@@ -7,6 +7,7 @@
 #include "common/constants/app_constants.h"
 #include "common/paths/app_paths.h"
 #include "common/platform/platform_services.h"
+#include "common/platform/platform_state_fields.h"
 #include "common/provider/codex/cli/codex_session_index.h"
 #include "common/provider/gemini/base/gemini_history_loader.h"
 #include "common/provider/provider_profile.h"
@@ -387,6 +388,14 @@ UAM_TEST(ChatRepositoryDoesNotSynthesizeInvalidCodexNativeIds)
   "updated_at": "2026-01-01T00:00:00.000Z",
   "messages": []
 })"));
+	UAM_ASSERT(uam::io::WriteTextFile(chats_dir / "gemini-draft.json", R"({
+  "id": "chat-gemini-draft",
+  "provider_id": "gemini-cli",
+  "title": "Gemini Draft",
+  "created_at": "2026-01-01T00:00:00.000Z",
+  "updated_at": "2026-01-01T00:00:00.000Z",
+  "messages": []
+})"));
 
 	const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(temp.root);
 	auto find_chat = [&](const std::string& id) -> const ChatSession*
@@ -404,12 +413,15 @@ UAM_TEST(ChatRepositoryDoesNotSynthesizeInvalidCodexNativeIds)
 	const ChatSession* codex_missing = find_chat("chat-codex-missing");
 	const ChatSession* codex_invalid = find_chat("chat-codex-invalid");
 	const ChatSession* gemini_missing = find_chat("gemini-missing");
+	const ChatSession* gemini_draft = find_chat("chat-gemini-draft");
 	UAM_ASSERT(codex_missing != nullptr);
 	UAM_ASSERT(codex_invalid != nullptr);
 	UAM_ASSERT(gemini_missing != nullptr);
+	UAM_ASSERT(gemini_draft != nullptr);
 	UAM_ASSERT_EQ(codex_missing->native_session_id, std::string(""));
 	UAM_ASSERT_EQ(codex_invalid->native_session_id, std::string(""));
 	UAM_ASSERT_EQ(gemini_missing->native_session_id, std::string("gemini-missing"));
+	UAM_ASSERT_EQ(gemini_draft->native_session_id, std::string(""));
 }
 
 UAM_TEST(StateSerializerIncludesChatModelId)
@@ -623,6 +635,20 @@ UAM_TEST(AcpJsonRpcBuildersUseProtocolMethods)
 	UAM_ASSERT_EQ(session_new["params"].value("cwd", ""), std::string("/tmp/project"));
 	UAM_ASSERT(session_new["params"]["mcpServers"].is_array());
 
+	ChatSession draft_chat;
+	draft_chat.id = "chat-local";
+	draft_chat.provider_id = "gemini-cli";
+	draft_chat.native_session_id = "chat-local";
+	const nlohmann::json draft_setup = nlohmann::json::parse(uam::BuildGeminiSessionSetupRequestForTests(12, draft_chat, "/tmp/project", true));
+	UAM_ASSERT_EQ(draft_setup.value("method", ""), std::string("session/new"));
+
+	ChatSession native_chat = draft_chat;
+	native_chat.id = "chat-local";
+	native_chat.native_session_id = "native-session";
+	const nlohmann::json native_setup = nlohmann::json::parse(uam::BuildGeminiSessionSetupRequestForTests(13, native_chat, "/tmp/project", true));
+	UAM_ASSERT_EQ(native_setup.value("method", ""), std::string("session/load"));
+	UAM_ASSERT_EQ(native_setup["params"].value("sessionId", ""), std::string("native-session"));
+
 	const nlohmann::json prompt = nlohmann::json::parse(uam::BuildAcpPromptRequestForTests(9, "sess-1", "hello"));
 	UAM_ASSERT_EQ(prompt.value("method", ""), std::string("session/prompt"));
 	UAM_ASSERT_EQ(prompt["params"].value("sessionId", ""), std::string("sess-1"));
@@ -758,6 +784,72 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	const std::string codex_detail = uam::BuildAcpLaunchDetailForTests("/tmp/project", codex_chat);
 	UAM_ASSERT(codex_detail.find("argv=codex app-server --listen stdio://") != std::string::npos);
 	UAM_ASSERT(codex_detail.find("nativeSessionId=6a6f0f3b-1a0b-4a9c-8a01-111111111111") != std::string::npos);
+}
+
+UAM_TEST(GeminiInvalidSessionLoadFallsBackToNewSession)
+{
+	TempDir temp("uam-gemini-invalid-load");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-local";
+	chat.provider_id = "gemini-cli";
+	chat.native_session_id = "native-missing";
+	chat.workspace_directory = temp.root.string();
+	app.chats.push_back(chat);
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	uam::AcpSessionState& raw_session = *session;
+	raw_session.chat_id = chat.id;
+	raw_session.provider_id = "gemini-cli";
+	raw_session.protocol_kind = "gemini-acp";
+	raw_session.running = true;
+	raw_session.initialized = true;
+	raw_session.load_session_supported = true;
+	raw_session.session_id = chat.native_session_id;
+	raw_session.session_setup_request_id = 2;
+	raw_session.next_request_id = 3;
+	raw_session.pending_request_methods[2] = "session/load";
+	raw_session.lifecycle_state = "starting";
+
+#if defined(_WIN32)
+	const std::vector<std::string> sink_argv = {"cmd", "/C", "more > NUL"};
+#else
+	const std::vector<std::string> sink_argv = {"/bin/sh", "-c", "cat >/dev/null"};
+#endif
+	std::string launch_error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(raw_session, temp.root, sink_argv, &launch_error));
+	UAM_ASSERT(launch_error.empty());
+
+	app.acp_sessions.push_back(std::move(session));
+	ChatSession& stored_chat = app.chats.front();
+	const nlohmann::json load_error = {
+		{"jsonrpc", "2.0"},
+		{"id", 2},
+		{"error", {
+			{"code", -32603},
+			{"message", "Internal error"},
+			{"data", {
+				{"details", "Invalid session identifier \"native-missing\". Use --list-sessions to see available sessions."},
+			}},
+		}},
+	};
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, raw_session, stored_chat, load_error.dump()));
+
+	PlatformServicesFactory::Instance().process_service.StopStdioProcess(raw_session, true);
+	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(raw_session);
+
+	UAM_ASSERT(raw_session.gemini_resume_fallback_attempted);
+	UAM_ASSERT_EQ(stored_chat.native_session_id, std::string(""));
+	UAM_ASSERT_EQ(raw_session.session_id, std::string(""));
+	UAM_ASSERT_EQ(raw_session.session_setup_request_id, 3);
+	UAM_ASSERT_EQ(raw_session.pending_request_methods[3], std::string("session/new"));
+	UAM_ASSERT_EQ(raw_session.lifecycle_state, std::string("starting"));
+
+	const nlohmann::json persisted = nlohmann::json::parse(ReadFile(AppPaths::UamChatFilePath(temp.root, stored_chat.id)));
+	UAM_ASSERT_EQ(persisted.value("native_session_id", "missing"), std::string(""));
 }
 
 UAM_TEST(CefBridgeRequestValidationRejectsMalformedEnvelopes)
@@ -2511,6 +2603,75 @@ UAM_TEST(GeminiHistoryPreservesThoughtOnlyAndToolOnlyMessages)
 	UAM_ASSERT_EQ(parsed->messages[1].tool_calls[0].name, std::string("Read file"));
 	UAM_ASSERT_EQ(parsed->messages[1].tool_calls[0].result_text, std::string("file contents"));
 }
+
+#if defined(_WIN32)
+UAM_TEST(WindowsStdioProcessLaunchesPathCmdShim)
+{
+	TempDir temp("uam-win-cmd-shim");
+	const fs::path shim_path = temp.root / "uam-fake-cli.cmd";
+	UAM_ASSERT(uam::io::WriteTextFile(shim_path, "@echo off\r\necho shim:%~1:%~2\r\n"));
+
+	const char* existing_path = std::getenv("PATH");
+	const std::string combined_path = temp.root.string() + (existing_path == nullptr ? "" : (";" + std::string(existing_path)));
+	ScopedEnvVar scoped_path("PATH", combined_path);
+
+	uam::platform::StdioProcessPlatformFields process;
+	std::string error;
+	auto& process_service = PlatformServicesFactory::Instance().process_service;
+	const bool started = process_service.StartStdioProcess(process, temp.root, {"uam-fake-cli", "hello world", "tail"}, &error);
+	UAM_ASSERT(started);
+	UAM_ASSERT(error.empty());
+
+	std::string output;
+	std::array<char, 512> buffer{};
+	int exit_code = -1;
+	bool exited = false;
+
+	for (int attempt = 0; attempt < 200; ++attempt)
+	{
+		std::string read_error;
+		const std::ptrdiff_t bytes = process_service.ReadStdioProcessStdout(process, buffer.data(), buffer.size(), &read_error);
+		UAM_ASSERT(bytes >= -2);
+		UAM_ASSERT(read_error.empty());
+		if (bytes > 0)
+		{
+			output.append(buffer.data(), static_cast<std::size_t>(bytes));
+		}
+
+		if (process_service.PollStdioProcessExited(process, &exit_code))
+		{
+			exited = true;
+			for (;;)
+			{
+				const std::ptrdiff_t drain_bytes = process_service.ReadStdioProcessStdout(process, buffer.data(), buffer.size(), &read_error);
+				UAM_ASSERT(drain_bytes >= -2);
+				UAM_ASSERT(read_error.empty());
+				if (drain_bytes <= 0)
+				{
+					break;
+				}
+				output.append(buffer.data(), static_cast<std::size_t>(drain_bytes));
+			}
+			break;
+		}
+
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+
+	if (!exited)
+	{
+		process_service.StopStdioProcess(process, true);
+	}
+	else
+	{
+		process_service.CloseStdioProcessHandles(process);
+	}
+
+	UAM_ASSERT(exited);
+	UAM_ASSERT_EQ(exit_code, 0);
+	UAM_ASSERT(output.find("shim:hello world:tail") != std::string::npos);
+}
+#endif
 
 #if defined(__APPLE__)
 UAM_TEST(MacTerminalRejectsInvalidWorkingDirectory)

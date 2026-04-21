@@ -37,6 +37,7 @@ std::vector<std::string> BuildAcpLaunchArgvForTests(const ChatSession& chat);
 std::string BuildAcpLaunchDetailForTests(const std::filesystem::path& workspace_root, const ChatSession& chat);
 std::string BuildAcpInitializeRequestForTests(int request_id);
 std::string BuildAcpNewSessionRequestForTests(int request_id, const std::string& cwd);
+std::string BuildGeminiSessionSetupRequestForTests(int request_id, const ChatSession& chat, const std::string& cwd, bool load_session_supported);
 std::string BuildAcpPromptRequestForTests(int request_id, const std::string& session_id, const std::string& text);
 std::string BuildAcpSetModeRequestForTests(int request_id, const std::string& session_id, const std::string& mode_id);
 std::string BuildAcpSetModelRequestForTests(int request_id, const std::string& session_id, const std::string& model_id);

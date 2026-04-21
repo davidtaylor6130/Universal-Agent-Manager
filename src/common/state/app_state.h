@@ -219,6 +219,7 @@ namespace uam
 			std::string queued_prompt;
 			bool ignore_session_updates_until_ready = false;
 			bool codex_resume_fallback_attempted = false;
+			bool gemini_resume_fallback_attempted = false;
 				std::string stdout_buffer;
 			std::string stderr_buffer;
 			std::string recent_stderr;

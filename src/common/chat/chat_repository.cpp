@@ -51,7 +51,12 @@ namespace
 		return chat_id.find('/') == std::string::npos &&
 		       chat_id.find('\\') == std::string::npos &&
 		       chat_id.find("..") == std::string::npos;
-		}
+	}
+
+	bool IsLocalDraftChatId(const std::string& chat_id)
+	{
+		return chat_id.rfind("chat-", 0) == 0;
+	}
 
 		void NormalizeLoadedNativeSessionId(ChatSession& chat)
 		{
@@ -61,7 +66,7 @@ namespace
 				return;
 			}
 
-			if (chat.native_session_id.empty() && !chat.id.empty())
+			if (chat.native_session_id.empty() && !chat.id.empty() && !IsLocalDraftChatId(chat.id))
 			{
 				chat.native_session_id = chat.id;
 			}

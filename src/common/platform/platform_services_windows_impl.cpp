@@ -236,6 +236,279 @@ namespace
 		return out.str();
 	}
 
+	std::string LowerAscii(std::string value)
+	{
+		std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch)
+		{
+			return static_cast<char>(std::tolower(ch));
+		});
+		return value;
+	}
+
+	bool LooksLikeWindowsPath(const std::string& value)
+	{
+		return value.find('\\') != std::string::npos ||
+		       value.find('/') != std::string::npos ||
+		       value.find(':') != std::string::npos;
+	}
+
+	std::string WindowsPathExtension(const std::string& value)
+	{
+		return LowerAscii(std::filesystem::path(value).extension().string());
+	}
+
+	bool IsDirectWindowsExecutableExtension(const std::string& extension)
+	{
+		return extension == ".exe" || extension == ".com";
+	}
+
+	bool IsWindowsCommandScriptExtension(const std::string& extension)
+	{
+		return extension == ".cmd" || extension == ".bat";
+	}
+
+	bool IsLaunchableWindowsCommandExtension(const std::string& extension)
+	{
+		return IsDirectWindowsExecutableExtension(extension) || IsWindowsCommandScriptExtension(extension);
+	}
+
+	bool IsExistingRegularFileUtf8(const std::string& path)
+	{
+		const std::wstring wide = WideFromUtf8(path);
+		if (wide.empty())
+		{
+			return false;
+		}
+
+		const DWORD attrs = GetFileAttributesW(wide.c_str());
+		return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
+	}
+
+	std::optional<std::string> LaunchableCommandPathIfExists(const std::string& candidate)
+	{
+		if (!IsLaunchableWindowsCommandExtension(WindowsPathExtension(candidate)))
+		{
+			return std::nullopt;
+		}
+
+		if (!IsExistingRegularFileUtf8(candidate))
+		{
+			return std::nullopt;
+		}
+
+		return candidate;
+	}
+
+	std::string GetWindowsEnvironmentVariableUtf8(const wchar_t* name)
+	{
+		const DWORD required = GetEnvironmentVariableW(name, nullptr, 0);
+		if (required == 0)
+		{
+			return "";
+		}
+
+		std::wstring value(static_cast<std::size_t>(required), L'\0');
+		const DWORD written = GetEnvironmentVariableW(name, value.data(), required);
+		if (written == 0 || written >= required)
+		{
+			return "";
+		}
+
+		value.resize(static_cast<std::size_t>(written));
+		return WideToUtf8(value);
+	}
+
+	std::string TrimWindowsPathListEntry(const std::string& raw)
+	{
+		std::string value = TrimAsciiWhitespace(raw);
+		if (value.size() >= 2 && value.front() == '"' && value.back() == '"')
+		{
+			value = value.substr(1, value.size() - 2);
+		}
+		return value;
+	}
+
+	std::vector<std::string> SplitWindowsPathList(const std::string& value)
+	{
+		std::vector<std::string> entries;
+		std::size_t start = 0;
+
+		while (start <= value.size())
+		{
+			const std::size_t end = value.find(';', start);
+			const std::string entry = TrimWindowsPathListEntry(value.substr(start, end == std::string::npos ? std::string::npos : end - start));
+			if (!entry.empty())
+			{
+				entries.push_back(entry);
+			}
+
+			if (end == std::string::npos)
+			{
+				break;
+			}
+			start = end + 1;
+		}
+
+		return entries;
+	}
+
+	std::string JoinWindowsPathUtf8(const std::string& directory, const std::string& filename)
+	{
+		return (std::filesystem::path(directory) / filename).string();
+	}
+
+	std::optional<std::string> ResolveWindowsCommandPath(const std::string& command)
+	{
+		static constexpr std::array<const char*, 4> kLaunchableExtensions = {".exe", ".com", ".cmd", ".bat"};
+
+		const std::string trimmed = TrimAsciiWhitespace(command);
+		if (trimmed.empty())
+		{
+			return std::nullopt;
+		}
+
+		const std::string extension = WindowsPathExtension(trimmed);
+		if (LooksLikeWindowsPath(trimmed))
+		{
+			if (!extension.empty())
+			{
+				return LaunchableCommandPathIfExists(trimmed);
+			}
+
+			for (const char* candidate_extension : kLaunchableExtensions)
+			{
+				if (auto resolved = LaunchableCommandPathIfExists(trimmed + candidate_extension); resolved.has_value())
+				{
+					return resolved;
+				}
+			}
+
+			return std::nullopt;
+		}
+
+		const std::vector<std::string> path_entries = SplitWindowsPathList(GetWindowsEnvironmentVariableUtf8(L"PATH"));
+		if (!extension.empty())
+		{
+			for (const std::string& path_entry : path_entries)
+			{
+				if (auto resolved = LaunchableCommandPathIfExists(JoinWindowsPathUtf8(path_entry, trimmed)); resolved.has_value())
+				{
+					return resolved;
+				}
+			}
+
+			return std::nullopt;
+		}
+
+		for (const std::string& path_entry : path_entries)
+		{
+			for (const char* candidate_extension : kLaunchableExtensions)
+			{
+				if (auto resolved = LaunchableCommandPathIfExists(JoinWindowsPathUtf8(path_entry, trimmed + candidate_extension)); resolved.has_value())
+				{
+					return resolved;
+				}
+			}
+		}
+
+		return std::nullopt;
+	}
+
+	std::string ResolveComSpecPath()
+	{
+		std::string comspec = GetWindowsEnvironmentVariableUtf8(L"COMSPEC");
+		if (LaunchableCommandPathIfExists(comspec).has_value())
+		{
+			return comspec;
+		}
+
+		std::wstring system_directory(static_cast<std::size_t>(MAX_PATH), L'\0');
+		const UINT length = GetSystemDirectoryW(system_directory.data(), static_cast<UINT>(system_directory.size()));
+		if (length > 0 && length < system_directory.size())
+		{
+			system_directory.resize(static_cast<std::size_t>(length));
+			const std::string system_cmd = WideToUtf8(system_directory) + "\\cmd.exe";
+			if (LaunchableCommandPathIfExists(system_cmd).has_value())
+			{
+				return system_cmd;
+			}
+		}
+
+		return "cmd.exe";
+	}
+
+	std::string BuildCmdScriptInvocation(const std::string& script_path, const std::vector<std::string>& argv)
+	{
+		std::ostringstream out;
+		out << '"' << ShellQuoteWindowsForCmd(script_path);
+
+		for (std::size_t i = 1; i < argv.size(); ++i)
+		{
+			out << ' ' << ShellQuoteWindowsForCmd(argv[i]);
+		}
+
+		out << '"';
+		return out.str();
+	}
+
+	struct WindowsLaunchCommand
+	{
+		std::string command_line;
+		std::string original_command_line;
+		std::string resolved_command;
+		bool uses_cmd_wrapper = false;
+	};
+
+	WindowsLaunchCommand BuildWindowsLaunchCommand(const std::vector<std::string>& argv)
+	{
+		WindowsLaunchCommand launch;
+		launch.original_command_line = BuildWindowsCommandLine(argv);
+
+		if (argv.empty())
+		{
+			return launch;
+		}
+
+		const std::optional<std::string> resolved_command = ResolveWindowsCommandPath(argv.front());
+		if (!resolved_command.has_value())
+		{
+			launch.command_line = launch.original_command_line;
+			return launch;
+		}
+
+		launch.resolved_command = resolved_command.value();
+		const std::string extension = WindowsPathExtension(launch.resolved_command);
+		if (IsWindowsCommandScriptExtension(extension))
+		{
+			launch.uses_cmd_wrapper = true;
+			launch.command_line = QuoteWindowsArg(ResolveComSpecPath()) + " /D /S /C " + BuildCmdScriptInvocation(launch.resolved_command, argv);
+			return launch;
+		}
+
+		std::vector<std::string> resolved_argv = argv;
+		resolved_argv.front() = launch.resolved_command;
+		launch.command_line = BuildWindowsCommandLine(resolved_argv);
+		return launch;
+	}
+
+	std::string WindowsLaunchDiagnosticSuffix(const WindowsLaunchCommand& launch)
+	{
+		std::ostringstream out;
+		if (!launch.original_command_line.empty())
+		{
+			out << " Original command: " << launch.original_command_line << ".";
+		}
+		if (!launch.resolved_command.empty())
+		{
+			out << " Resolved command: " << launch.resolved_command << ".";
+		}
+		if (launch.uses_cmd_wrapper)
+		{
+			out << " Wrapper: cmd.exe /D /S /C.";
+		}
+		return out.str();
+	}
+
 	void TerminateProcessTree(HANDLE job_object, HANDLE process_handle, const UINT exit_code)
 	{
 		if (job_object != nullptr)
@@ -727,8 +1000,8 @@ namespace
 			si.lpAttributeList = terminal.attr_list;
 			PROCESS_INFORMATION pi{};
 
-			const std::string command_str = BuildWindowsCommandLine(argv);
-			const std::wstring command_w = WideFromUtf8(command_str);
+			const WindowsLaunchCommand launch = BuildWindowsLaunchCommand(argv);
+			const std::wstring command_w = WideFromUtf8(launch.command_line);
 
 			if (command_w.empty())
 			{
@@ -754,18 +1027,9 @@ namespace
 			if (!created)
 			{
 				const DWORD last_error = GetLastError();
-				std::string cmd_line_str;
-				if (command_w.empty())
-				{
-					cmd_line_str = "(empty)";
-				}
-				else
-				{
-					cmd_line_str = WideToUtf8(command_w);
-				}
 				if (error_out != nullptr)
 				{
-					*error_out = "Failed to start provider process. Error code: " + std::to_string(last_error) + ". Command: " + cmd_line_str;
+					*error_out = "Failed to start provider process. " + FormatWindowsError(last_error) + ". Command: " + launch.command_line + "." + WindowsLaunchDiagnosticSuffix(launch);
 				}
 
 				DeleteProcThreadAttributeList(terminal.attr_list);
@@ -1290,8 +1554,8 @@ namespace
 			SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
 			SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0);
 
-			const std::string command_str = BuildWindowsCommandLine(argv);
-			const std::wstring command_w = WideFromUtf8(command_str);
+			const WindowsLaunchCommand launch = BuildWindowsLaunchCommand(argv);
+			const std::wstring command_w = WideFromUtf8(launch.command_line);
 			if (command_w.empty())
 			{
 				if (error_out != nullptr)
@@ -1330,7 +1594,7 @@ namespace
 				const DWORD launch_error = GetLastError();
 				if (error_out != nullptr)
 				{
-					*error_out = "Failed to start stdio process. Error code: " + std::to_string(launch_error) + ".";
+					*error_out = "Failed to start stdio process. " + FormatWindowsError(launch_error) + ". Command: " + launch.command_line + "." + WindowsLaunchDiagnosticSuffix(launch);
 				}
 				close_if_valid(stdin_write);
 				close_if_valid(stdout_read);

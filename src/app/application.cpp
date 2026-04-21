@@ -398,18 +398,8 @@ bool Application::InitializeCef(CefMainArgs main_args)
 		// resolved automatically from the framework bundle.  No need to set
 		// resources_dir_path / locales_dir_path explicitly.
 #else
-		const auto resources_dir = exe_dir / "Resources";
-		if (fs::exists(resources_dir))
-		{
-			CefString(&settings.resources_dir_path) = resources_dir.string();
-			CefString(&settings.locales_dir_path) = (resources_dir / "locales").string();
-		}
-		else
-		{
-			// Flat layout (Windows)
-			CefString(&settings.resources_dir_path) = exe_dir.string();
-			CefString(&settings.locales_dir_path) = (exe_dir / "locales").string();
-		}
+		CefString(&settings.resources_dir_path) = exe_dir.string();
+		CefString(&settings.locales_dir_path) = (exe_dir / "locales").string();
 #endif
 	}
 

@@ -1,4 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
+if(POLICY CMP0091)
+  cmake_policy(SET CMP0091 NEW)
+endif()
 project(universal_agent_manager LANGUAGES C CXX)
 
 if(NOT WIN32 AND NOT APPLE)
@@ -250,6 +253,15 @@ target_compile_definitions(universal_agent_manager PRIVATE
 )
 
 set_target_properties(universal_agent_manager PROPERTIES FOLDER "App")
+if(MSVC)
+  set_property(TARGET universal_agent_manager PROPERTY
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+  )
+  set_target_properties(universal_agent_manager PROPERTIES
+    VS_GLOBAL_VcpkgEnabled "false"
+    VS_GLOBAL_VcpkgApplocalDeps "false"
+  )
+endif()
 
 # ---------------------------------------------------------------------------
 # CEF binary resources — copy to build output
@@ -391,39 +403,65 @@ endif()
 # Windows: copy CEF runtime DLLs and resources.
 if(WIN32)
   set(CEF_RELEASE_DIR "${cef_binary_SOURCE_DIR}/Release")
-  foreach(_dll
-    libcef.dll
-    chrome_elf.dll
-    d3dcompiler_47.dll
-    libEGL.dll
-    libGLESv2.dll
-    snapshot_blob.bin
-    v8_context_snapshot.bin
-    icudtl.dat
-  )
-    if(EXISTS "${CEF_RELEASE_DIR}/${_dll}")
+  set(CEF_RESOURCES_DIR "${cef_binary_SOURCE_DIR}/Resources")
+
+  if(DEFINED CEF_BINARY_FILES)
+    set(UAM_CEF_BINARY_FILES ${CEF_BINARY_FILES})
+  else()
+    set(UAM_CEF_BINARY_FILES
+      chrome_elf.dll
+      d3dcompiler_47.dll
+      libcef.dll
+      libEGL.dll
+      libGLESv2.dll
+      v8_context_snapshot.bin
+      vk_swiftshader.dll
+      vk_swiftshader_icd.json
+      vulkan-1.dll
+      dxil.dll
+      dxcompiler.dll
+    )
+  endif()
+
+  foreach(_cef_binary IN LISTS UAM_CEF_BINARY_FILES)
+    if(EXISTS "${CEF_RELEASE_DIR}/${_cef_binary}")
       add_custom_command(TARGET universal_agent_manager POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-          "${CEF_RELEASE_DIR}/${_dll}"
-          "$<TARGET_FILE_DIR:universal_agent_manager>/${_dll}"
+          "${CEF_RELEASE_DIR}/${_cef_binary}"
+          "$<TARGET_FILE_DIR:universal_agent_manager>/${_cef_binary}"
       )
     endif()
   endforeach()
 
-  set(CEF_RESOURCES_DIR "${cef_binary_SOURCE_DIR}/Resources")
-  add_custom_command(TARGET universal_agent_manager POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-      "${CEF_RESOURCES_DIR}"
-      "$<TARGET_FILE_DIR:universal_agent_manager>/Resources"
-    COMMENT "Copying CEF resources"
-  )
+  if(DEFINED CEF_RESOURCE_FILES)
+    set(UAM_CEF_RESOURCE_FILES ${CEF_RESOURCE_FILES})
+  else()
+    set(UAM_CEF_RESOURCE_FILES
+      chrome_100_percent.pak
+      chrome_200_percent.pak
+      resources.pak
+      icudtl.dat
+      locales
+    )
+  endif()
 
-  add_custom_command(TARGET universal_agent_manager POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-      "${CEF_RELEASE_DIR}/locales"
-      "$<TARGET_FILE_DIR:universal_agent_manager>/locales"
-    COMMENT "Copying CEF locales"
-  )
+  foreach(_cef_resource IN LISTS UAM_CEF_RESOURCE_FILES)
+    if(IS_DIRECTORY "${CEF_RESOURCES_DIR}/${_cef_resource}")
+      add_custom_command(TARGET universal_agent_manager POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "${CEF_RESOURCES_DIR}/${_cef_resource}"
+          "$<TARGET_FILE_DIR:universal_agent_manager>/${_cef_resource}"
+        COMMENT "Copying CEF resource directory ${_cef_resource}"
+      )
+    elseif(EXISTS "${CEF_RESOURCES_DIR}/${_cef_resource}")
+      add_custom_command(TARGET universal_agent_manager POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CEF_RESOURCES_DIR}/${_cef_resource}"
+          "$<TARGET_FILE_DIR:universal_agent_manager>/${_cef_resource}"
+        COMMENT "Copying CEF resource file ${_cef_resource}"
+      )
+    endif()
+  endforeach()
 endif()
 
 # Build + copy React UI bundle into the app bundle.
@@ -432,7 +470,12 @@ endif()
 #           codesign to scan them as code objects and produce a broken signature.
 # On Windows: flat layout next to the executable.
 set(UAM_UI_DIST_SRC "${CMAKE_BINARY_DIR}/UI-V2/dist")
-find_program(UAM_NPM_EXECUTABLE NAMES npm npm.cmd REQUIRED)
+if(WIN32)
+  unset(UAM_NPM_EXECUTABLE CACHE)
+  find_program(UAM_NPM_EXECUTABLE NAMES npm.cmd REQUIRED)
+else()
+  find_program(UAM_NPM_EXECUTABLE NAMES npm REQUIRED)
+endif()
 string(TIMESTAMP UAM_UI_BUILD_TIMESTAMP "%Y%m%dT%H%M%SZ" UTC)
 set(UAM_UI_BUILD_VERSION "${PROJECT_VERSION}")
 if(UAM_UI_BUILD_VERSION STREQUAL "")
@@ -587,6 +630,15 @@ if(UAM_BUILD_TESTS)
   target_compile_definitions(uam_core_tests PRIVATE
     NOMINMAX
   )
+  if(MSVC)
+    set_property(TARGET uam_core_tests PROPERTY
+      MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+    )
+    set_target_properties(uam_core_tests PROPERTIES
+      VS_GLOBAL_VcpkgEnabled "false"
+      VS_GLOBAL_VcpkgApplocalDeps "false"
+    )
+  endif()
   set_target_properties(uam_core_tests PROPERTIES FOLDER "Tests")
   add_test(NAME uam_core_tests COMMAND uam_core_tests)
   add_test(

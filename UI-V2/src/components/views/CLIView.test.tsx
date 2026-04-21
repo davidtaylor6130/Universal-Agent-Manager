@@ -117,7 +117,7 @@ describe('CLIView', () => {
 
     const stopRequests = requests.filter((request) => request.action === 'stopCliTerminal')
     expect(stopRequests.length).toBeGreaterThanOrEqual(2)
-    expect(stopRequests.at(-1)?.payload).toMatchObject({
+    expect(stopRequests[stopRequests.length - 1]?.payload).toMatchObject({
       chatId: 'chat-1',
       terminalId: 'term-late',
     })
