@@ -12,6 +12,7 @@
 #include "common/paths/app_paths.h"
 
 #include "common/platform/platform_services.h"
+#include "common/provider/runtime/provider_build_config.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_identity.h"
@@ -42,7 +43,7 @@
 
 namespace
 {
-		constexpr const char* kPreferredProviderId = "gemini-cli";
+		constexpr const char* kPreferredProviderId = provider_build_config::FirstEnabledProviderId();
 		constexpr std::size_t kRecentOutputReplayLimitBytes = 256 * 1024;
 		constexpr std::size_t kMaxClipboardTextBytes = 1024 * 1024;
 

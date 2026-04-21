@@ -3,8 +3,12 @@
 #include "common/provider/runtime/provider_build_config.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
 
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
 #include "common/provider/codex/cli/codex_cli_provider_runtime.h"
+#endif
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
 #include "common/provider/gemini/cli/gemini_cli_provider_runtime.h"
+#endif
 
 namespace
 {
@@ -49,20 +53,30 @@ const IProviderRuntime& ProviderRuntimeRegistry::Resolve(const ProviderProfile& 
 const IProviderRuntime& ProviderRuntimeRegistry::ResolveById(const std::string& provider_id)
 {
 	const std::string normalized = NormalizeRuntimeId(provider_id);
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
 	if (normalized == "gemini-cli")
 	{
 		return GetGeminiCliProviderRuntime();
 	}
+#endif
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
 	if (normalized == "codex-cli")
 	{
 		return GetCodexCliProviderRuntime();
 	}
+#endif
 	return GetUnsupportedProviderRuntime();
 }
 
 bool ProviderRuntimeRegistry::IsKnownRuntimeId(const std::string& provider_id)
 {
 	const std::string normalized = NormalizeRuntimeId(provider_id);
-	return normalized == "gemini-cli" ||
-	       normalized == "codex-cli";
+	return
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+	    normalized == "gemini-cli" ||
+#endif
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	    normalized == "codex-cli" ||
+#endif
+	    false;
 }

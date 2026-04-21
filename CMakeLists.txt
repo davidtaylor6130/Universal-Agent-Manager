@@ -70,6 +70,29 @@ endif()
 # ---------------------------------------------------------------------------
 
 option(UAM_BUILD_TESTS "Build UAM core tests executable." OFF)
+option(UAM_ENABLE_RUNTIME_GEMINI_CLI "Enable Gemini CLI runtime backend." ON)
+option(UAM_ENABLE_RUNTIME_CODEX_CLI "Enable Codex CLI runtime backend." ON)
+
+foreach(_removed_runtime_flag IN ITEMS
+  UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED
+  UAM_ENABLE_RUNTIME_CLAUDE_CLI
+  UAM_ENABLE_RUNTIME_OPENCODE_CLI
+  UAM_ENABLE_RUNTIME_OPENCODE_LOCAL
+  UAM_ENABLE_RUNTIME_OLLAMA_ENGINE
+  UAM_ENABLE_ENGINE_RAG
+)
+  if(DEFINED ${_removed_runtime_flag})
+    message(FATAL_ERROR
+      "${_removed_runtime_flag} is no longer supported in this release slice. "
+      "Only UAM_ENABLE_RUNTIME_GEMINI_CLI and UAM_ENABLE_RUNTIME_CODEX_CLI are supported."
+    )
+  endif()
+endforeach()
+
+if(NOT UAM_ENABLE_RUNTIME_GEMINI_CLI AND NOT UAM_ENABLE_RUNTIME_CODEX_CLI)
+  message(FATAL_ERROR "At least one provider runtime must be enabled.")
+endif()
+
 set(UAM_FETCHCONTENT_BASE_DIR "${CMAKE_BINARY_DIR}/_deps" CACHE PATH
   "Directory used for FetchContent source checkouts.")
 if(APPLE)
@@ -147,11 +170,18 @@ set(CMAKE_FOLDER "")
 # Provider sources
 # ---------------------------------------------------------------------------
 
-set(UAM_PROVIDER_SOURCES
-  src/common/provider/codex/cli/codex_cli_provider_runtime.cpp
-  src/common/provider/gemini/cli/gemini_cli_provider_runtime.cpp
-  src/common/provider/gemini/base/gemini_history_loader.cpp
-)
+set(UAM_PROVIDER_SOURCES)
+if(UAM_ENABLE_RUNTIME_GEMINI_CLI)
+  list(APPEND UAM_PROVIDER_SOURCES
+    src/common/provider/gemini/cli/gemini_cli_provider_runtime.cpp
+    src/common/provider/gemini/base/gemini_history_loader.cpp
+  )
+endif()
+if(UAM_ENABLE_RUNTIME_CODEX_CLI)
+  list(APPEND UAM_PROVIDER_SOURCES
+    src/common/provider/codex/cli/codex_cli_provider_runtime.cpp
+  )
+endif()
 
 # ---------------------------------------------------------------------------
 # Platform sources
@@ -250,6 +280,8 @@ endif()
 
 target_compile_definitions(universal_agent_manager PRIVATE
   NOMINMAX
+  UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
+  UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>
 )
 
 set_target_properties(universal_agent_manager PROPERTIES FOLDER "App")
@@ -646,6 +678,8 @@ if(UAM_BUILD_TESTS)
   endif()
   target_compile_definitions(uam_core_tests PRIVATE
     NOMINMAX
+    UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
+    UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>
   )
   if(MSVC)
     set_property(TARGET uam_core_tests PROPERTY

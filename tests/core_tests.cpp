@@ -9,7 +9,9 @@
 #include "common/platform/platform_services.h"
 #include "common/platform/platform_state_fields.h"
 #include "common/provider/codex/cli/codex_session_index.h"
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
 #include "common/provider/gemini/base/gemini_history_loader.h"
+#endif
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/acp/acp_session_runtime.h"
@@ -225,7 +227,12 @@ UAM_TEST(SettingsStoreLoadsLegacyButWritesReleaseSliceOnly)
 	CenterViewMode mode = CenterViewMode::CliConsole;
 	SettingsStore::Load(settings_file, settings, mode);
 
-	UAM_ASSERT_EQ(settings.active_provider_id, std::string("codex-cli"));
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	const std::string expected_provider_id = "codex-cli";
+#else
+	const std::string expected_provider_id = provider_build_config::FirstEnabledProviderId();
+#endif
+	UAM_ASSERT_EQ(settings.active_provider_id, expected_provider_id);
 	UAM_ASSERT_EQ(settings.provider_command_template, std::string("gemini -p {prompt}"));
 	UAM_ASSERT_EQ(settings.provider_yolo_mode, true);
 	UAM_ASSERT_EQ(settings.provider_extra_flags, std::string("--approval-mode yolo"));
@@ -235,7 +242,7 @@ UAM_TEST(SettingsStoreLoadsLegacyButWritesReleaseSliceOnly)
 
 	UAM_ASSERT(SettingsStore::Save(settings_file, settings, mode));
 	const std::string saved = ReadFile(settings_file);
-	UAM_ASSERT(saved.find("active_provider_id=codex-cli") != std::string::npos);
+	UAM_ASSERT(saved.find("active_provider_id=" + expected_provider_id) != std::string::npos);
 	UAM_ASSERT(saved.find("provider_command_template=gemini -p {prompt}") != std::string::npos);
 	UAM_ASSERT(saved.find("rag_") == std::string::npos);
 	UAM_ASSERT(saved.find("selected_model_id") == std::string::npos);
@@ -506,14 +513,26 @@ UAM_TEST(StateSerializerIncludesMessageToolCalls)
 UAM_TEST(ProviderRegistryResolvesGeminiCodexAndUnknownExactly)
 {
 	const IProviderRuntime& gemini = ProviderRuntimeRegistry::ResolveById("gemini-cli");
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
 	UAM_ASSERT_EQ(std::string(gemini.RuntimeId()), std::string("gemini-cli"));
 	UAM_ASSERT(ProviderRuntimeRegistry::IsKnownRuntimeId("gemini-cli"));
 	UAM_ASSERT(ProviderRuntime::IsRuntimeEnabled("gemini-cli"));
+#else
+	UAM_ASSERT_EQ(std::string(gemini.RuntimeId()), std::string("unsupported"));
+	UAM_ASSERT(!ProviderRuntimeRegistry::IsKnownRuntimeId("gemini-cli"));
+	UAM_ASSERT(!ProviderRuntime::IsRuntimeEnabled("gemini-cli"));
+#endif
 
 	const IProviderRuntime& codex = ProviderRuntimeRegistry::ResolveById("codex-cli");
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
 	UAM_ASSERT_EQ(std::string(codex.RuntimeId()), std::string("codex-cli"));
 	UAM_ASSERT(ProviderRuntimeRegistry::IsKnownRuntimeId("codex-cli"));
 	UAM_ASSERT(ProviderRuntime::IsRuntimeEnabled("codex-cli"));
+#else
+	UAM_ASSERT_EQ(std::string(codex.RuntimeId()), std::string("unsupported"));
+	UAM_ASSERT(!ProviderRuntimeRegistry::IsKnownRuntimeId("codex-cli"));
+	UAM_ASSERT(!ProviderRuntime::IsRuntimeEnabled("codex-cli"));
+#endif
 
 	const IProviderRuntime& unknown = ProviderRuntimeRegistry::ResolveById("unknown");
 	UAM_ASSERT_EQ(std::string(unknown.RuntimeId()), std::string("unsupported"));
@@ -521,6 +540,25 @@ UAM_TEST(ProviderRegistryResolvesGeminiCodexAndUnknownExactly)
 	UAM_ASSERT(!ProviderRuntime::IsRuntimeEnabled("unknown"));
 	UAM_ASSERT(!ProviderRuntimeRegistry::IsKnownRuntimeId("gemini"));
 	UAM_ASSERT(!ProviderRuntimeRegistry::IsKnownRuntimeId("codex"));
+}
+
+UAM_TEST(BuiltInProviderProfilesFollowEnabledRuntimeFlags)
+{
+	const std::vector<ProviderProfile> profiles = ProviderProfileStore::BuiltInProfiles();
+	std::vector<std::string> ids;
+	for (const ProviderProfile& profile : profiles)
+	{
+		ids.push_back(profile.id);
+	}
+
+	std::vector<std::string> expected;
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+	expected.push_back("gemini-cli");
+#endif
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	expected.push_back("codex-cli");
+#endif
+	UAM_ASSERT_EQ(ids, expected);
 }
 
 UAM_TEST(CodexThreadIdValidatorAcceptsOnlyUuidThreadIds)
@@ -536,6 +574,7 @@ UAM_TEST(CodexThreadIdValidatorAcceptsOnlyUuidThreadIds)
 
 UAM_TEST(GeminiCliInteractiveArgvUsesResumeAndFlags)
 {
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
 	ProviderProfile profile = ProviderProfileStore::DefaultGeminiProfile();
 	AppSettings settings;
 	settings.provider_yolo_mode = true;
@@ -553,10 +592,12 @@ UAM_TEST(GeminiCliInteractiveArgvUsesResumeAndFlags)
 	UAM_ASSERT_EQ(argv[2], std::string("--checkpointing"));
 	UAM_ASSERT_EQ(argv[3], std::string("-r"));
 	UAM_ASSERT_EQ(argv[4], std::string("native-abc"));
+#endif
 }
 
 UAM_TEST(CodexCliInteractiveArgvUsesResumeModelAndFlags)
 {
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
 	ProviderProfile profile = ProviderProfileStore::DefaultCodexProfile();
 	AppSettings settings;
 	settings.provider_yolo_mode = true;
@@ -596,6 +637,7 @@ UAM_TEST(CodexCliInteractiveArgvUsesResumeModelAndFlags)
 	UAM_ASSERT_EQ(invalid_resume[1], std::string("--no-alt-screen"));
 	UAM_ASSERT_EQ(invalid_resume[2], std::string("-m"));
 	UAM_ASSERT_EQ(invalid_resume[3], std::string("gpt-5.4"));
+#endif
 }
 
 UAM_TEST(CodexSessionIndexPicksNewestNewSessionForMatchingCwd)
@@ -2595,6 +2637,7 @@ UAM_TEST(NativeGeminiHistoryLoadCapsAreBounded)
 
 UAM_TEST(GeminiHistoryParseFileHonorsCaps)
 {
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
 	TempDir temp("uam-gemini-history-caps");
 	const fs::path history_file = temp.root / "session.json";
 	UAM_ASSERT(uam::io::WriteTextFile(history_file, R"({
@@ -2616,10 +2659,12 @@ UAM_TEST(GeminiHistoryParseFileHonorsCaps)
 	const auto parsed = GeminiJsonHistoryStore::ParseFile(history_file, ProviderProfileStore::DefaultGeminiProfile(), message_cap);
 	UAM_ASSERT(parsed.has_value());
 	UAM_ASSERT_EQ(parsed->messages.size(), static_cast<std::size_t>(1));
+#endif
 }
 
 UAM_TEST(GeminiHistoryPreservesThoughtOnlyAndToolOnlyMessages)
 {
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
 	TempDir temp("uam-gemini-history-empty-content");
 	const fs::path history_file = temp.root / "session.json";
 	UAM_ASSERT(uam::io::WriteTextFile(history_file, R"({
@@ -2643,6 +2688,7 @@ UAM_TEST(GeminiHistoryPreservesThoughtOnlyAndToolOnlyMessages)
 	UAM_ASSERT_EQ(parsed->messages[1].tool_calls[0].id, std::string("tool-1"));
 	UAM_ASSERT_EQ(parsed->messages[1].tool_calls[0].name, std::string("Read file"));
 	UAM_ASSERT_EQ(parsed->messages[1].tool_calls[0].result_text, std::string("file contents"));
+#endif
 }
 
 #if defined(_WIN32)

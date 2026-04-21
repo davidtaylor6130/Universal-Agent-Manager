@@ -8,6 +8,7 @@
 #include "common/config/frontend_actions.h"
 #include "common/config/settings_store.h"
 #include "common/platform/platform_services.h"
+#include "common/provider/runtime/provider_build_config.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -124,7 +125,7 @@ bool PersistenceCoordinator::SaveSettings(AppState& app) const
 {
 	if (Trim(app.settings.active_provider_id).empty())
 	{
-		app.settings.active_provider_id = "gemini-cli";
+		app.settings.active_provider_id = provider_build_config::FirstEnabledProviderId();
 	}
 	app.settings.runtime_backend = "provider-cli";
 	app.settings.provider_command_template = app.settings.provider_command_template.empty()
@@ -153,7 +154,7 @@ void PersistenceCoordinator::LoadSettings(AppState& app) const
 	SettingsStore::Load(AppPaths::SettingsFilePath(app.data_root), app.settings, app.center_view_mode);
 	if (Trim(app.settings.active_provider_id).empty())
 	{
-		app.settings.active_provider_id = "gemini-cli";
+		app.settings.active_provider_id = provider_build_config::FirstEnabledProviderId();
 	}
 	app.settings.runtime_backend = "provider-cli";
 	app.settings.provider_extra_flags = Trim(app.settings.provider_extra_flags);

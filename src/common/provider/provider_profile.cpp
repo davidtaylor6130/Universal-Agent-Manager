@@ -69,7 +69,14 @@ ProviderProfile ProviderProfileStore::DefaultCodexProfile()
 
 std::vector<ProviderProfile> ProviderProfileStore::BuiltInProfiles()
 {
-	return {DefaultGeminiProfile(), DefaultCodexProfile()};
+	std::vector<ProviderProfile> profiles;
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+	profiles.push_back(DefaultGeminiProfile());
+#endif
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	profiles.push_back(DefaultCodexProfile());
+#endif
+	return profiles;
 }
 
 void ProviderProfileStore::EnsureDefaultProfile(std::vector<ProviderProfile>& profiles)

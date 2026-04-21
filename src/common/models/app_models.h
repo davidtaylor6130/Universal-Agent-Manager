@@ -6,6 +6,8 @@
 #include <thread>
 #include <vector>
 
+#include "common/provider/runtime/provider_build_config.h"
+
 /// <summary>
 /// Message role marker persisted with each chat message entry.
 /// </summary>
@@ -106,7 +108,7 @@ struct ChatFolder
 /// </summary>
 struct AppSettings
 {
-	std::string active_provider_id = "gemini-cli";
+	std::string active_provider_id = provider_build_config::FirstEnabledProviderId();
 	std::string provider_command_template = "gemini {resume} {flags} {prompt}";
 	bool provider_yolo_mode = false;
 	std::string provider_extra_flags;

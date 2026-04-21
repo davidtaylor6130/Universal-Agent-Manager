@@ -43,7 +43,7 @@ class ProviderProfileStore
 	static ProviderProfile DefaultCodexProfile();
 	/// <summary>Returns the built-in provider profiles for this build.</summary>
 	static std::vector<ProviderProfile> BuiltInProfiles();
-	/// <summary>Ensures the default Gemini CLI profile exists in the profile list.</summary>
+	/// <summary>Ensures enabled built-in provider profiles exist in the profile list.</summary>
 	static void EnsureDefaultProfile(std::vector<ProviderProfile>& profiles);
 
 	/// <summary>Finds a provider profile by id in a read-only collection.</summary>

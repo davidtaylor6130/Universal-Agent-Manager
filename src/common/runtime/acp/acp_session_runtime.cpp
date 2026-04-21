@@ -7,6 +7,7 @@
 #include "common/chat/chat_repository.h"
 #include "common/platform/platform_services.h"
 #include "common/provider/codex/cli/codex_thread_id.h"
+#include "common/provider/runtime/provider_build_config.h"
 #include "common/utils/string_utils.h"
 
 #include <nlohmann/json.hpp>
@@ -78,7 +79,7 @@ namespace
 
 		std::string MessageProviderId(const AcpSessionState& session)
 		{
-			return session.provider_id.empty() ? std::string("gemini-cli") : session.provider_id;
+			return session.provider_id.empty() ? std::string(provider_build_config::FirstEnabledProviderId()) : session.provider_id;
 		}
 
 	std::string TimestampNow()

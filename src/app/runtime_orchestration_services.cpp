@@ -13,7 +13,9 @@
 #include "common/chat/chat_repository.h"
 #include "common/constants/app_constants.h"
 #include "common/platform/platform_services.h"
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
 #include "common/provider/gemini/base/gemini_history_loader.h"
+#endif
 #include "common/provider/runtime/provider_build_config.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/json_runtime.h"
@@ -629,10 +631,12 @@ std::vector<ChatSession> ChatHistorySyncService::LoadNativeSessionChats(const fs
 	ProviderRuntimeHistoryLoadOptions l_options;
 	l_options.native_max_file_bytes = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxFileBytes();
 	l_options.native_max_messages = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxMessages();
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
 	if (ProviderRuntime::SupportsGeminiJsonHistory(p_provider))
 	{
 		return ChatDomainService().DeduplicateChatsById(LoadGeminiJsonHistoryForRuntime(p_chatsDir, p_provider, l_options, p_stopToken));
 	}
+#endif
 
 	return ChatDomainService().DeduplicateChatsById(ProviderRuntime::LoadHistory(p_provider, fs::path{}, p_chatsDir, l_options));
 }
@@ -1122,6 +1126,7 @@ bool ChatHistorySyncService::MoveChatToFolder(AppState& p_app, ChatSession& p_ch
 			const auto l_sessionFile = FindNativeSessionFilePath(l_oldChatsDir.value(), l_sessionId);
 			if (l_sessionFile.has_value())
 			{
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
 				GeminiJsonHistoryStoreOptions l_opts;
 				l_opts.max_messages = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxMessages();
 				l_opts.max_file_bytes = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxFileBytes();
@@ -1134,6 +1139,7 @@ bool ChatHistorySyncService::MoveChatToFolder(AppState& p_app, ChatSession& p_ch
 						l_movedChat.updated_at = l_parsed->updated_at;
 					}
 				}
+#endif
 			}
 		}
 
@@ -1437,6 +1443,7 @@ void ChatHistorySyncService::RefreshNativeSessionDirectory(AppState& p_app) cons
 
 bool ChatHistorySyncService::ExportChatToNative(const AppState& p_app, const ChatSession& p_chat) const
 {
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
 	const ProviderProfile& l_provider = ProviderResolutionService().ProviderForChatOrDefault(p_app, p_chat);
 
 	if (!ProviderRuntime::SupportsGeminiJsonHistory(l_provider))
@@ -1454,6 +1461,11 @@ bool ChatHistorySyncService::ExportChatToNative(const AppState& p_app, const Cha
 	const fs::path l_destFile = l_chatsDir / (l_sessionId + ".json");
 
 	return GeminiJsonHistoryStore::SaveFile(l_destFile, p_chat);
+#else
+	(void)p_app;
+	(void)p_chat;
+	return false;
+#endif
 }
 
 bool ChatHistorySyncService::TruncateNativeSessionFromDisplayedMessage(const AppState& p_app, const ChatSession& p_chat, const int p_displayedMessageIndex, std::string* p_errorOut) const

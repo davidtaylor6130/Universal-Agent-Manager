@@ -1,6 +1,7 @@
 #include "common/config/settings_store.h"
 
 #include "common/config/line_value_codec.h"
+#include "common/provider/runtime/provider_build_config.h"
 #include "common/utils/io_utils.h"
 
 #include <algorithm>
@@ -86,11 +87,19 @@ namespace
 	std::string NormalizeProviderId(const std::string& value)
 	{
 		const std::string lowered = ToLower(value);
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
 		if (lowered == "codex" || lowered == "codex-cli")
 		{
 			return "codex-cli";
 		}
-		return "gemini-cli";
+#endif
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+		if (lowered == "gemini" || lowered == "gemini-cli")
+		{
+			return "gemini-cli";
+		}
+#endif
+		return provider_build_config::FirstEnabledProviderId();
 	}
 
 	void ClampSettings(AppSettings& settings)
