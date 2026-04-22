@@ -552,6 +552,7 @@ endif()
 
 set(UAM_WINDOW_ICON_BMP "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.bmp")
 set(UAM_WINDOW_ICON_PNG "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.png")
+set(UAM_BUNDLE_ICON_ICNS "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.icns")
 if(APPLE AND UAM_MACOS_BUNDLE)
   add_custom_command(TARGET universal_agent_manager POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E rm -f
@@ -590,6 +591,13 @@ if(EXISTS "${UAM_WINDOW_ICON_PNG}")
     )
   endif()
 endif()
+if(APPLE AND UAM_MACOS_BUNDLE AND EXISTS "${UAM_BUNDLE_ICON_ICNS}")
+  add_custom_command(TARGET universal_agent_manager POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${UAM_BUNDLE_ICON_ICNS}"
+      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/app_icon.icns"
+  )
+endif()
 
 if(APPLE AND UAM_MACOS_BUNDLE)
   add_custom_command(TARGET universal_agent_manager POST_BUILD
@@ -615,6 +623,7 @@ if(APPLE)
     set_target_properties(universal_agent_manager PROPERTIES
       MACOSX_BUNDLE_BUNDLE_NAME "Universal Agent Manager"
       MACOSX_BUNDLE_GUI_IDENTIFIER "com.universalagentmanager.desktop"
+      MACOSX_BUNDLE_ICON_FILE "app_icon.icns"
     )
   endif()
 endif()
