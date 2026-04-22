@@ -2,14 +2,15 @@
 
 ## Release Slice
 
-This repository is currently scoped to the Gemini CLI release slice. Keep the app focused on React/CEF, xterm.js terminal sessions, Gemini CLI save/resume, chat rename/delete/select/create, one-level workspace folders, and multiple concurrent CLI instances on macOS and Windows.
+This repository is currently scoped to the Gemini CLI and Codex CLI release slice. Keep the app focused on React/CEF, ACP structured chat sessions, xterm.js terminal fallback sessions, provider save/resume, chat rename/delete/select/create/pin/branch, one-level workspace folders, durable memory files, and multiple concurrent CLI instances on macOS and Windows.
 
-Unsupported providers, structured prompt UI, RAG, templates, VCS panels, local engines, Dear ImGui, and checked-in frontend build output are intentionally removed.
+Unsupported non-Gemini/non-Codex providers, RAG engines, templates, VCS panels, local model engines, Dear ImGui, and checked-in frontend build output are intentionally removed.
 
 ## Build Commands
 
 ```bash
 npm --prefix UI-V2 ci
+npm --prefix UI-V2 run test
 npm --prefix UI-V2 run build
 
 cmake -S . -B Builds
@@ -58,7 +59,7 @@ cmake --build Builds/tests --config Debug
 ctest --test-dir Builds/tests -C Debug --output-on-failure
 ```
 
-Tests use a custom framework in `tests/core_tests.cpp` and Vitest for `UI-V2`.
+Tests use a custom framework in `tests/core_tests.cpp`, a CMake platform ifdef guard, and Vitest for `UI-V2`.
 
 ## Code Style
 
@@ -73,8 +74,11 @@ Tests use a custom framework in `tests/core_tests.cpp` and Vitest for `UI-V2`.
 - React UI: `UI-V2/src`
 - CEF bridge: `src/cef/uam_query_handler.cpp`
 - Gemini provider: `src/common/provider/gemini/`
+- Codex provider: `src/common/provider/codex/`
+- ACP runtime: `src/common/runtime/acp/`
 - Terminal runtime: `src/common/runtime/terminal/` plus platform services
-- Data storage: `<data-root>/chats/` JSON files
+- Memory service: `src/app/memory_service.cpp`
+- Data storage: `<data-root>/chats/` JSON files plus optional `<data-root>/memory/`
 
 ## Data Root Resolution
 

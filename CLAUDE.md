@@ -1,163 +1,195 @@
-# UAM — Claude Code Project Guide
+# UAM Project Guide
 
 ## Project Overview
 
-Universal Agent Manager (UAM) is a native desktop AI chat/agent application. The C++ backend runs provider runtimes, manages chat persistence, and hosts a CEF (Chromium Embedded Framework) window. The React frontend (UI-V2/) is served from `file://` inside that CEF window and communicates with C++ via `window.cefQuery` / `window.uamPush`.
+Universal Agent Manager (UAM) is a native desktop AI chat and agent application. The C++ backend owns provider runtimes, local persistence, process management, and the CEF window. The React frontend in `UI-V2/` is loaded from bundled files inside CEF and talks to C++ through `window.cefQuery` and `window.uamPush`.
 
----
+The active release slice supports Gemini CLI and Codex CLI. Both have structured chat paths through ACP-style stdio runtimes and an xterm.js CLI fallback path.
 
 ## Architecture
 
-```
-src/                        C++ backend (CMake target: universal_agent_manager)
-  main.cpp                  CEF multiprocess entry — CefExecuteProcess + Application::Run
+```text
+src/                                 C++ backend (CMake target: universal_agent_manager)
+  main.cpp                           CEF multiprocess entry and Application::Run
   app/
-    application.cpp/.h      App lifecycle, CEF init, polling loop
-    chat_domain_service.*   Chat CRUD operations
-    persistence_coordinator.*  Save/load chats and settings
-    runtime_orchestration_services.*  Provider request dispatch
+    application.*                    App lifecycle, CEF init, polling loop
+    chat_domain_service.*            Chat CRUD, selection, branching, sorting
+    chat_lifecycle_service.*         Chat/folder delete and runtime cleanup
+    memory_service.*                 Durable memory extraction and recall preface
+    native_session_link_service.*    Native session/thread id linking
+    persistence_coordinator.*        Save/load chats, folders, and settings
+    provider_resolution_service.*    Provider lookup for chats and defaults
+    runtime_orchestration_services.* Native history sync and provider request dispatch
   cef/
-    uam_cef_app.*           CefApp + CefBrowserProcessHandler + CefRenderProcessHandler
-    uam_cef_client.*        CefClient (lifespan, load, display, context menu, keyboard)
-    uam_query_handler.*     CefMessageRouterBrowserSide::Handler — all JS→C++ actions
-    state_serializer.*      AppState → nlohmann::json
-    cef_push.*              PushStateUpdate / PushStreamToken / PushCliOutput
-    cef_includes.h          Single include for all CEF headers
+    uam_cef_app.*                    CefApp, command line switches, renderer router
+    uam_cef_client.*                 CefClient, navigation, context menu, keyboard
+    uam_query_handler.*              JS to C++ bridge action dispatch
+    state_serializer.*               AppState to frontend JSON
+    cef_push.*                       PushStateUpdate / PushCliOutput
   common/
-    state/app_state.h       AppState, ChatSession, Message, ChatFolder, CliTerminalState
-    runtime/terminal_polling.h  PollCliTerminal — reads PTY → PushCliOutput
-    provider/               Provider runtime interfaces and implementations
-    platform/               macOS/Windows PTY spawning
+    chat/                            Local chat/folder storage and branch metadata
+    config/                          Settings and frontend action metadata
+    models/                          Chat, message, folder, provider, memory models
+    paths/                           Data-root and provider-history paths
+    provider/gemini/                 Gemini CLI runtime and JSON history loader
+    provider/codex/                  Codex CLI runtime and thread-id helpers
+    runtime/acp/                     Gemini ACP and Codex app-server session runtime
+    runtime/terminal/                PTY launch, polling, lifecycle, sync helpers
+    platform/                        macOS and Windows process/PTY services
 
-UI-V2/                      React frontend (Vite + TypeScript)
+UI-V2/                               React frontend (Vite + TypeScript)
   src/
-    App.tsx                 Root component — theme sync only (uamPush registered in store)
-    ipc/cefBridge.ts        window.cefQuery wrapper; isCefContext() detection
-    store/useAppStore.ts    Zustand store — state, actions, CEF bootstrap, uamPush handler
-    types/                  session.ts, message.ts, provider.ts
-    components/
-      layout/               AppShell, Sidebar, MainPanel
-      views/                StructuredView, CLIView, CodingAgentView
-      input/                ProviderChiplets, MessageInput
-      sidebar/              NewChatModal, ChatList
-      settings/             SettingsModal
-    mock/                   mockData.ts — used only in dev/browser mode
+    App.tsx                          Root component and copy fallback install
+    ipc/cefBridge.ts                 window.cefQuery wrapper and CEF detection
+    store/useAppStore.ts             Zustand store, CEF bootstrap, uamPush handler
+    components/layout/               AppShell, Sidebar, MainPanel
+    components/views/                ChatView and CLIView
+    components/sidebar/              Folder tree, search, new-chat modal
+    components/settings/             SettingsModal
+    components/shared/               Logo and theme toggle
+    types/                           session, message, provider
+    utils/                           Clipboard and theme helpers
 ```
-
----
 
 ## CEF IPC Protocol
 
-### JS → C++ (`window.cefQuery`)
+### JS to C++
+
 ```json
-{ "action": "<name>", "payload": { ... } }
+{ "action": "<name>", "payload": { "...": "..." }, "requestId": "optional-id" }
 ```
 
-| Action | Payload |
-|--------|---------|
-| `getInitialState` | — |
-| `selectSession` | `{ chatId }` |
-| `createSession` | `{ title, folderId, providerId }` |
-| `renameSession` | `{ chatId, title }` |
-| `deleteSession` | `{ chatId }` |
-| `sendMessage` | `{ chatId, content }` |
-| `createFolder` | `{ title }` |
-| `toggleFolder` | `{ folderId }` |
-| `startCliTerminal` | `{ chatId }` |
-| `writeCliInput` | `{ chatId, data }` |
-| `setTheme` | `{ theme: "dark"\|"light" }` |
+Current bridge actions:
 
-### C++ → JS (`window.uamPush(json)`)
+| Action | Purpose |
+| --- | --- |
+| `getInitialState` | Return full serialized app state |
+| `selectSession` | Select a chat |
+| `createSession` | Create a chat in a workspace folder with a provider |
+| `renameSession` | Rename a chat |
+| `setChatPinned` | Pin or unpin a chat |
+| `setChatProvider` | Switch between enabled providers |
+| `setChatModel` | Set ACP/Codex model id for a chat |
+| `setChatApprovalMode` | Set ACP approval mode (`default` or `plan`) |
+| `setChatMemoryEnabled` | Toggle memory extraction/recall per chat |
+| `setMemorySettings` | Persist memory defaults, idle delay, recall budget, worker bindings |
+| `deleteSession` | Delete a chat and reconcile branch children |
+| `createFolder` | Create a one-level workspace folder |
+| `renameFolder` | Rename/update a workspace folder |
+| `deleteFolder` | Delete a folder and its chats |
+| `toggleFolder` | Collapse/expand a folder |
+| `browseFolderDirectory` | Native folder picker |
+| `startCliTerminal` | Start the xterm.js CLI fallback PTY |
+| `stopCliTerminal` | Stop a CLI terminal |
+| `resizeCliTerminal` | Resize the PTY |
+| `writeCliInput` | Send bytes to the PTY |
+| `sendAcpPrompt` | Send a structured chat prompt |
+| `cancelAcpTurn` | Cancel an active structured turn |
+| `resolveAcpPermission` | Resolve a provider permission request |
+| `resolveAcpUserInput` | Answer provider-requested user input |
+| `stopAcpSession` | Stop a structured provider process |
+| `writeClipboardText` | Native clipboard write, limited to 1 MiB |
+| `setTheme` | Persist UI theme |
 
-| type | Fields |
-|------|--------|
-| `stateUpdate` | `data`: full CppAppState |
-| `streamToken` | `chatId`, `token` |
-| `streamDone` | `chatId` |
-| `cliOutput` | `chatId`, `data` (base64 PTY bytes) |
+C++ returns raw JSON in `cb->Success()`. `UI-V2/src/ipc/cefBridge.ts` wraps that into the frontend response shape.
 
-**Important**: C++ returns raw payload JSON as the `cb->Success()` body — NOT wrapped in `{ok, data}`. The bridge (`cefBridge.ts`) detects this and wraps it automatically.
+### C++ to JS
 
----
+| Type | Purpose |
+| --- | --- |
+| `stateUpdate` | Full serialized app state |
+| `cliOutput` | Base64 PTY output bytes for xterm.js |
+
+The store registers `window.uamPush` at module load time so early `OnLoadEnd` pushes are not missed.
+
+## Provider Runtimes
+
+- `gemini-cli`: interactive command `gemini`, structured command `gemini --acp`, native history in Gemini JSON files under the workspace-mapped Gemini tmp directory.
+- `codex-cli`: interactive command `codex --no-alt-screen` or `codex resume --no-alt-screen <thread>`, structured command `codex app-server --listen stdio://`, local JSON chat storage.
+
+CMake options:
+
+```bash
+-DUAM_ENABLE_RUNTIME_GEMINI_CLI=ON
+-DUAM_ENABLE_RUNTIME_CODEX_CLI=ON
+```
+
+Both are enabled by default. Removed runtime flags for old structured providers, Claude, OpenCode, Ollama, and RAG intentionally fail configuration.
 
 ## Build System
 
-### CEF Build (the one you run)
 ```bash
-# Configure (once)
-cmake -S . -B Builds/cef -DUAM_BUILD_TARGET=cef
+npm --prefix UI-V2 ci
+npm --prefix UI-V2 run test
+npm --prefix UI-V2 run build
 
-# Build
-cmake --build Builds/cef --config Release
-
-# After React changes only (no C++ recompile needed):
-cd UI-V2 && npm run build
-rsync -a --delete UI-V2/dist/ Builds/cef/universal_agent_manager.app/Contents/Resources/UI-V2/dist/
+cmake -S . -B Builds
+cmake --build Builds --config Release
 ```
 
-The correct app to run is always:
-```
-Builds/cef/universal_agent_manager.app
+CMake downloads nlohmann/json and the platform CEF binary with FetchContent, builds `UI-V2`, and copies the frontend into the packaged app:
+
+- macOS: `Contents/Resources/UI-V2/dist/`
+- Windows: next to the executable at `UI-V2/dist/`
+
+The canonical app outputs are:
+
+```text
+Builds/universal_agent_manager.app
+Builds/Release/universal_agent_manager.exe
 ```
 
-**Note**: macOS Finder shows the `.app` folder's own mtime (creation/structure time), not the binary's mtime. The binary inside (`Contents/MacOS/universal_agent_manager`) is the authoritative timestamp. Always check it with `ls -la` if unsure whether a build is current.
+Tests:
 
-### React Dev (browser preview)
 ```bash
-cd UI-V2 && npm run dev
-# Uses mock data — isCefContext() returns false in browser
+cmake -S . -B Builds/tests -DUAM_BUILD_TESTS=ON
+cmake --build Builds/tests --config Debug
+ctest --test-dir Builds/tests -C Debug --output-on-failure
 ```
 
----
+## Persistence
 
-## Key Design Decisions
+```text
+<data-root>/
+  settings.txt
+  folders.txt
+  chats/
+    <chat-id>.json
+    <chat-id>.json.bak
+  memory/
+    Failures/
+      AI_Failures/
+      User_Failures/
+    Lessons/
+      AI_Lessons/
+      User_Lessons/
+```
 
-### `window.uamPush` is registered in the store, not in a React component
-`useAppStore.ts` registers `window.uamPush` synchronously at module load time (before React mounts). This ensures the C++ `OnLoadEnd` push — which fires before React's `useEffect` would run — is never missed.
+Data root resolution:
 
-### `isCefContext()` determines initial state
-- In CEF: store starts with empty `[]`/`{}`/`null` and populates from `getInitialState` response
-- In browser/dev: store starts with mock data from `mock/mockData.ts`
+1. `UAM_DATA_DIR`
+2. `<cwd>/data`
+3. OS default app-data location
+4. Temp fallback
 
-### View mode is React-only
-C++ does not store `viewMode`. `deserializeState()` assigns `viewMode: 'cli'` for sessions whose `providerId` contains `'gemini'` or `'cli'`, otherwise `'structured'`.
+Workspace-local memories are stored at `<workspace>/.codex/memories/`.
 
-### CEF renderer process requires `CefRenderProcessHandler`
-`UamCefApp` inherits from both `CefBrowserProcessHandler` and `CefRenderProcessHandler`. The renderer handler's `OnWebKitInitialized()` creates `CefMessageRouterRendererSide`, which injects `window.cefQuery` into every page. Without this, `isCefContext()` always returns false.
+## Security Notes
 
-### macOS CEF helper bundles
-Four helper `.app` bundles inside `Contents/Frameworks/` are copies of the main binary:
-- `universal_agent_manager Helper.app` — referenced as `browser_subprocess_path`
-- `universal_agent_manager Helper (GPU).app`
-- `universal_agent_manager Helper (Plugin).app`
-- `universal_agent_manager Helper (Renderer).app`
+- Bridge messages are accepted only from the trusted bundled `index.html` URL and the main frame.
+- Renderer-side `window.cefQuery` is injected only for the trusted UI URL.
+- External `http`, `https`, `mailto`, `ftp`, and `tel` navigation is blocked in CEF and handed to the OS.
+- Chromium `allow-file-access-from-files` and `disable-web-security` are currently enabled because the packaged React UI is served from `file://`.
+- JavaScript clipboard access is enabled, and app copy paths prefer the native `writeClipboardText` bridge in CEF.
+- DevTools/view-source shortcuts are blocked; the context menu is reduced to Copy when there is selected text.
 
-Each has a symlink `Contents/Frameworks/Chromium Embedded Framework.framework → ../../../Chromium Embedded Framework.framework` so the CEF dylib resolves via `@executable_path/../Frameworks/`.
-
-### No browser chrome
-`UamCefClient` implements `CefContextMenuHandler` (clears all menus) and `CefKeyboardHandler` (blocks F12, Ctrl+Shift+I, Ctrl+U). The app is native-feeling — no Chromium address bar or DevTools shortcuts.
-
-### Codesign
-The main binary and each helper are ad-hoc signed with a JIT entitlement (`com.apple.security.cs.allow-jit`). The bundle itself is NOT fully signed (avoids sealed-resources errors from `.woff` fonts). UI dist lives in `Contents/Resources/UI-V2/dist/` (not `Contents/MacOS/`) to prevent codesign from treating font files as code objects.
-
----
-
-## Provider System
-
-- **gemini-cli**: `UsesCliOutput() = true`, `UsesNativeOverlayHistory() = true` — runs as interactive PTY terminal, output piped to xterm.js in `CLIView`
-- **Structured providers**: API-based, stream tokens via `PushStreamToken` → React streaming bubbles
-- Provider IDs containing `gemini` or `cli` auto-select `viewMode: 'cli'` on deserialization
-
----
+See `docs/security-enterprise.md` for the enterprise checklist and known gaps.
 
 ## Common Gotchas
 
-1. **`resp.ok` check after cefQuery**: C++ returns raw JSON, not `{ok:true, data:...}`. The bridge wraps it. Always verify `resp.ok && Array.isArray(resp.data?.chats)` before deserializing `getInitialState`.
-
-2. **rsync after React-only changes**: cmake's POST_BUILD only copies the dist when C++ recompiles. For React-only changes, manually rsync `UI-V2/dist/` into the bundle.
-
-3. **Finder timestamps are misleading**: The `.app` directory mtime reflects when the folder structure last changed, not when the binary was last rebuilt. Check the binary directly.
-
-4. **CEF version**: `130.1.16+g6a9f117+chromium-130.0.6723.117` (Spotify CDN). Platform detected at configure time (`macosarm64` / `macosx64` / `windows64`).
-
-5. **`--disable-gpu` removed**: GPU compositing is required for Metal rendering on macOS — removing those flags was a prior bug fix. Do not re-add them.
+1. `UI-V2/dist/` in the source tree is not the packaged output. CMake writes the build-tree frontend bundle and copies it into the native app.
+2. `window.uamPush` must stay registered outside React effects so initial state pushes are not missed.
+3. Gemini history discovery depends on workspace folders and Gemini's project tmp mapping.
+4. Codex resume only uses valid Codex thread ids; invalid ids fall back to a new thread.
+5. CEF helper bundles and codesigning on macOS are generated by the CMake post-build steps.
+6. The build directory restriction is intentional: use `Builds/` or a CLion `cmake-build-*` directory.

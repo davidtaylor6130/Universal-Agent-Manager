@@ -1,24 +1,39 @@
 # Universal Agent Manager
 
-Universal Agent Manager is currently a Gemini CLI release slice for macOS and Windows. The app packages a React UI inside CEF and embeds Gemini CLI sessions through xterm.js.
+Universal Agent Manager is a macOS and Windows desktop app that packages a React UI inside CEF and connects it to provider CLIs through C++ runtime services.
 
-This slice is intentionally narrow:
+The current release slice is intentionally focused:
 
-- Gemini CLI only. Legacy provider IDs are normalized to `gemini-cli`.
-- Multiple concurrent Gemini CLI terminal instances.
-- Chat create, select, rename, delete, save, and resume.
-- Resume through Gemini native history when a native session id is available.
-- Local UAM metadata for chat titles, folder/workspace roots, selected chat, theme, window, and sidebar state.
-- One-level folders used as workspace roots for Gemini history discovery and CLI working directories.
+- Gemini CLI and Codex CLI provider runtimes.
+- Chat and CLI views for each session.
+- ACP/stdout structured chat flows for Gemini (`gemini --acp`) and Codex (`codex app-server --listen stdio://`).
+- xterm.js terminal fallback for interactive provider CLI sessions.
+- Chat create, select, rename, delete, pin, provider switch, model selection, approval mode, save, resume, and branch metadata.
+- One-level workspace folders used for provider working directories and Gemini history discovery.
+- Multiple concurrent CLI terminal instances on macOS and Windows.
+- Local chat metadata, app settings, folders, theme, window/sidebar state, and optional memory files.
 
-Removed surfaces include alternate providers, structured prompt mode, RAG, templates, VCS panels, local engines, Dear ImGui, and checked-in frontend build output.
+Unsupported surfaces remain out of scope: non-Gemini/non-Codex providers, RAG engines, templates, VCS panels, local model engines, Dear ImGui, and checked-in frontend build output.
+
+## Screenshots
+
+### V2.0.1
+
+Dark theme:
+
+![Universal Agent Manager V2.0.1 dark theme](docs/images/V2.0.1-Dark.png)
+
+Light theme:
+
+![Universal Agent Manager V2.0.1 light theme](docs/images/V2.0.1-Light.png)
 
 ## Requirements
 
 - CMake 3.20+
 - C++20 compiler
 - Node.js and npm
-- Gemini CLI available on `PATH`
+- Gemini CLI on `PATH` when using Gemini features
+- Codex CLI on `PATH` when using Codex features
 - macOS with Xcode command line tools, or Windows with MSVC Build Tools initialized
 
 ## Frontend
@@ -29,16 +44,24 @@ npm --prefix UI-V2 run test
 npm --prefix UI-V2 run build
 ```
 
-`UI-V2/node_modules/`, `UI-V2/dist/`, and TypeScript build info files are generated output and are not committed.
+`UI-V2/node_modules/`, frontend build output, and TypeScript build info files are generated output and are not committed. CMake builds the frontend into the build tree before packaging it into the native app.
 
 ## Build
 
-CMake enforces build directories under `Builds/`:
+CMake enforces build directories under `Builds/`, except CLion default `cmake-build-*` directories:
 
 ```bash
 cmake -S . -B Builds
 cmake --build Builds --config Release
 ```
+
+Provider runtime flags:
+
+```bash
+cmake -S . -B Builds -DUAM_ENABLE_RUNTIME_GEMINI_CLI=ON -DUAM_ENABLE_RUNTIME_CODEX_CLI=ON
+```
+
+Both provider runtimes are enabled by default. At least one must be enabled.
 
 On Windows, initialize MSVC first:
 
@@ -66,12 +89,16 @@ Do not open `UI-V2/dist/index.html` directly. The frontend is packaged into the 
 ## Tests
 
 ```bash
+npm --prefix UI-V2 ci
+npm --prefix UI-V2 run test
+npm --prefix UI-V2 run build
+
 cmake -S . -B Builds/tests -DUAM_BUILD_TESTS=ON
 cmake --build Builds/tests --config Debug
 ctest --test-dir Builds/tests -C Debug --output-on-failure
 ```
 
-The core tests use the custom framework in `tests/core_tests.cpp`.
+Native tests include `uam_core_tests` from `tests/core_tests.cpp` and the `uam_platform_ifdef_guard` CMake script test.
 
 ## Data Layout
 
@@ -81,7 +108,17 @@ The core tests use the custom framework in `tests/core_tests.cpp`.
   folders.txt
   chats/
     <chat-id>.json
+    <chat-id>.json.bak
+  memory/
+    Failures/
+      AI_Failures/
+      User_Failures/
+    Lessons/
+      AI_Lessons/
+      User_Lessons/
 ```
+
+Workspace-local memories are written under `<workspace>/.codex/memories/` using the same category layout.
 
 Data root resolution:
 
@@ -96,10 +133,12 @@ Data root resolution:
 - App shell: `src/app/application.cpp`
 - CEF bridge: `src/cef/uam_query_handler.cpp`
 - React UI: `UI-V2/src`
-- Gemini provider runtime: `src/common/provider/gemini/cli`
-- Gemini native history loader: `src/common/provider/gemini/base`
-- Terminal runtime: `src/common/runtime/terminal` plus platform services
+- Gemini runtime: `src/common/provider/gemini/`
+- Codex runtime: `src/common/provider/codex/`
+- ACP runtime: `src/common/runtime/acp/`
+- Terminal runtime: `src/common/runtime/terminal/` plus platform services
 - Local persistence: `src/common/chat`, `src/common/config`
+- Memory worker: `src/app/memory_service.cpp`
 
 Security and enterprise deployment notes are tracked in `docs/security-enterprise.md`.
 
@@ -113,6 +152,8 @@ CEF bridge actions in this slice:
 - `setChatProvider`
 - `setChatModel`
 - `setChatApprovalMode`
+- `setChatMemoryEnabled`
+- `setMemorySettings`
 - `deleteSession`
 - `createFolder`
 - `renameFolder`
@@ -133,9 +174,11 @@ CEF bridge actions in this slice:
 
 ## Manual Release Checks
 
-1. Create two chats in different workspace folders and start both terminals.
-2. Type into both terminals and verify output routes to the correct session.
-3. Stop one terminal and verify the other keeps running.
-4. Rename a chat, restart, and verify the title persists.
-5. Resume a prior Gemini chat and verify the native session id is used where available.
-6. Restart and verify sidebar chats restore from local metadata plus Gemini history discovery.
+1. Create Gemini and Codex chats in different workspace folders.
+2. Send prompts in chat view and verify ACP output, tool calls, approvals, user input prompts, and cancellation route to the right session.
+3. Start CLI fallback for two sessions, type into both terminals, and verify output stays scoped to the correct session.
+4. Stop one terminal and verify the other keeps running.
+5. Rename, pin, branch, and delete chats, then restart and verify metadata persists.
+6. Resume prior Gemini and Codex chats and verify native session/thread ids are used where available.
+7. Toggle memory settings and verify durable memory files are only written after idle extraction.
+8. Restart and verify sidebar chats restore from local metadata plus Gemini history discovery.
