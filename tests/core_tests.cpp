@@ -1019,7 +1019,7 @@ UAM_TEST(ClaudeStreamJsonMessagesUpdateChatAndSession)
 
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"user","session_id":"claude-session-3","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":[{"type":"text","text":"done"}]}]}})"));
 	UAM_ASSERT_EQ(app.chats.front().messages[0].tool_calls[0].status, std::string("completed"));
-	UAM_ASSERT_EQ(app.chats.front().messages[0].tool_calls[0].result_text, std::string("done"));
+	UAM_ASSERT(app.chats.front().messages[0].tool_calls[0].result_text.find("Result:\ndone") != std::string::npos);
 
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"result","subtype":"success","is_error":false,"session_id":"claude-session-3","result":"Finished.","total_cost_usd":0.1})"));
 	UAM_ASSERT(!session.processing);

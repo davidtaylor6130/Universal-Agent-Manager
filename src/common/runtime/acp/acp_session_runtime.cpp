@@ -3741,7 +3741,7 @@ namespace
 					tool_call.status = "running";
 					if (item.contains("input"))
 					{
-						tool_call.args_json = CapDiagnosticString(item["input"].dump(), kMaxAcpDiagnosticDetailBytes);
+						tool_call.content = "Arguments:\n" + CapDiagnosticString(item["input"].dump(), kMaxAcpDiagnosticDetailBytes);
 					}
 					AppendToolTurnEventIfNeeded(session, tool_id);
 					changed = SyncAcpToolCallsToAssistantMessage(chat, session, true) || changed;
@@ -3785,7 +3785,15 @@ namespace
 
 				AcpToolCallState& tool_call = UpsertToolCall(session, tool_id);
 				tool_call.status = item.value("is_error", false) ? "failed" : "completed";
-				tool_call.content = ContentTextFromJson(item.value("content", nlohmann::json::array()));
+				const std::string result_text = ContentTextFromJson(item.value("content", nlohmann::json::array()));
+				if (tool_call.content.empty())
+				{
+					tool_call.content = result_text;
+				}
+				else if (!result_text.empty())
+				{
+					tool_call.content += "\n\nResult:\n" + result_text;
+				}
 				AppendToolTurnEventIfNeeded(session, tool_id);
 				changed = SyncAcpToolCallsToAssistantMessage(chat, session, true) || changed;
 			}

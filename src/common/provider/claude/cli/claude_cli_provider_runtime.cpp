@@ -1,6 +1,7 @@
 #include "common/provider/claude/cli/claude_cli_provider_runtime.h"
 
 #include "common/provider/runtime/provider_runtime_internal.h"
+#include "common/utils/string_utils.h"
 
 #include <sstream>
 
@@ -39,7 +40,7 @@ namespace
 
 	void AppendClaudeModeArgs(std::vector<std::string>& argv, const ChatSession& chat, const AppSettings& settings)
 	{
-		const std::string model_id = Trim(chat.model_id);
+		const std::string model_id = uam::strings::Trim(chat.model_id);
 		if (!model_id.empty())
 		{
 			argv.push_back("--model");
@@ -48,7 +49,7 @@ namespace
 
 		if (!settings.provider_yolo_mode)
 		{
-			const std::string approval_mode = Trim(chat.approval_mode);
+			const std::string approval_mode = uam::strings::Trim(chat.approval_mode);
 			if (approval_mode == "default" || approval_mode == "plan")
 			{
 				argv.push_back("--permission-mode");
@@ -82,10 +83,10 @@ std::string ClaudeCliProviderRuntime::BuildCommand(const ProviderProfile& profil
 {
 	AppSettings provider_settings = MergeProviderSettings(profile, settings);
 	std::vector<std::string> argv = {"claude", "-p"};
-	if (profile.supports_resume && !Trim(resume_session_id).empty())
+	if (profile.supports_resume && !uam::strings::Trim(resume_session_id).empty())
 	{
 		argv.push_back("--resume");
-		argv.push_back(Trim(resume_session_id));
+		argv.push_back(uam::strings::Trim(resume_session_id));
 	}
 
 	const std::vector<std::string> flags = ClaudeFlagsFromSettings(provider_settings);
@@ -103,10 +104,10 @@ std::vector<std::string> ClaudeCliProviderRuntime::BuildInteractiveArgv(const Pr
 
 	AppSettings provider_settings = MergeProviderSettings(profile, settings);
 	std::vector<std::string> argv = {"claude"};
-	if (profile.supports_resume && !Trim(chat.native_session_id).empty())
+	if (profile.supports_resume && !uam::strings::Trim(chat.native_session_id).empty())
 	{
 		argv.push_back("--resume");
-		argv.push_back(Trim(chat.native_session_id));
+		argv.push_back(uam::strings::Trim(chat.native_session_id));
 	}
 
 	AppendClaudeModeArgs(argv, chat, provider_settings);
