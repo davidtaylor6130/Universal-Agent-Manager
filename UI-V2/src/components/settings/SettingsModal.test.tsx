@@ -60,8 +60,47 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
 
     expect(host.querySelector('select')).toBeNull()
+    expect(host.textContent).toContain('Appearance')
+    expect(host.textContent).toContain('Memory')
+    expect(host.textContent).toContain('About')
+    expect(host.textContent).toContain('Theme')
+    expect(host.textContent).not.toContain('Gemini memory worker')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('switches sections through the sidebar', () => {
+    const { host, root } = renderModal()
+
+    const memorySectionButton = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Memory') && button.textContent?.includes('Defaults and workers')
+    )
+    expect(memorySectionButton).toBeTruthy()
+
+    act(() => {
+      memorySectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(host.textContent).toContain('Memory Workers')
     expect(host.textContent).toContain('Gemini memory worker')
     expect(host.textContent).toContain('CLI default')
+    expect(host.textContent).not.toContain('Build and release information')
+
+    const aboutSectionButton = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('About') && button.textContent?.includes('Version information')
+    )
+    expect(aboutSectionButton).toBeTruthy()
+
+    act(() => {
+      aboutSectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(host.textContent).toContain('Build and release information')
+    expect(host.textContent).toContain('V2.0.1')
+    expect(host.textContent).not.toContain('Gemini memory worker')
 
     act(() => {
       root.unmount()
@@ -71,6 +110,14 @@ describe('SettingsModal memory settings', () => {
 
   it('updates the memory worker provider through the custom menu', () => {
     const { host, root } = renderModal()
+
+    const memorySectionButton = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Memory') && button.textContent?.includes('Defaults and workers')
+    )
+
+    act(() => {
+      memorySectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
 
     const providerButton = host.querySelector(
       'button[title="Gemini memory worker provider"]'
@@ -109,6 +156,14 @@ describe('SettingsModal memory settings', () => {
       },
     })
     const { host, root } = renderModal()
+
+    const memorySectionButton = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Memory') && button.textContent?.includes('Defaults and workers')
+    )
+
+    act(() => {
+      memorySectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
 
     const modelButton = host.querySelector(
       'button[title="Gemini memory worker model"]'

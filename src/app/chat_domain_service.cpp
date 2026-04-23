@@ -17,6 +17,26 @@
 using uam::AppState;
 namespace
 {
+	bool ShouldAutoReplaceTitleFromFirstUserMessage(const ChatSession& chat, const MessageRole role)
+	{
+		return chat.messages.empty() && role == MessageRole::User && Trim(chat.title) == "New Session";
+	}
+
+	void AutoReplaceTitleFromFirstUserMessage(ChatSession& chat, const std::string& text)
+	{
+		std::string maybe_title = Trim(text);
+
+		if (maybe_title.size() > 48)
+		{
+			maybe_title = maybe_title.substr(0, 45) + "...";
+		}
+
+		if (!maybe_title.empty())
+		{
+			chat.title = maybe_title;
+		}
+	}
+
 	std::string NormalizeNativeIdentityWorkspace(const ChatSession& chat)
 	{
 		const std::string trimmed_workspace = Trim(chat.workspace_directory);
@@ -508,6 +528,8 @@ void ChatDomainService::ConsumePendingBranchRequest(AppState& app) const
 
 void ChatDomainService::AddMessage(ChatSession& chat, const MessageRole role, const std::string& text) const
 {
+	const bool should_auto_replace_title = ShouldAutoReplaceTitleFromFirstUserMessage(chat, role);
+
 	Message message;
 	message.role = role;
 	message.content = text;
@@ -515,24 +537,16 @@ void ChatDomainService::AddMessage(ChatSession& chat, const MessageRole role, co
 	chat.messages.push_back(std::move(message));
 	chat.updated_at = TimestampNow();
 
-	if (chat.messages.size() == 1 && role == MessageRole::User)
+	if (should_auto_replace_title)
 	{
-		std::string maybe_title = Trim(text);
-
-		if (maybe_title.size() > 48)
-		{
-			maybe_title = maybe_title.substr(0, 45) + "...";
-		}
-
-		if (!maybe_title.empty())
-		{
-			chat.title = maybe_title;
-		}
+		AutoReplaceTitleFromFirstUserMessage(chat, text);
 	}
 }
 
 void ChatDomainService::AddMessageWithAnalytics(ChatSession& chat, const MessageRole role, const std::string& text, const std::string& provider, const int64_t input_tokens, const int64_t output_chars, const int64_t time_to_first_token_ms, const int64_t processing_time_ms, const bool interrupted) const
 {
+	const bool should_auto_replace_title = ShouldAutoReplaceTitleFromFirstUserMessage(chat, role);
+
 	Message message;
 	message.role = role;
 	message.content = text;
@@ -551,18 +565,8 @@ void ChatDomainService::AddMessageWithAnalytics(ChatSession& chat, const Message
 	chat.messages.push_back(std::move(message));
 	chat.updated_at = TimestampNow();
 
-	if (chat.messages.size() == 1 && role == MessageRole::User)
+	if (should_auto_replace_title)
 	{
-		std::string maybe_title = Trim(text);
-
-		if (maybe_title.size() > 48)
-		{
-			maybe_title = maybe_title.substr(0, 45) + "...";
-		}
-
-		if (!maybe_title.empty())
-		{
-			chat.title = maybe_title;
-		}
+		AutoReplaceTitleFromFirstUserMessage(chat, text);
 	}
 }

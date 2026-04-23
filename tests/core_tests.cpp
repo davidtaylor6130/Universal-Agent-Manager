@@ -366,6 +366,62 @@ UAM_TEST(ChatRepositoryToleratesLegacyFieldsAndDropsThemOnWrite)
 	UAM_ASSERT(rewritten.find("rag_source_directories") == std::string::npos);
 }
 
+UAM_TEST(ChatDomainServiceAutoTitlesOnlyPlaceholderNewSession)
+{
+	ChatSession placeholder_chat;
+	placeholder_chat.title = "New Session";
+
+	ChatDomainService().AddMessage(placeholder_chat, MessageRole::User, "   Draft the release notes for the beta build   ");
+	UAM_ASSERT_EQ(placeholder_chat.title, std::string("Draft the release notes for the beta build"));
+
+	ChatSession custom_title_chat;
+	custom_title_chat.title = "Project kickoff";
+
+	ChatDomainService().AddMessage(custom_title_chat, MessageRole::User, "Rename me");
+	UAM_ASSERT_EQ(custom_title_chat.title, std::string("Project kickoff"));
+
+	ChatSession generated_title_chat = ChatDomainService().CreateNewChat("folder-1", "gemini-cli");
+	const std::string generated_title = generated_title_chat.title;
+	ChatDomainService().AddMessage(generated_title_chat, MessageRole::User, "Keep generated title");
+	UAM_ASSERT_EQ(generated_title_chat.title, generated_title);
+
+	ChatSession assistant_first_chat;
+	assistant_first_chat.title = "New Session";
+	ChatDomainService().AddMessage(assistant_first_chat, MessageRole::Assistant, "Assistant first");
+	UAM_ASSERT_EQ(assistant_first_chat.title, std::string("New Session"));
+}
+
+UAM_TEST(ChatDomainServiceAnalyticsAutoTitlesOnlyPlaceholderNewSession)
+{
+	ChatSession placeholder_chat;
+	placeholder_chat.title = "New Session";
+
+	ChatDomainService().AddMessageWithAnalytics(placeholder_chat,
+	                                            MessageRole::User,
+	                                            "Summarize the incident review action items",
+	                                            "codex-cli",
+	                                            100,
+	                                            40,
+	                                            5,
+	                                            20,
+	                                            false);
+	UAM_ASSERT_EQ(placeholder_chat.title, std::string("Summarize the incident review action items"));
+
+	ChatSession custom_title_chat;
+	custom_title_chat.title = "Incident review";
+
+	ChatDomainService().AddMessageWithAnalytics(custom_title_chat,
+	                                            MessageRole::User,
+	                                            "Do not overwrite",
+	                                            "codex-cli",
+	                                            100,
+	                                            40,
+	                                            5,
+	                                            20,
+	                                            false);
+	UAM_ASSERT_EQ(custom_title_chat.title, std::string("Incident review"));
+}
+
 UAM_TEST(ChatRepositoryPersistsPinnedFlag)
 {
 	TempDir temp("uam-chat-pinned");
