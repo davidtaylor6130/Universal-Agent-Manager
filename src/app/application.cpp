@@ -354,6 +354,7 @@ bool Application::InitializeState()
 
 	m_app.folders = ChatFolderStore::Load(m_app.data_root);
 	ChatHistorySyncService().LoadSidebarChatsByDiscovery(m_app);
+	MemoryService::RefreshMemoryActivity(m_app);
 
 	if (!m_app.chats.empty())
 	{

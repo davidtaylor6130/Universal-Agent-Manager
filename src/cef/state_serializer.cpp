@@ -1,6 +1,7 @@
 #include "cef/state_serializer.h"
 
 #include "app/application_core_helpers.h"
+#include "app/memory_service.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/provider/codex/cli/codex_session_index.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
@@ -656,6 +657,28 @@ nlohmann::json SerializeCliDebugState(const AppState& app)
 	return cli_debug;
 }
 
+nlohmann::json SerializeMemoryActivity(const AppState& app)
+{
+	const uam::MemoryActivityState activity = MemoryService::BuildMemoryActivity(app);
+	return {
+		{"entryCount", activity.entry_count},
+		{"lastCreatedAt", activity.last_created_at},
+		{"lastCreatedCount", activity.last_created_count},
+		{"runningCount", activity.running_count},
+		{"lastStatus", activity.last_status},
+		{"lastWorkerChatId", activity.last_worker_chat_id},
+		{"lastWorkerProviderId", activity.last_worker_provider_id},
+		{"lastWorkerUpdatedAt", activity.last_worker_updated_at},
+		{"lastWorkerStatus", activity.last_worker_status},
+		{"lastWorkerOutput", activity.last_worker_output},
+		{"lastWorkerError", activity.last_worker_error},
+		{"lastWorkerTimedOut", activity.last_worker_timed_out},
+		{"lastWorkerCanceled", activity.last_worker_canceled},
+		{"lastWorkerHasExitCode", activity.last_worker_has_exit_code},
+		{"lastWorkerExitCode", activity.last_worker_exit_code},
+	};
+}
+
 } // anonymous namespace
 
 // ---------------------------------------------------------------------------
@@ -719,6 +742,7 @@ nlohmann::json StateSerializer::Serialize(const AppState& app)
 	}
 	j["chats"] = chats_arr;
 	j["cliDebug"] = SerializeCliDebugState(app);
+	j["memoryActivity"] = SerializeMemoryActivity(app);
 
 	// Selected chat id (resolved from index)
 	if (app.selected_chat_index >= 0 &&
@@ -795,6 +819,7 @@ nlohmann::json StateSerializer::SerializeFingerprint(const AppState& app)
 		providers_arr.push_back(SerializeProvider(profile));
 	}
 	j["providers"] = providers_arr;
+	j["memoryActivity"] = SerializeMemoryActivity(app);
 
 	{
 		nlohmann::json settings;

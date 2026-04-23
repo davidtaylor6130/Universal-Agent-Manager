@@ -169,6 +169,21 @@ summary,
 @keyframes sessionStatusSpin {
   to { transform: rotate(360deg); }
 }
+@keyframes memoryActivityPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.72); }
+}
+.memory-activity-dot {
+  position: absolute;
+  right: 4px;
+  top: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--sidebar-bg);
+  animation: memoryActivityPulse 1.15s ease-in-out infinite;
+}
 .cursor-blink {
   display: inline-block;
   width: 7px;

@@ -118,7 +118,10 @@ export function SettingsModal() {
     memoryRecallBudgetBytes,
     memoryWorkerBindings,
     memoryLastStatus,
+    memoryActivity,
     setMemorySettings,
+    openGlobalMemoryLibrary,
+    openMemoryScanModal,
   } = useAppStore()
   const { theme } = useTheme()
   const [openMemoryMenu, setOpenMemoryMenu] = useState<string | null>(null)
@@ -156,6 +159,20 @@ export function SettingsModal() {
       },
     })
   }
+
+  const workerLogText = [
+    memoryActivity.lastWorkerError ? `Error:\n${memoryActivity.lastWorkerError}` : '',
+    memoryActivity.lastWorkerOutput ? `Output:\n${memoryActivity.lastWorkerOutput}` : '',
+  ].filter(Boolean).join('\n\n')
+  const hasWorkerLog = Boolean(workerLogText || memoryActivity.lastWorkerStatus)
+  const workerLogIsFailure = Boolean(memoryActivity.lastWorkerTimedOut || memoryActivity.lastWorkerError || (memoryActivity.lastWorkerStatus && memoryActivity.lastWorkerStatus !== 'Memory worker completed.'))
+  const workerLogMeta = [
+    memoryActivity.lastWorkerProviderId || '',
+    memoryActivity.lastWorkerChatId ? `chat ${memoryActivity.lastWorkerChatId}` : '',
+    memoryActivity.lastWorkerHasExitCode ? `exit ${memoryActivity.lastWorkerExitCode ?? 0}` : '',
+    memoryActivity.lastWorkerTimedOut ? 'timed out' : '',
+    memoryActivity.lastWorkerUpdatedAt || '',
+  ].filter(Boolean).join(' | ')
 
   const renderSectionContent = () => {
     if (selectedSection === 'appearance') {
@@ -417,6 +434,104 @@ export function SettingsModal() {
             {memoryLastStatus && (
               <div className="text-xs mt-3" style={{ color: 'var(--text-3)' }}>{memoryLastStatus}</div>
             )}
+
+            {hasWorkerLog && (
+              <div
+                className="mt-3 rounded-lg overflow-hidden"
+                style={{
+                  background: workerLogIsFailure ? 'color-mix(in srgb, var(--red) 7%, var(--surface))' : 'var(--surface)',
+                  border: `1px solid ${workerLogIsFailure ? 'color-mix(in srgb, var(--red) 35%, var(--border))' : 'var(--border)'}`,
+                }}
+              >
+                <div className="px-3 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
+                  <div className="text-xs font-semibold" style={{ color: workerLogIsFailure ? 'var(--red)' : 'var(--text)' }}>
+                    Last worker log
+                  </div>
+                  {memoryActivity.lastWorkerStatus && (
+                    <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-3)' }}>
+                      {memoryActivity.lastWorkerStatus}
+                    </div>
+                  )}
+                  {workerLogMeta && (
+                    <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-3)' }}>
+                      {workerLogMeta}
+                    </div>
+                  )}
+                </div>
+                <pre
+                  className="px-3 py-2 text-[11px] leading-5 overflow-auto"
+                  style={{
+                    color: 'var(--text-2)',
+                    maxHeight: 180,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    fontFamily: 'var(--font-mono)',
+                  }}
+                >
+                  {workerLogText || 'No worker output was captured.'}
+                </pre>
+              </div>
+            )}
+          </SectionCard>
+
+          <SectionCard
+            title="Memory Library"
+            description="Browse, add, delete, and reveal global memory files without leaving the app."
+          >
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <div className="text-sm" style={{ color: 'var(--text)' }}>
+                  Global memory browser
+                </div>
+                <div className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>
+                  Open the file-backed library for app-wide durable memories.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => void openGlobalMemoryLibrary()}
+                className="px-3 py-1.5 rounded-md text-xs"
+                style={{
+                  background: 'var(--accent)',
+                  color: '#fff',
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >
+                Open library
+              </button>
+            </div>
+          </SectionCard>
+
+          <SectionCard
+            title="Memory Backfill"
+            description="Scan existing chats to extract durable memories from older history."
+          >
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <div className="text-sm" style={{ color: 'var(--text)' }}>
+                  Scan current chats
+                </div>
+                <div className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>
+                  Choose chats and queue a one-off backfill scan for memory extraction.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => void openMemoryScanModal()}
+                className="px-3 py-1.5 rounded-md text-xs"
+                style={{
+                  background: 'var(--accent)',
+                  color: '#fff',
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >
+                Scan Current Chats
+              </button>
+            </div>
           </SectionCard>
         </div>
       )
@@ -450,10 +565,11 @@ export function SettingsModal() {
       onClick={(e) => { if (e.target === e.currentTarget) setSettingsOpen(false) }}
     >
       <div
-        className="rounded-2xl shadow-2xl w-full max-w-5xl mx-4 animate-slide-in overflow-hidden"
+        className="rounded-2xl shadow-2xl w-full max-w-5xl mx-4 animate-slide-in overflow-hidden flex flex-col"
         style={{
           background: 'var(--surface)',
           border: '1px solid var(--border-bright)',
+          maxHeight: 'calc(100vh - 2rem)',
         }}
       >
         {/* Header */}
@@ -479,9 +595,9 @@ export function SettingsModal() {
           </button>
         </div>
 
-        <div className="grid md:grid-cols-[220px_minmax(0,1fr)] min-h-[560px]">
+        <div className="grid md:grid-cols-[220px_minmax(0,1fr)] min-h-[560px] flex-1 min-h-0">
           <aside
-            className="p-4"
+            className="p-4 overflow-y-auto"
             style={{
               background: 'color-mix(in srgb, var(--surface-up) 68%, var(--surface))',
               borderRight: '1px solid var(--border)',
@@ -521,7 +637,7 @@ export function SettingsModal() {
             </div>
           </aside>
 
-          <div className="p-5 md:p-6 overflow-y-auto">
+          <div className="p-5 md:p-6 overflow-y-auto min-h-0">
             <div className="mb-5">
               <div className="text-lg font-semibold" style={{ color: 'var(--text)' }}>
                 {SETTINGS_SECTIONS.find((section) => section.id === selectedSection)?.label}

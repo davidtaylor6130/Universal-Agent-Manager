@@ -1,0 +1,49 @@
+{
+  "approval_mode": "plan",
+  "branch_from_message_index": -1,
+  "branch_root_chat_id": "",
+  "created_at": "",
+  "extra_flags": "",
+  "folder_id": "",
+  "id": "chat-1",
+  "last_opened_at": "2026-04-23T22:34:45.000Z",
+  "linked_files": [],
+  "memory_enabled": true,
+  "memory_last_processed_at": "",
+  "memory_last_processed_message_count": 0,
+  "messages": [
+    {
+      "blocks": [
+        {
+          "text": "Working on it.",
+          "type": "assistant_text"
+        },
+        {
+          "tool_call_id": "tool-1",
+          "type": "tool_call"
+        }
+      ],
+      "content": "Working on it.",
+      "created_at": "2026-04-23T22:34:45.000Z",
+      "provider": "claude-cli",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "args_json": "",
+          "id": "tool-1",
+          "name": "Read",
+          "result_text": "Arguments:\n{\"file_path\":\"README.md\"}\n\nResult:\ndone",
+          "status": "completed"
+        }
+      ]
+    }
+  ],
+  "model_id": "",
+  "native_session_id": "claude-session-3",
+  "parent_chat_id": "",
+  "pinned": false,
+  "provider_id": "claude-cli",
+  "title": "",
+  "updated_at": "2026-04-23T22:34:45.000Z",
+  "workspace_directory": ""
+}

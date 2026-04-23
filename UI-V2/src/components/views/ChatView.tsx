@@ -1504,7 +1504,7 @@ function ComposerToolbar({
   const planAvailable = !hasRuntimeModes || acp?.availableModes.some((mode) => mode.id === 'plan')
   const planDisabled = Boolean(modelDisabled || !planAvailable)
   const memoryDisabled = Boolean(modelDisabled)
-  const modeLabel = planActive ? 'Plan' : 'Default'
+  const modeLabel = planActive ? 'Plan' : approvalModeId === 'acceptEdits' ? 'Accept Edits' : 'Default'
   const chipStyle = {
     height: 26,
     borderRadius: 6,
@@ -2244,7 +2244,7 @@ export function ChatView({ session }: ChatViewProps) {
                 void setSessionModel(session.id, modelId)
               }}
               onTogglePlan={() => {
-                const nextMode = currentModeId === 'plan' ? 'default' : 'plan'
+                const nextMode = currentModeId === 'plan' ? (isClaudeProvider(currentProvider, currentProviderId) ? 'acceptEdits' : 'default') : 'plan'
                 void setSessionApprovalMode(session.id, nextMode)
               }}
               onToggleMemory={() => {

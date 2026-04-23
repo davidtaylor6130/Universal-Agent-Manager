@@ -208,6 +208,7 @@ namespace uam
 		bool processing = false;
 		bool waiting_for_permission = false;
 		bool waiting_for_user_input = false;
+		bool cancel_requested = false;
 		int next_request_id = 1;
 		int initialize_request_id = 0;
 		int session_setup_request_id = 0;
@@ -267,10 +268,38 @@ namespace uam
 	{
 		bool running = false;
 		std::string chat_id;
+		std::string command_preview;
 		int message_count = 0;
+		int scan_start_message_index = -1;
 		std::filesystem::path workspace_root;
 		std::shared_ptr<AsyncProcessTaskState> state;
 		std::unique_ptr<std::jthread> worker;
+	};
+
+	struct QueuedMemoryExtractionTask
+	{
+		std::string chat_id;
+		int scan_start_message_index = -1;
+		bool manual = false;
+	};
+
+	struct MemoryActivityState
+	{
+		int entry_count = 0;
+		std::string last_created_at;
+		int last_created_count = 0;
+		int running_count = 0;
+		std::string last_status;
+		std::string last_worker_chat_id;
+		std::string last_worker_provider_id;
+		std::string last_worker_updated_at;
+		std::string last_worker_status;
+		std::string last_worker_output;
+		std::string last_worker_error;
+		bool last_worker_timed_out = false;
+		bool last_worker_canceled = false;
+		bool last_worker_has_exit_code = false;
+		int last_worker_exit_code = 0;
 	};
 
 	/// <summary>
@@ -347,8 +376,12 @@ namespace uam
 		AsyncCommandTask runtime_cli_version_check_task;
 		AsyncCommandTask runtime_cli_pin_task;
 		std::vector<AsyncMemoryExtractionTask> memory_extraction_tasks;
+		std::deque<QueuedMemoryExtractionTask> memory_extraction_queue;
 		std::unordered_map<std::string, double> memory_idle_started_at_by_chat_id;
+		std::unordered_map<std::string, double> memory_retry_not_before_by_chat_id;
+		std::unordered_map<std::string, int> memory_failure_count_by_chat_id;
 		std::string memory_last_status;
+		MemoryActivityState memory_activity;
 		bool runtime_cli_version_checked = false;
 		bool runtime_cli_version_supported = false;
 		std::string runtime_cli_installed_version;

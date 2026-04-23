@@ -70,6 +70,13 @@ function makeCppState(
       memoryLastStatus: '',
       memoryWorkerBindings: {},
     },
+    memoryActivity: {
+      entryCount: 0,
+      lastCreatedAt: '',
+      lastCreatedCount: 0,
+      runningCount: 0,
+      lastStatus: '',
+    },
   }
 }
 
@@ -90,9 +97,26 @@ function resetStore() {
     memoryRecallBudgetBytes: 2048,
     memoryLastStatus: '',
     memoryWorkerBindings: {},
+    memoryActivity: {
+      entryCount: 0,
+      lastCreatedAt: '',
+      lastCreatedCount: 0,
+      runningCount: 0,
+      lastStatus: '',
+    },
     theme: 'dark',
     isNewChatModalOpen: false,
     isSettingsOpen: false,
+    memoryLibraryScope: null,
+    memoryLibraryEntries: [],
+    memoryLibraryLoading: false,
+    memoryLibraryError: '',
+    isMemoryScanModalOpen: false,
+    memoryScanCandidates: [],
+    selectedMemoryScanChatIds: [],
+    memoryScanLoading: false,
+    memoryScanRunning: false,
+    memoryScanError: '',
     streamingMessageId: null,
     pushChannelStatus: 'connected',
     pushChannelError: '',
@@ -1154,6 +1178,23 @@ describe('useAppStore Gemini CLI slice', () => {
     cppState.settings.memoryWorkerBindings = {
       'gemini-cli': { workerProviderId: 'codex-cli', workerModelId: 'gpt-5.4-mini' },
     }
+    cppState.memoryActivity = {
+      entryCount: 4,
+      lastCreatedAt: '2026-01-01T00:00:03.000Z',
+      lastCreatedCount: 2,
+      runningCount: 1,
+      lastStatus: 'Memory updated.',
+      lastWorkerChatId: 'chat-1',
+      lastWorkerProviderId: 'codex-cli',
+      lastWorkerUpdatedAt: '2026-01-01T00:00:04.000Z',
+      lastWorkerStatus: 'Memory worker completed.',
+      lastWorkerOutput: '{"memories":[]}',
+      lastWorkerError: '',
+      lastWorkerTimedOut: false,
+      lastWorkerCanceled: false,
+      lastWorkerHasExitCode: true,
+      lastWorkerExitCode: 0,
+    }
 
     useAppStore.getState().loadFromCef(cppState)
     expect(useAppStore.getState().sessions[0].memoryEnabled).toBe(false)
@@ -1162,6 +1203,18 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().memoryIdleDelaySeconds).toBe(90)
     expect(useAppStore.getState().memoryRecallBudgetBytes).toBe(1536)
     expect(useAppStore.getState().memoryWorkerBindings['gemini-cli'].workerProviderId).toBe('codex-cli')
+    expect(useAppStore.getState().memoryActivity).toMatchObject({
+      entryCount: 4,
+      lastCreatedAt: '2026-01-01T00:00:03.000Z',
+      lastCreatedCount: 2,
+      runningCount: 1,
+      lastStatus: 'Memory updated.',
+      lastWorkerChatId: 'chat-1',
+      lastWorkerProviderId: 'codex-cli',
+      lastWorkerOutput: '{"memories":[]}',
+      lastWorkerHasExitCode: true,
+      lastWorkerExitCode: 0,
+    })
 
     const requests: Array<{ action: string; payload?: unknown }> = []
     window.cefQuery = ({ request, onSuccess }) => {
@@ -1173,5 +1226,226 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(requests[0].action).toBe('setChatMemoryEnabled')
     expect(requests[0].payload).toEqual({ chatId: 'chat-1', enabled: true })
     expect(useAppStore.getState().sessions[0].memoryEnabled).toBe(true)
+  })
+
+  it('loads the global memory library through CEF', async () => {
+    const testWindow = ensureTestWindow()
+    testWindow.cefQuery = vi.fn(({ request, onSuccess }) => {
+      const parsed = JSON.parse(request as string)
+      if (parsed.action === 'listMemoryEntries') {
+        onSuccess?.(JSON.stringify({
+          scope: {
+            scopeType: 'global',
+            folderId: '',
+            label: 'Global memory',
+            rootPath: '/tmp/uam-memory',
+          },
+          entries: [
+            {
+              id: 'allman.md',
+              title: 'Project uses Allman braces',
+              category: 'Lessons/User_Lessons',
+              scope: 'global',
+              confidence: 'high',
+              sourceChatId: 'chat-1',
+              lastObserved: '2026-01-01T00:00:00.000Z',
+              occurrenceCount: 2,
+              preview: 'Prefer Allman braces.',
+              filePath: '/tmp/uam-memory/Lessons/User_Lessons/allman.md',
+            },
+          ],
+        }))
+        return
+      }
+      onSuccess?.('{}')
+    }) as TestWindow['cefQuery']
+
+    await expect(useAppStore.getState().openGlobalMemoryLibrary()).resolves.toBe(true)
+
+    const state = useAppStore.getState()
+    expect(state.memoryLibraryScope?.scopeType).toBe('global')
+    expect(state.memoryLibraryEntries).toHaveLength(1)
+    expect(state.memoryLibraryEntries[0].title).toBe('Project uses Allman braces')
+  })
+
+  it('loads the all memory library through CEF', async () => {
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    const testWindow = ensureTestWindow()
+    testWindow.cefQuery = vi.fn(({ request, onSuccess }) => {
+      const parsed = JSON.parse(request as string)
+      requests.push({ action: parsed.action, payload: parsed.payload })
+
+      if (parsed.action === 'listMemoryEntries') {
+        onSuccess?.(JSON.stringify({
+          scope: {
+            scopeType: 'all',
+            folderId: '',
+            label: 'All memory',
+            rootPath: 'Global and project memory roots',
+            rootCount: 2,
+          },
+          entries: [
+            {
+              id: 'all/726f6f74/Lessons/User_Lessons/local.md',
+              title: 'Local lesson',
+              category: 'Lessons/User_Lessons',
+              scope: 'local',
+              confidence: 'high',
+              sourceChatId: 'chat-1',
+              lastObserved: '2026-01-01T00:00:00.000Z',
+              occurrenceCount: 1,
+              preview: 'Keep this project-specific.',
+              filePath: '/tmp/project/.UAM/Lessons/User_Lessons/local.md',
+              scopeType: 'folder',
+              folderId: 'default',
+              scopeLabel: 'General',
+              rootPath: '/tmp/project/.UAM',
+            },
+          ],
+        }))
+        return
+      }
+      onSuccess?.('{}')
+    }) as TestWindow['cefQuery']
+
+    await expect(useAppStore.getState().openAllMemoryLibrary()).resolves.toBe(true)
+
+    const state = useAppStore.getState()
+    expect(requests[0].payload?.scopeType).toBe('all')
+    expect(state.memoryLibraryScope?.scopeType).toBe('all')
+    expect(state.memoryLibraryScope?.rootCount).toBe(2)
+    expect(state.memoryLibraryEntries[0].scopeLabel).toBe('General')
+  })
+
+  it('creates and deletes memory entries through the active scope', async () => {
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    const testWindow = ensureTestWindow()
+    testWindow.cefQuery = vi.fn(({ request, onSuccess }) => {
+      const parsed = JSON.parse(request as string)
+      requests.push({ action: parsed.action, payload: parsed.payload })
+
+      if (parsed.action === 'listMemoryEntries') {
+        onSuccess?.(JSON.stringify({
+          scope: {
+            scopeType: 'folder',
+            folderId: 'default',
+            label: 'General',
+            rootPath: '/tmp/project/.UAM',
+          },
+          entries: [],
+        }))
+        return
+      }
+
+      onSuccess?.('{}')
+    }) as TestWindow['cefQuery']
+
+    await expect(useAppStore.getState().openFolderMemoryLibrary('default')).resolves.toBe(true)
+
+    await expect(useAppStore.getState().createMemoryEntry({
+      category: 'Lessons/User_Lessons',
+      title: 'Brace style',
+      memory: 'Use Allman braces.',
+      evidence: 'Repository convention.',
+      confidence: 'high',
+      sourceChatId: 'chat-1',
+    })).resolves.toBe(true)
+
+    await expect(useAppStore.getState().deleteMemoryEntry('Lessons/User_Lessons/brace-style.md')).resolves.toBe(true)
+
+    expect(requests.some((request) => request.action === 'createMemoryEntry')).toBe(true)
+    expect(requests.some((request) => request.action === 'deleteMemoryEntry')).toBe(true)
+    expect(requests.find((request) => request.action === 'createMemoryEntry')?.payload?.scopeType).toBe('folder')
+  })
+
+  it('sends an explicit target when creating from the all memory scope', async () => {
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    const testWindow = ensureTestWindow()
+    testWindow.cefQuery = vi.fn(({ request, onSuccess }) => {
+      const parsed = JSON.parse(request as string)
+      requests.push({ action: parsed.action, payload: parsed.payload })
+
+      if (parsed.action === 'listMemoryEntries') {
+        onSuccess?.(JSON.stringify({
+          scope: {
+            scopeType: 'all',
+            folderId: '',
+            label: 'All memory',
+            rootPath: 'Global and project memory roots',
+          },
+          entries: [],
+        }))
+        return
+      }
+
+      onSuccess?.('{}')
+    }) as TestWindow['cefQuery']
+
+    await expect(useAppStore.getState().openAllMemoryLibrary()).resolves.toBe(true)
+    await expect(useAppStore.getState().createMemoryEntry({
+      category: 'Lessons/User_Lessons',
+      title: 'Scoped add',
+      memory: 'Save this to the project root.',
+      evidence: 'The user selected a folder target.',
+      confidence: 'medium',
+      sourceChatId: 'chat-1',
+      targetScopeType: 'folder',
+      targetFolderId: 'default',
+    })).resolves.toBe(true)
+
+    const createRequest = requests.find((request) => request.action === 'createMemoryEntry')
+    expect(createRequest?.payload?.scopeType).toBe('all')
+    expect(createRequest?.payload?.targetScopeType).toBe('folder')
+    expect(createRequest?.payload?.targetFolderId).toBe('default')
+  })
+
+  it('loads scan candidates and queues a manual memory scan through CEF', async () => {
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    const testWindow = ensureTestWindow()
+    testWindow.cefQuery = vi.fn(({ request, onSuccess }) => {
+      const parsed = JSON.parse(request as string)
+      requests.push({ action: parsed.action, payload: parsed.payload })
+
+      if (parsed.action === 'listMemoryScanCandidates') {
+        onSuccess?.(JSON.stringify({
+          candidates: [
+            {
+              chatId: 'chat-1',
+              title: 'Gemini Session',
+              folderId: 'default',
+              folderTitle: 'General',
+              providerId: 'gemini-cli',
+              messageCount: 12,
+              memoryEnabled: true,
+              memoryLastProcessedAt: '',
+              alreadyFullyProcessed: false,
+            },
+          ],
+        }))
+        return
+      }
+
+      if (parsed.action === 'scanCurrentChats') {
+        onSuccess?.(JSON.stringify({ queuedCount: 1 }))
+        return
+      }
+
+      onSuccess?.('{}')
+    }) as TestWindow['cefQuery']
+
+    await expect(useAppStore.getState().openMemoryScanModal()).resolves.toBe(true)
+    expect(useAppStore.getState().isMemoryScanModalOpen).toBe(true)
+    expect(useAppStore.getState().selectedMemoryScanChatIds).toEqual(['chat-1'])
+
+    useAppStore.getState().selectNoMemoryScanChats()
+    expect(useAppStore.getState().selectedMemoryScanChatIds).toEqual([])
+
+    useAppStore.getState().selectAllMemoryScanChats()
+    expect(useAppStore.getState().selectedMemoryScanChatIds).toEqual(['chat-1'])
+
+    await expect(useAppStore.getState().startMemoryScan()).resolves.toBe(true)
+    expect(useAppStore.getState().isMemoryScanModalOpen).toBe(false)
+    expect(requests.some((request) => request.action === 'listMemoryScanCandidates')).toBe(true)
+    expect(requests.find((request) => request.action === 'scanCurrentChats')?.payload?.chatIds).toEqual(['chat-1'])
   })
 })

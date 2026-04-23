@@ -25,6 +25,7 @@ export function FolderTree({ searchQuery }: FolderTreeProps) {
   const deleteFolder        = useAppStore((s) => s.deleteFolder)
   const browseFolderDirectory = useAppStore((s) => s.browseFolderDirectory)
   const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
+  const openFolderMemoryLibrary = useAppStore((s) => s.openFolderMemoryLibrary)
 
   const [addingFolder, setAddingFolder] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
@@ -146,6 +147,7 @@ export function FolderTree({ searchQuery }: FolderTreeProps) {
           onCancelEdit={() => setEditingFolderId(null)}
           onChooseDirectory={() => void chooseEditFolderDirectory()}
           onCreateChat={() => setNewChatModalOpen(true, folder.id)}
+          onOpenMemory={() => void openFolderMemoryLibrary(folder.id)}
         />
       ))}
 
@@ -466,6 +468,7 @@ interface FolderRowProps {
   onCancelEdit: () => void
   onChooseDirectory: () => void
   onCreateChat: () => void
+  onOpenMemory: () => void
 }
 
 const FolderRow = memo(function FolderRow({
@@ -485,6 +488,7 @@ const FolderRow = memo(function FolderRow({
   onCancelEdit,
   onChooseDirectory,
   onCreateChat,
+  onOpenMemory,
 }: FolderRowProps) {
   const [showAllSessions, setShowAllSessions] = useState(false)
   const shouldLimitSessions = !isSearching && sessionIds.length > VISIBLE_SESSION_LIMIT
@@ -541,6 +545,20 @@ const FolderRow = memo(function FolderRow({
           className="absolute right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-100"
           onClick={(e) => e.stopPropagation()}
         >
+          <button
+            type="button"
+            className="text-[10px] px-1.5 py-0.5 rounded"
+            style={{
+              background: 'var(--surface-up)',
+              color: 'var(--text-3)',
+              border: '1px solid var(--border)',
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+            }}
+            onClick={onOpenMemory}
+          >
+            Memory
+          </button>
           <button
             type="button"
             className="text-[10px] px-1.5 py-0.5 rounded"

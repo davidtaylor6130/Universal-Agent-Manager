@@ -541,7 +541,7 @@ namespace
 		std::string LaunchApprovalMode(const ChatSession& chat)
 		{
 			const std::string mode = Trim(chat.approval_mode);
-			return (mode == "default" || mode == "plan") ? mode : "";
+			return (mode == "default" || mode == "acceptEdits" || mode == "plan") ? mode : "";
 		}
 
 		std::vector<std::string> BuildAcpLaunchArgv(const ChatSession& chat)
@@ -555,7 +555,7 @@ namespace
 			{
 				std::vector<std::string> argv = {"claude", "-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose"};
 				const std::string approval_mode = LaunchApprovalMode(chat);
-				if (approval_mode == "default" || approval_mode == "plan")
+				if (approval_mode == "default" || approval_mode == "acceptEdits" || approval_mode == "plan")
 				{
 					argv.push_back("--permission-mode");
 					argv.push_back(approval_mode);
@@ -772,6 +772,7 @@ namespace
 			session.load_session_supported = true;
 			session.available_modes = {
 				AcpModeState{"default", "Default", "Use Claude default permissions."},
+				AcpModeState{"acceptEdits", "Accept Edits", "Auto-approve Claude file edits in the workspace."},
 				AcpModeState{"plan", "Plan", "Ask Claude to plan before making changes."},
 			};
 			if (session.current_mode_id.empty())
@@ -1202,6 +1203,7 @@ namespace
 		session.processing = false;
 		session.waiting_for_permission = false;
 		session.waiting_for_user_input = false;
+		session.cancel_requested = false;
 		session.next_request_id = 1;
 		session.initialize_request_id = 0;
 		session.session_setup_request_id = 0;
@@ -1726,6 +1728,7 @@ namespace
 			session.processing = false;
 			session.waiting_for_permission = false;
 			session.waiting_for_user_input = false;
+			session.cancel_requested = false;
 			session.queued_prompt.clear();
 			session.current_assistant_message_index = -1;
 			session.codex_turn_id.clear();
@@ -2247,6 +2250,19 @@ namespace
 
 	void HandlePermissionRequest(AcpSessionState& session, const nlohmann::json& message)
 	{
+		if (session.cancel_requested || session.cancel_request_id != 0)
+		{
+			AppendAcpDiagnostic(session,
+			                    "request",
+			                    "ignored_permission_during_cancel",
+			                    message.value("method", ""),
+			                    JsonRpcIdToStableString(message.value("id", nlohmann::json(nullptr))),
+			                    false,
+			                    0,
+			                    "Ignoring permission request while a turn cancel is pending.");
+			return;
+		}
+
 		const nlohmann::json params = message.value("params", nlohmann::json::object());
 		const nlohmann::json tool_call = params.value("toolCall", nlohmann::json::object());
 
@@ -2625,6 +2641,19 @@ namespace
 
 	void HandleCodexPendingPermission(AcpSessionState& session, const nlohmann::json& message, const std::string& kind)
 	{
+		if (session.cancel_requested || session.cancel_request_id != 0)
+		{
+			AppendAcpDiagnostic(session,
+			                    "request",
+			                    "ignored_permission_during_cancel",
+			                    JsonDiagnosticStringValue(message, "method"),
+			                    JsonRpcIdToStableString(message.value("id", nlohmann::json(nullptr))),
+			                    false,
+			                    0,
+			                    "Ignoring permission request while a turn cancel is pending.");
+			return;
+		}
+
 		const nlohmann::json params = JsonObjectValue(message, "params");
 		AcpPendingPermissionState pending;
 		pending.request_id_json = JsonRpcIdToStableString(message.value("id", nlohmann::json(nullptr)));
@@ -2727,6 +2756,19 @@ namespace
 
 	void HandleCodexUserInputRequest(AcpSessionState& session, const nlohmann::json& message)
 	{
+		if (session.cancel_requested || session.cancel_request_id != 0)
+		{
+			AppendAcpDiagnostic(session,
+			                    "request",
+			                    "ignored_user_input_during_cancel",
+			                    JsonDiagnosticStringValue(message, "method"),
+			                    JsonRpcIdToStableString(message.value("id", nlohmann::json(nullptr))),
+			                    false,
+			                    0,
+			                    "Ignoring user input request while a turn cancel is pending.");
+			return;
+		}
+
 		const nlohmann::json params = JsonObjectValue(message, "params");
 		AcpPendingUserInputState pending;
 		pending.request_id_json = JsonRpcIdToStableString(message.value("id", nlohmann::json(nullptr)));
@@ -3670,7 +3712,16 @@ namespace
 
 				if (method == "session/cancel")
 				{
+					session.cancel_requested = false;
 					session.cancel_request_id = 0;
+					return;
+				}
+
+				if (method == "turn/interrupt")
+				{
+					session.cancel_requested = false;
+					session.cancel_request_id = 0;
+					session.codex_turn_id.clear();
 					return;
 				}
 
@@ -4152,6 +4203,22 @@ bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string&
 
 	ChatSession& chat = app.chats[static_cast<std::size_t>(chat_index)];
 	AcpSessionState& session = EnsureAcpSessionForChat(app, chat);
+	if (session.cancel_requested || session.cancel_request_id != 0)
+	{
+		const std::string provider_id = session.provider_id;
+		const std::string protocol_kind = session.protocol_kind;
+		if (!StopAcpSession(app, chat_id))
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Failed to restart ACP session after cancelling the previous turn.";
+			}
+			return false;
+		}
+
+		session.provider_id = provider_id;
+		session.protocol_kind = protocol_kind;
+	}
 	if (session.processing)
 	{
 		if (error_out != nullptr)
@@ -4176,6 +4243,7 @@ bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string&
 	session.processing = true;
 	session.waiting_for_permission = false;
 	session.waiting_for_user_input = false;
+	session.cancel_requested = false;
 	session.current_assistant_message_index = -1;
 	session.turn_user_message_index = static_cast<int>(chat.messages.size()) - 1;
 		session.turn_assistant_message_index = -1;
@@ -4227,6 +4295,7 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 	session->processing = false;
 	session->waiting_for_permission = false;
 	session->waiting_for_user_input = false;
+	session->cancel_requested = true;
 		session->pending_permission = AcpPendingPermissionState{};
 		session->pending_user_input = AcpPendingUserInputState{};
 		session->current_assistant_message_index = -1;
@@ -4274,6 +4343,7 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 	session->processing = false;
 	session->waiting_for_permission = false;
 	session->waiting_for_user_input = false;
+	session->cancel_requested = false;
 	session->lifecycle_state = kAcpLifecycleStopped;
 	session->queued_prompt.clear();
 	session->prompt_request_id = 0;
@@ -4319,6 +4389,11 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 			session->current_mode_id = mode_id;
 			return true;
 		}
+		if (IsClaudeSession(*session))
+		{
+			session->current_mode_id = mode_id;
+			return StopAcpSession(app, chat_id);
+		}
 
 		const int id = NextAcpRequestId(*session, "session/set_mode");
 		if (!WriteAcpMessage(*session, BuildSetModeRequest(id, session->session_id, mode_id), error_out))
@@ -4357,6 +4432,11 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 		{
 			session->current_model_id = model_id;
 			return true;
+		}
+		if (IsClaudeSession(*session))
+		{
+			session->current_model_id = model_id;
+			return StopAcpSession(app, chat_id);
 		}
 
 		const int id = NextAcpRequestId(*session, "session/set_model");
@@ -4402,6 +4482,7 @@ bool ResolveAcpPermission(AppState& app,
 
 	session->pending_permission = AcpPendingPermissionState{};
 	session->waiting_for_permission = false;
+	session->cancel_requested = false;
 	session->lifecycle_state = session->processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
 	return true;
 }
@@ -4438,6 +4519,7 @@ bool ResolveAcpUserInput(AppState& app,
 
 	session->pending_user_input = AcpPendingUserInputState{};
 	session->waiting_for_user_input = false;
+	session->cancel_requested = false;
 	session->lifecycle_state = session->processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
 	return true;
 }

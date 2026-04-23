@@ -224,6 +224,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/application_core_helpers.cpp
   src/app/chat_domain_service.cpp
   src/app/chat_lifecycle_service.cpp
+  src/app/memory_library_service.cpp
   src/app/memory_service.cpp
   src/app/native_session_link_service.cpp
   src/app/persistence_coordinator.cpp
@@ -651,6 +652,7 @@ if(UAM_BUILD_TESTS)
     src/app/application_core_helpers.cpp
     src/app/chat_domain_service.cpp
     src/app/chat_lifecycle_service.cpp
+    src/app/memory_library_service.cpp
     src/app/memory_service.cpp
     src/app/native_session_link_service.cpp
     src/app/persistence_coordinator.cpp

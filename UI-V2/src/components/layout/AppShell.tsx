@@ -3,10 +3,12 @@ import { Sidebar } from './Sidebar'
 import { MainPanel } from './MainPanel'
 import { NewChatModal } from '../sidebar/NewChatModal'
 import { SettingsModal } from '../settings/SettingsModal'
+import { MemoryLibraryModal } from '../settings/MemoryLibraryModal'
+import { MemoryScanModal } from '../settings/MemoryScanModal'
 import { useAppStore } from '../../store/useAppStore'
 
 export function AppShell() {
-  const { isNewChatModalOpen, isSettingsOpen } = useAppStore()
+  const { isNewChatModalOpen, isSettingsOpen, memoryLibraryScope, isMemoryScanModalOpen } = useAppStore()
 
   return (
     <div
@@ -39,6 +41,8 @@ export function AppShell() {
       {/* Modals */}
       {isNewChatModalOpen && <NewChatModal />}
       {isSettingsOpen && <SettingsModal />}
+      {memoryLibraryScope && <MemoryLibraryModal />}
+      {isMemoryScanModalOpen && <MemoryScanModal />}
     </div>
   )
 }

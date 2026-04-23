@@ -48,6 +48,7 @@ describe('FolderTree', () => {
       cliTranscriptBySessionId: {},
       isNewChatModalOpen: false,
       newChatFolderId: null,
+      openFolderMemoryLibrary: vi.fn(() => Promise.resolve(true)),
     })
   })
 
@@ -120,6 +121,32 @@ describe('FolderTree', () => {
 
     expect(useAppStore.getState().activeSessionId).toBe('chat-3')
     expect(useAppStore.getState().sessions.find((session) => session.id === 'chat-2')?.isPinned).toBe(true)
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('opens project memory from the folder action', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<FolderTree searchQuery="" />)
+    })
+
+    const memoryButton = Array.from(host.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Memory')
+    )
+    expect(memoryButton).toBeTruthy()
+
+    act(() => {
+      memoryButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(useAppStore.getState().openFolderMemoryLibrary).toHaveBeenCalledWith('project')
 
     act(() => {
       root.unmount()

@@ -7,6 +7,8 @@
 #include "app/chat_domain_service.h"
 #include "app/chat_lifecycle_service.h"
 #include "app/application_core_helpers.h"
+#include "app/memory_library_service.h"
+#include "app/memory_service.h"
 #include "app/persistence_coordinator.h"
 #include "app/runtime_orchestration_services.h"
 #include "common/paths/app_paths.h"
@@ -117,7 +119,7 @@ namespace
 
 		bool IsAllowedAcpApprovalMode(const std::string& mode_id)
 		{
-			return mode_id == "default" || mode_id == "plan";
+			return mode_id == "default" || mode_id == "acceptEdits" || mode_id == "plan";
 		}
 
 		bool AcpSessionBlocksModelChange(const uam::AcpSessionState& session)
@@ -414,6 +416,20 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 			HandleToggleFolder(browser, payload, callback);
 		else if (action == "browseFolderDirectory")
 			HandleBrowseFolderDirectory(browser, payload, callback);
+		else if (action == "listMemoryEntries")
+			HandleListMemoryEntries(browser, payload, callback);
+		else if (action == "createMemoryEntry")
+			HandleCreateMemoryEntry(browser, payload, callback);
+		else if (action == "deleteMemoryEntry")
+			HandleDeleteMemoryEntry(browser, payload, callback);
+		else if (action == "openMemoryRoot")
+			HandleOpenMemoryRoot(browser, payload, callback);
+		else if (action == "revealMemoryEntry")
+			HandleRevealMemoryEntry(browser, payload, callback);
+		else if (action == "listMemoryScanCandidates")
+			HandleListMemoryScanCandidates(browser, payload, callback);
+		else if (action == "scanCurrentChats")
+			HandleScanCurrentChats(browser, payload, callback);
 		else if (action == "startCliTerminal")
 			HandleStartCli(browser, payload, callback);
 		else if (action == "stopCliTerminal")
@@ -1056,6 +1072,269 @@ void UamQueryHandler::HandleBrowseFolderDirectory(CefRefPtr<CefBrowser> /*browse
 	nlohmann::json result;
 	result["selectedPath"] = selected_path;
 	cb->Success(result.dump());
+}
+
+void UamQueryHandler::HandleListMemoryEntries(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	MemoryLibraryService::Scope scope;
+	std::string error;
+	if (!MemoryLibraryService::ResolveScope(m_app, payload.value("scopeType", "global"), payload.value("folderId", ""), scope, &error))
+	{
+		cb->Failure(400, error.empty() ? "Failed to resolve memory scope." : error);
+		return;
+	}
+
+	const std::vector<MemoryLibraryService::Entry> entries = MemoryLibraryService::ListEntries(scope, &error);
+	if (!error.empty())
+	{
+		cb->Failure(500, error);
+		return;
+	}
+
+	nlohmann::json response;
+	response["scope"] = {
+		{"scopeType", scope.scope_type},
+		{"folderId", scope.folder_id},
+		{"label", scope.label},
+		{"rootPath", scope.root_path.empty() ? std::string("Global and project memory roots") : scope.root_path.string()},
+		{"rootCount", scope.roots.size()},
+	};
+	response["entries"] = nlohmann::json::array();
+	for (const MemoryLibraryService::Entry& entry : entries)
+	{
+		response["entries"].push_back({
+			{"id", entry.id},
+			{"title", entry.title},
+			{"category", entry.category},
+			{"scope", entry.scope},
+			{"confidence", entry.confidence},
+			{"sourceChatId", entry.source_chat_id},
+			{"lastObserved", entry.last_observed},
+			{"occurrenceCount", entry.occurrence_count},
+			{"preview", entry.preview},
+			{"filePath", entry.file_path.string()},
+			{"scopeType", entry.scope_type},
+			{"folderId", entry.folder_id},
+			{"scopeLabel", entry.scope_label},
+			{"rootPath", entry.root_path.string()},
+		});
+	}
+	cb->Success(response.dump());
+}
+
+void UamQueryHandler::HandleCreateMemoryEntry(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string requested_scope_type = payload.value("scopeType", "global");
+	const std::string requested_folder_id = payload.value("folderId", "");
+	std::string concrete_scope_type = requested_scope_type;
+	std::string concrete_folder_id = requested_folder_id;
+	if (Trim(requested_scope_type) == "all")
+	{
+		concrete_scope_type = payload.value("targetScopeType", "");
+		concrete_folder_id = payload.value("targetFolderId", "");
+		if (Trim(concrete_scope_type).empty())
+		{
+			cb->Failure(400, "A target memory scope is required.");
+			return;
+		}
+	}
+
+	MemoryLibraryService::Scope scope;
+	std::string error;
+	if (!MemoryLibraryService::ResolveScope(m_app, concrete_scope_type, concrete_folder_id, scope, &error))
+	{
+		cb->Failure(400, error.empty() ? "Failed to resolve memory scope." : error);
+		return;
+	}
+
+	MemoryLibraryService::Draft draft;
+	draft.category = payload.value("category", "");
+	draft.title = payload.value("title", "");
+	draft.memory = payload.value("memory", "");
+	draft.evidence = payload.value("evidence", "");
+	draft.confidence = payload.value("confidence", "medium");
+	draft.source_chat_id = payload.value("sourceChatId", "");
+
+	MemoryLibraryService::Entry created;
+	if (!MemoryLibraryService::CreateEntry(scope, draft, &created, &error))
+	{
+		cb->Failure(400, error.empty() ? "Failed to create memory entry." : error);
+		return;
+	}
+
+	nlohmann::json response = {
+		{"id", created.id},
+		{"title", created.title},
+		{"category", created.category},
+		{"scope", created.scope},
+		{"confidence", created.confidence},
+		{"sourceChatId", created.source_chat_id},
+		{"lastObserved", created.last_observed},
+		{"occurrenceCount", created.occurrence_count},
+		{"preview", created.preview},
+		{"filePath", created.file_path.string()},
+		{"scopeType", created.scope_type},
+		{"folderId", created.folder_id},
+		{"scopeLabel", created.scope_label},
+		{"rootPath", created.root_path.string()},
+	};
+	MemoryService::RefreshMemoryActivity(m_app);
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success(response.dump());
+}
+
+void UamQueryHandler::HandleDeleteMemoryEntry(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	MemoryLibraryService::Scope scope;
+	std::string error;
+	if (!MemoryLibraryService::ResolveScope(m_app, payload.value("scopeType", "global"), payload.value("folderId", ""), scope, &error))
+	{
+		cb->Failure(400, error.empty() ? "Failed to resolve memory scope." : error);
+		return;
+	}
+
+	if (!MemoryLibraryService::DeleteEntry(scope, payload.value("entryId", ""), &error))
+	{
+		cb->Failure(404, error.empty() ? "Failed to delete memory entry." : error);
+		return;
+	}
+
+	MemoryService::RefreshMemoryActivity(m_app);
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleOpenMemoryRoot(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	MemoryLibraryService::Scope scope;
+	std::string error;
+	if (!MemoryLibraryService::ResolveScope(m_app, payload.value("scopeType", "global"), payload.value("folderId", ""), scope, &error))
+	{
+		cb->Failure(400, error.empty() ? "Failed to resolve memory scope." : error);
+		return;
+	}
+	if (scope.scope_type == "all")
+	{
+		cb->Failure(400, "The all memory view has multiple roots. Reveal a memory entry instead.");
+		return;
+	}
+
+	if (!MemoryService::EnsureMemoryLayout(scope.root_path))
+	{
+		cb->Failure(500, "Failed to create memory root.");
+		return;
+	}
+
+	if (!PlatformServicesFactory::Instance().file_dialog_service.OpenFolderInFileManager(scope.root_path, &error))
+	{
+		cb->Failure(500, error.empty() ? "Failed to open memory root." : error);
+		return;
+	}
+
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleRevealMemoryEntry(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	MemoryLibraryService::Scope scope;
+	std::string error;
+	if (!MemoryLibraryService::ResolveScope(m_app, payload.value("scopeType", "global"), payload.value("folderId", ""), scope, &error))
+	{
+		cb->Failure(400, error.empty() ? "Failed to resolve memory scope." : error);
+		return;
+	}
+
+	const std::string entry_id = payload.value("entryId", "");
+	if (entry_id.empty())
+	{
+		cb->Failure(400, "Memory entry id is required.");
+		return;
+	}
+
+	const std::vector<MemoryLibraryService::Entry> entries = MemoryLibraryService::ListEntries(scope, &error);
+	if (!error.empty())
+	{
+		cb->Failure(500, error);
+		return;
+	}
+
+	for (const MemoryLibraryService::Entry& entry : entries)
+	{
+		if (entry.id != entry_id)
+		{
+			continue;
+		}
+
+		if (!PlatformServicesFactory::Instance().file_dialog_service.RevealPathInFileManager(entry.file_path, &error))
+		{
+			cb->Failure(500, error.empty() ? "Failed to reveal memory file." : error);
+			return;
+		}
+
+		cb->Success("{}");
+		return;
+	}
+
+	cb->Failure(404, "Memory entry not found: " + entry_id);
+}
+
+void UamQueryHandler::HandleListMemoryScanCandidates(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& /*payload*/, CefRefPtr<Callback> cb)
+{
+	const std::vector<MemoryService::ManualScanCandidate> candidates = MemoryService::ListManualScanCandidates(m_app);
+	nlohmann::json response;
+	response["candidates"] = nlohmann::json::array();
+	for (const MemoryService::ManualScanCandidate& candidate : candidates)
+	{
+		response["candidates"].push_back({
+			{"chatId", candidate.chat_id},
+			{"title", candidate.title},
+			{"folderId", candidate.folder_id},
+			{"folderTitle", candidate.folder_title},
+			{"providerId", candidate.provider_id},
+			{"messageCount", candidate.message_count},
+			{"memoryEnabled", candidate.memory_enabled},
+			{"memoryLastProcessedAt", candidate.memory_last_processed_at},
+			{"alreadyFullyProcessed", candidate.already_fully_processed},
+		});
+	}
+	cb->Success(response.dump());
+}
+
+void UamQueryHandler::HandleScanCurrentChats(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	if (!payload.contains("chatIds") || !payload["chatIds"].is_array())
+	{
+		cb->Failure(400, "chatIds is required.");
+		return;
+	}
+
+	std::vector<std::string> chat_ids;
+	chat_ids.reserve(payload["chatIds"].size());
+	for (const nlohmann::json& value : payload["chatIds"])
+	{
+		if (!value.is_string())
+		{
+			continue;
+		}
+		const std::string chat_id = Trim(value.get<std::string>());
+		if (!chat_id.empty())
+		{
+			chat_ids.push_back(chat_id);
+		}
+	}
+
+	std::string error;
+	int queued_count = 0;
+	if (!MemoryService::QueueManualScan(m_app, chat_ids, &queued_count, &error))
+	{
+		cb->Failure(409, error.empty() ? "No chats were queued for memory scanning." : error);
+		return;
+	}
+
+	uam::PushStateUpdate(browser, m_app);
+	nlohmann::json response;
+	response["queuedCount"] = queued_count;
+	cb->Success(response.dump());
 }
 
 void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

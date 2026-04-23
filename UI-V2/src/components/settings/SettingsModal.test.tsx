@@ -43,6 +43,8 @@ describe('SettingsModal memory settings', () => {
       memoryLastStatus: '',
       setSettingsOpen: vi.fn(),
       setMemorySettings: vi.fn(() => Promise.resolve(true)),
+      openGlobalMemoryLibrary: vi.fn(() => Promise.resolve(true)),
+      openMemoryScanModal: vi.fn(() => Promise.resolve(true)),
     })
   })
 
@@ -101,6 +103,47 @@ describe('SettingsModal memory settings', () => {
     expect(host.textContent).toContain('Build and release information')
     expect(host.textContent).toContain('V2.0.1')
     expect(host.textContent).not.toContain('Gemini memory worker')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('shows the last memory worker log in the memory section', () => {
+    useAppStore.setState({
+      memoryActivity: {
+        entryCount: 0,
+        lastCreatedAt: '',
+        lastCreatedCount: 0,
+        runningCount: 0,
+        lastStatus: 'Command timed out.',
+        lastWorkerChatId: 'chat-1',
+        lastWorkerProviderId: 'codex-cli',
+        lastWorkerUpdatedAt: '2026-04-23T22:53:00.000Z',
+        lastWorkerStatus: 'Command timed out.',
+        lastWorkerOutput: 'codex started running commands from the transcript',
+        lastWorkerError: 'Command timed out.',
+        lastWorkerTimedOut: true,
+        lastWorkerCanceled: false,
+        lastWorkerHasExitCode: false,
+        lastWorkerExitCode: 0,
+      },
+    })
+    const { host, root } = renderModal()
+
+    const memorySectionButton = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Memory') && button.textContent?.includes('Defaults and workers')
+    )
+
+    act(() => {
+      memorySectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(host.textContent).toContain('Last worker log')
+    expect(host.textContent).toContain('Command timed out.')
+    expect(host.textContent).toContain('codex started running commands from the transcript')
+    expect(host.textContent).toContain('codex-cli')
 
     act(() => {
       root.unmount()
@@ -188,6 +231,65 @@ describe('SettingsModal memory settings', () => {
         'gemini-cli': { workerProviderId: 'gemini-cli', workerModelId: 'flash' },
       },
     })
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('opens the global memory library from the memory section', () => {
+    const { host, root } = renderModal()
+
+    const memorySectionButton = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Memory') && button.textContent?.includes('Defaults and workers')
+    )
+
+    act(() => {
+      memorySectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    const openLibraryButton = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Open library')
+    )
+    expect(openLibraryButton).toBeTruthy()
+
+    act(() => {
+      openLibraryButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(useAppStore.getState().openGlobalMemoryLibrary).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('opens the scan current chats flow from the memory section', () => {
+    const { host, root } = renderModal()
+
+    const memorySectionButton = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Memory') && button.textContent?.includes('Defaults and workers')
+    )
+
+    act(() => {
+      memorySectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    const scanButton = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Scan Current Chats')
+    )
+    expect(scanButton).toBeTruthy()
+
+    act(() => {
+      scanButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(useAppStore.getState().openMemoryScanModal).toHaveBeenCalledTimes(1)
+
+    const modalShell = host.querySelector('.rounded-2xl.shadow-2xl') as HTMLDivElement | null
+    expect(modalShell?.style.maxHeight).toBe('calc(100vh - 2rem)')
 
     act(() => {
       root.unmount()

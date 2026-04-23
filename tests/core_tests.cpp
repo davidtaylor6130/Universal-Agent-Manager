@@ -1,5 +1,6 @@
 #include "app/chat_domain_service.h"
 #include "app/chat_lifecycle_service.h"
+#include "app/memory_library_service.h"
 #include "app/memory_service.h"
 #include "app/runtime_orchestration_services.h"
 #include "common/chat/chat_folder_store.h"
@@ -15,6 +16,7 @@
 #endif
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
+#include "common/runtime/app_time.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/terminal/terminal_idle_classifier.h"
 #include "common/runtime/terminal/terminal_identity.h"
@@ -318,10 +320,506 @@ UAM_TEST(MemoryServiceWritesDedupesAndBuildsRecall)
 	const std::string text = ReadFile(memory_file);
 	UAM_ASSERT(text.find("Occurrence count: 2") != std::string::npos);
 	UAM_ASSERT(text.find("Prefer Allman brace style") != std::string::npos);
+	UAM_ASSERT_EQ(app.memory_activity.entry_count, 1);
+	UAM_ASSERT_EQ(app.memory_activity.last_created_count, 1);
+	UAM_ASSERT(!app.memory_activity.last_created_at.empty());
 
 	const std::string recall = MemoryService::BuildRecallPreface(app, app.chats[0], "Implement feature");
 	UAM_ASSERT(recall.find("Relevant UAM memories") != std::string::npos);
 	UAM_ASSERT(recall.find("Prefer Allman brace style") != std::string::npos);
+}
+
+UAM_TEST(MemoryServiceParsesNoisyCodexTranscriptMemoryPayload)
+{
+	TempDir temp("uam-memory-noisy-codex");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+
+	ChatFolder folder;
+	folder.id = "folder-1";
+	folder.title = "Project";
+	folder.directory = (temp.root / "workspace").string();
+	app.folders.push_back(folder);
+	fs::create_directories(folder.directory);
+
+	ChatSession chat = ChatDomainService().CreateNewChat(folder.id, "codex-cli");
+	chat.id = "chat-noisy-codex";
+	chat.workspace_directory = folder.directory;
+	chat.messages.push_back({MessageRole::User, "Remember that the memory worker should parse Codex output.", "now"});
+	app.chats.push_back(chat);
+
+	const std::string output = R"(Reading additional input from stdin...
+OpenAI Codex v0.124.0
+--------
+user
+Extract durable memories from this chat delta. Return ONLY JSON with shape {"memories":[{"scope":"global|local","category":"Failures/AI_Failures|Failures/User_Failures|Lessons/AI_Lessons|Lessons/User_Lessons","title":"...","memory":"...","evidence":"...","confidence":"high|medium|low"}]}.
+codex
+{"memories":[{"scope":"local","category":"Lessons/User_Lessons","title":"Codex worker output is noisy","memory":"Parse the final Codex memory JSON instead of treating the full transcript as JSON.","evidence":"Codex printed headers and then the JSON payload.","confidence":"high"}]}
+tokens used
+4,115
+)";
+
+	std::string error;
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats[0], fs::path(folder.directory), output, -1, &error));
+
+	const fs::path memory_file = fs::path(folder.directory) / ".UAM" / "Lessons" / "User_Lessons" / "codex-worker-output-is-noisy.md";
+	const std::string text = ReadFile(memory_file);
+	UAM_ASSERT(text.find("Parse the final Codex memory JSON") != std::string::npos);
+}
+
+UAM_TEST(MemoryServiceParsesCodexJsonEventMemoryPayload)
+{
+	TempDir temp("uam-memory-codex-jsonl");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+
+	ChatFolder folder;
+	folder.id = "folder-1";
+	folder.title = "Project";
+	folder.directory = (temp.root / "workspace").string();
+	app.folders.push_back(folder);
+	fs::create_directories(folder.directory);
+
+	ChatSession chat = ChatDomainService().CreateNewChat(folder.id, "codex-cli");
+	chat.id = "chat-codex-jsonl";
+	chat.workspace_directory = folder.directory;
+	chat.messages.push_back({MessageRole::User, "Remember that Codex JSONL wraps final text.", "now"});
+	app.chats.push_back(chat);
+
+	const std::string payload = R"({"memories":[{"scope":"local","category":"Lessons/User_Lessons","title":"Codex JSONL wraps final memory text","memory":"Parse item.text from Codex JSONL worker output as the memory payload.","evidence":"Codex emitted an item.completed event containing the final text.","confidence":"high"}]})";
+	const nlohmann::json event = {{"type", "item.completed"}, {"item", {{"type", "agent_message"}, {"text", payload}}}};
+	const std::string output = "Reading additional input from stdin...\n" + event.dump() + "\n";
+
+	std::string error;
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats[0], fs::path(folder.directory), output, -1, &error));
+
+	const fs::path memory_file = fs::path(folder.directory) / ".UAM" / "Lessons" / "User_Lessons" / "codex-jsonl-wraps-final-memory-text.md";
+	const std::string text = ReadFile(memory_file);
+	UAM_ASSERT(text.find("Parse item.text from Codex JSONL") != std::string::npos);
+}
+
+UAM_TEST(MemoryServiceBuildsHeadlessGeminiWorkerCommand)
+{
+	AppSettings settings;
+	settings.provider_extra_flags = "--debug";
+	const ProviderProfile gemini = ProviderProfileStore::DefaultGeminiProfile();
+
+	const std::string command = MemoryService::BuildWorkerCommandForTests(gemini, settings, "remember this", "flash-lite");
+
+	UAM_ASSERT(command.find("gemini") != std::string::npos);
+	UAM_ASSERT(command.find("-p") != std::string::npos || command.find("--prompt") != std::string::npos);
+	UAM_ASSERT(command.find("remember this") != std::string::npos);
+	UAM_ASSERT(command.find("--model") != std::string::npos);
+	UAM_ASSERT(command.find("flash-lite") != std::string::npos);
+#if !defined(_WIN32)
+	UAM_ASSERT(command.find("PATH=") != std::string::npos);
+	UAM_ASSERT(command.find("/opt/homebrew/bin") != std::string::npos);
+#endif
+}
+
+UAM_TEST(MemoryServiceBuildsInertTranscriptWorkerPrompt)
+{
+	ChatSession chat = ChatDomainService().CreateNewChat("folder-1", "codex-cli");
+	chat.messages.push_back({MessageRole::User, "Memory worker fails for some reason, Investigate!", "now"});
+	chat.messages.push_back({MessageRole::Assistant, "I will inspect the code.", "now"});
+
+	const std::string prompt = MemoryService::BuildWorkerPromptForTests(chat);
+
+	UAM_ASSERT(prompt.find("inert quoted data") != std::string::npos);
+	UAM_ASSERT(prompt.find("Do not run shell commands") != std::string::npos);
+	UAM_ASSERT(prompt.find("Use scope \"global\" only") != std::string::npos);
+	UAM_ASSERT(prompt.find("Use scope \"local\" for project-specific lessons") != std::string::npos);
+	UAM_ASSERT(prompt.find("<transcript>") != std::string::npos);
+	UAM_ASSERT(prompt.find("</transcript>") != std::string::npos);
+	UAM_ASSERT(prompt.find("user: Memory worker fails for some reason, Investigate!") != std::string::npos);
+}
+
+UAM_TEST(MemoryServiceBuildsStructuredCodexWorkerCommand)
+{
+	AppSettings settings;
+	const ProviderProfile codex = ProviderProfileStore::DefaultCodexProfile();
+
+	const std::string command = MemoryService::BuildWorkerCommandForTests(codex, settings, "remember this", "gpt-5.4-mini");
+
+	UAM_ASSERT(command.find("codex") != std::string::npos);
+	UAM_ASSERT(command.find("exec") != std::string::npos);
+	UAM_ASSERT(command.find("--json") != std::string::npos);
+	UAM_ASSERT(command.find("--ephemeral") != std::string::npos);
+	UAM_ASSERT(command.find("--skip-git-repo-check") != std::string::npos);
+	UAM_ASSERT(command.find("--ignore-user-config") != std::string::npos);
+	UAM_ASSERT(command.find("--ignore-rules") != std::string::npos);
+	UAM_ASSERT(command.find("--sandbox") != std::string::npos);
+	UAM_ASSERT(command.find("read-only") != std::string::npos);
+	UAM_ASSERT(command.find("model_reasoning_effort") != std::string::npos);
+	UAM_ASSERT(command.find("-m") != std::string::npos);
+	UAM_ASSERT(command.find("gpt-5.4-mini") != std::string::npos);
+	UAM_ASSERT(command.find("remember this") != std::string::npos);
+#if !defined(_WIN32)
+	UAM_ASSERT(command.find("PATH=") != std::string::npos);
+	UAM_ASSERT(command.find("/opt/homebrew/bin") != std::string::npos);
+#endif
+}
+
+UAM_TEST(MemoryServiceBuildsNonInteractiveClaudeWorkerCommand)
+{
+	AppSettings settings;
+	const ProviderProfile claude = ProviderProfileStore::DefaultClaudeProfile();
+
+	const std::string command = MemoryService::BuildWorkerCommandForTests(claude, settings, "remember this", "sonnet");
+
+	UAM_ASSERT(command.find("claude") != std::string::npos);
+	UAM_ASSERT(command.find("-p") != std::string::npos || command.find("--print") != std::string::npos);
+	UAM_ASSERT(command.find("--no-session-persistence") != std::string::npos);
+	UAM_ASSERT(command.find("--tools") != std::string::npos);
+	UAM_ASSERT(command.find("'--'") != std::string::npos || command.find("\"--\"") != std::string::npos);
+	UAM_ASSERT(command.find("--model") != std::string::npos);
+	UAM_ASSERT(command.find("sonnet") != std::string::npos);
+	UAM_ASSERT(command.find("remember this") != std::string::npos);
+#if !defined(_WIN32)
+	UAM_ASSERT(command.find("PATH=") != std::string::npos);
+	UAM_ASSERT(command.find("/opt/homebrew/bin") != std::string::npos);
+#endif
+}
+
+UAM_TEST(MemoryLibraryServiceListsCreatesAndDeletesEntries)
+{
+	TempDir temp("uam-memory-library");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+
+	ChatFolder folder;
+	folder.id = "folder-1";
+	folder.title = "Workspace";
+	folder.directory = (temp.root / "workspace").string();
+	app.folders.push_back(folder);
+	fs::create_directories(folder.directory);
+
+	MemoryLibraryService::Scope global_scope;
+	std::string error;
+	UAM_ASSERT(MemoryLibraryService::ResolveScope(app, "global", "", global_scope, &error));
+	UAM_ASSERT_EQ(global_scope.scope_type, std::string("global"));
+
+	MemoryLibraryService::Draft global_draft;
+	global_draft.category = "Lessons/User_Lessons";
+	global_draft.title = "Shared style rule";
+	global_draft.memory = "Use explicit Allman braces in this repository.";
+	global_draft.evidence = "Documented project preference.";
+	global_draft.confidence = "high";
+	global_draft.source_chat_id = "chat-global";
+
+	MemoryLibraryService::Entry created_global;
+	UAM_ASSERT(MemoryLibraryService::CreateEntry(global_scope, global_draft, &created_global, &error));
+	UAM_ASSERT(created_global.id.find("Lessons/User_Lessons/") == 0);
+
+	const std::vector<MemoryLibraryService::Entry> global_entries = MemoryLibraryService::ListEntries(global_scope, &error);
+	UAM_ASSERT_EQ(global_entries.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(global_entries.front().title, std::string("Shared style rule"));
+	UAM_ASSERT(global_entries.front().preview.find("Allman braces") != std::string::npos);
+
+	MemoryLibraryService::Scope folder_scope;
+	UAM_ASSERT(MemoryLibraryService::ResolveScope(app, "folder", folder.id, folder_scope, &error));
+	UAM_ASSERT_EQ(folder_scope.scope_type, std::string("folder"));
+
+	MemoryLibraryService::Draft folder_draft;
+	folder_draft.category = "Failures/User_Failures";
+	folder_draft.title = "Skipped formatting";
+	folder_draft.memory = "Formatting was skipped before review.";
+	folder_draft.evidence = "Review feedback called it out.";
+	folder_draft.confidence = "medium";
+	folder_draft.source_chat_id = "chat-local";
+
+	MemoryLibraryService::Entry created_folder;
+	UAM_ASSERT(MemoryLibraryService::CreateEntry(folder_scope, folder_draft, &created_folder, &error));
+	UAM_ASSERT(fs::exists(created_folder.file_path));
+
+	const std::vector<MemoryLibraryService::Entry> folder_entries = MemoryLibraryService::ListEntries(folder_scope, &error);
+	UAM_ASSERT_EQ(folder_entries.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(folder_entries.front().source_chat_id, std::string("chat-local"));
+
+	UAM_ASSERT(MemoryLibraryService::DeleteEntry(folder_scope, created_folder.id, &error));
+	UAM_ASSERT(!fs::exists(created_folder.file_path));
+}
+
+UAM_TEST(MemoryLibraryServiceAllScopeAggregatesKnownRootsAndDedupes)
+{
+	TempDir temp("uam-memory-library-all");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+
+	ChatFolder folder;
+	folder.id = "folder-1";
+	folder.title = "Workspace";
+	folder.directory = (temp.root / "workspace").string();
+	app.folders.push_back(folder);
+
+	ChatFolder duplicate_folder;
+	duplicate_folder.id = "folder-duplicate";
+	duplicate_folder.title = "Workspace duplicate";
+	duplicate_folder.directory = folder.directory;
+	app.folders.push_back(duplicate_folder);
+	fs::create_directories(folder.directory);
+
+	MemoryLibraryService::Scope folder_scope;
+	std::string error;
+	UAM_ASSERT(MemoryLibraryService::ResolveScope(app, "folder", folder.id, folder_scope, &error));
+
+	MemoryLibraryService::Draft folder_draft;
+	folder_draft.category = "Lessons/User_Lessons";
+	folder_draft.title = "Local-only memory";
+	folder_draft.memory = "This memory belongs to the workspace.";
+	folder_draft.evidence = "The transcript referenced the project.";
+	folder_draft.confidence = "high";
+	folder_draft.source_chat_id = "chat-local";
+
+	MemoryLibraryService::Entry created_folder;
+	UAM_ASSERT(MemoryLibraryService::CreateEntry(folder_scope, folder_draft, &created_folder, &error));
+
+	MemoryLibraryService::Scope global_scope;
+	UAM_ASSERT(MemoryLibraryService::ResolveScope(app, "global", "", global_scope, &error));
+	const std::vector<MemoryLibraryService::Entry> global_entries = MemoryLibraryService::ListEntries(global_scope, &error);
+	UAM_ASSERT_EQ(global_entries.size(), static_cast<std::size_t>(0));
+
+	MemoryLibraryService::Scope all_scope;
+	UAM_ASSERT(MemoryLibraryService::ResolveScope(app, "all", "", all_scope, &error));
+	const std::vector<MemoryLibraryService::Entry> all_entries = MemoryLibraryService::ListEntries(all_scope, &error);
+	UAM_ASSERT_EQ(all_entries.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(all_entries.front().id.find("all/") == 0);
+	UAM_ASSERT_EQ(all_entries.front().title, std::string("Local-only memory"));
+	UAM_ASSERT_EQ(all_entries.front().scope_type, std::string("folder"));
+	UAM_ASSERT_EQ(all_entries.front().folder_id, std::string("folder-1"));
+	UAM_ASSERT_EQ(all_entries.front().scope_label, std::string("Workspace"));
+	UAM_ASSERT(all_entries.front().root_path.string().find(".UAM") != std::string::npos);
+}
+
+UAM_TEST(MemoryLibraryServiceAllScopeDeletesOnlyInsideKnownRoots)
+{
+	TempDir temp("uam-memory-library-all-delete");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+
+	ChatFolder folder;
+	folder.id = "folder-1";
+	folder.title = "Workspace";
+	folder.directory = (temp.root / "workspace").string();
+	app.folders.push_back(folder);
+	fs::create_directories(folder.directory);
+
+	MemoryLibraryService::Scope folder_scope;
+	std::string error;
+	UAM_ASSERT(MemoryLibraryService::ResolveScope(app, "folder", folder.id, folder_scope, &error));
+
+	MemoryLibraryService::Draft draft;
+	draft.category = "Lessons/User_Lessons";
+	draft.title = "Deletable local memory";
+	draft.memory = "Delete this through the all-memory scope.";
+	draft.evidence = "Test setup.";
+	draft.confidence = "medium";
+	draft.source_chat_id = "chat-local";
+
+	MemoryLibraryService::Entry created;
+	UAM_ASSERT(MemoryLibraryService::CreateEntry(folder_scope, draft, &created, &error));
+	UAM_ASSERT(fs::exists(created.file_path));
+
+	MemoryLibraryService::Scope all_scope;
+	UAM_ASSERT(MemoryLibraryService::ResolveScope(app, "all", "", all_scope, &error));
+	const std::vector<MemoryLibraryService::Entry> all_entries = MemoryLibraryService::ListEntries(all_scope, &error);
+	UAM_ASSERT_EQ(all_entries.size(), static_cast<std::size_t>(1));
+
+	const std::string aggregate_id = all_entries.front().id;
+	const std::size_t root_separator = aggregate_id.find('/', std::string("all/").size());
+	UAM_ASSERT(root_separator != std::string::npos);
+	const std::string malicious_id = aggregate_id.substr(0, root_separator + 1) + "../../outside.md";
+	UAM_ASSERT(!MemoryLibraryService::DeleteEntry(all_scope, malicious_id, &error));
+	UAM_ASSERT(error.find("outside") != std::string::npos);
+	UAM_ASSERT(fs::exists(created.file_path));
+
+	UAM_ASSERT(MemoryLibraryService::DeleteEntry(all_scope, aggregate_id, &error));
+	UAM_ASSERT(!fs::exists(created.file_path));
+}
+
+UAM_TEST(MemoryServiceListsAndQueuesManualScanCandidates)
+{
+	TempDir temp("uam-memory-manual-scan");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatFolder folder;
+	folder.id = "folder-1";
+	folder.title = "Workspace";
+	folder.directory = (temp.root / "workspace").string();
+	app.folders.push_back(folder);
+	fs::create_directories(folder.directory);
+
+	ChatSession scan_chat = ChatDomainService().CreateNewChat(folder.id, "gemini-cli");
+	scan_chat.id = "chat-scan";
+	scan_chat.title = "Scan Me";
+	scan_chat.workspace_directory = folder.directory;
+	scan_chat.memory_enabled = true;
+	scan_chat.messages.push_back({MessageRole::User, "Remember our coding style.", "now"});
+	app.chats.push_back(scan_chat);
+
+	ChatSession processed_chat = ChatDomainService().CreateNewChat(folder.id, "gemini-cli");
+	processed_chat.id = "chat-processed";
+	processed_chat.title = "Processed";
+	processed_chat.workspace_directory = folder.directory;
+	processed_chat.memory_enabled = true;
+	processed_chat.messages.push_back({MessageRole::User, "Already processed.", "now"});
+	processed_chat.memory_last_processed_message_count = 1;
+	processed_chat.memory_last_processed_at = "2026-01-01T00:00:00.000Z";
+	app.chats.push_back(processed_chat);
+
+	ChatSession disabled_chat = ChatDomainService().CreateNewChat(folder.id, "gemini-cli");
+	disabled_chat.id = "chat-disabled";
+	disabled_chat.title = "Disabled";
+	disabled_chat.workspace_directory = folder.directory;
+	disabled_chat.memory_enabled = false;
+	disabled_chat.messages.push_back({MessageRole::User, "Ignore me.", "now"});
+	app.chats.push_back(disabled_chat);
+
+	const std::vector<MemoryService::ManualScanCandidate> candidates = MemoryService::ListManualScanCandidates(app);
+	UAM_ASSERT_EQ(candidates.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(candidates[0].title, std::string("Processed"));
+	UAM_ASSERT(candidates[0].already_fully_processed);
+	UAM_ASSERT_EQ(candidates[1].title, std::string("Scan Me"));
+	UAM_ASSERT(!candidates[1].already_fully_processed);
+
+	std::string error;
+	int queued_count = 0;
+	UAM_ASSERT(MemoryService::QueueManualScan(app, {"chat-scan", "chat-processed"}, &queued_count, &error));
+	UAM_ASSERT_EQ(queued_count, 2);
+	UAM_ASSERT_EQ(app.memory_extraction_tasks.size(), static_cast<std::size_t>(0));
+	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(app.memory_extraction_queue[0].scan_start_message_index, 0);
+	UAM_ASSERT_EQ(app.memory_extraction_queue[1].scan_start_message_index, 0);
+	MemoryService::StopMemoryTasks(app);
+}
+
+UAM_TEST(MemoryServiceSchedulerDoesNotStartBeyondSingleWorkerCap)
+{
+	TempDir temp("uam-memory-worker-cap");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.settings.memory_idle_delay_seconds = -1;
+	const double idle_started_at = std::max(0.001, GetAppTimeSeconds());
+
+	ChatFolder folder;
+	folder.id = "folder-1";
+	folder.title = "Workspace";
+	folder.directory = (temp.root / "workspace").string();
+	app.folders.push_back(folder);
+	fs::create_directories(folder.directory);
+
+	for (int i = 0; i < 3; ++i)
+	{
+		ChatSession chat = ChatDomainService().CreateNewChat(folder.id, "gemini-cli");
+		chat.id = "chat-" + std::to_string(i);
+		chat.title = "Chat " + std::to_string(i);
+		chat.workspace_directory = folder.directory;
+		chat.memory_enabled = true;
+		chat.messages.push_back({MessageRole::User, "Remember item " + std::to_string(i), "now"});
+		app.memory_idle_started_at_by_chat_id[chat.id] = idle_started_at;
+		app.chats.push_back(chat);
+	}
+
+	uam::AsyncMemoryExtractionTask running_task;
+	running_task.running = true;
+	running_task.chat_id = "chat-0";
+	running_task.message_count = 1;
+	running_task.state = std::make_shared<AsyncProcessTaskState>();
+	app.memory_extraction_tasks.push_back(std::move(running_task));
+
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT_EQ(app.memory_extraction_tasks.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(app.memory_extraction_queue[0].chat_id, std::string("chat-1"));
+	UAM_ASSERT_EQ(app.memory_extraction_queue[1].chat_id, std::string("chat-2"));
+	MemoryService::StopMemoryTasks(app);
+}
+
+UAM_TEST(MemoryServiceFailedWorkerRecordsBackoffAndStatus)
+{
+	TempDir temp("uam-memory-worker-backoff");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.settings.memory_idle_delay_seconds = 30;
+
+	ChatFolder folder;
+	folder.id = "folder-1";
+	folder.title = "Workspace";
+	folder.directory = (temp.root / "workspace").string();
+	app.folders.push_back(folder);
+	fs::create_directories(folder.directory);
+
+	ChatSession chat = ChatDomainService().CreateNewChat(folder.id, "gemini-cli");
+	chat.id = "chat-fail";
+	chat.title = "Failing Memory Chat";
+	chat.workspace_directory = folder.directory;
+	chat.memory_enabled = true;
+	chat.messages.push_back({MessageRole::User, "Remember this later.", "now"});
+	app.memory_idle_started_at_by_chat_id[chat.id] = GetAppTimeSeconds() - 999.0;
+	app.chats.push_back(chat);
+
+	uam::AsyncMemoryExtractionTask task;
+	task.running = true;
+	task.chat_id = chat.id;
+	task.message_count = 1;
+	task.workspace_root = folder.directory;
+	task.state = std::make_shared<AsyncProcessTaskState>();
+	task.state->result.ok = true;
+	task.state->result.output = "not-json";
+	task.state->completed.store(true);
+	app.memory_extraction_tasks.push_back(std::move(task));
+
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT_EQ(app.memory_extraction_tasks.size(), static_cast<std::size_t>(0));
+	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(0));
+	UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id[chat.id], 1);
+	UAM_ASSERT(app.memory_retry_not_before_by_chat_id[chat.id] > GetAppTimeSeconds());
+	UAM_ASSERT(app.memory_last_status.find("required JSON") != std::string::npos);
+	UAM_ASSERT(app.memory_activity.last_worker_output.find("not-json") != std::string::npos);
+	UAM_ASSERT(app.memory_activity.last_worker_status.find("required JSON") != std::string::npos);
+	UAM_ASSERT_EQ(app.chats[0].memory_last_processed_message_count, 0);
+}
+
+UAM_TEST(MemoryServiceFailedWorkerReportsCommandNotFound)
+{
+	TempDir temp("uam-memory-worker-command-not-found");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+
+	ChatFolder folder;
+	folder.id = "folder-1";
+	folder.title = "Workspace";
+	folder.directory = (temp.root / "workspace").string();
+	app.folders.push_back(folder);
+	fs::create_directories(folder.directory);
+
+	ChatSession chat = ChatDomainService().CreateNewChat(folder.id, "claude-cli");
+	chat.id = "chat-missing-worker";
+	chat.workspace_directory = folder.directory;
+	chat.memory_enabled = true;
+	chat.messages.push_back({MessageRole::User, "Remember this later.", "now"});
+	app.chats.push_back(chat);
+
+	uam::AsyncMemoryExtractionTask task;
+	task.running = true;
+	task.chat_id = chat.id;
+	task.message_count = 1;
+	task.workspace_root = folder.directory;
+	task.state = std::make_shared<AsyncProcessTaskState>();
+	task.state->provider_id = "claude-cli";
+	task.state->result.ok = false;
+	task.state->result.exit_code = 127;
+	task.state->result.output = "sh: claude: command not found";
+	task.state->completed.store(true);
+	app.memory_extraction_tasks.push_back(std::move(task));
+
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT(app.memory_last_status.find("command was not found") != std::string::npos);
+	UAM_ASSERT(app.memory_activity.last_worker_status.find("command was not found") != std::string::npos);
+	UAM_ASSERT(app.memory_activity.last_worker_output.find("command not found") != std::string::npos);
+	UAM_ASSERT_EQ(app.memory_activity.last_worker_exit_code, 127);
 }
 
 UAM_TEST(ChatRepositoryToleratesLegacyFieldsAndDropsThemOnWrite)
@@ -819,6 +1317,21 @@ UAM_TEST(ClaudeCliInteractiveArgvUsesResumeModelModeAndFlags)
 	UAM_ASSERT_EQ(resumed[4], std::string("sonnet"));
 	UAM_ASSERT_EQ(resumed[5], std::string("--permission-mode"));
 	UAM_ASSERT_EQ(resumed[6], std::string("plan"));
+#endif
+}
+
+UAM_TEST(ClaudeCliInteractiveArgvSupportsAcceptEditsMode)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	ChatSession chat;
+	chat.provider_id = "claude-cli";
+	chat.approval_mode = "acceptEdits";
+
+	const std::vector<std::string> argv = uam::BuildAcpLaunchArgvForTests(chat);
+	UAM_ASSERT_EQ(argv.size(), static_cast<std::size_t>(9));
+	UAM_ASSERT_EQ(argv[0], std::string("claude"));
+	UAM_ASSERT_EQ(argv[7], std::string("--permission-mode"));
+	UAM_ASSERT_EQ(argv[8], std::string("acceptEdits"));
 #endif
 }
 
@@ -2009,6 +2522,118 @@ UAM_TEST(CodexAppServerStateTransitionsMapModelsTurnsToolsAndApprovals)
 	UAM_ASSERT(!raw_session->waiting_for_permission);
 	UAM_ASSERT_EQ(raw_session->codex_turn_id, std::string(""));
 	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("ready"));
+}
+
+UAM_TEST(CodexCancelIgnoresLateApprovalAndClearsInterruptState)
+{
+	TempDir temp("uam-codex-cancel-approval");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "codex-cli";
+	chat.workspace_directory = temp.root.string();
+	app.chats.push_back(chat);
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	uam::AcpSessionState* raw_session = session.get();
+	raw_session->chat_id = "chat-1";
+	raw_session->provider_id = "codex-cli";
+	raw_session->protocol_kind = "gemini-acp";
+	raw_session->running = true;
+	raw_session->initialized = true;
+	raw_session->session_ready = true;
+	raw_session->processing = true;
+	raw_session->session_id = "6a6f0f3b-1a0b-4a9c-8a01-111111111111";
+	raw_session->codex_thread_id = raw_session->session_id;
+	raw_session->codex_turn_id = "turn-1";
+
+#if defined(_WIN32)
+	const std::vector<std::string> sink_argv = {"cmd", "/C", "more > NUL"};
+#else
+	const std::vector<std::string> sink_argv = {"/bin/sh", "-c", "cat >/dev/null"};
+#endif
+	std::string launch_error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*raw_session, temp.root, sink_argv, &launch_error));
+	UAM_ASSERT(launch_error.empty());
+
+	app.acp_sessions.push_back(std::move(session));
+
+	std::string cancel_error;
+	UAM_ASSERT(uam::CancelAcpTurn(app, "chat-1", &cancel_error));
+	UAM_ASSERT(cancel_error.empty());
+	UAM_ASSERT(raw_session->cancel_requested);
+	UAM_ASSERT_EQ(raw_session->cancel_request_id, 1);
+	UAM_ASSERT_EQ(raw_session->pending_request_methods[1], std::string("turn/interrupt"));
+	UAM_ASSERT(!raw_session->waiting_for_permission);
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{"itemId":"cmd-1","command":"rm -rf build","availableDecisions":["accept","decline"]}})"));
+	UAM_ASSERT(!raw_session->waiting_for_permission);
+	UAM_ASSERT_EQ(raw_session->pending_permission.request_id_json, std::string(""));
+	UAM_ASSERT(!raw_session->diagnostics.empty());
+	UAM_ASSERT_EQ(raw_session->diagnostics.back().reason, std::string("ignored_permission_during_cancel"));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":1,"result":{}})"));
+	UAM_ASSERT(!raw_session->cancel_requested);
+	UAM_ASSERT_EQ(raw_session->cancel_request_id, 0);
+	UAM_ASSERT_EQ(raw_session->codex_turn_id, std::string(""));
+
+	PlatformServicesFactory::Instance().process_service.StopStdioProcess(*raw_session, true);
+	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*raw_session);
+}
+
+UAM_TEST(AcpCancelIgnoresLateGenericPermissionRequest)
+{
+	TempDir temp("uam-acp-cancel-generic-permission");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "gemini-cli";
+	chat.workspace_directory = temp.root.string();
+	app.chats.push_back(chat);
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	uam::AcpSessionState* raw_session = session.get();
+	raw_session->chat_id = "chat-1";
+	raw_session->provider_id = "gemini-cli";
+	raw_session->protocol_kind = "gemini-acp";
+	raw_session->running = true;
+	raw_session->initialized = true;
+	raw_session->session_ready = true;
+	raw_session->processing = true;
+	raw_session->session_id = "gemini-session-1";
+
+#if defined(_WIN32)
+	const std::vector<std::string> sink_argv = {"cmd", "/C", "more > NUL"};
+#else
+	const std::vector<std::string> sink_argv = {"/bin/sh", "-c", "cat >/dev/null"};
+#endif
+	std::string launch_error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*raw_session, temp.root, sink_argv, &launch_error));
+	UAM_ASSERT(launch_error.empty());
+
+	app.acp_sessions.push_back(std::move(session));
+
+	std::string cancel_error;
+	UAM_ASSERT(uam::CancelAcpTurn(app, "chat-1", &cancel_error));
+	UAM_ASSERT(cancel_error.empty());
+	UAM_ASSERT(raw_session->cancel_requested);
+	UAM_ASSERT(!raw_session->waiting_for_permission);
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app,
+	                                      *raw_session,
+	                                      app.chats.front(),
+	                                      R"({"jsonrpc":"2.0","id":5,"method":"session/request_permission","params":{"toolCall":{"toolCallId":"tool-1","title":"Read file","kind":"read","status":"pending","content":{"type":"text","text":"Read /tmp/file.txt"}},"options":[{"optionId":"allow-once","name":"Allow once","kind":"allow_once"}]}})"));
+	UAM_ASSERT(!raw_session->waiting_for_permission);
+	UAM_ASSERT_EQ(raw_session->pending_permission.request_id_json, std::string(""));
+	UAM_ASSERT(!raw_session->diagnostics.empty());
+	UAM_ASSERT_EQ(raw_session->diagnostics.back().reason, std::string("ignored_permission_during_cancel"));
+
+	PlatformServicesFactory::Instance().process_service.StopStdioProcess(*raw_session, true);
+	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*raw_session);
 }
 
 UAM_TEST(CodexAppServerUserInputRequestsSurfaceAndSerialize)

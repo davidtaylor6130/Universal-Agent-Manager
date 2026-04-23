@@ -2,8 +2,31 @@ import { Logo } from '../shared/Logo'
 import { ThemeToggle } from '../shared/ThemeToggle'
 import { useAppStore } from '../../store/useAppStore'
 
+function formatMemoryTitle(entryCount: number, lastCreatedAt: string): string {
+  if (entryCount <= 0) {
+    return 'No memories yet'
+  }
+
+  const countLabel = `${entryCount} ${entryCount === 1 ? 'memory' : 'memories'} saved`
+  const parsed = lastCreatedAt ? new Date(lastCreatedAt) : null
+  if (!parsed || Number.isNaN(parsed.getTime())) {
+    return countLabel
+  }
+
+  return `${countLabel}, last updated ${parsed.toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })}`
+}
+
 export function SidebarHeader() {
-  const { setNewChatModalOpen, setSettingsOpen } = useAppStore()
+  const { setNewChatModalOpen, setSettingsOpen, openAllMemoryLibrary, memoryActivity } = useAppStore()
+  const hasMemories = memoryActivity.entryCount > 0
+  const hasActivity = memoryActivity.runningCount > 0 || memoryActivity.lastCreatedCount > 0
+  const memoryTitle = formatMemoryTitle(memoryActivity.entryCount, memoryActivity.lastCreatedAt)
 
   return (
     <div
@@ -17,6 +40,44 @@ export function SidebarHeader() {
 
       {/* Theme toggle */}
       <ThemeToggle />
+
+      {/* All memory */}
+      <button
+        onClick={() => { void openAllMemoryLibrary() }}
+        title={memoryTitle}
+        aria-label={memoryTitle}
+        className="relative flex items-center justify-center rounded-md transition-colors duration-150"
+        style={{
+          width: 28,
+          height: 28,
+          background: 'transparent',
+          color: hasMemories ? 'var(--accent)' : 'var(--text-3)',
+          cursor: 'pointer',
+          border: 'none',
+          flexShrink: 0,
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = 'var(--sidebar-item-hover)'
+          e.currentTarget.style.color = hasMemories ? 'var(--accent)' : 'var(--text)'
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = 'transparent'
+          e.currentTarget.style.color = hasMemories ? 'var(--accent)' : 'var(--text-3)'
+        }}
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M6.1 3.1A2 2 0 0 0 2.8 5a2.2 2.2 0 0 0 .2 4.3 2.1 2.1 0 0 0 3.1 2.3V3.1z" />
+          <path d="M9.9 3.1A2 2 0 0 1 13.2 5a2.2 2.2 0 0 1-.2 4.3 2.1 2.1 0 0 1-3.1 2.3V3.1z" />
+          <path d="M6.1 6.1H4.5M9.9 6.1h1.6M6.1 9.1H4.6M9.9 9.1h1.5" />
+        </svg>
+        {hasActivity && (
+          <span
+            className="memory-activity-dot"
+            data-testid="memory-activity-dot"
+            aria-hidden="true"
+          />
+        )}
+      </button>
 
       {/* Settings gear */}
       <button

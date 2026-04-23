@@ -602,6 +602,56 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('switches Claude from plan mode back to acceptEdits', () => {
+    const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1' ? { ...session, providerId: 'claude-cli', approvalMode: 'plan' } : session
+      ),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          providerId: 'claude-cli',
+          protocolKind: 'claude-code-stream-json',
+          lifecycleState: 'ready',
+          processing: false,
+          processingStartedAtMs: null,
+          availableModes: [
+            { id: 'default', name: 'Default', description: '' },
+            { id: 'acceptEdits', name: 'Accept Edits', description: '' },
+            { id: 'plan', name: 'Plan', description: '' },
+          ],
+          currentModeId: 'plan',
+          pendingPermission: null,
+        },
+      },
+      setSessionApprovalMode,
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const planButton = host.querySelector('button[title="Toggle planning mode"]') as HTMLButtonElement | null
+    expect(planButton).toBeTruthy()
+
+    act(() => {
+      planButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'acceptEdits')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
   it('toggles the memory chip', () => {
     const setSessionMemoryEnabled = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({

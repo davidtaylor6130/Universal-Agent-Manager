@@ -2,11 +2,12 @@ import { create } from 'zustand'
 import { Session, Folder } from '../types/session'
 import { Message, MessageBlock } from '../types/message'
 import { Provider } from '../types/provider'
+import { MemoryEntry, MemoryEntryDraft, MemoryScope, MemoryScanCandidate } from '../types/memory'
 import { sendToCEF, isCefContext, createRequestId } from '../ipc/cefBridge'
 import { applyDocumentTheme, writeStoredTheme } from '../utils/themeStorage'
 
 const GEMINI_CLI_PROVIDER_ID = 'gemini-cli'
-const ACP_APPROVAL_MODE_IDS = ['default', 'plan'] as const
+const ACP_APPROVAL_MODE_IDS = ['default', 'acceptEdits', 'plan'] as const
 const initialFolders: Folder[] = [
   {
     id: 'default',
@@ -293,6 +294,24 @@ export interface MemoryWorkerBinding {
   workerModelId: string
 }
 
+export interface MemoryActivity {
+  entryCount: number
+  lastCreatedAt: string
+  lastCreatedCount: number
+  runningCount: number
+  lastStatus: string
+  lastWorkerChatId?: string
+  lastWorkerProviderId?: string
+  lastWorkerUpdatedAt?: string
+  lastWorkerStatus?: string
+  lastWorkerOutput?: string
+  lastWorkerError?: string
+  lastWorkerTimedOut?: boolean
+  lastWorkerCanceled?: boolean
+  lastWorkerHasExitCode?: boolean
+  lastWorkerExitCode?: number
+}
+
 interface CppSettings {
   activeProviderId: string
   theme: string
@@ -312,6 +331,7 @@ export interface CppAppState {
   selectedChatIndex?: number
   providers: CppProvider[]
   settings: CppSettings
+  memoryActivity?: MemoryActivity
 }
 
 export interface CliBinding {
@@ -396,6 +416,48 @@ function finiteNumberOr(value: unknown, fallback: number): number {
 
 function booleanOr(value: unknown, fallback = false): boolean {
   return typeof value === 'boolean' ? value : fallback
+}
+
+const emptyMemoryActivity: MemoryActivity = {
+  entryCount: 0,
+  lastCreatedAt: '',
+  lastCreatedCount: 0,
+  runningCount: 0,
+  lastStatus: '',
+  lastWorkerChatId: '',
+  lastWorkerProviderId: '',
+  lastWorkerUpdatedAt: '',
+  lastWorkerStatus: '',
+  lastWorkerOutput: '',
+  lastWorkerError: '',
+  lastWorkerTimedOut: false,
+  lastWorkerCanceled: false,
+  lastWorkerHasExitCode: false,
+  lastWorkerExitCode: 0,
+}
+
+function sanitizeMemoryActivity(value: unknown, fallbackStatus = ''): MemoryActivity {
+  if (!isRecord(value)) {
+    return { ...emptyMemoryActivity, lastStatus: fallbackStatus }
+  }
+
+  return {
+    entryCount: Math.max(0, Math.floor(finiteNumberOr(value.entryCount, 0))),
+    lastCreatedAt: stringOr(value.lastCreatedAt),
+    lastCreatedCount: Math.max(0, Math.floor(finiteNumberOr(value.lastCreatedCount, 0))),
+    runningCount: Math.max(0, Math.floor(finiteNumberOr(value.runningCount, 0))),
+    lastStatus: stringOr(value.lastStatus, fallbackStatus),
+    lastWorkerChatId: stringOr(value.lastWorkerChatId),
+    lastWorkerProviderId: stringOr(value.lastWorkerProviderId),
+    lastWorkerUpdatedAt: stringOr(value.lastWorkerUpdatedAt),
+    lastWorkerStatus: stringOr(value.lastWorkerStatus),
+    lastWorkerOutput: stringOr(value.lastWorkerOutput),
+    lastWorkerError: stringOr(value.lastWorkerError),
+    lastWorkerTimedOut: booleanOr(value.lastWorkerTimedOut),
+    lastWorkerCanceled: booleanOr(value.lastWorkerCanceled),
+    lastWorkerHasExitCode: booleanOr(value.lastWorkerHasExitCode),
+    lastWorkerExitCode: Math.floor(finiteNumberOr(value.lastWorkerExitCode, 0)),
+  }
 }
 
 function sanitizeAcpAttentionKind(value: unknown, fallback: AcpAttentionKind | null = null): AcpAttentionKind | null {
@@ -914,6 +976,8 @@ function sanitizeCppAppState(value: unknown): CppAppState | null {
         ? chats[value.selectedChatIndex].id
         : null
 
+  const settings = sanitizeCppSettings(value.settings)
+
   return {
     stateRevision: finiteNumberOr(value.stateRevision, 0),
     folders,
@@ -922,7 +986,8 @@ function sanitizeCppAppState(value: unknown): CppAppState | null {
     selectedChatId,
     selectedChatIndex: finiteNumberOr(value.selectedChatIndex, -1),
     providers,
-    settings: sanitizeCppSettings(value.settings),
+    settings,
+    memoryActivity: sanitizeMemoryActivity(value.memoryActivity, settings.memoryLastStatus),
   }
 }
 
@@ -1250,6 +1315,7 @@ function deserializeState(
     memoryRecallBudgetBytes: number
     memoryLastStatus: string
     memoryWorkerBindings: Record<string, MemoryWorkerBinding>
+    memoryActivity: MemoryActivity
   }
 ) {
   const buildMessage = (chatId: string, message: CppMessage, index: number): Message => {
@@ -1588,6 +1654,7 @@ function deserializeState(
     memoryRecallBudgetBytes: cpp.settings.memoryRecallBudgetBytes,
     memoryLastStatus: cpp.settings.memoryLastStatus,
     memoryWorkerBindings: cpp.settings.memoryWorkerBindings,
+    memoryActivity: cpp.memoryActivity ?? sanitizeMemoryActivity(undefined, cpp.settings.memoryLastStatus),
   }
 }
 
@@ -1652,12 +1719,23 @@ interface AppState {
   memoryRecallBudgetBytes: number
   memoryLastStatus: string
   memoryWorkerBindings: Record<string, MemoryWorkerBinding>
+  memoryActivity: MemoryActivity
 
   // UI
   theme: 'dark' | 'light'
   isNewChatModalOpen: boolean
   newChatFolderId: string | null
   isSettingsOpen: boolean
+  memoryLibraryScope: MemoryScope | null
+  memoryLibraryEntries: MemoryEntry[]
+  memoryLibraryLoading: boolean
+  memoryLibraryError: string
+  isMemoryScanModalOpen: boolean
+  memoryScanCandidates: MemoryScanCandidate[]
+  selectedMemoryScanChatIds: string[]
+  memoryScanLoading: boolean
+  memoryScanRunning: boolean
+  memoryScanError: string
   streamingMessageId: string | null
   pushChannelStatus: PushChannelStatus
   pushChannelError: string
@@ -1682,6 +1760,21 @@ interface AppState {
   renameFolder: (id: string, name: string, directory: string) => void
   deleteFolder: (id: string) => void
   browseFolderDirectory: (currentValue: string) => Promise<string | null>
+  openAllMemoryLibrary: () => Promise<boolean>
+  openGlobalMemoryLibrary: () => Promise<boolean>
+  openFolderMemoryLibrary: (folderId: string) => Promise<boolean>
+  closeMemoryLibrary: () => void
+  refreshMemoryLibrary: () => Promise<boolean>
+  createMemoryEntry: (draft: MemoryEntryDraft) => Promise<boolean>
+  deleteMemoryEntry: (entryId: string) => Promise<boolean>
+  openMemoryRoot: () => Promise<boolean>
+  revealMemoryEntry: (entryId: string) => Promise<boolean>
+  openMemoryScanModal: () => Promise<boolean>
+  closeMemoryScanModal: () => void
+  toggleMemoryScanChat: (chatId: string) => void
+  selectAllMemoryScanChats: () => void
+  selectNoMemoryScanChats: () => void
+  startMemoryScan: () => Promise<boolean>
 
   // CLI actions
   setCliBinding: (sessionId: string, binding: Partial<CliBinding>) => void
@@ -1742,6 +1835,7 @@ export const useAppStore = create<AppState>((set, get) => {
 	            memoryRecallBudgetBytes: current.memoryRecallBudgetBytes,
 	            memoryLastStatus: current.memoryLastStatus,
 	            memoryWorkerBindings: current.memoryWorkerBindings,
+	            memoryActivity: current.memoryActivity,
 	          })
           set(deserialized)
           // Sync theme to DOM
@@ -1855,11 +1949,22 @@ export const useAppStore = create<AppState>((set, get) => {
     memoryRecallBudgetBytes: 2048,
     memoryLastStatus: '',
     memoryWorkerBindings: {},
+    memoryActivity: { ...emptyMemoryActivity },
 
     theme: readDocumentTheme(),
     isNewChatModalOpen: false,
     newChatFolderId: null,
     isSettingsOpen: false,
+    memoryLibraryScope: null,
+    memoryLibraryEntries: [],
+    memoryLibraryLoading: false,
+    memoryLibraryError: '',
+    isMemoryScanModalOpen: false,
+    memoryScanCandidates: [],
+    selectedMemoryScanChatIds: [],
+    memoryScanLoading: false,
+    memoryScanRunning: false,
+    memoryScanError: '',
     streamingMessageId: null,
     pushChannelStatus: inCef ? 'no-push-yet' : 'connected',
     pushChannelError: '',
@@ -1889,6 +1994,7 @@ export const useAppStore = create<AppState>((set, get) => {
         memoryRecallBudgetBytes: current.memoryRecallBudgetBytes,
         memoryLastStatus: current.memoryLastStatus,
         memoryWorkerBindings: current.memoryWorkerBindings,
+        memoryActivity: current.memoryActivity,
       })
       set(deserialized)
       if (deserialized.theme) {
@@ -2626,6 +2732,428 @@ export const useAppStore = create<AppState>((set, get) => {
 
       const selectedPath = response.ok ? response.data?.selectedPath?.trim() ?? '' : ''
       return selectedPath.length > 0 ? selectedPath : null
+    },
+
+    openAllMemoryLibrary: async () => {
+      set({ memoryLibraryLoading: true, memoryLibraryError: '' })
+
+      if (isCefContext()) {
+        const response = await sendToCEF<{ scope?: MemoryScope; entries?: MemoryEntry[] }>({
+          action: 'listMemoryEntries',
+          payload: { scopeType: 'all' },
+        })
+
+        if (!response.ok || !response.data?.scope) {
+          set({
+            memoryLibraryLoading: false,
+            memoryLibraryError: response.error ?? 'Failed to load memory.',
+          })
+          return false
+        }
+
+        set({
+          memoryLibraryScope: response.data.scope,
+          memoryLibraryEntries: response.data.entries ?? [],
+          memoryLibraryLoading: false,
+          memoryLibraryError: '',
+        })
+        return true
+      }
+
+      set({
+        memoryLibraryScope: {
+          scopeType: 'all',
+          folderId: '',
+          label: 'All memory',
+          rootPath: 'Global and project memory roots',
+          rootCount: 0,
+        },
+        memoryLibraryEntries: [],
+        memoryLibraryLoading: false,
+        memoryLibraryError: '',
+      })
+      return true
+    },
+
+    openGlobalMemoryLibrary: async () => {
+      set({ memoryLibraryLoading: true, memoryLibraryError: '' })
+
+      if (isCefContext()) {
+        const response = await sendToCEF<{ scope?: MemoryScope; entries?: MemoryEntry[] }>({
+          action: 'listMemoryEntries',
+          payload: { scopeType: 'global' },
+        })
+
+        if (!response.ok || !response.data?.scope) {
+          set({
+            memoryLibraryLoading: false,
+            memoryLibraryError: response.error ?? 'Failed to load global memory.',
+          })
+          return false
+        }
+
+        set({
+          memoryLibraryScope: response.data.scope,
+          memoryLibraryEntries: response.data.entries ?? [],
+          memoryLibraryLoading: false,
+          memoryLibraryError: '',
+        })
+        return true
+      }
+
+      set({
+        memoryLibraryScope: {
+          scopeType: 'global',
+          folderId: '',
+          label: 'Global memory',
+          rootPath: '/tmp/uam-memory',
+        },
+        memoryLibraryEntries: [],
+        memoryLibraryLoading: false,
+        memoryLibraryError: '',
+      })
+      return true
+    },
+
+    openFolderMemoryLibrary: async (folderId) => {
+      set({ memoryLibraryLoading: true, memoryLibraryError: '' })
+
+      if (isCefContext()) {
+        const response = await sendToCEF<{ scope?: MemoryScope; entries?: MemoryEntry[] }>({
+          action: 'listMemoryEntries',
+          payload: { scopeType: 'folder', folderId },
+        })
+
+        if (!response.ok || !response.data?.scope) {
+          set({
+            memoryLibraryLoading: false,
+            memoryLibraryError: response.error ?? 'Failed to load project memory.',
+          })
+          return false
+        }
+
+        set({
+          memoryLibraryScope: response.data.scope,
+          memoryLibraryEntries: response.data.entries ?? [],
+          memoryLibraryLoading: false,
+          memoryLibraryError: '',
+        })
+        return true
+      }
+
+      const folder = get().folders.find((candidate) => candidate.id === folderId)
+      if (!folder) {
+        set({
+          memoryLibraryLoading: false,
+          memoryLibraryError: `Folder not found: ${folderId}`,
+        })
+        return false
+      }
+
+      set({
+        memoryLibraryScope: {
+          scopeType: 'folder',
+          folderId,
+          label: folder.name,
+          rootPath: `${folder.directory}/.UAM`,
+        },
+        memoryLibraryEntries: [],
+        memoryLibraryLoading: false,
+        memoryLibraryError: '',
+      })
+      return true
+    },
+
+    closeMemoryLibrary: () => set({
+      memoryLibraryScope: null,
+      memoryLibraryEntries: [],
+      memoryLibraryLoading: false,
+      memoryLibraryError: '',
+    }),
+
+    refreshMemoryLibrary: async () => {
+      const scope = get().memoryLibraryScope
+      if (!scope) {
+        return false
+      }
+
+      set({ memoryLibraryLoading: true, memoryLibraryError: '' })
+
+      if (isCefContext()) {
+        const response = await sendToCEF<{ scope?: MemoryScope; entries?: MemoryEntry[] }>({
+          action: 'listMemoryEntries',
+          payload: { scopeType: scope.scopeType, folderId: scope.folderId },
+        })
+
+        if (!response.ok || !response.data?.scope) {
+          set({
+            memoryLibraryLoading: false,
+            memoryLibraryError: response.error ?? 'Failed to refresh memory library.',
+          })
+          return false
+        }
+
+        set({
+          memoryLibraryScope: response.data.scope,
+          memoryLibraryEntries: response.data.entries ?? [],
+          memoryLibraryLoading: false,
+          memoryLibraryError: '',
+        })
+        return true
+      }
+
+      set({ memoryLibraryLoading: false })
+      return true
+    },
+
+    createMemoryEntry: async (draft) => {
+      const scope = get().memoryLibraryScope
+      if (!scope) {
+        return false
+      }
+
+      if (isCefContext()) {
+        const payload: Record<string, string> = {
+          scopeType: scope.scopeType,
+          folderId: scope.folderId,
+          category: draft.category,
+          title: draft.title,
+          memory: draft.memory,
+          evidence: draft.evidence,
+          confidence: draft.confidence,
+          sourceChatId: draft.sourceChatId,
+        }
+
+        if (scope.scopeType === 'all') {
+          payload.targetScopeType = draft.targetScopeType ?? 'global'
+          payload.targetFolderId = draft.targetFolderId ?? ''
+        }
+
+        const response = await sendToCEF({
+          action: 'createMemoryEntry',
+          payload,
+        })
+
+        if (!response.ok) {
+          set({ memoryLibraryError: response.error ?? 'Failed to create memory entry.' })
+          return false
+        }
+
+        return get().refreshMemoryLibrary()
+      }
+
+      const syntheticEntry: MemoryEntry = {
+        id: `memory-${Date.now()}.md`,
+        title: draft.title,
+        category: draft.category,
+        scope: (scope.scopeType === 'global' || (scope.scopeType === 'all' && draft.targetScopeType === 'global')) ? 'global' : 'local',
+        confidence: draft.confidence,
+        sourceChatId: draft.sourceChatId,
+        lastObserved: new Date().toISOString(),
+        occurrenceCount: 1,
+        preview: draft.memory,
+        filePath: `${scope.rootPath}/${draft.category}/${draft.title}.md`,
+        scopeType: scope.scopeType === 'all' ? (draft.targetScopeType ?? 'global') : (scope.scopeType === 'global' ? 'global' : 'folder'),
+        folderId: scope.scopeType === 'all' ? draft.targetFolderId : scope.folderId,
+        scopeLabel: scope.scopeType === 'all' && draft.targetScopeType === 'folder'
+          ? (get().folders.find((folder) => folder.id === draft.targetFolderId)?.name ?? 'Project memory')
+          : scope.label,
+        rootPath: scope.rootPath,
+      }
+      set((state) => ({
+        memoryLibraryEntries: [...state.memoryLibraryEntries, syntheticEntry],
+        memoryLibraryError: '',
+      }))
+      return true
+    },
+
+    deleteMemoryEntry: async (entryId) => {
+      const scope = get().memoryLibraryScope
+      if (!scope) {
+        return false
+      }
+
+      if (isCefContext()) {
+        const response = await sendToCEF({
+          action: 'deleteMemoryEntry',
+          payload: {
+            scopeType: scope.scopeType,
+            folderId: scope.folderId,
+            entryId,
+          },
+        })
+
+        if (!response.ok) {
+          set({ memoryLibraryError: response.error ?? 'Failed to delete memory entry.' })
+          return false
+        }
+
+        return get().refreshMemoryLibrary()
+      }
+
+      set((state) => ({
+        memoryLibraryEntries: state.memoryLibraryEntries.filter((entry) => entry.id !== entryId),
+      }))
+      return true
+    },
+
+    openMemoryRoot: async () => {
+      const scope = get().memoryLibraryScope
+      if (!scope) {
+        return false
+      }
+
+      if (isCefContext()) {
+        const response = await sendToCEF({
+          action: 'openMemoryRoot',
+          payload: { scopeType: scope.scopeType, folderId: scope.folderId },
+        })
+        if (!response.ok) {
+          set({ memoryLibraryError: response.error ?? 'Failed to open memory root.' })
+          return false
+        }
+      }
+
+      return true
+    },
+
+    revealMemoryEntry: async (entryId) => {
+      const scope = get().memoryLibraryScope
+      if (!scope) {
+        return false
+      }
+
+      if (isCefContext()) {
+        const response = await sendToCEF({
+          action: 'revealMemoryEntry',
+          payload: { scopeType: scope.scopeType, folderId: scope.folderId, entryId },
+        })
+        if (!response.ok) {
+          set({ memoryLibraryError: response.error ?? 'Failed to reveal memory file.' })
+          return false
+        }
+      }
+
+      return true
+    },
+
+    openMemoryScanModal: async () => {
+      set({
+        isMemoryScanModalOpen: true,
+        memoryScanLoading: true,
+        memoryScanError: '',
+        memoryScanCandidates: [],
+        selectedMemoryScanChatIds: [],
+      })
+
+      if (isCefContext()) {
+        const response = await sendToCEF<{ candidates?: MemoryScanCandidate[] }>({
+          action: 'listMemoryScanCandidates',
+        })
+        if (!response.ok) {
+          set({
+            memoryScanLoading: false,
+            memoryScanError: response.error ?? 'Failed to load chats for memory scan.',
+          })
+          return false
+        }
+
+        const candidates = response.data?.candidates ?? []
+        set({
+          memoryScanCandidates: candidates,
+          selectedMemoryScanChatIds: candidates.map((candidate) => candidate.chatId),
+          memoryScanLoading: false,
+          memoryScanError: '',
+        })
+        return true
+      }
+
+      const sessions = get().sessions
+        .filter((session) => (session.memoryEnabled ?? true) && (get().messages[session.id]?.length ?? 0) > 0)
+        .map((session) => ({
+          chatId: session.id,
+          title: session.name,
+          folderId: session.folderId ?? '',
+          folderTitle: session.folderId ? (get().folders.find((folder) => folder.id === session.folderId)?.name ?? '') : '',
+          providerId: session.providerId ?? GEMINI_CLI_PROVIDER_ID,
+          messageCount: get().messages[session.id]?.length ?? 0,
+          memoryEnabled: session.memoryEnabled ?? true,
+          memoryLastProcessedAt: session.memoryLastProcessedAt ?? '',
+          alreadyFullyProcessed: false,
+        }))
+      set({
+        memoryScanCandidates: sessions,
+        selectedMemoryScanChatIds: sessions.map((candidate) => candidate.chatId),
+        memoryScanLoading: false,
+        memoryScanError: '',
+      })
+      return true
+    },
+
+    closeMemoryScanModal: () => set({
+      isMemoryScanModalOpen: false,
+      memoryScanCandidates: [],
+      selectedMemoryScanChatIds: [],
+      memoryScanLoading: false,
+      memoryScanRunning: false,
+      memoryScanError: '',
+    }),
+
+    toggleMemoryScanChat: (chatId) => set((state) => ({
+      selectedMemoryScanChatIds: state.selectedMemoryScanChatIds.includes(chatId)
+        ? state.selectedMemoryScanChatIds.filter((id) => id !== chatId)
+        : [...state.selectedMemoryScanChatIds, chatId],
+    })),
+
+    selectAllMemoryScanChats: () => set((state) => ({
+      selectedMemoryScanChatIds: state.memoryScanCandidates.map((candidate) => candidate.chatId),
+    })),
+
+    selectNoMemoryScanChats: () => set({ selectedMemoryScanChatIds: [] }),
+
+    startMemoryScan: async () => {
+      const selectedChatIds = get().selectedMemoryScanChatIds
+      if (selectedChatIds.length === 0) {
+        set({ memoryScanError: 'Select at least one chat to scan.' })
+        return false
+      }
+
+      set({ memoryScanRunning: true, memoryScanError: '' })
+
+      if (isCefContext()) {
+        const response = await sendToCEF<{ queuedCount?: number }>({
+          action: 'scanCurrentChats',
+          payload: { chatIds: selectedChatIds },
+        })
+
+        if (!response.ok) {
+          set({
+            memoryScanRunning: false,
+            memoryScanError: response.error ?? 'Failed to queue memory scan.',
+          })
+          return false
+        }
+
+        set({
+          isMemoryScanModalOpen: false,
+          memoryScanCandidates: [],
+          selectedMemoryScanChatIds: [],
+          memoryScanLoading: false,
+          memoryScanRunning: false,
+          memoryScanError: '',
+        })
+        return true
+      }
+
+      set({
+        isMemoryScanModalOpen: false,
+        memoryScanCandidates: [],
+        selectedMemoryScanChatIds: [],
+        memoryScanLoading: false,
+        memoryScanRunning: false,
+        memoryScanError: '',
+      })
+      return true
     },
 
     setCliBinding: (sessionId, binding) =>
