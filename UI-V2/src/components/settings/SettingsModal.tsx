@@ -3,6 +3,7 @@ import { useAppStore, type MemoryWorkerBinding } from '../../store/useAppStore'
 import { ThemeToggle } from '../shared/ThemeToggle'
 import { useTheme } from '../../hooks/useTheme'
 import type { Provider } from '../../types/provider'
+import { ProviderLogo } from '../shared/ProviderLogo'
 
 interface MemoryModelOption {
   id: string
@@ -289,7 +290,10 @@ export function SettingsModal() {
                             padding: '8px 10px',
                           }}
                         >
-                          {providerDisplayName(workerProvider, binding.workerProviderId)}
+                          <span className="inline-flex items-center gap-2">
+                            <ProviderLogo providerId={binding.workerProviderId} />
+                            <span>{providerDisplayName(workerProvider, binding.workerProviderId)}</span>
+                          </span>
                         </button>
                         {openMemoryMenu === providerMenuId && (
                           <div
@@ -328,6 +332,7 @@ export function SettingsModal() {
                                     color: selected ? 'var(--text)' : 'var(--text-2)',
                                   }}
                                 >
+                                  <ProviderLogo providerId={candidate.id} />
                                   <span className="flex-1">{providerDisplayName(candidate, candidate.id)}</span>
                                   {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
                                 </button>

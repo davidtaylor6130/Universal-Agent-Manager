@@ -15,6 +15,7 @@ import {
 import type { Message, MessageBlock } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import { copyTextToClipboard } from '../../utils/copySelection'
+import { ProviderLogo } from '../shared/ProviderLogo'
 
 interface ChatViewProps {
   session: Session
@@ -348,32 +349,6 @@ function AcpErrorDetails({ acp, title }: { acp: AcpBinding; title: string }) {
         )}
       </div>
     </details>
-  )
-}
-
-function ProviderIcon({ providerId }: { providerId?: string }) {
-  const codex = providerId === 'codex-cli'
-  const claude = providerId === 'claude-cli'
-  return (
-    <span
-      aria-hidden="true"
-      className="inline-flex items-center justify-center"
-      style={{
-        width: 16,
-        height: 16,
-        borderRadius: 4,
-        background: codex
-          ? 'linear-gradient(135deg, #111827 0%, #3b82f6 52%, #22c55e 100%)'
-          : claude
-            ? 'linear-gradient(135deg, #d97706 0%, #f59e0b 52%, #111827 100%)'
-          : 'linear-gradient(135deg, #8ab4ff 0%, #c58af9 48%, #4ade80 100%)',
-        color: '#ffffff',
-        fontSize: 10,
-        lineHeight: 1,
-      }}
-    >
-      {codex ? 'C' : claude ? 'A' : '✦'}
-    </span>
   )
 }
 
@@ -1558,7 +1533,7 @@ function ComposerToolbar({
             borderColor: providerOpen ? 'var(--border-bright)' : 'var(--border)',
           }}
         >
-          <ProviderIcon providerId={providerId} />
+          <ProviderLogo providerId={providerId} />
           <span>{providerName}</span>
         </button>
         {providerOpen && (
@@ -1597,7 +1572,7 @@ function ComposerToolbar({
                     opacity: disabled ? 0.5 : 1,
                   }}
                 >
-                  <ProviderIcon providerId={candidate.id} />
+                  <ProviderLogo providerId={candidate.id} />
                   <span className="flex-1">{candidateName}</span>
                   {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
                 </button>

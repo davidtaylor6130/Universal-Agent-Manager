@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useAppStore } from '../../store/useAppStore'
+import { ProviderLogo } from '../shared/ProviderLogo'
 
 export function NewChatModal() {
   const { addSession, setNewChatModalOpen, folders, providers, newChatFolderId } = useAppStore()
@@ -259,7 +260,10 @@ export function NewChatModal() {
                   }}
                 >
                   <div className="flex items-center justify-between gap-3">
-                    <span className="text-xs">{selectedProvider?.shortName ?? selectedProvider?.name ?? 'Provider'}</span>
+                    <span className="min-w-0 flex items-center gap-2 text-xs">
+                      <ProviderLogo providerId={selectedProvider?.id} />
+                      <span className="truncate">{selectedProvider?.shortName ?? selectedProvider?.name ?? 'Provider'}</span>
+                    </span>
                     <span className="text-[10px]" style={{ color: 'var(--text-3)' }}>
                       {providerMenuOpen ? '▲' : '▼'}
                     </span>
@@ -294,9 +298,16 @@ export function NewChatModal() {
                             fontFamily: 'inherit',
                           }}
                         >
-                          <div className="text-xs">{provider.shortName || provider.name}</div>
+                          <div className="flex items-center gap-2 text-xs">
+                            <ProviderLogo providerId={provider.id} />
+                            <span>{provider.shortName || provider.name}</span>
+                          </div>
                           <div className="truncate text-[10px]" style={{ color: 'var(--text-3)' }}>
-                            {provider.structuredProtocol === 'codex-app-server' ? 'Codex app-server + CLI' : 'Gemini ACP + CLI'}
+                            {provider.structuredProtocol === 'codex-app-server'
+                              ? 'Codex app-server + CLI'
+                              : provider.structuredProtocol === 'claude-code-stream-json'
+                                ? 'Claude stream + CLI'
+                                : 'Gemini ACP + CLI'}
                           </div>
                         </button>
                       )
