@@ -8,6 +8,10 @@
 #error "UAM_ENABLE_RUNTIME_CODEX_CLI must be defined by CMake. Use 0 or 1."
 #endif
 
+#ifndef UAM_ENABLE_RUNTIME_CLAUDE_CLI
+#error "UAM_ENABLE_RUNTIME_CLAUDE_CLI must be defined by CMake. Use 0 or 1."
+#endif
+
 namespace provider_build_config
 {
 
@@ -21,12 +25,19 @@ namespace provider_build_config
 		return UAM_ENABLE_RUNTIME_CODEX_CLI != 0;
 	}
 
+	inline constexpr bool ClaudeCliEnabled()
+	{
+		return UAM_ENABLE_RUNTIME_CLAUDE_CLI != 0;
+	}
+
 	inline constexpr const char* FirstEnabledProviderId()
 	{
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
 		return "gemini-cli";
 #elif UAM_ENABLE_RUNTIME_CODEX_CLI
 		return "codex-cli";
+#elif UAM_ENABLE_RUNTIME_CLAUDE_CLI
+		return "claude-cli";
 #else
 		return "";
 #endif
@@ -42,6 +53,8 @@ namespace provider_build_config
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
 		return "gemini-cli-json";
 #elif UAM_ENABLE_RUNTIME_CODEX_CLI
+		return "local-json";
+#elif UAM_ENABLE_RUNTIME_CLAUDE_CLI
 		return "local-json";
 #else
 		return "local-json";

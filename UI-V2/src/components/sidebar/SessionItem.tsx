@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, memo } from 'react'
-import { useAppStore } from '../../store/useAppStore'
+import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 
 function formatSidebarTime(date: Date | null): string {
@@ -44,6 +44,86 @@ interface SessionItemProps {
   forceShowPin?: boolean
 }
 
+type SidebarStatus =
+  | { type: 'attention'; kind: AcpAttentionKind; label: string }
+  | { type: 'processing'; label: string }
+  | { type: 'idle'; label: string }
+  | null
+
+const ATTENTION_LABELS: Record<AcpAttentionKind, string> = {
+  question: 'Needs answer',
+  plan: 'Plan needs review',
+  memory: 'Memory input needed',
+  permission: 'Permission needed',
+  command: 'Command approval needed',
+  file: 'File approval needed',
+  error: 'Needs attention',
+  generic: 'Input needed',
+}
+
+function sidebarStatusIcon(kind: AcpAttentionKind) {
+  if (kind === 'question') {
+    return <span className="session-status__question" aria-hidden="true">?</span>
+  }
+
+  if (kind === 'plan') {
+    return (
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M3 2.5h4.2c1 0 1.8.8 1.8 1.8v9.2c0-.8-.8-1.5-1.8-1.5H3V2.5z" />
+        <path d="M13 2.5H8.8C7.8 2.5 7 3.3 7 4.3v9.2c0-.8.8-1.5 1.8-1.5H13V2.5z" />
+      </svg>
+    )
+  }
+
+  if (kind === 'memory') {
+    return (
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M6.1 3.1A2 2 0 0 0 2.8 5a2.2 2.2 0 0 0 .2 4.3 2.1 2.1 0 0 0 3.1 2.3V3.1z" />
+        <path d="M9.9 3.1A2 2 0 0 1 13.2 5a2.2 2.2 0 0 1-.2 4.3 2.1 2.1 0 0 1-3.1 2.3V3.1z" />
+        <path d="M6.1 6.1H4.5M9.9 6.1h1.6M6.1 9.1H4.6M9.9 9.1h1.5" />
+      </svg>
+    )
+  }
+
+  if (kind === 'permission') {
+    return (
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M8 1.8l4.8 1.8v3.8c0 3.1-1.8 5.4-4.8 6.8-3-1.4-4.8-3.7-4.8-6.8V3.6L8 1.8z" />
+        <path d="M6.2 7.8l1.2 1.2 2.6-2.8" />
+      </svg>
+    )
+  }
+
+  if (kind === 'command') {
+    return (
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M2.5 4.2h11v7.6h-11z" />
+        <path d="M5 6.3l1.6 1.7L5 9.7M8.2 9.7h2.8" />
+      </svg>
+    )
+  }
+
+  if (kind === 'file') {
+    return (
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M4 2.2h5.2L12 5v8.8H4V2.2z" />
+        <path d="M9.2 2.2V5H12M5.8 8h4.4M5.8 10.4h3.4" />
+      </svg>
+    )
+  }
+
+  if (kind === 'error') {
+    return (
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M8 2.2l6 10.6H2L8 2.2z" />
+        <path d="M8 5.8v3.2M8 11.5h.01" />
+      </svg>
+    )
+  }
+
+  return <span className="session-status__question" aria-hidden="true">!</span>
+}
+
 export const SessionItem = memo(function SessionItem({ sessionId, forceShowPin }: SessionItemProps) {
   // Fine-grained selectors — each only re-renders when its specific value changes
   const sessionName     = useAppStore((s) => s.sessions.find((x) => x.id === sessionId)?.name ?? '')
@@ -68,13 +148,14 @@ export const SessionItem = memo(function SessionItem({ sessionId, forceShowPin }
   const lastOpenedLabel = formatSidebarTime(sessionLastOpenedAt)
   const lastOpenedTitle = formatSidebarTimeTitle(sessionLastOpenedAt)
 
-  const lifecycleStatus =
-    acpBinding?.processing || acpBinding?.lifecycleState === 'waitingPermission'
-      ? 'processing'
-      : acpBinding?.readySinceLastSelect || cliBinding?.readySinceLastSelect
-        ? 'idle'
-        : cliBinding?.lifecycleState === 'busy' || cliBinding?.lifecycleState === 'shuttingDown'
-          ? 'processing'
+  const lifecycleStatus: SidebarStatus = acpBinding?.attentionKind
+    ? { type: 'attention', kind: acpBinding.attentionKind, label: ATTENTION_LABELS[acpBinding.attentionKind] }
+    : acpBinding?.processing || acpBinding?.lifecycleState === 'waitingPermission'
+      ? { type: 'processing', label: 'Gemini running' }
+      : cliBinding?.lifecycleState === 'busy' || cliBinding?.lifecycleState === 'shuttingDown'
+        ? { type: 'processing', label: 'Gemini running' }
+        : acpBinding?.readySinceLastSelect || cliBinding?.readySinceLastSelect
+          ? { type: 'idle', label: 'Done' }
           : null
 
   useEffect(() => {
@@ -205,13 +286,18 @@ export const SessionItem = memo(function SessionItem({ sessionId, forceShowPin }
                 {lastOpenedLabel}
               </span>
             )}
-            {lifecycleStatus === 'processing' && (
-              <span className="session-status session-status--processing" aria-label="Gemini running">
+            {lifecycleStatus?.type === 'processing' && (
+              <span className="session-status session-status--processing" aria-label={lifecycleStatus.label} title={lifecycleStatus.label}>
                 <span />
               </span>
             )}
-            {lifecycleStatus === 'idle' && (
-              <span className="session-status session-status--idle" aria-label="Gemini idle">
+            {lifecycleStatus?.type === 'attention' && (
+              <span className={`session-status session-status--attention session-status--${lifecycleStatus.kind}`} aria-label={lifecycleStatus.label} title={lifecycleStatus.label}>
+                {sidebarStatusIcon(lifecycleStatus.kind)}
+              </span>
+            )}
+            {lifecycleStatus?.type === 'idle' && (
+              <span className="session-status session-status--idle" aria-label={lifecycleStatus.label} title={lifecycleStatus.label}>
                 <span />
               </span>
             )}

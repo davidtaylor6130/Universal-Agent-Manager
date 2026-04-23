@@ -511,6 +511,9 @@ namespace
 		chat.approval_mode = JsonStringOrEmpty(root.Find("approval_mode"));
 		chat.model_id = JsonStringOrEmpty(root.Find("model_id"));
 		chat.extra_flags = JsonStringOrEmpty(root.Find("extra_flags"));
+		chat.memory_enabled = JsonBoolOrDefault(root.Find("memory_enabled"), true);
+		chat.memory_last_processed_message_count = static_cast<int>(JsonNumberOrDefault(root.Find("memory_last_processed_message_count"), 0));
+		chat.memory_last_processed_at = JsonStringOrEmpty(root.Find("memory_last_processed_at"));
 
 		if (chat.created_at.empty())
 			chat.created_at = TimestampNow();
@@ -606,6 +609,15 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 
 	root.object_value["extra_flags"].type = JsonValue::Type::String;
 	root.object_value["extra_flags"].string_value = chat.extra_flags;
+
+	root.object_value["memory_enabled"].type = JsonValue::Type::Bool;
+	root.object_value["memory_enabled"].bool_value = chat.memory_enabled;
+
+	root.object_value["memory_last_processed_message_count"].type = JsonValue::Type::Number;
+	root.object_value["memory_last_processed_message_count"].number_value = static_cast<double>(chat.memory_last_processed_message_count);
+
+	root.object_value["memory_last_processed_at"].type = JsonValue::Type::String;
+	root.object_value["memory_last_processed_at"].string_value = chat.memory_last_processed_at;
 
 	if (!chat.messages.empty())
 	{

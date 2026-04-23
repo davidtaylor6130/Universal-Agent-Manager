@@ -5,6 +5,7 @@
 #include "persistence_coordinator.h"
 #include "provider_resolution_service.h"
 #include "runtime_orchestration_services.h"
+#include "memory_service.h"
 
 #include "common/constants/app_constants.h"
 #include "common/models/app_models.h"
@@ -225,9 +226,10 @@ void Application::PollTick()
 	const bool pending_calls_changed = PollPendingRuntimeCall(m_app);
 	const bool acp_sessions_changed = uam::PollAllAcpSessions(m_app);
 	const bool cli_terminals_changed = PollAllCliTerminals(m_browser, m_app);
+	const bool memory_changed = MemoryService::ProcessDueMemoryWork(m_app);
 	ProviderCliCompatibilityService().Poll(m_app);
 	const bool provider_compatibility_changed = RuntimeCliCompatibilitySnapshotChanged(provider_snapshot_before, CaptureRuntimeCliCompatibilitySnapshot(m_app));
-	const bool ui_relevant_state_changed = pending_calls_changed || acp_sessions_changed || cli_terminals_changed || provider_compatibility_changed;
+	const bool ui_relevant_state_changed = pending_calls_changed || acp_sessions_changed || cli_terminals_changed || memory_changed || provider_compatibility_changed;
 
 	// Push only when the serialized app state actually changed.
 	if (m_browser && ui_relevant_state_changed)
@@ -446,6 +448,7 @@ void Application::Shutdown()
 	m_app.resolved_native_sessions_by_chat_id.clear();
 	ResetAsyncCommandTask(m_app.runtime_cli_version_check_task);
 	ResetAsyncCommandTask(m_app.runtime_cli_pin_task);
+	MemoryService::StopMemoryTasks(m_app);
 	ResetNativeChatLoadTask(m_app.native_chat_load_task);
 	ResetNativeChatLoadTasks(m_app.native_chat_load_tasks);
 	uam::FastStopAcpSessionsForExit(m_app);

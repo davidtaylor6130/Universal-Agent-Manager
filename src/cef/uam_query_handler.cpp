@@ -12,6 +12,7 @@
 #include "common/paths/app_paths.h"
 
 #include "common/platform/platform_services.h"
+#include "common/provider/provider_profile.h"
 #include "common/provider/runtime/provider_build_config.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
@@ -397,6 +398,10 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 			HandleSetChatModel(browser, payload, callback);
 		else if (action == "setChatApprovalMode")
 			HandleSetChatApprovalMode(browser, payload, callback);
+		else if (action == "setChatMemoryEnabled")
+			HandleSetChatMemoryEnabled(browser, payload, callback);
+		else if (action == "setMemorySettings")
+			HandleSetMemorySettings(browser, payload, callback);
 		else if (action == "deleteSession")
 			HandleDeleteSession(browser, payload, callback);
 		else if (action == "createFolder")
@@ -530,6 +535,7 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 	if (!title.empty())
 		chat.title = title;
 	chat.workspace_directory = ResolveWorkspaceRootPath(m_app, chat).string();
+	chat.memory_enabled = m_app.settings.memory_enabled_default;
 
 	m_app.chats.push_back(std::move(chat));
 
@@ -845,6 +851,84 @@ void UamQueryHandler::HandleSetChatApprovalMode(CefRefPtr<CefBrowser> browser, c
 			cb->Failure(409, acp_error.empty() ? "Failed to update live ACP mode." : acp_error);
 			return;
 		}
+	}
+
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleSetChatMemoryEnabled(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const bool enabled = payload.value("enabled", true);
+	const int idx = ChatDomainService().FindChatIndexById(m_app, chat_id);
+	if (idx < 0)
+	{
+		cb->Failure(404, "Chat not found: " + chat_id);
+		return;
+	}
+
+	ChatSession& chat = m_app.chats[static_cast<std::size_t>(idx)];
+	if (chat.memory_enabled == enabled)
+	{
+		uam::PushStateUpdate(browser, m_app);
+		cb->Success("{}");
+		return;
+	}
+
+	const bool previous = chat.memory_enabled;
+	const std::string previous_updated_at = chat.updated_at;
+	chat.memory_enabled = enabled;
+	chat.updated_at = TimestampNow();
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, chat, "Chat memory setting updated.", "Chat memory setting changed in UI, but failed to save."))
+	{
+		chat.memory_enabled = previous;
+		chat.updated_at = previous_updated_at;
+		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist chat memory setting." : m_app.status_line);
+		return;
+	}
+
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	if (payload.contains("enabledDefault") && payload["enabledDefault"].is_boolean())
+	{
+		m_app.settings.memory_enabled_default = payload["enabledDefault"].get<bool>();
+	}
+	if (payload.contains("idleDelaySeconds") && payload["idleDelaySeconds"].is_number_integer())
+	{
+		m_app.settings.memory_idle_delay_seconds = std::clamp(payload["idleDelaySeconds"].get<int>(), 30, 3600);
+	}
+	if (payload.contains("recallBudgetBytes") && payload["recallBudgetBytes"].is_number_integer())
+	{
+		m_app.settings.memory_recall_budget_bytes = std::clamp(payload["recallBudgetBytes"].get<int>(), 512, 8192);
+	}
+	if (payload.contains("workerBindings") && payload["workerBindings"].is_object())
+	{
+		for (auto it = payload["workerBindings"].begin(); it != payload["workerBindings"].end(); ++it)
+		{
+			if (!it.value().is_object())
+			{
+				continue;
+			}
+			const std::string chat_provider_id = it.key();
+			const std::string worker_provider_id = Trim(it.value().value("workerProviderId", ""));
+			const std::string worker_model_id = Trim(it.value().value("workerModelId", ""));
+			if (chat_provider_id.empty() || worker_provider_id.empty() || ProviderProfileStore::FindById(m_app.provider_profiles, worker_provider_id) == nullptr)
+			{
+				continue;
+			}
+			m_app.settings.memory_worker_bindings[chat_provider_id] = MemoryWorkerBinding{worker_provider_id, worker_model_id};
+		}
+	}
+
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist memory settings." : m_app.status_line);
+		return;
 	}
 
 	uam::PushStateUpdate(browser, m_app);

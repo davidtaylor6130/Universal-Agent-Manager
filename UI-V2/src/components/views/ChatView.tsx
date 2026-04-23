@@ -57,6 +57,7 @@ function providerDisplayName(provider?: Provider, fallbackId = '') {
   if (provider?.shortName?.trim()) return provider.shortName.trim()
   if (provider?.name?.trim()) return provider.name.trim()
   if (fallbackId === 'codex-cli') return 'Codex'
+  if (fallbackId === 'claude-cli') return 'Claude'
   return 'Gemini'
 }
 
@@ -72,12 +73,17 @@ function providerDefaultModelOption(providerName: string): ModelOption {
 function providerRuntimeLabel(provider?: Provider, acp?: AcpBinding) {
   const protocol = acp?.protocolKind || provider?.structuredProtocol || 'gemini-acp'
   if (protocol === 'codex-app-server') return 'App Server'
+  if (protocol === 'claude-code-stream-json') return 'Claude Stream'
   if (protocol === 'none') return 'CLI'
   return 'ACP'
 }
 
 function isCodexProvider(provider?: Provider, providerId = '') {
   return providerId === 'codex-cli' || provider?.structuredProtocol === 'codex-app-server'
+}
+
+function isClaudeProvider(provider?: Provider, providerId = '') {
+  return providerId === 'claude-cli' || provider?.structuredProtocol === 'claude-code-stream-json'
 }
 
 function titleFromModelId(modelId: string) {
@@ -115,13 +121,16 @@ function buildModelOptions(
 ): ModelOption[] {
   const providerName = providerDisplayName(provider, providerId)
   const codexProvider = isCodexProvider(provider, providerId)
+  const claudeProvider = isClaudeProvider(provider, providerId)
   const runtimeOptions = (acp?.availableModels ?? []).flatMap((model) => {
-    const option = modelOptionFromRuntime(model, !codexProvider)
+    const option = modelOptionFromRuntime(model, !codexProvider && !claudeProvider)
     return option ? [option] : []
   })
   const defaultOption = providerDefaultModelOption(providerName)
   const fallbackOptions = codexProvider
     ? [defaultOption]
+    : claudeProvider
+      ? [defaultOption, { id: 'sonnet', label: 'Sonnet', shortLabel: 'Sonnet', detail: 'Latest Sonnet alias' }, { id: 'opus', label: 'Opus', shortLabel: 'Opus', detail: 'Latest Opus alias' }]
     : [defaultOption, ...GEMINI_FALLBACK_ACP_MODEL_OPTIONS.slice(1)]
   const baseOptions = runtimeOptions.length > 0
     ? [defaultOption, ...runtimeOptions]
@@ -344,6 +353,7 @@ function AcpErrorDetails({ acp, title }: { acp: AcpBinding; title: string }) {
 
 function ProviderIcon({ providerId }: { providerId?: string }) {
   const codex = providerId === 'codex-cli'
+  const claude = providerId === 'claude-cli'
   return (
     <span
       aria-hidden="true"
@@ -354,13 +364,15 @@ function ProviderIcon({ providerId }: { providerId?: string }) {
         borderRadius: 4,
         background: codex
           ? 'linear-gradient(135deg, #111827 0%, #3b82f6 52%, #22c55e 100%)'
+          : claude
+            ? 'linear-gradient(135deg, #d97706 0%, #f59e0b 52%, #111827 100%)'
           : 'linear-gradient(135deg, #8ab4ff 0%, #c58af9 48%, #4ade80 100%)',
         color: '#ffffff',
         fontSize: 10,
         lineHeight: 1,
       }}
     >
-      {codex ? 'C' : '✦'}
+      {codex ? 'C' : claude ? 'A' : '✦'}
     </span>
   )
 }
@@ -1460,6 +1472,7 @@ function ComposerToolbar({
   canSend,
   modelId,
   approvalModeId,
+  memoryEnabled,
   canChangeProvider,
   providerOpen,
   modelOpen,
@@ -1473,6 +1486,7 @@ function ComposerToolbar({
   onSelectProvider,
   onSelectModel,
   onTogglePlan,
+  onToggleMemory,
   onCancel,
 }: {
   acp?: AcpBinding
@@ -1485,6 +1499,7 @@ function ComposerToolbar({
   canSend: boolean
   modelId?: string
   approvalModeId?: string
+  memoryEnabled: boolean
   canChangeProvider: boolean
   providerOpen: boolean
   modelOpen: boolean
@@ -1498,6 +1513,7 @@ function ComposerToolbar({
   onSelectProvider: (providerId: string) => void
   onSelectModel: (modelId: string) => void
   onTogglePlan: () => void
+  onToggleMemory: () => void
   onCancel: () => void
 }) {
   const modelOptions = buildModelOptions(acp, modelId ?? '', provider, providerId)
@@ -1512,6 +1528,7 @@ function ComposerToolbar({
   const hasRuntimeModes = Boolean(acp?.running && acp.availableModes.length > 0)
   const planAvailable = !hasRuntimeModes || acp?.availableModes.some((mode) => mode.id === 'plan')
   const planDisabled = Boolean(modelDisabled || !planAvailable)
+  const memoryDisabled = Boolean(modelDisabled)
   const modeLabel = planActive ? 'Plan' : 'Default'
   const chipStyle = {
     height: 26,
@@ -1664,6 +1681,24 @@ function ComposerToolbar({
         <span style={{ color: planActive ? 'var(--accent)' : 'var(--text-3)', fontSize: 10 }}>●</span>
         <span>Plan</span>
       </button>
+      <button
+        type="button"
+        title="Toggle memory"
+        aria-pressed={memoryEnabled}
+        onClick={onToggleMemory}
+        disabled={memoryDisabled}
+        className="inline-flex items-center gap-1.5 px-2"
+        style={{
+          ...chipStyle,
+          borderColor: memoryEnabled ? 'color-mix(in srgb, var(--green) 50%, var(--border))' : 'var(--border)',
+          background: memoryEnabled ? 'color-mix(in srgb, var(--green) 14%, var(--surface))' : chipStyle.background,
+          color: memoryEnabled ? 'var(--text)' : 'var(--text-2)',
+          opacity: memoryDisabled ? 0.55 : 1,
+        }}
+      >
+        <span style={{ color: memoryEnabled ? 'var(--green)' : 'var(--text-3)', fontSize: 10 }}>●</span>
+        <span>Memory</span>
+      </button>
       <button type="button" title="Runtime" className="inline-flex items-center gap-1.5 px-2" style={chipStyle}>
         <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>
         <span>{runtimeLabel}</span>
@@ -1733,6 +1768,10 @@ function ComposerToolbar({
                   <span>{modeLabel}</span>
                 </div>
                 <div className="flex justify-between gap-3">
+                  <span style={{ color: 'var(--text-3)' }}>Memory</span>
+                  <span>{memoryEnabled ? 'On' : 'Off'}</span>
+                </div>
+                <div className="flex justify-between gap-3">
                   <span style={{ color: 'var(--text-3)' }}>Usage</span>
                   <span>Unavailable</span>
                 </div>
@@ -1797,6 +1836,7 @@ export function ChatView({ session }: ChatViewProps) {
   const setSessionProvider = useAppStore((s) => s.setSessionProvider)
   const setSessionModel = useAppStore((s) => s.setSessionModel)
   const setSessionApprovalMode = useAppStore((s) => s.setSessionApprovalMode)
+  const setSessionMemoryEnabled = useAppStore((s) => s.setSessionMemoryEnabled)
   const bottomRef = useRef<HTMLDivElement>(null)
   const providerMenuRef = useRef<HTMLDivElement>(null)
   const modelMenuRef = useRef<HTMLDivElement>(null)
@@ -1944,14 +1984,14 @@ export function ChatView({ session }: ChatViewProps) {
     () =>
       providers.find((candidate) => candidate.id === currentProviderId) ?? {
         id: currentProviderId,
-        name: currentProviderId === 'codex-cli' ? 'Codex CLI' : 'Gemini CLI',
-        shortName: currentProviderId === 'codex-cli' ? 'Codex' : 'Gemini',
+        name: currentProviderId === 'codex-cli' ? 'Codex CLI' : currentProviderId === 'claude-cli' ? 'Claude Code' : 'Gemini CLI',
+        shortName: currentProviderId === 'codex-cli' ? 'Codex' : currentProviderId === 'claude-cli' ? 'Claude' : 'Gemini',
         color: '#8ab4ff',
         description: '',
         outputMode: 'cli',
         supportsCli: true,
         supportsStructured: true,
-        structuredProtocol: currentProviderId === 'codex-cli' ? 'codex-app-server' : 'gemini-acp',
+        structuredProtocol: currentProviderId === 'codex-cli' ? 'codex-app-server' : currentProviderId === 'claude-cli' ? 'claude-code-stream-json' : 'gemini-acp',
       },
     [currentProviderId, providers]
   )
@@ -2195,6 +2235,7 @@ export function ChatView({ session }: ChatViewProps) {
               canSend={canSend}
               modelId={currentModelId}
               approvalModeId={currentModeId}
+              memoryEnabled={session.memoryEnabled ?? true}
               canChangeProvider={canChangeProvider}
               providerOpen={providerOpen}
               modelOpen={modelOpen}
@@ -2230,6 +2271,9 @@ export function ChatView({ session }: ChatViewProps) {
               onTogglePlan={() => {
                 const nextMode = currentModeId === 'plan' ? 'default' : 'plan'
                 void setSessionApprovalMode(session.id, nextMode)
+              }}
+              onToggleMemory={() => {
+                void setSessionMemoryEnabled(session.id, !(session.memoryEnabled ?? true))
               }}
               onCancel={() => void cancelAcpTurn(session.id)}
             />

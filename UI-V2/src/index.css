@@ -285,6 +285,50 @@ summary,
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--surface) 72%, transparent);
 }
 
+.session-status--attention {
+  width: 14px;
+  color: var(--yellow);
+}
+
+.session-status--attention > svg,
+.session-status--attention > span {
+  display: block;
+}
+
+.session-status--attention > svg {
+  width: 12px;
+  height: 12px;
+}
+
+.session-status__question {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  border: 1.4px solid currentColor;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 10px;
+  text-align: center;
+}
+
+.session-status--plan,
+.session-status--command {
+  color: var(--blue);
+}
+
+.session-status--memory {
+  color: var(--accent);
+}
+
+.session-status--permission,
+.session-status--file {
+  color: var(--yellow);
+}
+
+.session-status--error {
+  color: var(--red);
+}
+
 /* ── Highlight.js theme override (minimal) ───────────────── */
 .hljs {
   background: transparent !important;

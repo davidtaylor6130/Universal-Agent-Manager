@@ -69,6 +69,16 @@ export type AcpLifecycleState =
   | 'waitingUserInput'
   | 'error'
 
+export type AcpAttentionKind =
+  | 'question'
+  | 'plan'
+  | 'memory'
+  | 'permission'
+  | 'command'
+  | 'file'
+  | 'error'
+  | 'generic'
+
 interface CppMessage {
   role: 'user' | 'assistant' | 'system'
   content: string
@@ -88,6 +98,9 @@ interface CppChat {
   providerId: string
   modelId?: string
   approvalMode?: string
+  memoryEnabled?: boolean
+  memoryLastProcessedMessageCount?: number
+  memoryLastProcessedAt?: string
   workspaceDirectory?: string
   createdAt: string
   updatedAt: string
@@ -176,6 +189,7 @@ export interface AcpPendingUserInput {
   requestId: string
   itemId: string
   status: string
+  attentionKind?: AcpAttentionKind
   questions: AcpUserInputQuestion[]
 }
 
@@ -207,6 +221,7 @@ export interface CppAcpSession {
   running?: boolean
   processing?: boolean
   readySinceLastSelect?: boolean
+  attentionKind?: AcpAttentionKind | null
   lifecycleState?: AcpLifecycleState | string
   lastError?: string
   recentStderr?: string
@@ -273,9 +288,19 @@ interface CppProvider {
   structuredProtocol?: string
 }
 
+export interface MemoryWorkerBinding {
+  workerProviderId: string
+  workerModelId: string
+}
+
 interface CppSettings {
   activeProviderId: string
   theme: string
+  memoryEnabledDefault: boolean
+  memoryIdleDelaySeconds: number
+  memoryRecallBudgetBytes: number
+  memoryLastStatus: string
+  memoryWorkerBindings: Record<string, MemoryWorkerBinding>
 }
 
 export interface CppAppState {
@@ -310,6 +335,7 @@ export interface AcpBinding {
   lifecycleState: AcpLifecycleState
   processing: boolean
   readySinceLastSelect: boolean
+  attentionKind?: AcpAttentionKind | null
   processingStartedAtMs: number | null
   lastError: string
   recentStderr: string
@@ -370,6 +396,22 @@ function finiteNumberOr(value: unknown, fallback: number): number {
 
 function booleanOr(value: unknown, fallback = false): boolean {
   return typeof value === 'boolean' ? value : fallback
+}
+
+function sanitizeAcpAttentionKind(value: unknown, fallback: AcpAttentionKind | null = null): AcpAttentionKind | null {
+  if (
+    value === 'question' ||
+    value === 'plan' ||
+    value === 'memory' ||
+    value === 'permission' ||
+    value === 'command' ||
+    value === 'file' ||
+    value === 'error' ||
+    value === 'generic'
+  ) {
+    return value
+  }
+  return fallback
 }
 
 function normalizeAcpModelId(value: unknown): string {
@@ -622,6 +664,7 @@ function sanitizePendingUserInput(value: unknown): AcpPendingUserInput | null {
     requestId,
     itemId: stringOr(value.itemId),
     status: stringOr(value.status),
+    attentionKind: sanitizeAcpAttentionKind(value.attentionKind, 'question') ?? 'question',
     questions: Array.isArray(value.questions)
       ? value.questions.flatMap((question) => {
           const sanitized = sanitizeUserInputQuestion(question)
@@ -651,6 +694,7 @@ function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined {
     running: typeof value.running === 'boolean' ? value.running : undefined,
     processing: typeof value.processing === 'boolean' ? value.processing : undefined,
     readySinceLastSelect: typeof value.readySinceLastSelect === 'boolean' ? value.readySinceLastSelect : undefined,
+    attentionKind: sanitizeAcpAttentionKind(value.attentionKind),
     lifecycleState: isString(value.lifecycleState) ? value.lifecycleState : undefined,
     lastError: isString(value.lastError) ? value.lastError : undefined,
     recentStderr: isString(value.recentStderr) ? value.recentStderr : undefined,
@@ -727,6 +771,9 @@ function sanitizeCppChat(value: unknown): CppChat | null {
     providerId: stringOr(value.providerId, GEMINI_CLI_PROVIDER_ID),
     modelId: normalizeAcpModelId(value.modelId),
     approvalMode: normalizeAcpApprovalMode(value.approvalMode),
+    memoryEnabled: booleanOr(value.memoryEnabled, true),
+    memoryLastProcessedMessageCount: finiteNumberOr(value.memoryLastProcessedMessageCount, 0),
+    memoryLastProcessedAt: isString(value.memoryLastProcessedAt) ? value.memoryLastProcessedAt : undefined,
     workspaceDirectory: isString(value.workspaceDirectory) ? value.workspaceDirectory : undefined,
     createdAt: stringOr(value.createdAt),
     updatedAt: stringOr(value.updatedAt),
@@ -802,13 +849,36 @@ function sanitizeCliDebugState(value: unknown): CppCliDebugState | undefined {
 
 function sanitizeCppSettings(value: unknown): CppSettings {
   if (!isRecord(value)) {
-    return { activeProviderId: GEMINI_CLI_PROVIDER_ID, theme: 'dark' }
+    return {
+      activeProviderId: GEMINI_CLI_PROVIDER_ID,
+      theme: 'dark',
+      memoryEnabledDefault: true,
+      memoryIdleDelaySeconds: 60,
+      memoryRecallBudgetBytes: 2048,
+      memoryLastStatus: '',
+      memoryWorkerBindings: {},
+    }
   }
 
   const theme = value.theme === 'light' || value.theme === 'dark' ? value.theme : 'dark'
+  const bindings: Record<string, MemoryWorkerBinding> = {}
+  if (isRecord(value.memoryWorkerBindings)) {
+    for (const [providerId, binding] of Object.entries(value.memoryWorkerBindings)) {
+      if (!isRecord(binding)) continue
+      bindings[providerId] = {
+        workerProviderId: stringOr(binding.workerProviderId),
+        workerModelId: stringOr(binding.workerModelId),
+      }
+    }
+  }
   return {
     activeProviderId: stringOr(value.activeProviderId, GEMINI_CLI_PROVIDER_ID),
     theme,
+    memoryEnabledDefault: booleanOr(value.memoryEnabledDefault, true),
+    memoryIdleDelaySeconds: Math.min(3600, Math.max(30, finiteNumberOr(value.memoryIdleDelaySeconds, 60))),
+    memoryRecallBudgetBytes: Math.min(8192, Math.max(512, finiteNumberOr(value.memoryRecallBudgetBytes, 2048))),
+    memoryLastStatus: stringOr(value.memoryLastStatus),
+    memoryWorkerBindings: bindings,
   }
 }
 
@@ -954,6 +1024,7 @@ function acpBindingSignature(binding: AcpBinding | undefined) {
     lifecycleState: binding.lifecycleState,
     processing: binding.processing,
     readySinceLastSelect: binding.readySinceLastSelect,
+    attentionKind: binding.attentionKind,
     processingStartedAtMs: binding.processingStartedAtMs,
     lastError: binding.lastError,
     recentStderr: binding.recentStderr,
@@ -1174,6 +1245,11 @@ function deserializeState(
     cliBindingBySessionId: Record<string, CliBinding>
     acpBindingBySessionId: Record<string, AcpBinding>
     cliDebugState: CppCliDebugState | null
+    memoryEnabledDefault: boolean
+    memoryIdleDelaySeconds: number
+    memoryRecallBudgetBytes: number
+    memoryLastStatus: string
+    memoryWorkerBindings: Record<string, MemoryWorkerBinding>
   }
 ) {
   const buildMessage = (chatId: string, message: CppMessage, index: number): Message => {
@@ -1232,6 +1308,9 @@ function deserializeState(
     const providerId = c.providerId || GEMINI_CLI_PROVIDER_ID
     const modelId = c.modelId ?? ''
     const approvalMode = normalizeAcpApprovalMode(c.approvalMode)
+    const memoryEnabled = c.memoryEnabled ?? true
+    const memoryLastProcessedMessageCount = c.memoryLastProcessedMessageCount ?? 0
+    const memoryLastProcessedAt = c.memoryLastProcessedAt ?? ''
     const createdAt = new Date(c.createdAt || Date.now())
     const updatedAt = new Date(c.updatedAt || Date.now())
     const lastOpenedAt = new Date(c.lastOpenedAt || c.updatedAt || c.createdAt || Date.now())
@@ -1244,6 +1323,9 @@ function deserializeState(
       (prev.providerId ?? GEMINI_CLI_PROVIDER_ID) === providerId &&
       (prev.modelId ?? '') === modelId &&
       (prev.approvalMode ?? 'default') === approvalMode &&
+      (prev.memoryEnabled ?? true) === memoryEnabled &&
+      (prev.memoryLastProcessedMessageCount ?? 0) === memoryLastProcessedMessageCount &&
+      (prev.memoryLastProcessedAt ?? '') === memoryLastProcessedAt &&
       prev.workspaceDirectory === workspaceDirectory &&
       prev.viewMode === 'chat' &&
       prev.createdAt.getTime() === createdAt.getTime() &&
@@ -1261,6 +1343,9 @@ function deserializeState(
       providerId,
       modelId,
       approvalMode,
+      memoryEnabled,
+      memoryLastProcessedMessageCount,
+      memoryLastProcessedAt,
       workspaceDirectory,
       createdAt,
       updatedAt,
@@ -1422,6 +1507,7 @@ function deserializeState(
         lifecycleState,
         processing: effectiveProcessing,
         readySinceLastSelect: Boolean(acp?.readySinceLastSelect),
+        attentionKind: acp?.attentionKind ?? null,
         processingStartedAtMs: effectiveProcessing
           ? prev?.processing
             ? prev.processingStartedAtMs ?? Date.now()
@@ -1497,6 +1583,11 @@ function deserializeState(
     acpBindingBySessionId,
     cliTranscriptBySessionId,
     cliDebugState,
+    memoryEnabledDefault: cpp.settings.memoryEnabledDefault,
+    memoryIdleDelaySeconds: cpp.settings.memoryIdleDelaySeconds,
+    memoryRecallBudgetBytes: cpp.settings.memoryRecallBudgetBytes,
+    memoryLastStatus: cpp.settings.memoryLastStatus,
+    memoryWorkerBindings: cpp.settings.memoryWorkerBindings,
   }
 }
 
@@ -1556,6 +1647,11 @@ interface AppState {
   acpBindingBySessionId: Record<string, AcpBinding>
   cliTranscriptBySessionId: Record<string, CliTranscript>
   cliDebugState: CppCliDebugState | null
+  memoryEnabledDefault: boolean
+  memoryIdleDelaySeconds: number
+  memoryRecallBudgetBytes: number
+  memoryLastStatus: string
+  memoryWorkerBindings: Record<string, MemoryWorkerBinding>
 
   // UI
   theme: 'dark' | 'light'
@@ -1576,6 +1672,8 @@ interface AppState {
 	  setSessionProvider: (id: string, providerId: string) => Promise<boolean>
 	  setSessionModel: (id: string, modelId: string) => Promise<boolean>
 	  setSessionApprovalMode: (id: string, modeId: string) => Promise<boolean>
+	  setSessionMemoryEnabled: (id: string, enabled: boolean) => Promise<boolean>
+	  setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'memoryWorkerBindings'>>) => Promise<boolean>
 	  deleteSession: (id: string) => void
 
   // Folder actions
@@ -1631,15 +1729,20 @@ export const useAppStore = create<AppState>((set, get) => {
 	        if (isNewerStateRevision(nextRevision, current.lastAppliedStateRevision)) {
 	          const deserialized = deserializeState(sanitized, {
 	            sessions: current.sessions,
-            folders: current.folders,
-            messages: current.messages,
-            providers: current.providers,
-            activeSessionId: current.activeSessionId,
-            cliTranscriptBySessionId: current.cliTranscriptBySessionId,
-            cliBindingBySessionId: current.cliBindingBySessionId,
-            acpBindingBySessionId: current.acpBindingBySessionId,
-            cliDebugState: current.cliDebugState,
-          })
+	            folders: current.folders,
+	            messages: current.messages,
+	            providers: current.providers,
+	            activeSessionId: current.activeSessionId,
+	            cliTranscriptBySessionId: current.cliTranscriptBySessionId,
+	            cliBindingBySessionId: current.cliBindingBySessionId,
+	            acpBindingBySessionId: current.acpBindingBySessionId,
+	            cliDebugState: current.cliDebugState,
+	            memoryEnabledDefault: current.memoryEnabledDefault,
+	            memoryIdleDelaySeconds: current.memoryIdleDelaySeconds,
+	            memoryRecallBudgetBytes: current.memoryRecallBudgetBytes,
+	            memoryLastStatus: current.memoryLastStatus,
+	            memoryWorkerBindings: current.memoryWorkerBindings,
+	          })
           set(deserialized)
           // Sync theme to DOM
           if (deserialized.theme) {
@@ -1747,6 +1850,11 @@ export const useAppStore = create<AppState>((set, get) => {
     acpBindingBySessionId: {},
     cliTranscriptBySessionId: {},
     cliDebugState: null,
+    memoryEnabledDefault: true,
+    memoryIdleDelaySeconds: 60,
+    memoryRecallBudgetBytes: 2048,
+    memoryLastStatus: '',
+    memoryWorkerBindings: {},
 
     theme: readDocumentTheme(),
     isNewChatModalOpen: false,
@@ -1776,6 +1884,11 @@ export const useAppStore = create<AppState>((set, get) => {
         cliBindingBySessionId: current.cliBindingBySessionId,
         acpBindingBySessionId: current.acpBindingBySessionId,
         cliDebugState: current.cliDebugState,
+        memoryEnabledDefault: current.memoryEnabledDefault,
+        memoryIdleDelaySeconds: current.memoryIdleDelaySeconds,
+        memoryRecallBudgetBytes: current.memoryRecallBudgetBytes,
+        memoryLastStatus: current.memoryLastStatus,
+        memoryWorkerBindings: current.memoryWorkerBindings,
       })
       set(deserialized)
       if (deserialized.theme) {
@@ -2142,6 +2255,91 @@ export const useAppStore = create<AppState>((set, get) => {
 	      }
 
 	      applyMode()
+	      return true
+	    },
+
+	    setSessionMemoryEnabled: async (id, enabled) => {
+	      const previousSession = get().sessions.find((s) => s.id === id)
+	      if (!previousSession) {
+	        return false
+	      }
+	      if ((previousSession.memoryEnabled ?? true) === enabled) {
+	        return true
+	      }
+
+	      const applyMemory = () => {
+	        set((state) => ({
+	          sessions: state.sessions.map((s) =>
+	            s.id === id ? { ...s, memoryEnabled: enabled, updatedAt: new Date() } : s
+	          ),
+	        }))
+	      }
+
+	      if (isCefContext()) {
+	        const requestKey = `setSessionMemoryEnabled:${id}`
+	        const requestId = createRequestId('setSessionMemoryEnabled')
+	        rememberPendingRequest(requestKey, requestId)
+	        applyMemory()
+	        const response = await sendToCEF({
+	          action: 'setChatMemoryEnabled',
+	          payload: { chatId: id, enabled },
+	          requestId,
+	        })
+
+	        if (response.ok) {
+	          clearPendingRequest(requestKey, response.requestId)
+	          return true
+	        }
+
+	        if (isLatestPendingRequest(requestKey, response.requestId)) {
+	          set((state) => ({
+	            sessions: state.sessions.map((s) => (s.id === id ? previousSession : s)),
+	          }))
+	          pendingRequestIdsByKey.delete(requestKey)
+	        }
+	        return false
+	      }
+
+	      applyMemory()
+	      return true
+	    },
+
+	    setMemorySettings: async (settings) => {
+	      const previous = {
+	        memoryEnabledDefault: get().memoryEnabledDefault,
+	        memoryIdleDelaySeconds: get().memoryIdleDelaySeconds,
+	        memoryRecallBudgetBytes: get().memoryRecallBudgetBytes,
+	        memoryWorkerBindings: get().memoryWorkerBindings,
+	      }
+	      const next = {
+	        memoryEnabledDefault: settings.memoryEnabledDefault ?? previous.memoryEnabledDefault,
+	        memoryIdleDelaySeconds: settings.memoryIdleDelaySeconds ?? previous.memoryIdleDelaySeconds,
+	        memoryRecallBudgetBytes: settings.memoryRecallBudgetBytes ?? previous.memoryRecallBudgetBytes,
+	        memoryWorkerBindings: settings.memoryWorkerBindings ?? previous.memoryWorkerBindings,
+	      }
+	      const applySettings = () => set(next)
+
+	      if (isCefContext()) {
+	        const requestId = createRequestId('setMemorySettings')
+	        applySettings()
+	        const response = await sendToCEF({
+	          action: 'setMemorySettings',
+	          payload: {
+	            enabledDefault: next.memoryEnabledDefault,
+	            idleDelaySeconds: next.memoryIdleDelaySeconds,
+	            recallBudgetBytes: next.memoryRecallBudgetBytes,
+	            workerBindings: next.memoryWorkerBindings,
+	          },
+	          requestId,
+	        })
+	        if (!response.ok) {
+	          set(previous)
+	          return false
+	        }
+	        return true
+	      }
+
+	      applySettings()
 	      return true
 	    },
 
@@ -2640,6 +2838,7 @@ export const useAppStore = create<AppState>((set, get) => {
             lifecycleState: 'ready',
             processing: false,
             processingStartedAtMs: null,
+            attentionKind: null,
             pendingPermission: null,
             pendingUserInput: null,
           },
@@ -2693,6 +2892,7 @@ export const useAppStore = create<AppState>((set, get) => {
               agentInfo: null,
             }),
             lifecycleState: 'processing',
+            attentionKind: null,
             pendingPermission: null,
             pendingUserInput: null,
           },
@@ -2749,6 +2949,7 @@ export const useAppStore = create<AppState>((set, get) => {
             }),
             lifecycleState: 'processing',
             processing: true,
+            attentionKind: null,
             pendingUserInput: null,
           },
         },
@@ -2800,6 +3001,7 @@ export const useAppStore = create<AppState>((set, get) => {
             processing: false,
             readySinceLastSelect: false,
             processingStartedAtMs: null,
+            attentionKind: null,
             pendingPermission: null,
             pendingUserInput: null,
           },

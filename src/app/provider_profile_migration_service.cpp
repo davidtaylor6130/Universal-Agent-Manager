@@ -7,6 +7,7 @@ namespace
 {
 	constexpr const char* kRuntimeIdGeminiCli = "gemini-cli";
 	constexpr const char* kRuntimeIdCodexCli = "codex-cli";
+	constexpr const char* kRuntimeIdClaudeCli = "claude-cli";
 } // namespace
 
 bool ProviderProfileMigrationService::IsNativeHistoryProviderId(const std::string& provider_id) const
@@ -48,6 +49,15 @@ std::string ProviderProfileMigrationService::MapLegacyRuntimeId(const std::strin
 #endif
 	}
 
+	if (lowered == "claude" || lowered == "claude-code" || lowered == kRuntimeIdClaudeCli)
+	{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+		return kRuntimeIdClaudeCli;
+#else
+		return provider_build_config::FirstEnabledProviderId();
+#endif
+	}
+
 	return trimmed;
 }
 
@@ -66,6 +76,9 @@ bool ProviderProfileMigrationService::ShouldShowProviderProfileInUi(const Provid
 #endif
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
 	    lowered == kRuntimeIdCodexCli ||
+#endif
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	    lowered == kRuntimeIdClaudeCli ||
 #endif
 	    false;
 }
@@ -111,6 +124,16 @@ bool ProviderProfileMigrationService::MigrateActiveProviderIdToFixedModes(uam::A
 	{
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
 		app.settings.active_provider_id = kRuntimeIdCodexCli;
+#else
+		app.settings.active_provider_id = provider_build_config::FirstEnabledProviderId();
+#endif
+		return true;
+	}
+
+	if (lowered == "claude" || lowered == "claude-code")
+	{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+		app.settings.active_provider_id = kRuntimeIdClaudeCli;
 #else
 		app.settings.active_provider_id = provider_build_config::FirstEnabledProviderId();
 #endif

@@ -72,10 +72,10 @@ endif()
 option(UAM_BUILD_TESTS "Build UAM core tests executable." OFF)
 option(UAM_ENABLE_RUNTIME_GEMINI_CLI "Enable Gemini CLI runtime backend." ON)
 option(UAM_ENABLE_RUNTIME_CODEX_CLI "Enable Codex CLI runtime backend." ON)
+option(UAM_ENABLE_RUNTIME_CLAUDE_CLI "Enable Claude Code CLI runtime backend." ON)
 
 foreach(_removed_runtime_flag IN ITEMS
   UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED
-  UAM_ENABLE_RUNTIME_CLAUDE_CLI
   UAM_ENABLE_RUNTIME_OPENCODE_CLI
   UAM_ENABLE_RUNTIME_OPENCODE_LOCAL
   UAM_ENABLE_RUNTIME_OLLAMA_ENGINE
@@ -84,12 +84,12 @@ foreach(_removed_runtime_flag IN ITEMS
   if(DEFINED ${_removed_runtime_flag})
     message(FATAL_ERROR
       "${_removed_runtime_flag} is no longer supported in this release slice. "
-      "Only UAM_ENABLE_RUNTIME_GEMINI_CLI and UAM_ENABLE_RUNTIME_CODEX_CLI are supported."
+      "Only UAM_ENABLE_RUNTIME_GEMINI_CLI, UAM_ENABLE_RUNTIME_CODEX_CLI, and UAM_ENABLE_RUNTIME_CLAUDE_CLI are supported."
     )
   endif()
 endforeach()
 
-if(NOT UAM_ENABLE_RUNTIME_GEMINI_CLI AND NOT UAM_ENABLE_RUNTIME_CODEX_CLI)
+if(NOT UAM_ENABLE_RUNTIME_GEMINI_CLI AND NOT UAM_ENABLE_RUNTIME_CODEX_CLI AND NOT UAM_ENABLE_RUNTIME_CLAUDE_CLI)
   message(FATAL_ERROR "At least one provider runtime must be enabled.")
 endif()
 
@@ -182,6 +182,11 @@ if(UAM_ENABLE_RUNTIME_CODEX_CLI)
     src/common/provider/codex/cli/codex_cli_provider_runtime.cpp
   )
 endif()
+if(UAM_ENABLE_RUNTIME_CLAUDE_CLI)
+  list(APPEND UAM_PROVIDER_SOURCES
+    src/common/provider/claude/cli/claude_cli_provider_runtime.cpp
+  )
+endif()
 
 # ---------------------------------------------------------------------------
 # Platform sources
@@ -219,6 +224,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/application_core_helpers.cpp
   src/app/chat_domain_service.cpp
   src/app/chat_lifecycle_service.cpp
+  src/app/memory_service.cpp
   src/app/native_session_link_service.cpp
   src/app/persistence_coordinator.cpp
   src/app/provider_resolution_service.cpp
@@ -282,6 +288,7 @@ target_compile_definitions(universal_agent_manager PRIVATE
   NOMINMAX
   UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
   UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>
+  UAM_ENABLE_RUNTIME_CLAUDE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CLAUDE_CLI}>
 )
 
 set_target_properties(universal_agent_manager PROPERTIES FOLDER "App")
@@ -644,6 +651,7 @@ if(UAM_BUILD_TESTS)
     src/app/application_core_helpers.cpp
     src/app/chat_domain_service.cpp
     src/app/chat_lifecycle_service.cpp
+    src/app/memory_service.cpp
     src/app/native_session_link_service.cpp
     src/app/persistence_coordinator.cpp
     src/app/provider_resolution_service.cpp
@@ -689,6 +697,7 @@ if(UAM_BUILD_TESTS)
     NOMINMAX
     UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
     UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>
+    UAM_ENABLE_RUNTIME_CLAUDE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CLAUDE_CLI}>
   )
   if(MSVC)
     set_property(TARGET uam_core_tests PROPERTY

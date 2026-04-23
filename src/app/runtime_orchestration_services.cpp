@@ -1066,6 +1066,54 @@ bool ChatHistorySyncService::DeleteNativeSessionFileForChat(const AppState& p_ap
 	return l_removed && !l_ec;
 }
 
+bool ChatHistorySyncService::DeleteNativeWorkspaceHistoryForFolder(const AppState& p_app, const ChatFolder& p_folder, std::error_code* p_errorOut) const
+{
+	if (p_errorOut != nullptr)
+	{
+		p_errorOut->clear();
+	}
+
+	const std::string l_folderDirectory = Trim(p_folder.directory);
+
+	if (l_folderDirectory.empty())
+	{
+		return false;
+	}
+
+	const ProviderProfile& l_provider = DefaultNativeHistoryProvider(p_app);
+
+	if (!ProviderRuntime::UsesNativeOverlayHistory(l_provider))
+	{
+		return false;
+	}
+
+	const fs::path l_workspaceRoot = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(l_folderDirectory);
+	const auto l_tmpDir = AppPaths::ResolveGeminiProjectTmpDir(l_workspaceRoot);
+
+	if (!l_tmpDir.has_value())
+	{
+		return false;
+	}
+
+	const fs::path l_projectRootFile = l_tmpDir.value() / ".project_root";
+	const std::string l_recordedProjectRoot = Trim(ReadTextFile(l_projectRootFile));
+
+	if (l_recordedProjectRoot.empty() || !FolderDirectoryMatches(l_workspaceRoot, fs::path(l_recordedProjectRoot)))
+	{
+		return false;
+	}
+
+	std::error_code l_ec;
+	fs::remove_all(l_tmpDir.value(), l_ec);
+
+	if (p_errorOut != nullptr)
+	{
+		*p_errorOut = l_ec;
+	}
+
+	return !l_ec;
+}
+
 bool ChatHistorySyncService::PersistLocalDraftNativeSessionLink(const AppState& p_app, ChatSession& p_localChat, const std::string& p_nativeSessionId) const
 {
 	const std::string l_sessionId = Trim(p_nativeSessionId);

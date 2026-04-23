@@ -67,6 +67,48 @@ namespace
 		return "";
 	}
 
+	std::string NormalizeAttentionKindForFrontend(const std::string& value, const std::string& fallback)
+	{
+		const std::string kind = uam::strings::Trim(value);
+		if (kind == "question" ||
+		    kind == "plan" ||
+		    kind == "memory" ||
+		    kind == "permission" ||
+		    kind == "command" ||
+		    kind == "file" ||
+		    kind == "error" ||
+		    kind == "generic")
+		{
+			return kind;
+		}
+		return fallback;
+	}
+
+	std::string AcpAttentionKindForFrontend(const AcpSessionState& session)
+	{
+		if (!session.pending_user_input.request_id_json.empty())
+		{
+			return NormalizeAttentionKindForFrontend(session.pending_user_input.attention_kind, "question");
+		}
+		if (!session.pending_permission.request_id_json.empty())
+		{
+			if (session.pending_permission.kind == "commandExecution")
+			{
+				return "command";
+			}
+			if (session.pending_permission.kind == "fileChange")
+			{
+				return "file";
+			}
+			return "permission";
+		}
+		if (session.lifecycle_state == "error" && !session.last_error.empty())
+		{
+			return "error";
+		}
+		return "";
+	}
+
 	nlohmann::json ReadCachedCodexModelsForFrontend()
 	{
 		auto models_json = nlohmann::json::array();
@@ -341,6 +383,7 @@ nlohmann::json SerializeAcpSessionSummary(const AppState& app, const ChatSession
 		acp_json["running"] = false;
 		acp_json["processing"] = false;
 		acp_json["readySinceLastSelect"] = ready_since_last_select;
+			acp_json["attentionKind"] = nullptr;
 			acp_json["lifecycleState"] = "stopped";
 			acp_json["lastError"] = "";
 			acp_json["recentStderr"] = "";
@@ -369,6 +412,8 @@ nlohmann::json SerializeAcpSessionSummary(const AppState& app, const ChatSession
 	acp_json["running"] = session->running;
 	acp_json["processing"] = session->processing;
 	acp_json["readySinceLastSelect"] = ready_since_last_select;
+	const std::string attention_kind = AcpAttentionKindForFrontend(*session);
+	acp_json["attentionKind"] = attention_kind.empty() ? nlohmann::json(nullptr) : nlohmann::json(attention_kind);
 		acp_json["lifecycleState"] = session->lifecycle_state;
 		acp_json["lastError"] = session->last_error;
 		acp_json["recentStderr"] = session->recent_stderr;
@@ -498,6 +543,7 @@ nlohmann::json SerializeAcpSessionSummary(const AppState& app, const ChatSession
 		input_json["requestId"] = session->pending_user_input.request_id_json;
 		input_json["itemId"] = session->pending_user_input.item_id;
 		input_json["status"] = session->pending_user_input.status;
+		input_json["attentionKind"] = NormalizeAttentionKindForFrontend(session->pending_user_input.attention_kind, "question");
 
 		auto questions = nlohmann::json::array();
 		for (const AcpUserInputQuestionState& question : session->pending_user_input.questions)
@@ -541,6 +587,9 @@ nlohmann::json SerializeFingerprintSession(const AppState& app, const ChatSessio
 	chat_json["providerId"] = chat.provider_id;
 	chat_json["modelId"] = chat.model_id;
 	chat_json["approvalMode"] = chat.approval_mode;
+	chat_json["memoryEnabled"] = chat.memory_enabled;
+	chat_json["memoryLastProcessedMessageCount"] = chat.memory_last_processed_message_count;
+	chat_json["memoryLastProcessedAt"] = chat.memory_last_processed_at;
 	chat_json["workspaceDirectory"] = ResolveWorkspaceRootPath(app, chat).string();
 	chat_json["createdAt"] = chat.created_at;
 	chat_json["updatedAt"] = chat.updated_at;
@@ -693,6 +742,19 @@ nlohmann::json StateSerializer::Serialize(const AppState& app)
 		nlohmann::json settings;
 		settings["activeProviderId"] = app.settings.active_provider_id;
 		settings["theme"]            = app.settings.ui_theme;
+		settings["memoryEnabledDefault"] = app.settings.memory_enabled_default;
+		settings["memoryIdleDelaySeconds"] = app.settings.memory_idle_delay_seconds;
+		settings["memoryRecallBudgetBytes"] = app.settings.memory_recall_budget_bytes;
+		settings["memoryLastStatus"] = app.memory_last_status;
+		nlohmann::json bindings = nlohmann::json::object();
+		for (const auto& entry : app.settings.memory_worker_bindings)
+		{
+			bindings[entry.first] = {
+				{"workerProviderId", entry.second.worker_provider_id},
+				{"workerModelId", entry.second.worker_model_id},
+			};
+		}
+		settings["memoryWorkerBindings"] = std::move(bindings);
 		j["settings"]                = settings;
 	}
 
@@ -738,6 +800,9 @@ nlohmann::json StateSerializer::SerializeFingerprint(const AppState& app)
 		nlohmann::json settings;
 		settings["activeProviderId"] = app.settings.active_provider_id;
 		settings["theme"] = app.settings.ui_theme;
+		settings["memoryEnabledDefault"] = app.settings.memory_enabled_default;
+		settings["memoryIdleDelaySeconds"] = app.settings.memory_idle_delay_seconds;
+		settings["memoryRecallBudgetBytes"] = app.settings.memory_recall_budget_bytes;
 		j["settings"] = settings;
 	}
 
@@ -754,6 +819,9 @@ nlohmann::json StateSerializer::SerializeSession(const ChatSession& session)
 	j["providerId"] = session.provider_id;
 	j["modelId"]    = session.model_id;
 	j["approvalMode"] = session.approval_mode;
+	j["memoryEnabled"] = session.memory_enabled;
+	j["memoryLastProcessedMessageCount"] = session.memory_last_processed_message_count;
+	j["memoryLastProcessedAt"] = session.memory_last_processed_at;
 	j["workspaceDirectory"] = session.workspace_directory;
 	j["createdAt"]  = session.created_at;
 	j["updatedAt"]  = session.updated_at;

@@ -188,6 +188,7 @@ namespace uam
 		std::string request_id_json;
 		std::string item_id;
 		std::string status;
+		std::string attention_kind;
 		std::vector<AcpUserInputQuestionState> questions;
 	};
 
@@ -258,6 +259,16 @@ namespace uam
 	{
 		bool running = false;
 		std::string command_preview;
+		std::shared_ptr<AsyncProcessTaskState> state;
+		std::unique_ptr<std::jthread> worker;
+	};
+
+	struct AsyncMemoryExtractionTask
+	{
+		bool running = false;
+		std::string chat_id;
+		int message_count = 0;
+		std::filesystem::path workspace_root;
 		std::shared_ptr<AsyncProcessTaskState> state;
 		std::unique_ptr<std::jthread> worker;
 	};
@@ -335,6 +346,9 @@ namespace uam
 		std::unordered_map<std::string, std::string> resolved_native_sessions_by_chat_id;
 		AsyncCommandTask runtime_cli_version_check_task;
 		AsyncCommandTask runtime_cli_pin_task;
+		std::vector<AsyncMemoryExtractionTask> memory_extraction_tasks;
+		std::unordered_map<std::string, double> memory_idle_started_at_by_chat_id;
+		std::string memory_last_status;
 		bool runtime_cli_version_checked = false;
 		bool runtime_cli_version_supported = false;
 		std::string runtime_cli_installed_version;

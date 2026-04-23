@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <map>
 #include <memory>
 #include <string>
 #include <thread>
@@ -90,6 +91,15 @@ struct ChatSession
 	std::string approval_mode;
 	std::string model_id;
 	std::string extra_flags;
+	bool memory_enabled = true;
+	int memory_last_processed_message_count = 0;
+	std::string memory_last_processed_at;
+};
+
+struct MemoryWorkerBinding
+{
+	std::string worker_provider_id;
+	std::string worker_model_id;
 };
 
 /// <summary>
@@ -128,6 +138,10 @@ struct AppSettings
 	int window_width = 1440;
 	int window_height = 860;
 	bool window_maximized = false;
+	bool memory_enabled_default = true;
+	int memory_idle_delay_seconds = 60;
+	int memory_recall_budget_bytes = 2048;
+	std::map<std::string, MemoryWorkerBinding> memory_worker_bindings;
 };
 
 /// <summary>

@@ -36,6 +36,7 @@ class ChatHistorySyncService
 	std::vector<std::string> SessionIdsFromChats(const std::vector<ChatSession>& p_chats) const;
 	std::optional<std::filesystem::path> FindNativeSessionFilePath(const std::filesystem::path& p_chatsDir, const std::string& p_sessionId) const;
 	bool DeleteNativeSessionFileForChat(const uam::AppState& p_app, const ChatSession& p_chat, std::error_code* p_errorOut = nullptr) const;
+	bool DeleteNativeWorkspaceHistoryForFolder(const uam::AppState& p_app, const ChatFolder& p_folder, std::error_code* p_errorOut = nullptr) const;
 	std::string ResolveResumeSessionIdForChat(const uam::AppState& p_app, const ChatSession& p_chat) const;
 	bool PersistLocalDraftNativeSessionLink(const uam::AppState& p_app, ChatSession& p_localChat, const std::string& p_nativeSessionId) const;
 	void ApplyLocalOverrides(uam::AppState& p_app, std::vector<ChatSession>& p_nativeChats) const;

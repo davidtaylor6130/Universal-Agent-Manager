@@ -10,6 +10,9 @@ export interface Session {
   workspaceDirectory?: string
   modelId?: string
   approvalMode?: string
+  memoryEnabled?: boolean
+  memoryLastProcessedMessageCount?: number
+  memoryLastProcessedAt?: string
   createdAt: Date
   updatedAt: Date
   lastOpenedAt?: Date

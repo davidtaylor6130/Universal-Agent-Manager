@@ -2,6 +2,7 @@
 
 #include "app/application_core_helpers.h"
 #include "app/chat_domain_service.h"
+#include "app/memory_service.h"
 #include "app/native_session_link_service.h"
 #include "app/provider_resolution_service.h"
 #include "common/chat/chat_repository.h"
@@ -46,6 +47,7 @@ namespace
 		constexpr std::size_t kMaxAcpLogFieldBytes = 512;
 		constexpr const char* kProtocolGeminiAcp = "gemini-acp";
 		constexpr const char* kProtocolCodexAppServer = "codex-app-server";
+		constexpr const char* kProtocolClaudeCodeStreamJson = "claude-code-stream-json";
 
 			void CompletePromptTurn(AcpSessionState& session, const char* lifecycle_state);
 			void FailAcpTurnOrSession(AcpSessionState& session, const std::string& message);
@@ -72,9 +74,22 @@ namespace
 			return session.protocol_kind == kProtocolCodexAppServer || session.provider_id == "codex-cli";
 		}
 
+		bool IsClaudeSession(const AcpSessionState& session)
+		{
+			return session.protocol_kind == kProtocolClaudeCodeStreamJson || session.provider_id == "claude-cli";
+		}
+
 		const char* RuntimeDisplayName(const AcpSessionState& session)
 		{
-			return IsCodexSession(session) ? "Codex app-server" : "Gemini ACP";
+			if (IsCodexSession(session))
+			{
+				return "Codex app-server";
+			}
+			if (IsClaudeSession(session))
+			{
+				return "Claude stream-json";
+			}
+			return "Gemini ACP";
 		}
 
 		std::string MessageProviderId(const AcpSessionState& session)
@@ -536,6 +551,30 @@ namespace
 				return {"codex", "app-server", "--listen", "stdio://"};
 			}
 
+			if (Trim(chat.provider_id) == "claude-cli")
+			{
+				std::vector<std::string> argv = {"claude", "-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose"};
+				const std::string approval_mode = LaunchApprovalMode(chat);
+				if (approval_mode == "default" || approval_mode == "plan")
+				{
+					argv.push_back("--permission-mode");
+					argv.push_back(approval_mode);
+				}
+				const std::string model_id = Trim(chat.model_id);
+				if (!model_id.empty())
+				{
+					argv.push_back("--model");
+					argv.push_back(model_id);
+				}
+				const std::string resume_id = Trim(chat.native_session_id);
+				if (!resume_id.empty())
+				{
+					argv.push_back("--resume");
+					argv.push_back(resume_id);
+				}
+				return argv;
+			}
+
 			std::vector<std::string> argv = {"gemini", "--acp"};
 			const std::string approval_mode = LaunchApprovalMode(chat);
 			if (!approval_mode.empty())
@@ -727,9 +766,40 @@ namespace
 
 	bool SendInitialize(AcpSessionState& session, std::string* error_out = nullptr)
 	{
+		if (IsClaudeSession(session))
+		{
+			session.initialized = true;
+			session.load_session_supported = true;
+			session.available_modes = {
+				AcpModeState{"default", "Default", "Use Claude default permissions."},
+				AcpModeState{"plan", "Plan", "Ask Claude to plan before making changes."},
+			};
+			if (session.current_mode_id.empty())
+			{
+				session.current_mode_id = "default";
+			}
+			return true;
+		}
+
 		const int id = NextAcpRequestId(session, "initialize");
 		session.initialize_request_id = id;
 		return WriteAcpMessage(session, IsCodexSession(session) ? BuildCodexInitializeRequest(id) : BuildInitializeRequest(id), error_out);
+	}
+
+	nlohmann::json BuildClaudeInputMessage(const std::string& text)
+	{
+		return {
+			{"type", "user"},
+			{"message", {
+				{"role", "user"},
+				{"content", nlohmann::json::array({
+					{
+						{"type", "text"},
+						{"text", text},
+					},
+				})},
+			}},
+		};
 	}
 
 	std::string ContentTextFromJson(const nlohmann::json& content)
@@ -781,6 +851,19 @@ namespace
 
 			return "";
 		}
+
+	std::string ClaudeContentTextFromMessage(const nlohmann::json& message)
+	{
+		if (!message.is_object())
+		{
+			return "";
+		}
+		if (message.contains("content"))
+		{
+			return ContentTextFromJson(message["content"]);
+		}
+		return "";
+	}
 
 	bool StartsWith(const std::string& value, const std::string& prefix)
 	{
@@ -1234,6 +1317,15 @@ namespace
 			return false;
 		}
 
+		if (IsClaudeSession(session))
+		{
+			session.session_ready = true;
+			session.session_id = Trim(chat.native_session_id);
+			session.current_mode_id = chat.approval_mode.empty() ? "default" : chat.approval_mode;
+			session.lifecycle_state = session.processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
+			return true;
+		}
+
 		const std::filesystem::path workspace_root = ResolveWorkspaceRootPath(app, chat);
 		const std::string cwd = workspace_root.empty() ? std::filesystem::current_path().string() : workspace_root.string();
 		if (IsCodexSession(session))
@@ -1354,13 +1446,27 @@ namespace
 	{
 		if (!session.running || !session.session_ready || !session.processing || session.waiting_for_permission || session.waiting_for_user_input || session.prompt_request_id != 0 || session.queued_prompt.empty() || session.session_id.empty())
 		{
-			return false;
+			if (!(IsClaudeSession(session) && session.running && session.session_ready && session.processing && !session.waiting_for_permission && !session.waiting_for_user_input && session.prompt_request_id == 0 && !session.queued_prompt.empty()))
+			{
+				return false;
+			}
+		}
+
+		const std::string prompt = session.queued_prompt;
+		session.lifecycle_state = kAcpLifecycleProcessing;
+		if (IsClaudeSession(session))
+		{
+			if (!WriteAcpMessage(session, BuildClaudeInputMessage(prompt)))
+			{
+				CompletePromptTurn(session, kAcpLifecycleError);
+				return true;
+			}
+			session.queued_prompt.clear();
+			return true;
 		}
 
 		const int id = NextAcpRequestId(session, IsCodexSession(session) ? "turn/start" : "session/prompt");
-		const std::string prompt = session.queued_prompt;
 		session.prompt_request_id = id;
-		session.lifecycle_state = kAcpLifecycleProcessing;
 		const nlohmann::json request = IsCodexSession(session)
 			? BuildCodexTurnStartRequest(id, session.session_id, prompt, chat, session.current_model_id)
 			: BuildPromptRequest(id, session.session_id, prompt);
@@ -2602,6 +2708,23 @@ namespace
 		return out.str();
 	}
 
+	std::string NormalizeAttentionKind(const std::string& value, const std::string& fallback)
+	{
+		const std::string kind = strings::Trim(value);
+		if (kind == "question" ||
+		    kind == "plan" ||
+		    kind == "memory" ||
+		    kind == "permission" ||
+		    kind == "command" ||
+		    kind == "file" ||
+		    kind == "error" ||
+		    kind == "generic")
+		{
+			return kind;
+		}
+		return fallback;
+	}
+
 	void HandleCodexUserInputRequest(AcpSessionState& session, const nlohmann::json& message)
 	{
 		const nlohmann::json params = JsonObjectValue(message, "params");
@@ -2609,6 +2732,9 @@ namespace
 		pending.request_id_json = JsonRpcIdToStableString(message.value("id", nlohmann::json(nullptr)));
 		pending.item_id = JsonDiagnosticStringValue(params, "itemId");
 		pending.status = "pending";
+		pending.attention_kind = NormalizeAttentionKind(
+		    JsonDiagnosticStringValueOr(params, "attentionKind", JsonDiagnosticStringValueOr(params, "inputKind", JsonDiagnosticStringValue(params, "kind"))),
+		    "question");
 
 		const nlohmann::json questions = JsonArrayValue(params, "questions");
 		if (questions.is_array())
@@ -3208,8 +3334,8 @@ namespace
 				}
 			}
 
-			void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
-			{
+		void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
+		{
 			const std::string request_id = JsonRpcIdToStableString(message.value("id", nlohmann::json(nullptr)));
 			const int id = JsonRpcNumericId(message.value("id", nlohmann::json(nullptr)));
 			if (id == 0)
@@ -3556,6 +3682,216 @@ namespace
 			AppendAcpDiagnostic(session, "response", "unknown_request_id", method, request_id, false, 0, "", CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
 		}
 
+		void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
+		{
+			const nlohmann::json assistant_message = message.value("message", nlohmann::json::object());
+			const nlohmann::json content = assistant_message.value("content", nlohmann::json::array());
+			if (!content.is_array())
+			{
+				const std::string fallback_text = ClaudeContentTextFromMessage(assistant_message);
+				if (!fallback_text.empty())
+				{
+					AppendAssistantChunk(chat, session, fallback_text);
+					SaveChatQuietly(app, chat);
+				}
+				return;
+			}
+
+			bool changed = false;
+			for (const nlohmann::json& item : content)
+			{
+				if (!item.is_object())
+				{
+					continue;
+				}
+
+				const std::string type = item.value("type", "");
+				if (type == "text")
+				{
+					const std::string text = ContentTextFromJson(item);
+					if (!text.empty())
+					{
+						AppendAssistantChunk(chat, session, text);
+						changed = true;
+					}
+					continue;
+				}
+
+				if (type == "thinking")
+				{
+					const std::string thought = ContentTextFromJson(item);
+					if (!thought.empty())
+					{
+						changed = AppendThoughtChunk(chat, session, thought) || changed;
+					}
+					continue;
+				}
+
+				if (type == "tool_use")
+				{
+					const std::string tool_id = item.value("id", "");
+					if (tool_id.empty())
+					{
+						continue;
+					}
+
+					AcpToolCallState& tool_call = UpsertToolCall(session, tool_id);
+					tool_call.kind = item.value("name", tool_call.kind);
+					tool_call.title = tool_call.kind;
+					tool_call.status = "running";
+					if (item.contains("input"))
+					{
+						tool_call.args_json = CapDiagnosticString(item["input"].dump(), kMaxAcpDiagnosticDetailBytes);
+					}
+					AppendToolTurnEventIfNeeded(session, tool_id);
+					changed = SyncAcpToolCallsToAssistantMessage(chat, session, true) || changed;
+				}
+			}
+
+			if (changed)
+			{
+				SaveChatQuietly(app, chat);
+				MarkAcpChatUnseenIfBackground(app, chat);
+			}
+		}
+
+		void HandleClaudeUserMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
+		{
+			const nlohmann::json user_message = message.value("message", nlohmann::json::object());
+			const nlohmann::json content = user_message.value("content", nlohmann::json::array());
+			if (!content.is_array())
+			{
+				return;
+			}
+
+			bool changed = false;
+			for (const nlohmann::json& item : content)
+			{
+				if (!item.is_object())
+				{
+					continue;
+				}
+
+				if (item.value("type", "") != "tool_result")
+				{
+					continue;
+				}
+
+				const std::string tool_id = item.value("tool_use_id", "");
+				if (tool_id.empty())
+				{
+					continue;
+				}
+
+				AcpToolCallState& tool_call = UpsertToolCall(session, tool_id);
+				tool_call.status = item.value("is_error", false) ? "failed" : "completed";
+				tool_call.content = ContentTextFromJson(item.value("content", nlohmann::json::array()));
+				AppendToolTurnEventIfNeeded(session, tool_id);
+				changed = SyncAcpToolCallsToAssistantMessage(chat, session, true) || changed;
+			}
+
+			if (changed)
+			{
+				SaveChatQuietly(app, chat);
+			}
+		}
+
+		void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
+		{
+			const std::string session_id = Trim(message.value("session_id", ""));
+			if (!session_id.empty())
+			{
+				session.session_id = session_id;
+				if (chat.native_session_id != session_id)
+				{
+					chat.native_session_id = session_id;
+				}
+			}
+
+			const std::string model_id = Trim(message.value("model", ""));
+			if (!model_id.empty())
+			{
+				session.current_model_id = model_id;
+			}
+
+			if (session.available_models.empty() && !session.current_model_id.empty())
+			{
+				session.available_models.push_back(AcpModelState{session.current_model_id, session.current_model_id, ""});
+			}
+
+			if (session.turn_assistant_message_index < 0)
+			{
+				const std::string result_text = Trim(message.value("result", ""));
+				if (!result_text.empty())
+				{
+					AppendAssistantChunk(chat, session, result_text);
+				}
+			}
+
+			(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
+			const bool is_error = message.value("is_error", false);
+			const std::string subtype = message.value("subtype", "");
+			if (is_error || subtype == "error_during_execution" || subtype == "error_max_turns")
+			{
+				const std::string result_text = Trim(message.value("result", ""));
+				FailAcpTurnOrSession(session, result_text.empty() ? "Claude stream-json turn failed." : result_text);
+			}
+			else
+			{
+				CompletePromptTurn(session, kAcpLifecycleReady);
+			}
+
+			SaveChatQuietly(app, chat);
+			MarkAcpChatUnseenIfBackground(app, chat);
+		}
+
+		void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
+		{
+			const std::string type = message.value("type", "");
+			if (type == "system" && message.value("subtype", "") == "init")
+			{
+				session.initialized = true;
+				const std::string session_id = Trim(message.value("session_id", ""));
+				if (!session_id.empty())
+				{
+					session.session_id = session_id;
+					if (chat.native_session_id != session_id)
+					{
+						chat.native_session_id = session_id;
+						SaveChatQuietly(app, chat);
+					}
+				}
+
+				session.current_model_id = message.value("model", session.current_model_id);
+				session.current_mode_id = message.value("permissionMode", session.current_mode_id.empty() ? "default" : session.current_mode_id);
+				if (!session.current_model_id.empty() && session.available_models.empty())
+				{
+					session.available_models.push_back(AcpModelState{session.current_model_id, session.current_model_id, ""});
+				}
+				return;
+			}
+
+			if (type == "assistant")
+			{
+				HandleClaudeAssistantMessage(app, session, chat, message);
+				return;
+			}
+
+			if (type == "user")
+			{
+				HandleClaudeUserMessage(app, session, chat, message);
+				return;
+			}
+
+			if (type == "result")
+			{
+				HandleClaudeResult(app, session, chat, message);
+				return;
+			}
+
+			AppendAcpDiagnostic(session, "message", "ignored_claude_message", "", "", false, 0, "", CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
+		}
+
 	bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& line)
 	{
 		const std::string trimmed = uam::strings::Trim(line);
@@ -3577,6 +3913,22 @@ namespace
 				MarkAcpChatUnseenIfBackground(app, chat);
 				return true;
 			}
+
+		if (IsClaudeSession(session))
+		{
+			try
+			{
+				HandleClaudeMessage(app, session, chat, message);
+			}
+			catch (const std::exception& ex)
+			{
+				const std::string error_message = std::string("Claude stream-json message handling failed: ") + ex.what();
+				AppendAcpDiagnostic(session, "parse", "claude_message_parse_error", "", "", false, 0, error_message, CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
+				FailAcpTurnOrSession(session, error_message);
+				MarkAcpChatUnseenIfBackground(app, chat);
+			}
+			return true;
+		}
 
 		if (message.contains("method"))
 		{
@@ -3806,10 +4158,13 @@ bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string&
 		return false;
 	}
 
+	const std::string recall_preface = MemoryService::BuildRecallPreface(app, chat, prompt);
+	const std::string effective_prompt = recall_preface.empty() ? prompt : recall_preface + prompt;
+
 	ChatDomainService().AddMessageWithAnalytics(chat, MessageRole::User, prompt, MessageProviderId(session), 0, 0, 0, 0, false);
 	SaveChatQuietly(app, chat);
 
-	session.queued_prompt = prompt;
+	session.queued_prompt = effective_prompt;
 	session.processing = true;
 	session.waiting_for_permission = false;
 	session.waiting_for_user_input = false;

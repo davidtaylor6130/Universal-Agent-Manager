@@ -199,6 +199,7 @@ bool DeleteFolderById(AppState& app, const std::string& folder_id)
 		return false;
 	}
 
+	const ChatFolder deleted_folder = app.folders[folder_index];
 	const std::vector<ChatSession> original_chats = app.chats;
 	std::vector<ChatSession> deleted_chats;
 	std::unordered_set<std::string> deleted_chat_ids;
@@ -378,6 +379,10 @@ bool DeleteFolderById(AppState& app, const std::string& folder_id)
 
 		chat_history_delete_failed = chat_history_delete_failed || static_cast<bool>(local_delete_ec) || static_cast<bool>(uam_json_delete_ec) || static_cast<bool>(native_delete_ec);
 	}
+
+	std::error_code native_workspace_delete_ec;
+	ChatHistorySyncService().DeleteNativeWorkspaceHistoryForFolder(app, deleted_folder, &native_workspace_delete_ec);
+	chat_history_delete_failed = chat_history_delete_failed || static_cast<bool>(native_workspace_delete_ec);
 
 	app.folders = std::move(next_folders);
 

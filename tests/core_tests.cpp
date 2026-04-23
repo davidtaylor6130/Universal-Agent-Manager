@@ -1,5 +1,6 @@
 #include "app/chat_domain_service.h"
 #include "app/chat_lifecycle_service.h"
+#include "app/memory_service.h"
 #include "app/runtime_orchestration_services.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
@@ -248,6 +249,79 @@ UAM_TEST(SettingsStoreLoadsLegacyButWritesReleaseSliceOnly)
 	UAM_ASSERT(saved.find("selected_model_id") == std::string::npos);
 	UAM_ASSERT(saved.find("vector_db_backend") == std::string::npos);
 	UAM_ASSERT(saved.find("prompt_profile") == std::string::npos);
+	UAM_ASSERT(saved.find("memory_enabled_default=") != std::string::npos);
+	UAM_ASSERT(saved.find("memory_idle_delay_seconds=") != std::string::npos);
+}
+
+UAM_TEST(SettingsStorePersistsMemorySettings)
+{
+	TempDir temp("uam-memory-settings");
+	const fs::path settings_file = temp.root / "settings.txt";
+
+	AppSettings settings;
+	settings.memory_enabled_default = false;
+	settings.memory_idle_delay_seconds = 75;
+	settings.memory_recall_budget_bytes = 1536;
+	settings.memory_worker_bindings["gemini-cli"] = MemoryWorkerBinding{"codex-cli", "gpt-5.4-mini"};
+
+	UAM_ASSERT(SettingsStore::Save(settings_file, settings, CenterViewMode::CliConsole));
+
+	AppSettings loaded;
+	CenterViewMode mode = CenterViewMode::CliConsole;
+	SettingsStore::Load(settings_file, loaded, mode);
+
+	UAM_ASSERT_EQ(loaded.memory_enabled_default, false);
+	UAM_ASSERT_EQ(loaded.memory_idle_delay_seconds, 75);
+	UAM_ASSERT_EQ(loaded.memory_recall_budget_bytes, 1536);
+	UAM_ASSERT_EQ(loaded.memory_worker_bindings["gemini-cli"].worker_provider_id, std::string("codex-cli"));
+	UAM_ASSERT_EQ(loaded.memory_worker_bindings["gemini-cli"].worker_model_id, std::string("gpt-5.4-mini"));
+}
+
+UAM_TEST(MemoryServiceWritesDedupesAndBuildsRecall)
+{
+	TempDir temp("uam-memory-service");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.settings.memory_recall_budget_bytes = 2048;
+
+	ChatFolder folder;
+	folder.id = "folder-1";
+	folder.title = "Project";
+	folder.directory = (temp.root / "workspace").string();
+	app.folders.push_back(folder);
+	fs::create_directories(folder.directory);
+
+	ChatSession chat = ChatDomainService().CreateNewChat(folder.id, "gemini-cli");
+	chat.id = "chat-memory";
+	chat.workspace_directory = folder.directory;
+	chat.messages.push_back({MessageRole::User, "Please remember that this project uses Allman braces.", "now"});
+	app.chats.push_back(chat);
+
+	const std::string output = R"({
+		"memories": [
+			{
+				"scope": "local",
+				"category": "Lessons/User_Lessons",
+				"title": "Project uses Allman braces",
+				"memory": "Prefer Allman brace style in this project.",
+				"evidence": "User stated the project uses Allman braces.",
+				"confidence": "high"
+			}
+		]
+	})";
+
+	std::string error;
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats[0], fs::path(folder.directory), output, -1, &error));
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats[0], fs::path(folder.directory), output, -1, &error));
+
+	const fs::path memory_file = fs::path(folder.directory) / ".UAM" / "Lessons" / "User_Lessons" / "project-uses-allman-braces.md";
+	const std::string text = ReadFile(memory_file);
+	UAM_ASSERT(text.find("Occurrence count: 2") != std::string::npos);
+	UAM_ASSERT(text.find("Prefer Allman brace style") != std::string::npos);
+
+	const std::string recall = MemoryService::BuildRecallPreface(app, app.chats[0], "Implement feature");
+	UAM_ASSERT(recall.find("Relevant UAM memories") != std::string::npos);
+	UAM_ASSERT(recall.find("Prefer Allman brace style") != std::string::npos);
 }
 
 UAM_TEST(ChatRepositoryToleratesLegacyFieldsAndDropsThemOnWrite)
@@ -510,7 +584,7 @@ UAM_TEST(StateSerializerIncludesMessageToolCalls)
 	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][0]["blocks"][1].value("type", ""), std::string("plan"));
 }
 
-UAM_TEST(ProviderRegistryResolvesGeminiCodexAndUnknownExactly)
+UAM_TEST(ProviderRegistryResolvesGeminiCodexClaudeAndUnknownExactly)
 {
 	const IProviderRuntime& gemini = ProviderRuntimeRegistry::ResolveById("gemini-cli");
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
@@ -540,6 +614,18 @@ UAM_TEST(ProviderRegistryResolvesGeminiCodexAndUnknownExactly)
 	UAM_ASSERT(!ProviderRuntime::IsRuntimeEnabled("unknown"));
 	UAM_ASSERT(!ProviderRuntimeRegistry::IsKnownRuntimeId("gemini"));
 	UAM_ASSERT(!ProviderRuntimeRegistry::IsKnownRuntimeId("codex"));
+
+	const IProviderRuntime& claude = ProviderRuntimeRegistry::ResolveById("claude-cli");
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	UAM_ASSERT_EQ(std::string(claude.RuntimeId()), std::string("claude-cli"));
+	UAM_ASSERT(ProviderRuntimeRegistry::IsKnownRuntimeId("claude-cli"));
+	UAM_ASSERT(ProviderRuntime::IsRuntimeEnabled("claude-cli"));
+#else
+	UAM_ASSERT_EQ(std::string(claude.RuntimeId()), std::string("unsupported"));
+	UAM_ASSERT(!ProviderRuntimeRegistry::IsKnownRuntimeId("claude-cli"));
+	UAM_ASSERT(!ProviderRuntime::IsRuntimeEnabled("claude-cli"));
+#endif
+	UAM_ASSERT(!ProviderRuntimeRegistry::IsKnownRuntimeId("claude"));
 }
 
 UAM_TEST(BuiltInProviderProfilesFollowEnabledRuntimeFlags)
@@ -557,6 +643,9 @@ UAM_TEST(BuiltInProviderProfilesFollowEnabledRuntimeFlags)
 #endif
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
 	expected.push_back("codex-cli");
+#endif
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	expected.push_back("claude-cli");
 #endif
 	UAM_ASSERT_EQ(ids, expected);
 }
@@ -637,6 +726,43 @@ UAM_TEST(CodexCliInteractiveArgvUsesResumeModelAndFlags)
 	UAM_ASSERT_EQ(invalid_resume[1], std::string("--no-alt-screen"));
 	UAM_ASSERT_EQ(invalid_resume[2], std::string("-m"));
 	UAM_ASSERT_EQ(invalid_resume[3], std::string("gpt-5.4"));
+#endif
+}
+
+UAM_TEST(ClaudeCliInteractiveArgvUsesResumeModelModeAndFlags)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	ProviderProfile profile = ProviderProfileStore::DefaultClaudeProfile();
+	AppSettings settings;
+	settings.provider_yolo_mode = false;
+	settings.provider_extra_flags = "--add-dir ../shared";
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "claude-cli";
+	chat.model_id = "sonnet";
+	chat.approval_mode = "plan";
+
+	const std::vector<std::string> fresh = ProviderRuntime::BuildInteractiveArgv(profile, chat, settings);
+	UAM_ASSERT_EQ(fresh.size(), static_cast<std::size_t>(7));
+	UAM_ASSERT_EQ(fresh[0], std::string("claude"));
+	UAM_ASSERT_EQ(fresh[1], std::string("--model"));
+	UAM_ASSERT_EQ(fresh[2], std::string("sonnet"));
+	UAM_ASSERT_EQ(fresh[3], std::string("--permission-mode"));
+	UAM_ASSERT_EQ(fresh[4], std::string("plan"));
+	UAM_ASSERT_EQ(fresh[5], std::string("--add-dir"));
+	UAM_ASSERT_EQ(fresh[6], std::string("../shared"));
+
+	chat.native_session_id = "claude-session-1";
+	const std::vector<std::string> resumed = ProviderRuntime::BuildInteractiveArgv(profile, chat, AppSettings{});
+	UAM_ASSERT_EQ(resumed.size(), static_cast<std::size_t>(7));
+	UAM_ASSERT_EQ(resumed[0], std::string("claude"));
+	UAM_ASSERT_EQ(resumed[1], std::string("--resume"));
+	UAM_ASSERT_EQ(resumed[2], std::string("claude-session-1"));
+	UAM_ASSERT_EQ(resumed[3], std::string("--model"));
+	UAM_ASSERT_EQ(resumed[4], std::string("sonnet"));
+	UAM_ASSERT_EQ(resumed[5], std::string("--permission-mode"));
+	UAM_ASSERT_EQ(resumed[6], std::string("plan"));
 #endif
 }
 
@@ -833,6 +959,72 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	const std::string codex_detail = uam::BuildAcpLaunchDetailForTests("/tmp/project", codex_chat);
 	UAM_ASSERT(codex_detail.find("argv=codex app-server --listen stdio://") != std::string::npos);
 	UAM_ASSERT(codex_detail.find("nativeSessionId=6a6f0f3b-1a0b-4a9c-8a01-111111111111") != std::string::npos);
+
+	ChatSession claude_chat;
+	claude_chat.id = "claude-chat";
+	claude_chat.provider_id = "claude-cli";
+	claude_chat.native_session_id = "claude-session-2";
+	claude_chat.model_id = "sonnet";
+	claude_chat.approval_mode = "plan";
+	const std::vector<std::string> claude_argv = uam::BuildAcpLaunchArgvForTests(claude_chat);
+	UAM_ASSERT_EQ(claude_argv.size(), static_cast<std::size_t>(13));
+	UAM_ASSERT_EQ(claude_argv[0], std::string("claude"));
+	UAM_ASSERT_EQ(claude_argv[1], std::string("-p"));
+	UAM_ASSERT_EQ(claude_argv[2], std::string("--output-format"));
+	UAM_ASSERT_EQ(claude_argv[3], std::string("stream-json"));
+	UAM_ASSERT_EQ(claude_argv[4], std::string("--input-format"));
+	UAM_ASSERT_EQ(claude_argv[5], std::string("stream-json"));
+	UAM_ASSERT_EQ(claude_argv[6], std::string("--verbose"));
+	UAM_ASSERT_EQ(claude_argv[7], std::string("--permission-mode"));
+	UAM_ASSERT_EQ(claude_argv[8], std::string("plan"));
+	UAM_ASSERT_EQ(claude_argv[9], std::string("--model"));
+	UAM_ASSERT_EQ(claude_argv[10], std::string("sonnet"));
+	UAM_ASSERT_EQ(claude_argv[11], std::string("--resume"));
+	UAM_ASSERT_EQ(claude_argv[12], std::string("claude-session-2"));
+	const std::string claude_detail = uam::BuildAcpLaunchDetailForTests("/tmp/project", claude_chat);
+	UAM_ASSERT(claude_detail.find("argv=claude -p --output-format stream-json --input-format stream-json --verbose --permission-mode plan --model sonnet --resume claude-session-2") != std::string::npos);
+}
+
+UAM_TEST(ClaudeStreamJsonMessagesUpdateChatAndSession)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "claude-cli";
+	chat.approval_mode = "plan";
+	app.chats.push_back(chat);
+	app.selected_chat_index = 0;
+
+	uam::AcpSessionState session;
+	session.chat_id = "chat-1";
+	session.provider_id = "claude-cli";
+	session.protocol_kind = "claude-code-stream-json";
+	session.running = true;
+	session.initialized = true;
+	session.session_ready = true;
+	session.processing = true;
+	session.lifecycle_state = "processing";
+	session.queued_prompt = "hello";
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"system","subtype":"init","session_id":"claude-session-3","model":"sonnet","permissionMode":"plan"})"));
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, std::string("claude-session-3"));
+	UAM_ASSERT_EQ(session.current_model_id, std::string("sonnet"));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"assistant","session_id":"claude-session-3","message":{"role":"assistant","content":[{"type":"text","text":"Working on it."},{"type":"tool_use","id":"tool-1","name":"Read","input":{"file_path":"README.md"}}]}})"));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().messages[0].content, std::string("Working on it."));
+	UAM_ASSERT_EQ(app.chats.front().messages[0].tool_calls.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().messages[0].tool_calls[0].id, std::string("tool-1"));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"user","session_id":"claude-session-3","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":[{"type":"text","text":"done"}]}]}})"));
+	UAM_ASSERT_EQ(app.chats.front().messages[0].tool_calls[0].status, std::string("completed"));
+	UAM_ASSERT_EQ(app.chats.front().messages[0].tool_calls[0].result_text, std::string("done"));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"result","subtype":"success","is_error":false,"session_id":"claude-session-3","result":"Finished.","total_cost_usd":0.1})"));
+	UAM_ASSERT(!session.processing);
+	UAM_ASSERT_EQ(session.lifecycle_state, std::string("ready"));
+#endif
 }
 
 UAM_TEST(GeminiInvalidSessionLoadFallsBackToNewSession)
@@ -2581,6 +2773,96 @@ UAM_TEST(ImportDiscoveryDoesNotRecreateFolderForEmptyNativeSource)
 	{
 		UAM_ASSERT(!FolderDirectoryMatches(folder.directory, workspace_root));
 	}
+}
+
+UAM_TEST(DeleteFolderRemovesNativeWorkspaceHistoryAndPreventsReimport)
+{
+	TempDir temp("uam-delete-folder-native-history");
+	const fs::path gemini_home = temp.root / "gemini-home";
+	const fs::path data_root = temp.root / "data";
+	const fs::path workspace_root = temp.root / "workspace";
+	const fs::path source_root = gemini_home / "tmp" / "workspace-source";
+	const fs::path source_chats = source_root / "chats";
+	fs::create_directories(workspace_root);
+	fs::create_directories(source_chats);
+	UAM_ASSERT(uam::io::WriteTextFile(source_root / ".project_root", workspace_root.string()));
+	UAM_ASSERT(uam::io::WriteTextFile(source_chats / "native-delete-1.json", R"({
+  "sessionId": "native-delete-1",
+  "startTime": "2026-01-01T00:00:00.000Z",
+  "lastUpdated": "2026-01-01T00:00:02.000Z",
+  "messages": [
+    {"type": "user", "timestamp": "2026-01-01T00:00:01.000Z", "content": "delete me"}
+  ]
+})"));
+
+	ScopedEnvVar gemini_home_env("GEMINI_CLI_HOME", gemini_home.string());
+	uam::AppState app;
+	app.data_root = data_root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	std::string folder_id;
+	UAM_ASSERT(CreateFolder(app, "Workspace", workspace_root.string(), &folder_id));
+
+	ChatSession chat;
+	chat.id = "chat-delete-1";
+	chat.provider_id = "gemini-cli";
+	chat.native_session_id = "native-delete-1";
+	chat.folder_id = folder_id;
+	chat.title = "Delete Me";
+	chat.created_at = "2026-01-01T00:00:00.000Z";
+	chat.updated_at = "2026-01-01T00:00:02.000Z";
+	chat.workspace_directory = workspace_root.string();
+	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(data_root, chat));
+
+	UAM_ASSERT(DeleteFolderById(app, folder_id));
+	UAM_ASSERT(fs::exists(workspace_root));
+	UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(data_root, chat.id)));
+	UAM_ASSERT(!fs::exists(source_chats / "native-delete-1.json"));
+	UAM_ASSERT(!fs::exists(source_root));
+
+	for (const ChatFolder& folder : ChatFolderStore::Load(data_root))
+	{
+		UAM_ASSERT(!FolderDirectoryMatches(folder.directory, workspace_root));
+	}
+
+	const ChatHistorySyncService::ImportResult result = ChatHistorySyncService().ImportAllNativeChatsByDiscovery(app, false);
+	UAM_ASSERT_EQ(result.total_count, 0);
+	UAM_ASSERT_EQ(result.imported_count, 0);
+	UAM_ASSERT(ChatRepository::LoadLocalChats(data_root).empty());
+}
+
+UAM_TEST(DeleteFolderDoesNotRemoveUnrelatedNativeWorkspaceHistory)
+{
+	TempDir temp("uam-delete-folder-native-safety");
+	const fs::path gemini_home = temp.root / "gemini-home";
+	const fs::path data_root = temp.root / "data";
+	const fs::path workspace_root = temp.root / "workspace";
+	const fs::path other_workspace_root = temp.root / "other-workspace";
+	const fs::path source_root = gemini_home / "tmp" / "workspace-source";
+	const fs::path source_chats = source_root / "chats";
+	fs::create_directories(workspace_root);
+	fs::create_directories(other_workspace_root);
+	fs::create_directories(source_chats);
+	UAM_ASSERT(uam::io::WriteTextFile(source_root / ".project_root", other_workspace_root.string()));
+	UAM_ASSERT(uam::io::WriteTextFile(source_chats / "other-native.json", R"({
+  "sessionId": "other-native",
+  "startTime": "2026-01-01T00:00:00.000Z",
+  "lastUpdated": "2026-01-01T00:00:02.000Z",
+  "messages": [
+    {"type": "user", "timestamp": "2026-01-01T00:00:01.000Z", "content": "keep me"}
+  ]
+})"));
+
+	ScopedEnvVar gemini_home_env("GEMINI_CLI_HOME", gemini_home.string());
+	uam::AppState app;
+	app.data_root = data_root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	std::string folder_id;
+	UAM_ASSERT(CreateFolder(app, "Workspace", workspace_root.string(), &folder_id));
+
+	UAM_ASSERT(DeleteFolderById(app, folder_id));
+	UAM_ASSERT(fs::exists(source_root));
+	UAM_ASSERT(fs::exists(source_chats / "other-native.json"));
 }
 
 #if !defined(_WIN32)

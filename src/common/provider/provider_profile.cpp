@@ -67,6 +67,29 @@ ProviderProfile ProviderProfileStore::DefaultCodexProfile()
 	return profile;
 }
 
+ProviderProfile ProviderProfileStore::DefaultClaudeProfile()
+{
+	ProviderProfile profile;
+	profile.id = "claude-cli";
+	profile.title = "Claude Code";
+	profile.execution_mode = "cli";
+	profile.output_mode = "cli";
+	profile.command_template = "claude -p {prompt}";
+	profile.interactive_command = "claude";
+	profile.supports_cli = true;
+	profile.supports_structured = true;
+	profile.structured_protocol = "claude-code-stream-json";
+	profile.supports_interactive = true;
+	profile.supports_resume = true;
+	profile.resume_argument = "--resume";
+	profile.history_adapter = "local-json";
+	profile.prompt_bootstrap = "none";
+	profile.prompt_bootstrap_path.clear();
+	profile.user_message_types = {"user", "human"};
+	profile.assistant_message_types = {"assistant", "claude"};
+	return profile;
+}
+
 std::vector<ProviderProfile> ProviderProfileStore::BuiltInProfiles()
 {
 	std::vector<ProviderProfile> profiles;
@@ -75,6 +98,9 @@ std::vector<ProviderProfile> ProviderProfileStore::BuiltInProfiles()
 #endif
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
 	profiles.push_back(DefaultCodexProfile());
+#endif
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	profiles.push_back(DefaultClaudeProfile());
 #endif
 	return profiles;
 }

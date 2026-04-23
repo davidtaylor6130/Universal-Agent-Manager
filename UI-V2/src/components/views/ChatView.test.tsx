@@ -602,6 +602,50 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('toggles the memory chip', () => {
+    const setSessionMemoryEnabled = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1' ? { ...session, memoryEnabled: true } : session
+      ),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+          processingStartedAtMs: null,
+          pendingPermission: null,
+        },
+      },
+      setSessionMemoryEnabled,
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const memoryButton = host.querySelector('button[title="Toggle memory"]') as HTMLButtonElement | null
+    expect(memoryButton).toBeTruthy()
+    expect(memoryButton?.disabled).toBe(false)
+    expect(memoryButton?.getAttribute('aria-pressed')).toBe('true')
+
+    act(() => {
+      memoryButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(setSessionMemoryEnabled).toHaveBeenCalledWith('chat-1', false)
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
   it('renders pipe tables and leaves malformed table text alone', () => {
     useAppStore.setState((state) => ({
       messages: {

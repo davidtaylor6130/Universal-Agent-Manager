@@ -6,6 +6,9 @@
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
 #include "common/provider/codex/cli/codex_cli_provider_runtime.h"
 #endif
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+#include "common/provider/claude/cli/claude_cli_provider_runtime.h"
+#endif
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
 #include "common/provider/gemini/cli/gemini_cli_provider_runtime.h"
 #endif
@@ -65,6 +68,12 @@ const IProviderRuntime& ProviderRuntimeRegistry::ResolveById(const std::string& 
 		return GetCodexCliProviderRuntime();
 	}
 #endif
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	if (normalized == "claude-cli")
+	{
+		return GetClaudeCliProviderRuntime();
+	}
+#endif
 	return GetUnsupportedProviderRuntime();
 }
 
@@ -77,6 +86,9 @@ bool ProviderRuntimeRegistry::IsKnownRuntimeId(const std::string& provider_id)
 #endif
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
 	    normalized == "codex-cli" ||
+#endif
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	    normalized == "claude-cli" ||
 #endif
 	    false;
 }

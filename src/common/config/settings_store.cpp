@@ -8,7 +8,9 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <sstream>
+#include <vector>
 
 namespace
 {
@@ -70,6 +72,65 @@ namespace
 		}
 	}
 
+	std::string NormalizeProviderId(const std::string& value);
+
+	std::vector<std::string> Split(const std::string& value, const char delimiter)
+	{
+		std::vector<std::string> parts;
+		std::string current;
+		std::istringstream stream(value);
+		while (std::getline(stream, current, delimiter))
+		{
+			parts.push_back(current);
+		}
+		return parts;
+	}
+
+	std::string EncodeMemoryWorkerBindings(const std::map<std::string, MemoryWorkerBinding>& bindings)
+	{
+		std::ostringstream out;
+		bool first = true;
+		for (const auto& entry : bindings)
+		{
+			if (entry.first.empty() || entry.second.worker_provider_id.empty())
+			{
+				continue;
+			}
+			if (!first)
+			{
+				out << ';';
+			}
+			out << uam::EncodeLineValue(entry.first) << ','
+			    << uam::EncodeLineValue(entry.second.worker_provider_id) << ','
+			    << uam::EncodeLineValue(entry.second.worker_model_id);
+			first = false;
+		}
+		return out.str();
+	}
+
+	void DecodeMemoryWorkerBindings(const std::string& value, std::map<std::string, MemoryWorkerBinding>& bindings)
+	{
+		bindings.clear();
+		for (const std::string& encoded_entry : Split(value, ';'))
+		{
+			const std::vector<std::string> fields = Split(encoded_entry, ',');
+			if (fields.size() < 2)
+			{
+				continue;
+			}
+
+			const std::string chat_provider_id = uam::DecodeLineValue(fields[0]);
+			const std::string worker_provider_id = NormalizeProviderId(uam::DecodeLineValue(fields[1]));
+			const std::string worker_model_id = fields.size() >= 3 ? uam::DecodeLineValue(fields[2]) : "";
+			if (chat_provider_id.empty() || worker_provider_id.empty())
+			{
+				continue;
+			}
+
+			bindings[chat_provider_id] = MemoryWorkerBinding{worker_provider_id, worker_model_id};
+		}
+	}
+
 	std::string NormalizeThemeId(std::string value)
 	{
 		value = ToLower(value);
@@ -91,6 +152,12 @@ namespace
 		if (lowered == "codex" || lowered == "codex-cli")
 		{
 			return "codex-cli";
+		}
+#endif
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+		if (lowered == "claude" || lowered == "claude-code" || lowered == "claude-cli")
+		{
+			return "claude-cli";
 		}
 #endif
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
@@ -118,6 +185,16 @@ namespace
 		settings.sidebar_width = std::clamp(settings.sidebar_width, 220.0f, 600.0f);
 		settings.window_width = std::clamp(settings.window_width, 960, 8192);
 		settings.window_height = std::clamp(settings.window_height, 620, 8192);
+		settings.memory_idle_delay_seconds = std::clamp(settings.memory_idle_delay_seconds, 30, 3600);
+		settings.memory_recall_budget_bytes = std::clamp(settings.memory_recall_budget_bytes, 512, 8192);
+
+		for (const std::string& provider_id : {std::string("gemini-cli"), std::string("codex-cli"), std::string("claude-cli")})
+		{
+			if (settings.memory_worker_bindings.find(provider_id) == settings.memory_worker_bindings.end())
+			{
+				settings.memory_worker_bindings[provider_id] = MemoryWorkerBinding{NormalizeProviderId(provider_id), ""};
+			}
+		}
 
 		if (!settings.remember_last_chat)
 		{
@@ -153,6 +230,10 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	lines << "window_width=" << normalized.window_width << '\n';
 	lines << "window_height=" << normalized.window_height << '\n';
 	lines << "window_maximized=" << (normalized.window_maximized ? "1" : "0") << '\n';
+	lines << "memory_enabled_default=" << (normalized.memory_enabled_default ? "1" : "0") << '\n';
+	lines << "memory_idle_delay_seconds=" << normalized.memory_idle_delay_seconds << '\n';
+	lines << "memory_recall_budget_bytes=" << normalized.memory_recall_budget_bytes << '\n';
+	lines << "memory_worker_bindings=" << EncodeMemoryWorkerBindings(normalized.memory_worker_bindings) << '\n';
 	return uam::io::WriteTextFile(settings_file, lines.str());
 }
 
@@ -258,6 +339,22 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		else if (key == "window_maximized")
 		{
 			settings.window_maximized = ParseBool(value, settings.window_maximized);
+		}
+		else if (key == "memory_enabled_default")
+		{
+			settings.memory_enabled_default = ParseBool(value, settings.memory_enabled_default);
+		}
+		else if (key == "memory_idle_delay_seconds")
+		{
+			settings.memory_idle_delay_seconds = ParseInt(value, settings.memory_idle_delay_seconds);
+		}
+		else if (key == "memory_recall_budget_bytes")
+		{
+			settings.memory_recall_budget_bytes = ParseInt(value, settings.memory_recall_budget_bytes);
+		}
+		else if (key == "memory_worker_bindings")
+		{
+			DecodeMemoryWorkerBindings(decoded_value, settings.memory_worker_bindings);
 		}
 	}
 

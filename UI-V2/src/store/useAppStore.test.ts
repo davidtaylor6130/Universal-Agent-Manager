@@ -64,6 +64,11 @@ function makeCppState(
     settings: {
       activeProviderId: 'gemini-cli',
       theme: 'dark',
+      memoryEnabledDefault: true,
+      memoryIdleDelaySeconds: 60,
+      memoryRecallBudgetBytes: 2048,
+      memoryLastStatus: '',
+      memoryWorkerBindings: {},
     },
   }
 }
@@ -80,6 +85,11 @@ function resetStore() {
     acpBindingBySessionId: {},
     cliTranscriptBySessionId: {},
     cliDebugState: null,
+    memoryEnabledDefault: true,
+    memoryIdleDelaySeconds: 60,
+    memoryRecallBudgetBytes: 2048,
+    memoryLastStatus: '',
+    memoryWorkerBindings: {},
     theme: 'dark',
     isNewChatModalOpen: false,
     isSettingsOpen: false,
@@ -127,6 +137,7 @@ describe('useAppStore Gemini CLI slice', () => {
       lifecycleState: 'processing',
 	      processing: true,
 	      readySinceLastSelect: true,
+	      attentionKind: 'memory',
 	      lastError: '',
 	      recentStderr: 'stderr tail',
 	      lastExitCode: 137,
@@ -190,6 +201,7 @@ describe('useAppStore Gemini CLI slice', () => {
       lifecycleState: 'processing',
 	      processing: true,
 	      readySinceLastSelect: true,
+	      attentionKind: 'memory',
 	      turnSerial: 3,
 	      recentStderr: 'stderr tail',
 	      lastExitCode: 137,
@@ -336,6 +348,32 @@ describe('useAppStore Gemini CLI slice', () => {
       title: 'Read file',
       content: 'file contents',
     })
+  })
+
+  it('sanitizes ACP attention kinds with safe fallbacks', () => {
+    const cppState = makeCppState(1)
+    cppState.chats[0].acpSession = {
+      sessionId: 'native-1',
+      running: true,
+      lifecycleState: 'waitingUserInput',
+      processing: true,
+      readySinceLastSelect: false,
+      attentionKind: 'unsupported' as never,
+      pendingPermission: null,
+      pendingUserInput: {
+        requestId: 'input-1',
+        itemId: 'item-1',
+        status: 'pending',
+        attentionKind: 'unsupported' as never,
+        questions: [],
+      },
+    }
+
+    useAppStore.getState().loadFromCef(cppState)
+
+    const binding = useAppStore.getState().acpBindingBySessionId['chat-1']
+    expect(binding.attentionKind).toBeNull()
+    expect(binding.pendingUserInput?.attentionKind).toBe('question')
   })
 
   it('refreshes persisted messages when only plan fields change', () => {
@@ -1102,5 +1140,38 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(requests[0].action).toBe('setChatPinned')
     expect(requests[0].payload).toEqual({ chatId: 'chat-1', pinned: true })
     expect(useAppStore.getState().sessions[0].isPinned).toBe(true)
+  })
+
+  it('deserializes memory state and toggles chat memory through CEF', async () => {
+    const cppState = makeCppState(1)
+    cppState.chats[0].memoryEnabled = false
+    cppState.chats[0].memoryLastProcessedMessageCount = 3
+    cppState.chats[0].memoryLastProcessedAt = '2026-01-01T00:00:02.000Z'
+    cppState.settings.memoryEnabledDefault = false
+    cppState.settings.memoryIdleDelaySeconds = 90
+    cppState.settings.memoryRecallBudgetBytes = 1536
+    cppState.settings.memoryLastStatus = 'Memory updated.'
+    cppState.settings.memoryWorkerBindings = {
+      'gemini-cli': { workerProviderId: 'codex-cli', workerModelId: 'gpt-5.4-mini' },
+    }
+
+    useAppStore.getState().loadFromCef(cppState)
+    expect(useAppStore.getState().sessions[0].memoryEnabled).toBe(false)
+    expect(useAppStore.getState().sessions[0].memoryLastProcessedMessageCount).toBe(3)
+    expect(useAppStore.getState().memoryEnabledDefault).toBe(false)
+    expect(useAppStore.getState().memoryIdleDelaySeconds).toBe(90)
+    expect(useAppStore.getState().memoryRecallBudgetBytes).toBe(1536)
+    expect(useAppStore.getState().memoryWorkerBindings['gemini-cli'].workerProviderId).toBe('codex-cli')
+
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
+      onSuccess('{}')
+    }
+
+    await expect(useAppStore.getState().setSessionMemoryEnabled('chat-1', true)).resolves.toBe(true)
+    expect(requests[0].action).toBe('setChatMemoryEnabled')
+    expect(requests[0].payload).toEqual({ chatId: 'chat-1', enabled: true })
+    expect(useAppStore.getState().sessions[0].memoryEnabled).toBe(true)
   })
 })

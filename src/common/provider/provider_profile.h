@@ -41,6 +41,8 @@ class ProviderProfileStore
 	static ProviderProfile DefaultGeminiProfile();
 	/// <summary>Returns the built-in Codex CLI profile.</summary>
 	static ProviderProfile DefaultCodexProfile();
+	/// <summary>Returns the built-in Claude Code CLI profile.</summary>
+	static ProviderProfile DefaultClaudeProfile();
 	/// <summary>Returns the built-in provider profiles for this build.</summary>
 	static std::vector<ProviderProfile> BuiltInProfiles();
 	/// <summary>Ensures enabled built-in provider profiles exist in the profile list.</summary>
