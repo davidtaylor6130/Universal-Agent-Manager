@@ -1767,6 +1767,7 @@ interface AppState {
   refreshMemoryLibrary: () => Promise<boolean>
   createMemoryEntry: (draft: MemoryEntryDraft) => Promise<boolean>
   deleteMemoryEntry: (entryId: string) => Promise<boolean>
+  deleteMemoryEntries: (entryIds: string[]) => Promise<boolean>
   openMemoryRoot: () => Promise<boolean>
   revealMemoryEntry: (entryId: string) => Promise<boolean>
   openMemoryScanModal: () => Promise<boolean>
@@ -2993,6 +2994,41 @@ export const useAppStore = create<AppState>((set, get) => {
 
       set((state) => ({
         memoryLibraryEntries: state.memoryLibraryEntries.filter((entry) => entry.id !== entryId),
+      }))
+      return true
+    },
+
+    deleteMemoryEntries: async (entryIds) => {
+      const scope = get().memoryLibraryScope
+      const uniqueEntryIds = Array.from(new Set(entryIds.filter((entryId) => entryId.trim().length > 0)))
+      if (!scope || uniqueEntryIds.length === 0) {
+        return false
+      }
+
+      if (isCefContext()) {
+        for (const entryId of uniqueEntryIds) {
+          const response = await sendToCEF({
+            action: 'deleteMemoryEntry',
+            payload: {
+              scopeType: scope.scopeType,
+              folderId: scope.folderId,
+              entryId,
+            },
+          })
+
+          if (!response.ok) {
+            set({ memoryLibraryError: response.error ?? 'Failed to delete memory entries.' })
+            await get().refreshMemoryLibrary()
+            return false
+          }
+        }
+
+        return get().refreshMemoryLibrary()
+      }
+
+      set((state) => ({
+        memoryLibraryEntries: state.memoryLibraryEntries.filter((entry) => !uniqueEntryIds.includes(entry.id)),
+        memoryLibraryError: '',
       }))
       return true
     },

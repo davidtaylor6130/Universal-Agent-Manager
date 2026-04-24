@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAppStore } from '../../store/useAppStore'
-import type { MemoryEntryDraft } from '../../types/memory'
+import type { Folder } from '../../types/session'
+import type { MemoryEntry, MemoryEntryDraft, MemoryScope } from '../../types/memory'
 
 const MEMORY_CATEGORIES = [
   'Failures/AI_Failures',
@@ -20,6 +21,129 @@ const EMPTY_DRAFT: MemoryEntryDraft = {
   sourceChatId: '',
 }
 
+interface MemoryCategoryGroup {
+  category: string
+  entries: MemoryEntry[]
+}
+
+interface MemoryLocationGroup {
+  key: string
+  label: string
+  rootPath: string
+  count: number
+  sortIndex: number
+  categories: MemoryCategoryGroup[]
+}
+
+function memoryLocationKey(entry: MemoryEntry, scope: MemoryScope): string {
+  if (entry.scopeType === 'global' || entry.scope === 'global') {
+    return 'global'
+  }
+
+  if (entry.scopeType === 'folder' && entry.folderId) {
+    return `folder:${entry.folderId}`
+  }
+
+  if (scope.scopeType === 'folder' && scope.folderId) {
+    return `folder:${scope.folderId}`
+  }
+
+  const rootPath = (entry.rootPath || scope.rootPath || '').trim()
+  return rootPath ? `root:${rootPath}` : `scope:${scope.scopeType}:${entry.scope || 'local'}`
+}
+
+function memoryLocationLabel(entry: MemoryEntry, scope: MemoryScope): string {
+  if (entry.scopeType === 'global' || entry.scope === 'global') {
+    return 'Global memory'
+  }
+
+  const scopeLabel = (entry.scopeLabel || '').trim()
+  if (scopeLabel) {
+    return scopeLabel
+  }
+
+  if (scope.scopeType === 'folder') {
+    return scope.label
+  }
+
+  return entry.scope === 'global' ? 'Global memory' : 'Project memory'
+}
+
+function memoryLocationRootPath(entry: MemoryEntry, scope: MemoryScope): string {
+  if (entry.rootPath) {
+    return entry.rootPath
+  }
+
+  if (entry.scopeType === 'global' || entry.scope === 'global') {
+    return 'Global memory root'
+  }
+
+  return scope.rootPath
+}
+
+function buildMemoryLocationGroups(
+  entries: MemoryEntry[],
+  scope: MemoryScope | null,
+  folders: Folder[],
+): MemoryLocationGroup[] {
+  if (!scope) {
+    return []
+  }
+
+  const folderOrder = new Map(folders.map((folder, index) => [folder.id, index]))
+  const groups = new Map<string, {
+    label: string
+    rootPath: string
+    sortIndex: number
+    entries: MemoryEntry[]
+  }>()
+
+  for (const entry of entries) {
+    const key = memoryLocationKey(entry, scope)
+    const folderIndex = key.startsWith('folder:')
+      ? folderOrder.get(key.replace(/^folder:/, ''))
+      : undefined
+    const sortIndex = key === 'global'
+      ? -1
+      : folderIndex !== undefined
+        ? folderIndex
+        : 10000
+    const existing = groups.get(key)
+    if (existing) {
+      existing.entries.push(entry)
+      continue
+    }
+
+    groups.set(key, {
+      label: memoryLocationLabel(entry, scope),
+      rootPath: memoryLocationRootPath(entry, scope),
+      sortIndex,
+      entries: [entry],
+    })
+  }
+
+  return Array.from(groups.entries())
+    .map(([key, group]) => ({
+      key,
+      label: group.label,
+      rootPath: group.rootPath,
+      count: group.entries.length,
+      sortIndex: group.sortIndex,
+      categories: MEMORY_CATEGORIES
+        .map((category) => ({
+          category,
+          entries: group.entries.filter((entry) => entry.category === category),
+        }))
+        .filter((categoryGroup) => categoryGroup.entries.length > 0),
+    }))
+    .sort((left, right) => {
+      if (left.sortIndex !== right.sortIndex) {
+        return left.sortIndex - right.sortIndex
+      }
+      return left.label.localeCompare(right.label)
+    })
+}
+
 export function MemoryLibraryModal() {
   const {
     memoryLibraryScope,
@@ -30,6 +154,7 @@ export function MemoryLibraryModal() {
     refreshMemoryLibrary,
     createMemoryEntry,
     deleteMemoryEntry,
+    deleteMemoryEntries,
     openMemoryRoot,
     revealMemoryEntry,
     folders,
@@ -39,6 +164,8 @@ export function MemoryLibraryModal() {
   const [draft, setDraft] = useState<MemoryEntryDraft>(EMPTY_DRAFT)
   const [submitting, setSubmitting] = useState(false)
   const [pendingDeleteEntryId, setPendingDeleteEntryId] = useState<string | null>(null)
+  const [pendingMassDeleteEntryIds, setPendingMassDeleteEntryIds] = useState<string[] | null>(null)
+  const [expandedLocationGroups, setExpandedLocationGroups] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
     if (!memoryLibraryScope) {
@@ -73,12 +200,30 @@ export function MemoryLibraryModal() {
     )
   }, [memoryLibraryEntries, searchQuery])
 
-  const groupedEntries = useMemo(() => {
-    return MEMORY_CATEGORIES.map((category) => ({
-      category,
-      entries: filteredEntries.filter((entry) => entry.category === category),
-    }))
-  }, [filteredEntries])
+  const groupedEntries = useMemo(
+    () => buildMemoryLocationGroups(filteredEntries, memoryLibraryScope, folders),
+    [filteredEntries, folders, memoryLibraryScope],
+  )
+
+  useEffect(() => {
+    setExpandedLocationGroups((current) => {
+      let changed = false
+      const next: Record<string, boolean> = {}
+
+      for (const group of groupedEntries) {
+        next[group.key] = current[group.key] ?? true
+        if (current[group.key] === undefined) {
+          changed = true
+        }
+      }
+
+      if (Object.keys(current).length !== Object.keys(next).length) {
+        changed = true
+      }
+
+      return changed ? next : current
+    })
+  }, [groupedEntries])
 
   if (!memoryLibraryScope) {
     return null
@@ -123,6 +268,16 @@ export function MemoryLibraryModal() {
   }
 
   const pendingDelete = memoryLibraryEntries.find((entry) => entry.id === pendingDeleteEntryId) ?? null
+  const pendingMassDeleteCount = pendingMassDeleteEntryIds?.length ?? 0
+  const visibleEntryIds = filteredEntries.map((entry) => entry.id)
+  const hasSearchQuery = searchQuery.trim().length > 0
+  const massDeleteLabel = hasSearchQuery ? 'Delete matches' : 'Delete all'
+  const toggleLocationGroup = (key: string) => {
+    setExpandedLocationGroups((current) => ({
+      ...current,
+      [key]: !(current[key] ?? true),
+    }))
+  }
 
   return (
     <div
@@ -345,6 +500,21 @@ export function MemoryLibraryModal() {
                 className="w-full rounded-md px-3 py-2 text-sm outline-none"
                 style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)' }}
               />
+              <button
+                type="button"
+                disabled={memoryLibraryLoading || visibleEntryIds.length === 0}
+                onClick={() => setPendingMassDeleteEntryIds(visibleEntryIds)}
+                className="shrink-0 rounded-md px-3 py-2 text-xs font-medium"
+                style={{
+                  background: 'transparent',
+                  color: visibleEntryIds.length > 0 ? 'var(--red)' : 'var(--text-3)',
+                  border: '1px solid var(--border)',
+                  opacity: visibleEntryIds.length > 0 ? 1 : 0.55,
+                  cursor: visibleEntryIds.length > 0 ? 'pointer' : 'not-allowed',
+                }}
+              >
+                {massDeleteLabel}
+              </button>
             </div>
 
             {memoryLibraryError && (
@@ -365,67 +535,113 @@ export function MemoryLibraryModal() {
                 No memory entries found for this scope.
               </div>
             ) : (
-              <div className="space-y-5">
-                {groupedEntries.map(({ category, entries }) => (
-                  <section key={category}>
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.16em] mb-2" style={{ color: 'var(--text-3)' }}>
-                      {category}
-                    </div>
-                    {entries.length === 0 ? (
-                      <div className="rounded-lg px-3 py-2 text-xs" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)', color: 'var(--text-3)' }}>
-                        No entries in this category.
-                      </div>
-                    ) : (
-                      <div className="space-y-3">
-                        {entries.map((entry) => (
-                          <article
-                            key={entry.id}
-                            className="rounded-xl p-4"
-                            style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}
-                          >
-                            <div className="flex items-start justify-between gap-4">
-                              <div className="min-w-0">
-                                <div className="text-sm font-semibold truncate" style={{ color: 'var(--text)' }}>
-                                  {entry.title}
-                                </div>
-                                <div className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>
-                                  {isAllMemory ? (entry.scopeLabel || entry.scope) : entry.scope} • {entry.confidence} confidence • {entry.occurrenceCount} occurrence{entry.occurrenceCount === 1 ? '' : 's'}
-                                </div>
-                                {isAllMemory && entry.rootPath && (
-                                  <div className="text-[11px] mt-1 truncate" style={{ color: 'var(--text-3)' }}>
-                                    {entry.rootPath}
+              <div className="space-y-4">
+                {groupedEntries.map((location) => (
+                  <section key={location.key}>
+                    <button
+                      type="button"
+                      onClick={() => toggleLocationGroup(location.key)}
+                      className="w-full relative flex items-center gap-2 px-3 py-2 cursor-pointer group rounded-md text-left"
+                      style={{
+                        background: 'var(--surface-up)',
+                        color: 'var(--text-2)',
+                        border: '1px solid var(--border)',
+                        fontFamily: 'inherit',
+                      }}
+                    >
+                      <svg
+                        width="13"
+                        height="13"
+                        viewBox="0 0 16 16"
+                        fill="currentColor"
+                        style={{ flexShrink: 0, color: 'var(--accent)', opacity: 0.85 }}
+                        aria-hidden="true"
+                      >
+                        {(expandedLocationGroups[location.key] ?? true) ? (
+                          <>
+                            <path d="M1 5.5A1.5 1.5 0 012.5 4H6l1.5 1.5H14A1.5 1.5 0 0115.5 7v.5H.5V5.5A1 1 0 011 5.5z" />
+                            <path d="M.5 8h15l-1.5 5.5H2L.5 8z" opacity="0.85" />
+                          </>
+                        ) : (
+                          <path d="M1 5.5A1.5 1.5 0 012.5 4H6l1.5 1.5H13.5A1.5 1.5 0 0115 7v5.5A1.5 1.5 0 0113.5 14h-11A1.5 1.5 0 011 12.5v-7z" />
+                        )}
+                      </svg>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-semibold truncate" style={{ color: 'var(--text)' }}>
+                          {location.label}
+                        </span>
+                        <span className="block text-[11px] truncate mt-0.5" style={{ color: 'var(--text-3)' }}>
+                          {location.rootPath}
+                        </span>
+                      </span>
+                      <span
+                        className="text-xs flex-shrink-0 rounded px-1"
+                        style={{ fontSize: 10, background: 'var(--surface-high)', color: 'var(--text-3)' }}
+                      >
+                        {location.count}
+                      </span>
+                    </button>
+
+                    {(expandedLocationGroups[location.key] ?? true) && (
+                      <div className="mt-3 ml-4 space-y-4">
+                        {location.categories.map(({ category, entries }) => (
+                          <section key={`${location.key}:${category}`}>
+                            <div className="flex items-center justify-between gap-2 mb-2">
+                              <div className="text-[11px] font-semibold uppercase tracking-[0.16em]" style={{ color: 'var(--text-3)' }}>
+                                {category}
+                              </div>
+                              <div className="text-[10px] rounded px-1.5 py-0.5" style={{ background: 'var(--surface-up)', color: 'var(--text-3)', border: '1px solid var(--border)' }}>
+                                {entries.length}
+                              </div>
+                            </div>
+                            <div className="space-y-3">
+                              {entries.map((entry) => (
+                                <article
+                                  key={entry.id}
+                                  className="rounded-xl p-4"
+                                  style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}
+                                >
+                                  <div className="flex items-start justify-between gap-4">
+                                    <div className="min-w-0">
+                                      <div className="text-sm font-semibold truncate" style={{ color: 'var(--text)' }}>
+                                        {entry.title}
+                                      </div>
+                                      <div className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>
+                                        {entry.scope} • {entry.confidence} confidence • {entry.occurrenceCount} occurrence{entry.occurrenceCount === 1 ? '' : 's'}
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => void revealMemoryEntry(entry.id)}
+                                        className="px-2 py-1 rounded-md text-[11px]"
+                                        style={{ background: 'transparent', color: 'var(--text-2)', border: '1px solid var(--border)' }}
+                                      >
+                                        Reveal file
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setPendingDeleteEntryId(entry.id)}
+                                        className="px-2 py-1 rounded-md text-[11px]"
+                                        style={{ background: 'transparent', color: 'var(--red)', border: '1px solid var(--border)' }}
+                                      >
+                                        Delete
+                                      </button>
+                                    </div>
                                   </div>
-                                )}
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => void revealMemoryEntry(entry.id)}
-                                  className="px-2 py-1 rounded-md text-[11px]"
-                                  style={{ background: 'transparent', color: 'var(--text-2)', border: '1px solid var(--border)' }}
-                                >
-                                  Reveal file
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setPendingDeleteEntryId(entry.id)}
-                                  className="px-2 py-1 rounded-md text-[11px]"
-                                  style={{ background: 'transparent', color: 'var(--red)', border: '1px solid var(--border)' }}
-                                >
-                                  Delete
-                                </button>
-                              </div>
-                            </div>
 
-                            <div className="grid md:grid-cols-2 gap-2 mt-3 text-xs" style={{ color: 'var(--text-3)' }}>
-                              <div>Source chat: {entry.sourceChatId || '—'}</div>
-                              <div>Last observed: {entry.lastObserved || '—'}</div>
-                            </div>
+                                  <div className="grid md:grid-cols-2 gap-2 mt-3 text-xs" style={{ color: 'var(--text-3)' }}>
+                                    <div>Source chat: {entry.sourceChatId || '—'}</div>
+                                    <div>Last observed: {entry.lastObserved || '—'}</div>
+                                  </div>
 
-                            <div className="mt-3 text-sm leading-6" style={{ color: 'var(--text-2)' }}>
-                              {entry.preview || 'No preview available.'}
+                                  <div className="mt-3 text-sm leading-6" style={{ color: 'var(--text-2)' }}>
+                                    {entry.preview || 'No preview available.'}
+                                  </div>
+                                </article>
+                              ))}
                             </div>
-                          </article>
+                          </section>
                         ))}
                       </div>
                     )}
@@ -478,6 +694,53 @@ export function MemoryLibraryModal() {
                 style={{ background: 'var(--red)', color: '#fff', border: 'none' }}
               >
                 Delete memory
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingMassDeleteEntryIds && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center"
+          style={{ background: 'rgba(0,0,0,0.25)' }}
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setPendingMassDeleteEntryIds(null)
+          }}
+        >
+          <div
+            className="rounded-xl shadow-2xl w-full max-w-md mx-4"
+            style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)' }}
+          >
+            <div className="px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
+              <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
+                {hasSearchQuery ? 'Delete matching memories?' : 'Delete all memories?'}
+              </div>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="text-sm" style={{ color: 'var(--text)' }}>
+                This deletes {pendingMassDeleteCount} {hasSearchQuery ? 'matching' : 'listed'} memory {pendingMassDeleteCount === 1 ? 'entry' : 'entries'} and removes the backing markdown {pendingMassDeleteCount === 1 ? 'file' : 'files'}.
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
+              <button
+                type="button"
+                onClick={() => setPendingMassDeleteEntryIds(null)}
+                className="px-4 py-1.5 rounded-md text-xs"
+                style={{ background: 'transparent', color: 'var(--text-2)', border: '1px solid var(--border)' }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void deleteMemoryEntries(pendingMassDeleteEntryIds)
+                  setPendingMassDeleteEntryIds(null)
+                }}
+                className="px-4 py-1.5 rounded-md text-xs font-medium"
+                style={{ background: 'var(--red)', color: '#fff', border: 'none' }}
+              >
+                Delete {pendingMassDeleteCount} {pendingMassDeleteCount === 1 ? 'memory' : 'memories'}
               </button>
             </div>
           </div>

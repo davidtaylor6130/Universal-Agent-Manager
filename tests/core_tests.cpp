@@ -306,7 +306,7 @@ UAM_TEST(MemoryServiceWritesDedupesAndBuildsRecall)
 				"category": "Lessons/User_Lessons",
 				"title": "Project uses Allman braces",
 				"memory": "Prefer Allman brace style in this project.",
-				"evidence": "User stated the project uses Allman braces.",
+				"evidence": "User said: Please remember that this project uses Allman braces.",
 				"confidence": "high"
 			}
 		]
@@ -354,7 +354,7 @@ OpenAI Codex v0.124.0
 user
 Extract durable memories from this chat delta. Return ONLY JSON with shape {"memories":[{"scope":"global|local","category":"Failures/AI_Failures|Failures/User_Failures|Lessons/AI_Lessons|Lessons/User_Lessons","title":"...","memory":"...","evidence":"...","confidence":"high|medium|low"}]}.
 codex
-{"memories":[{"scope":"local","category":"Lessons/User_Lessons","title":"Codex worker output is noisy","memory":"Parse the final Codex memory JSON instead of treating the full transcript as JSON.","evidence":"Codex printed headers and then the JSON payload.","confidence":"high"}]}
+{"memories":[{"scope":"local","category":"Lessons/User_Lessons","title":"Codex worker output is noisy","memory":"Remember that the memory worker should parse the final Codex memory JSON instead of treating the full transcript as JSON.","evidence":"User said: Remember that the memory worker should parse Codex output.","confidence":"high"}]}
 tokens used
 4,115
 )";
@@ -364,7 +364,7 @@ tokens used
 
 	const fs::path memory_file = fs::path(folder.directory) / ".UAM" / "Lessons" / "User_Lessons" / "codex-worker-output-is-noisy.md";
 	const std::string text = ReadFile(memory_file);
-	UAM_ASSERT(text.find("Parse the final Codex memory JSON") != std::string::npos);
+	UAM_ASSERT(text.find("parse the final Codex memory JSON") != std::string::npos);
 }
 
 UAM_TEST(MemoryServiceParsesCodexJsonEventMemoryPayload)
@@ -386,7 +386,7 @@ UAM_TEST(MemoryServiceParsesCodexJsonEventMemoryPayload)
 	chat.messages.push_back({MessageRole::User, "Remember that Codex JSONL wraps final text.", "now"});
 	app.chats.push_back(chat);
 
-	const std::string payload = R"({"memories":[{"scope":"local","category":"Lessons/User_Lessons","title":"Codex JSONL wraps final memory text","memory":"Parse item.text from Codex JSONL worker output as the memory payload.","evidence":"Codex emitted an item.completed event containing the final text.","confidence":"high"}]})";
+	const std::string payload = R"({"memories":[{"scope":"local","category":"Lessons/User_Lessons","title":"Codex JSONL wraps final memory text","memory":"Remember that Codex JSONL worker output can wrap the memory payload in item.text.","evidence":"User said: Remember that Codex JSONL wraps final text.","confidence":"high"}]})";
 	const nlohmann::json event = {{"type", "item.completed"}, {"item", {{"type", "agent_message"}, {"text", payload}}}};
 	const std::string output = "Reading additional input from stdin...\n" + event.dump() + "\n";
 
@@ -395,7 +395,127 @@ UAM_TEST(MemoryServiceParsesCodexJsonEventMemoryPayload)
 
 	const fs::path memory_file = fs::path(folder.directory) / ".UAM" / "Lessons" / "User_Lessons" / "codex-jsonl-wraps-final-memory-text.md";
 	const std::string text = ReadFile(memory_file);
-	UAM_ASSERT(text.find("Parse item.text from Codex JSONL") != std::string::npos);
+	UAM_ASSERT(text.find("item.text") != std::string::npos);
+}
+
+UAM_TEST(MemoryServiceSaveGateRejectsRoutineWorkerMemory)
+{
+	TempDir temp("uam-memory-save-gate-routine");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+
+	ChatFolder folder;
+	folder.id = "folder-1";
+	folder.title = "Project";
+	folder.directory = (temp.root / "workspace").string();
+	app.folders.push_back(folder);
+	fs::create_directories(folder.directory);
+
+	ChatSession chat = ChatDomainService().CreateNewChat(folder.id, "gemini-cli");
+	chat.id = "chat-routine-memory";
+	chat.workspace_directory = folder.directory;
+	chat.messages.push_back({MessageRole::User, "Please implement the sidebar spacing tweak.", "now"});
+	app.chats.push_back(chat);
+
+	const std::string output = R"({
+		"memories": [
+			{
+				"scope": "local",
+				"category": "Lessons/User_Lessons",
+				"title": "Sidebar spacing tweak",
+				"memory": "The conversation discussed a sidebar spacing tweak.",
+				"evidence": "User asked to implement the sidebar spacing tweak.",
+				"confidence": "high"
+			}
+		]
+	})";
+
+	std::string error;
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats[0], fs::path(folder.directory), output, -1, &error));
+	const fs::path memory_file = fs::path(folder.directory) / ".UAM" / "Lessons" / "User_Lessons" / "sidebar-spacing-tweak.md";
+	UAM_ASSERT(!fs::exists(memory_file));
+	UAM_ASSERT_EQ(app.memory_activity.last_created_count, 0);
+	UAM_ASSERT(app.memory_last_status.find("no durable memories") != std::string::npos);
+}
+
+UAM_TEST(MemoryServiceSaveGateRequiresHighConfidenceAndEvidence)
+{
+	TempDir temp("uam-memory-save-gate-confidence");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+
+	ChatFolder folder;
+	folder.id = "folder-1";
+	folder.title = "Project";
+	folder.directory = (temp.root / "workspace").string();
+	app.folders.push_back(folder);
+	fs::create_directories(folder.directory);
+
+	ChatSession chat = ChatDomainService().CreateNewChat(folder.id, "gemini-cli");
+	chat.id = "chat-low-confidence-memory";
+	chat.workspace_directory = folder.directory;
+	chat.messages.push_back({MessageRole::User, "Remember that critical fixes must include tests.", "now"});
+	app.chats.push_back(chat);
+
+	const std::string output = R"({
+		"memories": [
+			{
+				"scope": "local",
+				"category": "Lessons/User_Lessons",
+				"title": "Critical fixes need tests",
+				"memory": "Remember that critical fixes must include tests.",
+				"evidence": "",
+				"confidence": "medium"
+			}
+		]
+	})";
+
+	std::string error;
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats[0], fs::path(folder.directory), output, -1, &error));
+	const fs::path memory_file = fs::path(folder.directory) / ".UAM" / "Lessons" / "User_Lessons" / "critical-fixes-need-tests.md";
+	UAM_ASSERT(!fs::exists(memory_file));
+	UAM_ASSERT_EQ(app.memory_activity.last_created_count, 0);
+}
+
+UAM_TEST(MemoryServiceSaveGateAcceptsCriticalFailureMemory)
+{
+	TempDir temp("uam-memory-save-gate-failure");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+
+	ChatFolder folder;
+	folder.id = "folder-1";
+	folder.title = "Project";
+	folder.directory = (temp.root / "workspace").string();
+	app.folders.push_back(folder);
+	fs::create_directories(folder.directory);
+
+	ChatSession chat = ChatDomainService().CreateNewChat(folder.id, "gemini-cli");
+	chat.id = "chat-critical-failure-memory";
+	chat.workspace_directory = folder.directory;
+	chat.messages.push_back({MessageRole::User, "The build failed because the memory service header was missing.", "now"});
+	app.chats.push_back(chat);
+
+	const std::string output = R"({
+		"memories": [
+			{
+				"scope": "local",
+				"category": "Failures/AI_Failures",
+				"title": "Missing memory service include caused build failure",
+				"memory": "Verify native includes when wiring MemoryService calls because a missing header caused a build failure.",
+				"evidence": "User said the build failed because the memory service header was missing.",
+				"confidence": "high"
+			}
+		]
+	})";
+
+	std::string error;
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats[0], fs::path(folder.directory), output, -1, &error));
+	const fs::path memory_file = fs::path(folder.directory) / ".UAM" / "Failures" / "AI_Failures" / "missing-memory-service-include-caused-build-failure.md";
+	UAM_ASSERT(fs::exists(memory_file));
+	const std::string text = ReadFile(memory_file);
+	UAM_ASSERT(text.find("missing header caused a build failure") != std::string::npos);
+	UAM_ASSERT_EQ(app.memory_activity.last_created_count, 1);
 }
 
 UAM_TEST(MemoryServiceBuildsHeadlessGeminiWorkerCommand)
@@ -695,6 +815,75 @@ UAM_TEST(MemoryServiceListsAndQueuesManualScanCandidates)
 	MemoryService::StopMemoryTasks(app);
 }
 
+UAM_TEST(MemoryServiceAutomaticGateSkipsLowSignalChatDelta)
+{
+	TempDir temp("uam-memory-auto-gate-low-signal");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.settings.memory_idle_delay_seconds = -1;
+
+	ChatFolder folder;
+	folder.id = "folder-1";
+	folder.title = "Workspace";
+	folder.directory = (temp.root / "workspace").string();
+	app.folders.push_back(folder);
+	fs::create_directories(folder.directory);
+
+	ChatSession chat = ChatDomainService().CreateNewChat(folder.id, "gemini-cli");
+	chat.id = "chat-low-signal";
+	chat.title = "Low Signal";
+	chat.workspace_directory = folder.directory;
+	chat.memory_enabled = true;
+	chat.messages.push_back({MessageRole::User, "Please make the button spacing tighter.", "now"});
+	app.memory_idle_started_at_by_chat_id[chat.id] = GetAppTimeSeconds() - 999.0;
+	app.chats.push_back(chat);
+
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(0));
+	UAM_ASSERT_EQ(app.memory_extraction_tasks.size(), static_cast<std::size_t>(0));
+	UAM_ASSERT_EQ(app.chats[0].memory_last_processed_message_count, 1);
+	UAM_ASSERT(app.memory_last_status.find("skipped low-signal") != std::string::npos);
+}
+
+UAM_TEST(MemoryServiceAutomaticGateQueuesExplicitCriticalPreference)
+{
+	TempDir temp("uam-memory-auto-gate-critical");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.settings.memory_idle_delay_seconds = -1;
+	const double idle_started_at = std::max(0.001, GetAppTimeSeconds());
+
+	ChatFolder folder;
+	folder.id = "folder-1";
+	folder.title = "Workspace";
+	folder.directory = (temp.root / "workspace").string();
+	app.folders.push_back(folder);
+	fs::create_directories(folder.directory);
+
+	ChatSession chat = ChatDomainService().CreateNewChat(folder.id, "gemini-cli");
+	chat.id = "chat-critical-preference";
+	chat.title = "Critical Preference";
+	chat.workspace_directory = folder.directory;
+	chat.memory_enabled = true;
+	chat.messages.push_back({MessageRole::User, "Remember that critical fixes must always include a focused test.", "now"});
+	app.memory_idle_started_at_by_chat_id[chat.id] = idle_started_at;
+	app.chats.push_back(chat);
+
+	uam::AsyncMemoryExtractionTask running_task;
+	running_task.running = true;
+	running_task.chat_id = "other-chat";
+	running_task.message_count = 1;
+	running_task.state = std::make_shared<AsyncProcessTaskState>();
+	app.memory_extraction_tasks.push_back(std::move(running_task));
+
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT_EQ(app.memory_extraction_tasks.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.memory_extraction_queue[0].chat_id, std::string("chat-critical-preference"));
+	UAM_ASSERT_EQ(app.chats[0].memory_last_processed_message_count, 0);
+	MemoryService::StopMemoryTasks(app);
+}
+
 UAM_TEST(MemoryServiceSchedulerDoesNotStartBeyondSingleWorkerCap)
 {
 	TempDir temp("uam-memory-worker-cap");
@@ -717,7 +906,7 @@ UAM_TEST(MemoryServiceSchedulerDoesNotStartBeyondSingleWorkerCap)
 		chat.title = "Chat " + std::to_string(i);
 		chat.workspace_directory = folder.directory;
 		chat.memory_enabled = true;
-		chat.messages.push_back({MessageRole::User, "Remember item " + std::to_string(i), "now"});
+		chat.messages.push_back({MessageRole::User, "Remember that item " + std::to_string(i) + " is a critical workspace lesson.", "now"});
 		app.memory_idle_started_at_by_chat_id[chat.id] = idle_started_at;
 		app.chats.push_back(chat);
 	}
