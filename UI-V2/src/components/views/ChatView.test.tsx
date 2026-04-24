@@ -505,6 +505,7 @@ describe('ChatView', () => {
     expect(modelButton).toBeTruthy()
     expect(modelButton?.disabled).toBe(true)
     expect((host.querySelector('button[title="Toggle planning mode"]') as HTMLButtonElement | null)?.disabled).toBe(true)
+    expect((host.querySelector('button[title="Yolo mode unavailable"]') as HTMLButtonElement | null)?.disabled).toBe(true)
 
     act(() => {
       modelButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -602,7 +603,80 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('switches Claude from plan mode back to acceptEdits', () => {
+  it('toggles the Yolo chip and reflects runtime Yolo state', () => {
+    const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1' ? { ...session, approvalMode: 'default' } : session
+      ),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+          processingStartedAtMs: null,
+          currentModeId: 'default',
+          availableModes: [
+            { id: 'default', name: 'Default', description: '' },
+            { id: 'plan', name: 'Plan', description: '' },
+            { id: 'yolo', name: 'Yolo', description: '' },
+          ],
+          pendingPermission: null,
+        },
+      },
+      setSessionApprovalMode,
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const yoloButton = host.querySelector('button[title="Toggle Yolo mode"]') as HTMLButtonElement | null
+    expect(yoloButton).toBeTruthy()
+    expect(yoloButton?.disabled).toBe(false)
+    expect(yoloButton?.getAttribute('aria-pressed')).toBe('false')
+
+    act(() => {
+      yoloButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'yolo')
+
+    act(() => {
+      useAppStore.setState((state) => ({
+        sessions: state.sessions.map((session) =>
+          session.id === 'chat-1' ? { ...session, approvalMode: 'yolo' } : session
+        ),
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          'chat-1': {
+            ...state.acpBindingBySessionId['chat-1'],
+            currentModeId: 'yolo',
+          },
+        },
+      }))
+    })
+
+    expect(yoloButton?.getAttribute('aria-pressed')).toBe('true')
+
+    act(() => {
+      yoloButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(setSessionApprovalMode).toHaveBeenLastCalledWith('chat-1', 'default')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('switches Claude from plan mode back to default', () => {
     const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) =>
@@ -644,7 +718,7 @@ describe('ChatView', () => {
       planButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'acceptEdits')
+    expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'default')
 
     act(() => {
       root.unmount()

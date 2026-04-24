@@ -40,6 +40,7 @@ using uam::AppState;
 namespace
 {
 	constexpr const char* kDefaultNativeHistoryProviderId = provider_build_config::DefaultNativeHistoryProviderId();
+	constexpr const char* kMemoryWorkerPromptPrefix = "You are a non-interactive memory extraction function.";
 
 	std::string NormalizeNativeIdentityWorkspace(const std::string& workspace_directory)
 	{
@@ -101,6 +102,22 @@ namespace
 		}
 
 		return candidate;
+	}
+
+	bool IsUamMemoryWorkerNativeChat(const ChatSession& chat)
+	{
+		for (const Message& message : chat.messages)
+		{
+			if (message.role != MessageRole::User)
+			{
+				continue;
+			}
+			if (Trim(message.content).rfind(kMemoryWorkerPromptPrefix, 0) == 0)
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	std::string ResolvePersistedImportFolderIdForSource(AppState& app, const ProviderChatSource& source)
@@ -705,6 +722,19 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 
 		for (ChatSession& l_nativeChat : l_nativeChats)
 		{
+			if (IsUamMemoryWorkerNativeChat(l_nativeChat))
+			{
+				if (p_delete_native_after_import && !l_nativeChat.native_session_id.empty())
+				{
+					std::error_code l_ec;
+					if (const auto l_nativeFile = FindNativeSessionFilePath(l_chatsDir.value(), l_nativeChat.native_session_id); l_nativeFile.has_value())
+					{
+						fs::remove(l_nativeFile.value(), l_ec);
+					}
+				}
+				continue;
+			}
+
 			if (!p_targetChatId.empty() && l_nativeChat.id != p_targetChatId && l_nativeChat.native_session_id != p_targetChatId)
 			{
 				continue;
@@ -840,6 +870,19 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 
 		for (ChatSession& l_nativeChat : l_nativeChats)
 		{
+			if (IsUamMemoryWorkerNativeChat(l_nativeChat))
+			{
+				if (p_delete_native_after_import && !l_nativeChat.native_session_id.empty())
+				{
+					std::error_code l_ec;
+					if (const auto l_nativeFile = FindNativeSessionFilePath(l_source.chats_dir, l_nativeChat.native_session_id); l_nativeFile.has_value())
+					{
+						fs::remove(l_nativeFile.value(), l_ec);
+					}
+				}
+				continue;
+			}
+
 			if (!p_targetChatId.empty() && l_nativeChat.id != p_targetChatId && l_nativeChat.native_session_id != p_targetChatId)
 			{
 				continue;

@@ -272,6 +272,8 @@ namespace uam
 		int message_count = 0;
 		int scan_start_message_index = -1;
 		std::filesystem::path workspace_root;
+		std::filesystem::path native_history_chats_dir;
+		std::vector<std::string> native_history_files_before;
 		std::shared_ptr<AsyncProcessTaskState> state;
 		std::unique_ptr<std::jthread> worker;
 	};

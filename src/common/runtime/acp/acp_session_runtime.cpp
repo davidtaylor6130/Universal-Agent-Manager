@@ -332,9 +332,10 @@ namespace
 
 	nlohmann::json BuildCodexThreadStartRequest(const int request_id, const ChatSession& chat, const std::string& cwd)
 	{
+		const bool yolo_mode = Trim(chat.approval_mode) == "yolo";
 		nlohmann::json params = {
 			{"cwd", cwd},
-			{"approvalPolicy", "on-request"},
+			{"approvalPolicy", yolo_mode ? "never" : "on-request"},
 			{"sandbox", "workspace-write"},
 			{"serviceName", "universal-agent-manager"},
 			{"experimentalRawEvents", false},
@@ -357,10 +358,11 @@ namespace
 
 	nlohmann::json BuildCodexThreadResumeRequest(const int request_id, const ChatSession& chat, const std::string& cwd)
 	{
+		const bool yolo_mode = Trim(chat.approval_mode) == "yolo";
 		nlohmann::json params = {
 			{"threadId", chat.native_session_id},
 			{"cwd", cwd},
-			{"approvalPolicy", "on-request"},
+			{"approvalPolicy", yolo_mode ? "never" : "on-request"},
 			{"sandbox", "workspace-write"},
 			{"persistExtendedHistory", true},
 		};
@@ -541,7 +543,33 @@ namespace
 		std::string LaunchApprovalMode(const ChatSession& chat)
 		{
 			const std::string mode = Trim(chat.approval_mode);
-			return (mode == "default" || mode == "acceptEdits" || mode == "plan") ? mode : "";
+			return (mode == "default" || mode == "acceptEdits" || mode == "plan" || mode == "yolo") ? mode : "";
+		}
+
+		std::string GeminiLaunchApprovalMode(const ChatSession& chat)
+		{
+			const std::string mode = LaunchApprovalMode(chat);
+			return mode == "acceptEdits" ? "auto_edit" : mode;
+		}
+
+		std::string ClaudeLaunchApprovalMode(const ChatSession& chat)
+		{
+			const std::string mode = LaunchApprovalMode(chat);
+			return mode == "yolo" ? "auto" : mode;
+		}
+
+		std::string AppApprovalModeId(const std::string& mode_id)
+		{
+			return mode_id == "auto_edit" ? "acceptEdits" : mode_id;
+		}
+
+		std::string ProviderApprovalModeId(const AcpSessionState& session, const std::string& mode_id)
+		{
+			if (!IsCodexSession(session) && !IsClaudeSession(session) && mode_id == "acceptEdits")
+			{
+				return "auto_edit";
+			}
+			return mode_id;
 		}
 
 		std::vector<std::string> BuildAcpLaunchArgv(const ChatSession& chat)
@@ -554,8 +582,8 @@ namespace
 			if (Trim(chat.provider_id) == "claude-cli")
 			{
 				std::vector<std::string> argv = {"claude", "-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose"};
-				const std::string approval_mode = LaunchApprovalMode(chat);
-				if (approval_mode == "default" || approval_mode == "acceptEdits" || approval_mode == "plan")
+				const std::string approval_mode = ClaudeLaunchApprovalMode(chat);
+				if (!approval_mode.empty())
 				{
 					argv.push_back("--permission-mode");
 					argv.push_back(approval_mode);
@@ -576,7 +604,7 @@ namespace
 			}
 
 			std::vector<std::string> argv = {"gemini", "--acp"};
-			const std::string approval_mode = LaunchApprovalMode(chat);
+			const std::string approval_mode = GeminiLaunchApprovalMode(chat);
 			if (!approval_mode.empty())
 			{
 				argv.push_back("--approval-mode");
@@ -774,6 +802,7 @@ namespace
 				AcpModeState{"default", "Default", "Use Claude default permissions."},
 				AcpModeState{"acceptEdits", "Accept Edits", "Auto-approve Claude file edits in the workspace."},
 				AcpModeState{"plan", "Plan", "Ask Claude to plan before making changes."},
+				AcpModeState{"yolo", "Yolo", "Let Claude auto-decide permissions without prompting."},
 			};
 			if (session.current_mode_id.empty())
 			{
@@ -3324,7 +3353,7 @@ namespace
 						}
 
 						AcpModeState parsed;
-						parsed.id = mode.value("id", "");
+						parsed.id = AppApprovalModeId(mode.value("id", ""));
 						parsed.name = mode.value("name", parsed.id);
 						parsed.description = mode.value("description", "");
 						if (!parsed.id.empty())
@@ -3337,7 +3366,7 @@ namespace
 				const std::string current_mode_id = modes.value("currentModeId", "");
 				if (!current_mode_id.empty())
 				{
-					session.current_mode_id = current_mode_id;
+					session.current_mode_id = AppApprovalModeId(current_mode_id);
 				}
 			}
 
@@ -3633,6 +3662,7 @@ namespace
 					session.available_modes = {
 						AcpModeState{"default", "Default", "Use Codex default collaboration mode."},
 						AcpModeState{"plan", "Plan", "Ask Codex to plan before implementing."},
+						AcpModeState{"yolo", "Yolo", "Run Codex without approval prompts in the workspace sandbox."},
 					};
 					session.current_mode_id = chat.approval_mode.empty() ? "default" : chat.approval_mode;
 					session.session_ready = !session.session_id.empty();
@@ -4386,8 +4416,9 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 		}
 		if (IsCodexSession(*session))
 		{
+			const bool restart_for_policy_change = session->current_mode_id == "yolo" || mode_id == "yolo";
 			session->current_mode_id = mode_id;
-			return true;
+			return restart_for_policy_change ? StopAcpSession(app, chat_id) : true;
 		}
 		if (IsClaudeSession(*session))
 		{
@@ -4396,7 +4427,7 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 		}
 
 		const int id = NextAcpRequestId(*session, "session/set_mode");
-		if (!WriteAcpMessage(*session, BuildSetModeRequest(id, session->session_id, mode_id), error_out))
+		if (!WriteAcpMessage(*session, BuildSetModeRequest(id, session->session_id, ProviderApprovalModeId(*session, mode_id)), error_out))
 		{
 			session->pending_request_methods.erase(id);
 			return false;

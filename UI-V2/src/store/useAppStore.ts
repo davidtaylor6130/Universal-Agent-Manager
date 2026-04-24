@@ -7,7 +7,7 @@ import { sendToCEF, isCefContext, createRequestId } from '../ipc/cefBridge'
 import { applyDocumentTheme, writeStoredTheme } from '../utils/themeStorage'
 
 const GEMINI_CLI_PROVIDER_ID = 'gemini-cli'
-const ACP_APPROVAL_MODE_IDS = ['default', 'acceptEdits', 'plan'] as const
+const ACP_APPROVAL_MODE_IDS = ['default', 'acceptEdits', 'plan', 'yolo'] as const
 const initialFolders: Folder[] = [
   {
     id: 'default',
@@ -489,6 +489,7 @@ function isAllowedAcpModelId(modelId: string): boolean {
 
 function normalizeAcpApprovalMode(value: unknown): string {
   const modeId = stringOr(value).trim() || 'default'
+  if (modeId === 'auto_edit') return 'acceptEdits'
   return (ACP_APPROVAL_MODE_IDS as readonly string[]).includes(modeId) ? modeId : 'default'
 }
 
@@ -581,8 +582,10 @@ function sanitizePlanEntry(value: unknown): AcpPlanEntry | null {
 
 function sanitizeAcpMode(value: unknown): AcpMode | null {
   if (!isRecord(value)) return null
-  const id = stringOr(value.id).trim()
-  if (!id) return null
+  const rawId = stringOr(value.id).trim()
+  if (!rawId) return null
+  const id = normalizeAcpApprovalMode(rawId)
+  if (id === 'default' && rawId !== 'default') return null
   return {
     id,
     name: stringOr(value.name, id),

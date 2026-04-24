@@ -711,7 +711,7 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().sessions[0].modelId).toBe('auto-gemini-3')
   })
 
-  it('sends planning mode changes through CEF and rolls back on failure', async () => {
+  it('sends approval mode changes through CEF and rolls back on failure', async () => {
     const now = new Date()
     const requests: Array<{ action: string; payload?: unknown }> = []
     let rejectNext = false
@@ -747,8 +747,10 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(requests[1].payload).toEqual({ chatId: 'chat-1', modeId: 'default' })
     expect(useAppStore.getState().sessions[0].approvalMode).toBe('plan')
 
-    await expect(useAppStore.getState().setSessionApprovalMode('chat-1', 'yolo')).resolves.toBe(false)
-    expect(requests).toHaveLength(2)
+    rejectNext = false
+    await expect(useAppStore.getState().setSessionApprovalMode('chat-1', 'yolo')).resolves.toBe(true)
+    expect(requests[2].payload).toEqual({ chatId: 'chat-1', modeId: 'yolo' })
+    expect(useAppStore.getState().sessions[0].approvalMode).toBe('yolo')
   })
 
   it('sends planning mode changes when the live runtime mode differs from the saved chat mode', async () => {
@@ -1084,7 +1086,7 @@ describe('useAppStore Gemini CLI slice', () => {
     let state = cefStore.getState()
     expect(state.folders.map((folder) => folder.id)).toEqual(['default'])
     expect(state.sessions.map((session) => session.id)).toEqual(['chat-1'])
-    expect(state.sessions[0].approvalMode).toBe('default')
+    expect(state.sessions[0].approvalMode).toBe('yolo')
     expect(state.sessions[0].modelId).toBe('')
     expect(state.activeSessionId).toBe('chat-1')
     expect(state.messages['chat-1'].map((message) => message.content)).toEqual(['hello'])
@@ -1094,7 +1096,7 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(state.cliDebugState?.terminals.map((terminal) => terminal.terminalId)).toEqual(['term-1'])
     expect(state.acpBindingBySessionId['chat-1'].toolCalls.map((tool) => tool.id)).toEqual(['tool-1'])
     expect(state.acpBindingBySessionId['chat-1'].availableModes.map((mode) => mode.id)).toEqual(['plan'])
-    expect(state.acpBindingBySessionId['chat-1'].currentModeId).toBe('default')
+    expect(state.acpBindingBySessionId['chat-1'].currentModeId).toBe('acceptEdits')
     expect(state.acpBindingBySessionId['chat-1'].availableModels.map((model) => model.id)).toEqual([
       'models/gemini-3-pro-preview',
     ])

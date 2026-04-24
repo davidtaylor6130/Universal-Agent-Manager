@@ -119,7 +119,7 @@ namespace
 
 		bool IsAllowedAcpApprovalMode(const std::string& mode_id)
 		{
-			return mode_id == "default" || mode_id == "acceptEdits" || mode_id == "plan";
+			return mode_id == "default" || mode_id == "acceptEdits" || mode_id == "plan" || mode_id == "yolo";
 		}
 
 		bool AcpSessionBlocksModelChange(const uam::AcpSessionState& session)

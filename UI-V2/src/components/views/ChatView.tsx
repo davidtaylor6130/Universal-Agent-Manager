@@ -1461,6 +1461,7 @@ function ComposerToolbar({
   onSelectProvider,
   onSelectModel,
   onTogglePlan,
+  onToggleYolo,
   onToggleMemory,
   onCancel,
 }: {
@@ -1488,6 +1489,7 @@ function ComposerToolbar({
   onSelectProvider: (providerId: string) => void
   onSelectModel: (modelId: string) => void
   onTogglePlan: () => void
+  onToggleYolo: () => void
   onToggleMemory: () => void
   onCancel: () => void
 }) {
@@ -1500,11 +1502,14 @@ function ComposerToolbar({
     acp?.lifecycleState === 'waitingUserInput'
   )
   const planActive = approvalModeId === 'plan'
+  const yoloActive = approvalModeId === 'yolo'
   const hasRuntimeModes = Boolean(acp?.running && acp.availableModes.length > 0)
   const planAvailable = !hasRuntimeModes || acp?.availableModes.some((mode) => mode.id === 'plan')
+  const yoloAvailable = !hasRuntimeModes || acp?.availableModes.some((mode) => mode.id === 'yolo')
   const planDisabled = Boolean(modelDisabled || !planAvailable)
+  const yoloDisabled = Boolean(modelDisabled || !yoloAvailable)
   const memoryDisabled = Boolean(modelDisabled)
-  const modeLabel = planActive ? 'Plan' : approvalModeId === 'acceptEdits' ? 'Accept Edits' : 'Default'
+  const modeLabel = yoloActive ? 'Yolo' : planActive ? 'Plan' : approvalModeId === 'acceptEdits' ? 'Accept Edits' : 'Default'
   const chipStyle = {
     height: 26,
     borderRadius: 6,
@@ -1655,6 +1660,24 @@ function ComposerToolbar({
       >
         <span style={{ color: planActive ? 'var(--accent)' : 'var(--text-3)', fontSize: 10 }}>●</span>
         <span>Plan</span>
+      </button>
+      <button
+        type="button"
+        title={yoloAvailable ? 'Toggle Yolo mode' : 'Yolo mode unavailable'}
+        aria-pressed={yoloActive}
+        onClick={onToggleYolo}
+        disabled={yoloDisabled}
+        className="inline-flex items-center gap-1.5 px-2"
+        style={{
+          ...chipStyle,
+          borderColor: yoloActive ? 'color-mix(in srgb, var(--yellow) 55%, var(--border))' : 'var(--border)',
+          background: yoloActive ? 'color-mix(in srgb, var(--yellow) 16%, var(--surface))' : chipStyle.background,
+          color: yoloActive ? 'var(--text)' : 'var(--text-2)',
+          opacity: yoloDisabled ? 0.55 : 1,
+        }}
+      >
+        <span style={{ color: yoloActive ? 'var(--yellow)' : 'var(--text-3)', fontSize: 10 }}>●</span>
+        <span>Yolo</span>
       </button>
       <button
         type="button"
@@ -2244,7 +2267,11 @@ export function ChatView({ session }: ChatViewProps) {
                 void setSessionModel(session.id, modelId)
               }}
               onTogglePlan={() => {
-                const nextMode = currentModeId === 'plan' ? (isClaudeProvider(currentProvider, currentProviderId) ? 'acceptEdits' : 'default') : 'plan'
+                const nextMode = currentModeId === 'plan' ? 'default' : 'plan'
+                void setSessionApprovalMode(session.id, nextMode)
+              }}
+              onToggleYolo={() => {
+                const nextMode = currentModeId === 'yolo' ? 'default' : 'yolo'
                 void setSessionApprovalMode(session.id, nextMode)
               }}
               onToggleMemory={() => {
