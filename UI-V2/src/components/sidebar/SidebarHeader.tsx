@@ -1,6 +1,7 @@
 import { Logo } from '../shared/Logo'
 import { ThemeToggle } from '../shared/ThemeToggle'
 import { useAppStore } from '../../store/useAppStore'
+import { useShallow } from 'zustand/react/shallow'
 
 function formatMemoryTitle(entryCount: number, lastCreatedAt: string): string {
   if (entryCount <= 0) {
@@ -23,7 +24,10 @@ function formatMemoryTitle(entryCount: number, lastCreatedAt: string): string {
 }
 
 export function SidebarHeader() {
-  const { setNewChatModalOpen, setSettingsOpen, openAllMemoryLibrary, memoryActivity } = useAppStore()
+  const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
+  const setSettingsOpen = useAppStore((s) => s.setSettingsOpen)
+  const openAllMemoryLibrary = useAppStore((s) => s.openAllMemoryLibrary)
+  const memoryActivity = useAppStore(useShallow((s) => s.memoryActivity))
   const hasMemories = memoryActivity.entryCount > 0
   const hasActivity = memoryActivity.runningCount > 0 || memoryActivity.lastCreatedCount > 0
   const memoryTitle = formatMemoryTitle(memoryActivity.entryCount, memoryActivity.lastCreatedAt)

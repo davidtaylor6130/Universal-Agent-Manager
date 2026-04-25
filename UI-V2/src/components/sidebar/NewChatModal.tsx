@@ -1,9 +1,14 @@
 import { useState, useEffect, useRef } from 'react'
 import { useAppStore } from '../../store/useAppStore'
+import { useShallow } from 'zustand/react/shallow'
 import { ProviderLogo } from '../shared/ProviderLogo'
 
 export function NewChatModal() {
-  const { addSession, setNewChatModalOpen, folders, providers, newChatFolderId } = useAppStore()
+  const addSession = useAppStore((s) => s.addSession)
+  const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
+  const folders = useAppStore(useShallow((s) => s.folders))
+  const providers = useAppStore(useShallow((s) => s.providers))
+  const newChatFolderId = useAppStore((s) => s.newChatFolderId)
   const initialFolderId =
     newChatFolderId !== null && folders.some((folder) => folder.id === newChatFolderId)
       ? newChatFolderId

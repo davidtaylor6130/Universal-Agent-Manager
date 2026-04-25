@@ -154,6 +154,60 @@ namespace
 		return before.runtime_cli_version_checked != after.runtime_cli_version_checked || before.runtime_cli_version_supported != after.runtime_cli_version_supported || before.runtime_cli_installed_version != after.runtime_cli_installed_version || before.runtime_cli_version_raw_output != after.runtime_cli_version_raw_output || before.runtime_cli_version_message != after.runtime_cli_version_message || before.runtime_cli_pin_output != after.runtime_cli_pin_output || before.status_line != after.status_line;
 	}
 
+	bool HasSelectedActiveRuntime(const uam::AppState& app)
+	{
+		const ChatSession* selected_chat = ChatDomainService().SelectedChat(app);
+		if (selected_chat == nullptr)
+		{
+			return false;
+		}
+
+		for (const auto& terminal : app.cli_terminals)
+		{
+			if (terminal != nullptr && terminal->running && CliTerminalMatchesChatId(*terminal, selected_chat->id))
+			{
+				return true;
+			}
+		}
+
+		const uam::AcpSessionState* acp = FindAcpSessionForChat(app, selected_chat->id);
+		return acp != nullptr && acp->running;
+	}
+
+	bool HasAnyActiveRuntime(const uam::AppState& app)
+	{
+		for (const auto& terminal : app.cli_terminals)
+		{
+			if (terminal != nullptr && terminal->running)
+			{
+				return true;
+			}
+		}
+
+		for (const auto& session : app.acp_sessions)
+		{
+			if (session != nullptr && session->running)
+			{
+				return true;
+			}
+		}
+
+		return !app.pending_calls.empty() || !app.memory_extraction_tasks.empty() || !app.memory_extraction_queue.empty();
+	}
+
+	int NextPollDelayMs(const uam::AppState& app)
+	{
+		if (HasSelectedActiveRuntime(app))
+		{
+			return 50;
+		}
+		if (HasAnyActiveRuntime(app))
+		{
+			return 250;
+		}
+		return 1000;
+	}
+
 	// ---- Periodic poll task ---------------------------------------------------
 
 	/// CefTask that calls Application::PollTick() on the CEF UI thread.
@@ -235,14 +289,13 @@ void Application::PollTick()
 	if (m_browser && ui_relevant_state_changed)
 		uam::PushStateUpdateIfChanged(m_browser, m_app);
 
-	// Schedule the next tick at ~16 ms (≈60 fps polling).
-	ScheduleNextUpdate();
+	ScheduleNextUpdate(NextPollDelayMs(m_app));
 }
 
-void Application::ScheduleNextUpdate()
+void Application::ScheduleNextUpdate(const int delay_ms)
 {
 	if (!m_done)
-		CefPostDelayedTask(TID_UI, new AppPollTask(this), 16);
+		CefPostDelayedTask(TID_UI, new AppPollTask(this), delay_ms);
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +306,7 @@ void Application::OnBrowserReady(CefRefPtr<CefBrowser> browser)
 {
 	m_browser = browser;
 	// Start the polling loop as soon as the browser window exists.
-	ScheduleNextUpdate();
+	ScheduleNextUpdate(50);
 }
 
 bool Application::InitializeState()

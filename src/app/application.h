@@ -49,7 +49,7 @@ class Application
 
 	// ---- periodic work (posted to CEF UI thread) --------------------------
 	void Update();
-	void ScheduleNextUpdate();
+	void ScheduleNextUpdate(int delay_ms = 1000);
 
 	// ---- CEF ready callback -----------------------------------------------
 	void OnBrowserReady(CefRefPtr<CefBrowser> browser);

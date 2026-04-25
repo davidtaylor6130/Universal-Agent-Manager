@@ -224,6 +224,63 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('deduplicates permission actions and clarifies matching labels', () => {
+    const resolveAcpPermission = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      resolveAcpPermission,
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          pendingPermission: {
+            requestId: '5',
+            toolCallId: 'tool-1',
+            title: 'Command approval',
+            kind: 'commandExecution',
+            status: 'pending',
+            content: 'npm test',
+            options: [
+              { id: 'accept', name: 'Allow', kind: 'decision' },
+              { id: 'accept', name: 'Allow', kind: 'decision' },
+              { id: 'acceptForSession', name: 'Allow', kind: 'decision' },
+              { id: 'decline', name: 'Deny', kind: 'decision' },
+              { id: 'cancelled', name: 'Cancel', kind: 'cancel' },
+              { id: 'cancelled', name: 'Cancel', kind: 'cancel' },
+              { id: 'cancel', name: 'Cancel', kind: 'cancel' },
+            ],
+          },
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const buttonTexts = Array.from(host.querySelectorAll('button')).map((button) => button.textContent?.trim() ?? '')
+    expect(buttonTexts.filter((text) => text === 'Cancel')).toHaveLength(1)
+    expect(buttonTexts.filter((text) => text === 'Allow')).toHaveLength(0)
+    expect(buttonTexts).toContain('Allow (accept)')
+    expect(buttonTexts).toContain('Allow (acceptForSession)')
+    expect(buttonTexts).toContain('Deny')
+
+    const cancelButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Cancel')
+    expect(cancelButton).toBeTruthy()
+    act(() => {
+      cancelButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(resolveAcpPermission).toHaveBeenCalledWith('chat-1', '5', 'cancelled')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
   it('flags stale permission waits and exposes recovery actions', async () => {
     const cancelAcpTurn = vi.fn(() => Promise.resolve(true))
     const stopAcpSession = vi.fn(() => Promise.resolve(true))

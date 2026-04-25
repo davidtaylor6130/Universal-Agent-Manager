@@ -5,6 +5,8 @@
 #include "include/cef_frame.h"
 #include "include/wrapper/cef_helpers.h"
 
+#include <unordered_map>
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -12,6 +14,7 @@
 namespace
 {
 std::string g_last_pushed_state_fingerprint;
+std::unordered_map<std::string, std::string> g_last_pushed_message_digests_by_chat_id;
 
 /// Escapes a raw string so it can be safely embedded inside a JS string literal.
 std::string JsEscape(const std::string& s)
@@ -57,9 +60,60 @@ void PostPush(CefRefPtr<CefBrowser> browser, const std::string& json)
 	frame->ExecuteJavaScript(js, frame->GetURL(), 0);
 }
 
-std::string BuildStateUpdateMessage(const uam::AppState& app)
+std::string SelectedChatId(const uam::AppState& app)
 {
-	const nlohmann::json state = uam::StateSerializer::Serialize(app);
+	if (app.selected_chat_index >= 0 && app.selected_chat_index < static_cast<int>(app.chats.size()))
+	{
+		return app.chats[static_cast<std::size_t>(app.selected_chat_index)].id;
+	}
+	return "";
+}
+
+void PruneUnchangedChatMessages(nlohmann::json& state, const uam::AppState& app)
+{
+	const std::string selected_chat_id = SelectedChatId(app);
+	auto chats_it = state.find("chats");
+	if (chats_it == state.end() || !chats_it->is_array())
+	{
+		return;
+	}
+
+	std::unordered_map<std::string, std::string> next_digests;
+	for (auto& chat : *chats_it)
+	{
+		if (!chat.is_object())
+		{
+			continue;
+		}
+
+		const std::string chat_id = chat.value("id", "");
+		const std::string digest = chat.value("messagesDigest", "");
+		if (chat_id.empty())
+		{
+			continue;
+		}
+
+		next_digests[chat_id] = digest;
+		const auto previous_it = g_last_pushed_message_digests_by_chat_id.find(chat_id);
+		const bool messages_changed = previous_it == g_last_pushed_message_digests_by_chat_id.end() || previous_it->second != digest;
+		const bool selected_chat = chat_id == selected_chat_id;
+		if (!messages_changed && !selected_chat)
+		{
+			chat.erase("messages");
+		}
+	}
+
+	g_last_pushed_message_digests_by_chat_id = std::move(next_digests);
+}
+
+std::string BuildStateUpdateMessage(const uam::AppState& app, const bool incremental)
+{
+	nlohmann::json state = uam::StateSerializer::Serialize(app);
+	if (incremental)
+	{
+		PruneUnchangedChatMessages(state, app);
+	}
+
 	nlohmann::json msg;
 	msg["type"] = "stateUpdate";
 	msg["data"] = state;
@@ -94,10 +148,34 @@ void StripVolatileCliDebugTelemetry(nlohmann::json& state)
 	}
 }
 
+void StripVolatileAcpWaitTelemetry(nlohmann::json& state)
+{
+	auto chats_it = state.find("chats");
+	if (chats_it == state.end() || !chats_it->is_array())
+	{
+		return;
+	}
+
+	for (auto& chat : *chats_it)
+	{
+		if (!chat.is_object())
+		{
+			continue;
+		}
+
+		auto acp_it = chat.find("acpSession");
+		if (acp_it != chat.end() && acp_it->is_object())
+		{
+			acp_it->erase("waitSeconds");
+		}
+	}
+}
+
 std::string BuildStateFingerprint(const uam::AppState& app)
 {
 	nlohmann::json state = uam::StateSerializer::SerializeFingerprint(app);
 	StripVolatileCliDebugTelemetry(state);
+	StripVolatileAcpWaitTelemetry(state);
 	return state.dump();
 }
 
@@ -167,7 +245,7 @@ bool PushStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, const AppState& app
 	}
 
 	BumpStateRevision(const_cast<AppState&>(app));
-	const std::string message = BuildStateUpdateMessage(app);
+	const std::string message = BuildStateUpdateMessage(app, true);
 	g_last_pushed_state_fingerprint = fingerprint;
 	PostPush(browser, message);
 	return true;
@@ -176,7 +254,8 @@ bool PushStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, const AppState& app
 void PushStateUpdate(CefRefPtr<CefBrowser> browser, const AppState& app)
 {
 	BumpStateRevision(const_cast<AppState&>(app));
-	const std::string message = BuildStateUpdateMessage(app);
+	g_last_pushed_message_digests_by_chat_id.clear();
+	const std::string message = BuildStateUpdateMessage(app, false);
 	g_last_pushed_state_fingerprint = BuildStateFingerprint(app);
 	PostPush(browser, message);
 }

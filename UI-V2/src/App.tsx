@@ -4,7 +4,7 @@ import { useAppStore } from './store/useAppStore'
 import { installCopySelectionFallback } from './utils/copySelection'
 
 export default function App() {
-  const { theme } = useAppStore()
+  const theme = useAppStore((s) => s.theme)
 
   // Sync data-theme attribute when theme changes.
   useEffect(() => {

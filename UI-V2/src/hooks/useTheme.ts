@@ -3,7 +3,8 @@ import { useAppStore } from '../store/useAppStore'
 import { applyDocumentTheme, readStoredTheme } from '../utils/themeStorage'
 
 export function useTheme() {
-  const { theme, setTheme } = useAppStore()
+  const theme = useAppStore((s) => s.theme)
+  const setTheme = useAppStore((s) => s.setTheme)
 
   // Sync from localStorage on mount
   useEffect(() => {

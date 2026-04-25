@@ -572,7 +572,7 @@ inline bool PollAllCliTerminals(CefRefPtr<CefBrowser> browser, uam::AppState& ap
 		}
 
 		const bool selected_terminal = (!selected_chat_id.empty() && CliTerminalMatchesChatId(*terminal, selected_chat_id));
-		const double min_poll_interval_s = selected_terminal ? 0.0 : 0.08;
+		const double min_poll_interval_s = selected_terminal ? 0.05 : 0.25;
 
 		if (terminal->last_polled_time_s > 0.0 && (now - terminal->last_polled_time_s) < min_poll_interval_s)
 		{

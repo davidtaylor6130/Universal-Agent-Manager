@@ -14,11 +14,13 @@ interface FolderTreeProps {
 }
 
 const VISIBLE_SESSION_LIMIT = 5
+const EMPTY_SEARCH_INDEX = {}
+const EMPTY_MESSAGES = {}
 
 export function FolderTree({ searchQuery }: FolderTreeProps) {
   const folders  = useAppStore(useShallow((s) => s.folders))
   const sessions = useAppStore(useShallow((s) => s.sessions))
-  const messages = useAppStore(useShallow((s) => s.messages))
+  const messages = useAppStore(useShallow((s) => searchQuery.trim() ? s.messages : EMPTY_MESSAGES))
   const toggleFolder        = useAppStore((s) => s.toggleFolder)
   const addFolder           = useAppStore((s) => s.addFolder)
   const renameFolder        = useAppStore((s) => s.renameFolder)
@@ -35,13 +37,13 @@ export function FolderTree({ searchQuery }: FolderTreeProps) {
   const [editFolderDirectory, setEditFolderDirectory] = useState('')
   const [pendingDeleteFolderId, setPendingDeleteFolderId] = useState<string | null>(null)
 
-  const searchIndex = useMemo(
-    () => buildChatSearchIndex(sessions, messages),
-    [sessions, messages]
-  )
   const searchTokens = useMemo(
     () => tokenizeChatSearchQuery(searchQuery),
     [searchQuery]
+  )
+  const searchIndex = useMemo(
+    () => searchTokens.length > 0 ? buildChatSearchIndex(sessions, messages) : EMPTY_SEARCH_INDEX,
+    [sessions, messages, searchTokens]
   )
   const searchModel = useMemo(
     () => buildChatSearchModel(folders, sessions, searchIndex, searchTokens),

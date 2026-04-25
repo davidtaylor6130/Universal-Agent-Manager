@@ -106,7 +106,9 @@ interface CppChat {
   createdAt: string
   updatedAt: string
   lastOpenedAt?: string
-  messages: CppMessage[]
+  messageCount?: number
+  messagesDigest?: string
+  messages?: CppMessage[]
   cliTerminal?: {
     terminalId?: string
     frontendChatId?: string
@@ -852,12 +854,14 @@ function sanitizeCppChat(value: unknown): CppChat | null {
     createdAt: stringOr(value.createdAt),
     updatedAt: stringOr(value.updatedAt),
     lastOpenedAt: isString(value.lastOpenedAt) ? value.lastOpenedAt : undefined,
+    messageCount: finiteNumberOr(value.messageCount, 0),
+    messagesDigest: isString(value.messagesDigest) ? value.messagesDigest : undefined,
     messages: Array.isArray(value.messages)
       ? value.messages.flatMap((message) => {
           const sanitized = sanitizeCppMessage(message)
           return sanitized ? [sanitized] : []
         })
-      : [],
+      : undefined,
     cliTerminal: sanitizeCppCliTerminal(value.cliTerminal),
     acpSession: sanitizeCppAcpSession(value.acpSession),
   }
@@ -1090,41 +1094,141 @@ function normalizeAcpLifecycleState(value: unknown, running: boolean, processing
   return 'stopped'
 }
 
-function acpBindingSignature(binding: AcpBinding | undefined) {
-  if (!binding) return ''
-  return JSON.stringify({
-    sessionId: binding.sessionId,
-    providerId: binding.providerId,
-    protocolKind: binding.protocolKind,
-    threadId: binding.threadId,
-    running: binding.running,
-    lifecycleState: binding.lifecycleState,
-    processing: binding.processing,
-    readySinceLastSelect: binding.readySinceLastSelect,
-    attentionKind: binding.attentionKind,
-    processingStartedAtMs: binding.processingStartedAtMs,
-    lastError: binding.lastError,
-    recentStderr: binding.recentStderr,
-    lastExitCode: binding.lastExitCode,
-	    diagnostics: binding.diagnostics,
-	    toolCalls: binding.toolCalls,
-	    planSummary: binding.planSummary,
-	    planEntries: binding.planEntries,
-	    availableModes: binding.availableModes,
-	    currentModeId: binding.currentModeId,
-	    availableModels: binding.availableModels,
-	    currentModelId: binding.currentModelId,
-	    turnEvents: binding.turnEvents,
-    turnUserMessageIndex: binding.turnUserMessageIndex,
-    turnAssistantMessageIndex: binding.turnAssistantMessageIndex,
-    turnSerial: binding.turnSerial,
-    waitIsStale: binding.waitIsStale,
-    waitStaleReason: binding.waitStaleReason,
-    waitSeconds: binding.waitSeconds,
-    pendingPermission: binding.pendingPermission,
-    pendingUserInput: binding.pendingUserInput,
-    agentInfo: binding.agentInfo,
+function diagnosticsEquivalent(existing: AcpDiagnosticEntry[], next: AcpDiagnosticEntry[]) {
+  if (existing.length !== next.length) return false
+  return existing.every((entry, index) => {
+    const other = next[index]
+    return (
+      entry.time === other.time &&
+      entry.event === other.event &&
+      entry.reason === other.reason &&
+      entry.method === other.method &&
+      entry.requestId === other.requestId &&
+      entry.code === other.code &&
+      entry.message === other.message &&
+      entry.detail === other.detail &&
+      entry.lifecycleState === other.lifecycleState
+    )
   })
+}
+
+function modesEquivalent(existing: AcpMode[], next: AcpMode[]) {
+  if (existing.length !== next.length) return false
+  return existing.every((mode, index) => {
+    const other = next[index]
+    return mode.id === other.id && mode.name === other.name && mode.description === other.description
+  })
+}
+
+function modelsEquivalent(existing: AcpModel[], next: AcpModel[]) {
+  if (existing.length !== next.length) return false
+  return existing.every((model, index) => {
+    const other = next[index]
+    return model.id === other.id && model.name === other.name && model.description === other.description
+  })
+}
+
+function turnEventsEquivalent(existing: AcpTurnEvent[], next: AcpTurnEvent[]) {
+  if (existing.length !== next.length) return false
+  return existing.every((event, index) => {
+    const other = next[index]
+    if (event.type !== other.type) return false
+    if ('text' in event || 'text' in other) {
+      if ((event as { text?: string }).text !== (other as { text?: string }).text) return false
+    }
+    return (
+      (event as { toolCallId?: string }).toolCallId === (other as { toolCallId?: string }).toolCallId &&
+      (event as { requestId?: string }).requestId === (other as { requestId?: string }).requestId
+    )
+  })
+}
+
+function agentInfoEquivalent(existing: AcpAgentInfo | null, next: AcpAgentInfo | null) {
+  if (existing === next) return true
+  if (!existing || !next) return false
+  return existing.name === next.name && existing.title === next.title && existing.version === next.version
+}
+
+function pendingPermissionEquivalent(existing: AcpPendingPermission | null, next: AcpPendingPermission | null) {
+  if (existing === next) return true
+  if (!existing || !next) return false
+  return (
+    existing.requestId === next.requestId &&
+    existing.toolCallId === next.toolCallId &&
+    existing.title === next.title &&
+    existing.kind === next.kind &&
+    existing.status === next.status &&
+    existing.content === next.content &&
+    existing.options.length === next.options.length &&
+    existing.options.every((option, index) => {
+      const other = next.options[index]
+      return option.id === other.id && option.name === other.name && option.kind === other.kind
+    })
+  )
+}
+
+function pendingUserInputEquivalent(existing: AcpPendingUserInput | null, next: AcpPendingUserInput | null) {
+  if (existing === next) return true
+  if (!existing || !next) return false
+  return (
+    existing.requestId === next.requestId &&
+    existing.itemId === next.itemId &&
+    existing.status === next.status &&
+    existing.attentionKind === next.attentionKind &&
+    existing.questions.length === next.questions.length &&
+    existing.questions.every((question, index) => {
+      const other = next.questions[index]
+      return (
+        question.id === other.id &&
+        question.header === other.header &&
+        question.question === other.question &&
+        question.isOther === other.isOther &&
+        question.isSecret === other.isSecret &&
+        question.options.length === other.options.length &&
+        question.options.every((option, optionIndex) => {
+          const otherOption = other.options[optionIndex]
+          return option.label === otherOption.label && option.description === otherOption.description
+        })
+      )
+    })
+  )
+}
+
+function acpBindingsEquivalent(existing: AcpBinding | undefined, next: AcpBinding) {
+  if (!existing) return false
+  return (
+    existing.sessionId === next.sessionId &&
+    existing.providerId === next.providerId &&
+    existing.protocolKind === next.protocolKind &&
+    existing.threadId === next.threadId &&
+    existing.running === next.running &&
+    existing.lifecycleState === next.lifecycleState &&
+    existing.processing === next.processing &&
+    existing.readySinceLastSelect === next.readySinceLastSelect &&
+    existing.attentionKind === next.attentionKind &&
+    existing.processingStartedAtMs === next.processingStartedAtMs &&
+    existing.lastError === next.lastError &&
+    existing.recentStderr === next.recentStderr &&
+    existing.lastExitCode === next.lastExitCode &&
+    diagnosticsEquivalent(existing.diagnostics, next.diagnostics) &&
+    toolCallsEquivalent(existing.toolCalls, next.toolCalls) &&
+    existing.planSummary === next.planSummary &&
+    planEntriesEquivalent(existing.planEntries, next.planEntries) &&
+    modesEquivalent(existing.availableModes, next.availableModes) &&
+    existing.currentModeId === next.currentModeId &&
+    modelsEquivalent(existing.availableModels, next.availableModels) &&
+    existing.currentModelId === next.currentModelId &&
+    turnEventsEquivalent(existing.turnEvents, next.turnEvents) &&
+    existing.turnUserMessageIndex === next.turnUserMessageIndex &&
+    existing.turnAssistantMessageIndex === next.turnAssistantMessageIndex &&
+    existing.turnSerial === next.turnSerial &&
+    existing.waitIsStale === next.waitIsStale &&
+    existing.waitStaleReason === next.waitStaleReason &&
+    existing.waitSeconds === next.waitSeconds &&
+    pendingPermissionEquivalent(existing.pendingPermission, next.pendingPermission) &&
+    pendingUserInputEquivalent(existing.pendingUserInput, next.pendingUserInput) &&
+    agentInfoEquivalent(existing.agentInfo, next.agentInfo)
+  )
 }
 
 function normalizeCliTranscript(
@@ -1155,6 +1259,7 @@ function normalizeCliTranscript(
 }
 
 const pendingRequestIdsByKey = new Map<string, string>()
+let lastPushStatusUpdateAtMs = 0
 
 function rememberPendingRequest(key: string, requestId: string) {
   pendingRequestIdsByKey.set(key, requestId)
@@ -1441,6 +1546,13 @@ function deserializeState(
   const nextMessages: Record<string, Message[]> = {}
   for (const c of cpp.chats) {
     const existingMsgs = existing.messages[c.id] ?? []
+    if (!Array.isArray(c.messages)) {
+      if (existingMsgs.length > 0) {
+        nextMessages[c.id] = existingMsgs
+      }
+      continue
+    }
+
     const existingRealMsgs = existingMsgs.filter((m) => !m.isStreaming)
     const hasStreamingPlaceholder = existingMsgs.some((m) => m.isStreaming)
 
@@ -1622,7 +1734,7 @@ function deserializeState(
             }
           : null,
       }
-      if (acpBindingSignature(prev) === acpBindingSignature(next)) {
+      if (acpBindingsEquivalent(prev, next)) {
         return [c.id, prev]
       }
       return [c.id, next]
@@ -1881,11 +1993,21 @@ export const useAppStore = create<AppState>((set, get) => {
         return
       }
 
-      set({
-        pushChannelStatus: 'connected',
-        pushChannelError: '',
-        lastPushAtMs: Date.now(),
-      })
+      const now = Date.now()
+      const currentPushState = get()
+      if (
+        currentPushState.pushChannelStatus !== 'connected' ||
+        currentPushState.pushChannelError !== '' ||
+        currentPushState.lastPushAtMs === null ||
+        now - lastPushStatusUpdateAtMs >= 1000
+      ) {
+        lastPushStatusUpdateAtMs = now
+        set({
+          pushChannelStatus: 'connected',
+          pushChannelError: '',
+          lastPushAtMs: now,
+        })
+      }
 
       const store = get()
       const msg = parsed.message

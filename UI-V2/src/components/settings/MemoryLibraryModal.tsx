@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAppStore } from '../../store/useAppStore'
+import { useShallow } from 'zustand/react/shallow'
 import type { Folder } from '../../types/session'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope } from '../../types/memory'
 
@@ -145,20 +146,18 @@ function buildMemoryLocationGroups(
 }
 
 export function MemoryLibraryModal() {
-  const {
-    memoryLibraryScope,
-    memoryLibraryEntries,
-    memoryLibraryLoading,
-    memoryLibraryError,
-    closeMemoryLibrary,
-    refreshMemoryLibrary,
-    createMemoryEntry,
-    deleteMemoryEntry,
-    deleteMemoryEntries,
-    openMemoryRoot,
-    revealMemoryEntry,
-    folders,
-  } = useAppStore()
+  const memoryLibraryScope = useAppStore((s) => s.memoryLibraryScope)
+  const memoryLibraryEntries = useAppStore(useShallow((s) => s.memoryLibraryEntries))
+  const memoryLibraryLoading = useAppStore((s) => s.memoryLibraryLoading)
+  const memoryLibraryError = useAppStore((s) => s.memoryLibraryError)
+  const closeMemoryLibrary = useAppStore((s) => s.closeMemoryLibrary)
+  const refreshMemoryLibrary = useAppStore((s) => s.refreshMemoryLibrary)
+  const createMemoryEntry = useAppStore((s) => s.createMemoryEntry)
+  const deleteMemoryEntry = useAppStore((s) => s.deleteMemoryEntry)
+  const deleteMemoryEntries = useAppStore((s) => s.deleteMemoryEntries)
+  const openMemoryRoot = useAppStore((s) => s.openMemoryRoot)
+  const revealMemoryEntry = useAppStore((s) => s.revealMemoryEntry)
+  const folders = useAppStore(useShallow((s) => s.folders))
   const [searchQuery, setSearchQuery] = useState('')
   const [isAdding, setIsAdding] = useState(false)
   const [draft, setDraft] = useState<MemoryEntryDraft>(EMPTY_DRAFT)

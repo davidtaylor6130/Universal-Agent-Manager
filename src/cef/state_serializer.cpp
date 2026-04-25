@@ -860,6 +860,8 @@ nlohmann::json StateSerializer::SerializeSession(const ChatSession& session)
 	j["createdAt"]  = session.created_at;
 	j["updatedAt"]  = session.updated_at;
 	j["lastOpenedAt"] = session.last_opened_at.empty() ? session.updated_at : session.last_opened_at;
+	j["messageCount"] = session.messages.size();
+	j["messagesDigest"] = MessageDigestForFingerprint(session);
 
 	auto msgs = nlohmann::json::array();
 		for (const auto& msg : session.messages)

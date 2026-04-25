@@ -8,7 +8,10 @@ import { MemoryScanModal } from '../settings/MemoryScanModal'
 import { useAppStore } from '../../store/useAppStore'
 
 export function AppShell() {
-  const { isNewChatModalOpen, isSettingsOpen, memoryLibraryScope, isMemoryScanModalOpen } = useAppStore()
+  const isNewChatModalOpen = useAppStore((s) => s.isNewChatModalOpen)
+  const isSettingsOpen = useAppStore((s) => s.isSettingsOpen)
+  const memoryLibraryScope = useAppStore((s) => s.memoryLibraryScope)
+  const isMemoryScanModalOpen = useAppStore((s) => s.isMemoryScanModalOpen)
 
   return (
     <div

@@ -6,6 +6,7 @@ import {
   type AcpBinding,
   type AcpModel,
   type AcpPendingPermission,
+  type AcpPermissionOption,
   type AcpPendingUserInput,
   type AcpPlanEntry,
   type AcpToolCall,
@@ -681,6 +682,8 @@ function PermissionInlineCard({
   onCancelTurn?: () => void
   onStopRuntime?: () => void
 }) {
+  const normalizedOptions = normalizePermissionOptions(permission.options)
+
   return (
     <div
       className="my-2"
@@ -749,7 +752,7 @@ function PermissionInlineCard({
         </div>
       )}
       <div className="flex flex-wrap gap-2">
-        {permission.options.map((option) => (
+        {normalizedOptions.map((option) => (
           <button
             key={option.id}
             type="button"
@@ -762,25 +765,56 @@ function PermissionInlineCard({
             }}
             onClick={() => onResolve(permission.requestId, option.id)}
           >
-            {option.name || option.id}
+            {option.displayName}
           </button>
         ))}
-        <button
-          type="button"
-          className="px-3 h-7 text-[11px]"
-          style={{
-            borderRadius: 6,
-            border: '1px solid var(--border)',
-            background: 'transparent',
-            color: 'var(--text-2)',
-          }}
-          onClick={() => onResolve(permission.requestId, 'cancelled')}
-        >
-          Cancel
-        </button>
       </div>
     </div>
   )
+}
+
+function isCancelPermissionOption(option: AcpPermissionOption) {
+  const id = option.id.trim().toLowerCase()
+  const name = option.name.trim().toLowerCase()
+  const kind = option.kind.trim().toLowerCase()
+  return id === 'cancelled' || id === 'cancel' || name === 'cancel' || kind === 'cancel'
+}
+
+function normalizePermissionOptions(options: AcpPermissionOption[]) {
+  const byId = new Map<string, AcpPermissionOption>()
+  let hasCancelOption = false
+
+  for (const option of options) {
+    if (isCancelPermissionOption(option)) {
+      if (hasCancelOption) {
+        continue
+      }
+      hasCancelOption = true
+    }
+
+    if (!byId.has(option.id)) {
+      byId.set(option.id, option)
+    }
+  }
+
+  const normalized = Array.from(byId.values())
+  if (!hasCancelOption) {
+    normalized.push({ id: 'cancelled', name: 'Cancel', kind: 'cancel' })
+  }
+
+  const labelCounts = new Map<string, number>()
+  for (const option of normalized) {
+    const label = option.name || option.id
+    labelCounts.set(label, (labelCounts.get(label) ?? 0) + 1)
+  }
+
+  return normalized.map((option) => {
+    const label = option.name || option.id
+    return {
+      ...option,
+      displayName: (labelCounts.get(label) ?? 0) > 1 ? `${label} (${option.id})` : label,
+    }
+  })
 }
 
 function UserInputInlineCard({

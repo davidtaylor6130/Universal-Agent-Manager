@@ -1,20 +1,19 @@
 import { useEffect } from 'react'
 import { useAppStore } from '../../store/useAppStore'
+import { useShallow } from 'zustand/react/shallow'
 
 export function MemoryScanModal() {
-  const {
-    isMemoryScanModalOpen,
-    memoryScanCandidates,
-    selectedMemoryScanChatIds,
-    memoryScanLoading,
-    memoryScanRunning,
-    memoryScanError,
-    closeMemoryScanModal,
-    toggleMemoryScanChat,
-    selectAllMemoryScanChats,
-    selectNoMemoryScanChats,
-    startMemoryScan,
-  } = useAppStore()
+  const isMemoryScanModalOpen = useAppStore((s) => s.isMemoryScanModalOpen)
+  const memoryScanCandidates = useAppStore(useShallow((s) => s.memoryScanCandidates))
+  const selectedMemoryScanChatIds = useAppStore(useShallow((s) => s.selectedMemoryScanChatIds))
+  const memoryScanLoading = useAppStore((s) => s.memoryScanLoading)
+  const memoryScanRunning = useAppStore((s) => s.memoryScanRunning)
+  const memoryScanError = useAppStore((s) => s.memoryScanError)
+  const closeMemoryScanModal = useAppStore((s) => s.closeMemoryScanModal)
+  const toggleMemoryScanChat = useAppStore((s) => s.toggleMemoryScanChat)
+  const selectAllMemoryScanChats = useAppStore((s) => s.selectAllMemoryScanChats)
+  const selectNoMemoryScanChats = useAppStore((s) => s.selectNoMemoryScanChats)
+  const startMemoryScan = useAppStore((s) => s.startMemoryScan)
 
   useEffect(() => {
     if (!isMemoryScanModalOpen) {

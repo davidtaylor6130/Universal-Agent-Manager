@@ -4,6 +4,7 @@ import { ThemeToggle } from '../shared/ThemeToggle'
 import { useTheme } from '../../hooks/useTheme'
 import type { Provider } from '../../types/provider'
 import { ProviderLogo } from '../shared/ProviderLogo'
+import { useShallow } from 'zustand/react/shallow'
 
 interface MemoryModelOption {
   id: string
@@ -110,19 +111,17 @@ function SectionCard(
 }
 
 export function SettingsModal() {
-  const {
-    setSettingsOpen,
-    providers,
-    memoryEnabledDefault,
-    memoryIdleDelaySeconds,
-    memoryRecallBudgetBytes,
-    memoryWorkerBindings,
-    memoryLastStatus,
-    memoryActivity,
-    setMemorySettings,
-    openGlobalMemoryLibrary,
-    openMemoryScanModal,
-  } = useAppStore()
+  const setSettingsOpen = useAppStore((s) => s.setSettingsOpen)
+  const providers = useAppStore(useShallow((s) => s.providers))
+  const memoryEnabledDefault = useAppStore((s) => s.memoryEnabledDefault)
+  const memoryIdleDelaySeconds = useAppStore((s) => s.memoryIdleDelaySeconds)
+  const memoryRecallBudgetBytes = useAppStore((s) => s.memoryRecallBudgetBytes)
+  const memoryWorkerBindings = useAppStore(useShallow((s) => s.memoryWorkerBindings))
+  const memoryLastStatus = useAppStore((s) => s.memoryLastStatus)
+  const memoryActivity = useAppStore(useShallow((s) => s.memoryActivity))
+  const setMemorySettings = useAppStore((s) => s.setMemorySettings)
+  const openGlobalMemoryLibrary = useAppStore((s) => s.openGlobalMemoryLibrary)
+  const openMemoryScanModal = useAppStore((s) => s.openMemoryScanModal)
   const { theme } = useTheme()
   const [openMemoryMenu, setOpenMemoryMenu] = useState<string | null>(null)
   const [selectedSection, setSelectedSection] = useState<SettingsSectionId>('appearance')
