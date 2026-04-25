@@ -1899,6 +1899,53 @@ UAM_TEST(CodexAppServerRequestBuildersUseCodexProtocolMethods)
 	UAM_ASSERT_EQ(interrupt["params"].value("turnId", ""), std::string("turn-1"));
 }
 
+UAM_TEST(AcpStaleWaitDetectionFlagsLongInactivePermissionWaits)
+{
+	uam::AcpSessionState session;
+	session.running = true;
+	session.waiting_for_permission = true;
+	session.pending_permission.request_id_json = "42";
+	session.pending_permission.tool_call_id = "tool-1";
+	session.wait_started_time_s = 10.0;
+	session.last_runtime_activity_time_s = 10.0;
+
+	UAM_ASSERT(!uam::UpdateAcpStaleWaitForTests(session, 60.0));
+	UAM_ASSERT(!session.wait_is_stale);
+
+	UAM_ASSERT(uam::UpdateAcpStaleWaitForTests(session, 131.0));
+	UAM_ASSERT(session.wait_is_stale);
+	UAM_ASSERT(session.wait_stale_reason.find("approval") != std::string::npos);
+	UAM_ASSERT_EQ(session.diagnostics.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(session.diagnostics[0].reason, std::string("stale_permission_wait"));
+
+	UAM_ASSERT(!uam::UpdateAcpStaleWaitForTests(session, 150.0));
+	UAM_ASSERT_EQ(session.diagnostics.size(), static_cast<std::size_t>(1));
+}
+
+UAM_TEST(AcpStaleWaitDetectionRequiresRuntimeInactivity)
+{
+	uam::AcpSessionState session;
+	session.running = true;
+	session.waiting_for_user_input = true;
+	session.pending_user_input.request_id_json = "input-1";
+	session.pending_user_input.item_id = "question-1";
+	session.wait_started_time_s = 10.0;
+	session.last_runtime_activity_time_s = 100.0;
+
+	UAM_ASSERT(!uam::UpdateAcpStaleWaitForTests(session, 150.0));
+	UAM_ASSERT(!session.wait_is_stale);
+
+	UAM_ASSERT(uam::UpdateAcpStaleWaitForTests(session, 221.0));
+	UAM_ASSERT(session.wait_is_stale);
+	UAM_ASSERT(session.wait_stale_reason.find("user input") != std::string::npos);
+	UAM_ASSERT_EQ(session.diagnostics[0].reason, std::string("stale_user_input_wait"));
+
+	session.waiting_for_user_input = false;
+	UAM_ASSERT(uam::UpdateAcpStaleWaitForTests(session, 222.0));
+	UAM_ASSERT(!session.wait_is_stale);
+	UAM_ASSERT_EQ(session.wait_started_time_s, 0.0);
+}
+
 UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 {
 	ChatSession chat;

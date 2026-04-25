@@ -9,6 +9,7 @@
 #include "common/platform/platform_services.h"
 #include "common/provider/codex/cli/codex_thread_id.h"
 #include "common/provider/runtime/provider_build_config.h"
+#include "common/runtime/app_time.h"
 #include "common/utils/string_utils.h"
 
 #include <nlohmann/json.hpp>
@@ -45,6 +46,7 @@ namespace
 		constexpr std::size_t kMaxAcpDiagnosticFieldBytes = 4096;
 		constexpr std::size_t kMaxAcpDiagnosticDetailBytes = 8192;
 		constexpr std::size_t kMaxAcpLogFieldBytes = 512;
+		constexpr double kAcpStaleWaitSeconds = 120.0;
 		constexpr const char* kProtocolGeminiAcp = "gemini-acp";
 		constexpr const char* kProtocolCodexAppServer = "codex-app-server";
 		constexpr const char* kProtocolClaudeCodeStreamJson = "claude-code-stream-json";
@@ -60,6 +62,7 @@ namespace
 			nlohmann::json JsonArrayValue(const nlohmann::json& object, const char* key);
 			std::string CodexTurnErrorMessage(const nlohmann::json& error);
 			std::string CodexTurnErrorDetails(const AcpSessionState& session, const nlohmann::json& params, const nlohmann::json& error);
+			std::string RecentStderrTail(const AcpSessionState& session);
 			std::string FormatAcpFailureMessage(const AcpSessionState& session,
 			                                    const std::string& method,
 			                                    const std::string& request_id,
@@ -68,6 +71,7 @@ namespace
 			                                    const std::string& message,
 			                                    bool has_detail);
 			bool SyncAcpToolCallsToAssistantMessage(ChatSession& chat, AcpSessionState& session, bool create_if_missing);
+			bool UpdateAcpStaleWait(AcpSessionState& session, double now_seconds);
 
 		bool IsCodexSession(const AcpSessionState& session)
 		{
@@ -241,6 +245,119 @@ namespace
 			{
 				session.diagnostics.erase(session.diagnostics.begin(), session.diagnostics.begin() + static_cast<std::ptrdiff_t>(session.diagnostics.size() - kMaxAcpDiagnosticEntries));
 			}
+		}
+
+		bool MarkAcpRuntimeActivity(AcpSessionState& session, const double now_seconds = GetAppTimeSeconds())
+		{
+			session.last_runtime_activity_time_s = now_seconds;
+			if (session.wait_is_stale)
+			{
+				session.wait_is_stale = false;
+				session.wait_stale_reason.clear();
+				return true;
+			}
+			return false;
+		}
+
+		void BeginAcpPendingWait(AcpSessionState& session, const char* lifecycle_state)
+		{
+			const double now = GetAppTimeSeconds();
+			session.wait_started_time_s = now;
+			session.last_runtime_activity_time_s = now;
+			session.wait_is_stale = false;
+			session.wait_stale_reason.clear();
+			session.processing = true;
+			session.lifecycle_state = lifecycle_state;
+		}
+
+		void ClearAcpPendingWait(AcpSessionState& session)
+		{
+			if (!session.waiting_for_permission && !session.waiting_for_user_input)
+			{
+				session.wait_started_time_s = 0.0;
+				session.wait_is_stale = false;
+				session.wait_stale_reason.clear();
+			}
+		}
+
+		std::string ActiveAcpWaitRequestId(const AcpSessionState& session)
+		{
+			if (!session.pending_permission.request_id_json.empty())
+			{
+				return session.pending_permission.request_id_json;
+			}
+			return session.pending_user_input.request_id_json;
+		}
+
+		std::string ActiveAcpWaitToolId(const AcpSessionState& session)
+		{
+			if (!session.pending_permission.tool_call_id.empty())
+			{
+				return session.pending_permission.tool_call_id;
+			}
+			return session.pending_user_input.item_id;
+		}
+
+		bool UpdateAcpStaleWait(AcpSessionState& session, const double now_seconds)
+		{
+			if (!session.running || (!session.waiting_for_permission && !session.waiting_for_user_input))
+			{
+				if (session.wait_is_stale || session.wait_started_time_s > 0.0 || !session.wait_stale_reason.empty())
+				{
+					session.wait_started_time_s = 0.0;
+					session.wait_is_stale = false;
+					session.wait_stale_reason.clear();
+					return true;
+				}
+				return false;
+			}
+
+			if (session.wait_started_time_s <= 0.0)
+			{
+				session.wait_started_time_s = now_seconds;
+			}
+			if (session.last_runtime_activity_time_s <= 0.0)
+			{
+				session.last_runtime_activity_time_s = session.wait_started_time_s;
+			}
+
+			const double wait_age = now_seconds - session.wait_started_time_s;
+			const double idle_age = now_seconds - session.last_runtime_activity_time_s;
+			const bool stale = wait_age >= kAcpStaleWaitSeconds && idle_age >= kAcpStaleWaitSeconds;
+			if (!stale)
+			{
+				return false;
+			}
+
+			if (session.wait_is_stale)
+			{
+				return false;
+			}
+
+			session.wait_is_stale = true;
+			session.wait_stale_reason = session.waiting_for_permission
+				? "No runtime activity while waiting for command or tool approval."
+				: "No runtime activity while waiting for user input.";
+
+			std::ostringstream detail;
+			detail << "wait_seconds=" << static_cast<int>(wait_age)
+			       << "\nidle_seconds=" << static_cast<int>(idle_age)
+			       << "\nrequest_id=" << ActiveAcpWaitRequestId(session)
+			       << "\ntool_id=" << ActiveAcpWaitToolId(session);
+			if (!session.recent_stderr.empty())
+			{
+				detail << "\nstderr_tail=" << RecentStderrTail(session);
+			}
+			AppendAcpDiagnostic(session,
+			                    "wait",
+			                    session.waiting_for_permission ? "stale_permission_wait" : "stale_user_input_wait",
+			                    "",
+			                    ActiveAcpWaitRequestId(session),
+			                    false,
+			                    0,
+			                    session.wait_stale_reason,
+			                    detail.str());
+			return true;
 		}
 
 		std::string RecentStderrTail(const AcpSessionState& session)
@@ -801,8 +918,8 @@ namespace
 			session.available_modes = {
 				AcpModeState{"default", "Default", "Use Claude default permissions."},
 				AcpModeState{"acceptEdits", "Accept Edits", "Auto-approve Claude file edits in the workspace."},
-				AcpModeState{"plan", "Plan", "Ask Claude to plan before making changes."},
-				AcpModeState{"yolo", "Yolo", "Let Claude auto-decide permissions without prompting."},
+				AcpModeState{"plan", "Plan", "Let Claude research and propose changes without editing files."},
+				AcpModeState{"yolo", "Auto", "Let Claude auto-decide permissions with Claude Code safety checks."},
 			};
 			if (session.current_mode_id.empty())
 			{
@@ -1765,6 +1882,9 @@ namespace
 			session.pending_assistant_thoughts.clear();
 			session.pending_permission = AcpPendingPermissionState{};
 			session.pending_user_input = AcpPendingUserInputState{};
+			session.wait_started_time_s = 0.0;
+			session.wait_is_stale = false;
+			session.wait_stale_reason.clear();
 			session.lifecycle_state = lifecycle_state;
 		}
 
@@ -2338,8 +2458,7 @@ namespace
 
 		session.pending_permission = std::move(pending);
 		session.waiting_for_permission = true;
-		session.processing = true;
-		session.lifecycle_state = kAcpLifecycleWaitingPermission;
+		BeginAcpPendingWait(session, kAcpLifecycleWaitingPermission);
 	}
 
 	std::string CodexItemTitle(const nlohmann::json& item)
@@ -2742,8 +2861,7 @@ namespace
 		AppendPermissionTurnEventIfNeeded(session, pending.request_id_json, pending.tool_call_id);
 		session.pending_permission = std::move(pending);
 		session.waiting_for_permission = true;
-		session.processing = true;
-		session.lifecycle_state = kAcpLifecycleWaitingPermission;
+		BeginAcpPendingWait(session, kAcpLifecycleWaitingPermission);
 	}
 
 	std::string CodexUserInputContent(const AcpPendingUserInputState& pending)
@@ -2863,8 +2981,7 @@ namespace
 		AppendUserInputTurnEventIfNeeded(session, pending.request_id_json, pending.item_id);
 		session.pending_user_input = std::move(pending);
 		session.waiting_for_user_input = true;
-		session.processing = true;
-		session.lifecycle_state = kAcpLifecycleWaitingUserInput;
+		BeginAcpPendingWait(session, kAcpLifecycleWaitingUserInput);
 	}
 
 	void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
@@ -4067,6 +4184,7 @@ namespace
 				const std::ptrdiff_t read_bytes = PlatformServicesFactory::Instance().process_service.ReadStdioProcessStdout(session, buffer.data(), buffer.size(), &read_error);
 				if (read_bytes > 0)
 				{
+					changed = MarkAcpRuntimeActivity(session) || changed;
 					session.stdout_buffer.append(buffer.data(), static_cast<std::size_t>(read_bytes));
 				std::size_t newline_pos = std::string::npos;
 				while ((newline_pos = session.stdout_buffer.find('\n')) != std::string::npos)
@@ -4108,6 +4226,7 @@ namespace
 				const std::ptrdiff_t read_bytes = PlatformServicesFactory::Instance().process_service.ReadStdioProcessStderr(session, buffer.data(), buffer.size(), &read_error);
 				if (read_bytes > 0)
 				{
+					changed = MarkAcpRuntimeActivity(session) || changed;
 					AppendRecentStderr(session, std::string(buffer.data(), static_cast<std::size_t>(read_bytes)));
 				changed = true;
 				continue;
@@ -4181,6 +4300,9 @@ namespace
 			session.pending_assistant_thoughts.clear();
 			session.pending_permission = AcpPendingPermissionState{};
 			session.pending_user_input = AcpPendingUserInputState{};
+			session.wait_started_time_s = 0.0;
+			session.wait_is_stale = false;
+			session.wait_stale_reason.clear();
 		PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
 	}
 } // namespace
@@ -4291,6 +4413,10 @@ bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string&
 	session.turn_events.clear();
 	session.pending_permission = AcpPendingPermissionState{};
 	session.pending_user_input = AcpPendingUserInputState{};
+	session.wait_started_time_s = 0.0;
+	session.last_runtime_activity_time_s = GetAppTimeSeconds();
+	session.wait_is_stale = false;
+	session.wait_stale_reason.clear();
 	session.last_error.clear();
 	session.lifecycle_state = session.session_ready ? kAcpLifecycleProcessing : kAcpLifecycleStarting;
 
@@ -4328,6 +4454,9 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 	session->cancel_requested = true;
 		session->pending_permission = AcpPendingPermissionState{};
 		session->pending_user_input = AcpPendingUserInputState{};
+		session->wait_started_time_s = 0.0;
+		session->wait_is_stale = false;
+		session->wait_stale_reason.clear();
 		session->current_assistant_message_index = -1;
 		session->pending_assistant_thoughts.clear();
 		session->lifecycle_state = session->session_ready ? kAcpLifecycleReady : kAcpLifecycleStopped;
@@ -4387,6 +4516,9 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 		session->pending_assistant_thoughts.clear();
 		session->pending_permission = AcpPendingPermissionState{};
 		session->pending_user_input = AcpPendingUserInputState{};
+		session->wait_started_time_s = 0.0;
+		session->wait_is_stale = false;
+		session->wait_stale_reason.clear();
 		PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*session);
 		return true;
 	}
@@ -4513,6 +4645,7 @@ bool ResolveAcpPermission(AppState& app,
 
 	session->pending_permission = AcpPendingPermissionState{};
 	session->waiting_for_permission = false;
+	ClearAcpPendingWait(*session);
 	session->cancel_requested = false;
 	session->lifecycle_state = session->processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
 	return true;
@@ -4550,6 +4683,7 @@ bool ResolveAcpUserInput(AppState& app,
 
 	session->pending_user_input = AcpPendingUserInputState{};
 	session->waiting_for_user_input = false;
+	ClearAcpPendingWait(*session);
 	session->cancel_requested = false;
 	session->lifecycle_state = session->processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
 	return true;
@@ -4595,6 +4729,11 @@ bool PollAllAcpSessions(AppState& app)
 			{
 				MarkAcpChatUnseenIfBackground(app, chat);
 			}
+			changed = true;
+		}
+
+		if (UpdateAcpStaleWait(session, GetAppTimeSeconds()))
+		{
 			changed = true;
 		}
 
@@ -4717,9 +4856,14 @@ std::string BuildGeminiSessionSetupRequestForTests(const int request_id, const C
 	return ProcessAcpLine(app, session, chat, line);
 	}
 
-	bool IsValidCodexThreadIdForTests(const std::string& thread_id)
-	{
-		return uam::codex::IsValidThreadId(thread_id);
-	}
+bool IsValidCodexThreadIdForTests(const std::string& thread_id)
+{
+	return uam::codex::IsValidThreadId(thread_id);
+}
+
+bool UpdateAcpStaleWaitForTests(AcpSessionState& session, const double now_seconds)
+{
+	return UpdateAcpStaleWait(session, now_seconds);
+}
 
 } // namespace uam

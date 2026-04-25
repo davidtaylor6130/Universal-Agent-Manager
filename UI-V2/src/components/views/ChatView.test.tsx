@@ -224,6 +224,58 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('flags stale permission waits and exposes recovery actions', async () => {
+    const cancelAcpTurn = vi.fn(() => Promise.resolve(true))
+    const stopAcpSession = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      cancelAcpTurn,
+      stopAcpSession,
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          waitIsStale: true,
+          waitStaleReason: 'No runtime activity while waiting for command or tool approval.',
+          waitSeconds: 143,
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    expect(host.querySelector('[data-testid="stale-wait-warning"]')).toBeTruthy()
+    expect(host.textContent).toContain('This approval has not had runtime activity for 143s.')
+    expect(host.textContent).toContain('No runtime activity while waiting for command or tool approval.')
+
+    const cancelButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Cancel turn')
+    const stopButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Stop runtime')
+    expect(cancelButton).toBeTruthy()
+    expect(stopButton).toBeTruthy()
+
+    await act(async () => {
+      cancelButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(cancelAcpTurn).toHaveBeenCalledWith('chat-1')
+
+    await act(async () => {
+      stopButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(stopAcpSession).toHaveBeenCalledWith('chat-1')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
   it('renders Codex user-input questions and submits answers', async () => {
     const resolveAcpUserInput = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
@@ -504,7 +556,7 @@ describe('ChatView', () => {
     const modelButton = host.querySelector('button[title="Select model"]') as HTMLButtonElement | null
     expect(modelButton).toBeTruthy()
     expect(modelButton?.disabled).toBe(true)
-    expect((host.querySelector('button[title="Toggle planning mode"]') as HTMLButtonElement | null)?.disabled).toBe(true)
+    expect((host.querySelector('button[title^="Toggle planning mode"]') as HTMLButtonElement | null)?.disabled).toBe(true)
     expect((host.querySelector('button[title="Yolo mode unavailable"]') as HTMLButtonElement | null)?.disabled).toBe(true)
 
     act(() => {
@@ -548,7 +600,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const planButton = host.querySelector('button[title="Toggle planning mode"]') as HTMLButtonElement | null
+    const planButton = host.querySelector('button[title^="Toggle planning mode"]') as HTMLButtonElement | null
     expect(planButton).toBeTruthy()
     expect(planButton?.disabled).toBe(false)
     expect(planButton?.getAttribute('aria-pressed')).toBe('false')
@@ -711,7 +763,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const planButton = host.querySelector('button[title="Toggle planning mode"]') as HTMLButtonElement | null
+    const planButton = host.querySelector('button[title^="Toggle planning mode"]') as HTMLButtonElement | null
     expect(planButton).toBeTruthy()
 
     act(() => {
@@ -719,6 +771,150 @@ describe('ChatView', () => {
     })
 
     expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'default')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('toggles Claude Accept Edits mode', () => {
+    const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1' ? { ...session, providerId: 'claude-cli', approvalMode: 'default' } : session
+      ),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          providerId: 'claude-cli',
+          protocolKind: 'claude-code-stream-json',
+          lifecycleState: 'ready',
+          processing: false,
+          processingStartedAtMs: null,
+          availableModes: [
+            { id: 'default', name: 'Default', description: '' },
+            { id: 'acceptEdits', name: 'Accept Edits', description: '' },
+            { id: 'plan', name: 'Plan', description: '' },
+            { id: 'yolo', name: 'Auto', description: '' },
+          ],
+          currentModeId: 'default',
+          pendingPermission: null,
+        },
+      },
+      setSessionApprovalMode,
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const acceptEditsButton = host.querySelector('button[title="Toggle Accept Edits mode. Claude can edit workspace files without prompting."]') as HTMLButtonElement | null
+    const autoButton = host.querySelector('button[title="Toggle Auto mode"]') as HTMLButtonElement | null
+    expect(acceptEditsButton).toBeTruthy()
+    expect(acceptEditsButton?.disabled).toBe(false)
+    expect(acceptEditsButton?.textContent).toContain('Accept Edits')
+    expect(autoButton?.textContent).toContain('Auto')
+
+    act(() => {
+      acceptEditsButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'acceptEdits')
+
+    act(() => {
+      useAppStore.setState((state) => ({
+        sessions: state.sessions.map((session) =>
+          session.id === 'chat-1' ? { ...session, approvalMode: 'acceptEdits' } : session
+        ),
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          'chat-1': {
+            ...state.acpBindingBySessionId['chat-1'],
+            currentModeId: 'acceptEdits',
+          },
+        },
+      }))
+    })
+
+    act(() => {
+      acceptEditsButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(setSessionApprovalMode).toHaveBeenLastCalledWith('chat-1', 'default')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('asks how to proceed before sending a prompt from Claude plan mode', async () => {
+    const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
+    const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1' ? { ...session, providerId: 'claude-cli', approvalMode: 'plan' } : session
+      ),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          providerId: 'claude-cli',
+          protocolKind: 'claude-code-stream-json',
+          lifecycleState: 'ready',
+          processing: false,
+          processingStartedAtMs: null,
+          availableModes: [
+            { id: 'default', name: 'Default', description: '' },
+            { id: 'acceptEdits', name: 'Accept Edits', description: '' },
+            { id: 'plan', name: 'Plan', description: '' },
+          ],
+          currentModeId: 'plan',
+          pendingPermission: null,
+        },
+      },
+      setSessionApprovalMode,
+      sendAcpPrompt,
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement | null
+    expect(textarea).toBeTruthy()
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      valueSetter?.call(textarea, 'proceed')
+      textarea!.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+
+    const form = host.querySelector('form') as HTMLFormElement | null
+    await act(async () => {
+      form?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    })
+
+    expect(sendAcpPrompt).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('Claude Plan mode is read-only')
+
+    const acceptAndProceed = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Accept edits and proceed') as HTMLButtonElement | undefined
+    expect(acceptAndProceed).toBeTruthy()
+    await act(async () => {
+      acceptAndProceed?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'acceptEdits')
+    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'proceed')
 
     act(() => {
       root.unmount()

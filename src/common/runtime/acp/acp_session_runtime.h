@@ -52,5 +52,6 @@ std::string BuildCodexTurnInterruptRequestForTests(int request_id, const std::st
 std::string BuildCodexUserInputResponseForTests(const std::string& request_id_json, const std::map<std::string, std::vector<std::string>>& answers);
 bool ProcessAcpLineForTests(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& line);
 bool IsValidCodexThreadIdForTests(const std::string& thread_id);
+bool UpdateAcpStaleWaitForTests(AcpSessionState& session, double now_seconds);
 
 } // namespace uam

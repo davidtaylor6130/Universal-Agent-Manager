@@ -240,6 +240,9 @@ export interface CppAcpSession {
   turnUserMessageIndex?: number
   turnAssistantMessageIndex?: number
   turnSerial?: number
+  waitIsStale?: boolean
+  waitStaleReason?: string
+  waitSeconds?: number
   pendingPermission?: AcpPendingPermission | null
   pendingUserInput?: AcpPendingUserInput | null
 }
@@ -372,6 +375,9 @@ export interface AcpBinding {
   turnUserMessageIndex: number
   turnAssistantMessageIndex: number
   turnSerial: number
+  waitIsStale?: boolean
+  waitStaleReason?: string
+  waitSeconds?: number
   pendingPermission: AcpPendingPermission | null
   pendingUserInput: AcpPendingUserInput | null
   agentInfo: AcpAgentInfo | null
@@ -807,6 +813,9 @@ function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined {
     turnUserMessageIndex: finiteNumberOr(value.turnUserMessageIndex, -1),
     turnAssistantMessageIndex: finiteNumberOr(value.turnAssistantMessageIndex, -1),
     turnSerial: finiteNumberOr(value.turnSerial, 0),
+    waitIsStale: Boolean(value.waitIsStale),
+    waitStaleReason: stringOr(value.waitStaleReason),
+    waitSeconds: finiteNumberOr(value.waitSeconds, 0),
     pendingPermission: sanitizePendingPermission(value.pendingPermission),
     pendingUserInput: sanitizePendingUserInput(value.pendingUserInput),
   }
@@ -1109,6 +1118,9 @@ function acpBindingSignature(binding: AcpBinding | undefined) {
     turnUserMessageIndex: binding.turnUserMessageIndex,
     turnAssistantMessageIndex: binding.turnAssistantMessageIndex,
     turnSerial: binding.turnSerial,
+    waitIsStale: binding.waitIsStale,
+    waitStaleReason: binding.waitStaleReason,
+    waitSeconds: binding.waitSeconds,
     pendingPermission: binding.pendingPermission,
     pendingUserInput: binding.pendingUserInput,
     agentInfo: binding.agentInfo,
@@ -1597,6 +1609,9 @@ function deserializeState(
         turnUserMessageIndex: typeof acp?.turnUserMessageIndex === 'number' ? acp.turnUserMessageIndex : -1,
         turnAssistantMessageIndex: typeof acp?.turnAssistantMessageIndex === 'number' ? acp.turnAssistantMessageIndex : -1,
         turnSerial: typeof acp?.turnSerial === 'number' ? acp.turnSerial : 0,
+        waitIsStale: Boolean(acp?.waitIsStale),
+        waitStaleReason: typeof acp?.waitStaleReason === 'string' ? acp.waitStaleReason : '',
+        waitSeconds: typeof acp?.waitSeconds === 'number' ? acp.waitSeconds : 0,
         pendingPermission: acp?.pendingPermission ?? null,
         pendingUserInput: acp?.pendingUserInput ?? null,
         agentInfo: acp?.agentInfo
@@ -3289,6 +3304,9 @@ export const useAppStore = create<AppState>((set, get) => {
                   turnUserMessageIndex: -1,
                   turnAssistantMessageIndex: -1,
                   turnSerial: 0,
+                  waitIsStale: false,
+                  waitStaleReason: '',
+                  waitSeconds: 0,
                   pendingPermission: null,
                   pendingUserInput: null,
                   agentInfo: null,
@@ -3354,6 +3372,9 @@ export const useAppStore = create<AppState>((set, get) => {
             turnUserMessageIndex: -1,
             turnAssistantMessageIndex: -1,
             turnSerial: (state.acpBindingBySessionId[sessionId]?.turnSerial ?? 0) + 1,
+            waitIsStale: false,
+            waitStaleReason: '',
+            waitSeconds: 0,
             pendingPermission: null,
             pendingUserInput: null,
             agentInfo: { name: 'dev', title: 'Dev ACP', version: 'local' },
@@ -3398,6 +3419,9 @@ export const useAppStore = create<AppState>((set, get) => {
               turnUserMessageIndex: -1,
               turnAssistantMessageIndex: -1,
               turnSerial: 0,
+              waitIsStale: false,
+              waitStaleReason: '',
+              waitSeconds: 0,
               pendingPermission: null,
               pendingUserInput: null,
               agentInfo: null,
@@ -3454,6 +3478,9 @@ export const useAppStore = create<AppState>((set, get) => {
               turnUserMessageIndex: -1,
               turnAssistantMessageIndex: -1,
               turnSerial: 0,
+              waitIsStale: false,
+              waitStaleReason: '',
+              waitSeconds: 0,
               pendingPermission: null,
               pendingUserInput: null,
               agentInfo: null,
@@ -3510,6 +3537,9 @@ export const useAppStore = create<AppState>((set, get) => {
               turnUserMessageIndex: -1,
               turnAssistantMessageIndex: -1,
               turnSerial: 0,
+              waitIsStale: false,
+              waitStaleReason: '',
+              waitSeconds: 0,
               pendingPermission: null,
               pendingUserInput: null,
               agentInfo: null,
@@ -3559,6 +3589,9 @@ export const useAppStore = create<AppState>((set, get) => {
               turnUserMessageIndex: -1,
               turnAssistantMessageIndex: -1,
               turnSerial: 0,
+              waitIsStale: false,
+              waitStaleReason: '',
+              waitSeconds: 0,
               pendingPermission: null,
               pendingUserInput: null,
               agentInfo: null,

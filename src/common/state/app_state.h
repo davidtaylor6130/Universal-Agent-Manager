@@ -251,6 +251,10 @@ namespace uam
 			std::vector<AcpTurnEventState> turn_events;
 			AcpPendingPermissionState pending_permission;
 			AcpPendingUserInputState pending_user_input;
+			double wait_started_time_s = 0.0;
+			double last_runtime_activity_time_s = 0.0;
+			bool wait_is_stale = false;
+			std::string wait_stale_reason;
 		};
 
 	/// <summary>

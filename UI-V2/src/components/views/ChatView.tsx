@@ -667,9 +667,19 @@ function ToolCallInlineRows({ tools, onSelectTool }: { tools: AcpToolCall[]; onS
 function PermissionInlineCard({
   permission,
   onResolve,
+  waitIsStale,
+  waitStaleReason,
+  waitSeconds,
+  onCancelTurn,
+  onStopRuntime,
 }: {
   permission: AcpPendingPermission
   onResolve: (requestId: string, optionId: string) => void
+  waitIsStale?: boolean
+  waitStaleReason?: string
+  waitSeconds?: number
+  onCancelTurn?: () => void
+  onStopRuntime?: () => void
 }) {
   return (
     <div
@@ -691,6 +701,52 @@ function PermissionInlineCard({
         >
           {permission.content}
         </pre>
+      )}
+      {waitIsStale && (
+        <div
+          className="mb-2 text-[11px]"
+          data-testid="stale-wait-warning"
+          style={{
+            border: '1px solid color-mix(in srgb, var(--yellow) 52%, var(--border))',
+            borderRadius: 6,
+            background: 'color-mix(in srgb, var(--yellow) 10%, var(--surface))',
+            color: 'var(--text-2)',
+            padding: '7px 8px',
+          }}
+        >
+          <div className="font-medium" style={{ color: 'var(--text)' }}>
+            This approval has not had runtime activity for {Math.max(120, waitSeconds ?? 0)}s.
+          </div>
+          <div>{waitStaleReason || 'The provider may be waiting on a stale command or tool request.'}</div>
+          <div className="flex flex-wrap gap-2 mt-2">
+            <button
+              type="button"
+              className="px-2.5 h-7 text-[11px] font-medium"
+              style={{
+                borderRadius: 6,
+                border: '1px solid var(--border-bright)',
+                background: 'var(--surface-up)',
+                color: 'var(--text)',
+              }}
+              onClick={onCancelTurn}
+            >
+              Cancel turn
+            </button>
+            <button
+              type="button"
+              className="px-2.5 h-7 text-[11px]"
+              style={{
+                borderRadius: 6,
+                border: '1px solid var(--border)',
+                background: 'transparent',
+                color: 'var(--text-2)',
+              }}
+              onClick={onStopRuntime}
+            >
+              Stop runtime
+            </button>
+          </div>
+        </div>
       )}
       <div className="flex flex-wrap gap-2">
         {permission.options.map((option) => (
@@ -730,9 +786,19 @@ function PermissionInlineCard({
 function UserInputInlineCard({
   input,
   onResolve,
+  waitIsStale,
+  waitStaleReason,
+  waitSeconds,
+  onCancelTurn,
+  onStopRuntime,
 }: {
   input: AcpPendingUserInput
   onResolve: (requestId: string, answers: AcpUserInputAnswers) => void
+  waitIsStale?: boolean
+  waitStaleReason?: string
+  waitSeconds?: number
+  onCancelTurn?: () => void
+  onStopRuntime?: () => void
 }) {
   const [values, setValues] = useState<Record<string, string>>(() => {
     const initial: Record<string, string> = {}
@@ -778,6 +844,52 @@ function UserInputInlineCard({
         <span style={{ color: 'var(--yellow)', fontSize: 9 }}>●</span>
         <span>Codex needs input</span>
       </div>
+      {waitIsStale && (
+        <div
+          className="mb-3 text-[11px]"
+          data-testid="stale-wait-warning"
+          style={{
+            border: '1px solid color-mix(in srgb, var(--yellow) 52%, var(--border))',
+            borderRadius: 6,
+            background: 'color-mix(in srgb, var(--yellow) 10%, var(--surface))',
+            color: 'var(--text-2)',
+            padding: '7px 8px',
+          }}
+        >
+          <div className="font-medium" style={{ color: 'var(--text)' }}>
+            This input request has not had runtime activity for {Math.max(120, waitSeconds ?? 0)}s.
+          </div>
+          <div>{waitStaleReason || 'The provider may be waiting on a stale input request.'}</div>
+          <div className="flex flex-wrap gap-2 mt-2">
+            <button
+              type="button"
+              className="px-2.5 h-7 text-[11px] font-medium"
+              style={{
+                borderRadius: 6,
+                border: '1px solid var(--border-bright)',
+                background: 'var(--surface-up)',
+                color: 'var(--text)',
+              }}
+              onClick={onCancelTurn}
+            >
+              Cancel turn
+            </button>
+            <button
+              type="button"
+              className="px-2.5 h-7 text-[11px]"
+              style={{
+                borderRadius: 6,
+                border: '1px solid var(--border)',
+                background: 'transparent',
+                color: 'var(--text-2)',
+              }}
+              onClick={onStopRuntime}
+            >
+              Stop runtime
+            </button>
+          </div>
+        </div>
+      )}
       <div className="space-y-3">
         {input.questions.map((question) => {
           const selected = values[question.id] ?? ''
@@ -1303,9 +1415,14 @@ function TurnTimelineContent({
   planActions,
   pendingPermission,
   pendingUserInput,
+  waitIsStale,
+  waitStaleReason,
+  waitSeconds,
   onSelectTool,
   onResolvePermission,
   onResolveUserInput,
+  onCancelTurn,
+  onStopRuntime,
 }: {
   events: AcpTurnEvent[]
   tools: AcpToolCall[]
@@ -1320,9 +1437,14 @@ function TurnTimelineContent({
   }
   pendingPermission: AcpPendingPermission | null
   pendingUserInput: AcpPendingUserInput | null
+  waitIsStale?: boolean
+  waitStaleReason?: string
+  waitSeconds?: number
   onSelectTool: (toolId: string) => void
   onResolvePermission: (requestId: string, optionId: string) => void
   onResolveUserInput: (requestId: string, answers: AcpUserInputAnswers) => void
+  onCancelTurn: () => void
+  onStopRuntime: () => void
 }) {
   const toolById = new Map(tools.map((tool) => [tool.id, tool]))
   const hasPlanEvent = events.some((event) => event.type === 'plan')
@@ -1387,10 +1509,26 @@ function TurnTimelineContent({
             <div key={`tool-${event.toolCallId}-${index}`} className="space-y-2">
               <ToolCallInlineRows tools={[tool]} onSelectTool={onSelectTool} />
               {shouldRenderPendingPermission && (
-                <PermissionInlineCard permission={pendingPermission} onResolve={onResolvePermission} />
+                <PermissionInlineCard
+                  permission={pendingPermission}
+                  onResolve={onResolvePermission}
+                  waitIsStale={waitIsStale}
+                  waitStaleReason={waitStaleReason}
+                  waitSeconds={waitSeconds}
+                  onCancelTurn={onCancelTurn}
+                  onStopRuntime={onStopRuntime}
+                />
               )}
               {shouldRenderPendingUserInput && (
-                <UserInputInlineCard input={pendingUserInput} onResolve={onResolveUserInput} />
+                <UserInputInlineCard
+                  input={pendingUserInput}
+                  onResolve={onResolveUserInput}
+                  waitIsStale={waitIsStale}
+                  waitStaleReason={waitStaleReason}
+                  waitSeconds={waitSeconds}
+                  onCancelTurn={onCancelTurn}
+                  onStopRuntime={onStopRuntime}
+                />
               )}
             </div>
           )
@@ -1402,6 +1540,11 @@ function TurnTimelineContent({
               key={`permission-${event.requestId}-${index}`}
               permission={pendingPermission}
               onResolve={onResolvePermission}
+              waitIsStale={waitIsStale}
+              waitStaleReason={waitStaleReason}
+              waitSeconds={waitSeconds}
+              onCancelTurn={onCancelTurn}
+              onStopRuntime={onStopRuntime}
             />
           )
         }
@@ -1412,6 +1555,11 @@ function TurnTimelineContent({
               key={`user-input-${event.requestId}-${index}`}
               input={pendingUserInput}
               onResolve={onResolveUserInput}
+              waitIsStale={waitIsStale}
+              waitStaleReason={waitStaleReason}
+              waitSeconds={waitSeconds}
+              onCancelTurn={onCancelTurn}
+              onStopRuntime={onStopRuntime}
             />
           )
         }
@@ -1430,7 +1578,15 @@ function TurnTimelineContent({
         />
       )}
       {pendingUserInput && !hasPendingUserInputEvent && !hasPendingUserInputToolEvent && (
-        <UserInputInlineCard input={pendingUserInput} onResolve={onResolveUserInput} />
+        <UserInputInlineCard
+          input={pendingUserInput}
+          onResolve={onResolveUserInput}
+          waitIsStale={waitIsStale}
+          waitStaleReason={waitStaleReason}
+          waitSeconds={waitSeconds}
+          onCancelTurn={onCancelTurn}
+          onStopRuntime={onStopRuntime}
+        />
       )}
     </div>
   )
@@ -1461,6 +1617,7 @@ function ComposerToolbar({
   onSelectProvider,
   onSelectModel,
   onTogglePlan,
+  onToggleAcceptEdits,
   onToggleYolo,
   onToggleMemory,
   onCancel,
@@ -1489,6 +1646,7 @@ function ComposerToolbar({
   onSelectProvider: (providerId: string) => void
   onSelectModel: (modelId: string) => void
   onTogglePlan: () => void
+  onToggleAcceptEdits: () => void
   onToggleYolo: () => void
   onToggleMemory: () => void
   onCancel: () => void
@@ -1502,14 +1660,19 @@ function ComposerToolbar({
     acp?.lifecycleState === 'waitingUserInput'
   )
   const planActive = approvalModeId === 'plan'
+  const acceptEditsActive = approvalModeId === 'acceptEdits'
   const yoloActive = approvalModeId === 'yolo'
+  const claudeProvider = isClaudeProvider(provider, providerId)
   const hasRuntimeModes = Boolean(acp?.running && acp.availableModes.length > 0)
   const planAvailable = !hasRuntimeModes || acp?.availableModes.some((mode) => mode.id === 'plan')
+  const acceptEditsAvailable = claudeProvider && (!hasRuntimeModes || acp?.availableModes.some((mode) => mode.id === 'acceptEdits'))
   const yoloAvailable = !hasRuntimeModes || acp?.availableModes.some((mode) => mode.id === 'yolo')
   const planDisabled = Boolean(modelDisabled || !planAvailable)
+  const acceptEditsDisabled = Boolean(modelDisabled || !acceptEditsAvailable)
   const yoloDisabled = Boolean(modelDisabled || !yoloAvailable)
   const memoryDisabled = Boolean(modelDisabled)
-  const modeLabel = yoloActive ? 'Yolo' : planActive ? 'Plan' : approvalModeId === 'acceptEdits' ? 'Accept Edits' : 'Default'
+  const autoLabel = claudeProvider ? 'Auto' : 'Yolo'
+  const modeLabel = yoloActive ? autoLabel : planActive ? 'Plan' : acceptEditsActive ? 'Accept Edits' : 'Default'
   const chipStyle = {
     height: 26,
     borderRadius: 6,
@@ -1645,7 +1808,7 @@ function ComposerToolbar({
       </div>
       <button
         type="button"
-        title={planAvailable ? 'Toggle planning mode' : 'Planning mode unavailable'}
+        title={planAvailable ? 'Toggle planning mode. Claude Plan is read-only and will not edit files.' : 'Planning mode unavailable'}
         aria-pressed={planActive}
         onClick={onTogglePlan}
         disabled={planDisabled}
@@ -1661,9 +1824,29 @@ function ComposerToolbar({
         <span style={{ color: planActive ? 'var(--accent)' : 'var(--text-3)', fontSize: 10 }}>●</span>
         <span>Plan</span>
       </button>
+      {claudeProvider && (
+        <button
+          type="button"
+          title={acceptEditsAvailable ? 'Toggle Accept Edits mode. Claude can edit workspace files without prompting.' : 'Accept Edits mode unavailable'}
+          aria-pressed={acceptEditsActive}
+          onClick={onToggleAcceptEdits}
+          disabled={acceptEditsDisabled}
+          className="inline-flex items-center gap-1.5 px-2"
+          style={{
+            ...chipStyle,
+            borderColor: acceptEditsActive ? 'color-mix(in srgb, var(--green) 52%, var(--border))' : 'var(--border)',
+            background: acceptEditsActive ? 'color-mix(in srgb, var(--green) 14%, var(--surface))' : chipStyle.background,
+            color: acceptEditsActive ? 'var(--text)' : 'var(--text-2)',
+            opacity: acceptEditsDisabled ? 0.55 : 1,
+          }}
+        >
+          <span style={{ color: acceptEditsActive ? 'var(--green)' : 'var(--text-3)', fontSize: 10 }}>●</span>
+          <span>Accept Edits</span>
+        </button>
+      )}
       <button
         type="button"
-        title={yoloAvailable ? 'Toggle Yolo mode' : 'Yolo mode unavailable'}
+        title={yoloAvailable ? `Toggle ${autoLabel} mode` : `${autoLabel} mode unavailable`}
         aria-pressed={yoloActive}
         onClick={onToggleYolo}
         disabled={yoloDisabled}
@@ -1677,7 +1860,7 @@ function ComposerToolbar({
         }}
       >
         <span style={{ color: yoloActive ? 'var(--yellow)' : 'var(--text-3)', fontSize: 10 }}>●</span>
-        <span>Yolo</span>
+        <span>{autoLabel}</span>
       </button>
       <button
         type="button"
@@ -1821,6 +2004,7 @@ export function ChatView({ session }: ChatViewProps) {
   const [modelOpen, setModelOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
+  const [claudePlanPrompt, setClaudePlanPrompt] = useState<string | null>(null)
   const messages = useAppStore(useShallow((s) => s.messages[session.id] ?? []))
   const folderDirectory = useAppStore((s) =>
     session.folderId ? s.folders.find((folder) => folder.id === session.folderId)?.directory ?? '' : ''
@@ -1829,6 +2013,7 @@ export function ChatView({ session }: ChatViewProps) {
   const providers = useAppStore((s) => s.providers)
   const sendAcpPrompt = useAppStore((s) => s.sendAcpPrompt)
   const cancelAcpTurn = useAppStore((s) => s.cancelAcpTurn)
+  const stopAcpSession = useAppStore((s) => s.stopAcpSession)
   const resolveAcpPermission = useAppStore((s) => s.resolveAcpPermission)
   const resolveAcpUserInput = useAppStore((s) => s.resolveAcpUserInput)
   const setSessionProvider = useAppStore((s) => s.setSessionProvider)
@@ -1961,6 +2146,10 @@ export function ChatView({ session }: ChatViewProps) {
     event?.preventDefault()
     if (!canSend) return
     const prompt = draft.trim()
+    if (isClaudeProvider(currentProvider, currentProviderId) && currentModeId === 'plan') {
+      setClaudePlanPrompt(prompt)
+      return
+    }
     setSubmitting(true)
     const ok = await sendAcpPrompt(session.id, prompt)
     setSubmitting(false)
@@ -2036,6 +2225,24 @@ export function ChatView({ session }: ChatViewProps) {
     canShowPlanActions && index === latestPlanMessageIndex
       ? activePlanActions
       : undefined
+  const resolveClaudePlanPrompt = async (nextModeId: 'acceptEdits' | 'default' | 'plan') => {
+    const prompt = claudePlanPrompt?.trim()
+    if (!prompt) {
+      setClaudePlanPrompt(null)
+      return
+    }
+
+    setSubmitting(true)
+    const modeOk = nextModeId === 'plan' ? true : await setSessionApprovalMode(session.id, nextModeId)
+    if (modeOk) {
+      const ok = await sendAcpPrompt(session.id, prompt)
+      if (ok) {
+        setDraft('')
+        setClaudePlanPrompt(null)
+      }
+    }
+    setSubmitting(false)
+  }
 
   return (
     <div className="relative h-full flex overflow-hidden" style={{ background: 'var(--bg)' }}>
@@ -2078,6 +2285,9 @@ export function ChatView({ session }: ChatViewProps) {
 	                          planActions={activePlanActions}
 	                          pendingPermission={pendingPermission ?? null}
 	                          pendingUserInput={pendingUserInput ?? null}
+                            waitIsStale={acp?.waitIsStale}
+                            waitStaleReason={acp?.waitStaleReason}
+                            waitSeconds={acp?.waitSeconds}
 	                          onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
 	                          onResolvePermission={(requestId, optionId) => {
 	                            void resolveAcpPermission(session.id, requestId, optionId)
@@ -2085,6 +2295,8 @@ export function ChatView({ session }: ChatViewProps) {
                             onResolveUserInput={(requestId, answers) => {
                               void resolveAcpUserInput(session.id, requestId, answers)
                             }}
+                            onCancelTurn={() => void cancelAcpTurn(session.id)}
+                            onStopRuntime={() => void stopAcpSession(session.id)}
                         />
                       ) : (
                         <PersistedMessageContent
@@ -2105,6 +2317,9 @@ export function ChatView({ session }: ChatViewProps) {
 	                          planActions={activePlanActions}
 	                          pendingPermission={pendingPermission ?? null}
 	                          pendingUserInput={pendingUserInput ?? null}
+                            waitIsStale={acp?.waitIsStale}
+                            waitStaleReason={acp?.waitStaleReason}
+                            waitSeconds={acp?.waitSeconds}
 	                          onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
 	                          onResolvePermission={(requestId, optionId) => {
 	                            void resolveAcpPermission(session.id, requestId, optionId)
@@ -2112,6 +2327,8 @@ export function ChatView({ session }: ChatViewProps) {
                             onResolveUserInput={(requestId, answers) => {
                               void resolveAcpUserInput(session.id, requestId, answers)
                             }}
+                            onCancelTurn={() => void cancelAcpTurn(session.id)}
+                            onStopRuntime={() => void stopAcpSession(session.id)}
                         />
                       </MessageFrame>
                     )}
@@ -2129,6 +2346,9 @@ export function ChatView({ session }: ChatViewProps) {
 	                    planActions={activePlanActions}
 	                    pendingPermission={pendingPermission ?? null}
 	                    pendingUserInput={pendingUserInput ?? null}
+                      waitIsStale={acp?.waitIsStale}
+                      waitStaleReason={acp?.waitStaleReason}
+                      waitSeconds={acp?.waitSeconds}
 	                    onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
 	                    onResolvePermission={(requestId, optionId) => {
 	                      void resolveAcpPermission(session.id, requestId, optionId)
@@ -2136,6 +2356,8 @@ export function ChatView({ session }: ChatViewProps) {
                       onResolveUserInput={(requestId, answers) => {
                         void resolveAcpUserInput(session.id, requestId, answers)
                       }}
+                      onCancelTurn={() => void cancelAcpTurn(session.id)}
+                      onStopRuntime={() => void stopAcpSession(session.id)}
                   />
                 </MessageFrame>
               )}
@@ -2196,6 +2418,69 @@ export function ChatView({ session }: ChatViewProps) {
                 <AcpErrorDetails acp={acp} title={currentErrorTitle} />
 		              </div>
 	            )}
+            {claudePlanPrompt !== null && (
+              <div
+                className="mb-2 text-xs"
+                style={{
+                  border: '1px solid color-mix(in srgb, var(--accent) 38%, var(--border))',
+                  borderRadius: 6,
+                  padding: '8px 10px',
+                  background: 'color-mix(in srgb, var(--accent) 9%, var(--surface))',
+                  color: 'var(--text)',
+                }}
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="min-w-0 flex-1" style={{ color: 'var(--text-2)' }}>
+                    Claude Plan mode is read-only. Choose how to proceed with this prompt.
+                  </span>
+                  <button
+                    type="button"
+                    disabled={submitting}
+                    onClick={() => void resolveClaudePlanPrompt('acceptEdits')}
+                    className="px-2 py-1"
+                    style={{
+                      border: '1px solid color-mix(in srgb, var(--green) 48%, var(--border))',
+                      borderRadius: 6,
+                      background: 'color-mix(in srgb, var(--green) 16%, var(--surface))',
+                      color: 'var(--text)',
+                      opacity: submitting ? 0.6 : 1,
+                    }}
+                  >
+                    Accept edits and proceed
+                  </button>
+                  <button
+                    type="button"
+                    disabled={submitting}
+                    onClick={() => void resolveClaudePlanPrompt('default')}
+                    className="px-2 py-1"
+                    style={{
+                      border: '1px solid var(--border)',
+                      borderRadius: 6,
+                      background: 'var(--bg)',
+                      color: 'var(--text-2)',
+                      opacity: submitting ? 0.6 : 1,
+                    }}
+                  >
+                    Review each edit
+                  </button>
+                  <button
+                    type="button"
+                    disabled={submitting}
+                    onClick={() => void resolveClaudePlanPrompt('plan')}
+                    className="px-2 py-1"
+                    style={{
+                      border: '1px solid var(--border)',
+                      borderRadius: 6,
+                      background: 'var(--bg)',
+                      color: 'var(--text-2)',
+                      opacity: submitting ? 0.6 : 1,
+                    }}
+                  >
+                    Keep planning
+                  </button>
+                </div>
+              </div>
+            )}
             <div
               style={{
                 border: '1px solid var(--border-bright)',
@@ -2268,6 +2553,10 @@ export function ChatView({ session }: ChatViewProps) {
               }}
               onTogglePlan={() => {
                 const nextMode = currentModeId === 'plan' ? 'default' : 'plan'
+                void setSessionApprovalMode(session.id, nextMode)
+              }}
+              onToggleAcceptEdits={() => {
+                const nextMode = currentModeId === 'acceptEdits' ? 'default' : 'acceptEdits'
                 void setSessionApprovalMode(session.id, nextMode)
               }}
               onToggleYolo={() => {

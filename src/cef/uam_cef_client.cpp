@@ -105,7 +105,7 @@ void UamCefClient::OnTitleChange(CefRefPtr<CefBrowser> browser,
 }
 
 // ---------------------------------------------------------------------------
-// CefContextMenuHandler — suppress browser context menu entirely
+// CefContextMenuHandler — suppress browser chrome while preserving text editing
 // ---------------------------------------------------------------------------
 
 void UamCefClient::OnBeforeContextMenu(CefRefPtr<CefBrowser>           /*browser*/,
@@ -114,7 +114,21 @@ void UamCefClient::OnBeforeContextMenu(CefRefPtr<CefBrowser>           /*browser
                                         CefRefPtr<CefMenuModel>         model)
 {
 	model->Clear();
-	if (params != nullptr && !params->GetSelectionText().empty())
+
+	if (params == nullptr)
+		return;
+
+	if (params->IsEditable())
+	{
+		model->AddItem(MENU_ID_CUT, "Cut");
+		model->AddItem(MENU_ID_COPY, "Copy");
+		model->AddItem(MENU_ID_PASTE, "Paste");
+		model->AddSeparator();
+		model->AddItem(MENU_ID_SELECT_ALL, "Select All");
+		return;
+	}
+
+	if (!params->GetSelectionText().empty())
 	{
 		model->AddItem(MENU_ID_COPY, "Copy");
 	}
@@ -126,12 +140,26 @@ bool UamCefClient::OnContextMenuCommand(CefRefPtr<CefBrowser>           /*browse
                                          int                             command_id,
                                          EventFlags                      /*event_flags*/)
 {
-	if (command_id == MENU_ID_COPY && frame != nullptr)
+	if (frame == nullptr)
+		return false;
+
+	switch (command_id)
 	{
+	case MENU_ID_CUT:
+		frame->Cut();
+		return true;
+	case MENU_ID_COPY:
 		frame->Copy();
 		return true;
+	case MENU_ID_PASTE:
+		frame->Paste();
+		return true;
+	case MENU_ID_SELECT_ALL:
+		frame->SelectAll();
+		return true;
+	default:
+		return false;
 	}
-	return false;
 }
 
 // ---------------------------------------------------------------------------

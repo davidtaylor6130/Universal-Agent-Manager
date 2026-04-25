@@ -3,6 +3,7 @@
 #include "app/application_core_helpers.h"
 #include "app/memory_service.h"
 #include "common/runtime/acp/acp_session_runtime.h"
+#include "common/runtime/app_time.h"
 #include "common/provider/codex/cli/codex_session_index.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
@@ -400,7 +401,10 @@ nlohmann::json SerializeAcpSessionSummary(const AppState& app, const ChatSession
 			acp_json["turnEvents"] = nlohmann::json::array();
 			acp_json["turnUserMessageIndex"] = -1;
 		acp_json["turnAssistantMessageIndex"] = -1;
-		acp_json["turnSerial"] = 0;
+			acp_json["turnSerial"] = 0;
+			acp_json["waitIsStale"] = false;
+			acp_json["waitStaleReason"] = "";
+			acp_json["waitSeconds"] = 0;
 		acp_json["pendingPermission"] = nullptr;
 		acp_json["pendingUserInput"] = nullptr;
 		return acp_json;
@@ -510,6 +514,11 @@ nlohmann::json SerializeAcpSessionSummary(const AppState& app, const ChatSession
 	acp_json["turnUserMessageIndex"] = session->turn_user_message_index;
 	acp_json["turnAssistantMessageIndex"] = session->turn_assistant_message_index;
 	acp_json["turnSerial"] = session->turn_serial;
+	acp_json["waitIsStale"] = session->wait_is_stale;
+	acp_json["waitStaleReason"] = session->wait_stale_reason;
+	acp_json["waitSeconds"] = session->wait_started_time_s > 0.0
+		? static_cast<int>(std::max(0.0, GetAppTimeSeconds() - session->wait_started_time_s))
+		: 0;
 
 	if (!session->pending_permission.request_id_json.empty())
 	{
