@@ -85,9 +85,15 @@ describe('CLIView', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
+    useAppStore.setState({
+      providers: [
+        { id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' },
+      ],
+    })
     const session = {
       id: 'chat-1',
       name: 'Gemini Session',
+      providerId: 'gemini-cli',
       viewMode: 'cli' as const,
       folderId: null,
       createdAt: new Date('2026-01-01T00:00:00.000Z'),
@@ -123,6 +129,40 @@ describe('CLIView', () => {
     })
     expect(useAppStore.getState().cliBindingBySessionId['chat-1']).toBeUndefined()
 
+    host.remove()
+  })
+
+  it('shows an unsupported provider warning without starting a terminal', async () => {
+    useAppStore.setState({
+      providers: [
+        { id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' },
+      ],
+    })
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const session = {
+      id: 'chat-1',
+      name: 'Legacy Codex Session',
+      providerId: 'codex-cli',
+      viewMode: 'cli' as const,
+      folderId: null,
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+    }
+
+    await act(async () => {
+      root.render(<CLIView session={session} />)
+    })
+
+    expect(host.textContent).toContain("Provider 'codex-cli' is not supported in this build.")
+    expect(useAppStore.getState().cliBindingBySessionId['chat-1']).toBeUndefined()
+    expect(host.querySelector('.xterm')).toBeNull()
+
+    act(() => {
+      root.unmount()
+    })
     host.remove()
   })
 })

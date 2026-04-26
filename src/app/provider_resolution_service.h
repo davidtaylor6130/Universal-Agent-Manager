@@ -12,6 +12,8 @@ class ProviderResolutionService
 	const ProviderProfile& ActiveProviderOrDefault(const uam::AppState& app) const;
 	const ProviderProfile* ProviderForChat(const uam::AppState& app, const ChatSession& chat) const;
 	const ProviderProfile& ProviderForChatOrDefault(const uam::AppState& app, const ChatSession& chat) const;
+	bool ChatProviderIsAvailable(const uam::AppState& app, const ChatSession& chat) const;
+	std::string ChatProviderUnavailableReason(const uam::AppState& app, const ChatSession& chat) const;
 	bool ActiveProviderUsesNativeOverlayHistory(const uam::AppState& app) const;
 	bool ActiveProviderUsesInternalEngine(const uam::AppState& app) const;
 	bool ChatUsesNativeOverlayHistory(const uam::AppState& app, const ChatSession& chat) const;

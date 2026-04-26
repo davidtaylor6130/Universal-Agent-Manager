@@ -1723,6 +1723,7 @@ function ComposerToolbar({
         color: 'var(--text-2)',
       }}
     >
+      {(providerOptions.length > 1 || providerId !== providerOptions[0]?.id) && (
       <div ref={providerMenuRef} className="relative">
         <button
           type="button"
@@ -1783,6 +1784,7 @@ function ComposerToolbar({
           </div>
         )}
       </div>
+      )}
       <div ref={modelMenuRef} className="relative">
         <button
           type="button"
@@ -2061,11 +2063,6 @@ export function ChatView({ session }: ChatViewProps) {
   const modelMenuRef = useRef<HTMLDivElement>(null)
   const settingsMenuRef = useRef<HTMLDivElement>(null)
 
-  const canSend = useMemo(
-    () => draft.trim().length > 0 && !submitting && !acp?.processing,
-    [draft, submitting, acp?.processing]
-  )
-
   const selectedToolCall = useMemo(
     () => {
       if (!selectedToolCallRef) return null
@@ -2211,6 +2208,7 @@ export function ChatView({ session }: ChatViewProps) {
     }
   }
   const currentProviderId = session.providerId || acp?.providerId || 'gemini-cli'
+  const providerSupported = providers.some((candidate) => candidate.id === currentProviderId)
   const currentProvider = useMemo<Provider>(
     () =>
       providers.find((candidate) => candidate.id === currentProviderId) ?? {
@@ -2229,7 +2227,14 @@ export function ChatView({ session }: ChatViewProps) {
   const currentProviderName = providerDisplayName(currentProvider, currentProviderId)
   const currentRuntimeLabel = providerRuntimeLabel(currentProvider, acp)
   const currentErrorTitle = `${currentProviderName} ${currentRuntimeLabel} error`
+  const unsupportedProviderMessage = providerSupported
+    ? ''
+    : `${currentProviderName} is not supported in this build. Switch this chat to Gemini CLI to continue.`
   const canChangeProvider = messages.length === 0 && !acp?.running && !acp?.processing
+  const canSend = useMemo(
+    () => providerSupported && draft.trim().length > 0 && !submitting && !acp?.processing,
+    [providerSupported, draft, submitting, acp?.processing]
+  )
   const currentModelId = acp?.currentModelId || session.modelId || ''
   const currentModeId = acp?.currentModeId || session.approvalMode || 'default'
   const latestPlanMessageIndex = messages.reduce((latest, message, index) => {
@@ -2256,7 +2261,7 @@ export function ChatView({ session }: ChatViewProps) {
     }
     setSubmitting(false)
   }
-  const activePlanActions = canShowPlanActions
+  const activePlanActions = canShowPlanActions && providerSupported
     ? {
         show: true,
         disabled: planActionsDisabled,
@@ -2468,6 +2473,21 @@ export function ChatView({ session }: ChatViewProps) {
                 }}
               >
                 {openWorkspaceError}
+              </div>
+            )}
+            {!providerSupported && (
+              <div
+                className="mb-2 text-xs"
+                style={{
+                  border: '1px solid color-mix(in srgb, var(--yellow) 45%, var(--border))',
+                  borderRadius: 6,
+                  padding: '8px 10px',
+                  background: 'color-mix(in srgb, var(--yellow) 10%, var(--surface))',
+                  color: 'var(--text)',
+                  overflowWrap: 'anywhere',
+                }}
+              >
+                {unsupportedProviderMessage}
               </div>
             )}
             {acp?.lastError && (

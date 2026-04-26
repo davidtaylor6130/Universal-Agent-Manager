@@ -1,11 +1,11 @@
 # build_gui_selector.ps1
-# Windows GUI launcher for the Gemini CLI release-slice build.
+# Windows GUI launcher for the Gemini-only UAM build.
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "UAM Gemini CLI Build"
+$form.Text = "UAM Gemini Build"
 $form.Size = New-Object System.Drawing.Size(420, 220)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
@@ -13,14 +13,14 @@ $form.MaximizeBox = $false
 $form.MinimizeBox = $false
 
 $label = New-Object System.Windows.Forms.Label
-$label.Text = "Build Universal Agent Manager for the Gemini CLI release slice."
+$label.Text = "Build the current Universal Agent Manager Gemini-only Windows executable."
 $label.Location = New-Object System.Drawing.Point(15, 18)
 $label.Size = New-Object System.Drawing.Size(370, 40)
 $label.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Regular)
 $form.Controls.Add($label)
 
 $details = New-Object System.Windows.Forms.Label
-$details.Text = "Unsupported provider variants are intentionally removed from this build."
+$details.Text = "This uses the current local branch, refreshes UI-V2 dependencies, and disables Codex/Claude."
 $details.Location = New-Object System.Drawing.Point(15, 65)
 $details.Size = New-Object System.Drawing.Size(370, 35)
 $details.Font = New-Object System.Drawing.Font("Segoe UI", 8.5, [System.Drawing.FontStyle]::Italic)
@@ -58,13 +58,20 @@ Write-Host "Output:        $outDir"
 Write-Host "=========================================="
 Write-Host ""
 
-& cmake -S . -B $outDir `
-    -DUAM_FETCH_DEPS=ON `
-    -DUAM_BUILD_TESTS=OFF
+& npm --prefix UI-V2 ci
 
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
-& cmake --build $outDir -j8
+& cmake -S . -B $outDir `
+    -DUAM_BUILD_TESTS=OFF `
+    -DUAM_FETCHCONTENT_BASE_DIR=Builds\_deps `
+    -DUAM_ENABLE_RUNTIME_GEMINI_CLI=ON `
+    -DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF `
+    -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF
+
+if ($LASTEXITCODE -ne 0) { exit 1 }
+
+& cmake --build $outDir --config Release -j8
 
 if ($LASTEXITCODE -ne 0) { exit 1 }
 

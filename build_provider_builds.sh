@@ -1,6 +1,6 @@
 #!/bin/bash
 # build_provider_builds.sh
-# Builds the Gemini CLI release-slice binary.
+# Builds the Gemini-only binary.
 
 set -e
 
@@ -11,19 +11,24 @@ out_dir="Builds/GeminiCLI"
 
 echo ""
 echo "=========================================="
-echo "Building: Gemini CLI release slice"
+echo "Building: Gemini-only app"
 echo "Output:   ${out_dir}"
 echo "=========================================="
 
-cmake -S . -B "${out_dir}" \
-    -DUAM_FETCH_DEPS=ON \
-    -DUAM_BUILD_TESTS=OFF
+npm --prefix UI-V2 ci
 
-cmake --build "${out_dir}" -j8
+cmake -S . -B "${out_dir}" \
+    -DUAM_BUILD_TESTS=OFF \
+    -DUAM_FETCHCONTENT_BASE_DIR=Builds/_deps \
+    -DUAM_ENABLE_RUNTIME_GEMINI_CLI=ON \
+    -DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF \
+    -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF
+
+cmake --build "${out_dir}" --config Release -j8
 
 echo ""
 echo "=========================================="
-echo "Gemini CLI build complete."
+echo "Gemini-only build complete."
 echo "Output: ${out_dir}"
 echo "=========================================="
 echo ""

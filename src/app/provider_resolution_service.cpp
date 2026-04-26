@@ -47,15 +47,12 @@ const ProviderProfile* ProviderResolutionService::ProviderForChat(const uam::App
 {
 	const std::string preferred = Trim(chat.provider_id);
 
-	if (!preferred.empty())
+	if (preferred.empty())
 	{
-		if (const ProviderProfile* profile = ProviderProfileStore::FindById(app.provider_profiles, preferred); profile != nullptr)
-		{
-			return profile;
-		}
+		return ActiveProvider(app);
 	}
 
-	return ActiveProvider(app);
+	return ProviderProfileStore::FindById(app.provider_profiles, preferred);
 }
 
 const ProviderProfile& ProviderResolutionService::ProviderForChatOrDefault(const uam::AppState& app, const ChatSession& chat) const
@@ -66,6 +63,35 @@ const ProviderProfile& ProviderResolutionService::ProviderForChatOrDefault(const
 	}
 
 	return ActiveProviderOrDefault(app);
+}
+
+bool ProviderResolutionService::ChatProviderIsAvailable(const uam::AppState& app, const ChatSession& chat) const
+{
+	const std::string preferred = Trim(chat.provider_id);
+	if (preferred.empty())
+	{
+		const ProviderProfile* active = ActiveProvider(app);
+		return active != nullptr && ProviderRuntime::IsRuntimeEnabled(*active);
+	}
+
+	const ProviderProfile* profile = ProviderProfileStore::FindById(app.provider_profiles, preferred);
+	return profile != nullptr && ProviderRuntime::IsRuntimeEnabled(*profile);
+}
+
+std::string ProviderResolutionService::ChatProviderUnavailableReason(const uam::AppState& app, const ChatSession& chat) const
+{
+	if (ChatProviderIsAvailable(app, chat))
+	{
+		return "";
+	}
+
+	const std::string preferred = Trim(chat.provider_id);
+	if (preferred.empty())
+	{
+		return "No supported provider is available for this chat in the current build.";
+	}
+
+	return "Provider '" + preferred + "' is not supported in this build.";
 }
 
 bool ProviderResolutionService::ActiveProviderUsesNativeOverlayHistory(const uam::AppState& app) const

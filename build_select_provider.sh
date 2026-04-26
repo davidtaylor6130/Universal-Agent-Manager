@@ -1,6 +1,6 @@
 #!/bin/bash
 # build_select_provider.sh
-# Compatibility launcher for the Gemini CLI release-slice build.
+# Compatibility launcher for the Gemini-only build.
 
 set -e
 
@@ -13,8 +13,8 @@ echo "============================================"
 echo "  UAM Gemini CLI Build"
 echo "============================================"
 echo ""
-echo "This repository now builds the Gemini CLI release slice only."
-echo "Unsupported provider variants are intentionally removed."
+echo "This entrypoint builds the Gemini-only slice."
+echo "Codex and Claude are disabled for this artifact."
 echo ""
 read -rp "  Proceed with build? [y]: " confirm
 confirm="${confirm:-y}"
@@ -23,11 +23,16 @@ if [[ "${confirm,,}" != "y"* ]]; then
     exit 0
 fi
 
-cmake -S . -B "${out_dir}" \
-    -DUAM_FETCH_DEPS=ON \
-    -DUAM_BUILD_TESTS=OFF
+npm --prefix UI-V2 ci
 
-cmake --build "${out_dir}" -j8
+cmake -S . -B "${out_dir}" \
+    -DUAM_BUILD_TESTS=OFF \
+    -DUAM_FETCHCONTENT_BASE_DIR=Builds/_deps \
+    -DUAM_ENABLE_RUNTIME_GEMINI_CLI=ON \
+    -DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF \
+    -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF
+
+cmake --build "${out_dir}" --config Release -j8
 
 echo ""
 echo "============================================"

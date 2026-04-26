@@ -762,6 +762,31 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().sessions[0].providerId).toBe('codex-cli')
   })
 
+  it('rejects switching a session to an unavailable provider in a Gemini-only provider list', async () => {
+    const now = new Date()
+    useAppStore.setState({
+      providers: [
+        { id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#f97316', description: '' },
+      ],
+      sessions: [
+        {
+          id: 'chat-1',
+          name: 'Gemini Session',
+          viewMode: 'chat',
+          folderId: null,
+          providerId: 'gemini-cli',
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      messages: { 'chat-1': [] },
+      acpBindingBySessionId: {},
+    })
+
+    await expect(useAppStore.getState().setSessionProvider('chat-1', 'codex-cli')).resolves.toBe(false)
+    expect(useAppStore.getState().sessions[0].providerId).toBe('gemini-cli')
+  })
+
   it('updates local session model state in dev mode', async () => {
     const now = new Date()
     useAppStore.setState({

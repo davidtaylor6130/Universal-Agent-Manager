@@ -2,7 +2,7 @@
 
 #include "common/state/app_state.h"
 
-// nlohmann/json is fetched by CMake into _deps/nlohmann_json/json.hpp
+// nlohmann/json is provided by the CMake dependency target.
 // and the include path is added to the target, so this include works
 // once CMake has run FetchContent.
 #include <nlohmann/json.hpp>

@@ -73,13 +73,18 @@ export function CLIView({ session }: CLIViewProps) {
   const termInstanceRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const theme = useAppStore((s) => s.theme)
+  const providers = useAppStore((s) => s.providers)
   const cliBindingBySessionId = useAppStore((s) => s.cliBindingBySessionId)
   const cliTranscriptBySessionId = useAppStore((s) => s.cliTranscriptBySessionId)
   const setCliBinding = useAppStore((s) => s.setCliBinding)
   const cliBinding = cliBindingBySessionId[session.id]
   const cliTranscript = cliTranscriptBySessionId[session.id]
+  const currentProviderId = session.providerId?.trim() || 'gemini-cli'
+  const providerSupported = providers.some((provider) => provider.id === currentProviderId)
+  const unsupportedProviderMessage = `Provider '${currentProviderId}' is not supported in this build. Switch this chat to Gemini CLI to use terminal mode.`
 
   useEffect(() => {
+    if (!providerSupported) return
     if (!terminalRef.current) return
 
     const isDark = document.documentElement.getAttribute('data-theme') !== 'light'
@@ -342,12 +347,29 @@ export function CLIView({ session }: CLIViewProps) {
       resizeObserver.disconnect()
       term.dispose()
     }
-  }, [session.id]) // Re-init per session
+  }, [cliBinding?.terminalId, cliTranscript?.content, providerSupported, session.id]) // Re-init per session and provider support
 
   // Refit on theme change
   useEffect(() => {
     requestAnimationFrame(() => fitAddonRef.current?.fit())
   }, [theme])
+
+  if (!providerSupported) {
+    return (
+      <div className="flex flex-col h-full overflow-hidden">
+        <div
+          className="mx-4 mt-4 rounded-md border px-3 py-2 text-xs"
+          style={{
+            borderColor: 'color-mix(in srgb, var(--yellow) 45%, var(--border))',
+            background: 'color-mix(in srgb, var(--yellow) 10%, var(--surface))',
+            color: 'var(--text)',
+          }}
+        >
+          {unsupportedProviderMessage}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="flex flex-col h-full overflow-hidden">

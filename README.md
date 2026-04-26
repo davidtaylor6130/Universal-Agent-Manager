@@ -63,12 +63,38 @@ cmake -S . -B Builds -DUAM_ENABLE_RUNTIME_GEMINI_CLI=ON -DUAM_ENABLE_RUNTIME_COD
 
 Both provider runtimes are enabled by default. At least one must be enabled.
 
+Gemini-only build:
+
+```bash
+npm --prefix UI-V2 ci
+cmake -S . -B Builds/GeminiCLI \
+  -DUAM_FETCHCONTENT_BASE_DIR=Builds/_deps \
+  -DUAM_ENABLE_RUNTIME_GEMINI_CLI=ON \
+  -DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF \
+  -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF
+cmake --build Builds/GeminiCLI --config Release
+```
+
 On Windows, initialize MSVC first:
 
 ```bat
 call "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+npm --prefix UI-V2 ci
 cmake -S . -B Builds
 cmake --build Builds --config Release
+```
+
+On Windows for the Gemini-only build:
+
+```bat
+call "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+npm --prefix UI-V2 ci
+cmake -S . -B Builds\GeminiCLI ^
+  -DUAM_FETCHCONTENT_BASE_DIR=Builds\_deps ^
+  -DUAM_ENABLE_RUNTIME_GEMINI_CLI=ON ^
+  -DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF ^
+  -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF
+cmake --build Builds\GeminiCLI --config Release
 ```
 
 ## Run
@@ -79,6 +105,12 @@ open Builds/universal_agent_manager.app
 
 # Windows
 .\Builds\Release\universal_agent_manager.exe
+
+# Gemini-only macOS
+open Builds/GeminiCLI/universal_agent_manager.app
+
+# Gemini-only Windows
+.\Builds\GeminiCLI\Release\universal_agent_manager.exe
 
 # Optional custom data root on macOS
 UAM_DATA_DIR=/tmp/uam-data ./Builds/universal_agent_manager.app/Contents/MacOS/universal_agent_manager

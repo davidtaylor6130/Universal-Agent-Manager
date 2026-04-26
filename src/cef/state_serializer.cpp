@@ -5,6 +5,7 @@
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/app_time.h"
 #include "common/provider/codex/cli/codex_session_index.h"
+#include "common/provider/provider_runtime.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/runtime/terminal/terminal_identity.h"
@@ -767,7 +768,12 @@ nlohmann::json StateSerializer::Serialize(const AppState& app)
 	// Provider profiles
 	auto providers_arr = nlohmann::json::array();
 	for (const auto& profile : app.provider_profiles)
-		providers_arr.push_back(SerializeProvider(profile));
+	{
+		if (ProviderRuntime::IsRuntimeEnabled(profile))
+		{
+			providers_arr.push_back(SerializeProvider(profile));
+		}
+	}
 	j["providers"] = providers_arr;
 
 	// Settings slice that the UI cares about
@@ -825,7 +831,10 @@ nlohmann::json StateSerializer::SerializeFingerprint(const AppState& app)
 	auto providers_arr = nlohmann::json::array();
 	for (const auto& profile : app.provider_profiles)
 	{
-		providers_arr.push_back(SerializeProvider(profile));
+		if (ProviderRuntime::IsRuntimeEnabled(profile))
+		{
+			providers_arr.push_back(SerializeProvider(profile));
+		}
 	}
 	j["providers"] = providers_arr;
 	j["memoryActivity"] = SerializeMemoryActivity(app);

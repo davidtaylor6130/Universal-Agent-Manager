@@ -54,6 +54,7 @@ describe('ChatView', () => {
       providers: [
         { id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' },
         { id: 'codex-cli', name: 'Codex CLI', shortName: 'Codex', color: '#22c55e', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'codex-app-server' },
+        { id: 'claude-cli', name: 'Claude Code', shortName: 'Claude', color: '#7c3aed', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'claude-code-stream-json' },
       ],
       acpBindingBySessionId: {
         'chat-1': {
@@ -1707,6 +1708,102 @@ describe('ChatView', () => {
     const openButton = host.querySelector('button[title="Open workspace in Finder or File Explorer"]') as HTMLButtonElement | null
     expect(openButton).toBeTruthy()
     expect(openButton?.disabled).toBe(true)
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('normalizes legacy provider chats to the Gemini-only provider list without showing Codex UI', () => {
+    useAppStore.getState().loadFromCef({
+      folders: [
+        {
+          id: 'default',
+          title: 'Project',
+          directory: '/tmp/project',
+          collapsed: false,
+        },
+      ],
+      chats: [
+        {
+          id: 'chat-1',
+          title: 'Legacy Codex Chat',
+          folderId: 'default',
+          providerId: 'codex-cli',
+          createdAt: new Date('2026-01-01T00:00:00.000Z').toISOString(),
+          updatedAt: new Date('2026-01-01T00:00:00.000Z').toISOString(),
+          messages: [],
+          acpSession: {
+            providerId: 'codex-cli',
+            protocolKind: 'codex-app-server',
+            running: false,
+            processing: false,
+            lifecycleState: 'ready',
+            turnEvents: [],
+            turnUserMessageIndex: -1,
+            turnAssistantMessageIndex: -1,
+          },
+        },
+      ],
+      selectedChatId: 'chat-1',
+      providers: [
+        {
+          id: 'gemini-cli',
+          name: 'Gemini CLI',
+          shortName: 'Gemini',
+          outputMode: 'cli',
+          supportsCli: true,
+          supportsStructured: true,
+          structuredProtocol: 'gemini-acp',
+        },
+      ],
+      settings: {
+        activeProviderId: 'gemini-cli',
+        theme: 'dark',
+        memoryEnabledDefault: true,
+        memoryIdleDelaySeconds: 60,
+        memoryRecallBudgetBytes: 2048,
+        memoryLastStatus: '',
+        memoryWorkerBindings: {
+          'gemini-cli': { workerProviderId: 'gemini-cli', workerModelId: '' },
+        },
+      },
+    })
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    expect(host.textContent).not.toContain('Codex is not supported in this build')
+    expect(host.querySelector('button[title="Select provider"]')).toBeNull()
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('hides the provider selector when Gemini is the only available provider for the chat', () => {
+    useAppStore.setState({
+      providers: [
+        { id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' },
+      ],
+    })
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    expect(host.querySelector('button[title="Select provider"]')).toBeNull()
 
     act(() => {
       root.unmount()

@@ -260,7 +260,6 @@ target_include_directories(universal_agent_manager
     src
     src/common
     ${cef_binary_SOURCE_DIR}
-    "${CMAKE_BINARY_DIR}/_deps/nlohmann_json-src/include"
 )
 
 # CEF link targets depend on platform.
@@ -274,12 +273,14 @@ if(APPLE)
     "-F\"${cef_binary_SOURCE_DIR}/Release\" -framework \"Chromium Embedded Framework\""
   )
   target_link_libraries(universal_agent_manager PRIVATE
+    nlohmann_json::nlohmann_json
     libcef_dll_wrapper
     "-Wl,-framework,Security"
     "-Wl,-framework,WebKit"
   )
 elseif(WIN32)
   target_link_libraries(universal_agent_manager PRIVATE
+    nlohmann_json::nlohmann_json
     libcef_dll_wrapper
     "${cef_binary_SOURCE_DIR}/Release/libcef.lib"
   )
@@ -682,15 +683,16 @@ if(UAM_BUILD_TESTS)
       src
       src/common
       ${cef_binary_SOURCE_DIR}
-      "${CMAKE_BINARY_DIR}/_deps/nlohmann_json-src/include"
   )
   if(APPLE)
     target_link_libraries(uam_core_tests PRIVATE
+      nlohmann_json::nlohmann_json
       libcef_dll_wrapper
       "-Wl,-framework,Security"
     )
   elseif(WIN32)
     target_link_libraries(uam_core_tests PRIVATE
+      nlohmann_json::nlohmann_json
       libcef_dll_wrapper
       "${cef_binary_SOURCE_DIR}/Release/libcef.lib"
     )

@@ -1087,6 +1087,17 @@ function cppPatchRevision(patch: CppStatePatch): number {
     : 0
 }
 
+function normalizeProviderIdForVisibleProviders(
+  providerId: string | undefined,
+  providers: Array<{ id: string }>
+): string {
+  const requestedProviderId = providerId?.trim() || GEMINI_CLI_PROVIDER_ID
+  if (providers.some((provider) => provider.id === requestedProviderId)) {
+    return requestedProviderId
+  }
+  return providers[0]?.id ?? GEMINI_CLI_PROVIDER_ID
+}
+
 const MAX_CLI_TRANSCRIPT_BYTES = 1024 * 1024
 
 function decodeCliChunk(encoded: string): string {
@@ -1573,7 +1584,7 @@ function deserializeState(
     const folderId = c.folderId || null
     const isPinned = c.pinned ?? false
     const workspaceDirectory = c.workspaceDirectory ?? ''
-    const providerId = c.providerId || GEMINI_CLI_PROVIDER_ID
+    const providerId = normalizeProviderIdForVisibleProviders(c.providerId, visibleProviders)
     const modelId = c.modelId ?? ''
     const approvalMode = normalizeAcpApprovalMode(c.approvalMode)
     const memoryEnabled = c.memoryEnabled ?? true
@@ -1924,6 +1935,9 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
           : nextProvider
       })
     : current.providers
+  const visibleProviders = providers.length > 0
+    ? providers
+    : [{ id: GEMINI_CLI_PROVIDER_ID }]
 
   const patchedSessionsById = new Map(current.sessions.filter((session) => !removedChatIds.has(session.id)).map((session) => [session.id, session]))
   for (const chat of patch.chats ?? []) {
@@ -1937,7 +1951,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
       viewMode: 'chat',
       folderId: chat.folderId || null,
       isPinned: chat.pinned ?? false,
-      providerId: chat.providerId || GEMINI_CLI_PROVIDER_ID,
+      providerId: normalizeProviderIdForVisibleProviders(chat.providerId, visibleProviders),
       modelId: chat.modelId ?? '',
       approvalMode: normalizeAcpApprovalMode(chat.approvalMode),
       memoryEnabled: chat.memoryEnabled ?? true,

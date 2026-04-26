@@ -2,6 +2,7 @@
 #include "app/chat_lifecycle_service.h"
 #include "app/memory_library_service.h"
 #include "app/memory_service.h"
+#include "app/provider_resolution_service.h"
 #include "app/runtime_orchestration_services.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
@@ -272,11 +273,46 @@ UAM_TEST(SettingsStorePersistsMemorySettings)
 	CenterViewMode mode = CenterViewMode::CliConsole;
 	SettingsStore::Load(settings_file, loaded, mode);
 
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	const std::string expected_worker_provider_id = "codex-cli";
+#else
+	const std::string expected_worker_provider_id = provider_build_config::FirstEnabledProviderId();
+#endif
+
 	UAM_ASSERT_EQ(loaded.memory_enabled_default, false);
 	UAM_ASSERT_EQ(loaded.memory_idle_delay_seconds, 75);
 	UAM_ASSERT_EQ(loaded.memory_recall_budget_bytes, 1536);
-	UAM_ASSERT_EQ(loaded.memory_worker_bindings["gemini-cli"].worker_provider_id, std::string("codex-cli"));
+	UAM_ASSERT_EQ(loaded.memory_worker_bindings["gemini-cli"].worker_provider_id, expected_worker_provider_id);
 	UAM_ASSERT_EQ(loaded.memory_worker_bindings["gemini-cli"].worker_model_id, std::string("gpt-5.4-mini"));
+}
+
+UAM_TEST(ProviderResolutionServiceBlocksDisabledLegacyProviders)
+{
+	uam::AppState app;
+	ProviderProfileStore::EnsureDefaultProfile(app.provider_profiles);
+	app.settings.active_provider_id = provider_build_config::FirstEnabledProviderId();
+
+	ChatSession active_chat = ChatDomainService().CreateNewChat("", provider_build_config::FirstEnabledProviderId());
+	UAM_ASSERT(ProviderResolutionService().ChatProviderIsAvailable(app, active_chat));
+	UAM_ASSERT_EQ(ProviderResolutionService().ChatProviderUnavailableReason(app, active_chat), std::string(""));
+
+#if !UAM_ENABLE_RUNTIME_CODEX_CLI
+	ChatSession codex_chat = ChatDomainService().CreateNewChat("", "codex-cli");
+	UAM_ASSERT(!ProviderResolutionService().ChatProviderIsAvailable(app, codex_chat));
+	UAM_ASSERT_EQ(ProviderResolutionService().ProviderForChat(app, codex_chat), nullptr);
+	UAM_ASSERT_EQ(
+	    ProviderResolutionService().ChatProviderUnavailableReason(app, codex_chat),
+	    std::string("Provider 'codex-cli' is not supported in this build."));
+#endif
+
+#if !UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	ChatSession claude_chat = ChatDomainService().CreateNewChat("", "claude-cli");
+	UAM_ASSERT(!ProviderResolutionService().ChatProviderIsAvailable(app, claude_chat));
+	UAM_ASSERT_EQ(ProviderResolutionService().ProviderForChat(app, claude_chat), nullptr);
+	UAM_ASSERT_EQ(
+	    ProviderResolutionService().ChatProviderUnavailableReason(app, claude_chat),
+	    std::string("Provider 'claude-cli' is not supported in this build."));
+#endif
 }
 
 UAM_TEST(MemoryServiceWritesDedupesAndBuildsRecall)

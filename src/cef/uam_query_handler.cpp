@@ -676,6 +676,12 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 	}
 
 	ChatSession& chat = m_app.chats[static_cast<std::size_t>(idx)];
+	if (!ProviderResolutionService().ChatProviderIsAvailable(m_app, chat))
+	{
+		cb->Failure(409, ProviderResolutionService().ChatProviderUnavailableReason(m_app, chat));
+		return;
+	}
+
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat.id);
 	if (session != nullptr && AcpSessionBlocksModelChange(*session))
 	{
@@ -822,6 +828,12 @@ void UamQueryHandler::HandleSetChatApprovalMode(CefRefPtr<CefBrowser> browser, c
 	}
 
 	ChatSession& chat = m_app.chats[static_cast<std::size_t>(idx)];
+	if (!ProviderResolutionService().ChatProviderIsAvailable(m_app, chat))
+	{
+		cb->Failure(409, ProviderResolutionService().ChatProviderUnavailableReason(m_app, chat));
+		return;
+	}
+
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat.id);
 	if (session != nullptr && AcpSessionBlocksModelChange(*session))
 	{
@@ -1424,6 +1436,19 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 	}
 	uam::LogCliDiagnosticEvent(m_app, "handle_start_cli", "terminal_prepared", &terminal);
 
+	if (!ProviderResolutionService().ChatProviderIsAvailable(m_app, chat))
+	{
+		terminal.running = false;
+		terminal.generation_in_progress = false;
+		terminal.turn_state = uam::CliTerminalTurnState::Idle;
+		terminal.should_launch = false;
+		terminal.last_error = ProviderResolutionService().ChatProviderUnavailableReason(m_app, chat);
+		terminal.lifecycle_state = uam::CliTerminalLifecycleState::Stopped;
+		uam::PushStateUpdate(browser, m_app);
+		cb->Success(BuildCliBindingResponse(terminal).dump());
+		return;
+	}
+
 	if (!terminal.running)
 	{
 		if (!StartCliTerminalForChat(m_app, terminal, chat, rows, cols))
@@ -1508,6 +1533,20 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string text = payload.value("text", "");
+	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
+
+	if (chat_index < 0)
+	{
+		cb->Failure(chat_id.empty() || text.empty() ? 400 : 404, "Chat not found: " + chat_id);
+		return;
+	}
+
+	const ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
+	if (!ProviderResolutionService().ChatProviderIsAvailable(m_app, chat))
+	{
+		cb->Failure(409, ProviderResolutionService().ChatProviderUnavailableReason(m_app, chat));
+		return;
+	}
 
 	std::string error;
 	if (!uam::SendAcpPrompt(m_app, chat_id, text, &error))
