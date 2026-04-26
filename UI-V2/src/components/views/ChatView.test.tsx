@@ -1659,4 +1659,58 @@ describe('ChatView', () => {
     })
     host.remove()
   })
+
+  it('opens the current workspace from the composer workspace row', async () => {
+    const originalOpenSessionWorkspace = useAppStore.getState().openSessionWorkspace
+    const openSessionWorkspace = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState({ openSessionWorkspace })
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const openButton = host.querySelector('button[title="Open workspace in Finder or File Explorer"]') as HTMLButtonElement | null
+    expect(openButton).toBeTruthy()
+    expect(openButton?.disabled).toBe(false)
+
+    await act(async () => {
+      openButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(openSessionWorkspace).toHaveBeenCalledWith('chat-1')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+    useAppStore.setState({ openSessionWorkspace: originalOpenSessionWorkspace })
+  })
+
+  it('disables the workspace open button when no workspace is selected', () => {
+    useAppStore.setState((state) => ({
+      folders: state.folders.map((folder) => ({ ...folder, directory: '' })),
+      sessions: state.sessions.map((session) => ({ ...session, workspaceDirectory: '' })),
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const openButton = host.querySelector('button[title="Open workspace in Finder or File Explorer"]') as HTMLButtonElement | null
+    expect(openButton).toBeTruthy()
+    expect(openButton?.disabled).toBe(true)
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
 })

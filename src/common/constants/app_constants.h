@@ -21,7 +21,7 @@ namespace uam::constants
 	/// <summary>
 	/// User-facing application version string.
 	/// </summary>
-	inline constexpr const char* kAppVersion = "V2.0.1";
+	inline constexpr const char* kAppVersion = "V2.0.2";
 
 	/// <summary>
 	/// Copyright footer displayed in About dialogs.

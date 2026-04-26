@@ -339,6 +339,19 @@ export interface CppAppState {
   memoryActivity?: MemoryActivity
 }
 
+export interface CppStatePatch {
+  stateRevision?: number
+  folders?: CppFolder[]
+  chats?: CppChat[]
+  chatOrder?: string[]
+  removedChatIds?: string[]
+  messagesByChatId?: Record<string, CppMessage[]>
+  selectedChatId?: string | null
+  providers?: CppProvider[]
+  settings?: CppSettings
+  memoryActivity?: MemoryActivity
+}
+
 export interface CliBinding {
   terminalId: string
   boundChatId: string
@@ -394,6 +407,7 @@ export type PushChannelStatus = 'no-push-yet' | 'connected' | 'parse-error' | 'i
 
 type ParsedPushMessage =
   | { type: 'stateUpdate'; data: CppAppState }
+  | { type: 'statePatch'; data: CppStatePatch }
   | {
       type: 'cliOutput'
       data: string
@@ -1007,9 +1021,69 @@ function sanitizeCppAppState(value: unknown): CppAppState | null {
   }
 }
 
+function sanitizeMessagesByChatId(value: unknown): Record<string, CppMessage[]> | undefined {
+  if (!isRecord(value)) return undefined
+  const messagesByChatId: Record<string, CppMessage[]> = {}
+  for (const [chatId, messages] of Object.entries(value)) {
+    if (!Array.isArray(messages)) continue
+    messagesByChatId[chatId] = messages.flatMap((message) => {
+      const sanitized = sanitizeCppMessage(message)
+      return sanitized ? [sanitized] : []
+    })
+  }
+  return messagesByChatId
+}
+
+function sanitizeCppStatePatch(value: unknown): CppStatePatch | null {
+  if (!isRecord(value)) return null
+
+  return {
+    stateRevision: finiteNumberOr(value.stateRevision, 0),
+    folders: Array.isArray(value.folders)
+      ? value.folders.flatMap((folder) => {
+          const sanitized = sanitizeCppFolder(folder)
+          return sanitized ? [sanitized] : []
+        })
+      : undefined,
+    chats: Array.isArray(value.chats)
+      ? value.chats.flatMap((chat) => {
+          const sanitized = sanitizeCppChat(chat)
+          return sanitized ? [sanitized] : []
+        })
+      : undefined,
+    removedChatIds: Array.isArray(value.removedChatIds)
+      ? value.removedChatIds.filter(isString)
+      : undefined,
+    chatOrder: Array.isArray(value.chatOrder)
+      ? value.chatOrder.filter(isString)
+      : undefined,
+    messagesByChatId: sanitizeMessagesByChatId(value.messagesByChatId),
+    selectedChatId:
+      isString(value.selectedChatId)
+        ? value.selectedChatId
+        : value.selectedChatId === null
+          ? null
+          : undefined,
+    providers: Array.isArray(value.providers)
+      ? value.providers.flatMap((provider) => {
+          const sanitized = sanitizeCppProvider(provider)
+          return sanitized ? [sanitized] : []
+        })
+      : undefined,
+    settings: isRecord(value.settings) ? sanitizeCppSettings(value.settings) : undefined,
+    memoryActivity: value.memoryActivity !== undefined ? sanitizeMemoryActivity(value.memoryActivity) : undefined,
+  }
+}
+
 function cppStateRevision(state: CppAppState): number {
   return typeof state.stateRevision === 'number' && Number.isFinite(state.stateRevision)
     ? state.stateRevision
+    : 0
+}
+
+function cppPatchRevision(patch: CppStatePatch): number {
+  return typeof patch.stateRevision === 'number' && Number.isFinite(patch.stateRevision)
+    ? patch.stateRevision
     : 0
 }
 
@@ -1392,6 +1466,14 @@ function parseUamPushPayload(payload: unknown): ParsedPushResult {
     const sanitized = sanitizeCppAppState(raw.data)
     if (!sanitized) {
       return { ok: false, status: 'invalid-message', error: 'stateUpdate.data does not match CppAppState shape.' }
+    }
+    return { ok: true, message: { type, data: sanitized } }
+  }
+
+  if (type === 'statePatch') {
+    const sanitized = sanitizeCppStatePatch(raw.data)
+    if (!sanitized) {
+      return { ok: false, status: 'invalid-message', error: 'statePatch.data does not match CppStatePatch shape.' }
     }
     return { ok: true, message: { type, data: sanitized } }
   }
@@ -1788,6 +1870,273 @@ function deserializeState(
   }
 }
 
+function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppState> | null {
+  const nextRevision = cppPatchRevision(patch)
+  if (!isNewerStateRevision(nextRevision, current.lastAppliedStateRevision)) return null
+
+  const removedChatIds = new Set(patch.removedChatIds ?? [])
+  const existingFoldersById = Object.fromEntries(current.folders.map((folder) => [folder.id, folder]))
+  const existingSessionsById = Object.fromEntries(current.sessions.map((session) => [session.id, session]))
+  const existingProvidersById = Object.fromEntries(current.providers.map((provider) => [provider.id, provider]))
+
+  const folders = patch.folders
+    ? patch.folders.map((folder) => {
+        const prev = existingFoldersById[folder.id]
+        const nextFolder: Folder = {
+          id: folder.id,
+          name: folder.title,
+          parentId: null,
+          directory: folder.directory ?? '',
+          isExpanded: !folder.collapsed,
+          createdAt: prev?.createdAt ?? new Date(),
+        }
+        return prev &&
+          prev.name === nextFolder.name &&
+          prev.directory === nextFolder.directory &&
+          prev.isExpanded === nextFolder.isExpanded
+          ? prev
+          : nextFolder
+      })
+    : current.folders
+
+  const providers = patch.providers
+    ? patch.providers.map((provider) => {
+        const prev = existingProvidersById[provider.id]
+        const nextProvider: Provider = {
+          id: provider.id,
+          name: provider.name,
+          shortName: provider.shortName,
+          color: prev?.color ?? '#f97316',
+          description: prev?.description ?? '',
+          outputMode: provider.outputMode,
+          supportsCli: provider.supportsCli,
+          supportsStructured: provider.supportsStructured,
+          structuredProtocol: provider.structuredProtocol,
+        }
+        return prev &&
+          prev.name === nextProvider.name &&
+          prev.shortName === nextProvider.shortName &&
+          prev.outputMode === nextProvider.outputMode &&
+          prev.supportsCli === nextProvider.supportsCli &&
+          prev.supportsStructured === nextProvider.supportsStructured &&
+          prev.structuredProtocol === nextProvider.structuredProtocol
+          ? prev
+          : nextProvider
+      })
+    : current.providers
+
+  const patchedSessionsById = new Map(current.sessions.filter((session) => !removedChatIds.has(session.id)).map((session) => [session.id, session]))
+  for (const chat of patch.chats ?? []) {
+    const prev = existingSessionsById[chat.id]
+    const createdAt = new Date(chat.createdAt || Date.now())
+    const updatedAt = new Date(chat.updatedAt || Date.now())
+    const lastOpenedAt = new Date(chat.lastOpenedAt || chat.updatedAt || chat.createdAt || Date.now())
+    const nextSession: Session = {
+      id: chat.id,
+      name: chat.title || 'Untitled',
+      viewMode: 'chat',
+      folderId: chat.folderId || null,
+      isPinned: chat.pinned ?? false,
+      providerId: chat.providerId || GEMINI_CLI_PROVIDER_ID,
+      modelId: chat.modelId ?? '',
+      approvalMode: normalizeAcpApprovalMode(chat.approvalMode),
+      memoryEnabled: chat.memoryEnabled ?? true,
+      memoryLastProcessedMessageCount: chat.memoryLastProcessedMessageCount ?? 0,
+      memoryLastProcessedAt: chat.memoryLastProcessedAt ?? '',
+      workspaceDirectory: chat.workspaceDirectory ?? '',
+      createdAt,
+      updatedAt,
+      lastOpenedAt,
+    }
+    patchedSessionsById.set(
+      chat.id,
+      prev &&
+        prev.name === nextSession.name &&
+        prev.folderId === nextSession.folderId &&
+        (prev.isPinned ?? false) === (nextSession.isPinned ?? false) &&
+        (prev.providerId ?? GEMINI_CLI_PROVIDER_ID) === nextSession.providerId &&
+        (prev.modelId ?? '') === (nextSession.modelId ?? '') &&
+        (prev.approvalMode ?? 'default') === nextSession.approvalMode &&
+        (prev.memoryEnabled ?? true) === nextSession.memoryEnabled &&
+        (prev.memoryLastProcessedMessageCount ?? 0) === nextSession.memoryLastProcessedMessageCount &&
+        (prev.memoryLastProcessedAt ?? '') === nextSession.memoryLastProcessedAt &&
+        prev.workspaceDirectory === nextSession.workspaceDirectory &&
+        prev.createdAt.getTime() === nextSession.createdAt.getTime() &&
+        prev.updatedAt.getTime() === nextSession.updatedAt.getTime() &&
+        (prev.lastOpenedAt ?? prev.updatedAt).getTime() === nextSession.lastOpenedAt?.getTime()
+        ? prev
+        : nextSession
+    )
+  }
+  let sessions = current.sessions
+    .filter((session) => patchedSessionsById.has(session.id))
+    .map((session) => patchedSessionsById.get(session.id)!)
+  for (const chat of patch.chats ?? []) {
+    if (!current.sessions.some((session) => session.id === chat.id)) {
+      sessions.push(patchedSessionsById.get(chat.id)!)
+    }
+  }
+  if (patch.chatOrder) {
+    const order = new Map(patch.chatOrder.map((chatId, index) => [chatId, index]))
+    sessions = sessions
+      .filter((session) => order.has(session.id))
+      .sort((a, b) => (order.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.id) ?? Number.MAX_SAFE_INTEGER))
+  }
+
+  const messages = { ...current.messages }
+  for (const chatId of removedChatIds) {
+    delete messages[chatId]
+  }
+  for (const [chatId, cppMessages] of Object.entries(patch.messagesByChatId ?? {})) {
+    messages[chatId] = cppMessages.map((message, index) => ({
+      id: `cef-m-${chatId}-${cppMessageCreatedAtMillis(message)}-${index}-${message.role}`,
+      sessionId: chatId,
+      role: message.role,
+      content: message.content,
+      thoughts: message.thoughts ?? '',
+      planSummary: message.planSummary ?? '',
+      planEntries: message.planEntries ?? [],
+      toolCalls: message.toolCalls ?? [],
+      blocks: message.blocks ?? [],
+      createdAt: new Date(cppMessageCreatedAtMillis(message)),
+    }))
+  }
+
+  const cliBindingBySessionId = { ...current.cliBindingBySessionId }
+  const acpBindingBySessionId = { ...current.acpBindingBySessionId }
+  const cliTranscriptBySessionId = { ...current.cliTranscriptBySessionId }
+  for (const chatId of removedChatIds) {
+    delete cliBindingBySessionId[chatId]
+    delete acpBindingBySessionId[chatId]
+    delete cliTranscriptBySessionId[chatId]
+  }
+
+  for (const chat of patch.chats ?? []) {
+    if (chat.cliTerminal) {
+      const running = Boolean(chat.cliTerminal.running)
+      const lifecycleState = normalizeCliLifecycleState(
+        chat.cliTerminal.lifecycleState,
+        running,
+        chat.cliTerminal.turnState,
+        chat.cliTerminal.processing
+      )
+      const processing = Boolean(chat.cliTerminal.processing) || cliLifecycleIsProcessing(lifecycleState)
+      const nextCli: CliBinding = {
+        terminalId: chat.cliTerminal.terminalId ?? '',
+        boundChatId: chat.cliTerminal.sourceChatId ?? chat.id,
+        running,
+        lifecycleState,
+        turnState: processing ? 'busy' : 'idle',
+        processing,
+        readySinceLastSelect: Boolean(chat.cliTerminal.readySinceLastSelect),
+        active: lifecycleState === 'idle' && running,
+        lastError: chat.cliTerminal.lastError ?? '',
+      }
+      const prev = cliBindingBySessionId[chat.id]
+      cliBindingBySessionId[chat.id] =
+        prev &&
+        prev.terminalId === nextCli.terminalId &&
+        prev.boundChatId === nextCli.boundChatId &&
+        prev.running === nextCli.running &&
+        prev.lifecycleState === nextCli.lifecycleState &&
+        prev.turnState === nextCli.turnState &&
+        prev.processing === nextCli.processing &&
+        prev.readySinceLastSelect === nextCli.readySinceLastSelect &&
+        prev.active === nextCli.active &&
+        prev.lastError === nextCli.lastError
+          ? prev
+          : nextCli
+    }
+
+    const acp = chat.acpSession
+    if (acp) {
+      const running = Boolean(acp.running)
+      const processing = Boolean(acp.processing)
+      const lifecycleState = normalizeAcpLifecycleState(acp.lifecycleState, running, processing)
+      const effectiveProcessing =
+        lifecycleState === 'error'
+          ? false
+          : processing ||
+            lifecycleState === 'processing' ||
+            lifecycleState === 'waitingPermission' ||
+            lifecycleState === 'waitingUserInput'
+      const prev = acpBindingBySessionId[chat.id]
+      const nextAcp: AcpBinding = {
+        sessionId: acp.sessionId ?? '',
+        providerId: acp.providerId ?? chat.providerId ?? GEMINI_CLI_PROVIDER_ID,
+        protocolKind: acp.protocolKind ?? '',
+        threadId: acp.threadId ?? '',
+        running,
+        lifecycleState,
+        processing: effectiveProcessing,
+        readySinceLastSelect: Boolean(acp.readySinceLastSelect),
+        attentionKind: acp.attentionKind ?? null,
+        processingStartedAtMs: effectiveProcessing
+          ? prev?.processing
+            ? prev.processingStartedAtMs ?? Date.now()
+            : Date.now()
+          : null,
+        lastError: acp.lastError ?? '',
+        recentStderr: acp.recentStderr ?? '',
+        lastExitCode: typeof acp.lastExitCode === 'number' ? acp.lastExitCode : null,
+        diagnostics: Array.isArray(acp.diagnostics) ? acp.diagnostics : [],
+        toolCalls: Array.isArray(acp.toolCalls) ? acp.toolCalls : [],
+        planSummary: acp.planSummary ?? '',
+        planEntries: Array.isArray(acp.planEntries) ? acp.planEntries : [],
+        availableModes: Array.isArray(acp.availableModes) ? acp.availableModes : [],
+        currentModeId: normalizeAcpApprovalMode(acp.currentModeId ?? chat.approvalMode),
+        availableModels: Array.isArray(acp.availableModels) ? acp.availableModels : [],
+        currentModelId: normalizeAcpModelId(acp.currentModelId ?? chat.modelId),
+        turnEvents: Array.isArray(acp.turnEvents) ? acp.turnEvents : [],
+        turnUserMessageIndex: typeof acp.turnUserMessageIndex === 'number' ? acp.turnUserMessageIndex : -1,
+        turnAssistantMessageIndex: typeof acp.turnAssistantMessageIndex === 'number' ? acp.turnAssistantMessageIndex : -1,
+        turnSerial: typeof acp.turnSerial === 'number' ? acp.turnSerial : 0,
+        waitIsStale: Boolean(acp.waitIsStale),
+        waitStaleReason: typeof acp.waitStaleReason === 'string' ? acp.waitStaleReason : '',
+        waitSeconds: typeof acp.waitSeconds === 'number' ? acp.waitSeconds : 0,
+        pendingPermission: acp.pendingPermission ?? null,
+        pendingUserInput: acp.pendingUserInput ?? null,
+        agentInfo: acp.agentInfo
+          ? {
+              name: acp.agentInfo.name ?? '',
+              title: acp.agentInfo.title ?? '',
+              version: acp.agentInfo.version ?? '',
+            }
+          : null,
+      }
+      acpBindingBySessionId[chat.id] = acpBindingsEquivalent(prev, nextAcp) ? prev! : nextAcp
+    }
+  }
+
+  const activeSessionId =
+    patch.selectedChatId !== undefined
+      ? patch.selectedChatId && sessions.some((session) => session.id === patch.selectedChatId)
+        ? patch.selectedChatId
+        : sessions[0]?.id ?? null
+      : current.activeSessionId && sessions.some((session) => session.id === current.activeSessionId)
+        ? current.activeSessionId
+        : sessions[0]?.id ?? null
+
+  return {
+    folders,
+    sessions,
+    messages: sameRecordEntries(current.messages, messages) ? current.messages : messages,
+    providers,
+    activeSessionId,
+    lastAppliedStateRevision: nextRevision,
+    theme: patch.settings?.theme ? (patch.settings.theme as 'dark' | 'light') : current.theme,
+    cliBindingBySessionId: sameRecordEntries(current.cliBindingBySessionId, cliBindingBySessionId) ? current.cliBindingBySessionId : cliBindingBySessionId,
+    acpBindingBySessionId: sameRecordEntries(current.acpBindingBySessionId, acpBindingBySessionId) ? current.acpBindingBySessionId : acpBindingBySessionId,
+    cliTranscriptBySessionId: sameRecordEntries(current.cliTranscriptBySessionId, cliTranscriptBySessionId) ? current.cliTranscriptBySessionId : cliTranscriptBySessionId,
+    memoryEnabledDefault: patch.settings?.memoryEnabledDefault ?? current.memoryEnabledDefault,
+    memoryIdleDelaySeconds: patch.settings?.memoryIdleDelaySeconds ?? current.memoryIdleDelaySeconds,
+    memoryRecallBudgetBytes: patch.settings?.memoryRecallBudgetBytes ?? current.memoryRecallBudgetBytes,
+    memoryLastStatus: patch.settings?.memoryLastStatus ?? current.memoryLastStatus,
+    memoryWorkerBindings: patch.settings?.memoryWorkerBindings ?? current.memoryWorkerBindings,
+    memoryActivity: patch.memoryActivity ?? current.memoryActivity,
+  }
+}
+
 function cliDebugSignature(debug: CppCliDebugState | null | undefined) {
   if (!debug) return 'none'
   // Intentionally excludes volatile timestamps to avoid churn on stateUpdate pushes.
@@ -1882,6 +2231,7 @@ interface AppState {
 	  setSessionApprovalMode: (id: string, modeId: string) => Promise<boolean>
 	  setSessionMemoryEnabled: (id: string, enabled: boolean) => Promise<boolean>
 	  setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'memoryWorkerBindings'>>) => Promise<boolean>
+	  openSessionWorkspace: (id: string) => Promise<boolean>
 	  deleteSession: (id: string) => void
 
   // Folder actions
@@ -2015,6 +2365,17 @@ export const useAppStore = create<AppState>((set, get) => {
       switch (msg.type) {
         case 'stateUpdate':
           store.loadFromCef(msg.data)
+          break
+        case 'statePatch':
+          {
+            const next = applyStatePatch(msg.data, get())
+            if (next) {
+              set(next)
+              if (next.theme) {
+                persistTheme(next.theme)
+              }
+            }
+          }
           break
         case 'cliOutput':
           {
@@ -2229,6 +2590,28 @@ export const useAppStore = create<AppState>((set, get) => {
         isNewChatModalOpen: false,
         newChatFolderId: null,
       }))
+    },
+
+    openSessionWorkspace: async (id) => {
+      if (isCefContext()) {
+        const response = await sendToCEF({
+          action: 'openWorkspaceDirectory',
+          payload: { chatId: id },
+        })
+
+        if (!response.ok) {
+          console.error('[CEF] openWorkspaceDirectory failed:', response.error)
+          return false
+        }
+
+        return true
+      }
+
+      const session = get().sessions.find((candidate) => candidate.id === id)
+      const folderDirectory = session?.folderId
+        ? get().folders.find((folder) => folder.id === session.folderId)?.directory ?? ''
+        : ''
+      return Boolean(session?.workspaceDirectory?.trim() || folderDirectory.trim())
     },
 
     renameSession: (id, name) => {

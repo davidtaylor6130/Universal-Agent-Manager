@@ -2039,6 +2039,7 @@ export function ChatView({ session }: ChatViewProps) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [claudePlanPrompt, setClaudePlanPrompt] = useState<string | null>(null)
+  const [openWorkspaceError, setOpenWorkspaceError] = useState('')
   const messages = useAppStore(useShallow((s) => s.messages[session.id] ?? []))
   const folderDirectory = useAppStore((s) =>
     session.folderId ? s.folders.find((folder) => folder.id === session.folderId)?.directory ?? '' : ''
@@ -2054,6 +2055,7 @@ export function ChatView({ session }: ChatViewProps) {
   const setSessionModel = useAppStore((s) => s.setSessionModel)
   const setSessionApprovalMode = useAppStore((s) => s.setSessionApprovalMode)
   const setSessionMemoryEnabled = useAppStore((s) => s.setSessionMemoryEnabled)
+  const openSessionWorkspace = useAppStore((s) => s.openSessionWorkspace)
   const bottomRef = useRef<HTMLDivElement>(null)
   const providerMenuRef = useRef<HTMLDivElement>(null)
   const modelMenuRef = useRef<HTMLDivElement>(null)
@@ -2200,6 +2202,14 @@ export function ChatView({ session }: ChatViewProps) {
   const pendingPermission = acp?.pendingPermission
   const pendingUserInput = acp?.pendingUserInput
   const workspaceDirectory = session.workspaceDirectory?.trim() || folderDirectory.trim()
+  const openWorkspace = async () => {
+    if (!workspaceDirectory) return
+    setOpenWorkspaceError('')
+    const ok = await openSessionWorkspace(session.id)
+    if (!ok) {
+      setOpenWorkspaceError('Failed to open workspace directory.')
+    }
+  }
   const currentProviderId = session.providerId || acp?.providerId || 'gemini-cli'
   const currentProvider = useMemo<Provider>(
     () =>
@@ -2416,7 +2426,7 @@ export function ChatView({ session }: ChatViewProps) {
             >
               <span style={{ color: 'var(--text-2)', flexShrink: 0 }}>Workspace</span>
               <span
-                className="truncate"
+                className="min-w-0 flex-1 truncate"
                 style={{
                   border: '1px solid var(--border)',
                   borderRadius: 6,
@@ -2428,7 +2438,38 @@ export function ChatView({ session }: ChatViewProps) {
               >
                 {workspaceDirectory || 'No workspace directory selected'}
               </span>
+              <button
+                type="button"
+                disabled={!workspaceDirectory}
+                onClick={() => void openWorkspace()}
+                className="h-[24px] flex-shrink-0 px-2 text-[11px] font-medium"
+                title="Open workspace in Finder or File Explorer"
+                style={{
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  background: workspaceDirectory ? 'var(--surface-up)' : 'var(--bg)',
+                  color: workspaceDirectory ? 'var(--text-2)' : 'var(--text-3)',
+                  opacity: workspaceDirectory ? 1 : 0.55,
+                }}
+              >
+                Open
+              </button>
             </div>
+            {openWorkspaceError && (
+              <div
+                className="mb-2 text-xs"
+                style={{
+                  border: '1px solid color-mix(in srgb, var(--red) 45%, var(--border))',
+                  borderRadius: 6,
+                  padding: '8px 10px',
+                  background: 'color-mix(in srgb, var(--red) 10%, var(--surface))',
+                  color: 'var(--text)',
+                  overflowWrap: 'anywhere',
+                }}
+              >
+                {openWorkspaceError}
+              </div>
+            )}
             {acp?.lastError && (
               <div
                 className="mb-2 text-xs"

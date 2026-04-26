@@ -17,15 +17,15 @@ Unsupported surfaces remain out of scope: non-Gemini/non-Codex providers, RAG en
 
 ## Screenshots
 
-### V2.0.1
+### V2.0.2
 
 Dark theme:
 
-![Universal Agent Manager V2.0.1 dark theme](docs/images/V2.0.1-Dark.png)
+![Universal Agent Manager V2.0.2 dark theme](docs/images/V2.0.1-Dark.png)
 
 Light theme:
 
-![Universal Agent Manager V2.0.1 light theme](docs/images/V2.0.1-Light.png)
+![Universal Agent Manager V2.0.2 light theme](docs/images/V2.0.1-Light.png)
 
 ## Requirements
 

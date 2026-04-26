@@ -510,6 +510,86 @@ describe('useAppStore Gemini CLI slice', () => {
     })
   })
 
+  it('merges statePatch updates without dropping existing messages', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    testWindow.cefQuery = ({ onSuccess }) => {
+      const initialState = makeCppState(1)
+      initialState.chats[0].messages = [
+        { role: 'user', content: 'keep me', createdAt: '2026-01-01T00:00:00.000Z' },
+      ]
+      onSuccess(JSON.stringify(initialState))
+    }
+
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    testWindow.uamPush?.({
+      type: 'statePatch',
+      data: {
+        stateRevision: 2,
+        chats: [
+          {
+            id: 'chat-1',
+            title: 'Patched Session',
+            folderId: 'default',
+            providerId: 'gemini-cli',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:00:02.000Z',
+            messageCount: 1,
+            messagesDigest: 'digest-1',
+            cliTerminal: {
+              terminalId: 'term-chat-1',
+              sourceChatId: 'chat-1',
+              running: true,
+              lifecycleState: 'busy',
+              turnState: 'busy',
+              processing: true,
+              readySinceLastSelect: false,
+              active: false,
+              lastError: '',
+            },
+          },
+        ],
+      },
+    })
+
+    let state = cefStore.getState()
+    expect(state.lastAppliedStateRevision).toBe(2)
+    expect(state.sessions[0].name).toBe('Patched Session')
+    expect(state.messages['chat-1'].map((message) => message.content)).toEqual(['keep me'])
+    expect(state.cliBindingBySessionId['chat-1']).toMatchObject({ lifecycleState: 'busy', processing: true })
+
+    testWindow.uamPush?.({
+      type: 'statePatch',
+      data: {
+        stateRevision: 3,
+        messagesByChatId: {
+          'chat-1': [
+            { role: 'assistant', content: 'replacement', createdAt: '2026-01-01T00:00:03.000Z' },
+          ],
+        },
+      },
+    })
+
+    state = cefStore.getState()
+    expect(state.messages['chat-1'].map((message) => message.content)).toEqual(['replacement'])
+
+    testWindow.uamPush?.({
+      type: 'statePatch',
+      data: {
+        stateRevision: 4,
+        removedChatIds: ['chat-1'],
+      },
+    })
+
+    state = cefStore.getState()
+    expect(state.sessions).toEqual([])
+    expect(state.messages['chat-1']).toBeUndefined()
+    expect(state.cliBindingBySessionId['chat-1']).toBeUndefined()
+  })
+
   it('ignores stale backend revisions', () => {
     useAppStore.getState().loadFromCef(makeCppState(2))
     useAppStore.getState().loadFromCef({
@@ -570,6 +650,31 @@ describe('useAppStore Gemini CLI slice', () => {
       folderId: 'default',
       providerId: 'codex-cli',
     })
+  })
+
+  it('opens a session workspace through CEF', async () => {
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
+      onSuccess('{}')
+    }
+
+    await expect(useAppStore.getState().openSessionWorkspace('chat-1')).resolves.toBe(true)
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0].action).toBe('openWorkspaceDirectory')
+    expect(requests[0].payload).toEqual({ chatId: 'chat-1' })
+  })
+
+  it('returns false when CEF fails to open a session workspace', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    window.cefQuery = ({ onFailure }) => {
+      onFailure(404, 'Workspace directory does not exist.')
+    }
+
+    await expect(useAppStore.getState().openSessionWorkspace('missing')).resolves.toBe(false)
+
+    consoleSpy.mockRestore()
   })
 
   it('does not create sessions without a valid folder', async () => {

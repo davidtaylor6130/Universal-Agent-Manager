@@ -426,6 +426,8 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 			HandleOpenMemoryRoot(browser, payload, callback);
 		else if (action == "revealMemoryEntry")
 			HandleRevealMemoryEntry(browser, payload, callback);
+		else if (action == "openWorkspaceDirectory")
+			HandleOpenWorkspaceDirectory(browser, payload, callback);
 		else if (action == "listMemoryScanCandidates")
 			HandleListMemoryScanCandidates(browser, payload, callback);
 		else if (action == "scanCurrentChats")
@@ -1276,6 +1278,47 @@ void UamQueryHandler::HandleRevealMemoryEntry(CefRefPtr<CefBrowser> /*browser*/,
 	}
 
 	cb->Failure(404, "Memory entry not found: " + entry_id);
+}
+
+void UamQueryHandler::HandleOpenWorkspaceDirectory(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
+	if (chat_index < 0)
+	{
+		cb->Failure(404, "Chat not found.");
+		return;
+	}
+
+	const ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
+	const std::filesystem::path workspace_root = ResolveWorkspaceRootPath(m_app, chat);
+	if (workspace_root.empty())
+	{
+		cb->Failure(400, "Chat has no workspace directory.");
+		return;
+	}
+
+	std::error_code ec;
+	if (!std::filesystem::exists(workspace_root, ec) || ec)
+	{
+		cb->Failure(404, "Workspace directory does not exist.");
+		return;
+	}
+
+	if (!std::filesystem::is_directory(workspace_root, ec) || ec)
+	{
+		cb->Failure(400, "Workspace path is not a directory.");
+		return;
+	}
+
+	std::string error;
+	if (!PlatformServicesFactory::Instance().file_dialog_service.OpenFolderInFileManager(workspace_root, &error))
+	{
+		cb->Failure(500, error.empty() ? "Failed to open workspace directory." : error);
+		return;
+	}
+
+	cb->Success("{}");
 }
 
 void UamQueryHandler::HandleListMemoryScanCandidates(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& /*payload*/, CefRefPtr<Callback> cb)

@@ -549,7 +549,7 @@ export function SettingsModal() {
             </div>
             <div className="flex justify-between gap-3">
               <span style={{ color: 'var(--text-3)' }}>Version</span>
-              <span style={{ color: 'var(--text)' }}>V2.0.1</span>
+              <span style={{ color: 'var(--text)' }}>V2.0.2</span>
             </div>
           </div>
         </SectionCard>
