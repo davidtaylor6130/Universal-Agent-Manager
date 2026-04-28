@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { useAppStore, type MemoryWorkerBinding } from '../../store/useAppStore'
+import { useAppStore, type CliVersionManager, type MemoryWorkerBinding } from '../../store/useAppStore'
 import { ThemeToggle } from '../shared/ThemeToggle'
 import { useTheme } from '../../hooks/useTheme'
 import type { Provider } from '../../types/provider'
@@ -74,7 +74,7 @@ function selectedMemoryModelLabel(options: MemoryModelOption[], modelId: string)
   return options.find((option) => option.id === modelId)?.label ?? titleFromModelId(modelId)
 }
 
-type SettingsSectionId = 'appearance' | 'memory' | 'about'
+type SettingsSectionId = 'appearance' | 'cli-version' | 'memory' | 'about'
 
 interface SettingsSection {
   id: SettingsSectionId
@@ -84,9 +84,18 @@ interface SettingsSection {
 
 const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'appearance', label: 'Appearance', detail: 'Theme and display' },
+  { id: 'cli-version', label: 'CLI Version', detail: 'Run or revert provider CLIs' },
   { id: 'memory', label: 'Memory', detail: 'Defaults and workers' },
   { id: 'about', label: 'About', detail: 'Version information' },
 ]
+
+function versionStatusText(manager: CliVersionManager) {
+  if (manager.status === 'checking') return 'Checking installed version'
+  if (manager.status === 'installing') return 'Installing selected version'
+  if (manager.status === 'supported') return 'Installed version is supported'
+  if (manager.status === 'unsupported') return 'Installed version is not in the curated list'
+  return 'Version has not been checked'
+}
 
 function SectionCard(
   { title, description, children }: { title: string; description?: string; children: ReactNode }
@@ -119,13 +128,26 @@ export function SettingsModal() {
   const memoryWorkerBindings = useAppStore(useShallow((s) => s.memoryWorkerBindings))
   const memoryLastStatus = useAppStore((s) => s.memoryLastStatus)
   const memoryActivity = useAppStore(useShallow((s) => s.memoryActivity))
+  const cliVersionManager = useAppStore(useShallow((s) => s.cliVersionManager))
+  const markdownStoreDirectory = useAppStore((s) => s.markdownStoreDirectory)
   const setMemorySettings = useAppStore((s) => s.setMemorySettings)
+  const refreshCliProviderVersion = useAppStore((s) => s.refreshCliProviderVersion)
+  const applyCliProviderVersion = useAppStore((s) => s.applyCliProviderVersion)
+  const browseMarkdownStoreDirectory = useAppStore((s) => s.browseMarkdownStoreDirectory)
+  const setMarkdownStoreDirectory = useAppStore((s) => s.setMarkdownStoreDirectory)
+  const openMarkdownStore = useAppStore((s) => s.openMarkdownStore)
   const openGlobalMemoryLibrary = useAppStore((s) => s.openGlobalMemoryLibrary)
   const openMemoryScanModal = useAppStore((s) => s.openMemoryScanModal)
   const { theme } = useTheme()
   const [openMemoryMenu, setOpenMemoryMenu] = useState<string | null>(null)
+  const [selectedCliVersion, setSelectedCliVersion] = useState('')
+  const [markdownStoreDraftDirectory, setMarkdownStoreDraftDirectory] = useState(markdownStoreDirectory)
   const [selectedSection, setSelectedSection] = useState<SettingsSectionId>('appearance')
   const memoryMenuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    setSelectedCliVersion(cliVersionManager.selectedVersion || cliVersionManager.preferredVersion || '')
+  }, [cliVersionManager.providerId, cliVersionManager.selectedVersion, cliVersionManager.preferredVersion])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -150,6 +172,10 @@ export function SettingsModal() {
     return () => document.removeEventListener('mousedown', handler)
   }, [])
 
+  useEffect(() => {
+    setMarkdownStoreDraftDirectory(markdownStoreDirectory)
+  }, [markdownStoreDirectory])
+
   const updateMemoryBinding = (providerId: string, binding: MemoryWorkerBinding) => {
     void setMemorySettings({
       memoryWorkerBindings: {
@@ -172,6 +198,9 @@ export function SettingsModal() {
     memoryActivity.lastWorkerTimedOut ? 'timed out' : '',
     memoryActivity.lastWorkerUpdatedAt || '',
   ].filter(Boolean).join(' | ')
+  const cliVersionProvider = providers.find((provider) => provider.id === cliVersionManager.providerId)
+  const cliVersionChanged = Boolean(selectedCliVersion && selectedCliVersion !== cliVersionManager.installedVersion)
+  const canApplyCliVersion = Boolean(selectedCliVersion && cliVersionChanged && !cliVersionManager.running)
 
   const renderSectionContent = () => {
     if (selectedSection === 'appearance') {
@@ -193,6 +222,138 @@ export function SettingsModal() {
               <ThemeToggle />
             </div>
           </SectionCard>
+        </div>
+      )
+    }
+
+    if (selectedSection === 'cli-version') {
+      return (
+        <div className="space-y-4">
+          <SectionCard
+            title="Active Provider CLI"
+            description="Check, run, or revert the selected chat provider CLI to a curated supported version."
+          >
+            <div className="space-y-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--text)' }}>
+                    <ProviderLogo providerId={cliVersionManager.providerId} />
+                    <span>{providerDisplayName(cliVersionProvider, cliVersionManager.providerId)}</span>
+                  </div>
+                  <div className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>
+                    {versionStatusText(cliVersionManager)}
+                  </div>
+                  {cliVersionManager.message && (
+                    <div className="text-xs mt-1" style={{ color: cliVersionManager.status === 'unsupported' ? 'var(--red)' : 'var(--text-3)' }}>
+                      {cliVersionManager.message}
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  disabled={cliVersionManager.running}
+                  onClick={() => void refreshCliProviderVersion(cliVersionManager.providerId)}
+                  className="px-3 py-1.5 rounded-md text-xs disabled:opacity-50"
+                  style={{
+                    background: 'var(--surface-up)',
+                    color: 'var(--text)',
+                    border: '1px solid var(--border)',
+                    cursor: cliVersionManager.running ? 'default' : 'pointer',
+                  }}
+                >
+                  Refresh
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-lg p-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                  <div className="text-[11px]" style={{ color: 'var(--text-3)' }}>Installed</div>
+                  <div className="text-sm mt-1" style={{ color: 'var(--text)' }}>
+                    {cliVersionManager.installedVersion || 'Unknown'}
+                  </div>
+                </div>
+                <div className="rounded-lg p-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                  <div className="text-[11px]" style={{ color: 'var(--text-3)' }}>Preferred</div>
+                  <div className="text-sm mt-1" style={{ color: 'var(--text)' }}>
+                    {cliVersionManager.preferredVersion || 'Not configured'}
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid gap-2">
+                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                  Target version
+                  <select
+                    value={selectedCliVersion}
+                    disabled={cliVersionManager.running || cliVersionManager.availableVersions.length === 0}
+                    onChange={(event) => setSelectedCliVersion(event.currentTarget.value)}
+                    style={{
+                      background: 'var(--surface)',
+                      color: 'var(--text)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 8,
+                      padding: '8px 10px',
+                    }}
+                  >
+                    {cliVersionManager.availableVersions.map((option) => (
+                      <option key={option.version} value={option.version}>
+                        {option.version}{option.preferred ? ' (preferred)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-xs" style={{ color: 'var(--text-3)' }}>
+                    Applies with npm globally for the active provider.
+                  </div>
+                  <button
+                    type="button"
+                    disabled={!canApplyCliVersion}
+                    onClick={() => {
+                      const providerName = providerDisplayName(cliVersionProvider, cliVersionManager.providerId)
+                      if (!window.confirm(`Install ${providerName} ${selectedCliVersion}?`)) return
+                      void applyCliProviderVersion(cliVersionManager.providerId, selectedCliVersion)
+                    }}
+                    className="px-3 py-1.5 rounded-md text-xs disabled:opacity-50"
+                    style={{
+                      background: canApplyCliVersion ? 'var(--accent)' : 'var(--surface-up)',
+                      color: canApplyCliVersion ? '#fff' : 'var(--text-3)',
+                      border: canApplyCliVersion ? 'none' : '1px solid var(--border)',
+                      cursor: canApplyCliVersion ? 'pointer' : 'default',
+                    }}
+                  >
+                    {cliVersionManager.running ? 'Running' : 'Apply'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </SectionCard>
+
+          {(cliVersionManager.lastCommand || cliVersionManager.lastOutput) && (
+            <SectionCard title="Last Command">
+              <div className="grid gap-2">
+                {cliVersionManager.lastCommand && (
+                  <code className="text-xs rounded-md px-2 py-1" style={{ background: 'var(--surface)', color: 'var(--text)' }}>
+                    {cliVersionManager.lastCommand}
+                  </code>
+                )}
+                <pre
+                  className="text-[11px] leading-5 overflow-auto rounded-lg px-3 py-2"
+                  style={{
+                    maxHeight: 220,
+                    background: 'var(--surface)',
+                    color: 'var(--text-2)',
+                    border: '1px solid var(--border)',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    fontFamily: 'var(--font-mono)',
+                  }}
+                >
+                  {cliVersionManager.lastOutput || 'No output captured yet.'}
+                </pre>
+              </div>
+            </SectionCard>
+          )}
         </div>
       )
     }
@@ -500,6 +661,69 @@ export function SettingsModal() {
               >
                 Open library
               </button>
+            </div>
+          </SectionCard>
+
+          <SectionCard
+            title="Markdown Store"
+            description="Publish and attach internal `.uam` markdown files from a shared directory."
+          >
+            <div className="grid gap-3">
+              <div className="flex items-center gap-2">
+                <input
+                  value={markdownStoreDraftDirectory}
+                  onChange={(event) => setMarkdownStoreDraftDirectory(event.target.value)}
+                  placeholder="Markdown Store directory"
+                  className="min-w-0 flex-1 text-xs"
+                  style={{
+                    border: '1px solid var(--border)',
+                    borderRadius: 8,
+                    background: 'var(--bg)',
+                    color: 'var(--text)',
+                    padding: '8px 10px',
+                    outline: 'none',
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    void browseMarkdownStoreDirectory(markdownStoreDraftDirectory).then((selected) => {
+                      if (selected) setMarkdownStoreDraftDirectory(selected)
+                    })
+                  }}
+                  className="px-3 py-2 text-xs"
+                  style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface-up)', color: 'var(--text-2)' }}
+                >
+                  Browse
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void setMarkdownStoreDirectory(markdownStoreDraftDirectory)}
+                  className="px-3 py-2 text-xs"
+                  style={{ border: 'none', borderRadius: 8, background: 'var(--accent)', color: '#fff' }}
+                >
+                  Save
+                </button>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <div className="text-xs" style={{ color: 'var(--text-3)' }}>
+                  Attach entries to chats as file path references.
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void openMarkdownStore()}
+                  className="px-3 py-1.5 rounded-md text-xs"
+                  style={{
+                    background: 'var(--accent)',
+                    color: '#fff',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontFamily: 'inherit',
+                  }}
+                >
+                  Open store
+                </button>
+              </div>
             </div>
           </SectionCard>
 

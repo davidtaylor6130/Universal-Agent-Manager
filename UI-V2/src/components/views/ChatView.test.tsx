@@ -1691,6 +1691,77 @@ describe('ChatView', () => {
     useAppStore.setState({ openSessionWorkspace: originalOpenSessionWorkspace })
   })
 
+  it('stages selected files and sends them with the prompt', async () => {
+    let stagedAttachment = {
+      id: 'file-1',
+      name: 'diagram.png',
+      type: 'image',
+      size: 4,
+      path: '.UAM/attachments/chat-1/diagram.png',
+    }
+    const stageChatAttachments = vi.fn((_sessionId, items) => {
+      stagedAttachment = {
+        ...stagedAttachment,
+        id: items[0].id,
+      }
+      return Promise.resolve([stagedAttachment])
+    })
+    const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      stageChatAttachments,
+      sendAcpPrompt,
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+          pendingPermission: null,
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    await act(async () => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const input = host.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File(['data'], 'diagram.png', { type: 'image/png' })
+    Object.defineProperty(file, 'path', { value: '/tmp/diagram.png', configurable: true })
+    Object.defineProperty(input, 'files', { value: [file], configurable: true })
+    await act(async () => {
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    expect(stageChatAttachments).toHaveBeenCalledWith('chat-1', [
+      expect.objectContaining({ name: 'diagram.png', kind: 'image', mimeType: 'image/png' }),
+    ])
+    expect(host.textContent).toContain('diagram.png')
+
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      valueSetter?.call(textarea, 'Use this image')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+
+    const form = host.querySelector('form') as HTMLFormElement
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    })
+
+    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Use this image', [stagedAttachment])
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
   it('disables the workspace open button when no workspace is selected', () => {
     useAppStore.setState((state) => ({
       folders: state.folders.map((folder) => ({ ...folder, directory: '' })),

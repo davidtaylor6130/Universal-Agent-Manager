@@ -40,9 +40,26 @@ describe('SettingsModal memory settings', () => {
       memoryWorkerBindings: {
         'gemini-cli': { workerProviderId: 'gemini-cli', workerModelId: '' },
       },
+      cliVersionManager: {
+        providerId: 'codex-cli',
+        installedVersion: '0.123.0',
+        selectedVersion: '0.123.0',
+        availableVersions: [
+          { version: '0.124.0', preferred: true },
+          { version: '0.123.0', preferred: false },
+        ],
+        preferredVersion: '0.124.0',
+        status: 'supported',
+        message: 'Codex CLI version is supported.',
+        running: false,
+        lastCommand: '',
+        lastOutput: '',
+      },
       memoryLastStatus: '',
       setSettingsOpen: vi.fn(),
       setMemorySettings: vi.fn(() => Promise.resolve(true)),
+      refreshCliProviderVersion: vi.fn(() => Promise.resolve(true)),
+      applyCliProviderVersion: vi.fn(() => Promise.resolve(true)),
       openGlobalMemoryLibrary: vi.fn(() => Promise.resolve(true)),
       openMemoryScanModal: vi.fn(() => Promise.resolve(true)),
     })
@@ -63,10 +80,56 @@ describe('SettingsModal memory settings', () => {
 
     expect(host.querySelector('select')).toBeNull()
     expect(host.textContent).toContain('Appearance')
+    expect(host.textContent).toContain('CLI Version')
     expect(host.textContent).toContain('Memory')
     expect(host.textContent).toContain('About')
     expect(host.textContent).toContain('Theme')
     expect(host.textContent).not.toContain('Gemini memory worker')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('applies a curated CLI version after confirmation', () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const { host, root } = renderModal()
+
+    const cliSectionButton = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('CLI Version') && button.textContent?.includes('Run or revert provider CLIs')
+    )
+    expect(cliSectionButton).toBeTruthy()
+
+    act(() => {
+      cliSectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(host.textContent).toContain('Active Provider CLI')
+    expect(host.textContent).toContain('Codex')
+    expect(host.textContent).toContain('0.123.0')
+
+    const select = host.querySelector('select') as HTMLSelectElement | null
+    expect(select).toBeTruthy()
+    act(() => {
+      if (select) {
+        select.value = '0.124.0'
+        select.dispatchEvent(new Event('change', { bubbles: true }))
+      }
+    })
+
+    const applyButton = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Apply'
+    ) as HTMLButtonElement | undefined
+    expect(applyButton).toBeTruthy()
+    expect(applyButton?.disabled).toBe(false)
+
+    act(() => {
+      applyButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(confirmSpy).toHaveBeenCalledWith('Install Codex 0.124.0?')
+    expect(useAppStore.getState().applyCliProviderVersion).toHaveBeenCalledWith('codex-cli', '0.124.0')
 
     act(() => {
       root.unmount()

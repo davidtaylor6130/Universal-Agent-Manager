@@ -2,6 +2,7 @@
 
 #include "app/application_core_helpers.h"
 #include "app/chat_domain_service.h"
+#include "app/markdown_store_service.h"
 #include "app/memory_service.h"
 #include "app/native_session_link_service.h"
 #include "app/provider_resolution_service.h"
@@ -4331,7 +4332,7 @@ const AcpSessionState* FindAcpSessionForChat(const AppState& app, const std::str
 	return nullptr;
 }
 
-bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, std::string* error_out)
+bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, const std::vector<std::string>& markdown_store_files, const std::vector<MessageAttachment>& attachments, std::string* error_out)
 {
 	const std::string prompt = uam::strings::Trim(text);
 	if (prompt.empty())
@@ -4354,6 +4355,18 @@ bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string&
 	}
 
 	ChatSession& chat = app.chats[static_cast<std::size_t>(chat_index)];
+	std::vector<std::string> validated_markdown_store_files;
+	const std::filesystem::path markdown_store_root = MarkdownStoreService::NormalizeRoot(app.settings.markdown_store_directory);
+	for (const std::string& file : markdown_store_files)
+	{
+		std::filesystem::path normalized_file;
+		if (!MarkdownStoreService::ValidateStoreFilePath(markdown_store_root, file, &normalized_file, error_out))
+		{
+			return false;
+		}
+		validated_markdown_store_files.push_back(normalized_file.string());
+	}
+
 	AcpSessionState& session = EnsureAcpSessionForChat(app, chat);
 	if (session.cancel_requested || session.cancel_request_id != 0)
 	{
@@ -4386,9 +4399,62 @@ bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string&
 	}
 
 	const std::string recall_preface = MemoryService::BuildRecallPreface(app, chat, prompt);
-	const std::string effective_prompt = recall_preface.empty() ? prompt : recall_preface + prompt;
+	std::string effective_prompt = recall_preface.empty() ? prompt : recall_preface + prompt;
+	if (!validated_markdown_store_files.empty())
+	{
+		effective_prompt += "\n\nReferenced Markdown Store files:\n";
+		for (const std::string& file : validated_markdown_store_files)
+		{
+			effective_prompt += "- " + file + "\n";
+		}
+	}
+	if (!attachments.empty())
+	{
+		bool wrote_files_header = false;
+		bool wrote_directories_header = false;
+		for (const MessageAttachment& attachment : attachments)
+		{
+			if (attachment.path.empty())
+			{
+				continue;
+			}
+			if (attachment.kind == "directory")
+			{
+				if (!wrote_directories_header)
+				{
+					effective_prompt += "\n\nReferenced directories:\n";
+					wrote_directories_header = true;
+				}
+				effective_prompt += "- " + attachment.path + "\n";
+			}
+			else
+			{
+				if (!wrote_files_header)
+				{
+					effective_prompt += "\n\nReferenced files:\n";
+					wrote_files_header = true;
+				}
+				effective_prompt += "- " + attachment.path + "\n";
+			}
+		}
+	}
 
 	ChatDomainService().AddMessageWithAnalytics(chat, MessageRole::User, prompt, MessageProviderId(session), 0, 0, 0, 0, false);
+	if (!validated_markdown_store_files.empty() && !chat.messages.empty())
+	{
+		chat.messages.back().markdown_store_files = validated_markdown_store_files;
+	}
+	if (!attachments.empty() && !chat.messages.empty())
+	{
+		chat.messages.back().attachments = attachments;
+		for (const MessageAttachment& attachment : attachments)
+		{
+			if (!attachment.path.empty() && std::find(chat.linked_files.begin(), chat.linked_files.end(), attachment.path) == chat.linked_files.end())
+			{
+				chat.linked_files.push_back(attachment.path);
+			}
+		}
+	}
 	SaveChatQuietly(app, chat);
 
 	session.queued_prompt = effective_prompt;
@@ -4426,6 +4492,11 @@ bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string&
 	}
 
 	return true;
+}
+
+bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, std::string* error_out)
+{
+	return SendAcpPrompt(app, chat_id, text, std::vector<std::string>{}, std::vector<MessageAttachment>{}, error_out);
 }
 
 bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error_out)

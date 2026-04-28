@@ -5,6 +5,7 @@ export interface Attachment {
   name: string
   type: string
   size: number
+  path?: string
 }
 
 export interface MessageToolCall {

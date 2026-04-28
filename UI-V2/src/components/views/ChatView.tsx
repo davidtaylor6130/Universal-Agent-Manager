@@ -1,4 +1,4 @@
-import { FormEvent, KeyboardEvent, ReactNode, RefObject, useEffect, useMemo, useRef, useState } from 'react'
+import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, ReactNode, RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { Session } from '../../types/session'
 import {
@@ -12,8 +12,9 @@ import {
   type AcpToolCall,
   type AcpTurnEvent,
   type AcpUserInputAnswers,
+  type ChatAttachmentInput,
 } from '../../store/useAppStore'
-import type { Message, MessageBlock } from '../../types/message'
+import type { Attachment, Message, MessageBlock } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -54,6 +55,45 @@ const FRIENDLY_MODEL_LABELS: Record<string, Pick<ModelOption, 'label' | 'shortLa
 
 const PLAN_APPROVE_PROMPT = 'Proceed with the plan.'
 const PLAN_DENY_PROMPT = 'Do not proceed with this plan. Please revise it before making changes.'
+
+type LocalAttachmentStatus = 'ready' | 'staging' | 'failed'
+
+interface LocalAttachment extends Attachment {
+  status: LocalAttachmentStatus
+  error?: string
+}
+
+function filePathFromBrowserFile(file: File): string {
+  const maybeFile = file as File & { path?: string }
+  return typeof maybeFile.path === 'string' ? maybeFile.path : ''
+}
+
+function readFileBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : ''
+      const comma = result.indexOf(',')
+      resolve(comma >= 0 ? result.slice(comma + 1) : result)
+    }
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read file.'))
+    reader.readAsDataURL(file)
+  })
+}
+
+function attachmentLabel(attachment: Attachment) {
+  const path = attachment.path?.trim()
+  return path || attachment.name
+}
+
+function fileUriToPath(uri: string): string {
+  if (!uri.startsWith('file://')) return uri
+  try {
+    return decodeURIComponent(new URL(uri).pathname)
+  } catch {
+    return uri.replace(/^file:\/\//, '')
+  }
+}
 
 function providerDisplayName(provider?: Provider, fallbackId = '') {
   if (provider?.shortName?.trim()) return provider.shortName.trim()
@@ -1407,20 +1447,29 @@ function PersistedMessageContent({
   const planSummary = message.role === 'assistant' ? message.planSummary ?? '' : ''
   const planEntries = message.role === 'assistant' ? message.planEntries ?? [] : []
   const blocks = message.role === 'assistant' ? message.blocks ?? [] : []
+  const attachments = message.attachments ?? []
 
   if (blocks.length > 0) {
     return (
-      <PersistedMessageBlocksContent
-        message={message}
-        blocks={blocks}
-        onSelectTool={onSelectTool}
-        planActions={planActions}
-      />
+      <div className="space-y-2">
+        <PersistedMessageBlocksContent
+          message={message}
+          blocks={blocks}
+          onSelectTool={onSelectTool}
+          planActions={planActions}
+        />
+        <AttachmentList attachments={attachments} />
+      </div>
     )
   }
 
   if (!thoughts && toolCalls.length === 0 && !planSummary.trim() && planEntries.length === 0) {
-    return <MarkdownContent content={message.content} />
+    return (
+      <div className="space-y-2">
+        <MarkdownContent content={message.content} />
+        <AttachmentList attachments={attachments} />
+      </div>
+    )
   }
 
   return (
@@ -1437,6 +1486,33 @@ function PersistedMessageContent({
         onApprove={planActions?.onApprove}
         onDeny={planActions?.onDeny}
       />
+      <AttachmentList attachments={attachments} />
+    </div>
+  )
+}
+
+function AttachmentList({ attachments }: { attachments: Attachment[] }) {
+  if (attachments.length === 0) return null
+
+  return (
+    <div className="flex flex-wrap gap-2">
+      {attachments.map((attachment) => (
+        <span
+          key={attachment.id}
+          className="inline-flex items-center gap-2 max-w-full text-[11px]"
+          title={attachmentLabel(attachment)}
+          style={{
+            border: '1px solid var(--border)',
+            borderRadius: 999,
+            background: 'var(--surface-up)',
+            color: 'var(--text-2)',
+            padding: '3px 7px',
+          }}
+        >
+          <span className="truncate max-w-[320px]">{attachment.path || attachment.name}</span>
+          <span style={{ color: 'var(--text-3)' }}>{attachment.type}</span>
+        </span>
+      ))}
     </div>
   )
 }
@@ -1655,6 +1731,8 @@ function ComposerToolbar({
   onToggleYolo,
   onToggleMemory,
   onCancel,
+  onAttachFile,
+  onOpenMarkdownStore,
 }: {
   acp?: AcpBinding
   provider: Provider
@@ -1684,6 +1762,8 @@ function ComposerToolbar({
   onToggleYolo: () => void
   onToggleMemory: () => void
   onCancel: () => void
+  onAttachFile: () => void
+  onOpenMarkdownStore: () => void
 }) {
   const modelOptions = buildModelOptions(acp, modelId ?? '', provider, providerId)
   const currentModel = modelOptionFor(modelOptions, modelId)
@@ -1916,6 +1996,26 @@ function ComposerToolbar({
         <span style={{ color: memoryEnabled ? 'var(--green)' : 'var(--text-3)', fontSize: 10 }}>●</span>
         <span>Memory</span>
       </button>
+      <button
+        type="button"
+        title="Attach files"
+        onClick={onAttachFile}
+        className="inline-flex items-center gap-1.5 px-2"
+        style={chipStyle}
+      >
+        <span style={{ color: 'var(--text-3)', fontSize: 10 }}>●</span>
+        <span>Attach</span>
+      </button>
+      <button
+        type="button"
+        title="Open Markdown Store"
+        onClick={onOpenMarkdownStore}
+        className="inline-flex items-center gap-1.5 px-2"
+        style={chipStyle}
+      >
+        <span style={{ color: 'var(--text-3)', fontSize: 10 }}>●</span>
+        <span>Store</span>
+      </button>
       <button type="button" title="Runtime" className="inline-flex items-center gap-1.5 px-2" style={chipStyle}>
         <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>
         <span>{runtimeLabel}</span>
@@ -2042,12 +2142,15 @@ export function ChatView({ session }: ChatViewProps) {
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [claudePlanPrompt, setClaudePlanPrompt] = useState<string | null>(null)
   const [openWorkspaceError, setOpenWorkspaceError] = useState('')
+  const [composerAttachments, setComposerAttachments] = useState<LocalAttachment[]>([])
+  const [attachmentError, setAttachmentError] = useState('')
   const messages = useAppStore(useShallow((s) => s.messages[session.id] ?? []))
   const folderDirectory = useAppStore((s) =>
     session.folderId ? s.folders.find((folder) => folder.id === session.folderId)?.directory ?? '' : ''
   )
   const acp = useAppStore((s) => s.acpBindingBySessionId[session.id])
   const providers = useAppStore((s) => s.providers)
+  const stageChatAttachments = useAppStore((s) => s.stageChatAttachments)
   const sendAcpPrompt = useAppStore((s) => s.sendAcpPrompt)
   const cancelAcpTurn = useAppStore((s) => s.cancelAcpTurn)
   const stopAcpSession = useAppStore((s) => s.stopAcpSession)
@@ -2058,7 +2161,11 @@ export function ChatView({ session }: ChatViewProps) {
   const setSessionApprovalMode = useAppStore((s) => s.setSessionApprovalMode)
   const setSessionMemoryEnabled = useAppStore((s) => s.setSessionMemoryEnabled)
   const openSessionWorkspace = useAppStore((s) => s.openSessionWorkspace)
+  const openMarkdownStore = useAppStore((s) => s.openMarkdownStore)
+  const markdownStoreAttachments = useAppStore(useShallow((s) => s.markdownStoreAttachedBySessionId[session.id] ?? []))
+  const detachMarkdownStoreEntry = useAppStore((s) => s.detachMarkdownStoreEntry)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const providerMenuRef = useRef<HTMLDivElement>(null)
   const modelMenuRef = useRef<HTMLDivElement>(null)
   const settingsMenuRef = useRef<HTMLDivElement>(null)
@@ -2122,6 +2229,11 @@ export function ChatView({ session }: ChatViewProps) {
   }, [turnSerial])
 
   useEffect(() => {
+    setComposerAttachments([])
+    setAttachmentError('')
+  }, [session.id])
+
+  useEffect(() => {
     if (acp?.processing || acp?.lifecycleState === 'waitingPermission' || acp?.lifecycleState === 'waitingUserInput') {
       setModelOpen(false)
     }
@@ -2175,6 +2287,121 @@ export function ChatView({ session }: ChatViewProps) {
     return () => window.clearInterval(interval)
   }, [processingStartedAtMs])
 
+  const stageFiles = async (files: File[]) => {
+    const realFiles = files.filter((file) => file.size > 0 || file.type || file.name)
+    if (realFiles.length === 0) return
+
+    const pending = realFiles.map<LocalAttachment>((file) => ({
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}-${file.name}`,
+      name: file.name || 'attachment',
+      type: file.type.startsWith('image/') ? 'image' : 'file',
+      size: file.size,
+      path: filePathFromBrowserFile(file),
+      status: 'staging',
+    }))
+    setAttachmentError('')
+    setComposerAttachments((current) => [...current, ...pending])
+
+    try {
+      const items: ChatAttachmentInput[] = []
+      for (let index = 0; index < realFiles.length; index += 1) {
+        const file = realFiles[index]
+        const pendingItem = pending[index]
+        const path = filePathFromBrowserFile(file)
+        items.push({
+          id: pendingItem.id,
+          name: file.name || 'attachment',
+          kind: file.type.startsWith('image/') ? 'image' : 'file',
+          mimeType: file.type,
+          size: file.size,
+          path,
+          dataBase64: path ? undefined : await readFileBase64(file),
+        })
+      }
+
+      const staged = await stageChatAttachments(session.id, items)
+      setComposerAttachments((current) =>
+        current.map((attachment) => {
+          const replacement = staged.find((candidate) => candidate.id === attachment.id)
+          return replacement
+            ? { ...replacement, status: 'ready' as LocalAttachmentStatus }
+            : attachment
+        })
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to stage attachments.'
+      setAttachmentError(message)
+      const failedIds = new Set(pending.map((attachment) => attachment.id))
+      setComposerAttachments((current) =>
+        current.map((attachment) =>
+          failedIds.has(attachment.id) ? { ...attachment, status: 'failed', error: message } : attachment
+        )
+      )
+    }
+  }
+
+  const stageDirectoryPaths = async (paths: string[]) => {
+    const uniquePaths = Array.from(new Set(paths.map((path) => path.trim()).filter(Boolean)))
+    if (uniquePaths.length === 0) return
+
+    const pending = uniquePaths.map<LocalAttachment>((path) => ({
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}-${path}`,
+      name: path.split(/[\\/]/).pop() || path,
+      type: 'directory',
+      size: 0,
+      path,
+      status: 'staging',
+    }))
+    setAttachmentError('')
+    setComposerAttachments((current) => [...current, ...pending])
+
+    try {
+      const staged = await stageChatAttachments(session.id, pending.map((attachment) => ({
+        id: attachment.id,
+        name: attachment.name,
+        kind: 'directory',
+        path: attachment.path,
+      })))
+      setComposerAttachments((current) =>
+        current.map((attachment) => {
+          const replacement = staged.find((candidate) => candidate.id === attachment.id)
+          return replacement
+            ? { ...replacement, status: 'ready' as LocalAttachmentStatus }
+            : attachment
+        })
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to stage directory references.'
+      setAttachmentError(message)
+      const failedIds = new Set(pending.map((attachment) => attachment.id))
+      setComposerAttachments((current) =>
+        current.map((attachment) =>
+          failedIds.has(attachment.id) ? { ...attachment, status: 'failed', error: message } : attachment
+        )
+      )
+    }
+  }
+
+  const onComposerDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    const files = Array.from(event.dataTransfer.files)
+    const uriList = event.dataTransfer.getData('text/uri-list')
+    if (files.length === 0 && uriList.trim()) {
+      const paths = uriList
+        .split(/\r?\n/)
+        .filter((line) => line.trim() && !line.startsWith('#'))
+        .map(fileUriToPath)
+      void stageDirectoryPaths(paths)
+    }
+    void stageFiles(files)
+  }
+
+  const onComposerPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData.files)
+    if (files.length === 0) return
+    void stageFiles(files)
+  }
+
   const submit = async (event?: FormEvent) => {
     event?.preventDefault()
     if (!canSend) return
@@ -2184,9 +2411,16 @@ export function ChatView({ session }: ChatViewProps) {
       return
     }
     setSubmitting(true)
-    const ok = await sendAcpPrompt(session.id, prompt)
+    const readyAttachments = composerAttachments
+      .filter((attachment) => attachment.status === 'ready')
+      .map(({ status, error, ...attachment }) => attachment)
+    const ok = await sendAcpPrompt(session.id, prompt, readyAttachments)
     setSubmitting(false)
-    if (ok) setDraft('')
+    if (ok) {
+      setDraft('')
+      setComposerAttachments([])
+      setAttachmentError('')
+    }
   }
 
   const onComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -2232,8 +2466,8 @@ export function ChatView({ session }: ChatViewProps) {
     : `${currentProviderName} is not supported in this build. Switch this chat to Gemini CLI to continue.`
   const canChangeProvider = messages.length === 0 && !acp?.running && !acp?.processing
   const canSend = useMemo(
-    () => providerSupported && draft.trim().length > 0 && !submitting && !acp?.processing,
-    [providerSupported, draft, submitting, acp?.processing]
+    () => providerSupported && draft.trim().length > 0 && !submitting && !acp?.processing && !composerAttachments.some((attachment) => attachment.status !== 'ready'),
+    [providerSupported, draft, submitting, acp?.processing, composerAttachments]
   )
   const currentModelId = acp?.currentModelId || session.modelId || ''
   const currentModeId = acp?.currentModeId || session.approvalMode || 'default'
@@ -2284,9 +2518,16 @@ export function ChatView({ session }: ChatViewProps) {
     setSubmitting(true)
     const modeOk = nextModeId === 'plan' ? true : await setSessionApprovalMode(session.id, nextModeId)
     if (modeOk) {
-      const ok = await sendAcpPrompt(session.id, prompt)
+      const readyAttachments = composerAttachments
+        .filter((attachment) => attachment.status === 'ready')
+        .map(({ status, error, ...attachment }) => attachment)
+      const ok = readyAttachments.length > 0
+        ? await sendAcpPrompt(session.id, prompt, readyAttachments)
+        : await sendAcpPrompt(session.id, prompt)
       if (ok) {
         setDraft('')
+        setComposerAttachments([])
+        setAttachmentError('')
         setClaudePlanPrompt(null)
       }
     }
@@ -2577,6 +2818,8 @@ export function ChatView({ session }: ChatViewProps) {
               </div>
             )}
             <div
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={onComposerDrop}
               style={{
                 border: '1px solid var(--border-bright)',
                 borderRadius: 8,
@@ -2584,10 +2827,71 @@ export function ChatView({ session }: ChatViewProps) {
                 overflow: 'visible',
               }}
             >
+            {(markdownStoreAttachments.length > 0 || composerAttachments.length > 0) && (
+              <div className="flex flex-wrap gap-2 px-3 pt-3">
+                {markdownStoreAttachments.map((entry) => (
+                  <span
+                    key={entry.filePath}
+                    className="inline-flex items-center gap-2 max-w-full text-[11px]"
+                    title={entry.filePath}
+                    style={{
+                      border: '1px solid var(--border)',
+                      borderRadius: 999,
+                      background: 'var(--surface-up)',
+                      color: 'var(--text-2)',
+                      padding: '3px 7px',
+                    }}
+                  >
+                    <span className="truncate max-w-[260px]">{entry.title || entry.filePath.split(/[\\/]/).pop()}</span>
+                    <button
+                      type="button"
+                      onClick={() => detachMarkdownStoreEntry(session.id, entry.filePath)}
+                      title="Remove Markdown Store attachment"
+                      style={{ color: 'var(--text-3)' }}
+                    >
+                      x
+                    </button>
+                  </span>
+                ))}
+                {composerAttachments.map((attachment) => (
+                  <span
+                    key={attachment.id}
+                    className="inline-flex items-center gap-2 max-w-full text-[11px]"
+                    title={attachment.error || attachmentLabel(attachment)}
+                    style={{
+                      border: `1px solid ${attachment.status === 'failed' ? 'color-mix(in srgb, var(--red) 55%, var(--border))' : 'var(--border)'}`,
+                      borderRadius: 999,
+                      background: attachment.status === 'failed' ? 'color-mix(in srgb, var(--red) 10%, var(--surface))' : 'var(--surface-up)',
+                      color: attachment.status === 'failed' ? 'var(--red)' : 'var(--text-2)',
+                      padding: '3px 7px',
+                    }}
+                  >
+                    <span className="truncate max-w-[260px]">{attachment.name}</span>
+                    <span style={{ color: 'var(--text-3)' }}>
+                      {attachment.status === 'staging' ? 'copying' : attachment.type === 'directory' ? 'dir' : attachment.type}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setComposerAttachments((current) => current.filter((item) => item.id !== attachment.id))}
+                      title="Remove attachment"
+                      style={{ color: 'var(--text-3)' }}
+                    >
+                      x
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            {attachmentError && (
+              <div className="px-3 pt-2 text-[11px]" style={{ color: 'var(--red)' }}>
+                {attachmentError}
+              </div>
+            )}
             <textarea
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={onComposerKeyDown}
+              onPaste={onComposerPaste}
               rows={3}
               placeholder={`Message ${currentProviderName}`}
               disabled={submitting}
@@ -2600,6 +2904,17 @@ export function ChatView({ session }: ChatViewProps) {
                 color: 'var(--text)',
                 padding: '10px 12px',
                 outline: 'none',
+              }}
+            />
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(event) => {
+                const files = Array.from(event.currentTarget.files ?? [])
+                event.currentTarget.value = ''
+                void stageFiles(files)
               }}
             />
             <ComposerToolbar
@@ -2662,6 +2977,8 @@ export function ChatView({ session }: ChatViewProps) {
                 void setSessionMemoryEnabled(session.id, !(session.memoryEnabled ?? true))
               }}
               onCancel={() => void cancelAcpTurn(session.id)}
+              onAttachFile={() => fileInputRef.current?.click()}
+              onOpenMarkdownStore={() => void openMarkdownStore()}
             />
             </div>
           </div>

@@ -5,6 +5,7 @@ import { NewChatModal } from '../sidebar/NewChatModal'
 import { SettingsModal } from '../settings/SettingsModal'
 import { MemoryLibraryModal } from '../settings/MemoryLibraryModal'
 import { MemoryScanModal } from '../settings/MemoryScanModal'
+import { MarkdownStoreModal } from '../settings/MarkdownStoreModal'
 import { useAppStore } from '../../store/useAppStore'
 
 export function AppShell() {
@@ -12,6 +13,7 @@ export function AppShell() {
   const isSettingsOpen = useAppStore((s) => s.isSettingsOpen)
   const memoryLibraryScope = useAppStore((s) => s.memoryLibraryScope)
   const isMemoryScanModalOpen = useAppStore((s) => s.isMemoryScanModalOpen)
+  const isMarkdownStoreOpen = useAppStore((s) => s.isMarkdownStoreOpen)
 
   return (
     <div
@@ -46,6 +48,7 @@ export function AppShell() {
       {isSettingsOpen && <SettingsModal />}
       {memoryLibraryScope && <MemoryLibraryModal />}
       {isMemoryScanModalOpen && <MemoryScanModal />}
+      {isMarkdownStoreOpen && <MarkdownStoreModal />}
     </div>
   )
 }

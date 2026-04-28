@@ -7,6 +7,7 @@
 #include "app/chat_domain_service.h"
 #include "app/chat_lifecycle_service.h"
 #include "app/application_core_helpers.h"
+#include "app/markdown_store_service.h"
 #include "app/memory_library_service.h"
 #include "app/memory_service.h"
 #include "app/persistence_coordinator.h"
@@ -17,6 +18,7 @@
 #include "common/provider/provider_profile.h"
 #include "common/provider/runtime/provider_build_config.h"
 #include "common/runtime/acp/acp_session_runtime.h"
+#include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_launch.h"
@@ -29,9 +31,15 @@
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <chrono>
+#include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <map>
+#include <sstream>
 #include <utility>
 
 #if defined(_WIN32)
@@ -49,6 +57,7 @@ namespace
 		constexpr const char* kPreferredProviderId = provider_build_config::FirstEnabledProviderId();
 		constexpr std::size_t kRecentOutputReplayLimitBytes = 256 * 1024;
 		constexpr std::size_t kMaxClipboardTextBytes = 1024 * 1024;
+		constexpr std::uintmax_t kMaxAttachmentBytes = 25ull * 1024ull * 1024ull;
 
 	int FolderFailureCode(const std::string& status_line)
 	{
@@ -132,6 +141,26 @@ namespace
 		       session.prompt_request_id != 0 ||
 		       session.cancel_request_id != 0 ||
 			       !session.queued_prompt.empty();
+		}
+
+		std::string CliVersionProviderFromPayloadOrSelection(const uam::AppState& app, const nlohmann::json& payload)
+		{
+			const std::string requested = Trim(payload.value("providerId", ""));
+			if (requested == "codex-cli" || requested == "gemini-cli")
+			{
+				return requested;
+			}
+
+			if (const ChatSession* selected_chat = ChatDomainService().SelectedChat(app); selected_chat != nullptr)
+			{
+				const std::string selected_provider_id = Trim(selected_chat->provider_id);
+				if (selected_provider_id == "codex-cli" || selected_provider_id == "gemini-cli")
+				{
+					return selected_provider_id;
+				}
+			}
+
+			return Trim(app.settings.active_provider_id) == "codex-cli" ? "codex-cli" : "gemini-cli";
 		}
 
 #if defined(_WIN32)
@@ -255,6 +284,20 @@ namespace
 #endif
 		}
 
+	nlohmann::json SerializeMarkdownStoreEntry(const MarkdownStoreService::Entry& entry)
+	{
+		return {
+			{"id", entry.id},
+			{"title", entry.title},
+			{"maker", entry.maker},
+			{"review", entry.review},
+			{"dateCreated", entry.date_created},
+			{"dateUpdated", entry.date_updated},
+			{"preview", entry.preview},
+			{"filePath", entry.file_path.string()},
+		};
+	}
+
 	static const char kBase64Chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 	std::string Base64Encode(const std::string& input)
@@ -295,6 +338,150 @@ namespace
 		}
 
 		return out;
+	}
+
+	int Base64Value(const char ch)
+	{
+		if (ch >= 'A' && ch <= 'Z') return ch - 'A';
+		if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
+		if (ch >= '0' && ch <= '9') return ch - '0' + 52;
+		if (ch == '+') return 62;
+		if (ch == '/') return 63;
+		return -1;
+	}
+
+	bool Base64Decode(const std::string& input, std::string& out)
+	{
+		out.clear();
+		int value = 0;
+		int bits = -8;
+		for (const char ch : input)
+		{
+			if (std::isspace(static_cast<unsigned char>(ch)))
+			{
+				continue;
+			}
+			if (ch == '=')
+			{
+				break;
+			}
+			const int decoded = Base64Value(ch);
+			if (decoded < 0)
+			{
+				return false;
+			}
+			value = (value << 6) + decoded;
+			bits += 6;
+			if (bits >= 0)
+			{
+				out.push_back(static_cast<char>((value >> bits) & 0xFF));
+				bits -= 8;
+			}
+		}
+		return true;
+	}
+
+	std::string SafeAttachmentName(std::string value, const std::string& fallback)
+	{
+		std::string out;
+		out.reserve(value.size());
+		for (const unsigned char ch : value)
+		{
+			if (std::isalnum(ch) || ch == '.' || ch == '-' || ch == '_')
+			{
+				out.push_back(static_cast<char>(ch));
+			}
+			else if (ch == ' ')
+			{
+				out.push_back('-');
+			}
+		}
+		if (out.empty() || out == "." || out == "..")
+		{
+			out = fallback;
+		}
+		return out.substr(0, 120);
+	}
+
+	std::string AttachmentId()
+	{
+		const auto ticks = std::chrono::system_clock::now().time_since_epoch().count();
+		return "att-" + std::to_string(ticks);
+	}
+
+	std::string PathForPrompt(const std::filesystem::path& workspace_root, const std::filesystem::path& path)
+	{
+		std::error_code ec;
+		const std::filesystem::path absolute_path = std::filesystem::absolute(path, ec);
+		const std::filesystem::path final_path = ec ? path : absolute_path;
+		if (!workspace_root.empty())
+		{
+			const std::filesystem::path relative = std::filesystem::relative(final_path, workspace_root, ec);
+			if (!ec && !relative.empty() && relative.native().find("..") != 0)
+			{
+				return relative.generic_string();
+			}
+		}
+		return final_path.generic_string();
+	}
+
+	nlohmann::json AttachmentToJson(const MessageAttachment& attachment)
+	{
+		return {
+			{"id", attachment.id},
+			{"name", attachment.name},
+			{"kind", attachment.kind},
+			{"type", attachment.mime_type},
+			{"path", attachment.path},
+			{"size", attachment.size_bytes},
+			{"copied", attachment.copied},
+		};
+	}
+
+	std::vector<MessageAttachment> ParseStagedAttachments(const nlohmann::json& payload)
+	{
+		std::vector<MessageAttachment> attachments;
+		if (!payload.contains("attachments") || !payload["attachments"].is_array())
+		{
+			return attachments;
+		}
+		for (const nlohmann::json& item : payload["attachments"])
+		{
+			if (!item.is_object())
+			{
+				continue;
+			}
+			MessageAttachment attachment;
+			attachment.id = item.value("id", "");
+			attachment.name = item.value("name", "");
+			attachment.kind = item.value("kind", item.value("type", "file"));
+			attachment.mime_type = item.value("mimeType", item.value("type", ""));
+			if (attachment.kind == attachment.mime_type || attachment.kind.find('/') != std::string::npos)
+			{
+				attachment.kind = item.value("kind", "file");
+			}
+			attachment.path = item.value("path", "");
+			attachment.size_bytes = item.value("size", static_cast<std::uintmax_t>(0));
+			attachment.copied = item.value("copied", false);
+			if (attachment.path.empty())
+			{
+				continue;
+			}
+			if (attachment.id.empty())
+			{
+				attachment.id = AttachmentId();
+			}
+			if (attachment.name.empty())
+			{
+				attachment.name = std::filesystem::path(attachment.path).filename().string();
+			}
+			if (attachment.kind.empty())
+			{
+				attachment.kind = "file";
+			}
+			attachments.push_back(std::move(attachment));
+		}
+		return attachments;
 	}
 
 	uam::CliTerminalState* FindCliTerminalByRoutingKey(uam::AppState& app, const std::string& chat_id, const std::string& terminal_id)
@@ -404,6 +591,20 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 			HandleSetChatMemoryEnabled(browser, payload, callback);
 		else if (action == "setMemorySettings")
 			HandleSetMemorySettings(browser, payload, callback);
+		else if (action == "refreshCliProviderVersion")
+			HandleRefreshCliProviderVersion(browser, payload, callback);
+		else if (action == "applyCliProviderVersion")
+			HandleApplyCliProviderVersion(browser, payload, callback);
+		else if (action == "browseMarkdownStoreDirectory")
+			HandleBrowseMarkdownStoreDirectory(browser, payload, callback);
+		else if (action == "setMarkdownStoreDirectory")
+			HandleSetMarkdownStoreDirectory(browser, payload, callback);
+		else if (action == "listMarkdownStoreEntries")
+			HandleListMarkdownStoreEntries(browser, payload, callback);
+		else if (action == "createMarkdownStoreEntry")
+			HandleCreateMarkdownStoreEntry(browser, payload, callback);
+		else if (action == "revealMarkdownStoreEntry")
+			HandleRevealMarkdownStoreEntry(browser, payload, callback);
 		else if (action == "deleteSession")
 			HandleDeleteSession(browser, payload, callback);
 		else if (action == "createFolder")
@@ -440,6 +641,8 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 			HandleResizeCli(payload, callback);
 		else if (action == "writeCliInput")
 			HandleWriteCliInput(browser, payload, callback);
+		else if (action == "stageChatAttachments")
+			HandleStageChatAttachments(browser, payload, callback);
 		else if (action == "sendAcpPrompt")
 			HandleSendAcpPrompt(browser, payload, callback);
 		else if (action == "cancelAcpTurn")
@@ -962,6 +1165,138 @@ void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, con
 	}
 
 	uam::PushStateUpdate(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleRefreshCliProviderVersion(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string provider_id = CliVersionProviderFromPayloadOrSelection(m_app, payload);
+	if (ProviderProfileStore::FindById(m_app.provider_profiles, provider_id) == nullptr)
+	{
+		cb->Failure(400, "Unsupported provider: " + provider_id);
+		return;
+	}
+
+	ProviderCliCompatibilityService().StartProviderVersionCheck(m_app, provider_id, true);
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleApplyCliProviderVersion(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string provider_id = CliVersionProviderFromPayloadOrSelection(m_app, payload);
+	const std::string version = Trim(payload.value("version", ""));
+	std::string error;
+	if (!ProviderCliCompatibilityService().StartInstallProviderVersion(m_app, provider_id, version, &error))
+	{
+		cb->Failure(400, error.empty() ? "Failed to start provider CLI install." : error);
+		return;
+	}
+
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleBrowseMarkdownStoreDirectory(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string current_value = payload.value("currentValue", m_app.settings.markdown_store_directory);
+	const std::filesystem::path initial_path = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(current_value);
+	std::string selected_path;
+	std::string error;
+	if (!PlatformServicesFactory::Instance().file_dialog_service.BrowsePath(PlatformPathBrowseTarget::Directory, initial_path, &selected_path, &error))
+	{
+		cb->Failure(500, error.empty() ? "Failed to browse Markdown Store directory." : error);
+		return;
+	}
+	cb->Success(nlohmann::json{{"selectedPath", selected_path}}.dump());
+}
+
+void UamQueryHandler::HandleSetMarkdownStoreDirectory(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string directory = Trim(payload.value("directory", ""));
+	if (!directory.empty())
+	{
+		const std::filesystem::path root = MarkdownStoreService::NormalizeRoot(directory);
+		std::string error;
+		if (!MarkdownStoreService::IsConfiguredRoot(root, &error))
+		{
+			cb->Failure(400, error.empty() ? "Invalid Markdown Store directory." : error);
+			return;
+		}
+		m_app.settings.markdown_store_directory = root.string();
+	}
+	else
+	{
+		m_app.settings.markdown_store_directory.clear();
+	}
+
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist Markdown Store directory." : m_app.status_line);
+		return;
+	}
+
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success(nlohmann::json{{"directory", m_app.settings.markdown_store_directory}}.dump());
+}
+
+void UamQueryHandler::HandleListMarkdownStoreEntries(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& /*payload*/, CefRefPtr<Callback> cb)
+{
+	const std::filesystem::path root = MarkdownStoreService::NormalizeRoot(m_app.settings.markdown_store_directory);
+	std::string error;
+	std::vector<MarkdownStoreService::Entry> entries = MarkdownStoreService::ListEntries(root, &error);
+	if (!error.empty())
+	{
+		cb->Failure(400, error);
+		return;
+	}
+
+	nlohmann::json entry_json = nlohmann::json::array();
+	for (const MarkdownStoreService::Entry& entry : entries)
+	{
+		entry_json.push_back(SerializeMarkdownStoreEntry(entry));
+	}
+	cb->Success(nlohmann::json{{"directory", root.string()}, {"entries", entry_json}}.dump());
+}
+
+void UamQueryHandler::HandleCreateMarkdownStoreEntry(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::filesystem::path root = MarkdownStoreService::NormalizeRoot(m_app.settings.markdown_store_directory);
+	MarkdownStoreService::Draft draft;
+	draft.title = payload.value("title", "");
+	draft.maker = payload.value("maker", "");
+	draft.review = payload.value("review", "");
+	draft.body = payload.value("body", "");
+
+	MarkdownStoreService::Entry created;
+	std::string error;
+	if (!MarkdownStoreService::CreateEntry(root, draft, &created, &error))
+	{
+		cb->Failure(400, error.empty() ? "Failed to create Markdown Store entry." : error);
+		return;
+	}
+
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success(SerializeMarkdownStoreEntry(created).dump());
+}
+
+void UamQueryHandler::HandleRevealMarkdownStoreEntry(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::filesystem::path root = MarkdownStoreService::NormalizeRoot(m_app.settings.markdown_store_directory);
+	const std::string file_path = payload.value("filePath", "");
+	std::filesystem::path normalized_file;
+	std::string error;
+	if (!MarkdownStoreService::ValidateStoreFilePath(root, file_path, &normalized_file, &error))
+	{
+		cb->Failure(400, error.empty() ? "Invalid Markdown Store file." : error);
+		return;
+	}
+
+	if (!PlatformServicesFactory::Instance().file_dialog_service.RevealPathInFileManager(normalized_file, &error))
+	{
+		cb->Failure(500, error.empty() ? "Failed to reveal Markdown Store file." : error);
+		return;
+	}
 	cb->Success("{}");
 }
 
@@ -1548,8 +1883,21 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 
+	std::vector<std::string> markdown_store_files;
+	if (payload.contains("markdownStoreFiles") && payload["markdownStoreFiles"].is_array())
+	{
+		for (const nlohmann::json& item : payload["markdownStoreFiles"])
+		{
+			if (item.is_string())
+			{
+				markdown_store_files.push_back(item.get<std::string>());
+			}
+		}
+	}
+
 	std::string error;
-	if (!uam::SendAcpPrompt(m_app, chat_id, text, &error))
+	const std::vector<MessageAttachment> attachments = ParseStagedAttachments(payload);
+	if (!uam::SendAcpPrompt(m_app, chat_id, text, markdown_store_files, attachments, &error))
 	{
 		cb->Failure(chat_id.empty() || text.empty() ? 400 : 500, error.empty() ? "Failed to send ACP prompt." : error);
 		return;
@@ -1557,6 +1905,158 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 
 	uam::PushStateUpdate(browser, m_app);
 	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	(void)browser;
+	const std::string chat_id = payload.value("chatId", "");
+	if (chat_id.empty())
+	{
+		cb->Failure(400, "Missing chat id.");
+		return;
+	}
+
+	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
+	if (chat_index < 0)
+	{
+		cb->Failure(404, "Chat not found: " + chat_id);
+		return;
+	}
+
+	if (!payload.contains("items") || !payload["items"].is_array())
+	{
+		cb->Failure(400, "Attachment staging requires an items array.");
+		return;
+	}
+
+	ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
+	const std::filesystem::path workspace_root = ResolveWorkspaceRootPath(m_app, chat);
+	if (workspace_root.empty())
+	{
+		cb->Failure(400, "Chat has no workspace directory.");
+		return;
+	}
+
+	std::error_code ec;
+	std::filesystem::create_directories(workspace_root, ec);
+	if (ec)
+	{
+		cb->Failure(500, "Failed to create workspace directory.");
+		return;
+	}
+
+	const std::filesystem::path attachment_root = workspace_root / ".UAM" / "attachments" / chat_id;
+	std::filesystem::create_directories(attachment_root, ec);
+	if (ec)
+	{
+		cb->Failure(500, "Failed to create attachment directory.");
+		return;
+	}
+
+	auto staged = nlohmann::json::array();
+	std::size_t index = 0;
+	for (const nlohmann::json& item : payload["items"])
+	{
+		if (!item.is_object())
+		{
+			continue;
+		}
+
+		const std::string requested_kind = item.value("kind", "file");
+		const std::string mime_type = item.value("mimeType", "");
+		const std::string source_path_text = item.value("path", "");
+		const bool is_directory = requested_kind == "directory";
+		MessageAttachment attachment;
+		attachment.id = item.value("id", AttachmentId());
+		attachment.name = SafeAttachmentName(item.value("name", source_path_text.empty() ? "attachment" : std::filesystem::path(source_path_text).filename().string()), "attachment");
+		attachment.kind = is_directory ? "directory" : (requested_kind == "image" ? "image" : "file");
+		attachment.mime_type = mime_type;
+
+		if (is_directory)
+		{
+			if (source_path_text.empty())
+			{
+				cb->Failure(400, "Directory attachments require a filesystem path.");
+				return;
+			}
+			const std::filesystem::path source_path = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(source_path_text);
+			if (!std::filesystem::exists(source_path, ec) || ec || !std::filesystem::is_directory(source_path, ec) || ec)
+			{
+				cb->Failure(400, "Directory attachment does not exist: " + source_path_text);
+				return;
+			}
+			attachment.path = PathForPrompt(workspace_root, source_path);
+			attachment.copied = false;
+			staged.push_back(AttachmentToJson(attachment));
+			continue;
+		}
+
+		std::string bytes;
+		if (item.contains("dataBase64") && item["dataBase64"].is_string())
+		{
+			if (!Base64Decode(item["dataBase64"].get<std::string>(), bytes))
+			{
+				cb->Failure(400, "Attachment data is not valid base64.");
+				return;
+			}
+			if (bytes.size() > kMaxAttachmentBytes)
+			{
+				cb->Failure(413, "Attachment is larger than the 25 MB limit.");
+				return;
+			}
+		}
+		else if (!source_path_text.empty())
+		{
+			const std::filesystem::path source_path = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(source_path_text);
+			if (!std::filesystem::exists(source_path, ec) || ec || !std::filesystem::is_regular_file(source_path, ec) || ec)
+			{
+				cb->Failure(400, "File attachment does not exist: " + source_path_text);
+				return;
+			}
+			const std::uintmax_t source_size = std::filesystem::file_size(source_path, ec);
+			if (ec || source_size > kMaxAttachmentBytes)
+			{
+				cb->Failure(413, "Attachment is larger than the 25 MB limit.");
+				return;
+			}
+			std::ifstream in(source_path, std::ios::binary);
+			if (!in)
+			{
+				cb->Failure(500, "Failed to read attachment: " + source_path_text);
+				return;
+			}
+			std::ostringstream buffer;
+			buffer << in.rdbuf();
+			bytes = buffer.str();
+		}
+		else
+		{
+			cb->Failure(400, "File attachments require data or a filesystem path.");
+			return;
+		}
+
+		const std::string prefix = std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + "-" + std::to_string(index++);
+		const std::filesystem::path target = attachment_root / (prefix + "-" + attachment.name);
+		std::ofstream out(target, std::ios::binary);
+		if (!out)
+		{
+			cb->Failure(500, "Failed to write attachment.");
+			return;
+		}
+		out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+		if (!out)
+		{
+			cb->Failure(500, "Failed to write attachment.");
+			return;
+		}
+		attachment.path = PathForPrompt(workspace_root, target);
+		attachment.size_bytes = bytes.size();
+		attachment.copied = true;
+		staged.push_back(AttachmentToJson(attachment));
+	}
+
+	cb->Success(nlohmann::json{{"attachments", staged}}.dump());
 }
 
 void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

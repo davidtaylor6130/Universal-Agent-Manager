@@ -6,6 +6,7 @@
 #include "common/runtime/app_time.h"
 #include "common/provider/codex/cli/codex_session_index.h"
 #include "common/provider/provider_runtime.h"
+#include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/runtime/terminal/terminal_identity.h"
@@ -294,6 +295,15 @@ std::string MessageDigestForFingerprint(const ChatSession& session)
 				FingerprintHashString(hash, block.text);
 				FingerprintHashString(hash, block.tool_call_id);
 				FingerprintHashString(hash, block.request_id_json);
+			}
+			FingerprintHashString(hash, std::to_string(last_message.attachments.size()));
+			for (const MessageAttachment& attachment : last_message.attachments)
+			{
+				FingerprintHashString(hash, attachment.id);
+				FingerprintHashString(hash, attachment.kind);
+				FingerprintHashString(hash, attachment.path);
+				FingerprintHashString(hash, std::to_string(attachment.size_bytes));
+				FingerprintHashBool(hash, attachment.copied);
 			}
 			FingerprintHashBool(hash, last_message.interrupted);
 		}
@@ -667,9 +677,9 @@ nlohmann::json SerializeCliDebugState(const AppState& app)
 	return cli_debug;
 }
 
-nlohmann::json SerializeMemoryActivity(const AppState& app)
-{
-	const uam::MemoryActivityState activity = MemoryService::BuildMemoryActivity(app);
+	nlohmann::json SerializeMemoryActivity(const AppState& app)
+	{
+		const uam::MemoryActivityState activity = MemoryService::BuildMemoryActivity(app);
 	return {
 		{"entryCount", activity.entry_count},
 		{"lastCreatedAt", activity.last_created_at},
@@ -686,8 +696,70 @@ nlohmann::json SerializeMemoryActivity(const AppState& app)
 		{"lastWorkerCanceled", activity.last_worker_canceled},
 		{"lastWorkerHasExitCode", activity.last_worker_has_exit_code},
 		{"lastWorkerExitCode", activity.last_worker_exit_code},
-	};
-}
+		};
+	}
+
+	std::string ActiveCliVersionProviderId(const AppState& app)
+	{
+		if (app.selected_chat_index >= 0 && app.selected_chat_index < static_cast<int>(app.chats.size()))
+		{
+			const std::string selected_provider_id = uam::strings::Trim(app.chats[static_cast<std::size_t>(app.selected_chat_index)].provider_id);
+			if (selected_provider_id == "codex-cli" || selected_provider_id == "gemini-cli")
+			{
+				return selected_provider_id;
+			}
+		}
+
+		const std::string active_provider_id = uam::strings::Trim(app.settings.active_provider_id);
+		return active_provider_id == "codex-cli" ? "codex-cli" : "gemini-cli";
+	}
+
+	nlohmann::json SerializeCliVersionManager(const AppState& app)
+	{
+		const ProviderCliCompatibilityService service;
+		const std::string provider_id = ActiveCliVersionProviderId(app);
+		const bool check_running_for_provider = app.runtime_cli_version_check_task.running && app.runtime_cli_version_provider_id == provider_id;
+		const bool install_running_for_provider = app.runtime_cli_pin_task.running && app.runtime_cli_pin_provider_id == provider_id;
+		const bool state_matches_provider = app.runtime_cli_version_provider_id.empty() || app.runtime_cli_version_provider_id == provider_id;
+		const std::string preferred_version = service.PreferredVersionForProvider(provider_id);
+		const std::string selected_version = app.runtime_cli_selected_version.empty() ? (app.runtime_cli_installed_version.empty() ? preferred_version : app.runtime_cli_installed_version) : app.runtime_cli_selected_version;
+
+		auto versions = nlohmann::json::array();
+		for (const CliProviderVersionOption& option : service.SupportedVersionsForProvider(provider_id))
+		{
+			versions.push_back({
+				{"version", option.version},
+				{"preferred", option.preferred},
+			});
+		}
+
+		std::string status = "unknown";
+		if (check_running_for_provider)
+		{
+			status = "checking";
+		}
+		else if (install_running_for_provider)
+		{
+			status = "installing";
+		}
+		else if (state_matches_provider && app.runtime_cli_version_checked)
+		{
+			status = app.runtime_cli_version_supported ? "supported" : "unsupported";
+		}
+
+		return {
+			{"providerId", provider_id},
+			{"installedVersion", state_matches_provider ? app.runtime_cli_installed_version : ""},
+			{"selectedVersion", selected_version},
+			{"availableVersions", std::move(versions)},
+			{"preferredVersion", preferred_version},
+			{"status", status},
+			{"message", state_matches_provider ? app.runtime_cli_version_message : ""},
+			{"running", check_running_for_provider || install_running_for_provider},
+			{"lastCommand", install_running_for_provider ? app.runtime_cli_pin_task.command_preview : app.runtime_cli_version_check_task.command_preview},
+			{"lastOutput", app.runtime_cli_pin_output.empty() ? app.runtime_cli_version_raw_output : app.runtime_cli_pin_output},
+		};
+	}
 
 } // anonymous namespace
 
@@ -753,6 +825,7 @@ nlohmann::json StateSerializer::Serialize(const AppState& app)
 	j["chats"] = chats_arr;
 	j["cliDebug"] = SerializeCliDebugState(app);
 	j["memoryActivity"] = SerializeMemoryActivity(app);
+	j["cliVersionManager"] = SerializeCliVersionManager(app);
 
 	// Selected chat id (resolved from index)
 	if (app.selected_chat_index >= 0 &&
@@ -838,6 +911,7 @@ nlohmann::json StateSerializer::SerializeFingerprint(const AppState& app)
 	}
 	j["providers"] = providers_arr;
 	j["memoryActivity"] = SerializeMemoryActivity(app);
+	j["cliVersionManager"] = SerializeCliVersionManager(app);
 
 	{
 		nlohmann::json settings;
@@ -846,6 +920,7 @@ nlohmann::json StateSerializer::SerializeFingerprint(const AppState& app)
 		settings["memoryEnabledDefault"] = app.settings.memory_enabled_default;
 		settings["memoryIdleDelaySeconds"] = app.settings.memory_idle_delay_seconds;
 		settings["memoryRecallBudgetBytes"] = app.settings.memory_recall_budget_bytes;
+		settings["markdownStoreDirectory"] = app.settings.markdown_store_directory;
 		j["settings"] = settings;
 	}
 
@@ -918,6 +993,39 @@ nlohmann::json StateSerializer::SerializeSession(const ChatSession& session)
 				if (!blocks.empty())
 				{
 					m["blocks"] = std::move(blocks);
+				}
+			}
+			if (!msg.markdown_store_files.empty())
+			{
+				auto markdown_store_files = nlohmann::json::array();
+				for (const std::string& file : msg.markdown_store_files)
+				{
+					markdown_store_files.push_back(file);
+				}
+				m["markdownStoreFiles"] = std::move(markdown_store_files);
+			}
+			if (!msg.attachments.empty())
+			{
+				auto attachments = nlohmann::json::array();
+				for (const MessageAttachment& attachment : msg.attachments)
+				{
+					if (attachment.path.empty())
+					{
+						continue;
+					}
+					attachments.push_back({
+						{"id", attachment.id},
+						{"name", attachment.name},
+						{"kind", attachment.kind},
+						{"type", attachment.mime_type},
+						{"path", attachment.path},
+						{"size", attachment.size_bytes},
+						{"copied", attachment.copied},
+					});
+				}
+				if (!attachments.empty())
+				{
+					m["attachments"] = std::move(attachments);
 				}
 			}
 			msgs.push_back(m);

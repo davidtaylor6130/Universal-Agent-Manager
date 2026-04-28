@@ -1,8 +1,9 @@
 import { create } from 'zustand'
 import { Session, Folder } from '../types/session'
-import { Message, MessageBlock } from '../types/message'
+import { Attachment, Message, MessageBlock } from '../types/message'
 import { Provider } from '../types/provider'
 import { MemoryEntry, MemoryEntryDraft, MemoryScope, MemoryScanCandidate } from '../types/memory'
+import type { MarkdownStoreDraft, MarkdownStoreEntry } from '../types/markdownStore'
 import { sendToCEF, isCefContext, createRequestId } from '../ipc/cefBridge'
 import { applyDocumentTheme, writeStoredTheme } from '../utils/themeStorage'
 
@@ -88,7 +89,19 @@ interface CppMessage {
   planEntries?: AcpPlanEntry[]
   toolCalls?: AcpToolCall[]
   blocks?: MessageBlock[]
+  markdownStoreFiles?: string[]
+  attachments?: Attachment[]
   createdAt: string
+}
+
+export interface ChatAttachmentInput {
+  id: string
+  name: string
+  kind: 'file' | 'image' | 'directory'
+  mimeType?: string
+  size?: number
+  path?: string
+  dataBase64?: string
 }
 
 interface CppChat {
@@ -317,6 +330,24 @@ export interface MemoryActivity {
   lastWorkerExitCode?: number
 }
 
+export interface CliVersionOption {
+  version: string
+  preferred: boolean
+}
+
+export interface CliVersionManager {
+  providerId: string
+  installedVersion: string
+  selectedVersion: string
+  availableVersions: CliVersionOption[]
+  preferredVersion: string
+  status: 'unknown' | 'checking' | 'installing' | 'supported' | 'unsupported'
+  message: string
+  running: boolean
+  lastCommand: string
+  lastOutput: string
+}
+
 interface CppSettings {
   activeProviderId: string
   theme: string
@@ -325,6 +356,7 @@ interface CppSettings {
   memoryRecallBudgetBytes: number
   memoryLastStatus: string
   memoryWorkerBindings: Record<string, MemoryWorkerBinding>
+  markdownStoreDirectory?: string
 }
 
 export interface CppAppState {
@@ -337,6 +369,7 @@ export interface CppAppState {
   providers: CppProvider[]
   settings: CppSettings
   memoryActivity?: MemoryActivity
+  cliVersionManager?: CliVersionManager
 }
 
 export interface CppStatePatch {
@@ -350,6 +383,7 @@ export interface CppStatePatch {
   providers?: CppProvider[]
   settings?: CppSettings
   memoryActivity?: MemoryActivity
+  cliVersionManager?: CliVersionManager
 }
 
 export interface CliBinding {
@@ -544,8 +578,45 @@ function sanitizeCppMessage(value: unknown): CppMessage | null {
           return sanitized ? [sanitized as MessageBlock] : []
         })
       : [],
+    attachments: Array.isArray(value.attachments)
+      ? value.attachments.flatMap((attachment) => {
+          const sanitized = sanitizeAttachment(attachment)
+          return sanitized ? [sanitized] : []
+        })
+      : [],
     createdAt: stringOr(value.createdAt),
   }
+}
+
+function sanitizeAttachment(value: unknown): Attachment | null {
+  if (!isRecord(value)) return null
+  const path = isString(value.path) ? value.path : ''
+  const name = isString(value.name) ? value.name : path.split(/[\\/]/).pop() || ''
+  const id = isString(value.id) ? value.id : path || name
+  if (!id || !name) return null
+  const type = isString(value.kind)
+    ? value.kind
+    : isString(value.type)
+      ? value.type
+      : 'file'
+  return {
+    id,
+    name,
+    type,
+    size: finiteNumberOr(value.size, finiteNumberOr(value.sizeBytes, 0)),
+    path,
+  }
+}
+
+function messageAttachments(message: CppMessage): Attachment[] {
+  const markdownAttachments = (message.markdownStoreFiles ?? []).map((filePath) => ({
+    id: filePath,
+    name: filePath.split(/[\\/]/).pop() || filePath,
+    type: 'markdown-store',
+    size: 0,
+    path: filePath,
+  }))
+  return [...markdownAttachments, ...(message.attachments ?? [])]
 }
 
 function sanitizeCppCliTerminal(value: unknown): CppChat['cliTerminal'] | undefined {
@@ -939,6 +1010,51 @@ function sanitizeCliDebugState(value: unknown): CppCliDebugState | undefined {
   }
 }
 
+const emptyCliVersionManager: CliVersionManager = {
+  providerId: GEMINI_CLI_PROVIDER_ID,
+  installedVersion: '',
+  selectedVersion: '',
+  availableVersions: [],
+  preferredVersion: '',
+  status: 'unknown',
+  message: '',
+  running: false,
+  lastCommand: '',
+  lastOutput: '',
+}
+
+function sanitizeCliVersionManager(value: unknown): CliVersionManager | undefined {
+  if (!isRecord(value)) return undefined
+  const status = stringOr(value.status)
+  const normalizedStatus: CliVersionManager['status'] =
+    status === 'checking' ||
+    status === 'installing' ||
+    status === 'supported' ||
+    status === 'unsupported' ||
+    status === 'unknown'
+      ? status
+      : 'unknown'
+
+  return {
+    providerId: stringOr(value.providerId, GEMINI_CLI_PROVIDER_ID),
+    installedVersion: stringOr(value.installedVersion),
+    selectedVersion: stringOr(value.selectedVersion),
+    availableVersions: Array.isArray(value.availableVersions)
+      ? value.availableVersions.flatMap((option) => {
+          if (!isRecord(option)) return []
+          const version = stringOr(option.version).trim()
+          return version ? [{ version, preferred: booleanOr(option.preferred) }] : []
+        })
+      : [],
+    preferredVersion: stringOr(value.preferredVersion),
+    status: normalizedStatus,
+    message: stringOr(value.message),
+    running: booleanOr(value.running),
+    lastCommand: stringOr(value.lastCommand),
+    lastOutput: stringOr(value.lastOutput),
+  }
+}
+
 function sanitizeCppSettings(value: unknown): CppSettings {
   if (!isRecord(value)) {
     return {
@@ -949,6 +1065,7 @@ function sanitizeCppSettings(value: unknown): CppSettings {
       memoryRecallBudgetBytes: 2048,
       memoryLastStatus: '',
       memoryWorkerBindings: {},
+      markdownStoreDirectory: '',
     }
   }
 
@@ -971,6 +1088,7 @@ function sanitizeCppSettings(value: unknown): CppSettings {
     memoryRecallBudgetBytes: Math.min(8192, Math.max(512, finiteNumberOr(value.memoryRecallBudgetBytes, 2048))),
     memoryLastStatus: stringOr(value.memoryLastStatus),
     memoryWorkerBindings: bindings,
+    markdownStoreDirectory: stringOr(value.markdownStoreDirectory),
   }
 }
 
@@ -1018,6 +1136,7 @@ function sanitizeCppAppState(value: unknown): CppAppState | null {
     providers,
     settings,
     memoryActivity: sanitizeMemoryActivity(value.memoryActivity, settings.memoryLastStatus),
+    cliVersionManager: sanitizeCliVersionManager(value.cliVersionManager),
   }
 }
 
@@ -1072,6 +1191,7 @@ function sanitizeCppStatePatch(value: unknown): CppStatePatch | null {
       : undefined,
     settings: isRecord(value.settings) ? sanitizeCppSettings(value.settings) : undefined,
     memoryActivity: value.memoryActivity !== undefined ? sanitizeMemoryActivity(value.memoryActivity) : undefined,
+    cliVersionManager: value.cliVersionManager !== undefined ? sanitizeCliVersionManager(value.cliVersionManager) : undefined,
   }
 }
 
@@ -1529,6 +1649,8 @@ function deserializeState(
     memoryLastStatus: string
     memoryWorkerBindings: Record<string, MemoryWorkerBinding>
     memoryActivity: MemoryActivity
+    cliVersionManager: CliVersionManager
+    markdownStoreDirectory: string
   }
 ) {
   const buildMessage = (chatId: string, message: CppMessage, index: number): Message => {
@@ -1544,6 +1666,7 @@ function deserializeState(
       planEntries: message.planEntries ?? [],
       toolCalls: message.toolCalls ?? [],
       blocks: message.blocks ?? [],
+      attachments: messageAttachments(message),
       createdAt: new Date(createdAtMillis),
     } satisfies Message
   }
@@ -1878,6 +2001,8 @@ function deserializeState(
     memoryLastStatus: cpp.settings.memoryLastStatus,
     memoryWorkerBindings: cpp.settings.memoryWorkerBindings,
     memoryActivity: cpp.memoryActivity ?? sanitizeMemoryActivity(undefined, cpp.settings.memoryLastStatus),
+    cliVersionManager: cpp.cliVersionManager ?? existing.cliVersionManager,
+    markdownStoreDirectory: cpp.settings.markdownStoreDirectory ?? '',
   }
 }
 
@@ -2012,6 +2137,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
       planEntries: message.planEntries ?? [],
       toolCalls: message.toolCalls ?? [],
       blocks: message.blocks ?? [],
+      attachments: messageAttachments(message),
       createdAt: new Date(cppMessageCreatedAtMillis(message)),
     }))
   }
@@ -2148,6 +2274,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     memoryLastStatus: patch.settings?.memoryLastStatus ?? current.memoryLastStatus,
     memoryWorkerBindings: patch.settings?.memoryWorkerBindings ?? current.memoryWorkerBindings,
     memoryActivity: patch.memoryActivity ?? current.memoryActivity,
+    cliVersionManager: patch.cliVersionManager ?? current.cliVersionManager,
+    markdownStoreDirectory: patch.settings?.markdownStoreDirectory ?? current.markdownStoreDirectory,
   }
 }
 
@@ -2213,6 +2341,8 @@ interface AppState {
   memoryLastStatus: string
   memoryWorkerBindings: Record<string, MemoryWorkerBinding>
   memoryActivity: MemoryActivity
+  cliVersionManager: CliVersionManager
+  markdownStoreDirectory: string
 
   // UI
   theme: 'dark' | 'light'
@@ -2229,6 +2359,11 @@ interface AppState {
   memoryScanLoading: boolean
   memoryScanRunning: boolean
   memoryScanError: string
+  isMarkdownStoreOpen: boolean
+  markdownStoreEntries: MarkdownStoreEntry[]
+  markdownStoreLoading: boolean
+  markdownStoreError: string
+  markdownStoreAttachedBySessionId: Record<string, MarkdownStoreEntry[]>
   streamingMessageId: string | null
   pushChannelStatus: PushChannelStatus
   pushChannelError: string
@@ -2245,6 +2380,17 @@ interface AppState {
 	  setSessionApprovalMode: (id: string, modeId: string) => Promise<boolean>
 	  setSessionMemoryEnabled: (id: string, enabled: boolean) => Promise<boolean>
 	  setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'memoryWorkerBindings'>>) => Promise<boolean>
+	  refreshCliProviderVersion: (providerId?: string) => Promise<boolean>
+	  applyCliProviderVersion: (providerId: string, version: string) => Promise<boolean>
+	  browseMarkdownStoreDirectory: (currentValue: string) => Promise<string | null>
+	  setMarkdownStoreDirectory: (directory: string) => Promise<boolean>
+	  openMarkdownStore: () => Promise<boolean>
+	  closeMarkdownStore: () => void
+	  refreshMarkdownStore: () => Promise<boolean>
+	  createMarkdownStoreEntry: (draft: MarkdownStoreDraft) => Promise<boolean>
+	  revealMarkdownStoreEntry: (entry: MarkdownStoreEntry) => Promise<boolean>
+	  attachMarkdownStoreEntry: (sessionId: string, entry: MarkdownStoreEntry) => void
+	  detachMarkdownStoreEntry: (sessionId: string, filePath: string) => void
 	  openSessionWorkspace: (id: string) => Promise<boolean>
 	  deleteSession: (id: string) => void
 
@@ -2275,7 +2421,8 @@ interface AppState {
   setCliBinding: (sessionId: string, binding: Partial<CliBinding>) => void
 
   // ACP actions
-  sendAcpPrompt: (sessionId: string, text: string) => Promise<boolean>
+  stageChatAttachments: (sessionId: string, items: ChatAttachmentInput[]) => Promise<Attachment[]>
+  sendAcpPrompt: (sessionId: string, text: string, attachments?: Attachment[]) => Promise<boolean>
   cancelAcpTurn: (sessionId: string) => Promise<boolean>
   resolveAcpPermission: (sessionId: string, requestId: string, optionId: string | 'cancelled') => Promise<boolean>
   resolveAcpUserInput: (sessionId: string, requestId: string, answers: AcpUserInputAnswers) => Promise<boolean>
@@ -2331,6 +2478,8 @@ export const useAppStore = create<AppState>((set, get) => {
 	            memoryLastStatus: current.memoryLastStatus,
 	            memoryWorkerBindings: current.memoryWorkerBindings,
 	            memoryActivity: current.memoryActivity,
+	            cliVersionManager: current.cliVersionManager,
+	            markdownStoreDirectory: current.markdownStoreDirectory,
 	          })
           set(deserialized)
           // Sync theme to DOM
@@ -2466,6 +2615,8 @@ export const useAppStore = create<AppState>((set, get) => {
     memoryLastStatus: '',
     memoryWorkerBindings: {},
     memoryActivity: { ...emptyMemoryActivity },
+    cliVersionManager: { ...emptyCliVersionManager },
+    markdownStoreDirectory: '',
 
     theme: readDocumentTheme(),
     isNewChatModalOpen: false,
@@ -2481,6 +2632,11 @@ export const useAppStore = create<AppState>((set, get) => {
     memoryScanLoading: false,
     memoryScanRunning: false,
     memoryScanError: '',
+    isMarkdownStoreOpen: false,
+    markdownStoreEntries: [],
+    markdownStoreLoading: false,
+    markdownStoreError: '',
+    markdownStoreAttachedBySessionId: {},
     streamingMessageId: null,
     pushChannelStatus: inCef ? 'no-push-yet' : 'connected',
     pushChannelError: '',
@@ -2511,6 +2667,8 @@ export const useAppStore = create<AppState>((set, get) => {
         memoryLastStatus: current.memoryLastStatus,
         memoryWorkerBindings: current.memoryWorkerBindings,
         memoryActivity: current.memoryActivity,
+        cliVersionManager: current.cliVersionManager,
+        markdownStoreDirectory: current.markdownStoreDirectory,
       })
       set(deserialized)
       if (deserialized.theme) {
@@ -2987,6 +3145,61 @@ export const useAppStore = create<AppState>((set, get) => {
 	      return true
 	    },
 
+	    refreshCliProviderVersion: async (providerId) => {
+	      const targetProviderId = providerId?.trim() || get().cliVersionManager.providerId
+	      if (!targetProviderId) return false
+
+	      if (isCefContext()) {
+	        const response = await sendToCEF({
+	          action: 'refreshCliProviderVersion',
+	          payload: { providerId: targetProviderId },
+	          requestId: createRequestId('refreshCliProviderVersion'),
+	        })
+	        return response.ok
+	      }
+
+	      set((state) => ({
+	        cliVersionManager: {
+	          ...state.cliVersionManager,
+	          providerId: targetProviderId,
+	          status: 'supported',
+	          message: 'Provider CLI version is supported.',
+	          running: false,
+	        },
+	      }))
+	      return true
+	    },
+
+	    applyCliProviderVersion: async (providerId, version) => {
+	      const targetProviderId = providerId.trim()
+	      const targetVersion = version.trim()
+	      if (!targetProviderId || !targetVersion) return false
+
+	      if (isCefContext()) {
+	        const response = await sendToCEF({
+	          action: 'applyCliProviderVersion',
+	          payload: { providerId: targetProviderId, version: targetVersion },
+	          requestId: createRequestId('applyCliProviderVersion'),
+	        })
+	        return response.ok
+	      }
+
+	      set((state) => ({
+	        cliVersionManager: {
+	          ...state.cliVersionManager,
+	          providerId: targetProviderId,
+	          selectedVersion: targetVersion,
+	          installedVersion: targetVersion,
+	          status: 'supported',
+	          message: 'Provider CLI version is supported.',
+	          running: false,
+	          lastCommand: `npm install -g ${targetProviderId === 'codex-cli' ? '@openai/codex' : '@google/gemini-cli'}@${targetVersion}`,
+	          lastOutput: 'Dev mode install simulated.',
+	        },
+	      }))
+	      return true
+	    },
+
 	    deleteSession: (id) => {
       if (isCefContext()) {
         const current = get()
@@ -3271,6 +3484,140 @@ export const useAppStore = create<AppState>((set, get) => {
       const selectedPath = response.ok ? response.data?.selectedPath?.trim() ?? '' : ''
       return selectedPath.length > 0 ? selectedPath : null
     },
+
+    browseMarkdownStoreDirectory: async (currentValue) => {
+      if (!isCefContext()) {
+        return null
+      }
+
+      const response = await sendToCEF<{ selectedPath?: string }>({
+        action: 'browseMarkdownStoreDirectory',
+        payload: { currentValue },
+      })
+
+      const selectedPath = response.ok ? response.data?.selectedPath?.trim() ?? '' : ''
+      return selectedPath.length > 0 ? selectedPath : null
+    },
+
+    setMarkdownStoreDirectory: async (directory) => {
+      const trimmed = directory.trim()
+      if (isCefContext()) {
+        const response = await sendToCEF<{ directory?: string }>({
+          action: 'setMarkdownStoreDirectory',
+          payload: { directory: trimmed },
+        })
+        if (!response.ok) {
+          set({ markdownStoreError: response.error ?? 'Failed to save Markdown Store directory.' })
+          return false
+        }
+        set({
+          markdownStoreDirectory: response.data?.directory ?? trimmed,
+          markdownStoreError: '',
+        })
+        return true
+      }
+
+      set({ markdownStoreDirectory: trimmed, markdownStoreError: '' })
+      return true
+    },
+
+    openMarkdownStore: async () => {
+      set({ isMarkdownStoreOpen: true, markdownStoreLoading: true, markdownStoreError: '' })
+      return get().refreshMarkdownStore()
+    },
+
+    closeMarkdownStore: () => set({
+      isMarkdownStoreOpen: false,
+      markdownStoreEntries: [],
+      markdownStoreLoading: false,
+      markdownStoreError: '',
+    }),
+
+    refreshMarkdownStore: async () => {
+      if (isCefContext()) {
+        const response = await sendToCEF<{ directory?: string; entries?: MarkdownStoreEntry[] }>({
+          action: 'listMarkdownStoreEntries',
+        })
+        if (!response.ok) {
+          set({
+            markdownStoreLoading: false,
+            markdownStoreError: response.error ?? 'Failed to load Markdown Store.',
+          })
+          return false
+        }
+        set({
+          markdownStoreDirectory: response.data?.directory ?? get().markdownStoreDirectory,
+          markdownStoreEntries: response.data?.entries ?? [],
+          markdownStoreLoading: false,
+          markdownStoreError: '',
+        })
+        return true
+      }
+
+      set({ markdownStoreLoading: false, markdownStoreError: '' })
+      return true
+    },
+
+    createMarkdownStoreEntry: async (draft) => {
+      if (isCefContext()) {
+        const response = await sendToCEF<MarkdownStoreEntry>({
+          action: 'createMarkdownStoreEntry',
+          payload: draft,
+        })
+        if (!response.ok) {
+          set({ markdownStoreError: response.error ?? 'Failed to publish Markdown Store entry.' })
+          return false
+        }
+        return get().refreshMarkdownStore()
+      }
+
+      const synthetic: MarkdownStoreEntry = {
+        id: `${draft.title || Date.now()}.uam`,
+        title: draft.title,
+        maker: draft.maker,
+        review: draft.review,
+        dateCreated: new Date().toISOString(),
+        dateUpdated: new Date().toISOString(),
+        preview: draft.body,
+        filePath: `${get().markdownStoreDirectory}/${draft.title || Date.now()}.uam`,
+      }
+      set((state) => ({ markdownStoreEntries: [...state.markdownStoreEntries, synthetic] }))
+      return true
+    },
+
+    revealMarkdownStoreEntry: async (entry) => {
+      if (isCefContext()) {
+        const response = await sendToCEF({
+          action: 'revealMarkdownStoreEntry',
+          payload: { filePath: entry.filePath },
+        })
+        if (!response.ok) {
+          set({ markdownStoreError: response.error ?? 'Failed to reveal Markdown Store entry.' })
+          return false
+        }
+      }
+      return true
+    },
+
+    attachMarkdownStoreEntry: (sessionId, entry) => set((state) => {
+      const current = state.markdownStoreAttachedBySessionId[sessionId] ?? []
+      if (current.some((candidate) => candidate.filePath === entry.filePath)) {
+        return state
+      }
+      return {
+        markdownStoreAttachedBySessionId: {
+          ...state.markdownStoreAttachedBySessionId,
+          [sessionId]: [...current, entry],
+        },
+      }
+    }),
+
+    detachMarkdownStoreEntry: (sessionId, filePath) => set((state) => ({
+      markdownStoreAttachedBySessionId: {
+        ...state.markdownStoreAttachedBySessionId,
+        [sessionId]: (state.markdownStoreAttachedBySessionId[sessionId] ?? []).filter((entry) => entry.filePath !== filePath),
+      },
+    })),
 
     openAllMemoryLibrary: async () => {
       set({ memoryLibraryLoading: true, memoryLibraryError: '' })
@@ -3782,16 +4129,42 @@ export const useAppStore = create<AppState>((set, get) => {
         }
       }),
 
-    sendAcpPrompt: async (sessionId, text) => {
+    stageChatAttachments: async (sessionId, items) => {
+      if (items.length === 0) return []
+      if (isCefContext()) {
+        const response = await sendToCEF<{ attachments?: Attachment[] }>({
+          action: 'stageChatAttachments',
+          payload: { chatId: sessionId, items },
+        })
+        if (!response.ok) {
+          throw new Error(response.error ?? 'Failed to stage attachments.')
+        }
+        return (response.data?.attachments ?? []).flatMap((attachment) => {
+          const sanitized = sanitizeAttachment(attachment)
+          return sanitized ? [sanitized] : []
+        })
+      }
+
+      return items.map((item) => ({
+        id: item.id,
+        name: item.name,
+        type: item.kind,
+        size: item.size ?? 0,
+        path: item.path || item.name,
+      }))
+    },
+
+    sendAcpPrompt: async (sessionId, text, attachments = []) => {
       const prompt = text.trim()
       if (!prompt) {
         return false
       }
+      const markdownStoreFiles = (get().markdownStoreAttachedBySessionId[sessionId] ?? []).map((entry) => entry.filePath)
 
       if (isCefContext()) {
         const response = await sendToCEF({
           action: 'sendAcpPrompt',
-          payload: { chatId: sessionId, text: prompt },
+          payload: { chatId: sessionId, text: prompt, markdownStoreFiles, attachments },
         })
         if (!response.ok) {
           set((state) => ({
@@ -3839,6 +4212,12 @@ export const useAppStore = create<AppState>((set, get) => {
           }))
           return false
         }
+        set((state) => ({
+          markdownStoreAttachedBySessionId: {
+            ...state.markdownStoreAttachedBySessionId,
+            [sessionId]: [],
+          },
+        }))
         return true
       }
 
@@ -3853,6 +4232,16 @@ export const useAppStore = create<AppState>((set, get) => {
               sessionId,
               role: 'user',
               content: prompt,
+              attachments: [
+                ...markdownStoreFiles.map((filePath) => ({
+                id: filePath,
+                name: filePath.split(/[\\/]/).pop() || filePath,
+                type: 'markdown-store',
+                size: 0,
+                path: filePath,
+                })),
+                ...attachments,
+              ],
               createdAt: now,
             },
             {
@@ -3863,6 +4252,10 @@ export const useAppStore = create<AppState>((set, get) => {
               createdAt: now,
             },
           ],
+        },
+        markdownStoreAttachedBySessionId: {
+          ...state.markdownStoreAttachedBySessionId,
+          [sessionId]: [],
         },
         acpBindingBySessionId: {
           ...state.acpBindingBySessionId,

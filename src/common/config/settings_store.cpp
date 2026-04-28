@@ -234,6 +234,7 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	lines << "memory_idle_delay_seconds=" << normalized.memory_idle_delay_seconds << '\n';
 	lines << "memory_recall_budget_bytes=" << normalized.memory_recall_budget_bytes << '\n';
 	lines << "memory_worker_bindings=" << EncodeMemoryWorkerBindings(normalized.memory_worker_bindings) << '\n';
+	lines << "markdown_store_directory=" << uam::EncodeLineValue(normalized.markdown_store_directory) << '\n';
 	return uam::io::WriteTextFile(settings_file, lines.str());
 }
 
@@ -355,6 +356,10 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		else if (key == "memory_worker_bindings")
 		{
 			DecodeMemoryWorkerBindings(decoded_value, settings.memory_worker_bindings);
+		}
+		else if (key == "markdown_store_directory")
+		{
+			settings.markdown_store_directory = decoded_value;
 		}
 	}
 

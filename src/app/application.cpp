@@ -92,6 +92,15 @@ namespace
 		task.state.reset();
 	}
 
+	void ResetRuntimeCliVersionState(uam::AppState& app)
+	{
+		ResetAsyncCommandTask(app.runtime_cli_version_check_task);
+		ResetAsyncCommandTask(app.runtime_cli_pin_task);
+		app.runtime_cli_version_provider_id.clear();
+		app.runtime_cli_pin_provider_id.clear();
+		app.runtime_cli_selected_version.clear();
+	}
+
 	void ResetPendingRuntimeCall(PendingRuntimeCall& call)
 	{
 		if (call.worker != nullptr)
@@ -129,7 +138,10 @@ namespace
 	{
 		bool runtime_cli_version_checked = false;
 		bool runtime_cli_version_supported = false;
+		std::string runtime_cli_version_provider_id;
+		std::string runtime_cli_pin_provider_id;
 		std::string runtime_cli_installed_version;
+		std::string runtime_cli_selected_version;
 		std::string runtime_cli_version_raw_output;
 		std::string runtime_cli_version_message;
 		std::string runtime_cli_pin_output;
@@ -141,7 +153,10 @@ namespace
 		RuntimeCliCompatibilitySnapshot snapshot;
 		snapshot.runtime_cli_version_checked = app.runtime_cli_version_checked;
 		snapshot.runtime_cli_version_supported = app.runtime_cli_version_supported;
+		snapshot.runtime_cli_version_provider_id = app.runtime_cli_version_provider_id;
+		snapshot.runtime_cli_pin_provider_id = app.runtime_cli_pin_provider_id;
 		snapshot.runtime_cli_installed_version = app.runtime_cli_installed_version;
+		snapshot.runtime_cli_selected_version = app.runtime_cli_selected_version;
 		snapshot.runtime_cli_version_raw_output = app.runtime_cli_version_raw_output;
 		snapshot.runtime_cli_version_message = app.runtime_cli_version_message;
 		snapshot.runtime_cli_pin_output = app.runtime_cli_pin_output;
@@ -151,7 +166,7 @@ namespace
 
 	bool RuntimeCliCompatibilitySnapshotChanged(const RuntimeCliCompatibilitySnapshot& before, const RuntimeCliCompatibilitySnapshot& after)
 	{
-		return before.runtime_cli_version_checked != after.runtime_cli_version_checked || before.runtime_cli_version_supported != after.runtime_cli_version_supported || before.runtime_cli_installed_version != after.runtime_cli_installed_version || before.runtime_cli_version_raw_output != after.runtime_cli_version_raw_output || before.runtime_cli_version_message != after.runtime_cli_version_message || before.runtime_cli_pin_output != after.runtime_cli_pin_output || before.status_line != after.status_line;
+		return before.runtime_cli_version_checked != after.runtime_cli_version_checked || before.runtime_cli_version_supported != after.runtime_cli_version_supported || before.runtime_cli_version_provider_id != after.runtime_cli_version_provider_id || before.runtime_cli_pin_provider_id != after.runtime_cli_pin_provider_id || before.runtime_cli_installed_version != after.runtime_cli_installed_version || before.runtime_cli_selected_version != after.runtime_cli_selected_version || before.runtime_cli_version_raw_output != after.runtime_cli_version_raw_output || before.runtime_cli_version_message != after.runtime_cli_version_message || before.runtime_cli_pin_output != after.runtime_cli_pin_output || before.status_line != after.status_line;
 	}
 
 	bool HasSelectedActiveRuntime(const uam::AppState& app)
@@ -500,8 +515,7 @@ void Application::Shutdown()
 		ResetPendingRuntimeCall(call);
 	m_app.pending_calls.clear();
 	m_app.resolved_native_sessions_by_chat_id.clear();
-	ResetAsyncCommandTask(m_app.runtime_cli_version_check_task);
-	ResetAsyncCommandTask(m_app.runtime_cli_pin_task);
+		ResetRuntimeCliVersionState(m_app);
 	MemoryService::StopMemoryTasks(m_app);
 	ResetNativeChatLoadTask(m_app.native_chat_load_task);
 	ResetNativeChatLoadTasks(m_app.native_chat_load_tasks);

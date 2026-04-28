@@ -69,8 +69,32 @@ namespace
 			if (chat.native_session_id.empty() && !chat.id.empty() && !IsLocalDraftChatId(chat.id))
 			{
 				chat.native_session_id = chat.id;
-			}
 		}
+	}
+
+	JsonValue StringArrayToJson(const std::vector<std::string>& values);
+	std::vector<std::string> JsonStringArrayOrEmpty(const JsonValue* value);
+
+	JsonValue AttachmentToJson(const MessageAttachment& attachment)
+	{
+		JsonValue obj;
+		obj.type = JsonValue::Type::Object;
+		obj.object_value["id"].type = JsonValue::Type::String;
+		obj.object_value["id"].string_value = attachment.id;
+		obj.object_value["name"].type = JsonValue::Type::String;
+		obj.object_value["name"].string_value = attachment.name;
+		obj.object_value["kind"].type = JsonValue::Type::String;
+		obj.object_value["kind"].string_value = attachment.kind;
+		obj.object_value["mime_type"].type = JsonValue::Type::String;
+		obj.object_value["mime_type"].string_value = attachment.mime_type;
+		obj.object_value["path"].type = JsonValue::Type::String;
+		obj.object_value["path"].string_value = attachment.path;
+		obj.object_value["size_bytes"].type = JsonValue::Type::Number;
+		obj.object_value["size_bytes"].number_value = static_cast<double>(attachment.size_bytes);
+		obj.object_value["copied"].type = JsonValue::Type::Bool;
+		obj.object_value["copied"].bool_value = attachment.copied;
+		return obj;
+	}
 
 	JsonValue MessageToJson(const Message& msg)
 	{
@@ -207,6 +231,27 @@ namespace
 				obj.object_value["blocks"] = std::move(block_arr);
 			}
 		}
+		if (!msg.markdown_store_files.empty())
+		{
+			obj.object_value["markdown_store_files"] = StringArrayToJson(msg.markdown_store_files);
+		}
+		if (!msg.attachments.empty())
+		{
+			JsonValue attachments;
+			attachments.type = JsonValue::Type::Array;
+			for (const MessageAttachment& attachment : msg.attachments)
+			{
+				if (attachment.path.empty())
+				{
+					continue;
+				}
+				attachments.array_value.push_back(AttachmentToJson(attachment));
+			}
+			if (!attachments.array_value.empty())
+			{
+				obj.object_value["attachments"] = std::move(attachments);
+			}
+		}
 		return obj;
 	}
 
@@ -294,6 +339,35 @@ namespace
 					message_block.tool_call_id = JsonStringOrEmpty(block.Find("tool_call_id"));
 					message_block.request_id_json = JsonStringOrEmpty(block.Find("request_id"));
 					msg.blocks.push_back(std::move(message_block));
+				}
+			}
+		}
+		if (const JsonValue* markdown_store_files = obj.Find("markdown_store_files"))
+		{
+			msg.markdown_store_files = JsonStringArrayOrEmpty(markdown_store_files);
+		}
+		if (const JsonValue* attachments = obj.Find("attachments"))
+		{
+			if (attachments->type == JsonValue::Type::Array)
+			{
+				for (const JsonValue& item : attachments->array_value)
+				{
+					if (item.type != JsonValue::Type::Object)
+					{
+						continue;
+					}
+					MessageAttachment attachment;
+					attachment.id = JsonStringOrEmpty(item.Find("id"));
+					attachment.name = JsonStringOrEmpty(item.Find("name"));
+					attachment.kind = JsonStringOrEmpty(item.Find("kind"));
+					attachment.mime_type = JsonStringOrEmpty(item.Find("mime_type"));
+					attachment.path = JsonStringOrEmpty(item.Find("path"));
+					attachment.size_bytes = static_cast<std::uintmax_t>(std::max(0.0, JsonNumberOrDefault(item.Find("size_bytes"), 0.0)));
+					attachment.copied = JsonBoolOrDefault(item.Find("copied"), false);
+					if (!attachment.path.empty())
+					{
+						msg.attachments.push_back(std::move(attachment));
+					}
 				}
 			}
 		}
@@ -428,9 +502,25 @@ namespace
 			    left.plan_summary != right.plan_summary ||
 			    !PlanEntriesEquivalentForRecovery(left.plan_entries, right.plan_entries) ||
 			    !ToolCallsEquivalentForRecovery(left.tool_calls, right.tool_calls) ||
-			    !MessageBlocksEquivalentForRecovery(left.blocks, right.blocks))
+			    !MessageBlocksEquivalentForRecovery(left.blocks, right.blocks) ||
+			    left.attachments.size() != right.attachments.size())
 			{
 				return false;
+			}
+			for (std::size_t attachment_index = 0; attachment_index < left.attachments.size(); ++attachment_index)
+			{
+				const MessageAttachment& left_attachment = left.attachments[attachment_index];
+				const MessageAttachment& right_attachment = right.attachments[attachment_index];
+				if (left_attachment.id != right_attachment.id ||
+				    left_attachment.name != right_attachment.name ||
+				    left_attachment.kind != right_attachment.kind ||
+				    left_attachment.mime_type != right_attachment.mime_type ||
+				    left_attachment.path != right_attachment.path ||
+				    left_attachment.size_bytes != right_attachment.size_bytes ||
+				    left_attachment.copied != right_attachment.copied)
+				{
+					return false;
+				}
 			}
 		}
 

@@ -1,5 +1,6 @@
 #include "app/chat_domain_service.h"
 #include "app/chat_lifecycle_service.h"
+#include "app/markdown_store_service.h"
 #include "app/memory_library_service.h"
 #include "app/memory_service.h"
 #include "app/provider_resolution_service.h"
@@ -19,6 +20,7 @@
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/app_time.h"
 #include "common/runtime/acp/acp_session_runtime.h"
+#include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/terminal/terminal_idle_classifier.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_lifecycle.h"
@@ -1435,6 +1437,52 @@ UAM_TEST(ChatRepositoryPersistsAssistantPlanFields)
 	UAM_ASSERT_EQ(persisted["messages"][0]["blocks"][1].value("type", ""), std::string("plan"));
 }
 
+UAM_TEST(ChatRepositoryPersistsMessageAttachments)
+{
+	TempDir temp("uam-chat-attachments");
+	ChatSession chat;
+	chat.id = "chat-attachments";
+	chat.provider_id = "codex-cli";
+	chat.title = "Attachments";
+	chat.created_at = "2026-01-01T00:00:00.000Z";
+	chat.updated_at = "2026-01-01T00:00:01.000Z";
+
+	Message user;
+	user.role = MessageRole::User;
+	user.content = "Please inspect these files.";
+	user.created_at = "2026-01-01T00:00:01.000Z";
+	MessageAttachment file;
+	file.id = "att-1";
+	file.name = "screenshot.png";
+	file.kind = "image";
+	file.mime_type = "image/png";
+	file.path = ".UAM/attachments/chat-attachments/screenshot.png";
+	file.size_bytes = 1234;
+	file.copied = true;
+	user.attachments.push_back(std::move(file));
+	MessageAttachment directory;
+	directory.id = "att-2";
+	directory.name = "src";
+	directory.kind = "directory";
+	directory.path = "src";
+	directory.copied = false;
+	user.attachments.push_back(std::move(directory));
+	chat.messages.push_back(std::move(user));
+
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+
+	const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(loaded.front().messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(loaded.front().messages[0].attachments.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(loaded.front().messages[0].attachments[0].path, std::string(".UAM/attachments/chat-attachments/screenshot.png"));
+	UAM_ASSERT_EQ(loaded.front().messages[0].attachments[0].kind, std::string("image"));
+	UAM_ASSERT_EQ(loaded.front().messages[0].attachments[0].size_bytes, static_cast<std::uintmax_t>(1234));
+	UAM_ASSERT(loaded.front().messages[0].attachments[0].copied);
+	UAM_ASSERT_EQ(loaded.front().messages[0].attachments[1].path, std::string("src"));
+	UAM_ASSERT_EQ(loaded.front().messages[0].attachments[1].kind, std::string("directory"));
+}
+
 UAM_TEST(ChatRepositoryDoesNotSynthesizeInvalidCodexNativeIds)
 {
 	TempDir temp("uam-codex-native-normalize");
@@ -1528,6 +1576,43 @@ UAM_TEST(StateSerializerIncludesChatModelId)
 	UAM_ASSERT(fingerprint["chats"][0].value("pinned", false));
 	UAM_ASSERT_EQ(fingerprint["chats"][0].value("modelId", ""), std::string("auto-gemini-3"));
 	UAM_ASSERT_EQ(fingerprint["chats"][0].value("approvalMode", ""), std::string("plan"));
+}
+
+UAM_TEST(StateSerializerIncludesActiveCliVersionManager)
+{
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.title = "Codex version chat";
+	chat.provider_id = "codex-cli";
+	chat.created_at = "2026-01-01T00:00:00.000Z";
+	chat.updated_at = "2026-01-01T00:00:01.000Z";
+	app.chats.push_back(std::move(chat));
+	app.selected_chat_index = 0;
+	app.runtime_cli_version_provider_id = "codex-cli";
+	app.runtime_cli_version_checked = true;
+	app.runtime_cli_installed_version = "0.124.0";
+	app.runtime_cli_version_supported = true;
+	app.runtime_cli_version_message = "Codex CLI version is supported.";
+
+	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json manager = serialized["cliVersionManager"];
+	UAM_ASSERT_EQ(manager.value("providerId", ""), std::string("codex-cli"));
+	UAM_ASSERT_EQ(manager.value("installedVersion", ""), std::string("0.124.0"));
+	UAM_ASSERT_EQ(manager.value("preferredVersion", ""), std::string("0.124.0"));
+	UAM_ASSERT_EQ(manager.value("status", ""), std::string("supported"));
+	UAM_ASSERT(manager["availableVersions"].is_array());
+	UAM_ASSERT(!manager["availableVersions"].empty());
+}
+
+UAM_TEST(CliProviderVersionCommandsUseCuratedPackages)
+{
+	UAM_ASSERT_EQ(BuildCliProviderVersionProbeCommandForTests("gemini-cli"), std::string("gemini --version"));
+	UAM_ASSERT_EQ(BuildCliProviderVersionProbeCommandForTests("codex-cli"), std::string("codex --version"));
+	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForTests("gemini-cli", "0.38.1"), std::string("npm install -g @google/gemini-cli@0.38.1"));
+	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForTests("codex-cli", "0.124.0"), std::string("npm install -g @openai/codex@0.124.0"));
+	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForTests("codex-cli", "--bad"), std::string(""));
 }
 
 UAM_TEST(StateSerializerIncludesMessageToolCalls)
@@ -3914,6 +3999,41 @@ UAM_TEST(NewChatFolderResolutionRequiresExistingFolder)
 	UAM_ASSERT_EQ(ResolveRequestedNewChatFolderId(app, "missing-folder"), std::string(""));
 	UAM_ASSERT_EQ(app.status_line, std::string("Selected workspace folder no longer exists."));
 	UAM_ASSERT_EQ(ResolveRequestedNewChatFolderId(app, created_id), created_id);
+}
+
+UAM_TEST(MarkdownStoreCreatesListsAndValidatesUamFiles)
+{
+	TempDir temp("uam-markdown-store");
+	const fs::path root = temp.root / "store";
+	fs::create_directories(root);
+
+	MarkdownStoreService::Draft draft;
+	draft.title = "Release Notes";
+	draft.maker = "UAM";
+	draft.review = "User feedback";
+	draft.body = "# Release Notes\n\nAttach this to current chats.";
+
+	MarkdownStoreService::Entry created;
+	std::string error;
+	UAM_ASSERT(MarkdownStoreService::CreateEntry(root, draft, &created, &error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(created.title, std::string("Release Notes"));
+	UAM_ASSERT_EQ(created.maker, std::string("UAM"));
+	UAM_ASSERT_EQ(created.review, std::string("User feedback"));
+	UAM_ASSERT_EQ(created.file_path.extension().string(), std::string(".uam"));
+
+	const std::vector<MarkdownStoreService::Entry> entries = MarkdownStoreService::ListEntries(root, &error);
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(entries.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(entries.front().title, std::string("Release Notes"));
+
+	fs::path normalized_file;
+	UAM_ASSERT(MarkdownStoreService::ValidateStoreFilePath(root, created.file_path.string(), &normalized_file, &error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(normalized_file.extension().string(), std::string(".uam"));
+
+	UAM_ASSERT(!MarkdownStoreService::ValidateStoreFilePath(root, (temp.root / "outside.uam").string(), nullptr, &error));
+	UAM_ASSERT(!error.empty());
 }
 
 UAM_TEST(MoveChatToFolderHandlesMissingWorkspacePaths)

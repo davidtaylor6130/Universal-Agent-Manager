@@ -381,6 +381,8 @@ namespace uam
 		std::unordered_map<std::string, std::string> resolved_native_sessions_by_chat_id;
 		AsyncCommandTask runtime_cli_version_check_task;
 		AsyncCommandTask runtime_cli_pin_task;
+		std::string runtime_cli_version_provider_id;
+		std::string runtime_cli_pin_provider_id;
 		std::vector<AsyncMemoryExtractionTask> memory_extraction_tasks;
 		std::deque<QueuedMemoryExtractionTask> memory_extraction_queue;
 		std::unordered_map<std::string, double> memory_idle_started_at_by_chat_id;
@@ -391,6 +393,7 @@ namespace uam
 		bool runtime_cli_version_checked = false;
 		bool runtime_cli_version_supported = false;
 		std::string runtime_cli_installed_version;
+		std::string runtime_cli_selected_version;
 		std::string runtime_cli_version_raw_output;
 		std::string runtime_cli_version_message;
 		std::string runtime_cli_pin_output;

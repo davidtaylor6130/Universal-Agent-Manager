@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
@@ -46,6 +47,17 @@ struct MessageBlock
 	std::string request_id_json;
 };
 
+struct MessageAttachment
+{
+	std::string id;
+	std::string name;
+	std::string kind;
+	std::string mime_type;
+	std::string path;
+	std::uintmax_t size_bytes = 0;
+	bool copied = false;
+};
+
 /// <summary>
 /// One persisted chat message payload.
 /// </summary>
@@ -66,6 +78,8 @@ struct Message
 	std::string plan_summary;
 	std::vector<MessagePlanEntry> plan_entries;
 	std::vector<MessageBlock> blocks;
+	std::vector<std::string> markdown_store_files;
+	std::vector<MessageAttachment> attachments;
 };
 
 /// <summary>
@@ -142,6 +156,7 @@ struct AppSettings
 	int memory_idle_delay_seconds = 60;
 	int memory_recall_budget_bytes = 2048;
 	std::map<std::string, MemoryWorkerBinding> memory_worker_bindings;
+	std::string markdown_store_directory;
 };
 
 /// <summary>
