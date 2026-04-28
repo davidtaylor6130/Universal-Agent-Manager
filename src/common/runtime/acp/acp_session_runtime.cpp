@@ -51,6 +51,8 @@ namespace
 		constexpr const char* kProtocolGeminiAcp = "gemini-acp";
 		constexpr const char* kProtocolCodexAppServer = "codex-app-server";
 		constexpr const char* kProtocolClaudeCodeStreamJson = "claude-code-stream-json";
+		constexpr const char* kProtocolOpenCodeAcp = "opencode-acp";
+		constexpr const char* kProtocolCopilotAcp = "copilot-acp";
 
 			void CompletePromptTurn(AcpSessionState& session, const char* lifecycle_state);
 			void FailAcpTurnOrSession(AcpSessionState& session, const std::string& message);
@@ -84,6 +86,21 @@ namespace
 			return session.protocol_kind == kProtocolClaudeCodeStreamJson || session.provider_id == "claude-cli";
 		}
 
+		bool IsOpenCodeSession(const AcpSessionState& session)
+		{
+			return session.protocol_kind == kProtocolOpenCodeAcp || session.provider_id == "opencode-cli";
+		}
+
+		bool IsCopilotSession(const AcpSessionState& session)
+		{
+			return session.protocol_kind == kProtocolCopilotAcp || session.provider_id == "copilot-cli";
+		}
+
+		bool IsGenericAcpSession(const AcpSessionState& session)
+		{
+			return IsOpenCodeSession(session) || IsCopilotSession(session);
+		}
+
 		const char* RuntimeDisplayName(const AcpSessionState& session)
 		{
 			if (IsCodexSession(session))
@@ -93,6 +110,14 @@ namespace
 			if (IsClaudeSession(session))
 			{
 				return "Claude stream-json";
+			}
+			if (IsOpenCodeSession(session))
+			{
+				return "OpenCode ACP";
+			}
+			if (IsCopilotSession(session))
+			{
+				return "GitHub Copilot ACP";
 			}
 			return "Gemini ACP";
 		}
@@ -509,6 +534,11 @@ namespace
 		return NativeSessionLinkService().HasRealNativeSessionId(chat) ? Trim(chat.native_session_id) : std::string{};
 	}
 
+	std::string ValidGenericAcpResumeId(const ChatSession& chat)
+	{
+		return NativeSessionLinkService().HasRealNativeSessionId(chat) ? Trim(chat.native_session_id) : std::string{};
+	}
+
 	nlohmann::json BuildGeminiSessionSetupRequest(const int request_id, const ChatSession& chat, const std::string& cwd, const bool load_session_supported)
 	{
 		const std::string resume_id = ValidGeminiResumeId(chat);
@@ -683,6 +713,10 @@ namespace
 
 		std::string ProviderApprovalModeId(const AcpSessionState& session, const std::string& mode_id)
 		{
+			if (IsCopilotSession(session) && mode_id == "acceptEdits")
+			{
+				return "default";
+			}
 			if (!IsCodexSession(session) && !IsClaudeSession(session) && mode_id == "acceptEdits")
 			{
 				return "auto_edit";
@@ -695,6 +729,16 @@ namespace
 			if (Trim(chat.provider_id) == "codex-cli")
 			{
 				return {"codex", "app-server", "--listen", "stdio://"};
+			}
+
+			if (Trim(chat.provider_id) == "opencode-cli")
+			{
+				return {"opencode", "acp"};
+			}
+
+			if (Trim(chat.provider_id) == "copilot-cli")
+			{
+				return {"copilot", "--acp", "--stdio"};
 			}
 
 			if (Trim(chat.provider_id) == "claude-cli")
@@ -1424,8 +1468,8 @@ namespace
 		session.provider_id = provider.id;
 		session.protocol_kind = provider.structured_protocol.empty() ? kProtocolGeminiAcp : provider.structured_protocol;
 		const std::string codex_resume_id = IsCodexSession(session) ? ValidCodexResumeId(chat) : std::string{};
-		const std::string gemini_resume_id = IsCodexSession(session) ? std::string{} : ValidGeminiResumeId(chat);
-		session.session_id = IsCodexSession(session) ? codex_resume_id : gemini_resume_id;
+		const std::string acp_resume_id = IsCodexSession(session) ? std::string{} : (IsGenericAcpSession(session) ? ValidGenericAcpResumeId(chat) : ValidGeminiResumeId(chat));
+		session.session_id = IsCodexSession(session) ? codex_resume_id : acp_resume_id;
 		session.codex_thread_id = codex_resume_id;
 			session.lifecycle_state = kAcpLifecycleStarting;
 
@@ -1507,10 +1551,11 @@ namespace
 		}
 
 		const std::string raw_resume_id = Trim(chat.native_session_id);
-		const std::string resume_id = ValidGeminiResumeId(chat);
+		const std::string resume_id = IsGenericAcpSession(session) ? ValidGenericAcpResumeId(chat) : ValidGeminiResumeId(chat);
 		if (!raw_resume_id.empty() && resume_id.empty())
 		{
-			AppendAcpDiagnostic(session, "session_setup", "gemini_invalid_resume_id_ignored", "", "", false, 0, "Ignoring invalid Gemini session id and starting a new session.", "nativeSessionId=" + raw_resume_id);
+			const std::string provider_label = IsOpenCodeSession(session) ? "OpenCode" : (IsCopilotSession(session) ? "GitHub Copilot" : "Gemini");
+			AppendAcpDiagnostic(session, "session_setup", IsOpenCodeSession(session) ? "opencode_invalid_resume_id_ignored" : (IsCopilotSession(session) ? "copilot_invalid_resume_id_ignored" : "gemini_invalid_resume_id_ignored"), "", "", false, 0, "Ignoring invalid " + provider_label + " session id and starting a new session.", "nativeSessionId=" + raw_resume_id);
 			chat.native_session_id.clear();
 			SaveChatQuietly(app, chat);
 		}
@@ -1528,7 +1573,7 @@ namespace
 			if (!written)
 			{
 				session.session_setup_request_id = 0;
-				FailAcpTurnOrSession(session, session.last_error.empty() ? "Failed to load Gemini ACP session." : session.last_error);
+				FailAcpTurnOrSession(session, session.last_error.empty() ? "Failed to load " + std::string(RuntimeDisplayName(session)) + " session." : session.last_error);
 				MarkAcpChatUnseenIfBackground(app, chat);
 			}
 			return written;
@@ -1538,7 +1583,7 @@ namespace
 		if (!written)
 		{
 			session.session_setup_request_id = 0;
-			FailAcpTurnOrSession(session, session.last_error.empty() ? "Failed to create Gemini ACP session." : session.last_error);
+			FailAcpTurnOrSession(session, session.last_error.empty() ? "Failed to create " + std::string(RuntimeDisplayName(session)) + " session." : session.last_error);
 			MarkAcpChatUnseenIfBackground(app, chat);
 		}
 		return written;
@@ -1557,6 +1602,7 @@ namespace
 	                                           const std::string& formatted_error)
 	{
 		if (IsCodexSession(session) ||
+		    IsGenericAcpSession(session) ||
 		    method != "session/load" ||
 		    session.gemini_resume_fallback_attempted ||
 		    !GeminiErrorLooksLikeInvalidSessionId(error_message, error_data))

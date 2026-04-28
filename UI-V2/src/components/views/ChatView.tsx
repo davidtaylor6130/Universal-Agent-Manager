@@ -100,6 +100,8 @@ function providerDisplayName(provider?: Provider, fallbackId = '') {
   if (provider?.name?.trim()) return provider.name.trim()
   if (fallbackId === 'codex-cli') return 'Codex'
   if (fallbackId === 'claude-cli') return 'Claude'
+  if (fallbackId === 'opencode-cli') return 'OpenCode'
+  if (fallbackId === 'copilot-cli') return 'Copilot'
   return 'Gemini'
 }
 
@@ -126,6 +128,10 @@ function isCodexProvider(provider?: Provider, providerId = '') {
 
 function isClaudeProvider(provider?: Provider, providerId = '') {
   return providerId === 'claude-cli' || provider?.structuredProtocol === 'claude-code-stream-json'
+}
+
+function isCopilotProvider(provider?: Provider, providerId = '') {
+  return providerId === 'copilot-cli' || provider?.structuredProtocol === 'copilot-acp'
 }
 
 function titleFromModelId(modelId: string) {
@@ -164,8 +170,9 @@ function buildModelOptions(
   const providerName = providerDisplayName(provider, providerId)
   const codexProvider = isCodexProvider(provider, providerId)
   const claudeProvider = isClaudeProvider(provider, providerId)
+  const copilotProvider = isCopilotProvider(provider, providerId)
   const runtimeOptions = (acp?.availableModels ?? []).flatMap((model) => {
-    const option = modelOptionFromRuntime(model, !codexProvider && !claudeProvider)
+    const option = modelOptionFromRuntime(model, !codexProvider && !claudeProvider && !copilotProvider)
     return option ? [option] : []
   })
   const defaultOption = providerDefaultModelOption(providerName)
@@ -173,6 +180,8 @@ function buildModelOptions(
     ? [defaultOption]
     : claudeProvider
       ? [defaultOption, { id: 'sonnet', label: 'Sonnet', shortLabel: 'Sonnet', detail: 'Latest Sonnet alias' }, { id: 'opus', label: 'Opus', shortLabel: 'Opus', detail: 'Latest Opus alias' }]
+      : copilotProvider
+        ? [defaultOption]
     : [defaultOption, ...GEMINI_FALLBACK_ACP_MODEL_OPTIONS.slice(1)]
   const baseOptions = runtimeOptions.length > 0
     ? [defaultOption, ...runtimeOptions]
@@ -2447,14 +2456,14 @@ export function ChatView({ session }: ChatViewProps) {
     () =>
       providers.find((candidate) => candidate.id === currentProviderId) ?? {
         id: currentProviderId,
-        name: currentProviderId === 'codex-cli' ? 'Codex CLI' : currentProviderId === 'claude-cli' ? 'Claude Code' : 'Gemini CLI',
-        shortName: currentProviderId === 'codex-cli' ? 'Codex' : currentProviderId === 'claude-cli' ? 'Claude' : 'Gemini',
+        name: currentProviderId === 'codex-cli' ? 'Codex CLI' : currentProviderId === 'claude-cli' ? 'Claude Code' : currentProviderId === 'opencode-cli' ? 'OpenCode' : currentProviderId === 'copilot-cli' ? 'GitHub Copilot CLI' : 'Gemini CLI',
+        shortName: currentProviderId === 'codex-cli' ? 'Codex' : currentProviderId === 'claude-cli' ? 'Claude' : currentProviderId === 'opencode-cli' ? 'OpenCode' : currentProviderId === 'copilot-cli' ? 'Copilot' : 'Gemini',
         color: '#8ab4ff',
         description: '',
         outputMode: 'cli',
         supportsCli: true,
         supportsStructured: true,
-        structuredProtocol: currentProviderId === 'codex-cli' ? 'codex-app-server' : currentProviderId === 'claude-cli' ? 'claude-code-stream-json' : 'gemini-acp',
+        structuredProtocol: currentProviderId === 'codex-cli' ? 'codex-app-server' : currentProviderId === 'claude-cli' ? 'claude-code-stream-json' : currentProviderId === 'opencode-cli' ? 'opencode-acp' : currentProviderId === 'copilot-cli' ? 'copilot-acp' : 'gemini-acp',
       },
     [currentProviderId, providers]
   )

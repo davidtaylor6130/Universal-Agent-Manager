@@ -41,6 +41,28 @@ const initialProviders: Provider[] = [
     supportsStructured: true,
     structuredProtocol: 'gemini-acp',
   },
+  {
+    id: 'opencode-cli',
+    name: 'OpenCode',
+    shortName: 'OpenCode',
+    color: '#14b8a6',
+    description: '',
+    outputMode: 'cli',
+    supportsCli: true,
+    supportsStructured: true,
+    structuredProtocol: 'opencode-acp',
+  },
+  {
+    id: 'copilot-cli',
+    name: 'GitHub Copilot CLI',
+    shortName: 'Copilot',
+    color: '#22c55e',
+    description: '',
+    outputMode: 'cli',
+    supportsCli: true,
+    supportsStructured: true,
+    structuredProtocol: 'copilot-acp',
+  },
 ]
 const UI_RUNTIME_BUILD_MARKER = (() => {
   const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env
@@ -1700,7 +1722,7 @@ function deserializeState(
 
   const visibleProviders = cpp.providers.length > 0
     ? cpp.providers
-    : [{ id: GEMINI_CLI_PROVIDER_ID, name: 'Gemini CLI', shortName: 'Gemini', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }]
+    : initialProviders
   const newSessions: Session[] = cpp.chats.map((c) => {
     const prev = existingSessionsById[c.id]
     const name = c.title || 'Untitled'
@@ -3193,7 +3215,7 @@ export const useAppStore = create<AppState>((set, get) => {
 	          status: 'supported',
 	          message: 'Provider CLI version is supported.',
 	          running: false,
-	          lastCommand: `npm install -g ${targetProviderId === 'codex-cli' ? '@openai/codex' : '@google/gemini-cli'}@${targetVersion}`,
+	          lastCommand: `npm install -g ${targetProviderId === 'codex-cli' ? '@openai/codex' : targetProviderId === 'copilot-cli' ? '@github/copilot' : targetProviderId === 'opencode-cli' ? 'opencode-ai' : '@google/gemini-cli'}@${targetVersion}`,
 	          lastOutput: 'Dev mode install simulated.',
 	        },
 	      }))

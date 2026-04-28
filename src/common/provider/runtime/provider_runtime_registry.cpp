@@ -12,6 +12,12 @@
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
 #include "common/provider/gemini/cli/gemini_cli_provider_runtime.h"
 #endif
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+#include "common/provider/opencode/cli/opencode_cli_provider_runtime.h"
+#endif
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+#include "common/provider/copilot/cli/copilot_cli_provider_runtime.h"
+#endif
 
 namespace
 {
@@ -74,6 +80,18 @@ const IProviderRuntime& ProviderRuntimeRegistry::ResolveById(const std::string& 
 		return GetClaudeCliProviderRuntime();
 	}
 #endif
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	if (normalized == "opencode-cli")
+	{
+		return GetOpenCodeCliProviderRuntime();
+	}
+#endif
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	if (normalized == "copilot-cli")
+	{
+		return GetCopilotCliProviderRuntime();
+	}
+#endif
 	return GetUnsupportedProviderRuntime();
 }
 
@@ -89,6 +107,12 @@ bool ProviderRuntimeRegistry::IsKnownRuntimeId(const std::string& provider_id)
 #endif
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 	    normalized == "claude-cli" ||
+#endif
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	    normalized == "opencode-cli" ||
+#endif
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	    normalized == "copilot-cli" ||
 #endif
 	    false;
 }

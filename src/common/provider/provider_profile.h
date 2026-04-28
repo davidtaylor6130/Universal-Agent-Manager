@@ -43,6 +43,10 @@ class ProviderProfileStore
 	static ProviderProfile DefaultCodexProfile();
 	/// <summary>Returns the built-in Claude Code CLI profile.</summary>
 	static ProviderProfile DefaultClaudeProfile();
+	/// <summary>Returns the built-in OpenCode CLI profile.</summary>
+	static ProviderProfile DefaultOpenCodeProfile();
+	/// <summary>Returns the built-in GitHub Copilot CLI profile.</summary>
+	static ProviderProfile DefaultCopilotProfile();
 	/// <summary>Returns the built-in provider profiles for this build.</summary>
 	static std::vector<ProviderProfile> BuiltInProfiles();
 	/// <summary>Ensures enabled built-in provider profiles exist in the profile list.</summary>

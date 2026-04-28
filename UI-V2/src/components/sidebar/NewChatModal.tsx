@@ -312,7 +312,11 @@ export function NewChatModal() {
                               ? 'Codex app-server + CLI'
                               : provider.structuredProtocol === 'claude-code-stream-json'
                                 ? 'Claude stream + CLI'
-                                : 'Gemini ACP + CLI'}
+                                : provider.structuredProtocol === 'opencode-acp'
+                                  ? 'OpenCode ACP + CLI'
+                                  : provider.structuredProtocol === 'copilot-acp'
+                                    ? 'Copilot ACP + CLI'
+                                  : 'Gemini ACP + CLI'}
                           </div>
                         </button>
                       )

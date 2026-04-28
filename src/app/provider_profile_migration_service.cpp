@@ -8,6 +8,8 @@ namespace
 	constexpr const char* kRuntimeIdGeminiCli = "gemini-cli";
 	constexpr const char* kRuntimeIdCodexCli = "codex-cli";
 	constexpr const char* kRuntimeIdClaudeCli = "claude-cli";
+	constexpr const char* kRuntimeIdOpenCodeCli = "opencode-cli";
+	constexpr const char* kRuntimeIdCopilotCli = "copilot-cli";
 } // namespace
 
 bool ProviderProfileMigrationService::IsNativeHistoryProviderId(const std::string& provider_id) const
@@ -58,6 +60,24 @@ std::string ProviderProfileMigrationService::MapLegacyRuntimeId(const std::strin
 #endif
 	}
 
+	if (lowered == "opencode" || lowered == "open-code" || lowered == kRuntimeIdOpenCodeCli)
+	{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+		return kRuntimeIdOpenCodeCli;
+#else
+		return provider_build_config::FirstEnabledProviderId();
+#endif
+	}
+
+	if (lowered == "copilot" || lowered == "github-copilot" || lowered == kRuntimeIdCopilotCli)
+	{
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+		return kRuntimeIdCopilotCli;
+#else
+		return provider_build_config::FirstEnabledProviderId();
+#endif
+	}
+
 	return trimmed;
 }
 
@@ -79,6 +99,12 @@ bool ProviderProfileMigrationService::ShouldShowProviderProfileInUi(const Provid
 #endif
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 	    lowered == kRuntimeIdClaudeCli ||
+#endif
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	    lowered == kRuntimeIdOpenCodeCli ||
+#endif
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	    lowered == kRuntimeIdCopilotCli ||
 #endif
 	    false;
 }
@@ -104,6 +130,15 @@ bool ProviderProfileMigrationService::MigrateActiveProviderIdToFixedModes(uam::A
 #endif
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
 	    lowered == kRuntimeIdCodexCli ||
+#endif
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	    lowered == kRuntimeIdClaudeCli ||
+#endif
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	    lowered == kRuntimeIdOpenCodeCli ||
+#endif
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	    lowered == kRuntimeIdCopilotCli ||
 #endif
 	    false)
 	{
@@ -134,6 +169,26 @@ bool ProviderProfileMigrationService::MigrateActiveProviderIdToFixedModes(uam::A
 	{
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 		app.settings.active_provider_id = kRuntimeIdClaudeCli;
+#else
+		app.settings.active_provider_id = provider_build_config::FirstEnabledProviderId();
+#endif
+		return true;
+	}
+
+	if (lowered == "opencode" || lowered == "open-code")
+	{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+		app.settings.active_provider_id = kRuntimeIdOpenCodeCli;
+#else
+		app.settings.active_provider_id = provider_build_config::FirstEnabledProviderId();
+#endif
+		return true;
+	}
+
+	if (lowered == "copilot" || lowered == "github-copilot")
+	{
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+		app.settings.active_provider_id = kRuntimeIdCopilotCli;
 #else
 		app.settings.active_provider_id = provider_build_config::FirstEnabledProviderId();
 #endif

@@ -160,6 +160,18 @@ namespace
 			return "claude-cli";
 		}
 #endif
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+		if (lowered == "opencode" || lowered == "opencode-cli")
+		{
+			return "opencode-cli";
+		}
+#endif
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+		if (lowered == "copilot" || lowered == "github-copilot" || lowered == "copilot-cli")
+		{
+			return "copilot-cli";
+		}
+#endif
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
 		if (lowered == "gemini" || lowered == "gemini-cli")
 		{
@@ -188,7 +200,7 @@ namespace
 		settings.memory_idle_delay_seconds = std::clamp(settings.memory_idle_delay_seconds, 30, 3600);
 		settings.memory_recall_budget_bytes = std::clamp(settings.memory_recall_budget_bytes, 512, 8192);
 
-		for (const std::string& provider_id : {std::string("gemini-cli"), std::string("codex-cli"), std::string("claude-cli")})
+		for (const std::string& provider_id : {std::string("gemini-cli"), std::string("codex-cli"), std::string("claude-cli"), std::string("opencode-cli"), std::string("copilot-cli")})
 		{
 			if (settings.memory_worker_bindings.find(provider_id) == settings.memory_worker_bindings.end())
 			{

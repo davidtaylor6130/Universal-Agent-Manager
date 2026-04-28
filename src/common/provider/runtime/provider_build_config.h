@@ -12,6 +12,14 @@
 #error "UAM_ENABLE_RUNTIME_CLAUDE_CLI must be defined by CMake. Use 0 or 1."
 #endif
 
+#ifndef UAM_ENABLE_RUNTIME_OPENCODE_CLI
+#error "UAM_ENABLE_RUNTIME_OPENCODE_CLI must be defined by CMake. Use 0 or 1."
+#endif
+
+#ifndef UAM_ENABLE_RUNTIME_COPILOT_CLI
+#error "UAM_ENABLE_RUNTIME_COPILOT_CLI must be defined by CMake. Use 0 or 1."
+#endif
+
 namespace provider_build_config
 {
 
@@ -30,6 +38,16 @@ namespace provider_build_config
 		return UAM_ENABLE_RUNTIME_CLAUDE_CLI != 0;
 	}
 
+	inline constexpr bool OpenCodeCliEnabled()
+	{
+		return UAM_ENABLE_RUNTIME_OPENCODE_CLI != 0;
+	}
+
+	inline constexpr bool CopilotCliEnabled()
+	{
+		return UAM_ENABLE_RUNTIME_COPILOT_CLI != 0;
+	}
+
 	inline constexpr const char* FirstEnabledProviderId()
 	{
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
@@ -38,6 +56,10 @@ namespace provider_build_config
 		return "codex-cli";
 #elif UAM_ENABLE_RUNTIME_CLAUDE_CLI
 		return "claude-cli";
+#elif UAM_ENABLE_RUNTIME_OPENCODE_CLI
+		return "opencode-cli";
+#elif UAM_ENABLE_RUNTIME_COPILOT_CLI
+		return "copilot-cli";
 #else
 		return "";
 #endif
@@ -55,6 +77,10 @@ namespace provider_build_config
 #elif UAM_ENABLE_RUNTIME_CODEX_CLI
 		return "local-json";
 #elif UAM_ENABLE_RUNTIME_CLAUDE_CLI
+		return "local-json";
+#elif UAM_ENABLE_RUNTIME_OPENCODE_CLI
+		return "local-json";
+#elif UAM_ENABLE_RUNTIME_COPILOT_CLI
 		return "local-json";
 #else
 		return "local-json";

@@ -90,6 +90,52 @@ ProviderProfile ProviderProfileStore::DefaultClaudeProfile()
 	return profile;
 }
 
+ProviderProfile ProviderProfileStore::DefaultOpenCodeProfile()
+{
+	ProviderProfile profile;
+	profile.id = "opencode-cli";
+	profile.title = "OpenCode";
+	profile.execution_mode = "cli";
+	profile.output_mode = "cli";
+	profile.command_template = "opencode run {flags} {prompt}";
+	profile.interactive_command = "opencode";
+	profile.supports_cli = true;
+	profile.supports_structured = true;
+	profile.structured_protocol = "opencode-acp";
+	profile.supports_interactive = true;
+	profile.supports_resume = true;
+	profile.resume_argument = "--session";
+	profile.history_adapter = "local-json";
+	profile.prompt_bootstrap = "none";
+	profile.prompt_bootstrap_path.clear();
+	profile.user_message_types = {"user"};
+	profile.assistant_message_types = {"assistant", "opencode"};
+	return profile;
+}
+
+ProviderProfile ProviderProfileStore::DefaultCopilotProfile()
+{
+	ProviderProfile profile;
+	profile.id = "copilot-cli";
+	profile.title = "GitHub Copilot CLI";
+	profile.execution_mode = "cli";
+	profile.output_mode = "cli";
+	profile.command_template = "copilot -p {prompt} {flags}";
+	profile.interactive_command = "copilot";
+	profile.supports_cli = true;
+	profile.supports_structured = true;
+	profile.structured_protocol = "copilot-acp";
+	profile.supports_interactive = true;
+	profile.supports_resume = true;
+	profile.resume_argument = "--resume";
+	profile.history_adapter = "local-json";
+	profile.prompt_bootstrap = "none";
+	profile.prompt_bootstrap_path.clear();
+	profile.user_message_types = {"user", "human"};
+	profile.assistant_message_types = {"assistant", "copilot"};
+	return profile;
+}
+
 std::vector<ProviderProfile> ProviderProfileStore::BuiltInProfiles()
 {
 	std::vector<ProviderProfile> profiles;
@@ -101,6 +147,12 @@ std::vector<ProviderProfile> ProviderProfileStore::BuiltInProfiles()
 #endif
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 	profiles.push_back(DefaultClaudeProfile());
+#endif
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	profiles.push_back(DefaultOpenCodeProfile());
+#endif
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	profiles.push_back(DefaultCopilotProfile());
 #endif
 	return profiles;
 }

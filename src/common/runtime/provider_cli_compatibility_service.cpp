@@ -20,10 +20,16 @@ namespace
 	constexpr const char* kRuntimeVersionProbeCommand = "gemini --version";
 	constexpr const char* kGeminiProviderId = "gemini-cli";
 	constexpr const char* kCodexProviderId = "codex-cli";
+	constexpr const char* kClaudeProviderId = "claude-cli";
+	constexpr const char* kOpenCodeProviderId = "opencode-cli";
+	constexpr const char* kCopilotProviderId = "copilot-cli";
 	constexpr const char* kGeminiNpmPackage = "@google/gemini-cli";
 	constexpr const char* kCodexNpmPackage = "@openai/codex";
+	constexpr const char* kOpenCodeNpmPackage = "opencode-ai";
+	constexpr const char* kCopilotNpmPackage = "@github/copilot";
 	constexpr const char* kCodexPreferredVersion = "0.124.0";
 	constexpr const char* kCodexFallbackVersion = "0.123.0";
+	constexpr const char* kLatestVersion = "latest";
 
 	std::string TrimAscii(const std::string& value)
 	{
@@ -170,6 +176,18 @@ namespace
 		{
 			return "Codex CLI";
 		}
+		if (provider_id == kClaudeProviderId)
+		{
+			return "Claude Code";
+		}
+		if (provider_id == kOpenCodeProviderId)
+		{
+			return "OpenCode";
+		}
+		if (provider_id == kCopilotProviderId)
+		{
+			return "GitHub Copilot CLI";
+		}
 		return "Gemini CLI";
 	}
 
@@ -215,6 +233,18 @@ namespace
 		if (trimmed == kCodexProviderId)
 		{
 			return kCodexProviderId;
+		}
+		if (trimmed == kClaudeProviderId)
+		{
+			return kClaudeProviderId;
+		}
+		if (trimmed == kOpenCodeProviderId)
+		{
+			return kOpenCodeProviderId;
+		}
+		if (trimmed == kCopilotProviderId)
+		{
+			return kCopilotProviderId;
 		}
 		return kGeminiProviderId;
 	}
@@ -395,6 +425,15 @@ std::vector<CliProviderVersionOption> ProviderCliCompatibilityService::Supported
 		versions.push_back({kCodexFallbackVersion, false});
 		return versions;
 	}
+	if (normalized_provider_id == kOpenCodeProviderId)
+	{
+		return versions;
+	}
+	if (normalized_provider_id == kCopilotProviderId)
+	{
+		versions.push_back({kLatestVersion, true});
+		return versions;
+	}
 
 	for (const std::string_view version : uam::SupportedGeminiCliVersions())
 	{
@@ -411,6 +450,14 @@ std::string ProviderCliCompatibilityService::PreferredVersionForProvider(const s
 	{
 		return kCodexPreferredVersion;
 	}
+	if (normalized_provider_id == kOpenCodeProviderId)
+	{
+		return "";
+	}
+	if (normalized_provider_id == kCopilotProviderId)
+	{
+		return kLatestVersion;
+	}
 	return std::string(uam::PreferredGeminiCliVersion());
 }
 
@@ -426,6 +473,14 @@ bool ProviderCliCompatibilityService::IsSupportedVersionForProvider(const std::s
 	{
 		return trimmed_version == kCodexPreferredVersion || trimmed_version == kCodexFallbackVersion;
 	}
+	if (normalized_provider_id == kOpenCodeProviderId)
+	{
+		return IsSafeVersionToken(trimmed_version);
+	}
+	if (normalized_provider_id == kCopilotProviderId)
+	{
+		return trimmed_version == kLatestVersion || IsSafeVersionToken(trimmed_version);
+	}
 	return uam::IsSupportedGeminiCliVersion(trimmed_version);
 }
 
@@ -435,6 +490,18 @@ std::string ProviderCliCompatibilityService::VersionProbeCommandForProvider(cons
 	if (normalized_provider_id == kCodexProviderId)
 	{
 		return "codex --version";
+	}
+	if (normalized_provider_id == kOpenCodeProviderId)
+	{
+		return "opencode --version";
+	}
+	if (normalized_provider_id == kCopilotProviderId)
+	{
+		return "copilot --version";
+	}
+	if (normalized_provider_id == kClaudeProviderId)
+	{
+		return "claude --version";
 	}
 	return kRuntimeVersionProbeCommand;
 }
@@ -447,7 +514,7 @@ std::string ProviderCliCompatibilityService::InstallCommandForProviderVersion(co
 	{
 		return "";
 	}
-	const std::string package_name = normalized_provider_id == kCodexProviderId ? kCodexNpmPackage : kGeminiNpmPackage;
+	const std::string package_name = normalized_provider_id == kCodexProviderId ? kCodexNpmPackage : (normalized_provider_id == kOpenCodeProviderId ? kOpenCodeNpmPackage : (normalized_provider_id == kCopilotProviderId ? kCopilotNpmPackage : kGeminiNpmPackage));
 	return "npm install -g " + package_name + "@" + trimmed_version;
 }
 

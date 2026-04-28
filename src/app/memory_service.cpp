@@ -767,6 +767,32 @@ namespace
 			return WithMemoryWorkerEnvironment(ShellJoin(argv));
 		}
 
+		if (profile.id == "opencode-cli")
+		{
+			argv = {"opencode", "run"};
+			argv.insert(argv.end(), flags.begin(), flags.end());
+			if (!model_id.empty())
+			{
+				argv.push_back("--model");
+				argv.push_back(model_id);
+			}
+			argv.push_back(prompt);
+			return WithMemoryWorkerEnvironment(ShellJoin(argv));
+		}
+
+		if (profile.id == "copilot-cli")
+		{
+			argv = {"copilot", "-p"};
+			argv.insert(argv.end(), flags.begin(), flags.end());
+			if (!model_id.empty())
+			{
+				argv.push_back("--model");
+				argv.push_back(model_id);
+			}
+			argv.push_back(prompt);
+			return WithMemoryWorkerEnvironment(ShellJoin(argv));
+		}
+
 		return "";
 	}
 

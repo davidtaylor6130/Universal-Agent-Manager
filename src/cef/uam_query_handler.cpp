@@ -146,7 +146,7 @@ namespace
 		std::string CliVersionProviderFromPayloadOrSelection(const uam::AppState& app, const nlohmann::json& payload)
 		{
 			const std::string requested = Trim(payload.value("providerId", ""));
-			if (requested == "codex-cli" || requested == "gemini-cli")
+			if (requested == "codex-cli" || requested == "gemini-cli" || requested == "opencode-cli" || requested == "copilot-cli")
 			{
 				return requested;
 			}
@@ -154,12 +154,16 @@ namespace
 			if (const ChatSession* selected_chat = ChatDomainService().SelectedChat(app); selected_chat != nullptr)
 			{
 				const std::string selected_provider_id = Trim(selected_chat->provider_id);
-				if (selected_provider_id == "codex-cli" || selected_provider_id == "gemini-cli")
+				if (selected_provider_id == "codex-cli" || selected_provider_id == "gemini-cli" || selected_provider_id == "opencode-cli" || selected_provider_id == "copilot-cli")
 				{
 					return selected_provider_id;
 				}
 			}
 
+			if (Trim(app.settings.active_provider_id) == "opencode-cli" || Trim(app.settings.active_provider_id) == "copilot-cli")
+			{
+				return Trim(app.settings.active_provider_id);
+			}
 			return Trim(app.settings.active_provider_id) == "codex-cli" ? "codex-cli" : "gemini-cli";
 		}
 

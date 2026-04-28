@@ -33,6 +33,8 @@ function providerDisplayName(provider?: Provider, fallbackId = '') {
   if (provider?.name?.trim()) return provider.name.trim()
   if (fallbackId === 'codex-cli') return 'Codex'
   if (fallbackId === 'claude-cli') return 'Claude'
+  if (fallbackId === 'opencode-cli') return 'OpenCode'
+  if (fallbackId === 'copilot-cli') return 'Copilot'
   return 'Gemini'
 }
 
@@ -53,6 +55,10 @@ function isClaudeProvider(provider?: Provider, providerId = '') {
   return providerId === 'claude-cli' || provider?.structuredProtocol === 'claude-code-stream-json'
 }
 
+function isCopilotProvider(provider?: Provider, providerId = '') {
+  return providerId === 'copilot-cli' || provider?.structuredProtocol === 'copilot-acp'
+}
+
 function memoryModelOptions(provider?: Provider, providerId = '', selectedModelId = '') {
   const baseOptions = isCodexProvider(provider, providerId)
     ? CODEX_MEMORY_MODELS
@@ -62,6 +68,10 @@ function memoryModelOptions(provider?: Provider, providerId = '', selectedModelI
           { id: 'sonnet', label: 'Sonnet', detail: 'Latest Sonnet alias' },
           { id: 'opus', label: 'Opus', detail: 'Latest Opus alias' },
         ]
+      : isCopilotProvider(provider, providerId)
+        ? [
+            { id: '', label: 'CLI default', detail: 'Use GitHub Copilot CLI settings' },
+          ]
       : GEMINI_MEMORY_MODELS
   if (!selectedModelId || baseOptions.some((option) => option.id === selectedModelId)) return baseOptions
   return [

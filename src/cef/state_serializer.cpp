@@ -704,13 +704,17 @@ nlohmann::json SerializeCliDebugState(const AppState& app)
 		if (app.selected_chat_index >= 0 && app.selected_chat_index < static_cast<int>(app.chats.size()))
 		{
 			const std::string selected_provider_id = uam::strings::Trim(app.chats[static_cast<std::size_t>(app.selected_chat_index)].provider_id);
-			if (selected_provider_id == "codex-cli" || selected_provider_id == "gemini-cli")
+			if (selected_provider_id == "codex-cli" || selected_provider_id == "gemini-cli" || selected_provider_id == "opencode-cli" || selected_provider_id == "copilot-cli")
 			{
 				return selected_provider_id;
 			}
 		}
 
 		const std::string active_provider_id = uam::strings::Trim(app.settings.active_provider_id);
+		if (active_provider_id == "opencode-cli" || active_provider_id == "copilot-cli")
+		{
+			return active_provider_id;
+		}
 		return active_provider_id == "codex-cli" ? "codex-cli" : "gemini-cli";
 	}
 

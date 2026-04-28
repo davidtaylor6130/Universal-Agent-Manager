@@ -788,6 +788,46 @@ UAM_TEST(MemoryServiceBuildsNonInteractiveClaudeWorkerCommand)
 #endif
 }
 
+UAM_TEST(MemoryServiceBuildsNonInteractiveOpenCodeWorkerCommand)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	AppSettings settings;
+	const ProviderProfile opencode = ProviderProfileStore::DefaultOpenCodeProfile();
+
+	const std::string command = MemoryService::BuildWorkerCommandForTests(opencode, settings, "remember this", "anthropic/claude-sonnet-4");
+
+	UAM_ASSERT(command.find("opencode") != std::string::npos);
+	UAM_ASSERT(command.find("run") != std::string::npos);
+	UAM_ASSERT(command.find("--model") != std::string::npos);
+	UAM_ASSERT(command.find("anthropic/claude-sonnet-4") != std::string::npos);
+	UAM_ASSERT(command.find("remember this") != std::string::npos);
+#if !defined(_WIN32)
+	UAM_ASSERT(command.find("PATH=") != std::string::npos);
+	UAM_ASSERT(command.find("/opt/homebrew/bin") != std::string::npos);
+#endif
+#endif
+}
+
+UAM_TEST(MemoryServiceBuildsNonInteractiveCopilotWorkerCommand)
+{
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	AppSettings settings;
+	const ProviderProfile copilot = ProviderProfileStore::DefaultCopilotProfile();
+
+	const std::string command = MemoryService::BuildWorkerCommandForTests(copilot, settings, "remember this", "gpt-5.1");
+
+	UAM_ASSERT(command.find("copilot") != std::string::npos);
+	UAM_ASSERT(command.find("-p") != std::string::npos);
+	UAM_ASSERT(command.find("--model") != std::string::npos);
+	UAM_ASSERT(command.find("gpt-5.1") != std::string::npos);
+	UAM_ASSERT(command.find("remember this") != std::string::npos);
+#if !defined(_WIN32)
+	UAM_ASSERT(command.find("PATH=") != std::string::npos);
+	UAM_ASSERT(command.find("/opt/homebrew/bin") != std::string::npos);
+#endif
+#endif
+}
+
 UAM_TEST(MemoryLibraryServiceListsCreatesAndDeletesEntries)
 {
 	TempDir temp("uam-memory-library");
@@ -1610,9 +1650,15 @@ UAM_TEST(CliProviderVersionCommandsUseCuratedPackages)
 {
 	UAM_ASSERT_EQ(BuildCliProviderVersionProbeCommandForTests("gemini-cli"), std::string("gemini --version"));
 	UAM_ASSERT_EQ(BuildCliProviderVersionProbeCommandForTests("codex-cli"), std::string("codex --version"));
+	UAM_ASSERT_EQ(BuildCliProviderVersionProbeCommandForTests("opencode-cli"), std::string("opencode --version"));
+	UAM_ASSERT_EQ(BuildCliProviderVersionProbeCommandForTests("copilot-cli"), std::string("copilot --version"));
 	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForTests("gemini-cli", "0.38.1"), std::string("npm install -g @google/gemini-cli@0.38.1"));
 	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForTests("codex-cli", "0.124.0"), std::string("npm install -g @openai/codex@0.124.0"));
+	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForTests("opencode-cli", "0.6.6"), std::string("npm install -g opencode-ai@0.6.6"));
+	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForTests("copilot-cli", "latest"), std::string("npm install -g @github/copilot@latest"));
 	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForTests("codex-cli", "--bad"), std::string(""));
+	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForTests("opencode-cli", "--bad"), std::string(""));
+	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForTests("copilot-cli", "--bad"), std::string(""));
 }
 
 UAM_TEST(StateSerializerIncludesMessageToolCalls)
@@ -1666,7 +1712,7 @@ UAM_TEST(StateSerializerIncludesMessageToolCalls)
 	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][0]["blocks"][1].value("type", ""), std::string("plan"));
 }
 
-UAM_TEST(ProviderRegistryResolvesGeminiCodexClaudeAndUnknownExactly)
+UAM_TEST(ProviderRegistryResolvesGeminiCodexClaudeOpenCodeCopilotAndUnknownExactly)
 {
 	const IProviderRuntime& gemini = ProviderRuntimeRegistry::ResolveById("gemini-cli");
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
@@ -1708,6 +1754,30 @@ UAM_TEST(ProviderRegistryResolvesGeminiCodexClaudeAndUnknownExactly)
 	UAM_ASSERT(!ProviderRuntime::IsRuntimeEnabled("claude-cli"));
 #endif
 	UAM_ASSERT(!ProviderRuntimeRegistry::IsKnownRuntimeId("claude"));
+
+	const IProviderRuntime& opencode = ProviderRuntimeRegistry::ResolveById("opencode-cli");
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	UAM_ASSERT_EQ(std::string(opencode.RuntimeId()), std::string("opencode-cli"));
+	UAM_ASSERT(ProviderRuntimeRegistry::IsKnownRuntimeId("opencode-cli"));
+	UAM_ASSERT(ProviderRuntime::IsRuntimeEnabled("opencode-cli"));
+#else
+	UAM_ASSERT_EQ(std::string(opencode.RuntimeId()), std::string("unsupported"));
+	UAM_ASSERT(!ProviderRuntimeRegistry::IsKnownRuntimeId("opencode-cli"));
+	UAM_ASSERT(!ProviderRuntime::IsRuntimeEnabled("opencode-cli"));
+#endif
+	UAM_ASSERT(!ProviderRuntimeRegistry::IsKnownRuntimeId("opencode"));
+
+	const IProviderRuntime& copilot = ProviderRuntimeRegistry::ResolveById("copilot-cli");
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	UAM_ASSERT_EQ(std::string(copilot.RuntimeId()), std::string("copilot-cli"));
+	UAM_ASSERT(ProviderRuntimeRegistry::IsKnownRuntimeId("copilot-cli"));
+	UAM_ASSERT(ProviderRuntime::IsRuntimeEnabled("copilot-cli"));
+#else
+	UAM_ASSERT_EQ(std::string(copilot.RuntimeId()), std::string("unsupported"));
+	UAM_ASSERT(!ProviderRuntimeRegistry::IsKnownRuntimeId("copilot-cli"));
+	UAM_ASSERT(!ProviderRuntime::IsRuntimeEnabled("copilot-cli"));
+#endif
+	UAM_ASSERT(!ProviderRuntimeRegistry::IsKnownRuntimeId("copilot"));
 }
 
 UAM_TEST(BuiltInProviderProfilesFollowEnabledRuntimeFlags)
@@ -1728,6 +1798,12 @@ UAM_TEST(BuiltInProviderProfilesFollowEnabledRuntimeFlags)
 #endif
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 	expected.push_back("claude-cli");
+#endif
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	expected.push_back("opencode-cli");
+#endif
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	expected.push_back("copilot-cli");
 #endif
 	UAM_ASSERT_EQ(ids, expected);
 }
@@ -1860,6 +1936,84 @@ UAM_TEST(ClaudeCliInteractiveArgvSupportsAcceptEditsMode)
 	UAM_ASSERT_EQ(argv[0], std::string("claude"));
 	UAM_ASSERT_EQ(argv[7], std::string("--permission-mode"));
 	UAM_ASSERT_EQ(argv[8], std::string("acceptEdits"));
+#endif
+}
+
+UAM_TEST(OpenCodeCliBuildsCommandsAndInteractiveArgv)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	ProviderProfile profile = ProviderProfileStore::DefaultOpenCodeProfile();
+	AppSettings settings;
+	settings.provider_yolo_mode = true;
+	settings.provider_extra_flags = "--agent build";
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "opencode-cli";
+	chat.native_session_id = "session-abc";
+	chat.model_id = "anthropic/claude-sonnet-4";
+
+	const std::vector<std::string> argv = ProviderRuntime::BuildInteractiveArgv(profile, chat, settings);
+	UAM_ASSERT_EQ(argv.size(), static_cast<std::size_t>(8));
+	UAM_ASSERT_EQ(argv[0], std::string("opencode"));
+	UAM_ASSERT_EQ(argv[1], std::string("--session"));
+	UAM_ASSERT_EQ(argv[2], std::string("session-abc"));
+	UAM_ASSERT_EQ(argv[3], std::string("--model"));
+	UAM_ASSERT_EQ(argv[4], std::string("anthropic/claude-sonnet-4"));
+	UAM_ASSERT_EQ(argv[5], std::string("--dangerously-skip-permissions"));
+	UAM_ASSERT_EQ(argv[6], std::string("--agent"));
+	UAM_ASSERT_EQ(argv[7], std::string("build"));
+
+	const std::string command = ProviderRuntime::BuildCommand(profile, settings, "hello", {"src/main.cpp"}, "session-abc");
+	UAM_ASSERT(command.find("opencode") != std::string::npos);
+	UAM_ASSERT(command.find("run") != std::string::npos);
+	UAM_ASSERT(command.find("--dangerously-skip-permissions") != std::string::npos);
+	UAM_ASSERT(command.find("--session") != std::string::npos);
+	UAM_ASSERT(command.find("session-abc") != std::string::npos);
+	UAM_ASSERT(command.find("--file") != std::string::npos);
+	UAM_ASSERT(command.find("src/main.cpp") != std::string::npos);
+	UAM_ASSERT(command.find("hello") != std::string::npos);
+#endif
+}
+
+UAM_TEST(CopilotCliBuildsCommandsAndInteractiveArgv)
+{
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	ProviderProfile profile = ProviderProfileStore::DefaultCopilotProfile();
+	AppSettings settings;
+	settings.provider_extra_flags = "--debug";
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "copilot-cli";
+	chat.native_session_id = "copilot-session-abc";
+	chat.model_id = "gpt-5.1";
+	chat.approval_mode = "plan";
+
+	const std::vector<std::string> argv = ProviderRuntime::BuildInteractiveArgv(profile, chat, settings);
+	UAM_ASSERT_EQ(argv.size(), static_cast<std::size_t>(7));
+	UAM_ASSERT_EQ(argv[0], std::string("copilot"));
+	UAM_ASSERT_EQ(argv[1], std::string("--resume"));
+	UAM_ASSERT_EQ(argv[2], std::string("copilot-session-abc"));
+	UAM_ASSERT_EQ(argv[3], std::string("--model"));
+	UAM_ASSERT_EQ(argv[4], std::string("gpt-5.1"));
+	UAM_ASSERT_EQ(argv[5], std::string("--plan"));
+	UAM_ASSERT_EQ(argv[6], std::string("--debug"));
+
+	chat.approval_mode = "yolo";
+	const std::vector<std::string> yolo_argv = ProviderRuntime::BuildInteractiveArgv(profile, chat, AppSettings{});
+	UAM_ASSERT(std::find(yolo_argv.begin(), yolo_argv.end(), "--allow-all") != yolo_argv.end());
+
+	settings.provider_yolo_mode = true;
+	const std::string command = ProviderRuntime::BuildCommand(profile, settings, "hello", {"src/main.cpp"}, "copilot-session-abc");
+	UAM_ASSERT(command.find("copilot") != std::string::npos);
+	UAM_ASSERT(command.find("-p") != std::string::npos);
+	UAM_ASSERT(command.find("--resume") != std::string::npos);
+	UAM_ASSERT(command.find("copilot-session-abc") != std::string::npos);
+	UAM_ASSERT(command.find("--allow-all") != std::string::npos);
+	UAM_ASSERT(command.find("--debug") != std::string::npos);
+	UAM_ASSERT(command.find("src/main.cpp") != std::string::npos);
+	UAM_ASSERT(command.find("hello") != std::string::npos);
 #endif
 }
 
@@ -2156,6 +2310,31 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	const std::vector<std::string> claude_yolo_argv = uam::BuildAcpLaunchArgvForTests(claude_chat);
 	UAM_ASSERT_EQ(claude_yolo_argv[7], std::string("--permission-mode"));
 	UAM_ASSERT_EQ(claude_yolo_argv[8], std::string("auto"));
+
+	ChatSession opencode_chat;
+	opencode_chat.id = "opencode-chat";
+	opencode_chat.provider_id = "opencode-cli";
+	opencode_chat.native_session_id = "opencode-session-1";
+	const std::vector<std::string> opencode_argv = uam::BuildAcpLaunchArgvForTests(opencode_chat);
+	UAM_ASSERT_EQ(opencode_argv.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(opencode_argv[0], std::string("opencode"));
+	UAM_ASSERT_EQ(opencode_argv[1], std::string("acp"));
+	const std::string opencode_detail = uam::BuildAcpLaunchDetailForTests("/tmp/project", opencode_chat);
+	UAM_ASSERT(opencode_detail.find("argv=opencode acp") != std::string::npos);
+	UAM_ASSERT(opencode_detail.find("nativeSessionId=opencode-session-1") != std::string::npos);
+
+	ChatSession copilot_chat;
+	copilot_chat.id = "copilot-chat";
+	copilot_chat.provider_id = "copilot-cli";
+	copilot_chat.native_session_id = "copilot-session-1";
+	const std::vector<std::string> copilot_argv = uam::BuildAcpLaunchArgvForTests(copilot_chat);
+	UAM_ASSERT_EQ(copilot_argv.size(), static_cast<std::size_t>(3));
+	UAM_ASSERT_EQ(copilot_argv[0], std::string("copilot"));
+	UAM_ASSERT_EQ(copilot_argv[1], std::string("--acp"));
+	UAM_ASSERT_EQ(copilot_argv[2], std::string("--stdio"));
+	const std::string copilot_detail = uam::BuildAcpLaunchDetailForTests("/tmp/project", copilot_chat);
+	UAM_ASSERT(copilot_detail.find("argv=copilot --acp --stdio") != std::string::npos);
+	UAM_ASSERT(copilot_detail.find("nativeSessionId=copilot-session-1") != std::string::npos);
 }
 
 UAM_TEST(ClaudeStreamJsonMessagesUpdateChatAndSession)
