@@ -4,6 +4,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { CLIView } from '../views/CLIView'
 import { ChatView } from '../views/ChatView'
 import { isCefContext } from '../../ipc/cefBridge'
+import { ProviderLogo } from '../shared/ProviderLogo'
 
 const PushStatusDot = memo(function PushStatusDot() {
   const pushChannelStatus = useAppStore((s) => s.pushChannelStatus)
@@ -43,6 +44,7 @@ export function MainPanel() {
   const [view, setView] = useState<'chat' | 'cli'>('chat')
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const session = useAppStore(useShallow((s) => s.sessions.find((x) => x.id === activeSessionId) ?? null))
+  const providers = useAppStore(useShallow((s) => s.providers))
   const acpBinding = useAppStore((s) => activeSessionId ? s.acpBindingBySessionId[activeSessionId] : undefined)
   const cliBinding = useAppStore((s) => activeSessionId ? s.cliBindingBySessionId[activeSessionId] : undefined)
   const viewSwitchLocked = Boolean(
@@ -52,6 +54,12 @@ export function MainPanel() {
       cliBinding?.lifecycleState === 'busy' ||
       cliBinding?.lifecycleState === 'shuttingDown'
   )
+  const providerId = session?.providerId || acpBinding?.providerId || 'gemini-cli'
+  const provider = providers.find((candidate) => candidate.id === providerId)
+  const providerName =
+    provider?.shortName?.trim() ||
+    provider?.name?.trim() ||
+    (providerId === 'codex-cli' ? 'Codex' : providerId === 'claude-cli' ? 'Claude' : providerId === 'opencode-cli' ? 'OpenCode' : providerId === 'copilot-cli' ? 'Copilot' : 'Gemini')
 
   if (!session) {
     return (
@@ -76,20 +84,39 @@ export function MainPanel() {
     <div className="flex flex-col h-full overflow-hidden">
       {/* Header bar */}
       <div
-        className="flex items-center gap-0 flex-shrink-0 px-1"
+        className="flex items-center gap-3 flex-shrink-0 px-4"
         style={{
-          height: 40,
+          height: 48,
           borderBottom: '1px solid var(--border)',
           background: 'var(--surface)',
         }}
       >
         {/* Session name */}
         <div
-          className="flex-1 px-3 text-sm font-medium truncate"
+          className="flex items-center gap-3 flex-1 min-w-0 text-sm font-semibold truncate"
           style={{ color: 'var(--text)' }}
           title={session.name}
         >
-          {session.name}
+          <span style={{ width: 10, height: 10, borderRadius: 999, background: 'var(--accent)', flexShrink: 0 }} />
+          <span className="truncate">{session.name}</span>
+          <span
+            className="inline-flex items-center gap-2 text-xs font-medium"
+            style={{
+              height: 30,
+              border: '1px solid color-mix(in srgb, var(--teal) 28%, var(--border))',
+              borderRadius: 7,
+              background: 'var(--teal-dim)',
+              color: 'var(--teal)',
+              padding: '0 10px',
+              flexShrink: 0,
+            }}
+          >
+            <ProviderLogo providerId={providerId} />
+            <span>{providerName} Provider</span>
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="m4 6 4 4 4-4" />
+            </svg>
+          </span>
         </div>
 
         <div

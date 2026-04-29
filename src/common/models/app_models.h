@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -101,6 +102,9 @@ struct ChatSession
 	bool pinned = false;
 	std::vector<std::string> linked_files;
 	std::vector<Message> messages;
+	bool messages_loaded = true;
+	std::size_t persisted_message_count = 0;
+	std::string persisted_messages_digest;
 	std::string workspace_directory;
 	std::string approval_mode;
 	std::string model_id;

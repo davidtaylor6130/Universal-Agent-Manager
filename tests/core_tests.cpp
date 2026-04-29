@@ -1618,7 +1618,7 @@ UAM_TEST(StateSerializerIncludesChatModelId)
 	UAM_ASSERT_EQ(fingerprint["chats"][0].value("approvalMode", ""), std::string("plan"));
 }
 
-UAM_TEST(StateSerializerIncludesActiveCliVersionManager)
+UAM_TEST(StateSerializerIncludesAllCliVersionManagers)
 {
 	uam::AppState app;
 	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
@@ -1635,15 +1635,25 @@ UAM_TEST(StateSerializerIncludesActiveCliVersionManager)
 	app.runtime_cli_installed_version = "0.124.0";
 	app.runtime_cli_version_supported = true;
 	app.runtime_cli_version_message = "Codex CLI version is supported.";
+	app.runtime_cli_versions_by_provider_id["codex-cli"].checked = true;
+	app.runtime_cli_versions_by_provider_id["codex-cli"].installed_version = "0.124.0";
+	app.runtime_cli_versions_by_provider_id["codex-cli"].supported = true;
+	app.runtime_cli_versions_by_provider_id["codex-cli"].message = "Codex CLI version is supported.";
 
 	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
 	const nlohmann::json manager = serialized["cliVersionManager"];
-	UAM_ASSERT_EQ(manager.value("providerId", ""), std::string("codex-cli"));
-	UAM_ASSERT_EQ(manager.value("installedVersion", ""), std::string("0.124.0"));
-	UAM_ASSERT_EQ(manager.value("preferredVersion", ""), std::string("0.124.0"));
-	UAM_ASSERT_EQ(manager.value("status", ""), std::string("supported"));
-	UAM_ASSERT(manager["availableVersions"].is_array());
-	UAM_ASSERT(!manager["availableVersions"].empty());
+	UAM_ASSERT(manager["providers"].is_array());
+	UAM_ASSERT(manager["providers"].size() >= 2);
+
+	const auto codex_it = std::find_if(manager["providers"].begin(), manager["providers"].end(), [](const nlohmann::json& provider) {
+		return provider.value("providerId", "") == "codex-cli";
+	});
+	UAM_ASSERT(codex_it != manager["providers"].end());
+	UAM_ASSERT_EQ(codex_it->value("installedVersion", ""), std::string("0.124.0"));
+	UAM_ASSERT_EQ(codex_it->value("preferredVersion", ""), std::string("0.124.0"));
+	UAM_ASSERT_EQ(codex_it->value("status", ""), std::string("supported"));
+	UAM_ASSERT((*codex_it)["availableVersions"].is_array());
+	UAM_ASSERT(!(*codex_it)["availableVersions"].empty());
 }
 
 UAM_TEST(CliProviderVersionCommandsUseCuratedPackages)

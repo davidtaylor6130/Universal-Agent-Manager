@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { useAppStore, type CliVersionManager, type MemoryWorkerBinding } from '../../store/useAppStore'
+import { useAppStore, type CliVersionProviderState, type MemoryWorkerBinding } from '../../store/useAppStore'
 import { ThemeToggle } from '../shared/ThemeToggle'
 import { useTheme } from '../../hooks/useTheme'
 import type { Provider } from '../../types/provider'
@@ -99,7 +99,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'about', label: 'About', detail: 'Version information' },
 ]
 
-function versionStatusText(manager: CliVersionManager) {
+function versionStatusText(manager: CliVersionProviderState) {
   if (manager.status === 'checking') return 'Checking installed version'
   if (manager.status === 'installing') return 'Installing selected version'
   if (manager.status === 'supported') return 'Installed version is supported'
@@ -150,14 +150,22 @@ export function SettingsModal() {
   const openMemoryScanModal = useAppStore((s) => s.openMemoryScanModal)
   const { theme } = useTheme()
   const [openMemoryMenu, setOpenMemoryMenu] = useState<string | null>(null)
-  const [selectedCliVersion, setSelectedCliVersion] = useState('')
+  const [selectedCliVersions, setSelectedCliVersions] = useState<Record<string, string>>({})
   const [markdownStoreDraftDirectory, setMarkdownStoreDraftDirectory] = useState(markdownStoreDirectory)
   const [selectedSection, setSelectedSection] = useState<SettingsSectionId>('appearance')
   const memoryMenuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    setSelectedCliVersion(cliVersionManager.selectedVersion || cliVersionManager.preferredVersion || '')
-  }, [cliVersionManager.providerId, cliVersionManager.selectedVersion, cliVersionManager.preferredVersion])
+    setSelectedCliVersions((current) => {
+      const next = { ...current }
+      for (const provider of cliVersionManager.providers) {
+        if (!next[provider.providerId]) {
+          next[provider.providerId] = provider.selectedVersion || provider.preferredVersion || ''
+        }
+      }
+      return next
+    })
+  }, [cliVersionManager.providers])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -208,10 +216,6 @@ export function SettingsModal() {
     memoryActivity.lastWorkerTimedOut ? 'timed out' : '',
     memoryActivity.lastWorkerUpdatedAt || '',
   ].filter(Boolean).join(' | ')
-  const cliVersionProvider = providers.find((provider) => provider.id === cliVersionManager.providerId)
-  const cliVersionChanged = Boolean(selectedCliVersion && selectedCliVersion !== cliVersionManager.installedVersion)
-  const canApplyCliVersion = Boolean(selectedCliVersion && cliVersionChanged && !cliVersionManager.running)
-
   const renderSectionContent = () => {
     if (selectedSection === 'appearance') {
       return (
@@ -240,130 +244,150 @@ export function SettingsModal() {
       return (
         <div className="space-y-4">
           <SectionCard
-            title="Active Provider CLI"
-            description="Check, run, or revert the selected chat provider CLI to a curated supported version."
+            title="Provider CLIs"
+            description="Check, run, or revert each provider CLI to a curated supported version."
           >
-            <div className="space-y-4">
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--text)' }}>
-                    <ProviderLogo providerId={cliVersionManager.providerId} />
-                    <span>{providerDisplayName(cliVersionProvider, cliVersionManager.providerId)}</span>
-                  </div>
-                  <div className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>
-                    {versionStatusText(cliVersionManager)}
-                  </div>
-                  {cliVersionManager.message && (
-                    <div className="text-xs mt-1" style={{ color: cliVersionManager.status === 'unsupported' ? 'var(--red)' : 'var(--text-3)' }}>
-                      {cliVersionManager.message}
+            <div className="space-y-3">
+              {cliVersionManager.providers.length === 0 && (
+                <div className="text-xs" style={{ color: 'var(--text-3)' }}>
+                  No managed CLI providers are available in this build.
+                </div>
+              )}
+              {cliVersionManager.providers.map((manager) => {
+                const cliVersionProvider = providers.find((provider) => provider.id === manager.providerId)
+                const selectedCliVersion = selectedCliVersions[manager.providerId] || manager.selectedVersion || manager.preferredVersion || ''
+                const cliVersionChanged = Boolean(selectedCliVersion && selectedCliVersion !== manager.installedVersion)
+                const canApplyCliVersion = Boolean(selectedCliVersion && cliVersionChanged && !manager.running)
+                return (
+                  <div
+                    key={manager.providerId}
+                    className="rounded-lg p-3"
+                    style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--text)' }}>
+                          <ProviderLogo providerId={manager.providerId} />
+                          <span>{providerDisplayName(cliVersionProvider, manager.providerId)}</span>
+                        </div>
+                        <div className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>
+                          {versionStatusText(manager)}
+                        </div>
+                        {manager.message && (
+                          <div className="text-xs mt-1" style={{ color: manager.status === 'unsupported' ? 'var(--red)' : 'var(--text-3)' }}>
+                            {manager.message}
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        disabled={manager.running}
+                        onClick={() => void refreshCliProviderVersion(manager.providerId)}
+                        className="px-3 py-1.5 rounded-md text-xs disabled:opacity-50"
+                        style={{
+                          background: 'var(--surface-up)',
+                          color: 'var(--text)',
+                          border: '1px solid var(--border)',
+                          cursor: manager.running ? 'default' : 'pointer',
+                        }}
+                      >
+                        Refresh
+                      </button>
                     </div>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  disabled={cliVersionManager.running}
-                  onClick={() => void refreshCliProviderVersion(cliVersionManager.providerId)}
-                  className="px-3 py-1.5 rounded-md text-xs disabled:opacity-50"
-                  style={{
-                    background: 'var(--surface-up)',
-                    color: 'var(--text)',
-                    border: '1px solid var(--border)',
-                    cursor: cliVersionManager.running ? 'default' : 'pointer',
-                  }}
-                >
-                  Refresh
-                </button>
-              </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div className="rounded-lg p-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-                  <div className="text-[11px]" style={{ color: 'var(--text-3)' }}>Installed</div>
-                  <div className="text-sm mt-1" style={{ color: 'var(--text)' }}>
-                    {cliVersionManager.installedVersion || 'Unknown'}
-                  </div>
-                </div>
-                <div className="rounded-lg p-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-                  <div className="text-[11px]" style={{ color: 'var(--text-3)' }}>Preferred</div>
-                  <div className="text-sm mt-1" style={{ color: 'var(--text)' }}>
-                    {cliVersionManager.preferredVersion || 'Not configured'}
-                  </div>
-                </div>
-              </div>
+                    <div className="grid grid-cols-2 gap-3 mt-3">
+                      <div>
+                        <div className="text-[11px]" style={{ color: 'var(--text-3)' }}>Installed</div>
+                        <div className="text-sm mt-1" style={{ color: 'var(--text)' }}>
+                          {manager.installedVersion || 'Unknown'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[11px]" style={{ color: 'var(--text-3)' }}>Preferred</div>
+                        <div className="text-sm mt-1" style={{ color: 'var(--text)' }}>
+                          {manager.preferredVersion || 'Not configured'}
+                        </div>
+                      </div>
+                    </div>
 
-              <div className="grid gap-2">
-                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                  Target version
-                  <select
-                    value={selectedCliVersion}
-                    disabled={cliVersionManager.running || cliVersionManager.availableVersions.length === 0}
-                    onChange={(event) => setSelectedCliVersion(event.currentTarget.value)}
-                    style={{
-                      background: 'var(--surface)',
-                      color: 'var(--text)',
-                      border: '1px solid var(--border)',
-                      borderRadius: 8,
-                      padding: '8px 10px',
-                    }}
-                  >
-                    {cliVersionManager.availableVersions.map((option) => (
-                      <option key={option.version} value={option.version}>
-                        {option.version}{option.preferred ? ' (preferred)' : ''}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <div className="flex items-center justify-between gap-3">
-                  <div className="text-xs" style={{ color: 'var(--text-3)' }}>
-                    Applies with npm globally for the active provider.
+                    <div className="grid gap-2 mt-3">
+                      <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                        Target version
+                        <select
+                          value={selectedCliVersion}
+                          disabled={manager.running || manager.availableVersions.length === 0}
+                          onChange={(event) => {
+                            const nextVersion = event.currentTarget.value
+                            setSelectedCliVersions((current) => ({ ...current, [manager.providerId]: nextVersion }))
+                          }}
+                          style={{
+                            background: 'var(--surface-up)',
+                            color: 'var(--text)',
+                            border: '1px solid var(--border)',
+                            borderRadius: 8,
+                            padding: '8px 10px',
+                          }}
+                        >
+                          {manager.availableVersions.map((option) => (
+                            <option key={option.version} value={option.version}>
+                              {option.version}{option.preferred ? ' (preferred)' : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-xs" style={{ color: 'var(--text-3)' }}>
+                          Applies with npm globally for this provider.
+                        </div>
+                        <button
+                          type="button"
+                          disabled={!canApplyCliVersion}
+                          onClick={() => {
+                            const providerName = providerDisplayName(cliVersionProvider, manager.providerId)
+                            if (!window.confirm(`Install ${providerName} ${selectedCliVersion}?`)) return
+                            void applyCliProviderVersion(manager.providerId, selectedCliVersion)
+                          }}
+                          className="px-3 py-1.5 rounded-md text-xs disabled:opacity-50"
+                          style={{
+                            background: canApplyCliVersion ? 'var(--accent)' : 'var(--surface-up)',
+                            color: canApplyCliVersion ? '#fff' : 'var(--text-3)',
+                            border: canApplyCliVersion ? 'none' : '1px solid var(--border)',
+                            cursor: canApplyCliVersion ? 'pointer' : 'default',
+                          }}
+                        >
+                          {manager.running ? 'Running' : 'Apply'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {(manager.lastCommand || manager.lastOutput) && (
+                      <div className="grid gap-2 mt-3">
+                        {manager.lastCommand && (
+                          <code className="text-xs rounded-md px-2 py-1" style={{ background: 'var(--surface-up)', color: 'var(--text)' }}>
+                            {manager.lastCommand}
+                          </code>
+                        )}
+                        <pre
+                          className="text-[11px] leading-5 overflow-auto rounded-lg px-3 py-2"
+                          style={{
+                            maxHeight: 180,
+                            background: 'var(--surface-up)',
+                            color: 'var(--text-2)',
+                            border: '1px solid var(--border)',
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-word',
+                            fontFamily: 'var(--font-mono)',
+                          }}
+                        >
+                          {manager.lastOutput || 'No output captured yet.'}
+                        </pre>
+                      </div>
+                    )}
                   </div>
-                  <button
-                    type="button"
-                    disabled={!canApplyCliVersion}
-                    onClick={() => {
-                      const providerName = providerDisplayName(cliVersionProvider, cliVersionManager.providerId)
-                      if (!window.confirm(`Install ${providerName} ${selectedCliVersion}?`)) return
-                      void applyCliProviderVersion(cliVersionManager.providerId, selectedCliVersion)
-                    }}
-                    className="px-3 py-1.5 rounded-md text-xs disabled:opacity-50"
-                    style={{
-                      background: canApplyCliVersion ? 'var(--accent)' : 'var(--surface-up)',
-                      color: canApplyCliVersion ? '#fff' : 'var(--text-3)',
-                      border: canApplyCliVersion ? 'none' : '1px solid var(--border)',
-                      cursor: canApplyCliVersion ? 'pointer' : 'default',
-                    }}
-                  >
-                    {cliVersionManager.running ? 'Running' : 'Apply'}
-                  </button>
-                </div>
-              </div>
+                )
+              })}
             </div>
           </SectionCard>
-
-          {(cliVersionManager.lastCommand || cliVersionManager.lastOutput) && (
-            <SectionCard title="Last Command">
-              <div className="grid gap-2">
-                {cliVersionManager.lastCommand && (
-                  <code className="text-xs rounded-md px-2 py-1" style={{ background: 'var(--surface)', color: 'var(--text)' }}>
-                    {cliVersionManager.lastCommand}
-                  </code>
-                )}
-                <pre
-                  className="text-[11px] leading-5 overflow-auto rounded-lg px-3 py-2"
-                  style={{
-                    maxHeight: 220,
-                    background: 'var(--surface)',
-                    color: 'var(--text-2)',
-                    border: '1px solid var(--border)',
-                    whiteSpace: 'pre-wrap',
-                    wordBreak: 'break-word',
-                    fontFamily: 'var(--font-mono)',
-                  }}
-                >
-                  {cliVersionManager.lastOutput || 'No output captured yet.'}
-                </pre>
-              </div>
-            </SectionCard>
-          )}
         </div>
       )
     }

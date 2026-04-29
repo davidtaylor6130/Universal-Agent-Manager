@@ -16,10 +16,10 @@ export function Logo({ size = 22, showText = true }: LogoProps) {
       />
       {showText && (
         <span
-          className="text-sm font-semibold tracking-wider"
-          style={{ color: 'var(--text)', letterSpacing: '0.12em' }}
+          className="text-sm font-semibold"
+          style={{ color: 'var(--text)' }}
         >
-          UAM
+          Universal Agent Manager
         </span>
       )}
     </div>

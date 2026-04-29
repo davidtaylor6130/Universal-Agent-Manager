@@ -258,6 +258,15 @@ std::string FingerprintHashHex(const std::uint64_t hash)
 
 std::string MessageDigestForFingerprint(const ChatSession& session)
 {
+	if (!session.messages_loaded)
+	{
+		if (!session.persisted_messages_digest.empty())
+		{
+			return session.persisted_messages_digest;
+		}
+		return session.updated_at + ":" + std::to_string(session.persisted_message_count);
+	}
+
 	std::uint64_t hash = kFingerprintHashOffset;
 
 	FingerprintHashString(hash, session.updated_at);
@@ -309,6 +318,11 @@ std::string MessageDigestForFingerprint(const ChatSession& session)
 		}
 
 	return FingerprintHashHex(hash);
+}
+
+std::size_t MessageCountForFrontend(const ChatSession& session)
+{
+	return session.messages_loaded ? session.messages.size() : session.persisted_message_count;
 }
 
 const uam::CliTerminalState* FindTerminalForChat(const uam::AppState& app, const ChatSession& chat)
@@ -615,7 +629,7 @@ nlohmann::json SerializeFingerprintSession(const AppState& app, const ChatSessio
 	chat_json["createdAt"] = chat.created_at;
 	chat_json["updatedAt"] = chat.updated_at;
 	chat_json["lastOpenedAt"] = chat.last_opened_at.empty() ? chat.updated_at : chat.last_opened_at;
-	chat_json["messageCount"] = chat.messages.size();
+	chat_json["messageCount"] = MessageCountForFrontend(chat);
 	chat_json["messagesDigest"] = MessageDigestForFingerprint(chat);
 	chat_json["cliTerminal"] = SerializeChatTerminalSummary(app, chat);
 	chat_json["acpSession"] = SerializeAcpSessionSummary(app, chat);
@@ -699,34 +713,21 @@ nlohmann::json SerializeCliDebugState(const AppState& app)
 		};
 	}
 
-	std::string ActiveCliVersionProviderId(const AppState& app)
+	bool IsCliVersionManagedProvider(const ProviderCliCompatibilityService& service, const ProviderProfile& profile)
 	{
-		if (app.selected_chat_index >= 0 && app.selected_chat_index < static_cast<int>(app.chats.size()))
-		{
-			const std::string selected_provider_id = uam::strings::Trim(app.chats[static_cast<std::size_t>(app.selected_chat_index)].provider_id);
-			if (selected_provider_id == "codex-cli" || selected_provider_id == "gemini-cli" || selected_provider_id == "opencode-cli" || selected_provider_id == "copilot-cli")
-			{
-				return selected_provider_id;
-			}
-		}
-
-		const std::string active_provider_id = uam::strings::Trim(app.settings.active_provider_id);
-		if (active_provider_id == "opencode-cli" || active_provider_id == "copilot-cli")
-		{
-			return active_provider_id;
-		}
-		return active_provider_id == "codex-cli" ? "codex-cli" : "gemini-cli";
+		const std::string provider_id = uam::strings::Trim(profile.id);
+		return profile.supports_cli && !provider_id.empty() && !service.VersionProbeCommandForProvider(provider_id).empty();
 	}
 
-	nlohmann::json SerializeCliVersionManager(const AppState& app)
+	nlohmann::json SerializeCliVersionEntry(const AppState& app, const ProviderCliCompatibilityService& service, const std::string& provider_id)
 	{
-		const ProviderCliCompatibilityService service;
-		const std::string provider_id = ActiveCliVersionProviderId(app);
 		const bool check_running_for_provider = app.runtime_cli_version_check_task.running && app.runtime_cli_version_provider_id == provider_id;
 		const bool install_running_for_provider = app.runtime_cli_pin_task.running && app.runtime_cli_pin_provider_id == provider_id;
-		const bool state_matches_provider = app.runtime_cli_version_provider_id.empty() || app.runtime_cli_version_provider_id == provider_id;
+		const auto state_it = app.runtime_cli_versions_by_provider_id.find(provider_id);
+		const bool has_provider_state = state_it != app.runtime_cli_versions_by_provider_id.end();
+		const CliProviderVersionState provider_state = has_provider_state ? state_it->second : CliProviderVersionState{};
 		const std::string preferred_version = service.PreferredVersionForProvider(provider_id);
-		const std::string selected_version = app.runtime_cli_selected_version.empty() ? (app.runtime_cli_installed_version.empty() ? preferred_version : app.runtime_cli_installed_version) : app.runtime_cli_selected_version;
+		const std::string selected_version = provider_state.selected_version.empty() ? (provider_state.installed_version.empty() ? preferred_version : provider_state.installed_version) : provider_state.selected_version;
 
 		auto versions = nlohmann::json::array();
 		for (const CliProviderVersionOption& option : service.SupportedVersionsForProvider(provider_id))
@@ -746,22 +747,40 @@ nlohmann::json SerializeCliDebugState(const AppState& app)
 		{
 			status = "installing";
 		}
-		else if (state_matches_provider && app.runtime_cli_version_checked)
+		else if (provider_state.checked)
 		{
-			status = app.runtime_cli_version_supported ? "supported" : "unsupported";
+			status = provider_state.supported ? "supported" : "unsupported";
 		}
 
 		return {
 			{"providerId", provider_id},
-			{"installedVersion", state_matches_provider ? app.runtime_cli_installed_version : ""},
+			{"installedVersion", provider_state.installed_version},
 			{"selectedVersion", selected_version},
 			{"availableVersions", std::move(versions)},
 			{"preferredVersion", preferred_version},
 			{"status", status},
-			{"message", state_matches_provider ? app.runtime_cli_version_message : ""},
+			{"message", provider_state.message},
 			{"running", check_running_for_provider || install_running_for_provider},
 			{"lastCommand", install_running_for_provider ? app.runtime_cli_pin_task.command_preview : app.runtime_cli_version_check_task.command_preview},
-			{"lastOutput", app.runtime_cli_pin_output.empty() ? app.runtime_cli_version_raw_output : app.runtime_cli_pin_output},
+			{"lastOutput", provider_state.install_output.empty() ? provider_state.raw_output : provider_state.install_output},
+		};
+	}
+
+	nlohmann::json SerializeCliVersionManager(const AppState& app)
+	{
+		const ProviderCliCompatibilityService service;
+		auto providers = nlohmann::json::array();
+		for (const ProviderProfile& profile : app.provider_profiles)
+		{
+			if (!IsCliVersionManagedProvider(service, profile))
+			{
+				continue;
+			}
+			providers.push_back(SerializeCliVersionEntry(app, service, profile.id));
+		}
+
+		return {
+			{"providers", std::move(providers)},
 		};
 	}
 
@@ -786,7 +805,11 @@ nlohmann::json StateSerializer::Serialize(const AppState& app)
 	auto chats_arr = nlohmann::json::array();
 	for (const auto& chat : app.chats)
 	{
-		nlohmann::json chat_json = SerializeSession(chat);
+		const bool has_selected_chat = app.selected_chat_index >= 0 &&
+		                               app.selected_chat_index < static_cast<int>(app.chats.size());
+		const bool selected_chat = !has_selected_chat ||
+		                           app.chats[static_cast<std::size_t>(app.selected_chat_index)].id == chat.id;
+		nlohmann::json chat_json = (selected_chat && chat.messages_loaded) ? SerializeSession(chat) : SerializeFingerprintSession(app, chat);
 		chat_json["workspaceDirectory"] = ResolveWorkspaceRootPath(app, chat).string();
 
 		const bool ready_since_last_select = app.chats_with_unseen_updates.find(chat.id) != app.chats_with_unseen_updates.end();
@@ -948,7 +971,7 @@ nlohmann::json StateSerializer::SerializeSession(const ChatSession& session)
 	j["createdAt"]  = session.created_at;
 	j["updatedAt"]  = session.updated_at;
 	j["lastOpenedAt"] = session.last_opened_at.empty() ? session.updated_at : session.last_opened_at;
-	j["messageCount"] = session.messages.size();
+	j["messageCount"] = MessageCountForFrontend(session);
 	j["messagesDigest"] = MessageDigestForFingerprint(session);
 
 	auto msgs = nlohmann::json::array();

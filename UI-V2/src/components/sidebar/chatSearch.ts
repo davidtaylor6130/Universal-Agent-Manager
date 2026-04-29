@@ -1,4 +1,3 @@
-import type { Message } from '../../types/message'
 import type { Folder, Session } from '../../types/session'
 
 export type ChatSearchIndex = Record<string, string>
@@ -27,17 +26,11 @@ export function tokenizeChatSearchQuery(query: string): string[] {
 }
 
 export function buildChatSearchIndex(
-  sessions: Session[],
-  messages: Record<string, Message[]>
+  sessions: Session[]
 ): ChatSearchIndex {
   return Object.fromEntries(
     sessions.map((session) => {
-      const messageText = (messages[session.id] ?? [])
-        .filter((message) => !message.isStreaming)
-        .map((message) => message.content)
-        .join(' ')
-
-      return [session.id, normalizeSearchText(`${session.name} ${messageText}`)]
+      return [session.id, normalizeSearchText(`${session.name} ${session.providerId ?? ''} ${session.workspaceDirectory ?? ''}`)]
     })
   )
 }
@@ -90,7 +83,8 @@ export function buildChatSearchModel(
   folders: Folder[],
   sessions: Session[],
   searchIndex: ChatSearchIndex,
-  searchTokens: string[]
+  searchTokens: string[],
+  deepSearchSessionIds?: Set<string>
 ): ChatSearchModel {
   const isSearching = searchTokens.length > 0
   const rootFolders = folders.filter((folder) => folder.parentId === null)
@@ -98,7 +92,7 @@ export function buildChatSearchModel(
   const sortedSessions = [...sessions].sort(compareSessionsByRecent)
   const matchingSessionIds = new Set(
     sortedSessions
-      .filter((session) => sessionMatchesChatSearch(searchIndex[session.id], searchTokens))
+      .filter((session) => deepSearchSessionIds ? deepSearchSessionIds.has(session.id) : sessionMatchesChatSearch(searchIndex[session.id], searchTokens))
       .map((session) => session.id)
   )
 

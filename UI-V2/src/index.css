@@ -9,28 +9,32 @@
 
 /* ── Theme Tokens ─────────────────────────────────────────── */
 :root {
-  --bg:              #f5f5f8;
+  --desktop-bg:      #e9edf5;
+  --window-bg:       #f8f9fb;
+  --bg:              #f7f8fa;
   --surface:         #ffffff;
-  --surface-up:      #ededf2;
-  --surface-high:    #e6e6ec;
-  --border:          rgba(0, 0, 0, 0.08);
-  --border-bright:   rgba(0, 0, 0, 0.14);
-  --text:            #111118;
-  --text-2:          #5a5a78;
-  --text-3:          #9898b8;
-  --accent:          #e8793a;
-  --accent-dim:      rgba(232, 121, 58, 0.10);
-  --accent-glow:     rgba(232, 121, 58, 0.18);
+  --surface-up:      #f2f4f7;
+  --surface-high:    #e8ebf0;
+  --border:          rgba(16, 24, 40, 0.09);
+  --border-bright:   rgba(16, 24, 40, 0.15);
+  --text:            #141820;
+  --text-2:          #596273;
+  --text-3:          #98a1b2;
+  --accent:          #ff6a00;
+  --accent-dim:      rgba(255, 106, 0, 0.10);
+  --accent-glow:     rgba(255, 106, 0, 0.18);
+  --teal:            #0891a1;
+  --teal-dim:        rgba(8, 145, 161, 0.11);
   --blue:            #3b82f6;
   --blue-dim:        rgba(59, 130, 246, 0.10);
-  --green:           #22c55e;
+  --green:           #16a34a;
   --red:             #ef4444;
   --yellow:          #eab308;
 
   /* Sidebar */
-  --sidebar-bg:      #eeeeF3;
-  --sidebar-item-hover: rgba(0,0,0,0.05);
-  --sidebar-item-active: rgba(232,121,58,0.08);
+  --sidebar-bg:      #fbfcfe;
+  --sidebar-item-hover: rgba(16, 24, 40, 0.05);
+  --sidebar-item-active: rgba(255, 106, 0, 0.10);
 
   /* Scrollbar */
   --scroll-thumb:    rgba(0,0,0,0.15);
@@ -44,27 +48,31 @@
 }
 
 [data-theme="dark"] {
-  --bg:              #0b0b0e;
-  --surface:         #101014;
-  --surface-up:      #17171d;
-  --surface-high:    #1e1e26;
-  --border:          rgba(255, 255, 255, 0.07);
-  --border-bright:   rgba(255, 255, 255, 0.12);
-  --text:            #e6e6ef;
-  --text-2:          #8888aa;
-  --text-3:          #44445a;
-  --accent:          #e8793a;
-  --accent-dim:      rgba(232, 121, 58, 0.12);
-  --accent-glow:     rgba(232, 121, 58, 0.22);
+  --desktop-bg:      #31435b;
+  --window-bg:       #0c0d11;
+  --bg:              #0f1117;
+  --surface:         #12141b;
+  --surface-up:      #191c25;
+  --surface-high:    #222632;
+  --border:          rgba(255, 255, 255, 0.08);
+  --border-bright:   rgba(255, 255, 255, 0.14);
+  --text:            #eef1f7;
+  --text-2:          #9aa4b6;
+  --text-3:          #5f6a7c;
+  --accent:          #ff6a00;
+  --accent-dim:      rgba(255, 106, 0, 0.13);
+  --accent-glow:     rgba(255, 106, 0, 0.22);
+  --teal:            #22d3ee;
+  --teal-dim:        rgba(34, 211, 238, 0.10);
   --blue:            #3b82f6;
   --blue-dim:        rgba(59, 130, 246, 0.10);
   --green:           #4ade80;
   --red:             #f87171;
   --yellow:          #facc15;
 
-  --sidebar-bg:      #0e0e12;
+  --sidebar-bg:      #11131a;
   --sidebar-item-hover: rgba(255,255,255,0.04);
-  --sidebar-item-active: rgba(232,121,58,0.10);
+  --sidebar-item-active: rgba(255, 106, 0, 0.14);
 
   --scroll-thumb:    rgba(255,255,255,0.10);
   --scroll-track:    transparent;
@@ -98,6 +106,102 @@ body {
   -webkit-user-select: text;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+.uam-app {
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.uam-titlebar {
+  height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--window-bg) 96%, var(--bg));
+}
+
+.uam-titlebar__spacer {
+  flex: 1;
+}
+
+.uam-icon-button,
+.uam-primary-button {
+  font-family: inherit;
+  border: 0;
+  cursor: pointer;
+}
+
+.uam-tool-timeline {
+  position: relative;
+  display: grid;
+  gap: 6px;
+}
+
+.uam-tool-timeline__item {
+  position: relative;
+}
+
+.uam-tool-row {
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--surface) 88%, var(--bg));
+  color: var(--text-2);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, var(--border) 65%, transparent),
+    0 8px 24px color-mix(in srgb, black 3%, transparent);
+}
+
+.uam-tool-row:hover {
+  border-color: var(--border-bright);
+  background: color-mix(in srgb, var(--surface) 96%, var(--bg));
+}
+
+.uam-icon-button {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-2);
+}
+
+.uam-icon-button:hover {
+  background: var(--surface-up);
+  color: var(--text);
+}
+
+.uam-primary-button {
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 13px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: #ffffff;
+  font-weight: 600;
+  font-size: 12px;
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.uam-primary-button:hover {
+  filter: brightness(0.96);
 }
 
 pre,

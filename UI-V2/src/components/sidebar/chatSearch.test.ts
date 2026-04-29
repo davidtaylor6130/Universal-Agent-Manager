@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest'
-import type { Message } from '../../types/message'
 import type { Folder, Session } from '../../types/session'
 import {
   buildChatSearchIndex,
@@ -40,27 +39,15 @@ function makeSession(
   }
 }
 
-function makeMessage(sessionId: string, content: string, isStreaming = false): Message {
-  return {
-    id: `${sessionId}-${content}`,
-    sessionId,
-    role: 'user',
-    content,
-    isStreaming,
-    createdAt: now,
-  }
-}
-
 function searchModel(
   query: string,
   folders: Folder[],
-  sessions: Session[],
-  messages: Record<string, Message[]> = {}
+  sessions: Session[]
 ) {
   return buildChatSearchModel(
     folders,
     sessions,
-    buildChatSearchIndex(sessions, messages),
+    buildChatSearchIndex(sessions),
     tokenizeChatSearchQuery(query)
   )
 }
@@ -109,18 +96,14 @@ describe('chatSearch', () => {
     expect(visibleSessionIds(model)).toEqual(['s-gemini'])
   })
 
-  it('matches saved message content', () => {
+  it('does not require message content for default search', () => {
     const folders = [makeFolder('general')]
     const sessions = [
-      makeSession('s-one', 'Planning', 'general'),
+      makeSession('s-one', 'Persisted Planning', 'general'),
       makeSession('s-two', 'Release', 'general'),
     ]
-    const messages = {
-      's-one': [makeMessage('s-one', 'Investigate persisted terminal output')],
-      's-two': [makeMessage('s-two', 'Prepare the installer')],
-    }
 
-    const model = searchModel('persisted', folders, sessions, messages)
+    const model = searchModel('persisted', folders, sessions)
 
     expect(visibleSessionIds(model)).toEqual(['s-one'])
   })
@@ -220,12 +203,7 @@ describe('chatSearch', () => {
       makeSession('s-match', 'Alpha Project', 'general'),
       makeSession('s-miss', 'Alpha Notes', 'general'),
     ]
-    const messages = {
-      's-match': [makeMessage('s-match', 'terminal restart steps')],
-      's-miss': [makeMessage('s-miss', 'build checklist')],
-    }
-
-    expect(visibleSessionIds(searchModel('alpha terminal', folders, sessions, messages))).toEqual(['s-match'])
-    expect(visibleSessionIds(searchModel('alpha missing', folders, sessions, messages))).toEqual([])
+    expect(visibleSessionIds(searchModel('alpha project', folders, sessions))).toEqual(['s-match'])
+    expect(visibleSessionIds(searchModel('alpha missing', folders, sessions))).toEqual([])
   })
 })

@@ -99,6 +99,7 @@ namespace
 		app.runtime_cli_version_provider_id.clear();
 		app.runtime_cli_pin_provider_id.clear();
 		app.runtime_cli_selected_version.clear();
+		app.runtime_cli_versions_by_provider_id.clear();
 	}
 
 	void ResetPendingRuntimeCall(PendingRuntimeCall& call)
@@ -431,6 +432,11 @@ bool Application::InitializeState()
 
 		if (m_app.selected_chat_index < 0 || m_app.selected_chat_index >= static_cast<int>(m_app.chats.size()))
 			m_app.selected_chat_index = 0;
+
+		std::string hydrate_warning;
+		ChatRepository::HydrateChatMessages(m_app.data_root, m_app.chats[static_cast<std::size_t>(m_app.selected_chat_index)], &hydrate_warning);
+		if (!hydrate_warning.empty())
+			m_app.status_line = hydrate_warning;
 
 		ChatDomainService().RefreshRememberedSelection(m_app);
 	}

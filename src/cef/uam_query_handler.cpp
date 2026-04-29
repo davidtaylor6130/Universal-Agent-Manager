@@ -25,6 +25,7 @@
 #include "common/runtime/terminal/terminal_lifecycle.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
 #include "common/chat/chat_folder_store.h"
+#include "common/chat/chat_repository.h"
 #include "common/utils/string_utils.h"
 
 #include "include/wrapper/cef_helpers.h"
@@ -488,6 +489,24 @@ namespace
 		return attachments;
 	}
 
+	std::string LowerAscii(std::string value)
+	{
+		std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+		return value;
+	}
+
+	std::vector<std::string> SearchTokens(const std::string& query)
+	{
+		std::istringstream in(LowerAscii(Trim(query)));
+		std::vector<std::string> tokens;
+		std::string token;
+		while (in >> token)
+		{
+			tokens.push_back(token);
+		}
+		return tokens;
+	}
+
 	uam::CliTerminalState* FindCliTerminalByRoutingKey(uam::AppState& app, const std::string& chat_id, const std::string& terminal_id)
 	{
 		if (!terminal_id.empty())
@@ -621,6 +640,8 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 			HandleToggleFolder(browser, payload, callback);
 		else if (action == "browseFolderDirectory")
 			HandleBrowseFolderDirectory(browser, payload, callback);
+		else if (action == "searchChatMessages")
+			HandleSearchChatMessages(browser, payload, callback);
 		else if (action == "listMemoryEntries")
 			HandleListMemoryEntries(browser, payload, callback);
 		else if (action == "createMemoryEntry")
@@ -712,6 +733,15 @@ void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const n
 	if (selected_chat == nullptr)
 	{
 		cb->Failure(404, "Selected chat no longer exists.");
+		return;
+	}
+
+	std::string hydrate_warning;
+	if (!ChatRepository::HydrateChatMessages(m_app.data_root, *selected_chat, &hydrate_warning))
+	{
+		m_app.status_line = hydrate_warning.empty() ? "Failed to load selected chat messages." : hydrate_warning;
+		ChatDomainService().SelectChatById(m_app, previous_selected_chat_id);
+		cb->Failure(500, m_app.status_line);
 		return;
 	}
 
@@ -972,7 +1002,8 @@ void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const
 		return;
 	}
 
-	if (!chat.messages.empty())
+	const std::size_t message_count = chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count;
+	if (message_count > 0)
 	{
 		cb->Failure(409, "Cannot change provider after messages have been added.");
 		return;
@@ -1427,6 +1458,45 @@ void UamQueryHandler::HandleBrowseFolderDirectory(CefRefPtr<CefBrowser> /*browse
 	cb->Success(result.dump());
 }
 
+void UamQueryHandler::HandleSearchChatMessages(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::vector<std::string> tokens = SearchTokens(payload.value("query", ""));
+	nlohmann::json result;
+	result["chatIds"] = nlohmann::json::array();
+	if (tokens.empty())
+	{
+		cb->Success(result.dump());
+		return;
+	}
+
+	std::string warning;
+	const std::vector<ChatSession> chats = ChatRepository::LoadLocalChats(m_app.data_root, &warning);
+	for (const ChatSession& chat : chats)
+	{
+		std::string haystack = LowerAscii(chat.title + " " + chat.provider_id + " " + chat.workspace_directory);
+		for (const Message& message : chat.messages)
+		{
+			haystack += " " + LowerAscii(message.content);
+			haystack += " " + LowerAscii(message.thoughts);
+			haystack += " " + LowerAscii(message.plan_summary);
+		}
+
+		const bool matches = std::all_of(tokens.begin(), tokens.end(), [&](const std::string& token) {
+			return haystack.find(token) != std::string::npos;
+		});
+		if (matches)
+		{
+			result["chatIds"].push_back(chat.id);
+		}
+	}
+
+	if (!warning.empty())
+	{
+		result["warning"] = warning;
+	}
+	cb->Success(result.dump());
+}
+
 void UamQueryHandler::HandleListMemoryEntries(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	MemoryLibraryService::Scope scope;
@@ -1766,6 +1836,12 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 	}
 
 	ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_idx)];
+	std::string hydrate_warning;
+	if (!ChatRepository::HydrateChatMessages(m_app.data_root, chat, &hydrate_warning))
+	{
+		cb->Failure(500, hydrate_warning.empty() ? "Failed to load chat messages." : hydrate_warning);
+		return;
+	}
 	uam::CliTerminalState& terminal = EnsureCliTerminalForChat(m_app, chat);
 	terminal.frontend_chat_id = chat.id;
 	terminal.ui_attached = true;
@@ -1880,7 +1956,14 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 
-	const ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
+	ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
+	std::string hydrate_warning;
+	if (!ChatRepository::HydrateChatMessages(m_app.data_root, chat, &hydrate_warning))
+	{
+		cb->Failure(500, hydrate_warning.empty() ? "Failed to load chat messages." : hydrate_warning);
+		return;
+	}
+
 	if (!ProviderResolutionService().ChatProviderIsAvailable(m_app, chat))
 	{
 		cb->Failure(409, ProviderResolutionService().ChatProviderUnavailableReason(m_app, chat));

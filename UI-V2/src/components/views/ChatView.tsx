@@ -688,27 +688,57 @@ function ToolCallInlineRows({ tools, onSelectTool }: { tools: AcpToolCall[]; onS
   if (tools.length === 0) return null
 
   return (
-    <div className="space-y-1">
+    <div className="uam-tool-timeline">
       {tools.map((tool) => (
-        <button
-          key={tool.id}
-          type="button"
-          onClick={() => onSelectTool(tool.id)}
-          className="w-full flex items-center gap-2 text-left"
-          style={{
-            border: '1px solid var(--border)',
-            borderRadius: 6,
-            background: 'color-mix(in srgb, var(--surface) 72%, var(--bg))',
-            color: 'var(--text-2)',
-            padding: '6px 8px',
-          }}
-          title="Open tool details"
-        >
-          <span style={{ color: toolStatusColor(tool), fontSize: 9 }}>●</span>
-          <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>Tool call:</span>
-          <span className="text-xs truncate" style={{ color: 'var(--text)' }}>{tool.title || tool.id}</span>
-          {tool.status && <span className="ml-auto text-[11px]" style={{ color: 'var(--text-3)' }}>{tool.status}</span>}
-        </button>
+        <div key={tool.id} className="uam-tool-timeline__item">
+          <button
+            type="button"
+            onClick={() => onSelectTool(tool.id)}
+            className="w-full grid text-left uam-tool-row"
+            style={{
+              gridTemplateColumns: '22px 86px minmax(0, 1fr) auto 18px',
+            }}
+            title="Open tool details"
+          >
+            <span
+              className="inline-flex items-center justify-center"
+              style={{
+                width: 20,
+                height: 20,
+                borderRadius: 5,
+                color: 'var(--text-2)',
+              }}
+              aria-hidden="true"
+            >
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M5.2 3.2H3.7A1.7 1.7 0 0 0 2 4.9v6.2a1.7 1.7 0 0 0 1.7 1.7h1.5" />
+                <path d="M10.8 3.2h1.5A1.7 1.7 0 0 1 14 4.9v6.2a1.7 1.7 0 0 1-1.7 1.7h-1.5" />
+                <path d="M6.5 5.4 4.4 8l2.1 2.6M9.5 5.4 11.6 8l-2.1 2.6" />
+              </svg>
+            </span>
+            <span className="text-[11px] font-medium" style={{ color: 'var(--teal)' }}>Tool call:</span>
+            <span className="text-xs truncate" style={{ color: 'var(--text)' }}>{tool.title || tool.id}</span>
+            {tool.status && (
+              <span
+                className="text-[10px] font-medium"
+                style={{
+                  color: toolStatusColor(tool),
+                  border: '1px solid color-mix(in srgb, currentColor 22%, var(--border))',
+                  borderRadius: 6,
+                  background: 'color-mix(in srgb, currentColor 8%, var(--surface))',
+                  padding: '2px 7px',
+                }}
+              >
+                {tool.status.replace('_', ' ')}
+              </span>
+            )}
+            <span style={{ color: 'var(--text-3)' }} aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m5 6 3 3 3-3" />
+              </svg>
+            </span>
+          </button>
+        </div>
       ))}
     </div>
   )
@@ -1718,7 +1748,6 @@ function ComposerToolbar({
   providerId,
   providerName,
   runtimeLabel,
-  elapsedSeconds,
   canSend,
   modelId,
   approvalModeId,
@@ -1739,7 +1768,7 @@ function ComposerToolbar({
   onToggleAcceptEdits,
   onToggleYolo,
   onToggleMemory,
-  onCancel,
+  onStopRuntime,
   onAttachFile,
   onOpenMarkdownStore,
 }: {
@@ -1749,7 +1778,6 @@ function ComposerToolbar({
   providerId: string
   providerName: string
   runtimeLabel: string
-  elapsedSeconds: number
   canSend: boolean
   modelId?: string
   approvalModeId?: string
@@ -1770,7 +1798,7 @@ function ComposerToolbar({
   onToggleAcceptEdits: () => void
   onToggleYolo: () => void
   onToggleMemory: () => void
-  onCancel: () => void
+  onStopRuntime: () => void
   onAttachFile: () => void
   onOpenMarkdownStore: () => void
 }) {
@@ -1796,6 +1824,7 @@ function ComposerToolbar({
   const memoryDisabled = Boolean(modelDisabled)
   const autoLabel = claudeProvider ? 'Auto' : 'Yolo'
   const modeLabel = yoloActive ? autoLabel : planActive ? 'Plan' : acceptEditsActive ? 'Accept Edits' : 'Default'
+  const running = Boolean(acp?.processing)
   const chipStyle = {
     height: 26,
     borderRadius: 6,
@@ -2033,19 +2062,6 @@ function ComposerToolbar({
         <span>Usage</span>
         <span style={{ color: 'var(--text-3)' }}>--</span>
       </button>
-      {acp?.processing && (
-        <span
-          className="inline-flex items-center gap-1.5 px-2"
-          style={{
-            ...chipStyle,
-            color: 'var(--text)',
-            borderColor: 'color-mix(in srgb, var(--blue) 40%, var(--border))',
-          }}
-        >
-          <span style={{ color: 'var(--blue)', fontSize: 10 }}>●</span>
-          <span>Working {elapsedSeconds}s</span>
-        </span>
-      )}
       <div className="ml-auto flex items-center gap-2">
         <div ref={settingsMenuRef} className="relative">
           <button
@@ -2105,37 +2121,32 @@ function ComposerToolbar({
             </div>
           )}
         </div>
-        {acp?.processing ? (
-          <button
-            type="button"
-            title="Cancel turn"
-            onClick={onCancel}
-            className="h-[26px] px-3 text-xs font-semibold inline-flex items-center"
-            style={{
-              borderRadius: 6,
-              border: '1px solid var(--border-bright)',
-              background: 'var(--surface-up)',
-              color: 'var(--text)',
-            }}
-          >
-            Stop
-          </button>
-        ) : (
-          <button
-            type="submit"
-            title="Send prompt"
-            disabled={!canSend}
-            className="h-[26px] px-3 text-xs font-semibold inline-flex items-center"
-            style={{
-              borderRadius: 6,
-              border: '1px solid var(--border-bright)',
-              background: canSend ? 'var(--accent)' : 'var(--surface-up)',
-              color: canSend ? '#fff' : 'var(--text-3)',
-            }}
-          >
-            Send
-          </button>
-        )}
+        <button
+          type={running ? 'button' : 'submit'}
+          title={running ? 'Stop runtime' : 'Send prompt'}
+          disabled={!running && !canSend}
+          onClick={running ? onStopRuntime : undefined}
+          className="h-[30px] px-4 text-xs font-semibold inline-flex items-center gap-2"
+          style={{
+            borderRadius: 7,
+            border: running
+              ? '1px solid color-mix(in srgb, var(--red) 46%, var(--border-bright))'
+              : '1px solid color-mix(in srgb, var(--accent) 64%, var(--border-bright))',
+            background: running ? 'color-mix(in srgb, var(--red) 14%, var(--surface))' : canSend ? 'var(--accent)' : 'var(--surface-up)',
+            color: running ? 'var(--red)' : canSend ? '#fff' : 'var(--text-3)',
+            boxShadow: !running && canSend ? '0 8px 18px color-mix(in srgb, var(--accent) 20%, transparent)' : 'none',
+          }}
+        >
+          {running ? (
+            <span aria-hidden="true" style={{ width: 9, height: 9, borderRadius: 2, background: 'currentColor' }} />
+          ) : (
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M3 8h8" />
+              <path d="m8 5 3 3-3 3" />
+            </svg>
+          )}
+          <span>{running ? 'Stop' : 'Send'}</span>
+        </button>
       </div>
     </div>
   )
@@ -2148,7 +2159,6 @@ export function ChatView({ session }: ChatViewProps) {
   const [providerOpen, setProviderOpen] = useState(false)
   const [modelOpen, setModelOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [claudePlanPrompt, setClaudePlanPrompt] = useState<string | null>(null)
   const [openWorkspaceError, setOpenWorkspaceError] = useState('')
   const [composerAttachments, setComposerAttachments] = useState<LocalAttachment[]>([])
@@ -2198,7 +2208,6 @@ export function ChatView({ session }: ChatViewProps) {
   const turnAssistantMessageIndex = acp?.turnAssistantMessageIndex ?? -1
   const turnUserMessageIndex = acp?.turnUserMessageIndex ?? -1
   const turnSerial = acp?.turnSerial ?? 0
-  const processingStartedAtMs = acp?.processing ? acp.processingStartedAtMs : null
   const renderTimelineAfterUser =
     turnEvents.length > 0 &&
     turnUserMessageIndex >= 0 &&
@@ -2281,20 +2290,6 @@ export function ChatView({ session }: ChatViewProps) {
       document.removeEventListener('keydown', onKeyDown)
     }
   }, [modelOpen, providerOpen, settingsOpen])
-
-  useEffect(() => {
-    if (processingStartedAtMs === null) {
-      setElapsedSeconds(0)
-      return undefined
-    }
-
-    const updateElapsed = () => {
-      setElapsedSeconds(Math.max(0, Math.floor((Date.now() - processingStartedAtMs) / 1000)))
-    }
-    updateElapsed()
-    const interval = window.setInterval(updateElapsed, 1000)
-    return () => window.clearInterval(interval)
-  }, [processingStartedAtMs])
 
   const stageFiles = async (files: File[]) => {
     const realFiles = files.filter((file) => file.size > 0 || file.type || file.name)
@@ -2550,7 +2545,7 @@ export function ChatView({ session }: ChatViewProps) {
       )}
       <div className="flex-1 flex flex-col min-w-0">
         <div className="flex-1 overflow-auto" data-copy-surface="chat">
-          <div className="mx-auto w-full px-4 py-5" style={{ maxWidth: 940 }}>
+          <div className="w-full px-4 py-4">
             <div className="flex items-center gap-2 mb-5 text-xs" style={{ color: 'var(--text-2)' }}>
               <span style={{ color: statusColor(acp), fontSize: 9 }}>●</span>
               <span>{statusLabel(acp)}</span>
@@ -2673,7 +2668,7 @@ export function ChatView({ session }: ChatViewProps) {
             background: 'var(--surface)',
           }}
         >
-          <div className="mx-auto p-3" style={{ maxWidth: 940 }}>
+          <div className="p-3">
             <div
               className="mb-2 flex items-center gap-2 text-[11px]"
               style={{ color: 'var(--text-3)', minWidth: 0 }}
@@ -2707,7 +2702,7 @@ export function ChatView({ session }: ChatViewProps) {
                   opacity: workspaceDirectory ? 1 : 0.55,
                 }}
               >
-                Open
+                Change
               </button>
             </div>
             {openWorkspaceError && (
@@ -2831,7 +2826,7 @@ export function ChatView({ session }: ChatViewProps) {
               onDrop={onComposerDrop}
               style={{
                 border: '1px solid var(--border-bright)',
-                borderRadius: 8,
+                borderRadius: 9,
                 background: 'var(--bg)',
                 overflow: 'visible',
               }}
@@ -2933,7 +2928,6 @@ export function ChatView({ session }: ChatViewProps) {
               providerId={currentProviderId}
               providerName={currentProviderName}
               runtimeLabel={currentRuntimeLabel}
-              elapsedSeconds={elapsedSeconds}
               canSend={canSend}
               modelId={currentModelId}
               approvalModeId={currentModeId}
@@ -2985,7 +2979,7 @@ export function ChatView({ session }: ChatViewProps) {
               onToggleMemory={() => {
                 void setSessionMemoryEnabled(session.id, !(session.memoryEnabled ?? true))
               }}
-              onCancel={() => void cancelAcpTurn(session.id)}
+              onStopRuntime={() => void stopAcpSession(session.id)}
               onAttachFile={() => fileInputRef.current?.click()}
               onOpenMarkdownStore={() => void openMarkdownStore()}
             />

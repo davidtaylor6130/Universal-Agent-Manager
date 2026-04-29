@@ -11,16 +11,15 @@ import type { Folder } from '../../types/session'
 
 interface FolderTreeProps {
   searchQuery: string
+  deepSearchSessionIds?: string[]
 }
 
 const VISIBLE_SESSION_LIMIT = 5
 const EMPTY_SEARCH_INDEX = {}
-const EMPTY_MESSAGES = {}
 
-export function FolderTree({ searchQuery }: FolderTreeProps) {
+export function FolderTree({ searchQuery, deepSearchSessionIds }: FolderTreeProps) {
   const folders  = useAppStore(useShallow((s) => s.folders))
   const sessions = useAppStore(useShallow((s) => s.sessions))
-  const messages = useAppStore(useShallow((s) => searchQuery.trim() ? s.messages : EMPTY_MESSAGES))
   const toggleFolder        = useAppStore((s) => s.toggleFolder)
   const addFolder           = useAppStore((s) => s.addFolder)
   const renameFolder        = useAppStore((s) => s.renameFolder)
@@ -42,12 +41,16 @@ export function FolderTree({ searchQuery }: FolderTreeProps) {
     [searchQuery]
   )
   const searchIndex = useMemo(
-    () => searchTokens.length > 0 ? buildChatSearchIndex(sessions, messages) : EMPTY_SEARCH_INDEX,
-    [sessions, messages, searchTokens]
+    () => searchTokens.length > 0 ? buildChatSearchIndex(sessions) : EMPTY_SEARCH_INDEX,
+    [sessions, searchTokens]
+  )
+  const deepSearchSet = useMemo(
+    () => deepSearchSessionIds ? new Set(deepSearchSessionIds) : undefined,
+    [deepSearchSessionIds]
   )
   const searchModel = useMemo(
-    () => buildChatSearchModel(folders, sessions, searchIndex, searchTokens),
-    [folders, sessions, searchIndex, searchTokens]
+    () => buildChatSearchModel(folders, sessions, searchIndex, searchTokens, deepSearchSet),
+    [folders, sessions, searchIndex, searchTokens, deepSearchSet]
   )
   const pendingDeleteFolder = useMemo(
     () => folders.find((folder) => folder.id === pendingDeleteFolderId) ?? null,
@@ -127,6 +130,17 @@ export function FolderTree({ searchQuery }: FolderTreeProps) {
           {searchModel.pinnedSessionIds.map((id) => (
             <SessionItem key={id} sessionId={id} forceShowPin={true} />
           ))}
+        </div>
+      )}
+
+      {!searchModel.isSearching && searchModel.folderRows.length > 0 && (
+        <div className="px-3 pb-1 pt-1" style={{ color: 'var(--text-3)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span className="text-xs font-medium tracking-wider uppercase" style={{ letterSpacing: '0.08em', fontSize: 10, whiteSpace: 'nowrap' }}>
+              All chats
+            </span>
+            <span style={{ height: 1, flex: 1, background: 'var(--border)' }} />
+          </div>
         </div>
       )}
 
@@ -509,9 +523,9 @@ const FolderRow = memo(function FolderRow({
     <div className="mb-2">
       {/* Folder header */}
       <div
-        className="relative flex items-center gap-2 px-2.5 py-1.5 cursor-pointer group rounded-md mx-1"
+        className="relative flex items-center gap-2 px-3 py-1.5 cursor-pointer group rounded-md mx-1"
         style={{
-          background: 'var(--surface-up)',
+          background: 'transparent',
           color: 'var(--text-2)',
         }}
         onClick={onToggle}

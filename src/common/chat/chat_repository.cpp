@@ -533,6 +533,11 @@ namespace
 		std::string error;
 	};
 
+	std::string SummaryDigest(const ChatSession& chat, const std::size_t message_count)
+	{
+		return chat.updated_at + ":" + std::to_string(message_count);
+	}
+
 	bool ChatsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
 	{
 		return lhs.id == rhs.id &&
@@ -555,7 +560,7 @@ namespace
 		       MessagesEquivalentForRecovery(lhs.messages, rhs.messages);
 	}
 
-	LoadChatResult ParseLocalChatFile(const fs::path& path)
+	LoadChatResult ParseLocalChatFile(const fs::path& path, const bool include_messages = true)
 	{
 		const std::string file_text = ReadTextFile(path);
 		if (file_text.empty())
@@ -618,12 +623,27 @@ namespace
 		const JsonValue* msgs = root.Find("messages");
 		if (msgs != nullptr && msgs->type == JsonValue::Type::Array)
 		{
-			for (const auto& m : msgs->array_value)
+			chat.persisted_message_count = msgs->array_value.size();
+			if (include_messages)
 			{
-				if (m.type == JsonValue::Type::Object)
-					chat.messages.push_back(JsonToMessage(m));
+				for (const auto& m : msgs->array_value)
+				{
+					if (m.type == JsonValue::Type::Object)
+						chat.messages.push_back(JsonToMessage(m));
+				}
 			}
 		}
+		else
+		{
+			chat.persisted_message_count = 0;
+		}
+
+		chat.messages_loaded = include_messages;
+		if (include_messages)
+		{
+			chat.persisted_message_count = chat.messages.size();
+		}
+		chat.persisted_messages_digest = SummaryDigest(chat, chat.persisted_message_count);
 
 		return {std::move(chat), ""};
 	}
@@ -709,13 +729,25 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 	root.object_value["memory_last_processed_at"].type = JsonValue::Type::String;
 	root.object_value["memory_last_processed_at"].string_value = chat.memory_last_processed_at;
 
-	if (!chat.messages.empty())
+	if (chat.messages_loaded && !chat.messages.empty())
 	{
 		JsonValue msgs;
 		msgs.type = JsonValue::Type::Array;
 		for (const auto& m : chat.messages)
 			msgs.array_value.push_back(MessageToJson(m));
 		root.object_value["messages"] = std::move(msgs);
+	}
+	else if (!chat.messages_loaded)
+	{
+		const std::string existing_text = ReadTextFile(file_path);
+		const auto existing_root = existing_text.empty() ? std::optional<JsonValue>{} : ParseJson(existing_text);
+		if (existing_root.has_value() && existing_root->type == JsonValue::Type::Object)
+		{
+			if (const JsonValue* existing_messages = existing_root->Find("messages"); existing_messages != nullptr && existing_messages->type == JsonValue::Type::Array)
+			{
+				root.object_value["messages"] = *existing_messages;
+			}
+		}
 	}
 
 	const std::string json = SerializeJson(root);
@@ -819,10 +851,15 @@ ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
 		}
 	}
 
+	chat.messages_loaded = true;
+	chat.persisted_message_count = chat.messages.size();
+	chat.persisted_messages_digest = SummaryDigest(chat, chat.persisted_message_count);
 	return chat;
 }
 
-std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::path& data_root, std::string* warning_out)
+namespace
+{
+std::vector<ChatSession> LoadLocalChatsImpl(const std::filesystem::path& data_root, const bool include_messages, std::string* warning_out)
 {
 	std::vector<ChatSession> chats;
 	std::unordered_set<std::string> migrated_chat_ids;
@@ -851,7 +888,7 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
 				if (!chat.id.empty())
 				{
 					// Save in new format
-					if (SaveChat(data_root, chat))
+					if (ChatRepository::SaveChat(data_root, chat))
 					{
 						chats.push_back(chat);
 						migrated_chat_ids.insert(chat.id);
@@ -879,7 +916,7 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
 		if (ec || !entry.is_regular_file() || entry.path().extension() != ".json")
 			continue;
 
-		const LoadChatResult primary_chat = ParseLocalChatFile(entry.path());
+			const LoadChatResult primary_chat = ParseLocalChatFile(entry.path(), include_messages);
 		if (primary_chat.chat.has_value())
 		{
 			if (migrated_chat_ids.find(primary_chat.chat->id) != migrated_chat_ids.end())
@@ -890,7 +927,7 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
 			const fs::path backup_path = entry.path().string() + ".bak";
 			if (fs::exists(backup_path))
 			{
-				const LoadChatResult backup_chat = ParseLocalChatFile(backup_path);
+				const LoadChatResult backup_chat = ParseLocalChatFile(backup_path, include_messages);
 				if (backup_chat.chat.has_value() && !ChatsEquivalentForRecovery(primary_chat.chat.value(), backup_chat.chat.value()))
 				{
 					if (warning_out != nullptr)
@@ -907,7 +944,7 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
 		const fs::path backup_path = entry.path().string() + ".bak";
 		if (fs::exists(backup_path))
 		{
-			LoadChatResult backup_chat = ParseLocalChatFile(backup_path);
+			LoadChatResult backup_chat = ParseLocalChatFile(backup_path, include_messages);
 			if (backup_chat.chat.has_value())
 			{
 				if (migrated_chat_ids.find(backup_chat.chat->id) != migrated_chat_ids.end())
@@ -915,7 +952,7 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
 					continue;
 				}
 
-					ChatSession recovered = backup_chat.chat.value();
+					ChatSession recovered = (!include_messages ? ParseLocalChatFile(backup_path, true).chat.value_or(backup_chat.chat.value()) : backup_chat.chat.value());
 					const std::string recovered_id = entry.path().stem().string();
 					recovered.id = recovered_id;
 					NormalizeLoadedNativeSessionId(recovered);
@@ -923,7 +960,7 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
 					if (recovered.branch_root_chat_id.empty() || recovered.branch_root_chat_id == previous_id)
 						recovered.branch_root_chat_id = recovered.id;
 
-				if (SaveChat(data_root, recovered))
+				if (ChatRepository::SaveChat(data_root, recovered))
 				{
 					chats.push_back(recovered);
 				}
@@ -954,7 +991,7 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
 			continue;
 		}
 
-		LoadChatResult backup_chat = ParseLocalChatFile(entry.path());
+		LoadChatResult backup_chat = ParseLocalChatFile(entry.path(), include_messages);
 		if (!backup_chat.chat.has_value())
 		{
 			if (warning_out != nullptr)
@@ -964,7 +1001,7 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
 			continue;
 		}
 
-			ChatSession recovered = backup_chat.chat.value();
+			ChatSession recovered = (!include_messages ? ParseLocalChatFile(entry.path(), true).chat.value_or(backup_chat.chat.value()) : backup_chat.chat.value());
 			const std::string recovered_id = primary_path.stem().string();
 			recovered.id = recovered_id;
 			NormalizeLoadedNativeSessionId(recovered);
@@ -977,7 +1014,7 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
 			continue;
 		}
 
-		if (SaveChat(data_root, recovered))
+		if (ChatRepository::SaveChat(data_root, recovered))
 		{
 			chats.push_back(recovered);
 		}
@@ -989,4 +1026,47 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
 
 	std::sort(chats.begin(), chats.end(), [](const ChatSession& a, const ChatSession& b) { return a.updated_at > b.updated_at; });
 	return chats;
+}
+} // namespace
+
+std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::path& data_root, std::string* warning_out)
+{
+	return LoadLocalChatsImpl(data_root, true, warning_out);
+}
+
+std::vector<ChatSession> ChatRepository::LoadLocalChatSummaries(const std::filesystem::path& data_root, std::string* warning_out)
+{
+	return LoadLocalChatsImpl(data_root, false, warning_out);
+}
+
+bool ChatRepository::HydrateChatMessages(const std::filesystem::path& data_root, ChatSession& chat, std::string* warning_out)
+{
+	if (chat.messages_loaded)
+	{
+		return true;
+	}
+
+	LoadChatResult loaded = ParseLocalChatFile(AppPaths::UamChatFilePath(data_root, chat.id), true);
+	if (!loaded.chat.has_value())
+	{
+		if (warning_out != nullptr)
+		{
+			*warning_out = loaded.error;
+		}
+		return false;
+	}
+
+	ChatSession hydrated = loaded.chat.value();
+	hydrated.folder_id = chat.folder_id;
+	hydrated.title = chat.title;
+	hydrated.pinned = chat.pinned;
+	hydrated.workspace_directory = chat.workspace_directory;
+	hydrated.approval_mode = chat.approval_mode;
+	hydrated.model_id = chat.model_id;
+	hydrated.extra_flags = chat.extra_flags;
+	hydrated.memory_enabled = chat.memory_enabled;
+	hydrated.memory_last_processed_message_count = chat.memory_last_processed_message_count;
+	hydrated.memory_last_processed_at = chat.memory_last_processed_at;
+	chat = std::move(hydrated);
+	return true;
 }

@@ -41,19 +41,38 @@ describe('SettingsModal memory settings', () => {
         'gemini-cli': { workerProviderId: 'gemini-cli', workerModelId: '' },
       },
       cliVersionManager: {
-        providerId: 'codex-cli',
-        installedVersion: '0.123.0',
-        selectedVersion: '0.123.0',
-        availableVersions: [
-          { version: '0.124.0', preferred: true },
-          { version: '0.123.0', preferred: false },
+        providers: [
+          {
+            providerId: 'gemini-cli',
+            installedVersion: '0.38.1',
+            selectedVersion: '0.38.1',
+            availableVersions: [
+              { version: '0.38.1', preferred: true },
+              { version: '0.36.0', preferred: false },
+            ],
+            preferredVersion: '0.38.1',
+            status: 'supported',
+            message: 'Gemini CLI version is supported.',
+            running: false,
+            lastCommand: '',
+            lastOutput: '',
+          },
+          {
+            providerId: 'codex-cli',
+            installedVersion: '0.123.0',
+            selectedVersion: '0.123.0',
+            availableVersions: [
+              { version: '0.124.0', preferred: true },
+              { version: '0.123.0', preferred: false },
+            ],
+            preferredVersion: '0.124.0',
+            status: 'supported',
+            message: 'Codex CLI version is supported.',
+            running: false,
+            lastCommand: '',
+            lastOutput: '',
+          },
         ],
-        preferredVersion: '0.124.0',
-        status: 'supported',
-        message: 'Codex CLI version is supported.',
-        running: false,
-        lastCommand: '',
-        lastOutput: '',
       },
       memoryLastStatus: '',
       setSettingsOpen: vi.fn(),
@@ -105,11 +124,14 @@ describe('SettingsModal memory settings', () => {
       cliSectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(host.textContent).toContain('Active Provider CLI')
+    expect(host.textContent).toContain('Provider CLIs')
+    expect(host.textContent).toContain('Gemini')
     expect(host.textContent).toContain('Codex')
     expect(host.textContent).toContain('0.123.0')
 
-    const select = host.querySelector('select') as HTMLSelectElement | null
+    const select = Array.from(host.querySelectorAll('select')).find((candidate) =>
+      Array.from(candidate.options).some((option) => option.value === '0.124.0')
+    ) as HTMLSelectElement | undefined
     expect(select).toBeTruthy()
     act(() => {
       if (select) {
@@ -119,7 +141,7 @@ describe('SettingsModal memory settings', () => {
     })
 
     const applyButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Apply'
+      (button) => button.textContent === 'Apply' && !(button as HTMLButtonElement).disabled
     ) as HTMLButtonElement | undefined
     expect(applyButton).toBeTruthy()
     expect(applyButton?.disabled).toBe(false)

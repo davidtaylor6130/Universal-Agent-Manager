@@ -25,6 +25,7 @@ namespace
 	constexpr const char* kCopilotProviderId = "copilot-cli";
 	constexpr const char* kGeminiNpmPackage = "@google/gemini-cli";
 	constexpr const char* kCodexNpmPackage = "@openai/codex";
+	constexpr const char* kClaudeNpmPackage = "@anthropic-ai/claude-code";
 	constexpr const char* kOpenCodeNpmPackage = "opencode-ai";
 	constexpr const char* kCopilotNpmPackage = "@github/copilot";
 	constexpr const char* kCodexPreferredVersion = "0.124.0";
@@ -264,7 +265,8 @@ void ProviderCliCompatibilityService::StartProviderVersionCheck(uam::AppState& a
 		return;
 	}
 
-	if (!force && app.runtime_cli_version_checked && app.runtime_cli_version_provider_id == normalized_provider_id)
+	const auto existing_state = app.runtime_cli_versions_by_provider_id.find(normalized_provider_id);
+	if (!force && existing_state != app.runtime_cli_versions_by_provider_id.end() && existing_state->second.checked)
 	{
 		return;
 	}
@@ -277,6 +279,7 @@ void ProviderCliCompatibilityService::StartProviderVersionCheck(uam::AppState& a
 	}
 
 	app.runtime_cli_version_provider_id = normalized_provider_id;
+	app.runtime_cli_versions_by_provider_id[normalized_provider_id].message = "Checking installed " + ProviderTitle(app, normalized_provider_id) + " version...";
 	StartAsyncCommandTask(app.runtime_cli_version_check_task, command);
 	app.runtime_cli_version_message = "Checking installed " + ProviderTitle(app, normalized_provider_id) + " version...";
 }
@@ -348,6 +351,8 @@ bool ProviderCliCompatibilityService::StartInstallProviderVersion(uam::AppState&
 
 	app.runtime_cli_pin_provider_id = normalized_provider_id;
 	app.runtime_cli_selected_version = trimmed_version;
+	app.runtime_cli_versions_by_provider_id[normalized_provider_id].selected_version = trimmed_version;
+	app.runtime_cli_versions_by_provider_id[normalized_provider_id].install_output.clear();
 	StartAsyncCommandTask(app.runtime_cli_pin_task, command);
 	app.runtime_cli_pin_output.clear();
 	app.status_line = "Running " + ProviderTitle(app, normalized_provider_id) + " install command...";
@@ -361,10 +366,15 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 	if (TryConsumeAsyncCommandTaskOutput(app.runtime_cli_version_check_task, output))
 	{
 		const std::string provider_id = NormalizeProviderId(app.runtime_cli_version_provider_id);
+		uam::CliProviderVersionState& provider_state = app.runtime_cli_versions_by_provider_id[provider_id];
 		app.runtime_cli_version_checked = true;
 		app.runtime_cli_version_raw_output = output;
 		app.runtime_cli_installed_version.clear();
 		app.runtime_cli_version_supported = false;
+		provider_state.checked = true;
+		provider_state.raw_output = output;
+		provider_state.installed_version.clear();
+		provider_state.supported = false;
 
 		const std::optional<std::string> parsed = ExtractSemverVersion(output);
 
@@ -372,14 +382,18 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 		{
 			app.runtime_cli_installed_version = parsed.value();
 			app.runtime_cli_version_supported = IsSupportedVersionForProvider(provider_id, app.runtime_cli_installed_version);
+			provider_state.installed_version = app.runtime_cli_installed_version;
+			provider_state.supported = app.runtime_cli_version_supported;
 
 			if (app.runtime_cli_version_supported)
 			{
 				app.runtime_cli_version_message = ProviderTitle(app, provider_id) + " version is supported.";
+				provider_state.message = app.runtime_cli_version_message;
 			}
 			else
 			{
 				app.runtime_cli_version_message = "Installed " + ProviderTitle(app, provider_id) + " version is not in the curated supported list.";
+				provider_state.message = app.runtime_cli_version_message;
 			}
 		}
 		else
@@ -389,10 +403,12 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 			if (lowered.find("not found") != std::string::npos || lowered.find("not recognized") != std::string::npos)
 			{
 				app.runtime_cli_version_message = ProviderTitle(app, provider_id) + " is not installed or not on PATH.";
+				provider_state.message = app.runtime_cli_version_message;
 			}
 			else
 			{
 				app.runtime_cli_version_message = "Could not parse " + ProviderTitle(app, provider_id) + " version output.";
+				provider_state.message = app.runtime_cli_version_message;
 			}
 		}
 	}
@@ -400,16 +416,20 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 	if (TryConsumeAsyncCommandTaskOutput(app.runtime_cli_pin_task, output))
 	{
 		const std::string provider_id = NormalizeProviderId(app.runtime_cli_pin_provider_id);
+		uam::CliProviderVersionState& provider_state = app.runtime_cli_versions_by_provider_id[provider_id];
 		app.runtime_cli_pin_output = output;
+		provider_state.install_output = output;
 
 		if (OutputContainsNonZeroExit(output))
 		{
 			app.status_line = "Provider CLI update command failed. Review output in Settings.";
 			app.runtime_cli_version_message = "Update command failed.";
+			provider_state.message = app.runtime_cli_version_message;
 		}
 		else
 		{
 			app.status_line = "Provider CLI update completed. Re-checking installed version.";
+			provider_state.message = app.status_line;
 			StartProviderVersionCheck(app, provider_id, true);
 		}
 	}
@@ -427,9 +447,15 @@ std::vector<CliProviderVersionOption> ProviderCliCompatibilityService::Supported
 	}
 	if (normalized_provider_id == kOpenCodeProviderId)
 	{
+		versions.push_back({kLatestVersion, true});
 		return versions;
 	}
 	if (normalized_provider_id == kCopilotProviderId)
+	{
+		versions.push_back({kLatestVersion, true});
+		return versions;
+	}
+	if (normalized_provider_id == kClaudeProviderId)
 	{
 		versions.push_back({kLatestVersion, true});
 		return versions;
@@ -452,9 +478,13 @@ std::string ProviderCliCompatibilityService::PreferredVersionForProvider(const s
 	}
 	if (normalized_provider_id == kOpenCodeProviderId)
 	{
-		return "";
+		return kLatestVersion;
 	}
 	if (normalized_provider_id == kCopilotProviderId)
+	{
+		return kLatestVersion;
+	}
+	if (normalized_provider_id == kClaudeProviderId)
 	{
 		return kLatestVersion;
 	}
@@ -478,6 +508,10 @@ bool ProviderCliCompatibilityService::IsSupportedVersionForProvider(const std::s
 		return IsSafeVersionToken(trimmed_version);
 	}
 	if (normalized_provider_id == kCopilotProviderId)
+	{
+		return trimmed_version == kLatestVersion || IsSafeVersionToken(trimmed_version);
+	}
+	if (normalized_provider_id == kClaudeProviderId)
 	{
 		return trimmed_version == kLatestVersion || IsSafeVersionToken(trimmed_version);
 	}
@@ -514,7 +548,11 @@ std::string ProviderCliCompatibilityService::InstallCommandForProviderVersion(co
 	{
 		return "";
 	}
-	const std::string package_name = normalized_provider_id == kCodexProviderId ? kCodexNpmPackage : (normalized_provider_id == kOpenCodeProviderId ? kOpenCodeNpmPackage : (normalized_provider_id == kCopilotProviderId ? kCopilotNpmPackage : kGeminiNpmPackage));
+	const std::string package_name = normalized_provider_id == kCodexProviderId
+	                                     ? kCodexNpmPackage
+	                                     : (normalized_provider_id == kClaudeProviderId
+	                                            ? kClaudeNpmPackage
+	                                            : (normalized_provider_id == kOpenCodeProviderId ? kOpenCodeNpmPackage : (normalized_provider_id == kCopilotProviderId ? kCopilotNpmPackage : kGeminiNpmPackage)));
 	return "npm install -g " + package_name + "@" + trimmed_version;
 }
 

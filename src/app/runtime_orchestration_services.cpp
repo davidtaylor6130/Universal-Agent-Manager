@@ -797,7 +797,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 void ChatHistorySyncService::LoadSidebarChats(AppState& p_app) const
 {
 	std::string warning;
-	p_app.chats = ChatRepository::LoadLocalChats(p_app.data_root, &warning);
+	p_app.chats = ChatRepository::LoadLocalChatSummaries(p_app.data_root, &warning);
 	p_app.chats = ChatDomainService().DeduplicateChatsById(std::move(p_app.chats));
 	ChatBranching::Normalize(p_app.chats);
 	ChatDomainService().NormalizeChatFolderAssignments(p_app);

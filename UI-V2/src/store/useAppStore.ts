@@ -357,7 +357,7 @@ export interface CliVersionOption {
   preferred: boolean
 }
 
-export interface CliVersionManager {
+export interface CliVersionProviderState {
   providerId: string
   installedVersion: string
   selectedVersion: string
@@ -368,6 +368,10 @@ export interface CliVersionManager {
   running: boolean
   lastCommand: string
   lastOutput: string
+}
+
+export interface CliVersionManager {
+  providers: CliVersionProviderState[]
 }
 
 interface CppSettings {
@@ -1032,7 +1036,7 @@ function sanitizeCliDebugState(value: unknown): CppCliDebugState | undefined {
   }
 }
 
-const emptyCliVersionManager: CliVersionManager = {
+const emptyCliVersionProviderState: CliVersionProviderState = {
   providerId: GEMINI_CLI_PROVIDER_ID,
   installedVersion: '',
   selectedVersion: '',
@@ -1045,10 +1049,16 @@ const emptyCliVersionManager: CliVersionManager = {
   lastOutput: '',
 }
 
-function sanitizeCliVersionManager(value: unknown): CliVersionManager | undefined {
-  if (!isRecord(value)) return undefined
+const emptyCliVersionManager: CliVersionManager = {
+  providers: [],
+}
+
+function sanitizeCliVersionProviderState(value: unknown): CliVersionProviderState | null {
+  if (!isRecord(value)) return null
+  const providerId = stringOr(value.providerId, GEMINI_CLI_PROVIDER_ID).trim()
+  if (!providerId) return null
   const status = stringOr(value.status)
-  const normalizedStatus: CliVersionManager['status'] =
+  const normalizedStatus: CliVersionProviderState['status'] =
     status === 'checking' ||
     status === 'installing' ||
     status === 'supported' ||
@@ -1058,7 +1068,7 @@ function sanitizeCliVersionManager(value: unknown): CliVersionManager | undefine
       : 'unknown'
 
   return {
-    providerId: stringOr(value.providerId, GEMINI_CLI_PROVIDER_ID),
+    providerId,
     installedVersion: stringOr(value.installedVersion),
     selectedVersion: stringOr(value.selectedVersion),
     availableVersions: Array.isArray(value.availableVersions)
@@ -1075,6 +1085,31 @@ function sanitizeCliVersionManager(value: unknown): CliVersionManager | undefine
     lastCommand: stringOr(value.lastCommand),
     lastOutput: stringOr(value.lastOutput),
   }
+}
+
+function sanitizeCliVersionManager(value: unknown): CliVersionManager | undefined {
+  if (!isRecord(value)) return undefined
+  const providers = Array.isArray(value.providers)
+    ? value.providers.flatMap((provider) => {
+        const sanitized = sanitizeCliVersionProviderState(provider)
+        return sanitized ? [sanitized] : []
+      })
+    : []
+  if (providers.length > 0) {
+    return { providers }
+  }
+
+  const legacy = sanitizeCliVersionProviderState(value)
+  return { providers: legacy ? [legacy] : [] }
+}
+
+function upsertCliVersionProviderState(
+  providers: CliVersionProviderState[],
+  next: CliVersionProviderState
+): CliVersionProviderState[] {
+  const found = providers.some((provider) => provider.providerId === next.providerId)
+  if (!found) return [...providers, next]
+  return providers.map((provider) => provider.providerId === next.providerId ? next : provider)
 }
 
 function sanitizeCppSettings(value: unknown): CppSettings {
@@ -3168,7 +3203,7 @@ export const useAppStore = create<AppState>((set, get) => {
 	    },
 
 	    refreshCliProviderVersion: async (providerId) => {
-	      const targetProviderId = providerId?.trim() || get().cliVersionManager.providerId
+	      const targetProviderId = providerId?.trim() || get().cliVersionManager.providers[0]?.providerId || GEMINI_CLI_PROVIDER_ID
 	      if (!targetProviderId) return false
 
 	      if (isCefContext()) {
@@ -3182,11 +3217,13 @@ export const useAppStore = create<AppState>((set, get) => {
 
 	      set((state) => ({
 	        cliVersionManager: {
-	          ...state.cliVersionManager,
-	          providerId: targetProviderId,
-	          status: 'supported',
-	          message: 'Provider CLI version is supported.',
-	          running: false,
+	          providers: upsertCliVersionProviderState(state.cliVersionManager.providers, {
+	            ...emptyCliVersionProviderState,
+	            providerId: targetProviderId,
+	            status: 'supported',
+	            message: 'Provider CLI version is supported.',
+	            running: false,
+	          }),
 	        },
 	      }))
 	      return true
@@ -3208,15 +3245,18 @@ export const useAppStore = create<AppState>((set, get) => {
 
 	      set((state) => ({
 	        cliVersionManager: {
-	          ...state.cliVersionManager,
-	          providerId: targetProviderId,
-	          selectedVersion: targetVersion,
-	          installedVersion: targetVersion,
-	          status: 'supported',
-	          message: 'Provider CLI version is supported.',
-	          running: false,
-	          lastCommand: `npm install -g ${targetProviderId === 'codex-cli' ? '@openai/codex' : targetProviderId === 'copilot-cli' ? '@github/copilot' : targetProviderId === 'opencode-cli' ? 'opencode-ai' : '@google/gemini-cli'}@${targetVersion}`,
-	          lastOutput: 'Dev mode install simulated.',
+	          providers: upsertCliVersionProviderState(state.cliVersionManager.providers, {
+	            ...emptyCliVersionProviderState,
+	            ...(state.cliVersionManager.providers.find((provider) => provider.providerId === targetProviderId) ?? {}),
+	            providerId: targetProviderId,
+	            selectedVersion: targetVersion,
+	            installedVersion: targetVersion,
+	            status: 'supported',
+	            message: 'Provider CLI version is supported.',
+	            running: false,
+	            lastCommand: `npm install -g ${targetProviderId === 'codex-cli' ? '@openai/codex' : targetProviderId === 'copilot-cli' ? '@github/copilot' : targetProviderId === 'opencode-cli' ? 'opencode-ai' : '@google/gemini-cli'}@${targetVersion}`,
+	            lastOutput: 'Dev mode install simulated.',
+	          }),
 	        },
 	      }))
 	      return true

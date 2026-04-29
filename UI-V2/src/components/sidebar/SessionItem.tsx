@@ -190,10 +190,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, forceShowPin }
       style={{ animation: 'fadeIn 0.12s ease-out' }}
     >
       <div
-        className="flex items-center gap-2 px-3 py-1.5 rounded-sm mx-1 cursor-pointer transition-all duration-100"
+        className="flex items-center gap-2 px-3 py-1.5 rounded-md mx-1.5 cursor-pointer transition-all duration-100"
         style={{
           background: isActive ? 'var(--sidebar-item-active)' : 'transparent',
-          borderLeft: isActive ? '2px solid var(--accent)' : '2px solid transparent',
+          borderLeft: isActive ? '3px solid var(--accent)' : '3px solid transparent',
         }}
         onClick={() => !editing && setActiveSession(sessionId)}
         onDoubleClick={() => {

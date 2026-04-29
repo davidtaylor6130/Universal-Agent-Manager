@@ -308,6 +308,17 @@ namespace uam
 		int last_worker_exit_code = 0;
 	};
 
+	struct CliProviderVersionState
+	{
+		bool checked = false;
+		bool supported = false;
+		std::string installed_version;
+		std::string selected_version;
+		std::string raw_output;
+		std::string message;
+		std::string install_output;
+	};
+
 	/// <summary>
 	/// Shared application state for the CEF/React Gemini CLI release slice.
 	/// </summary>
@@ -388,6 +399,7 @@ namespace uam
 		std::unordered_map<std::string, double> memory_idle_started_at_by_chat_id;
 		std::unordered_map<std::string, double> memory_retry_not_before_by_chat_id;
 		std::unordered_map<std::string, int> memory_failure_count_by_chat_id;
+		std::unordered_map<std::string, CliProviderVersionState> runtime_cli_versions_by_provider_id;
 		std::string memory_last_status;
 		MemoryActivityState memory_activity;
 		bool runtime_cli_version_checked = false;

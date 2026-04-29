@@ -117,6 +117,67 @@ describe('ChatView', () => {
     })
   })
 
+  it('uses the composer action as Stop while the runtime is processing', async () => {
+    const stopAcpSession = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState({ stopAcpSession })
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const stopButton = Array.from(host.querySelectorAll('button')).find((button) => button.title === 'Stop runtime' && button.textContent === 'Stop') as HTMLButtonElement
+    expect(stopButton).toBeTruthy()
+    expect(host.textContent).not.toContain('Working ')
+
+    await act(async () => {
+      stopButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(stopAcpSession).toHaveBeenCalledWith('chat-1')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('uses the composer action as Send when the runtime is idle', () => {
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+          pendingPermission: null,
+          turnEvents: [],
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const sendButton = Array.from(host.querySelectorAll('button')).find((button) => button.title === 'Send prompt' && button.textContent === 'Send') as HTMLButtonElement
+    expect(sendButton).toBeTruthy()
+    expect(Array.from(host.querySelectorAll('button')).some((button) => button.title === 'Cancel turn' && button.textContent === 'Stop')).toBe(false)
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
   it('renders ACP messages and resolves permission choices', () => {
     const resolveAcpPermission = vi.fn(() => Promise.resolve(true))
     useAppStore.setState({ resolveAcpPermission })
