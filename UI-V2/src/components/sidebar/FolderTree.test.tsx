@@ -90,6 +90,30 @@ describe('FolderTree', () => {
     host.remove()
   })
 
+  it('selects a visible chat row after folders are grouped for rendering', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<FolderTree searchQuery="" />)
+    })
+
+    const chatTitle = Array.from(host.querySelectorAll('span')).find((span) => span.textContent === 'Chat 2')
+    expect(chatTitle).toBeTruthy()
+
+    act(() => {
+      chatTitle?.parentElement?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(useAppStore.getState().activeSessionId).toBe('chat-2')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
   it('renders pinned chats above folders and pin clicks do not select chats', () => {
     useAppStore.setState((state) => ({
       activeSessionId: 'chat-3',

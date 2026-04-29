@@ -16,6 +16,13 @@ export interface ChatSearchModel {
   hasMatches: boolean
 }
 
+export interface ChatSearchSessionGroups {
+  isSearching: boolean
+  sessionIdsByFolderId: Map<string, string[]>
+  pinnedSessionIds: string[]
+  unfolderedSessionIds: string[]
+}
+
 function normalizeSearchText(value: string): string {
   return value.trim().toLowerCase()
 }
@@ -79,16 +86,13 @@ export function compareSessionsByRecent(a: Session, b: Session): number {
   return b.createdAt.getTime() - a.createdAt.getTime()
 }
 
-export function buildChatSearchModel(
-  folders: Folder[],
+export function buildChatSearchSessionGroups(
   sessions: Session[],
   searchIndex: ChatSearchIndex,
   searchTokens: string[],
   deepSearchSessionIds?: Set<string>
-): ChatSearchModel {
+): ChatSearchSessionGroups {
   const isSearching = searchTokens.length > 0
-  const rootFolders = folders.filter((folder) => folder.parentId === null)
-  const rootFolderIds = new Set(rootFolders.map((folder) => folder.id))
   const sortedSessions = [...sessions].sort(compareSessionsByRecent)
   const matchingSessionIds = new Set(
     sortedSessions
@@ -110,7 +114,7 @@ export function buildChatSearchModel(
       continue
     }
 
-    if (session.folderId === null || !rootFolderIds.has(session.folderId)) {
+    if (session.folderId === null) {
       unfolderedSessionIds.push(session.id)
       continue
     }
@@ -120,27 +124,61 @@ export function buildChatSearchModel(
     sessionIdsByFolderId.set(session.folderId, sessionIds)
   }
 
+  return {
+    isSearching,
+    sessionIdsByFolderId,
+    pinnedSessionIds,
+    unfolderedSessionIds,
+  }
+}
+
+export function buildChatSearchModelFromGroups(
+  folders: Folder[],
+  groups: ChatSearchSessionGroups
+): ChatSearchModel {
+  const rootFolders = folders.filter((folder) => folder.parentId === null)
+  const rootFolderIds = new Set(rootFolders.map((folder) => folder.id))
+  const unfolderedSessionIds = [
+    ...groups.unfolderedSessionIds,
+    ...Array.from(groups.sessionIdsByFolderId.entries())
+      .filter(([folderId]) => !rootFolderIds.has(folderId))
+      .flatMap(([, sessionIds]) => sessionIds),
+  ]
+
   const folderRows = rootFolders
     .map((folder) => {
-      const sessionIds = sessionIdsByFolderId.get(folder.id) ?? []
+      const sessionIds = groups.sessionIdsByFolderId.get(folder.id) ?? []
       return {
         folder,
         sessionIds,
-        shouldShowSessions: isSearching || folder.isExpanded,
+        shouldShowSessions: groups.isSearching || folder.isExpanded,
       } satisfies ChatSearchFolderRow
     })
-    .filter((row) => !isSearching || row.sessionIds.length > 0)
+    .filter((row) => !groups.isSearching || row.sessionIds.length > 0)
 
   const hasMatches =
-    pinnedSessionIds.length > 0 ||
+    groups.pinnedSessionIds.length > 0 ||
     folderRows.some((row) => row.sessionIds.length > 0) ||
     unfolderedSessionIds.length > 0
 
   return {
-    isSearching,
-    pinnedSessionIds,
+    isSearching: groups.isSearching,
+    pinnedSessionIds: groups.pinnedSessionIds,
     folderRows,
     unfolderedSessionIds,
     hasMatches,
   }
+}
+
+export function buildChatSearchModel(
+  folders: Folder[],
+  sessions: Session[],
+  searchIndex: ChatSearchIndex,
+  searchTokens: string[],
+  deepSearchSessionIds?: Set<string>
+): ChatSearchModel {
+  return buildChatSearchModelFromGroups(
+    folders,
+    buildChatSearchSessionGroups(sessions, searchIndex, searchTokens, deepSearchSessionIds)
+  )
 }

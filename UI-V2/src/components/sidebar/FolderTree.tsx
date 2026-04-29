@@ -4,7 +4,8 @@ import { useShallow } from 'zustand/react/shallow'
 import { SessionItem } from './SessionItem'
 import {
   buildChatSearchIndex,
-  buildChatSearchModel,
+  buildChatSearchModelFromGroups,
+  buildChatSearchSessionGroups,
   tokenizeChatSearchQuery,
 } from './chatSearch'
 import type { Folder } from '../../types/session'
@@ -48,9 +49,13 @@ export function FolderTree({ searchQuery, deepSearchSessionIds }: FolderTreeProp
     () => deepSearchSessionIds ? new Set(deepSearchSessionIds) : undefined,
     [deepSearchSessionIds]
   )
+  const searchGroups = useMemo(
+    () => buildChatSearchSessionGroups(sessions, searchIndex, searchTokens, deepSearchSet),
+    [sessions, searchIndex, searchTokens, deepSearchSet]
+  )
   const searchModel = useMemo(
-    () => buildChatSearchModel(folders, sessions, searchIndex, searchTokens, deepSearchSet),
-    [folders, sessions, searchIndex, searchTokens, deepSearchSet]
+    () => buildChatSearchModelFromGroups(folders, searchGroups),
+    [folders, searchGroups]
   )
   const pendingDeleteFolder = useMemo(
     () => folders.find((folder) => folder.id === pendingDeleteFolderId) ?? null,

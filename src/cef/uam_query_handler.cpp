@@ -1410,6 +1410,7 @@ void UamQueryHandler::HandleDeleteFolder(CefRefPtr<CefBrowser> browser, const nl
 
 void UamQueryHandler::HandleToggleFolder(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	(void)browser;
 	const std::string folder_id = payload.value("folderId", "");
 	ChatFolder* folder = ChatDomainService().FindFolderById(m_app, folder_id);
 	if (!folder)
@@ -1427,7 +1428,6 @@ void UamQueryHandler::HandleToggleFolder(CefRefPtr<CefBrowser> browser, const nl
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
 	cb->Success("{}");
 }
 

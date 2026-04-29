@@ -1113,6 +1113,82 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(state.activeSessionId).toBe('chat-general')
   })
 
+  it('toggles folder expansion locally without changing the active chat', async () => {
+    const now = new Date()
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
+      onSuccess('{}')
+    }
+
+    useAppStore.setState({
+      folders: [
+        { id: 'default', name: 'General', parentId: null, directory: '/tmp/general', isExpanded: true, createdAt: now },
+        { id: 'project', name: 'Project', parentId: null, directory: '/tmp/project', isExpanded: true, createdAt: now },
+      ],
+      sessions: [
+        { id: 'chat-folder', name: 'Folder chat', viewMode: 'cli', folderId: 'project', createdAt: now, updatedAt: now },
+        { id: 'chat-general', name: 'General chat', viewMode: 'cli', folderId: 'default', createdAt: now, updatedAt: now },
+      ],
+      activeSessionId: 'chat-folder',
+      messages: {
+        'chat-folder': [{ id: 'm-folder', sessionId: 'chat-folder', role: 'user', content: 'keep selected', createdAt: now }],
+      },
+      lastAppliedStateRevision: 7,
+    })
+
+    useAppStore.getState().toggleFolder('project')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const state = useAppStore.getState()
+    expect(requests).toHaveLength(1)
+    expect(requests[0].action).toBe('toggleFolder')
+    expect(requests[0].payload).toEqual({ folderId: 'project' })
+    expect(state.folders.find((folder) => folder.id === 'project')?.isExpanded).toBe(false)
+    expect(state.activeSessionId).toBe('chat-folder')
+    expect(state.messages['chat-folder']).toEqual([
+      { id: 'm-folder', sessionId: 'chat-folder', role: 'user', content: 'keep selected', createdAt: now },
+    ])
+    expect(state.lastAppliedStateRevision).toBe(7)
+  })
+
+  it('rolls folder expansion back on CEF failure without changing the active chat', async () => {
+    const now = new Date()
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onFailure }) => {
+      requests.push(JSON.parse(request))
+      onFailure(500, 'Failed to save folders')
+    }
+
+    useAppStore.setState({
+      folders: [
+        { id: 'default', name: 'General', parentId: null, directory: '/tmp/general', isExpanded: true, createdAt: now },
+        { id: 'project', name: 'Project', parentId: null, directory: '/tmp/project', isExpanded: true, createdAt: now },
+      ],
+      sessions: [
+        { id: 'chat-folder', name: 'Folder chat', viewMode: 'cli', folderId: 'project', createdAt: now, updatedAt: now },
+        { id: 'chat-general', name: 'General chat', viewMode: 'cli', folderId: 'default', createdAt: now, updatedAt: now },
+      ],
+      activeSessionId: 'chat-folder',
+      messages: {
+        'chat-folder': [{ id: 'm-folder', sessionId: 'chat-folder', role: 'assistant', content: 'still selected', createdAt: now }],
+      },
+    })
+
+    useAppStore.getState().toggleFolder('project')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const state = useAppStore.getState()
+    expect(requests).toHaveLength(1)
+    expect(requests[0].action).toBe('toggleFolder')
+    expect(requests[0].payload).toEqual({ folderId: 'project' })
+    expect(state.folders.find((folder) => folder.id === 'project')?.isExpanded).toBe(true)
+    expect(state.activeSessionId).toBe('chat-folder')
+    expect(state.messages['chat-folder']).toEqual([
+      { id: 'm-folder', sessionId: 'chat-folder', role: 'assistant', content: 'still selected', createdAt: now },
+    ])
+  })
+
   it('sanitizes malformed initial state and pushed stateUpdate payloads', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()

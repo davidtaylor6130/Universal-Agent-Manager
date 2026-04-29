@@ -126,12 +126,17 @@ function sidebarStatusIcon(kind: AcpAttentionKind) {
 
 export const SessionItem = memo(function SessionItem({ sessionId, forceShowPin }: SessionItemProps) {
   // Fine-grained selectors — each only re-renders when its specific value changes
-  const sessionName     = useAppStore((s) => s.sessions.find((x) => x.id === sessionId)?.name ?? '')
-  const sessionLastOpenedAt = useAppStore((s) => {
+  const sessionSummary = useAppStore(useShallow((s) => {
     const session = s.sessions.find((x) => x.id === sessionId)
-    return session?.lastOpenedAt ?? session?.updatedAt ?? null
-  })
-  const isPinned        = useAppStore((s) => s.sessions.find((x) => x.id === sessionId)?.isPinned ?? false)
+    return {
+      name: session?.name ?? '',
+      lastOpenedAt: session?.lastOpenedAt ?? session?.updatedAt ?? null,
+      isPinned: session?.isPinned ?? false,
+    }
+  }))
+  const sessionName = sessionSummary.name
+  const sessionLastOpenedAt = sessionSummary.lastOpenedAt
+  const isPinned = sessionSummary.isPinned
   const isActive        = useAppStore((s) => s.activeSessionId === sessionId)
   const cliBinding      = useAppStore(useShallow((s) => s.cliBindingBySessionId[sessionId]))
   const acpBinding      = useAppStore(useShallow((s) => s.acpBindingBySessionId[sessionId]))
