@@ -7,6 +7,7 @@
 #include "app/chat_domain_service.h"
 #include "app/chat_lifecycle_service.h"
 #include "app/application_core_helpers.h"
+#include "app/git_worktree_service.h"
 #include "app/markdown_store_service.h"
 #include "app/memory_library_service.h"
 #include "app/memory_service.h"
@@ -20,6 +21,7 @@
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
+#include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_launch.h"
 #include "common/runtime/terminal/terminal_lifecycle.h"
@@ -124,12 +126,12 @@ namespace
 		std::string NormalizeAcpApprovalMode(const std::string& mode_id)
 		{
 			const std::string trimmed = Trim(mode_id);
-			return trimmed.empty() ? "default" : trimmed;
+			return trimmed.empty() || trimmed == "yolo" ? "default" : trimmed;
 		}
 
 		bool IsAllowedAcpApprovalMode(const std::string& mode_id)
 		{
-			return mode_id == "default" || mode_id == "acceptEdits" || mode_id == "plan" || mode_id == "yolo";
+			return mode_id == "default" || mode_id == "acceptEdits" || mode_id == "plan";
 		}
 
 		bool AcpSessionBlocksModelChange(const uam::AcpSessionState& session)
@@ -558,6 +560,59 @@ namespace
 
 		return data;
 	}
+
+	nlohmann::json SerializeGitWorktreeStatus(const uam::GitWorktreeStatus& status)
+	{
+		return {
+			{"isGitRepository", status.is_git_repository},
+			{"isSvnWorkspace", status.is_svn_workspace},
+			{"isolated", status.isolated},
+			{"sourceDirty", status.source_dirty},
+			{"worktreeDirty", status.worktree_dirty},
+			{"worktreeMissing", status.worktree_missing},
+			{"sourceDirectory", status.source_directory},
+			{"worktreeDirectory", status.worktree_directory},
+			{"branchName", status.branch_name},
+			{"baseRef", status.base_ref},
+			{"warning", status.warning},
+			{"error", status.error},
+		};
+	}
+
+	nlohmann::json SerializeGitWorktreeResult(const uam::GitWorktreeOperationResult& result)
+	{
+		nlohmann::json json;
+		json["status"] = SerializeGitWorktreeStatus(result.status);
+		json["message"] = result.message;
+		json["patchPath"] = result.patch_path.empty() ? "" : result.patch_path.string();
+		return json;
+	}
+
+	bool ChatRuntimeBusy(const uam::AppState& app, const std::string& chat_id)
+	{
+		if (HasPendingCallForChat(app, chat_id))
+		{
+			return true;
+		}
+		for (const auto& session : app.acp_sessions)
+		{
+			if (session != nullptr &&
+			    session->chat_id == chat_id &&
+			    session->running &&
+			    (session->processing || session->waiting_for_permission || session->waiting_for_user_input || session->initialize_request_id != 0 || session->session_setup_request_id != 0 || session->prompt_request_id != 0))
+			{
+				return true;
+			}
+		}
+		for (const auto& terminal : app.cli_terminals)
+		{
+			if (terminal != nullptr && terminal->running && CliTerminalMatchesChatId(*terminal, chat_id))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -610,6 +665,8 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 			HandleSetChatModel(browser, payload, callback);
 		else if (action == "setChatApprovalMode")
 			HandleSetChatApprovalMode(browser, payload, callback);
+		else if (action == "setChatAutoApproveCommands")
+			HandleSetChatAutoApproveCommands(browser, payload, callback);
 		else if (action == "setChatMemoryEnabled")
 			HandleSetChatMemoryEnabled(browser, payload, callback);
 		else if (action == "setMemorySettings")
@@ -654,6 +711,14 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 			HandleRevealMemoryEntry(browser, payload, callback);
 		else if (action == "openWorkspaceDirectory")
 			HandleOpenWorkspaceDirectory(browser, payload, callback);
+		else if (action == "getChatWorktreeStatus")
+			HandleGetChatWorktreeStatus(browser, payload, callback);
+		else if (action == "createChatWorktree")
+			HandleCreateChatWorktree(browser, payload, callback);
+		else if (action == "discardChatWorktreeChanges")
+			HandleDiscardChatWorktreeChanges(browser, payload, callback);
+		else if (action == "portChatWorktreeChanges")
+			HandlePortChatWorktreeChanges(browser, payload, callback);
 		else if (action == "listMemoryScanCandidates")
 			HandleListMemoryScanCandidates(browser, payload, callback);
 		else if (action == "scanCurrentChats")
@@ -875,7 +940,7 @@ void UamQueryHandler::HandleSetChatPinned(CefRefPtr<CefBrowser> browser, const n
 	ChatSession& chat = m_app.chats[static_cast<std::size_t>(idx)];
 	if (chat.pinned == pinned)
 	{
-		uam::PushStateUpdate(browser, m_app);
+		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Success("{}");
 		return;
 	}
@@ -890,7 +955,7 @@ void UamQueryHandler::HandleSetChatPinned(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
@@ -1024,11 +1089,13 @@ void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const
 	const std::string previous_provider_id = chat.provider_id;
 	const std::string previous_model_id = chat.model_id;
 	const std::string previous_approval_mode = chat.approval_mode;
+	const bool previous_auto_approve_commands = chat.auto_approve_commands;
 	const std::string previous_native_session_id = chat.native_session_id;
 	const std::string previous_updated_at = chat.updated_at;
 	chat.provider_id = provider->id;
 	chat.model_id.clear();
 	chat.approval_mode = "default";
+	chat.auto_approve_commands = false;
 	chat.native_session_id.clear();
 	chat.updated_at = TimestampNow();
 
@@ -1037,6 +1104,7 @@ void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const
 		chat.provider_id = previous_provider_id;
 		chat.model_id = previous_model_id;
 		chat.approval_mode = previous_approval_mode;
+		chat.auto_approve_commands = previous_auto_approve_commands;
 		chat.native_session_id = previous_native_session_id;
 		chat.updated_at = previous_updated_at;
 		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist chat provider." : m_app.status_line);
@@ -1117,6 +1185,60 @@ void UamQueryHandler::HandleSetChatApprovalMode(CefRefPtr<CefBrowser> browser, c
 			chat.updated_at = previous_updated_at;
 			(void)ChatHistorySyncService().SaveChatWithStatus(m_app, chat, "Chat mode reverted.", "Chat mode changed in UI, but failed to revert.");
 			cb->Failure(409, acp_error.empty() ? "Failed to update live ACP mode." : acp_error);
+			return;
+		}
+	}
+
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleSetChatAutoApproveCommands(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const bool enabled = payload.value("enabled", false);
+	const int idx = ChatDomainService().FindChatIndexById(m_app, chat_id);
+	if (idx < 0)
+	{
+		cb->Failure(404, "Chat not found: " + chat_id);
+		return;
+	}
+
+	ChatSession& chat = m_app.chats[static_cast<std::size_t>(idx)];
+	if (chat.auto_approve_commands == enabled)
+	{
+		if (enabled)
+		{
+			std::string acp_error;
+			if (!uam::TryAutoApprovePendingAcpPermission(m_app, chat.id, &acp_error) && !acp_error.empty())
+			{
+				cb->Failure(409, acp_error);
+				return;
+			}
+		}
+		uam::PushStateUpdate(browser, m_app);
+		cb->Success("{}");
+		return;
+	}
+
+	const bool previous = chat.auto_approve_commands;
+	const std::string previous_updated_at = chat.updated_at;
+	chat.auto_approve_commands = enabled;
+	chat.updated_at = TimestampNow();
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, chat, "Chat auto-approval updated.", "Chat auto-approval changed in UI, but failed to save."))
+	{
+		chat.auto_approve_commands = previous;
+		chat.updated_at = previous_updated_at;
+		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist chat auto-approval." : m_app.status_line);
+		return;
+	}
+
+	if (enabled)
+	{
+		std::string acp_error;
+		if (!uam::TryAutoApprovePendingAcpPermission(m_app, chat.id, &acp_error) && !acp_error.empty())
+		{
+			cb->Failure(409, acp_error);
 			return;
 		}
 	}
@@ -1742,6 +1864,107 @@ void UamQueryHandler::HandleOpenWorkspaceDirectory(CefRefPtr<CefBrowser> /*brows
 	cb->Success("{}");
 }
 
+void UamQueryHandler::HandleGetChatWorktreeStatus(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
+	if (chat_index < 0)
+	{
+		cb->Failure(404, "Chat not found.");
+		return;
+	}
+
+	const ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
+	const uam::GitWorktreeStatus status = uam::GitWorktreeService().Status(m_app, chat);
+	cb->Success(SerializeGitWorktreeStatus(status).dump());
+}
+
+void UamQueryHandler::HandleCreateChatWorktree(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
+	if (chat_index < 0)
+	{
+		cb->Failure(404, "Chat not found.");
+		return;
+	}
+	if (ChatRuntimeBusy(m_app, chat_id))
+	{
+		cb->Failure(409, "Stop the chat runtime before changing workspace isolation.");
+		return;
+	}
+
+	ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
+	const uam::GitWorktreeOperationResult result = uam::GitWorktreeService().CreateForChat(m_app, chat);
+	if (!result.ok)
+	{
+		cb->Failure(400, result.message.empty() ? "Failed to create isolated Git worktree." : result.message);
+		return;
+	}
+
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success(SerializeGitWorktreeResult(result).dump());
+}
+
+void UamQueryHandler::HandleDiscardChatWorktreeChanges(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
+	if (chat_index < 0)
+	{
+		cb->Failure(404, "Chat not found.");
+		return;
+	}
+	if (ChatRuntimeBusy(m_app, chat_id))
+	{
+		cb->Failure(409, "Stop the chat runtime before discarding worktree changes.");
+		return;
+	}
+
+	ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
+	const uam::GitWorktreeOperationResult result = uam::GitWorktreeService().DiscardChatChanges(m_app, chat);
+	if (!result.ok)
+	{
+		cb->Failure(400, result.message.empty() ? "Failed to discard worktree changes." : result.message);
+		return;
+	}
+
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success(SerializeGitWorktreeResult(result).dump());
+}
+
+void UamQueryHandler::HandlePortChatWorktreeChanges(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
+	if (chat_index < 0)
+	{
+		cb->Failure(404, "Chat not found.");
+		return;
+	}
+	if (ChatRuntimeBusy(m_app, chat_id))
+	{
+		cb->Failure(409, "Stop the chat runtime before porting worktree changes.");
+		return;
+	}
+
+	ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
+	const uam::GitWorktreeOperationResult result = uam::GitWorktreeService().PortChatChanges(m_app, chat);
+	if (!result.ok)
+	{
+		std::string message = result.message.empty() ? "Failed to port worktree changes." : result.message;
+		if (!result.patch_path.empty())
+		{
+			message += "\nPatch saved at: " + result.patch_path.string();
+		}
+		cb->Failure(400, message);
+		return;
+	}
+
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success(SerializeGitWorktreeResult(result).dump());
+}
+
 void UamQueryHandler::HandleListMemoryScanCandidates(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& /*payload*/, CefRefPtr<Callback> cb)
 {
 	const std::vector<MemoryService::ManualScanCandidate> candidates = MemoryService::ListManualScanCandidates(m_app);
@@ -2175,7 +2398,7 @@ void UamQueryHandler::HandleResolveAcpPermission(CefRefPtr<CefBrowser> browser, 
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 

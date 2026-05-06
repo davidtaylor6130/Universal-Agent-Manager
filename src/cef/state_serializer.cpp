@@ -113,7 +113,7 @@ namespace
 		return "";
 	}
 
-	nlohmann::json ReadCachedCodexModelsForFrontend()
+		nlohmann::json ReadCachedCodexModelsForFrontend()
 	{
 		auto models_json = nlohmann::json::array();
 		std::ifstream in(uam::codex::CodexHomePath() / "models_cache.json", std::ios::binary);
@@ -170,10 +170,19 @@ namespace
 		return models_json;
 	}
 
-	nlohmann::json FallbackAcpModelsForChat(const ChatSession& chat)
-	{
-		return uam::strings::Trim(chat.provider_id) == "codex-cli" ? ReadCachedCodexModelsForFrontend() : nlohmann::json::array();
-	}
+		nlohmann::json FallbackAcpModelsForChat(const ChatSession& chat)
+		{
+			return uam::strings::Trim(chat.provider_id) == "codex-cli" ? ReadCachedCodexModelsForFrontend() : nlohmann::json::array();
+		}
+
+		void AddWorkspaceIsolationFields(nlohmann::json& chat_json, const ChatSession& chat)
+		{
+			chat_json["workspaceIsolationKind"] = chat.workspace_isolation_kind;
+			chat_json["workspaceSourceDirectory"] = chat.workspace_source_directory;
+			chat_json["workspaceBaseRef"] = chat.workspace_base_ref;
+			chat_json["workspaceBranchName"] = chat.workspace_branch_name;
+			chat_json["workspaceWorktreeDirectory"] = chat.workspace_worktree_directory;
+		}
 
 	nlohmann::json SerializeToolCallForFrontend(const ToolCall& tool_call)
 	{
@@ -622,10 +631,12 @@ nlohmann::json SerializeFingerprintSession(const AppState& app, const ChatSessio
 	chat_json["providerId"] = chat.provider_id;
 	chat_json["modelId"] = chat.model_id;
 	chat_json["approvalMode"] = chat.approval_mode;
+	chat_json["autoApproveCommands"] = chat.auto_approve_commands;
 	chat_json["memoryEnabled"] = chat.memory_enabled;
 	chat_json["memoryLastProcessedMessageCount"] = chat.memory_last_processed_message_count;
 	chat_json["memoryLastProcessedAt"] = chat.memory_last_processed_at;
 	chat_json["workspaceDirectory"] = ResolveWorkspaceRootPath(app, chat).string();
+	AddWorkspaceIsolationFields(chat_json, chat);
 	chat_json["createdAt"] = chat.created_at;
 	chat_json["updatedAt"] = chat.updated_at;
 	chat_json["lastOpenedAt"] = chat.last_opened_at.empty() ? chat.updated_at : chat.last_opened_at;
@@ -964,10 +975,12 @@ nlohmann::json StateSerializer::SerializeSession(const ChatSession& session)
 	j["providerId"] = session.provider_id;
 	j["modelId"]    = session.model_id;
 	j["approvalMode"] = session.approval_mode;
+	j["autoApproveCommands"] = session.auto_approve_commands;
 	j["memoryEnabled"] = session.memory_enabled;
 	j["memoryLastProcessedMessageCount"] = session.memory_last_processed_message_count;
 	j["memoryLastProcessedAt"] = session.memory_last_processed_at;
 	j["workspaceDirectory"] = session.workspace_directory;
+	AddWorkspaceIsolationFields(j, session);
 	j["createdAt"]  = session.created_at;
 	j["updatedAt"]  = session.updated_at;
 	j["lastOpenedAt"] = session.last_opened_at.empty() ? session.updated_at : session.last_opened_at;

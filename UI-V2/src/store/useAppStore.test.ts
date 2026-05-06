@@ -590,6 +590,224 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(state.cliBindingBySessionId['chat-1']).toBeUndefined()
   })
 
+  it('applies selected chat patches with hydrated messages and chat order', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    testWindow.cefQuery = ({ onSuccess }) => {
+      const initialState = makeCppState(1)
+      initialState.chats[0].messages = [
+        { role: 'user', content: 'first chat message', createdAt: '2026-01-01T00:00:00.000Z' },
+      ]
+      initialState.chats.push({
+        id: 'chat-2',
+        title: 'Second Chat',
+        folderId: 'default',
+        providerId: 'gemini-cli',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:01.000Z',
+        messageCount: 1,
+        messagesDigest: 'chat-2-digest',
+      })
+      onSuccess(JSON.stringify(initialState))
+    }
+
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    testWindow.uamPush?.({
+      type: 'statePatch',
+      data: {
+        stateRevision: 2,
+        selectedChatId: 'chat-2',
+        chatOrder: ['chat-2', 'chat-1'],
+        chats: [
+          {
+            id: 'chat-2',
+            title: 'Second Chat',
+            folderId: 'default',
+            providerId: 'gemini-cli',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:00:02.000Z',
+            lastOpenedAt: '2026-01-01T00:00:03.000Z',
+            messageCount: 1,
+            messagesDigest: 'chat-2-digest',
+          },
+        ],
+        messagesByChatId: {
+          'chat-2': [
+            { role: 'assistant', content: 'hydrated second chat', createdAt: '2026-01-01T00:00:04.000Z' },
+          ],
+        },
+      },
+    })
+
+    const state = cefStore.getState()
+    expect(state.activeSessionId).toBe('chat-2')
+    expect(state.sessions.map((session) => session.id)).toEqual(['chat-2', 'chat-1'])
+    expect(state.messages['chat-1'].map((message) => message.content)).toEqual(['first chat message'])
+    expect(state.messages['chat-2'].map((message) => message.content)).toEqual(['hydrated second chat'])
+  })
+
+  it('applies pin patches without changing the active chat', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    testWindow.cefQuery = ({ onSuccess }) => {
+      const initialState = makeCppState(1, 'chat-2')
+      initialState.chats.push({
+        id: 'chat-2',
+        title: 'Active Chat',
+        folderId: 'default',
+        providerId: 'gemini-cli',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:01.000Z',
+        messages: [],
+      })
+      onSuccess(JSON.stringify(initialState))
+    }
+
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    testWindow.uamPush?.({
+      type: 'statePatch',
+      data: {
+        stateRevision: 2,
+        chats: [
+          {
+            id: 'chat-1',
+            title: 'Gemini Session',
+            folderId: 'default',
+            pinned: true,
+            providerId: 'gemini-cli',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:00:01.000Z',
+            messageCount: 0,
+            messagesDigest: 'chat-1-digest',
+          },
+        ],
+        chatOrder: ['chat-1', 'chat-2'],
+      },
+    })
+
+    const state = cefStore.getState()
+    expect(state.activeSessionId).toBe('chat-2')
+    expect(state.sessions.find((session) => session.id === 'chat-1')?.isPinned).toBe(true)
+    expect(state.sessions.map((session) => session.id)).toEqual(['chat-1', 'chat-2'])
+  })
+
+  it('ignores stale no-op pin patches without replacing session state', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    testWindow.cefQuery = ({ onSuccess }) => {
+      const initialState = makeCppState(2)
+      initialState.chats[0].pinned = true
+      onSuccess(JSON.stringify(initialState))
+    }
+
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const previousSessions = cefStore.getState().sessions
+
+    testWindow.uamPush?.({
+      type: 'statePatch',
+      data: {
+        stateRevision: 2,
+        chats: [
+          {
+            id: 'chat-1',
+            title: 'Gemini Session',
+            folderId: 'default',
+            pinned: true,
+            providerId: 'gemini-cli',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:00:01.000Z',
+            messageCount: 0,
+            messagesDigest: 'chat-1-digest',
+          },
+        ],
+      },
+    })
+
+    expect(cefStore.getState().sessions).toBe(previousSessions)
+    expect(cefStore.getState().activeSessionId).toBe('chat-1')
+    expect(cefStore.getState().lastAppliedStateRevision).toBe(2)
+  })
+
+  it('applies permission resolution patches without requiring a full state update', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    testWindow.cefQuery = ({ onSuccess }) => {
+      const initialState = makeCppState(1)
+      initialState.chats[0].messages = [
+        { role: 'assistant', content: 'approval needed', createdAt: '2026-01-01T00:00:00.000Z' },
+      ]
+      initialState.chats[0].acpSession = {
+        sessionId: 'acp-chat-1',
+        running: true,
+        processing: true,
+        lifecycleState: 'waitingPermission',
+        attentionKind: 'command',
+        pendingPermission: {
+          requestId: 'req-1',
+          toolCallId: 'tool-1',
+          title: 'Command approval',
+          kind: 'command',
+          status: 'pending',
+          content: 'Run command?',
+          options: [
+            { id: 'accept', name: 'Allow', kind: 'decision' },
+            { id: 'decline', name: 'Deny', kind: 'decision' },
+          ],
+        },
+      }
+      onSuccess(JSON.stringify(initialState))
+    }
+
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(cefStore.getState().acpBindingBySessionId['chat-1'].pendingPermission?.requestId).toBe('req-1')
+
+    testWindow.uamPush?.({
+      type: 'statePatch',
+      data: {
+        stateRevision: 2,
+        chats: [
+          {
+            id: 'chat-1',
+            title: 'Gemini Session',
+            folderId: 'default',
+            providerId: 'gemini-cli',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:00:01.000Z',
+            messageCount: 1,
+            messagesDigest: 'chat-1-digest',
+            acpSession: {
+              sessionId: 'acp-chat-1',
+              running: true,
+              processing: true,
+              lifecycleState: 'processing',
+              attentionKind: null,
+              pendingPermission: null,
+            },
+          },
+        ],
+      },
+    })
+
+    const state = cefStore.getState()
+    expect(state.activeSessionId).toBe('chat-1')
+    expect(state.messages['chat-1'].map((message) => message.content)).toEqual(['approval needed'])
+    expect(state.acpBindingBySessionId['chat-1']).toMatchObject({
+      lifecycleState: 'processing',
+      attentionKind: null,
+      pendingPermission: null,
+    })
+  })
+
   it('ignores stale backend revisions', () => {
     useAppStore.getState().loadFromCef(makeCppState(2))
     useAppStore.getState().loadFromCef({
@@ -664,6 +882,42 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(requests).toHaveLength(1)
     expect(requests[0].action).toBe('openWorkspaceDirectory')
     expect(requests[0].payload).toEqual({ chatId: 'chat-1' })
+  })
+
+  it('dispatches worktree actions without changing the active chat locally', async () => {
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
+      onSuccess(JSON.stringify({
+        message: 'Created isolated Git worktree.',
+        patchPath: '',
+        status: {
+          isGitRepository: true,
+          isSvnWorkspace: false,
+          isolated: true,
+          sourceDirty: false,
+          worktreeDirty: false,
+          worktreeMissing: false,
+          sourceDirectory: '/tmp/project',
+          worktreeDirectory: '/tmp/uam-worktree',
+          branchName: 'uam/chat-1',
+          baseRef: 'abc123',
+          warning: '',
+          error: '',
+        },
+      }))
+    }
+    useAppStore.setState({ activeSessionId: 'chat-1' })
+
+    await expect(useAppStore.getState().createChatWorktree('chat-1')).resolves.toMatchObject({
+      ok: true,
+      message: 'Created isolated Git worktree.',
+    })
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0].action).toBe('createChatWorktree')
+    expect(requests[0].payload).toEqual({ chatId: 'chat-1' })
+    expect(useAppStore.getState().activeSessionId).toBe('chat-1')
   })
 
   it('returns false when CEF fails to open a session workspace', async () => {
@@ -877,10 +1131,48 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(requests[1].payload).toEqual({ chatId: 'chat-1', modeId: 'default' })
     expect(useAppStore.getState().sessions[0].approvalMode).toBe('plan')
 
-    rejectNext = false
-    await expect(useAppStore.getState().setSessionApprovalMode('chat-1', 'yolo')).resolves.toBe(true)
-    expect(requests[2].payload).toEqual({ chatId: 'chat-1', modeId: 'yolo' })
-    expect(useAppStore.getState().sessions[0].approvalMode).toBe('yolo')
+    await expect(useAppStore.getState().setSessionApprovalMode('chat-1', 'yolo')).resolves.toBe(false)
+    expect(requests).toHaveLength(2)
+    expect(useAppStore.getState().sessions[0].approvalMode).toBe('plan')
+  })
+
+  it('sends UAM auto-approve command changes through CEF and rolls back on failure', async () => {
+    const now = new Date()
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    let rejectNext = false
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      requests.push(JSON.parse(request))
+      if (rejectNext) {
+        onFailure(409, 'Auto approve failed')
+        return
+      }
+      onSuccess('{}')
+    }
+    useAppStore.setState({
+      sessions: [
+        {
+          id: 'chat-1',
+          name: 'Gemini Session',
+          viewMode: 'chat',
+          folderId: 'default',
+          approvalMode: 'plan',
+          autoApproveCommands: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    })
+
+    await expect(useAppStore.getState().setSessionAutoApproveCommands('chat-1', true)).resolves.toBe(true)
+    expect(requests[0].action).toBe('setChatAutoApproveCommands')
+    expect(requests[0].payload).toEqual({ chatId: 'chat-1', enabled: true })
+    expect(useAppStore.getState().sessions[0].approvalMode).toBe('plan')
+    expect(useAppStore.getState().sessions[0].autoApproveCommands).toBe(true)
+
+    rejectNext = true
+    await expect(useAppStore.getState().setSessionAutoApproveCommands('chat-1', false)).resolves.toBe(false)
+    expect(requests[1].payload).toEqual({ chatId: 'chat-1', enabled: false })
+    expect(useAppStore.getState().sessions[0].autoApproveCommands).toBe(true)
   })
 
   it('sends planning mode changes when the live runtime mode differs from the saved chat mode', async () => {
@@ -1292,7 +1584,8 @@ describe('useAppStore Gemini CLI slice', () => {
     let state = cefStore.getState()
     expect(state.folders.map((folder) => folder.id)).toEqual(['default'])
     expect(state.sessions.map((session) => session.id)).toEqual(['chat-1'])
-    expect(state.sessions[0].approvalMode).toBe('yolo')
+    expect(state.sessions[0].approvalMode).toBe('default')
+    expect(state.sessions[0].autoApproveCommands).toBe(true)
     expect(state.sessions[0].modelId).toBe('')
     expect(state.activeSessionId).toBe('chat-1')
     expect(state.messages['chat-1'].map((message) => message.content)).toEqual(['hello'])
@@ -1371,6 +1664,33 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(requests).toHaveLength(1)
     expect(requests[0].action).toBe('setChatPinned')
     expect(requests[0].payload).toEqual({ chatId: 'chat-1', pinned: true })
+    expect(useAppStore.getState().sessions[0].isPinned).toBe(true)
+  })
+
+  it('does not send setChatPinned when the requested pin state is already applied', async () => {
+    const now = new Date()
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
+      onSuccess('{}')
+    }
+    useAppStore.setState({
+      sessions: [
+        {
+          id: 'chat-1',
+          name: 'Gemini Session',
+          viewMode: 'chat',
+          folderId: 'default',
+          isPinned: true,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    })
+
+    await expect(useAppStore.getState().setSessionPinned('chat-1', true)).resolves.toBe(true)
+
+    expect(requests).toHaveLength(0)
     expect(useAppStore.getState().sessions[0].isPinned).toBe(true)
   })
 

@@ -163,10 +163,10 @@ bool UamCefClient::OnContextMenuCommand(CefRefPtr<CefBrowser>           /*browse
 }
 
 // ---------------------------------------------------------------------------
-// CefKeyboardHandler — block DevTools and view-source shortcuts
+// CefKeyboardHandler — block DevTools/view-source shortcuts and bridge paste
 // ---------------------------------------------------------------------------
 
-bool UamCefClient::OnKeyEvent(CefRefPtr<CefBrowser> /*browser*/,
+bool UamCefClient::OnKeyEvent(CefRefPtr<CefBrowser> browser,
                                const CefKeyEvent&    event,
                                CefEventHandle        /*os_event*/)
 {
@@ -186,6 +186,21 @@ bool UamCefClient::OnKeyEvent(CefRefPtr<CefBrowser> /*browser*/,
 		if ((event.modifiers & EVENTFLAG_CONTROL_DOWN) &&
 		    event.windows_key_code == 'U')
 			return true;
+
+		const bool pasteModifier =
+			(event.modifiers & EVENTFLAG_CONTROL_DOWN) ||
+			(event.modifiers & EVENTFLAG_COMMAND_DOWN);
+		if (pasteModifier &&
+		    !(event.modifiers & EVENTFLAG_ALT_DOWN) &&
+		    event.windows_key_code == 'V')
+		{
+			CefRefPtr<CefFrame> frame = browser ? browser->GetFocusedFrame() : nullptr;
+			if (frame)
+			{
+				frame->Paste();
+				return true;
+			}
+		}
 	}
 	return false;
 }

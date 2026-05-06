@@ -155,6 +155,7 @@ std::string BuildStatePatchMessage(const uam::AppState& app)
 {
 	const auto started = std::chrono::steady_clock::now();
 	const nlohmann::json fingerprint_state = uam::StateSerializer::SerializeFingerprint(app);
+	const std::string previous_selected_chat_id = g_last_pushed_selected_chat_id;
 	const std::string selected_chat_id = SelectedChatId(app);
 	nlohmann::json data = nlohmann::json::object();
 
@@ -228,7 +229,7 @@ std::string BuildStatePatchMessage(const uam::AppState& app)
 			const auto previous_digest_it = g_last_pushed_message_digests_by_chat_id.find(chat_id);
 			const bool selected_chat = chat_id == selected_chat_id;
 			const bool messages_changed = previous_digest_it == g_last_pushed_message_digests_by_chat_id.end() || previous_digest_it->second != message_digest;
-			if (selected_chat && messages_changed)
+			if (selected_chat && (messages_changed || chat_id != previous_selected_chat_id))
 			{
 				const auto app_chat_it = std::find_if(app.chats.begin(), app.chats.end(), [&](const ChatSession& candidate) {
 					return candidate.id == chat_id;

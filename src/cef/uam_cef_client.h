@@ -83,7 +83,7 @@ class UamCefClient : public CefClient,
 	                          int command_id,
 	                          EventFlags event_flags) override;
 
-	// CefKeyboardHandler — block DevTools shortcuts (F12, Ctrl+Shift+I, Ctrl+U)
+	// CefKeyboardHandler — block DevTools shortcuts and bridge paste shortcuts
 	bool OnKeyEvent(CefRefPtr<CefBrowser>  browser,
 	                const CefKeyEvent&     event,
 	                CefEventHandle         os_event) override;

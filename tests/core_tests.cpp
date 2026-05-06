@@ -1,5 +1,7 @@
 #include "app/chat_domain_service.h"
 #include "app/chat_lifecycle_service.h"
+#include "app/application_core_helpers.h"
+#include "app/git_worktree_service.h"
 #include "app/markdown_store_service.h"
 #include "app/memory_library_service.h"
 #include "app/memory_service.h"
@@ -120,7 +122,7 @@ namespace
 		return uam::io::ReadTextFile(path);
 	}
 
-	std::size_t CountSubstring(const std::string& text, const std::string& needle)
+		std::size_t CountSubstring(const std::string& text, const std::string& needle)
 	{
 		if (needle.empty())
 		{
@@ -134,8 +136,63 @@ namespace
 			++count;
 			pos += needle.size();
 		}
-		return count;
-	}
+			return count;
+		}
+
+		std::string ShellQuoteForTest(const std::string& value)
+		{
+	#if defined(_WIN32)
+			std::string escaped = "\"";
+			for (const char ch : value)
+			{
+				if (ch == '"')
+				{
+					escaped += "\"\"";
+				}
+				else if (ch == '%')
+				{
+					escaped += "%%";
+				}
+				else
+				{
+					escaped.push_back(ch == '\n' || ch == '\r' ? ' ' : ch);
+				}
+			}
+			escaped.push_back('"');
+			return escaped;
+	#else
+			std::string escaped = "'";
+			for (const char ch : value)
+			{
+				if (ch == '\'')
+				{
+					escaped += "'\\''";
+				}
+				else
+				{
+					escaped.push_back(ch);
+				}
+			}
+			escaped.push_back('\'');
+			return escaped;
+	#endif
+		}
+
+		bool RunTestCommand(const std::string& command)
+		{
+			const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(command, 120000);
+			return result.ok && !result.timed_out && !result.canceled && result.exit_code == 0;
+		}
+
+		bool GitAvailableForTests()
+		{
+			return RunTestCommand("git --version");
+		}
+
+		bool RunGitForTest(const fs::path& repo, const std::string& args)
+		{
+			return RunTestCommand("git -C " + ShellQuoteForTest(repo.string()) + " " + args);
+		}
 
 	struct ScopedEnvVar
 	{
@@ -1349,6 +1406,34 @@ UAM_TEST(ChatRepositoryToleratesLegacyFieldsAndDropsThemOnWrite)
 	UAM_ASSERT(rewritten.find("rag_source_directories") == std::string::npos);
 }
 
+UAM_TEST(ChatRepositoryMigratesLegacyYoloModeToAutoApproveCommands)
+{
+	TempDir temp("uam-chat-yolo-migration");
+	const fs::path chats_dir = temp.root / "chats";
+	fs::create_directories(chats_dir);
+	const fs::path legacy_file = chats_dir / "legacy-yolo.json";
+
+	UAM_ASSERT(uam::io::WriteTextFile(legacy_file, R"({
+  "id": "legacy-yolo",
+  "provider_id": "codex-cli",
+  "approval_mode": "yolo",
+  "title": "Legacy Yolo",
+  "created_at": "2026-01-01 00:00:00",
+  "updated_at": "2026-01-01 00:00:01",
+  "messages": []
+})"));
+
+	std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(loaded.front().approval_mode, std::string("default"));
+	UAM_ASSERT(loaded.front().auto_approve_commands);
+
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, loaded.front()));
+	const nlohmann::json rewritten_json = nlohmann::json::parse(ReadFile(legacy_file));
+	UAM_ASSERT_EQ(rewritten_json.value("approval_mode", ""), std::string("default"));
+	UAM_ASSERT(rewritten_json.value("auto_approve_commands", false));
+}
+
 UAM_TEST(ChatDomainServiceAutoTitlesOnlyPlaceholderNewSession)
 {
 	ChatSession placeholder_chat;
@@ -1424,6 +1509,111 @@ UAM_TEST(ChatRepositoryPersistsPinnedFlag)
 
 	const nlohmann::json persisted = nlohmann::json::parse(ReadFile(AppPaths::UamChatFilePath(temp.root, chat.id)));
 	UAM_ASSERT(persisted.value("pinned", false));
+}
+
+UAM_TEST(ChatRepositoryPersistsGitWorktreeMetadata)
+{
+	TempDir temp("uam-chat-worktree-metadata");
+	ChatSession chat;
+	chat.id = "chat-worktree";
+	chat.provider_id = "codex-cli";
+	chat.title = "Worktree";
+	chat.created_at = "2026-01-01T00:00:00.000Z";
+	chat.updated_at = "2026-01-01T00:00:01.000Z";
+	chat.workspace_directory = (temp.root / "repo").string();
+	chat.workspace_isolation_kind = "gitWorktree";
+	chat.workspace_source_directory = (temp.root / "repo").string();
+	chat.workspace_base_ref = "abc123";
+	chat.workspace_branch_name = "uam/chat-worktree";
+	chat.workspace_worktree_directory = (temp.root / "worktree").string();
+
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+
+	const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(loaded.front().workspace_isolation_kind, std::string("gitWorktree"));
+	UAM_ASSERT_EQ(loaded.front().workspace_source_directory, chat.workspace_source_directory);
+	UAM_ASSERT_EQ(loaded.front().workspace_base_ref, std::string("abc123"));
+	UAM_ASSERT_EQ(loaded.front().workspace_branch_name, std::string("uam/chat-worktree"));
+	UAM_ASSERT_EQ(loaded.front().workspace_worktree_directory, chat.workspace_worktree_directory);
+
+	const nlohmann::json persisted = nlohmann::json::parse(ReadFile(AppPaths::UamChatFilePath(temp.root, chat.id)));
+	UAM_ASSERT_EQ(persisted.value("workspace_isolation_kind", ""), std::string("gitWorktree"));
+	UAM_ASSERT_EQ(persisted.value("workspace_worktree_directory", ""), chat.workspace_worktree_directory);
+}
+
+UAM_TEST(ResolveWorkspaceRootPathPrefersGitWorktreeDirectory)
+{
+	TempDir temp("uam-worktree-resolve");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+
+	ChatFolder folder;
+	folder.id = "folder";
+	folder.directory = (temp.root / "repo").string();
+	app.folders.push_back(folder);
+
+	ChatSession chat = ChatDomainService().CreateNewChat(folder.id, "codex-cli");
+	chat.workspace_directory = folder.directory;
+	chat.workspace_isolation_kind = "gitWorktree";
+	chat.workspace_source_directory = folder.directory;
+	chat.workspace_worktree_directory = (temp.root / "worktree").string();
+
+	UAM_ASSERT_EQ(ResolveWorkspaceRootPath(app, chat), fs::absolute(temp.root / "worktree").lexically_normal());
+}
+
+UAM_TEST(GitWorktreeServiceCreatesDiscardsAndPortsChanges)
+{
+	if (!GitAvailableForTests())
+	{
+		return;
+	}
+
+	TempDir temp("uam-git-worktree");
+	const fs::path repo = temp.root / "repo";
+	fs::create_directories(repo);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
+	UAM_ASSERT(RunGitForTest(repo, "config user.email uam@example.test"));
+	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "app.txt", "one\n"));
+	UAM_ASSERT(RunGitForTest(repo, "add app.txt"));
+	UAM_ASSERT(RunGitForTest(repo, "commit -m initial"));
+
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatFolder folder;
+	folder.id = "folder";
+	folder.directory = repo.string();
+	app.folders.push_back(folder);
+	ChatSession chat = ChatDomainService().CreateNewChat(folder.id, "codex-cli");
+	chat.id = "chat-worktree-service";
+	chat.title = "Worktree Service";
+	chat.workspace_directory = repo.string();
+	app.chats.push_back(chat);
+
+	uam::GitWorktreeService service;
+	uam::GitWorktreeOperationResult created = service.CreateForChat(app, app.chats.front());
+	UAM_ASSERT(created.ok);
+	UAM_ASSERT_EQ(app.chats.front().workspace_isolation_kind, std::string("gitWorktree"));
+	const fs::path worktree = app.chats.front().workspace_worktree_directory;
+	UAM_ASSERT(fs::exists(worktree / "app.txt"));
+	UAM_ASSERT_EQ(ResolveWorkspaceRootPath(app, app.chats.front()), fs::absolute(worktree).lexically_normal());
+
+	UAM_ASSERT(uam::io::WriteTextFile(worktree / "app.txt", "discard me\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(worktree / "scratch.txt", "remove me\n"));
+	uam::GitWorktreeOperationResult discarded = service.DiscardChatChanges(app, app.chats.front());
+	UAM_ASSERT(discarded.ok);
+	UAM_ASSERT_EQ(ReadFile(worktree / "app.txt"), std::string("one\n"));
+	UAM_ASSERT(!fs::exists(worktree / "scratch.txt"));
+
+	UAM_ASSERT(uam::io::WriteTextFile(worktree / "app.txt", "two\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(worktree / "new.txt", "new\n"));
+	uam::GitWorktreeOperationResult ported = service.PortChatChanges(app, app.chats.front());
+	UAM_ASSERT(ported.ok);
+	UAM_ASSERT(fs::exists(ported.patch_path));
+	UAM_ASSERT_EQ(ReadFile(repo / "app.txt"), std::string("two\n"));
+	UAM_ASSERT_EQ(ReadFile(repo / "new.txt"), std::string("new\n"));
 }
 
 UAM_TEST(ChatRepositoryPersistsAssistantPlanFields)
@@ -2142,12 +2332,12 @@ UAM_TEST(CodexAppServerRequestBuildersUseCodexProtocolMethods)
 	UAM_ASSERT(thread_resume["params"].value("persistExtendedHistory", false));
 
 	ChatSession yolo_chat = chat;
-	yolo_chat.approval_mode = "yolo";
+	yolo_chat.auto_approve_commands = true;
 	const nlohmann::json yolo_thread_start = nlohmann::json::parse(uam::BuildCodexThreadStartRequestForTests(241, yolo_chat, "/tmp/project"));
-	UAM_ASSERT_EQ(yolo_thread_start["params"].value("approvalPolicy", ""), std::string("never"));
+	UAM_ASSERT_EQ(yolo_thread_start["params"].value("approvalPolicy", ""), std::string("on-request"));
 	UAM_ASSERT_EQ(yolo_thread_start["params"].value("sandbox", ""), std::string("workspace-write"));
 	const nlohmann::json yolo_thread_resume = nlohmann::json::parse(uam::BuildCodexThreadResumeRequestForTests(242, yolo_chat, "/tmp/project"));
-	UAM_ASSERT_EQ(yolo_thread_resume["params"].value("approvalPolicy", ""), std::string("never"));
+	UAM_ASSERT_EQ(yolo_thread_resume["params"].value("approvalPolicy", ""), std::string("on-request"));
 	UAM_ASSERT_EQ(yolo_thread_resume["params"].value("sandbox", ""), std::string("workspace-write"));
 
 	ChatSession default_model_chat = chat;
@@ -2266,11 +2456,6 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	UAM_ASSERT_EQ(accept_edits_argv[2], std::string("--approval-mode"));
 	UAM_ASSERT_EQ(accept_edits_argv[3], std::string("auto_edit"));
 
-	chat.approval_mode = " yolo ";
-	const std::vector<std::string> yolo_argv = uam::BuildAcpLaunchArgvForTests(chat);
-	UAM_ASSERT_EQ(yolo_argv[2], std::string("--approval-mode"));
-	UAM_ASSERT_EQ(yolo_argv[3], std::string("yolo"));
-
 	chat.approval_mode = " plan ";
 	const std::string detail = uam::BuildAcpLaunchDetailForTests("/tmp/project", chat);
 	UAM_ASSERT(detail.find("cwd=/tmp/project") != std::string::npos);
@@ -2315,11 +2500,6 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	UAM_ASSERT_EQ(claude_argv[12], std::string("claude-session-2"));
 	const std::string claude_detail = uam::BuildAcpLaunchDetailForTests("/tmp/project", claude_chat);
 	UAM_ASSERT(claude_detail.find("argv=claude -p --output-format stream-json --input-format stream-json --verbose --permission-mode plan --model sonnet --resume claude-session-2") != std::string::npos);
-
-	claude_chat.approval_mode = "yolo";
-	const std::vector<std::string> claude_yolo_argv = uam::BuildAcpLaunchArgvForTests(claude_chat);
-	UAM_ASSERT_EQ(claude_yolo_argv[7], std::string("--permission-mode"));
-	UAM_ASSERT_EQ(claude_yolo_argv[8], std::string("auto"));
 
 	ChatSession opencode_chat;
 	opencode_chat.id = "opencode-chat";
@@ -3273,8 +3453,7 @@ UAM_TEST(CodexAppServerStateTransitionsMapModelsTurnsToolsAndApprovals)
 	UAM_ASSERT_EQ(raw_session->session_id, codex_thread_id);
 	UAM_ASSERT_EQ(raw_session->codex_thread_id, codex_thread_id);
 	UAM_ASSERT_EQ(app.chats.front().native_session_id, codex_thread_id);
-	UAM_ASSERT_EQ(raw_session->available_modes.size(), static_cast<std::size_t>(3));
-	UAM_ASSERT_EQ(raw_session->available_modes[2].id, std::string("yolo"));
+	UAM_ASSERT_EQ(raw_session->available_modes.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(raw_session->current_mode_id, std::string("plan"));
 	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("ready"));
 

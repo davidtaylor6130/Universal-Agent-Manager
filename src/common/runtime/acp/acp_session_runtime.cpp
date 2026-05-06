@@ -75,6 +75,7 @@ namespace
 			                                    bool has_detail);
 			bool SyncAcpToolCallsToAssistantMessage(ChatSession& chat, AcpSessionState& session, bool create_if_missing);
 			bool UpdateAcpStaleWait(AcpSessionState& session, double now_seconds);
+			bool TryAutoApprovePendingPermission(AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
 
 		bool IsCodexSession(const AcpSessionState& session)
 		{
@@ -475,10 +476,9 @@ namespace
 
 	nlohmann::json BuildCodexThreadStartRequest(const int request_id, const ChatSession& chat, const std::string& cwd)
 	{
-		const bool yolo_mode = Trim(chat.approval_mode) == "yolo";
 		nlohmann::json params = {
 			{"cwd", cwd},
-			{"approvalPolicy", yolo_mode ? "never" : "on-request"},
+			{"approvalPolicy", "on-request"},
 			{"sandbox", "workspace-write"},
 			{"serviceName", "universal-agent-manager"},
 			{"experimentalRawEvents", false},
@@ -501,11 +501,10 @@ namespace
 
 	nlohmann::json BuildCodexThreadResumeRequest(const int request_id, const ChatSession& chat, const std::string& cwd)
 	{
-		const bool yolo_mode = Trim(chat.approval_mode) == "yolo";
 		nlohmann::json params = {
 			{"threadId", chat.native_session_id},
 			{"cwd", cwd},
-			{"approvalPolicy", yolo_mode ? "never" : "on-request"},
+			{"approvalPolicy", "on-request"},
 			{"sandbox", "workspace-write"},
 			{"persistExtendedHistory", true},
 		};
@@ -691,7 +690,7 @@ namespace
 		std::string LaunchApprovalMode(const ChatSession& chat)
 		{
 			const std::string mode = Trim(chat.approval_mode);
-			return (mode == "default" || mode == "acceptEdits" || mode == "plan" || mode == "yolo") ? mode : "";
+			return (mode == "default" || mode == "acceptEdits" || mode == "plan") ? mode : "";
 		}
 
 		std::string GeminiLaunchApprovalMode(const ChatSession& chat)
@@ -703,11 +702,15 @@ namespace
 		std::string ClaudeLaunchApprovalMode(const ChatSession& chat)
 		{
 			const std::string mode = LaunchApprovalMode(chat);
-			return mode == "yolo" ? "auto" : mode;
+			return mode;
 		}
 
 		std::string AppApprovalModeId(const std::string& mode_id)
 		{
+			if (mode_id == "yolo" || mode_id == "auto")
+			{
+				return "default";
+			}
 			return mode_id == "auto_edit" ? "acceptEdits" : mode_id;
 		}
 
@@ -964,7 +967,6 @@ namespace
 				AcpModeState{"default", "Default", "Use Claude default permissions."},
 				AcpModeState{"acceptEdits", "Accept Edits", "Auto-approve Claude file edits in the workspace."},
 				AcpModeState{"plan", "Plan", "Let Claude research and propose changes without editing files."},
-				AcpModeState{"yolo", "Auto", "Let Claude auto-decide permissions with Claude Code safety checks."},
 			};
 			if (session.current_mode_id.empty())
 			{
@@ -2409,6 +2411,99 @@ namespace
 		return WriteAcpMessage(session, response, error_out);
 	}
 
+	std::string LowerAscii(std::string value)
+	{
+		for (char& ch : value)
+		{
+			ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+		}
+		return value;
+	}
+
+	bool LooksLikeAutoApprovablePermission(const AcpPendingPermissionState& pending)
+	{
+		const std::string kind = LowerAscii(pending.kind);
+		const std::string title = LowerAscii(pending.title);
+		return kind.find("command") != std::string::npos ||
+		       kind.find("file") != std::string::npos ||
+		       kind.find("permission") != std::string::npos ||
+		       kind.find("tool") != std::string::npos ||
+		       title.find("command") != std::string::npos ||
+		       title.find("file change") != std::string::npos ||
+		       title.find("permission") != std::string::npos;
+	}
+
+	std::string AutoApproveOptionId(const AcpPendingPermissionState& pending)
+	{
+		for (const AcpPermissionOptionState& option : pending.options)
+		{
+			const std::string id = LowerAscii(option.id);
+			const std::string name = LowerAscii(option.name);
+			const std::string kind = LowerAscii(option.kind);
+			const bool reject = id.find("decline") != std::string::npos ||
+			                    id.find("deny") != std::string::npos ||
+			                    id.find("cancel") != std::string::npos ||
+			                    name.find("decline") != std::string::npos ||
+			                    name.find("deny") != std::string::npos ||
+			                    name.find("cancel") != std::string::npos ||
+			                    kind.find("cancel") != std::string::npos;
+			if (reject)
+			{
+				continue;
+			}
+			if (id.find("accept") != std::string::npos ||
+			    id.find("allow") != std::string::npos ||
+			    name.find("accept") != std::string::npos ||
+			    name.find("allow") != std::string::npos)
+			{
+				return option.id;
+			}
+		}
+		return "";
+	}
+
+	bool TryAutoApprovePendingPermission(AcpSessionState& session, const ChatSession& chat, std::string* error_out)
+	{
+		if (!chat.auto_approve_commands || session.pending_permission.request_id_json.empty())
+		{
+			return false;
+		}
+		if (!LooksLikeAutoApprovablePermission(session.pending_permission))
+		{
+			return false;
+		}
+
+		std::string option_id = AutoApproveOptionId(session.pending_permission);
+		if (!IsCodexSession(session) && option_id.empty())
+		{
+			return false;
+		}
+
+		if (!SendPermissionResponse(session, session.pending_permission.request_id_json, option_id, false, error_out))
+		{
+			return false;
+		}
+
+		if (!session.pending_permission.tool_call_id.empty())
+		{
+			AcpToolCallState& tracked_tool_call = UpsertToolCall(session, session.pending_permission.tool_call_id);
+			tracked_tool_call.status = "auto_approved";
+		}
+		AppendAcpDiagnostic(session,
+		                    "permission",
+		                    "auto_approved",
+		                    session.pending_permission.provider_request_method,
+		                    session.pending_permission.request_id_json,
+		                    false,
+		                    0,
+		                    "UAM yolo auto-approved a command permission request.");
+		session.pending_permission = AcpPendingPermissionState{};
+		session.waiting_for_permission = false;
+		ClearAcpPendingWait(session);
+		session.lifecycle_state = session.processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
+		return true;
+	}
+
 	nlohmann::json BuildCodexUserInputResponse(const std::string& request_id_json, const std::map<std::string, std::vector<std::string>>& answers)
 	{
 		nlohmann::json answer_map = nlohmann::json::object();
@@ -2444,7 +2539,7 @@ namespace
 		return WriteAcpMessage(session, BuildCodexUserInputResponse(request_id_json, answers), error_out);
 	}
 
-	void HandlePermissionRequest(AcpSessionState& session, const nlohmann::json& message)
+	void HandlePermissionRequest(AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
 	{
 		if (session.cancel_requested || session.cancel_request_id != 0)
 		{
@@ -2504,6 +2599,10 @@ namespace
 		AppendPermissionTurnEventIfNeeded(session, pending.request_id_json, pending.tool_call_id);
 
 		session.pending_permission = std::move(pending);
+		if (TryAutoApprovePendingPermission(session, chat))
+		{
+			return;
+		}
 		session.waiting_for_permission = true;
 		BeginAcpPendingWait(session, kAcpLifecycleWaitingPermission);
 	}
@@ -2834,7 +2933,7 @@ namespace
 		(void)SyncAcpToolCallsToAssistantMessage(chat, session, false);
 	}
 
-	void HandleCodexPendingPermission(AcpSessionState& session, const nlohmann::json& message, const std::string& kind)
+	void HandleCodexPendingPermission(AcpSessionState& session, ChatSession& chat, const nlohmann::json& message, const std::string& kind)
 	{
 		if (session.cancel_requested || session.cancel_request_id != 0)
 		{
@@ -2907,6 +3006,10 @@ namespace
 		}
 		AppendPermissionTurnEventIfNeeded(session, pending.request_id_json, pending.tool_call_id);
 		session.pending_permission = std::move(pending);
+		if (TryAutoApprovePendingPermission(session, chat))
+		{
+			return;
+		}
 		session.waiting_for_permission = true;
 		BeginAcpPendingWait(session, kAcpLifecycleWaitingPermission);
 	}
@@ -3209,17 +3312,17 @@ namespace
 		}
 		if (method == "item/commandExecution/requestApproval")
 		{
-			HandleCodexPendingPermission(session, message, "codex-command");
+			HandleCodexPendingPermission(session, chat, message, "codex-command");
 			return;
 		}
 		if (method == "item/fileChange/requestApproval")
 		{
-			HandleCodexPendingPermission(session, message, "codex-file");
+			HandleCodexPendingPermission(session, chat, message, "codex-file");
 			return;
 		}
 		if (method == "item/permissions/requestApproval")
 		{
-			HandleCodexPendingPermission(session, message, "codex-permissions");
+			HandleCodexPendingPermission(session, chat, message, "codex-permissions");
 			return;
 		}
 		if (method == "item/tool/requestUserInput")
@@ -3260,7 +3363,7 @@ namespace
 		}
 	}
 
-		void HandleAcpRequest(AppState&, AcpSessionState& session, const nlohmann::json& message)
+		void HandleAcpRequest(AppState&, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
 		{
 			const std::string method = message.value("method", "");
 			if (method == "session/update")
@@ -3270,7 +3373,7 @@ namespace
 
 		if (method == "session/request_permission")
 		{
-			HandlePermissionRequest(session, message);
+			HandlePermissionRequest(session, chat, message);
 			return;
 		}
 
@@ -3516,8 +3619,13 @@ namespace
 							continue;
 						}
 
+						const std::string provider_mode_id = mode.value("id", "");
+						if (provider_mode_id == "yolo" || provider_mode_id == "auto")
+						{
+							continue;
+						}
 						AcpModeState parsed;
-						parsed.id = AppApprovalModeId(mode.value("id", ""));
+						parsed.id = AppApprovalModeId(provider_mode_id);
 						parsed.name = mode.value("name", parsed.id);
 						parsed.description = mode.value("description", "");
 						if (!parsed.id.empty())
@@ -3826,7 +3934,6 @@ namespace
 					session.available_modes = {
 						AcpModeState{"default", "Default", "Use Codex default collaboration mode."},
 						AcpModeState{"plan", "Plan", "Ask Codex to plan before implementing."},
-						AcpModeState{"yolo", "Yolo", "Run Codex without approval prompts in the workspace sandbox."},
 					};
 					session.current_mode_id = chat.approval_mode.empty() ? "default" : chat.approval_mode;
 					session.session_ready = !session.session_id.empty();
@@ -4206,7 +4313,7 @@ namespace
 			}
 			else
 			{
-				HandleAcpRequest(app, session, message);
+				HandleAcpRequest(app, session, chat, message);
 			}
 			return true;
 		}
@@ -4665,9 +4772,8 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 		}
 		if (IsCodexSession(*session))
 		{
-			const bool restart_for_policy_change = session->current_mode_id == "yolo" || mode_id == "yolo";
 			session->current_mode_id = mode_id;
-			return restart_for_policy_change ? StopAcpSession(app, chat_id) : true;
+			return true;
 		}
 		if (IsClaudeSession(*session))
 		{
@@ -4727,6 +4833,33 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 		}
 		session->current_model_id = model_id;
 		return true;
+	}
+
+	bool TryAutoApprovePendingAcpPermission(AppState& app, const std::string& chat_id, std::string* error_out)
+	{
+		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
+		if (session == nullptr || !session->running || session->pending_permission.request_id_json.empty())
+		{
+			return false;
+		}
+		ChatSession* chat = nullptr;
+		for (ChatSession& candidate : app.chats)
+		{
+			if (candidate.id == chat_id)
+			{
+				chat = &candidate;
+				break;
+			}
+		}
+		if (chat == nullptr)
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Chat not found: " + chat_id;
+			}
+			return false;
+		}
+		return TryAutoApprovePendingPermission(*session, *chat, error_out);
 	}
 
 bool ResolveAcpPermission(AppState& app,

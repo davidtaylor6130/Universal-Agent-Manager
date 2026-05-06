@@ -25,6 +25,8 @@ describe('Sidebar', () => {
     vi.restoreAllMocks()
     useAppStore.setState({
       setNewChatModalOpen: vi.fn(),
+      sessions: [],
+      providers: [],
     })
   })
 

@@ -8,7 +8,7 @@ import { sendToCEF, isCefContext, createRequestId } from '../ipc/cefBridge'
 import { applyDocumentTheme, writeStoredTheme } from '../utils/themeStorage'
 
 const GEMINI_CLI_PROVIDER_ID = 'gemini-cli'
-const ACP_APPROVAL_MODE_IDS = ['default', 'acceptEdits', 'plan', 'yolo'] as const
+const ACP_APPROVAL_MODE_IDS = ['default', 'acceptEdits', 'plan'] as const
 const initialFolders: Folder[] = [
   {
     id: 'default',
@@ -134,11 +134,17 @@ interface CppChat {
   providerId: string
   modelId?: string
   approvalMode?: string
+  autoApproveCommands?: boolean
   memoryEnabled?: boolean
   memoryLastProcessedMessageCount?: number
-  memoryLastProcessedAt?: string
-  workspaceDirectory?: string
-  createdAt: string
+	  memoryLastProcessedAt?: string
+	  workspaceDirectory?: string
+	  workspaceIsolationKind?: string
+	  workspaceSourceDirectory?: string
+	  workspaceBaseRef?: string
+	  workspaceBranchName?: string
+	  workspaceWorktreeDirectory?: string
+	  createdAt: string
   updatedAt: string
   lastOpenedAt?: string
   messageCount?: number
@@ -157,6 +163,28 @@ interface CppChat {
     lastError: string
   }
   acpSession?: CppAcpSession
+}
+
+export interface GitWorktreeStatus {
+  isGitRepository: boolean
+  isSvnWorkspace: boolean
+  isolated: boolean
+  sourceDirty: boolean
+  worktreeDirty: boolean
+  worktreeMissing: boolean
+  sourceDirectory: string
+  worktreeDirectory: string
+  branchName: string
+  baseRef: string
+  warning: string
+  error: string
+}
+
+export interface GitWorktreeResult {
+  ok: boolean
+  status?: GitWorktreeStatus
+  message: string
+  patchPath: string
 }
 
 export interface AcpToolCall {
@@ -571,6 +599,7 @@ function isAllowedAcpModelId(modelId: string): boolean {
 
 function normalizeAcpApprovalMode(value: unknown): string {
   const modeId = stringOr(value).trim() || 'default'
+  if (modeId === 'yolo') return 'default'
   if (modeId === 'auto_edit') return 'acceptEdits'
   return (ACP_APPROVAL_MODE_IDS as readonly string[]).includes(modeId) ? modeId : 'default'
 }
@@ -958,11 +987,17 @@ function sanitizeCppChat(value: unknown): CppChat | null {
     providerId: stringOr(value.providerId, GEMINI_CLI_PROVIDER_ID),
     modelId: normalizeAcpModelId(value.modelId),
     approvalMode: normalizeAcpApprovalMode(value.approvalMode),
+    autoApproveCommands: booleanOr(value.autoApproveCommands, stringOr(value.approvalMode).trim() === 'yolo'),
     memoryEnabled: booleanOr(value.memoryEnabled, true),
-    memoryLastProcessedMessageCount: finiteNumberOr(value.memoryLastProcessedMessageCount, 0),
-    memoryLastProcessedAt: isString(value.memoryLastProcessedAt) ? value.memoryLastProcessedAt : undefined,
-    workspaceDirectory: isString(value.workspaceDirectory) ? value.workspaceDirectory : undefined,
-    createdAt: stringOr(value.createdAt),
+	    memoryLastProcessedMessageCount: finiteNumberOr(value.memoryLastProcessedMessageCount, 0),
+	    memoryLastProcessedAt: isString(value.memoryLastProcessedAt) ? value.memoryLastProcessedAt : undefined,
+	    workspaceDirectory: isString(value.workspaceDirectory) ? value.workspaceDirectory : undefined,
+	    workspaceIsolationKind: isString(value.workspaceIsolationKind) ? value.workspaceIsolationKind : undefined,
+	    workspaceSourceDirectory: isString(value.workspaceSourceDirectory) ? value.workspaceSourceDirectory : undefined,
+	    workspaceBaseRef: isString(value.workspaceBaseRef) ? value.workspaceBaseRef : undefined,
+	    workspaceBranchName: isString(value.workspaceBranchName) ? value.workspaceBranchName : undefined,
+	    workspaceWorktreeDirectory: isString(value.workspaceWorktreeDirectory) ? value.workspaceWorktreeDirectory : undefined,
+	    createdAt: stringOr(value.createdAt),
     updatedAt: stringOr(value.updatedAt),
     lastOpenedAt: isString(value.lastOpenedAt) ? value.lastOpenedAt : undefined,
     messageCount: finiteNumberOr(value.messageCount, 0),
@@ -975,7 +1010,41 @@ function sanitizeCppChat(value: unknown): CppChat | null {
       : undefined,
     cliTerminal: sanitizeCppCliTerminal(value.cliTerminal),
     acpSession: sanitizeCppAcpSession(value.acpSession),
+	  }
+	}
+
+function sanitizeGitWorktreeStatus(value: unknown): GitWorktreeStatus | null {
+  if (!isRecord(value)) return null
+  return {
+    isGitRepository: booleanOr(value.isGitRepository),
+    isSvnWorkspace: booleanOr(value.isSvnWorkspace),
+    isolated: booleanOr(value.isolated),
+    sourceDirty: booleanOr(value.sourceDirty),
+    worktreeDirty: booleanOr(value.worktreeDirty),
+    worktreeMissing: booleanOr(value.worktreeMissing),
+    sourceDirectory: stringOr(value.sourceDirectory),
+    worktreeDirectory: stringOr(value.worktreeDirectory),
+    branchName: stringOr(value.branchName),
+    baseRef: stringOr(value.baseRef),
+    warning: stringOr(value.warning),
+    error: stringOr(value.error),
   }
+}
+
+function sanitizeGitWorktreeResult(value: unknown): GitWorktreeResult {
+  if (!isRecord(value)) {
+    return { ok: false, message: 'Invalid worktree response.', patchPath: '' }
+  }
+  return {
+    ok: booleanOr(value.ok, true),
+    status: sanitizeGitWorktreeStatus(value.status) ?? undefined,
+    message: stringOr(value.message),
+    patchPath: stringOr(value.patchPath),
+  }
+}
+
+function failedGitWorktreeResult(message: string): GitWorktreeResult {
+  return { ok: false, message, patchPath: '' }
 }
 
 function sanitizeCppProvider(value: unknown): CppProvider | null {
@@ -1767,10 +1836,16 @@ function deserializeState(
     const providerId = normalizeProviderIdForVisibleProviders(c.providerId, visibleProviders)
     const modelId = c.modelId ?? ''
     const approvalMode = normalizeAcpApprovalMode(c.approvalMode)
+    const autoApproveCommands = c.autoApproveCommands ?? false
     const memoryEnabled = c.memoryEnabled ?? true
-    const memoryLastProcessedMessageCount = c.memoryLastProcessedMessageCount ?? 0
-    const memoryLastProcessedAt = c.memoryLastProcessedAt ?? ''
-    const createdAt = new Date(c.createdAt || Date.now())
+	  const memoryLastProcessedMessageCount = c.memoryLastProcessedMessageCount ?? 0
+	  const memoryLastProcessedAt = c.memoryLastProcessedAt ?? ''
+	  const workspaceIsolationKind = c.workspaceIsolationKind ?? ''
+	  const workspaceSourceDirectory = c.workspaceSourceDirectory ?? ''
+	  const workspaceBaseRef = c.workspaceBaseRef ?? ''
+	  const workspaceBranchName = c.workspaceBranchName ?? ''
+	  const workspaceWorktreeDirectory = c.workspaceWorktreeDirectory ?? ''
+	  const createdAt = new Date(c.createdAt || Date.now())
     const updatedAt = new Date(c.updatedAt || Date.now())
     const lastOpenedAt = new Date(c.lastOpenedAt || c.updatedAt || c.createdAt || Date.now())
     // Reuse reference if nothing changed — keeps memoized children stable
@@ -1782,11 +1857,17 @@ function deserializeState(
       (prev.providerId ?? GEMINI_CLI_PROVIDER_ID) === providerId &&
       (prev.modelId ?? '') === modelId &&
       (prev.approvalMode ?? 'default') === approvalMode &&
+      (prev.autoApproveCommands ?? false) === autoApproveCommands &&
       (prev.memoryEnabled ?? true) === memoryEnabled &&
       (prev.memoryLastProcessedMessageCount ?? 0) === memoryLastProcessedMessageCount &&
-      (prev.memoryLastProcessedAt ?? '') === memoryLastProcessedAt &&
-      prev.workspaceDirectory === workspaceDirectory &&
-      prev.viewMode === 'chat' &&
+	      (prev.memoryLastProcessedAt ?? '') === memoryLastProcessedAt &&
+	      prev.workspaceDirectory === workspaceDirectory &&
+	      (prev.workspaceIsolationKind ?? '') === workspaceIsolationKind &&
+	      (prev.workspaceSourceDirectory ?? '') === workspaceSourceDirectory &&
+	      (prev.workspaceBaseRef ?? '') === workspaceBaseRef &&
+	      (prev.workspaceBranchName ?? '') === workspaceBranchName &&
+	      (prev.workspaceWorktreeDirectory ?? '') === workspaceWorktreeDirectory &&
+	      prev.viewMode === 'chat' &&
       prev.createdAt.getTime() === createdAt.getTime() &&
       prev.updatedAt.getTime() === updatedAt.getTime() &&
       (prev.lastOpenedAt ?? prev.updatedAt).getTime() === lastOpenedAt.getTime()
@@ -1802,11 +1883,17 @@ function deserializeState(
       providerId,
       modelId,
       approvalMode,
+      autoApproveCommands,
       memoryEnabled,
       memoryLastProcessedMessageCount,
-      memoryLastProcessedAt,
-      workspaceDirectory,
-      createdAt,
+	      memoryLastProcessedAt,
+	      workspaceDirectory,
+	      workspaceIsolationKind,
+	      workspaceSourceDirectory,
+	      workspaceBaseRef,
+	      workspaceBranchName,
+	      workspaceWorktreeDirectory,
+	      createdAt,
       updatedAt,
       lastOpenedAt,
     }
@@ -2136,11 +2223,17 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
       providerId: normalizeProviderIdForVisibleProviders(chat.providerId, visibleProviders),
       modelId: chat.modelId ?? '',
       approvalMode: normalizeAcpApprovalMode(chat.approvalMode),
+      autoApproveCommands: chat.autoApproveCommands ?? false,
       memoryEnabled: chat.memoryEnabled ?? true,
       memoryLastProcessedMessageCount: chat.memoryLastProcessedMessageCount ?? 0,
-      memoryLastProcessedAt: chat.memoryLastProcessedAt ?? '',
-      workspaceDirectory: chat.workspaceDirectory ?? '',
-      createdAt,
+	      memoryLastProcessedAt: chat.memoryLastProcessedAt ?? '',
+	      workspaceDirectory: chat.workspaceDirectory ?? '',
+	      workspaceIsolationKind: chat.workspaceIsolationKind ?? '',
+	      workspaceSourceDirectory: chat.workspaceSourceDirectory ?? '',
+	      workspaceBaseRef: chat.workspaceBaseRef ?? '',
+	      workspaceBranchName: chat.workspaceBranchName ?? '',
+	      workspaceWorktreeDirectory: chat.workspaceWorktreeDirectory ?? '',
+	      createdAt,
       updatedAt,
       lastOpenedAt,
     }
@@ -2153,11 +2246,17 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
         (prev.providerId ?? GEMINI_CLI_PROVIDER_ID) === nextSession.providerId &&
         (prev.modelId ?? '') === (nextSession.modelId ?? '') &&
         (prev.approvalMode ?? 'default') === nextSession.approvalMode &&
+        (prev.autoApproveCommands ?? false) === (nextSession.autoApproveCommands ?? false) &&
         (prev.memoryEnabled ?? true) === nextSession.memoryEnabled &&
         (prev.memoryLastProcessedMessageCount ?? 0) === nextSession.memoryLastProcessedMessageCount &&
-        (prev.memoryLastProcessedAt ?? '') === nextSession.memoryLastProcessedAt &&
-        prev.workspaceDirectory === nextSession.workspaceDirectory &&
-        prev.createdAt.getTime() === nextSession.createdAt.getTime() &&
+	        (prev.memoryLastProcessedAt ?? '') === nextSession.memoryLastProcessedAt &&
+	        prev.workspaceDirectory === nextSession.workspaceDirectory &&
+	        (prev.workspaceIsolationKind ?? '') === (nextSession.workspaceIsolationKind ?? '') &&
+	        (prev.workspaceSourceDirectory ?? '') === (nextSession.workspaceSourceDirectory ?? '') &&
+	        (prev.workspaceBaseRef ?? '') === (nextSession.workspaceBaseRef ?? '') &&
+	        (prev.workspaceBranchName ?? '') === (nextSession.workspaceBranchName ?? '') &&
+	        (prev.workspaceWorktreeDirectory ?? '') === (nextSession.workspaceWorktreeDirectory ?? '') &&
+	        prev.createdAt.getTime() === nextSession.createdAt.getTime() &&
         prev.updatedAt.getTime() === nextSession.updatedAt.getTime() &&
         (prev.lastOpenedAt ?? prev.updatedAt).getTime() === nextSession.lastOpenedAt?.getTime()
         ? prev
@@ -2435,6 +2534,7 @@ interface AppState {
 	  setSessionProvider: (id: string, providerId: string) => Promise<boolean>
 	  setSessionModel: (id: string, modelId: string) => Promise<boolean>
 	  setSessionApprovalMode: (id: string, modeId: string) => Promise<boolean>
+	  setSessionAutoApproveCommands: (id: string, enabled: boolean) => Promise<boolean>
 	  setSessionMemoryEnabled: (id: string, enabled: boolean) => Promise<boolean>
 	  setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'memoryWorkerBindings'>>) => Promise<boolean>
 	  refreshCliProviderVersion: (providerId?: string) => Promise<boolean>
@@ -2449,6 +2549,10 @@ interface AppState {
 	  attachMarkdownStoreEntry: (sessionId: string, entry: MarkdownStoreEntry) => void
 	  detachMarkdownStoreEntry: (sessionId: string, filePath: string) => void
 	  openSessionWorkspace: (id: string) => Promise<boolean>
+	  getChatWorktreeStatus: (id: string) => Promise<GitWorktreeStatus | null>
+	  createChatWorktree: (id: string) => Promise<GitWorktreeResult>
+	  discardChatWorktreeChanges: (id: string) => Promise<GitWorktreeResult>
+	  portChatWorktreeChanges: (id: string) => Promise<GitWorktreeResult>
 	  deleteSession: (id: string) => void
 
   // Folder actions
@@ -2843,6 +2947,84 @@ export const useAppStore = create<AppState>((set, get) => {
       return Boolean(session?.workspaceDirectory?.trim() || folderDirectory.trim())
     },
 
+    getChatWorktreeStatus: async (id) => {
+      if (isCefContext()) {
+        const response = await sendToCEF<GitWorktreeStatus>({
+          action: 'getChatWorktreeStatus',
+          payload: { chatId: id },
+        })
+        if (!response.ok) {
+          console.error('[CEF] getChatWorktreeStatus failed:', response.error)
+          return null
+        }
+        return sanitizeGitWorktreeStatus(response.data)
+      }
+
+      const session = get().sessions.find((candidate) => candidate.id === id)
+      return {
+        isGitRepository: true,
+        isSvnWorkspace: false,
+        isolated: session?.workspaceIsolationKind === 'gitWorktree',
+        sourceDirty: false,
+        worktreeDirty: false,
+        worktreeMissing: false,
+        sourceDirectory: session?.workspaceSourceDirectory ?? session?.workspaceDirectory ?? '',
+        worktreeDirectory: session?.workspaceWorktreeDirectory ?? '',
+        branchName: session?.workspaceBranchName ?? '',
+        baseRef: session?.workspaceBaseRef ?? '',
+        warning: '',
+        error: '',
+      }
+    },
+
+    createChatWorktree: async (id) => {
+      if (isCefContext()) {
+        const response = await sendToCEF<GitWorktreeResult>({
+          action: 'createChatWorktree',
+          payload: { chatId: id },
+        })
+        if (!response.ok) {
+          console.error('[CEF] createChatWorktree failed:', response.error)
+          return failedGitWorktreeResult(response.error || 'Failed to create isolated Git worktree.')
+        }
+        return sanitizeGitWorktreeResult(response.data)
+      }
+
+      return failedGitWorktreeResult('Git worktree actions require the desktop runtime.')
+    },
+
+    discardChatWorktreeChanges: async (id) => {
+      if (isCefContext()) {
+        const response = await sendToCEF<GitWorktreeResult>({
+          action: 'discardChatWorktreeChanges',
+          payload: { chatId: id },
+        })
+        if (!response.ok) {
+          console.error('[CEF] discardChatWorktreeChanges failed:', response.error)
+          return failedGitWorktreeResult(response.error || 'Failed to discard worktree changes.')
+        }
+        return sanitizeGitWorktreeResult(response.data)
+      }
+
+      return failedGitWorktreeResult('Git worktree actions require the desktop runtime.')
+    },
+
+    portChatWorktreeChanges: async (id) => {
+      if (isCefContext()) {
+        const response = await sendToCEF<GitWorktreeResult>({
+          action: 'portChatWorktreeChanges',
+          payload: { chatId: id },
+        })
+        if (!response.ok) {
+          console.error('[CEF] portChatWorktreeChanges failed:', response.error)
+          return failedGitWorktreeResult(response.error || 'Failed to port worktree changes.')
+        }
+        return sanitizeGitWorktreeResult(response.data)
+      }
+
+      return failedGitWorktreeResult('Git worktree actions require the desktop runtime.')
+    },
+
     renameSession: (id, name) => {
       if (isCefContext()) {
         const previousSession = get().sessions.find((s) => s.id === id)
@@ -2958,7 +3140,7 @@ export const useAppStore = create<AppState>((set, get) => {
 	      const applyProvider = () => {
 	        set((state) => ({
 	          sessions: state.sessions.map((s) =>
-	            s.id === id ? { ...s, providerId: requestedProviderId, modelId: '', approvalMode: 'default', updatedAt: new Date() } : s
+	            s.id === id ? { ...s, providerId: requestedProviderId, modelId: '', approvalMode: 'default', autoApproveCommands: false, updatedAt: new Date() } : s
 	          ),
 	        }))
 	      }
@@ -3114,6 +3296,53 @@ export const useAppStore = create<AppState>((set, get) => {
 	      }
 
 	      applyMode()
+	      return true
+	    },
+
+	    setSessionAutoApproveCommands: async (id, enabled) => {
+	      const previousSession = get().sessions.find((s) => s.id === id)
+	      if (!previousSession) {
+	        return false
+	      }
+	      if ((previousSession.autoApproveCommands ?? false) === enabled) {
+	        return true
+	      }
+
+	      const applyAutoApprove = () => {
+	        set((state) => ({
+	          sessions: state.sessions.map((s) =>
+	            s.id === id ? { ...s, autoApproveCommands: enabled, updatedAt: new Date() } : s
+	          ),
+	        }))
+	      }
+
+	      if (isCefContext()) {
+	        const requestKey = `setSessionAutoApproveCommands:${id}`
+	        const requestId = createRequestId('setSessionAutoApproveCommands')
+	        rememberPendingRequest(requestKey, requestId)
+	        applyAutoApprove()
+	        const response = await sendToCEF({
+	          action: 'setChatAutoApproveCommands',
+	          payload: { chatId: id, enabled },
+	          requestId,
+	        })
+
+	        if (response.ok) {
+	          clearPendingRequest(requestKey, response.requestId)
+	          return true
+	        }
+
+	        if (isLatestPendingRequest(requestKey, response.requestId)) {
+	          set((state) => ({
+	            sessions: state.sessions.map((s) => (s.id === id ? previousSession : s)),
+	          }))
+	          pendingRequestIdsByKey.delete(requestKey)
+	        }
+
+	        return false
+	      }
+
+	      applyAutoApprove()
 	      return true
 	    },
 

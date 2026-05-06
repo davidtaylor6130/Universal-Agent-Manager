@@ -129,7 +129,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const stopButton = Array.from(host.querySelectorAll('button')).find((button) => button.title === 'Stop runtime' && button.textContent === 'Stop') as HTMLButtonElement
+    const stopButton = Array.from(host.querySelectorAll('button')).find((button) => button.title === 'Stop runtime') as HTMLButtonElement
     expect(stopButton).toBeTruthy()
     expect(host.textContent).not.toContain('Working ')
 
@@ -168,7 +168,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const sendButton = Array.from(host.querySelectorAll('button')).find((button) => button.title === 'Send prompt' && button.textContent === 'Send') as HTMLButtonElement
+    const sendButton = Array.from(host.querySelectorAll('button')).find((button) => button.title === 'Send prompt') as HTMLButtonElement
     expect(sendButton).toBeTruthy()
     expect(Array.from(host.querySelectorAll('button')).some((button) => button.title === 'Cancel turn' && button.textContent === 'Stop')).toBe(false)
 
@@ -199,7 +199,7 @@ describe('ChatView', () => {
     expect(host.textContent).not.toContain('Persisted thought should not duplicate while turn events are active.')
     expect(host.textContent).toContain('After tool.')
     expect(host.textContent).toContain('Gemini')
-    expect(host.textContent).toContain('ACP')
+    expect(host.textContent).not.toContain('ACP')
     expect(host.textContent).toContain('Workspace')
     expect(host.textContent).toContain('/tmp/project')
     expect(host.textContent).not.toContain('Tools on')
@@ -233,7 +233,7 @@ describe('ChatView', () => {
       settingsButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(host.textContent).toContain('Chat settings')
-    expect(host.textContent).toContain('Unavailable')
+    expect(host.textContent).not.toContain('Unavailable')
 
     const toolButton = Array.from(host.querySelectorAll('button')).find((button) =>
       button.textContent?.includes('Tool call:')
@@ -523,7 +523,7 @@ describe('ChatView', () => {
     })
 
     expect(host.textContent).toContain('Codex')
-    expect(host.textContent).toContain('App Server')
+    expect(host.textContent).not.toContain('App Server')
     expect(host.textContent).toContain('CLI default')
     expect(host.querySelector('textarea')?.getAttribute('placeholder')).toBe('Message Codex')
 
@@ -676,7 +676,7 @@ describe('ChatView', () => {
     expect(modelButton).toBeTruthy()
     expect(modelButton?.disabled).toBe(true)
     expect((host.querySelector('button[title^="Toggle planning mode"]') as HTMLButtonElement | null)?.disabled).toBe(true)
-    expect((host.querySelector('button[title="Yolo mode unavailable"]') as HTMLButtonElement | null)?.disabled).toBe(true)
+    expect((host.querySelector('button[title="Toggle Yolo mode"]') as HTMLButtonElement | null)?.disabled).toBe(false)
 
     act(() => {
       modelButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -774,11 +774,11 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('toggles the Yolo chip and reflects runtime Yolo state', () => {
-    const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
+  it('toggles the Yolo chip without changing Plan mode', () => {
+    const setSessionAutoApproveCommands = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) =>
-        session.id === 'chat-1' ? { ...session, approvalMode: 'default' } : session
+        session.id === 'chat-1' ? { ...session, approvalMode: 'plan', autoApproveCommands: false } : session
       ),
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
@@ -787,16 +787,15 @@ describe('ChatView', () => {
           lifecycleState: 'ready',
           processing: false,
           processingStartedAtMs: null,
-          currentModeId: 'default',
+          currentModeId: 'plan',
           availableModes: [
             { id: 'default', name: 'Default', description: '' },
             { id: 'plan', name: 'Plan', description: '' },
-            { id: 'yolo', name: 'Yolo', description: '' },
           ],
           pendingPermission: null,
         },
       },
-      setSessionApprovalMode,
+      setSessionAutoApproveCommands,
     }))
 
     const host = document.createElement('div')
@@ -816,21 +815,15 @@ describe('ChatView', () => {
       yoloButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'yolo')
+    expect(setSessionAutoApproveCommands).toHaveBeenCalledWith('chat-1', true)
 
     act(() => {
       useAppStore.setState((state) => ({
         sessions: state.sessions.map((session) =>
-          session.id === 'chat-1' ? { ...session, approvalMode: 'yolo' } : session
+          session.id === 'chat-1' ? { ...session, autoApproveCommands: true } : session
         ),
-        acpBindingBySessionId: {
-          ...state.acpBindingBySessionId,
-          'chat-1': {
-            ...state.acpBindingBySessionId['chat-1'],
-            currentModeId: 'yolo',
-          },
-        },
       }))
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
     expect(yoloButton?.getAttribute('aria-pressed')).toBe('true')
@@ -839,7 +832,7 @@ describe('ChatView', () => {
       yoloButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(setSessionApprovalMode).toHaveBeenLastCalledWith('chat-1', 'default')
+    expect(setSessionAutoApproveCommands).toHaveBeenLastCalledWith('chat-1', false)
 
     act(() => {
       root.unmount()
@@ -916,7 +909,6 @@ describe('ChatView', () => {
             { id: 'default', name: 'Default', description: '' },
             { id: 'acceptEdits', name: 'Accept Edits', description: '' },
             { id: 'plan', name: 'Plan', description: '' },
-            { id: 'yolo', name: 'Auto', description: '' },
           ],
           currentModeId: 'default',
           pendingPermission: null,
@@ -1816,6 +1808,55 @@ describe('ChatView', () => {
     })
 
     expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Use this image', [stagedAttachment])
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('does not block normal text paste in the composer', async () => {
+    const stageChatAttachments = vi.fn((_sessionId, items) => Promise.resolve([
+      {
+        id: items[0].id,
+        name: 'pasted.png',
+        type: 'image',
+        size: 4,
+        path: '.UAM/attachments/chat-1/pasted.png',
+      },
+    ]))
+    useAppStore.setState((state) => ({
+      stageChatAttachments,
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+          pendingPermission: null,
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    await act(async () => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    const textPaste = new Event('paste', { bubbles: true, cancelable: true })
+    Object.defineProperty(textPaste, 'clipboardData', {
+      value: { files: [], getData: () => 'plain text' },
+    })
+    await act(async () => {
+      textarea.dispatchEvent(textPaste)
+    })
+    expect(textPaste.defaultPrevented).toBe(false)
+
+    expect(stageChatAttachments).not.toHaveBeenCalled()
 
     act(() => {
       root.unmount()

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Folder, Session } from '../../types/session'
 import {
+  type ChatSearchFilters,
   buildChatSearchIndex,
   buildChatSearchModel,
   tokenizeChatSearchQuery,
@@ -25,7 +26,8 @@ function makeSession(
   folderId: string | null,
   lastOpenedAt = now,
   updatedAt = now,
-  isPinned = false
+  isPinned = false,
+  providerId?: string
 ): Session {
   return {
     id,
@@ -33,6 +35,7 @@ function makeSession(
     viewMode: 'cli',
     folderId,
     isPinned,
+    providerId,
     createdAt: now,
     updatedAt,
     lastOpenedAt,
@@ -42,13 +45,18 @@ function makeSession(
 function searchModel(
   query: string,
   folders: Folder[],
-  sessions: Session[]
+  sessions: Session[],
+  filters?: ChatSearchFilters,
+  filterContext = {}
 ) {
   return buildChatSearchModel(
     folders,
     sessions,
     buildChatSearchIndex(sessions),
-    tokenizeChatSearchQuery(query)
+    tokenizeChatSearchQuery(query),
+    undefined,
+    filters,
+    filterContext
   )
 }
 
@@ -205,5 +213,57 @@ describe('chatSearch', () => {
     ]
     expect(visibleSessionIds(searchModel('alpha project', folders, sessions))).toEqual(['s-match'])
     expect(visibleSessionIds(searchModel('alpha missing', folders, sessions))).toEqual([])
+  })
+
+  it('filters by provider id', () => {
+    const folders = [makeFolder('general')]
+    const sessions = [
+      makeSession('s-gemini', 'Gemini Chat', 'general', now, now, false, 'gemini-cli'),
+      makeSession('s-codex', 'Codex Chat', 'general', now, now, false, 'codex-cli'),
+    ]
+
+    const model = searchModel('', folders, sessions, { providerIds: ['codex-cli'], statusIds: [] })
+
+    expect(model.isSearching).toBe(true)
+    expect(visibleSessionIds(model)).toEqual(['s-codex'])
+  })
+
+  it('filters by session state from runtime bindings', () => {
+    const folders = [makeFolder('general')]
+    const sessions = [
+      makeSession('s-pinned', 'Pinned', 'general', now, now, true),
+      makeSession('s-running', 'Running', 'general'),
+      makeSession('s-attention', 'Attention', 'general'),
+      makeSession('s-done', 'Done', 'general'),
+      makeSession('s-idle', 'Idle', 'general'),
+    ]
+
+    const context = {
+      acpBindingBySessionId: {
+        's-running': { running: true, processing: true, lifecycleState: 'processing' },
+        's-attention': { running: true, processing: false, lifecycleState: 'waitingPermission', attentionKind: 'permission' },
+        's-done': { running: true, processing: false, lifecycleState: 'ready', readySinceLastSelect: true },
+      },
+      cliBindingBySessionId: {},
+    }
+
+    expect(visibleSessionIds(searchModel('', folders, sessions, { providerIds: [], statusIds: ['pinned'] }, context))).toEqual(['s-pinned'])
+    expect(visibleSessionIds(searchModel('', folders, sessions, { providerIds: [], statusIds: ['running'] }, context))).toEqual(['s-running', 's-attention', 's-done'])
+    expect(visibleSessionIds(searchModel('', folders, sessions, { providerIds: [], statusIds: ['attention'] }, context))).toEqual(['s-attention'])
+    expect(visibleSessionIds(searchModel('', folders, sessions, { providerIds: [], statusIds: ['done'] }, context))).toEqual(['s-done'])
+    expect(visibleSessionIds(searchModel('', folders, sessions, { providerIds: [], statusIds: ['idle'] }, context))).toEqual(['s-idle'])
+  })
+
+  it('uses OR behavior between search text and active filters', () => {
+    const folders = [makeFolder('general')]
+    const sessions = [
+      makeSession('s-search', 'Needle Chat', 'general', now, now, false, 'gemini-cli'),
+      makeSession('s-provider', 'Other Chat', 'general', now, now, false, 'codex-cli'),
+      makeSession('s-miss', 'Plain Chat', 'general', now, now, false, 'gemini-cli'),
+    ]
+
+    const model = searchModel('needle', folders, sessions, { providerIds: ['codex-cli'], statusIds: [] })
+
+    expect(visibleSessionIds(model)).toEqual(['s-search', 's-provider'])
   })
 })

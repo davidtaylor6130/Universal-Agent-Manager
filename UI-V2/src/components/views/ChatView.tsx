@@ -57,10 +57,61 @@ const PLAN_APPROVE_PROMPT = 'Proceed with the plan.'
 const PLAN_DENY_PROMPT = 'Do not proceed with this plan. Please revise it before making changes.'
 
 type LocalAttachmentStatus = 'ready' | 'staging' | 'failed'
+type ComposerIconName = 'folder' | 'git-tree' | 'markdown' | 'plus' | 'send'
 
 interface LocalAttachment extends Attachment {
   status: LocalAttachmentStatus
   error?: string
+}
+
+function ComposerIcon({ name, size = 14 }: { name: ComposerIconName; size?: number }) {
+  if (name === 'markdown') {
+    return (
+      <span
+        aria-hidden="true"
+        className="font-semibold leading-none"
+        style={{ fontSize: 11, letterSpacing: 0 }}
+      >
+        .md
+      </span>
+    )
+  }
+
+  if (name === 'folder') {
+    return (
+      <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M2.5 4.2h4l1.1 1.4h5.9v6.2a1 1 0 0 1-1 1h-10a1 1 0 0 1-1-1V5.2a1 1 0 0 1 1-1Z" />
+      </svg>
+    )
+  }
+
+  if (name === 'git-tree') {
+    return (
+      <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <circle cx="4" cy="3.5" r="1.6" />
+        <circle cx="12" cy="8" r="1.6" />
+        <circle cx="4" cy="12.5" r="1.6" />
+        <path d="M4 5.1v5.8" />
+        <path d="M5.6 3.5h1.7A2.7 2.7 0 0 1 10 6.2V8h.4" />
+      </svg>
+    )
+  }
+
+  if (name === 'send') {
+    return (
+      <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M2.5 8 13 3.2 10.4 13 7.5 9.2 2.5 8Z" />
+        <path d="m7.5 9.2 2.2-2.4" />
+      </svg>
+    )
+  }
+
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+      <path d="M8 3.2v9.6" />
+      <path d="M3.2 8h9.6" />
+    </svg>
+  )
 }
 
 function filePathFromBrowserFile(file: File): string {
@@ -1747,10 +1798,10 @@ function ComposerToolbar({
   providers,
   providerId,
   providerName,
-  runtimeLabel,
   canSend,
   modelId,
   approvalModeId,
+  autoApproveCommands,
   memoryEnabled,
   canChangeProvider,
   providerOpen,
@@ -1777,10 +1828,10 @@ function ComposerToolbar({
   providers: Provider[]
   providerId: string
   providerName: string
-  runtimeLabel: string
   canSend: boolean
   modelId?: string
   approvalModeId?: string
+  autoApproveCommands: boolean
   memoryEnabled: boolean
   canChangeProvider: boolean
   providerOpen: boolean
@@ -1812,18 +1863,18 @@ function ComposerToolbar({
   )
   const planActive = approvalModeId === 'plan'
   const acceptEditsActive = approvalModeId === 'acceptEdits'
-  const yoloActive = approvalModeId === 'yolo'
+  const yoloActive = autoApproveCommands
   const claudeProvider = isClaudeProvider(provider, providerId)
   const hasRuntimeModes = Boolean(acp?.running && acp.availableModes.length > 0)
   const planAvailable = !hasRuntimeModes || acp?.availableModes.some((mode) => mode.id === 'plan')
   const acceptEditsAvailable = claudeProvider && (!hasRuntimeModes || acp?.availableModes.some((mode) => mode.id === 'acceptEdits'))
-  const yoloAvailable = !hasRuntimeModes || acp?.availableModes.some((mode) => mode.id === 'yolo')
+  const yoloAvailable = true
   const planDisabled = Boolean(modelDisabled || !planAvailable)
   const acceptEditsDisabled = Boolean(modelDisabled || !acceptEditsAvailable)
-  const yoloDisabled = Boolean(modelDisabled || !yoloAvailable)
+  const yoloDisabled = false
   const memoryDisabled = Boolean(modelDisabled)
   const autoLabel = claudeProvider ? 'Auto' : 'Yolo'
-  const modeLabel = yoloActive ? autoLabel : planActive ? 'Plan' : acceptEditsActive ? 'Accept Edits' : 'Default'
+  const modeLabel = planActive ? 'Plan' : acceptEditsActive ? 'Accept Edits' : 'Default'
   const running = Boolean(acp?.processing)
   const chipStyle = {
     height: 26,
@@ -1831,6 +1882,11 @@ function ComposerToolbar({
     border: '1px solid var(--border)',
     background: 'color-mix(in srgb, var(--surface) 72%, var(--bg))',
     color: 'var(--text-2)',
+  }
+  const iconChipStyle = {
+    ...chipStyle,
+    width: 30,
+    justifyContent: 'center',
   }
 
   return (
@@ -2038,29 +2094,19 @@ function ComposerToolbar({
         type="button"
         title="Attach files"
         onClick={onAttachFile}
-        className="inline-flex items-center gap-1.5 px-2"
-        style={chipStyle}
+        className="inline-flex items-center"
+        style={iconChipStyle}
       >
-        <span style={{ color: 'var(--text-3)', fontSize: 10 }}>●</span>
-        <span>Attach</span>
+        <ComposerIcon name="plus" />
       </button>
       <button
         type="button"
         title="Open Markdown Store"
         onClick={onOpenMarkdownStore}
-        className="inline-flex items-center gap-1.5 px-2"
-        style={chipStyle}
+        className="inline-flex items-center"
+        style={iconChipStyle}
       >
-        <span style={{ color: 'var(--text-3)', fontSize: 10 }}>●</span>
-        <span>Store</span>
-      </button>
-      <button type="button" title="Runtime" className="inline-flex items-center gap-1.5 px-2" style={chipStyle}>
-        <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>
-        <span>{runtimeLabel}</span>
-      </button>
-      <button type="button" title="Usage" className="inline-flex items-center gap-1.5 px-2" style={chipStyle}>
-        <span>Usage</span>
-        <span style={{ color: 'var(--text-3)' }}>--</span>
+        <ComposerIcon name="markdown" />
       </button>
       <div className="ml-auto flex items-center gap-2">
         <div ref={settingsMenuRef} className="relative">
@@ -2098,10 +2144,6 @@ function ComposerToolbar({
                   <span>{providerName}</span>
                 </div>
                 <div className="flex justify-between gap-3">
-                  <span style={{ color: 'var(--text-3)' }}>Runtime</span>
-                  <span>{runtimeLabel}</span>
-                </div>
-                <div className="flex justify-between gap-3">
                   <span style={{ color: 'var(--text-3)' }}>Model</span>
                   <span>{currentModel.label}</span>
                 </div>
@@ -2113,10 +2155,6 @@ function ComposerToolbar({
                   <span style={{ color: 'var(--text-3)' }}>Memory</span>
                   <span>{memoryEnabled ? 'On' : 'Off'}</span>
                 </div>
-                <div className="flex justify-between gap-3">
-                  <span style={{ color: 'var(--text-3)' }}>Usage</span>
-                  <span>Unavailable</span>
-                </div>
               </div>
             </div>
           )}
@@ -2126,7 +2164,7 @@ function ComposerToolbar({
           title={running ? 'Stop runtime' : 'Send prompt'}
           disabled={!running && !canSend}
           onClick={running ? onStopRuntime : undefined}
-          className="h-[30px] px-4 text-xs font-semibold inline-flex items-center gap-2"
+          className="h-[30px] w-[34px] text-xs font-semibold inline-flex items-center justify-center"
           style={{
             borderRadius: 7,
             border: running
@@ -2140,12 +2178,8 @@ function ComposerToolbar({
           {running ? (
             <span aria-hidden="true" style={{ width: 9, height: 9, borderRadius: 2, background: 'currentColor' }} />
           ) : (
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M3 8h8" />
-              <path d="m8 5 3 3-3 3" />
-            </svg>
+            <ComposerIcon name="send" size={15} />
           )}
-          <span>{running ? 'Stop' : 'Send'}</span>
         </button>
       </div>
     </div>
@@ -2161,6 +2195,8 @@ export function ChatView({ session }: ChatViewProps) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [claudePlanPrompt, setClaudePlanPrompt] = useState<string | null>(null)
   const [openWorkspaceError, setOpenWorkspaceError] = useState('')
+  const [workspaceActionMessage, setWorkspaceActionMessage] = useState('')
+  const [workspaceActionBusy, setWorkspaceActionBusy] = useState(false)
   const [composerAttachments, setComposerAttachments] = useState<LocalAttachment[]>([])
   const [attachmentError, setAttachmentError] = useState('')
   const messages = useAppStore(useShallow((s) => s.messages[session.id] ?? []))
@@ -2178,8 +2214,12 @@ export function ChatView({ session }: ChatViewProps) {
   const setSessionProvider = useAppStore((s) => s.setSessionProvider)
   const setSessionModel = useAppStore((s) => s.setSessionModel)
   const setSessionApprovalMode = useAppStore((s) => s.setSessionApprovalMode)
+  const setSessionAutoApproveCommands = useAppStore((s) => s.setSessionAutoApproveCommands)
   const setSessionMemoryEnabled = useAppStore((s) => s.setSessionMemoryEnabled)
   const openSessionWorkspace = useAppStore((s) => s.openSessionWorkspace)
+  const createChatWorktree = useAppStore((s) => s.createChatWorktree)
+  const discardChatWorktreeChanges = useAppStore((s) => s.discardChatWorktreeChanges)
+  const portChatWorktreeChanges = useAppStore((s) => s.portChatWorktreeChanges)
   const openMarkdownStore = useAppStore((s) => s.openMarkdownStore)
   const markdownStoreAttachments = useAppStore(useShallow((s) => s.markdownStoreAttachedBySessionId[session.id] ?? []))
   const detachMarkdownStoreEntry = useAppStore((s) => s.detachMarkdownStoreEntry)
@@ -2437,12 +2477,33 @@ export function ChatView({ session }: ChatViewProps) {
   const pendingPermission = acp?.pendingPermission
   const pendingUserInput = acp?.pendingUserInput
   const workspaceDirectory = session.workspaceDirectory?.trim() || folderDirectory.trim()
+  const isGitWorktree = session.workspaceIsolationKind === 'gitWorktree'
+  const sourceWorkspaceDirectory = session.workspaceSourceDirectory?.trim() || (!isGitWorktree ? workspaceDirectory : '')
+  const workspaceActionsDisabled = workspaceActionBusy || Boolean(acp?.running || acp?.processing)
   const openWorkspace = async () => {
     if (!workspaceDirectory) return
     setOpenWorkspaceError('')
     const ok = await openSessionWorkspace(session.id)
     if (!ok) {
       setOpenWorkspaceError('Failed to open workspace directory.')
+    }
+  }
+  const runWorkspaceAction = async (action: 'create' | 'discard' | 'port') => {
+    if (workspaceActionsDisabled) return
+    setOpenWorkspaceError('')
+    setWorkspaceActionMessage('')
+    setWorkspaceActionBusy(true)
+    const result =
+      action === 'create'
+        ? await createChatWorktree(session.id)
+        : action === 'discard'
+          ? await discardChatWorktreeChanges(session.id)
+          : await portChatWorktreeChanges(session.id)
+    setWorkspaceActionBusy(false)
+    if (result.ok) {
+      setWorkspaceActionMessage(result.message || (action === 'port' ? 'Applied chat changes to the source workspace.' : 'Workspace action complete.'))
+    } else {
+      setOpenWorkspaceError(result.message || 'Workspace action failed.')
     }
   }
   const currentProviderId = session.providerId || acp?.providerId || 'gemini-cli'
@@ -2668,15 +2729,30 @@ export function ChatView({ session }: ChatViewProps) {
             background: 'var(--surface)',
           }}
         >
-          <div className="p-3">
-            <div
-              className="mb-2 flex items-center gap-2 text-[11px]"
-              style={{ color: 'var(--text-3)', minWidth: 0 }}
-              title={workspaceDirectory || 'No workspace directory selected'}
-            >
-              <span style={{ color: 'var(--text-2)', flexShrink: 0 }}>Workspace</span>
-              <span
-                className="min-w-0 flex-1 truncate"
+	          <div className="p-3">
+	            <div
+	              className="mb-2 flex flex-wrap items-center gap-2 text-[11px]"
+	              style={{ color: 'var(--text-3)', minWidth: 0 }}
+	              title={workspaceDirectory || 'No workspace directory selected'}
+	            >
+	              <span style={{ color: 'var(--text-2)', flexShrink: 0 }}>Workspace</span>
+	              {isGitWorktree && (
+	                <span
+	                  style={{
+	                    border: '1px solid color-mix(in srgb, var(--green) 42%, var(--border))',
+	                    borderRadius: 6,
+	                    background: 'color-mix(in srgb, var(--green) 10%, var(--surface))',
+	                    color: 'var(--text-2)',
+	                    padding: '3px 7px',
+	                    flexShrink: 0,
+	                  }}
+	                  title={sourceWorkspaceDirectory ? `Source: ${sourceWorkspaceDirectory}` : 'Isolated Git worktree'}
+	                >
+	                  Git worktree
+	                </span>
+	              )}
+	              <span
+	                className="min-w-0 flex-1 truncate"
                 style={{
                   border: '1px solid var(--border)',
                   borderRadius: 6,
@@ -2685,14 +2761,14 @@ export function ChatView({ session }: ChatViewProps) {
                   padding: '3px 7px',
                   minWidth: 0,
                 }}
-              >
-                {workspaceDirectory || 'No workspace directory selected'}
-              </span>
-              <button
-                type="button"
+	              >
+	                {workspaceDirectory || 'No workspace directory selected'}
+	              </span>
+	              <button
+	                type="button"
                 disabled={!workspaceDirectory}
                 onClick={() => void openWorkspace()}
-                className="h-[24px] flex-shrink-0 px-2 text-[11px] font-medium"
+                className="h-[24px] w-[28px] inline-flex flex-shrink-0 items-center justify-center text-[11px] font-medium"
                 title="Open workspace in Finder or File Explorer"
                 style={{
                   border: '1px solid var(--border)',
@@ -2701,11 +2777,89 @@ export function ChatView({ session }: ChatViewProps) {
                   color: workspaceDirectory ? 'var(--text-2)' : 'var(--text-3)',
                   opacity: workspaceDirectory ? 1 : 0.55,
                 }}
-              >
-                Change
-              </button>
-            </div>
-            {openWorkspaceError && (
+	              >
+	                <ComposerIcon name="folder" size={13} />
+	              </button>
+	              {!isGitWorktree && (
+	                <button
+	                  type="button"
+	                  disabled={!workspaceDirectory || workspaceActionsDisabled}
+	                  onClick={() => void runWorkspaceAction('create')}
+	                  className="h-[24px] w-[28px] inline-flex flex-shrink-0 items-center justify-center text-[11px] font-medium"
+	                  title={workspaceActionsDisabled ? 'Stop the runtime before changing workspace isolation' : 'Create an isolated Git worktree for this chat'}
+	                  style={{
+	                    border: '1px solid var(--border)',
+	                    borderRadius: 6,
+	                    background: workspaceDirectory && !workspaceActionsDisabled ? 'var(--surface-up)' : 'var(--bg)',
+	                    color: workspaceDirectory && !workspaceActionsDisabled ? 'var(--text-2)' : 'var(--text-3)',
+	                    opacity: workspaceDirectory && !workspaceActionsDisabled ? 1 : 0.55,
+	                  }}
+	                >
+	                  <ComposerIcon name="git-tree" size={13} />
+	                </button>
+	              )}
+	              {isGitWorktree && (
+	                <>
+	                  <button
+	                    type="button"
+	                    disabled={workspaceActionsDisabled}
+	                    onClick={() => void runWorkspaceAction('discard')}
+	                    className="h-[24px] flex-shrink-0 px-2 text-[11px] font-medium"
+	                    title={workspaceActionsDisabled ? 'Stop the runtime before discarding worktree changes' : 'Discard changes in this chat worktree'}
+	                    style={{
+	                      border: '1px solid var(--border)',
+	                      borderRadius: 6,
+	                      background: workspaceActionsDisabled ? 'var(--bg)' : 'var(--surface-up)',
+	                      color: workspaceActionsDisabled ? 'var(--text-3)' : 'var(--text-2)',
+	                      opacity: workspaceActionsDisabled ? 0.55 : 1,
+	                    }}
+	                  >
+	                    Discard
+	                  </button>
+	                  <button
+	                    type="button"
+	                    disabled={workspaceActionsDisabled}
+	                    onClick={() => void runWorkspaceAction('port')}
+	                    className="h-[24px] flex-shrink-0 px-2 text-[11px] font-medium"
+	                    title={workspaceActionsDisabled ? 'Stop the runtime before porting worktree changes' : 'Apply this chat worktree diff to the source workspace'}
+	                    style={{
+	                      border: '1px solid color-mix(in srgb, var(--accent) 42%, var(--border))',
+	                      borderRadius: 6,
+	                      background: workspaceActionsDisabled ? 'var(--bg)' : 'color-mix(in srgb, var(--accent) 12%, var(--surface))',
+	                      color: workspaceActionsDisabled ? 'var(--text-3)' : 'var(--text)',
+	                      opacity: workspaceActionsDisabled ? 0.55 : 1,
+	                    }}
+	                  >
+	                    Port back
+	                  </button>
+	                </>
+	              )}
+	            </div>
+	            {isGitWorktree && sourceWorkspaceDirectory && (
+	              <div
+	                className="mb-2 truncate text-[11px]"
+	                style={{ color: 'var(--text-3)' }}
+	                title={sourceWorkspaceDirectory}
+	              >
+	                Source {sourceWorkspaceDirectory}
+	              </div>
+	            )}
+	            {workspaceActionMessage && (
+	              <div
+	                className="mb-2 text-xs"
+	                style={{
+	                  border: '1px solid color-mix(in srgb, var(--green) 38%, var(--border))',
+	                  borderRadius: 6,
+	                  padding: '8px 10px',
+	                  background: 'color-mix(in srgb, var(--green) 8%, var(--surface))',
+	                  color: 'var(--text)',
+	                  overflowWrap: 'anywhere',
+	                }}
+	              >
+	                {workspaceActionMessage}
+	              </div>
+	            )}
+	            {openWorkspaceError && (
               <div
                 className="mb-2 text-xs"
                 style={{
@@ -2927,10 +3081,10 @@ export function ChatView({ session }: ChatViewProps) {
               providers={providers}
               providerId={currentProviderId}
               providerName={currentProviderName}
-              runtimeLabel={currentRuntimeLabel}
               canSend={canSend}
               modelId={currentModelId}
               approvalModeId={currentModeId}
+              autoApproveCommands={session.autoApproveCommands ?? false}
               memoryEnabled={session.memoryEnabled ?? true}
               canChangeProvider={canChangeProvider}
               providerOpen={providerOpen}
@@ -2973,8 +3127,7 @@ export function ChatView({ session }: ChatViewProps) {
                 void setSessionApprovalMode(session.id, nextMode)
               }}
               onToggleYolo={() => {
-                const nextMode = currentModeId === 'yolo' ? 'default' : 'yolo'
-                void setSessionApprovalMode(session.id, nextMode)
+                void setSessionAutoApproveCommands(session.id, !(session.autoApproveCommands ?? false))
               }}
               onToggleMemory={() => {
                 void setSessionMemoryEnabled(session.id, !(session.memoryEnabled ?? true))

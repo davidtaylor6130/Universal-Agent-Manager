@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { FolderTree } from '../sidebar/FolderTree'
 import { ChatSearchBar } from '../sidebar/ChatSearchBar'
 import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF } from '../../ipc/cefBridge'
+import type { ChatSearchFilters, ChatStatusFilterId } from '../sidebar/chatSearch'
 
 interface SearchChatMessagesResponse {
   chatIds?: string[]
@@ -12,8 +13,40 @@ export function Sidebar() {
   const [searchQuery, setSearchQuery] = useState('')
   const [deepSearch, setDeepSearch] = useState(false)
   const [deepSearchSessionIds, setDeepSearchSessionIds] = useState<string[] | undefined>(undefined)
+  const [filters, setFilters] = useState<ChatSearchFilters>({ providerIds: [], statusIds: [] })
   const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
+  const sessions = useAppStore((s) => s.sessions)
+  const providers = useAppStore((s) => s.providers)
   const clearSearch = useCallback(() => setSearchQuery(''), [])
+  const providerOptions = useMemo(() => {
+    const labels = new Map(providers.map((provider) => [provider.id, provider.shortName || provider.name || provider.id]))
+    for (const session of sessions) {
+      const providerId = session.providerId || 'gemini-cli'
+      if (!labels.has(providerId)) {
+        labels.set(providerId, providerId)
+      }
+    }
+    return Array.from(labels.entries())
+      .map(([id, label]) => ({ id, label }))
+      .sort((a, b) => a.label.localeCompare(b.label))
+  }, [providers, sessions])
+  const toggleProviderFilter = useCallback((providerId: string) => {
+    setFilters((current) => ({
+      ...current,
+      providerIds: current.providerIds.includes(providerId)
+        ? current.providerIds.filter((id) => id !== providerId)
+        : [...current.providerIds, providerId],
+    }))
+  }, [])
+  const toggleStatusFilter = useCallback((statusId: ChatStatusFilterId) => {
+    setFilters((current) => ({
+      ...current,
+      statusIds: current.statusIds.includes(statusId)
+        ? current.statusIds.filter((id) => id !== statusId)
+        : [...current.statusIds, statusId],
+    }))
+  }, [])
+  const clearFilters = useCallback(() => setFilters({ providerIds: [], statusIds: [] }), [])
 
   useEffect(() => {
     const query = searchQuery.trim()
@@ -44,15 +77,20 @@ export function Sidebar() {
       <ChatSearchBar
         value={searchQuery}
         deepSearch={deepSearch}
+        filters={filters}
+        providerOptions={providerOptions}
         onChange={setSearchQuery}
         onClear={clearSearch}
         onToggleDeepSearch={() => setDeepSearch((enabled) => !enabled)}
+        onToggleProviderFilter={toggleProviderFilter}
+        onToggleStatusFilter={toggleStatusFilter}
+        onClearFilters={clearFilters}
       />
       <div
         className="flex-1 overflow-y-auto overflow-x-hidden py-2"
         style={{ borderTop: '1px solid var(--border)' }}
       >
-        <FolderTree searchQuery={searchQuery} deepSearchSessionIds={deepSearch ? deepSearchSessionIds : undefined} />
+        <FolderTree searchQuery={searchQuery} deepSearchSessionIds={deepSearch ? deepSearchSessionIds : undefined} filters={filters} />
       </div>
       <div
         className="flex-shrink-0 p-3"

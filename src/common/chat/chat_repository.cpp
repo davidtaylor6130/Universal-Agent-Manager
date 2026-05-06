@@ -551,10 +551,16 @@ namespace
 		       lhs.created_at == rhs.created_at &&
 		       lhs.updated_at == rhs.updated_at &&
 		       lhs.last_opened_at == rhs.last_opened_at &&
-		       lhs.pinned == rhs.pinned &&
-		       lhs.linked_files == rhs.linked_files &&
-		       lhs.workspace_directory == rhs.workspace_directory &&
-		       lhs.approval_mode == rhs.approval_mode &&
+			       lhs.pinned == rhs.pinned &&
+			       lhs.linked_files == rhs.linked_files &&
+			       lhs.workspace_directory == rhs.workspace_directory &&
+			       lhs.workspace_isolation_kind == rhs.workspace_isolation_kind &&
+			       lhs.workspace_source_directory == rhs.workspace_source_directory &&
+			       lhs.workspace_base_ref == rhs.workspace_base_ref &&
+			       lhs.workspace_branch_name == rhs.workspace_branch_name &&
+			       lhs.workspace_worktree_directory == rhs.workspace_worktree_directory &&
+			       lhs.approval_mode == rhs.approval_mode &&
+		       lhs.auto_approve_commands == rhs.auto_approve_commands &&
 		       lhs.model_id == rhs.model_id &&
 		       lhs.extra_flags == rhs.extra_flags &&
 		       MessagesEquivalentForRecovery(lhs.messages, rhs.messages);
@@ -600,10 +606,21 @@ namespace
 		chat.updated_at = JsonStringOrEmpty(root.Find("updated_at"));
 		chat.last_opened_at = JsonStringOrEmpty(root.Find("last_opened_at"));
 		chat.pinned = JsonBoolOrDefault(root.Find("pinned"), false);
-		if (const JsonValue* linked_files = root.Find("linked_files"))
-			chat.linked_files = JsonStringArrayOrEmpty(linked_files);
-		chat.workspace_directory = JsonStringOrEmpty(root.Find("workspace_directory"));
-		chat.approval_mode = JsonStringOrEmpty(root.Find("approval_mode"));
+			if (const JsonValue* linked_files = root.Find("linked_files"))
+				chat.linked_files = JsonStringArrayOrEmpty(linked_files);
+			chat.workspace_directory = JsonStringOrEmpty(root.Find("workspace_directory"));
+			chat.workspace_isolation_kind = JsonStringOrEmpty(root.Find("workspace_isolation_kind"));
+			chat.workspace_source_directory = JsonStringOrEmpty(root.Find("workspace_source_directory"));
+			chat.workspace_base_ref = JsonStringOrEmpty(root.Find("workspace_base_ref"));
+			chat.workspace_branch_name = JsonStringOrEmpty(root.Find("workspace_branch_name"));
+			chat.workspace_worktree_directory = JsonStringOrEmpty(root.Find("workspace_worktree_directory"));
+			chat.approval_mode = JsonStringOrEmpty(root.Find("approval_mode"));
+		chat.auto_approve_commands = JsonBoolOrDefault(root.Find("auto_approve_commands"), false);
+		if (chat.approval_mode == "yolo")
+		{
+			chat.approval_mode = "default";
+			chat.auto_approve_commands = true;
+		}
 		chat.model_id = JsonStringOrEmpty(root.Find("model_id"));
 		chat.extra_flags = JsonStringOrEmpty(root.Find("extra_flags"));
 		chat.memory_enabled = JsonBoolOrDefault(root.Find("memory_enabled"), true);
@@ -708,11 +725,29 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 
 	root.object_value["linked_files"] = StringArrayToJson(chat.linked_files);
 
-	root.object_value["workspace_directory"].type = JsonValue::Type::String;
-	root.object_value["workspace_directory"].string_value = chat.workspace_directory;
+		root.object_value["workspace_directory"].type = JsonValue::Type::String;
+		root.object_value["workspace_directory"].string_value = chat.workspace_directory;
 
-	root.object_value["approval_mode"].type = JsonValue::Type::String;
+		root.object_value["workspace_isolation_kind"].type = JsonValue::Type::String;
+		root.object_value["workspace_isolation_kind"].string_value = chat.workspace_isolation_kind;
+
+		root.object_value["workspace_source_directory"].type = JsonValue::Type::String;
+		root.object_value["workspace_source_directory"].string_value = chat.workspace_source_directory;
+
+		root.object_value["workspace_base_ref"].type = JsonValue::Type::String;
+		root.object_value["workspace_base_ref"].string_value = chat.workspace_base_ref;
+
+		root.object_value["workspace_branch_name"].type = JsonValue::Type::String;
+		root.object_value["workspace_branch_name"].string_value = chat.workspace_branch_name;
+
+		root.object_value["workspace_worktree_directory"].type = JsonValue::Type::String;
+		root.object_value["workspace_worktree_directory"].string_value = chat.workspace_worktree_directory;
+
+		root.object_value["approval_mode"].type = JsonValue::Type::String;
 	root.object_value["approval_mode"].string_value = chat.approval_mode;
+
+	root.object_value["auto_approve_commands"].type = JsonValue::Type::Bool;
+	root.object_value["auto_approve_commands"].bool_value = chat.auto_approve_commands;
 
 	root.object_value["model_id"].type = JsonValue::Type::String;
 	root.object_value["model_id"].string_value = chat.model_id;
@@ -1061,7 +1096,13 @@ bool ChatRepository::HydrateChatMessages(const std::filesystem::path& data_root,
 	hydrated.title = chat.title;
 	hydrated.pinned = chat.pinned;
 	hydrated.workspace_directory = chat.workspace_directory;
+	hydrated.workspace_isolation_kind = chat.workspace_isolation_kind;
+	hydrated.workspace_source_directory = chat.workspace_source_directory;
+	hydrated.workspace_base_ref = chat.workspace_base_ref;
+	hydrated.workspace_branch_name = chat.workspace_branch_name;
+	hydrated.workspace_worktree_directory = chat.workspace_worktree_directory;
 	hydrated.approval_mode = chat.approval_mode;
+	hydrated.auto_approve_commands = chat.auto_approve_commands;
 	hydrated.model_id = chat.model_id;
 	hydrated.extra_flags = chat.extra_flags;
 	hydrated.memory_enabled = chat.memory_enabled;

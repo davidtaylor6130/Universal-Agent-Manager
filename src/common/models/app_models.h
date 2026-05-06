@@ -105,8 +105,14 @@ struct ChatSession
 	bool messages_loaded = true;
 	std::size_t persisted_message_count = 0;
 	std::string persisted_messages_digest;
-	std::string workspace_directory;
-	std::string approval_mode;
+		std::string workspace_directory;
+		std::string workspace_isolation_kind;
+		std::string workspace_source_directory;
+		std::string workspace_base_ref;
+		std::string workspace_branch_name;
+		std::string workspace_worktree_directory;
+		std::string approval_mode;
+	bool auto_approve_commands = false;
 	std::string model_id;
 	std::string extra_flags;
 	bool memory_enabled = true;

@@ -3,6 +3,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { SessionItem } from './SessionItem'
 import {
+  type ChatSearchFilters,
   buildChatSearchIndex,
   buildChatSearchModelFromGroups,
   buildChatSearchSessionGroups,
@@ -13,14 +14,17 @@ import type { Folder } from '../../types/session'
 interface FolderTreeProps {
   searchQuery: string
   deepSearchSessionIds?: string[]
+  filters?: ChatSearchFilters
 }
 
 const VISIBLE_SESSION_LIMIT = 5
 const EMPTY_SEARCH_INDEX = {}
 
-export function FolderTree({ searchQuery, deepSearchSessionIds }: FolderTreeProps) {
+export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: FolderTreeProps) {
   const folders  = useAppStore(useShallow((s) => s.folders))
   const sessions = useAppStore(useShallow((s) => s.sessions))
+  const cliBindingBySessionId = useAppStore(useShallow((s) => s.cliBindingBySessionId))
+  const acpBindingBySessionId = useAppStore(useShallow((s) => s.acpBindingBySessionId))
   const toggleFolder        = useAppStore((s) => s.toggleFolder)
   const addFolder           = useAppStore((s) => s.addFolder)
   const renameFolder        = useAppStore((s) => s.renameFolder)
@@ -50,8 +54,15 @@ export function FolderTree({ searchQuery, deepSearchSessionIds }: FolderTreeProp
     [deepSearchSessionIds]
   )
   const searchGroups = useMemo(
-    () => buildChatSearchSessionGroups(sessions, searchIndex, searchTokens, deepSearchSet),
-    [sessions, searchIndex, searchTokens, deepSearchSet]
+    () => buildChatSearchSessionGroups(
+      sessions,
+      searchIndex,
+      searchTokens,
+      deepSearchSet,
+      filters,
+      { cliBindingBySessionId, acpBindingBySessionId }
+    ),
+    [sessions, searchIndex, searchTokens, deepSearchSet, filters, cliBindingBySessionId, acpBindingBySessionId]
   )
   const searchModel = useMemo(
     () => buildChatSearchModelFromGroups(folders, searchGroups),

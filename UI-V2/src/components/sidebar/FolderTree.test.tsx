@@ -114,6 +114,40 @@ describe('FolderTree', () => {
     host.remove()
   })
 
+  it('selects a chat row after filters change the rendered group', () => {
+    useAppStore.setState((state) => ({
+      activeSessionId: 'chat-1',
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-6' ? { ...session, providerId: 'codex-cli' } : session
+      ),
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<FolderTree searchQuery="" filters={{ providerIds: ['codex-cli'], statusIds: [] }} />)
+    })
+
+    expect(host.textContent).toContain('Chat 6')
+    expect(host.textContent).not.toContain('Chat 1')
+
+    const chatTitle = Array.from(host.querySelectorAll('span')).find((span) => span.textContent === 'Chat 6')
+    expect(chatTitle).toBeTruthy()
+
+    act(() => {
+      chatTitle?.parentElement?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(useAppStore.getState().activeSessionId).toBe('chat-6')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
   it('renders pinned chats above folders and pin clicks do not select chats', () => {
     useAppStore.setState((state) => ({
       activeSessionId: 'chat-3',

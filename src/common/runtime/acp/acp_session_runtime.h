@@ -19,6 +19,7 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 bool StopAcpSession(AppState& app, const std::string& chat_id);
 bool SetAcpSessionMode(AppState& app, const std::string& chat_id, const std::string& mode_id, std::string* error_out = nullptr);
 bool SetAcpSessionModel(AppState& app, const std::string& chat_id, const std::string& model_id, std::string* error_out = nullptr);
+bool TryAutoApprovePendingAcpPermission(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);
 bool ResolveAcpPermission(AppState& app,
                           const std::string& chat_id,
                           const std::string& request_id_json,

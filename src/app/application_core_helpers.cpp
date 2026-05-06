@@ -98,7 +98,12 @@ fs::path ResolveWorkspaceRootPath(const AppState& app, const ChatSession& chat)
 {
 	fs::path workspace_root;
 
-	if (!Trim(chat.workspace_directory).empty())
+	if (Trim(chat.workspace_isolation_kind) == "gitWorktree" && !Trim(chat.workspace_worktree_directory).empty())
+	{
+		workspace_root = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(chat.workspace_worktree_directory);
+	}
+
+	if (workspace_root.empty() && !Trim(chat.workspace_directory).empty())
 	{
 		workspace_root = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(chat.workspace_directory);
 	}

@@ -1,6 +1,33 @@
 import type { Folder, Session } from '../../types/session'
 
 export type ChatSearchIndex = Record<string, string>
+export type ChatStatusFilterId = 'pinned' | 'running' | 'attention' | 'done' | 'idle'
+
+export interface ChatSearchFilters {
+  providerIds: string[]
+  statusIds: ChatStatusFilterId[]
+}
+
+interface ChatSearchCliBinding {
+  running?: boolean
+  processing?: boolean
+  lifecycleState?: string
+  readySinceLastSelect?: boolean
+}
+
+interface ChatSearchAcpBinding {
+  running?: boolean
+  processing?: boolean
+  lifecycleState?: string
+  readySinceLastSelect?: boolean
+  attentionKind?: string | null
+  lastError?: string
+}
+
+export interface ChatSearchFilterContext {
+  cliBindingBySessionId?: Record<string, ChatSearchCliBinding>
+  acpBindingBySessionId?: Record<string, ChatSearchAcpBinding>
+}
 
 export interface ChatSearchFolderRow {
   folder: Folder
@@ -21,6 +48,10 @@ export interface ChatSearchSessionGroups {
   sessionIdsByFolderId: Map<string, string[]>
   pinnedSessionIds: string[]
   unfolderedSessionIds: string[]
+}
+
+function hasActiveChatSearchFilters(filters?: ChatSearchFilters): boolean {
+  return Boolean(filters && (filters.providerIds.length > 0 || filters.statusIds.length > 0))
 }
 
 function normalizeSearchText(value: string): string {
@@ -57,6 +88,80 @@ export function sessionMatchesChatSearch(
   return searchTokens.every((token) => indexedText.includes(token))
 }
 
+function sessionHasAttention(acpBinding: ChatSearchAcpBinding | undefined): boolean {
+  return Boolean(
+    acpBinding?.attentionKind ||
+    acpBinding?.lifecycleState === 'waitingPermission' ||
+    acpBinding?.lifecycleState === 'waitingUserInput' ||
+    acpBinding?.lifecycleState === 'error' ||
+    acpBinding?.lastError
+  )
+}
+
+function sessionIsRunning(cliBinding: ChatSearchCliBinding | undefined, acpBinding: ChatSearchAcpBinding | undefined): boolean {
+  return Boolean(
+    cliBinding?.running ||
+    cliBinding?.processing ||
+    cliBinding?.lifecycleState === 'busy' ||
+    cliBinding?.lifecycleState === 'shuttingDown' ||
+    acpBinding?.running ||
+    acpBinding?.processing ||
+    acpBinding?.lifecycleState === 'starting' ||
+    acpBinding?.lifecycleState === 'processing'
+  )
+}
+
+function sessionIsDone(cliBinding: ChatSearchCliBinding | undefined, acpBinding: ChatSearchAcpBinding | undefined): boolean {
+  return Boolean(cliBinding?.readySinceLastSelect || acpBinding?.readySinceLastSelect)
+}
+
+function sessionMatchesStatusFilter(
+  session: Session,
+  statusId: ChatStatusFilterId,
+  context: ChatSearchFilterContext
+): boolean {
+  const cliBinding = context.cliBindingBySessionId?.[session.id]
+  const acpBinding = context.acpBindingBySessionId?.[session.id]
+  const hasAttention = sessionHasAttention(acpBinding)
+  const isRunning = sessionIsRunning(cliBinding, acpBinding)
+  const isDone = sessionIsDone(cliBinding, acpBinding)
+
+  if (statusId === 'pinned') {
+    return Boolean(session.isPinned)
+  }
+
+  if (statusId === 'running') {
+    return isRunning
+  }
+
+  if (statusId === 'attention') {
+    return hasAttention
+  }
+
+  if (statusId === 'done') {
+    return isDone
+  }
+
+  return !session.isPinned && !hasAttention && !isRunning && !isDone
+}
+
+export function sessionMatchesChatSearchFilters(
+  session: Session,
+  filters: ChatSearchFilters | undefined,
+  context: ChatSearchFilterContext = {}
+): boolean {
+  if (!hasActiveChatSearchFilters(filters)) {
+    return false
+  }
+
+  const providerMatch =
+    filters?.providerIds.some((providerId) => (session.providerId || 'gemini-cli') === providerId) ?? false
+  const statusMatch =
+    filters?.statusIds.some((statusId) => sessionMatchesStatusFilter(session, statusId, context)) ?? false
+
+  return providerMatch || statusMatch
+}
+
 function sessionRecentTime(session: Session): number {
   const lastOpenedAt = session.lastOpenedAt?.getTime()
   if (typeof lastOpenedAt === 'number' && Number.isFinite(lastOpenedAt)) {
@@ -90,13 +195,25 @@ export function buildChatSearchSessionGroups(
   sessions: Session[],
   searchIndex: ChatSearchIndex,
   searchTokens: string[],
-  deepSearchSessionIds?: Set<string>
+  deepSearchSessionIds?: Set<string>,
+  filters?: ChatSearchFilters,
+  filterContext: ChatSearchFilterContext = {}
 ): ChatSearchSessionGroups {
-  const isSearching = searchTokens.length > 0
+  const isTextSearching = searchTokens.length > 0
+  const isFiltering = hasActiveChatSearchFilters(filters)
+  const isSearching = isTextSearching || isFiltering
   const sortedSessions = [...sessions].sort(compareSessionsByRecent)
   const matchingSessionIds = new Set(
     sortedSessions
-      .filter((session) => deepSearchSessionIds ? deepSearchSessionIds.has(session.id) : sessionMatchesChatSearch(searchIndex[session.id], searchTokens))
+      .filter((session) => {
+        const searchMatch = isTextSearching
+          ? deepSearchSessionIds
+            ? deepSearchSessionIds.has(session.id)
+            : sessionMatchesChatSearch(searchIndex[session.id], searchTokens)
+          : false
+        const filterMatch = sessionMatchesChatSearchFilters(session, filters, filterContext)
+        return isSearching ? searchMatch || filterMatch : true
+      })
       .map((session) => session.id)
   )
 
@@ -175,10 +292,12 @@ export function buildChatSearchModel(
   sessions: Session[],
   searchIndex: ChatSearchIndex,
   searchTokens: string[],
-  deepSearchSessionIds?: Set<string>
+  deepSearchSessionIds?: Set<string>,
+  filters?: ChatSearchFilters,
+  filterContext: ChatSearchFilterContext = {}
 ): ChatSearchModel {
   return buildChatSearchModelFromGroups(
     folders,
-    buildChatSearchSessionGroups(sessions, searchIndex, searchTokens, deepSearchSessionIds)
+    buildChatSearchSessionGroups(sessions, searchIndex, searchTokens, deepSearchSessionIds, filters, filterContext)
   )
 }
