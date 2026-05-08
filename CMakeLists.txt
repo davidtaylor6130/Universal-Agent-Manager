@@ -244,7 +244,9 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/provider_resolution_service.cpp
   src/app/provider_profile_migration_service.cpp
   src/app/runtime_orchestration_services.cpp
+  src/app/vcs_commit_service.cpp
   src/cef/uam_cef_app.cpp
+  src/cef/uam_cef_command_line_config.cpp
   src/cef/uam_cef_client.cpp
   src/cef/uam_bridge_request.cpp
   src/cef/uam_query_handler.cpp
@@ -677,6 +679,8 @@ if(UAM_BUILD_TESTS)
     src/app/provider_resolution_service.cpp
     src/app/provider_profile_migration_service.cpp
     src/app/runtime_orchestration_services.cpp
+    src/app/vcs_commit_service.cpp
+    src/cef/uam_cef_command_line_config.cpp
     src/cef/uam_bridge_request.cpp
     src/cef/state_serializer.cpp
     src/common/models/app_models.cpp

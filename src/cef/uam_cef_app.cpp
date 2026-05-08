@@ -1,4 +1,5 @@
 #include "cef/uam_cef_app.h"
+#include "cef/uam_cef_command_line_config.h"
 #include "cef/uam_cef_client.h"
 #include "cef/uam_cef_security.h"
 
@@ -13,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <cstdio>
 #include <vector>
 
 namespace
@@ -137,7 +139,7 @@ namespace uam_cef_globals
 	extern CefRefPtr<UamCefClient> g_client;
 } // namespace uam_cef_globals
 
-void UamCefApp::OnBeforeCommandLineProcessing(const CefString& /*process_type*/,
+void UamCefApp::OnBeforeCommandLineProcessing(const CefString& process_type,
                                               CefRefPtr<CefCommandLine> command_line)
 {
 	// Allow file:// pages to make XHR/fetch requests to other file:// URLs.
@@ -145,21 +147,30 @@ void UamCefApp::OnBeforeCommandLineProcessing(const CefString& /*process_type*/,
 	command_line->AppendSwitch("allow-file-access-from-files");
 	command_line->AppendSwitch("disable-web-security");
 
+#if defined(__APPLE__)
 	// Disable Chromium features that trigger an EXC_BREAKPOINT / SIGTRAP crash
 	// on macOS 26.x (beta).  The crash manifests as NSApplication receiving a
 	// message with the selector "%s" (an unsubstituted format-string placeholder)
 	// from ChromeWebAppShortcutCopierMain — a Chromium internal worker that
 	// handles OS-level web-app shortcut creation.  UAM does not use web-app
 	// shortcuts, so these features can be disabled without functional loss.
-	command_line->AppendSwitchWithValue("disable-features",
-	    "WebAppEnableShortcuts,"
-	    "DesktopPWADeterminedInstalledByOsIntegration,"
-	    "WebAppSystemMediaControlsWin");
+	const std::string disabled_features = uam::cef::MacOsWebAppShortcutCrashDisabledFeatures();
+	command_line->AppendSwitchWithValue("disable-features", disabled_features);
 
 	// Skip first-run tasks and background-mode processes that may exercise
 	// other macOS APIs removed or renamed in the beta OS.
 	command_line->AppendSwitch("no-first-run");
 	command_line->AppendSwitch("disable-background-mode");
+	command_line->AppendSwitch("disable-background-networking");
+	command_line->AppendSwitch("disable-component-update");
+	command_line->AppendSwitch("disable-default-apps");
+	command_line->AppendSwitch("disable-sync");
+
+	if (process_type.empty())
+	{
+		std::fprintf(stderr, "[CEF] macOS web-app shortcut crash workaround: disable-features=%s\n", disabled_features.c_str());
+	}
+#endif
 }
 
 void UamCefApp::OnContextInitialized()

@@ -135,7 +135,8 @@ body {
 }
 
 .uam-icon-button,
-.uam-primary-button {
+.uam-primary-button,
+.uam-secondary-button {
   font-family: inherit;
   border: 0;
   cursor: pointer;
@@ -202,6 +203,33 @@ body {
 
 .uam-primary-button:hover {
   filter: brightness(0.96);
+}
+
+.uam-secondary-button {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--surface-up);
+  color: var(--text-2);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.uam-secondary-button:hover {
+  border-color: var(--border-bright);
+  color: var(--text);
+}
+
+.uam-secondary-button:disabled,
+.uam-primary-button:disabled,
+.uam-icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 pre,

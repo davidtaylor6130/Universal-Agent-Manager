@@ -221,6 +221,47 @@ namespace uam
 			out << content;
 			return out.good();
 		}
+
+		bool ClearWorktreeIsolation(AppState& app, ChatSession& chat, const GitWorktreeStatus& status, std::string* error_out)
+		{
+			const std::filesystem::path source = Trim(status.source_directory).empty()
+				? EffectiveSourceWorkspace(app, chat)
+				: std::filesystem::path(status.source_directory);
+			const std::filesystem::path worktree = Trim(status.worktree_directory).empty()
+				? std::filesystem::path()
+				: std::filesystem::path(status.worktree_directory);
+
+			if (!worktree.empty())
+			{
+				std::error_code ec;
+				const bool worktree_exists = std::filesystem::exists(worktree, ec) && !ec;
+				if (worktree_exists)
+				{
+					const ProcessExecutionResult remove_result = RunCommand(GitC(source, "worktree remove --force " + ShellQuote(worktree.string())));
+					if (!CommandSucceeded(remove_result))
+					{
+						if (error_out != nullptr)
+						{
+							*error_out = CommandOutputOrError(remove_result);
+						}
+						return false;
+					}
+				}
+			}
+
+			if (!Trim(chat.workspace_branch_name).empty())
+			{
+				RunCommand(GitC(source, "branch -D " + ShellQuote(chat.workspace_branch_name)));
+			}
+
+			chat.workspace_isolation_kind.clear();
+			chat.workspace_source_directory.clear();
+			chat.workspace_base_ref.clear();
+			chat.workspace_branch_name.clear();
+			chat.workspace_worktree_directory.clear();
+			chat.updated_at = TimestampNow();
+			return SaveChat(app, chat, error_out);
+		}
 	} // namespace
 
 	GitWorktreeStatus GitWorktreeService::Status(const AppState& app, const ChatSession& chat) const
@@ -350,37 +391,39 @@ namespace uam
 	{
 		GitWorktreeOperationResult result;
 		result.status = Status(app, chat);
-		if (!result.status.isolated || result.status.worktree_missing)
+		if (!result.status.isolated)
 		{
-			result.message = "Chat does not have an available isolated Git worktree.";
+			result.message = "Chat does not have an isolated Git worktree.";
 			return result;
 		}
 
-		const std::filesystem::path worktree(result.status.worktree_directory);
-		ProcessExecutionResult reset_result = RunCommand(GitC(worktree, "reset --hard HEAD"));
-		if (!CommandSucceeded(reset_result))
+		if (!result.status.worktree_missing)
 		{
-			result.message = CommandOutputOrError(reset_result);
-			return result;
+			const std::filesystem::path worktree(result.status.worktree_directory);
+			ProcessExecutionResult reset_result = RunCommand(GitC(worktree, "reset --hard HEAD"));
+			if (!CommandSucceeded(reset_result))
+			{
+				result.message = CommandOutputOrError(reset_result);
+				return result;
+			}
+
+			ProcessExecutionResult clean_result = RunCommand(GitC(worktree, "clean -fd"));
+			if (!CommandSucceeded(clean_result))
+			{
+				result.message = CommandOutputOrError(clean_result);
+				return result;
+			}
 		}
 
-		ProcessExecutionResult clean_result = RunCommand(GitC(worktree, "clean -fd"));
-		if (!CommandSucceeded(clean_result))
-		{
-			result.message = CommandOutputOrError(clean_result);
-			return result;
-		}
-
-		chat.updated_at = TimestampNow();
 		std::string save_error;
-		if (!SaveChat(app, chat, &save_error))
+		if (!ClearWorktreeIsolation(app, chat, result.status, &save_error))
 		{
 			result.message = save_error;
 			return result;
 		}
 
 		result.ok = true;
-		result.message = "Discarded changes in the chat worktree.";
+		result.message = "Discarded chat worktree changes and returned to the source workspace.";
 		result.status = Status(app, chat);
 		return result;
 	}
@@ -431,8 +474,14 @@ namespace uam
 		const std::string patch = diff_result.output;
 		if (Trim(patch).empty())
 		{
+			std::string save_error;
+			if (!ClearWorktreeIsolation(app, chat, result.status, &save_error))
+			{
+				result.message = save_error;
+				return result;
+			}
 			result.ok = true;
-			result.message = "No chat worktree changes to port.";
+			result.message = "No chat worktree changes to port. Returned to the source workspace.";
 			result.status = Status(app, chat);
 			return result;
 		}
@@ -456,9 +505,8 @@ namespace uam
 			return result;
 		}
 
-		chat.updated_at = TimestampNow();
 		std::string save_error;
-		if (!SaveChat(app, chat, &save_error))
+		if (!ClearWorktreeIsolation(app, chat, result.status, &save_error))
 		{
 			result.message = save_error;
 			return result;
@@ -466,7 +514,7 @@ namespace uam
 
 		result.ok = true;
 		result.patch_path = patch_path;
-		result.message = "Applied chat worktree changes to the source workspace.";
+		result.message = "Applied chat worktree changes and returned to the source workspace.";
 		result.status = Status(app, chat);
 		return result;
 	}

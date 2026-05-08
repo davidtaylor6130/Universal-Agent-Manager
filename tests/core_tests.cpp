@@ -7,6 +7,7 @@
 #include "app/memory_service.h"
 #include "app/provider_resolution_service.h"
 #include "app/runtime_orchestration_services.h"
+#include "app/vcs_commit_service.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
 #include "common/config/settings_store.h"
@@ -28,6 +29,7 @@
 #include "common/runtime/terminal/terminal_lifecycle.h"
 #include "common/utils/io_utils.h"
 #include "cef/uam_bridge_request.h"
+#include "cef/uam_cef_command_line_config.h"
 #include "cef/state_serializer.h"
 #include "core/gemini_cli_compat.h"
 
@@ -1604,16 +1606,117 @@ UAM_TEST(GitWorktreeServiceCreatesDiscardsAndPortsChanges)
 	UAM_ASSERT(uam::io::WriteTextFile(worktree / "scratch.txt", "remove me\n"));
 	uam::GitWorktreeOperationResult discarded = service.DiscardChatChanges(app, app.chats.front());
 	UAM_ASSERT(discarded.ok);
-	UAM_ASSERT_EQ(ReadFile(worktree / "app.txt"), std::string("one\n"));
-	UAM_ASSERT(!fs::exists(worktree / "scratch.txt"));
+	UAM_ASSERT_EQ(app.chats.front().workspace_isolation_kind, std::string(""));
+	UAM_ASSERT_EQ(app.chats.front().workspace_worktree_directory, std::string(""));
+	UAM_ASSERT_EQ(ResolveWorkspaceRootPath(app, app.chats.front()), fs::absolute(repo).lexically_normal());
+	UAM_ASSERT(!fs::exists(worktree));
 
-	UAM_ASSERT(uam::io::WriteTextFile(worktree / "app.txt", "two\n"));
-	UAM_ASSERT(uam::io::WriteTextFile(worktree / "new.txt", "new\n"));
+	created = service.CreateForChat(app, app.chats.front());
+	UAM_ASSERT(created.ok);
+	const fs::path second_worktree = app.chats.front().workspace_worktree_directory;
+	UAM_ASSERT(uam::io::WriteTextFile(second_worktree / "app.txt", "two\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(second_worktree / "new.txt", "new\n"));
 	uam::GitWorktreeOperationResult ported = service.PortChatChanges(app, app.chats.front());
 	UAM_ASSERT(ported.ok);
 	UAM_ASSERT(fs::exists(ported.patch_path));
 	UAM_ASSERT_EQ(ReadFile(repo / "app.txt"), std::string("two\n"));
 	UAM_ASSERT_EQ(ReadFile(repo / "new.txt"), std::string("new\n"));
+	UAM_ASSERT_EQ(app.chats.front().workspace_isolation_kind, std::string(""));
+	UAM_ASSERT_EQ(app.chats.front().workspace_worktree_directory, std::string(""));
+	UAM_ASSERT_EQ(ResolveWorkspaceRootPath(app, app.chats.front()), fs::absolute(repo).lexically_normal());
+	UAM_ASSERT(!fs::exists(second_worktree));
+}
+
+UAM_TEST(VcsCommitServiceDetectsGitSvnBothAndNone)
+{
+	TempDir temp("uam-vcs-detect");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "chat-vcs";
+
+	chat.workspace_directory = (temp.root / "none").string();
+	fs::create_directories(chat.workspace_directory);
+	uam::VcsCommitStatus none_status = uam::VcsCommitService().Status(app, chat);
+	UAM_ASSERT(!none_status.available);
+	UAM_ASSERT_EQ(none_status.warning, std::string("No Git or SVN repository detected for this workspace."));
+
+	chat.workspace_directory = (temp.root / "svn").string();
+	fs::create_directories(fs::path(chat.workspace_directory) / ".svn");
+	uam::VcsCommitStatus svn_status = uam::VcsCommitService().Status(app, chat, uam::VcsType::Svn);
+	UAM_ASSERT(svn_status.available);
+	UAM_ASSERT(std::find(svn_status.vcs_types.begin(), svn_status.vcs_types.end(), uam::VcsType::Svn) != svn_status.vcs_types.end());
+
+	if (!GitAvailableForTests())
+	{
+		return;
+	}
+
+	const fs::path repo = temp.root / "repo";
+	fs::create_directories(repo);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
+	chat.workspace_directory = repo.string();
+	uam::VcsCommitStatus git_status = uam::VcsCommitService().Status(app, chat);
+	UAM_ASSERT(git_status.available);
+	UAM_ASSERT(std::find(git_status.vcs_types.begin(), git_status.vcs_types.end(), uam::VcsType::Git) != git_status.vcs_types.end());
+
+	fs::create_directories(repo / ".svn");
+	uam::VcsCommitStatus both_status = uam::VcsCommitService().Status(app, chat);
+	UAM_ASSERT(both_status.available);
+	UAM_ASSERT_EQ(both_status.active_vcs_type, uam::VcsType::Git);
+	UAM_ASSERT(std::find(both_status.vcs_types.begin(), both_status.vcs_types.end(), uam::VcsType::Git) != both_status.vcs_types.end());
+	UAM_ASSERT(std::find(both_status.vcs_types.begin(), both_status.vcs_types.end(), uam::VcsType::Svn) != both_status.vcs_types.end());
+}
+
+UAM_TEST(VcsCommitServiceUsesResolvedWorkspaceForGitStatusDiffAndCommit)
+{
+	if (!GitAvailableForTests())
+	{
+		return;
+	}
+
+	TempDir temp("uam-vcs-git");
+	const fs::path source = temp.root / "source";
+	const fs::path worktree = temp.root / "worktree";
+	fs::create_directories(source);
+	fs::create_directories(worktree);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(source.string())));
+	UAM_ASSERT(RunGitForTest(source, "config user.email uam@example.test"));
+	UAM_ASSERT(RunGitForTest(source, "config user.name UAM"));
+	UAM_ASSERT(uam::io::WriteTextFile(source / "app.txt", "source\n"));
+	UAM_ASSERT(RunGitForTest(source, "add app.txt"));
+	UAM_ASSERT(RunGitForTest(source, "commit -m initial"));
+	UAM_ASSERT(RunTestCommand("git clone " + ShellQuoteForTest(source.string()) + " " + ShellQuoteForTest(worktree.string())));
+	UAM_ASSERT(RunGitForTest(worktree, "config user.email uam@example.test"));
+	UAM_ASSERT(RunGitForTest(worktree, "config user.name UAM"));
+
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "chat-vcs-worktree";
+	chat.workspace_directory = source.string();
+	chat.workspace_isolation_kind = "gitWorktree";
+	chat.workspace_worktree_directory = worktree.string();
+	UAM_ASSERT(uam::io::WriteTextFile(worktree / "app.txt", "worktree\n"));
+
+	uam::VcsCommitService service;
+	uam::VcsCommitStatus status = service.Status(app, chat);
+	UAM_ASSERT(status.available);
+	UAM_ASSERT_EQ(fs::path(status.workspace_directory), fs::absolute(worktree).lexically_normal());
+	UAM_ASSERT_EQ(status.changed_files.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(status.changed_files.front().additions, 1);
+	UAM_ASSERT_EQ(status.changed_files.front().deletions, 1);
+	UAM_ASSERT(!status.changed_files.front().binary);
+
+	std::string error;
+	const std::string diff = service.Diff(app, chat, "app.txt", uam::VcsType::Git, &error);
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT(diff.find("worktree") != std::string::npos);
+
+	uam::VcsCommitResult committed = service.Commit(app, chat, uam::VcsType::Git, "worktree commit", {"app.txt"});
+	UAM_ASSERT(committed.ok);
+	UAM_ASSERT(RunGitForTest(worktree, "log --oneline --grep " + ShellQuoteForTest("worktree commit")));
+	UAM_ASSERT_EQ(ReadFile(source / "app.txt"), std::string("source\n"));
 }
 
 UAM_TEST(ChatRepositoryPersistsAssistantPlanFields)
@@ -2680,6 +2783,19 @@ UAM_TEST(CefBridgeRequestValidationDefaultsMissingAndNullPayload)
 	UAM_ASSERT(valid_payload.ok);
 	UAM_ASSERT_EQ(valid_payload.request.action, std::string("selectSession"));
 	UAM_ASSERT_EQ(valid_payload.request.payload.value("chatId", ""), std::string("chat-1"));
+}
+
+UAM_TEST(CefMacOsWebAppShortcutCrashWorkaroundDisablesShortcutFeatures)
+{
+	const std::string disabled_features = uam::cef::MacOsWebAppShortcutCrashDisabledFeatures();
+
+	UAM_ASSERT(disabled_features.find("WebAppEnableShortcuts") != std::string::npos);
+	UAM_ASSERT(disabled_features.find("DesktopPWADeterminedInstalledByOsIntegration") != std::string::npos);
+	UAM_ASSERT(disabled_features.find("WebAppSystemMediaControlsWin") != std::string::npos);
+	UAM_ASSERT(disabled_features.find("WebAppEnableOsIntegrationSubManagers") != std::string::npos);
+	UAM_ASSERT(disabled_features.find("DesktopPWAsRunOnOsLogin") != std::string::npos);
+	UAM_ASSERT(disabled_features.find("DesktopPWAsWithoutExtensions") != std::string::npos);
+	UAM_ASSERT(disabled_features.find("WebAppUniversalInstall") != std::string::npos);
 }
 
 UAM_TEST(AcpTurnTimelinePreservesStreamOrder)

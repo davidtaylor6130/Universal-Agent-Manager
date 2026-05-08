@@ -1744,6 +1744,156 @@ describe('ChatView', () => {
     useAppStore.setState({ openSessionWorkspace: originalOpenSessionWorkspace })
   })
 
+  it('clears transient worktree action messages when the active chat changes', async () => {
+    const originalDiscardChatWorktreeChanges = useAppStore.getState().discardChatWorktreeChanges
+    const discardChatWorktreeChanges = vi.fn(() => Promise.resolve({ ok: true, message: 'Discarded changes in the chat worktree.', patchPath: '' }))
+    useAppStore.setState((state) => ({
+      discardChatWorktreeChanges,
+      sessions: [
+        {
+          ...state.sessions[0],
+          workspaceDirectory: '/tmp/project/.uam-worktrees/chat-1',
+          workspaceSourceDirectory: '/tmp/project',
+          workspaceIsolationKind: 'gitWorktree',
+        },
+        {
+          id: 'chat-2',
+          name: 'Second Chat',
+          viewMode: 'chat',
+          folderId: 'default',
+          workspaceDirectory: '/tmp/project',
+          createdAt: new Date('2026-01-01T00:00:00.000Z'),
+          updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+        },
+      ],
+      messages: {
+        ...state.messages,
+        'chat-2': [],
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          running: false,
+          processing: false,
+          pendingPermission: null,
+          turnEvents: [],
+        },
+        'chat-2': {
+          ...state.acpBindingBySessionId['chat-1'],
+          providerId: 'gemini-cli',
+          lifecycleState: 'ready',
+          running: false,
+          processing: false,
+          pendingPermission: null,
+          turnEvents: [],
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const discardButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Discard & return') as HTMLButtonElement | undefined
+    expect(discardButton).toBeTruthy()
+
+    await act(async () => {
+      discardButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(discardChatWorktreeChanges).toHaveBeenCalledWith('chat-1')
+    expect(host.textContent).toContain('Discarded changes in the chat worktree.')
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[1]} />)
+    })
+
+    expect(host.textContent).toContain('/tmp/project')
+    expect(host.textContent).not.toContain('Discarded changes in the chat worktree.')
+    expect(useAppStore.getState().activeSessionId).toBe('chat-1')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+    useAppStore.setState({ discardChatWorktreeChanges: originalDiscardChatWorktreeChanges })
+  })
+
+  it('clears transient worktree action messages when a chat returns to its source workspace', async () => {
+    const originalDiscardChatWorktreeChanges = useAppStore.getState().discardChatWorktreeChanges
+    const discardChatWorktreeChanges = vi.fn(() => Promise.resolve({ ok: true, message: 'Discarded changes in the chat worktree.', patchPath: '' }))
+    useAppStore.setState((state) => ({
+      discardChatWorktreeChanges,
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1'
+          ? {
+              ...session,
+              workspaceDirectory: '/tmp/project/.uam-worktrees/chat-1',
+              workspaceSourceDirectory: '/tmp/project',
+              workspaceIsolationKind: 'gitWorktree',
+            }
+          : session
+      ),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          running: false,
+          processing: false,
+          pendingPermission: null,
+          turnEvents: [],
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const discardButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Discard & return') as HTMLButtonElement | undefined
+    expect(discardButton).toBeTruthy()
+
+    await act(async () => {
+      discardButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(host.textContent).toContain('Discarded changes in the chat worktree.')
+
+    const returnedSession = {
+      ...useAppStore.getState().sessions[0],
+      workspaceDirectory: '/tmp/project',
+      workspaceSourceDirectory: '',
+      workspaceIsolationKind: '',
+    }
+
+    act(() => {
+      root.render(<ChatView session={returnedSession} />)
+    })
+
+    expect(host.textContent).not.toContain('Discarded changes in the chat worktree.')
+    expect(host.textContent).not.toContain('Git worktree')
+    expect(useAppStore.getState().activeSessionId).toBe('chat-1')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+    useAppStore.setState({ discardChatWorktreeChanges: originalDiscardChatWorktreeChanges })
+  })
+
   it('stages selected files and sends them with the prompt', async () => {
     let stagedAttachment = {
       id: 'file-1',

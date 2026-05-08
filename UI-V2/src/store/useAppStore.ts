@@ -413,6 +413,44 @@ interface CppSettings {
   markdownStoreDirectory?: string
 }
 
+export type VcsType = 'git' | 'svn'
+
+export interface VcsChangedFile {
+  path: string
+  status: string
+  staged: boolean
+  additions: number
+  deletions: number
+  binary: boolean
+}
+
+export interface VcsCommitStatus {
+  available: boolean
+  vcsTypes: VcsType[]
+  activeVcsType: VcsType
+  workspaceDirectory: string
+  branchOrRevision: string
+  changedFiles: VcsChangedFile[]
+  warning: string
+  error: string
+}
+
+export interface VcsCommitResult {
+  ok: boolean
+  status?: VcsCommitStatus
+  message: string
+  error: string
+}
+
+interface VcsFileDiffResponse {
+  diff?: string
+}
+
+export interface VcsCommitMessageSuggestion {
+  title: string
+  description: string
+}
+
 export interface CppAppState {
   stateRevision?: number
   folders: CppFolder[]
@@ -1045,6 +1083,53 @@ function sanitizeGitWorktreeResult(value: unknown): GitWorktreeResult {
 
 function failedGitWorktreeResult(message: string): GitWorktreeResult {
   return { ok: false, message, patchPath: '' }
+}
+
+function sanitizeVcsType(value: unknown): VcsType {
+  return value === 'svn' ? 'svn' : 'git'
+}
+
+function sanitizeVcsCommitStatus(value: unknown): VcsCommitStatus | null {
+  if (!isRecord(value)) return null
+  return {
+    available: booleanOr(value.available),
+    vcsTypes: Array.isArray(value.vcsTypes)
+      ? value.vcsTypes.map(sanitizeVcsType).filter((candidate, index, all) => all.indexOf(candidate) === index)
+      : [],
+    activeVcsType: sanitizeVcsType(value.activeVcsType),
+    workspaceDirectory: stringOr(value.workspaceDirectory),
+    branchOrRevision: stringOr(value.branchOrRevision),
+    changedFiles: Array.isArray(value.changedFiles)
+      ? value.changedFiles.flatMap((file) => {
+          if (!isRecord(file)) return []
+          const path = stringOr(file.path)
+          return path
+            ? [{
+                path,
+                status: stringOr(file.status),
+                staged: booleanOr(file.staged),
+                additions: finiteNumberOr(file.additions, 0),
+                deletions: finiteNumberOr(file.deletions, 0),
+                binary: booleanOr(file.binary),
+              }]
+            : []
+        })
+      : [],
+    warning: stringOr(value.warning),
+    error: stringOr(value.error),
+  }
+}
+
+function sanitizeVcsCommitResult(value: unknown): VcsCommitResult {
+  if (!isRecord(value)) {
+    return { ok: false, message: '', error: 'Invalid VCS commit response.' }
+  }
+  return {
+    ok: booleanOr(value.ok),
+    status: sanitizeVcsCommitStatus(value.status) ?? undefined,
+    message: stringOr(value.message),
+    error: stringOr(value.error),
+  }
 }
 
 function sanitizeCppProvider(value: unknown): CppProvider | null {
@@ -2520,6 +2605,9 @@ interface AppState {
   markdownStoreLoading: boolean
   markdownStoreError: string
   markdownStoreAttachedBySessionId: Record<string, MarkdownStoreEntry[]>
+  sidebarCollapsed: boolean
+  commitPanelOpen: boolean
+  commitPanelWidth: number
   streamingMessageId: string | null
   pushChannelStatus: PushChannelStatus
   pushChannelError: string
@@ -2553,6 +2641,10 @@ interface AppState {
 	  createChatWorktree: (id: string) => Promise<GitWorktreeResult>
 	  discardChatWorktreeChanges: (id: string) => Promise<GitWorktreeResult>
 	  portChatWorktreeChanges: (id: string) => Promise<GitWorktreeResult>
+	  getVcsCommitStatus: (id: string, vcsType?: VcsType) => Promise<VcsCommitStatus | null>
+	  getVcsFileDiff: (id: string, path: string, vcsType: VcsType) => Promise<string>
+	  commitVcsChanges: (id: string, vcsType: VcsType, message: string, files: string[]) => Promise<VcsCommitResult>
+	  generateVcsCommitMessage: (id: string, vcsType: VcsType, files: string[]) => Promise<VcsCommitMessageSuggestion | null>
 	  deleteSession: (id: string) => void
 
   // Folder actions
@@ -2593,6 +2685,9 @@ interface AppState {
   setTheme: (theme: 'dark' | 'light') => void
   setNewChatModalOpen: (open: boolean, folderId?: string | null) => void
   setSettingsOpen: (open: boolean) => void
+  setSidebarCollapsed: (collapsed: boolean) => void
+  setCommitPanelOpen: (open: boolean) => void
+  setCommitPanelWidth: (width: number) => void
 
   // CEF bootstrap
   loadFromCef: (state: CppAppState) => void
@@ -2611,6 +2706,34 @@ function readDocumentTheme(): 'dark' | 'light' {
 function persistTheme(theme: 'dark' | 'light'): void {
   applyDocumentTheme(theme)
   writeStoredTheme(theme)
+}
+
+const appShellLayoutStorageKey = 'uam-app-shell-layout-v1'
+
+function readStoredAppShellLayout() {
+  if (typeof window === 'undefined') {
+    return { sidebarCollapsed: false, commitPanelOpen: false, commitPanelWidth: 30 }
+  }
+  try {
+    const raw = window.localStorage.getItem(appShellLayoutStorageKey)
+    const parsed = raw ? JSON.parse(raw) : {}
+    return {
+      sidebarCollapsed: Boolean(parsed.sidebarCollapsed),
+      commitPanelOpen: Boolean(parsed.commitPanelOpen),
+      commitPanelWidth: Math.min(42, Math.max(22, Number(parsed.commitPanelWidth) || 30)),
+    }
+  } catch {
+    return { sidebarCollapsed: false, commitPanelOpen: false, commitPanelWidth: 30 }
+  }
+}
+
+function writeStoredAppShellLayout(layout: { sidebarCollapsed: boolean; commitPanelOpen: boolean; commitPanelWidth: number }) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(appShellLayoutStorageKey, JSON.stringify(layout))
+  } catch {
+    // Ignore storage failures; the in-memory store still tracks the layout.
+  }
 }
 
 export const useAppStore = create<AppState>((set, get) => {
@@ -2757,6 +2880,7 @@ export const useAppStore = create<AppState>((set, get) => {
   // In CEF context, start with empty state — real data arrives via getInitialState above.
   // In dev/browser mode, use mock data so the UI is immediately interactive.
   const inCef = isCefContext()
+  const storedShellLayout = readStoredAppShellLayout()
 
   return {
     folders: inCef ? [] : initialFolders,
@@ -2798,6 +2922,9 @@ export const useAppStore = create<AppState>((set, get) => {
     markdownStoreLoading: false,
     markdownStoreError: '',
     markdownStoreAttachedBySessionId: {},
+    sidebarCollapsed: storedShellLayout.sidebarCollapsed,
+    commitPanelOpen: storedShellLayout.commitPanelOpen,
+    commitPanelWidth: storedShellLayout.commitPanelWidth,
     streamingMessageId: null,
     pushChannelStatus: inCef ? 'no-push-yet' : 'connected',
     pushChannelError: '',
@@ -3023,6 +3150,111 @@ export const useAppStore = create<AppState>((set, get) => {
       }
 
       return failedGitWorktreeResult('Git worktree actions require the desktop runtime.')
+    },
+
+    getVcsCommitStatus: async (id, vcsType = 'git') => {
+      if (isCefContext()) {
+        const response = await sendToCEF<VcsCommitStatus>({
+          action: 'getVcsCommitStatus',
+          payload: { chatId: id, vcsType },
+        })
+        if (!response.ok) {
+          console.error('[CEF] getVcsCommitStatus failed:', response.error)
+          return null
+        }
+        return sanitizeVcsCommitStatus(response.data)
+      }
+
+      const session = get().sessions.find((candidate) => candidate.id === id)
+      if (!session?.workspaceDirectory?.trim()) {
+        return {
+          available: false,
+          vcsTypes: [],
+          activeVcsType: 'git',
+          workspaceDirectory: '',
+          branchOrRevision: '',
+          changedFiles: [],
+          warning: 'No Git or SVN repository detected for this workspace.',
+          error: '',
+        }
+      }
+      return {
+        available: true,
+        vcsTypes: ['git'],
+        activeVcsType: vcsType,
+        workspaceDirectory: session.workspaceDirectory,
+        branchOrRevision: 'main',
+        changedFiles: [
+          { path: 'src/example.ts', status: ' M', staged: false, additions: 12, deletions: 3, binary: false },
+          { path: 'README.md', status: '??', staged: false, additions: 8, deletions: 0, binary: false },
+        ],
+        warning: '',
+        error: '',
+      }
+    },
+
+    getVcsFileDiff: async (id, path, vcsType) => {
+      if (isCefContext()) {
+        const response = await sendToCEF<VcsFileDiffResponse>({
+          action: 'getVcsFileDiff',
+          payload: { chatId: id, path, vcsType },
+        })
+        if (!response.ok) {
+          console.error('[CEF] getVcsFileDiff failed:', response.error)
+          return response.error || ''
+        }
+        return typeof response.data?.diff === 'string' ? response.data.diff : ''
+      }
+
+      return `diff -- ${path}\n`
+    },
+
+    commitVcsChanges: async (id, vcsType, message, files) => {
+      if (isCefContext()) {
+        const response = await sendToCEF<VcsCommitResult>({
+          action: 'commitVcsChanges',
+          payload: { chatId: id, vcsType, message, files },
+        })
+        if (!response.ok) {
+          console.error('[CEF] commitVcsChanges failed:', response.error)
+          return { ok: false, message: '', error: response.error || 'Failed to commit changes.' }
+        }
+        return sanitizeVcsCommitResult(response.data)
+      }
+
+      return {
+        ok: true,
+        message: `${vcsType.toUpperCase()} commit created for ${files.length} file${files.length === 1 ? '' : 's'}.`,
+        error: '',
+        status: await get().getVcsCommitStatus(id, vcsType) ?? undefined,
+      }
+    },
+
+    generateVcsCommitMessage: async (id, vcsType, files) => {
+      if (isCefContext()) {
+        const response = await sendToCEF<VcsCommitMessageSuggestion>({
+          action: 'generateVcsCommitMessage',
+          payload: { chatId: id, vcsType, files },
+        })
+        if (!response.ok) {
+          console.error('[CEF] generateVcsCommitMessage failed:', response.error)
+          return null
+        }
+        if (!isRecord(response.data)) {
+          return null
+        }
+        const title = stringOr(response.data.title)
+        return title ? { title, description: stringOr(response.data.description) } : null
+      }
+
+      const status = await get().getVcsCommitStatus(id, vcsType)
+      const selected = status?.changedFiles.filter((file) => files.includes(file.path)) ?? []
+      if (selected.length === 0) return null
+      const primary = selected[0]?.path.split(/[\\/]/).pop() || 'files'
+      return {
+        title: `Update ${primary}`,
+        description: selected.map((file) => `- ${file.status.trim() || 'Changed'} ${file.path}`).join('\n'),
+      }
     },
 
     renameSession: (id, name) => {
@@ -4845,5 +5077,21 @@ export const useAppStore = create<AppState>((set, get) => {
       newChatFolderId: open ? (folderId ?? null) : null,
     }),
     setSettingsOpen: (open) => set({ isSettingsOpen: open }),
+    setSidebarCollapsed: (collapsed) => set((state) => {
+      const next = { sidebarCollapsed: collapsed, commitPanelOpen: state.commitPanelOpen, commitPanelWidth: state.commitPanelWidth }
+      writeStoredAppShellLayout(next)
+      return { sidebarCollapsed: collapsed }
+    }),
+    setCommitPanelOpen: (open) => set((state) => {
+      const next = { sidebarCollapsed: state.sidebarCollapsed, commitPanelOpen: open, commitPanelWidth: state.commitPanelWidth }
+      writeStoredAppShellLayout(next)
+      return { commitPanelOpen: open }
+    }),
+    setCommitPanelWidth: (width) => set((state) => {
+      const commitPanelWidth = Math.min(42, Math.max(22, width))
+      const next = { sidebarCollapsed: state.sidebarCollapsed, commitPanelOpen: state.commitPanelOpen, commitPanelWidth }
+      writeStoredAppShellLayout(next)
+      return { commitPanelWidth }
+    }),
   }
 })

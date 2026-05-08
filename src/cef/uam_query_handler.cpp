@@ -13,6 +13,7 @@
 #include "app/memory_service.h"
 #include "app/persistence_coordinator.h"
 #include "app/runtime_orchestration_services.h"
+#include "app/vcs_commit_service.h"
 #include "common/paths/app_paths.h"
 
 #include "common/platform/platform_services.h"
@@ -588,6 +589,49 @@ namespace
 		return json;
 	}
 
+	nlohmann::json SerializeVcsCommitStatus(const uam::VcsCommitStatus& status)
+	{
+		nlohmann::json types = nlohmann::json::array();
+		for (const uam::VcsType type : status.vcs_types)
+		{
+			types.push_back(uam::VcsTypeToString(type));
+		}
+
+		nlohmann::json files = nlohmann::json::array();
+		for (const uam::VcsChangedFile& file : status.changed_files)
+		{
+			files.push_back({
+				{"path", file.path},
+				{"status", file.status},
+				{"staged", file.staged},
+				{"additions", file.additions},
+				{"deletions", file.deletions},
+				{"binary", file.binary},
+			});
+		}
+
+		return {
+			{"available", status.available},
+			{"vcsTypes", std::move(types)},
+			{"activeVcsType", uam::VcsTypeToString(status.active_vcs_type)},
+			{"workspaceDirectory", status.workspace_directory},
+			{"branchOrRevision", status.branch_or_revision},
+			{"changedFiles", std::move(files)},
+			{"warning", status.warning},
+			{"error", status.error},
+		};
+	}
+
+	nlohmann::json SerializeVcsCommitResult(const uam::VcsCommitResult& result)
+	{
+		return {
+			{"ok", result.ok},
+			{"status", SerializeVcsCommitStatus(result.status)},
+			{"message", result.message},
+			{"error", result.error},
+		};
+	}
+
 	bool ChatRuntimeBusy(const uam::AppState& app, const std::string& chat_id)
 	{
 		if (HasPendingCallForChat(app, chat_id))
@@ -719,6 +763,14 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 			HandleDiscardChatWorktreeChanges(browser, payload, callback);
 		else if (action == "portChatWorktreeChanges")
 			HandlePortChatWorktreeChanges(browser, payload, callback);
+		else if (action == "getVcsCommitStatus")
+			HandleGetVcsCommitStatus(browser, payload, callback);
+		else if (action == "getVcsFileDiff")
+			HandleGetVcsFileDiff(browser, payload, callback);
+		else if (action == "commitVcsChanges")
+			HandleCommitVcsChanges(browser, payload, callback);
+		else if (action == "generateVcsCommitMessage")
+			HandleGenerateVcsCommitMessage(browser, payload, callback);
 		else if (action == "listMemoryScanCandidates")
 			HandleListMemoryScanCandidates(browser, payload, callback);
 		else if (action == "scanCurrentChats")
@@ -1963,6 +2015,118 @@ void UamQueryHandler::HandlePortChatWorktreeChanges(CefRefPtr<CefBrowser> browse
 
 	uam::PushStateUpdate(browser, m_app);
 	cb->Success(SerializeGitWorktreeResult(result).dump());
+}
+
+void UamQueryHandler::HandleGetVcsCommitStatus(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
+	if (chat_index < 0)
+	{
+		cb->Failure(404, "Chat not found.");
+		return;
+	}
+
+	const uam::VcsType requested_type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
+	const ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
+	const uam::VcsCommitStatus status = uam::VcsCommitService().Status(m_app, chat, requested_type);
+	cb->Success(SerializeVcsCommitStatus(status).dump());
+}
+
+void UamQueryHandler::HandleGetVcsFileDiff(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
+	if (chat_index < 0)
+	{
+		cb->Failure(404, "Chat not found.");
+		return;
+	}
+
+	const std::string path = payload.value("path", "");
+	const uam::VcsType type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
+	std::string error;
+	const ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
+	const std::string diff = uam::VcsCommitService().Diff(m_app, chat, path, type, &error);
+	if (!error.empty())
+	{
+		cb->Failure(400, error);
+		return;
+	}
+	cb->Success(nlohmann::json{{"diff", diff}}.dump());
+}
+
+void UamQueryHandler::HandleCommitVcsChanges(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
+	if (chat_index < 0)
+	{
+		cb->Failure(404, "Chat not found.");
+		return;
+	}
+
+	std::vector<std::string> files;
+	if (payload.contains("files") && payload["files"].is_array())
+	{
+		for (const nlohmann::json& file : payload["files"])
+		{
+			if (file.is_string())
+			{
+				files.push_back(file.get<std::string>());
+			}
+		}
+	}
+
+	const std::string message = payload.value("message", "");
+	const uam::VcsType type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
+	const ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
+	const uam::VcsCommitResult result = uam::VcsCommitService().Commit(m_app, chat, type, message, files);
+	if (!result.ok)
+	{
+		cb->Failure(400, result.error.empty() ? "Failed to commit changes." : result.error);
+		return;
+	}
+
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success(SerializeVcsCommitResult(result).dump());
+}
+
+void UamQueryHandler::HandleGenerateVcsCommitMessage(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
+	if (chat_index < 0)
+	{
+		cb->Failure(404, "Chat not found.");
+		return;
+	}
+
+	std::vector<std::string> files;
+	if (payload.contains("files") && payload["files"].is_array())
+	{
+		for (const nlohmann::json& file : payload["files"])
+		{
+			if (file.is_string())
+			{
+				files.push_back(file.get<std::string>());
+			}
+		}
+	}
+
+	const uam::VcsType type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
+	const ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
+	const uam::VcsCommitMessageSuggestion suggestion = uam::VcsCommitService().GenerateMessage(m_app, chat, type, files);
+	if (!suggestion.ok)
+	{
+		cb->Failure(400, suggestion.error.empty() ? "Failed to generate commit message." : suggestion.error);
+		return;
+	}
+
+	cb->Success(nlohmann::json{
+		{"title", suggestion.title},
+		{"description", suggestion.description},
+	}.dump());
 }
 
 void UamQueryHandler::HandleListMemoryScanCandidates(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& /*payload*/, CefRefPtr<Callback> cb)

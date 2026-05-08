@@ -2289,7 +2289,16 @@ export function ChatView({ session }: ChatViewProps) {
   useEffect(() => {
     setComposerAttachments([])
     setAttachmentError('')
+    setOpenWorkspaceError('')
+    setWorkspaceActionMessage('')
+    setWorkspaceActionBusy(false)
   }, [session.id])
+
+  useEffect(() => {
+    if (session.workspaceIsolationKind !== 'gitWorktree') {
+      setWorkspaceActionMessage('')
+    }
+  }, [session.workspaceIsolationKind])
 
   useEffect(() => {
     if (acp?.processing || acp?.lifecycleState === 'waitingPermission' || acp?.lifecycleState === 'waitingUserInput') {
@@ -2501,7 +2510,7 @@ export function ChatView({ session }: ChatViewProps) {
           : await portChatWorktreeChanges(session.id)
     setWorkspaceActionBusy(false)
     if (result.ok) {
-      setWorkspaceActionMessage(result.message || (action === 'port' ? 'Applied chat changes to the source workspace.' : 'Workspace action complete.'))
+      setWorkspaceActionMessage(result.message || (action === 'port' ? 'Applied chat changes and returned to the source workspace.' : 'Workspace action complete.'))
     } else {
       setOpenWorkspaceError(result.message || 'Workspace action failed.')
     }
@@ -2805,7 +2814,7 @@ export function ChatView({ session }: ChatViewProps) {
 	                    disabled={workspaceActionsDisabled}
 	                    onClick={() => void runWorkspaceAction('discard')}
 	                    className="h-[24px] flex-shrink-0 px-2 text-[11px] font-medium"
-	                    title={workspaceActionsDisabled ? 'Stop the runtime before discarding worktree changes' : 'Discard changes in this chat worktree'}
+	                    title={workspaceActionsDisabled ? 'Stop the runtime before discarding worktree changes' : 'Discard worktree changes and return this chat to the source workspace'}
 	                    style={{
 	                      border: '1px solid var(--border)',
 	                      borderRadius: 6,
@@ -2814,14 +2823,14 @@ export function ChatView({ session }: ChatViewProps) {
 	                      opacity: workspaceActionsDisabled ? 0.55 : 1,
 	                    }}
 	                  >
-	                    Discard
+	                    Discard & return
 	                  </button>
 	                  <button
 	                    type="button"
 	                    disabled={workspaceActionsDisabled}
 	                    onClick={() => void runWorkspaceAction('port')}
 	                    className="h-[24px] flex-shrink-0 px-2 text-[11px] font-medium"
-	                    title={workspaceActionsDisabled ? 'Stop the runtime before porting worktree changes' : 'Apply this chat worktree diff to the source workspace'}
+	                    title={workspaceActionsDisabled ? 'Stop the runtime before porting worktree changes' : 'Apply this chat worktree diff and return this chat to the source workspace'}
 	                    style={{
 	                      border: '1px solid color-mix(in srgb, var(--accent) 42%, var(--border))',
 	                      borderRadius: 6,
