@@ -1845,6 +1845,85 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(state.memoryLibraryEntries[0].scopeLabel).toBe('General')
   })
 
+  it('accepts raw successful VCS commit responses from CEF', async () => {
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    const testWindow = ensureTestWindow()
+    testWindow.cefQuery = vi.fn(({ request, onSuccess }) => {
+      const parsed = JSON.parse(request as string)
+      requests.push({ action: parsed.action, payload: parsed.payload })
+
+      if (parsed.action === 'commitVcsChanges') {
+        onSuccess?.(JSON.stringify({
+          ok: true,
+          message: 'Git commit created locally.',
+          error: '',
+          status: {
+            available: true,
+            vcsTypes: ['git'],
+            activeVcsType: 'git',
+            workspaceDirectory: '/tmp/project',
+            branchOrRevision: 'main',
+            changedFiles: [],
+            warning: '',
+            error: '',
+          },
+        }))
+        return
+      }
+
+      onSuccess?.('{}')
+    }) as TestWindow['cefQuery']
+
+    const result = await useAppStore.getState().commitVcsChanges('chat-1', 'git', 'Update app', ['app.txt'])
+
+    expect(requests[0]).toEqual({
+      action: 'commitVcsChanges',
+      payload: { chatId: 'chat-1', vcsType: 'git', message: 'Update app', files: ['app.txt'] },
+    })
+    expect(result.ok).toBe(true)
+    expect(result.message).toBe('Git commit created locally.')
+    expect(result.error).toBe('')
+    expect(result.status?.changedFiles).toEqual([])
+  })
+
+  it('accepts raw successful worktree action responses from CEF', async () => {
+    const testWindow = ensureTestWindow()
+    testWindow.cefQuery = vi.fn(({ request, onSuccess }) => {
+      const parsed = JSON.parse(request as string)
+
+      if (parsed.action === 'createChatWorktree') {
+        onSuccess?.(JSON.stringify({
+          ok: true,
+          message: 'Created isolated worktree.',
+          patchPath: '',
+          status: {
+            isGitRepository: true,
+            isSvnWorkspace: false,
+            isolated: true,
+            sourceDirty: false,
+            worktreeDirty: false,
+            worktreeMissing: false,
+            sourceDirectory: '/tmp/project',
+            worktreeDirectory: '/tmp/uam-worktree',
+            branchName: 'uam/chat-1',
+            baseRef: 'HEAD',
+            warning: '',
+            error: '',
+          },
+        }))
+        return
+      }
+
+      onSuccess?.('{}')
+    }) as TestWindow['cefQuery']
+
+    const result = await useAppStore.getState().createChatWorktree('chat-1')
+
+    expect(result.ok).toBe(true)
+    expect(result.message).toBe('Created isolated worktree.')
+    expect(result.status?.isolated).toBe(true)
+  })
+
   it('creates and deletes memory entries through the active scope', async () => {
     const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
     const testWindow = ensureTestWindow()

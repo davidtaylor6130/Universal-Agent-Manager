@@ -1081,6 +1081,10 @@ function sanitizeGitWorktreeResult(value: unknown): GitWorktreeResult {
   }
 }
 
+function cefPayloadOrRawResponse<T>(response: { data?: T }): unknown {
+  return response.data ?? response
+}
+
 function failedGitWorktreeResult(message: string): GitWorktreeResult {
   return { ok: false, message, patchPath: '' }
 }
@@ -3114,7 +3118,7 @@ export const useAppStore = create<AppState>((set, get) => {
           console.error('[CEF] createChatWorktree failed:', response.error)
           return failedGitWorktreeResult(response.error || 'Failed to create isolated Git worktree.')
         }
-        return sanitizeGitWorktreeResult(response.data)
+        return sanitizeGitWorktreeResult(cefPayloadOrRawResponse(response))
       }
 
       return failedGitWorktreeResult('Git worktree actions require the desktop runtime.')
@@ -3130,7 +3134,7 @@ export const useAppStore = create<AppState>((set, get) => {
           console.error('[CEF] discardChatWorktreeChanges failed:', response.error)
           return failedGitWorktreeResult(response.error || 'Failed to discard worktree changes.')
         }
-        return sanitizeGitWorktreeResult(response.data)
+        return sanitizeGitWorktreeResult(cefPayloadOrRawResponse(response))
       }
 
       return failedGitWorktreeResult('Git worktree actions require the desktop runtime.')
@@ -3146,7 +3150,7 @@ export const useAppStore = create<AppState>((set, get) => {
           console.error('[CEF] portChatWorktreeChanges failed:', response.error)
           return failedGitWorktreeResult(response.error || 'Failed to port worktree changes.')
         }
-        return sanitizeGitWorktreeResult(response.data)
+        return sanitizeGitWorktreeResult(cefPayloadOrRawResponse(response))
       }
 
       return failedGitWorktreeResult('Git worktree actions require the desktop runtime.')
@@ -3219,7 +3223,7 @@ export const useAppStore = create<AppState>((set, get) => {
           console.error('[CEF] commitVcsChanges failed:', response.error)
           return { ok: false, message: '', error: response.error || 'Failed to commit changes.' }
         }
-        return sanitizeVcsCommitResult(response.data)
+        return sanitizeVcsCommitResult(cefPayloadOrRawResponse(response))
       }
 
       return {
