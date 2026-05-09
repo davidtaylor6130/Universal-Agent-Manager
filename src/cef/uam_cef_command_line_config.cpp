@@ -7,6 +7,8 @@ std::string MacOsWebAppShortcutCrashDisabledFeatures()
 {
 	return
 		"WebAppEnableShortcuts,"
+		"WebAppShortcuts,"
+		"WebAppShortcutCopier,"
 		"DesktopPWADeterminedInstalledByOsIntegration,"
 		"WebAppSystemMediaControlsWin,"
 		"WebAppEnableOsIntegrationSubManagers,"
