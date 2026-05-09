@@ -53,11 +53,27 @@ const FRIENDLY_MODEL_LABELS: Record<string, Pick<ModelOption, 'label' | 'shortLa
   'flash-lite': { label: 'Flash Lite', shortLabel: 'Flash Lite', detail: 'Fastest option' },
 }
 
+const CODEX_REASONING_LABELS: Record<string, Pick<ModelOption, 'label' | 'shortLabel' | 'detail'>> = {
+  '': { label: 'CLI default', shortLabel: 'Default', detail: 'Use Codex default reasoning' },
+  none: { label: 'None', shortLabel: 'None', detail: 'No extra reasoning' },
+  minimal: { label: 'Minimal', shortLabel: 'Minimal', detail: 'Fastest reasoning' },
+  low: { label: 'Low', shortLabel: 'Low', detail: 'Faster responses' },
+  medium: { label: 'Medium', shortLabel: 'Medium', detail: 'Balanced reasoning' },
+  high: { label: 'High', shortLabel: 'High', detail: 'Deeper reasoning' },
+  xhigh: { label: 'XHigh', shortLabel: 'XHigh', detail: 'Maximum reasoning' },
+}
+
+const CODEX_SPEED_LABELS: Record<string, Pick<ModelOption, 'label' | 'shortLabel' | 'detail'>> = {
+  '': { label: 'CLI default', shortLabel: 'Default', detail: 'Use Codex default speed' },
+  fast: { label: 'Fast', shortLabel: 'Fast', detail: 'Prioritize latency' },
+  flex: { label: 'Flex', shortLabel: 'Flex', detail: 'Use flexible service tier' },
+}
+
 const PLAN_APPROVE_PROMPT = 'Proceed with the plan.'
 const PLAN_DENY_PROMPT = 'Do not proceed with this plan. Please revise it before making changes.'
 
 type LocalAttachmentStatus = 'ready' | 'staging' | 'failed'
-type ComposerIconName = 'folder' | 'git-tree' | 'markdown' | 'plus' | 'send'
+type ComposerIconName = 'editor' | 'folder' | 'git-tree' | 'markdown' | 'plus' | 'send'
 
 interface LocalAttachment extends Attachment {
   status: LocalAttachmentStatus
@@ -81,6 +97,18 @@ function ComposerIcon({ name, size = 14 }: { name: ComposerIconName; size?: numb
     return (
       <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <path d="M2.5 4.2h4l1.1 1.4h5.9v6.2a1 1 0 0 1-1 1h-10a1 1 0 0 1-1-1V5.2a1 1 0 0 1 1-1Z" />
+      </svg>
+    )
+  }
+
+  if (name === 'editor') {
+    return (
+      <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="2.5" y="3" width="11" height="8.5" rx="1.2" />
+        <path d="M5.5 13h5" />
+        <path d="M8 11.5V13" />
+        <path d="m5.6 6.1 1.2 1.2-1.2 1.2" />
+        <path d="M8.2 8.6h2.2" />
       </svg>
     )
   }
@@ -185,6 +213,10 @@ function isCopilotProvider(provider?: Provider, providerId = '') {
   return providerId === 'copilot-cli' || provider?.structuredProtocol === 'copilot-acp'
 }
 
+function isOpenCodeProvider(provider?: Provider, providerId = '') {
+  return providerId === 'opencode-cli' || provider?.structuredProtocol === 'opencode-acp'
+}
+
 function titleFromModelId(modelId: string) {
   const source = modelId.split('/').pop() ?? modelId
   return source
@@ -222,8 +254,9 @@ function buildModelOptions(
   const codexProvider = isCodexProvider(provider, providerId)
   const claudeProvider = isClaudeProvider(provider, providerId)
   const copilotProvider = isCopilotProvider(provider, providerId)
+  const openCodeProvider = isOpenCodeProvider(provider, providerId)
   const runtimeOptions = (acp?.availableModels ?? []).flatMap((model) => {
-    const option = modelOptionFromRuntime(model, !codexProvider && !claudeProvider && !copilotProvider)
+    const option = modelOptionFromRuntime(model, !codexProvider && !claudeProvider && !copilotProvider && !openCodeProvider)
     return option ? [option] : []
   })
   const defaultOption = providerDefaultModelOption(providerName)
@@ -233,6 +266,8 @@ function buildModelOptions(
       ? [defaultOption, { id: 'sonnet', label: 'Sonnet', shortLabel: 'Sonnet', detail: 'Latest Sonnet alias' }, { id: 'opus', label: 'Opus', shortLabel: 'Opus', detail: 'Latest Opus alias' }]
       : copilotProvider
         ? [defaultOption]
+        : openCodeProvider
+          ? [defaultOption]
     : [defaultOption, ...GEMINI_FALLBACK_ACP_MODEL_OPTIONS.slice(1)]
   const baseOptions = runtimeOptions.length > 0
     ? [defaultOption, ...runtimeOptions]
@@ -247,7 +282,7 @@ function buildModelOptions(
   }
 
   if (selectedModelId && !seen.has(selectedModelId)) {
-    const friendly = codexProvider ? undefined : FRIENDLY_MODEL_LABELS[selectedModelId]
+    const friendly = codexProvider || openCodeProvider ? undefined : FRIENDLY_MODEL_LABELS[selectedModelId]
     options.push(
       friendly
         ? { id: selectedModelId, ...friendly }
@@ -265,6 +300,37 @@ function buildModelOptions(
 
 function modelOptionFor(options: ModelOption[], modelId?: string) {
   return options.find((option) => option.id === (modelId ?? '')) ?? options[0] ?? providerDefaultModelOption('provider')
+}
+
+function codexSelectedRuntimeModel(acp: AcpBinding | undefined, modelId: string): AcpModel | undefined {
+  const models = acp?.availableModels ?? []
+  return models.find((model) => model.id === modelId) ?? models.find((model) => Boolean(model.defaultReasoningEffort)) ?? models[0]
+}
+
+function labeledOption(id: string, labels: Record<string, Pick<ModelOption, 'label' | 'shortLabel' | 'detail'>>): ModelOption {
+  const fallback = labels[id] ?? {
+    label: titleFromModelId(id),
+    shortLabel: titleFromModelId(id),
+    detail: id,
+  }
+  return { id, ...fallback }
+}
+
+function buildCodexReasoningOptions(acp: AcpBinding | undefined, modelId: string, selectedReasoningEffort = ''): ModelOption[] {
+  const runtimeModel = codexSelectedRuntimeModel(acp, modelId)
+  const runtimeEfforts = runtimeModel?.supportedReasoningEfforts ?? []
+  const base = runtimeEfforts.length > 0 ? runtimeEfforts : ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']
+  const ids = ['', ...base]
+  if (selectedReasoningEffort && !ids.includes(selectedReasoningEffort)) ids.push(selectedReasoningEffort)
+  return Array.from(new Set(ids)).map((id) => labeledOption(id, CODEX_REASONING_LABELS))
+}
+
+function buildCodexSpeedOptions(acp: AcpBinding | undefined, modelId: string, selectedServiceTier = ''): ModelOption[] {
+  const runtimeModel = codexSelectedRuntimeModel(acp, modelId)
+  const runtimeTiers = runtimeModel?.additionalSpeedTiers ?? []
+  const ids = ['', ...new Set([...runtimeTiers, 'fast', 'flex'])]
+  if (selectedServiceTier && !ids.includes(selectedServiceTier)) ids.push(selectedServiceTier)
+  return Array.from(new Set(ids)).map((id) => labeledOption(id, CODEX_SPEED_LABELS))
 }
 
 function statusLabel(acp?: AcpBinding) {
@@ -1800,21 +1866,31 @@ function ComposerToolbar({
   providerName,
   canSend,
   modelId,
+  reasoningEffort,
+  serviceTier,
   approvalModeId,
   autoApproveCommands,
   memoryEnabled,
   canChangeProvider,
   providerOpen,
   modelOpen,
+  reasoningOpen,
+  speedOpen,
   settingsOpen,
   providerMenuRef,
   modelMenuRef,
+  reasoningMenuRef,
+  speedMenuRef,
   settingsMenuRef,
   onToggleProvider,
   onToggleModel,
+  onToggleReasoning,
+  onToggleSpeed,
   onToggleSettings,
   onSelectProvider,
   onSelectModel,
+  onSelectReasoning,
+  onSelectSpeed,
   onTogglePlan,
   onToggleAcceptEdits,
   onToggleYolo,
@@ -1830,21 +1906,31 @@ function ComposerToolbar({
   providerName: string
   canSend: boolean
   modelId?: string
+  reasoningEffort?: string
+  serviceTier?: string
   approvalModeId?: string
   autoApproveCommands: boolean
   memoryEnabled: boolean
   canChangeProvider: boolean
   providerOpen: boolean
   modelOpen: boolean
+  reasoningOpen: boolean
+  speedOpen: boolean
   settingsOpen: boolean
   providerMenuRef: RefObject<HTMLDivElement>
   modelMenuRef: RefObject<HTMLDivElement>
+  reasoningMenuRef: RefObject<HTMLDivElement>
+  speedMenuRef: RefObject<HTMLDivElement>
   settingsMenuRef: RefObject<HTMLDivElement>
   onToggleProvider: () => void
   onToggleModel: () => void
+  onToggleReasoning: () => void
+  onToggleSpeed: () => void
   onToggleSettings: () => void
   onSelectProvider: (providerId: string) => void
   onSelectModel: (modelId: string) => void
+  onSelectReasoning: (reasoningEffort: string) => void
+  onSelectSpeed: (serviceTier: string) => void
   onTogglePlan: () => void
   onToggleAcceptEdits: () => void
   onToggleYolo: () => void
@@ -1855,6 +1941,11 @@ function ComposerToolbar({
 }) {
   const modelOptions = buildModelOptions(acp, modelId ?? '', provider, providerId)
   const currentModel = modelOptionFor(modelOptions, modelId)
+  const codexProvider = isCodexProvider(provider, providerId)
+  const reasoningOptions = codexProvider ? buildCodexReasoningOptions(acp, currentModel.id, reasoningEffort ?? '') : []
+  const speedOptions = codexProvider ? buildCodexSpeedOptions(acp, currentModel.id, serviceTier ?? '') : []
+  const currentReasoning = modelOptionFor(reasoningOptions, reasoningEffort)
+  const currentSpeed = modelOptionFor(speedOptions, serviceTier)
   const providerOptions = providers.length > 0 ? providers : [provider]
   const modelDisabled = Boolean(
     acp?.processing ||
@@ -2016,6 +2107,124 @@ function ComposerToolbar({
           </div>
         )}
       </div>
+      {codexProvider && (
+        <div ref={reasoningMenuRef} className="relative">
+          <button
+            type="button"
+            title="Select Codex reasoning"
+            onClick={onToggleReasoning}
+            disabled={modelDisabled}
+            className="inline-flex items-center gap-1.5 px-2"
+            style={{
+              ...chipStyle,
+              color: reasoningOpen ? 'var(--text)' : 'var(--text-2)',
+              borderColor: reasoningOpen ? 'var(--border-bright)' : 'var(--border)',
+              opacity: modelDisabled ? 0.55 : 1,
+            }}
+          >
+            <span>Reasoning</span>
+            <span style={{ color: 'var(--text)' }}>{currentReasoning.shortLabel}</span>
+          </button>
+          {reasoningOpen && !modelDisabled && (
+            <div
+              className="absolute left-0"
+              style={{
+                bottom: 32,
+                width: 250,
+                zIndex: 40,
+                border: '1px solid var(--border-bright)',
+                borderRadius: 8,
+                background: 'var(--surface)',
+                boxShadow: '0 14px 42px rgba(0, 0, 0, 0.28)',
+                padding: 6,
+              }}
+            >
+              <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>Reasoning</div>
+              {reasoningOptions.map((option) => {
+                const selected = option.id === currentReasoning.id
+                return (
+                  <button
+                    key={option.id || 'default'}
+                    type="button"
+                    onClick={() => onSelectReasoning(option.id)}
+                    className="w-full grid gap-0.5 text-left px-2 py-2"
+                    style={{
+                      borderRadius: 6,
+                      background: selected ? 'var(--accent-dim)' : 'transparent',
+                      color: selected ? 'var(--text)' : 'var(--text-2)',
+                    }}
+                  >
+                    <span className="flex items-center gap-2">
+                      <span className="flex-1">{option.label}</span>
+                      {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
+                    </span>
+                    <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>{option.detail}</span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+      {codexProvider && (
+        <div ref={speedMenuRef} className="relative">
+          <button
+            type="button"
+            title="Select Codex speed"
+            onClick={onToggleSpeed}
+            disabled={modelDisabled}
+            className="inline-flex items-center gap-1.5 px-2"
+            style={{
+              ...chipStyle,
+              color: speedOpen ? 'var(--text)' : 'var(--text-2)',
+              borderColor: speedOpen ? 'var(--border-bright)' : 'var(--border)',
+              opacity: modelDisabled ? 0.55 : 1,
+            }}
+          >
+            <span>Speed</span>
+            <span style={{ color: 'var(--text)' }}>{currentSpeed.shortLabel}</span>
+          </button>
+          {speedOpen && !modelDisabled && (
+            <div
+              className="absolute left-0"
+              style={{
+                bottom: 32,
+                width: 230,
+                zIndex: 40,
+                border: '1px solid var(--border-bright)',
+                borderRadius: 8,
+                background: 'var(--surface)',
+                boxShadow: '0 14px 42px rgba(0, 0, 0, 0.28)',
+                padding: 6,
+              }}
+            >
+              <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>Speed</div>
+              {speedOptions.map((option) => {
+                const selected = option.id === currentSpeed.id
+                return (
+                  <button
+                    key={option.id || 'default'}
+                    type="button"
+                    onClick={() => onSelectSpeed(option.id)}
+                    className="w-full grid gap-0.5 text-left px-2 py-2"
+                    style={{
+                      borderRadius: 6,
+                      background: selected ? 'var(--accent-dim)' : 'transparent',
+                      color: selected ? 'var(--text)' : 'var(--text-2)',
+                    }}
+                  >
+                    <span className="flex items-center gap-2">
+                      <span className="flex-1">{option.label}</span>
+                      {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
+                    </span>
+                    <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>{option.detail}</span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
       <button
         type="button"
         title={planAvailable ? 'Toggle planning mode. Claude Plan is read-only and will not edit files.' : 'Planning mode unavailable'}
@@ -2147,6 +2356,18 @@ function ComposerToolbar({
                   <span style={{ color: 'var(--text-3)' }}>Model</span>
                   <span>{currentModel.label}</span>
                 </div>
+                {codexProvider && (
+                  <div className="flex justify-between gap-3">
+                    <span style={{ color: 'var(--text-3)' }}>Reasoning</span>
+                    <span>{currentReasoning.label}</span>
+                  </div>
+                )}
+                {codexProvider && (
+                  <div className="flex justify-between gap-3">
+                    <span style={{ color: 'var(--text-3)' }}>Speed</span>
+                    <span>{currentSpeed.label}</span>
+                  </div>
+                )}
                 <div className="flex justify-between gap-3">
                   <span style={{ color: 'var(--text-3)' }}>Mode</span>
                   <span>{modeLabel}</span>
@@ -2192,6 +2413,8 @@ export function ChatView({ session }: ChatViewProps) {
   const [selectedToolCallRef, setSelectedToolCallRef] = useState<SelectedToolCallRef | null>(null)
   const [providerOpen, setProviderOpen] = useState(false)
   const [modelOpen, setModelOpen] = useState(false)
+  const [reasoningOpen, setReasoningOpen] = useState(false)
+  const [speedOpen, setSpeedOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [claudePlanPrompt, setClaudePlanPrompt] = useState<string | null>(null)
   const [openWorkspaceError, setOpenWorkspaceError] = useState('')
@@ -2213,10 +2436,12 @@ export function ChatView({ session }: ChatViewProps) {
   const resolveAcpUserInput = useAppStore((s) => s.resolveAcpUserInput)
   const setSessionProvider = useAppStore((s) => s.setSessionProvider)
   const setSessionModel = useAppStore((s) => s.setSessionModel)
+  const setSessionCodexOptions = useAppStore((s) => s.setSessionCodexOptions)
   const setSessionApprovalMode = useAppStore((s) => s.setSessionApprovalMode)
   const setSessionAutoApproveCommands = useAppStore((s) => s.setSessionAutoApproveCommands)
   const setSessionMemoryEnabled = useAppStore((s) => s.setSessionMemoryEnabled)
   const openSessionWorkspace = useAppStore((s) => s.openSessionWorkspace)
+  const openSessionWorkspaceEditor = useAppStore((s) => s.openSessionWorkspaceEditor)
   const createChatWorktree = useAppStore((s) => s.createChatWorktree)
   const discardChatWorktreeChanges = useAppStore((s) => s.discardChatWorktreeChanges)
   const portChatWorktreeChanges = useAppStore((s) => s.portChatWorktreeChanges)
@@ -2227,6 +2452,8 @@ export function ChatView({ session }: ChatViewProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const providerMenuRef = useRef<HTMLDivElement>(null)
   const modelMenuRef = useRef<HTMLDivElement>(null)
+  const reasoningMenuRef = useRef<HTMLDivElement>(null)
+  const speedMenuRef = useRef<HTMLDivElement>(null)
   const settingsMenuRef = useRef<HTMLDivElement>(null)
 
   const selectedToolCall = useMemo(
@@ -2303,6 +2530,8 @@ export function ChatView({ session }: ChatViewProps) {
   useEffect(() => {
     if (acp?.processing || acp?.lifecycleState === 'waitingPermission' || acp?.lifecycleState === 'waitingUserInput') {
       setModelOpen(false)
+      setReasoningOpen(false)
+      setSpeedOpen(false)
     }
   }, [acp?.lifecycleState, acp?.processing])
 
@@ -2319,6 +2548,14 @@ export function ChatView({ session }: ChatViewProps) {
         setModelOpen(false)
       }
 
+      if (reasoningOpen && reasoningMenuRef.current && !reasoningMenuRef.current.contains(target)) {
+        setReasoningOpen(false)
+      }
+
+      if (speedOpen && speedMenuRef.current && !speedMenuRef.current.contains(target)) {
+        setSpeedOpen(false)
+      }
+
       if (settingsOpen && settingsMenuRef.current && !settingsMenuRef.current.contains(target)) {
         setSettingsOpen(false)
       }
@@ -2328,6 +2565,8 @@ export function ChatView({ session }: ChatViewProps) {
       if (event.key !== 'Escape') return
       setProviderOpen(false)
       setModelOpen(false)
+      setReasoningOpen(false)
+      setSpeedOpen(false)
       setSettingsOpen(false)
       setSelectedToolCallRef(null)
     }
@@ -2338,7 +2577,7 @@ export function ChatView({ session }: ChatViewProps) {
       document.removeEventListener('mousedown', onMouseDown)
       document.removeEventListener('keydown', onKeyDown)
     }
-  }, [modelOpen, providerOpen, settingsOpen])
+  }, [modelOpen, providerOpen, reasoningOpen, settingsOpen, speedOpen])
 
   const stageFiles = async (files: File[]) => {
     const realFiles = files.filter((file) => file.size > 0 || file.type || file.name)
@@ -2495,6 +2734,17 @@ export function ChatView({ session }: ChatViewProps) {
     const ok = await openSessionWorkspace(session.id)
     if (!ok) {
       setOpenWorkspaceError('Failed to open workspace directory.')
+    }
+  }
+  const openWorkspaceEditor = async () => {
+    if (!workspaceDirectory) return
+    setOpenWorkspaceError('')
+    setWorkspaceActionMessage('')
+    const ok = await openSessionWorkspaceEditor(session.id)
+    if (ok) {
+      setWorkspaceActionMessage('Opened workspace editor.')
+    } else {
+      setOpenWorkspaceError('Failed to open workspace editor.')
     }
   }
   const runWorkspaceAction = async (action: 'create' | 'discard' | 'port') => {
@@ -2788,6 +3038,22 @@ export function ChatView({ session }: ChatViewProps) {
                 }}
 	              >
 	                <ComposerIcon name="folder" size={13} />
+	              </button>
+	              <button
+	                type="button"
+                disabled={!workspaceDirectory}
+                onClick={() => void openWorkspaceEditor()}
+                className="h-[24px] w-[28px] inline-flex flex-shrink-0 items-center justify-center text-[11px] font-medium"
+                title="Open workspace in configured editor"
+                style={{
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  background: workspaceDirectory ? 'var(--surface-up)' : 'var(--bg)',
+                  color: workspaceDirectory ? 'var(--text-2)' : 'var(--text-3)',
+                  opacity: workspaceDirectory ? 1 : 0.55,
+                }}
+	              >
+	                <ComposerIcon name="editor" size={13} />
 	              </button>
 	              {!isGitWorktree && (
 	                <button
@@ -3092,31 +3358,59 @@ export function ChatView({ session }: ChatViewProps) {
               providerName={currentProviderName}
               canSend={canSend}
               modelId={currentModelId}
+              reasoningEffort={session.reasoningEffort ?? ''}
+              serviceTier={session.serviceTier ?? ''}
               approvalModeId={currentModeId}
               autoApproveCommands={session.autoApproveCommands ?? false}
               memoryEnabled={session.memoryEnabled ?? true}
               canChangeProvider={canChangeProvider}
               providerOpen={providerOpen}
               modelOpen={modelOpen}
+              reasoningOpen={reasoningOpen}
+              speedOpen={speedOpen}
               settingsOpen={settingsOpen}
               providerMenuRef={providerMenuRef}
               modelMenuRef={modelMenuRef}
+              reasoningMenuRef={reasoningMenuRef}
+              speedMenuRef={speedMenuRef}
               settingsMenuRef={settingsMenuRef}
               onToggleProvider={() => {
                 setProviderOpen((value) => !value)
                 setModelOpen(false)
+                setReasoningOpen(false)
+                setSpeedOpen(false)
                 setSettingsOpen(false)
               }}
               onToggleModel={() => {
                 if (acp?.processing || acp?.lifecycleState === 'waitingPermission' || acp?.lifecycleState === 'waitingUserInput') return
                 setModelOpen((value) => !value)
                 setProviderOpen(false)
+                setReasoningOpen(false)
+                setSpeedOpen(false)
+                setSettingsOpen(false)
+              }}
+              onToggleReasoning={() => {
+                if (acp?.processing || acp?.lifecycleState === 'waitingPermission' || acp?.lifecycleState === 'waitingUserInput') return
+                setReasoningOpen((value) => !value)
+                setProviderOpen(false)
+                setModelOpen(false)
+                setSpeedOpen(false)
+                setSettingsOpen(false)
+              }}
+              onToggleSpeed={() => {
+                if (acp?.processing || acp?.lifecycleState === 'waitingPermission' || acp?.lifecycleState === 'waitingUserInput') return
+                setSpeedOpen((value) => !value)
+                setProviderOpen(false)
+                setModelOpen(false)
+                setReasoningOpen(false)
                 setSettingsOpen(false)
               }}
               onToggleSettings={() => {
                 setSettingsOpen((value) => !value)
                 setProviderOpen(false)
                 setModelOpen(false)
+                setReasoningOpen(false)
+                setSpeedOpen(false)
               }}
               onSelectProvider={(providerId) => {
                 setProviderOpen(false)
@@ -3126,6 +3420,14 @@ export function ChatView({ session }: ChatViewProps) {
               onSelectModel={(modelId) => {
                 setModelOpen(false)
                 void setSessionModel(session.id, modelId)
+              }}
+              onSelectReasoning={(reasoningEffort) => {
+                setReasoningOpen(false)
+                void setSessionCodexOptions(session.id, { reasoningEffort, serviceTier: session.serviceTier ?? '' })
+              }}
+              onSelectSpeed={(serviceTier) => {
+                setSpeedOpen(false)
+                void setSessionCodexOptions(session.id, { reasoningEffort: session.reasoningEffort ?? '', serviceTier })
               }}
               onTogglePlan={() => {
                 const nextMode = currentModeId === 'plan' ? 'default' : 'plan'

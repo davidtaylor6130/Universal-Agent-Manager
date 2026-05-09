@@ -75,8 +75,18 @@ describe('SettingsModal memory settings', () => {
         ],
       },
       memoryLastStatus: '',
+      defaultEditorPresetId: 'vscode',
+      editorFileAssociations: [
+        {
+          id: 'cpp',
+          name: 'C++',
+          extensions: ['.c', '.cc', '.cpp', '.cxx', '.h', '.hh', '.hpp', '.hxx'],
+          editorPresetId: 'vscode',
+        },
+      ],
       setSettingsOpen: vi.fn(),
       setMemorySettings: vi.fn(() => Promise.resolve(true)),
+      setEditorSettings: vi.fn(() => Promise.resolve(true)),
       refreshCliProviderVersion: vi.fn(() => Promise.resolve(true)),
       applyCliProviderVersion: vi.fn(() => Promise.resolve(true)),
       openGlobalMemoryLibrary: vi.fn(() => Promise.resolve(true)),
@@ -92,6 +102,17 @@ describe('SettingsModal memory settings', () => {
       root.render(<SettingsModal />)
     })
     return { host, root }
+  }
+
+  function openEditorsSection(host: HTMLElement) {
+    const editorsSectionButton = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Editors') && button.textContent?.includes('Workspace launch presets')
+    )
+    expect(editorsSectionButton).toBeTruthy()
+
+    act(() => {
+      editorsSectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
   }
 
   it('does not render native selects for memory worker controls', () => {
@@ -188,6 +209,91 @@ describe('SettingsModal memory settings', () => {
     expect(host.textContent).toContain('Build and release information')
     expect(host.textContent).toContain('V2.0.2')
     expect(host.textContent).not.toContain('Gemini memory worker')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('updates the default editor through the custom menu', () => {
+    const { host, root } = renderModal()
+    openEditorsSection(host)
+
+    expect(host.textContent).toContain('Workspace Editors')
+    expect(host.querySelector('select')).toBeNull()
+
+    const defaultEditorButton = host.querySelector(
+      'button[title="Default editor"]'
+    ) as HTMLButtonElement | null
+    expect(defaultEditorButton).toBeTruthy()
+
+    act(() => {
+      defaultEditorButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    const webstormOption = Array.from(host.querySelectorAll('button[role="option"]')).find(
+      (button) => button.textContent?.includes('WebStorm')
+    )
+    expect(webstormOption).toBeTruthy()
+
+    act(() => {
+      webstormOption?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(useAppStore.getState().setEditorSettings).toHaveBeenCalledWith({
+      defaultEditorPresetId: 'webstorm',
+      editorFileAssociations: [
+        {
+          id: 'cpp',
+          name: 'C++',
+          extensions: ['.c', '.cc', '.cpp', '.cxx', '.h', '.hh', '.hpp', '.hxx'],
+          editorPresetId: 'vscode',
+        },
+      ],
+    })
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('updates the C++ editor through the custom menu', () => {
+    const { host, root } = renderModal()
+    openEditorsSection(host)
+
+    expect(host.querySelector('select')).toBeNull()
+
+    const cppEditorButton = host.querySelector(
+      'button[title="C++ editor"]'
+    ) as HTMLButtonElement | null
+    expect(cppEditorButton).toBeTruthy()
+
+    act(() => {
+      cppEditorButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    const clionOption = Array.from(host.querySelectorAll('button[role="option"]')).find(
+      (button) => button.textContent?.includes('CLion')
+    )
+    expect(clionOption).toBeTruthy()
+
+    act(() => {
+      clionOption?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(useAppStore.getState().setEditorSettings).toHaveBeenCalledWith({
+      defaultEditorPresetId: 'vscode',
+      editorFileAssociations: [
+        {
+          id: 'cpp',
+          name: 'C++',
+          extensions: ['.c', '.cc', '.cpp', '.cxx', '.h', '.hh', '.hpp', '.hxx'],
+          editorPresetId: 'clion',
+        },
+      ],
+    })
 
     act(() => {
       root.unmount()

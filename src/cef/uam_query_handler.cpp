@@ -18,6 +18,7 @@
 
 #include "common/platform/platform_services.h"
 #include "common/provider/provider_profile.h"
+#include "common/provider/provider_runtime.h"
 #include "common/provider/runtime/provider_build_config.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
@@ -43,6 +44,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <utility>
 
@@ -135,6 +137,93 @@ namespace
 			return mode_id == "default" || mode_id == "acceptEdits" || mode_id == "plan";
 		}
 
+		std::string NormalizeCodexReasoningEffort(const std::string& value)
+		{
+			const std::string lowered = ToLowerAscii(Trim(value));
+			if (lowered == "none" ||
+			    lowered == "minimal" ||
+			    lowered == "low" ||
+			    lowered == "medium" ||
+			    lowered == "high" ||
+			    lowered == "xhigh")
+			{
+				return lowered;
+			}
+			return "";
+		}
+
+		std::string NormalizeCodexServiceTier(const std::string& value)
+		{
+			const std::string lowered = ToLowerAscii(Trim(value));
+			if (lowered == "fast" || lowered == "flex")
+			{
+				return lowered;
+			}
+			return "";
+		}
+
+		ProviderChatDefaults DefaultsFromPayload(const nlohmann::json& value, const ProviderChatDefaults& fallback)
+		{
+			ProviderChatDefaults defaults = fallback;
+			if (!value.is_object())
+			{
+				return defaults;
+			}
+			defaults.model_id = Trim(value.value("modelId", defaults.model_id));
+			if (!IsAllowedAcpModelId(defaults.model_id))
+			{
+				defaults.model_id.clear();
+			}
+			defaults.approval_mode = NormalizeAcpApprovalMode(value.value("approvalMode", defaults.approval_mode));
+			if (!IsAllowedAcpApprovalMode(defaults.approval_mode))
+			{
+				defaults.approval_mode = "default";
+			}
+			if (value.contains("autoApproveCommands") && value["autoApproveCommands"].is_boolean())
+			{
+				defaults.auto_approve_commands = value["autoApproveCommands"].get<bool>();
+			}
+			if (value.contains("memoryEnabled") && value["memoryEnabled"].is_boolean())
+			{
+				defaults.memory_enabled = value["memoryEnabled"].get<bool>();
+			}
+			defaults.reasoning_effort = NormalizeCodexReasoningEffort(value.value("reasoningEffort", defaults.reasoning_effort));
+			defaults.service_tier = NormalizeCodexServiceTier(value.value("serviceTier", defaults.service_tier));
+			return defaults;
+		}
+
+		ProviderChatDefaults DefaultsForProvider(const AppSettings& settings, const std::string& provider_id)
+		{
+			if (const auto found = settings.provider_chat_defaults.find(provider_id); found != settings.provider_chat_defaults.end())
+			{
+				ProviderChatDefaults defaults = found->second;
+				defaults.approval_mode = NormalizeAcpApprovalMode(defaults.approval_mode);
+				if (!IsAllowedAcpApprovalMode(defaults.approval_mode))
+				{
+					defaults.approval_mode = "default";
+				}
+				if (!IsAllowedAcpModelId(defaults.model_id))
+				{
+					defaults.model_id.clear();
+				}
+				defaults.reasoning_effort = NormalizeCodexReasoningEffort(defaults.reasoning_effort);
+				defaults.service_tier = NormalizeCodexServiceTier(defaults.service_tier);
+				return defaults;
+			}
+			return ProviderChatDefaults{"", "default", false, settings.memory_enabled_default, "", ""};
+		}
+
+		void ApplyProviderDefaultsToChat(const AppSettings& settings, ChatSession& chat)
+		{
+			const ProviderChatDefaults defaults = DefaultsForProvider(settings, chat.provider_id);
+			chat.model_id = defaults.model_id;
+			chat.approval_mode = defaults.approval_mode;
+			chat.auto_approve_commands = defaults.auto_approve_commands;
+			chat.memory_enabled = defaults.memory_enabled;
+			chat.reasoning_effort = chat.provider_id == "codex-cli" ? defaults.reasoning_effort : "";
+			chat.service_tier = chat.provider_id == "codex-cli" ? defaults.service_tier : "";
+		}
+
 		bool AcpSessionBlocksModelChange(const uam::AcpSessionState& session)
 	{
 		return session.processing ||
@@ -142,9 +231,175 @@ namespace
 		       session.waiting_for_user_input ||
 		       session.initialize_request_id != 0 ||
 		       session.session_setup_request_id != 0 ||
+		       session.startup_model_request_id != 0 ||
 		       session.prompt_request_id != 0 ||
 		       session.cancel_request_id != 0 ||
 			       !session.queued_prompt.empty();
+		}
+
+		std::string LowerAsciiForEditor(std::string value)
+		{
+			std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch)
+			{
+				return static_cast<char>(std::tolower(ch));
+			});
+			return value;
+		}
+
+		std::string NormalizeFileExtension(std::string value)
+		{
+			value = Trim(value);
+			if (value.empty())
+			{
+				return "";
+			}
+			value = LowerAsciiForEditor(value);
+			if (value.front() != '.')
+			{
+				value.insert(value.begin(), '.');
+			}
+			return value;
+		}
+
+		bool IsKnownEditorPresetId(const std::string& value)
+		{
+			return value == "vscode" ||
+			       value == "xcode" ||
+			       value == "visualstudio" ||
+			       value == "clion" ||
+			       value == "rider" ||
+			       value == "webstorm" ||
+			       value == "pycharm" ||
+			       value == "idea" ||
+			       value == "goland" ||
+			       value == "rustrover";
+		}
+
+		std::vector<EditorFileAssociation> DefaultEditorFileAssociationsForUi()
+		{
+			return {
+			    EditorFileAssociation{"cpp", "C++", {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}, "clion"},
+			    EditorFileAssociation{"csharp", "C#", {".cs", ".csx", ".csproj", ".sln"}, "rider"},
+			    EditorFileAssociation{"python", "Python", {".py", ".pyw", ".ipynb"}, "pycharm"},
+			    EditorFileAssociation{"javascript", "JavaScript", {".js", ".mjs", ".cjs"}, "webstorm"},
+			    EditorFileAssociation{"react-typescript", "React / TypeScript", {".jsx", ".ts", ".tsx", ".mts", ".cts"}, "webstorm"},
+			    EditorFileAssociation{"rust", "Rust", {".rs"}, "rustrover"},
+			    EditorFileAssociation{"go", "Go", {".go"}, "goland"},
+			    EditorFileAssociation{"java-kotlin", "Java / Kotlin", {".java", ".kt", ".kts"}, "idea"},
+			    EditorFileAssociation{"swift-apple", "Swift / Apple", {".swift"}, "xcode"},
+			    EditorFileAssociation{"powershell", "PowerShell", {".ps1", ".psm1", ".psd1"}, "vscode"},
+			    EditorFileAssociation{"shell", "Bash / Shell", {".sh", ".bash", ".zsh", ".fish"}, "vscode"},
+			    EditorFileAssociation{"web-styles", "Web Styles / Templates", {".html", ".css", ".scss", ".sass", ".less"}, "webstorm"},
+			};
+		}
+
+		std::vector<EditorFileAssociation> ParseEditorFileAssociationsPayload(const nlohmann::json& payload)
+		{
+			std::vector<EditorFileAssociation> associations;
+			if (!payload.contains("fileAssociations") || !payload["fileAssociations"].is_array())
+			{
+				return associations;
+			}
+
+			for (const nlohmann::json& item : payload["fileAssociations"])
+			{
+				if (!item.is_object())
+				{
+					continue;
+				}
+
+				EditorFileAssociation association;
+				association.id = Trim(item.value("id", ""));
+				association.name = Trim(item.value("name", ""));
+				association.editor_preset_id = Trim(item.value("editorPresetId", ""));
+				if (!IsKnownEditorPresetId(association.editor_preset_id))
+				{
+					association.editor_preset_id = "vscode";
+				}
+
+				if (item.contains("extensions") && item["extensions"].is_array())
+				{
+					std::set<std::string> seen_extensions;
+					for (const nlohmann::json& extension_json : item["extensions"])
+					{
+						if (!extension_json.is_string())
+						{
+							continue;
+						}
+						const std::string extension = NormalizeFileExtension(extension_json.get<std::string>());
+						if (!extension.empty() && seen_extensions.insert(extension).second)
+						{
+							association.extensions.push_back(extension);
+						}
+					}
+				}
+
+				if (association.id.empty())
+				{
+					association.id = "editor-group-" + std::to_string(associations.size() + 1);
+				}
+				if (association.name.empty() || association.extensions.empty())
+				{
+					continue;
+				}
+				associations.push_back(std::move(association));
+			}
+
+			return associations;
+		}
+
+		bool ShouldSkipEditorScanDirectory(const std::filesystem::path& path)
+		{
+			const std::string name = path.filename().string();
+			return name == ".git" ||
+			       name == "node_modules" ||
+			       name == "Builds" ||
+			       name == "build" ||
+			       name == "dist" ||
+			       name == "out" ||
+			       name == ".venv" ||
+			       name == "venv" ||
+			       name.rfind("cmake-build-", 0) == 0;
+		}
+
+		std::string SelectEditorPresetForWorkspace(const AppSettings& settings, const std::filesystem::path& workspace_root)
+		{
+			std::set<std::string> found_extensions;
+			std::error_code ec;
+			std::size_t visited_files = 0;
+			std::filesystem::recursive_directory_iterator it(workspace_root, std::filesystem::directory_options::skip_permission_denied, ec);
+			const std::filesystem::recursive_directory_iterator end;
+			while (!ec && it != end && visited_files < 5000)
+			{
+				const std::filesystem::directory_entry entry = *it;
+				if (entry.is_directory(ec) && ShouldSkipEditorScanDirectory(entry.path()))
+				{
+					it.disable_recursion_pending();
+				}
+				else if (entry.is_regular_file(ec))
+				{
+					++visited_files;
+					const std::string extension = NormalizeFileExtension(entry.path().extension().string());
+					if (!extension.empty())
+					{
+						found_extensions.insert(extension);
+					}
+				}
+				it.increment(ec);
+			}
+
+			for (const EditorFileAssociation& association : settings.editor_file_associations)
+			{
+				for (const std::string& raw_extension : association.extensions)
+				{
+					if (found_extensions.find(NormalizeFileExtension(raw_extension)) != found_extensions.end())
+					{
+						return IsKnownEditorPresetId(association.editor_preset_id) ? association.editor_preset_id : settings.default_editor_preset_id;
+					}
+				}
+			}
+
+			return IsKnownEditorPresetId(settings.default_editor_preset_id) ? settings.default_editor_preset_id : std::string("vscode");
 		}
 
 		std::string CliVersionProviderFromPayloadOrSelection(const uam::AppState& app, const nlohmann::json& payload)
@@ -707,6 +962,8 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 			HandleSetChatProvider(browser, payload, callback);
 		else if (action == "setChatModel")
 			HandleSetChatModel(browser, payload, callback);
+		else if (action == "setChatCodexOptions")
+			HandleSetChatCodexOptions(browser, payload, callback);
 		else if (action == "setChatApprovalMode")
 			HandleSetChatApprovalMode(browser, payload, callback);
 		else if (action == "setChatAutoApproveCommands")
@@ -715,6 +972,10 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 			HandleSetChatMemoryEnabled(browser, payload, callback);
 		else if (action == "setMemorySettings")
 			HandleSetMemorySettings(browser, payload, callback);
+		else if (action == "setProviderChatDefaults")
+			HandleSetProviderChatDefaults(browser, payload, callback);
+		else if (action == "setEditorSettings")
+			HandleSetEditorSettings(browser, payload, callback);
 		else if (action == "refreshCliProviderVersion")
 			HandleRefreshCliProviderVersion(browser, payload, callback);
 		else if (action == "applyCliProviderVersion")
@@ -755,6 +1016,8 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 			HandleRevealMemoryEntry(browser, payload, callback);
 		else if (action == "openWorkspaceDirectory")
 			HandleOpenWorkspaceDirectory(browser, payload, callback);
+		else if (action == "openWorkspaceEditor")
+			HandleOpenWorkspaceEditor(browser, payload, callback);
 		else if (action == "getChatWorktreeStatus")
 			HandleGetChatWorktreeStatus(browser, payload, callback);
 		else if (action == "createChatWorktree")
@@ -891,9 +1154,10 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 	const std::string title = payload.value("title", "New Chat");
 	const std::string requested_folder_id = payload.value("folderId", "");
 	const ProviderProfile* preferred_provider = ResolvePreferredCliProvider(m_app);
-	const std::string requested_provider_id = payload.value("providerId", preferred_provider != nullptr ? preferred_provider->id : m_app.settings.active_provider_id);
+	const std::string requested_provider_id = payload.value("providerId", m_app.settings.default_new_chat_provider_id.empty() ? (preferred_provider != nullptr ? preferred_provider->id : m_app.settings.active_provider_id) : m_app.settings.default_new_chat_provider_id);
 	const ProviderProfile* requested_provider = ProviderProfileStore::FindById(m_app.provider_profiles, requested_provider_id);
-	const std::string provider_id = requested_provider != nullptr ? requested_provider->id : (preferred_provider != nullptr ? preferred_provider->id : m_app.settings.active_provider_id);
+	const ProviderProfile* fallback_provider = ProviderProfileStore::FindById(m_app.provider_profiles, m_app.settings.default_new_chat_provider_id);
+	const std::string provider_id = requested_provider != nullptr ? requested_provider->id : (fallback_provider != nullptr ? fallback_provider->id : (preferred_provider != nullptr ? preferred_provider->id : m_app.settings.active_provider_id));
 	const std::string previous_selected_chat_id = (ChatDomainService().SelectedChat(m_app) != nullptr) ? ChatDomainService().SelectedChat(m_app)->id : std::string{};
 
 	const std::string target_folder_id = ResolveRequestedNewChatFolderId(m_app, requested_folder_id);
@@ -907,7 +1171,7 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 	if (!title.empty())
 		chat.title = title;
 	chat.workspace_directory = ResolveWorkspaceRootPath(m_app, chat).string();
-	chat.memory_enabled = m_app.settings.memory_enabled_default;
+	ApplyProviderDefaultsToChat(m_app.settings, chat);
 
 	m_app.chats.push_back(std::move(chat));
 
@@ -1092,6 +1356,66 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 	cb->Success("{}");
 }
 
+void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const std::string reasoning_effort = NormalizeCodexReasoningEffort(payload.value("reasoningEffort", ""));
+	const std::string service_tier = NormalizeCodexServiceTier(payload.value("serviceTier", ""));
+
+	const int idx = ChatDomainService().FindChatIndexById(m_app, chat_id);
+	if (idx < 0)
+	{
+		cb->Failure(404, "Chat not found: " + chat_id);
+		return;
+	}
+
+	ChatSession& chat = m_app.chats[static_cast<std::size_t>(idx)];
+	if (chat.provider_id != "codex-cli")
+	{
+		cb->Failure(409, "Codex reasoning and speed options are only available for Codex chats.");
+		return;
+	}
+
+	if (!ProviderResolutionService().ChatProviderIsAvailable(m_app, chat))
+	{
+		cb->Failure(409, ProviderResolutionService().ChatProviderUnavailableReason(m_app, chat));
+		return;
+	}
+
+	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat.id);
+	if (session != nullptr && AcpSessionBlocksModelChange(*session))
+	{
+		cb->Failure(409, "Cannot change Codex reasoning or speed while the structured runtime is busy.");
+		return;
+	}
+
+	if (chat.reasoning_effort == reasoning_effort && chat.service_tier == service_tier)
+	{
+		uam::PushStateUpdate(browser, m_app);
+		cb->Success("{}");
+		return;
+	}
+
+	const std::string previous_reasoning_effort = chat.reasoning_effort;
+	const std::string previous_service_tier = chat.service_tier;
+	const std::string previous_updated_at = chat.updated_at;
+	chat.reasoning_effort = reasoning_effort;
+	chat.service_tier = service_tier;
+	chat.updated_at = TimestampNow();
+
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, chat, "Codex chat options updated.", "Codex chat options changed in UI, but failed to save."))
+	{
+		chat.reasoning_effort = previous_reasoning_effort;
+		chat.service_tier = previous_service_tier;
+		chat.updated_at = previous_updated_at;
+		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist Codex chat options." : m_app.status_line);
+		return;
+	}
+
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success("{}");
+}
+
 void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
@@ -1140,14 +1464,15 @@ void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const
 
 	const std::string previous_provider_id = chat.provider_id;
 	const std::string previous_model_id = chat.model_id;
+	const std::string previous_reasoning_effort = chat.reasoning_effort;
+	const std::string previous_service_tier = chat.service_tier;
 	const std::string previous_approval_mode = chat.approval_mode;
 	const bool previous_auto_approve_commands = chat.auto_approve_commands;
+	const bool previous_memory_enabled = chat.memory_enabled;
 	const std::string previous_native_session_id = chat.native_session_id;
 	const std::string previous_updated_at = chat.updated_at;
 	chat.provider_id = provider->id;
-	chat.model_id.clear();
-	chat.approval_mode = "default";
-	chat.auto_approve_commands = false;
+	ApplyProviderDefaultsToChat(m_app.settings, chat);
 	chat.native_session_id.clear();
 	chat.updated_at = TimestampNow();
 
@@ -1155,8 +1480,11 @@ void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const
 	{
 		chat.provider_id = previous_provider_id;
 		chat.model_id = previous_model_id;
+		chat.reasoning_effort = previous_reasoning_effort;
+		chat.service_tier = previous_service_tier;
 		chat.approval_mode = previous_approval_mode;
 		chat.auto_approve_commands = previous_auto_approve_commands;
+		chat.memory_enabled = previous_memory_enabled;
 		chat.native_session_id = previous_native_session_id;
 		chat.updated_at = previous_updated_at;
 		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist chat provider." : m_app.status_line);
@@ -1370,6 +1698,74 @@ void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, con
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
 		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist memory settings." : m_app.status_line);
+		return;
+	}
+
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string requested_default_provider_id = Trim(payload.value("defaultProviderId", m_app.settings.default_new_chat_provider_id));
+	if (!requested_default_provider_id.empty())
+	{
+		const ProviderProfile* provider = ProviderProfileStore::FindById(m_app.provider_profiles, requested_default_provider_id);
+		if (provider == nullptr || !ProviderRuntime::IsRuntimeEnabled(*provider))
+		{
+			cb->Failure(400, "Unsupported default provider: " + requested_default_provider_id);
+			return;
+		}
+		m_app.settings.default_new_chat_provider_id = provider->id;
+	}
+
+	if (payload.contains("defaults") && payload["defaults"].is_object())
+	{
+		for (auto it = payload["defaults"].begin(); it != payload["defaults"].end(); ++it)
+		{
+			const std::string provider_id = Trim(it.key());
+			const ProviderProfile* provider = ProviderProfileStore::FindById(m_app.provider_profiles, provider_id);
+			if (provider == nullptr || !ProviderRuntime::IsRuntimeEnabled(*provider))
+			{
+				continue;
+			}
+			const ProviderChatDefaults fallback = DefaultsForProvider(m_app.settings, provider->id);
+			ProviderChatDefaults defaults = DefaultsFromPayload(it.value(), fallback);
+			if (provider->id != "codex-cli")
+			{
+				defaults.reasoning_effort.clear();
+				defaults.service_tier.clear();
+			}
+			m_app.settings.provider_chat_defaults[provider->id] = defaults;
+		}
+	}
+
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist provider chat defaults." : m_app.status_line);
+		return;
+	}
+
+	uam::PushStateUpdate(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleSetEditorSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string default_editor_preset_id = Trim(payload.value("defaultEditorPresetId", m_app.settings.default_editor_preset_id));
+	m_app.settings.default_editor_preset_id = IsKnownEditorPresetId(default_editor_preset_id) ? default_editor_preset_id : "vscode";
+
+	std::vector<EditorFileAssociation> associations = ParseEditorFileAssociationsPayload(payload);
+	if (associations.empty())
+	{
+		associations = DefaultEditorFileAssociationsForUi();
+	}
+	m_app.settings.editor_file_associations = std::move(associations);
+	m_app.settings.editor_default_groups_version = 1;
+
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist editor settings." : m_app.status_line);
 		return;
 	}
 
@@ -1914,6 +2310,48 @@ void UamQueryHandler::HandleOpenWorkspaceDirectory(CefRefPtr<CefBrowser> /*brows
 	}
 
 	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleOpenWorkspaceEditor(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
+	if (chat_index < 0)
+	{
+		cb->Failure(404, "Chat not found.");
+		return;
+	}
+
+	const ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
+	const std::filesystem::path workspace_root = ResolveWorkspaceRootPath(m_app, chat);
+	if (workspace_root.empty())
+	{
+		cb->Failure(400, "Chat has no workspace directory.");
+		return;
+	}
+
+	std::error_code ec;
+	if (!std::filesystem::exists(workspace_root, ec) || ec)
+	{
+		cb->Failure(404, "Workspace directory does not exist.");
+		return;
+	}
+
+	if (!std::filesystem::is_directory(workspace_root, ec) || ec)
+	{
+		cb->Failure(400, "Workspace path is not a directory.");
+		return;
+	}
+
+	const std::string editor_preset_id = SelectEditorPresetForWorkspace(m_app.settings, workspace_root);
+	std::string error;
+	if (!PlatformServicesFactory::Instance().file_dialog_service.OpenFolderInEditorPreset(workspace_root, editor_preset_id, &error))
+	{
+		cb->Failure(500, error.empty() ? "Failed to open workspace editor." : error);
+		return;
+	}
+
+	cb->Success(nlohmann::json{{"editorPresetId", editor_preset_id}}.dump());
 }
 
 void UamQueryHandler::HandleGetChatWorktreeStatus(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)

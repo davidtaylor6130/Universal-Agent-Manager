@@ -30,6 +30,7 @@
 #include "common/utils/io_utils.h"
 #include "cef/uam_bridge_request.h"
 #include "cef/uam_cef_command_line_config.h"
+#include "cef/cef_push.h"
 #include "cef/state_serializer.h"
 #include "core/gemini_cli_compat.h"
 
@@ -345,6 +346,144 @@ UAM_TEST(SettingsStorePersistsMemorySettings)
 	UAM_ASSERT_EQ(loaded.memory_recall_budget_bytes, 1536);
 	UAM_ASSERT_EQ(loaded.memory_worker_bindings["gemini-cli"].worker_provider_id, expected_worker_provider_id);
 	UAM_ASSERT_EQ(loaded.memory_worker_bindings["gemini-cli"].worker_model_id, std::string("gpt-5.4-mini"));
+}
+
+UAM_TEST(SettingsStorePersistsProviderChatDefaults)
+{
+	TempDir temp("uam-provider-chat-defaults");
+	const fs::path settings_file = temp.root / "settings.txt";
+
+	AppSettings settings;
+	settings.default_new_chat_provider_id = "codex-cli";
+	settings.provider_chat_defaults["codex-cli"] = ProviderChatDefaults{"gpt-5.4", "plan", true, false, "high", "fast"};
+	settings.provider_chat_defaults["gemini-cli"] = ProviderChatDefaults{"flash", "default", false, true, "high", "fast"};
+
+	UAM_ASSERT(SettingsStore::Save(settings_file, settings, CenterViewMode::CliConsole));
+
+	AppSettings loaded;
+	CenterViewMode mode = CenterViewMode::CliConsole;
+	SettingsStore::Load(settings_file, loaded, mode);
+
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	UAM_ASSERT_EQ(loaded.default_new_chat_provider_id, std::string("codex-cli"));
+	UAM_ASSERT_EQ(loaded.provider_chat_defaults["codex-cli"].model_id, std::string("gpt-5.4"));
+	UAM_ASSERT_EQ(loaded.provider_chat_defaults["codex-cli"].approval_mode, std::string("plan"));
+	UAM_ASSERT_EQ(loaded.provider_chat_defaults["codex-cli"].auto_approve_commands, true);
+	UAM_ASSERT_EQ(loaded.provider_chat_defaults["codex-cli"].memory_enabled, false);
+	UAM_ASSERT_EQ(loaded.provider_chat_defaults["codex-cli"].reasoning_effort, std::string("high"));
+	UAM_ASSERT_EQ(loaded.provider_chat_defaults["codex-cli"].service_tier, std::string("fast"));
+#endif
+	UAM_ASSERT_EQ(loaded.provider_chat_defaults["gemini-cli"].reasoning_effort, std::string("high"));
+	UAM_ASSERT_EQ(loaded.provider_chat_defaults["gemini-cli"].service_tier, std::string("fast"));
+}
+
+UAM_TEST(SettingsStorePersistsEditorSettings)
+{
+	TempDir temp("uam-editor-settings");
+	const fs::path settings_file = temp.root / "settings.txt";
+
+	AppSettings settings;
+	settings.default_editor_preset_id = "clion";
+	settings.editor_default_groups_version = 1;
+	settings.editor_file_associations = {
+	    EditorFileAssociation{"cpp", "C++", {".cpp", ".h"}, "clion"},
+	    EditorFileAssociation{"web", "Web", {".ts", ".tsx"}, "vscode"},
+	};
+
+	UAM_ASSERT(SettingsStore::Save(settings_file, settings, CenterViewMode::CliConsole));
+
+	AppSettings loaded;
+	CenterViewMode mode = CenterViewMode::CliConsole;
+	SettingsStore::Load(settings_file, loaded, mode);
+
+	UAM_ASSERT_EQ(loaded.default_editor_preset_id, std::string("clion"));
+	UAM_ASSERT_EQ(loaded.editor_file_associations.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(loaded.editor_file_associations[0].name, std::string("C++"));
+	UAM_ASSERT_EQ(loaded.editor_file_associations[0].extensions.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(loaded.editor_file_associations[0].extensions[0], std::string(".cpp"));
+	UAM_ASSERT_EQ(loaded.editor_file_associations[0].editor_preset_id, std::string("clion"));
+	UAM_ASSERT_EQ(loaded.editor_file_associations[1].extensions[1], std::string(".tsx"));
+	UAM_ASSERT_EQ(loaded.editor_file_associations[1].editor_preset_id, std::string("vscode"));
+}
+
+UAM_TEST(SettingsStoreSeedsCommonEditorGroups)
+{
+	TempDir temp("uam-editor-settings-defaults");
+	const fs::path settings_file = temp.root / "settings.txt";
+
+	AppSettings loaded;
+	CenterViewMode mode = CenterViewMode::CliConsole;
+	SettingsStore::Load(settings_file, loaded, mode);
+
+	auto find_group = [&](const std::string& id) -> const EditorFileAssociation* {
+		const auto it = std::find_if(loaded.editor_file_associations.begin(), loaded.editor_file_associations.end(), [&](const EditorFileAssociation& association) {
+			return association.id == id;
+		});
+		return it == loaded.editor_file_associations.end() ? nullptr : &(*it);
+	};
+
+	UAM_ASSERT_EQ(loaded.editor_default_groups_version, 1);
+	UAM_ASSERT(loaded.editor_file_associations.size() >= static_cast<std::size_t>(12));
+	UAM_ASSERT(find_group("cpp") != nullptr);
+	UAM_ASSERT_EQ(find_group("cpp")->editor_preset_id, std::string("clion"));
+	UAM_ASSERT(find_group("python") != nullptr);
+	UAM_ASSERT_EQ(find_group("python")->editor_preset_id, std::string("pycharm"));
+	UAM_ASSERT(find_group("javascript") != nullptr);
+	UAM_ASSERT_EQ(find_group("javascript")->editor_preset_id, std::string("webstorm"));
+	UAM_ASSERT(find_group("react-typescript") != nullptr);
+	UAM_ASSERT_EQ(find_group("react-typescript")->editor_preset_id, std::string("webstorm"));
+	UAM_ASSERT(find_group("rust") != nullptr);
+	UAM_ASSERT_EQ(find_group("rust")->editor_preset_id, std::string("rustrover"));
+}
+
+UAM_TEST(SettingsStoreMigratesLegacyEditorGroupsWithoutOverwriting)
+{
+	TempDir temp("uam-editor-settings-migration");
+	const fs::path settings_file = temp.root / "settings.txt";
+	const std::string legacy_settings =
+	    "default_editor_preset_id=vscode\n"
+	    "editor_file_associations=[{\"id\":\"cpp\",\"name\":\"C++\",\"extensions\":[\".cpp\",\".h\"],\"editorPresetId\":\"xcode\"}]\n";
+	UAM_ASSERT(uam::io::WriteTextFile(settings_file, legacy_settings));
+
+	AppSettings loaded;
+	CenterViewMode mode = CenterViewMode::CliConsole;
+	SettingsStore::Load(settings_file, loaded, mode);
+
+	auto find_group = [&](const std::string& id) -> const EditorFileAssociation* {
+		const auto it = std::find_if(loaded.editor_file_associations.begin(), loaded.editor_file_associations.end(), [&](const EditorFileAssociation& association) {
+			return association.id == id;
+		});
+		return it == loaded.editor_file_associations.end() ? nullptr : &(*it);
+	};
+
+	UAM_ASSERT_EQ(loaded.editor_default_groups_version, 1);
+	UAM_ASSERT(find_group("cpp") != nullptr);
+	UAM_ASSERT_EQ(find_group("cpp")->editor_preset_id, std::string("xcode"));
+	UAM_ASSERT_EQ(find_group("cpp")->extensions.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT(find_group("python") != nullptr);
+	UAM_ASSERT_EQ(find_group("python")->editor_preset_id, std::string("pycharm"));
+	UAM_ASSERT(find_group("web-styles") != nullptr);
+	UAM_ASSERT_EQ(find_group("web-styles")->editor_preset_id, std::string("webstorm"));
+}
+
+UAM_TEST(SettingsStoreDoesNotReaddDeletedCurrentEditorGroups)
+{
+	TempDir temp("uam-editor-settings-current-version");
+	const fs::path settings_file = temp.root / "settings.txt";
+	const std::string current_settings =
+	    "default_editor_preset_id=vscode\n"
+	    "editor_default_groups_version=1\n"
+	    "editor_file_associations=[{\"id\":\"cpp\",\"name\":\"C++\",\"extensions\":[\".cpp\",\".h\"],\"editorPresetId\":\"clion\"}]\n";
+	UAM_ASSERT(uam::io::WriteTextFile(settings_file, current_settings));
+
+	AppSettings loaded;
+	CenterViewMode mode = CenterViewMode::CliConsole;
+	SettingsStore::Load(settings_file, loaded, mode);
+
+	UAM_ASSERT_EQ(loaded.editor_default_groups_version, 1);
+	UAM_ASSERT_EQ(loaded.editor_file_associations.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(loaded.editor_file_associations[0].id, std::string("cpp"));
+	UAM_ASSERT_EQ(loaded.editor_file_associations[0].editor_preset_id, std::string("clion"));
 }
 
 UAM_TEST(ProviderResolutionServiceBlocksDisabledLegacyProviders)
@@ -1377,6 +1516,8 @@ UAM_TEST(ChatRepositoryToleratesLegacyFieldsAndDropsThemOnWrite)
   "id": "legacy-chat",
   "provider_id": "codex-cli",
   "model_id": "flash",
+  "reasoning_effort": "high",
+  "service_tier": "fast",
   "native_session_id": "6a6f0f3b-1a0b-4a9c-8a01-111111111111",
   "folder_id": "folder-a",
   "template_override_id": "removed-template.md",
@@ -1396,12 +1537,16 @@ UAM_TEST(ChatRepositoryToleratesLegacyFieldsAndDropsThemOnWrite)
 	UAM_ASSERT_EQ(loaded.front().id, std::string("legacy-chat"));
 	UAM_ASSERT_EQ(loaded.front().native_session_id, std::string("6a6f0f3b-1a0b-4a9c-8a01-111111111111"));
 	UAM_ASSERT_EQ(loaded.front().model_id, std::string("flash"));
+	UAM_ASSERT_EQ(loaded.front().reasoning_effort, std::string("high"));
+	UAM_ASSERT_EQ(loaded.front().service_tier, std::string("fast"));
 	UAM_ASSERT_EQ(loaded.front().messages.size(), static_cast<std::size_t>(1));
 
 	UAM_ASSERT(ChatRepository::SaveChat(temp.root, loaded.front()));
 	const std::string rewritten = ReadFile(legacy_file);
 	const nlohmann::json rewritten_json = nlohmann::json::parse(rewritten);
 	UAM_ASSERT_EQ(rewritten_json.value("model_id", ""), std::string("flash"));
+	UAM_ASSERT_EQ(rewritten_json.value("reasoning_effort", ""), std::string("high"));
+	UAM_ASSERT_EQ(rewritten_json.value("service_tier", ""), std::string("fast"));
 	UAM_ASSERT(rewritten.find("template_override_id") == std::string::npos);
 	UAM_ASSERT(rewritten.find("prompt_profile_bootstrapped") == std::string::npos);
 	UAM_ASSERT(rewritten.find("rag_enabled") == std::string::npos);
@@ -1911,6 +2056,26 @@ UAM_TEST(StateSerializerIncludesChatModelId)
 	UAM_ASSERT_EQ(fingerprint["chats"][0].value("approvalMode", ""), std::string("plan"));
 }
 
+UAM_TEST(StatePatchSettingsIncludeChatDefaults)
+{
+	uam::AppState app;
+	app.settings.default_new_chat_provider_id = "codex-cli";
+	app.settings.provider_chat_defaults["codex-cli"] = ProviderChatDefaults{"gpt-5.4", "plan", true, false, "high", "fast"};
+	app.settings.markdown_store_directory = "/tmp/markdown";
+	app.settings.default_editor_preset_id = "clion";
+	app.settings.editor_file_associations = {
+	    EditorFileAssociation{"cpp", "C++", {".cpp", ".h"}, "clion"},
+	};
+
+	const nlohmann::json settings = nlohmann::json::parse(uam::SettingsPatchForTests(app));
+	UAM_ASSERT_EQ(settings.value("defaultNewChatProviderId", ""), std::string("codex-cli"));
+	UAM_ASSERT_EQ(settings.value("markdownStoreDirectory", ""), std::string("/tmp/markdown"));
+	UAM_ASSERT_EQ(settings.value("defaultEditorPresetId", ""), std::string("clion"));
+	UAM_ASSERT_EQ(settings["providerChatDefaults"]["codex-cli"].value("reasoningEffort", ""), std::string("high"));
+	UAM_ASSERT_EQ(settings["providerChatDefaults"]["codex-cli"].value("serviceTier", ""), std::string("fast"));
+	UAM_ASSERT_EQ(settings["editorFileAssociations"][0].value("editorPresetId", ""), std::string("clion"));
+}
+
 UAM_TEST(StateSerializerIncludesAllCliVersionManagers)
 {
 	uam::AppState app;
@@ -2394,6 +2559,8 @@ UAM_TEST(CodexAppServerRequestBuildersUseCodexProtocolMethods)
 	chat.provider_id = "codex-cli";
 	chat.native_session_id = "6a6f0f3b-1a0b-4a9c-8a01-111111111111";
 	chat.model_id = "gpt-5.4";
+	chat.reasoning_effort = "high";
+	chat.service_tier = "fast";
 	chat.approval_mode = "plan";
 
 	const nlohmann::json initialize = nlohmann::json::parse(uam::BuildCodexInitializeRequestForTests(21));
@@ -2453,8 +2620,11 @@ UAM_TEST(CodexAppServerRequestBuildersUseCodexProtocolMethods)
 	UAM_ASSERT_EQ(turn_start["params"].value("threadId", ""), chat.native_session_id);
 	UAM_ASSERT_EQ(turn_start["params"]["input"][0].value("text", ""), std::string("hello"));
 	UAM_ASSERT_EQ(turn_start["params"].value("model", ""), std::string("gpt-5.4"));
+	UAM_ASSERT_EQ(turn_start["params"].value("effort", ""), std::string("high"));
+	UAM_ASSERT_EQ(turn_start["params"].value("serviceTier", ""), std::string("fast"));
 	UAM_ASSERT_EQ(turn_start["params"]["collaborationMode"].value("mode", ""), std::string("plan"));
 	UAM_ASSERT_EQ(turn_start["params"]["collaborationMode"]["settings"].value("model", ""), std::string("gpt-5.4"));
+	UAM_ASSERT_EQ(turn_start["params"]["collaborationMode"]["settings"].value("reasoning_effort", ""), std::string("high"));
 
 	ChatSession active_model_chat = chat;
 	active_model_chat.model_id.clear();
@@ -2471,6 +2641,8 @@ UAM_TEST(CodexAppServerRequestBuildersUseCodexProtocolMethods)
 	const nlohmann::json missing_model_turn_start = nlohmann::json::parse(uam::BuildCodexTurnStartRequestForTests(251, chat.native_session_id, "hello", active_model_chat));
 	UAM_ASSERT(!missing_model_turn_start["params"].contains("model"));
 	UAM_ASSERT(!missing_model_turn_start["params"].contains("collaborationMode"));
+	UAM_ASSERT_EQ(missing_model_turn_start["params"].value("effort", ""), std::string("high"));
+	UAM_ASSERT_EQ(missing_model_turn_start["params"].value("serviceTier", ""), std::string("fast"));
 
 	const nlohmann::json interrupt = nlohmann::json::parse(uam::BuildCodexTurnInterruptRequestForTests(26, chat.native_session_id, "turn-1"));
 	UAM_ASSERT_EQ(interrupt.value("method", ""), std::string("turn/interrupt"));
@@ -3501,7 +3673,7 @@ UAM_TEST(CodexCachedModelsPopulateSelectorBeforeAppServerStarts)
 	ScopedEnvVar codex_home("CODEX_HOME", temp.root.string());
 	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "models_cache.json", R"({
   "models": [
-    {"slug": "gpt-5.4", "display_name": "gpt-5.4", "description": "Latest frontier agentic coding model.", "visibility": "list"},
+    {"slug": "gpt-5.4", "display_name": "gpt-5.4", "description": "Latest frontier agentic coding model.", "visibility": "list", "defaultReasoningEffort": "medium", "supportedReasoningEfforts": [{"reasoningEffort": "low"}, {"reasoningEffort": "high"}], "additionalSpeedTiers": ["fast"]},
     {"slug": "hidden-model", "display_name": "Hidden", "visibility": "hidden"},
     {"slug": "gpt-5.4-mini", "display_name": "GPT-5.4-Mini", "description": "Smaller frontier agentic coding model.", "visibility": "list"},
     {"slug": "gpt-5.4", "display_name": "Duplicate", "visibility": "list"}
@@ -3520,9 +3692,105 @@ UAM_TEST(CodexCachedModelsPopulateSelectorBeforeAppServerStarts)
 	UAM_ASSERT_EQ(acp["availableModels"].size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(acp["availableModels"][0].value("id", ""), std::string("gpt-5.4"));
 	UAM_ASSERT_EQ(acp["availableModels"][0].value("name", ""), std::string("gpt-5.4"));
+	UAM_ASSERT_EQ(acp["availableModels"][0].value("defaultReasoningEffort", ""), std::string("medium"));
+	UAM_ASSERT_EQ(acp["availableModels"][0]["supportedReasoningEfforts"][0], std::string("low"));
+	UAM_ASSERT_EQ(acp["availableModels"][0]["additionalSpeedTiers"][0], std::string("fast"));
 	UAM_ASSERT_EQ(acp["availableModels"][1].value("id", ""), std::string("gpt-5.4-mini"));
 	UAM_ASSERT_EQ(acp["availableModels"][1].value("name", ""), std::string("GPT-5.4-Mini"));
 	UAM_ASSERT_EQ(acp.value("currentModelId", ""), std::string(""));
+}
+
+UAM_TEST(OpenCodeConfigModelsPopulateSelectorBeforeAcpStarts)
+{
+	TempDir temp("uam-opencode-model-config");
+	ScopedEnvVar config_home("XDG_CONFIG_HOME", temp.root.string());
+	const fs::path config_dir = temp.root / "opencode";
+	fs::create_directories(config_dir);
+	UAM_ASSERT(uam::io::WriteTextFile(config_dir / "opencode.json", R"({
+  "provider": {
+    "ollama-r9700": {
+      "name": "Ollama on R9700",
+      "models": {
+        "qwen3.6:35b-a3b-q4_K_M": { "name": "Qwen3.6 35B A3B Q4" },
+        "qwen3-coder:30b": { "name": "Qwen3 Coder 30B", "description": "Coding model" }
+      }
+    },
+    "local-openai": {
+      "models": {
+        "gpt-oss:20b": { "name": "GPT-OSS 20B" }
+      }
+    }
+  },
+  "model": "ollama-r9700/qwen3.6:35b-a3b-q4_K_M"
+})"));
+
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "opencode-cli";
+	app.chats.push_back(std::move(chat));
+
+	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json acp = serialized["chats"][0]["acpSession"];
+	auto model_by_id = [&](const std::string& id) -> nlohmann::json
+	{
+		for (const nlohmann::json& model : acp["availableModels"])
+		{
+			if (model.value("id", "") == id)
+			{
+				return model;
+			}
+		}
+		return nlohmann::json::object();
+	};
+	UAM_ASSERT_EQ(acp["availableModels"].size(), static_cast<std::size_t>(3));
+	UAM_ASSERT_EQ(model_by_id("ollama-r9700/qwen3.6:35b-a3b-q4_K_M").value("name", ""), std::string("Qwen3.6 35B A3B Q4"));
+	UAM_ASSERT_EQ(model_by_id("ollama-r9700/qwen3-coder:30b").value("description", ""), std::string("Coding model"));
+	UAM_ASSERT_EQ(model_by_id("local-openai/gpt-oss:20b").value("name", ""), std::string("GPT-OSS 20B"));
+	UAM_ASSERT_EQ(acp.value("currentModelId", ""), std::string("ollama-r9700/qwen3.6:35b-a3b-q4_K_M"));
+}
+
+UAM_TEST(OpenCodeRuntimeModelsMergeWithConfiguredModels)
+{
+	TempDir temp("uam-opencode-model-merge");
+	ScopedEnvVar config_home("XDG_CONFIG_HOME", temp.root.string());
+	const fs::path config_dir = temp.root / "opencode";
+	fs::create_directories(config_dir);
+	UAM_ASSERT(uam::io::WriteTextFile(config_dir / "opencode.json", R"({
+  "provider": {
+    "ollama-r9700": {
+      "models": {
+        "qwen3-coder:30b": { "name": "Qwen3 Coder 30B" }
+      }
+    }
+  }
+})"));
+
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "opencode-cli";
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->provider_id = "opencode-cli";
+	session->protocol_kind = "opencode-acp";
+	session->running = true;
+	session->session_ready = true;
+	session->available_models.push_back(uam::AcpModelState{"ollama-r9700/qwen3-coder:30b", "Runtime duplicate", ""});
+	session->available_models.push_back(uam::AcpModelState{"ollama-r9700/mistral-small3.2:24b", "Mistral Small 3.2 24B", ""});
+	app.acp_sessions.push_back(std::move(session));
+
+	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json acp = serialized["chats"][0]["acpSession"];
+	UAM_ASSERT_EQ(acp["availableModels"].size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(acp["availableModels"][0].value("id", ""), std::string("ollama-r9700/qwen3-coder:30b"));
+	UAM_ASSERT_EQ(acp["availableModels"][0].value("name", ""), std::string("Qwen3 Coder 30B"));
+	UAM_ASSERT_EQ(acp["availableModels"][1].value("id", ""), std::string("ollama-r9700/mistral-small3.2:24b"));
+	UAM_ASSERT_EQ(acp["availableModels"][1].value("name", ""), std::string("Mistral Small 3.2 24B"));
 }
 
 UAM_TEST(CodexAppServerStateTransitionsMapModelsTurnsToolsAndApprovals)
@@ -3553,11 +3821,14 @@ UAM_TEST(CodexAppServerStateTransitionsMapModelsTurnsToolsAndApprovals)
 	UAM_ASSERT_EQ(raw_session->agent_version, std::string("codex-cli/1.2.3"));
 
 	raw_session->pending_request_methods[2] = "model/list";
-	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":2,"result":{"currentModelId":"gpt-5.4-mini","data":[{"slug":"gpt-5.4","display_name":"gpt-5.4","description":"Latest frontier agentic coding model.","visibility":"list"},{"id":"gpt-5.4-mini","displayName":"GPT-5.4-Mini","description":"Smaller model","isDefault":true},{"slug":"hidden-model","display_name":"Hidden","visibility":"hidden"},{"id":"hidden","displayName":"Hidden","hidden":true},{"id":"gpt-5.4","displayName":"Duplicate","description":"Duplicate entry","visibility":"list"}]}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":2,"result":{"currentModelId":"gpt-5.4-mini","data":[{"slug":"gpt-5.4","display_name":"gpt-5.4","description":"Latest frontier agentic coding model.","visibility":"list","defaultReasoningEffort":"medium","supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}],"additionalSpeedTiers":["fast"]},{"id":"gpt-5.4-mini","displayName":"GPT-5.4-Mini","description":"Smaller model","isDefault":true},{"slug":"hidden-model","display_name":"Hidden","visibility":"hidden"},{"id":"hidden","displayName":"Hidden","hidden":true},{"id":"gpt-5.4","displayName":"Duplicate","description":"Duplicate entry","visibility":"list"}]}})"));
 	UAM_ASSERT_EQ(raw_session->available_models.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(raw_session->available_models[0].id, std::string("gpt-5.4"));
 	UAM_ASSERT_EQ(raw_session->available_models[0].name, std::string("gpt-5.4"));
 	UAM_ASSERT_EQ(raw_session->available_models[0].description, std::string("Latest frontier agentic coding model."));
+	UAM_ASSERT_EQ(raw_session->available_models[0].default_reasoning_effort, std::string("medium"));
+	UAM_ASSERT_EQ(raw_session->available_models[0].supported_reasoning_efforts[0], std::string("low"));
+	UAM_ASSERT_EQ(raw_session->available_models[0].additional_speed_tiers[0], std::string("fast"));
 	UAM_ASSERT_EQ(raw_session->available_models[1].id, std::string("gpt-5.4-mini"));
 	UAM_ASSERT_EQ(raw_session->available_models[1].name, std::string("GPT-5.4-Mini"));
 	UAM_ASSERT_EQ(raw_session->current_model_id, std::string("gpt-5.4-mini"));

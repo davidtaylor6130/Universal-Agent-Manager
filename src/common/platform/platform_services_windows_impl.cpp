@@ -1881,6 +1881,90 @@ namespace
 			return true;
 		}
 
+		bool OpenFolderInEditorPreset(const std::filesystem::path& folder_path, const std::string& editor_preset_id, std::string* error_out = nullptr) const override
+		{
+			if (folder_path.empty())
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Folder path is empty.";
+				}
+				return false;
+			}
+
+			std::error_code ec;
+			if (!std::filesystem::exists(folder_path, ec) || !std::filesystem::is_directory(folder_path, ec))
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Workspace directory does not exist.";
+				}
+				return false;
+			}
+
+			std::wstring executable = L"Code.exe";
+			std::string label = "Visual Studio Code";
+			if (editor_preset_id == "visualstudio")
+			{
+				executable = L"devenv.exe";
+				label = "Visual Studio";
+			}
+			else if (editor_preset_id == "clion")
+			{
+				executable = L"clion64.exe";
+				label = "CLion";
+			}
+			else if (editor_preset_id == "rider")
+			{
+				executable = L"rider64.exe";
+				label = "Rider";
+			}
+			else if (editor_preset_id == "webstorm")
+			{
+				executable = L"webstorm64.exe";
+				label = "WebStorm";
+			}
+			else if (editor_preset_id == "pycharm")
+			{
+				executable = L"pycharm64.exe";
+				label = "PyCharm";
+			}
+			else if (editor_preset_id == "idea")
+			{
+				executable = L"idea64.exe";
+				label = "IntelliJ IDEA";
+			}
+			else if (editor_preset_id == "goland")
+			{
+				executable = L"goland64.exe";
+				label = "GoLand";
+			}
+			else if (editor_preset_id == "rustrover")
+			{
+				executable = L"rustrover64.exe";
+				label = "RustRover";
+			}
+			else if (editor_preset_id == "xcode")
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Xcode is not available on Windows.";
+				}
+				return false;
+			}
+
+			const HINSTANCE result = ShellExecuteW(nullptr, L"open", executable.c_str(), folder_path.c_str(), nullptr, SW_SHOWNORMAL);
+			if (reinterpret_cast<INT_PTR>(result) <= 32)
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to open workspace in " + label + ".";
+				}
+				return false;
+			}
+			return true;
+		}
+
 		bool RevealPathInFileManager(const std::filesystem::path& file_path, std::string* error_out = nullptr) const override
 		{
 			if (file_path.empty())

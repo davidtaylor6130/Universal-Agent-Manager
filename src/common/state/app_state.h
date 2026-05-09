@@ -114,6 +114,9 @@ namespace uam
 			std::string id;
 			std::string name;
 			std::string description;
+			std::string default_reasoning_effort;
+			std::vector<std::string> supported_reasoning_efforts;
+			std::vector<std::string> additional_speed_tiers;
 		};
 
 	struct AcpTurnEventState
@@ -212,6 +215,7 @@ namespace uam
 		int next_request_id = 1;
 		int initialize_request_id = 0;
 		int session_setup_request_id = 0;
+		int startup_model_request_id = 0;
 		int prompt_request_id = 0;
 		int cancel_request_id = 0;
 		int current_assistant_message_index = -1;
@@ -248,6 +252,7 @@ namespace uam
 			std::string current_mode_id;
 			std::vector<AcpModelState> available_models;
 			std::string current_model_id;
+			std::string pending_startup_model_id;
 			std::vector<AcpTurnEventState> turn_events;
 			AcpPendingPermissionState pending_permission;
 			AcpPendingUserInputState pending_user_input;

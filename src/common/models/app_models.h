@@ -111,9 +111,11 @@ struct ChatSession
 		std::string workspace_base_ref;
 		std::string workspace_branch_name;
 		std::string workspace_worktree_directory;
-		std::string approval_mode;
+	std::string approval_mode;
 	bool auto_approve_commands = false;
 	std::string model_id;
+	std::string reasoning_effort;
+	std::string service_tier;
 	std::string extra_flags;
 	bool memory_enabled = true;
 	int memory_last_processed_message_count = 0;
@@ -124,6 +126,24 @@ struct MemoryWorkerBinding
 {
 	std::string worker_provider_id;
 	std::string worker_model_id;
+};
+
+struct EditorFileAssociation
+{
+	std::string id;
+	std::string name;
+	std::vector<std::string> extensions;
+	std::string editor_preset_id;
+};
+
+struct ProviderChatDefaults
+{
+	std::string model_id;
+	std::string approval_mode = "default";
+	bool auto_approve_commands = false;
+	bool memory_enabled = true;
+	std::string reasoning_effort;
+	std::string service_tier;
 };
 
 /// <summary>
@@ -166,7 +186,12 @@ struct AppSettings
 	int memory_idle_delay_seconds = 60;
 	int memory_recall_budget_bytes = 2048;
 	std::map<std::string, MemoryWorkerBinding> memory_worker_bindings;
+	std::string default_new_chat_provider_id = provider_build_config::FirstEnabledProviderId();
+	std::map<std::string, ProviderChatDefaults> provider_chat_defaults;
 	std::string markdown_store_directory;
+	std::string default_editor_preset_id = "vscode";
+	int editor_default_groups_version = 0;
+	std::vector<EditorFileAssociation> editor_file_associations;
 };
 
 /// <summary>

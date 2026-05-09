@@ -8,6 +8,7 @@ export function NewChatModal() {
   const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
   const folders = useAppStore(useShallow((s) => s.folders))
   const providers = useAppStore(useShallow((s) => s.providers))
+  const defaultNewChatProviderId = useAppStore((s) => s.defaultNewChatProviderId)
   const newChatFolderId = useAppStore((s) => s.newChatFolderId)
   const initialFolderId =
     newChatFolderId !== null && folders.some((folder) => folder.id === newChatFolderId)
@@ -15,7 +16,11 @@ export function NewChatModal() {
       : null
   const [name, setName] = useState('')
   const [folderId, setFolderId] = useState<string | null>(initialFolderId)
-  const [providerId, setProviderId] = useState<string>(providers[0]?.id ?? 'gemini-cli')
+  const [providerId, setProviderId] = useState<string>(
+    providers.some((provider) => provider.id === defaultNewChatProviderId)
+      ? defaultNewChatProviderId
+      : providers[0]?.id ?? 'gemini-cli'
+  )
   const [folderMenuOpen, setFolderMenuOpen] = useState(false)
   const [providerMenuOpen, setProviderMenuOpen] = useState(false)
   const nameRef = useRef<HTMLInputElement>(null)
@@ -49,9 +54,9 @@ export function NewChatModal() {
   useEffect(() => {
     if (providers.length === 0) return
     if (!providers.some((provider) => provider.id === providerId)) {
-      setProviderId(providers[0].id)
+      setProviderId(providers.some((provider) => provider.id === defaultNewChatProviderId) ? defaultNewChatProviderId : providers[0].id)
     }
-  }, [providers, providerId])
+  }, [providers, providerId, defaultNewChatProviderId])
 
   // Close on Escape
   useEffect(() => {

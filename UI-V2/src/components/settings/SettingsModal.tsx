@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { useAppStore, type CliVersionProviderState, type MemoryWorkerBinding } from '../../store/useAppStore'
+import { useAppStore, type CliVersionProviderState, type EditorFileAssociation, type MemoryWorkerBinding, type ProviderChatDefaults } from '../../store/useAppStore'
 import { ThemeToggle } from '../shared/ThemeToggle'
 import { useTheme } from '../../hooks/useTheme'
 import type { Provider } from '../../types/provider'
@@ -26,6 +26,21 @@ const CODEX_MEMORY_MODELS: MemoryModelOption[] = [
   { id: 'gpt-5.4', label: 'GPT-5.4', detail: 'Frontier coding model' },
   { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', detail: 'Smaller fast model' },
   { id: 'gpt-5.2', label: 'GPT-5.2', detail: 'Balanced coding model' },
+]
+
+const CODEX_REASONING_OPTIONS: MemoryModelOption[] = [
+  { id: '', label: 'CLI default', detail: 'Use Codex default reasoning' },
+  { id: 'minimal', label: 'Minimal', detail: 'Fastest reasoning' },
+  { id: 'low', label: 'Low', detail: 'Faster responses' },
+  { id: 'medium', label: 'Medium', detail: 'Balanced reasoning' },
+  { id: 'high', label: 'High', detail: 'Deeper reasoning' },
+  { id: 'xhigh', label: 'XHigh', detail: 'Maximum reasoning' },
+]
+
+const CODEX_SPEED_OPTIONS: MemoryModelOption[] = [
+  { id: '', label: 'CLI default', detail: 'Use Codex default speed' },
+  { id: 'fast', label: 'Fast', detail: 'Prioritize latency' },
+  { id: 'flex', label: 'Flex', detail: 'Use flexible service tier' },
 ]
 
 function providerDisplayName(provider?: Provider, fallbackId = '') {
@@ -84,7 +99,7 @@ function selectedMemoryModelLabel(options: MemoryModelOption[], modelId: string)
   return options.find((option) => option.id === modelId)?.label ?? titleFromModelId(modelId)
 }
 
-type SettingsSectionId = 'appearance' | 'cli-version' | 'memory' | 'about'
+type SettingsSectionId = 'appearance' | 'defaults' | 'cli-version' | 'memory' | 'editors' | 'about'
 
 interface SettingsSection {
   id: SettingsSectionId
@@ -94,10 +109,43 @@ interface SettingsSection {
 
 const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'appearance', label: 'Appearance', detail: 'Theme and display' },
+  { id: 'defaults', label: 'Chat Defaults', detail: 'Provider and new-chat settings' },
   { id: 'cli-version', label: 'CLI Version', detail: 'Run or revert provider CLIs' },
   { id: 'memory', label: 'Memory', detail: 'Defaults and workers' },
+  { id: 'editors', label: 'Editors', detail: 'Workspace launch presets' },
   { id: 'about', label: 'About', detail: 'Version information' },
 ]
+
+const EDITOR_PRESETS = [
+  { id: 'vscode', label: 'VS Code' },
+  { id: 'xcode', label: 'Xcode' },
+  { id: 'visualstudio', label: 'Visual Studio' },
+  { id: 'clion', label: 'CLion' },
+  { id: 'rider', label: 'Rider' },
+  { id: 'webstorm', label: 'WebStorm' },
+  { id: 'pycharm', label: 'PyCharm' },
+  { id: 'idea', label: 'IntelliJ IDEA' },
+  { id: 'goland', label: 'GoLand' },
+  { id: 'rustrover', label: 'RustRover' },
+]
+
+function editorPresetLabel(id: string) {
+  return EDITOR_PRESETS.find((preset) => preset.id === id)?.label ?? 'VS Code'
+}
+
+function extensionsText(association: EditorFileAssociation) {
+  return association.extensions.join(' ')
+}
+
+function parseExtensions(value: string) {
+  return Array.from(new Set(
+    value
+      .split(/[,\s]+/)
+      .map((extension) => extension.trim().toLowerCase())
+      .filter(Boolean)
+      .map((extension) => extension.startsWith('.') ? extension : `.${extension}`)
+  ))
+}
 
 function versionStatusText(manager: CliVersionProviderState) {
   if (manager.status === 'checking') return 'Checking installed version'
@@ -140,7 +188,13 @@ export function SettingsModal() {
   const memoryActivity = useAppStore(useShallow((s) => s.memoryActivity))
   const cliVersionManager = useAppStore(useShallow((s) => s.cliVersionManager))
   const markdownStoreDirectory = useAppStore((s) => s.markdownStoreDirectory)
+  const defaultNewChatProviderId = useAppStore((s) => s.defaultNewChatProviderId)
+  const providerChatDefaults = useAppStore(useShallow((s) => s.providerChatDefaults))
+  const defaultEditorPresetId = useAppStore((s) => s.defaultEditorPresetId)
+  const editorFileAssociations = useAppStore(useShallow((s) => s.editorFileAssociations))
   const setMemorySettings = useAppStore((s) => s.setMemorySettings)
+  const setProviderChatDefaults = useAppStore((s) => s.setProviderChatDefaults)
+  const setEditorSettings = useAppStore((s) => s.setEditorSettings)
   const refreshCliProviderVersion = useAppStore((s) => s.refreshCliProviderVersion)
   const applyCliProviderVersion = useAppStore((s) => s.applyCliProviderVersion)
   const browseMarkdownStoreDirectory = useAppStore((s) => s.browseMarkdownStoreDirectory)
@@ -150,10 +204,16 @@ export function SettingsModal() {
   const openMemoryScanModal = useAppStore((s) => s.openMemoryScanModal)
   const { theme } = useTheme()
   const [openMemoryMenu, setOpenMemoryMenu] = useState<string | null>(null)
+  const [openEditorMenu, setOpenEditorMenu] = useState<string | null>(null)
+  const [openDefaultsMenu, setOpenDefaultsMenu] = useState<string | null>(null)
   const [selectedCliVersions, setSelectedCliVersions] = useState<Record<string, string>>({})
   const [markdownStoreDraftDirectory, setMarkdownStoreDraftDirectory] = useState(markdownStoreDirectory)
+  const [editorAssociationsDraft, setEditorAssociationsDraft] = useState(editorFileAssociations)
+  const [defaultEditorDraft, setDefaultEditorDraft] = useState(defaultEditorPresetId)
   const [selectedSection, setSelectedSection] = useState<SettingsSectionId>('appearance')
   const memoryMenuRef = useRef<HTMLDivElement>(null)
+  const editorMenuRef = useRef<HTMLDivElement>(null)
+  const defaultsMenuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     setSelectedCliVersions((current) => {
@@ -174,17 +234,27 @@ export function SettingsModal() {
         setOpenMemoryMenu(null)
         return
       }
+      if (openEditorMenu) {
+        setOpenEditorMenu(null)
+        return
+      }
+      if (openDefaultsMenu) {
+        setOpenDefaultsMenu(null)
+        return
+      }
       setSettingsOpen(false)
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [openMemoryMenu, setSettingsOpen])
+  }, [openDefaultsMenu, openEditorMenu, openMemoryMenu, setSettingsOpen])
 
   useEffect(() => {
     const handler = (event: MouseEvent) => {
       const target = event.target
       if (!(target instanceof Node)) return
       if (!memoryMenuRef.current?.contains(target)) setOpenMemoryMenu(null)
+      if (!editorMenuRef.current?.contains(target)) setOpenEditorMenu(null)
+      if (!defaultsMenuRef.current?.contains(target)) setOpenDefaultsMenu(null)
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
@@ -194,6 +264,14 @@ export function SettingsModal() {
     setMarkdownStoreDraftDirectory(markdownStoreDirectory)
   }, [markdownStoreDirectory])
 
+  useEffect(() => {
+    setEditorAssociationsDraft(editorFileAssociations)
+  }, [editorFileAssociations])
+
+  useEffect(() => {
+    setDefaultEditorDraft(defaultEditorPresetId)
+  }, [defaultEditorPresetId])
+
   const updateMemoryBinding = (providerId: string, binding: MemoryWorkerBinding) => {
     void setMemorySettings({
       memoryWorkerBindings: {
@@ -202,6 +280,188 @@ export function SettingsModal() {
       },
     })
   }
+
+  const defaultsForProvider = (provider: Provider): ProviderChatDefaults => {
+    const saved = providerChatDefaults[provider.id]
+    return {
+      modelId: saved?.modelId ?? '',
+      approvalMode: saved?.approvalMode ?? 'default',
+      autoApproveCommands: saved?.autoApproveCommands ?? false,
+      memoryEnabled: saved?.memoryEnabled ?? memoryEnabledDefault,
+      reasoningEffort: saved?.reasoningEffort ?? '',
+      serviceTier: saved?.serviceTier ?? '',
+    }
+  }
+
+  const updateProviderDefaults = (providerId: string, defaults: ProviderChatDefaults) => {
+    void setProviderChatDefaults({
+      providerChatDefaults: {
+        ...providerChatDefaults,
+        [providerId]: defaults,
+      },
+    })
+  }
+
+  const renderDefaultsMenu = (
+    menuId: string,
+    value: string,
+    label: string,
+    options: MemoryModelOption[],
+    onSelect: (value: string) => void,
+    renderOptionIcon?: (option: MemoryModelOption) => ReactNode
+  ) => {
+    const selectedOption = options.find((option) => option.id === value) ?? options[0]
+    return (
+      <div className="relative">
+        <button
+          type="button"
+          title={label}
+          aria-haspopup="listbox"
+          aria-expanded={openDefaultsMenu === menuId}
+          onClick={() => setOpenDefaultsMenu(openDefaultsMenu === menuId ? null : menuId)}
+          className="w-full text-left"
+          style={{
+            background: 'var(--surface-up)',
+            color: 'var(--text)',
+            border: '1px solid var(--border)',
+            borderRadius: 8,
+            padding: '8px 10px',
+          }}
+        >
+          <span className="inline-flex items-center gap-2 min-w-0">
+            {selectedOption ? renderOptionIcon?.(selectedOption) : null}
+            <span className="truncate">{selectedOption?.label ?? titleFromModelId(value)}</span>
+          </span>
+        </button>
+        {openDefaultsMenu === menuId && (
+          <div
+            role="listbox"
+            aria-label={label}
+            className="absolute left-0 right-0"
+            style={{
+              top: 38,
+              zIndex: 70,
+              border: '1px solid var(--border-bright)',
+              borderRadius: 10,
+              background: 'var(--surface)',
+              boxShadow: '0 14px 42px rgba(0, 0, 0, 0.28)',
+              padding: 6,
+            }}
+          >
+            {options.map((option) => {
+              const selected = option.id === value
+              return (
+                <button
+                  key={option.id || 'default'}
+                  type="button"
+                  role="option"
+                  aria-selected={selected}
+                  onClick={() => {
+                    onSelect(option.id)
+                    setOpenDefaultsMenu(null)
+                  }}
+                  className="w-full flex items-center gap-2 text-left px-2 py-2"
+                  style={{
+                    borderRadius: 6,
+                    background: selected ? 'var(--accent-dim)' : 'transparent',
+                    color: selected ? 'var(--text)' : 'var(--text-2)',
+                  }}
+                >
+                  {renderOptionIcon?.(option)}
+                  <span className="flex-1 min-w-0">
+                    <span className="block truncate">{option.label}</span>
+                    {option.detail && (
+                      <span className="block truncate text-[11px]" style={{ color: 'var(--text-3)' }}>
+                        {option.detail}
+                      </span>
+                    )}
+                  </span>
+                  {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  const saveEditorSettings = (nextAssociations = editorAssociationsDraft, nextDefaultEditor = defaultEditorDraft) => {
+    setEditorAssociationsDraft(nextAssociations)
+    setDefaultEditorDraft(nextDefaultEditor)
+    void setEditorSettings({
+      defaultEditorPresetId: nextDefaultEditor,
+      editorFileAssociations: nextAssociations,
+    })
+  }
+
+  const renderEditorPresetMenu = (
+    menuId: string,
+    value: string,
+    label: string,
+    onSelect: (presetId: string) => void
+  ) => (
+    <div className="relative">
+      <button
+        type="button"
+        title={label}
+        aria-haspopup="listbox"
+        aria-expanded={openEditorMenu === menuId}
+        onClick={() => setOpenEditorMenu(openEditorMenu === menuId ? null : menuId)}
+        className="w-full text-left"
+        style={{
+          background: 'var(--surface-up)',
+          color: 'var(--text)',
+          border: '1px solid var(--border)',
+          borderRadius: 8,
+          padding: '8px 10px',
+        }}
+      >
+        {editorPresetLabel(value)}
+      </button>
+      {openEditorMenu === menuId && (
+        <div
+          role="listbox"
+          aria-label={label}
+          className="absolute left-0 right-0"
+          style={{
+            top: 38,
+            zIndex: 60,
+            border: '1px solid var(--border-bright)',
+            borderRadius: 10,
+            background: 'var(--surface)',
+            boxShadow: '0 14px 42px rgba(0, 0, 0, 0.28)',
+            padding: 6,
+          }}
+        >
+          {EDITOR_PRESETS.map((preset) => {
+            const selected = preset.id === value
+            return (
+              <button
+                key={preset.id}
+                type="button"
+                role="option"
+                aria-selected={selected}
+                onClick={() => {
+                  onSelect(preset.id)
+                  setOpenEditorMenu(null)
+                }}
+                className="w-full flex items-center gap-2 text-left px-2 py-2"
+                style={{
+                  borderRadius: 6,
+                  background: selected ? 'var(--accent-dim)' : 'transparent',
+                  color: selected ? 'var(--text)' : 'var(--text-2)',
+                }}
+              >
+                <span className="flex-1">{preset.label}</span>
+                {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
 
   const workerLogText = [
     memoryActivity.lastWorkerError ? `Error:\n${memoryActivity.lastWorkerError}` : '',
@@ -234,6 +494,132 @@ export function SettingsModal() {
                 </div>
               </div>
               <ThemeToggle />
+            </div>
+          </SectionCard>
+        </div>
+      )
+    }
+
+    if (selectedSection === 'defaults') {
+      return (
+        <div className="space-y-4">
+          <SectionCard
+            title="New Chat Defaults"
+            description="Choose the provider preselected for new chats and the defaults each provider applies."
+          >
+            <div ref={defaultsMenuRef} className="grid gap-4">
+              <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                <div>Default provider</div>
+                {renderDefaultsMenu(
+                  'default-provider',
+                  defaultNewChatProviderId || providers[0]?.id || 'gemini-cli',
+                  'Default provider',
+                  providers.map((provider) => ({
+                    id: provider.id,
+                    label: providerDisplayName(provider, provider.id),
+                    detail: provider.name ?? provider.id,
+                  })),
+                  (providerId) => void setProviderChatDefaults({ defaultNewChatProviderId: providerId }),
+                  (option) => <ProviderLogo providerId={option.id} />
+                )}
+              </div>
+
+              <div className="space-y-3">
+                {providers.map((provider) => {
+                  const defaults = defaultsForProvider(provider)
+                  const modelOptions = memoryModelOptions(provider, provider.id, defaults.modelId)
+                  const codexProvider = isCodexProvider(provider, provider.id)
+                  const modeOptions = [
+                    { id: 'default', label: 'Default', detail: 'Use the provider default mode' },
+                    { id: 'plan', label: 'Plan', detail: 'Ask the provider to plan first' },
+                    ...(isClaudeProvider(provider, provider.id) ? [{ id: 'acceptEdits', label: 'Accept Edits', detail: 'Auto-approve workspace file edits' }] : []),
+                  ]
+                  return (
+                    <div
+                      key={provider.id}
+                      className="grid gap-3 rounded-lg p-3 text-xs"
+                      style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)' }}
+                    >
+                      <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--text)' }}>
+                        <ProviderLogo providerId={provider.id} />
+                        <span>{providerDisplayName(provider, provider.id)}</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="grid gap-1">
+                          <div>Model</div>
+                          {renderDefaultsMenu(
+                            `${provider.id}:model`,
+                            defaults.modelId,
+                            `${providerDisplayName(provider, provider.id)} default model`,
+                            modelOptions,
+                            (modelId) => updateProviderDefaults(provider.id, { ...defaults, modelId })
+                          )}
+                        </div>
+                        <div className="grid gap-1">
+                          <div>Mode</div>
+                          {renderDefaultsMenu(
+                            `${provider.id}:mode`,
+                            defaults.approvalMode,
+                            `${providerDisplayName(provider, provider.id)} default mode`,
+                            modeOptions,
+                            (approvalMode) => updateProviderDefaults(provider.id, { ...defaults, approvalMode })
+                          )}
+                        </div>
+                        {codexProvider && (
+                          <div className="grid gap-1">
+                            <div>Reasoning</div>
+                            {renderDefaultsMenu(
+                              `${provider.id}:reasoning`,
+                              defaults.reasoningEffort,
+                              `${providerDisplayName(provider, provider.id)} default reasoning`,
+                              CODEX_REASONING_OPTIONS,
+                              (reasoningEffort) => updateProviderDefaults(provider.id, { ...defaults, reasoningEffort })
+                            )}
+                          </div>
+                        )}
+                        {codexProvider && (
+                          <div className="grid gap-1">
+                            <div>Speed</div>
+                            {renderDefaultsMenu(
+                              `${provider.id}:speed`,
+                              defaults.serviceTier,
+                              `${providerDisplayName(provider, provider.id)} default speed`,
+                              CODEX_SPEED_OPTIONS,
+                              (serviceTier) => updateProviderDefaults(provider.id, { ...defaults, serviceTier })
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => updateProviderDefaults(provider.id, { ...defaults, autoApproveCommands: !defaults.autoApproveCommands })}
+                          className="px-2 py-1 rounded-md"
+                          style={{
+                            background: defaults.autoApproveCommands ? 'color-mix(in srgb, var(--yellow) 16%, var(--surface))' : 'var(--surface-up)',
+                            color: 'var(--text-2)',
+                            border: '1px solid var(--border)',
+                          }}
+                        >
+                          {defaults.autoApproveCommands ? 'Auto approve on' : 'Auto approve off'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => updateProviderDefaults(provider.id, { ...defaults, memoryEnabled: !defaults.memoryEnabled })}
+                          className="px-2 py-1 rounded-md"
+                          style={{
+                            background: defaults.memoryEnabled ? 'color-mix(in srgb, var(--green) 14%, var(--surface))' : 'var(--surface-up)',
+                            color: 'var(--text-2)',
+                            border: '1px solid var(--border)',
+                          }}
+                        >
+                          {defaults.memoryEnabled ? 'Memory on' : 'Memory off'}
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
             </div>
           </SectionCard>
         </div>
@@ -787,6 +1173,116 @@ export function SettingsModal() {
                 }}
               >
                 Scan Current Chats
+              </button>
+            </div>
+          </SectionCard>
+        </div>
+      )
+    }
+
+    if (selectedSection === 'editors') {
+      return (
+        <div className="space-y-4">
+          <SectionCard
+            title="Workspace Editors"
+            description="Choose which IDE opens when the chat workspace editor button is pressed."
+          >
+            <div ref={editorMenuRef} className="grid gap-3">
+              <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                <div>Default editor</div>
+                {renderEditorPresetMenu(
+                  'default-editor',
+                  defaultEditorDraft,
+                  'Default editor',
+                  (presetId) => saveEditorSettings(editorAssociationsDraft, presetId)
+                )}
+              </div>
+
+              <div className="space-y-3">
+                {editorAssociationsDraft.map((association) => (
+                  <div
+                    key={association.id}
+                    className="grid gap-2 rounded-lg p-3"
+                    style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+                  >
+                    <div className="grid grid-cols-3 gap-2">
+                      <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                        Group
+                        <input
+                          value={association.name}
+                          onChange={(event) => {
+                            const nextAssociations = editorAssociationsDraft.map((item) =>
+                              item.id === association.id ? { ...item, name: event.currentTarget.value } : item
+                            )
+                            saveEditorSettings(nextAssociations)
+                          }}
+                          style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}
+                        />
+                      </label>
+                      <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                        Extensions
+                        <input
+                          value={extensionsText(association)}
+                          onChange={(event) => {
+                            const nextAssociations = editorAssociationsDraft.map((item) =>
+                              item.id === association.id ? { ...item, extensions: parseExtensions(event.currentTarget.value) } : item
+                            )
+                            saveEditorSettings(nextAssociations)
+                          }}
+                          style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}
+                        />
+                      </label>
+                      <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                        <div>Editor</div>
+                        {renderEditorPresetMenu(
+                          `${association.id}:editor`,
+                          association.editorPresetId,
+                          `${association.name || 'File group'} editor`,
+                          (presetId) => {
+                            const nextAssociations = editorAssociationsDraft.map((item) =>
+                              item.id === association.id ? { ...item, editorPresetId: presetId } : item
+                            )
+                            saveEditorSettings(nextAssociations)
+                          }
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-xs" style={{ color: 'var(--text-3)' }}>
+                        {association.extensions.length} extension{association.extensions.length === 1 ? '' : 's'} open in {editorPresetLabel(association.editorPresetId)}
+                      </div>
+                      <button
+                        type="button"
+                        disabled={editorAssociationsDraft.length <= 1}
+                        onClick={() => saveEditorSettings(editorAssociationsDraft.filter((item) => item.id !== association.id))}
+                        className="px-3 py-1.5 text-xs disabled:opacity-50"
+                        style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface-up)', color: 'var(--text-2)' }}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const nextAssociations = [
+                    ...editorAssociationsDraft,
+                    {
+                      id: `editor-group-${Date.now()}`,
+                      name: 'Files',
+                      extensions: ['.txt'],
+                      editorPresetId: defaultEditorDraft,
+                    },
+                  ]
+                  saveEditorSettings(nextAssociations)
+                }}
+                className="px-3 py-2 text-xs justify-self-start"
+                style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface-up)', color: 'var(--text)' }}
+              >
+                Add group
               </button>
             </div>
           </SectionCard>

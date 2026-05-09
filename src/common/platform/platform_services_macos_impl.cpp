@@ -1483,6 +1483,81 @@ namespace
 			return true;
 		}
 
+		bool OpenFolderInEditorPreset(const std::filesystem::path& folder_path, const std::string& editor_preset_id, std::string* error_out = nullptr) const override
+		{
+			if (folder_path.empty())
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Folder path is empty.";
+				}
+				return false;
+			}
+
+			std::error_code ec;
+			if (!std::filesystem::exists(folder_path, ec) || !std::filesystem::is_directory(folder_path, ec))
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Workspace directory does not exist.";
+				}
+				return false;
+			}
+
+			std::string app_name;
+			if (editor_preset_id == "xcode")
+			{
+				app_name = "Xcode";
+			}
+			else if (editor_preset_id == "clion")
+			{
+				app_name = "CLion";
+			}
+			else if (editor_preset_id == "rider")
+			{
+				app_name = "Rider";
+			}
+			else if (editor_preset_id == "visualstudio")
+			{
+				app_name = "Visual Studio";
+			}
+			else if (editor_preset_id == "webstorm")
+			{
+				app_name = "WebStorm";
+			}
+			else if (editor_preset_id == "pycharm")
+			{
+				app_name = "PyCharm";
+			}
+			else if (editor_preset_id == "idea")
+			{
+				app_name = "IntelliJ IDEA";
+			}
+			else if (editor_preset_id == "goland")
+			{
+				app_name = "GoLand";
+			}
+			else if (editor_preset_id == "rustrover")
+			{
+				app_name = "RustRover";
+			}
+			else
+			{
+				app_name = "Visual Studio Code";
+			}
+
+			const std::string command = "open -a " + ShellQuotePosix(app_name) + " " + ShellQuotePosix(folder_path.string());
+			if (!RunShellCommand(command))
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to open workspace in " + app_name + ".";
+				}
+				return false;
+			}
+			return true;
+		}
+
 		bool RevealPathInFileManager(const std::filesystem::path& file_path, std::string* error_out = nullptr) const override
 		{
 			if (file_path.empty())

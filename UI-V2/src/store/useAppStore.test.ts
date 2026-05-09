@@ -69,6 +69,15 @@ function makeCppState(
       memoryRecallBudgetBytes: 2048,
       memoryLastStatus: '',
       memoryWorkerBindings: {},
+      defaultEditorPresetId: 'vscode',
+      editorFileAssociations: [
+        {
+          id: 'cpp',
+          name: 'C++',
+          extensions: ['.cpp', '.h'],
+          editorPresetId: 'clion',
+        },
+      ],
     },
     memoryActivity: {
       entryCount: 0,
@@ -97,6 +106,17 @@ function resetStore() {
     memoryRecallBudgetBytes: 2048,
     memoryLastStatus: '',
     memoryWorkerBindings: {},
+    defaultNewChatProviderId: 'gemini-cli',
+    providerChatDefaults: {},
+    defaultEditorPresetId: 'vscode',
+    editorFileAssociations: [
+      {
+        id: 'cpp',
+        name: 'C++',
+        extensions: ['.c', '.cc', '.cpp', '.cxx', '.h', '.hh', '.hpp', '.hxx'],
+        editorPresetId: 'vscode',
+      },
+    ],
     memoryActivity: {
       entryCount: 0,
       lastCreatedAt: '',
@@ -213,6 +233,13 @@ describe('useAppStore Gemini CLI slice', () => {
     })
     expect(state.activeSessionId).toBe('chat-1')
     expect(state.providers.map((provider) => provider.id)).toEqual(['gemini-cli', 'codex-cli'])
+    expect(state.defaultEditorPresetId).toBe('vscode')
+    expect(state.editorFileAssociations[0]).toMatchObject({
+      id: 'cpp',
+      name: 'C++',
+      extensions: ['.cpp', '.h'],
+      editorPresetId: 'clion',
+    })
     expect(state.cliBindingBySessionId['chat-1']).toMatchObject({
       terminalId: 'term-chat-1',
       running: true,
@@ -268,8 +295,24 @@ describe('useAppStore Gemini CLI slice', () => {
       { type: 'assistant_text', text: 'Before tool.', toolCallId: undefined, requestId: undefined },
       { type: 'thought', text: 'Live backend thought', toolCallId: undefined, requestId: undefined },
       { type: 'tool_call', toolCallId: 'tool-1', text: undefined, requestId: undefined },
-    ])
+	    ])
 	  })
+
+  it('uses common editor groups when backend state has no editor associations', () => {
+    const cppState = makeCppState(1)
+    delete cppState.settings.editorFileAssociations
+
+    useAppStore.getState().loadFromCef(cppState)
+
+    const groupsById = new Map(useAppStore.getState().editorFileAssociations.map((group) => [group.id, group]))
+    expect(groupsById.get('cpp')).toMatchObject({ name: 'C++', editorPresetId: 'clion' })
+    expect(groupsById.get('csharp')).toMatchObject({ name: 'C#', editorPresetId: 'rider' })
+    expect(groupsById.get('python')).toMatchObject({ name: 'Python', editorPresetId: 'pycharm' })
+    expect(groupsById.get('javascript')).toMatchObject({ name: 'JavaScript', editorPresetId: 'webstorm' })
+    expect(groupsById.get('react-typescript')).toMatchObject({ name: 'React / TypeScript', editorPresetId: 'webstorm' })
+    expect(groupsById.get('rust')).toMatchObject({ name: 'Rust', editorPresetId: 'rustrover' })
+    expect(groupsById.get('shell')?.extensions).toContain('.zsh')
+  })
 
   it('updates ACP bindings when only turn serial changes and keeps the timer stable', () => {
     const firstState = makeCppState(1)
@@ -1095,6 +1138,259 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().sessions[0].modelId).toBe('auto-gemini-3')
   })
 
+  it('sends Codex reasoning and speed changes through CEF and rolls back on failure', async () => {
+    const now = new Date()
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    let rejectNext = false
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      requests.push(JSON.parse(request))
+      if (rejectNext) {
+        onFailure(409, 'Codex is busy')
+        return
+      }
+      onSuccess('{}')
+    }
+    useAppStore.setState({
+      sessions: [
+        {
+          id: 'chat-1',
+          name: 'Codex Session',
+          viewMode: 'chat',
+          folderId: 'default',
+          providerId: 'codex-cli',
+          reasoningEffort: 'medium',
+          serviceTier: 'flex',
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    })
+
+    await expect(useAppStore.getState().setSessionCodexOptions('chat-1', {
+      reasoningEffort: 'high',
+      serviceTier: 'fast',
+    })).resolves.toBe(true)
+
+    expect(requests[0].action).toBe('setChatCodexOptions')
+    expect(requests[0].payload).toEqual({ chatId: 'chat-1', reasoningEffort: 'high', serviceTier: 'fast' })
+    expect(useAppStore.getState().sessions[0].reasoningEffort).toBe('high')
+    expect(useAppStore.getState().sessions[0].serviceTier).toBe('fast')
+
+    rejectNext = true
+    await expect(useAppStore.getState().setSessionCodexOptions('chat-1', {
+      reasoningEffort: 'low',
+      serviceTier: 'flex',
+    })).resolves.toBe(false)
+
+    expect(requests[1].payload).toEqual({ chatId: 'chat-1', reasoningEffort: 'low', serviceTier: 'flex' })
+    expect(useAppStore.getState().sessions[0].reasoningEffort).toBe('high')
+    expect(useAppStore.getState().sessions[0].serviceTier).toBe('fast')
+  })
+
+  it('keeps pending Codex reasoning and speed when stale backend state arrives before CEF success', async () => {
+    const now = new Date()
+    const cefSuccess: { current: ((response: string) => void) | null } = { current: null }
+    window.cefQuery = ({ onSuccess }) => {
+      cefSuccess.current = onSuccess
+    }
+    useAppStore.setState({
+      sessions: [
+        {
+          id: 'chat-1',
+          name: 'Codex Session',
+          viewMode: 'chat',
+          folderId: 'default',
+          providerId: 'codex-cli',
+          reasoningEffort: 'medium',
+          serviceTier: 'flex',
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      lastAppliedStateRevision: -1,
+    })
+
+    const change = useAppStore.getState().setSessionCodexOptions('chat-1', {
+      reasoningEffort: 'high',
+      serviceTier: 'fast',
+    })
+
+    expect(useAppStore.getState().sessions[0].reasoningEffort).toBe('high')
+    expect(useAppStore.getState().sessions[0].serviceTier).toBe('fast')
+
+    const staleState = makeCppState(1)
+    staleState.chats[0].providerId = 'codex-cli'
+    staleState.chats[0].reasoningEffort = 'medium'
+    staleState.chats[0].serviceTier = 'flex'
+    useAppStore.getState().loadFromCef(staleState)
+
+    expect(useAppStore.getState().sessions[0].reasoningEffort).toBe('high')
+    expect(useAppStore.getState().sessions[0].serviceTier).toBe('fast')
+
+    expect(cefSuccess.current).toBeTruthy()
+    cefSuccess.current?.('{}')
+    await expect(change).resolves.toBe(true)
+  })
+
+  it('sends provider chat defaults through CEF and rolls back on failure', async () => {
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    let rejectNext = false
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      requests.push(JSON.parse(request))
+      if (rejectNext) {
+        onFailure(500, 'Failed to save settings')
+        return
+      }
+      onSuccess('{}')
+    }
+    useAppStore.setState({
+      providers: [
+        { id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#f97316', description: '' },
+        { id: 'codex-cli', name: 'Codex', shortName: 'Codex', color: '#0ea5e9', description: '' },
+      ],
+      defaultNewChatProviderId: 'gemini-cli',
+      providerChatDefaults: {},
+    })
+
+    await expect(useAppStore.getState().setProviderChatDefaults({
+      defaultNewChatProviderId: 'codex-cli',
+      providerChatDefaults: {
+        'codex-cli': {
+          modelId: 'gpt-5.2',
+          approvalMode: 'acceptEdits',
+          autoApproveCommands: true,
+          memoryEnabled: false,
+          reasoningEffort: 'xhigh',
+          serviceTier: 'fast',
+        },
+        'gemini-cli': {
+          modelId: 'gemini-3-pro-preview',
+          approvalMode: 'plan',
+          autoApproveCommands: false,
+          memoryEnabled: true,
+          reasoningEffort: 'high',
+          serviceTier: 'fast',
+        },
+      },
+    })).resolves.toBe(true)
+
+    const expectedDefaults = {
+      'codex-cli': {
+        modelId: 'gpt-5.2',
+        approvalMode: 'acceptEdits',
+        autoApproveCommands: true,
+        memoryEnabled: false,
+        reasoningEffort: 'xhigh',
+        serviceTier: 'fast',
+      },
+      'gemini-cli': {
+        modelId: 'gemini-3-pro-preview',
+        approvalMode: 'plan',
+        autoApproveCommands: false,
+        memoryEnabled: true,
+        reasoningEffort: '',
+        serviceTier: '',
+      },
+    }
+
+    expect(requests[0].action).toBe('setProviderChatDefaults')
+    expect(requests[0].payload).toEqual({
+      defaultProviderId: 'codex-cli',
+      defaults: expectedDefaults,
+    })
+    expect(useAppStore.getState().defaultNewChatProviderId).toBe('codex-cli')
+    expect(useAppStore.getState().providerChatDefaults).toEqual(expectedDefaults)
+
+    rejectNext = true
+    await expect(useAppStore.getState().setProviderChatDefaults({
+      defaultNewChatProviderId: 'gemini-cli',
+      providerChatDefaults: {
+        'codex-cli': {
+          modelId: 'gpt-5.3',
+          approvalMode: 'default',
+          autoApproveCommands: false,
+          memoryEnabled: true,
+          reasoningEffort: 'low',
+          serviceTier: 'flex',
+        },
+      },
+    })).resolves.toBe(false)
+
+    expect(requests[1].payload).toMatchObject({ defaultProviderId: 'gemini-cli' })
+    expect(useAppStore.getState().defaultNewChatProviderId).toBe('codex-cli')
+    expect(useAppStore.getState().providerChatDefaults).toEqual(expectedDefaults)
+
+    await expect(useAppStore.getState().setProviderChatDefaults({
+      defaultNewChatProviderId: 'missing-provider',
+    })).resolves.toBe(false)
+    expect(requests).toHaveLength(2)
+  })
+
+  it('keeps pending provider chat defaults when stale backend state arrives before CEF success', async () => {
+    const cefSuccess: { current: ((response: string) => void) | null } = { current: null }
+    window.cefQuery = ({ onSuccess }) => {
+      cefSuccess.current = onSuccess
+    }
+    useAppStore.setState({
+      providers: [
+        { id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#f97316', description: '' },
+        { id: 'codex-cli', name: 'Codex', shortName: 'Codex', color: '#0ea5e9', description: '' },
+      ],
+      defaultNewChatProviderId: 'gemini-cli',
+      providerChatDefaults: {
+        'codex-cli': {
+          modelId: '',
+          approvalMode: 'default',
+          autoApproveCommands: false,
+          memoryEnabled: true,
+          reasoningEffort: 'medium',
+          serviceTier: 'flex',
+        },
+      },
+      lastAppliedStateRevision: -1,
+    })
+
+    const nextDefaults = {
+      'codex-cli': {
+        modelId: 'gpt-5.4',
+        approvalMode: 'plan',
+        autoApproveCommands: true,
+        memoryEnabled: false,
+        reasoningEffort: 'high',
+        serviceTier: 'fast',
+      },
+    }
+
+    const change = useAppStore.getState().setProviderChatDefaults({
+      defaultNewChatProviderId: 'codex-cli',
+      providerChatDefaults: nextDefaults,
+    })
+
+    expect(useAppStore.getState().defaultNewChatProviderId).toBe('codex-cli')
+    expect(useAppStore.getState().providerChatDefaults['codex-cli']).toEqual(nextDefaults['codex-cli'])
+
+    const staleState = makeCppState(1)
+    staleState.settings.defaultNewChatProviderId = 'gemini-cli'
+    staleState.settings.providerChatDefaults = {
+      'codex-cli': {
+        modelId: '',
+        approvalMode: 'default',
+        autoApproveCommands: false,
+        memoryEnabled: true,
+        reasoningEffort: 'medium',
+        serviceTier: 'flex',
+      },
+    }
+    useAppStore.getState().loadFromCef(staleState)
+
+    expect(useAppStore.getState().defaultNewChatProviderId).toBe('codex-cli')
+    expect(useAppStore.getState().providerChatDefaults['codex-cli']).toEqual(nextDefaults['codex-cli'])
+
+    expect(cefSuccess.current).toBeTruthy()
+    cefSuccess.current?.('{}')
+    await expect(change).resolves.toBe(true)
+  })
+
   it('sends approval mode changes through CEF and rolls back on failure', async () => {
     const now = new Date()
     const requests: Array<{ action: string; payload?: unknown }> = []
@@ -1754,6 +2050,57 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(requests[0].action).toBe('setChatMemoryEnabled')
     expect(requests[0].payload).toEqual({ chatId: 'chat-1', enabled: true })
     expect(useAppStore.getState().sessions[0].memoryEnabled).toBe(true)
+  })
+
+  it('persists editor settings through CEF', async () => {
+    const cppState = makeCppState(1)
+    useAppStore.getState().loadFromCef(cppState)
+
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
+      onSuccess('{}')
+    }
+
+    await expect(useAppStore.getState().setEditorSettings({
+      defaultEditorPresetId: 'webstorm',
+      editorFileAssociations: [
+        {
+          id: 'cpp',
+          name: 'C++',
+          extensions: ['cpp', '.h'],
+          editorPresetId: 'clion',
+        },
+        {
+          id: 'javascript',
+          name: 'JavaScript',
+          extensions: ['js', '.mjs'],
+          editorPresetId: 'webstorm',
+        },
+      ],
+    })).resolves.toBe(true)
+
+    expect(requests[0].action).toBe('setEditorSettings')
+    expect(requests[0].payload).toEqual({
+      defaultEditorPresetId: 'webstorm',
+      fileAssociations: [
+        {
+          id: 'cpp',
+          name: 'C++',
+          extensions: ['.cpp', '.h'],
+          editorPresetId: 'clion',
+        },
+        {
+          id: 'javascript',
+          name: 'JavaScript',
+          extensions: ['.js', '.mjs'],
+          editorPresetId: 'webstorm',
+        },
+      ],
+    })
+    expect(useAppStore.getState().defaultEditorPresetId).toBe('webstorm')
+    expect(useAppStore.getState().editorFileAssociations[0].extensions).toEqual(['.cpp', '.h'])
+    expect(useAppStore.getState().editorFileAssociations[1].editorPresetId).toBe('webstorm')
   })
 
   it('loads the global memory library through CEF', async () => {

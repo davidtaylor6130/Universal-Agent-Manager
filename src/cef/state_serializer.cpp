@@ -14,6 +14,7 @@
 #include "common/utils/string_utils.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
@@ -69,6 +70,35 @@ namespace
 			}
 		}
 		return "";
+	}
+
+	std::vector<std::string> JsonStringArrayValue(const nlohmann::json& object, const char* key)
+	{
+		std::vector<std::string> values;
+		if (!object.contains(key) || !object[key].is_array())
+		{
+			return values;
+		}
+		for (const nlohmann::json& item : object[key])
+		{
+			if (item.is_string())
+			{
+				const std::string value = uam::strings::Trim(item.get<std::string>());
+				if (!value.empty() && std::find(values.begin(), values.end(), value) == values.end())
+				{
+					values.push_back(value);
+				}
+			}
+			else if (item.is_object())
+			{
+				const std::string value = JsonStringValue(item, {"reasoningEffort", "reasoning_effort", "id"});
+				if (!value.empty() && std::find(values.begin(), values.end(), value) == values.end())
+				{
+					values.push_back(value);
+				}
+			}
+		}
+		return values;
 	}
 
 	std::string NormalizeAttentionKindForFrontend(const std::string& value, const std::string& fallback)
@@ -158,6 +188,9 @@ namespace
 					{"id", id},
 					{"name", name},
 					{"description", JsonStringValue(model, {"description"})},
+					{"defaultReasoningEffort", JsonStringValue(model, {"defaultReasoningEffort", "default_reasoning_effort"})},
+					{"supportedReasoningEfforts", JsonStringArrayValue(model, "supportedReasoningEfforts")},
+					{"additionalSpeedTiers", JsonStringArrayValue(model, "additionalSpeedTiers")},
 				});
 				seen_model_ids.push_back(id);
 			}
@@ -170,9 +203,223 @@ namespace
 		return models_json;
 	}
 
+	std::filesystem::path OpenCodeConfigPath()
+	{
+		if (const char* config_home = std::getenv("XDG_CONFIG_HOME"))
+		{
+			const std::string value = uam::strings::Trim(config_home);
+			if (!value.empty())
+			{
+				return std::filesystem::path(value) / "opencode" / "opencode.json";
+			}
+		}
+
+#if defined(_WIN32)
+		if (const char* app_data = std::getenv("APPDATA"))
+		{
+			const std::string value = uam::strings::Trim(app_data);
+			if (!value.empty())
+			{
+				return std::filesystem::path(value) / "opencode" / "opencode.json";
+			}
+		}
+#endif
+
+		if (const char* home = std::getenv("HOME"))
+		{
+			const std::string value = uam::strings::Trim(home);
+			if (!value.empty())
+			{
+				return std::filesystem::path(value) / ".config" / "opencode" / "opencode.json";
+			}
+		}
+
+		return std::filesystem::current_path() / ".config" / "opencode" / "opencode.json";
+	}
+
+	void PushModelIfNew(nlohmann::json& models_json, std::vector<std::string>& seen_model_ids, const std::string& id, const std::string& name, const std::string& description)
+	{
+		if (id.empty() || std::find(seen_model_ids.begin(), seen_model_ids.end(), id) != seen_model_ids.end())
+		{
+			return;
+		}
+
+		models_json.push_back({
+			{"id", id},
+			{"name", name.empty() ? id : name},
+			{"description", description},
+		});
+		seen_model_ids.push_back(id);
+	}
+
+	nlohmann::json ReadConfiguredOpenCodeModelsForFrontend()
+	{
+		auto models_json = nlohmann::json::array();
+		std::ifstream in(OpenCodeConfigPath(), std::ios::binary);
+		if (!in.good())
+		{
+			return models_json;
+		}
+
+		try
+		{
+			const nlohmann::json config = nlohmann::json::parse(in);
+			const nlohmann::json providers = config.value("provider", nlohmann::json::object());
+			if (!providers.is_object())
+			{
+				return models_json;
+			}
+
+			std::vector<std::string> seen_model_ids;
+			for (const auto& provider_entry : providers.items())
+			{
+				const std::string provider_id = uam::strings::Trim(provider_entry.key());
+				if (provider_id.empty() || !provider_entry.value().is_object())
+				{
+					continue;
+				}
+
+				const nlohmann::json models = provider_entry.value().value("models", nlohmann::json::object());
+				if (!models.is_object())
+				{
+					continue;
+				}
+
+				for (const auto& model_entry : models.items())
+				{
+					const std::string model_id = uam::strings::Trim(model_entry.key());
+					if (model_id.empty())
+					{
+						continue;
+					}
+					const std::string full_id = provider_id + "/" + model_id;
+					std::string name;
+					std::string description;
+					if (model_entry.value().is_object())
+					{
+						name = JsonStringValue(model_entry.value(), {"name", "displayName", "display_name"});
+						description = JsonStringValue(model_entry.value(), {"description"});
+					}
+					PushModelIfNew(models_json, seen_model_ids, full_id, name.empty() ? model_id : name, description);
+				}
+			}
+		}
+		catch (...)
+		{
+			return nlohmann::json::array();
+		}
+
+		return models_json;
+	}
+
+	nlohmann::json SerializeEditorFileAssociations(const std::vector<EditorFileAssociation>& associations)
+	{
+		auto associations_json = nlohmann::json::array();
+		for (const EditorFileAssociation& association : associations)
+		{
+			associations_json.push_back({
+				{"id", association.id},
+				{"name", association.name},
+				{"extensions", association.extensions},
+				{"editorPresetId", association.editor_preset_id},
+			});
+		}
+		return associations_json;
+	}
+
+	nlohmann::json SerializeProviderChatDefaults(const std::map<std::string, ProviderChatDefaults>& defaults_by_provider)
+	{
+		nlohmann::json defaults_json = nlohmann::json::object();
+		for (const auto& entry : defaults_by_provider)
+		{
+			defaults_json[entry.first] = {
+				{"modelId", entry.second.model_id},
+				{"approvalMode", entry.second.approval_mode},
+				{"autoApproveCommands", entry.second.auto_approve_commands},
+				{"memoryEnabled", entry.second.memory_enabled},
+				{"reasoningEffort", entry.second.reasoning_effort},
+				{"serviceTier", entry.second.service_tier},
+			};
+		}
+		return defaults_json;
+	}
+
+	std::string ReadConfiguredOpenCodeDefaultModelForFrontend()
+	{
+		std::ifstream in(OpenCodeConfigPath(), std::ios::binary);
+		if (!in.good())
+		{
+			return "";
+		}
+
+		try
+		{
+			const nlohmann::json config = nlohmann::json::parse(in);
+			return JsonStringValue(config, {"model"});
+		}
+		catch (...)
+		{
+			return "";
+		}
+	}
+
 		nlohmann::json FallbackAcpModelsForChat(const ChatSession& chat)
 		{
-			return uam::strings::Trim(chat.provider_id) == "codex-cli" ? ReadCachedCodexModelsForFrontend() : nlohmann::json::array();
+			const std::string provider_id = uam::strings::Trim(chat.provider_id);
+			if (provider_id == "codex-cli")
+			{
+				return ReadCachedCodexModelsForFrontend();
+			}
+			if (provider_id == "opencode-cli")
+			{
+				return ReadConfiguredOpenCodeModelsForFrontend();
+			}
+			return nlohmann::json::array();
+		}
+
+		std::string FallbackAcpCurrentModelForChat(const ChatSession& chat)
+		{
+			if (!uam::strings::Trim(chat.model_id).empty())
+			{
+				return chat.model_id;
+			}
+			return uam::strings::Trim(chat.provider_id) == "opencode-cli" ? ReadConfiguredOpenCodeDefaultModelForFrontend() : std::string{};
+		}
+
+		nlohmann::json MergeAcpModelArrays(nlohmann::json fallback_models, nlohmann::json runtime_models)
+		{
+			if (!fallback_models.is_array())
+			{
+				fallback_models = nlohmann::json::array();
+			}
+			if (!runtime_models.is_array())
+			{
+				return fallback_models;
+			}
+
+			std::vector<std::string> seen_model_ids;
+			for (const nlohmann::json& model : fallback_models)
+			{
+				if (model.is_object())
+				{
+					seen_model_ids.push_back(model.value("id", ""));
+				}
+			}
+			for (const nlohmann::json& model : runtime_models)
+			{
+				if (!model.is_object())
+				{
+					continue;
+				}
+				const std::string id = model.value("id", "");
+				if (id.empty() || std::find(seen_model_ids.begin(), seen_model_ids.end(), id) != seen_model_ids.end())
+				{
+					continue;
+				}
+				fallback_models.push_back(model);
+				seen_model_ids.push_back(id);
+			}
+			return fallback_models;
 		}
 
 		void AddWorkspaceIsolationFields(nlohmann::json& chat_json, const ChatSession& chat)
@@ -431,7 +678,7 @@ nlohmann::json SerializeAcpSessionSummary(const AppState& app, const ChatSession
 			acp_json["availableModes"] = nlohmann::json::array();
 			acp_json["currentModeId"] = chat.approval_mode;
 			acp_json["availableModels"] = FallbackAcpModelsForChat(chat);
-			acp_json["currentModelId"] = chat.model_id;
+			acp_json["currentModelId"] = FallbackAcpCurrentModelForChat(chat);
 			acp_json["turnEvents"] = nlohmann::json::array();
 			acp_json["turnUserMessageIndex"] = -1;
 		acp_json["turnAssistantMessageIndex"] = -1;
@@ -520,10 +767,13 @@ nlohmann::json SerializeAcpSessionSummary(const AppState& app, const ChatSession
 				{"id", model.id},
 				{"name", model.name},
 				{"description", model.description},
+				{"defaultReasoningEffort", model.default_reasoning_effort},
+				{"supportedReasoningEfforts", model.supported_reasoning_efforts},
+				{"additionalSpeedTiers", model.additional_speed_tiers},
 			});
 		}
-		acp_json["availableModels"] = available_models.empty() ? FallbackAcpModelsForChat(chat) : std::move(available_models);
-		acp_json["currentModelId"] = session->current_model_id.empty() ? chat.model_id : session->current_model_id;
+		acp_json["availableModels"] = MergeAcpModelArrays(FallbackAcpModelsForChat(chat), std::move(available_models));
+		acp_json["currentModelId"] = session->current_model_id.empty() ? FallbackAcpCurrentModelForChat(chat) : session->current_model_id;
 
 		auto turn_events = nlohmann::json::array();
 	for (const AcpTurnEventState& event : session->turn_events)
@@ -630,6 +880,8 @@ nlohmann::json SerializeFingerprintSession(const AppState& app, const ChatSessio
 	chat_json["pinned"] = chat.pinned;
 	chat_json["providerId"] = chat.provider_id;
 	chat_json["modelId"] = chat.model_id;
+	chat_json["reasoningEffort"] = chat.reasoning_effort;
+	chat_json["serviceTier"] = chat.service_tier;
 	chat_json["approvalMode"] = chat.approval_mode;
 	chat_json["autoApproveCommands"] = chat.auto_approve_commands;
 	chat_json["memoryEnabled"] = chat.memory_enabled;
@@ -896,6 +1148,10 @@ nlohmann::json StateSerializer::Serialize(const AppState& app)
 		settings["memoryIdleDelaySeconds"] = app.settings.memory_idle_delay_seconds;
 		settings["memoryRecallBudgetBytes"] = app.settings.memory_recall_budget_bytes;
 		settings["memoryLastStatus"] = app.memory_last_status;
+		settings["defaultNewChatProviderId"] = app.settings.default_new_chat_provider_id;
+		settings["providerChatDefaults"] = SerializeProviderChatDefaults(app.settings.provider_chat_defaults);
+		settings["defaultEditorPresetId"] = app.settings.default_editor_preset_id;
+		settings["editorFileAssociations"] = SerializeEditorFileAssociations(app.settings.editor_file_associations);
 		nlohmann::json bindings = nlohmann::json::object();
 		for (const auto& entry : app.settings.memory_worker_bindings)
 		{
@@ -959,6 +1215,10 @@ nlohmann::json StateSerializer::SerializeFingerprint(const AppState& app)
 		settings["memoryIdleDelaySeconds"] = app.settings.memory_idle_delay_seconds;
 		settings["memoryRecallBudgetBytes"] = app.settings.memory_recall_budget_bytes;
 		settings["markdownStoreDirectory"] = app.settings.markdown_store_directory;
+		settings["defaultNewChatProviderId"] = app.settings.default_new_chat_provider_id;
+		settings["providerChatDefaults"] = SerializeProviderChatDefaults(app.settings.provider_chat_defaults);
+		settings["defaultEditorPresetId"] = app.settings.default_editor_preset_id;
+		settings["editorFileAssociations"] = SerializeEditorFileAssociations(app.settings.editor_file_associations);
 		j["settings"] = settings;
 	}
 
@@ -974,6 +1234,8 @@ nlohmann::json StateSerializer::SerializeSession(const ChatSession& session)
 	j["pinned"]     = session.pinned;
 	j["providerId"] = session.provider_id;
 	j["modelId"]    = session.model_id;
+	j["reasoningEffort"] = session.reasoning_effort;
+	j["serviceTier"] = session.service_tier;
 	j["approvalMode"] = session.approval_mode;
 	j["autoApproveCommands"] = session.auto_approve_commands;
 	j["memoryEnabled"] = session.memory_enabled;

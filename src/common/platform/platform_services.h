@@ -99,6 +99,7 @@ class IPlatformFileDialogService
 	virtual bool SupportsNativeDialogs() const = 0;
 	virtual bool BrowsePath(PlatformPathBrowseTarget target, const std::filesystem::path& initial_path, std::string* selected_path_out, std::string* error_out = nullptr) const = 0;
 	virtual bool OpenFolderInFileManager(const std::filesystem::path& folder_path, std::string* error_out = nullptr) const = 0;
+	virtual bool OpenFolderInEditorPreset(const std::filesystem::path& folder_path, const std::string& editor_preset_id, std::string* error_out = nullptr) const = 0;
 	virtual bool RevealPathInFileManager(const std::filesystem::path& file_path, std::string* error_out = nullptr) const = 0;
 };
 

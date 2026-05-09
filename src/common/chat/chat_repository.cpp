@@ -562,6 +562,8 @@ namespace
 			       lhs.approval_mode == rhs.approval_mode &&
 		       lhs.auto_approve_commands == rhs.auto_approve_commands &&
 		       lhs.model_id == rhs.model_id &&
+		       lhs.reasoning_effort == rhs.reasoning_effort &&
+		       lhs.service_tier == rhs.service_tier &&
 		       lhs.extra_flags == rhs.extra_flags &&
 		       MessagesEquivalentForRecovery(lhs.messages, rhs.messages);
 	}
@@ -622,6 +624,8 @@ namespace
 			chat.auto_approve_commands = true;
 		}
 		chat.model_id = JsonStringOrEmpty(root.Find("model_id"));
+		chat.reasoning_effort = JsonStringOrEmpty(root.Find("reasoning_effort"));
+		chat.service_tier = JsonStringOrEmpty(root.Find("service_tier"));
 		chat.extra_flags = JsonStringOrEmpty(root.Find("extra_flags"));
 		chat.memory_enabled = JsonBoolOrDefault(root.Find("memory_enabled"), true);
 		chat.memory_last_processed_message_count = static_cast<int>(JsonNumberOrDefault(root.Find("memory_last_processed_message_count"), 0));
@@ -751,6 +755,12 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 
 	root.object_value["model_id"].type = JsonValue::Type::String;
 	root.object_value["model_id"].string_value = chat.model_id;
+
+	root.object_value["reasoning_effort"].type = JsonValue::Type::String;
+	root.object_value["reasoning_effort"].string_value = chat.reasoning_effort;
+
+	root.object_value["service_tier"].type = JsonValue::Type::String;
+	root.object_value["service_tier"].string_value = chat.service_tier;
 
 	root.object_value["extra_flags"].type = JsonValue::Type::String;
 	root.object_value["extra_flags"].string_value = chat.extra_flags;
@@ -1104,6 +1114,8 @@ bool ChatRepository::HydrateChatMessages(const std::filesystem::path& data_root,
 	hydrated.approval_mode = chat.approval_mode;
 	hydrated.auto_approve_commands = chat.auto_approve_commands;
 	hydrated.model_id = chat.model_id;
+	hydrated.reasoning_effort = chat.reasoning_effort;
+	hydrated.service_tier = chat.service_tier;
 	hydrated.extra_flags = chat.extra_flags;
 	hydrated.memory_enabled = chat.memory_enabled;
 	hydrated.memory_last_processed_message_count = chat.memory_last_processed_message_count;

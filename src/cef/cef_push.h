@@ -19,6 +19,7 @@ inline std::string StateFingerprintForTests(const AppState& app)
 {
 	return StateSerializer::SerializeFingerprint(app).dump();
 }
+std::string SettingsPatchForTests(const AppState& app);
 
 /// <summary>
 /// Delivers a single streaming token for the given chat session to the React frontend.

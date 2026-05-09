@@ -549,13 +549,38 @@ namespace
 		return BuildNewSessionRequest(request_id, cwd);
 	}
 
-	std::string LowerAsciiCopy(std::string value)
+		std::string LowerAsciiCopy(std::string value)
 	{
 		std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch)
 		{
 			return static_cast<char>(std::tolower(ch));
 		});
 		return value;
+	}
+
+	std::string NormalizeReasoningEffortForCodex(const std::string& value)
+	{
+		const std::string lowered = LowerAsciiCopy(Trim(value));
+		if (lowered == "none" ||
+		    lowered == "minimal" ||
+		    lowered == "low" ||
+		    lowered == "medium" ||
+		    lowered == "high" ||
+		    lowered == "xhigh")
+		{
+			return lowered;
+		}
+		return "";
+	}
+
+	std::string NormalizeServiceTierForCodex(const std::string& value)
+	{
+		const std::string lowered = LowerAsciiCopy(Trim(value));
+		if (lowered == "fast" || lowered == "flex")
+		{
+			return lowered;
+		}
+		return "";
 	}
 
 	bool GeminiErrorLooksLikeInvalidSessionId(const std::string& error_message, const std::string& error_data)
@@ -611,21 +636,32 @@ namespace
 
 		const std::string model_id = Trim(chat.model_id);
 		const std::string collaboration_model_id = model_id.empty() ? Trim(active_model_id) : model_id;
+		const std::string reasoning_effort = NormalizeReasoningEffortForCodex(chat.reasoning_effort);
+		const std::string service_tier = NormalizeServiceTierForCodex(chat.service_tier);
 		if (!model_id.empty())
 		{
 			params["model"] = model_id;
+		}
+		if (!reasoning_effort.empty())
+		{
+			params["effort"] = reasoning_effort;
+		}
+		if (!service_tier.empty())
+		{
+			params["serviceTier"] = service_tier;
 		}
 
 		const std::string requested_mode_id = Trim(chat.approval_mode) == "plan" ? "plan" : "default";
 		if (!collaboration_model_id.empty())
 		{
+			nlohmann::json settings = {
+				{"model", collaboration_model_id},
+				{"reasoning_effort", reasoning_effort.empty() ? nlohmann::json(nullptr) : nlohmann::json(reasoning_effort)},
+				{"developer_instructions", nullptr},
+			};
 			params["collaborationMode"] = {
 				{"mode", requested_mode_id},
-				{"settings", {
-					{"model", collaboration_model_id},
-					{"reasoning_effort", nullptr},
-					{"developer_instructions", nullptr},
-				}},
+				{"settings", std::move(settings)},
 			};
 		}
 
@@ -1400,6 +1436,7 @@ namespace
 		session.next_request_id = 1;
 		session.initialize_request_id = 0;
 		session.session_setup_request_id = 0;
+		session.startup_model_request_id = 0;
 		session.prompt_request_id = 0;
 		session.cancel_request_id = 0;
 		session.current_assistant_message_index = -1;
@@ -1407,6 +1444,7 @@ namespace
 		session.turn_assistant_message_index = -1;
 		session.turn_serial = 0;
 		session.queued_prompt.clear();
+		session.pending_startup_model_id.clear();
 		session.ignore_session_updates_until_ready = false;
 		session.codex_resume_fallback_attempted = false;
 		session.gemini_resume_fallback_attempted = false;
@@ -1639,8 +1677,46 @@ namespace
 		return true;
 	}
 
+	bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat)
+	{
+		if (!IsOpenCodeSession(session) || !session.running || !session.session_ready || session.startup_model_request_id != 0 || session.session_id.empty())
+		{
+			return false;
+		}
+
+		const std::string model_id = Trim(chat.model_id);
+		if (model_id.empty() || session.current_model_id == model_id)
+		{
+			session.pending_startup_model_id.clear();
+			return false;
+		}
+
+		const int id = NextAcpRequestId(session, "session/set_model");
+		session.startup_model_request_id = id;
+		session.pending_startup_model_id = model_id;
+		if (!WriteAcpMessage(session, BuildSetModelRequest(id, session.session_id, model_id)))
+		{
+			session.pending_request_methods.erase(id);
+			session.startup_model_request_id = 0;
+			session.pending_startup_model_id.clear();
+			FailAcpTurnOrSession(session, session.last_error.empty() ? "Failed to set OpenCode ACP model." : session.last_error);
+			return false;
+		}
+
+		session.current_model_id = model_id;
+		return true;
+	}
+
 	bool SendQueuedPromptIfReady(AcpSessionState& session, const ChatSession& chat)
 	{
+		if (session.startup_model_request_id != 0)
+		{
+			return false;
+		}
+		if (SendStartupModelIfNeeded(session, chat))
+		{
+			return false;
+		}
 		if (!session.running || !session.session_ready || !session.processing || session.waiting_for_permission || session.waiting_for_user_input || session.prompt_request_id != 0 || session.queued_prompt.empty() || session.session_id.empty())
 		{
 			if (!(IsClaudeSession(session) && session.running && session.session_ready && session.processing && !session.waiting_for_permission && !session.waiting_for_user_input && session.prompt_request_id == 0 && !session.queued_prompt.empty()))
@@ -3770,6 +3846,11 @@ namespace
 					{
 						return;
 					}
+					if (method == "session/set_model" && id == session.startup_model_request_id)
+					{
+						session.startup_model_request_id = 0;
+						session.pending_startup_model_id.clear();
+					}
 						if (method == "session/prompt" || session.processing || session.waiting_for_permission || session.waiting_for_user_input || !session.queued_prompt.empty())
 						{
 						(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
@@ -3858,6 +3939,41 @@ namespace
 									}
 									return "";
 								};
+								const auto string_array = [&model, &first_string](const char* key) -> std::vector<std::string>
+								{
+									std::vector<std::string> values;
+									if (!model.contains(key) || !model[key].is_array())
+									{
+										return values;
+									}
+									for (const nlohmann::json& item : model[key])
+									{
+										std::string value;
+										if (item.is_string())
+										{
+											value = Trim(item.get<std::string>());
+										}
+										else if (item.is_object())
+										{
+											for (const char* option_key : {"reasoningEffort", "reasoning_effort", "id"})
+											{
+												if (item.contains(option_key) && item[option_key].is_string())
+												{
+													value = Trim(item[option_key].get<std::string>());
+													if (!value.empty())
+													{
+														break;
+													}
+												}
+											}
+										}
+										if (!value.empty() && std::find(values.begin(), values.end(), value) == values.end())
+										{
+											values.push_back(value);
+										}
+									}
+									return values;
+								};
 
 								AcpModelState parsed;
 								parsed.id = first_string({"id", "model", "slug", "modelId"});
@@ -3883,6 +3999,9 @@ namespace
 									parsed.name = parsed.id;
 								}
 								parsed.description = first_string({"description"});
+								parsed.default_reasoning_effort = first_string({"defaultReasoningEffort", "default_reasoning_effort"});
+								parsed.supported_reasoning_efforts = string_array("supportedReasoningEfforts");
+								parsed.additional_speed_tiers = string_array("additionalSpeedTiers");
 								if (!parsed.id.empty())
 								{
 									if (is_default)
@@ -4028,6 +4147,11 @@ namespace
 
 				if (method == "session/set_mode" || method == "session/set_model")
 				{
+					if (method == "session/set_model" && JsonRpcNumericId(message.value("id", nlohmann::json(nullptr))) == session.startup_model_request_id)
+					{
+						session.startup_model_request_id = 0;
+						session.pending_startup_model_id.clear();
+					}
 					return;
 				}
 
@@ -4729,6 +4853,8 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error
 	session->cancel_requested = false;
 	session->lifecycle_state = kAcpLifecycleStopped;
 	session->queued_prompt.clear();
+	session->startup_model_request_id = 0;
+	session->pending_startup_model_id.clear();
 	session->prompt_request_id = 0;
 	session->cancel_request_id = 0;
 	session->current_assistant_message_index = -1;

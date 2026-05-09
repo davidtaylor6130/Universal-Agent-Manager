@@ -133,6 +133,8 @@ interface CppChat {
   pinned?: boolean
   providerId: string
   modelId?: string
+  reasoningEffort?: string
+  serviceTier?: string
   approvalMode?: string
   autoApproveCommands?: boolean
   memoryEnabled?: boolean
@@ -211,6 +213,9 @@ export interface AcpModel {
   id: string
   name: string
   description: string
+  defaultReasoningEffort?: string
+  supportedReasoningEfforts?: string[]
+  additionalSpeedTiers?: string[]
 }
 
 export type AcpTurnEvent =
@@ -362,6 +367,15 @@ export interface MemoryWorkerBinding {
   workerModelId: string
 }
 
+export interface ProviderChatDefaults {
+  modelId: string
+  approvalMode: string
+  autoApproveCommands: boolean
+  memoryEnabled: boolean
+  reasoningEffort: string
+  serviceTier: string
+}
+
 export interface MemoryActivity {
   entryCount: number
   lastCreatedAt: string
@@ -410,7 +424,18 @@ interface CppSettings {
   memoryRecallBudgetBytes: number
   memoryLastStatus: string
   memoryWorkerBindings: Record<string, MemoryWorkerBinding>
+  defaultNewChatProviderId?: string
+  providerChatDefaults?: Record<string, ProviderChatDefaults>
   markdownStoreDirectory?: string
+  defaultEditorPresetId?: string
+  editorFileAssociations?: EditorFileAssociation[]
+}
+
+export interface EditorFileAssociation {
+  id: string
+  name: string
+  extensions: string[]
+  editorPresetId: string
 }
 
 export type VcsType = 'git' | 'svn'
@@ -444,6 +469,10 @@ export interface VcsCommitResult {
 
 interface VcsFileDiffResponse {
   diff?: string
+}
+
+interface OpenWorkspaceEditorResponse {
+  editorPresetId?: string
 }
 
 export interface VcsCommitMessageSuggestion {
@@ -635,6 +664,16 @@ function isAllowedAcpModelId(modelId: string): boolean {
   return /^[A-Za-z0-9._:/-]+$/.test(modelId)
 }
 
+function normalizeCodexReasoningEffort(value: unknown): string {
+  const effort = stringOr(value).trim().toLowerCase()
+  return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(effort) ? effort : ''
+}
+
+function normalizeCodexServiceTier(value: unknown): string {
+  const tier = stringOr(value).trim().toLowerCase()
+  return tier === 'fast' || tier === 'flex' ? tier : ''
+}
+
 function normalizeAcpApprovalMode(value: unknown): string {
   const modeId = stringOr(value).trim() || 'default'
   if (modeId === 'yolo') return 'default'
@@ -783,10 +822,19 @@ function sanitizeAcpModel(value: unknown): AcpModel | null {
   if (!isRecord(value)) return null
   const id = normalizeAcpModelId(value.id)
   if (!id) return null
+  const supportedReasoningEfforts = Array.isArray(value.supportedReasoningEfforts)
+    ? Array.from(new Set(value.supportedReasoningEfforts.map(normalizeCodexReasoningEffort).filter(Boolean)))
+    : []
+  const additionalSpeedTiers = Array.isArray(value.additionalSpeedTiers)
+    ? Array.from(new Set(value.additionalSpeedTiers.map(normalizeCodexServiceTier).filter(Boolean)))
+    : []
   return {
     id,
     name: stringOr(value.name, id),
     description: stringOr(value.description),
+    defaultReasoningEffort: normalizeCodexReasoningEffort(value.defaultReasoningEffort),
+    supportedReasoningEfforts,
+    additionalSpeedTiers,
   }
 }
 
@@ -1270,6 +1318,163 @@ function upsertCliVersionProviderState(
   return providers.map((provider) => provider.providerId === next.providerId ? next : provider)
 }
 
+const DEFAULT_EDITOR_FILE_ASSOCIATIONS: EditorFileAssociation[] = [
+  {
+    id: 'cpp',
+    name: 'C++',
+    extensions: ['.c', '.cc', '.cpp', '.cxx', '.h', '.hh', '.hpp', '.hxx'],
+    editorPresetId: 'clion',
+  },
+  {
+    id: 'csharp',
+    name: 'C#',
+    extensions: ['.cs', '.csx', '.csproj', '.sln'],
+    editorPresetId: 'rider',
+  },
+  {
+    id: 'python',
+    name: 'Python',
+    extensions: ['.py', '.pyw', '.ipynb'],
+    editorPresetId: 'pycharm',
+  },
+  {
+    id: 'javascript',
+    name: 'JavaScript',
+    extensions: ['.js', '.mjs', '.cjs'],
+    editorPresetId: 'webstorm',
+  },
+  {
+    id: 'react-typescript',
+    name: 'React / TypeScript',
+    extensions: ['.jsx', '.ts', '.tsx', '.mts', '.cts'],
+    editorPresetId: 'webstorm',
+  },
+  {
+    id: 'rust',
+    name: 'Rust',
+    extensions: ['.rs'],
+    editorPresetId: 'rustrover',
+  },
+  {
+    id: 'go',
+    name: 'Go',
+    extensions: ['.go'],
+    editorPresetId: 'goland',
+  },
+  {
+    id: 'java-kotlin',
+    name: 'Java / Kotlin',
+    extensions: ['.java', '.kt', '.kts'],
+    editorPresetId: 'idea',
+  },
+  {
+    id: 'swift-apple',
+    name: 'Swift / Apple',
+    extensions: ['.swift'],
+    editorPresetId: 'xcode',
+  },
+  {
+    id: 'powershell',
+    name: 'PowerShell',
+    extensions: ['.ps1', '.psm1', '.psd1'],
+    editorPresetId: 'vscode',
+  },
+  {
+    id: 'shell',
+    name: 'Bash / Shell',
+    extensions: ['.sh', '.bash', '.zsh', '.fish'],
+    editorPresetId: 'vscode',
+  },
+  {
+    id: 'web-styles',
+    name: 'Web Styles / Templates',
+    extensions: ['.html', '.css', '.scss', '.sass', '.less'],
+    editorPresetId: 'webstorm',
+  },
+]
+
+const EDITOR_PRESET_IDS = [
+  'vscode',
+  'xcode',
+  'visualstudio',
+  'clion',
+  'rider',
+  'webstorm',
+  'pycharm',
+  'idea',
+  'goland',
+  'rustrover',
+]
+
+function defaultEditorFileAssociations() {
+  return DEFAULT_EDITOR_FILE_ASSOCIATIONS.map((association) => ({
+    ...association,
+    extensions: [...association.extensions],
+  }))
+}
+
+function normalizeEditorExtension(value: string) {
+  const trimmed = value.trim().toLowerCase()
+  if (!trimmed) return ''
+  return trimmed.startsWith('.') ? trimmed : `.${trimmed}`
+}
+
+function sanitizeEditorPresetId(value: unknown) {
+  const preset = stringOr(value, 'vscode').trim()
+  return EDITOR_PRESET_IDS.includes(preset) ? preset : 'vscode'
+}
+
+function sanitizeEditorFileAssociations(value: unknown): EditorFileAssociation[] {
+  if (!Array.isArray(value)) return defaultEditorFileAssociations()
+  const associations = value.flatMap((item, index) => {
+    if (!isRecord(item)) return []
+    const extensions = Array.isArray(item.extensions)
+      ? Array.from(new Set(item.extensions.map((extension) => normalizeEditorExtension(stringOr(extension))).filter(Boolean)))
+      : []
+    const name = stringOr(item.name).trim()
+    if (!name || extensions.length === 0) return []
+    return [{
+      id: stringOr(item.id, `editor-group-${index + 1}`).trim() || `editor-group-${index + 1}`,
+      name,
+      extensions,
+      editorPresetId: sanitizeEditorPresetId(item.editorPresetId),
+    }]
+  })
+  return associations.length > 0 ? associations : defaultEditorFileAssociations()
+}
+
+function sanitizeProviderChatDefaults(value: unknown): ProviderChatDefaults {
+  if (!isRecord(value)) {
+    return {
+      modelId: '',
+      approvalMode: 'default',
+      autoApproveCommands: false,
+      memoryEnabled: true,
+      reasoningEffort: '',
+      serviceTier: '',
+    }
+  }
+  return {
+    modelId: normalizeAcpModelId(value.modelId),
+    approvalMode: normalizeAcpApprovalMode(value.approvalMode),
+    autoApproveCommands: booleanOr(value.autoApproveCommands),
+    memoryEnabled: booleanOr(value.memoryEnabled, true),
+    reasoningEffort: normalizeCodexReasoningEffort(value.reasoningEffort),
+    serviceTier: normalizeCodexServiceTier(value.serviceTier),
+  }
+}
+
+function sanitizeProviderChatDefaultsMap(value: unknown): Record<string, ProviderChatDefaults> {
+  const defaults: Record<string, ProviderChatDefaults> = {}
+  if (!isRecord(value)) return defaults
+  for (const [providerId, providerDefaults] of Object.entries(value)) {
+    const id = providerId.trim()
+    if (!id) continue
+    defaults[id] = sanitizeProviderChatDefaults(providerDefaults)
+  }
+  return defaults
+}
+
 function sanitizeCppSettings(value: unknown): CppSettings {
   if (!isRecord(value)) {
     return {
@@ -1280,7 +1485,11 @@ function sanitizeCppSettings(value: unknown): CppSettings {
       memoryRecallBudgetBytes: 2048,
       memoryLastStatus: '',
       memoryWorkerBindings: {},
+      defaultNewChatProviderId: GEMINI_CLI_PROVIDER_ID,
+      providerChatDefaults: {},
       markdownStoreDirectory: '',
+      defaultEditorPresetId: 'vscode',
+      editorFileAssociations: defaultEditorFileAssociations(),
     }
   }
 
@@ -1303,7 +1512,11 @@ function sanitizeCppSettings(value: unknown): CppSettings {
     memoryRecallBudgetBytes: Math.min(8192, Math.max(512, finiteNumberOr(value.memoryRecallBudgetBytes, 2048))),
     memoryLastStatus: stringOr(value.memoryLastStatus),
     memoryWorkerBindings: bindings,
+    defaultNewChatProviderId: stringOr(value.defaultNewChatProviderId, stringOr(value.activeProviderId, GEMINI_CLI_PROVIDER_ID)),
+    providerChatDefaults: sanitizeProviderChatDefaultsMap(value.providerChatDefaults),
     markdownStoreDirectory: stringOr(value.markdownStoreDirectory),
+    defaultEditorPresetId: sanitizeEditorPresetId(value.defaultEditorPresetId),
+    editorFileAssociations: sanitizeEditorFileAssociations(value.editorFileAssociations),
   }
 }
 
@@ -1544,7 +1757,12 @@ function modelsEquivalent(existing: AcpModel[], next: AcpModel[]) {
   if (existing.length !== next.length) return false
   return existing.every((model, index) => {
     const other = next[index]
-    return model.id === other.id && model.name === other.name && model.description === other.description
+    return model.id === other.id &&
+      model.name === other.name &&
+      model.description === other.description &&
+      (model.defaultReasoningEffort ?? '') === (other.defaultReasoningEffort ?? '') &&
+      (model.supportedReasoningEfforts ?? []).join('|') === (other.supportedReasoningEfforts ?? []).join('|') &&
+      (model.additionalSpeedTiers ?? []).join('|') === (other.additionalSpeedTiers ?? []).join('|')
   })
 }
 
@@ -1679,6 +1897,12 @@ function normalizeCliTranscript(
 }
 
 const pendingRequestIdsByKey = new Map<string, string>()
+const pendingCodexOptionsByChatId = new Map<string, { requestId: string; reasoningEffort: string; serviceTier: string }>()
+let pendingProviderChatDefaults: {
+  requestId: string
+  defaultNewChatProviderId: string
+  providerChatDefaults: Record<string, ProviderChatDefaults>
+} | null = null
 let lastPushStatusUpdateAtMs = 0
 
 function rememberPendingRequest(key: string, requestId: string) {
@@ -1787,6 +2011,40 @@ function clearPendingRequest(key: string, requestId?: string) {
   }
 }
 
+function clearPendingCodexOptions(chatId: string, requestId?: string) {
+  const pending = pendingCodexOptionsByChatId.get(chatId)
+  if (pending && pending.requestId === requestId) {
+    pendingCodexOptionsByChatId.delete(chatId)
+  }
+}
+
+function clearPendingProviderChatDefaults(requestId?: string) {
+  if (pendingProviderChatDefaults && pendingProviderChatDefaults.requestId === requestId) {
+    pendingProviderChatDefaults = null
+  }
+}
+
+function applyPendingCodexOptions(sessions: Session[]): Session[] {
+  if (pendingCodexOptionsByChatId.size === 0) return sessions
+  let changed = false
+  const nextSessions = sessions.map((session) => {
+    const pending = pendingCodexOptionsByChatId.get(session.id)
+    if (!pending || (session.providerId ?? GEMINI_CLI_PROVIDER_ID) !== 'codex-cli') {
+      return session
+    }
+    if ((session.reasoningEffort ?? '') === pending.reasoningEffort && (session.serviceTier ?? '') === pending.serviceTier) {
+      return session
+    }
+    changed = true
+    return {
+      ...session,
+      reasoningEffort: pending.reasoningEffort,
+      serviceTier: pending.serviceTier,
+    }
+  })
+  return changed ? nextSessions : sessions
+}
+
 function parseUamPushPayload(payload: unknown): ParsedPushResult {
   let raw: unknown = payload
 
@@ -1866,6 +2124,10 @@ function deserializeState(
     memoryActivity: MemoryActivity
     cliVersionManager: CliVersionManager
     markdownStoreDirectory: string
+    defaultNewChatProviderId: string
+    providerChatDefaults: Record<string, ProviderChatDefaults>
+    defaultEditorPresetId: string
+    editorFileAssociations: EditorFileAssociation[]
   }
 ) {
   const buildMessage = (chatId: string, message: CppMessage, index: number): Message => {
@@ -1924,6 +2186,8 @@ function deserializeState(
     const workspaceDirectory = c.workspaceDirectory ?? ''
     const providerId = normalizeProviderIdForVisibleProviders(c.providerId, visibleProviders)
     const modelId = c.modelId ?? ''
+    const reasoningEffort = normalizeCodexReasoningEffort(c.reasoningEffort)
+    const serviceTier = normalizeCodexServiceTier(c.serviceTier)
     const approvalMode = normalizeAcpApprovalMode(c.approvalMode)
     const autoApproveCommands = c.autoApproveCommands ?? false
     const memoryEnabled = c.memoryEnabled ?? true
@@ -1945,6 +2209,8 @@ function deserializeState(
       (prev.isPinned ?? false) === isPinned &&
       (prev.providerId ?? GEMINI_CLI_PROVIDER_ID) === providerId &&
       (prev.modelId ?? '') === modelId &&
+      (prev.reasoningEffort ?? '') === reasoningEffort &&
+      (prev.serviceTier ?? '') === serviceTier &&
       (prev.approvalMode ?? 'default') === approvalMode &&
       (prev.autoApproveCommands ?? false) === autoApproveCommands &&
       (prev.memoryEnabled ?? true) === memoryEnabled &&
@@ -1971,6 +2237,8 @@ function deserializeState(
       isPinned,
       providerId,
       modelId,
+      reasoningEffort,
+      serviceTier,
       approvalMode,
       autoApproveCommands,
       memoryEnabled,
@@ -2216,9 +2484,11 @@ function deserializeState(
       ? existing.cliDebugState
       : nextCliDebugState
 
+  const sessionsWithPendingCodexOptions = applyPendingCodexOptions(sessions)
+
   return {
     folders,
-    sessions,
+    sessions: sessionsWithPendingCodexOptions,
     messages,
     providers,
     activeSessionId: effectiveActiveSessionId,
@@ -2236,6 +2506,10 @@ function deserializeState(
     memoryActivity: cpp.memoryActivity ?? sanitizeMemoryActivity(undefined, cpp.settings.memoryLastStatus),
     cliVersionManager: cpp.cliVersionManager ?? existing.cliVersionManager,
     markdownStoreDirectory: cpp.settings.markdownStoreDirectory ?? '',
+    defaultNewChatProviderId: pendingProviderChatDefaults?.defaultNewChatProviderId ?? cpp.settings.defaultNewChatProviderId ?? cpp.settings.activeProviderId ?? GEMINI_CLI_PROVIDER_ID,
+    providerChatDefaults: pendingProviderChatDefaults?.providerChatDefaults ?? cpp.settings.providerChatDefaults ?? {},
+    defaultEditorPresetId: cpp.settings.defaultEditorPresetId ?? 'vscode',
+    editorFileAssociations: cpp.settings.editorFileAssociations ?? defaultEditorFileAssociations(),
   }
 }
 
@@ -2311,6 +2585,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
       isPinned: chat.pinned ?? false,
       providerId: normalizeProviderIdForVisibleProviders(chat.providerId, visibleProviders),
       modelId: chat.modelId ?? '',
+      reasoningEffort: normalizeCodexReasoningEffort(chat.reasoningEffort),
+      serviceTier: normalizeCodexServiceTier(chat.serviceTier),
       approvalMode: normalizeAcpApprovalMode(chat.approvalMode),
       autoApproveCommands: chat.autoApproveCommands ?? false,
       memoryEnabled: chat.memoryEnabled ?? true,
@@ -2334,6 +2610,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
         (prev.isPinned ?? false) === (nextSession.isPinned ?? false) &&
         (prev.providerId ?? GEMINI_CLI_PROVIDER_ID) === nextSession.providerId &&
         (prev.modelId ?? '') === (nextSession.modelId ?? '') &&
+        (prev.reasoningEffort ?? '') === (nextSession.reasoningEffort ?? '') &&
+        (prev.serviceTier ?? '') === (nextSession.serviceTier ?? '') &&
         (prev.approvalMode ?? 'default') === nextSession.approvalMode &&
         (prev.autoApproveCommands ?? false) === (nextSession.autoApproveCommands ?? false) &&
         (prev.memoryEnabled ?? true) === nextSession.memoryEnabled &&
@@ -2470,7 +2748,12 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
         planEntries: Array.isArray(acp.planEntries) ? acp.planEntries : [],
         availableModes: Array.isArray(acp.availableModes) ? acp.availableModes : [],
         currentModeId: normalizeAcpApprovalMode(acp.currentModeId ?? chat.approvalMode),
-        availableModels: Array.isArray(acp.availableModels) ? acp.availableModels : [],
+        availableModels: Array.isArray(acp.availableModels)
+          ? acp.availableModels.flatMap((model) => {
+              const sanitized = sanitizeAcpModel(model)
+              return sanitized ? [sanitized] : []
+            })
+          : [],
         currentModelId: normalizeAcpModelId(acp.currentModelId ?? chat.modelId),
         turnEvents: Array.isArray(acp.turnEvents) ? acp.turnEvents : [],
         turnUserMessageIndex: typeof acp.turnUserMessageIndex === 'number' ? acp.turnUserMessageIndex : -1,
@@ -2502,9 +2785,11 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
         ? current.activeSessionId
         : sessions[0]?.id ?? null
 
+  const sessionsWithPendingCodexOptions = applyPendingCodexOptions(sessions)
+
   return {
     folders,
-    sessions,
+    sessions: sessionsWithPendingCodexOptions,
     messages: sameRecordEntries(current.messages, messages) ? current.messages : messages,
     providers,
     activeSessionId,
@@ -2521,6 +2806,10 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     memoryActivity: patch.memoryActivity ?? current.memoryActivity,
     cliVersionManager: patch.cliVersionManager ?? current.cliVersionManager,
     markdownStoreDirectory: patch.settings?.markdownStoreDirectory ?? current.markdownStoreDirectory,
+    defaultNewChatProviderId: pendingProviderChatDefaults?.defaultNewChatProviderId ?? patch.settings?.defaultNewChatProviderId ?? current.defaultNewChatProviderId,
+    providerChatDefaults: pendingProviderChatDefaults?.providerChatDefaults ?? patch.settings?.providerChatDefaults ?? current.providerChatDefaults,
+    defaultEditorPresetId: patch.settings?.defaultEditorPresetId ?? current.defaultEditorPresetId,
+    editorFileAssociations: patch.settings?.editorFileAssociations ?? current.editorFileAssociations,
   }
 }
 
@@ -2588,6 +2877,10 @@ interface AppState {
   memoryActivity: MemoryActivity
   cliVersionManager: CliVersionManager
   markdownStoreDirectory: string
+  defaultNewChatProviderId: string
+  providerChatDefaults: Record<string, ProviderChatDefaults>
+  defaultEditorPresetId: string
+  editorFileAssociations: EditorFileAssociation[]
 
   // UI
   theme: 'dark' | 'light'
@@ -2629,6 +2922,9 @@ interface AppState {
 	  setSessionAutoApproveCommands: (id: string, enabled: boolean) => Promise<boolean>
 	  setSessionMemoryEnabled: (id: string, enabled: boolean) => Promise<boolean>
 	  setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'memoryWorkerBindings'>>) => Promise<boolean>
+	  setSessionCodexOptions: (id: string, options: { reasoningEffort?: string; serviceTier?: string }) => Promise<boolean>
+	  setProviderChatDefaults: (settings: { defaultNewChatProviderId?: string; providerChatDefaults?: Record<string, ProviderChatDefaults> }) => Promise<boolean>
+	  setEditorSettings: (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'>) => Promise<boolean>
 	  refreshCliProviderVersion: (providerId?: string) => Promise<boolean>
 	  applyCliProviderVersion: (providerId: string, version: string) => Promise<boolean>
 	  browseMarkdownStoreDirectory: (currentValue: string) => Promise<string | null>
@@ -2641,6 +2937,7 @@ interface AppState {
 	  attachMarkdownStoreEntry: (sessionId: string, entry: MarkdownStoreEntry) => void
 	  detachMarkdownStoreEntry: (sessionId: string, filePath: string) => void
 	  openSessionWorkspace: (id: string) => Promise<boolean>
+	  openSessionWorkspaceEditor: (id: string) => Promise<boolean>
 	  getChatWorktreeStatus: (id: string) => Promise<GitWorktreeStatus | null>
 	  createChatWorktree: (id: string) => Promise<GitWorktreeResult>
 	  discardChatWorktreeChanges: (id: string) => Promise<GitWorktreeResult>
@@ -2768,6 +3065,10 @@ export const useAppStore = create<AppState>((set, get) => {
 	            memoryActivity: current.memoryActivity,
 	            cliVersionManager: current.cliVersionManager,
 	            markdownStoreDirectory: current.markdownStoreDirectory,
+	            defaultNewChatProviderId: current.defaultNewChatProviderId,
+	            providerChatDefaults: current.providerChatDefaults,
+	            defaultEditorPresetId: current.defaultEditorPresetId,
+	            editorFileAssociations: current.editorFileAssociations,
 	          })
           set(deserialized)
           // Sync theme to DOM
@@ -2906,6 +3207,10 @@ export const useAppStore = create<AppState>((set, get) => {
     memoryActivity: { ...emptyMemoryActivity },
     cliVersionManager: { ...emptyCliVersionManager },
     markdownStoreDirectory: '',
+    defaultNewChatProviderId: GEMINI_CLI_PROVIDER_ID,
+    providerChatDefaults: {},
+    defaultEditorPresetId: 'vscode',
+    editorFileAssociations: defaultEditorFileAssociations(),
 
     theme: readDocumentTheme(),
     isNewChatModalOpen: false,
@@ -2961,6 +3266,10 @@ export const useAppStore = create<AppState>((set, get) => {
         memoryActivity: current.memoryActivity,
         cliVersionManager: current.cliVersionManager,
         markdownStoreDirectory: current.markdownStoreDirectory,
+        defaultNewChatProviderId: current.defaultNewChatProviderId,
+        providerChatDefaults: current.providerChatDefaults,
+        defaultEditorPresetId: current.defaultEditorPresetId,
+        editorFileAssociations: current.editorFileAssociations,
       })
       set(deserialized)
       if (deserialized.theme) {
@@ -3065,6 +3374,28 @@ export const useAppStore = create<AppState>((set, get) => {
 
         if (!response.ok) {
           console.error('[CEF] openWorkspaceDirectory failed:', response.error)
+          return false
+        }
+
+        return true
+      }
+
+      const session = get().sessions.find((candidate) => candidate.id === id)
+      const folderDirectory = session?.folderId
+        ? get().folders.find((folder) => folder.id === session.folderId)?.directory ?? ''
+        : ''
+      return Boolean(session?.workspaceDirectory?.trim() || folderDirectory.trim())
+    },
+
+    openSessionWorkspaceEditor: async (id) => {
+      if (isCefContext()) {
+        const response = await sendToCEF<OpenWorkspaceEditorResponse>({
+          action: 'openWorkspaceEditor',
+          payload: { chatId: id },
+        })
+
+        if (!response.ok) {
+          console.error('[CEF] openWorkspaceEditor failed:', response.error)
           return false
         }
 
@@ -3372,11 +3703,22 @@ export const useAppStore = create<AppState>((set, get) => {
 	      if (messages.length > 0 || acp?.running || acp?.processing) {
 	        return false
 	      }
+	      const defaults = current.providerChatDefaults[requestedProviderId] ?? sanitizeProviderChatDefaults(null)
 
 	      const applyProvider = () => {
 	        set((state) => ({
 	          sessions: state.sessions.map((s) =>
-	            s.id === id ? { ...s, providerId: requestedProviderId, modelId: '', approvalMode: 'default', autoApproveCommands: false, updatedAt: new Date() } : s
+	            s.id === id ? {
+                ...s,
+                providerId: requestedProviderId,
+                modelId: defaults.modelId,
+                reasoningEffort: requestedProviderId === 'codex-cli' ? defaults.reasoningEffort : '',
+                serviceTier: requestedProviderId === 'codex-cli' ? defaults.serviceTier : '',
+                approvalMode: defaults.approvalMode,
+                autoApproveCommands: defaults.autoApproveCommands,
+                memoryEnabled: defaults.memoryEnabled,
+                updatedAt: new Date(),
+              } : s
 	          ),
 	        }))
 	      }
@@ -3461,6 +3803,61 @@ export const useAppStore = create<AppState>((set, get) => {
       }
 
 	      applyModel()
+	      return true
+	    },
+
+	    setSessionCodexOptions: async (id, options) => {
+	      const requestedReasoningEffort = normalizeCodexReasoningEffort(options.reasoningEffort)
+	      const requestedServiceTier = normalizeCodexServiceTier(options.serviceTier)
+	      const previousSession = get().sessions.find((s) => s.id === id)
+	      if (!previousSession || (previousSession.providerId ?? GEMINI_CLI_PROVIDER_ID) !== 'codex-cli') {
+	        return false
+	      }
+	      if ((previousSession.reasoningEffort ?? '') === requestedReasoningEffort && (previousSession.serviceTier ?? '') === requestedServiceTier) {
+	        return true
+	      }
+
+	      const applyOptions = () => {
+	        set((state) => ({
+	          sessions: state.sessions.map((s) =>
+	            s.id === id ? { ...s, reasoningEffort: requestedReasoningEffort, serviceTier: requestedServiceTier, updatedAt: new Date() } : s
+	          ),
+	        }))
+	      }
+
+	      if (isCefContext()) {
+	        const requestKey = `setSessionCodexOptions:${id}`
+	        const requestId = createRequestId('setSessionCodexOptions')
+	        rememberPendingRequest(requestKey, requestId)
+	        pendingCodexOptionsByChatId.set(id, {
+	          requestId,
+	          reasoningEffort: requestedReasoningEffort,
+	          serviceTier: requestedServiceTier,
+	        })
+	        applyOptions()
+	        const response = await sendToCEF({
+	          action: 'setChatCodexOptions',
+	          payload: { chatId: id, reasoningEffort: requestedReasoningEffort, serviceTier: requestedServiceTier },
+	          requestId,
+	        })
+
+	        if (response.ok) {
+	          clearPendingRequest(requestKey, response.requestId)
+	          clearPendingCodexOptions(id, response.requestId)
+	          return true
+	        }
+
+	        if (isLatestPendingRequest(requestKey, response.requestId)) {
+	          set((state) => ({
+	            sessions: state.sessions.map((s) => (s.id === id ? previousSession : s)),
+	          }))
+	          pendingRequestIdsByKey.delete(requestKey)
+	          clearPendingCodexOptions(id, response.requestId)
+	        }
+	        return false
+	      }
+
+	      applyOptions()
 	      return true
 	    },
 
@@ -3660,6 +4057,95 @@ export const useAppStore = create<AppState>((set, get) => {
 	          set(previous)
 	          return false
 	        }
+	        return true
+	      }
+
+	      applySettings()
+	      return true
+	    },
+
+	    setEditorSettings: async (settings) => {
+	      const previous = {
+	        defaultEditorPresetId: get().defaultEditorPresetId,
+	        editorFileAssociations: get().editorFileAssociations,
+	      }
+	      const next = {
+	        defaultEditorPresetId: sanitizeEditorPresetId(settings.defaultEditorPresetId),
+	        editorFileAssociations: sanitizeEditorFileAssociations(settings.editorFileAssociations),
+	      }
+	      const applySettings = () => set(next)
+
+	      if (isCefContext()) {
+	        const requestId = createRequestId('setEditorSettings')
+	        applySettings()
+	        const response = await sendToCEF({
+	          action: 'setEditorSettings',
+	          payload: {
+	            defaultEditorPresetId: next.defaultEditorPresetId,
+	            fileAssociations: next.editorFileAssociations,
+	          },
+	          requestId,
+	        })
+	        if (!response.ok) {
+	          set(previous)
+	          return false
+	        }
+	        return true
+	      }
+
+	      applySettings()
+	      return true
+	    },
+
+	    setProviderChatDefaults: async (settings) => {
+	      const previous = {
+	        defaultNewChatProviderId: get().defaultNewChatProviderId,
+	        providerChatDefaults: get().providerChatDefaults,
+	      }
+	      const requestedDefaultProviderId = settings.defaultNewChatProviderId?.trim() || previous.defaultNewChatProviderId
+	      if (!get().providers.some((provider) => provider.id === requestedDefaultProviderId)) {
+	        return false
+	      }
+	      const nextDefaults: Record<string, ProviderChatDefaults> = {
+	        ...previous.providerChatDefaults,
+	        ...(settings.providerChatDefaults ?? {}),
+	      }
+	      for (const [providerId, defaults] of Object.entries(nextDefaults)) {
+	        const sanitized = sanitizeProviderChatDefaults(defaults)
+	        if (providerId !== 'codex-cli') {
+	          sanitized.reasoningEffort = ''
+	          sanitized.serviceTier = ''
+	        }
+	        nextDefaults[providerId] = sanitized
+	      }
+	      const next = {
+	        defaultNewChatProviderId: requestedDefaultProviderId,
+	        providerChatDefaults: nextDefaults,
+	      }
+	      const applySettings = () => set(next)
+
+	      if (isCefContext()) {
+	        const requestId = createRequestId('setProviderChatDefaults')
+	        pendingProviderChatDefaults = {
+	          requestId,
+	          defaultNewChatProviderId: next.defaultNewChatProviderId,
+	          providerChatDefaults: next.providerChatDefaults,
+	        }
+	        applySettings()
+	        const response = await sendToCEF({
+	          action: 'setProviderChatDefaults',
+	          payload: {
+	            defaultProviderId: next.defaultNewChatProviderId,
+	            defaults: next.providerChatDefaults,
+	          },
+	          requestId,
+	        })
+	        if (!response.ok) {
+	          clearPendingProviderChatDefaults(response.requestId)
+	          set(previous)
+	          return false
+	        }
+	        clearPendingProviderChatDefaults(response.requestId)
 	        return true
 	      }
 

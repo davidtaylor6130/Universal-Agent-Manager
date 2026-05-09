@@ -14,6 +14,8 @@ export interface Session {
 	  workspaceBranchName?: string
 	  workspaceWorktreeDirectory?: string
 	  modelId?: string
+  reasoningEffort?: string
+  serviceTier?: string
   approvalMode?: string
   autoApproveCommands?: boolean
   memoryEnabled?: boolean

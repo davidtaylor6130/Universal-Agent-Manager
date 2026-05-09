@@ -600,6 +600,76 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('renders OpenCode model options without Gemini fallback labels', () => {
+    const setSessionModel = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      providers: [
+        ...state.providers,
+        { id: 'opencode-cli', name: 'OpenCode', shortName: 'OpenCode', color: '#14b8a6', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'opencode-acp' },
+      ],
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1' ? { ...session, providerId: 'opencode-cli', modelId: 'ollama-r9700/qwen3.6:35b-a3b-q4_K_M' } : session
+      ),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          providerId: 'opencode-cli',
+          protocolKind: 'opencode-acp',
+          lifecycleState: 'ready',
+          processing: false,
+          processingStartedAtMs: null,
+          pendingPermission: null,
+          availableModels: [
+            { id: 'ollama-r9700/qwen3.6:35b-a3b-q4_K_M', name: 'Qwen3.6 35B A3B Q4', description: '' },
+            { id: 'ollama-r9700/qwen3-coder:30b', name: 'Qwen3 Coder 30B', description: '' },
+          ],
+          currentModelId: 'ollama-r9700/qwen3.6:35b-a3b-q4_K_M',
+          agentInfo: { name: 'opencode', title: 'OpenCode', version: '0.6.6' },
+        },
+      },
+      setSessionModel,
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const modelButton = host.querySelector('button[title="Select model"]')
+    expect(modelButton).toBeTruthy()
+    expect(modelButton?.textContent).toContain('Model')
+
+    act(() => {
+      modelButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(host.textContent).toContain('CLI default')
+    expect(host.textContent).toContain('Use OpenCode CLI settings')
+    expect(host.textContent).toContain('Qwen3.6 35B A3B Q4')
+    expect(host.textContent).toContain('Qwen3 Coder 30B')
+    expect(host.textContent).not.toContain('Auto 3')
+    expect(host.textContent).not.toContain('Flash Lite')
+
+    const coderButton = Array.from(host.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Qwen3 Coder 30B')
+    )
+    expect(coderButton).toBeTruthy()
+    act(() => {
+      coderButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(setSessionModel).toHaveBeenCalledWith('chat-1', 'ollama-r9700/qwen3-coder:30b')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
   it('renders dynamic ACP model options and applies the selected model id', () => {
     const setSessionModel = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({

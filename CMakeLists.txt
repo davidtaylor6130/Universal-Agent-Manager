@@ -682,6 +682,7 @@ if(UAM_BUILD_TESTS)
     src/app/vcs_commit_service.cpp
     src/cef/uam_cef_command_line_config.cpp
     src/cef/uam_bridge_request.cpp
+    src/cef/cef_push.cpp
     src/cef/state_serializer.cpp
     src/common/models/app_models.cpp
     src/common/paths/app_paths.cpp

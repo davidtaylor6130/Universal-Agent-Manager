@@ -88,6 +88,8 @@ nlohmann::json SerializeSettingsForPatch(const uam::AppState& app)
 	settings["memoryIdleDelaySeconds"] = app.settings.memory_idle_delay_seconds;
 	settings["memoryRecallBudgetBytes"] = app.settings.memory_recall_budget_bytes;
 	settings["memoryLastStatus"] = app.memory_last_status;
+	settings["markdownStoreDirectory"] = app.settings.markdown_store_directory;
+	settings["defaultNewChatProviderId"] = app.settings.default_new_chat_provider_id;
 
 	nlohmann::json bindings = nlohmann::json::object();
 	for (const auto& entry : app.settings.memory_worker_bindings)
@@ -98,6 +100,33 @@ nlohmann::json SerializeSettingsForPatch(const uam::AppState& app)
 		};
 	}
 	settings["memoryWorkerBindings"] = std::move(bindings);
+
+	nlohmann::json provider_defaults = nlohmann::json::object();
+	for (const auto& entry : app.settings.provider_chat_defaults)
+	{
+		provider_defaults[entry.first] = {
+			{"modelId", entry.second.model_id},
+			{"approvalMode", entry.second.approval_mode},
+			{"autoApproveCommands", entry.second.auto_approve_commands},
+			{"memoryEnabled", entry.second.memory_enabled},
+			{"reasoningEffort", entry.second.reasoning_effort},
+			{"serviceTier", entry.second.service_tier},
+		};
+	}
+	settings["providerChatDefaults"] = std::move(provider_defaults);
+
+	settings["defaultEditorPresetId"] = app.settings.default_editor_preset_id;
+	auto editor_associations = nlohmann::json::array();
+	for (const auto& association : app.settings.editor_file_associations)
+	{
+		editor_associations.push_back({
+			{"id", association.id},
+			{"name", association.name},
+			{"extensions", association.extensions},
+			{"editorPresetId", association.editor_preset_id},
+		});
+	}
+	settings["editorFileAssociations"] = std::move(editor_associations);
 	return settings;
 }
 
@@ -390,6 +419,11 @@ std::string Base64Encode(const std::string& input)
 
 namespace uam
 {
+
+std::string SettingsPatchForTests(const AppState& app)
+{
+	return SerializeSettingsForPatch(app).dump();
+}
 
 bool PushStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, const AppState& app)
 {

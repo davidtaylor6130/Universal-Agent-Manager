@@ -476,6 +476,12 @@ bool ChatDomainService::CreateBranchFromMessage(AppState& app, const std::string
 	branch.branch_root_chat_id = source.branch_root_chat_id.empty() ? source.id : source.branch_root_chat_id;
 	branch.branch_from_message_index = message_index;
 	branch.linked_files = source.linked_files;
+	branch.model_id = source.model_id;
+	branch.reasoning_effort = source.reasoning_effort;
+	branch.service_tier = source.service_tier;
+	branch.approval_mode = source.approval_mode;
+	branch.auto_approve_commands = source.auto_approve_commands;
+	branch.memory_enabled = source.memory_enabled;
 	branch.workspace_directory = Trim(source.workspace_isolation_kind) == "gitWorktree" && !Trim(source.workspace_source_directory).empty()
 		? source.workspace_source_directory
 		: ResolveWorkspaceRootPath(app, source).string();
