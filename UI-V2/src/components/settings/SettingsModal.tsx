@@ -99,7 +99,7 @@ function selectedMemoryModelLabel(options: MemoryModelOption[], modelId: string)
   return options.find((option) => option.id === modelId)?.label ?? titleFromModelId(modelId)
 }
 
-type SettingsSectionId = 'appearance' | 'defaults' | 'cli-version' | 'memory' | 'editors' | 'about'
+type SettingsSectionId = 'appearance' | 'defaults' | 'cli-version' | 'memory-settings' | 'memory-store' | 'editors' | 'about'
 
 interface SettingsSection {
   id: SettingsSectionId
@@ -111,7 +111,8 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'appearance', label: 'Appearance', detail: 'Theme and display' },
   { id: 'defaults', label: 'Chat Defaults', detail: 'Provider and new-chat settings' },
   { id: 'cli-version', label: 'CLI Version', detail: 'Run or revert provider CLIs' },
-  { id: 'memory', label: 'Memory', detail: 'Defaults and workers' },
+  { id: 'memory-settings', label: 'Memory Settings', detail: 'Defaults and workers' },
+  { id: 'memory-store', label: 'Memory Store', detail: 'Library and backfill' },
   { id: 'editors', label: 'Editors', detail: 'Workspace launch presets' },
   { id: 'about', label: 'About', detail: 'Version information' },
 ]
@@ -177,6 +178,72 @@ function SectionCard(
   )
 }
 
+function ProviderDisclosureCard(
+  {
+    panelId,
+    providerId,
+    leadingIcon,
+    title,
+    expanded,
+    onToggle,
+    toggleLabel,
+    children,
+  }: {
+    panelId: string
+    providerId?: string
+    leadingIcon?: ReactNode
+    title: string
+    expanded: boolean
+    onToggle: () => void
+    toggleLabel: string
+    children: ReactNode
+  }
+) {
+  return (
+    <div
+      className="rounded-lg p-3"
+      style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+    >
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={panelId}
+        aria-label={toggleLabel}
+        title={toggleLabel}
+        onClick={onToggle}
+        className="w-full flex items-center justify-between gap-3 text-left"
+        style={{ color: 'var(--text)', background: 'transparent', border: 'none', padding: 0, cursor: 'pointer' }}
+      >
+        <span className="inline-flex min-w-0 items-center gap-2 text-sm">
+          {leadingIcon ?? (providerId ? <ProviderLogo providerId={providerId} /> : null)}
+          <span className="truncate">{title}</span>
+        </span>
+        <span
+          aria-hidden="true"
+          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-sm"
+          style={{
+            background: expanded ? 'var(--accent-dim)' : 'var(--surface-up)',
+            color: 'var(--text-2)',
+            border: '1px solid var(--border)',
+          }}
+        >
+          {expanded ? '-' : '+'}
+        </span>
+      </button>
+
+      {expanded && (
+        <div
+          id={panelId}
+          className="mt-3 pt-3"
+          style={{ borderTop: '1px solid var(--border)' }}
+        >
+          {children}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function SettingsModal() {
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen)
   const providers = useAppStore(useShallow((s) => s.providers))
@@ -206,7 +273,11 @@ export function SettingsModal() {
   const [openMemoryMenu, setOpenMemoryMenu] = useState<string | null>(null)
   const [openEditorMenu, setOpenEditorMenu] = useState<string | null>(null)
   const [openDefaultsMenu, setOpenDefaultsMenu] = useState<string | null>(null)
+  const [openCliVersionMenu, setOpenCliVersionMenu] = useState<string | null>(null)
   const [selectedCliVersions, setSelectedCliVersions] = useState<Record<string, string>>({})
+  const [expandedDefaultProviders, setExpandedDefaultProviders] = useState<Record<string, boolean>>({})
+  const [expandedCliVersionProviders, setExpandedCliVersionProviders] = useState<Record<string, boolean>>({})
+  const [expandedEditorGroups, setExpandedEditorGroups] = useState<Record<string, boolean>>({})
   const [markdownStoreDraftDirectory, setMarkdownStoreDraftDirectory] = useState(markdownStoreDirectory)
   const [editorAssociationsDraft, setEditorAssociationsDraft] = useState(editorFileAssociations)
   const [defaultEditorDraft, setDefaultEditorDraft] = useState(defaultEditorPresetId)
@@ -214,6 +285,7 @@ export function SettingsModal() {
   const memoryMenuRef = useRef<HTMLDivElement>(null)
   const editorMenuRef = useRef<HTMLDivElement>(null)
   const defaultsMenuRef = useRef<HTMLDivElement>(null)
+  const cliVersionMenuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     setSelectedCliVersions((current) => {
@@ -242,11 +314,15 @@ export function SettingsModal() {
         setOpenDefaultsMenu(null)
         return
       }
+      if (openCliVersionMenu) {
+        setOpenCliVersionMenu(null)
+        return
+      }
       setSettingsOpen(false)
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [openDefaultsMenu, openEditorMenu, openMemoryMenu, setSettingsOpen])
+  }, [openCliVersionMenu, openDefaultsMenu, openEditorMenu, openMemoryMenu, setSettingsOpen])
 
   useEffect(() => {
     const handler = (event: MouseEvent) => {
@@ -255,6 +331,7 @@ export function SettingsModal() {
       if (!memoryMenuRef.current?.contains(target)) setOpenMemoryMenu(null)
       if (!editorMenuRef.current?.contains(target)) setOpenEditorMenu(null)
       if (!defaultsMenuRef.current?.contains(target)) setOpenDefaultsMenu(null)
+      if (!cliVersionMenuRef.current?.contains(target)) setOpenCliVersionMenu(null)
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
@@ -300,6 +377,30 @@ export function SettingsModal() {
         [providerId]: defaults,
       },
     })
+  }
+
+  const toggleDefaultProvider = (providerId: string) => {
+    setOpenDefaultsMenu(null)
+    setExpandedDefaultProviders((current) => ({
+      ...current,
+      [providerId]: !(current[providerId] ?? false),
+    }))
+  }
+
+  const toggleCliVersionProvider = (providerId: string) => {
+    setOpenCliVersionMenu(null)
+    setExpandedCliVersionProviders((current) => ({
+      ...current,
+      [providerId]: !(current[providerId] ?? false),
+    }))
+  }
+
+  const toggleEditorGroup = (groupId: string) => {
+    setOpenEditorMenu(null)
+    setExpandedEditorGroups((current) => ({
+      ...current,
+      [groupId]: !(current[groupId] ?? false),
+    }))
   }
 
   const renderDefaultsMenu = (
@@ -393,6 +494,88 @@ export function SettingsModal() {
       defaultEditorPresetId: nextDefaultEditor,
       editorFileAssociations: nextAssociations,
     })
+  }
+
+  const renderCliVersionMenu = (
+    menuId: string,
+    value: string,
+    label: string,
+    options: MemoryModelOption[],
+    disabled: boolean,
+    onSelect: (value: string) => void
+  ) => {
+    const selectedOption = options.find((option) => option.id === value) ?? (value ? { id: value, label: value, detail: 'Current selection' } : undefined)
+    return (
+      <div className="relative">
+        <button
+          type="button"
+          title={label}
+          aria-haspopup="listbox"
+          aria-expanded={openCliVersionMenu === menuId}
+          disabled={disabled}
+          onClick={() => setOpenCliVersionMenu(openCliVersionMenu === menuId ? null : menuId)}
+          className="w-full text-left disabled:opacity-50"
+          style={{
+            background: 'var(--surface-up)',
+            color: 'var(--text)',
+            border: '1px solid var(--border)',
+            borderRadius: 8,
+            padding: '8px 10px',
+            cursor: disabled ? 'default' : 'pointer',
+          }}
+        >
+          <span className="truncate">{selectedOption?.label ?? 'No versions available'}</span>
+        </button>
+        {!disabled && openCliVersionMenu === menuId && (
+          <div
+            role="listbox"
+            aria-label={label}
+            className="absolute left-0 right-0"
+            style={{
+              top: 38,
+              zIndex: 70,
+              border: '1px solid var(--border-bright)',
+              borderRadius: 10,
+              background: 'var(--surface)',
+              boxShadow: '0 14px 42px rgba(0, 0, 0, 0.28)',
+              padding: 6,
+            }}
+          >
+            {options.map((option) => {
+              const selected = option.id === value
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  role="option"
+                  aria-selected={selected}
+                  onClick={() => {
+                    onSelect(option.id)
+                    setOpenCliVersionMenu(null)
+                  }}
+                  className="w-full grid gap-0.5 text-left px-2 py-2"
+                  style={{
+                    borderRadius: 6,
+                    background: selected ? 'var(--accent-dim)' : 'transparent',
+                    color: selected ? 'var(--text)' : 'var(--text-2)',
+                  }}
+                >
+                  <span className="flex items-center gap-2">
+                    <span className="flex-1">{option.label}</span>
+                    {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
+                  </span>
+                  {option.detail && (
+                    <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>
+                      {option.detail}
+                    </span>
+                  )}
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    )
   }
 
   const renderEditorPresetMenu = (
@@ -529,94 +712,98 @@ export function SettingsModal() {
                   const defaults = defaultsForProvider(provider)
                   const modelOptions = memoryModelOptions(provider, provider.id, defaults.modelId)
                   const codexProvider = isCodexProvider(provider, provider.id)
+                  const providerName = providerDisplayName(provider, provider.id)
+                  const expanded = expandedDefaultProviders[provider.id] ?? false
                   const modeOptions = [
                     { id: 'default', label: 'Default', detail: 'Use the provider default mode' },
                     { id: 'plan', label: 'Plan', detail: 'Ask the provider to plan first' },
                     ...(isClaudeProvider(provider, provider.id) ? [{ id: 'acceptEdits', label: 'Accept Edits', detail: 'Auto-approve workspace file edits' }] : []),
                   ]
                   return (
-                    <div
+                    <ProviderDisclosureCard
                       key={provider.id}
-                      className="grid gap-3 rounded-lg p-3 text-xs"
-                      style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)' }}
+                      panelId={`${provider.id}-defaults-panel`}
+                      providerId={provider.id}
+                      title={providerName}
+                      expanded={expanded}
+                      toggleLabel={`${expanded ? 'Hide' : 'Show'} ${providerName} chat defaults`}
+                      onToggle={() => toggleDefaultProvider(provider.id)}
                     >
-                      <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--text)' }}>
-                        <ProviderLogo providerId={provider.id} />
-                        <span>{providerDisplayName(provider, provider.id)}</span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <div className="grid gap-1">
-                          <div>Model</div>
-                          {renderDefaultsMenu(
-                            `${provider.id}:model`,
-                            defaults.modelId,
-                            `${providerDisplayName(provider, provider.id)} default model`,
-                            modelOptions,
-                            (modelId) => updateProviderDefaults(provider.id, { ...defaults, modelId })
-                          )}
-                        </div>
-                        <div className="grid gap-1">
-                          <div>Mode</div>
-                          {renderDefaultsMenu(
-                            `${provider.id}:mode`,
-                            defaults.approvalMode,
-                            `${providerDisplayName(provider, provider.id)} default mode`,
-                            modeOptions,
-                            (approvalMode) => updateProviderDefaults(provider.id, { ...defaults, approvalMode })
-                          )}
-                        </div>
-                        {codexProvider && (
+                      <div className="grid gap-3 text-xs" style={{ color: 'var(--text-2)' }}>
+                        <div className="grid grid-cols-2 gap-2">
                           <div className="grid gap-1">
-                            <div>Reasoning</div>
+                            <div>Model</div>
                             {renderDefaultsMenu(
-                              `${provider.id}:reasoning`,
-                              defaults.reasoningEffort,
-                              `${providerDisplayName(provider, provider.id)} default reasoning`,
-                              CODEX_REASONING_OPTIONS,
-                              (reasoningEffort) => updateProviderDefaults(provider.id, { ...defaults, reasoningEffort })
+                              `${provider.id}:model`,
+                              defaults.modelId,
+                              `${providerName} default model`,
+                              modelOptions,
+                              (modelId) => updateProviderDefaults(provider.id, { ...defaults, modelId })
                             )}
                           </div>
-                        )}
-                        {codexProvider && (
                           <div className="grid gap-1">
-                            <div>Speed</div>
+                            <div>Mode</div>
                             {renderDefaultsMenu(
-                              `${provider.id}:speed`,
-                              defaults.serviceTier,
-                              `${providerDisplayName(provider, provider.id)} default speed`,
-                              CODEX_SPEED_OPTIONS,
-                              (serviceTier) => updateProviderDefaults(provider.id, { ...defaults, serviceTier })
+                              `${provider.id}:mode`,
+                              defaults.approvalMode,
+                              `${providerName} default mode`,
+                              modeOptions,
+                              (approvalMode) => updateProviderDefaults(provider.id, { ...defaults, approvalMode })
                             )}
                           </div>
-                        )}
+                          {codexProvider && (
+                            <div className="grid gap-1">
+                              <div>Reasoning</div>
+                              {renderDefaultsMenu(
+                                `${provider.id}:reasoning`,
+                                defaults.reasoningEffort,
+                                `${providerName} default reasoning`,
+                                CODEX_REASONING_OPTIONS,
+                                (reasoningEffort) => updateProviderDefaults(provider.id, { ...defaults, reasoningEffort })
+                              )}
+                            </div>
+                          )}
+                          {codexProvider && (
+                            <div className="grid gap-1">
+                              <div>Speed</div>
+                              {renderDefaultsMenu(
+                                `${provider.id}:speed`,
+                                defaults.serviceTier,
+                                `${providerName} default speed`,
+                                CODEX_SPEED_OPTIONS,
+                                (serviceTier) => updateProviderDefaults(provider.id, { ...defaults, serviceTier })
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => updateProviderDefaults(provider.id, { ...defaults, autoApproveCommands: !defaults.autoApproveCommands })}
+                            className="px-2 py-1 rounded-md"
+                            style={{
+                              background: defaults.autoApproveCommands ? 'color-mix(in srgb, var(--yellow) 16%, var(--surface))' : 'var(--surface-up)',
+                              color: 'var(--text-2)',
+                              border: '1px solid var(--border)',
+                            }}
+                          >
+                            {defaults.autoApproveCommands ? 'Auto approve on' : 'Auto approve off'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => updateProviderDefaults(provider.id, { ...defaults, memoryEnabled: !defaults.memoryEnabled })}
+                            className="px-2 py-1 rounded-md"
+                            style={{
+                              background: defaults.memoryEnabled ? 'color-mix(in srgb, var(--green) 14%, var(--surface))' : 'var(--surface-up)',
+                              color: 'var(--text-2)',
+                              border: '1px solid var(--border)',
+                            }}
+                          >
+                            {defaults.memoryEnabled ? 'Memory on' : 'Memory off'}
+                          </button>
+                        </div>
                       </div>
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          onClick={() => updateProviderDefaults(provider.id, { ...defaults, autoApproveCommands: !defaults.autoApproveCommands })}
-                          className="px-2 py-1 rounded-md"
-                          style={{
-                            background: defaults.autoApproveCommands ? 'color-mix(in srgb, var(--yellow) 16%, var(--surface))' : 'var(--surface-up)',
-                            color: 'var(--text-2)',
-                            border: '1px solid var(--border)',
-                          }}
-                        >
-                          {defaults.autoApproveCommands ? 'Auto approve on' : 'Auto approve off'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => updateProviderDefaults(provider.id, { ...defaults, memoryEnabled: !defaults.memoryEnabled })}
-                          className="px-2 py-1 rounded-md"
-                          style={{
-                            background: defaults.memoryEnabled ? 'color-mix(in srgb, var(--green) 14%, var(--surface))' : 'var(--surface-up)',
-                            color: 'var(--text-2)',
-                            border: '1px solid var(--border)',
-                          }}
-                        >
-                          {defaults.memoryEnabled ? 'Memory on' : 'Memory off'}
-                        </button>
-                      </div>
-                    </div>
+                    </ProviderDisclosureCard>
                   )
                 })}
               </div>
@@ -633,7 +820,7 @@ export function SettingsModal() {
             title="Provider CLIs"
             description="Check, run, or revert each provider CLI to a curated supported version."
           >
-            <div className="space-y-3">
+            <div ref={cliVersionMenuRef} className="space-y-3">
               {cliVersionManager.providers.length === 0 && (
                 <div className="text-xs" style={{ color: 'var(--text-3)' }}>
                   No managed CLI providers are available in this build.
@@ -641,22 +828,32 @@ export function SettingsModal() {
               )}
               {cliVersionManager.providers.map((manager) => {
                 const cliVersionProvider = providers.find((provider) => provider.id === manager.providerId)
+                const providerName = providerDisplayName(cliVersionProvider, manager.providerId)
                 const selectedCliVersion = selectedCliVersions[manager.providerId] || manager.selectedVersion || manager.preferredVersion || ''
                 const cliVersionChanged = Boolean(selectedCliVersion && selectedCliVersion !== manager.installedVersion)
                 const canApplyCliVersion = Boolean(selectedCliVersion && cliVersionChanged && !manager.running)
+                const expanded = expandedCliVersionProviders[manager.providerId] ?? false
+                const versionOptions = manager.availableVersions.map((option) => ({
+                  id: option.version,
+                  label: option.version,
+                  detail: option.preferred ? 'Preferred version' : 'Curated version',
+                }))
+                if (selectedCliVersion && !versionOptions.some((option) => option.id === selectedCliVersion)) {
+                  versionOptions.push({ id: selectedCliVersion, label: selectedCliVersion, detail: 'Current selection' })
+                }
                 return (
-                  <div
+                  <ProviderDisclosureCard
                     key={manager.providerId}
-                    className="rounded-lg p-3"
-                    style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+                    panelId={`${manager.providerId}-cli-version-panel`}
+                    providerId={manager.providerId}
+                    title={providerName}
+                    expanded={expanded}
+                    toggleLabel={`${expanded ? 'Hide' : 'Show'} ${providerName} CLI version settings`}
+                    onToggle={() => toggleCliVersionProvider(manager.providerId)}
                   >
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0">
-                        <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--text)' }}>
-                          <ProviderLogo providerId={manager.providerId} />
-                          <span>{providerDisplayName(cliVersionProvider, manager.providerId)}</span>
-                        </div>
-                        <div className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>
+                        <div className="text-xs" style={{ color: 'var(--text-3)' }}>
                           {versionStatusText(manager)}
                         </div>
                         {manager.message && (
@@ -697,30 +894,17 @@ export function SettingsModal() {
                     </div>
 
                     <div className="grid gap-2 mt-3">
-                      <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                        Target version
-                        <select
-                          value={selectedCliVersion}
-                          disabled={manager.running || manager.availableVersions.length === 0}
-                          onChange={(event) => {
-                            const nextVersion = event.currentTarget.value
-                            setSelectedCliVersions((current) => ({ ...current, [manager.providerId]: nextVersion }))
-                          }}
-                          style={{
-                            background: 'var(--surface-up)',
-                            color: 'var(--text)',
-                            border: '1px solid var(--border)',
-                            borderRadius: 8,
-                            padding: '8px 10px',
-                          }}
-                        >
-                          {manager.availableVersions.map((option) => (
-                            <option key={option.version} value={option.version}>
-                              {option.version}{option.preferred ? ' (preferred)' : ''}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
+                      <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                        <div>Target version</div>
+                        {renderCliVersionMenu(
+                          `${manager.providerId}:cli-version`,
+                          selectedCliVersion,
+                          `${providerName} target version`,
+                          versionOptions,
+                          manager.running || versionOptions.length === 0,
+                          (nextVersion) => setSelectedCliVersions((current) => ({ ...current, [manager.providerId]: nextVersion }))
+                        )}
+                      </div>
                       <div className="flex items-center justify-between gap-3">
                         <div className="text-xs" style={{ color: 'var(--text-3)' }}>
                           Applies with npm globally for this provider.
@@ -729,7 +913,6 @@ export function SettingsModal() {
                           type="button"
                           disabled={!canApplyCliVersion}
                           onClick={() => {
-                            const providerName = providerDisplayName(cliVersionProvider, manager.providerId)
                             if (!window.confirm(`Install ${providerName} ${selectedCliVersion}?`)) return
                             void applyCliProviderVersion(manager.providerId, selectedCliVersion)
                           }}
@@ -769,7 +952,7 @@ export function SettingsModal() {
                         </pre>
                       </div>
                     )}
-                  </div>
+                  </ProviderDisclosureCard>
                 )
               })}
             </div>
@@ -778,7 +961,7 @@ export function SettingsModal() {
       )
     }
 
-    if (selectedSection === 'memory') {
+    if (selectedSection === 'memory-settings') {
       return (
         <div className="space-y-4">
           <SectionCard
@@ -1054,6 +1237,13 @@ export function SettingsModal() {
             )}
           </SectionCard>
 
+        </div>
+      )
+    }
+
+    if (selectedSection === 'memory-store') {
+      return (
+        <div className="space-y-4">
           <SectionCard
             title="Memory Library"
             description="Browse, add, delete, and reveal global memory files without leaving the app."
@@ -1199,84 +1389,95 @@ export function SettingsModal() {
               </div>
 
               <div className="space-y-3">
-                {editorAssociationsDraft.map((association) => (
-                  <div
-                    key={association.id}
-                    className="grid gap-2 rounded-lg p-3"
-                    style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
-                  >
-                    <div className="grid grid-cols-3 gap-2">
-                      <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                        Group
-                        <input
-                          value={association.name}
-                          onChange={(event) => {
-                            const nextAssociations = editorAssociationsDraft.map((item) =>
-                              item.id === association.id ? { ...item, name: event.currentTarget.value } : item
-                            )
-                            saveEditorSettings(nextAssociations)
-                          }}
-                          style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}
-                        />
-                      </label>
-                      <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                        Extensions
-                        <input
-                          value={extensionsText(association)}
-                          onChange={(event) => {
-                            const nextAssociations = editorAssociationsDraft.map((item) =>
-                              item.id === association.id ? { ...item, extensions: parseExtensions(event.currentTarget.value) } : item
-                            )
-                            saveEditorSettings(nextAssociations)
-                          }}
-                          style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}
-                        />
-                      </label>
-                      <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                        <div>Editor</div>
-                        {renderEditorPresetMenu(
-                          `${association.id}:editor`,
-                          association.editorPresetId,
-                          `${association.name || 'File group'} editor`,
-                          (presetId) => {
-                            const nextAssociations = editorAssociationsDraft.map((item) =>
-                              item.id === association.id ? { ...item, editorPresetId: presetId } : item
-                            )
-                            saveEditorSettings(nextAssociations)
-                          }
-                        )}
+                {editorAssociationsDraft.map((association) => {
+                  const groupName = association.name.trim() || 'File group'
+                  const expanded = expandedEditorGroups[association.id] ?? false
+                  return (
+                    <ProviderDisclosureCard
+                      key={association.id}
+                      panelId={`${association.id}-editor-group-panel`}
+                      title={groupName}
+                      expanded={expanded}
+                      toggleLabel={`${expanded ? 'Hide' : 'Show'} ${groupName} editor group`}
+                      onToggle={() => toggleEditorGroup(association.id)}
+                    >
+                      <div className="grid gap-2">
+                        <div className="grid grid-cols-3 gap-2">
+                          <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                            Group
+                            <input
+                              value={association.name}
+                              onChange={(event) => {
+                                const nextAssociations = editorAssociationsDraft.map((item) =>
+                                  item.id === association.id ? { ...item, name: event.currentTarget.value } : item
+                                )
+                                saveEditorSettings(nextAssociations)
+                              }}
+                              style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}
+                            />
+                          </label>
+                          <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                            Extensions
+                            <input
+                              value={extensionsText(association)}
+                              onChange={(event) => {
+                                const nextAssociations = editorAssociationsDraft.map((item) =>
+                                  item.id === association.id ? { ...item, extensions: parseExtensions(event.currentTarget.value) } : item
+                                )
+                                saveEditorSettings(nextAssociations)
+                              }}
+                              style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}
+                            />
+                          </label>
+                          <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                            <div>Editor</div>
+                            {renderEditorPresetMenu(
+                              `${association.id}:editor`,
+                              association.editorPresetId,
+                              `${groupName} editor`,
+                              (presetId) => {
+                                const nextAssociations = editorAssociationsDraft.map((item) =>
+                                  item.id === association.id ? { ...item, editorPresetId: presetId } : item
+                                )
+                                saveEditorSettings(nextAssociations)
+                              }
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="text-xs" style={{ color: 'var(--text-3)' }}>
+                            {association.extensions.length} extension{association.extensions.length === 1 ? '' : 's'} open in {editorPresetLabel(association.editorPresetId)}
+                          </div>
+                          <button
+                            type="button"
+                            disabled={editorAssociationsDraft.length <= 1}
+                            onClick={() => saveEditorSettings(editorAssociationsDraft.filter((item) => item.id !== association.id))}
+                            className="px-3 py-1.5 text-xs disabled:opacity-50"
+                            style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface-up)', color: 'var(--text-2)' }}
+                          >
+                            Delete
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="text-xs" style={{ color: 'var(--text-3)' }}>
-                        {association.extensions.length} extension{association.extensions.length === 1 ? '' : 's'} open in {editorPresetLabel(association.editorPresetId)}
-                      </div>
-                      <button
-                        type="button"
-                        disabled={editorAssociationsDraft.length <= 1}
-                        onClick={() => saveEditorSettings(editorAssociationsDraft.filter((item) => item.id !== association.id))}
-                        className="px-3 py-1.5 text-xs disabled:opacity-50"
-                        style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface-up)', color: 'var(--text-2)' }}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                    </ProviderDisclosureCard>
+                  )
+                })}
               </div>
 
               <button
                 type="button"
                 onClick={() => {
+                  const id = `editor-group-${Date.now()}`
                   const nextAssociations = [
                     ...editorAssociationsDraft,
                     {
-                      id: `editor-group-${Date.now()}`,
+                      id,
                       name: 'Files',
                       extensions: ['.txt'],
                       editorPresetId: defaultEditorDraft,
                     },
                   ]
+                  setExpandedEditorGroups((current) => ({ ...current, [id]: true }))
                   saveEditorSettings(nextAssociations)
                 }}
                 className="px-3 py-2 text-xs justify-self-start"
@@ -1370,6 +1571,9 @@ export function SettingsModal() {
                     onClick={() => {
                       setSelectedSection(section.id)
                       setOpenMemoryMenu(null)
+                      setOpenEditorMenu(null)
+                      setOpenDefaultsMenu(null)
+                      setOpenCliVersionMenu(null)
                     }}
                     className="w-full text-left px-3 py-2.5 rounded-xl transition-colors"
                     style={{

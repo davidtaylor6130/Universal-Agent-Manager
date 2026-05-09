@@ -115,13 +115,47 @@ describe('SettingsModal memory settings', () => {
     })
   }
 
+  function openCliVersionSection(host: HTMLElement) {
+    const cliSectionButton = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('CLI Version') && button.textContent?.includes('Run or revert provider CLIs')
+    )
+    expect(cliSectionButton).toBeTruthy()
+
+    act(() => {
+      cliSectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+  }
+
+  function openMemorySettingsSection(host: HTMLElement) {
+    const memorySectionButton = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Memory Settings') && button.textContent?.includes('Defaults and workers')
+    )
+    expect(memorySectionButton).toBeTruthy()
+
+    act(() => {
+      memorySectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+  }
+
+  function openMemoryStoreSection(host: HTMLElement) {
+    const memoryStoreSectionButton = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Memory Store') && button.textContent?.includes('Library and backfill')
+    )
+    expect(memoryStoreSectionButton).toBeTruthy()
+
+    act(() => {
+      memoryStoreSectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+  }
+
   it('does not render native selects for memory worker controls', () => {
     const { host, root } = renderModal()
 
     expect(host.querySelector('select')).toBeNull()
     expect(host.textContent).toContain('Appearance')
     expect(host.textContent).toContain('CLI Version')
-    expect(host.textContent).toContain('Memory')
+    expect(host.textContent).toContain('Memory Settings')
+    expect(host.textContent).toContain('Memory Store')
     expect(host.textContent).toContain('About')
     expect(host.textContent).toContain('Theme')
     expect(host.textContent).not.toContain('Gemini memory worker')
@@ -136,29 +170,40 @@ describe('SettingsModal memory settings', () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const { host, root } = renderModal()
 
-    const cliSectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('CLI Version') && button.textContent?.includes('Run or revert provider CLIs')
-    )
-    expect(cliSectionButton).toBeTruthy()
-
-    act(() => {
-      cliSectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    openCliVersionSection(host)
 
     expect(host.textContent).toContain('Provider CLIs')
     expect(host.textContent).toContain('Gemini')
     expect(host.textContent).toContain('Codex')
+    expect(host.textContent).not.toContain('0.123.0')
+
+    const codexCliToggle = host.querySelector(
+      'button[aria-label="Show Codex CLI version settings"]'
+    ) as HTMLButtonElement | null
+    expect(codexCliToggle).toBeTruthy()
+
+    act(() => {
+      codexCliToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
     expect(host.textContent).toContain('0.123.0')
 
-    const select = Array.from(host.querySelectorAll('select')).find((candidate) =>
-      Array.from(candidate.options).some((option) => option.value === '0.124.0')
-    ) as HTMLSelectElement | undefined
-    expect(select).toBeTruthy()
+    const targetVersionButton = host.querySelector(
+      'button[title="Codex target version"]'
+    ) as HTMLButtonElement | null
+    expect(targetVersionButton).toBeTruthy()
+
     act(() => {
-      if (select) {
-        select.value = '0.124.0'
-        select.dispatchEvent(new Event('change', { bubbles: true }))
-      }
+      targetVersionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    const nextVersionOption = Array.from(host.querySelectorAll('button[role="option"]')).find(
+      (button) => button.textContent?.includes('0.124.0')
+    )
+    expect(nextVersionOption).toBeTruthy()
+
+    act(() => {
+      nextVersionOption?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
     const applyButton = Array.from(host.querySelectorAll('button')).find(
@@ -180,22 +225,56 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it('keeps provider chat defaults collapsed until toggled', () => {
+    const { host, root } = renderModal()
+
+    const defaultsSectionButton = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Chat Defaults') && button.textContent?.includes('Provider and new-chat settings')
+    )
+    expect(defaultsSectionButton).toBeTruthy()
+
+    act(() => {
+      defaultsSectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(host.textContent).toContain('New Chat Defaults')
+    expect(host.textContent).toContain('Gemini')
+    expect(host.textContent).toContain('Codex')
+    expect(host.textContent).not.toContain('Auto approve off')
+
+    const codexDefaultsToggle = host.querySelector(
+      'button[aria-label="Show Codex chat defaults"]'
+    ) as HTMLButtonElement | null
+    expect(codexDefaultsToggle).toBeTruthy()
+
+    act(() => {
+      codexDefaultsToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(host.textContent).toContain('Reasoning')
+    expect(host.textContent).toContain('Auto approve off')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
   it('switches sections through the sidebar', () => {
     const { host, root } = renderModal()
 
-    const memorySectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Memory') && button.textContent?.includes('Defaults and workers')
-    )
-    expect(memorySectionButton).toBeTruthy()
-
-    act(() => {
-      memorySectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    openMemorySettingsSection(host)
 
     expect(host.textContent).toContain('Memory Workers')
     expect(host.textContent).toContain('Gemini memory worker')
     expect(host.textContent).toContain('CLI default')
     expect(host.textContent).not.toContain('Build and release information')
+
+    openMemoryStoreSection(host)
+
+    expect(host.textContent).toContain('Memory Library')
+    expect(host.textContent).toContain('Memory Backfill')
+    expect(host.textContent).not.toContain('Gemini memory worker')
 
     const aboutSectionButton = Array.from(host.querySelectorAll('button')).find(
       (button) => button.textContent?.includes('About') && button.textContent?.includes('Version information')
@@ -222,6 +301,8 @@ describe('SettingsModal memory settings', () => {
 
     expect(host.textContent).toContain('Workspace Editors')
     expect(host.querySelector('select')).toBeNull()
+    expect(host.textContent).toContain('C++')
+    expect(host.textContent).not.toContain('8 extensions open in VS Code')
 
     const defaultEditorButton = host.querySelector(
       'button[title="Default editor"]'
@@ -259,11 +340,46 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it('keeps editor groups collapsed until toggled', () => {
+    const { host, root } = renderModal()
+    openEditorsSection(host)
+
+    expect(host.textContent).toContain('C++')
+    expect(host.textContent).not.toContain('Extensions')
+    expect(host.textContent).not.toContain('8 extensions open in VS Code')
+
+    const cppGroupToggle = host.querySelector(
+      'button[aria-label="Show C++ editor group"]'
+    ) as HTMLButtonElement | null
+    expect(cppGroupToggle).toBeTruthy()
+
+    act(() => {
+      cppGroupToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(host.textContent).toContain('Extensions')
+    expect(host.textContent).toContain('8 extensions open in VS Code')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
   it('updates the C++ editor through the custom menu', () => {
     const { host, root } = renderModal()
     openEditorsSection(host)
 
     expect(host.querySelector('select')).toBeNull()
+
+    const cppGroupToggle = host.querySelector(
+      'button[aria-label="Show C++ editor group"]'
+    ) as HTMLButtonElement | null
+    expect(cppGroupToggle).toBeTruthy()
+
+    act(() => {
+      cppGroupToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
 
     const cppEditorButton = host.querySelector(
       'button[title="C++ editor"]'
@@ -301,7 +417,7 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
-  it('shows the last memory worker log in the memory section', () => {
+  it('shows the last memory worker log in the memory settings section', () => {
     useAppStore.setState({
       memoryActivity: {
         entryCount: 0,
@@ -323,13 +439,7 @@ describe('SettingsModal memory settings', () => {
     })
     const { host, root } = renderModal()
 
-    const memorySectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Memory') && button.textContent?.includes('Defaults and workers')
-    )
-
-    act(() => {
-      memorySectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    openMemorySettingsSection(host)
 
     expect(host.textContent).toContain('Last worker log')
     expect(host.textContent).toContain('Command timed out.')
@@ -345,13 +455,7 @@ describe('SettingsModal memory settings', () => {
   it('updates the memory worker provider through the custom menu', () => {
     const { host, root } = renderModal()
 
-    const memorySectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Memory') && button.textContent?.includes('Defaults and workers')
-    )
-
-    act(() => {
-      memorySectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    openMemorySettingsSection(host)
 
     const providerButton = host.querySelector(
       'button[title="Gemini memory worker provider"]'
@@ -391,13 +495,7 @@ describe('SettingsModal memory settings', () => {
     })
     const { host, root } = renderModal()
 
-    const memorySectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Memory') && button.textContent?.includes('Defaults and workers')
-    )
-
-    act(() => {
-      memorySectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    openMemorySettingsSection(host)
 
     const modelButton = host.querySelector(
       'button[title="Gemini memory worker model"]'
@@ -429,16 +527,10 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
-  it('opens the global memory library from the memory section', () => {
+  it('opens the global memory library from the memory store section', () => {
     const { host, root } = renderModal()
 
-    const memorySectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Memory') && button.textContent?.includes('Defaults and workers')
-    )
-
-    act(() => {
-      memorySectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    openMemoryStoreSection(host)
 
     const openLibraryButton = Array.from(host.querySelectorAll('button')).find(
       (button) => button.textContent?.includes('Open library')
@@ -457,16 +549,10 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
-  it('opens the scan current chats flow from the memory section', () => {
+  it('opens the scan current chats flow from the memory store section', () => {
     const { host, root } = renderModal()
 
-    const memorySectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Memory') && button.textContent?.includes('Defaults and workers')
-    )
-
-    act(() => {
-      memorySectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    openMemoryStoreSection(host)
 
     const scanButton = Array.from(host.querySelectorAll('button')).find(
       (button) => button.textContent?.includes('Scan Current Chats')
