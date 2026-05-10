@@ -1475,6 +1475,25 @@ function sanitizeProviderChatDefaultsMap(value: unknown): Record<string, Provide
   return defaults
 }
 
+function providerChatDefaultsForNewChat(
+  state: {
+    providerChatDefaults: Record<string, ProviderChatDefaults>
+    memoryEnabledDefault: boolean
+  },
+  providerId: string
+): ProviderChatDefaults {
+  const saved = state.providerChatDefaults[providerId]
+  const defaults = sanitizeProviderChatDefaults(saved ?? null)
+  if (!saved) {
+    defaults.memoryEnabled = state.memoryEnabledDefault
+  }
+  if (providerId !== 'codex-cli') {
+    defaults.reasoningEffort = ''
+    defaults.serviceTier = ''
+  }
+  return defaults
+}
+
 function sanitizeCppSettings(value: unknown): CppSettings {
   if (!isRecord(value)) {
     return {
@@ -2904,7 +2923,8 @@ interface AppState {
   markdownStoreAttachedBySessionId: Record<string, MarkdownStoreEntry[]>
   sidebarCollapsed: boolean
   commitPanelOpen: boolean
-  commitPanelWidth: number
+  sidebarWidthPx: number
+  commitPanelWidthPx: number
   streamingMessageId: string | null
   pushChannelStatus: PushChannelStatus
   pushChannelError: string
@@ -2988,7 +3008,8 @@ interface AppState {
   setSettingsOpen: (open: boolean) => void
   setSidebarCollapsed: (collapsed: boolean) => void
   setCommitPanelOpen: (open: boolean) => void
-  setCommitPanelWidth: (width: number) => void
+  setSidebarWidthPx: (width: number) => void
+  setCommitPanelWidthPx: (width: number) => void
 
   // CEF bootstrap
   loadFromCef: (state: CppAppState) => void
@@ -3009,29 +3030,71 @@ function persistTheme(theme: 'dark' | 'light'): void {
   writeStoredTheme(theme)
 }
 
-const appShellLayoutStorageKey = 'uam-app-shell-layout-v1'
+const appShellLayoutStorageKey = 'uam-app-shell-layout-v2'
+const legacyAppShellLayoutStorageKey = 'uam-app-shell-layout-v1'
+const defaultAppShellLayout = {
+  sidebarCollapsed: false,
+  commitPanelOpen: false,
+  sidebarWidthPx: 320,
+  commitPanelWidthPx: 420,
+}
+
+function clampSidebarWidthPx(width: number): number {
+  return Math.min(520, Math.max(260, Math.round(width)))
+}
+
+function clampCommitPanelWidthPx(width: number): number {
+  return Math.min(680, Math.max(320, Math.round(width)))
+}
+
+function legacyCommitPanelPercentToPx(value: unknown): number {
+  const legacyPercent = typeof value === 'number' && Number.isFinite(value) ? value : 30
+  return clampCommitPanelWidthPx(legacyPercent * 14)
+}
 
 function readStoredAppShellLayout() {
   if (typeof window === 'undefined') {
-    return { sidebarCollapsed: false, commitPanelOpen: false, commitPanelWidth: 30 }
+    return defaultAppShellLayout
   }
   try {
     const raw = window.localStorage.getItem(appShellLayoutStorageKey)
-    const parsed = raw ? JSON.parse(raw) : {}
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      return {
+        sidebarCollapsed: Boolean(parsed.sidebarCollapsed),
+        commitPanelOpen: Boolean(parsed.commitPanelOpen),
+        sidebarWidthPx: clampSidebarWidthPx(Number(parsed.sidebarWidthPx) || defaultAppShellLayout.sidebarWidthPx),
+        commitPanelWidthPx: clampCommitPanelWidthPx(Number(parsed.commitPanelWidthPx) || defaultAppShellLayout.commitPanelWidthPx),
+      }
+    }
+
+    const legacyRaw = window.localStorage.getItem(legacyAppShellLayoutStorageKey)
+    const parsed = legacyRaw ? JSON.parse(legacyRaw) : {}
     return {
       sidebarCollapsed: Boolean(parsed.sidebarCollapsed),
       commitPanelOpen: Boolean(parsed.commitPanelOpen),
-      commitPanelWidth: Math.min(42, Math.max(22, Number(parsed.commitPanelWidth) || 30)),
+      sidebarWidthPx: defaultAppShellLayout.sidebarWidthPx,
+      commitPanelWidthPx: legacyCommitPanelPercentToPx(parsed.commitPanelWidth),
     }
   } catch {
-    return { sidebarCollapsed: false, commitPanelOpen: false, commitPanelWidth: 30 }
+    return defaultAppShellLayout
   }
 }
 
-function writeStoredAppShellLayout(layout: { sidebarCollapsed: boolean; commitPanelOpen: boolean; commitPanelWidth: number }) {
+function writeStoredAppShellLayout(layout: {
+  sidebarCollapsed: boolean
+  commitPanelOpen: boolean
+  sidebarWidthPx: number
+  commitPanelWidthPx: number
+}) {
   if (typeof window === 'undefined') return
   try {
-    window.localStorage.setItem(appShellLayoutStorageKey, JSON.stringify(layout))
+    window.localStorage.setItem(appShellLayoutStorageKey, JSON.stringify({
+      sidebarCollapsed: layout.sidebarCollapsed,
+      commitPanelOpen: layout.commitPanelOpen,
+      sidebarWidthPx: clampSidebarWidthPx(layout.sidebarWidthPx),
+      commitPanelWidthPx: clampCommitPanelWidthPx(layout.commitPanelWidthPx),
+    }))
   } catch {
     // Ignore storage failures; the in-memory store still tracks the layout.
   }
@@ -3233,7 +3296,8 @@ export const useAppStore = create<AppState>((set, get) => {
     markdownStoreAttachedBySessionId: {},
     sidebarCollapsed: storedShellLayout.sidebarCollapsed,
     commitPanelOpen: storedShellLayout.commitPanelOpen,
-    commitPanelWidth: storedShellLayout.commitPanelWidth,
+    sidebarWidthPx: storedShellLayout.sidebarWidthPx,
+    commitPanelWidthPx: storedShellLayout.commitPanelWidthPx,
     streamingMessageId: null,
     pushChannelStatus: inCef ? 'no-push-yet' : 'connected',
     pushChannelError: '',
@@ -3328,18 +3392,25 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     addSession: (name, folderId, providerId = GEMINI_CLI_PROVIDER_ID) => {
-      const selectedFolderId = folderId && get().folders.some((folder) => folder.id === folderId)
+      const current = get()
+      const selectedFolderId = folderId && current.folders.some((folder) => folder.id === folderId)
         ? folderId
         : null
       if (!selectedFolderId) {
         console.error('[UAM] createSession requires a workspace folder')
         return
       }
+      const requestedProviderId = current.providers.some((provider) => provider.id === providerId)
+        ? providerId
+        : current.providers.some((provider) => provider.id === current.defaultNewChatProviderId)
+          ? current.defaultNewChatProviderId
+          : GEMINI_CLI_PROVIDER_ID
+      const defaults = providerChatDefaultsForNewChat(current, requestedProviderId)
 
       if (isCefContext()) {
         sendToCEF({
           action: 'createSession',
-          payload: { title: name, folderId: selectedFolderId, providerId },
+          payload: { title: name, folderId: selectedFolderId, providerId: requestedProviderId, defaults },
         }).then((resp) => {
           if (!resp.ok) {
             console.error('[CEF] createSession failed:', resp.error)
@@ -3355,7 +3426,22 @@ export const useAppStore = create<AppState>((set, get) => {
       sessionCounter++
       const id = makeId('s', sessionCounter)
       const now = new Date()
-      const session: Session = { id, name, viewMode: 'chat', folderId: selectedFolderId, providerId, createdAt: now, updatedAt: now, lastOpenedAt: now }
+      const session: Session = {
+        id,
+        name,
+        viewMode: 'chat',
+        folderId: selectedFolderId,
+        providerId: requestedProviderId,
+        modelId: defaults.modelId,
+        reasoningEffort: defaults.reasoningEffort,
+        serviceTier: defaults.serviceTier,
+        approvalMode: defaults.approvalMode,
+        autoApproveCommands: defaults.autoApproveCommands,
+        memoryEnabled: defaults.memoryEnabled,
+        createdAt: now,
+        updatedAt: now,
+        lastOpenedAt: now,
+      }
       set((state) => ({
         sessions: [...state.sessions, session],
         messages: { ...state.messages, [id]: [] },
@@ -5568,20 +5654,46 @@ export const useAppStore = create<AppState>((set, get) => {
     }),
     setSettingsOpen: (open) => set({ isSettingsOpen: open }),
     setSidebarCollapsed: (collapsed) => set((state) => {
-      const next = { sidebarCollapsed: collapsed, commitPanelOpen: state.commitPanelOpen, commitPanelWidth: state.commitPanelWidth }
+      const next = {
+        sidebarCollapsed: collapsed,
+        commitPanelOpen: state.commitPanelOpen,
+        sidebarWidthPx: state.sidebarWidthPx,
+        commitPanelWidthPx: state.commitPanelWidthPx,
+      }
       writeStoredAppShellLayout(next)
       return { sidebarCollapsed: collapsed }
     }),
     setCommitPanelOpen: (open) => set((state) => {
-      const next = { sidebarCollapsed: state.sidebarCollapsed, commitPanelOpen: open, commitPanelWidth: state.commitPanelWidth }
+      const next = {
+        sidebarCollapsed: state.sidebarCollapsed,
+        commitPanelOpen: open,
+        sidebarWidthPx: state.sidebarWidthPx,
+        commitPanelWidthPx: state.commitPanelWidthPx,
+      }
       writeStoredAppShellLayout(next)
       return { commitPanelOpen: open }
     }),
-    setCommitPanelWidth: (width) => set((state) => {
-      const commitPanelWidth = Math.min(42, Math.max(22, width))
-      const next = { sidebarCollapsed: state.sidebarCollapsed, commitPanelOpen: state.commitPanelOpen, commitPanelWidth }
+    setSidebarWidthPx: (width) => set((state) => {
+      const sidebarWidthPx = clampSidebarWidthPx(width)
+      const next = {
+        sidebarCollapsed: state.sidebarCollapsed,
+        commitPanelOpen: state.commitPanelOpen,
+        sidebarWidthPx,
+        commitPanelWidthPx: state.commitPanelWidthPx,
+      }
       writeStoredAppShellLayout(next)
-      return { commitPanelWidth }
+      return { sidebarWidthPx }
+    }),
+    setCommitPanelWidthPx: (width) => set((state) => {
+      const commitPanelWidthPx = clampCommitPanelWidthPx(width)
+      const next = {
+        sidebarCollapsed: state.sidebarCollapsed,
+        commitPanelOpen: state.commitPanelOpen,
+        sidebarWidthPx: state.sidebarWidthPx,
+        commitPanelWidthPx,
+      }
+      writeStoredAppShellLayout(next)
+      return { commitPanelWidthPx }
     }),
   }
 })

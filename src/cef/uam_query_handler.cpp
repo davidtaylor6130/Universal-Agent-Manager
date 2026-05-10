@@ -213,15 +213,24 @@ namespace
 			return ProviderChatDefaults{"", "default", false, settings.memory_enabled_default, "", ""};
 		}
 
-		void ApplyProviderDefaultsToChat(const AppSettings& settings, ChatSession& chat)
+		void ApplyProviderDefaultsToChat(const AppSettings& settings, ChatSession& chat, const nlohmann::json* payload_defaults = nullptr)
 		{
-			const ProviderChatDefaults defaults = DefaultsForProvider(settings, chat.provider_id);
+			ProviderChatDefaults defaults = DefaultsForProvider(settings, chat.provider_id);
+			if (payload_defaults != nullptr)
+			{
+				defaults = DefaultsFromPayload(*payload_defaults, defaults);
+			}
+			if (chat.provider_id != "codex-cli")
+			{
+				defaults.reasoning_effort.clear();
+				defaults.service_tier.clear();
+			}
 			chat.model_id = defaults.model_id;
 			chat.approval_mode = defaults.approval_mode;
 			chat.auto_approve_commands = defaults.auto_approve_commands;
 			chat.memory_enabled = defaults.memory_enabled;
-			chat.reasoning_effort = chat.provider_id == "codex-cli" ? defaults.reasoning_effort : "";
-			chat.service_tier = chat.provider_id == "codex-cli" ? defaults.service_tier : "";
+			chat.reasoning_effort = defaults.reasoning_effort;
+			chat.service_tier = defaults.service_tier;
 		}
 
 		bool AcpSessionBlocksModelChange(const uam::AcpSessionState& session)
@@ -1171,7 +1180,8 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 	if (!title.empty())
 		chat.title = title;
 	chat.workspace_directory = ResolveWorkspaceRootPath(m_app, chat).string();
-	ApplyProviderDefaultsToChat(m_app.settings, chat);
+	const nlohmann::json* payload_defaults = payload.contains("defaults") && payload["defaults"].is_object() ? &payload["defaults"] : nullptr;
+	ApplyProviderDefaultsToChat(m_app.settings, chat, payload_defaults);
 
 	m_app.chats.push_back(std::move(chat));
 

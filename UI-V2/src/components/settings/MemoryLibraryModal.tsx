@@ -36,6 +36,73 @@ interface MemoryLocationGroup {
   categories: MemoryCategoryGroup[]
 }
 
+interface MenuOption {
+  value: string
+  label: string
+}
+
+function InlineMenu({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string
+  value: string
+  options: MenuOption[]
+  onChange: (value: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const selectedOption = options.find((option) => option.value === value) ?? options[0]
+
+  return (
+    <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+      <span>{label}</span>
+      <div className="relative">
+        <button
+          type="button"
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          className="flex w-full items-center justify-between gap-2 text-left"
+          onClick={() => setOpen((current) => !current)}
+          style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}
+        >
+          <span className="min-w-0 truncate">{selectedOption?.label ?? value}</span>
+          <span aria-hidden="true" style={{ color: 'var(--text-3)' }}>{open ? '▲' : '▼'}</span>
+        </button>
+        {open && (
+          <div
+            role="listbox"
+            className="absolute left-0 right-0 top-full z-40 mt-1 max-h-56 overflow-y-auto"
+            style={{ background: 'var(--surface-up)', border: '1px solid var(--border)', borderRadius: 8, boxShadow: '0 10px 24px rgba(0,0,0,0.24)' }}
+          >
+            {options.map((option) => {
+              const selected = option.value === value
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="option"
+                  aria-selected={selected}
+                  className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left"
+                  onClick={() => {
+                    onChange(option.value)
+                    setOpen(false)
+                  }}
+                  style={{ background: selected ? 'var(--accent-dim)' : 'transparent', color: selected ? 'var(--text)' : 'var(--text-2)' }}
+                >
+                  <span className="min-w-0 truncate">{option.label}</span>
+                  {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function memoryLocationKey(entry: MemoryEntry, scope: MemoryScope): string {
   if (entry.scopeType === 'global' || entry.scope === 'global') {
     return 'global'
@@ -237,6 +304,14 @@ export function MemoryLibraryModal() {
   const targetValue = draft.targetScopeType === 'folder' && draft.targetFolderId
     ? `folder:${draft.targetFolderId}`
     : 'global'
+  const targetOptions = [
+    { value: 'global', label: 'Global memory' },
+    ...folders
+      .filter((folder) => folder.directory.trim().length > 0)
+      .map((folder) => ({ value: `folder:${folder.id}`, label: folder.name })),
+  ]
+  const categoryOptions = MEMORY_CATEGORIES.map((category) => ({ value: category, label: category }))
+  const confidenceOptions = MEMORY_CONFIDENCE.map((confidence) => ({ value: confidence, label: confidence }))
 
   const submitDraft = async () => {
     if (!draft.title.trim() || !draft.memory.trim()) {
@@ -365,46 +440,29 @@ export function MemoryLibraryModal() {
                 </div>
 
                 {isAllMemory && (
-                  <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                    Save to
-                    <select
-                      value={targetValue}
-                      onChange={(event) => {
-                        const value = event.currentTarget.value
-                        if (value === 'global') {
-                          setDraft((current) => ({ ...current, targetScopeType: 'global', targetFolderId: '' }))
-                          return
-                        }
-                        const folderId = value.replace(/^folder:/, '')
-                        setDraft((current) => ({ ...current, targetScopeType: 'folder', targetFolderId: folderId }))
-                      }}
-                      style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}
-                    >
-                      <option value="global">Global memory</option>
-                      {folders
-                        .filter((folder) => folder.directory.trim().length > 0)
-                        .map((folder) => (
-                          <option key={folder.id} value={`folder:${folder.id}`}>{folder.name}</option>
-                        ))}
-                    </select>
-                  </label>
+                  <InlineMenu
+                    label="Save to"
+                    value={targetValue}
+                    options={targetOptions}
+                    onChange={(value) => {
+                      if (value === 'global') {
+                        setDraft((current) => ({ ...current, targetScopeType: 'global', targetFolderId: '' }))
+                        return
+                      }
+                      const folderId = value.replace(/^folder:/, '')
+                      setDraft((current) => ({ ...current, targetScopeType: 'folder', targetFolderId: folderId }))
+                    }}
+                  />
                 )}
 
-                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                  Category
-                  <select
-                    value={draft.category}
-                    onChange={(event) => {
-                      const value = event.currentTarget.value
-                      setDraft((current) => ({ ...current, category: value }))
-                    }}
-                    style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}
-                  >
-                    {MEMORY_CATEGORIES.map((category) => (
-                      <option key={category} value={category}>{category}</option>
-                    ))}
-                  </select>
-                </label>
+                <InlineMenu
+                  label="Category"
+                  value={draft.category}
+                  options={categoryOptions}
+                  onChange={(value) => {
+                    setDraft((current) => ({ ...current, category: value }))
+                  }}
+                />
 
                 <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
                   Title
@@ -445,21 +503,14 @@ export function MemoryLibraryModal() {
                 </label>
 
                 <div className="grid grid-cols-2 gap-2">
-                  <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                    Confidence
-                    <select
-                      value={draft.confidence}
-                      onChange={(event) => {
-                        const value = event.currentTarget.value
-                        setDraft((current) => ({ ...current, confidence: value }))
-                      }}
-                      style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}
-                    >
-                      {MEMORY_CONFIDENCE.map((confidence) => (
-                        <option key={confidence} value={confidence}>{confidence}</option>
-                      ))}
-                    </select>
-                  </label>
+                  <InlineMenu
+                    label="Confidence"
+                    value={draft.confidence}
+                    options={confidenceOptions}
+                    onChange={(value) => {
+                      setDraft((current) => ({ ...current, confidence: value }))
+                    }}
+                  />
 
                   <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
                     Source chat

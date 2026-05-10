@@ -69,14 +69,14 @@ export function ChatSearchBar({
 
   return (
     <div
-      className="flex-shrink-0 px-3 py-3"
-      style={{ background: 'var(--sidebar-bg)' }}
+      className="flex h-12 flex-shrink-0 items-center px-4"
+      style={{ background: 'var(--surface)' }}
     >
-      <div className="flex items-center gap-2">
+      <div className="flex w-full items-center gap-2">
         <div
           className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2"
           style={{
-            height: 34,
+            height: 32,
             background: 'var(--surface)',
             border: '1px solid var(--border)',
             color: 'var(--text-3)',
@@ -165,8 +165,8 @@ export function ChatSearchBar({
             aria-expanded={filtersOpen}
             className="relative flex items-center justify-center rounded-md"
             style={{
-              width: 34,
-              height: 34,
+              width: 32,
+              height: 32,
               border: '1px solid var(--border)',
               background: activeFilterCount > 0 ? 'var(--accent)' : 'var(--surface)',
               color: activeFilterCount > 0 ? 'white' : 'var(--text-2)',

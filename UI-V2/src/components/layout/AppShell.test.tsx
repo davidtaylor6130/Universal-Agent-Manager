@@ -1,20 +1,7 @@
 import { act } from 'react'
-import type { CSSProperties, PropsWithChildren } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../../store/useAppStore'
-
-vi.mock('react-resizable-panels', () => ({
-  PanelGroup: ({ children, className }: PropsWithChildren<{ className?: string }>) => (
-    <div className={className} data-testid="panel-group">{children}</div>
-  ),
-  Panel: ({ children, className, style }: PropsWithChildren<{ className?: string; style?: CSSProperties }>) => (
-    <section className={className} style={style}>{children}</section>
-  ),
-  PanelResizeHandle: ({ className, style }: { className?: string; style?: CSSProperties }) => (
-    <div className={className} style={style} data-testid="resize-handle" />
-  ),
-}))
 
 vi.mock('./Sidebar', () => ({
   Sidebar: () => <div data-testid="sidebar">Sidebar</div>,
@@ -41,11 +28,12 @@ describe('AppShell', () => {
       isMarkdownStoreOpen: false,
       sidebarCollapsed: false,
       commitPanelOpen: false,
-      commitPanelWidth: 30,
+      sidebarWidthPx: 320,
+      commitPanelWidthPx: 420,
     })
   })
 
-  it('renders edge-to-edge without a faux nested window', () => {
+  it('renders edge-to-edge with side rails and without a total header bar', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
@@ -55,7 +43,9 @@ describe('AppShell', () => {
     })
 
     expect(host.querySelector('.uam-app')).toBeTruthy()
-    expect(host.querySelector('.uam-titlebar')).toBeTruthy()
+    expect(host.querySelector('.uam-titlebar')).toBeNull()
+    expect(host.querySelector('[aria-label="Main navigation"]')).toBeTruthy()
+    expect(host.querySelector('[aria-label="Tool windows"]')).toBeTruthy()
     expect(host.querySelector('.uam-window')).toBeNull()
     expect(host.querySelector('.uam-window-controls')).toBeNull()
     expect(host.querySelector('.uam-window-dot')).toBeNull()
@@ -66,7 +56,7 @@ describe('AppShell', () => {
     host.remove()
   })
 
-  it('keeps the top toolbar actions wired', () => {
+  it('keeps the rail actions wired', () => {
     const openAllMemoryLibrary = vi.fn().mockResolvedValue(true)
     const setSettingsOpen = vi.fn()
     useAppStore.setState({
@@ -98,6 +88,28 @@ describe('AppShell', () => {
       root.unmount()
     })
     host.remove()
+  })
+
+  it('clamps sidebar and commit panel widths independently', () => {
+    useAppStore.setState({
+      sidebarWidthPx: 320,
+      commitPanelWidthPx: 420,
+      commitPanelOpen: true,
+    })
+
+    act(() => {
+      useAppStore.getState().setSidebarWidthPx(900)
+    })
+
+    expect(useAppStore.getState().sidebarWidthPx).toBe(520)
+    expect(useAppStore.getState().commitPanelWidthPx).toBe(420)
+
+    act(() => {
+      useAppStore.getState().setCommitPanelWidthPx(100)
+    })
+
+    expect(useAppStore.getState().sidebarWidthPx).toBe(520)
+    expect(useAppStore.getState().commitPanelWidthPx).toBe(320)
   })
 
   it('collapses and expands the sidebar without changing the active chat', () => {

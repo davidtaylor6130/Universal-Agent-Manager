@@ -162,12 +162,18 @@ describe('MemoryLibraryModal all memory scope', () => {
 
     clickButton(host, 'Add memory')
 
-    const targetSelect = host.querySelector('select') as HTMLSelectElement
-    expect(targetSelect).toBeTruthy()
-    expect(Array.from(targetSelect.options).map((option) => option.textContent)).toEqual([
-      'Global memory',
-      'General',
-    ])
+    expect(host.querySelector('select')).toBeNull()
+    const targetButton = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-haspopup') === 'listbox' && button.textContent?.includes('Global memory')
+    ) as HTMLButtonElement | undefined
+    expect(targetButton).toBeTruthy()
+
+    act(() => {
+      targetButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    const options = Array.from(host.querySelectorAll('[role="option"]')).map((option) => option.textContent?.replace('●', '').trim())
+    expect(options).toEqual(['Global memory', 'General'])
     expect(createMemoryEntry).not.toHaveBeenCalled()
 
     act(() => {

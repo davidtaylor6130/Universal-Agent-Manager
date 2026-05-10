@@ -30,6 +30,7 @@ export function VcsCommitPanel() {
   const [committing, setCommitting] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [notice, setNotice] = useState('')
+  const [vcsMenuOpen, setVcsMenuOpen] = useState(false)
 
   const refresh = useCallback(async (vcsType = selectedVcsType) => {
     if (!activeSessionId) {
@@ -129,14 +130,47 @@ export function VcsCommitPanel() {
           <div>
             <div style={{ color: 'var(--text-3)' }}>VCS</div>
             {status.vcsTypes.length > 1 ? (
-              <select
-                className="mt-1 w-full rounded-md px-2 py-1"
-                style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
-                value={selectedVcsType}
-                onChange={(event) => { void refresh(event.target.value as VcsType) }}
-              >
-                {status.vcsTypes.map((type) => <option key={type} value={type}>{type.toUpperCase()}</option>)}
-              </select>
+              <div className="relative mt-1">
+                <button
+                  type="button"
+                  className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1 text-left"
+                  aria-haspopup="listbox"
+                  aria-expanded={vcsMenuOpen}
+                  onClick={() => setVcsMenuOpen((open) => !open)}
+                  style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
+                >
+                  <span>{selectedVcsType.toUpperCase()}</span>
+                  <span aria-hidden="true" style={{ color: 'var(--text-3)' }}>{vcsMenuOpen ? '▲' : '▼'}</span>
+                </button>
+                {vcsMenuOpen && (
+                  <div
+                    role="listbox"
+                    className="absolute left-0 right-0 top-full z-30 mt-1 overflow-hidden rounded-md"
+                    style={{ background: 'var(--surface-up)', border: '1px solid var(--border)', boxShadow: '0 10px 24px rgba(0,0,0,0.24)' }}
+                  >
+                    {status.vcsTypes.map((type) => {
+                      const selected = type === selectedVcsType
+                      return (
+                        <button
+                          key={type}
+                          type="button"
+                          role="option"
+                          aria-selected={selected}
+                          className="flex w-full items-center justify-between px-2 py-1 text-left"
+                          onClick={() => {
+                            setVcsMenuOpen(false)
+                            void refresh(type)
+                          }}
+                          style={{ background: selected ? 'var(--accent-dim)' : 'transparent', color: selected ? 'var(--text)' : 'var(--text-2)' }}
+                        >
+                          <span>{type.toUpperCase()}</span>
+                          {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
             ) : (
               <div className="mt-1 font-medium" style={{ color: 'var(--text)' }}>{status.available ? status.activeVcsType.toUpperCase() : 'None'}</div>
             )}

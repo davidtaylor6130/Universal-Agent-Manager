@@ -138,6 +138,10 @@ function resetStore() {
     memoryScanRunning: false,
     memoryScanError: '',
     streamingMessageId: null,
+    sidebarCollapsed: false,
+    commitPanelOpen: false,
+    sidebarWidthPx: 320,
+    commitPanelWidthPx: 420,
     pushChannelStatus: 'connected',
     pushChannelError: '',
     lastPushAtMs: null,
@@ -883,6 +887,14 @@ describe('useAppStore Gemini CLI slice', () => {
       title: 'New Chat',
       folderId: 'default',
       providerId: 'gemini-cli',
+      defaults: {
+        modelId: '',
+        approvalMode: 'default',
+        autoApproveCommands: false,
+        memoryEnabled: true,
+        reasoningEffort: '',
+        serviceTier: '',
+      },
     })
   })
 
@@ -910,6 +922,77 @@ describe('useAppStore Gemini CLI slice', () => {
       title: 'Codex Chat',
       folderId: 'default',
       providerId: 'codex-cli',
+      defaults: {
+        modelId: '',
+        approvalMode: 'default',
+        autoApproveCommands: false,
+        memoryEnabled: true,
+        reasoningEffort: '',
+        serviceTier: '',
+      },
+    })
+  })
+
+  it('applies provider chat defaults when creating CEF and local sessions', async () => {
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
+      onSuccess('{}')
+    }
+
+    useAppStore.setState({
+      folders: [{ id: 'default', name: 'General', parentId: null, directory: '/tmp/project', isExpanded: true, createdAt: new Date() }],
+      providers: [
+        { id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#f97316', description: '' },
+        { id: 'codex-cli', name: 'Codex CLI', shortName: 'Codex', color: '#22c55e', description: '' },
+      ],
+      providerChatDefaults: {
+        'codex-cli': {
+          modelId: 'gpt-5.4',
+          approvalMode: 'plan',
+          autoApproveCommands: true,
+          memoryEnabled: false,
+          reasoningEffort: 'high',
+          serviceTier: 'fast',
+        },
+      },
+    })
+
+    useAppStore.getState().addSession('Codex Defaults', 'default', 'codex-cli')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(requests[0].payload).toMatchObject({
+      title: 'Codex Defaults',
+      folderId: 'default',
+      providerId: 'codex-cli',
+      defaults: {
+        modelId: 'gpt-5.4',
+        approvalMode: 'plan',
+        autoApproveCommands: true,
+        memoryEnabled: false,
+        reasoningEffort: 'high',
+        serviceTier: 'fast',
+      },
+    })
+
+    delete window.cefQuery
+    useAppStore.setState({
+      sessions: [],
+      activeSessionId: null,
+    })
+
+    useAppStore.getState().addSession('Local Codex Defaults', 'default', 'codex-cli')
+
+    const created = useAppStore.getState().sessions[0]
+    expect(created).toMatchObject({
+      name: 'Local Codex Defaults',
+      providerId: 'codex-cli',
+      modelId: 'gpt-5.4',
+      approvalMode: 'plan',
+      autoApproveCommands: true,
+      memoryEnabled: false,
+      reasoningEffort: 'high',
+      serviceTier: 'fast',
     })
   })
 
