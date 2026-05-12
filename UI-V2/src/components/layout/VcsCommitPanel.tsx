@@ -119,7 +119,7 @@ export function VcsCommitPanel() {
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-3">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-3">
         {(status.warning || status.error || notice) && (
           <div className="mb-3 rounded-md px-3 py-2 text-xs" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)', color: status.error || notice ? 'var(--text)' : 'var(--text-2)' }}>
             {notice || status.error || status.warning}
@@ -181,7 +181,7 @@ export function VcsCommitPanel() {
           </div>
         </div>
 
-        <div className="mb-3 overflow-hidden rounded-md" style={{ border: '1px solid var(--border)', background: 'var(--bg)' }}>
+        <div className="mb-3 flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-md" style={{ border: '1px solid var(--border)', background: 'var(--bg)' }}>
           <div className="flex items-center gap-2 px-2 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-2)' }}>
             <input
               type="checkbox"
@@ -193,7 +193,7 @@ export function VcsCommitPanel() {
             <span className="min-w-0 flex-1 font-medium">{loading ? 'Refreshing changes' : `${status.changedFiles.length} changed file${status.changedFiles.length === 1 ? '' : 's'}`}</span>
             <span>{selectedFiles.length} selected</span>
           </div>
-          <div className="max-h-[360px] overflow-y-auto">
+          <div className="min-h-0 flex-1 overflow-y-auto">
             {status.changedFiles.length === 0 ? (
               <div className="px-3 py-4 text-xs" style={{ color: 'var(--text-3)' }}>No changed files.</div>
             ) : status.changedFiles.map((file) => (
