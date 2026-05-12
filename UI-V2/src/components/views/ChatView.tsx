@@ -1,4 +1,4 @@
-import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, ReactNode, RefObject, useEffect, useMemo, useRef, useState } from 'react'
+import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, memo, ReactNode, RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { Session } from '../../types/session'
 import {
@@ -22,6 +22,9 @@ import { ProviderLogo } from '../shared/ProviderLogo'
 interface ChatViewProps {
   session: Session
 }
+
+const INITIAL_RENDERED_MESSAGES = 200
+const RENDERED_MESSAGE_BATCH_SIZE = 100
 
 interface SelectedToolCallRef {
   id: string
@@ -761,7 +764,7 @@ function MarkdownTextBlock({ text, blockKey }: { text: string; blockKey: string 
   return <>{nodes}</>
 }
 
-function MarkdownContent({ content }: { content: string }) {
+const MarkdownContent = memo(function MarkdownContent({ content }: { content: string }) {
   const parts: ReactNode[] = []
   const fencePattern = /```([A-Za-z0-9_-]+)?\n?([\s\S]*?)```/g
   let lastIndex = 0
@@ -799,7 +802,7 @@ function MarkdownContent({ content }: { content: string }) {
   }
 
   return <div className="prose-msg">{parts}</div>
-}
+})
 
 function ToolCallInlineRows({ tools, onSelectTool }: { tools: AcpToolCall[]; onSelectTool: (toolId: string) => void }) {
   if (tools.length === 0) return null
@@ -2422,6 +2425,7 @@ export function ChatView({ session }: ChatViewProps) {
   const [workspaceActionBusy, setWorkspaceActionBusy] = useState(false)
   const [composerAttachments, setComposerAttachments] = useState<LocalAttachment[]>([])
   const [attachmentError, setAttachmentError] = useState('')
+  const [renderedMessageCount, setRenderedMessageCount] = useState(INITIAL_RENDERED_MESSAGES)
   const messages = useAppStore(useShallow((s) => s.messages[session.id] ?? []))
   const folderDirectory = useAppStore((s) =>
     session.folderId ? s.folders.find((folder) => folder.id === session.folderId)?.directory ?? '' : ''
@@ -2485,6 +2489,11 @@ export function ChatView({ session }: ChatViewProps) {
     !renderTimelineAfterUser &&
     turnAssistantMessageIndex >= 0 &&
     turnAssistantMessageIndex < messages.length
+  const earliestRenderedMessageIndex = Math.max(0, messages.length - renderedMessageCount)
+  const visibleMessages = useMemo(
+    () => messages.slice(earliestRenderedMessageIndex),
+    [earliestRenderedMessageIndex, messages]
+  )
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView?.({ block: 'end' })
@@ -2519,6 +2528,7 @@ export function ChatView({ session }: ChatViewProps) {
     setOpenWorkspaceError('')
     setWorkspaceActionMessage('')
     setWorkspaceActionBusy(false)
+    setRenderedMessageCount(INITIAL_RENDERED_MESSAGES)
   }, [session.id])
 
   useEffect(() => {
@@ -2880,7 +2890,19 @@ export function ChatView({ session }: ChatViewProps) {
             </div>
 
             <div className="space-y-4">
-              {messages.map((message, index) => {
+              {earliestRenderedMessageIndex > 0 && (
+                <div className="flex justify-center">
+                  <button
+                    type="button"
+                    className="uam-secondary-button"
+                    onClick={() => setRenderedMessageCount((current) => current + RENDERED_MESSAGE_BATCH_SIZE)}
+                  >
+                    <span>Show earlier messages</span>
+                  </button>
+                </div>
+              )}
+              {visibleMessages.map((message, visibleIndex) => {
+                const index = earliestRenderedMessageIndex + visibleIndex
                 const shouldRenderTimelineAtAssistant = renderTimelineAtAssistant && index === turnAssistantMessageIndex
                 const shouldSkipAssistantMessage = renderTimelineAfterUser && index === turnAssistantMessageIndex
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore, type VcsCommitStatus, type VcsType } from '../../store/useAppStore'
 
 function emptyStatus(workspaceDirectory = ''): VcsCommitStatus {
@@ -9,6 +9,7 @@ function emptyStatus(workspaceDirectory = ''): VcsCommitStatus {
     workspaceDirectory,
     branchOrRevision: '',
     changedFiles: [],
+    lineStatsReady: true,
     warning: 'No Git or SVN repository detected for this workspace.',
     error: '',
   }
@@ -31,19 +32,34 @@ export function VcsCommitPanel() {
   const [generating, setGenerating] = useState(false)
   const [notice, setNotice] = useState('')
   const [vcsMenuOpen, setVcsMenuOpen] = useState(false)
+  const latestStatusRequestRef = useRef('')
 
-  const refresh = useCallback(async (vcsType = selectedVcsType) => {
+  const refresh = useCallback(async (vcsType = selectedVcsType, includeLineStats = false) => {
     if (!activeSessionId) {
       setStatus(emptyStatus())
       return
     }
+    const requestKey = `${activeSessionId}:${vcsType}:${Date.now()}`
+    latestStatusRequestRef.current = requestKey
     setLoading(true)
-    const next = await getVcsCommitStatus(activeSessionId, vcsType)
+    const next = await getVcsCommitStatus(activeSessionId, vcsType, { includeLineStats, requestId: requestKey })
+    if (latestStatusRequestRef.current !== requestKey) return
     setLoading(false)
     const effective = next ?? emptyStatus(session?.workspaceDirectory ?? '')
     setStatus(effective)
     setSelectedVcsType(effective.activeVcsType)
     setSelectedFiles((current) => current.filter((file) => effective.changedFiles.some((changed) => changed.path === file)))
+    if (!includeLineStats && effective.available && effective.changedFiles.length > 0 && !effective.lineStatsReady) {
+      const detailed = await getVcsCommitStatus(activeSessionId, effective.activeVcsType, {
+        includeLineStats: true,
+        requestId: `${requestKey}:stats`,
+      })
+      if (latestStatusRequestRef.current !== requestKey) return
+      if (detailed) {
+        setStatus(detailed)
+        setSelectedFiles((current) => current.filter((file) => detailed.changedFiles.some((changed) => changed.path === file)))
+      }
+    }
   }, [activeSessionId, getVcsCommitStatus, selectedVcsType, session?.workspaceDirectory])
 
   useEffect(() => {
@@ -55,6 +71,7 @@ export function VcsCommitPanel() {
   const generateDisabled = generating || !status.available || selectedFiles.length === 0
   const selectedFileSet = useMemo(() => new Set(selectedFiles), [selectedFiles])
   const allSelected = status.changedFiles.length > 0 && status.changedFiles.every((file) => selectedFileSet.has(file.path))
+  const lineStatsReady = status.lineStatsReady !== false
 
   const toggleFile = (path: string) => {
     setSelectedFiles((current) =>
@@ -94,7 +111,7 @@ export function VcsCommitPanel() {
     setDescription('')
     setSelectedFiles([])
     setNotice(result.message || 'Commit created.')
-    await refresh(selectedVcsType)
+    await refresh(selectedVcsType, true)
   }
 
   return (
@@ -104,7 +121,7 @@ export function VcsCommitPanel() {
           <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Commit</div>
           <div className="truncate text-xs" style={{ color: 'var(--text-3)' }}>{status.workspaceDirectory || 'No workspace selected'}</div>
         </div>
-        <button type="button" className="uam-icon-button" title="Refresh VCS status" aria-label="Refresh VCS status" onClick={() => { void refresh() }}>
+        <button type="button" className="uam-icon-button" title="Refresh VCS status" aria-label="Refresh VCS status" onClick={() => { void refresh(selectedVcsType, true) }}>
           <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M13 4v4H9" />
             <path d="M3 12V8h4" />
@@ -191,6 +208,7 @@ export function VcsCommitPanel() {
               onChange={toggleAllFiles}
             />
             <span className="min-w-0 flex-1 font-medium">{loading ? 'Refreshing changes' : `${status.changedFiles.length} changed file${status.changedFiles.length === 1 ? '' : 's'}`}</span>
+            {!lineStatsReady && status.changedFiles.length > 0 && <span>Stats loading</span>}
             <span>{selectedFiles.length} selected</span>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto">
@@ -205,7 +223,9 @@ export function VcsCommitPanel() {
                 <input type="checkbox" checked={selectedFileSet.has(file.path)} onChange={() => toggleFile(file.path)} />
                 <span className="w-8 flex-shrink-0 text-center font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>{file.status.trim() || 'M'}</span>
                 <span className="min-w-0 flex-1 truncate">{file.path}</span>
-                {file.binary ? (
+                {!lineStatsReady ? (
+                  <span className="flex-shrink-0 font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>...</span>
+                ) : file.binary ? (
                   <span className="flex-shrink-0 font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>BIN</span>
                 ) : (
                   <span className="flex flex-shrink-0 items-center gap-2 font-mono text-[11px]">

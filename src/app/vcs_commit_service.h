@@ -33,6 +33,7 @@ namespace uam
 		std::string workspace_directory;
 		std::string branch_or_revision;
 		std::vector<VcsChangedFile> changed_files;
+		bool line_stats_ready = true;
 		std::string warning;
 		std::string error;
 	};
@@ -59,7 +60,7 @@ namespace uam
 	class VcsCommitService
 	{
 	  public:
-		VcsCommitStatus Status(const AppState& app, const ChatSession& chat, VcsType requested_type = VcsType::Git) const;
+		VcsCommitStatus Status(const AppState& app, const ChatSession& chat, VcsType requested_type = VcsType::Git, bool include_line_stats = true) const;
 		std::string Diff(const AppState& app, const ChatSession& chat, const std::string& path, VcsType type, std::string* error_out = nullptr) const;
 		VcsCommitResult Commit(AppState& app, const ChatSession& chat, VcsType type, const std::string& message, const std::vector<std::string>& files) const;
 		VcsCommitMessageSuggestion GenerateMessage(const AppState& app, const ChatSession& chat, VcsType type, const std::vector<std::string>& files) const;

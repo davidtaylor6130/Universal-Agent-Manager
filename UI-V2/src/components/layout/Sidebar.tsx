@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FolderTree } from '../sidebar/FolderTree'
 import { ChatSearchBar } from '../sidebar/ChatSearchBar'
 import { useAppStore } from '../../store/useAppStore'
-import { sendToCEF } from '../../ipc/cefBridge'
+import { createRequestId, sendToCEF } from '../../ipc/cefBridge'
 import type { ChatSearchFilters, ChatStatusFilterId } from '../sidebar/chatSearch'
 
 interface SearchChatMessagesResponse {
@@ -14,6 +14,7 @@ export function Sidebar() {
   const [deepSearch, setDeepSearch] = useState(false)
   const [deepSearchSessionIds, setDeepSearchSessionIds] = useState<string[] | undefined>(undefined)
   const [filters, setFilters] = useState<ChatSearchFilters>({ providerIds: [], statusIds: [] })
+  const latestDeepSearchRequestRef = useRef('')
   const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
   const sessions = useAppStore((s) => s.sessions)
   const providers = useAppStore((s) => s.providers)
@@ -56,12 +57,15 @@ export function Sidebar() {
     }
 
     let cancelled = false
+    const requestId = createRequestId('searchChatMessages')
+    latestDeepSearchRequestRef.current = requestId
     const timer = window.setTimeout(() => {
       void sendToCEF<SearchChatMessagesResponse>({
         action: 'searchChatMessages',
-        payload: { query },
+        payload: { query, requestId },
+        requestId,
       }).then((response) => {
-        if (cancelled) return
+        if (cancelled || latestDeepSearchRequestRef.current !== response.requestId) return
         setDeepSearchSessionIds(response.ok && Array.isArray(response.data?.chatIds) ? response.data.chatIds : [])
       })
     }, 180)

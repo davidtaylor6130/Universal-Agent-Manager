@@ -456,6 +456,7 @@ export interface VcsCommitStatus {
   workspaceDirectory: string
   branchOrRevision: string
   changedFiles: VcsChangedFile[]
+  lineStatsReady: boolean
   warning: string
   error: string
 }
@@ -1174,6 +1175,7 @@ function sanitizeVcsCommitStatus(value: unknown): VcsCommitStatus | null {
             : []
         })
       : [],
+    lineStatsReady: typeof value.lineStatsReady === 'boolean' ? value.lineStatsReady : true,
     warning: stringOr(value.warning),
     error: stringOr(value.error),
   }
@@ -3020,7 +3022,7 @@ interface AppState {
 	  createChatWorktree: (id: string) => Promise<GitWorktreeResult>
 	  discardChatWorktreeChanges: (id: string) => Promise<GitWorktreeResult>
 	  portChatWorktreeChanges: (id: string) => Promise<GitWorktreeResult>
-	  getVcsCommitStatus: (id: string, vcsType?: VcsType) => Promise<VcsCommitStatus | null>
+	  getVcsCommitStatus: (id: string, vcsType?: VcsType, options?: { includeLineStats?: boolean; requestId?: string }) => Promise<VcsCommitStatus | null>
 	  getVcsFileDiff: (id: string, path: string, vcsType: VcsType) => Promise<string>
 	  commitVcsChanges: (id: string, vcsType: VcsType, message: string, files: string[]) => Promise<VcsCommitResult>
 	  generateVcsCommitMessage: (id: string, vcsType: VcsType, files: string[]) => Promise<VcsCommitMessageSuggestion | null>
@@ -3723,11 +3725,16 @@ export const useAppStore = create<AppState>((set, get) => {
       return failedGitWorktreeResult('Git worktree actions require the desktop runtime.')
     },
 
-    getVcsCommitStatus: async (id, vcsType = 'git') => {
+    getVcsCommitStatus: async (id, vcsType = 'git', options = {}) => {
       if (isCefContext()) {
         const response = await sendToCEF<VcsCommitStatus>({
           action: 'getVcsCommitStatus',
-          payload: { chatId: id, vcsType },
+          payload: {
+            chatId: id,
+            vcsType,
+            includeLineStats: options.includeLineStats ?? true,
+            requestId: options.requestId,
+          },
         })
         if (!response.ok) {
           console.error('[CEF] getVcsCommitStatus failed:', response.error)
@@ -3745,6 +3752,7 @@ export const useAppStore = create<AppState>((set, get) => {
           workspaceDirectory: '',
           branchOrRevision: '',
           changedFiles: [],
+          lineStatsReady: true,
           warning: 'No Git or SVN repository detected for this workspace.',
           error: '',
         }
@@ -3759,6 +3767,7 @@ export const useAppStore = create<AppState>((set, get) => {
           { path: 'src/example.ts', status: ' M', staged: false, additions: 12, deletions: 3, binary: false },
           { path: 'README.md', status: '??', staged: false, additions: 8, deletions: 0, binary: false },
         ],
+        lineStatsReady: true,
         warning: '',
         error: '',
       }
@@ -4784,9 +4793,16 @@ export const useAppStore = create<AppState>((set, get) => {
 
     refreshMarkdownStore: async () => {
       if (isCefContext()) {
+        const requestKey = 'listMarkdownStoreEntries'
+        const requestId = createRequestId(requestKey)
+        rememberPendingRequest(requestKey, requestId)
         const response = await sendToCEF<{ directory?: string; entries?: MarkdownStoreEntry[] }>({
           action: 'listMarkdownStoreEntries',
+          payload: { requestId },
+          requestId,
         })
+        if (!isLatestPendingRequest(requestKey, response.requestId)) return false
+        clearPendingRequest(requestKey, response.requestId)
         if (!response.ok) {
           set({
             markdownStoreLoading: false,
@@ -4872,10 +4888,16 @@ export const useAppStore = create<AppState>((set, get) => {
       set({ memoryLibraryLoading: true, memoryLibraryError: '' })
 
       if (isCefContext()) {
+        const requestKey = 'listMemoryEntries:all'
+        const requestId = createRequestId(requestKey)
+        rememberPendingRequest(requestKey, requestId)
         const response = await sendToCEF<{ scope?: MemoryScope; entries?: MemoryEntry[] }>({
           action: 'listMemoryEntries',
-          payload: { scopeType: 'all' },
+          payload: { scopeType: 'all', requestId },
+          requestId,
         })
+        if (!isLatestPendingRequest(requestKey, response.requestId)) return false
+        clearPendingRequest(requestKey, response.requestId)
 
         if (!response.ok || !response.data?.scope) {
           set({
@@ -4913,10 +4935,16 @@ export const useAppStore = create<AppState>((set, get) => {
       set({ memoryLibraryLoading: true, memoryLibraryError: '' })
 
       if (isCefContext()) {
+        const requestKey = 'listMemoryEntries:global'
+        const requestId = createRequestId(requestKey)
+        rememberPendingRequest(requestKey, requestId)
         const response = await sendToCEF<{ scope?: MemoryScope; entries?: MemoryEntry[] }>({
           action: 'listMemoryEntries',
-          payload: { scopeType: 'global' },
+          payload: { scopeType: 'global', requestId },
+          requestId,
         })
+        if (!isLatestPendingRequest(requestKey, response.requestId)) return false
+        clearPendingRequest(requestKey, response.requestId)
 
         if (!response.ok || !response.data?.scope) {
           set({
@@ -4953,10 +4981,16 @@ export const useAppStore = create<AppState>((set, get) => {
       set({ memoryLibraryLoading: true, memoryLibraryError: '' })
 
       if (isCefContext()) {
+        const requestKey = `listMemoryEntries:folder:${folderId}`
+        const requestId = createRequestId('listMemoryEntries')
+        rememberPendingRequest(requestKey, requestId)
         const response = await sendToCEF<{ scope?: MemoryScope; entries?: MemoryEntry[] }>({
           action: 'listMemoryEntries',
-          payload: { scopeType: 'folder', folderId },
+          payload: { scopeType: 'folder', folderId, requestId },
+          requestId,
         })
+        if (!isLatestPendingRequest(requestKey, response.requestId)) return false
+        clearPendingRequest(requestKey, response.requestId)
 
         if (!response.ok || !response.data?.scope) {
           set({
@@ -5014,10 +5048,16 @@ export const useAppStore = create<AppState>((set, get) => {
       set({ memoryLibraryLoading: true, memoryLibraryError: '' })
 
       if (isCefContext()) {
+        const requestKey = `listMemoryEntries:refresh:${scope.scopeType}:${scope.folderId ?? ''}`
+        const requestId = createRequestId('listMemoryEntries')
+        rememberPendingRequest(requestKey, requestId)
         const response = await sendToCEF<{ scope?: MemoryScope; entries?: MemoryEntry[] }>({
           action: 'listMemoryEntries',
-          payload: { scopeType: scope.scopeType, folderId: scope.folderId },
+          payload: { scopeType: scope.scopeType, folderId: scope.folderId, requestId },
+          requestId,
         })
+        if (!isLatestPendingRequest(requestKey, response.requestId)) return false
+        clearPendingRequest(requestKey, response.requestId)
 
         if (!response.ok || !response.data?.scope) {
           set({

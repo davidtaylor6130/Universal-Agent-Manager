@@ -782,9 +782,10 @@ namespace uam
 		return Trim(value) == "svn" ? VcsType::Svn : VcsType::Git;
 	}
 
-	VcsCommitStatus VcsCommitService::Status(const AppState& app, const ChatSession& chat, const VcsType requested_type) const
+	VcsCommitStatus VcsCommitService::Status(const AppState& app, const ChatSession& chat, const VcsType requested_type, const bool include_line_stats) const
 	{
 		VcsCommitStatus status;
+		status.line_stats_ready = include_line_stats;
 		const std::filesystem::path workspace = ResolveWorkspaceRootPath(app, chat);
 		status.workspace_directory = workspace.string();
 
@@ -831,7 +832,10 @@ namespace uam
 			if (OutputCommandRaw(GitC(workspace, "status --porcelain"), &output, &error))
 			{
 				status.changed_files = ParseGitStatus(output);
-				ApplyGitLineStats(workspace, status.changed_files);
+				if (include_line_stats)
+				{
+					ApplyGitLineStats(workspace, status.changed_files);
+				}
 			}
 			else
 			{
@@ -847,7 +851,10 @@ namespace uam
 			if (OutputCommandRaw(SvnC(workspace, "status"), &output, &error))
 			{
 				status.changed_files = ParseSvnStatus(output);
-				ApplySvnLineStats(workspace, status.changed_files);
+				if (include_line_stats)
+				{
+					ApplySvnLineStats(workspace, status.changed_files);
+				}
 			}
 			else
 			{

@@ -43,9 +43,11 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <set>
 #include <sstream>
+#include <thread>
 #include <utility>
 
 #if defined(_WIN32)
@@ -64,6 +66,94 @@ namespace
 		constexpr std::size_t kRecentOutputReplayLimitBytes = 256 * 1024;
 		constexpr std::size_t kMaxClipboardTextBytes = 1024 * 1024;
 		constexpr std::uintmax_t kMaxAttachmentBytes = 25ull * 1024ull * 1024ull;
+
+	struct AsyncCefResult
+	{
+		bool ok = true;
+		int status = 500;
+		std::string body;
+		std::string error;
+	};
+
+	AsyncCefResult AsyncSuccess(nlohmann::json body)
+	{
+		return {true, 200, body.dump(), ""};
+	}
+
+	AsyncCefResult AsyncFailure(const int status, std::string error)
+	{
+		return {false, status, "", std::move(error)};
+	}
+
+	nlohmann::json WithOptionalRequestId(nlohmann::json value, const std::string& request_id)
+	{
+		if (!request_id.empty())
+		{
+			value["requestId"] = request_id;
+		}
+		return value;
+	}
+
+	uam::AppState BuildReadOnlyAppSnapshot(std::filesystem::path data_root, AppSettings settings, std::vector<ChatFolder> folders, std::vector<ProviderProfile> provider_profiles)
+	{
+		uam::AppState snapshot;
+		snapshot.data_root = std::move(data_root);
+		snapshot.settings = std::move(settings);
+		snapshot.folders = std::move(folders);
+		snapshot.provider_profiles = std::move(provider_profiles);
+		return snapshot;
+	}
+
+	class CefQueryCallbackTask : public CefTask
+	{
+	  public:
+		CefQueryCallbackTask(CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, AsyncCefResult result) : m_callback(std::move(callback)), m_result(std::move(result))
+		{
+		}
+
+		void Execute() override
+		{
+			CEF_REQUIRE_UI_THREAD();
+			if (!m_callback)
+			{
+				return;
+			}
+			if (m_result.ok)
+			{
+				m_callback->Success(m_result.body);
+			}
+			else
+			{
+				m_callback->Failure(m_result.status, m_result.error);
+			}
+		}
+
+	  private:
+		CefRefPtr<CefMessageRouterBrowserSide::Callback> m_callback;
+		AsyncCefResult m_result;
+		IMPLEMENT_REFCOUNTING(CefQueryCallbackTask);
+	};
+
+	template <typename Worker>
+	void RunAsyncCefQuery(CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, Worker worker)
+	{
+		std::thread([callback = std::move(callback), worker = std::move(worker)]() mutable {
+			AsyncCefResult result;
+			try
+			{
+				result = worker();
+			}
+			catch (const std::exception& ex)
+			{
+				result = AsyncFailure(500, ex.what());
+			}
+			catch (...)
+			{
+				result = AsyncFailure(500, "Async bridge request failed.");
+			}
+			CefPostTask(TID_UI, new CefQueryCallbackTask(callback, std::move(result)));
+		}).detach();
+	}
 
 	int FolderFailureCode(const std::string& status_line)
 	{
@@ -881,6 +971,7 @@ namespace
 			{"workspaceDirectory", status.workspace_directory},
 			{"branchOrRevision", status.branch_or_revision},
 			{"changedFiles", std::move(files)},
+			{"lineStatsReady", status.line_stats_ready},
 			{"warning", status.warning},
 			{"error", status.error},
 		};
@@ -1884,23 +1975,25 @@ void UamQueryHandler::HandleSetMarkdownStoreDirectory(CefRefPtr<CefBrowser> brow
 	cb->Success(nlohmann::json{{"directory", m_app.settings.markdown_store_directory}}.dump());
 }
 
-void UamQueryHandler::HandleListMarkdownStoreEntries(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& /*payload*/, CefRefPtr<Callback> cb)
+void UamQueryHandler::HandleListMarkdownStoreEntries(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::filesystem::path root = MarkdownStoreService::NormalizeRoot(m_app.settings.markdown_store_directory);
-	std::string error;
-	std::vector<MarkdownStoreService::Entry> entries = MarkdownStoreService::ListEntries(root, &error);
-	if (!error.empty())
-	{
-		cb->Failure(400, error);
-		return;
-	}
+	const std::string request_id = payload.value("requestId", "");
+	RunAsyncCefQuery(cb, [root, request_id]() {
+		std::string error;
+		std::vector<MarkdownStoreService::Entry> entries = MarkdownStoreService::ListEntries(root, &error);
+		if (!error.empty())
+		{
+			return AsyncFailure(400, error);
+		}
 
-	nlohmann::json entry_json = nlohmann::json::array();
-	for (const MarkdownStoreService::Entry& entry : entries)
-	{
-		entry_json.push_back(SerializeMarkdownStoreEntry(entry));
-	}
-	cb->Success(nlohmann::json{{"directory", root.string()}, {"entries", entry_json}}.dump());
+		nlohmann::json entry_json = nlohmann::json::array();
+		for (const MarkdownStoreService::Entry& entry : entries)
+		{
+			entry_json.push_back(SerializeMarkdownStoreEntry(entry));
+		}
+		return AsyncSuccess(WithOptionalRequestId(nlohmann::json{{"directory", root.string()}, {"entries", entry_json}}, request_id));
+	});
 }
 
 void UamQueryHandler::HandleCreateMarkdownStoreEntry(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -2070,40 +2163,55 @@ void UamQueryHandler::HandleBrowseFolderDirectory(CefRefPtr<CefBrowser> /*browse
 void UamQueryHandler::HandleSearchChatMessages(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::vector<std::string> tokens = SearchTokens(payload.value("query", ""));
+	const std::filesystem::path data_root = m_app.data_root;
+	const std::string request_id = payload.value("requestId", "");
 	nlohmann::json result;
 	result["chatIds"] = nlohmann::json::array();
+	if (!request_id.empty())
+	{
+		result["requestId"] = request_id;
+	}
 	if (tokens.empty())
 	{
 		cb->Success(result.dump());
 		return;
 	}
 
-	std::string warning;
-	const std::vector<ChatSession> chats = ChatRepository::LoadLocalChats(m_app.data_root, &warning);
-	for (const ChatSession& chat : chats)
-	{
-		std::string haystack = LowerAscii(chat.title + " " + chat.provider_id + " " + chat.workspace_directory);
-		for (const Message& message : chat.messages)
+	RunAsyncCefQuery(cb, [data_root, tokens, request_id]() {
+		nlohmann::json async_result;
+		async_result["chatIds"] = nlohmann::json::array();
+		if (!request_id.empty())
 		{
-			haystack += " " + LowerAscii(message.content);
-			haystack += " " + LowerAscii(message.thoughts);
-			haystack += " " + LowerAscii(message.plan_summary);
+			async_result["requestId"] = request_id;
 		}
 
-		const bool matches = std::all_of(tokens.begin(), tokens.end(), [&](const std::string& token) {
-			return haystack.find(token) != std::string::npos;
-		});
-		if (matches)
+		std::string warning;
+		const std::vector<ChatSession> chats = ChatRepository::LoadLocalChats(data_root, &warning);
+		for (const ChatSession& chat : chats)
 		{
-			result["chatIds"].push_back(chat.id);
-		}
-	}
+			std::string haystack = LowerAscii(chat.title + " " + chat.provider_id + " " + chat.workspace_directory);
+			for (const Message& message : chat.messages)
+			{
+				haystack += " " + LowerAscii(message.content);
+				haystack += " " + LowerAscii(message.thoughts);
+				haystack += " " + LowerAscii(message.plan_summary);
+			}
 
-	if (!warning.empty())
-	{
-		result["warning"] = warning;
-	}
-	cb->Success(result.dump());
+			const bool matches = std::all_of(tokens.begin(), tokens.end(), [&](const std::string& token) {
+				return haystack.find(token) != std::string::npos;
+			});
+			if (matches)
+			{
+				async_result["chatIds"].push_back(chat.id);
+			}
+		}
+
+		if (!warning.empty())
+		{
+			async_result["warning"] = warning;
+		}
+		return AsyncSuccess(std::move(async_result));
+	});
 }
 
 void UamQueryHandler::HandleListMemoryEntries(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -2115,43 +2223,46 @@ void UamQueryHandler::HandleListMemoryEntries(CefRefPtr<CefBrowser> /*browser*/,
 		cb->Failure(400, error.empty() ? "Failed to resolve memory scope." : error);
 		return;
 	}
+	const std::string request_id = payload.value("requestId", "");
 
-	const std::vector<MemoryLibraryService::Entry> entries = MemoryLibraryService::ListEntries(scope, &error);
-	if (!error.empty())
-	{
-		cb->Failure(500, error);
-		return;
-	}
+	RunAsyncCefQuery(cb, [scope, request_id]() {
+		std::string error;
+		const std::vector<MemoryLibraryService::Entry> entries = MemoryLibraryService::ListEntries(scope, &error);
+		if (!error.empty())
+		{
+			return AsyncFailure(500, error);
+		}
 
-	nlohmann::json response;
-	response["scope"] = {
-		{"scopeType", scope.scope_type},
-		{"folderId", scope.folder_id},
-		{"label", scope.label},
-		{"rootPath", scope.root_path.empty() ? std::string("Global and project memory roots") : scope.root_path.string()},
-		{"rootCount", scope.roots.size()},
-	};
-	response["entries"] = nlohmann::json::array();
-	for (const MemoryLibraryService::Entry& entry : entries)
-	{
-		response["entries"].push_back({
-			{"id", entry.id},
-			{"title", entry.title},
-			{"category", entry.category},
-			{"scope", entry.scope},
-			{"confidence", entry.confidence},
-			{"sourceChatId", entry.source_chat_id},
-			{"lastObserved", entry.last_observed},
-			{"occurrenceCount", entry.occurrence_count},
-			{"preview", entry.preview},
-			{"filePath", entry.file_path.string()},
-			{"scopeType", entry.scope_type},
-			{"folderId", entry.folder_id},
-			{"scopeLabel", entry.scope_label},
-			{"rootPath", entry.root_path.string()},
-		});
-	}
-	cb->Success(response.dump());
+		nlohmann::json response;
+		response["scope"] = {
+			{"scopeType", scope.scope_type},
+			{"folderId", scope.folder_id},
+			{"label", scope.label},
+			{"rootPath", scope.root_path.empty() ? std::string("Global and project memory roots") : scope.root_path.string()},
+			{"rootCount", scope.roots.size()},
+		};
+		response["entries"] = nlohmann::json::array();
+		for (const MemoryLibraryService::Entry& entry : entries)
+		{
+			response["entries"].push_back({
+				{"id", entry.id},
+				{"title", entry.title},
+				{"category", entry.category},
+				{"scope", entry.scope},
+				{"confidence", entry.confidence},
+				{"sourceChatId", entry.source_chat_id},
+				{"lastObserved", entry.last_observed},
+				{"occurrenceCount", entry.occurrence_count},
+				{"preview", entry.preview},
+				{"filePath", entry.file_path.string()},
+				{"scopeType", entry.scope_type},
+				{"folderId", entry.folder_id},
+				{"scopeLabel", entry.scope_label},
+				{"rootPath", entry.root_path.string()},
+			});
+		}
+		return AsyncSuccess(WithOptionalRequestId(std::move(response), request_id));
+	});
 }
 
 void UamQueryHandler::HandleCreateMemoryEntry(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -2505,9 +2616,19 @@ void UamQueryHandler::HandleGetVcsCommitStatus(CefRefPtr<CefBrowser> /*browser*/
 	}
 
 	const uam::VcsType requested_type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
-	const ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
-	const uam::VcsCommitStatus status = uam::VcsCommitService().Status(m_app, chat, requested_type);
-	cb->Success(SerializeVcsCommitStatus(status).dump());
+	const bool include_line_stats = payload.value("includeLineStats", true);
+	const std::string request_id = payload.value("requestId", "");
+	const ChatSession chat = m_app.chats[static_cast<std::size_t>(chat_index)];
+	const std::filesystem::path data_root = m_app.data_root;
+	AppSettings settings = m_app.settings;
+	std::vector<ChatFolder> folders = m_app.folders;
+	std::vector<ProviderProfile> provider_profiles = m_app.provider_profiles;
+
+	RunAsyncCefQuery(cb, [data_root, settings = std::move(settings), folders = std::move(folders), provider_profiles = std::move(provider_profiles), chat, requested_type, include_line_stats, request_id]() mutable {
+		uam::AppState snapshot = BuildReadOnlyAppSnapshot(data_root, std::move(settings), std::move(folders), std::move(provider_profiles));
+		const uam::VcsCommitStatus status = uam::VcsCommitService().Status(snapshot, chat, requested_type, include_line_stats);
+		return AsyncSuccess(WithOptionalRequestId(SerializeVcsCommitStatus(status), request_id));
+	});
 }
 
 void UamQueryHandler::HandleGetVcsFileDiff(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -2522,15 +2643,23 @@ void UamQueryHandler::HandleGetVcsFileDiff(CefRefPtr<CefBrowser> /*browser*/, co
 
 	const std::string path = payload.value("path", "");
 	const uam::VcsType type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
-	std::string error;
-	const ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
-	const std::string diff = uam::VcsCommitService().Diff(m_app, chat, path, type, &error);
-	if (!error.empty())
-	{
-		cb->Failure(400, error);
-		return;
-	}
-	cb->Success(nlohmann::json{{"diff", diff}}.dump());
+	const std::string request_id = payload.value("requestId", "");
+	const ChatSession chat = m_app.chats[static_cast<std::size_t>(chat_index)];
+	const std::filesystem::path data_root = m_app.data_root;
+	AppSettings settings = m_app.settings;
+	std::vector<ChatFolder> folders = m_app.folders;
+	std::vector<ProviderProfile> provider_profiles = m_app.provider_profiles;
+
+	RunAsyncCefQuery(cb, [data_root, settings = std::move(settings), folders = std::move(folders), provider_profiles = std::move(provider_profiles), chat, path, type, request_id]() mutable {
+		uam::AppState snapshot = BuildReadOnlyAppSnapshot(data_root, std::move(settings), std::move(folders), std::move(provider_profiles));
+		std::string error;
+		const std::string diff = uam::VcsCommitService().Diff(snapshot, chat, path, type, &error);
+		if (!error.empty())
+		{
+			return AsyncFailure(400, error);
+		}
+		return AsyncSuccess(WithOptionalRequestId(nlohmann::json{{"diff", diff}}, request_id));
+	});
 }
 
 void UamQueryHandler::HandleCommitVcsChanges(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -2592,18 +2721,26 @@ void UamQueryHandler::HandleGenerateVcsCommitMessage(CefRefPtr<CefBrowser> /*bro
 	}
 
 	const uam::VcsType type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
-	const ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
-	const uam::VcsCommitMessageSuggestion suggestion = uam::VcsCommitService().GenerateMessage(m_app, chat, type, files);
-	if (!suggestion.ok)
-	{
-		cb->Failure(400, suggestion.error.empty() ? "Failed to generate commit message." : suggestion.error);
-		return;
-	}
+	const std::string request_id = payload.value("requestId", "");
+	const ChatSession chat = m_app.chats[static_cast<std::size_t>(chat_index)];
+	const std::filesystem::path data_root = m_app.data_root;
+	AppSettings settings = m_app.settings;
+	std::vector<ChatFolder> folders = m_app.folders;
+	std::vector<ProviderProfile> provider_profiles = m_app.provider_profiles;
 
-	cb->Success(nlohmann::json{
-		{"title", suggestion.title},
-		{"description", suggestion.description},
-	}.dump());
+	RunAsyncCefQuery(cb, [data_root, settings = std::move(settings), folders = std::move(folders), provider_profiles = std::move(provider_profiles), chat, type, files = std::move(files), request_id]() mutable {
+		uam::AppState snapshot = BuildReadOnlyAppSnapshot(data_root, std::move(settings), std::move(folders), std::move(provider_profiles));
+		const uam::VcsCommitMessageSuggestion suggestion = uam::VcsCommitService().GenerateMessage(snapshot, chat, type, files);
+		if (!suggestion.ok)
+		{
+			return AsyncFailure(400, suggestion.error.empty() ? "Failed to generate commit message." : suggestion.error);
+		}
+
+		return AsyncSuccess(WithOptionalRequestId(nlohmann::json{
+			{"title", suggestion.title},
+			{"description", suggestion.description},
+		}, request_id));
+	});
 }
 
 void UamQueryHandler::HandleListMemoryScanCandidates(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& /*payload*/, CefRefPtr<Callback> cb)
