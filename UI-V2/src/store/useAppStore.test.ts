@@ -547,6 +547,7 @@ describe('useAppStore Gemini CLI slice', () => {
       terminalId: 'term-chat-1',
       data: btoa('hello'),
     })
+    await new Promise((resolve) => setTimeout(resolve, 120))
 
     const state = cefStore.getState()
     expect(state.cliTranscriptBySessionId['chat-1']?.content).toBe('hello')

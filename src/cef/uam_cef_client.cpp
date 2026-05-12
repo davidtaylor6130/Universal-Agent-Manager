@@ -63,13 +63,14 @@ void UamCefClient::OnLoadEnd(CefRefPtr<CefBrowser> browser,
                               CefRefPtr<CefFrame>   frame,
                               int                   http_status_code)
 {
+	(void)browser;
 	(void)http_status_code;
 
 	if (!IsTrustedMainFrame(frame))
 		return;
 
-	// Push the full serialised application state as soon as the page is ready.
-	uam::PushStateUpdate(browser, m_app);
+	// React pulls the initial state with getInitialState during store bootstrap.
+	// Avoid a duplicate full-state serialization/push on the CEF UI thread here.
 }
 
 void UamCefClient::OnLoadError(CefRefPtr<CefBrowser> /*browser*/,

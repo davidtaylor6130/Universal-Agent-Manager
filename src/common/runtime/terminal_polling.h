@@ -267,6 +267,7 @@ inline bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, u
 	char buffer[8192];
 	int chunks_read = 0;
 	std::size_t bytes_read_total = 0;
+	std::string output_for_frontend;
 
 	while (true)
 	{
@@ -288,9 +289,8 @@ inline bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, u
 			terminal.last_ai_output_time_s = now;
 			changed = true;
 			append_recent_output(buffer, static_cast<std::size_t>(read_bytes));
+			output_for_frontend.append(buffer, static_cast<std::size_t>(read_bytes));
 			uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "pty_read", &terminal, "", static_cast<long long>(read_bytes));
-
-			uam::PushCliOutput(browser, CliTerminalPrimaryChatId(terminal), CliTerminalPrimaryChatId(terminal), terminal.terminal_id, std::string(buffer, static_cast<std::size_t>(read_bytes)));
 			continue;
 		}
 
@@ -328,6 +328,12 @@ inline bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, u
 		}
 		changed = true;
 		break;
+	}
+
+	if (!output_for_frontend.empty())
+	{
+		const std::string primary_chat_id = CliTerminalPrimaryChatId(terminal);
+		uam::PushCliOutput(browser, primary_chat_id, primary_chat_id, terminal.terminal_id, output_for_frontend);
 	}
 
 	const bool prompt_indicates_idle = terminal_provider.id == "codex-cli"

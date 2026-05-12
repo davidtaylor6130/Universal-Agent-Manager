@@ -1,7 +1,6 @@
 #include "cef/state_serializer.h"
 
 #include "app/application_core_helpers.h"
-#include "app/memory_service.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/app_time.h"
 #include "common/provider/codex/cli/codex_session_index.h"
@@ -956,7 +955,12 @@ nlohmann::json SerializeCliDebugState(const AppState& app)
 
 	nlohmann::json SerializeMemoryActivity(const AppState& app)
 	{
-		const uam::MemoryActivityState activity = MemoryService::BuildMemoryActivity(app);
+		uam::MemoryActivityState activity = app.memory_activity;
+		activity.running_count = static_cast<int>(app.memory_extraction_tasks.size() + app.memory_extraction_queue.size());
+		if (!app.memory_last_status.empty())
+		{
+			activity.last_status = app.memory_last_status;
+		}
 	return {
 		{"entryCount", activity.entry_count},
 		{"lastCreatedAt", activity.last_created_at},
