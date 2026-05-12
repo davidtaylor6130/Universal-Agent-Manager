@@ -961,6 +961,8 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 			HandleGetInitialState(browser, callback);
 		else if (action == "selectSession")
 			HandleSelectSession(browser, payload, callback);
+		else if (action == "getChatMessages")
+			HandleGetChatMessages(browser, payload, callback);
 		else if (action == "createSession")
 			HandleCreateSession(browser, payload, callback);
 		else if (action == "renameSession")
@@ -1125,15 +1127,6 @@ void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 
-	std::string hydrate_warning;
-	if (!ChatRepository::HydrateChatMessages(m_app.data_root, *selected_chat, &hydrate_warning))
-	{
-		m_app.status_line = hydrate_warning.empty() ? "Failed to load selected chat messages." : hydrate_warning;
-		ChatDomainService().SelectChatById(m_app, previous_selected_chat_id);
-		cb->Failure(500, m_app.status_line);
-		return;
-	}
-
 	selected_chat->last_opened_at = TimestampNow();
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
@@ -1154,8 +1147,44 @@ void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const n
 
 	ChatDomainService().SortChatsByRecent(m_app.chats);
 	ChatDomainService().SelectChatById(m_app, chat_id);
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const std::string known_digest = payload.value("messagesDigest", "");
+	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
+	if (chat_index < 0)
+	{
+		cb->Failure(404, "Chat not found: " + chat_id);
+		return;
+	}
+
+	ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
+	std::string hydrate_warning;
+	if (!ChatRepository::HydrateChatMessages(m_app.data_root, chat, &hydrate_warning))
+	{
+		cb->Failure(500, hydrate_warning.empty() ? "Failed to load chat messages." : hydrate_warning);
+		return;
+	}
+
+	const nlohmann::json serialized = uam::StateSerializer::SerializeSession(chat);
+	const std::string messages_digest = serialized.value("messagesDigest", "");
+	nlohmann::json result;
+	result["chatId"] = chat_id;
+	result["messagesDigest"] = messages_digest;
+	if (!known_digest.empty() && known_digest == messages_digest)
+	{
+		result["unchanged"] = true;
+		cb->Success(result.dump());
+		return;
+	}
+
+	result["unchanged"] = false;
+	result["messages"] = serialized.value("messages", nlohmann::json::array());
+	cb->Success(result.dump());
 }
 
 void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -1224,7 +1253,7 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 		MarkSelectedCliTerminalForLaunch(m_app);
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
@@ -1247,7 +1276,7 @@ void UamQueryHandler::HandleRenameSession(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
@@ -1328,7 +1357,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 				return;
 			}
 		}
-		uam::PushStateUpdate(browser, m_app);
+		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Success("{}");
 		return;
 	}
@@ -1362,7 +1391,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 		}
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
@@ -1401,7 +1430,7 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 
 	if (chat.reasoning_effort == reasoning_effort && chat.service_tier == service_tier)
 	{
-		uam::PushStateUpdate(browser, m_app);
+		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Success("{}");
 		return;
 	}
@@ -1422,7 +1451,7 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
@@ -1448,7 +1477,7 @@ void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const
 	ChatSession& chat = m_app.chats[static_cast<std::size_t>(idx)];
 	if (chat.provider_id == provider->id)
 	{
-		uam::PushStateUpdate(browser, m_app);
+		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Success("{}");
 		return;
 	}
@@ -1501,7 +1530,7 @@ void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
@@ -1548,7 +1577,7 @@ void UamQueryHandler::HandleSetChatApprovalMode(CefRefPtr<CefBrowser> browser, c
 				return;
 			}
 		}
-		uam::PushStateUpdate(browser, m_app);
+		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Success("{}");
 		return;
 	}
@@ -1579,7 +1608,7 @@ void UamQueryHandler::HandleSetChatApprovalMode(CefRefPtr<CefBrowser> browser, c
 		}
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
@@ -1606,7 +1635,7 @@ void UamQueryHandler::HandleSetChatAutoApproveCommands(CefRefPtr<CefBrowser> bro
 				return;
 			}
 		}
-		uam::PushStateUpdate(browser, m_app);
+		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Success("{}");
 		return;
 	}
@@ -1633,7 +1662,7 @@ void UamQueryHandler::HandleSetChatAutoApproveCommands(CefRefPtr<CefBrowser> bro
 		}
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
@@ -1651,7 +1680,7 @@ void UamQueryHandler::HandleSetChatMemoryEnabled(CefRefPtr<CefBrowser> browser, 
 	ChatSession& chat = m_app.chats[static_cast<std::size_t>(idx)];
 	if (chat.memory_enabled == enabled)
 	{
-		uam::PushStateUpdate(browser, m_app);
+		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Success("{}");
 		return;
 	}
@@ -1668,7 +1697,7 @@ void UamQueryHandler::HandleSetChatMemoryEnabled(CefRefPtr<CefBrowser> browser, 
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
@@ -1711,7 +1740,7 @@ void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, con
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
@@ -1756,7 +1785,7 @@ void UamQueryHandler::HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browse
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
@@ -1779,7 +1808,7 @@ void UamQueryHandler::HandleSetEditorSettings(CefRefPtr<CefBrowser> browser, con
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
@@ -1793,7 +1822,7 @@ void UamQueryHandler::HandleRefreshCliProviderVersion(CefRefPtr<CefBrowser> brow
 	}
 
 	ProviderCliCompatibilityService().StartProviderVersionCheck(m_app, provider_id, true);
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
@@ -1808,7 +1837,7 @@ void UamQueryHandler::HandleApplyCliProviderVersion(CefRefPtr<CefBrowser> browse
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
@@ -1851,7 +1880,7 @@ void UamQueryHandler::HandleSetMarkdownStoreDirectory(CefRefPtr<CefBrowser> brow
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success(nlohmann::json{{"directory", m_app.settings.markdown_store_directory}}.dump());
 }
 
@@ -1891,7 +1920,7 @@ void UamQueryHandler::HandleCreateMarkdownStoreEntry(CefRefPtr<CefBrowser> brows
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success(SerializeMarkdownStoreEntry(created).dump());
 }
 
@@ -1931,7 +1960,7 @@ void UamQueryHandler::HandleDeleteSession(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
@@ -1947,7 +1976,7 @@ void UamQueryHandler::HandleCreateFolder(CefRefPtr<CefBrowser> browser, const nl
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	ChatFolder* folder = ChatDomainService().FindFolderById(m_app, created_folder_id);
 	if (folder == nullptr)
 	{
@@ -1970,7 +1999,7 @@ void UamQueryHandler::HandleRenameFolder(CefRefPtr<CefBrowser> browser, const nl
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
@@ -1984,7 +2013,7 @@ void UamQueryHandler::HandleDeleteFolder(CefRefPtr<CefBrowser> browser, const nl
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
@@ -2182,7 +2211,7 @@ void UamQueryHandler::HandleCreateMemoryEntry(CefRefPtr<CefBrowser> browser, con
 		{"rootPath", created.root_path.string()},
 	};
 	MemoryService::RefreshMemoryActivity(m_app);
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success(response.dump());
 }
 
@@ -2203,7 +2232,7 @@ void UamQueryHandler::HandleDeleteMemoryEntry(CefRefPtr<CefBrowser> browser, con
 	}
 
 	MemoryService::RefreshMemoryActivity(m_app);
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
@@ -2402,7 +2431,7 @@ void UamQueryHandler::HandleCreateChatWorktree(CefRefPtr<CefBrowser> browser, co
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success(SerializeGitWorktreeResult(result).dump());
 }
 
@@ -2429,7 +2458,7 @@ void UamQueryHandler::HandleDiscardChatWorktreeChanges(CefRefPtr<CefBrowser> bro
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success(SerializeGitWorktreeResult(result).dump());
 }
 
@@ -2461,7 +2490,7 @@ void UamQueryHandler::HandlePortChatWorktreeChanges(CefRefPtr<CefBrowser> browse
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success(SerializeGitWorktreeResult(result).dump());
 }
 
@@ -2536,7 +2565,7 @@ void UamQueryHandler::HandleCommitVcsChanges(CefRefPtr<CefBrowser> browser, cons
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success(SerializeVcsCommitResult(result).dump());
 }
 
@@ -2630,7 +2659,7 @@ void UamQueryHandler::HandleScanCurrentChats(CefRefPtr<CefBrowser> browser, cons
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	nlohmann::json response;
 	response["queuedCount"] = queued_count;
 	cb->Success(response.dump());
@@ -2694,7 +2723,7 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 		terminal.should_launch = false;
 		terminal.last_error = ProviderResolutionService().ChatProviderUnavailableReason(m_app, chat);
 		terminal.lifecycle_state = uam::CliTerminalLifecycleState::Stopped;
-		uam::PushStateUpdate(browser, m_app);
+		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Success(BuildCliBindingResponse(terminal).dump());
 		return;
 	}
@@ -2711,7 +2740,7 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 		uam::LogCliDiagnosticEvent(m_app, "handle_start_cli", "started_terminal", &terminal);
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success(BuildCliBindingResponse(terminal).dump());
 }
 
@@ -2729,7 +2758,7 @@ void UamQueryHandler::HandleStopCli(CefRefPtr<CefBrowser> browser, const nlohman
 
 	term->ui_attached = false;
 	uam::LogCliDiagnosticEvent(m_app, "handle_stop_cli", "ui_detached", term);
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
@@ -2771,7 +2800,7 @@ void UamQueryHandler::HandleWriteCliInput(CefRefPtr<CefBrowser> browser, const n
 			{
 				MarkCliTerminalTurnBusy(*term);
 				uam::LogCliDiagnosticEvent(m_app, "handle_write_cli_input", "turn_marked_busy_from_submit", term);
-				uam::PushStateUpdate(browser, m_app);
+				uam::PushStateUpdateIfChanged(browser, m_app);
 			}
 		}
 	}
@@ -2825,7 +2854,7 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
@@ -2992,7 +3021,7 @@ void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
@@ -3059,7 +3088,7 @@ void UamQueryHandler::HandleResolveAcpUserInput(CefRefPtr<CefBrowser> browser, c
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
@@ -3067,7 +3096,7 @@ void UamQueryHandler::HandleStopAcpSession(CefRefPtr<CefBrowser> browser, const 
 {
 	const std::string chat_id = payload.value("chatId", "");
 	uam::StopAcpSession(m_app, chat_id);
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
@@ -3107,6 +3136,6 @@ void UamQueryHandler::HandleSetTheme(CefRefPtr<CefBrowser> browser, const nlohma
 		return;
 	}
 
-	uam::PushStateUpdate(browser, m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }

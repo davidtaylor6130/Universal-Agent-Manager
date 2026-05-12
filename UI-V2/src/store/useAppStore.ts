@@ -475,6 +475,13 @@ interface OpenWorkspaceEditorResponse {
   editorPresetId?: string
 }
 
+interface ChatMessagesResponse {
+  chatId?: string
+  messagesDigest?: string
+  unchanged?: boolean
+  messages?: CppMessage[]
+}
+
 export interface VcsCommitMessageSuggestion {
   title: string
   description: string
@@ -2270,6 +2277,8 @@ function deserializeState(
 	  const workspaceBaseRef = c.workspaceBaseRef ?? ''
 	  const workspaceBranchName = c.workspaceBranchName ?? ''
 	  const workspaceWorktreeDirectory = c.workspaceWorktreeDirectory ?? ''
+    const messageCount = c.messageCount ?? 0
+    const messagesDigest = c.messagesDigest ?? ''
 	  const createdAt = new Date(c.createdAt || Date.now())
     const updatedAt = new Date(c.updatedAt || Date.now())
     const lastOpenedAt = new Date(c.lastOpenedAt || c.updatedAt || c.createdAt || Date.now())
@@ -2294,6 +2303,8 @@ function deserializeState(
 	      (prev.workspaceBaseRef ?? '') === workspaceBaseRef &&
 	      (prev.workspaceBranchName ?? '') === workspaceBranchName &&
 	      (prev.workspaceWorktreeDirectory ?? '') === workspaceWorktreeDirectory &&
+        (prev.messageCount ?? 0) === messageCount &&
+        (prev.messagesDigest ?? '') === messagesDigest &&
 	      prev.viewMode === 'chat' &&
       prev.createdAt.getTime() === createdAt.getTime() &&
       prev.updatedAt.getTime() === updatedAt.getTime() &&
@@ -2322,6 +2333,8 @@ function deserializeState(
 	      workspaceBaseRef,
 	      workspaceBranchName,
 	      workspaceWorktreeDirectory,
+      messageCount,
+      messagesDigest,
 	      createdAt,
       updatedAt,
       lastOpenedAt,
@@ -2670,6 +2683,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
 	      workspaceBaseRef: chat.workspaceBaseRef ?? '',
 	      workspaceBranchName: chat.workspaceBranchName ?? '',
 	      workspaceWorktreeDirectory: chat.workspaceWorktreeDirectory ?? '',
+      messageCount: chat.messageCount ?? 0,
+      messagesDigest: chat.messagesDigest ?? '',
 	      createdAt,
       updatedAt,
       lastOpenedAt,
@@ -2695,6 +2710,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
 	        (prev.workspaceBaseRef ?? '') === (nextSession.workspaceBaseRef ?? '') &&
 	        (prev.workspaceBranchName ?? '') === (nextSession.workspaceBranchName ?? '') &&
 	        (prev.workspaceWorktreeDirectory ?? '') === (nextSession.workspaceWorktreeDirectory ?? '') &&
+        (prev.messageCount ?? 0) === (nextSession.messageCount ?? 0) &&
+        (prev.messagesDigest ?? '') === (nextSession.messagesDigest ?? '') &&
 	        prev.createdAt.getTime() === nextSession.createdAt.getTime() &&
         prev.updatedAt.getTime() === nextSession.updatedAt.getTime() &&
         (prev.lastOpenedAt ?? prev.updatedAt).getTime() === nextSession.lastOpenedAt?.getTime()
@@ -3178,6 +3195,61 @@ export const useAppStore = create<AppState>((set, get) => {
     cliTranscriptFlushTimer = window.setTimeout(flushPendingCliTranscriptChunks, CLI_TRANSCRIPT_FLUSH_DELAY_MS)
   }
 
+  const requestChatMessagesFromCef = (chatId: string) => {
+    if (!isCefContext() || !chatId) return
+    const current = get()
+    const session = current.sessions.find((candidate) => candidate.id === chatId)
+    if (!session) return
+
+    const requestKey = `getChatMessages:${chatId}`
+    const requestId = createRequestId('getChatMessages')
+    rememberPendingRequest(requestKey, requestId)
+    void sendToCEF<ChatMessagesResponse>({
+      action: 'getChatMessages',
+      payload: {
+        chatId,
+        messagesDigest: session.messagesDigest ?? '',
+      },
+      requestId,
+    }).then((response) => {
+      if (!isLatestPendingRequest(requestKey, response.requestId)) return
+      clearPendingRequest(requestKey, response.requestId)
+      if (!response.ok || !response.data) return
+
+      const data = response.data
+      if (data.chatId && data.chatId !== chatId) return
+      if (get().activeSessionId !== chatId) return
+      if (data.unchanged) return
+      if (!Array.isArray(data.messages)) return
+
+      set((state) => {
+        if (state.activeSessionId !== chatId) return state
+        const nextMessages = reconcileCppMessages(chatId, state.messages[chatId], data.messages ?? [])
+        const messagesChanged = nextMessages !== state.messages[chatId]
+        const nextDigest = data.messagesDigest ?? ''
+        const sessions = nextDigest
+          ? state.sessions.map((candidate) =>
+              candidate.id === chatId && (candidate.messagesDigest ?? '') !== nextDigest
+                ? { ...candidate, messagesDigest: nextDigest, messageCount: data.messages?.length ?? candidate.messageCount ?? 0 }
+                : candidate
+            )
+          : state.sessions
+        const sessionsChanged = sessions !== state.sessions && sessions.some((candidate, index) => candidate !== state.sessions[index])
+
+        if (!messagesChanged && !sessionsChanged) return state
+        return {
+          ...(messagesChanged ? {
+            messages: {
+              ...state.messages,
+              [chatId]: nextMessages,
+            },
+          } : {}),
+          ...(sessionsChanged ? { sessions } : {}),
+        }
+      })
+    })
+  }
+
   // Bootstrap from CEF if available (non-blocking — state arrives via uamPush later too)
 	  if (isCefContext()) {
 	    sendToCEF<CppAppState>({ action: 'getInitialState' }).then((resp) => {
@@ -3437,6 +3509,7 @@ export const useAppStore = create<AppState>((set, get) => {
         sendToCEF({ action: 'selectSession', payload: { chatId: id }, requestId }).then((resp) => {
           if (resp.ok) {
             clearPendingRequest(requestKey, resp.requestId)
+            requestChatMessagesFromCef(id)
             return
           }
 

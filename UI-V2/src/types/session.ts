@@ -21,6 +21,8 @@ export interface Session {
   memoryEnabled?: boolean
   memoryLastProcessedMessageCount?: number
   memoryLastProcessedAt?: string
+  messageCount?: number
+  messagesDigest?: string
   createdAt: Date
   updatedAt: Date
   lastOpenedAt?: Date

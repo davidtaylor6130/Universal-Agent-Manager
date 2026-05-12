@@ -39,6 +39,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	// ---- action handlers -------------------------------------------------
 	void HandleGetInitialState(CefRefPtr<CefBrowser> browser, CefRefPtr<Callback> cb);
 	void HandleSelectSession  (CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleCreateSession  (CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleRenameSession  (CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetChatPinned (CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
