@@ -1917,6 +1917,9 @@ function normalizeCliTranscript(
 
 const pendingRequestIdsByKey = new Map<string, string>()
 const pendingCodexOptionsByChatId = new Map<string, { requestId: string; reasoningEffort: string; serviceTier: string }>()
+const pendingCliTranscriptChunksBySessionId = new Map<string, { terminalId: string; chunks: string[] }>()
+const CLI_TRANSCRIPT_FLUSH_DELAY_MS = 100
+let cliTranscriptFlushTimer: number | null = null
 let pendingProviderChatDefaults: {
   requestId: string
   defaultNewChatProviderId: string
@@ -1987,6 +1990,56 @@ function cppMessagesEquivalent(existing: Message, next: CppMessage) {
     messageBlocksEquivalent(existing.blocks ?? [], next.blocks ?? []) &&
     existing.createdAt.getTime() === cppMessageCreatedAtMillis(next)
   )
+}
+
+function buildMessageFromCpp(chatId: string, message: CppMessage, index: number): Message {
+  const createdAtMillis = cppMessageCreatedAtMillis(message)
+  return {
+    id: `cef-m-${chatId}-${createdAtMillis}-${index}-${message.role}`,
+    sessionId: chatId,
+    role: message.role,
+    content: message.content,
+    thoughts: message.thoughts ?? '',
+    planSummary: message.planSummary ?? '',
+    planEntries: message.planEntries ?? [],
+    toolCalls: message.toolCalls ?? [],
+    blocks: message.blocks ?? [],
+    attachments: messageAttachments(message),
+    createdAt: new Date(createdAtMillis),
+  }
+}
+
+function reconcileCppMessages(
+  chatId: string,
+  existingMessages: Message[] | undefined,
+  cppMessages: CppMessage[]
+): Message[] {
+  const existing = existingMessages ?? []
+  const existingRealMessages = existing.filter((message) => !message.isStreaming)
+  const hasStreamingPlaceholder = existing.some((message) => message.isStreaming)
+
+  if (hasStreamingPlaceholder && cppMessages.length <= existingRealMessages.length) {
+    return existing
+  }
+
+  let prefixLength = 0
+  while (
+    prefixLength < existingRealMessages.length &&
+    prefixLength < cppMessages.length &&
+    cppMessagesEquivalent(existingRealMessages[prefixLength], cppMessages[prefixLength])
+  ) {
+    prefixLength++
+  }
+
+  if (!hasStreamingPlaceholder && prefixLength === existingRealMessages.length && prefixLength === cppMessages.length) {
+    return existing
+  }
+
+  const reconciled = existingRealMessages.slice(0, prefixLength)
+  for (let index = prefixLength; index < cppMessages.length; index += 1) {
+    reconciled.push(buildMessageFromCpp(chatId, cppMessages[index], index))
+  }
+  return reconciled
 }
 
 function planEntriesEquivalent(existing: AcpPlanEntry[], next: AcpPlanEntry[]) {
@@ -2669,19 +2722,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     delete messages[chatId]
   }
   for (const [chatId, cppMessages] of Object.entries(patch.messagesByChatId ?? {})) {
-    messages[chatId] = cppMessages.map((message, index) => ({
-      id: `cef-m-${chatId}-${cppMessageCreatedAtMillis(message)}-${index}-${message.role}`,
-      sessionId: chatId,
-      role: message.role,
-      content: message.content,
-      thoughts: message.thoughts ?? '',
-      planSummary: message.planSummary ?? '',
-      planEntries: message.planEntries ?? [],
-      toolCalls: message.toolCalls ?? [],
-      blocks: message.blocks ?? [],
-      attachments: messageAttachments(message),
-      createdAt: new Date(cppMessageCreatedAtMillis(message)),
-    }))
+    messages[chatId] = reconcileCppMessages(chatId, current.messages[chatId], cppMessages)
   }
 
   const cliBindingBySessionId = { ...current.cliBindingBySessionId }
@@ -3101,6 +3142,42 @@ function writeStoredAppShellLayout(layout: {
 }
 
 export const useAppStore = create<AppState>((set, get) => {
+  const flushPendingCliTranscriptChunks = () => {
+    cliTranscriptFlushTimer = null
+    if (pendingCliTranscriptChunksBySessionId.size === 0) return
+
+    const entries = Array.from(pendingCliTranscriptChunksBySessionId.entries())
+    pendingCliTranscriptChunksBySessionId.clear()
+
+    set((state) => {
+      let nextTranscripts = state.cliTranscriptBySessionId
+
+      for (const [sessionId, pending] of entries) {
+        const chunk = pending.chunks.join('')
+        if (!chunk) continue
+
+        if (nextTranscripts === state.cliTranscriptBySessionId) {
+          nextTranscripts = { ...state.cliTranscriptBySessionId }
+        }
+
+        nextTranscripts[sessionId] = appendCliTranscriptChunk(
+          nextTranscripts[sessionId],
+          pending.terminalId,
+          chunk
+        )
+      }
+
+      return nextTranscripts === state.cliTranscriptBySessionId
+        ? state
+        : { cliTranscriptBySessionId: nextTranscripts }
+    })
+  }
+
+  const scheduleCliTranscriptFlush = () => {
+    if (typeof window === 'undefined' || cliTranscriptFlushTimer !== null) return
+    cliTranscriptFlushTimer = window.setTimeout(flushPendingCliTranscriptChunks, CLI_TRANSCRIPT_FLUSH_DELAY_MS)
+  }
+
   // Bootstrap from CEF if available (non-blocking — state arrives via uamPush later too)
 	  if (isCefContext()) {
 	    sendToCEF<CppAppState>({ action: 'getInitialState' }).then((resp) => {
@@ -3198,36 +3275,36 @@ export const useAppStore = create<AppState>((set, get) => {
             const sessionId = msg.sessionId ?? msg.sourceChatId ?? ''
 
             if (sessionId) {
-              set((state) => {
-                const currentBinding = state.cliBindingBySessionId[sessionId]
-                const terminalId = msg.terminalId ?? currentBinding?.terminalId ?? ''
-                const boundChatId = msg.sourceChatId ?? currentBinding?.boundChatId ?? sessionId
-                const bindingChanged =
-                  currentBinding &&
-                  (currentBinding.terminalId !== terminalId ||
-                    currentBinding.boundChatId !== boundChatId)
+              const currentBinding = get().cliBindingBySessionId[sessionId]
+              const terminalId = msg.terminalId ?? currentBinding?.terminalId ?? ''
+              const boundChatId = msg.sourceChatId ?? currentBinding?.boundChatId ?? sessionId
+              const existingPending = pendingCliTranscriptChunksBySessionId.get(sessionId)
+              if (existingPending && existingPending.terminalId === terminalId) {
+                existingPending.chunks.push(decodedData)
+              } else {
+                pendingCliTranscriptChunksBySessionId.set(sessionId, {
+                  terminalId,
+                  chunks: [decodedData],
+                })
+              }
+              scheduleCliTranscriptFlush()
 
-                return {
-                  cliTranscriptBySessionId: {
-                    ...state.cliTranscriptBySessionId,
-                    [sessionId]: appendCliTranscriptChunk(
-                      state.cliTranscriptBySessionId[sessionId],
+              if (
+                currentBinding &&
+                (currentBinding.terminalId !== terminalId ||
+                  currentBinding.boundChatId !== boundChatId)
+              ) {
+                set((state) => ({
+                  cliBindingBySessionId: {
+                    ...state.cliBindingBySessionId,
+                    [sessionId]: {
+                      ...currentBinding,
                       terminalId,
-                      decodedData
-                    ),
-                  },
-                  ...(bindingChanged ? {
-                    cliBindingBySessionId: {
-                      ...state.cliBindingBySessionId,
-                      [sessionId]: {
-                        ...(currentBinding as CliBinding),
-                        terminalId,
-                        boundChatId,
-                      },
+                      boundChatId,
                     },
-                  } : {}),
-                }
-              })
+                  },
+                }))
+              }
             }
 
             window.dispatchEvent(
@@ -5675,6 +5752,9 @@ export const useAppStore = create<AppState>((set, get) => {
     }),
     setSidebarWidthPx: (width) => set((state) => {
       const sidebarWidthPx = clampSidebarWidthPx(width)
+      if (sidebarWidthPx === state.sidebarWidthPx) {
+        return state
+      }
       const next = {
         sidebarCollapsed: state.sidebarCollapsed,
         commitPanelOpen: state.commitPanelOpen,
@@ -5686,6 +5766,9 @@ export const useAppStore = create<AppState>((set, get) => {
     }),
     setCommitPanelWidthPx: (width) => set((state) => {
       const commitPanelWidthPx = clampCommitPanelWidthPx(width)
+      if (commitPanelWidthPx === state.commitPanelWidthPx) {
+        return state
+      }
       const next = {
         sidebarCollapsed: state.sidebarCollapsed,
         commitPanelOpen: state.commitPanelOpen,

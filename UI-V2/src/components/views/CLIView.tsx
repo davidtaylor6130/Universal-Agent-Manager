@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
@@ -74,11 +75,9 @@ export function CLIView({ session }: CLIViewProps) {
   const fitAddonRef = useRef<FitAddon | null>(null)
   const theme = useAppStore((s) => s.theme)
   const providers = useAppStore((s) => s.providers)
-  const cliBindingBySessionId = useAppStore((s) => s.cliBindingBySessionId)
-  const cliTranscriptBySessionId = useAppStore((s) => s.cliTranscriptBySessionId)
+  const cliBinding = useAppStore(useShallow((s) => s.cliBindingBySessionId[session.id]))
+  const cliTranscript = useAppStore(useShallow((s) => s.cliTranscriptBySessionId[session.id]))
   const setCliBinding = useAppStore((s) => s.setCliBinding)
-  const cliBinding = cliBindingBySessionId[session.id]
-  const cliTranscript = cliTranscriptBySessionId[session.id]
   const currentProviderId = session.providerId?.trim() || 'gemini-cli'
   const providerSupported = providers.some((provider) => provider.id === currentProviderId)
   const unsupportedProviderMessage = `Provider '${currentProviderId}' is not supported in this build. Switch this chat to Gemini CLI to use terminal mode.`
@@ -347,7 +346,7 @@ export function CLIView({ session }: CLIViewProps) {
       resizeObserver.disconnect()
       term.dispose()
     }
-  }, [cliBinding?.terminalId, cliTranscript?.content, providerSupported, session.id]) // Re-init per session and provider support
+  }, [cliBinding?.terminalId, cliTranscript?.terminalId, providerSupported, session.id]) // Re-init per session/terminal identity and provider support
 
   // Refit on theme change
   useEffect(() => {

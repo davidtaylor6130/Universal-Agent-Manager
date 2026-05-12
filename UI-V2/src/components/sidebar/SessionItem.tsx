@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, memo } from 'react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
+import type { Session } from '../../types/session'
 
 function formatSidebarTime(date: Date | null): string {
   if (!date || Number.isNaN(date.getTime())) {
@@ -41,6 +42,7 @@ function formatSidebarTimeTitle(date: Date | null): string {
 
 interface SessionItemProps {
   sessionId: string
+  session?: Session
   forceShowPin?: boolean
 }
 
@@ -124,14 +126,22 @@ function sidebarStatusIcon(kind: AcpAttentionKind) {
   return <span className="session-status__question" aria-hidden="true">!</span>
 }
 
-export const SessionItem = memo(function SessionItem({ sessionId, forceShowPin }: SessionItemProps) {
+export const SessionItem = memo(function SessionItem({ sessionId, session, forceShowPin }: SessionItemProps) {
   // Fine-grained selectors — each only re-renders when its specific value changes
   const sessionSummary = useAppStore(useShallow((s) => {
-    const session = s.sessions.find((x) => x.id === sessionId)
+    if (session) {
+      return {
+        name: session.name,
+        lastOpenedAt: session.lastOpenedAt ?? session.updatedAt ?? null,
+        isPinned: session.isPinned ?? false,
+      }
+    }
+
+    const storeSession = s.sessions.find((x) => x.id === sessionId)
     return {
-      name: session?.name ?? '',
-      lastOpenedAt: session?.lastOpenedAt ?? session?.updatedAt ?? null,
-      isPinned: session?.isPinned ?? false,
+      name: storeSession?.name ?? '',
+      lastOpenedAt: storeSession?.lastOpenedAt ?? storeSession?.updatedAt ?? null,
+      isPinned: storeSession?.isPinned ?? false,
     }
   }))
   const sessionName = sessionSummary.name

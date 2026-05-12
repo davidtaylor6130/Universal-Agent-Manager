@@ -9,7 +9,7 @@ import {
   buildChatSearchSessionGroups,
   tokenizeChatSearchQuery,
 } from './chatSearch'
-import type { Folder } from '../../types/session'
+import type { Folder, Session } from '../../types/session'
 
 interface FolderTreeProps {
   searchQuery: string
@@ -67,6 +67,10 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const searchModel = useMemo(
     () => buildChatSearchModelFromGroups(folders, searchGroups),
     [folders, searchGroups]
+  )
+  const sessionsById = useMemo(
+    () => new Map(sessions.map((session) => [session.id, session])),
+    [sessions]
   )
   const pendingDeleteFolder = useMemo(
     () => folders.find((folder) => folder.id === pendingDeleteFolderId) ?? null,
@@ -144,7 +148,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
             </span>
           </div>
           {searchModel.pinnedSessionIds.map((id) => (
-            <SessionItem key={id} sessionId={id} forceShowPin={true} />
+            <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} forceShowPin={true} />
           ))}
         </div>
       )}
@@ -180,6 +184,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
           onChooseDirectory={() => void chooseEditFolderDirectory()}
           onCreateChat={() => setNewChatModalOpen(true, folder.id)}
           onOpenMemory={() => void openFolderMemoryLibrary(folder.id)}
+          sessionsById={sessionsById}
         />
       ))}
 
@@ -192,7 +197,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
             </span>
           </div>
           {searchModel.unfolderedSessionIds.map((id) => (
-            <SessionItem key={id} sessionId={id} />
+            <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} />
           ))}
         </div>
       )}
@@ -501,6 +506,7 @@ interface FolderRowProps {
   onChooseDirectory: () => void
   onCreateChat: () => void
   onOpenMemory: () => void
+  sessionsById: Map<string, Session>
 }
 
 const FolderRow = memo(function FolderRow({
@@ -521,6 +527,7 @@ const FolderRow = memo(function FolderRow({
   onChooseDirectory,
   onCreateChat,
   onOpenMemory,
+  sessionsById,
 }: FolderRowProps) {
   const [showAllSessions, setShowAllSessions] = useState(false)
   const shouldLimitSessions = !isSearching && sessionIds.length > VISIBLE_SESSION_LIMIT
@@ -722,7 +729,7 @@ const FolderRow = memo(function FolderRow({
             </div>
           ) : (
             visibleSessionIds.map((id) => (
-              <SessionItem key={id} sessionId={id} />
+              <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} />
             ))
           )}
           {shouldLimitSessions && (

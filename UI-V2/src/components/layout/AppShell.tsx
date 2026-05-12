@@ -139,17 +139,32 @@ export function AppShell() {
     event.preventDefault()
     const startX = event.clientX
     const startWidth = side === 'sidebar' ? sidebarWidthPx : commitPanelWidthPx
+    let resizeAnimationFrame: number | null = null
+    let pendingWidth = startWidth
+
+    const commitResize = () => {
+      resizeAnimationFrame = null
+      if (side === 'sidebar') {
+        setSidebarWidthPx(pendingWidth)
+      } else {
+        setCommitPanelWidthPx(pendingWidth)
+      }
+    }
 
     const onMouseMove = (moveEvent: MouseEvent) => {
       const delta = moveEvent.clientX - startX
-      if (side === 'sidebar') {
-        setSidebarWidthPx(startWidth + delta)
-      } else {
-        setCommitPanelWidthPx(startWidth - delta)
+      pendingWidth = side === 'sidebar' ? startWidth + delta : startWidth - delta
+      if (resizeAnimationFrame === null) {
+        resizeAnimationFrame = window.requestAnimationFrame(commitResize)
       }
     }
 
     const onMouseUp = () => {
+      if (resizeAnimationFrame !== null) {
+        window.cancelAnimationFrame(resizeAnimationFrame)
+        resizeAnimationFrame = null
+      }
+      commitResize()
       document.removeEventListener('mousemove', onMouseMove)
       document.removeEventListener('mouseup', onMouseUp)
       document.body.style.cursor = ''
