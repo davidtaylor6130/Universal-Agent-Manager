@@ -6,7 +6,6 @@
 
 #include "app/chat_domain_service.h"
 #include "app/chat_lifecycle_service.h"
-#include "app/application_core_helpers.h"
 #include "app/git_worktree_service.h"
 #include "app/markdown_store_service.h"
 #include "app/memory_library_service.h"
@@ -14,13 +13,22 @@
 #include "app/persistence_coordinator.h"
 #include "app/runtime_orchestration_services.h"
 #include "app/vcs_commit_service.h"
+#include "common/config/approval_modes.h"
+#include "common/config/editor_file_associations.h"
+#include "common/config/settings_normalization.h"
 #include "common/paths/app_paths.h"
+#include "common/paths/path_utils.h"
+#include "common/paths/workspace_root.h"
 
 #include "common/platform/platform_services.h"
+#include "common/provider/codex/codex_options.h"
+#include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
 #include "common/provider/runtime/provider_build_config.h"
+#include "common/runtime/acp/acp_permissions.h"
 #include "common/runtime/acp/acp_session_runtime.h"
+#include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
@@ -29,26 +37,34 @@
 #include "common/runtime/terminal/terminal_lifecycle.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
 #include "common/chat/chat_folder_store.h"
+#include "common/chat/message_attachment_json.h"
 #include "common/chat/chat_repository.h"
+#include "common/utils/base64.h"
+#include "common/utils/io_utils.h"
+#include "common/utils/nlohmann_json_utils.h"
+#include "common/utils/range_utils.h"
 #include "common/utils/string_utils.h"
+#include "common/utils/time_utils.h"
 
 #include "include/wrapper/cef_helpers.h"
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
-#include <chrono>
-#include <cctype>
+#include <array>
+#include <cerrno>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
+#include <exception>
 #include <filesystem>
-#include <fstream>
 #include <functional>
 #include <map>
+#include <optional>
 #include <set>
 #include <sstream>
+#include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -60,12 +76,20 @@
 #include <windows.h>
 #endif
 
+#if defined(__APPLE__)
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 namespace
 {
-		constexpr const char* kPreferredProviderId = provider_build_config::FirstEnabledProviderId();
-		constexpr std::size_t kRecentOutputReplayLimitBytes = 256 * 1024;
-		constexpr std::size_t kMaxClipboardTextBytes = 1024 * 1024;
-		constexpr std::uintmax_t kMaxAttachmentBytes = 25ull * 1024ull * 1024ull;
+	namespace attachment_fields = uam::message_attachment_json;
+	namespace attachment_frontend_fields = uam::message_attachment_json::frontend;
+
+	constexpr const char* kPreferredProviderId = provider_build_config::FirstEnabledProviderId();
+	constexpr std::size_t kRecentOutputReplayLimitBytes = 256 * 1024;
+	constexpr std::size_t kMaxClipboardTextBytes = 1024 * 1024;
+	constexpr std::uintmax_t kMaxAttachmentBytes = 25ull * 1024ull * 1024ull;
 
 	struct AsyncCefResult
 	{
@@ -80,9 +104,14 @@ namespace
 		return {true, 200, body.dump(), ""};
 	}
 
-	AsyncCefResult AsyncFailure(const int status, std::string error)
+	AsyncCefResult AsyncFailure(int status, std::string error)
 	{
 		return {false, status, "", std::move(error)};
+	}
+
+	std::string FailureDetailOrFallback(const std::string& detail, std::string fallback)
+	{
+		return detail.empty() ? std::move(fallback) : detail;
 	}
 
 	nlohmann::json WithOptionalRequestId(nlohmann::json value, const std::string& request_id)
@@ -94,14 +123,32 @@ namespace
 		return value;
 	}
 
-	uam::AppState BuildReadOnlyAppSnapshot(std::filesystem::path data_root, AppSettings settings, std::vector<ChatFolder> folders, std::vector<ProviderProfile> provider_profiles)
-	{
-		uam::AppState snapshot;
+		uam::AppState BuildReadOnlyAppSnapshot(std::filesystem::path data_root, AppSettings settings, std::vector<ChatFolder> folders, std::vector<ProviderProfile> provider_profiles)
+		{
+			uam::AppState snapshot;
 		snapshot.data_root = std::move(data_root);
 		snapshot.settings = std::move(settings);
 		snapshot.folders = std::move(folders);
 		snapshot.provider_profiles = std::move(provider_profiles);
 		return snapshot;
+	}
+
+	struct ReadOnlyAppSnapshotInputs
+	{
+		std::filesystem::path data_root;
+		AppSettings settings;
+		std::vector<ChatFolder> folders;
+		std::vector<ProviderProfile> provider_profiles;
+	};
+
+	ReadOnlyAppSnapshotInputs CaptureReadOnlyAppSnapshotInputs(const uam::AppState& app)
+	{
+		return {app.data_root, app.settings, app.folders, app.provider_profiles};
+	}
+
+	uam::AppState BuildReadOnlyAppSnapshot(ReadOnlyAppSnapshotInputs inputs)
+	{
+		return BuildReadOnlyAppSnapshot(std::move(inputs.data_root), std::move(inputs.settings), std::move(inputs.folders), std::move(inputs.provider_profiles));
 	}
 
 	class CefQueryCallbackTask : public CefTask
@@ -134,30 +181,91 @@ namespace
 		IMPLEMENT_REFCOUNTING(CefQueryCallbackTask);
 	};
 
-	template <typename Worker>
-	void RunAsyncCefQuery(CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, Worker worker)
+	template <typename Worker> void RunAsyncCefQuery(CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, Worker worker)
 	{
-		std::thread([callback = std::move(callback), worker = std::move(worker)]() mutable {
-			AsyncCefResult result;
-			try
-			{
-				result = worker();
-			}
-			catch (const std::exception& ex)
-			{
-				result = AsyncFailure(500, ex.what());
-			}
-			catch (...)
-			{
-				result = AsyncFailure(500, "Async bridge request failed.");
-			}
-			CefPostTask(TID_UI, new CefQueryCallbackTask(callback, std::move(result)));
-		}).detach();
+		std::thread(
+		    [callback = std::move(callback), worker = std::move(worker)]() mutable
+		    {
+			    AsyncCefResult result;
+			    try
+			    {
+				    result = worker();
+			    }
+			    catch (const std::exception& ex)
+			    {
+				    result = AsyncFailure(500, ex.what());
+			    }
+			    catch (...)
+			    {
+				    // Detached CEF workers must translate non-standard exceptions into callback failures.
+				    result = AsyncFailure(500, "Async bridge request failed.");
+			    }
+			    CefPostTask(TID_UI, new CefQueryCallbackTask(callback, std::move(result)));
+		    })
+		    .detach();
+	}
+
+	ChatSession* FindChatOrFail(uam::AppState& app, const std::string& chat_id, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb, const std::string& not_found_message, int status_code = 404)
+	{
+		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+
+		if (chat == nullptr)
+		{
+			cb->Failure(status_code, not_found_message);
+			return nullptr;
+		}
+
+		return chat;
+	}
+
+	ChatSession* FindPayloadChatOrFail(uam::AppState& app, const nlohmann::json& payload, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb)
+	{
+		const std::string chat_id = payload.value("chatId", "");
+		return FindChatOrFail(app, chat_id, cb, "Chat not found.");
+	}
+
+	bool ChatProviderAvailableOrFail(const uam::AppState& app, const ChatSession& chat, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb)
+	{
+		if (ProviderResolutionService().ChatProviderIsAvailable(app, chat))
+		{
+			return true;
+		}
+
+		cb->Failure(409, ProviderResolutionService().ChatProviderUnavailableReason(app, chat));
+		return false;
+	}
+
+	bool AutoApprovePendingAcpPermissionOrFail(uam::AppState& app, const std::string& chat_id, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb)
+	{
+		std::string acp_error;
+		if (uam::TryAutoApprovePendingAcpPermission(app, chat_id, &acp_error) || acp_error.empty())
+		{
+			return true;
+		}
+
+		cb->Failure(409, acp_error);
+		return false;
+	}
+
+	void RollbackCreatedChat(uam::AppState& app, const std::string& chat_id, const std::string& previous_selected_chat_id, bool delete_storage)
+	{
+		const int chat_index = ChatDomainService().FindChatIndexById(app, chat_id);
+		if (chat_index >= 0)
+		{
+			app.chats.erase(app.chats.begin() + chat_index);
+		}
+
+		if (delete_storage)
+		{
+			ChatRepository::DeleteChatStorageFiles(app.data_root, chat_id);
+		}
+
+		ChatDomainService().SelectChatById(app, previous_selected_chat_id);
 	}
 
 	int FolderFailureCode(const std::string& status_line)
 	{
-		if (status_line.find("no longer exists") != std::string::npos || status_line.find("not found") != std::string::npos)
+		if (uam::strings::ContainsAny(status_line, {"no longer exists", "not found"}))
 		{
 			return 404;
 		}
@@ -186,561 +294,489 @@ namespace
 		return nullptr;
 	}
 
-		bool IsSafeAcpToken(const std::string& value)
-		{
-			if (value.empty() || value.size() > 160 || value.front() == '-')
-			{
-				return false;
-			}
-			for (const char ch : value)
-			{
-				const bool safe =
-				    (ch >= 'a' && ch <= 'z') ||
-				    (ch >= 'A' && ch <= 'Z') ||
-				    (ch >= '0' && ch <= '9') ||
-				    ch == '.' ||
-				    ch == '_' ||
-				    ch == '-' ||
-				    ch == ':' ||
-				    ch == '/';
-				if (!safe)
-				{
-					return false;
-				}
-			}
-			return true;
-		}
-
-		bool IsAllowedAcpModelId(const std::string& model_id)
-		{
-			return model_id.empty() || IsSafeAcpToken(model_id);
-		}
-
-		std::string NormalizeAcpApprovalMode(const std::string& mode_id)
-		{
-			const std::string trimmed = Trim(mode_id);
-			return trimmed.empty() || trimmed == "yolo" ? "default" : trimmed;
-		}
-
-		bool IsAllowedAcpApprovalMode(const std::string& mode_id)
-		{
-			return mode_id == "default" || mode_id == "acceptEdits" || mode_id == "plan";
-		}
-
-		std::string NormalizeCodexReasoningEffort(const std::string& value)
-		{
-			const std::string lowered = ToLowerAscii(Trim(value));
-			if (lowered == "none" ||
-			    lowered == "minimal" ||
-			    lowered == "low" ||
-			    lowered == "medium" ||
-			    lowered == "high" ||
-			    lowered == "xhigh")
-			{
-				return lowered;
-			}
-			return "";
-		}
-
-		std::string NormalizeCodexServiceTier(const std::string& value)
-		{
-			const std::string lowered = ToLowerAscii(Trim(value));
-			if (lowered == "fast" || lowered == "flex")
-			{
-				return lowered;
-			}
-			return "";
-		}
-
-		ProviderChatDefaults DefaultsFromPayload(const nlohmann::json& value, const ProviderChatDefaults& fallback)
-		{
-			ProviderChatDefaults defaults = fallback;
-			if (!value.is_object())
-			{
-				return defaults;
-			}
-			defaults.model_id = Trim(value.value("modelId", defaults.model_id));
-			if (!IsAllowedAcpModelId(defaults.model_id))
-			{
-				defaults.model_id.clear();
-			}
-			defaults.approval_mode = NormalizeAcpApprovalMode(value.value("approvalMode", defaults.approval_mode));
-			if (!IsAllowedAcpApprovalMode(defaults.approval_mode))
-			{
-				defaults.approval_mode = "default";
-			}
-			if (value.contains("autoApproveCommands") && value["autoApproveCommands"].is_boolean())
-			{
-				defaults.auto_approve_commands = value["autoApproveCommands"].get<bool>();
-			}
-			if (value.contains("memoryEnabled") && value["memoryEnabled"].is_boolean())
-			{
-				defaults.memory_enabled = value["memoryEnabled"].get<bool>();
-			}
-			defaults.reasoning_effort = NormalizeCodexReasoningEffort(value.value("reasoningEffort", defaults.reasoning_effort));
-			defaults.service_tier = NormalizeCodexServiceTier(value.value("serviceTier", defaults.service_tier));
-			return defaults;
-		}
-
-		ProviderChatDefaults DefaultsForProvider(const AppSettings& settings, const std::string& provider_id)
-		{
-			if (const auto found = settings.provider_chat_defaults.find(provider_id); found != settings.provider_chat_defaults.end())
-			{
-				ProviderChatDefaults defaults = found->second;
-				defaults.approval_mode = NormalizeAcpApprovalMode(defaults.approval_mode);
-				if (!IsAllowedAcpApprovalMode(defaults.approval_mode))
-				{
-					defaults.approval_mode = "default";
-				}
-				if (!IsAllowedAcpModelId(defaults.model_id))
-				{
-					defaults.model_id.clear();
-				}
-				defaults.reasoning_effort = NormalizeCodexReasoningEffort(defaults.reasoning_effort);
-				defaults.service_tier = NormalizeCodexServiceTier(defaults.service_tier);
-				return defaults;
-			}
-			return ProviderChatDefaults{"", "default", false, settings.memory_enabled_default, "", ""};
-		}
-
-		void ApplyProviderDefaultsToChat(const AppSettings& settings, ChatSession& chat, const nlohmann::json* payload_defaults = nullptr)
-		{
-			ProviderChatDefaults defaults = DefaultsForProvider(settings, chat.provider_id);
-			if (payload_defaults != nullptr)
-			{
-				defaults = DefaultsFromPayload(*payload_defaults, defaults);
-			}
-			if (chat.provider_id != "codex-cli")
-			{
-				defaults.reasoning_effort.clear();
-				defaults.service_tier.clear();
-			}
-			chat.model_id = defaults.model_id;
-			chat.approval_mode = defaults.approval_mode;
-			chat.auto_approve_commands = defaults.auto_approve_commands;
-			chat.memory_enabled = defaults.memory_enabled;
-			chat.reasoning_effort = defaults.reasoning_effort;
-			chat.service_tier = defaults.service_tier;
-		}
-
-		bool AcpSessionBlocksModelChange(const uam::AcpSessionState& session)
+	std::string DefaultNewChatProviderId(const uam::AppState& app, const ProviderProfile* preferred_provider)
 	{
-		return session.processing ||
-		       session.waiting_for_permission ||
-		       session.waiting_for_user_input ||
-		       session.initialize_request_id != 0 ||
-		       session.session_setup_request_id != 0 ||
-		       session.startup_model_request_id != 0 ||
-		       session.prompt_request_id != 0 ||
-		       session.cancel_request_id != 0 ||
-			       !session.queued_prompt.empty();
+		if (!app.settings.default_new_chat_provider_id.empty())
+		{
+			return app.settings.default_new_chat_provider_id;
+		}
+		if (preferred_provider != nullptr)
+		{
+			return preferred_provider->id;
 		}
 
-		std::string LowerAsciiForEditor(std::string value)
+		return app.settings.active_provider_id;
+	}
+
+	std::string ResolveNewChatProviderId(const uam::AppState& app, const std::string& requested_provider_id, const ProviderProfile* preferred_provider)
+	{
+		if (const ProviderProfile* requested_provider = ProviderProfileStore::FindById(app.provider_profiles, requested_provider_id); requested_provider != nullptr)
 		{
-			std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch)
-			{
-				return static_cast<char>(std::tolower(ch));
-			});
-			return value;
+			return requested_provider->id;
+		}
+		if (const ProviderProfile* fallback_provider = ProviderProfileStore::FindById(app.provider_profiles, app.settings.default_new_chat_provider_id); fallback_provider != nullptr)
+		{
+			return fallback_provider->id;
+		}
+		if (preferred_provider != nullptr)
+		{
+			return preferred_provider->id;
 		}
 
-		std::string NormalizeFileExtension(std::string value)
+		return app.settings.active_provider_id;
+	}
+
+	constexpr std::size_t kMaxAcpModelIdLength = 160;
+
+	bool IsSafeAcpModelIdToken(std::string_view value)
+	{
+		if (value.empty() || value.size() > kMaxAcpModelIdLength || value.front() == '-')
 		{
-			value = Trim(value);
-			if (value.empty())
-			{
-				return "";
-			}
-			value = LowerAsciiForEditor(value);
-			if (value.front() != '.')
-			{
-				value.insert(value.begin(), '.');
-			}
-			return value;
-		}
-
-		bool IsKnownEditorPresetId(const std::string& value)
-		{
-			return value == "vscode" ||
-			       value == "xcode" ||
-			       value == "visualstudio" ||
-			       value == "clion" ||
-			       value == "rider" ||
-			       value == "webstorm" ||
-			       value == "pycharm" ||
-			       value == "idea" ||
-			       value == "goland" ||
-			       value == "rustrover";
-		}
-
-		std::vector<EditorFileAssociation> DefaultEditorFileAssociationsForUi()
-		{
-			return {
-			    EditorFileAssociation{"cpp", "C++", {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}, "clion"},
-			    EditorFileAssociation{"csharp", "C#", {".cs", ".csx", ".csproj", ".sln"}, "rider"},
-			    EditorFileAssociation{"python", "Python", {".py", ".pyw", ".ipynb"}, "pycharm"},
-			    EditorFileAssociation{"javascript", "JavaScript", {".js", ".mjs", ".cjs"}, "webstorm"},
-			    EditorFileAssociation{"react-typescript", "React / TypeScript", {".jsx", ".ts", ".tsx", ".mts", ".cts"}, "webstorm"},
-			    EditorFileAssociation{"rust", "Rust", {".rs"}, "rustrover"},
-			    EditorFileAssociation{"go", "Go", {".go"}, "goland"},
-			    EditorFileAssociation{"java-kotlin", "Java / Kotlin", {".java", ".kt", ".kts"}, "idea"},
-			    EditorFileAssociation{"swift-apple", "Swift / Apple", {".swift"}, "xcode"},
-			    EditorFileAssociation{"powershell", "PowerShell", {".ps1", ".psm1", ".psd1"}, "vscode"},
-			    EditorFileAssociation{"shell", "Bash / Shell", {".sh", ".bash", ".zsh", ".fish"}, "vscode"},
-			    EditorFileAssociation{"web-styles", "Web Styles / Templates", {".html", ".css", ".scss", ".sass", ".less"}, "webstorm"},
-			};
-		}
-
-		std::vector<EditorFileAssociation> ParseEditorFileAssociationsPayload(const nlohmann::json& payload)
-		{
-			std::vector<EditorFileAssociation> associations;
-			if (!payload.contains("fileAssociations") || !payload["fileAssociations"].is_array())
-			{
-				return associations;
-			}
-
-			for (const nlohmann::json& item : payload["fileAssociations"])
-			{
-				if (!item.is_object())
-				{
-					continue;
-				}
-
-				EditorFileAssociation association;
-				association.id = Trim(item.value("id", ""));
-				association.name = Trim(item.value("name", ""));
-				association.editor_preset_id = Trim(item.value("editorPresetId", ""));
-				if (!IsKnownEditorPresetId(association.editor_preset_id))
-				{
-					association.editor_preset_id = "vscode";
-				}
-
-				if (item.contains("extensions") && item["extensions"].is_array())
-				{
-					std::set<std::string> seen_extensions;
-					for (const nlohmann::json& extension_json : item["extensions"])
-					{
-						if (!extension_json.is_string())
-						{
-							continue;
-						}
-						const std::string extension = NormalizeFileExtension(extension_json.get<std::string>());
-						if (!extension.empty() && seen_extensions.insert(extension).second)
-						{
-							association.extensions.push_back(extension);
-						}
-					}
-				}
-
-				if (association.id.empty())
-				{
-					association.id = "editor-group-" + std::to_string(associations.size() + 1);
-				}
-				if (association.name.empty() || association.extensions.empty())
-				{
-					continue;
-				}
-				associations.push_back(std::move(association));
-			}
-
-			return associations;
-		}
-
-		bool ShouldSkipEditorScanDirectory(const std::filesystem::path& path)
-		{
-			const std::string name = path.filename().string();
-			return name == ".git" ||
-			       name == "node_modules" ||
-			       name == "Builds" ||
-			       name == "build" ||
-			       name == "dist" ||
-			       name == "out" ||
-			       name == ".venv" ||
-			       name == "venv" ||
-			       name.rfind("cmake-build-", 0) == 0;
-		}
-
-		std::string SelectEditorPresetForWorkspace(const AppSettings& settings, const std::filesystem::path& workspace_root)
-		{
-			std::set<std::string> found_extensions;
-			std::error_code ec;
-			std::size_t visited_files = 0;
-			std::filesystem::recursive_directory_iterator it(workspace_root, std::filesystem::directory_options::skip_permission_denied, ec);
-			const std::filesystem::recursive_directory_iterator end;
-			while (!ec && it != end && visited_files < 5000)
-			{
-				const std::filesystem::directory_entry entry = *it;
-				if (entry.is_directory(ec) && ShouldSkipEditorScanDirectory(entry.path()))
-				{
-					it.disable_recursion_pending();
-				}
-				else if (entry.is_regular_file(ec))
-				{
-					++visited_files;
-					const std::string extension = NormalizeFileExtension(entry.path().extension().string());
-					if (!extension.empty())
-					{
-						found_extensions.insert(extension);
-					}
-				}
-				it.increment(ec);
-			}
-
-			for (const EditorFileAssociation& association : settings.editor_file_associations)
-			{
-				for (const std::string& raw_extension : association.extensions)
-				{
-					if (found_extensions.find(NormalizeFileExtension(raw_extension)) != found_extensions.end())
-					{
-						return IsKnownEditorPresetId(association.editor_preset_id) ? association.editor_preset_id : settings.default_editor_preset_id;
-					}
-				}
-			}
-
-			return IsKnownEditorPresetId(settings.default_editor_preset_id) ? settings.default_editor_preset_id : std::string("vscode");
-		}
-
-		std::string CliVersionProviderFromPayloadOrSelection(const uam::AppState& app, const nlohmann::json& payload)
-		{
-			const std::string requested = Trim(payload.value("providerId", ""));
-			if (requested == "codex-cli" || requested == "gemini-cli" || requested == "opencode-cli" || requested == "copilot-cli")
-			{
-				return requested;
-			}
-
-			if (const ChatSession* selected_chat = ChatDomainService().SelectedChat(app); selected_chat != nullptr)
-			{
-				const std::string selected_provider_id = Trim(selected_chat->provider_id);
-				if (selected_provider_id == "codex-cli" || selected_provider_id == "gemini-cli" || selected_provider_id == "opencode-cli" || selected_provider_id == "copilot-cli")
-				{
-					return selected_provider_id;
-				}
-			}
-
-			if (Trim(app.settings.active_provider_id) == "opencode-cli" || Trim(app.settings.active_provider_id) == "copilot-cli")
-			{
-				return Trim(app.settings.active_provider_id);
-			}
-			return Trim(app.settings.active_provider_id) == "codex-cli" ? "codex-cli" : "gemini-cli";
-		}
-
-#if defined(_WIN32)
-		std::wstring WideFromUtf8(const std::string& value)
-		{
-			if (value.empty())
-			{
-				return std::wstring();
-			}
-			const int wide_len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), nullptr, 0);
-			if (wide_len <= 0)
-			{
-				return std::wstring();
-			}
-			std::wstring wide(static_cast<std::size_t>(wide_len), L'\0');
-			if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), wide.data(), wide_len) <= 0)
-			{
-				return std::wstring();
-			}
-			return wide;
-		}
-#endif
-
-		bool WriteNativeClipboardText(const std::string& text, std::string* error_out)
-		{
-#if defined(__APPLE__)
-			FILE* pipe = popen("/usr/bin/pbcopy", "w");
-			if (pipe == nullptr)
-			{
-				if (error_out != nullptr)
-				{
-					*error_out = "Failed to launch pbcopy.";
-				}
-				return false;
-			}
-
-			const std::size_t written = std::fwrite(text.data(), 1, text.size(), pipe);
-			const int status = pclose(pipe);
-			if (written != text.size() || status != 0)
-			{
-				if (error_out != nullptr)
-				{
-					*error_out = "Failed to write clipboard text through pbcopy.";
-				}
-				return false;
-			}
-			return true;
-#elif defined(_WIN32)
-			const std::wstring wide = WideFromUtf8(text);
-			if (wide.empty() && !text.empty())
-			{
-				if (error_out != nullptr)
-				{
-					*error_out = "Clipboard text is not valid UTF-8.";
-				}
-				return false;
-			}
-			if (!OpenClipboard(nullptr))
-			{
-				if (error_out != nullptr)
-				{
-					*error_out = "Failed to open the Windows clipboard.";
-				}
-				return false;
-			}
-
-			if (!EmptyClipboard())
-			{
-				CloseClipboard();
-				if (error_out != nullptr)
-				{
-					*error_out = "Failed to clear the Windows clipboard.";
-				}
-				return false;
-			}
-
-			const SIZE_T bytes = (wide.size() + 1) * sizeof(wchar_t);
-			HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
-			if (memory == nullptr)
-			{
-				CloseClipboard();
-				if (error_out != nullptr)
-				{
-					*error_out = "Failed to allocate Windows clipboard memory.";
-				}
-				return false;
-			}
-
-			void* locked = GlobalLock(memory);
-			if (locked == nullptr)
-			{
-				GlobalFree(memory);
-				CloseClipboard();
-				if (error_out != nullptr)
-				{
-					*error_out = "Failed to lock Windows clipboard memory.";
-				}
-				return false;
-			}
-			std::memcpy(locked, wide.c_str(), bytes);
-			GlobalUnlock(memory);
-
-			if (SetClipboardData(CF_UNICODETEXT, memory) == nullptr)
-			{
-				GlobalFree(memory);
-				CloseClipboard();
-				if (error_out != nullptr)
-				{
-					*error_out = "Failed to set Windows clipboard text.";
-				}
-				return false;
-			}
-			CloseClipboard();
-			return true;
-#else
-			if (error_out != nullptr)
-			{
-				*error_out = "Native clipboard writes are not implemented for this platform.";
-			}
 			return false;
-#endif
 		}
-
-	nlohmann::json SerializeMarkdownStoreEntry(const MarkdownStoreService::Entry& entry)
-	{
-		return {
-			{"id", entry.id},
-			{"title", entry.title},
-			{"maker", entry.maker},
-			{"review", entry.review},
-			{"dateCreated", entry.date_created},
-			{"dateUpdated", entry.date_updated},
-			{"preview", entry.preview},
-			{"filePath", entry.file_path.string()},
-		};
-	}
-
-	static const char kBase64Chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-	std::string Base64Encode(const std::string& input)
-	{
-		std::string out;
-		out.reserve(((input.size() + 2) / 3) * 4);
-
-		std::size_t i = 0;
-		unsigned char buf[3];
-		while (i + 3 <= input.size())
+		for (const char ch : value)
 		{
-			buf[0] = static_cast<unsigned char>(input[i]);
-			buf[1] = static_cast<unsigned char>(input[i + 1]);
-			buf[2] = static_cast<unsigned char>(input[i + 2]);
-			out += kBase64Chars[(buf[0] >> 2) & 0x3F];
-			out += kBase64Chars[((buf[0] & 0x03) << 4) | ((buf[1] >> 4) & 0x0F)];
-			out += kBase64Chars[((buf[1] & 0x0F) << 2) | ((buf[2] >> 6) & 0x03)];
-			out += kBase64Chars[buf[2] & 0x3F];
-			i += 3;
-		}
-
-		const std::size_t remaining = input.size() - i;
-		if (remaining == 1)
-		{
-			buf[0] = static_cast<unsigned char>(input[i]);
-			out += kBase64Chars[(buf[0] >> 2) & 0x3F];
-			out += kBase64Chars[(buf[0] & 0x03) << 4];
-			out += "==";
-		}
-		else if (remaining == 2)
-		{
-			buf[0] = static_cast<unsigned char>(input[i]);
-			buf[1] = static_cast<unsigned char>(input[i + 1]);
-			out += kBase64Chars[(buf[0] >> 2) & 0x3F];
-			out += kBase64Chars[((buf[0] & 0x03) << 4) | ((buf[1] >> 4) & 0x0F)];
-			out += kBase64Chars[(buf[1] & 0x0F) << 2];
-			out += '=';
-		}
-
-		return out;
-	}
-
-	int Base64Value(const char ch)
-	{
-		if (ch >= 'A' && ch <= 'Z') return ch - 'A';
-		if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
-		if (ch >= '0' && ch <= '9') return ch - '0' + 52;
-		if (ch == '+') return 62;
-		if (ch == '/') return 63;
-		return -1;
-	}
-
-	bool Base64Decode(const std::string& input, std::string& out)
-	{
-		out.clear();
-		int value = 0;
-		int bits = -8;
-		for (const char ch : input)
-		{
-			if (std::isspace(static_cast<unsigned char>(ch)))
-			{
-				continue;
-			}
-			if (ch == '=')
-			{
-				break;
-			}
-			const int decoded = Base64Value(ch);
-			if (decoded < 0)
+			const bool safe = uam::strings::IsAsciiAlnum(static_cast<unsigned char>(ch)) || ch == '.' || ch == '_' || ch == '-' || ch == ':' || ch == '/';
+			if (!safe)
 			{
 				return false;
-			}
-			value = (value << 6) + decoded;
-			bits += 6;
-			if (bits >= 0)
-			{
-				out.push_back(static_cast<char>((value >> bits) & 0xFF));
-				bits -= 8;
 			}
 		}
 		return true;
+	}
+
+	bool IsAllowedAcpModelId(std::string_view model_id)
+	{
+		return model_id.empty() || IsSafeAcpModelIdToken(model_id);
+	}
+
+	ProviderChatDefaults NormalizeProviderChatDefaultsForRuntime(ProviderChatDefaults defaults)
+	{
+		defaults.model_id = uam::strings::Trim(defaults.model_id);
+		if (!IsAllowedAcpModelId(defaults.model_id))
+		{
+			defaults.model_id.clear();
+		}
+
+		defaults.approval_mode = uam::approval_modes::NormalizeIncomingApprovalModeId(defaults.approval_mode);
+		if (!uam::approval_modes::IsAppApprovalMode(defaults.approval_mode))
+		{
+			defaults.approval_mode = uam::approval_modes::kDefaultApprovalMode;
+		}
+
+		defaults.reasoning_effort = uam::codex::NormalizeReasoningEffort(defaults.reasoning_effort);
+		defaults.service_tier = uam::codex::NormalizeServiceTier(defaults.service_tier);
+		return defaults;
+	}
+
+	ProviderChatDefaults DefaultsFromPayload(const nlohmann::json& value, const ProviderChatDefaults& fallback)
+	{
+		ProviderChatDefaults defaults = fallback;
+		if (!value.is_object())
+		{
+			return NormalizeProviderChatDefaultsForRuntime(defaults);
+		}
+		defaults.model_id = uam::nlohmann_json::TrimmedStringValueOr(value, "modelId", defaults.model_id);
+		defaults.approval_mode = uam::nlohmann_json::TrimmedStringValueOr(value, "approvalMode", defaults.approval_mode);
+		if (const std::optional<bool> auto_approve_commands = uam::nlohmann_json::BoolFieldStrict(value, "autoApproveCommands"))
+		{
+			defaults.auto_approve_commands = *auto_approve_commands;
+		}
+		if (const std::optional<bool> memory_enabled = uam::nlohmann_json::BoolFieldStrict(value, "memoryEnabled"))
+		{
+			defaults.memory_enabled = *memory_enabled;
+		}
+		defaults.reasoning_effort = uam::nlohmann_json::TrimmedStringValueOr(value, "reasoningEffort", defaults.reasoning_effort);
+		defaults.service_tier = uam::nlohmann_json::TrimmedStringValueOr(value, "serviceTier", defaults.service_tier);
+		return NormalizeProviderChatDefaultsForRuntime(defaults);
+	}
+
+	ProviderChatDefaults DefaultsForProvider(const AppSettings& settings, const std::string& provider_id)
+	{
+		const std::string normalized_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
+		const auto found = settings.provider_chat_defaults.find(normalized_provider_id);
+		if (found != settings.provider_chat_defaults.end())
+		{
+			return NormalizeProviderChatDefaultsForRuntime(found->second);
+		}
+		return ProviderChatDefaults{"", uam::approval_modes::kDefaultApprovalMode, false, settings.memory_enabled_default, "", ""};
+	}
+
+	void ApplyProviderDefaultsToChat(const AppSettings& settings, ChatSession& chat, const nlohmann::json* payload_defaults = nullptr)
+	{
+		ProviderChatDefaults defaults = DefaultsForProvider(settings, chat.provider_id);
+		if (payload_defaults != nullptr)
+		{
+			defaults = DefaultsFromPayload(*payload_defaults, defaults);
+		}
+		if (!uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kCodexCli))
+		{
+			defaults.reasoning_effort.clear();
+			defaults.service_tier.clear();
+		}
+		chat.model_id = defaults.model_id;
+		chat.approval_mode = defaults.approval_mode;
+		chat.auto_approve_commands = defaults.auto_approve_commands;
+		chat.memory_enabled = defaults.memory_enabled;
+		chat.reasoning_effort = defaults.reasoning_effort;
+		chat.service_tier = defaults.service_tier;
+	}
+
+	bool AcpSessionBlocksModelChange(const uam::AcpSessionState& session)
+	{
+		return uam::AcpSessionHasBlockingRuntimeWork(session);
+	}
+
+	std::vector<EditorFileAssociation> ParseEditorFileAssociationsPayload(const nlohmann::json& payload)
+	{
+		std::vector<EditorFileAssociation> associations;
+		const nlohmann::json* file_associations = uam::nlohmann_json::FindArrayField(payload, "fileAssociations");
+		if (file_associations == nullptr)
+		{
+			return associations;
+		}
+
+		for (const nlohmann::json& item : *file_associations)
+		{
+			if (!item.is_object())
+			{
+				continue;
+			}
+
+			EditorFileAssociation association;
+			association.id = uam::nlohmann_json::TrimmedStringValue(item, {"id"});
+			association.name = uam::nlohmann_json::TrimmedStringValue(item, {"name"});
+			if (association.id.empty())
+			{
+				association.id = "editor-group-" + std::to_string(associations.size() + 1);
+			}
+			association.editor_preset_id = uam::nlohmann_json::TrimmedStringValue(item, {"editorPresetId"});
+			association.extensions = uam::nlohmann_json::StringArrayField(item, "extensions");
+
+			std::optional<EditorFileAssociation> normalized_association = uam::editor_file_associations::NormalizeEditorFileAssociation(std::move(association));
+			if (!normalized_association)
+			{
+				continue;
+			}
+			associations.push_back(std::move(*normalized_association));
+		}
+
+		return associations;
+	}
+
+	bool ShouldSkipEditorScanDirectory(const std::filesystem::path& path)
+	{
+		static constexpr std::array<std::string_view, 8> kIgnoredDirectoryNames = {
+		    ".git", "node_modules", "Builds", "build", "dist", "out", ".venv", "venv",
+		};
+
+		const std::string name = path.filename().string();
+		return uam::ranges::Contains(kIgnoredDirectoryNames, std::string_view(name)) || uam::strings::StartsWith(name, "cmake-build-");
+	}
+
+	std::string SelectEditorPresetForWorkspace(const AppSettings& settings, const std::filesystem::path& workspace_root)
+	{
+		constexpr std::size_t kMaxEditorPresetScanFiles = 5000;
+		std::set<std::string> found_extensions;
+		std::error_code ec;
+		std::size_t visited_files = 0;
+		std::filesystem::recursive_directory_iterator it(workspace_root, std::filesystem::directory_options::skip_permission_denied, ec);
+		const std::filesystem::recursive_directory_iterator end;
+		while (!ec && it != end && visited_files < kMaxEditorPresetScanFiles)
+		{
+			const std::filesystem::directory_entry entry = *it;
+			if (entry.is_directory(ec) && ShouldSkipEditorScanDirectory(entry.path()))
+			{
+				it.disable_recursion_pending();
+			}
+			else if (entry.is_regular_file(ec))
+			{
+				++visited_files;
+				const std::string extension = uam::editor_file_associations::NormalizeFileExtension(entry.path().extension().string());
+				if (!extension.empty())
+				{
+					found_extensions.insert(extension);
+				}
+			}
+			it.increment(ec);
+		}
+
+		for (const EditorFileAssociation& association : settings.editor_file_associations)
+		{
+			for (const std::string& raw_extension : association.extensions)
+			{
+				if (found_extensions.contains(uam::editor_file_associations::NormalizeFileExtension(raw_extension)))
+				{
+					return uam::editor_file_associations::NormalizeEditorPresetId(association.editor_preset_id, settings.default_editor_preset_id);
+				}
+			}
+		}
+
+		return uam::editor_file_associations::NormalizeEditorPresetId(settings.default_editor_preset_id);
+	}
+
+	std::string NormalizeCliVersionProviderId(std::string_view provider_id)
+	{
+		const std::string normalized = uam::provider_ids::NormalizeCliProviderAlias(provider_id);
+		return uam::provider_ids::IsVersionManagedCliProviderId(normalized) ? normalized : std::string{};
+	}
+
+	std::string FallbackCliVersionProviderId(const std::string& active_provider_id)
+	{
+		return uam::provider_ids::NormalizeVersionManagedCliProviderId(active_provider_id);
+	}
+
+	std::string CliVersionProviderFromPayloadOrSelection(const uam::AppState& app, const nlohmann::json& payload)
+	{
+		const std::string requested = NormalizeCliVersionProviderId(uam::nlohmann_json::TrimmedStringValue(payload, {"providerId"}));
+		if (!requested.empty())
+		{
+			return requested;
+		}
+
+		const std::string selected_provider_id = NormalizeCliVersionProviderId(ChatDomainService().SelectedChatProviderId(app));
+		if (!selected_provider_id.empty())
+		{
+			return selected_provider_id;
+		}
+
+		return FallbackCliVersionProviderId(app.settings.active_provider_id);
+	}
+
+#if defined(_WIN32)
+	std::wstring WideFromUtf8(const std::string& value)
+	{
+		if (value.empty())
+		{
+			return std::wstring();
+		}
+		const int wide_len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), nullptr, 0);
+		if (wide_len <= 0)
+		{
+			return std::wstring();
+		}
+		std::wstring wide(static_cast<std::size_t>(wide_len), L'\0');
+		if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), wide.data(), wide_len) <= 0)
+		{
+			return std::wstring();
+		}
+		return wide;
+	}
+#endif
+
+#if defined(__APPLE__)
+	bool WriteAllToFileDescriptor(int fd, const std::string& text, std::string* error_out)
+	{
+		std::size_t offset = 0;
+		while (offset < text.size())
+		{
+			const ssize_t written = write(fd, text.data() + offset, text.size() - offset);
+			if (written > 0)
+			{
+				offset += static_cast<std::size_t>(written);
+				continue;
+			}
+
+			if (written < 0 && errno == EINTR)
+			{
+				continue;
+			}
+
+			if (error_out != nullptr)
+			{
+				*error_out = written == 0 ? "Failed to write clipboard text: write made no progress." : "Failed to write clipboard text: " + std::string(std::strerror(errno)) + ".";
+			}
+			return false;
+		}
+
+		return true;
+	}
+
+	bool WaitForClipboardProcess(const pid_t pid, std::string* error_out)
+	{
+		int status = 0;
+		while (waitpid(pid, &status, 0) < 0)
+		{
+			if (errno == EINTR)
+			{
+				continue;
+			}
+
+			if (error_out != nullptr)
+			{
+				*error_out = "Failed waiting for pbcopy: " + std::string(std::strerror(errno)) + ".";
+			}
+			return false;
+		}
+
+		if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+		{
+			return true;
+		}
+
+		if (error_out != nullptr)
+		{
+			if (WIFEXITED(status))
+			{
+				*error_out = "pbcopy exited with status " + std::to_string(WEXITSTATUS(status)) + ".";
+			}
+			else if (WIFSIGNALED(status))
+			{
+				*error_out = "pbcopy terminated by signal " + std::to_string(WTERMSIG(status)) + ".";
+			}
+			else
+			{
+				*error_out = "pbcopy ended without a normal exit status.";
+			}
+		}
+
+		return false;
+	}
+#endif
+
+	bool WriteNativeClipboardText(const std::string& text, std::string* error_out)
+	{
+#if defined(__APPLE__)
+		int stdin_pipe[2] = {-1, -1};
+		if (pipe(stdin_pipe) != 0)
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Failed to create pbcopy pipe: " + std::string(std::strerror(errno)) + ".";
+			}
+			return false;
+		}
+
+		const pid_t pid = fork();
+		if (pid < 0)
+		{
+			close(stdin_pipe[0]);
+			close(stdin_pipe[1]);
+			if (error_out != nullptr)
+			{
+				*error_out = "Failed to launch pbcopy: " + std::string(std::strerror(errno)) + ".";
+			}
+			return false;
+		}
+
+		if (pid == 0)
+		{
+			close(stdin_pipe[1]);
+			if (dup2(stdin_pipe[0], STDIN_FILENO) < 0)
+			{
+				_exit(126);
+			}
+			close(stdin_pipe[0]);
+			execl("/usr/bin/pbcopy", "pbcopy", static_cast<char*>(nullptr));
+			_exit(127);
+		}
+
+		close(stdin_pipe[0]);
+		std::string write_error;
+		const bool write_ok = WriteAllToFileDescriptor(stdin_pipe[1], text, &write_error);
+		close(stdin_pipe[1]);
+
+		std::string wait_error;
+		const bool wait_ok = WaitForClipboardProcess(pid, &wait_error);
+
+		if (!write_ok || !wait_ok)
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = !write_ok ? write_error : wait_error;
+			}
+			return false;
+		}
+
+		return true;
+#elif defined(_WIN32)
+		const std::wstring wide = WideFromUtf8(text);
+		if (wide.empty() && !text.empty())
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Clipboard text is not valid UTF-8.";
+			}
+			return false;
+		}
+		if (!OpenClipboard(nullptr))
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Failed to open the Windows clipboard.";
+			}
+			return false;
+		}
+
+		if (!EmptyClipboard())
+		{
+			CloseClipboard();
+			if (error_out != nullptr)
+			{
+				*error_out = "Failed to clear the Windows clipboard.";
+			}
+			return false;
+		}
+
+		const SIZE_T bytes = (wide.size() + 1) * sizeof(wchar_t);
+		HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+		if (memory == nullptr)
+		{
+			CloseClipboard();
+			if (error_out != nullptr)
+			{
+				*error_out = "Failed to allocate Windows clipboard memory.";
+			}
+			return false;
+		}
+
+		void* locked = GlobalLock(memory);
+		if (locked == nullptr)
+		{
+			GlobalFree(memory);
+			CloseClipboard();
+			if (error_out != nullptr)
+			{
+				*error_out = "Failed to lock Windows clipboard memory.";
+			}
+			return false;
+		}
+		std::memcpy(locked, wide.c_str(), bytes);
+		GlobalUnlock(memory);
+
+		if (SetClipboardData(CF_UNICODETEXT, memory) == nullptr)
+		{
+			GlobalFree(memory);
+			CloseClipboard();
+			if (error_out != nullptr)
+			{
+				*error_out = "Failed to set Windows clipboard text.";
+			}
+			return false;
+		}
+		CloseClipboard();
+		return true;
+#else
+		if (error_out != nullptr)
+		{
+			*error_out = "Native clipboard writes are not implemented for this platform.";
+		}
+		return false;
+#endif
+	}
+
+	nlohmann::json SerializeMarkdownStoreEntry(const MarkdownStoreService::Entry& entry)
+	{
+		nlohmann::json entry_json;
+		entry_json["id"] = entry.id;
+		entry_json["title"] = entry.title;
+		entry_json["maker"] = entry.maker;
+		entry_json["review"] = entry.review;
+		entry_json["dateCreated"] = entry.date_created;
+		entry_json["dateUpdated"] = entry.date_updated;
+		entry_json["preview"] = entry.preview;
+		entry_json["filePath"] = entry.file_path.string();
+		return entry_json;
 	}
 
 	std::string SafeAttachmentName(std::string value, const std::string& fallback)
@@ -749,7 +785,7 @@ namespace
 		out.reserve(value.size());
 		for (const unsigned char ch : value)
 		{
-			if (std::isalnum(ch) || ch == '.' || ch == '-' || ch == '_')
+			if (uam::strings::IsAsciiAlnum(ch) || ch == '.' || ch == '-' || ch == '_')
 			{
 				out.push_back(static_cast<char>(ch));
 			}
@@ -767,64 +803,73 @@ namespace
 
 	std::string AttachmentId()
 	{
-		const auto ticks = std::chrono::system_clock::now().time_since_epoch().count();
-		return "att-" + std::to_string(ticks);
+		return "att-" + uam::time::SystemEpochMicrosecondsTokenNow();
 	}
 
 	std::string PathForPrompt(const std::filesystem::path& workspace_root, const std::filesystem::path& path)
 	{
-		std::error_code ec;
-		const std::filesystem::path absolute_path = std::filesystem::absolute(path, ec);
-		const std::filesystem::path final_path = ec ? path : absolute_path;
-		if (!workspace_root.empty())
+		const std::filesystem::path final_path = uam::paths::AbsolutePathNoThrow(path);
+		if (const std::optional<std::filesystem::path> relative = uam::paths::RelativePathIfInsideRoot(workspace_root, final_path))
 		{
-			const std::filesystem::path relative = std::filesystem::relative(final_path, workspace_root, ec);
-			if (!ec && !relative.empty() && relative.native().find("..") != 0)
-			{
-				return relative.generic_string();
-			}
+			return uam::paths::PortablePathString(*relative);
 		}
-		return final_path.generic_string();
+		return uam::paths::PortablePathString(final_path);
 	}
 
 	nlohmann::json AttachmentToJson(const MessageAttachment& attachment)
 	{
 		return {
-			{"id", attachment.id},
-			{"name", attachment.name},
-			{"kind", attachment.kind},
-			{"type", attachment.mime_type},
-			{"path", attachment.path},
-			{"size", attachment.size_bytes},
-			{"copied", attachment.copied},
+		    {std::string(attachment_fields::kIdField), attachment.id},
+		    {std::string(attachment_fields::kNameField), attachment.name},
+		    {std::string(attachment_fields::kKindField), attachment.kind},
+		    {std::string(attachment_frontend_fields::kMimeTypeField), attachment.mime_type},
+		    {std::string(attachment_fields::kPathField), attachment.path},
+		    {std::string(attachment_frontend_fields::kSizeBytesField), attachment.size_bytes},
+		    {std::string(attachment_fields::kCopiedField), attachment.copied},
 		};
+	}
+
+	std::string NormalizeStagedAttachmentKind(std::string_view requested_kind)
+	{
+		requested_kind = uam::strings::TrimAsciiView(requested_kind);
+		if (requested_kind == attachment_frontend_fields::kDirectoryKind)
+		{
+			return std::string(attachment_frontend_fields::kDirectoryKind);
+		}
+		if (requested_kind == attachment_frontend_fields::kImageKind)
+		{
+			return std::string(attachment_frontend_fields::kImageKind);
+		}
+
+		return std::string(attachment_frontend_fields::kFileKind);
 	}
 
 	std::vector<MessageAttachment> ParseStagedAttachments(const nlohmann::json& payload)
 	{
 		std::vector<MessageAttachment> attachments;
-		if (!payload.contains("attachments") || !payload["attachments"].is_array())
+		const nlohmann::json* attachment_items = uam::nlohmann_json::FindArrayField(payload, attachment_frontend_fields::kAttachmentsField);
+		if (attachment_items == nullptr)
 		{
 			return attachments;
 		}
-		for (const nlohmann::json& item : payload["attachments"])
+		for (const nlohmann::json& item : *attachment_items)
 		{
 			if (!item.is_object())
 			{
 				continue;
 			}
 			MessageAttachment attachment;
-			attachment.id = item.value("id", "");
-			attachment.name = item.value("name", "");
-			attachment.kind = item.value("kind", item.value("type", "file"));
-			attachment.mime_type = item.value("mimeType", item.value("type", ""));
-			if (attachment.kind == attachment.mime_type || attachment.kind.find('/') != std::string::npos)
+			attachment.id = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kIdField});
+			attachment.name = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kNameField});
+			attachment.kind = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kKindField, attachment_frontend_fields::kMimeTypeField});
+			attachment.mime_type = uam::nlohmann_json::TrimmedStringValue(item, {attachment_frontend_fields::kMimeTypeInputField, attachment_frontend_fields::kMimeTypeField});
+			if (attachment.kind == attachment.mime_type || uam::strings::Contains(attachment.kind, '/'))
 			{
-				attachment.kind = item.value("kind", "file");
+				attachment.kind = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kKindField});
 			}
-			attachment.path = item.value("path", "");
-			attachment.size_bytes = item.value("size", static_cast<std::uintmax_t>(0));
-			attachment.copied = item.value("copied", false);
+			attachment.path = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kPathField});
+			attachment.size_bytes = item.value(std::string(attachment_frontend_fields::kSizeBytesField), static_cast<std::uintmax_t>(0));
+			attachment.copied = item.value(std::string(attachment_fields::kCopiedField), false);
 			if (attachment.path.empty())
 			{
 				continue;
@@ -846,15 +891,9 @@ namespace
 		return attachments;
 	}
 
-	std::string LowerAscii(std::string value)
-	{
-		std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-		return value;
-	}
-
 	std::vector<std::string> SearchTokens(const std::string& query)
 	{
-		std::istringstream in(LowerAscii(Trim(query)));
+		std::istringstream in(uam::strings::ToLowerAscii(uam::strings::Trim(query)));
 		std::vector<std::string> tokens;
 		std::string token;
 		while (in >> token)
@@ -866,11 +905,11 @@ namespace
 
 	uam::CliTerminalState* FindCliTerminalByRoutingKey(uam::AppState& app, const std::string& chat_id, const std::string& terminal_id)
 	{
-		if (!terminal_id.empty())
+		if (!uam::strings::IsBlank(terminal_id))
 		{
 			for (auto& term : app.cli_terminals)
 			{
-				if (term && term->terminal_id == terminal_id)
+				if (term && uam::CliTerminalMatchesTerminalId(*term, terminal_id))
 				{
 					return term.get();
 				}
@@ -881,7 +920,7 @@ namespace
 		{
 			for (auto& term : app.cli_terminals)
 			{
-				if (term && CliTerminalMatchesChatId(*term, chat_id))
+				if (term && uam::CliTerminalMatchesChatId(*term, chat_id))
 				{
 					return term.get();
 				}
@@ -893,7 +932,7 @@ namespace
 
 	bool CliInputLooksLikeTurnSubmit(const std::string& data)
 	{
-		return data.find('\r') != std::string::npos || data.find('\n') != std::string::npos;
+		return uam::strings::Contains(data, '\r') || uam::strings::Contains(data, '\n');
 	}
 
 	nlohmann::json BuildCliBindingResponse(const uam::CliTerminalState& terminal)
@@ -901,16 +940,16 @@ namespace
 		nlohmann::json data;
 		data["terminalId"] = terminal.terminal_id;
 		data["sessionId"] = terminal.frontend_chat_id;
-		data["sourceChatId"] = CliTerminalPrimaryChatId(terminal);
+		data["sourceChatId"] = uam::CliTerminalPrimaryChatId(terminal);
 		data["running"] = terminal.running;
-		data["lifecycleState"] = CliTerminalLifecycleStateLabel(terminal);
-		data["turnState"] = CliTerminalLifecycleIsProcessing(terminal) ? "busy" : "idle";
+		data["lifecycleState"] = uam::CliTerminalLifecycleStateLabel(terminal);
+		data["turnState"] = uam::CliTerminalLifecycleIsProcessing(terminal) ? "busy" : "idle";
 		data["lastError"] = terminal.last_error;
 
 		if (!terminal.recent_output_bytes.empty())
 		{
 			const std::size_t start_offset = terminal.recent_output_bytes.size() > kRecentOutputReplayLimitBytes ? terminal.recent_output_bytes.size() - kRecentOutputReplayLimitBytes : 0;
-			data["replayData"] = Base64Encode(terminal.recent_output_bytes.substr(start_offset));
+			data["replayData"] = uam::base64::Encode(terminal.recent_output_bytes.substr(start_offset));
 		}
 
 		return data;
@@ -918,20 +957,20 @@ namespace
 
 	nlohmann::json SerializeGitWorktreeStatus(const uam::GitWorktreeStatus& status)
 	{
-		return {
-			{"isGitRepository", status.is_git_repository},
-			{"isSvnWorkspace", status.is_svn_workspace},
-			{"isolated", status.isolated},
-			{"sourceDirty", status.source_dirty},
-			{"worktreeDirty", status.worktree_dirty},
-			{"worktreeMissing", status.worktree_missing},
-			{"sourceDirectory", status.source_directory},
-			{"worktreeDirectory", status.worktree_directory},
-			{"branchName", status.branch_name},
-			{"baseRef", status.base_ref},
-			{"warning", status.warning},
-			{"error", status.error},
-		};
+		nlohmann::json json;
+		json["isGitRepository"] = status.is_git_repository;
+		json["isSvnWorkspace"] = status.is_svn_workspace;
+		json["isolated"] = status.isolated;
+		json["sourceDirty"] = status.source_dirty;
+		json["worktreeDirty"] = status.worktree_dirty;
+		json["worktreeMissing"] = status.worktree_missing;
+		json["sourceDirectory"] = status.source_directory;
+		json["worktreeDirectory"] = status.worktree_directory;
+		json["branchName"] = status.branch_name;
+		json["baseRef"] = status.base_ref;
+		json["warning"] = status.warning;
+		json["error"] = status.error;
+		return json;
 	}
 
 	nlohmann::json SerializeGitWorktreeResult(const uam::GitWorktreeOperationResult& result)
@@ -955,57 +994,59 @@ namespace
 		for (const uam::VcsChangedFile& file : status.changed_files)
 		{
 			files.push_back({
-				{"path", file.path},
-				{"status", file.status},
-				{"staged", file.staged},
-				{"additions", file.additions},
-				{"deletions", file.deletions},
-				{"binary", file.binary},
+			    {"path", file.path},
+			    {"status", file.status},
+			    {"staged", file.staged},
+			    {"additions", file.additions},
+			    {"deletions", file.deletions},
+			    {"binary", file.binary},
 			});
 		}
 
-		return {
-			{"available", status.available},
-			{"vcsTypes", std::move(types)},
-			{"activeVcsType", uam::VcsTypeToString(status.active_vcs_type)},
-			{"workspaceDirectory", status.workspace_directory},
-			{"branchOrRevision", status.branch_or_revision},
-			{"changedFiles", std::move(files)},
-			{"lineStatsReady", status.line_stats_ready},
-			{"warning", status.warning},
-			{"error", status.error},
-		};
+		nlohmann::json json;
+		json["available"] = status.available;
+		json["vcsTypes"] = std::move(types);
+		json["activeVcsType"] = uam::VcsTypeToString(status.active_vcs_type);
+		json["workspaceDirectory"] = status.workspace_directory;
+		json["branchOrRevision"] = status.branch_or_revision;
+		json["changedFiles"] = std::move(files);
+		json["lineStatsReady"] = status.line_stats_ready;
+		json["warning"] = status.warning;
+		json["error"] = status.error;
+		return json;
 	}
 
 	nlohmann::json SerializeVcsCommitResult(const uam::VcsCommitResult& result)
 	{
 		return {
-			{"ok", result.ok},
-			{"status", SerializeVcsCommitStatus(result.status)},
-			{"message", result.message},
-			{"error", result.error},
+		    {"ok", result.ok},
+		    {"status", SerializeVcsCommitStatus(result.status)},
+		    {"message", result.message},
+		    {"error", result.error},
 		};
 	}
 
 	bool ChatRuntimeBusy(const uam::AppState& app, const std::string& chat_id)
 	{
-		if (HasPendingCallForChat(app, chat_id))
+		if (uam::HasPendingCallForChat(app, chat_id))
 		{
 			return true;
 		}
 		for (const auto& session : app.acp_sessions)
 		{
-			if (session != nullptr &&
-			    session->chat_id == chat_id &&
-			    session->running &&
-			    (session->processing || session->waiting_for_permission || session->waiting_for_user_input || session->initialize_request_id != 0 || session->session_setup_request_id != 0 || session->prompt_request_id != 0))
+			if (session == nullptr || session->chat_id != chat_id || !session->running)
+			{
+				continue;
+			}
+
+			if (uam::AcpSessionHasBlockingRuntimeWork(*session))
 			{
 				return true;
 			}
 		}
 		for (const auto& terminal : app.cli_terminals)
 		{
-			if (terminal != nullptr && terminal->running && CliTerminalMatchesChatId(*terminal, chat_id))
+			if (terminal != nullptr && terminal->running && uam::CliTerminalMatchesChatId(*terminal, chat_id))
 			{
 				return true;
 			}
@@ -1026,11 +1067,92 @@ UamQueryHandler::UamQueryHandler(uam::AppState& app, std::string trusted_ui_inde
 // CefMessageRouterBrowserSide::Handler
 // ---------------------------------------------------------------------------
 
+bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	struct Route
+	{
+		std::string_view action;
+		ActionHandler handler;
+	};
+
+	static constexpr Route kRoutes[] = {
+		{"getInitialState", &UamQueryHandler::HandleGetInitialState},
+		{"selectSession", &UamQueryHandler::HandleSelectSession},
+		{"getChatMessages", &UamQueryHandler::HandleGetChatMessages},
+		{"createSession", &UamQueryHandler::HandleCreateSession},
+		{"renameSession", &UamQueryHandler::HandleRenameSession},
+		{"setChatPinned", &UamQueryHandler::HandleSetChatPinned},
+		{"setChatProvider", &UamQueryHandler::HandleSetChatProvider},
+		{"setChatModel", &UamQueryHandler::HandleSetChatModel},
+		{"setChatCodexOptions", &UamQueryHandler::HandleSetChatCodexOptions},
+		{"setChatApprovalMode", &UamQueryHandler::HandleSetChatApprovalMode},
+		{"setChatAutoApproveCommands", &UamQueryHandler::HandleSetChatAutoApproveCommands},
+		{"setChatMemoryEnabled", &UamQueryHandler::HandleSetChatMemoryEnabled},
+		{"setMemorySettings", &UamQueryHandler::HandleSetMemorySettings},
+		{"setProviderChatDefaults", &UamQueryHandler::HandleSetProviderChatDefaults},
+		{"setEditorSettings", &UamQueryHandler::HandleSetEditorSettings},
+		{"refreshCliProviderVersion", &UamQueryHandler::HandleRefreshCliProviderVersion},
+		{"applyCliProviderVersion", &UamQueryHandler::HandleApplyCliProviderVersion},
+		{"browseMarkdownStoreDirectory", &UamQueryHandler::HandleBrowseMarkdownStoreDirectory},
+		{"setMarkdownStoreDirectory", &UamQueryHandler::HandleSetMarkdownStoreDirectory},
+		{"listMarkdownStoreEntries", &UamQueryHandler::HandleListMarkdownStoreEntries},
+		{"createMarkdownStoreEntry", &UamQueryHandler::HandleCreateMarkdownStoreEntry},
+		{"revealMarkdownStoreEntry", &UamQueryHandler::HandleRevealMarkdownStoreEntry},
+		{"deleteSession", &UamQueryHandler::HandleDeleteSession},
+		{"createFolder", &UamQueryHandler::HandleCreateFolder},
+		{"renameFolder", &UamQueryHandler::HandleRenameFolder},
+		{"deleteFolder", &UamQueryHandler::HandleDeleteFolder},
+		{"toggleFolder", &UamQueryHandler::HandleToggleFolder},
+		{"browseFolderDirectory", &UamQueryHandler::HandleBrowseFolderDirectory},
+		{"searchChatMessages", &UamQueryHandler::HandleSearchChatMessages},
+		{"listMemoryEntries", &UamQueryHandler::HandleListMemoryEntries},
+		{"createMemoryEntry", &UamQueryHandler::HandleCreateMemoryEntry},
+		{"deleteMemoryEntry", &UamQueryHandler::HandleDeleteMemoryEntry},
+		{"openMemoryRoot", &UamQueryHandler::HandleOpenMemoryRoot},
+		{"revealMemoryEntry", &UamQueryHandler::HandleRevealMemoryEntry},
+		{"openWorkspaceDirectory", &UamQueryHandler::HandleOpenWorkspaceDirectory},
+		{"openWorkspaceEditor", &UamQueryHandler::HandleOpenWorkspaceEditor},
+		{"getChatWorktreeStatus", &UamQueryHandler::HandleGetChatWorktreeStatus},
+		{"createChatWorktree", &UamQueryHandler::HandleCreateChatWorktree},
+		{"discardChatWorktreeChanges", &UamQueryHandler::HandleDiscardChatWorktreeChanges},
+		{"portChatWorktreeChanges", &UamQueryHandler::HandlePortChatWorktreeChanges},
+		{"getVcsCommitStatus", &UamQueryHandler::HandleGetVcsCommitStatus},
+		{"getVcsFileDiff", &UamQueryHandler::HandleGetVcsFileDiff},
+		{"commitVcsChanges", &UamQueryHandler::HandleCommitVcsChanges},
+		{"generateVcsCommitMessage", &UamQueryHandler::HandleGenerateVcsCommitMessage},
+		{"listMemoryScanCandidates", &UamQueryHandler::HandleListMemoryScanCandidates},
+		{"scanCurrentChats", &UamQueryHandler::HandleScanCurrentChats},
+		{"startCliTerminal", &UamQueryHandler::HandleStartCli},
+		{"stopCliTerminal", &UamQueryHandler::HandleStopCli},
+		{"resizeCliTerminal", &UamQueryHandler::HandleResizeCli},
+		{"writeCliInput", &UamQueryHandler::HandleWriteCliInput},
+		{"stageChatAttachments", &UamQueryHandler::HandleStageChatAttachments},
+		{"sendAcpPrompt", &UamQueryHandler::HandleSendAcpPrompt},
+		{"cancelAcpTurn", &UamQueryHandler::HandleCancelAcpTurn},
+		{"resolveAcpPermission", &UamQueryHandler::HandleResolveAcpPermission},
+		{"resolveAcpUserInput", &UamQueryHandler::HandleResolveAcpUserInput},
+		{"stopAcpSession", &UamQueryHandler::HandleStopAcpSession},
+		{"writeClipboardText", &UamQueryHandler::HandleWriteClipboardText},
+		{"setTheme", &UamQueryHandler::HandleSetTheme},
+	};
+
+	for (const Route& route : kRoutes)
+	{
+		if (route.action == action)
+		{
+			(this->*route.handler)(browser, payload, cb);
+			return true;
+		}
+	}
+
+	return false;
+}
+
 bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int64_t /*query_id*/, const CefString& request, bool /*persistent*/, CefRefPtr<Callback> callback)
 {
 	CEF_REQUIRE_UI_THREAD();
 
-	if (!frame->IsMain() || !uam::cef::IsTrustedUiUrl(frame->GetURL().ToString(), m_trustedUiIndexUrl))
+	if (!uam::cef::IsTrustedMainFrame(frame, m_trustedUiIndexUrl))
 	{
 		callback->Failure(403, "Privileged bridge is restricted to the bundled UI.");
 		return true;
@@ -1048,123 +1170,7 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 
 	try
 	{
-		if (action == "getInitialState")
-			HandleGetInitialState(browser, callback);
-		else if (action == "selectSession")
-			HandleSelectSession(browser, payload, callback);
-		else if (action == "getChatMessages")
-			HandleGetChatMessages(browser, payload, callback);
-		else if (action == "createSession")
-			HandleCreateSession(browser, payload, callback);
-		else if (action == "renameSession")
-			HandleRenameSession(browser, payload, callback);
-		else if (action == "setChatPinned")
-			HandleSetChatPinned(browser, payload, callback);
-		else if (action == "setChatProvider")
-			HandleSetChatProvider(browser, payload, callback);
-		else if (action == "setChatModel")
-			HandleSetChatModel(browser, payload, callback);
-		else if (action == "setChatCodexOptions")
-			HandleSetChatCodexOptions(browser, payload, callback);
-		else if (action == "setChatApprovalMode")
-			HandleSetChatApprovalMode(browser, payload, callback);
-		else if (action == "setChatAutoApproveCommands")
-			HandleSetChatAutoApproveCommands(browser, payload, callback);
-		else if (action == "setChatMemoryEnabled")
-			HandleSetChatMemoryEnabled(browser, payload, callback);
-		else if (action == "setMemorySettings")
-			HandleSetMemorySettings(browser, payload, callback);
-		else if (action == "setProviderChatDefaults")
-			HandleSetProviderChatDefaults(browser, payload, callback);
-		else if (action == "setEditorSettings")
-			HandleSetEditorSettings(browser, payload, callback);
-		else if (action == "refreshCliProviderVersion")
-			HandleRefreshCliProviderVersion(browser, payload, callback);
-		else if (action == "applyCliProviderVersion")
-			HandleApplyCliProviderVersion(browser, payload, callback);
-		else if (action == "browseMarkdownStoreDirectory")
-			HandleBrowseMarkdownStoreDirectory(browser, payload, callback);
-		else if (action == "setMarkdownStoreDirectory")
-			HandleSetMarkdownStoreDirectory(browser, payload, callback);
-		else if (action == "listMarkdownStoreEntries")
-			HandleListMarkdownStoreEntries(browser, payload, callback);
-		else if (action == "createMarkdownStoreEntry")
-			HandleCreateMarkdownStoreEntry(browser, payload, callback);
-		else if (action == "revealMarkdownStoreEntry")
-			HandleRevealMarkdownStoreEntry(browser, payload, callback);
-		else if (action == "deleteSession")
-			HandleDeleteSession(browser, payload, callback);
-		else if (action == "createFolder")
-			HandleCreateFolder(browser, payload, callback);
-		else if (action == "renameFolder")
-			HandleRenameFolder(browser, payload, callback);
-		else if (action == "deleteFolder")
-			HandleDeleteFolder(browser, payload, callback);
-		else if (action == "toggleFolder")
-			HandleToggleFolder(browser, payload, callback);
-		else if (action == "browseFolderDirectory")
-			HandleBrowseFolderDirectory(browser, payload, callback);
-		else if (action == "searchChatMessages")
-			HandleSearchChatMessages(browser, payload, callback);
-		else if (action == "listMemoryEntries")
-			HandleListMemoryEntries(browser, payload, callback);
-		else if (action == "createMemoryEntry")
-			HandleCreateMemoryEntry(browser, payload, callback);
-		else if (action == "deleteMemoryEntry")
-			HandleDeleteMemoryEntry(browser, payload, callback);
-		else if (action == "openMemoryRoot")
-			HandleOpenMemoryRoot(browser, payload, callback);
-		else if (action == "revealMemoryEntry")
-			HandleRevealMemoryEntry(browser, payload, callback);
-		else if (action == "openWorkspaceDirectory")
-			HandleOpenWorkspaceDirectory(browser, payload, callback);
-		else if (action == "openWorkspaceEditor")
-			HandleOpenWorkspaceEditor(browser, payload, callback);
-		else if (action == "getChatWorktreeStatus")
-			HandleGetChatWorktreeStatus(browser, payload, callback);
-		else if (action == "createChatWorktree")
-			HandleCreateChatWorktree(browser, payload, callback);
-		else if (action == "discardChatWorktreeChanges")
-			HandleDiscardChatWorktreeChanges(browser, payload, callback);
-		else if (action == "portChatWorktreeChanges")
-			HandlePortChatWorktreeChanges(browser, payload, callback);
-		else if (action == "getVcsCommitStatus")
-			HandleGetVcsCommitStatus(browser, payload, callback);
-		else if (action == "getVcsFileDiff")
-			HandleGetVcsFileDiff(browser, payload, callback);
-		else if (action == "commitVcsChanges")
-			HandleCommitVcsChanges(browser, payload, callback);
-		else if (action == "generateVcsCommitMessage")
-			HandleGenerateVcsCommitMessage(browser, payload, callback);
-		else if (action == "listMemoryScanCandidates")
-			HandleListMemoryScanCandidates(browser, payload, callback);
-		else if (action == "scanCurrentChats")
-			HandleScanCurrentChats(browser, payload, callback);
-		else if (action == "startCliTerminal")
-			HandleStartCli(browser, payload, callback);
-		else if (action == "stopCliTerminal")
-			HandleStopCli(browser, payload, callback);
-		else if (action == "resizeCliTerminal")
-			HandleResizeCli(payload, callback);
-		else if (action == "writeCliInput")
-			HandleWriteCliInput(browser, payload, callback);
-		else if (action == "stageChatAttachments")
-			HandleStageChatAttachments(browser, payload, callback);
-		else if (action == "sendAcpPrompt")
-			HandleSendAcpPrompt(browser, payload, callback);
-		else if (action == "cancelAcpTurn")
-			HandleCancelAcpTurn(browser, payload, callback);
-		else if (action == "resolveAcpPermission")
-			HandleResolveAcpPermission(browser, payload, callback);
-		else if (action == "resolveAcpUserInput")
-			HandleResolveAcpUserInput(browser, payload, callback);
-			else if (action == "stopAcpSession")
-				HandleStopAcpSession(browser, payload, callback);
-			else if (action == "writeClipboardText")
-				HandleWriteClipboardText(payload, callback);
-			else if (action == "setTheme")
-				HandleSetTheme(browser, payload, callback);
-		else
+		if (!DispatchAction(action, browser, payload, callback))
 		{
 			callback->Failure(404, "Unknown action: " + action);
 		}
@@ -1190,7 +1196,7 @@ void UamQueryHandler::OnQueryCanceled(CefRefPtr<CefBrowser> /*browser*/, CefRefP
 // Action handlers
 // ---------------------------------------------------------------------------
 
-void UamQueryHandler::HandleGetInitialState(CefRefPtr<CefBrowser> /*browser*/, CefRefPtr<Callback> cb)
+void UamQueryHandler::HandleGetInitialState(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& /*payload*/, CefRefPtr<Callback> cb)
 {
 	nlohmann::json state = uam::StateSerializer::Serialize(m_app);
 	cb->Success(state.dump());
@@ -1199,16 +1205,14 @@ void UamQueryHandler::HandleGetInitialState(CefRefPtr<CefBrowser> /*browser*/, C
 void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
-	const std::string previous_selected_chat_id = (ChatDomainService().SelectedChat(m_app) != nullptr) ? ChatDomainService().SelectedChat(m_app)->id : std::string{};
-	const int target_chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
-
-	if (target_chat_index < 0)
+	const std::string previous_selected_chat_id = ChatDomainService().SelectedChatId(m_app);
+	ChatSession* target_chat = FindChatOrFail(m_app, chat_id, cb, "Selected chat no longer exists.");
+	if (target_chat == nullptr)
 	{
-		cb->Failure(404, "Selected chat no longer exists.");
 		return;
 	}
 
-	const std::string previous_last_opened_at = m_app.chats[static_cast<std::size_t>(target_chat_index)].last_opened_at;
+	const std::string previous_last_opened_at = target_chat->last_opened_at;
 	ChatDomainService().SelectChatById(m_app, chat_id);
 
 	ChatSession* selected_chat = ChatDomainService().SelectedChat(m_app);
@@ -1218,12 +1222,12 @@ void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 
-	selected_chat->last_opened_at = TimestampNow();
+	selected_chat->last_opened_at = uam::time::TimestampNow();
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
 		selected_chat->last_opened_at = previous_last_opened_at;
 		ChatDomainService().SelectChatById(m_app, previous_selected_chat_id);
-		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist selected chat." : m_app.status_line);
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist selected chat."));
 		return;
 	}
 
@@ -1232,7 +1236,7 @@ void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const n
 		selected_chat->last_opened_at = previous_last_opened_at;
 		ChatDomainService().SelectChatById(m_app, previous_selected_chat_id);
 		(void)PersistenceCoordinator().SaveSettings(m_app);
-		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist selected chat." : m_app.status_line);
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist selected chat."));
 		return;
 	}
 
@@ -1246,22 +1250,20 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> /*browser*/, c
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string known_digest = payload.value("messagesDigest", "");
-	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
-	if (chat_index < 0)
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (chat == nullptr)
 	{
-		cb->Failure(404, "Chat not found: " + chat_id);
 		return;
 	}
 
-	ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
 	std::string hydrate_warning;
-	if (!ChatRepository::HydrateChatMessages(m_app.data_root, chat, &hydrate_warning))
+	if (!ChatRepository::HydrateChatMessages(m_app.data_root, *chat, &hydrate_warning))
 	{
-		cb->Failure(500, hydrate_warning.empty() ? "Failed to load chat messages." : hydrate_warning);
+		cb->Failure(500, FailureDetailOrFallback(hydrate_warning, "Failed to load chat messages."));
 		return;
 	}
 
-	const nlohmann::json serialized = uam::StateSerializer::SerializeSession(chat);
+	const nlohmann::json serialized = uam::StateSerializer::SerializeSession(*chat);
 	const std::string messages_digest = serialized.value("messagesDigest", "");
 	nlohmann::json result;
 	result["chatId"] = chat_id;
@@ -1274,7 +1276,8 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> /*browser*/, c
 	}
 
 	result["unchanged"] = false;
-	result["messages"] = serialized.value("messages", nlohmann::json::array());
+	const nlohmann::json* messages = uam::nlohmann_json::FindArrayField(serialized, "messages");
+	result["messages"] = messages == nullptr ? nlohmann::json::array() : *messages;
 	cb->Success(result.dump());
 }
 
@@ -1283,24 +1286,25 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 	const std::string title = payload.value("title", "New Chat");
 	const std::string requested_folder_id = payload.value("folderId", "");
 	const ProviderProfile* preferred_provider = ResolvePreferredCliProvider(m_app);
-	const std::string requested_provider_id = payload.value("providerId", m_app.settings.default_new_chat_provider_id.empty() ? (preferred_provider != nullptr ? preferred_provider->id : m_app.settings.active_provider_id) : m_app.settings.default_new_chat_provider_id);
-	const ProviderProfile* requested_provider = ProviderProfileStore::FindById(m_app.provider_profiles, requested_provider_id);
-	const ProviderProfile* fallback_provider = ProviderProfileStore::FindById(m_app.provider_profiles, m_app.settings.default_new_chat_provider_id);
-	const std::string provider_id = requested_provider != nullptr ? requested_provider->id : (fallback_provider != nullptr ? fallback_provider->id : (preferred_provider != nullptr ? preferred_provider->id : m_app.settings.active_provider_id));
-	const std::string previous_selected_chat_id = (ChatDomainService().SelectedChat(m_app) != nullptr) ? ChatDomainService().SelectedChat(m_app)->id : std::string{};
+	const std::string default_provider_id = DefaultNewChatProviderId(m_app, preferred_provider);
+	const std::string requested_provider_id = payload.value("providerId", default_provider_id);
+	const std::string provider_id = ResolveNewChatProviderId(m_app, requested_provider_id, preferred_provider);
+	const std::string previous_selected_chat_id = ChatDomainService().SelectedChatId(m_app);
 
 	const std::string target_folder_id = ResolveRequestedNewChatFolderId(m_app, requested_folder_id);
 	if (target_folder_id.empty())
 	{
-		cb->Failure(400, m_app.status_line.empty() ? "A workspace folder is required to create a chat." : m_app.status_line);
+		cb->Failure(400, FailureDetailOrFallback(m_app.status_line, "A workspace folder is required to create a chat."));
 		return;
 	}
 
 	ChatSession chat = ChatDomainService().CreateNewChat(target_folder_id, provider_id);
 	if (!title.empty())
+	{
 		chat.title = title;
-	chat.workspace_directory = ResolveWorkspaceRootPath(m_app, chat).string();
-	const nlohmann::json* payload_defaults = payload.contains("defaults") && payload["defaults"].is_object() ? &payload["defaults"] : nullptr;
+	}
+	chat.workspace_directory = uam::paths::ResolveWorkspaceRootPath(m_app, chat).string();
+	const nlohmann::json* payload_defaults = uam::nlohmann_json::FindObjectField(payload, "defaults");
 	ApplyProviderDefaultsToChat(m_app.settings, chat, payload_defaults);
 
 	m_app.chats.push_back(std::move(chat));
@@ -1312,36 +1316,21 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 	ChatHistorySyncService sync;
 	if (!sync.SaveChatWithStatus(m_app, created_chat, "", ""))
 	{
-		const int created_chat_index = ChatDomainService().FindChatIndexById(m_app, created_chat_id);
-		if (created_chat_index >= 0)
-		{
-			m_app.chats.erase(m_app.chats.begin() + created_chat_index);
-		}
-
-		ChatDomainService().SelectChatById(m_app, previous_selected_chat_id);
-		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist new chat." : m_app.status_line);
+		RollbackCreatedChat(m_app, created_chat_id, previous_selected_chat_id, false);
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist new chat."));
 		return;
 	}
 
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
-		const int created_chat_index = ChatDomainService().FindChatIndexById(m_app, created_chat_id);
-		if (created_chat_index >= 0)
-		{
-			m_app.chats.erase(m_app.chats.begin() + created_chat_index);
-		}
-
-		std::error_code cleanup_ec;
-		std::filesystem::remove_all(AppPaths::ChatPath(m_app.data_root, created_chat_id), cleanup_ec);
-		std::filesystem::remove(AppPaths::UamChatFilePath(m_app.data_root, created_chat_id), cleanup_ec);
-		ChatDomainService().SelectChatById(m_app, previous_selected_chat_id);
-		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist new chat settings." : m_app.status_line);
+		RollbackCreatedChat(m_app, created_chat_id, previous_selected_chat_id, true);
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist new chat settings."));
 		return;
 	}
 
 	if (const ChatSession* selected = ChatDomainService().SelectedChat(m_app); selected != nullptr && ProviderResolutionService().ChatUsesCliOutput(m_app, *selected))
 	{
-		MarkSelectedCliTerminalForLaunch(m_app);
+		uam::MarkSelectedCliTerminalForLaunch(m_app);
 	}
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
@@ -1353,17 +1342,15 @@ void UamQueryHandler::HandleRenameSession(CefRefPtr<CefBrowser> browser, const n
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string title = payload.value("title", "");
 
-	const int idx = ChatDomainService().FindChatIndexById(m_app, chat_id);
-	if (idx < 0)
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (chat == nullptr)
 	{
-		cb->Failure(404, "Chat not found: " + chat_id);
 		return;
 	}
 
-	ChatSession& chat = m_app.chats[static_cast<std::size_t>(idx)];
-	if (!ChatHistorySyncService().RenameChat(m_app, chat, title))
+	if (!ChatHistorySyncService().RenameChat(m_app, *chat, title))
 	{
-		cb->Failure(500, m_app.status_line.empty() ? ("Failed to rename chat: " + chat_id) : m_app.status_line);
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to rename chat: " + chat_id));
 		return;
 	}
 
@@ -1376,28 +1363,26 @@ void UamQueryHandler::HandleSetChatPinned(CefRefPtr<CefBrowser> browser, const n
 	const std::string chat_id = payload.value("chatId", "");
 	const bool pinned = payload.value("pinned", false);
 
-	const int idx = ChatDomainService().FindChatIndexById(m_app, chat_id);
-	if (idx < 0)
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (chat == nullptr)
 	{
-		cb->Failure(404, "Chat not found: " + chat_id);
 		return;
 	}
 
-	ChatSession& chat = m_app.chats[static_cast<std::size_t>(idx)];
-	if (chat.pinned == pinned)
+	if (chat->pinned == pinned)
 	{
 		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Success("{}");
 		return;
 	}
 
-	const bool previous_pinned = chat.pinned;
-	chat.pinned = pinned;
+	const bool previous_pinned = chat->pinned;
+	chat->pinned = pinned;
 
-	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, chat, "Chat pin updated.", "Chat pin changed in UI, but failed to save."))
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat pin updated.", "Chat pin changed in UI, but failed to save."))
 	{
-		chat.pinned = previous_pinned;
-		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist chat pin." : m_app.status_line);
+		chat->pinned = previous_pinned;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat pin."));
 		return;
 	}
 
@@ -1408,7 +1393,7 @@ void UamQueryHandler::HandleSetChatPinned(CefRefPtr<CefBrowser> browser, const n
 void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
-	const std::string model_id = Trim(payload.value("modelId", ""));
+	const std::string model_id = uam::strings::Trim(payload.value("modelId", ""));
 
 	if (!IsAllowedAcpModelId(model_id))
 	{
@@ -1416,35 +1401,32 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 		return;
 	}
 
-	const int idx = ChatDomainService().FindChatIndexById(m_app, chat_id);
-	if (idx < 0)
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (chat == nullptr)
 	{
-		cb->Failure(404, "Chat not found: " + chat_id);
 		return;
 	}
 
-	ChatSession& chat = m_app.chats[static_cast<std::size_t>(idx)];
-	if (!ProviderResolutionService().ChatProviderIsAvailable(m_app, chat))
+	if (!ChatProviderAvailableOrFail(m_app, *chat, cb))
 	{
-		cb->Failure(409, ProviderResolutionService().ChatProviderUnavailableReason(m_app, chat));
 		return;
 	}
 
-	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat.id);
+	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat->id);
 	if (session != nullptr && AcpSessionBlocksModelChange(*session))
 	{
 		cb->Failure(409, "Cannot change model while the structured runtime is busy.");
 		return;
 	}
 
-	if (chat.model_id == model_id)
+	if (chat->model_id == model_id)
 	{
 		if (session != nullptr && session->running && !model_id.empty() && session->current_model_id != model_id)
 		{
 			std::string acp_error;
-			if (!uam::SetAcpSessionModel(m_app, chat.id, model_id, &acp_error))
+			if (!uam::SetAcpSessionModel(m_app, chat->id, model_id, &acp_error))
 			{
-				cb->Failure(409, acp_error.empty() ? "Failed to update live ACP model." : acp_error);
+				cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live ACP model."));
 				return;
 			}
 		}
@@ -1453,31 +1435,29 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 		return;
 	}
 
-	const std::string previous_model_id = chat.model_id;
-	const std::string previous_updated_at = chat.updated_at;
-	chat.model_id = model_id;
-	chat.updated_at = TimestampNow();
+	const std::string previous_model_id = chat->model_id;
+	const std::string previous_updated_at = chat->updated_at;
+	chat->model_id = model_id;
+	chat->updated_at = uam::time::TimestampNow();
 
-	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, chat, "Chat model updated.", "Chat model changed in UI, but failed to save."))
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat model updated.", "Chat model changed in UI, but failed to save."))
 	{
-		chat.model_id = previous_model_id;
-		chat.updated_at = previous_updated_at;
-		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist chat model." : m_app.status_line);
+		chat->model_id = previous_model_id;
+		chat->updated_at = previous_updated_at;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat model."));
 		return;
 	}
 
 	if (session != nullptr && session->running)
 	{
 		std::string acp_error;
-		const bool live_updated = model_id.empty()
-			? uam::StopAcpSession(m_app, chat.id)
-			: uam::SetAcpSessionModel(m_app, chat.id, model_id, &acp_error);
+		const bool live_updated = model_id.empty() ? uam::StopAcpSession(m_app, chat->id) : uam::SetAcpSessionModel(m_app, chat->id, model_id, &acp_error);
 		if (!live_updated)
 		{
-			chat.model_id = previous_model_id;
-			chat.updated_at = previous_updated_at;
-			(void)ChatHistorySyncService().SaveChatWithStatus(m_app, chat, "Chat model reverted.", "Chat model changed in UI, but failed to revert.");
-			cb->Failure(409, acp_error.empty() ? "Failed to update live ACP model." : acp_error);
+			chat->model_id = previous_model_id;
+			chat->updated_at = previous_updated_at;
+			(void)ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat model reverted.", "Chat model changed in UI, but failed to revert.");
+			cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live ACP model."));
 			return;
 		}
 	}
@@ -1489,56 +1469,53 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
-	const std::string reasoning_effort = NormalizeCodexReasoningEffort(payload.value("reasoningEffort", ""));
-	const std::string service_tier = NormalizeCodexServiceTier(payload.value("serviceTier", ""));
+	const std::string reasoning_effort = uam::codex::NormalizeReasoningEffort(payload.value("reasoningEffort", ""));
+	const std::string service_tier = uam::codex::NormalizeServiceTier(payload.value("serviceTier", ""));
 
-	const int idx = ChatDomainService().FindChatIndexById(m_app, chat_id);
-	if (idx < 0)
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (chat == nullptr)
 	{
-		cb->Failure(404, "Chat not found: " + chat_id);
 		return;
 	}
 
-	ChatSession& chat = m_app.chats[static_cast<std::size_t>(idx)];
-	if (chat.provider_id != "codex-cli")
+	if (!uam::provider_ids::IsCliProviderAliasOf(chat->provider_id, uam::provider_ids::kCodexCli))
 	{
 		cb->Failure(409, "Codex reasoning and speed options are only available for Codex chats.");
 		return;
 	}
 
-	if (!ProviderResolutionService().ChatProviderIsAvailable(m_app, chat))
+	if (!ChatProviderAvailableOrFail(m_app, *chat, cb))
 	{
-		cb->Failure(409, ProviderResolutionService().ChatProviderUnavailableReason(m_app, chat));
 		return;
 	}
 
-	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat.id);
+	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat->id);
 	if (session != nullptr && AcpSessionBlocksModelChange(*session))
 	{
 		cb->Failure(409, "Cannot change Codex reasoning or speed while the structured runtime is busy.");
 		return;
 	}
 
-	if (chat.reasoning_effort == reasoning_effort && chat.service_tier == service_tier)
+	if (chat->reasoning_effort == reasoning_effort && chat->service_tier == service_tier)
 	{
 		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Success("{}");
 		return;
 	}
 
-	const std::string previous_reasoning_effort = chat.reasoning_effort;
-	const std::string previous_service_tier = chat.service_tier;
-	const std::string previous_updated_at = chat.updated_at;
-	chat.reasoning_effort = reasoning_effort;
-	chat.service_tier = service_tier;
-	chat.updated_at = TimestampNow();
+	const std::string previous_reasoning_effort = chat->reasoning_effort;
+	const std::string previous_service_tier = chat->service_tier;
+	const std::string previous_updated_at = chat->updated_at;
+	chat->reasoning_effort = reasoning_effort;
+	chat->service_tier = service_tier;
+	chat->updated_at = uam::time::TimestampNow();
 
-	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, chat, "Codex chat options updated.", "Codex chat options changed in UI, but failed to save."))
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Codex chat options updated.", "Codex chat options changed in UI, but failed to save."))
 	{
-		chat.reasoning_effort = previous_reasoning_effort;
-		chat.service_tier = previous_service_tier;
-		chat.updated_at = previous_updated_at;
-		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist Codex chat options." : m_app.status_line);
+		chat->reasoning_effort = previous_reasoning_effort;
+		chat->service_tier = previous_service_tier;
+		chat->updated_at = previous_updated_at;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist Codex chat options."));
 		return;
 	}
 
@@ -1549,7 +1526,7 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
-	const std::string provider_id = Trim(payload.value("providerId", ""));
+	const std::string provider_id = uam::strings::Trim(payload.value("providerId", ""));
 
 	const ProviderProfile* provider = ProviderProfileStore::FindById(m_app.provider_profiles, provider_id);
 	if (provider == nullptr || !ProviderRuntime::IsRuntimeEnabled(*provider))
@@ -1558,66 +1535,64 @@ void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const
 		return;
 	}
 
-	const int idx = ChatDomainService().FindChatIndexById(m_app, chat_id);
-	if (idx < 0)
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (chat == nullptr)
 	{
-		cb->Failure(404, "Chat not found: " + chat_id);
 		return;
 	}
 
-	ChatSession& chat = m_app.chats[static_cast<std::size_t>(idx)];
-	if (chat.provider_id == provider->id)
+	if (uam::provider_ids::NormalizeCliProviderAliasOrSelf(chat->provider_id) == provider->id)
 	{
 		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Success("{}");
 		return;
 	}
 
-	const std::size_t message_count = chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count;
+	const std::size_t message_count = chat->messages_loaded ? chat->messages.size() : chat->persisted_message_count;
 	if (message_count > 0)
 	{
 		cb->Failure(409, "Cannot change provider after messages have been added.");
 		return;
 	}
 
-	if (uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat.id); session != nullptr && session->running)
+	if (uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat->id); session != nullptr && session->running)
 	{
 		cb->Failure(409, "Cannot change provider while the structured runtime is running.");
 		return;
 	}
 
-	if (uam::CliTerminalState* terminal = FindCliTerminalByRoutingKey(m_app, chat.id, ""); terminal != nullptr && terminal->running)
+	if (uam::CliTerminalState* terminal = FindCliTerminalByRoutingKey(m_app, chat->id, ""); terminal != nullptr && terminal->running)
 	{
 		cb->Failure(409, "Cannot change provider while the CLI terminal is running.");
 		return;
 	}
 
-	const std::string previous_provider_id = chat.provider_id;
-	const std::string previous_model_id = chat.model_id;
-	const std::string previous_reasoning_effort = chat.reasoning_effort;
-	const std::string previous_service_tier = chat.service_tier;
-	const std::string previous_approval_mode = chat.approval_mode;
-	const bool previous_auto_approve_commands = chat.auto_approve_commands;
-	const bool previous_memory_enabled = chat.memory_enabled;
-	const std::string previous_native_session_id = chat.native_session_id;
-	const std::string previous_updated_at = chat.updated_at;
-	chat.provider_id = provider->id;
-	ApplyProviderDefaultsToChat(m_app.settings, chat);
-	chat.native_session_id.clear();
-	chat.updated_at = TimestampNow();
+	const std::string previous_provider_id = chat->provider_id;
+	const std::string previous_model_id = chat->model_id;
+	const std::string previous_reasoning_effort = chat->reasoning_effort;
+	const std::string previous_service_tier = chat->service_tier;
+	const std::string previous_approval_mode = chat->approval_mode;
+	const bool previous_auto_approve_commands = chat->auto_approve_commands;
+	const bool previous_memory_enabled = chat->memory_enabled;
+	const std::string previous_native_session_id = chat->native_session_id;
+	const std::string previous_updated_at = chat->updated_at;
+	chat->provider_id = provider->id;
+	ApplyProviderDefaultsToChat(m_app.settings, *chat);
+	chat->native_session_id.clear();
+	chat->updated_at = uam::time::TimestampNow();
 
-	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, chat, "Chat provider updated.", "Chat provider changed in UI, but failed to save."))
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat provider updated.", "Chat provider changed in UI, but failed to save."))
 	{
-		chat.provider_id = previous_provider_id;
-		chat.model_id = previous_model_id;
-		chat.reasoning_effort = previous_reasoning_effort;
-		chat.service_tier = previous_service_tier;
-		chat.approval_mode = previous_approval_mode;
-		chat.auto_approve_commands = previous_auto_approve_commands;
-		chat.memory_enabled = previous_memory_enabled;
-		chat.native_session_id = previous_native_session_id;
-		chat.updated_at = previous_updated_at;
-		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist chat provider." : m_app.status_line);
+		chat->provider_id = previous_provider_id;
+		chat->model_id = previous_model_id;
+		chat->reasoning_effort = previous_reasoning_effort;
+		chat->service_tier = previous_service_tier;
+		chat->approval_mode = previous_approval_mode;
+		chat->auto_approve_commands = previous_auto_approve_commands;
+		chat->memory_enabled = previous_memory_enabled;
+		chat->native_session_id = previous_native_session_id;
+		chat->updated_at = previous_updated_at;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat provider."));
 		return;
 	}
 
@@ -1628,43 +1603,40 @@ void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const
 void UamQueryHandler::HandleSetChatApprovalMode(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
-	const std::string mode_id = NormalizeAcpApprovalMode(payload.value("modeId", ""));
+	const std::string mode_id = uam::approval_modes::NormalizeIncomingApprovalModeId(payload.value("modeId", ""));
 
-	if (!IsAllowedAcpApprovalMode(mode_id))
+	if (!uam::approval_modes::IsAppApprovalMode(mode_id))
 	{
 		cb->Failure(400, "Unsupported ACP mode: " + mode_id);
 		return;
 	}
 
-	const int idx = ChatDomainService().FindChatIndexById(m_app, chat_id);
-	if (idx < 0)
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (chat == nullptr)
 	{
-		cb->Failure(404, "Chat not found: " + chat_id);
 		return;
 	}
 
-	ChatSession& chat = m_app.chats[static_cast<std::size_t>(idx)];
-	if (!ProviderResolutionService().ChatProviderIsAvailable(m_app, chat))
+	if (!ChatProviderAvailableOrFail(m_app, *chat, cb))
 	{
-		cb->Failure(409, ProviderResolutionService().ChatProviderUnavailableReason(m_app, chat));
 		return;
 	}
 
-	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat.id);
+	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat->id);
 	if (session != nullptr && AcpSessionBlocksModelChange(*session))
 	{
 		cb->Failure(409, "Cannot change structured runtime mode while the structured runtime is busy.");
 		return;
 	}
 
-	if (chat.approval_mode == mode_id)
+	if (chat->approval_mode == mode_id)
 	{
 		if (session != nullptr && session->running && session->current_mode_id != mode_id)
 		{
 			std::string acp_error;
-			if (!uam::SetAcpSessionMode(m_app, chat.id, mode_id, &acp_error))
+			if (!uam::SetAcpSessionMode(m_app, chat->id, mode_id, &acp_error))
 			{
-				cb->Failure(409, acp_error.empty() ? "Failed to update live ACP mode." : acp_error);
+				cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live ACP mode."));
 				return;
 			}
 		}
@@ -1673,28 +1645,28 @@ void UamQueryHandler::HandleSetChatApprovalMode(CefRefPtr<CefBrowser> browser, c
 		return;
 	}
 
-	const std::string previous_mode_id = chat.approval_mode;
-	const std::string previous_updated_at = chat.updated_at;
-	chat.approval_mode = mode_id;
-	chat.updated_at = TimestampNow();
+	const std::string previous_mode_id = chat->approval_mode;
+	const std::string previous_updated_at = chat->updated_at;
+	chat->approval_mode = mode_id;
+	chat->updated_at = uam::time::TimestampNow();
 
-	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, chat, "Chat mode updated.", "Chat mode changed in UI, but failed to save."))
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat mode updated.", "Chat mode changed in UI, but failed to save."))
 	{
-		chat.approval_mode = previous_mode_id;
-		chat.updated_at = previous_updated_at;
-		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist chat mode." : m_app.status_line);
+		chat->approval_mode = previous_mode_id;
+		chat->updated_at = previous_updated_at;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat mode."));
 		return;
 	}
 
 	if (session != nullptr && session->running)
 	{
 		std::string acp_error;
-		if (!uam::SetAcpSessionMode(m_app, chat.id, mode_id, &acp_error))
+		if (!uam::SetAcpSessionMode(m_app, chat->id, mode_id, &acp_error))
 		{
-			chat.approval_mode = previous_mode_id;
-			chat.updated_at = previous_updated_at;
-			(void)ChatHistorySyncService().SaveChatWithStatus(m_app, chat, "Chat mode reverted.", "Chat mode changed in UI, but failed to revert.");
-			cb->Failure(409, acp_error.empty() ? "Failed to update live ACP mode." : acp_error);
+			chat->approval_mode = previous_mode_id;
+			chat->updated_at = previous_updated_at;
+			(void)ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat mode reverted.", "Chat mode changed in UI, but failed to revert.");
+			cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live ACP mode."));
 			return;
 		}
 	}
@@ -1707,50 +1679,38 @@ void UamQueryHandler::HandleSetChatAutoApproveCommands(CefRefPtr<CefBrowser> bro
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const bool enabled = payload.value("enabled", false);
-	const int idx = ChatDomainService().FindChatIndexById(m_app, chat_id);
-	if (idx < 0)
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (chat == nullptr)
 	{
-		cb->Failure(404, "Chat not found: " + chat_id);
 		return;
 	}
 
-	ChatSession& chat = m_app.chats[static_cast<std::size_t>(idx)];
-	if (chat.auto_approve_commands == enabled)
+	if (chat->auto_approve_commands == enabled)
 	{
-		if (enabled)
+		if (enabled && !AutoApprovePendingAcpPermissionOrFail(m_app, chat->id, cb))
 		{
-			std::string acp_error;
-			if (!uam::TryAutoApprovePendingAcpPermission(m_app, chat.id, &acp_error) && !acp_error.empty())
-			{
-				cb->Failure(409, acp_error);
-				return;
-			}
+			return;
 		}
 		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Success("{}");
 		return;
 	}
 
-	const bool previous = chat.auto_approve_commands;
-	const std::string previous_updated_at = chat.updated_at;
-	chat.auto_approve_commands = enabled;
-	chat.updated_at = TimestampNow();
-	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, chat, "Chat auto-approval updated.", "Chat auto-approval changed in UI, but failed to save."))
+	const bool previous = chat->auto_approve_commands;
+	const std::string previous_updated_at = chat->updated_at;
+	chat->auto_approve_commands = enabled;
+	chat->updated_at = uam::time::TimestampNow();
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat auto-approval updated.", "Chat auto-approval changed in UI, but failed to save."))
 	{
-		chat.auto_approve_commands = previous;
-		chat.updated_at = previous_updated_at;
-		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist chat auto-approval." : m_app.status_line);
+		chat->auto_approve_commands = previous;
+		chat->updated_at = previous_updated_at;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat auto-approval."));
 		return;
 	}
 
-	if (enabled)
+	if (enabled && !AutoApprovePendingAcpPermissionOrFail(m_app, chat->id, cb))
 	{
-		std::string acp_error;
-		if (!uam::TryAutoApprovePendingAcpPermission(m_app, chat.id, &acp_error) && !acp_error.empty())
-		{
-			cb->Failure(409, acp_error);
-			return;
-		}
+		return;
 	}
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
@@ -1761,30 +1721,28 @@ void UamQueryHandler::HandleSetChatMemoryEnabled(CefRefPtr<CefBrowser> browser, 
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const bool enabled = payload.value("enabled", true);
-	const int idx = ChatDomainService().FindChatIndexById(m_app, chat_id);
-	if (idx < 0)
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (chat == nullptr)
 	{
-		cb->Failure(404, "Chat not found: " + chat_id);
 		return;
 	}
 
-	ChatSession& chat = m_app.chats[static_cast<std::size_t>(idx)];
-	if (chat.memory_enabled == enabled)
+	if (chat->memory_enabled == enabled)
 	{
 		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Success("{}");
 		return;
 	}
 
-	const bool previous = chat.memory_enabled;
-	const std::string previous_updated_at = chat.updated_at;
-	chat.memory_enabled = enabled;
-	chat.updated_at = TimestampNow();
-	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, chat, "Chat memory setting updated.", "Chat memory setting changed in UI, but failed to save."))
+	const bool previous = chat->memory_enabled;
+	const std::string previous_updated_at = chat->updated_at;
+	chat->memory_enabled = enabled;
+	chat->updated_at = uam::time::TimestampNow();
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat memory setting updated.", "Chat memory setting changed in UI, but failed to save."))
 	{
-		chat.memory_enabled = previous;
-		chat.updated_at = previous_updated_at;
-		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist chat memory setting." : m_app.status_line);
+		chat->memory_enabled = previous;
+		chat->updated_at = previous_updated_at;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat memory setting."));
 		return;
 	}
 
@@ -1794,30 +1752,31 @@ void UamQueryHandler::HandleSetChatMemoryEnabled(CefRefPtr<CefBrowser> browser, 
 
 void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	if (payload.contains("enabledDefault") && payload["enabledDefault"].is_boolean())
+	if (const std::optional<bool> enabled_default = uam::nlohmann_json::BoolFieldStrict(payload, "enabledDefault"))
 	{
-		m_app.settings.memory_enabled_default = payload["enabledDefault"].get<bool>();
+		m_app.settings.memory_enabled_default = *enabled_default;
 	}
-	if (payload.contains("idleDelaySeconds") && payload["idleDelaySeconds"].is_number_integer())
+	if (const std::optional<int> idle_delay_seconds = uam::nlohmann_json::IntFieldStrict(payload, "idleDelaySeconds"))
 	{
-		m_app.settings.memory_idle_delay_seconds = std::clamp(payload["idleDelaySeconds"].get<int>(), 30, 3600);
+		m_app.settings.memory_idle_delay_seconds = *idle_delay_seconds;
 	}
-	if (payload.contains("recallBudgetBytes") && payload["recallBudgetBytes"].is_number_integer())
+	if (const std::optional<int> recall_budget_bytes = uam::nlohmann_json::IntFieldStrict(payload, "recallBudgetBytes"))
 	{
-		m_app.settings.memory_recall_budget_bytes = std::clamp(payload["recallBudgetBytes"].get<int>(), 512, 8192);
+		m_app.settings.memory_recall_budget_bytes = *recall_budget_bytes;
 	}
-	if (payload.contains("workerBindings") && payload["workerBindings"].is_object())
+	uam::settings::ClampMemorySettings(m_app.settings);
+	if (const nlohmann::json* worker_bindings = uam::nlohmann_json::FindObjectField(payload, "workerBindings"); worker_bindings != nullptr)
 	{
-		for (auto it = payload["workerBindings"].begin(); it != payload["workerBindings"].end(); ++it)
+		for (auto it = worker_bindings->begin(); it != worker_bindings->end(); ++it)
 		{
 			if (!it.value().is_object())
 			{
 				continue;
 			}
-			const std::string chat_provider_id = it.key();
-			const std::string worker_provider_id = Trim(it.value().value("workerProviderId", ""));
-			const std::string worker_model_id = Trim(it.value().value("workerModelId", ""));
-			if (chat_provider_id.empty() || worker_provider_id.empty() || ProviderProfileStore::FindById(m_app.provider_profiles, worker_provider_id) == nullptr)
+			const std::string chat_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(it.key());
+			const std::string worker_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(it.value().value("workerProviderId", ""));
+			const std::string worker_model_id = uam::strings::Trim(it.value().value("workerModelId", ""));
+			if (chat_provider_id.empty() || worker_provider_id.empty() || ProviderProfileStore::FindById(m_app.provider_profiles, chat_provider_id) == nullptr || ProviderProfileStore::FindById(m_app.provider_profiles, worker_provider_id) == nullptr)
 			{
 				continue;
 			}
@@ -1827,7 +1786,7 @@ void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, con
 
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
-		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist memory settings." : m_app.status_line);
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist memory settings."));
 		return;
 	}
 
@@ -1837,7 +1796,7 @@ void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, con
 
 void UamQueryHandler::HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const std::string requested_default_provider_id = Trim(payload.value("defaultProviderId", m_app.settings.default_new_chat_provider_id));
+	const std::string requested_default_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(payload.value("defaultProviderId", m_app.settings.default_new_chat_provider_id));
 	if (!requested_default_provider_id.empty())
 	{
 		const ProviderProfile* provider = ProviderProfileStore::FindById(m_app.provider_profiles, requested_default_provider_id);
@@ -1849,11 +1808,11 @@ void UamQueryHandler::HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browse
 		m_app.settings.default_new_chat_provider_id = provider->id;
 	}
 
-	if (payload.contains("defaults") && payload["defaults"].is_object())
+	if (const nlohmann::json* defaults_by_provider = uam::nlohmann_json::FindObjectField(payload, "defaults"); defaults_by_provider != nullptr)
 	{
-		for (auto it = payload["defaults"].begin(); it != payload["defaults"].end(); ++it)
+		for (auto it = defaults_by_provider->begin(); it != defaults_by_provider->end(); ++it)
 		{
-			const std::string provider_id = Trim(it.key());
+			const std::string provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(it.key());
 			const ProviderProfile* provider = ProviderProfileStore::FindById(m_app.provider_profiles, provider_id);
 			if (provider == nullptr || !ProviderRuntime::IsRuntimeEnabled(*provider))
 			{
@@ -1861,7 +1820,7 @@ void UamQueryHandler::HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browse
 			}
 			const ProviderChatDefaults fallback = DefaultsForProvider(m_app.settings, provider->id);
 			ProviderChatDefaults defaults = DefaultsFromPayload(it.value(), fallback);
-			if (provider->id != "codex-cli")
+			if (!uam::provider_ids::IsCliProviderAliasOf(provider->id, uam::provider_ids::kCodexCli))
 			{
 				defaults.reasoning_effort.clear();
 				defaults.service_tier.clear();
@@ -1872,7 +1831,7 @@ void UamQueryHandler::HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browse
 
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
-		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist provider chat defaults." : m_app.status_line);
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist provider chat defaults."));
 		return;
 	}
 
@@ -1882,20 +1841,20 @@ void UamQueryHandler::HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browse
 
 void UamQueryHandler::HandleSetEditorSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const std::string default_editor_preset_id = Trim(payload.value("defaultEditorPresetId", m_app.settings.default_editor_preset_id));
-	m_app.settings.default_editor_preset_id = IsKnownEditorPresetId(default_editor_preset_id) ? default_editor_preset_id : "vscode";
+	const std::string default_editor_preset_id = uam::strings::Trim(payload.value("defaultEditorPresetId", m_app.settings.default_editor_preset_id));
+	m_app.settings.default_editor_preset_id = uam::editor_file_associations::NormalizeEditorPresetId(default_editor_preset_id);
 
 	std::vector<EditorFileAssociation> associations = ParseEditorFileAssociationsPayload(payload);
 	if (associations.empty())
 	{
-		associations = DefaultEditorFileAssociationsForUi();
+		associations = uam::editor_file_associations::DefaultEditorFileAssociations();
 	}
 	m_app.settings.editor_file_associations = std::move(associations);
-	m_app.settings.editor_default_groups_version = 1;
+	m_app.settings.editor_default_groups_version = uam::editor_file_associations::kDefaultGroupsVersion;
 
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
-		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist editor settings." : m_app.status_line);
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist editor settings."));
 		return;
 	}
 
@@ -1920,11 +1879,11 @@ void UamQueryHandler::HandleRefreshCliProviderVersion(CefRefPtr<CefBrowser> brow
 void UamQueryHandler::HandleApplyCliProviderVersion(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string provider_id = CliVersionProviderFromPayloadOrSelection(m_app, payload);
-	const std::string version = Trim(payload.value("version", ""));
+	const std::string version = uam::strings::Trim(payload.value("version", ""));
 	std::string error;
 	if (!ProviderCliCompatibilityService().StartInstallProviderVersion(m_app, provider_id, version, &error))
 	{
-		cb->Failure(400, error.empty() ? "Failed to start provider CLI install." : error);
+		cb->Failure(400, FailureDetailOrFallback(error, "Failed to start provider CLI install."));
 		return;
 	}
 
@@ -1940,7 +1899,7 @@ void UamQueryHandler::HandleBrowseMarkdownStoreDirectory(CefRefPtr<CefBrowser> /
 	std::string error;
 	if (!PlatformServicesFactory::Instance().file_dialog_service.BrowsePath(PlatformPathBrowseTarget::Directory, initial_path, &selected_path, &error))
 	{
-		cb->Failure(500, error.empty() ? "Failed to browse Markdown Store directory." : error);
+		cb->Failure(500, FailureDetailOrFallback(error, "Failed to browse Markdown Store directory."));
 		return;
 	}
 	cb->Success(nlohmann::json{{"selectedPath", selected_path}}.dump());
@@ -1948,14 +1907,14 @@ void UamQueryHandler::HandleBrowseMarkdownStoreDirectory(CefRefPtr<CefBrowser> /
 
 void UamQueryHandler::HandleSetMarkdownStoreDirectory(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const std::string directory = Trim(payload.value("directory", ""));
+	const std::string directory = uam::strings::Trim(payload.value("directory", ""));
 	if (!directory.empty())
 	{
 		const std::filesystem::path root = MarkdownStoreService::NormalizeRoot(directory);
 		std::string error;
 		if (!MarkdownStoreService::IsConfiguredRoot(root, &error))
 		{
-			cb->Failure(400, error.empty() ? "Invalid Markdown Store directory." : error);
+			cb->Failure(400, FailureDetailOrFallback(error, "Invalid Markdown Store directory."));
 			return;
 		}
 		m_app.settings.markdown_store_directory = root.string();
@@ -1967,7 +1926,7 @@ void UamQueryHandler::HandleSetMarkdownStoreDirectory(CefRefPtr<CefBrowser> brow
 
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
-		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist Markdown Store directory." : m_app.status_line);
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist Markdown Store directory."));
 		return;
 	}
 
@@ -1979,21 +1938,23 @@ void UamQueryHandler::HandleListMarkdownStoreEntries(CefRefPtr<CefBrowser> /*bro
 {
 	const std::filesystem::path root = MarkdownStoreService::NormalizeRoot(m_app.settings.markdown_store_directory);
 	const std::string request_id = payload.value("requestId", "");
-	RunAsyncCefQuery(cb, [root, request_id]() {
-		std::string error;
-		std::vector<MarkdownStoreService::Entry> entries = MarkdownStoreService::ListEntries(root, &error);
-		if (!error.empty())
-		{
-			return AsyncFailure(400, error);
-		}
+	RunAsyncCefQuery(cb,
+	                 [root, request_id]()
+	                 {
+		                 std::string error;
+		                 std::vector<MarkdownStoreService::Entry> entries = MarkdownStoreService::ListEntries(root, &error);
+		                 if (!error.empty())
+		                 {
+			                 return AsyncFailure(400, error);
+		                 }
 
-		nlohmann::json entry_json = nlohmann::json::array();
-		for (const MarkdownStoreService::Entry& entry : entries)
-		{
-			entry_json.push_back(SerializeMarkdownStoreEntry(entry));
-		}
-		return AsyncSuccess(WithOptionalRequestId(nlohmann::json{{"directory", root.string()}, {"entries", entry_json}}, request_id));
-	});
+		                 nlohmann::json entry_json = nlohmann::json::array();
+		                 for (const MarkdownStoreService::Entry& entry : entries)
+		                 {
+			                 entry_json.push_back(SerializeMarkdownStoreEntry(entry));
+		                 }
+		                 return AsyncSuccess(WithOptionalRequestId(nlohmann::json{{"directory", root.string()}, {"entries", entry_json}}, request_id));
+	                 });
 }
 
 void UamQueryHandler::HandleCreateMarkdownStoreEntry(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -2009,7 +1970,7 @@ void UamQueryHandler::HandleCreateMarkdownStoreEntry(CefRefPtr<CefBrowser> brows
 	std::string error;
 	if (!MarkdownStoreService::CreateEntry(root, draft, &created, &error))
 	{
-		cb->Failure(400, error.empty() ? "Failed to create Markdown Store entry." : error);
+		cb->Failure(400, FailureDetailOrFallback(error, "Failed to create Markdown Store entry."));
 		return;
 	}
 
@@ -2025,13 +1986,13 @@ void UamQueryHandler::HandleRevealMarkdownStoreEntry(CefRefPtr<CefBrowser> /*bro
 	std::string error;
 	if (!MarkdownStoreService::ValidateStoreFilePath(root, file_path, &normalized_file, &error))
 	{
-		cb->Failure(400, error.empty() ? "Invalid Markdown Store file." : error);
+		cb->Failure(400, FailureDetailOrFallback(error, "Invalid Markdown Store file."));
 		return;
 	}
 
 	if (!PlatformServicesFactory::Instance().file_dialog_service.RevealPathInFileManager(normalized_file, &error))
 	{
-		cb->Failure(500, error.empty() ? "Failed to reveal Markdown Store file." : error);
+		cb->Failure(500, FailureDetailOrFallback(error, "Failed to reveal Markdown Store file."));
 		return;
 	}
 	cb->Success("{}");
@@ -2040,16 +2001,14 @@ void UamQueryHandler::HandleRevealMarkdownStoreEntry(CefRefPtr<CefBrowser> /*bro
 void UamQueryHandler::HandleDeleteSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
-	const int idx = ChatDomainService().FindChatIndexById(m_app, chat_id);
-	if (idx < 0)
+	if (FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id) == nullptr)
 	{
-		cb->Failure(404, "Chat not found: " + chat_id);
 		return;
 	}
 
 	if (!RemoveChatById(m_app, chat_id))
 	{
-		cb->Failure(409, m_app.status_line.empty() ? ("Failed to delete chat: " + chat_id) : m_app.status_line);
+		cb->Failure(409, FailureDetailOrFallback(m_app.status_line, "Failed to delete chat: " + chat_id));
 		return;
 	}
 
@@ -2177,41 +2136,41 @@ void UamQueryHandler::HandleSearchChatMessages(CefRefPtr<CefBrowser> /*browser*/
 		return;
 	}
 
-	RunAsyncCefQuery(cb, [data_root, tokens, request_id]() {
-		nlohmann::json async_result;
-		async_result["chatIds"] = nlohmann::json::array();
-		if (!request_id.empty())
-		{
-			async_result["requestId"] = request_id;
-		}
+	RunAsyncCefQuery(cb,
+	                 [data_root, tokens, request_id]()
+	                 {
+		                 nlohmann::json async_result;
+		                 async_result["chatIds"] = nlohmann::json::array();
+		                 if (!request_id.empty())
+		                 {
+			                 async_result["requestId"] = request_id;
+		                 }
 
-		std::string warning;
-		const std::vector<ChatSession> chats = ChatRepository::LoadLocalChats(data_root, &warning);
-		for (const ChatSession& chat : chats)
-		{
-			std::string haystack = LowerAscii(chat.title + " " + chat.provider_id + " " + chat.workspace_directory);
-			for (const Message& message : chat.messages)
-			{
-				haystack += " " + LowerAscii(message.content);
-				haystack += " " + LowerAscii(message.thoughts);
-				haystack += " " + LowerAscii(message.plan_summary);
-			}
+		                 std::string warning;
+		                 const std::vector<ChatSession> chats = ChatRepository::LoadLocalChats(data_root, &warning);
+		                 for (const ChatSession& chat : chats)
+		                 {
+			                 std::string haystack = uam::strings::ToLowerAscii(chat.title + " " + chat.provider_id + " " + chat.workspace_directory);
+			                 for (const Message& message : chat.messages)
+			                 {
+				                 haystack += " " + uam::strings::ToLowerAscii(message.content);
+				                 haystack += " " + uam::strings::ToLowerAscii(message.thoughts);
+				                 haystack += " " + uam::strings::ToLowerAscii(message.plan_summary);
+			                 }
 
-			const bool matches = std::all_of(tokens.begin(), tokens.end(), [&](const std::string& token) {
-				return haystack.find(token) != std::string::npos;
-			});
-			if (matches)
-			{
-				async_result["chatIds"].push_back(chat.id);
-			}
-		}
+			                 const bool matches = std::ranges::all_of(tokens, [&](const std::string& token) { return uam::strings::Contains(haystack, token); });
+			                 if (matches)
+			                 {
+				                 async_result["chatIds"].push_back(chat.id);
+			                 }
+		                 }
 
-		if (!warning.empty())
-		{
-			async_result["warning"] = warning;
-		}
-		return AsyncSuccess(std::move(async_result));
-	});
+		                 if (!warning.empty())
+		                 {
+			                 async_result["warning"] = warning;
+		                 }
+		                 return AsyncSuccess(std::move(async_result));
+	                 });
 }
 
 void UamQueryHandler::HandleListMemoryEntries(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -2220,49 +2179,52 @@ void UamQueryHandler::HandleListMemoryEntries(CefRefPtr<CefBrowser> /*browser*/,
 	std::string error;
 	if (!MemoryLibraryService::ResolveScope(m_app, payload.value("scopeType", "global"), payload.value("folderId", ""), scope, &error))
 	{
-		cb->Failure(400, error.empty() ? "Failed to resolve memory scope." : error);
+		cb->Failure(400, FailureDetailOrFallback(error, "Failed to resolve memory scope."));
 		return;
 	}
 	const std::string request_id = payload.value("requestId", "");
 
-	RunAsyncCefQuery(cb, [scope, request_id]() {
-		std::string error;
-		const std::vector<MemoryLibraryService::Entry> entries = MemoryLibraryService::ListEntries(scope, &error);
-		if (!error.empty())
-		{
-			return AsyncFailure(500, error);
-		}
+	RunAsyncCefQuery(cb,
+	                 [scope, request_id]()
+	                 {
+		                 std::string error;
+		                 const std::vector<MemoryLibraryService::Entry> entries = MemoryLibraryService::ListEntries(scope, &error);
+		                 if (!error.empty())
+		                 {
+			                 return AsyncFailure(500, error);
+		                 }
 
-		nlohmann::json response;
-		response["scope"] = {
-			{"scopeType", scope.scope_type},
-			{"folderId", scope.folder_id},
-			{"label", scope.label},
-			{"rootPath", scope.root_path.empty() ? std::string("Global and project memory roots") : scope.root_path.string()},
-			{"rootCount", scope.roots.size()},
-		};
-		response["entries"] = nlohmann::json::array();
-		for (const MemoryLibraryService::Entry& entry : entries)
-		{
-			response["entries"].push_back({
-				{"id", entry.id},
-				{"title", entry.title},
-				{"category", entry.category},
-				{"scope", entry.scope},
-				{"confidence", entry.confidence},
-				{"sourceChatId", entry.source_chat_id},
-				{"lastObserved", entry.last_observed},
-				{"occurrenceCount", entry.occurrence_count},
-				{"preview", entry.preview},
-				{"filePath", entry.file_path.string()},
-				{"scopeType", entry.scope_type},
-				{"folderId", entry.folder_id},
-				{"scopeLabel", entry.scope_label},
-				{"rootPath", entry.root_path.string()},
-			});
-		}
-		return AsyncSuccess(WithOptionalRequestId(std::move(response), request_id));
-	});
+		                 nlohmann::json scope_json;
+		                 scope_json["scopeType"] = scope.scope_type;
+		                 scope_json["folderId"] = scope.folder_id;
+		                 scope_json["label"] = scope.label;
+		                 scope_json["rootPath"] = uam::strings::NonEmptyOrFallback(scope.root_path.string(), "Global and project memory roots");
+		                 scope_json["rootCount"] = scope.roots.size();
+
+		                 nlohmann::json response;
+		                 response["scope"] = std::move(scope_json);
+		                 response["entries"] = nlohmann::json::array();
+		                 for (const MemoryLibraryService::Entry& entry : entries)
+		                 {
+			                 response["entries"].push_back({
+			                     {"id", entry.id},
+			                     {"title", entry.title},
+			                     {"category", entry.category},
+			                     {"scope", entry.scope},
+			                     {"confidence", entry.confidence},
+			                     {"sourceChatId", entry.source_chat_id},
+			                     {"lastObserved", entry.last_observed},
+			                     {"occurrenceCount", entry.occurrence_count},
+			                     {"preview", entry.preview},
+			                     {"filePath", entry.file_path.string()},
+			                     {"scopeType", entry.scope_type},
+			                     {"folderId", entry.folder_id},
+			                     {"scopeLabel", entry.scope_label},
+			                     {"rootPath", entry.root_path.string()},
+			                 });
+		                 }
+		                 return AsyncSuccess(WithOptionalRequestId(std::move(response), request_id));
+	                 });
 }
 
 void UamQueryHandler::HandleCreateMemoryEntry(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -2271,11 +2233,11 @@ void UamQueryHandler::HandleCreateMemoryEntry(CefRefPtr<CefBrowser> browser, con
 	const std::string requested_folder_id = payload.value("folderId", "");
 	std::string concrete_scope_type = requested_scope_type;
 	std::string concrete_folder_id = requested_folder_id;
-	if (Trim(requested_scope_type) == "all")
+	if (uam::strings::Trim(requested_scope_type) == "all")
 	{
 		concrete_scope_type = payload.value("targetScopeType", "");
 		concrete_folder_id = payload.value("targetFolderId", "");
-		if (Trim(concrete_scope_type).empty())
+		if (uam::strings::IsBlank(concrete_scope_type))
 		{
 			cb->Failure(400, "A target memory scope is required.");
 			return;
@@ -2286,7 +2248,7 @@ void UamQueryHandler::HandleCreateMemoryEntry(CefRefPtr<CefBrowser> browser, con
 	std::string error;
 	if (!MemoryLibraryService::ResolveScope(m_app, concrete_scope_type, concrete_folder_id, scope, &error))
 	{
-		cb->Failure(400, error.empty() ? "Failed to resolve memory scope." : error);
+		cb->Failure(400, FailureDetailOrFallback(error, "Failed to resolve memory scope."));
 		return;
 	}
 
@@ -2301,26 +2263,25 @@ void UamQueryHandler::HandleCreateMemoryEntry(CefRefPtr<CefBrowser> browser, con
 	MemoryLibraryService::Entry created;
 	if (!MemoryLibraryService::CreateEntry(scope, draft, &created, &error))
 	{
-		cb->Failure(400, error.empty() ? "Failed to create memory entry." : error);
+		cb->Failure(400, FailureDetailOrFallback(error, "Failed to create memory entry."));
 		return;
 	}
 
-	nlohmann::json response = {
-		{"id", created.id},
-		{"title", created.title},
-		{"category", created.category},
-		{"scope", created.scope},
-		{"confidence", created.confidence},
-		{"sourceChatId", created.source_chat_id},
-		{"lastObserved", created.last_observed},
-		{"occurrenceCount", created.occurrence_count},
-		{"preview", created.preview},
-		{"filePath", created.file_path.string()},
-		{"scopeType", created.scope_type},
-		{"folderId", created.folder_id},
-		{"scopeLabel", created.scope_label},
-		{"rootPath", created.root_path.string()},
-	};
+	nlohmann::json response;
+	response["id"] = created.id;
+	response["title"] = created.title;
+	response["category"] = created.category;
+	response["scope"] = created.scope;
+	response["confidence"] = created.confidence;
+	response["sourceChatId"] = created.source_chat_id;
+	response["lastObserved"] = created.last_observed;
+	response["occurrenceCount"] = created.occurrence_count;
+	response["preview"] = created.preview;
+	response["filePath"] = created.file_path.string();
+	response["scopeType"] = created.scope_type;
+	response["folderId"] = created.folder_id;
+	response["scopeLabel"] = created.scope_label;
+	response["rootPath"] = created.root_path.string();
 	MemoryService::RefreshMemoryActivity(m_app);
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success(response.dump());
@@ -2332,13 +2293,13 @@ void UamQueryHandler::HandleDeleteMemoryEntry(CefRefPtr<CefBrowser> browser, con
 	std::string error;
 	if (!MemoryLibraryService::ResolveScope(m_app, payload.value("scopeType", "global"), payload.value("folderId", ""), scope, &error))
 	{
-		cb->Failure(400, error.empty() ? "Failed to resolve memory scope." : error);
+		cb->Failure(400, FailureDetailOrFallback(error, "Failed to resolve memory scope."));
 		return;
 	}
 
 	if (!MemoryLibraryService::DeleteEntry(scope, payload.value("entryId", ""), &error))
 	{
-		cb->Failure(404, error.empty() ? "Failed to delete memory entry." : error);
+		cb->Failure(404, FailureDetailOrFallback(error, "Failed to delete memory entry."));
 		return;
 	}
 
@@ -2353,7 +2314,7 @@ void UamQueryHandler::HandleOpenMemoryRoot(CefRefPtr<CefBrowser> /*browser*/, co
 	std::string error;
 	if (!MemoryLibraryService::ResolveScope(m_app, payload.value("scopeType", "global"), payload.value("folderId", ""), scope, &error))
 	{
-		cb->Failure(400, error.empty() ? "Failed to resolve memory scope." : error);
+		cb->Failure(400, FailureDetailOrFallback(error, "Failed to resolve memory scope."));
 		return;
 	}
 	if (scope.scope_type == "all")
@@ -2370,7 +2331,7 @@ void UamQueryHandler::HandleOpenMemoryRoot(CefRefPtr<CefBrowser> /*browser*/, co
 
 	if (!PlatformServicesFactory::Instance().file_dialog_service.OpenFolderInFileManager(scope.root_path, &error))
 	{
-		cb->Failure(500, error.empty() ? "Failed to open memory root." : error);
+		cb->Failure(500, FailureDetailOrFallback(error, "Failed to open memory root."));
 		return;
 	}
 
@@ -2383,7 +2344,7 @@ void UamQueryHandler::HandleRevealMemoryEntry(CefRefPtr<CefBrowser> /*browser*/,
 	std::string error;
 	if (!MemoryLibraryService::ResolveScope(m_app, payload.value("scopeType", "global"), payload.value("folderId", ""), scope, &error))
 	{
-		cb->Failure(400, error.empty() ? "Failed to resolve memory scope." : error);
+		cb->Failure(400, FailureDetailOrFallback(error, "Failed to resolve memory scope."));
 		return;
 	}
 
@@ -2410,7 +2371,7 @@ void UamQueryHandler::HandleRevealMemoryEntry(CefRefPtr<CefBrowser> /*browser*/,
 
 		if (!PlatformServicesFactory::Instance().file_dialog_service.RevealPathInFileManager(entry.file_path, &error))
 		{
-			cb->Failure(500, error.empty() ? "Failed to reveal memory file." : error);
+			cb->Failure(500, FailureDetailOrFallback(error, "Failed to reveal memory file."));
 			return;
 		}
 
@@ -2423,30 +2384,26 @@ void UamQueryHandler::HandleRevealMemoryEntry(CefRefPtr<CefBrowser> /*browser*/,
 
 void UamQueryHandler::HandleOpenWorkspaceDirectory(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const std::string chat_id = payload.value("chatId", "");
-	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
-	if (chat_index < 0)
+	const ChatSession* chat = FindPayloadChatOrFail(m_app, payload, cb);
+	if (chat == nullptr)
 	{
-		cb->Failure(404, "Chat not found.");
 		return;
 	}
 
-	const ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
-	const std::filesystem::path workspace_root = ResolveWorkspaceRootPath(m_app, chat);
+	const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(m_app, *chat);
 	if (workspace_root.empty())
 	{
 		cb->Failure(400, "Chat has no workspace directory.");
 		return;
 	}
 
-	std::error_code ec;
-	if (!std::filesystem::exists(workspace_root, ec) || ec)
+	if (!uam::paths::PathExistsNoThrow(workspace_root))
 	{
 		cb->Failure(404, "Workspace directory does not exist.");
 		return;
 	}
 
-	if (!std::filesystem::is_directory(workspace_root, ec) || ec)
+	if (!uam::paths::IsDirectoryNoThrow(workspace_root))
 	{
 		cb->Failure(400, "Workspace path is not a directory.");
 		return;
@@ -2455,7 +2412,7 @@ void UamQueryHandler::HandleOpenWorkspaceDirectory(CefRefPtr<CefBrowser> /*brows
 	std::string error;
 	if (!PlatformServicesFactory::Instance().file_dialog_service.OpenFolderInFileManager(workspace_root, &error))
 	{
-		cb->Failure(500, error.empty() ? "Failed to open workspace directory." : error);
+		cb->Failure(500, FailureDetailOrFallback(error, "Failed to open workspace directory."));
 		return;
 	}
 
@@ -2464,30 +2421,26 @@ void UamQueryHandler::HandleOpenWorkspaceDirectory(CefRefPtr<CefBrowser> /*brows
 
 void UamQueryHandler::HandleOpenWorkspaceEditor(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const std::string chat_id = payload.value("chatId", "");
-	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
-	if (chat_index < 0)
+	const ChatSession* chat = FindPayloadChatOrFail(m_app, payload, cb);
+	if (chat == nullptr)
 	{
-		cb->Failure(404, "Chat not found.");
 		return;
 	}
 
-	const ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
-	const std::filesystem::path workspace_root = ResolveWorkspaceRootPath(m_app, chat);
+	const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(m_app, *chat);
 	if (workspace_root.empty())
 	{
 		cb->Failure(400, "Chat has no workspace directory.");
 		return;
 	}
 
-	std::error_code ec;
-	if (!std::filesystem::exists(workspace_root, ec) || ec)
+	if (!uam::paths::PathExistsNoThrow(workspace_root))
 	{
 		cb->Failure(404, "Workspace directory does not exist.");
 		return;
 	}
 
-	if (!std::filesystem::is_directory(workspace_root, ec) || ec)
+	if (!uam::paths::IsDirectoryNoThrow(workspace_root))
 	{
 		cb->Failure(400, "Workspace path is not a directory.");
 		return;
@@ -2497,7 +2450,7 @@ void UamQueryHandler::HandleOpenWorkspaceEditor(CefRefPtr<CefBrowser> /*browser*
 	std::string error;
 	if (!PlatformServicesFactory::Instance().file_dialog_service.OpenFolderInEditorPreset(workspace_root, editor_preset_id, &error))
 	{
-		cb->Failure(500, error.empty() ? "Failed to open workspace editor." : error);
+		cb->Failure(500, FailureDetailOrFallback(error, "Failed to open workspace editor."));
 		return;
 	}
 
@@ -2506,39 +2459,33 @@ void UamQueryHandler::HandleOpenWorkspaceEditor(CefRefPtr<CefBrowser> /*browser*
 
 void UamQueryHandler::HandleGetChatWorktreeStatus(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const std::string chat_id = payload.value("chatId", "");
-	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
-	if (chat_index < 0)
+	const ChatSession* chat = FindPayloadChatOrFail(m_app, payload, cb);
+	if (chat == nullptr)
 	{
-		cb->Failure(404, "Chat not found.");
 		return;
 	}
 
-	const ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
-	const uam::GitWorktreeStatus status = uam::GitWorktreeService().Status(m_app, chat);
+	const uam::GitWorktreeStatus status = uam::GitWorktreeService().Status(m_app, *chat);
 	cb->Success(SerializeGitWorktreeStatus(status).dump());
 }
 
 void UamQueryHandler::HandleCreateChatWorktree(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const std::string chat_id = payload.value("chatId", "");
-	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
-	if (chat_index < 0)
+	ChatSession* chat = FindPayloadChatOrFail(m_app, payload, cb);
+	if (chat == nullptr)
 	{
-		cb->Failure(404, "Chat not found.");
 		return;
 	}
-	if (ChatRuntimeBusy(m_app, chat_id))
+	if (ChatRuntimeBusy(m_app, chat->id))
 	{
 		cb->Failure(409, "Stop the chat runtime before changing workspace isolation.");
 		return;
 	}
 
-	ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
-	const uam::GitWorktreeOperationResult result = uam::GitWorktreeService().CreateForChat(m_app, chat);
+	const uam::GitWorktreeOperationResult result = uam::GitWorktreeService().CreateForChat(m_app, *chat);
 	if (!result.ok)
 	{
-		cb->Failure(400, result.message.empty() ? "Failed to create isolated Git worktree." : result.message);
+		cb->Failure(400, FailureDetailOrFallback(result.message, "Failed to create isolated Git worktree."));
 		return;
 	}
 
@@ -2548,24 +2495,21 @@ void UamQueryHandler::HandleCreateChatWorktree(CefRefPtr<CefBrowser> browser, co
 
 void UamQueryHandler::HandleDiscardChatWorktreeChanges(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const std::string chat_id = payload.value("chatId", "");
-	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
-	if (chat_index < 0)
+	ChatSession* chat = FindPayloadChatOrFail(m_app, payload, cb);
+	if (chat == nullptr)
 	{
-		cb->Failure(404, "Chat not found.");
 		return;
 	}
-	if (ChatRuntimeBusy(m_app, chat_id))
+	if (ChatRuntimeBusy(m_app, chat->id))
 	{
 		cb->Failure(409, "Stop the chat runtime before discarding worktree changes.");
 		return;
 	}
 
-	ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
-	const uam::GitWorktreeOperationResult result = uam::GitWorktreeService().DiscardChatChanges(m_app, chat);
+	const uam::GitWorktreeOperationResult result = uam::GitWorktreeService().DiscardChatChanges(m_app, *chat);
 	if (!result.ok)
 	{
-		cb->Failure(400, result.message.empty() ? "Failed to discard worktree changes." : result.message);
+		cb->Failure(400, FailureDetailOrFallback(result.message, "Failed to discard worktree changes."));
 		return;
 	}
 
@@ -2575,24 +2519,21 @@ void UamQueryHandler::HandleDiscardChatWorktreeChanges(CefRefPtr<CefBrowser> bro
 
 void UamQueryHandler::HandlePortChatWorktreeChanges(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const std::string chat_id = payload.value("chatId", "");
-	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
-	if (chat_index < 0)
+	ChatSession* chat = FindPayloadChatOrFail(m_app, payload, cb);
+	if (chat == nullptr)
 	{
-		cb->Failure(404, "Chat not found.");
 		return;
 	}
-	if (ChatRuntimeBusy(m_app, chat_id))
+	if (ChatRuntimeBusy(m_app, chat->id))
 	{
 		cb->Failure(409, "Stop the chat runtime before porting worktree changes.");
 		return;
 	}
 
-	ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
-	const uam::GitWorktreeOperationResult result = uam::GitWorktreeService().PortChatChanges(m_app, chat);
+	const uam::GitWorktreeOperationResult result = uam::GitWorktreeService().PortChatChanges(m_app, *chat);
 	if (!result.ok)
 	{
-		std::string message = result.message.empty() ? "Failed to port worktree changes." : result.message;
+		std::string message = FailureDetailOrFallback(result.message, "Failed to port worktree changes.");
 		if (!result.patch_path.empty())
 		{
 			message += "\nPatch saved at: " + result.patch_path.string();
@@ -2607,90 +2548,70 @@ void UamQueryHandler::HandlePortChatWorktreeChanges(CefRefPtr<CefBrowser> browse
 
 void UamQueryHandler::HandleGetVcsCommitStatus(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const std::string chat_id = payload.value("chatId", "");
-	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
-	if (chat_index < 0)
+	const ChatSession* chat = FindPayloadChatOrFail(m_app, payload, cb);
+	if (chat == nullptr)
 	{
-		cb->Failure(404, "Chat not found.");
 		return;
 	}
 
 	const uam::VcsType requested_type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
 	const bool include_line_stats = payload.value("includeLineStats", true);
 	const std::string request_id = payload.value("requestId", "");
-	const ChatSession chat = m_app.chats[static_cast<std::size_t>(chat_index)];
-	const std::filesystem::path data_root = m_app.data_root;
-	AppSettings settings = m_app.settings;
-	std::vector<ChatFolder> folders = m_app.folders;
-	std::vector<ProviderProfile> provider_profiles = m_app.provider_profiles;
+	const ChatSession chat_snapshot = *chat;
+	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
 
-	RunAsyncCefQuery(cb, [data_root, settings = std::move(settings), folders = std::move(folders), provider_profiles = std::move(provider_profiles), chat, requested_type, include_line_stats, request_id]() mutable {
-		uam::AppState snapshot = BuildReadOnlyAppSnapshot(data_root, std::move(settings), std::move(folders), std::move(provider_profiles));
-		const uam::VcsCommitStatus status = uam::VcsCommitService().Status(snapshot, chat, requested_type, include_line_stats);
-		return AsyncSuccess(WithOptionalRequestId(SerializeVcsCommitStatus(status), request_id));
-	});
+	RunAsyncCefQuery(cb,
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), requested_type, include_line_stats, request_id]() mutable
+	                 {
+		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
+		                 const uam::VcsCommitStatus status = uam::VcsCommitService().Status(snapshot, chat, requested_type, include_line_stats);
+		                 return AsyncSuccess(WithOptionalRequestId(SerializeVcsCommitStatus(status), request_id));
+	                 });
 }
 
 void UamQueryHandler::HandleGetVcsFileDiff(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const std::string chat_id = payload.value("chatId", "");
-	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
-	if (chat_index < 0)
+	const ChatSession* chat = FindPayloadChatOrFail(m_app, payload, cb);
+	if (chat == nullptr)
 	{
-		cb->Failure(404, "Chat not found.");
 		return;
 	}
 
 	const std::string path = payload.value("path", "");
 	const uam::VcsType type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
 	const std::string request_id = payload.value("requestId", "");
-	const ChatSession chat = m_app.chats[static_cast<std::size_t>(chat_index)];
-	const std::filesystem::path data_root = m_app.data_root;
-	AppSettings settings = m_app.settings;
-	std::vector<ChatFolder> folders = m_app.folders;
-	std::vector<ProviderProfile> provider_profiles = m_app.provider_profiles;
+	const ChatSession chat_snapshot = *chat;
+	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
 
-	RunAsyncCefQuery(cb, [data_root, settings = std::move(settings), folders = std::move(folders), provider_profiles = std::move(provider_profiles), chat, path, type, request_id]() mutable {
-		uam::AppState snapshot = BuildReadOnlyAppSnapshot(data_root, std::move(settings), std::move(folders), std::move(provider_profiles));
-		std::string error;
-		const std::string diff = uam::VcsCommitService().Diff(snapshot, chat, path, type, &error);
-		if (!error.empty())
-		{
-			return AsyncFailure(400, error);
-		}
-		return AsyncSuccess(WithOptionalRequestId(nlohmann::json{{"diff", diff}}, request_id));
-	});
+	RunAsyncCefQuery(cb,
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), path, type, request_id]() mutable
+	                 {
+		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
+		                 std::string error;
+		                 const std::string diff = uam::VcsCommitService().Diff(snapshot, chat, path, type, &error);
+		                 if (!error.empty())
+		                 {
+			                 return AsyncFailure(400, error);
+		                 }
+		                 return AsyncSuccess(WithOptionalRequestId(nlohmann::json{{"diff", diff}}, request_id));
+	                 });
 }
 
 void UamQueryHandler::HandleCommitVcsChanges(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const std::string chat_id = payload.value("chatId", "");
-	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
-	if (chat_index < 0)
+	const ChatSession* chat = FindPayloadChatOrFail(m_app, payload, cb);
+	if (chat == nullptr)
 	{
-		cb->Failure(404, "Chat not found.");
 		return;
 	}
 
-	std::vector<std::string> files;
-	if (payload.contains("files") && payload["files"].is_array())
-	{
-		for (const nlohmann::json& file : payload["files"])
-		{
-			if (file.is_string())
-			{
-				files.push_back(file.get<std::string>());
-			}
-		}
-	}
-
+	const std::vector<std::string> files = uam::nlohmann_json::TrimmedStringArrayField(payload, "files");
 	const std::string message = payload.value("message", "");
 	const uam::VcsType type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
-	const ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
-	const uam::VcsCommitResult result = uam::VcsCommitService().Commit(m_app, chat, type, message, files);
+	const uam::VcsCommitResult result = uam::VcsCommitService().Commit(m_app, *chat, type, message, files);
 	if (!result.ok)
 	{
-		cb->Failure(400, result.error.empty() ? "Failed to commit changes." : result.error);
+		cb->Failure(400, FailureDetailOrFallback(result.error, "Failed to commit changes."));
 		return;
 	}
 
@@ -2700,47 +2621,35 @@ void UamQueryHandler::HandleCommitVcsChanges(CefRefPtr<CefBrowser> browser, cons
 
 void UamQueryHandler::HandleGenerateVcsCommitMessage(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const std::string chat_id = payload.value("chatId", "");
-	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
-	if (chat_index < 0)
+	const ChatSession* chat = FindPayloadChatOrFail(m_app, payload, cb);
+	if (chat == nullptr)
 	{
-		cb->Failure(404, "Chat not found.");
 		return;
 	}
 
-	std::vector<std::string> files;
-	if (payload.contains("files") && payload["files"].is_array())
-	{
-		for (const nlohmann::json& file : payload["files"])
-		{
-			if (file.is_string())
-			{
-				files.push_back(file.get<std::string>());
-			}
-		}
-	}
-
+	std::vector<std::string> files = uam::nlohmann_json::TrimmedStringArrayField(payload, "files");
 	const uam::VcsType type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
 	const std::string request_id = payload.value("requestId", "");
-	const ChatSession chat = m_app.chats[static_cast<std::size_t>(chat_index)];
-	const std::filesystem::path data_root = m_app.data_root;
-	AppSettings settings = m_app.settings;
-	std::vector<ChatFolder> folders = m_app.folders;
-	std::vector<ProviderProfile> provider_profiles = m_app.provider_profiles;
+	const ChatSession chat_snapshot = *chat;
+	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
 
-	RunAsyncCefQuery(cb, [data_root, settings = std::move(settings), folders = std::move(folders), provider_profiles = std::move(provider_profiles), chat, type, files = std::move(files), request_id]() mutable {
-		uam::AppState snapshot = BuildReadOnlyAppSnapshot(data_root, std::move(settings), std::move(folders), std::move(provider_profiles));
-		const uam::VcsCommitMessageSuggestion suggestion = uam::VcsCommitService().GenerateMessage(snapshot, chat, type, files);
-		if (!suggestion.ok)
-		{
-			return AsyncFailure(400, suggestion.error.empty() ? "Failed to generate commit message." : suggestion.error);
-		}
+	RunAsyncCefQuery(cb,
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), type, files = std::move(files), request_id]() mutable
+	                 {
+		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
+		                 const uam::VcsCommitMessageSuggestion suggestion = uam::VcsCommitService().GenerateMessage(snapshot, chat, type, files);
+		                 if (!suggestion.ok)
+		                 {
+			                 return AsyncFailure(400, FailureDetailOrFallback(suggestion.error, "Failed to generate commit message."));
+		                 }
 
-		return AsyncSuccess(WithOptionalRequestId(nlohmann::json{
-			{"title", suggestion.title},
-			{"description", suggestion.description},
-		}, request_id));
-	});
+		                 return AsyncSuccess(WithOptionalRequestId(
+		                     nlohmann::json{
+		                         {"title", suggestion.title},
+		                         {"description", suggestion.description},
+		                     },
+		                     request_id));
+	                 });
 }
 
 void UamQueryHandler::HandleListMemoryScanCandidates(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& /*payload*/, CefRefPtr<Callback> cb)
@@ -2751,15 +2660,15 @@ void UamQueryHandler::HandleListMemoryScanCandidates(CefRefPtr<CefBrowser> /*bro
 	for (const MemoryService::ManualScanCandidate& candidate : candidates)
 	{
 		response["candidates"].push_back({
-			{"chatId", candidate.chat_id},
-			{"title", candidate.title},
-			{"folderId", candidate.folder_id},
-			{"folderTitle", candidate.folder_title},
-			{"providerId", candidate.provider_id},
-			{"messageCount", candidate.message_count},
-			{"memoryEnabled", candidate.memory_enabled},
-			{"memoryLastProcessedAt", candidate.memory_last_processed_at},
-			{"alreadyFullyProcessed", candidate.already_fully_processed},
+		    {"chatId", candidate.chat_id},
+		    {"title", candidate.title},
+		    {"folderId", candidate.folder_id},
+		    {"folderTitle", candidate.folder_title},
+		    {"providerId", candidate.provider_id},
+		    {"messageCount", candidate.message_count},
+		    {"memoryEnabled", candidate.memory_enabled},
+		    {"memoryLastProcessedAt", candidate.memory_last_processed_at},
+		    {"alreadyFullyProcessed", candidate.already_fully_processed},
 		});
 	}
 	cb->Success(response.dump());
@@ -2767,32 +2676,18 @@ void UamQueryHandler::HandleListMemoryScanCandidates(CefRefPtr<CefBrowser> /*bro
 
 void UamQueryHandler::HandleScanCurrentChats(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	if (!payload.contains("chatIds") || !payload["chatIds"].is_array())
+	std::vector<std::string> chat_ids = uam::nlohmann_json::TrimmedStringArrayField(payload, "chatIds");
+	if (chat_ids.empty() && uam::nlohmann_json::FindArrayField(payload, "chatIds") == nullptr)
 	{
 		cb->Failure(400, "chatIds is required.");
 		return;
-	}
-
-	std::vector<std::string> chat_ids;
-	chat_ids.reserve(payload["chatIds"].size());
-	for (const nlohmann::json& value : payload["chatIds"])
-	{
-		if (!value.is_string())
-		{
-			continue;
-		}
-		const std::string chat_id = Trim(value.get<std::string>());
-		if (!chat_id.empty())
-		{
-			chat_ids.push_back(chat_id);
-		}
 	}
 
 	std::string error;
 	int queued_count = 0;
 	if (!MemoryService::QueueManualScan(m_app, chat_ids, &queued_count, &error))
 	{
-		cb->Failure(409, error.empty() ? "No chats were queued for memory scanning." : error);
+		cb->Failure(409, FailureDetailOrFallback(error, "No chats were queued for memory scanning."));
 		return;
 	}
 
@@ -2805,8 +2700,8 @@ void UamQueryHandler::HandleScanCurrentChats(CefRefPtr<CefBrowser> browser, cons
 void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
-	const int rows = payload.value("rows", 24);
-	const int cols = payload.value("cols", 80);
+	const int rows = payload.value("rows", uam::kCliTerminalDefaultRows);
+	const int cols = payload.value("cols", uam::kCliTerminalDefaultCols);
 	const std::string terminal_id = payload.value("terminalId", "");
 	uam::LogCliDiagnosticEvent(m_app, "handle_start_cli", "request_received", nullptr, "chat_id=" + chat_id + ", terminal_id=" + terminal_id);
 
@@ -2815,13 +2710,13 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 		if (existing->lifecycle_state == uam::CliTerminalLifecycleState::ShuttingDown)
 		{
 			uam::LogCliDiagnosticEvent(m_app, "handle_start_cli", "restart_shutting_down_terminal", existing);
-			StopCliTerminal(*existing, false, CliTerminalStopMode::FastExit);
+			uam::StopCliTerminal(*existing, false, uam::CliTerminalStopMode::FastExit);
 		}
 		else
 		{
 			existing->ui_attached = true;
-			existing->rows = std::max(1, rows);
-			existing->cols = std::max(1, cols);
+			existing->rows = uam::ClampCliTerminalResizeRows(rows);
+			existing->cols = uam::ClampCliTerminalResizeCols(cols);
 			PlatformServicesFactory::Instance().terminal_runtime.ResizeCliTerminal(*existing);
 			uam::LogCliDiagnosticEvent(m_app, "handle_start_cli", "reused_running_terminal", existing);
 			cb->Success(BuildCliBindingResponse(*existing).dump());
@@ -2829,36 +2724,34 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 		}
 	}
 
-	const int chat_idx = ChatDomainService().FindChatIndexById(m_app, chat_id);
-	if (chat_idx < 0)
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (chat == nullptr)
 	{
-		cb->Failure(404, "Chat not found: " + chat_id);
 		return;
 	}
 
-	ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_idx)];
 	std::string hydrate_warning;
-	if (!ChatRepository::HydrateChatMessages(m_app.data_root, chat, &hydrate_warning))
+	if (!ChatRepository::HydrateChatMessages(m_app.data_root, *chat, &hydrate_warning))
 	{
-		cb->Failure(500, hydrate_warning.empty() ? "Failed to load chat messages." : hydrate_warning);
+		cb->Failure(500, FailureDetailOrFallback(hydrate_warning, "Failed to load chat messages."));
 		return;
 	}
-	uam::CliTerminalState& terminal = EnsureCliTerminalForChat(m_app, chat);
-	terminal.frontend_chat_id = chat.id;
+	uam::CliTerminalState& terminal = uam::EnsureCliTerminalForChat(m_app, *chat);
+	terminal.frontend_chat_id = chat->id;
 	terminal.ui_attached = true;
 	if (terminal.terminal_id.empty())
 	{
-		terminal.terminal_id = "term-" + chat.id;
+		terminal.terminal_id = "term-" + chat->id;
 	}
 	uam::LogCliDiagnosticEvent(m_app, "handle_start_cli", "terminal_prepared", &terminal);
 
-	if (!ProviderResolutionService().ChatProviderIsAvailable(m_app, chat))
+	if (!ProviderResolutionService().ChatProviderIsAvailable(m_app, *chat))
 	{
 		terminal.running = false;
 		terminal.generation_in_progress = false;
 		terminal.turn_state = uam::CliTerminalTurnState::Idle;
 		terminal.should_launch = false;
-		terminal.last_error = ProviderResolutionService().ChatProviderUnavailableReason(m_app, chat);
+		terminal.last_error = ProviderResolutionService().ChatProviderUnavailableReason(m_app, *chat);
 		terminal.lifecycle_state = uam::CliTerminalLifecycleState::Stopped;
 		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Success(BuildCliBindingResponse(terminal).dump());
@@ -2867,7 +2760,7 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 
 	if (!terminal.running)
 	{
-		if (!StartCliTerminalForChat(m_app, terminal, chat, rows, cols))
+		if (!uam::StartCliTerminalForChat(m_app, terminal, *chat, rows, cols))
 		{
 			uam::LogCliDiagnosticEvent(m_app, "handle_start_cli", "start_failed", &terminal, terminal.last_error);
 			cb->Success(BuildCliBindingResponse(terminal).dump());
@@ -2899,12 +2792,12 @@ void UamQueryHandler::HandleStopCli(CefRefPtr<CefBrowser> browser, const nlohman
 	cb->Success("{}");
 }
 
-void UamQueryHandler::HandleResizeCli(const nlohmann::json& payload, CefRefPtr<Callback> cb)
+void UamQueryHandler::HandleResizeCli(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string terminal_id = payload.value("terminalId", "");
-	const int rows = std::max(1, payload.value("rows", 24));
-	const int cols = std::max(1, payload.value("cols", 80));
+	const int rows = uam::ClampCliTerminalResizeRows(payload.value("rows", uam::kCliTerminalDefaultRows));
+	const int cols = uam::ClampCliTerminalResizeCols(payload.value("cols", uam::kCliTerminalDefaultCols));
 
 	if (uam::CliTerminalState* term = FindCliTerminalByRoutingKey(m_app, chat_id, terminal_id); term != nullptr && term->running)
 	{
@@ -2931,11 +2824,11 @@ void UamQueryHandler::HandleWriteCliInput(CefRefPtr<CefBrowser> browser, const n
 			// must reach the child process unmodified — do NOT queue these as
 			// structured prompts (which wrap them in bracketed-paste sequences
 			// and append \r, breaking all interactive CLI communication).
-			const bool wrote = WriteToCliTerminal(*term, data.c_str(), data.size());
+			const bool wrote = uam::WriteToCliTerminal(*term, data.c_str(), data.size());
 			uam::LogCliDiagnosticEvent(m_app, "handle_write_cli_input", wrote ? "pty_write_ok" : "pty_write_failed", term, "", static_cast<long long>(data.size()));
 			if (wrote && CliInputLooksLikeTurnSubmit(data))
 			{
-				MarkCliTerminalTurnBusy(*term);
+				uam::MarkCliTerminalTurnBusy(*term);
 				uam::LogCliDiagnosticEvent(m_app, "handle_write_cli_input", "turn_marked_busy_from_submit", term);
 				uam::PushStateUpdateIfChanged(browser, m_app);
 			}
@@ -2949,45 +2842,32 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string text = payload.value("text", "");
-	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
-
-	if (chat_index < 0)
+	const int missing_chat_status = chat_id.empty() || text.empty() ? 400 : 404;
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id, missing_chat_status);
+	if (chat == nullptr)
 	{
-		cb->Failure(chat_id.empty() || text.empty() ? 400 : 404, "Chat not found: " + chat_id);
 		return;
 	}
 
-	ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
 	std::string hydrate_warning;
-	if (!ChatRepository::HydrateChatMessages(m_app.data_root, chat, &hydrate_warning))
+	if (!ChatRepository::HydrateChatMessages(m_app.data_root, *chat, &hydrate_warning))
 	{
-		cb->Failure(500, hydrate_warning.empty() ? "Failed to load chat messages." : hydrate_warning);
+		cb->Failure(500, FailureDetailOrFallback(hydrate_warning, "Failed to load chat messages."));
 		return;
 	}
 
-	if (!ProviderResolutionService().ChatProviderIsAvailable(m_app, chat))
+	if (!ChatProviderAvailableOrFail(m_app, *chat, cb))
 	{
-		cb->Failure(409, ProviderResolutionService().ChatProviderUnavailableReason(m_app, chat));
 		return;
 	}
 
-	std::vector<std::string> markdown_store_files;
-	if (payload.contains("markdownStoreFiles") && payload["markdownStoreFiles"].is_array())
-	{
-		for (const nlohmann::json& item : payload["markdownStoreFiles"])
-		{
-			if (item.is_string())
-			{
-				markdown_store_files.push_back(item.get<std::string>());
-			}
-		}
-	}
+	const std::vector<std::string> markdown_store_files = uam::nlohmann_json::StringArrayField(payload, "markdownStoreFiles");
 
 	std::string error;
 	const std::vector<MessageAttachment> attachments = ParseStagedAttachments(payload);
 	if (!uam::SendAcpPrompt(m_app, chat_id, text, markdown_store_files, attachments, &error))
 	{
-		cb->Failure(chat_id.empty() || text.empty() ? 400 : 500, error.empty() ? "Failed to send ACP prompt." : error);
+		cb->Failure(chat_id.empty() || text.empty() ? 400 : 500, FailureDetailOrFallback(error, "Failed to send ACP prompt."));
 		return;
 	}
 
@@ -3005,21 +2885,20 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 		return;
 	}
 
-	const int chat_index = ChatDomainService().FindChatIndexById(m_app, chat_id);
-	if (chat_index < 0)
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (chat == nullptr)
 	{
-		cb->Failure(404, "Chat not found: " + chat_id);
 		return;
 	}
 
-	if (!payload.contains("items") || !payload["items"].is_array())
+	const nlohmann::json* items = uam::nlohmann_json::FindArrayField(payload, attachment_frontend_fields::kItemsField);
+	if (items == nullptr)
 	{
 		cb->Failure(400, "Attachment staging requires an items array.");
 		return;
 	}
 
-	ChatSession& chat = m_app.chats[static_cast<std::size_t>(chat_index)];
-	const std::filesystem::path workspace_root = ResolveWorkspaceRootPath(m_app, chat);
+	const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(m_app, *chat);
 	if (workspace_root.empty())
 	{
 		cb->Failure(400, "Chat has no workspace directory.");
@@ -3027,16 +2906,14 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 	}
 
 	std::error_code ec;
-	std::filesystem::create_directories(workspace_root, ec);
-	if (ec)
+	if (!uam::paths::CreateDirectoriesNoThrow(workspace_root, &ec))
 	{
 		cb->Failure(500, "Failed to create workspace directory.");
 		return;
 	}
 
 	const std::filesystem::path attachment_root = workspace_root / ".UAM" / "attachments" / chat_id;
-	std::filesystem::create_directories(attachment_root, ec);
-	if (ec)
+	if (!uam::paths::CreateDirectoriesNoThrow(attachment_root, &ec))
 	{
 		cb->Failure(500, "Failed to create attachment directory.");
 		return;
@@ -3044,21 +2921,27 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 
 	auto staged = nlohmann::json::array();
 	std::size_t index = 0;
-	for (const nlohmann::json& item : payload["items"])
+	for (const nlohmann::json& item : *items)
 	{
 		if (!item.is_object())
 		{
 			continue;
 		}
 
-		const std::string requested_kind = item.value("kind", "file");
-		const std::string mime_type = item.value("mimeType", "");
-		const std::string source_path_text = item.value("path", "");
-		const bool is_directory = requested_kind == "directory";
+		const std::string requested_kind = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kKindField});
+		const std::string mime_type = uam::nlohmann_json::TrimmedStringValue(item, {attachment_frontend_fields::kMimeTypeInputField});
+		const std::string source_path_text = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kPathField});
+		const std::string attachment_kind = NormalizeStagedAttachmentKind(requested_kind);
+		const bool is_directory = attachment_kind == attachment_frontend_fields::kDirectoryKind;
 		MessageAttachment attachment;
-		attachment.id = item.value("id", AttachmentId());
-		attachment.name = SafeAttachmentName(item.value("name", source_path_text.empty() ? "attachment" : std::filesystem::path(source_path_text).filename().string()), "attachment");
-		attachment.kind = is_directory ? "directory" : (requested_kind == "image" ? "image" : "file");
+		attachment.id = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kIdField});
+		if (attachment.id.empty())
+		{
+			attachment.id = AttachmentId();
+		}
+		const std::string fallback_name = source_path_text.empty() ? "attachment" : std::filesystem::path(source_path_text).filename().string();
+		attachment.name = SafeAttachmentName(uam::strings::TrimOrFallback(uam::nlohmann_json::StringViewOrEmpty(item, attachment_fields::kNameField), fallback_name), "attachment");
+		attachment.kind = attachment_kind;
 		attachment.mime_type = mime_type;
 
 		if (is_directory)
@@ -3069,7 +2952,7 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 				return;
 			}
 			const std::filesystem::path source_path = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(source_path_text);
-			if (!std::filesystem::exists(source_path, ec) || ec || !std::filesystem::is_directory(source_path, ec) || ec)
+			if (!uam::paths::IsDirectoryNoThrow(source_path))
 			{
 				cb->Failure(400, "Directory attachment does not exist: " + source_path_text);
 				return;
@@ -3081,9 +2964,9 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 		}
 
 		std::string bytes;
-		if (item.contains("dataBase64") && item["dataBase64"].is_string())
+		if (const nlohmann::json* data_base64 = uam::nlohmann_json::FindStringField(item, attachment_frontend_fields::kDataBase64Field); data_base64 != nullptr)
 		{
-			if (!Base64Decode(item["dataBase64"].get<std::string>(), bytes))
+			if (!uam::base64::Decode(data_base64->get_ref<const std::string&>(), bytes))
 			{
 				cb->Failure(400, "Attachment data is not valid base64.");
 				return;
@@ -3097,26 +2980,27 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 		else if (!source_path_text.empty())
 		{
 			const std::filesystem::path source_path = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(source_path_text);
-			if (!std::filesystem::exists(source_path, ec) || ec || !std::filesystem::is_regular_file(source_path, ec) || ec)
+			if (!uam::paths::IsRegularFileNoThrow(source_path))
 			{
 				cb->Failure(400, "File attachment does not exist: " + source_path_text);
 				return;
 			}
-			const std::uintmax_t source_size = std::filesystem::file_size(source_path, ec);
-			if (ec || source_size > kMaxAttachmentBytes)
+			const std::optional<std::uintmax_t> source_size = uam::paths::FileSizeNoThrow(source_path);
+			if (!source_size || *source_size > kMaxAttachmentBytes)
 			{
 				cb->Failure(413, "Attachment is larger than the 25 MB limit.");
 				return;
 			}
-			std::ifstream in(source_path, std::ios::binary);
-			if (!in)
+			if (!uam::io::TryReadBinaryFile(source_path, bytes))
 			{
 				cb->Failure(500, "Failed to read attachment: " + source_path_text);
 				return;
 			}
-			std::ostringstream buffer;
-			buffer << in.rdbuf();
-			bytes = buffer.str();
+			if (bytes.size() > kMaxAttachmentBytes)
+			{
+				cb->Failure(413, "Attachment is larger than the 25 MB limit.");
+				return;
+			}
 		}
 		else
 		{
@@ -3124,16 +3008,9 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 			return;
 		}
 
-		const std::string prefix = std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + "-" + std::to_string(index++);
+		const std::string prefix = uam::time::SystemEpochMicrosecondsTokenNow() + "-" + std::to_string(index++);
 		const std::filesystem::path target = attachment_root / (prefix + "-" + attachment.name);
-		std::ofstream out(target, std::ios::binary);
-		if (!out)
-		{
-			cb->Failure(500, "Failed to write attachment.");
-			return;
-		}
-		out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-		if (!out)
+		if (!uam::io::WriteBinaryFile(target, bytes))
 		{
 			cb->Failure(500, "Failed to write attachment.");
 			return;
@@ -3154,7 +3031,7 @@ void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser, const n
 	std::string error;
 	if (!uam::CancelAcpTurn(m_app, chat_id, &error))
 	{
-		cb->Failure(500, error.empty() ? "Failed to cancel ACP turn." : error);
+		cb->Failure(500, FailureDetailOrFallback(error, "Failed to cancel ACP turn."));
 		return;
 	}
 
@@ -3167,12 +3044,12 @@ void UamQueryHandler::HandleResolveAcpPermission(CefRefPtr<CefBrowser> browser, 
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string request_id = payload.value("requestId", "");
 	const std::string option_id = payload.value("optionId", "");
-	const bool cancelled = payload.value("cancelled", false) || option_id == "cancelled";
+	const bool cancelled = payload.value("cancelled", false) || option_id == uam::acp_permissions::kCancelledOptionId;
 
 	std::string error;
 	if (!uam::ResolveAcpPermission(m_app, chat_id, request_id, option_id, cancelled, &error))
 	{
-		cb->Failure(409, error.empty() ? "Failed to resolve ACP permission request." : error);
+		cb->Failure(409, FailureDetailOrFallback(error, "Failed to resolve ACP permission request."));
 		return;
 	}
 
@@ -3186,42 +3063,27 @@ void UamQueryHandler::HandleResolveAcpUserInput(CefRefPtr<CefBrowser> browser, c
 	const std::string request_id = payload.value("requestId", "");
 	std::map<std::string, std::vector<std::string>> answers;
 
-	const nlohmann::json raw_answers = payload.value("answers", nlohmann::json::object());
-	if (!raw_answers.is_object())
+	const nlohmann::json* raw_answers = uam::nlohmann_json::FindObjectField(payload, "answers");
+	if (raw_answers == nullptr)
 	{
 		cb->Failure(400, "ACP user input answers must be an object.");
 		return;
 	}
 
-	for (auto it = raw_answers.begin(); it != raw_answers.end(); ++it)
+	for (auto it = raw_answers->begin(); it != raw_answers->end(); ++it)
 	{
 		if (it.key().empty())
 		{
 			continue;
 		}
 
-		std::vector<std::string> values;
-		if (it.value().is_array())
-		{
-			for (const nlohmann::json& value : it.value())
-			{
-				if (value.is_string())
-				{
-					values.push_back(value.get<std::string>());
-				}
-			}
-		}
-		else if (it.value().is_string())
-		{
-			values.push_back(it.value().get<std::string>());
-		}
-		answers[it.key()] = std::move(values);
+		answers[it.key()] = uam::nlohmann_json::StringListValue(it.value());
 	}
 
 	std::string error;
 	if (!uam::ResolveAcpUserInput(m_app, chat_id, request_id, answers, &error))
 	{
-		cb->Failure(409, error.empty() ? "Failed to resolve ACP user input request." : error);
+		cb->Failure(409, FailureDetailOrFallback(error, "Failed to resolve ACP user input request."));
 		return;
 	}
 
@@ -3237,7 +3099,7 @@ void UamQueryHandler::HandleStopAcpSession(CefRefPtr<CefBrowser> browser, const 
 	cb->Success("{}");
 }
 
-void UamQueryHandler::HandleWriteClipboardText(const nlohmann::json& payload, CefRefPtr<Callback> cb)
+void UamQueryHandler::HandleWriteClipboardText(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string text = payload.value("text", "");
 	if (text.empty())
@@ -3254,7 +3116,7 @@ void UamQueryHandler::HandleWriteClipboardText(const nlohmann::json& payload, Ce
 	std::string error;
 	if (!WriteNativeClipboardText(text, &error))
 	{
-		cb->Failure(500, error.empty() ? "Failed to write clipboard text." : error);
+		cb->Failure(500, FailureDetailOrFallback(error, "Failed to write clipboard text."));
 		return;
 	}
 
@@ -3269,7 +3131,7 @@ void UamQueryHandler::HandleSetTheme(CefRefPtr<CefBrowser> browser, const nlohma
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
 		m_app.settings.ui_theme = previous_theme;
-		cb->Failure(500, m_app.status_line.empty() ? "Failed to persist theme." : m_app.status_line);
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist theme."));
 		return;
 	}
 

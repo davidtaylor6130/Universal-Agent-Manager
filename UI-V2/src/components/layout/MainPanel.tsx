@@ -5,6 +5,7 @@ import { CLIView } from '../views/CLIView'
 import { ChatView } from '../views/ChatView'
 import { isCefContext } from '../../ipc/cefBridge'
 import { ProviderLogo } from '../shared/ProviderLogo'
+import { DEFAULT_PROVIDER_ID, providerShortName } from '../../utils/providerMetadata'
 
 const PushStatusDot = memo(function PushStatusDot() {
   const pushChannelStatus = useAppStore((s) => s.pushChannelStatus)
@@ -54,12 +55,9 @@ export function MainPanel() {
       cliBinding?.lifecycleState === 'busy' ||
       cliBinding?.lifecycleState === 'shuttingDown'
   )
-  const providerId = session?.providerId || acpBinding?.providerId || 'gemini-cli'
+  const providerId = session?.providerId || acpBinding?.providerId || DEFAULT_PROVIDER_ID
   const provider = providers.find((candidate) => candidate.id === providerId)
-  const providerName =
-    provider?.shortName?.trim() ||
-    provider?.name?.trim() ||
-    (providerId === 'codex-cli' ? 'Codex' : providerId === 'claude-cli' ? 'Claude' : providerId === 'opencode-cli' ? 'OpenCode' : providerId === 'copilot-cli' ? 'Copilot' : 'Gemini')
+  const providerName = providerShortName(provider, providerId)
 
   if (!session) {
     return (

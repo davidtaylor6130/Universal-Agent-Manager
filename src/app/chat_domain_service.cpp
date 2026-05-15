@@ -1,35 +1,44 @@
 #include "chat_domain_service.h"
 
-#include "app/application_core_helpers.h"
 #include "app/persistence_coordinator.h"
 #include "app/provider_resolution_service.h"
 #include "common/chat/chat_branching.h"
+#include "common/chat/chat_ids.h"
+#include "common/chat/native_chat_identity.h"
+#include "common/paths/workspace_root.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/terminal_common.h"
+#include "common/utils/string_utils.h"
+#include "common/utils/time_utils.h"
 
 #include <algorithm>
-#include <chrono>
-#include <cstdint>
-#include <random>
-#include <sstream>
+#include <iterator>
+#include <limits>
+#include <string>
+#include <string_view>
 #include <unordered_map>
 
-using uam::AppState;
 namespace
 {
+	namespace chat_identity = uam::chat_identity;
+
+	constexpr std::string_view kPlaceholderNewChatTitle = "New Session";
+	constexpr std::string_view kFallbackBranchChatTitle = "Branch Chat";
+	constexpr int kFirstUserMessageTitleMaxChars = 48;
+	constexpr int kBranchTitleMessageMaxChars = 40;
+	constexpr int kEstimatedOutputCharsPerToken = 4;
+	constexpr double kTokensPerMillion = 1000000.0;
+	constexpr double kCostPerMillionInputTokens = 0.075;
+	constexpr double kCostPerMillionOutputTokens = 0.30;
+
 	bool ShouldAutoReplaceTitleFromFirstUserMessage(const ChatSession& chat, const MessageRole role)
 	{
-		return chat.messages.empty() && role == MessageRole::User && Trim(chat.title) == "New Session";
+		return chat.messages.empty() && role == MessageRole::User && uam::strings::Trim(chat.title) == kPlaceholderNewChatTitle;
 	}
 
 	void AutoReplaceTitleFromFirstUserMessage(ChatSession& chat, const std::string& text)
 	{
-		std::string maybe_title = Trim(text);
-
-		if (maybe_title.size() > 48)
-		{
-			maybe_title = maybe_title.substr(0, 45) + "...";
-		}
+		const std::string maybe_title = uam::strings::TrimAndElide(text, kFirstUserMessageTitleMaxChars);
 
 		if (!maybe_title.empty())
 		{
@@ -37,214 +46,296 @@ namespace
 		}
 	}
 
-	std::string NormalizeNativeIdentityWorkspace(const ChatSession& chat)
+	void ApplyMessageAnalytics(Message& message, const ChatDomainService::MessageAnalytics& analytics)
 	{
-		const std::string trimmed_workspace = Trim(chat.workspace_directory);
-
-		if (!trimmed_workspace.empty())
+		const auto bounded_non_negative_int = [](int64_t value)
 		{
-			return std::filesystem::path(trimmed_workspace).lexically_normal().generic_string();
+			return static_cast<int>(std::clamp<int64_t>(value, 0, std::numeric_limits<int>::max()));
+		};
+		const int64_t estimated_output_tokens = std::max<int64_t>(0, analytics.output_chars / kEstimatedOutputCharsPerToken);
+
+		message.provider = analytics.provider;
+		message.tokens_input = bounded_non_negative_int(analytics.input_tokens);
+		message.tokens_output = bounded_non_negative_int(estimated_output_tokens);
+		message.time_to_first_token_ms = bounded_non_negative_int(analytics.time_to_first_token_ms);
+		message.processing_time_ms = bounded_non_negative_int(analytics.processing_time_ms);
+		message.interrupted = analytics.interrupted;
+		message.estimated_cost_usd = (static_cast<double>(message.tokens_input) * kCostPerMillionInputTokens + static_cast<double>(message.tokens_output) * kCostPerMillionOutputTokens) / kTokensPerMillion;
+	}
+
+	void AppendMessage(ChatSession& chat, const MessageRole role, const std::string& text, const ChatDomainService::MessageAnalytics* analytics = nullptr)
+	{
+		const bool should_auto_replace_title = ShouldAutoReplaceTitleFromFirstUserMessage(chat, role);
+		const std::string timestamp = uam::time::TimestampNow();
+
+		Message message;
+		message.role = role;
+		message.content = text;
+		message.created_at = timestamp;
+		if (analytics != nullptr)
+		{
+			ApplyMessageAnalytics(message, *analytics);
 		}
 
-		const std::string trimmed_folder = Trim(chat.folder_id);
-		return trimmed_folder.empty() ? "" : trimmed_folder;
-	}
+		chat.messages.push_back(std::move(message));
+		chat.updated_at = timestamp;
 
-	std::string NativeIdentityKey(const ChatSession& chat)
-	{
-		return Trim(chat.provider_id) + "|" + NormalizeNativeIdentityWorkspace(chat) + "|" + Trim(chat.native_session_id);
-	}
-
-	std::string RecentChatTimestamp(const ChatSession& chat)
-	{
-		return chat.last_opened_at.empty() ? chat.updated_at : chat.last_opened_at;
-	}
-
-	std::string HashNativeIdentityKey(const std::string& key)
-	{
-		std::uint64_t hash = 1469598103934665603ull;
-
-		for (const unsigned char ch : key)
+		if (should_auto_replace_title)
 		{
-			hash ^= ch;
-			hash *= 1099511628211ull;
+			AutoReplaceTitleFromFirstUserMessage(chat, text);
+		}
+	}
+
+	std::string_view RecentChatTimestamp(const ChatSession& chat)
+	{
+		return chat.last_opened_at.empty() ? std::string_view(chat.updated_at) : std::string_view(chat.last_opened_at);
+	}
+
+	bool IsValidChatIndex(const std::vector<ChatSession>& chats, int index)
+	{
+		return index >= 0 && index < static_cast<int>(chats.size());
+	}
+
+	template <typename AppStateT> auto SelectedChatOrNull(AppStateT& app) -> decltype(&app.chats[app.selected_chat_index])
+	{
+		if (!IsValidChatIndex(app.chats, app.selected_chat_index))
+		{
+			return nullptr;
 		}
 
-		std::ostringstream out;
-		out << std::hex << hash;
-		return out.str();
+		return &app.chats[app.selected_chat_index];
+	}
+
+	template <typename Range> auto FindById(Range& values, const std::string& id)
+	{
+		return std::ranges::find_if(values, [&](const auto& value) { return uam::strings::TrimmedEqualsNonEmpty(value.id, id); });
+	}
+
+	template <typename Range> int FindIndexById(Range& values, const std::string& id)
+	{
+		const auto found = FindById(values, id);
+		return found == values.end() ? -1 : static_cast<int>(std::ranges::distance(values.begin(), found));
+	}
+
+	template <typename Range> auto* PointerOrNull(Range& values, decltype(values.begin()) found)
+	{
+		return found == values.end() ? nullptr : &*found;
+	}
+
+	std::string BranchTitleFromMessage(const std::string& message)
+	{
+		const std::string title = uam::strings::TrimAndElide(message, kBranchTitleMessageMaxChars);
+		return title.empty() ? std::string(kFallbackBranchChatTitle) : "Branch: " + title;
+	}
+
+	std::string NativeDeduplicationKeyOrEmpty(const ChatSession& chat)
+	{
+		return uam::strings::IsBlank(chat.native_session_id) ? std::string{} : chat_identity::NativeIdentityKeyForLocalDeduplication(chat);
+	}
+
+	void RegisterChatIndexes(const ChatSession& chat,
+	                         std::size_t index,
+	                         std::unordered_map<std::string, std::size_t>& index_by_id,
+	                         std::unordered_map<std::string, std::size_t>& index_by_native_identity)
+	{
+		index_by_id[chat.id] = index;
+
+		const std::string native_key = NativeDeduplicationKeyOrEmpty(chat);
+		if (!native_key.empty())
+		{
+			index_by_native_identity[native_key] = index;
+		}
+	}
+
+	void UnregisterChatIndexes(const ChatSession& chat,
+	                           std::unordered_map<std::string, std::size_t>& index_by_id,
+	                           std::unordered_map<std::string, std::size_t>& index_by_native_identity)
+	{
+		index_by_id.erase(chat.id);
+
+		const std::string native_key = NativeDeduplicationKeyOrEmpty(chat);
+		if (!native_key.empty())
+		{
+			index_by_native_identity.erase(native_key);
+		}
+	}
+
+	void ReplaceDedupedChat(ChatSession& existing,
+	                        ChatSession&& candidate,
+	                        std::size_t index,
+	                        std::unordered_map<std::string, std::size_t>& index_by_id,
+	                        std::unordered_map<std::string, std::size_t>& index_by_native_identity)
+	{
+		UnregisterChatIndexes(existing, index_by_id, index_by_native_identity);
+		existing = std::move(candidate);
+		RegisterChatIndexes(existing, index, index_by_id, index_by_native_identity);
 	}
 } // namespace
 
 std::string ChatDomainService::NewFolderId() const
 {
 	const std::string uuid = PlatformServicesFactory::Instance().process_service.GenerateUuid();
-	if (!uuid.empty())
-	{
-		return "folder-" + uuid;
-	}
-
-	const auto now = std::chrono::system_clock::now().time_since_epoch();
-	const auto epoch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
-	std::mt19937 rng(std::random_device{}());
-	std::uniform_int_distribution<int> hex_digit(0, 15);
-	std::ostringstream id;
-	id << "folder-" << epoch_ms << "-";
-
-	for (int i = 0; i < 8; ++i)
-	{
-		id << std::hex << hex_digit(rng);
-	}
-
-	return id.str();
+	return uam::chat_ids::NewFolderId(uuid);
 }
 
-int ChatDomainService::FindFolderIndexById(const AppState& app, const std::string& folder_id) const
+int ChatDomainService::FindFolderIndexById(const uam::AppState& app, const std::string& folder_id) const
 {
-	for (int i = 0; i < static_cast<int>(app.folders.size()); ++i)
-	{
-		if (app.folders[i].id == folder_id)
-		{
-			return i;
-		}
-	}
-
-	return -1;
+	return FindIndexById(app.folders, uam::strings::Trim(folder_id));
 }
 
-ChatFolder* ChatDomainService::FindFolderById(AppState& app, const std::string& folder_id) const
+ChatFolder* ChatDomainService::FindFolderById(uam::AppState& app, const std::string& folder_id) const
 {
-	const int index = FindFolderIndexById(app, folder_id);
-	return (index >= 0) ? &app.folders[index] : nullptr;
+	return PointerOrNull(app.folders, FindById(app.folders, uam::strings::Trim(folder_id)));
 }
 
-const ChatFolder* ChatDomainService::FindFolderById(const AppState& app, const std::string& folder_id) const
+const ChatFolder* ChatDomainService::FindFolderById(const uam::AppState& app, const std::string& folder_id) const
 {
-	const int index = FindFolderIndexById(app, folder_id);
-	return (index >= 0) ? &app.folders[index] : nullptr;
+	return PointerOrNull(app.folders, FindById(app.folders, uam::strings::Trim(folder_id)));
 }
 
-void ChatDomainService::EnsureDefaultFolder(AppState& app) const
+void ChatDomainService::EnsureDefaultFolder(uam::AppState& app) const
 {
 	(void)app;
 }
 
-void ChatDomainService::EnsureNewChatFolderSelection(AppState& app) const
+void ChatDomainService::EnsureNewChatFolderSelection(uam::AppState& app) const
 {
+	app.new_chat_folder_id = uam::strings::Trim(app.new_chat_folder_id);
 	if (!app.new_chat_folder_id.empty() && FindFolderById(app, app.new_chat_folder_id) == nullptr)
 	{
 		app.new_chat_folder_id.clear();
 	}
 }
 
-void ChatDomainService::NormalizeChatFolderAssignments(AppState& app) const
+void ChatDomainService::NormalizeChatFolderAssignments(uam::AppState& app) const
 {
-	bool any_expanded_with_chats = false;
-
-	for (const ChatFolder& folder : app.folders)
-	{
-		if (!folder.collapsed && CountChatsInFolder(app, folder.id) > 0)
-		{
-			any_expanded_with_chats = true;
-			break;
-		}
-	}
+	const bool any_expanded_with_chats = std::ranges::any_of(app.folders, [&](const ChatFolder& folder) { return !folder.collapsed && CountChatsInFolder(app, folder.id) > 0; });
 
 	if (!any_expanded_with_chats)
 	{
-		for (ChatFolder& folder : app.folders)
-		{
-			if (CountChatsInFolder(app, folder.id) > 0)
-			{
-				folder.collapsed = false;
-			}
-		}
+		std::ranges::for_each(app.folders,
+		                      [&](ChatFolder& folder)
+		                      {
+			                      if (CountChatsInFolder(app, folder.id) > 0)
+			                      {
+				                      folder.collapsed = false;
+			                      }
+		                      });
 	}
 
 	EnsureNewChatFolderSelection(app);
 }
 
-std::string ChatDomainService::FolderForNewChat(const AppState& app) const
+std::string ChatDomainService::FolderForNewChat(const uam::AppState& app) const
 {
-	if (!app.new_chat_folder_id.empty() && FindFolderById(app, app.new_chat_folder_id) != nullptr)
+	const std::string target_folder_id = uam::strings::Trim(app.new_chat_folder_id);
+	if (!target_folder_id.empty() && FindFolderById(app, target_folder_id) != nullptr)
 	{
-		return app.new_chat_folder_id;
+		return target_folder_id;
 	}
 
 	return "";
 }
 
-int ChatDomainService::CountChatsInFolder(const AppState& app, const std::string& folder_id) const
+int ChatDomainService::CountChatsInFolder(const uam::AppState& app, const std::string& folder_id) const
 {
-	int count = 0;
-
-	for (const ChatSession& chat : app.chats)
-	{
-		if (chat.folder_id == folder_id)
-		{
-			++count;
-		}
-	}
-
-	return count;
+	const std::string target_folder_id = uam::strings::Trim(folder_id);
+	return static_cast<int>(std::ranges::count_if(app.chats, [&](const ChatSession& chat) { return uam::strings::TrimmedEquals(chat.folder_id, target_folder_id); }));
 }
 
 std::string ChatDomainService::FolderTitleOrFallback(const ChatFolder& folder) const
 {
-	const std::string trimmed = Trim(folder.title);
-	return trimmed.empty() ? "Untitled Folder" : trimmed;
+	return uam::strings::TrimOrFallback(folder.title, "Untitled Folder");
 }
 
-int ChatDomainService::FindChatIndexById(const AppState& app, const std::string& chat_id) const
+std::string ChatDomainService::ChatTitleOrFallback(const ChatSession& chat) const
 {
-	for (int i = 0; i < static_cast<int>(app.chats.size()); ++i)
-	{
-		if (app.chats[i].id == chat_id)
-		{
-			return i;
-		}
-	}
-
-	return -1;
+	return uam::strings::TrimOrFallback(chat.title, "Untitled Chat");
 }
 
-ChatSession* ChatDomainService::SelectedChat(AppState& app) const
+int ChatDomainService::FindChatIndexById(const uam::AppState& app, const std::string& chat_id) const
 {
-	if (app.selected_chat_index < 0 || app.selected_chat_index >= static_cast<int>(app.chats.size()))
-	{
-		return nullptr;
-	}
-
-	return &app.chats[app.selected_chat_index];
+	return FindIndexById(app.chats, uam::strings::Trim(chat_id));
 }
 
-const ChatSession* ChatDomainService::SelectedChat(const AppState& app) const
+ChatSession* ChatDomainService::FindChatById(uam::AppState& app, const std::string& chat_id) const
 {
-	if (app.selected_chat_index < 0 || app.selected_chat_index >= static_cast<int>(app.chats.size()))
+	return PointerOrNull(app.chats, FindById(app.chats, uam::strings::Trim(chat_id)));
+}
+
+const ChatSession* ChatDomainService::FindChatById(const uam::AppState& app, const std::string& chat_id) const
+{
+	return PointerOrNull(app.chats, FindById(app.chats, uam::strings::Trim(chat_id)));
+}
+
+ChatSession* ChatDomainService::SelectedChat(uam::AppState& app) const
+{
+	return SelectedChatOrNull(app);
+}
+
+const ChatSession* ChatDomainService::SelectedChat(const uam::AppState& app) const
+{
+	return SelectedChatOrNull(app);
+}
+
+std::string ChatDomainService::SelectedChatId(const uam::AppState& app) const
+{
+	const ChatSession* selected = SelectedChat(app);
+	return (selected != nullptr) ? uam::strings::Trim(selected->id) : "";
+}
+
+std::string ChatDomainService::SelectedChatProviderId(const uam::AppState& app) const
+{
+	const ChatSession* selected = SelectedChat(app);
+	return (selected != nullptr) ? uam::strings::Trim(selected->provider_id) : "";
+}
+
+void ChatDomainService::SetSelectedChatIndexOrNearest(uam::AppState& app, int preferred_index) const
+{
+	if (app.chats.empty())
 	{
-		return nullptr;
+		app.selected_chat_index = -1;
+		RefreshRememberedSelection(app);
+		return;
 	}
 
-	return &app.chats[app.selected_chat_index];
+	const int last_index = static_cast<int>(app.chats.size()) - 1;
+	app.selected_chat_index = std::clamp(preferred_index, 0, last_index);
+	RefreshRememberedSelection(app);
+}
+
+void ChatDomainService::SelectRememberedOrFirstChat(uam::AppState& app) const
+{
+	int preferred_index = 0;
+
+	app.settings.last_selected_chat_id = uam::strings::Trim(app.settings.last_selected_chat_id);
+	if (app.settings.remember_last_chat && !app.settings.last_selected_chat_id.empty())
+	{
+		preferred_index = FindChatIndexById(app, app.settings.last_selected_chat_id);
+	}
+
+	SetSelectedChatIndexOrNearest(app, preferred_index);
 }
 
 void ChatDomainService::SortChatsByRecent(std::vector<ChatSession>& chats) const
 {
-	std::sort(chats.begin(), chats.end(), [](const ChatSession& a, const ChatSession& b) {
-		const std::string a_recent = RecentChatTimestamp(a);
-		const std::string b_recent = RecentChatTimestamp(b);
-		if (a_recent != b_recent)
-		{
-			return a_recent > b_recent;
-		}
+	std::ranges::sort(chats,
+	                  [](const ChatSession& a, const ChatSession& b)
+	                  {
+		                  const std::string_view a_recent = RecentChatTimestamp(a);
+		                  const std::string_view b_recent = RecentChatTimestamp(b);
+		                  if (a_recent != b_recent)
+		                  {
+			                  return a_recent > b_recent;
+		                  }
 
-		if (a.updated_at != b.updated_at)
-		{
-			return a.updated_at > b.updated_at;
-		}
+		                  if (a.updated_at != b.updated_at)
+		                  {
+			                  return a.updated_at > b.updated_at;
+		                  }
 
-		return a.created_at > b.created_at;
-	});
+		                  return a.created_at > b.created_at;
+	                  });
 }
 
 bool ChatDomainService::ShouldReplaceChatForDuplicateId(const ChatSession& candidate, const ChatSession& existing) const
@@ -271,17 +362,17 @@ bool ChatDomainService::ShouldReplaceChatForDuplicateId(const ChatSession& candi
 
 	if (candidate.provider_id != existing.provider_id)
 	{
-		return !candidate.provider_id.empty();
+		return !uam::strings::IsBlank(candidate.provider_id);
 	}
 
 	if (candidate.parent_chat_id != existing.parent_chat_id)
 	{
-		return !candidate.parent_chat_id.empty();
+		return !uam::strings::IsBlank(candidate.parent_chat_id);
 	}
 
 	if (candidate.branch_root_chat_id != existing.branch_root_chat_id)
 	{
-		return !candidate.branch_root_chat_id.empty();
+		return !uam::strings::IsBlank(candidate.branch_root_chat_id);
 	}
 
 	if (candidate.branch_from_message_index != existing.branch_from_message_index)
@@ -298,19 +389,20 @@ std::vector<ChatSession> ChatDomainService::DeduplicateChatsById(std::vector<Cha
 	deduped.reserve(chats.size());
 	std::unordered_map<std::string, std::size_t> index_by_id;
 	std::unordered_map<std::string, std::size_t> index_by_native_identity;
+	index_by_id.reserve(chats.size());
+	index_by_native_identity.reserve(chats.size());
 
 	for (ChatSession& chat : chats)
 	{
-		chat.id = Trim(chat.id);
+		chat.id = uam::strings::Trim(chat.id);
 
 		if (chat.id.empty())
 		{
 			continue;
 		}
 
-		const std::string native_session_id = Trim(chat.native_session_id);
-		const bool has_native_identity = !native_session_id.empty();
-		const std::string native_key = has_native_identity ? NativeIdentityKey(chat) : std::string{};
+		const std::string native_key = NativeDeduplicationKeyOrEmpty(chat);
+		const bool has_native_identity = !native_key.empty();
 
 		if (has_native_identity)
 		{
@@ -322,13 +414,7 @@ std::vector<ChatSession> ChatDomainService::DeduplicateChatsById(std::vector<Cha
 
 				if (ShouldReplaceChatForDuplicateId(chat, existing))
 				{
-					const std::string previous_id = existing.id;
-					existing = std::move(chat);
-					if (existing.id != previous_id)
-					{
-						index_by_id.erase(previous_id);
-						index_by_id[existing.id] = native_it->second;
-					}
+					ReplaceDedupedChat(existing, std::move(chat), native_it->second, index_by_id, index_by_native_identity);
 				}
 
 				continue;
@@ -338,35 +424,27 @@ std::vector<ChatSession> ChatDomainService::DeduplicateChatsById(std::vector<Cha
 			if (id_it != index_by_id.end())
 			{
 				ChatSession& existing = deduped[id_it->second];
-				const std::string existing_native_key = Trim(existing.native_session_id).empty() ? std::string{} : NativeIdentityKey(existing);
+				const std::string existing_native_key = NativeDeduplicationKeyOrEmpty(existing);
 
 				if (!existing_native_key.empty() && existing_native_key == native_key)
 				{
 					if (ShouldReplaceChatForDuplicateId(chat, existing))
 					{
-						const std::string previous_id = existing.id;
-						existing = std::move(chat);
-						if (existing.id != previous_id)
-						{
-							index_by_id.erase(previous_id);
-							index_by_id[existing.id] = id_it->second;
-						}
-						index_by_native_identity[native_key] = id_it->second;
+						ReplaceDedupedChat(existing, std::move(chat), id_it->second, index_by_id, index_by_native_identity);
 					}
 
 					continue;
 				}
 
-				chat.id = chat.id + "--" + HashNativeIdentityKey(native_key);
-				while (index_by_id.find(chat.id) != index_by_id.end())
+				chat.id = chat.id + "--" + chat_identity::NativeIdentityKeyHash(native_key);
+				while (index_by_id.contains(chat.id))
 				{
 					chat.id.push_back('_');
 				}
 			}
 
 			const std::size_t next_index = deduped.size();
-			index_by_native_identity[native_key] = next_index;
-			index_by_id[chat.id] = next_index;
+			RegisterChatIndexes(chat, next_index, index_by_id, index_by_native_identity);
 			deduped.push_back(std::move(chat));
 			continue;
 		}
@@ -376,8 +454,7 @@ std::vector<ChatSession> ChatDomainService::DeduplicateChatsById(std::vector<Cha
 		if (it == index_by_id.end())
 		{
 			const std::size_t next_index = deduped.size();
-			index_by_id[chat.id] = next_index;
-
+			RegisterChatIndexes(chat, next_index, index_by_id, index_by_native_identity);
 			deduped.push_back(std::move(chat));
 			continue;
 		}
@@ -386,12 +463,7 @@ std::vector<ChatSession> ChatDomainService::DeduplicateChatsById(std::vector<Cha
 
 		if (ShouldReplaceChatForDuplicateId(chat, existing))
 		{
-			existing = std::move(chat);
-		}
-
-		if (!existing.native_session_id.empty())
-		{
-			index_by_native_identity[NativeIdentityKey(existing)] = it->second;
+			ReplaceDedupedChat(existing, std::move(chat), it->second, index_by_id, index_by_native_identity);
 		}
 	}
 
@@ -399,7 +471,7 @@ std::vector<ChatSession> ChatDomainService::DeduplicateChatsById(std::vector<Cha
 	return deduped;
 }
 
-void ChatDomainService::RefreshRememberedSelection(AppState& app) const
+void ChatDomainService::RefreshRememberedSelection(uam::AppState& app) const
 {
 	if (!app.settings.remember_last_chat)
 	{
@@ -407,22 +479,22 @@ void ChatDomainService::RefreshRememberedSelection(AppState& app) const
 		return;
 	}
 
-	const ChatSession* selected = SelectedChat(app);
-	app.settings.last_selected_chat_id = (selected != nullptr) ? selected->id : "";
+	app.settings.last_selected_chat_id = SelectedChatId(app);
 }
 
-void ChatDomainService::SelectChatById(AppState& app, const std::string& chat_id) const
+void ChatDomainService::SelectChatById(uam::AppState& app, const std::string& chat_id) const
 {
-	const ChatSession* previously_selected = SelectedChat(app);
-	const std::string previous_id = (previously_selected != nullptr) ? previously_selected->id : "";
-	app.selected_chat_index = FindChatIndexById(app, chat_id);
+	const std::string target_chat_id = uam::strings::Trim(chat_id);
+	const std::string previous_id = SelectedChatId(app);
+	app.selected_chat_index = FindChatIndexById(app, target_chat_id);
 
-	if (app.selected_chat_index >= 0)
+	const std::string selected_id = SelectedChatId(app);
+	if (!selected_id.empty())
 	{
-		app.chats_with_unseen_updates.erase(app.chats[app.selected_chat_index].id);
+		app.chats_with_unseen_updates.erase(selected_id);
 	}
 
-	if (previous_id != chat_id)
+	if (previous_id != target_chat_id)
 	{
 		app.composer_text.clear();
 	}
@@ -433,20 +505,20 @@ void ChatDomainService::SelectChatById(AppState& app, const std::string& chat_id
 ChatSession ChatDomainService::CreateNewChat(const std::string& folder_id, const std::string& provider_id) const
 {
 	ChatSession chat;
-	chat.id = NewSessionId();
-	chat.provider_id = provider_id;
+	chat.id = uam::chat_ids::NewChatId();
+	chat.provider_id = uam::strings::Trim(provider_id);
 	chat.parent_chat_id.clear();
 	chat.branch_root_chat_id = chat.id;
 	chat.branch_from_message_index = -1;
-	chat.folder_id = folder_id;
-	chat.created_at = TimestampNow();
+	chat.folder_id = uam::strings::Trim(folder_id);
+	chat.created_at = uam::time::TimestampNow();
 	chat.updated_at = chat.created_at;
 	chat.last_opened_at = chat.created_at;
 	chat.title = "Chat " + chat.created_at;
 	return chat;
 }
 
-bool ChatDomainService::CreateBranchFromMessage(AppState& app, const std::string& source_chat_id, const int message_index) const
+bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::string& source_chat_id, int message_index) const
 {
 	const int source_index = FindChatIndexById(app, source_chat_id);
 
@@ -473,7 +545,7 @@ bool ChatDomainService::CreateBranchFromMessage(AppState& app, const std::string
 	ChatSession branch = CreateNewChat(source.folder_id, source.provider_id);
 	branch.native_session_id.clear();
 	branch.parent_chat_id = source.id;
-	branch.branch_root_chat_id = source.branch_root_chat_id.empty() ? source.id : source.branch_root_chat_id;
+	branch.branch_root_chat_id = uam::strings::NonEmptyOrFallback(source.branch_root_chat_id, source.id);
 	branch.branch_from_message_index = message_index;
 	branch.linked_files = source.linked_files;
 	branch.model_id = source.model_id;
@@ -482,20 +554,12 @@ bool ChatDomainService::CreateBranchFromMessage(AppState& app, const std::string
 	branch.approval_mode = source.approval_mode;
 	branch.auto_approve_commands = source.auto_approve_commands;
 	branch.memory_enabled = source.memory_enabled;
-	branch.workspace_directory = Trim(source.workspace_isolation_kind) == "gitWorktree" && !Trim(source.workspace_source_directory).empty()
-		? source.workspace_source_directory
-		: ResolveWorkspaceRootPath(app, source).string();
+	const bool branch_from_git_worktree = uam::paths::HasGitWorktreeSource(source);
+	branch.workspace_directory = branch_from_git_worktree ? source.workspace_source_directory : uam::paths::ResolveWorkspaceRootPath(app, source).string();
 	branch.messages.assign(source.messages.begin(), source.messages.begin() + message_index + 1);
-	branch.updated_at = TimestampNow();
+	branch.updated_at = uam::time::TimestampNow();
 	branch.last_opened_at = branch.updated_at;
-	branch.title = Trim(source.messages[message_index].content);
-
-	if (branch.title.size() > 40)
-	{
-		branch.title = branch.title.substr(0, 37) + "...";
-	}
-
-	branch.title = branch.title.empty() ? "Branch Chat" : ("Branch: " + branch.title);
+	branch.title = BranchTitleFromMessage(source.messages[message_index].content);
 
 	app.chats.push_back(branch);
 	ChatBranching::Normalize(app.chats);
@@ -503,9 +567,10 @@ bool ChatDomainService::CreateBranchFromMessage(AppState& app, const std::string
 	SelectChatById(app, branch.id);
 	PersistenceCoordinator().SaveSettings(app);
 
-	if (app.selected_chat_index >= 0 && app.selected_chat_index < static_cast<int>(app.chats.size()) && ProviderResolutionService().ChatUsesCliOutput(app, app.chats[app.selected_chat_index]))
+	const ChatSession* selected_branch = SelectedChat(app);
+	if (selected_branch != nullptr && ProviderResolutionService().ChatUsesCliOutput(app, *selected_branch))
 	{
-		MarkSelectedCliTerminalForLaunch(app);
+		uam::MarkSelectedCliTerminalForLaunch(app);
 	}
 
 	const ProviderProfile& branch_provider = ProviderResolutionService().ProviderForChatOrDefault(app, branch);
@@ -520,61 +585,12 @@ bool ChatDomainService::CreateBranchFromMessage(AppState& app, const std::string
 	return true;
 }
 
-void ChatDomainService::ConsumePendingBranchRequest(AppState& app) const
-{
-	if (app.pending_branch_chat_id.empty())
-	{
-		return;
-	}
-
-	const std::string chat_id = app.pending_branch_chat_id;
-	const int message_index = app.pending_branch_message_index;
-	app.pending_branch_chat_id.clear();
-	app.pending_branch_message_index = -1;
-	CreateBranchFromMessage(app, chat_id, message_index);
-}
-
 void ChatDomainService::AddMessage(ChatSession& chat, const MessageRole role, const std::string& text) const
 {
-	const bool should_auto_replace_title = ShouldAutoReplaceTitleFromFirstUserMessage(chat, role);
-
-	Message message;
-	message.role = role;
-	message.content = text;
-	message.created_at = TimestampNow();
-	chat.messages.push_back(std::move(message));
-	chat.updated_at = TimestampNow();
-
-	if (should_auto_replace_title)
-	{
-		AutoReplaceTitleFromFirstUserMessage(chat, text);
-	}
+	AppendMessage(chat, role, text);
 }
 
-void ChatDomainService::AddMessageWithAnalytics(ChatSession& chat, const MessageRole role, const std::string& text, const std::string& provider, const int64_t input_tokens, const int64_t output_chars, const int64_t time_to_first_token_ms, const int64_t processing_time_ms, const bool interrupted) const
+void ChatDomainService::AddMessageWithAnalytics(ChatSession& chat, const MessageRole role, const std::string& text, const MessageAnalytics& analytics) const
 {
-	const bool should_auto_replace_title = ShouldAutoReplaceTitleFromFirstUserMessage(chat, role);
-
-	Message message;
-	message.role = role;
-	message.content = text;
-	message.created_at = TimestampNow();
-	message.provider = provider;
-	message.tokens_input = static_cast<int>(input_tokens);
-	message.tokens_output = static_cast<int>(output_chars / 4);
-	message.time_to_first_token_ms = static_cast<int>(time_to_first_token_ms);
-	message.processing_time_ms = static_cast<int>(processing_time_ms);
-	message.interrupted = interrupted;
-
-	static const double kCostPerMillionInputTokens = 0.075;
-	static const double kCostPerMillionOutputTokens = 0.30;
-	message.estimated_cost_usd = (input_tokens * kCostPerMillionInputTokens + (output_chars / 4) * kCostPerMillionOutputTokens) / 1000000.0;
-
-	chat.messages.push_back(std::move(message));
-	chat.updated_at = TimestampNow();
-
-	if (should_auto_replace_title)
-	{
-		AutoReplaceTitleFromFirstUserMessage(chat, text);
-	}
+	AppendMessage(chat, role, text, &analytics);
 }

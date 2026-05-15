@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 
 #include <string>
+#include <string_view>
 
 namespace uam::cef
 {
@@ -21,6 +22,6 @@ namespace uam::cef
 		BridgeRequest request;
 	};
 
-	BridgeRequestParseResult ParseBridgeRequest(const std::string& raw_request);
+	BridgeRequestParseResult ParseBridgeRequest(std::string_view raw_request);
 
 } // namespace uam::cef

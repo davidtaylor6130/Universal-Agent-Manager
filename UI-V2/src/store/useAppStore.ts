@@ -5,10 +5,25 @@ import { Provider } from '../types/provider'
 import { MemoryEntry, MemoryEntryDraft, MemoryScope, MemoryScanCandidate } from '../types/memory'
 import type { MarkdownStoreDraft, MarkdownStoreEntry } from '../types/markdownStore'
 import { sendToCEF, isCefContext, createRequestId } from '../ipc/cefBridge'
-import { applyDocumentTheme, writeStoredTheme } from '../utils/themeStorage'
+import { applyDocumentTheme, normalizeStoredTheme, readStoredTheme, writeStoredTheme, type StoredTheme } from '../utils/themeStorage'
+import {
+  CODEX_CLI_PROVIDER_ID,
+  COPILOT_CLI_PROVIDER_ID,
+  DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID,
+  OPENCODE_CLI_PROVIDER_ID,
+  buildProviderCliInstallCommand,
+  fallbackProviderForId,
+  normalizeCliProviderIdAlias,
+} from '../utils/providerMetadata'
 
-const GEMINI_CLI_PROVIDER_ID = 'gemini-cli'
 const ACP_APPROVAL_MODE_IDS = ['default', 'acceptEdits', 'plan'] as const
+export const DEFAULT_MEMORY_IDLE_DELAY_SECONDS = 60
+export const MIN_MEMORY_IDLE_DELAY_SECONDS = 30
+export const MAX_MEMORY_IDLE_DELAY_SECONDS = 3600
+export const DEFAULT_MEMORY_RECALL_BUDGET_BYTES = 2048
+export const MIN_MEMORY_RECALL_BUDGET_BYTES = 512
+export const MAX_MEMORY_RECALL_BUDGET_BYTES = 8192
+
 const initialFolders: Folder[] = [
   {
     id: 'default',
@@ -29,40 +44,17 @@ const initialSessions: Session[] = [
     updatedAt: new Date(),
   },
 ]
+function initialProvider(providerId: string, color: string): Provider {
+  return {
+    ...fallbackProviderForId(providerId),
+    color,
+  }
+}
+
 const initialProviders: Provider[] = [
-  {
-    id: GEMINI_CLI_PROVIDER_ID,
-    name: 'Gemini CLI',
-    shortName: 'Gemini',
-    color: '#f97316',
-    description: '',
-    outputMode: 'cli',
-    supportsCli: true,
-    supportsStructured: true,
-    structuredProtocol: 'gemini-acp',
-  },
-  {
-    id: 'opencode-cli',
-    name: 'OpenCode',
-    shortName: 'OpenCode',
-    color: '#14b8a6',
-    description: '',
-    outputMode: 'cli',
-    supportsCli: true,
-    supportsStructured: true,
-    structuredProtocol: 'opencode-acp',
-  },
-  {
-    id: 'copilot-cli',
-    name: 'GitHub Copilot CLI',
-    shortName: 'Copilot',
-    color: '#22c55e',
-    description: '',
-    outputMode: 'cli',
-    supportsCli: true,
-    supportsStructured: true,
-    structuredProtocol: 'copilot-acp',
-  },
+  initialProvider(GEMINI_CLI_PROVIDER_ID, '#f97316'),
+  initialProvider(OPENCODE_CLI_PROVIDER_ID, '#14b8a6'),
+  initialProvider(COPILOT_CLI_PROVIDER_ID, '#22c55e'),
 ]
 const UI_RUNTIME_BUILD_MARKER = (() => {
   const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env
@@ -139,14 +131,14 @@ interface CppChat {
   autoApproveCommands?: boolean
   memoryEnabled?: boolean
   memoryLastProcessedMessageCount?: number
-	  memoryLastProcessedAt?: string
-	  workspaceDirectory?: string
-	  workspaceIsolationKind?: string
-	  workspaceSourceDirectory?: string
-	  workspaceBaseRef?: string
-	  workspaceBranchName?: string
-	  workspaceWorktreeDirectory?: string
-	  createdAt: string
+  memoryLastProcessedAt?: string
+  workspaceDirectory?: string
+  workspaceIsolationKind?: string
+  workspaceSourceDirectory?: string
+  workspaceBaseRef?: string
+  workspaceBranchName?: string
+  workspaceWorktreeDirectory?: string
+  createdAt: string
   updatedAt: string
   lastOpenedAt?: string
   messageCount?: number
@@ -299,14 +291,14 @@ export interface CppAcpSession {
   lastExitCode?: number | null
   diagnostics?: AcpDiagnosticEntry[]
   agentInfo?: Partial<AcpAgentInfo>
-	  toolCalls?: AcpToolCall[]
-	  planSummary?: string
-	  planEntries?: AcpPlanEntry[]
-	  availableModes?: AcpMode[]
-	  currentModeId?: string
-	  availableModels?: AcpModel[]
-	  currentModelId?: string
-	  turnEvents?: AcpTurnEvent[]
+  toolCalls?: AcpToolCall[]
+  planSummary?: string
+  planEntries?: AcpPlanEntry[]
+  availableModes?: AcpMode[]
+  currentModeId?: string
+  availableModels?: AcpModel[]
+  currentModelId?: string
+  turnEvents?: AcpTurnEvent[]
   turnUserMessageIndex?: number
   turnAssistantMessageIndex?: number
   turnSerial?: number
@@ -418,7 +410,7 @@ export interface CliVersionManager {
 
 interface CppSettings {
   activeProviderId: string
-  theme: string
+  theme: StoredTheme
   memoryEnabledDefault: boolean
   memoryIdleDelaySeconds: number
   memoryRecallBudgetBytes: number
@@ -542,14 +534,14 @@ export interface AcpBinding {
   recentStderr: string
   lastExitCode: number | null
   diagnostics: AcpDiagnosticEntry[]
-	  toolCalls: AcpToolCall[]
-	  planSummary?: string
-	  planEntries: AcpPlanEntry[]
-	  availableModes: AcpMode[]
-	  currentModeId: string
-	  availableModels: AcpModel[]
-	  currentModelId: string
-	  turnEvents: AcpTurnEvent[]
+  toolCalls: AcpToolCall[]
+  planSummary?: string
+  planEntries: AcpPlanEntry[]
+  availableModes: AcpMode[]
+  currentModeId: string
+  availableModels: AcpModel[]
+  currentModelId: string
+  turnEvents: AcpTurnEvent[]
   turnUserMessageIndex: number
   turnAssistantMessageIndex: number
   turnSerial: number
@@ -597,6 +589,10 @@ function stringOr(value: unknown, fallback = ''): string {
 
 function finiteNumberOr(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+function clampedFiniteNumberOr(value: unknown, fallback: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, finiteNumberOr(value, fallback)))
 }
 
 function booleanOr(value: unknown, fallback = false): boolean {
@@ -1013,36 +1009,36 @@ function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined {
         })
       : [],
     agentInfo: sanitizeAgentInfo(value.agentInfo),
-  toolCalls: Array.isArray(value.toolCalls)
+    toolCalls: Array.isArray(value.toolCalls)
       ? value.toolCalls.flatMap((toolCall) => {
           const sanitized = sanitizeToolCall(toolCall)
           return sanitized ? [sanitized] : []
         })
       : [],
-	    planSummary: stringOr(value.planSummary),
-	    planEntries: Array.isArray(value.planEntries)
-	      ? value.planEntries.flatMap((entry) => {
-	          const sanitized = sanitizePlanEntry(entry)
-	          return sanitized ? [sanitized] : []
-	        })
-	      : [],
-	    availableModes: Array.isArray(value.availableModes)
-	      ? value.availableModes.flatMap((mode) => {
-	          const sanitized = sanitizeAcpMode(mode)
-	          return sanitized ? [sanitized] : []
-	        })
-	      : [],
-	    currentModeId: normalizeAcpApprovalMode(value.currentModeId),
-	    availableModels: Array.isArray(value.availableModels)
-	      ? value.availableModels.flatMap((model) => {
-	          const sanitized = sanitizeAcpModel(model)
-	          return sanitized ? [sanitized] : []
-	        })
-	      : [],
-	    currentModelId: normalizeAcpModelId(value.currentModelId),
-	    turnEvents: Array.isArray(value.turnEvents)
-	      ? value.turnEvents.flatMap((event) => {
-	          const sanitized = sanitizeTurnEvent(event)
+    planSummary: stringOr(value.planSummary),
+    planEntries: Array.isArray(value.planEntries)
+      ? value.planEntries.flatMap((entry) => {
+          const sanitized = sanitizePlanEntry(entry)
+          return sanitized ? [sanitized] : []
+        })
+      : [],
+    availableModes: Array.isArray(value.availableModes)
+      ? value.availableModes.flatMap((mode) => {
+          const sanitized = sanitizeAcpMode(mode)
+          return sanitized ? [sanitized] : []
+        })
+      : [],
+    currentModeId: normalizeAcpApprovalMode(value.currentModeId),
+    availableModels: Array.isArray(value.availableModels)
+      ? value.availableModels.flatMap((model) => {
+          const sanitized = sanitizeAcpModel(model)
+          return sanitized ? [sanitized] : []
+        })
+      : [],
+    currentModelId: normalizeAcpModelId(value.currentModelId),
+    turnEvents: Array.isArray(value.turnEvents)
+      ? value.turnEvents.flatMap((event) => {
+          const sanitized = sanitizeTurnEvent(event)
           return sanitized ? [sanitized] : []
         })
       : [],
@@ -1477,7 +1473,7 @@ function sanitizeProviderChatDefaultsMap(value: unknown): Record<string, Provide
   const defaults: Record<string, ProviderChatDefaults> = {}
   if (!isRecord(value)) return defaults
   for (const [providerId, providerDefaults] of Object.entries(value)) {
-    const id = providerId.trim()
+    const id = normalizeCliProviderIdAlias(providerId)
     if (!id) continue
     defaults[id] = sanitizeProviderChatDefaults(providerDefaults)
   }
@@ -1496,7 +1492,7 @@ function providerChatDefaultsForNewChat(
   if (!saved) {
     defaults.memoryEnabled = state.memoryEnabledDefault
   }
-  if (providerId !== 'codex-cli') {
+  if (providerId !== CODEX_CLI_PROVIDER_ID) {
     defaults.reasoningEffort = ''
     defaults.serviceTier = ''
   }
@@ -1509,8 +1505,8 @@ function sanitizeCppSettings(value: unknown): CppSettings {
       activeProviderId: GEMINI_CLI_PROVIDER_ID,
       theme: 'dark',
       memoryEnabledDefault: true,
-      memoryIdleDelaySeconds: 60,
-      memoryRecallBudgetBytes: 2048,
+      memoryIdleDelaySeconds: DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
+      memoryRecallBudgetBytes: DEFAULT_MEMORY_RECALL_BUDGET_BYTES,
       memoryLastStatus: '',
       memoryWorkerBindings: {},
       defaultNewChatProviderId: GEMINI_CLI_PROVIDER_ID,
@@ -1521,7 +1517,7 @@ function sanitizeCppSettings(value: unknown): CppSettings {
     }
   }
 
-  const theme = value.theme === 'light' || value.theme === 'dark' ? value.theme : 'dark'
+  const theme = normalizeStoredTheme(value.theme) ?? 'dark'
   const bindings: Record<string, MemoryWorkerBinding> = {}
   if (isRecord(value.memoryWorkerBindings)) {
     for (const [providerId, binding] of Object.entries(value.memoryWorkerBindings)) {
@@ -1536,8 +1532,8 @@ function sanitizeCppSettings(value: unknown): CppSettings {
     activeProviderId: stringOr(value.activeProviderId, GEMINI_CLI_PROVIDER_ID),
     theme,
     memoryEnabledDefault: booleanOr(value.memoryEnabledDefault, true),
-    memoryIdleDelaySeconds: Math.min(3600, Math.max(30, finiteNumberOr(value.memoryIdleDelaySeconds, 60))),
-    memoryRecallBudgetBytes: Math.min(8192, Math.max(512, finiteNumberOr(value.memoryRecallBudgetBytes, 2048))),
+    memoryIdleDelaySeconds: clampedFiniteNumberOr(value.memoryIdleDelaySeconds, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_IDLE_DELAY_SECONDS),
+    memoryRecallBudgetBytes: clampedFiniteNumberOr(value.memoryRecallBudgetBytes, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_RECALL_BUDGET_BYTES, MAX_MEMORY_RECALL_BUDGET_BYTES),
     memoryLastStatus: stringOr(value.memoryLastStatus),
     memoryWorkerBindings: bindings,
     defaultNewChatProviderId: stringOr(value.defaultNewChatProviderId, stringOr(value.activeProviderId, GEMINI_CLI_PROVIDER_ID)),
@@ -1667,11 +1663,124 @@ function normalizeProviderIdForVisibleProviders(
   providerId: string | undefined,
   providers: Array<{ id: string }>
 ): string {
-  const requestedProviderId = providerId?.trim() || GEMINI_CLI_PROVIDER_ID
+  const requestedProviderId = normalizeCliProviderIdAlias(providerId ?? '') || GEMINI_CLI_PROVIDER_ID
   if (providers.some((provider) => provider.id === requestedProviderId)) {
     return requestedProviderId
   }
   return providers[0]?.id ?? GEMINI_CLI_PROVIDER_ID
+}
+
+function foldersEquivalent(previous: Folder, next: Folder): boolean {
+  return previous.name === next.name &&
+    previous.directory === next.directory &&
+    previous.isExpanded === next.isExpanded
+}
+
+function folderFromCppFolder(folder: CppFolder, previous: Folder | undefined): Folder {
+  const nextFolder: Folder = {
+    id: folder.id,
+    name: folder.title,
+    parentId: null,
+    directory: folder.directory ?? '',
+    isExpanded: !folder.collapsed,
+    createdAt: previous?.createdAt ?? new Date(),
+  }
+
+  return previous && foldersEquivalent(previous, nextFolder) ? previous : nextFolder
+}
+
+function providersEquivalent(previous: Provider, next: Provider): boolean {
+  return previous.id === next.id &&
+    previous.name === next.name &&
+    previous.shortName === next.shortName &&
+    previous.color === next.color &&
+    previous.description === next.description &&
+    previous.outputMode === next.outputMode &&
+    previous.supportsCli === next.supportsCli &&
+    previous.supportsStructured === next.supportsStructured &&
+    previous.structuredProtocol === next.structuredProtocol
+}
+
+function providerFromCppProvider(provider: CppProvider, previous: Provider | undefined): Provider {
+  const nextProvider: Provider = {
+    id: provider.id,
+    name: provider.name,
+    shortName: provider.shortName,
+    color: previous?.color ?? '#f97316',
+    description: previous?.description ?? '',
+    outputMode: provider.outputMode,
+    supportsCli: provider.supportsCli,
+    supportsStructured: provider.supportsStructured,
+    structuredProtocol: provider.structuredProtocol,
+  }
+
+  return previous && providersEquivalent(previous, nextProvider) ? previous : nextProvider
+}
+
+function sessionsEquivalent(previous: Session, next: Session): boolean {
+  return previous.name === next.name &&
+    previous.folderId === next.folderId &&
+    (previous.isPinned ?? false) === (next.isPinned ?? false) &&
+    (previous.providerId ?? GEMINI_CLI_PROVIDER_ID) === next.providerId &&
+    (previous.modelId ?? '') === (next.modelId ?? '') &&
+    (previous.reasoningEffort ?? '') === (next.reasoningEffort ?? '') &&
+    (previous.serviceTier ?? '') === (next.serviceTier ?? '') &&
+    (previous.approvalMode ?? 'default') === next.approvalMode &&
+    (previous.autoApproveCommands ?? false) === (next.autoApproveCommands ?? false) &&
+    (previous.memoryEnabled ?? true) === next.memoryEnabled &&
+    (previous.memoryLastProcessedMessageCount ?? 0) === next.memoryLastProcessedMessageCount &&
+    (previous.memoryLastProcessedAt ?? '') === next.memoryLastProcessedAt &&
+    (previous.workspaceDirectory ?? '') === (next.workspaceDirectory ?? '') &&
+    (previous.workspaceIsolationKind ?? '') === (next.workspaceIsolationKind ?? '') &&
+    (previous.workspaceSourceDirectory ?? '') === (next.workspaceSourceDirectory ?? '') &&
+    (previous.workspaceBaseRef ?? '') === (next.workspaceBaseRef ?? '') &&
+    (previous.workspaceBranchName ?? '') === (next.workspaceBranchName ?? '') &&
+    (previous.workspaceWorktreeDirectory ?? '') === (next.workspaceWorktreeDirectory ?? '') &&
+    (previous.messageCount ?? 0) === (next.messageCount ?? 0) &&
+    (previous.messagesDigest ?? '') === (next.messagesDigest ?? '') &&
+    previous.viewMode === next.viewMode &&
+    previous.createdAt.getTime() === next.createdAt.getTime() &&
+    previous.updatedAt.getTime() === next.updatedAt.getTime() &&
+    (previous.lastOpenedAt ?? previous.updatedAt).getTime() === next.lastOpenedAt?.getTime()
+}
+
+function sessionFromCppChat(
+  chat: CppChat,
+  previous: Session | undefined,
+  visibleProviders: Array<{ id: string }>
+): Session {
+  const createdAt = new Date(chat.createdAt || Date.now())
+  const updatedAt = new Date(chat.updatedAt || Date.now())
+  const lastOpenedAt = new Date(chat.lastOpenedAt || chat.updatedAt || chat.createdAt || Date.now())
+  const nextSession: Session = {
+    id: chat.id,
+    name: chat.title || 'Untitled',
+    viewMode: 'chat',
+    folderId: chat.folderId || null,
+    isPinned: chat.pinned ?? false,
+    providerId: normalizeProviderIdForVisibleProviders(chat.providerId, visibleProviders),
+    modelId: chat.modelId ?? '',
+    reasoningEffort: normalizeCodexReasoningEffort(chat.reasoningEffort),
+    serviceTier: normalizeCodexServiceTier(chat.serviceTier),
+    approvalMode: normalizeAcpApprovalMode(chat.approvalMode),
+    autoApproveCommands: chat.autoApproveCommands ?? false,
+    memoryEnabled: chat.memoryEnabled ?? true,
+    memoryLastProcessedMessageCount: chat.memoryLastProcessedMessageCount ?? 0,
+    memoryLastProcessedAt: chat.memoryLastProcessedAt ?? '',
+    workspaceDirectory: chat.workspaceDirectory ?? '',
+    workspaceIsolationKind: chat.workspaceIsolationKind ?? '',
+    workspaceSourceDirectory: chat.workspaceSourceDirectory ?? '',
+    workspaceBaseRef: chat.workspaceBaseRef ?? '',
+    workspaceBranchName: chat.workspaceBranchName ?? '',
+    workspaceWorktreeDirectory: chat.workspaceWorktreeDirectory ?? '',
+    messageCount: chat.messageCount ?? 0,
+    messagesDigest: chat.messagesDigest ?? '',
+    createdAt,
+    updatedAt,
+    lastOpenedAt,
+  }
+
+  return previous && sessionsEquivalent(previous, nextSession) ? previous : nextSession
 }
 
 const MAX_CLI_TRANSCRIPT_BYTES = 1024 * 1024
@@ -1897,6 +2006,106 @@ function acpBindingsEquivalent(existing: AcpBinding | undefined, next: AcpBindin
   )
 }
 
+function cliBindingsEquivalent(existing: CliBinding | undefined, next: CliBinding) {
+  if (!existing) return false
+  return (
+    existing.terminalId === next.terminalId &&
+    existing.boundChatId === next.boundChatId &&
+    existing.running === next.running &&
+    existing.lifecycleState === next.lifecycleState &&
+    existing.turnState === next.turnState &&
+    existing.processing === next.processing &&
+    existing.readySinceLastSelect === next.readySinceLastSelect &&
+    existing.active === next.active &&
+    existing.lastError === next.lastError
+  )
+}
+
+function cliBindingFromCppChat(chat: CppChat, previous: CliBinding | undefined): CliBinding | null {
+  if (!chat.cliTerminal) return null
+
+  const running = Boolean(chat.cliTerminal.running)
+  const lifecycleState = normalizeCliLifecycleState(
+    chat.cliTerminal.lifecycleState,
+    running,
+    chat.cliTerminal.turnState,
+    chat.cliTerminal.processing
+  )
+  const processing = Boolean(chat.cliTerminal.processing) || cliLifecycleIsProcessing(lifecycleState)
+  const next: CliBinding = {
+    terminalId: chat.cliTerminal.terminalId ?? '',
+    boundChatId: chat.cliTerminal.sourceChatId ?? chat.id,
+    running,
+    lifecycleState,
+    turnState: processing ? 'busy' : 'idle',
+    processing,
+    readySinceLastSelect: Boolean(chat.cliTerminal.readySinceLastSelect),
+    active: lifecycleState === 'idle' && running,
+    lastError: chat.cliTerminal.lastError ?? '',
+  }
+
+  return cliBindingsEquivalent(previous, next) ? previous! : next
+}
+
+function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | undefined): AcpBinding {
+  const acp = chat.acpSession
+  const running = Boolean(acp?.running)
+  const processing = Boolean(acp?.processing)
+  const lifecycleState = normalizeAcpLifecycleState(acp?.lifecycleState, running, processing)
+  const effectiveProcessing =
+    lifecycleState === 'error'
+      ? false
+      : processing ||
+        lifecycleState === 'processing' ||
+        lifecycleState === 'waitingPermission' ||
+        lifecycleState === 'waitingUserInput'
+  const next: AcpBinding = {
+    sessionId: acp?.sessionId ?? '',
+    providerId: acp?.providerId ?? chat.providerId ?? GEMINI_CLI_PROVIDER_ID,
+    protocolKind: acp?.protocolKind ?? '',
+    threadId: acp?.threadId ?? '',
+    running,
+    lifecycleState,
+    processing: effectiveProcessing,
+    readySinceLastSelect: Boolean(acp?.readySinceLastSelect),
+    attentionKind: acp?.attentionKind ?? null,
+    processingStartedAtMs: effectiveProcessing
+      ? previous?.processing
+        ? previous.processingStartedAtMs ?? Date.now()
+        : Date.now()
+      : null,
+    lastError: acp?.lastError ?? '',
+    recentStderr: acp?.recentStderr ?? '',
+    lastExitCode: typeof acp?.lastExitCode === 'number' ? acp.lastExitCode : null,
+    diagnostics: Array.isArray(acp?.diagnostics) ? acp!.diagnostics : [],
+    toolCalls: Array.isArray(acp?.toolCalls) ? acp!.toolCalls : [],
+    planSummary: acp?.planSummary ?? '',
+    planEntries: Array.isArray(acp?.planEntries) ? acp!.planEntries : [],
+    availableModes: Array.isArray(acp?.availableModes) ? acp!.availableModes : [],
+    currentModeId: normalizeAcpApprovalMode(acp?.currentModeId ?? chat.approvalMode),
+    availableModels: Array.isArray(acp?.availableModels) ? acp!.availableModels : [],
+    currentModelId: normalizeAcpModelId(acp?.currentModelId ?? chat.modelId),
+    turnEvents: Array.isArray(acp?.turnEvents) ? acp!.turnEvents : [],
+    turnUserMessageIndex: typeof acp?.turnUserMessageIndex === 'number' ? acp.turnUserMessageIndex : -1,
+    turnAssistantMessageIndex: typeof acp?.turnAssistantMessageIndex === 'number' ? acp.turnAssistantMessageIndex : -1,
+    turnSerial: typeof acp?.turnSerial === 'number' ? acp.turnSerial : 0,
+    waitIsStale: Boolean(acp?.waitIsStale),
+    waitStaleReason: typeof acp?.waitStaleReason === 'string' ? acp.waitStaleReason : '',
+    waitSeconds: typeof acp?.waitSeconds === 'number' ? acp.waitSeconds : 0,
+    pendingPermission: acp?.pendingPermission ?? null,
+    pendingUserInput: acp?.pendingUserInput ?? null,
+    agentInfo: acp?.agentInfo
+      ? {
+          name: acp.agentInfo.name ?? '',
+          title: acp.agentInfo.title ?? '',
+          version: acp.agentInfo.version ?? '',
+        }
+      : null,
+  }
+
+  return acpBindingsEquivalent(previous, next) ? previous! : next
+}
+
 function normalizeCliTranscript(
   existing: CliTranscript | undefined,
   terminalId: string
@@ -2110,7 +2319,7 @@ function applyPendingCodexOptions(sessions: Session[]): Session[] {
   let changed = false
   const nextSessions = sessions.map((session) => {
     const pending = pendingCodexOptionsByChatId.get(session.id)
-    if (!pending || (session.providerId ?? GEMINI_CLI_PROVIDER_ID) !== 'codex-cli') {
+    if (!pending || (session.providerId ?? GEMINI_CLI_PROVIDER_ID) !== CODEX_CLI_PROVIDER_ID) {
       return session
     }
     if ((session.reasoningEffort ?? '') === pending.reasoningEffort && (session.serviceTier ?? '') === pending.serviceTier) {
@@ -2211,47 +2420,14 @@ function deserializeState(
     editorFileAssociations: EditorFileAssociation[]
   }
 ) {
-  const buildMessage = (chatId: string, message: CppMessage, index: number): Message => {
-    const createdAtMillis = cppMessageCreatedAtMillis(message)
-    return {
-      // Stable across refreshes (unlike an incrementing counter).
-      id: `cef-m-${chatId}-${createdAtMillis}-${index}-${message.role}`,
-      sessionId: chatId,
-      role: message.role,
-      content: message.content,
-      thoughts: message.thoughts ?? '',
-      planSummary: message.planSummary ?? '',
-      planEntries: message.planEntries ?? [],
-      toolCalls: message.toolCalls ?? [],
-      blocks: message.blocks ?? [],
-      attachments: messageAttachments(message),
-      createdAt: new Date(createdAtMillis),
-    } satisfies Message
-  }
-
   // Build lookup maps for reference-identity preservation
   const existingSessionsById = Object.fromEntries(existing.sessions.map((s) => [s.id, s]))
   const existingFoldersById = Object.fromEntries(existing.folders.map((f) => [f.id, f]))
   const existingProvidersById = Object.fromEntries(existing.providers.map((p) => [p.id, p]))
 
-  const newFolders: Folder[] = cpp.folders.map((f) => {
-    const prev = existingFoldersById[f.id]
-    const name = f.title
-    const directory = f.directory ?? ''
-    const isExpanded = !f.collapsed
-    // Reuse reference if nothing changed — keeps memoized children stable
-    if (prev && prev.name === name && prev.directory === directory && prev.isExpanded === isExpanded) {
-      return prev
-    }
-    return {
-      id: f.id,
-      name,
-      parentId: null,
-      directory,
-      isExpanded,
-      createdAt: prev?.createdAt ?? new Date(),
-    }
-  })
+  const newFolders: Folder[] = cpp.folders.map((folder) =>
+    folderFromCppFolder(folder, existingFoldersById[folder.id])
+  )
   const folders: Folder[] = newFolders.length === existing.folders.length && newFolders.every((f) => f === existingFoldersById[f.id])
     ? existing.folders
     : newFolders
@@ -2259,169 +2435,31 @@ function deserializeState(
   const visibleProviders = cpp.providers.length > 0
     ? cpp.providers
     : initialProviders
-  const newSessions: Session[] = cpp.chats.map((c) => {
-    const prev = existingSessionsById[c.id]
-    const name = c.title || 'Untitled'
-    const folderId = c.folderId || null
-    const isPinned = c.pinned ?? false
-    const workspaceDirectory = c.workspaceDirectory ?? ''
-    const providerId = normalizeProviderIdForVisibleProviders(c.providerId, visibleProviders)
-    const modelId = c.modelId ?? ''
-    const reasoningEffort = normalizeCodexReasoningEffort(c.reasoningEffort)
-    const serviceTier = normalizeCodexServiceTier(c.serviceTier)
-    const approvalMode = normalizeAcpApprovalMode(c.approvalMode)
-    const autoApproveCommands = c.autoApproveCommands ?? false
-    const memoryEnabled = c.memoryEnabled ?? true
-	  const memoryLastProcessedMessageCount = c.memoryLastProcessedMessageCount ?? 0
-	  const memoryLastProcessedAt = c.memoryLastProcessedAt ?? ''
-	  const workspaceIsolationKind = c.workspaceIsolationKind ?? ''
-	  const workspaceSourceDirectory = c.workspaceSourceDirectory ?? ''
-	  const workspaceBaseRef = c.workspaceBaseRef ?? ''
-	  const workspaceBranchName = c.workspaceBranchName ?? ''
-	  const workspaceWorktreeDirectory = c.workspaceWorktreeDirectory ?? ''
-    const messageCount = c.messageCount ?? 0
-    const messagesDigest = c.messagesDigest ?? ''
-	  const createdAt = new Date(c.createdAt || Date.now())
-    const updatedAt = new Date(c.updatedAt || Date.now())
-    const lastOpenedAt = new Date(c.lastOpenedAt || c.updatedAt || c.createdAt || Date.now())
-    // Reuse reference if nothing changed — keeps memoized children stable
-    if (
-      prev &&
-      prev.name === name &&
-      prev.folderId === folderId &&
-      (prev.isPinned ?? false) === isPinned &&
-      (prev.providerId ?? GEMINI_CLI_PROVIDER_ID) === providerId &&
-      (prev.modelId ?? '') === modelId &&
-      (prev.reasoningEffort ?? '') === reasoningEffort &&
-      (prev.serviceTier ?? '') === serviceTier &&
-      (prev.approvalMode ?? 'default') === approvalMode &&
-      (prev.autoApproveCommands ?? false) === autoApproveCommands &&
-      (prev.memoryEnabled ?? true) === memoryEnabled &&
-      (prev.memoryLastProcessedMessageCount ?? 0) === memoryLastProcessedMessageCount &&
-	      (prev.memoryLastProcessedAt ?? '') === memoryLastProcessedAt &&
-	      prev.workspaceDirectory === workspaceDirectory &&
-	      (prev.workspaceIsolationKind ?? '') === workspaceIsolationKind &&
-	      (prev.workspaceSourceDirectory ?? '') === workspaceSourceDirectory &&
-	      (prev.workspaceBaseRef ?? '') === workspaceBaseRef &&
-	      (prev.workspaceBranchName ?? '') === workspaceBranchName &&
-	      (prev.workspaceWorktreeDirectory ?? '') === workspaceWorktreeDirectory &&
-        (prev.messageCount ?? 0) === messageCount &&
-        (prev.messagesDigest ?? '') === messagesDigest &&
-	      prev.viewMode === 'chat' &&
-      prev.createdAt.getTime() === createdAt.getTime() &&
-      prev.updatedAt.getTime() === updatedAt.getTime() &&
-      (prev.lastOpenedAt ?? prev.updatedAt).getTime() === lastOpenedAt.getTime()
-    ) {
-      return prev
-    }
-    return {
-      id: c.id,
-      name,
-      viewMode: 'chat',
-      folderId,
-      isPinned,
-      providerId,
-      modelId,
-      reasoningEffort,
-      serviceTier,
-      approvalMode,
-      autoApproveCommands,
-      memoryEnabled,
-      memoryLastProcessedMessageCount,
-	      memoryLastProcessedAt,
-	      workspaceDirectory,
-	      workspaceIsolationKind,
-	      workspaceSourceDirectory,
-	      workspaceBaseRef,
-	      workspaceBranchName,
-	      workspaceWorktreeDirectory,
-      messageCount,
-      messagesDigest,
-	      createdAt,
-      updatedAt,
-      lastOpenedAt,
-    }
-  })
+  const newSessions: Session[] = cpp.chats.map((chat) =>
+    sessionFromCppChat(chat, existingSessionsById[chat.id], visibleProviders)
+  )
   // Reuse array reference if all elements are identical
   const sessions: Session[] = newSessions.length === existing.sessions.length && newSessions.every((s, i) => s === existing.sessions[i])
     ? existing.sessions
     : newSessions
 
   const nextMessages: Record<string, Message[]> = {}
-  for (const c of cpp.chats) {
-    const existingMsgs = existing.messages[c.id] ?? []
-    if (!Array.isArray(c.messages)) {
-      if (existingMsgs.length > 0) {
-        nextMessages[c.id] = existingMsgs
+  for (const chat of cpp.chats) {
+    const existingMessages = existing.messages[chat.id]
+    if (!Array.isArray(chat.messages)) {
+      if (existingMessages?.length) {
+        nextMessages[chat.id] = existingMessages
       }
       continue
     }
 
-    const existingRealMsgs = existingMsgs.filter((m) => !m.isStreaming)
-    const hasStreamingPlaceholder = existingMsgs.some((m) => m.isStreaming)
-
-    // While C++ is processing a request, the React store holds an optimistic
-    // streaming placeholder.  Preserve it until C++ delivers the response
-    // (detected by the C++ message count exceeding our real message count).
-    if (hasStreamingPlaceholder && c.messages.length <= existingRealMsgs.length) {
-      nextMessages[c.id] = existingMsgs
-      continue
-    }
-
-    let prefixLength = 0
-    while (
-      prefixLength < existingRealMsgs.length &&
-      prefixLength < c.messages.length &&
-      cppMessagesEquivalent(existingRealMsgs[prefixLength], c.messages[prefixLength])
-    ) {
-      prefixLength++
-    }
-
-    if (!hasStreamingPlaceholder && prefixLength === existingRealMsgs.length && prefixLength === c.messages.length) {
-      nextMessages[c.id] = existingMsgs
-      continue
-    }
-
-    const reconciledMessages: Message[] = existingRealMsgs.slice(0, prefixLength)
-    for (let i = prefixLength; i < c.messages.length; i++) {
-      reconciledMessages.push(buildMessage(c.id, c.messages[i], i))
-    }
-    nextMessages[c.id] = reconciledMessages
+    nextMessages[chat.id] = reconcileCppMessages(chat.id, existingMessages, chat.messages)
   }
   const messages = sameRecordEntries(existing.messages, nextMessages) ? existing.messages : nextMessages
 
-  const nextProviders: Provider[] = visibleProviders.map((p) => {
-    const prev = existingProvidersById[p.id]
-    const nextProvider: Provider = {
-      id: p.id,
-      name: p.name,
-      shortName: p.shortName,
-      // Preserve any UI-only provider metadata if it already exists.
-      color: prev?.color ?? '#f97316', // default accent; could be persisted later
-      description: prev?.description ?? '',
-      outputMode: p.outputMode,
-      supportsCli: p.supportsCli,
-      supportsStructured: p.supportsStructured,
-      structuredProtocol: p.structuredProtocol,
-    }
-
-    if (
-      prev &&
-      prev.id === nextProvider.id &&
-      prev.name === nextProvider.name &&
-      prev.shortName === nextProvider.shortName &&
-      prev.color === nextProvider.color &&
-      prev.description === nextProvider.description &&
-      prev.outputMode === nextProvider.outputMode &&
-      prev.supportsCli === nextProvider.supportsCli &&
-      prev.supportsStructured === nextProvider.supportsStructured &&
-      prev.structuredProtocol === nextProvider.structuredProtocol
-    ) {
-      return prev
-    }
-
-    return nextProvider
-  })
+  const nextProviders: Provider[] = visibleProviders.map((provider) =>
+    providerFromCppProvider(provider, existingProvidersById[provider.id])
+  )
   const providers = sameArrayEntries(existing.providers, nextProviders) ? existing.providers : nextProviders
 
   const selectedByBackend =
@@ -2435,46 +2473,10 @@ function deserializeState(
   const effectiveActiveSessionId = selectedByBackend ?? selectedFromCurrent ?? sessions[0]?.id ?? null
   const existingBindings = existing.cliBindingBySessionId
   const nextCliBindingBySessionId = Object.fromEntries(
-    cpp.chats
-      .filter((c) => c.cliTerminal)
-      .map((c) => {
-        const running = Boolean(c.cliTerminal?.running)
-        const lifecycleState = normalizeCliLifecycleState(
-          c.cliTerminal?.lifecycleState,
-          running,
-          c.cliTerminal?.turnState,
-          c.cliTerminal?.processing
-        )
-        const processing = Boolean(c.cliTerminal?.processing) || cliLifecycleIsProcessing(lifecycleState)
-        const next: CliBinding = {
-          terminalId: c.cliTerminal?.terminalId ?? '',
-          boundChatId: c.cliTerminal?.sourceChatId ?? c.id,
-          running,
-          lifecycleState,
-          turnState: processing ? 'busy' : 'idle',
-          processing,
-          readySinceLastSelect: Boolean(c.cliTerminal?.readySinceLastSelect),
-          active: lifecycleState === 'idle' && running,
-          lastError: c.cliTerminal?.lastError ?? '',
-        }
-        const prev = existingBindings[c.id]
-        // Reuse reference if all fields match — prevents SessionItem re-renders
-        if (
-          prev &&
-          prev.terminalId === next.terminalId &&
-          prev.boundChatId === next.boundChatId &&
-          prev.running === next.running &&
-          prev.lifecycleState === next.lifecycleState &&
-          prev.turnState === next.turnState &&
-          prev.processing === next.processing &&
-          prev.readySinceLastSelect === next.readySinceLastSelect &&
-          prev.active === next.active &&
-          prev.lastError === next.lastError
-        ) {
-          return [c.id, prev]
-        }
-        return [c.id, next]
-      })
+    cpp.chats.flatMap((chat) => {
+      const binding = cliBindingFromCppChat(chat, existingBindings[chat.id])
+      return binding ? [[chat.id, binding]] : []
+    })
   ) as Record<string, CliBinding>
   const cliBindingBySessionId = sameRecordEntries(existingBindings, nextCliBindingBySessionId)
     ? existingBindings
@@ -2482,67 +2484,10 @@ function deserializeState(
 
   const existingAcpBindings = existing.acpBindingBySessionId
   const nextAcpBindingBySessionId = Object.fromEntries(
-    cpp.chats.map((c) => {
-      const acp = c.acpSession
-      const running = Boolean(acp?.running)
-      const processing = Boolean(acp?.processing)
-      const lifecycleState = normalizeAcpLifecycleState(acp?.lifecycleState, running, processing)
-      const effectiveProcessing =
-        lifecycleState === 'error'
-          ? false
-          : processing ||
-            lifecycleState === 'processing' ||
-            lifecycleState === 'waitingPermission' ||
-            lifecycleState === 'waitingUserInput'
-      const prev = existingAcpBindings[c.id]
-      const next: AcpBinding = {
-        sessionId: acp?.sessionId ?? '',
-        providerId: acp?.providerId ?? c.providerId ?? GEMINI_CLI_PROVIDER_ID,
-        protocolKind: acp?.protocolKind ?? '',
-        threadId: acp?.threadId ?? '',
-        running,
-        lifecycleState,
-        processing: effectiveProcessing,
-        readySinceLastSelect: Boolean(acp?.readySinceLastSelect),
-        attentionKind: acp?.attentionKind ?? null,
-        processingStartedAtMs: effectiveProcessing
-          ? prev?.processing
-            ? prev.processingStartedAtMs ?? Date.now()
-            : Date.now()
-          : null,
-        lastError: acp?.lastError ?? '',
-        recentStderr: acp?.recentStderr ?? '',
-        lastExitCode: typeof acp?.lastExitCode === 'number' ? acp.lastExitCode : null,
-	        diagnostics: Array.isArray(acp?.diagnostics) ? acp!.diagnostics : [],
-	        toolCalls: Array.isArray(acp?.toolCalls) ? acp!.toolCalls : [],
-	        planSummary: acp?.planSummary ?? '',
-	        planEntries: Array.isArray(acp?.planEntries) ? acp!.planEntries : [],
-	        availableModes: Array.isArray(acp?.availableModes) ? acp!.availableModes : [],
-	        currentModeId: normalizeAcpApprovalMode(acp?.currentModeId ?? c.approvalMode),
-	        availableModels: Array.isArray(acp?.availableModels) ? acp!.availableModels : [],
-	        currentModelId: normalizeAcpModelId(acp?.currentModelId ?? c.modelId),
-	        turnEvents: Array.isArray(acp?.turnEvents) ? acp!.turnEvents : [],
-        turnUserMessageIndex: typeof acp?.turnUserMessageIndex === 'number' ? acp.turnUserMessageIndex : -1,
-        turnAssistantMessageIndex: typeof acp?.turnAssistantMessageIndex === 'number' ? acp.turnAssistantMessageIndex : -1,
-        turnSerial: typeof acp?.turnSerial === 'number' ? acp.turnSerial : 0,
-        waitIsStale: Boolean(acp?.waitIsStale),
-        waitStaleReason: typeof acp?.waitStaleReason === 'string' ? acp.waitStaleReason : '',
-        waitSeconds: typeof acp?.waitSeconds === 'number' ? acp.waitSeconds : 0,
-        pendingPermission: acp?.pendingPermission ?? null,
-        pendingUserInput: acp?.pendingUserInput ?? null,
-        agentInfo: acp?.agentInfo
-          ? {
-              name: acp.agentInfo.name ?? '',
-              title: acp.agentInfo.title ?? '',
-              version: acp.agentInfo.version ?? '',
-            }
-          : null,
-      }
-      if (acpBindingsEquivalent(prev, next)) {
-        return [c.id, prev]
-      }
-      return [c.id, next]
-    })
+    cpp.chats.map((chat) => [
+      chat.id,
+      acpBindingFromCppChat(chat, existingAcpBindings[chat.id]),
+    ])
   ) as Record<string, AcpBinding>
   const acpBindingBySessionId = sameRecordEntries(existingAcpBindings, nextAcpBindingBySessionId)
     ? existingAcpBindings
@@ -2580,7 +2525,7 @@ function deserializeState(
     providers,
     activeSessionId: effectiveActiveSessionId,
     lastAppliedStateRevision: cppStateRevision(cpp),
-    theme: (cpp.settings.theme as 'dark' | 'light') || 'dark',
+    theme: cpp.settings.theme,
     cliBindingBySessionId,
     acpBindingBySessionId,
     cliTranscriptBySessionId,
@@ -2610,49 +2555,11 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
   const existingProvidersById = Object.fromEntries(current.providers.map((provider) => [provider.id, provider]))
 
   const folders = patch.folders
-    ? patch.folders.map((folder) => {
-        const prev = existingFoldersById[folder.id]
-        const nextFolder: Folder = {
-          id: folder.id,
-          name: folder.title,
-          parentId: null,
-          directory: folder.directory ?? '',
-          isExpanded: !folder.collapsed,
-          createdAt: prev?.createdAt ?? new Date(),
-        }
-        return prev &&
-          prev.name === nextFolder.name &&
-          prev.directory === nextFolder.directory &&
-          prev.isExpanded === nextFolder.isExpanded
-          ? prev
-          : nextFolder
-      })
+    ? patch.folders.map((folder) => folderFromCppFolder(folder, existingFoldersById[folder.id]))
     : current.folders
 
   const providers = patch.providers
-    ? patch.providers.map((provider) => {
-        const prev = existingProvidersById[provider.id]
-        const nextProvider: Provider = {
-          id: provider.id,
-          name: provider.name,
-          shortName: provider.shortName,
-          color: prev?.color ?? '#f97316',
-          description: prev?.description ?? '',
-          outputMode: provider.outputMode,
-          supportsCli: provider.supportsCli,
-          supportsStructured: provider.supportsStructured,
-          structuredProtocol: provider.structuredProtocol,
-        }
-        return prev &&
-          prev.name === nextProvider.name &&
-          prev.shortName === nextProvider.shortName &&
-          prev.outputMode === nextProvider.outputMode &&
-          prev.supportsCli === nextProvider.supportsCli &&
-          prev.supportsStructured === nextProvider.supportsStructured &&
-          prev.structuredProtocol === nextProvider.structuredProtocol
-          ? prev
-          : nextProvider
-      })
+    ? patch.providers.map((provider) => providerFromCppProvider(provider, existingProvidersById[provider.id]))
     : current.providers
   const visibleProviders = providers.length > 0
     ? providers
@@ -2660,66 +2567,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
 
   const patchedSessionsById = new Map(current.sessions.filter((session) => !removedChatIds.has(session.id)).map((session) => [session.id, session]))
   for (const chat of patch.chats ?? []) {
-    const prev = existingSessionsById[chat.id]
-    const createdAt = new Date(chat.createdAt || Date.now())
-    const updatedAt = new Date(chat.updatedAt || Date.now())
-    const lastOpenedAt = new Date(chat.lastOpenedAt || chat.updatedAt || chat.createdAt || Date.now())
-    const nextSession: Session = {
-      id: chat.id,
-      name: chat.title || 'Untitled',
-      viewMode: 'chat',
-      folderId: chat.folderId || null,
-      isPinned: chat.pinned ?? false,
-      providerId: normalizeProviderIdForVisibleProviders(chat.providerId, visibleProviders),
-      modelId: chat.modelId ?? '',
-      reasoningEffort: normalizeCodexReasoningEffort(chat.reasoningEffort),
-      serviceTier: normalizeCodexServiceTier(chat.serviceTier),
-      approvalMode: normalizeAcpApprovalMode(chat.approvalMode),
-      autoApproveCommands: chat.autoApproveCommands ?? false,
-      memoryEnabled: chat.memoryEnabled ?? true,
-      memoryLastProcessedMessageCount: chat.memoryLastProcessedMessageCount ?? 0,
-	      memoryLastProcessedAt: chat.memoryLastProcessedAt ?? '',
-	      workspaceDirectory: chat.workspaceDirectory ?? '',
-	      workspaceIsolationKind: chat.workspaceIsolationKind ?? '',
-	      workspaceSourceDirectory: chat.workspaceSourceDirectory ?? '',
-	      workspaceBaseRef: chat.workspaceBaseRef ?? '',
-	      workspaceBranchName: chat.workspaceBranchName ?? '',
-	      workspaceWorktreeDirectory: chat.workspaceWorktreeDirectory ?? '',
-      messageCount: chat.messageCount ?? 0,
-      messagesDigest: chat.messagesDigest ?? '',
-	      createdAt,
-      updatedAt,
-      lastOpenedAt,
-    }
-    patchedSessionsById.set(
-      chat.id,
-      prev &&
-        prev.name === nextSession.name &&
-        prev.folderId === nextSession.folderId &&
-        (prev.isPinned ?? false) === (nextSession.isPinned ?? false) &&
-        (prev.providerId ?? GEMINI_CLI_PROVIDER_ID) === nextSession.providerId &&
-        (prev.modelId ?? '') === (nextSession.modelId ?? '') &&
-        (prev.reasoningEffort ?? '') === (nextSession.reasoningEffort ?? '') &&
-        (prev.serviceTier ?? '') === (nextSession.serviceTier ?? '') &&
-        (prev.approvalMode ?? 'default') === nextSession.approvalMode &&
-        (prev.autoApproveCommands ?? false) === (nextSession.autoApproveCommands ?? false) &&
-        (prev.memoryEnabled ?? true) === nextSession.memoryEnabled &&
-        (prev.memoryLastProcessedMessageCount ?? 0) === nextSession.memoryLastProcessedMessageCount &&
-	        (prev.memoryLastProcessedAt ?? '') === nextSession.memoryLastProcessedAt &&
-	        prev.workspaceDirectory === nextSession.workspaceDirectory &&
-	        (prev.workspaceIsolationKind ?? '') === (nextSession.workspaceIsolationKind ?? '') &&
-	        (prev.workspaceSourceDirectory ?? '') === (nextSession.workspaceSourceDirectory ?? '') &&
-	        (prev.workspaceBaseRef ?? '') === (nextSession.workspaceBaseRef ?? '') &&
-	        (prev.workspaceBranchName ?? '') === (nextSession.workspaceBranchName ?? '') &&
-	        (prev.workspaceWorktreeDirectory ?? '') === (nextSession.workspaceWorktreeDirectory ?? '') &&
-        (prev.messageCount ?? 0) === (nextSession.messageCount ?? 0) &&
-        (prev.messagesDigest ?? '') === (nextSession.messagesDigest ?? '') &&
-	        prev.createdAt.getTime() === nextSession.createdAt.getTime() &&
-        prev.updatedAt.getTime() === nextSession.updatedAt.getTime() &&
-        (prev.lastOpenedAt ?? prev.updatedAt).getTime() === nextSession.lastOpenedAt?.getTime()
-        ? prev
-        : nextSession
-    )
+    patchedSessionsById.set(chat.id, sessionFromCppChat(chat, existingSessionsById[chat.id], visibleProviders))
   }
   let sessions = current.sessions
     .filter((session) => patchedSessionsById.has(session.id))
@@ -2754,104 +2602,13 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
   }
 
   for (const chat of patch.chats ?? []) {
-    if (chat.cliTerminal) {
-      const running = Boolean(chat.cliTerminal.running)
-      const lifecycleState = normalizeCliLifecycleState(
-        chat.cliTerminal.lifecycleState,
-        running,
-        chat.cliTerminal.turnState,
-        chat.cliTerminal.processing
-      )
-      const processing = Boolean(chat.cliTerminal.processing) || cliLifecycleIsProcessing(lifecycleState)
-      const nextCli: CliBinding = {
-        terminalId: chat.cliTerminal.terminalId ?? '',
-        boundChatId: chat.cliTerminal.sourceChatId ?? chat.id,
-        running,
-        lifecycleState,
-        turnState: processing ? 'busy' : 'idle',
-        processing,
-        readySinceLastSelect: Boolean(chat.cliTerminal.readySinceLastSelect),
-        active: lifecycleState === 'idle' && running,
-        lastError: chat.cliTerminal.lastError ?? '',
-      }
-      const prev = cliBindingBySessionId[chat.id]
-      cliBindingBySessionId[chat.id] =
-        prev &&
-        prev.terminalId === nextCli.terminalId &&
-        prev.boundChatId === nextCli.boundChatId &&
-        prev.running === nextCli.running &&
-        prev.lifecycleState === nextCli.lifecycleState &&
-        prev.turnState === nextCli.turnState &&
-        prev.processing === nextCli.processing &&
-        prev.readySinceLastSelect === nextCli.readySinceLastSelect &&
-        prev.active === nextCli.active &&
-        prev.lastError === nextCli.lastError
-          ? prev
-          : nextCli
+    const nextCli = cliBindingFromCppChat(chat, cliBindingBySessionId[chat.id])
+    if (nextCli) {
+      cliBindingBySessionId[chat.id] = nextCli
     }
 
-    const acp = chat.acpSession
-    if (acp) {
-      const running = Boolean(acp.running)
-      const processing = Boolean(acp.processing)
-      const lifecycleState = normalizeAcpLifecycleState(acp.lifecycleState, running, processing)
-      const effectiveProcessing =
-        lifecycleState === 'error'
-          ? false
-          : processing ||
-            lifecycleState === 'processing' ||
-            lifecycleState === 'waitingPermission' ||
-            lifecycleState === 'waitingUserInput'
-      const prev = acpBindingBySessionId[chat.id]
-      const nextAcp: AcpBinding = {
-        sessionId: acp.sessionId ?? '',
-        providerId: acp.providerId ?? chat.providerId ?? GEMINI_CLI_PROVIDER_ID,
-        protocolKind: acp.protocolKind ?? '',
-        threadId: acp.threadId ?? '',
-        running,
-        lifecycleState,
-        processing: effectiveProcessing,
-        readySinceLastSelect: Boolean(acp.readySinceLastSelect),
-        attentionKind: acp.attentionKind ?? null,
-        processingStartedAtMs: effectiveProcessing
-          ? prev?.processing
-            ? prev.processingStartedAtMs ?? Date.now()
-            : Date.now()
-          : null,
-        lastError: acp.lastError ?? '',
-        recentStderr: acp.recentStderr ?? '',
-        lastExitCode: typeof acp.lastExitCode === 'number' ? acp.lastExitCode : null,
-        diagnostics: Array.isArray(acp.diagnostics) ? acp.diagnostics : [],
-        toolCalls: Array.isArray(acp.toolCalls) ? acp.toolCalls : [],
-        planSummary: acp.planSummary ?? '',
-        planEntries: Array.isArray(acp.planEntries) ? acp.planEntries : [],
-        availableModes: Array.isArray(acp.availableModes) ? acp.availableModes : [],
-        currentModeId: normalizeAcpApprovalMode(acp.currentModeId ?? chat.approvalMode),
-        availableModels: Array.isArray(acp.availableModels)
-          ? acp.availableModels.flatMap((model) => {
-              const sanitized = sanitizeAcpModel(model)
-              return sanitized ? [sanitized] : []
-            })
-          : [],
-        currentModelId: normalizeAcpModelId(acp.currentModelId ?? chat.modelId),
-        turnEvents: Array.isArray(acp.turnEvents) ? acp.turnEvents : [],
-        turnUserMessageIndex: typeof acp.turnUserMessageIndex === 'number' ? acp.turnUserMessageIndex : -1,
-        turnAssistantMessageIndex: typeof acp.turnAssistantMessageIndex === 'number' ? acp.turnAssistantMessageIndex : -1,
-        turnSerial: typeof acp.turnSerial === 'number' ? acp.turnSerial : 0,
-        waitIsStale: Boolean(acp.waitIsStale),
-        waitStaleReason: typeof acp.waitStaleReason === 'string' ? acp.waitStaleReason : '',
-        waitSeconds: typeof acp.waitSeconds === 'number' ? acp.waitSeconds : 0,
-        pendingPermission: acp.pendingPermission ?? null,
-        pendingUserInput: acp.pendingUserInput ?? null,
-        agentInfo: acp.agentInfo
-          ? {
-              name: acp.agentInfo.name ?? '',
-              title: acp.agentInfo.title ?? '',
-              version: acp.agentInfo.version ?? '',
-            }
-          : null,
-      }
-      acpBindingBySessionId[chat.id] = acpBindingsEquivalent(prev, nextAcp) ? prev! : nextAcp
+    if (chat.acpSession) {
+      acpBindingBySessionId[chat.id] = acpBindingFromCppChat(chat, acpBindingBySessionId[chat.id])
     }
   }
 
@@ -2873,7 +2630,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     providers,
     activeSessionId,
     lastAppliedStateRevision: nextRevision,
-    theme: patch.settings?.theme ? (patch.settings.theme as 'dark' | 'light') : current.theme,
+    theme: patch.settings?.theme ?? current.theme,
     cliBindingBySessionId: sameRecordEntries(current.cliBindingBySessionId, cliBindingBySessionId) ? current.cliBindingBySessionId : cliBindingBySessionId,
     acpBindingBySessionId: sameRecordEntries(current.acpBindingBySessionId, acpBindingBySessionId) ? current.acpBindingBySessionId : acpBindingBySessionId,
     cliTranscriptBySessionId: sameRecordEntries(current.cliTranscriptBySessionId, cliTranscriptBySessionId) ? current.cliTranscriptBySessionId : cliTranscriptBySessionId,
@@ -2962,7 +2719,7 @@ interface AppState {
   editorFileAssociations: EditorFileAssociation[]
 
   // UI
-  theme: 'dark' | 'light'
+  theme: StoredTheme
   isNewChatModalOpen: boolean
   newChatFolderId: string | null
   isSettingsOpen: boolean
@@ -3063,7 +2820,7 @@ interface AppState {
   stopAcpSession: (sessionId: string) => Promise<boolean>
 
   // UI actions
-  setTheme: (theme: 'dark' | 'light') => void
+  setTheme: (theme: StoredTheme) => void
   setNewChatModalOpen: (open: boolean, folderId?: string | null) => void
   setSettingsOpen: (open: boolean) => void
   setSidebarCollapsed: (collapsed: boolean) => void
@@ -3079,13 +2836,14 @@ interface AppState {
 // Store
 // ---------------------------------------------------------------------------
 
-function readDocumentTheme(): 'dark' | 'light' {
+function readDocumentTheme(): StoredTheme {
+  const stored = readStoredTheme()
+  if (stored) return stored
   if (typeof document === 'undefined') return 'dark'
-  const value = document.documentElement.getAttribute('data-theme')
-  return value === 'light' ? 'light' : 'dark'
+  return normalizeStoredTheme(document.documentElement.getAttribute('data-theme')) ?? 'dark'
 }
 
-function persistTheme(theme: 'dark' | 'light'): void {
+function persistTheme(theme: StoredTheme): void {
   applyDocumentTheme(theme)
   writeStoredTheme(theme)
 }
@@ -3414,8 +3172,8 @@ export const useAppStore = create<AppState>((set, get) => {
     cliTranscriptBySessionId: {},
     cliDebugState: null,
     memoryEnabledDefault: true,
-    memoryIdleDelaySeconds: 60,
-    memoryRecallBudgetBytes: 2048,
+    memoryIdleDelaySeconds: DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
+    memoryRecallBudgetBytes: DEFAULT_MEMORY_RECALL_BUDGET_BYTES,
     memoryLastStatus: '',
     memoryWorkerBindings: {},
     memoryActivity: { ...emptyMemoryActivity },
@@ -3552,10 +3310,12 @@ export const useAppStore = create<AppState>((set, get) => {
         console.error('[UAM] createSession requires a workspace folder')
         return
       }
-      const requestedProviderId = current.providers.some((provider) => provider.id === providerId)
-        ? providerId
-        : current.providers.some((provider) => provider.id === current.defaultNewChatProviderId)
-          ? current.defaultNewChatProviderId
+      const normalizedProviderId = normalizeCliProviderIdAlias(providerId)
+      const normalizedDefaultProviderId = normalizeCliProviderIdAlias(current.defaultNewChatProviderId)
+      const requestedProviderId = current.providers.some((provider) => provider.id === normalizedProviderId)
+        ? normalizedProviderId
+        : current.providers.some((provider) => provider.id === normalizedDefaultProviderId)
+          ? normalizedDefaultProviderId
           : GEMINI_CLI_PROVIDER_ID
       const defaults = providerChatDefaultsForNewChat(current, requestedProviderId)
 
@@ -3928,7 +3688,7 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
 	    setSessionProvider: async (id, providerId) => {
-	      const requestedProviderId = providerId.trim()
+	      const requestedProviderId = normalizeCliProviderIdAlias(providerId)
 	      const current = get()
 	      if (!requestedProviderId || !current.providers.some((provider) => provider.id === requestedProviderId)) {
 	        return false
@@ -3957,8 +3717,8 @@ export const useAppStore = create<AppState>((set, get) => {
                 ...s,
                 providerId: requestedProviderId,
                 modelId: defaults.modelId,
-                reasoningEffort: requestedProviderId === 'codex-cli' ? defaults.reasoningEffort : '',
-                serviceTier: requestedProviderId === 'codex-cli' ? defaults.serviceTier : '',
+                reasoningEffort: requestedProviderId === CODEX_CLI_PROVIDER_ID ? defaults.reasoningEffort : '',
+                serviceTier: requestedProviderId === CODEX_CLI_PROVIDER_ID ? defaults.serviceTier : '',
                 approvalMode: defaults.approvalMode,
                 autoApproveCommands: defaults.autoApproveCommands,
                 memoryEnabled: defaults.memoryEnabled,
@@ -4055,7 +3815,7 @@ export const useAppStore = create<AppState>((set, get) => {
 	      const requestedReasoningEffort = normalizeCodexReasoningEffort(options.reasoningEffort)
 	      const requestedServiceTier = normalizeCodexServiceTier(options.serviceTier)
 	      const previousSession = get().sessions.find((s) => s.id === id)
-	      if (!previousSession || (previousSession.providerId ?? GEMINI_CLI_PROVIDER_ID) !== 'codex-cli') {
+	      if (!previousSession || (previousSession.providerId ?? GEMINI_CLI_PROVIDER_ID) !== CODEX_CLI_PROVIDER_ID) {
 	        return false
 	      }
 	      if ((previousSession.reasoningEffort ?? '') === requestedReasoningEffort && (previousSession.serviceTier ?? '') === requestedServiceTier) {
@@ -4279,8 +4039,8 @@ export const useAppStore = create<AppState>((set, get) => {
 	      }
 	      const next = {
 	        memoryEnabledDefault: settings.memoryEnabledDefault ?? previous.memoryEnabledDefault,
-	        memoryIdleDelaySeconds: settings.memoryIdleDelaySeconds ?? previous.memoryIdleDelaySeconds,
-	        memoryRecallBudgetBytes: settings.memoryRecallBudgetBytes ?? previous.memoryRecallBudgetBytes,
+	        memoryIdleDelaySeconds: clampedFiniteNumberOr(settings.memoryIdleDelaySeconds, previous.memoryIdleDelaySeconds, MIN_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_IDLE_DELAY_SECONDS),
+	        memoryRecallBudgetBytes: clampedFiniteNumberOr(settings.memoryRecallBudgetBytes, previous.memoryRecallBudgetBytes, MIN_MEMORY_RECALL_BUDGET_BYTES, MAX_MEMORY_RECALL_BUDGET_BYTES),
 	        memoryWorkerBindings: settings.memoryWorkerBindings ?? previous.memoryWorkerBindings,
 	      }
 	      const applySettings = () => set(next)
@@ -4347,17 +4107,17 @@ export const useAppStore = create<AppState>((set, get) => {
 	        defaultNewChatProviderId: get().defaultNewChatProviderId,
 	        providerChatDefaults: get().providerChatDefaults,
 	      }
-	      const requestedDefaultProviderId = settings.defaultNewChatProviderId?.trim() || previous.defaultNewChatProviderId
+	      const requestedDefaultProviderId = normalizeCliProviderIdAlias(settings.defaultNewChatProviderId ?? '') || previous.defaultNewChatProviderId
 	      if (!get().providers.some((provider) => provider.id === requestedDefaultProviderId)) {
 	        return false
 	      }
 	      const nextDefaults: Record<string, ProviderChatDefaults> = {
 	        ...previous.providerChatDefaults,
-	        ...(settings.providerChatDefaults ?? {}),
+	        ...sanitizeProviderChatDefaultsMap(settings.providerChatDefaults),
 	      }
 	      for (const [providerId, defaults] of Object.entries(nextDefaults)) {
 	        const sanitized = sanitizeProviderChatDefaults(defaults)
-	        if (providerId !== 'codex-cli') {
+	        if (providerId !== CODEX_CLI_PROVIDER_ID) {
 	          sanitized.reasoningEffort = ''
 	          sanitized.serviceTier = ''
 	        }
@@ -4399,7 +4159,7 @@ export const useAppStore = create<AppState>((set, get) => {
 	    },
 
 	    refreshCliProviderVersion: async (providerId) => {
-	      const targetProviderId = providerId?.trim() || get().cliVersionManager.providers[0]?.providerId || GEMINI_CLI_PROVIDER_ID
+	      const targetProviderId = normalizeCliProviderIdAlias(providerId ?? get().cliVersionManager.providers[0]?.providerId ?? '') || GEMINI_CLI_PROVIDER_ID
 	      if (!targetProviderId) return false
 
 	      if (isCefContext()) {
@@ -4426,7 +4186,7 @@ export const useAppStore = create<AppState>((set, get) => {
 	    },
 
 	    applyCliProviderVersion: async (providerId, version) => {
-	      const targetProviderId = providerId.trim()
+	      const targetProviderId = normalizeCliProviderIdAlias(providerId)
 	      const targetVersion = version.trim()
 	      if (!targetProviderId || !targetVersion) return false
 
@@ -4450,7 +4210,7 @@ export const useAppStore = create<AppState>((set, get) => {
 	            status: 'supported',
 	            message: 'Provider CLI version is supported.',
 	            running: false,
-	            lastCommand: `npm install -g ${targetProviderId === 'codex-cli' ? '@openai/codex' : targetProviderId === 'copilot-cli' ? '@github/copilot' : targetProviderId === 'opencode-cli' ? 'opencode-ai' : '@google/gemini-cli'}@${targetVersion}`,
+	            lastCommand: buildProviderCliInstallCommand(targetProviderId, targetVersion),
 	            lastOutput: 'Dev mode install simulated.',
 	          }),
 	        },

@@ -1,16 +1,27 @@
 #pragma once
 
-#include <cctype>
+#include "common/utils/range_utils.h"
+#include "common/utils/string_utils.h"
+
+#include <array>
+#include <cstddef>
 #include <string>
 #include <string_view>
 
 namespace uam::codex
 {
-	inline bool IsUuidHex(const char ch)
+	inline constexpr auto kUuidHyphenPositions = std::to_array<std::size_t>({8, 13, 18, 23});
+	inline constexpr std::string_view kUuidUrnPrefix = "urn:uuid:";
+	inline constexpr auto kInvalidThreadIdErrorMarkers = std::to_array<std::string_view>({"invalid thread id", "urn:uuid"});
+
+	inline bool IsUuidHex(char ch)
 	{
-		return (ch >= '0' && ch <= '9') ||
-		       (ch >= 'a' && ch <= 'f') ||
-		       (ch >= 'A' && ch <= 'F');
+		return uam::strings::IsAsciiHexDigit(static_cast<unsigned char>(ch));
+	}
+
+	inline bool IsUuidHyphenPosition(std::size_t index)
+	{
+		return uam::ranges::Contains(kUuidHyphenPositions, index);
 	}
 
 	inline bool IsCanonicalUuid(std::string_view value)
@@ -22,8 +33,7 @@ namespace uam::codex
 
 		for (std::size_t i = 0; i < value.size(); ++i)
 		{
-			const bool hyphen_position = i == 8 || i == 13 || i == 18 || i == 23;
-			if (hyphen_position)
+			if (IsUuidHyphenPosition(i))
 			{
 				if (value[i] != '-')
 				{
@@ -41,41 +51,21 @@ namespace uam::codex
 
 	inline bool IsValidThreadId(std::string_view value)
 	{
-		constexpr std::string_view urn_prefix = "urn:uuid:";
-		if (value.rfind(urn_prefix, 0) == 0)
+		if (uam::strings::StartsWith(value, kUuidUrnPrefix))
 		{
-			value.remove_prefix(urn_prefix.size());
+			value.remove_prefix(kUuidUrnPrefix.size());
 		}
 		return IsCanonicalUuid(value);
 	}
 
-	inline std::string TrimAsciiWhitespace(const std::string& value)
+	inline std::string ValidThreadIdOrEmpty(std::string_view value)
 	{
-		const std::size_t start = value.find_first_not_of(" \t\r\n");
-		if (start == std::string::npos)
-		{
-			return "";
-		}
-		const std::size_t end = value.find_last_not_of(" \t\r\n");
-		return value.substr(start, end - start + 1);
-	}
-
-	inline std::string ValidThreadIdOrEmpty(const std::string& value)
-	{
-		const std::string trimmed = TrimAsciiWhitespace(value);
+		const std::string trimmed = uam::strings::Trim(value);
 		return IsValidThreadId(trimmed) ? trimmed : std::string{};
 	}
 
-	inline bool ErrorLooksLikeInvalidThreadId(const std::string& message)
+	inline bool ErrorLooksLikeInvalidThreadId(std::string_view message)
 	{
-		std::string lowered;
-		lowered.reserve(message.size());
-		for (const unsigned char ch : message)
-		{
-			lowered.push_back(static_cast<char>(std::tolower(ch)));
-		}
-
-		return lowered.find("invalid thread id") != std::string::npos ||
-		       lowered.find("urn:uuid") != std::string::npos;
+		return uam::strings::ContainsAnyCaseInsensitive(message, kInvalidThreadIdErrorMarkers);
 	}
 } // namespace uam::codex

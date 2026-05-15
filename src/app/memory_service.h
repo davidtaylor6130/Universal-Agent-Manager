@@ -1,5 +1,4 @@
-#ifndef UAM_APP_MEMORY_SERVICE_H
-#define UAM_APP_MEMORY_SERVICE_H
+#pragma once
 
 #include "common/state/app_state.h"
 
@@ -38,5 +37,3 @@ class MemoryService
 	static bool ProcessDueMemoryWork(uam::AppState& app);
 	static void StopMemoryTasks(uam::AppState& app);
 };
-
-#endif // UAM_APP_MEMORY_SERVICE_H

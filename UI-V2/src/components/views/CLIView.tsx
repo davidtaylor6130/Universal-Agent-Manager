@@ -7,6 +7,7 @@ import { Session } from '../../types/session'
 import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF, isCefContext } from '../../ipc/cefBridge'
 import type { CliLifecycleState } from '../../store/useAppStore'
+import { DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
 
 interface CLIViewProps {
   session: Session
@@ -78,7 +79,7 @@ export function CLIView({ session }: CLIViewProps) {
   const cliBinding = useAppStore(useShallow((s) => s.cliBindingBySessionId[session.id]))
   const cliTranscript = useAppStore(useShallow((s) => s.cliTranscriptBySessionId[session.id]))
   const setCliBinding = useAppStore((s) => s.setCliBinding)
-  const currentProviderId = session.providerId?.trim() || 'gemini-cli'
+  const currentProviderId = session.providerId?.trim() || DEFAULT_PROVIDER_ID
   const providerSupported = providers.some((provider) => provider.id === currentProviderId)
   const unsupportedProviderMessage = `Provider '${currentProviderId}' is not supported in this build. Switch this chat to Gemini CLI to use terminal mode.`
 

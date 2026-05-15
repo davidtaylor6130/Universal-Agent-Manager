@@ -22,10 +22,22 @@ UamCefClient::UamCefClient(uam::AppState& app, std::string trusted_ui_index_url,
 
 bool UamCefClient::IsTrustedMainFrame(CefRefPtr<CefFrame> frame) const
 {
-	if (frame == nullptr || !frame->IsMain())
-		return false;
+	return uam::cef::IsTrustedMainFrame(frame, m_trustedUiIndexUrl);
+}
 
-	return uam::cef::IsTrustedUiUrl(frame->GetURL().ToString(), m_trustedUiIndexUrl);
+bool UamCefClient::ShouldCancelNavigationToUrl(const std::string& target_url) const
+{
+	if (uam::cef::IsTrustedUiUrl(target_url, m_trustedUiIndexUrl))
+	{
+		return false;
+	}
+
+	if (uam::cef::ShouldOpenExternally(target_url))
+	{
+		(void)uam::cef::OpenUrlExternally(target_url);
+	}
+
+	return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -38,7 +50,9 @@ void UamCefClient::OnAfterCreated(CefRefPtr<CefBrowser> browser)
 	m_browser = browser;
 
 	if (m_onReady)
+	{
 		m_onReady(browser);
+	}
 }
 
 bool UamCefClient::DoClose(CefRefPtr<CefBrowser> /*browser*/)
@@ -67,7 +81,9 @@ void UamCefClient::OnLoadEnd(CefRefPtr<CefBrowser> browser,
 	(void)http_status_code;
 
 	if (!IsTrustedMainFrame(frame))
+	{
 		return;
+	}
 
 	// React pulls the initial state with getInitialState during store bootstrap.
 	// Avoid a duplicate full-state serialization/push on the CEF UI thread here.
@@ -79,8 +95,10 @@ void UamCefClient::OnLoadError(CefRefPtr<CefBrowser> /*browser*/,
                                 const CefString&      error_text,
                                 const CefString&      failed_url)
 {
-	if (!frame->IsMain())
+	if (frame == nullptr || !frame->IsMain())
+	{
 		return;
+	}
 
 	// Inject a minimal error page so the window is not blank.
 	std::string html =
@@ -114,10 +132,17 @@ void UamCefClient::OnBeforeContextMenu(CefRefPtr<CefBrowser>           /*browser
                                         CefRefPtr<CefContextMenuParams> params,
                                         CefRefPtr<CefMenuModel>         model)
 {
+	if (model == nullptr)
+	{
+		return;
+	}
+
 	model->Clear();
 
 	if (params == nullptr)
+	{
 		return;
+	}
 
 	if (params->IsEditable())
 	{
@@ -142,7 +167,9 @@ bool UamCefClient::OnContextMenuCommand(CefRefPtr<CefBrowser>           /*browse
                                          EventFlags                      /*event_flags*/)
 {
 	if (frame == nullptr)
+	{
 		return false;
+	}
 
 	switch (command_id)
 	{
@@ -175,18 +202,24 @@ bool UamCefClient::OnKeyEvent(CefRefPtr<CefBrowser> browser,
 	{
 		// F12
 		if (event.windows_key_code == 123)
+		{
 			return true;
+		}
 
 		// Ctrl+Shift+I (DevTools)
 		if ((event.modifiers & EVENTFLAG_CONTROL_DOWN) &&
 		    (event.modifiers & EVENTFLAG_SHIFT_DOWN) &&
 		    event.windows_key_code == 'I')
+		{
 			return true;
+		}
 
 		// Ctrl+U (view-source)
 		if ((event.modifiers & EVENTFLAG_CONTROL_DOWN) &&
 		    event.windows_key_code == 'U')
+		{
 			return true;
+		}
 
 		const bool pasteModifier =
 			(event.modifiers & EVENTFLAG_CONTROL_DOWN) ||
@@ -216,7 +249,9 @@ bool UamCefClient::OnProcessMessageReceived(CefRefPtr<CefBrowser>        browser
                                              CefRefPtr<CefProcessMessage> message)
 {
 	if (m_router == nullptr || !IsTrustedMainFrame(frame))
+	{
 		return false;
+	}
 
 	return m_router->OnProcessMessageReceived(browser, frame, source_process, message);
 }
@@ -235,16 +270,12 @@ bool UamCefClient::OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
 	(void)browser;
 	(void)frame;
 
-	const std::string target_url = request->GetURL();
-	if (uam::cef::IsTrustedUiUrl(target_url, m_trustedUiIndexUrl))
-		return false;
-
-	if (uam::cef::ShouldOpenExternally(target_url))
+	if (request == nullptr)
 	{
-		(void)uam::cef::OpenUrlExternally(target_url);
+		return true;
 	}
 
-	return true;
+	return ShouldCancelNavigationToUrl(request->GetURL());
 }
 
 bool UamCefClient::OnOpenURLFromTab(CefRefPtr<CefBrowser> browser,
@@ -257,14 +288,5 @@ bool UamCefClient::OnOpenURLFromTab(CefRefPtr<CefBrowser> browser,
 	(void)browser;
 	(void)frame;
 
-	const std::string target = target_url.ToString();
-	if (uam::cef::IsTrustedUiUrl(target, m_trustedUiIndexUrl))
-		return false;
-
-	if (uam::cef::ShouldOpenExternally(target))
-	{
-		(void)uam::cef::OpenUrlExternally(target);
-	}
-
-	return true;
+	return ShouldCancelNavigationToUrl(target_url.ToString());
 }

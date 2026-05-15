@@ -8,19 +8,22 @@
 /// Implements CefRenderProcessHandler so CefMessageRouterRendererSide is created in the
 /// renderer process — this is what injects window.cefQuery into the page.
 /// </summary>
-class UamCefApp : public CefApp,
-                  public CefBrowserProcessHandler,
-                  public CefRenderProcessHandler
+class UamCefApp : public CefApp, public CefBrowserProcessHandler, public CefRenderProcessHandler
 {
   public:
 	UamCefApp() = default;
 
 	// CefApp
-	CefRefPtr<CefBrowserProcessHandler> GetBrowserProcessHandler() override { return this; }
-	CefRefPtr<CefRenderProcessHandler>  GetRenderProcessHandler()  override { return this; }
+	CefRefPtr<CefBrowserProcessHandler> GetBrowserProcessHandler() override
+	{
+		return this;
+	}
+	CefRefPtr<CefRenderProcessHandler> GetRenderProcessHandler() override
+	{
+		return this;
+	}
 
-	void OnBeforeCommandLineProcessing(const CefString& process_type,
-	                                   CefRefPtr<CefCommandLine> command_line) override;
+	void OnBeforeCommandLineProcessing(const CefString& process_type, CefRefPtr<CefCommandLine> command_line) override;
 
 	// CefBrowserProcessHandler
 	void OnContextInitialized() override;
@@ -28,16 +31,9 @@ class UamCefApp : public CefApp,
 
 	// CefRenderProcessHandler — creates the renderer-side message router that injects window.cefQuery
 	void OnWebKitInitialized() override;
-	void OnContextCreated(CefRefPtr<CefBrowser>   browser,
-	                      CefRefPtr<CefFrame>     frame,
-	                      CefRefPtr<CefV8Context> context) override;
-	void OnContextReleased(CefRefPtr<CefBrowser>   browser,
-	                       CefRefPtr<CefFrame>     frame,
-	                       CefRefPtr<CefV8Context> context) override;
-	bool OnProcessMessageReceived(CefRefPtr<CefBrowser>        browser,
-	                              CefRefPtr<CefFrame>          frame,
-	                              CefProcessId                 source_process,
-	                              CefRefPtr<CefProcessMessage> message) override;
+	void OnContextCreated(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefRefPtr<CefV8Context> context) override;
+	void OnContextReleased(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefRefPtr<CefV8Context> context) override;
+	bool OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefProcessId source_process, CefRefPtr<CefProcessMessage> message) override;
 
   private:
 	std::string m_trustedUiIndexUrl;

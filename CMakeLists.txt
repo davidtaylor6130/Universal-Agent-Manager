@@ -232,7 +232,6 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   ${UAM_PLATFORM_IMPL_SOURCES}
   src/main.cpp
   src/app/application.cpp
-  src/app/application_core_helpers.cpp
   src/app/chat_domain_service.cpp
   src/app/chat_lifecycle_service.cpp
   src/app/git_worktree_service.cpp
@@ -257,6 +256,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/chat/chat_folder_store.cpp
   src/common/chat/chat_repository.cpp
   src/common/chat/chat_branching.cpp
+  src/common/chat/native_chat_identity.cpp
   src/common/config/settings_store.cpp
   src/common/utils/command_line_words.cpp
   src/common/config/frontend_actions.cpp
@@ -667,7 +667,6 @@ if(UAM_BUILD_TESTS)
   add_executable(uam_core_tests
     tests/core_tests.cpp
     ${UAM_PLATFORM_IMPL_SOURCES}
-    src/app/application_core_helpers.cpp
     src/app/chat_domain_service.cpp
     src/app/chat_lifecycle_service.cpp
     src/app/git_worktree_service.cpp
@@ -691,11 +690,13 @@ if(UAM_BUILD_TESTS)
     src/common/utils/command_line_words.cpp
     src/common/chat/chat_repository.cpp
     src/common/chat/chat_branching.cpp
+    src/common/chat/native_chat_identity.cpp
     src/common/provider/provider_profile.cpp
     src/common/provider/runtime/provider_runtime_facade.cpp
     src/common/provider/runtime/provider_runtime_registry.cpp
     src/common/runtime/acp/acp_session_runtime.cpp
     src/common/runtime/provider_cli_compatibility_service.cpp
+    src/core/chat_import_utils.cpp
     src/core/gemini_cli_compat.cpp
     ${UAM_PROVIDER_SOURCES}
     src/common/config/settings_store.cpp

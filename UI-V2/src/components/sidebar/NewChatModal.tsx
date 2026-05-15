@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ProviderLogo } from '../shared/ProviderLogo'
+import { DEFAULT_PROVIDER_ID, providerRuntimeDescription } from '../../utils/providerMetadata'
 
 export function NewChatModal() {
   const addSession = useAppStore((s) => s.addSession)
@@ -19,7 +20,7 @@ export function NewChatModal() {
   const [providerId, setProviderId] = useState<string>(
     providers.some((provider) => provider.id === defaultNewChatProviderId)
       ? defaultNewChatProviderId
-      : providers[0]?.id ?? 'gemini-cli'
+      : providers[0]?.id ?? DEFAULT_PROVIDER_ID
   )
   const [folderMenuOpen, setFolderMenuOpen] = useState(false)
   const [providerMenuOpen, setProviderMenuOpen] = useState(false)
@@ -313,15 +314,7 @@ export function NewChatModal() {
                             <span>{provider.shortName || provider.name}</span>
                           </div>
                           <div className="truncate text-[10px]" style={{ color: 'var(--text-3)' }}>
-                            {provider.structuredProtocol === 'codex-app-server'
-                              ? 'Codex app-server + CLI'
-                              : provider.structuredProtocol === 'claude-code-stream-json'
-                                ? 'Claude stream + CLI'
-                                : provider.structuredProtocol === 'opencode-acp'
-                                  ? 'OpenCode ACP + CLI'
-                                  : provider.structuredProtocol === 'copilot-acp'
-                                    ? 'Copilot ACP + CLI'
-                                  : 'Gemini ACP + CLI'}
+                            {providerRuntimeDescription(provider, provider.id)}
                           </div>
                         </button>
                       )

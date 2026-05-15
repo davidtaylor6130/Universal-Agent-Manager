@@ -1,77 +1,113 @@
 #include "core/gemini_cli_compat.h"
 
+#include "common/utils/parse_utils.h"
+
 #include <algorithm>
 #include <array>
-#include <cstdlib>
+#include <optional>
+#include <string>
 
-namespace uam {
-namespace {
+namespace uam
+{
+namespace
+{
 
+constexpr std::string_view kPreferredGeminiCliVersion = "0.38.1";
+constexpr std::string_view kMinimumSupportedGeminiCliVersion = "0.36.0";
 constexpr std::array<std::string_view, 2> kSupportedGeminiCliVersions{{
-    "0.38.1",
-    "0.36.0",
+	kPreferredGeminiCliVersion,
+	kMinimumSupportedGeminiCliVersion,
 }};
 
-struct Semver {
-  int major = -1;
-  int minor = -1;
-  int patch = -1;
+struct Semver
+{
+	int major = -1;
+	int minor = -1;
+	int patch = -1;
 };
 
-bool ParseSemver(const std::string_view value, Semver& out) {
-  const std::string text(value);
-  char* end = nullptr;
-  const long major = std::strtol(text.c_str(), &end, 10);
-  if (end == nullptr || *end != '.') {
-    return false;
-  }
+constexpr Semver kMinimumSupportedGeminiCliSemver{0, 36, 0};
 
-  const long minor = std::strtol(end + 1, &end, 10);
-  if (end == nullptr || *end != '.') {
-    return false;
-  }
+std::optional<int> ParseSemverComponent(std::string_view value)
+{
+	const std::optional<int> parsed = uam::parse::IntStrict(value);
+	if (!parsed || *parsed < 0)
+	{
+		return std::nullopt;
+	}
 
-  const long patch = std::strtol(end + 1, &end, 10);
-  if (major < 0 || minor < 0 || patch < 0) {
-    return false;
-  }
-
-  out.major = static_cast<int>(major);
-  out.minor = static_cast<int>(minor);
-  out.patch = static_cast<int>(patch);
-  return true;
+	return parsed;
 }
 
-}  // namespace
+std::optional<Semver> ParseSemver(std::string_view value)
+{
+	const std::size_t major_end = value.find('.');
+	if (major_end == std::string_view::npos)
+	{
+		return std::nullopt;
+	}
 
-std::span<const std::string_view> SupportedGeminiCliVersions() {
-  return std::span<const std::string_view>(kSupportedGeminiCliVersions.data(), kSupportedGeminiCliVersions.size());
+	const std::size_t minor_end = value.find('.', major_end + 1);
+	if (minor_end == std::string_view::npos || value.find('.', minor_end + 1) != std::string_view::npos)
+	{
+		return std::nullopt;
+	}
+
+	const std::optional<int> major = ParseSemverComponent(value.substr(0, major_end));
+	const std::optional<int> minor = ParseSemverComponent(value.substr(major_end + 1, minor_end - major_end - 1));
+	const std::optional<int> patch = ParseSemverComponent(value.substr(minor_end + 1));
+	if (!major || !minor || !patch)
+	{
+		return std::nullopt;
+	}
+
+	return Semver{*major, *minor, *patch};
 }
 
-std::string_view PreferredGeminiCliVersion() {
-  return kSupportedGeminiCliVersions.front();
+} // namespace
+
+std::span<const std::string_view> SupportedGeminiCliVersions()
+{
+	return std::span<const std::string_view>(kSupportedGeminiCliVersions.data(), kSupportedGeminiCliVersions.size());
 }
 
-bool IsSupportedGeminiCliVersion(const std::string_view version) {
-  if (std::find(kSupportedGeminiCliVersions.begin(), kSupportedGeminiCliVersions.end(), version) !=
-      kSupportedGeminiCliVersions.end()) {
-    return true;
-  }
-
-  Semver parsed;
-  if (!ParseSemver(version, parsed)) {
-    return false;
-  }
-
-  if (parsed.major > 0) {
-    return true;
-  }
-
-  return parsed.major == 0 && parsed.minor >= 36;
+std::string_view PreferredGeminiCliVersion()
+{
+	return kPreferredGeminiCliVersion;
 }
 
-std::string SupportedGeminiCliVersionsLabel() {
-  return "0.36.0 or newer (preferred 0.38.1)";
+bool IsSupportedGeminiCliVersion(std::string_view version)
+{
+	if (std::ranges::find(kSupportedGeminiCliVersions, version) != kSupportedGeminiCliVersions.end())
+	{
+		return true;
+	}
+
+	const std::optional<Semver> parsed = ParseSemver(version);
+	if (!parsed)
+	{
+		return false;
+	}
+
+	if (parsed->major > 0)
+	{
+		return true;
+	}
+
+	return parsed->major == kMinimumSupportedGeminiCliSemver.major &&
+	       parsed->minor >= kMinimumSupportedGeminiCliSemver.minor;
 }
 
-}  // namespace uam
+std::string SupportedGeminiCliVersionsLabel()
+{
+	constexpr std::string_view kPreferredVersionPrefix = " or newer (preferred ";
+	std::string label;
+	label.reserve(kMinimumSupportedGeminiCliVersion.size() + kPreferredVersionPrefix.size() + kPreferredGeminiCliVersion.size() + 1);
+	label.append(kMinimumSupportedGeminiCliVersion);
+	label.append(kPreferredVersionPrefix);
+	label.append(kPreferredGeminiCliVersion);
+	label.push_back(')');
+	return label;
+}
+
+} // namespace uam

@@ -10,6 +10,6 @@
 /// </summary>
 
 /// <summary>
-/// Terminal rendering/polling integration and Gemini request orchestration.
+/// Terminal rendering/polling integration and provider CLI request orchestration.
 /// </summary>
 #include "common/runtime/terminal_polling.h"

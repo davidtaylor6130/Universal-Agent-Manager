@@ -1,6 +1,4 @@
-#ifndef UAM_APP_PERSISTENCE_COORDINATOR_H
-#define UAM_APP_PERSISTENCE_COORDINATOR_H
-
+#pragma once
 
 #include "common/state/app_state.h"
 
@@ -18,5 +16,3 @@ class PersistenceCoordinator
 	void LoadSettings(uam::AppState& app) const;
 	void LoadFrontendActions(uam::AppState& app) const;
 };
-
-#endif // UAM_APP_PERSISTENCE_COORDINATOR_H

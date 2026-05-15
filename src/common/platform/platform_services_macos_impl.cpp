@@ -2,21 +2,25 @@
 #include <Security/Security.h>
 
 #include "common/paths/app_paths.h"
+#include "common/paths/path_utils.h"
 #include "common/state/app_state.h"
+#include "common/utils/env_utils.h"
+#include "common/utils/io_utils.h"
+#include "common/utils/range_utils.h"
+#include "common/utils/shell_escape.h"
+#include "common/utils/string_utils.h"
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cerrno>
 #include <chrono>
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
 #include <memory>
 #include <optional>
 #include <sstream>
 #include <thread>
+#include <vector>
 
 #include <fcntl.h>
 #include <mach-o/dyld.h>
@@ -29,86 +33,249 @@
 
 namespace
 {
-
-	std::string TrimAsciiWhitespace(const std::string& value)
+	bool IsInterruptedErrno()
 	{
-		const std::size_t start = value.find_first_not_of(" \t\r\n");
+		return errno == EINTR;
+	}
 
-		if (start == std::string::npos)
+	bool IsWouldBlockErrno()
+	{
+		return errno == EAGAIN || errno == EWOULDBLOCK;
+	}
+
+	void CloseFdIfOpen(int& fd)
+	{
+		if (fd >= 0)
 		{
-			return "";
+			close(fd);
+			fd = -1;
+		}
+	}
+
+	void ClosePipeFds(int (&pipe_fds)[2])
+	{
+		CloseFdIfOpen(pipe_fds[0]);
+		CloseFdIfOpen(pipe_fds[1]);
+	}
+
+	void SetFdNonBlockingIfOpen(int fd)
+	{
+		if (fd < 0)
+		{
+			return;
 		}
 
-		const std::size_t end = value.find_last_not_of(" \t\r\n");
-		return value.substr(start, end - start + 1);
+		const int flags = fcntl(fd, F_GETFL, 0);
+		if (flags >= 0)
+		{
+			(void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+		}
 	}
 
-	std::string ShellQuotePosix(const std::string& value)
+	std::string ErrorWithOptionalDetail(const std::string& base_message, const std::string& detail)
 	{
-		std::string escaped = "'";
+		return detail.empty() ? base_message : base_message + ": " + detail;
+	}
 
-		for (const char ch : value)
+	std::vector<char*> BuildMutableArgv(const std::vector<std::string>& argv, std::vector<std::vector<char>>& storage)
+	{
+		storage.clear();
+		storage.reserve(argv.size());
+
+		std::vector<char*> argv_ptrs;
+		argv_ptrs.reserve(argv.size() + 1);
+
+		for (const std::string& arg : argv)
 		{
-			if (ch == '\'')
-			{
-				escaped += "'\\''";
-			}
-			else
-			{
-				escaped.push_back(ch);
-			}
+			storage.emplace_back(arg.begin(), arg.end());
+			storage.back().push_back('\0');
+			argv_ptrs.push_back(storage.back().data());
 		}
 
-		escaped.push_back('\'');
-		return escaped;
+		argv_ptrs.push_back(nullptr);
+		return argv_ptrs;
 	}
 
-	bool RunShellCommand(const std::string& command)
+	bool ValidateProgramArgv(const std::vector<std::string>& argv, std::string* error_out = nullptr)
 	{
-		return std::system(command.c_str()) == 0;
-	}
-
-	bool RunShellCommandCapture(const std::string& command, std::string* output_out = nullptr)
-	{
-		FILE* pipe = popen(command.c_str(), "r");
-
-		if (pipe == nullptr)
+		if (!argv.empty() && !argv.front().empty())
 		{
-			if (output_out != nullptr)
+			return true;
+		}
+
+		if (error_out != nullptr)
+		{
+			*error_out = "Executable path is empty.";
+		}
+		return false;
+	}
+
+	bool WaitForSuccessfulProgramExit(const pid_t pid, std::string* error_out = nullptr)
+	{
+		int status = 0;
+		while (waitpid(pid, &status, 0) < 0)
+		{
+			if (IsInterruptedErrno())
 			{
-				output_out->clear();
+				continue;
 			}
 
+			if (error_out != nullptr)
+			{
+				*error_out = "waitpid failed: " + std::string(std::strerror(errno));
+			}
 			return false;
 		}
 
-		std::string output;
-		std::array<char, 512> buffer{};
-
-		while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr)
+		if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
 		{
-			output.append(buffer.data());
+			return true;
 		}
 
-		const int status = pclose(pipe);
+		if (error_out != nullptr)
+		{
+			if (WIFEXITED(status))
+			{
+				*error_out = "process exited with status " + std::to_string(WEXITSTATUS(status)) + ".";
+			}
+			else if (WIFSIGNALED(status))
+			{
+				*error_out = "process terminated by signal " + std::to_string(WTERMSIG(status)) + ".";
+			}
+			else
+			{
+				*error_out = "process ended without a normal exit status.";
+			}
+		}
+
+		return false;
+	}
+
+	bool RunProgramAndWait(const std::vector<std::string>& argv, std::string* error_out = nullptr)
+	{
+		if (!ValidateProgramArgv(argv, error_out))
+		{
+			return false;
+		}
+
+		std::vector<std::vector<char>> argv_storage;
+		std::vector<char*> argv_ptrs = BuildMutableArgv(argv, argv_storage);
+
+		const pid_t pid = fork();
+		if (pid < 0)
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "fork failed: " + std::string(std::strerror(errno));
+			}
+			return false;
+		}
+
+		if (pid == 0)
+		{
+			execv(argv_ptrs[0], argv_ptrs.data());
+			_exit(127);
+		}
+
+		return WaitForSuccessfulProgramExit(pid, error_out);
+	}
+
+	bool RunProgramAndCapture(const std::vector<std::string>& argv, std::string* output_out = nullptr, std::string* error_out = nullptr)
+	{
+		if (!ValidateProgramArgv(argv, error_out))
+		{
+			return false;
+		}
+
+		int output_pipe[2] = {-1, -1};
+		if (pipe(output_pipe) != 0)
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "pipe failed: " + std::string(std::strerror(errno));
+			}
+			return false;
+		}
+
+		std::vector<std::vector<char>> argv_storage;
+		std::vector<char*> argv_ptrs = BuildMutableArgv(argv, argv_storage);
+
+		const pid_t pid = fork();
+		if (pid < 0)
+		{
+			ClosePipeFds(output_pipe);
+			if (error_out != nullptr)
+			{
+				*error_out = "fork failed: " + std::string(std::strerror(errno));
+			}
+			return false;
+		}
+
+		if (pid == 0)
+		{
+			CloseFdIfOpen(output_pipe[0]);
+			if (dup2(output_pipe[1], STDOUT_FILENO) < 0)
+			{
+				_exit(126);
+			}
+			CloseFdIfOpen(output_pipe[1]);
+			execv(argv_ptrs[0], argv_ptrs.data());
+			_exit(127);
+		}
+
+		CloseFdIfOpen(output_pipe[1]);
+		std::string output;
+		std::array<char, 512> buffer{};
+		bool read_ok = true;
+		std::string read_error;
+
+		while (true)
+		{
+			const ssize_t bytes_read = read(output_pipe[0], buffer.data(), buffer.size());
+			if (bytes_read > 0)
+			{
+				output.append(buffer.data(), static_cast<std::size_t>(bytes_read));
+				continue;
+			}
+
+			if (bytes_read == 0)
+			{
+				break;
+			}
+
+			if (IsInterruptedErrno())
+			{
+				continue;
+			}
+
+			read_ok = false;
+			read_error = "read failed: " + std::string(std::strerror(errno));
+			break;
+		}
+
+		CloseFdIfOpen(output_pipe[0]);
 
 		if (output_out != nullptr)
 		{
-			*output_out = TrimAsciiWhitespace(output);
+			*output_out = uam::strings::Trim(output);
 		}
 
-		return status == 0;
-	}
+		if (!read_ok)
+		{
+			(void)WaitForSuccessfulProgramExit(pid);
+			if (error_out != nullptr)
+			{
+				*error_out = read_error;
+			}
+			return false;
+		}
 
-	bool IsShellCommandAvailable(const std::string& command)
-	{
-		return RunShellCommand("command -v " + command + " >/dev/null 2>&1");
+		return WaitForSuccessfulProgramExit(pid, error_out);
 	}
 
 	bool IsExecutableFile(const std::filesystem::path& candidate)
 	{
-		std::error_code ec;
-		if (!std::filesystem::exists(candidate, ec) || !std::filesystem::is_regular_file(candidate, ec))
+		if (!uam::paths::IsRegularFileNoThrow(candidate))
 		{
 			return false;
 		}
@@ -146,53 +313,45 @@ namespace
 
 	void AppendUniquePathEntry(std::vector<std::string>& entries, const std::string& entry)
 	{
-		if (entry.empty())
-		{
-			return;
-		}
-
-		if (std::find(entries.begin(), entries.end(), entry) == entries.end())
-		{
-			entries.push_back(entry);
-		}
+		uam::ranges::PushUniqueNonEmptyString(entries, entry);
 	}
 
 	std::vector<std::string> CollectTerminalPathSearchDirs()
 	{
 		std::vector<std::string> candidate_dirs;
-		if (const char* path_env = std::getenv("PATH"); path_env != nullptr)
+		if (const std::optional<std::string> path_env = uam::env::GetNonEmptyString("PATH"))
 		{
-			candidate_dirs = SplitPathEnv(path_env);
+			candidate_dirs = SplitPathEnv(*path_env);
 		}
 
-		const std::array<const char*, 8> fallback_dirs = {
+		const auto fallback_dirs = std::to_array<const char*>({
 		    "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin", "/usr/bin", "/bin", "/usr/sbin", "/sbin",
-		};
+		});
 		for (const char* dir : fallback_dirs)
 		{
 			AppendUniquePathEntry(candidate_dirs, dir);
 		}
 
-		if (const char* home = std::getenv("HOME"); home != nullptr)
+		if (const std::optional<std::filesystem::path> home_path = uam::env::GetTrimmedPath("HOME"))
 		{
-			const std::filesystem::path home_path(home);
-			AppendUniquePathEntry(candidate_dirs, (home_path / ".volta" / "bin").string());
-			AppendUniquePathEntry(candidate_dirs, (home_path / ".asdf" / "shims").string());
-			AppendUniquePathEntry(candidate_dirs, (home_path / ".fnm").string());
+			AppendUniquePathEntry(candidate_dirs, (*home_path / ".volta" / "bin").string());
+			AppendUniquePathEntry(candidate_dirs, (*home_path / ".asdf" / "shims").string());
+			AppendUniquePathEntry(candidate_dirs, (*home_path / ".fnm").string());
 
-			const std::filesystem::path nvm_versions_dir = home_path / ".nvm" / "versions" / "node";
+			const std::filesystem::path nvm_versions_dir = *home_path / ".nvm" / "versions" / "node";
 			std::error_code ec;
-			if (std::filesystem::exists(nvm_versions_dir, ec) && std::filesystem::is_directory(nvm_versions_dir, ec))
+			if (uam::paths::IsDirectoryNoThrow(nvm_versions_dir))
 			{
-				for (const auto& entry : std::filesystem::directory_iterator(nvm_versions_dir, ec))
+				for (std::filesystem::directory_iterator it(nvm_versions_dir, ec), end; !ec && it != end; it.increment(ec))
 				{
-					if (ec || !entry.is_directory())
+					const std::filesystem::directory_entry& entry = *it;
+					if (!uam::paths::IsDirectoryEntryNoThrow(entry))
 					{
 						continue;
 					}
 
 					const std::filesystem::path bin_dir = entry.path() / "bin";
-					if (std::filesystem::exists(bin_dir, ec) && std::filesystem::is_directory(bin_dir, ec))
+					if (uam::paths::IsDirectoryNoThrow(bin_dir))
 					{
 						AppendUniquePathEntry(candidate_dirs, bin_dir.string());
 					}
@@ -229,7 +388,7 @@ namespace
 			return "";
 		}
 
-		if (command.find('/') != std::string::npos)
+		if (uam::strings::Contains(command, '/'))
 		{
 			return IsExecutableFile(command) ? command : "";
 		}
@@ -258,29 +417,81 @@ namespace
 
 	bool ScriptShebangMentionsNode(const std::filesystem::path& executable_path)
 	{
-		std::ifstream stream(executable_path);
-		if (!stream.is_open())
+		const std::optional<std::string> first_line = uam::io::ReadFirstTextFileLine(executable_path);
+		if (!first_line)
 		{
 			return false;
 		}
 
-		std::string first_line;
-		if (!std::getline(stream, first_line))
+		if (!uam::strings::StartsWith(*first_line, "#!"))
 		{
 			return false;
 		}
 
-		if (first_line.rfind("#!", 0) != 0)
-		{
-			return false;
-		}
-
-		return first_line.find("node") != std::string::npos;
+		return uam::strings::Contains(*first_line, "node");
 	}
 
 	bool CommandNeedsNodePreflight(const std::string& command, const std::filesystem::path& executable_path)
 	{
 		return command == "gemini" && ScriptShebangMentionsNode(executable_path);
+	}
+
+	std::string CommandNotFoundOnPathMessage(const std::string& command)
+	{
+		return command + " not found on PATH in app environment";
+	}
+
+	std::string NodeRuntimeNotFoundMessage(const std::string& command)
+	{
+		return "node not found on PATH in app environment (required by " + command + ")";
+	}
+
+	bool ValidateRequiredNodeRuntime(const std::string& command, const std::filesystem::path& executable_path, const std::vector<std::string>& search_dirs, std::string* error_out)
+	{
+		if (!CommandNeedsNodePreflight(command, executable_path))
+		{
+			return true;
+		}
+
+		if (!ResolveExecutablePathForTerminal("node", search_dirs).empty())
+		{
+			return true;
+		}
+
+		if (error_out != nullptr)
+		{
+			*error_out = NodeRuntimeNotFoundMessage(command);
+		}
+		return false;
+	}
+
+	bool PrepareWorkingDirectory(const std::filesystem::path& working_directory, const char* prepare_context_name, const char* access_context_name, bool require_execute_access, std::string* error_out)
+	{
+		if (working_directory.empty())
+		{
+			return true;
+		}
+
+		std::error_code wd_ec;
+		if (!uam::paths::CreateDirectoriesNoThrow(working_directory, &wd_ec) || !uam::paths::IsDirectoryNoThrow(working_directory))
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Failed to prepare " + std::string(prepare_context_name) + " working directory: " + (wd_ec ? wd_ec.message() : working_directory.string());
+			}
+			return false;
+		}
+
+		if (require_execute_access && access(working_directory.c_str(), X_OK) != 0)
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = std::string(access_context_name) + " working directory is not accessible: " + std::strerror(errno);
+			}
+			return false;
+		}
+
+		return true;
 	}
 
 	std::string EscapeAppleScriptQuotedString(const std::string& value)
@@ -307,7 +518,7 @@ namespace
 		return escaped;
 	}
 
-	bool ReadAvailablePipeData(const int fd, std::string* output_out, std::string* error_out = nullptr)
+	bool ReadAvailablePipeData(int fd, std::string* output_out, std::string* error_out = nullptr)
 	{
 		if (output_out == nullptr)
 		{
@@ -331,12 +542,12 @@ namespace
 				return true;
 			}
 
-			if (errno == EINTR)
+			if (IsInterruptedErrno())
 			{
 				continue;
 			}
 
-			if (errno == EAGAIN || errno == EWOULDBLOCK)
+			if (IsWouldBlockErrno())
 			{
 				return true;
 			}
@@ -350,7 +561,7 @@ namespace
 		}
 	}
 
-	ProcessExecutionResult ExecuteCapturedCommandPosix(const std::string& command, const int timeout_ms, std::stop_token stop_token)
+	ProcessExecutionResult ExecuteCapturedCommandPosix(const std::string& command, int timeout_ms, std::stop_token stop_token)
 	{
 		ProcessExecutionResult result;
 		int pipe_fds[2] = {-1, -1};
@@ -365,8 +576,7 @@ namespace
 
 		if (pid < 0)
 		{
-			close(pipe_fds[0]);
-			close(pipe_fds[1]);
+			ClosePipeFds(pipe_fds);
 			result.error = "fork failed.";
 			return result;
 		}
@@ -375,13 +585,12 @@ namespace
 		{
 			dup2(pipe_fds[1], STDOUT_FILENO);
 			dup2(pipe_fds[1], STDERR_FILENO);
-			close(pipe_fds[0]);
-			close(pipe_fds[1]);
+			ClosePipeFds(pipe_fds);
 			execl("/bin/sh", "sh", "-lc", command.c_str(), static_cast<char*>(nullptr));
 			_exit(127);
 		}
 
-		close(pipe_fds[1]);
+		CloseFdIfOpen(pipe_fds[1]);
 		const int read_fd = pipe_fds[0];
 		const int original_flags = fcntl(read_fd, F_GETFL, 0);
 
@@ -515,7 +724,7 @@ namespace
 		NoChild,
 	};
 
-	ChildWaitResult WaitForChildProcess(const pid_t child_pid, const bool wait_for_exit, const double timeout_seconds)
+	ChildWaitResult WaitForChildProcess(pid_t child_pid, bool wait_for_exit, double timeout_seconds)
 	{
 		int status = 0;
 		const auto wait_start = std::chrono::steady_clock::now();
@@ -532,7 +741,7 @@ namespace
 
 			if (wait_result < 0)
 			{
-				if (errno == EINTR)
+				if (IsInterruptedErrno())
 				{
 					continue;
 				}
@@ -559,7 +768,7 @@ namespace
 		return result == ChildWaitResult::Exited || result == ChildWaitResult::NoChild;
 	}
 
-	void SignalTerminalProcessGroup(const pid_t child_pid, const int signal_number)
+	void SignalTerminalProcessGroup(pid_t child_pid, int signal_number)
 	{
 		if (child_pid <= 0)
 		{
@@ -569,7 +778,7 @@ namespace
 		(void)kill(-child_pid, signal_number);
 	}
 
-	int ExitCodeFromWaitStatus(const int status)
+	int ExitCodeFromWaitStatus(int status)
 	{
 		if (WIFEXITED(status))
 		{
@@ -582,7 +791,7 @@ namespace
 		return status;
 	}
 
-	std::ptrdiff_t ReadNonBlockingFd(const int fd, char* buffer, const std::size_t buffer_size, std::string* error_out = nullptr)
+	std::ptrdiff_t ReadNonBlockingFd(int fd, char* buffer, std::size_t buffer_size, std::string* error_out = nullptr)
 	{
 		if (fd < 0)
 		{
@@ -607,12 +816,12 @@ namespace
 				return 0;
 			}
 
-			if (errno == EINTR)
+			if (IsInterruptedErrno())
 			{
 				continue;
 			}
 
-			if (errno == EAGAIN || errno == EWOULDBLOCK)
+			if (IsWouldBlockErrno())
 			{
 				return -2;
 			}
@@ -625,6 +834,35 @@ namespace
 		}
 	}
 
+	bool WriteAllToFd(int fd, const char* bytes, std::size_t len, std::string* error_out = nullptr)
+	{
+		if (bytes == nullptr || len == 0)
+		{
+			return true;
+		}
+
+		std::size_t offset = 0;
+		while (offset < len)
+		{
+			const ssize_t written = write(fd, bytes + offset, len - offset);
+			if (written > 0)
+			{
+				offset += static_cast<std::size_t>(written);
+				continue;
+			}
+			if (written < 0 && IsInterruptedErrno())
+			{
+				continue;
+			}
+			if (error_out != nullptr)
+			{
+				*error_out = std::strerror(errno);
+			}
+			return false;
+		}
+		return true;
+	}
+
 	class MacTerminalRuntime final : public IPlatformTerminalRuntime
 	{
 	  public:
@@ -635,7 +873,7 @@ namespace
 
 		bool StartCliTerminalProcess(uam::CliTerminalState& terminal, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr) const override
 		{
-			if (argv.empty() || TrimAsciiWhitespace(argv.front()).empty())
+			if (argv.empty() || uam::strings::IsBlank(argv.front()))
 			{
 				if (error_out != nullptr)
 				{
@@ -645,27 +883,9 @@ namespace
 				return false;
 			}
 
-			if (!working_directory.empty())
+			if (!PrepareWorkingDirectory(working_directory, "provider", "Provider", true, error_out))
 			{
-				std::error_code wd_ec;
-				std::filesystem::create_directories(working_directory, wd_ec);
-				if (wd_ec || !std::filesystem::is_directory(working_directory, wd_ec))
-				{
-					if (error_out != nullptr)
-					{
-						*error_out = "Failed to prepare provider working directory: " + (wd_ec ? wd_ec.message() : working_directory.string());
-					}
-					return false;
-				}
-
-				if (access(working_directory.c_str(), X_OK) != 0)
-				{
-					if (error_out != nullptr)
-					{
-						*error_out = "Provider working directory is not accessible: " + std::string(std::strerror(errno));
-					}
-					return false;
-				}
+				return false;
 			}
 
 			int master_fd = -1;
@@ -693,27 +913,24 @@ namespace
 			{
 				if (error_out != nullptr)
 				{
-					*error_out = argv.front() + " not found on PATH in app environment";
+					*error_out = CommandNotFoundOnPathMessage(argv.front());
 				}
-				close(master_fd);
-				close(slave_fd);
+				CloseFdIfOpen(master_fd);
+				CloseFdIfOpen(slave_fd);
 				return false;
 			}
 
-			if (CommandNeedsNodePreflight(argv.front(), resolved_executable))
+			if (!ValidateRequiredNodeRuntime(argv.front(), resolved_executable, terminal_path_dirs, error_out))
 			{
-				const std::string resolved_node = ResolveExecutablePathForTerminal("node", terminal_path_dirs);
-				if (resolved_node.empty())
-				{
-					if (error_out != nullptr)
-					{
-						*error_out = "node not found on PATH in app environment (required by " + argv.front() + ")";
-					}
-					close(master_fd);
-					close(slave_fd);
-					return false;
-				}
+				CloseFdIfOpen(master_fd);
+				CloseFdIfOpen(slave_fd);
+				return false;
 			}
+
+			std::vector<std::string> resolved_argv = argv;
+			resolved_argv[0] = resolved_executable;
+			std::vector<std::vector<char>> argv_storage;
+			std::vector<char*> argv_ptrs = BuildMutableArgv(resolved_argv, argv_storage);
 
 			const pid_t pid = fork();
 
@@ -724,8 +941,8 @@ namespace
 					*error_out = "fork failed.";
 				}
 
-				close(master_fd);
-				close(slave_fd);
+				CloseFdIfOpen(master_fd);
+				CloseFdIfOpen(slave_fd);
 				return false;
 			}
 
@@ -736,8 +953,8 @@ namespace
 				dup2(slave_fd, STDIN_FILENO);
 				dup2(slave_fd, STDOUT_FILENO);
 				dup2(slave_fd, STDERR_FILENO);
-				close(master_fd);
-				close(slave_fd);
+				CloseFdIfOpen(master_fd);
+				CloseFdIfOpen(slave_fd);
 
 				if (!working_directory.empty() && chdir(working_directory.c_str()) != 0)
 				{
@@ -749,41 +966,21 @@ namespace
 				{
 					setenv("PATH", terminal_path_env.c_str(), 1);
 				}
-				std::vector<std::string> resolved_argv = argv;
-				resolved_argv[0] = resolved_executable;
-				std::vector<char*> argv_ptrs;
-				argv_ptrs.reserve(resolved_argv.size() + 1);
-
-				for (const std::string& arg : resolved_argv)
-				{
-					argv_ptrs.push_back(const_cast<char*>(arg.c_str()));
-				}
-
-				argv_ptrs.push_back(nullptr);
 				execv(argv_ptrs[0], argv_ptrs.data());
 				_exit(127);
 			}
 
-			close(slave_fd);
+			CloseFdIfOpen(slave_fd);
 			terminal.master_fd = master_fd;
 			terminal.child_pid = pid;
-			const int flags = fcntl(terminal.master_fd, F_GETFL, 0);
-
-			if (flags >= 0)
-			{
-				(void)fcntl(terminal.master_fd, F_SETFL, flags | O_NONBLOCK);
-			}
+			SetFdNonBlockingIfOpen(terminal.master_fd);
 
 			return true;
 		}
 
 		void CloseCliTerminalHandles(uam::CliTerminalState& terminal) const override
 		{
-			if (terminal.master_fd >= 0)
-			{
-				close(terminal.master_fd);
-				terminal.master_fd = -1;
-			}
+			CloseFdIfOpen(terminal.master_fd);
 
 			if (terminal.child_pid > 0 && ChildWaitResultClearsPid(WaitForChildProcess(terminal.child_pid, false, 0.0)))
 			{
@@ -791,37 +988,12 @@ namespace
 			}
 		}
 
-		bool WriteToCliTerminal(uam::CliTerminalState& terminal, const char* bytes, const std::size_t len) const override
+		bool WriteToCliTerminal(uam::CliTerminalState& terminal, const char* bytes, std::size_t len) const override
 		{
-			if (bytes == nullptr || len == 0)
-			{
-				return true;
-			}
-
-			std::size_t offset = 0;
-
-			while (offset < len)
-			{
-				const ssize_t written = write(terminal.master_fd, bytes + offset, len - offset);
-
-				if (written > 0)
-				{
-					offset += static_cast<std::size_t>(written);
-					continue;
-				}
-
-				if (written < 0 && errno == EINTR)
-				{
-					continue;
-				}
-
-				return false;
-			}
-
-			return true;
+			return WriteAllToFd(terminal.master_fd, bytes, len);
 		}
 
-		void StopCliTerminalProcess(uam::CliTerminalState& terminal, const bool fast_exit) const override
+		void StopCliTerminalProcess(uam::CliTerminalState& terminal, bool fast_exit) const override
 		{
 			if (terminal.child_pid <= 0)
 			{
@@ -829,7 +1001,7 @@ namespace
 			}
 
 			const pid_t child_pid = terminal.child_pid;
-			const auto wait_and_clear = [&](const bool wait_for_exit, const double timeout_seconds) -> bool
+			const auto wait_and_clear = [&](bool wait_for_exit, double timeout_seconds) -> bool
 			{
 				const ChildWaitResult result = WaitForChildProcess(child_pid, wait_for_exit, timeout_seconds);
 				if (ChildWaitResultClearsPid(result))
@@ -878,7 +1050,7 @@ namespace
 			}
 		}
 
-		std::ptrdiff_t ReadCliTerminalOutput(uam::CliTerminalState& terminal, char* buffer, const std::size_t buffer_size) const override
+		std::ptrdiff_t ReadCliTerminalOutput(uam::CliTerminalState& terminal, char* buffer, std::size_t buffer_size) const override
 		{
 			while (true)
 			{
@@ -894,12 +1066,12 @@ namespace
 					return 0;
 				}
 
-				if (errno == EINTR)
+				if (IsInterruptedErrno())
 				{
 					continue;
 				}
 
-				if (errno == EAGAIN || errno == EWOULDBLOCK)
+				if (IsWouldBlockErrno())
 				{
 					return -2;
 				}
@@ -939,7 +1111,7 @@ namespace
 	class MacDataRootLock final : public uam::platform::DataRootLock
 	{
 	  public:
-		explicit MacDataRootLock(const int fd) : m_fd(fd)
+		explicit MacDataRootLock(int fd) : m_fd(fd)
 		{
 		}
 
@@ -979,7 +1151,7 @@ namespace
 
 		std::string BuildShellCommandWithWorkingDirectory(const std::filesystem::path& working_directory, const std::string& command) const override
 		{
-			return "cd " + ShellQuotePosix(working_directory.string()) + " && " + command;
+			return "cd " + uam::shell::EscapeArg(working_directory.string()) + " && " + command;
 		}
 
 		bool CaptureCommandOutput(const std::string& command, std::string* output_out, int* raw_status_out, std::string* error_out = nullptr) const override
@@ -1004,7 +1176,7 @@ namespace
 			return !result.timed_out && !result.canceled && result.error.empty();
 		}
 
-		int NormalizeCapturedCommandExitCode(const int raw_status) const override
+		int NormalizeCapturedCommandExitCode(int raw_status) const override
 		{
 			if (WIFEXITED(raw_status))
 			{
@@ -1014,14 +1186,14 @@ namespace
 			return raw_status;
 		}
 
-		ProcessExecutionResult ExecuteCommand(const std::string& command, const int timeout_ms = -1, std::stop_token stop_token = {}) const override
+		ProcessExecutionResult ExecuteCommand(const std::string& command, int timeout_ms = -1, std::stop_token stop_token = {}) const override
 		{
 			return ExecuteCapturedCommandPosix(command, timeout_ms, stop_token);
 		}
 
 		bool StartStdioProcess(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr) const override
 		{
-			if (argv.empty() || TrimAsciiWhitespace(argv.front()).empty())
+			if (argv.empty() || uam::strings::IsBlank(argv.front()))
 			{
 				if (error_out != nullptr)
 				{
@@ -1030,36 +1202,14 @@ namespace
 				return false;
 			}
 
-			if (!working_directory.empty())
+			if (!PrepareWorkingDirectory(working_directory, "process", "Process", false, error_out))
 			{
-				std::error_code wd_ec;
-				std::filesystem::create_directories(working_directory, wd_ec);
-				if (wd_ec || !std::filesystem::is_directory(working_directory, wd_ec))
-				{
-					if (error_out != nullptr)
-					{
-						*error_out = "Failed to prepare process working directory: " + (wd_ec ? wd_ec.message() : working_directory.string());
-					}
-					return false;
-				}
+				return false;
 			}
 
 			int stdin_pipe[2] = {-1, -1};
 			int stdout_pipe[2] = {-1, -1};
 			int stderr_pipe[2] = {-1, -1};
-			auto close_pipe = [](int(&pipe_fds)[2])
-			{
-				if (pipe_fds[0] >= 0)
-				{
-					close(pipe_fds[0]);
-					pipe_fds[0] = -1;
-				}
-				if (pipe_fds[1] >= 0)
-				{
-					close(pipe_fds[1]);
-					pipe_fds[1] = -1;
-				}
-			};
 
 			if (pipe(stdin_pipe) != 0 || pipe(stdout_pipe) != 0 || pipe(stderr_pipe) != 0)
 			{
@@ -1067,9 +1217,9 @@ namespace
 				{
 					*error_out = "Failed to create stdio process pipes.";
 				}
-				close_pipe(stdin_pipe);
-				close_pipe(stdout_pipe);
-				close_pipe(stderr_pipe);
+				ClosePipeFds(stdin_pipe);
+				ClosePipeFds(stdout_pipe);
+				ClosePipeFds(stderr_pipe);
 				return false;
 			}
 
@@ -1080,25 +1230,26 @@ namespace
 			{
 				if (error_out != nullptr)
 				{
-					*error_out = argv.front() + " not found on PATH in app environment";
+					*error_out = CommandNotFoundOnPathMessage(argv.front());
 				}
-				close_pipe(stdin_pipe);
-				close_pipe(stdout_pipe);
-				close_pipe(stderr_pipe);
+				ClosePipeFds(stdin_pipe);
+				ClosePipeFds(stdout_pipe);
+				ClosePipeFds(stderr_pipe);
 				return false;
 			}
 
-			if (CommandNeedsNodePreflight(argv.front(), resolved_executable) && ResolveExecutablePathForTerminal("node", path_dirs).empty())
+			if (!ValidateRequiredNodeRuntime(argv.front(), resolved_executable, path_dirs, error_out))
 			{
-				if (error_out != nullptr)
-				{
-					*error_out = "node not found on PATH in app environment (required by " + argv.front() + ")";
-				}
-				close_pipe(stdin_pipe);
-				close_pipe(stdout_pipe);
-				close_pipe(stderr_pipe);
+				ClosePipeFds(stdin_pipe);
+				ClosePipeFds(stdout_pipe);
+				ClosePipeFds(stderr_pipe);
 				return false;
 			}
+
+			std::vector<std::string> resolved_argv = argv;
+			resolved_argv[0] = resolved_executable;
+			std::vector<std::vector<char>> argv_storage;
+			std::vector<char*> argv_ptrs = BuildMutableArgv(resolved_argv, argv_storage);
 
 			const pid_t pid = fork();
 			if (pid < 0)
@@ -1107,9 +1258,9 @@ namespace
 				{
 					*error_out = "fork failed.";
 				}
-				close_pipe(stdin_pipe);
-				close_pipe(stdout_pipe);
-				close_pipe(stderr_pipe);
+				ClosePipeFds(stdin_pipe);
+				ClosePipeFds(stdout_pipe);
+				ClosePipeFds(stderr_pipe);
 				return false;
 			}
 
@@ -1118,9 +1269,9 @@ namespace
 				dup2(stdin_pipe[0], STDIN_FILENO);
 				dup2(stdout_pipe[1], STDOUT_FILENO);
 				dup2(stderr_pipe[1], STDERR_FILENO);
-				close_pipe(stdin_pipe);
-				close_pipe(stdout_pipe);
-				close_pipe(stderr_pipe);
+				ClosePipeFds(stdin_pipe);
+				ClosePipeFds(stdout_pipe);
+				ClosePipeFds(stderr_pipe);
 
 				if (!working_directory.empty() && chdir(working_directory.c_str()) != 0)
 				{
@@ -1132,22 +1283,13 @@ namespace
 					setenv("PATH", path_env.c_str(), 1);
 				}
 
-				std::vector<std::string> resolved_argv = argv;
-				resolved_argv[0] = resolved_executable;
-				std::vector<char*> argv_ptrs;
-				argv_ptrs.reserve(resolved_argv.size() + 1);
-				for (const std::string& arg : resolved_argv)
-				{
-					argv_ptrs.push_back(const_cast<char*>(arg.c_str()));
-				}
-				argv_ptrs.push_back(nullptr);
 				execv(argv_ptrs[0], argv_ptrs.data());
 				_exit(127);
 			}
 
-			close(stdin_pipe[0]);
-			close(stdout_pipe[1]);
-			close(stderr_pipe[1]);
+			CloseFdIfOpen(stdin_pipe[0]);
+			CloseFdIfOpen(stdout_pipe[1]);
+			CloseFdIfOpen(stderr_pipe[1]);
 			process.stdin_write_fd = stdin_pipe[1];
 			process.stdout_read_fd = stdout_pipe[0];
 			process.stderr_read_fd = stderr_pipe[0];
@@ -1155,11 +1297,7 @@ namespace
 
 			for (const int fd : {process.stdout_read_fd, process.stderr_read_fd})
 			{
-				const int flags = fcntl(fd, F_GETFL, 0);
-				if (flags >= 0)
-				{
-					(void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-				}
+				SetFdNonBlockingIfOpen(fd);
 			}
 
 			return true;
@@ -1167,25 +1305,13 @@ namespace
 
 		void CloseStdioProcessHandles(uam::platform::StdioProcessPlatformFields& process) const override
 		{
-			if (process.stdin_write_fd >= 0)
-			{
-				close(process.stdin_write_fd);
-				process.stdin_write_fd = -1;
-			}
-			if (process.stdout_read_fd >= 0)
-			{
-				close(process.stdout_read_fd);
-				process.stdout_read_fd = -1;
-			}
-			if (process.stderr_read_fd >= 0)
-			{
-				close(process.stderr_read_fd);
-				process.stderr_read_fd = -1;
-			}
+			CloseFdIfOpen(process.stdin_write_fd);
+			CloseFdIfOpen(process.stdout_read_fd);
+			CloseFdIfOpen(process.stderr_read_fd);
 			process.child_pid = -1;
 		}
 
-		bool WriteToStdioProcess(uam::platform::StdioProcessPlatformFields& process, const char* bytes, const std::size_t len, std::string* error_out = nullptr) const override
+		bool WriteToStdioProcess(uam::platform::StdioProcessPlatformFields& process, const char* bytes, std::size_t len, std::string* error_out = nullptr) const override
 		{
 			if (bytes == nullptr || len == 0)
 			{
@@ -1200,29 +1326,10 @@ namespace
 				return false;
 			}
 
-			std::size_t offset = 0;
-			while (offset < len)
-			{
-				const ssize_t written = write(process.stdin_write_fd, bytes + offset, len - offset);
-				if (written > 0)
-				{
-					offset += static_cast<std::size_t>(written);
-					continue;
-				}
-				if (written < 0 && errno == EINTR)
-				{
-					continue;
-				}
-				if (error_out != nullptr)
-				{
-					*error_out = std::strerror(errno);
-				}
-				return false;
-			}
-			return true;
+			return WriteAllToFd(process.stdin_write_fd, bytes, len, error_out);
 		}
 
-		void StopStdioProcess(uam::platform::StdioProcessPlatformFields& process, const bool fast_exit) const override
+		void StopStdioProcess(uam::platform::StdioProcessPlatformFields& process, bool fast_exit) const override
 		{
 			if (process.child_pid <= 0)
 			{
@@ -1258,12 +1365,12 @@ namespace
 			CloseStdioProcessHandles(process);
 		}
 
-		std::ptrdiff_t ReadStdioProcessStdout(uam::platform::StdioProcessPlatformFields& process, char* buffer, const std::size_t buffer_size, std::string* error_out = nullptr) const override
+		std::ptrdiff_t ReadStdioProcessStdout(uam::platform::StdioProcessPlatformFields& process, char* buffer, std::size_t buffer_size, std::string* error_out = nullptr) const override
 		{
 			return ReadNonBlockingFd(process.stdout_read_fd, buffer, buffer_size, error_out);
 		}
 
-		std::ptrdiff_t ReadStdioProcessStderr(uam::platform::StdioProcessPlatformFields& process, char* buffer, const std::size_t buffer_size, std::string* error_out = nullptr) const override
+		std::ptrdiff_t ReadStdioProcessStderr(uam::platform::StdioProcessPlatformFields& process, char* buffer, std::size_t buffer_size, std::string* error_out = nullptr) const override
 		{
 			return ReadNonBlockingFd(process.stderr_read_fd, buffer, buffer_size, error_out);
 		}
@@ -1297,11 +1404,6 @@ namespace
 			return false;
 		}
 
-		std::string GeminiDowngradeCommand() const override
-		{
-			return "npm install -g @google/gemini-cli@latest";
-		}
-
 		std::filesystem::path ResolveCurrentExecutablePath() const override
 		{
 			uint32_t buffer_size = 0;
@@ -1325,8 +1427,7 @@ namespace
 		std::unique_ptr<uam::platform::DataRootLock> TryAcquireDataRootLock(const std::filesystem::path& data_root, std::string* error_out = nullptr) const override
 		{
 			std::error_code ec;
-			std::filesystem::create_directories(data_root, ec);
-			if (ec)
+			if (!uam::paths::CreateDirectoriesNoThrow(data_root, &ec))
 			{
 				if (error_out != nullptr)
 				{
@@ -1409,7 +1510,12 @@ namespace
 
 		bool BrowsePath(const PlatformPathBrowseTarget target, const std::filesystem::path& initial_path, std::string* selected_path_out, std::string* error_out = nullptr) const override
 		{
-			if (!IsShellCommandAvailable("osascript"))
+			if (selected_path_out != nullptr)
+			{
+				selected_path_out->clear();
+			}
+
+			if (!IsExecutableFile("/usr/bin/osascript"))
 			{
 				if (error_out != nullptr)
 				{
@@ -1419,7 +1525,11 @@ namespace
 				return false;
 			}
 
-			std::string script = "set selectedPath to POSIX path of (choose " + std::string(target == PlatformPathBrowseTarget::Directory ? "folder" : "file") + " with prompt " + std::string(target == PlatformPathBrowseTarget::Directory ? "\"Select folder\"" : "\"Select file\"");
+			const bool choosing_directory = target == PlatformPathBrowseTarget::Directory;
+			const std::string chooser_kind = choosing_directory ? "folder" : "file";
+			const std::string prompt = choosing_directory ? "\"Select folder\"" : "\"Select file\"";
+
+			std::string script = "set selectedPath to POSIX path of (choose " + chooser_kind + " with prompt " + prompt;
 
 			if (!initial_path.empty())
 			{
@@ -1428,9 +1538,8 @@ namespace
 
 			script += ")";
 			std::string selected_path;
-			const std::string command = "osascript -e " + ShellQuotePosix(script) + " -e " + ShellQuotePosix("return selectedPath");
 
-			if (!RunShellCommandCapture(command, &selected_path) || selected_path.empty())
+			if (!RunProgramAndCapture({"/usr/bin/osascript", "-e", script, "-e", "return selectedPath"}, &selected_path) || selected_path.empty())
 			{
 				return false;
 			}
@@ -1456,9 +1565,7 @@ namespace
 			}
 
 			std::error_code ec;
-			std::filesystem::create_directories(folder_path, ec);
-
-			if (ec)
+			if (!uam::paths::CreateDirectoriesNoThrow(folder_path, &ec))
 			{
 				if (error_out != nullptr)
 				{
@@ -1468,13 +1575,12 @@ namespace
 				return false;
 			}
 
-			const std::string command = "open " + ShellQuotePosix(folder_path.string());
-
-			if (!RunShellCommand(command))
+			std::string launch_error;
+			if (!RunProgramAndWait({"/usr/bin/open", folder_path.string()}, &launch_error))
 			{
 				if (error_out != nullptr)
 				{
-					*error_out = "Failed to open folder in file manager.";
+					*error_out = ErrorWithOptionalDetail("Failed to open folder in file manager.", launch_error);
 				}
 
 				return false;
@@ -1494,8 +1600,7 @@ namespace
 				return false;
 			}
 
-			std::error_code ec;
-			if (!std::filesystem::exists(folder_path, ec) || !std::filesystem::is_directory(folder_path, ec))
+			if (!uam::paths::IsDirectoryNoThrow(folder_path))
 			{
 				if (error_out != nullptr)
 				{
@@ -1546,12 +1651,12 @@ namespace
 				app_name = "Visual Studio Code";
 			}
 
-			const std::string command = "open -a " + ShellQuotePosix(app_name) + " " + ShellQuotePosix(folder_path.string());
-			if (!RunShellCommand(command))
+			std::string launch_error;
+			if (!RunProgramAndWait({"/usr/bin/open", "-a", app_name, folder_path.string()}, &launch_error))
 			{
 				if (error_out != nullptr)
 				{
-					*error_out = "Failed to open workspace in " + app_name + ".";
+					*error_out = ErrorWithOptionalDetail("Failed to open workspace in " + app_name + ".", launch_error);
 				}
 				return false;
 			}
@@ -1570,18 +1675,17 @@ namespace
 				return false;
 			}
 
-			if (!std::filesystem::exists(file_path))
+			if (!uam::paths::PathExistsNoThrow(file_path))
 			{
 				return OpenFolderInFileManager(file_path.parent_path(), error_out);
 			}
 
-			const std::string command = "open -R " + ShellQuotePosix(file_path.string());
-
-			if (!RunShellCommand(command))
+			std::string launch_error;
+			if (!RunProgramAndWait({"/usr/bin/open", "-R", file_path.string()}, &launch_error))
 			{
 				if (error_out != nullptr)
 				{
-					*error_out = "Failed to reveal file in file manager.";
+					*error_out = ErrorWithOptionalDetail("Failed to reveal file in file manager.", launch_error);
 				}
 
 				return false;
@@ -1601,14 +1705,9 @@ namespace
 
 		std::optional<std::filesystem::path> ResolveUserHomePath() const override
 		{
-			if (const char* home = std::getenv("HOME"))
+			if (const std::optional<std::filesystem::path> home = uam::env::GetTrimmedPath("HOME"))
 			{
-				const std::string value = TrimAsciiWhitespace(home);
-
-				if (!value.empty())
-				{
-					return std::filesystem::path(value);
-				}
+				return *home;
 			}
 
 			return std::nullopt;
@@ -1616,7 +1715,7 @@ namespace
 
 		std::filesystem::path ExpandLeadingTildePath(const std::string& raw_path) const override
 		{
-			const std::string trimmed = TrimAsciiWhitespace(raw_path);
+			const std::string trimmed = uam::strings::Trim(raw_path);
 
 			if (trimmed.empty())
 			{
@@ -1628,16 +1727,16 @@ namespace
 				return std::filesystem::path(trimmed);
 			}
 
-			if (const std::optional<std::filesystem::path> home = ResolveUserHomePath(); home.has_value())
+			if (const std::optional<std::filesystem::path> home = ResolveUserHomePath())
 			{
 				if (trimmed.size() == 1)
 				{
-					return home.value();
+					return *home;
 				}
 
 				if (trimmed[1] == '/')
 				{
-					return home.value() / trimmed.substr(2);
+					return *home / trimmed.substr(2);
 				}
 			}
 

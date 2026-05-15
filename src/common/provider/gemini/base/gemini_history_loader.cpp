@@ -1,78 +1,29 @@
 #include "common/provider/gemini/base/gemini_history_loader.h"
 
+#include "common/paths/path_utils.h"
 #include "common/paths/app_paths.h"
 #include "common/provider/provider_runtime.h"
+#include "common/utils/io_utils.h"
+#include "common/utils/string_utils.h"
+#include "common/utils/time_utils.h"
 #include "runtime/json_runtime.h"
 
-#include <chrono>
-#include <ctime>
-#include <fstream>
-#include <iomanip>
 #include <sstream>
 
-namespace
-{
-
-	namespace fs = std::filesystem;
-
-	std::string Trim(const std::string& value)
-	{
-		const auto start = value.find_first_not_of(" \t\r\n");
-
-		if (start == std::string::npos)
-		{
-			return "";
-		}
-
-		const auto end = value.find_last_not_of(" \t\r\n");
-		return value.substr(start, end - start + 1);
-	}
-
-	std::string TimestampNow()
-	{
-		const auto now = std::chrono::system_clock::now();
-		const std::time_t tt = std::chrono::system_clock::to_time_t(now);
-		std::tm tm_snapshot{};
-#if defined(_WIN32)
-		localtime_s(&tm_snapshot, &tt);
-#else
-		localtime_r(&tt, &tm_snapshot);
-#endif
-		std::ostringstream out;
-		out << std::put_time(&tm_snapshot, "%Y-%m-%d %H:%M:%S");
-		return out.str();
-	}
-
-	std::string ReadTextFile(const fs::path& path)
-	{
-		std::ifstream in(path, std::ios::binary);
-
-		if (!in.good())
-		{
-			return "";
-		}
-
-		std::ostringstream buffer;
-		buffer << in.rdbuf();
-		return buffer.str();
-	}
-
-} // namespace
+namespace fs = std::filesystem;
 
 std::optional<ChatSession> GeminiJsonHistoryStore::ParseFile(const std::filesystem::path& file_path, const ProviderProfile& provider, const GeminiJsonHistoryStoreOptions& options)
 {
 	if (options.max_file_bytes > 0)
 	{
-		std::error_code size_ec;
-		const std::uintmax_t file_size = std::filesystem::file_size(file_path, size_ec);
-
-		if (!size_ec && file_size > options.max_file_bytes)
+		const std::optional<std::uintmax_t> file_size = uam::paths::FileSizeNoThrow(file_path);
+		if (file_size && *file_size > options.max_file_bytes)
 		{
 			return std::nullopt;
 		}
 	}
 
-	const std::string file_text = ReadTextFile(file_path);
+	const std::string file_text = uam::io::ReadTextFile(file_path);
 
 	if (file_text.empty())
 	{
@@ -81,13 +32,13 @@ std::optional<ChatSession> GeminiJsonHistoryStore::ParseFile(const std::filesyst
 
 	const std::optional<JsonValue> root_opt = ParseJson(file_text);
 
-	if (!root_opt.has_value() || root_opt->type != JsonValue::Type::Object)
+	if (!root_opt || root_opt->type != JsonValue::Type::Object)
 	{
 		return std::nullopt;
 	}
 
-	const JsonValue& root = root_opt.value();
-	const std::string session_id = Trim(JsonStringOrEmpty(root.Find("sessionId")));
+	const JsonValue& root = *root_opt;
+	const std::string session_id = uam::strings::Trim(JsonStringOrEmpty(root.Find("sessionId")));
 
 	if (session_id.empty())
 	{
@@ -107,7 +58,7 @@ std::optional<ChatSession> GeminiJsonHistoryStore::ParseFile(const std::filesyst
 
 	if (chat.created_at.empty())
 	{
-		chat.created_at = TimestampNow();
+		chat.created_at = uam::time::TimestampNow();
 	}
 
 	if (chat.updated_at.empty())
@@ -132,21 +83,24 @@ std::optional<ChatSession> GeminiJsonHistoryStore::ParseFile(const std::filesyst
 			}
 
 			const std::string type = JsonStringOrEmpty(raw_message.Find("type"));
-				const std::string timestamp = JsonStringOrEmpty(raw_message.Find("timestamp"));
-				const std::string content = Trim(ExtractGeminiContentText(raw_message.Find("content")));
+			const std::string timestamp = JsonStringOrEmpty(raw_message.Find("timestamp"));
+			const std::string content = uam::strings::Trim(ExtractGeminiContentText(raw_message.Find("content")));
 
-				Message message;
-				message.role = ProviderRuntime::RoleFromNativeType(provider, type);
-				message.content = content;
-			message.created_at = timestamp.empty() ? chat.updated_at : timestamp;
+			Message message;
+			message.role = ProviderRuntime::RoleFromNativeType(provider, type);
+			message.content = content;
+			message.created_at = uam::strings::NonEmptyOrFallback(timestamp, chat.updated_at);
 
 			const JsonValue* tool_calls = raw_message.Find("toolCalls");
-			if (tool_calls && tool_calls->type == JsonValue::Type::Array)
+			if (tool_calls != nullptr && tool_calls->type == JsonValue::Type::Array)
 			{
-				for (const auto& tc : tool_calls->array_value)
+				for (const JsonValue& tc : tool_calls->array_value)
 				{
 					if (tc.type != JsonValue::Type::Object)
+					{
 						continue;
+					}
+
 					ToolCall tool_call;
 					tool_call.id = JsonStringOrEmpty(tc.Find("id"));
 					tool_call.name = JsonStringOrEmpty(tc.Find("name"));
@@ -169,28 +123,35 @@ std::optional<ChatSession> GeminiJsonHistoryStore::ParseFile(const std::filesyst
 			}
 
 			const JsonValue* thoughts = raw_message.Find("thoughts");
-			if (thoughts && thoughts->type == JsonValue::Type::Array)
+			if (thoughts != nullptr && thoughts->type == JsonValue::Type::Array)
 			{
 				std::ostringstream thought_out;
-				for (const auto& t : thoughts->array_value)
+				bool has_thought_text = false;
+
+				for (const JsonValue& thought : thoughts->array_value)
 				{
-					std::string thought_text = ExtractGeminiContentText(&t);
+					const std::string thought_text = ExtractGeminiContentText(&thought);
 					if (!thought_text.empty())
 					{
-						if (!thought_out.str().empty())
+						if (has_thought_text)
+						{
 							thought_out << "\n";
+						}
+
 						thought_out << thought_text;
+						has_thought_text = true;
 					}
-					}
-					message.thoughts = thought_out.str();
 				}
 
-				if (message.content.empty() && Trim(message.thoughts).empty() && message.tool_calls.empty())
-				{
-					continue;
-				}
+				message.thoughts = thought_out.str();
+			}
 
-				chat.messages.push_back(std::move(message));
+			if (message.content.empty() && uam::strings::IsBlank(message.thoughts) && message.tool_calls.empty())
+			{
+				continue;
+			}
+
+			chat.messages.push_back(std::move(message));
 
 			if (options.max_messages > 0 && chat.messages.size() >= options.max_messages)
 			{
@@ -213,12 +174,7 @@ std::optional<ChatSession> GeminiJsonHistoryStore::ParseFile(const std::filesyst
 	{
 		if (message.role == MessageRole::User)
 		{
-			std::string title = Trim(message.content);
-
-			if (title.size() > 48)
-			{
-				title = title.substr(0, 45) + "...";
-			}
+			const std::string title = uam::strings::TrimAndElide(message.content, 48);
 
 			if (!title.empty())
 			{
@@ -234,34 +190,32 @@ std::optional<ChatSession> GeminiJsonHistoryStore::ParseFile(const std::filesyst
 
 std::vector<ChatSession> GeminiJsonHistoryStore::Load(const std::filesystem::path& chats_dir, const ProviderProfile& provider, const GeminiJsonHistoryStoreOptions& options, std::stop_token stop_token)
 {
-	namespace fs = std::filesystem;
 	std::vector<ChatSession> chats;
 
-	if (chats_dir.empty() || !fs::exists(chats_dir) || !fs::is_directory(chats_dir))
+	if (chats_dir.empty() || !uam::paths::IsDirectoryNoThrow(chats_dir))
 	{
 		return chats;
 	}
 
 	std::error_code ec;
 
-	for (const auto& item : fs::directory_iterator(chats_dir, ec))
+	for (fs::directory_iterator it(chats_dir, ec), end; !ec && it != end; it.increment(ec))
 	{
+		const fs::directory_entry& item = *it;
 		if (stop_token.stop_requested())
 		{
 			break;
 		}
 
-		if (ec || !item.is_regular_file() || item.path().extension() != ".json")
+		if (!uam::paths::IsRegularFileWithExtensionNoThrow(item, ".json"))
 		{
 			continue;
 		}
 
 		if (options.max_file_bytes > 0)
 		{
-			std::error_code size_ec;
-			const std::uintmax_t file_size = fs::file_size(item.path(), size_ec);
-
-			if (!size_ec && file_size > options.max_file_bytes)
+			const std::optional<std::uintmax_t> file_size = uam::paths::FileSizeNoThrow(item.path());
+			if (file_size && *file_size > options.max_file_bytes)
 			{
 				continue;
 			}
@@ -269,9 +223,9 @@ std::vector<ChatSession> GeminiJsonHistoryStore::Load(const std::filesystem::pat
 
 		const std::optional<ChatSession> parsed = ParseFile(item.path(), provider, options);
 
-		if (parsed.has_value())
+		if (parsed)
 		{
-			chats.push_back(parsed.value());
+			chats.push_back(*parsed);
 		}
 	}
 
@@ -280,53 +234,33 @@ std::vector<ChatSession> GeminiJsonHistoryStore::Load(const std::filesystem::pat
 
 bool GeminiJsonHistoryStore::SaveFile(const std::filesystem::path& file_path, const ChatSession& chat)
 {
-	JsonValue root;
-	root.type = JsonValue::Type::Object;
+	JsonValue root = uam::json::Object();
 
-	const std::string session_id = Trim(chat.native_session_id.empty() ? chat.id : chat.native_session_id);
+	const std::string session_id = uam::strings::Trim(uam::strings::NonEmptyOrFallback(chat.native_session_id, chat.id));
 
 	if (session_id.empty())
 	{
 		return false;
 	}
-	
-	auto make_string = [](const std::string& val) {
-		JsonValue j;
-		j.type = JsonValue::Type::String;
-		j.string_value = val;
-		return j;
-	};
 
-	root.object_value["sessionId"] = make_string(session_id);
-	root.object_value["startTime"] = make_string(chat.created_at.empty() ? TimestampNow() : chat.created_at);
-	root.object_value["lastUpdated"] = make_string(chat.updated_at.empty() ? TimestampNow() : chat.updated_at);
+	uam::json::SetString(root, "sessionId", session_id);
+	uam::json::SetString(root, "startTime", chat.created_at.empty() ? uam::time::TimestampNow() : chat.created_at);
+	uam::json::SetString(root, "lastUpdated", chat.updated_at.empty() ? uam::time::TimestampNow() : chat.updated_at);
 
-	JsonValue messages_arr;
-	messages_arr.type = JsonValue::Type::Array;
+	JsonValue messages_arr = uam::json::Array();
 
 	for (const Message& msg : chat.messages)
 	{
-		JsonValue msg_obj;
-		msg_obj.type = JsonValue::Type::Object;
-		msg_obj.object_value["type"] = make_string(msg.role == MessageRole::User ? "user" : "model");
-		msg_obj.object_value["timestamp"] = make_string(msg.created_at.empty() ? TimestampNow() : msg.created_at);
-		msg_obj.object_value["content"] = make_string(msg.content);
-		messages_arr.array_value.push_back(std::move(msg_obj));
+		JsonValue msg_obj = uam::json::Object();
+		uam::json::SetString(msg_obj, "type", msg.role == MessageRole::User ? "user" : "model");
+		uam::json::SetString(msg_obj, "timestamp", msg.created_at.empty() ? uam::time::TimestampNow() : msg.created_at);
+		uam::json::SetString(msg_obj, "content", msg.content);
+		uam::json::PushValue(messages_arr, std::move(msg_obj));
 	}
 
-	root.object_value["messages"] = std::move(messages_arr);
+	uam::json::SetValue(root, "messages", std::move(messages_arr));
 
-	std::error_code ec;
-	fs::create_directories(file_path.parent_path(), ec);
-
-	std::ofstream out(file_path, std::ios::binary | std::ios::trunc);
-	if (!out.good())
-	{
-		return false;
-	}
-
-	out << SerializeJson(root);
-	return out.good();
+	return uam::io::WriteTextFile(file_path, SerializeJson(root));
 }
 
 std::vector<ChatSession> LoadGeminiJsonHistoryForRuntime(const std::filesystem::path& chats_dir, const ProviderProfile& profile, const ProviderRuntimeHistoryLoadOptions& options, std::stop_token stop_token)
@@ -339,37 +273,37 @@ std::vector<ChatSession> LoadGeminiJsonHistoryForRuntime(const std::filesystem::
 
 std::vector<ProviderChatSource> DiscoverGeminiTmpChatSources()
 {
-	namespace fs = std::filesystem;
 	std::vector<ProviderChatSource> sources;
 	const fs::path gemini_home = AppPaths::GeminiHomePath();
 	const fs::path tmp_root = gemini_home / "tmp";
 
-	if (!fs::exists(tmp_root) || !fs::is_directory(tmp_root))
+	if (!uam::paths::IsDirectoryNoThrow(tmp_root))
 	{
 		return sources;
 	}
 
 	std::error_code ec;
-	for (const auto& item : fs::directory_iterator(tmp_root, ec))
+	for (fs::directory_iterator it(tmp_root, ec), end; !ec && it != end; it.increment(ec))
 	{
-		if (ec || !item.is_directory())
+		const fs::directory_entry& item = *it;
+		if (!uam::paths::IsDirectoryEntryNoThrow(item))
 		{
 			continue;
 		}
 
 		const fs::path project_root_file = item.path() / ".project_root";
-		if (!fs::exists(project_root_file))
+		if (!uam::paths::PathExistsNoThrow(project_root_file))
 		{
 			continue;
 		}
 
 		const fs::path chats_dir = item.path() / "chats";
-		if (!fs::exists(chats_dir) || !fs::is_directory(chats_dir))
+		if (!uam::paths::IsDirectoryNoThrow(chats_dir))
 		{
 			continue;
 		}
 
-		const std::string project_root = Trim(ReadTextFile(project_root_file));
+		const std::string project_root = uam::strings::Trim(uam::io::ReadTextFile(project_root_file));
 		if (project_root.empty())
 		{
 			continue;

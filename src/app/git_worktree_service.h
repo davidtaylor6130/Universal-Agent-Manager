@@ -1,5 +1,4 @@
-#ifndef UAM_APP_GIT_WORKTREE_SERVICE_H
-#define UAM_APP_GIT_WORKTREE_SERVICE_H
+#pragma once
 
 #include "common/state/app_state.h"
 
@@ -41,5 +40,3 @@ namespace uam
 		GitWorktreeOperationResult PortChatChanges(AppState& app, ChatSession& chat) const;
 	};
 } // namespace uam
-
-#endif // UAM_APP_GIT_WORKTREE_SERVICE_H

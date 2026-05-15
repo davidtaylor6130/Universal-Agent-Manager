@@ -1,144 +1,186 @@
 #include "common/provider/provider_profile.h"
 
+#include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_build_config.h"
 
 #include <algorithm>
-#include <cctype>
+#include <cstddef>
+#include <initializer_list>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace
 {
-	bool IsSameId(const std::string& lhs, const std::string& rhs)
-	{
-		auto lower = [](std::string value)
-		{
-			std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-			return value;
-		};
+	constexpr std::size_t kMaxBuiltInProviderProfiles = uam::provider_ids::kAllCliProviderIds.size();
 
-		return lower(lhs) == lower(rhs);
+	struct BuiltInProviderProfileDefinition
+	{
+		std::string_view id;
+		std::string_view title;
+		std::string_view command_template;
+		std::string_view interactive_command;
+		std::string_view structured_protocol;
+		std::string_view resume_argument;
+		std::string_view history_adapter;
+		std::string_view prompt_bootstrap;
+		std::string_view prompt_bootstrap_path;
+		std::initializer_list<std::string_view> user_message_types;
+		std::initializer_list<std::string_view> assistant_message_types;
+	};
+
+	std::vector<std::string> StringList(const std::initializer_list<std::string_view> values)
+	{
+		std::vector<std::string> result;
+		result.reserve(values.size());
+		for (const std::string_view value : values)
+		{
+			result.emplace_back(value);
+		}
+		return result;
+	}
+
+	ProviderProfile MakeBuiltInCliProfile(const BuiltInProviderProfileDefinition& definition)
+	{
+		ProviderProfile profile;
+		profile.id = definition.id;
+		profile.title = definition.title;
+		profile.execution_mode = uam::provider_profile_constants::kExecutionModeCli;
+		profile.output_mode = uam::provider_profile_constants::kOutputModeCli;
+		profile.command_template = definition.command_template;
+		profile.interactive_command = definition.interactive_command;
+		profile.supports_cli = true;
+		profile.supports_structured = true;
+		profile.structured_protocol = definition.structured_protocol;
+		profile.supports_interactive = true;
+		profile.supports_resume = true;
+		profile.resume_argument = definition.resume_argument;
+		profile.history_adapter = definition.history_adapter;
+		profile.prompt_bootstrap = definition.prompt_bootstrap;
+		profile.prompt_bootstrap_path = definition.prompt_bootstrap_path;
+		profile.user_message_types = StringList(definition.user_message_types);
+		profile.assistant_message_types = StringList(definition.assistant_message_types);
+		return profile;
+	}
+
+	std::string CanonicalProviderProfileId(std::string_view provider_id)
+	{
+		return uam::provider_ids::CanonicalCliProviderLookupId(provider_id);
+	}
+
+	bool ProviderProfileIdMatchesCanonicalId(std::string_view profile_id, std::string_view canonical_id)
+	{
+		return CanonicalProviderProfileId(profile_id) == canonical_id;
+	}
+
+	template <typename Profiles> auto FindProfileById(Profiles& profiles, std::string_view id)
+	{
+		const std::string canonical_id = CanonicalProviderProfileId(id);
+		if (canonical_id.empty())
+		{
+			return std::ranges::end(profiles);
+		}
+
+		return std::ranges::find_if(profiles, [&canonical_id](const ProviderProfile& profile) {
+			return ProviderProfileIdMatchesCanonicalId(profile.id, canonical_id);
+		});
+	}
+
+	template <typename Profiles> auto* ProfileOrNull(Profiles& profiles, decltype(profiles.begin()) found)
+	{
+		return found == profiles.end() ? nullptr : &*found;
 	}
 } // namespace
 
 ProviderProfile ProviderProfileStore::DefaultGeminiProfile()
 {
-	ProviderProfile profile;
-	profile.id = "gemini-cli";
-	profile.title = "Gemini CLI";
-	profile.execution_mode = "cli";
-	profile.output_mode = "cli";
-	profile.command_template = "gemini -r {resume} {flags} {prompt}";
-	profile.interactive_command = "gemini";
-	profile.supports_cli = true;
-	profile.supports_structured = true;
-	profile.structured_protocol = "gemini-acp";
-	profile.supports_interactive = true;
-	profile.supports_resume = true;
-	profile.resume_argument = "-r";
-	profile.history_adapter = "gemini-cli-json";
-	profile.prompt_bootstrap = "gemini-at-path";
-	profile.prompt_bootstrap_path = "@.gemini/gemini.md";
-	profile.user_message_types = {"user"};
-	profile.assistant_message_types = {"assistant", "model", "gemini"};
-	return profile;
+	return MakeBuiltInCliProfile({
+	    .id = uam::provider_ids::kGeminiCli,
+	    .title = "Gemini CLI",
+	    .command_template = "gemini -r {resume} {flags} {prompt}",
+	    .interactive_command = "gemini",
+	    .structured_protocol = uam::provider_profile_constants::kProtocolGeminiAcp,
+	    .resume_argument = "-r",
+	    .history_adapter = uam::provider_profile_constants::kHistoryAdapterGeminiCliJson,
+	    .prompt_bootstrap = uam::provider_profile_constants::kPromptBootstrapGeminiAtPath,
+	    .prompt_bootstrap_path = uam::provider_profile_constants::kGeminiPromptBootstrapPath,
+	    .user_message_types = {"user"},
+	    .assistant_message_types = {"assistant", "model", "gemini"},
+	});
 }
 
 ProviderProfile ProviderProfileStore::DefaultCodexProfile()
 {
-	ProviderProfile profile;
-	profile.id = "codex-cli";
-	profile.title = "Codex CLI";
-	profile.execution_mode = "cli";
-	profile.output_mode = "cli";
-	profile.command_template = "codex exec {flags} {prompt}";
-	profile.interactive_command = "codex --no-alt-screen";
-	profile.supports_cli = true;
-	profile.supports_structured = true;
-	profile.structured_protocol = "codex-app-server";
-	profile.supports_interactive = true;
-	profile.supports_resume = true;
-	profile.resume_argument.clear();
-	profile.history_adapter = "local-json";
-	profile.prompt_bootstrap = "none";
-	profile.prompt_bootstrap_path.clear();
-	profile.user_message_types = {"user"};
-	profile.assistant_message_types = {"assistant", "codex"};
-	return profile;
+	return MakeBuiltInCliProfile({
+	    .id = uam::provider_ids::kCodexCli,
+	    .title = "Codex CLI",
+	    .command_template = "codex exec {flags} {prompt}",
+	    .interactive_command = "codex --no-alt-screen",
+	    .structured_protocol = uam::provider_profile_constants::kProtocolCodexAppServer,
+	    .resume_argument = "",
+	    .history_adapter = uam::provider_profile_constants::kHistoryAdapterLocalJson,
+	    .prompt_bootstrap = uam::provider_profile_constants::kPromptBootstrapNone,
+	    .prompt_bootstrap_path = "",
+	    .user_message_types = {"user"},
+	    .assistant_message_types = {"assistant", "codex"},
+	});
 }
 
 ProviderProfile ProviderProfileStore::DefaultClaudeProfile()
 {
-	ProviderProfile profile;
-	profile.id = "claude-cli";
-	profile.title = "Claude Code";
-	profile.execution_mode = "cli";
-	profile.output_mode = "cli";
-	profile.command_template = "claude -p {prompt}";
-	profile.interactive_command = "claude";
-	profile.supports_cli = true;
-	profile.supports_structured = true;
-	profile.structured_protocol = "claude-code-stream-json";
-	profile.supports_interactive = true;
-	profile.supports_resume = true;
-	profile.resume_argument = "--resume";
-	profile.history_adapter = "local-json";
-	profile.prompt_bootstrap = "none";
-	profile.prompt_bootstrap_path.clear();
-	profile.user_message_types = {"user", "human"};
-	profile.assistant_message_types = {"assistant", "claude"};
-	return profile;
+	return MakeBuiltInCliProfile({
+	    .id = uam::provider_ids::kClaudeCli,
+	    .title = "Claude Code",
+	    .command_template = "claude -p {prompt}",
+	    .interactive_command = "claude",
+	    .structured_protocol = uam::provider_profile_constants::kProtocolClaudeCodeStreamJson,
+	    .resume_argument = "--resume",
+	    .history_adapter = uam::provider_profile_constants::kHistoryAdapterLocalJson,
+	    .prompt_bootstrap = uam::provider_profile_constants::kPromptBootstrapNone,
+	    .prompt_bootstrap_path = "",
+	    .user_message_types = {"user", "human"},
+	    .assistant_message_types = {"assistant", "claude"},
+	});
 }
 
 ProviderProfile ProviderProfileStore::DefaultOpenCodeProfile()
 {
-	ProviderProfile profile;
-	profile.id = "opencode-cli";
-	profile.title = "OpenCode";
-	profile.execution_mode = "cli";
-	profile.output_mode = "cli";
-	profile.command_template = "opencode run {flags} {prompt}";
-	profile.interactive_command = "opencode";
-	profile.supports_cli = true;
-	profile.supports_structured = true;
-	profile.structured_protocol = "opencode-acp";
-	profile.supports_interactive = true;
-	profile.supports_resume = true;
-	profile.resume_argument = "--session";
-	profile.history_adapter = "local-json";
-	profile.prompt_bootstrap = "none";
-	profile.prompt_bootstrap_path.clear();
-	profile.user_message_types = {"user"};
-	profile.assistant_message_types = {"assistant", "opencode"};
-	return profile;
+	return MakeBuiltInCliProfile({
+	    .id = uam::provider_ids::kOpenCodeCli,
+	    .title = "OpenCode",
+	    .command_template = "opencode run {flags} {prompt}",
+	    .interactive_command = "opencode",
+	    .structured_protocol = uam::provider_profile_constants::kProtocolOpenCodeAcp,
+	    .resume_argument = "--session",
+	    .history_adapter = uam::provider_profile_constants::kHistoryAdapterLocalJson,
+	    .prompt_bootstrap = uam::provider_profile_constants::kPromptBootstrapNone,
+	    .prompt_bootstrap_path = "",
+	    .user_message_types = {"user"},
+	    .assistant_message_types = {"assistant", "opencode"},
+	});
 }
 
 ProviderProfile ProviderProfileStore::DefaultCopilotProfile()
 {
-	ProviderProfile profile;
-	profile.id = "copilot-cli";
-	profile.title = "GitHub Copilot CLI";
-	profile.execution_mode = "cli";
-	profile.output_mode = "cli";
-	profile.command_template = "copilot -p {prompt} {flags}";
-	profile.interactive_command = "copilot";
-	profile.supports_cli = true;
-	profile.supports_structured = true;
-	profile.structured_protocol = "copilot-acp";
-	profile.supports_interactive = true;
-	profile.supports_resume = true;
-	profile.resume_argument = "--resume";
-	profile.history_adapter = "local-json";
-	profile.prompt_bootstrap = "none";
-	profile.prompt_bootstrap_path.clear();
-	profile.user_message_types = {"user", "human"};
-	profile.assistant_message_types = {"assistant", "copilot"};
-	return profile;
+	return MakeBuiltInCliProfile({
+	    .id = uam::provider_ids::kCopilotCli,
+	    .title = "GitHub Copilot CLI",
+	    .command_template = "copilot -p {prompt} {flags}",
+	    .interactive_command = "copilot",
+	    .structured_protocol = uam::provider_profile_constants::kProtocolCopilotAcp,
+	    .resume_argument = "--resume",
+	    .history_adapter = uam::provider_profile_constants::kHistoryAdapterLocalJson,
+	    .prompt_bootstrap = uam::provider_profile_constants::kPromptBootstrapNone,
+	    .prompt_bootstrap_path = "",
+	    .user_message_types = {"user", "human"},
+	    .assistant_message_types = {"assistant", "copilot"},
+	});
 }
 
 std::vector<ProviderProfile> ProviderProfileStore::BuiltInProfiles()
 {
 	std::vector<ProviderProfile> profiles;
+	profiles.reserve(kMaxBuiltInProviderProfiles);
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
 	profiles.push_back(DefaultGeminiProfile());
 #endif
@@ -160,49 +202,23 @@ std::vector<ProviderProfile> ProviderProfileStore::BuiltInProfiles()
 void ProviderProfileStore::EnsureDefaultProfile(std::vector<ProviderProfile>& profiles)
 {
 	const std::vector<ProviderProfile> built_ins = BuiltInProfiles();
+	profiles.reserve(profiles.size() + built_ins.size());
 
 	for (const ProviderProfile& built_in : built_ins)
 	{
-		bool found = false;
-
-		for (const ProviderProfile& profile : profiles)
-		{
-			if (IsSameId(profile.id, built_in.id))
-			{
-				found = true;
-				break;
-			}
-		}
-
-		if (!found)
+		if (ProviderProfileStore::FindById(profiles, built_in.id) == nullptr)
 		{
 			profiles.push_back(built_in);
 		}
 	}
 }
 
-const ProviderProfile* ProviderProfileStore::FindById(const std::vector<ProviderProfile>& profiles, const std::string& id)
+const ProviderProfile* ProviderProfileStore::FindById(const std::vector<ProviderProfile>& profiles, std::string_view id)
 {
-	for (const ProviderProfile& profile : profiles)
-	{
-		if (IsSameId(profile.id, id))
-		{
-			return &profile;
-		}
-	}
-
-	return nullptr;
+	return ProfileOrNull(profiles, FindProfileById(profiles, id));
 }
 
-ProviderProfile* ProviderProfileStore::FindById(std::vector<ProviderProfile>& profiles, const std::string& id)
+ProviderProfile* ProviderProfileStore::FindById(std::vector<ProviderProfile>& profiles, std::string_view id)
 {
-	for (ProviderProfile& profile : profiles)
-	{
-		if (IsSameId(profile.id, id))
-		{
-			return &profile;
-		}
-	}
-
-	return nullptr;
+	return ProfileOrNull(profiles, FindProfileById(profiles, id));
 }

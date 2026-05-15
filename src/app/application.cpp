@@ -1,6 +1,5 @@
 #include "application.h"
 
-#include "application_core_helpers.h"
 #include "chat_domain_service.h"
 #include "persistence_coordinator.h"
 #include "provider_resolution_service.h"
@@ -10,6 +9,7 @@
 #include "common/constants/app_constants.h"
 #include "common/models/app_models.h"
 #include "common/paths/app_paths.h"
+#include "common/paths/path_utils.h"
 #include "common/chat/chat_branching.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
@@ -23,6 +23,8 @@
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/config/settings_store.h"
 #include "common/platform/platform_services.h"
+#include "common/utils/env_utils.h"
+#include "common/utils/string_utils.h"
 
 #include "cef/cef_push.h"
 #include "cef/cef_includes.h"
@@ -38,12 +40,10 @@
 
 #include <algorithm>
 #include <cstdio>
-#include <cstdlib>
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
-#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -69,135 +69,135 @@ namespace
 	bool IsMacAppBundleExecutable(const fs::path& exe_path)
 	{
 #if defined(__APPLE__)
-		const fs::path normalized = exe_path.lexically_normal();
+		const fs::path normalized = uam::paths::LexicallyNormalPath(exe_path);
 		const fs::path macos_dir = normalized.parent_path();
 		const fs::path contents_dir = macos_dir.parent_path();
 		const fs::path app_dir = contents_dir.parent_path();
-		return !app_dir.empty() && macos_dir.filename() == "MacOS" && contents_dir.filename() == "Contents" && app_dir.extension() == ".app";
+		if (app_dir.empty())
+		{
+			return false;
+		}
+		if (macos_dir.filename() != "MacOS")
+		{
+			return false;
+		}
+		if (contents_dir.filename() != "Contents")
+		{
+			return false;
+		}
+		return app_dir.extension() == ".app";
 #else
 		(void)exe_path;
 		return false;
 #endif
 	}
 
-	void ResetAsyncCommandTask(uam::AsyncCommandTask& task)
-	{
-		if (task.worker != nullptr)
-		{
-			task.worker->request_stop();
-			task.worker.reset();
-		}
-		task.running = false;
-		task.command_preview.clear();
-		task.state.reset();
-	}
-
 	void ResetRuntimeCliVersionState(uam::AppState& app)
 	{
-		ResetAsyncCommandTask(app.runtime_cli_version_check_task);
-		ResetAsyncCommandTask(app.runtime_cli_pin_task);
+		uam::ResetAsyncCommandTask(app.runtime_cli_version_check_task);
+		uam::ResetAsyncCommandTask(app.runtime_cli_pin_task);
 		app.runtime_cli_version_provider_id.clear();
 		app.runtime_cli_pin_provider_id.clear();
-		app.runtime_cli_selected_version.clear();
 		app.runtime_cli_versions_by_provider_id.clear();
 	}
 
-	void ResetPendingRuntimeCall(PendingRuntimeCall& call)
+	std::string RuntimeCliVersionStateSignature(const std::unordered_map<std::string, uam::CliProviderVersionState>& states)
 	{
-		if (call.worker != nullptr)
-		{
-			call.worker->request_stop();
-			call.worker.reset();
-		}
-		call.state.reset();
-	}
+		std::vector<const std::pair<const std::string, uam::CliProviderVersionState>*> ordered_states;
+		ordered_states.reserve(states.size());
 
-	void ResetNativeChatLoadTask(uam::platform::AsyncNativeChatLoadTask& task)
-	{
-		if (task.worker != nullptr)
+		for (const auto& entry : states)
 		{
-			task.worker->request_stop();
-			task.worker.reset();
-		}
-		task.running = false;
-		task.provider_id_snapshot.clear();
-		task.chats_dir_snapshot.clear();
-		task.state.reset();
-	}
-
-	void ResetNativeChatLoadTasks(std::unordered_map<std::string, uam::platform::AsyncNativeChatLoadTask>& tasks)
-	{
-		for (auto& entry : tasks)
-		{
-			ResetNativeChatLoadTask(entry.second);
+			ordered_states.push_back(&entry);
 		}
 
-		tasks.clear();
+		std::ranges::sort(ordered_states, [](const auto* lhs, const auto* rhs) {
+			return lhs->first < rhs->first;
+		});
+
+		std::string signature;
+		for (const auto* entry : ordered_states)
+		{
+			const std::string& provider_id = entry->first;
+			const uam::CliProviderVersionState& state = entry->second;
+			signature += provider_id;
+			signature.push_back('\0');
+			signature += state.checked ? "1" : "0";
+			signature.push_back('\0');
+			signature += state.supported ? "1" : "0";
+			signature.push_back('\0');
+			signature += state.installed_version;
+			signature.push_back('\0');
+			signature += state.selected_version;
+			signature.push_back('\0');
+			signature += state.raw_output;
+			signature.push_back('\0');
+			signature += state.message;
+			signature.push_back('\0');
+			signature += state.install_output;
+			signature.push_back('\0');
+		}
+
+		return signature;
 	}
 
 	struct RuntimeCliCompatibilitySnapshot
 	{
-		bool runtime_cli_version_checked = false;
-		bool runtime_cli_version_supported = false;
 		std::string runtime_cli_version_provider_id;
 		std::string runtime_cli_pin_provider_id;
-		std::string runtime_cli_installed_version;
-		std::string runtime_cli_selected_version;
-		std::string runtime_cli_version_raw_output;
-		std::string runtime_cli_version_message;
-		std::string runtime_cli_pin_output;
+		std::string provider_state_signature;
 		std::string status_line;
 	};
 
 	RuntimeCliCompatibilitySnapshot CaptureRuntimeCliCompatibilitySnapshot(const uam::AppState& app)
 	{
 		RuntimeCliCompatibilitySnapshot snapshot;
-		snapshot.runtime_cli_version_checked = app.runtime_cli_version_checked;
-		snapshot.runtime_cli_version_supported = app.runtime_cli_version_supported;
 		snapshot.runtime_cli_version_provider_id = app.runtime_cli_version_provider_id;
 		snapshot.runtime_cli_pin_provider_id = app.runtime_cli_pin_provider_id;
-		snapshot.runtime_cli_installed_version = app.runtime_cli_installed_version;
-		snapshot.runtime_cli_selected_version = app.runtime_cli_selected_version;
-		snapshot.runtime_cli_version_raw_output = app.runtime_cli_version_raw_output;
-		snapshot.runtime_cli_version_message = app.runtime_cli_version_message;
-		snapshot.runtime_cli_pin_output = app.runtime_cli_pin_output;
+		snapshot.provider_state_signature = RuntimeCliVersionStateSignature(app.runtime_cli_versions_by_provider_id);
 		snapshot.status_line = app.status_line;
 		return snapshot;
 	}
 
 	bool RuntimeCliCompatibilitySnapshotChanged(const RuntimeCliCompatibilitySnapshot& before, const RuntimeCliCompatibilitySnapshot& after)
 	{
-		return before.runtime_cli_version_checked != after.runtime_cli_version_checked || before.runtime_cli_version_supported != after.runtime_cli_version_supported || before.runtime_cli_version_provider_id != after.runtime_cli_version_provider_id || before.runtime_cli_pin_provider_id != after.runtime_cli_pin_provider_id || before.runtime_cli_installed_version != after.runtime_cli_installed_version || before.runtime_cli_selected_version != after.runtime_cli_selected_version || before.runtime_cli_version_raw_output != after.runtime_cli_version_raw_output || before.runtime_cli_version_message != after.runtime_cli_version_message || before.runtime_cli_pin_output != after.runtime_cli_pin_output || before.status_line != after.status_line;
+		if (before.runtime_cli_version_provider_id != after.runtime_cli_version_provider_id)
+		{
+			return true;
+		}
+		if (before.runtime_cli_pin_provider_id != after.runtime_cli_pin_provider_id)
+		{
+			return true;
+		}
+		if (before.provider_state_signature != after.provider_state_signature)
+		{
+			return true;
+		}
+		return before.status_line != after.status_line;
 	}
 
 	bool HasSelectedActiveRuntime(const uam::AppState& app)
 	{
-		const ChatSession* selected_chat = ChatDomainService().SelectedChat(app);
-		if (selected_chat == nullptr)
+		const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
+		if (selected_chat_id.empty())
 		{
 			return false;
 		}
 
-		for (const auto& terminal : app.cli_terminals)
+		if (uam::ChatHasActiveCliTerminal(app, selected_chat_id))
 		{
-			if (terminal != nullptr && terminal->running && CliTerminalMatchesChatId(*terminal, selected_chat->id))
-			{
-				return true;
-			}
+			return true;
 		}
 
-		const uam::AcpSessionState* acp = FindAcpSessionForChat(app, selected_chat->id);
+		const uam::AcpSessionState* acp = FindAcpSessionForChat(app, selected_chat_id);
 		return acp != nullptr && acp->running;
 	}
 
 	bool HasAnyActiveRuntime(const uam::AppState& app)
 	{
-		for (const auto& terminal : app.cli_terminals)
+		if (uam::HasAnyActiveCliTerminal(app))
 		{
-			if (terminal != nullptr && terminal->running)
-			{
-				return true;
-			}
+			return true;
 		}
 
 		for (const auto& session : app.acp_sessions)
@@ -236,7 +236,9 @@ namespace
 		void Execute() override
 		{
 			if (m_app)
+			{
 				m_app->PollTick();
+			}
 		}
 
 	  private:
@@ -290,28 +292,35 @@ void Application::PollTick()
 	CEF_REQUIRE_UI_THREAD();
 
 	if (m_done)
+	{
 		return;
+	}
 
 	const RuntimeCliCompatibilitySnapshot provider_snapshot_before = CaptureRuntimeCliCompatibilitySnapshot(m_app);
 	const bool pending_calls_changed = PollPendingRuntimeCall(m_app);
 	const bool acp_sessions_changed = uam::PollAllAcpSessions(m_app);
-	const bool cli_terminals_changed = PollAllCliTerminals(m_browser, m_app);
+	const bool cli_terminals_changed = uam::PollAllCliTerminals(m_browser, m_app);
 	const bool memory_changed = MemoryService::ProcessDueMemoryWork(m_app);
 	ProviderCliCompatibilityService().Poll(m_app);
 	const bool provider_compatibility_changed = RuntimeCliCompatibilitySnapshotChanged(provider_snapshot_before, CaptureRuntimeCliCompatibilitySnapshot(m_app));
-	const bool ui_relevant_state_changed = pending_calls_changed || acp_sessions_changed || cli_terminals_changed || memory_changed || provider_compatibility_changed;
+	const bool runtime_state_changed = pending_calls_changed || acp_sessions_changed || cli_terminals_changed || memory_changed;
+	const bool ui_relevant_state_changed = runtime_state_changed || provider_compatibility_changed;
 
 	// Push only when the serialized app state actually changed.
 	if (m_browser && ui_relevant_state_changed)
+	{
 		uam::PushStateUpdateIfChanged(m_browser, m_app);
+	}
 
 	ScheduleNextUpdate(NextPollDelayMs(m_app));
 }
 
-void Application::ScheduleNextUpdate(const int delay_ms)
+void Application::ScheduleNextUpdate(int delay_ms)
 {
 	if (!m_done)
+	{
 		CefPostDelayedTask(TID_UI, new AppPollTask(this), delay_ms);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -327,61 +336,64 @@ void Application::OnBrowserReady(CefRefPtr<CefBrowser> browser)
 
 bool Application::InitializeState()
 {
-	std::vector<fs::path> l_dataRootCandidates;
-	std::error_code l_exeEc;
-	const fs::path l_exePath = m_platformServices->process_service.ResolveCurrentExecutablePath();
-	const bool l_runningFromMacAppBundle = !l_exeEc && !l_exePath.empty() && IsMacAppBundleExecutable(l_exePath);
+	std::vector<fs::path> data_root_candidates;
+	const fs::path executable_path = m_platformServices->process_service.ResolveCurrentExecutablePath();
+	const bool running_from_mac_app_bundle = !executable_path.empty() && IsMacAppBundleExecutable(executable_path);
 
-	if (const char* lcp_dataDirEnv = std::getenv("UAM_DATA_DIR"))
+	if (const std::optional<fs::path> data_root_env = uam::env::GetTrimmedPath("UAM_DATA_DIR"))
 	{
-		const std::string l_envRoot = Trim(lcp_dataDirEnv);
-		if (!l_envRoot.empty())
-			l_dataRootCandidates.push_back(fs::path(l_envRoot));
+		data_root_candidates.push_back(*data_root_env);
 	}
 
-	if (!l_exePath.empty() && !l_runningFromMacAppBundle)
-		l_dataRootCandidates.push_back(l_exePath.parent_path() / "data");
-
-	if (!l_runningFromMacAppBundle)
+	if (!executable_path.empty() && !running_from_mac_app_bundle)
 	{
-		std::error_code l_cwdEc;
-		const fs::path l_cwd = fs::current_path(l_cwdEc);
-		if (!l_cwdEc)
-			l_dataRootCandidates.push_back(l_cwd / "data");
+		data_root_candidates.push_back(executable_path.parent_path() / "data");
 	}
 
-	l_dataRootCandidates.push_back(m_platformServices->path_service.DefaultDataRootPath());
-	l_dataRootCandidates.push_back(PersistenceCoordinator().TempFallbackDataRootPath());
-
-	std::unordered_set<std::string> l_triedRoots;
-	std::string l_lastDataRootError = "Unknown data directory initialization failure.";
-	bool l_initializedDataRoot = false;
-
-	for (const fs::path& l_candidateRoot : l_dataRootCandidates)
+	if (!running_from_mac_app_bundle)
 	{
-		if (l_candidateRoot.empty())
-			continue;
-
-		const std::string l_key = l_candidateRoot.lexically_normal().string();
-		if (l_triedRoots.find(l_key) != l_triedRoots.end())
-			continue;
-
-		l_triedRoots.insert(l_key);
-		std::string l_error;
-
-		if (PersistenceCoordinator().EnsureDataRootLayout(l_candidateRoot, &l_error))
+		if (const std::optional<fs::path> cwd = uam::paths::CurrentPathNoThrow())
 		{
-			m_app.data_root = l_candidateRoot;
-			l_initializedDataRoot = true;
+			data_root_candidates.push_back(*cwd / "data");
+		}
+	}
+
+	data_root_candidates.push_back(m_platformServices->path_service.DefaultDataRootPath());
+	data_root_candidates.push_back(PersistenceCoordinator().TempFallbackDataRootPath());
+
+	std::unordered_set<std::string> tried_roots;
+	std::string last_data_root_error = "Unknown data directory initialization failure.";
+	bool initialized_data_root = false;
+
+	for (const fs::path& candidate_root : data_root_candidates)
+	{
+		if (candidate_root.empty())
+		{
+			continue;
+		}
+
+		const std::string key = uam::paths::NormalizedNativePathString(candidate_root);
+		if (tried_roots.contains(key))
+		{
+			continue;
+		}
+
+		tried_roots.insert(key);
+		std::string error;
+
+		if (PersistenceCoordinator().EnsureDataRootLayout(candidate_root, &error))
+		{
+			m_app.data_root = candidate_root;
+			initialized_data_root = true;
 			break;
 		}
 
-		l_lastDataRootError = std::move(l_error);
+		last_data_root_error = std::move(error);
 	}
 
-	if (!l_initializedDataRoot)
+	if (!initialized_data_root)
 	{
-		std::fprintf(stderr, "Failed to initialize application data directories: %s\n", l_lastDataRootError.c_str());
+		std::fprintf(stderr, "Failed to initialize application data directories: %s\n", last_data_root_error.c_str());
 		m_exitCode = 1;
 		return false;
 	}
@@ -400,24 +412,24 @@ bool Application::InitializeState()
 	}
 
 	PersistenceCoordinator().LoadSettings(m_app);
-	bool l_settingsDirty = false;
+	bool settings_dirty = false;
 	m_app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
 	if (ProviderResolutionService().ActiveProvider(m_app) == nullptr && !m_app.provider_profiles.empty())
 	{
 		m_app.settings.active_provider_id = m_app.provider_profiles.front().id;
-		l_settingsDirty = true;
+		settings_dirty = true;
 	}
 
-	if (ProviderProfile* lp_activeProfile = ProviderResolutionService().ActiveProvider(m_app); lp_activeProfile != nullptr)
+	if (ProviderProfile* active_profile = ProviderResolutionService().ActiveProvider(m_app); active_profile != nullptr)
 	{
-		m_app.settings.provider_command_template = lp_activeProfile->command_template;
+		m_app.settings.provider_command_template = active_profile->command_template;
 		m_app.settings.gemini_command_template = m_app.settings.provider_command_template;
 		m_app.settings.runtime_backend = "provider-cli";
 
-		if (!ProviderRuntime::IsRuntimeEnabled(*lp_activeProfile))
+		if (!ProviderRuntime::IsRuntimeEnabled(*active_profile))
 		{
-			const std::string l_disabledReason = ProviderRuntime::DisabledReason(*lp_activeProfile);
-			m_app.status_line = l_disabledReason.empty() ? "Active provider runtime is disabled in this build." : l_disabledReason;
+			const std::string disabled_reason = ProviderRuntime::DisabledReason(*active_profile);
+			m_app.status_line = uam::strings::NonEmptyOrFallback(disabled_reason, "Active provider runtime is disabled in this build.");
 		}
 	}
 
@@ -427,21 +439,19 @@ bool Application::InitializeState()
 
 	if (!m_app.chats.empty())
 	{
-		if (m_app.settings.remember_last_chat && !m_app.settings.last_selected_chat_id.empty())
-			m_app.selected_chat_index = ChatDomainService().FindChatIndexById(m_app, m_app.settings.last_selected_chat_id);
-
-		if (m_app.selected_chat_index < 0 || m_app.selected_chat_index >= static_cast<int>(m_app.chats.size()))
-			m_app.selected_chat_index = 0;
+		ChatDomainService().SelectRememberedOrFirstChat(m_app);
 
 		std::string hydrate_warning;
-		ChatRepository::HydrateChatMessages(m_app.data_root, m_app.chats[static_cast<std::size_t>(m_app.selected_chat_index)], &hydrate_warning);
+		ChatSession* selected_chat = ChatDomainService().SelectedChat(m_app);
+		if (selected_chat != nullptr)
+		{
+			ChatRepository::HydrateChatMessages(m_app.data_root, *selected_chat, &hydrate_warning);
+		}
 		if (!hydrate_warning.empty())
 			m_app.status_line = hydrate_warning;
-
-		ChatDomainService().RefreshRememberedSelection(m_app);
 	}
 
-	if (l_settingsDirty)
+	if (settings_dirty)
 		PersistenceCoordinator().SaveSettings(m_app);
 
 	// Make AppState accessible to CEF app/client via global pointer.
@@ -467,9 +477,9 @@ bool Application::InitializeCef(CefMainArgs main_args)
 		// to guess; this prevents the EXC_BREAKPOINT / SIGTRAP crash that occurs
 		// when Chromium cannot locate its renderer / GPU subprocesses.
 		const fs::path helper_path = exe_dir / ".." / "Frameworks" / "universal_agent_manager Helper.app" / "Contents" / "MacOS" / "universal_agent_manager Helper";
-		if (fs::exists(helper_path))
+		if (uam::paths::PathExistsNoThrow(helper_path))
 		{
-			CefString(&settings.browser_subprocess_path) = helper_path.lexically_normal().string();
+			CefString(&settings.browser_subprocess_path) = uam::paths::NormalizedNativePathString(helper_path);
 		}
 		// On macOS the CEF framework is self-contained; resource paths are
 		// resolved automatically from the framework bundle.  No need to set
@@ -518,15 +528,18 @@ void Application::Shutdown()
 	PersistenceCoordinator().SaveSettings(m_app);
 
 	for (PendingRuntimeCall& call : m_app.pending_calls)
+	{
 		ResetPendingRuntimeCall(call);
+	}
+
 	m_app.pending_calls.clear();
 	m_app.resolved_native_sessions_by_chat_id.clear();
-		ResetRuntimeCliVersionState(m_app);
+	ResetRuntimeCliVersionState(m_app);
 	MemoryService::StopMemoryTasks(m_app);
-	ResetNativeChatLoadTask(m_app.native_chat_load_task);
-	ResetNativeChatLoadTasks(m_app.native_chat_load_tasks);
+	uam::platform::ResetAsyncNativeChatLoadTask(m_app.native_chat_load_task);
+	uam::platform::ResetAsyncNativeChatLoadTasks(m_app.native_chat_load_tasks);
 	uam::FastStopAcpSessionsForExit(m_app);
-	FastStopCliTerminalsForExit(m_app);
+	uam::FastStopCliTerminalsForExit(m_app);
 
 	uam_cef_globals::g_app_state = nullptr;
 	uam_cef_globals::g_client = nullptr;

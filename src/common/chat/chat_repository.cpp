@@ -1,38 +1,121 @@
 #include "common/chat/chat_repository.h"
 
+#include "common/chat/chat_ids.h"
+#include "common/chat/message_attachment_json.h"
+#include "common/config/approval_modes.h"
 #include "common/paths/app_paths.h"
+#include "common/paths/path_utils.h"
 #include "common/provider/codex/cli/codex_thread_id.h"
-#include "common/utils/io_utils.h"
-#include "common/utils/time_utils.h"
+#include "common/provider/provider_ids.h"
 #include "common/runtime/json_runtime.h"
+#include "common/utils/io_utils.h"
+#include "common/utils/parse_utils.h"
+#include "common/utils/string_utils.h"
+#include "common/utils/time_utils.h"
 
 #include <algorithm>
-#include <chrono>
-#include <ctime>
-#include <fstream>
-#include <iomanip>
+#include <limits>
 #include <mutex>
-#include <iostream>
+#include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 
 namespace
 {
 	namespace fs = std::filesystem;
-	using namespace uam::io;
-	using namespace uam::time;
+	namespace attachment_fields = uam::message_attachment_json;
+	namespace attachment_persisted_fields = uam::message_attachment_json::persisted;
 
-	MessageRole ParseMessageRole(const std::string& role)
+	constexpr std::string_view kLegacyProviderIdKey = "provider_id";
+	constexpr std::string_view kLegacyNativeSessionIdKey = "native_session_id";
+	constexpr std::string_view kLegacyParentChatKey = "parent_chat";
+	constexpr std::string_view kLegacyBranchRootKey = "branch_root";
+	constexpr std::string_view kLegacyBranchFromIndexKey = "branch_from_index";
+	constexpr std::string_view kLegacyFolderKey = "folder";
+	constexpr std::string_view kLegacyTitleKey = "title";
+	constexpr std::string_view kLegacyCreatedAtKey = "created_at";
+	constexpr std::string_view kLegacyUpdatedAtKey = "updated_at";
+	constexpr std::string_view kLegacyLastOpenedAtKey = "last_opened_at";
+	constexpr std::string_view kLegacyLinkedFileKey = "file";
+
+	constexpr std::string_view kMessageRoleField = "role";
+	constexpr std::string_view kMessageContentField = "content";
+	constexpr std::string_view kMessageCreatedAtField = "created_at";
+	constexpr std::string_view kMessageProviderField = "provider";
+	constexpr std::string_view kMessageTokensInputField = "tokens_input";
+	constexpr std::string_view kMessageTokensOutputField = "tokens_output";
+	constexpr std::string_view kMessageEstimatedCostUsdField = "estimated_cost_usd";
+	constexpr std::string_view kMessageTimeToFirstTokenMsField = "time_to_first_token_ms";
+	constexpr std::string_view kMessageProcessingTimeMsField = "processing_time_ms";
+	constexpr std::string_view kMessageInterruptedField = "interrupted";
+	constexpr std::string_view kMessageThoughtsField = "thoughts";
+	constexpr std::string_view kMessagePlanSummaryField = "plan_summary";
+	constexpr std::string_view kMessagePlanEntriesField = "plan_entries";
+	constexpr std::string_view kMessageToolCallsField = "tool_calls";
+	constexpr std::string_view kMessageBlocksField = "blocks";
+	constexpr std::string_view kMessageMarkdownStoreFilesField = "markdown_store_files";
+	constexpr std::string_view kMessageAttachmentsField = "attachments";
+
+	constexpr std::string_view kPlanEntryPriorityField = "priority";
+	constexpr std::string_view kPlanEntryStatusField = "status";
+
+	constexpr std::string_view kToolCallIdField = "id";
+	constexpr std::string_view kToolCallNameField = "name";
+	constexpr std::string_view kToolCallArgsJsonField = "args_json";
+	constexpr std::string_view kToolCallResultTextField = "result_text";
+	constexpr std::string_view kToolCallStatusField = "status";
+
+	constexpr std::string_view kMessageBlockTypeField = "type";
+	constexpr std::string_view kMessageBlockTextField = "text";
+	constexpr std::string_view kMessageBlockToolCallIdField = "tool_call_id";
+	constexpr std::string_view kMessageBlockRequestIdField = "request_id";
+
+	constexpr std::string_view kChatIdField = "id";
+	constexpr std::string_view kChatProviderIdField = "provider_id";
+	constexpr std::string_view kChatNativeSessionIdField = "native_session_id";
+	constexpr std::string_view kChatParentChatIdField = "parent_chat_id";
+	constexpr std::string_view kChatBranchRootChatIdField = "branch_root_chat_id";
+	constexpr std::string_view kChatBranchFromMessageIndexField = "branch_from_message_index";
+	constexpr std::string_view kChatFolderIdField = "folder_id";
+	constexpr std::string_view kChatTitleField = "title";
+	constexpr std::string_view kChatCreatedAtField = "created_at";
+	constexpr std::string_view kChatUpdatedAtField = "updated_at";
+	constexpr std::string_view kChatLastOpenedAtField = "last_opened_at";
+	constexpr std::string_view kChatPinnedField = "pinned";
+	constexpr std::string_view kChatLinkedFilesField = "linked_files";
+	constexpr std::string_view kChatWorkspaceDirectoryField = "workspace_directory";
+	constexpr std::string_view kChatWorkspaceIsolationKindField = "workspace_isolation_kind";
+	constexpr std::string_view kChatWorkspaceSourceDirectoryField = "workspace_source_directory";
+	constexpr std::string_view kChatWorkspaceBaseRefField = "workspace_base_ref";
+	constexpr std::string_view kChatWorkspaceBranchNameField = "workspace_branch_name";
+	constexpr std::string_view kChatWorkspaceWorktreeDirectoryField = "workspace_worktree_directory";
+	constexpr std::string_view kChatApprovalModeField = "approval_mode";
+	constexpr std::string_view kChatAutoApproveCommandsField = "auto_approve_commands";
+	constexpr std::string_view kChatModelIdField = "model_id";
+	constexpr std::string_view kChatReasoningEffortField = "reasoning_effort";
+	constexpr std::string_view kChatServiceTierField = "service_tier";
+	constexpr std::string_view kChatExtraFlagsField = "extra_flags";
+	constexpr std::string_view kChatMemoryEnabledField = "memory_enabled";
+	constexpr std::string_view kChatMemoryLastProcessedMessageCountField = "memory_last_processed_message_count";
+	constexpr std::string_view kChatMemoryLastProcessedAtField = "memory_last_processed_at";
+	constexpr std::string_view kChatMessagesField = "messages";
+
+	MessageRole ParseLegacyMessageRoleFromFilename(const fs::path& message_file)
 	{
-		if (role == "assistant")
-			return MessageRole::Assistant;
-		if (role == "system")
-			return MessageRole::System;
-		return MessageRole::User;
+		const std::string file_name = message_file.filename().string();
+		const auto underscore = file_name.find('_');
+		const auto dot = file_name.find_last_of('.');
+		if (underscore == std::string::npos || dot == std::string::npos || dot <= underscore)
+		{
+			return MessageRole::User;
+		}
+
+		return RoleFromString(file_name.substr(underscore + 1, dot - underscore - 1));
 	}
 
-	std::string StripCarriageReturn(const std::string& line)
+	std::string_view StripCarriageReturn(std::string_view line)
 	{
 		if (!line.empty() && line.back() == '\r')
 		{
@@ -41,215 +124,183 @@ namespace
 		return line;
 	}
 
-		bool IsSafeChatId(const std::string& chat_id)
+	bool ChatUpdatedNewestFirst(const ChatSession& lhs, const ChatSession& rhs)
 	{
-		if (chat_id.empty() || chat_id == "." || chat_id == "..")
+		return lhs.updated_at > rhs.updated_at;
+	}
+
+	void NormalizeLoadedNativeSessionId(ChatSession& chat)
+	{
+		if (uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kCodexCli))
 		{
-			return false;
+			chat.native_session_id = uam::codex::ValidThreadIdOrEmpty(chat.native_session_id);
+			return;
 		}
 
-		return chat_id.find('/') == std::string::npos &&
-		       chat_id.find('\\') == std::string::npos &&
-		       chat_id.find("..") == std::string::npos;
-	}
-
-	bool IsLocalDraftChatId(const std::string& chat_id)
-	{
-		return chat_id.rfind("chat-", 0) == 0;
-	}
-
-		void NormalizeLoadedNativeSessionId(ChatSession& chat)
+		if (chat.native_session_id.empty() && !chat.id.empty() && !uam::chat_ids::IsLocalDraftChatId(chat.id))
 		{
-			if (chat.provider_id == "codex-cli")
-			{
-				chat.native_session_id = uam::codex::ValidThreadIdOrEmpty(chat.native_session_id);
-				return;
-			}
-
-			if (chat.native_session_id.empty() && !chat.id.empty() && !IsLocalDraftChatId(chat.id))
-			{
-				chat.native_session_id = chat.id;
+			chat.native_session_id = chat.id;
 		}
 	}
 
 	JsonValue StringArrayToJson(const std::vector<std::string>& values);
 	std::vector<std::string> JsonStringArrayOrEmpty(const JsonValue* value);
 
+	void SetNonEmptyString(JsonValue& obj, std::string_view key, std::string_view value)
+	{
+		if (!value.empty())
+		{
+			uam::json::SetString(obj, key, value);
+		}
+	}
+
+	void SetPositiveNumber(JsonValue& obj, std::string_view key, double value)
+	{
+		if (value > 0.0)
+		{
+			uam::json::SetNumber(obj, key, value);
+		}
+	}
+
+	int NonNegativeIntFieldOrZero(const JsonValue* value)
+	{
+		const double parsed = JsonNumberOrDefault(value, 0.0);
+		const double bounded = std::clamp(parsed, 0.0, static_cast<double>(std::numeric_limits<int>::max()));
+		return static_cast<int>(bounded);
+	}
+
+	int IntFieldAtLeastOrDefault(const JsonValue* value, int minimum, int fallback)
+	{
+		const double parsed = JsonNumberOrDefault(value, static_cast<double>(fallback));
+		const double bounded = std::clamp(parsed, static_cast<double>(minimum), static_cast<double>(std::numeric_limits<int>::max()));
+		return static_cast<int>(bounded);
+	}
+
+	double NonNegativeNumberFieldOrZero(const JsonValue* value)
+	{
+		return std::max(0.0, JsonNumberOrDefault(value, 0.0));
+	}
+
+	std::uintmax_t NonNegativeUintmaxFieldOrZero(const JsonValue* value)
+	{
+		const double parsed = JsonNumberOrDefault(value, 0.0);
+		if (parsed <= 0.0)
+		{
+			return 0;
+		}
+
+		const double max_value = static_cast<double>(std::numeric_limits<std::uintmax_t>::max());
+		if (parsed >= max_value)
+		{
+			return std::numeric_limits<std::uintmax_t>::max();
+		}
+
+		return static_cast<std::uintmax_t>(parsed);
+	}
+
 	JsonValue AttachmentToJson(const MessageAttachment& attachment)
 	{
-		JsonValue obj;
-		obj.type = JsonValue::Type::Object;
-		obj.object_value["id"].type = JsonValue::Type::String;
-		obj.object_value["id"].string_value = attachment.id;
-		obj.object_value["name"].type = JsonValue::Type::String;
-		obj.object_value["name"].string_value = attachment.name;
-		obj.object_value["kind"].type = JsonValue::Type::String;
-		obj.object_value["kind"].string_value = attachment.kind;
-		obj.object_value["mime_type"].type = JsonValue::Type::String;
-		obj.object_value["mime_type"].string_value = attachment.mime_type;
-		obj.object_value["path"].type = JsonValue::Type::String;
-		obj.object_value["path"].string_value = attachment.path;
-		obj.object_value["size_bytes"].type = JsonValue::Type::Number;
-		obj.object_value["size_bytes"].number_value = static_cast<double>(attachment.size_bytes);
-		obj.object_value["copied"].type = JsonValue::Type::Bool;
-		obj.object_value["copied"].bool_value = attachment.copied;
+		JsonValue obj = uam::json::Object();
+		uam::json::SetString(obj, attachment_fields::kIdField, attachment.id);
+		uam::json::SetString(obj, attachment_fields::kNameField, attachment.name);
+		uam::json::SetString(obj, attachment_fields::kKindField, attachment.kind);
+		uam::json::SetString(obj, attachment_persisted_fields::kMimeTypeField, attachment.mime_type);
+		uam::json::SetString(obj, attachment_fields::kPathField, attachment.path);
+		uam::json::SetNumber(obj, attachment_persisted_fields::kSizeBytesField, static_cast<double>(attachment.size_bytes));
+		uam::json::SetBool(obj, attachment_fields::kCopiedField, attachment.copied);
 		return obj;
 	}
 
 	JsonValue MessageToJson(const Message& msg)
 	{
-		JsonValue obj;
-		obj.type = JsonValue::Type::Object;
+		JsonValue obj = uam::json::Object();
+		uam::json::SetString(obj, kMessageRoleField, RoleToString(msg.role));
+		uam::json::SetString(obj, kMessageContentField, msg.content);
+		uam::json::SetString(obj, kMessageCreatedAtField, msg.created_at);
 
-		obj.object_value["role"].type = JsonValue::Type::String;
-		obj.object_value["role"].string_value = RoleToString(msg.role);
-
-		obj.object_value["content"].type = JsonValue::Type::String;
-		obj.object_value["content"].string_value = msg.content;
-
-		obj.object_value["created_at"].type = JsonValue::Type::String;
-		obj.object_value["created_at"].string_value = msg.created_at;
-
-		if (!msg.provider.empty())
-		{
-			obj.object_value["provider"].type = JsonValue::Type::String;
-			obj.object_value["provider"].string_value = msg.provider;
-		}
-		if (msg.tokens_input > 0)
-		{
-			obj.object_value["tokens_input"].type = JsonValue::Type::Number;
-			obj.object_value["tokens_input"].number_value = static_cast<double>(msg.tokens_input);
-		}
-		if (msg.tokens_output > 0)
-		{
-			obj.object_value["tokens_output"].type = JsonValue::Type::Number;
-			obj.object_value["tokens_output"].number_value = static_cast<double>(msg.tokens_output);
-		}
-		if (msg.estimated_cost_usd > 0.0)
-		{
-			obj.object_value["estimated_cost_usd"].type = JsonValue::Type::Number;
-			obj.object_value["estimated_cost_usd"].number_value = msg.estimated_cost_usd;
-		}
-		if (msg.time_to_first_token_ms > 0)
-		{
-			obj.object_value["time_to_first_token_ms"].type = JsonValue::Type::Number;
-			obj.object_value["time_to_first_token_ms"].number_value = static_cast<double>(msg.time_to_first_token_ms);
-		}
-		if (msg.processing_time_ms > 0)
-		{
-			obj.object_value["processing_time_ms"].type = JsonValue::Type::Number;
-			obj.object_value["processing_time_ms"].number_value = static_cast<double>(msg.processing_time_ms);
-		}
+		SetNonEmptyString(obj, kMessageProviderField, msg.provider);
+		SetPositiveNumber(obj, kMessageTokensInputField, static_cast<double>(msg.tokens_input));
+		SetPositiveNumber(obj, kMessageTokensOutputField, static_cast<double>(msg.tokens_output));
+		SetPositiveNumber(obj, kMessageEstimatedCostUsdField, msg.estimated_cost_usd);
+		SetPositiveNumber(obj, kMessageTimeToFirstTokenMsField, static_cast<double>(msg.time_to_first_token_ms));
+		SetPositiveNumber(obj, kMessageProcessingTimeMsField, static_cast<double>(msg.processing_time_ms));
 		if (msg.interrupted)
 		{
-			obj.object_value["interrupted"].type = JsonValue::Type::Bool;
-			obj.object_value["interrupted"].bool_value = true;
+			uam::json::SetBool(obj, kMessageInterruptedField, true);
 		}
-		if (!msg.thoughts.empty())
-		{
-			obj.object_value["thoughts"].type = JsonValue::Type::String;
-			obj.object_value["thoughts"].string_value = msg.thoughts;
-		}
-		if (!msg.plan_summary.empty())
-		{
-			obj.object_value["plan_summary"].type = JsonValue::Type::String;
-			obj.object_value["plan_summary"].string_value = msg.plan_summary;
-		}
+		SetNonEmptyString(obj, kMessageThoughtsField, msg.thoughts);
+		SetNonEmptyString(obj, kMessagePlanSummaryField, msg.plan_summary);
 		if (!msg.plan_entries.empty())
 		{
-			JsonValue plan_arr;
-			plan_arr.type = JsonValue::Type::Array;
+			JsonValue plan_arr = uam::json::Array();
+			plan_arr.array_value.reserve(msg.plan_entries.size());
 			for (const MessagePlanEntry& entry : msg.plan_entries)
 			{
-				JsonValue entry_obj;
-				entry_obj.type = JsonValue::Type::Object;
-				entry_obj.object_value["content"].type = JsonValue::Type::String;
-				entry_obj.object_value["content"].string_value = entry.content;
-				entry_obj.object_value["priority"].type = JsonValue::Type::String;
-				entry_obj.object_value["priority"].string_value = entry.priority;
-				entry_obj.object_value["status"].type = JsonValue::Type::String;
-				entry_obj.object_value["status"].string_value = entry.status;
-				plan_arr.array_value.push_back(std::move(entry_obj));
+				JsonValue entry_obj = uam::json::Object();
+				uam::json::SetString(entry_obj, kMessageContentField, entry.content);
+				uam::json::SetString(entry_obj, kPlanEntryPriorityField, entry.priority);
+				uam::json::SetString(entry_obj, kPlanEntryStatusField, entry.status);
+				uam::json::PushValue(plan_arr, std::move(entry_obj));
 			}
-			obj.object_value["plan_entries"] = std::move(plan_arr);
+			uam::json::SetValue(obj, kMessagePlanEntriesField, std::move(plan_arr));
 		}
 		if (!msg.tool_calls.empty())
 		{
-			JsonValue tc_arr;
-			tc_arr.type = JsonValue::Type::Array;
+			JsonValue tc_arr = uam::json::Array();
+			tc_arr.array_value.reserve(msg.tool_calls.size());
 			for (const auto& tc : msg.tool_calls)
 			{
-				JsonValue tc_obj;
-				tc_obj.type = JsonValue::Type::Object;
-				tc_obj.object_value["id"].type = JsonValue::Type::String;
-				tc_obj.object_value["id"].string_value = tc.id;
-				tc_obj.object_value["name"].type = JsonValue::Type::String;
-				tc_obj.object_value["name"].string_value = tc.name;
-				tc_obj.object_value["args_json"].type = JsonValue::Type::String;
-				tc_obj.object_value["args_json"].string_value = tc.args_json;
-				tc_obj.object_value["result_text"].type = JsonValue::Type::String;
-				tc_obj.object_value["result_text"].string_value = tc.result_text;
-				tc_obj.object_value["status"].type = JsonValue::Type::String;
-				tc_obj.object_value["status"].string_value = tc.status;
-				tc_arr.array_value.push_back(tc_obj);
+				JsonValue tc_obj = uam::json::Object();
+				uam::json::SetString(tc_obj, kToolCallIdField, tc.id);
+				uam::json::SetString(tc_obj, kToolCallNameField, tc.name);
+				uam::json::SetString(tc_obj, kToolCallArgsJsonField, tc.args_json);
+				uam::json::SetString(tc_obj, kToolCallResultTextField, tc.result_text);
+				uam::json::SetString(tc_obj, kToolCallStatusField, tc.status);
+				uam::json::PushValue(tc_arr, std::move(tc_obj));
 			}
-			obj.object_value["tool_calls"] = std::move(tc_arr);
+			uam::json::SetValue(obj, kMessageToolCallsField, std::move(tc_arr));
 		}
 		if (!msg.blocks.empty())
 		{
-			JsonValue block_arr;
-			block_arr.type = JsonValue::Type::Array;
+			JsonValue block_arr = uam::json::Array();
+			block_arr.array_value.reserve(msg.blocks.size());
 			for (const MessageBlock& block : msg.blocks)
 			{
 				if (block.type.empty())
 				{
 					continue;
 				}
-				JsonValue block_obj;
-				block_obj.type = JsonValue::Type::Object;
-				block_obj.object_value["type"].type = JsonValue::Type::String;
-				block_obj.object_value["type"].string_value = block.type;
-				if (!block.text.empty())
-				{
-					block_obj.object_value["text"].type = JsonValue::Type::String;
-					block_obj.object_value["text"].string_value = block.text;
-				}
-				if (!block.tool_call_id.empty())
-				{
-					block_obj.object_value["tool_call_id"].type = JsonValue::Type::String;
-					block_obj.object_value["tool_call_id"].string_value = block.tool_call_id;
-				}
-				if (!block.request_id_json.empty())
-				{
-					block_obj.object_value["request_id"].type = JsonValue::Type::String;
-					block_obj.object_value["request_id"].string_value = block.request_id_json;
-				}
-				block_arr.array_value.push_back(std::move(block_obj));
+				JsonValue block_obj = uam::json::Object();
+				uam::json::SetString(block_obj, kMessageBlockTypeField, block.type);
+				SetNonEmptyString(block_obj, kMessageBlockTextField, block.text);
+				SetNonEmptyString(block_obj, kMessageBlockToolCallIdField, block.tool_call_id);
+				SetNonEmptyString(block_obj, kMessageBlockRequestIdField, block.request_id_json);
+				uam::json::PushValue(block_arr, std::move(block_obj));
 			}
 			if (!block_arr.array_value.empty())
 			{
-				obj.object_value["blocks"] = std::move(block_arr);
+				uam::json::SetValue(obj, kMessageBlocksField, std::move(block_arr));
 			}
 		}
 		if (!msg.markdown_store_files.empty())
 		{
-			obj.object_value["markdown_store_files"] = StringArrayToJson(msg.markdown_store_files);
+			uam::json::SetValue(obj, kMessageMarkdownStoreFilesField, StringArrayToJson(msg.markdown_store_files));
 		}
 		if (!msg.attachments.empty())
 		{
-			JsonValue attachments;
-			attachments.type = JsonValue::Type::Array;
+			JsonValue attachments = uam::json::Array();
+			attachments.array_value.reserve(msg.attachments.size());
 			for (const MessageAttachment& attachment : msg.attachments)
 			{
 				if (attachment.path.empty())
 				{
 					continue;
 				}
-				attachments.array_value.push_back(AttachmentToJson(attachment));
+				uam::json::PushValue(attachments, AttachmentToJson(attachment));
 			}
 			if (!attachments.array_value.empty())
 			{
-				obj.object_value["attachments"] = std::move(attachments);
+				uam::json::SetValue(obj, kMessageAttachmentsField, std::move(attachments));
 			}
 		}
 		return obj;
@@ -258,116 +309,104 @@ namespace
 	Message JsonToMessage(const JsonValue& obj)
 	{
 		Message msg;
-		if (obj.object_value.contains("role"))
-			msg.role = ParseMessageRole(JsonStringOrEmpty(obj.Find("role")));
-		if (obj.object_value.contains("content"))
-			msg.content = JsonStringOrEmpty(obj.Find("content"));
-		if (obj.object_value.contains("created_at"))
-			msg.created_at = JsonStringOrEmpty(obj.Find("created_at"));
-		if (obj.object_value.contains("provider"))
-			msg.provider = JsonStringOrEmpty(obj.Find("provider"));
-		if (obj.object_value.contains("tokens_input"))
-			msg.tokens_input = static_cast<int>(JsonNumberOrDefault(obj.Find("tokens_input"), 0));
-		if (obj.object_value.contains("tokens_output"))
-			msg.tokens_output = static_cast<int>(JsonNumberOrDefault(obj.Find("tokens_output"), 0));
-		if (obj.object_value.contains("estimated_cost_usd"))
-			msg.estimated_cost_usd = JsonNumberOrDefault(obj.Find("estimated_cost_usd"), 0);
-		if (obj.object_value.contains("time_to_first_token_ms"))
-			msg.time_to_first_token_ms = static_cast<int>(JsonNumberOrDefault(obj.Find("time_to_first_token_ms"), 0));
-		if (obj.object_value.contains("processing_time_ms"))
-			msg.processing_time_ms = static_cast<int>(JsonNumberOrDefault(obj.Find("processing_time_ms"), 0));
-		if (obj.object_value.contains("interrupted"))
-			msg.interrupted = obj.Find("interrupted")->type == JsonValue::Type::Bool && obj.Find("interrupted")->bool_value;
-		if (obj.object_value.contains("thoughts"))
-			msg.thoughts = JsonStringOrEmpty(obj.Find("thoughts"));
-		if (obj.object_value.contains("plan_summary"))
-			msg.plan_summary = JsonStringOrEmpty(obj.Find("plan_summary"));
-		if (obj.object_value.contains("plan_entries"))
+		msg.role = RoleFromString(JsonStringOrEmpty(obj.Find(kMessageRoleField)));
+		msg.content = JsonStringOrEmpty(obj.Find(kMessageContentField));
+		msg.created_at = JsonStringOrEmpty(obj.Find(kMessageCreatedAtField));
+		msg.provider = JsonStringOrEmpty(obj.Find(kMessageProviderField));
+		msg.tokens_input = NonNegativeIntFieldOrZero(obj.Find(kMessageTokensInputField));
+		msg.tokens_output = NonNegativeIntFieldOrZero(obj.Find(kMessageTokensOutputField));
+		msg.estimated_cost_usd = NonNegativeNumberFieldOrZero(obj.Find(kMessageEstimatedCostUsdField));
+		msg.time_to_first_token_ms = NonNegativeIntFieldOrZero(obj.Find(kMessageTimeToFirstTokenMsField));
+		msg.processing_time_ms = NonNegativeIntFieldOrZero(obj.Find(kMessageProcessingTimeMsField));
+		msg.interrupted = JsonBoolOrDefault(obj.Find(kMessageInterruptedField), false);
+		msg.thoughts = JsonStringOrEmpty(obj.Find(kMessageThoughtsField));
+		msg.plan_summary = JsonStringOrEmpty(obj.Find(kMessagePlanSummaryField));
+
+		if (const JsonValue* plan_arr = uam::json::ArrayOrNull(obj.Find(kMessagePlanEntriesField)); plan_arr != nullptr)
 		{
-			const JsonValue* plan_arr = obj.Find("plan_entries");
-			if (plan_arr && plan_arr->type == JsonValue::Type::Array)
+			msg.plan_entries.reserve(plan_arr->array_value.size());
+			for (const JsonValue& entry : plan_arr->array_value)
 			{
-				for (const auto& entry : plan_arr->array_value)
+				if (entry.type != JsonValue::Type::Object)
 				{
-					if (entry.type != JsonValue::Type::Object)
-						continue;
-					MessagePlanEntry plan_entry;
-					plan_entry.content = JsonStringOrEmpty(entry.Find("content"));
-					plan_entry.priority = JsonStringOrEmpty(entry.Find("priority"));
-					plan_entry.status = JsonStringOrEmpty(entry.Find("status"));
-					msg.plan_entries.push_back(std::move(plan_entry));
+					continue;
 				}
+
+				MessagePlanEntry plan_entry;
+				plan_entry.content = JsonStringOrEmpty(entry.Find(kMessageContentField));
+				plan_entry.priority = JsonStringOrEmpty(entry.Find(kPlanEntryPriorityField));
+				plan_entry.status = JsonStringOrEmpty(entry.Find(kPlanEntryStatusField));
+				msg.plan_entries.push_back(std::move(plan_entry));
 			}
 		}
-		if (obj.object_value.contains("tool_calls"))
+
+		if (const JsonValue* tc_arr = uam::json::ArrayOrNull(obj.Find(kMessageToolCallsField)); tc_arr != nullptr)
 		{
-			const JsonValue* tc_arr = obj.Find("tool_calls");
-			if (tc_arr && tc_arr->type == JsonValue::Type::Array)
+			msg.tool_calls.reserve(tc_arr->array_value.size());
+			for (const JsonValue& tc : tc_arr->array_value)
 			{
-				for (const auto& tc : tc_arr->array_value)
+				if (tc.type != JsonValue::Type::Object)
 				{
-					if (tc.type != JsonValue::Type::Object)
-						continue;
-					ToolCall tool_call;
-					tool_call.id = JsonStringOrEmpty(tc.Find("id"));
-					tool_call.name = JsonStringOrEmpty(tc.Find("name"));
-					tool_call.args_json = JsonStringOrEmpty(tc.Find("args_json"));
-					tool_call.result_text = JsonStringOrEmpty(tc.Find("result_text"));
-					tool_call.status = JsonStringOrEmpty(tc.Find("status"));
-					msg.tool_calls.push_back(std::move(tool_call));
+					continue;
 				}
+
+				ToolCall tool_call;
+				tool_call.id = JsonStringOrEmpty(tc.Find(kToolCallIdField));
+				tool_call.name = JsonStringOrEmpty(tc.Find(kToolCallNameField));
+				tool_call.args_json = JsonStringOrEmpty(tc.Find(kToolCallArgsJsonField));
+				tool_call.result_text = JsonStringOrEmpty(tc.Find(kToolCallResultTextField));
+				tool_call.status = JsonStringOrEmpty(tc.Find(kToolCallStatusField));
+				msg.tool_calls.push_back(std::move(tool_call));
 			}
 		}
-		if (obj.object_value.contains("blocks"))
+
+		if (const JsonValue* block_arr = uam::json::ArrayOrNull(obj.Find(kMessageBlocksField)); block_arr != nullptr)
 		{
-			const JsonValue* block_arr = obj.Find("blocks");
-			if (block_arr && block_arr->type == JsonValue::Type::Array)
+			msg.blocks.reserve(block_arr->array_value.size());
+			for (const JsonValue& block : block_arr->array_value)
 			{
-				for (const JsonValue& block : block_arr->array_value)
+				if (block.type != JsonValue::Type::Object)
 				{
-					if (block.type != JsonValue::Type::Object)
-					{
-						continue;
-					}
-					MessageBlock message_block;
-					message_block.type = JsonStringOrEmpty(block.Find("type"));
-					if (message_block.type.empty())
-					{
-						continue;
-					}
-					message_block.text = JsonStringOrEmpty(block.Find("text"));
-					message_block.tool_call_id = JsonStringOrEmpty(block.Find("tool_call_id"));
-					message_block.request_id_json = JsonStringOrEmpty(block.Find("request_id"));
-					msg.blocks.push_back(std::move(message_block));
+					continue;
 				}
+
+				MessageBlock message_block;
+				message_block.type = JsonStringOrEmpty(block.Find(kMessageBlockTypeField));
+				if (message_block.type.empty())
+				{
+					continue;
+				}
+
+				message_block.text = JsonStringOrEmpty(block.Find(kMessageBlockTextField));
+				message_block.tool_call_id = JsonStringOrEmpty(block.Find(kMessageBlockToolCallIdField));
+				message_block.request_id_json = JsonStringOrEmpty(block.Find(kMessageBlockRequestIdField));
+				msg.blocks.push_back(std::move(message_block));
 			}
 		}
-		if (const JsonValue* markdown_store_files = obj.Find("markdown_store_files"))
+
+		msg.markdown_store_files = JsonStringArrayOrEmpty(obj.Find(kMessageMarkdownStoreFilesField));
+
+		if (const JsonValue* attachments = uam::json::ArrayOrNull(obj.Find(kMessageAttachmentsField)); attachments != nullptr)
 		{
-			msg.markdown_store_files = JsonStringArrayOrEmpty(markdown_store_files);
-		}
-		if (const JsonValue* attachments = obj.Find("attachments"))
-		{
-			if (attachments->type == JsonValue::Type::Array)
+			msg.attachments.reserve(attachments->array_value.size());
+			for (const JsonValue& item : attachments->array_value)
 			{
-				for (const JsonValue& item : attachments->array_value)
+				if (item.type != JsonValue::Type::Object)
 				{
-					if (item.type != JsonValue::Type::Object)
-					{
-						continue;
-					}
-					MessageAttachment attachment;
-					attachment.id = JsonStringOrEmpty(item.Find("id"));
-					attachment.name = JsonStringOrEmpty(item.Find("name"));
-					attachment.kind = JsonStringOrEmpty(item.Find("kind"));
-					attachment.mime_type = JsonStringOrEmpty(item.Find("mime_type"));
-					attachment.path = JsonStringOrEmpty(item.Find("path"));
-					attachment.size_bytes = static_cast<std::uintmax_t>(std::max(0.0, JsonNumberOrDefault(item.Find("size_bytes"), 0.0)));
-					attachment.copied = JsonBoolOrDefault(item.Find("copied"), false);
-					if (!attachment.path.empty())
-					{
-						msg.attachments.push_back(std::move(attachment));
-					}
+					continue;
+				}
+
+				MessageAttachment attachment;
+				attachment.id = JsonStringOrEmpty(item.Find(attachment_fields::kIdField));
+				attachment.name = JsonStringOrEmpty(item.Find(attachment_fields::kNameField));
+				attachment.kind = JsonStringOrEmpty(item.Find(attachment_fields::kKindField));
+				attachment.mime_type = JsonStringOrEmpty(item.Find(attachment_persisted_fields::kMimeTypeField));
+				attachment.path = JsonStringOrEmpty(item.Find(attachment_fields::kPathField));
+				attachment.size_bytes = NonNegativeUintmaxFieldOrZero(item.Find(attachment_persisted_fields::kSizeBytesField));
+				attachment.copied = JsonBoolOrDefault(item.Find(attachment_fields::kCopiedField), false);
+				if (!attachment.path.empty())
+				{
+					msg.attachments.push_back(std::move(attachment));
 				}
 			}
 		}
@@ -376,15 +415,16 @@ namespace
 
 	JsonValue StringArrayToJson(const std::vector<std::string>& values)
 	{
-		JsonValue arr;
-		arr.type = JsonValue::Type::Array;
+		JsonValue arr = uam::json::Array();
+		arr.array_value.reserve(values.size());
 
 		for (const std::string& value : values)
 		{
-			JsonValue item;
-			item.type = JsonValue::Type::String;
-			item.string_value = value;
-			arr.array_value.push_back(std::move(item));
+			const std::string trimmed_value = uam::strings::Trim(value);
+			if (!trimmed_value.empty())
+			{
+				uam::json::PushValue(arr, uam::json::String(trimmed_value));
+			}
 		}
 
 		return arr;
@@ -399,132 +439,206 @@ namespace
 			return out;
 		}
 
+		out.reserve(value->array_value.size());
 		for (const JsonValue& item : value->array_value)
 		{
 			if (item.type == JsonValue::Type::String)
 			{
-				out.push_back(item.string_value);
+				const std::string trimmed_value = uam::strings::Trim(item.string_value);
+				if (!trimmed_value.empty())
+				{
+					out.push_back(trimmed_value);
+				}
 			}
 		}
 
 		return out;
 	}
 
+	template <typename T, typename Predicate> bool EquivalentVectors(const std::vector<T>& lhs, const std::vector<T>& rhs, Predicate equivalent)
+	{
+		return std::ranges::equal(lhs, rhs, equivalent);
+	}
+
+	bool ToolCallEquivalentForRecovery(const ToolCall& lhs, const ToolCall& rhs)
+	{
+		return lhs.id == rhs.id && lhs.name == rhs.name && lhs.args_json == rhs.args_json && lhs.result_text == rhs.result_text && lhs.status == rhs.status;
+	}
+
 	bool ToolCallsEquivalentForRecovery(const std::vector<ToolCall>& lhs, const std::vector<ToolCall>& rhs)
 	{
-		if (lhs.size() != rhs.size())
-		{
-			return false;
-		}
+		return EquivalentVectors(lhs, rhs, ToolCallEquivalentForRecovery);
+	}
 
-		for (std::size_t i = 0; i < lhs.size(); ++i)
-		{
-			const ToolCall& left = lhs[i];
-			const ToolCall& right = rhs[i];
-
-			if (left.id != right.id ||
-			    left.name != right.name ||
-			    left.args_json != right.args_json ||
-			    left.result_text != right.result_text ||
-			    left.status != right.status)
-			{
-				return false;
-			}
-		}
-
-		return true;
+	bool PlanEntryEquivalentForRecovery(const MessagePlanEntry& lhs, const MessagePlanEntry& rhs)
+	{
+		return lhs.content == rhs.content && lhs.priority == rhs.priority && lhs.status == rhs.status;
 	}
 
 	bool PlanEntriesEquivalentForRecovery(const std::vector<MessagePlanEntry>& lhs, const std::vector<MessagePlanEntry>& rhs)
 	{
-		if (lhs.size() != rhs.size())
-		{
-			return false;
-		}
+		return EquivalentVectors(lhs, rhs, PlanEntryEquivalentForRecovery);
+	}
 
-		for (std::size_t i = 0; i < lhs.size(); ++i)
-		{
-			if (lhs[i].content != rhs[i].content ||
-			    lhs[i].priority != rhs[i].priority ||
-			    lhs[i].status != rhs[i].status)
-			{
-				return false;
-			}
-		}
-
-		return true;
+	bool MessageBlockEquivalentForRecovery(const MessageBlock& lhs, const MessageBlock& rhs)
+	{
+		return lhs.type == rhs.type && lhs.text == rhs.text && lhs.tool_call_id == rhs.tool_call_id && lhs.request_id_json == rhs.request_id_json;
 	}
 
 	bool MessageBlocksEquivalentForRecovery(const std::vector<MessageBlock>& lhs, const std::vector<MessageBlock>& rhs)
 	{
-		if (lhs.size() != rhs.size())
+		return EquivalentVectors(lhs, rhs, MessageBlockEquivalentForRecovery);
+	}
+
+	bool MessageAttachmentEquivalentForRecovery(const MessageAttachment& lhs, const MessageAttachment& rhs)
+	{
+		return lhs.id == rhs.id && lhs.name == rhs.name && lhs.kind == rhs.kind && lhs.mime_type == rhs.mime_type && lhs.path == rhs.path && lhs.size_bytes == rhs.size_bytes && lhs.copied == rhs.copied;
+	}
+
+	bool MessageAttachmentsEquivalentForRecovery(const std::vector<MessageAttachment>& lhs, const std::vector<MessageAttachment>& rhs)
+	{
+		return EquivalentVectors(lhs, rhs, MessageAttachmentEquivalentForRecovery);
+	}
+
+	bool MessageMarkdownStoreFilesEquivalentForRecovery(const Message& lhs, const Message& rhs)
+	{
+		return lhs.markdown_store_files == rhs.markdown_store_files;
+	}
+
+	bool MessageIdentityFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
+	{
+		return lhs.role == rhs.role && lhs.content == rhs.content && lhs.created_at == rhs.created_at && lhs.provider == rhs.provider;
+	}
+
+	bool MessageUsageFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
+	{
+		return lhs.tokens_input == rhs.tokens_input && lhs.tokens_output == rhs.tokens_output && lhs.estimated_cost_usd == rhs.estimated_cost_usd;
+	}
+
+	bool MessageTimingFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
+	{
+		return lhs.time_to_first_token_ms == rhs.time_to_first_token_ms && lhs.processing_time_ms == rhs.processing_time_ms && lhs.interrupted == rhs.interrupted;
+	}
+
+	bool MessageNarrativeFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
+	{
+		return lhs.thoughts == rhs.thoughts && lhs.plan_summary == rhs.plan_summary;
+	}
+
+	bool MessageScalarFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
+	{
+		return MessageIdentityFieldsEquivalentForRecovery(lhs, rhs) &&
+		       MessageUsageFieldsEquivalentForRecovery(lhs, rhs) &&
+		       MessageTimingFieldsEquivalentForRecovery(lhs, rhs) &&
+		       MessageNarrativeFieldsEquivalentForRecovery(lhs, rhs);
+	}
+
+	bool MessageEquivalentForRecovery(const Message& lhs, const Message& rhs)
+	{
+		if (!MessageScalarFieldsEquivalentForRecovery(lhs, rhs))
+		{
+			return false;
+		}
+		if (!PlanEntriesEquivalentForRecovery(lhs.plan_entries, rhs.plan_entries))
+		{
+			return false;
+		}
+		if (!ToolCallsEquivalentForRecovery(lhs.tool_calls, rhs.tool_calls))
+		{
+			return false;
+		}
+		if (!MessageBlocksEquivalentForRecovery(lhs.blocks, rhs.blocks))
+		{
+			return false;
+		}
+		if (!MessageMarkdownStoreFilesEquivalentForRecovery(lhs, rhs))
 		{
 			return false;
 		}
 
-		for (std::size_t i = 0; i < lhs.size(); ++i)
-		{
-			if (lhs[i].type != rhs[i].type ||
-			    lhs[i].text != rhs[i].text ||
-			    lhs[i].tool_call_id != rhs[i].tool_call_id ||
-			    lhs[i].request_id_json != rhs[i].request_id_json)
-			{
-				return false;
-			}
-		}
-
-		return true;
+		return MessageAttachmentsEquivalentForRecovery(lhs.attachments, rhs.attachments);
 	}
 
 	bool MessagesEquivalentForRecovery(const std::vector<Message>& lhs, const std::vector<Message>& rhs)
 	{
-		if (lhs.size() != rhs.size())
+		return EquivalentVectors(lhs, rhs, MessageEquivalentForRecovery);
+	}
+
+	bool ChatIdentityFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
+	{
+		return lhs.id == rhs.id && lhs.provider_id == rhs.provider_id && lhs.native_session_id == rhs.native_session_id;
+	}
+
+	bool ChatBranchFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
+	{
+		if (lhs.parent_chat_id != rhs.parent_chat_id || lhs.branch_root_chat_id != rhs.branch_root_chat_id)
 		{
 			return false;
 		}
 
-		for (std::size_t i = 0; i < lhs.size(); ++i)
-		{
-			const Message& left = lhs[i];
-			const Message& right = rhs[i];
+		return lhs.branch_from_message_index == rhs.branch_from_message_index;
+	}
 
-			if (left.role != right.role ||
-			    left.content != right.content ||
-			    left.created_at != right.created_at ||
-			    left.provider != right.provider ||
-			    left.tokens_input != right.tokens_input ||
-			    left.tokens_output != right.tokens_output ||
-			    left.estimated_cost_usd != right.estimated_cost_usd ||
-			    left.time_to_first_token_ms != right.time_to_first_token_ms ||
-			    left.processing_time_ms != right.processing_time_ms ||
-			    left.interrupted != right.interrupted ||
-			    left.thoughts != right.thoughts ||
-			    left.plan_summary != right.plan_summary ||
-			    !PlanEntriesEquivalentForRecovery(left.plan_entries, right.plan_entries) ||
-			    !ToolCallsEquivalentForRecovery(left.tool_calls, right.tool_calls) ||
-			    !MessageBlocksEquivalentForRecovery(left.blocks, right.blocks) ||
-			    left.attachments.size() != right.attachments.size())
-			{
-				return false;
-			}
-			for (std::size_t attachment_index = 0; attachment_index < left.attachments.size(); ++attachment_index)
-			{
-				const MessageAttachment& left_attachment = left.attachments[attachment_index];
-				const MessageAttachment& right_attachment = right.attachments[attachment_index];
-				if (left_attachment.id != right_attachment.id ||
-				    left_attachment.name != right_attachment.name ||
-				    left_attachment.kind != right_attachment.kind ||
-				    left_attachment.mime_type != right_attachment.mime_type ||
-				    left_attachment.path != right_attachment.path ||
-				    left_attachment.size_bytes != right_attachment.size_bytes ||
-				    left_attachment.copied != right_attachment.copied)
-				{
-					return false;
-				}
-			}
+	bool ChatDisplayFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
+	{
+		if (lhs.folder_id != rhs.folder_id || lhs.title != rhs.title || lhs.pinned != rhs.pinned)
+		{
+			return false;
+		}
+		if (lhs.created_at != rhs.created_at || lhs.updated_at != rhs.updated_at || lhs.last_opened_at != rhs.last_opened_at)
+		{
+			return false;
 		}
 
-		return true;
+		return lhs.linked_files == rhs.linked_files;
+	}
+
+	bool ChatWorkspaceFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
+	{
+		if (lhs.workspace_directory != rhs.workspace_directory || lhs.workspace_isolation_kind != rhs.workspace_isolation_kind)
+		{
+			return false;
+		}
+		if (lhs.workspace_source_directory != rhs.workspace_source_directory || lhs.workspace_base_ref != rhs.workspace_base_ref)
+		{
+			return false;
+		}
+
+		return lhs.workspace_branch_name == rhs.workspace_branch_name && lhs.workspace_worktree_directory == rhs.workspace_worktree_directory;
+	}
+
+	bool ChatProviderFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
+	{
+		if (lhs.approval_mode != rhs.approval_mode || lhs.auto_approve_commands != rhs.auto_approve_commands || lhs.model_id != rhs.model_id)
+		{
+			return false;
+		}
+		if (lhs.reasoning_effort != rhs.reasoning_effort || lhs.service_tier != rhs.service_tier)
+		{
+			return false;
+		}
+
+		return lhs.extra_flags == rhs.extra_flags;
+	}
+
+	bool ChatMemoryFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
+	{
+		if (lhs.memory_enabled != rhs.memory_enabled || lhs.memory_last_processed_message_count != rhs.memory_last_processed_message_count)
+		{
+			return false;
+		}
+
+		return lhs.memory_last_processed_at == rhs.memory_last_processed_at;
+	}
+
+	bool ChatScalarFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
+	{
+		return ChatIdentityFieldsEquivalentForRecovery(lhs, rhs) &&
+		       ChatBranchFieldsEquivalentForRecovery(lhs, rhs) &&
+		       ChatDisplayFieldsEquivalentForRecovery(lhs, rhs) &&
+		       ChatWorkspaceFieldsEquivalentForRecovery(lhs, rhs) &&
+		       ChatProviderFieldsEquivalentForRecovery(lhs, rhs) &&
+		       ChatMemoryFieldsEquivalentForRecovery(lhs, rhs);
 	}
 
 	struct LoadChatResult
@@ -533,116 +647,88 @@ namespace
 		std::string error;
 	};
 
-	std::string SummaryDigest(const ChatSession& chat, const std::size_t message_count)
+	void ApplyChatTimestampFallbacks(ChatSession& chat);
+
+	std::string SummaryDigest(const ChatSession& chat, std::size_t message_count)
 	{
 		return chat.updated_at + ":" + std::to_string(message_count);
 	}
 
 	bool ChatsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
 	{
-		return lhs.id == rhs.id &&
-		       lhs.provider_id == rhs.provider_id &&
-		       lhs.native_session_id == rhs.native_session_id &&
-		       lhs.parent_chat_id == rhs.parent_chat_id &&
-		       lhs.branch_root_chat_id == rhs.branch_root_chat_id &&
-		       lhs.branch_from_message_index == rhs.branch_from_message_index &&
-		       lhs.folder_id == rhs.folder_id &&
-		       lhs.title == rhs.title &&
-		       lhs.created_at == rhs.created_at &&
-		       lhs.updated_at == rhs.updated_at &&
-		       lhs.last_opened_at == rhs.last_opened_at &&
-			       lhs.pinned == rhs.pinned &&
-			       lhs.linked_files == rhs.linked_files &&
-			       lhs.workspace_directory == rhs.workspace_directory &&
-			       lhs.workspace_isolation_kind == rhs.workspace_isolation_kind &&
-			       lhs.workspace_source_directory == rhs.workspace_source_directory &&
-			       lhs.workspace_base_ref == rhs.workspace_base_ref &&
-			       lhs.workspace_branch_name == rhs.workspace_branch_name &&
-			       lhs.workspace_worktree_directory == rhs.workspace_worktree_directory &&
-			       lhs.approval_mode == rhs.approval_mode &&
-		       lhs.auto_approve_commands == rhs.auto_approve_commands &&
-		       lhs.model_id == rhs.model_id &&
-		       lhs.reasoning_effort == rhs.reasoning_effort &&
-		       lhs.service_tier == rhs.service_tier &&
-		       lhs.extra_flags == rhs.extra_flags &&
-		       MessagesEquivalentForRecovery(lhs.messages, rhs.messages);
+		return ChatScalarFieldsEquivalentForRecovery(lhs, rhs) && MessagesEquivalentForRecovery(lhs.messages, rhs.messages);
 	}
 
-	LoadChatResult ParseLocalChatFile(const fs::path& path, const bool include_messages = true)
+	LoadChatResult ParseLocalChatFile(const fs::path& path, bool include_messages = true)
 	{
-		const std::string file_text = ReadTextFile(path);
+		const std::string file_text = uam::io::ReadTextFile(path);
 		if (file_text.empty())
 		{
 			return {std::nullopt, "is empty"};
 		}
 
 		const auto root_opt = ParseJson(file_text);
-		if (!root_opt.has_value() || root_opt->type != JsonValue::Type::Object)
+		if (!root_opt || root_opt->type != JsonValue::Type::Object)
 		{
 			return {std::nullopt, "contains invalid JSON"};
 		}
 
-		const JsonValue& root = root_opt.value();
+		const JsonValue& root = *root_opt;
 		ChatSession chat;
 
-			chat.id = JsonStringOrEmpty(root.Find("id"));
-			if (chat.id.empty())
-			{
-				return {std::nullopt, "is missing a chat id"};
-			}
-
-			if (!IsSafeChatId(chat.id))
-			{
-				return {std::nullopt, "contains an unsafe chat id"};
-			}
-
-		chat.provider_id = JsonStringOrEmpty(root.Find("provider_id"));
-		chat.native_session_id = JsonStringOrEmpty(root.Find("native_session_id"));
-		chat.parent_chat_id = JsonStringOrEmpty(root.Find("parent_chat_id"));
-		chat.branch_root_chat_id = JsonStringOrEmpty(root.Find("branch_root_chat_id"));
-		if (root.object_value.contains("branch_from_message_index"))
-			chat.branch_from_message_index = static_cast<int>(JsonNumberOrDefault(root.Find("branch_from_message_index"), -1));
-		chat.folder_id = JsonStringOrEmpty(root.Find("folder_id"));
-		chat.title = JsonStringOrEmpty(root.Find("title"));
-		chat.created_at = JsonStringOrEmpty(root.Find("created_at"));
-		chat.updated_at = JsonStringOrEmpty(root.Find("updated_at"));
-		chat.last_opened_at = JsonStringOrEmpty(root.Find("last_opened_at"));
-		chat.pinned = JsonBoolOrDefault(root.Find("pinned"), false);
-			if (const JsonValue* linked_files = root.Find("linked_files"))
-				chat.linked_files = JsonStringArrayOrEmpty(linked_files);
-			chat.workspace_directory = JsonStringOrEmpty(root.Find("workspace_directory"));
-			chat.workspace_isolation_kind = JsonStringOrEmpty(root.Find("workspace_isolation_kind"));
-			chat.workspace_source_directory = JsonStringOrEmpty(root.Find("workspace_source_directory"));
-			chat.workspace_base_ref = JsonStringOrEmpty(root.Find("workspace_base_ref"));
-			chat.workspace_branch_name = JsonStringOrEmpty(root.Find("workspace_branch_name"));
-			chat.workspace_worktree_directory = JsonStringOrEmpty(root.Find("workspace_worktree_directory"));
-			chat.approval_mode = JsonStringOrEmpty(root.Find("approval_mode"));
-		chat.auto_approve_commands = JsonBoolOrDefault(root.Find("auto_approve_commands"), false);
-		if (chat.approval_mode == "yolo")
+		chat.id = JsonStringOrEmpty(root.Find(kChatIdField));
+		if (chat.id.empty())
 		{
-			chat.approval_mode = "default";
+			return {std::nullopt, "is missing a chat id"};
+		}
+
+		if (!uam::chat_ids::IsSafeStorageChatId(chat.id))
+		{
+			return {std::nullopt, "contains an unsafe chat id"};
+		}
+
+		chat.provider_id = JsonStringOrEmpty(root.Find(kChatProviderIdField));
+		chat.native_session_id = JsonStringOrEmpty(root.Find(kChatNativeSessionIdField));
+		chat.parent_chat_id = JsonStringOrEmpty(root.Find(kChatParentChatIdField));
+		chat.branch_root_chat_id = JsonStringOrEmpty(root.Find(kChatBranchRootChatIdField));
+		chat.branch_from_message_index = IntFieldAtLeastOrDefault(root.Find(kChatBranchFromMessageIndexField), -1, -1);
+		chat.folder_id = JsonStringOrEmpty(root.Find(kChatFolderIdField));
+		chat.title = JsonStringOrEmpty(root.Find(kChatTitleField));
+		chat.created_at = JsonStringOrEmpty(root.Find(kChatCreatedAtField));
+		chat.updated_at = JsonStringOrEmpty(root.Find(kChatUpdatedAtField));
+		chat.last_opened_at = JsonStringOrEmpty(root.Find(kChatLastOpenedAtField));
+		chat.pinned = JsonBoolOrDefault(root.Find(kChatPinnedField), false);
+		chat.linked_files = JsonStringArrayOrEmpty(root.Find(kChatLinkedFilesField));
+		chat.workspace_directory = JsonStringOrEmpty(root.Find(kChatWorkspaceDirectoryField));
+		chat.workspace_isolation_kind = JsonStringOrEmpty(root.Find(kChatWorkspaceIsolationKindField));
+		chat.workspace_source_directory = JsonStringOrEmpty(root.Find(kChatWorkspaceSourceDirectoryField));
+		chat.workspace_base_ref = JsonStringOrEmpty(root.Find(kChatWorkspaceBaseRefField));
+		chat.workspace_branch_name = JsonStringOrEmpty(root.Find(kChatWorkspaceBranchNameField));
+		chat.workspace_worktree_directory = JsonStringOrEmpty(root.Find(kChatWorkspaceWorktreeDirectoryField));
+		chat.approval_mode = JsonStringOrEmpty(root.Find(kChatApprovalModeField));
+		chat.auto_approve_commands = JsonBoolOrDefault(root.Find(kChatAutoApproveCommandsField), false);
+		if (chat.approval_mode == uam::approval_modes::kLegacyYoloApprovalMode)
+		{
+			chat.approval_mode = uam::approval_modes::kDefaultApprovalMode;
 			chat.auto_approve_commands = true;
 		}
-		chat.model_id = JsonStringOrEmpty(root.Find("model_id"));
-		chat.reasoning_effort = JsonStringOrEmpty(root.Find("reasoning_effort"));
-		chat.service_tier = JsonStringOrEmpty(root.Find("service_tier"));
-		chat.extra_flags = JsonStringOrEmpty(root.Find("extra_flags"));
-		chat.memory_enabled = JsonBoolOrDefault(root.Find("memory_enabled"), true);
-		chat.memory_last_processed_message_count = static_cast<int>(JsonNumberOrDefault(root.Find("memory_last_processed_message_count"), 0));
-		chat.memory_last_processed_at = JsonStringOrEmpty(root.Find("memory_last_processed_at"));
+		chat.model_id = JsonStringOrEmpty(root.Find(kChatModelIdField));
+		chat.reasoning_effort = JsonStringOrEmpty(root.Find(kChatReasoningEffortField));
+		chat.service_tier = JsonStringOrEmpty(root.Find(kChatServiceTierField));
+		chat.extra_flags = JsonStringOrEmpty(root.Find(kChatExtraFlagsField));
+		chat.memory_enabled = JsonBoolOrDefault(root.Find(kChatMemoryEnabledField), true);
+		chat.memory_last_processed_message_count = NonNegativeIntFieldOrZero(root.Find(kChatMemoryLastProcessedMessageCountField));
+		chat.memory_last_processed_at = JsonStringOrEmpty(root.Find(kChatMemoryLastProcessedAtField));
 
-		if (chat.created_at.empty())
-			chat.created_at = TimestampNow();
-		if (chat.updated_at.empty())
-			chat.updated_at = chat.created_at;
-		if (chat.last_opened_at.empty())
-			chat.last_opened_at = chat.updated_at;
+		ApplyChatTimestampFallbacks(chat);
 		NormalizeLoadedNativeSessionId(chat);
 		if (chat.branch_root_chat_id.empty())
+		{
 			chat.branch_root_chat_id = chat.id;
+		}
 
-		const JsonValue* msgs = root.Find("messages");
-		if (msgs != nullptr && msgs->type == JsonValue::Type::Array)
+		const JsonValue* msgs = uam::json::ArrayOrNull(root.Find(kChatMessagesField));
+		if (msgs != nullptr)
 		{
 			chat.persisted_message_count = msgs->array_value.size();
 			if (include_messages)
@@ -650,7 +736,9 @@ namespace
 				for (const auto& m : msgs->array_value)
 				{
 					if (m.type == JsonValue::Type::Object)
+					{
 						chat.messages.push_back(JsonToMessage(m));
+					}
 				}
 			}
 		}
@@ -669,6 +757,81 @@ namespace
 		return {std::move(chat), ""};
 	}
 
+	void AssignStringView(std::string& target, std::string_view value)
+	{
+		target.assign(value);
+	}
+
+	void ApplyLegacyChatMeta(ChatSession& chat, std::string_view key, std::string_view value)
+	{
+		const std::string_view normalized_key = uam::strings::TrimAsciiView(key);
+
+		if (normalized_key == kLegacyProviderIdKey)
+		{
+			AssignStringView(chat.provider_id, value);
+		}
+		else if (normalized_key == kLegacyNativeSessionIdKey)
+		{
+			AssignStringView(chat.native_session_id, value);
+		}
+		else if (normalized_key == kLegacyParentChatKey)
+		{
+			AssignStringView(chat.parent_chat_id, value);
+		}
+		else if (normalized_key == kLegacyBranchRootKey)
+		{
+			AssignStringView(chat.branch_root_chat_id, value);
+		}
+		else if (normalized_key == kLegacyBranchFromIndexKey)
+		{
+			chat.branch_from_message_index = std::max(-1, uam::parse::IntOr(value, -1));
+		}
+		else if (normalized_key == kLegacyFolderKey)
+		{
+			AssignStringView(chat.folder_id, value);
+		}
+		else if (normalized_key == kLegacyTitleKey)
+		{
+			AssignStringView(chat.title, value);
+		}
+		else if (normalized_key == kLegacyCreatedAtKey)
+		{
+			AssignStringView(chat.created_at, value);
+		}
+		else if (normalized_key == kLegacyUpdatedAtKey)
+		{
+			AssignStringView(chat.updated_at, value);
+		}
+		else if (normalized_key == kLegacyLastOpenedAtKey)
+		{
+			AssignStringView(chat.last_opened_at, value);
+		}
+		else if (normalized_key == kLegacyLinkedFileKey)
+		{
+			const std::string linked_file = uam::strings::Trim(value);
+			if (!linked_file.empty())
+			{
+				chat.linked_files.push_back(linked_file);
+			}
+		}
+	}
+
+	void ApplyChatTimestampFallbacks(ChatSession& chat)
+	{
+		if (chat.created_at.empty())
+		{
+			chat.created_at = uam::time::TimestampNow();
+		}
+		if (chat.updated_at.empty())
+		{
+			chat.updated_at = chat.created_at;
+		}
+		if (chat.last_opened_at.empty())
+		{
+			chat.last_opened_at = chat.updated_at;
+		}
+	}
+
 } // namespace
 
 bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const ChatSession& chat)
@@ -676,127 +839,87 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 	static std::mutex save_mutex;
 	std::lock_guard<std::mutex> lock(save_mutex);
 
-	const fs::path file_path = AppPaths::UamChatFilePath(data_root, chat.id);
-
-	if (!IsSafeChatId(chat.id))
+	if (!uam::chat_ids::IsSafeStorageChatId(chat.id))
 	{
 		return false;
 	}
 
+	const fs::path file_path = AppPaths::UamChatFilePath(data_root, chat.id);
+
 	std::error_code ec;
-	fs::create_directories(file_path.parent_path(), ec);
-	if (ec)
+	if (!uam::paths::CreateDirectoriesNoThrow(file_path.parent_path(), &ec))
+	{
 		return false;
+	}
 
-	JsonValue root;
-	root.type = JsonValue::Type::Object;
-
-	root.object_value["id"].type = JsonValue::Type::String;
-	root.object_value["id"].string_value = chat.id;
-
-	root.object_value["provider_id"].type = JsonValue::Type::String;
-	root.object_value["provider_id"].string_value = chat.provider_id;
-
-	root.object_value["native_session_id"].type = JsonValue::Type::String;
-	root.object_value["native_session_id"].string_value = chat.native_session_id;
-
-	root.object_value["parent_chat_id"].type = JsonValue::Type::String;
-	root.object_value["parent_chat_id"].string_value = chat.parent_chat_id;
-
-	root.object_value["branch_root_chat_id"].type = JsonValue::Type::String;
-	root.object_value["branch_root_chat_id"].string_value = chat.branch_root_chat_id;
-
-	root.object_value["branch_from_message_index"].type = JsonValue::Type::Number;
-	root.object_value["branch_from_message_index"].number_value = static_cast<double>(chat.branch_from_message_index);
-
-	root.object_value["folder_id"].type = JsonValue::Type::String;
-	root.object_value["folder_id"].string_value = chat.folder_id;
-
-	root.object_value["title"].type = JsonValue::Type::String;
-	root.object_value["title"].string_value = chat.title;
-
-	root.object_value["created_at"].type = JsonValue::Type::String;
-	root.object_value["created_at"].string_value = chat.created_at;
-
-	root.object_value["updated_at"].type = JsonValue::Type::String;
-	root.object_value["updated_at"].string_value = chat.updated_at;
-
-	root.object_value["last_opened_at"].type = JsonValue::Type::String;
-	root.object_value["last_opened_at"].string_value = chat.last_opened_at.empty() ? chat.updated_at : chat.last_opened_at;
-
-	root.object_value["pinned"].type = JsonValue::Type::Bool;
-	root.object_value["pinned"].bool_value = chat.pinned;
-
-	root.object_value["linked_files"] = StringArrayToJson(chat.linked_files);
-
-		root.object_value["workspace_directory"].type = JsonValue::Type::String;
-		root.object_value["workspace_directory"].string_value = chat.workspace_directory;
-
-		root.object_value["workspace_isolation_kind"].type = JsonValue::Type::String;
-		root.object_value["workspace_isolation_kind"].string_value = chat.workspace_isolation_kind;
-
-		root.object_value["workspace_source_directory"].type = JsonValue::Type::String;
-		root.object_value["workspace_source_directory"].string_value = chat.workspace_source_directory;
-
-		root.object_value["workspace_base_ref"].type = JsonValue::Type::String;
-		root.object_value["workspace_base_ref"].string_value = chat.workspace_base_ref;
-
-		root.object_value["workspace_branch_name"].type = JsonValue::Type::String;
-		root.object_value["workspace_branch_name"].string_value = chat.workspace_branch_name;
-
-		root.object_value["workspace_worktree_directory"].type = JsonValue::Type::String;
-		root.object_value["workspace_worktree_directory"].string_value = chat.workspace_worktree_directory;
-
-		root.object_value["approval_mode"].type = JsonValue::Type::String;
-	root.object_value["approval_mode"].string_value = chat.approval_mode;
-
-	root.object_value["auto_approve_commands"].type = JsonValue::Type::Bool;
-	root.object_value["auto_approve_commands"].bool_value = chat.auto_approve_commands;
-
-	root.object_value["model_id"].type = JsonValue::Type::String;
-	root.object_value["model_id"].string_value = chat.model_id;
-
-	root.object_value["reasoning_effort"].type = JsonValue::Type::String;
-	root.object_value["reasoning_effort"].string_value = chat.reasoning_effort;
-
-	root.object_value["service_tier"].type = JsonValue::Type::String;
-	root.object_value["service_tier"].string_value = chat.service_tier;
-
-	root.object_value["extra_flags"].type = JsonValue::Type::String;
-	root.object_value["extra_flags"].string_value = chat.extra_flags;
-
-	root.object_value["memory_enabled"].type = JsonValue::Type::Bool;
-	root.object_value["memory_enabled"].bool_value = chat.memory_enabled;
-
-	root.object_value["memory_last_processed_message_count"].type = JsonValue::Type::Number;
-	root.object_value["memory_last_processed_message_count"].number_value = static_cast<double>(chat.memory_last_processed_message_count);
-
-	root.object_value["memory_last_processed_at"].type = JsonValue::Type::String;
-	root.object_value["memory_last_processed_at"].string_value = chat.memory_last_processed_at;
+	JsonValue root = uam::json::Object();
+	uam::json::SetString(root, kChatIdField, chat.id);
+	uam::json::SetString(root, kChatProviderIdField, chat.provider_id);
+	uam::json::SetString(root, kChatNativeSessionIdField, chat.native_session_id);
+	uam::json::SetString(root, kChatParentChatIdField, chat.parent_chat_id);
+	uam::json::SetString(root, kChatBranchRootChatIdField, chat.branch_root_chat_id);
+	uam::json::SetNumber(root, kChatBranchFromMessageIndexField, static_cast<double>(chat.branch_from_message_index));
+	uam::json::SetString(root, kChatFolderIdField, chat.folder_id);
+	uam::json::SetString(root, kChatTitleField, chat.title);
+	uam::json::SetString(root, kChatCreatedAtField, chat.created_at);
+	uam::json::SetString(root, kChatUpdatedAtField, chat.updated_at);
+	uam::json::SetString(root, kChatLastOpenedAtField, uam::strings::NonEmptyOrFallback(chat.last_opened_at, chat.updated_at));
+	uam::json::SetBool(root, kChatPinnedField, chat.pinned);
+	uam::json::SetValue(root, kChatLinkedFilesField, StringArrayToJson(chat.linked_files));
+	uam::json::SetString(root, kChatWorkspaceDirectoryField, chat.workspace_directory);
+	uam::json::SetString(root, kChatWorkspaceIsolationKindField, chat.workspace_isolation_kind);
+	uam::json::SetString(root, kChatWorkspaceSourceDirectoryField, chat.workspace_source_directory);
+	uam::json::SetString(root, kChatWorkspaceBaseRefField, chat.workspace_base_ref);
+	uam::json::SetString(root, kChatWorkspaceBranchNameField, chat.workspace_branch_name);
+	uam::json::SetString(root, kChatWorkspaceWorktreeDirectoryField, chat.workspace_worktree_directory);
+	uam::json::SetString(root, kChatApprovalModeField, chat.approval_mode);
+	uam::json::SetBool(root, kChatAutoApproveCommandsField, chat.auto_approve_commands);
+	uam::json::SetString(root, kChatModelIdField, chat.model_id);
+	uam::json::SetString(root, kChatReasoningEffortField, chat.reasoning_effort);
+	uam::json::SetString(root, kChatServiceTierField, chat.service_tier);
+	uam::json::SetString(root, kChatExtraFlagsField, chat.extra_flags);
+	uam::json::SetBool(root, kChatMemoryEnabledField, chat.memory_enabled);
+	uam::json::SetNumber(root, kChatMemoryLastProcessedMessageCountField, static_cast<double>(chat.memory_last_processed_message_count));
+	uam::json::SetString(root, kChatMemoryLastProcessedAtField, chat.memory_last_processed_at);
 
 	if (chat.messages_loaded && !chat.messages.empty())
 	{
-		JsonValue msgs;
-		msgs.type = JsonValue::Type::Array;
+		JsonValue msgs = uam::json::Array();
 		for (const auto& m : chat.messages)
-			msgs.array_value.push_back(MessageToJson(m));
-		root.object_value["messages"] = std::move(msgs);
+		{
+			uam::json::PushValue(msgs, MessageToJson(m));
+		}
+		uam::json::SetValue(root, kChatMessagesField, std::move(msgs));
 	}
 	else if (!chat.messages_loaded)
 	{
-		const std::string existing_text = ReadTextFile(file_path);
+		const std::string existing_text = uam::io::ReadTextFile(file_path);
 		const auto existing_root = existing_text.empty() ? std::optional<JsonValue>{} : ParseJson(existing_text);
-		if (existing_root.has_value() && existing_root->type == JsonValue::Type::Object)
+		if (existing_root && existing_root->type == JsonValue::Type::Object)
 		{
-			if (const JsonValue* existing_messages = existing_root->Find("messages"); existing_messages != nullptr && existing_messages->type == JsonValue::Type::Array)
+			if (const JsonValue* existing_messages = existing_root->Find(kChatMessagesField); existing_messages != nullptr && existing_messages->type == JsonValue::Type::Array)
 			{
-				root.object_value["messages"] = *existing_messages;
+				uam::json::SetValue(root, kChatMessagesField, *existing_messages);
 			}
 		}
 	}
 
 	const std::string json = SerializeJson(root);
-	return WriteTextFile(file_path, json);
+	return uam::io::WriteTextFile(file_path, json);
+}
+
+ChatStorageDeleteResult ChatRepository::DeleteChatStorageFiles(const std::filesystem::path& data_root, std::string_view chat_id)
+{
+	ChatStorageDeleteResult result;
+	if (!uam::chat_ids::IsSafeStorageChatId(chat_id))
+	{
+		result.unsafe_chat_id = true;
+		return result;
+	}
+
+	uam::paths::RemoveAllNoThrow(AppPaths::ChatPath(data_root, chat_id), &result.legacy_directory_error);
+	uam::paths::RemoveFileNoThrow(AppPaths::UamChatFilePath(data_root, chat_id), &result.metadata_file_error);
+	return result;
 }
 
 ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
@@ -807,90 +930,56 @@ ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
 
 	const fs::path meta_file = chat_root / "meta.txt";
 
-	if (fs::exists(meta_file))
+	if (uam::paths::PathExistsNoThrow(meta_file))
 	{
-		std::istringstream lines(ReadTextFile(meta_file));
+		std::istringstream lines(uam::io::ReadTextFile(meta_file));
 		std::string line;
 
 		while (std::getline(lines, line))
 		{
-			// Strip carriage return for Windows compatibility
-			line = StripCarriageReturn(line);
-			
-			const auto equals_at = line.find('=');
-			if (equals_at == std::string::npos)
-				continue;
+			const std::string_view trimmed_line = StripCarriageReturn(line);
 
-			const std::string key = line.substr(0, equals_at);
-			const std::string value = line.substr(equals_at + 1);
-
-			if (key == "provider_id")
-				chat.provider_id = value;
-			else if (key == "native_session_id")
-				chat.native_session_id = value;
-			else if (key == "parent_chat")
-				chat.parent_chat_id = value;
-			else if (key == "branch_root")
-				chat.branch_root_chat_id = value;
-			else if (key == "branch_from_index")
+			const auto equals_at = trimmed_line.find('=');
+			if (equals_at == std::string_view::npos)
 			{
-				char* parse_end = nullptr;
-				const long parsed = std::strtol(value.c_str(), &parse_end, 10);
-				chat.branch_from_message_index = (parse_end != nullptr && *parse_end == '\0') ? static_cast<int>(parsed) : -1;
+				continue;
 			}
-			else if (key == "folder")
-				chat.folder_id = value;
-			else if (key == "title")
-				chat.title = value;
-			else if (key == "created_at")
-				chat.created_at = value;
-			else if (key == "updated_at")
-				chat.updated_at = value;
-			else if (key == "last_opened_at")
-				chat.last_opened_at = value;
-			else if (key == "file" && !value.empty())
-				chat.linked_files.push_back(value);
+
+			const std::string_view key = trimmed_line.substr(0, equals_at);
+			const std::string_view value = trimmed_line.substr(equals_at + 1);
+			ApplyLegacyChatMeta(chat, key, value);
 		}
 	}
 
-	if (chat.created_at.empty())
-		chat.created_at = TimestampNow();
-	if (chat.updated_at.empty())
-		chat.updated_at = chat.created_at;
-	if (chat.last_opened_at.empty())
-		chat.last_opened_at = chat.updated_at;
-
+	ApplyChatTimestampFallbacks(chat);
 	NormalizeLoadedNativeSessionId(chat);
 
 	if (chat.branch_root_chat_id.empty())
+	{
 		chat.branch_root_chat_id = chat.id;
+	}
 
 	const fs::path messages_dir = chat_root / "messages";
-	if (fs::exists(messages_dir))
+	if (uam::paths::IsDirectoryNoThrow(messages_dir))
 	{
 		std::vector<fs::path> message_files;
 		std::error_code ec;
-		for (const auto& file : fs::directory_iterator(messages_dir, ec))
+		for (fs::directory_iterator it(messages_dir, ec), end; !ec && it != end; it.increment(ec))
 		{
-			if (!ec && file.is_regular_file() && file.path().extension() == ".txt")
+			const fs::directory_entry& file = *it;
+			if (uam::paths::IsRegularFileWithExtensionNoThrow(file, ".txt"))
+			{
 				message_files.push_back(file.path());
+			}
 		}
 
-		std::sort(message_files.begin(), message_files.end());
+		std::ranges::sort(message_files);
 
 		for (const auto& message_file : message_files)
 		{
-			const std::string file_name = message_file.filename().string();
-			const auto underscore = file_name.find('_');
-			const auto dot = file_name.find_last_of('.');
-			std::string role_str = "user";
-
-			if (underscore != std::string::npos && dot != std::string::npos && dot > underscore)
-				role_str = file_name.substr(underscore + 1, dot - underscore - 1);
-
 			Message message;
-			message.role = ParseMessageRole(role_str);
-			message.content = ReadTextFile(message_file);
+			message.role = ParseLegacyMessageRoleFromFilename(message_file);
+			message.content = uam::io::ReadTextFile(message_file);
 			message.created_at = chat.updated_at;
 			chat.messages.push_back(std::move(message));
 		}
@@ -904,174 +993,240 @@ ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
 
 namespace
 {
-std::vector<ChatSession> LoadLocalChatsImpl(const std::filesystem::path& data_root, const bool include_messages, std::string* warning_out)
-{
-	std::vector<ChatSession> chats;
-	std::unordered_set<std::string> migrated_chat_ids;
-	if (warning_out != nullptr)
+	void SetWarning(std::string* warning_out, std::string warning)
 	{
-		warning_out->clear();
+		if (warning_out != nullptr)
+		{
+			*warning_out = std::move(warning);
+		}
 	}
 
-	// Migration: Check for old-style chats in data_root/chats/ and convert to new JSON format
-	const fs::path old_chats_root = AppPaths::ChatsRootPath(data_root);
-	if (fs::exists(old_chats_root))
+	void AppendWarning(std::string* warning_out, const std::string& warning)
 	{
-		std::error_code ec;
-		for (const auto& folder : fs::directory_iterator(old_chats_root, ec))
+		if (warning_out == nullptr || warning.empty())
 		{
-			if (ec || !folder.is_directory())
-				continue;
+			return;
+		}
 
-			const std::string chat_id = folder.path().filename().string();
-			const fs::path new_chat_file = AppPaths::UamChatFilePath(data_root, chat_id);
+		if (!warning_out->empty())
+		{
+			warning_out->push_back('\n');
+		}
 
-			// Only migrate if not already migrated
-			if (!fs::exists(new_chat_file))
+		warning_out->append(warning);
+	}
+
+	bool ChatIdWasMigrated(const std::unordered_set<std::string>& migrated_chat_ids, const std::string& chat_id)
+	{
+		return migrated_chat_ids.contains(chat_id);
+	}
+
+	bool TryMigrateLegacyChatDirectory(const fs::path& data_root, const fs::directory_entry& folder, std::vector<ChatSession>& chats, std::unordered_set<std::string>& migrated_chat_ids, std::string* warning_out)
+	{
+		const std::string chat_id = folder.path().filename().string();
+		const fs::path migrated_chat_file = AppPaths::UamChatFilePath(data_root, chat_id);
+
+		if (uam::paths::PathExistsNoThrow(migrated_chat_file))
+		{
+			return false;
+		}
+
+		ChatSession chat = LoadLegacyChatFromDirectory(folder.path());
+		if (chat.id.empty())
+		{
+			return false;
+		}
+
+		if (!ChatRepository::SaveChat(data_root, chat))
+		{
+			AppendWarning(warning_out, "Failed to migrate legacy chat folder: " + folder.path().string());
+			return true;
+		}
+
+		chats.push_back(chat);
+		migrated_chat_ids.insert(chat.id);
+		return true;
+	}
+
+	void CarrySummaryFieldsIntoHydratedChat(ChatSession& hydrated, const ChatSession& summary)
+	{
+		hydrated.folder_id = summary.folder_id;
+		hydrated.title = summary.title;
+		hydrated.pinned = summary.pinned;
+		hydrated.workspace_directory = summary.workspace_directory;
+		hydrated.workspace_isolation_kind = summary.workspace_isolation_kind;
+		hydrated.workspace_source_directory = summary.workspace_source_directory;
+		hydrated.workspace_base_ref = summary.workspace_base_ref;
+		hydrated.workspace_branch_name = summary.workspace_branch_name;
+		hydrated.workspace_worktree_directory = summary.workspace_worktree_directory;
+		hydrated.approval_mode = summary.approval_mode;
+		hydrated.auto_approve_commands = summary.auto_approve_commands;
+		hydrated.model_id = summary.model_id;
+		hydrated.reasoning_effort = summary.reasoning_effort;
+		hydrated.service_tier = summary.service_tier;
+		hydrated.extra_flags = summary.extra_flags;
+		hydrated.memory_enabled = summary.memory_enabled;
+		hydrated.memory_last_processed_message_count = summary.memory_last_processed_message_count;
+		hydrated.memory_last_processed_at = summary.memory_last_processed_at;
+	}
+
+	ChatSession BuildRecoveredChatFromBackup(const fs::path& backup_path, const LoadChatResult& backup_chat, bool include_messages, const std::string& recovered_id)
+	{
+		ChatSession recovered = *backup_chat.chat;
+
+		if (!include_messages)
+		{
+			recovered = ParseLocalChatFile(backup_path, true).chat.value_or(recovered);
+		}
+
+		const std::string previous_id = backup_chat.chat->id;
+		recovered.id = recovered_id;
+		NormalizeLoadedNativeSessionId(recovered);
+
+		if (recovered.branch_root_chat_id.empty() || recovered.branch_root_chat_id == previous_id)
+		{
+			recovered.branch_root_chat_id = recovered.id;
+		}
+
+		return recovered;
+	}
+
+	void RecoverChatFromBackup(const fs::path& data_root,
+	                              const fs::path& backup_path,
+	                              const fs::path& restored_primary_path,
+	                              bool include_messages,
+	                              const std::unordered_set<std::string>& migrated_chat_ids,
+	                              std::vector<ChatSession>& chats,
+	                              std::string* warning_out)
+	{
+		const LoadChatResult backup_chat = ParseLocalChatFile(backup_path, include_messages);
+		if (!backup_chat.chat)
+		{
+			AppendWarning(warning_out, "Skipped corrupted backup file " + backup_path.string() + ": " + backup_chat.error + ".");
+			return;
+		}
+
+		if (ChatIdWasMigrated(migrated_chat_ids, backup_chat.chat->id))
+		{
+			return;
+		}
+
+		ChatSession recovered = BuildRecoveredChatFromBackup(backup_path, backup_chat, include_messages, restored_primary_path.stem().string());
+
+		if (ChatIdWasMigrated(migrated_chat_ids, recovered.id))
+		{
+			return;
+		}
+
+		if (!ChatRepository::SaveChat(data_root, recovered))
+		{
+			AppendWarning(warning_out, "Recovered backup file " + backup_path.string() + ", but failed to save " + restored_primary_path.string() + ".");
+			return;
+		}
+
+		chats.push_back(recovered);
+	}
+
+	std::vector<ChatSession> LoadLocalChatsImpl(const std::filesystem::path& data_root, bool include_messages, std::string* warning_out)
+	{
+		std::vector<ChatSession> chats;
+		std::unordered_set<std::string> migrated_chat_ids;
+		if (warning_out != nullptr)
+		{
+			warning_out->clear();
+		}
+
+		const fs::path old_chats_root = AppPaths::ChatsRootPath(data_root);
+		if (uam::paths::IsDirectoryNoThrow(old_chats_root))
+		{
+			std::error_code ec;
+			for (fs::directory_iterator it(old_chats_root, ec), end; !ec && it != end; it.increment(ec))
 			{
-				ChatSession chat = LoadLegacyChatFromDirectory(folder.path());
-				if (!chat.id.empty())
+				const fs::directory_entry& folder = *it;
+				if (!uam::paths::IsDirectoryEntryNoThrow(folder))
 				{
-					// Save in new format
-					if (ChatRepository::SaveChat(data_root, chat))
-					{
-						chats.push_back(chat);
-						migrated_chat_ids.insert(chat.id);
-					}
-					else if (warning_out != nullptr)
-					{
-						*warning_out = "Failed to migrate legacy chat folder: " + folder.path().string();
-					}
+					continue;
+				}
+
+				if (TryMigrateLegacyChatDirectory(data_root, folder, chats, migrated_chat_ids, warning_out))
+				{
 					continue;
 				}
 			}
 		}
-	}
 
-	// Load new JSON format chats
-	const fs::path chats_root = AppPaths::UamChatsRootPath(data_root);
+		const fs::path chats_root = AppPaths::UamChatsRootPath(data_root);
 
-	if (!fs::exists(chats_root))
-		return chats;
+		if (!uam::paths::IsDirectoryNoThrow(chats_root))
+		{
+			return chats;
+		}
 
-	std::error_code ec;
+		std::error_code ec;
 
-	for (const auto& entry : fs::directory_iterator(chats_root, ec))
-	{
-		if (ec || !entry.is_regular_file() || entry.path().extension() != ".json")
-			continue;
+		for (fs::directory_iterator it(chats_root, ec), end; !ec && it != end; it.increment(ec))
+		{
+			const fs::directory_entry& entry = *it;
+			if (!uam::paths::IsRegularFileWithExtensionNoThrow(entry, ".json"))
+			{
+				continue;
+			}
 
 			const LoadChatResult primary_chat = ParseLocalChatFile(entry.path(), include_messages);
-		if (primary_chat.chat.has_value())
-		{
-			if (migrated_chat_ids.find(primary_chat.chat->id) != migrated_chat_ids.end())
+			if (primary_chat.chat)
 			{
-				continue;
-			}
-
-			const fs::path backup_path = entry.path().string() + ".bak";
-			if (fs::exists(backup_path))
-			{
-				const LoadChatResult backup_chat = ParseLocalChatFile(backup_path, include_messages);
-				if (backup_chat.chat.has_value() && !ChatsEquivalentForRecovery(primary_chat.chat.value(), backup_chat.chat.value()))
-				{
-					if (warning_out != nullptr)
-					{
-						*warning_out = "Recovered chat file " + entry.path().string() + " differs from backup " + backup_path.string() + ".";
-					}
-				}
-			}
-
-			chats.push_back(primary_chat.chat.value());
-			continue;
-		}
-
-		const fs::path backup_path = entry.path().string() + ".bak";
-		if (fs::exists(backup_path))
-		{
-			LoadChatResult backup_chat = ParseLocalChatFile(backup_path, include_messages);
-			if (backup_chat.chat.has_value())
-			{
-				if (migrated_chat_ids.find(backup_chat.chat->id) != migrated_chat_ids.end())
+				const ChatSession& primary = *primary_chat.chat;
+				if (ChatIdWasMigrated(migrated_chat_ids, primary.id))
 				{
 					continue;
 				}
 
-					ChatSession recovered = (!include_messages ? ParseLocalChatFile(backup_path, true).chat.value_or(backup_chat.chat.value()) : backup_chat.chat.value());
-					const std::string recovered_id = entry.path().stem().string();
-					recovered.id = recovered_id;
-					NormalizeLoadedNativeSessionId(recovered);
-					const std::string previous_id = backup_chat.chat->id;
-					if (recovered.branch_root_chat_id.empty() || recovered.branch_root_chat_id == previous_id)
-						recovered.branch_root_chat_id = recovered.id;
-
-				if (ChatRepository::SaveChat(data_root, recovered))
+				const fs::path backup_path = uam::io::MakeBackupPath(entry.path());
+				if (uam::paths::PathExistsNoThrow(backup_path))
 				{
-					chats.push_back(recovered);
+					const LoadChatResult backup_chat = ParseLocalChatFile(backup_path, include_messages);
+					if (backup_chat.chat && !ChatsEquivalentForRecovery(primary, *backup_chat.chat))
+					{
+						AppendWarning(warning_out, "Recovered chat file " + entry.path().string() + " differs from backup " + backup_path.string() + ".");
+					}
 				}
-				else if (warning_out != nullptr)
-				{
-					*warning_out = "Recovered backup file " + backup_path.string() + ", but failed to save " + entry.path().string() + ".";
-				}
+
+				chats.push_back(primary);
+				continue;
 			}
-			else if (warning_out != nullptr)
+
+			const fs::path backup_path = uam::io::MakeBackupPath(entry.path());
+			if (uam::paths::PathExistsNoThrow(backup_path))
 			{
-				*warning_out = "Skipped corrupted backup file " + backup_path.string() + ": " + backup_chat.error + ".";
+				RecoverChatFromBackup(data_root, backup_path, entry.path(), include_messages, migrated_chat_ids, chats, warning_out);
 			}
-		}
-		else if (warning_out != nullptr && !primary_chat.error.empty())
-		{
-			*warning_out = "Skipped malformed chat file " + entry.path().string() + ": " + primary_chat.error + ".";
-		}
-	}
-
-	for (const auto& entry : fs::directory_iterator(chats_root, ec))
-	{
-		if (ec || !entry.is_regular_file() || entry.path().extension() != ".bak")
-			continue;
-
-		const fs::path primary_path = entry.path().parent_path() / entry.path().stem();
-		if (fs::exists(primary_path))
-		{
-			continue;
-		}
-
-		LoadChatResult backup_chat = ParseLocalChatFile(entry.path(), include_messages);
-		if (!backup_chat.chat.has_value())
-		{
-			if (warning_out != nullptr)
+			else if (!primary_chat.error.empty())
 			{
-				*warning_out = "Skipped corrupted backup file " + entry.path().string() + ": " + backup_chat.error + ".";
+				AppendWarning(warning_out, "Skipped malformed chat file " + entry.path().string() + ": " + primary_chat.error + ".");
 			}
-			continue;
 		}
 
-			ChatSession recovered = (!include_messages ? ParseLocalChatFile(entry.path(), true).chat.value_or(backup_chat.chat.value()) : backup_chat.chat.value());
-			const std::string recovered_id = primary_path.stem().string();
-			recovered.id = recovered_id;
-			NormalizeLoadedNativeSessionId(recovered);
-			const std::string previous_id = backup_chat.chat->id;
-			if (recovered.branch_root_chat_id.empty() || recovered.branch_root_chat_id == previous_id)
-				recovered.branch_root_chat_id = recovered.id;
+		ec.clear();
+		for (fs::directory_iterator it(chats_root, ec), end; !ec && it != end; it.increment(ec))
+		{
+			const fs::directory_entry& entry = *it;
+			if (!uam::paths::IsRegularFileWithExtensionNoThrow(entry, ".bak"))
+			{
+				continue;
+			}
 
-		if (migrated_chat_ids.find(recovered.id) != migrated_chat_ids.end())
-		{
-			continue;
+			const fs::path primary_path = entry.path().parent_path() / entry.path().stem();
+			if (uam::paths::PathExistsNoThrow(primary_path))
+			{
+				continue;
+			}
+
+			RecoverChatFromBackup(data_root, entry.path(), primary_path, include_messages, migrated_chat_ids, chats, warning_out);
 		}
 
-		if (ChatRepository::SaveChat(data_root, recovered))
-		{
-			chats.push_back(recovered);
-		}
-		else if (warning_out != nullptr)
-		{
-			*warning_out = "Recovered backup file " + entry.path().string() + ", but failed to save " + primary_path.string() + ".";
-		}
+		std::ranges::sort(chats, ChatUpdatedNewestFirst);
+		return chats;
 	}
-
-	std::sort(chats.begin(), chats.end(), [](const ChatSession& a, const ChatSession& b) { return a.updated_at > b.updated_at; });
-	return chats;
-}
 } // namespace
 
 std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::path& data_root, std::string* warning_out)
@@ -1086,40 +1241,28 @@ std::vector<ChatSession> ChatRepository::LoadLocalChatSummaries(const std::files
 
 bool ChatRepository::HydrateChatMessages(const std::filesystem::path& data_root, ChatSession& chat, std::string* warning_out)
 {
+	SetWarning(warning_out, "");
+
 	if (chat.messages_loaded)
 	{
 		return true;
 	}
 
-	LoadChatResult loaded = ParseLocalChatFile(AppPaths::UamChatFilePath(data_root, chat.id), true);
-	if (!loaded.chat.has_value())
+	if (!uam::chat_ids::IsSafeStorageChatId(chat.id))
 	{
-		if (warning_out != nullptr)
-		{
-			*warning_out = loaded.error;
-		}
+		SetWarning(warning_out, "contains an unsafe chat id");
 		return false;
 	}
 
-	ChatSession hydrated = loaded.chat.value();
-	hydrated.folder_id = chat.folder_id;
-	hydrated.title = chat.title;
-	hydrated.pinned = chat.pinned;
-	hydrated.workspace_directory = chat.workspace_directory;
-	hydrated.workspace_isolation_kind = chat.workspace_isolation_kind;
-	hydrated.workspace_source_directory = chat.workspace_source_directory;
-	hydrated.workspace_base_ref = chat.workspace_base_ref;
-	hydrated.workspace_branch_name = chat.workspace_branch_name;
-	hydrated.workspace_worktree_directory = chat.workspace_worktree_directory;
-	hydrated.approval_mode = chat.approval_mode;
-	hydrated.auto_approve_commands = chat.auto_approve_commands;
-	hydrated.model_id = chat.model_id;
-	hydrated.reasoning_effort = chat.reasoning_effort;
-	hydrated.service_tier = chat.service_tier;
-	hydrated.extra_flags = chat.extra_flags;
-	hydrated.memory_enabled = chat.memory_enabled;
-	hydrated.memory_last_processed_message_count = chat.memory_last_processed_message_count;
-	hydrated.memory_last_processed_at = chat.memory_last_processed_at;
+	LoadChatResult loaded = ParseLocalChatFile(AppPaths::UamChatFilePath(data_root, chat.id), true);
+	if (!loaded.chat)
+	{
+		SetWarning(warning_out, loaded.error);
+		return false;
+	}
+
+	ChatSession hydrated = *loaded.chat;
+	CarrySummaryFieldsIntoHydratedChat(hydrated, chat);
 	chat = std::move(hydrated);
 	return true;
 }

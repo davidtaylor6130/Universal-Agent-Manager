@@ -1,66 +1,135 @@
 #include "provider_cli_compatibility_service.h"
 
+#include "app/provider_resolution_service.h"
 #include "common/platform/platform_services.h"
+#include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
-#include "common/runtime/terminal/terminal_lifecycle.h"
+#include "common/runtime/acp/acp_session_state_helpers.h"
+#include "common/runtime/terminal/terminal_chat_sync.h"
+#include "common/runtime/terminal/terminal_identity.h"
 #include "common/state/app_state.h"
+#include "common/utils/range_utils.h"
+#include "common/utils/string_utils.h"
 #include "core/gemini_cli_compat.h"
 
-#include <atomic>
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <memory>
 #include <optional>
-#include <regex>
-#include <sstream>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace
 {
-	constexpr const char* kRuntimeVersionProbeCommand = "gemini --version";
-	constexpr const char* kGeminiProviderId = "gemini-cli";
-	constexpr const char* kCodexProviderId = "codex-cli";
-	constexpr const char* kClaudeProviderId = "claude-cli";
-	constexpr const char* kOpenCodeProviderId = "opencode-cli";
-	constexpr const char* kCopilotProviderId = "copilot-cli";
-	constexpr const char* kGeminiNpmPackage = "@google/gemini-cli";
-	constexpr const char* kCodexNpmPackage = "@openai/codex";
-	constexpr const char* kClaudeNpmPackage = "@anthropic-ai/claude-code";
-	constexpr const char* kOpenCodeNpmPackage = "opencode-ai";
-	constexpr const char* kCopilotNpmPackage = "@github/copilot";
 	constexpr const char* kCodexPreferredVersion = "0.124.0";
 	constexpr const char* kCodexFallbackVersion = "0.123.0";
 	constexpr const char* kLatestVersion = "latest";
+	constexpr const char* kDefaultProviderCliPolicyId = uam::provider_ids::kGeminiCli;
+	constexpr const char* kCommandFailurePrefix = "Failed to run command: ";
+	constexpr const char* kProviderCliTimedOutSuffix = "\n\n[Provider CLI command timed out]";
+	constexpr const char* kProviderCliCanceledSuffix = "\n\n[Provider CLI command canceled]";
+	constexpr const char* kProviderCliExitCodeMarker = "[Provider CLI exited with code ";
+	constexpr auto kSafeVersionTokenPunctuation = std::to_array<char>({
+	    '.',
+	    '_',
+	    '-',
+	});
 
-	std::string TrimAscii(const std::string& value)
+	enum class CliVersionPolicy
 	{
-		const std::size_t start = value.find_first_not_of(" \t\r\n");
+		GeminiCurated,
+		FixedPreferredAndFallback,
+		AnySafeToken,
+	};
 
-		if (start == std::string::npos)
-		{
-			return "";
-		}
+	struct ProviderCliPolicy
+	{
+		std::string_view provider_id;
+		std::string_view npm_package;
+		std::string_view fallback_title;
+		std::string_view version_probe_command;
+		const char* preferred_version = nullptr;
+		const char* fallback_version = nullptr;
+		CliVersionPolicy version_policy = CliVersionPolicy::AnySafeToken;
+	};
 
-		const std::size_t end = value.find_last_not_of(" \t\r\n");
-		return value.substr(start, end - start + 1);
+	struct ResolvedProviderCliPolicy
+	{
+		std::string provider_id;
+		const ProviderCliPolicy& policy;
+	};
+
+	struct OptionalProviderCliPolicy
+	{
+		std::string provider_id;
+		const ProviderCliPolicy* policy = nullptr;
+	};
+
+	constexpr auto kProviderCliPolicies = std::to_array<ProviderCliPolicy>({
+	    ProviderCliPolicy{
+	        .provider_id = uam::provider_ids::kGeminiCli,
+	        .npm_package = "@google/gemini-cli",
+	        .fallback_title = "Gemini CLI",
+	        .version_probe_command = "gemini --version",
+	        .version_policy = CliVersionPolicy::GeminiCurated,
+	    },
+	    ProviderCliPolicy{
+	        .provider_id = uam::provider_ids::kCodexCli,
+	        .npm_package = "@openai/codex",
+	        .fallback_title = "Codex CLI",
+	        .version_probe_command = "codex --version",
+	        .preferred_version = kCodexPreferredVersion,
+	        .fallback_version = kCodexFallbackVersion,
+	        .version_policy = CliVersionPolicy::FixedPreferredAndFallback,
+	    },
+	    ProviderCliPolicy{
+	        .provider_id = uam::provider_ids::kClaudeCli,
+	        .npm_package = "@anthropic-ai/claude-code",
+	        .fallback_title = "Claude Code",
+	        .version_probe_command = "claude --version",
+	        .preferred_version = kLatestVersion,
+	    },
+	    ProviderCliPolicy{
+	        .provider_id = uam::provider_ids::kOpenCodeCli,
+	        .npm_package = "opencode-ai",
+	        .fallback_title = "OpenCode",
+	        .version_probe_command = "opencode --version",
+	        .preferred_version = kLatestVersion,
+	    },
+	    ProviderCliPolicy{
+	        .provider_id = uam::provider_ids::kCopilotCli,
+	        .npm_package = "@github/copilot",
+	        .fallback_title = "GitHub Copilot CLI",
+	        .version_probe_command = "copilot --version",
+	        .preferred_version = kLatestVersion,
+	    },
+	});
+
+	const ProviderCliPolicy* FindProviderCliPolicy(std::string_view normalized_provider_id)
+	{
+		const auto it = std::ranges::find_if(kProviderCliPolicies, [normalized_provider_id](const ProviderCliPolicy& policy) { return policy.provider_id == normalized_provider_id; });
+		return it == kProviderCliPolicies.end() ? nullptr : &*it;
 	}
 
-	void ResetAsyncCommandTask(uam::AsyncCommandTask& task)
+	const ProviderCliPolicy& ProviderCliPolicyOrDefault(std::string_view normalized_provider_id)
 	{
-		if (task.worker != nullptr)
+		if (const ProviderCliPolicy* policy = FindProviderCliPolicy(normalized_provider_id))
 		{
-			task.worker->request_stop();
-			task.worker.reset();
+			return *policy;
 		}
-
-		task.running = false;
-		task.command_preview.clear();
-		task.state.reset();
+		if (const ProviderCliPolicy* policy = FindProviderCliPolicy(kDefaultProviderCliPolicyId))
+		{
+			return *policy;
+		}
+		return kProviderCliPolicies.front();
 	}
 
 	void StartAsyncCommandTask(uam::AsyncCommandTask& task, const std::string& command)
 	{
-		ResetAsyncCommandTask(task);
+		uam::ResetAsyncCommandTask(task);
 		task.running = true;
 		task.command_preview = command;
 		task.state = std::make_shared<AsyncProcessTaskState>();
@@ -72,10 +141,13 @@ namespace
 
 			    if (!state->result.error.empty() && state->result.output.empty())
 			    {
-				    std::ostringstream message;
-				    message << "Failed to run command: " << command;
-				    message << "\n\n" << state->result.error;
-				    state->result.output = message.str();
+				    std::string message;
+				    message.reserve(std::string_view(kCommandFailurePrefix).size() + command.size() + 2 + state->result.error.size());
+				    message.append(kCommandFailurePrefix);
+				    message.append(command);
+				    message.append("\n\n");
+				    message.append(state->result.error);
+				    state->result.output = std::move(message);
 			    }
 			    else
 			    {
@@ -86,15 +158,15 @@ namespace
 
 				    if (state->result.timed_out)
 				    {
-					    state->result.output += "\n\n[Provider CLI command timed out]";
+					    state->result.output += kProviderCliTimedOutSuffix;
 				    }
 				    else if (state->result.canceled)
 				    {
-					    state->result.output += "\n\n[Provider CLI command canceled]";
+					    state->result.output += kProviderCliCanceledSuffix;
 				    }
 				    else if (state->result.exit_code != 0)
 				    {
-					    state->result.output += "\n\n[Provider CLI exited with code " + std::to_string(state->result.exit_code) + "]";
+					    state->result.output += "\n\n" + std::string(kProviderCliExitCodeMarker) + std::to_string(state->result.exit_code) + "]";
 				    }
 			    }
 
@@ -111,7 +183,7 @@ namespace
 
 		if (task.state == nullptr)
 		{
-			ResetAsyncCommandTask(task);
+			uam::ResetAsyncCommandTask(task);
 			output_out.clear();
 			return true;
 		}
@@ -121,145 +193,208 @@ namespace
 			return false;
 		}
 
-		output_out = task.state->result.output;
-		ResetAsyncCommandTask(task);
+		output_out = std::move(task.state->result.output);
+		uam::ResetAsyncCommandTask(task);
 		return true;
 	}
 
-	std::optional<std::string> ExtractSemverVersion(const std::string& text)
+	bool ConsumeDigits(std::string_view text, std::size_t& offset)
 	{
-		static const std::regex semver_pattern(R"((\d+)\.(\d+)\.(\d+))");
-		std::smatch match;
-
-		if (std::regex_search(text, match, semver_pattern) && !match.str(0).empty())
+		const std::size_t start = offset;
+		while (offset < text.size() && uam::strings::IsAsciiDigit(static_cast<unsigned char>(text[offset])))
 		{
-			return match.str(0);
+			++offset;
+		}
+
+		return offset > start;
+	}
+
+	bool ConsumeDot(std::string_view text, std::size_t& offset)
+	{
+		if (offset >= text.size() || text[offset] != '.')
+		{
+			return false;
+		}
+
+		++offset;
+		return true;
+	}
+
+	std::optional<std::string> ExtractSemverVersion(std::string_view text)
+	{
+		for (std::size_t start = 0; start < text.size(); ++start)
+		{
+			if (!uam::strings::IsAsciiDigit(static_cast<unsigned char>(text[start])))
+			{
+				continue;
+			}
+
+			std::size_t end = start;
+			const bool has_semver = ConsumeDigits(text, end) && ConsumeDot(text, end) && ConsumeDigits(text, end) && ConsumeDot(text, end) && ConsumeDigits(text, end);
+			if (has_semver)
+			{
+				return std::string(text.substr(start, end - start));
+			}
 		}
 
 		return std::nullopt;
 	}
 
-	bool OutputContainsNonZeroExit(const std::string& output)
+	bool OutputContainsNonZeroExit(std::string_view output)
 	{
-		return output.find("[Provider CLI exited with code ") != std::string::npos;
+		return uam::strings::Contains(output, kProviderCliExitCodeMarker);
 	}
 
-	bool IsSafeVersionToken(const std::string& value)
+	bool OutputIndicatesCommandMissing(std::string_view output)
+	{
+		constexpr auto kMissingCommandNeedles = std::to_array<std::string_view>({
+		    "not found",
+		    "not recognized",
+		    "no such file or directory",
+		});
+		return uam::strings::ContainsAnyCaseInsensitive(output, kMissingCommandNeedles);
+	}
+
+	std::string ProviderTitleMessage(std::string_view prefix, std::string_view provider_title, std::string_view suffix)
+	{
+		std::string message;
+		message.reserve(prefix.size() + provider_title.size() + suffix.size());
+		message.append(prefix);
+		message.append(provider_title);
+		message.append(suffix);
+		return message;
+	}
+
+	std::string UnparsedVersionOutputMessage(std::string_view provider_title, std::string_view output)
+	{
+		if (OutputIndicatesCommandMissing(output))
+		{
+			return ProviderTitleMessage("", provider_title, " is not installed or not on PATH.");
+		}
+		return ProviderTitleMessage("Could not parse ", provider_title, " version output.");
+	}
+
+	bool FailProviderCliInstall(std::string* error_out, std::string message)
+	{
+		if (error_out != nullptr)
+		{
+			*error_out = std::move(message);
+		}
+		return false;
+	}
+
+	bool IsSafeVersionToken(std::string_view value)
 	{
 		if (value.empty() || value.size() > 80 || value.front() == '-')
 		{
 			return false;
 		}
-		for (const char ch : value)
-		{
-			const bool safe =
-			    (ch >= 'a' && ch <= 'z') ||
-			    (ch >= 'A' && ch <= 'Z') ||
-			    (ch >= '0' && ch <= '9') ||
-			    ch == '.' ||
-			    ch == '_' ||
-			    ch == '-';
-			if (!safe)
-			{
-				return false;
-			}
-		}
-		return true;
+		return std::ranges::all_of(value, [](char ch) {
+			return uam::strings::IsAsciiAlnum(static_cast<unsigned char>(ch)) ||
+			       uam::ranges::Contains(kSafeVersionTokenPunctuation, ch);
+		});
 	}
 
-	std::string ProviderTitle(const uam::AppState& app, const std::string& provider_id)
+	std::string NormalizeProviderCliPolicyIdOrDefault(std::string_view provider_id)
 	{
-		if (const ProviderProfile* profile = ProviderProfileStore::FindById(app.provider_profiles, provider_id); profile != nullptr && !profile->title.empty())
+		const std::string normalized = uam::provider_ids::NormalizeCliProviderAlias(provider_id);
+		if (!normalized.empty())
+		{
+			return normalized;
+		}
+
+		return kDefaultProviderCliPolicyId;
+	}
+
+	ResolvedProviderCliPolicy ResolveProviderCliPolicyOrDefault(std::string_view provider_id)
+	{
+		const std::string normalized_provider_id = NormalizeProviderCliPolicyIdOrDefault(provider_id);
+		return {normalized_provider_id, ProviderCliPolicyOrDefault(normalized_provider_id)};
+	}
+
+	OptionalProviderCliPolicy ResolveKnownProviderCliPolicy(std::string_view provider_id)
+	{
+		const std::string normalized_provider_id = uam::provider_ids::NormalizeCliProviderAlias(provider_id);
+		if (normalized_provider_id.empty())
+		{
+			return {uam::provider_ids::CanonicalCliProviderLookupId(provider_id), nullptr};
+		}
+
+		return {normalized_provider_id, FindProviderCliPolicy(normalized_provider_id)};
+	}
+
+	bool VersionMatchesFixedProviderPolicy(const ProviderCliPolicy& policy, std::string_view version)
+	{
+		return version == policy.preferred_version ||
+		       (policy.fallback_version != nullptr && version == policy.fallback_version);
+	}
+
+	std::string BuildNpmGlobalInstallCommand(std::string_view package_name, std::string_view version)
+	{
+		constexpr std::string_view kNpmGlobalInstallPrefix = "npm install -g ";
+		std::string command;
+		command.reserve(kNpmGlobalInstallPrefix.size() + package_name.size() + 1 + version.size());
+		command.append(kNpmGlobalInstallPrefix);
+		command.append(package_name);
+		command.push_back('@');
+		command.append(version);
+		return command;
+	}
+
+	std::string ProviderTitle(const uam::AppState& app, std::string_view provider_id)
+	{
+		const ResolvedProviderCliPolicy resolved = ResolveProviderCliPolicyOrDefault(provider_id);
+		if (const ProviderProfile* profile = ProviderProfileStore::FindById(app.provider_profiles, resolved.provider_id); profile != nullptr && !profile->title.empty())
 		{
 			return profile->title;
 		}
-		if (provider_id == kCodexProviderId)
-		{
-			return "Codex CLI";
-		}
-		if (provider_id == kClaudeProviderId)
-		{
-			return "Claude Code";
-		}
-		if (provider_id == kOpenCodeProviderId)
-		{
-			return "OpenCode";
-		}
-		if (provider_id == kCopilotProviderId)
-		{
-			return "GitHub Copilot CLI";
-		}
-		return "Gemini CLI";
+		return std::string(resolved.policy.fallback_title);
 	}
 
-	bool ProviderHasActiveRuntimeWork(const uam::AppState& app, const std::string& provider_id)
+	bool AcpSessionHasProviderInstallBlockingWork(const uam::AcpSessionState& session)
 	{
-		for (const auto& session : app.acp_sessions)
-		{
-			if (session != nullptr &&
-			    session->provider_id == provider_id &&
-			    (session->processing ||
-			     session->waiting_for_permission ||
-			     session->waiting_for_user_input ||
-			     session->initialize_request_id != 0 ||
-			     session->session_setup_request_id != 0 ||
-			     session->prompt_request_id != 0 ||
-			     session->cancel_request_id != 0))
-			{
-				return true;
-			}
-		}
-
-		for (const auto& terminal : app.cli_terminals)
-		{
-			if (terminal == nullptr || !terminal->running || !CliTerminalLifecycleIsProcessing(*terminal))
-			{
-				continue;
-			}
-
-			const std::string chat_id = terminal->attached_chat_id.empty() ? terminal->frontend_chat_id : terminal->attached_chat_id;
-			const auto chat_it = std::find_if(app.chats.begin(), app.chats.end(), [&chat_id](const ChatSession& chat) { return chat.id == chat_id; });
-			if (chat_it != app.chats.end() && chat_it->provider_id == provider_id)
-			{
-				return true;
-			}
-		}
-
-		return false;
+		return uam::AcpSessionHasBlockingRuntimeWork(session);
 	}
 
-	std::string NormalizeProviderId(const std::string& provider_id)
+	bool ProviderHasActiveRuntimeWork(const uam::AppState& app, std::string_view provider_id)
 	{
-		const std::string trimmed = TrimAscii(provider_id);
-		if (trimmed == kCodexProviderId)
+		const bool acp_has_work = std::ranges::any_of(app.acp_sessions, [provider_id](const auto& session) {
+			return session != nullptr &&
+			       uam::provider_ids::IsCliProviderAliasOf(session->provider_id, provider_id) &&
+			       AcpSessionHasProviderInstallBlockingWork(*session);
+		});
+		if (acp_has_work)
 		{
-			return kCodexProviderId;
+			return true;
 		}
-		if (trimmed == kClaudeProviderId)
-		{
-			return kClaudeProviderId;
-		}
-		if (trimmed == kOpenCodeProviderId)
-		{
-			return kOpenCodeProviderId;
-		}
-		if (trimmed == kCopilotProviderId)
-		{
-			return kCopilotProviderId;
-		}
-		return kGeminiProviderId;
+
+		return std::ranges::any_of(app.cli_terminals, [&app, provider_id](const auto& terminal) {
+			if (terminal == nullptr || !terminal->running || !uam::CliTerminalHasActiveTurn(*terminal))
+			{
+				return false;
+			}
+
+			const ChatSession* chat = uam::FindChatForCliTerminal(app, *terminal);
+			if (chat == nullptr)
+			{
+				return false;
+			}
+
+			const ProviderProfile& terminal_provider = ProviderResolutionService().ProviderForChatOrDefault(app, *chat);
+			return uam::provider_ids::IsCliProviderAliasOf(terminal_provider.id, provider_id);
+		});
 	}
 
 } // namespace
 
-void ProviderCliCompatibilityService::StartVersionCheck(uam::AppState& app, const bool force) const
+void ProviderCliCompatibilityService::StartVersionCheck(uam::AppState& app, bool force) const
 {
-	StartProviderVersionCheck(app, kGeminiProviderId, force);
+	StartProviderVersionCheck(app, kDefaultProviderCliPolicyId, force);
 }
 
-void ProviderCliCompatibilityService::StartProviderVersionCheck(uam::AppState& app, const std::string& provider_id, const bool force) const
+void ProviderCliCompatibilityService::StartProviderVersionCheck(uam::AppState& app, std::string_view provider_id, bool force) const
 {
-	const std::string normalized_provider_id = NormalizeProviderId(provider_id);
+	const std::string normalized_provider_id = NormalizeProviderCliPolicyIdOrDefault(provider_id);
 	if (app.runtime_cli_version_check_task.running)
 	{
 		return;
@@ -274,88 +409,67 @@ void ProviderCliCompatibilityService::StartProviderVersionCheck(uam::AppState& a
 	const std::string command = VersionProbeCommandForProvider(normalized_provider_id);
 	if (command.empty())
 	{
-		app.runtime_cli_version_message = "Provider CLI version checks are not supported for this provider.";
+		app.runtime_cli_versions_by_provider_id[normalized_provider_id].message = "Provider CLI version checks are not supported for this provider.";
 		return;
 	}
 
 	app.runtime_cli_version_provider_id = normalized_provider_id;
-	app.runtime_cli_versions_by_provider_id[normalized_provider_id].message = "Checking installed " + ProviderTitle(app, normalized_provider_id) + " version...";
+	app.runtime_cli_versions_by_provider_id[normalized_provider_id].message = ProviderTitleMessage("Checking installed ", ProviderTitle(app, normalized_provider_id), " version...");
 	StartAsyncCommandTask(app.runtime_cli_version_check_task, command);
-	app.runtime_cli_version_message = "Checking installed " + ProviderTitle(app, normalized_provider_id) + " version...";
 }
 
 void ProviderCliCompatibilityService::StartPinToSupported(uam::AppState& app) const
 {
 	std::string error;
-	(void)StartInstallProviderVersion(app, kGeminiProviderId, PreferredVersionForProvider(kGeminiProviderId), &error);
+	(void)StartInstallProviderVersion(app, kDefaultProviderCliPolicyId, PreferredVersionForProvider(kDefaultProviderCliPolicyId), &error);
 	if (!error.empty())
 	{
 		app.status_line = error;
 	}
 }
 
-bool ProviderCliCompatibilityService::StartInstallProviderVersion(uam::AppState& app, const std::string& provider_id, const std::string& version, std::string* error_out) const
+bool ProviderCliCompatibilityService::StartInstallProviderVersion(uam::AppState& app, std::string_view provider_id, std::string_view version, std::string* error_out) const
 {
-	const std::string normalized_provider_id = NormalizeProviderId(provider_id);
-	const std::string trimmed_version = TrimAscii(version);
+	const OptionalProviderCliPolicy resolved = ResolveKnownProviderCliPolicy(provider_id);
+	const std::string unsupported_provider_id = uam::strings::NonEmptyOrFallback(resolved.provider_id, uam::strings::TrimAsciiView(provider_id));
+	std::string_view trimmed_version = uam::strings::TrimAsciiView(version);
 	if (app.runtime_cli_pin_task.running)
 	{
-		if (error_out != nullptr)
-		{
-			*error_out = "A provider CLI install is already running.";
-		}
-		return false;
+		return FailProviderCliInstall(error_out, "A provider CLI install is already running.");
 	}
 	if (app.runtime_cli_version_check_task.running)
 	{
-		if (error_out != nullptr)
-		{
-			*error_out = "A provider CLI version check is already running.";
-		}
-		return false;
+		return FailProviderCliInstall(error_out, "A provider CLI version check is already running.");
 	}
-	if (ProviderProfileStore::FindById(app.provider_profiles, normalized_provider_id) == nullptr)
+	if (resolved.policy == nullptr || ProviderProfileStore::FindById(app.provider_profiles, resolved.provider_id) == nullptr)
 	{
-		if (error_out != nullptr)
-		{
-			*error_out = "Unsupported provider: " + normalized_provider_id;
-		}
-		return false;
+		return FailProviderCliInstall(error_out, "Unsupported provider: " + unsupported_provider_id);
 	}
-	if (!IsSupportedVersionForProvider(normalized_provider_id, trimmed_version))
+	if (!IsSupportedVersionForProvider(resolved.provider_id, trimmed_version))
 	{
-		if (error_out != nullptr)
-		{
-			*error_out = "Unsupported CLI version: " + trimmed_version;
-		}
-		return false;
+		constexpr std::string_view kUnsupportedVersionPrefix = "Unsupported CLI version: ";
+		std::string message;
+		message.reserve(kUnsupportedVersionPrefix.size() + trimmed_version.size());
+		message.append(kUnsupportedVersionPrefix);
+		message.append(trimmed_version);
+		return FailProviderCliInstall(error_out, std::move(message));
 	}
-	if (ProviderHasActiveRuntimeWork(app, normalized_provider_id))
+	if (ProviderHasActiveRuntimeWork(app, resolved.provider_id))
 	{
-		if (error_out != nullptr)
-		{
-			*error_out = "Cannot install a provider CLI version while that provider is processing.";
-		}
-		return false;
+		return FailProviderCliInstall(error_out, "Cannot install a provider CLI version while that provider is processing.");
 	}
 
-	const std::string command = InstallCommandForProviderVersion(normalized_provider_id, trimmed_version);
+	const std::string command = InstallCommandForProviderVersion(resolved.provider_id, trimmed_version);
 	if (command.empty())
 	{
-		if (error_out != nullptr)
-		{
-			*error_out = "Provider CLI installs are not supported for this provider.";
-		}
-		return false;
+		return FailProviderCliInstall(error_out, "Provider CLI installs are not supported for this provider.");
 	}
 
-	app.runtime_cli_pin_provider_id = normalized_provider_id;
-	app.runtime_cli_selected_version = trimmed_version;
-	app.runtime_cli_versions_by_provider_id[normalized_provider_id].selected_version = trimmed_version;
-	app.runtime_cli_versions_by_provider_id[normalized_provider_id].install_output.clear();
+	app.runtime_cli_pin_provider_id = resolved.provider_id;
+	app.runtime_cli_versions_by_provider_id[resolved.provider_id].selected_version.assign(trimmed_version);
+	app.runtime_cli_versions_by_provider_id[resolved.provider_id].install_output.clear();
 	StartAsyncCommandTask(app.runtime_cli_pin_task, command);
-	app.runtime_cli_pin_output.clear();
-	app.status_line = "Running " + ProviderTitle(app, normalized_provider_id) + " install command...";
+	app.status_line = ProviderTitleMessage("Running ", ProviderTitle(app, resolved.provider_id), " install command...");
 	return true;
 }
 
@@ -365,12 +479,8 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 
 	if (TryConsumeAsyncCommandTaskOutput(app.runtime_cli_version_check_task, output))
 	{
-		const std::string provider_id = NormalizeProviderId(app.runtime_cli_version_provider_id);
+		const std::string provider_id = NormalizeProviderCliPolicyIdOrDefault(app.runtime_cli_version_provider_id);
 		uam::CliProviderVersionState& provider_state = app.runtime_cli_versions_by_provider_id[provider_id];
-		app.runtime_cli_version_checked = true;
-		app.runtime_cli_version_raw_output = output;
-		app.runtime_cli_installed_version.clear();
-		app.runtime_cli_version_supported = false;
 		provider_state.checked = true;
 		provider_state.raw_output = output;
 		provider_state.installed_version.clear();
@@ -378,53 +488,36 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 
 		const std::optional<std::string> parsed = ExtractSemverVersion(output);
 
-		if (parsed.has_value())
+		if (parsed)
 		{
-			app.runtime_cli_installed_version = parsed.value();
-			app.runtime_cli_version_supported = IsSupportedVersionForProvider(provider_id, app.runtime_cli_installed_version);
-			provider_state.installed_version = app.runtime_cli_installed_version;
-			provider_state.supported = app.runtime_cli_version_supported;
+			provider_state.installed_version = *parsed;
+			provider_state.supported = IsSupportedVersionForProvider(provider_id, provider_state.installed_version);
 
-			if (app.runtime_cli_version_supported)
+			if (provider_state.supported)
 			{
-				app.runtime_cli_version_message = ProviderTitle(app, provider_id) + " version is supported.";
-				provider_state.message = app.runtime_cli_version_message;
+				provider_state.message = ProviderTitleMessage("", ProviderTitle(app, provider_id), " version is supported.");
 			}
 			else
 			{
-				app.runtime_cli_version_message = "Installed " + ProviderTitle(app, provider_id) + " version is not in the curated supported list.";
-				provider_state.message = app.runtime_cli_version_message;
+				provider_state.message = ProviderTitleMessage("Installed ", ProviderTitle(app, provider_id), " version is not in the curated supported list.");
 			}
 		}
 		else
 		{
-			const std::string lowered = TrimAscii(output);
-
-			if (lowered.find("not found") != std::string::npos || lowered.find("not recognized") != std::string::npos)
-			{
-				app.runtime_cli_version_message = ProviderTitle(app, provider_id) + " is not installed or not on PATH.";
-				provider_state.message = app.runtime_cli_version_message;
-			}
-			else
-			{
-				app.runtime_cli_version_message = "Could not parse " + ProviderTitle(app, provider_id) + " version output.";
-				provider_state.message = app.runtime_cli_version_message;
-			}
+			provider_state.message = UnparsedVersionOutputMessage(ProviderTitle(app, provider_id), output);
 		}
 	}
 
 	if (TryConsumeAsyncCommandTaskOutput(app.runtime_cli_pin_task, output))
 	{
-		const std::string provider_id = NormalizeProviderId(app.runtime_cli_pin_provider_id);
+		const std::string provider_id = NormalizeProviderCliPolicyIdOrDefault(app.runtime_cli_pin_provider_id);
 		uam::CliProviderVersionState& provider_state = app.runtime_cli_versions_by_provider_id[provider_id];
-		app.runtime_cli_pin_output = output;
 		provider_state.install_output = output;
 
 		if (OutputContainsNonZeroExit(output))
 		{
 			app.status_line = "Provider CLI update command failed. Review output in Settings.";
-			app.runtime_cli_version_message = "Update command failed.";
-			provider_state.message = app.runtime_cli_version_message;
+			provider_state.message = "Update command failed.";
 		}
 		else
 		{
@@ -435,133 +528,100 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 	}
 }
 
-std::vector<CliProviderVersionOption> ProviderCliCompatibilityService::SupportedVersionsForProvider(const std::string& provider_id) const
+std::vector<CliProviderVersionOption> ProviderCliCompatibilityService::SupportedVersionsForProvider(std::string_view provider_id) const
 {
-	const std::string normalized_provider_id = NormalizeProviderId(provider_id);
+	const ResolvedProviderCliPolicy resolved = ResolveProviderCliPolicyOrDefault(provider_id);
 	std::vector<CliProviderVersionOption> versions;
-	if (normalized_provider_id == kCodexProviderId)
+	if (resolved.policy.version_policy == CliVersionPolicy::GeminiCurated)
 	{
-		versions.push_back({kCodexPreferredVersion, true});
-		versions.push_back({kCodexFallbackVersion, false});
+		versions.reserve(uam::SupportedGeminiCliVersions().size());
+		for (std::string_view version : uam::SupportedGeminiCliVersions())
+		{
+			const std::string text(version);
+			versions.push_back({text, text == uam::PreferredGeminiCliVersion()});
+		}
 		return versions;
 	}
-	if (normalized_provider_id == kOpenCodeProviderId)
+	if (resolved.policy.preferred_version != nullptr)
 	{
-		versions.push_back({kLatestVersion, true});
-		return versions;
+		versions.reserve(resolved.policy.fallback_version == nullptr ? 1 : 2);
+		versions.push_back({resolved.policy.preferred_version, true});
 	}
-	if (normalized_provider_id == kCopilotProviderId)
+	if (resolved.policy.fallback_version != nullptr)
 	{
-		versions.push_back({kLatestVersion, true});
-		return versions;
-	}
-	if (normalized_provider_id == kClaudeProviderId)
-	{
-		versions.push_back({kLatestVersion, true});
-		return versions;
-	}
-
-	for (const std::string_view version : uam::SupportedGeminiCliVersions())
-	{
-		const std::string text(version);
-		versions.push_back({text, text == uam::PreferredGeminiCliVersion()});
+		const bool duplicate = resolved.policy.preferred_version != nullptr && std::string_view(resolved.policy.fallback_version) == std::string_view(resolved.policy.preferred_version);
+		if (!duplicate)
+		{
+			versions.push_back({resolved.policy.fallback_version, false});
+		}
 	}
 	return versions;
 }
 
-std::string ProviderCliCompatibilityService::PreferredVersionForProvider(const std::string& provider_id) const
+std::string ProviderCliCompatibilityService::PreferredVersionForProvider(std::string_view provider_id) const
 {
-	const std::string normalized_provider_id = NormalizeProviderId(provider_id);
-	if (normalized_provider_id == kCodexProviderId)
+	const ResolvedProviderCliPolicy resolved = ResolveProviderCliPolicyOrDefault(provider_id);
+	if (resolved.policy.version_policy == CliVersionPolicy::GeminiCurated)
 	{
-		return kCodexPreferredVersion;
+		return std::string(uam::PreferredGeminiCliVersion());
 	}
-	if (normalized_provider_id == kOpenCodeProviderId)
-	{
-		return kLatestVersion;
-	}
-	if (normalized_provider_id == kCopilotProviderId)
-	{
-		return kLatestVersion;
-	}
-	if (normalized_provider_id == kClaudeProviderId)
-	{
-		return kLatestVersion;
-	}
-	return std::string(uam::PreferredGeminiCliVersion());
+	return resolved.policy.preferred_version == nullptr ? std::string() : std::string(resolved.policy.preferred_version);
 }
 
-bool ProviderCliCompatibilityService::IsSupportedVersionForProvider(const std::string& provider_id, const std::string& version) const
+bool ProviderCliCompatibilityService::IsSupportedVersionForProvider(std::string_view provider_id, std::string_view version) const
 {
-	const std::string normalized_provider_id = NormalizeProviderId(provider_id);
-	const std::string trimmed_version = TrimAscii(version);
+	const ResolvedProviderCliPolicy resolved = ResolveProviderCliPolicyOrDefault(provider_id);
+	std::string_view trimmed_version = uam::strings::TrimAsciiView(version);
 	if (!IsSafeVersionToken(trimmed_version))
 	{
 		return false;
 	}
-	if (normalized_provider_id == kCodexProviderId)
+
+	switch (resolved.policy.version_policy)
 	{
-		return trimmed_version == kCodexPreferredVersion || trimmed_version == kCodexFallbackVersion;
+		case CliVersionPolicy::GeminiCurated:
+			return uam::IsSupportedGeminiCliVersion(trimmed_version);
+		case CliVersionPolicy::FixedPreferredAndFallback:
+			return VersionMatchesFixedProviderPolicy(resolved.policy, trimmed_version);
+		case CliVersionPolicy::AnySafeToken:
+			return true;
 	}
-	if (normalized_provider_id == kOpenCodeProviderId)
-	{
-		return IsSafeVersionToken(trimmed_version);
-	}
-	if (normalized_provider_id == kCopilotProviderId)
-	{
-		return trimmed_version == kLatestVersion || IsSafeVersionToken(trimmed_version);
-	}
-	if (normalized_provider_id == kClaudeProviderId)
-	{
-		return trimmed_version == kLatestVersion || IsSafeVersionToken(trimmed_version);
-	}
-	return uam::IsSupportedGeminiCliVersion(trimmed_version);
+	return false;
 }
 
-std::string ProviderCliCompatibilityService::VersionProbeCommandForProvider(const std::string& provider_id) const
+std::string ProviderCliCompatibilityService::VersionProbeCommandForProvider(std::string_view provider_id) const
 {
-	const std::string normalized_provider_id = NormalizeProviderId(provider_id);
-	if (normalized_provider_id == kCodexProviderId)
-	{
-		return "codex --version";
-	}
-	if (normalized_provider_id == kOpenCodeProviderId)
-	{
-		return "opencode --version";
-	}
-	if (normalized_provider_id == kCopilotProviderId)
-	{
-		return "copilot --version";
-	}
-	if (normalized_provider_id == kClaudeProviderId)
-	{
-		return "claude --version";
-	}
-	return kRuntimeVersionProbeCommand;
+	return std::string(ResolveProviderCliPolicyOrDefault(provider_id).policy.version_probe_command);
 }
 
-std::string ProviderCliCompatibilityService::InstallCommandForProviderVersion(const std::string& provider_id, const std::string& version) const
+std::string ProviderCliCompatibilityService::InstallCommandForProviderVersion(std::string_view provider_id, std::string_view version) const
 {
-	const std::string normalized_provider_id = NormalizeProviderId(provider_id);
-	const std::string trimmed_version = TrimAscii(version);
-	if (!IsSupportedVersionForProvider(normalized_provider_id, trimmed_version))
+	const OptionalProviderCliPolicy resolved = ResolveKnownProviderCliPolicy(provider_id);
+	std::string_view trimmed_version = uam::strings::TrimAsciiView(version);
+	if (resolved.policy == nullptr || !IsSupportedVersionForProvider(resolved.provider_id, trimmed_version))
 	{
 		return "";
 	}
-	const std::string package_name = normalized_provider_id == kCodexProviderId
-	                                     ? kCodexNpmPackage
-	                                     : (normalized_provider_id == kClaudeProviderId
-	                                            ? kClaudeNpmPackage
-	                                            : (normalized_provider_id == kOpenCodeProviderId ? kOpenCodeNpmPackage : (normalized_provider_id == kCopilotProviderId ? kCopilotNpmPackage : kGeminiNpmPackage)));
-	return "npm install -g " + package_name + "@" + trimmed_version;
+	return BuildNpmGlobalInstallCommand(resolved.policy->npm_package, trimmed_version);
 }
 
-std::string BuildCliProviderVersionProbeCommandForTests(const std::string& provider_id)
+std::string BuildCliProviderVersionProbeCommandForTests(std::string_view provider_id)
 {
 	return ProviderCliCompatibilityService().VersionProbeCommandForProvider(provider_id);
 }
 
-std::string BuildCliProviderInstallCommandForTests(const std::string& provider_id, const std::string& version)
+std::string BuildCliProviderInstallCommandForTests(std::string_view provider_id, std::string_view version)
 {
 	return ProviderCliCompatibilityService().InstallCommandForProviderVersion(provider_id, version);
+}
+
+std::string ExtractCliProviderSemverVersionForTests(std::string_view output)
+{
+	const std::optional<std::string> parsed = ExtractSemverVersion(output);
+	return parsed.value_or("");
+}
+
+bool CliProviderVersionOutputIndicatesMissingCommandForTests(std::string_view output)
+{
+	return OutputIndicatesCommandMissing(output);
 }

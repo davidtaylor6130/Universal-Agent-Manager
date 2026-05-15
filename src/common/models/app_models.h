@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -105,12 +106,12 @@ struct ChatSession
 	bool messages_loaded = true;
 	std::size_t persisted_message_count = 0;
 	std::string persisted_messages_digest;
-		std::string workspace_directory;
-		std::string workspace_isolation_kind;
-		std::string workspace_source_directory;
-		std::string workspace_base_ref;
-		std::string workspace_branch_name;
-		std::string workspace_worktree_directory;
+	std::string workspace_directory;
+	std::string workspace_isolation_kind;
+	std::string workspace_source_directory;
+	std::string workspace_base_ref;
+	std::string workspace_branch_name;
+	std::string workspace_worktree_directory;
 	std::string approval_mode;
 	bool auto_approve_commands = false;
 	std::string model_id;
@@ -163,13 +164,13 @@ struct ChatFolder
 struct AppSettings
 {
 	std::string active_provider_id = provider_build_config::FirstEnabledProviderId();
-	std::string provider_command_template = "gemini {resume} {flags} {prompt}";
+	std::string provider_command_template = provider_build_config::DefaultProviderCommandTemplate();
 	bool provider_yolo_mode = false;
 	std::string provider_extra_flags;
 	std::string runtime_backend = "provider-cli";
 	int cli_idle_timeout_seconds = 600;
 	// Legacy keys retained for backward-compatible load paths.
-	std::string gemini_command_template = "gemini {resume} {flags} {prompt}";
+	std::string gemini_command_template = provider_build_config::DefaultProviderCommandTemplate();
 	bool gemini_yolo_mode = false;
 	std::string gemini_extra_flags;
 	std::string ui_theme = "dark";
@@ -236,6 +237,17 @@ struct PendingRuntimeCall
 	std::unique_ptr<std::jthread> worker;
 };
 
+inline void ResetPendingRuntimeCall(PendingRuntimeCall& call)
+{
+	if (call.worker != nullptr)
+	{
+		call.worker->request_stop();
+		call.worker.reset();
+	}
+
+	call.state.reset();
+}
+
 /// <summary>
 /// Converts a message role enum into persisted text.
 /// </summary>
@@ -243,7 +255,7 @@ std::string RoleToString(MessageRole role);
 /// <summary>
 /// Parses persisted message role text into an enum value.
 /// </summary>
-MessageRole RoleFromString(const std::string& value);
+MessageRole RoleFromString(std::string_view value);
 /// <summary>
 /// Converts center view mode enum into persisted text.
 /// </summary>
@@ -251,4 +263,4 @@ std::string ViewModeToString(CenterViewMode mode);
 /// <summary>
 /// Parses persisted center view mode text into an enum value.
 /// </summary>
-CenterViewMode ViewModeFromString(const std::string& value);
+CenterViewMode ViewModeFromString(std::string_view value);

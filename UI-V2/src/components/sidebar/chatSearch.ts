@@ -1,4 +1,5 @@
 import type { Folder, Session } from '../../types/session'
+import { DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
 
 export type ChatSearchIndex = Record<string, string>
 export type ChatStatusFilterId = 'pinned' | 'running' | 'attention' | 'done' | 'idle'
@@ -50,6 +51,10 @@ export interface ChatSearchSessionGroups {
   unfolderedSessionIds: string[]
 }
 
+const CLI_RUNNING_LIFECYCLE_STATES = new Set(['busy', 'shuttingDown'])
+const ACP_RUNNING_LIFECYCLE_STATES = new Set(['starting', 'processing'])
+const ACP_ATTENTION_LIFECYCLE_STATES = new Set(['waitingPermission', 'waitingUserInput', 'error'])
+
 function hasActiveChatSearchFilters(filters?: ChatSearchFilters): boolean {
   return Boolean(filters && (filters.providerIds.length > 0 || filters.statusIds.length > 0))
 }
@@ -91,9 +96,7 @@ export function sessionMatchesChatSearch(
 function sessionHasAttention(acpBinding: ChatSearchAcpBinding | undefined): boolean {
   return Boolean(
     acpBinding?.attentionKind ||
-    acpBinding?.lifecycleState === 'waitingPermission' ||
-    acpBinding?.lifecycleState === 'waitingUserInput' ||
-    acpBinding?.lifecycleState === 'error' ||
+    ACP_ATTENTION_LIFECYCLE_STATES.has(acpBinding?.lifecycleState ?? '') ||
     acpBinding?.lastError
   )
 }
@@ -102,12 +105,10 @@ function sessionIsRunning(cliBinding: ChatSearchCliBinding | undefined, acpBindi
   return Boolean(
     cliBinding?.running ||
     cliBinding?.processing ||
-    cliBinding?.lifecycleState === 'busy' ||
-    cliBinding?.lifecycleState === 'shuttingDown' ||
+    CLI_RUNNING_LIFECYCLE_STATES.has(cliBinding?.lifecycleState ?? '') ||
     acpBinding?.running ||
     acpBinding?.processing ||
-    acpBinding?.lifecycleState === 'starting' ||
-    acpBinding?.lifecycleState === 'processing'
+    ACP_RUNNING_LIFECYCLE_STATES.has(acpBinding?.lifecycleState ?? '')
   )
 }
 
@@ -155,7 +156,7 @@ export function sessionMatchesChatSearchFilters(
   }
 
   const providerMatch =
-    filters?.providerIds.some((providerId) => (session.providerId || 'gemini-cli') === providerId) ?? false
+    filters?.providerIds.some((providerId) => (session.providerId || DEFAULT_PROVIDER_ID) === providerId) ?? false
   const statusMatch =
     filters?.statusIds.some((statusId) => sessionMatchesStatusFilter(session, statusId, context)) ?? false
 

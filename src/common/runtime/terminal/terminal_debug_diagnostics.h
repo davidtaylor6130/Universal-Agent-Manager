@@ -1,55 +1,45 @@
 #pragma once
 
+#include "app/chat_domain_service.h"
 #include "common/runtime/app_time.h"
+#include "common/runtime/terminal/terminal_identity.h"
+#include "common/runtime/terminal/terminal_lifecycle.h"
 #include "common/state/app_state.h"
 
+#include <algorithm>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <string_view>
 
 namespace uam
 {
 
-inline std::string CliTurnStateLabel(const CliTerminalState& terminal)
+inline constexpr std::size_t kCliDiagnosticFieldMaxBytes = 4096;
+
+inline const char* CliTurnStateLabel(const CliTerminalState& terminal)
 {
 	return terminal.turn_state == CliTerminalTurnState::Busy ? "busy" : "idle";
 }
 
-inline std::string CliLifecycleStateLabel(const CliTerminalState& terminal)
+inline const char* CliLifecycleStateLabel(const CliTerminalState& terminal)
 {
-	switch (terminal.lifecycle_state)
-	{
-	case CliTerminalLifecycleState::Disabled:     return "disabled";
-	case CliTerminalLifecycleState::Stopped:      return "stopped";
-	case CliTerminalLifecycleState::Idle:         return "idle";
-	case CliTerminalLifecycleState::Busy:         return "busy";
-	case CliTerminalLifecycleState::ShuttingDown: return "shuttingDown";
-	}
+	return CliTerminalLifecycleStateLabel(terminal);
+}
 
-	return "stopped";
+inline const char* CliBoolLabel(bool value)
+{
+	return value ? "true" : "false";
 }
 
 inline std::string CliSelectedChatId(const AppState& app)
 {
-	if (app.selected_chat_index < 0 || app.selected_chat_index >= static_cast<int>(app.chats.size()))
-	{
-		return "";
-	}
-
-	return app.chats[static_cast<std::size_t>(app.selected_chat_index)].id;
+	return ChatDomainService().SelectedChatId(app);
 }
 
 inline const ChatSession* FindChatForCliDiagnostics(const AppState& app, const CliTerminalState& terminal)
 {
-	for (const ChatSession& chat : app.chats)
-	{
-		if (chat.id == terminal.frontend_chat_id || chat.id == terminal.attached_chat_id || (!terminal.attached_session_id.empty() && chat.native_session_id == terminal.attached_session_id))
-		{
-			return &chat;
-		}
-	}
-
-	return nullptr;
+	return FindChatForCliTerminal(app, terminal);
 }
 
 inline std::string CliProviderIdForDiagnostics(const AppState& app, const CliTerminalState& terminal)
@@ -88,12 +78,55 @@ inline std::string CliProcessHandleLabel(const CliTerminalState& terminal)
 #endif
 }
 
+inline std::string CliDiagnosticQuotedField(std::string_view value)
+{
+	std::string quoted;
+	quoted.reserve(std::min(value.size(), kCliDiagnosticFieldMaxBytes) + 5);
+	quoted.push_back('"');
+
+	std::size_t emitted = 0;
+	bool truncated = false;
+	for (const char ch : value)
+	{
+		const bool escaped = ch == '"' || ch == '\\';
+		const std::size_t required = escaped ? 2 : 1;
+		if (emitted + required > kCliDiagnosticFieldMaxBytes)
+		{
+			truncated = true;
+			break;
+		}
+
+		if (escaped)
+		{
+			quoted.push_back('\\');
+		}
+
+		if (ch == '\n' || ch == '\r' || ch == '\t')
+		{
+			quoted.push_back(' ');
+		}
+		else
+		{
+			quoted.push_back(ch);
+		}
+		emitted += required;
+	}
+
+	if (truncated)
+	{
+		quoted.append("...");
+	}
+
+	quoted.push_back('"');
+	return quoted;
+}
+
 inline void LogCliDiagnosticEvent(const AppState&            app,
-                                  const std::string&        event_name,
-                                  const std::string&        reason,
+                                  std::string_view          event_name,
+                                  std::string_view          reason,
                                   const CliTerminalState*   terminal = nullptr,
-                                  const std::string&        note = "",
-                                  const long long           bytes = -1)
+                                  std::string_view          note = "",
+                                  long long                 bytes = -1)
 {
 	std::ostringstream out;
 	out << "[cli-diag]"
@@ -110,8 +143,8 @@ inline void LogCliDiagnosticEvent(const AppState&            app,
 		    << " provider_id=" << CliProviderIdForDiagnostics(app, *terminal)
 		    << " native_session_id=" << CliNativeSessionIdForDiagnostics(app, *terminal)
 		    << " process_id=" << CliProcessHandleLabel(*terminal)
-		    << " ui_attached=" << (terminal->ui_attached ? "true" : "false")
-		    << " running=" << (terminal->running ? "true" : "false")
+		    << " ui_attached=" << CliBoolLabel(terminal->ui_attached)
+		    << " running=" << CliBoolLabel(terminal->running)
 		    << " turn_state=" << CliTurnStateLabel(*terminal)
 		    << " lifecycle_state=" << CliLifecycleStateLabel(*terminal);
 	}
@@ -123,11 +156,11 @@ inline void LogCliDiagnosticEvent(const AppState&            app,
 
 	if (!note.empty())
 	{
-		out << " note=\"" << note << "\"";
+		out << " note=" << CliDiagnosticQuotedField(note);
 	}
 
 	out << " t=" << GetAppTimeSeconds();
-	std::cerr << out.str() << std::endl;
+	std::cerr << out.str() << '\n';
 }
 
 } // namespace uam

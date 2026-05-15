@@ -1,206 +1,41 @@
 #include "provider_profile_migration_service.h"
 
-#include "app/application_core_helpers.h"
+#include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_build_config.h"
+#include "common/state/app_state.h"
 
-namespace
+#include <string>
+#include <string_view>
+
+std::string ProviderProfileMigrationService::MapLegacyRuntimeId(std::string_view provider_id, bool use_native_history_provider_for_blank_id) const
 {
-	constexpr const char* kRuntimeIdGeminiCli = "gemini-cli";
-	constexpr const char* kRuntimeIdCodexCli = "codex-cli";
-	constexpr const char* kRuntimeIdClaudeCli = "claude-cli";
-	constexpr const char* kRuntimeIdOpenCodeCli = "opencode-cli";
-	constexpr const char* kRuntimeIdCopilotCli = "copilot-cli";
-} // namespace
-
-bool ProviderProfileMigrationService::IsNativeHistoryProviderId(const std::string& provider_id) const
-{
-	const std::string lowered = ToLowerAscii(Trim(provider_id));
-	return lowered == kRuntimeIdGeminiCli || lowered == "gemini";
-}
-
-std::string ProviderProfileMigrationService::MapLegacyRuntimeId(const std::string& provider_id, const bool prefer_cli_for_native_history) const
-{
-	(void)prefer_cli_for_native_history;
-	const std::string trimmed = Trim(provider_id);
-	const std::string lowered = ToLowerAscii(trimmed);
-
-	if (lowered == "gemini")
+	const std::string mapped_provider_id = uam::provider_ids::CanonicalCliProviderLookupId(provider_id);
+	if (mapped_provider_id.empty())
 	{
-#if UAM_ENABLE_RUNTIME_GEMINI_CLI
-		return kRuntimeIdGeminiCli;
-#else
-		return provider_build_config::FirstEnabledProviderId();
-#endif
+		return use_native_history_provider_for_blank_id ? provider_build_config::NativeHistoryProviderIdOrFirst() : mapped_provider_id;
 	}
 
-	if (lowered == kRuntimeIdGeminiCli)
+	if (uam::provider_ids::IsKnownCliProviderId(mapped_provider_id))
 	{
-#if UAM_ENABLE_RUNTIME_GEMINI_CLI
-		return kRuntimeIdGeminiCli;
-#else
-		return provider_build_config::FirstEnabledProviderId();
-#endif
+		return provider_build_config::EnabledCliProviderIdOrFirst(mapped_provider_id);
 	}
 
-	if (lowered == "codex" || lowered == kRuntimeIdCodexCli)
-	{
-#if UAM_ENABLE_RUNTIME_CODEX_CLI
-		return kRuntimeIdCodexCli;
-#else
-		return provider_build_config::FirstEnabledProviderId();
-#endif
-	}
-
-	if (lowered == "claude" || lowered == "claude-code" || lowered == kRuntimeIdClaudeCli)
-	{
-#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
-		return kRuntimeIdClaudeCli;
-#else
-		return provider_build_config::FirstEnabledProviderId();
-#endif
-	}
-
-	if (lowered == "opencode" || lowered == "open-code" || lowered == kRuntimeIdOpenCodeCli)
-	{
-#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
-		return kRuntimeIdOpenCodeCli;
-#else
-		return provider_build_config::FirstEnabledProviderId();
-#endif
-	}
-
-	if (lowered == "copilot" || lowered == "github-copilot" || lowered == kRuntimeIdCopilotCli)
-	{
-#if UAM_ENABLE_RUNTIME_COPILOT_CLI
-		return kRuntimeIdCopilotCli;
-#else
-		return provider_build_config::FirstEnabledProviderId();
-#endif
-	}
-
-	return trimmed;
-}
-
-std::string ProviderProfileMigrationService::DefaultRuntimeIdForLegacyViewHint(const uam::AppState& app) const
-{
-	(void)app.center_view_mode;
-	return provider_build_config::FirstEnabledProviderId();
-}
-
-bool ProviderProfileMigrationService::ShouldShowProviderProfileInUi(const ProviderProfile& profile) const
-{
-	const std::string lowered = ToLowerAscii(Trim(profile.id));
-	return
-#if UAM_ENABLE_RUNTIME_GEMINI_CLI
-	    lowered == kRuntimeIdGeminiCli ||
-#endif
-#if UAM_ENABLE_RUNTIME_CODEX_CLI
-	    lowered == kRuntimeIdCodexCli ||
-#endif
-#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
-	    lowered == kRuntimeIdClaudeCli ||
-#endif
-#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
-	    lowered == kRuntimeIdOpenCodeCli ||
-#endif
-#if UAM_ENABLE_RUNTIME_COPILOT_CLI
-	    lowered == kRuntimeIdCopilotCli ||
-#endif
-	    false;
-}
-
-bool ProviderProfileMigrationService::MigrateProviderProfilesToFixedModeIds(uam::AppState& app) const
-{
-	(void)app;
-	return false;
+	return mapped_provider_id;
 }
 
 bool ProviderProfileMigrationService::MigrateActiveProviderIdToFixedModes(uam::AppState& app) const
 {
-	if (Trim(app.settings.active_provider_id).empty())
+	std::string mapped_provider_id = MapLegacyRuntimeId(app.settings.active_provider_id, true);
+	if (!uam::provider_ids::IsKnownCliProviderId(mapped_provider_id))
 	{
-		app.settings.active_provider_id = provider_build_config::FirstEnabledProviderId();
-		return true;
+		mapped_provider_id = provider_build_config::FirstEnabledProviderId();
 	}
 
-	const std::string lowered = ToLowerAscii(Trim(app.settings.active_provider_id));
-	if (
-#if UAM_ENABLE_RUNTIME_GEMINI_CLI
-	    lowered == kRuntimeIdGeminiCli ||
-#endif
-#if UAM_ENABLE_RUNTIME_CODEX_CLI
-	    lowered == kRuntimeIdCodexCli ||
-#endif
-#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
-	    lowered == kRuntimeIdClaudeCli ||
-#endif
-#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
-	    lowered == kRuntimeIdOpenCodeCli ||
-#endif
-#if UAM_ENABLE_RUNTIME_COPILOT_CLI
-	    lowered == kRuntimeIdCopilotCli ||
-#endif
-	    false)
+	if (mapped_provider_id == app.settings.active_provider_id)
 	{
 		return false;
 	}
 
-	if (lowered == "gemini")
-	{
-#if UAM_ENABLE_RUNTIME_GEMINI_CLI
-		app.settings.active_provider_id = kRuntimeIdGeminiCli;
-#else
-		app.settings.active_provider_id = provider_build_config::FirstEnabledProviderId();
-#endif
-		return true;
-	}
-
-	if (lowered == "codex")
-	{
-#if UAM_ENABLE_RUNTIME_CODEX_CLI
-		app.settings.active_provider_id = kRuntimeIdCodexCli;
-#else
-		app.settings.active_provider_id = provider_build_config::FirstEnabledProviderId();
-#endif
-		return true;
-	}
-
-	if (lowered == "claude" || lowered == "claude-code")
-	{
-#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
-		app.settings.active_provider_id = kRuntimeIdClaudeCli;
-#else
-		app.settings.active_provider_id = provider_build_config::FirstEnabledProviderId();
-#endif
-		return true;
-	}
-
-	if (lowered == "opencode" || lowered == "open-code")
-	{
-#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
-		app.settings.active_provider_id = kRuntimeIdOpenCodeCli;
-#else
-		app.settings.active_provider_id = provider_build_config::FirstEnabledProviderId();
-#endif
-		return true;
-	}
-
-	if (lowered == "copilot" || lowered == "github-copilot")
-	{
-#if UAM_ENABLE_RUNTIME_COPILOT_CLI
-		app.settings.active_provider_id = kRuntimeIdCopilotCli;
-#else
-		app.settings.active_provider_id = provider_build_config::FirstEnabledProviderId();
-#endif
-		return true;
-	}
-
-	app.settings.active_provider_id = provider_build_config::FirstEnabledProviderId();
+	app.settings.active_provider_id = mapped_provider_id;
 	return true;
-}
-
-bool ProviderProfileMigrationService::MigrateChatProviderBindingsToFixedModes(uam::AppState& app) const
-{
-	(void)app;
-	return false;
 }

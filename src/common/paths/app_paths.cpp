@@ -1,67 +1,60 @@
 #include "common/paths/app_paths.h"
 
+#include "common/paths/path_utils.h"
+#include "common/utils/env_utils.h"
+#include "common/utils/io_utils.h"
+#include "common/utils/nlohmann_json_utils.h"
+#include "common/utils/string_utils.h"
+
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
-#include <cctype>
-#include <cstdlib>
-#include <fstream>
-#include <regex>
-#include <sstream>
+#include <limits>
+#include <optional>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace
 {
 	namespace fs = std::filesystem;
 
-	std::string Trim(std::string value)
-	{
-		const auto start = value.find_first_not_of(" \t\r\n");
-
-		if (start == std::string::npos)
-		{
-			return "";
-		}
-
-		const auto end = value.find_last_not_of(" \t\r\n");
-		return value.substr(start, end - start + 1);
-	}
-
-	std::string ReadTextFile(const fs::path& path)
-	{
-		std::ifstream in(path, std::ios::binary);
-
-		if (!in.good())
-		{
-			return "";
-		}
-
-		std::ostringstream buffer;
-		buffer << in.rdbuf();
-		return buffer.str();
-	}
-
-	std::string ToComparableComponent(std::string value)
+	std::string ToComparableComponent(std::string_view value)
 	{
 #if defined(_WIN32) || defined(__APPLE__) || defined(__MACH__)
-		std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+		return uam::strings::ToLowerAscii(value);
+#else
+		return std::string(value);
 #endif
-		return value;
 	}
 
 	fs::path NormalizePathForCompare(const fs::path& path)
 	{
-		std::error_code ec;
-		const fs::path canonical = fs::weakly_canonical(path, ec);
-		return (ec ? path.lexically_normal() : canonical.lexically_normal());
+		return uam::paths::NormalizeExistingPath(path);
 	}
 
 	bool PathComponentEquals(const fs::path& lhs, const fs::path& rhs)
 	{
-		return ToComparableComponent(lhs.generic_string()) == ToComparableComponent(rhs.generic_string());
+		return ToComparableComponent(uam::paths::PortablePathString(lhs)) == ToComparableComponent(uam::paths::PortablePathString(rhs));
 	}
 
 	bool PathsEquivalent(const fs::path& lhs, const fs::path& rhs)
 	{
-		return lhs.has_root_path() == rhs.has_root_path() && std::equal(lhs.begin(), lhs.end(), rhs.begin(), rhs.end(), [](const fs::path& a, const fs::path& b) { return PathComponentEquals(a, b); }) && std::distance(lhs.begin(), lhs.end()) == std::distance(rhs.begin(), rhs.end());
+		if (lhs.has_root_path() != rhs.has_root_path())
+		{
+			return false;
+		}
+
+		auto lhs_it = lhs.begin();
+		auto rhs_it = rhs.begin();
+		for (; lhs_it != lhs.end() && rhs_it != rhs.end(); ++lhs_it, ++rhs_it)
+		{
+			if (!PathComponentEquals(*lhs_it, *rhs_it))
+			{
+				return false;
+			}
+		}
+		return lhs_it == lhs.end() && rhs_it == rhs.end();
 	}
 
 	bool PathHasPrefix(const fs::path& path, const fs::path& prefix)
@@ -103,94 +96,64 @@ namespace
 		return depth;
 	}
 
-	std::string JsonUnescape(const std::string& value)
+	using ProjectMapping = std::pair<fs::path, std::string>;
+	using ProjectMappings = std::vector<ProjectMapping>;
+	constexpr std::size_t kExactPathMatchDepth = std::numeric_limits<std::size_t>::max();
+
+	void AppendProjectMappingsFromJson(const nlohmann::json& value, ProjectMappings& mappings)
 	{
-		std::string out;
-		out.reserve(value.size());
-
-		for (std::size_t i = 0; i < value.size(); ++i)
+		if (value.is_array())
 		{
-			const char ch = value[i];
-
-			if (ch != '\\' || i + 1 >= value.size())
+			for (const nlohmann::json& item : value)
 			{
-				out.push_back(ch);
+				AppendProjectMappingsFromJson(item, mappings);
+			}
+			return;
+		}
+
+		if (!value.is_object())
+		{
+			return;
+		}
+
+		for (auto it = value.begin(); it != value.end(); ++it)
+		{
+			const std::string key = it.key();
+			const std::optional<std::string> mapped_tmp_name = key == "projects" ? std::nullopt : uam::nlohmann_json::TrimmedStringScalarValue(it.value());
+			if (!key.empty() && mapped_tmp_name)
+			{
+				mappings.emplace_back(fs::path(key), *mapped_tmp_name);
 				continue;
 			}
 
-			const char esc = value[++i];
-
-			switch (esc)
-			{
-			case '"':
-			case '\\':
-			case '/':
-				out.push_back(esc);
-				break;
-			case 'b':
-				out.push_back('\b');
-				break;
-			case 'f':
-				out.push_back('\f');
-				break;
-			case 'n':
-				out.push_back('\n');
-				break;
-			case 'r':
-				out.push_back('\r');
-				break;
-			case 't':
-				out.push_back('\t');
-				break;
-			case 'u':
-
-				if (i + 4 < value.size())
-				{
-					i += 4;
-				}
-
-				break;
-			default:
-				out.push_back(esc);
-				break;
-			}
+			AppendProjectMappingsFromJson(it.value(), mappings);
 		}
-
-		return out;
 	}
 
-	std::vector<std::pair<fs::path, std::string>> ReadProjectMappings(const fs::path& gemini_home)
+	ProjectMappings ReadProjectMappings(const fs::path& gemini_home)
 	{
-		std::vector<std::pair<fs::path, std::string>> mappings;
+		ProjectMappings mappings;
 		const fs::path projects_file = gemini_home / "projects.json";
 
-		if (!fs::exists(projects_file))
+		if (!uam::paths::PathExistsNoThrow(projects_file))
 		{
 			return mappings;
 		}
 
-		const std::string text = ReadTextFile(projects_file);
+		const std::string text = uam::io::ReadTextFile(projects_file);
 
 		if (text.empty())
 		{
 			return mappings;
 		}
 
-		const std::regex pair_pattern(R"PAIR("((?:\\.|[^"])*)"\s*:\s*"((?:\\.|[^"])*)")PAIR");
-
-		for (auto it = std::sregex_iterator(text.begin(), text.end(), pair_pattern); it != std::sregex_iterator(); ++it)
+		const nlohmann::json root = nlohmann::json::parse(text, nullptr, false);
+		if (root.is_discarded())
 		{
-			const std::string key = JsonUnescape((*it)[1].str());
-			const std::string value = JsonUnescape((*it)[2].str());
-
-			if (key.empty() || value.empty() || key == "projects")
-			{
-				continue;
-			}
-
-			mappings.emplace_back(fs::path(key), value);
+			return mappings;
 		}
 
+		AppendProjectMappingsFromJson(root, mappings);
 		return mappings;
 	}
 
@@ -206,81 +169,44 @@ std::filesystem::path AppPaths::ChatsRootPath(const std::filesystem::path& data_
 	return data_root / "chats";
 }
 
-std::filesystem::path AppPaths::ChatPath(const std::filesystem::path& data_root, const std::string& chat_id)
+std::filesystem::path AppPaths::ChatPath(const std::filesystem::path& data_root, std::string_view chat_id)
 {
-	return ChatsRootPath(data_root) / chat_id;
+	return ChatsRootPath(data_root) / std::string(chat_id);
 }
 
 std::filesystem::path AppPaths::DefaultDataRootPath()
 {
 #if defined(_WIN32)
 
-	if (const char* local_app_data = std::getenv("LOCALAPPDATA"))
+	if (const std::optional<std::filesystem::path> local_app_data = uam::env::GetTrimmedPath("LOCALAPPDATA"))
 	{
-		const std::string value = Trim(local_app_data);
-
-		if (!value.empty())
-		{
-			return std::filesystem::path(value) / "Universal Agent Manager";
-		}
+		return *local_app_data / "Universal Agent Manager";
 	}
 
-	if (const char* app_data = std::getenv("APPDATA"))
+	if (const std::optional<std::filesystem::path> app_data = uam::env::GetTrimmedPath("APPDATA"))
 	{
-		const std::string value = Trim(app_data);
-
-		if (!value.empty())
-		{
-			return std::filesystem::path(value) / "Universal Agent Manager";
-		}
+		return *app_data / "Universal Agent Manager";
 	}
 
-	if (const char* user_profile = std::getenv("USERPROFILE"))
+	if (const std::optional<std::filesystem::path> home = uam::env::GetUserHomePath())
 	{
-		const std::string value = Trim(user_profile);
-
-		if (!value.empty())
-		{
-			return std::filesystem::path(value) / "AppData" / "Local" / "Universal Agent Manager";
-		}
-	}
-
-	if (const char* home_drive = std::getenv("HOMEDRIVE"))
-	{
-		if (const char* home_path = std::getenv("HOMEPATH"))
-		{
-			const std::string drive = Trim(home_drive);
-			const std::string path = Trim(home_path);
-
-			if (!drive.empty() && !path.empty())
-			{
-				return std::filesystem::path(drive + path) / "AppData" / "Local" / "Universal Agent Manager";
-			}
-		}
+		return *home / "AppData" / "Local" / "Universal Agent Manager";
 	}
 
 #endif
 
-	if (const char* home = std::getenv("HOME"))
+	if (const std::optional<std::filesystem::path> home = uam::env::GetUserHomePath())
 	{
-		const std::string value = Trim(home);
-
-		if (!value.empty())
-		{
 #if defined(__APPLE__)
-			return std::filesystem::path(value) / "Library" / "Application Support" / "Universal Agent Manager";
+		return *home / "Library" / "Application Support" / "Universal Agent Manager";
 #else
-			return std::filesystem::path(value) / ".universal_agent_manager";
+		return *home / ".universal_agent_manager";
 #endif
-		}
 	}
 
-	std::error_code ec;
-	const std::filesystem::path temp = std::filesystem::temp_directory_path(ec);
-
-	if (!ec)
+	if (const std::optional<std::filesystem::path> temp = uam::paths::TempDirectoryPathNoThrow())
 	{
-		return temp / "universal_agent_manager_data";
+		return *temp / "universal_agent_manager_data";
 	}
 
 	return std::filesystem::path("data");
@@ -288,66 +214,32 @@ std::filesystem::path AppPaths::DefaultDataRootPath()
 
 std::filesystem::path AppPaths::GeminiHomePath()
 {
-	if (const char* gemini_cli_home = std::getenv("GEMINI_CLI_HOME"))
+	if (const std::optional<std::filesystem::path> gemini_cli_home = uam::env::GetTrimmedPath("GEMINI_CLI_HOME"))
 	{
-		return std::filesystem::path(gemini_cli_home);
+		return *gemini_cli_home;
 	}
 
-	if (const char* gemini_home = std::getenv("GEMINI_HOME"))
+	if (const std::optional<std::filesystem::path> gemini_home = uam::env::GetTrimmedPath("GEMINI_HOME"))
 	{
-		return std::filesystem::path(gemini_home);
+		return *gemini_home;
 	}
 
-#if defined(_WIN32)
-
-	if (const char* user_profile = std::getenv("USERPROFILE"))
+	if (const std::optional<std::filesystem::path> home = uam::env::GetUserHomePath())
 	{
-		return std::filesystem::path(user_profile) / ".gemini";
+		return *home / ".gemini";
 	}
 
-	if (const char* home_drive = std::getenv("HOMEDRIVE"))
-	{
-		if (const char* home_path = std::getenv("HOMEPATH"))
-		{
-			return std::filesystem::path(std::string(home_drive) + std::string(home_path)) / ".gemini";
-		}
-	}
-
-#endif
-
-	if (const char* home = std::getenv("HOME"))
-	{
-		return std::filesystem::path(home) / ".gemini";
-	}
-
-	return std::filesystem::current_path() / ".gemini";
+	return uam::paths::CurrentPathOrDot() / ".gemini";
 }
 
 std::filesystem::path AppPaths::DefaultGeminiUniversalRootPath()
 {
-#if defined(_WIN32)
-
-	if (const char* user_profile = std::getenv("USERPROFILE"))
+	if (const std::optional<std::filesystem::path> home = uam::env::GetUserHomePath())
 	{
-		return std::filesystem::path(user_profile) / ".Gemini_universal_agent_manager";
+		return *home / ".Gemini_universal_agent_manager";
 	}
 
-	if (const char* home_drive = std::getenv("HOMEDRIVE"))
-	{
-		if (const char* home_path = std::getenv("HOMEPATH"))
-		{
-			return std::filesystem::path(std::string(home_drive) + std::string(home_path)) / ".Gemini_universal_agent_manager";
-		}
-	}
-
-#endif
-
-	if (const char* home = std::getenv("HOME"))
-	{
-		return std::filesystem::path(home) / ".Gemini_universal_agent_manager";
-	}
-
-	return std::filesystem::current_path() / ".Gemini_universal_agent_manager";
+	return uam::paths::CurrentPathOrDot() / ".Gemini_universal_agent_manager";
 }
 
 std::optional<std::filesystem::path> AppPaths::ResolveGeminiProjectTmpDir(const std::filesystem::path& project_root)
@@ -356,7 +248,7 @@ std::optional<std::filesystem::path> AppPaths::ResolveGeminiProjectTmpDir(const 
 	const fs::path gemini_home = GeminiHomePath();
 	const fs::path tmp_root = gemini_home / "tmp";
 
-	if (!fs::exists(tmp_root) || !fs::is_directory(tmp_root))
+	if (!uam::paths::IsDirectoryNoThrow(tmp_root))
 	{
 		return std::nullopt;
 	}
@@ -372,7 +264,7 @@ std::optional<std::filesystem::path> AppPaths::ResolveGeminiProjectTmpDir(const 
 		if (PathsEquivalent(normalized_recorded, normalized_project))
 		{
 			closest_match = candidate_tmp_path;
-			closest_depth = static_cast<std::size_t>(-1);
+			closest_depth = kExactPathMatchDepth;
 			return true;
 		}
 
@@ -396,21 +288,22 @@ std::optional<std::filesystem::path> AppPaths::ResolveGeminiProjectTmpDir(const 
 
 	std::error_code ec;
 
-	for (const auto& item : fs::directory_iterator(tmp_root, ec))
+	for (fs::directory_iterator it(tmp_root, ec), end; !ec && it != end; it.increment(ec))
 	{
-		if (ec || !item.is_directory())
+		const fs::directory_entry& item = *it;
+		if (!uam::paths::IsDirectoryEntryNoThrow(item))
 		{
 			continue;
 		}
 
 		const fs::path project_root_file = item.path() / ".project_root";
 
-		if (!fs::exists(project_root_file))
+		if (!uam::paths::PathExistsNoThrow(project_root_file))
 		{
 			continue;
 		}
 
-		const std::string recorded_path_raw = Trim(ReadTextFile(project_root_file));
+		const std::string recorded_path_raw = uam::strings::Trim(uam::io::ReadTextFile(project_root_file));
 
 		if (recorded_path_raw.empty())
 		{
@@ -423,13 +316,13 @@ std::optional<std::filesystem::path> AppPaths::ResolveGeminiProjectTmpDir(const 
 		}
 	}
 
-	const std::vector<std::pair<fs::path, std::string>> project_mappings = ReadProjectMappings(gemini_home);
+	const ProjectMappings project_mappings = ReadProjectMappings(gemini_home);
 
 	for (const auto& entry : project_mappings)
 	{
 		const fs::path candidate_tmp_path = tmp_root / entry.second;
 
-		if (!fs::exists(candidate_tmp_path) || !fs::is_directory(candidate_tmp_path))
+		if (!uam::paths::IsDirectoryNoThrow(candidate_tmp_path))
 		{
 			continue;
 		}
@@ -440,7 +333,7 @@ std::optional<std::filesystem::path> AppPaths::ResolveGeminiProjectTmpDir(const 
 		}
 	}
 
-	if (closest_match.has_value())
+	if (closest_match)
 	{
 		return closest_match;
 	}
@@ -453,12 +346,14 @@ std::filesystem::path AppPaths::UamChatsRootPath(const std::filesystem::path& da
 	return ChatsRootPath(data_root);
 }
 
-std::filesystem::path AppPaths::UamChatFilePath(const std::filesystem::path& data_root, const std::string& chat_id)
+std::filesystem::path AppPaths::UamChatFilePath(const std::filesystem::path& data_root, std::string_view chat_id)
 {
-	return UamChatsRootPath(data_root) / (chat_id + ".json");
+	std::string filename(chat_id);
+	filename += ".json";
+	return UamChatsRootPath(data_root) / filename;
 }
 
 bool FolderDirectoryMatches(const std::filesystem::path& lhs, const std::filesystem::path& rhs)
 {
-	return PathsEquivalent(lhs, rhs);
+	return PathsEquivalent(NormalizePathForCompare(lhs), NormalizePathForCompare(rhs));
 }

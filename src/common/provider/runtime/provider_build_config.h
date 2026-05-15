@@ -20,89 +20,104 @@
 #error "UAM_ENABLE_RUNTIME_COPILOT_CLI must be defined by CMake. Use 0 or 1."
 #endif
 
+#include "common/provider/provider_ids.h"
+#include "common/provider/provider_profile_constants.h"
+#include "common/utils/string_utils.h"
+
+#include <string>
+#include <string_view>
+
 namespace provider_build_config
 {
 
-	inline constexpr bool GeminiCliEnabled()
+	inline constexpr bool ProviderEnabled(std::string_view provider_id)
 	{
-		return UAM_ENABLE_RUNTIME_GEMINI_CLI != 0;
-	}
-
-	inline constexpr bool CodexCliEnabled()
-	{
-		return UAM_ENABLE_RUNTIME_CODEX_CLI != 0;
-	}
-
-	inline constexpr bool ClaudeCliEnabled()
-	{
-		return UAM_ENABLE_RUNTIME_CLAUDE_CLI != 0;
-	}
-
-	inline constexpr bool OpenCodeCliEnabled()
-	{
-		return UAM_ENABLE_RUNTIME_OPENCODE_CLI != 0;
-	}
-
-	inline constexpr bool CopilotCliEnabled()
-	{
-		return UAM_ENABLE_RUNTIME_COPILOT_CLI != 0;
+		return
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+		    provider_id == uam::provider_ids::kGeminiCli ||
+#endif
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+		    provider_id == uam::provider_ids::kCodexCli ||
+#endif
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+		    provider_id == uam::provider_ids::kClaudeCli ||
+#endif
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+		    provider_id == uam::provider_ids::kOpenCodeCli ||
+#endif
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+		    provider_id == uam::provider_ids::kCopilotCli ||
+#endif
+		    false;
 	}
 
 	inline constexpr const char* FirstEnabledProviderId()
 	{
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
-		return "gemini-cli";
+		return uam::provider_ids::kGeminiCli;
 #elif UAM_ENABLE_RUNTIME_CODEX_CLI
-		return "codex-cli";
+		return uam::provider_ids::kCodexCli;
 #elif UAM_ENABLE_RUNTIME_CLAUDE_CLI
-		return "claude-cli";
+		return uam::provider_ids::kClaudeCli;
 #elif UAM_ENABLE_RUNTIME_OPENCODE_CLI
-		return "opencode-cli";
+		return uam::provider_ids::kOpenCodeCli;
 #elif UAM_ENABLE_RUNTIME_COPILOT_CLI
-		return "copilot-cli";
+		return uam::provider_ids::kCopilotCli;
 #else
 		return "";
 #endif
 	}
 
-	inline constexpr const char* DefaultVectorDbBackend()
-	{
-		return "none";
-	}
-
 	inline constexpr const char* DefaultHistoryAdapter()
 	{
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
-		return "gemini-cli-json";
-#elif UAM_ENABLE_RUNTIME_CODEX_CLI
-		return "local-json";
-#elif UAM_ENABLE_RUNTIME_CLAUDE_CLI
-		return "local-json";
-#elif UAM_ENABLE_RUNTIME_OPENCODE_CLI
-		return "local-json";
-#elif UAM_ENABLE_RUNTIME_COPILOT_CLI
-		return "local-json";
+		return uam::provider_profile_constants::kHistoryAdapterGeminiCliJson;
 #else
-		return "local-json";
+		return uam::provider_profile_constants::kHistoryAdapterLocalJson;
+#endif
+	}
+
+	inline constexpr const char* DefaultProviderCommandTemplate()
+	{
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+		return "gemini {resume} {flags} {prompt}";
+#elif UAM_ENABLE_RUNTIME_CODEX_CLI
+		return "codex exec {flags} {prompt}";
+#elif UAM_ENABLE_RUNTIME_CLAUDE_CLI
+		return "claude -p {prompt}";
+#elif UAM_ENABLE_RUNTIME_OPENCODE_CLI
+		return "opencode run {flags} {prompt}";
+#elif UAM_ENABLE_RUNTIME_COPILOT_CLI
+		return "copilot -p {prompt} {flags}";
+#else
+		return "";
 #endif
 	}
 
 	inline constexpr const char* DefaultNativeHistoryProviderId()
 	{
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
-		return "gemini-cli";
+		return uam::provider_ids::kGeminiCli;
 #else
 		return "";
 #endif
 	}
 
-	inline constexpr bool HasNativeHistoryProvider()
+	inline std::string EnabledCliProviderIdOrFirst(std::string_view provider_id)
 	{
-#if UAM_ENABLE_RUNTIME_GEMINI_CLI
-		return true;
-#else
-		return false;
-#endif
+		const std::string normalized = uam::provider_ids::NormalizeCliProviderAlias(provider_id);
+		if (!normalized.empty() && ProviderEnabled(normalized))
+		{
+			return normalized;
+		}
+
+		return FirstEnabledProviderId();
+	}
+
+	inline std::string NativeHistoryProviderIdOrFirst()
+	{
+		const std::string native_provider_id = DefaultNativeHistoryProviderId();
+		return uam::strings::NonEmptyOrFallback(native_provider_id, FirstEnabledProviderId());
 	}
 
 } // namespace provider_build_config

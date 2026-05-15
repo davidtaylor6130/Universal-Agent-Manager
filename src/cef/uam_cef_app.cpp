@@ -1,7 +1,9 @@
 #include "cef/uam_cef_app.h"
-#include "cef/uam_cef_command_line_config.h"
 #include "cef/uam_cef_client.h"
+#include "cef/uam_cef_command_line_config.h"
 #include "cef/uam_cef_security.h"
+#include "common/paths/path_utils.h"
+#include "common/utils/io_utils.h"
 
 #include "include/cef_browser.h"
 #include "include/cef_command_line.h"
@@ -11,122 +13,137 @@
 #include "include/views/cef_fill_layout.h"
 #include "include/views/cef_window.h"
 
-#include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <cstdio>
+#include <filesystem>
 #include <vector>
 
 namespace
 {
 
-CefRefPtr<CefImage> LoadUamWindowIcon()
-{
-	CefString exe_dir_string;
-	if (!CefGetPath(PK_DIR_EXE, exe_dir_string))
-		return nullptr;
-
-	const std::filesystem::path exe_dir(exe_dir_string.ToString());
-	const std::vector<std::filesystem::path> icon_paths = {
-		exe_dir / "app_icon.png",
-		(exe_dir / ".." / "Resources" / "app_icon.png").lexically_normal(),
-	};
-
-	for (const std::filesystem::path& icon_path : icon_paths)
+	CefRefPtr<CefImage> LoadUamWindowIcon()
 	{
-		if (!std::filesystem::exists(icon_path))
-			continue;
-
-		std::ifstream icon_file(icon_path, std::ios::binary);
-		if (!icon_file)
-			continue;
-
-		std::vector<char> bytes((std::istreambuf_iterator<char>(icon_file)), std::istreambuf_iterator<char>());
-		if (bytes.empty())
-			continue;
-
-		CefRefPtr<CefImage> image = CefImage::CreateImage();
-		if (image != nullptr && image->AddPNG(1.0f, bytes.data(), bytes.size()))
-			return image;
-	}
-
-	return nullptr;
-}
-
-class UamRootWindowDelegate : public CefWindowDelegate,
-                              public CefBrowserViewDelegate
-{
-  public:
-	explicit UamRootWindowDelegate(const CefRect& initial_bounds)
-		: m_initialBounds(initial_bounds)
-	{
-	}
-
-	void SetBrowserView(CefRefPtr<CefBrowserView> browser_view)
-	{
-		m_browserView = browser_view;
-	}
-
-	void OnWindowCreated(CefRefPtr<CefWindow> window) override
-	{
-		CEF_REQUIRE_UI_THREAD();
-
-		window->SetTitle("Universal Agent Manager");
-		if (CefRefPtr<CefImage> icon = LoadUamWindowIcon())
+		CefString exe_dir_string;
+		if (!CefGetPath(PK_DIR_EXE, exe_dir_string))
 		{
-			window->SetWindowIcon(icon);
-			window->SetWindowAppIcon(icon);
+			return nullptr;
 		}
 
-		window->SetToFillLayout();
+		const std::filesystem::path exe_dir(exe_dir_string.ToString());
+		const std::vector<std::filesystem::path> icon_paths = {
+		    exe_dir / "app_icon.png",
+		    uam::paths::LexicallyNormalPath(exe_dir / ".." / "Resources" / "app_icon.png"),
+		};
 
-		if (m_browserView)
-			window->AddChildView(m_browserView);
+		for (const std::filesystem::path& icon_path : icon_paths)
+		{
+			if (!uam::paths::PathExistsNoThrow(icon_path))
+			{
+				continue;
+			}
 
-		window->Show();
+			std::string bytes;
+			if (!uam::io::TryReadBinaryFile(icon_path, bytes))
+			{
+				continue;
+			}
+			if (bytes.empty())
+			{
+				continue;
+			}
+
+			CefRefPtr<CefImage> image = CefImage::CreateImage();
+			if (image != nullptr && image->AddPNG(1.0f, bytes.data(), bytes.size()))
+			{
+				return image;
+			}
+		}
+
+		return nullptr;
 	}
 
-	void OnWindowDestroyed(CefRefPtr<CefWindow> /*window*/) override
+	class UamRootWindowDelegate : public CefWindowDelegate, public CefBrowserViewDelegate
 	{
-		CEF_REQUIRE_UI_THREAD();
-		m_browserView = nullptr;
-	}
+	  public:
+		explicit UamRootWindowDelegate(const CefRect& initial_bounds) : m_initialBounds(initial_bounds)
+		{
+		}
 
-	CefRect GetInitialBounds(CefRefPtr<CefWindow> /*window*/) override
+		void SetBrowserView(CefRefPtr<CefBrowserView> browser_view)
+		{
+			m_browserView = browser_view;
+		}
+
+		void OnWindowCreated(CefRefPtr<CefWindow> window) override
+		{
+			CEF_REQUIRE_UI_THREAD();
+
+			window->SetTitle("Universal Agent Manager");
+			if (CefRefPtr<CefImage> icon = LoadUamWindowIcon())
+			{
+				window->SetWindowIcon(icon);
+				window->SetWindowAppIcon(icon);
+			}
+
+			window->SetToFillLayout();
+
+			if (m_browserView)
+			{
+				window->AddChildView(m_browserView);
+			}
+
+			window->Show();
+		}
+
+		void OnWindowDestroyed(CefRefPtr<CefWindow> /*window*/) override
+		{
+			CEF_REQUIRE_UI_THREAD();
+			m_browserView = nullptr;
+		}
+
+		CefRect GetInitialBounds(CefRefPtr<CefWindow> /*window*/) override
+		{
+			return m_initialBounds;
+		}
+
+		bool CanClose(CefRefPtr<CefWindow> /*window*/) override
+		{
+			CEF_REQUIRE_UI_THREAD();
+
+			if (!m_browserView)
+			{
+				return true;
+			}
+
+			CefRefPtr<CefBrowser> browser = m_browserView->GetBrowser();
+			if (!browser)
+			{
+				return true;
+			}
+
+			return browser->GetHost()->TryCloseBrowser();
+		}
+
+		cef_runtime_style_t GetWindowRuntimeStyle() override
+		{
+			return CEF_RUNTIME_STYLE_ALLOY;
+		}
+
+		cef_runtime_style_t GetBrowserRuntimeStyle() override
+		{
+			return CEF_RUNTIME_STYLE_ALLOY;
+		}
+
+	  private:
+		CefRect m_initialBounds;
+		CefRefPtr<CefBrowserView> m_browserView;
+
+		IMPLEMENT_REFCOUNTING(UamRootWindowDelegate);
+	};
+
+	bool IsTrustedRendererFrame(CefRefPtr<CefFrame> frame, const std::string& trusted_ui_index_url)
 	{
-		return m_initialBounds;
+		return frame != nullptr && uam::cef::IsTrustedUiUrl(frame->GetURL().ToString(), trusted_ui_index_url);
 	}
-
-	bool CanClose(CefRefPtr<CefWindow> /*window*/) override
-	{
-		CEF_REQUIRE_UI_THREAD();
-
-		if (!m_browserView)
-			return true;
-
-		CefRefPtr<CefBrowser> browser = m_browserView->GetBrowser();
-		if (!browser)
-			return true;
-
-		return browser->GetHost()->TryCloseBrowser();
-	}
-
-	cef_runtime_style_t GetWindowRuntimeStyle() override
-	{
-		return CEF_RUNTIME_STYLE_ALLOY;
-	}
-
-	cef_runtime_style_t GetBrowserRuntimeStyle() override
-	{
-		return CEF_RUNTIME_STYLE_ALLOY;
-	}
-
-  private:
-	CefRect                    m_initialBounds;
-	CefRefPtr<CefBrowserView>  m_browserView;
-
-	IMPLEMENT_REFCOUNTING(UamRootWindowDelegate);
-};
 
 } // namespace
 
@@ -139,9 +156,13 @@ namespace uam_cef_globals
 	extern CefRefPtr<UamCefClient> g_client;
 } // namespace uam_cef_globals
 
-void UamCefApp::OnBeforeCommandLineProcessing(const CefString& process_type,
-                                              CefRefPtr<CefCommandLine> command_line)
+void UamCefApp::OnBeforeCommandLineProcessing(const CefString& process_type, CefRefPtr<CefCommandLine> command_line)
 {
+	if (command_line == nullptr)
+	{
+		return;
+	}
+
 	// Allow file:// pages to make XHR/fetch requests to other file:// URLs.
 	// Required because the React UI is served from file:// in production.
 	command_line->AppendSwitch("allow-file-access-from-files");
@@ -181,6 +202,12 @@ void UamCefApp::OnContextInitialized()
 	// Reuse the pre-constructed client if Application already set it up
 	// (e.g. with a BrowserReadyCallback).  Fall back to a fresh client if not.
 	uam::AppState* app_state = uam_cef_globals::g_app_state;
+	if (app_state == nullptr)
+	{
+		std::fprintf(stderr, "[CEF] AppState is unavailable during context initialization.\n");
+		return;
+	}
+
 	CefRefPtr<UamCefClient> client = uam_cef_globals::g_client;
 	if (!client)
 	{
@@ -194,21 +221,14 @@ void UamCefApp::OnContextInitialized()
 	browser_settings.javascript_access_clipboard = STATE_ENABLED;
 
 	CefRect initial_bounds;
-	initial_bounds.x      = 100;
-	initial_bounds.y      = 100;
-	initial_bounds.width  = 1400;
+	initial_bounds.x = 100;
+	initial_bounds.y = 100;
+	initial_bounds.width = 1400;
 	initial_bounds.height = 900;
 
-	CefRefPtr<UamRootWindowDelegate> window_delegate =
-		new UamRootWindowDelegate(initial_bounds);
+	CefRefPtr<UamRootWindowDelegate> window_delegate = new UamRootWindowDelegate(initial_bounds);
 
-	CefRefPtr<CefBrowserView> browser_view = CefBrowserView::CreateBrowserView(
-		client,
-		m_trustedUiIndexUrl,
-		browser_settings,
-		nullptr,
-		nullptr,
-		window_delegate);
+	CefRefPtr<CefBrowserView> browser_view = CefBrowserView::CreateBrowserView(client, m_trustedUiIndexUrl, browser_settings, nullptr, nullptr, window_delegate);
 
 	window_delegate->SetBrowserView(browser_view);
 	CefWindow::CreateTopLevelWindow(window_delegate);
@@ -235,29 +255,28 @@ void UamCefApp::OnWebKitInitialized()
 	m_renderer_router = CefMessageRouterRendererSide::Create(config);
 }
 
-void UamCefApp::OnContextCreated(CefRefPtr<CefBrowser>   browser,
-                                  CefRefPtr<CefFrame>     frame,
-                                  CefRefPtr<CefV8Context> context)
+void UamCefApp::OnContextCreated(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefRefPtr<CefV8Context> context)
 {
-	if (m_renderer_router != nullptr && uam::cef::IsTrustedUiUrl(frame->GetURL().ToString(), m_trustedUiIndexUrl))
+	if (m_renderer_router != nullptr && IsTrustedRendererFrame(frame, m_trustedUiIndexUrl))
+	{
 		m_renderer_router->OnContextCreated(browser, frame, context);
+	}
 }
 
-void UamCefApp::OnContextReleased(CefRefPtr<CefBrowser>   browser,
-                                   CefRefPtr<CefFrame>     frame,
-                                   CefRefPtr<CefV8Context> context)
+void UamCefApp::OnContextReleased(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefRefPtr<CefV8Context> context)
 {
-	if (m_renderer_router != nullptr && uam::cef::IsTrustedUiUrl(frame->GetURL().ToString(), m_trustedUiIndexUrl))
+	if (m_renderer_router != nullptr && IsTrustedRendererFrame(frame, m_trustedUiIndexUrl))
+	{
 		m_renderer_router->OnContextReleased(browser, frame, context);
+	}
 }
 
-bool UamCefApp::OnProcessMessageReceived(CefRefPtr<CefBrowser>        browser,
-                                          CefRefPtr<CefFrame>          frame,
-                                          CefProcessId                 source_process,
-                                          CefRefPtr<CefProcessMessage> message)
+bool UamCefApp::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefProcessId source_process, CefRefPtr<CefProcessMessage> message)
 {
-	if (m_renderer_router == nullptr || !uam::cef::IsTrustedUiUrl(frame->GetURL().ToString(), m_trustedUiIndexUrl))
+	if (m_renderer_router == nullptr || !IsTrustedRendererFrame(frame, m_trustedUiIndexUrl))
+	{
 		return false;
+	}
 
 	return m_renderer_router->OnProcessMessageReceived(browser, frame, source_process, message);
 }

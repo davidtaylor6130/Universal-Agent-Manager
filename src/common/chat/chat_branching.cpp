@@ -1,11 +1,15 @@
 #include "common/chat/chat_branching.h"
 
+#include "common/utils/string_utils.h"
+
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 namespace
 {
+	constexpr int kRootBranchMessageIndex = -1;
+	constexpr int kFirstBranchMessageIndex = 0;
 
 	std::unordered_map<std::string, std::size_t> BuildIndexById(const std::vector<ChatSession>& chats)
 	{
@@ -23,7 +27,7 @@ namespace
 		return index_by_id;
 	}
 
-	std::string ResolveRootId(const std::vector<ChatSession>& chats, const std::unordered_map<std::string, std::size_t>& index_by_id, const std::size_t start_index)
+	std::string ResolveRootId(const std::vector<ChatSession>& chats, const std::unordered_map<std::string, std::size_t>& index_by_id, std::size_t start_index)
 	{
 		std::size_t cursor = start_index;
 		std::unordered_set<std::string> seen;
@@ -50,7 +54,7 @@ namespace
 		return (cursor < chats.size()) ? chats[cursor].id : chats[start_index].id;
 	}
 
-	void SetBranchRootForSubtree(std::vector<ChatSession>& chats, const std::string& subtree_root_id, const std::string& new_root_id)
+	void SetBranchRootForSubtree(std::vector<ChatSession>& chats, std::string_view subtree_root_id, std::string_view new_root_id)
 	{
 		if (subtree_root_id.empty() || new_root_id.empty())
 		{
@@ -58,7 +62,7 @@ namespace
 		}
 
 		std::vector<std::string> stack;
-		stack.push_back(subtree_root_id);
+		stack.emplace_back(subtree_root_id);
 		std::unordered_set<std::string> visited;
 
 		while (!stack.empty())
@@ -79,7 +83,7 @@ namespace
 
 					if (chat.parent_chat_id.empty())
 					{
-						chat.branch_from_message_index = -1;
+						chat.branch_from_message_index = kRootBranchMessageIndex;
 					}
 				}
 
@@ -104,12 +108,15 @@ void ChatBranching::Normalize(std::vector<ChatSession>& chats)
 			continue;
 		}
 
+		chat.parent_chat_id = uam::strings::Trim(chat.parent_chat_id);
+		chat.branch_root_chat_id = uam::strings::Trim(chat.branch_root_chat_id);
+
 		if (chat.parent_chat_id == chat.id)
 		{
 			chat.parent_chat_id.clear();
 		}
 
-		if (!chat.parent_chat_id.empty() && index_by_id.find(chat.parent_chat_id) == index_by_id.end())
+		if (!chat.parent_chat_id.empty() && !index_by_id.contains(chat.parent_chat_id))
 		{
 			chat.parent_chat_id.clear();
 		}
@@ -129,23 +136,24 @@ void ChatBranching::Normalize(std::vector<ChatSession>& chats)
 		if (chat.parent_chat_id.empty())
 		{
 			chat.branch_root_chat_id = chat.id;
-			chat.branch_from_message_index = -1;
+			chat.branch_from_message_index = kRootBranchMessageIndex;
 			continue;
 		}
 
 		const std::string resolved_root = ResolveRootId(chats, index_by_id, i);
-		chat.branch_root_chat_id = resolved_root.empty() ? chat.id : resolved_root;
+		chat.branch_root_chat_id = uam::strings::NonEmptyOrFallback(resolved_root, chat.id);
 
 		if (chat.branch_from_message_index < 0)
 		{
-			chat.branch_from_message_index = 0;
+			chat.branch_from_message_index = kFirstBranchMessageIndex;
 		}
 	}
 }
 
-void ChatBranching::ReparentChildrenAfterDelete(std::vector<ChatSession>& chats, const std::string& deleted_chat_id)
+void ChatBranching::ReparentChildrenAfterDelete(std::vector<ChatSession>& chats, std::string_view deleted_chat_id)
 {
-	if (deleted_chat_id.empty())
+	const std::string normalized_deleted_chat_id = uam::strings::Trim(deleted_chat_id);
+	if (normalized_deleted_chat_id.empty())
 	{
 		return;
 	}
@@ -153,7 +161,7 @@ void ChatBranching::ReparentChildrenAfterDelete(std::vector<ChatSession>& chats,
 	Normalize(chats);
 
 	std::unordered_map<std::string, std::size_t> index_by_id = BuildIndexById(chats);
-	const auto deleted_it = index_by_id.find(deleted_chat_id);
+	const auto deleted_it = index_by_id.find(normalized_deleted_chat_id);
 
 	if (deleted_it == index_by_id.end())
 	{
@@ -167,7 +175,7 @@ void ChatBranching::ReparentChildrenAfterDelete(std::vector<ChatSession>& chats,
 
 	for (const ChatSession& chat : chats)
 	{
-		if (chat.parent_chat_id == deleted_chat_id && !chat.id.empty())
+		if (chat.parent_chat_id == normalized_deleted_chat_id && !chat.id.empty())
 		{
 			direct_child_ids.push_back(chat.id);
 		}
@@ -187,7 +195,7 @@ void ChatBranching::ReparentChildrenAfterDelete(std::vector<ChatSession>& chats,
 
 		if (parent_id.empty())
 		{
-			child.branch_from_message_index = -1;
+			child.branch_from_message_index = kRootBranchMessageIndex;
 			SetBranchRootForSubtree(chats, child.id, child.id);
 			continue;
 		}
@@ -197,7 +205,7 @@ void ChatBranching::ReparentChildrenAfterDelete(std::vector<ChatSession>& chats,
 		if (parent_it != index_by_id.end())
 		{
 			const ChatSession& parent_chat = chats[parent_it->second];
-			child.branch_root_chat_id = parent_chat.branch_root_chat_id.empty() ? parent_chat.id : parent_chat.branch_root_chat_id;
+			child.branch_root_chat_id = uam::strings::NonEmptyOrFallback(parent_chat.branch_root_chat_id, parent_chat.id);
 		}
 	}
 

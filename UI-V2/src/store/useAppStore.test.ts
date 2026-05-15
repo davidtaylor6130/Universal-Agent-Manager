@@ -142,6 +142,7 @@ function resetStore() {
     commitPanelOpen: false,
     sidebarWidthPx: 320,
     commitPanelWidthPx: 420,
+    cliVersionManager: { providers: [] },
     pushChannelStatus: 'connected',
     pushChannelError: '',
     lastPushAtMs: null,
@@ -154,6 +155,16 @@ describe('useAppStore Gemini CLI slice', () => {
     resetStore()
     delete testWindow.cefQuery
     vi.restoreAllMocks()
+  })
+
+  it('simulates provider CLI install commands with provider-specific packages outside CEF', async () => {
+    const store = useAppStore.getState()
+
+    await expect(store.applyCliProviderVersion(' Claude-Code ', 'latest')).resolves.toBe(true)
+
+    const claudeState = useAppStore.getState().cliVersionManager.providers.find((provider) => provider.providerId === 'claude-cli')
+    expect(claudeState?.lastCommand).toBe('npm install -g @anthropic-ai/claude-code@latest')
+    expect(claudeState?.lastOutput).toBe('Dev mode install simulated.')
   })
 
   it('deserializes backend state as ACP-first sessions and providers', () => {
@@ -914,7 +925,7 @@ describe('useAppStore Gemini CLI slice', () => {
       ],
     })
 
-    useAppStore.getState().addSession('Codex Chat', 'default', 'codex-cli')
+    useAppStore.getState().addSession('Codex Chat', 'default', ' CoDeX ')
     await new Promise((resolve) => setTimeout(resolve, 0))
 
     expect(requests).toHaveLength(1)
@@ -1129,7 +1140,7 @@ describe('useAppStore Gemini CLI slice', () => {
       acpBindingBySessionId: {},
     })
 
-    await expect(useAppStore.getState().setSessionProvider('chat-1', 'codex-cli')).resolves.toBe(true)
+    await expect(useAppStore.getState().setSessionProvider('chat-1', ' CoDeX ')).resolves.toBe(true)
     expect(useAppStore.getState().sessions[0].providerId).toBe('codex-cli')
 
     useAppStore.setState({
@@ -1337,9 +1348,9 @@ describe('useAppStore Gemini CLI slice', () => {
     })
 
     await expect(useAppStore.getState().setProviderChatDefaults({
-      defaultNewChatProviderId: 'codex-cli',
+      defaultNewChatProviderId: ' codex ',
       providerChatDefaults: {
-        'codex-cli': {
+        ' CoDeX ': {
           modelId: 'gpt-5.2',
           approvalMode: 'acceptEdits',
           autoApproveCommands: true,
@@ -1971,7 +1982,7 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(state.messages['chat-1'].map((message) => message.content)).toEqual(['hello'])
     expect(state.messages['chat-1'][0].toolCalls?.map((tool) => tool.id)).toEqual(['tool-message-1'])
     expect(state.providers.map((provider) => provider.id)).toEqual(['gemini-cli'])
-    expect(state.theme).toBe('dark')
+    expect(state.theme).toBe('system')
     expect(state.cliDebugState?.terminals.map((terminal) => terminal.terminalId)).toEqual(['term-1'])
     expect(state.acpBindingBySessionId['chat-1'].toolCalls.map((tool) => tool.id)).toEqual(['tool-1'])
     expect(state.acpBindingBySessionId['chat-1'].availableModes.map((mode) => mode.id)).toEqual(['plan'])
@@ -2185,6 +2196,28 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().defaultEditorPresetId).toBe('webstorm')
     expect(useAppStore.getState().editorFileAssociations[0].extensions).toEqual(['.cpp', '.h'])
     expect(useAppStore.getState().editorFileAssociations[1].editorPresetId).toBe('webstorm')
+  })
+
+  it('clamps memory settings before optimistic updates and CEF persistence', async () => {
+    const cppState = makeCppState(1)
+    useAppStore.getState().loadFromCef(cppState)
+
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
+      onSuccess('{}')
+    }
+
+    await expect(useAppStore.getState().setMemorySettings({
+      memoryIdleDelaySeconds: -1,
+      memoryRecallBudgetBytes: 999999,
+    })).resolves.toBe(true)
+
+    expect(useAppStore.getState().memoryIdleDelaySeconds).toBe(30)
+    expect(useAppStore.getState().memoryRecallBudgetBytes).toBe(8192)
+    expect(requests[0].action).toBe('setMemorySettings')
+    expect(requests[0].payload?.idleDelaySeconds).toBe(30)
+    expect(requests[0].payload?.recallBudgetBytes).toBe(8192)
   })
 
   it('loads the global memory library through CEF', async () => {

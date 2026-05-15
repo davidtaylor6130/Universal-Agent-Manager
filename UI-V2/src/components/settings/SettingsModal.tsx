@@ -1,10 +1,28 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { useAppStore, type CliVersionProviderState, type EditorFileAssociation, type MemoryWorkerBinding, type ProviderChatDefaults } from '../../store/useAppStore'
+import {
+  MAX_MEMORY_IDLE_DELAY_SECONDS,
+  MAX_MEMORY_RECALL_BUDGET_BYTES,
+  MIN_MEMORY_IDLE_DELAY_SECONDS,
+  MIN_MEMORY_RECALL_BUDGET_BYTES,
+  useAppStore,
+  type CliVersionProviderState,
+  type EditorFileAssociation,
+  type MemoryWorkerBinding,
+  type ProviderChatDefaults,
+} from '../../store/useAppStore'
 import { ThemeToggle } from '../shared/ThemeToggle'
 import { useTheme } from '../../hooks/useTheme'
 import type { Provider } from '../../types/provider'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
+import {
+  CODEX_CLI_PROVIDER_ID,
+  CLAUDE_CLI_PROVIDER_ID,
+  COPILOT_CLI_PROVIDER_ID,
+  DEFAULT_PROVIDER_ID,
+  providerShortName,
+  providerUsesProtocol,
+} from '../../utils/providerMetadata'
 
 interface MemoryModelOption {
   id: string
@@ -44,13 +62,7 @@ const CODEX_SPEED_OPTIONS: MemoryModelOption[] = [
 ]
 
 function providerDisplayName(provider?: Provider, fallbackId = '') {
-  if (provider?.shortName?.trim()) return provider.shortName.trim()
-  if (provider?.name?.trim()) return provider.name.trim()
-  if (fallbackId === 'codex-cli') return 'Codex'
-  if (fallbackId === 'claude-cli') return 'Claude'
-  if (fallbackId === 'opencode-cli') return 'OpenCode'
-  if (fallbackId === 'copilot-cli') return 'Copilot'
-  return 'Gemini'
+  return providerShortName(provider, fallbackId)
 }
 
 function titleFromModelId(modelId: string) {
@@ -63,15 +75,15 @@ function titleFromModelId(modelId: string) {
 }
 
 function isCodexProvider(provider?: Provider, providerId = '') {
-  return providerId === 'codex-cli' || provider?.structuredProtocol === 'codex-app-server'
+  return providerUsesProtocol(provider, providerId, CODEX_CLI_PROVIDER_ID)
 }
 
 function isClaudeProvider(provider?: Provider, providerId = '') {
-  return providerId === 'claude-cli' || provider?.structuredProtocol === 'claude-code-stream-json'
+  return providerUsesProtocol(provider, providerId, CLAUDE_CLI_PROVIDER_ID)
 }
 
 function isCopilotProvider(provider?: Provider, providerId = '') {
-  return providerId === 'copilot-cli' || provider?.structuredProtocol === 'copilot-acp'
+  return providerUsesProtocol(provider, providerId, COPILOT_CLI_PROVIDER_ID)
 }
 
 function memoryModelOptions(provider?: Provider, providerId = '', selectedModelId = '') {
@@ -673,7 +685,7 @@ export function SettingsModal() {
                   Theme
                 </div>
                 <div className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>
-                  {theme === 'dark' ? 'Dark mode' : 'Light mode'} active
+                  {theme === 'system' ? 'System theme' : theme === 'dark' ? 'Dark mode' : 'Light mode'} active
                 </div>
               </div>
               <ThemeToggle />
@@ -695,7 +707,7 @@ export function SettingsModal() {
                 <div>Default provider</div>
                 {renderDefaultsMenu(
                   'default-provider',
-                  defaultNewChatProviderId || providers[0]?.id || 'gemini-cli',
+                  defaultNewChatProviderId || providers[0]?.id || DEFAULT_PROVIDER_ID,
                   'Default provider',
                   providers.map((provider) => ({
                     id: provider.id,
@@ -995,8 +1007,8 @@ export function SettingsModal() {
                   Idle delay
                   <input
                     type="number"
-                    min={30}
-                    max={3600}
+                    min={MIN_MEMORY_IDLE_DELAY_SECONDS}
+                    max={MAX_MEMORY_IDLE_DELAY_SECONDS}
                     value={memoryIdleDelaySeconds}
                     onChange={(event) => void setMemorySettings({ memoryIdleDelaySeconds: Number(event.currentTarget.value) })}
                     style={{
@@ -1013,8 +1025,8 @@ export function SettingsModal() {
                   Recall budget bytes
                   <input
                     type="number"
-                    min={512}
-                    max={8192}
+                    min={MIN_MEMORY_RECALL_BUDGET_BYTES}
+                    max={MAX_MEMORY_RECALL_BUDGET_BYTES}
                     step={256}
                     value={memoryRecallBudgetBytes}
                     onChange={(event) => void setMemorySettings({ memoryRecallBudgetBytes: Number(event.currentTarget.value) })}

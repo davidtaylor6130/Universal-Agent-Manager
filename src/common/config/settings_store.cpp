@@ -1,236 +1,258 @@
 #include "common/config/settings_store.h"
 
+#include "common/config/editor_file_associations.h"
+#include "common/config/approval_modes.h"
 #include "common/config/line_value_codec.h"
+#include "common/config/settings_normalization.h"
+#include "common/paths/path_utils.h"
+#include "common/provider/codex/codex_options.h"
+#include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_build_config.h"
 #include "common/utils/io_utils.h"
+#include "common/utils/nlohmann_json_utils.h"
+#include "common/utils/parse_utils.h"
+#include "common/utils/string_utils.h"
 
 #include <algorithm>
-#include <cctype>
 #include <filesystem>
-#include <fstream>
 #include <map>
-#include <set>
+#include <optional>
 #include <sstream>
+#include <string_view>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
 namespace
 {
-	constexpr int kEditorDefaultGroupsVersion = 1;
+	constexpr char kSettingsEntryDelimiter = ';';
+	constexpr char kSettingsFieldDelimiter = ',';
+	constexpr std::string_view kSettingsEntryDelimiterText = ";";
+	constexpr std::string_view kSettingsFieldDelimiterText = ",";
+	constexpr std::string_view kProviderCliRuntimeBackend = "provider-cli";
 
-	std::string ReadTextFile(const std::filesystem::path& path)
+	constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
+	constexpr std::string_view kProviderCommandTemplateKey = "provider_command_template";
+	constexpr std::string_view kProviderYoloModeKey = "provider_yolo_mode";
+	constexpr std::string_view kProviderExtraFlagsKey = "provider_extra_flags";
+	constexpr std::string_view kRuntimeBackendKey = "runtime_backend";
+	constexpr std::string_view kCliIdleTimeoutSecondsKey = "cli_idle_timeout_seconds";
+	constexpr std::string_view kCenterViewModeKey = "center_view_mode";
+	constexpr std::string_view kUiThemeKey = "ui_theme";
+	constexpr std::string_view kConfirmDeleteChatKey = "confirm_delete_chat";
+	constexpr std::string_view kConfirmDeleteFolderKey = "confirm_delete_folder";
+	constexpr std::string_view kRememberLastChatKey = "remember_last_chat";
+	constexpr std::string_view kLastSelectedChatIdKey = "last_selected_chat_id";
+	constexpr std::string_view kUiScaleMultiplierKey = "ui_scale_multiplier";
+	constexpr std::string_view kSidebarWidthKey = "sidebar_width";
+	constexpr std::string_view kWindowWidthKey = "window_width";
+	constexpr std::string_view kWindowHeightKey = "window_height";
+	constexpr std::string_view kWindowMaximizedKey = "window_maximized";
+	constexpr std::string_view kMemoryEnabledDefaultKey = "memory_enabled_default";
+	constexpr std::string_view kMemoryIdleDelaySecondsKey = "memory_idle_delay_seconds";
+	constexpr std::string_view kMemoryRecallBudgetBytesKey = "memory_recall_budget_bytes";
+	constexpr std::string_view kMemoryWorkerBindingsKey = "memory_worker_bindings";
+	constexpr std::string_view kDefaultNewChatProviderIdKey = "default_new_chat_provider_id";
+	constexpr std::string_view kProviderChatDefaultsKey = "provider_chat_defaults";
+	constexpr std::string_view kMarkdownStoreDirectoryKey = "markdown_store_directory";
+	constexpr std::string_view kDefaultEditorPresetIdKey = "default_editor_preset_id";
+	constexpr std::string_view kEditorDefaultGroupsVersionKey = "editor_default_groups_version";
+	constexpr std::string_view kEditorFileAssociationsKey = "editor_file_associations";
+
+	constexpr std::string_view kLegacyGeminiCommandTemplateKey = "gemini_command_template";
+	constexpr std::string_view kLegacyGeminiYoloModeKey = "gemini_yolo_mode";
+	constexpr std::string_view kLegacyGeminiExtraFlagsKey = "gemini_extra_flags";
+
+	std::string NormalizeProviderId(std::string_view value);
+
+	void WriteRawSetting(std::ostringstream& lines, std::string_view key, std::string_view value)
 	{
-		std::ifstream in(path, std::ios::binary);
-		if (!in.good())
-		{
-			return "";
-		}
-
-		std::ostringstream buffer;
-		buffer << in.rdbuf();
-		return buffer.str();
+		lines << key << '=' << value << '\n';
 	}
 
-	std::string ToLower(std::string value)
+	template <typename Value> void WriteSettingValue(std::ostringstream& lines, std::string_view key, const Value& value)
 	{
-		std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-		return value;
+		lines << key << '=' << value << '\n';
 	}
 
-	bool ParseBool(const std::string& value, const bool fallback)
+	void WriteEncodedSetting(std::ostringstream& lines, std::string_view key, std::string_view value)
 	{
-		const std::string lowered = ToLower(value);
-		if (lowered == "1" || lowered == "true" || lowered == "on" || lowered == "yes")
-		{
-			return true;
-		}
-		if (lowered == "0" || lowered == "false" || lowered == "off" || lowered == "no")
-		{
-			return false;
-		}
-		return fallback;
+		WriteRawSetting(lines, key, uam::EncodeLineValue(value));
 	}
 
-	int ParseInt(const std::string& value, const int fallback)
+	void WriteBoolSetting(std::ostringstream& lines, std::string_view key, bool value)
 	{
-		try
-		{
-			return std::stoi(value);
-		}
-		catch (...)
-		{
-			return fallback;
-		}
+		WriteRawSetting(lines, key, value ? "1" : "0");
 	}
 
-	float ParseFloat(const std::string& value, const float fallback)
+	bool TryNormalizeMemoryWorkerBinding(std::string_view chat_provider_id,
+	                                     const MemoryWorkerBinding& binding,
+	                                     std::string& normalized_chat_provider_id,
+	                                     MemoryWorkerBinding& normalized_binding)
 	{
-		try
-		{
-			return std::stof(value);
-		}
-		catch (...)
-		{
-			return fallback;
-		}
+		normalized_chat_provider_id = NormalizeProviderId(chat_provider_id);
+		normalized_binding.worker_provider_id = NormalizeProviderId(binding.worker_provider_id);
+		normalized_binding.worker_model_id = uam::strings::Trim(binding.worker_model_id);
+		return !normalized_chat_provider_id.empty() && !normalized_binding.worker_provider_id.empty();
 	}
 
-	std::string NormalizeProviderId(const std::string& value);
-
-	std::vector<std::string> Split(const std::string& value, const char delimiter)
+	bool BoolFieldOr(const std::vector<std::string_view>& fields, std::size_t index, bool fallback)
 	{
-		std::vector<std::string> parts;
-		std::string current;
-		std::istringstream stream(value);
-		while (std::getline(stream, current, delimiter))
-		{
-			parts.push_back(current);
-		}
-		return parts;
+		return index < fields.size() ? uam::parse::BoolOr(fields[index], fallback) : fallback;
 	}
 
 	std::string EncodeMemoryWorkerBindings(const std::map<std::string, MemoryWorkerBinding>& bindings)
 	{
-		std::ostringstream out;
-		bool first = true;
+		std::vector<std::string> encoded_entries;
+		encoded_entries.reserve(bindings.size());
 		for (const auto& entry : bindings)
 		{
-			if (entry.first.empty() || entry.second.worker_provider_id.empty())
+			std::string chat_provider_id;
+			MemoryWorkerBinding binding;
+			if (!TryNormalizeMemoryWorkerBinding(entry.first, entry.second, chat_provider_id, binding))
 			{
 				continue;
 			}
-			if (!first)
-			{
-				out << ';';
-			}
-			out << uam::EncodeLineValue(entry.first) << ','
-			    << uam::EncodeLineValue(entry.second.worker_provider_id) << ','
-			    << uam::EncodeLineValue(entry.second.worker_model_id);
-			first = false;
+			encoded_entries.push_back(uam::EncodeLineValueFields({
+			    chat_provider_id,
+			    binding.worker_provider_id,
+			    binding.worker_model_id,
+			}, kSettingsFieldDelimiterText));
 		}
-		return out.str();
+		return uam::strings::JoinNonEmpty(encoded_entries, kSettingsEntryDelimiterText);
 	}
 
-	void DecodeMemoryWorkerBindings(const std::string& value, std::map<std::string, MemoryWorkerBinding>& bindings)
+	void DecodeMemoryWorkerBindings(std::string_view value, std::map<std::string, MemoryWorkerBinding>& bindings)
 	{
 		bindings.clear();
-		for (const std::string& encoded_entry : Split(value, ';'))
+		for (const std::string_view encoded_entry : uam::SplitLineValueFields(value, kSettingsEntryDelimiter))
 		{
-			const std::vector<std::string> fields = Split(encoded_entry, ',');
+			const std::vector<std::string_view> fields = uam::SplitLineValueFields(encoded_entry, kSettingsFieldDelimiter);
 			if (fields.size() < 2)
 			{
 				continue;
 			}
 
-			const std::string chat_provider_id = uam::DecodeLineValue(fields[0]);
-			const std::string worker_provider_id = NormalizeProviderId(uam::DecodeLineValue(fields[1]));
-			const std::string worker_model_id = fields.size() >= 3 ? uam::DecodeLineValue(fields[2]) : "";
-			if (chat_provider_id.empty() || worker_provider_id.empty())
+			std::string chat_provider_id;
+			MemoryWorkerBinding binding;
+			binding.worker_provider_id = uam::DecodedLineFieldOr(fields, 1, "");
+			binding.worker_model_id = uam::DecodedLineFieldOr(fields, 2, "");
+			if (!TryNormalizeMemoryWorkerBinding(uam::DecodedLineFieldOr(fields, 0, ""), binding, chat_provider_id, binding))
 			{
 				continue;
 			}
 
-			bindings[chat_provider_id] = MemoryWorkerBinding{worker_provider_id, worker_model_id};
+			bindings[chat_provider_id] = std::move(binding);
 		}
 	}
 
-	std::string NormalizeApprovalMode(std::string value)
+	void NormalizeMemoryWorkerBindings(std::map<std::string, MemoryWorkerBinding>& bindings)
 	{
-		value = uam::DecodeLineValue(uam::EncodeLineValue(value));
-		if (value == "plan" || value == "acceptEdits")
+		std::map<std::string, MemoryWorkerBinding> normalized;
+		for (const auto& entry : bindings)
 		{
-			return value;
+			std::string chat_provider_id;
+			MemoryWorkerBinding binding;
+			if (!TryNormalizeMemoryWorkerBinding(entry.first, entry.second, chat_provider_id, binding))
+			{
+				continue;
+			}
+			normalized[chat_provider_id] = std::move(binding);
 		}
-		return "default";
-	}
-
-	std::string NormalizeReasoningEffort(std::string value)
-	{
-		value = ToLower(value);
-		if (value == "none" ||
-		    value == "minimal" ||
-		    value == "low" ||
-		    value == "medium" ||
-		    value == "high" ||
-		    value == "xhigh")
-		{
-			return value;
-		}
-		return "";
-	}
-
-	std::string NormalizeServiceTier(std::string value)
-	{
-		value = ToLower(value);
-		if (value == "fast" || value == "flex")
-		{
-			return value;
-		}
-		return "";
+		bindings = std::move(normalized);
 	}
 
 	ProviderChatDefaults NormalizeProviderChatDefaults(ProviderChatDefaults defaults)
 	{
-		defaults.approval_mode = NormalizeApprovalMode(defaults.approval_mode);
-		defaults.reasoning_effort = NormalizeReasoningEffort(defaults.reasoning_effort);
-		defaults.service_tier = NormalizeServiceTier(defaults.service_tier);
+		defaults.model_id = uam::strings::Trim(defaults.model_id);
+		defaults.approval_mode = uam::approval_modes::NormalizePersistedProviderDefaultApprovalMode(defaults.approval_mode);
+		defaults.reasoning_effort = uam::codex::NormalizeReasoningEffort(defaults.reasoning_effort);
+		defaults.service_tier = uam::codex::NormalizeServiceTier(defaults.service_tier);
 		return defaults;
+	}
+
+	bool TryNormalizeProviderChatDefaults(std::string_view provider_id,
+	                                      const ProviderChatDefaults& defaults,
+	                                      std::string& normalized_provider_id,
+	                                      ProviderChatDefaults& normalized_defaults)
+	{
+		normalized_provider_id = NormalizeProviderId(provider_id);
+		if (normalized_provider_id.empty())
+		{
+			return false;
+		}
+
+		normalized_defaults = NormalizeProviderChatDefaults(defaults);
+		return true;
+	}
+
+	void NormalizeProviderChatDefaultsByProvider(std::map<std::string, ProviderChatDefaults>& defaults_by_provider)
+	{
+		std::map<std::string, ProviderChatDefaults> normalized;
+		for (const auto& entry : defaults_by_provider)
+		{
+			std::string provider_id;
+			ProviderChatDefaults defaults;
+			if (!TryNormalizeProviderChatDefaults(entry.first, entry.second, provider_id, defaults))
+			{
+				continue;
+			}
+			normalized[provider_id] = std::move(defaults);
+		}
+		defaults_by_provider = std::move(normalized);
 	}
 
 	std::string EncodeProviderChatDefaults(const std::map<std::string, ProviderChatDefaults>& defaults_by_provider)
 	{
-		std::ostringstream out;
-		bool first = true;
+		std::vector<std::string> encoded_entries;
+		encoded_entries.reserve(defaults_by_provider.size());
 		for (const auto& entry : defaults_by_provider)
 		{
-			const std::string provider_id = NormalizeProviderId(entry.first);
-			if (provider_id.empty())
+			std::string provider_id;
+			ProviderChatDefaults defaults;
+			if (!TryNormalizeProviderChatDefaults(entry.first, entry.second, provider_id, defaults))
 			{
 				continue;
 			}
-			const ProviderChatDefaults defaults = NormalizeProviderChatDefaults(entry.second);
-			if (!first)
-			{
-				out << ';';
-			}
-			out << uam::EncodeLineValue(provider_id) << ','
-			    << uam::EncodeLineValue(defaults.model_id) << ','
-			    << uam::EncodeLineValue(defaults.approval_mode) << ','
-			    << (defaults.auto_approve_commands ? "1" : "0") << ','
-			    << (defaults.memory_enabled ? "1" : "0") << ','
-			    << uam::EncodeLineValue(defaults.reasoning_effort) << ','
-			    << uam::EncodeLineValue(defaults.service_tier);
-			first = false;
+			encoded_entries.push_back(uam::EncodeLineValueFields({
+			    provider_id,
+			    defaults.model_id,
+			    defaults.approval_mode,
+			    defaults.auto_approve_commands ? "1" : "0",
+			    defaults.memory_enabled ? "1" : "0",
+			    defaults.reasoning_effort,
+			    defaults.service_tier,
+			}, kSettingsFieldDelimiterText));
 		}
-		return out.str();
+		return uam::strings::JoinNonEmpty(encoded_entries, kSettingsEntryDelimiterText);
 	}
 
-	void DecodeProviderChatDefaults(const std::string& value, std::map<std::string, ProviderChatDefaults>& defaults_by_provider)
+	void DecodeProviderChatDefaults(std::string_view value, std::map<std::string, ProviderChatDefaults>& defaults_by_provider)
 	{
 		defaults_by_provider.clear();
-		for (const std::string& encoded_entry : Split(value, ';'))
+		for (const std::string_view encoded_entry : uam::SplitLineValueFields(value, kSettingsEntryDelimiter))
 		{
-			const std::vector<std::string> fields = Split(encoded_entry, ',');
+			const std::vector<std::string_view> fields = uam::SplitLineValueFields(encoded_entry, kSettingsFieldDelimiter);
 			if (fields.empty())
 			{
 				continue;
 			}
 
-			const std::string provider_id = NormalizeProviderId(uam::DecodeLineValue(fields[0]));
-			if (provider_id.empty())
+			ProviderChatDefaults defaults;
+			defaults.model_id = uam::DecodedLineFieldOr(fields, 1, "");
+			defaults.approval_mode = uam::DecodedLineFieldOr(fields, 2, uam::approval_modes::kDefaultApprovalMode);
+			defaults.auto_approve_commands = BoolFieldOr(fields, 3, false);
+			defaults.memory_enabled = BoolFieldOr(fields, 4, true);
+			defaults.reasoning_effort = uam::DecodedLineFieldOr(fields, 5, "");
+			defaults.service_tier = uam::DecodedLineFieldOr(fields, 6, "");
+
+			std::string provider_id;
+			if (!TryNormalizeProviderChatDefaults(uam::DecodedLineFieldOr(fields, 0, ""), defaults, provider_id, defaults))
 			{
 				continue;
 			}
 
-			ProviderChatDefaults defaults;
-			defaults.model_id = fields.size() >= 2 ? uam::DecodeLineValue(fields[1]) : "";
-			defaults.approval_mode = fields.size() >= 3 ? uam::DecodeLineValue(fields[2]) : "default";
-			defaults.auto_approve_commands = fields.size() >= 4 ? ParseBool(fields[3], false) : false;
-			defaults.memory_enabled = fields.size() >= 5 ? ParseBool(fields[4], true) : true;
-			defaults.reasoning_effort = fields.size() >= 6 ? uam::DecodeLineValue(fields[5]) : "";
-			defaults.service_tier = fields.size() >= 7 ? uam::DecodeLineValue(fields[6]) : "";
-			defaults_by_provider[provider_id] = NormalizeProviderChatDefaults(defaults);
+			defaults_by_provider[provider_id] = std::move(defaults);
 		}
 	}
 
@@ -264,6 +286,7 @@ namespace
 				return;
 			}
 
+			associations.reserve(parsed.size());
 			for (const nlohmann::json& item : parsed)
 			{
 				if (!item.is_object())
@@ -272,267 +295,135 @@ namespace
 				}
 
 				EditorFileAssociation association;
-				association.id = item.value("id", "");
-				association.name = item.value("name", "");
-				association.editor_preset_id = item.value("editorPresetId", "");
-				const nlohmann::json extensions = item.value("extensions", nlohmann::json::array());
-				if (extensions.is_array())
-				{
-					for (const nlohmann::json& extension : extensions)
-					{
-						if (extension.is_string())
-						{
-							const std::string extension_value = extension.get<std::string>();
-							if (!extension_value.empty())
-							{
-								association.extensions.push_back(extension_value);
-							}
-						}
-					}
-				}
-				if (association.id.empty() || association.name.empty() || association.editor_preset_id.empty() || association.extensions.empty())
+				association.id = uam::nlohmann_json::TrimmedStringValue(item, {"id"});
+				association.name = uam::nlohmann_json::TrimmedStringValue(item, {"name"});
+				association.editor_preset_id = uam::nlohmann_json::TrimmedStringValue(item, {"editorPresetId"});
+				association.extensions = uam::nlohmann_json::StringArrayField(item, "extensions");
+				std::optional<EditorFileAssociation> normalized_association = uam::editor_file_associations::NormalizeEditorFileAssociation(std::move(association));
+				if (!normalized_association)
 				{
 					continue;
 				}
-				associations.push_back(std::move(association));
+				associations.push_back(std::move(*normalized_association));
 			}
 		}
-		catch (...)
+		catch (const nlohmann::json::exception&)
 		{
 			associations.clear();
 		}
 	}
 
-	std::vector<EditorFileAssociation> DefaultEditorFileAssociations()
+	std::string NormalizeProviderId(std::string_view value)
 	{
-		return {
-		    EditorFileAssociation{"cpp", "C++", {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}, "clion"},
-		    EditorFileAssociation{"csharp", "C#", {".cs", ".csx", ".csproj", ".sln"}, "rider"},
-		    EditorFileAssociation{"python", "Python", {".py", ".pyw", ".ipynb"}, "pycharm"},
-		    EditorFileAssociation{"javascript", "JavaScript", {".js", ".mjs", ".cjs"}, "webstorm"},
-		    EditorFileAssociation{"react-typescript", "React / TypeScript", {".jsx", ".ts", ".tsx", ".mts", ".cts"}, "webstorm"},
-		    EditorFileAssociation{"rust", "Rust", {".rs"}, "rustrover"},
-		    EditorFileAssociation{"go", "Go", {".go"}, "goland"},
-		    EditorFileAssociation{"java-kotlin", "Java / Kotlin", {".java", ".kt", ".kts"}, "idea"},
-		    EditorFileAssociation{"swift-apple", "Swift / Apple", {".swift"}, "xcode"},
-		    EditorFileAssociation{"powershell", "PowerShell", {".ps1", ".psm1", ".psd1"}, "vscode"},
-		    EditorFileAssociation{"shell", "Bash / Shell", {".sh", ".bash", ".zsh", ".fish"}, "vscode"},
-		    EditorFileAssociation{"web-styles", "Web Styles / Templates", {".html", ".css", ".scss", ".sass", ".less"}, "webstorm"},
-		};
+		return provider_build_config::EnabledCliProviderIdOrFirst(value);
 	}
 
-	bool IsKnownEditorPresetId(const std::string& value)
+	void EnsureMemoryWorkerBinding(AppSettings& settings, std::string_view provider_id)
 	{
-		return value == "vscode" ||
-		       value == "xcode" ||
-		       value == "visualstudio" ||
-		       value == "clion" ||
-		       value == "rider" ||
-		       value == "webstorm" ||
-		       value == "pycharm" ||
-		       value == "idea" ||
-		       value == "goland" ||
-		       value == "rustrover";
-	}
-
-	void NormalizeEditorFileAssociations(std::vector<EditorFileAssociation>& associations)
-	{
-		std::vector<EditorFileAssociation> normalized;
-		for (EditorFileAssociation& association : associations)
+		const std::string provider_key(provider_id);
+		if (!settings.memory_worker_bindings.contains(provider_key))
 		{
-			if (association.id.empty() || association.name.empty() || association.extensions.empty())
-			{
-				continue;
-			}
-			if (!IsKnownEditorPresetId(association.editor_preset_id))
-			{
-				association.editor_preset_id = "vscode";
-			}
-			normalized.push_back(std::move(association));
+			settings.memory_worker_bindings[provider_key] = MemoryWorkerBinding{NormalizeProviderId(provider_key), ""};
 		}
-		associations = std::move(normalized);
 	}
 
-	void AppendMissingDefaultEditorGroups(AppSettings& settings)
+	void EnsureProviderChatDefaults(AppSettings& settings, std::string_view provider_id)
 	{
-		if (settings.editor_default_groups_version >= kEditorDefaultGroupsVersion)
+		const std::string provider_key(provider_id);
+		if (!settings.provider_chat_defaults.contains(provider_key))
 		{
+			settings.provider_chat_defaults[provider_key] = ProviderChatDefaults{"", uam::approval_modes::kDefaultApprovalMode, false, settings.memory_enabled_default, "", ""};
 			return;
 		}
 
-		std::set<std::string> existing_ids;
-		for (const EditorFileAssociation& association : settings.editor_file_associations)
-		{
-			if (!association.id.empty())
-			{
-				existing_ids.insert(association.id);
-			}
-		}
-
-		for (const EditorFileAssociation& default_association : DefaultEditorFileAssociations())
-		{
-			if (existing_ids.insert(default_association.id).second)
-			{
-				settings.editor_file_associations.push_back(default_association);
-			}
-		}
-
-		settings.editor_default_groups_version = kEditorDefaultGroupsVersion;
-	}
-
-	std::string NormalizeThemeId(std::string value)
-	{
-		value = ToLower(value);
-		if (value == "light")
-		{
-			return "light";
-		}
-		if (value == "system")
-		{
-			return "system";
-		}
-		return "dark";
-	}
-
-	std::string NormalizeProviderId(const std::string& value)
-	{
-		const std::string lowered = ToLower(value);
-#if UAM_ENABLE_RUNTIME_CODEX_CLI
-		if (lowered == "codex" || lowered == "codex-cli")
-		{
-			return "codex-cli";
-		}
-#endif
-#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
-		if (lowered == "claude" || lowered == "claude-code" || lowered == "claude-cli")
-		{
-			return "claude-cli";
-		}
-#endif
-#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
-		if (lowered == "opencode" || lowered == "opencode-cli")
-		{
-			return "opencode-cli";
-		}
-#endif
-#if UAM_ENABLE_RUNTIME_COPILOT_CLI
-		if (lowered == "copilot" || lowered == "github-copilot" || lowered == "copilot-cli")
-		{
-			return "copilot-cli";
-		}
-#endif
-#if UAM_ENABLE_RUNTIME_GEMINI_CLI
-		if (lowered == "gemini" || lowered == "gemini-cli")
-		{
-			return "gemini-cli";
-		}
-#endif
-		return provider_build_config::FirstEnabledProviderId();
+		settings.provider_chat_defaults[provider_key] = NormalizeProviderChatDefaults(settings.provider_chat_defaults[provider_key]);
 	}
 
 	void ClampSettings(AppSettings& settings)
 	{
-		settings.active_provider_id = NormalizeProviderId(settings.active_provider_id);
-		settings.default_new_chat_provider_id = NormalizeProviderId(settings.default_new_chat_provider_id.empty() ? settings.active_provider_id : settings.default_new_chat_provider_id);
-		settings.runtime_backend = "provider-cli";
-		settings.provider_command_template = settings.provider_command_template.empty()
-			? "gemini {resume} {flags} {prompt}"
-			: settings.provider_command_template;
+		settings.active_provider_id = provider_build_config::EnabledCliProviderIdOrFirst(settings.active_provider_id);
+		settings.default_new_chat_provider_id = provider_build_config::EnabledCliProviderIdOrFirst(uam::strings::NonEmptyOrFallback(settings.default_new_chat_provider_id, settings.active_provider_id));
+		settings.runtime_backend = kProviderCliRuntimeBackend;
+		settings.provider_command_template = uam::strings::NonEmptyOrFallback(settings.provider_command_template, provider_build_config::DefaultProviderCommandTemplate());
 		settings.gemini_command_template = settings.provider_command_template;
 		settings.gemini_yolo_mode = settings.provider_yolo_mode;
 		settings.gemini_extra_flags = settings.provider_extra_flags;
-		settings.cli_idle_timeout_seconds = std::clamp(settings.cli_idle_timeout_seconds, 30, 3600);
-		settings.ui_theme = NormalizeThemeId(settings.ui_theme);
-		settings.ui_scale_multiplier = std::clamp(settings.ui_scale_multiplier, 0.85f, 1.75f);
-		settings.sidebar_width = std::clamp(settings.sidebar_width, 220.0f, 600.0f);
-		settings.window_width = std::clamp(settings.window_width, 960, 8192);
-		settings.window_height = std::clamp(settings.window_height, 620, 8192);
-		settings.memory_idle_delay_seconds = std::clamp(settings.memory_idle_delay_seconds, 30, 3600);
-		settings.memory_recall_budget_bytes = std::clamp(settings.memory_recall_budget_bytes, 512, 8192);
-		if (settings.default_editor_preset_id.empty())
-		{
-			settings.default_editor_preset_id = "vscode";
-		}
-		if (!IsKnownEditorPresetId(settings.default_editor_preset_id))
-		{
-			settings.default_editor_preset_id = "vscode";
-		}
-		NormalizeEditorFileAssociations(settings.editor_file_associations);
-		AppendMissingDefaultEditorGroups(settings);
+		settings.cli_idle_timeout_seconds = std::clamp(settings.cli_idle_timeout_seconds, uam::settings::kMinCliIdleTimeoutSeconds, uam::settings::kMaxCliIdleTimeoutSeconds);
+		settings.ui_theme = uam::settings::NormalizeThemeId(settings.ui_theme);
+		uam::settings::ClampWindowSettings(settings);
+		uam::settings::ClampMemorySettings(settings);
+		settings.default_editor_preset_id = uam::editor_file_associations::NormalizeEditorPresetId(settings.default_editor_preset_id);
+		uam::editor_file_associations::NormalizeEditorFileAssociations(settings.editor_file_associations);
+		uam::editor_file_associations::AppendMissingDefaultEditorGroups(settings);
+		NormalizeMemoryWorkerBindings(settings.memory_worker_bindings);
+		NormalizeProviderChatDefaultsByProvider(settings.provider_chat_defaults);
 
-		for (const std::string& provider_id : {std::string("gemini-cli"), std::string("codex-cli"), std::string("claude-cli"), std::string("opencode-cli"), std::string("copilot-cli")})
+		for (const char* provider_id : uam::provider_ids::kAllCliProviderIds)
 		{
-			if (settings.memory_worker_bindings.find(provider_id) == settings.memory_worker_bindings.end())
-			{
-				settings.memory_worker_bindings[provider_id] = MemoryWorkerBinding{NormalizeProviderId(provider_id), ""};
-			}
-			if (settings.provider_chat_defaults.find(provider_id) == settings.provider_chat_defaults.end())
-			{
-				settings.provider_chat_defaults[provider_id] = ProviderChatDefaults{"", "default", false, settings.memory_enabled_default, "", ""};
-			}
-			else
-			{
-				settings.provider_chat_defaults[provider_id] = NormalizeProviderChatDefaults(settings.provider_chat_defaults[provider_id]);
-			}
+			EnsureMemoryWorkerBinding(settings, provider_id);
+			EnsureProviderChatDefaults(settings, provider_id);
 		}
 
 		if (!settings.remember_last_chat)
 		{
 			settings.last_selected_chat_id.clear();
 		}
+		else
+		{
+			settings.last_selected_chat_id = uam::strings::Trim(settings.last_selected_chat_id);
+		}
 	}
 
 } // namespace
 
-bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSettings& settings, const CenterViewMode center_view_mode)
+bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSettings& settings, CenterViewMode center_view_mode)
 {
-	std::error_code ec;
-	std::filesystem::create_directories(settings_file.parent_path(), ec);
+	uam::paths::CreateDirectoriesNoThrow(settings_file.parent_path());
 
 	AppSettings normalized = settings;
 	ClampSettings(normalized);
 
 	std::ostringstream lines;
-	lines << "active_provider_id=" << uam::EncodeLineValue(normalized.active_provider_id) << '\n';
-	lines << "provider_command_template=" << uam::EncodeLineValue(normalized.provider_command_template) << '\n';
-	lines << "provider_yolo_mode=" << (normalized.provider_yolo_mode ? "1" : "0") << '\n';
-	lines << "provider_extra_flags=" << uam::EncodeLineValue(normalized.provider_extra_flags) << '\n';
-	lines << "runtime_backend=provider-cli\n";
-	lines << "cli_idle_timeout_seconds=" << normalized.cli_idle_timeout_seconds << '\n';
-	lines << "center_view_mode=" << ViewModeToString(center_view_mode) << '\n';
-	lines << "ui_theme=" << uam::EncodeLineValue(normalized.ui_theme) << '\n';
-	lines << "confirm_delete_chat=" << (normalized.confirm_delete_chat ? "1" : "0") << '\n';
-	lines << "confirm_delete_folder=" << (normalized.confirm_delete_folder ? "1" : "0") << '\n';
-	lines << "remember_last_chat=" << (normalized.remember_last_chat ? "1" : "0") << '\n';
-	lines << "last_selected_chat_id=" << uam::EncodeLineValue(normalized.last_selected_chat_id) << '\n';
-	lines << "ui_scale_multiplier=" << normalized.ui_scale_multiplier << '\n';
-	lines << "sidebar_width=" << normalized.sidebar_width << '\n';
-	lines << "window_width=" << normalized.window_width << '\n';
-	lines << "window_height=" << normalized.window_height << '\n';
-	lines << "window_maximized=" << (normalized.window_maximized ? "1" : "0") << '\n';
-	lines << "memory_enabled_default=" << (normalized.memory_enabled_default ? "1" : "0") << '\n';
-	lines << "memory_idle_delay_seconds=" << normalized.memory_idle_delay_seconds << '\n';
-	lines << "memory_recall_budget_bytes=" << normalized.memory_recall_budget_bytes << '\n';
-	lines << "memory_worker_bindings=" << EncodeMemoryWorkerBindings(normalized.memory_worker_bindings) << '\n';
-	lines << "default_new_chat_provider_id=" << uam::EncodeLineValue(normalized.default_new_chat_provider_id) << '\n';
-	lines << "provider_chat_defaults=" << EncodeProviderChatDefaults(normalized.provider_chat_defaults) << '\n';
-	lines << "markdown_store_directory=" << uam::EncodeLineValue(normalized.markdown_store_directory) << '\n';
-	lines << "default_editor_preset_id=" << uam::EncodeLineValue(normalized.default_editor_preset_id) << '\n';
-	lines << "editor_default_groups_version=" << normalized.editor_default_groups_version << '\n';
-	lines << "editor_file_associations=" << EncodeEditorFileAssociations(normalized.editor_file_associations) << '\n';
+	WriteEncodedSetting(lines, kActiveProviderIdKey, normalized.active_provider_id);
+	WriteEncodedSetting(lines, kProviderCommandTemplateKey, normalized.provider_command_template);
+	WriteBoolSetting(lines, kProviderYoloModeKey, normalized.provider_yolo_mode);
+	WriteEncodedSetting(lines, kProviderExtraFlagsKey, normalized.provider_extra_flags);
+	WriteRawSetting(lines, kRuntimeBackendKey, kProviderCliRuntimeBackend);
+	WriteSettingValue(lines, kCliIdleTimeoutSecondsKey, normalized.cli_idle_timeout_seconds);
+	WriteRawSetting(lines, kCenterViewModeKey, ViewModeToString(center_view_mode));
+	WriteEncodedSetting(lines, kUiThemeKey, normalized.ui_theme);
+	WriteBoolSetting(lines, kConfirmDeleteChatKey, normalized.confirm_delete_chat);
+	WriteBoolSetting(lines, kConfirmDeleteFolderKey, normalized.confirm_delete_folder);
+	WriteBoolSetting(lines, kRememberLastChatKey, normalized.remember_last_chat);
+	WriteEncodedSetting(lines, kLastSelectedChatIdKey, normalized.last_selected_chat_id);
+	WriteSettingValue(lines, kUiScaleMultiplierKey, normalized.ui_scale_multiplier);
+	WriteSettingValue(lines, kSidebarWidthKey, normalized.sidebar_width);
+	WriteSettingValue(lines, kWindowWidthKey, normalized.window_width);
+	WriteSettingValue(lines, kWindowHeightKey, normalized.window_height);
+	WriteBoolSetting(lines, kWindowMaximizedKey, normalized.window_maximized);
+	WriteBoolSetting(lines, kMemoryEnabledDefaultKey, normalized.memory_enabled_default);
+	WriteSettingValue(lines, kMemoryIdleDelaySecondsKey, normalized.memory_idle_delay_seconds);
+	WriteSettingValue(lines, kMemoryRecallBudgetBytesKey, normalized.memory_recall_budget_bytes);
+	WriteRawSetting(lines, kMemoryWorkerBindingsKey, EncodeMemoryWorkerBindings(normalized.memory_worker_bindings));
+	WriteEncodedSetting(lines, kDefaultNewChatProviderIdKey, normalized.default_new_chat_provider_id);
+	WriteRawSetting(lines, kProviderChatDefaultsKey, EncodeProviderChatDefaults(normalized.provider_chat_defaults));
+	WriteEncodedSetting(lines, kMarkdownStoreDirectoryKey, normalized.markdown_store_directory);
+	WriteEncodedSetting(lines, kDefaultEditorPresetIdKey, normalized.default_editor_preset_id);
+	WriteSettingValue(lines, kEditorDefaultGroupsVersionKey, normalized.editor_default_groups_version);
+	WriteRawSetting(lines, kEditorFileAssociationsKey, EncodeEditorFileAssociations(normalized.editor_file_associations));
 	return uam::io::WriteTextFile(settings_file, lines.str());
 }
 
 void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings& settings, CenterViewMode& center_view_mode)
 {
-	if (!std::filesystem::exists(settings_file))
+	std::string text;
+	if (!uam::io::TryReadTextFile(settings_file, text))
 	{
 		ClampSettings(settings);
 		center_view_mode = CenterViewMode::CliConsole;
 		return;
 	}
 
-	const std::string text = ReadTextFile(settings_file);
 	std::istringstream lines(text);
 	std::string line;
 	bool has_provider_command_template = false;
@@ -545,124 +436,124 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 			continue;
 		}
 
-		const std::string key = line.substr(0, equals_at);
-		const std::string value = line.substr(equals_at + 1);
+		const std::string_view key(line.data(), equals_at);
+		const std::string_view value(line.data() + equals_at + 1, line.size() - equals_at - 1);
 		const std::string decoded_value = uam::DecodeLineValue(value);
 
-		if (key == "active_provider_id")
+		if (key == kActiveProviderIdKey)
 		{
 			settings.active_provider_id = decoded_value;
 		}
-		else if (key == "provider_command_template")
+		else if (key == kProviderCommandTemplateKey)
 		{
 			settings.provider_command_template = decoded_value;
 			has_provider_command_template = true;
 		}
-		else if (key == "provider_yolo_mode")
+		else if (key == kProviderYoloModeKey)
 		{
-			settings.provider_yolo_mode = ParseBool(value, settings.provider_yolo_mode);
+			settings.provider_yolo_mode = uam::parse::BoolOr(value, settings.provider_yolo_mode);
 		}
-		else if (key == "provider_extra_flags")
+		else if (key == kProviderExtraFlagsKey)
 		{
 			settings.provider_extra_flags = decoded_value;
 		}
-		else if (key == "gemini_command_template")
+		else if (key == kLegacyGeminiCommandTemplateKey)
 		{
 			settings.gemini_command_template = decoded_value;
 		}
-		else if (key == "gemini_yolo_mode")
+		else if (key == kLegacyGeminiYoloModeKey)
 		{
-			settings.gemini_yolo_mode = ParseBool(value, settings.gemini_yolo_mode);
+			settings.gemini_yolo_mode = uam::parse::BoolOr(value, settings.gemini_yolo_mode);
 		}
-		else if (key == "gemini_extra_flags")
+		else if (key == kLegacyGeminiExtraFlagsKey)
 		{
 			settings.gemini_extra_flags = decoded_value;
 		}
-		else if (key == "cli_idle_timeout_seconds")
+		else if (key == kCliIdleTimeoutSecondsKey)
 		{
-			settings.cli_idle_timeout_seconds = ParseInt(value, settings.cli_idle_timeout_seconds);
+			settings.cli_idle_timeout_seconds = uam::parse::IntOr(value, settings.cli_idle_timeout_seconds);
 		}
-		else if (key == "center_view_mode")
+		else if (key == kCenterViewModeKey)
 		{
 			center_view_mode = ViewModeFromString(value);
 		}
-		else if (key == "ui_theme")
+		else if (key == kUiThemeKey)
 		{
-			settings.ui_theme = NormalizeThemeId(decoded_value);
+			settings.ui_theme = uam::settings::NormalizeThemeId(decoded_value);
 		}
-		else if (key == "confirm_delete_chat")
+		else if (key == kConfirmDeleteChatKey)
 		{
-			settings.confirm_delete_chat = ParseBool(value, settings.confirm_delete_chat);
+			settings.confirm_delete_chat = uam::parse::BoolOr(value, settings.confirm_delete_chat);
 		}
-		else if (key == "confirm_delete_folder")
+		else if (key == kConfirmDeleteFolderKey)
 		{
-			settings.confirm_delete_folder = ParseBool(value, settings.confirm_delete_folder);
+			settings.confirm_delete_folder = uam::parse::BoolOr(value, settings.confirm_delete_folder);
 		}
-		else if (key == "remember_last_chat")
+		else if (key == kRememberLastChatKey)
 		{
-			settings.remember_last_chat = ParseBool(value, settings.remember_last_chat);
+			settings.remember_last_chat = uam::parse::BoolOr(value, settings.remember_last_chat);
 		}
-		else if (key == "last_selected_chat_id")
+		else if (key == kLastSelectedChatIdKey)
 		{
 			settings.last_selected_chat_id = decoded_value;
 		}
-		else if (key == "ui_scale_multiplier")
+		else if (key == kUiScaleMultiplierKey)
 		{
-			settings.ui_scale_multiplier = ParseFloat(value, settings.ui_scale_multiplier);
+			settings.ui_scale_multiplier = uam::parse::FloatOr(value, settings.ui_scale_multiplier);
 		}
-		else if (key == "sidebar_width")
+		else if (key == kSidebarWidthKey)
 		{
-			settings.sidebar_width = ParseFloat(value, settings.sidebar_width);
+			settings.sidebar_width = uam::parse::FloatOr(value, settings.sidebar_width);
 		}
-		else if (key == "window_width")
+		else if (key == kWindowWidthKey)
 		{
-			settings.window_width = ParseInt(value, settings.window_width);
+			settings.window_width = uam::parse::IntOr(value, settings.window_width);
 		}
-		else if (key == "window_height")
+		else if (key == kWindowHeightKey)
 		{
-			settings.window_height = ParseInt(value, settings.window_height);
+			settings.window_height = uam::parse::IntOr(value, settings.window_height);
 		}
-		else if (key == "window_maximized")
+		else if (key == kWindowMaximizedKey)
 		{
-			settings.window_maximized = ParseBool(value, settings.window_maximized);
+			settings.window_maximized = uam::parse::BoolOr(value, settings.window_maximized);
 		}
-		else if (key == "memory_enabled_default")
+		else if (key == kMemoryEnabledDefaultKey)
 		{
-			settings.memory_enabled_default = ParseBool(value, settings.memory_enabled_default);
+			settings.memory_enabled_default = uam::parse::BoolOr(value, settings.memory_enabled_default);
 		}
-		else if (key == "memory_idle_delay_seconds")
+		else if (key == kMemoryIdleDelaySecondsKey)
 		{
-			settings.memory_idle_delay_seconds = ParseInt(value, settings.memory_idle_delay_seconds);
+			settings.memory_idle_delay_seconds = uam::parse::IntOr(value, settings.memory_idle_delay_seconds);
 		}
-		else if (key == "memory_recall_budget_bytes")
+		else if (key == kMemoryRecallBudgetBytesKey)
 		{
-			settings.memory_recall_budget_bytes = ParseInt(value, settings.memory_recall_budget_bytes);
+			settings.memory_recall_budget_bytes = uam::parse::IntOr(value, settings.memory_recall_budget_bytes);
 		}
-		else if (key == "memory_worker_bindings")
+		else if (key == kMemoryWorkerBindingsKey)
 		{
 			DecodeMemoryWorkerBindings(decoded_value, settings.memory_worker_bindings);
 		}
-		else if (key == "default_new_chat_provider_id")
+		else if (key == kDefaultNewChatProviderIdKey)
 		{
 			settings.default_new_chat_provider_id = decoded_value;
 		}
-		else if (key == "provider_chat_defaults")
+		else if (key == kProviderChatDefaultsKey)
 		{
 			DecodeProviderChatDefaults(decoded_value, settings.provider_chat_defaults);
 		}
-		else if (key == "markdown_store_directory")
+		else if (key == kMarkdownStoreDirectoryKey)
 		{
 			settings.markdown_store_directory = decoded_value;
 		}
-		else if (key == "default_editor_preset_id")
+		else if (key == kDefaultEditorPresetIdKey)
 		{
 			settings.default_editor_preset_id = decoded_value;
 		}
-		else if (key == "editor_default_groups_version")
+		else if (key == kEditorDefaultGroupsVersionKey)
 		{
-			settings.editor_default_groups_version = ParseInt(value, settings.editor_default_groups_version);
+			settings.editor_default_groups_version = uam::parse::IntOr(value, settings.editor_default_groups_version);
 		}
-		else if (key == "editor_file_associations")
+		else if (key == kEditorFileAssociationsKey)
 		{
 			DecodeEditorFileAssociations(decoded_value, settings.editor_file_associations);
 		}

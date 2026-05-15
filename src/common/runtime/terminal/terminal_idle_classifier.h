@@ -1,221 +1,250 @@
 #pragma once
 
-#include <algorithm>
-#include <cctype>
+#include "common/utils/range_utils.h"
+#include "common/utils/string_utils.h"
+
+#include <array>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
-inline std::string StripTerminalControlSequencesForLifecycle(const std::string_view input)
+namespace uam
 {
-	std::string output;
-	output.reserve(input.size());
+	inline constexpr std::size_t kTerminalPromptScanLimit = 8192;
+	inline constexpr auto kGeminiExactPromptLines = std::to_array<std::string_view>({">", ">_"});
+	inline constexpr auto kGeminiPromptCueTexts = std::to_array<std::string_view>({"Type your message", "? for shortcuts"});
+	inline constexpr auto kCodexPromptMarkers = std::to_array<std::string_view>({"\xE2\x80\xBA", "> "});
+	inline constexpr auto kCodexPromptCueTexts = std::to_array<std::string_view>({"Send", "message", "for shortcuts"});
+	inline constexpr int kGeminiPromptRecentLineLimit = 6;
 
-	for (std::size_t i = 0; i < input.size(); ++i)
+	inline std::size_t CountTerminalLineBreaks(std::string_view value)
 	{
-		const unsigned char ch = static_cast<unsigned char>(input[i]);
-
-		if (ch == 0x1B)
+		std::size_t count = 0;
+		for (const char ch : value)
 		{
-			if (i + 1 >= input.size())
+			if (ch == '\n')
+			{
+				++count;
+			}
+		}
+
+		return count;
+	}
+
+	inline std::vector<std::string> SplitTerminalLines(std::string_view value)
+	{
+		std::vector<std::string> lines;
+		lines.reserve(CountTerminalLineBreaks(value) + 1);
+
+		std::string current;
+		current.reserve(value.size());
+		for (const char ch : value)
+		{
+			if (ch == '\n')
+			{
+				lines.push_back(current);
+				current.clear();
+			}
+			else
+			{
+				current.push_back(ch);
+			}
+		}
+
+		lines.push_back(current);
+		return lines;
+	}
+
+	inline bool SkipTerminalEscapeSequence(std::string_view input, std::size_t& index)
+	{
+		if (index + 1 >= input.size())
+		{
+			index = input.size();
+			return false;
+		}
+
+		const unsigned char next = static_cast<unsigned char>(input[index + 1]);
+
+		if (next == '[')
+		{
+			index += 2;
+			while (index < input.size())
+			{
+				const unsigned char seq = static_cast<unsigned char>(input[index]);
+				if (seq >= 0x40 && seq <= 0x7E)
+				{
+					break;
+				}
+				++index;
+			}
+			return true;
+		}
+
+		if (next == ']')
+		{
+			index += 2;
+			while (index < input.size())
+			{
+				const unsigned char seq = static_cast<unsigned char>(input[index]);
+				if (seq == 0x07)
+				{
+					break;
+				}
+				if (seq == 0x1B && index + 1 < input.size() && input[index + 1] == '\\')
+				{
+					++index;
+					break;
+				}
+				++index;
+			}
+			return true;
+		}
+
+		++index;
+		return true;
+	}
+
+	inline std::string StripTerminalControlSequencesForLifecycle(std::string_view input)
+	{
+		std::string output;
+		output.reserve(input.size());
+
+		for (std::size_t i = 0; i < input.size(); ++i)
+		{
+			const unsigned char ch = static_cast<unsigned char>(input[i]);
+
+			if (ch == 0x1B)
+			{
+				if (!SkipTerminalEscapeSequence(input, i))
+				{
+					break;
+				}
+				continue;
+			}
+
+			if (ch == '\b' || ch == 0x7F)
+			{
+				if (!output.empty())
+				{
+					output.pop_back();
+				}
+				continue;
+			}
+
+			if (ch == '\r')
+			{
+				output.push_back('\n');
+				if (i + 1 < input.size() && input[i + 1] == '\n')
+				{
+					++i;
+				}
+				continue;
+			}
+
+			if (ch == '\n' || ch == '\t' || ch >= 0x20)
+			{
+				output.push_back(static_cast<char>(ch));
+			}
+		}
+
+		return output;
+	}
+
+	inline std::string NormalizeGeminiPromptLine(std::string_view line)
+	{
+		std::string normalized = uam::strings::Trim(line);
+
+		while (!normalized.empty())
+		{
+			const unsigned char ch = static_cast<unsigned char>(normalized.front());
+			if (ch == '|' || ch == '>' || ch < 0x80)
 			{
 				break;
 			}
+			normalized.erase(normalized.begin());
+			normalized = uam::strings::Trim(normalized);
+		}
 
-			const unsigned char next = static_cast<unsigned char>(input[i + 1]);
-
-			if (next == '[')
+		while (!normalized.empty())
+		{
+			const unsigned char ch = static_cast<unsigned char>(normalized.back());
+			if (ch < 0x80)
 			{
-				i += 2;
-				while (i < input.size())
-				{
-					const unsigned char seq = static_cast<unsigned char>(input[i]);
-					if (seq >= 0x40 && seq <= 0x7E)
-					{
-						break;
-					}
-					++i;
-				}
+				break;
+			}
+			normalized.pop_back();
+			normalized = uam::strings::Trim(normalized);
+		}
+
+		const auto box_prefix = normalized.find('>');
+		if (box_prefix != std::string::npos)
+		{
+			normalized = uam::strings::Trim(std::string_view(normalized).substr(box_prefix));
+		}
+
+		return normalized;
+	}
+
+	inline std::string RecentTerminalPromptScanText(std::string_view recent_output)
+	{
+		const std::size_t start = recent_output.size() > kTerminalPromptScanLimit ? recent_output.size() - kTerminalPromptScanLimit : 0;
+		return StripTerminalControlSequencesForLifecycle(recent_output.substr(start));
+	}
+
+	inline bool GeminiCliRecentOutputIndicatesInputPrompt(std::string_view recent_output)
+	{
+		const std::string stripped = RecentTerminalPromptScanText(recent_output);
+
+		if (stripped.empty())
+		{
+			return false;
+		}
+
+		const std::vector<std::string> lines = SplitTerminalLines(stripped);
+
+		int inspected = 0;
+		for (auto it = lines.rbegin(); it != lines.rend() && inspected < kGeminiPromptRecentLineLimit; ++it)
+		{
+			std::string line = NormalizeGeminiPromptLine(*it);
+			if (line.empty())
+			{
 				continue;
 			}
 
-			if (next == ']')
+			++inspected;
+			if (uam::ranges::Contains(kGeminiExactPromptLines, std::string_view(line)))
 			{
-				i += 2;
-				while (i < input.size())
-				{
-					const unsigned char seq = static_cast<unsigned char>(input[i]);
-					if (seq == 0x07)
-					{
-						break;
-					}
-					if (seq == 0x1B && i + 1 < input.size() && input[i + 1] == '\\')
-					{
-						++i;
-						break;
-					}
-					++i;
-				}
-				continue;
+				return true;
 			}
 
-			++i;
-			continue;
-		}
-
-		if (ch == '\b' || ch == 0x7F)
-		{
-			if (!output.empty())
+			if (uam::strings::Contains(line, '>') && uam::strings::ContainsAny(line, kGeminiPromptCueTexts))
 			{
-				output.pop_back();
+				return true;
 			}
-			continue;
 		}
 
-		if (ch == '\r')
-		{
-			output.push_back('\n');
-			continue;
-		}
-
-		if (ch == '\n' || ch == '\t' || ch >= 0x20)
-		{
-			output.push_back(static_cast<char>(ch));
-		}
-	}
-
-	return output;
-}
-
-inline std::string TrimAsciiCopy(std::string value)
-{
-	const auto is_space = [](const unsigned char ch)
-	{
-		return std::isspace(ch) != 0;
-	};
-
-	value.erase(value.begin(), std::find_if(value.begin(), value.end(), [&](const char ch)
-	{
-		return !is_space(static_cast<unsigned char>(ch));
-	}));
-
-	value.erase(std::find_if(value.rbegin(), value.rend(), [&](const char ch)
-	{
-		return !is_space(static_cast<unsigned char>(ch));
-	}).base(), value.end());
-
-	return value;
-}
-
-inline std::string NormalizeGeminiPromptLine(std::string line)
-{
-	line = TrimAsciiCopy(std::move(line));
-
-	while (!line.empty())
-	{
-		const unsigned char ch = static_cast<unsigned char>(line.front());
-		if (ch == '|' || ch == '>' || ch < 0x80)
-		{
-			break;
-		}
-		line.erase(line.begin());
-		line = TrimAsciiCopy(std::move(line));
-	}
-
-	while (!line.empty())
-	{
-		const unsigned char ch = static_cast<unsigned char>(line.back());
-		if (ch < 0x80)
-		{
-			break;
-		}
-		line.pop_back();
-		line = TrimAsciiCopy(std::move(line));
-	}
-
-	const auto box_prefix = line.find('>');
-	if (box_prefix != std::string::npos)
-	{
-		line = TrimAsciiCopy(line.substr(box_prefix));
-	}
-
-	return line;
-}
-
-inline bool GeminiCliRecentOutputIndicatesInputPrompt(const std::string_view recent_output)
-{
-	constexpr std::size_t kPromptScanLimit = 8192;
-	const std::size_t start = recent_output.size() > kPromptScanLimit ? recent_output.size() - kPromptScanLimit : 0;
-	const std::string stripped = StripTerminalControlSequencesForLifecycle(recent_output.substr(start));
-
-	if (stripped.empty())
-	{
 		return false;
 	}
 
-	std::vector<std::string> lines;
-	std::string current;
-	for (const char ch : stripped)
+	inline bool CodexCliRecentOutputIndicatesInputPrompt(std::string_view recent_output)
 	{
-		if (ch == '\n')
+		const std::string stripped = RecentTerminalPromptScanText(recent_output);
+		if (stripped.empty())
 		{
-			lines.push_back(current);
-			current.clear();
-		}
-		else
-		{
-			current.push_back(ch);
-		}
-	}
-	lines.push_back(current);
-
-	int inspected = 0;
-	for (auto it = lines.rbegin(); it != lines.rend() && inspected < 6; ++it)
-	{
-		std::string line = NormalizeGeminiPromptLine(*it);
-		if (line.empty())
-		{
-			continue;
+			return false;
 		}
 
-		++inspected;
-		if (line == ">" || line == "> " || line == ">_")
+		if (uam::strings::ContainsAny(stripped, kCodexPromptMarkers) && uam::strings::ContainsAny(stripped, kCodexPromptCueTexts))
 		{
 			return true;
 		}
 
-		if (line.find("Type your message") != std::string::npos && line.find('>') != std::string::npos)
-		{
-			return true;
-		}
-
-		if (line.find("? for shortcuts") != std::string::npos && line.find('>') != std::string::npos)
-		{
-			return true;
-		}
-	}
-
-	return false;
-}
-
-inline bool CodexCliRecentOutputIndicatesInputPrompt(const std::string_view recent_output)
-{
-	constexpr std::size_t kPromptScanLimit = 8192;
-	const std::size_t start = recent_output.size() > kPromptScanLimit ? recent_output.size() - kPromptScanLimit : 0;
-	const std::string stripped = StripTerminalControlSequencesForLifecycle(recent_output.substr(start));
-	if (stripped.empty())
-	{
 		return false;
 	}
 
-	if (stripped.find("\xE2\x80\xBA") != std::string::npos || stripped.find("> ") != std::string::npos)
+	inline bool FallbackCliRecentOutputIndicatesInputPrompt(std::string_view recent_output)
 	{
-		if (stripped.find("Send") != std::string::npos || stripped.find("message") != std::string::npos || stripped.find("for shortcuts") != std::string::npos)
-		{
-			return true;
-		}
+		return GeminiCliRecentOutputIndicatesInputPrompt(recent_output);
 	}
 
-	return false;
-}
+} // namespace uam

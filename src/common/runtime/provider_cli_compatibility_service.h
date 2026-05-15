@@ -1,7 +1,7 @@
-#ifndef UAM_COMMON_RUNTIME_PROVIDER_CLI_COMPATIBILITY_SERVICE_H
-#define UAM_COMMON_RUNTIME_PROVIDER_CLI_COMPATIBILITY_SERVICE_H
+#pragma once
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace uam
@@ -17,20 +17,20 @@ struct CliProviderVersionOption
 
 class ProviderCliCompatibilityService
 {
-  public:
+ public:
 	void StartVersionCheck(uam::AppState& app, bool force) const;
-	void StartProviderVersionCheck(uam::AppState& app, const std::string& provider_id, bool force) const;
+	void StartProviderVersionCheck(uam::AppState& app, std::string_view provider_id, bool force) const;
 	void StartPinToSupported(uam::AppState& app) const;
-	bool StartInstallProviderVersion(uam::AppState& app, const std::string& provider_id, const std::string& version, std::string* error_out = nullptr) const;
+	bool StartInstallProviderVersion(uam::AppState& app, std::string_view provider_id, std::string_view version, std::string* error_out = nullptr) const;
 	void Poll(uam::AppState& app) const;
-	std::vector<CliProviderVersionOption> SupportedVersionsForProvider(const std::string& provider_id) const;
-	std::string PreferredVersionForProvider(const std::string& provider_id) const;
-	bool IsSupportedVersionForProvider(const std::string& provider_id, const std::string& version) const;
-	std::string VersionProbeCommandForProvider(const std::string& provider_id) const;
-	std::string InstallCommandForProviderVersion(const std::string& provider_id, const std::string& version) const;
+	std::vector<CliProviderVersionOption> SupportedVersionsForProvider(std::string_view provider_id) const;
+	std::string PreferredVersionForProvider(std::string_view provider_id) const;
+	bool IsSupportedVersionForProvider(std::string_view provider_id, std::string_view version) const;
+	std::string VersionProbeCommandForProvider(std::string_view provider_id) const;
+	std::string InstallCommandForProviderVersion(std::string_view provider_id, std::string_view version) const;
 };
 
-std::string BuildCliProviderVersionProbeCommandForTests(const std::string& provider_id);
-std::string BuildCliProviderInstallCommandForTests(const std::string& provider_id, const std::string& version);
-
-#endif // UAM_COMMON_RUNTIME_PROVIDER_CLI_COMPATIBILITY_SERVICE_H
+std::string BuildCliProviderVersionProbeCommandForTests(std::string_view provider_id);
+std::string BuildCliProviderInstallCommandForTests(std::string_view provider_id, std::string_view version);
+std::string ExtractCliProviderSemverVersionForTests(std::string_view output);
+bool CliProviderVersionOutputIndicatesMissingCommandForTests(std::string_view output);

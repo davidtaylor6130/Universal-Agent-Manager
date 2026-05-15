@@ -6,14 +6,14 @@ export interface Session {
   viewMode: ViewMode
   folderId: string | null
   isPinned?: boolean
-	  providerId?: string
-	  workspaceDirectory?: string
-	  workspaceIsolationKind?: string
-	  workspaceSourceDirectory?: string
-	  workspaceBaseRef?: string
-	  workspaceBranchName?: string
-	  workspaceWorktreeDirectory?: string
-	  modelId?: string
+  providerId?: string
+  workspaceDirectory?: string
+  workspaceIsolationKind?: string
+  workspaceSourceDirectory?: string
+  workspaceBaseRef?: string
+  workspaceBranchName?: string
+  workspaceWorktreeDirectory?: string
+  modelId?: string
   reasoningEffort?: string
   serviceTier?: string
   approvalMode?: string

@@ -2,28 +2,28 @@
 
 #include <algorithm>
 #include <string>
+#include <string_view>
 
 #include "app/chat_domain_service.h"
 #include "common/platform/platform_services.h"
 #include "common/runtime/app_time.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/runtime/terminal/terminal_identity.h"
+#include "common/runtime/terminal/terminal_lifecycle_states.h"
 #include "common/state/app_state.h"
 
-// ---------------------------------------------------------------------------
-// VTerm is replaced by xterm.js; stub so existing callers compile cleanly.
-// ---------------------------------------------------------------------------
-inline void FreeCliTerminalVTerm(uam::CliTerminalState& /*terminal*/)
+namespace uam
 {
-	// No-op: terminal rendering is handled by xterm.js in the frontend.
-}
 
-inline void CloseCliTerminalHandles(uam::CliTerminalState& terminal)
+inline constexpr double kCliTerminalDefaultIdleShutdownTimeoutSeconds = 60.0;
+inline constexpr std::string_view kCliTerminalQuitCommand = "/quit\r\n";
+
+inline void CloseCliTerminalHandles(CliTerminalState& terminal)
 {
 	PlatformServicesFactory::Instance().terminal_runtime.CloseCliTerminalHandles(terminal);
 }
 
-inline bool WriteToCliTerminal(uam::CliTerminalState& terminal, const char* bytes, const std::size_t len)
+inline bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, std::size_t len)
 {
 	const bool wrote = PlatformServicesFactory::Instance().terminal_runtime.WriteToCliTerminal(terminal, bytes, len);
 	if (wrote && bytes != nullptr && len > 0)
@@ -35,137 +35,145 @@ inline bool WriteToCliTerminal(uam::CliTerminalState& terminal, const char* byte
 	return wrote;
 }
 
-inline const char* CliTerminalLifecycleStateLabel(const uam::CliTerminalLifecycleState state)
+inline const char* CliTerminalLifecycleStateLabel(CliTerminalLifecycleState state)
 {
 	switch (state)
 	{
-	case uam::CliTerminalLifecycleState::Disabled:     return "disabled";
-	case uam::CliTerminalLifecycleState::Stopped:      return "stopped";
-	case uam::CliTerminalLifecycleState::Idle:         return "idle";
-	case uam::CliTerminalLifecycleState::Busy:         return "busy";
-	case uam::CliTerminalLifecycleState::ShuttingDown: return "shuttingDown";
+	case CliTerminalLifecycleState::Disabled:     return "disabled";
+	case CliTerminalLifecycleState::Stopped:      return "stopped";
+	case CliTerminalLifecycleState::Idle:         return "idle";
+	case CliTerminalLifecycleState::Busy:         return "busy";
+	case CliTerminalLifecycleState::ShuttingDown: return "shuttingDown";
 	}
 
 	return "stopped";
 }
 
-inline const char* CliTerminalLifecycleStateLabel(const uam::CliTerminalState& terminal)
+inline const char* CliTerminalLifecycleStateLabel(const CliTerminalState& terminal)
 {
 	return CliTerminalLifecycleStateLabel(terminal.lifecycle_state);
 }
 
-inline bool CliTerminalLifecycleIsProcessing(const uam::CliTerminalState& terminal)
+inline bool CliTerminalLifecycleIsProcessing(const CliTerminalState& terminal)
 {
-	return terminal.running &&
-	       (terminal.lifecycle_state == uam::CliTerminalLifecycleState::Busy ||
-	        terminal.lifecycle_state == uam::CliTerminalLifecycleState::ShuttingDown);
+	return terminal.running && CliTerminalLifecycleStateIsProcessing(terminal.lifecycle_state);
 }
 
-inline bool CliTerminalLifecycleIsIdleLive(const uam::CliTerminalState& terminal)
+inline bool CliTerminalLifecycleIsIdleLive(const CliTerminalState& terminal)
 {
-	return terminal.running && terminal.lifecycle_state == uam::CliTerminalLifecycleState::Idle;
+	return terminal.running && terminal.lifecycle_state == CliTerminalLifecycleState::Idle;
 }
 
-inline void MarkCliTerminalTurnBusy(uam::CliTerminalState& terminal)
+inline void MarkCliTerminalTurnBusy(CliTerminalState& terminal)
 {
 	const double now = GetAppTimeSeconds();
-	terminal.lifecycle_state = uam::CliTerminalLifecycleState::Busy;
-	terminal.turn_state = uam::CliTerminalTurnState::Busy;
+	terminal.lifecycle_state = CliTerminalLifecycleState::Busy;
+	terminal.turn_state = CliTerminalTurnState::Busy;
 	terminal.generation_in_progress = true;
 	terminal.last_busy_time_s = now;
 	terminal.shutdown_requested_time_s = 0.0;
 }
 
-inline void MarkCliTerminalTurnIdle(uam::CliTerminalState& terminal)
+inline void MarkCliTerminalTurnIdle(CliTerminalState& terminal)
 {
 	const double now = GetAppTimeSeconds();
-	terminal.lifecycle_state = terminal.running ? uam::CliTerminalLifecycleState::Idle : uam::CliTerminalLifecycleState::Stopped;
-	terminal.turn_state = uam::CliTerminalTurnState::Idle;
+	terminal.lifecycle_state = terminal.running ? CliTerminalLifecycleState::Idle : CliTerminalLifecycleState::Stopped;
+	terminal.turn_state = CliTerminalTurnState::Idle;
 	terminal.generation_in_progress = false;
 	terminal.last_idle_confirmed_time_s = now;
 	terminal.shutdown_requested_time_s = 0.0;
 }
 
-inline bool IsCliTerminalTurnBusy(const uam::CliTerminalState& terminal)
+inline bool IsCliTerminalTurnBusy(const CliTerminalState& terminal)
 {
-	return terminal.lifecycle_state == uam::CliTerminalLifecycleState::Busy ||
-	       terminal.turn_state == uam::CliTerminalTurnState::Busy;
+	return terminal.lifecycle_state == CliTerminalLifecycleState::Busy ||
+	       terminal.turn_state == CliTerminalTurnState::Busy;
 }
 
-inline void MarkCliTerminalShuttingDown(uam::CliTerminalState& terminal)
+inline void MarkCliTerminalShuttingDown(CliTerminalState& terminal)
 {
 	const double now = GetAppTimeSeconds();
-	terminal.lifecycle_state = uam::CliTerminalLifecycleState::ShuttingDown;
-	terminal.turn_state = uam::CliTerminalTurnState::Busy;
+	terminal.lifecycle_state = CliTerminalLifecycleState::ShuttingDown;
+	terminal.turn_state = CliTerminalTurnState::Busy;
 	terminal.generation_in_progress = false;
 	terminal.shutdown_requested_time_s = now;
 }
 
-inline void MarkCliTerminalStopped(uam::CliTerminalState& terminal)
+inline void MarkCliTerminalStopped(CliTerminalState& terminal)
 {
-	terminal.lifecycle_state = uam::CliTerminalLifecycleState::Stopped;
-	terminal.turn_state = uam::CliTerminalTurnState::Idle;
+	terminal.lifecycle_state = CliTerminalLifecycleState::Stopped;
+	terminal.turn_state = CliTerminalTurnState::Idle;
 	terminal.generation_in_progress = false;
 	terminal.last_idle_confirmed_time_s = 0.0;
 	terminal.last_busy_time_s = 0.0;
 	terminal.shutdown_requested_time_s = 0.0;
 }
 
-inline void MarkCliTerminalDisabled(uam::CliTerminalState& terminal)
+inline void MarkCliTerminalDisabled(CliTerminalState& terminal)
 {
 	MarkCliTerminalStopped(terminal);
-	terminal.lifecycle_state = uam::CliTerminalLifecycleState::Disabled;
+	terminal.lifecycle_state = CliTerminalLifecycleState::Disabled;
 }
 
-inline void ClearCliReadyForChat(uam::AppState& app, const std::string& chat_id)
+inline void ClearCliReadyForChat(AppState& app, std::string_view chat_id)
 {
-	if (chat_id.empty())
+	const std::string_view target_id = TrimCliTerminalIdentityView(chat_id);
+	if (target_id.empty())
 	{
 		return;
 	}
 
-	app.chats_with_unseen_updates.erase(chat_id);
+	app.chats_with_unseen_updates.erase(std::string(target_id));
 }
 
-inline void RequestCliTerminalQuit(uam::CliTerminalState& terminal)
+inline void RequestCliTerminalQuit(CliTerminalState& terminal)
 {
-	if (!terminal.running || !uam::platform::CliTerminalHasWritableInput(terminal))
+	if (!terminal.running || !platform::CliTerminalHasWritableInput(terminal))
+	{
 		return;
+	}
 
-	static constexpr char kQuitCommand[] = "/quit\r\n";
-	(void)WriteToCliTerminal(terminal, kQuitCommand, sizeof(kQuitCommand) - 1);
+	(void)WriteToCliTerminal(terminal, kCliTerminalQuitCommand.data(), kCliTerminalQuitCommand.size());
 }
 
-inline void BeginCliTerminalIdleShutdown(uam::CliTerminalState& terminal)
+inline void BeginCliTerminalIdleShutdown(CliTerminalState& terminal)
 {
 	RequestCliTerminalQuit(terminal);
 	MarkCliTerminalShuttingDown(terminal);
 }
 
-inline bool CliTerminalHasPendingCall(const uam::AppState& app, const uam::CliTerminalState& terminal)
+inline bool PendingCallMatchesCliTerminalIdentity(const AppState& app, std::string_view identity)
 {
-	const std::string primary_chat_id = CliTerminalPrimaryChatId(terminal);
-
-	if (!primary_chat_id.empty() && HasPendingCallForChat(app, primary_chat_id))
-	{
-		return true;
-	}
-
-	if (!terminal.attached_chat_id.empty() && terminal.attached_chat_id != primary_chat_id && HasPendingCallForChat(app, terminal.attached_chat_id))
-	{
-		return true;
-	}
-
-	return !terminal.attached_session_id.empty() && HasPendingCallForChat(app, terminal.attached_session_id);
+	const std::string_view target_id = TrimCliTerminalIdentityView(identity);
+	return !target_id.empty() && HasPendingCallForChat(app, target_id);
 }
 
-inline bool IsCliTerminalEligibleForBackgroundIdleShutdown(const uam::AppState& app,
-                                                           const uam::CliTerminalState& terminal,
-                                                           const std::string& selected_chat_id,
-                                                           const double now,
-                                                           const double idle_timeout_seconds = 60.0)
+inline bool CliTerminalHasPendingCall(const AppState& app, const CliTerminalState& terminal)
 {
-	if (!terminal.running || terminal.ui_attached || terminal.lifecycle_state != uam::CliTerminalLifecycleState::Idle)
+	const std::string primary_chat_id = CliTerminalPrimaryChatId(terminal);
+	const std::string attached_chat_id = CliTerminalAttachedChatId(terminal);
+	const std::string attached_session_id = CliTerminalAttachedSessionId(terminal);
+
+	if (PendingCallMatchesCliTerminalIdentity(app, primary_chat_id))
+	{
+		return true;
+	}
+
+	if (attached_chat_id != primary_chat_id && PendingCallMatchesCliTerminalIdentity(app, attached_chat_id))
+	{
+		return true;
+	}
+
+	return PendingCallMatchesCliTerminalIdentity(app, attached_session_id);
+}
+
+inline bool IsCliTerminalEligibleForBackgroundIdleShutdown(const AppState& app,
+                                                           const CliTerminalState& terminal,
+                                                           std::string_view selected_chat_id,
+                                                           double now,
+                                                           double idle_timeout_seconds = kCliTerminalDefaultIdleShutdownTimeoutSeconds)
+{
+	if (!terminal.running || terminal.ui_attached || terminal.lifecycle_state != CliTerminalLifecycleState::Idle)
 	{
 		return false;
 	}
@@ -194,12 +202,11 @@ enum class CliTerminalStopMode
 	FastExit,
 };
 
-inline void StopCliTerminal(uam::CliTerminalState& terminal, const bool clear_identity = false, const CliTerminalStopMode stop_mode = CliTerminalStopMode::Graceful)
+inline void StopCliTerminal(CliTerminalState& terminal, bool clear_identity = false, CliTerminalStopMode stop_mode = CliTerminalStopMode::Graceful)
 {
 	PlatformServicesFactory::Instance().terminal_runtime.StopCliTerminalProcess(terminal, stop_mode == CliTerminalStopMode::FastExit);
 
 	CloseCliTerminalHandles(terminal);
-	FreeCliTerminalVTerm(terminal);
 	terminal.running = false;
 	terminal.input_ready = false;
 	terminal.startup_time_s = 0.0;
@@ -221,57 +228,68 @@ inline void StopCliTerminal(uam::CliTerminalState& terminal, const bool clear_id
 	}
 }
 
-inline uam::CliTerminalState* FindCliTerminalForChat(uam::AppState& app, const std::string& chat_id)
+inline CliTerminalState* FindCliTerminalForChat(AppState& app, std::string_view chat_id)
 {
-	for (auto& terminal : app.cli_terminals)
-	{
-		if (terminal != nullptr && CliTerminalMatchesChatId(*terminal, chat_id))
-			return terminal.get();
-	}
-	return nullptr;
+	const auto found = std::ranges::find_if(app.cli_terminals, [&chat_id](const std::unique_ptr<CliTerminalState>& terminal) {
+		return terminal != nullptr && CliTerminalMatchesChatId(*terminal, chat_id);
+	});
+	return found == app.cli_terminals.end() ? nullptr : found->get();
 }
 
-inline void StopAndEraseCliTerminalForChat(uam::AppState& app, const std::string& chat_id, const bool sync_to_history = true)
+inline void SyncCliTerminalToNativeHistory(AppState& app, const CliTerminalState& terminal)
 {
-	auto matches_chat_terminal = [&](std::unique_ptr<uam::CliTerminalState>& terminal)
+	const std::string sync_target_id = CliTerminalSyncTargetId(terminal);
+	if (!sync_target_id.empty())
+	{
+		SyncChatsFromNative(app, sync_target_id, true);
+	}
+}
+
+inline void StopAndEraseCliTerminalForChat(AppState& app, std::string_view chat_id, bool sync_to_history = true)
+{
+	auto matches_chat_terminal = [&](std::unique_ptr<CliTerminalState>& terminal)
 	{
 		if (terminal == nullptr || !CliTerminalMatchesChatId(*terminal, chat_id))
+		{
 			return false;
+		}
 
-		const std::string sync_target_id = CliTerminalSyncTargetId(*terminal);
-		if (sync_to_history && !sync_target_id.empty())
-			SyncChatsFromNative(app, sync_target_id, true);
+		if (sync_to_history)
+		{
+			SyncCliTerminalToNativeHistory(app, *terminal);
+		}
 
 		StopCliTerminal(*terminal, true, CliTerminalStopMode::FastExit);
 		return true;
 	};
 
-	app.cli_terminals.erase(std::remove_if(app.cli_terminals.begin(), app.cli_terminals.end(), matches_chat_terminal), app.cli_terminals.end());
+	std::erase_if(app.cli_terminals, matches_chat_terminal);
 }
 
-inline void StopAllCliTerminals(uam::AppState& app, const bool clear_identity = true)
+inline void StopAllCliTerminals(AppState& app, bool clear_identity = true)
 {
 	for (auto& terminal : app.cli_terminals)
 	{
 		if (terminal != nullptr)
 		{
-			const std::string sync_target_id = CliTerminalSyncTargetId(*terminal);
-			if (!sync_target_id.empty())
-				SyncChatsFromNative(app, sync_target_id, true);
+			SyncCliTerminalToNativeHistory(app, *terminal);
 			StopCliTerminal(*terminal, clear_identity);
 		}
 	}
 }
 
-inline void FastStopCliTerminalsForExit(uam::AppState& app)
+inline void FastStopCliTerminalsForExit(AppState& app)
 {
 	for (const auto& terminal_ptr : app.cli_terminals)
 	{
 		if (terminal_ptr == nullptr)
+		{
 			continue;
-		const std::string sync_target_id = CliTerminalSyncTargetId(*terminal_ptr);
-		if (!sync_target_id.empty())
-			SyncChatsFromNative(app, sync_target_id, true);
+		}
+
+		SyncCliTerminalToNativeHistory(app, *terminal_ptr);
 		StopCliTerminal(*terminal_ptr, true, CliTerminalStopMode::FastExit);
 	}
 }
+
+} // namespace uam

@@ -1,6 +1,4 @@
-#ifndef UAM_APP_NATIVE_SESSION_LINK_SERVICE_H
-#define UAM_APP_NATIVE_SESSION_LINK_SERVICE_H
-
+#pragma once
 
 #include "common/state/app_state.h"
 
@@ -14,17 +12,10 @@ class NativeSessionLinkService
   public:
 	bool IsLocalDraftChatId(const std::string& chat_id) const;
 	bool HasRealNativeSessionId(const ChatSession& chat) const;
-	std::optional<std::string> MatchNativeSessionIdForLocalDraft(const ChatSession& local_chat,
-	                                                            const std::vector<ChatSession>& native_chats,
-	                                                            const std::unordered_set<std::string>& blocked_ids = {}) const;
-	std::optional<std::string> InferNativeSessionIdForLocalDraft(const ChatSession& local_chat,
-	                                                            const std::vector<ChatSession>& native_chats) const;
-	std::vector<std::string> CollectNewSessionIds(const std::vector<ChatSession>& loaded_chats,
-	                                              const std::vector<std::string>& existing_ids) const;
-	std::string PickFirstUnblockedSessionId(const std::vector<std::string>& candidate_ids,
-	                                        const std::unordered_set<std::string>& blocked_ids) const;
-	bool SessionIdExistsInLoadedChats(const std::vector<ChatSession>& loaded_chats,
-	                                 const std::string& session_id) const;
+	std::string RealNativeSessionId(const ChatSession& chat) const;
+	std::optional<std::string> MatchNativeSessionIdForLocalDraft(const ChatSession& local_chat, const std::vector<ChatSession>& native_chats, const std::unordered_set<std::string>& blocked_ids = {}) const;
+	std::optional<std::string> InferNativeSessionIdForLocalDraft(const ChatSession& local_chat, const std::vector<ChatSession>& native_chats) const;
+	std::vector<std::string> CollectNewSessionIds(const std::vector<ChatSession>& loaded_chats, const std::vector<std::string>& existing_ids) const;
+	std::string PickFirstUnblockedSessionId(const std::vector<std::string>& candidate_ids, const std::unordered_set<std::string>& blocked_ids) const;
+	bool SessionIdExistsInLoadedChats(const std::vector<ChatSession>& loaded_chats, const std::string& session_id) const;
 };
-
-#endif // UAM_APP_NATIVE_SESSION_LINK_SERVICE_H

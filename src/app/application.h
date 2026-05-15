@@ -1,5 +1,4 @@
-#ifndef UAM_APP_APPLICATION_H
-#define UAM_APP_APPLICATION_H
+#pragma once
 
 #include "cef/cef_includes.h"
 #include "common/platform/platform_services.h"
@@ -17,10 +16,10 @@ class Application
   public:
 	Application();
 	~Application();
-	Application(const Application&)            = delete;
+	Application(const Application&) = delete;
 	Application& operator=(const Application&) = delete;
-	Application(Application&&)                 = delete;
-	Application& operator=(Application&&)      = delete;
+	Application(Application&&) = delete;
+	Application& operator=(Application&&) = delete;
 
 	/// <summary>
 	/// Called from main() once CEF has been initialized.
@@ -35,12 +34,12 @@ class Application
 	void PollTick();
 
   private:
-	uam::AppState        m_app;
-	PlatformServices*    m_platformServices  = nullptr;
+	uam::AppState m_app;
+	PlatformServices* m_platformServices = nullptr;
 	std::unique_ptr<uam::platform::DataRootLock> m_dataRootLock;
 	CefRefPtr<CefBrowser> m_browser;
-	bool                 m_done              = false;
-	int                  m_exitCode          = 0;
+	bool m_done = false;
+	int m_exitCode = 0;
 
 	// ---- startup / teardown -----------------------------------------------
 	bool InitializeState();
@@ -54,5 +53,3 @@ class Application
 	// ---- CEF ready callback -----------------------------------------------
 	void OnBrowserReady(CefRefPtr<CefBrowser> browser);
 };
-
-#endif // UAM_APP_APPLICATION_H

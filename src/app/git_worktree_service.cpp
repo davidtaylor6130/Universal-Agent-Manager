@@ -1,75 +1,33 @@
 #include "app/git_worktree_service.h"
 
-#include "app/application_core_helpers.h"
 #include "app/persistence_coordinator.h"
 #include "app/provider_resolution_service.h"
 #include "common/chat/chat_repository.h"
+#include "common/paths/path_utils.h"
+#include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
 #include "common/provider/provider_runtime.h"
-
-#include <chrono>
-#include <cctype>
-#include <fstream>
-#include <sstream>
+#include "common/utils/hash_utils.h"
+#include "common/utils/io_utils.h"
+#include "common/utils/shell_escape.h"
+#include "common/utils/string_utils.h"
+#include "common/utils/time_utils.h"
 
 namespace uam
 {
 	namespace
 	{
-		constexpr const char* kGitWorktreeIsolationKind = "gitWorktree";
+		constexpr int kDefaultGitCommandTimeoutMs = 120000;
 
-		std::string ShellQuote(const std::string& value)
-		{
-	#if defined(_WIN32)
-			std::string escaped = "\"";
-			for (const char ch : value)
-			{
-				if (ch == '"')
-				{
-					escaped += "\"\"";
-				}
-				else if (ch == '%')
-				{
-					escaped += "%%";
-				}
-				else if (ch == '\r' || ch == '\n')
-				{
-					escaped.push_back(' ');
-				}
-				else
-				{
-					escaped.push_back(ch);
-				}
-			}
-			escaped.push_back('"');
-			return escaped;
-	#else
-			std::string escaped = "'";
-			for (const char ch : value)
-			{
-				if (ch == '\'')
-				{
-					escaped += "'\\''";
-				}
-				else
-				{
-					escaped.push_back(ch);
-				}
-			}
-			escaped.push_back('\'');
-			return escaped;
-	#endif
-		}
-
-		ProcessExecutionResult RunCommand(const std::string& command, const int timeout_ms = 120000)
+		ProcessExecutionResult RunCommand(const std::string& command, int timeout_ms = kDefaultGitCommandTimeoutMs)
 		{
 			return PlatformServicesFactory::Instance().process_service.ExecuteCommand(command, timeout_ms);
 		}
 
 		std::string CommandOutputOrError(const ProcessExecutionResult& result)
 		{
-			std::string detail = Trim(result.output);
-			const std::string error = Trim(result.error);
+			std::string detail = uam::strings::Trim(result.output);
+			const std::string error = uam::strings::Trim(result.error);
 			if (!error.empty())
 			{
 				if (!detail.empty())
@@ -81,9 +39,14 @@ namespace uam
 			return detail;
 		}
 
-		std::string GitC(const std::filesystem::path& cwd, const std::string& args)
+		std::string CommandOutputOrFallback(const ProcessExecutionResult& result, const std::string& fallback)
 		{
-			return "git -C " + ShellQuote(cwd.string()) + " " + args;
+			return uam::strings::NonEmptyOrFallback(CommandOutputOrError(result), fallback);
+		}
+
+		std::string BuildGitCommandInDirectory(const std::filesystem::path& cwd, const std::string& args)
+		{
+			return "git -C " + uam::shell::EscapeArg(cwd.string()) + " " + args;
 		}
 
 		bool CommandSucceeded(const ProcessExecutionResult& result)
@@ -91,9 +54,38 @@ namespace uam
 			return result.ok && !result.timed_out && !result.canceled && result.exit_code == 0;
 		}
 
+		bool GitCommand(const std::filesystem::path& cwd, const std::string& args, std::string* error_out = nullptr)
+		{
+			if (error_out != nullptr)
+			{
+				error_out->clear();
+			}
+
+			const ProcessExecutionResult result = RunCommand(BuildGitCommandInDirectory(cwd, args));
+			if (CommandSucceeded(result))
+			{
+				return true;
+			}
+
+			if (error_out != nullptr)
+			{
+				*error_out = CommandOutputOrError(result);
+			}
+			return false;
+		}
+
 		bool GitOutput(const std::filesystem::path& cwd, const std::string& args, std::string* output_out, std::string* error_out = nullptr)
 		{
-			const ProcessExecutionResult result = RunCommand(GitC(cwd, args));
+			if (output_out != nullptr)
+			{
+				output_out->clear();
+			}
+			if (error_out != nullptr)
+			{
+				error_out->clear();
+			}
+
+			const ProcessExecutionResult result = RunCommand(BuildGitCommandInDirectory(cwd, args));
 			if (!CommandSucceeded(result))
 			{
 				if (error_out != nullptr)
@@ -104,28 +96,27 @@ namespace uam
 			}
 			if (output_out != nullptr)
 			{
-				*output_out = Trim(result.output);
+				*output_out = uam::strings::Trim(result.output);
 			}
 			return true;
 		}
 
 		std::filesystem::path EffectiveSourceWorkspace(const AppState& app, const ChatSession& chat)
 		{
-			if (Trim(chat.workspace_isolation_kind) == kGitWorktreeIsolationKind && !Trim(chat.workspace_source_directory).empty())
+			if (uam::paths::HasGitWorktreeSource(chat))
 			{
-				return PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(chat.workspace_source_directory);
+				return PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(uam::strings::Trim(chat.workspace_source_directory));
 			}
 
 			ChatSession source_chat = chat;
 			source_chat.workspace_isolation_kind.clear();
 			source_chat.workspace_worktree_directory.clear();
-			return ResolveWorkspaceRootPath(app, source_chat);
+			return uam::paths::ResolveWorkspaceRootPath(app, source_chat);
 		}
 
 		bool IsSvnWorkspace(const std::filesystem::path& workspace)
 		{
-			std::error_code ec;
-			if (std::filesystem::exists(workspace / ".svn", ec) && !ec)
+			if (uam::paths::PathExistsNoThrow(workspace / ".svn"))
 			{
 				return true;
 			}
@@ -133,7 +124,7 @@ namespace uam
 			std::filesystem::path current = workspace;
 			while (!current.empty() && current.has_parent_path() && current != current.parent_path())
 			{
-				if (std::filesystem::exists(current / ".svn", ec) && !ec)
+				if (uam::paths::PathExistsNoThrow(current / ".svn"))
 				{
 					return true;
 				}
@@ -144,7 +135,8 @@ namespace uam
 
 		std::filesystem::path WorktreeRootForChat(const AppState& app, const std::filesystem::path& source_root, const std::string& chat_id)
 		{
-			const std::string repo_key = Hex64(Fnv1a64(source_root.lexically_normal().generic_string()));
+			const std::string normalized_source_root = uam::paths::NormalizedPortablePathString(source_root);
+			const std::string repo_key = uam::hashing::Hex64(uam::hashing::Fnv1a64(normalized_source_root));
 			return app.data_root / "worktrees" / repo_key / chat_id;
 		}
 
@@ -154,7 +146,7 @@ namespace uam
 			safe.reserve(chat_id.size());
 			for (const unsigned char ch : chat_id)
 			{
-				if (std::isalnum(ch) || ch == '-' || ch == '_' || ch == '.')
+				if (uam::strings::IsAsciiAlnum(ch) || ch == '-' || ch == '_' || ch == '.')
 				{
 					safe.push_back(static_cast<char>(ch));
 				}
@@ -163,17 +155,25 @@ namespace uam
 					safe.push_back('-');
 				}
 			}
-			return "uam/" + (safe.empty() ? std::string("chat") : safe);
+			return "uam/" + uam::strings::NonEmptyOrFallback(safe, "chat");
 		}
 
 		bool IsDirty(const std::filesystem::path& repo, bool* dirty_out, std::string* error_out = nullptr)
 		{
+			if (dirty_out != nullptr)
+			{
+				*dirty_out = false;
+			}
+
 			std::string status;
 			if (!GitOutput(repo, "status --porcelain", &status, error_out))
 			{
 				return false;
 			}
-			*dirty_out = !Trim(status).empty();
+			if (dirty_out != nullptr)
+			{
+				*dirty_out = !uam::strings::IsBlank(status);
+			}
 			return true;
 		}
 
@@ -184,7 +184,7 @@ namespace uam
 			{
 				if (error_out != nullptr)
 				{
-					*error_out = app.status_line.empty() ? "Failed to persist chat worktree metadata." : app.status_line;
+					*error_out = uam::strings::NonEmptyOrFallback(app.status_line, "Failed to persist chat worktree metadata.");
 				}
 				return false;
 			}
@@ -192,7 +192,7 @@ namespace uam
 			{
 				if (error_out != nullptr)
 				{
-					*error_out = app.status_line.empty() ? "Failed to persist application settings." : app.status_line;
+					*error_out = uam::strings::NonEmptyOrFallback(app.status_line, "Failed to persist application settings.");
 				}
 				return false;
 			}
@@ -201,57 +201,51 @@ namespace uam
 
 		std::filesystem::path PatchPathForChat(const AppState& app, const std::string& chat_id)
 		{
-			const auto ticks = std::chrono::system_clock::now().time_since_epoch().count();
-			return app.data_root / "worktrees" / "patches" / (chat_id + "-" + std::to_string(ticks) + ".patch");
+			return app.data_root / "worktrees" / "patches" / (chat_id + "-" + uam::time::SystemEpochMicrosecondsTokenNow() + ".patch");
 		}
 
-		bool WriteTextFileEnsuringParent(const std::filesystem::path& path, const std::string& content)
+		std::filesystem::path TrimmedPathOrEmpty(std::string_view value)
 		{
-			std::error_code ec;
-			std::filesystem::create_directories(path.parent_path(), ec);
-			if (ec)
-			{
-				return false;
-			}
-			std::ofstream out(path, std::ios::binary);
-			if (!out.good())
-			{
-				return false;
-			}
-			out << content;
-			return out.good();
+			const std::string_view trimmed = uam::strings::TrimAsciiView(value);
+			return trimmed.empty() ? std::filesystem::path() : std::filesystem::path(std::string(trimmed));
+		}
+
+		std::filesystem::path SourcePathFromStatusOrChat(const AppState& app, const ChatSession& chat, const GitWorktreeStatus& status)
+		{
+			const std::filesystem::path source_directory = TrimmedPathOrEmpty(status.source_directory);
+			return source_directory.empty() ? EffectiveSourceWorkspace(app, chat) : source_directory;
+		}
+
+		std::filesystem::path WorktreePathFromStatus(const GitWorktreeStatus& status)
+		{
+			return TrimmedPathOrEmpty(status.worktree_directory);
+		}
+
+		std::string BranchNameFromStatusOrChat(const GitWorktreeStatus& status, const ChatSession& chat)
+		{
+			return uam::strings::NonEmptyOrFallback(uam::strings::Trim(status.branch_name), uam::strings::Trim(chat.workspace_branch_name));
 		}
 
 		bool ClearWorktreeIsolation(AppState& app, ChatSession& chat, const GitWorktreeStatus& status, std::string* error_out)
 		{
-			const std::filesystem::path source = Trim(status.source_directory).empty()
-				? EffectiveSourceWorkspace(app, chat)
-				: std::filesystem::path(status.source_directory);
-			const std::filesystem::path worktree = Trim(status.worktree_directory).empty()
-				? std::filesystem::path()
-				: std::filesystem::path(status.worktree_directory);
+			const std::filesystem::path source = SourcePathFromStatusOrChat(app, chat, status);
+			const std::filesystem::path worktree = WorktreePathFromStatus(status);
 
 			if (!worktree.empty())
 			{
-				std::error_code ec;
-				const bool worktree_exists = std::filesystem::exists(worktree, ec) && !ec;
-				if (worktree_exists)
+				if (uam::paths::PathExistsNoThrow(worktree))
 				{
-					const ProcessExecutionResult remove_result = RunCommand(GitC(source, "worktree remove --force " + ShellQuote(worktree.string())));
-					if (!CommandSucceeded(remove_result))
+					if (!GitCommand(source, "worktree remove --force " + uam::shell::EscapeArg(worktree.string()), error_out))
 					{
-						if (error_out != nullptr)
-						{
-							*error_out = CommandOutputOrError(remove_result);
-						}
 						return false;
 					}
 				}
 			}
 
-			if (!Trim(chat.workspace_branch_name).empty())
+			const std::string branch_name = BranchNameFromStatusOrChat(status, chat);
+			if (!branch_name.empty())
 			{
-				RunCommand(GitC(source, "branch -D " + ShellQuote(chat.workspace_branch_name)));
+				GitCommand(source, "branch -D " + uam::shell::EscapeArg(branch_name));
 			}
 
 			chat.workspace_isolation_kind.clear();
@@ -259,60 +253,80 @@ namespace uam
 			chat.workspace_base_ref.clear();
 			chat.workspace_branch_name.clear();
 			chat.workspace_worktree_directory.clear();
-			chat.updated_at = TimestampNow();
+			chat.updated_at = uam::time::TimestampNow();
 			return SaveChat(app, chat, error_out);
+		}
+
+		void PopulateSourceRepositoryStatus(GitWorktreeStatus& status, const std::filesystem::path& source_candidate)
+		{
+			std::string repo_root;
+			std::string git_error;
+			if (GitOutput(source_candidate, "rev-parse --show-toplevel", &repo_root, &git_error))
+			{
+				status.is_git_repository = true;
+				status.source_directory = repo_root;
+				bool source_dirty = false;
+				if (IsDirty(repo_root, &source_dirty))
+				{
+					status.source_dirty = source_dirty;
+				}
+				return;
+			}
+
+			if (!status.is_svn_workspace)
+			{
+				status.error = uam::strings::NonEmptyOrFallback(git_error, "Workspace is not inside a Git repository.");
+			}
+		}
+
+		void PopulateIsolatedWorktreeStatus(GitWorktreeStatus& status)
+		{
+			if (!status.isolated)
+			{
+				return;
+			}
+
+			const std::filesystem::path worktree_path(status.worktree_directory);
+			status.worktree_missing = status.worktree_directory.empty() || !uam::paths::PathExistsNoThrow(worktree_path);
+			if (status.worktree_missing)
+			{
+				return;
+			}
+
+			bool worktree_dirty = false;
+			if (IsDirty(worktree_path, &worktree_dirty))
+			{
+				status.worktree_dirty = worktree_dirty;
+			}
+		}
+
+		void CompleteSuccessfulResult(GitWorktreeOperationResult& result, const GitWorktreeStatus& status, const std::string& message)
+		{
+			result.ok = true;
+			result.message = message;
+			result.status = status;
 		}
 	} // namespace
 
 	GitWorktreeStatus GitWorktreeService::Status(const AppState& app, const ChatSession& chat) const
 	{
 		GitWorktreeStatus status;
-		status.isolated = Trim(chat.workspace_isolation_kind) == kGitWorktreeIsolationKind;
-		status.source_directory = Trim(chat.workspace_source_directory);
-		status.worktree_directory = Trim(chat.workspace_worktree_directory);
-		status.branch_name = Trim(chat.workspace_branch_name);
-		status.base_ref = Trim(chat.workspace_base_ref);
+		status.isolated = uam::paths::IsGitWorktreeIsolated(chat);
+		status.source_directory = uam::strings::Trim(chat.workspace_source_directory);
+		status.worktree_directory = uam::strings::Trim(chat.workspace_worktree_directory);
+		status.branch_name = uam::strings::Trim(chat.workspace_branch_name);
+		status.base_ref = uam::strings::Trim(chat.workspace_base_ref);
 
 		const std::filesystem::path source_candidate = EffectiveSourceWorkspace(app, chat);
 		status.is_svn_workspace = IsSvnWorkspace(source_candidate);
-
-		std::string repo_root;
-		std::string git_error;
-		if (GitOutput(source_candidate, "rev-parse --show-toplevel", &repo_root, &git_error))
-		{
-			status.is_git_repository = true;
-			status.source_directory = repo_root;
-			bool source_dirty = false;
-			if (IsDirty(repo_root, &source_dirty))
-			{
-				status.source_dirty = source_dirty;
-			}
-		}
-		else if (!status.is_svn_workspace)
-		{
-			status.error = git_error.empty() ? "Workspace is not inside a Git repository." : git_error;
-		}
+		PopulateSourceRepositoryStatus(status, source_candidate);
 
 		if (status.is_svn_workspace && !status.is_git_repository)
 		{
 			status.error = "SVN workspaces are not supported by Git worktree isolation in this release.";
 		}
 
-		if (status.isolated)
-		{
-			std::error_code ec;
-			const std::filesystem::path worktree_path(status.worktree_directory);
-			status.worktree_missing = status.worktree_directory.empty() || !std::filesystem::exists(worktree_path, ec) || ec;
-			if (!status.worktree_missing)
-			{
-				bool worktree_dirty = false;
-				if (IsDirty(worktree_path, &worktree_dirty))
-				{
-					status.worktree_dirty = worktree_dirty;
-				}
-			}
-		}
-
+		PopulateIsolatedWorktreeStatus(status);
 		return status;
 	}
 
@@ -322,13 +336,12 @@ namespace uam
 		result.status = Status(app, chat);
 		if (result.status.isolated)
 		{
-			result.ok = true;
-			result.message = "Chat already has an isolated Git worktree.";
+			CompleteSuccessfulResult(result, result.status, "Chat already has an isolated Git worktree.");
 			return result;
 		}
 		if (!result.status.is_git_repository)
 		{
-			result.message = result.status.error.empty() ? "Workspace is not inside a Git repository." : result.status.error;
+			result.message = uam::strings::NonEmptyOrFallback(result.status.error, "Workspace is not inside a Git repository.");
 			return result;
 		}
 
@@ -340,37 +353,32 @@ namespace uam
 		}
 
 		const std::filesystem::path worktree_root = WorktreeRootForChat(app, source_root, chat.id);
-		std::error_code ec;
-		if (std::filesystem::exists(worktree_root, ec))
+		if (uam::paths::PathExistsNoThrow(worktree_root))
 		{
 			result.message = "Worktree path already exists: " + worktree_root.string();
 			return result;
 		}
-		std::filesystem::create_directories(worktree_root.parent_path(), ec);
-		if (ec)
+		std::error_code ec;
+		if (!uam::paths::CreateDirectoriesNoThrow(worktree_root.parent_path(), &ec))
 		{
 			result.message = "Failed to create worktree parent directory.";
 			return result;
 		}
 
 		const std::string branch_name = BranchNameForChat(chat.id);
-		const ProcessExecutionResult add_result = RunCommand(GitC(source_root, "worktree add -b " + ShellQuote(branch_name) + " " + ShellQuote(worktree_root.string()) + " HEAD"));
+		const ProcessExecutionResult add_result = RunCommand(BuildGitCommandInDirectory(source_root, "worktree add -b " + uam::shell::EscapeArg(branch_name) + " " + uam::shell::EscapeArg(worktree_root.string()) + " HEAD"));
 		if (!CommandSucceeded(add_result))
 		{
-			result.message = CommandOutputOrError(add_result);
-			if (result.message.empty())
-			{
-				result.message = "Failed to create Git worktree.";
-			}
+			result.message = CommandOutputOrFallback(add_result, "Failed to create Git worktree.");
 			return result;
 		}
 
-		chat.workspace_isolation_kind = kGitWorktreeIsolationKind;
+		chat.workspace_isolation_kind = uam::paths::kGitWorktreeIsolationKind;
 		chat.workspace_source_directory = source_root.string();
 		chat.workspace_base_ref = head;
 		chat.workspace_branch_name = branch_name;
 		chat.workspace_worktree_directory = worktree_root.string();
-		chat.updated_at = TimestampNow();
+		chat.updated_at = uam::time::TimestampNow();
 
 		std::string save_error;
 		if (!SaveChat(app, chat, &save_error))
@@ -379,11 +387,8 @@ namespace uam
 			return result;
 		}
 
-		result.ok = true;
-		result.message = result.status.source_dirty
-			? "Created isolated Git worktree from HEAD. Source workspace has uncommitted changes that were not copied."
-			: "Created isolated Git worktree.";
-		result.status = Status(app, chat);
+		const std::string message = result.status.source_dirty ? "Created isolated Git worktree from HEAD. Source workspace has uncommitted changes that were not copied." : "Created isolated Git worktree.";
+		CompleteSuccessfulResult(result, Status(app, chat), message);
 		return result;
 	}
 
@@ -400,17 +405,13 @@ namespace uam
 		if (!result.status.worktree_missing)
 		{
 			const std::filesystem::path worktree(result.status.worktree_directory);
-			ProcessExecutionResult reset_result = RunCommand(GitC(worktree, "reset --hard HEAD"));
-			if (!CommandSucceeded(reset_result))
+			if (!GitCommand(worktree, "reset --hard HEAD", &result.message))
 			{
-				result.message = CommandOutputOrError(reset_result);
 				return result;
 			}
 
-			ProcessExecutionResult clean_result = RunCommand(GitC(worktree, "clean -fd"));
-			if (!CommandSucceeded(clean_result))
+			if (!GitCommand(worktree, "clean -fd", &result.message))
 			{
-				result.message = CommandOutputOrError(clean_result);
 				return result;
 			}
 		}
@@ -422,9 +423,7 @@ namespace uam
 			return result;
 		}
 
-		result.ok = true;
-		result.message = "Discarded chat worktree changes and returned to the source workspace.";
-		result.status = Status(app, chat);
+		CompleteSuccessfulResult(result, Status(app, chat), "Discarded chat worktree changes and returned to the source workspace.");
 		return result;
 	}
 
@@ -451,28 +450,24 @@ namespace uam
 			return result;
 		}
 
-		ProcessExecutionResult add_result = RunCommand(GitC(worktree, "add -A"));
-		if (!CommandSucceeded(add_result))
+		if (!GitCommand(worktree, "add -A", &result.message))
 		{
-			result.message = CommandOutputOrError(add_result);
 			return result;
 		}
 
-		ProcessExecutionResult diff_result = RunCommand(GitC(worktree, "diff --binary --cached HEAD"));
-		const ProcessExecutionResult reset_index_result = RunCommand(GitC(worktree, "reset --mixed HEAD"));
+		ProcessExecutionResult diff_result = RunCommand(BuildGitCommandInDirectory(worktree, "diff --binary --cached HEAD"));
 		if (!CommandSucceeded(diff_result))
 		{
 			result.message = CommandOutputOrError(diff_result);
 			return result;
 		}
-		if (!CommandSucceeded(reset_index_result))
+		if (!GitCommand(worktree, "reset --mixed HEAD", &result.message))
 		{
-			result.message = CommandOutputOrError(reset_index_result);
 			return result;
 		}
 
 		const std::string patch = diff_result.output;
-		if (Trim(patch).empty())
+		if (uam::strings::IsBlank(patch))
 		{
 			std::string save_error;
 			if (!ClearWorktreeIsolation(app, chat, result.status, &save_error))
@@ -480,28 +475,22 @@ namespace uam
 				result.message = save_error;
 				return result;
 			}
-			result.ok = true;
-			result.message = "No chat worktree changes to port. Returned to the source workspace.";
-			result.status = Status(app, chat);
+			CompleteSuccessfulResult(result, Status(app, chat), "No chat worktree changes to port. Returned to the source workspace.");
 			return result;
 		}
 
 		const std::filesystem::path patch_path = PatchPathForChat(app, chat.id);
-		if (!WriteTextFileEnsuringParent(patch_path, patch))
+		if (!uam::io::WriteTextFile(patch_path, patch))
 		{
 			result.message = "Failed to write patch file.";
 			return result;
 		}
 
-		ProcessExecutionResult apply_result = RunCommand(GitC(source, "apply --3way " + ShellQuote(patch_path.string())));
+		ProcessExecutionResult apply_result = RunCommand(BuildGitCommandInDirectory(source, "apply --3way " + uam::shell::EscapeArg(patch_path.string())));
 		if (!CommandSucceeded(apply_result))
 		{
 			result.patch_path = patch_path;
-			result.message = CommandOutputOrError(apply_result);
-			if (result.message.empty())
-			{
-				result.message = "Failed to apply patch to source workspace.";
-			}
+			result.message = CommandOutputOrFallback(apply_result, "Failed to apply patch to source workspace.");
 			return result;
 		}
 
@@ -512,10 +501,8 @@ namespace uam
 			return result;
 		}
 
-		result.ok = true;
 		result.patch_path = patch_path;
-		result.message = "Applied chat worktree changes and returned to the source workspace.";
-		result.status = Status(app, chat);
+		CompleteSuccessfulResult(result, Status(app, chat), "Applied chat worktree changes and returned to the source workspace.");
 		return result;
 	}
 } // namespace uam

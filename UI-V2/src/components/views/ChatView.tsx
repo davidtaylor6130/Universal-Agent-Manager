@@ -17,6 +17,17 @@ import {
 import type { Attachment, Message, MessageBlock } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import { copyTextToClipboard } from '../../utils/copySelection'
+import {
+  CODEX_CLI_PROVIDER_ID,
+  CLAUDE_CLI_PROVIDER_ID,
+  COPILOT_CLI_PROVIDER_ID,
+  DEFAULT_PROVIDER_ID,
+  OPENCODE_CLI_PROVIDER_ID,
+  fallbackProviderForId,
+  providerRuntimeKindLabel,
+  providerShortName,
+  providerUsesProtocol,
+} from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
 
 interface ChatViewProps {
@@ -81,6 +92,14 @@ type ComposerIconName = 'editor' | 'folder' | 'git-tree' | 'markdown' | 'plus' |
 interface LocalAttachment extends Attachment {
   status: LocalAttachmentStatus
   error?: string
+}
+
+function acpRuntimeBlocksControlChanges(acp?: AcpBinding | null): boolean {
+  return Boolean(
+    acp?.processing ||
+    acp?.lifecycleState === 'waitingPermission' ||
+    acp?.lifecycleState === 'waitingUserInput'
+  )
 }
 
 function ComposerIcon({ name, size = 14 }: { name: ComposerIconName; size?: number }) {
@@ -177,16 +196,6 @@ function fileUriToPath(uri: string): string {
   }
 }
 
-function providerDisplayName(provider?: Provider, fallbackId = '') {
-  if (provider?.shortName?.trim()) return provider.shortName.trim()
-  if (provider?.name?.trim()) return provider.name.trim()
-  if (fallbackId === 'codex-cli') return 'Codex'
-  if (fallbackId === 'claude-cli') return 'Claude'
-  if (fallbackId === 'opencode-cli') return 'OpenCode'
-  if (fallbackId === 'copilot-cli') return 'Copilot'
-  return 'Gemini'
-}
-
 function providerDefaultModelOption(providerName: string): ModelOption {
   return {
     id: '',
@@ -197,27 +206,23 @@ function providerDefaultModelOption(providerName: string): ModelOption {
 }
 
 function providerRuntimeLabel(provider?: Provider, acp?: AcpBinding) {
-  const protocol = acp?.protocolKind || provider?.structuredProtocol || 'gemini-acp'
-  if (protocol === 'codex-app-server') return 'App Server'
-  if (protocol === 'claude-code-stream-json') return 'Claude Stream'
-  if (protocol === 'none') return 'CLI'
-  return 'ACP'
+  return providerRuntimeKindLabel(provider, acp?.protocolKind)
 }
 
 function isCodexProvider(provider?: Provider, providerId = '') {
-  return providerId === 'codex-cli' || provider?.structuredProtocol === 'codex-app-server'
+  return providerUsesProtocol(provider, providerId, CODEX_CLI_PROVIDER_ID)
 }
 
 function isClaudeProvider(provider?: Provider, providerId = '') {
-  return providerId === 'claude-cli' || provider?.structuredProtocol === 'claude-code-stream-json'
+  return providerUsesProtocol(provider, providerId, CLAUDE_CLI_PROVIDER_ID)
 }
 
 function isCopilotProvider(provider?: Provider, providerId = '') {
-  return providerId === 'copilot-cli' || provider?.structuredProtocol === 'copilot-acp'
+  return providerUsesProtocol(provider, providerId, COPILOT_CLI_PROVIDER_ID)
 }
 
 function isOpenCodeProvider(provider?: Provider, providerId = '') {
-  return providerId === 'opencode-cli' || provider?.structuredProtocol === 'opencode-acp'
+  return providerUsesProtocol(provider, providerId, OPENCODE_CLI_PROVIDER_ID)
 }
 
 function titleFromModelId(modelId: string) {
@@ -253,7 +258,7 @@ function buildModelOptions(
   provider: Provider | undefined,
   providerId: string
 ): ModelOption[] {
-  const providerName = providerDisplayName(provider, providerId)
+  const providerName = providerShortName(provider, providerId)
   const codexProvider = isCodexProvider(provider, providerId)
   const claudeProvider = isClaudeProvider(provider, providerId)
   const copilotProvider = isCopilotProvider(provider, providerId)
@@ -1950,11 +1955,7 @@ function ComposerToolbar({
   const currentReasoning = modelOptionFor(reasoningOptions, reasoningEffort)
   const currentSpeed = modelOptionFor(speedOptions, serviceTier)
   const providerOptions = providers.length > 0 ? providers : [provider]
-  const modelDisabled = Boolean(
-    acp?.processing ||
-    acp?.lifecycleState === 'waitingPermission' ||
-    acp?.lifecycleState === 'waitingUserInput'
-  )
+  const modelDisabled = acpRuntimeBlocksControlChanges(acp)
   const planActive = approvalModeId === 'plan'
   const acceptEditsActive = approvalModeId === 'acceptEdits'
   const yoloActive = autoApproveCommands
@@ -2023,7 +2024,7 @@ function ComposerToolbar({
           >
             <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>Provider</div>
             {providerOptions.map((candidate) => {
-              const candidateName = providerDisplayName(candidate, candidate.id)
+              const candidateName = providerShortName(candidate, candidate.id)
               const selected = candidate.id === providerId
               const disabled = !selected && !canChangeProvider
               return (
@@ -2537,13 +2538,15 @@ export function ChatView({ session }: ChatViewProps) {
     }
   }, [session.workspaceIsolationKind])
 
+  const runtimeBlocksControlChanges = acpRuntimeBlocksControlChanges(acp)
+
   useEffect(() => {
-    if (acp?.processing || acp?.lifecycleState === 'waitingPermission' || acp?.lifecycleState === 'waitingUserInput') {
+    if (runtimeBlocksControlChanges) {
       setModelOpen(false)
       setReasoningOpen(false)
       setSpeedOpen(false)
     }
-  }, [acp?.lifecycleState, acp?.processing])
+  }, [runtimeBlocksControlChanges])
 
   useEffect(() => {
     const onMouseDown = (event: MouseEvent) => {
@@ -2775,24 +2778,14 @@ export function ChatView({ session }: ChatViewProps) {
       setOpenWorkspaceError(result.message || 'Workspace action failed.')
     }
   }
-  const currentProviderId = session.providerId || acp?.providerId || 'gemini-cli'
+  const currentProviderId = session.providerId || acp?.providerId || DEFAULT_PROVIDER_ID
   const providerSupported = providers.some((candidate) => candidate.id === currentProviderId)
   const currentProvider = useMemo<Provider>(
     () =>
-      providers.find((candidate) => candidate.id === currentProviderId) ?? {
-        id: currentProviderId,
-        name: currentProviderId === 'codex-cli' ? 'Codex CLI' : currentProviderId === 'claude-cli' ? 'Claude Code' : currentProviderId === 'opencode-cli' ? 'OpenCode' : currentProviderId === 'copilot-cli' ? 'GitHub Copilot CLI' : 'Gemini CLI',
-        shortName: currentProviderId === 'codex-cli' ? 'Codex' : currentProviderId === 'claude-cli' ? 'Claude' : currentProviderId === 'opencode-cli' ? 'OpenCode' : currentProviderId === 'copilot-cli' ? 'Copilot' : 'Gemini',
-        color: '#8ab4ff',
-        description: '',
-        outputMode: 'cli',
-        supportsCli: true,
-        supportsStructured: true,
-        structuredProtocol: currentProviderId === 'codex-cli' ? 'codex-app-server' : currentProviderId === 'claude-cli' ? 'claude-code-stream-json' : currentProviderId === 'opencode-cli' ? 'opencode-acp' : currentProviderId === 'copilot-cli' ? 'copilot-acp' : 'gemini-acp',
-      },
+      providers.find((candidate) => candidate.id === currentProviderId) ?? fallbackProviderForId(currentProviderId),
     [currentProviderId, providers]
   )
-  const currentProviderName = providerDisplayName(currentProvider, currentProviderId)
+  const currentProviderName = providerShortName(currentProvider, currentProviderId)
   const currentRuntimeLabel = providerRuntimeLabel(currentProvider, acp)
   const currentErrorTitle = `${currentProviderName} ${currentRuntimeLabel} error`
   const unsupportedProviderMessage = providerSupported
@@ -2812,10 +2805,7 @@ export function ChatView({ session }: ChatViewProps) {
   const latestPlanHasLaterUser =
     latestPlanMessageIndex >= 0 && messages.slice(latestPlanMessageIndex + 1).some((message) => message.role === 'user')
   const canShowPlanActions = isCodexProvider(currentProvider, currentProviderId) && latestPlanMessageIndex >= 0 && !latestPlanHasLaterUser
-  const planActionBlockedByRuntime =
-    acp?.processing ||
-    acp?.lifecycleState === 'waitingPermission' ||
-    acp?.lifecycleState === 'waitingUserInput'
+  const planActionBlockedByRuntime = runtimeBlocksControlChanges
   const planActionsDisabled = Boolean(submitting || planActionBlockedByRuntime)
   const planActionsDisabledTitle = planActionBlockedByRuntime
     ? 'Codex is still working.'
@@ -3404,7 +3394,7 @@ export function ChatView({ session }: ChatViewProps) {
                 setSettingsOpen(false)
               }}
               onToggleModel={() => {
-                if (acp?.processing || acp?.lifecycleState === 'waitingPermission' || acp?.lifecycleState === 'waitingUserInput') return
+                if (runtimeBlocksControlChanges) return
                 setModelOpen((value) => !value)
                 setProviderOpen(false)
                 setReasoningOpen(false)
@@ -3412,7 +3402,7 @@ export function ChatView({ session }: ChatViewProps) {
                 setSettingsOpen(false)
               }}
               onToggleReasoning={() => {
-                if (acp?.processing || acp?.lifecycleState === 'waitingPermission' || acp?.lifecycleState === 'waitingUserInput') return
+                if (runtimeBlocksControlChanges) return
                 setReasoningOpen((value) => !value)
                 setProviderOpen(false)
                 setModelOpen(false)
@@ -3420,7 +3410,7 @@ export function ChatView({ session }: ChatViewProps) {
                 setSettingsOpen(false)
               }}
               onToggleSpeed={() => {
-                if (acp?.processing || acp?.lifecycleState === 'waitingPermission' || acp?.lifecycleState === 'waitingUserInput') return
+                if (runtimeBlocksControlChanges) return
                 setSpeedOpen((value) => !value)
                 setProviderOpen(false)
                 setModelOpen(false)

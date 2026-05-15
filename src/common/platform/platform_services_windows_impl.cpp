@@ -1,18 +1,22 @@
 #include "platform_services_windows_impl.h"
 
 #include "common/paths/app_paths.h"
+#include "common/paths/path_utils.h"
 #include "common/state/app_state.h"
+#include "common/utils/env_utils.h"
+#include "common/utils/range_utils.h"
+#include "common/utils/shell_escape.h"
+#include "common/utils/string_utils.h"
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cerrno>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <optional>
 #include <sstream>
+#include <string_view>
 #include <thread>
 
 #ifndef NOMINMAX
@@ -30,47 +34,22 @@
 
 namespace
 {
+	constexpr auto kDirectWindowsExecutableExtensions = std::to_array<std::string_view>({
+	    ".exe",
+	    ".com",
+	});
 
-	std::string TrimAsciiWhitespace(const std::string& value)
-	{
-		const std::size_t start = value.find_first_not_of(" \t\r\n");
+	constexpr auto kWindowsCommandScriptExtensions = std::to_array<std::string_view>({
+	    ".cmd",
+	    ".bat",
+	});
 
-		if (start == std::string::npos)
-		{
-			return "";
-		}
-
-		const std::size_t end = value.find_last_not_of(" \t\r\n");
-		return value.substr(start, end - start + 1);
-	}
-
-	std::string ShellQuoteWindowsForCmd(const std::string& value)
-	{
-		std::string escaped = "\"";
-
-		for (const char ch : value)
-		{
-			if (ch == '"')
-			{
-				escaped += "\"\"";
-			}
-			else if (ch == '%')
-			{
-				escaped += "%%";
-			}
-			else if (ch == '\r' || ch == '\n')
-			{
-				escaped.push_back(' ');
-			}
-			else
-			{
-				escaped.push_back(ch);
-			}
-		}
-
-		escaped.push_back('"');
-		return escaped;
-	}
+	constexpr auto kLaunchableWindowsCommandExtensions = std::to_array<std::string_view>({
+	    ".exe",
+	    ".com",
+	    ".cmd",
+	    ".bat",
+	});
 
 	std::wstring WideFromUtf8(const std::string& value)
 	{
@@ -219,52 +198,34 @@ namespace
 
 	std::string BuildWindowsCommandLine(const std::vector<std::string>& argv)
 	{
-		std::ostringstream out;
-		bool first = true;
-
+		std::vector<std::string> quoted_args;
+		quoted_args.reserve(argv.size());
 		for (const std::string& arg : argv)
 		{
-			if (!first)
-			{
-				out << ' ';
-			}
-
-			out << QuoteWindowsArg(arg);
-			first = false;
+			quoted_args.push_back(QuoteWindowsArg(arg));
 		}
 
-		return out.str();
-	}
-
-	std::string LowerAscii(std::string value)
-	{
-		std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch)
-		{
-			return static_cast<char>(std::tolower(ch));
-		});
-		return value;
+		return uam::strings::Join(quoted_args, " ");
 	}
 
 	bool LooksLikeWindowsPath(const std::string& value)
 	{
-		return value.find('\\') != std::string::npos ||
-		       value.find('/') != std::string::npos ||
-		       value.find(':') != std::string::npos;
+		return uam::strings::Contains(value, '\\') || uam::strings::Contains(value, '/') || uam::strings::Contains(value, ':');
 	}
 
 	std::string WindowsPathExtension(const std::string& value)
 	{
-		return LowerAscii(std::filesystem::path(value).extension().string());
+		return uam::strings::ToLowerAscii(std::filesystem::path(value).extension().string());
 	}
 
 	bool IsDirectWindowsExecutableExtension(const std::string& extension)
 	{
-		return extension == ".exe" || extension == ".com";
+		return uam::ranges::Contains(kDirectWindowsExecutableExtensions, std::string_view(extension));
 	}
 
 	bool IsWindowsCommandScriptExtension(const std::string& extension)
 	{
-		return extension == ".cmd" || extension == ".bat";
+		return uam::ranges::Contains(kWindowsCommandScriptExtensions, std::string_view(extension));
 	}
 
 	bool IsLaunchableWindowsCommandExtension(const std::string& extension)
@@ -320,7 +281,7 @@ namespace
 
 	std::string TrimWindowsPathListEntry(const std::string& raw)
 	{
-		std::string value = TrimAsciiWhitespace(raw);
+		std::string value = uam::strings::Trim(raw);
 		if (value.size() >= 2 && value.front() == '"' && value.back() == '"')
 		{
 			value = value.substr(1, value.size() - 2);
@@ -359,9 +320,7 @@ namespace
 
 	std::optional<std::string> ResolveWindowsCommandPath(const std::string& command)
 	{
-		static constexpr std::array<const char*, 4> kLaunchableExtensions = {".exe", ".com", ".cmd", ".bat"};
-
-		const std::string trimmed = TrimAsciiWhitespace(command);
+		const std::string trimmed = uam::strings::Trim(command);
 		if (trimmed.empty())
 		{
 			return std::nullopt;
@@ -375,9 +334,9 @@ namespace
 				return LaunchableCommandPathIfExists(trimmed);
 			}
 
-			for (const char* candidate_extension : kLaunchableExtensions)
+			for (const std::string_view candidate_extension : kLaunchableWindowsCommandExtensions)
 			{
-				if (auto resolved = LaunchableCommandPathIfExists(trimmed + candidate_extension); resolved.has_value())
+				if (auto resolved = LaunchableCommandPathIfExists(trimmed + std::string(candidate_extension)))
 				{
 					return resolved;
 				}
@@ -391,7 +350,7 @@ namespace
 		{
 			for (const std::string& path_entry : path_entries)
 			{
-				if (auto resolved = LaunchableCommandPathIfExists(JoinWindowsPathUtf8(path_entry, trimmed)); resolved.has_value())
+				if (auto resolved = LaunchableCommandPathIfExists(JoinWindowsPathUtf8(path_entry, trimmed)))
 				{
 					return resolved;
 				}
@@ -402,9 +361,9 @@ namespace
 
 		for (const std::string& path_entry : path_entries)
 		{
-			for (const char* candidate_extension : kLaunchableExtensions)
+			for (const std::string_view candidate_extension : kLaunchableWindowsCommandExtensions)
 			{
-				if (auto resolved = LaunchableCommandPathIfExists(JoinWindowsPathUtf8(path_entry, trimmed + candidate_extension)); resolved.has_value())
+				if (auto resolved = LaunchableCommandPathIfExists(JoinWindowsPathUtf8(path_entry, trimmed + std::string(candidate_extension))))
 				{
 					return resolved;
 				}
@@ -417,7 +376,7 @@ namespace
 	std::string ResolveComSpecPath()
 	{
 		std::string comspec = GetWindowsEnvironmentVariableUtf8(L"COMSPEC");
-		if (LaunchableCommandPathIfExists(comspec).has_value())
+		if (LaunchableCommandPathIfExists(comspec))
 		{
 			return comspec;
 		}
@@ -428,7 +387,7 @@ namespace
 		{
 			system_directory.resize(static_cast<std::size_t>(length));
 			const std::string system_cmd = WideToUtf8(system_directory) + "\\cmd.exe";
-			if (LaunchableCommandPathIfExists(system_cmd).has_value())
+			if (LaunchableCommandPathIfExists(system_cmd))
 			{
 				return system_cmd;
 			}
@@ -440,11 +399,11 @@ namespace
 	std::string BuildCmdScriptInvocation(const std::string& script_path, const std::vector<std::string>& argv)
 	{
 		std::ostringstream out;
-		out << '"' << ShellQuoteWindowsForCmd(script_path);
+		out << '"' << uam::shell::EscapeArg(script_path);
 
 		for (std::size_t i = 1; i < argv.size(); ++i)
 		{
-			out << ' ' << ShellQuoteWindowsForCmd(argv[i]);
+			out << ' ' << uam::shell::EscapeArg(argv[i]);
 		}
 
 		out << '"';
@@ -470,13 +429,13 @@ namespace
 		}
 
 		const std::optional<std::string> resolved_command = ResolveWindowsCommandPath(argv.front());
-		if (!resolved_command.has_value())
+		if (!resolved_command)
 		{
 			launch.command_line = launch.original_command_line;
 			return launch;
 		}
 
-		launch.resolved_command = resolved_command.value();
+		launch.resolved_command = *resolved_command;
 		const std::string extension = WindowsPathExtension(launch.resolved_command);
 		if (IsWindowsCommandScriptExtension(extension))
 		{
@@ -521,6 +480,73 @@ namespace
 		{
 			TerminateProcess(process_handle, exit_code);
 		}
+	}
+
+	void TerminateProcessAndWaitBriefly(HANDLE process_handle, const UINT exit_code)
+	{
+		if (process_handle == nullptr || process_handle == INVALID_HANDLE_VALUE)
+		{
+			return;
+		}
+
+		TerminateProcess(process_handle, exit_code);
+		WaitForSingleObject(process_handle, 250);
+	}
+
+	void TerminateProcessTreeAndWaitBriefly(HANDLE job_object, HANDLE process_handle, const UINT exit_code)
+	{
+		TerminateProcessTree(job_object, process_handle, exit_code);
+		if (process_handle != nullptr && process_handle != INVALID_HANDLE_VALUE)
+		{
+			WaitForSingleObject(process_handle, 250);
+		}
+	}
+
+	void CloseInvalidHandleIfOpen(HANDLE& handle)
+	{
+		if (handle != nullptr && handle != INVALID_HANDLE_VALUE)
+		{
+			CloseHandle(handle);
+			handle = INVALID_HANDLE_VALUE;
+		}
+	}
+
+	void CloseConPtyPipeHandles(HANDLE& pipe_pty_in, HANDLE& pipe_pty_out, HANDLE& pipe_con_in, HANDLE& pipe_con_out)
+	{
+		CloseInvalidHandleIfOpen(pipe_pty_in);
+		CloseInvalidHandleIfOpen(pipe_pty_out);
+		CloseInvalidHandleIfOpen(pipe_con_in);
+		CloseInvalidHandleIfOpen(pipe_con_out);
+	}
+
+	void CloseConPtyAppPipeHandles(HANDLE& pipe_pty_in, HANDLE& pipe_pty_out)
+	{
+		CloseInvalidHandleIfOpen(pipe_pty_in);
+		CloseInvalidHandleIfOpen(pipe_pty_out);
+	}
+
+	void CloseStdioPipeHandles(HANDLE& stdin_read, HANDLE& stdin_write, HANDLE& stdout_read, HANDLE& stdout_write, HANDLE& stderr_read, HANDLE& stderr_write)
+	{
+		CloseInvalidHandleIfOpen(stdin_read);
+		CloseInvalidHandleIfOpen(stdin_write);
+		CloseInvalidHandleIfOpen(stdout_read);
+		CloseInvalidHandleIfOpen(stdout_write);
+		CloseInvalidHandleIfOpen(stderr_read);
+		CloseInvalidHandleIfOpen(stderr_write);
+	}
+
+	void CloseStdioChildPipeEnds(HANDLE& stdin_read, HANDLE& stdout_write, HANDLE& stderr_write)
+	{
+		CloseInvalidHandleIfOpen(stdin_read);
+		CloseInvalidHandleIfOpen(stdout_write);
+		CloseInvalidHandleIfOpen(stderr_write);
+	}
+
+	void CloseStdioParentPipeEnds(HANDLE& stdin_write, HANDLE& stdout_read, HANDLE& stderr_read)
+	{
+		CloseInvalidHandleIfOpen(stdin_write);
+		CloseInvalidHandleIfOpen(stdout_read);
+		CloseInvalidHandleIfOpen(stderr_read);
 	}
 
 	bool CreateKillOnCloseJobForProcess(HANDLE process_handle, HANDLE* job_out, std::string* error_out)
@@ -604,7 +630,7 @@ namespace
 		}
 	}
 
-	std::ptrdiff_t ReadPipeNonBlocking(HANDLE pipe, char* buffer, const std::size_t buffer_size, std::string* error_out = nullptr)
+	std::ptrdiff_t ReadPipeNonBlocking(HANDLE pipe, char* buffer, std::size_t buffer_size, std::string* error_out = nullptr)
 	{
 		if (pipe == INVALID_HANDLE_VALUE)
 		{
@@ -653,38 +679,19 @@ namespace
 
 	std::optional<std::filesystem::path> ResolveWindowsHomePath()
 	{
-		if (const char* user_profile = std::getenv("USERPROFILE"))
+		if (const std::optional<std::filesystem::path> user_profile = uam::env::GetTrimmedPath("USERPROFILE"))
 		{
-			const std::string value = TrimAsciiWhitespace(user_profile);
-
-			if (!value.empty())
-			{
-				return std::filesystem::path(value);
-			}
+			return *user_profile;
 		}
 
-		if (const char* home_drive = std::getenv("HOMEDRIVE"))
+		if (const std::optional<std::filesystem::path> home_drive_path = uam::env::GetWindowsHomeDrivePath())
 		{
-			if (const char* home_path = std::getenv("HOMEPATH"))
-			{
-				const std::string drive = TrimAsciiWhitespace(home_drive);
-				const std::string path = TrimAsciiWhitespace(home_path);
-
-				if (!drive.empty() && !path.empty())
-				{
-					return std::filesystem::path(drive + path);
-				}
-			}
+			return *home_drive_path;
 		}
 
-		if (const char* home = std::getenv("HOME"))
+		if (const std::optional<std::filesystem::path> home = uam::env::GetTrimmedPath("HOME"))
 		{
-			const std::string value = TrimAsciiWhitespace(home);
-
-			if (!value.empty())
-			{
-				return std::filesystem::path(value);
-			}
+			return *home;
 		}
 
 		return std::nullopt;
@@ -701,6 +708,7 @@ namespace
 
 			return false;
 		}
+		selected_path_out->clear();
 
 		const HRESULT co_init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
 		const bool should_uninitialize = SUCCEEDED(co_init);
@@ -769,11 +777,7 @@ namespace
 
 		if (!initial_folder.empty())
 		{
-			std::error_code ec;
-			const bool exists = std::filesystem::exists(initial_folder, ec);
-			const bool is_directory = exists && std::filesystem::is_directory(initial_folder, ec);
-
-			if (!exists || ec || !is_directory)
+			if (!uam::paths::IsDirectoryNoThrow(initial_folder))
 			{
 				initial_folder = initial_folder.parent_path();
 			}
@@ -887,7 +891,7 @@ namespace
 
 		bool StartCliTerminalProcess(uam::CliTerminalState& terminal, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr) const override
 		{
-			if (argv.empty() || TrimAsciiWhitespace(argv.front()).empty())
+			if (argv.empty() || uam::strings::IsBlank(argv.front()))
 			{
 				if (error_out != nullptr)
 				{
@@ -913,25 +917,7 @@ namespace
 					*error_out = "Failed to create ConPTY pipes.";
 				}
 
-				if (pipe_pty_in != INVALID_HANDLE_VALUE)
-				{
-					CloseHandle(pipe_pty_in);
-				}
-
-				if (pipe_pty_out != INVALID_HANDLE_VALUE)
-				{
-					CloseHandle(pipe_pty_out);
-				}
-
-				if (pipe_con_in != INVALID_HANDLE_VALUE)
-				{
-					CloseHandle(pipe_con_in);
-				}
-
-				if (pipe_con_out != INVALID_HANDLE_VALUE)
-				{
-					CloseHandle(pipe_con_out);
-				}
+				CloseConPtyPipeHandles(pipe_pty_in, pipe_pty_out, pipe_con_in, pipe_con_out);
 
 				return false;
 			}
@@ -952,15 +938,12 @@ namespace
 					*error_out = "CreatePseudoConsole failed.";
 				}
 
-				CloseHandle(pipe_pty_in);
-				CloseHandle(pipe_pty_out);
-				CloseHandle(pipe_con_in);
-				CloseHandle(pipe_con_out);
+				CloseConPtyPipeHandles(pipe_pty_in, pipe_pty_out, pipe_con_in, pipe_con_out);
 				return false;
 			}
 
-			CloseHandle(pipe_con_in);
-			CloseHandle(pipe_con_out);
+			CloseInvalidHandleIfOpen(pipe_con_in);
+			CloseInvalidHandleIfOpen(pipe_con_out);
 
 			SIZE_T attr_size = 0;
 			InitializeProcThreadAttributeList(nullptr, 1, 0, &attr_size);
@@ -974,8 +957,7 @@ namespace
 				}
 
 				ClosePseudoConsoleSafe(pseudo_console);
-				CloseHandle(pipe_pty_in);
-				CloseHandle(pipe_pty_out);
+				CloseConPtyAppPipeHandles(pipe_pty_in, pipe_pty_out);
 				return false;
 			}
 
@@ -990,8 +972,7 @@ namespace
 				HeapFree(GetProcessHeap(), 0, terminal.attr_list);
 				terminal.attr_list = nullptr;
 				ClosePseudoConsoleSafe(pseudo_console);
-				CloseHandle(pipe_pty_in);
-				CloseHandle(pipe_pty_out);
+				CloseConPtyAppPipeHandles(pipe_pty_in, pipe_pty_out);
 				return false;
 			}
 
@@ -1014,15 +995,16 @@ namespace
 				HeapFree(GetProcessHeap(), 0, terminal.attr_list);
 				terminal.attr_list = nullptr;
 				ClosePseudoConsoleSafe(pseudo_console);
-				CloseHandle(pipe_pty_in);
-				CloseHandle(pipe_pty_out);
+				CloseConPtyAppPipeHandles(pipe_pty_in, pipe_pty_out);
 				return false;
 			}
 
 			std::vector<wchar_t> command_line(command_w.begin(), command_w.end());
 			command_line.push_back(L'\0');
 			const std::wstring working_directory_w = working_directory.empty() ? std::wstring() : working_directory.wstring();
-			const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT, nullptr, working_directory.empty() ? nullptr : working_directory_w.c_str(), &si.StartupInfo, &pi);
+			const DWORD creation_flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT;
+			const wchar_t* working_directory_arg = working_directory.empty() ? nullptr : working_directory_w.c_str();
+			const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, creation_flags, nullptr, working_directory_arg, &si.StartupInfo, &pi);
 
 			if (!created)
 			{
@@ -1036,8 +1018,7 @@ namespace
 				HeapFree(GetProcessHeap(), 0, terminal.attr_list);
 				terminal.attr_list = nullptr;
 				ClosePseudoConsoleSafe(pseudo_console);
-				CloseHandle(pipe_pty_in);
-				CloseHandle(pipe_pty_out);
+				CloseConPtyAppPipeHandles(pipe_pty_in, pipe_pty_out);
 				return false;
 			}
 
@@ -1047,19 +1028,17 @@ namespace
 			{
 				if (error_out != nullptr)
 				{
-					*error_out = job_error.empty() ? "Failed to protect provider process tree." : job_error;
+					*error_out = uam::strings::NonEmptyOrFallback(job_error, "Failed to protect provider process tree.");
 				}
 
-				TerminateProcess(pi.hProcess, 1);
-				WaitForSingleObject(pi.hProcess, 250);
-				CloseHandle(pi.hThread);
-				CloseHandle(pi.hProcess);
+				TerminateProcessAndWaitBriefly(pi.hProcess, 1);
+				CloseInvalidHandleIfOpen(pi.hThread);
+				CloseInvalidHandleIfOpen(pi.hProcess);
 				DeleteProcThreadAttributeList(terminal.attr_list);
 				HeapFree(GetProcessHeap(), 0, terminal.attr_list);
 				terminal.attr_list = nullptr;
 				ClosePseudoConsoleSafe(pseudo_console);
-				CloseHandle(pipe_pty_in);
-				CloseHandle(pipe_pty_out);
+				CloseConPtyAppPipeHandles(pipe_pty_in, pipe_pty_out);
 				return false;
 			}
 
@@ -1082,17 +1061,8 @@ namespace
 
 		void CloseCliTerminalHandles(uam::CliTerminalState& terminal) const override
 		{
-			if (terminal.pipe_input != INVALID_HANDLE_VALUE)
-			{
-				CloseHandle(terminal.pipe_input);
-				terminal.pipe_input = INVALID_HANDLE_VALUE;
-			}
-
-			if (terminal.pipe_output != INVALID_HANDLE_VALUE)
-			{
-				CloseHandle(terminal.pipe_output);
-				terminal.pipe_output = INVALID_HANDLE_VALUE;
-			}
+			CloseInvalidHandleIfOpen(terminal.pipe_input);
+			CloseInvalidHandleIfOpen(terminal.pipe_output);
 
 			if (terminal.attr_list != nullptr)
 			{
@@ -1101,17 +1071,8 @@ namespace
 				terminal.attr_list = nullptr;
 			}
 
-			if (terminal.process_info.hThread != INVALID_HANDLE_VALUE)
-			{
-				CloseHandle(terminal.process_info.hThread);
-				terminal.process_info.hThread = INVALID_HANDLE_VALUE;
-			}
-
-			if (terminal.process_info.hProcess != INVALID_HANDLE_VALUE)
-			{
-				CloseHandle(terminal.process_info.hProcess);
-				terminal.process_info.hProcess = INVALID_HANDLE_VALUE;
-			}
+			CloseInvalidHandleIfOpen(terminal.process_info.hThread);
+			CloseInvalidHandleIfOpen(terminal.process_info.hProcess);
 
 			if (terminal.pseudo_console != nullptr)
 			{
@@ -1129,7 +1090,7 @@ namespace
 			terminal.process_info.dwThreadId = 0;
 		}
 
-		bool WriteToCliTerminal(uam::CliTerminalState& terminal, const char* bytes, const std::size_t len) const override
+		bool WriteToCliTerminal(uam::CliTerminalState& terminal, const char* bytes, std::size_t len) const override
 		{
 			if (bytes == nullptr || len == 0)
 			{
@@ -1160,7 +1121,7 @@ namespace
 			return true;
 		}
 
-		void StopCliTerminalProcess(uam::CliTerminalState& terminal, const bool fast_exit) const override
+		void StopCliTerminalProcess(uam::CliTerminalState& terminal, bool fast_exit) const override
 		{
 			if (terminal.process_info.hProcess == INVALID_HANDLE_VALUE)
 			{
@@ -1202,7 +1163,7 @@ namespace
 			}
 		}
 
-		std::ptrdiff_t ReadCliTerminalOutput(uam::CliTerminalState& terminal, char* buffer, const std::size_t buffer_size) const override
+		std::ptrdiff_t ReadCliTerminalOutput(uam::CliTerminalState& terminal, char* buffer, std::size_t buffer_size) const override
 		{
 			if (terminal.pipe_output == INVALID_HANDLE_VALUE)
 			{
@@ -1314,7 +1275,7 @@ namespace
 
 		std::string BuildShellCommandWithWorkingDirectory(const std::filesystem::path& working_directory, const std::string& command) const override
 		{
-			return "cd /d " + ShellQuoteWindowsForCmd(working_directory.string()) + " && " + command;
+			return "cd /d " + uam::shell::EscapeArg(working_directory.string()) + " && " + command;
 		}
 
 		bool CaptureCommandOutput(const std::string& command, std::string* output_out, int* raw_status_out, std::string* error_out = nullptr) const override
@@ -1339,7 +1300,7 @@ namespace
 			return !result.timed_out && !result.canceled && result.error.empty();
 		}
 
-		int NormalizeCapturedCommandExitCode(const int raw_status) const override
+		int NormalizeCapturedCommandExitCode(int raw_status) const override
 		{
 			if (raw_status == STILL_ACTIVE)
 			{
@@ -1348,7 +1309,7 @@ namespace
 			return raw_status;
 		}
 
-		ProcessExecutionResult ExecuteCommand(const std::string& command, const int timeout_ms = -1, std::stop_token stop_token = {}) const override
+		ProcessExecutionResult ExecuteCommand(const std::string& command, int timeout_ms = -1, std::stop_token stop_token = {}) const override
 		{
 			ProcessExecutionResult result;
 			SECURITY_ATTRIBUTES sa{};
@@ -1369,8 +1330,8 @@ namespace
 
 			if (command_w.empty())
 			{
-				CloseHandle(stdout_read);
-				CloseHandle(stdout_write);
+				CloseInvalidHandleIfOpen(stdout_read);
+				CloseInvalidHandleIfOpen(stdout_write);
 				result.error = "Failed to encode command line.";
 				return result;
 			}
@@ -1387,12 +1348,12 @@ namespace
 
 			PROCESS_INFORMATION process_info{};
 			const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startup_info, &process_info);
-			CloseHandle(stdout_write);
+			CloseInvalidHandleIfOpen(stdout_write);
 
 			if (!created)
 			{
 				const DWORD launch_error = GetLastError();
-				CloseHandle(stdout_read);
+				CloseInvalidHandleIfOpen(stdout_read);
 				result.error = "Failed to launch command (Win32 error " + std::to_string(launch_error) + ").";
 				return result;
 			}
@@ -1401,12 +1362,11 @@ namespace
 			std::string job_error;
 			if (!CreateKillOnCloseJobForProcess(process_info.hProcess, &job_object, &job_error))
 			{
-				TerminateProcess(process_info.hProcess, 1);
-				WaitForSingleObject(process_info.hProcess, 250);
-				CloseHandle(stdout_read);
-				CloseHandle(process_info.hProcess);
-				CloseHandle(process_info.hThread);
-				result.error = job_error.empty() ? "Failed to protect command process tree." : job_error;
+				TerminateProcessAndWaitBriefly(process_info.hProcess, 1);
+				CloseInvalidHandleIfOpen(stdout_read);
+				CloseInvalidHandleIfOpen(process_info.hProcess);
+				CloseInvalidHandleIfOpen(process_info.hThread);
+				result.error = uam::strings::NonEmptyOrFallback(job_error, "Failed to protect command process tree.");
 				return result;
 			}
 
@@ -1454,8 +1414,7 @@ namespace
 				{
 					result.canceled = true;
 					result.error = "Command canceled.";
-					TerminateProcessTree(job_object, process_info.hProcess, 1);
-					WaitForSingleObject(process_info.hProcess, 250);
+					TerminateProcessTreeAndWaitBriefly(job_object, process_info.hProcess, 1);
 					process_finished = true;
 				}
 
@@ -1463,8 +1422,7 @@ namespace
 				{
 					result.timed_out = true;
 					result.error = "Command timed out.";
-					TerminateProcessTree(job_object, process_info.hProcess, 1);
-					WaitForSingleObject(process_info.hProcess, 250);
+					TerminateProcessTreeAndWaitBriefly(job_object, process_info.hProcess, 1);
 					process_finished = true;
 				}
 
@@ -1490,10 +1448,10 @@ namespace
 
 			DWORD exit_code = 1;
 			GetExitCodeProcess(process_info.hProcess, &exit_code);
-			CloseHandle(stdout_read);
+			CloseInvalidHandleIfOpen(stdout_read);
 			CloseHandle(job_object);
-			CloseHandle(process_info.hProcess);
-			CloseHandle(process_info.hThread);
+			CloseInvalidHandleIfOpen(process_info.hProcess);
+			CloseInvalidHandleIfOpen(process_info.hThread);
 
 			if (!result.timed_out && !result.canceled)
 			{
@@ -1506,7 +1464,7 @@ namespace
 
 		bool StartStdioProcess(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr) const override
 		{
-			if (argv.empty() || TrimAsciiWhitespace(argv.front()).empty())
+			if (argv.empty() || uam::strings::IsBlank(argv.front()))
 			{
 				if (error_out != nullptr)
 				{
@@ -1526,27 +1484,13 @@ namespace
 			HANDLE stderr_read = INVALID_HANDLE_VALUE;
 			HANDLE stderr_write = INVALID_HANDLE_VALUE;
 
-			auto close_if_valid = [](HANDLE& handle)
-			{
-				if (handle != INVALID_HANDLE_VALUE)
-				{
-					CloseHandle(handle);
-					handle = INVALID_HANDLE_VALUE;
-				}
-			};
-
 			if (!CreatePipe(&stdin_read, &stdin_write, &sa, 0) || !CreatePipe(&stdout_read, &stdout_write, &sa, 0) || !CreatePipe(&stderr_read, &stderr_write, &sa, 0))
 			{
 				if (error_out != nullptr)
 				{
 					*error_out = "Failed to create stdio process pipes.";
 				}
-				close_if_valid(stdin_read);
-				close_if_valid(stdin_write);
-				close_if_valid(stdout_read);
-				close_if_valid(stdout_write);
-				close_if_valid(stderr_read);
-				close_if_valid(stderr_write);
+				CloseStdioPipeHandles(stdin_read, stdin_write, stdout_read, stdout_write, stderr_read, stderr_write);
 				return false;
 			}
 
@@ -1562,12 +1506,7 @@ namespace
 				{
 					*error_out = "Failed to encode stdio command line.";
 				}
-				close_if_valid(stdin_read);
-				close_if_valid(stdin_write);
-				close_if_valid(stdout_read);
-				close_if_valid(stdout_write);
-				close_if_valid(stderr_read);
-				close_if_valid(stderr_write);
+				CloseStdioPipeHandles(stdin_read, stdin_write, stdout_read, stdout_write, stderr_read, stderr_write);
 				return false;
 			}
 
@@ -1583,11 +1522,11 @@ namespace
 			startup_info.hStdError = stderr_write;
 
 			PROCESS_INFORMATION process_info{};
-			const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, nullptr, working_directory.empty() ? nullptr : working_directory_w.c_str(), &startup_info, &process_info);
+			const DWORD creation_flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT;
+			const wchar_t* working_directory_arg = working_directory.empty() ? nullptr : working_directory_w.c_str();
+			const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, creation_flags, nullptr, working_directory_arg, &startup_info, &process_info);
 
-			close_if_valid(stdin_read);
-			close_if_valid(stdout_write);
-			close_if_valid(stderr_write);
+			CloseStdioChildPipeEnds(stdin_read, stdout_write, stderr_write);
 
 			if (!created)
 			{
@@ -1596,9 +1535,7 @@ namespace
 				{
 					*error_out = "Failed to start stdio process. " + FormatWindowsError(launch_error) + ". Command: " + launch.command_line + "." + WindowsLaunchDiagnosticSuffix(launch);
 				}
-				close_if_valid(stdin_write);
-				close_if_valid(stdout_read);
-				close_if_valid(stderr_read);
+				CloseStdioParentPipeEnds(stdin_write, stdout_read, stderr_read);
 				return false;
 			}
 
@@ -1608,15 +1545,12 @@ namespace
 			{
 				if (error_out != nullptr)
 				{
-					*error_out = job_error.empty() ? "Failed to protect stdio process tree." : job_error;
+					*error_out = uam::strings::NonEmptyOrFallback(job_error, "Failed to protect stdio process tree.");
 				}
-				TerminateProcess(process_info.hProcess, 1);
-				WaitForSingleObject(process_info.hProcess, 250);
-				CloseHandle(process_info.hThread);
-				CloseHandle(process_info.hProcess);
-				close_if_valid(stdin_write);
-				close_if_valid(stdout_read);
-				close_if_valid(stderr_read);
+				TerminateProcessAndWaitBriefly(process_info.hProcess, 1);
+				CloseInvalidHandleIfOpen(process_info.hThread);
+				CloseInvalidHandleIfOpen(process_info.hProcess);
+				CloseStdioParentPipeEnds(stdin_write, stdout_read, stderr_read);
 				return false;
 			}
 
@@ -1631,41 +1565,21 @@ namespace
 
 		void CloseStdioProcessHandles(uam::platform::StdioProcessPlatformFields& process) const override
 		{
-			if (process.stdin_write != INVALID_HANDLE_VALUE)
-			{
-				CloseHandle(process.stdin_write);
-				process.stdin_write = INVALID_HANDLE_VALUE;
-			}
-			if (process.stdout_read != INVALID_HANDLE_VALUE)
-			{
-				CloseHandle(process.stdout_read);
-				process.stdout_read = INVALID_HANDLE_VALUE;
-			}
-			if (process.stderr_read != INVALID_HANDLE_VALUE)
-			{
-				CloseHandle(process.stderr_read);
-				process.stderr_read = INVALID_HANDLE_VALUE;
-			}
+			CloseInvalidHandleIfOpen(process.stdin_write);
+			CloseInvalidHandleIfOpen(process.stdout_read);
+			CloseInvalidHandleIfOpen(process.stderr_read);
 			if (process.job_object != nullptr)
 			{
 				CloseHandle(process.job_object);
 				process.job_object = nullptr;
 			}
-			if (process.process_info.hThread != INVALID_HANDLE_VALUE)
-			{
-				CloseHandle(process.process_info.hThread);
-				process.process_info.hThread = INVALID_HANDLE_VALUE;
-			}
-			if (process.process_info.hProcess != INVALID_HANDLE_VALUE)
-			{
-				CloseHandle(process.process_info.hProcess);
-				process.process_info.hProcess = INVALID_HANDLE_VALUE;
-			}
+			CloseInvalidHandleIfOpen(process.process_info.hThread);
+			CloseInvalidHandleIfOpen(process.process_info.hProcess);
 			process.process_info.dwProcessId = 0;
 			process.process_info.dwThreadId = 0;
 		}
 
-		bool WriteToStdioProcess(uam::platform::StdioProcessPlatformFields& process, const char* bytes, const std::size_t len, std::string* error_out = nullptr) const override
+		bool WriteToStdioProcess(uam::platform::StdioProcessPlatformFields& process, const char* bytes, std::size_t len, std::string* error_out = nullptr) const override
 		{
 			if (bytes == nullptr || len == 0)
 			{
@@ -1699,7 +1613,7 @@ namespace
 			return true;
 		}
 
-		void StopStdioProcess(uam::platform::StdioProcessPlatformFields& process, const bool fast_exit) const override
+		void StopStdioProcess(uam::platform::StdioProcessPlatformFields& process, bool fast_exit) const override
 		{
 			if (process.process_info.hProcess == INVALID_HANDLE_VALUE)
 			{
@@ -1712,12 +1626,12 @@ namespace
 			CloseStdioProcessHandles(process);
 		}
 
-		std::ptrdiff_t ReadStdioProcessStdout(uam::platform::StdioProcessPlatformFields& process, char* buffer, const std::size_t buffer_size, std::string* error_out = nullptr) const override
+		std::ptrdiff_t ReadStdioProcessStdout(uam::platform::StdioProcessPlatformFields& process, char* buffer, std::size_t buffer_size, std::string* error_out = nullptr) const override
 		{
 			return ReadPipeNonBlocking(process.stdout_read, buffer, buffer_size, error_out);
 		}
 
-		std::ptrdiff_t ReadStdioProcessStderr(uam::platform::StdioProcessPlatformFields& process, char* buffer, const std::size_t buffer_size, std::string* error_out = nullptr) const override
+		std::ptrdiff_t ReadStdioProcessStderr(uam::platform::StdioProcessPlatformFields& process, char* buffer, std::size_t buffer_size, std::string* error_out = nullptr) const override
 		{
 			return ReadPipeNonBlocking(process.stderr_read, buffer, buffer_size, error_out);
 		}
@@ -1753,11 +1667,6 @@ namespace
 			return true;
 		}
 
-		std::string GeminiDowngradeCommand() const override
-		{
-			return "npm install -g @google/gemini-cli@latest";
-		}
-
 		std::filesystem::path ResolveCurrentExecutablePath() const override
 		{
 			std::wstring buffer(static_cast<std::size_t>(MAX_PATH), L'\0');
@@ -1775,8 +1684,7 @@ namespace
 		std::unique_ptr<uam::platform::DataRootLock> TryAcquireDataRootLock(const std::filesystem::path& data_root, std::string* error_out = nullptr) const override
 		{
 			std::error_code ec;
-			std::filesystem::create_directories(data_root, ec);
-			if (ec)
+			if (!uam::paths::CreateDirectoriesNoThrow(data_root, &ec))
 			{
 				if (error_out != nullptr)
 				{
@@ -1823,7 +1731,15 @@ namespace
 				return "";
 			}
 			char uuid[37];
-			sprintf_s(uuid, sizeof(uuid), "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x", guid.Data1, guid.Data2, guid.Data3, guid.Data4[0], guid.Data4[1], guid.Data4[2], guid.Data4[3], guid.Data4[4], guid.Data4[5], guid.Data4[6], guid.Data4[7]);
+			const unsigned int d4_0 = guid.Data4[0];
+			const unsigned int d4_1 = guid.Data4[1];
+			const unsigned int d4_2 = guid.Data4[2];
+			const unsigned int d4_3 = guid.Data4[3];
+			const unsigned int d4_4 = guid.Data4[4];
+			const unsigned int d4_5 = guid.Data4[5];
+			const unsigned int d4_6 = guid.Data4[6];
+			const unsigned int d4_7 = guid.Data4[7];
+			sprintf_s(uuid, sizeof(uuid), "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x", guid.Data1, guid.Data2, guid.Data3, d4_0, d4_1, d4_2, d4_3, d4_4, d4_5, d4_6, d4_7);
 			return std::string(uuid);
 		}
 	};
@@ -1854,9 +1770,7 @@ namespace
 			}
 
 			std::error_code ec;
-			std::filesystem::create_directories(folder_path, ec);
-
-			if (ec)
+			if (!uam::paths::CreateDirectoriesNoThrow(folder_path, &ec))
 			{
 				if (error_out != nullptr)
 				{
@@ -1892,8 +1806,7 @@ namespace
 				return false;
 			}
 
-			std::error_code ec;
-			if (!std::filesystem::exists(folder_path, ec) || !std::filesystem::is_directory(folder_path, ec))
+			if (!uam::paths::IsDirectoryNoThrow(folder_path))
 			{
 				if (error_out != nullptr)
 				{
@@ -1977,7 +1890,7 @@ namespace
 				return false;
 			}
 
-			if (!std::filesystem::exists(file_path))
+			if (!uam::paths::PathExistsNoThrow(file_path))
 			{
 				return OpenFolderInFileManager(file_path.parent_path(), error_out);
 			}
@@ -2014,7 +1927,7 @@ namespace
 
 		std::filesystem::path ExpandLeadingTildePath(const std::string& raw_path) const override
 		{
-			const std::string trimmed = TrimAsciiWhitespace(raw_path);
+			const std::string trimmed = uam::strings::Trim(raw_path);
 
 			if (trimmed.empty())
 			{
@@ -2026,16 +1939,16 @@ namespace
 				return std::filesystem::path(trimmed);
 			}
 
-			if (const std::optional<std::filesystem::path> home = ResolveUserHomePath(); home.has_value())
+			if (const std::optional<std::filesystem::path> home = ResolveUserHomePath())
 			{
 				if (trimmed.size() == 1)
 				{
-					return home.value();
+					return *home;
 				}
 
 				if (trimmed[1] == '\\' || trimmed[1] == '/')
 				{
-					return home.value() / trimmed.substr(2);
+					return *home / trimmed.substr(2);
 				}
 			}
 

@@ -4,6 +4,7 @@ import { ChatSearchBar } from '../sidebar/ChatSearchBar'
 import { useAppStore } from '../../store/useAppStore'
 import { createRequestId, sendToCEF } from '../../ipc/cefBridge'
 import type { ChatSearchFilters, ChatStatusFilterId } from '../sidebar/chatSearch'
+import { DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
 
 interface SearchChatMessagesResponse {
   chatIds?: string[]
@@ -22,7 +23,7 @@ export function Sidebar() {
   const providerOptions = useMemo(() => {
     const labels = new Map(providers.map((provider) => [provider.id, provider.shortName || provider.name || provider.id]))
     for (const session of sessions) {
-      const providerId = session.providerId || 'gemini-cli'
+      const providerId = session.providerId || DEFAULT_PROVIDER_ID
       if (!labels.has(providerId)) {
         labels.set(providerId, providerId)
       }

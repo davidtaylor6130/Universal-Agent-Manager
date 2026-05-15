@@ -1,10 +1,10 @@
-#ifndef UAM_APP_MEMORY_LIBRARY_SERVICE_H
-#define UAM_APP_MEMORY_LIBRARY_SERVICE_H
+#pragma once
 
 #include "common/state/app_state.h"
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 class MemoryLibraryService
@@ -55,10 +55,8 @@ class MemoryLibraryService
 		std::string source_chat_id;
 	};
 
-	static bool ResolveScope(const uam::AppState& app, const std::string& scope_type, const std::string& folder_id, Scope& out_scope, std::string* error_out = nullptr);
+	static bool ResolveScope(const uam::AppState& app, std::string_view scope_type, std::string_view folder_id, Scope& out_scope, std::string* error_out = nullptr);
 	static std::vector<Entry> ListEntries(const Scope& scope, std::string* error_out = nullptr);
 	static bool CreateEntry(const Scope& scope, const Draft& draft, Entry* created_entry = nullptr, std::string* error_out = nullptr);
-	static bool DeleteEntry(const Scope& scope, const std::string& entry_id, std::string* error_out = nullptr);
+	static bool DeleteEntry(const Scope& scope, std::string_view entry_id, std::string* error_out = nullptr);
 };
-
-#endif // UAM_APP_MEMORY_LIBRARY_SERVICE_H

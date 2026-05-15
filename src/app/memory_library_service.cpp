@@ -1,135 +1,49 @@
 #include "app/memory_library_service.h"
 
-#include "app/application_core_helpers.h"
 #include "app/chat_domain_service.h"
 #include "app/memory_service.h"
+#include "common/memory/memory_categories.h"
+#include "common/paths/path_utils.h"
+#include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
 #include "common/utils/io_utils.h"
+#include "common/utils/parse_utils.h"
+#include "common/utils/sensitive_text.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
 
 #include <algorithm>
-#include <cctype>
-#include <fstream>
 #include <map>
+#include <optional>
 #include <set>
 #include <sstream>
+#include <string_view>
 #include <utility>
 
 namespace fs = std::filesystem;
 
 namespace
 {
-	constexpr const char* kFailuresAi = "Failures/AI_Failures";
-	constexpr const char* kFailuresUser = "Failures/User_Failures";
-	constexpr const char* kLessonsAi = "Lessons/AI_Lessons";
-	constexpr const char* kLessonsUser = "Lessons/User_Lessons";
+	constexpr std::size_t kTitleMaxChars = 160;
+	constexpr std::size_t kMemoryMaxChars = 1400;
+	constexpr std::size_t kEvidenceMaxChars = 900;
+	constexpr std::size_t kConfidenceMaxChars = 80;
+	constexpr std::size_t kSourceChatIdMaxChars = 120;
+	constexpr std::size_t kPreviewMaxChars = 320;
 
-	const std::vector<std::string>& SupportedCategories()
+	enum class MemoryEntrySection
 	{
-		static const std::vector<std::string> kCategories = {
-			kFailuresAi,
-			kFailuresUser,
-			kLessonsAi,
-			kLessonsUser,
-		};
-		return kCategories;
-	}
-
-	std::string Trimmed(const std::string& value)
-	{
-		return uam::strings::Trim(value);
-	}
-
-	std::string LowerAscii(std::string value)
-	{
-		std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-		return value;
-	}
-
-	bool IsSupportedCategory(const std::string& category)
-	{
-		return std::find(SupportedCategories().begin(), SupportedCategories().end(), category) != SupportedCategories().end();
-	}
-
-	bool LooksSensitive(const std::string& text)
-	{
-		const std::string lowered = LowerAscii(text);
-		return lowered.find("api_key") != std::string::npos ||
-		       lowered.find("apikey") != std::string::npos ||
-		       lowered.find("password") != std::string::npos ||
-		       lowered.find("secret") != std::string::npos ||
-		       lowered.find("token=") != std::string::npos ||
-		       lowered.find("bearer ") != std::string::npos ||
-		       lowered.find("-----begin ") != std::string::npos;
-	}
-
-	std::string Slug(std::string value)
-	{
-		value = LowerAscii(value);
-		std::string out;
-		bool previous_dash = false;
-		for (const unsigned char ch : value)
-		{
-			if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9'))
-			{
-				out.push_back(static_cast<char>(ch));
-				previous_dash = false;
-			}
-			else if (!previous_dash && !out.empty())
-			{
-				out.push_back('-');
-				previous_dash = true;
-			}
-			if (out.size() >= 72)
-			{
-				break;
-			}
-		}
-		while (!out.empty() && out.back() == '-')
-		{
-			out.pop_back();
-		}
-		return out.empty() ? "memory" : out;
-	}
-
-	std::string SafeLine(std::string value, const std::size_t max_chars = 700)
-	{
-		value = Trimmed(value);
-		std::replace(value.begin(), value.end(), '\r', ' ');
-		if (value.size() > max_chars)
-		{
-			value = value.substr(0, max_chars);
-		}
-		return value;
-	}
-
-	std::string NormalizeComparable(std::string value)
-	{
-		value = LowerAscii(value);
-		std::string out;
-		for (const unsigned char ch : value)
-		{
-			if (std::isalnum(ch))
-			{
-				out.push_back(static_cast<char>(ch));
-			}
-			else if (!out.empty() && out.back() != ' ')
-			{
-				out.push_back(' ');
-			}
-		}
-		return Trimmed(out);
-	}
+		Header,
+		Memory,
+		Evidence,
+	};
 
 	std::string CanonicalRootKey(const fs::path& root)
 	{
-		std::error_code ec;
-		const fs::path canonical = fs::weakly_canonical(root, ec).lexically_normal();
-		return (ec ? root.lexically_normal() : canonical).string();
+		return uam::paths::NormalizeExistingPath(root).string();
 	}
 
-	std::string HexEncode(const std::string& value)
+	std::string HexEncode(std::string_view value)
 	{
 		static constexpr char kDigits[] = "0123456789abcdef";
 		std::string out;
@@ -142,25 +56,9 @@ namespace
 		return out;
 	}
 
-	int HexValue(const char ch)
+	bool HexDecode(std::string_view value, std::string& out)
 	{
-		if (ch >= '0' && ch <= '9')
-		{
-			return ch - '0';
-		}
-		if (ch >= 'a' && ch <= 'f')
-		{
-			return 10 + (ch - 'a');
-		}
-		if (ch >= 'A' && ch <= 'F')
-		{
-			return 10 + (ch - 'A');
-		}
-		return -1;
-	}
-
-	bool HexDecode(const std::string& value, std::string& out)
-	{
+		out.clear();
 		if (value.size() % 2 != 0)
 		{
 			return false;
@@ -170,8 +68,8 @@ namespace
 		decoded.reserve(value.size() / 2);
 		for (std::size_t i = 0; i < value.size(); i += 2)
 		{
-			const int high = HexValue(value[i]);
-			const int low = HexValue(value[i + 1]);
+			const int high = uam::strings::HexDigitValue(static_cast<unsigned char>(value[i]));
+			const int low = uam::strings::HexDigitValue(static_cast<unsigned char>(value[i + 1]));
 			if (high < 0 || low < 0)
 			{
 				return false;
@@ -182,16 +80,20 @@ namespace
 		return true;
 	}
 
-	std::string BuildAggregateEntryId(const fs::path& root, const std::string& relative_id)
+	std::string BuildAggregateEntryId(const fs::path& root, std::string_view relative_id)
 	{
-		return "all/" + HexEncode(CanonicalRootKey(root)) + "/" + relative_id;
+		std::string id = "all/";
+		id += HexEncode(CanonicalRootKey(root));
+		id.push_back('/');
+		id.append(relative_id);
+		return id;
 	}
 
-	bool ParseAggregateEntryId(const std::string& entry_id, std::string& root_key, std::string& relative_id)
+	bool ParseAggregateEntryId(std::string_view entry_id, std::string& root_key, std::string& relative_id)
 	{
 		constexpr const char* kPrefix = "all/";
-		const std::string trimmed = Trimmed(entry_id);
-		if (trimmed.rfind(kPrefix, 0) != 0)
+		const std::string trimmed = uam::strings::Trim(entry_id);
+		if (!uam::strings::StartsWith(trimmed, kPrefix))
 		{
 			return false;
 		}
@@ -203,7 +105,8 @@ namespace
 			return false;
 		}
 
-		if (!HexDecode(trimmed.substr(encoded_start, separator - encoded_start), root_key))
+		const std::string_view trimmed_view(trimmed);
+		if (!HexDecode(trimmed_view.substr(encoded_start, separator - encoded_start), root_key))
 		{
 			return false;
 		}
@@ -213,56 +116,78 @@ namespace
 
 	std::string WorkspaceLabel(const fs::path& workspace_root, const ChatSession& chat)
 	{
-		const std::string title = Trimmed(chat.title);
-		if (!title.empty())
+		const std::string filename = workspace_root.filename().string();
+		const std::string fallback = uam::strings::NonEmptyOrFallback(filename, "Project memory");
+		return uam::strings::TrimOrFallback(chat.title, fallback);
+	}
+
+	fs::path FolderWorkspaceRoot(const ChatFolder& folder)
+	{
+		return PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(uam::strings::Trim(folder.directory));
+	}
+
+	void SetError(std::string* error_out, std::string_view message)
+	{
+		if (error_out != nullptr)
 		{
-			return title;
+			error_out->assign(message);
+		}
+	}
+
+	void ClearError(std::string* error_out)
+	{
+		if (error_out != nullptr)
+		{
+			error_out->clear();
+		}
+	}
+
+	void AddUniqueMemoryLibraryRoot(std::vector<MemoryLibraryService::Root>& roots,
+	                                std::set<std::string>& seen,
+	                                std::string scope_type,
+	                                std::string folder_id,
+	                                std::string label,
+	                                const fs::path& root_path)
+	{
+		if (root_path.empty())
+		{
+			return;
 		}
 
-		const std::string filename = workspace_root.filename().string();
-		return filename.empty() ? "Project memory" : filename;
+		const std::string key = CanonicalRootKey(root_path);
+		if (!seen.insert(key).second)
+		{
+			return;
+		}
+
+		MemoryLibraryService::Root root;
+		root.scope_type = std::move(scope_type);
+		root.folder_id = std::move(folder_id);
+		root.label = uam::strings::TrimOrFallback(label, "Project memory");
+		root.root_path = root_path;
+		roots.push_back(std::move(root));
 	}
 
 	std::vector<MemoryLibraryService::Root> CollectAllMemoryRoots(const uam::AppState& app)
 	{
 		std::vector<MemoryLibraryService::Root> roots;
 		std::set<std::string> seen;
-		auto add_root = [&](std::string scope_type, std::string folder_id, std::string label, const fs::path& root_path)
-		{
-			if (root_path.empty())
-			{
-				return;
-			}
-
-			const std::string key = CanonicalRootKey(root_path);
-			if (!seen.insert(key).second)
-			{
-				return;
-			}
-
-			MemoryLibraryService::Root root;
-			root.scope_type = std::move(scope_type);
-			root.folder_id = std::move(folder_id);
-			root.label = Trimmed(label).empty() ? "Project memory" : Trimmed(label);
-			root.root_path = root_path;
-			roots.push_back(std::move(root));
-		};
 
 		if (!app.data_root.empty())
 		{
-			add_root("global", "", "Global memory", MemoryService::GlobalMemoryRoot(app.data_root));
+			AddUniqueMemoryLibraryRoot(roots, seen, "global", "", "Global memory", MemoryService::GlobalMemoryRoot(app.data_root));
 		}
 
 		for (const ChatFolder& folder : app.folders)
 		{
-			const fs::path workspace_root = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(folder.directory);
-			add_root("folder", folder.id, Trimmed(folder.title).empty() ? "Project memory" : Trimmed(folder.title), MemoryService::LocalMemoryRoot(workspace_root));
+			const fs::path workspace_root = FolderWorkspaceRoot(folder);
+			AddUniqueMemoryLibraryRoot(roots, seen, "folder", folder.id, uam::strings::TrimOrFallback(folder.title, "Project memory"), MemoryService::LocalMemoryRoot(workspace_root));
 		}
 
 		for (const ChatSession& chat : app.chats)
 		{
-			const fs::path workspace_root = ResolveWorkspaceRootPath(app, chat);
-			add_root("folder", chat.folder_id, WorkspaceLabel(workspace_root, chat), MemoryService::LocalMemoryRoot(workspace_root));
+			const fs::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
+			AddUniqueMemoryLibraryRoot(roots, seen, "folder", chat.folder_id, WorkspaceLabel(workspace_root, chat), MemoryService::LocalMemoryRoot(workspace_root));
 		}
 
 		return roots;
@@ -274,93 +199,56 @@ namespace
 		return found == headers.end() ? fallback : found->second;
 	}
 
-	int ParseInt(const std::string& value, const int fallback)
-	{
-		try
-		{
-			return std::stoi(Trimmed(value));
-		}
-		catch (...)
-		{
-			return fallback;
-		}
-	}
-
-	bool IsPathInsideRoot(const fs::path& root, const fs::path& candidate)
-	{
-		std::error_code root_ec;
-		std::error_code candidate_ec;
-		const fs::path normalized_root = fs::weakly_canonical(root, root_ec).lexically_normal();
-		const fs::path normalized_candidate = fs::weakly_canonical(candidate, candidate_ec).lexically_normal();
-		const fs::path& safe_root = root_ec ? root.lexically_normal() : normalized_root;
-		const fs::path& safe_candidate = candidate_ec ? candidate.lexically_normal() : normalized_candidate;
-
-		auto root_it = safe_root.begin();
-		auto candidate_it = safe_candidate.begin();
-		for (; root_it != safe_root.end(); ++root_it, ++candidate_it)
-		{
-			if (candidate_it == safe_candidate.end() || *root_it != *candidate_it)
-			{
-				return false;
-			}
-		}
-		return true;
-	}
-
 	bool ParseEntryFile(const fs::path& path, MemoryLibraryService::Entry& out_entry)
 	{
-		std::ifstream in(path, std::ios::binary);
-		if (!in.good())
+		out_entry = MemoryLibraryService::Entry{};
+
+		std::string text;
+		if (!uam::io::TryReadTextFile(path, text))
 		{
 			return false;
 		}
 
+		std::istringstream in(text);
 		std::string line;
 		std::map<std::string, std::string> headers;
-		bool in_memory_section = false;
-		bool in_evidence_section = false;
-		std::ostringstream memory_body;
+		MemoryEntrySection section = MemoryEntrySection::Header;
+		std::vector<std::string> memory_lines;
 
 		while (std::getline(in, line))
 		{
-			const std::string trimmed = Trimmed(line);
-			if (out_entry.title.empty() && line.rfind("# ", 0) == 0)
+			const std::string trimmed = uam::strings::Trim(line);
+			if (out_entry.title.empty() && uam::strings::StartsWith(line, "# "))
 			{
-				out_entry.title = Trimmed(line.substr(2));
+				out_entry.title = uam::strings::Trim(line.substr(2));
 				continue;
 			}
 
 			if (trimmed == "## Memory")
 			{
-				in_memory_section = true;
-				in_evidence_section = false;
+				section = MemoryEntrySection::Memory;
 				continue;
 			}
 
 			if (trimmed == "## Evidence")
 			{
-				in_memory_section = false;
-				in_evidence_section = true;
+				section = MemoryEntrySection::Evidence;
 				continue;
 			}
 
-			if (!in_memory_section && !in_evidence_section)
+			if (section == MemoryEntrySection::Header)
 			{
 				const std::size_t colon = line.find(':');
 				if (colon != std::string::npos)
 				{
-					headers[Trimmed(line.substr(0, colon))] = Trimmed(line.substr(colon + 1));
+					headers[uam::strings::Trim(line.substr(0, colon))] = uam::strings::Trim(line.substr(colon + 1));
 				}
 				continue;
 			}
 
-			if (in_memory_section)
+			if (section == MemoryEntrySection::Memory)
 			{
-				if (!memory_body.str().empty())
-				{
-					memory_body << '\n';
-				}
-				memory_body << line;
+				memory_lines.push_back(line);
 			}
 		}
 
@@ -370,34 +258,35 @@ namespace
 		}
 
 		out_entry.category = ReadHeaderValue(headers, "Category");
-		out_entry.scope = LowerAscii(ReadHeaderValue(headers, "Scope", "local"));
+		out_entry.scope = uam::strings::ToLowerAscii(ReadHeaderValue(headers, "Scope", "local"));
 		out_entry.confidence = ReadHeaderValue(headers, "Confidence", "medium");
 		out_entry.source_chat_id = ReadHeaderValue(headers, "Source chat");
 		out_entry.last_observed = ReadHeaderValue(headers, "Last observed");
-		out_entry.occurrence_count = std::max(1, ParseInt(ReadHeaderValue(headers, "Occurrence count"), 1));
-		out_entry.preview = SafeLine(memory_body.str(), 320);
+		out_entry.occurrence_count = std::max(1, uam::parse::IntOr(ReadHeaderValue(headers, "Occurrence count"), 1));
+		out_entry.preview = uam::strings::SafeLine(uam::strings::Join(memory_lines, "\n"), kPreviewMaxChars);
 		out_entry.file_path = path;
-		return IsSupportedCategory(out_entry.category);
+		return uam::memory::IsSupportedCategory(out_entry.category);
 	}
 
-	fs::path FindExistingMemoryFile(const fs::path& category_path, const std::string& title)
+	fs::path FindExistingMemoryFile(const fs::path& category_path, std::string_view title)
 	{
-		const std::string wanted = NormalizeComparable(title);
-		if (wanted.empty() || !fs::exists(category_path))
+		const std::string wanted = uam::strings::NormalizeComparableKey(title);
+		if (wanted.empty() || !uam::paths::IsDirectoryNoThrow(category_path))
 		{
 			return {};
 		}
 
 		std::error_code ec;
-		for (const fs::directory_entry& item : fs::directory_iterator(category_path, ec))
+		for (fs::directory_iterator it(category_path, ec), end; !ec && it != end; it.increment(ec))
 		{
-			if (ec || !item.is_regular_file() || item.path().extension() != ".md")
+			const fs::directory_entry& item = *it;
+			if (!uam::paths::IsRegularFileWithExtensionNoThrow(item, ".md"))
 			{
 				continue;
 			}
 
 			MemoryLibraryService::Entry existing;
-			if (ParseEntryFile(item.path(), existing) && NormalizeComparable(existing.title) == wanted)
+			if (ParseEntryFile(item.path(), existing) && uam::strings::NormalizeComparableKey(existing.title) == wanted)
 			{
 				return item.path();
 			}
@@ -405,30 +294,260 @@ namespace
 		return {};
 	}
 
-	std::string BuildMemoryMarkdown(const MemoryLibraryService::Draft& draft, const std::string& scope, const int occurrence_count)
+	struct MemoryEntryTarget
 	{
-		std::ostringstream out;
-		out << "# " << draft.title << "\n\n";
-		out << "Scope: " << scope << "\n";
-		out << "Category: " << draft.category << "\n";
-		out << "Confidence: " << draft.confidence << "\n";
-		out << "Source chat: " << draft.source_chat_id << "\n";
-		out << "Last observed: " << uam::time::TimestampNow() << "\n";
-		out << "Occurrence count: " << std::max(1, occurrence_count) << "\n\n";
-		out << "## Memory\n";
-		out << draft.memory << "\n\n";
+		fs::path path;
+		int occurrence_count = 1;
+	};
+
+	MemoryEntryTarget ResolveMemoryEntryTarget(const fs::path& category_path, std::string_view title)
+	{
+		MemoryEntryTarget target;
+		target.path = FindExistingMemoryFile(category_path, title);
+		if (!target.path.empty())
+		{
+			MemoryLibraryService::Entry existing;
+			if (ParseEntryFile(target.path, existing))
+			{
+				target.occurrence_count = existing.occurrence_count + 1;
+			}
+			return target;
+		}
+
+		const std::string slug = uam::strings::AsciiSlug(title, 72, "memory");
+		target.path = category_path / (slug + ".md");
+		for (int i = 2; uam::paths::PathExistsNoThrow(target.path); ++i)
+		{
+			target.path = category_path / (slug + "-" + std::to_string(i) + ".md");
+		}
+		return target;
+	}
+
+	std::string PersistedScopeFor(const MemoryLibraryService::Scope& scope)
+	{
+		return scope.scope_type == "global" ? "global" : "local";
+	}
+
+	std::string BuildMemoryMarkdown(const MemoryLibraryService::Draft& draft, std::string_view scope, int occurrence_count)
+	{
+		std::string markdown;
+		markdown.reserve(draft.title.size() + draft.category.size() + draft.confidence.size() + draft.source_chat_id.size() + draft.memory.size() + draft.evidence.size() + 180);
+		markdown = "# " + draft.title + "\n\n";
+		markdown += "Scope: ";
+		markdown.append(scope);
+		markdown += "\n";
+		markdown += "Category: " + draft.category + "\n";
+		markdown += "Confidence: " + draft.confidence + "\n";
+		markdown += "Source chat: " + draft.source_chat_id + "\n";
+		markdown += "Last observed: " + uam::time::TimestampNow() + "\n";
+		markdown += "Occurrence count: " + std::to_string(std::max(1, occurrence_count)) + "\n\n";
+		markdown += "## Memory\n";
+		markdown += draft.memory + "\n\n";
 		if (!draft.evidence.empty())
 		{
-			out << "## Evidence\n";
-			out << draft.evidence << "\n";
+			markdown += "## Evidence\n";
+			markdown += draft.evidence + "\n";
 		}
-		return out.str();
+		return markdown;
 	}
-}
 
-bool MemoryLibraryService::ResolveScope(const uam::AppState& app, const std::string& scope_type, const std::string& folder_id, Scope& out_scope, std::string* error_out)
+	std::string EntryIdForPath(const fs::path& root_path, const fs::path& entry_path)
+	{
+		if (const std::optional<fs::path> relative = uam::paths::RelativePathIfInsideRoot(root_path, entry_path))
+		{
+			return uam::paths::PortablePathString(*relative);
+		}
+		return entry_path.filename().string();
+	}
+
+	void PopulateEntryScope(MemoryLibraryService::Entry& entry, const MemoryLibraryService::Root& root, bool aggregate)
+	{
+		entry.id = EntryIdForPath(root.root_path, entry.file_path);
+		if (aggregate)
+		{
+			entry.id = BuildAggregateEntryId(root.root_path, entry.id);
+		}
+		entry.scope_type = root.scope_type;
+		entry.folder_id = root.folder_id;
+		entry.scope_label = root.label;
+		entry.root_path = root.root_path;
+	}
+
+	void PopulateEntryScope(MemoryLibraryService::Entry& entry, const MemoryLibraryService::Scope& scope)
+	{
+		PopulateEntryScope(entry, MemoryLibraryService::Root{scope.scope_type, scope.folder_id, scope.label, scope.root_path}, false);
+	}
+
+	MemoryLibraryService::Scope ScopeFromRoot(const MemoryLibraryService::Root& root)
+	{
+		MemoryLibraryService::Scope scope;
+		scope.scope_type = root.scope_type;
+		scope.folder_id = root.folder_id;
+		scope.label = root.label;
+		scope.root_path = root.root_path;
+		scope.roots = {root};
+		return scope;
+	}
+
+	std::vector<MemoryLibraryService::Root> EffectiveRootsForScope(const MemoryLibraryService::Scope& scope)
+	{
+		std::vector<MemoryLibraryService::Root> roots = scope.roots;
+		if (roots.empty() && !scope.root_path.empty())
+		{
+			roots.push_back(MemoryLibraryService::Root{scope.scope_type, scope.folder_id, scope.label, scope.root_path});
+		}
+		return roots;
+	}
+
+	bool AppendEntriesFromRoot(const MemoryLibraryService::Root& root, bool aggregate, std::vector<MemoryLibraryService::Entry>& entries, std::string* error_out)
+	{
+		if (root.root_path.empty())
+		{
+			return true;
+		}
+
+		for (const std::string& category : uam::memory::SupportedCategories())
+		{
+			const fs::path category_path = MemoryService::CategoryPath(root.root_path, category);
+			if (!uam::paths::IsDirectoryNoThrow(category_path))
+			{
+				continue;
+			}
+
+			std::error_code ec;
+			for (fs::directory_iterator it(category_path, ec), end; !ec && it != end; it.increment(ec))
+			{
+				const fs::directory_entry& item = *it;
+				if (!uam::paths::IsRegularFileWithExtensionNoThrow(item, ".md"))
+				{
+					continue;
+				}
+
+				MemoryLibraryService::Entry entry;
+				if (ParseEntryFile(item.path(), entry))
+				{
+					PopulateEntryScope(entry, root, aggregate);
+					entries.push_back(std::move(entry));
+				}
+			}
+			if (ec)
+			{
+				SetError(error_out, "Failed to enumerate memory files.");
+				return false;
+			}
+		}
+		return true;
+	}
+
+	bool MemoryEntryOrderLess(const MemoryLibraryService::Entry& lhs, const MemoryLibraryService::Entry& rhs)
+	{
+		if (lhs.scope_label != rhs.scope_label)
+		{
+			return lhs.scope_label < rhs.scope_label;
+		}
+		if (lhs.category != rhs.category)
+		{
+			return lhs.category < rhs.category;
+		}
+		if (lhs.title != rhs.title)
+		{
+			return lhs.title < rhs.title;
+		}
+		return lhs.file_path.filename() < rhs.file_path.filename();
+	}
+
+	bool SanitizeDraft(MemoryLibraryService::Draft input, MemoryLibraryService::Draft& draft, std::string* error_out)
+	{
+		input.category = uam::strings::Trim(input.category);
+		input.title = uam::strings::SafeLine(input.title, kTitleMaxChars);
+		input.memory = uam::strings::SafeLine(input.memory, kMemoryMaxChars);
+		input.evidence = uam::strings::SafeLine(input.evidence, kEvidenceMaxChars);
+		input.confidence = uam::strings::SafeLine(uam::strings::NonEmptyOrFallback(input.confidence, "medium"), kConfidenceMaxChars);
+		input.source_chat_id = uam::strings::SafeLine(input.source_chat_id, kSourceChatIdMaxChars);
+
+		if (!uam::memory::IsSupportedCategory(input.category) || input.title.empty() || input.memory.empty())
+		{
+			SetError(error_out, "Memory entry is missing a valid category, title, or body.");
+			return false;
+		}
+
+		if (uam::sensitive::LooksSensitiveText(input.title + "\n" + input.memory + "\n" + input.evidence))
+		{
+			SetError(error_out, "Memory entry appears to contain sensitive content.");
+			return false;
+		}
+
+		draft = std::move(input);
+		return true;
+	}
+
+	bool DeleteAggregateEntry(const MemoryLibraryService::Scope& scope, std::string_view entry_id, std::string* error_out)
+	{
+		std::string root_key;
+		std::string relative_id;
+		if (!ParseAggregateEntryId(entry_id, root_key, relative_id))
+		{
+			SetError(error_out, "Invalid aggregate memory entry id.");
+			return false;
+		}
+
+		for (const MemoryLibraryService::Root& root : scope.roots)
+		{
+			if (CanonicalRootKey(root.root_path) != root_key)
+			{
+				continue;
+			}
+
+			return MemoryLibraryService::DeleteEntry(ScopeFromRoot(root), relative_id, error_out);
+		}
+
+		SetError(error_out, "Aggregate memory root is no longer known.");
+		return false;
+	}
+
+	bool ResolveDeletableEntryPath(const MemoryLibraryService::Scope& scope, std::string_view entry_id, fs::path& entry_path, std::string* error_out)
+	{
+		if (scope.root_path.empty())
+		{
+			SetError(error_out, "Memory root is unavailable.");
+			return false;
+		}
+
+		const std::string trimmed_id = uam::strings::Trim(entry_id);
+		if (trimmed_id.empty())
+		{
+			SetError(error_out, "Memory entry id is required.");
+			return false;
+		}
+
+		entry_path = scope.root_path / fs::path(trimmed_id);
+		if (!uam::paths::IsSameOrInsideRoot(scope.root_path, entry_path))
+		{
+			SetError(error_out, "Memory entry path is outside the memory root.");
+			return false;
+		}
+
+		if (!uam::paths::PathExistsNoThrow(entry_path))
+		{
+			SetError(error_out, "Memory entry not found: " + trimmed_id);
+			return false;
+		}
+
+		if (entry_path.extension() != ".md")
+		{
+			SetError(error_out, "Only markdown memory files can be deleted.");
+			return false;
+		}
+
+		return true;
+	}
+} // namespace
+
+bool MemoryLibraryService::ResolveScope(const uam::AppState& app, std::string_view scope_type, std::string_view folder_id, Scope& out_scope, std::string* error_out)
 {
-	const std::string normalized_scope = LowerAscii(Trimmed(scope_type));
+	ClearError(error_out);
+	out_scope = Scope{};
+	const std::string normalized_scope = uam::strings::TrimAndLowerAscii(scope_type);
 	if (normalized_scope == "all")
 	{
 		out_scope.scope_type = "all";
@@ -451,332 +570,129 @@ bool MemoryLibraryService::ResolveScope(const uam::AppState& app, const std::str
 
 	if (normalized_scope == "folder" || normalized_scope == "local")
 	{
-		const ChatFolder* folder = ChatDomainService().FindFolderById(app, folder_id);
+		const std::string normalized_folder_id = uam::strings::Trim(folder_id);
+		const ChatFolder* folder = ChatDomainService().FindFolderById(app, normalized_folder_id);
 		if (folder == nullptr)
 		{
-			if (error_out != nullptr)
-			{
-				*error_out = "Folder not found: " + folder_id;
-			}
+			SetError(error_out, "Folder not found: " + normalized_folder_id);
 			return false;
 		}
 
-		const fs::path workspace_root = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(folder->directory);
+		const fs::path workspace_root = FolderWorkspaceRoot(*folder);
 		if (workspace_root.empty())
 		{
-			if (error_out != nullptr)
-			{
-				*error_out = "Folder has no workspace directory.";
-			}
+			SetError(error_out, "Folder has no workspace directory.");
 			return false;
 		}
 
 		out_scope.scope_type = "folder";
 		out_scope.folder_id = folder->id;
-		out_scope.label = Trimmed(folder->title).empty() ? "Project memory" : Trimmed(folder->title);
+		out_scope.label = uam::strings::TrimOrFallback(folder->title, "Project memory");
 		out_scope.root_path = MemoryService::LocalMemoryRoot(workspace_root);
 		out_scope.roots = {Root{"folder", folder->id, out_scope.label, out_scope.root_path}};
 		return true;
 	}
 
-	if (error_out != nullptr)
-	{
-		*error_out = "Unsupported memory scope.";
-	}
+	SetError(error_out, "Unsupported memory scope.");
 	return false;
 }
 
 std::vector<MemoryLibraryService::Entry> MemoryLibraryService::ListEntries(const Scope& scope, std::string* error_out)
 {
+	ClearError(error_out);
 	std::vector<Entry> entries;
-	std::vector<Root> roots = scope.roots;
-	if (roots.empty() && !scope.root_path.empty())
-	{
-		roots.push_back(Root{scope.scope_type, scope.folder_id, scope.label, scope.root_path});
-	}
-
+	const std::vector<Root> roots = EffectiveRootsForScope(scope);
 	if (roots.empty())
 	{
-		if (error_out != nullptr)
-		{
-			*error_out = "Memory root is unavailable.";
-		}
+		SetError(error_out, "Memory root is unavailable.");
 		return entries;
 	}
 
 	const bool aggregate = scope.scope_type == "all";
 	for (const Root& root : roots)
 	{
-		if (root.root_path.empty())
+		if (!AppendEntriesFromRoot(root, aggregate, entries, error_out))
 		{
-			continue;
-		}
-
-		for (const std::string& category : SupportedCategories())
-		{
-			const fs::path category_path = MemoryService::CategoryPath(root.root_path, category);
-			if (!fs::exists(category_path))
-			{
-				continue;
-			}
-
-			std::error_code ec;
-			for (const fs::directory_entry& item : fs::directory_iterator(category_path, ec))
-			{
-				if (ec)
-				{
-					if (error_out != nullptr)
-					{
-						*error_out = "Failed to enumerate memory files.";
-					}
-					return {};
-				}
-				if (!item.is_regular_file() || item.path().extension() != ".md")
-				{
-					continue;
-				}
-
-				Entry entry;
-				if (ParseEntryFile(item.path(), entry))
-				{
-					std::error_code relative_ec;
-					const std::string relative_id = fs::relative(item.path(), root.root_path, relative_ec).generic_string();
-					entry.id = (relative_ec || relative_id.empty()) ? item.path().filename().string() : relative_id;
-					if (aggregate)
-					{
-						entry.id = BuildAggregateEntryId(root.root_path, entry.id);
-					}
-					entry.scope_type = root.scope_type;
-					entry.folder_id = root.folder_id;
-					entry.scope_label = root.label;
-					entry.root_path = root.root_path;
-					entries.push_back(std::move(entry));
-				}
-			}
+			return {};
 		}
 	}
 
-	std::sort(entries.begin(), entries.end(), [](const Entry& lhs, const Entry& rhs) {
-		if (lhs.scope_label != rhs.scope_label)
-		{
-			return lhs.scope_label < rhs.scope_label;
-		}
-		if (lhs.category != rhs.category)
-		{
-			return lhs.category < rhs.category;
-		}
-		if (lhs.title != rhs.title)
-		{
-			return lhs.title < rhs.title;
-		}
-		return lhs.file_path.filename().string() < rhs.file_path.filename().string();
-	});
+	std::ranges::sort(entries, MemoryEntryOrderLess);
 	return entries;
 }
 
 bool MemoryLibraryService::CreateEntry(const Scope& scope, const Draft& input, Entry* created_entry, std::string* error_out)
 {
+	ClearError(error_out);
+	if (created_entry != nullptr)
+	{
+		*created_entry = Entry{};
+	}
+
 	if (scope.scope_type == "all")
 	{
-		if (error_out != nullptr)
-		{
-			*error_out = "All memory scope requires a concrete target.";
-		}
+		SetError(error_out, "All memory scope requires a concrete target.");
 		return false;
 	}
 
 	if (scope.root_path.empty())
 	{
-		if (error_out != nullptr)
-		{
-			*error_out = "Memory root is unavailable.";
-		}
+		SetError(error_out, "Memory root is unavailable.");
 		return false;
 	}
 
-	Draft draft = input;
-	draft.category = Trimmed(draft.category);
-	draft.title = SafeLine(draft.title, 160);
-	draft.memory = SafeLine(draft.memory, 1400);
-	draft.evidence = SafeLine(draft.evidence, 900);
-	draft.confidence = SafeLine(draft.confidence.empty() ? "medium" : draft.confidence, 80);
-	draft.source_chat_id = SafeLine(draft.source_chat_id, 120);
-
-	if (!IsSupportedCategory(draft.category) || draft.title.empty() || draft.memory.empty())
+	Draft draft;
+	if (!SanitizeDraft(input, draft, error_out))
 	{
-		if (error_out != nullptr)
-		{
-			*error_out = "Memory entry is missing a valid category, title, or body.";
-		}
-		return false;
-	}
-
-	if (LooksSensitive(draft.title + "\n" + draft.memory + "\n" + draft.evidence))
-	{
-		if (error_out != nullptr)
-		{
-			*error_out = "Memory entry appears to contain sensitive content.";
-		}
 		return false;
 	}
 
 	if (!MemoryService::EnsureMemoryLayout(scope.root_path))
 	{
-		if (error_out != nullptr)
-		{
-			*error_out = "Failed to create memory directory layout.";
-		}
+		SetError(error_out, "Failed to create memory directory layout.");
 		return false;
 	}
 
 	const fs::path category_path = MemoryService::CategoryPath(scope.root_path, draft.category);
-	fs::path target = FindExistingMemoryFile(category_path, draft.title);
-	int occurrence_count = 1;
-	if (!target.empty())
+	const MemoryEntryTarget target = ResolveMemoryEntryTarget(category_path, draft.title);
+	if (!uam::io::WriteTextFile(target.path, BuildMemoryMarkdown(draft, PersistedScopeFor(scope), target.occurrence_count)))
 	{
-		Entry existing;
-		if (ParseEntryFile(target, existing))
-		{
-			occurrence_count = existing.occurrence_count + 1;
-		}
-	}
-	else
-	{
-		target = category_path / (Slug(draft.title) + ".md");
-		for (int i = 2; fs::exists(target); ++i)
-		{
-			target = category_path / (Slug(draft.title) + "-" + std::to_string(i) + ".md");
-		}
-	}
-
-	const std::string persisted_scope = scope.scope_type == "global" ? "global" : "local";
-	if (!uam::io::WriteTextFile(target, BuildMemoryMarkdown(draft, persisted_scope, occurrence_count)))
-	{
-		if (error_out != nullptr)
-		{
-			*error_out = "Failed to write memory file.";
-		}
+		SetError(error_out, "Failed to write memory file.");
 		return false;
 	}
 
 	if (created_entry != nullptr)
 	{
 		Entry created;
-		if (!ParseEntryFile(target, created))
+		if (!ParseEntryFile(target.path, created))
 		{
-			if (error_out != nullptr)
-			{
-				*error_out = "Memory file was written but could not be reloaded.";
-			}
+			SetError(error_out, "Memory file was written but could not be reloaded.");
 			return false;
 		}
-		std::error_code relative_ec;
-		created.id = fs::relative(target, scope.root_path, relative_ec).generic_string();
-		if (relative_ec || created.id.empty())
-		{
-			created.id = target.filename().string();
-		}
-		created.scope_type = scope.scope_type;
-		created.folder_id = scope.folder_id;
-		created.scope_label = scope.label;
-		created.root_path = scope.root_path;
+		PopulateEntryScope(created, scope);
 		*created_entry = std::move(created);
 	}
 	return true;
 }
 
-bool MemoryLibraryService::DeleteEntry(const Scope& scope, const std::string& entry_id, std::string* error_out)
+bool MemoryLibraryService::DeleteEntry(const Scope& scope, std::string_view entry_id, std::string* error_out)
 {
+	ClearError(error_out);
 	if (scope.scope_type == "all")
 	{
-		std::string root_key;
-		std::string relative_id;
-		if (!ParseAggregateEntryId(entry_id, root_key, relative_id))
-		{
-			if (error_out != nullptr)
-			{
-				*error_out = "Invalid aggregate memory entry id.";
-			}
-			return false;
-		}
-
-		for (const Root& root : scope.roots)
-		{
-			if (CanonicalRootKey(root.root_path) != root_key)
-			{
-				continue;
-			}
-
-			Scope concrete_scope;
-			concrete_scope.scope_type = root.scope_type;
-			concrete_scope.folder_id = root.folder_id;
-			concrete_scope.label = root.label;
-			concrete_scope.root_path = root.root_path;
-			concrete_scope.roots = {root};
-			return DeleteEntry(concrete_scope, relative_id, error_out);
-		}
-
-		if (error_out != nullptr)
-		{
-			*error_out = "Aggregate memory root is no longer known.";
-		}
-		return false;
+		return DeleteAggregateEntry(scope, entry_id, error_out);
 	}
 
-	if (scope.root_path.empty())
+	fs::path entry_path;
+	if (!ResolveDeletableEntryPath(scope, entry_id, entry_path, error_out))
 	{
-		if (error_out != nullptr)
-		{
-			*error_out = "Memory root is unavailable.";
-		}
-		return false;
-	}
-
-	const std::string trimmed_id = Trimmed(entry_id);
-	if (trimmed_id.empty())
-	{
-		if (error_out != nullptr)
-		{
-			*error_out = "Memory entry id is required.";
-		}
-		return false;
-	}
-
-	const fs::path candidate = scope.root_path / fs::path(trimmed_id);
-	if (!IsPathInsideRoot(scope.root_path, candidate))
-	{
-		if (error_out != nullptr)
-		{
-			*error_out = "Memory entry path is outside the memory root.";
-		}
-		return false;
-	}
-
-	if (!fs::exists(candidate))
-	{
-		if (error_out != nullptr)
-		{
-			*error_out = "Memory entry not found: " + trimmed_id;
-		}
-		return false;
-	}
-
-	if (candidate.extension() != ".md")
-	{
-		if (error_out != nullptr)
-		{
-			*error_out = "Only markdown memory files can be deleted.";
-		}
 		return false;
 	}
 
 	std::error_code ec;
-	if (!fs::remove(candidate, ec))
+	if (!uam::paths::RemoveFileNoThrow(entry_path, &ec))
 	{
-		if (error_out != nullptr)
-		{
-			*error_out = ec ? "Failed to delete memory file." : "Memory file no longer exists.";
-		}
+		SetError(error_out, ec ? "Failed to delete memory file." : "Memory file no longer exists.");
 		return false;
 	}
 	return true;

@@ -1,21 +1,16 @@
-#ifndef UAM_APP_PROVIDER_PROFILE_MIGRATION_SERVICE_H
-#define UAM_APP_PROVIDER_PROFILE_MIGRATION_SERVICE_H
-
-
-#include "common/state/app_state.h"
+#pragma once
 
 #include <string>
+#include <string_view>
+
+namespace uam
+{
+	struct AppState;
+}
 
 class ProviderProfileMigrationService
 {
   public:
-	bool IsNativeHistoryProviderId(const std::string& provider_id) const;
-	std::string MapLegacyRuntimeId(const std::string& provider_id, bool prefer_cli_for_native_history) const;
-	std::string DefaultRuntimeIdForLegacyViewHint(const uam::AppState& app) const;
-	bool ShouldShowProviderProfileInUi(const ProviderProfile& profile) const;
-	bool MigrateProviderProfilesToFixedModeIds(uam::AppState& app) const;
+	std::string MapLegacyRuntimeId(std::string_view provider_id, bool use_native_history_provider_for_blank_id) const;
 	bool MigrateActiveProviderIdToFixedModes(uam::AppState& app) const;
-	bool MigrateChatProviderBindingsToFixedModes(uam::AppState& app) const;
 };
-
-#endif // UAM_APP_PROVIDER_PROFILE_MIGRATION_SERVICE_H

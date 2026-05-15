@@ -1,6 +1,6 @@
 #include "common/models/app_models.h"
 
-std::string RoleToString(const MessageRole role)
+std::string RoleToString(MessageRole role)
 {
 	switch (role)
 	{
@@ -15,7 +15,7 @@ std::string RoleToString(const MessageRole role)
 	return "user";
 }
 
-MessageRole RoleFromString(const std::string& value)
+MessageRole RoleFromString(std::string_view value)
 {
 	if (value == "assistant")
 	{
@@ -30,13 +30,13 @@ MessageRole RoleFromString(const std::string& value)
 	return MessageRole::User;
 }
 
-std::string ViewModeToString(const CenterViewMode mode)
+std::string ViewModeToString(CenterViewMode mode)
 {
 	(void)mode;
 	return "cli";
 }
 
-CenterViewMode ViewModeFromString(const std::string& value)
+CenterViewMode ViewModeFromString(std::string_view value)
 {
 	(void)value;
 	return CenterViewMode::CliConsole;

@@ -2,6 +2,12 @@ import type { CSSProperties } from 'react'
 import codexLogo from '../../assets/provider-logos/codex.svg'
 import claudeLogo from '../../assets/provider-logos/claude.svg'
 import opencodeLogo from '../../assets/provider-logos/opencode.svg'
+import {
+  CLAUDE_CLI_PROVIDER_ID,
+  CODEX_CLI_PROVIDER_ID,
+  COPILOT_CLI_PROVIDER_ID,
+  OPENCODE_CLI_PROVIDER_ID,
+} from '../../utils/providerMetadata'
 
 interface ProviderLogoProps {
   providerId?: string
@@ -38,10 +44,10 @@ function CopilotMark() {
 }
 
 export function ProviderLogo({ providerId, size = 16, style, className }: ProviderLogoProps) {
-  const codex = providerId === 'codex-cli'
-  const claude = providerId === 'claude-cli'
-  const opencode = providerId === 'opencode-cli'
-  const copilot = providerId === 'copilot-cli'
+  const codex = providerId === CODEX_CLI_PROVIDER_ID
+  const claude = providerId === CLAUDE_CLI_PROVIDER_ID
+  const opencode = providerId === OPENCODE_CLI_PROVIDER_ID
+  const copilot = providerId === COPILOT_CLI_PROVIDER_ID
   const logoSrc = codex ? codexLogo : claude ? claudeLogo : opencode ? opencodeLogo : ''
 
   return (

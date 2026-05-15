@@ -1,59 +1,42 @@
 #include "common/provider/claude/cli/claude_cli_provider_runtime.h"
 
+#include "common/config/approval_modes.h"
+#include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
-#include "common/utils/string_utils.h"
+#include "common/utils/range_utils.h"
 
-#include <sstream>
-
-using namespace provider_runtime_internal;
+#include <array>
+#include <string_view>
 
 namespace
 {
+	constexpr const char* kClaudeDangerouslySkipPermissionsFlag = "--dangerously-skip-permissions";
+
+	constexpr auto kClaudeProviderPermissionModes = std::to_array<std::string_view>({
+	    uam::approval_modes::kDefaultApprovalMode,
+	    uam::approval_modes::kPlanApprovalMode,
+	});
+
 	std::vector<std::string> ClaudeFlagsFromSettings(const AppSettings& settings)
 	{
-		std::vector<std::string> flags;
-		if (settings.provider_yolo_mode)
-		{
-			flags.push_back("--dangerously-skip-permissions");
-		}
-
-		const std::vector<std::string> extra_flags = SplitCommandLineWords(settings.provider_extra_flags);
-		flags.insert(flags.end(), extra_flags.begin(), extra_flags.end());
-		return flags;
+		return uam::provider_runtime_internal::BuildProviderFlagsArgv(settings, kClaudeDangerouslySkipPermissionsFlag);
 	}
 
-	std::string BuildClaudeShellCommand(const std::vector<std::string>& argv)
+	bool ShouldPassClaudePermissionMode(std::string_view approval_mode)
 	{
-		std::ostringstream out;
-		bool first = true;
-		for (const std::string& arg : argv)
-		{
-			if (!first)
-			{
-				out << ' ';
-			}
-			out << ShellEscape(arg);
-			first = false;
-		}
-		return out.str();
+		return uam::ranges::Contains(kClaudeProviderPermissionModes, approval_mode);
 	}
 
 	void AppendClaudeModeArgs(std::vector<std::string>& argv, const ChatSession& chat, const AppSettings& settings)
 	{
-		const std::string model_id = uam::strings::Trim(chat.model_id);
-		if (!model_id.empty())
-		{
-			argv.push_back("--model");
-			argv.push_back(model_id);
-		}
+		uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", chat.model_id);
 
 		if (!settings.provider_yolo_mode)
 		{
-			const std::string approval_mode = uam::strings::Trim(chat.approval_mode);
-			if (approval_mode == "default" || approval_mode == "plan")
+			const std::string approval_mode = uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode);
+			if (ShouldPassClaudePermissionMode(approval_mode))
 			{
-				argv.push_back("--permission-mode");
-				argv.push_back(approval_mode);
+				uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--permission-mode", approval_mode);
 			}
 		}
 	}
@@ -61,7 +44,7 @@ namespace
 
 const char* ClaudeCliProviderRuntime::RuntimeId() const
 {
-	return "claude-cli";
+	return uam::provider_ids::kClaudeCli;
 }
 
 bool ClaudeCliProviderRuntime::IsEnabled() const
@@ -74,25 +57,20 @@ const char* ClaudeCliProviderRuntime::DisabledReason() const
 	return "";
 }
 
-std::string ClaudeCliProviderRuntime::BuildPrompt(const ProviderProfile&, const std::string& user_prompt, const std::vector<std::string>& files) const
+std::string ClaudeCliProviderRuntime::BuildPrompt(const ProviderProfile&, std::string_view user_prompt, const std::vector<std::string>& files) const
 {
-	return provider_runtime_internal::BuildPrompt(user_prompt, files);
+	return uam::provider_runtime_internal::BuildPrompt(user_prompt, files);
 }
 
-std::string ClaudeCliProviderRuntime::BuildCommand(const ProviderProfile& profile, const AppSettings& settings, const std::string& prompt, const std::vector<std::string>& files, const std::string& resume_session_id) const
+std::string ClaudeCliProviderRuntime::BuildCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, const std::string& resume_session_id) const
 {
-	AppSettings provider_settings = MergeProviderSettings(profile, settings);
+	const AppSettings provider_settings = uam::provider_runtime_internal::MergeProviderSettings(profile, settings);
 	std::vector<std::string> argv = {"claude", "-p"};
-	if (profile.supports_resume && !uam::strings::Trim(resume_session_id).empty())
-	{
-		argv.push_back("--resume");
-		argv.push_back(uam::strings::Trim(resume_session_id));
-	}
+	uam::provider_runtime_internal::AppendResumeArgs(argv, profile, resume_session_id);
 
-	const std::vector<std::string> flags = ClaudeFlagsFromSettings(provider_settings);
-	argv.insert(argv.end(), flags.begin(), flags.end());
+	uam::provider_runtime_internal::AppendArgs(argv, ClaudeFlagsFromSettings(provider_settings));
 	argv.push_back(BuildPrompt(profile, prompt, files));
-	return BuildClaudeShellCommand(argv);
+	return uam::provider_runtime_internal::JoinShellEscapedArgs(argv);
 }
 
 std::vector<std::string> ClaudeCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
@@ -102,33 +80,28 @@ std::vector<std::string> ClaudeCliProviderRuntime::BuildInteractiveArgv(const Pr
 		return {};
 	}
 
-	AppSettings provider_settings = MergeProviderSettings(profile, settings);
-	std::vector<std::string> argv = {"claude"};
-	if (profile.supports_resume && !uam::strings::Trim(chat.native_session_id).empty())
-	{
-		argv.push_back("--resume");
-		argv.push_back(uam::strings::Trim(chat.native_session_id));
-	}
+	const AppSettings provider_settings = uam::provider_runtime_internal::MergeProviderSettings(profile, settings);
+	std::vector<std::string> argv = uam::provider_runtime_internal::SplitInteractiveCommandOrDefault(profile, "claude");
+	uam::provider_runtime_internal::AppendResumeArgs(argv, profile, chat.native_session_id);
 
 	AppendClaudeModeArgs(argv, chat, provider_settings);
-	const std::vector<std::string> flags = ClaudeFlagsFromSettings(provider_settings);
-	argv.insert(argv.end(), flags.begin(), flags.end());
+	uam::provider_runtime_internal::AppendArgs(argv, ClaudeFlagsFromSettings(provider_settings));
 	return argv;
 }
 
-MessageRole ClaudeCliProviderRuntime::RoleFromNativeType(const ProviderProfile& profile, const std::string& native_type) const
+MessageRole ClaudeCliProviderRuntime::RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const
 {
-	return provider_runtime_internal::RoleFromNativeType(profile, native_type);
+	return uam::provider_runtime_internal::RoleFromNativeType(profile, native_type);
 }
 
 std::vector<ChatSession> ClaudeCliProviderRuntime::LoadHistory(const ProviderProfile&, const std::filesystem::path& data_root, const std::filesystem::path&, const ProviderRuntimeHistoryLoadOptions&) const
 {
-	return LoadLocalChats(data_root);
+	return uam::provider_runtime_internal::LoadLocalChats(data_root);
 }
 
 bool ClaudeCliProviderRuntime::SaveHistory(const ProviderProfile&, const std::filesystem::path& data_root, const ChatSession& chat) const
 {
-	return SaveLocalChat(data_root, chat);
+	return uam::provider_runtime_internal::SaveLocalChat(data_root, chat);
 }
 
 bool ClaudeCliProviderRuntime::UsesNativeOverlayHistory(const ProviderProfile&) const

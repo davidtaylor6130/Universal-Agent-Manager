@@ -1,10 +1,10 @@
-#ifndef UAM_APP_VCS_COMMIT_SERVICE_H
-#define UAM_APP_VCS_COMMIT_SERVICE_H
+#pragma once
 
 #include "common/state/app_state.h"
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace uam
@@ -55,7 +55,7 @@ namespace uam
 	};
 
 	std::string VcsTypeToString(VcsType type);
-	VcsType VcsTypeFromString(const std::string& value);
+	VcsType VcsTypeFromString(std::string_view value);
 
 	class VcsCommitService
 	{
@@ -64,7 +64,7 @@ namespace uam
 		std::string Diff(const AppState& app, const ChatSession& chat, const std::string& path, VcsType type, std::string* error_out = nullptr) const;
 		VcsCommitResult Commit(AppState& app, const ChatSession& chat, VcsType type, const std::string& message, const std::vector<std::string>& files) const;
 		VcsCommitMessageSuggestion GenerateMessage(const AppState& app, const ChatSession& chat, VcsType type, const std::vector<std::string>& files) const;
+		static std::string BuildCommitMessagePromptForTests(const VcsCommitStatus& status, const std::vector<std::string>& selected_files);
+		static VcsCommitMessageSuggestion ParseWorkerOutputForTests(const std::string& output);
 	};
 } // namespace uam
-
-#endif // UAM_APP_VCS_COMMIT_SERVICE_H

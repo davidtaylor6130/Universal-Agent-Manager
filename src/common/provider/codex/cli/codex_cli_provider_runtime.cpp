@@ -1,29 +1,27 @@
 #include "common/provider/codex/cli/codex_cli_provider_runtime.h"
 
 #include "common/provider/codex/cli/codex_thread_id.h"
+#include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
-
-using namespace provider_runtime_internal;
 
 namespace
 {
+	constexpr const char* kCodexFullAutoFlag = "--full-auto";
+
+	AppSettings CodexTemplateCommandSettings(const ProviderProfile& profile, const AppSettings& settings)
+	{
+		return uam::provider_runtime_internal::MergeProviderSettingsWithCustomYoloFlag(profile, settings, kCodexFullAutoFlag);
+	}
+
 	std::vector<std::string> CodexFlagsFromSettings(const AppSettings& settings)
 	{
-		std::vector<std::string> flags;
-		if (settings.provider_yolo_mode)
-		{
-			flags.push_back("--full-auto");
-		}
-
-		const std::vector<std::string> extra_flags = SplitCommandLineWords(settings.provider_extra_flags);
-		flags.insert(flags.end(), extra_flags.begin(), extra_flags.end());
-		return flags;
+		return uam::provider_runtime_internal::BuildProviderFlagsArgv(settings, kCodexFullAutoFlag);
 	}
 } // namespace
 
 const char* CodexCliProviderRuntime::RuntimeId() const
 {
-	return "codex-cli";
+	return uam::provider_ids::kCodexCli;
 }
 
 bool CodexCliProviderRuntime::IsEnabled() const
@@ -36,23 +34,16 @@ const char* CodexCliProviderRuntime::DisabledReason() const
 	return "";
 }
 
-std::string CodexCliProviderRuntime::BuildPrompt(const ProviderProfile&, const std::string& user_prompt, const std::vector<std::string>& files) const
+std::string CodexCliProviderRuntime::BuildPrompt(const ProviderProfile&, std::string_view user_prompt, const std::vector<std::string>& files) const
 {
-	return provider_runtime_internal::BuildPrompt(user_prompt, files);
+	return uam::provider_runtime_internal::BuildPrompt(user_prompt, files);
 }
 
-std::string CodexCliProviderRuntime::BuildCommand(const ProviderProfile& profile, const AppSettings& settings, const std::string& prompt, const std::vector<std::string>& files, const std::string& resume_session_id) const
+std::string CodexCliProviderRuntime::BuildCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, const std::string& resume_session_id) const
 {
 	(void)resume_session_id;
-	AppSettings provider_settings = MergeProviderSettings(profile, settings);
-	provider_settings.provider_yolo_mode = false;
-	if (settings.provider_yolo_mode)
-	{
-		provider_settings.provider_extra_flags = provider_settings.provider_extra_flags.empty()
-			? "--full-auto"
-			: "--full-auto " + provider_settings.provider_extra_flags;
-	}
-	return BuildCommandFromTemplate(provider_settings, prompt, files, "", "codex exec {flags} {prompt}");
+	const AppSettings provider_settings = CodexTemplateCommandSettings(profile, settings);
+	return uam::provider_runtime_internal::BuildCommandFromTemplate(provider_settings, prompt, files, "", "codex exec {flags} {prompt}");
 }
 
 std::vector<std::string> CodexCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
@@ -62,43 +53,39 @@ std::vector<std::string> CodexCliProviderRuntime::BuildInteractiveArgv(const Pro
 		return {};
 	}
 
-	AppSettings provider_settings = MergeProviderSettings(profile, settings);
+	const AppSettings provider_settings = uam::provider_runtime_internal::MergeProviderSettings(profile, settings);
 	std::vector<std::string> argv;
-		const std::string resume_id = uam::codex::ValidThreadIdOrEmpty(chat.native_session_id);
-		if (profile.supports_resume && !resume_id.empty())
-		{
-			argv = {"codex", "resume", "--no-alt-screen", resume_id};
-		}
+	const std::string resume_id = uam::codex::ValidThreadIdOrEmpty(chat.native_session_id);
+	if (profile.supports_resume && !resume_id.empty())
+	{
+		uam::provider_runtime_internal::AppendLiteralArgs(argv, {"codex", "resume", "--no-alt-screen"});
+		argv.push_back(resume_id);
+	}
 	else
 	{
-		argv = SplitCommandLineWords(profile.interactive_command.empty() ? "codex --no-alt-screen" : profile.interactive_command);
+		argv = uam::provider_runtime_internal::SplitInteractiveCommandOrDefault(profile, "codex --no-alt-screen");
 	}
 
-	if (!chat.model_id.empty())
-	{
-		argv.push_back("-m");
-		argv.push_back(chat.model_id);
-	}
+	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "-m", chat.model_id);
 
-	const std::vector<std::string> flags = CodexFlagsFromSettings(provider_settings);
-	argv.insert(argv.end(), flags.begin(), flags.end());
+	uam::provider_runtime_internal::AppendArgs(argv, CodexFlagsFromSettings(provider_settings));
 	return argv;
 }
 
-MessageRole CodexCliProviderRuntime::RoleFromNativeType(const ProviderProfile& profile, const std::string& native_type) const
+MessageRole CodexCliProviderRuntime::RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const
 {
-	return provider_runtime_internal::RoleFromNativeType(profile, native_type);
+	return uam::provider_runtime_internal::RoleFromNativeType(profile, native_type);
 }
 
 std::vector<ChatSession> CodexCliProviderRuntime::LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path&, const ProviderRuntimeHistoryLoadOptions&) const
 {
 	(void)profile;
-	return LoadLocalChats(data_root);
+	return uam::provider_runtime_internal::LoadLocalChats(data_root);
 }
 
 bool CodexCliProviderRuntime::SaveHistory(const ProviderProfile&, const std::filesystem::path& data_root, const ChatSession& chat) const
 {
-	return SaveLocalChat(data_root, chat);
+	return uam::provider_runtime_internal::SaveLocalChat(data_root, chat);
 }
 
 bool CodexCliProviderRuntime::UsesNativeOverlayHistory(const ProviderProfile&) const

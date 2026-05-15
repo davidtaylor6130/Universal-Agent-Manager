@@ -1,6 +1,9 @@
 #include "common/utils/command_line_words.h"
 
-#include <cctype>
+#include "common/utils/string_utils.h"
+
+#include <string_view>
+#include <utility>
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -15,11 +18,29 @@
 
 namespace
 {
+	bool IsQuoteChar(char ch)
+	{
+		return ch == '\'' || ch == '"';
+	}
 
-	std::vector<std::string> SplitShellWordsFallback(const std::string& value)
+	void AppendCurrentWordIfPending(std::vector<std::string>& words, std::string& current, bool& word_started)
+	{
+		if (!word_started)
+		{
+			return;
+		}
+
+		words.push_back(std::move(current));
+		current.clear();
+		word_started = false;
+	}
+
+	std::vector<std::string> SplitShellWordsFallback(std::string_view value)
 	{
 		std::vector<std::string> words;
 		std::string current;
+		current.reserve(value.size());
+		bool word_started = false;
 		bool escaping = false;
 		char quote = '\0';
 
@@ -28,7 +49,23 @@ namespace
 			if (escaping)
 			{
 				current.push_back(ch);
+				word_started = true;
 				escaping = false;
+				continue;
+			}
+
+			if (quote == '\'')
+			{
+				if (ch == quote)
+				{
+					quote = '\0';
+				}
+				else
+				{
+					current.push_back(ch);
+					word_started = true;
+				}
+
 				continue;
 			}
 
@@ -47,46 +84,42 @@ namespace
 				else
 				{
 					current.push_back(ch);
+					word_started = true;
 				}
 
 				continue;
 			}
 
-			if (ch == '\'' || ch == '"')
+			if (IsQuoteChar(ch))
 			{
 				quote = ch;
+				word_started = true;
 				continue;
 			}
 
-			if (std::isspace(static_cast<unsigned char>(ch)) != 0)
+			if (uam::strings::IsAsciiSpace(static_cast<unsigned char>(ch)))
 			{
-				if (!current.empty())
-				{
-					words.push_back(current);
-					current.clear();
-				}
-
+				AppendCurrentWordIfPending(words, current, word_started);
 				continue;
 			}
 
 			current.push_back(ch);
+			word_started = true;
 		}
 
 		if (escaping)
 		{
 			current.push_back('\\');
+			word_started = true;
 		}
 
-		if (!current.empty())
-		{
-			words.push_back(current);
-		}
+		AppendCurrentWordIfPending(words, current, word_started);
 
 		return words;
 	}
 
 #if defined(_WIN32)
-	std::wstring WideFromString(const std::string& value)
+	std::wstring WideFromString(std::string_view value)
 	{
 		if (value.empty())
 		{
@@ -162,7 +195,7 @@ namespace
 
 } // namespace
 
-std::vector<std::string> SplitCommandLineWords(const std::string& value)
+std::vector<std::string> uam::command_line::SplitWords(std::string_view value)
 {
 	if (value.empty())
 	{
