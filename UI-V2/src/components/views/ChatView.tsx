@@ -3091,16 +3091,16 @@ export function ChatView({ session }: ChatViewProps) {
       </button>
       <button
         type="button"
-        disabled={!workspaceDirectory || workspaceActionsDisabled}
+        disabled={!workspaceDirectory}
         onClick={() => void openWorkspaceTerminal()}
         className="h-[24px] w-[28px] inline-flex flex-shrink-0 items-center justify-center text-[11px] font-medium"
-        title={workspaceActionsDisabled ? 'Stop the runtime before opening a terminal' : 'Open a terminal at the workspace location'}
+        title={!workspaceDirectory ? 'Select a workspace directory to open a terminal' : 'Open a terminal at the workspace location'}
         style={{
           border: '1px solid var(--border)',
           borderRadius: 6,
-          background: workspaceDirectory && !workspaceActionsDisabled ? 'var(--surface-up)' : 'var(--bg)',
-          color: workspaceDirectory && !workspaceActionsDisabled ? 'var(--text-2)' : 'var(--text-3)',
-          opacity: workspaceDirectory && !workspaceActionsDisabled ? 1 : 0.55,
+          background: workspaceDirectory ? 'var(--surface-up)' : 'var(--bg)',
+          color: workspaceDirectory ? 'var(--text-2)' : 'var(--text-3)',
+          opacity: workspaceDirectory ? 1 : 0.55,
         }}
       >
         <ComposerIcon name="terminal" size={13} />
