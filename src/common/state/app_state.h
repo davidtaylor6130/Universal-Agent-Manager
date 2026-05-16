@@ -382,6 +382,8 @@ namespace uam
 		MemoryActivityState memory_activity;
 		platform::AsyncNativeChatLoadTask native_chat_load_task;
 		std::unordered_map<std::string, platform::AsyncNativeChatLoadTask> native_chat_load_tasks;
+
+		std::unordered_map<std::string, double> pending_chat_save_at_by_chat_id;
 	};
 
 } // namespace uam

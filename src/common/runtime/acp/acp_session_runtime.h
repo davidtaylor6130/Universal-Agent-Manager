@@ -1,5 +1,6 @@
 #pragma once
 
+#include "cef/cef_includes.h"
 #include "common/state/app_state.h"
 
 #include <filesystem>
@@ -32,7 +33,8 @@ bool ResolveAcpUserInput(AppState& app,
                          const std::map<std::string, std::vector<std::string>>& answers,
                          std::string* error_out = nullptr);
 
-bool PollAllAcpSessions(AppState& app);
+bool PollAllAcpSessions(AppState& app, CefRefPtr<CefBrowser> browser = nullptr);
+void FlushPendingChatSaves(AppState& app);
 void FastStopAcpSessionsForExit(AppState& app);
 
 std::vector<std::string> BuildAcpLaunchArgvForTests(const ChatSession& chat);

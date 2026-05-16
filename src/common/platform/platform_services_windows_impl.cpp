@@ -1742,6 +1742,45 @@ namespace
 			sprintf_s(uuid, sizeof(uuid), "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x", guid.Data1, guid.Data2, guid.Data3, d4_0, d4_1, d4_2, d4_3, d4_4, d4_5, d4_6, d4_7);
 			return std::string(uuid);
 		}
+
+		bool LaunchShellAt(const std::filesystem::path& working_directory, std::string* error_out = nullptr) const override
+		{
+			if (working_directory.empty())
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Working directory is empty.";
+				}
+				return false;
+			}
+
+			SHELLEXECUTEINFOA shim{};
+			shim.cbSize = sizeof(SHELLEXECUTEINFOA);
+			shim.fMask = SEE_MASK_NOCLOSEPROCESS;
+			shim.hwnd = nullptr;
+			shim.lpVerb = "open";
+			shim.lpFile = "cmd.exe";
+			shim.lpParameters = nullptr;
+			shim.lpDirectory = working_directory.u8string().c_str();
+			shim.nShow = SW_SHOWNORMAL;
+
+			if (!ShellExecuteExA(&shim))
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to launch terminal.";
+				}
+				return false;
+			}
+
+			if (shim.hProcess != nullptr)
+			{
+				WaitForSingleObject(shim.hProcess, 2000);
+				CloseHandle(shim.hProcess);
+			}
+
+			return true;
+		}
 	};
 
 	class WindowsFileDialogService final : public IPlatformFileDialogService

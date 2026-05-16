@@ -215,7 +215,7 @@ namespace
 	{
 		if (HasSelectedActiveRuntime(app))
 		{
-			return 50;
+			return 16;
 		}
 		if (HasAnyActiveRuntime(app))
 		{
@@ -298,7 +298,8 @@ void Application::PollTick()
 
 	const RuntimeCliCompatibilitySnapshot provider_snapshot_before = CaptureRuntimeCliCompatibilitySnapshot(m_app);
 	const bool pending_calls_changed = PollPendingRuntimeCall(m_app);
-	const bool acp_sessions_changed = uam::PollAllAcpSessions(m_app);
+	const bool acp_sessions_changed = uam::PollAllAcpSessions(m_app, m_browser);
+	uam::FlushPendingChatSaves(m_app);
 	const bool cli_terminals_changed = uam::PollAllCliTerminals(m_browser, m_app);
 	const bool memory_changed = MemoryService::ProcessDueMemoryWork(m_app);
 	ProviderCliCompatibilityService().Poll(m_app);

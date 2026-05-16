@@ -570,6 +570,8 @@ type ParsedPushMessage =
       sourceChatId?: string
       terminalId?: string
     }
+  | { type: 'streamToken'; chatId: string; token: string }
+  | { type: 'streamDone'; chatId: string }
 
 type ParsedPushResult =
   | { ok: true; message: ParsedPushMessage }
@@ -2136,7 +2138,7 @@ function normalizeCliTranscript(
 const pendingRequestIdsByKey = new Map<string, string>()
 const pendingCodexOptionsByChatId = new Map<string, { requestId: string; reasoningEffort: string; serviceTier: string }>()
 const pendingCliTranscriptChunksBySessionId = new Map<string, { terminalId: string; chunks: string[] }>()
-const CLI_TRANSCRIPT_FLUSH_DELAY_MS = 100
+const CLI_TRANSCRIPT_FLUSH_DELAY_MS = 32
 let cliTranscriptFlushTimer: number | null = null
 let pendingProviderChatDefaults: {
   requestId: string
@@ -2385,6 +2387,20 @@ function parseUamPushPayload(payload: unknown): ParsedPushResult {
       ok: true,
       message: { type, data: raw.data, sessionId, sourceChatId, terminalId },
     }
+  }
+
+  if (type === 'streamToken') {
+    if (!isString(raw.chatId) || !isString(raw.token)) {
+      return { ok: false, status: 'invalid-message', error: 'streamToken requires chatId and token.' }
+    }
+    return { ok: true, message: { type, chatId: raw.chatId, token: raw.token } }
+  }
+
+  if (type === 'streamDone') {
+    if (!isString(raw.chatId)) {
+      return { ok: false, status: 'invalid-message', error: 'streamDone requires chatId.' }
+    }
+    return { ok: true, message: { type, chatId: raw.chatId } }
   }
 
   return { ok: false, status: 'invalid-message', error: `Unsupported push message type: ${type}` }
@@ -2775,6 +2791,7 @@ interface AppState {
 	  detachMarkdownStoreEntry: (sessionId: string, filePath: string) => void
 	  openSessionWorkspace: (id: string) => Promise<boolean>
 	  openSessionWorkspaceEditor: (id: string) => Promise<boolean>
+	  openSessionTerminal: (id: string) => Promise<boolean>
 	  getChatWorktreeStatus: (id: string) => Promise<GitWorktreeStatus | null>
 	  createChatWorktree: (id: string) => Promise<GitWorktreeResult>
 	  discardChatWorktreeChanges: (id: string) => Promise<GitWorktreeResult>
@@ -3151,6 +3168,54 @@ export const useAppStore = create<AppState>((set, get) => {
             )
           }
           break
+        case 'streamToken':
+          {
+            const { chatId, token } = msg
+            const session = get().sessions.find((s) => s.id === chatId)
+            if (!session) break
+
+            const existingMessages = get().messages[chatId] ?? []
+            const lastMessage = existingMessages[existingMessages.length - 1]
+
+            if (lastMessage && lastMessage.role === 'assistant' && lastMessage.isStreaming) {
+              const updatedMessages = [...existingMessages]
+              updatedMessages[updatedMessages.length - 1] = {
+                ...lastMessage,
+                content: lastMessage.content + token,
+              }
+              set((state) => ({
+                messages: {
+                  ...state.messages,
+                  [chatId]: updatedMessages,
+                },
+              }))
+            }
+          }
+          break
+        case 'streamDone':
+          {
+            const { chatId } = msg
+            const session = get().sessions.find((s) => s.id === chatId)
+            if (!session) break
+
+            const existingMessages = get().messages[chatId] ?? []
+            const lastMessage = existingMessages[existingMessages.length - 1]
+
+            if (lastMessage && lastMessage.role === 'assistant' && lastMessage.isStreaming) {
+              const updatedMessages = [...existingMessages]
+              updatedMessages[updatedMessages.length - 1] = {
+                ...lastMessage,
+                isStreaming: false,
+              }
+              set((state) => ({
+                messages: {
+                  ...state.messages,
+                  [chatId]: updatedMessages,
+                },
+              }))
+            }
+          }
+          break
         }
       }
     }
@@ -3394,6 +3459,28 @@ export const useAppStore = create<AppState>((set, get) => {
 
         if (!response.ok) {
           console.error('[CEF] openWorkspaceEditor failed:', response.error)
+          return false
+        }
+
+        return true
+      }
+
+      const session = get().sessions.find((candidate) => candidate.id === id)
+      const folderDirectory = session?.folderId
+        ? get().folders.find((folder) => folder.id === session.folderId)?.directory ?? ''
+        : ''
+      return Boolean(session?.workspaceDirectory?.trim() || folderDirectory.trim())
+    },
+
+    openSessionTerminal: async (id) => {
+      if (isCefContext()) {
+        const response = await sendToCEF({
+          action: 'openWorkspaceTerminal',
+          payload: { chatId: id },
+        })
+
+        if (!response.ok) {
+          console.error('[CEF] openWorkspaceTerminal failed:', response.error)
           return false
         }
 

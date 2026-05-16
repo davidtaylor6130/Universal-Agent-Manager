@@ -1112,6 +1112,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"revealMemoryEntry", &UamQueryHandler::HandleRevealMemoryEntry},
 		{"openWorkspaceDirectory", &UamQueryHandler::HandleOpenWorkspaceDirectory},
 		{"openWorkspaceEditor", &UamQueryHandler::HandleOpenWorkspaceEditor},
+		{"openWorkspaceTerminal", &UamQueryHandler::HandleOpenWorkspaceTerminal},
 		{"getChatWorktreeStatus", &UamQueryHandler::HandleGetChatWorktreeStatus},
 		{"createChatWorktree", &UamQueryHandler::HandleCreateChatWorktree},
 		{"discardChatWorktreeChanges", &UamQueryHandler::HandleDiscardChatWorktreeChanges},
@@ -2455,6 +2456,43 @@ void UamQueryHandler::HandleOpenWorkspaceEditor(CefRefPtr<CefBrowser> /*browser*
 	}
 
 	cb->Success(nlohmann::json{{"editorPresetId", editor_preset_id}}.dump());
+}
+
+void UamQueryHandler::HandleOpenWorkspaceTerminal(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const ChatSession* chat = FindPayloadChatOrFail(m_app, payload, cb);
+	if (chat == nullptr)
+	{
+		return;
+	}
+
+	const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(m_app, *chat);
+	if (workspace_root.empty())
+	{
+		cb->Failure(400, "Chat has no workspace directory.");
+		return;
+	}
+
+	if (!uam::paths::PathExistsNoThrow(workspace_root))
+	{
+		cb->Failure(404, "Workspace directory does not exist.");
+		return;
+	}
+
+	if (!uam::paths::IsDirectoryNoThrow(workspace_root))
+	{
+		cb->Failure(400, "Workspace path is not a directory.");
+		return;
+	}
+
+	std::string error;
+	if (!PlatformServicesFactory::Instance().process_service.LaunchShellAt(workspace_root, &error))
+	{
+		cb->Failure(500, FailureDetailOrFallback(error, "Failed to open terminal."));
+		return;
+	}
+
+	cb->Success("{}");
 }
 
 void UamQueryHandler::HandleGetChatWorktreeStatus(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)

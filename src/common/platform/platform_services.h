@@ -78,6 +78,7 @@ class IPlatformProcessService
 	virtual uintmax_t NativeGeminiSessionMaxFileBytes() const = 0;
 	virtual std::size_t NativeGeminiSessionMaxMessages() const = 0;
 	virtual std::string GenerateUuid() const = 0;
+	virtual bool LaunchShellAt(const std::filesystem::path& working_directory, std::string* error_out = nullptr) const = 0;
 };
 
 /// <summary>

@@ -28,6 +28,8 @@
 #include "common/runtime/acp/acp_statuses.h"
 #include "common/runtime/acp/acp_stream_types.h"
 #include "common/runtime/acp/acp_tool_items.h"
+
+#include "cef/cef_push.h"
 #include "common/runtime/acp/acp_tool_kinds.h"
 #include "common/runtime/app_time.h"
 #include "common/utils/nlohmann_json_utils.h"
@@ -92,6 +94,8 @@ namespace uam
 		void FailAcpTurnOrSession(AcpSessionState& session, const std::string& message);
 		void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat);
 		void SaveChatQuietly(AppState& app, const ChatSession& chat);
+		void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds = 0.5);
+		void FlushPendingChatSaves(AppState& app);
 		bool SetChatNativeSessionIdIfChanged(ChatSession& chat, std::string_view session_id);
 		std::string JsonDiagnosticStringValue(const nlohmann::json& object, const char* key);
 		std::string JsonDiagnosticStringValueOr(const nlohmann::json& object, const char* key, const std::string& fallback);
@@ -1644,6 +1648,17 @@ namespace uam
 			(void)ChatRepository::SaveChat(app.data_root, chat);
 		}
 
+		void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds)
+		{
+			const double now = GetAppTimeSeconds();
+			const double due_at = now + delay_seconds;
+			const auto it = app.pending_chat_save_at_by_chat_id.find(chat.id);
+			if (it == app.pending_chat_save_at_by_chat_id.end() || it->second > due_at)
+			{
+				app.pending_chat_save_at_by_chat_id[chat.id] = due_at;
+			}
+		}
+
 		bool SetChatNativeSessionIdIfChanged(ChatSession& chat, std::string_view session_id)
 		{
 			const std::string normalized_session_id = uam::strings::Trim(std::string(session_id));
@@ -2181,7 +2196,7 @@ namespace uam
 			return session.tool_calls.back();
 		}
 
-		void HandleSessionUpdate(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& params)
+		void HandleSessionUpdate(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& params, CefRefPtr<CefBrowser> browser)
 		{
 			const nlohmann::json update = JsonObjectValue(params, "update");
 			if (!update.is_object())
@@ -2239,7 +2254,11 @@ namespace uam
 
 				if (AppendThoughtChunk(chat, session, live_text))
 				{
-					SaveChatQuietly(app, chat);
+					if (browser)
+					{
+						uam::PushStreamToken(browser, chat.id, live_text);
+					}
+					ScheduleChatSave(app, chat, 0.5);
 				}
 				return;
 			}
@@ -2253,7 +2272,11 @@ namespace uam
 				}
 
 				AppendAssistantChunk(chat, session, live_text);
-				SaveChatQuietly(app, chat);
+				if (browser)
+				{
+					uam::PushStreamToken(browser, chat.id, live_text);
+				}
+				ScheduleChatSave(app, chat, 0.5);
 				return;
 			}
 
@@ -3032,7 +3055,7 @@ namespace uam
 			BeginAcpPendingWait(session, kAcpLifecycleWaitingUserInput);
 		}
 
-		void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
+		void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message, CefRefPtr<CefBrowser> browser)
 		{
 			const std::string method = JsonDiagnosticStringValue(message, "method");
 			const nlohmann::json params = JsonObjectValue(message, "params");
@@ -3079,6 +3102,10 @@ namespace uam
 				}
 				(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 				CompletePromptTurn(session, kAcpLifecycleReady);
+				if (browser)
+				{
+					uam::PushStreamDone(browser, chat.id);
+				}
 				SaveChatQuietly(app, chat);
 				MarkAcpChatUnseenIfBackground(app, chat);
 				return;
@@ -3086,23 +3113,38 @@ namespace uam
 			if (method == uam::acp_methods::kItemAgentMessageDelta)
 			{
 				const std::string item_id = JsonDiagnosticStringValue(params, "itemId");
-				AppendCodexAgentMessageText(chat, session, item_id, CodexStreamedAgentMessageDelta(session, item_id, JsonDiagnosticStringValue(params, "delta")));
-				SaveChatQuietly(app, chat);
+				const std::string delta = CodexStreamedAgentMessageDelta(session, item_id, JsonDiagnosticStringValue(params, "delta"));
+				AppendCodexAgentMessageText(chat, session, item_id, delta);
+				if (browser && !delta.empty())
+				{
+					uam::PushStreamToken(browser, chat.id, delta);
+				}
+				ScheduleChatSave(app, chat, 0.5);
 				return;
 			}
 			if (method == uam::acp_methods::kItemReasoningTextDelta)
 			{
-				if (AppendCodexReasoningThought(chat, session, JsonDiagnosticStringValue(params, "itemId"), "Reasoning", JsonDiagnosticStringValue(params, "delta"), JsonIntValueOr(params, "contentIndex", -1), true))
+				const std::string delta = JsonDiagnosticStringValue(params, "delta");
+				if (AppendCodexReasoningThought(chat, session, JsonDiagnosticStringValue(params, "itemId"), "Reasoning", delta, JsonIntValueOr(params, "contentIndex", -1), true))
 				{
-					SaveChatQuietly(app, chat);
+					if (browser && !delta.empty())
+					{
+						uam::PushStreamToken(browser, chat.id, delta);
+					}
+					ScheduleChatSave(app, chat, 0.5);
 				}
 				return;
 			}
 			if (method == uam::acp_methods::kItemReasoningSummaryTextDelta)
 			{
-				if (AppendCodexReasoningThought(chat, session, JsonDiagnosticStringValue(params, "itemId"), "Summary", JsonDiagnosticStringValue(params, "delta"), JsonIntValueOr(params, "summaryIndex", -1), true))
+				const std::string delta = JsonDiagnosticStringValue(params, "delta");
+				if (AppendCodexReasoningThought(chat, session, JsonDiagnosticStringValue(params, "itemId"), "Summary", delta, JsonIntValueOr(params, "summaryIndex", -1), true))
 				{
-					SaveChatQuietly(app, chat);
+					if (browser && !delta.empty())
+					{
+						uam::PushStreamToken(browser, chat.id, delta);
+					}
+					ScheduleChatSave(app, chat, 0.5);
 				}
 				return;
 			}
@@ -3872,7 +3914,7 @@ namespace uam
 			AppendAcpDiagnostic(session, "response", "unknown_request_id", method, request_id, false, 0, "", CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
 		}
 
-		void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
+		void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message, CefRefPtr<CefBrowser> browser)
 		{
 			const nlohmann::json assistant_message = JsonObjectValue(message, "message");
 			const nlohmann::json content = JsonArrayValue(assistant_message, "content");
@@ -3882,7 +3924,11 @@ namespace uam
 				if (!fallback_text.empty())
 				{
 					AppendAssistantChunk(chat, session, fallback_text);
-					SaveChatQuietly(app, chat);
+					if (browser)
+					{
+						uam::PushStreamToken(browser, chat.id, fallback_text);
+					}
+					ScheduleChatSave(app, chat, 0.5);
 				}
 				return;
 			}
@@ -3902,6 +3948,10 @@ namespace uam
 					if (!text.empty())
 					{
 						AppendAssistantChunk(chat, session, text);
+						if (browser)
+						{
+							uam::PushStreamToken(browser, chat.id, text);
+						}
 						changed = true;
 					}
 					continue;
@@ -3913,6 +3963,10 @@ namespace uam
 					if (!thought.empty())
 					{
 						changed = AppendThoughtChunk(chat, session, thought) || changed;
+						if (browser)
+						{
+							uam::PushStreamToken(browser, chat.id, thought);
+						}
 					}
 					continue;
 				}
@@ -3995,7 +4049,7 @@ namespace uam
 			}
 		}
 
-		void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
+		void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message, CefRefPtr<CefBrowser> browser)
 		{
 			const std::string session_id = uam::nlohmann_json::TrimmedStringValueOr(message, "session_id", "");
 			if (!session_id.empty())
@@ -4037,11 +4091,15 @@ namespace uam
 				CompletePromptTurn(session, kAcpLifecycleReady);
 			}
 
+			if (browser)
+			{
+				uam::PushStreamDone(browser, chat.id);
+			}
 			SaveChatQuietly(app, chat);
 			MarkAcpChatUnseenIfBackground(app, chat);
 		}
 
-		void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
+		void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message, CefRefPtr<CefBrowser> browser)
 		{
 			const std::string type = JsonDiagnosticStringValue(message, "type");
 			if (type == uam::acp_claude_stream::kMessageTypeSystem && JsonDiagnosticStringValue(message, "subtype") == uam::acp_claude_stream::kSubtypeInit)
@@ -4068,7 +4126,7 @@ namespace uam
 
 			if (type == uam::acp_claude_stream::kMessageTypeAssistant)
 			{
-				HandleClaudeAssistantMessage(app, session, chat, message);
+				HandleClaudeAssistantMessage(app, session, chat, message, browser);
 				return;
 			}
 
@@ -4080,14 +4138,14 @@ namespace uam
 
 			if (type == uam::acp_claude_stream::kMessageTypeResult)
 			{
-				HandleClaudeResult(app, session, chat, message);
+				HandleClaudeResult(app, session, chat, message, browser);
 				return;
 			}
 
 			AppendAcpDiagnostic(session, "message", "ignored_claude_message", "", "", false, 0, "", CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
 		}
 
-		bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& line)
+		bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& line, CefRefPtr<CefBrowser> browser)
 		{
 			const std::string trimmed = uam::strings::Trim(line);
 			if (trimmed.empty())
@@ -4113,7 +4171,7 @@ namespace uam
 			{
 				try
 				{
-					HandleClaudeMessage(app, session, chat, message);
+					HandleClaudeMessage(app, session, chat, message, browser);
 				}
 				catch (const std::exception& ex)
 				{
@@ -4132,7 +4190,7 @@ namespace uam
 				{
 					try
 					{
-						HandleCodexMessage(app, session, chat, message);
+						HandleCodexMessage(app, session, chat, message, browser);
 					}
 					catch (const std::exception& ex)
 					{
@@ -4144,7 +4202,7 @@ namespace uam
 				}
 				else if (method == uam::acp_methods::kSessionUpdate)
 				{
-					HandleSessionUpdate(app, session, chat, JsonObjectValue(message, "params"));
+					HandleSessionUpdate(app, session, chat, JsonObjectValue(message, "params"), browser);
 				}
 				else
 				{
@@ -4163,7 +4221,7 @@ namespace uam
 			return false;
 		}
 
-		bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat)
+		bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, CefRefPtr<CefBrowser> browser)
 		{
 			bool changed = false;
 			std::array<char, 8192> buffer{};
@@ -4180,7 +4238,7 @@ namespace uam
 					{
 						std::string line = session.stdout_buffer.substr(0, newline_pos);
 						session.stdout_buffer.erase(0, newline_pos + 1);
-						changed = ProcessAcpLine(app, session, chat, line) || changed;
+						changed = ProcessAcpLine(app, session, chat, line, browser) || changed;
 					}
 					continue;
 				}
@@ -4736,7 +4794,7 @@ namespace uam
 		return true;
 	}
 
-	bool PollAllAcpSessions(AppState& app)
+	bool PollAllAcpSessions(AppState& app, CefRefPtr<CefBrowser> browser)
 	{
 		bool changed = false;
 		for (auto& session_ptr : app.acp_sessions)
@@ -4763,7 +4821,7 @@ namespace uam
 
 			ChatSession& chat = *chat_ptr;
 			changed = DrainStderr(session) || changed;
-			changed = DrainStdout(app, session, chat) || changed;
+			changed = DrainStdout(app, session, chat, browser) || changed;
 
 			if (SendSessionSetupIfReady(app, session, chat))
 			{
@@ -4900,7 +4958,7 @@ namespace uam
 
 	bool ProcessAcpLineForTests(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& line)
 	{
-		return ProcessAcpLine(app, session, chat, line);
+		return ProcessAcpLine(app, session, chat, line, nullptr);
 	}
 
 	bool IsValidCodexThreadIdForTests(const std::string& thread_id)
@@ -4911,6 +4969,28 @@ namespace uam
 	bool UpdateAcpStaleWaitForTests(AcpSessionState& session, double now_seconds)
 	{
 		return UpdateAcpStaleWait(session, now_seconds);
+	}
+
+	void FlushPendingChatSaves(AppState& app)
+	{
+		const double now = GetAppTimeSeconds();
+		std::vector<std::string> due_chat_ids;
+		for (const auto& entry : app.pending_chat_save_at_by_chat_id)
+		{
+			if (entry.second <= now)
+			{
+				due_chat_ids.push_back(entry.first);
+			}
+		}
+		for (const std::string& chat_id : due_chat_ids)
+		{
+			const ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+			if (chat != nullptr)
+			{
+				(void)ChatRepository::SaveChat(app.data_root, *chat);
+			}
+			app.pending_chat_save_at_by_chat_id.erase(chat_id);
+		}
 	}
 
 } // namespace uam

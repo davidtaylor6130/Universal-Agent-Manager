@@ -1498,6 +1498,41 @@ namespace
 			return "";
 #endif
 		}
+
+		bool LaunchShellAt(const std::filesystem::path& working_directory, std::string* error_out = nullptr) const override
+		{
+			if (working_directory.empty())
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Working directory is empty.";
+				}
+				return false;
+			}
+
+			std::string escaped_path;
+			for (char c : working_directory.generic_string())
+			{
+				if (c == ' ' || c == '\'' || c == '"' || c == '\\' || c == '$')
+				{
+					escaped_path += '\\';
+				}
+				escaped_path += c;
+			}
+
+			std::string command = "open -a Terminal --args --cd-path '" + escaped_path + "' &";
+			int result = std::system(command.c_str());
+			if (result != 0)
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to launch terminal.";
+				}
+				return false;
+			}
+
+			return true;
+		}
 	};
 
 	class MacFileDialogService final : public IPlatformFileDialogService

@@ -87,7 +87,7 @@ const PLAN_APPROVE_PROMPT = 'Proceed with the plan.'
 const PLAN_DENY_PROMPT = 'Do not proceed with this plan. Please revise it before making changes.'
 
 type LocalAttachmentStatus = 'ready' | 'staging' | 'failed'
-type ComposerIconName = 'editor' | 'folder' | 'git-tree' | 'markdown' | 'plus' | 'send'
+type ComposerIconName = 'editor' | 'folder' | 'git-tree' | 'markdown' | 'plus' | 'send' | 'terminal'
 
 interface LocalAttachment extends Attachment {
   status: LocalAttachmentStatus
@@ -152,6 +152,16 @@ function ComposerIcon({ name, size = 14 }: { name: ComposerIconName; size?: numb
       <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <path d="M2.5 8 13 3.2 10.4 13 7.5 9.2 2.5 8Z" />
         <path d="m7.5 9.2 2.2-2.4" />
+      </svg>
+    )
+  }
+
+  if (name === 'terminal') {
+    return (
+      <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="2" y="3" width="12" height="10" rx="1.5" />
+        <path d="m4.7 7.3 2 1.1-2 1.1" />
+        <path d="M8 10h4" />
       </svg>
     )
   }
@@ -2447,6 +2457,7 @@ export function ChatView({ session }: ChatViewProps) {
   const setSessionMemoryEnabled = useAppStore((s) => s.setSessionMemoryEnabled)
   const openSessionWorkspace = useAppStore((s) => s.openSessionWorkspace)
   const openSessionWorkspaceEditor = useAppStore((s) => s.openSessionWorkspaceEditor)
+  const openSessionTerminal = useAppStore((s) => s.openSessionTerminal)
   const createChatWorktree = useAppStore((s) => s.createChatWorktree)
   const discardChatWorktreeChanges = useAppStore((s) => s.discardChatWorktreeChanges)
   const portChatWorktreeChanges = useAppStore((s) => s.portChatWorktreeChanges)
@@ -2760,6 +2771,17 @@ export function ChatView({ session }: ChatViewProps) {
       setOpenWorkspaceError('Failed to open workspace editor.')
     }
   }
+  const openWorkspaceTerminal = async () => {
+    if (!workspaceDirectory) return
+    setOpenWorkspaceError('')
+    setWorkspaceActionMessage('')
+    const ok = await openSessionTerminal(session.id)
+    if (ok) {
+      setWorkspaceActionMessage('Opened terminal at workspace.')
+    } else {
+      setOpenWorkspaceError('Failed to open terminal.')
+    }
+  }
   const runWorkspaceAction = async (action: 'create' | 'discard' | 'port') => {
     if (workspaceActionsDisabled) return
     setOpenWorkspaceError('')
@@ -3050,41 +3072,57 @@ export function ChatView({ session }: ChatViewProps) {
                 }}
 	              >
 	                <ComposerIcon name="folder" size={13} />
-	              </button>
-	              <button
-	                type="button"
-                disabled={!workspaceDirectory}
-                onClick={() => void openWorkspaceEditor()}
-                className="h-[24px] w-[28px] inline-flex flex-shrink-0 items-center justify-center text-[11px] font-medium"
-                title="Open workspace in configured editor"
-                style={{
-                  border: '1px solid var(--border)',
-                  borderRadius: 6,
-                  background: workspaceDirectory ? 'var(--surface-up)' : 'var(--bg)',
-                  color: workspaceDirectory ? 'var(--text-2)' : 'var(--text-3)',
-                  opacity: workspaceDirectory ? 1 : 0.55,
-                }}
-	              >
-	                <ComposerIcon name="editor" size={13} />
-	              </button>
-	              {!isGitWorktree && (
-	                <button
-	                  type="button"
-	                  disabled={!workspaceDirectory || workspaceActionsDisabled}
-	                  onClick={() => void runWorkspaceAction('create')}
-	                  className="h-[24px] w-[28px] inline-flex flex-shrink-0 items-center justify-center text-[11px] font-medium"
-	                  title={workspaceActionsDisabled ? 'Stop the runtime before changing workspace isolation' : 'Create an isolated Git worktree for this chat'}
-	                  style={{
-	                    border: '1px solid var(--border)',
-	                    borderRadius: 6,
-	                    background: workspaceDirectory && !workspaceActionsDisabled ? 'var(--surface-up)' : 'var(--bg)',
-	                    color: workspaceDirectory && !workspaceActionsDisabled ? 'var(--text-2)' : 'var(--text-3)',
-	                    opacity: workspaceDirectory && !workspaceActionsDisabled ? 1 : 0.55,
-	                  }}
-	                >
-	                  <ComposerIcon name="git-tree" size={13} />
-	                </button>
-	              )}
+	      </button>
+	      <button
+        type="button"
+        disabled={!workspaceDirectory}
+        onClick={() => void openWorkspaceEditor()}
+        className="h-[24px] w-[28px] inline-flex flex-shrink-0 items-center justify-center text-[11px] font-medium"
+        title="Open workspace in configured editor"
+        style={{
+          border: '1px solid var(--border)',
+          borderRadius: 6,
+          background: workspaceDirectory ? 'var(--surface-up)' : 'var(--bg)',
+          color: workspaceDirectory ? 'var(--text-2)' : 'var(--text-3)',
+          opacity: workspaceDirectory ? 1 : 0.55,
+        }}
+      >
+        <ComposerIcon name="editor" size={13} />
+      </button>
+      <button
+        type="button"
+        disabled={!workspaceDirectory || workspaceActionsDisabled}
+        onClick={() => void openWorkspaceTerminal()}
+        className="h-[24px] w-[28px] inline-flex flex-shrink-0 items-center justify-center text-[11px] font-medium"
+        title={workspaceActionsDisabled ? 'Stop the runtime before opening a terminal' : 'Open a terminal at the workspace location'}
+        style={{
+          border: '1px solid var(--border)',
+          borderRadius: 6,
+          background: workspaceDirectory && !workspaceActionsDisabled ? 'var(--surface-up)' : 'var(--bg)',
+          color: workspaceDirectory && !workspaceActionsDisabled ? 'var(--text-2)' : 'var(--text-3)',
+          opacity: workspaceDirectory && !workspaceActionsDisabled ? 1 : 0.55,
+        }}
+      >
+        <ComposerIcon name="terminal" size={13} />
+      </button>
+      {!isGitWorktree && (
+        <button
+          type="button"
+          disabled={!workspaceDirectory || workspaceActionsDisabled}
+          onClick={() => void runWorkspaceAction('create')}
+          className="h-[24px] w-[28px] inline-flex flex-shrink-0 items-center justify-center text-[11px] font-medium"
+          title={workspaceActionsDisabled ? 'Stop the runtime before changing workspace isolation' : 'Create an isolated Git worktree for this chat'}
+          style={{
+            border: '1px solid var(--border)',
+            borderRadius: 6,
+            background: workspaceDirectory && !workspaceActionsDisabled ? 'var(--surface-up)' : 'var(--bg)',
+            color: workspaceDirectory && !workspaceActionsDisabled ? 'var(--text-2)' : 'var(--text-3)',
+            opacity: workspaceDirectory && !workspaceActionsDisabled ? 1 : 0.55,
+          }}
+        >
+          <ComposerIcon name="git-tree" size={13} />
+        </button>
+      )}
 	              {isGitWorktree && (
 	                <>
 	                  <button
