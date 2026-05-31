@@ -99,4 +99,9 @@ namespace uam::time
 	{
 		return LocalTimestampNow(kLocalDisplayTimestampFormat);
 	}
+
+	inline std::int64_t TimestampNowSec()
+	{
+		return detail::SystemTimeNow();
+	}
 } // namespace uam::time

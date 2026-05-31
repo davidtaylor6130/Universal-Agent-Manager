@@ -4,6 +4,7 @@ import { Attachment, Message, MessageBlock } from '../types/message'
 import { Provider } from '../types/provider'
 import { MemoryEntry, MemoryEntryDraft, MemoryScope, MemoryScanCandidate } from '../types/memory'
 import type { MarkdownStoreDraft, MarkdownStoreEntry } from '../types/markdownStore'
+import type { Goal, GoalStatus } from '../types/goal'
 import { sendToCEF, isCefContext, createRequestId } from '../ipc/cefBridge'
 import { applyDocumentTheme, normalizeStoredTheme, readStoredTheme, writeStoredTheme, type StoredTheme } from '../utils/themeStorage'
 import {
@@ -157,6 +158,20 @@ interface CppChat {
     lastError: string
   }
   acpSession?: CppAcpSession
+  activeGoalId?: string | null
+  goals?: CppGoal[]
+}
+
+interface CppGoal {
+  id: string
+  objective: string
+  status: GoalStatus
+  tokenBudget?: number
+  tokensUsed?: number
+  blockedTurnCount?: number
+  lastBlocker?: string
+  createdAt: string
+  updatedAt: string
 }
 
 export interface GitWorktreeStatus {
@@ -1102,8 +1117,37 @@ function sanitizeCppChat(value: unknown): CppChat | null {
       : undefined,
     cliTerminal: sanitizeCppCliTerminal(value.cliTerminal),
     acpSession: sanitizeCppAcpSession(value.acpSession),
+    activeGoalId: isString(value.activeGoalId) ? value.activeGoalId : null,
+    goals: Array.isArray(value.goals)
+      ? value.goals.flatMap((goal) => {
+          const sanitized = sanitizeCppGoal(goal)
+          return sanitized ? [sanitized] : []
+        })
+      : undefined,
 	  }
 	}
+
+function sanitizeGoalStatus(value: unknown): GoalStatus {
+  if (value === 'active' || value === 'complete' || value === 'blocked') return value
+  return 'active'
+}
+
+function sanitizeCppGoal(value: unknown): CppGoal | null {
+  if (!isRecord(value)) return null
+  const id = stringOr(value.id).trim()
+  if (!id) return null
+  return {
+    id,
+    objective: stringOr(value.objective),
+    status: sanitizeGoalStatus(value.status),
+    tokenBudget: finiteNumberOr(value.tokenBudget, 0),
+    tokensUsed: finiteNumberOr(value.tokensUsed, 0),
+    blockedTurnCount: finiteNumberOr(value.blockedTurnCount, 0),
+    lastBlocker: isString(value.lastBlocker) ? value.lastBlocker : undefined,
+    createdAt: stringOr(value.createdAt),
+    updatedAt: stringOr(value.updatedAt),
+  }
+}
 
 function sanitizeGitWorktreeStatus(value: unknown): GitWorktreeStatus | null {
   if (!isRecord(value)) return null
@@ -2534,10 +2578,35 @@ function deserializeState(
 
   const sessionsWithPendingCodexOptions = applyPendingCodexOptions(sessions)
 
+  const goalsByChatId: Record<string, Goal[]> = {}
+  const activeGoalIdByChatId: Record<string, string | null> = {}
+  for (const chat of cpp.chats) {
+    if (chat.activeGoalId !== undefined) {
+      activeGoalIdByChatId[chat.id] = chat.activeGoalId
+    }
+    if (Array.isArray(chat.goals) && chat.goals.length > 0) {
+      const goalObjects: Goal[] = chat.goals.map((cppGoal) => ({
+        id: cppGoal.id,
+        chatId: chat.id,
+        objective: cppGoal.objective,
+        status: cppGoal.status,
+        tokenBudget: cppGoal.tokenBudget,
+        tokensUsed: cppGoal.tokensUsed,
+        blockedTurnCount: cppGoal.blockedTurnCount,
+        lastBlocker: cppGoal.lastBlocker,
+        createdAt: new Date(cppGoal.createdAt || Date.now()),
+        updatedAt: new Date(cppGoal.updatedAt || Date.now()),
+      }))
+      goalsByChatId[chat.id] = goalObjects
+    }
+  }
+
   return {
     folders,
     sessions: sessionsWithPendingCodexOptions,
     messages,
+    goalsByChatId,
+    activeGoalIdByChatId,
     providers,
     activeSessionId: effectiveActiveSessionId,
     lastAppliedStateRevision: cppStateRevision(cpp),
@@ -2628,6 +2697,33 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     }
   }
 
+  // Patch goal data
+  const goalsByChatId = { ...current.goalsByChatId }
+  const activeGoalIdByChatId = { ...current.activeGoalIdByChatId }
+  for (const chatId of removedChatIds) {
+    delete goalsByChatId[chatId]
+    delete activeGoalIdByChatId[chatId]
+  }
+  for (const chat of patch.chats ?? []) {
+    if (chat.activeGoalId !== undefined) {
+      activeGoalIdByChatId[chat.id] = chat.activeGoalId
+    }
+    if (Array.isArray(chat.goals)) {
+      goalsByChatId[chat.id] = chat.goals.map((cppGoal) => ({
+        id: cppGoal.id,
+        chatId: chat.id,
+        objective: cppGoal.objective,
+        status: cppGoal.status,
+        tokenBudget: cppGoal.tokenBudget,
+        tokensUsed: cppGoal.tokensUsed,
+        blockedTurnCount: cppGoal.blockedTurnCount,
+        lastBlocker: cppGoal.lastBlocker,
+        createdAt: new Date(cppGoal.createdAt || Date.now()),
+        updatedAt: new Date(cppGoal.updatedAt || Date.now()),
+      }))
+    }
+  }
+
   const activeSessionId =
     patch.selectedChatId !== undefined
       ? patch.selectedChatId && sessions.some((session) => session.id === patch.selectedChatId)
@@ -2643,6 +2739,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     folders,
     sessions: sessionsWithPendingCodexOptions,
     messages: sameRecordEntries(current.messages, messages) ? current.messages : messages,
+    goalsByChatId,
+    activeGoalIdByChatId,
     providers,
     activeSessionId,
     lastAppliedStateRevision: nextRevision,
@@ -2714,6 +2812,8 @@ interface AppState {
   activeSessionId: string | null
   lastAppliedStateRevision: number
   messages: Record<string, Message[]>
+  goalsByChatId: Record<string, Goal[]>
+  activeGoalIdByChatId: Record<string, string | null>
 
   // Providers
   providers: Provider[]
@@ -2801,6 +2901,12 @@ interface AppState {
 	  commitVcsChanges: (id: string, vcsType: VcsType, message: string, files: string[]) => Promise<VcsCommitResult>
 	  generateVcsCommitMessage: (id: string, vcsType: VcsType, files: string[]) => Promise<VcsCommitMessageSuggestion | null>
 	  deleteSession: (id: string) => void
+
+  // Goal actions
+  setGoal: (chatId: string, objective: string, tokenBudget?: number) => Promise<string | null>
+  updateGoalStatus: (goalId: string, status: GoalStatus) => Promise<boolean>
+  removeGoal: (goalId: string) => Promise<boolean>
+  clearActiveGoal: (chatId: string) => Promise<boolean>
 
   // Folder actions
   addFolder: (name: string, parentId: string | null, directory: string) => Promise<boolean>
@@ -3230,6 +3336,8 @@ export const useAppStore = create<AppState>((set, get) => {
     activeSessionId: inCef ? null : 's1',
     lastAppliedStateRevision: -1,
     messages: {},
+    goalsByChatId: {},
+    activeGoalIdByChatId: {},
 
     providers: inCef ? [] : initialProviders,
     cliBindingBySessionId: {},
@@ -5653,6 +5761,139 @@ export const useAppStore = create<AppState>((set, get) => {
             pendingPermission: null,
             pendingUserInput: null,
           },
+        },
+      }))
+      return true
+    },
+
+    // ---- Goal actions ----
+
+    setGoal: async (chatId: string, objective: string, tokenBudget = 0): Promise<string | null> => {
+      if (isCefContext()) {
+        const response = await sendToCEF<{ goalId: string }>({
+          action: 'setGoal',
+          payload: { chatId, objective, tokenBudget },
+          requestId: createRequestId('setGoal'),
+        })
+        if (response.ok && response.data?.goalId) {
+          return response.data.goalId
+        }
+        return null
+      }
+
+      // Mock: create a local goal
+      const goalId = `goal-${Date.now()}`
+      const now = new Date()
+      const newGoal: Goal = {
+        id: goalId,
+        chatId,
+        objective,
+        status: 'active',
+        tokenBudget: tokenBudget || undefined,
+        tokensUsed: 0,
+        blockedTurnCount: 0,
+        createdAt: now,
+        updatedAt: now,
+      }
+      set((state: AppState) => ({
+        goalsByChatId: {
+          ...state.goalsByChatId,
+          [chatId]: [...(state.goalsByChatId[chatId] ?? []), newGoal],
+        },
+        activeGoalIdByChatId: {
+          ...state.activeGoalIdByChatId,
+          [chatId]: goalId,
+        },
+      }))
+      return goalId
+    },
+
+    updateGoalStatus: async (goalId: string, status: GoalStatus): Promise<boolean> => {
+      if (isCefContext()) {
+        const response = await sendToCEF({
+          action: 'updateGoalStatus',
+          payload: { goalId, status },
+          requestId: createRequestId('updateGoalStatus'),
+        })
+        return response.ok
+      }
+
+      set((state: AppState) => {
+        const nextActive: Record<string, string | null> = {}
+        const nextGoals: Record<string, Goal[]> = {}
+        const entries = Object.entries(state.goalsByChatId) as [string, Goal[]][]
+        for (const [chatId, goals] of entries) {
+          const updated = goals.map((g: Goal) =>
+            g.id === goalId ? { ...g, status, updatedAt: new Date() } : g
+          )
+          if (updated !== goals) {
+            nextGoals[chatId] = updated
+            if (status === 'complete' || status === 'blocked') {
+              if (state.activeGoalIdByChatId[chatId] === goalId) {
+                nextActive[chatId] = null
+              }
+            }
+          }
+        }
+        if (Object.keys(nextGoals).length === 0) return state
+        return {
+          goalsByChatId: { ...state.goalsByChatId, ...nextGoals },
+          activeGoalIdByChatId: { ...state.activeGoalIdByChatId, ...nextActive },
+        }
+      })
+      return true
+    },
+
+    removeGoal: async (goalId: string): Promise<boolean> => {
+      if (isCefContext()) {
+        const response = await sendToCEF({
+          action: 'removeGoal',
+          payload: { goalId },
+          requestId: createRequestId('removeGoal'),
+        })
+        return response.ok
+      }
+
+      set((state: AppState) => {
+        const nextActive: Record<string, string | null> = {}
+        const nextGoals: Record<string, Goal[]> = {}
+        const entries = Object.entries(state.goalsByChatId) as [string, Goal[]][]
+        for (const [chatId, goals] of entries) {
+          const filtered = goals.filter((g: Goal) => g.id !== goalId)
+          if (filtered.length !== goals.length) {
+            nextGoals[chatId] = filtered
+            if (state.activeGoalIdByChatId[chatId] === goalId) {
+              nextActive[chatId] = null
+            }
+          }
+        }
+        if (Object.keys(nextGoals).length === 0) return state
+        return {
+          goalsByChatId: { ...state.goalsByChatId, ...nextGoals },
+          activeGoalIdByChatId: { ...state.activeGoalIdByChatId, ...nextActive },
+        }
+      })
+      return true
+    },
+
+    clearActiveGoal: async (chatId: string): Promise<boolean> => {
+      // Clear active goal by setting with empty goalId
+      if (isCefContext()) {
+        const current = get()
+        const currentActiveGoalId = current.activeGoalIdByChatId[chatId]
+        if (!currentActiveGoalId) return true
+        const response = await sendToCEF({
+          action: 'setActiveGoal',
+          payload: { chatId, goalId: '' },
+          requestId: createRequestId('setActiveGoal'),
+        })
+        return response.ok
+      }
+
+      set((state: AppState) => ({
+        activeGoalIdByChatId: {
+          ...state.activeGoalIdByChatId,
+          [chatId]: null,
         },
       }))
       return true

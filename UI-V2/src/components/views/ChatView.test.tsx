@@ -670,6 +670,71 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('renders OpenCode Zen free model options from ACP state', () => {
+    const setSessionModel = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      providers: [
+        ...state.providers,
+        { id: 'opencode-cli', name: 'OpenCode', shortName: 'OpenCode', color: '#14b8a6', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'opencode-acp' },
+      ],
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1' ? { ...session, providerId: 'opencode-cli', modelId: '' } : session
+      ),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          providerId: 'opencode-cli',
+          protocolKind: 'opencode-acp',
+          lifecycleState: 'ready',
+          processing: false,
+          processingStartedAtMs: null,
+          pendingPermission: null,
+          availableModels: [
+            { id: 'opencode/deepseek-v4-flash-free', name: 'DeepSeek V4 Flash Free', description: 'OpenCode Zen free model.' },
+            { id: 'opencode/big-pickle', name: 'Big Pickle', description: 'OpenCode Zen limited-time stealth free model.' },
+          ],
+          currentModelId: '',
+          agentInfo: { name: 'opencode', title: 'OpenCode', version: '0.6.6' },
+        },
+      },
+      setSessionModel,
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const modelButton = host.querySelector('button[title="Select model"]')
+    act(() => {
+      modelButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(host.textContent).toContain('DeepSeek V4 Flash Free')
+    expect(host.textContent).toContain('OpenCode Zen free model.')
+    expect(host.textContent).toContain('Big Pickle')
+    expect(host.textContent).not.toContain('Auto 3')
+
+    const freeButton = Array.from(host.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('DeepSeek V4 Flash Free')
+    )
+    expect(freeButton).toBeTruthy()
+    act(() => {
+      freeButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(setSessionModel).toHaveBeenCalledWith('chat-1', 'opencode/deepseek-v4-flash-free')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
   it('renders dynamic ACP model options and applies the selected model id', () => {
     const setSessionModel = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({

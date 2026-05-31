@@ -6388,6 +6388,7 @@ UAM_TEST(OpenCodeConfigModelsPopulateSelectorBeforeAcpStarts)
 {
 	TempDir temp("uam-opencode-model-config");
 	ScopedEnvVar config_home("XDG_CONFIG_HOME", temp.root.string());
+	ScopedEnvVar disable_zen_refresh("UAM_DISABLE_OPENCODE_ZEN_REFRESH", "1");
 	const fs::path config_dir = temp.root / "opencode";
 	fs::create_directories(config_dir);
 	UAM_ASSERT(uam::io::WriteTextFile(config_dir / "opencode.json", R"({
@@ -6428,17 +6429,73 @@ UAM_TEST(OpenCodeConfigModelsPopulateSelectorBeforeAcpStarts)
 		}
 		return nlohmann::json::object();
 	};
-	UAM_ASSERT_EQ(acp["availableModels"].size(), static_cast<std::size_t>(3));
+	UAM_ASSERT_EQ(acp["availableModels"].size(), static_cast<std::size_t>(9));
 	UAM_ASSERT_EQ(model_by_id("ollama-r9700/qwen3.6:35b-a3b-q4_K_M").value("name", ""), std::string("Qwen3.6 35B A3B Q4"));
 	UAM_ASSERT_EQ(model_by_id("ollama-r9700/qwen3-coder:30b").value("description", ""), std::string("Coding model"));
 	UAM_ASSERT_EQ(model_by_id("local-openai/gpt-oss:20b").value("name", ""), std::string("GPT-OSS 20B"));
+	UAM_ASSERT_EQ(model_by_id("opencode/deepseek-v4-flash-free").value("name", ""), std::string("DeepSeek V4 Flash Free"));
+	UAM_ASSERT_EQ(model_by_id("opencode/big-pickle").value("description", ""), std::string("OpenCode Zen limited-time stealth free model."));
 	UAM_ASSERT_EQ(acp.value("currentModelId", ""), std::string("ollama-r9700/qwen3.6:35b-a3b-q4_K_M"));
+}
+
+UAM_TEST(OpenCodeZenFreeModelsParseAndFilterOfficialModelList)
+{
+	const nlohmann::json parsed = uam::StateSerializer::ParseOpenCodeZenFreeModelsForFrontend(nlohmann::json::parse(R"({
+  "object": "list",
+  "data": [
+    { "id": "deepseek-v4-flash-free", "object": "model", "owned_by": "opencode" },
+    { "id": "gpt-5.4", "object": "model", "owned_by": "opencode" },
+    { "id": "big-pickle", "object": "model", "owned_by": "opencode" },
+    { "id": "nemotron-3-super-free", "object": "model", "owned_by": "opencode" },
+    { "id": "vendor-free", "object": "model", "owned_by": "other" },
+    { "id": "", "object": "model", "owned_by": "opencode" },
+    "bad"
+  ]
+})"));
+
+	UAM_ASSERT_EQ(parsed.size(), static_cast<std::size_t>(3));
+	UAM_ASSERT_EQ(parsed[0].value("id", ""), std::string("opencode/deepseek-v4-flash-free"));
+	UAM_ASSERT_EQ(parsed[0].value("name", ""), std::string("DeepSeek V4 Flash Free"));
+	UAM_ASSERT_EQ(parsed[1].value("id", ""), std::string("opencode/big-pickle"));
+	UAM_ASSERT_EQ(parsed[1].value("description", ""), std::string("OpenCode Zen limited-time stealth free model."));
+	UAM_ASSERT_EQ(parsed[2].value("id", ""), std::string("opencode/nemotron-3-super-free"));
+}
+
+UAM_TEST(OpenCodeZenFreeModelsRefreshFromFixtureAndCache)
+{
+	TempDir temp("uam-opencode-zen-models");
+	ScopedEnvVar config_home("XDG_CONFIG_HOME", temp.root.string());
+	const fs::path fixture = temp.root / "zen-models.json";
+	UAM_ASSERT(uam::io::WriteTextFile(fixture, R"({
+  "object": "list",
+  "data": [
+    { "id": "minimax-m3-free", "object": "model", "owned_by": "opencode" },
+    { "id": "qwen3.6-plus-free", "object": "model", "owned_by": "opencode" },
+    { "id": "gpt-5.4", "object": "model", "owned_by": "opencode" }
+  ]
+})"));
+	ScopedEnvVar fixture_env("UAM_OPENCODE_ZEN_MODELS_PATH", fixture.string());
+
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "opencode-cli";
+	app.chats.push_back(std::move(chat));
+
+	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json acp = serialized["chats"][0]["acpSession"];
+	UAM_ASSERT_EQ(acp["availableModels"].size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(acp["availableModels"][0].value("id", ""), std::string("opencode/minimax-m3-free"));
+	UAM_ASSERT_EQ(acp["availableModels"][1].value("id", ""), std::string("opencode/qwen3.6-plus-free"));
+	UAM_ASSERT(fs::exists(temp.root / "opencode_zen_free_models_cache.json"));
 }
 
 UAM_TEST(OpenCodeRuntimeModelsMergeWithConfiguredModels)
 {
 	TempDir temp("uam-opencode-model-merge");
 	ScopedEnvVar config_home("XDG_CONFIG_HOME", temp.root.string());
+	ScopedEnvVar disable_zen_refresh("UAM_DISABLE_OPENCODE_ZEN_REFRESH", "1");
 	const fs::path config_dir = temp.root / "opencode";
 	fs::create_directories(config_dir);
 	UAM_ASSERT(uam::io::WriteTextFile(config_dir / "opencode.json", R"({
@@ -6470,11 +6527,13 @@ UAM_TEST(OpenCodeRuntimeModelsMergeWithConfiguredModels)
 
 	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
 	const nlohmann::json acp = serialized["chats"][0]["acpSession"];
-	UAM_ASSERT_EQ(acp["availableModels"].size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(acp["availableModels"].size(), static_cast<std::size_t>(8));
 	UAM_ASSERT_EQ(acp["availableModels"][0].value("id", ""), std::string("ollama-r9700/qwen3-coder:30b"));
 	UAM_ASSERT_EQ(acp["availableModels"][0].value("name", ""), std::string("Qwen3 Coder 30B"));
-	UAM_ASSERT_EQ(acp["availableModels"][1].value("id", ""), std::string("ollama-r9700/mistral-small3.2:24b"));
-	UAM_ASSERT_EQ(acp["availableModels"][1].value("name", ""), std::string("Mistral Small 3.2 24B"));
+	UAM_ASSERT_EQ(acp["availableModels"][1].value("id", ""), std::string("opencode/big-pickle"));
+	UAM_ASSERT_EQ(acp["availableModels"][6].value("id", ""), std::string("opencode/nemotron-3-super-free"));
+	UAM_ASSERT_EQ(acp["availableModels"][7].value("id", ""), std::string("ollama-r9700/mistral-small3.2:24b"));
+	UAM_ASSERT_EQ(acp["availableModels"][7].value("name", ""), std::string("Mistral Small 3.2 24B"));
 }
 
 UAM_TEST(CodexAppServerStateTransitionsMapModelsTurnsToolsAndApprovals)

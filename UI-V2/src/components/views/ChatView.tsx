@@ -16,6 +16,8 @@ import {
 } from '../../store/useAppStore'
 import type { Attachment, Message, MessageBlock } from '../../types/message'
 import type { Provider } from '../../types/provider'
+import type { Goal, GoalStatus } from '../../types/goal'
+import { GoalBanner } from '../shared/GoalBanner'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import {
   CODEX_CLI_PROVIDER_ID,
@@ -2434,6 +2436,8 @@ export function ChatView({ session }: ChatViewProps) {
   const [openWorkspaceError, setOpenWorkspaceError] = useState('')
   const [workspaceActionMessage, setWorkspaceActionMessage] = useState('')
   const [workspaceActionBusy, setWorkspaceActionBusy] = useState(false)
+  const [goalError, setGoalError] = useState('')
+  const [goalSubmitting, setGoalSubmitting] = useState(false)
   const [composerAttachments, setComposerAttachments] = useState<LocalAttachment[]>([])
   const [attachmentError, setAttachmentError] = useState('')
   const [renderedMessageCount, setRenderedMessageCount] = useState(INITIAL_RENDERED_MESSAGES)
@@ -2464,6 +2468,11 @@ export function ChatView({ session }: ChatViewProps) {
   const openMarkdownStore = useAppStore((s) => s.openMarkdownStore)
   const markdownStoreAttachments = useAppStore(useShallow((s) => s.markdownStoreAttachedBySessionId[session.id] ?? []))
   const detachMarkdownStoreEntry = useAppStore((s) => s.detachMarkdownStoreEntry)
+  const goals = useAppStore((s) => s.goalsByChatId[session.id] ?? [])
+  const activeGoalId = useAppStore((s) => s.activeGoalIdByChatId[session.id] ?? null)
+  const setGoalStore = useAppStore((s) => s.setGoal)
+  const updateGoalStatus = useAppStore((s) => s.updateGoalStatus)
+  const removeGoal = useAppStore((s) => s.removeGoal)
   const bottomRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const providerMenuRef = useRef<HTMLDivElement>(null)
@@ -2718,10 +2727,42 @@ export function ChatView({ session }: ChatViewProps) {
     void stageFiles(files)
   }
 
+  const submitGoal = async (prompt: string) => {
+    const goalMatch = prompt.match(/^\/goal\s+(.+?)(?:\s+--budget\s+(\d+))?\s*$/)
+    if (!goalMatch) return false
+
+    const objective = goalMatch[1].trim()
+    const tokenBudget = goalMatch[2] ? parseInt(goalMatch[2], 10) : 0
+
+    if (!objective) {
+      setGoalError('Goal objective is required.')
+      return true
+    }
+
+    setGoalSubmitting(true)
+    const goalId = await setGoalStore(session.id, objective, tokenBudget)
+    setGoalSubmitting(false)
+
+    if (goalId) {
+      setDraft('')
+      setGoalError('')
+    } else {
+      setGoalError('Failed to create goal.')
+    }
+    return true
+  }
+
   const submit = async (event?: FormEvent) => {
     event?.preventDefault()
     if (!canSend) return
     const prompt = draft.trim()
+
+    // Handle /goal command
+    if (prompt.startsWith('/goal ')) {
+      void submitGoal(prompt)
+      return
+    }
+
     if (isClaudeProvider(currentProvider, currentProviderId) && currentModeId === 'plan') {
       setClaudePlanPrompt(prompt)
       return
@@ -2841,6 +2882,18 @@ export function ChatView({ session }: ChatViewProps) {
     }
     setSubmitting(false)
   }
+  const activeGoal = activeGoalId ? goals.find((g) => g.id === activeGoalId) ?? null : null
+  const handleCompleteGoal = () => {
+    if (activeGoal) {
+      void updateGoalStatus(activeGoal.id, 'complete')
+    }
+  }
+  const handleRemoveGoal = () => {
+    if (activeGoal) {
+      void removeGoal(activeGoal.id)
+    }
+  }
+
   const activePlanActions = canShowPlanActions && providerSupported
     ? {
         show: true,
@@ -3013,6 +3066,20 @@ export function ChatView({ session }: ChatViewProps) {
             </div>
           </div>
         </div>
+
+        {goalError && (
+          <div className="px-4 py-1 text-xs" style={{ background: 'var(--surface)', color: 'var(--danger)' }}>
+            {goalError}
+          </div>
+        )}
+
+        {activeGoal && (
+          <GoalBanner
+            goal={activeGoal}
+            onComplete={handleCompleteGoal}
+            onRemove={handleRemoveGoal}
+          />
+        )}
 
         <form
           onSubmit={submit}

@@ -41,3 +41,32 @@ CenterViewMode ViewModeFromString(std::string_view value)
 	(void)value;
 	return CenterViewMode::CliConsole;
 }
+
+std::string GoalStatusToString(GoalStatus status)
+{
+	switch (status)
+	{
+	case GoalStatus::Active:
+		return "active";
+	case GoalStatus::Complete:
+		return "complete";
+	case GoalStatus::Blocked:
+		return "blocked";
+	}
+	return "active";
+}
+
+GoalStatus GoalStatusFromString(std::string_view value)
+{
+	if (value == "complete")
+	{
+		return GoalStatus::Complete;
+	}
+
+	if (value == "blocked")
+	{
+		return GoalStatus::Blocked;
+	}
+
+	return GoalStatus::Active;
+}

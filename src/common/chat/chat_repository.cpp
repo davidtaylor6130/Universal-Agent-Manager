@@ -720,6 +720,31 @@ namespace
 		chat.memory_last_processed_message_count = NonNegativeIntFieldOrZero(root.Find(kChatMemoryLastProcessedMessageCountField));
 		chat.memory_last_processed_at = JsonStringOrEmpty(root.Find(kChatMemoryLastProcessedAtField));
 
+		// Load goals array
+		if (const JsonValue* goals_arr = uam::json::ArrayOrNull(root.Find("goals")); goals_arr != nullptr)
+		{
+			for (const auto& goal_obj : goals_arr->array_value)
+			{
+				if (goal_obj.type != JsonValue::Type::Object)
+					continue;
+
+				Goal goal;
+				goal.id = JsonStringOrEmpty(goal_obj.Find("id"));
+				goal.objective = JsonStringOrEmpty(goal_obj.Find("objective"));
+				goal.status = GoalStatusFromString(JsonStringOrEmpty(goal_obj.Find("status")));
+				goal.token_budget = static_cast<int64_t>(NonNegativeIntFieldOrZero(goal_obj.Find("tokenBudget")));
+				goal.tokens_used = static_cast<int64_t>(NonNegativeIntFieldOrZero(goal_obj.Find("tokensUsed")));
+				goal.blocked_turn_count = NonNegativeIntFieldOrZero(goal_obj.Find("blockedTurnCount"));
+				goal.last_blocker = JsonStringOrEmpty(goal_obj.Find("lastBlocker"));
+				goal.created_at = JsonStringOrEmpty(goal_obj.Find("createdAt"));
+				goal.updated_at = JsonStringOrEmpty(goal_obj.Find("updatedAt"));
+				chat.goals.push_back(std::move(goal));
+			}
+		}
+
+		// Load active_goal_id
+		chat.active_goal_id = JsonStringOrEmpty(root.Find("activeGoalId"));
+
 		ApplyChatTimestampFallbacks(chat);
 		NormalizeLoadedNativeSessionId(chat);
 		if (chat.branch_root_chat_id.empty())
@@ -902,6 +927,33 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 				uam::json::SetValue(root, kChatMessagesField, *existing_messages);
 			}
 		}
+	}
+
+	// Serialize goals array
+	if (!chat.goals.empty())
+	{
+		JsonValue goals_arr = uam::json::Array();
+		for (const auto& goal : chat.goals)
+		{
+			JsonValue goal_obj = uam::json::Object();
+			uam::json::SetString(goal_obj, "id", goal.id);
+			uam::json::SetString(goal_obj, "objective", goal.objective);
+			uam::json::SetString(goal_obj, "status", GoalStatusToString(goal.status));
+			uam::json::SetNumber(goal_obj, "tokenBudget", static_cast<double>(goal.token_budget));
+			uam::json::SetNumber(goal_obj, "tokensUsed", static_cast<double>(goal.tokens_used));
+			uam::json::SetNumber(goal_obj, "blockedTurnCount", static_cast<double>(goal.blocked_turn_count));
+			uam::json::SetString(goal_obj, "lastBlocker", goal.last_blocker);
+			uam::json::SetString(goal_obj, "createdAt", goal.created_at);
+			uam::json::SetString(goal_obj, "updatedAt", goal.updated_at);
+			uam::json::PushValue(goals_arr, std::move(goal_obj));
+		}
+		uam::json::SetValue(root, "goals", std::move(goals_arr));
+	}
+
+	// Serialize active_goal_id
+	if (!chat.active_goal_id.empty())
+	{
+		uam::json::SetString(root, "activeGoalId", chat.active_goal_id);
 	}
 
 	const std::string json = SerializeJson(root);

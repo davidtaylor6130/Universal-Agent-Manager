@@ -85,6 +85,34 @@ struct Message
 };
 
 /// <summary>
+/// Goal status for a thread-level goal.
+/// </summary>
+enum class GoalStatus
+{
+	Active,
+	Complete,
+	Blocked
+};
+
+/// <summary>
+/// A thread-level goal that persists the agent across turns until it
+/// self-detects completion or gets stuck (>= 3 consecutive blocker turns).
+/// Mirrors Codex CLI's /goal mode.
+/// </summary>
+struct Goal
+{
+	std::string id;
+	std::string objective;                    // user-provided goal text
+	GoalStatus status = GoalStatus::Active;
+	int64_t token_budget = 0;                // 0 = unlimited
+	int64_t tokens_used = 0;
+	int blocked_turn_count = 0;              // consecutive turns at same blocker
+	std::string last_blocker;                // description of current blocker
+	std::string created_at;
+	std::string updated_at;
+};
+
+/// <summary>
 /// Chat session metadata and message history.
 /// </summary>
 struct ChatSession
@@ -121,6 +149,8 @@ struct ChatSession
 	bool memory_enabled = true;
 	int memory_last_processed_message_count = 0;
 	std::string memory_last_processed_at;
+	std::vector<Goal> goals;
+	std::string active_goal_id;
 };
 
 struct MemoryWorkerBinding
@@ -264,3 +294,11 @@ std::string ViewModeToString(CenterViewMode mode);
 /// Parses persisted center view mode text into an enum value.
 /// </summary>
 CenterViewMode ViewModeFromString(std::string_view value);
+/// <summary>
+/// Converts goal status enum into persisted text.
+/// </summary>
+std::string GoalStatusToString(GoalStatus status);
+/// <summary>
+/// Parses persisted goal status text into an enum value.
+/// </summary>
+GoalStatus GoalStatusFromString(std::string_view value);

@@ -238,6 +238,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/markdown_store_service.cpp
   src/app/memory_library_service.cpp
   src/app/memory_service.cpp
+  src/app/goal_service.cpp
   src/app/native_session_link_service.cpp
   src/app/persistence_coordinator.cpp
   src/app/provider_resolution_service.cpp
@@ -673,6 +674,7 @@ if(UAM_BUILD_TESTS)
     src/app/markdown_store_service.cpp
     src/app/memory_library_service.cpp
     src/app/memory_service.cpp
+    src/app/goal_service.cpp
     src/app/native_session_link_service.cpp
     src/app/persistence_coordinator.cpp
     src/app/provider_resolution_service.cpp
