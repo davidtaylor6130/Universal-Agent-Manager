@@ -86,7 +86,7 @@ namespace provider_build_config
 #elif UAM_ENABLE_RUNTIME_CLAUDE_CLI
 		return "claude -p {prompt}";
 #elif UAM_ENABLE_RUNTIME_OPENCODE_CLI
-		return "opencode run {flags} {prompt}";
+		return "opencode run --session {resume} {flags} {prompt}";
 #elif UAM_ENABLE_RUNTIME_COPILOT_CLI
 		return "copilot -p {prompt} {flags}";
 #else

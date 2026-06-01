@@ -37,9 +37,10 @@ bool PollAllAcpSessions(AppState& app, CefRefPtr<CefBrowser> browser = nullptr);
 void FlushPendingChatSaves(AppState& app);
 void FastStopAcpSessionsForExit(AppState& app);
 
-std::vector<std::string> BuildAcpLaunchArgvForTests(const ChatSession& chat);
-std::string BuildAcpLaunchDetailForTests(const std::filesystem::path& workspace_root, const ChatSession& chat);
-std::string BuildAcpInitializeRequestForTests(int request_id);
+	std::vector<std::string> BuildAcpLaunchArgvForTests(const ChatSession& chat);
+	std::string BuildAcpLaunchDetailForTests(const std::filesystem::path& workspace_root, const ChatSession& chat);
+	std::string BuildAcpLaunchDetailForTests(const AppState& app, const std::filesystem::path& workspace_root, const ChatSession& chat);
+	std::string BuildAcpInitializeRequestForTests(int request_id);
 std::string BuildAcpNewSessionRequestForTests(int request_id, const std::string& cwd);
 std::string BuildGeminiSessionSetupRequestForTests(int request_id, const ChatSession& chat, const std::string& cwd, bool load_session_supported);
 std::string BuildAcpPromptRequestForTests(int request_id, const std::string& session_id, const std::string& text);
@@ -54,6 +55,7 @@ std::string BuildCodexThreadResumeRequestForTests(int request_id, const ChatSess
 std::string BuildCodexTurnStartRequestForTests(int request_id, const std::string& thread_id, const std::string& text, const ChatSession& chat, const std::string& active_model_id = "");
 std::string BuildCodexTurnInterruptRequestForTests(int request_id, const std::string& thread_id, const std::string& turn_id);
 std::string BuildCodexUserInputResponseForTests(const std::string& request_id_json, const std::map<std::string, std::vector<std::string>>& answers);
+std::string ResolveAcpSessionResumeIdForTests(const AppState& app, const ChatSession& chat);
 bool ProcessAcpLineForTests(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& line);
 bool IsValidCodexThreadIdForTests(const std::string& thread_id);
 bool UpdateAcpStaleWaitForTests(AcpSessionState& session, double now_seconds);

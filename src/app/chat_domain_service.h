@@ -35,6 +35,8 @@ class ChatDomainService
 	int FindChatIndexById(const uam::AppState& app, const std::string& chat_id) const;
 	ChatSession* FindChatById(uam::AppState& app, const std::string& chat_id) const;
 	const ChatSession* FindChatById(const uam::AppState& app, const std::string& chat_id) const;
+	ChatSession* FindChatByNativeSessionId(uam::AppState& app, const std::string& native_session_id) const;
+	const ChatSession* FindChatByNativeSessionId(const uam::AppState& app, const std::string& native_session_id) const;
 	ChatSession* SelectedChat(uam::AppState& app) const;
 	const ChatSession* SelectedChat(const uam::AppState& app) const;
 	std::string SelectedChatId(const uam::AppState& app) const;

@@ -79,6 +79,9 @@ namespace uam
 		std::string kind;
 		std::string status;
 		std::string content;
+		bool is_sub_agent = false;
+		std::string sub_agent_id;
+		std::string sub_agent_title;
 	};
 
 	struct AcpPlanEntryState

@@ -2,6 +2,7 @@
 
 #include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
+#include "common/utils/string_utils.h"
 
 namespace
 {
@@ -77,7 +78,15 @@ MessageRole OpenCodeCliProviderRuntime::RoleFromNativeType(const ProviderProfile
 
 std::vector<ChatSession> OpenCodeCliProviderRuntime::LoadHistory(const ProviderProfile&, const std::filesystem::path& data_root, const std::filesystem::path&, const ProviderRuntimeHistoryLoadOptions&) const
 {
-	return uam::provider_runtime_internal::LoadLocalChats(data_root);
+	std::vector<ChatSession> chats = uam::provider_runtime_internal::LoadLocalChats(data_root);
+	for (ChatSession& chat : chats)
+	{
+		if (uam::strings::IsBlank(chat.provider_id))
+		{
+			chat.provider_id = uam::provider_ids::kOpenCodeCli;
+		}
+	}
+	return chats;
 }
 
 bool OpenCodeCliProviderRuntime::SaveHistory(const ProviderProfile&, const std::filesystem::path& data_root, const ChatSession& chat) const

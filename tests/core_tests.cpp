@@ -3436,6 +3436,136 @@ UAM_TEST(ChatDomainServiceFindChatByIdReturnsMutableAndConstPointers)
 	UAM_ASSERT(ChatDomainService().FindChatById(const_app, "missing") == nullptr);
 }
 
+UAM_TEST(ChatDomainServiceFindChatByNativeSessionIdReturnsMutableAndConstPointers)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.native_session_id = " native-session-1 ";
+	chat.title = "Original";
+	app.chats.push_back(chat);
+
+	ChatSession* mutable_chat = ChatDomainService().FindChatByNativeSessionId(app, " native-session-1 ");
+	UAM_ASSERT(mutable_chat != nullptr);
+	mutable_chat->title = "Updated";
+
+	const uam::AppState& const_app = app;
+	const ChatSession* const_chat = ChatDomainService().FindChatByNativeSessionId(const_app, " native-session-1 ");
+	UAM_ASSERT(const_chat != nullptr);
+	UAM_ASSERT_EQ(const_chat->title, std::string("Updated"));
+	UAM_ASSERT(ChatDomainService().FindChatByNativeSessionId(app, "missing") == nullptr);
+	UAM_ASSERT(ChatDomainService().FindChatByNativeSessionId(const_app, "missing") == nullptr);
+}
+
+UAM_TEST(ChatDomainServiceFindChatByNativeSessionIdPrefersResolvedRuntimeMapping)
+{
+	uam::AppState app;
+
+	ChatSession stale_chat;
+	stale_chat.id = "chat-stale";
+	stale_chat.native_session_id = "other-session";
+	stale_chat.title = "Stale";
+	app.chats.push_back(stale_chat);
+
+	ChatSession resolved_chat;
+	resolved_chat.id = "chat-resolved";
+	resolved_chat.native_session_id = "other-session";
+	resolved_chat.title = "Resolved";
+	app.chats.push_back(resolved_chat);
+
+	app.resolved_native_sessions_by_chat_id["chat-resolved"] = "resolved-session";
+
+	ChatSession* mutable_chat = ChatDomainService().FindChatByNativeSessionId(app, " resolved-session ");
+	UAM_ASSERT(mutable_chat != nullptr);
+	UAM_ASSERT_EQ(mutable_chat->id, std::string("chat-resolved"));
+
+	const uam::AppState& const_app = app;
+	const ChatSession* const_chat = ChatDomainService().FindChatByNativeSessionId(const_app, "resolved-session");
+	UAM_ASSERT(const_chat != nullptr);
+	UAM_ASSERT_EQ(const_chat->id, std::string("chat-resolved"));
+}
+
+UAM_TEST(ChatDomainServiceFindChatByNativeSessionIdSkipsStaleResolvedEntries)
+{
+	uam::AppState app;
+
+	ChatSession stale_chat;
+	stale_chat.id = "chat-stale";
+	stale_chat.native_session_id = "resolved-session";
+	stale_chat.title = "Stale";
+	app.resolved_native_sessions_by_chat_id[stale_chat.id] = "resolved-session";
+
+	ChatSession live_chat;
+	live_chat.id = "chat-live";
+	live_chat.native_session_id = "resolved-session";
+	live_chat.title = "Live";
+	app.chats.push_back(live_chat);
+
+	ChatSession* mutable_chat = ChatDomainService().FindChatByNativeSessionId(app, "resolved-session");
+	UAM_ASSERT(mutable_chat != nullptr);
+	UAM_ASSERT_EQ(mutable_chat->id, std::string("chat-live"));
+
+	const uam::AppState& const_app = app;
+	const ChatSession* const_chat = ChatDomainService().FindChatByNativeSessionId(const_app, "resolved-session");
+	UAM_ASSERT(const_chat != nullptr);
+	UAM_ASSERT_EQ(const_chat->id, std::string("chat-live"));
+}
+
+UAM_TEST(ChatDomainServiceFindChatByNativeSessionIdPrefersNewerEqualPriorityMatch)
+{
+	uam::AppState app;
+
+	ChatSession older_chat;
+	older_chat.id = "chat-older";
+	older_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	older_chat.native_session_id = "resolved-session";
+	older_chat.updated_at = "2026-01-01T00:00:01.000Z";
+	app.chats.push_back(older_chat);
+	app.resolved_native_sessions_by_chat_id[older_chat.id] = "resolved-session";
+
+	ChatSession newer_chat = older_chat;
+	newer_chat.id = "chat-newer";
+	newer_chat.updated_at = "2026-01-01T00:00:02.000Z";
+	app.chats.push_back(newer_chat);
+	app.resolved_native_sessions_by_chat_id[newer_chat.id] = "resolved-session";
+
+	ChatSession* mutable_chat = ChatDomainService().FindChatByNativeSessionId(app, "resolved-session");
+	UAM_ASSERT(mutable_chat != nullptr);
+	UAM_ASSERT_EQ(mutable_chat->id, std::string("chat-newer"));
+
+	const uam::AppState& const_app = app;
+	const ChatSession* const_chat = ChatDomainService().FindChatByNativeSessionId(const_app, "resolved-session");
+	UAM_ASSERT(const_chat != nullptr);
+	UAM_ASSERT_EQ(const_chat->id, std::string("chat-newer"));
+}
+
+UAM_TEST(ChatDomainServiceFindChatByNativeSessionIdPrefersNewerRawChatOverStaleResolvedMapping)
+{
+	uam::AppState app;
+
+	ChatSession stale_resolved_chat;
+	stale_resolved_chat.id = "chat-stale";
+	stale_resolved_chat.native_session_id = "stale-session";
+	stale_resolved_chat.updated_at = "2026-01-01T00:00:01.000Z";
+	app.chats.push_back(stale_resolved_chat);
+	app.resolved_native_sessions_by_chat_id[stale_resolved_chat.id] = "resolved-session";
+
+	ChatSession live_chat;
+	live_chat.id = "chat-live";
+	live_chat.native_session_id = "resolved-session";
+	live_chat.updated_at = "2026-01-01T00:00:02.000Z";
+	app.chats.push_back(live_chat);
+
+	ChatSession* mutable_chat = ChatDomainService().FindChatByNativeSessionId(app, "resolved-session");
+	UAM_ASSERT(mutable_chat != nullptr);
+	UAM_ASSERT_EQ(mutable_chat->id, std::string("chat-live"));
+
+	const uam::AppState& const_app = app;
+	const ChatSession* const_chat = ChatDomainService().FindChatByNativeSessionId(const_app, "resolved-session");
+	UAM_ASSERT(const_chat != nullptr);
+	UAM_ASSERT_EQ(const_chat->id, std::string("chat-live"));
+}
+
 UAM_TEST(ChatDomainServiceFindFolderByIdTrimsRequestedFolderId)
 {
 	uam::AppState app;
@@ -4236,6 +4366,88 @@ UAM_TEST(StateSerializerIncludesChatModelId)
 	UAM_ASSERT_EQ(fingerprint["chats"][0].value("approvalMode", ""), std::string("plan"));
 }
 
+UAM_TEST(StateSerializerUsesResolvedOpenCodeSessionIdForStoppedAcpSummary)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "chat-opencode";
+	chat.title = "OpenCode chat";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.workspace_directory = "/tmp/opencode-workspace";
+	chat.native_session_id = "stale-session";
+	app.resolved_native_sessions_by_chat_id[chat.id] = "resolved-session";
+	app.chats.push_back(std::move(chat));
+
+	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json acp = serialized["chats"][0]["acpSession"];
+	UAM_ASSERT_EQ(acp.value("sessionId", ""), std::string("resolved-session"));
+	UAM_ASSERT_EQ(acp.value("threadId", ""), std::string("resolved-session"));
+}
+
+UAM_TEST(StateSerializerUsesResolvedOpenCodeSessionIdForCliDiagnostics)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "chat-opencode";
+	chat.title = "OpenCode chat";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.workspace_directory = "/tmp/opencode-workspace";
+	chat.native_session_id = "stale-session";
+	app.resolved_native_sessions_by_chat_id[chat.id] = "resolved-session";
+	app.chats.push_back(chat);
+
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->terminal_id = "term-chat-opencode";
+	terminal->frontend_chat_id = chat.id;
+	terminal->attached_chat_id = chat.id;
+	terminal->attached_session_id = "resolved-session";
+	app.cli_terminals.push_back(std::move(terminal));
+
+	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json cli_debug = serialized["cliDebug"];
+	UAM_ASSERT_EQ(cli_debug.value("runningTerminalCount", -1), 0);
+	UAM_ASSERT_EQ(cli_debug["terminals"][0].value("attachedSessionId", ""), std::string("resolved-session"));
+	UAM_ASSERT_EQ(cli_debug["terminals"][0].value("nativeSessionId", ""), std::string("resolved-session"));
+}
+
+UAM_TEST(StateSerializerChatTerminalSummaryPrefersLiveOpenCodeTerminalOverStaleDuplicate)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "chat-opencode";
+	chat.title = "OpenCode chat";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.workspace_directory = "/tmp/opencode-workspace";
+	chat.native_session_id = "resolved-session";
+	app.resolved_native_sessions_by_chat_id[chat.id] = "resolved-session";
+	app.chats.push_back(chat);
+
+	auto stale_terminal = std::make_unique<uam::CliTerminalState>();
+	stale_terminal->terminal_id = "term-stale";
+	stale_terminal->frontend_chat_id = chat.id;
+	stale_terminal->attached_chat_id = chat.id;
+	stale_terminal->attached_session_id = "resolved-session";
+	stale_terminal->running = false;
+	app.cli_terminals.push_back(std::move(stale_terminal));
+
+	auto live_terminal = std::make_unique<uam::CliTerminalState>();
+	live_terminal->terminal_id = "term-live";
+	live_terminal->frontend_chat_id = chat.id;
+	live_terminal->attached_chat_id = chat.id;
+	live_terminal->attached_session_id = "resolved-session";
+	live_terminal->running = true;
+	live_terminal->ui_attached = true;
+	live_terminal->lifecycle_state = uam::CliTerminalLifecycleState::Idle;
+	live_terminal->last_activity_time_s = 10.0;
+	app.cli_terminals.push_back(std::move(live_terminal));
+
+	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json terminal = serialized["chats"][0]["cliTerminal"];
+	UAM_ASSERT_EQ(terminal.value("terminalId", ""), std::string("term-live"));
+	UAM_ASSERT(terminal.value("running", false));
+	UAM_ASSERT(terminal.value("active", false));
+}
+
 UAM_TEST(StatePatchSettingsIncludeChatDefaults)
 {
 	uam::AppState app;
@@ -4931,12 +5143,1039 @@ UAM_TEST(OpenCodeCliBuildsCommandsAndInteractiveArgv)
 	UAM_ASSERT(command.find("--file") != std::string::npos);
 	UAM_ASSERT(command.find("src/main.cpp") != std::string::npos);
 	UAM_ASSERT(command.find("hello") != std::string::npos);
+	UAM_ASSERT(profile.command_template.find("{resume}") != std::string::npos);
+	UAM_ASSERT(profile.command_template.find("--session") != std::string::npos);
 
 	profile.interactive_command = "   ";
 	const std::vector<std::string> defaulted_argv = ProviderRuntime::BuildInteractiveArgv(profile, chat, AppSettings{});
 	UAM_ASSERT_EQ(defaulted_argv[0], std::string("opencode"));
 	UAM_ASSERT(uam::ranges::Contains(defaulted_argv, "opencode"));
 	UAM_ASSERT(!uam::ranges::Contains(defaulted_argv, "   "));
+
+	TempDir temp("uam-opencode-runtime-load-normalizes-blank-provider");
+	ChatSession legacy_chat;
+	legacy_chat.id = "chat-opencode-runtime-load";
+	legacy_chat.provider_id.clear();
+	legacy_chat.native_session_id = "open-code-session-runtime-load";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, legacy_chat));
+
+	const std::vector<ChatSession> loaded = ProviderRuntime::LoadHistory(ProviderProfileStore::DefaultOpenCodeProfile(), temp.root, {});
+	UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(loaded.front().provider_id, std::string(uam::provider_ids::kOpenCodeCli));
+	UAM_ASSERT_EQ(loaded.front().native_session_id, std::string("open-code-session-runtime-load"));
+#endif
+}
+
+UAM_TEST(OpenCodeAcpSubAgentToolCallsAreVisibleAndPersistent)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-subagent");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	Message user;
+	user.role = MessageRole::User;
+	user.content = "Use a sub-agent.";
+	user.created_at = "2026-01-01T00:00:00.000Z";
+	chat.messages.push_back(std::move(user));
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->provider_id = uam::provider_ids::kOpenCodeCli;
+	session->protocol_kind = uam::provider_profile_constants::kProtocolOpenCodeAcp;
+	session->running = true;
+	session->processing = true;
+	session->session_ready = true;
+	session->session_id = "opencode-session-1";
+	session->turn_user_message_index = 0;
+	session->prompt_request_id = 10;
+	session->pending_request_methods[10] = "session/prompt";
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call","toolCallId":"agent-tool-1","title":"Planner agent","kind":"sub-agent","status":"running","subAgentId":"agent-session-1","subAgentTitle":"Planner","content":{"type":"text","text":"Inspecting with a sub-agent"}}}})"));
+	UAM_ASSERT_EQ(raw_session->tool_calls.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(raw_session->tool_calls[0].is_sub_agent);
+	UAM_ASSERT_EQ(raw_session->tool_calls[0].sub_agent_id, std::string("agent-session-1"));
+	UAM_ASSERT_EQ(raw_session->tool_calls[0].sub_agent_title, std::string("Planner"));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":10,"result":{}})"));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(2));
+	const ToolCall& persisted_tool = app.chats.front().messages[1].tool_calls[0];
+	UAM_ASSERT(persisted_tool.is_sub_agent);
+	UAM_ASSERT_EQ(persisted_tool.sub_agent_id, std::string("agent-session-1"));
+	UAM_ASSERT_EQ(persisted_tool.sub_agent_title, std::string("Planner"));
+
+	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json frontend_tool = serialized["chats"][0]["messages"][1]["toolCalls"][0];
+	UAM_ASSERT(frontend_tool.value("isSubAgent", false));
+	UAM_ASSERT_EQ(frontend_tool.value("subAgentId", ""), std::string("agent-session-1"));
+	UAM_ASSERT_EQ(frontend_tool.value("subAgentTitle", ""), std::string("Planner"));
+
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	const auto loaded = ChatRepository::LoadLocalChats(app.data_root);
+	UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(loaded[0].messages.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(loaded[0].messages[1].tool_calls.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(loaded[0].messages[1].tool_calls[0].is_sub_agent);
+	UAM_ASSERT_EQ(loaded[0].messages[1].tool_calls[0].sub_agent_id, std::string("agent-session-1"));
+#endif
+}
+
+UAM_TEST(OpenCodeAcpSessionNewSyncsResolvedNativeSessionMapping)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-session-new-sync");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->provider_id = uam::provider_ids::kOpenCodeCli;
+	session->protocol_kind = uam::provider_profile_constants::kProtocolOpenCodeAcp;
+	session->running = true;
+	session->initialized = true;
+	session->session_setup_request_id = 1;
+	session->pending_request_methods[1] = "session/new";
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":1,"result":{"sessionId":"opencode-session-1"}})"));
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, std::string("opencode-session-1"));
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id[app.chats.front().id], std::string("opencode-session-1"));
+#endif
+}
+
+UAM_TEST(OpenCodeAcpSessionNewRebindsAttachedCliTerminalToResolvedSession)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-session-new-terminal-rebind");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->provider_id = uam::provider_ids::kOpenCodeCli;
+	session->protocol_kind = uam::provider_profile_constants::kProtocolOpenCodeAcp;
+	session->running = true;
+	session->initialized = true;
+	session->session_setup_request_id = 1;
+	session->pending_request_methods[1] = "session/new";
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = "chat-1";
+	terminal->attached_chat_id = "chat-1";
+	terminal->attached_session_id = "stale-opencode-session";
+	app.cli_terminals.push_back(std::move(terminal));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":1,"result":{"sessionId":"opencode-session-1"}})"));
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id[app.chats.front().id], std::string("opencode-session-1"));
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedSessionId(*app.cli_terminals.front()), std::string("opencode-session-1"));
+#endif
+}
+
+UAM_TEST(OpenCodeAcpSessionNewRebindsSessionOnlyCliTerminalToResolvedSession)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-session-new-terminal-rebind-session-only");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-opencode";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.native_session_id = "stale-opencode-session";
+	app.chats.push_back(chat);
+
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->terminal_id = "term-stale-opencode";
+	terminal->frontend_chat_id.clear();
+	terminal->attached_chat_id.clear();
+	terminal->attached_session_id = "stale-opencode-session";
+	app.cli_terminals.push_back(std::move(terminal));
+
+	auto raw_session = std::make_unique<uam::AcpSessionState>();
+	raw_session->chat_id = chat.id;
+	raw_session->provider_id = uam::provider_ids::kOpenCodeCli;
+	raw_session->protocol_kind = uam::provider_profile_constants::kProtocolOpenCodeAcp;
+	raw_session->running = true;
+	raw_session->initialized = true;
+	raw_session->session_ready = true;
+	raw_session->session_setup_request_id = 1;
+	raw_session->pending_request_methods[1] = "session/new";
+	raw_session->session_id = "stale-opencode-session";
+	uam::AcpSessionState* acp_session = raw_session.get();
+	app.acp_sessions.push_back(std::move(raw_session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *acp_session, app.chats.front(), R"({"jsonrpc":"2.0","id":1,"result":{"sessionId":"opencode-session-1"}})"));
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id[app.chats.front().id], std::string("opencode-session-1"));
+	UAM_ASSERT_EQ(uam::CliTerminalPrimaryChatId(*app.cli_terminals.front()), std::string(chat.id));
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedChatId(*app.cli_terminals.front()), std::string(chat.id));
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedSessionId(*app.cli_terminals.front()), std::string("opencode-session-1"));
+#endif
+}
+
+UAM_TEST(OpenCodeOpenNativeSessionChatImportsLocalHistorySubAgent)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-open-subagent");
+	const fs::path workspace_root = temp.root / "workspace";
+	fs::create_directories(workspace_root);
+
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles.push_back(ProviderProfileStore::DefaultOpenCodeProfile());
+
+	ChatSession source_chat;
+	source_chat.id = "chat-source";
+	source_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	source_chat.folder_id = "folder-1";
+	source_chat.workspace_directory = workspace_root.string();
+	app.chats.push_back(source_chat);
+
+	ChatSession local_sub_agent;
+	local_sub_agent.id = "chat-sub-agent";
+	local_sub_agent.provider_id = uam::provider_ids::kOpenCodeCli;
+	local_sub_agent.title = "Planner";
+	local_sub_agent.folder_id = "folder-1";
+	local_sub_agent.workspace_directory = workspace_root.string();
+	local_sub_agent.native_session_id = "agent-session-1";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, local_sub_agent));
+
+	const ProviderProfile opencode_provider = ProviderProfileStore::DefaultOpenCodeProfile();
+	ChatSession* imported = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(app, app.chats.front(), opencode_provider, " agent-session-1 ");
+
+	UAM_ASSERT(imported != nullptr);
+	UAM_ASSERT_EQ(imported->native_session_id, std::string("agent-session-1"));
+	UAM_ASSERT_EQ(imported->title, std::string("Planner"));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id[imported->id], std::string("agent-session-1"));
+	UAM_ASSERT(ChatDomainService().FindChatByNativeSessionId(app, "agent-session-1") != nullptr);
+#endif
+}
+
+UAM_TEST(OpenCodeOpenNativeSessionChatRollbackClearsInsertedResolvedMapping)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-open-subagent-rollback");
+	const fs::path workspace_root = temp.root / "workspace";
+	fs::create_directories(workspace_root);
+
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession source_chat;
+	source_chat.id = "chat-source";
+	source_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	source_chat.folder_id = "folder-1";
+	source_chat.workspace_directory = workspace_root.string();
+	app.chats.push_back(source_chat);
+	ChatDomainService().SelectChatById(app, source_chat.id);
+
+	ChatSession imported_chat;
+	imported_chat.id = "chat-sub-agent";
+	imported_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	imported_chat.folder_id = "folder-1";
+	imported_chat.workspace_directory = workspace_root.string();
+	imported_chat.native_session_id = "agent-session-1";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, imported_chat));
+
+	app.chats.push_back(imported_chat);
+	app.resolved_native_sessions_by_chat_id[imported_chat.id] = "agent-session-1";
+	ChatDomainService().SelectChatById(app, imported_chat.id);
+
+	const fs::path imported_chat_file = AppPaths::UamChatFilePath(app.data_root, imported_chat.id);
+	UAM_ASSERT(uam::paths::PathExistsNoThrow(imported_chat_file));
+
+	ChatHistorySyncService().RollbackOpenNativeSessionChatImport(app, imported_chat.id, source_chat.id, true);
+
+	UAM_ASSERT(ChatDomainService().FindChatById(app, imported_chat.id) == nullptr);
+	UAM_ASSERT(app.resolved_native_sessions_by_chat_id.find(imported_chat.id) == app.resolved_native_sessions_by_chat_id.end());
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), source_chat.id);
+	UAM_ASSERT(!uam::paths::PathExistsNoThrow(imported_chat_file));
+#endif
+}
+
+UAM_TEST(OpenCodeOpenNativeSessionResolvedMappingRestoreUsesPreviousStateOrClearsNewMapping)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	uam::AppState app;
+	app.resolved_native_sessions_by_chat_id["chat-opencode"] = "old-session";
+
+	ChatHistorySyncService().RestoreOpenNativeSessionResolvedMapping(app, "chat-opencode", true, "restored-session");
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id["chat-opencode"], std::string("restored-session"));
+
+	ChatHistorySyncService().RestoreOpenNativeSessionResolvedMapping(app, "chat-opencode", false, "ignored");
+	UAM_ASSERT(app.resolved_native_sessions_by_chat_id.find("chat-opencode") == app.resolved_native_sessions_by_chat_id.end());
+#endif
+}
+
+UAM_TEST(OpenCodeOpenNativeSessionChatFailureRestoresSourceAndTargetResolvedMappings)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	uam::AppState app;
+	app.resolved_native_sessions_by_chat_id["chat-source"] = "source-session";
+	app.resolved_native_sessions_by_chat_id["chat-target"] = "old-target-session";
+
+	const bool had_previous_source_resolved_native_session = true;
+	const std::string previous_source_resolved_native_session_id = "source-session";
+	const bool had_previous_target_resolved_native_session = true;
+	const std::string previous_target_resolved_native_session_id = "old-target-session";
+
+	app.resolved_native_sessions_by_chat_id["chat-target"] = "new-target-session";
+	ChatHistorySyncService().RestoreOpenNativeSessionResolvedMapping(app, "chat-target", had_previous_target_resolved_native_session, previous_target_resolved_native_session_id);
+	ChatHistorySyncService().RestoreOpenNativeSessionResolvedMapping(app, "chat-source", had_previous_source_resolved_native_session, previous_source_resolved_native_session_id);
+
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id["chat-target"], std::string("old-target-session"));
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id["chat-source"], std::string("source-session"));
+#endif
+}
+
+UAM_TEST(OpenCodeOpenNativeSessionMetadataRestoreRevertsExistingChatState)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	ChatSession chat;
+	chat.provider_id = "legacy-opencode";
+	chat.native_session_id = "new-session";
+	chat.updated_at = "2026-06-01T00:00:00Z";
+
+	ChatHistorySyncService().RestoreOpenNativeSessionChatMetadata(chat, "restored-opencode", "old-session", "2026-05-01T00:00:00Z");
+
+	UAM_ASSERT_EQ(chat.provider_id, std::string("restored-opencode"));
+	UAM_ASSERT_EQ(chat.native_session_id, std::string("old-session"));
+	UAM_ASSERT_EQ(chat.updated_at, std::string("2026-05-01T00:00:00Z"));
+#endif
+}
+
+UAM_TEST(OpenCodeOpenNativeSessionChatSeedsResolvedMappingWhenReusingExistingChat)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-open-subagent-reuse");
+	const fs::path workspace_root = temp.root / "workspace";
+	fs::create_directories(workspace_root);
+
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession source_chat;
+	source_chat.id = "chat-source";
+	source_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	source_chat.workspace_directory = workspace_root.string();
+	app.chats.push_back(source_chat);
+
+	ChatSession local_sub_agent;
+	local_sub_agent.id = "chat-sub-agent";
+	local_sub_agent.provider_id = uam::provider_ids::kOpenCodeCli;
+	local_sub_agent.title = "Planner";
+	local_sub_agent.workspace_directory = workspace_root.string();
+	local_sub_agent.native_session_id = "agent-session-1";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, local_sub_agent));
+	app.chats.push_back(local_sub_agent);
+
+	ChatSession* existing = ChatDomainService().FindChatByNativeSessionId(app, "agent-session-1");
+	UAM_ASSERT(existing != nullptr);
+	UAM_ASSERT(app.resolved_native_sessions_by_chat_id.empty());
+
+	const ProviderProfile opencode_provider = ProviderProfileStore::DefaultOpenCodeProfile();
+	ChatSession* reused = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(app, app.chats.front(), opencode_provider, "agent-session-1");
+
+	UAM_ASSERT(reused != nullptr);
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(reused->provider_id, opencode_provider.id);
+	UAM_ASSERT_EQ(reused->workspace_directory, workspace_root.string());
+	UAM_ASSERT_EQ(reused->native_session_id, std::string("agent-session-1"));
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id[reused->id], std::string("agent-session-1"));
+	UAM_ASSERT(ChatDomainService().FindChatByNativeSessionId(app, "agent-session-1") == reused);
+#endif
+}
+
+UAM_TEST(OpenCodeOpenNativeSessionChatRepairsStaleLoadedChatNativeSessionIdWhenReusingExistingChat)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-open-subagent-reuse-stale-raw");
+	const fs::path workspace_root = temp.root / "workspace";
+	fs::create_directories(workspace_root);
+
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession source_chat;
+	source_chat.id = "chat-source";
+	source_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	source_chat.workspace_directory = workspace_root.string();
+	app.chats.push_back(source_chat);
+
+	ChatSession loaded_chat;
+	loaded_chat.id = "chat-live";
+	loaded_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	loaded_chat.title = "Planner";
+	loaded_chat.workspace_directory = workspace_root.string();
+	loaded_chat.native_session_id = "stale-session";
+	app.chats.push_back(loaded_chat);
+	app.resolved_native_sessions_by_chat_id[loaded_chat.id] = "agent-session-1";
+
+	ChatSession disk_copy = loaded_chat;
+	disk_copy.native_session_id = "agent-session-1";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, disk_copy));
+
+	const ProviderProfile opencode_provider = ProviderProfileStore::DefaultOpenCodeProfile();
+	ChatSession* reused = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(app, app.chats.front(), opencode_provider, "agent-session-1");
+
+	UAM_ASSERT(reused != nullptr);
+	UAM_ASSERT_EQ(reused->id, std::string("chat-live"));
+	UAM_ASSERT_EQ(reused->native_session_id, std::string("agent-session-1"));
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id[reused->id], std::string("agent-session-1"));
+#endif
+}
+
+UAM_TEST(OpenCodeOpenNativeSessionChatRepairsResolvedOnlyLoadedChatNativeSessionIdWithoutDiskCandidate)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-open-subagent-resolved-only-live-reuse");
+	const fs::path workspace_root = temp.root / "workspace";
+	fs::create_directories(workspace_root);
+
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession source_chat;
+	source_chat.id = "chat-source";
+	source_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	source_chat.workspace_directory = workspace_root.string();
+	app.chats.push_back(source_chat);
+
+	ChatSession loaded_chat;
+	loaded_chat.id = "chat-live";
+	loaded_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	loaded_chat.title = "Planner";
+	loaded_chat.workspace_directory = workspace_root.string();
+	loaded_chat.native_session_id = "stale-session";
+	app.chats.push_back(loaded_chat);
+	app.resolved_native_sessions_by_chat_id[loaded_chat.id] = "agent-session-1";
+
+	const ProviderProfile opencode_provider = ProviderProfileStore::DefaultOpenCodeProfile();
+	ChatSession* reused = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(app, app.chats.front(), opencode_provider, "agent-session-1");
+
+	UAM_ASSERT(reused != nullptr);
+	UAM_ASSERT_EQ(reused->id, std::string("chat-live"));
+	UAM_ASSERT_EQ(reused->native_session_id, std::string("agent-session-1"));
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id[reused->id], std::string("agent-session-1"));
+#endif
+}
+
+UAM_TEST(OpenCodeOpenNativeSessionChatReusesResolvedOnlyLoadedChatBeforeImportingDiskCandidate)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-open-subagent-resolved-only-reuse");
+	const fs::path workspace_root = temp.root / "workspace";
+	fs::create_directories(workspace_root);
+
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession source_chat;
+	source_chat.id = "chat-source";
+	source_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	source_chat.workspace_directory = workspace_root.string();
+	app.chats.push_back(source_chat);
+
+	ChatSession resolved_only_live;
+	resolved_only_live.id = "chat-live";
+	resolved_only_live.provider_id = uam::provider_ids::kOpenCodeCli;
+	resolved_only_live.title = "Planner";
+	resolved_only_live.workspace_directory = workspace_root.string();
+	resolved_only_live.native_session_id = "stale-session";
+	app.chats.push_back(resolved_only_live);
+	app.resolved_native_sessions_by_chat_id[resolved_only_live.id] = "agent-session-1";
+
+	ChatSession disk_copy;
+	disk_copy.id = "chat-live";
+	disk_copy.provider_id = uam::provider_ids::kOpenCodeCli;
+	disk_copy.title = "Planner";
+	disk_copy.workspace_directory = workspace_root.string();
+	disk_copy.native_session_id = "agent-session-1";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, disk_copy));
+
+	const ProviderProfile opencode_provider = ProviderProfileStore::DefaultOpenCodeProfile();
+	ChatSession* reused = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(app, app.chats.front(), opencode_provider, "agent-session-1");
+
+	UAM_ASSERT(reused != nullptr);
+	UAM_ASSERT_EQ(reused->id, std::string("chat-live"));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id[reused->id], std::string("agent-session-1"));
+#endif
+}
+
+UAM_TEST(OpenCodeOpenNativeSessionChatRespectsWorkspaceFiltering)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-open-subagent-workspace");
+	const fs::path source_workspace = temp.root / "workspace-a";
+	const fs::path other_workspace = temp.root / "workspace-b";
+	fs::create_directories(source_workspace);
+	fs::create_directories(other_workspace);
+
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession source_chat;
+	source_chat.id = "chat-source";
+	source_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	source_chat.workspace_directory = source_workspace.string();
+	app.chats.push_back(source_chat);
+
+	ChatSession local_sub_agent;
+	local_sub_agent.id = "chat-sub-agent";
+	local_sub_agent.provider_id = uam::provider_ids::kOpenCodeCli;
+	local_sub_agent.title = "Planner";
+	local_sub_agent.workspace_directory = other_workspace.string();
+	local_sub_agent.native_session_id = "agent-session-1";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, local_sub_agent));
+
+	const ProviderProfile opencode_provider = ProviderProfileStore::DefaultOpenCodeProfile();
+	ChatSession* imported = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(app, app.chats.front(), opencode_provider, "agent-session-1");
+
+	UAM_ASSERT(imported == nullptr);
+	UAM_ASSERT(ChatDomainService().FindChatByNativeSessionId(app, "agent-session-1") == nullptr);
+#endif
+}
+
+UAM_TEST(OpenCodeOpenNativeSessionChatPrefersWorkspaceMatchingChatOverStaleExistingChat)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-open-subagent-stale-existing");
+	const fs::path source_workspace = temp.root / "workspace-a";
+	const fs::path other_workspace = temp.root / "workspace-b";
+	fs::create_directories(source_workspace);
+	fs::create_directories(other_workspace);
+
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession source_chat;
+	source_chat.id = "chat-source";
+	source_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	source_chat.workspace_directory = source_workspace.string();
+	app.chats.push_back(source_chat);
+
+	ChatSession stale_existing;
+	stale_existing.id = "chat-stale";
+	stale_existing.provider_id = uam::provider_ids::kOpenCodeCli;
+	stale_existing.title = "Wrong workspace";
+	stale_existing.workspace_directory = other_workspace.string();
+	stale_existing.native_session_id = "agent-session-1";
+	app.chats.push_back(stale_existing);
+
+	ChatSession local_sub_agent;
+	local_sub_agent.id = "chat-sub-agent";
+	local_sub_agent.provider_id = uam::provider_ids::kOpenCodeCli;
+	local_sub_agent.title = "Planner";
+	local_sub_agent.workspace_directory = source_workspace.string();
+	local_sub_agent.native_session_id = "agent-session-1";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, local_sub_agent));
+
+	const ProviderProfile opencode_provider = ProviderProfileStore::DefaultOpenCodeProfile();
+	ChatSession* imported = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(app, app.chats.front(), opencode_provider, "agent-session-1");
+
+	UAM_ASSERT(imported != nullptr);
+	UAM_ASSERT_EQ(imported->title, std::string("Planner"));
+	UAM_ASSERT_EQ(imported->workspace_directory, source_workspace.string());
+	UAM_ASSERT(imported->id != stale_existing.id);
+#endif
+}
+
+UAM_TEST(OpenCodeOpenNativeSessionChatIgnoresCrossProviderSameSessionCollision)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI && UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-opencode-open-subagent-cross-provider");
+	const fs::path source_workspace = temp.root / "workspace";
+	fs::create_directories(source_workspace);
+
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession source_chat;
+	source_chat.id = "chat-source";
+	source_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	source_chat.workspace_directory = source_workspace.string();
+	app.chats.push_back(source_chat);
+
+	ChatSession codex_collision;
+	codex_collision.id = "chat-codex";
+	codex_collision.provider_id = uam::provider_ids::kCodexCli;
+	codex_collision.title = "Codex collision";
+	codex_collision.workspace_directory = source_workspace.string();
+	codex_collision.native_session_id = "agent-session-1";
+	app.chats.push_back(codex_collision);
+
+	ChatSession opencode_sub_agent;
+	opencode_sub_agent.id = "chat-open-code";
+	opencode_sub_agent.provider_id = uam::provider_ids::kOpenCodeCli;
+	opencode_sub_agent.title = "Planner";
+	opencode_sub_agent.workspace_directory = source_workspace.string();
+	opencode_sub_agent.native_session_id = "agent-session-1";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, opencode_sub_agent));
+
+	const ProviderProfile opencode_provider = ProviderProfileStore::DefaultOpenCodeProfile();
+	ChatSession* imported = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(app, app.chats.front(), opencode_provider, "agent-session-1");
+
+	UAM_ASSERT(imported != nullptr);
+	UAM_ASSERT_EQ(imported->provider_id, std::string(uam::provider_ids::kOpenCodeCli));
+	UAM_ASSERT_EQ(imported->title, std::string("Planner"));
+	UAM_ASSERT(imported->id != codex_collision.id);
+#endif
+}
+
+UAM_TEST(OpenCodeOpenNativeSessionChatRejectsWrongProviderDiskCollision)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI && UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-opencode-open-subagent-disk-cross-provider");
+	const fs::path source_workspace = temp.root / "workspace";
+	fs::create_directories(source_workspace);
+
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession source_chat;
+	source_chat.id = "chat-source";
+	source_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	source_chat.workspace_directory = source_workspace.string();
+	app.chats.push_back(source_chat);
+
+	ChatSession codex_collision;
+	codex_collision.id = "chat-codex";
+	codex_collision.provider_id = uam::provider_ids::kCodexCli;
+	codex_collision.title = "Codex collision";
+	codex_collision.workspace_directory = source_workspace.string();
+	codex_collision.native_session_id = "agent-session-1";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, codex_collision));
+
+	const ProviderProfile opencode_provider = ProviderProfileStore::DefaultOpenCodeProfile();
+	ChatSession* imported = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(app, app.chats.front(), opencode_provider, "agent-session-1");
+
+	UAM_ASSERT(imported == nullptr);
+	UAM_ASSERT(app.chats.size() == static_cast<std::size_t>(1));
+	UAM_ASSERT(app.resolved_native_sessions_by_chat_id.empty());
+#endif
+}
+
+UAM_TEST(OpenCodeFindInMemoryNativeSessionChatForOpenPrefersMatchingLoadedChatOverStaleResolvedCollision)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-open-subagent-memory-fallback");
+	const fs::path source_workspace = temp.root / "workspace-a";
+	const fs::path other_workspace = temp.root / "workspace-b";
+	fs::create_directories(source_workspace);
+	fs::create_directories(other_workspace);
+
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession source_chat;
+	source_chat.id = "chat-source";
+	source_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	source_chat.workspace_directory = source_workspace.string();
+	app.chats.push_back(source_chat);
+
+	ChatSession stale_existing;
+	stale_existing.id = "chat-stale";
+	stale_existing.provider_id = uam::provider_ids::kOpenCodeCli;
+	stale_existing.title = "Wrong workspace";
+	stale_existing.workspace_directory = other_workspace.string();
+	stale_existing.native_session_id = "agent-session-1";
+	app.chats.push_back(stale_existing);
+	app.resolved_native_sessions_by_chat_id[stale_existing.id] = "agent-session-1";
+
+	ChatSession live_loaded;
+	live_loaded.id = "chat-live";
+	live_loaded.provider_id.clear();
+	live_loaded.title = "Planner";
+	live_loaded.workspace_directory = source_workspace.string();
+	live_loaded.native_session_id = "agent-session-1";
+	app.chats.push_back(live_loaded);
+
+	UAM_ASSERT(ChatDomainService().FindChatByNativeSessionId(app, "agent-session-1") != nullptr);
+	UAM_ASSERT_EQ(ChatDomainService().FindChatByNativeSessionId(app, "agent-session-1")->id, std::string("chat-stale"));
+
+	const ProviderProfile opencode_provider = ProviderProfileStore::DefaultOpenCodeProfile();
+	ChatSession* matched = ChatHistorySyncService().FindInMemoryNativeSessionChatForOpen(app, app.chats.front(), opencode_provider, "agent-session-1");
+
+	UAM_ASSERT(matched != nullptr);
+	UAM_ASSERT_EQ(matched->id, std::string("chat-live"));
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id[matched->id], std::string("agent-session-1"));
+#endif
+}
+
+UAM_TEST(OpenCodeFindInMemoryNativeSessionChatForOpenPrefersRawLoadedChatOverStaleResolvedCollisionInSameWorkspace)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-open-subagent-memory-fallback-same-workspace");
+	const fs::path source_workspace = temp.root / "workspace";
+	fs::create_directories(source_workspace);
+
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession source_chat;
+	source_chat.id = "chat-source";
+	source_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	source_chat.workspace_directory = source_workspace.string();
+	app.chats.push_back(source_chat);
+
+	ChatSession stale_existing;
+	stale_existing.id = "chat-stale";
+	stale_existing.provider_id = uam::provider_ids::kOpenCodeCli;
+	stale_existing.title = "Wrong resolved mapping";
+	stale_existing.workspace_directory = source_workspace.string();
+	stale_existing.native_session_id = "stale-session";
+	app.chats.push_back(stale_existing);
+	app.resolved_native_sessions_by_chat_id[stale_existing.id] = "agent-session-1";
+
+	ChatSession live_loaded;
+	live_loaded.id = "chat-live";
+	live_loaded.provider_id.clear();
+	live_loaded.title = "Planner";
+	live_loaded.workspace_directory = source_workspace.string();
+	live_loaded.native_session_id = "agent-session-1";
+	app.chats.push_back(live_loaded);
+
+	const ProviderProfile opencode_provider = ProviderProfileStore::DefaultOpenCodeProfile();
+	ChatSession* matched = ChatHistorySyncService().FindInMemoryNativeSessionChatForOpen(app, app.chats.front(), opencode_provider, "agent-session-1");
+
+	UAM_ASSERT(matched != nullptr);
+	UAM_ASSERT_EQ(matched->id, std::string("chat-live"));
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id[matched->id], std::string("agent-session-1"));
+#endif
+}
+
+UAM_TEST(OpenCodeFindInMemoryNativeSessionChatForOpenPrefersNewerEqualPriorityCandidate)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-open-subagent-memory-newer-priority");
+	const fs::path source_workspace = temp.root / "workspace";
+	fs::create_directories(source_workspace);
+
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession source_chat;
+	source_chat.id = "chat-source";
+	source_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	source_chat.workspace_directory = source_workspace.string();
+	app.chats.push_back(source_chat);
+
+	ChatSession older_loaded;
+	older_loaded.id = "chat-older";
+	older_loaded.provider_id = uam::provider_ids::kOpenCodeCli;
+	older_loaded.title = "Older";
+	older_loaded.workspace_directory = source_workspace.string();
+	older_loaded.native_session_id = "agent-session-1";
+	older_loaded.updated_at = "2026-01-01T00:00:01.000Z";
+	app.chats.push_back(older_loaded);
+
+	ChatSession newer_loaded = older_loaded;
+	newer_loaded.id = "chat-newer";
+	newer_loaded.title = "Newer";
+	newer_loaded.updated_at = "2026-01-01T00:00:02.000Z";
+	app.chats.push_back(newer_loaded);
+
+	const ProviderProfile opencode_provider = ProviderProfileStore::DefaultOpenCodeProfile();
+	ChatSession* matched = ChatHistorySyncService().FindInMemoryNativeSessionChatForOpen(app, app.chats.front(), opencode_provider, "agent-session-1");
+
+	UAM_ASSERT(matched != nullptr);
+	UAM_ASSERT_EQ(matched->id, std::string("chat-newer"));
+#endif
+}
+
+UAM_TEST(OpenCodeFindInMemoryNativeSessionChatForOpenCanSkipResolvedMappingMutation)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-open-subagent-memory-readonly");
+	const fs::path source_workspace = temp.root / "workspace";
+	fs::create_directories(source_workspace);
+
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession source_chat;
+	source_chat.id = "chat-source";
+	source_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	source_chat.workspace_directory = source_workspace.string();
+	app.chats.push_back(source_chat);
+
+	ChatSession live_loaded;
+	live_loaded.id = "chat-live";
+	live_loaded.provider_id.clear();
+	live_loaded.title = "Planner";
+	live_loaded.workspace_directory = source_workspace.string();
+	live_loaded.native_session_id = "agent-session-1";
+	app.chats.push_back(live_loaded);
+
+	const ProviderProfile opencode_provider = ProviderProfileStore::DefaultOpenCodeProfile();
+	ChatSession* matched = ChatHistorySyncService().FindInMemoryNativeSessionChatForOpen(app, app.chats.front(), opencode_provider, "agent-session-1", false);
+
+	UAM_ASSERT(matched != nullptr);
+	UAM_ASSERT_EQ(matched->id, std::string("chat-live"));
+	UAM_ASSERT(matched->provider_id.empty());
+	UAM_ASSERT(app.resolved_native_sessions_by_chat_id.find(matched->id) == app.resolved_native_sessions_by_chat_id.end());
+#endif
+}
+
+UAM_TEST(OpenCodeFindOrImportNativeSessionChatForOpenCanSkipProviderNormalizationForImportedLegacyChat)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-open-subagent-import-readonly");
+	const fs::path source_workspace = temp.root / "workspace";
+	fs::create_directories(source_workspace);
+
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession source_chat;
+	source_chat.id = "chat-source";
+	source_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	source_chat.workspace_directory = source_workspace.string();
+	app.chats.push_back(source_chat);
+
+	ChatSession legacy_disk_chat;
+	legacy_disk_chat.id = "chat-legacy";
+	legacy_disk_chat.provider_id.clear();
+	legacy_disk_chat.title = "Legacy OpenCode chat";
+	legacy_disk_chat.workspace_directory = source_workspace.string();
+	legacy_disk_chat.native_session_id = "agent-session-1";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, legacy_disk_chat));
+
+	const ProviderProfile opencode_provider = ProviderProfileStore::DefaultOpenCodeProfile();
+	ChatSession* imported = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(app, app.chats.front(), opencode_provider, "agent-session-1", false);
+
+	UAM_ASSERT(imported != nullptr);
+	UAM_ASSERT_EQ(imported->id, std::string("chat-legacy"));
+	UAM_ASSERT(imported->provider_id.empty());
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id[imported->id], std::string("agent-session-1"));
+#endif
+}
+
+UAM_TEST(OpenCodeFindOrImportNativeSessionChatForOpenCanReuseResolvedOnlyLoadedChat)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-open-subagent-resolved-only-reuse");
+	const fs::path source_workspace = temp.root / "workspace";
+	fs::create_directories(source_workspace);
+
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession source_chat;
+	source_chat.id = "chat-source";
+	source_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	source_chat.workspace_directory = source_workspace.string();
+	app.chats.push_back(source_chat);
+
+	ChatSession resolved_legacy_chat;
+	resolved_legacy_chat.id = "chat-live";
+	resolved_legacy_chat.provider_id.clear();
+	resolved_legacy_chat.title = "Resolved Legacy OpenCode chat";
+	resolved_legacy_chat.workspace_directory = source_workspace.string();
+	resolved_legacy_chat.native_session_id.clear();
+	app.chats.push_back(resolved_legacy_chat);
+	app.resolved_native_sessions_by_chat_id[resolved_legacy_chat.id] = "agent-session-1";
+
+	ChatSession legacy_disk_chat;
+	legacy_disk_chat.id = "chat-legacy";
+	legacy_disk_chat.provider_id.clear();
+	legacy_disk_chat.title = "Legacy OpenCode chat";
+	legacy_disk_chat.workspace_directory = source_workspace.string();
+	legacy_disk_chat.native_session_id = "agent-session-1";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, legacy_disk_chat));
+
+	const ProviderProfile opencode_provider = ProviderProfileStore::DefaultOpenCodeProfile();
+	ChatSession* imported = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(app, app.chats.front(), opencode_provider, "agent-session-1", false);
+
+	UAM_ASSERT(imported != nullptr);
+	UAM_ASSERT_EQ(imported->id, std::string("chat-live"));
+	UAM_ASSERT(imported->provider_id.empty());
+	UAM_ASSERT_EQ(imported->native_session_id, std::string("agent-session-1"));
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id[imported->id], std::string("agent-session-1"));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+#endif
+}
+
+UAM_TEST(OpenCodeFindInMemoryNativeSessionChatForOpenAcceptsBlankProviderLegacyChat)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-open-subagent-blank-provider");
+	const fs::path source_workspace = temp.root / "workspace";
+	fs::create_directories(source_workspace);
+
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession source_chat;
+	source_chat.id = "chat-source";
+	source_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	source_chat.workspace_directory = source_workspace.string();
+	app.chats.push_back(source_chat);
+
+	ChatSession legacy_loaded;
+	legacy_loaded.id = "chat-legacy";
+	legacy_loaded.provider_id.clear();
+	legacy_loaded.title = "Legacy OpenCode chat";
+	legacy_loaded.workspace_directory = source_workspace.string();
+	legacy_loaded.native_session_id = "agent-session-1";
+	app.chats.push_back(legacy_loaded);
+
+	const ProviderProfile opencode_provider = ProviderProfileStore::DefaultOpenCodeProfile();
+	ChatSession* matched = ChatHistorySyncService().FindInMemoryNativeSessionChatForOpen(app, app.chats.front(), opencode_provider, "agent-session-1");
+
+	UAM_ASSERT(matched != nullptr);
+	UAM_ASSERT_EQ(matched->id, std::string("chat-legacy"));
+	UAM_ASSERT_EQ(matched->provider_id, std::string(uam::provider_ids::kOpenCodeCli));
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id[matched->id], std::string("agent-session-1"));
+#endif
+}
+
+UAM_TEST(OpenCodeFindOrImportNativeSessionChatForOpenPrefersRawLoadedChatOverStaleResolvedCollisionInSameWorkspace)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-open-subagent-import-fallback-same-workspace");
+	const fs::path source_workspace = temp.root / "workspace";
+	fs::create_directories(source_workspace);
+
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession source_chat;
+	source_chat.id = "chat-source";
+	source_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	source_chat.workspace_directory = source_workspace.string();
+	app.chats.push_back(source_chat);
+
+	ChatSession stale_existing;
+	stale_existing.id = "chat-stale";
+	stale_existing.provider_id = uam::provider_ids::kOpenCodeCli;
+	stale_existing.title = "Wrong resolved mapping";
+	stale_existing.workspace_directory = source_workspace.string();
+	stale_existing.native_session_id = "stale-session";
+	app.chats.push_back(stale_existing);
+	app.resolved_native_sessions_by_chat_id[stale_existing.id] = "agent-session-1";
+
+	ChatSession live_loaded;
+	live_loaded.id = "chat-live";
+	live_loaded.provider_id = uam::provider_ids::kOpenCodeCli;
+	live_loaded.title = "Planner";
+	live_loaded.workspace_directory = source_workspace.string();
+	live_loaded.native_session_id = "agent-session-1";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, live_loaded));
+
+	const ProviderProfile opencode_provider = ProviderProfileStore::DefaultOpenCodeProfile();
+	ChatSession* imported = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(app, app.chats.front(), opencode_provider, "agent-session-1");
+
+	UAM_ASSERT(imported != nullptr);
+	UAM_ASSERT_EQ(imported->id, std::string("chat-live"));
+	UAM_ASSERT_EQ(imported->native_session_id, std::string("agent-session-1"));
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id[imported->id], std::string("agent-session-1"));
+#endif
+}
+
+UAM_TEST(OpenCodeFindOrImportNativeSessionChatForOpenPrefersNewerLoadedRawDuplicate)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-open-subagent-import-raw-duplicate");
+	const fs::path source_workspace = temp.root / "workspace";
+	fs::create_directories(source_workspace);
+
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession source_chat;
+	source_chat.id = "chat-source";
+	source_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	source_chat.workspace_directory = source_workspace.string();
+	app.chats.push_back(source_chat);
+
+	ChatSession older_loaded;
+	older_loaded.id = "chat-older";
+	older_loaded.provider_id = uam::provider_ids::kOpenCodeCli;
+	older_loaded.title = "Older";
+	older_loaded.workspace_directory = source_workspace.string();
+	older_loaded.native_session_id = "agent-session-1";
+	older_loaded.updated_at = "2026-01-01T00:00:01.000Z";
+	app.chats.push_back(older_loaded);
+
+	ChatSession newer_loaded = older_loaded;
+	newer_loaded.id = "chat-newer";
+	newer_loaded.title = "Newer";
+	newer_loaded.updated_at = "2026-01-01T00:00:02.000Z";
+	app.chats.push_back(newer_loaded);
+
+	ChatSession disk_copy = older_loaded;
+	disk_copy.id = "chat-disk";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, disk_copy));
+
+	const ProviderProfile opencode_provider = ProviderProfileStore::DefaultOpenCodeProfile();
+	ChatSession* reused = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(app, app.chats.front(), opencode_provider, "agent-session-1");
+
+	UAM_ASSERT(reused != nullptr);
+	UAM_ASSERT_EQ(reused->id, std::string("chat-newer"));
+	UAM_ASSERT_EQ(reused->native_session_id, std::string("agent-session-1"));
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id[reused->id], std::string("agent-session-1"));
+#endif
+}
+
+UAM_TEST(ForgetResolvedNativeSessionForChatClearsProviderSwitchResidualMapping)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "chat-opencode";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	app.chats.push_back(chat);
+	app.resolved_native_sessions_by_chat_id[chat.id] = "opencode-session-1";
+
+	ChatHistorySyncService().ForgetResolvedNativeSessionForChat(app, chat.id);
+
+	UAM_ASSERT(app.resolved_native_sessions_by_chat_id.find(chat.id) == app.resolved_native_sessions_by_chat_id.end());
+#endif
+}
+
+UAM_TEST(ClearStoppedCliTerminalAttachmentForChatClearsProviderSwitchResidualTerminalIdentity)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "chat-opencode";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	app.chats.push_back(chat);
+
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = chat.id;
+	terminal->attached_chat_id = chat.id;
+	terminal->attached_session_id = "opencode-session-1";
+	terminal->terminal_id = "term-chat-opencode";
+	terminal->should_launch = true;
+	app.cli_terminals.push_back(std::move(terminal));
+
+	uam::ClearStoppedCliTerminalAttachmentForChat(app, chat.id);
+
+	UAM_ASSERT(uam::CliTerminalAttachedSessionId(*app.cli_terminals.front()).empty());
+	UAM_ASSERT(uam::CliTerminalAttachedChatId(*app.cli_terminals.front()).empty());
+	UAM_ASSERT(app.cli_terminals.front()->terminal_id.empty());
 #endif
 }
 
@@ -5435,6 +6674,14 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	UAM_ASSERT(opencode_detail.find("argv=opencode acp") != std::string::npos);
 	UAM_ASSERT(opencode_detail.find("nativeSessionId=opencode-session-1") != std::string::npos);
 
+	uam::AppState opencode_app;
+	ChatSession opencode_resolved_chat = opencode_chat;
+	opencode_resolved_chat.native_session_id = "stale-opencode-session";
+	opencode_app.resolved_native_sessions_by_chat_id[opencode_resolved_chat.id] = "resolved-opencode-session";
+	const std::string resolved_opencode_detail = uam::BuildAcpLaunchDetailForTests(opencode_app, "/tmp/project", opencode_resolved_chat);
+	UAM_ASSERT(resolved_opencode_detail.find("argv=opencode acp") != std::string::npos);
+	UAM_ASSERT(resolved_opencode_detail.find("nativeSessionId=resolved-opencode-session") != std::string::npos);
+
 	ChatSession copilot_chat;
 	copilot_chat.id = "copilot-chat";
 	copilot_chat.provider_id = "copilot-cli";
@@ -5447,6 +6694,25 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	const std::string copilot_detail = uam::BuildAcpLaunchDetailForTests("/tmp/project", copilot_chat);
 	UAM_ASSERT(copilot_detail.find("argv=copilot --acp --stdio") != std::string::npos);
 	UAM_ASSERT(copilot_detail.find("nativeSessionId=copilot-session-1") != std::string::npos);
+}
+
+UAM_TEST(AcpLaunchArgsUseResolvedProviderForBlankOpenCodeChat)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.settings.active_provider_id = uam::provider_ids::kOpenCodeCli;
+
+	ChatSession chat;
+	chat.id = "chat-opencode-blank";
+	chat.provider_id.clear();
+	chat.native_session_id = "stale-session";
+	app.resolved_native_sessions_by_chat_id[chat.id] = "resolved-opencode-session";
+
+	const std::string detail = uam::BuildAcpLaunchDetailForTests(app, "/tmp/project", chat);
+	UAM_ASSERT(detail.find("argv=opencode acp") != std::string::npos);
+	UAM_ASSERT(detail.find("nativeSessionId=resolved-opencode-session") != std::string::npos);
+#endif
 }
 
 UAM_TEST(ClaudeStreamJsonMessagesUpdateChatAndSession)
@@ -7452,6 +8718,389 @@ UAM_TEST(CliTerminalIdentitySeparatesFrontendChatAndNativeSession)
 	UAM_ASSERT_EQ(uam::CliTerminalSyncTargetId(terminal), std::string("native-session"));
 }
 
+UAM_TEST(CliTerminalMatchesResolvedNativeSessionWhenRawSessionIsMissing)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "chat-opencode";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	app.chats.push_back(chat);
+	app.resolved_native_sessions_by_chat_id[chat.id] = "opencode-session-1";
+
+	uam::CliTerminalState terminal;
+	terminal.frontend_chat_id = "chat-opencode";
+	terminal.attached_chat_id = "chat-opencode";
+	terminal.attached_session_id = "opencode-session-1";
+
+	UAM_ASSERT(uam::CliTerminalMatchesChat(app, terminal, app.chats.front()));
+	UAM_ASSERT_EQ(uam::FindChatIndexForCliTerminal(app, terminal), 0);
+	UAM_ASSERT_EQ(uam::FindChatForCliTerminal(app, terminal), &app.chats.front());
+}
+
+UAM_TEST(CliTerminalMatchesResolvedNativeSessionPrefersLiveRawChatForSessionOnlyTerminal)
+{
+	uam::AppState app;
+
+	ChatSession stale_chat;
+	stale_chat.id = "chat-stale";
+	stale_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	stale_chat.native_session_id = "stale-opencode-session";
+	stale_chat.updated_at = "2026-05-31T12:00:00.000Z";
+	stale_chat.last_opened_at = "2026-05-31T12:00:00.000Z";
+	app.chats.push_back(stale_chat);
+	app.resolved_native_sessions_by_chat_id[stale_chat.id] = "opencode-session-1";
+
+	ChatSession live_chat;
+	live_chat.id = "chat-live";
+	live_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	live_chat.native_session_id = "other-session";
+	live_chat.updated_at = "2026-06-01T12:00:00.000Z";
+	live_chat.last_opened_at = "2026-06-01T12:00:00.000Z";
+	app.chats.push_back(live_chat);
+	app.resolved_native_sessions_by_chat_id[live_chat.id] = "opencode-session-1";
+
+	uam::CliTerminalState terminal;
+	terminal.attached_session_id = "opencode-session-1";
+
+	UAM_ASSERT(uam::CliTerminalMatchesChat(app, terminal, app.chats.front()));
+	UAM_ASSERT(uam::CliTerminalMatchesChat(app, terminal, app.chats.back()));
+	UAM_ASSERT_EQ(uam::FindChatForCliTerminal(app, terminal), &app.chats.back());
+}
+
+UAM_TEST(CliTerminalMatchesResolvedNativeSessionPrefersLiveChatOverStaleRawCollision)
+{
+	uam::AppState app;
+
+	ChatSession stale_chat;
+	stale_chat.id = "chat-stale";
+	stale_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	stale_chat.native_session_id = "opencode-session-1";
+	app.chats.push_back(stale_chat);
+
+	ChatSession live_chat;
+	live_chat.id = "chat-live";
+	live_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	live_chat.native_session_id = "stale-opencode-session";
+	app.chats.push_back(live_chat);
+	app.resolved_native_sessions_by_chat_id[live_chat.id] = "opencode-session-1";
+
+	uam::CliTerminalState terminal;
+	terminal.frontend_chat_id = "chat-live";
+	terminal.attached_chat_id = "chat-live";
+	terminal.attached_session_id = "opencode-session-1";
+
+	UAM_ASSERT(uam::CliTerminalMatchesChat(app, terminal, app.chats.front()));
+	UAM_ASSERT(uam::CliTerminalMatchesChat(app, terminal, app.chats.back()));
+	UAM_ASSERT_EQ(uam::FindChatForCliTerminal(app, terminal), &app.chats.back());
+}
+
+UAM_TEST(FindCliTerminalForChatPrefersLiveTerminalOverStaleCollision)
+{
+	uam::AppState app;
+
+	ChatSession stale_chat;
+	stale_chat.id = "chat-stale";
+	stale_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	stale_chat.native_session_id = "opencode-session-1";
+	stale_chat.updated_at = "2026-05-31T12:00:00.000Z";
+	stale_chat.last_opened_at = "2026-05-31T12:00:00.000Z";
+	app.chats.push_back(stale_chat);
+	app.resolved_native_sessions_by_chat_id[stale_chat.id] = "opencode-session-1";
+
+	ChatSession live_chat;
+	live_chat.id = "chat-live";
+	live_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	live_chat.native_session_id = "opencode-session-1";
+	live_chat.updated_at = "2026-06-01T12:00:00.000Z";
+	live_chat.last_opened_at = "2026-06-01T12:00:00.000Z";
+	app.chats.push_back(live_chat);
+
+	auto stale_terminal = std::make_unique<uam::CliTerminalState>();
+	stale_terminal->frontend_chat_id = stale_chat.id;
+	stale_terminal->attached_chat_id = stale_chat.id;
+	stale_terminal->attached_session_id = "opencode-session-1";
+	app.cli_terminals.push_back(std::move(stale_terminal));
+
+	auto live_terminal = std::make_unique<uam::CliTerminalState>();
+	live_terminal->frontend_chat_id = live_chat.id;
+	live_terminal->attached_chat_id = live_chat.id;
+	live_terminal->attached_session_id = "opencode-session-1";
+	app.cli_terminals.push_back(std::move(live_terminal));
+
+	UAM_ASSERT_EQ(uam::FindCliTerminalIndexForChat(app, live_chat), 1);
+	UAM_ASSERT_EQ(uam::FindCliTerminalForChat(app, live_chat), app.cli_terminals[1].get());
+	UAM_ASSERT_EQ(uam::FindCliTerminalForChat(app, stale_chat), app.cli_terminals[0].get());
+}
+
+UAM_TEST(FindCliTerminalForChatPrefersLiveTerminalOverLaterStaleCollision)
+{
+	uam::AppState app;
+
+	ChatSession live_chat;
+	live_chat.id = "chat-live";
+	live_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	live_chat.native_session_id = "opencode-session-1";
+	live_chat.updated_at = "2026-06-01T12:00:00.000Z";
+	live_chat.last_opened_at = "2026-06-01T12:00:00.000Z";
+	app.chats.push_back(live_chat);
+
+	ChatSession stale_chat;
+	stale_chat.id = "chat-stale";
+	stale_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	stale_chat.native_session_id = "opencode-session-1";
+	app.chats.push_back(stale_chat);
+	app.resolved_native_sessions_by_chat_id[live_chat.id] = "opencode-session-1";
+
+	auto live_terminal = std::make_unique<uam::CliTerminalState>();
+	live_terminal->frontend_chat_id = live_chat.id;
+	live_terminal->attached_chat_id = live_chat.id;
+	live_terminal->attached_session_id = "opencode-session-1";
+	live_terminal->running = true;
+	live_terminal->ui_attached = true;
+	live_terminal->last_activity_time_s = 2.0;
+	app.cli_terminals.push_back(std::move(live_terminal));
+
+	auto stale_terminal = std::make_unique<uam::CliTerminalState>();
+	stale_terminal->frontend_chat_id = stale_chat.id;
+	stale_terminal->attached_chat_id = stale_chat.id;
+	stale_terminal->attached_session_id = "opencode-session-1";
+	stale_terminal->running = false;
+	stale_terminal->ui_attached = false;
+	stale_terminal->last_activity_time_s = 1.0;
+	app.cli_terminals.push_back(std::move(stale_terminal));
+
+	UAM_ASSERT_EQ(uam::FindCliTerminalForChat(app, live_chat), app.cli_terminals[0].get());
+	UAM_ASSERT_EQ(uam::FindCliTerminalForChat(app, stale_chat), app.cli_terminals[1].get());
+}
+
+UAM_TEST(FindChatForCliTerminalPrefersLiveChatOverLaterStaleCollision)
+{
+	uam::AppState app;
+
+	ChatSession live_chat;
+	live_chat.id = "chat-live";
+	live_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	live_chat.native_session_id = "opencode-session-1";
+	live_chat.last_opened_at = "2026-06-01T12:00:00.000Z";
+	live_chat.updated_at = "2026-06-01T12:00:00.000Z";
+	app.chats.push_back(live_chat);
+
+	ChatSession stale_chat;
+	stale_chat.id = "chat-stale";
+	stale_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	stale_chat.native_session_id = "opencode-session-1";
+	stale_chat.last_opened_at = "2026-05-31T12:00:00.000Z";
+	stale_chat.updated_at = "2026-05-31T12:00:00.000Z";
+	app.chats.push_back(stale_chat);
+
+	uam::CliTerminalState terminal;
+	terminal.frontend_chat_id = "chat-live";
+	terminal.attached_chat_id = "chat-live";
+	terminal.attached_session_id = "opencode-session-1";
+
+	UAM_ASSERT_EQ(uam::FindChatForCliTerminal(app, terminal), &app.chats.front());
+}
+
+UAM_TEST(FindCliTerminalForRoutingKeyPrefersLiveTerminalOverStaleCollision)
+{
+	uam::AppState app;
+
+	auto stale_terminal = std::make_unique<uam::CliTerminalState>();
+	stale_terminal->frontend_chat_id = "chat-stale";
+	stale_terminal->attached_chat_id = "chat-stale";
+	stale_terminal->attached_session_id = "opencode-session-1";
+	app.cli_terminals.push_back(std::move(stale_terminal));
+
+	auto live_terminal = std::make_unique<uam::CliTerminalState>();
+	live_terminal->frontend_chat_id = "chat-live";
+	live_terminal->attached_chat_id = "chat-live";
+	live_terminal->attached_session_id = "opencode-session-1";
+	app.cli_terminals.push_back(std::move(live_terminal));
+
+	UAM_ASSERT_EQ(uam::FindCliTerminalForRoutingKey(app, "opencode-session-1", ""), app.cli_terminals[1].get());
+}
+
+UAM_TEST(FindCliTerminalForRoutingKeyPrefersLiveTerminalOverStaleTerminalIdCollision)
+{
+	uam::AppState app;
+
+	auto stale_terminal = std::make_unique<uam::CliTerminalState>();
+	stale_terminal->terminal_id = "term-chat-live";
+	stale_terminal->frontend_chat_id = "chat-stale";
+	stale_terminal->attached_chat_id = "chat-stale";
+	stale_terminal->attached_session_id = "opencode-session-1";
+	stale_terminal->last_activity_time_s = 1.0;
+	app.cli_terminals.push_back(std::move(stale_terminal));
+
+	auto live_terminal = std::make_unique<uam::CliTerminalState>();
+	live_terminal->terminal_id = "term-chat-live";
+	live_terminal->frontend_chat_id = "chat-live";
+	live_terminal->attached_chat_id = "chat-live";
+	live_terminal->attached_session_id = "opencode-session-1";
+	live_terminal->running = true;
+	live_terminal->ui_attached = true;
+	live_terminal->last_activity_time_s = 2.0;
+	app.cli_terminals.push_back(std::move(live_terminal));
+
+	UAM_ASSERT_EQ(uam::FindCliTerminalForRoutingKey(app, "", "term-chat-live"), app.cli_terminals[1].get());
+}
+
+UAM_TEST(FindCliTerminalForRoutingKeyPrefersChatMatchingTerminalOverStaleTerminalIdCollision)
+{
+	uam::AppState app;
+
+	auto stale_terminal = std::make_unique<uam::CliTerminalState>();
+	stale_terminal->terminal_id = "term-chat-live";
+	stale_terminal->frontend_chat_id = "chat-stale";
+	stale_terminal->attached_chat_id = "chat-stale";
+	stale_terminal->attached_session_id = "opencode-session-1";
+	stale_terminal->last_activity_time_s = 5.0;
+	app.cli_terminals.push_back(std::move(stale_terminal));
+
+	auto live_terminal = std::make_unique<uam::CliTerminalState>();
+	live_terminal->terminal_id = "term-chat-live";
+	live_terminal->frontend_chat_id = "chat-live";
+	live_terminal->attached_chat_id = "chat-live";
+	live_terminal->attached_session_id = "opencode-session-1";
+	live_terminal->last_activity_time_s = 1.0;
+	app.cli_terminals.push_back(std::move(live_terminal));
+
+	UAM_ASSERT_EQ(uam::FindCliTerminalForRoutingKey(app, "chat-live", "term-chat-live"), app.cli_terminals[1].get());
+}
+
+UAM_TEST(FindCliTerminalForChatStringPrefersLiveTerminalOverStaleCollision)
+{
+	uam::AppState app;
+
+	auto stale_terminal = std::make_unique<uam::CliTerminalState>();
+	stale_terminal->frontend_chat_id = "chat-stale";
+	stale_terminal->attached_chat_id = "chat-stale";
+	stale_terminal->attached_session_id = "opencode-session-1";
+	stale_terminal->running = false;
+	app.cli_terminals.push_back(std::move(stale_terminal));
+
+	auto live_terminal = std::make_unique<uam::CliTerminalState>();
+	live_terminal->frontend_chat_id = "chat-live";
+	live_terminal->attached_chat_id = "chat-live";
+	live_terminal->attached_session_id = "opencode-session-1";
+	live_terminal->running = true;
+	live_terminal->ui_attached = true;
+	live_terminal->lifecycle_state = uam::CliTerminalLifecycleState::Idle;
+	app.cli_terminals.push_back(std::move(live_terminal));
+
+	UAM_ASSERT_EQ(uam::FindCliTerminalForChat(app, std::string_view("chat-live")), app.cli_terminals[1].get());
+}
+
+UAM_TEST(ChatRuntimeHelpersPreferBestMatchCliTerminalOverStaleCollision)
+{
+	uam::AppState app;
+
+	ChatSession stale_chat;
+	stale_chat.id = "chat-stale";
+	stale_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	stale_chat.native_session_id = "opencode-session-1";
+	stale_chat.updated_at = "2026-05-31T12:00:00.000Z";
+	stale_chat.last_opened_at = "2026-05-31T12:00:00.000Z";
+	app.chats.push_back(stale_chat);
+	app.resolved_native_sessions_by_chat_id[stale_chat.id] = "opencode-session-1";
+
+	ChatSession live_chat;
+	live_chat.id = "chat-live";
+	live_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	live_chat.native_session_id = "opencode-session-1";
+	live_chat.updated_at = "2026-06-01T12:00:00.000Z";
+	live_chat.last_opened_at = "2026-06-01T12:00:00.000Z";
+	app.chats.push_back(live_chat);
+
+	auto stale_terminal = std::make_unique<uam::CliTerminalState>();
+	stale_terminal->frontend_chat_id = stale_chat.id;
+	stale_terminal->attached_chat_id = stale_chat.id;
+	stale_terminal->attached_session_id = "opencode-session-1";
+	stale_terminal->running = true;
+	stale_terminal->lifecycle_state = uam::CliTerminalLifecycleState::Busy;
+	stale_terminal->turn_state = uam::CliTerminalTurnState::Busy;
+	app.cli_terminals.push_back(std::move(stale_terminal));
+
+	auto live_terminal = std::make_unique<uam::CliTerminalState>();
+	live_terminal->frontend_chat_id = live_chat.id;
+	live_terminal->attached_chat_id = live_chat.id;
+	live_terminal->attached_session_id = "opencode-session-1";
+	live_terminal->running = true;
+	app.cli_terminals.push_back(std::move(live_terminal));
+
+	UAM_ASSERT(uam::ChatHasActiveCliTerminal(app, live_chat.id));
+	UAM_ASSERT(uam::ChatHasBusyCliTerminal(app, stale_chat.id));
+	UAM_ASSERT(!uam::ChatHasBusyCliTerminal(app, live_chat.id));
+	UAM_ASSERT(uam::ChatHasRunningRuntime(app, stale_chat.id));
+}
+
+UAM_TEST(ChatRuntimeHelpersPreferBestMatchCliTerminalForNativeSessionLookup)
+{
+	uam::AppState app;
+
+	ChatSession stale_chat;
+	stale_chat.id = "chat-stale";
+	stale_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	stale_chat.native_session_id = "opencode-session-1";
+	stale_chat.updated_at = "2026-05-31T12:00:00.000Z";
+	stale_chat.last_opened_at = "2026-05-31T12:00:00.000Z";
+	app.chats.push_back(stale_chat);
+	app.resolved_native_sessions_by_chat_id[stale_chat.id] = "opencode-session-1";
+
+	ChatSession live_chat;
+	live_chat.id = "chat-live";
+	live_chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	live_chat.native_session_id = "opencode-session-1";
+	live_chat.updated_at = "2026-06-01T12:00:00.000Z";
+	live_chat.last_opened_at = "2026-06-01T12:00:00.000Z";
+	app.chats.push_back(live_chat);
+
+	auto stale_terminal = std::make_unique<uam::CliTerminalState>();
+	stale_terminal->frontend_chat_id = stale_chat.id;
+	stale_terminal->attached_chat_id = stale_chat.id;
+	stale_terminal->attached_session_id = "opencode-session-1";
+	stale_terminal->running = true;
+	stale_terminal->lifecycle_state = uam::CliTerminalLifecycleState::Busy;
+	stale_terminal->turn_state = uam::CliTerminalTurnState::Busy;
+	app.cli_terminals.push_back(std::move(stale_terminal));
+
+	auto live_terminal = std::make_unique<uam::CliTerminalState>();
+	live_terminal->frontend_chat_id = live_chat.id;
+	live_terminal->attached_chat_id = live_chat.id;
+	live_terminal->attached_session_id = "opencode-session-1";
+	live_terminal->running = true;
+	app.cli_terminals.push_back(std::move(live_terminal));
+
+	UAM_ASSERT(uam::ChatHasActiveCliTerminal(app, "opencode-session-1"));
+	UAM_ASSERT(uam::ChatHasBusyCliTerminal(app, stale_chat.id));
+	UAM_ASSERT(!uam::ChatHasBusyCliTerminal(app, "opencode-session-1"));
+}
+
+UAM_TEST(LoadSidebarChatsPreservesResolvedOpenCodeSessionMappings)
+{
+	TempDir temp("uam-opencode-sidebar-resolved-mapping");
+
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession chat;
+	chat.id = "chat-opencode";
+	chat.provider_id.clear();
+	chat.native_session_id = "opencode-session-1";
+	chat.title = "OpenCode";
+	app.chats.push_back(chat);
+	app.resolved_native_sessions_by_chat_id[chat.id] = "opencode-session-1";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+
+	ChatHistorySyncService().LoadSidebarChats(app);
+
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().id, std::string("chat-opencode"));
+	UAM_ASSERT_EQ(app.chats.front().provider_id, std::string(uam::provider_ids::kOpenCodeCli));
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id[app.chats.front().id], std::string("opencode-session-1"));
+}
+
 UAM_TEST(EnsureCliTerminalRepairsWhitespaceOnlyAttachedSessionId)
 {
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
@@ -7473,6 +9122,697 @@ UAM_TEST(EnsureCliTerminalRepairsWhitespaceOnlyAttachedSessionId)
 
 	uam::CliTerminalState& ensured = uam::EnsureCliTerminalForChat(app, chat);
 	UAM_ASSERT_EQ(uam::CliTerminalAttachedSessionId(ensured), chat.native_session_id);
+#endif
+}
+
+UAM_TEST(EnsureCliTerminalPrefersLiveAcpSessionIdForOpenCode)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession chat;
+	chat.id = "chat-opencode";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.native_session_id.clear();
+	app.chats.push_back(chat);
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->provider_id = uam::provider_ids::kOpenCodeCli;
+	session->protocol_kind = uam::provider_profile_constants::kProtocolOpenCodeAcp;
+	session->running = true;
+	session->session_id = "opencode-session-live";
+	app.acp_sessions.push_back(std::move(session));
+
+	uam::CliTerminalState& ensured = uam::EnsureCliTerminalForChat(app, app.chats.front());
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedSessionId(ensured), std::string("opencode-session-live"));
+#endif
+}
+
+UAM_TEST(EnsureCliTerminalUsesResolvedNativeSessionIdForOpenCode)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession chat;
+	chat.id = "chat-opencode-resolved";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.native_session_id.clear();
+	app.chats.push_back(chat);
+	app.resolved_native_sessions_by_chat_id[chat.id] = "opencode-session-resolved";
+
+	uam::CliTerminalState& ensured = uam::EnsureCliTerminalForChat(app, app.chats.front());
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedSessionId(ensured), std::string("opencode-session-resolved"));
+#endif
+}
+
+UAM_TEST(EnsureCliTerminalRepairsStaleAttachedSessionIdForOpenCode)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession chat;
+	chat.id = "chat-opencode-stale-attached";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.native_session_id.clear();
+	app.chats.push_back(chat);
+	app.resolved_native_sessions_by_chat_id[chat.id] = "opencode-session-resolved";
+
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = chat.id;
+	terminal->attached_chat_id = chat.id;
+	terminal->attached_session_id = "opencode-session-stale";
+	app.cli_terminals.push_back(std::move(terminal));
+
+	uam::CliTerminalState& ensured = uam::EnsureCliTerminalForChat(app, app.chats.front());
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedSessionId(ensured), std::string("opencode-session-resolved"));
+#endif
+}
+
+UAM_TEST(EnsureCliTerminalRepairsAttachedChatIdForOpenCode)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession chat;
+	chat.id = "chat-opencode-attached-chat-repair";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.native_session_id = "opencode-session-resolved";
+	app.chats.push_back(chat);
+	app.resolved_native_sessions_by_chat_id[chat.id] = "opencode-session-resolved";
+
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = "stale-frontend-chat";
+	terminal->terminal_id = "term-stale-frontend-chat";
+	terminal->attached_chat_id = "stale-chat";
+	terminal->attached_session_id = "opencode-session-stale";
+	app.cli_terminals.push_back(std::move(terminal));
+
+	uam::CliTerminalState& ensured = uam::EnsureCliTerminalForChat(app, app.chats.front());
+	UAM_ASSERT_EQ(ensured.frontend_chat_id, chat.id);
+	UAM_ASSERT_EQ(ensured.terminal_id, uam::CliTerminalIdForChat(chat.id));
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedChatId(ensured), chat.id);
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedSessionId(ensured), std::string("opencode-session-resolved"));
+#endif
+}
+
+UAM_TEST(EnsureCliTerminalRepairsRunningOpenCodeTerminalIdentity)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession chat;
+	chat.id = "chat-opencode-running-repair";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.native_session_id = "opencode-session-resolved";
+	app.chats.push_back(chat);
+	app.resolved_native_sessions_by_chat_id[chat.id] = "opencode-session-resolved";
+
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = "stale-frontend-chat";
+	terminal->terminal_id = "term-stale-frontend-chat";
+	terminal->attached_chat_id = "stale-chat";
+	terminal->attached_session_id = "opencode-session-stale";
+	terminal->running = true;
+	terminal->ui_attached = true;
+	app.cli_terminals.push_back(std::move(terminal));
+
+	uam::CliTerminalState& running_terminal = *app.cli_terminals.front();
+	uam::RepairCliTerminalIdentityForChat(app, running_terminal, app.chats.front(), ProviderProfileStore::DefaultOpenCodeProfile());
+	UAM_ASSERT(running_terminal.running);
+	UAM_ASSERT_EQ(running_terminal.frontend_chat_id, chat.id);
+	UAM_ASSERT_EQ(running_terminal.terminal_id, uam::CliTerminalIdForChat(chat.id));
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedChatId(running_terminal), chat.id);
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedSessionId(running_terminal), std::string("opencode-session-resolved"));
+#endif
+}
+
+UAM_TEST(EnsureCliTerminalClearsStaleOpenCodeSessionWhenNoResumeIdExists)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession chat;
+	chat.id = "chat-opencode-no-resume";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.native_session_id.clear();
+	app.chats.push_back(chat);
+
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = "stale-frontend-chat";
+	terminal->terminal_id = "term-stale-frontend-chat";
+	terminal->attached_chat_id = "stale-chat";
+	terminal->attached_session_id = "opencode-session-stale";
+	terminal->running = true;
+	app.cli_terminals.push_back(std::move(terminal));
+
+	uam::CliTerminalState& ensured = uam::EnsureCliTerminalForChat(app, app.chats.front());
+	UAM_ASSERT_EQ(ensured.frontend_chat_id, chat.id);
+	UAM_ASSERT_EQ(ensured.terminal_id, uam::CliTerminalIdForChat(chat.id));
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedChatId(ensured), chat.id);
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedSessionId(ensured), std::string(""));
+#endif
+}
+
+UAM_TEST(ClearStoppedCliTerminalAttachmentForChatClearsStoppedOpenCodeDuplicate)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession chat;
+	chat.id = "chat-opencode-clear";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.native_session_id = "opencode-session-live";
+	app.chats.push_back(chat);
+
+	auto live_terminal = std::make_unique<uam::CliTerminalState>();
+	live_terminal->frontend_chat_id = chat.id;
+	live_terminal->attached_chat_id = chat.id;
+	live_terminal->attached_session_id = "opencode-session-live";
+	live_terminal->running = true;
+	app.cli_terminals.push_back(std::move(live_terminal));
+
+	auto stopped_terminal = std::make_unique<uam::CliTerminalState>();
+	stopped_terminal->frontend_chat_id = chat.id;
+	stopped_terminal->attached_chat_id = chat.id;
+	stopped_terminal->attached_session_id = "opencode-session-stale";
+	stopped_terminal->running = false;
+	app.cli_terminals.push_back(std::move(stopped_terminal));
+
+	uam::ClearStoppedCliTerminalAttachmentForChat(app, chat.id);
+
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedSessionId(*app.cli_terminals[0]), std::string("opencode-session-live"));
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedSessionId(*app.cli_terminals[1]), std::string(""));
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedChatId(*app.cli_terminals[1]), std::string(""));
+	UAM_ASSERT_EQ(app.cli_terminals[1]->terminal_id, std::string(""));
+#endif
+}
+
+UAM_TEST(TryAttachLocalHistorySessionFromChatsRebindsOpenCodeTerminal)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-local-rebind");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession chat;
+	chat.id = "chat-opencode-local-rebind";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.native_session_id.clear();
+	app.chats.push_back(chat);
+
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = chat.id;
+	terminal->attached_chat_id = chat.id;
+	terminal->attached_session_id.clear();
+	terminal->session_ids_before = {"existing-session"};
+	app.cli_terminals.push_back(std::move(terminal));
+	const ProviderProfile opencode_provider = ProviderProfileStore::DefaultOpenCodeProfile();
+
+	std::vector<ChatSession> local_chats;
+	ChatSession existing;
+	existing.id = "existing-session";
+	existing.provider_id = uam::provider_ids::kOpenCodeCli;
+	existing.native_session_id = "existing-session";
+	local_chats.push_back(existing);
+
+	ChatSession discovered;
+	discovered.id = "discovered-session";
+	discovered.provider_id = uam::provider_ids::kOpenCodeCli;
+	discovered.native_session_id = "discovered-session";
+	local_chats.push_back(discovered);
+
+	uam::CliTerminalState& ensured = *app.cli_terminals.front();
+	UAM_ASSERT(uam::TryAttachLocalHistorySessionFromChats(app, opencode_provider, ensured, local_chats));
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedSessionId(ensured), std::string("discovered-session"));
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, std::string("discovered-session"));
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id[chat.id], std::string("discovered-session"));
+#endif
+}
+
+UAM_TEST(TryAttachLocalHistorySessionFromChatsRepairsStaleAttachedOpenCodeTerminal)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-local-repair-stale");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession chat;
+	chat.id = "chat-opencode-local-stale";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.native_session_id = "stale-session";
+	app.chats.push_back(chat);
+
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = chat.id;
+	terminal->attached_chat_id = chat.id;
+	terminal->attached_session_id = "stale-session";
+	terminal->session_ids_before = {"existing-session"};
+	app.cli_terminals.push_back(std::move(terminal));
+	const ProviderProfile opencode_provider = ProviderProfileStore::DefaultOpenCodeProfile();
+
+	std::vector<ChatSession> local_chats;
+	ChatSession discovered;
+	discovered.id = "discovered-session";
+	discovered.provider_id = uam::provider_ids::kOpenCodeCli;
+	discovered.native_session_id = "discovered-session";
+	local_chats.push_back(discovered);
+
+	uam::CliTerminalState& ensured = *app.cli_terminals.front();
+	UAM_ASSERT(uam::TryAttachLocalHistorySessionFromChats(app, opencode_provider, ensured, local_chats));
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedSessionId(ensured), std::string("discovered-session"));
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, std::string("discovered-session"));
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id[chat.id], std::string("discovered-session"));
+#endif
+}
+
+UAM_TEST(TryAttachLocalHistorySessionFromChatsRepairsOpenCodeWithoutSessionSnapshot)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-local-repair-nosnapshot");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession chat;
+	chat.id = "chat-opencode-local-nosnapshot";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.native_session_id = "stale-session";
+	app.chats.push_back(chat);
+
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = chat.id;
+	terminal->attached_chat_id = chat.id;
+	terminal->attached_session_id.clear();
+	terminal->session_ids_before.clear();
+	app.cli_terminals.push_back(std::move(terminal));
+	const ProviderProfile opencode_provider = ProviderProfileStore::DefaultOpenCodeProfile();
+
+	std::vector<ChatSession> local_chats;
+	ChatSession discovered;
+	discovered.id = chat.id;
+	discovered.provider_id = uam::provider_ids::kOpenCodeCli;
+	discovered.native_session_id = "discovered-session";
+	local_chats.push_back(discovered);
+
+	uam::CliTerminalState& ensured = *app.cli_terminals.front();
+	UAM_ASSERT(uam::TryAttachLocalHistorySessionFromChats(app, opencode_provider, ensured, local_chats));
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedSessionId(ensured), std::string("discovered-session"));
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, std::string("discovered-session"));
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id[chat.id], std::string("discovered-session"));
+#endif
+}
+
+UAM_TEST(TryAttachLocalHistorySessionFromChatsIgnoresCrossProviderAttachedChat)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI && UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-opencode-local-cross-provider");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession chat;
+	chat.id = "cross-provider-session";
+	chat.provider_id = uam::provider_ids::kCodexCli;
+	chat.native_session_id = "stale-session";
+	app.chats.push_back(chat);
+
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = chat.id;
+	terminal->attached_chat_id = chat.id;
+	terminal->attached_session_id = "stale-session";
+	terminal->session_ids_before = {"existing-session"};
+	app.cli_terminals.push_back(std::move(terminal));
+	const ProviderProfile opencode_provider = ProviderProfileStore::DefaultOpenCodeProfile();
+
+	std::vector<ChatSession> local_chats;
+	ChatSession discovered;
+	discovered.id = "discovered-session";
+	discovered.provider_id = uam::provider_ids::kOpenCodeCli;
+	discovered.native_session_id = "discovered-session";
+	local_chats.push_back(discovered);
+
+	uam::CliTerminalState& ensured = *app.cli_terminals.front();
+	UAM_ASSERT(!uam::TryAttachLocalHistorySessionFromChats(app, opencode_provider, ensured, local_chats));
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedSessionId(ensured), std::string("stale-session"));
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, std::string("stale-session"));
+	UAM_ASSERT(app.resolved_native_sessions_by_chat_id.find(chat.id) == app.resolved_native_sessions_by_chat_id.end());
+#endif
+}
+
+UAM_TEST(TryAttachLocalHistorySessionFromChatsSkipsCodexTerminal)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-local-rebind-skip-codex");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession chat;
+	chat.id = "chat-codex-local-rebind";
+	chat.provider_id = uam::provider_ids::kCodexCli;
+	chat.native_session_id.clear();
+	app.chats.push_back(chat);
+
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = chat.id;
+	terminal->attached_chat_id = chat.id;
+	terminal->attached_session_id.clear();
+	terminal->session_ids_before = {"existing-session"};
+	app.cli_terminals.push_back(std::move(terminal));
+
+	std::vector<ChatSession> local_chats;
+	ChatSession discovered;
+	discovered.id = "discovered-session";
+	discovered.provider_id = uam::provider_ids::kCodexCli;
+	discovered.native_session_id = "discovered-session";
+	local_chats.push_back(discovered);
+
+	uam::CliTerminalState& ensured = *app.cli_terminals.front();
+	UAM_ASSERT(!uam::TryAttachLocalHistorySessionFromChats(app, ProviderProfileStore::DefaultCodexProfile(), ensured, local_chats));
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedSessionId(ensured), std::string(""));
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, std::string(""));
+#endif
+}
+
+UAM_TEST(TryAttachLocalHistorySessionFromChatsIgnoresDifferentWorkspaceOpenCode)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-local-rebind-workspace-filter");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	fs::create_directories(temp.root / "workspace-a");
+	fs::create_directories(temp.root / "workspace-b");
+
+	ChatSession chat;
+	chat.id = "chat-opencode-workspace-filter";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.workspace_directory = (temp.root / "workspace-a").string();
+	app.chats.push_back(chat);
+
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = chat.id;
+	terminal->attached_chat_id = chat.id;
+	terminal->session_ids_before = {"existing-session"};
+	app.cli_terminals.push_back(std::move(terminal));
+	const ProviderProfile opencode_provider = ProviderProfileStore::DefaultOpenCodeProfile();
+
+	std::vector<ChatSession> local_chats;
+	ChatSession different_workspace;
+	different_workspace.id = "different-workspace-session";
+	different_workspace.provider_id = uam::provider_ids::kOpenCodeCli;
+	different_workspace.workspace_directory = (temp.root / "workspace-b").string();
+	different_workspace.native_session_id = "different-workspace-session";
+	local_chats.push_back(different_workspace);
+
+	uam::CliTerminalState& ensured = *app.cli_terminals.front();
+	UAM_ASSERT(!uam::TryAttachLocalHistorySessionFromChats(app, opencode_provider, ensured, local_chats));
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedSessionId(ensured), std::string(""));
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, std::string(""));
+#endif
+}
+
+UAM_TEST(TryAttachLocalHistorySessionFromChatsAcceptsEquivalentWorkspacePathsOpenCode)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-local-rebind-workspace-normalized");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	fs::create_directories(temp.root / "workspace-a");
+
+	ChatSession chat;
+	chat.id = "chat-opencode-workspace-normalized";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.workspace_directory = (temp.root / "workspace-a").string();
+	app.chats.push_back(chat);
+
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = chat.id;
+	terminal->attached_chat_id = chat.id;
+	terminal->session_ids_before = {"existing-session"};
+	app.cli_terminals.push_back(std::move(terminal));
+	const ProviderProfile opencode_provider = ProviderProfileStore::DefaultOpenCodeProfile();
+
+	std::vector<ChatSession> local_chats;
+	ChatSession discovered;
+	discovered.id = "discovered-session";
+	discovered.provider_id = uam::provider_ids::kOpenCodeCli;
+	discovered.workspace_directory = (temp.root / "workspace-a" / ".").string();
+	discovered.native_session_id = "discovered-session";
+	local_chats.push_back(discovered);
+
+	uam::CliTerminalState& ensured = *app.cli_terminals.front();
+	UAM_ASSERT(uam::TryAttachLocalHistorySessionFromChats(app, opencode_provider, ensured, local_chats));
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedSessionId(ensured), std::string("discovered-session"));
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, std::string("discovered-session"));
+#endif
+}
+
+UAM_TEST(ShouldAttemptOpenCodeLocalHistoryRebindAllowsStaleAttachedSessionId)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession chat;
+	chat.id = "chat-opencode-rebind-gate";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.native_session_id = "stale-session";
+	app.chats.push_back(chat);
+
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = chat.id;
+	terminal->attached_chat_id = chat.id;
+	terminal->attached_session_id = "stale-session";
+	terminal->session_ids_before = {"existing-session"};
+	app.cli_terminals.push_back(std::move(terminal));
+
+	std::vector<ChatSession> local_chats;
+	ChatSession discovered;
+	discovered.id = "discovered-session";
+	discovered.provider_id = uam::provider_ids::kOpenCodeCli;
+	discovered.native_session_id = "discovered-session";
+	local_chats.push_back(discovered);
+
+	UAM_ASSERT(uam::ShouldAttemptOpenCodeLocalHistoryRebind(ProviderProfileStore::DefaultOpenCodeProfile(), *app.cli_terminals.front(), local_chats));
+#endif
+}
+
+UAM_TEST(ShouldAttemptOpenCodeLocalHistoryRebindSkipsLiveAttachedSessionId)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession chat;
+	chat.id = "chat-opencode-rebind-gate-live";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.native_session_id = "live-session";
+	app.chats.push_back(chat);
+
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = chat.id;
+	terminal->attached_chat_id = chat.id;
+	terminal->attached_session_id = "live-session";
+	terminal->session_ids_before = {"existing-session"};
+	app.cli_terminals.push_back(std::move(terminal));
+
+	std::vector<ChatSession> local_chats;
+	ChatSession live;
+	live.id = "chat-opencode-rebind-gate-live";
+	live.provider_id = uam::provider_ids::kOpenCodeCli;
+	live.native_session_id = "live-session";
+	local_chats.push_back(live);
+
+	UAM_ASSERT(!uam::ShouldAttemptOpenCodeLocalHistoryRebind(ProviderProfileStore::DefaultOpenCodeProfile(), *app.cli_terminals.front(), local_chats));
+#endif
+}
+
+UAM_TEST(ShouldAttemptOpenCodeLocalHistoryRebindIgnoresUnrelatedLoadedCollision)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession chat;
+	chat.id = "chat-opencode-rebind-gate-workspace";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.workspace_directory = "/workspace-a";
+	chat.native_session_id = "stale-session";
+	app.chats.push_back(chat);
+
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = chat.id;
+	terminal->attached_chat_id = chat.id;
+	terminal->attached_session_id = "stale-session";
+	terminal->session_ids_before = {"existing-session"};
+	app.cli_terminals.push_back(std::move(terminal));
+
+	std::vector<ChatSession> matching_chats;
+	ChatSession discovered;
+	discovered.id = "discovered-session";
+	discovered.provider_id = uam::provider_ids::kOpenCodeCli;
+	discovered.workspace_directory = "/workspace-a";
+	discovered.native_session_id = "discovered-session";
+	matching_chats.push_back(discovered);
+
+	std::vector<ChatSession> unrelated_loaded_chats = matching_chats;
+	ChatSession unrelated_collision = discovered;
+	unrelated_collision.workspace_directory = "/workspace-b";
+	unrelated_loaded_chats.push_back(unrelated_collision);
+
+	UAM_ASSERT(uam::ShouldAttemptOpenCodeLocalHistoryRebind(ProviderProfileStore::DefaultOpenCodeProfile(), *app.cli_terminals.front(), matching_chats));
+#endif
+}
+
+UAM_TEST(ShouldPollOpenCodeLocalHistoryRebindAllowsEmptySnapshotRecovery)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession chat;
+	chat.id = "chat-opencode-rebind-poll";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.native_session_id = "stale-session";
+	app.chats.push_back(chat);
+
+	uam::CliTerminalState terminal;
+	terminal.frontend_chat_id = chat.id;
+	terminal.attached_chat_id = chat.id;
+	terminal.attached_session_id.clear();
+	terminal.session_ids_before.clear();
+
+	std::vector<ChatSession> matching_chats;
+	ChatSession discovered;
+	discovered.id = chat.id;
+	discovered.provider_id = uam::provider_ids::kOpenCodeCli;
+	discovered.native_session_id = "discovered-session";
+	matching_chats.push_back(discovered);
+
+	UAM_ASSERT(uam::ShouldPollOpenCodeLocalHistoryRebind(ProviderProfileStore::DefaultOpenCodeProfile(), terminal, matching_chats));
+#endif
+}
+
+UAM_TEST(OpenCodeLocalHistoryPollingAcceptsBlankProviderLegacyChat)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-local-history-blank-provider-poll");
+	const fs::path source_workspace = temp.root / "workspace";
+	fs::create_directories(source_workspace);
+
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession legacy_chat;
+	legacy_chat.id = "chat-legacy";
+	legacy_chat.provider_id.clear();
+	legacy_chat.workspace_directory = source_workspace.string();
+	app.chats.push_back(legacy_chat);
+
+	uam::CliTerminalState terminal;
+	terminal.frontend_chat_id = legacy_chat.id;
+	terminal.attached_chat_id = legacy_chat.id;
+	terminal.attached_session_id.clear();
+	terminal.session_ids_before.clear();
+
+	std::vector<ChatSession> local_chats;
+	ChatSession discovered;
+	discovered.id = legacy_chat.id;
+	discovered.provider_id.clear();
+	discovered.workspace_directory = source_workspace.string();
+	discovered.native_session_id = "open-code-session-1";
+	local_chats.push_back(discovered);
+
+	UAM_ASSERT(uam::TryAttachLocalHistorySessionFromChats(app, ProviderProfileStore::DefaultOpenCodeProfile(), terminal, local_chats));
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedSessionId(terminal), std::string("open-code-session-1"));
+	UAM_ASSERT_EQ(app.chats.front().provider_id, std::string(uam::provider_ids::kOpenCodeCli));
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, std::string("open-code-session-1"));
+#endif
+}
+
+UAM_TEST(OpenCodeLocalHistoryPollingChatFileFallbackNormalizesBlankProviderLegacyChat)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-local-history-blank-provider-chat-file");
+	const fs::path source_workspace = temp.root / "workspace";
+	fs::create_directories(source_workspace);
+
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession legacy_chat;
+	legacy_chat.id = "chat-legacy";
+	legacy_chat.provider_id.clear();
+	legacy_chat.workspace_directory = source_workspace.string();
+	app.chats.push_back(legacy_chat);
+
+	uam::CliTerminalState terminal;
+	terminal.frontend_chat_id = legacy_chat.id;
+	terminal.attached_chat_id = legacy_chat.id;
+	terminal.attached_session_id.clear();
+	terminal.session_ids_before = {"existing-session"};
+
+	std::vector<ChatSession> matching_chats;
+	ChatSession discovered;
+	discovered.id = legacy_chat.id;
+	discovered.provider_id.clear();
+	discovered.workspace_directory = source_workspace.string();
+	discovered.native_session_id = "open-code-session-2";
+	matching_chats.push_back(discovered);
+
+	UAM_ASSERT(uam::TryAttachOpenCodeLocalHistorySessionFromChatFile(app, ProviderProfileStore::DefaultOpenCodeProfile(), terminal, matching_chats));
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedSessionId(terminal), std::string("open-code-session-2"));
+	UAM_ASSERT_EQ(app.chats.front().provider_id, std::string(uam::provider_ids::kOpenCodeCli));
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, std::string("open-code-session-2"));
+#endif
+}
+
+UAM_TEST(OpenCodeLocalHistoryPollingChatFileFallbackFailsClosedWhenPersistenceFails)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-local-history-save-fail");
+	const fs::path source_workspace = temp.root / "workspace";
+	fs::create_directories(source_workspace);
+
+	uam::AppState app;
+	const fs::path blocked_root = temp.root / "blocked-root";
+	UAM_ASSERT(uam::io::WriteTextFile(blocked_root, "not a directory"));
+	app.data_root = blocked_root;
+
+	ChatSession legacy_chat;
+	legacy_chat.id = "chat-legacy";
+	legacy_chat.provider_id.clear();
+	legacy_chat.workspace_directory = source_workspace.string();
+	app.chats.push_back(legacy_chat);
+
+	uam::CliTerminalState terminal;
+	terminal.frontend_chat_id = legacy_chat.id;
+	terminal.attached_chat_id = legacy_chat.id;
+	terminal.attached_session_id.clear();
+	terminal.session_ids_before = {"existing-session"};
+
+	std::vector<ChatSession> matching_chats;
+	ChatSession discovered;
+	discovered.id = legacy_chat.id;
+	discovered.provider_id.clear();
+	discovered.workspace_directory = source_workspace.string();
+	discovered.native_session_id = "open-code-session-fail";
+	matching_chats.push_back(discovered);
+
+	UAM_ASSERT(!uam::TryAttachOpenCodeLocalHistorySessionFromChatFile(app, ProviderProfileStore::DefaultOpenCodeProfile(), terminal, matching_chats));
+	UAM_ASSERT_EQ(uam::CliTerminalAttachedSessionId(terminal), std::string(""));
+	UAM_ASSERT_EQ(app.chats.front().provider_id, std::string(""));
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, std::string(""));
 #endif
 }
 
@@ -7990,6 +10330,53 @@ UAM_TEST(AppPathsResolveGeminiProjectTmpDirUsesProjectsJsonMappings)
 
 	UAM_ASSERT(resolved.has_value());
 	UAM_ASSERT(FolderDirectoryMatches(resolved.value(), source_root));
+}
+
+UAM_TEST(ResolveResumeSessionIdForChatPrefersResolvedRuntimeSessionId)
+{
+	TempDir temp("uam-resolve-runtime-session");
+	const fs::path gemini_home = temp.root / "gemini-home";
+	const fs::path data_root = temp.root / "data";
+	const fs::path workspace_root = temp.root / "workspace";
+	const fs::path source_root = gemini_home / "tmp" / "workspace-source";
+	const fs::path source_chats = source_root / "chats";
+	fs::create_directories(workspace_root);
+	fs::create_directories(source_chats);
+	UAM_ASSERT(uam::io::WriteTextFile(source_root / ".project_root", workspace_root.string()));
+	UAM_ASSERT(uam::io::WriteTextFile(source_chats / "resolved-session.json", R"({"sessionId":"resolved-session"})"));
+
+	ScopedEnvVar gemini_home_env("GEMINI_CLI_HOME", gemini_home.string());
+
+	uam::AppState app;
+	app.data_root = data_root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession chat;
+	chat.id = "chat-resolve-runtime";
+	chat.provider_id = uam::provider_ids::kGeminiCli;
+	chat.workspace_directory = workspace_root.string();
+	chat.native_session_id.clear();
+	app.chats.push_back(chat);
+	app.resolved_native_sessions_by_chat_id[chat.id] = " resolved-session ";
+
+	UAM_ASSERT_EQ(ChatHistorySyncService().ResolveResumeSessionIdForChat(app, app.chats.front()), std::string("resolved-session"));
+}
+
+UAM_TEST(ResolveAcpSessionResumeIdForTestsPrefersResolvedRuntimeSessionId)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession chat;
+	chat.id = "chat-opencode-acp-resolve";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.native_session_id = "stale-session";
+	app.chats.push_back(chat);
+	app.resolved_native_sessions_by_chat_id[chat.id] = " resolved-session ";
+
+	UAM_ASSERT_EQ(uam::ResolveAcpSessionResumeIdForTests(app, app.chats.front()), std::string("resolved-session"));
+#endif
 }
 
 UAM_TEST(ImportDiscoveryDoesNotRecreateFolderForEmptyNativeSource)

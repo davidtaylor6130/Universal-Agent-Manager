@@ -9,6 +9,7 @@
 #include "app/persistence_coordinator.h"
 #include "app/provider_resolution_service.h"
 #include "app/runtime_orchestration_services.h"
+#include "common/chat/chat_repository.h"
 #include "common/paths/workspace_root.h"
 #include "common/provider/codex/cli/codex_session_index.h"
 #include "common/provider/provider_ids.h"
@@ -93,6 +94,10 @@ namespace uam
 		{
 			ChatHistorySyncService().ExportChatToNative(app, chat);
 			terminal.session_ids_before = ChatHistorySyncService().SessionIdsFromChats(ChatHistorySyncService().LoadNativeSessionChats(native_history_chats_dir, provider));
+		}
+		else if (uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kOpenCodeCli))
+		{
+			terminal.session_ids_before = ChatHistorySyncService().SessionIdsFromChats(ChatRepository::LoadLocalChats(app.data_root));
 		}
 		else if (chat_uses_codex_cli && !uam::codex::IsValidThreadId(chat.native_session_id))
 		{

@@ -82,6 +82,22 @@ namespace uam
 			return false;
 		}
 
+		const ChatSession* target_chat = ChatDomainService().FindChatById(app, target_id);
+		if (target_chat == nullptr)
+		{
+			uam::CliTerminalState target_terminal;
+			target_terminal.attached_session_id = target_id;
+			target_chat = FindChatForCliTerminal(app, target_terminal);
+		}
+
+		if (target_chat != nullptr)
+		{
+			if (const CliTerminalState* terminal = FindCliTerminalForChat(app, *target_chat); terminal != nullptr)
+			{
+				return terminal->running && CliTerminalHasActiveTurn(*terminal);
+			}
+		}
+
 		return std::ranges::any_of(app.cli_terminals, [&target_id](const auto& terminal) { return terminal != nullptr && terminal->running && uam::CliTerminalMatchesChatId(*terminal, target_id) && CliTerminalHasActiveTurn(*terminal); });
 	}
 
@@ -112,6 +128,22 @@ namespace uam
 		if (target_id.empty())
 		{
 			return false;
+		}
+
+		const ChatSession* target_chat = ChatDomainService().FindChatById(app, target_id);
+		if (target_chat == nullptr)
+		{
+			uam::CliTerminalState target_terminal;
+			target_terminal.attached_session_id = target_id;
+			target_chat = FindChatForCliTerminal(app, target_terminal);
+		}
+
+		if (target_chat != nullptr)
+		{
+			if (const CliTerminalState* terminal = FindCliTerminalForChat(app, *target_chat); terminal != nullptr)
+			{
+				return terminal->running;
+			}
 		}
 
 		return std::ranges::any_of(app.cli_terminals, [&target_id](const auto& terminal) { return terminal != nullptr && terminal->running && uam::CliTerminalMatchesChatId(*terminal, target_id); });

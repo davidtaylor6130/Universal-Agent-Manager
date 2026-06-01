@@ -118,6 +118,21 @@ namespace uam
 			return app.chats_with_unseen_updates.contains(chat.id);
 		}
 
+		std::string ResolvedAcpSessionIdForChat(const AppState& app, const ChatSession& chat)
+		{
+			const auto resolved = app.resolved_native_sessions_by_chat_id.find(chat.id);
+			if (resolved != app.resolved_native_sessions_by_chat_id.end())
+			{
+				const std::string resolved_session_id = uam::strings::Trim(resolved->second);
+				if (!resolved_session_id.empty())
+				{
+					return resolved_session_id;
+				}
+			}
+
+			return uam::strings::Trim(chat.native_session_id);
+		}
+
 		nlohmann::json ReadJsonFile(const std::filesystem::path& path)
 		{
 			const std::string text = uam::io::ReadTextFile(path);
@@ -529,6 +544,9 @@ namespace uam
 			tool_json["kind"] = uam::strings::NonEmptyOrFallback(tool_call.name, "tool");
 			tool_json["status"] = tool_call.status;
 			tool_json["content"] = ToolCallContentForFrontend(tool_call);
+			tool_json["isSubAgent"] = tool_call.is_sub_agent;
+			tool_json["subAgentId"] = tool_call.sub_agent_id;
+			tool_json["subAgentTitle"] = tool_call.sub_agent_title;
 			return tool_json;
 		}
 
@@ -741,20 +759,7 @@ namespace uam
 
 		const uam::CliTerminalState* FindTerminalForChat(const uam::AppState& app, const ChatSession& chat)
 		{
-			for (const auto& terminal : app.cli_terminals)
-			{
-				if (terminal == nullptr)
-				{
-					continue;
-				}
-
-				if (uam::CliTerminalMatchesChat(*terminal, chat))
-				{
-					return terminal.get();
-				}
-			}
-
-			return nullptr;
+			return uam::FindCliTerminalForChat(app, chat);
 		}
 
 		nlohmann::json SerializeChatTerminalSummary(const AppState& app, const ChatSession& chat)
@@ -823,6 +828,9 @@ namespace uam
 				    {"kind", tool_call.kind},
 				    {"status", tool_call.status},
 				    {"content", tool_call.content},
+				    {"isSubAgent", tool_call.is_sub_agent},
+				    {"subAgentId", tool_call.sub_agent_id},
+				    {"subAgentTitle", tool_call.sub_agent_title},
 				});
 			}
 			return tool_calls_json;
@@ -980,13 +988,14 @@ namespace uam
 			return input_json;
 		}
 
-		nlohmann::json SerializeStoppedAcpSessionSummary(const ChatSession& chat, const std::filesystem::path& data_root, bool ready_since_last_select)
+		nlohmann::json SerializeStoppedAcpSessionSummary(const AppState& app, const ChatSession& chat, const std::filesystem::path& data_root, bool ready_since_last_select)
 		{
 			nlohmann::json acp_json;
-			acp_json["sessionId"] = chat.native_session_id;
+			const std::string session_id = ResolvedAcpSessionIdForChat(app, chat);
+			acp_json["sessionId"] = session_id;
 			acp_json["providerId"] = chat.provider_id;
 			acp_json["protocolKind"] = "";
-			acp_json["threadId"] = chat.native_session_id;
+			acp_json["threadId"] = session_id;
 			acp_json["running"] = false;
 			acp_json["processing"] = false;
 			acp_json["readySinceLastSelect"] = ready_since_last_select;
@@ -1022,7 +1031,7 @@ namespace uam
 			const bool ready_since_last_select = ChatHasUnseenUpdate(app, chat);
 			if (session == nullptr)
 			{
-				return SerializeStoppedAcpSessionSummary(chat, app.data_root, ready_since_last_select);
+				return SerializeStoppedAcpSessionSummary(app, chat, app.data_root, ready_since_last_select);
 			}
 
 			acp_json["sessionId"] = session->session_id;
@@ -1128,7 +1137,7 @@ namespace uam
 				terminal_json["terminalId"] = terminal.terminal_id;
 				terminal_json["frontendChatId"] = terminal.frontend_chat_id;
 				terminal_json["sourceChatId"] = uam::CliTerminalPrimaryChatId(terminal);
-				terminal_json["attachedSessionId"] = terminal.attached_session_id;
+				terminal_json["attachedSessionId"] = CliAttachedSessionIdForDiagnostics(app, terminal);
 				terminal_json["providerId"] = CliProviderIdForDiagnostics(app, terminal);
 				terminal_json["nativeSessionId"] = CliNativeSessionIdForDiagnostics(app, terminal);
 				terminal_json["processId"] = CliProcessHandleLabel(terminal);

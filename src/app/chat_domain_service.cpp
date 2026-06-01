@@ -170,6 +170,28 @@ namespace
 		existing = std::move(candidate);
 		RegisterChatIndexes(existing, index, index_by_id, index_by_native_identity);
 	}
+
+	bool IsLaterNativeSessionMatch(const ChatSession& candidate, const ChatSession& existing)
+	{
+		const std::string_view candidate_recent = RecentChatTimestamp(candidate);
+		const std::string_view existing_recent = RecentChatTimestamp(existing);
+		if (candidate_recent != existing_recent)
+		{
+			return candidate_recent > existing_recent;
+		}
+
+		if (candidate.updated_at != existing.updated_at)
+		{
+			return candidate.updated_at > existing.updated_at;
+		}
+
+		if (candidate.created_at != existing.created_at)
+		{
+			return candidate.created_at > existing.created_at;
+		}
+
+		return candidate.id > existing.id;
+	}
 } // namespace
 
 std::string ChatDomainService::NewFolderId() const
@@ -266,6 +288,92 @@ ChatSession* ChatDomainService::FindChatById(uam::AppState& app, const std::stri
 const ChatSession* ChatDomainService::FindChatById(const uam::AppState& app, const std::string& chat_id) const
 {
 	return PointerOrNull(app.chats, FindById(app.chats, uam::strings::Trim(chat_id)));
+}
+
+ChatSession* ChatDomainService::FindChatByNativeSessionId(uam::AppState& app, const std::string& native_session_id) const
+{
+	const std::string target_native_session_id = uam::strings::Trim(native_session_id);
+	if (target_native_session_id.empty())
+	{
+		return nullptr;
+	}
+
+	ChatSession* best_match = nullptr;
+	int best_priority = 3;
+
+	for (const auto& entry : app.resolved_native_sessions_by_chat_id)
+	{
+		if (uam::strings::Trim(entry.second) == target_native_session_id)
+		{
+			if (ChatSession* resolved_chat = FindChatById(app, entry.first); resolved_chat != nullptr)
+			{
+				if (best_match == nullptr || best_priority > 0 || (best_priority == 0 && IsLaterNativeSessionMatch(*resolved_chat, *best_match)))
+				{
+					best_match = resolved_chat;
+					best_priority = 0;
+				}
+			}
+		}
+	}
+
+	for (ChatSession& chat : app.chats)
+	{
+		if (uam::strings::Trim(chat.native_session_id) == target_native_session_id)
+		{
+			if (best_match == nullptr || best_priority > 1 ||
+			    (best_priority == 0 && IsLaterNativeSessionMatch(chat, *best_match)) ||
+			    (best_priority == 1 && IsLaterNativeSessionMatch(chat, *best_match)))
+			{
+				best_match = &chat;
+				best_priority = 1;
+			}
+		}
+	}
+
+	return best_match;
+}
+
+const ChatSession* ChatDomainService::FindChatByNativeSessionId(const uam::AppState& app, const std::string& native_session_id) const
+{
+	const std::string target_native_session_id = uam::strings::Trim(native_session_id);
+	if (target_native_session_id.empty())
+	{
+		return nullptr;
+	}
+
+	const ChatSession* best_match = nullptr;
+	int best_priority = 3;
+
+	for (const auto& entry : app.resolved_native_sessions_by_chat_id)
+	{
+		if (uam::strings::Trim(entry.second) == target_native_session_id)
+		{
+			if (const ChatSession* resolved_chat = FindChatById(app, entry.first); resolved_chat != nullptr)
+			{
+				if (best_match == nullptr || best_priority > 0 || (best_priority == 0 && IsLaterNativeSessionMatch(*resolved_chat, *best_match)))
+				{
+					best_match = resolved_chat;
+					best_priority = 0;
+				}
+			}
+		}
+	}
+
+	for (const ChatSession& chat : app.chats)
+	{
+		if (uam::strings::Trim(chat.native_session_id) == target_native_session_id)
+		{
+			if (best_match == nullptr || best_priority > 1 ||
+			    (best_priority == 0 && IsLaterNativeSessionMatch(chat, *best_match)) ||
+			    (best_priority == 1 && IsLaterNativeSessionMatch(chat, *best_match)))
+			{
+				best_match = &chat;
+				best_priority = 1;
+			}
+		}
+	}
+
+	return best_match;
 }
 
 ChatSession* ChatDomainService::SelectedChat(uam::AppState& app) const

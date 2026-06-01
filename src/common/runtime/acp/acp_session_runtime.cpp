@@ -28,6 +28,7 @@
 #include "common/runtime/acp/acp_statuses.h"
 #include "common/runtime/acp/acp_stream_types.h"
 #include "common/runtime/acp/acp_tool_items.h"
+#include "common/runtime/terminal/terminal_identity.h"
 
 #include "cef/cef_push.h"
 #include "common/runtime/acp/acp_tool_kinds.h"
@@ -585,6 +586,21 @@ namespace uam
 			return NativeSessionLinkService().RealNativeSessionId(chat);
 		}
 
+		std::string ResolvedAcpResumeIdForChat(const AppState& app, const ChatSession& chat)
+		{
+			const auto resolved = app.resolved_native_sessions_by_chat_id.find(chat.id);
+			if (resolved != app.resolved_native_sessions_by_chat_id.end())
+			{
+				const std::string resolved_session_id = uam::strings::Trim(resolved->second);
+				if (!resolved_session_id.empty())
+				{
+					return resolved_session_id;
+				}
+			}
+
+			return uam::strings::Trim(chat.native_session_id);
+		}
+
 		nlohmann::json BuildGeminiSessionSetupRequest(int request_id, const ChatSession& chat, const std::string& cwd, bool load_session_supported)
 		{
 			const std::string resume_id = ValidGeminiResumeId(chat);
@@ -758,9 +774,9 @@ namespace uam
 			return mode_id;
 		}
 
-		std::vector<std::string> BuildAcpLaunchArgv(const ChatSession& chat)
+		std::vector<std::string> BuildAcpLaunchArgv(const ProviderProfile& provider, const ChatSession& chat)
 		{
-			const std::string provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(chat.provider_id);
+			const std::string provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider.id);
 			if (provider_id == uam::provider_ids::kCodexCli)
 			{
 				return {"codex", "app-server", "--listen", "stdio://"};
@@ -811,10 +827,22 @@ namespace uam
 			return cwd.string();
 		}
 
-		std::string BuildAcpLaunchDetail(const std::filesystem::path& workspace_root, const ChatSession& chat)
+		std::string BuildAcpLaunchDetail(const ProviderProfile& provider, const AppState& app, const std::filesystem::path& workspace_root, const ChatSession& chat)
 		{
-			const std::vector<std::string> argv = BuildAcpLaunchArgv(chat);
-			return "cwd=" + AcpWorkingDirectoryString(workspace_root) + ", argv=" + JoinAcpArgvForDiagnostics(argv) + ", nativeSessionId=" + chat.native_session_id;
+			const std::vector<std::string> argv = BuildAcpLaunchArgv(provider, chat);
+			return "cwd=" + AcpWorkingDirectoryString(workspace_root) + ", argv=" + JoinAcpArgvForDiagnostics(argv) + ", nativeSessionId=" + ResolvedAcpResumeIdForChat(app, chat);
+		}
+
+		std::string BuildAcpLaunchDetail(const AppState& app, const std::filesystem::path& workspace_root, const ChatSession& chat)
+		{
+			if (const ProviderProfile* provider = ProviderResolutionService().ProviderForChat(app, chat); provider != nullptr)
+			{
+				return BuildAcpLaunchDetail(*provider, app, workspace_root, chat);
+			}
+
+			ProviderProfile provider;
+			provider.id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(chat.provider_id);
+			return BuildAcpLaunchDetail(provider, app, workspace_root, chat);
 		}
 
 		int NextAcpRequestId(AcpSessionState& session, const std::string& method)
@@ -1419,15 +1447,15 @@ namespace uam
 			session.provider_id = provider.id;
 			session.protocol_kind = ProviderStructuredProtocolOrDefault(provider);
 			const std::string codex_resume_id = IsCodexSession(session) ? ValidCodexResumeId(chat) : std::string{};
-			const std::string acp_resume_id = IsCodexSession(session) ? std::string{} : (IsGenericAcpSession(session) ? ValidGenericAcpResumeId(chat) : ValidGeminiResumeId(chat));
+			const std::string acp_resume_id = IsCodexSession(session) ? std::string{} : ResolvedAcpResumeIdForChat(app, chat);
 			session.session_id = IsCodexSession(session) ? codex_resume_id : acp_resume_id;
 			session.codex_thread_id = codex_resume_id;
 			session.lifecycle_state = kAcpLifecycleStarting;
 
 			std::string startup_error;
 			const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
-			const std::vector<std::string> launch_argv = BuildAcpLaunchArgv(chat);
-			const std::string launch_detail = BuildAcpLaunchDetail(workspace_root, chat);
+			const std::vector<std::string> launch_argv = BuildAcpLaunchArgv(provider, chat);
+			const std::string launch_detail = BuildAcpLaunchDetail(app, workspace_root, chat);
 			AppendAcpDiagnostic(session, "process_launch", "starting", "", "", false, 0, "", launch_detail);
 			if (!PlatformServicesFactory::Instance().process_service.StartStdioProcess(session, workspace_root, launch_argv, &startup_error))
 			{
@@ -1464,7 +1492,7 @@ namespace uam
 			if (IsClaudeSession(session))
 			{
 				session.session_ready = true;
-				session.session_id = uam::strings::Trim(chat.native_session_id);
+				session.session_id = ResolvedAcpResumeIdForChat(app, chat);
 				session.current_mode_id = chat.approval_mode.empty() ? uam::approval_modes::kDefaultApprovalMode : chat.approval_mode;
 				session.lifecycle_state = session.processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
 				return true;
@@ -1472,10 +1500,13 @@ namespace uam
 
 			const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
 			const std::string cwd = AcpWorkingDirectoryString(workspace_root);
+			const std::string resolved_resume_id = ResolvedAcpResumeIdForChat(app, chat);
+			ChatSession resume_chat = chat;
+			resume_chat.native_session_id = resolved_resume_id;
 			if (IsCodexSession(session))
 			{
 				const std::string raw_resume_id = uam::strings::Trim(chat.native_session_id);
-				const std::string resume_id = ValidCodexResumeId(chat);
+				const std::string resume_id = ValidCodexResumeId(resume_chat);
 				if (!raw_resume_id.empty() && resume_id.empty())
 				{
 					AppendAcpDiagnostic(session, "session_setup", "codex_invalid_resume_id_ignored", "", "", false, 0, "Ignoring invalid Codex thread id and starting a new thread.", "nativeSessionId=" + raw_resume_id);
@@ -1489,7 +1520,7 @@ namespace uam
 				session.lifecycle_state = kAcpLifecycleStarting;
 				session.session_id = can_resume ? resume_id : "";
 				session.codex_thread_id = session.session_id;
-				ChatSession setup_chat = chat;
+				ChatSession setup_chat = resume_chat;
 				setup_chat.native_session_id = resume_id;
 				const bool written = WriteAcpMessage(session, can_resume ? BuildCodexThreadResumeRequest(id, setup_chat, cwd) : BuildCodexThreadStartRequest(id, setup_chat, cwd));
 				if (!written)
@@ -1500,7 +1531,7 @@ namespace uam
 			}
 
 			const std::string raw_resume_id = uam::strings::Trim(chat.native_session_id);
-			const std::string resume_id = IsGenericAcpSession(session) ? ValidGenericAcpResumeId(chat) : ValidGeminiResumeId(chat);
+			const std::string resume_id = IsGenericAcpSession(session) ? ValidGenericAcpResumeId(resume_chat) : ValidGeminiResumeId(resume_chat);
 			if (!raw_resume_id.empty() && resume_id.empty())
 			{
 				AppendInvalidResumeDiagnostic(session, raw_resume_id);
@@ -1669,6 +1700,49 @@ namespace uam
 
 			chat.native_session_id = normalized_session_id;
 			return true;
+		}
+
+		void SyncResolvedNativeSessionIdForChat(AppState& app, const ChatSession& chat, std::string_view session_id, std::string_view previous_session_id = {})
+		{
+			const std::string normalized_session_id = uam::strings::Trim(std::string(session_id));
+			if (normalized_session_id.empty())
+			{
+				app.resolved_native_sessions_by_chat_id.erase(chat.id);
+				return;
+			}
+
+			const auto previous_resolved = app.resolved_native_sessions_by_chat_id.find(chat.id);
+			const std::string previous_resolved_session_id = previous_resolved == app.resolved_native_sessions_by_chat_id.end() ? std::string{} : uam::strings::Trim(previous_resolved->second);
+			const std::string normalized_previous_session_id = uam::strings::Trim(std::string(previous_session_id));
+			app.resolved_native_sessions_by_chat_id[chat.id] = normalized_session_id;
+
+			for (const auto& terminal_ptr : app.cli_terminals)
+			{
+				if (terminal_ptr == nullptr)
+				{
+					continue;
+				}
+
+				CliTerminalState& terminal = *terminal_ptr;
+				const std::string attached_session_id = CliTerminalAttachedSessionId(terminal);
+				const bool matches_chat_identity = CliTerminalPrimaryChatId(terminal) == chat.id || CliTerminalAttachedChatId(terminal) == chat.id;
+				const bool matches_previous_session = attached_session_id == normalized_previous_session_id || attached_session_id == previous_resolved_session_id;
+				if (!matches_chat_identity && !matches_previous_session)
+				{
+					continue;
+				}
+
+				if (!matches_chat_identity)
+				{
+					terminal.frontend_chat_id = chat.id;
+					terminal.attached_chat_id = chat.id;
+				}
+
+				if (attached_session_id != normalized_session_id)
+				{
+					terminal.attached_session_id = normalized_session_id;
+				}
+			}
 		}
 
 		bool MessageBlocksEqual(const std::vector<MessageBlock>& lhs, const std::vector<MessageBlock>& rhs)
@@ -2049,6 +2123,9 @@ namespace uam
 			persisted.name = uam::strings::NonEmptyOrFallback(tool_call.title, uam::strings::NonEmptyOrFallback(tool_call.kind, tool_call.id));
 			persisted.status = tool_call.status;
 			persisted.result_text = tool_call.content;
+			persisted.is_sub_agent = tool_call.is_sub_agent;
+			persisted.sub_agent_id = tool_call.sub_agent_id;
+			persisted.sub_agent_title = tool_call.sub_agent_title;
 			return persisted;
 		}
 
@@ -2067,7 +2144,7 @@ namespace uam
 					continue;
 				}
 
-				if (existing.name == persisted.name && existing.args_json == persisted.args_json && existing.result_text == persisted.result_text && existing.status == persisted.status)
+				if (existing.name == persisted.name && existing.args_json == persisted.args_json && existing.result_text == persisted.result_text && existing.status == persisted.status && existing.is_sub_agent == persisted.is_sub_agent && existing.sub_agent_id == persisted.sub_agent_id && existing.sub_agent_title == persisted.sub_agent_title)
 				{
 					return false;
 				}
@@ -2196,6 +2273,40 @@ namespace uam
 			return session.tool_calls.back();
 		}
 
+		bool LooksLikeSubAgentTool(const nlohmann::json& update, const AcpToolCallState& tool_call)
+		{
+			if (JsonBooleanValueOr(update, "isSubAgent", false) || JsonBooleanValueOr(update, "subAgent", false))
+			{
+				return true;
+			}
+
+			return TextContainsAnyCaseInsensitive(tool_call.kind, {"subagent", "sub-agent", "agent"}) ||
+			       TextContainsAnyCaseInsensitive(tool_call.title, {"subagent", "sub-agent", "agent"});
+		}
+
+		void ApplySubAgentMetadata(AcpToolCallState& tool_call, const nlohmann::json& update)
+		{
+			const std::string sub_agent_id = uam::strings::NonEmptyOrFallback(
+			    JsonDiagnosticStringValue(update, "subAgentId"),
+			    uam::strings::NonEmptyOrFallback(JsonDiagnosticStringValue(update, "agentId"), JsonDiagnosticStringValue(update, "sessionId")));
+			const std::string sub_agent_title = uam::strings::NonEmptyOrFallback(
+			    JsonDiagnosticStringValue(update, "subAgentTitle"),
+			    uam::strings::NonEmptyOrFallback(JsonDiagnosticStringValue(update, "agentName"), JsonDiagnosticStringValue(update, "agent")));
+
+			if (!sub_agent_id.empty())
+			{
+				tool_call.sub_agent_id = sub_agent_id;
+			}
+			if (!sub_agent_title.empty())
+			{
+				tool_call.sub_agent_title = sub_agent_title;
+			}
+			if (LooksLikeSubAgentTool(update, tool_call) || !tool_call.sub_agent_id.empty() || !tool_call.sub_agent_title.empty())
+			{
+				tool_call.is_sub_agent = true;
+			}
+		}
+
 		void HandleSessionUpdate(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& params, CefRefPtr<CefBrowser> browser)
 		{
 			const nlohmann::json update = JsonObjectValue(params, "update");
@@ -2298,6 +2409,7 @@ namespace uam
 					{
 						tool_call.content = ContentTextFromJson(*content);
 					}
+					ApplySubAgentMetadata(tool_call, update);
 					AppendToolTurnEventIfNeeded(session, id);
 					if (SyncAcpToolCallsToAssistantMessage(chat, session, false))
 					{
@@ -3799,7 +3911,9 @@ namespace uam
 					session.codex_thread_id.clear();
 					session.session_id.clear();
 				}
+				const std::string previous_native_session_id = chat.native_session_id;
 				SetChatNativeSessionIdIfChanged(chat, session.session_id);
+				SyncResolvedNativeSessionIdForChat(app, chat, session.session_id, previous_native_session_id);
 				session.available_modes = {
 				    AcpModeState{uam::approval_modes::kDefaultApprovalMode, "Default", "Use Codex default collaboration mode."},
 				    AcpModeState{uam::approval_modes::kPlanApprovalMode, "Plan", "Ask Codex to plan before implementing."},
@@ -3846,7 +3960,9 @@ namespace uam
 					UpdateAcpModesFromJson(session, JsonObjectValue(result, "modes"));
 					UpdateAcpModelsFromJson(session, JsonObjectValue(result, "models"));
 				}
+				const std::string previous_native_session_id = chat.native_session_id;
 				SetChatNativeSessionIdIfChanged(chat, session.session_id);
+				SyncResolvedNativeSessionIdForChat(app, chat, session.session_id, previous_native_session_id);
 				session.session_ready = !session.session_id.empty();
 				session.lifecycle_state = session.session_ready ? kAcpLifecycleReady : kAcpLifecycleError;
 				if (!session.session_ready)
@@ -4055,7 +4171,9 @@ namespace uam
 			if (!session_id.empty())
 			{
 				session.session_id = session_id;
+				const std::string previous_native_session_id = chat.native_session_id;
 				SetChatNativeSessionIdIfChanged(chat, session_id);
+				SyncResolvedNativeSessionIdForChat(app, chat, session_id, previous_native_session_id);
 			}
 
 			const std::string model_id = uam::nlohmann_json::TrimmedStringValueOr(message, "model", "");
@@ -4111,6 +4229,8 @@ namespace uam
 					session.session_id = session_id;
 					if (SetChatNativeSessionIdIfChanged(chat, session_id))
 					{
+						const std::string previous_native_session_id = chat.native_session_id;
+						SyncResolvedNativeSessionIdForChat(app, chat, session_id, previous_native_session_id);
 						SaveChatQuietly(app, chat);
 					}
 				}
@@ -4873,12 +4993,22 @@ namespace uam
 
 	std::vector<std::string> BuildAcpLaunchArgvForTests(const ChatSession& chat)
 	{
-		return BuildAcpLaunchArgv(chat);
+		ProviderProfile provider;
+		provider.id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(chat.provider_id);
+		return BuildAcpLaunchArgv(provider, chat);
 	}
 
 	std::string BuildAcpLaunchDetailForTests(const std::filesystem::path& workspace_root, const ChatSession& chat)
 	{
-		return BuildAcpLaunchDetail(workspace_root, chat);
+		ProviderProfile provider;
+		provider.id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(chat.provider_id);
+		AppState app;
+		return BuildAcpLaunchDetail(provider, app, workspace_root, chat);
+	}
+
+	std::string BuildAcpLaunchDetailForTests(const AppState& app, const std::filesystem::path& workspace_root, const ChatSession& chat)
+	{
+		return BuildAcpLaunchDetail(app, workspace_root, chat);
 	}
 
 	std::string BuildAcpInitializeRequestForTests(int request_id)
@@ -4954,6 +5084,11 @@ namespace uam
 	std::string BuildCodexUserInputResponseForTests(const std::string& request_id_json, const std::map<std::string, std::vector<std::string>>& answers)
 	{
 		return BuildCodexUserInputResponse(request_id_json, answers).dump();
+	}
+
+	std::string ResolveAcpSessionResumeIdForTests(const AppState& app, const ChatSession& chat)
+	{
+		return ResolvedAcpResumeIdForChat(app, chat);
 	}
 
 	bool ProcessAcpLineForTests(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& line)

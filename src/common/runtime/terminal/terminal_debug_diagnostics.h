@@ -56,10 +56,44 @@ inline std::string CliNativeSessionIdForDiagnostics(const AppState& app, const C
 {
 	if (const ChatSession* chat = FindChatForCliDiagnostics(app, terminal); chat != nullptr)
 	{
+		const std::string resolved_native_session_id = ResolvedNativeSessionIdForChat(app, *chat);
+		if (!resolved_native_session_id.empty())
+		{
+			return resolved_native_session_id;
+		}
+
+		const std::string native_session_id = NativeSessionLinkService().RealNativeSessionId(*chat);
+		if (!native_session_id.empty())
+		{
+			return native_session_id;
+		}
+
 		return chat->native_session_id;
 	}
 
 	return "";
+}
+
+inline std::string CliAttachedSessionIdForDiagnostics(const AppState& app, const CliTerminalState& terminal)
+{
+	if (const ChatSession* chat = FindChatForCliDiagnostics(app, terminal); chat != nullptr)
+	{
+		const std::string resolved_native_session_id = ResolvedNativeSessionIdForChat(app, *chat);
+		if (!resolved_native_session_id.empty())
+		{
+			return resolved_native_session_id;
+		}
+
+		const std::string native_session_id = NativeSessionLinkService().RealNativeSessionId(*chat);
+		if (!native_session_id.empty())
+		{
+			return native_session_id;
+		}
+
+		return chat->native_session_id;
+	}
+
+	return TrimCliTerminalIdentity(terminal.attached_session_id);
 }
 
 inline std::string CliProcessHandleLabel(const CliTerminalState& terminal)
@@ -139,7 +173,7 @@ inline void LogCliDiagnosticEvent(const AppState&            app,
 		out << " terminal_id=" << terminal->terminal_id
 		    << " frontend_chat_id=" << terminal->frontend_chat_id
 		    << " attached_chat_id=" << terminal->attached_chat_id
-		    << " attached_session_id=" << terminal->attached_session_id
+		    << " attached_session_id=" << CliAttachedSessionIdForDiagnostics(app, *terminal)
 		    << " provider_id=" << CliProviderIdForDiagnostics(app, *terminal)
 		    << " native_session_id=" << CliNativeSessionIdForDiagnostics(app, *terminal)
 		    << " process_id=" << CliProcessHandleLabel(*terminal)

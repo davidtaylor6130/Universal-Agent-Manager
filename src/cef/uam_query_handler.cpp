@@ -14,6 +14,8 @@
 #include "app/persistence_coordinator.h"
 #include "app/runtime_orchestration_services.h"
 #include "app/vcs_commit_service.h"
+#include "common/chat/chat_branching.h"
+#include "common/chat/native_chat_identity.h"
 #include "common/config/approval_modes.h"
 #include "common/config/editor_file_associations.h"
 #include "common/config/settings_normalization.h"
@@ -223,6 +225,27 @@ namespace
 	{
 		const std::string chat_id = payload.value("chatId", "");
 		return FindChatOrFail(app, chat_id, cb, "Chat not found.");
+	}
+
+	bool ChatIdExists(const uam::AppState& app, const std::string& chat_id)
+	{
+		return ChatDomainService().FindChatById(app, chat_id) != nullptr;
+	}
+
+	std::string MakeCollisionSafeImportedChatId(const ChatSession& chat, const uam::AppState& app)
+	{
+		const std::string chat_id = uam::strings::Trim(chat.id);
+		const std::string native_session_id = uam::strings::Trim(chat.native_session_id);
+		const std::string base_id = uam::strings::NonEmptyOrFallback(chat_id, native_session_id);
+		const std::string suffix = uam::chat_identity::NativeIdentityKeyHash(uam::chat_identity::NativeIdentityKeyForHistoryImport(chat));
+		std::string candidate = base_id + "--" + suffix;
+
+		while (ChatIdExists(app, candidate))
+		{
+			candidate += "_";
+		}
+
+		return candidate;
 	}
 
 	bool ChatProviderAvailableOrFail(const uam::AppState& app, const ChatSession& chat, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb)
@@ -906,29 +929,7 @@ namespace
 
 	uam::CliTerminalState* FindCliTerminalByRoutingKey(uam::AppState& app, const std::string& chat_id, const std::string& terminal_id)
 	{
-		if (!uam::strings::IsBlank(terminal_id))
-		{
-			for (auto& term : app.cli_terminals)
-			{
-				if (term && uam::CliTerminalMatchesTerminalId(*term, terminal_id))
-				{
-					return term.get();
-				}
-			}
-		}
-
-		if (!chat_id.empty())
-		{
-			for (auto& term : app.cli_terminals)
-			{
-				if (term && uam::CliTerminalMatchesChatId(*term, chat_id))
-				{
-					return term.get();
-				}
-			}
-		}
-
-		return nullptr;
+		return uam::FindCliTerminalForRoutingKey(app, chat_id, terminal_id);
 	}
 
 	bool CliInputLooksLikeTurnSubmit(const std::string& data)
@@ -1081,6 +1082,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"selectSession", &UamQueryHandler::HandleSelectSession},
 		{"getChatMessages", &UamQueryHandler::HandleGetChatMessages},
 		{"createSession", &UamQueryHandler::HandleCreateSession},
+		{"openNativeSessionChat", &UamQueryHandler::HandleOpenNativeSessionChat},
 		{"renameSession", &UamQueryHandler::HandleRenameSession},
 		{"setChatPinned", &UamQueryHandler::HandleSetChatPinned},
 		{"setChatProvider", &UamQueryHandler::HandleSetChatProvider},
@@ -1343,6 +1345,132 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 	cb->Success("{}");
 }
 
+void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string source_chat_id = payload.value("chatId", "");
+	const std::string native_session_id = uam::strings::Trim(payload.value("nativeSessionId", ""));
+	if (native_session_id.empty())
+	{
+		cb->Failure(400, "A native session id is required.");
+		return;
+	}
+
+	ChatSession* source_chat = FindChatOrFail(m_app, source_chat_id, cb, "Source chat not found: " + source_chat_id);
+	if (source_chat == nullptr)
+	{
+		return;
+	}
+
+	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(m_app, *source_chat);
+	if (!ProviderRuntime::UsesNativeOverlayHistory(provider) && !ProviderRuntime::UsesLocalHistory(provider))
+	{
+		cb->Failure(409, "This provider does not expose a native or local session history path.");
+		return;
+	}
+
+	const std::string source_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider.id);
+
+	const std::string previous_selected_chat_id = ChatDomainService().SelectedChatId(m_app);
+	const auto previous_resolved_native_session = m_app.resolved_native_sessions_by_chat_id.find(source_chat->id);
+	const bool had_previous_resolved_native_session = previous_resolved_native_session != m_app.resolved_native_sessions_by_chat_id.end();
+	const std::string previous_resolved_native_session_id = had_previous_resolved_native_session ? previous_resolved_native_session->second : std::string{};
+	ChatSession* target_chat = ChatHistorySyncService().FindInMemoryNativeSessionChatForOpen(m_app, *source_chat, provider, native_session_id, false);
+
+	bool inserted_chat = false;
+	std::string target_chat_id;
+	bool had_previous_target_resolved_native_session = false;
+	std::string previous_target_resolved_native_session_id;
+	if (target_chat == nullptr)
+	{
+		target_chat = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(m_app, *source_chat, provider, native_session_id, false);
+		if (target_chat == nullptr)
+		{
+			cb->Failure(404, "Sub-agent chat not found in native history.");
+			return;
+		}
+		inserted_chat = true;
+		target_chat_id = target_chat->id;
+	}
+	else
+	{
+		target_chat_id = target_chat->id;
+		const auto previous_target_resolved_native_session = m_app.resolved_native_sessions_by_chat_id.find(target_chat_id);
+		had_previous_target_resolved_native_session = previous_target_resolved_native_session != m_app.resolved_native_sessions_by_chat_id.end();
+		previous_target_resolved_native_session_id = had_previous_target_resolved_native_session ? previous_target_resolved_native_session->second : std::string{};
+		m_app.resolved_native_sessions_by_chat_id[target_chat->id] = native_session_id;
+	}
+
+	const std::string previous_provider_id = target_chat->provider_id;
+	const std::string previous_native_session_id = target_chat->native_session_id;
+	const std::string previous_updated_at = target_chat->updated_at;
+	const std::string previous_last_opened_at = target_chat->last_opened_at;
+	if (target_chat->provider_id.empty())
+	{
+		target_chat->provider_id = source_provider_id;
+	}
+	ChatDomainService().SelectChatById(m_app, target_chat_id);
+
+	ChatSession* selected_chat = ChatDomainService().SelectedChat(m_app);
+	if (selected_chat == nullptr)
+	{
+		if (inserted_chat)
+		{
+			ChatHistorySyncService().RollbackOpenNativeSessionChatImport(m_app, target_chat_id, previous_selected_chat_id, true);
+		}
+		if (!inserted_chat)
+		{
+			ChatHistorySyncService().RestoreOpenNativeSessionChatMetadata(*target_chat, previous_provider_id, previous_native_session_id, previous_updated_at);
+			ChatHistorySyncService().RestoreOpenNativeSessionResolvedMapping(m_app, target_chat_id, had_previous_target_resolved_native_session, previous_target_resolved_native_session_id);
+		}
+		ChatHistorySyncService().RestoreOpenNativeSessionResolvedMapping(m_app, source_chat->id, had_previous_resolved_native_session, previous_resolved_native_session_id);
+		cb->Failure(404, "Selected chat no longer exists.");
+		return;
+	}
+
+	selected_chat->last_opened_at = uam::time::TimestampNow();
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		selected_chat->last_opened_at = previous_last_opened_at;
+		ChatDomainService().SelectChatById(m_app, previous_selected_chat_id);
+		if (!inserted_chat)
+		{
+			ChatHistorySyncService().RestoreOpenNativeSessionChatMetadata(*selected_chat, previous_provider_id, previous_native_session_id, previous_updated_at);
+			ChatHistorySyncService().RestoreOpenNativeSessionResolvedMapping(m_app, target_chat_id, had_previous_target_resolved_native_session, previous_target_resolved_native_session_id);
+			ChatHistorySyncService().RestoreOpenNativeSessionResolvedMapping(m_app, source_chat->id, had_previous_resolved_native_session, previous_resolved_native_session_id);
+		}
+		if (inserted_chat)
+		{
+			ChatHistorySyncService().RollbackOpenNativeSessionChatImport(m_app, target_chat_id, previous_selected_chat_id, true);
+		}
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist selected chat."));
+		return;
+	}
+
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *selected_chat, "", ""))
+	{
+		selected_chat->last_opened_at = previous_last_opened_at;
+		ChatDomainService().SelectChatById(m_app, previous_selected_chat_id);
+		if (!inserted_chat)
+		{
+			ChatHistorySyncService().RestoreOpenNativeSessionChatMetadata(*selected_chat, previous_provider_id, previous_native_session_id, previous_updated_at);
+			ChatHistorySyncService().RestoreOpenNativeSessionResolvedMapping(m_app, target_chat_id, had_previous_target_resolved_native_session, previous_target_resolved_native_session_id);
+			ChatHistorySyncService().RestoreOpenNativeSessionResolvedMapping(m_app, source_chat->id, had_previous_resolved_native_session, previous_resolved_native_session_id);
+		}
+		if (inserted_chat)
+		{
+			ChatHistorySyncService().RollbackOpenNativeSessionChatImport(m_app, target_chat_id, previous_selected_chat_id, true);
+		}
+		(void)PersistenceCoordinator().SaveSettings(m_app);
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist selected chat."));
+		return;
+	}
+
+	ChatDomainService().SortChatsByRecent(m_app.chats);
+	ChatDomainService().SelectChatById(m_app, target_chat_id);
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
 void UamQueryHandler::HandleRenameSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
@@ -1581,10 +1709,14 @@ void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const
 	const bool previous_auto_approve_commands = chat->auto_approve_commands;
 	const bool previous_memory_enabled = chat->memory_enabled;
 	const std::string previous_native_session_id = chat->native_session_id;
+	const auto previous_resolved_native_session = m_app.resolved_native_sessions_by_chat_id.find(chat->id);
+	const bool had_previous_resolved_native_session = previous_resolved_native_session != m_app.resolved_native_sessions_by_chat_id.end();
+	const std::string previous_resolved_native_session_id = had_previous_resolved_native_session ? previous_resolved_native_session->second : std::string{};
 	const std::string previous_updated_at = chat->updated_at;
 	chat->provider_id = provider->id;
 	ApplyProviderDefaultsToChat(m_app.settings, *chat);
 	chat->native_session_id.clear();
+	ChatHistorySyncService().ForgetResolvedNativeSessionForChat(m_app, chat->id);
 	chat->updated_at = uam::time::TimestampNow();
 
 	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat provider updated.", "Chat provider changed in UI, but failed to save."))
@@ -1597,10 +1729,16 @@ void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const
 		chat->auto_approve_commands = previous_auto_approve_commands;
 		chat->memory_enabled = previous_memory_enabled;
 		chat->native_session_id = previous_native_session_id;
+		if (had_previous_resolved_native_session)
+		{
+			m_app.resolved_native_sessions_by_chat_id[chat->id] = previous_resolved_native_session_id;
+		}
 		chat->updated_at = previous_updated_at;
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat provider."));
 		return;
 	}
+
+	uam::ClearStoppedCliTerminalAttachmentForChat(m_app, chat->id);
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
@@ -2757,12 +2895,21 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 		}
 		else
 		{
-			existing->ui_attached = true;
-			existing->rows = uam::ClampCliTerminalResizeRows(rows);
-			existing->cols = uam::ClampCliTerminalResizeCols(cols);
-			PlatformServicesFactory::Instance().terminal_runtime.ResizeCliTerminal(*existing);
-			uam::LogCliDiagnosticEvent(m_app, "handle_start_cli", "reused_running_terminal", existing);
-			cb->Success(BuildCliBindingResponse(*existing).dump());
+			ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+			if (chat == nullptr)
+			{
+				return;
+			}
+
+			const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(m_app, *chat);
+			uam::RepairCliTerminalIdentityForChat(m_app, *existing, *chat, provider);
+			uam::CliTerminalState& terminal = *existing;
+			terminal.ui_attached = true;
+			terminal.rows = uam::ClampCliTerminalResizeRows(rows);
+			terminal.cols = uam::ClampCliTerminalResizeCols(cols);
+			PlatformServicesFactory::Instance().terminal_runtime.ResizeCliTerminal(terminal);
+			uam::LogCliDiagnosticEvent(m_app, "handle_start_cli", "reused_running_terminal", &terminal);
+			cb->Success(BuildCliBindingResponse(terminal).dump());
 			return;
 		}
 	}

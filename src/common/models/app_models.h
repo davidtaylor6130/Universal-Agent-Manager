@@ -32,6 +32,9 @@ struct ToolCall
 	std::string args_json;
 	std::string result_text;
 	std::string status;
+	bool is_sub_agent = false;
+	std::string sub_agent_id;
+	std::string sub_agent_title;
 };
 
 struct MessagePlanEntry

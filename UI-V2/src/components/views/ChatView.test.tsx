@@ -1849,6 +1849,73 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('opens a sub-agent chat from the tool details modal', async () => {
+    const originalOpenSubAgentSession = useAppStore.getState().openSubAgentSession
+    const openSubAgentSession = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      openSubAgentSession,
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          toolCalls: [
+            {
+              id: 'agent-tool-1',
+              title: 'Planner agent',
+              kind: 'sub-agent',
+              status: 'running',
+              content: 'Inspecting with a sub-agent',
+              isSubAgent: true,
+              subAgentId: 'agent-session-1',
+              subAgentTitle: 'Planner',
+            },
+          ],
+          turnEvents: [
+            { type: 'assistant_text', text: 'I am delegating to a sub-agent.' },
+            { type: 'tool_call', toolCallId: 'agent-tool-1' },
+          ],
+          turnSerial: 2,
+          pendingPermission: null,
+          pendingUserInput: null,
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const subAgentButton = Array.from(host.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Sub-agent:')
+    ) as HTMLButtonElement | undefined
+    expect(subAgentButton).toBeTruthy()
+
+    act(() => {
+      subAgentButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    const openChatButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Open chat') as HTMLButtonElement | undefined
+    expect(openChatButton).toBeTruthy()
+
+    await act(async () => {
+      openChatButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(openSubAgentSession).toHaveBeenCalledWith('chat-1', 'agent-session-1', 'Planner')
+    expect(host.querySelector('[role="dialog"]')).toBeNull()
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+    useAppStore.setState({ openSubAgentSession: originalOpenSubAgentSession })
+  })
+
   it('opens the current workspace from the composer workspace row', async () => {
     const originalOpenSessionWorkspace = useAppStore.getState().openSessionWorkspace
     const openSessionWorkspace = vi.fn(() => Promise.resolve(true))

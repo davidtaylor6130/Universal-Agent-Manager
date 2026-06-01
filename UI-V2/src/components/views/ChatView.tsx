@@ -377,7 +377,18 @@ function toolStatusColor(tool: AcpToolCall) {
   if (tool.status === 'completed') return 'var(--green)'
   if (tool.status === 'failed') return 'var(--red)'
   if (tool.status === 'in_progress') return 'var(--blue)'
+  if (tool.status === 'running') return 'var(--blue)'
   return 'var(--text-3)'
+}
+
+function toolDisplayKind(tool: AcpToolCall) {
+  return tool.isSubAgent ? 'Sub-agent' : 'Tool call'
+}
+
+function toolDisplayTitle(tool: AcpToolCall) {
+  return tool.isSubAgent
+    ? (tool.subAgentTitle || tool.title || tool.subAgentId || tool.id)
+    : (tool.title || tool.id)
 }
 
 function roleAccent(role: string) {
@@ -826,7 +837,10 @@ function ToolCallInlineRows({ tools, onSelectTool }: { tools: AcpToolCall[]; onS
 
   return (
     <div className="uam-tool-timeline">
-      {tools.map((tool) => (
+      {tools.map((tool) => {
+        const displayKind = toolDisplayKind(tool)
+        const displayTitle = toolDisplayTitle(tool)
+        return (
         <div key={tool.id} className="uam-tool-timeline__item">
           <button
             type="button"
@@ -847,14 +861,22 @@ function ToolCallInlineRows({ tools, onSelectTool }: { tools: AcpToolCall[]; onS
               }}
               aria-hidden="true"
             >
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M5.2 3.2H3.7A1.7 1.7 0 0 0 2 4.9v6.2a1.7 1.7 0 0 0 1.7 1.7h1.5" />
-                <path d="M10.8 3.2h1.5A1.7 1.7 0 0 1 14 4.9v6.2a1.7 1.7 0 0 1-1.7 1.7h-1.5" />
-                <path d="M6.5 5.4 4.4 8l2.1 2.6M9.5 5.4 11.6 8l-2.1 2.6" />
-              </svg>
+              {tool.isSubAgent ? (
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="8" cy="4.4" r="2.1" />
+                  <path d="M4.4 13.2a3.6 3.6 0 0 1 7.2 0" />
+                  <path d="M2.5 8.6h2.2M11.3 8.6h2.2" />
+                </svg>
+              ) : (
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5.2 3.2H3.7A1.7 1.7 0 0 0 2 4.9v6.2a1.7 1.7 0 0 0 1.7 1.7h1.5" />
+                  <path d="M10.8 3.2h1.5A1.7 1.7 0 0 1 14 4.9v6.2a1.7 1.7 0 0 1-1.7 1.7h-1.5" />
+                  <path d="M6.5 5.4 4.4 8l2.1 2.6M9.5 5.4 11.6 8l-2.1 2.6" />
+                </svg>
+              )}
             </span>
-            <span className="text-[11px] font-medium" style={{ color: 'var(--teal)' }}>Tool call:</span>
-            <span className="text-xs truncate" style={{ color: 'var(--text)' }}>{tool.title || tool.id}</span>
+            <span className="text-[11px] font-medium" style={{ color: tool.isSubAgent ? 'var(--blue)' : 'var(--teal)' }}>{displayKind}:</span>
+            <span className="text-xs truncate" style={{ color: 'var(--text)' }}>{displayTitle}</span>
             {tool.status && (
               <span
                 className="text-[10px] font-medium"
@@ -876,7 +898,8 @@ function ToolCallInlineRows({ tools, onSelectTool }: { tools: AcpToolCall[]; onS
             </span>
           </button>
         </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -1237,12 +1260,21 @@ function UserInputInlineCard({
   )
 }
 
-function ToolCallModal({ tool, onClose }: { tool: AcpToolCall; onClose: () => void }) {
+function ToolCallModal({
+  tool,
+  onClose,
+  onOpenSubAgent,
+}: {
+  tool: AcpToolCall
+  onClose: () => void
+  onOpenSubAgent?: () => void
+}) {
   const toolCopyText = [
-    tool.title || tool.id || 'Tool call',
+    toolDisplayTitle(tool) || tool.id || 'Tool call',
     `id: ${tool.id || 'unknown'}`,
     `kind: ${tool.kind || 'unknown'}`,
     `status: ${tool.status || 'unknown'}`,
+    ...(tool.isSubAgent ? [`subAgentId: ${tool.subAgentId || 'unknown'}`, `subAgentTitle: ${tool.subAgentTitle || 'unknown'}`] : []),
     '',
     tool.content || 'No tool output yet.',
   ].join('\n')
@@ -1283,13 +1315,31 @@ function ToolCallModal({ tool, onClose }: { tool: AcpToolCall; onClose: () => vo
           <span style={{ color: toolStatusColor(tool), fontSize: 10 }}>●</span>
           <div className="min-w-0 flex-1">
             <div className="text-sm font-semibold truncate" style={{ color: 'var(--text)' }}>
-              {tool.title || tool.id}
+              {toolDisplayTitle(tool)}
             </div>
             <div className="text-[11px]" style={{ color: 'var(--text-3)' }}>
-              {[tool.kind, tool.status].filter(Boolean).join(' / ') || 'tool call'}
+              {[toolDisplayKind(tool), tool.kind, tool.status].filter(Boolean).join(' / ') || 'tool call'}
             </div>
           </div>
-          <CopyTextButton text={toolCopyText} label="Copy" title="Copy tool output" />
+          <div className="flex items-center gap-2">
+            {tool.isSubAgent && onOpenSubAgent && (
+              <button
+                type="button"
+                title="Open sub-agent chat"
+                onClick={onOpenSubAgent}
+                className="px-2 h-7 text-xs"
+                style={{
+                  borderRadius: 5,
+                  border: '1px solid var(--border-bright)',
+                  background: 'var(--accent-dim)',
+                  color: 'var(--text)',
+                }}
+              >
+                Open chat
+              </button>
+            )}
+            <CopyTextButton text={toolCopyText} label="Copy" title="Copy tool output" />
+          </div>
           <button
             type="button"
             title="Close tool details"
@@ -1308,6 +1358,9 @@ function ToolCallModal({ tool, onClose }: { tool: AcpToolCall; onClose: () => vo
         <div className="p-4 overflow-auto" style={{ maxHeight: 'calc(min(720px, 88vh) - 44px)' }}>
           <div className="grid gap-2 text-xs mb-4" style={{ color: 'var(--text-2)' }}>
             <div><span style={{ color: 'var(--text-3)' }}>id:</span> {tool.id || 'unknown'}</div>
+            {tool.isSubAgent && (
+              <div><span style={{ color: 'var(--text-3)' }}>sub-agent:</span> {tool.subAgentId || tool.subAgentTitle || 'tracked from provider event'}</div>
+            )}
             <div><span style={{ color: 'var(--text-3)' }}>kind:</span> {tool.kind || 'unknown'}</div>
             <div><span style={{ color: 'var(--text-3)' }}>status:</span> {tool.status || 'unknown'}</div>
           </div>
@@ -2462,6 +2515,7 @@ export function ChatView({ session }: ChatViewProps) {
   const openSessionWorkspace = useAppStore((s) => s.openSessionWorkspace)
   const openSessionWorkspaceEditor = useAppStore((s) => s.openSessionWorkspaceEditor)
   const openSessionTerminal = useAppStore((s) => s.openSessionTerminal)
+  const openSubAgentSession = useAppStore((s) => s.openSubAgentSession)
   const createChatWorktree = useAppStore((s) => s.createChatWorktree)
   const discardChatWorktreeChanges = useAppStore((s) => s.discardChatWorktreeChanges)
   const portChatWorktreeChanges = useAppStore((s) => s.portChatWorktreeChanges)
@@ -2823,6 +2877,13 @@ export function ChatView({ session }: ChatViewProps) {
       setOpenWorkspaceError('Failed to open terminal.')
     }
   }
+  const openSelectedSubAgentSession = async () => {
+    if (!selectedToolCall?.isSubAgent || !selectedToolCall.subAgentId) return
+    const ok = await openSubAgentSession(session.id, selectedToolCall.subAgentId, selectedToolCall.subAgentTitle)
+    if (ok) {
+      setSelectedToolCallRef(null)
+    }
+  }
   const runWorkspaceAction = async (action: 'create' | 'discard' | 'port') => {
     if (workspaceActionsDisabled) return
     setOpenWorkspaceError('')
@@ -2936,7 +2997,11 @@ export function ChatView({ session }: ChatViewProps) {
   return (
     <div className="relative h-full flex overflow-hidden" style={{ background: 'var(--bg)' }}>
       {selectedToolCall && (
-        <ToolCallModal tool={selectedToolCall} onClose={() => setSelectedToolCallRef(null)} />
+        <ToolCallModal
+          tool={selectedToolCall}
+          onClose={() => setSelectedToolCallRef(null)}
+          onOpenSubAgent={selectedToolCall.isSubAgent ? () => void openSelectedSubAgentSession() : undefined}
+        />
       )}
       <div className="flex-1 flex flex-col min-w-0">
         <div className="flex-1 overflow-auto" data-copy-surface="chat">

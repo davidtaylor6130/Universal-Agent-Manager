@@ -230,10 +230,7 @@ inline void StopCliTerminal(CliTerminalState& terminal, bool clear_identity = fa
 
 inline CliTerminalState* FindCliTerminalForChat(AppState& app, std::string_view chat_id)
 {
-	const auto found = std::ranges::find_if(app.cli_terminals, [&chat_id](const std::unique_ptr<CliTerminalState>& terminal) {
-		return terminal != nullptr && CliTerminalMatchesChatId(*terminal, chat_id);
-	});
-	return found == app.cli_terminals.end() ? nullptr : found->get();
+	return FindCliTerminalForRoutingKey(app, chat_id, "");
 }
 
 inline void SyncCliTerminalToNativeHistory(AppState& app, const CliTerminalState& terminal)
@@ -264,6 +261,23 @@ inline void StopAndEraseCliTerminalForChat(AppState& app, std::string_view chat_
 	};
 
 	std::erase_if(app.cli_terminals, matches_chat_terminal);
+}
+
+inline void ClearStoppedCliTerminalAttachmentForChat(AppState& app, std::string_view chat_id)
+{
+	const std::string_view target_chat_id = TrimCliTerminalIdentityView(chat_id);
+	if (target_chat_id.empty())
+	{
+		return;
+	}
+
+	for (auto& terminal : app.cli_terminals)
+	{
+		if (terminal != nullptr && !terminal->running && CliTerminalMatchesChatId(*terminal, target_chat_id))
+		{
+			StopCliTerminal(*terminal, true);
+		}
+	}
 }
 
 inline void StopAllCliTerminals(AppState& app, bool clear_identity = true)

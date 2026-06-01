@@ -14,6 +14,9 @@ export interface MessageToolCall {
   kind: string
   status: string
   content: string
+  isSubAgent?: boolean
+  subAgentId?: string
+  subAgentTitle?: string
 }
 
 export interface MessagePlanEntry {

@@ -148,7 +148,7 @@ ProviderProfile ProviderProfileStore::DefaultOpenCodeProfile()
 	return MakeBuiltInCliProfile({
 	    .id = uam::provider_ids::kOpenCodeCli,
 	    .title = "OpenCode",
-	    .command_template = "opencode run {flags} {prompt}",
+	    .command_template = "opencode run --session {resume} {flags} {prompt}",
 	    .interactive_command = "opencode",
 	    .structured_protocol = uam::provider_profile_constants::kProtocolOpenCodeAcp,
 	    .resume_argument = "--session",

@@ -7,6 +7,7 @@
 #include "app/chat_domain_service.h"
 #include "app/native_session_link_service.h"
 #include "app/provider_resolution_service.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 #include "common/provider/codex/cli/codex_thread_id.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
@@ -62,6 +63,22 @@ namespace uam
 
 	inline std::string ResolveProviderInteractiveResumeId(const AppState& app, const ChatSession& chat, const ProviderProfile& provider)
 	{
+		if (const AcpSessionState* acp_session = FindAcpSessionForChat(app, chat.id); acp_session != nullptr && acp_session->running && !uam::strings::Trim(acp_session->session_id).empty())
+		{
+			return uam::strings::Trim(acp_session->session_id);
+		}
+
+		const std::string resolved_native_session_id = ResolvedNativeSessionIdForChat(app, chat);
+		if (!resolved_native_session_id.empty())
+		{
+			if (ProviderUsesCodexCli(provider))
+			{
+				return uam::codex::ValidThreadIdOrEmpty(resolved_native_session_id);
+			}
+
+			return resolved_native_session_id;
+		}
+
 		if (ProviderUsesCodexCli(provider))
 		{
 			return uam::codex::ValidThreadIdOrEmpty(chat.native_session_id);
@@ -85,6 +102,32 @@ namespace uam
 		return ProviderRuntime::BuildInteractiveArgv(provider, effective_chat, app.settings);
 	}
 
+	inline void RepairCliTerminalIdentityForChat(AppState& app, CliTerminalState& terminal, const ChatSession& chat, const ProviderProfile& provider)
+	{
+		const std::string resume_id = ResolveProviderInteractiveResumeId(app, chat, provider);
+
+		if (terminal.frontend_chat_id != chat.id)
+		{
+			terminal.frontend_chat_id = chat.id;
+		}
+
+		if (CliTerminalAttachedChatId(terminal) != chat.id)
+		{
+			terminal.attached_chat_id = chat.id;
+		}
+
+		const std::string expected_terminal_id = CliTerminalIdForChat(chat.id);
+		if (terminal.terminal_id != expected_terminal_id)
+		{
+			terminal.terminal_id = expected_terminal_id;
+		}
+
+		if (CliTerminalAttachedSessionId(terminal) != resume_id)
+		{
+			terminal.attached_session_id = resume_id;
+		}
+	}
+
 	inline CliTerminalState& EnsureCliTerminalForChat(AppState& app, const ChatSession& chat)
 	{
 		const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
@@ -93,20 +136,7 @@ namespace uam
 
 		if (CliTerminalState* existing = FindCliTerminalForChat(app, chat.id))
 		{
-			if (existing->frontend_chat_id.empty())
-			{
-				existing->frontend_chat_id = chat.id;
-			}
-
-			if (existing->terminal_id.empty())
-			{
-				existing->terminal_id = CliTerminalIdForChat(chat.id);
-			}
-
-			if (CliTerminalAttachedSessionId(*existing).empty() && !resume_id.empty())
-			{
-				existing->attached_session_id = resume_id;
-			}
+			RepairCliTerminalIdentityForChat(app, *existing, chat, provider);
 
 			if (!can_launch_terminal)
 			{

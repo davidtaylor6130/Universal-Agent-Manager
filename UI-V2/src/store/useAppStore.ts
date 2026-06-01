@@ -202,6 +202,9 @@ export interface AcpToolCall {
   kind: string
   status: string
   content: string
+  isSubAgent?: boolean
+  subAgentId?: string
+  subAgentTitle?: string
 }
 
 export interface AcpPlanEntry {
@@ -814,6 +817,9 @@ function sanitizeToolCall(value: unknown): AcpToolCall | null {
     kind: stringOr(value.kind),
     status: stringOr(value.status),
     content: stringOr(value.content),
+    isSubAgent: booleanOr(value.isSubAgent),
+    subAgentId: stringOr(value.subAgentId),
+    subAgentTitle: stringOr(value.subAgentTitle),
   }
 }
 
@@ -2323,7 +2329,10 @@ function toolCallsEquivalent(existing: AcpToolCall[], next: AcpToolCall[]) {
       tool.title === other.title &&
       tool.kind === other.kind &&
       tool.status === other.status &&
-      tool.content === other.content
+      tool.content === other.content &&
+      Boolean(tool.isSubAgent) === Boolean(other.isSubAgent) &&
+      (tool.subAgentId ?? '') === (other.subAgentId ?? '') &&
+      (tool.subAgentTitle ?? '') === (other.subAgentTitle ?? '')
     )
   })
 }
@@ -2889,10 +2898,11 @@ interface AppState {
 	  revealMarkdownStoreEntry: (entry: MarkdownStoreEntry) => Promise<boolean>
 	  attachMarkdownStoreEntry: (sessionId: string, entry: MarkdownStoreEntry) => void
 	  detachMarkdownStoreEntry: (sessionId: string, filePath: string) => void
-	  openSessionWorkspace: (id: string) => Promise<boolean>
-	  openSessionWorkspaceEditor: (id: string) => Promise<boolean>
-	  openSessionTerminal: (id: string) => Promise<boolean>
-	  getChatWorktreeStatus: (id: string) => Promise<GitWorktreeStatus | null>
+  openSessionWorkspace: (id: string) => Promise<boolean>
+  openSessionWorkspaceEditor: (id: string) => Promise<boolean>
+  openSessionTerminal: (id: string) => Promise<boolean>
+  openSubAgentSession: (sourceChatId: string, nativeSessionId: string, title?: string) => Promise<boolean>
+  getChatWorktreeStatus: (id: string) => Promise<GitWorktreeStatus | null>
 	  createChatWorktree: (id: string) => Promise<GitWorktreeResult>
 	  discardChatWorktreeChanges: (id: string) => Promise<GitWorktreeResult>
 	  portChatWorktreeChanges: (id: string) => Promise<GitWorktreeResult>
@@ -3600,6 +3610,29 @@ export const useAppStore = create<AppState>((set, get) => {
         ? get().folders.find((folder) => folder.id === session.folderId)?.directory ?? ''
         : ''
       return Boolean(session?.workspaceDirectory?.trim() || folderDirectory.trim())
+    },
+
+    openSubAgentSession: async (sourceChatId, nativeSessionId, title = '') => {
+      if (isCefContext()) {
+        const response = await sendToCEF({
+          action: 'openNativeSessionChat',
+          payload: {
+            chatId: sourceChatId,
+            nativeSessionId,
+            title,
+          },
+        })
+
+        if (!response.ok) {
+          console.error('[CEF] openNativeSessionChat failed:', response.error)
+          return false
+        }
+
+        return true
+      }
+
+      const sourceChat = get().sessions.find((candidate) => candidate.id === sourceChatId)
+      return Boolean(sourceChat && nativeSessionId.trim())
     },
 
     getChatWorktreeStatus: async (id) => {
