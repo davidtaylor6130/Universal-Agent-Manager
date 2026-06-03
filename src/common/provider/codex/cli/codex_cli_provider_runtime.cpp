@@ -34,12 +34,12 @@ const char* CodexCliProviderRuntime::DisabledReason() const
 	return "";
 }
 
-std::string CodexCliProviderRuntime::BuildPrompt(const ProviderProfile&, std::string_view user_prompt, const std::vector<std::string>& files) const
+std::string CodexCliProviderRuntime::BuildPrompt(const ProviderProfile&, std::string_view user_prompt, const std::vector<std::string>& files, const Goal*, int64_t, int64_t) const
 {
 	return uam::provider_runtime_internal::BuildPrompt(user_prompt, files);
 }
 
-std::string CodexCliProviderRuntime::BuildCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, const std::string& resume_session_id) const
+std::string CodexCliProviderRuntime::BuildCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, const std::string& resume_session_id, const ChatSession*) const
 {
 	(void)resume_session_id;
 	const AppSettings provider_settings = CodexTemplateCommandSettings(profile, settings);

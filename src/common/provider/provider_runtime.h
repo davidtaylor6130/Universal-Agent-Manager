@@ -54,9 +54,9 @@ class IProviderRuntime
 	virtual const char* DisabledReason() const = 0;
 
 	/// <summary>Builds a provider prompt from user text and file references.</summary>
-	virtual std::string BuildPrompt(const ProviderProfile& profile, std::string_view user_prompt, const std::vector<std::string>& files) const = 0;
+	virtual std::string BuildPrompt(const ProviderProfile& profile, std::string_view user_prompt, const std::vector<std::string>& files, const Goal* active_goal = nullptr, int64_t tokens_used = 0, int64_t token_budget = 0) const = 0;
 	/// <summary>Builds the provider command for one request.</summary>
-	virtual std::string BuildCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, const std::string& resume_session_id) const = 0;
+	virtual std::string BuildCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, const std::string& resume_session_id, const ChatSession* chat = nullptr) const = 0;
 	/// <summary>Builds interactive terminal argv for the active provider.</summary>
 	virtual std::vector<std::string> BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const = 0;
 	/// <summary>Maps provider-native message types to app message roles.</summary>
@@ -139,10 +139,10 @@ class ProviderRuntime
 {
   public:
 	/// <summary>Builds a provider prompt from user text and file references.</summary>
-	static std::string BuildPrompt(const ProviderProfile& profile, std::string_view user_prompt, const std::vector<std::string>& files);
+	static std::string BuildPrompt(const ProviderProfile& profile, std::string_view user_prompt, const std::vector<std::string>& files, const Goal* active_goal = nullptr, int64_t tokens_used = 0, int64_t token_budget = 0);
 
 	/// <summary>Builds the provider command for one request.</summary>
-	static std::string BuildCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, const std::string& resume_session_id);
+	static std::string BuildCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, const std::string& resume_session_id, const ChatSession* chat = nullptr);
 
 	/// <summary>Builds interactive terminal argv for the active provider.</summary>
 	static std::vector<std::string> BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings);

@@ -92,12 +92,12 @@ const char* GeminiCliProviderRuntime::DisabledReason() const
 	return "";
 }
 
-std::string GeminiCliProviderRuntime::BuildPrompt(const ProviderProfile&, std::string_view user_prompt, const std::vector<std::string>& files) const
+std::string GeminiCliProviderRuntime::BuildPrompt(const ProviderProfile&, std::string_view user_prompt, const std::vector<std::string>& files, const Goal*, int64_t, int64_t) const
 {
 	return uam::provider_runtime_internal::BuildPrompt(user_prompt, files);
 }
 
-std::string GeminiCliProviderRuntime::BuildCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, const std::string& resume_session_id) const
+std::string GeminiCliProviderRuntime::BuildCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, const std::string& resume_session_id, const ChatSession*) const
 {
 	const AppSettings provider_settings = uam::provider_runtime_internal::MergeProviderSettings(profile, settings);
 	const std::string effective_resume_session_id = profile.supports_resume ? resume_session_id : "";

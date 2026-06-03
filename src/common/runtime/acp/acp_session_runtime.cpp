@@ -2,6 +2,7 @@
 
 #include "app/chat_domain_service.h"
 #include "app/markdown_store_service.h"
+#include "app/goal_service.h"
 #include "app/memory_service.h"
 #include "app/native_session_link_service.h"
 #include "app/provider_resolution_service.h"
@@ -4492,7 +4493,7 @@ namespace uam
 		return nullptr;
 	}
 
-	bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, const std::vector<std::string>& markdown_store_files, const std::vector<MessageAttachment>& attachments, std::string* error_out)
+	bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, const std::vector<std::string>& markdown_store_files, const std::vector<MessageAttachment>& attachments, bool goal_mode, std::string* error_out)
 	{
 		const std::string prompt = uam::strings::Trim(text);
 		if (prompt.empty())
@@ -4560,6 +4561,21 @@ namespace uam
 
 		const std::string recall_preface = MemoryService::BuildRecallPreface(app, chat, prompt);
 		std::string effective_prompt = recall_preface.empty() ? prompt : recall_preface + prompt;
+
+		// Inject goal context only when the UI has Goal mode toggled on for this chat
+		if (goal_mode)
+		{
+			const Goal* active_goal = GoalService::FindActiveGoal(app, chat.id);
+			if (active_goal && active_goal->status == GoalStatus::Active && !active_goal->objective.empty())
+			{
+				std::string goal_prompt = GoalService::BuildContinuationPrompt(*active_goal, active_goal->tokens_used, active_goal->token_budget);
+				if (!goal_prompt.empty())
+				{
+					effective_prompt = goal_prompt + "\n\n" + effective_prompt;
+				}
+			}
+		}
+		
 		if (!validated_markdown_store_files.empty())
 		{
 			effective_prompt += "\n\nReferenced Markdown Store files:\n";
@@ -4644,7 +4660,7 @@ namespace uam
 
 	bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, std::string* error_out)
 	{
-		return SendAcpPrompt(app, chat_id, text, std::vector<std::string>{}, std::vector<MessageAttachment>{}, error_out);
+		return SendAcpPrompt(app, chat_id, text, std::vector<std::string>{}, std::vector<MessageAttachment>{}, false, error_out);
 	}
 
 	bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error_out)

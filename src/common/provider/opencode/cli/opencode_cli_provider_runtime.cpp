@@ -1,5 +1,6 @@
 #include "common/provider/opencode/cli/opencode_cli_provider_runtime.h"
 
+#include "app/goal_service.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/utils/string_utils.h"
@@ -35,12 +36,23 @@ const char* OpenCodeCliProviderRuntime::DisabledReason() const
 	return "";
 }
 
-std::string OpenCodeCliProviderRuntime::BuildPrompt(const ProviderProfile&, std::string_view user_prompt, const std::vector<std::string>& files) const
+std::string OpenCodeCliProviderRuntime::BuildPrompt(const ProviderProfile&, std::string_view user_prompt, const std::vector<std::string>& files, const Goal* active_goal, int64_t tokens_used, int64_t token_budget) const
 {
-	return uam::provider_runtime_internal::BuildPrompt(user_prompt, files);
+	std::string prompt = uam::provider_runtime_internal::BuildPrompt(user_prompt, files);
+	
+	if (active_goal && !active_goal->objective.empty())
+	{
+		std::string goal_prompt = uam::GoalService::BuildContinuationPrompt(*active_goal, tokens_used, token_budget);
+		if (!goal_prompt.empty())
+		{
+			prompt = goal_prompt + "\n\n" + prompt;
+		}
+	}
+	
+	return prompt;
 }
 
-std::string OpenCodeCliProviderRuntime::BuildCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, const std::string& resume_session_id) const
+std::string OpenCodeCliProviderRuntime::BuildCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, const std::string& resume_session_id, const ChatSession* chat) const
 {
 	const AppSettings provider_settings = OpenCodeBatchCommandSettings(profile, settings);
 
@@ -49,7 +61,7 @@ std::string OpenCodeCliProviderRuntime::BuildCommand(const ProviderProfile& prof
 
 	uam::provider_runtime_internal::AppendArgs(argv, OpenCodeFlagsFromSettings(provider_settings));
 	uam::provider_runtime_internal::AppendTrimmedOptionValues(argv, "--file", files);
-	argv.push_back(BuildPrompt(profile, prompt, {}));
+	argv.push_back(BuildPrompt(profile, prompt, files));
 	return uam::provider_runtime_internal::JoinShellEscapedArgs(argv);
 }
 

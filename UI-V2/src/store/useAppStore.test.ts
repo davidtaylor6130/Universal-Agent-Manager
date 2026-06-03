@@ -2519,4 +2519,25 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(requests.some((request) => request.action === 'listMemoryScanCandidates')).toBe(true)
     expect(requests.find((request) => request.action === 'scanCurrentChats')?.payload?.chatIds).toEqual(['chat-1'])
   })
+
+  it('toggles goal mode per chat without making CEF requests', () => {
+    const requests: { action: string; payload?: unknown }[] = []
+    ensureTestWindow().cefQuery = ((params: { request: string }) => {
+      requests.push(JSON.parse(params.request) as { action: string; payload?: unknown })
+    }) as unknown as TestWindow['cefQuery']
+
+    expect(useAppStore.getState().goalModeByChatId['chat-1'] ?? false).toBe(false)
+
+    useAppStore.getState().setGoalMode('chat-1', true)
+    expect(useAppStore.getState().goalModeByChatId['chat-1']).toBe(true)
+
+    useAppStore.getState().setGoalMode('chat-1', false)
+    expect(useAppStore.getState().goalModeByChatId['chat-1']).toBe(false)
+
+    useAppStore.getState().setGoalMode('chat-2', true)
+    expect(useAppStore.getState().goalModeByChatId['chat-2']).toBe(true)
+    expect(useAppStore.getState().goalModeByChatId['chat-1']).toBe(false)
+
+    expect(requests).toEqual([])
+  })
 })

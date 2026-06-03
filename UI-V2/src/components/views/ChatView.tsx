@@ -1939,6 +1939,7 @@ function ComposerToolbar({
   providerName,
   canSend,
   modelId,
+  session,
   reasoningEffort,
   serviceTier,
   approvalModeId,
@@ -1979,6 +1980,7 @@ function ComposerToolbar({
   providerName: string
   canSend: boolean
   modelId?: string
+  session: { id: string }
   reasoningEffort?: string
   serviceTier?: string
   approvalModeId?: string
@@ -2033,6 +2035,10 @@ function ComposerToolbar({
   const acceptEditsDisabled = Boolean(modelDisabled || !acceptEditsAvailable)
   const yoloDisabled = false
   const memoryDisabled = Boolean(modelDisabled)
+  const goalActiveGoalId = useAppStore((s) => s.activeGoalIdByChatId[session.id] ?? null)
+  const goalAvailable = goalActiveGoalId != null
+  const goalActive = useAppStore((s) => s.goalModeByChatId[session.id] ?? false)
+  const setGoalMode = useAppStore((s) => s.setGoalMode)
   const autoLabel = claudeProvider ? 'Auto' : 'Yolo'
   const modeLabel = planActive ? 'Plan' : acceptEditsActive ? 'Accept Edits' : 'Default'
   const running = Boolean(acp?.processing)
@@ -2047,6 +2053,46 @@ function ComposerToolbar({
     ...chipStyle,
     width: 30,
     justifyContent: 'center',
+  }
+
+  // Goal create popup state
+  const [goalCreateOpen, setGoalCreateOpen] = useState(false)
+  const [goalCreateObjective, setGoalCreateObjective] = useState('')
+  const [goalCreateBudget, setGoalCreateBudget] = useState('')
+  const [goalCreateError, setGoalCreateError] = useState('')
+  const [goalCreateSubmitting, setGoalCreateSubmitting] = useState(false)
+  const goalCreateRef = useRef<HTMLDivElement>(null)
+  const setGoalStore = useAppStore((s) => s.setGoal)
+
+  useEffect(() => {
+    if (!goalCreateOpen) return
+    const handleClick = (e: MouseEvent) => {
+      if (goalCreateRef.current && !goalCreateRef.current.contains(e.target as Node)) {
+        setGoalCreateOpen(false)
+        setGoalCreateObjective('')
+        setGoalCreateBudget('')
+        setGoalCreateError('')
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [goalCreateOpen])
+
+  const handleCreateGoal = () => {
+    setGoalCreateError('')
+    setGoalCreateSubmitting(true)
+    setGoalStore(session.id, goalCreateObjective.trim(), goalCreateBudget ? parseInt(goalCreateBudget, 10) : 0)
+      .then((goalId: string | null) => {
+        setGoalCreateSubmitting(false)
+        if (goalId) {
+          setGoalCreateOpen(false)
+          setGoalCreateObjective('')
+          setGoalCreateBudget('')
+          setGoalCreateError('')
+        } else {
+          setGoalCreateError('Failed to create goal.')
+        }
+      })
   }
 
   return (
@@ -2368,6 +2414,135 @@ function ComposerToolbar({
         <span style={{ color: memoryEnabled ? 'var(--green)' : 'var(--text-3)', fontSize: 10 }}>●</span>
         <span>Memory</span>
       </button>
+      <div ref={goalCreateRef} className="relative">
+        {goalAvailable ? (
+          <button
+            type="button"
+            title={goalActive ? 'Goal mode is active — the active goal context will be prepended to prompts' : 'Toggle Goal mode — include active goal context in prompts'}
+            aria-pressed={goalActive}
+            onClick={() => setGoalMode(session.id, !goalActive)}
+            className="inline-flex items-center gap-1.5 px-2"
+            style={{
+              ...chipStyle,
+              borderColor: goalActive ? 'color-mix(in srgb, var(--purple) 55%, var(--border))' : 'var(--border)',
+              background: goalActive ? 'color-mix(in srgb, var(--purple) 16%, var(--surface))' : chipStyle.background,
+              color: goalActive ? 'var(--text)' : 'var(--text-2)',
+              opacity: modelDisabled ? 0.55 : 1,
+            }}
+          >
+            <span style={{ color: goalActive ? 'var(--purple)' : 'var(--text-3)', fontSize: 10 }}>●</span>
+            <span>Goal</span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            title="Create a goal"
+            onClick={() => setGoalCreateOpen(true)}
+            className="inline-flex items-center gap-1.5 px-2"
+            style={chipStyle}
+          >
+            <span style={{ color: 'var(--text-3)', fontSize: 12, fontWeight: 700 }}>+</span>
+            <span>Goal</span>
+          </button>
+        )}
+        {goalCreateOpen && !goalAvailable && (
+          <div
+            className="absolute left-0"
+            style={{
+              bottom: 34,
+              width: 280,
+              zIndex: 40,
+              border: '1px solid var(--border-bright)',
+              borderRadius: 8,
+              background: 'var(--surface)',
+              boxShadow: '0 14px 42px rgba(0, 0, 0, 0.28)',
+              padding: 12,
+            }}
+          >
+            <div className="flex flex-col gap-2">
+              <span className="text-xs" style={{ color: 'var(--text-2)', fontWeight: 600 }}>Create Goal</span>
+              <input
+                autoFocus
+                type="text"
+                placeholder="What do you want to achieve?"
+                value={goalCreateObjective}
+                onChange={(e) => setGoalCreateObjective(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && goalCreateObjective.trim()) {
+                    handleCreateGoal()
+                  }
+                  if (e.key === 'Escape') {
+                    setGoalCreateOpen(false)
+                    setGoalCreateObjective('')
+                    setGoalCreateBudget('')
+                    setGoalCreateError('')
+                  }
+                }}
+                className="w-full px-2 py-1.5 text-xs"
+                style={{
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  background: 'var(--bg)',
+                  color: 'var(--text)',
+                  outline: 'none',
+                }}
+              />
+              <input
+                type="number"
+                placeholder="Token budget (optional)"
+                value={goalCreateBudget}
+                onChange={(e) => setGoalCreateBudget(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && goalCreateObjective.trim()) {
+                    handleCreateGoal()
+                  }
+                  if (e.key === 'Escape') {
+                    setGoalCreateOpen(false)
+                    setGoalCreateObjective('')
+                    setGoalCreateBudget('')
+                    setGoalCreateError('')
+                  }
+                }}
+                className="w-full px-2 py-1.5 text-xs"
+                style={{
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  background: 'var(--bg)',
+                  color: 'var(--text)',
+                  outline: 'none',
+                }}
+              />
+              {goalCreateError && (
+                <span className="text-xs" style={{ color: 'var(--danger)' }}>{goalCreateError}</span>
+              )}
+              <div className="flex justify-end gap-2 mt-1">
+                <button
+                  type="button"
+                  className="uam-secondary-button"
+                  style={{ padding: '2px 10px', fontSize: 11 }}
+                  onClick={() => {
+                    setGoalCreateOpen(false)
+                    setGoalCreateObjective('')
+                    setGoalCreateBudget('')
+                    setGoalCreateError('')
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="uam-primary-button"
+                  style={{ padding: '2px 10px', fontSize: 11 }}
+                  disabled={goalCreateSubmitting || !goalCreateObjective.trim()}
+                  onClick={handleCreateGoal}
+                >
+                  {goalCreateSubmitting ? 'Creating...' : 'Create'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
       <button
         type="button"
         title="Attach files"
@@ -3540,6 +3715,7 @@ export function ChatView({ session }: ChatViewProps) {
               providerName={currentProviderName}
               canSend={canSend}
               modelId={currentModelId}
+              session={session}
               reasoningEffort={session.reasoningEffort ?? ''}
               serviceTier={session.serviceTier ?? ''}
               approvalModeId={currentModeId}

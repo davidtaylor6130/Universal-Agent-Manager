@@ -36,11 +36,11 @@ namespace
 		{
 			return "Selected provider runtime is not supported in this build.";
 		}
-		std::string BuildPrompt(const ProviderProfile&, std::string_view user_prompt, const std::vector<std::string>&) const override
+		std::string BuildPrompt(const ProviderProfile&, std::string_view user_prompt, const std::vector<std::string>&, const Goal*, int64_t, int64_t) const override
 		{
 			return std::string(user_prompt);
 		}
-		std::string BuildCommand(const ProviderProfile&, const AppSettings&, std::string_view, const std::vector<std::string>&, const std::string&) const override
+		std::string BuildCommand(const ProviderProfile&, const AppSettings&, std::string_view, const std::vector<std::string>&, const std::string&, const ChatSession*) const override
 		{
 			return "";
 		}

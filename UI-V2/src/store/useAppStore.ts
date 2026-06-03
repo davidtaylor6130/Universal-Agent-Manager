@@ -160,6 +160,7 @@ interface CppChat {
   acpSession?: CppAcpSession
   activeGoalId?: string | null
   goals?: CppGoal[]
+  goalMode?: boolean
 }
 
 interface CppGoal {
@@ -2823,6 +2824,7 @@ interface AppState {
   messages: Record<string, Message[]>
   goalsByChatId: Record<string, Goal[]>
   activeGoalIdByChatId: Record<string, string | null>
+  goalModeByChatId: Record<string, boolean>
 
   // Providers
   providers: Provider[]
@@ -2916,6 +2918,7 @@ interface AppState {
   setGoal: (chatId: string, objective: string, tokenBudget?: number) => Promise<string | null>
   updateGoalStatus: (goalId: string, status: GoalStatus) => Promise<boolean>
   removeGoal: (goalId: string) => Promise<boolean>
+  setGoalMode: (chatId: string, active: boolean) => void
   clearActiveGoal: (chatId: string) => Promise<boolean>
 
   // Folder actions
@@ -3348,6 +3351,7 @@ export const useAppStore = create<AppState>((set, get) => {
     messages: {},
     goalsByChatId: {},
     activeGoalIdByChatId: {},
+    goalModeByChatId: {},
 
     providers: inCef ? [] : initialProviders,
     cliBindingBySessionId: {},
@@ -5437,11 +5441,21 @@ export const useAppStore = create<AppState>((set, get) => {
         return false
       }
       const markdownStoreFiles = (get().markdownStoreAttachedBySessionId[sessionId] ?? []).map((entry) => entry.filePath)
+      const state = get()
+      const goalModeActive = state.goalModeByChatId[sessionId] ?? false
+      const goalId = goalModeActive ? state.activeGoalIdByChatId[sessionId] ?? null : null
 
       if (isCefContext()) {
         const response = await sendToCEF({
           action: 'sendAcpPrompt',
-          payload: { chatId: sessionId, text: prompt, markdownStoreFiles, attachments },
+          payload: {
+            chatId: sessionId,
+            text: prompt,
+            markdownStoreFiles,
+            attachments,
+            goalMode: goalModeActive,
+            goalId,
+          },
         })
         if (!response.ok) {
           set((state) => ({
@@ -5930,6 +5944,15 @@ export const useAppStore = create<AppState>((set, get) => {
         },
       }))
       return true
+    },
+
+    setGoalMode: (chatId: string, active: boolean) => {
+      set((state: AppState) => ({
+        goalModeByChatId: {
+          ...state.goalModeByChatId,
+          [chatId]: active,
+        },
+      }))
     },
 
     // ---- UI actions ----

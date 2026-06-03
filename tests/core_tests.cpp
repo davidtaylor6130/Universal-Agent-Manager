@@ -1,6 +1,7 @@
 #include "app/chat_domain_service.h"
 #include "app/chat_lifecycle_service.h"
 #include "app/git_worktree_service.h"
+#include "app/goal_service.h"
 #include "app/markdown_store_service.h"
 #include "app/memory_library_service.h"
 #include "app/memory_service.h"
@@ -38,6 +39,7 @@
 #include "common/provider/provider_profile_constants.h"
 #include "common/provider/provider_runtime.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
+#include "common/provider/opencode/cli/opencode_cli_provider_runtime.h"
 #include "common/runtime/acp/acp_attention_kind.h"
 #include "common/runtime/acp/acp_claude_stream.h"
 #include "common/runtime/acp/acp_content.h"
@@ -10959,6 +10961,77 @@ UAM_TEST(MacTerminalFastStopTerminatesProcessGroupChildren)
 	UAM_ASSERT(process_group_gone);
 }
 #endif
+
+UAM_TEST(GoalServiceBuildContinuationPromptIncludesObjectiveAndBudget)
+{
+	Goal goal;
+	goal.id = "goal_test_1";
+	goal.objective = "Refactor the caching layer to reduce cold-start latency by 50%.";
+	goal.status = GoalStatus::Active;
+	goal.token_budget = 8000;
+	goal.tokens_used = 1500;
+
+	const std::string prompt = uam::GoalService::BuildContinuationPrompt(goal, goal.tokens_used, goal.token_budget);
+
+	UAM_ASSERT(!prompt.empty());
+	UAM_ASSERT(prompt.find(goal.objective) != std::string::npos);
+	UAM_ASSERT(prompt.find("Continue working toward the active thread goal.") != std::string::npos);
+	UAM_ASSERT(prompt.find("Tokens used: 1500") != std::string::npos);
+	UAM_ASSERT(prompt.find("Token budget: 8000") != std::string::npos);
+	UAM_ASSERT(prompt.find("Tokens remaining: 6500") != std::string::npos);
+}
+
+UAM_TEST(GoalServiceBuildContinuationPromptReturnsEmptyForBlankObjective)
+{
+	Goal goal;
+	goal.id = "goal_test_2";
+	goal.objective = "";
+	goal.status = GoalStatus::Active;
+
+	const std::string prompt = uam::GoalService::BuildContinuationPrompt(goal, 0, 0);
+	UAM_ASSERT(prompt.empty());
+}
+
+UAM_TEST(OpenCodeBuildPromptPrependsGoalContextWhenActiveGoalProvided)
+{
+	const IProviderRuntime& runtime = GetOpenCodeCliProviderRuntime();
+	const ProviderProfile profile = ProviderProfileStore::DefaultOpenCodeProfile();
+
+	Goal goal;
+	goal.id = "goal_test_3";
+	goal.objective = "Ship a working build of the goal-aware prompt path.";
+	goal.status = GoalStatus::Active;
+	goal.token_budget = 4000;
+	goal.tokens_used = 250;
+
+	const std::string baseline = runtime.BuildPrompt(profile, "Explain the diff", {});
+	UAM_ASSERT_EQ(baseline, std::string("Explain the diff"));
+
+	const std::string with_goal = runtime.BuildPrompt(profile, "Explain the diff", {}, &goal, goal.tokens_used, goal.token_budget);
+	UAM_ASSERT(with_goal.find(goal.objective) != std::string::npos);
+	UAM_ASSERT(with_goal.find("Explain the diff") != std::string::npos);
+	UAM_ASSERT(with_goal.find(goal.objective) < with_goal.find("Explain the diff"));
+}
+
+UAM_TEST(ProviderRuntimeFacadeBuildPromptForwardsGoalContext)
+{
+	const ProviderProfile profile = ProviderProfileStore::DefaultOpenCodeProfile();
+
+	Goal goal;
+	goal.id = "goal_test_4";
+	goal.objective = "Land the goal-mode toggle behind a unit-tested contract.";
+	goal.status = GoalStatus::Active;
+	goal.token_budget = 1000;
+	goal.tokens_used = 100;
+
+	const std::string baseline = ProviderRuntime::BuildPrompt(profile, "Ship it", {});
+	UAM_ASSERT_EQ(baseline, std::string("Ship it"));
+
+	const std::string with_goal = ProviderRuntime::BuildPrompt(profile, "Ship it", {}, &goal, goal.tokens_used, goal.token_budget);
+	UAM_ASSERT(with_goal.find(goal.objective) != std::string::npos);
+	UAM_ASSERT(with_goal.find("Ship it") != std::string::npos);
+	UAM_ASSERT(with_goal.find(goal.objective) < with_goal.find("Ship it"));
+}
 
 int main()
 {

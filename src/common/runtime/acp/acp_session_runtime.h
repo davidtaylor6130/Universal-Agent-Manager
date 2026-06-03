@@ -14,7 +14,7 @@ namespace uam
 AcpSessionState* FindAcpSessionForChat(AppState& app, const std::string& chat_id);
 const AcpSessionState* FindAcpSessionForChat(const AppState& app, const std::string& chat_id);
 
-bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, const std::vector<std::string>& markdown_store_files = {}, const std::vector<MessageAttachment>& attachments = {}, std::string* error_out = nullptr);
+bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, const std::vector<std::string>& markdown_store_files = {}, const std::vector<MessageAttachment>& attachments = {}, bool goal_mode = false, std::string* error_out = nullptr);
 bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, std::string* error_out);
 bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);
 bool StopAcpSession(AppState& app, const std::string& chat_id);
