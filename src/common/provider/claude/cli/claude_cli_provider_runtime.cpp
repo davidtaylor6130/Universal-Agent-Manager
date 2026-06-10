@@ -1,5 +1,6 @@
 #include "common/provider/claude/cli/claude_cli_provider_runtime.h"
 
+#include "app/goal_service.h"
 #include "common/config/approval_modes.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
@@ -57,19 +58,40 @@ const char* ClaudeCliProviderRuntime::DisabledReason() const
 	return "";
 }
 
-std::string ClaudeCliProviderRuntime::BuildPrompt(const ProviderProfile&, std::string_view user_prompt, const std::vector<std::string>& files, const Goal*, int64_t, int64_t) const
+std::string ClaudeCliProviderRuntime::BuildPrompt(const ProviderProfile&, std::string_view user_prompt, const std::vector<std::string>& files, const Goal* active_goal, int64_t tokens_used, int64_t token_budget) const
 {
-	return uam::provider_runtime_internal::BuildPrompt(user_prompt, files);
+	std::string prompt = uam::provider_runtime_internal::BuildPrompt(user_prompt, files);
+	if (active_goal && !active_goal->objective.empty())
+	{
+		const std::string goal_prompt = uam::GoalService::BuildContinuationPrompt(*active_goal, tokens_used, token_budget);
+		if (!goal_prompt.empty())
+		{
+			prompt = goal_prompt + "\n\n" + prompt;
+		}
+	}
+	return prompt;
 }
 
-std::string ClaudeCliProviderRuntime::BuildCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, const std::string& resume_session_id, const ChatSession*) const
+std::string ClaudeCliProviderRuntime::BuildCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, const std::string& resume_session_id, const ChatSession* chat) const
 {
 	const AppSettings provider_settings = uam::provider_runtime_internal::MergeProviderSettings(profile, settings);
 	std::vector<std::string> argv = {"claude", "-p"};
 	uam::provider_runtime_internal::AppendResumeArgs(argv, profile, resume_session_id);
 
 	uam::provider_runtime_internal::AppendArgs(argv, ClaudeFlagsFromSettings(provider_settings));
-	argv.push_back(BuildPrompt(profile, prompt, files));
+	const Goal* active_goal = nullptr;
+	if (chat != nullptr && !chat->active_goal_id.empty())
+	{
+		for (const Goal& goal : chat->goals)
+		{
+			if (goal.id == chat->active_goal_id && goal.status == GoalStatus::Active)
+			{
+				active_goal = &goal;
+				break;
+			}
+		}
+	}
+	argv.push_back(BuildPrompt(profile, prompt, files, active_goal, active_goal == nullptr ? 0 : active_goal->tokens_used, active_goal == nullptr ? 0 : active_goal->token_budget));
 	return uam::provider_runtime_internal::JoinShellEscapedArgs(argv);
 }
 

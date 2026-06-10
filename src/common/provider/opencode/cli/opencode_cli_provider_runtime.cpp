@@ -61,7 +61,19 @@ std::string OpenCodeCliProviderRuntime::BuildCommand(const ProviderProfile& prof
 
 	uam::provider_runtime_internal::AppendArgs(argv, OpenCodeFlagsFromSettings(provider_settings));
 	uam::provider_runtime_internal::AppendTrimmedOptionValues(argv, "--file", files);
-	argv.push_back(BuildPrompt(profile, prompt, files));
+	const Goal* active_goal = nullptr;
+	if (chat != nullptr && !chat->active_goal_id.empty())
+	{
+		for (const Goal& goal : chat->goals)
+		{
+			if (goal.id == chat->active_goal_id && goal.status == GoalStatus::Active)
+			{
+				active_goal = &goal;
+				break;
+			}
+		}
+	}
+	argv.push_back(BuildPrompt(profile, prompt, files, active_goal, active_goal == nullptr ? 0 : active_goal->tokens_used, active_goal == nullptr ? 0 : active_goal->token_budget));
 	return uam::provider_runtime_internal::JoinShellEscapedArgs(argv);
 }
 
@@ -134,6 +146,11 @@ bool OpenCodeCliProviderRuntime::UsesCliOutput(const ProviderProfile&) const
 bool OpenCodeCliProviderRuntime::UsesGeminiPathBootstrap(const ProviderProfile&) const
 {
 	return false;
+}
+
+bool OpenCodeCliProviderRuntime::ProviderRecognizesSubagentTool(std::string_view tool_name) const
+{
+	return uam::strings::ContainsAnyCaseInsensitive(tool_name, {"task", "subtask", "delegate"});
 }
 
 const IProviderRuntime& GetOpenCodeCliProviderRuntime()

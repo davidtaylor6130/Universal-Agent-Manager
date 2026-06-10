@@ -157,3 +157,8 @@ ProviderDiscoveryResult ProviderRuntime::DiscoverChatSources(const ProviderProfi
 {
 	return ProviderRuntimeRegistry::Resolve(profile).DiscoverChatSources(profile);
 }
+
+bool ProviderRuntime::ProviderRecognizesSubagentTool(const ProviderProfile& profile, std::string_view tool_name)
+{
+	return ProviderRuntimeRegistry::Resolve(profile).ProviderRecognizesSubagentTool(tool_name);
+}

@@ -3357,6 +3357,10 @@ void UamQueryHandler::HandleSetGoal(CefRefPtr<CefBrowser> browser, const nlohman
 
 	// Auto-activate the new goal
 	uam::GoalService::SetActiveGoal(m_app, chat_id, goal_id);
+	if (ChatSession* chat = ChatDomainService().FindChatById(m_app, chat_id); chat != nullptr)
+	{
+		(void)ChatRepository::SaveChat(m_app.data_root, *chat);
+	}
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success(R"({"goalId":")" + goal_id + R"("})");
@@ -3380,6 +3384,10 @@ void UamQueryHandler::HandleUpdateGoalStatus(CefRefPtr<CefBrowser> browser, cons
 	else if (status_str == "blocked")
 	{
 		status = GoalStatus::Blocked;
+	}
+	else if (status_str == "active")
+	{
+		status = GoalStatus::Active;
 	}
 	else
 	{
@@ -3411,6 +3419,10 @@ void UamQueryHandler::HandleUpdateGoalStatus(CefRefPtr<CefBrowser> browser, cons
 
 	if (!parent_chat_id.empty())
 	{
+		if (ChatSession* chat = ChatDomainService().FindChatById(m_app, parent_chat_id); chat != nullptr)
+		{
+			(void)ChatRepository::SaveChat(m_app.data_root, *chat);
+		}
 		uam::PushStateUpdateIfChanged(browser, m_app);
 	}
 
@@ -3422,18 +3434,23 @@ void UamQueryHandler::HandleSetActiveGoal(CefRefPtr<CefBrowser> browser, const n
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string goal_id = payload.value("goalId", "");
 
-	if (chat_id.empty() || goal_id.empty())
+	if (chat_id.empty())
 	{
-		cb->Failure(400, "Missing chatId or goalId.");
+		cb->Failure(400, "Missing chatId.");
 		return;
 	}
 
-	if (!uam::GoalService::SetActiveGoal(m_app, chat_id, goal_id))
+	const bool updated = goal_id.empty() ? uam::GoalService::ClearActiveGoal(m_app, chat_id) : uam::GoalService::SetActiveGoal(m_app, chat_id, goal_id);
+	if (!updated)
 	{
 		cb->Failure(404, "Failed to set active goal. Goal may not exist or is not in this chat.");
 		return;
 	}
 
+	if (ChatSession* chat = ChatDomainService().FindChatById(m_app, chat_id); chat != nullptr)
+	{
+		(void)ChatRepository::SaveChat(m_app.data_root, *chat);
+	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
@@ -3471,6 +3488,10 @@ void UamQueryHandler::HandleRemoveGoal(CefRefPtr<CefBrowser> browser, const nloh
 
 	if (!parent_chat_id.empty())
 	{
+		if (ChatSession* chat = ChatDomainService().FindChatById(m_app, parent_chat_id); chat != nullptr)
+		{
+			(void)ChatRepository::SaveChat(m_app.data_root, *chat);
+		}
 		uam::PushStateUpdateIfChanged(browser, m_app);
 	}
 

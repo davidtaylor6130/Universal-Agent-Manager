@@ -15,6 +15,7 @@
 #include "common/provider/codex/cli/codex_thread_id.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile_constants.h"
+#include "common/provider/provider_runtime.h"
 #include "common/provider/runtime/provider_build_config.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/runtime/acp/acp_attention_kind.h"
@@ -1214,6 +1215,12 @@ namespace uam
 				{
 					return candidate.substr(current_assistant_text.size());
 				}
+
+				if (candidate.size() <= current_assistant_text.size() &&
+				    current_assistant_text.compare(current_assistant_text.size() - candidate.size(), candidate.size(), candidate) == 0)
+				{
+					return "";
+				}
 			}
 
 			return candidate;
@@ -2021,6 +2028,178 @@ namespace uam
 			session.lifecycle_state.assign(lifecycle_state);
 		}
 
+		std::string MessageTextForGoalReview(const ChatSession& chat, int index)
+		{
+			if (index < 0 || index >= static_cast<int>(chat.messages.size()))
+			{
+				return "";
+			}
+			return chat.messages[static_cast<std::size_t>(index)].content;
+		}
+
+		int64_t EstimateGoalTurnTokens(const ChatSession& chat, const AcpSessionState& session)
+		{
+			int64_t tokens = 0;
+			if (session.turn_user_message_index >= 0 && session.turn_user_message_index < static_cast<int>(chat.messages.size()))
+			{
+				const Message& message = chat.messages[static_cast<std::size_t>(session.turn_user_message_index)];
+				tokens += message.tokens_input + message.tokens_output;
+				if (message.tokens_input == 0 && message.tokens_output == 0)
+				{
+					tokens += static_cast<int64_t>(std::max<std::size_t>(1, message.content.size() / 4));
+				}
+			}
+			if (session.turn_assistant_message_index >= 0 && session.turn_assistant_message_index < static_cast<int>(chat.messages.size()))
+			{
+				const Message& message = chat.messages[static_cast<std::size_t>(session.turn_assistant_message_index)];
+				tokens += message.tokens_input + message.tokens_output;
+				if (message.tokens_input == 0 && message.tokens_output == 0)
+				{
+					tokens += static_cast<int64_t>(std::max<std::size_t>(1, message.content.size() / 4));
+				}
+			}
+			return std::max<int64_t>(1, tokens);
+		}
+
+		bool CanQueueGoalInternalPrompt(const AcpSessionState& session)
+		{
+			return session.session_ready && !session.processing && !session.waiting_for_permission && !session.waiting_for_user_input && !session.cancel_requested && session.prompt_request_id == 0 && session.cancel_request_id == 0 && session.queued_prompt.empty();
+		}
+
+		bool QueueGoalInternalPrompt(AcpSessionState& session, ChatSession& chat, const std::string& prompt, bool review_turn)
+		{
+			if (prompt.empty() || !CanQueueGoalInternalPrompt(session))
+			{
+				return false;
+			}
+			session.queued_prompt = prompt;
+			session.goal_review_turn = review_turn;
+			session.processing = true;
+			session.cancel_requested = false;
+			session.current_assistant_message_index = -1;
+			session.turn_user_message_index = -1;
+			session.turn_assistant_message_index = -1;
+			session.turn_serial += 1;
+			ResetAcpTurnStreamState(session);
+			ResetAcpPendingInteractionState(session);
+			session.last_runtime_activity_time_s = GetAppTimeSeconds();
+			session.last_error.clear();
+			session.lifecycle_state = kAcpLifecycleProcessing;
+			return SendQueuedPromptIfReady(session, chat);
+		}
+
+		void ClearGoalReviewState(AcpSessionState& session)
+		{
+			session.goal_review_turn = false;
+			session.goal_review_scheduled = false;
+			session.goal_review_goal_id.clear();
+			session.goal_review_user_prompt.clear();
+			session.goal_review_assistant_text.clear();
+		}
+
+		bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSession& chat, CefRefPtr<CefBrowser> browser)
+		{
+			if (!session.goal_review_turn)
+			{
+				return false;
+			}
+
+			const std::string goal_id = session.goal_review_goal_id;
+			const std::string review_text = MessageTextForGoalReview(chat, session.turn_assistant_message_index);
+			ClearGoalReviewState(session);
+
+			const std::optional<GoalService::ReviewDecision> parsed = GoalService::ParseReviewDecision(review_text);
+			if (!parsed.has_value())
+			{
+				GoalService::RecordBlocker(app, goal_id, "Goal reviewer returned invalid JSON.");
+				SaveChatQuietly(app, chat);
+				if (Goal* active_goal = GoalService::FindActiveGoal(app, chat.id); active_goal != nullptr && active_goal->id == goal_id)
+				{
+					(void)QueueGoalInternalPrompt(session, chat, GoalService::BuildContinuationPrompt(*active_goal, active_goal->tokens_used, active_goal->token_budget), false);
+				}
+						if (browser)
+				{
+					uam::PushStateUpdateIfChanged(browser, app);
+				}
+				return true;
+			}
+
+			const GoalService::ReviewDecision& decision = *parsed;
+			if (decision.decision == "complete")
+			{
+				(void)GoalService::UpdateGoalStatus(app, goal_id, GoalStatus::Complete);
+				SaveChatQuietly(app, chat);
+					if (browser)
+				{
+					uam::PushStateUpdateIfChanged(browser, app);
+				}
+				return true;
+			}
+			if (decision.decision == "blocked")
+			{
+				GoalService::RecordBlocker(app, goal_id, decision.reason);
+				SaveChatQuietly(app, chat);
+				if (Goal* active_goal = GoalService::FindActiveGoal(app, chat.id); active_goal != nullptr && active_goal->id == goal_id)
+				{
+					(void)QueueGoalInternalPrompt(session, chat, GoalService::BuildContinuationPrompt(*active_goal, active_goal->tokens_used, active_goal->token_budget), false);
+				}
+					if (browser)
+				{
+					uam::PushStateUpdateIfChanged(browser, app);
+				}
+				return true;
+			}
+
+			Goal* active_goal = GoalService::FindActiveGoal(app, chat.id);
+			if (active_goal == nullptr || active_goal->id != goal_id)
+			{
+				SaveChatQuietly(app, chat);
+				return true;
+			}
+
+			const std::string follow_up = decision.next_prompt.empty() ? GoalService::BuildContinuationPrompt(*active_goal, active_goal->tokens_used, active_goal->token_budget) : decision.next_prompt;
+			SaveChatQuietly(app, chat);
+			(void)QueueGoalInternalPrompt(session, chat, follow_up, false);
+			if (browser)
+			{
+				uam::PushStateUpdateIfChanged(browser, app);
+			}
+			return true;
+		}
+
+		void ScheduleGoalReviewAfterSuccessfulTurn(AppState& app, AcpSessionState& session, ChatSession& chat, CefRefPtr<CefBrowser> browser)
+		{
+			if (session.goal_review_turn || session.goal_review_scheduled)
+			{
+				return;
+			}
+
+			Goal* active_goal = GoalService::FindActiveGoal(app, chat.id);
+			if (active_goal == nullptr || active_goal->objective.empty())
+			{
+				return;
+			}
+
+			GoalService::RecordTurnCompletion(app, active_goal->id, EstimateGoalTurnTokens(chat, session));
+			active_goal = GoalService::FindActiveGoal(app, chat.id);
+			SaveChatQuietly(app, chat);
+			if (active_goal == nullptr)
+			{
+				if (browser)
+				{
+					uam::PushStateUpdateIfChanged(browser, app);
+				}
+				return;
+			}
+
+			session.goal_review_scheduled = true;
+			session.goal_review_goal_id = active_goal->id;
+			session.goal_review_user_prompt = MessageTextForGoalReview(chat, session.turn_user_message_index);
+			session.goal_review_assistant_text = MessageTextForGoalReview(chat, session.turn_assistant_message_index);
+			const std::string review_prompt = GoalService::BuildReviewPrompt(*active_goal, session.goal_review_user_prompt, session.goal_review_assistant_text);
+			(void)QueueGoalInternalPrompt(session, chat, review_prompt, true);
+		}
+
 		void FailAcpTurnOrSession(AcpSessionState& session, const std::string& message)
 		{
 			session.last_error = message;
@@ -2080,11 +2259,11 @@ namespace uam
 			return false;
 		}
 
-		void AppendAssistantChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk)
+		std::string AppendAssistantChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk)
 		{
 			if (chunk.empty())
 			{
-				return;
+				return "";
 			}
 
 			std::string current_assistant_text;
@@ -2096,7 +2275,7 @@ namespace uam
 			const std::string delta = AssistantDeltaForIncomingText(session, current_assistant_text, chunk);
 			if (delta.empty())
 			{
-				return;
+				return "";
 			}
 
 			Message* current_message = CurrentAssistantMessage(chat, session);
@@ -2115,6 +2294,7 @@ namespace uam
 			}
 			AppendAssistantTextTurnEvent(session, delta);
 			(void)SyncCurrentAssistantMessageBlocksFromTurnEvents(chat, session);
+			return delta;
 		}
 
 		ToolCall PersistedToolCallFromAcpToolCall(const AcpToolCallState& tool_call)
@@ -2274,18 +2454,23 @@ namespace uam
 			return session.tool_calls.back();
 		}
 
-		bool LooksLikeSubAgentTool(const nlohmann::json& update, const AcpToolCallState& tool_call)
+		bool LooksLikeSubAgentTool(const nlohmann::json& update, const AcpToolCallState& tool_call, const IProviderRuntime& runtime)
 		{
 			if (JsonBooleanValueOr(update, "isSubAgent", false) || JsonBooleanValueOr(update, "subAgent", false))
 			{
 				return true;
 			}
 
-			return TextContainsAnyCaseInsensitive(tool_call.kind, {"subagent", "sub-agent", "agent"}) ||
-			       TextContainsAnyCaseInsensitive(tool_call.title, {"subagent", "sub-agent", "agent"});
+			if (TextContainsAnyCaseInsensitive(tool_call.kind, {"subagent", "sub-agent", "agent"}) ||
+			    TextContainsAnyCaseInsensitive(tool_call.title, {"subagent", "sub-agent", "agent"}))
+			{
+				return true;
+			}
+
+			return runtime.ProviderRecognizesSubagentTool(tool_call.title);
 		}
 
-		void ApplySubAgentMetadata(AcpToolCallState& tool_call, const nlohmann::json& update)
+		void ApplySubAgentMetadata(AcpToolCallState& tool_call, const nlohmann::json& update, const IProviderRuntime& runtime)
 		{
 			const std::string sub_agent_id = uam::strings::NonEmptyOrFallback(
 			    JsonDiagnosticStringValue(update, "subAgentId"),
@@ -2302,7 +2487,7 @@ namespace uam
 			{
 				tool_call.sub_agent_title = sub_agent_title;
 			}
-			if (LooksLikeSubAgentTool(update, tool_call) || !tool_call.sub_agent_id.empty() || !tool_call.sub_agent_title.empty())
+			if (LooksLikeSubAgentTool(update, tool_call, runtime) || !tool_call.sub_agent_id.empty() || !tool_call.sub_agent_title.empty())
 			{
 				tool_call.is_sub_agent = true;
 			}
@@ -2383,10 +2568,10 @@ namespace uam
 					return;
 				}
 
-				AppendAssistantChunk(chat, session, live_text);
-				if (browser)
+				const std::string appended = AppendAssistantChunk(chat, session, live_text);
+				if (browser && !appended.empty())
 				{
-					uam::PushStreamToken(browser, chat.id, live_text);
+					uam::PushStreamToken(browser, chat.id, appended);
 				}
 				ScheduleChatSave(app, chat, 0.5);
 				return;
@@ -2410,7 +2595,20 @@ namespace uam
 					{
 						tool_call.content = ContentTextFromJson(*content);
 					}
-					ApplySubAgentMetadata(tool_call, update);
+					if (const ProviderProfile* provider_profile = ProviderResolutionService().ProviderForChat(app, chat); provider_profile != nullptr)
+					{
+						const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(*provider_profile);
+						ApplySubAgentMetadata(tool_call, update, runtime);
+					}
+					else if (!chat.provider_id.empty())
+					{
+						const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(chat.provider_id);
+						ApplySubAgentMetadata(tool_call, update, runtime);
+					}
+					else
+					{
+						ApplySubAgentMetadata(tool_call, update, ProviderRuntimeRegistry::ResolveById(std::string_view{}));
+					}
 					AppendToolTurnEventIfNeeded(session, id);
 					if (SyncAcpToolCallsToAssistantMessage(chat, session, false))
 					{
@@ -2927,11 +3125,11 @@ namespace uam
 			return message != nullptr && !message->content.empty();
 		}
 
-		void AppendCodexAgentMessageText(ChatSession& chat, AcpSessionState& session, const std::string& item_id, const std::string& delta)
+		std::string AppendCodexAgentMessageText(ChatSession& chat, AcpSessionState& session, const std::string& item_id, const std::string& delta)
 		{
 			if (delta.empty())
 			{
-				return;
+				return "";
 			}
 
 			std::string chunk = delta;
@@ -2943,7 +3141,7 @@ namespace uam
 			{
 				session.codex_last_agent_message_item_id = item_id;
 			}
-			AppendAssistantChunk(chat, session, chunk);
+			return AppendAssistantChunk(chat, session, chunk);
 		}
 
 		void RemoveCodexPlanDeltaEntryForItem(AcpSessionState& session, const std::string& item_id)
@@ -3215,6 +3413,10 @@ namespace uam
 				}
 				(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 				CompletePromptTurn(session, kAcpLifecycleReady);
+				if (!HandleGoalReviewCompletion(app, session, chat, browser))
+				{
+					ScheduleGoalReviewAfterSuccessfulTurn(app, session, chat, browser);
+				}
 				if (browser)
 				{
 					uam::PushStreamDone(browser, chat.id);
@@ -3227,10 +3429,10 @@ namespace uam
 			{
 				const std::string item_id = JsonDiagnosticStringValue(params, "itemId");
 				const std::string delta = CodexStreamedAgentMessageDelta(session, item_id, JsonDiagnosticStringValue(params, "delta"));
-				AppendCodexAgentMessageText(chat, session, item_id, delta);
-				if (browser && !delta.empty())
+				const std::string appended = AppendCodexAgentMessageText(chat, session, item_id, delta);
+				if (browser && !appended.empty())
 				{
-					uam::PushStreamToken(browser, chat.id, delta);
+					uam::PushStreamToken(browser, chat.id, appended);
 				}
 				ScheduleChatSave(app, chat, 0.5);
 				return;
@@ -3244,7 +3446,7 @@ namespace uam
 					{
 						uam::PushStreamToken(browser, chat.id, delta);
 					}
-					ScheduleChatSave(app, chat, 0.5);
+						ScheduleChatSave(app, chat, 0.5);
 				}
 				return;
 			}
@@ -3257,7 +3459,7 @@ namespace uam
 					{
 						uam::PushStreamToken(browser, chat.id, delta);
 					}
-					ScheduleChatSave(app, chat, 0.5);
+						ScheduleChatSave(app, chat, 0.5);
 				}
 				return;
 			}
@@ -3999,6 +4201,10 @@ namespace uam
 			{
 				(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 				CompletePromptTurn(session, kAcpLifecycleReady);
+				if (!HandleGoalReviewCompletion(app, session, chat, nullptr))
+				{
+					ScheduleGoalReviewAfterSuccessfulTurn(app, session, chat, nullptr);
+				}
 				SaveChatQuietly(app, chat);
 				MarkAcpChatUnseenIfBackground(app, chat);
 				return;
@@ -4040,12 +4246,12 @@ namespace uam
 				const std::string fallback_text = ClaudeContentTextFromMessage(assistant_message);
 				if (!fallback_text.empty())
 				{
-					AppendAssistantChunk(chat, session, fallback_text);
-					if (browser)
+					const std::string appended = AppendAssistantChunk(chat, session, fallback_text);
+					if (browser && !appended.empty())
 					{
-						uam::PushStreamToken(browser, chat.id, fallback_text);
+						uam::PushStreamToken(browser, chat.id, appended);
 					}
-					ScheduleChatSave(app, chat, 0.5);
+						ScheduleChatSave(app, chat, 0.5);
 				}
 				return;
 			}
@@ -4064,10 +4270,10 @@ namespace uam
 					const std::string text = ContentTextFromJson(item);
 					if (!text.empty())
 					{
-						AppendAssistantChunk(chat, session, text);
-						if (browser)
+						const std::string appended = AppendAssistantChunk(chat, session, text);
+						if (browser && !appended.empty())
 						{
-							uam::PushStreamToken(browser, chat.id, text);
+							uam::PushStreamToken(browser, chat.id, appended);
 						}
 						changed = true;
 					}
@@ -4208,6 +4414,10 @@ namespace uam
 			else
 			{
 				CompletePromptTurn(session, kAcpLifecycleReady);
+				if (!HandleGoalReviewCompletion(app, session, chat, browser))
+				{
+					ScheduleGoalReviewAfterSuccessfulTurn(app, session, chat, browser);
+				}
 			}
 
 			if (browser)
@@ -4493,7 +4703,7 @@ namespace uam
 		return nullptr;
 	}
 
-	bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, const std::vector<std::string>& markdown_store_files, const std::vector<MessageAttachment>& attachments, bool goal_mode, std::string* error_out)
+	bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, const std::vector<std::string>& markdown_store_files, const std::vector<MessageAttachment>& attachments, bool, std::string* error_out)
 	{
 		const std::string prompt = uam::strings::Trim(text);
 		if (prompt.empty())
@@ -4562,17 +4772,13 @@ namespace uam
 		const std::string recall_preface = MemoryService::BuildRecallPreface(app, chat, prompt);
 		std::string effective_prompt = recall_preface.empty() ? prompt : recall_preface + prompt;
 
-		// Inject goal context only when the UI has Goal mode toggled on for this chat
-		if (goal_mode)
+		const Goal* active_goal = GoalService::FindActiveGoal(app, chat.id);
+		if (active_goal && active_goal->status == GoalStatus::Active && !active_goal->objective.empty())
 		{
-			const Goal* active_goal = GoalService::FindActiveGoal(app, chat.id);
-			if (active_goal && active_goal->status == GoalStatus::Active && !active_goal->objective.empty())
+			std::string goal_prompt = GoalService::BuildContinuationPrompt(*active_goal, active_goal->tokens_used, active_goal->token_budget);
+			if (!goal_prompt.empty())
 			{
-				std::string goal_prompt = GoalService::BuildContinuationPrompt(*active_goal, active_goal->tokens_used, active_goal->token_budget);
-				if (!goal_prompt.empty())
-				{
-					effective_prompt = goal_prompt + "\n\n" + effective_prompt;
-				}
+				effective_prompt = goal_prompt + "\n\n" + effective_prompt;
 			}
 		}
 		
@@ -4636,6 +4842,7 @@ namespace uam
 		SaveChatQuietly(app, chat);
 
 		session.queued_prompt = effective_prompt;
+		ClearGoalReviewState(session);
 		session.processing = true;
 		session.cancel_requested = false;
 		session.current_assistant_message_index = -1;

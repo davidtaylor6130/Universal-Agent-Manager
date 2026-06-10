@@ -2540,4 +2540,39 @@ describe('useAppStore Gemini CLI slice', () => {
 
     expect(requests).toEqual([])
   })
+
+  it('sends ACP goal context from active goal id without requiring goal mode toggle', async () => {
+    const requests: { action: string; payload?: any }[] = []
+    ensureTestWindow().cefQuery = ((params: { request: string; onSuccess?: (response: string) => void }) => {
+      const parsed = JSON.parse(params.request) as { action: string; payload?: any }
+      requests.push(parsed)
+      params.onSuccess?.('{}')
+    }) as unknown as TestWindow['cefQuery']
+
+    useAppStore.setState({
+      sessions: [{ id: 'chat-1', name: 'Codex', viewMode: 'chat', providerId: 'codex-cli', folderId: 'default', createdAt: new Date(), updatedAt: new Date(), isPinned: false }],
+      activeGoalIdByChatId: { 'chat-1': 'goal-1' },
+      goalModeByChatId: { 'chat-1': false },
+    })
+
+    await expect(useAppStore.getState().sendAcpPrompt('chat-1', 'continue')).resolves.toBe(true)
+
+    const promptRequest = requests.find((request) => request.action === 'sendAcpPrompt')
+    expect(promptRequest?.payload?.goalId).toBe('goal-1')
+    expect(promptRequest?.payload?.goalMode).toBe(true)
+  })
+
+  it('resumes a goal through the setActiveGoal backend action', async () => {
+    const requests: { action: string; payload?: any }[] = []
+    ensureTestWindow().cefQuery = ((params: { request: string; onSuccess?: (response: string) => void }) => {
+      const parsed = JSON.parse(params.request) as { action: string; payload?: any }
+      requests.push(parsed)
+      params.onSuccess?.('{}')
+    }) as unknown as TestWindow['cefQuery']
+
+    await expect(useAppStore.getState().resumeGoal('chat-1', 'goal-1')).resolves.toBe(true)
+
+    const resumeRequest = requests.find((request) => request.action === 'setActiveGoal')
+    expect(resumeRequest?.payload).toEqual({ chatId: 'chat-1', goalId: 'goal-1' })
+  })
 })

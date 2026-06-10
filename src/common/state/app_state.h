@@ -212,6 +212,11 @@ namespace uam
 		int turn_assistant_message_index = -1;
 		int turn_serial = 0;
 		std::string queued_prompt;
+		bool goal_review_turn = false;
+		bool goal_review_scheduled = false;
+		std::string goal_review_goal_id;
+		std::string goal_review_user_prompt;
+		std::string goal_review_assistant_text;
 		bool ignore_session_updates_until_ready = false;
 		bool codex_resume_fallback_attempted = false;
 		bool gemini_resume_fallback_attempted = false;

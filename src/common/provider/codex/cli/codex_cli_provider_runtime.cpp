@@ -1,6 +1,7 @@
 #include "common/provider/codex/cli/codex_cli_provider_runtime.h"
 
 #include "common/provider/codex/cli/codex_thread_id.h"
+#include "app/goal_service.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
 
@@ -34,16 +35,38 @@ const char* CodexCliProviderRuntime::DisabledReason() const
 	return "";
 }
 
-std::string CodexCliProviderRuntime::BuildPrompt(const ProviderProfile&, std::string_view user_prompt, const std::vector<std::string>& files, const Goal*, int64_t, int64_t) const
+std::string CodexCliProviderRuntime::BuildPrompt(const ProviderProfile&, std::string_view user_prompt, const std::vector<std::string>& files, const Goal* active_goal, int64_t tokens_used, int64_t token_budget) const
 {
-	return uam::provider_runtime_internal::BuildPrompt(user_prompt, files);
+	std::string prompt = uam::provider_runtime_internal::BuildPrompt(user_prompt, files);
+	if (active_goal && !active_goal->objective.empty())
+	{
+		const std::string goal_prompt = uam::GoalService::BuildContinuationPrompt(*active_goal, tokens_used, token_budget);
+		if (!goal_prompt.empty())
+		{
+			prompt = goal_prompt + "\n\n" + prompt;
+		}
+	}
+	return prompt;
 }
 
-std::string CodexCliProviderRuntime::BuildCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, const std::string& resume_session_id, const ChatSession*) const
+std::string CodexCliProviderRuntime::BuildCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, const std::string& resume_session_id, const ChatSession* chat) const
 {
 	(void)resume_session_id;
 	const AppSettings provider_settings = CodexTemplateCommandSettings(profile, settings);
-	return uam::provider_runtime_internal::BuildCommandFromTemplate(provider_settings, prompt, files, "", "codex exec {flags} {prompt}");
+	const Goal* active_goal = nullptr;
+	if (chat != nullptr && !chat->active_goal_id.empty())
+	{
+		for (const Goal& goal : chat->goals)
+		{
+			if (goal.id == chat->active_goal_id && goal.status == GoalStatus::Active)
+			{
+				active_goal = &goal;
+				break;
+			}
+		}
+	}
+	const std::string effective_prompt = BuildPrompt(profile, prompt, files, active_goal, active_goal == nullptr ? 0 : active_goal->tokens_used, active_goal == nullptr ? 0 : active_goal->token_budget);
+	return uam::provider_runtime_internal::BuildCommandFromTemplate(provider_settings, effective_prompt, files, "", "codex exec {flags} {prompt}");
 }
 
 std::vector<std::string> CodexCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const

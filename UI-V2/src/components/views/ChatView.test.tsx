@@ -1463,6 +1463,63 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('renders goal review JSON as a goal review block', () => {
+    useAppStore.setState((state) => {
+      const currentMessages = state.messages['chat-1'] ?? []
+      return {
+        messages: {
+          ...state.messages,
+          'chat-1': currentMessages.map((message) =>
+            message.id === 'm-2'
+              ? {
+                  ...message,
+                  content: '{"decision":"continue","reason":"More work remains.","nextPrompt":"Continue with the next page."}',
+                  thoughts: '',
+                  toolCalls: [],
+                  planSummary: '',
+                  planEntries: [],
+                  blocks: [],
+                }
+              : message
+          ),
+        },
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          'chat-1': {
+            ...state.acpBindingBySessionId['chat-1'],
+            lifecycleState: 'ready',
+            processing: false,
+            processingStartedAtMs: null,
+            toolCalls: [],
+            turnEvents: [],
+            turnUserMessageIndex: -1,
+            turnAssistantMessageIndex: -1,
+            pendingPermission: null,
+          },
+        },
+      }
+    })
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    expect(host.querySelector('[data-testid="goal-review-block"]')).not.toBeNull()
+    expect(host.textContent).toContain('Goal Review')
+    expect(host.textContent).toContain('Continue')
+    expect(host.textContent).toContain('More work remains.')
+    expect(host.textContent).toContain('Next:')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
   it('renders Codex thinking and persisted plan actions', async () => {
     const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
     const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))

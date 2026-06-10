@@ -601,3 +601,13 @@ summary,
     border-radius: 16px;
   }
 }
+
+@keyframes uam-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(0.85); }
+}
+
+.uam-subagent-panel:hover {
+  background: color-mix(in srgb, var(--blue) 14%, var(--surface));
+  border-color: color-mix(in srgb, var(--blue) 50%, var(--border-bright));
+}

@@ -5228,6 +5228,61 @@ UAM_TEST(OpenCodeAcpSubAgentToolCallsAreVisibleAndPersistent)
 #endif
 }
 
+UAM_TEST(OpenCodeProviderRecognizesTaskToolAsSubAgent)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	const ProviderProfile profile = ProviderProfileStore::DefaultOpenCodeProfile();
+	UAM_ASSERT(ProviderRuntime::ProviderRecognizesSubagentTool(profile, "task"));
+	UAM_ASSERT(ProviderRuntime::ProviderRecognizesSubagentTool(profile, "TASK"));
+	UAM_ASSERT(ProviderRuntime::ProviderRecognizesSubagentTool(profile, "subtask"));
+	UAM_ASSERT(ProviderRuntime::ProviderRecognizesSubagentTool(profile, "delegate"));
+	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "bash"));
+	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "read"));
+	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, ""));
+#endif
+}
+
+UAM_TEST(OpenCodeAcpTaskToolCallIsDetectedAsSubAgentOnPendingUpdate)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-task-subagent");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-task";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	Message user;
+	user.role = MessageRole::User;
+	user.content = "Delegate to a sub-agent.";
+	user.created_at = "2026-01-01T00:00:00.000Z";
+	chat.messages.push_back(std::move(user));
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-task";
+	session->provider_id = uam::provider_ids::kOpenCodeCli;
+	session->protocol_kind = uam::provider_profile_constants::kProtocolOpenCodeAcp;
+	session->running = true;
+	session->processing = true;
+	session->session_ready = true;
+	session->session_id = "opencode-session-task";
+	session->turn_user_message_index = 0;
+	session->prompt_request_id = 20;
+	session->pending_request_methods[20] = "session/prompt";
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call","toolCallId":"task-1","title":"task","kind":"other","status":"running"}}})"));
+	UAM_ASSERT_EQ(raw_session->tool_calls.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(raw_session->tool_calls[0].is_sub_agent);
+	UAM_ASSERT_EQ(raw_session->tool_calls[0].title, std::string("task"));
+	UAM_ASSERT_EQ(raw_session->tool_calls[0].status, std::string("running"));
+	UAM_ASSERT(raw_session->tool_calls[0].sub_agent_id.empty());
+	UAM_ASSERT(raw_session->tool_calls[0].sub_agent_title.empty());
+#endif
+}
+
 UAM_TEST(OpenCodeAcpSessionNewSyncsResolvedNativeSessionMapping)
 {
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
@@ -10992,6 +11047,91 @@ UAM_TEST(GoalServiceBuildContinuationPromptReturnsEmptyForBlankObjective)
 	UAM_ASSERT(prompt.empty());
 }
 
+UAM_TEST(GoalServiceStatusBlockerAndTokenUpdatesMarkParentAndClearActive)
+{
+	uam::AppState app;
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+	chat.id = "chat-goal-service";
+	app.chats.push_back(chat);
+
+	std::string goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Finish the durable goal mode work.", 10, &goal_id));
+	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, chat.id, goal_id));
+	app.chats_with_unseen_updates.clear();
+
+	uam::GoalService::RecordTurnCompletion(app, goal_id, 4);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().tokens_used, static_cast<int64_t>(4));
+	UAM_ASSERT(app.chats_with_unseen_updates.contains(chat.id));
+	UAM_ASSERT_EQ(app.chats.front().active_goal_id, goal_id);
+
+	uam::GoalService::RecordBlocker(app, goal_id, "Need user credentials.");
+	uam::GoalService::RecordBlocker(app, goal_id, "Need user credentials.");
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+	UAM_ASSERT_EQ(app.chats.front().active_goal_id, goal_id);
+	uam::GoalService::RecordBlocker(app, goal_id, "Need user credentials.");
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Blocked);
+	UAM_ASSERT(app.chats.front().active_goal_id.empty());
+
+	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, chat.id, goal_id));
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+	uam::GoalService::RecordTurnCompletion(app, goal_id, 10);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Blocked);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().last_blocker, std::string("Token budget exceeded."));
+	UAM_ASSERT(app.chats.front().active_goal_id.empty());
+}
+
+UAM_TEST(GoalServiceUpdateStatusAndClearActiveGoalWork)
+{
+	uam::AppState app;
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+	chat.id = "chat-clear-active";
+	app.chats.push_back(chat);
+
+	std::string goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Clear active goal correctly.", 0, &goal_id));
+	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, chat.id, goal_id));
+	UAM_ASSERT(uam::GoalService::ClearActiveGoal(app, chat.id));
+	UAM_ASSERT(app.chats.front().active_goal_id.empty());
+	UAM_ASSERT(app.chats_with_unseen_updates.contains(chat.id));
+
+	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, chat.id, goal_id));
+	UAM_ASSERT(uam::GoalService::UpdateGoalStatus(app, goal_id, GoalStatus::Complete));
+	UAM_ASSERT(app.chats.front().active_goal_id.empty());
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Complete);
+}
+
+UAM_TEST(GoalServiceSetActiveGoalReactivatesBlockedGoal)
+{
+	uam::AppState app;
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kOpenCodeCli);
+	chat.id = "chat-resume-goal";
+	app.chats.push_back(chat);
+
+	std::string goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Resume a blocked OpenCode goal.", 0, &goal_id));
+	uam::GoalService::RecordBlocker(app, goal_id, "Same blocker.");
+	uam::GoalService::RecordBlocker(app, goal_id, "Same blocker.");
+	uam::GoalService::RecordBlocker(app, goal_id, "Same blocker.");
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Blocked);
+	UAM_ASSERT(app.chats.front().active_goal_id.empty());
+
+	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, chat.id, goal_id));
+	UAM_ASSERT_EQ(app.chats.front().active_goal_id, goal_id);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().blocked_turn_count, 0);
+	UAM_ASSERT(app.chats.front().goals.front().last_blocker.empty());
+}
+
+UAM_TEST(GoalServiceParseReviewDecisionAllowsWrappedStrictJson)
+{
+	const auto parsed = uam::GoalService::ParseReviewDecision("review:\n{\"decision\":\"continue\",\"reason\":\"more work remains\",\"nextPrompt\":\"Run tests\"}\nthanks");
+	UAM_ASSERT(parsed.has_value());
+	UAM_ASSERT_EQ(parsed->decision, std::string("continue"));
+	UAM_ASSERT_EQ(parsed->reason, std::string("more work remains"));
+	UAM_ASSERT_EQ(parsed->next_prompt, std::string("Run tests"));
+	UAM_ASSERT(!uam::GoalService::ParseReviewDecision("{\"decision\":\"maybe\",\"reason\":\"x\",\"nextPrompt\":\"y\"}").has_value());
+}
+
 UAM_TEST(OpenCodeBuildPromptPrependsGoalContextWhenActiveGoalProvided)
 {
 	const IProviderRuntime& runtime = GetOpenCodeCliProviderRuntime();
@@ -11031,6 +11171,29 @@ UAM_TEST(ProviderRuntimeFacadeBuildPromptForwardsGoalContext)
 	UAM_ASSERT(with_goal.find(goal.objective) != std::string::npos);
 	UAM_ASSERT(with_goal.find("Ship it") != std::string::npos);
 	UAM_ASSERT(with_goal.find(goal.objective) < with_goal.find("Ship it"));
+}
+
+UAM_TEST(CodexClaudeOpenCodeCommandsIncludeActiveGoalContext)
+{
+	Goal goal;
+	goal.id = "goal_command_1";
+	goal.objective = "Keep goal context in CLI command prompts.";
+	goal.status = GoalStatus::Active;
+	goal.tokens_used = 7;
+	goal.token_budget = 99;
+
+	ChatSession chat;
+	chat.active_goal_id = goal.id;
+	chat.goals.push_back(goal);
+
+	AppSettings settings;
+	const std::string codex_command = ProviderRuntime::BuildCommand(ProviderProfileStore::DefaultCodexProfile(), settings, "Do the work", {}, "", &chat);
+	const std::string claude_command = ProviderRuntime::BuildCommand(ProviderProfileStore::DefaultClaudeProfile(), settings, "Do the work", {}, "", &chat);
+	const std::string opencode_command = ProviderRuntime::BuildCommand(ProviderProfileStore::DefaultOpenCodeProfile(), settings, "Do the work", {}, "", &chat);
+
+	UAM_ASSERT(codex_command.find(goal.objective) != std::string::npos);
+	UAM_ASSERT(claude_command.find(goal.objective) != std::string::npos);
+	UAM_ASSERT(opencode_command.find(goal.objective) != std::string::npos);
 }
 
 int main()

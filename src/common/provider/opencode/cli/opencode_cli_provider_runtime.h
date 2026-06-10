@@ -20,6 +20,7 @@ class OpenCodeCliProviderRuntime final : public IProviderRuntime
 	bool UsesInternalEngine(const ProviderProfile& profile) const override;
 	bool UsesCliOutput(const ProviderProfile& profile) const override;
 	bool UsesGeminiPathBootstrap(const ProviderProfile& profile) const override;
+	bool ProviderRecognizesSubagentTool(std::string_view tool_name) const override;
 };
 
 const IProviderRuntime& GetOpenCodeCliProviderRuntime();

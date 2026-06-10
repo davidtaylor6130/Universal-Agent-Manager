@@ -116,6 +116,19 @@ class IProviderRuntime
 	virtual bool UsesCliOutput(const ProviderProfile& profile) const = 0;
 	/// <summary>Returns true when prompt bootstrap should use @.gemini path injection.</summary>
 	virtual bool UsesGeminiPathBootstrap(const ProviderProfile& profile) const = 0;
+
+	/// <summary>
+	/// Returns true when <paramref name="tool_name"/> is a tool this provider treats as a sub-agent
+	/// invocation, even when the ACP update does not carry an explicit <c>isSubAgent</c> /
+	/// <c>subAgentId</c> field. The default implementation returns false; providers whose ACP
+	/// adapter emits sub-agent tool calls as plain <c>tool_call</c> updates should override this
+	/// so the sub-agent visual is applied from the initial pending update, not just at completion.
+	/// </summary>
+	virtual bool ProviderRecognizesSubagentTool(std::string_view tool_name) const
+	{
+		(void)tool_name;
+		return false;
+	}
 };
 
 /// <summary>
@@ -177,4 +190,6 @@ class ProviderRuntime
 	static ProviderDiscoveryResult DiscoverChatSources(const ProviderProfile& profile);
 	/// <summary>Rebuilds a provider-native session file from UAM source of truth.</summary>
 	static bool RebuildNativeSessionFile(const ProviderProfile& profile, const ChatSession& chat, const std::filesystem::path& workspace_path);
+	/// <summary>Returns true when this provider treats <paramref name="tool_name"/> as a sub-agent invocation.</summary>
+	static bool ProviderRecognizesSubagentTool(const ProviderProfile& profile, std::string_view tool_name);
 };

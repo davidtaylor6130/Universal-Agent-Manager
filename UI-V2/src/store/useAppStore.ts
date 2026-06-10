@@ -2918,6 +2918,7 @@ interface AppState {
   setGoal: (chatId: string, objective: string, tokenBudget?: number) => Promise<string | null>
   updateGoalStatus: (goalId: string, status: GoalStatus) => Promise<boolean>
   removeGoal: (goalId: string) => Promise<boolean>
+  resumeGoal: (chatId: string, goalId: string) => Promise<boolean>
   setGoalMode: (chatId: string, active: boolean) => void
   clearActiveGoal: (chatId: string) => Promise<boolean>
 
@@ -5442,8 +5443,7 @@ export const useAppStore = create<AppState>((set, get) => {
       }
       const markdownStoreFiles = (get().markdownStoreAttachedBySessionId[sessionId] ?? []).map((entry) => entry.filePath)
       const state = get()
-      const goalModeActive = state.goalModeByChatId[sessionId] ?? false
-      const goalId = goalModeActive ? state.activeGoalIdByChatId[sessionId] ?? null : null
+      const goalId = state.activeGoalIdByChatId[sessionId] ?? null
 
       if (isCefContext()) {
         const response = await sendToCEF({
@@ -5453,7 +5453,7 @@ export const useAppStore = create<AppState>((set, get) => {
             text: prompt,
             markdownStoreFiles,
             attachments,
-            goalMode: goalModeActive,
+            goalMode: goalId != null,
             goalId,
           },
         })
@@ -5918,6 +5918,37 @@ export const useAppStore = create<AppState>((set, get) => {
         return {
           goalsByChatId: { ...state.goalsByChatId, ...nextGoals },
           activeGoalIdByChatId: { ...state.activeGoalIdByChatId, ...nextActive },
+        }
+      })
+      return true
+    },
+
+    resumeGoal: async (chatId: string, goalId: string): Promise<boolean> => {
+      if (!goalId) return false
+      if (isCefContext()) {
+        const response = await sendToCEF({
+          action: 'setActiveGoal',
+          payload: { chatId, goalId },
+          requestId: createRequestId('setActiveGoal'),
+        })
+        return response.ok
+      }
+
+      set((state: AppState) => {
+        const goals = state.goalsByChatId[chatId] ?? []
+        return {
+          goalsByChatId: {
+            ...state.goalsByChatId,
+            [chatId]: goals.map((goal) =>
+              goal.id === goalId
+                ? { ...goal, status: 'active', blockedTurnCount: 0, lastBlocker: '', updatedAt: new Date() }
+                : goal
+            ),
+          },
+          activeGoalIdByChatId: {
+            ...state.activeGoalIdByChatId,
+            [chatId]: goalId,
+          },
         }
       })
       return true

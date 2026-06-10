@@ -4,6 +4,7 @@ import type { Goal } from '../../types/goal'
 interface GoalBannerProps {
   goal: Goal
   onComplete: () => void
+  onResume?: () => void
   onRemove: () => void
 }
 
@@ -26,10 +27,11 @@ function statusLabel(status: Goal['status']): string {
   }
 }
 
-export function GoalBanner({ goal, onComplete, onRemove }: GoalBannerProps) {
+export function GoalBanner({ goal, onComplete, onResume, onRemove }: GoalBannerProps) {
   const budgetDisplay = goal.tokenBudget
     ? `${goal.tokensUsed ?? 0}/${goal.tokenBudget} tokens`
     : null
+  const blockerDisplay = goal.status === 'blocked' && goal.lastBlocker ? goal.lastBlocker : ''
 
   return (
     <div
@@ -43,13 +45,24 @@ export function GoalBanner({ goal, onComplete, onRemove }: GoalBannerProps) {
       <span style={{ color: 'var(--text-2)', fontWeight: 600, whiteSpace: 'nowrap' }}>
         Goal:
       </span>
-      <span
-        className="truncate flex-1"
-        style={{ color: 'var(--text-1)' }}
-        title={goal.objective}
-      >
-        {goal.objective}
-      </span>
+      <div className="min-w-0 flex-1">
+        <div
+          className="truncate"
+          style={{ color: 'var(--text-1)', fontWeight: 500 }}
+          title={goal.objective}
+        >
+          {goal.objective}
+        </div>
+        {blockerDisplay && (
+          <div
+            className="truncate"
+            style={{ color: 'var(--text-3)', marginTop: 2 }}
+            title={blockerDisplay}
+          >
+            Blocked: {blockerDisplay}
+          </div>
+        )}
+      </div>
       <span
         className="rounded px-1.5 py-0.5 font-medium"
         style={statusBadgeStyle(goal.status)}
@@ -69,6 +82,16 @@ export function GoalBanner({ goal, onComplete, onRemove }: GoalBannerProps) {
           style={{ padding: '1px 8px', fontSize: 11 }}
         >
           Complete
+        </button>
+      )}
+      {goal.status !== 'active' && onResume && (
+        <button
+          type="button"
+          className="uam-secondary-button"
+          onClick={onResume}
+          style={{ padding: '1px 8px', fontSize: 11 }}
+        >
+          Resume
         </button>
       )}
       <button

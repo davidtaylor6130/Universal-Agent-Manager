@@ -832,12 +832,95 @@ const MarkdownContent = memo(function MarkdownContent({ content }: { content: st
   return <div className="prose-msg">{parts}</div>
 })
 
+function SubAgentRunningPanel({ tool, onSelectTool }: { tool: AcpToolCall; onSelectTool: (toolId: string) => void }) {
+  const isActive = tool.status === 'running' || tool.status === 'in_progress' || tool.status === 'pending'
+  const statusColor = toolStatusColor(tool)
+  const displayTitle = toolDisplayTitle(tool)
+  return (
+    <button
+      type="button"
+      onClick={() => onSelectTool(tool.id)}
+      className="w-full text-left uam-subagent-panel"
+      style={{
+        display: 'grid',
+        gridTemplateColumns: 'minmax(0, 1fr) auto',
+        gap: 8,
+        alignItems: 'center',
+        padding: '10px 12px',
+        borderRadius: 8,
+        border: '1px solid color-mix(in srgb, var(--blue) 35%, var(--border-bright))',
+        borderLeft: '3px solid var(--blue)',
+        background: 'color-mix(in srgb, var(--blue) 8%, var(--surface))',
+        color: 'var(--text)',
+        boxShadow: '0 1px 0 color-mix(in srgb, var(--blue) 10%, transparent)',
+      }}
+      title="Open sub-agent details"
+    >
+      <span className="min-w-0 flex items-center gap-2" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span
+          aria-hidden="true"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: 22,
+            height: 22,
+            borderRadius: 6,
+            background: 'var(--blue-dim)',
+            color: 'var(--blue)',
+            flexShrink: 0,
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="8" cy="4.4" r="2.1" />
+            <path d="M4.4 13.2a3.6 3.6 0 0 1 7.2 0" />
+            <path d="M2.5 8.6h2.2M11.3 8.6h2.2" />
+          </svg>
+        </span>
+        <span className="min-w-0" style={{ display: 'flex', flexDirection: 'column', minWidth: 0, gap: 2 }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--blue)' }}>
+            <span aria-hidden="true" style={{ display: 'inline-block', width: 6, height: 6, borderRadius: 999, background: isActive ? statusColor : 'var(--text-3)', boxShadow: isActive ? `0 0 0 3px color-mix(in srgb, ${statusColor} 24%, transparent)` : 'none', animation: isActive ? 'uam-pulse 1.4s ease-in-out infinite' : 'none' }} />
+            Sub-agent:{isActive ? ' running' : ''}
+            <span style={{ fontSize: 10, fontWeight: 500, color: 'var(--text-3)', textTransform: 'none', letterSpacing: 0 }}>
+              {tool.kind && tool.kind !== 'sub-agent' ? tool.kind : ''}
+            </span>
+          </span>
+          <span className="truncate" style={{ fontSize: 12, color: 'var(--text)' }}>{displayTitle}</span>
+        </span>
+      </span>
+      {tool.status && (
+        <span
+          className="text-[10px] font-medium"
+          style={{
+            color: statusColor,
+            border: '1px solid color-mix(in srgb, currentColor 22%, var(--border))',
+            borderRadius: 6,
+            background: 'color-mix(in srgb, currentColor 8%, var(--surface))',
+            padding: '2px 7px',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {tool.status.replace('_', ' ')}
+        </span>
+      )}
+    </button>
+  )
+}
+
 function ToolCallInlineRows({ tools, onSelectTool }: { tools: AcpToolCall[]; onSelectTool: (toolId: string) => void }) {
   if (tools.length === 0) return null
 
   return (
     <div className="uam-tool-timeline">
       {tools.map((tool) => {
+        if (tool.isSubAgent) {
+          return (
+            <div key={tool.id} className="uam-tool-timeline__item">
+              <SubAgentRunningPanel tool={tool} onSelectTool={onSelectTool} />
+            </div>
+          )
+        }
+
         const displayKind = toolDisplayKind(tool)
         const displayTitle = toolDisplayTitle(tool)
         return (
@@ -861,21 +944,13 @@ function ToolCallInlineRows({ tools, onSelectTool }: { tools: AcpToolCall[]; onS
               }}
               aria-hidden="true"
             >
-              {tool.isSubAgent ? (
-                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="8" cy="4.4" r="2.1" />
-                  <path d="M4.4 13.2a3.6 3.6 0 0 1 7.2 0" />
-                  <path d="M2.5 8.6h2.2M11.3 8.6h2.2" />
-                </svg>
-              ) : (
-                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M5.2 3.2H3.7A1.7 1.7 0 0 0 2 4.9v6.2a1.7 1.7 0 0 0 1.7 1.7h1.5" />
-                  <path d="M10.8 3.2h1.5A1.7 1.7 0 0 1 14 4.9v6.2a1.7 1.7 0 0 1-1.7 1.7h-1.5" />
-                  <path d="M6.5 5.4 4.4 8l2.1 2.6M9.5 5.4 11.6 8l-2.1 2.6" />
-                </svg>
-              )}
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M5.2 3.2H3.7A1.7 1.7 0 0 0 2 4.9v6.2a1.7 1.7 0 0 0 1.7 1.7h1.5" />
+                <path d="M10.8 3.2h1.5A1.7 1.7 0 0 1 14 4.9v6.2a1.7 1.7 0 0 1-1.7 1.7h-1.5" />
+                <path d="M6.5 5.4 4.4 8l2.1 2.6M9.5 5.4 11.6 8l-2.1 2.6" />
+              </svg>
             </span>
-            <span className="text-[11px] font-medium" style={{ color: tool.isSubAgent ? 'var(--blue)' : 'var(--teal)' }}>{displayKind}:</span>
+            <span className="text-[11px] font-medium" style={{ color: 'var(--teal)' }}>{displayKind}:</span>
             <span className="text-xs truncate" style={{ color: 'var(--text)' }}>{displayTitle}</span>
             {tool.status && (
               <span
@@ -1587,6 +1662,93 @@ function PlanBlock({
   )
 }
 
+type GoalReviewDecision = {
+  decision: 'complete' | 'continue' | 'blocked'
+  reason: string
+  nextPrompt: string
+}
+
+function parseGoalReviewDecision(text: string): GoalReviewDecision | null {
+  const trimmed = text.trim()
+  if (!trimmed.includes('"decision"')) return null
+
+  const first = trimmed.indexOf('{')
+  const last = trimmed.lastIndexOf('}')
+  if (first < 0 || last <= first) return null
+
+  try {
+    const parsed = JSON.parse(trimmed.slice(first, last + 1)) as Partial<GoalReviewDecision>
+    if (parsed.decision !== 'complete' && parsed.decision !== 'continue' && parsed.decision !== 'blocked') {
+      return null
+    }
+    return {
+      decision: parsed.decision,
+      reason: typeof parsed.reason === 'string' ? parsed.reason : '',
+      nextPrompt: typeof parsed.nextPrompt === 'string' ? parsed.nextPrompt : '',
+    }
+  } catch {
+    return null
+  }
+}
+
+function goalReviewDecisionStyle(decision: GoalReviewDecision['decision']) {
+  if (decision === 'complete') return { color: 'var(--green)', label: 'Complete' }
+  if (decision === 'blocked') return { color: 'var(--red)', label: 'Blocked' }
+  return { color: 'var(--purple)', label: 'Continue' }
+}
+
+function GoalReviewBlock({ review }: { review: GoalReviewDecision }) {
+  const decision = goalReviewDecisionStyle(review.decision)
+
+  return (
+    <section
+      data-testid="goal-review-block"
+      className="space-y-2"
+      style={{
+        border: '1px solid color-mix(in srgb, var(--purple) 44%, var(--border))',
+        borderLeft: '4px solid var(--purple)',
+        borderRadius: 6,
+        background: 'color-mix(in srgb, var(--purple) 10%, var(--surface))',
+        color: 'var(--text)',
+        padding: 10,
+      }}
+    >
+      <div className="flex items-center gap-2 text-[11px] font-semibold">
+        <span style={{ color: 'var(--purple)', fontSize: 9 }}>●</span>
+        <span>Goal Review</span>
+        <span
+          className="ml-auto rounded px-1.5 py-0.5 text-[10px] uppercase"
+          style={{
+            border: `1px solid color-mix(in srgb, ${decision.color} 48%, var(--border))`,
+            color: decision.color,
+            background: 'color-mix(in srgb, var(--surface-up) 70%, transparent)',
+          }}
+        >
+          {decision.label}
+        </span>
+      </div>
+      {review.reason && (
+        <div className="text-xs" style={{ color: 'var(--text-2)' }}>
+          {review.reason}
+        </div>
+      )}
+      {review.nextPrompt && review.decision === 'continue' && (
+        <div
+          className="text-xs"
+          style={{
+            borderTop: '1px solid color-mix(in srgb, var(--purple) 24%, var(--border))',
+            paddingTop: 8,
+            color: 'var(--text-3)',
+          }}
+        >
+          <span className="font-semibold" style={{ color: 'var(--text-2)' }}>Next: </span>
+          {review.nextPrompt}
+        </div>
+      )}
+    </section>
+  )
+}
+
 function PersistedMessageBlocksContent({
   message,
   blocks,
@@ -1611,6 +1773,8 @@ function PersistedMessageBlocksContent({
     <div className="space-y-2">
       {blocks.map((block, index) => {
         if (block.type === 'assistant_text') {
+          const review = parseGoalReviewDecision(block.text)
+          if (review) return <GoalReviewBlock key={`block-goal-review-${index}`} review={review} />
           return <MarkdownContent key={`block-text-${index}`} content={block.text} />
         }
 
@@ -1677,6 +1841,7 @@ function PersistedMessageContent({
   const planEntries = message.role === 'assistant' ? message.planEntries ?? [] : []
   const blocks = message.role === 'assistant' ? message.blocks ?? [] : []
   const attachments = message.attachments ?? []
+  const goalReview = message.role === 'assistant' ? parseGoalReviewDecision(message.content) : null
 
   if (blocks.length > 0) {
     return (
@@ -1695,7 +1860,7 @@ function PersistedMessageContent({
   if (!thoughts && toolCalls.length === 0 && !planSummary.trim() && planEntries.length === 0) {
     return (
       <div className="space-y-2">
-        <MarkdownContent content={message.content} />
+        {goalReview ? <GoalReviewBlock review={goalReview} /> : <MarkdownContent content={message.content} />}
         <AttachmentList attachments={attachments} />
       </div>
     )
@@ -1703,7 +1868,7 @@ function PersistedMessageContent({
 
   return (
     <div className="space-y-2">
-      {message.content.trim() && <MarkdownContent content={message.content} />}
+      {message.content.trim() && (goalReview ? <GoalReviewBlock review={goalReview} /> : <MarkdownContent content={message.content} />)}
       <ThinkingBlock text={thoughts} />
       <ToolCallInlineRows tools={toolCalls} onSelectTool={(toolId) => onSelectTool(message.id, toolId)} />
       <PlanBlock
@@ -2037,7 +2202,7 @@ function ComposerToolbar({
   const memoryDisabled = Boolean(modelDisabled)
   const goalActiveGoalId = useAppStore((s) => s.activeGoalIdByChatId[session.id] ?? null)
   const goalAvailable = goalActiveGoalId != null
-  const goalActive = useAppStore((s) => s.goalModeByChatId[session.id] ?? false)
+  const goalActive = goalAvailable
   const setGoalMode = useAppStore((s) => s.setGoalMode)
   const autoLabel = claudeProvider ? 'Auto' : 'Yolo'
   const modeLabel = planActive ? 'Plan' : acceptEditsActive ? 'Accept Edits' : 'Default'
@@ -2702,6 +2867,7 @@ export function ChatView({ session }: ChatViewProps) {
   const setGoalStore = useAppStore((s) => s.setGoal)
   const updateGoalStatus = useAppStore((s) => s.updateGoalStatus)
   const removeGoal = useAppStore((s) => s.removeGoal)
+  const resumeGoal = useAppStore((s) => s.resumeGoal)
   const bottomRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const providerMenuRef = useRef<HTMLDivElement>(null)
@@ -3119,14 +3285,20 @@ export function ChatView({ session }: ChatViewProps) {
     setSubmitting(false)
   }
   const activeGoal = activeGoalId ? goals.find((g) => g.id === activeGoalId) ?? null : null
+  const displayedGoal = activeGoal ?? (goals.length > 0 ? goals[goals.length - 1] : null)
   const handleCompleteGoal = () => {
-    if (activeGoal) {
-      void updateGoalStatus(activeGoal.id, 'complete')
+    if (displayedGoal) {
+      void updateGoalStatus(displayedGoal.id, 'complete')
+    }
+  }
+  const handleResumeGoal = () => {
+    if (displayedGoal) {
+      void resumeGoal(session.id, displayedGoal.id)
     }
   }
   const handleRemoveGoal = () => {
-    if (activeGoal) {
-      void removeGoal(activeGoal.id)
+    if (displayedGoal) {
+      void removeGoal(displayedGoal.id)
     }
   }
 
@@ -3313,10 +3485,11 @@ export function ChatView({ session }: ChatViewProps) {
           </div>
         )}
 
-        {activeGoal && (
+        {displayedGoal && (
           <GoalBanner
-            goal={activeGoal}
+            goal={displayedGoal}
             onComplete={handleCompleteGoal}
+            onResume={handleResumeGoal}
             onRemove={handleRemoveGoal}
           />
         )}

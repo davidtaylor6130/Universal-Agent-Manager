@@ -3,6 +3,7 @@
 #include "common/models/app_models.h"
 #include "common/state/app_state.h"
 
+#include <optional>
 #include <string>
 
 namespace uam
@@ -15,6 +16,13 @@ namespace uam
 class GoalService
 {
   public:
+	struct ReviewDecision
+	{
+		std::string decision;
+		std::string reason;
+		std::string next_prompt;
+	};
+
 	/// <summary>
 	/// Create a new goal for a chat session.
 	/// Returns true on success, false if chat not found.
@@ -55,6 +63,8 @@ class GoalService
 	/// </summary>
 	static Goal* FindGoalById(AppState& app, const std::string& chat_id, const std::string& goal_id);
 	static const Goal* FindGoalById(const AppState& app, const std::string& chat_id, const std::string& goal_id);
+	static ChatSession* FindChatForGoal(AppState& app, const std::string& goal_id);
+	static const ChatSession* FindChatForGoal(const AppState& app, const std::string& goal_id);
 
 	/// <summary>
 	/// Get all goals for a chat session.
@@ -83,6 +93,8 @@ class GoalService
 	/// Returns empty string if no active goal or no objective.
 	/// </summary>
 	static std::string BuildContinuationPrompt(const Goal& goal, int64_t tokens_used, int64_t token_budget);
+	static std::string BuildReviewPrompt(const Goal& goal, const std::string& recent_user_prompt, const std::string& recent_assistant_text);
+	static std::optional<ReviewDecision> ParseReviewDecision(const std::string& text);
 
 	/// <summary>
 	/// Generate a unique goal ID.
