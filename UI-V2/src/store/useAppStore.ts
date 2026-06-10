@@ -171,6 +171,13 @@ interface CppGoal {
   tokensUsed?: number
   blockedTurnCount?: number
   lastBlocker?: string
+  completedItems?: string[]
+  remainingItems?: string[]
+  currentStep?: string
+  lastVerification?: string
+  lastNextPrompt?: string
+  sameNextPromptCount?: number
+  loopCount?: number
   createdAt: string
   updatedAt: string
 }
@@ -1135,7 +1142,7 @@ function sanitizeCppChat(value: unknown): CppChat | null {
 	}
 
 function sanitizeGoalStatus(value: unknown): GoalStatus {
-  if (value === 'active' || value === 'complete' || value === 'blocked') return value
+  if (value === 'active' || value === 'complete' || value === 'blocked' || value === 'paused') return value
   return 'active'
 }
 
@@ -1151,6 +1158,13 @@ function sanitizeCppGoal(value: unknown): CppGoal | null {
     tokensUsed: finiteNumberOr(value.tokensUsed, 0),
     blockedTurnCount: finiteNumberOr(value.blockedTurnCount, 0),
     lastBlocker: isString(value.lastBlocker) ? value.lastBlocker : undefined,
+    completedItems: Array.isArray(value.completedItems) ? value.completedItems.filter(isString) : undefined,
+    remainingItems: Array.isArray(value.remainingItems) ? value.remainingItems.filter(isString) : undefined,
+    currentStep: isString(value.currentStep) ? value.currentStep : undefined,
+    lastVerification: isString(value.lastVerification) ? value.lastVerification : undefined,
+    lastNextPrompt: isString(value.lastNextPrompt) ? value.lastNextPrompt : undefined,
+    sameNextPromptCount: finiteNumberOr(value.sameNextPromptCount, 0),
+    loopCount: finiteNumberOr(value.loopCount, 0),
     createdAt: stringOr(value.createdAt),
     updatedAt: stringOr(value.updatedAt),
   }
@@ -2604,6 +2618,13 @@ function deserializeState(
         tokensUsed: cppGoal.tokensUsed,
         blockedTurnCount: cppGoal.blockedTurnCount,
         lastBlocker: cppGoal.lastBlocker,
+        completedItems: cppGoal.completedItems,
+        remainingItems: cppGoal.remainingItems,
+        currentStep: cppGoal.currentStep,
+        lastVerification: cppGoal.lastVerification,
+        lastNextPrompt: cppGoal.lastNextPrompt,
+        sameNextPromptCount: cppGoal.sameNextPromptCount,
+        loopCount: cppGoal.loopCount,
         createdAt: new Date(cppGoal.createdAt || Date.now()),
         updatedAt: new Date(cppGoal.updatedAt || Date.now()),
       }))
@@ -2728,6 +2749,13 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
         tokensUsed: cppGoal.tokensUsed,
         blockedTurnCount: cppGoal.blockedTurnCount,
         lastBlocker: cppGoal.lastBlocker,
+        completedItems: cppGoal.completedItems,
+        remainingItems: cppGoal.remainingItems,
+        currentStep: cppGoal.currentStep,
+        lastVerification: cppGoal.lastVerification,
+        lastNextPrompt: cppGoal.lastNextPrompt,
+        sameNextPromptCount: cppGoal.sameNextPromptCount,
+        loopCount: cppGoal.loopCount,
         createdAt: new Date(cppGoal.createdAt || Date.now()),
         updatedAt: new Date(cppGoal.updatedAt || Date.now()),
       }))
@@ -2825,6 +2853,7 @@ interface AppState {
   goalsByChatId: Record<string, Goal[]>
   activeGoalIdByChatId: Record<string, string | null>
   goalModeByChatId: Record<string, boolean>
+  defaultGoalTokenBudgetByChatId: Record<string, number>
 
   // Providers
   providers: Provider[]
@@ -2920,6 +2949,7 @@ interface AppState {
   removeGoal: (goalId: string) => Promise<boolean>
   resumeGoal: (chatId: string, goalId: string) => Promise<boolean>
   setGoalMode: (chatId: string, active: boolean) => void
+  setDefaultGoalTokenBudget: (chatId: string, tokenBudget: number) => void
   clearActiveGoal: (chatId: string) => Promise<boolean>
 
   // Folder actions
@@ -3353,6 +3383,7 @@ export const useAppStore = create<AppState>((set, get) => {
     goalsByChatId: {},
     activeGoalIdByChatId: {},
     goalModeByChatId: {},
+    defaultGoalTokenBudgetByChatId: {},
 
     providers: inCef ? [] : initialProviders,
     cliBindingBySessionId: {},
@@ -5839,6 +5870,13 @@ export const useAppStore = create<AppState>((set, get) => {
         tokenBudget: tokenBudget || undefined,
         tokensUsed: 0,
         blockedTurnCount: 0,
+        completedItems: [],
+        remainingItems: [],
+        currentStep: '',
+        lastVerification: '',
+        lastNextPrompt: '',
+        sameNextPromptCount: 0,
+        loopCount: 0,
         createdAt: now,
         updatedAt: now,
       }
@@ -5875,7 +5913,7 @@ export const useAppStore = create<AppState>((set, get) => {
           )
           if (updated !== goals) {
             nextGoals[chatId] = updated
-            if (status === 'complete' || status === 'blocked') {
+            if (status === 'complete' || status === 'blocked' || status === 'paused') {
               if (state.activeGoalIdByChatId[chatId] === goalId) {
                 nextActive[chatId] = null
               }
@@ -5982,6 +6020,15 @@ export const useAppStore = create<AppState>((set, get) => {
         goalModeByChatId: {
           ...state.goalModeByChatId,
           [chatId]: active,
+        },
+      }))
+    },
+
+    setDefaultGoalTokenBudget: (chatId: string, tokenBudget: number) => {
+      set((state: AppState) => ({
+        defaultGoalTokenBudgetByChatId: {
+          ...state.defaultGoalTokenBudgetByChatId,
+          [chatId]: Math.max(0, Math.floor(Number.isFinite(tokenBudget) ? tokenBudget : 0)),
         },
       }))
     },

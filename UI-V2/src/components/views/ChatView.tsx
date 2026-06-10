@@ -2134,6 +2134,12 @@ function ComposerToolbar({
   onToggleAcceptEdits,
   onToggleYolo,
   onToggleMemory,
+  goalArmed,
+  goalActive,
+  goalPaused,
+  defaultGoalTokenBudget,
+  onToggleGoal,
+  onSetDefaultGoalTokenBudget,
   onStopRuntime,
   onAttachFile,
   onOpenMarkdownStore,
@@ -2175,6 +2181,12 @@ function ComposerToolbar({
   onToggleAcceptEdits: () => void
   onToggleYolo: () => void
   onToggleMemory: () => void
+  goalArmed: boolean
+  goalActive: boolean
+  goalPaused: boolean
+  defaultGoalTokenBudget: number
+  onToggleGoal: () => void
+  onSetDefaultGoalTokenBudget: (value: number) => void
   onStopRuntime: () => void
   onAttachFile: () => void
   onOpenMarkdownStore: () => void
@@ -2200,10 +2212,6 @@ function ComposerToolbar({
   const acceptEditsDisabled = Boolean(modelDisabled || !acceptEditsAvailable)
   const yoloDisabled = false
   const memoryDisabled = Boolean(modelDisabled)
-  const goalActiveGoalId = useAppStore((s) => s.activeGoalIdByChatId[session.id] ?? null)
-  const goalAvailable = goalActiveGoalId != null
-  const goalActive = goalAvailable
-  const setGoalMode = useAppStore((s) => s.setGoalMode)
   const autoLabel = claudeProvider ? 'Auto' : 'Yolo'
   const modeLabel = planActive ? 'Plan' : acceptEditsActive ? 'Accept Edits' : 'Default'
   const running = Boolean(acp?.processing)
@@ -2218,46 +2226,6 @@ function ComposerToolbar({
     ...chipStyle,
     width: 30,
     justifyContent: 'center',
-  }
-
-  // Goal create popup state
-  const [goalCreateOpen, setGoalCreateOpen] = useState(false)
-  const [goalCreateObjective, setGoalCreateObjective] = useState('')
-  const [goalCreateBudget, setGoalCreateBudget] = useState('')
-  const [goalCreateError, setGoalCreateError] = useState('')
-  const [goalCreateSubmitting, setGoalCreateSubmitting] = useState(false)
-  const goalCreateRef = useRef<HTMLDivElement>(null)
-  const setGoalStore = useAppStore((s) => s.setGoal)
-
-  useEffect(() => {
-    if (!goalCreateOpen) return
-    const handleClick = (e: MouseEvent) => {
-      if (goalCreateRef.current && !goalCreateRef.current.contains(e.target as Node)) {
-        setGoalCreateOpen(false)
-        setGoalCreateObjective('')
-        setGoalCreateBudget('')
-        setGoalCreateError('')
-      }
-    }
-    document.addEventListener('mousedown', handleClick)
-    return () => document.removeEventListener('mousedown', handleClick)
-  }, [goalCreateOpen])
-
-  const handleCreateGoal = () => {
-    setGoalCreateError('')
-    setGoalCreateSubmitting(true)
-    setGoalStore(session.id, goalCreateObjective.trim(), goalCreateBudget ? parseInt(goalCreateBudget, 10) : 0)
-      .then((goalId: string | null) => {
-        setGoalCreateSubmitting(false)
-        if (goalId) {
-          setGoalCreateOpen(false)
-          setGoalCreateObjective('')
-          setGoalCreateBudget('')
-          setGoalCreateError('')
-        } else {
-          setGoalCreateError('Failed to create goal.')
-        }
-      })
   }
 
   return (
@@ -2579,135 +2547,24 @@ function ComposerToolbar({
         <span style={{ color: memoryEnabled ? 'var(--green)' : 'var(--text-3)', fontSize: 10 }}>●</span>
         <span>Memory</span>
       </button>
-      <div ref={goalCreateRef} className="relative">
-        {goalAvailable ? (
-          <button
-            type="button"
-            title={goalActive ? 'Goal mode is active — the active goal context will be prepended to prompts' : 'Toggle Goal mode — include active goal context in prompts'}
-            aria-pressed={goalActive}
-            onClick={() => setGoalMode(session.id, !goalActive)}
-            className="inline-flex items-center gap-1.5 px-2"
-            style={{
-              ...chipStyle,
-              borderColor: goalActive ? 'color-mix(in srgb, var(--purple) 55%, var(--border))' : 'var(--border)',
-              background: goalActive ? 'color-mix(in srgb, var(--purple) 16%, var(--surface))' : chipStyle.background,
-              color: goalActive ? 'var(--text)' : 'var(--text-2)',
-              opacity: modelDisabled ? 0.55 : 1,
-            }}
-          >
-            <span style={{ color: goalActive ? 'var(--purple)' : 'var(--text-3)', fontSize: 10 }}>●</span>
-            <span>Goal</span>
-          </button>
-        ) : (
-          <button
-            type="button"
-            title="Create a goal"
-            onClick={() => setGoalCreateOpen(true)}
-            className="inline-flex items-center gap-1.5 px-2"
-            style={chipStyle}
-          >
-            <span style={{ color: 'var(--text-3)', fontSize: 12, fontWeight: 700 }}>+</span>
-            <span>Goal</span>
-          </button>
-        )}
-        {goalCreateOpen && !goalAvailable && (
-          <div
-            className="absolute left-0"
-            style={{
-              bottom: 34,
-              width: 280,
-              zIndex: 40,
-              border: '1px solid var(--border-bright)',
-              borderRadius: 8,
-              background: 'var(--surface)',
-              boxShadow: '0 14px 42px rgba(0, 0, 0, 0.28)',
-              padding: 12,
-            }}
-          >
-            <div className="flex flex-col gap-2">
-              <span className="text-xs" style={{ color: 'var(--text-2)', fontWeight: 600 }}>Create Goal</span>
-              <input
-                autoFocus
-                type="text"
-                placeholder="What do you want to achieve?"
-                value={goalCreateObjective}
-                onChange={(e) => setGoalCreateObjective(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && goalCreateObjective.trim()) {
-                    handleCreateGoal()
-                  }
-                  if (e.key === 'Escape') {
-                    setGoalCreateOpen(false)
-                    setGoalCreateObjective('')
-                    setGoalCreateBudget('')
-                    setGoalCreateError('')
-                  }
-                }}
-                className="w-full px-2 py-1.5 text-xs"
-                style={{
-                  border: '1px solid var(--border)',
-                  borderRadius: 6,
-                  background: 'var(--bg)',
-                  color: 'var(--text)',
-                  outline: 'none',
-                }}
-              />
-              <input
-                type="number"
-                placeholder="Token budget (optional)"
-                value={goalCreateBudget}
-                onChange={(e) => setGoalCreateBudget(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && goalCreateObjective.trim()) {
-                    handleCreateGoal()
-                  }
-                  if (e.key === 'Escape') {
-                    setGoalCreateOpen(false)
-                    setGoalCreateObjective('')
-                    setGoalCreateBudget('')
-                    setGoalCreateError('')
-                  }
-                }}
-                className="w-full px-2 py-1.5 text-xs"
-                style={{
-                  border: '1px solid var(--border)',
-                  borderRadius: 6,
-                  background: 'var(--bg)',
-                  color: 'var(--text)',
-                  outline: 'none',
-                }}
-              />
-              {goalCreateError && (
-                <span className="text-xs" style={{ color: 'var(--danger)' }}>{goalCreateError}</span>
-              )}
-              <div className="flex justify-end gap-2 mt-1">
-                <button
-                  type="button"
-                  className="uam-secondary-button"
-                  style={{ padding: '2px 10px', fontSize: 11 }}
-                  onClick={() => {
-                    setGoalCreateOpen(false)
-                    setGoalCreateObjective('')
-                    setGoalCreateBudget('')
-                    setGoalCreateError('')
-                  }}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className="uam-primary-button"
-                  style={{ padding: '2px 10px', fontSize: 11 }}
-                  disabled={goalCreateSubmitting || !goalCreateObjective.trim()}
-                  onClick={handleCreateGoal}
-                >
-                  {goalCreateSubmitting ? 'Creating...' : 'Create'}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
+      <button
+        type="button"
+        title={goalActive ? 'Pause goal mode' : goalPaused ? 'Resume goal mode' : goalArmed ? 'Next message will become the goal' : 'Use the next message as a goal'}
+        aria-pressed={goalActive || goalArmed}
+        onClick={onToggleGoal}
+        disabled={modelDisabled}
+        className="inline-flex items-center gap-1.5 px-2"
+        style={{
+          ...chipStyle,
+          borderColor: goalActive || goalArmed ? 'color-mix(in srgb, var(--purple) 55%, var(--border))' : 'var(--border)',
+          background: goalActive || goalArmed ? 'color-mix(in srgb, var(--purple) 16%, var(--surface))' : chipStyle.background,
+          color: goalActive || goalArmed ? 'var(--text)' : 'var(--text-2)',
+          opacity: modelDisabled ? 0.55 : 1,
+        }}
+      >
+        <span style={{ color: goalActive || goalArmed ? 'var(--purple)' : 'var(--text-3)', fontSize: 10 }}>●</span>
+        <span>{goalArmed ? 'Goal Next' : 'Goal'}</span>
+      </button>
       <button
         type="button"
         title="Attach files"
@@ -2785,6 +2642,24 @@ function ComposerToolbar({
                   <span style={{ color: 'var(--text-3)' }}>Memory</span>
                   <span>{memoryEnabled ? 'On' : 'Off'}</span>
                 </div>
+                <label className="grid gap-1">
+                  <span style={{ color: 'var(--text-3)' }}>Goal token budget</span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={defaultGoalTokenBudget || ''}
+                    placeholder="Unlimited"
+                    onChange={(event) => onSetDefaultGoalTokenBudget(parseInt(event.target.value || '0', 10))}
+                    className="w-full px-2 py-1 text-xs"
+                    style={{
+                      border: '1px solid var(--border)',
+                      borderRadius: 6,
+                      background: 'var(--bg)',
+                      color: 'var(--text)',
+                      outline: 'none',
+                    }}
+                  />
+                </label>
               </div>
             </div>
           )}
@@ -2831,6 +2706,7 @@ export function ChatView({ session }: ChatViewProps) {
   const [workspaceActionBusy, setWorkspaceActionBusy] = useState(false)
   const [goalError, setGoalError] = useState('')
   const [goalSubmitting, setGoalSubmitting] = useState(false)
+  const [goalArmNextMessage, setGoalArmNextMessage] = useState(false)
   const [composerAttachments, setComposerAttachments] = useState<LocalAttachment[]>([])
   const [attachmentError, setAttachmentError] = useState('')
   const [renderedMessageCount, setRenderedMessageCount] = useState(INITIAL_RENDERED_MESSAGES)
@@ -2868,6 +2744,8 @@ export function ChatView({ session }: ChatViewProps) {
   const updateGoalStatus = useAppStore((s) => s.updateGoalStatus)
   const removeGoal = useAppStore((s) => s.removeGoal)
   const resumeGoal = useAppStore((s) => s.resumeGoal)
+  const defaultGoalTokenBudget = useAppStore((s) => s.defaultGoalTokenBudgetByChatId[session.id] ?? 0)
+  const setDefaultGoalTokenBudget = useAppStore((s) => s.setDefaultGoalTokenBudget)
   const bottomRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const providerMenuRef = useRef<HTMLDivElement>(null)
@@ -2944,6 +2822,7 @@ export function ChatView({ session }: ChatViewProps) {
     setOpenWorkspaceError('')
     setWorkspaceActionMessage('')
     setWorkspaceActionBusy(false)
+    setGoalArmNextMessage(false)
     setRenderedMessageCount(INITIAL_RENDERED_MESSAGES)
   }, [session.id])
 
@@ -3127,7 +3006,7 @@ export function ChatView({ session }: ChatViewProps) {
     if (!goalMatch) return false
 
     const objective = goalMatch[1].trim()
-    const tokenBudget = goalMatch[2] ? parseInt(goalMatch[2], 10) : 0
+    const tokenBudget = goalMatch[2] ? parseInt(goalMatch[2], 10) : defaultGoalTokenBudget
 
     if (!objective) {
       setGoalError('Goal objective is required.')
@@ -3158,14 +3037,36 @@ export function ChatView({ session }: ChatViewProps) {
       return
     }
 
+    const readyAttachments = composerAttachments
+      .filter((attachment) => attachment.status === 'ready')
+      .map(({ status, error, ...attachment }) => attachment)
+    if (goalArmNextMessage) {
+      setGoalSubmitting(true)
+      const goalId = await setGoalStore(session.id, prompt, defaultGoalTokenBudget)
+      if (!goalId) {
+        setGoalSubmitting(false)
+        setGoalError('Failed to create goal.')
+        return
+      }
+      const ok = await sendAcpPrompt(session.id, prompt, readyAttachments)
+      setGoalSubmitting(false)
+      if (!ok) {
+        setGoalError('Goal was created, but the first prompt failed to send.')
+        return
+      }
+      setGoalError('')
+      setGoalArmNextMessage(false)
+      setDraft('')
+      setComposerAttachments([])
+      setAttachmentError('')
+      return
+    }
+
     if (isClaudeProvider(currentProvider, currentProviderId) && currentModeId === 'plan') {
       setClaudePlanPrompt(prompt)
       return
     }
     setSubmitting(true)
-    const readyAttachments = composerAttachments
-      .filter((attachment) => attachment.status === 'ready')
-      .map(({ status, error, ...attachment }) => attachment)
     const ok = await sendAcpPrompt(session.id, prompt, readyAttachments)
     setSubmitting(false)
     if (ok) {
@@ -3258,8 +3159,8 @@ export function ChatView({ session }: ChatViewProps) {
     : `${currentProviderName} is not supported in this build. Switch this chat to Gemini CLI to continue.`
   const canChangeProvider = messages.length === 0 && !acp?.running && !acp?.processing
   const canSend = useMemo(
-    () => providerSupported && draft.trim().length > 0 && !submitting && !acp?.processing && !composerAttachments.some((attachment) => attachment.status !== 'ready'),
-    [providerSupported, draft, submitting, acp?.processing, composerAttachments]
+    () => providerSupported && draft.trim().length > 0 && !submitting && !goalSubmitting && !acp?.processing && !composerAttachments.some((attachment) => attachment.status !== 'ready'),
+    [providerSupported, draft, submitting, goalSubmitting, acp?.processing, composerAttachments]
   )
   const currentModelId = acp?.currentModelId || session.modelId || ''
   const currentModeId = acp?.currentModeId || session.approvalMode || 'default'
@@ -3286,6 +3187,7 @@ export function ChatView({ session }: ChatViewProps) {
   }
   const activeGoal = activeGoalId ? goals.find((g) => g.id === activeGoalId) ?? null : null
   const displayedGoal = activeGoal ?? (goals.length > 0 ? goals[goals.length - 1] : null)
+  const goalPaused = displayedGoal?.status === 'paused'
   const handleCompleteGoal = () => {
     if (displayedGoal) {
       void updateGoalStatus(displayedGoal.id, 'complete')
@@ -3296,10 +3198,27 @@ export function ChatView({ session }: ChatViewProps) {
       void resumeGoal(session.id, displayedGoal.id)
     }
   }
+  const handlePauseGoal = () => {
+    if (displayedGoal) {
+      void updateGoalStatus(displayedGoal.id, 'paused')
+    }
+  }
   const handleRemoveGoal = () => {
     if (displayedGoal) {
       void removeGoal(displayedGoal.id)
     }
+  }
+  const handleToggleGoal = () => {
+    if (activeGoal) {
+      void updateGoalStatus(activeGoal.id, 'paused')
+      return
+    }
+    if (displayedGoal && displayedGoal.status !== 'active') {
+      void resumeGoal(session.id, displayedGoal.id)
+      return
+    }
+    setGoalArmNextMessage((value) => !value)
+    setGoalError('')
   }
 
   const activePlanActions = canShowPlanActions && providerSupported
@@ -3489,6 +3408,7 @@ export function ChatView({ session }: ChatViewProps) {
           <GoalBanner
             goal={displayedGoal}
             onComplete={handleCompleteGoal}
+            onPause={handlePauseGoal}
             onResume={handleResumeGoal}
             onRemove={handleRemoveGoal}
           />
@@ -3974,6 +3894,12 @@ export function ChatView({ session }: ChatViewProps) {
               onToggleMemory={() => {
                 void setSessionMemoryEnabled(session.id, !(session.memoryEnabled ?? true))
               }}
+              goalArmed={goalArmNextMessage}
+              goalActive={Boolean(activeGoal)}
+              goalPaused={Boolean(goalPaused)}
+              defaultGoalTokenBudget={defaultGoalTokenBudget}
+              onToggleGoal={handleToggleGoal}
+              onSetDefaultGoalTokenBudget={(value) => setDefaultGoalTokenBudget(session.id, value)}
               onStopRuntime={() => void stopAcpSession(session.id)}
               onAttachFile={() => fileInputRef.current?.click()}
               onOpenMarkdownStore={() => void openMarkdownStore()}

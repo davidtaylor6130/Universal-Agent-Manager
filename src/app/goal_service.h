@@ -5,6 +5,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace uam
 {
@@ -21,6 +22,12 @@ class GoalService
 		std::string decision;
 		std::string reason;
 		std::string next_prompt;
+		std::string blocker_kind;
+		std::vector<std::string> evidence;
+		std::vector<std::string> completed_items;
+		std::vector<std::string> remaining_items;
+		std::string current_step;
+		std::string last_verification;
 	};
 
 	/// <summary>

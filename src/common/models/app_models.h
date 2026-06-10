@@ -94,7 +94,8 @@ enum class GoalStatus
 {
 	Active,
 	Complete,
-	Blocked
+	Blocked,
+	Paused
 };
 
 /// <summary>
@@ -111,6 +112,13 @@ struct Goal
 	int64_t tokens_used = 0;
 	int blocked_turn_count = 0;              // consecutive turns at same blocker
 	std::string last_blocker;                // description of current blocker
+	std::vector<std::string> completed_items;
+	std::vector<std::string> remaining_items;
+	std::string current_step;
+	std::string last_verification;
+	std::string last_next_prompt;
+	int same_next_prompt_count = 0;
+	int loop_count = 0;
 	std::string created_at;
 	std::string updated_at;
 };

@@ -11122,6 +11122,64 @@ UAM_TEST(GoalServiceSetActiveGoalReactivatesBlockedGoal)
 	UAM_ASSERT(app.chats.front().goals.front().last_blocker.empty());
 }
 
+UAM_TEST(GoalServicePauseClearsActiveGoalAndResumeReactivates)
+{
+	uam::AppState app;
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+	chat.id = "chat-pause-goal";
+	app.chats.push_back(chat);
+
+	std::string goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Pause and resume goal mode.", 0, &goal_id));
+	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, chat.id, goal_id));
+	UAM_ASSERT(uam::GoalService::UpdateGoalStatus(app, goal_id, GoalStatus::Paused));
+	UAM_ASSERT(app.chats.front().active_goal_id.empty());
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Paused);
+	UAM_ASSERT(uam::GoalService::FindActiveGoal(app, chat.id) == nullptr);
+
+	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, chat.id, goal_id));
+	UAM_ASSERT_EQ(app.chats.front().active_goal_id, goal_id);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+}
+
+UAM_TEST(ChatRepositoryPersistsPausedGoalProgressState)
+{
+	TempDir temp("uam-goal-progress-state");
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+	chat.id = "chat-goal-progress";
+	Goal goal;
+	goal.id = "goal-progress";
+	goal.objective = "Track durable progress.";
+	goal.status = GoalStatus::Paused;
+	goal.token_budget = 100;
+	goal.tokens_used = 20;
+	goal.completed_items = {"first"};
+	goal.remaining_items = {"second"};
+	goal.current_step = "second";
+	goal.last_verification = "npm test passed";
+	goal.last_next_prompt = "Do second";
+	goal.same_next_prompt_count = 2;
+	goal.loop_count = 3;
+	goal.created_at = "2026-01-01T00:00:00.000Z";
+	goal.updated_at = "2026-01-01T00:00:01.000Z";
+	chat.goals.push_back(goal);
+
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(loaded.front().goals.size(), static_cast<std::size_t>(1));
+	const Goal& loaded_goal = loaded.front().goals.front();
+	UAM_ASSERT_EQ(loaded_goal.status, GoalStatus::Paused);
+	UAM_ASSERT_EQ(loaded_goal.completed_items.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(loaded_goal.completed_items.front(), std::string("first"));
+	UAM_ASSERT_EQ(loaded_goal.remaining_items.front(), std::string("second"));
+	UAM_ASSERT_EQ(loaded_goal.current_step, std::string("second"));
+	UAM_ASSERT_EQ(loaded_goal.last_verification, std::string("npm test passed"));
+	UAM_ASSERT_EQ(loaded_goal.last_next_prompt, std::string("Do second"));
+	UAM_ASSERT_EQ(loaded_goal.same_next_prompt_count, 2);
+	UAM_ASSERT_EQ(loaded_goal.loop_count, 3);
+}
+
 UAM_TEST(GoalServiceParseReviewDecisionAllowsWrappedStrictJson)
 {
 	const auto parsed = uam::GoalService::ParseReviewDecision("review:\n{\"decision\":\"continue\",\"reason\":\"more work remains\",\"nextPrompt\":\"Run tests\"}\nthanks");
@@ -11130,6 +11188,43 @@ UAM_TEST(GoalServiceParseReviewDecisionAllowsWrappedStrictJson)
 	UAM_ASSERT_EQ(parsed->reason, std::string("more work remains"));
 	UAM_ASSERT_EQ(parsed->next_prompt, std::string("Run tests"));
 	UAM_ASSERT(!uam::GoalService::ParseReviewDecision("{\"decision\":\"maybe\",\"reason\":\"x\",\"nextPrompt\":\"y\"}").has_value());
+}
+
+UAM_TEST(GoalServiceParseReviewDecisionRejectsContinueWithoutNextPrompt)
+{
+	UAM_ASSERT(!uam::GoalService::ParseReviewDecision(R"({"decision":"continue","reason":"more work remains","nextPrompt":""})").has_value());
+	UAM_ASSERT(!uam::GoalService::ParseReviewDecision(R"({"decision":"continue","reason":"more work remains","nextPrompt":"   "})").has_value());
+
+	const auto blocked = uam::GoalService::ParseReviewDecision(R"({"decision":"blocked","reason":"Need user input.","nextPrompt":""})");
+	UAM_ASSERT(blocked.has_value());
+	UAM_ASSERT_EQ(blocked->decision, std::string("blocked"));
+	UAM_ASSERT_EQ(blocked->next_prompt, std::string(""));
+}
+
+UAM_TEST(GoalServiceParseReviewDecisionRequiresEvidenceForCompleteAndReadsProgress)
+{
+	UAM_ASSERT(!uam::GoalService::ParseReviewDecision(R"({"decision":"complete","reason":"done","nextPrompt":""})").has_value());
+
+	const auto parsed = uam::GoalService::ParseReviewDecision(R"({
+		"decision":"continue",
+		"reason":"more work remains",
+		"nextPrompt":"Run the focused tests",
+		"evidence":["diff reviewed"],
+		"blockerKind":"transient",
+		"progressUpdate":{
+			"completed":["parser guard"],
+			"remaining":["runtime guard"],
+			"currentStep":"runtime guard",
+			"lastVerification":"npm test passed"
+		}
+	})");
+	UAM_ASSERT(parsed.has_value());
+	UAM_ASSERT_EQ(parsed->blocker_kind, std::string("transient"));
+	UAM_ASSERT_EQ(parsed->evidence.front(), std::string("diff reviewed"));
+	UAM_ASSERT_EQ(parsed->completed_items.front(), std::string("parser guard"));
+	UAM_ASSERT_EQ(parsed->remaining_items.front(), std::string("runtime guard"));
+	UAM_ASSERT_EQ(parsed->current_step, std::string("runtime guard"));
+	UAM_ASSERT_EQ(parsed->last_verification, std::string("npm test passed"));
 }
 
 UAM_TEST(OpenCodeBuildPromptPrependsGoalContextWhenActiveGoalProvided)

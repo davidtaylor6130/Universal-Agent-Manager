@@ -52,6 +52,8 @@ std::string GoalStatusToString(GoalStatus status)
 		return "complete";
 	case GoalStatus::Blocked:
 		return "blocked";
+	case GoalStatus::Paused:
+		return "paused";
 	}
 	return "active";
 }
@@ -66,6 +68,11 @@ GoalStatus GoalStatusFromString(std::string_view value)
 	if (value == "blocked")
 	{
 		return GoalStatus::Blocked;
+	}
+
+	if (value == "paused")
+	{
+		return GoalStatus::Paused;
 	}
 
 	return GoalStatus::Active;

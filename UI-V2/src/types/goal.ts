@@ -1,4 +1,4 @@
-export type GoalStatus = 'active' | 'complete' | 'blocked'
+export type GoalStatus = 'active' | 'complete' | 'blocked' | 'paused'
 
 export interface Goal {
   id: string
@@ -9,6 +9,13 @@ export interface Goal {
   tokensUsed?: number
   blockedTurnCount?: number
   lastBlocker?: string
+  completedItems?: string[]
+  remainingItems?: string[]
+  currentStep?: string
+  lastVerification?: string
+  lastNextPrompt?: string
+  sameNextPromptCount?: number
+  loopCount?: number
   createdAt: Date
   updatedAt: Date
 }

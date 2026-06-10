@@ -4,6 +4,7 @@ import type { Goal } from '../../types/goal'
 interface GoalBannerProps {
   goal: Goal
   onComplete: () => void
+  onPause?: () => void
   onResume?: () => void
   onRemove: () => void
 }
@@ -16,6 +17,8 @@ function statusBadgeStyle(status: Goal['status']): CSSProperties {
       return { background: '#1a4d6d', color: '#b8d8f5' }
     case 'blocked':
       return { background: '#6d1a1a', color: '#f5b8b8' }
+    case 'paused':
+      return { background: '#5a4a12', color: '#f5df8a' }
   }
 }
 
@@ -24,10 +27,20 @@ function statusLabel(status: Goal['status']): string {
     case 'active': return 'Active'
     case 'complete': return 'Complete'
     case 'blocked': return 'Blocked'
+    case 'paused': return 'Paused'
   }
 }
 
-export function GoalBanner({ goal, onComplete, onResume, onRemove }: GoalBannerProps) {
+function iconButtonStyle(color?: string): CSSProperties {
+  return {
+    padding: '1px 8px',
+    fontSize: 12,
+    minWidth: 28,
+    color,
+  }
+}
+
+export function GoalBanner({ goal, onComplete, onPause, onResume, onRemove }: GoalBannerProps) {
   const budgetDisplay = goal.tokenBudget
     ? `${goal.tokensUsed ?? 0}/${goal.tokenBudget} tokens`
     : null
@@ -75,32 +88,50 @@ export function GoalBanner({ goal, onComplete, onResume, onRemove }: GoalBannerP
         </span>
       )}
       {goal.status === 'active' && (
-        <button
-          type="button"
-          className="uam-secondary-button"
-          onClick={onComplete}
-          style={{ padding: '1px 8px', fontSize: 11 }}
-        >
-          Complete
-        </button>
+        <>
+          <button
+            type="button"
+            className="uam-secondary-button"
+            onClick={onComplete}
+            style={{ padding: '1px 8px', fontSize: 11 }}
+          >
+            Complete
+          </button>
+          {onPause && (
+            <button
+              type="button"
+              className="uam-secondary-button"
+              title="Pause goal"
+              aria-label="Pause goal"
+              onClick={onPause}
+              style={iconButtonStyle()}
+            >
+              ||
+            </button>
+          )}
+        </>
       )}
       {goal.status !== 'active' && onResume && (
         <button
           type="button"
           className="uam-secondary-button"
+          title="Resume goal"
+          aria-label="Resume goal"
           onClick={onResume}
-          style={{ padding: '1px 8px', fontSize: 11 }}
+          style={iconButtonStyle()}
         >
-          Resume
+          ▶
         </button>
       )}
       <button
         type="button"
         className="uam-secondary-button"
+        title="Delete goal"
+        aria-label="Delete goal"
         onClick={onRemove}
-        style={{ padding: '1px 8px', fontSize: 11, color: 'var(--danger)' }}
+        style={iconButtonStyle('var(--danger)')}
       >
-        Remove
+        🗑
       </button>
     </div>
   )

@@ -1095,6 +1095,13 @@ namespace uam
 					goal_json["tokensUsed"] = goal.tokens_used;
 					goal_json["blockedTurnCount"] = goal.blocked_turn_count;
 					goal_json["lastBlocker"] = goal.last_blocker.empty() ? nullptr : nlohmann::json(goal.last_blocker);
+					goal_json["completedItems"] = goal.completed_items;
+					goal_json["remainingItems"] = goal.remaining_items;
+					goal_json["currentStep"] = goal.current_step;
+					goal_json["lastVerification"] = goal.last_verification;
+					goal_json["lastNextPrompt"] = goal.last_next_prompt;
+					goal_json["sameNextPromptCount"] = goal.same_next_prompt_count;
+					goal_json["loopCount"] = goal.loop_count;
 					goal_json["createdAt"] = goal.created_at;
 					goal_json["updatedAt"] = goal.updated_at;
 					goals_arr.push_back(std::move(goal_json));
@@ -1433,6 +1440,13 @@ namespace uam
 				goal_json["tokensUsed"] = goal.tokens_used;
 				goal_json["blockedTurnCount"] = goal.blocked_turn_count;
 				goal_json["lastBlocker"] = goal.last_blocker.empty() ? nullptr : nlohmann::json(goal.last_blocker);
+				goal_json["completedItems"] = goal.completed_items;
+				goal_json["remainingItems"] = goal.remaining_items;
+				goal_json["currentStep"] = goal.current_step;
+				goal_json["lastVerification"] = goal.last_verification;
+				goal_json["lastNextPrompt"] = goal.last_next_prompt;
+				goal_json["sameNextPromptCount"] = goal.same_next_prompt_count;
+				goal_json["loopCount"] = goal.loop_count;
 				goal_json["createdAt"] = goal.created_at;
 				goal_json["updatedAt"] = goal.updated_at;
 				goals_arr.push_back(std::move(goal_json));

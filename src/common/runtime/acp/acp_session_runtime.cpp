@@ -2066,6 +2066,38 @@ namespace uam
 			return session.session_ready && !session.processing && !session.waiting_for_permission && !session.waiting_for_user_input && !session.cancel_requested && session.prompt_request_id == 0 && session.cancel_request_id == 0 && session.queued_prompt.empty();
 		}
 
+		std::string NormalizeGoalNextPrompt(const std::string& prompt)
+		{
+			return uam::strings::Trim(prompt);
+		}
+
+		bool GoalBlockerStopsImmediately(const std::string& blocker_kind)
+		{
+			return blocker_kind == "needs_user" || blocker_kind == "needs_external_state" || blocker_kind == "invalid_review";
+		}
+
+		void ApplyGoalProgressUpdate(Goal& goal, const GoalService::ReviewDecision& decision)
+		{
+			if (!decision.completed_items.empty())
+			{
+				goal.completed_items = decision.completed_items;
+			}
+			if (!decision.remaining_items.empty())
+			{
+				goal.remaining_items = decision.remaining_items;
+			}
+			if (!decision.current_step.empty())
+			{
+				goal.current_step = decision.current_step;
+			}
+			if (!decision.last_verification.empty())
+			{
+				goal.last_verification = decision.last_verification;
+			}
+			goal.loop_count += 1;
+			goal.updated_at = uam::time::TimestampNow();
+		}
+
 		bool QueueGoalInternalPrompt(AcpSessionState& session, ChatSession& chat, const std::string& prompt, bool review_turn)
 		{
 			if (prompt.empty() || !CanQueueGoalInternalPrompt(session))
@@ -2105,6 +2137,8 @@ namespace uam
 			}
 
 			const std::string goal_id = session.goal_review_goal_id;
+			const std::string review_user_prompt = session.goal_review_user_prompt;
+			const std::string review_assistant_text = session.goal_review_assistant_text;
 			const std::string review_text = MessageTextForGoalReview(chat, session.turn_assistant_message_index);
 			ClearGoalReviewState(session);
 
@@ -2113,9 +2147,9 @@ namespace uam
 			{
 				GoalService::RecordBlocker(app, goal_id, "Goal reviewer returned invalid JSON.");
 				SaveChatQuietly(app, chat);
-				if (Goal* active_goal = GoalService::FindActiveGoal(app, chat.id); active_goal != nullptr && active_goal->id == goal_id)
+				if (Goal* active_goal = GoalService::FindActiveGoal(app, chat.id); active_goal != nullptr && active_goal->id == goal_id && active_goal->blocked_turn_count < 2)
 				{
-					(void)QueueGoalInternalPrompt(session, chat, GoalService::BuildContinuationPrompt(*active_goal, active_goal->tokens_used, active_goal->token_budget), false);
+					(void)QueueGoalInternalPrompt(session, chat, GoalService::BuildReviewPrompt(*active_goal, review_user_prompt, review_assistant_text), true);
 				}
 						if (browser)
 				{
@@ -2127,6 +2161,10 @@ namespace uam
 			const GoalService::ReviewDecision& decision = *parsed;
 			if (decision.decision == "complete")
 			{
+				if (Goal* goal = GoalService::FindGoalById(app, chat.id, goal_id); goal != nullptr)
+				{
+					ApplyGoalProgressUpdate(*goal, decision);
+				}
 				(void)GoalService::UpdateGoalStatus(app, goal_id, GoalStatus::Complete);
 				SaveChatQuietly(app, chat);
 					if (browser)
@@ -2137,9 +2175,17 @@ namespace uam
 			}
 			if (decision.decision == "blocked")
 			{
+				if (Goal* goal = GoalService::FindGoalById(app, chat.id, goal_id); goal != nullptr)
+				{
+					ApplyGoalProgressUpdate(*goal, decision);
+				}
 				GoalService::RecordBlocker(app, goal_id, decision.reason);
+				if (GoalBlockerStopsImmediately(decision.blocker_kind))
+				{
+					(void)GoalService::UpdateGoalStatus(app, goal_id, GoalStatus::Blocked);
+				}
 				SaveChatQuietly(app, chat);
-				if (Goal* active_goal = GoalService::FindActiveGoal(app, chat.id); active_goal != nullptr && active_goal->id == goal_id)
+				if (Goal* active_goal = GoalService::FindActiveGoal(app, chat.id); active_goal != nullptr && active_goal->id == goal_id && !GoalBlockerStopsImmediately(decision.blocker_kind))
 				{
 					(void)QueueGoalInternalPrompt(session, chat, GoalService::BuildContinuationPrompt(*active_goal, active_goal->tokens_used, active_goal->token_budget), false);
 				}
@@ -2157,7 +2203,27 @@ namespace uam
 				return true;
 			}
 
-			const std::string follow_up = decision.next_prompt.empty() ? GoalService::BuildContinuationPrompt(*active_goal, active_goal->tokens_used, active_goal->token_budget) : decision.next_prompt;
+			ApplyGoalProgressUpdate(*active_goal, decision);
+			const std::string follow_up = NormalizeGoalNextPrompt(decision.next_prompt);
+			if (active_goal->last_next_prompt == follow_up)
+			{
+				active_goal->same_next_prompt_count += 1;
+			}
+			else
+			{
+				active_goal->last_next_prompt = follow_up;
+				active_goal->same_next_prompt_count = 1;
+			}
+			if (active_goal->same_next_prompt_count >= 3)
+			{
+				GoalService::RecordBlocker(app, goal_id, "Goal reviewer repeated the same next prompt.");
+				SaveChatQuietly(app, chat);
+				if (browser)
+				{
+					uam::PushStateUpdateIfChanged(browser, app);
+				}
+				return true;
+			}
 			SaveChatQuietly(app, chat);
 			(void)QueueGoalInternalPrompt(session, chat, follow_up, false);
 			if (browser)

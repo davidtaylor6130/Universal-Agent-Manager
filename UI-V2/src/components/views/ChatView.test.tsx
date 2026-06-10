@@ -1168,6 +1168,130 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('arms the next message as a goal and sends the same text with the default budget', async () => {
+    const setGoal = vi.fn(() => Promise.resolve('goal-1'))
+    const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      setGoal,
+      sendAcpPrompt,
+      defaultGoalTokenBudgetByChatId: { ...state.defaultGoalTokenBudgetByChatId, 'chat-1': 1234 },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+          processingStartedAtMs: null,
+          pendingPermission: null,
+          turnEvents: [],
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const goalButton = host.querySelector('button[title="Use the next message as a goal"]') as HTMLButtonElement | null
+    expect(goalButton).toBeTruthy()
+    act(() => {
+      goalButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(host.textContent).toContain('Goal Next')
+
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement | null
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      valueSetter?.call(textarea, 'Ship the goal loop')
+      textarea!.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+
+    const form = host.querySelector('form') as HTMLFormElement | null
+    await act(async () => {
+      form?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    })
+
+    expect(setGoal).toHaveBeenCalledWith('chat-1', 'Ship the goal loop', 1234)
+    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Ship the goal loop', [])
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
+  it('renders active goal pause/delete controls and paused goal resume control', async () => {
+    const updateGoalStatus = vi.fn(() => Promise.resolve(true))
+    const removeGoal = vi.fn(() => Promise.resolve(true))
+    const resumeGoal = vi.fn(() => Promise.resolve(true))
+    const goal = {
+      id: 'goal-1',
+      chatId: 'chat-1',
+      objective: 'Review the Ralph loop',
+      status: 'active' as const,
+      tokenBudget: 0,
+      tokensUsed: 0,
+      blockedTurnCount: 0,
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+    }
+    useAppStore.setState((state) => ({
+      updateGoalStatus,
+      removeGoal,
+      resumeGoal,
+      goalsByChatId: { ...state.goalsByChatId, 'chat-1': [goal] },
+      activeGoalIdByChatId: { ...state.activeGoalIdByChatId, 'chat-1': 'goal-1' },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const pauseButton = host.querySelector('button[title="Pause goal"]') as HTMLButtonElement | null
+    const deleteButton = host.querySelector('button[title="Delete goal"]') as HTMLButtonElement | null
+    expect(host.textContent).toContain('Complete')
+    expect(pauseButton).toBeTruthy()
+    expect(deleteButton).toBeTruthy()
+
+    act(() => {
+      pauseButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(updateGoalStatus).toHaveBeenCalledWith('goal-1', 'paused')
+
+    act(() => {
+      useAppStore.setState((state) => ({
+        goalsByChatId: { ...state.goalsByChatId, 'chat-1': [{ ...goal, status: 'paused' as const }] },
+        activeGoalIdByChatId: { ...state.activeGoalIdByChatId, 'chat-1': null },
+      }))
+    })
+
+    const resumeButton = host.querySelector('button[title="Resume goal"]') as HTMLButtonElement | null
+    expect(resumeButton).toBeTruthy()
+    act(() => {
+      resumeButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(resumeGoal).toHaveBeenCalledWith('chat-1', 'goal-1')
+
+    const pausedDeleteButton = host.querySelector('button[title="Delete goal"]') as HTMLButtonElement | null
+    act(() => {
+      pausedDeleteButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(removeGoal).toHaveBeenCalledWith('goal-1')
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  })
+
   it('toggles the memory chip', () => {
     const setSessionMemoryEnabled = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({

@@ -745,6 +745,13 @@ namespace
 				goal.tokens_used = static_cast<int64_t>(NonNegativeIntFieldOrZero(goal_obj.Find("tokensUsed")));
 				goal.blocked_turn_count = NonNegativeIntFieldOrZero(goal_obj.Find("blockedTurnCount"));
 				goal.last_blocker = JsonStringOrEmpty(goal_obj.Find("lastBlocker"));
+				goal.completed_items = JsonStringArrayOrEmpty(goal_obj.Find("completedItems"));
+				goal.remaining_items = JsonStringArrayOrEmpty(goal_obj.Find("remainingItems"));
+				goal.current_step = JsonStringOrEmpty(goal_obj.Find("currentStep"));
+				goal.last_verification = JsonStringOrEmpty(goal_obj.Find("lastVerification"));
+				goal.last_next_prompt = JsonStringOrEmpty(goal_obj.Find("lastNextPrompt"));
+				goal.same_next_prompt_count = NonNegativeIntFieldOrZero(goal_obj.Find("sameNextPromptCount"));
+				goal.loop_count = NonNegativeIntFieldOrZero(goal_obj.Find("loopCount"));
 				goal.created_at = JsonStringOrEmpty(goal_obj.Find("createdAt"));
 				goal.updated_at = JsonStringOrEmpty(goal_obj.Find("updatedAt"));
 				chat.goals.push_back(std::move(goal));
@@ -952,6 +959,13 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 			uam::json::SetNumber(goal_obj, "tokensUsed", static_cast<double>(goal.tokens_used));
 			uam::json::SetNumber(goal_obj, "blockedTurnCount", static_cast<double>(goal.blocked_turn_count));
 			uam::json::SetString(goal_obj, "lastBlocker", goal.last_blocker);
+			uam::json::SetValue(goal_obj, "completedItems", StringArrayToJson(goal.completed_items));
+			uam::json::SetValue(goal_obj, "remainingItems", StringArrayToJson(goal.remaining_items));
+			uam::json::SetString(goal_obj, "currentStep", goal.current_step);
+			uam::json::SetString(goal_obj, "lastVerification", goal.last_verification);
+			uam::json::SetString(goal_obj, "lastNextPrompt", goal.last_next_prompt);
+			uam::json::SetNumber(goal_obj, "sameNextPromptCount", static_cast<double>(goal.same_next_prompt_count));
+			uam::json::SetNumber(goal_obj, "loopCount", static_cast<double>(goal.loop_count));
 			uam::json::SetString(goal_obj, "createdAt", goal.created_at);
 			uam::json::SetString(goal_obj, "updatedAt", goal.updated_at);
 			uam::json::PushValue(goals_arr, std::move(goal_obj));

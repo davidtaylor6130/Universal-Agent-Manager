@@ -47,6 +47,29 @@ namespace
 	{
 		return uam::strings::Trim(blocker).empty() ? "Goal reviewer reported a blocker." : uam::strings::Trim(blocker);
 	}
+
+	std::vector<std::string> TrimmedStringArray(const nlohmann::json& value)
+	{
+		std::vector<std::string> result;
+		if (!value.is_array())
+		{
+			return result;
+		}
+		for (const auto& item : value)
+		{
+			if (!item.is_string())
+			{
+				continue;
+			}
+			const std::string text = uam::strings::Trim(item.get<std::string>());
+			if (!text.empty())
+			{
+				result.push_back(text);
+			}
+		}
+		return result;
+	}
+
 } // namespace
 
 bool GoalService::CreateGoal(AppState& app, const std::string& chat_id, const std::string& objective,
@@ -124,6 +147,19 @@ bool GoalService::UpdateGoalStatus(AppState& app, const std::string& goal_id, Go
 			}
 		}
 	}
+	else if (status == GoalStatus::Paused)
+	{
+		for (auto& chat : app.chats)
+		{
+			if (chat.active_goal_id == goal_id)
+			{
+				chat.active_goal_id.clear();
+				chat.updated_at = uam::time::TimestampNow();
+				MarkDirty(app, chat.id);
+				break;
+			}
+		}
+	}
 
 	ChatSession* chat = FindChatForGoal(app, goal_id);
 	if (chat != nullptr)
@@ -162,9 +198,16 @@ bool GoalService::SetActiveGoal(AppState& app, const std::string& chat_id, const
 		return false;
 	}
 
+	if (matched_goal->status == GoalStatus::Blocked)
+	{
+		matched_goal->blocked_turn_count = 0;
+		matched_goal->last_blocker.clear();
+	}
+	else if (matched_goal->status == GoalStatus::Paused)
+	{
+		matched_goal->blocked_turn_count = 0;
+	}
 	matched_goal->status = GoalStatus::Active;
-	matched_goal->blocked_turn_count = 0;
-	matched_goal->last_blocker.clear();
 	matched_goal->updated_at = uam::time::TimestampNow();
 	chat->active_goal_id = goal_id;
 	chat->updated_at = uam::time::TimestampNow();
@@ -462,7 +505,7 @@ std::string GoalService::BuildContinuationPrompt(const Goal& goal, int64_t token
 	if (token_budget > 0)
 	{
 		ss << "- Token budget: " << token_budget << "\n";
-		ss << "- Tokens remaining: " << (token_budget - tokens_used) << "\n";
+		ss << "- Tokens remaining: " << std::max<int64_t>(0, token_budget - tokens_used) << "\n";
 	}
 	else
 	{
@@ -479,12 +522,42 @@ std::string GoalService::BuildReviewPrompt(const Goal& goal, const std::string& 
 {
 	std::ostringstream ss;
 	ss << "Review progress toward the active thread goal. Return only strict JSON with this exact shape:\n";
-	ss << R"({"decision":"complete|continue|blocked","reason":"...","nextPrompt":"..."})" << "\n\n";
+	ss << R"({"decision":"complete|continue|blocked","reason":"...","nextPrompt":"...","evidence":["..."],"blockerKind":"transient|needs_user|needs_external_state|invalid_review","progressUpdate":{"completed":["..."],"remaining":["..."],"currentStep":"...","lastVerification":"..."}})" << "\n\n";
 	ss << "Decision rules:\n";
-	ss << "- complete only when the objective is fully satisfied.\n";
-	ss << "- blocked only when the same concrete blocker prevents progress.\n";
-	ss << "- continue when more work can be done; nextPrompt must be the next agent prompt.\n\n";
+	ss << "- complete only when the objective is fully satisfied and evidence is non-empty.\n";
+	ss << "- blocked when a concrete blocker prevents progress; classify blockerKind.\n";
+	ss << "- continue when more work can be done; nextPrompt must be a non-empty next agent prompt that makes concrete progress.\n";
+	ss << "- do not return continue with an empty nextPrompt; use blocked when progress requires user input or external state.\n\n";
 	ss << "<objective>\n" << goal.objective << "\n</objective>\n\n";
+	if (!goal.completed_items.empty() || !goal.remaining_items.empty() || !goal.current_step.empty() || !goal.last_verification.empty())
+	{
+		ss << "<progress>\n";
+		if (!goal.completed_items.empty())
+		{
+			ss << "Completed:\n";
+			for (const std::string& item : goal.completed_items)
+			{
+				ss << "- " << item << "\n";
+			}
+		}
+		if (!goal.remaining_items.empty())
+		{
+			ss << "Remaining:\n";
+			for (const std::string& item : goal.remaining_items)
+			{
+				ss << "- " << item << "\n";
+			}
+		}
+		if (!goal.current_step.empty())
+		{
+			ss << "Current step: " << goal.current_step << "\n";
+		}
+		if (!goal.last_verification.empty())
+		{
+			ss << "Last verification: " << goal.last_verification << "\n";
+		}
+		ss << "</progress>\n\n";
+	}
 	ss << "<recentUserPrompt>\n" << recent_user_prompt << "\n</recentUserPrompt>\n\n";
 	ss << "<recentAssistantText>\n" << recent_assistant_text << "\n</recentAssistantText>\n";
 	return ss.str();
@@ -511,7 +584,24 @@ std::optional<GoalService::ReviewDecision> GoalService::ParseReviewDecision(cons
 		decision.decision = uam::strings::Trim(parsed.value("decision", ""));
 		decision.reason = uam::strings::Trim(parsed.value("reason", ""));
 		decision.next_prompt = uam::strings::Trim(parsed.value("nextPrompt", ""));
+		decision.blocker_kind = uam::strings::Trim(parsed.value("blockerKind", ""));
+		decision.evidence = TrimmedStringArray(parsed.value("evidence", nlohmann::json::array()));
+		if (const auto it = parsed.find("progressUpdate"); it != parsed.end() && it->is_object())
+		{
+			decision.completed_items = TrimmedStringArray(it->value("completed", nlohmann::json::array()));
+			decision.remaining_items = TrimmedStringArray(it->value("remaining", nlohmann::json::array()));
+			decision.current_step = uam::strings::Trim(it->value("currentStep", ""));
+			decision.last_verification = uam::strings::Trim(it->value("lastVerification", ""));
+		}
 		if (decision.decision != "complete" && decision.decision != "continue" && decision.decision != "blocked")
+		{
+			return std::nullopt;
+		}
+		if (decision.decision == "continue" && decision.next_prompt.empty())
+		{
+			return std::nullopt;
+		}
+		if (decision.decision == "complete" && decision.evidence.empty())
 		{
 			return std::nullopt;
 		}

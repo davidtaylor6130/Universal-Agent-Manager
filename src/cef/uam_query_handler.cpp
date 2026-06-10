@@ -3385,6 +3385,10 @@ void UamQueryHandler::HandleUpdateGoalStatus(CefRefPtr<CefBrowser> browser, cons
 	{
 		status = GoalStatus::Blocked;
 	}
+	else if (status_str == "paused")
+	{
+		status = GoalStatus::Paused;
+	}
 	else if (status_str == "active")
 	{
 		status = GoalStatus::Active;
