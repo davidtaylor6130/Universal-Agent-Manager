@@ -147,13 +147,13 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
   const sessionName = sessionSummary.name
   const sessionLastOpenedAt = sessionSummary.lastOpenedAt
   const isPinned = sessionSummary.isPinned
-  const isActive        = useAppStore((s) => s.activeSessionId === sessionId)
-  const cliBinding      = useAppStore(useShallow((s) => s.cliBindingBySessionId[sessionId]))
-  const acpBinding      = useAppStore(useShallow((s) => s.acpBindingBySessionId[sessionId]))
+  const isActive = useAppStore((s) => s.activeSessionId === sessionId)
+  const cliBinding = useAppStore(useShallow((s) => s.cliBindingBySessionId[sessionId]))
+  const acpBinding = useAppStore(useShallow((s) => s.acpBindingBySessionId[sessionId]))
   const setActiveSession = useAppStore((s) => s.setActiveSession)
   const setSessionPinned = useAppStore((s) => s.setSessionPinned)
-  const renameSession    = useAppStore((s) => s.renameSession)
-  const deleteSession    = useAppStore((s) => s.deleteSession)
+  const renameSession = useAppStore((s) => s.renameSession)
+  const deleteSession = useAppStore((s) => s.deleteSession)
 
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(sessionName)

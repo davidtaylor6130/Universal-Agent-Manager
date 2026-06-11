@@ -20,9 +20,9 @@
 - [x] UI-V2/src/components/sidebar/ChatSearchBar.tsx
 - [x] UI-V2/src/components/sidebar/FolderTree.test.tsx
 - [x] UI-V2/src/components/sidebar/FolderTree.tsx
-- [ ] UI-V2/src/components/sidebar/NewChatModal.tsx
-- [ ] UI-V2/src/components/sidebar/SessionItem.test.tsx
-- [ ] UI-V2/src/components/sidebar/SessionItem.tsx
+- [x] UI-V2/src/components/sidebar/NewChatModal.tsx
+- [x] UI-V2/src/components/sidebar/SessionItem.test.tsx
+- [x] UI-V2/src/components/sidebar/SessionItem.tsx
 - [ ] UI-V2/src/components/sidebar/SidebarHeader.test.tsx
 - [ ] UI-V2/src/components/sidebar/SidebarHeader.tsx
 - [ ] UI-V2/src/components/sidebar/chatSearch.test.ts
