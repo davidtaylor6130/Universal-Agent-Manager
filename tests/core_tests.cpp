@@ -9896,7 +9896,6 @@ UAM_TEST(FolderLifecycleKeepsWorkspaceRootsMinimal)
 	TempDir temp("uam-folders");
 	uam::AppState app;
 	app.data_root = temp.root;
-	ChatDomainService().EnsureDefaultFolder(app);
 
 	std::string created_id;
 	UAM_ASSERT(CreateFolder(app, "Project", temp.root.string(), &created_id));
@@ -10030,7 +10029,6 @@ UAM_TEST(DefaultFolderIsNotSynthesized)
 	chat.folder_id = "missing-folder";
 	app.chats.push_back(chat);
 
-	ChatDomainService().EnsureDefaultFolder(app);
 	ChatDomainService().NormalizeChatFolderAssignments(app);
 
 	UAM_ASSERT(app.folders.empty());
@@ -10076,7 +10074,6 @@ UAM_TEST(DeleteFolderRefreshesRememberedSelectionToFallbackChat)
 	uam::AppState app;
 	app.data_root = temp.root;
 	app.settings.remember_last_chat = true;
-	ChatDomainService().EnsureDefaultFolder(app);
 
 	std::string created_id;
 	UAM_ASSERT(CreateFolder(app, "Project", temp.root.string(), &created_id));
@@ -10127,7 +10124,6 @@ UAM_TEST(DeleteFolderBlocksWhenContainedChatIsRunning)
 	TempDir temp("uam-folder-pending-delete");
 	uam::AppState app;
 	app.data_root = temp.root;
-	ChatDomainService().EnsureDefaultFolder(app);
 
 	std::string created_id;
 	UAM_ASSERT(CreateFolder(app, "Project", temp.root.string(), &created_id));
@@ -10231,7 +10227,6 @@ UAM_TEST(CreateFolderGeneratesUniqueIds)
 	TempDir temp("uam-folder-ids");
 	uam::AppState app;
 	app.data_root = temp.root;
-	ChatDomainService().EnsureDefaultFolder(app);
 
 	std::unordered_set<std::string> ids;
 	for (int i = 0; i < 128; ++i)
@@ -10335,7 +10330,6 @@ UAM_TEST(MoveChatToFolderHandlesMissingWorkspacePaths)
 	uam::AppState app;
 	app.data_root = temp.root;
 	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
-	ChatDomainService().EnsureDefaultFolder(app);
 
 	std::string target_folder_id;
 	const fs::path missing_target = temp.root / "missing-target";
@@ -10452,7 +10446,6 @@ UAM_TEST(ImportDiscoveryDoesNotRecreateFolderForEmptyNativeSource)
 	uam::AppState app;
 	app.data_root = data_root;
 	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
-	ChatDomainService().EnsureDefaultFolder(app);
 	UAM_ASSERT(ChatFolderStore::Save(data_root, app.folders));
 
 	const ChatHistorySyncService::ImportResult result = ChatHistorySyncService().ImportAllNativeChatsByDiscovery(app, false);
@@ -10502,7 +10495,6 @@ UAM_TEST(ImportDiscoverySkipsUamMemoryWorkerNativeChats)
 	uam::AppState app;
 	app.data_root = data_root;
 	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
-	ChatDomainService().EnsureDefaultFolder(app);
 	UAM_ASSERT(ChatFolderStore::Save(data_root, app.folders));
 
 	const ChatHistorySyncService::ImportResult result = ChatHistorySyncService().ImportAllNativeChatsByDiscovery(app, false);
@@ -10540,7 +10532,6 @@ UAM_TEST(ImportDiscoveryDeletesNativeFileAfterImportWhenRequested)
 	uam::AppState app;
 	app.data_root = data_root;
 	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
-	ChatDomainService().EnsureDefaultFolder(app);
 	UAM_ASSERT(ChatFolderStore::Save(data_root, app.folders));
 
 	const ChatHistorySyncService::ImportResult result = ChatHistorySyncService().ImportAllNativeChatsByDiscovery(app, true);
@@ -10579,7 +10570,6 @@ UAM_TEST(ImportDiscoveryDoesNotDuplicateWorkspaceScopedNativeChats)
 	uam::AppState app;
 	app.data_root = data_root;
 	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
-	ChatDomainService().EnsureDefaultFolder(app);
 	UAM_ASSERT(ChatFolderStore::Save(data_root, app.folders));
 
 	const ChatHistorySyncService::ImportResult first_import = ChatHistorySyncService().ImportAllNativeChatsByDiscovery(app, false);
@@ -10813,7 +10803,6 @@ UAM_TEST(ImportKeepsWorkspaceWhenNewFolderMetadataSaveFails)
 	uam::AppState app;
 	app.data_root = data_root;
 	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
-	ChatDomainService().EnsureDefaultFolder(app);
 
 	ScopedDirectoryNoWrite block_folder_write(data_root);
 	const ChatHistorySyncService::ImportResult result = ChatHistorySyncService().ImportAllNativeChatsByDiscovery(app, false);

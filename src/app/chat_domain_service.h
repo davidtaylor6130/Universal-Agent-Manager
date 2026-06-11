@@ -24,7 +24,6 @@ class ChatDomainService
 	int FindFolderIndexById(const uam::AppState& app, const std::string& folder_id) const;
 	ChatFolder* FindFolderById(uam::AppState& app, const std::string& folder_id) const;
 	const ChatFolder* FindFolderById(const uam::AppState& app, const std::string& folder_id) const;
-	void EnsureDefaultFolder(uam::AppState& app) const;
 	void EnsureNewChatFolderSelection(uam::AppState& app) const;
 	void NormalizeChatFolderAssignments(uam::AppState& app) const;
 	std::string FolderForNewChat(const uam::AppState& app) const;

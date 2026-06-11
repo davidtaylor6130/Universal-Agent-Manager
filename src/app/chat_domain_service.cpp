@@ -215,11 +215,6 @@ const ChatFolder* ChatDomainService::FindFolderById(const uam::AppState& app, co
 	return PointerOrNull(app.folders, FindById(app.folders, uam::strings::Trim(folder_id)));
 }
 
-void ChatDomainService::EnsureDefaultFolder(uam::AppState& app) const
-{
-	(void)app;
-}
-
 void ChatDomainService::EnsureNewChatFolderSelection(uam::AppState& app) const
 {
 	app.new_chat_folder_id = uam::strings::Trim(app.new_chat_folder_id);
