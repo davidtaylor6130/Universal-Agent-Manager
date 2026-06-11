@@ -205,14 +205,14 @@ int ChatDomainService::FindFolderIndexById(const uam::AppState& app, const std::
 	return FindIndexById(app.folders, uam::strings::Trim(folder_id));
 }
 
-ChatFolder* ChatDomainService::FindFolderById(uam::AppState& app, const std::string& folder_id) const
+const ChatFolder* ChatDomainService::FindFolderById(const uam::AppState& app, const std::string& folder_id) const
 {
 	return PointerOrNull(app.folders, FindById(app.folders, uam::strings::Trim(folder_id)));
 }
 
-const ChatFolder* ChatDomainService::FindFolderById(const uam::AppState& app, const std::string& folder_id) const
+ChatFolder* ChatDomainService::FindFolderById(uam::AppState& app, const std::string& folder_id) const
 {
-	return PointerOrNull(app.folders, FindById(app.folders, uam::strings::Trim(folder_id)));
+	return const_cast<ChatFolder*>(FindFolderById(static_cast<const uam::AppState&>(app), folder_id));
 }
 
 void ChatDomainService::EnsureNewChatFolderSelection(uam::AppState& app) const
