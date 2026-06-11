@@ -135,20 +135,8 @@ bool GoalService::UpdateGoalStatus(AppState& app, const std::string& goal_id, Go
 	goal->status = status;
 	goal->updated_at = uam::time::TimestampNow();
 
-	if (status == GoalStatus::Complete || status == GoalStatus::Blocked)
-	{
-		for (auto& chat : app.chats)
-		{
-			if (chat.active_goal_id == goal_id)
-			{
-				chat.active_goal_id.clear();
-				chat.updated_at = uam::time::TimestampNow();
-				MarkDirty(app, chat.id);
-				break;
-			}
-		}
-	}
-	else if (status == GoalStatus::Paused)
+	// Clear active goal for terminal statuses (Complete, Blocked, Paused)
+	if (status == GoalStatus::Complete || status == GoalStatus::Blocked || status == GoalStatus::Paused)
 	{
 		for (auto& chat : app.chats)
 		{
