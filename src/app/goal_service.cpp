@@ -260,39 +260,6 @@ const Goal* GoalService::FindActiveGoal(const AppState& app, const std::string& 
 	return nullptr;
 }
 
-Goal* GoalService::FindGoalById(AppState& app, const std::string& chat_id, const std::string& goal_id)
-{
-	// First try to find the goal within the specified chat
-	if (!chat_id.empty())
-	{
-		ChatSession* chat = FindChatMutable(app, chat_id);
-		if (chat != nullptr)
-		{
-			for (auto& goal : chat->goals)
-			{
-				if (goal.id == goal_id)
-				{
-					return &goal;
-				}
-			}
-		}
-	}
-
-	// Fall back: search all chats for the goal
-	for (auto& chat : app.chats)
-	{
-		for (auto& goal : chat.goals)
-		{
-			if (goal.id == goal_id)
-			{
-				return &goal;
-			}
-		}
-	}
-
-	return nullptr;
-}
-
 const Goal* GoalService::FindGoalById(const AppState& app, const std::string& chat_id, const std::string& goal_id)
 {
 	// First try to find the goal within the specified chat
@@ -326,19 +293,9 @@ const Goal* GoalService::FindGoalById(const AppState& app, const std::string& ch
 	return nullptr;
 }
 
-ChatSession* GoalService::FindChatForGoal(AppState& app, const std::string& goal_id)
+Goal* GoalService::FindGoalById(AppState& app, const std::string& chat_id, const std::string& goal_id)
 {
-	for (auto& chat : app.chats)
-	{
-		for (const auto& goal : chat.goals)
-		{
-			if (goal.id == goal_id)
-			{
-				return &chat;
-			}
-		}
-	}
-	return nullptr;
+	return const_cast<Goal*>(FindGoalById(static_cast<const AppState&>(app), chat_id, goal_id));
 }
 
 const ChatSession* GoalService::FindChatForGoal(const AppState& app, const std::string& goal_id)
@@ -354,6 +311,11 @@ const ChatSession* GoalService::FindChatForGoal(const AppState& app, const std::
 		}
 	}
 	return nullptr;
+}
+
+ChatSession* GoalService::FindChatForGoal(AppState& app, const std::string& goal_id)
+{
+	return const_cast<ChatSession*>(FindChatForGoal(static_cast<const AppState&>(app), goal_id));
 }
 
 std::vector<Goal> GoalService::GetGoalsForChat(const AppState& app, const std::string& chat_id)
