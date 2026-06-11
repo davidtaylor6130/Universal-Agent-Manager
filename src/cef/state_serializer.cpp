@@ -1065,6 +1065,7 @@ namespace uam
 			acp_json["turnUserMessageIndex"] = session->turn_user_message_index;
 			acp_json["turnAssistantMessageIndex"] = session->turn_assistant_message_index;
 			acp_json["turnSerial"] = session->turn_serial;
+			acp_json["goalTurnKind"] = session->goal_turn_kind;
 			acp_json["waitIsStale"] = session->wait_is_stale;
 			acp_json["waitStaleReason"] = session->wait_stale_reason;
 			acp_json["waitSeconds"] = session->wait_started_time_s > 0.0 ? static_cast<int>(std::max(0.0, GetAppTimeSeconds() - session->wait_started_time_s)) : 0;

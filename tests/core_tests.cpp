@@ -11227,6 +11227,192 @@ UAM_TEST(GoalServiceParseReviewDecisionRequiresEvidenceForCompleteAndReadsProgre
 	UAM_ASSERT_EQ(parsed->last_verification, std::string("npm test passed"));
 }
 
+UAM_TEST(AcpGoalReviewTurnQueuesWorkerContinuationWithoutReviewingReviewOutput)
+{
+	TempDir temp("uam-goal-review-turn-completion");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "gemini-cli";
+	Goal goal;
+	goal.id = "goal-1";
+	goal.objective = "Finish the work without looping.";
+	goal.status = GoalStatus::Active;
+	goal.token_budget = 1000;
+	chat.active_goal_id = goal.id;
+	chat.goals.push_back(goal);
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->running = false;
+	session->session_ready = true;
+	session->processing = true;
+	session->prompt_request_id = 10;
+	session->pending_request_methods[10] = uam::acp_methods::kSessionPrompt;
+	session->goal_turn_kind = "review";
+	session->goal_review_turn = true;
+	session->goal_review_scheduled = true;
+	session->goal_review_goal_id = "goal-1";
+	session->goal_review_user_prompt = "Implement the fix.";
+	session->goal_review_assistant_text = "I inspected the runtime.";
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"decision\":\"continue\",\"reason\":\"More implementation remains.\",\"nextPrompt\":\"Apply the runtime guard.\",\"evidence\":[\"reviewed worker output\"]}"}}}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":10,"result":{}})"));
+
+	UAM_ASSERT_EQ(raw_session->goal_turn_kind, std::string("worker_continuation"));
+	UAM_ASSERT(!raw_session->goal_review_turn);
+	UAM_ASSERT(!raw_session->goal_review_scheduled);
+	UAM_ASSERT_EQ(raw_session->queued_prompt, std::string("Apply the runtime guard."));
+	UAM_ASSERT_EQ(app.chats.front().goals.front().last_next_prompt, std::string("Apply the runtime guard."));
+	UAM_ASSERT_EQ(app.chats.front().goals.front().same_next_prompt_count, 1);
+}
+
+UAM_TEST(AcpGoalReviewTurnWithLostReviewBoolDoesNotScheduleReviewOfReviewOutput)
+{
+	TempDir temp("uam-goal-review-lost-bool");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "gemini-cli";
+	Goal goal;
+	goal.id = "goal-1";
+	goal.objective = "Avoid reviewing review output.";
+	goal.status = GoalStatus::Active;
+	goal.token_budget = 1000;
+	chat.active_goal_id = goal.id;
+	chat.goals.push_back(goal);
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->running = false;
+	session->session_ready = true;
+	session->processing = true;
+	session->prompt_request_id = 10;
+	session->pending_request_methods[10] = uam::acp_methods::kSessionPrompt;
+	session->goal_turn_kind = "review";
+	session->goal_review_turn = false;
+	session->goal_review_goal_id = "goal-1";
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"decision\":\"continue\",\"reason\":\"More work remains.\",\"nextPrompt\":\"Do the next worker task.\",\"evidence\":[\"review text\"]}"}}}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":10,"result":{}})"));
+
+	UAM_ASSERT(raw_session->goal_turn_kind.empty());
+	UAM_ASSERT(!raw_session->goal_review_turn);
+	UAM_ASSERT(!raw_session->goal_review_scheduled);
+	UAM_ASSERT(raw_session->queued_prompt.empty());
+	UAM_ASSERT_EQ(app.chats.front().goals.front().tokens_used, 0);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().blocked_turn_count, 1);
+}
+
+UAM_TEST(AcpGoalSchedulerSkipsMissingUserIndexAndReviewDecisionOutput)
+{
+	TempDir temp("uam-goal-scheduler-guards");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "gemini-cli";
+	Goal goal;
+	goal.id = "goal-1";
+	goal.objective = "Only review worker turns.";
+	goal.status = GoalStatus::Active;
+	goal.token_budget = 1000;
+	chat.active_goal_id = goal.id;
+	chat.goals.push_back(goal);
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->running = false;
+	session->session_ready = true;
+	session->processing = true;
+	session->prompt_request_id = 10;
+	session->pending_request_methods[10] = uam::acp_methods::kSessionPrompt;
+	session->turn_user_message_index = -1;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Normal worker output."}}}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":10,"result":{}})"));
+	UAM_ASSERT(!raw_session->goal_review_scheduled);
+	UAM_ASSERT(raw_session->queued_prompt.empty());
+	UAM_ASSERT_EQ(app.chats.front().goals.front().tokens_used, 0);
+
+	Message user;
+	user.role = MessageRole::User;
+	user.content = "Worker prompt";
+	app.chats.front().messages.push_back(std::move(user));
+	raw_session->processing = true;
+	raw_session->prompt_request_id = 11;
+	raw_session->pending_request_methods[11] = uam::acp_methods::kSessionPrompt;
+	raw_session->turn_user_message_index = static_cast<int>(app.chats.front().messages.size()) - 1;
+	raw_session->current_assistant_message_index = -1;
+	raw_session->turn_assistant_message_index = -1;
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"decision\":\"continue\",\"reason\":\"Still going.\",\"nextPrompt\":\"Repeat this review.\",\"evidence\":[\"review output\"]}"}}}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":11,"result":{}})"));
+	UAM_ASSERT(!raw_session->goal_review_scheduled);
+	UAM_ASSERT(raw_session->queued_prompt.empty());
+	UAM_ASSERT_EQ(app.chats.front().goals.front().tokens_used, 0);
+}
+
+UAM_TEST(AcpGoalWorkerTurnSchedulesOneReview)
+{
+	TempDir temp("uam-goal-worker-schedules-review");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "gemini-cli";
+	Message user;
+	user.role = MessageRole::User;
+	user.content = "Implement the next fix.";
+	chat.messages.push_back(std::move(user));
+	Goal goal;
+	goal.id = "goal-1";
+	goal.objective = "Review normal worker turns.";
+	goal.status = GoalStatus::Active;
+	goal.token_budget = 1000;
+	chat.active_goal_id = goal.id;
+	chat.goals.push_back(goal);
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->running = false;
+	session->session_ready = true;
+	session->processing = true;
+	session->prompt_request_id = 10;
+	session->pending_request_methods[10] = uam::acp_methods::kSessionPrompt;
+	session->turn_user_message_index = 0;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"I changed the runtime guard."}}}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":10,"result":{}})"));
+
+	UAM_ASSERT_EQ(raw_session->goal_turn_kind, std::string("review"));
+	UAM_ASSERT(raw_session->goal_review_turn);
+	UAM_ASSERT(raw_session->goal_review_scheduled);
+	UAM_ASSERT(!raw_session->queued_prompt.empty());
+	UAM_ASSERT_EQ(raw_session->goal_review_goal_id, std::string("goal-1"));
+	UAM_ASSERT_EQ(raw_session->goal_review_user_prompt, std::string("Implement the next fix."));
+	UAM_ASSERT_EQ(raw_session->goal_review_assistant_text, std::string("I changed the runtime guard."));
+	UAM_ASSERT(app.chats.front().goals.front().tokens_used > 0);
+}
+
 UAM_TEST(OpenCodeBuildPromptPrependsGoalContextWhenActiveGoalProvided)
 {
 	const IProviderRuntime& runtime = GetOpenCodeCliProviderRuntime();

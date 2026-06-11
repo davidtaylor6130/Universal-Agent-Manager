@@ -212,6 +212,7 @@ namespace uam
 		int turn_assistant_message_index = -1;
 		int turn_serial = 0;
 		std::string queued_prompt;
+		std::string goal_turn_kind;
 		bool goal_review_turn = false;
 		bool goal_review_scheduled = false;
 		std::string goal_review_goal_id;

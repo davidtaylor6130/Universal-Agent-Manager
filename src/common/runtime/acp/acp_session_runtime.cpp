@@ -75,6 +75,9 @@ namespace uam
 		constexpr std::size_t kMaxAcpDiagnosticDetailBytes = 8192;
 		constexpr std::size_t kMaxAcpLogFieldBytes = 512;
 		constexpr double kAcpStaleWaitSeconds = 120.0;
+		constexpr std::string_view kGoalTurnKindNone = "";
+		constexpr std::string_view kGoalTurnKindWorkerContinuation = "worker_continuation";
+		constexpr std::string_view kGoalTurnKindReview = "review";
 		struct AcpFailureDetails
 		{
 			std::string method;
@@ -94,6 +97,7 @@ namespace uam
 		};
 
 		void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_state);
+		void CompletePromptTurnAndHandleGoalLoop(AppState& app, AcpSessionState& session, ChatSession& chat, std::string_view lifecycle_state, CefRefPtr<CefBrowser> browser);
 		void FailAcpTurnOrSession(AcpSessionState& session, const std::string& message);
 		void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat);
 		void SaveChatQuietly(AppState& app, const ChatSession& chat);
@@ -1393,6 +1397,12 @@ namespace uam
 			session.turn_assistant_message_index = -1;
 			session.turn_serial = 0;
 			session.queued_prompt.clear();
+			session.goal_turn_kind.clear();
+			session.goal_review_turn = false;
+			session.goal_review_scheduled = false;
+			session.goal_review_goal_id.clear();
+			session.goal_review_user_prompt.clear();
+			session.goal_review_assistant_text.clear();
 			session.ignore_session_updates_until_ready = false;
 			session.codex_resume_fallback_attempted = false;
 			session.gemini_resume_fallback_attempted = false;
@@ -2037,6 +2047,35 @@ namespace uam
 			return chat.messages[static_cast<std::size_t>(index)].content;
 		}
 
+		std::string GoalTextPrefixForDiagnostics(const std::string& text)
+		{
+			std::string flattened = text;
+			std::replace(flattened.begin(), flattened.end(), '\n', ' ');
+			std::replace(flattened.begin(), flattened.end(), '\r', ' ');
+			return CapDiagnosticString(flattened, 160);
+		}
+
+		std::string GoalLoopDiagnosticDetail(const AcpSessionState& session, const std::string& goal_id, const std::string& text = "")
+		{
+			std::ostringstream detail;
+			detail << "goalId=" << goal_id
+			       << "\ngoalTurnKind=" << session.goal_turn_kind
+			       << "\ngoalReviewTurn=" << (session.goal_review_turn ? "true" : "false")
+			       << "\ngoalReviewScheduled=" << (session.goal_review_scheduled ? "true" : "false")
+			       << "\nturnUserMessageIndex=" << session.turn_user_message_index
+			       << "\nturnAssistantMessageIndex=" << session.turn_assistant_message_index;
+			if (!text.empty())
+			{
+				detail << "\ntextPrefix=" << GoalTextPrefixForDiagnostics(text);
+			}
+			return detail.str();
+		}
+
+		void AppendGoalLoopDiagnostic(AcpSessionState& session, const std::string& reason, const std::string& goal_id, const std::string& text = "")
+		{
+			AppendAcpDiagnostic(session, "goal_loop", reason, "", "", false, 0, "", GoalLoopDiagnosticDetail(session, goal_id, text));
+		}
+
 		int64_t EstimateGoalTurnTokens(const ChatSession& chat, const AcpSessionState& session)
 		{
 			int64_t tokens = 0;
@@ -2105,7 +2144,9 @@ namespace uam
 				return false;
 			}
 			session.queued_prompt = prompt;
+			session.goal_turn_kind = review_turn ? std::string(kGoalTurnKindReview) : std::string(kGoalTurnKindWorkerContinuation);
 			session.goal_review_turn = review_turn;
+			AppendGoalLoopDiagnostic(session, review_turn ? "queue_review" : "queue_worker_continuation", session.goal_review_goal_id, prompt);
 			session.processing = true;
 			session.cancel_requested = false;
 			session.current_assistant_message_index = -1;
@@ -2239,6 +2280,29 @@ namespace uam
 			{
 				return;
 			}
+			if (session.goal_turn_kind == kGoalTurnKindReview)
+			{
+				AppendGoalLoopDiagnostic(session, "skip_schedule_after_review_turn", session.goal_review_goal_id);
+				return;
+			}
+			if (session.turn_user_message_index < 0 || session.turn_assistant_message_index < 0)
+			{
+				AppendGoalLoopDiagnostic(session, "skip_schedule_missing_turn_indexes", session.goal_review_goal_id);
+				return;
+			}
+
+			const std::string recent_user_prompt = MessageTextForGoalReview(chat, session.turn_user_message_index);
+			const std::string recent_assistant_text = MessageTextForGoalReview(chat, session.turn_assistant_message_index);
+			if (uam::strings::Trim(recent_user_prompt).empty() || uam::strings::Trim(recent_assistant_text).empty())
+			{
+				AppendGoalLoopDiagnostic(session, "skip_schedule_empty_turn_text", session.goal_review_goal_id, recent_assistant_text);
+				return;
+			}
+			if (GoalService::ParseReviewDecision(recent_assistant_text).has_value())
+			{
+				AppendGoalLoopDiagnostic(session, "skip_schedule_review_decision_output", session.goal_review_goal_id, recent_assistant_text);
+				return;
+			}
 
 			Goal* active_goal = GoalService::FindActiveGoal(app, chat.id);
 			if (active_goal == nullptr || active_goal->objective.empty())
@@ -2260,10 +2324,48 @@ namespace uam
 
 			session.goal_review_scheduled = true;
 			session.goal_review_goal_id = active_goal->id;
-			session.goal_review_user_prompt = MessageTextForGoalReview(chat, session.turn_user_message_index);
-			session.goal_review_assistant_text = MessageTextForGoalReview(chat, session.turn_assistant_message_index);
+			session.goal_review_user_prompt = recent_user_prompt;
+			session.goal_review_assistant_text = recent_assistant_text;
 			const std::string review_prompt = GoalService::BuildReviewPrompt(*active_goal, session.goal_review_user_prompt, session.goal_review_assistant_text);
+			AppendGoalLoopDiagnostic(session, "schedule_review", active_goal->id, recent_assistant_text);
 			(void)QueueGoalInternalPrompt(session, chat, review_prompt, true);
+		}
+
+		void CompletePromptTurnAndHandleGoalLoop(AppState& app, AcpSessionState& session, ChatSession& chat, std::string_view lifecycle_state, CefRefPtr<CefBrowser> browser)
+		{
+			const std::string completed_goal_turn_kind = session.goal_turn_kind;
+			const bool completed_review_turn = completed_goal_turn_kind == kGoalTurnKindReview || session.goal_review_turn;
+			const std::string goal_id = session.goal_review_goal_id;
+			CompletePromptTurn(session, lifecycle_state);
+
+			if (completed_review_turn)
+			{
+				AppendGoalLoopDiagnostic(session, "complete_review_turn", goal_id, MessageTextForGoalReview(chat, session.turn_assistant_message_index));
+				if (!HandleGoalReviewCompletion(app, session, chat, browser))
+				{
+					if (!goal_id.empty())
+					{
+						GoalService::RecordBlocker(app, goal_id, "Goal reviewer turn completed but could not be consumed.");
+						SaveChatQuietly(app, chat);
+						if (browser)
+						{
+							uam::PushStateUpdateIfChanged(browser, app);
+						}
+					}
+					ClearGoalReviewState(session);
+				}
+				if (session.goal_turn_kind == completed_goal_turn_kind)
+				{
+					session.goal_turn_kind.clear();
+				}
+				return;
+			}
+
+			ScheduleGoalReviewAfterSuccessfulTurn(app, session, chat, browser);
+			if (session.goal_turn_kind == completed_goal_turn_kind)
+			{
+				session.goal_turn_kind.clear();
+			}
 		}
 
 		void FailAcpTurnOrSession(AcpSessionState& session, const std::string& message)
@@ -3478,11 +3580,7 @@ namespace uam
 					return;
 				}
 				(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
-				CompletePromptTurn(session, kAcpLifecycleReady);
-				if (!HandleGoalReviewCompletion(app, session, chat, browser))
-				{
-					ScheduleGoalReviewAfterSuccessfulTurn(app, session, chat, browser);
-				}
+				CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, browser);
 				if (browser)
 				{
 					uam::PushStreamDone(browser, chat.id);
@@ -4266,11 +4364,7 @@ namespace uam
 			if (method == uam::acp_methods::kSessionPrompt)
 			{
 				(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
-				CompletePromptTurn(session, kAcpLifecycleReady);
-				if (!HandleGoalReviewCompletion(app, session, chat, nullptr))
-				{
-					ScheduleGoalReviewAfterSuccessfulTurn(app, session, chat, nullptr);
-				}
+				CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, nullptr);
 				SaveChatQuietly(app, chat);
 				MarkAcpChatUnseenIfBackground(app, chat);
 				return;
@@ -4479,11 +4573,7 @@ namespace uam
 			}
 			else
 			{
-				CompletePromptTurn(session, kAcpLifecycleReady);
-				if (!HandleGoalReviewCompletion(app, session, chat, browser))
-				{
-					ScheduleGoalReviewAfterSuccessfulTurn(app, session, chat, browser);
-				}
+				CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, browser);
 			}
 
 			if (browser)
@@ -4909,6 +4999,7 @@ namespace uam
 
 		session.queued_prompt = effective_prompt;
 		ClearGoalReviewState(session);
+		session.goal_turn_kind.clear();
 		session.processing = true;
 		session.cancel_requested = false;
 		session.current_assistant_message_index = -1;
