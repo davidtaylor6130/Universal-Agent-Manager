@@ -5,8 +5,8 @@
 - [x] UI-V2/src/components/layout/MainPanel.tsx
 - [x] UI-V2/src/components/layout/Sidebar.test.tsx
 - [x] UI-V2/src/components/layout/Sidebar.tsx
-- [ ] UI-V2/src/components/layout/VcsCommitPanel.tsx
-- [ ] UI-V2/src/components/settings/MarkdownStoreModal.tsx
+- [x] UI-V2/src/components/layout/VcsCommitPanel.tsx
+- [x] UI-V2/src/components/settings/MarkdownStoreModal.tsx
 - [ ] UI-V2/src/components/settings/MemoryLibraryModal.test.tsx
 - [ ] UI-V2/src/components/settings/MemoryLibraryModal.tsx
 - [ ] UI-V2/src/components/settings/MemoryScanModal.tsx
