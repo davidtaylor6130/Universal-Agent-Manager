@@ -10,8 +10,8 @@
 - [x] UI-V2/src/components/settings/MemoryLibraryModal.test.tsx
 - [x] UI-V2/src/components/settings/MemoryLibraryModal.tsx
 - [x] UI-V2/src/components/settings/MemoryScanModal.tsx
-- [ ] UI-V2/src/components/settings/SettingsModal.test.tsx
-- [ ] UI-V2/src/components/settings/SettingsModal.tsx
+- [x] UI-V2/src/components/settings/SettingsModal.test.tsx
+- [x] UI-V2/src/components/settings/SettingsModal.tsx
 - [ ] UI-V2/src/components/shared/GoalBanner.tsx
 - [ ] UI-V2/src/components/shared/Logo.tsx
 - [ ] UI-V2/src/components/shared/ProviderLogo.tsx
