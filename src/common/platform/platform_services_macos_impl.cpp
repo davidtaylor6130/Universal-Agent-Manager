@@ -410,11 +410,6 @@ namespace
 		return "";
 	}
 
-	std::string ResolveExecutablePathForTerminal(const std::string& command)
-	{
-		return ResolveExecutablePathForTerminal(command, CollectTerminalPathSearchDirs());
-	}
-
 	bool ScriptShebangMentionsNode(const std::filesystem::path& executable_path)
 	{
 		const std::optional<std::string> first_line = uam::io::ReadFirstTextFileLine(executable_path);

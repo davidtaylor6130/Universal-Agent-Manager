@@ -101,7 +101,7 @@ namespace
 		app.runtime_cli_versions_by_provider_id.clear();
 	}
 
-	std::string RuntimeCliVersionStateSignature(const std::unordered_map<std::string, uam::CliProviderVersionState>& states)
+	std::string CalculateCliVersionStateSignature(const std::unordered_map<std::string, uam::CliProviderVersionState>& states)
 	{
 		std::vector<const std::pair<const std::string, uam::CliProviderVersionState>*> ordered_states;
 		ordered_states.reserve(states.size());
@@ -149,17 +149,17 @@ namespace
 		std::string status_line;
 	};
 
-	RuntimeCliCompatibilitySnapshot CaptureRuntimeCliCompatibilitySnapshot(const uam::AppState& app)
+	RuntimeCliCompatibilitySnapshot CreateCliCompatibilitySnapshot(const uam::AppState& app)
 	{
 		RuntimeCliCompatibilitySnapshot snapshot;
 		snapshot.runtime_cli_version_provider_id = app.runtime_cli_version_provider_id;
 		snapshot.runtime_cli_pin_provider_id = app.runtime_cli_pin_provider_id;
-		snapshot.provider_state_signature = RuntimeCliVersionStateSignature(app.runtime_cli_versions_by_provider_id);
+		snapshot.provider_state_signature = CalculateCliVersionStateSignature(app.runtime_cli_versions_by_provider_id);
 		snapshot.status_line = app.status_line;
 		return snapshot;
 	}
 
-	bool RuntimeCliCompatibilitySnapshotChanged(const RuntimeCliCompatibilitySnapshot& before, const RuntimeCliCompatibilitySnapshot& after)
+	bool IsCliCompatibilitySnapshotChanged(const RuntimeCliCompatibilitySnapshot& before, const RuntimeCliCompatibilitySnapshot& after)
 	{
 		if (before.runtime_cli_version_provider_id != after.runtime_cli_version_provider_id)
 		{
@@ -176,7 +176,7 @@ namespace
 		return before.status_line != after.status_line;
 	}
 
-	bool HasSelectedActiveRuntime(const uam::AppState& app)
+	bool IsSelectedChatRunning(const uam::AppState& app)
 	{
 		const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
 		if (selected_chat_id.empty())
@@ -193,7 +193,7 @@ namespace
 		return acp != nullptr && acp->running;
 	}
 
-	bool HasAnyActiveRuntime(const uam::AppState& app)
+	bool IsAnyRuntimeActive(const uam::AppState& app)
 	{
 		if (uam::HasAnyActiveCliTerminal(app))
 		{
@@ -211,13 +211,13 @@ namespace
 		return !app.pending_calls.empty() || !app.memory_extraction_tasks.empty() || !app.memory_extraction_queue.empty();
 	}
 
-	int NextPollDelayMs(const uam::AppState& app)
+	int GetNextPollDelayMs(const uam::AppState& app)
 	{
-		if (HasSelectedActiveRuntime(app))
+		if (IsSelectedChatRunning(app))
 		{
 			return 16;
 		}
-		if (HasAnyActiveRuntime(app))
+		if (IsAnyRuntimeActive(app))
 		{
 			return 250;
 		}
@@ -296,14 +296,14 @@ void Application::PollTick()
 		return;
 	}
 
-	const RuntimeCliCompatibilitySnapshot provider_snapshot_before = CaptureRuntimeCliCompatibilitySnapshot(m_app);
+	const RuntimeCliCompatibilitySnapshot provider_snapshot_before = CreateCliCompatibilitySnapshot(m_app);
 	const bool pending_calls_changed = PollPendingRuntimeCall(m_app);
 	const bool acp_sessions_changed = uam::PollAllAcpSessions(m_app, m_browser);
 	uam::FlushPendingChatSaves(m_app);
 	const bool cli_terminals_changed = uam::PollAllCliTerminals(m_browser, m_app);
 	const bool memory_changed = MemoryService::ProcessDueMemoryWork(m_app);
 	ProviderCliCompatibilityService().Poll(m_app);
-	const bool provider_compatibility_changed = RuntimeCliCompatibilitySnapshotChanged(provider_snapshot_before, CaptureRuntimeCliCompatibilitySnapshot(m_app));
+	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
 	const bool runtime_state_changed = pending_calls_changed || acp_sessions_changed || cli_terminals_changed || memory_changed;
 	const bool ui_relevant_state_changed = runtime_state_changed || provider_compatibility_changed;
 
@@ -313,7 +313,7 @@ void Application::PollTick()
 		uam::PushStateUpdateIfChanged(m_browser, m_app);
 	}
 
-	ScheduleNextUpdate(NextPollDelayMs(m_app));
+	ScheduleNextUpdate(GetNextPollDelayMs(m_app));
 }
 
 void Application::ScheduleNextUpdate(int delay_ms)
