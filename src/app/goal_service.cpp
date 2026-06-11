@@ -45,7 +45,8 @@ namespace
 
 	std::string NormalizeBlocker(const std::string& blocker)
 	{
-		return uam::strings::Trim(blocker).empty() ? "Goal reviewer reported a blocker." : uam::strings::Trim(blocker);
+		const std::string trimmed = uam::strings::Trim(blocker);
+		return trimmed.empty() ? "Goal reviewer reported a blocker." : trimmed;
 	}
 
 	std::vector<std::string> TrimmedStringArray(const nlohmann::json& value)
