@@ -1,8 +1,8 @@
 - [x] UI-V2/src/App.tsx
 - [x] UI-V2/src/components/layout/AppShell.test.tsx
 - [x] UI-V2/src/components/layout/AppShell.tsx
-- [ ] UI-V2/src/components/layout/MainPanel.test.tsx
-- [ ] UI-V2/src/components/layout/MainPanel.tsx
+- [x] UI-V2/src/components/layout/MainPanel.test.tsx
+- [x] UI-V2/src/components/layout/MainPanel.tsx
 - [ ] UI-V2/src/components/layout/Sidebar.test.tsx
 - [ ] UI-V2/src/components/layout/Sidebar.tsx
 - [ ] UI-V2/src/components/layout/VcsCommitPanel.tsx
