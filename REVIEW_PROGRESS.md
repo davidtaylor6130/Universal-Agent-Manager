@@ -27,10 +27,10 @@
 - [x] UI-V2/src/components/sidebar/SidebarHeader.tsx
 - [x] UI-V2/src/components/sidebar/chatSearch.test.ts
 - [x] UI-V2/src/components/sidebar/chatSearch.ts
-- [ ] UI-V2/src/components/views/CLIView.test.tsx
-- [ ] UI-V2/src/components/views/CLIView.tsx
-- [ ] UI-V2/src/components/views/ChatView.test.tsx
-- [ ] UI-V2/src/components/views/ChatView.tsx
+- [x] UI-V2/src/components/views/CLIView.test.tsx
+- [x] UI-V2/src/components/views/CLIView.tsx
+- [x] UI-V2/src/components/views/ChatView.test.tsx
+- [x] UI-V2/src/components/views/ChatView.tsx
 - [x] UI-V2/src/hooks/useTheme.ts
 - [ ] UI-V2/src/ipc/cefBridge.ts
 - [ ] UI-V2/src/main.tsx

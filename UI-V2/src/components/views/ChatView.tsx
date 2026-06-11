@@ -3311,19 +3311,19 @@ export function ChatView({ session }: ChatViewProps) {
                         <TurnTimelineContent
                           key={`turn-${turnSerial}-assistant`}
                           events={turnEvents}
-	                          tools={acp?.toolCalls ?? []}
-	                          planSummary={acp?.planSummary ?? ''}
-	                          planEntries={acp?.planEntries ?? []}
-	                          planActions={activePlanActions}
-	                          pendingPermission={pendingPermission ?? null}
-	                          pendingUserInput={pendingUserInput ?? null}
+                            tools={acp?.toolCalls ?? []}
+                            planSummary={acp?.planSummary ?? ''}
+                            planEntries={acp?.planEntries ?? []}
+                            planActions={activePlanActions}
+                            pendingPermission={pendingPermission ?? null}
+                            pendingUserInput={pendingUserInput ?? null}
                             waitIsStale={acp?.waitIsStale}
                             waitStaleReason={acp?.waitStaleReason}
                             waitSeconds={acp?.waitSeconds}
-	                          onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
-	                          onResolvePermission={(requestId, optionId) => {
-	                            void resolveAcpPermission(session.id, requestId, optionId)
-	                          }}
+                            onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
+                            onResolvePermission={(requestId, optionId) => {
+                              void resolveAcpPermission(session.id, requestId, optionId)
+                            }}
                             onResolveUserInput={(requestId, answers) => {
                               void resolveAcpUserInput(session.id, requestId, answers)
                             }}
@@ -3343,19 +3343,19 @@ export function ChatView({ session }: ChatViewProps) {
                         <TurnTimelineContent
                           key={`turn-${turnSerial}-after-user-content`}
                           events={turnEvents}
-	                          tools={acp?.toolCalls ?? []}
-	                          planSummary={acp?.planSummary ?? ''}
-	                          planEntries={acp?.planEntries ?? []}
-	                          planActions={activePlanActions}
-	                          pendingPermission={pendingPermission ?? null}
-	                          pendingUserInput={pendingUserInput ?? null}
+                            tools={acp?.toolCalls ?? []}
+                            planSummary={acp?.planSummary ?? ''}
+                            planEntries={acp?.planEntries ?? []}
+                            planActions={activePlanActions}
+                            pendingPermission={pendingPermission ?? null}
+                            pendingUserInput={pendingUserInput ?? null}
                             waitIsStale={acp?.waitIsStale}
                             waitStaleReason={acp?.waitStaleReason}
                             waitSeconds={acp?.waitSeconds}
-	                          onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
-	                          onResolvePermission={(requestId, optionId) => {
-	                            void resolveAcpPermission(session.id, requestId, optionId)
-	                          }}
+                            onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
+                            onResolvePermission={(requestId, optionId) => {
+                              void resolveAcpPermission(session.id, requestId, optionId)
+                            }}
                             onResolveUserInput={(requestId, answers) => {
                               void resolveAcpUserInput(session.id, requestId, answers)
                             }}
@@ -3372,19 +3372,19 @@ export function ChatView({ session }: ChatViewProps) {
                   <TurnTimelineContent
                     key={`turn-${turnSerial}-fallback-content`}
                     events={turnEvents}
-	                    tools={acp?.toolCalls ?? []}
-	                    planSummary={acp?.planSummary ?? ''}
-	                    planEntries={acp?.planEntries ?? []}
-	                    planActions={activePlanActions}
-	                    pendingPermission={pendingPermission ?? null}
-	                    pendingUserInput={pendingUserInput ?? null}
+                      tools={acp?.toolCalls ?? []}
+                      planSummary={acp?.planSummary ?? ''}
+                      planEntries={acp?.planEntries ?? []}
+                      planActions={activePlanActions}
+                      pendingPermission={pendingPermission ?? null}
+                      pendingUserInput={pendingUserInput ?? null}
                       waitIsStale={acp?.waitIsStale}
                       waitStaleReason={acp?.waitStaleReason}
                       waitSeconds={acp?.waitSeconds}
-	                    onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
-	                    onResolvePermission={(requestId, optionId) => {
-	                      void resolveAcpPermission(session.id, requestId, optionId)
-	                    }}
+                      onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
+                      onResolvePermission={(requestId, optionId) => {
+                        void resolveAcpPermission(session.id, requestId, optionId)
+                      }}
                       onResolveUserInput={(requestId, answers) => {
                         void resolveAcpUserInput(session.id, requestId, answers)
                       }}
@@ -3422,30 +3422,30 @@ export function ChatView({ session }: ChatViewProps) {
             background: 'var(--surface)',
           }}
         >
-	          <div className="p-3">
-	            <div
-	              className="mb-2 flex flex-wrap items-center gap-2 text-[11px]"
-	              style={{ color: 'var(--text-3)', minWidth: 0 }}
-	              title={workspaceDirectory || 'No workspace directory selected'}
-	            >
-	              <span style={{ color: 'var(--text-2)', flexShrink: 0 }}>Workspace</span>
-	              {isGitWorktree && (
-	                <span
-	                  style={{
-	                    border: '1px solid color-mix(in srgb, var(--green) 42%, var(--border))',
-	                    borderRadius: 6,
-	                    background: 'color-mix(in srgb, var(--green) 10%, var(--surface))',
-	                    color: 'var(--text-2)',
-	                    padding: '3px 7px',
-	                    flexShrink: 0,
-	                  }}
-	                  title={sourceWorkspaceDirectory ? `Source: ${sourceWorkspaceDirectory}` : 'Isolated Git worktree'}
-	                >
-	                  Git worktree
-	                </span>
-	              )}
-	              <span
-	                className="min-w-0 flex-1 truncate"
+            <div className="p-3">
+              <div
+                className="mb-2 flex flex-wrap items-center gap-2 text-[11px]"
+                style={{ color: 'var(--text-3)', minWidth: 0 }}
+                title={workspaceDirectory || 'No workspace directory selected'}
+              >
+                <span style={{ color: 'var(--text-2)', flexShrink: 0 }}>Workspace</span>
+                {isGitWorktree && (
+                  <span
+                    style={{
+                      border: '1px solid color-mix(in srgb, var(--green) 42%, var(--border))',
+                      borderRadius: 6,
+                      background: 'color-mix(in srgb, var(--green) 10%, var(--surface))',
+                      color: 'var(--text-2)',
+                      padding: '3px 7px',
+                      flexShrink: 0,
+                    }}
+                    title={sourceWorkspaceDirectory ? `Source: ${sourceWorkspaceDirectory}` : 'Isolated Git worktree'}
+                  >
+                    Git worktree
+                  </span>
+                )}
+                <span
+                  className="min-w-0 flex-1 truncate"
                 style={{
                   border: '1px solid var(--border)',
                   borderRadius: 6,
@@ -3454,11 +3454,11 @@ export function ChatView({ session }: ChatViewProps) {
                   padding: '3px 7px',
                   minWidth: 0,
                 }}
-	              >
-	                {workspaceDirectory || 'No workspace directory selected'}
-	              </span>
-	              <button
-	                type="button"
+                >
+                  {workspaceDirectory || 'No workspace directory selected'}
+                </span>
+                <button
+                  type="button"
                 disabled={!workspaceDirectory}
                 onClick={() => void openWorkspace()}
                 className="h-[24px] w-[28px] inline-flex flex-shrink-0 items-center justify-center text-[11px] font-medium"
@@ -3470,10 +3470,10 @@ export function ChatView({ session }: ChatViewProps) {
                   color: workspaceDirectory ? 'var(--text-2)' : 'var(--text-3)',
                   opacity: workspaceDirectory ? 1 : 0.55,
                 }}
-	              >
-	                <ComposerIcon name="folder" size={13} />
-	      </button>
-	      <button
+                >
+                  <ComposerIcon name="folder" size={13} />
+        </button>
+        <button
         type="button"
         disabled={!workspaceDirectory}
         onClick={() => void openWorkspaceEditor()}
@@ -3523,68 +3523,68 @@ export function ChatView({ session }: ChatViewProps) {
           <ComposerIcon name="git-tree" size={13} />
         </button>
       )}
-	              {isGitWorktree && (
-	                <>
-	                  <button
-	                    type="button"
-	                    disabled={workspaceActionsDisabled}
-	                    onClick={() => void runWorkspaceAction('discard')}
-	                    className="h-[24px] flex-shrink-0 px-2 text-[11px] font-medium"
-	                    title={workspaceActionsDisabled ? 'Stop the runtime before discarding worktree changes' : 'Discard worktree changes and return this chat to the source workspace'}
-	                    style={{
-	                      border: '1px solid var(--border)',
-	                      borderRadius: 6,
-	                      background: workspaceActionsDisabled ? 'var(--bg)' : 'var(--surface-up)',
-	                      color: workspaceActionsDisabled ? 'var(--text-3)' : 'var(--text-2)',
-	                      opacity: workspaceActionsDisabled ? 0.55 : 1,
-	                    }}
-	                  >
-	                    Discard & return
-	                  </button>
-	                  <button
-	                    type="button"
-	                    disabled={workspaceActionsDisabled}
-	                    onClick={() => void runWorkspaceAction('port')}
-	                    className="h-[24px] flex-shrink-0 px-2 text-[11px] font-medium"
-	                    title={workspaceActionsDisabled ? 'Stop the runtime before porting worktree changes' : 'Apply this chat worktree diff and return this chat to the source workspace'}
-	                    style={{
-	                      border: '1px solid color-mix(in srgb, var(--accent) 42%, var(--border))',
-	                      borderRadius: 6,
-	                      background: workspaceActionsDisabled ? 'var(--bg)' : 'color-mix(in srgb, var(--accent) 12%, var(--surface))',
-	                      color: workspaceActionsDisabled ? 'var(--text-3)' : 'var(--text)',
-	                      opacity: workspaceActionsDisabled ? 0.55 : 1,
-	                    }}
-	                  >
-	                    Port back
-	                  </button>
-	                </>
-	              )}
-	            </div>
-	            {isGitWorktree && sourceWorkspaceDirectory && (
-	              <div
-	                className="mb-2 truncate text-[11px]"
-	                style={{ color: 'var(--text-3)' }}
-	                title={sourceWorkspaceDirectory}
-	              >
-	                Source {sourceWorkspaceDirectory}
-	              </div>
-	            )}
-	            {workspaceActionMessage && (
-	              <div
-	                className="mb-2 text-xs"
-	                style={{
-	                  border: '1px solid color-mix(in srgb, var(--green) 38%, var(--border))',
-	                  borderRadius: 6,
-	                  padding: '8px 10px',
-	                  background: 'color-mix(in srgb, var(--green) 8%, var(--surface))',
-	                  color: 'var(--text)',
-	                  overflowWrap: 'anywhere',
-	                }}
-	              >
-	                {workspaceActionMessage}
-	              </div>
-	            )}
-	            {openWorkspaceError && (
+                {isGitWorktree && (
+                  <>
+                    <button
+                      type="button"
+                      disabled={workspaceActionsDisabled}
+                      onClick={() => void runWorkspaceAction('discard')}
+                      className="h-[24px] flex-shrink-0 px-2 text-[11px] font-medium"
+                      title={workspaceActionsDisabled ? 'Stop the runtime before discarding worktree changes' : 'Discard worktree changes and return this chat to the source workspace'}
+                      style={{
+                        border: '1px solid var(--border)',
+                        borderRadius: 6,
+                        background: workspaceActionsDisabled ? 'var(--bg)' : 'var(--surface-up)',
+                        color: workspaceActionsDisabled ? 'var(--text-3)' : 'var(--text-2)',
+                        opacity: workspaceActionsDisabled ? 0.55 : 1,
+                      }}
+                    >
+                      Discard & return
+                    </button>
+                    <button
+                      type="button"
+                      disabled={workspaceActionsDisabled}
+                      onClick={() => void runWorkspaceAction('port')}
+                      className="h-[24px] flex-shrink-0 px-2 text-[11px] font-medium"
+                      title={workspaceActionsDisabled ? 'Stop the runtime before porting worktree changes' : 'Apply this chat worktree diff and return this chat to the source workspace'}
+                      style={{
+                        border: '1px solid color-mix(in srgb, var(--accent) 42%, var(--border))',
+                        borderRadius: 6,
+                        background: workspaceActionsDisabled ? 'var(--bg)' : 'color-mix(in srgb, var(--accent) 12%, var(--surface))',
+                        color: workspaceActionsDisabled ? 'var(--text-3)' : 'var(--text)',
+                        opacity: workspaceActionsDisabled ? 0.55 : 1,
+                      }}
+                    >
+                      Port back
+                    </button>
+                  </>
+                )}
+              </div>
+              {isGitWorktree && sourceWorkspaceDirectory && (
+                <div
+                  className="mb-2 truncate text-[11px]"
+                  style={{ color: 'var(--text-3)' }}
+                  title={sourceWorkspaceDirectory}
+                >
+                  Source {sourceWorkspaceDirectory}
+                </div>
+              )}
+              {workspaceActionMessage && (
+                <div
+                  className="mb-2 text-xs"
+                  style={{
+                    border: '1px solid color-mix(in srgb, var(--green) 38%, var(--border))',
+                    borderRadius: 6,
+                    padding: '8px 10px',
+                    background: 'color-mix(in srgb, var(--green) 8%, var(--surface))',
+                    color: 'var(--text)',
+                    overflowWrap: 'anywhere',
+                  }}
+                >
+                  {workspaceActionMessage}
+                </div>
+              )}
+              {openWorkspaceError && (
               <div
                 className="mb-2 text-xs"
                 style={{
@@ -3635,8 +3635,8 @@ export function ChatView({ session }: ChatViewProps) {
                   <CopyTextButton text={buildAcpErrorCopyText(acp, currentErrorTitle)} label="Copy error" title="Copy error details" />
                 </div>
                 <AcpErrorDetails acp={acp} title={currentErrorTitle} />
-		              </div>
-	            )}
+                  </div>
+              )}
             {claudePlanPrompt !== null && (
               <div
                 className="mb-2 text-xs"

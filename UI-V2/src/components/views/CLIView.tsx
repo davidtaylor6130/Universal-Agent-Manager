@@ -132,42 +132,42 @@ export function CLIView({ session }: CLIViewProps) {
       term.write(binaryStringToUint8Array(cliTranscript.content))
     }
 
-	    termInstanceRef.current = term
-	    fitAddonRef.current = fitAddon
+      termInstanceRef.current = term
+      fitAddonRef.current = fitAddon
 
-	    if (isCefContext()) {
-	      let cancelled = false
-	      let resizeAnimationFrame: number | null = null
-	      let bestKnownTerminalId = cliBinding?.terminalId ?? cliTranscript?.terminalId ?? ''
-	      let bestKnownBoundChatId = session.id
+      if (isCefContext()) {
+        let cancelled = false
+        let resizeAnimationFrame: number | null = null
+        let bestKnownTerminalId = cliBinding?.terminalId ?? cliTranscript?.terminalId ?? ''
+        let bestKnownBoundChatId = session.id
 
-	      const detachTerminal = (terminalId = bestKnownTerminalId, chatId = bestKnownBoundChatId) => {
-	        sendToCEF({
-	          action: 'stopCliTerminal',
-	          payload: {
-	            chatId,
-	            terminalId,
-	          },
-	        }).catch((e) => console.error('[CEF] stopCliTerminal error:', e))
-	      }
+        const detachTerminal = (terminalId = bestKnownTerminalId, chatId = bestKnownBoundChatId) => {
+          sendToCEF({
+            action: 'stopCliTerminal',
+            payload: {
+              chatId,
+              terminalId,
+            },
+          }).catch((e) => console.error('[CEF] stopCliTerminal error:', e))
+        }
 
-	      // Receive PTY output pushed from C++ via window.uamPush → CustomEvent.
-	      const onCliOutput = (e: Event) => {
-	        const { sessionId, sourceChatId, terminalId, data } = (e as CustomEvent<{
-	          sessionId?: string
+        // Receive PTY output pushed from C++ via window.uamPush → CustomEvent.
+        const onCliOutput = (e: Event) => {
+          const { sessionId, sourceChatId, terminalId, data } = (e as CustomEvent<{
+            sessionId?: string
           sourceChatId?: string
           terminalId?: string
           data: string
         }>).detail
         const binding = useAppStore.getState().cliBindingBySessionId[session.id]
-	        const sessionMatch = sessionId === session.id
-	        const terminalMatch = Boolean(binding?.terminalId) && Boolean(terminalId) && binding?.terminalId === terminalId
+          const sessionMatch = sessionId === session.id
+          const terminalMatch = Boolean(binding?.terminalId) && Boolean(terminalId) && binding?.terminalId === terminalId
 
-	        if (!cancelled && (sessionMatch || terminalMatch) && data) {
-	          term.write(binaryStringToUint8Array(data))
-	        }
-	      }
-	      window.addEventListener('uam-cli-output', onCliOutput)
+          if (!cancelled && (sessionMatch || terminalMatch) && data) {
+            term.write(binaryStringToUint8Array(data))
+          }
+        }
+        window.addEventListener('uam-cli-output', onCliOutput)
 
       // Production path — request the C++ backend to start/attach a PTY.
       sendToCEF<StartCliTerminalResponse>({
@@ -177,39 +177,39 @@ export function CLIView({ session }: CLIViewProps) {
           terminalId: cliBinding?.terminalId ?? cliTranscript?.terminalId ?? '',
           rows: term.rows,
           cols: term.cols,
-	        },
-	      }).then((resp) => {
-	        const data = resp.ok ? resp.data : undefined
-	        const returnedTerminalId = data?.terminalId ?? ''
-	        const returnedBoundChatId = data?.sourceChatId ?? session.id
-	        if (returnedTerminalId) {
-	          bestKnownTerminalId = returnedTerminalId
-	        }
-	        bestKnownBoundChatId = returnedBoundChatId
+          },
+        }).then((resp) => {
+          const data = resp.ok ? resp.data : undefined
+          const returnedTerminalId = data?.terminalId ?? ''
+          const returnedBoundChatId = data?.sourceChatId ?? session.id
+          if (returnedTerminalId) {
+            bestKnownTerminalId = returnedTerminalId
+          }
+          bestKnownBoundChatId = returnedBoundChatId
 
-	        if (cancelled) {
-	          if (returnedTerminalId || bestKnownTerminalId) {
-	            detachTerminal(returnedTerminalId || bestKnownTerminalId, returnedBoundChatId)
-	          }
-	          return
-	        }
+          if (cancelled) {
+            if (returnedTerminalId || bestKnownTerminalId) {
+              detachTerminal(returnedTerminalId || bestKnownTerminalId, returnedBoundChatId)
+            }
+            return
+          }
 
-	        if (!resp.ok) {
-	          setCliBinding(session.id, {
-	            running: false,
+          if (!resp.ok) {
+            setCliBinding(session.id, {
+              running: false,
             processing: false,
             active: false,
             lifecycleState: 'stopped',
             turnState: 'idle',
             lastError: resp.error ?? 'Failed to start provider terminal.',
-	          })
-	          return
-	        }
+            })
+            return
+          }
 
-	        if (data) {
-	          const running = Boolean(data.running)
-	          const lifecycleState = normalizeLifecycleState(data.lifecycleState, running, data.turnState)
-	          const processing = lifecycleIsProcessing(lifecycleState)
+          if (data) {
+            const running = Boolean(data.running)
+            const lifecycleState = normalizeLifecycleState(data.lifecycleState, running, data.turnState)
+            const processing = lifecycleIsProcessing(lifecycleState)
           setCliBinding(session.id, {
             terminalId: data.terminalId ?? cliBinding?.terminalId ?? '',
             boundChatId: data.sourceChatId ?? session.id,
@@ -225,13 +225,13 @@ export function CLIView({ session }: CLIViewProps) {
             term.write(decodeReplayData(data.replayData))
           }
         }
-	      }).catch((e) => {
-	        console.error('[CEF] startCliTerminal error:', e)
-	        if (cancelled) {
-	          return
-	        }
-	        setCliBinding(session.id, {
-	          running: false,
+        }).catch((e) => {
+          console.error('[CEF] startCliTerminal error:', e)
+          if (cancelled) {
+            return
+          }
+          setCliBinding(session.id, {
+            running: false,
           processing: false,
           active: false,
           lifecycleState: 'stopped',
@@ -240,27 +240,27 @@ export function CLIView({ session }: CLIViewProps) {
         })
       })
 
-	      // Forward xterm.js keystrokes → C++ PTY via cefQuery.
-	      const onData = term.onData((data) => {
-	        if (cancelled) return
-	        const binding = useAppStore.getState().cliBindingBySessionId[session.id]
-	        sendToCEF({
-	          action: 'writeCliInput',
+        // Forward xterm.js keystrokes → C++ PTY via cefQuery.
+        const onData = term.onData((data) => {
+          if (cancelled) return
+          const binding = useAppStore.getState().cliBindingBySessionId[session.id]
+          sendToCEF({
+            action: 'writeCliInput',
           payload: { chatId: binding?.boundChatId ?? session.id, terminalId: binding?.terminalId ?? '', data },
         })
       })
 
-	      // Resize observer — notify C++ of terminal dimension changes.
-	      const resizeObserver = new ResizeObserver(() => {
-	        if (resizeAnimationFrame !== null) {
-	          cancelAnimationFrame(resizeAnimationFrame)
-	        }
-	        resizeAnimationFrame = requestAnimationFrame(() => {
-	          resizeAnimationFrame = null
-	          if (cancelled) return
-	          fitAddon.fit()
-	          const binding = useAppStore.getState().cliBindingBySessionId[session.id]
-	          sendToCEF({
+        // Resize observer — notify C++ of terminal dimension changes.
+        const resizeObserver = new ResizeObserver(() => {
+          if (resizeAnimationFrame !== null) {
+            cancelAnimationFrame(resizeAnimationFrame)
+          }
+          resizeAnimationFrame = requestAnimationFrame(() => {
+            resizeAnimationFrame = null
+            if (cancelled) return
+            fitAddon.fit()
+            const binding = useAppStore.getState().cliBindingBySessionId[session.id]
+            sendToCEF({
             action: 'resizeCliTerminal',
             payload: {
               chatId: binding?.boundChatId ?? session.id,
@@ -271,30 +271,30 @@ export function CLIView({ session }: CLIViewProps) {
           }).catch((e) => console.error('[CEF] resizeCliTerminal error:', e))
         })
       })
-	      if (terminalRef.current) resizeObserver.observe(terminalRef.current)
+        if (terminalRef.current) resizeObserver.observe(terminalRef.current)
 
-	      return () => {
-	        cancelled = true
-	        onData.dispose()
-	        window.removeEventListener('uam-cli-output', onCliOutput)
-	        resizeObserver.disconnect()
-	        if (resizeAnimationFrame !== null) {
-	          cancelAnimationFrame(resizeAnimationFrame)
-	          resizeAnimationFrame = null
-	        }
-	        const binding = useAppStore.getState().cliBindingBySessionId[session.id]
-	        bestKnownTerminalId = binding?.terminalId ?? bestKnownTerminalId
-	        bestKnownBoundChatId = binding?.boundChatId ?? bestKnownBoundChatId
-	        detachTerminal()
-	        if (termInstanceRef.current === term) {
-	          termInstanceRef.current = null
-	        }
-	        if (fitAddonRef.current === fitAddon) {
-	          fitAddonRef.current = null
-	        }
-	        term.dispose()
-	      }
-	    }
+        return () => {
+          cancelled = true
+          onData.dispose()
+          window.removeEventListener('uam-cli-output', onCliOutput)
+          resizeObserver.disconnect()
+          if (resizeAnimationFrame !== null) {
+            cancelAnimationFrame(resizeAnimationFrame)
+            resizeAnimationFrame = null
+          }
+          const binding = useAppStore.getState().cliBindingBySessionId[session.id]
+          bestKnownTerminalId = binding?.terminalId ?? bestKnownTerminalId
+          bestKnownBoundChatId = binding?.boundChatId ?? bestKnownBoundChatId
+          detachTerminal()
+          if (termInstanceRef.current === term) {
+            termInstanceRef.current = null
+          }
+          if (fitAddonRef.current === fitAddon) {
+            fitAddonRef.current = null
+          }
+          term.dispose()
+        }
+      }
 
     // ----- Dev/mock path -----
     const welcome = MOCK_WELCOME.map((line) =>
