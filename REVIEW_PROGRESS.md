@@ -15,11 +15,11 @@
 - [x] UI-V2/src/components/shared/GoalBanner.tsx
 - [x] UI-V2/src/components/shared/Logo.tsx
 - [x] UI-V2/src/components/shared/ProviderLogo.tsx
-- [ ] UI-V2/src/components/shared/ThemeToggle.test.tsx
-- [ ] UI-V2/src/components/shared/ThemeToggle.tsx
-- [ ] UI-V2/src/components/sidebar/ChatSearchBar.tsx
-- [ ] UI-V2/src/components/sidebar/FolderTree.test.tsx
-- [ ] UI-V2/src/components/sidebar/FolderTree.tsx
+- [x] UI-V2/src/components/shared/ThemeToggle.test.tsx
+- [x] UI-V2/src/components/shared/ThemeToggle.tsx
+- [x] UI-V2/src/components/sidebar/ChatSearchBar.tsx
+- [x] UI-V2/src/components/sidebar/FolderTree.test.tsx
+- [x] UI-V2/src/components/sidebar/FolderTree.tsx
 - [ ] UI-V2/src/components/sidebar/NewChatModal.tsx
 - [ ] UI-V2/src/components/sidebar/SessionItem.test.tsx
 - [ ] UI-V2/src/components/sidebar/SessionItem.tsx
@@ -31,7 +31,7 @@
 - [ ] UI-V2/src/components/views/CLIView.tsx
 - [ ] UI-V2/src/components/views/ChatView.test.tsx
 - [ ] UI-V2/src/components/views/ChatView.tsx
-- [ ] UI-V2/src/hooks/useTheme.ts
+- [x] UI-V2/src/hooks/useTheme.ts
 - [ ] UI-V2/src/ipc/cefBridge.ts
 - [ ] UI-V2/src/main.tsx
 - [ ] UI-V2/src/store/useAppStore.test.ts

@@ -21,7 +21,7 @@ const VISIBLE_SESSION_LIMIT = 5
 const EMPTY_SEARCH_INDEX = {}
 
 export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: FolderTreeProps) {
-  const folders  = useAppStore(useShallow((s) => s.folders))
+  const folders = useAppStore(useShallow((s) => s.folders))
   const sessions = useAppStore(useShallow((s) => s.sessions))
   const cliBindingBySessionId = useAppStore(useShallow((s) => s.cliBindingBySessionId))
   const acpBindingBySessionId = useAppStore(useShallow((s) => s.acpBindingBySessionId))
