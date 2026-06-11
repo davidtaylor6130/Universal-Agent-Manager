@@ -12,9 +12,9 @@
 - [x] UI-V2/src/components/settings/MemoryScanModal.tsx
 - [x] UI-V2/src/components/settings/SettingsModal.test.tsx
 - [x] UI-V2/src/components/settings/SettingsModal.tsx
-- [ ] UI-V2/src/components/shared/GoalBanner.tsx
-- [ ] UI-V2/src/components/shared/Logo.tsx
-- [ ] UI-V2/src/components/shared/ProviderLogo.tsx
+- [x] UI-V2/src/components/shared/GoalBanner.tsx
+- [x] UI-V2/src/components/shared/Logo.tsx
+- [x] UI-V2/src/components/shared/ProviderLogo.tsx
 - [ ] UI-V2/src/components/shared/ThemeToggle.test.tsx
 - [ ] UI-V2/src/components/shared/ThemeToggle.tsx
 - [ ] UI-V2/src/components/sidebar/ChatSearchBar.tsx
