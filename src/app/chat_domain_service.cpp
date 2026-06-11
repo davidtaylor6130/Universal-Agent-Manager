@@ -275,57 +275,14 @@ int ChatDomainService::FindChatIndexById(const uam::AppState& app, const std::st
 	return FindIndexById(app.chats, uam::strings::Trim(chat_id));
 }
 
-ChatSession* ChatDomainService::FindChatById(uam::AppState& app, const std::string& chat_id) const
-{
-	return PointerOrNull(app.chats, FindById(app.chats, uam::strings::Trim(chat_id)));
-}
-
 const ChatSession* ChatDomainService::FindChatById(const uam::AppState& app, const std::string& chat_id) const
 {
 	return PointerOrNull(app.chats, FindById(app.chats, uam::strings::Trim(chat_id)));
 }
 
-ChatSession* ChatDomainService::FindChatByNativeSessionId(uam::AppState& app, const std::string& native_session_id) const
+ChatSession* ChatDomainService::FindChatById(uam::AppState& app, const std::string& chat_id) const
 {
-	const std::string target_native_session_id = uam::strings::Trim(native_session_id);
-	if (target_native_session_id.empty())
-	{
-		return nullptr;
-	}
-
-	ChatSession* best_match = nullptr;
-	int best_priority = 3;
-
-	for (const auto& entry : app.resolved_native_sessions_by_chat_id)
-	{
-		if (uam::strings::Trim(entry.second) == target_native_session_id)
-		{
-			if (ChatSession* resolved_chat = FindChatById(app, entry.first); resolved_chat != nullptr)
-			{
-				if (best_match == nullptr || best_priority > 0 || (best_priority == 0 && IsLaterNativeSessionMatch(*resolved_chat, *best_match)))
-				{
-					best_match = resolved_chat;
-					best_priority = 0;
-				}
-			}
-		}
-	}
-
-	for (ChatSession& chat : app.chats)
-	{
-		if (uam::strings::Trim(chat.native_session_id) == target_native_session_id)
-		{
-			if (best_match == nullptr || best_priority > 1 ||
-			    (best_priority == 0 && IsLaterNativeSessionMatch(chat, *best_match)) ||
-			    (best_priority == 1 && IsLaterNativeSessionMatch(chat, *best_match)))
-			{
-				best_match = &chat;
-				best_priority = 1;
-			}
-		}
-	}
-
-	return best_match;
+	return const_cast<ChatSession*>(FindChatById(static_cast<const uam::AppState&>(app), chat_id));
 }
 
 const ChatSession* ChatDomainService::FindChatByNativeSessionId(const uam::AppState& app, const std::string& native_session_id) const
@@ -369,6 +326,11 @@ const ChatSession* ChatDomainService::FindChatByNativeSessionId(const uam::AppSt
 	}
 
 	return best_match;
+}
+
+ChatSession* ChatDomainService::FindChatByNativeSessionId(uam::AppState& app, const std::string& native_session_id) const
+{
+	return const_cast<ChatSession*>(FindChatByNativeSessionId(static_cast<const uam::AppState&>(app), native_session_id));
 }
 
 ChatSession* ChatDomainService::SelectedChat(uam::AppState& app) const
