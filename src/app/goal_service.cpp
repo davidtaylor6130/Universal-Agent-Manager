@@ -14,18 +14,6 @@ namespace uam
 
 namespace
 {
-	ChatSession* FindChatMutable(AppState& app, const std::string& chat_id)
-	{
-		for (auto& chat : app.chats)
-		{
-			if (chat.id == chat_id)
-			{
-				return &chat;
-			}
-		}
-		return nullptr;
-	}
-
 	const ChatSession* FindChatConst(const AppState& app, const std::string& chat_id)
 	{
 		for (const auto& chat : app.chats)
@@ -36,6 +24,11 @@ namespace
 			}
 		}
 		return nullptr;
+	}
+
+	ChatSession* FindChatMutable(AppState& app, const std::string& chat_id)
+	{
+		return const_cast<ChatSession*>(FindChatConst(app, chat_id));
 	}
 
 	void MarkDirty(AppState& app, const std::string& chat_id)
