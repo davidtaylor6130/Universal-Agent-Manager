@@ -7,9 +7,9 @@
 - [x] UI-V2/src/components/layout/Sidebar.tsx
 - [x] UI-V2/src/components/layout/VcsCommitPanel.tsx
 - [x] UI-V2/src/components/settings/MarkdownStoreModal.tsx
-- [ ] UI-V2/src/components/settings/MemoryLibraryModal.test.tsx
-- [ ] UI-V2/src/components/settings/MemoryLibraryModal.tsx
-- [ ] UI-V2/src/components/settings/MemoryScanModal.tsx
+- [x] UI-V2/src/components/settings/MemoryLibraryModal.test.tsx
+- [x] UI-V2/src/components/settings/MemoryLibraryModal.tsx
+- [x] UI-V2/src/components/settings/MemoryScanModal.tsx
 - [ ] UI-V2/src/components/settings/SettingsModal.test.tsx
 - [ ] UI-V2/src/components/settings/SettingsModal.tsx
 - [ ] UI-V2/src/components/shared/GoalBanner.tsx
