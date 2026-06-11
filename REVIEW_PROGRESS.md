@@ -23,10 +23,10 @@
 - [x] UI-V2/src/components/sidebar/NewChatModal.tsx
 - [x] UI-V2/src/components/sidebar/SessionItem.test.tsx
 - [x] UI-V2/src/components/sidebar/SessionItem.tsx
-- [ ] UI-V2/src/components/sidebar/SidebarHeader.test.tsx
-- [ ] UI-V2/src/components/sidebar/SidebarHeader.tsx
-- [ ] UI-V2/src/components/sidebar/chatSearch.test.ts
-- [ ] UI-V2/src/components/sidebar/chatSearch.ts
+- [x] UI-V2/src/components/sidebar/SidebarHeader.test.tsx
+- [x] UI-V2/src/components/sidebar/SidebarHeader.tsx
+- [x] UI-V2/src/components/sidebar/chatSearch.test.ts
+- [x] UI-V2/src/components/sidebar/chatSearch.ts
 - [ ] UI-V2/src/components/views/CLIView.test.tsx
 - [ ] UI-V2/src/components/views/CLIView.tsx
 - [ ] UI-V2/src/components/views/ChatView.test.tsx
