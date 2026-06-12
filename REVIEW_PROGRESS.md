@@ -32,8 +32,8 @@
 - [x] UI-V2/src/components/views/ChatView.test.tsx
 - [x] UI-V2/src/components/views/ChatView.tsx
 - [x] UI-V2/src/hooks/useTheme.ts
-- [ ] UI-V2/src/ipc/cefBridge.ts
-- [ ] UI-V2/src/main.tsx
+- [x] UI-V2/src/ipc/cefBridge.ts
+- [x] UI-V2/src/main.tsx
 - [ ] UI-V2/src/store/useAppStore.test.ts
 - [ ] UI-V2/src/store/useAppStore.ts
 - [ ] UI-V2/src/types/goal.ts
