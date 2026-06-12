@@ -2337,6 +2337,7 @@ namespace uam
 			const bool completed_review_turn = completed_goal_turn_kind == kGoalTurnKindReview || session.goal_review_turn;
 			const std::string goal_id = session.goal_review_goal_id;
 			CompletePromptTurn(session, lifecycle_state);
+			session.crash_restart_attempts = 0;
 
 			if (completed_review_turn)
 			{
@@ -4998,6 +4999,7 @@ namespace uam
 		SaveChatQuietly(app, chat);
 
 		session.queued_prompt = effective_prompt;
+		session.crash_restart_attempts = 0;
 		ClearGoalReviewState(session);
 		session.goal_turn_kind.clear();
 		session.processing = true;
@@ -5345,10 +5347,61 @@ namespace uam
 			int exit_code = 0;
 			if (PlatformServicesFactory::Instance().process_service.PollStdioProcessExited(session, &exit_code))
 			{
+				// Snapshot the turn before MarkAcpProcessExited clears it: if the
+				// process died before the queued prompt was ever delivered (e.g. a
+				// startup crash), the turn can be retried safely without risking a
+				// duplicate prompt reaching the provider.
+				const bool turn_was_active = uam::AcpSessionHasActiveTurn(session);
+				const bool undelivered_prompt = session.processing && session.prompt_request_id == 0 && !session.queued_prompt.empty();
+				const std::string pending_prompt = session.queued_prompt;
+				const int turn_user_message_index = session.turn_user_message_index;
+				const int turn_serial = session.turn_serial;
+				const std::string goal_turn_kind = session.goal_turn_kind;
+				const bool goal_review_turn = session.goal_review_turn;
+				const bool goal_review_scheduled = session.goal_review_scheduled;
+				const std::string goal_review_goal_id = session.goal_review_goal_id;
+				const std::string goal_review_user_prompt = session.goal_review_user_prompt;
+				const std::string goal_review_assistant_text = session.goal_review_assistant_text;
+
 				MarkAcpProcessExited(session, true, exit_code);
-				if (!session.last_error.empty())
+
+				std::string restart_error;
+				if (undelivered_prompt && session.crash_restart_attempts < 1 && StartAcpProcessForChat(app, session, chat, &restart_error))
 				{
-					MarkAcpChatUnseenIfBackground(app, chat);
+					session.crash_restart_attempts = 1;
+					session.queued_prompt = pending_prompt;
+					session.processing = true;
+					session.turn_user_message_index = turn_user_message_index;
+					session.turn_assistant_message_index = -1;
+					session.turn_serial = turn_serial + 1;
+					session.goal_turn_kind = goal_turn_kind;
+					session.goal_review_turn = goal_review_turn;
+					session.goal_review_scheduled = goal_review_scheduled;
+					session.goal_review_goal_id = goal_review_goal_id;
+					session.goal_review_user_prompt = goal_review_user_prompt;
+					session.goal_review_assistant_text = goal_review_assistant_text;
+					session.last_error.clear();
+					AppendGoalLoopDiagnostic(session, "auto_restart_after_startup_crash", goal_review_goal_id, pending_prompt);
+				}
+				else
+				{
+					if (!session.last_error.empty())
+					{
+						MarkAcpChatUnseenIfBackground(app, chat);
+					}
+					// A goal must not stay Active with no running session; surface
+					// the crash as a blocker so the goal loop ends visibly instead
+					// of stalling silently.
+					if (turn_was_active)
+					{
+						if (Goal* active_goal = GoalService::FindActiveGoal(app, chat.id); active_goal != nullptr)
+						{
+							const std::string blocker = uam::strings::NonEmptyOrFallback(session.last_error, std::string(RuntimeDisplayName(session)) + " process exited during a goal turn.");
+							GoalService::RecordBlocker(app, active_goal->id, blocker);
+							(void)GoalService::UpdateGoalStatus(app, active_goal->id, GoalStatus::Blocked);
+							AppendGoalLoopDiagnostic(session, "goal_blocked_process_exit", active_goal->id, blocker);
+						}
+					}
 				}
 				changed = true;
 			}

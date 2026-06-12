@@ -212,6 +212,11 @@ namespace uam
 		int turn_assistant_message_index = -1;
 		int turn_serial = 0;
 		std::string queued_prompt;
+		// Counts automatic relaunches after the process died before the queued
+		// prompt was delivered. Deliberately survives ResetAcpRuntimeState so a
+		// crash-looping provider cannot restart forever; cleared when a new user
+		// prompt is sent or a turn completes.
+		int crash_restart_attempts = 0;
 		std::string goal_turn_kind;
 		bool goal_review_turn = false;
 		bool goal_review_scheduled = false;

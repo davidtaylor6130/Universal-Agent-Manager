@@ -2204,7 +2204,13 @@ const pendingRequestIdsByKey = new Map<string, string>()
 const pendingCodexOptionsByChatId = new Map<string, { requestId: string; reasoningEffort: string; serviceTier: string }>()
 const pendingCliTranscriptChunksBySessionId = new Map<string, { terminalId: string; chunks: string[] }>()
 const CLI_TRANSCRIPT_FLUSH_DELAY_MS = 32
+// Stream tokens can arrive far faster than the UI needs to repaint; applying
+// each one individually re-parses the growing assistant message's markdown per
+// token. Coalescing keeps streaming smooth on long answers.
+const pendingStreamTokensByChatId = new Map<string, string>()
+const STREAM_TOKEN_FLUSH_DELAY_MS = 48
 let cliTranscriptFlushTimer: number | null = null
+let streamTokenFlushTimer: number | null = null
 let pendingProviderChatDefaults: {
   requestId: string
   defaultNewChatProviderId: string
@@ -3122,6 +3128,41 @@ export const useAppStore = create<AppState>((set, get) => {
     cliTranscriptFlushTimer = window.setTimeout(flushPendingCliTranscriptChunks, CLI_TRANSCRIPT_FLUSH_DELAY_MS)
   }
 
+  const flushPendingStreamTokens = () => {
+    streamTokenFlushTimer = null
+    if (pendingStreamTokensByChatId.size === 0) return
+
+    const entries = Array.from(pendingStreamTokensByChatId.entries())
+    pendingStreamTokensByChatId.clear()
+
+    set((state) => {
+      let nextMessages = state.messages
+
+      for (const [chatId, token] of entries) {
+        const existingMessages = nextMessages[chatId] ?? []
+        const lastMessage = existingMessages[existingMessages.length - 1]
+        if (!lastMessage || lastMessage.role !== 'assistant' || !lastMessage.isStreaming) continue
+
+        const updatedMessages = [...existingMessages]
+        updatedMessages[updatedMessages.length - 1] = {
+          ...lastMessage,
+          content: lastMessage.content + token,
+        }
+        if (nextMessages === state.messages) {
+          nextMessages = { ...state.messages }
+        }
+        nextMessages[chatId] = updatedMessages
+      }
+
+      return nextMessages === state.messages ? state : { messages: nextMessages }
+    })
+  }
+
+  const scheduleStreamTokenFlush = () => {
+    if (typeof window === 'undefined' || streamTokenFlushTimer !== null) return
+    streamTokenFlushTimer = window.setTimeout(flushPendingStreamTokens, STREAM_TOKEN_FLUSH_DELAY_MS)
+  }
+
   const requestChatMessagesFromCef = (chatId: string) => {
     if (!isCefContext() || !chatId) return
     const current = get()
@@ -3255,10 +3296,21 @@ export const useAppStore = create<AppState>((set, get) => {
 
       switch (msg.type) {
         case 'stateUpdate':
+          // Drop buffered deltas: the full state already contains the streamed
+          // text, so applying them afterwards would duplicate content.
+          pendingStreamTokensByChatId.clear()
           store.loadFromCef(msg.data)
           break
         case 'statePatch':
           {
+            // A patch that replaces a chat's messages carries the streamed text
+            // authoritatively; buffered deltas for those chats must not be
+            // re-applied on top.
+            if (msg.data && typeof msg.data === 'object' && msg.data.messagesByChatId && typeof msg.data.messagesByChatId === 'object') {
+              for (const chatId of Object.keys(msg.data.messagesByChatId)) {
+                pendingStreamTokensByChatId.delete(chatId)
+              }
+            }
             const next = applyStatePatch(msg.data, get())
             if (next) {
               set(next)
@@ -3324,22 +3376,8 @@ export const useAppStore = create<AppState>((set, get) => {
             const session = get().sessions.find((s) => s.id === chatId)
             if (!session) break
 
-            const existingMessages = get().messages[chatId] ?? []
-            const lastMessage = existingMessages[existingMessages.length - 1]
-
-            if (lastMessage && lastMessage.role === 'assistant' && lastMessage.isStreaming) {
-              const updatedMessages = [...existingMessages]
-              updatedMessages[updatedMessages.length - 1] = {
-                ...lastMessage,
-                content: lastMessage.content + token,
-              }
-              set((state) => ({
-                messages: {
-                  ...state.messages,
-                  [chatId]: updatedMessages,
-                },
-              }))
-            }
+            pendingStreamTokensByChatId.set(chatId, (pendingStreamTokensByChatId.get(chatId) ?? '') + token)
+            scheduleStreamTokenFlush()
           }
           break
         case 'streamDone':
@@ -3348,6 +3386,7 @@ export const useAppStore = create<AppState>((set, get) => {
             const session = get().sessions.find((s) => s.id === chatId)
             if (!session) break
 
+            flushPendingStreamTokens()
             const existingMessages = get().messages[chatId] ?? []
             const lastMessage = existingMessages[existingMessages.length - 1]
 

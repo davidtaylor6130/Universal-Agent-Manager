@@ -29,8 +29,23 @@ namespace
 	constexpr const char* kPushTypeCliOutput = "cliOutput";
 	constexpr long long kStatePatchSlowSerializationMs = 8;
 	constexpr std::size_t kStatePatchLargeMessageBytes = 64 * 1024;
+	// While a turn streams, the selected chat's messagesDigest changes on nearly
+	// every 16ms poll tick; re-serializing and re-pushing the full message array
+	// at that rate stalls both the serializer and the React message list. Live
+	// text still arrives instantly via streamToken pushes, so the heavyweight
+	// message-array patch only needs to keep up at a coarse interval.
+	constexpr std::chrono::milliseconds kSelectedChatMessagesMinPushInterval{250};
+	// The selected chat's summary carries the live turn timeline (turnEvents),
+	// which grows on nearly every tick during a turn; 10 updates per second is
+	// plenty for streamed text and tool-call progress. Summaries that introduce
+	// a pending permission or user-input request bypass the throttle so
+	// interaction prompts are never delayed.
+	constexpr std::chrono::milliseconds kSelectedChatSummaryMinPushInterval{100};
 
 	std::string g_last_pushed_state_fingerprint;
+	std::unordered_map<std::string, std::chrono::steady_clock::time_point> g_last_messages_push_time_by_chat_id;
+	std::unordered_map<std::string, std::chrono::steady_clock::time_point> g_last_summary_push_time_by_chat_id;
+	bool g_messages_push_deferred = false;
 	std::unordered_map<std::string, std::string> g_last_pushed_message_digests_by_chat_id;
 	std::unordered_map<std::string, std::string> g_last_pushed_chat_summaries_by_chat_id;
 	std::string g_last_pushed_folders_fingerprint;
@@ -75,6 +90,9 @@ namespace
 		g_last_pushed_selected_chat_id = ChatDomainService().SelectedChatId(app);
 		g_last_pushed_message_digests_by_chat_id.clear();
 		g_last_pushed_chat_summaries_by_chat_id.clear();
+		g_last_messages_push_time_by_chat_id.clear();
+		g_last_summary_push_time_by_chat_id.clear();
+		g_messages_push_deferred = false;
 
 		const nlohmann::json chats = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "chats");
 
@@ -144,6 +162,22 @@ namespace
 		}
 	};
 
+	bool ChatSummaryHasPendingInteraction(const nlohmann::json& chat)
+	{
+		const auto acp_it = chat.find("acpSession");
+		if (acp_it == chat.end() || !acp_it->is_object())
+		{
+			return false;
+		}
+		const auto permission_it = acp_it->find("pendingPermission");
+		if (permission_it != acp_it->end() && !permission_it->is_null())
+		{
+			return true;
+		}
+		const auto user_input_it = acp_it->find("pendingUserInput");
+		return user_input_it != acp_it->end() && !user_input_it->is_null();
+	}
+
 	nlohmann::json ChatOrderForPatch(const uam::AppState& app)
 	{
 		nlohmann::json chat_order = nlohmann::json::array();
@@ -167,6 +201,7 @@ namespace
 	ChatPatchDiff BuildChatPatchDiff(const uam::AppState& app, const nlohmann::json& fingerprint_state, const std::string& selected_chat_id)
 	{
 		ChatPatchDiff diff;
+		g_messages_push_deferred = false;
 		std::unordered_set<std::string> current_chat_ids;
 
 		const nlohmann::json chats = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "chats");
@@ -193,7 +228,31 @@ namespace
 			const auto previous_chat_it = g_last_pushed_chat_summaries_by_chat_id.find(chat_id);
 			if (previous_chat_it == g_last_pushed_chat_summaries_by_chat_id.end() || previous_chat_it->second != chat_fingerprint)
 			{
-				diff.changed_chats.push_back(chat);
+				const auto now = std::chrono::steady_clock::now();
+				const auto last_summary_push_it = g_last_summary_push_time_by_chat_id.find(chat_id);
+				const bool summary_throttled = chat_id == selected_chat_id &&
+				                               !ChatSummaryHasPendingInteraction(chat) &&
+				                               last_summary_push_it != g_last_summary_push_time_by_chat_id.end() &&
+				                               now - last_summary_push_it->second < kSelectedChatSummaryMinPushInterval;
+				if (summary_throttled)
+				{
+					// Keep the previous summary baseline so the deferred change is
+					// retried on a later tick instead of silently dropped.
+					if (previous_chat_it != g_last_pushed_chat_summaries_by_chat_id.end())
+					{
+						diff.next_chat_summaries[chat_id] = previous_chat_it->second;
+					}
+					else
+					{
+						diff.next_chat_summaries.erase(chat_id);
+					}
+					g_messages_push_deferred = true;
+				}
+				else
+				{
+					diff.changed_chats.push_back(chat);
+					g_last_summary_push_time_by_chat_id[chat_id] = now;
+				}
 			}
 
 			const auto previous_digest_it = g_last_pushed_message_digests_by_chat_id.find(chat_id);
@@ -201,10 +260,31 @@ namespace
 			const bool messages_changed = previous_digest_it == g_last_pushed_message_digests_by_chat_id.end() || previous_digest_it->second != message_digest;
 			if (selected_chat && messages_changed)
 			{
-				const nlohmann::json messages = SelectedChatMessagesForPatch(app, chat_id);
-				if (!messages.is_null())
+				const auto now = std::chrono::steady_clock::now();
+				const auto last_push_it = g_last_messages_push_time_by_chat_id.find(chat_id);
+				const bool throttled = last_push_it != g_last_messages_push_time_by_chat_id.end() && now - last_push_it->second < kSelectedChatMessagesMinPushInterval;
+				if (throttled)
 				{
-					diff.messages_by_chat_id[chat_id] = messages;
+					// Keep the previous digest baseline so the deferred change is
+					// retried on a later tick instead of silently dropped.
+					if (previous_digest_it != g_last_pushed_message_digests_by_chat_id.end())
+					{
+						diff.next_message_digests[chat_id] = previous_digest_it->second;
+					}
+					else
+					{
+						diff.next_message_digests.erase(chat_id);
+					}
+					g_messages_push_deferred = true;
+				}
+				else
+				{
+					const nlohmann::json messages = SelectedChatMessagesForPatch(app, chat_id);
+					if (!messages.is_null())
+					{
+						diff.messages_by_chat_id[chat_id] = messages;
+						g_last_messages_push_time_by_chat_id[chat_id] = now;
+					}
 				}
 			}
 		}
@@ -244,10 +324,9 @@ namespace
 		g_last_pushed_message_digests_by_chat_id = std::move(diff.next_message_digests);
 	}
 
-	std::string BuildStatePatchMessage(const uam::AppState& app)
+	std::string BuildStatePatchMessage(const uam::AppState& app, const nlohmann::json& fingerprint_state)
 	{
 		const auto started = std::chrono::steady_clock::now();
-		const nlohmann::json fingerprint_state = uam::StateSerializer::SerializeFingerprint(app);
 		const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
 		nlohmann::json data = nlohmann::json::object();
 
@@ -331,12 +410,17 @@ namespace
 		}
 	}
 
-	std::string BuildStateFingerprint(const uam::AppState& app)
+	std::string BuildStateFingerprintFromState(const nlohmann::json& fingerprint_state)
 	{
-		nlohmann::json state = uam::StateSerializer::SerializeFingerprint(app);
+		nlohmann::json state = fingerprint_state;
 		StripVolatileCliDebugTelemetry(state);
 		StripVolatileAcpWaitTelemetry(state);
 		return state.dump();
+	}
+
+	std::string BuildStateFingerprint(const uam::AppState& app)
+	{
+		return BuildStateFingerprintFromState(uam::StateSerializer::SerializeFingerprint(app));
 	}
 
 	void BumpStateRevision(uam::AppState& app)
@@ -358,16 +442,24 @@ namespace uam
 		return SerializeSettingsForPatch(app).dump();
 	}
 
+	bool HasDeferredStatePush()
+	{
+		return g_messages_push_deferred;
+	}
+
 	bool PushStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, AppState& app)
 	{
-		const std::string fingerprint = BuildStateFingerprint(app);
-		if (fingerprint == g_last_pushed_state_fingerprint)
+		const nlohmann::json fingerprint_state = uam::StateSerializer::SerializeFingerprint(app);
+		const std::string fingerprint = BuildStateFingerprintFromState(fingerprint_state);
+		// A deferred (throttled) selected-chat messages payload must still be
+		// flushed even if no further state changes arrive after streaming ends.
+		if (fingerprint == g_last_pushed_state_fingerprint && !g_messages_push_deferred)
 		{
 			return false;
 		}
 
 		BumpStateRevision(app);
-		const std::string message = BuildStatePatchMessage(app);
+		const std::string message = BuildStatePatchMessage(app, fingerprint_state);
 		g_last_pushed_state_fingerprint = fingerprint;
 		PostPush(browser, message);
 		return true;

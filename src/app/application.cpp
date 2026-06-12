@@ -305,7 +305,7 @@ void Application::PollTick()
 	ProviderCliCompatibilityService().Poll(m_app);
 	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
 	const bool runtime_state_changed = pending_calls_changed || acp_sessions_changed || cli_terminals_changed || memory_changed;
-	const bool ui_relevant_state_changed = runtime_state_changed || provider_compatibility_changed;
+	const bool ui_relevant_state_changed = runtime_state_changed || provider_compatibility_changed || uam::HasDeferredStatePush();
 
 	// Push only when the serialized app state actually changed.
 	if (m_browser && ui_relevant_state_changed)

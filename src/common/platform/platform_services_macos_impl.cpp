@@ -27,6 +27,7 @@
 #include <signal.h>
 #include <sys/file.h>
 #include <sys/ioctl.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <util.h>
@@ -56,6 +57,40 @@ namespace
 	{
 		CloseFdIfOpen(pipe_fds[0]);
 		CloseFdIfOpen(pipe_fds[1]);
+	}
+
+	// Child provider runtimes (e.g. Bun-based OpenCode) refuse to start when the
+	// inherited soft RLIMIT_NOFILE is low, so raise it as close to the hard limit
+	// as the kernel allows before exec. Async-signal-safe; intended for use
+	// between fork and execv.
+	void RaiseFdLimitBestEffort()
+	{
+		struct rlimit limit
+		{
+		};
+		if (getrlimit(RLIMIT_NOFILE, &limit) != 0)
+		{
+			return;
+		}
+
+		const rlim_t candidates[] = {limit.rlim_max, 1048576, 524288, 262144, 122880, 65536, 61440, 32768};
+		for (const rlim_t candidate : candidates)
+		{
+			if (candidate == RLIM_INFINITY || candidate <= limit.rlim_cur)
+			{
+				continue;
+			}
+
+			struct rlimit raised
+			{
+			};
+			raised.rlim_cur = candidate;
+			raised.rlim_max = limit.rlim_max;
+			if (setrlimit(RLIMIT_NOFILE, &raised) == 0)
+			{
+				return;
+			}
+		}
 	}
 
 	void SetFdNonBlockingIfOpen(int fd)
@@ -961,6 +996,7 @@ namespace
 				{
 					setenv("PATH", terminal_path_env.c_str(), 1);
 				}
+				RaiseFdLimitBestEffort();
 				execv(argv_ptrs[0], argv_ptrs.data());
 				_exit(127);
 			}
@@ -1278,6 +1314,7 @@ namespace
 					setenv("PATH", path_env.c_str(), 1);
 				}
 
+				RaiseFdLimitBestEffort();
 				execv(argv_ptrs[0], argv_ptrs.data());
 				_exit(127);
 			}

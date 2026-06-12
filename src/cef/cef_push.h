@@ -15,6 +15,12 @@ namespace uam
 	/// </summary>
 	bool PushStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, AppState& app);
 	void PushStateUpdate(CefRefPtr<CefBrowser> browser, AppState& app);
+
+	/// <summary>
+	/// True when a throttled selected-chat messages payload is still waiting to
+	/// be flushed by a later PushStateUpdateIfChanged call.
+	/// </summary>
+	bool HasDeferredStatePush();
 	inline std::string StateFingerprintForTests(const AppState& app)
 	{
 		return StateSerializer::SerializeFingerprint(app).dump();
