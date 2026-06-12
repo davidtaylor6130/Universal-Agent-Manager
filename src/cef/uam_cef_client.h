@@ -88,6 +88,7 @@ class UamCefClient : public CefClient, public CefLifeSpanHandler, public CefLoad
 	std::unique_ptr<UamQueryHandler> m_queryHandler;
 	BrowserReadyCallback m_onReady;
 
+	void EnsureMessageRouter();
 	bool IsTrustedMainFrame(CefRefPtr<CefFrame> frame) const;
 	bool ShouldCancelNavigationToUrl(const std::string& target_url) const;
 

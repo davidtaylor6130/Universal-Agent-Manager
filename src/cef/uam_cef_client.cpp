@@ -14,9 +14,23 @@ UamCefClient::UamCefClient(uam::AppState& app, std::string trusted_ui_index_url,
 	, m_trustedUiIndexUrl(std::move(trusted_ui_index_url))
 	, m_onReady(std::move(on_ready))
 {
+	// The message router cannot be created here: this client is constructed
+	// before CefInitialize(), and CefMessageRouterBrowserSide::AddHandler()
+	// requires the CEF UI thread to exist (fatal CHECK otherwise).  It is
+	// created lazily in EnsureMessageRouter() from OnAfterCreated().
+}
+
+void UamCefClient::EnsureMessageRouter()
+{
+	CEF_REQUIRE_UI_THREAD();
+	if (m_router != nullptr)
+	{
+		return;
+	}
+
 	CefMessageRouterConfig router_config;
 	m_router        = CefMessageRouterBrowserSide::Create(router_config);
-	m_queryHandler  = std::make_unique<UamQueryHandler>(app, m_trustedUiIndexUrl);
+	m_queryHandler  = std::make_unique<UamQueryHandler>(m_app, m_trustedUiIndexUrl);
 	m_router->AddHandler(m_queryHandler.get(), true);
 }
 
@@ -47,6 +61,7 @@ bool UamCefClient::ShouldCancelNavigationToUrl(const std::string& target_url) co
 void UamCefClient::OnAfterCreated(CefRefPtr<CefBrowser> browser)
 {
 	CEF_REQUIRE_UI_THREAD();
+	EnsureMessageRouter();
 	m_browser = browser;
 
 	if (m_onReady)
@@ -64,7 +79,10 @@ bool UamCefClient::DoClose(CefRefPtr<CefBrowser> /*browser*/)
 void UamCefClient::OnBeforeClose(CefRefPtr<CefBrowser> browser)
 {
 	CEF_REQUIRE_UI_THREAD();
-	m_router->OnBeforeClose(browser);
+	if (m_router != nullptr)
+	{
+		m_router->OnBeforeClose(browser);
+	}
 	m_browser = nullptr;
 	CefQuitMessageLoop();
 }

@@ -28,3 +28,4 @@
 /.UAM
 
 compile_commands.json
+/.cache
