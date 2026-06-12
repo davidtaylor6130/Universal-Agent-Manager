@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app/provider_model_catalog_service.h"
 #include "common/models/app_models.h"
 #include "common/config/frontend_actions.h"
 #include "common/platform/platform_state_fields.h"
@@ -398,6 +399,8 @@ namespace uam
 		std::unordered_map<std::string, platform::AsyncNativeChatLoadTask> native_chat_load_tasks;
 
 		std::unordered_map<std::string, double> pending_chat_save_at_by_chat_id;
+
+		std::unique_ptr<ProviderModelCatalogService> provider_model_catalog;
 	};
 
 } // namespace uam

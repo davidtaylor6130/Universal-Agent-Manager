@@ -1,6 +1,7 @@
 #include "cef/state_serializer.h"
 
 #include "app/chat_domain_service.h"
+#include "app/provider_model_catalog_service.h"
 
 #include "common/chat/message_attachment_json.h"
 #include "common/config/settings_frontend_json.h"
@@ -48,11 +49,6 @@ namespace uam
 	{
 		namespace attachment_fields = uam::message_attachment_json;
 		namespace attachment_frontend_fields = uam::message_attachment_json::frontend;
-		constexpr const char* kOpenCodeZenModelsUrl = "https://opencode.ai/zen/v1/models";
-		constexpr const char* kOpenCodeZenFreeModelsCacheFile = "opencode_zen_free_models_cache.json";
-		constexpr const char* kOpenCodeZenModelsFixtureEnv = "UAM_OPENCODE_ZEN_MODELS_PATH";
-		constexpr const char* kOpenCodeZenRefreshDisabledEnv = "UAM_DISABLE_OPENCODE_ZEN_REFRESH";
-		constexpr auto kOpenCodeZenRefreshInterval = std::chrono::minutes(10);
 
 		std::string RoleStr(MessageRole role)
 		{
@@ -191,58 +187,18 @@ namespace uam
 			return models_json;
 		}
 
-		void PushModelIfNew(nlohmann::json& models_json, std::vector<std::string>& seen_model_ids, const std::string& id, const std::string& name, const std::string& description);
-
-		std::string TitleFromModelId(std::string model_id)
+		void PushModelIfNew(nlohmann::json& models_json, std::vector<std::string>& seen_model_ids, const std::string& id, const std::string& name, const std::string& description)
 		{
-			if (const std::size_t slash = model_id.rfind('/'); slash != std::string::npos)
+			if (!uam::ranges::PushUniqueNonEmptyString(seen_model_ids, id))
 			{
-				model_id = model_id.substr(slash + 1);
+				return;
 			}
 
-			std::string title;
-			bool uppercase_next = true;
-			for (const char ch : model_id)
-			{
-				if (ch == '-' || ch == '_' || ch == '.' || ch == ':')
-				{
-					if (!title.empty() && title.back() != ' ')
-					{
-						title.push_back(' ');
-					}
-					uppercase_next = true;
-					continue;
-				}
-
-				title.push_back(uppercase_next ? static_cast<char>(std::toupper(static_cast<unsigned char>(ch))) : ch);
-				uppercase_next = false;
-			}
-
-			title = uam::strings::Trim(uam::strings::NonEmptyOrFallback(title, model_id));
-			if (title.starts_with("Deepseek "))
-			{
-				title.replace(0, 8, "DeepSeek");
-			}
-			if (title.starts_with("Minimax "))
-			{
-				title.replace(0, 7, "MiniMax");
-			}
-			if (title.starts_with("Mimo "))
-			{
-				title.replace(0, 4, "MiMo");
-			}
-			return title;
-		}
-
-		bool IsOpenCodeZenFreeModelId(const std::string& id)
-		{
-			constexpr std::string_view free_suffix = "-free";
-			return id == "big-pickle" || (id.size() >= free_suffix.size() && id.compare(id.size() - free_suffix.size(), free_suffix.size(), free_suffix) == 0);
-		}
-
-		std::filesystem::path OpenCodeZenFreeModelsCachePath(const std::filesystem::path& data_root)
-		{
-			return data_root / kOpenCodeZenFreeModelsCacheFile;
+			models_json.push_back({
+			    {"id", id},
+			    {"name", uam::strings::NonEmptyOrFallback(name, id)},
+			    {"description", description},
+			});
 		}
 
 		nlohmann::json BuiltInOpenCodeZenFreeModelsForFrontend()
@@ -258,6 +214,11 @@ namespace uam
 			return models_json;
 		}
 
+		std::filesystem::path OpenCodeZenFreeModelsCachePath(const std::filesystem::path& data_root)
+		{
+			return data_root / "opencode_zen_free_models_cache.json";
+		}
+
 		nlohmann::json ReadOpenCodeZenFreeModelsCacheForFrontend(const std::filesystem::path& data_root)
 		{
 			const nlohmann::json cache = ReadJsonFile(OpenCodeZenFreeModelsCachePath(data_root));
@@ -266,13 +227,18 @@ namespace uam
 
 		bool OpenCodeZenRefreshDisabled()
 		{
-			const std::string value = uam::strings::TrimAndLowerAscii(uam::env::GetTrimmedString(kOpenCodeZenRefreshDisabledEnv).value_or(""));
+			const std::string value = uam::strings::TrimAndLowerAscii(uam::env::GetTrimmedString("UAM_DISABLE_OPENCODE_ZEN_REFRESH").value_or(""));
 			return value == "1" || value == "true" || value == "yes" || value == "on";
+		}
+
+		bool HasOpenCodeZenModelsFixture()
+		{
+			return uam::env::GetTrimmedPath("UAM_OPENCODE_ZEN_MODELS_PATH").has_value();
 		}
 
 		std::optional<nlohmann::json> ReadOpenCodeZenModelsFixture()
 		{
-			const std::optional<std::filesystem::path> fixture_path = uam::env::GetTrimmedPath(kOpenCodeZenModelsFixtureEnv);
+			const std::optional<std::filesystem::path> fixture_path = uam::env::GetTrimmedPath("UAM_OPENCODE_ZEN_MODELS_PATH");
 			if (!fixture_path)
 			{
 				return std::nullopt;
@@ -280,11 +246,6 @@ namespace uam
 
 			const nlohmann::json root = ReadJsonFile(*fixture_path);
 			return root.is_object() ? std::optional<nlohmann::json>(root) : std::nullopt;
-		}
-
-		bool HasOpenCodeZenModelsFixture()
-		{
-			return uam::env::GetTrimmedPath(kOpenCodeZenModelsFixtureEnv).has_value();
 		}
 
 		std::optional<nlohmann::json> FetchOpenCodeZenModels()
@@ -298,7 +259,7 @@ namespace uam
 				return std::nullopt;
 			}
 
-			const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(std::string("curl -s --max-time 4 ") + kOpenCodeZenModelsUrl, 6000);
+			const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(std::string("curl -s --max-time 4 ") + "https://opencode.ai/zen/v1/models", 6000);
 			if (!result.ok || result.timed_out || result.canceled || result.exit_code != 0 || result.output.empty())
 			{
 				return std::nullopt;
@@ -319,7 +280,7 @@ namespace uam
 			{
 				std::lock_guard<std::mutex> lock(refresh_mutex);
 				const auto now = std::chrono::steady_clock::now();
-				const bool has_recent_attempt = last_refresh_attempt.time_since_epoch().count() != 0 && now - last_refresh_attempt < kOpenCodeZenRefreshInterval;
+				const bool has_recent_attempt = last_refresh_attempt.time_since_epoch().count() != 0 && now - last_refresh_attempt < std::chrono::minutes(10);
 				if (!refresh_disabled && (has_fixture || !has_recent_attempt))
 				{
 					last_refresh_attempt = now;
@@ -359,20 +320,6 @@ namespace uam
 			}
 
 			return uam::paths::CurrentPathOrDot() / ".config" / "opencode" / "opencode.json";
-		}
-
-		void PushModelIfNew(nlohmann::json& models_json, std::vector<std::string>& seen_model_ids, const std::string& id, const std::string& name, const std::string& description)
-		{
-			if (!uam::ranges::PushUniqueNonEmptyString(seen_model_ids, id))
-			{
-				return;
-			}
-
-			models_json.push_back({
-			    {"id", id},
-			    {"name", uam::strings::NonEmptyOrFallback(name, id)},
-			    {"description", description},
-			});
 		}
 
 		nlohmann::json ReadConfiguredOpenCodeModelsForFrontend()
@@ -438,30 +385,6 @@ namespace uam
 			return uam::nlohmann_json::TrimmedStringValue(config, {"model"});
 		}
 
-		nlohmann::json MergeAcpModelArrays(nlohmann::json fallback_models, nlohmann::json runtime_models);
-
-		nlohmann::json FallbackAcpModelsForChat(const ChatSession& chat, const std::filesystem::path& data_root)
-		{
-			if (uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kCodexCli))
-			{
-				return ReadCachedCodexModelsForFrontend();
-			}
-			if (uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kOpenCodeCli))
-			{
-				return MergeAcpModelArrays(ReadConfiguredOpenCodeModelsForFrontend(), RefreshOpenCodeZenFreeModelsForFrontend(data_root));
-			}
-			return nlohmann::json::array();
-		}
-
-		std::string FallbackAcpCurrentModelForChat(const ChatSession& chat)
-		{
-			if (!uam::strings::IsBlank(chat.model_id))
-			{
-				return chat.model_id;
-			}
-			return uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kOpenCodeCli) ? ReadConfiguredOpenCodeDefaultModelForFrontend() : std::string{};
-		}
-
 		nlohmann::json MergeAcpModelArrays(nlohmann::json fallback_models, nlohmann::json runtime_models)
 		{
 			if (!fallback_models.is_array())
@@ -497,6 +420,28 @@ namespace uam
 				fallback_models.push_back(std::move(normalized_model));
 			}
 			return fallback_models;
+		}
+
+		nlohmann::json FallbackAcpModelsForChat(const AppState& app, const ChatSession& chat)
+		{
+			if (uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kCodexCli))
+			{
+				return ReadCachedCodexModelsForFrontend();
+			}
+			if (uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kOpenCodeCli))
+			{
+				return MergeAcpModelArrays(ReadConfiguredOpenCodeModelsForFrontend(), RefreshOpenCodeZenFreeModelsForFrontend(app.data_root));
+			}
+			return nlohmann::json::array();
+		}
+
+		std::string FallbackAcpCurrentModelForChat(const ChatSession& chat)
+		{
+			if (!uam::strings::IsBlank(chat.model_id))
+			{
+				return chat.model_id;
+			}
+			return uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kOpenCodeCli) ? ReadConfiguredOpenCodeDefaultModelForFrontend() : std::string{};
 		}
 
 		std::string MessageDigestForFingerprint(const ChatSession& session);
@@ -1010,7 +955,7 @@ namespace uam
 			acp_json["planEntries"] = nlohmann::json::array();
 			acp_json["availableModes"] = nlohmann::json::array();
 			acp_json["currentModeId"] = chat.approval_mode;
-			acp_json["availableModels"] = FallbackAcpModelsForChat(chat, data_root);
+			acp_json["availableModels"] = FallbackAcpModelsForChat(app, chat);
 			acp_json["currentModelId"] = FallbackAcpCurrentModelForChat(chat);
 			acp_json["turnEvents"] = nlohmann::json::array();
 			acp_json["turnUserMessageIndex"] = -1;
@@ -1059,7 +1004,7 @@ namespace uam
 			acp_json["planEntries"] = SerializeAcpPlanEntries(session->plan_entries);
 			acp_json["availableModes"] = SerializeAcpModes(session->available_modes);
 			acp_json["currentModeId"] = uam::strings::NonEmptyOrFallback(session->current_mode_id, chat.approval_mode);
-			acp_json["availableModels"] = MergeAcpModelArrays(FallbackAcpModelsForChat(chat, app.data_root), SerializeAcpModels(session->available_models));
+			acp_json["availableModels"] = ProviderModelCatalogService::MergeAcpModelArrays(FallbackAcpModelsForChat(app, chat), SerializeAcpModels(session->available_models));
 			acp_json["currentModelId"] = uam::strings::NonEmptyOrFallback(session->current_model_id, FallbackAcpCurrentModelForChat(chat));
 			acp_json["turnEvents"] = SerializeAcpTurnEvents(session->turn_events);
 			acp_json["turnUserMessageIndex"] = session->turn_user_message_index;
@@ -1338,14 +1283,64 @@ namespace uam
 
 			const std::string owner = uam::nlohmann_json::TrimmedStringValue(model, {"owned_by", "ownedBy"});
 			const std::string model_id = uam::nlohmann_json::TrimmedStringValue(model, {"id"});
-			if (owner != "opencode" || model_id.empty() || !IsOpenCodeZenFreeModelId(model_id))
+
+			constexpr std::string_view free_suffix = "-free";
+			const bool is_free = model_id == "big-pickle" || (model_id.size() >= free_suffix.size() && model_id.compare(model_id.size() - free_suffix.size(), free_suffix.size(), free_suffix) == 0);
+
+			if (owner != "opencode" || model_id.empty() || !is_free)
 			{
 				continue;
 			}
 
 			const std::string full_id = "opencode/" + model_id;
 			const std::string description = model_id == "big-pickle" ? "OpenCode Zen limited-time stealth free model." : "OpenCode Zen free model.";
-			PushModelIfNew(models_json, seen_model_ids, full_id, TitleFromModelId(model_id), description);
+
+			// Build a title from the model id with special-case corrections.
+			std::string title = model_id;
+			if (const std::size_t slash = title.rfind('/'); slash != std::string::npos)
+			{
+				title = title.substr(slash + 1);
+			}
+			std::string formatted_title;
+			bool uppercase_next = true;
+			for (const char ch : title)
+			{
+				if (ch == '-' || ch == '_' || ch == '.' || ch == ':')
+				{
+					if (!formatted_title.empty() && formatted_title.back() != ' ')
+					{
+						formatted_title.push_back(' ');
+					}
+					uppercase_next = true;
+					continue;
+				}
+				formatted_title.push_back(uppercase_next ? static_cast<char>(std::toupper(static_cast<unsigned char>(ch))) : ch);
+				uppercase_next = false;
+			}
+			if (formatted_title.starts_with("Deepseek "))
+			{
+				formatted_title.replace(0, 8, "DeepSeek");
+			}
+			if (formatted_title.starts_with("Minimax "))
+			{
+				formatted_title.replace(0, 7, "MiniMax");
+			}
+			if (formatted_title.starts_with("Mimo "))
+			{
+				formatted_title.replace(0, 4, "MiMo");
+			}
+			formatted_title = uam::strings::Trim(uam::strings::NonEmptyOrFallback(formatted_title, model_id));
+
+			if (!uam::ranges::PushUniqueNonEmptyString(seen_model_ids, full_id))
+			{
+				continue;
+			}
+
+			models_json.push_back({
+			    {"id", full_id},
+			    {"name", uam::strings::NonEmptyOrFallback(formatted_title, model_id)},
+			    {"description", description},
+			});
 		}
 
 		return models_json;

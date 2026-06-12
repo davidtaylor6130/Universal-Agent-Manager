@@ -2,6 +2,7 @@
 
 #include "chat_domain_service.h"
 #include "persistence_coordinator.h"
+#include "provider_model_catalog_service.h"
 #include "provider_resolution_service.h"
 #include "runtime_orchestration_services.h"
 #include "memory_service.h"
@@ -303,6 +304,13 @@ void Application::PollTick()
 	const bool cli_terminals_changed = uam::PollAllCliTerminals(m_browser, m_app);
 	const bool memory_changed = MemoryService::ProcessDueMemoryWork(m_app);
 	ProviderCliCompatibilityService().Poll(m_app);
+
+	// Poll the provider model catalog service for async model refresh completion.
+	if (m_app.provider_model_catalog != nullptr)
+	{
+		m_app.provider_model_catalog->Poll();
+		m_app.provider_model_catalog->MaybeStartRefresh();
+	}
 	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
 	const bool runtime_state_changed = pending_calls_changed || acp_sessions_changed || cli_terminals_changed || memory_changed;
 	const bool ui_relevant_state_changed = runtime_state_changed || provider_compatibility_changed || uam::HasDeferredStatePush();
@@ -435,6 +443,11 @@ bool Application::InitializeState()
 	}
 
 	m_app.folders = ChatFolderStore::Load(m_app.data_root);
+
+	// Initialize the provider model catalog service (async refresh for OpenCode Zen models).
+	m_app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
+	m_app.provider_model_catalog->Initialize(m_app.data_root);
+
 	ChatHistorySyncService().LoadSidebarChatsByDiscovery(m_app);
 	MemoryService::RefreshMemoryActivity(m_app);
 
