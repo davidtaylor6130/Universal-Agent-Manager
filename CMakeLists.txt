@@ -242,6 +242,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/native_session_link_service.cpp
   src/app/persistence_coordinator.cpp
   src/app/provider_resolution_service.cpp
+  src/app/provider_worker_command.cpp
   src/app/provider_profile_migration_service.cpp
   src/app/provider_model_catalog_service.cpp
   src/app/runtime_orchestration_services.cpp
@@ -679,6 +680,7 @@ if(UAM_BUILD_TESTS)
     src/app/native_session_link_service.cpp
     src/app/persistence_coordinator.cpp
     src/app/provider_resolution_service.cpp
+  src/app/provider_worker_command.cpp
     src/app/provider_profile_migration_service.cpp
     src/app/provider_model_catalog_service.cpp
     src/app/runtime_orchestration_services.cpp

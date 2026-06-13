@@ -32,26 +32,6 @@ namespace uam
 	});
 	inline constexpr std::size_t kBaseProviderWorkerPathEntryCount = kBaseProviderWorkerPathEntries.size();
 
-	inline constexpr auto kCodexReadOnlyWorkerArgs = std::to_array<std::string_view>({
-	    "--ignore-user-config",
-	    "--ignore-rules",
-	    "--json",
-	    "--color",
-	    "never",
-	    "--ephemeral",
-	    "--skip-git-repo-check",
-	    "--sandbox",
-	    "read-only",
-	    "-c",
-	    "model_reasoning_effort=\"low\"",
-	});
-
-	inline constexpr auto kClaudeStatelessWorkerArgs = std::to_array<std::string_view>({
-	    "--no-session-persistence",
-	    "--tools",
-	    "",
-	});
-
 	enum class ProviderWorkerPathMode
 	{
 		BasePath,
@@ -169,61 +149,5 @@ namespace uam
 		return WithProviderWorkerPathEnvironment(uam::shell::JoinEscapedArgs(argv), path_mode);
 	}
 
-	inline bool ProviderWorkerProfileMatches(const ProviderProfile& profile, std::string_view canonical_provider_id)
-	{
-		return uam::provider_ids::IsCliProviderAliasOf(profile.id, canonical_provider_id);
-	}
-
-	inline std::string BuildProviderWorkerCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id, ProviderWorkerPathMode path_mode)
-	{
-		std::vector<std::string> argv;
-		const std::vector<std::string> flags = ProviderWorkerFlags(profile, settings);
-		if (ProviderWorkerProfileMatches(profile, uam::provider_ids::kGeminiCli))
-		{
-			uam::provider_runtime_internal::AppendLiteralArgs(argv, {"gemini"});
-			AppendProviderWorkerFlagsAndModel(argv, flags, "--model", model_id);
-			argv.push_back("-p");
-			AppendProviderWorkerPrompt(argv, prompt);
-			return BuildProviderWorkerShellCommand(argv, path_mode);
-		}
-
-		if (ProviderWorkerProfileMatches(profile, uam::provider_ids::kCodexCli))
-		{
-			uam::provider_runtime_internal::AppendLiteralArgs(argv, {"codex", "exec"});
-			uam::provider_runtime_internal::AppendArgs(argv, flags);
-			uam::provider_runtime_internal::AppendLiteralArgs(argv, kCodexReadOnlyWorkerArgs);
-			uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "-m", model_id);
-			AppendProviderWorkerPrompt(argv, prompt);
-			return BuildProviderWorkerShellCommand(argv, path_mode);
-		}
-
-		if (ProviderWorkerProfileMatches(profile, uam::provider_ids::kClaudeCli))
-		{
-			uam::provider_runtime_internal::AppendLiteralArgs(argv, {"claude", "-p"});
-			uam::provider_runtime_internal::AppendArgs(argv, flags);
-			uam::provider_runtime_internal::AppendLiteralArgs(argv, kClaudeStatelessWorkerArgs);
-			uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", model_id);
-			argv.push_back("--");
-			AppendProviderWorkerPrompt(argv, prompt);
-			return BuildProviderWorkerShellCommand(argv, path_mode);
-		}
-
-		if (ProviderWorkerProfileMatches(profile, uam::provider_ids::kOpenCodeCli))
-		{
-			uam::provider_runtime_internal::AppendLiteralArgs(argv, {"opencode", "run"});
-			AppendProviderWorkerFlagsAndModel(argv, flags, "--model", model_id);
-			AppendProviderWorkerPrompt(argv, prompt);
-			return BuildProviderWorkerShellCommand(argv, path_mode);
-		}
-
-		if (ProviderWorkerProfileMatches(profile, uam::provider_ids::kCopilotCli))
-		{
-			uam::provider_runtime_internal::AppendLiteralArgs(argv, {"copilot", "-p"});
-			AppendProviderWorkerFlagsAndModel(argv, flags, "--model", model_id);
-			AppendProviderWorkerPrompt(argv, prompt);
-			return BuildProviderWorkerShellCommand(argv, path_mode);
-		}
-
-		return "";
-	}
+	std::string BuildProviderWorkerCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id, ProviderWorkerPathMode path_mode);
 } // namespace uam
