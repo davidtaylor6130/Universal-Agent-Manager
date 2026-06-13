@@ -248,7 +248,37 @@ namespace uam
 		return ShouldAttemptOpenCodeLocalHistoryRebind(terminal_provider, terminal, matching_chats) || terminal.session_ids_before.empty();
 	}
 
-	inline void NormalizeOpenCodeLocalHistoryProvider(ChatSession& chat, const ProviderProfile& terminal_provider);
+	inline bool PersistRebindDiscoveredSession(uam::AppState& app, const ProviderProfile& terminal_provider, uam::CliTerminalState& terminal, ChatSession* previous_chat, std::string_view discovered, std::string_view previous_session_id, std::string_view event_kind)
+	{
+		const NativeSessionLinkService native_session_linker;
+
+		ChatSession persisted_previous_chat = *previous_chat;
+		uam::provider_ids::NormalizeLegacyLocalHistoryChatProvider(persisted_previous_chat.provider_id, terminal_provider.id);
+
+		if (native_session_linker.IsLocalDraftChatId(previous_chat->id) && !native_session_linker.HasRealNativeSessionId(*previous_chat))
+		{
+			if (!ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, persisted_previous_chat, std::string(discovered)))
+			{
+				return false;
+			}
+		}
+		else
+		{
+			persisted_previous_chat.native_session_id = std::string(discovered);
+			persisted_previous_chat.updated_at = uam::time::TimestampNow();
+			if (!ChatRepository::SaveChat(app.data_root, persisted_previous_chat))
+			{
+				return false;
+			}
+		}
+
+		*previous_chat = persisted_previous_chat;
+		terminal.attached_session_id = std::string(discovered);
+		app.resolved_native_sessions_by_chat_id[previous_chat->id] = std::string(discovered);
+		uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", event_kind, &terminal, "previous_session_id=" + std::string(previous_session_id) + ", discovered=" + std::string(discovered));
+		return true;
+	}
+
 
 	inline bool TryAttachOpenCodeLocalHistorySessionFromChatFile(uam::AppState& app, const ProviderProfile& terminal_provider, uam::CliTerminalState& terminal, const std::vector<ChatSession>& matching_chats)
 	{
@@ -293,59 +323,19 @@ namespace uam
 			return false;
 		}
 
-		ChatSession persisted_previous_chat = *previous_chat;
-		NormalizeOpenCodeLocalHistoryProvider(persisted_previous_chat, terminal_provider);
-
-		if (native_session_linker.IsLocalDraftChatId(previous_chat->id) && !native_session_linker.HasRealNativeSessionId(*previous_chat))
+		if (!PersistRebindDiscoveredSession(app, terminal_provider, terminal, previous_chat, discovered, previous_session_id, "local_history_session_rebound_from_chat_file"))
 		{
-			if (!ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, persisted_previous_chat, discovered))
-			{
-				return false;
-			}
-		}
-		else
-		{
-			persisted_previous_chat.native_session_id = discovered;
-			persisted_previous_chat.updated_at = uam::time::TimestampNow();
-			if (!ChatRepository::SaveChat(app.data_root, persisted_previous_chat))
-			{
-				return false;
-			}
+			return false;
 		}
 
-		*previous_chat = persisted_previous_chat;
-		terminal.attached_session_id = discovered;
-		app.resolved_native_sessions_by_chat_id[previous_chat->id] = discovered;
-		uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "local_history_session_rebound_from_chat_file", &terminal, "previous_session_id=" + previous_session_id + ", discovered=" + discovered);
-		return true;
 	}
 
-	inline bool OpenCodeLocalHistoryProviderMatches(const ChatSession& chat, const ProviderProfile& terminal_provider)
+
+	inline bool LocalHistoryChatMatchesTerminalProvider(const ChatSession& chat, const ProviderProfile& terminal_provider)
 	{
-		const std::string normalized_terminal_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(terminal_provider.id);
-		if (normalized_terminal_provider_id != uam::provider_ids::kOpenCodeCli)
-		{
-			return uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, terminal_provider.id);
-		}
-
-		const std::string normalized_chat_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(chat.provider_id);
-		if (normalized_chat_provider_id.empty())
-		{
-			return true;
-		}
-
-		return normalized_chat_provider_id == normalized_terminal_provider_id;
+		return uam::provider_ids::IsLegacyOpenCodeLocalHistoryProviderId(chat.provider_id, terminal_provider.id);
 	}
 
-	inline void NormalizeOpenCodeLocalHistoryProvider(ChatSession& chat, const ProviderProfile& terminal_provider)
-	{
-		const std::string normalized_terminal_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(terminal_provider.id);
-		if (normalized_terminal_provider_id == uam::provider_ids::kOpenCodeCli &&
-		    uam::provider_ids::NormalizeCliProviderAliasOrSelf(chat.provider_id) != normalized_terminal_provider_id)
-		{
-			chat.provider_id = normalized_terminal_provider_id;
-		}
-	}
 
 	inline bool TryAttachLocalHistorySessionFromChats(uam::AppState& app, const ProviderProfile& terminal_provider, uam::CliTerminalState& terminal, const std::vector<ChatSession>& local_chats)
 	{
@@ -357,7 +347,7 @@ namespace uam
 		}
 
 		const NativeSessionLinkService native_session_linker;
-		if (!native_session_linker.IsLocalDraftChatId(previous_chat->id) && !OpenCodeLocalHistoryProviderMatches(*previous_chat, terminal_provider))
+		if (!native_session_linker.IsLocalDraftChatId(previous_chat->id) && !LocalHistoryChatMatchesTerminalProvider(*previous_chat, terminal_provider))
 		{
 			return false;
 		}
@@ -368,7 +358,7 @@ namespace uam
 
 		for (const ChatSession& local_chat : local_chats)
 		{
-			if (!OpenCodeLocalHistoryProviderMatches(local_chat, terminal_provider))
+			if (!LocalHistoryChatMatchesTerminalProvider(local_chat, terminal_provider))
 			{
 				continue;
 			}
@@ -402,31 +392,11 @@ namespace uam
 
 		const std::string previous_session_id = CliTerminalAttachedSessionId(terminal);
 
-		ChatSession persisted_previous_chat = *previous_chat;
-		NormalizeOpenCodeLocalHistoryProvider(persisted_previous_chat, terminal_provider);
-
-		if (native_session_linker.IsLocalDraftChatId(previous_chat->id) && !native_session_linker.HasRealNativeSessionId(*previous_chat))
+		if (!PersistRebindDiscoveredSession(app, terminal_provider, terminal, previous_chat, discovered, previous_session_id, "local_history_session_rebound"))
 		{
-			if (!ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, persisted_previous_chat, discovered))
-			{
-				return false;
-			}
-		}
-		else
-		{
-			persisted_previous_chat.native_session_id = discovered;
-			persisted_previous_chat.updated_at = uam::time::TimestampNow();
-			if (!ChatRepository::SaveChat(app.data_root, persisted_previous_chat))
-			{
-				return false;
-			}
+			return false;
 		}
 
-		*previous_chat = persisted_previous_chat;
-		terminal.attached_session_id = discovered;
-		app.resolved_native_sessions_by_chat_id[previous_chat->id] = discovered;
-		uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "local_history_session_rebound", &terminal, "previous_session_id=" + previous_session_id + ", discovered=" + discovered);
-		return true;
 	}
 
 	inline bool ShouldAttemptOpenCodeLocalHistoryRebind(const ProviderProfile& terminal_provider, const uam::CliTerminalState& terminal, const std::vector<ChatSession>& matching_chats)

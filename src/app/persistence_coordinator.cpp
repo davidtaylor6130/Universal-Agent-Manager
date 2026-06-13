@@ -36,15 +36,10 @@ namespace
 		}
 	}
 
-	void NormalizeProviderCliSettings(AppSettings& settings, bool ensure_command_template)
+	void NormalizeProviderCliSettings(AppSettings& settings)
 	{
 		settings.active_provider_id = provider_build_config::EnabledCliProviderIdOrFirst(settings.active_provider_id);
 		settings.runtime_backend = "provider-cli";
-		if (ensure_command_template && settings.provider_command_template.empty())
-		{
-			settings.provider_command_template = provider_build_config::DefaultProviderCommandTemplate();
-		}
-		settings.gemini_command_template = settings.provider_command_template;
 		settings.gemini_yolo_mode = settings.provider_yolo_mode;
 		settings.gemini_extra_flags = uam::strings::Trim(settings.provider_extra_flags);
 		settings.provider_extra_flags = settings.gemini_extra_flags;
@@ -133,7 +128,7 @@ bool PersistenceCoordinator::EnsureDataRootLayout(const fs::path& data_root, std
 
 bool PersistenceCoordinator::SaveSettings(uam::AppState& app) const
 {
-	NormalizeProviderCliSettings(app.settings, true);
+	NormalizeProviderCliSettings(app.settings);
 	ChatDomainService().RefreshRememberedSelection(app);
 	if (!SettingsStore::Save(AppPaths::SettingsFilePath(app.data_root), app.settings, app.center_view_mode))
 	{
@@ -147,7 +142,7 @@ bool PersistenceCoordinator::SaveSettings(uam::AppState& app) const
 void PersistenceCoordinator::LoadSettings(uam::AppState& app) const
 {
 	SettingsStore::Load(AppPaths::SettingsFilePath(app.data_root), app.settings, app.center_view_mode);
-	NormalizeProviderCliSettings(app.settings, false);
+	NormalizeProviderCliSettings(app.settings);
 }
 
 void PersistenceCoordinator::LoadFrontendActions(uam::AppState& app) const

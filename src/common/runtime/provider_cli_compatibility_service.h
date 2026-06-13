@@ -34,3 +34,6 @@ std::string BuildCliProviderVersionProbeCommandForTests(std::string_view provide
 std::string BuildCliProviderInstallCommandForTests(std::string_view provider_id, std::string_view version);
 std::string ExtractCliProviderSemverVersionForTests(std::string_view output);
 bool CliProviderVersionOutputIndicatesMissingCommandForTests(std::string_view output);
+
+/// <summary>Returns the npm package name for a CLI provider id, or empty if unknown.</summary>
+std::string GetNpmPackageNameForProvider(std::string_view provider_id);

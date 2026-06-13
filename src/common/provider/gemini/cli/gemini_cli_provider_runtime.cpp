@@ -92,18 +92,6 @@ const char* GeminiCliProviderRuntime::DisabledReason() const
 	return "";
 }
 
-std::string GeminiCliProviderRuntime::BuildPrompt(const ProviderProfile&, std::string_view user_prompt, const std::vector<std::string>& files, const Goal*, int64_t, int64_t) const
-{
-	return uam::provider_runtime_internal::BuildPrompt(user_prompt, files);
-}
-
-std::string GeminiCliProviderRuntime::BuildCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, const std::string& resume_session_id, const ChatSession*) const
-{
-	const AppSettings provider_settings = uam::provider_runtime_internal::MergeProviderSettings(profile, settings);
-	const std::string effective_resume_session_id = profile.supports_resume ? resume_session_id : "";
-	return uam::provider_runtime_internal::BuildCommandFromTemplate(provider_settings, prompt, files, effective_resume_session_id, "gemini -r {resume} {flags} {prompt}");
-}
-
 std::vector<std::string> GeminiCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
 {
 	if (!profile.supports_interactive)
@@ -265,4 +253,19 @@ ProviderDiscoveryResult GeminiCliProviderRuntime::DiscoverChatSources(const Prov
 	ProviderDiscoveryResult result;
 	result.sources = DiscoverGeminiTmpChatSources();
 	return result;
+}
+
+std::vector<std::string> GeminiCliProviderRuntime::BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const
+{
+	std::vector<std::string> argv = {"gemini"};
+	const std::vector<std::string> flags = uam::provider_runtime_internal::ProviderWorkerFlags(profile, settings);
+	uam::provider_runtime_internal::AppendArgs(argv, flags);
+	if (!model_id.empty())
+	{
+		argv.push_back("--model");
+		argv.push_back(std::string(model_id));
+	}
+	argv.push_back("-p");
+	argv.push_back(std::string(prompt));
+	return argv;
 }

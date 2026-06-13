@@ -55,23 +55,6 @@ const char* CopilotCliProviderRuntime::DisabledReason() const
 	return "";
 }
 
-std::string CopilotCliProviderRuntime::BuildPrompt(const ProviderProfile&, std::string_view user_prompt, const std::vector<std::string>& files, const Goal*, int64_t, int64_t) const
-{
-	return uam::provider_runtime_internal::BuildPrompt(user_prompt, files);
-}
-
-std::string CopilotCliProviderRuntime::BuildCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, const std::string& resume_session_id, const ChatSession*) const
-{
-	const AppSettings provider_settings = uam::provider_runtime_internal::MergeProviderSettings(profile, settings);
-	std::vector<std::string> argv = {"copilot", "-p"};
-	uam::provider_runtime_internal::AppendResumeArgs(argv, profile, resume_session_id);
-
-	AppendCopilotBatchModeArgs(argv, provider_settings);
-	uam::provider_runtime_internal::AppendArgs(argv, CopilotFlagsFromSettings(provider_settings));
-	argv.push_back(BuildPrompt(profile, prompt, files));
-	return uam::provider_runtime_internal::JoinShellEscapedArgs(argv);
-}
-
 std::vector<std::string> CopilotCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
 {
 	if (!profile.supports_interactive)
@@ -114,24 +97,20 @@ bool CopilotCliProviderRuntime::SupportsGeminiJsonHistory(const ProviderProfile&
 	return false;
 }
 
-bool CopilotCliProviderRuntime::UsesLocalHistory(const ProviderProfile&) const
+std::vector<std::string> CopilotCliProviderRuntime::BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const
 {
-	return true;
-}
-
-bool CopilotCliProviderRuntime::UsesInternalEngine(const ProviderProfile&) const
-{
-	return false;
-}
-
-bool CopilotCliProviderRuntime::UsesCliOutput(const ProviderProfile&) const
-{
-	return true;
-}
-
-bool CopilotCliProviderRuntime::UsesGeminiPathBootstrap(const ProviderProfile&) const
-{
-	return false;
+	std::vector<std::string> argv = {"copilot", "-p"};
+	const std::vector<std::string> flags = uam::provider_runtime_internal::ProviderWorkerFlags(profile, settings);
+	uam::provider_runtime_internal::AppendArgs(argv, flags);
+	
+	if (!model_id.empty())
+	{
+		argv.push_back("--model");
+		argv.push_back(std::string(model_id));
+	}
+	
+	argv.push_back(std::string(prompt));
+	return argv;
 }
 
 const IProviderRuntime& GetCopilotCliProviderRuntime()

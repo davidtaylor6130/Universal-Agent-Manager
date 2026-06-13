@@ -9,11 +9,6 @@ namespace
 {
 	constexpr const char* kCodexFullAutoFlag = "--full-auto";
 
-	AppSettings CodexTemplateCommandSettings(const ProviderProfile& profile, const AppSettings& settings)
-	{
-		return uam::provider_runtime_internal::MergeProviderSettingsWithCustomYoloFlag(profile, settings, kCodexFullAutoFlag);
-	}
-
 	std::vector<std::string> CodexFlagsFromSettings(const AppSettings& settings)
 	{
 		return uam::provider_runtime_internal::BuildProviderFlagsArgv(settings, kCodexFullAutoFlag);
@@ -33,40 +28,6 @@ bool CodexCliProviderRuntime::IsEnabled() const
 const char* CodexCliProviderRuntime::DisabledReason() const
 {
 	return "";
-}
-
-std::string CodexCliProviderRuntime::BuildPrompt(const ProviderProfile&, std::string_view user_prompt, const std::vector<std::string>& files, const Goal* active_goal, int64_t tokens_used, int64_t token_budget) const
-{
-	std::string prompt = uam::provider_runtime_internal::BuildPrompt(user_prompt, files);
-	if (active_goal && !active_goal->objective.empty())
-	{
-		const std::string goal_prompt = uam::GoalService::BuildContinuationPrompt(*active_goal, tokens_used, token_budget);
-		if (!goal_prompt.empty())
-		{
-			prompt = goal_prompt + "\n\n" + prompt;
-		}
-	}
-	return prompt;
-}
-
-std::string CodexCliProviderRuntime::BuildCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, const std::string& resume_session_id, const ChatSession* chat) const
-{
-	(void)resume_session_id;
-	const AppSettings provider_settings = CodexTemplateCommandSettings(profile, settings);
-	const Goal* active_goal = nullptr;
-	if (chat != nullptr && !chat->active_goal_id.empty())
-	{
-		for (const Goal& goal : chat->goals)
-		{
-			if (goal.id == chat->active_goal_id && goal.status == GoalStatus::Active)
-			{
-				active_goal = &goal;
-				break;
-			}
-		}
-	}
-	const std::string effective_prompt = BuildPrompt(profile, prompt, files, active_goal, active_goal == nullptr ? 0 : active_goal->tokens_used, active_goal == nullptr ? 0 : active_goal->token_budget);
-	return uam::provider_runtime_internal::BuildCommandFromTemplate(provider_settings, effective_prompt, files, "", "codex exec {flags} {prompt}");
 }
 
 std::vector<std::string> CodexCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
@@ -121,24 +82,31 @@ bool CodexCliProviderRuntime::SupportsGeminiJsonHistory(const ProviderProfile&) 
 	return false;
 }
 
-bool CodexCliProviderRuntime::UsesLocalHistory(const ProviderProfile&) const
+std::vector<std::string> CodexCliProviderRuntime::BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const
 {
-	return true;
-}
-
-bool CodexCliProviderRuntime::UsesInternalEngine(const ProviderProfile&) const
-{
-	return false;
-}
-
-bool CodexCliProviderRuntime::UsesCliOutput(const ProviderProfile&) const
-{
-	return true;
-}
-
-bool CodexCliProviderRuntime::UsesGeminiPathBootstrap(const ProviderProfile&) const
-{
-	return false;
+	std::vector<std::string> argv = {"codex", "exec"};
+	const std::vector<std::string> flags = uam::provider_runtime_internal::ProviderWorkerFlags(profile, settings);
+	uam::provider_runtime_internal::AppendArgs(argv, flags);
+	
+	// Add read-only args for worker mode
+	constexpr const char* kCodexReadOnlyWorkerArgs[] = {
+	    "--ignore-user-config", "--ignore-rules", "--json", "--color", "never",
+	    "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only",
+	    "-c", "model_reasoning_effort=\"low\"",
+	};
+	for (const char* arg : kCodexReadOnlyWorkerArgs)
+	{
+		argv.push_back(arg);
+	}
+	
+	if (!model_id.empty())
+	{
+		argv.push_back("-m");
+		argv.push_back(std::string(model_id));
+	}
+	
+	argv.push_back(std::string(prompt));
+	return argv;
 }
 
 const IProviderRuntime& GetCodexCliProviderRuntime()

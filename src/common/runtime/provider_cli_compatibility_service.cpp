@@ -625,3 +625,15 @@ bool CliProviderVersionOutputIndicatesMissingCommandForTests(std::string_view ou
 {
 	return OutputIndicatesCommandMissing(output);
 }
+
+std::string GetNpmPackageNameForProvider(std::string_view provider_id)
+{
+	for (const ProviderCliPolicy& policy : kProviderCliPolicies)
+	{
+		if (policy.provider_id == provider_id)
+		{
+			return std::string(policy.npm_package);
+		}
+	}
+	return "";
+}

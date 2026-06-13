@@ -8,6 +8,7 @@ import type { Goal, GoalStatus } from '../types/goal'
 import { sendToCEF, isCefContext, createRequestId } from '../ipc/cefBridge'
 import { applyDocumentTheme, normalizeStoredTheme, readStoredTheme, writeStoredTheme, type StoredTheme } from '../utils/themeStorage'
 import {
+  CLAUDE_CLI_PROVIDER_ID,
   CODEX_CLI_PROVIDER_ID,
   COPILOT_CLI_PROVIDER_ID,
   DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID,
@@ -54,6 +55,8 @@ function initialProvider(providerId: string, color: string): Provider {
 
 const initialProviders: Provider[] = [
   initialProvider(GEMINI_CLI_PROVIDER_ID, '#f97316'),
+  initialProvider(CODEX_CLI_PROVIDER_ID, '#0ea5e9'),
+  initialProvider(CLAUDE_CLI_PROVIDER_ID, '#7c3aed'),
   initialProvider(OPENCODE_CLI_PROVIDER_ID, '#14b8a6'),
   initialProvider(COPILOT_CLI_PROVIDER_ID, '#22c55e'),
 ]
@@ -378,6 +381,7 @@ interface CppProvider {
   supportsCli?: boolean
   supportsStructured?: boolean
   structuredProtocol?: string
+  npmPackageName?: string
 }
 
 export interface MemoryWorkerBinding {
@@ -1781,7 +1785,11 @@ function providerFromCppProvider(provider: CppProvider, previous: Provider | und
     structuredProtocol: provider.structuredProtocol,
   }
 
-  return previous && providersEquivalent(previous, nextProvider) ? previous : nextProvider
+  if (previous) {
+    return providersEquivalent(previous, nextProvider) ? previous : nextProvider
+  }
+
+  return nextProvider
 }
 
 function sessionsEquivalent(previous: Session, next: Session): boolean {

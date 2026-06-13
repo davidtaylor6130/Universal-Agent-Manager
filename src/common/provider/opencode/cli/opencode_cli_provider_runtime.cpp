@@ -9,11 +9,6 @@ namespace
 {
 	constexpr const char* kOpenCodeDangerouslySkipPermissionsFlag = "--dangerously-skip-permissions";
 
-	AppSettings OpenCodeBatchCommandSettings(const ProviderProfile& profile, const AppSettings& settings)
-	{
-		return uam::provider_runtime_internal::MergeProviderSettingsWithCustomYoloFlag(profile, settings, kOpenCodeDangerouslySkipPermissionsFlag);
-	}
-
 	std::vector<std::string> OpenCodeFlagsFromSettings(const AppSettings& settings)
 	{
 		return uam::provider_runtime_internal::BuildProviderFlagsArgv(settings, kOpenCodeDangerouslySkipPermissionsFlag);
@@ -34,47 +29,6 @@ bool OpenCodeCliProviderRuntime::IsEnabled() const
 const char* OpenCodeCliProviderRuntime::DisabledReason() const
 {
 	return "";
-}
-
-std::string OpenCodeCliProviderRuntime::BuildPrompt(const ProviderProfile&, std::string_view user_prompt, const std::vector<std::string>& files, const Goal* active_goal, int64_t tokens_used, int64_t token_budget) const
-{
-	std::string prompt = uam::provider_runtime_internal::BuildPrompt(user_prompt, files);
-	
-	if (active_goal && !active_goal->objective.empty())
-	{
-		std::string goal_prompt = uam::GoalService::BuildContinuationPrompt(*active_goal, tokens_used, token_budget);
-		if (!goal_prompt.empty())
-		{
-			prompt = goal_prompt + "\n\n" + prompt;
-		}
-	}
-	
-	return prompt;
-}
-
-std::string OpenCodeCliProviderRuntime::BuildCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, const std::string& resume_session_id, const ChatSession* chat) const
-{
-	const AppSettings provider_settings = OpenCodeBatchCommandSettings(profile, settings);
-
-	std::vector<std::string> argv = {"opencode", "run"};
-	uam::provider_runtime_internal::AppendResumeArgs(argv, profile, resume_session_id);
-
-	uam::provider_runtime_internal::AppendArgs(argv, OpenCodeFlagsFromSettings(provider_settings));
-	uam::provider_runtime_internal::AppendTrimmedOptionValues(argv, "--file", files);
-	const Goal* active_goal = nullptr;
-	if (chat != nullptr && !chat->active_goal_id.empty())
-	{
-		for (const Goal& goal : chat->goals)
-		{
-			if (goal.id == chat->active_goal_id && goal.status == GoalStatus::Active)
-			{
-				active_goal = &goal;
-				break;
-			}
-		}
-	}
-	argv.push_back(BuildPrompt(profile, prompt, files, active_goal, active_goal == nullptr ? 0 : active_goal->tokens_used, active_goal == nullptr ? 0 : active_goal->token_budget));
-	return uam::provider_runtime_internal::JoinShellEscapedArgs(argv);
 }
 
 std::vector<std::string> OpenCodeCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
@@ -103,13 +57,6 @@ MessageRole OpenCodeCliProviderRuntime::RoleFromNativeType(const ProviderProfile
 std::vector<ChatSession> OpenCodeCliProviderRuntime::LoadHistory(const ProviderProfile&, const std::filesystem::path& data_root, const std::filesystem::path&, const ProviderRuntimeHistoryLoadOptions&) const
 {
 	std::vector<ChatSession> chats = uam::provider_runtime_internal::LoadLocalChats(data_root);
-	for (ChatSession& chat : chats)
-	{
-		if (uam::strings::IsBlank(chat.provider_id))
-		{
-			chat.provider_id = uam::provider_ids::kOpenCodeCli;
-		}
-	}
 	return chats;
 }
 
@@ -128,29 +75,48 @@ bool OpenCodeCliProviderRuntime::SupportsGeminiJsonHistory(const ProviderProfile
 	return false;
 }
 
-bool OpenCodeCliProviderRuntime::UsesLocalHistory(const ProviderProfile&) const
-{
-	return true;
-}
-
-bool OpenCodeCliProviderRuntime::UsesInternalEngine(const ProviderProfile&) const
-{
-	return false;
-}
-
-bool OpenCodeCliProviderRuntime::UsesCliOutput(const ProviderProfile&) const
-{
-	return true;
-}
-
-bool OpenCodeCliProviderRuntime::UsesGeminiPathBootstrap(const ProviderProfile&) const
-{
-	return false;
-}
-
 bool OpenCodeCliProviderRuntime::ProviderRecognizesSubagentTool(std::string_view tool_name) const
 {
-	return uam::strings::ContainsAnyCaseInsensitive(tool_name, {"task", "subtask", "delegate"});
+	if (tool_name.empty())
+		return false;
+
+	std::string lower_name(tool_name.size(), '\0');
+	for (std::size_t i = 0; i < tool_name.size(); ++i)
+	{
+		lower_name[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(tool_name[i])));
+	}
+
+	for (const char* word : {"task", "subtask", "delegate"})
+	{
+		const std::size_t len = strlen(word);
+		std::size_t pos = 0;
+		while ((pos = lower_name.find(word, pos)) != std::string_view::npos)
+		{
+			const bool before_ok = (pos == 0) || !std::isalnum(static_cast<unsigned char>(tool_name[pos - 1]));
+			const std::size_t end_pos = pos + len;
+			const bool after_ok = (end_pos >= tool_name.size()) || !std::isalnum(static_cast<unsigned char>(tool_name[end_pos]));
+			if (before_ok && after_ok)
+				return true;
+			pos += 1;
+		}
+	}
+	return false;
+}
+
+std::vector<std::string> OpenCodeCliProviderRuntime::BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const
+{
+	std::vector<std::string> argv = {"opencode", "run"};
+	const std::vector<std::string> flags = uam::provider_runtime_internal::ProviderWorkerFlags(profile, settings);
+	uam::provider_runtime_internal::AppendArgs(argv, flags);
+	
+	if (!model_id.empty())
+	{
+		argv.push_back("--model");
+		argv.push_back(std::string(model_id));
+	}
+	
+	argv.push_back(std::string(prompt));
+	return argv;
 }
 
 const IProviderRuntime& GetOpenCodeCliProviderRuntime()

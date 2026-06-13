@@ -31,8 +31,7 @@ namespace
 	constexpr std::string_view kSettingsFieldDelimiterText = ",";
 	constexpr std::string_view kProviderCliRuntimeBackend = "provider-cli";
 
-	constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
-	constexpr std::string_view kProviderCommandTemplateKey = "provider_command_template";
+constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kProviderYoloModeKey = "provider_yolo_mode";
 	constexpr std::string_view kProviderExtraFlagsKey = "provider_extra_flags";
 	constexpr std::string_view kRuntimeBackendKey = "runtime_backend";
@@ -344,8 +343,6 @@ namespace
 		settings.active_provider_id = provider_build_config::EnabledCliProviderIdOrFirst(settings.active_provider_id);
 		settings.default_new_chat_provider_id = provider_build_config::EnabledCliProviderIdOrFirst(uam::strings::NonEmptyOrFallback(settings.default_new_chat_provider_id, settings.active_provider_id));
 		settings.runtime_backend = kProviderCliRuntimeBackend;
-		settings.provider_command_template = uam::strings::NonEmptyOrFallback(settings.provider_command_template, provider_build_config::DefaultProviderCommandTemplate());
-		settings.gemini_command_template = settings.provider_command_template;
 		settings.gemini_yolo_mode = settings.provider_yolo_mode;
 		settings.gemini_extra_flags = settings.provider_extra_flags;
 		settings.cli_idle_timeout_seconds = std::clamp(settings.cli_idle_timeout_seconds, uam::settings::kMinCliIdleTimeoutSeconds, uam::settings::kMaxCliIdleTimeoutSeconds);
@@ -385,7 +382,6 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 
 	std::ostringstream lines;
 	WriteEncodedSetting(lines, kActiveProviderIdKey, normalized.active_provider_id);
-	WriteEncodedSetting(lines, kProviderCommandTemplateKey, normalized.provider_command_template);
 	WriteBoolSetting(lines, kProviderYoloModeKey, normalized.provider_yolo_mode);
 	WriteEncodedSetting(lines, kProviderExtraFlagsKey, normalized.provider_extra_flags);
 	WriteRawSetting(lines, kRuntimeBackendKey, kProviderCliRuntimeBackend);
@@ -426,8 +422,6 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 
 	std::istringstream lines(text);
 	std::string line;
-	bool has_provider_command_template = false;
-
 	while (std::getline(lines, line))
 	{
 		const auto equals_at = line.find('=');
@@ -444,11 +438,6 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		{
 			settings.active_provider_id = decoded_value;
 		}
-		else if (key == kProviderCommandTemplateKey)
-		{
-			settings.provider_command_template = decoded_value;
-			has_provider_command_template = true;
-		}
 		else if (key == kProviderYoloModeKey)
 		{
 			settings.provider_yolo_mode = uam::parse::BoolOr(value, settings.provider_yolo_mode);
@@ -456,10 +445,6 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		else if (key == kProviderExtraFlagsKey)
 		{
 			settings.provider_extra_flags = decoded_value;
-		}
-		else if (key == kLegacyGeminiCommandTemplateKey)
-		{
-			settings.gemini_command_template = decoded_value;
 		}
 		else if (key == kLegacyGeminiYoloModeKey)
 		{
@@ -559,10 +544,6 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		}
 	}
 
-	if (!has_provider_command_template && !settings.gemini_command_template.empty())
-	{
-		settings.provider_command_template = settings.gemini_command_template;
-	}
 	settings.provider_yolo_mode = settings.provider_yolo_mode || settings.gemini_yolo_mode;
 	if (settings.provider_extra_flags.empty())
 	{

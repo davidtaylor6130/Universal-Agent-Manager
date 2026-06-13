@@ -205,13 +205,11 @@ struct ChatFolder
 struct AppSettings
 {
 	std::string active_provider_id = provider_build_config::FirstEnabledProviderId();
-	std::string provider_command_template = provider_build_config::DefaultProviderCommandTemplate();
 	bool provider_yolo_mode = false;
 	std::string provider_extra_flags;
 	std::string runtime_backend = "provider-cli";
 	int cli_idle_timeout_seconds = 600;
 	// Legacy keys retained for backward-compatible load paths.
-	std::string gemini_command_template = provider_build_config::DefaultProviderCommandTemplate();
 	bool gemini_yolo_mode = false;
 	std::string gemini_extra_flags;
 	std::string ui_theme = "dark";

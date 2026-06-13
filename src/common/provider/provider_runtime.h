@@ -53,10 +53,6 @@ class IProviderRuntime
 	/// <summary>Returns a concise reason when runtime is disabled in this build.</summary>
 	virtual const char* DisabledReason() const = 0;
 
-	/// <summary>Builds a provider prompt from user text and file references.</summary>
-	virtual std::string BuildPrompt(const ProviderProfile& profile, std::string_view user_prompt, const std::vector<std::string>& files, const Goal* active_goal = nullptr, int64_t tokens_used = 0, int64_t token_budget = 0) const = 0;
-	/// <summary>Builds the provider command for one request.</summary>
-	virtual std::string BuildCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, const std::string& resume_session_id, const ChatSession* chat = nullptr) const = 0;
 	/// <summary>Builds interactive terminal argv for the active provider.</summary>
 	virtual std::vector<std::string> BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const = 0;
 	/// <summary>Maps provider-native message types to app message roles.</summary>
@@ -107,15 +103,38 @@ class IProviderRuntime
 	}
 
 	/// <summary>Returns true when provider uses Gemini JSON history files.</summary>
-	virtual bool SupportsGeminiJsonHistory(const ProviderProfile& profile) const = 0;
+	virtual bool SupportsGeminiJsonHistory(const ProviderProfile& profile) const
+	{
+		(void)profile;
+		return false;
+	}
 	/// <summary>Returns true when provider persists via local chat storage only.</summary>
-	virtual bool UsesLocalHistory(const ProviderProfile& profile) const = 0;
+	virtual bool UsesLocalHistory(const ProviderProfile& profile) const
+	{
+		(void)profile;
+		return true;
+	}
 	/// <summary>Returns true when provider execution is internal engine backed.</summary>
-	virtual bool UsesInternalEngine(const ProviderProfile& profile) const = 0;
+	virtual bool UsesInternalEngine(const ProviderProfile& profile) const
+	{
+		(void)profile;
+		return false;
+	}
 	/// <summary>Returns true when provider output is fixed to CLI terminal mode.</summary>
-	virtual bool UsesCliOutput(const ProviderProfile& profile) const = 0;
+	virtual bool UsesCliOutput(const ProviderProfile& profile) const
+	{
+		(void)profile;
+		return true;
+	}
 	/// <summary>Returns true when prompt bootstrap should use @.gemini path injection.</summary>
-	virtual bool UsesGeminiPathBootstrap(const ProviderProfile& profile) const = 0;
+	virtual bool UsesGeminiPathBootstrap(const ProviderProfile& profile) const
+	{
+		(void)profile;
+		return false;
+	}
+
+	/// <summary>Builds the argv for a provider worker command (batch mode, no terminal).</summary>
+	virtual std::vector<std::string> BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const = 0;
 
 	/// <summary>
 	/// Returns true when <paramref name="tool_name"/> is a tool this provider treats as a sub-agent
@@ -151,11 +170,6 @@ class ProviderRuntimeRegistry
 class ProviderRuntime
 {
   public:
-	/// <summary>Builds a provider prompt from user text and file references.</summary>
-	static std::string BuildPrompt(const ProviderProfile& profile, std::string_view user_prompt, const std::vector<std::string>& files, const Goal* active_goal = nullptr, int64_t tokens_used = 0, int64_t token_budget = 0);
-
-	/// <summary>Builds the provider command for one request.</summary>
-	static std::string BuildCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, const std::string& resume_session_id, const ChatSession* chat = nullptr);
 
 	/// <summary>Builds interactive terminal argv for the active provider.</summary>
 	static std::vector<std::string> BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings);

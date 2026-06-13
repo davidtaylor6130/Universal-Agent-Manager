@@ -21,11 +21,6 @@
 namespace uam::provider_runtime_internal
 {
 	inline constexpr std::string_view kGenericYoloFlag = "--yolo";
-	inline constexpr std::string_view kPromptPlaceholder = "{prompt}";
-	inline constexpr std::string_view kFilesPlaceholder = "{files}";
-	inline constexpr std::string_view kResumePlaceholder = "{resume}";
-	inline constexpr std::string_view kFlagsPlaceholder = "{flags}";
-	inline constexpr std::string_view kModelPlaceholder = "{model}";
 	inline constexpr std::string_view kReferencedFilesHeading = "\n\nReferenced files:\n";
 
 	inline bool AnyTypeMatches(const std::vector<std::string>& types, std::string_view value)
@@ -90,11 +85,6 @@ namespace uam::provider_runtime_internal
 	{
 		AppSettings merged = settings;
 
-		if (!profile.command_template.empty())
-		{
-			merged.provider_command_template = profile.command_template;
-		}
-
 		const std::string provider_flags = JoinFlags(profile.runtime_flags);
 		PrependProviderExtraFlags(merged, provider_flags);
 
@@ -105,16 +95,6 @@ namespace uam::provider_runtime_internal
 	{
 		AppSettings merged = MergeProviderSettings(profile, settings);
 		merged.provider_yolo_mode = false;
-		return merged;
-	}
-
-	inline AppSettings MergeProviderSettingsWithCustomYoloFlag(const ProviderProfile& profile, const AppSettings& settings, std::string_view custom_yolo_flag)
-	{
-		AppSettings merged = MergeProviderSettingsWithoutGenericYolo(profile, settings);
-		if (settings.provider_yolo_mode)
-		{
-			PrependProviderExtraFlags(merged, custom_yolo_flag);
-		}
 		return merged;
 	}
 
@@ -139,20 +119,6 @@ namespace uam::provider_runtime_internal
 	inline std::string JoinShellEscapedArgs(const std::vector<std::string>& args)
 	{
 		return uam::shell::JoinEscapedArgs(args);
-	}
-
-	inline void ReplacePlaceholderOrAppend(std::string& command, std::string_view placeholder, std::string_view fragment)
-	{
-		const bool has_placeholder = uam::strings::Contains(command, placeholder);
-		command = ReplaceAll(command, placeholder, fragment);
-		if (!has_placeholder && !fragment.empty())
-		{
-			if (!command.empty())
-			{
-				command.push_back(' ');
-			}
-			command.append(fragment);
-		}
 	}
 
 	inline void AppendArgs(std::vector<std::string>& argv, const std::vector<std::string>& args)
@@ -193,6 +159,12 @@ namespace uam::provider_runtime_internal
 
 		AppendArgs(flags, extra_flags);
 		return flags;
+	}
+
+	inline std::vector<std::string> ProviderWorkerFlags(const ProviderProfile& profile, const AppSettings& settings)
+	{
+		const AppSettings provider_settings = MergeProviderSettingsWithoutGenericYolo(profile, settings);
+		return BuildProviderFlagsArgv(provider_settings, "");
 	}
 
 	inline bool AppendTrimmedOptionValue(std::vector<std::string>& argv, std::string_view option, std::string_view raw_value)
@@ -264,11 +236,6 @@ namespace uam::provider_runtime_internal
 		return BuildProviderFlagsArgv(settings, kGenericYoloFlag);
 	}
 
-	inline std::string BuildFlagsShell(const AppSettings& settings)
-	{
-		return JoinShellEscapedArgs(BuildFlagsArgv(settings));
-	}
-
 	inline std::string BuildPrompt(std::string_view user_prompt, const std::vector<std::string>& files)
 	{
 		const std::vector<std::string> referenced_files = TrimNonEmptyValues(files);
@@ -299,34 +266,6 @@ namespace uam::provider_runtime_internal
 		}
 
 		return prompt;
-	}
-
-	inline std::string BuildCommandFromTemplate(const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, std::string_view resume_session_id, std::string_view default_template)
-	{
-		std::string_view configured_template = uam::strings::TrimAsciiView(settings.provider_command_template);
-		std::string command;
-		if (configured_template.empty())
-		{
-			command.assign(default_template);
-		}
-		else
-		{
-			command.assign(configured_template);
-		}
-
-		std::string_view resume_id = uam::strings::TrimAsciiView(resume_session_id);
-		const std::string resume_fragment = resume_id.empty() ? "" : uam::shell::EscapeArg(resume_id);
-		const std::string flags_fragment = BuildFlagsShell(settings);
-		const std::string files_fragment = JoinShellEscapedArgs(TrimNonEmptyValues(files));
-		const std::string prompt_fragment = uam::shell::EscapeArg(prompt);
-
-		ReplacePlaceholderOrAppend(command, kPromptPlaceholder, prompt_fragment);
-		ReplacePlaceholderOrAppend(command, kFilesPlaceholder, files_fragment);
-		ReplacePlaceholderOrAppend(command, kResumePlaceholder, resume_fragment);
-		ReplacePlaceholderOrAppend(command, kFlagsPlaceholder, flags_fragment);
-		command = ReplaceAll(command, kModelPlaceholder, "");
-
-		return command;
 	}
 
 	inline std::vector<std::string> BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings)

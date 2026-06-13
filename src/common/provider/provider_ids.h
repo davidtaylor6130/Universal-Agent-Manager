@@ -107,4 +107,34 @@ namespace uam::provider_ids
 		const std::string normalized_target_provider_id = NormalizeCliProviderAlias(canonical_provider_id);
 		return !normalized_provider_id.empty() && normalized_provider_id == normalized_target_provider_id;
 	}
+
+	inline bool IsLegacyOpenCodeLocalHistoryProviderId(std::string_view provider_id, std::string_view terminal_provider_id)
+	{
+		const std::string normalized_terminal = NormalizeCliProviderAliasOrSelf(terminal_provider_id);
+		if (normalized_terminal != kOpenCodeCli)
+		{
+			return IsCliProviderAliasOf(provider_id, terminal_provider_id);
+		}
+
+		// Legacy opencode local history: blank provider_id is treated as opencode
+		const std::string normalized_chat = NormalizeCliProviderAliasOrSelf(provider_id);
+		return normalized_chat.empty() || normalized_chat == kOpenCodeCli;
+	}
+
+	inline void NormalizeLegacyLocalHistoryChatProvider(std::string& provider_id, std::string_view terminal_provider_id)
+	{
+		const std::string normalized_terminal = NormalizeCliProviderAliasOrSelf(terminal_provider_id);
+		if (normalized_terminal != kOpenCodeCli)
+		{
+			return;
+		}
+
+		// Legacy opencode local history: blank provider_id becomes opencode-cli
+		const std::string normalized_chat = NormalizeCliProviderAliasOrSelf(provider_id);
+		if (normalized_chat.empty() || normalized_chat == kOpenCodeCli)
+		{
+			provider_id = kOpenCodeCli;
+		}
+	}
+
 } // namespace uam::provider_ids

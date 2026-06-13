@@ -16,7 +16,6 @@ struct ProviderProfile
 	std::string title;
 	std::string execution_mode = uam::provider_profile_constants::kExecutionModeCli;
 	std::string output_mode = uam::provider_profile_constants::kOutputModeStructured;
-	std::string command_template;
 	std::string interactive_command;
 	bool supports_cli = true;
 	bool supports_structured = false;

@@ -1473,6 +1473,13 @@ namespace uam
 		j["supportsCli"] = profile.supports_cli;
 		j["supportsStructured"] = profile.supports_structured;
 		j["structuredProtocol"] = profile.structured_protocol;
+		
+		const std::string npm_package = GetNpmPackageNameForProvider(profile.id);
+		if (!npm_package.empty())
+		{
+			j["npmPackageName"] = npm_package;
+		}
+		
 		return j;
 	}
 

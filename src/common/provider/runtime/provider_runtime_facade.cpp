@@ -22,22 +22,6 @@ namespace
 	}
 } // namespace
 
-std::string ProviderRuntime::BuildPrompt(const ProviderProfile& profile, std::string_view user_prompt, const std::vector<std::string>& files, const Goal* active_goal, int64_t tokens_used, int64_t token_budget)
-{
-	return ProviderRuntimeRegistry::Resolve(profile).BuildPrompt(profile, user_prompt, files, active_goal, tokens_used, token_budget);
-}
-
-std::string ProviderRuntime::BuildCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, const std::string& resume_session_id, const ChatSession* chat)
-{
-	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(profile);
-	if (!RuntimeEnabledForProfile(profile, runtime))
-	{
-		return "";
-	}
-
-	return runtime.BuildCommand(profile, settings, prompt, files, resume_session_id, chat);
-}
-
 std::vector<std::string> ProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings)
 {
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(profile);

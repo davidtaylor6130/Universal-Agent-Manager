@@ -431,8 +431,6 @@ bool Application::InitializeState()
 
 	if (ProviderProfile* active_profile = ProviderResolutionService().ActiveProvider(m_app); active_profile != nullptr)
 	{
-		m_app.settings.provider_command_template = active_profile->command_template;
-		m_app.settings.gemini_command_template = m_app.settings.provider_command_template;
 		m_app.settings.runtime_backend = "provider-cli";
 
 		if (!ProviderRuntime::IsRuntimeEnabled(*active_profile))

@@ -58,43 +58,6 @@ const char* ClaudeCliProviderRuntime::DisabledReason() const
 	return "";
 }
 
-std::string ClaudeCliProviderRuntime::BuildPrompt(const ProviderProfile&, std::string_view user_prompt, const std::vector<std::string>& files, const Goal* active_goal, int64_t tokens_used, int64_t token_budget) const
-{
-	std::string prompt = uam::provider_runtime_internal::BuildPrompt(user_prompt, files);
-	if (active_goal && !active_goal->objective.empty())
-	{
-		const std::string goal_prompt = uam::GoalService::BuildContinuationPrompt(*active_goal, tokens_used, token_budget);
-		if (!goal_prompt.empty())
-		{
-			prompt = goal_prompt + "\n\n" + prompt;
-		}
-	}
-	return prompt;
-}
-
-std::string ClaudeCliProviderRuntime::BuildCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, const std::vector<std::string>& files, const std::string& resume_session_id, const ChatSession* chat) const
-{
-	const AppSettings provider_settings = uam::provider_runtime_internal::MergeProviderSettings(profile, settings);
-	std::vector<std::string> argv = {"claude", "-p"};
-	uam::provider_runtime_internal::AppendResumeArgs(argv, profile, resume_session_id);
-
-	uam::provider_runtime_internal::AppendArgs(argv, ClaudeFlagsFromSettings(provider_settings));
-	const Goal* active_goal = nullptr;
-	if (chat != nullptr && !chat->active_goal_id.empty())
-	{
-		for (const Goal& goal : chat->goals)
-		{
-			if (goal.id == chat->active_goal_id && goal.status == GoalStatus::Active)
-			{
-				active_goal = &goal;
-				break;
-			}
-		}
-	}
-	argv.push_back(BuildPrompt(profile, prompt, files, active_goal, active_goal == nullptr ? 0 : active_goal->tokens_used, active_goal == nullptr ? 0 : active_goal->token_budget));
-	return uam::provider_runtime_internal::JoinShellEscapedArgs(argv);
-}
-
 std::vector<std::string> ClaudeCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
 {
 	if (!profile.supports_interactive)
@@ -136,24 +99,26 @@ bool ClaudeCliProviderRuntime::SupportsGeminiJsonHistory(const ProviderProfile&)
 	return false;
 }
 
-bool ClaudeCliProviderRuntime::UsesLocalHistory(const ProviderProfile&) const
+std::vector<std::string> ClaudeCliProviderRuntime::BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const
 {
-	return true;
-}
-
-bool ClaudeCliProviderRuntime::UsesInternalEngine(const ProviderProfile&) const
-{
-	return false;
-}
-
-bool ClaudeCliProviderRuntime::UsesCliOutput(const ProviderProfile&) const
-{
-	return true;
-}
-
-bool ClaudeCliProviderRuntime::UsesGeminiPathBootstrap(const ProviderProfile&) const
-{
-	return false;
+	std::vector<std::string> argv = {"claude", "-p"};
+	const std::vector<std::string> flags = uam::provider_runtime_internal::ProviderWorkerFlags(profile, settings);
+	uam::provider_runtime_internal::AppendArgs(argv, flags);
+	
+	// Add stateless args for worker mode
+	argv.push_back("--no-session-persistence");
+	argv.push_back("--tools");
+	argv.push_back("");
+	
+	if (!model_id.empty())
+	{
+		argv.push_back("--model");
+		argv.push_back(std::string(model_id));
+	}
+	
+	argv.push_back("--");
+	argv.push_back(std::string(prompt));
+	return argv;
 }
 
 const IProviderRuntime& GetClaudeCliProviderRuntime()

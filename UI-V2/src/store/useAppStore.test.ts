@@ -2025,7 +2025,7 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(state.lastAppliedStateRevision).toBe(2)
     expect(state.sessions[0].name).toBe('Updated Session')
     expect(state.messages['chat-1'].map((message) => message.content)).toEqual(['safe update'])
-    expect(state.providers.map((provider) => provider.id)).toEqual(['gemini-cli', 'opencode-cli', 'copilot-cli'])
+    expect(state.providers.map((provider) => provider.id)).toEqual(['gemini-cli', 'codex-cli', 'claude-cli', 'opencode-cli', 'copilot-cli'])
     expect(state.theme).toBe('dark')
   })
 

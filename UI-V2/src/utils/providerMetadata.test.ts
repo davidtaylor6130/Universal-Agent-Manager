@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildProviderCliInstallCommand, fallbackProviderForId, normalizeCliProviderIdAlias, providerMetadataForId, providerNpmPackageName, providerRuntimeDescription, providerRuntimeKindLabel, providerShortName, providerUsesProtocol } from './providerMetadata'
+import { buildProviderCliInstallCommand, CODEX_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, fallbackProviderForId, normalizeCliProviderIdAlias, OPENCODE_CLI_PROVIDER_ID, providerMetadataForId, providerNpmPackageName, providerRuntimeDescription, providerRuntimeKindLabel, providerShortName, providerUsesProtocol } from './providerMetadata'
 
 describe('providerMetadata', () => {
   it('returns known provider labels and structured protocols', () => {
@@ -53,5 +53,31 @@ describe('providerMetadata', () => {
     expect(providerNpmPackageName('opencode-cli')).toBe('opencode-ai')
     expect(buildProviderCliInstallCommand('copilot-cli', 'latest')).toBe('npm install -g @github/copilot@latest')
     expect(buildProviderCliInstallCommand('unknown-provider', '0.38.1')).toBe('npm install -g @google/gemini-cli@0.38.1')
+  })
+
+  it('fallback table provider ids match the canonical five CLI providers (FE-1 parity)', () => {
+    const expectedIds = [DEFAULT_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID]
+    for (const id of expectedIds) {
+      expect(providerMetadataForId(id)).toBeDefined()
+      expect(providerMetadataForId(id).id).toBe(id)
+      expect(providerMetadataForId(id).npmPackage).toBeTruthy()
+    }
+  })
+
+  it('normalization aliases resolve to the same canonical ids in both directions', () => {
+    const aliases: [string, string][] = [
+      ['gemini', DEFAULT_PROVIDER_ID],
+      ['codex', CODEX_CLI_PROVIDER_ID],
+      ['claude', CLAUDE_CLI_PROVIDER_ID],
+      ['claude-code', CLAUDE_CLI_PROVIDER_ID],
+      ['opencode', OPENCODE_CLI_PROVIDER_ID],
+      ['open-code', OPENCODE_CLI_PROVIDER_ID],
+      ['copilot', COPILOT_CLI_PROVIDER_ID],
+      ['github-copilot', COPILOT_CLI_PROVIDER_ID],
+    ]
+    for (const [alias, canonical] of aliases) {
+      expect(normalizeCliProviderIdAlias(alias)).toBe(canonical)
+      expect(providerMetadataForId(alias).id).toBe(canonical)
+    }
   })
 })

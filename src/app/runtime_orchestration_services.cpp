@@ -637,13 +637,11 @@ namespace
 		std::unordered_map<std::string, const ChatSession*> opencode_chats_by_id;
 		opencode_chats_by_id.reserve(opencode_chats.size());
 
-		for (const ChatSession& chat : opencode_chats)
-		{
-			if (!uam::strings::IsBlank(chat.provider_id))
-			{
-				opencode_chats_by_id[chat.id] = &chat;
-			}
-		}
+	for (const ChatSession& chat : opencode_chats)
+	{
+		opencode_chats_by_id[chat.id] = &chat;
+	}
+
 
 		for (ChatSession& chat : chats)
 		{

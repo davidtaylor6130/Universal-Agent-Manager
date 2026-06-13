@@ -47,7 +47,6 @@ namespace
 		profile.title = definition.title;
 		profile.execution_mode = uam::provider_profile_constants::kExecutionModeCli;
 		profile.output_mode = uam::provider_profile_constants::kOutputModeCli;
-		profile.command_template = definition.command_template;
 		profile.interactive_command = definition.interactive_command;
 		profile.supports_cli = true;
 		profile.supports_structured = true;

@@ -75,26 +75,9 @@ namespace provider_build_config
 #else
 		return uam::provider_profile_constants::kHistoryAdapterLocalJson;
 #endif
-	}
+}
 
-	inline constexpr const char* DefaultProviderCommandTemplate()
-	{
-#if UAM_ENABLE_RUNTIME_GEMINI_CLI
-		return "gemini {resume} {flags} {prompt}";
-#elif UAM_ENABLE_RUNTIME_CODEX_CLI
-		return "codex exec {flags} {prompt}";
-#elif UAM_ENABLE_RUNTIME_CLAUDE_CLI
-		return "claude -p {prompt}";
-#elif UAM_ENABLE_RUNTIME_OPENCODE_CLI
-		return "opencode run --session {resume} {flags} {prompt}";
-#elif UAM_ENABLE_RUNTIME_COPILOT_CLI
-		return "copilot -p {prompt} {flags}";
-#else
-		return "";
-#endif
-	}
-
-	inline constexpr const char* DefaultNativeHistoryProviderId()
+inline constexpr const char* DefaultNativeHistoryProviderId()
 	{
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
 		return uam::provider_ids::kGeminiCli;

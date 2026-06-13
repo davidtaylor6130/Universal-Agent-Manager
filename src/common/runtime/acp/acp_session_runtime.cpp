@@ -623,6 +623,35 @@ namespace uam
 			return uam::strings::ContainsAnyCaseInsensitive(text, needles);
 		}
 
+		bool WordMatchesAnyCaseInsensitive(std::string_view text, std::initializer_list<std::string_view> words)
+		{
+			if (text.empty())
+				return false;
+
+			std::string lower_text(text.size(), '\0');
+			for (std::size_t i = 0; i < text.size(); ++i)
+			{
+				lower_text[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(text[i])));
+			}
+
+			for (const auto& needle : words)
+			{
+				if (needle.empty())
+					continue;
+				std::size_t pos = 0;
+				while ((pos = lower_text.find(needle, pos)) != std::string_view::npos)
+				{
+					const bool before_ok = (pos == 0) || !std::isalnum(static_cast<unsigned char>(text[pos - 1]));
+					const std::size_t end_pos = pos + needle.size();
+					const bool after_ok = (end_pos >= text.size()) || !std::isalnum(static_cast<unsigned char>(text[end_pos]));
+					if (before_ok && after_ok)
+						return true;
+					pos += 1;
+				}
+			}
+			return false;
+		}
+
 		bool AcpSessionCanSendQueuedPrompt(const AcpSessionState& session)
 		{
 			if (!session.running ||
@@ -1623,7 +1652,7 @@ namespace uam
 
 		bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat)
 		{
-			if (!IsOpenCodeSession(session) || !session.running || !session.session_ready || session.startup_model_request_id != 0 || session.session_id.empty())
+			if (!IsGenericAcpSession(session) || !session.running || !session.session_ready || session.startup_model_request_id != 0 || session.session_id.empty())
 			{
 				return false;
 			}
@@ -2630,8 +2659,8 @@ namespace uam
 				return true;
 			}
 
-			if (TextContainsAnyCaseInsensitive(tool_call.kind, {"subagent", "sub-agent", "agent"}) ||
-			    TextContainsAnyCaseInsensitive(tool_call.title, {"subagent", "sub-agent", "agent"}))
+			if (WordMatchesAnyCaseInsensitive(tool_call.kind, {"subagent", "sub-agent"}) ||
+			    WordMatchesAnyCaseInsensitive(tool_call.title, {"subagent", "sub-agent"}))
 			{
 				return true;
 			}
