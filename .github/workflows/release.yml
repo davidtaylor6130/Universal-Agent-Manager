@@ -1,0 +1,101 @@
+name: Release Build
+
+# Builds unsigned (ad-hoc signed) macOS .app and Windows .exe packages and
+# attaches them to the GitHub Release for the pushed tag.
+#
+# Trigger: push a tag like `v2.0.3`. Use workflow_dispatch to dry-run a build
+# without publishing a release (artifacts are still uploaded to the run).
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: macOS
+          - os: windows-latest
+            name: Windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: UI-V2/package-lock.json
+
+      # CEF (hundreds of MB) and nlohmann/json are fetched into Builds/_deps by
+      # CMake FetchContent. Cache that dir keyed on CMakeLists.txt (the CEF pin).
+      - name: Cache fetched dependencies (CEF, nlohmann/json)
+        uses: actions/cache@v4
+        with:
+          path: Builds/_deps
+          key: ${{ runner.os }}-uam-deps-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-uam-deps-
+
+      - name: Install frontend dependencies
+        run: npm --prefix UI-V2 ci
+
+      - name: Configure (macOS)
+        if: runner.os == 'macOS'
+        run: cmake -S . -B Builds -DCMAKE_BUILD_TYPE=Release
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        run: cmake -S . -B Builds
+
+      - name: Build
+        run: cmake --build Builds --config Release
+
+      # macOS output: Builds/universal_agent_manager.app (ad-hoc signed via
+      # `codesign --sign -`, no certificate required). ditto preserves the bundle.
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: ditto -c -k --keepParent Builds/universal_agent_manager.app UAM-macOS.zip
+
+      # Windows output: Builds/Release/ holds the .exe plus the CEF DLLs,
+      # resources, and the bundled UI-V2/dist — zip the whole payload.
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: Compress-Archive -Path Builds/Release/* -DestinationPath UAM-Windows.zip
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UAM-${{ matrix.name }}
+          path: UAM-*.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Attach packages to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          fail_on_unmatched_files: true
