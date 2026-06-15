@@ -132,7 +132,16 @@ void ProviderModelCatalogService::Initialize(const fs::path& data_root)
 	// Read opencode config once at startup.
 	m_configured_open_code_models = ReadConfiguredOpenCodeModels();
 	m_configured_open_code_default_model = ReadConfiguredOpenCodeDefaultModel();
-	m_open_code_config_mtime = fs::last_write_time(OpenCodeConfigPath());
+
+	// Seed the cached config mtime. The file commonly does not exist (no OpenCode install),
+	// so guard last_write_time, which throws for a missing path.
+	const fs::path config_path = OpenCodeConfigPath();
+	std::error_code mtime_error;
+	m_open_code_config_mtime = fs::last_write_time(config_path, mtime_error);
+	if (mtime_error)
+	{
+		m_open_code_config_mtime = fs::file_time_type{};
+	}
 }
 
 bool ProviderModelCatalogService::MaybeStartRefresh()
@@ -347,7 +356,7 @@ void ProviderModelCatalogService::WriteOpenCodeZenFreeModelsCache(const nlohmann
 	(void)uam::io::WriteTextFile(OpenCodeZenFreeModelsCachePath(), models.dump(2));
 }
 
-nlohmann::json ProviderModelCatalogService::ParseOpenCodeZenFreeModels(const nlohmann::json& root) const
+nlohmann::json ProviderModelCatalogService::ParseOpenCodeZenFreeModels(const nlohmann::json& root)
 {
 	auto models_json = nlohmann::json::array();
 	const nlohmann::json* models = uam::nlohmann_json::FindArrayField(root, "data");

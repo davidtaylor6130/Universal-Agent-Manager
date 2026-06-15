@@ -34,9 +34,6 @@ class StateSerializer
 
 	/// Serialise a provider profile.
 	static nlohmann::json SerializeProvider(const ProviderProfile& profile);
-
-	/// Parse OpenCode Zen's model-list response into free model options for tests and fallback selection.
-	static nlohmann::json ParseOpenCodeZenFreeModelsForFrontend(const nlohmann::json& root);
 };
 
 } // namespace uam

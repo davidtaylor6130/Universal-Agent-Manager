@@ -422,6 +422,9 @@ bool Application::InitializeState()
 
 	PersistenceCoordinator().LoadSettings(m_app);
 	bool settings_dirty = false;
+	// PR-7: provider profiles are build-defined, not user data. They are reset to the
+	// built-in set on every startup and never persisted, so any per-profile "store" plumbing
+	// (e.g. EnsureDefaultProfile) is belt-and-suspenders unless profiles later become editable.
 	m_app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
 	if (ProviderResolutionService().ActiveProvider(m_app) == nullptr && !m_app.provider_profiles.empty())
 	{

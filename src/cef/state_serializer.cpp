@@ -5,36 +5,27 @@
 
 #include "common/chat/message_attachment_json.h"
 #include "common/config/settings_frontend_json.h"
-#include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/app_time.h"
-#include "common/provider/codex/cli/codex_session_index.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/acp/acp_attention_kind.h"
-#include "common/runtime/acp/acp_model_json.h"
 #include "common/runtime/acp/acp_tool_items.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_lifecycle.h"
-#include "common/utils/env_utils.h"
 #include "common/utils/hash_utils.h"
-#include "common/utils/io_utils.h"
 #include "common/utils/nlohmann_json_utils.h"
-#include "common/utils/range_utils.h"
 #include "common/utils/string_utils.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cstdint>
 #include <cctype>
 #include <filesystem>
-#include <optional>
-#include <mutex>
 #include <unordered_set>
 #include <vector>
 
@@ -129,319 +120,25 @@ namespace uam
 			return uam::strings::Trim(chat.native_session_id);
 		}
 
-		nlohmann::json ReadJsonFile(const std::filesystem::path& path)
-		{
-			const std::string text = uam::io::ReadTextFile(path);
-			if (text.empty())
-			{
-				return nullptr;
-			}
-
-			try
-			{
-				return nlohmann::json::parse(text);
-			}
-			catch (const nlohmann::json::exception&)
-			{
-				return nullptr;
-			}
-		}
-
-		nlohmann::json ReadCachedCodexModelsForFrontend()
-		{
-			auto models_json = nlohmann::json::array();
-			const nlohmann::json cache = ReadJsonFile(uam::codex::CodexHomePath() / "models_cache.json");
-			if (!cache.is_object())
-			{
-				return models_json;
-			}
-
-			const nlohmann::json* models = uam::nlohmann_json::FindArrayField(cache, "models");
-			if (models == nullptr)
-			{
-				return models_json;
-			}
-
-			std::vector<std::string> seen_model_ids;
-			uam::acp_models::CodexModelParseOptions parse_options;
-			parse_options.skip_hidden_field = false;
-			parse_options.allow_default_non_list_visibility = false;
-			for (const nlohmann::json& model : *models)
-			{
-				const auto parsed = uam::acp_models::ParseCodexModelEntry(model, parse_options);
-				if (!parsed || !uam::ranges::PushUniqueNonEmptyString(seen_model_ids, parsed->model.id))
-				{
-					continue;
-				}
-
-				models_json.push_back({
-				    {"id", parsed->model.id},
-				    {"name", parsed->model.name},
-				    {"description", parsed->model.description},
-				    {"defaultReasoningEffort", parsed->model.default_reasoning_effort},
-				    {"supportedReasoningEfforts", parsed->model.supported_reasoning_efforts},
-				    {"additionalSpeedTiers", parsed->model.additional_speed_tiers},
-				});
-			}
-
-			return models_json;
-		}
-
-		void PushModelIfNew(nlohmann::json& models_json, std::vector<std::string>& seen_model_ids, const std::string& id, const std::string& name, const std::string& description)
-		{
-			if (!uam::ranges::PushUniqueNonEmptyString(seen_model_ids, id))
-			{
-				return;
-			}
-
-			models_json.push_back({
-			    {"id", id},
-			    {"name", uam::strings::NonEmptyOrFallback(name, id)},
-			    {"description", description},
-			});
-		}
-
-		nlohmann::json BuiltInOpenCodeZenFreeModelsForFrontend()
-		{
-			auto models_json = nlohmann::json::array();
-			std::vector<std::string> seen_model_ids;
-			PushModelIfNew(models_json, seen_model_ids, "opencode/big-pickle", "Big Pickle", "OpenCode Zen limited-time stealth free model.");
-			PushModelIfNew(models_json, seen_model_ids, "opencode/deepseek-v4-flash-free", "DeepSeek V4 Flash Free", "OpenCode Zen free model.");
-			PushModelIfNew(models_json, seen_model_ids, "opencode/mimo-v2.5-free", "MiMo V2.5 Free", "OpenCode Zen free model.");
-			PushModelIfNew(models_json, seen_model_ids, "opencode/qwen3.6-plus-free", "Qwen3.6 Plus Free", "OpenCode Zen free model.");
-			PushModelIfNew(models_json, seen_model_ids, "opencode/minimax-m3-free", "MiniMax M3 Free", "OpenCode Zen free model.");
-			PushModelIfNew(models_json, seen_model_ids, "opencode/nemotron-3-super-free", "Nemotron 3 Super Free", "OpenCode Zen free model.");
-			return models_json;
-		}
-
-		std::filesystem::path OpenCodeZenFreeModelsCachePath(const std::filesystem::path& data_root)
-		{
-			return data_root / "opencode_zen_free_models_cache.json";
-		}
-
-		nlohmann::json ReadOpenCodeZenFreeModelsCacheForFrontend(const std::filesystem::path& data_root)
-		{
-			const nlohmann::json cache = ReadJsonFile(OpenCodeZenFreeModelsCachePath(data_root));
-			return cache.is_array() ? cache : nlohmann::json::array();
-		}
-
-		bool OpenCodeZenRefreshDisabled()
-		{
-			const std::string value = uam::strings::TrimAndLowerAscii(uam::env::GetTrimmedString("UAM_DISABLE_OPENCODE_ZEN_REFRESH").value_or(""));
-			return value == "1" || value == "true" || value == "yes" || value == "on";
-		}
-
-		bool HasOpenCodeZenModelsFixture()
-		{
-			return uam::env::GetTrimmedPath("UAM_OPENCODE_ZEN_MODELS_PATH").has_value();
-		}
-
-		std::optional<nlohmann::json> ReadOpenCodeZenModelsFixture()
-		{
-			const std::optional<std::filesystem::path> fixture_path = uam::env::GetTrimmedPath("UAM_OPENCODE_ZEN_MODELS_PATH");
-			if (!fixture_path)
-			{
-				return std::nullopt;
-			}
-
-			const nlohmann::json root = ReadJsonFile(*fixture_path);
-			return root.is_object() ? std::optional<nlohmann::json>(root) : std::nullopt;
-		}
-
-		std::optional<nlohmann::json> FetchOpenCodeZenModels()
-		{
-			if (std::optional<nlohmann::json> fixture = ReadOpenCodeZenModelsFixture())
-			{
-				return fixture;
-			}
-			if (OpenCodeZenRefreshDisabled())
-			{
-				return std::nullopt;
-			}
-
-			const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(std::string("curl -s --max-time 4 ") + "https://opencode.ai/zen/v1/models", 6000);
-			if (!result.ok || result.timed_out || result.canceled || result.exit_code != 0 || result.output.empty())
-			{
-				return std::nullopt;
-			}
-
-			const nlohmann::json root = nlohmann::json::parse(result.output, nullptr, false);
-			return root.is_object() ? std::optional<nlohmann::json>(root) : std::nullopt;
-		}
-
-		nlohmann::json RefreshOpenCodeZenFreeModelsForFrontend(const std::filesystem::path& data_root)
-		{
-			static std::mutex refresh_mutex;
-			static std::chrono::steady_clock::time_point last_refresh_attempt;
-
-			const bool has_fixture = HasOpenCodeZenModelsFixture();
-			const bool refresh_disabled = OpenCodeZenRefreshDisabled() && !has_fixture;
-			if (!data_root.empty())
-			{
-				std::lock_guard<std::mutex> lock(refresh_mutex);
-				const auto now = std::chrono::steady_clock::now();
-				const bool has_recent_attempt = last_refresh_attempt.time_since_epoch().count() != 0 && now - last_refresh_attempt < std::chrono::minutes(10);
-				if (!refresh_disabled && (has_fixture || !has_recent_attempt))
-				{
-					last_refresh_attempt = now;
-					if (std::optional<nlohmann::json> root = FetchOpenCodeZenModels())
-					{
-						const nlohmann::json models = StateSerializer::ParseOpenCodeZenFreeModelsForFrontend(*root);
-						if (models.is_array() && !models.empty())
-						{
-							(void)uam::io::WriteTextFile(OpenCodeZenFreeModelsCachePath(data_root), models.dump(2));
-							return models;
-						}
-					}
-				}
-			}
-
-			nlohmann::json cached = ReadOpenCodeZenFreeModelsCacheForFrontend(data_root);
-			return cached.empty() ? BuiltInOpenCodeZenFreeModelsForFrontend() : cached;
-		}
-
-		std::filesystem::path OpenCodeConfigPath()
-		{
-			if (const std::optional<std::filesystem::path> config_home = uam::env::GetTrimmedPath("XDG_CONFIG_HOME"))
-			{
-				return *config_home / "opencode" / "opencode.json";
-			}
-
-#if defined(_WIN32)
-			if (const std::optional<std::filesystem::path> app_data = uam::env::GetTrimmedPath("APPDATA"))
-			{
-				return *app_data / "opencode" / "opencode.json";
-			}
-#endif
-
-			if (const std::optional<std::filesystem::path> home = uam::env::GetTrimmedPath("HOME"))
-			{
-				return *home / ".config" / "opencode" / "opencode.json";
-			}
-
-			return uam::paths::CurrentPathOrDot() / ".config" / "opencode" / "opencode.json";
-		}
-
-		nlohmann::json ReadConfiguredOpenCodeModelsForFrontend()
-		{
-			auto models_json = nlohmann::json::array();
-			const nlohmann::json config = ReadJsonFile(OpenCodeConfigPath());
-			if (!config.is_object())
-			{
-				return models_json;
-			}
-
-			const nlohmann::json* providers = uam::nlohmann_json::FindObjectField(config, "provider");
-			if (providers == nullptr)
-			{
-				return models_json;
-			}
-
-			std::vector<std::string> seen_model_ids;
-			for (const auto& provider_entry : providers->items())
-			{
-				const std::string provider_id = uam::strings::Trim(provider_entry.key());
-				if (provider_id.empty() || !provider_entry.value().is_object())
-				{
-					continue;
-				}
-
-				const nlohmann::json* models = uam::nlohmann_json::FindObjectField(provider_entry.value(), "models");
-				if (models == nullptr)
-				{
-					continue;
-				}
-
-				for (const auto& model_entry : models->items())
-				{
-					const std::string model_id = uam::strings::Trim(model_entry.key());
-					if (model_id.empty())
-					{
-						continue;
-					}
-					const std::string full_id = provider_id + "/" + model_id;
-					std::string name;
-					std::string description;
-					if (model_entry.value().is_object())
-					{
-						name = uam::nlohmann_json::TrimmedStringValue(model_entry.value(), {"name", "displayName", "display_name"});
-						description = uam::nlohmann_json::TrimmedStringValue(model_entry.value(), {"description"});
-					}
-					PushModelIfNew(models_json, seen_model_ids, full_id, uam::strings::NonEmptyOrFallback(name, model_id), description);
-				}
-			}
-
-			return models_json;
-		}
-
-		std::string ReadConfiguredOpenCodeDefaultModelForFrontend()
-		{
-			const nlohmann::json config = ReadJsonFile(OpenCodeConfigPath());
-			if (!config.is_object())
-			{
-				return "";
-			}
-
-			return uam::nlohmann_json::TrimmedStringValue(config, {"model"});
-		}
-
-		nlohmann::json MergeAcpModelArrays(nlohmann::json fallback_models, nlohmann::json runtime_models)
-		{
-			if (!fallback_models.is_array())
-			{
-				fallback_models = nlohmann::json::array();
-			}
-			if (!runtime_models.is_array())
-			{
-				return fallback_models;
-			}
-
-			std::vector<std::string> seen_model_ids;
-			for (const nlohmann::json& model : fallback_models)
-			{
-				if (model.is_object())
-				{
-					uam::ranges::PushUniqueNonEmptyString(seen_model_ids, uam::nlohmann_json::TrimmedStringValue(model, {"id"}));
-				}
-			}
-			for (const nlohmann::json& model : runtime_models)
-			{
-				if (!model.is_object())
-				{
-					continue;
-				}
-				const std::string id = uam::nlohmann_json::TrimmedStringValue(model, {"id"});
-				if (!uam::ranges::PushUniqueNonEmptyString(seen_model_ids, id))
-				{
-					continue;
-				}
-				nlohmann::json normalized_model = model;
-				normalized_model["id"] = id;
-				fallback_models.push_back(std::move(normalized_model));
-			}
-			return fallback_models;
-		}
-
+		// Model-catalog reads (OpenCode config / Zen free models / Codex cache) live in
+		// ProviderModelCatalogService so that serialization performs zero file/network I/O.
+		// The service snapshot is refreshed asynchronously from the app polling loop.
 		nlohmann::json FallbackAcpModelsForChat(const AppState& app, const ChatSession& chat)
 		{
-			if (uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kCodexCli))
+			if (app.provider_model_catalog != nullptr)
 			{
-				return ReadCachedCodexModelsForFrontend();
-			}
-			if (uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kOpenCodeCli))
-			{
-				return MergeAcpModelArrays(ReadConfiguredOpenCodeModelsForFrontend(), RefreshOpenCodeZenFreeModelsForFrontend(app.data_root));
+				return app.provider_model_catalog->FallbackAcpModelsForChat(chat.provider_id);
 			}
 			return nlohmann::json::array();
 		}
 
-		std::string FallbackAcpCurrentModelForChat(const ChatSession& chat)
+		std::string FallbackAcpCurrentModelForChat(const AppState& app, const ChatSession& chat)
 		{
-			if (!uam::strings::IsBlank(chat.model_id))
+			if (app.provider_model_catalog != nullptr)
 			{
-				return chat.model_id;
+				return app.provider_model_catalog->FallbackAcpCurrentModelForChat(chat.provider_id, chat.model_id);
 			}
-			return uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kOpenCodeCli) ? ReadConfiguredOpenCodeDefaultModelForFrontend() : std::string{};
+			return uam::strings::IsBlank(chat.model_id) ? std::string{} : chat.model_id;
 		}
 
 		std::string MessageDigestForFingerprint(const ChatSession& session);
@@ -956,7 +653,7 @@ namespace uam
 			acp_json["availableModes"] = nlohmann::json::array();
 			acp_json["currentModeId"] = chat.approval_mode;
 			acp_json["availableModels"] = FallbackAcpModelsForChat(app, chat);
-			acp_json["currentModelId"] = FallbackAcpCurrentModelForChat(chat);
+			acp_json["currentModelId"] = FallbackAcpCurrentModelForChat(app, chat);
 			acp_json["turnEvents"] = nlohmann::json::array();
 			acp_json["turnUserMessageIndex"] = -1;
 			acp_json["turnAssistantMessageIndex"] = -1;
@@ -1005,7 +702,7 @@ namespace uam
 			acp_json["availableModes"] = SerializeAcpModes(session->available_modes);
 			acp_json["currentModeId"] = uam::strings::NonEmptyOrFallback(session->current_mode_id, chat.approval_mode);
 			acp_json["availableModels"] = ProviderModelCatalogService::MergeAcpModelArrays(FallbackAcpModelsForChat(app, chat), SerializeAcpModels(session->available_models));
-			acp_json["currentModelId"] = uam::strings::NonEmptyOrFallback(session->current_model_id, FallbackAcpCurrentModelForChat(chat));
+			acp_json["currentModelId"] = uam::strings::NonEmptyOrFallback(session->current_model_id, FallbackAcpCurrentModelForChat(app, chat));
 			acp_json["turnEvents"] = SerializeAcpTurnEvents(session->turn_events);
 			acp_json["turnUserMessageIndex"] = session->turn_user_message_index;
 			acp_json["turnAssistantMessageIndex"] = session->turn_assistant_message_index;
@@ -1263,88 +960,6 @@ namespace uam
 	// ---------------------------------------------------------------------------
 	// StateSerializer implementation
 	// ---------------------------------------------------------------------------
-
-	nlohmann::json StateSerializer::ParseOpenCodeZenFreeModelsForFrontend(const nlohmann::json& root)
-	{
-		auto models_json = nlohmann::json::array();
-		const nlohmann::json* models = uam::nlohmann_json::FindArrayField(root, "data");
-		if (models == nullptr)
-		{
-			return models_json;
-		}
-
-		std::vector<std::string> seen_model_ids;
-		for (const nlohmann::json& model : *models)
-		{
-			if (!model.is_object())
-			{
-				continue;
-			}
-
-			const std::string owner = uam::nlohmann_json::TrimmedStringValue(model, {"owned_by", "ownedBy"});
-			const std::string model_id = uam::nlohmann_json::TrimmedStringValue(model, {"id"});
-
-			constexpr std::string_view free_suffix = "-free";
-			const bool is_free = model_id == "big-pickle" || (model_id.size() >= free_suffix.size() && model_id.compare(model_id.size() - free_suffix.size(), free_suffix.size(), free_suffix) == 0);
-
-			if (owner != "opencode" || model_id.empty() || !is_free)
-			{
-				continue;
-			}
-
-			const std::string full_id = "opencode/" + model_id;
-			const std::string description = model_id == "big-pickle" ? "OpenCode Zen limited-time stealth free model." : "OpenCode Zen free model.";
-
-			// Build a title from the model id with special-case corrections.
-			std::string title = model_id;
-			if (const std::size_t slash = title.rfind('/'); slash != std::string::npos)
-			{
-				title = title.substr(slash + 1);
-			}
-			std::string formatted_title;
-			bool uppercase_next = true;
-			for (const char ch : title)
-			{
-				if (ch == '-' || ch == '_' || ch == '.' || ch == ':')
-				{
-					if (!formatted_title.empty() && formatted_title.back() != ' ')
-					{
-						formatted_title.push_back(' ');
-					}
-					uppercase_next = true;
-					continue;
-				}
-				formatted_title.push_back(uppercase_next ? static_cast<char>(std::toupper(static_cast<unsigned char>(ch))) : ch);
-				uppercase_next = false;
-			}
-			if (formatted_title.starts_with("Deepseek "))
-			{
-				formatted_title.replace(0, 8, "DeepSeek");
-			}
-			if (formatted_title.starts_with("Minimax "))
-			{
-				formatted_title.replace(0, 7, "MiniMax");
-			}
-			if (formatted_title.starts_with("Mimo "))
-			{
-				formatted_title.replace(0, 4, "MiMo");
-			}
-			formatted_title = uam::strings::Trim(uam::strings::NonEmptyOrFallback(formatted_title, model_id));
-
-			if (!uam::ranges::PushUniqueNonEmptyString(seen_model_ids, full_id))
-			{
-				continue;
-			}
-
-			models_json.push_back({
-			    {"id", full_id},
-			    {"name", uam::strings::NonEmptyOrFallback(formatted_title, model_id)},
-			    {"description", description},
-			});
-		}
-
-		return models_json;
-	}
 
 	nlohmann::json StateSerializer::Serialize(const AppState& app)
 	{

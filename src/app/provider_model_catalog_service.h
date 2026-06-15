@@ -49,6 +49,9 @@ class ProviderModelCatalogService
 	/// Merge fallback models with runtime models (same logic as before).
 	static nlohmann::json MergeAcpModelArrays(nlohmann::json fallback_models, nlohmann::json runtime_models);
 
+	/// Parse OpenCode Zen's model-list response into free model options (pure; for tests and refresh).
+	static nlohmann::json ParseOpenCodeZenFreeModels(const nlohmann::json& root);
+
 	/// Get fallback models for a chat (OpenCode Zen + configured, or Codex cache).
 	nlohmann::json FallbackAcpModelsForChat(const std::string& provider_id) const;
 
@@ -96,7 +99,6 @@ class ProviderModelCatalogService
 	nlohmann::json ReadOpenCodeZenFreeModelsCache() const;
 	void WriteOpenCodeZenFreeModelsCache(const nlohmann::json& models) const;
 	std::optional<nlohmann::json> FetchOpenCodeZenModels();
-	nlohmann::json ParseOpenCodeZenFreeModels(const nlohmann::json& root) const;
 	nlohmann::json ReadConfiguredOpenCodeModels();
 	std::string ReadConfiguredOpenCodeDefaultModel();
 	nlohmann::json ReadCachedCodexModels();
