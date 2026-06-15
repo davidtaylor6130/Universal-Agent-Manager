@@ -29,3 +29,17 @@
 
 compile_commands.json
 /.cache
+
+# Internal working notes and agent transcripts (not shipped)
+/GLOBAL_IMPROVEMENT_REPORT.md
+/Progress.md
+/REVIEW_PROGRESS.md
+/LARGE_MODEL_CHANGES.md
+/session-ses_*.md
+
+# Sample chats belong in the data-root, not the repo
+/chats/
+
+# OCR data and stray preview images
+*.traineddata
+/UI-V2/subagent-preview-*.png

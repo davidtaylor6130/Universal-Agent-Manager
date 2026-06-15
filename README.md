@@ -35,6 +35,13 @@ Light theme:
 
 Removed or intentionally unsupported surfaces include RAG engines, local model engines, templates, Dear ImGui, Linux builds, and checked-in frontend build output.
 
+## Tech Stack
+
+- **Backend:** C++20, CMake 3.20+, CEF (Chromium Embedded Framework), `nlohmann/json`
+- **Frontend:** React 18, Vite 5, TypeScript 5, Zustand, Tailwind CSS, xterm.js
+- **Platform services:** native PTY (openpty on macOS, ConPTY on Windows) for the CLI terminal path
+- **Tooling:** Vitest for the frontend, CTest for native tests
+
 ## Support Matrix
 
 Each provider has a structured chat path (over an ACP-style stdio protocol) and an xterm.js CLI fallback path. Native history is read from each provider's local store.
@@ -298,6 +305,14 @@ Current bridge capabilities include:
 7. Toggle memory settings and verify durable memory files are only written after idle extraction or manual scan.
 8. Exercise git worktree create, discard, port, status, diff, and commit flows in a git workspace.
 9. Restart and verify sidebar chats restore from local metadata plus Gemini history discovery.
+
+## Known Issues & Status
+
+This is an actively developed project; the latest stable line is published as release `v2.0.2`. Tracked gaps live in [GitHub Issues](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues). Current focus areas:
+
+- Windows feature parity is behind macOS (CLI fallback and native history are in active development — see the Support Matrix).
+- The in-app goal loop ("ralph loop") has several open reliability issues around continuation, failure surfacing, and stop conditions ([#1](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/1)–[#6](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/6)).
+- The polished "Interactive" view is planned but not yet implemented.
 
 ## License
 
