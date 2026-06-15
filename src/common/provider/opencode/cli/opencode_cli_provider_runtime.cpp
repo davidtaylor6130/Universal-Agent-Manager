@@ -1,9 +1,7 @@
 #include "common/provider/opencode/cli/opencode_cli_provider_runtime.h"
 
-#include "app/goal_service.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
-#include "common/utils/string_utils.h"
 
 namespace
 {
@@ -21,15 +19,6 @@ const char* OpenCodeCliProviderRuntime::RuntimeId() const
 	return uam::provider_ids::kOpenCodeCli;
 }
 
-bool OpenCodeCliProviderRuntime::IsEnabled() const
-{
-	return true;
-}
-
-const char* OpenCodeCliProviderRuntime::DisabledReason() const
-{
-	return "";
-}
 
 std::vector<std::string> OpenCodeCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
 {
@@ -65,15 +54,6 @@ bool OpenCodeCliProviderRuntime::SaveHistory(const ProviderProfile&, const std::
 	return uam::provider_runtime_internal::SaveLocalChat(data_root, chat);
 }
 
-bool OpenCodeCliProviderRuntime::UsesNativeOverlayHistory(const ProviderProfile&) const
-{
-	return false;
-}
-
-bool OpenCodeCliProviderRuntime::SupportsGeminiJsonHistory(const ProviderProfile&) const
-{
-	return false;
-}
 
 bool OpenCodeCliProviderRuntime::ProviderRecognizesSubagentTool(std::string_view tool_name) const
 {
@@ -92,9 +72,9 @@ bool OpenCodeCliProviderRuntime::ProviderRecognizesSubagentTool(std::string_view
 		std::size_t pos = 0;
 		while ((pos = lower_name.find(word, pos)) != std::string_view::npos)
 		{
-			const bool before_ok = (pos == 0) || !std::isalnum(static_cast<unsigned char>(tool_name[pos - 1]));
+			const bool before_ok = (pos == 0) || !std::isalnum(static_cast<unsigned char>(tool_name[pos - 1])) && tool_name[pos - 1] != '_';
 			const std::size_t end_pos = pos + len;
-			const bool after_ok = (end_pos >= tool_name.size()) || !std::isalnum(static_cast<unsigned char>(tool_name[end_pos]));
+			const bool after_ok = (end_pos >= tool_name.size()) || !std::isalnum(static_cast<unsigned char>(tool_name[end_pos])) && tool_name[end_pos] != '_';
 			if (before_ok && after_ok)
 				return true;
 			pos += 1;
@@ -108,15 +88,16 @@ std::vector<std::string> OpenCodeCliProviderRuntime::BuildWorkerArgv(const Provi
 	std::vector<std::string> argv = {"opencode", "run"};
 	const std::vector<std::string> flags = uam::provider_runtime_internal::ProviderWorkerFlags(profile, settings);
 	uam::provider_runtime_internal::AppendArgs(argv, flags);
-	
-	if (!model_id.empty())
-	{
-		argv.push_back("--model");
-		argv.push_back(std::string(model_id));
-	}
-	
+
+	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", model_id);
+
 	argv.push_back(std::string(prompt));
 	return argv;
+}
+
+std::vector<std::string> OpenCodeCliProviderRuntime::BuildStructuredLaunchArgv(const ProviderProfile&, const ChatSession&) const
+{
+	return {"opencode", "acp"};
 }
 
 const IProviderRuntime& GetOpenCodeCliProviderRuntime()

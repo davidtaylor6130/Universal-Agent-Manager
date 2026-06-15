@@ -84,6 +84,8 @@ ProviderProfile* ProviderResolutionService::ActiveProvider(uam::AppState& app) c
 		return found;
 	}
 
+	// PR-7: profiles are build-defined and reset on startup (application.cpp), so this only
+	// matters as a safety net should `provider_profiles` ever be left empty.
 	ProviderProfileStore::EnsureDefaultProfile(app.provider_profiles);
 	app.settings.active_provider_id = provider_build_config::FirstEnabledProviderId();
 	return ProviderProfileStore::FindById(app.provider_profiles, app.settings.active_provider_id);

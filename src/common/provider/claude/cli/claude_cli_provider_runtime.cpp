@@ -1,6 +1,5 @@
 #include "common/provider/claude/cli/claude_cli_provider_runtime.h"
 
-#include "app/goal_service.h"
 #include "common/config/approval_modes.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
@@ -48,15 +47,6 @@ const char* ClaudeCliProviderRuntime::RuntimeId() const
 	return uam::provider_ids::kClaudeCli;
 }
 
-bool ClaudeCliProviderRuntime::IsEnabled() const
-{
-	return true;
-}
-
-const char* ClaudeCliProviderRuntime::DisabledReason() const
-{
-	return "";
-}
 
 std::vector<std::string> ClaudeCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
 {
@@ -89,15 +79,6 @@ bool ClaudeCliProviderRuntime::SaveHistory(const ProviderProfile&, const std::fi
 	return uam::provider_runtime_internal::SaveLocalChat(data_root, chat);
 }
 
-bool ClaudeCliProviderRuntime::UsesNativeOverlayHistory(const ProviderProfile&) const
-{
-	return false;
-}
-
-bool ClaudeCliProviderRuntime::SupportsGeminiJsonHistory(const ProviderProfile&) const
-{
-	return false;
-}
 
 std::vector<std::string> ClaudeCliProviderRuntime::BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const
 {
@@ -109,15 +90,20 @@ std::vector<std::string> ClaudeCliProviderRuntime::BuildWorkerArgv(const Provide
 	argv.push_back("--no-session-persistence");
 	argv.push_back("--tools");
 	argv.push_back("");
-	
-	if (!model_id.empty())
-	{
-		argv.push_back("--model");
-		argv.push_back(std::string(model_id));
-	}
-	
+
+	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", model_id);
+
 	argv.push_back("--");
 	argv.push_back(std::string(prompt));
+	return argv;
+}
+
+std::vector<std::string> ClaudeCliProviderRuntime::BuildStructuredLaunchArgv(const ProviderProfile&, const ChatSession& chat) const
+{
+	std::vector<std::string> argv = {"claude", "-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose"};
+	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--permission-mode", uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode));
+	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", chat.model_id);
+	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--resume", chat.native_session_id);
 	return argv;
 }
 

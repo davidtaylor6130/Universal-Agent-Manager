@@ -52,19 +52,7 @@ namespace
 		{
 			return false;
 		}
-		bool UsesNativeOverlayHistory(const ProviderProfile&) const override
-		{
-			return false;
-		}
-		bool SupportsGeminiJsonHistory(const ProviderProfile&) const override
-		{
-			return false;
-		}
 		bool UsesLocalHistory(const ProviderProfile&) const override
-		{
-			return false;
-		}
-		bool UsesInternalEngine(const ProviderProfile&) const override
 		{
 			return false;
 		}
@@ -72,11 +60,11 @@ namespace
 		{
 			return false;
 		}
-		bool UsesGeminiPathBootstrap(const ProviderProfile&) const override
-		{
-			return false;
-		}
 		std::vector<std::string> BuildWorkerArgv(const ProviderProfile&, const AppSettings&, std::string_view, std::string_view) const override
+		{
+			return {};
+		}
+		std::vector<std::string> BuildStructuredLaunchArgv(const ProviderProfile&, const ChatSession&) const override
 		{
 			return {};
 		}

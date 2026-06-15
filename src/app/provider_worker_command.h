@@ -2,9 +2,7 @@
 
 #include "common/paths/path_utils.h"
 #include "common/models/app_models.h"
-#include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
-#include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/utils/env_utils.h"
 #include "common/utils/range_utils.h"
 #include "common/utils/shell_escape.h"
@@ -125,23 +123,6 @@ namespace uam
 		wrapped.append(command);
 		return wrapped;
 #endif
-	}
-
-	inline std::vector<std::string> ProviderWorkerFlags(const ProviderProfile& profile, const AppSettings& settings)
-	{
-		const AppSettings provider_settings = uam::provider_runtime_internal::MergeProviderSettingsWithoutGenericYolo(profile, settings);
-		return uam::provider_runtime_internal::BuildProviderFlagsArgv(provider_settings, "");
-	}
-
-	inline void AppendProviderWorkerPrompt(std::vector<std::string>& argv, std::string_view prompt)
-	{
-		argv.emplace_back(prompt.data(), prompt.size());
-	}
-
-	inline void AppendProviderWorkerFlagsAndModel(std::vector<std::string>& argv, const std::vector<std::string>& flags, std::string_view model_option, std::string_view model_id)
-	{
-		uam::provider_runtime_internal::AppendArgs(argv, flags);
-		uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, model_option, model_id);
 	}
 
 	inline std::string BuildProviderWorkerShellCommand(const std::vector<std::string>& argv, ProviderWorkerPathMode path_mode)

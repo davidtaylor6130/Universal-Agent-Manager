@@ -13,10 +13,10 @@ namespace
 
 	std::vector<std::string> CopilotFlagsFromSettings(const AppSettings& settings)
 	{
-		return uam::provider_runtime_internal::BuildProviderFlagsArgv(settings, "");
+		return uam::provider_runtime_internal::BuildProviderFlagsArgv(settings, kCopilotAllowAllFlag);
 	}
 
-	void AppendCopilotModeArgs(std::vector<std::string>& argv, std::string_view raw_model_id, std::string_view raw_approval_mode, const AppSettings& settings)
+	void AppendCopilotModeArgs(std::vector<std::string>& argv, std::string_view raw_model_id, std::string_view raw_approval_mode)
 	{
 		uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", raw_model_id);
 
@@ -25,15 +25,7 @@ namespace
 		{
 			argv.push_back("--plan");
 		}
-		else if (approval_mode == uam::approval_modes::kLegacyYoloApprovalMode || settings.provider_yolo_mode)
-		{
-			argv.push_back(kCopilotAllowAllFlag);
-		}
-	}
-
-	void AppendCopilotBatchModeArgs(std::vector<std::string>& argv, const AppSettings& settings)
-	{
-		if (settings.provider_yolo_mode)
+		else if (approval_mode == uam::approval_modes::kLegacyYoloApprovalMode)
 		{
 			argv.push_back(kCopilotAllowAllFlag);
 		}
@@ -45,15 +37,6 @@ const char* CopilotCliProviderRuntime::RuntimeId() const
 	return uam::provider_ids::kCopilotCli;
 }
 
-bool CopilotCliProviderRuntime::IsEnabled() const
-{
-	return true;
-}
-
-const char* CopilotCliProviderRuntime::DisabledReason() const
-{
-	return "";
-}
 
 std::vector<std::string> CopilotCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
 {
@@ -67,7 +50,7 @@ std::vector<std::string> CopilotCliProviderRuntime::BuildInteractiveArgv(const P
 
 	uam::provider_runtime_internal::AppendResumeArgs(argv, profile, chat.native_session_id);
 
-	AppendCopilotModeArgs(argv, chat.model_id, chat.approval_mode, provider_settings);
+	AppendCopilotModeArgs(argv, chat.model_id, chat.approval_mode);
 	uam::provider_runtime_internal::AppendArgs(argv, CopilotFlagsFromSettings(provider_settings));
 	return argv;
 }
@@ -87,30 +70,22 @@ bool CopilotCliProviderRuntime::SaveHistory(const ProviderProfile&, const std::f
 	return uam::provider_runtime_internal::SaveLocalChat(data_root, chat);
 }
 
-bool CopilotCliProviderRuntime::UsesNativeOverlayHistory(const ProviderProfile&) const
-{
-	return false;
-}
-
-bool CopilotCliProviderRuntime::SupportsGeminiJsonHistory(const ProviderProfile&) const
-{
-	return false;
-}
 
 std::vector<std::string> CopilotCliProviderRuntime::BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const
 {
 	std::vector<std::string> argv = {"copilot", "-p"};
 	const std::vector<std::string> flags = uam::provider_runtime_internal::ProviderWorkerFlags(profile, settings);
 	uam::provider_runtime_internal::AppendArgs(argv, flags);
-	
-	if (!model_id.empty())
-	{
-		argv.push_back("--model");
-		argv.push_back(std::string(model_id));
-	}
-	
+
+	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", model_id);
+
 	argv.push_back(std::string(prompt));
 	return argv;
+}
+
+std::vector<std::string> CopilotCliProviderRuntime::BuildStructuredLaunchArgv(const ProviderProfile&, const ChatSession&) const
+{
+	return {"copilot", "--acp", "--stdio"};
 }
 
 const IProviderRuntime& GetCopilotCliProviderRuntime()

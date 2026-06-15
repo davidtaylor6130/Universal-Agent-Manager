@@ -49,9 +49,9 @@ class IProviderRuntime
 	/// <summary>Canonical provider runtime id (for example `gemini-cli`).</summary>
 	virtual const char* RuntimeId() const = 0;
 	/// <summary>Returns whether this runtime backend is enabled in the current build.</summary>
-	virtual bool IsEnabled() const = 0;
+	virtual bool IsEnabled() const { return true; }
 	/// <summary>Returns a concise reason when runtime is disabled in this build.</summary>
-	virtual const char* DisabledReason() const = 0;
+	virtual const char* DisabledReason() const { return ""; }
 
 	/// <summary>Builds interactive terminal argv for the active provider.</summary>
 	virtual std::vector<std::string> BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const = 0;
@@ -62,7 +62,7 @@ class IProviderRuntime
 	/// <summary>Saves chat according to runtime history policy.</summary>
 	virtual bool SaveHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const ChatSession& chat) const = 0;
 	/// <summary>Returns true when runtime uses Gemini-native history plus local overlay.</summary>
-	virtual bool UsesNativeOverlayHistory(const ProviderProfile& profile) const = 0;
+	virtual bool UsesNativeOverlayHistory(const ProviderProfile& profile) const { (void)profile; return false; }
 	/// <summary>Discovers all chat sources this runtime manages. Returns empty result when not supported.</summary>
 	virtual ProviderDiscoveryResult DiscoverChatSources(const ProviderProfile& profile) const
 	{
@@ -135,6 +135,9 @@ class IProviderRuntime
 
 	/// <summary>Builds the argv for a provider worker command (batch mode, no terminal).</summary>
 	virtual std::vector<std::string> BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const = 0;
+
+	/// <summary>Builds the argv that launches the provider's structured (ACP/app-server) process over stdio.</summary>
+	virtual std::vector<std::string> BuildStructuredLaunchArgv(const ProviderProfile& profile, const ChatSession& chat) const = 0;
 
 	/// <summary>
 	/// Returns true when <paramref name="tool_name"/> is a tool this provider treats as a sub-agent

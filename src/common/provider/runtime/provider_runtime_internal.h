@@ -91,7 +91,7 @@ namespace uam::provider_runtime_internal
 		return merged;
 	}
 
-	inline AppSettings MergeProviderSettingsWithoutGenericYolo(const ProviderProfile& profile, const AppSettings& settings)
+	inline AppSettings MergeProviderSettingsNeverYolo(const ProviderProfile& profile, const AppSettings& settings)
 	{
 		AppSettings merged = MergeProviderSettings(profile, settings);
 		merged.provider_yolo_mode = false;
@@ -163,7 +163,7 @@ namespace uam::provider_runtime_internal
 
 	inline std::vector<std::string> ProviderWorkerFlags(const ProviderProfile& profile, const AppSettings& settings)
 	{
-		const AppSettings provider_settings = MergeProviderSettingsWithoutGenericYolo(profile, settings);
+		const AppSettings provider_settings = MergeProviderSettingsNeverYolo(profile, settings);
 		return BuildProviderFlagsArgv(provider_settings, "");
 	}
 
@@ -276,6 +276,10 @@ namespace uam::provider_runtime_internal
 		AppendArgs(argv, BuildFlagsArgv(settings));
 
 		AppendResumeArgs(argv, profile, chat.native_session_id);
+
+		// Gemini is the only runtime using this generic helper; honor a per-chat model id
+		// so interactive CLI launches match the structured path (gemini supports --model/-m).
+		AppendTrimmedOptionValue(argv, "--model", chat.model_id);
 
 		return argv;
 	}

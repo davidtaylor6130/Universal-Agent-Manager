@@ -657,6 +657,10 @@ namespace
 			}
 
 			OverlayLocalChatState(*matched->second, chat);
+
+			// OC-6: LoadHistory no longer stamps provider ids, so a legacy blank-provider chat
+			// that matched an OpenCode-history chat is normalized to opencode-cli here.
+			uam::provider_ids::NormalizeLegacyLocalHistoryChatProvider(chat.provider_id, uam::provider_ids::kOpenCodeCli);
 		}
 	}
 

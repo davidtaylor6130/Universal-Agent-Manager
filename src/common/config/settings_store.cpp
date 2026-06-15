@@ -58,7 +58,6 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kEditorDefaultGroupsVersionKey = "editor_default_groups_version";
 	constexpr std::string_view kEditorFileAssociationsKey = "editor_file_associations";
 
-	constexpr std::string_view kLegacyGeminiCommandTemplateKey = "gemini_command_template";
 	constexpr std::string_view kLegacyGeminiYoloModeKey = "gemini_yolo_mode";
 	constexpr std::string_view kLegacyGeminiExtraFlagsKey = "gemini_extra_flags";
 

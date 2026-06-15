@@ -1,7 +1,6 @@
 #include "common/provider/provider_profile.h"
 
 #include "common/provider/provider_ids.h"
-#include "common/provider/runtime/provider_build_config.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -18,7 +17,6 @@ namespace
 	{
 		std::string_view id;
 		std::string_view title;
-		std::string_view command_template;
 		std::string_view interactive_command;
 		std::string_view structured_protocol;
 		std::string_view resume_argument;
@@ -96,7 +94,6 @@ ProviderProfile ProviderProfileStore::DefaultGeminiProfile()
 	return MakeBuiltInCliProfile({
 	    .id = uam::provider_ids::kGeminiCli,
 	    .title = "Gemini CLI",
-	    .command_template = "gemini -r {resume} {flags} {prompt}",
 	    .interactive_command = "gemini",
 	    .structured_protocol = uam::provider_profile_constants::kProtocolGeminiAcp,
 	    .resume_argument = "-r",
@@ -113,7 +110,6 @@ ProviderProfile ProviderProfileStore::DefaultCodexProfile()
 	return MakeBuiltInCliProfile({
 	    .id = uam::provider_ids::kCodexCli,
 	    .title = "Codex CLI",
-	    .command_template = "codex exec {flags} {prompt}",
 	    .interactive_command = "codex --no-alt-screen",
 	    .structured_protocol = uam::provider_profile_constants::kProtocolCodexAppServer,
 	    .resume_argument = "",
@@ -130,7 +126,6 @@ ProviderProfile ProviderProfileStore::DefaultClaudeProfile()
 	return MakeBuiltInCliProfile({
 	    .id = uam::provider_ids::kClaudeCli,
 	    .title = "Claude Code",
-	    .command_template = "claude -p {prompt}",
 	    .interactive_command = "claude",
 	    .structured_protocol = uam::provider_profile_constants::kProtocolClaudeCodeStreamJson,
 	    .resume_argument = "--resume",
@@ -147,7 +142,6 @@ ProviderProfile ProviderProfileStore::DefaultOpenCodeProfile()
 	return MakeBuiltInCliProfile({
 	    .id = uam::provider_ids::kOpenCodeCli,
 	    .title = "OpenCode",
-	    .command_template = "opencode run --session {resume} {flags} {prompt}",
 	    .interactive_command = "opencode",
 	    .structured_protocol = uam::provider_profile_constants::kProtocolOpenCodeAcp,
 	    .resume_argument = "--session",
@@ -164,7 +158,6 @@ ProviderProfile ProviderProfileStore::DefaultCopilotProfile()
 	return MakeBuiltInCliProfile({
 	    .id = uam::provider_ids::kCopilotCli,
 	    .title = "GitHub Copilot CLI",
-	    .command_template = "copilot -p {prompt} {flags}",
 	    .interactive_command = "copilot",
 	    .structured_protocol = uam::provider_profile_constants::kProtocolCopilotAcp,
 	    .resume_argument = "--resume",

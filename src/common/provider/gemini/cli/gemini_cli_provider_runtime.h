@@ -6,8 +6,6 @@ class GeminiCliProviderRuntime final : public IProviderRuntime
 {
   public:
 	const char* RuntimeId() const override;
-	bool IsEnabled() const override;
-	const char* DisabledReason() const override;
 	std::vector<std::string> BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const override;
 	MessageRole RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const override;
 	std::vector<ChatSession> LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path& native_history_chats_dir, const ProviderRuntimeHistoryLoadOptions& options) const override;
@@ -24,6 +22,7 @@ class GeminiCliProviderRuntime final : public IProviderRuntime
 	bool UsesCliOutput(const ProviderProfile& profile) const override;
 	bool UsesGeminiPathBootstrap(const ProviderProfile& profile) const override;
 	std::vector<std::string> BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const override;
+	std::vector<std::string> BuildStructuredLaunchArgv(const ProviderProfile& profile, const ChatSession& chat) const override;
 	ProviderDiscoveryResult DiscoverChatSources(const ProviderProfile& profile) const override;
 };
 

@@ -1,7 +1,6 @@
 #include "common/provider/codex/cli/codex_cli_provider_runtime.h"
 
 #include "common/provider/codex/cli/codex_thread_id.h"
-#include "app/goal_service.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
 
@@ -20,15 +19,6 @@ const char* CodexCliProviderRuntime::RuntimeId() const
 	return uam::provider_ids::kCodexCli;
 }
 
-bool CodexCliProviderRuntime::IsEnabled() const
-{
-	return true;
-}
-
-const char* CodexCliProviderRuntime::DisabledReason() const
-{
-	return "";
-}
 
 std::vector<std::string> CodexCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
 {
@@ -72,15 +62,6 @@ bool CodexCliProviderRuntime::SaveHistory(const ProviderProfile&, const std::fil
 	return uam::provider_runtime_internal::SaveLocalChat(data_root, chat);
 }
 
-bool CodexCliProviderRuntime::UsesNativeOverlayHistory(const ProviderProfile&) const
-{
-	return false;
-}
-
-bool CodexCliProviderRuntime::SupportsGeminiJsonHistory(const ProviderProfile&) const
-{
-	return false;
-}
 
 std::vector<std::string> CodexCliProviderRuntime::BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const
 {
@@ -99,14 +80,15 @@ std::vector<std::string> CodexCliProviderRuntime::BuildWorkerArgv(const Provider
 		argv.push_back(arg);
 	}
 	
-	if (!model_id.empty())
-	{
-		argv.push_back("-m");
-		argv.push_back(std::string(model_id));
-	}
-	
+	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "-m", model_id);
+
 	argv.push_back(std::string(prompt));
 	return argv;
+}
+
+std::vector<std::string> CodexCliProviderRuntime::BuildStructuredLaunchArgv(const ProviderProfile&, const ChatSession&) const
+{
+	return {"codex", "app-server", "--listen", "stdio://"};
 }
 
 const IProviderRuntime& GetCodexCliProviderRuntime()

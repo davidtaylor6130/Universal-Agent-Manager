@@ -1,5 +1,6 @@
 #include "common/provider/gemini/cli/gemini_cli_provider_runtime.h"
 
+#include "common/config/approval_modes.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
 #include "common/platform/platform_services.h"
@@ -82,15 +83,6 @@ const char* GeminiCliProviderRuntime::RuntimeId() const
 	return uam::provider_ids::kGeminiCli;
 }
 
-bool GeminiCliProviderRuntime::IsEnabled() const
-{
-	return true;
-}
-
-const char* GeminiCliProviderRuntime::DisabledReason() const
-{
-	return "";
-}
 
 std::vector<std::string> GeminiCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
 {
@@ -260,12 +252,17 @@ std::vector<std::string> GeminiCliProviderRuntime::BuildWorkerArgv(const Provide
 	std::vector<std::string> argv = {"gemini"};
 	const std::vector<std::string> flags = uam::provider_runtime_internal::ProviderWorkerFlags(profile, settings);
 	uam::provider_runtime_internal::AppendArgs(argv, flags);
-	if (!model_id.empty())
-	{
-		argv.push_back("--model");
-		argv.push_back(std::string(model_id));
-	}
+	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", model_id);
 	argv.push_back("-p");
 	argv.push_back(std::string(prompt));
+	return argv;
+}
+
+std::vector<std::string> GeminiCliProviderRuntime::BuildStructuredLaunchArgv(const ProviderProfile&, const ChatSession& chat) const
+{
+	std::vector<std::string> argv = {"gemini", "--acp"};
+	const std::string approval_mode = uam::approval_modes::GeminiProviderApprovalModeFromAppModeId(uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode));
+	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--approval-mode", approval_mode);
+	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", chat.model_id);
 	return argv;
 }

@@ -1,6 +1,6 @@
 #include "app/provider_worker_command.h"
 
-// ProviderRuntimeRegistry is transitively included via provider_runtime_internal.h → provider_runtime.h
+#include "common/provider/provider_runtime.h"
 
 namespace uam
 {
