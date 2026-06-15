@@ -680,6 +680,10 @@ if(UAM_BUILD_TESTS)
   enable_testing()
   add_executable(uam_core_tests
     tests/core_tests.cpp
+    tests/memory_tests.cpp
+    tests/acp_session_tests.cpp
+    tests/terminal_tests.cpp
+    tests/goal_tests.cpp
     ${UAM_PLATFORM_IMPL_SOURCES}
     src/app/chat_domain_service.cpp
     src/app/chat_lifecycle_service.cpp
