@@ -8,4 +8,5 @@ export interface Provider {
   supportsCli?: boolean
   supportsStructured?: boolean
   structuredProtocol?: string
+  npmPackageName?: string
 }

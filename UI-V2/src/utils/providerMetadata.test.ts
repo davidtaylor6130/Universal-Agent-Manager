@@ -55,6 +55,15 @@ describe('providerMetadata', () => {
     expect(buildProviderCliInstallCommand('unknown-provider', '0.38.1')).toBe('npm install -g @google/gemini-cli@0.38.1')
   })
 
+  it('prefers live state npmPackageName over fallback table when provider is supplied (FE-1)', () => {
+    const liveProvider = { id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '', description: '', npmPackageName: '@google/gemini-cli-custom' }
+    expect(providerNpmPackageName('gemini-cli', liveProvider)).toBe('@google/gemini-cli-custom')
+    expect(buildProviderCliInstallCommand('gemini-cli', '1.0.0', liveProvider)).toBe('npm install -g @google/gemini-cli-custom@1.0.0')
+    // Falls back to static table when provider has no npmPackageName
+    const providerNoNpm = { id: 'codex-cli', name: 'Codex CLI', shortName: 'Codex', color: '', description: '' }
+    expect(providerNpmPackageName('codex-cli', providerNoNpm)).toBe('@openai/codex')
+  })
+
   it('fallback table provider ids match the canonical five CLI providers (FE-1 parity)', () => {
     const expectedIds = [DEFAULT_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID]
     for (const id of expectedIds) {

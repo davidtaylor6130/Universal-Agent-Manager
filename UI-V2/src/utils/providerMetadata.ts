@@ -132,10 +132,27 @@ export function providerUsesProtocol(provider: Provider | undefined, providerId:
   return normalizeCliProviderIdAlias(providerId) === metadata.id || provider?.structuredProtocol === metadata.structuredProtocol
 }
 
-export function providerNpmPackageName(providerId: string): string {
+export function isCodexProvider(provider?: Provider, providerId = ''): boolean {
+  return providerUsesProtocol(provider, providerId, CODEX_CLI_PROVIDER_ID)
+}
+
+export function isClaudeProvider(provider?: Provider, providerId = ''): boolean {
+  return providerUsesProtocol(provider, providerId, CLAUDE_CLI_PROVIDER_ID)
+}
+
+export function isCopilotProvider(provider?: Provider, providerId = ''): boolean {
+  return providerUsesProtocol(provider, providerId, COPILOT_CLI_PROVIDER_ID)
+}
+
+export function isOpenCodeProvider(provider?: Provider, providerId = ''): boolean {
+  return providerUsesProtocol(provider, providerId, OPENCODE_CLI_PROVIDER_ID)
+}
+
+export function providerNpmPackageName(providerId: string, provider?: Provider): string {
+  if (provider?.npmPackageName?.trim()) return provider.npmPackageName.trim()
   return providerMetadataForId(providerId).npmPackage
 }
 
-export function buildProviderCliInstallCommand(providerId: string, version: string): string {
-  return `npm install -g ${providerNpmPackageName(providerId)}@${version}`
+export function buildProviderCliInstallCommand(providerId: string, version: string, provider?: Provider): string {
+  return `npm install -g ${providerNpmPackageName(providerId, provider)}@${version}`
 }
