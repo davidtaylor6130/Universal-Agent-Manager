@@ -1336,52 +1336,8 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('renders pipe tables and leaves malformed table text alone', () => {
-    useAppStore.setState((state) => ({
-      messages: {
-        ...state.messages,
-        'chat-1': [
-          {
-            id: 'table-message',
-            sessionId: 'chat-1',
-            role: 'assistant',
-            content: '| Tool | Status |\n| --- | :---: |\n| `rg` | **ok** |\n\n| Bad | Row |\n| nope |',
-            createdAt: new Date('2026-01-01T00:00:02.000Z'),
-          },
-        ],
-      },
-      acpBindingBySessionId: {
-        ...state.acpBindingBySessionId,
-        'chat-1': {
-          ...state.acpBindingBySessionId['chat-1'],
-          lifecycleState: 'ready',
-          processing: false,
-          processingStartedAtMs: null,
-          turnEvents: [],
-          pendingPermission: null,
-        },
-      },
-    }))
-
-    const host = document.createElement('div')
-    document.body.appendChild(host)
-    const root = createRoot(host)
-
-    act(() => {
-      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
-    })
-
-    expect(host.querySelectorAll('table')).toHaveLength(1)
-    expect(host.querySelector('th')?.textContent).toBe('Tool')
-    expect(host.querySelector('td code')?.textContent).toBe('rg')
-    expect(host.querySelector('td strong')?.textContent).toBe('ok')
-    expect(host.textContent).toContain('| Bad | Row |')
-
-    act(() => {
-      root.unmount()
-    })
-    host.remove()
-  })
+  // Markdown rendering (tables, code fences, inline links) is covered directly in
+  // components/markdown/Markdown.test.tsx and markdownParsing.test.ts (FE-3 extraction).
 
   it('renders persisted assistant thoughts when no active ACP timeline is available', () => {
     useAppStore.setState((state) => {
