@@ -4,7 +4,7 @@
 
 Universal Agent Manager (UAM) is a native desktop AI chat and agent application. The C++ backend owns provider runtimes, local persistence, process management, and the CEF window. The React frontend in `UI-V2/` is loaded from bundled files inside CEF and talks to C++ through `window.cefQuery` and `window.uamPush`.
 
-The active release slice supports Gemini CLI and Codex CLI. Both have structured chat paths through ACP-style stdio runtimes and an xterm.js CLI fallback path.
+Five CLI provider runtimes are enabled by default: Gemini CLI, Codex CLI, Claude Code, OpenCode, and GitHub Copilot CLI. Each has a structured chat path through an ACP-style stdio runtime (Gemini ACP, Codex app-server, Claude stream-json, and generic ACP for OpenCode/Copilot) and an xterm.js CLI fallback path.
 
 ## Architecture
 
@@ -15,11 +15,18 @@ src/                                 C++ backend (CMake target: universal_agent_
     application.*                    App lifecycle, CEF init, polling loop
     chat_domain_service.*            Chat CRUD, selection, branching, sorting
     chat_lifecycle_service.*         Chat/folder delete and runtime cleanup
+    goal_service.*                   Goal mode: continuation/review prompt composition
+    git_worktree_service.*           Per-chat git worktree create/discard/port
+    markdown_store_service.*         Markdown notes store (list/create/reveal)
     memory_service.*                 Durable memory extraction and recall preface
+    memory_library_service.*         Memory library browse + scan candidates
     native_session_link_service.*    Native session/thread id linking
     persistence_coordinator.*        Save/load chats, folders, and settings
+    provider_model_catalog_service.* OpenCode/Codex model catalog (async refresh, cache)
     provider_resolution_service.*    Provider lookup for chats and defaults
+    provider_worker_command.*        Batch worker argv + PATH env (registry dispatch)
     runtime_orchestration_services.* Native history sync and provider request dispatch
+    vcs_commit_service.*             VCS status/diff/commit + commit-message generation
   cef/
     uam_cef_app.*                    CefApp, command line switches, renderer router
     uam_cef_client.*                 CefClient, navigation, context menu, keyboard
@@ -33,7 +40,11 @@ src/                                 C++ backend (CMake target: universal_agent_
     paths/                           Data-root and provider-history paths
     provider/gemini/                 Gemini CLI runtime and JSON history loader
     provider/codex/                  Codex CLI runtime and thread-id helpers
-    runtime/acp/                     Gemini ACP and Codex app-server session runtime
+    provider/claude/                 Claude Code CLI runtime
+    provider/opencode/               OpenCode CLI runtime and local history
+    provider/copilot/                GitHub Copilot CLI runtime
+    provider/runtime/                IProviderRuntime registry, internal helpers, build config
+    runtime/acp/                     ACP/app-server session runtime (gemini/codex/claude/opencode/copilot)
     runtime/terminal/                PTY launch, polling, lifecycle, sync helpers
     platform/                        macOS and Windows process/PTY services
 
@@ -59,30 +70,63 @@ UI-V2/                               React frontend (Vite + TypeScript)
 { "action": "<name>", "payload": { "...": "..." }, "requestId": "optional-id" }
 ```
 
-Current bridge actions:
+Current bridge actions, grouped by domain (the live dispatch table is `UamQueryHandler::DispatchAction` in `uam_query_handler.cpp`):
 
 | Action | Purpose |
 | --- | --- |
 | `getInitialState` | Return full serialized app state |
 | `selectSession` | Select a chat |
+| `getChatMessages` | Return messages for a chat |
 | `createSession` | Create a chat in a workspace folder with a provider |
+| `openNativeSessionChat` | Open a chat backed by a discovered native session |
 | `renameSession` | Rename a chat |
 | `setChatPinned` | Pin or unpin a chat |
 | `setChatProvider` | Switch between enabled providers |
 | `setChatModel` | Set ACP/Codex model id for a chat |
+| `setChatCodexOptions` | Set Codex per-chat options (reasoning effort, etc.) |
 | `setChatApprovalMode` | Set ACP approval mode (`default` or `plan`) |
+| `setChatAutoApproveCommands` | Toggle per-chat command auto-approval |
 | `setChatMemoryEnabled` | Toggle memory extraction/recall per chat |
 | `setMemorySettings` | Persist memory defaults, idle delay, recall budget, worker bindings |
+| `setProviderChatDefaults` | Persist per-provider default chat settings |
+| `setEditorSettings` | Persist external editor presets/associations |
+| `refreshCliProviderVersion` | Probe installed CLI provider version |
+| `applyCliProviderVersion` | Install/switch a CLI provider version |
+| `browseMarkdownStoreDirectory` | Native picker for the markdown store root |
+| `setMarkdownStoreDirectory` | Persist the markdown store root |
+| `listMarkdownStoreEntries` | List markdown store entries |
+| `createMarkdownStoreEntry` | Create a markdown store entry |
+| `revealMarkdownStoreEntry` | Reveal a markdown entry in the OS file manager |
 | `deleteSession` | Delete a chat and reconcile branch children |
 | `createFolder` | Create a one-level workspace folder |
 | `renameFolder` | Rename/update a workspace folder |
 | `deleteFolder` | Delete a folder and its chats |
 | `toggleFolder` | Collapse/expand a folder |
 | `browseFolderDirectory` | Native folder picker |
+| `searchChatMessages` | Full-text search across chat messages |
+| `listMemoryEntries` | List durable memory entries |
+| `createMemoryEntry` | Create a durable memory entry |
+| `deleteMemoryEntry` | Delete a durable memory entry |
+| `openMemoryRoot` | Open the memory root in the OS file manager |
+| `revealMemoryEntry` | Reveal a memory entry in the OS file manager |
+| `openWorkspaceDirectory` | Open the chat workspace in the OS file manager |
+| `openWorkspaceEditor` | Open the workspace in the configured editor |
+| `openWorkspaceTerminal` | Open the workspace in a terminal |
+| `getChatWorktreeStatus` | Return git worktree status for a chat |
+| `createChatWorktree` | Create a per-chat git worktree |
+| `discardChatWorktreeChanges` | Discard changes in a chat worktree |
+| `portChatWorktreeChanges` | Port worktree changes back to the base branch |
+| `getVcsCommitStatus` | Return VCS status for the commit panel |
+| `getVcsFileDiff` | Return a file diff for the commit panel |
+| `commitVcsChanges` | Commit staged changes |
+| `generateVcsCommitMessage` | Generate a commit message via a worker |
+| `listMemoryScanCandidates` | List chats eligible for a memory scan |
+| `scanCurrentChats` | Run a memory scan over current chats |
 | `startCliTerminal` | Start the xterm.js CLI fallback PTY |
 | `stopCliTerminal` | Stop a CLI terminal |
 | `resizeCliTerminal` | Resize the PTY |
 | `writeCliInput` | Send bytes to the PTY |
+| `stageChatAttachments` | Stage file attachments for the next prompt |
 | `sendAcpPrompt` | Send a structured chat prompt |
 | `cancelAcpTurn` | Cancel an active structured turn |
 | `resolveAcpPermission` | Resolve a provider permission request |
@@ -90,6 +134,10 @@ Current bridge actions:
 | `stopAcpSession` | Stop a structured provider process |
 | `writeClipboardText` | Native clipboard write, limited to 1 MiB |
 | `setTheme` | Persist UI theme |
+| `setGoal` | Create/update a chat goal |
+| `updateGoalStatus` | Update a goal's status |
+| `setActiveGoal` | Set the active goal for a chat |
+| `removeGoal` | Remove a goal |
 
 C++ returns raw JSON in `cb->Success()`. `UI-V2/src/ipc/cefBridge.ts` wraps that into the frontend response shape.
 
@@ -104,17 +152,25 @@ The store registers `window.uamPush` at module load time so early `OnLoadEnd` pu
 
 ## Provider Runtimes
 
-- `gemini-cli`: interactive command `gemini`, structured command `gemini --acp`, native history in Gemini JSON files under the workspace-mapped Gemini tmp directory.
-- `codex-cli`: interactive command `codex --no-alt-screen` or `codex resume --no-alt-screen <thread>`, structured command `codex app-server --listen stdio://`, local JSON chat storage.
+Provider ids: `gemini-cli`, `codex-cli`, `claude-cli`, `opencode-cli`, `copilot-cli` (aliases in `provider_ids.h`). Each runtime implements `IProviderRuntime` and is resolved through `ProviderRuntimeRegistry`. The interface owns `BuildInteractiveArgv` (terminal), `BuildStructuredLaunchArgv` (ACP/app-server launch), and `BuildWorkerArgv` (batch worker) so adding a provider plugs in at one place.
 
-CMake options:
+- `gemini-cli`: interactive `gemini`, structured `gemini --acp`, native history in Gemini JSON files under the workspace-mapped Gemini tmp directory.
+- `codex-cli`: interactive `codex --no-alt-screen` (or `codex resume --no-alt-screen <thread>`), structured `codex app-server --listen stdio://`, local JSON chat storage.
+- `claude-cli`: interactive `claude`, structured `claude -p --output-format stream-json --input-format stream-json --verbose`, local JSON chat storage.
+- `opencode-cli`: interactive `opencode`, structured `opencode acp` (generic ACP, `session/load`, model via `session/setModel`), batch worker `opencode run --model <id> <prompt>`, local JSON chat storage.
+- `copilot-cli`: interactive `copilot`, structured `copilot --acp --stdio` (generic ACP), local JSON chat storage.
+
+CMake options (all default `ON`):
 
 ```bash
 -DUAM_ENABLE_RUNTIME_GEMINI_CLI=ON
 -DUAM_ENABLE_RUNTIME_CODEX_CLI=ON
+-DUAM_ENABLE_RUNTIME_CLAUDE_CLI=ON
+-DUAM_ENABLE_RUNTIME_OPENCODE_CLI=ON
+-DUAM_ENABLE_RUNTIME_COPILOT_CLI=ON
 ```
 
-Both are enabled by default. Removed runtime flags for old structured providers, Claude, OpenCode, Ollama, and RAG intentionally fail configuration.
+Disabling a flag excludes that runtime from the registry. Removed runtime flags for old structured providers, Ollama, and RAG intentionally fail configuration.
 
 ## Build System
 

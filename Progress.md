@@ -72,7 +72,37 @@ Status: ✅ fully read · 🔶 partially read / skimmed · ⬜ queued · ➖ del
 - `src/app/memory_service.cpp` (1,457), `memory_library_service.cpp` (699), `goal_service.cpp` (567), `vcs_commit_service.cpp` (936), `git_worktree_service.cpp` (508), `chat_domain_service.cpp` (661), `chat_lifecycle_service.cpp` (545), `native_session_link_service.cpp` (513), `persistence_coordinator.cpp`, `chat_repository.cpp` (1,343), `settings_store.cpp` (574), `json_runtime.h` (850), `gemini_history_loader.cpp` (319), CEF client/app/security files, `SettingsModal.tsx` (1,645), `MemoryLibraryModal.tsx` (801), `FolderTree.tsx` (796), `CLIView.tsx` (398).
 - These were grepped for provider references where relevant but not line-audited. A follow-up audit wave should cover the persistence + memory cluster next (highest data-loss risk).
 
+## Implementation status (2026-06-14)
+
+Verified after each change: `ctest` (C++) and `npm --prefix UI-V2 run test && run build` (frontend) all green.
+
+Completed:
+- **RT-1 / RT-2** — all model-catalog file/network I/O removed from `state_serializer.cpp`; serializer now reads the in-memory `ProviderModelCatalogService` snapshot only (async refresh + mtime-cached config via the app polling loop). Guarded `Initialize` against a missing `opencode.json` (was a startup crash). Parse helper moved to the service; zen-model tests retargeted/driven through the service.
+- **OC-3** — gemini interactive argv now appends `--model <id>` (trimmed) via the generic `BuildInteractiveArgv`; core test added.
+- **RT-3** — structured-launch argv moved into each runtime via `IProviderRuntime::BuildStructuredLaunchArgv`; `BuildAcpLaunchArgv` is now a one-line registry call; dead approval-mode helpers removed; coverage test added for all five providers.
+- **PR-5 (finish)** — the dead `BuildCommand`/template pipeline had been removed from production but left the test binary uncompilable. Removed all dangling test references; deleted the dead `command_template` builder field + per-profile initializers and the unused legacy settings key.
+- **PR-6 (regression fix)** — worker argv had stopped trimming the model id when the if-chain moved into runtimes; restored `AppendTrimmedOptionValue` in all five `BuildWorkerArgv`.
+- **RT-6 (regression fix)** — `TryAttachLocalHistorySessionFromChats` / `TryAttachOpenCodeLocalHistorySessionFromChatFile` were missing their trailing `return true;` after a successful rebind (UB / `-Wreturn-type`); fixed.
+- **OC-6 (finish)** — sidebar normalization now stamps blank-provider legacy chats to `opencode-cli` (the overlay no longer carried it once `LoadHistory` stopped stamping); stale runtime-load test updated to the new contract.
+- **FE-3** — markdown renderer extracted to `components/markdown/Markdown.tsx` + `markdownParsing.ts`, with dedicated unit/component tests; ChatView imports `MarkdownContent`.
+- **FE-4** — push buffers/timers moved to `store/push/pushBuffers.ts` with `resetPushBuffersForTests()`.
+- **FE-5** — `is{Codex,Claude,Copilot,OpenCode}Provider` helpers moved to `providerMetadata.ts`.
+- **DOC-1** — CLAUDE.md rewritten: five providers, full `src/app` service tree, complete 64-action IPC table, accurate CMake flags + provider commands.
+- **PR-7** — documented that provider profiles are build-defined (reset on startup, never persisted).
+- **RT-7** — left inline with an explanatory comment (report-sanctioned fallback: branches differ in data source and the gemini branch has a side effect, so a single virtual is not a clean fit).
+- **RT-5 / OC-7** — tightened opencode's `ProviderRecognizesSubagentTool` to use underscore-aware word boundaries (prevents "task_runner" from matching "task"); added superstring negative tests (`task_status`, `multitasking_helper`, `delegated`, `subtasker`). Claude override dropped per report guidance (claude uses separate `HandleClaudeMessage` path, not `HandleSessionUpdate`).
+
+- **OC-5** — `IsEnabled`, `DisabledReason`, `UsesNativeOverlayHistory` given base-class defaults in `IProviderRuntime`; 4 redundant overrides removed from claude/codex/opencode/copilot and gemini; `UnsupportedProviderRuntime` trimmed to only override values that differ from defaults; stale `goal_service.h`/`string_utils.h` includes cleaned up.
+- **PR-4** — `MergeProviderSettingsWithoutGenericYolo` renamed to `MergeProviderSettingsNeverYolo`; copilot interactive path standardized on mechanism B (`kCopilotAllowAllFlag` via `BuildProviderFlagsArgv`); dead `ProviderWorkerFlags`/`AppendProviderWorkerFlagsAndModel`/`AppendProviderWorkerPrompt` helpers removed from `provider_worker_command.h`; copilot yolo unit tests added (on → once, off → absent).
+- **FE-1** — `npmPackageName` added to `Provider` type and threaded through `providerFromCppProvider` + `providersEquivalent`; `providerNpmPackageName`/`buildProviderCliInstallCommand` accept optional `Provider` and prefer live state; parity tests in `providerMetadata.test.ts`; C++ test `StateSerializerProviderJsonIncludesNpmPackageAndShortName` pins both sides of contract.
+- **RT-4** (already done in prior session) — `SendStartupModelIfNeeded` already checks `IsGenericAcpSession` covering copilot; confirmed.
+- **FE-2** (already done in prior session) — all five providers in `initialProviders`; confirmed.
+
+Not done (large, explicitly multi-PR per the report's Section 4 rules — each needs its own staged PRs, not a single pass):
+- **RT-8** — header→.cpp splits for the heavyweight inline headers (one header per PR).
+- **MO-1..MO-7** — monolith decompositions of `useAppStore.ts`, `acp_session_runtime.cpp`, `ChatView.tsx`, `uam_query_handler.cpp`, `core_tests.cpp`, `runtime_orchestration_services.cpp`, and the platform impls. Note FE-3/FE-4/FE-5 already landed slices of MO-3/MO-1.
+
 ## Repo-level observations
 
-- Branch: `Human-Code-improvement-&-Simplicatation`; working tree has 10 modified files (pre-existing, not from this audit).
-- CLAUDE.md is stale: says only Gemini + Codex are in the release slice and that Claude/OpenCode runtime flags were removed; in reality all five providers (gemini, codex, claude, opencode, copilot) exist and are registered.
+- Branch: `Human-Code-improvement-&-Simplicatation`; working tree has 32 modified files + 3 untracked directories (FE-3 markdown extraction, FE-4 push buffers, MO-1 cpp/types.ts — staged but not yet committed).
+- CLAUDE.md is stale: says only Gemini + Codex are in the release slice and that Claude/OpenCode runtime flags were removed; in reality all five providers (gemini, codex, claude, opencode, copilot) exist and are registered. **(Fixed — see DOC-1 above.)**
