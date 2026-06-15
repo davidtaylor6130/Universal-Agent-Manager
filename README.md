@@ -1,19 +1,16 @@
-# Universal Agent Manager
+<h1>
+  <img src="assets/app_icon.png" alt="Universal Agent Manager icon" width="36" valign="middle" />
+  Universal Agent Manager (UAM)
+</h1>
 
-Universal Agent Manager is a macOS and Windows desktop app that runs a React/Vite UI inside CEF and connects it to agent CLIs through C++ runtime services.
+**A local-first macOS and Windows desktop app for running CLI-driven AI agents across multiple providers from one interface.**
 
-The app is focused on local CLI-backed agent sessions:
+Universal Agent Manager runs a React/Vite UI inside CEF (Chromium Embedded Framework) and connects it to agent CLIs through C++ runtime services. It is focused on local, CLI-backed agent sessions with no cloud backend, telemetry, or sync service.
 
-- Built-in CLI providers for Gemini, Codex, Claude Code, OpenCode, and GitHub Copilot.
-- Structured chat sessions over provider protocols: Gemini ACP, Codex app-server stdio, Claude stream JSON, OpenCode ACP, and Copilot ACP.
-- xterm.js terminal fallback sessions for interactive provider CLIs.
-- Chat create, select, rename, delete, pin, branch, provider switch, model selection, approval mode, save, and resume metadata.
-- One-level workspace folders used for provider working directories and Gemini history discovery.
-- Optional git worktree isolation, status, diff, commit, discard, and port workflows for chat workspaces.
-- Local chat metadata, app settings, folders, theme, window/sidebar state, markdown store entries, and durable memory files.
-- Multiple concurrent CLI and structured runtime sessions on macOS and Windows.
-
-Removed or intentionally unsupported surfaces include RAG engines, local model engines, templates, Dear ImGui, Linux builds, and checked-in frontend build output.
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue)](https://github.com/davidtaylor6130/Universal-Agent-Manager)
+[![Language](https://img.shields.io/badge/language-C%2B%2B20-green)](https://github.com/davidtaylor6130/Universal-Agent-Manager)
+[![UI](https://img.shields.io/badge/UI-React%20%2B%20CEF-61dafb)](https://github.com/davidtaylor6130/Universal-Agent-Manager)
+[![License](https://img.shields.io/badge/license-UAML%20v1.0-orange)](LICENSE)
 
 ## Screenshots
 
@@ -24,6 +21,73 @@ Dark theme:
 Light theme:
 
 ![Universal Agent Manager light theme](docs/images/V2.0.1-Light.png)
+
+## Key Features
+
+- **Multi-provider** — Built-in CLI providers for Gemini, Codex, Claude Code, OpenCode, and GitHub Copilot, switchable per chat.
+- **Two session paths per provider** — A structured chat path over each provider's protocol, and an xterm.js terminal fallback for the raw interactive CLI.
+- **Universal chat history** — Chats are stored in UAM's own normalized format, so you can start with one provider and continue with another.
+- **Local-first storage** — Chat metadata, settings, folders, theme, window/sidebar state, markdown store, and durable memory are all stored locally as files. No cloud, no telemetry.
+- **Git worktree isolation** — Optional per-chat git worktree create, status, diff, commit, discard, and port workflows.
+- **Workspace folders** — One-level workspace folders drive provider working directories and Gemini history discovery.
+- **Durable memory** — Idle extraction and manual scans write durable memory files, with workspace-local memories under `<workspace>/.codex/memories/`.
+- **Concurrent sessions** — Multiple CLI and structured runtime sessions run side by side on macOS and Windows.
+
+Removed or intentionally unsupported surfaces include RAG engines, local model engines, templates, Dear ImGui, Linux builds, and checked-in frontend build output.
+
+## Support Matrix
+
+Each provider has a structured chat path (over an ACP-style stdio protocol) and an xterm.js CLI fallback path. Native history is read from each provider's local store.
+
+### Provider Feature Support (Mac)
+
+| Provider | ID | Structured | CLI Fallback | Native History | Interactive |
+|----------|:--:|:---------:|:------------:|:--------------:|:-----------:|
+| **Gemini CLI** | `gemini-cli` | ✅ | ✅ | ✅ | 🔜 |
+| **Codex CLI** | `codex-cli` | ✅ | ✅ | ✅ | 🔜 |
+| **Claude Code** | `claude-cli` | ✅ | ✅ | ✅ | 🔜 |
+| **OpenCode CLI** | `opencode-cli` | ✅ | ✅ | ✅ | 🔜 |
+| **GitHub Copilot CLI** | `copilot-cli` | ✅ | ✅ | ✅ | 🔜 |
+
+### Provider Feature Support (Windows)
+
+| Provider | ID | Structured | CLI Fallback | Native History | Interactive |
+|----------|:--:|:---------:|:------------:|:--------------:|:-----------:|
+| **Gemini CLI** | `gemini-cli` | ✅ | 🔜🛠️ | 🔜🛠️ | 🔜 |
+| **Codex CLI** | `codex-cli` | ✅ | 🔜🛠️ | 🔜🛠️ | 🔜 |
+| **Claude Code** | `claude-cli` | ✅ | 🔜🛠️ | 🔜🛠️ | 🔜 |
+| **OpenCode CLI** | `opencode-cli` | ✅ | 🔜🛠️ | 🔜🛠️ | 🔜 |
+| **GitHub Copilot CLI** | `copilot-cli` | ✅ | 🔜🛠️ | 🔜🛠️ | 🔜 |
+
+> Note: the primary development environment is macOS, so Windows features are ported and confirmed afterward. The Windows column is updated as each feature is verified.
+
+### Symbol Legend
+
+| Symbol | Status | Meaning |
+|:------:|:------:|---------|
+| ✅ | **Current** | Implemented and working |
+| ❌ | **Current** | Not available for this provider |
+| 🔜 | **Future** | Planned, not yet implemented |
+| 🔜🛠️ | **Future** | In active development |
+| 🚫 | **Future** | Explicitly not planned |
+
+### View Definitions
+
+| View | Description |
+|------|-------------|
+| **Structured View** | Chat-bubble UI over the provider's structured protocol (Gemini ACP, Codex app-server stdio, Claude stream JSON, OpenCode/Copilot ACP). Tool calls, approvals, and model selection surface in the UI with persisted history. |
+| **CLI View** | Embedded xterm.js terminal running the provider's CLI directly over a PTY (openpty on macOS, ConPTY on Windows). Full terminal experience with real-time streaming output. |
+| **Interactive** *(future)* | CLI power with a polished UI overlay — stream terminal output into chat bubbles, capture tool calls, and show progress while keeping full CLI capability underneath. |
+
+### What is Universal Chat History?
+
+UAM stores chats in its own normalized format, which enables provider switching:
+
+- **Start a chat with Gemini CLI**
+- **Switch mid-conversation to Claude or Codex**
+- **Continue the same chat with a different provider**
+
+Context and conversation history are preserved across providers. Native provider history (e.g. Gemini JSON) is used only while a session is active; long-term storage always lives in UAM's local format under `<data-root>/chats/`.
 
 ## Requirements
 
@@ -58,7 +122,7 @@ cmake -S . -B Builds
 cmake --build Builds --config Release
 ```
 
-Provider runtime flags:
+Provider runtime flags (all default `ON`; at least one must be enabled):
 
 ```bash
 cmake -S . -B Builds \
@@ -69,7 +133,7 @@ cmake -S . -B Builds \
   -DUAM_ENABLE_RUNTIME_COPILOT_CLI=ON
 ```
 
-All built-in provider runtimes are enabled by default. At least one provider runtime must be enabled.
+Disabling a flag excludes that runtime from the binary entirely, so it cannot be invoked. The removed structured, Ollama, and RAG runtime flags intentionally fail configuration.
 
 Gemini-and-Codex-only build:
 
@@ -207,6 +271,22 @@ Current bridge capabilities include:
 - Terminal sessions: start, stop, resize, and write xterm.js CLI input.
 - Structured sessions: stage attachments, send prompts, cancel turns, resolve permission and user-input requests, and stop ACP sessions.
 
+## Project Goals
+
+- Local-first operation with file-based state
+- Auditable behavior with explicit command execution
+- Provider-native history when an adapter is available
+- No cloud backend, no telemetry, no sync service
+- Reproducible workspace-driven CLI runs
+- A single repeatable interface so swapping between AI providers is hassle-free
+
+## Platform Notes
+
+| Platform | Minimum Version | Terminal Implementation |
+|----------|-----------------|-------------------------|
+| macOS | Current | xterm.js over a PTY (openpty / fork / execvp) |
+| Windows | Windows 10 1809+ | xterm.js over ConPTY (CreatePseudoConsole) |
+
 ## Manual Release Checks
 
 1. Create chats for every enabled provider in different workspace folders.
@@ -218,3 +298,13 @@ Current bridge capabilities include:
 7. Toggle memory settings and verify durable memory files are only written after idle extraction or manual scan.
 8. Exercise git worktree create, discard, port, status, diff, and commit flows in a git workspace.
 9. Restart and verify sidebar chats restore from local metadata plus Gemini history discovery.
+
+## License
+
+This project is licensed under the Universal Agent Manager License (UAML) v1.0.
+See [LICENSE](LICENSE) for full terms.
+
+- Copyright remains with David Taylor (davidtaylor6130)
+- Free to use and modify
+- Cannot be sold as-is
+- Redistribution requires attribution
