@@ -90,6 +90,10 @@ namespace uam
 		terminal.attached_session_id = ResolveProviderInteractiveResumeId(app, chat, provider);
 		terminal.linked_files_snapshot = chat.linked_files;
 
+		// RT-7: pre-launch session-id snapshot is per-provider. Unlike RT-3/PR-6 (pure argv),
+		// these branches differ in data source (native history dir vs local chats vs codex index)
+		// and the gemini branch has a side effect (ExportChatToNative), so it is intentionally
+		// left inline rather than forced behind a single runtime virtual.
 		if (chat_uses_native_history)
 		{
 			ChatHistorySyncService().ExportChatToNative(app, chat);

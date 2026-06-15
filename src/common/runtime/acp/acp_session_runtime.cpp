@@ -774,23 +774,6 @@ namespace uam
 			                                  });
 		}
 
-		std::string LaunchApprovalMode(const ChatSession& chat)
-		{
-			return uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode);
-		}
-
-		std::string GeminiLaunchApprovalMode(const ChatSession& chat)
-		{
-			const std::string mode = LaunchApprovalMode(chat);
-			return uam::approval_modes::GeminiProviderApprovalModeFromAppModeId(mode);
-		}
-
-		std::string ClaudeLaunchApprovalMode(const ChatSession& chat)
-		{
-			const std::string mode = LaunchApprovalMode(chat);
-			return mode;
-		}
-
 		std::string AppApprovalModeId(std::string_view mode_id)
 		{
 			return uam::approval_modes::AppApprovalModeFromProviderModeId(uam::strings::TrimAsciiView(mode_id));
@@ -811,35 +794,8 @@ namespace uam
 
 		std::vector<std::string> BuildAcpLaunchArgv(const ProviderProfile& provider, const ChatSession& chat)
 		{
-			const std::string provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider.id);
-			if (provider_id == uam::provider_ids::kCodexCli)
-			{
-				return {"codex", "app-server", "--listen", "stdio://"};
-			}
-
-			if (provider_id == uam::provider_ids::kOpenCodeCli)
-			{
-				return {"opencode", "acp"};
-			}
-
-			if (provider_id == uam::provider_ids::kCopilotCli)
-			{
-				return {"copilot", "--acp", "--stdio"};
-			}
-
-			if (provider_id == uam::provider_ids::kClaudeCli)
-			{
-				std::vector<std::string> argv = {"claude", "-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose"};
-				uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--permission-mode", ClaudeLaunchApprovalMode(chat));
-				uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", chat.model_id);
-				uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--resume", chat.native_session_id);
-				return argv;
-			}
-
-			std::vector<std::string> argv = {"gemini", "--acp"};
-			uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--approval-mode", GeminiLaunchApprovalMode(chat));
-			uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", chat.model_id);
-			return argv;
+			// RT-3: each provider owns its structured-launch argv via the runtime registry.
+			return ProviderRuntimeRegistry::Resolve(provider).BuildStructuredLaunchArgv(provider, chat);
 		}
 
 		std::string JoinAcpArgvForDiagnostics(const std::vector<std::string>& argv)

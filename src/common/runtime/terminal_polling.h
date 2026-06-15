@@ -328,6 +328,7 @@ namespace uam
 			return false;
 		}
 
+		return true;
 	}
 
 
@@ -397,6 +398,7 @@ namespace uam
 			return false;
 		}
 
+		return true;
 	}
 
 	inline bool ShouldAttemptOpenCodeLocalHistoryRebind(const ProviderProfile& terminal_provider, const uam::CliTerminalState& terminal, const std::vector<ChatSession>& matching_chats)
