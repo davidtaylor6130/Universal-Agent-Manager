@@ -1,28 +1,79 @@
 #include "persistence_coordinator.h"
 
-#include "app/application_core_helpers.h"
 #include "app/chat_domain_service.h"
-#include "app/provider_resolution_service.h"
-#include "app/runtime_local_service.h"
 
 #include "common/paths/app_paths.h"
+#include "common/paths/path_utils.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/config/frontend_actions.h"
-#include "common/chat/chat_repository.h"
-#include "common/rag/rag_app_helpers.h"
-#include "common/platform/platform_services.h"
-#include "common/provider/provider_profile.h"
+#include "common/config/settings_normalization.h"
 #include "common/config/settings_store.h"
-#include "common/ui/modals/modal_window_state.h"
-#include "common/ui/theme/theme_choice.h"
+#include "common/platform/platform_services.h"
+#include "common/provider/runtime/provider_build_config.h"
+#include "common/utils/string_utils.h"
 
+#include <algorithm>
 #include <cerrno>
-#include <cstdio>
 #include <cstring>
-#include <sstream>
+#include <optional>
+#include <string_view>
 
 namespace fs = std::filesystem;
-using uam::AppState;
+
+namespace
+{
+	constexpr const char* kDefaultDataDirectoryName = "data";
+	constexpr const char* kFallbackDataRootDirectoryName = "universal_agent_manager_data";
+	constexpr const char* kChatsDirectoryName = "chats";
+	constexpr const char* kProviderCliNoOutputMessage = "(Provider CLI returned no output.)";
+	constexpr const char* kProviderCliExitCodePrefix = "\n\n[Provider CLI exited with code ";
+
+	void SetError(std::string* error_out, std::string_view message)
+	{
+		if (error_out != nullptr)
+		{
+			error_out->assign(message);
+		}
+	}
+
+	void NormalizeProviderCliSettings(AppSettings& settings)
+	{
+		settings.active_provider_id = provider_build_config::EnabledCliProviderIdOrFirst(settings.active_provider_id);
+		settings.runtime_backend = "provider-cli";
+		settings.gemini_yolo_mode = settings.provider_yolo_mode;
+		settings.gemini_extra_flags = uam::strings::Trim(settings.provider_extra_flags);
+		settings.provider_extra_flags = settings.gemini_extra_flags;
+		settings.ui_theme = uam::settings::NormalizeThemeId(settings.ui_theme);
+		settings.cli_idle_timeout_seconds = std::clamp(settings.cli_idle_timeout_seconds, uam::settings::kMinCliIdleTimeoutSeconds, uam::settings::kMaxCliIdleTimeoutSeconds);
+		uam::settings::ClampWindowSettings(settings);
+	}
+
+	bool EnsureDirectory(const fs::path& path, const std::string& label, std::string* error_out)
+	{
+		std::error_code error;
+		uam::paths::CreateDirectoriesNoThrow(path, &error);
+		if (!error)
+		{
+			return true;
+		}
+
+		SetError(error_out, "Failed to create " + label + " '" + path.string() + "': " + error.message());
+		return false;
+	}
+
+	std::string ProviderLaunchFailureMessage()
+	{
+		std::string message = "Failed to launch provider CLI command";
+		if (errno != 0)
+		{
+			message += " (";
+			message += std::strerror(errno);
+			message += ")";
+		}
+		message += ".";
+		return message;
+	}
+} // namespace
 
 std::string PersistenceCoordinator::ExecuteCommandCaptureOutput(const std::string& command) const
 {
@@ -31,16 +82,7 @@ std::string PersistenceCoordinator::ExecuteCommandCaptureOutput(const std::strin
 
 	if (!result.error.empty() && result.output.empty())
 	{
-		std::ostringstream message;
-		message << "Failed to launch provider CLI command";
-
-		if (errno != 0)
-		{
-			message << " (" << std::strerror(errno) << ")";
-		}
-
-		message << ".";
-		return message.str();
+		return ProviderLaunchFailureMessage();
 	}
 
 	std::string output = result.output;
@@ -48,12 +90,12 @@ std::string PersistenceCoordinator::ExecuteCommandCaptureOutput(const std::strin
 
 	if (output.empty())
 	{
-		output = "(Provider CLI returned no output.)";
+		output = kProviderCliNoOutputMessage;
 	}
 
 	if (exit_code != 0)
 	{
-		output += "\n\n[Provider CLI exited with code " + std::to_string(exit_code) + "]";
+		output += kProviderCliExitCodePrefix + std::to_string(exit_code) + "]";
 	}
 
 	return output;
@@ -61,130 +103,58 @@ std::string PersistenceCoordinator::ExecuteCommandCaptureOutput(const std::strin
 
 fs::path PersistenceCoordinator::TempFallbackDataRootPath() const
 {
-	std::error_code ec;
-	const fs::path temp = fs::temp_directory_path(ec);
-
-	if (!ec)
+	if (const std::optional<fs::path> temp = uam::paths::TempDirectoryPathNoThrow())
 	{
-		return temp / "universal_agent_manager_data";
+		return *temp / kFallbackDataRootDirectoryName;
 	}
 
-	return fs::path("data");
+	return fs::path(kDefaultDataDirectoryName);
 }
 
 bool PersistenceCoordinator::EnsureDataRootLayout(const fs::path& data_root, std::string* error_out) const
 {
-	std::error_code ec;
-	fs::create_directories(data_root, ec);
-
-	if (ec)
+	if (!EnsureDirectory(data_root, "data root", error_out))
 	{
-		if (error_out != nullptr)
-		{
-			*error_out = "Failed to create data root '" + data_root.string() + "': " + ec.message();
-		}
-
 		return false;
 	}
 
-	fs::create_directories(data_root / "chats", ec);
-
-	if (ec)
+	if (!EnsureDirectory(data_root / kChatsDirectoryName, "chats dir", error_out))
 	{
-		if (error_out != nullptr)
-		{
-			*error_out = "Failed to create chats dir '" + (data_root / "chats").string() + "': " + ec.message();
-		}
-
 		return false;
 	}
 
 	return true;
 }
 
-void PersistenceCoordinator::SaveSettings(AppState& app) const
+bool PersistenceCoordinator::SaveSettings(uam::AppState& app) const
 {
-	app.settings.ui_theme = NormalizeThemeChoice(app.settings.ui_theme);
-	app.settings.runtime_backend = ProviderResolutionService().ActiveProviderUsesInternalEngine(app) ? "ollama-engine" : "provider-cli";
-#if UAM_ENABLE_ENGINE_RAG
-	app.settings.vector_db_backend = (app.settings.vector_db_backend == "none") ? "none" : "ollama-engine";
-#else
-	app.settings.vector_db_backend = "none";
-	app.settings.selected_vector_model_id.clear();
-#endif
-	app.settings.selected_model_id = Trim(app.settings.selected_model_id);
-	app.settings.models_folder_directory = Trim(app.settings.models_folder_directory);
-	app.settings.selected_vector_model_id = Trim(app.settings.selected_vector_model_id);
-	app.settings.vector_database_name_override = NormalizeVectorDatabaseName(app.settings.vector_database_name_override);
-	app.settings.cli_idle_timeout_seconds = std::clamp(app.settings.cli_idle_timeout_seconds, 30, 3600);
-	app.settings.rag_top_k = std::clamp(app.settings.rag_top_k, 1, 20);
-	app.settings.rag_max_snippet_chars = std::clamp(app.settings.rag_max_snippet_chars, 120, 4000);
-	app.settings.rag_max_file_bytes = std::clamp(app.settings.rag_max_file_bytes, 16 * 1024, 20 * 1024 * 1024);
-	app.settings.rag_scan_max_tokens = std::clamp(app.settings.rag_scan_max_tokens, 0, 32768);
-	ClampWindowSettings(app.settings);
-	SyncRagServiceConfig(app);
-
-	if (app.opencode_bridge.running)
+	NormalizeProviderCliSettings(app.settings);
+	ChatDomainService().RefreshRememberedSelection(app);
+	if (!SettingsStore::Save(AppPaths::SettingsFilePath(app.data_root), app.settings, app.center_view_mode))
 	{
-		fs::path desired_model_folder = NormalizeAbsolutePath(ResolveRagModelFolder(app));
-
-		if (desired_model_folder.empty())
-		{
-			desired_model_folder = ResolveRagModelFolder(app);
-		}
-
-		const std::string desired_model = Trim(app.settings.selected_model_id);
-
-		if (app.opencode_bridge.model_folder != desired_model_folder.string() || app.opencode_bridge.requested_model != desired_model)
-		{
-			std::string bridge_error;
-
-			if (!RuntimeLocalService().RestartLocalBridgeIfModelChanged(app, &bridge_error) && !bridge_error.empty())
-			{
-				app.status_line = bridge_error;
-			}
-		}
+		app.status_line = "Failed to persist settings.";
+		return false;
 	}
 
-	ChatDomainService().RefreshRememberedSelection(app);
-	SettingsStore::Save(AppPaths::SettingsFilePath(app.data_root), app.settings, app.center_view_mode);
+	return true;
 }
 
-void PersistenceCoordinator::LoadSettings(AppState& app) const
+void PersistenceCoordinator::LoadSettings(uam::AppState& app) const
 {
 	SettingsStore::Load(AppPaths::SettingsFilePath(app.data_root), app.settings, app.center_view_mode);
-#if UAM_ENABLE_ENGINE_RAG
-	app.settings.vector_db_backend = (app.settings.vector_db_backend == "none") ? "none" : "ollama-engine";
-#else
-	app.settings.vector_db_backend = "none";
-	app.settings.selected_vector_model_id.clear();
-#endif
-	app.settings.selected_model_id = Trim(app.settings.selected_model_id);
-	app.settings.models_folder_directory = Trim(app.settings.models_folder_directory);
-	app.settings.selected_vector_model_id = Trim(app.settings.selected_vector_model_id);
-	app.settings.vector_database_name_override = NormalizeVectorDatabaseName(app.settings.vector_database_name_override);
-	app.settings.cli_idle_timeout_seconds = std::clamp(app.settings.cli_idle_timeout_seconds, 30, 3600);
-
-	if (Trim(app.settings.prompt_profile_root_path).empty())
-	{
-		app.settings.prompt_profile_root_path = AppPaths::DefaultGeminiUniversalRootPath().string();
-	}
-
-	SyncRagServiceConfig(app);
-	app.rag_manual_query_max = std::clamp(app.settings.rag_top_k, 1, 20);
-	app.rag_manual_query_min = 1;
+	NormalizeProviderCliSettings(app.settings);
 }
 
-void PersistenceCoordinator::LoadFrontendActions(AppState& app) const
+void PersistenceCoordinator::LoadFrontendActions(uam::AppState& app) const
 {
 	std::string error;
-	const fs::path l_actionMapPath = app.data_root / "frontend_actions.txt";
+	const fs::path action_map_path = app.data_root / "frontend_actions.txt";
 
-	if (!uam::LoadFrontendActionMap(l_actionMapPath, app.frontend_actions, &error))
+	if (!uam::LoadFrontendActionMap(action_map_path, app.frontend_actions, &error))
 	{
 		app.frontend_actions = uam::DefaultFrontendActionMap();
 
-		if (!uam::SaveFrontendActionMap(l_actionMapPath, app.frontend_actions, &error) && !error.empty())
+		if (!uam::SaveFrontendActionMap(action_map_path, app.frontend_actions, &error) && !error.empty())
 		{
 			app.status_line = "Frontend action map reset, but saving failed: " + error;
 		}

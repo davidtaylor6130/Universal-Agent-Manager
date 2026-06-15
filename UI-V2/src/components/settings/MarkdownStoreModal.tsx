@@ -1,0 +1,166 @@
+import { useEffect, useMemo, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
+import { useAppStore } from '../../store/useAppStore'
+import type { MarkdownStoreDraft, MarkdownStoreEntry } from '../../types/markdownStore'
+
+const EMPTY_DRAFT: MarkdownStoreDraft = {
+  title: '',
+  maker: '',
+  review: '',
+  body: '',
+}
+
+export function MarkdownStoreModal() {
+  const activeSessionId = useAppStore((s) => s.activeSessionId)
+  const markdownStoreDirectory = useAppStore((s) => s.markdownStoreDirectory)
+  const entries = useAppStore(useShallow((s) => s.markdownStoreEntries))
+  const loading = useAppStore((s) => s.markdownStoreLoading)
+  const error = useAppStore((s) => s.markdownStoreError)
+  const close = useAppStore((s) => s.closeMarkdownStore)
+  const refresh = useAppStore((s) => s.refreshMarkdownStore)
+  const createEntry = useAppStore((s) => s.createMarkdownStoreEntry)
+  const revealEntry = useAppStore((s) => s.revealMarkdownStoreEntry)
+  const attachEntry = useAppStore((s) => s.attachMarkdownStoreEntry)
+  const [search, setSearch] = useState('')
+  const [isAdding, setIsAdding] = useState(false)
+  const [draft, setDraft] = useState<MarkdownStoreDraft>(EMPTY_DRAFT)
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') close()
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [close])
+
+  const filtered = useMemo(() => {
+    const query = search.trim().toLowerCase()
+    if (!query) return entries
+    return entries.filter((entry) =>
+      [entry.title, entry.maker, entry.review, entry.preview, entry.filePath]
+        .some((value) => value.toLowerCase().includes(query))
+    )
+  }, [entries, search])
+
+  const submitDraft = async () => {
+    if (!draft.title.trim() || !draft.body.trim()) return
+    setSubmitting(true)
+    const ok = await createEntry({
+      title: draft.title.trim(),
+      maker: draft.maker.trim(),
+      review: draft.review.trim(),
+      body: draft.body.trim(),
+    })
+    setSubmitting(false)
+    if (ok) {
+      setDraft(EMPTY_DRAFT)
+      setIsAdding(false)
+    }
+  }
+
+  const attach = (entry: MarkdownStoreEntry) => {
+    if (!activeSessionId) return
+    attachEntry(activeSessionId, entry)
+    close()
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0, 0, 0, 0.45)' }}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Markdown Store"
+        className="w-full max-w-5xl max-h-[86vh] flex flex-col overflow-hidden"
+        style={{
+          background: 'var(--surface)',
+          border: '1px solid var(--border-bright)',
+          borderRadius: 12,
+          boxShadow: '0 24px 70px rgba(0, 0, 0, 0.38)',
+        }}
+      >
+        <div className="flex items-start justify-between gap-4 px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
+          <div className="min-w-0">
+            <div className="text-base font-semibold" style={{ color: 'var(--text)' }}>Markdown Store</div>
+            <div className="text-xs mt-1 truncate" style={{ color: 'var(--text-3)' }}>
+              {markdownStoreDirectory || 'No store directory configured'}
+            </div>
+          </div>
+          <button type="button" onClick={close} className="px-2 py-1 text-xs" style={{ color: 'var(--text-2)', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)' }}>
+            Close
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2 px-5 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
+          <input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Search published markdown"
+            className="flex-1 text-sm"
+            style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)', color: 'var(--text)', padding: '8px 10px', outline: 'none' }}
+          />
+          <button type="button" onClick={() => void refresh()} className="px-3 py-2 text-xs" style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface-up)', color: 'var(--text-2)' }}>
+            Refresh
+          </button>
+          <button type="button" onClick={() => setIsAdding((value) => !value)} className="px-3 py-2 text-xs" style={{ border: 'none', borderRadius: 8, background: 'var(--accent)', color: '#fff' }}>
+            Publish
+          </button>
+        </div>
+
+        {error && (
+          <div className="mx-5 mt-3 text-xs" style={{ color: 'var(--red)' }}>{error}</div>
+        )}
+
+        <div className="flex-1 overflow-auto px-5 py-4">
+          {isAdding && (
+            <div className="mb-4 grid gap-3 p-3" style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)' }}>
+              <input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="Title" className="text-sm" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px' }} />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <input value={draft.maker} onChange={(event) => setDraft({ ...draft, maker: event.target.value })} placeholder="Maker" className="text-sm" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px' }} />
+                <input value={draft.review} onChange={(event) => setDraft({ ...draft, review: event.target.value })} placeholder="Review feedback" className="text-sm" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px' }} />
+              </div>
+              <textarea value={draft.body} onChange={(event) => setDraft({ ...draft, body: event.target.value })} placeholder="Markdown body" rows={8} className="text-sm resize-vertical" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px', fontFamily: 'var(--font-mono)' }} />
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={() => setIsAdding(false)} className="px-3 py-1.5 text-xs" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text-2)' }}>Cancel</button>
+                <button type="button" disabled={submitting || !draft.title.trim() || !draft.body.trim()} onClick={() => void submitDraft()} className="px-3 py-1.5 text-xs" style={{ border: 'none', borderRadius: 6, background: 'var(--accent)', color: '#fff', opacity: submitting || !draft.title.trim() || !draft.body.trim() ? 0.55 : 1 }}>Publish</button>
+              </div>
+            </div>
+          )}
+
+          {loading ? (
+            <div className="text-sm" style={{ color: 'var(--text-3)' }}>Loading Markdown Store...</div>
+          ) : filtered.length === 0 ? (
+            <div className="text-sm" style={{ color: 'var(--text-3)' }}>No `.uam` files found.</div>
+          ) : (
+            <div className="grid gap-2">
+              {filtered.map((entry) => (
+                <div key={entry.filePath} className="p-3" style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)' }}>
+                  <div className="flex items-start gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium truncate" style={{ color: 'var(--text)' }}>{entry.title}</div>
+                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px]" style={{ color: 'var(--text-3)' }}>
+                        {entry.maker && <span>Maker: {entry.maker}</span>}
+                        {entry.review && <span>Review: {entry.review}</span>}
+                        {entry.dateUpdated && <span>Updated: {entry.dateUpdated}</span>}
+                      </div>
+                      {entry.preview && <div className="mt-2 text-xs line-clamp-2" style={{ color: 'var(--text-2)' }}>{entry.preview}</div>}
+                      <div className="mt-2 text-[11px] truncate" style={{ color: 'var(--text-3)' }}>{entry.filePath}</div>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <button type="button" disabled={!activeSessionId} onClick={() => attach(entry)} className="px-3 py-1.5 text-xs" style={{ border: 'none', borderRadius: 6, background: activeSessionId ? 'var(--accent)' : 'var(--surface-up)', color: activeSessionId ? '#fff' : 'var(--text-3)' }}>
+                        Attach
+                      </button>
+                      <button type="button" onClick={() => void revealEntry(entry)} className="px-3 py-1.5 text-xs" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface-up)', color: 'var(--text-2)' }}>
+                        Reveal
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}

@@ -1,15 +1,16 @@
-#ifndef UAM_APP_APPLICATION_H
-#define UAM_APP_APPLICATION_H
+#pragma once
 
-
-#include "app/ui_orchestration_controller.h"
-
+#include "cef/cef_includes.h"
 #include "common/platform/platform_services.h"
-#include "common/platform/sdl_includes.h"
 #include "common/state/app_state.h"
 
 #include <filesystem>
+#include <memory>
 
+/// <summary>
+/// Top-level application lifetime manager for the CEF build.
+/// Owns AppState and all service orchestration for React/CEF and xterm.js.
+/// </summary>
 class Application
 {
   public:
@@ -20,34 +21,35 @@ class Application
 	Application(Application&&) = delete;
 	Application& operator=(Application&&) = delete;
 
-	int Run();
+	/// <summary>
+	/// Called from main() once CEF has been initialized.
+	/// Runs CefRunMessageLoop() until the window is closed.
+	/// </summary>
+	int Run(CefMainArgs main_args);
 
- private:
+	/// <summary>
+	/// Called periodically from a CefTask on the UI thread.
+	/// Polls runtime state and pushes updates to the React frontend.
+	/// </summary>
+	void PollTick();
+
+  private:
 	uam::AppState m_app;
-	ChatDetailView m_chatDetailView;
-	ModalHostView m_modalHostView;
-	UiController m_uiController;
 	PlatformServices* m_platformServices = nullptr;
-	SDL_Window* m_window = nullptr;
-	SDL_GLContext m_glContext = nullptr;
-	const char* m_glslVersion = nullptr;
-	float m_platformUiScale = 1.0f;
+	std::unique_ptr<uam::platform::DataRootLock> m_dataRootLock;
+	CefRefPtr<CefBrowser> m_browser;
 	bool m_done = false;
-	bool m_terminalsStoppedForShutdown = false;
-	bool m_sdlInitialized = false;
-	bool m_imguiInitialized = false;
-	bool m_curlInitialized = false;
 	int m_exitCode = 0;
 
-	bool OnLoad();
-	bool Update();
-	void Shutdown();
+	// ---- startup / teardown -----------------------------------------------
 	bool InitializeState();
-	bool InitializeWindowAndUi();
-	void PersistWindowStateAndSettings();
-	void PresentFrame();
-	std::filesystem::path ResolveWindowIconPath() const;
-	void ApplyWindowIcon() const;
-};
+	bool InitializeCef(CefMainArgs main_args);
+	void Shutdown();
 
-#endif // UAM_APP_APPLICATION_H
+	// ---- periodic work (posted to CEF UI thread) --------------------------
+	void Update();
+	void ScheduleNextUpdate(int delay_ms = 1000);
+
+	// ---- CEF ready callback -----------------------------------------------
+	void OnBrowserReady(CefRefPtr<CefBrowser> browser);
+};

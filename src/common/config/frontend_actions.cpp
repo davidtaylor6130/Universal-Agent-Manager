@@ -1,8 +1,13 @@
 #include "common/config/frontend_actions.h"
+#include "common/config/line_value_codec.h"
+#include "common/paths/path_utils.h"
+#include "common/utils/io_utils.h"
+#include "common/utils/parse_utils.h"
+#include "common/utils/string_utils.h"
 
 #include <algorithm>
-#include <cctype>
-#include <fstream>
+#include <cstddef>
+#include <optional>
 #include <sstream>
 #include <system_error>
 #include <unordered_map>
@@ -12,226 +17,151 @@ namespace uam
 {
 	namespace
 	{
+		constexpr std::size_t kDefaultFrontendActionCount = 5;
+		constexpr std::string_view kMetadataSectionName = "metadata";
+		constexpr std::string_view kMapSectionName = "map";
+		constexpr std::string_view kActionSectionPrefix = "action ";
+		constexpr std::string_view kVersionFieldName = "version";
+		constexpr std::string_view kSupportedActionMapVersion = "1";
+		constexpr std::string_view kLabelFieldName = "label";
+		constexpr std::string_view kGroupFieldName = "group";
+		constexpr std::string_view kVisibleFieldName = "visible";
+		constexpr std::string_view kOrderFieldName = "order";
+		constexpr std::string_view kDefaultActionGroup = "general";
 
-		std::string Trim(const std::string& value)
+		std::optional<bool> ParseVisibilityValue(std::string_view raw_value)
 		{
-			const std::size_t first = value.find_first_not_of(" \t\r\n");
-
-			if (first == std::string::npos)
+			if (const std::optional<bool> parsed = uam::parse::BoolStrict(raw_value))
 			{
-				return "";
+				return parsed;
 			}
 
-			const std::size_t last = value.find_last_not_of(" \t\r\n");
-			return value.substr(first, last - first + 1);
-		}
-
-		std::string ToLower(std::string value)
-		{
-			std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-			return value;
-		}
-
-		bool StartsWith(const std::string& value, const std::string& prefix)
-		{
-			return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
-		}
-
-		std::string EncodeValue(const std::string& value)
-		{
-			std::string encoded;
-			encoded.reserve(value.size());
-
-			for (const char ch : value)
+			const std::string value = uam::strings::TrimAndLowerAscii(raw_value);
+			if (value == "visible")
 			{
-				switch (ch)
-				{
-				case '\\':
-					encoded += "\\\\";
-					break;
-				case '\n':
-					encoded += "\\n";
-					break;
-				case '\r':
-					encoded += "\\r";
-					break;
-				case '\t':
-					encoded += "\\t";
-					break;
-				default:
-					encoded.push_back(ch);
-					break;
-				}
-			}
-
-			return encoded;
-		}
-
-		std::string DecodeValue(const std::string& value)
-		{
-			std::string decoded;
-			decoded.reserve(value.size());
-
-			for (std::size_t i = 0; i < value.size(); ++i)
-			{
-				const char ch = value[i];
-
-				if (ch != '\\' || i + 1 >= value.size())
-				{
-					decoded.push_back(ch);
-					continue;
-				}
-
-				const char next = value[++i];
-
-				switch (next)
-				{
-				case 'n':
-					decoded.push_back('\n');
-					break;
-				case 'r':
-					decoded.push_back('\r');
-					break;
-				case 't':
-					decoded.push_back('\t');
-					break;
-				case '\\':
-					decoded.push_back('\\');
-					break;
-				default:
-					decoded.push_back(next);
-					break;
-				}
-			}
-
-			return decoded;
-		}
-
-		bool ParseBool(const std::string& raw_value, bool* out_value)
-		{
-			const std::string value = ToLower(Trim(raw_value));
-
-			if (value == "1" || value == "true" || value == "yes" || value == "on" || value == "visible")
-			{
-				*out_value = true;
 				return true;
 			}
 
-			if (value == "0" || value == "false" || value == "no" || value == "off" || value == "hidden")
+			if (value == "hidden")
 			{
-				*out_value = false;
-				return true;
+				return false;
 			}
 
+			return std::nullopt;
+		}
+
+		bool ActionOrderLess(const FrontendAction& a, const FrontendAction& b)
+		{
+			if (a.order != b.order)
+			{
+				return a.order < b.order;
+			}
+
+			return a.key < b.key;
+		}
+
+		bool IsCommentLine(std::string_view trimmed_line)
+		{
+			return uam::strings::StartsWith(trimmed_line, "#") || uam::strings::StartsWith(trimmed_line, ";") || uam::strings::StartsWith(trimmed_line, "//");
+		}
+
+		bool IsVersionField(std::string_view key)
+		{
+			return uam::strings::TrimmedEqualsIgnoreCase(key, kVersionFieldName);
+		}
+
+		bool FailParse(std::string* error_out, std::string_view message)
+		{
+			if (error_out != nullptr)
+			{
+				error_out->assign(message);
+			}
 			return false;
 		}
 
-		bool ParseInt(const std::string& raw_value, int* out_value)
+		bool FailParseLine(std::string* error_out, std::string_view message, int line_number)
 		{
-			const std::string value = Trim(raw_value);
-
-			if (value.empty())
-			{
-				return false;
-			}
-
-			std::size_t index = 0;
-
-			try
-			{
-				const int parsed = std::stoi(value, &index, 10);
-
-				if (index != value.size())
-				{
-					return false;
-				}
-
-				*out_value = parsed;
-				return true;
-			}
-			catch (...)
-			{
-				return false;
-			}
+			return FailParse(error_out, std::string(message) + " on line " + std::to_string(line_number) + ".");
 		}
 
-		bool IsCommentLine(const std::string& trimmed_line)
+		std::string DecodeActionScalarValue(std::string_view value)
 		{
-			return trimmed_line.rfind("#", 0) == 0 || trimmed_line.rfind(";", 0) == 0 || trimmed_line.rfind("//", 0) == 0;
+			return uam::UnescapeLineValueBody(uam::strings::Trim(value), uam::UnknownLineEscapePolicy::DropBackslash);
 		}
 
-		FrontendAction MakeDefaultAction(const std::string& key, const std::string& label, const std::string& group, const int order)
+		FrontendAction MakeDefaultAction(std::string_view key, std::string_view label, std::string_view group, int order)
 		{
 			FrontendAction action;
-			action.key = key;
-			action.label = label;
-			action.group = group;
+			action.key = std::string(key);
+			action.label = std::string(label);
+			action.group = std::string(group);
 			action.visible = true;
 			action.order = order;
 			return action;
 		}
 
-		void AssignField(FrontendAction& action, const std::string& field, const std::string& raw_value, const int line_number, std::string* error_out)
+		template <typename ActionMap>
+		auto FindActionByKey(ActionMap& action_map, std::string_view key)
 		{
-			const std::string normalized_field = ToLower(Trim(field));
-			const std::string value = DecodeValue(Trim(raw_value));
+			return std::ranges::find_if(action_map.actions, [key](const FrontendAction& action) { return action.key == key; });
+		}
 
-			if (normalized_field == "label")
+		template <typename ActionMap>
+		auto* ActionOrNull(ActionMap& action_map, decltype(action_map.actions.begin()) found)
+		{
+			return found == action_map.actions.end() ? nullptr : &*found;
+		}
+
+		bool AssignField(FrontendAction& action, std::string_view field, std::string_view raw_value, int line_number, std::string* error_out)
+		{
+			const std::string normalized_field = uam::strings::TrimAndLowerAscii(field);
+			const std::string value = DecodeActionScalarValue(raw_value);
+
+			if (normalized_field == kLabelFieldName)
 			{
 				action.label = value;
-				return;
+				return true;
 			}
 
-			if (normalized_field == "group")
+			if (normalized_field == kGroupFieldName)
 			{
 				action.group = value;
-				return;
+				return true;
 			}
 
-			if (normalized_field == "visible")
+			if (normalized_field == kVisibleFieldName)
 			{
-				bool parsed = true;
-
-				if (!ParseBool(value, &parsed))
+				const std::optional<bool> parsed = ParseVisibilityValue(value);
+				if (!parsed)
 				{
-					if (error_out != nullptr)
-					{
-						*error_out = "Invalid boolean value on line " + std::to_string(line_number) + ".";
-					}
-
-					return;
+					return FailParseLine(error_out, "Invalid boolean value", line_number);
 				}
 
-				action.visible = parsed;
-				return;
+				action.visible = *parsed;
+				return true;
 			}
 
-			if (normalized_field == "order")
+			if (normalized_field == kOrderFieldName)
 			{
-				int parsed = 0;
-
-				if (!ParseInt(value, &parsed))
+				const std::optional<int> parsed = uam::parse::IntStrict(value);
+				if (!parsed)
 				{
-					if (error_out != nullptr)
-					{
-						*error_out = "Invalid integer value on line " + std::to_string(line_number) + ".";
-					}
-
-					return;
+					return FailParseLine(error_out, "Invalid integer value", line_number);
 				}
 
-				action.order = parsed;
-				return;
+				action.order = *parsed;
+				return true;
 			}
 
 			action.properties[normalized_field] = value;
+			return true;
 		}
 
 		void NormalizeAction(FrontendAction& action)
 		{
-			action.key = Trim(action.key);
-			action.label = Trim(action.label);
-			action.group = Trim(action.group);
+			action.key = uam::strings::Trim(action.key);
+			action.label = uam::strings::Trim(action.label);
+			action.group = uam::strings::Trim(action.group);
 
 			if (action.key.empty())
 			{
@@ -245,7 +175,7 @@ namespace uam
 
 			if (action.group.empty())
 			{
-				action.group = "general";
+				action.group = kDefaultActionGroup;
 			}
 		}
 
@@ -254,6 +184,7 @@ namespace uam
 	FrontendActionMap DefaultFrontendActionMap()
 	{
 		FrontendActionMap out;
+		out.actions.reserve(kDefaultFrontendActionCount);
 		out.actions.push_back(MakeDefaultAction("create_chat", "Create Chat", "chat", 10));
 		out.actions.push_back(MakeDefaultAction("delete_chat", "Delete Chat", "chat", 20));
 		out.actions.push_back(MakeDefaultAction("send_prompt", "Send Prompt", "composer", 30));
@@ -263,30 +194,14 @@ namespace uam
 		return out;
 	}
 
-	FrontendAction* FindAction(FrontendActionMap& action_map, const std::string& key)
+	FrontendAction* FindAction(FrontendActionMap& action_map, std::string_view key)
 	{
-		for (FrontendAction& action : action_map.actions)
-		{
-			if (action.key == key)
-			{
-				return &action;
-			}
-		}
-
-		return nullptr;
+		return ActionOrNull(action_map, FindActionByKey(action_map, key));
 	}
 
-	const FrontendAction* FindAction(const FrontendActionMap& action_map, const std::string& key)
+	const FrontendAction* FindAction(const FrontendActionMap& action_map, std::string_view key)
 	{
-		for (const FrontendAction& action : action_map.actions)
-		{
-			if (action.key == key)
-			{
-				return &action;
-			}
-		}
-
-		return nullptr;
+		return ActionOrNull(action_map, FindActionByKey(action_map, key));
 	}
 
 	void NormalizeFrontendActionMap(FrontendActionMap& action_map)
@@ -313,23 +228,19 @@ namespace uam
 			normalized.push_back(std::move(pair.second));
 		}
 
-		auto sort_actions_by_order_then_key = [](const FrontendAction& a, const FrontendAction& b)
-		{
-			if (a.order != b.order)
-			{
-				return a.order < b.order;
-			}
-
-			return a.key < b.key;
-		};
-
-		std::sort(normalized.begin(), normalized.end(), sort_actions_by_order_then_key);
+		std::ranges::sort(normalized, ActionOrderLess);
 
 		action_map.actions = std::move(normalized);
 	}
 
 	bool ParseFrontendActionMap(const std::string& text, FrontendActionMap& out_map, std::string* error_out)
 	{
+		out_map = FrontendActionMap{};
+		if (error_out != nullptr)
+		{
+			error_out->clear();
+		}
+
 		FrontendActionMap parsed;
 		FrontendAction* current_action = nullptr;
 		enum class Section
@@ -348,7 +259,7 @@ namespace uam
 		while (std::getline(input, line))
 		{
 			++line_number;
-			const std::string trimmed = Trim(line);
+			const std::string trimmed = uam::strings::Trim(line);
 
 			if (trimmed.empty() || IsCommentLine(trimmed))
 			{
@@ -357,28 +268,23 @@ namespace uam
 
 			if (trimmed.front() == '[' && trimmed.back() == ']')
 			{
-				const std::string section = Trim(trimmed.substr(1, trimmed.size() - 2));
-				const std::string section_lower = ToLower(section);
+				const std::string section = uam::strings::Trim(trimmed.substr(1, trimmed.size() - 2));
+				const std::string section_lower = uam::strings::ToLowerAscii(section);
 				current_action = nullptr;
 
-				if (section_lower == "metadata" || section_lower == "map")
+				if (section_lower == kMetadataSectionName || section_lower == kMapSectionName)
 				{
 					current_section = Section::Metadata;
 					continue;
 				}
 
-				if (StartsWith(section_lower, "action "))
+				if (uam::strings::StartsWith(section_lower, kActionSectionPrefix))
 				{
-					const std::string key = Trim(section.substr(7));
+					const std::string key = uam::strings::Trim(section.substr(kActionSectionPrefix.size()));
 
 					if (key.empty())
 					{
-						if (error_out != nullptr)
-						{
-							*error_out = "Missing action key on line " + std::to_string(line_number) + ".";
-						}
-
-						return false;
+						return FailParseLine(error_out, "Missing action key", line_number);
 					}
 
 					parsed.actions.push_back(FrontendAction{});
@@ -388,51 +294,34 @@ namespace uam
 					continue;
 				}
 
-				if (error_out != nullptr)
-				{
-					*error_out = "Unknown section header on line " + std::to_string(line_number) + ".";
-				}
-
-				return false;
+				return FailParseLine(error_out, "Unknown section header", line_number);
 			}
 
 			const std::size_t equals_at = trimmed.find('=');
 
 			if (equals_at == std::string::npos)
 			{
-				if (error_out != nullptr)
-				{
-					*error_out = "Expected key=value on line " + std::to_string(line_number) + ".";
-				}
-
-				return false;
+				return FailParseLine(error_out, "Expected key=value", line_number);
 			}
 
-			const std::string key = Trim(trimmed.substr(0, equals_at));
+			const std::string key = uam::strings::Trim(trimmed.substr(0, equals_at));
 			const std::string value = trimmed.substr(equals_at + 1);
 
 			if (key.empty())
 			{
-				if (error_out != nullptr)
-				{
-					*error_out = "Missing key on line " + std::to_string(line_number) + ".";
-				}
-
-				return false;
+				return FailParseLine(error_out, "Missing key", line_number);
 			}
 
 			if (current_section == Section::Metadata)
 			{
-				parsed.metadata[key] = DecodeValue(Trim(value));
+				parsed.metadata[key] = DecodeActionScalarValue(value);
 				continue;
 			}
 
 			if (current_section == Section::Action && current_action != nullptr)
 			{
 				std::string local_error;
-				AssignField(*current_action, key, value, line_number, &local_error);
-
-				if (!local_error.empty())
+				if (!AssignField(*current_action, key, value, line_number, &local_error))
 				{
 					if (error_out != nullptr)
 					{
@@ -445,24 +334,19 @@ namespace uam
 				continue;
 			}
 
-			if (ToLower(key) == "version")
+			if (IsVersionField(key))
 			{
-				const std::string version = Trim(DecodeValue(Trim(value)));
+				const std::string version = uam::strings::Trim(DecodeActionScalarValue(value));
 
-				if (version != "1")
+				if (version != kSupportedActionMapVersion)
 				{
-					if (error_out != nullptr)
-					{
-						*error_out = "Unsupported action map version on line " + std::to_string(line_number) + ".";
-					}
-
-					return false;
+					return FailParseLine(error_out, "Unsupported action map version", line_number);
 				}
 
 				continue;
 			}
 
-			parsed.metadata[key] = DecodeValue(Trim(value));
+			parsed.metadata[key] = DecodeActionScalarValue(value);
 		}
 
 		NormalizeFrontendActionMap(parsed);
@@ -474,7 +358,7 @@ namespace uam
 	{
 		std::ostringstream out;
 		out << "# Universal frontend action map\n";
-		out << "version = 1\n";
+		out << kVersionFieldName << " = " << kSupportedActionMapVersion << "\n";
 		out << "\n";
 
 		if (!action_map.metadata.empty())
@@ -483,28 +367,19 @@ namespace uam
 
 			for (const auto& [key, value] : action_map.metadata)
 			{
-				if (ToLower(key) == "version")
+				if (IsVersionField(key))
 				{
 					continue;
 				}
 
-				out << key << " = " << EncodeValue(value) << "\n";
+				out << key << " = " << uam::EscapeLineValueBody(value) << "\n";
 			}
 
 			out << "\n";
 		}
 
 		std::vector<FrontendAction> sorted_actions = action_map.actions;
-		auto sort_actions_by_order_then_key = [](const FrontendAction& a, const FrontendAction& b)
-		{
-			if (a.order != b.order)
-			{
-				return a.order < b.order;
-			}
-
-			return a.key < b.key;
-		};
-		std::sort(sorted_actions.begin(), sorted_actions.end(), sort_actions_by_order_then_key);
+		std::ranges::sort(sorted_actions, ActionOrderLess);
 
 		for (const FrontendAction& action : sorted_actions)
 		{
@@ -514,14 +389,14 @@ namespace uam
 			}
 
 			out << "[action " << action.key << "]\n";
-			out << "label = " << EncodeValue(action.label) << "\n";
-			out << "group = " << EncodeValue(action.group) << "\n";
+			out << "label = " << uam::EscapeLineValueBody(action.label) << "\n";
+			out << "group = " << uam::EscapeLineValueBody(action.group) << "\n";
 			out << "visible = " << (action.visible ? "true" : "false") << "\n";
 			out << "order = " << action.order << "\n";
 
 			for (const auto& [key, value] : action.properties)
 			{
-				out << key << " = " << EncodeValue(value) << "\n";
+				out << key << " = " << uam::EscapeLineValueBody(value) << "\n";
 			}
 
 			out << "\n";
@@ -532,9 +407,14 @@ namespace uam
 
 	bool LoadFrontendActionMap(const std::filesystem::path& path, FrontendActionMap& out_map, std::string* error_out)
 	{
-		std::ifstream input(path, std::ios::binary);
+		out_map = FrontendActionMap{};
+		if (error_out != nullptr)
+		{
+			error_out->clear();
+		}
 
-		if (!input.good())
+		std::string text;
+		if (!uam::io::TryReadTextFile(path, text))
 		{
 			if (error_out != nullptr)
 			{
@@ -544,21 +424,22 @@ namespace uam
 			return false;
 		}
 
-		std::ostringstream buffer;
-		buffer << input.rdbuf();
-		return ParseFrontendActionMap(buffer.str(), out_map, error_out);
+		return ParseFrontendActionMap(text, out_map, error_out);
 	}
 
 	bool SaveFrontendActionMap(const std::filesystem::path& path, const FrontendActionMap& action_map, std::string* error_out)
 	{
+		if (error_out != nullptr)
+		{
+			error_out->clear();
+		}
+
 		std::error_code ec;
 		const std::filesystem::path parent = path.parent_path();
 
 		if (!parent.empty())
 		{
-			std::filesystem::create_directories(parent, ec);
-
-			if (ec)
+			if (!uam::paths::CreateDirectoriesNoThrow(parent, &ec))
 			{
 				if (error_out != nullptr)
 				{
@@ -569,21 +450,8 @@ namespace uam
 			}
 		}
 
-		std::ofstream output(path, std::ios::binary | std::ios::trunc);
-
-		if (!output.good())
-		{
-			if (error_out != nullptr)
-			{
-				*error_out = "Failed to open '" + path.string() + "' for writing.";
-			}
-
-			return false;
-		}
-
-		output << SerializeFrontendActionMap(action_map);
-
-		if (!output.good())
+		const std::string text = SerializeFrontendActionMap(action_map);
+		if (!uam::io::WriteTextFile(path, text))
 		{
 			if (error_out != nullptr)
 			{

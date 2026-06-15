@@ -1,5 +1,4 @@
-#ifndef UAM_APP_RUNTIME_ORCHESTRATION_SERVICES_H
-#define UAM_APP_RUNTIME_ORCHESTRATION_SERVICES_H
+#pragma once
 
 #include "common/state/app_state.h"
 
@@ -9,20 +8,7 @@
 #include <string>
 #include <vector>
 
-enum class TemplatePreflightOutcome
-{
-	ReadyWithTemplate,
-	ReadyWithoutTemplate,
-	BlockingError
-};
-
-class ProviderRequestService
-{
-  public:
-	void StartSelectedChatRequest(uam::AppState& p_app) const;
-	bool QueuePromptForChat(uam::AppState& p_app, ChatSession& p_chat, const std::string& p_prompt, bool p_templateControlMessage = false) const;
-	TemplatePreflightOutcome PreflightWorkspaceTemplateForChat(uam::AppState& p_app, const ProviderProfile& p_provider, const ChatSession& p_chat, std::string* p_bootstrapPromptOut = nullptr, std::string* p_statusOut = nullptr) const;
-};
+bool PollPendingRuntimeCall(uam::AppState& app);
 
 class ChatHistorySyncService
 {
@@ -32,26 +18,47 @@ class ChatHistorySyncService
 		int imported_count = 0;
 		int total_count = 0;
 	};
-	ImportResult ImportAllNativeChatsToLocal(uam::AppState& p_app, bool p_delete_native_after_import) const;
-	ImportResult ImportAllNativeChatsByDiscovery(uam::AppState& p_app, bool p_delete_native_after_import) const;
-	void RefreshChatHistory(uam::AppState& p_app) const;
-	void SaveChatWithStatus(uam::AppState& p_app, const ChatSession& p_chat, const std::string& p_success, const std::string& p_failure) const;
-	std::vector<ChatSession> LoadNativeSessionChats(const std::filesystem::path& p_chatsDir, const ProviderProfile& p_provider, std::stop_token p_stopToken = {}) const;
-	std::optional<std::filesystem::path> ResolveNativeHistoryChatsDirForWorkspace(const std::filesystem::path& p_workspaceRoot) const;
-	std::filesystem::path ResolveNativeHistoryChatsDirForChat(const uam::AppState& p_app, const ChatSession& p_chat) const;
-	void LoadSidebarChats(uam::AppState& p_app) const;
-	void LoadSidebarChatsByDiscovery(uam::AppState& p_app) const;
-	void RefreshNativeSessionDirectory(uam::AppState& p_app) const;
-	bool StartAsyncNativeChatLoad(uam::AppState& p_app, const ProviderProfile& p_provider, const std::filesystem::path& p_chatsDir) const;
-	bool TryConsumeAsyncNativeChatLoad(uam::AppState& p_app, std::vector<ChatSession>& p_chatsOut, std::string& p_errorOut) const;
-	std::vector<std::string> SessionIdsFromChats(const std::vector<ChatSession>& p_chats) const;
-	std::optional<std::filesystem::path> FindNativeSessionFilePath(const std::filesystem::path& p_chatsDir, const std::string& p_sessionId) const;
-	bool DeleteNativeSessionFileForChat(const uam::AppState& p_app, const ChatSession& p_chat, std::error_code* p_errorOut = nullptr) const;
-	std::string ResolveResumeSessionIdForChat(const uam::AppState& p_app, const ChatSession& p_chat) const;
-	bool PersistLocalDraftNativeSessionLink(const uam::AppState& p_app, ChatSession& p_localChat, const std::string& p_nativeSessionId) const;
-	void ApplyLocalOverrides(uam::AppState& p_app, std::vector<ChatSession>& p_nativeChats) const;
-	bool TruncateNativeSessionFromDisplayedMessage(const uam::AppState& p_app, const ChatSession& p_chat, int p_displayedMessageIndex, std::string* p_errorOut) const;
-	bool MoveChatToFolder(uam::AppState& p_app, ChatSession& p_chat, const std::string& p_newFolderId) const;
+	ImportResult ImportAllNativeChatsToLocal(uam::AppState& app, bool delete_native_after_import, const std::string& target_chat_id = "") const;
+	ImportResult ImportAllNativeChatsByDiscovery(uam::AppState& app, bool delete_native_after_import, const std::string& target_chat_id = "") const;
+	void RefreshChatHistory(uam::AppState& app) const;
+	bool SaveChatWithStatus(uam::AppState& app, const ChatSession& chat, const std::string& success, const std::string& failure) const;
+	bool RenameChat(uam::AppState& app, ChatSession& chat, const std::string& requested_title) const;
+	std::vector<ChatSession> LoadNativeSessionChats(const std::filesystem::path& chats_dir, const ProviderProfile& provider, std::stop_token stop_token = {}) const;
+	std::optional<std::filesystem::path> ResolveNativeHistoryChatsDirForWorkspace(const std::filesystem::path& workspace_root) const;
+	std::filesystem::path ResolveNativeHistoryChatsDirForChat(const uam::AppState& app, const ChatSession& chat) const;
+	void ReconcileUnresolvedDraftLinksByDiscovery(uam::AppState& app) const;
+	void LoadSidebarChats(uam::AppState& app) const;
+	void LoadSidebarChatsByDiscovery(uam::AppState& app) const;
+	void RefreshNativeSessionDirectory(uam::AppState& app) const;
+	bool StartAsyncNativeChatLoad(uam::AppState& app, const ProviderProfile& provider, const std::filesystem::path& chats_dir) const;
+	bool TryConsumeAsyncNativeChatLoad(uam::AppState& app, std::vector<ChatSession>& chats_out, std::string& error_out) const;
+	std::vector<std::string> SessionIdsFromChats(const std::vector<ChatSession>& chats) const;
+	std::optional<std::filesystem::path> FindNativeSessionFilePath(const std::filesystem::path& chats_dir, const std::string& session_id) const;
+	bool DeleteNativeSessionFileForChat(const uam::AppState& app, const ChatSession& chat, std::error_code* error_out = nullptr) const;
+	bool DeleteNativeWorkspaceHistoryForFolder(const uam::AppState& app, const ChatFolder& folder, std::error_code* error_out = nullptr) const;
+	std::string ResolveResumeSessionIdForChat(const uam::AppState& app, const ChatSession& chat) const;
+	void ForgetResolvedNativeSessionForChat(uam::AppState& app, const std::string& chat_id) const;
+	void RollbackOpenNativeSessionChatImport(uam::AppState& app, const std::string& chat_id, const std::string& previous_selected_chat_id, bool delete_storage) const;
+	void RestoreOpenNativeSessionResolvedMapping(uam::AppState& app, const std::string& chat_id, bool had_previous_resolved_native_session, const std::string& previous_resolved_native_session_id) const;
+	void RestoreOpenNativeSessionChatMetadata(ChatSession& chat,
+	                                         const std::string& previous_provider_id,
+	                                         const std::string& previous_native_session_id,
+	                                         const std::string& previous_updated_at) const;
+	ChatSession* FindInMemoryNativeSessionChatForOpen(
+	    uam::AppState& app,
+	    const ChatSession& source_chat,
+	    const ProviderProfile& provider,
+	    const std::string& native_session_id,
+	    bool persist_resolved_mapping = true) const;
+	ChatSession* FindOrImportNativeSessionChatForOpen(
+	    uam::AppState& app,
+	    const ChatSession& source_chat,
+	    const ProviderProfile& provider,
+	    const std::string& native_session_id,
+	    bool persist_provider_normalization = true) const;
+	bool PersistLocalDraftNativeSessionLink(const uam::AppState& app, ChatSession& local_chat, const std::string& native_session_id) const;
+	void ApplyLocalOverrides(uam::AppState& app, std::vector<ChatSession>& native_chats, bool persist_local_draft_links = true) const;
+	bool TruncateNativeSessionFromDisplayedMessage(const uam::AppState& app, const ChatSession& chat, int displayed_message_index, std::string* error_out) const;
+	bool MoveChatToFolder(uam::AppState& app, ChatSession& chat, const std::string& new_folder_id) const;
+	bool ExportChatToNative(const uam::AppState& app, const ChatSession& chat) const;
 };
-
-#endif // UAM_APP_RUNTIME_ORCHESTRATION_SERVICES_H

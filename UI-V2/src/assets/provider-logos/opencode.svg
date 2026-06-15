@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-label="OpenCode">
+  <rect width="24" height="24" rx="5" fill="#0f172a"/>
+  <path d="M8.9 7.1 4 12l4.9 4.9 1.4-1.4L6.8 12l3.5-3.5-1.4-1.4Z" fill="#5eead4"/>
+  <path d="m15.1 7.1-1.4 1.4 3.5 3.5-3.5 3.5 1.4 1.4L20 12l-4.9-4.9Z" fill="#5eead4"/>
+  <path d="m13.2 5.7-4 12.8 1.9.6 4-12.8-1.9-.6Z" fill="#f8fafc"/>
+</svg>

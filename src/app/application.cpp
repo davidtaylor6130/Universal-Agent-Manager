@@ -1,56 +1,46 @@
 #include "application.h"
 
-#include "application_core_helpers.h"
 #include "chat_domain_service.h"
 #include "persistence_coordinator.h"
+#include "provider_model_catalog_service.h"
 #include "provider_resolution_service.h"
-#include "provider_profile_migration_service.h"
 #include "runtime_orchestration_services.h"
-#include "template_runtime_service.h"
+#include "memory_service.h"
 
-#include <imgui.h>
-#include <misc/cpp/imgui_stdlib.h>
-#include <backends/imgui_impl_opengl3.h>
-#include <backends/imgui_impl_sdl2.h>
-#include <vterm.h>
-#include <curl/curl.h>
-
-#include "runtime_local_service.h"
 #include "common/constants/app_constants.h"
 #include "common/models/app_models.h"
 #include "common/paths/app_paths.h"
+#include "common/paths/path_utils.h"
 #include "common/chat/chat_branching.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
 #include "common/config/frontend_actions.h"
-#include "common/provider/markdown_template_catalog.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
 #include "common/provider/runtime/provider_build_config.h"
-#include "common/rag/rag_index_service.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/terminal_common.h"
-#include "common/runtime/local_engine_runtime_service.h"
 #include "common/runtime/terminal_polling.h"
-#include "common/ui/chat_actions/chat_action_pending_calls.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/config/settings_store.h"
-#include "common/vcs/vcs_workspace_service.h"
 #include "common/platform/platform_services.h"
-#include "common/ui/modals/modal_window_state.h"
-#include "common/ui/theme/theme_apply.h"
-#include "common/ui/theme/theme_fonts.h"
-#include "common/ui/theme/theme_scaling.h"
+#include "common/utils/env_utils.h"
+#include "common/utils/string_utils.h"
 
-#ifndef SDL_MAIN_HANDLED
-#define SDL_MAIN_HANDLED
-#endif
+#include "cef/cef_push.h"
+#include "cef/cef_includes.h"
+#include "cef/uam_cef_security.h"
+#include "cef/state_serializer.h"
+#include "cef/uam_cef_app.h"
+#include "cef/uam_cef_client.h"
+#include "include/cef_path_util.h"
 
-#include "common/platform/sdl_includes.h"
-#include "common/platform/gl_includes.h"
+#include "include/cef_app.h"
+#include "include/cef_task.h"
+#include "include/wrapper/cef_helpers.h"
 
 #include <algorithm>
 #include <cstdio>
-#include <cstdlib>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -58,566 +48,518 @@
 #include <unordered_set>
 #include <vector>
 
-#define UAM_TARGET_FPS 30
-
 namespace fs = std::filesystem;
+
+// ---------------------------------------------------------------------------
+// uam_cef_globals — shared with uam_cef_app.cpp
+// ---------------------------------------------------------------------------
+
+namespace uam_cef_globals
+{
+	uam::AppState* g_app_state = nullptr;
+	CefRefPtr<UamCefClient> g_client;
+} // namespace uam_cef_globals
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
 
 namespace
 {
-	constexpr const char* kRuntimeBackendProviderCli = "provider-cli";
-#if UAM_ENABLE_RUNTIME_OLLAMA_ENGINE
-	constexpr const char* kRuntimeIdLocalEngine = "ollama-engine";
+
+	bool IsMacAppBundleExecutable(const fs::path& exe_path)
+	{
+#if defined(__APPLE__)
+		const fs::path normalized = uam::paths::LexicallyNormalPath(exe_path);
+		const fs::path macos_dir = normalized.parent_path();
+		const fs::path contents_dir = macos_dir.parent_path();
+		const fs::path app_dir = contents_dir.parent_path();
+		if (app_dir.empty())
+		{
+			return false;
+		}
+		if (macos_dir.filename() != "MacOS")
+		{
+			return false;
+		}
+		if (contents_dir.filename() != "Contents")
+		{
+			return false;
+		}
+		return app_dir.extension() == ".app";
+#else
+		(void)exe_path;
+		return false;
 #endif
-
-	void ResetAsyncCommandTask(uam::AsyncCommandTask& task)
-	{
-		if (task.worker != nullptr)
-		{
-			task.worker->request_stop();
-			task.worker->detach();
-			task.worker.reset();
-		}
-
-		task.running = false;
-		task.command_preview.clear();
-		task.state.reset();
 	}
 
-	void ResetPendingRuntimeCall(PendingRuntimeCall& call)
+	void ResetRuntimeCliVersionState(uam::AppState& app)
 	{
-		if (call.worker != nullptr)
-		{
-			call.worker->request_stop();
-			call.worker->detach();
-			call.worker.reset();
-		}
-
-		call.state.reset();
+		uam::ResetAsyncCommandTask(app.runtime_cli_version_check_task);
+		uam::ResetAsyncCommandTask(app.runtime_cli_pin_task);
+		app.runtime_cli_version_provider_id.clear();
+		app.runtime_cli_pin_provider_id.clear();
+		app.runtime_cli_versions_by_provider_id.clear();
 	}
 
-	void ResetNativeChatLoadTask(uam::platform::AsyncNativeChatLoadTask& task)
+	std::string CalculateCliVersionStateSignature(const std::unordered_map<std::string, uam::CliProviderVersionState>& states)
 	{
-		if (task.worker != nullptr)
+		std::vector<const std::pair<const std::string, uam::CliProviderVersionState>*> ordered_states;
+		ordered_states.reserve(states.size());
+
+		for (const auto& entry : states)
 		{
-			task.worker->request_stop();
-			task.worker->detach();
-			task.worker.reset();
+			ordered_states.push_back(&entry);
 		}
 
-		task.running = false;
-		task.provider_id_snapshot.clear();
-		task.chats_dir_snapshot.clear();
-		task.state.reset();
+		std::ranges::sort(ordered_states, [](const auto* lhs, const auto* rhs) {
+			return lhs->first < rhs->first;
+		});
+
+		std::string signature;
+		for (const auto* entry : ordered_states)
+		{
+			const std::string& provider_id = entry->first;
+			const uam::CliProviderVersionState& state = entry->second;
+			signature += provider_id;
+			signature.push_back('\0');
+			signature += state.checked ? "1" : "0";
+			signature.push_back('\0');
+			signature += state.supported ? "1" : "0";
+			signature.push_back('\0');
+			signature += state.installed_version;
+			signature.push_back('\0');
+			signature += state.selected_version;
+			signature.push_back('\0');
+			signature += state.raw_output;
+			signature.push_back('\0');
+			signature += state.message;
+			signature.push_back('\0');
+			signature += state.install_output;
+			signature.push_back('\0');
+		}
+
+		return signature;
 	}
-} // namespace
+
+	struct RuntimeCliCompatibilitySnapshot
+	{
+		std::string runtime_cli_version_provider_id;
+		std::string runtime_cli_pin_provider_id;
+		std::string provider_state_signature;
+		std::string status_line;
+	};
+
+	RuntimeCliCompatibilitySnapshot CreateCliCompatibilitySnapshot(const uam::AppState& app)
+	{
+		RuntimeCliCompatibilitySnapshot snapshot;
+		snapshot.runtime_cli_version_provider_id = app.runtime_cli_version_provider_id;
+		snapshot.runtime_cli_pin_provider_id = app.runtime_cli_pin_provider_id;
+		snapshot.provider_state_signature = CalculateCliVersionStateSignature(app.runtime_cli_versions_by_provider_id);
+		snapshot.status_line = app.status_line;
+		return snapshot;
+	}
+
+	bool IsCliCompatibilitySnapshotChanged(const RuntimeCliCompatibilitySnapshot& before, const RuntimeCliCompatibilitySnapshot& after)
+	{
+		if (before.runtime_cli_version_provider_id != after.runtime_cli_version_provider_id)
+		{
+			return true;
+		}
+		if (before.runtime_cli_pin_provider_id != after.runtime_cli_pin_provider_id)
+		{
+			return true;
+		}
+		if (before.provider_state_signature != after.provider_state_signature)
+		{
+			return true;
+		}
+		return before.status_line != after.status_line;
+	}
+
+	bool IsSelectedChatRunning(const uam::AppState& app)
+	{
+		const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
+		if (selected_chat_id.empty())
+		{
+			return false;
+		}
+
+		if (uam::ChatHasActiveCliTerminal(app, selected_chat_id))
+		{
+			return true;
+		}
+
+		const uam::AcpSessionState* acp = FindAcpSessionForChat(app, selected_chat_id);
+		return acp != nullptr && acp->running;
+	}
+
+	bool IsAnyRuntimeActive(const uam::AppState& app)
+	{
+		if (uam::HasAnyActiveCliTerminal(app))
+		{
+			return true;
+		}
+
+		for (const auto& session : app.acp_sessions)
+		{
+			if (session != nullptr && session->running)
+			{
+				return true;
+			}
+		}
+
+		return !app.pending_calls.empty() || !app.memory_extraction_tasks.empty() || !app.memory_extraction_queue.empty();
+	}
+
+	int GetNextPollDelayMs(const uam::AppState& app)
+	{
+		if (IsSelectedChatRunning(app))
+		{
+			return 16;
+		}
+		if (IsAnyRuntimeActive(app))
+		{
+			return 250;
+		}
+		return 1000;
+	}
+
+	// ---- Periodic poll task ---------------------------------------------------
+
+	/// CefTask that calls Application::PollTick() on the CEF UI thread.
+	class AppPollTask : public CefTask
+	{
+	  public:
+		explicit AppPollTask(Application* app) : m_app(app)
+		{
+		}
+		void Execute() override
+		{
+			if (m_app)
+			{
+				m_app->PollTick();
+			}
+		}
+
+	  private:
+		Application* m_app;
+		IMPLEMENT_REFCOUNTING(AppPollTask);
+	};
+
+} // anonymous namespace
+
+// ---------------------------------------------------------------------------
+// Application
+// ---------------------------------------------------------------------------
 
 Application::Application()
 {
-	// Constructor owns startup for the app lifetime.
-	if (!OnLoad())
-	{
-		m_done = true;
-		m_exitCode = (m_exitCode != 0) ? m_exitCode : 1;
-	}
+	// State initialization is deferred to Run() so that CEF is already up.
 }
 
 Application::~Application()
 {
-	// Destructor owns final app shutdown and low-level teardown.
 	Shutdown();
 
-	// Pump events to ensure window destruction completes on Windows.
-	// SDL_DestroyWindow can block waiting for window messages to be processed.
-	SDL_Event drain_event;
-	while (SDL_PollEvent(&drain_event))
-	{
-	}
-
-	if (m_imguiInitialized)
-	{
-		ImGui_ImplOpenGL3_Shutdown();
-		ImGui_ImplSDL2_Shutdown();
-		ImGui::DestroyContext();
-		m_imguiInitialized = false;
-	}
-
-	if (m_glContext != nullptr)
-	{
-		SDL_GL_DeleteContext(m_glContext);
-		m_glContext = nullptr;
-	}
-
-	if (m_window != nullptr)
-	{
-		SDL_DestroyWindow(m_window);
-		m_window = nullptr;
-	}
-
-	if (m_sdlInitialized)
-	{
-		SDL_Quit();
-		m_sdlInitialized = false;
-	}
-
-	if (m_curlInitialized)
-	{
-		curl_global_cleanup();
-		m_curlInitialized = false;
-	}
-
 	m_platformServices = nullptr;
-	m_glslVersion = nullptr;
-	m_platformUiScale = 1.0f;
-	m_done = true;
 }
 
-int Application::Run()
+int Application::Run(CefMainArgs main_args)
 {
-	// Figure the time for the fps wanted defined by UAM_TARGET_FPS
-	constexpr Uint64 kFrameDurationMs = 1000 / UAM_TARGET_FPS;
-
-	// Run owns the SDL event pump and frame loop.
-	while (!m_done && m_window != nullptr)
-	{
-		// GetFrame time start
-		const Uint64 l_frameStartMs = SDL_GetTicks64();
-
-		// The outer loop drives frames until shutdown is requested or the window is gone.
-		SDL_Event l_event;
-
-		// SDL may queue multiple input/window events between frames, so drain them before Update().
-		while (SDL_PollEvent(&l_event))
-		{
-			// Let an embedded terminal consume Escape first so app-level handlers do not steal it.
-			if (ForwardEscapeToSelectedCliTerminal(m_app, l_event))
-			{
-				continue;
-			}
-
-			ImGui_ImplSDL2_ProcessEvent(&l_event);
-
-			if (l_event.type == SDL_QUIT)
-			{
-				m_done = true;
-			}
-
-			if (l_event.type == SDL_WINDOWEVENT && l_event.window.event == SDL_WINDOWEVENT_CLOSE && l_event.window.windowID == SDL_GetWindowID(m_window))
-			{
-				m_done = true;
-			}
-
-			if (l_event.type == SDL_WINDOWEVENT && l_event.window.windowID == SDL_GetWindowID(m_window))
-			{
-				const Uint8 l_windowEvent = l_event.window.event;
-
-				if (l_windowEvent == SDL_WINDOWEVENT_SIZE_CHANGED || l_windowEvent == SDL_WINDOWEVENT_RESIZED || l_windowEvent == SDL_WINDOWEVENT_MAXIMIZED || l_windowEvent == SDL_WINDOWEVENT_RESTORED)
-				{
-					// Persist size/state changes as they happen.
-					PersistWindowStateAndSettings();
-				}
-			}
-		}
-
-		// Call the actual apps logic and update loop.
-		if (!Update())
-		{
-			break;
-		}
-
-		// Enforce a strick fps set at the start of run.
-		const Uint64 l_frameElapsedMs = SDL_GetTicks64() - l_frameStartMs;
-		if (l_frameElapsedMs < kFrameDurationMs)
-		{
-			SDL_Delay(static_cast<Uint32>(kFrameDurationMs - l_frameElapsedMs));
-		}
-	}
-
-	return m_exitCode;
-}
-
-bool Application::OnLoad()
-{
-	// Reset application-owned state before runtime/services initialize.
-	m_app = uam::AppState();
 	m_platformServices = &PlatformServicesFactory::Instance();
-	m_window = nullptr;
-	m_glContext = nullptr;
-	m_glslVersion = nullptr;
-	m_platformUiScale = 1.0f;
-	m_done = false;
-	m_terminalsStoppedForShutdown = false;
-	m_sdlInitialized = false;
-	m_imguiInitialized = false;
-	m_curlInitialized = false;
-	m_exitCode = 0;
 
 	if (!InitializeState())
 	{
-		return false;
+		return m_exitCode != 0 ? m_exitCode : 1;
 	}
 
-	return InitializeWindowAndUi();
+	if (!InitializeCef(main_args))
+	{
+		return m_exitCode != 0 ? m_exitCode : 1;
+	}
+
+	// CefRunMessageLoop() blocks until OnBeforeClose calls CefQuitMessageLoop().
+	CefRunMessageLoop();
+	return m_exitCode;
 }
 
-bool Application::Update()
+// ---------------------------------------------------------------------------
+// Periodic poll
+// ---------------------------------------------------------------------------
+
+void Application::PollTick()
 {
+	CEF_REQUIRE_UI_THREAD();
+
 	if (m_done)
 	{
-		return false;
+		return;
 	}
 
-	// Poll runtime work before drawing the next frame.
-	PollPendingRuntimeCall(m_app);
-	PollAllCliTerminals(m_app);
+	const RuntimeCliCompatibilitySnapshot provider_snapshot_before = CreateCliCompatibilitySnapshot(m_app);
+	const bool pending_calls_changed = PollPendingRuntimeCall(m_app);
+	const bool acp_sessions_changed = uam::PollAllAcpSessions(m_app, m_browser);
+	uam::FlushPendingChatSaves(m_app);
+	const bool cli_terminals_changed = uam::PollAllCliTerminals(m_browser, m_app);
+	const bool memory_changed = MemoryService::ProcessDueMemoryWork(m_app);
 	ProviderCliCompatibilityService().Poll(m_app);
 
-	ImGui_ImplOpenGL3_NewFrame();
-	ImGui_ImplSDL2_NewFrame();
-	ImGui::NewFrame();
-	m_uiController.DrawFrame(m_app, m_done, m_platformUiScale, m_platformServices->ui_traits, m_chatDetailView, m_modalHostView);
+	// Poll the provider model catalog service for async model refresh completion.
+	if (m_app.provider_model_catalog != nullptr)
+	{
+		m_app.provider_model_catalog->Poll();
+		m_app.provider_model_catalog->MaybeStartRefresh();
+	}
+	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
+	const bool runtime_state_changed = pending_calls_changed || acp_sessions_changed || cli_terminals_changed || memory_changed;
+	const bool ui_relevant_state_changed = runtime_state_changed || provider_compatibility_changed || uam::HasDeferredStatePush();
 
-	ImGui::Render();
-	PresentFrame();
-	return !m_done;
+	// Push only when the serialized app state actually changed.
+	if (m_browser && ui_relevant_state_changed)
+	{
+		uam::PushStateUpdateIfChanged(m_browser, m_app);
+	}
+
+	ScheduleNextUpdate(GetNextPollDelayMs(m_app));
 }
 
-void Application::Shutdown()
+void Application::ScheduleNextUpdate(int delay_ms)
 {
-	// Shutdown only app-owned runtime state; low-level teardown stays in the destructor.
-	PersistWindowStateAndSettings();
-	for (PendingRuntimeCall& call : m_app.pending_calls)
+	if (!m_done)
 	{
-		ResetPendingRuntimeCall(call);
+		CefPostDelayedTask(TID_UI, new AppPollTask(this), delay_ms);
 	}
-	m_app.pending_calls.clear();
-	m_app.resolved_native_sessions_by_chat_id.clear();
-	ResetAsyncCommandTask(m_app.runtime_cli_version_check_task);
-	ResetAsyncCommandTask(m_app.runtime_cli_pin_task);
-	ResetNativeChatLoadTask(m_app.native_chat_load_task);
+}
 
-	if (!m_terminalsStoppedForShutdown)
-	{
-		FastStopCliTerminalsForExit(m_app);
-		m_terminalsStoppedForShutdown = true;
-	}
+// ---------------------------------------------------------------------------
+// Startup
+// ---------------------------------------------------------------------------
 
-	RuntimeLocalService().StopLocalBridge(m_app);
+void Application::OnBrowserReady(CefRefPtr<CefBrowser> browser)
+{
+	m_browser = browser;
+	// Start the polling loop as soon as the browser window exists.
+	ScheduleNextUpdate(50);
 }
 
 bool Application::InitializeState()
 {
-	const CURLcode l_curlInitCode = curl_global_init(CURL_GLOBAL_DEFAULT);
+	std::vector<fs::path> data_root_candidates;
+	const fs::path executable_path = m_platformServices->process_service.ResolveCurrentExecutablePath();
+	const bool running_from_mac_app_bundle = !executable_path.empty() && IsMacAppBundleExecutable(executable_path);
 
-	if (l_curlInitCode != CURLE_OK)
+	if (const std::optional<fs::path> data_root_env = uam::env::GetTrimmedPath("UAM_DATA_DIR"))
 	{
-		std::fprintf(stderr, "Failed to initialize libcurl: %s\n", curl_easy_strerror(l_curlInitCode));
+		data_root_candidates.push_back(*data_root_env);
+	}
+
+	if (!executable_path.empty() && !running_from_mac_app_bundle)
+	{
+		data_root_candidates.push_back(executable_path.parent_path() / "data");
+	}
+
+	if (!running_from_mac_app_bundle)
+	{
+		if (const std::optional<fs::path> cwd = uam::paths::CurrentPathNoThrow())
+		{
+			data_root_candidates.push_back(*cwd / "data");
+		}
+	}
+
+	data_root_candidates.push_back(m_platformServices->path_service.DefaultDataRootPath());
+	data_root_candidates.push_back(PersistenceCoordinator().TempFallbackDataRootPath());
+
+	std::unordered_set<std::string> tried_roots;
+	std::string last_data_root_error = "Unknown data directory initialization failure.";
+	bool initialized_data_root = false;
+
+	for (const fs::path& candidate_root : data_root_candidates)
+	{
+		if (candidate_root.empty())
+		{
+			continue;
+		}
+
+		const std::string key = uam::paths::NormalizedNativePathString(candidate_root);
+		if (tried_roots.contains(key))
+		{
+			continue;
+		}
+
+		tried_roots.insert(key);
+		std::string error;
+
+		if (PersistenceCoordinator().EnsureDataRootLayout(candidate_root, &error))
+		{
+			m_app.data_root = candidate_root;
+			initialized_data_root = true;
+			break;
+		}
+
+		last_data_root_error = std::move(error);
+	}
+
+	if (!initialized_data_root)
+	{
+		std::fprintf(stderr, "Failed to initialize application data directories: %s\n", last_data_root_error.c_str());
 		m_exitCode = 1;
 		return false;
 	}
 
-	m_curlInitialized = true;
-	std::vector<fs::path> l_dataRootCandidates;
-
-	if (const char* lcp_dataDirEnv = std::getenv("UAM_DATA_DIR"))
+	std::string data_root_lock_error;
+	m_dataRootLock = m_platformServices->process_service.TryAcquireDataRootLock(m_app.data_root, &data_root_lock_error);
+	if (m_dataRootLock == nullptr)
 	{
-		const std::string l_envRoot = Trim(lcp_dataDirEnv);
-
-		if (!l_envRoot.empty())
+		if (data_root_lock_error.empty())
 		{
-			l_dataRootCandidates.push_back(fs::path(l_envRoot));
+			data_root_lock_error = "Another Universal Agent Manager instance is already using this data root.";
 		}
-	}
-
-	std::error_code l_exeEc;
-	const fs::path l_exePath = m_platformServices->process_service.ResolveCurrentExecutablePath();
-	if (!l_exeEc && !l_exePath.empty())
-	{
-		l_dataRootCandidates.push_back(l_exePath.parent_path() / "data");
-	}
-
-	if (l_dataRootCandidates.empty())
-	{
-		std::error_code l_cwdEc;
-		const fs::path l_cwd = fs::current_path(l_cwdEc);
-
-		if (!l_cwdEc)
-		{
-			l_dataRootCandidates.push_back(l_cwd / "data");
-		}
-
-		l_dataRootCandidates.push_back(m_platformServices->path_service.DefaultDataRootPath());
-	}
-
-	l_dataRootCandidates.push_back(PersistenceCoordinator().TempFallbackDataRootPath());
-
-	std::unordered_set<std::string> l_triedRoots;
-	std::string l_lastDataRootError = "Unknown data directory initialization failure.";
-	bool l_initializedDataRoot = false;
-
-	for (const fs::path& l_candidateRoot : l_dataRootCandidates)
-	{
-		if (l_candidateRoot.empty())
-		{
-			continue;
-		}
-
-		const std::string l_key = l_candidateRoot.lexically_normal().string();
-
-		if (l_triedRoots.find(l_key) != l_triedRoots.end())
-		{
-			continue;
-		}
-
-		l_triedRoots.insert(l_key);
-		std::string l_error;
-
-		if (PersistenceCoordinator().EnsureDataRootLayout(l_candidateRoot, &l_error))
-		{
-			m_app.data_root = l_candidateRoot;
-			l_initializedDataRoot = true;
-			break;
-		}
-
-		l_lastDataRootError = std::move(l_error);
-	}
-
-	if (!l_initializedDataRoot)
-	{
-		std::fprintf(stderr, "Failed to initialize application data directories: %s\n", l_lastDataRootError.c_str());
+		std::fprintf(stderr, "%s\n", data_root_lock_error.c_str());
 		m_exitCode = 1;
 		return false;
 	}
 
 	PersistenceCoordinator().LoadSettings(m_app);
-	bool l_settingsDirty = false;
+	bool settings_dirty = false;
+	// PR-7: provider profiles are build-defined, not user data. They are reset to the
+	// built-in set on every startup and never persisted, so any per-profile "store" plumbing
+	// (e.g. EnsureDefaultProfile) is belt-and-suspenders unless profiles later become editable.
 	m_app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
-	bool l_providersDirty = ProviderProfileMigrationService().MigrateProviderProfilesToFixedModeIds(m_app);
-
-	if (ProviderProfileMigrationService().MigrateActiveProviderIdToFixedModes(m_app))
-	{
-		l_settingsDirty = true;
-	}
-
 	if (ProviderResolutionService().ActiveProvider(m_app) == nullptr && !m_app.provider_profiles.empty())
 	{
 		m_app.settings.active_provider_id = m_app.provider_profiles.front().id;
-		l_settingsDirty = true;
+		settings_dirty = true;
 	}
 
-	if (ProviderProfile* lp_activeProfile = ProviderResolutionService().ActiveProvider(m_app); lp_activeProfile != nullptr)
+	if (ProviderProfile* active_profile = ProviderResolutionService().ActiveProvider(m_app); active_profile != nullptr)
 	{
-		m_app.settings.provider_command_template = lp_activeProfile->command_template;
-		m_app.settings.gemini_command_template = m_app.settings.provider_command_template;
-#if UAM_ENABLE_RUNTIME_OLLAMA_ENGINE
-		m_app.settings.runtime_backend = ProviderRuntime::UsesInternalEngine(*lp_activeProfile) ? kRuntimeIdLocalEngine : kRuntimeBackendProviderCli;
-#else
-		m_app.settings.runtime_backend = kRuntimeBackendProviderCli;
-#endif
+		m_app.settings.runtime_backend = "provider-cli";
 
-		if (!ProviderRuntime::IsRuntimeEnabled(*lp_activeProfile))
+		if (!ProviderRuntime::IsRuntimeEnabled(*active_profile))
 		{
-			const std::string l_disabledReason = ProviderRuntime::DisabledReason(*lp_activeProfile);
-			m_app.status_line = l_disabledReason.empty() ? "Active provider runtime is disabled in this build." : l_disabledReason;
+			const std::string disabled_reason = ProviderRuntime::DisabledReason(*active_profile);
+			m_app.status_line = uam::strings::NonEmptyOrFallback(disabled_reason, "Active provider runtime is disabled in this build.");
 		}
 	}
 
-	PersistenceCoordinator().LoadFrontendActions(m_app);
-	TemplateRuntimeService().RefreshTemplateCatalog(m_app, true);
 	m_app.folders = ChatFolderStore::Load(m_app.data_root);
-	ChatDomainService().EnsureDefaultFolder(m_app);
-	ChatFolderStore::Save(m_app.data_root, m_app.folders);
+
+	// Initialize the provider model catalog service (async refresh for OpenCode Zen models).
+	m_app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
+	m_app.provider_model_catalog->Initialize(m_app.data_root);
+
 	ChatHistorySyncService().LoadSidebarChatsByDiscovery(m_app);
-
-	auto import_result = ChatHistorySyncService().ImportAllNativeChatsByDiscovery(m_app, false);
-	m_app.latest_imported_count = import_result.imported_count;
-	m_app.latest_import_total_count = import_result.total_count;
-
-	if (ProviderProfileMigrationService().MigrateChatProviderBindingsToFixedModes(m_app))
-	{
-		l_settingsDirty = true;
-	}
+	MemoryService::RefreshMemoryActivity(m_app);
 
 	if (!m_app.chats.empty())
 	{
-		if (m_app.settings.remember_last_chat && !m_app.settings.last_selected_chat_id.empty())
+		ChatDomainService().SelectRememberedOrFirstChat(m_app);
+
+		std::string hydrate_warning;
+		ChatSession* selected_chat = ChatDomainService().SelectedChat(m_app);
+		if (selected_chat != nullptr)
 		{
-			m_app.selected_chat_index = ChatDomainService().FindChatIndexById(m_app, m_app.settings.last_selected_chat_id);
+			ChatRepository::HydrateChatMessages(m_app.data_root, *selected_chat, &hydrate_warning);
 		}
-
-		if (m_app.selected_chat_index < 0 || m_app.selected_chat_index >= int(m_app.chats.size()))
-		{
-			m_app.selected_chat_index = 0;
-		}
-
-		ChatDomainService().RefreshRememberedSelection(m_app);
+		if (!hydrate_warning.empty())
+			m_app.status_line = hydrate_warning;
 	}
 
-	ChatHistorySyncService().RefreshNativeSessionDirectory(m_app);
-
-	if (ProviderResolutionService().ActiveProviderUsesNativeOverlayHistory(m_app) && m_app.native_history_chats_dir.empty())
-	{
-		m_app.status_line = "Native session directory not found yet. Run the provider CLI in this project once.";
-	}
-
-	if (const ChatSession* lcp_selectedChat = ChatDomainService().SelectedChat(m_app); lcp_selectedChat != nullptr && ProviderResolutionService().ChatUsesCliOutput(m_app, *lcp_selectedChat))
-	{
-		MarkSelectedCliTerminalForLaunch(m_app);
-	}
-
-	if (l_settingsDirty)
-	{
+	if (settings_dirty)
 		PersistenceCoordinator().SaveSettings(m_app);
-	}
+
+	// Make AppState accessible to CEF app/client via global pointer.
+	uam_cef_globals::g_app_state = &m_app;
 
 	return true;
 }
 
-bool Application::InitializeWindowAndUi()
+bool Application::InitializeCef(CefMainArgs main_args)
 {
-	m_platformServices->ui_traits.ApplyProcessDpiAwareness();
+	CefSettings settings;
+	settings.no_sandbox = true;
 
-	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) != 0)
+	// Resolve CEF resource paths relative to the executable.
+	CefString exe_dir_str;
+	if (CefGetPath(PK_DIR_EXE, exe_dir_str))
 	{
-		std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
-		m_exitCode = 1;
-		return false;
-	}
+		const fs::path exe_dir(exe_dir_str.ToString());
 
-	m_sdlInitialized = true;
-	m_platformServices->ui_traits.ConfigureOpenGlAttributes();
-	m_glslVersion = m_platformServices->ui_traits.OpenGlGlslVersion();
-
-	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-	SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
-	SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
-
-	m_window = SDL_CreateWindow("Universal Agent Manager", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, m_app.settings.window_width, m_app.settings.window_height, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
-
-	if (m_window == nullptr)
-	{
-		std::fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
-		m_exitCode = 1;
-		return false;
-	}
-
-	ApplyWindowIcon();
-	m_glContext = SDL_GL_CreateContext(m_window);
-
-	if (m_glContext == nullptr)
-	{
-		std::fprintf(stderr, "SDL_GL_CreateContext failed: %s\n", SDL_GetError());
-		m_exitCode = 1;
-		return false;
-	}
-
-	SDL_GL_MakeCurrent(m_window, m_glContext);
-	SDL_GL_SetSwapInterval(1);
-
-	IMGUI_CHECKVERSION();
-	ImGui::CreateContext();
-	m_imguiInitialized = true;
-	ImGuiIO& l_io = ImGui::GetIO();
-	l_io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-	m_platformUiScale = DetectUiScale(m_window);
-	g_platform_layout_scale = std::clamp(m_platformUiScale, 1.0f, 2.25f);
-	ConfigureFonts(l_io, m_platformUiScale);
-	ApplyThemeFromSettings(m_app);
-
-	if (m_platformUiScale > 1.01f)
-	{
-		ImGui::GetStyle().ScaleAllSizes(m_platformUiScale);
-	}
-
-	CaptureUiScaleBaseStyle();
-	ApplyUserUiScale(l_io, m_app.settings.ui_scale_multiplier);
-
-	ImGui_ImplSDL2_InitForOpenGL(m_window, m_glContext);
-	ImGui_ImplOpenGL3_Init(m_glslVersion);
-
-	if (m_app.settings.window_maximized)
-	{
-		SDL_MaximizeWindow(m_window);
-	}
-
-	return true;
-}
-
-void Application::PersistWindowStateAndSettings()
-{
-	if (m_window == nullptr || m_app.data_root.empty())
-	{
-		return;
-	}
-
-	CaptureWindowState(m_app, m_window);
-	PersistenceCoordinator().SaveSettings(m_app);
-}
-
-void Application::PresentFrame()
-{
-	if (m_window == nullptr)
-	{
-		return;
-	}
-
-	int l_displayWidth = 0;
-	int l_displayHeight = 0;
-	SDL_GL_GetDrawableSize(m_window, &l_displayWidth, &l_displayHeight);
-	glViewport(0, 0, l_displayWidth, l_displayHeight);
-	glClearColor(ui::kMainBackground.x, ui::kMainBackground.y, ui::kMainBackground.z, ui::kMainBackground.w);
-	glClear(GL_COLOR_BUFFER_BIT);
-	ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-	SDL_GL_SwapWindow(m_window);
-}
-
-fs::path Application::ResolveWindowIconPath() const
-{
-	std::vector<fs::path> l_candidates;
-	std::unique_ptr<char, decltype(&SDL_free)> lp_basePath(SDL_GetBasePath(), SDL_free);
-
-	if (lp_basePath != nullptr)
-	{
-		l_candidates.emplace_back(fs::path(lp_basePath.get()) / "app_icon.bmp");
-	}
-
-	l_candidates.emplace_back("app_icon.bmp");
-	l_candidates.emplace_back(fs::path("assets") / "app_icon.bmp");
-
-	for (const fs::path& l_candidate : l_candidates)
-	{
-		std::error_code l_ec;
-
-		if (fs::exists(l_candidate, l_ec) && !l_ec)
+#if defined(__APPLE__)
+		// On macOS, the helper app sits in Contents/Frameworks/ alongside the
+		// CEF framework.  Tell CEF exactly where to find it so it does not have
+		// to guess; this prevents the EXC_BREAKPOINT / SIGTRAP crash that occurs
+		// when Chromium cannot locate its renderer / GPU subprocesses.
+		const fs::path helper_path = exe_dir / ".." / "Frameworks" / "universal_agent_manager Helper.app" / "Contents" / "MacOS" / "universal_agent_manager Helper";
+		if (uam::paths::PathExistsNoThrow(helper_path))
 		{
-			return l_candidate;
+			CefString(&settings.browser_subprocess_path) = uam::paths::NormalizedNativePathString(helper_path);
 		}
+		// On macOS the CEF framework is self-contained; resource paths are
+		// resolved automatically from the framework bundle.  No need to set
+		// resources_dir_path / locales_dir_path explicitly.
+#else
+		CefString(&settings.resources_dir_path) = exe_dir.string();
+		CefString(&settings.locales_dir_path) = (exe_dir / "locales").string();
+#endif
 	}
 
-	return {};
+	auto cef_app = CefRefPtr<UamCefApp>(new UamCefApp());
+
+	// OnBrowserReady is called from UamCefClient::OnAfterCreated() via the
+	// callback we pass here, giving us the browser reference for PushCliOutput etc.
+	auto on_browser_ready = [this](CefRefPtr<CefBrowser> browser) { OnBrowserReady(browser); };
+
+	// Store the ready callback so uam_cef_app.cpp can forward it to UamCefClient.
+	// We piggyback on the existing g_client mechanism — when UamCefApp creates the
+	// client in OnContextInitialized() it uses a default callback; we need to
+	// supply our own.  Override g_client's callback after creation by constructing
+	// a new client here and passing it through the globals.
+	//
+	// Simplest approach: create UamCefClient now and stash it so OnContextInitialized
+	// can skip creating a new one.
+	const fs::path exe_dir = m_platformServices->process_service.ResolveCurrentExecutablePath().parent_path();
+	auto client = CefRefPtr<UamCefClient>(new UamCefClient(m_app, uam::cef::ResolveTrustedUiIndexUrl(exe_dir), on_browser_ready));
+	uam_cef_globals::g_client = client;
+
+	if (!CefInitialize(main_args, settings, cef_app.get(), nullptr))
+	{
+		std::fprintf(stderr, "CefInitialize failed.\n");
+		m_exitCode = 1;
+		return false;
+	}
+
+	return true;
 }
 
-void Application::ApplyWindowIcon() const
+// ---------------------------------------------------------------------------
+// Shutdown
+// ---------------------------------------------------------------------------
+
+void Application::Shutdown()
 {
-	if (m_window == nullptr)
+	m_done = true;
+	PersistenceCoordinator().SaveSettings(m_app);
+
+	for (PendingRuntimeCall& call : m_app.pending_calls)
 	{
-		return;
+		ResetPendingRuntimeCall(call);
 	}
 
-	const fs::path l_iconPath = ResolveWindowIconPath();
+	m_app.pending_calls.clear();
+	m_app.resolved_native_sessions_by_chat_id.clear();
+	ResetRuntimeCliVersionState(m_app);
+	MemoryService::StopMemoryTasks(m_app);
+	uam::platform::ResetAsyncNativeChatLoadTask(m_app.native_chat_load_task);
+	uam::platform::ResetAsyncNativeChatLoadTasks(m_app.native_chat_load_tasks);
+	uam::FastStopAcpSessionsForExit(m_app);
+	uam::FastStopCliTerminalsForExit(m_app);
 
-	if (l_iconPath.empty())
-	{
-		return;
-	}
+	uam_cef_globals::g_app_state = nullptr;
+	uam_cef_globals::g_client = nullptr;
+	m_browser = nullptr;
 
-	const std::string l_iconUtf8 = l_iconPath.string();
-	std::unique_ptr<SDL_Surface, decltype(&SDL_FreeSurface)> lp_iconSurface(SDL_LoadBMP(l_iconUtf8.c_str()), SDL_FreeSurface);
-
-	if (lp_iconSurface == nullptr)
-	{
-		std::fprintf(stderr, "Warning: could not load window icon '%s': %s\n", l_iconUtf8.c_str(), SDL_GetError());
-		return;
-	}
-
-	SDL_SetWindowIcon(m_window, lp_iconSurface.get());
+	CefShutdown();
+	m_dataRootLock.reset();
 }

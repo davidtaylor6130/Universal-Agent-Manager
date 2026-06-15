@@ -1,9 +1,11 @@
-#ifndef UAM_COMMON_CONFIG_FRONTEND_ACTIONS_H
-#define UAM_COMMON_CONFIG_FRONTEND_ACTIONS_H
+#pragma once
+
+#include "common/utils/string_utils.h"
 
 #include <filesystem>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace uam
@@ -35,9 +37,9 @@ namespace uam
 	FrontendActionMap DefaultFrontendActionMap();
 
 	/// <summary>Finds a mutable action by key.</summary>
-	FrontendAction* FindAction(FrontendActionMap& action_map, const std::string& key);
+	FrontendAction* FindAction(FrontendActionMap& action_map, std::string_view key);
 	/// <summary>Finds a read-only action by key.</summary>
-	const FrontendAction* FindAction(const FrontendActionMap& action_map, const std::string& key);
+	const FrontendAction* FindAction(const FrontendActionMap& action_map, std::string_view key);
 
 	/// <summary>Normalizes ordering and defaults within the action map.</summary>
 	void NormalizeFrontendActionMap(FrontendActionMap& action_map);
@@ -55,33 +57,29 @@ namespace uam
 	bool SaveFrontendActionMap(const std::filesystem::path& path, const FrontendActionMap& action_map, std::string* error_out = nullptr);
 
 	/// <summary>Returns visibility for a UI action with fallback when missing.</summary>
-	inline bool FrontendActionVisible(const FrontendActionMap& action_map, const std::string& key, const bool fallback_visible = true)
+	inline bool FrontendActionVisible(const FrontendActionMap& action_map, std::string_view key, bool fallback_visible = true)
 	{
 		const FrontendAction* action = FindAction(action_map, key);
 		return (action == nullptr) ? fallback_visible : action->visible;
 	}
 
 	/// <summary>Returns label text for a UI action with fallback when missing.</summary>
-	inline std::string FrontendActionLabel(const FrontendActionMap& action_map, const std::string& key, const std::string& fallback_label)
+	inline std::string FrontendActionLabel(const FrontendActionMap& action_map, std::string_view key, std::string_view fallback_label)
 	{
 		const FrontendAction* action = FindAction(action_map, key);
 
 		if (action == nullptr)
 		{
-			return fallback_label;
+			return std::string(fallback_label);
 		}
 
-		const std::size_t start = action->label.find_first_not_of(" \t\r\n");
-
-		if (start == std::string::npos)
+		const std::string label = uam::strings::Trim(action->label);
+		if (label.empty())
 		{
-			return fallback_label;
+			return std::string(fallback_label);
 		}
 
-		const std::size_t end = action->label.find_last_not_of(" \t\r\n");
-		return action->label.substr(start, end - start + 1);
+		return label;
 	}
 
 } // namespace uam
-
-#endif // UAM_COMMON_CONFIG_FRONTEND_ACTIONS_H

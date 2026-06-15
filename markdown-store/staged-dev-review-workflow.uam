@@ -1,0 +1,132 @@
+---
+uamVersion: 1
+title: Workflow: Junior Dev, Dev, Senior Dev Review
+maker: David Taylor
+review: Layered review workflow by engineering experience level
+dateCreated: 2026-05-12T00:00:00Z
+dateUpdated: 2026-05-12T00:00:00Z
+---
+
+# Workflow: Junior Dev, Dev, Senior Dev Review
+
+Use this workflow to review a change in three passes. Each pass should use the expected knowledge level for that role and focus on issues that role is realistically responsible for catching.
+
+## Review Rules
+
+- Review as if the code may ship.
+- Findings come before summaries.
+- Only report issues that are actionable and relevant.
+- Include file and line references when possible.
+- Avoid style-only feedback unless it affects correctness, maintainability, accessibility, or user experience.
+- Do not repeat the same issue across levels. If a Junior finding already covers it, the Dev or Senior pass may add context but should not duplicate it as a new finding.
+
+## Pass 1: Junior Developer Review
+
+Review with a junior developer knowledge level. Focus on clear, local issues that can be found by careful reading.
+
+Check for:
+
+- Obvious syntax or type mistakes
+- Misspelled identifiers, wrong imports, or unused variables
+- Missing null, empty, or error-state handling in simple flows
+- Broken button handlers, missing props, or disconnected UI controls
+- Inconsistent labels, confusing text, or mismatched names
+- Simple off-by-one errors
+- Missing basic tests for changed behavior
+- Code that contradicts nearby examples or established local patterns
+
+Junior output should answer:
+
+- What looks plainly wrong?
+- What is likely to break during normal use?
+- What small test or manual check would catch it?
+
+## Pass 2: Developer Review
+
+Review with a mid-level developer knowledge level. Focus on integration, state, maintainability, and realistic runtime behavior.
+
+Check for:
+
+- State that can go stale across navigation, provider switches, chat switches, or mode changes
+- Race conditions, async ordering bugs, and missing cancellation or request-key handling
+- Incorrect data flow between UI, CEF bridge, app state, repository, and runtime layers
+- Persistence bugs, schema mismatches, or missing migration behavior
+- Platform differences between macOS and Windows
+- Error handling that hides useful diagnostics or leaves the UI in a bad state
+- Tests that verify implementation details but miss user-visible behavior
+- Duplicated logic that is likely to drift
+- Changes that are too broad for the requested behavior
+
+Developer output should answer:
+
+- Does the implementation fit the existing architecture?
+- Does the behavior survive realistic user workflows?
+- Are tests focused on the right contract?
+- Is the change maintainable without unnecessary abstraction?
+
+## Pass 3: Senior Developer Review
+
+Review with a senior developer knowledge level. Focus on product risk, architecture, release readiness, and long-term cost.
+
+Check for:
+
+- Architectural boundary violations
+- New coupling between unrelated subsystems
+- Incorrect ownership of durable versus transient state
+- Security, privacy, data-loss, or command-execution risks
+- Release-scope drift beyond the intended product slice
+- Backward compatibility and migration risk for existing user data
+- Failure modes that affect multiple providers, multiple chats, or concurrent CLI instances
+- UX behavior that is technically correct but operationally confusing
+- Missing observability or diagnostics for failures users are likely to report
+- Test gaps around high-risk behavior
+
+Senior output should answer:
+
+- What could make this change costly or risky after release?
+- Does this preserve the intended product scope?
+- Is the behavior robust across platforms and provider backends?
+- What is the minimum additional work needed before shipping?
+
+## Final Output Format
+
+Use this structure:
+
+## Junior Developer Findings
+
+- Severity:
+- Location:
+- Issue:
+- Why it matters:
+- Suggested fix:
+
+## Developer Findings
+
+- Severity:
+- Location:
+- Issue:
+- Why it matters:
+- Suggested fix:
+
+## Senior Developer Findings
+
+- Severity:
+- Location:
+- Issue:
+- Why it matters:
+- Suggested fix:
+
+## Open Questions
+
+List only questions that block confidence in the review.
+
+## Release Recommendation
+
+Choose one:
+
+- Ready
+- Ready after minor fixes
+- Needs changes
+- Do not ship
+
+Explain the recommendation briefly.

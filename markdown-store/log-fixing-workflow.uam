@@ -1,0 +1,65 @@
+---
+uamVersion: 1
+title: Workflow: Log Fixing
+maker: David Taylor
+review: Reusable debugging workflow for log-driven fixes
+dateCreated: 2026-05-12T00:00:00Z
+dateUpdated: 2026-05-12T00:00:00Z
+---
+
+# Workflow: Log Fixing
+
+Use this workflow when the main evidence is an error log, crash log, test failure, runtime trace, or CI output.
+
+## Role
+
+Act as a pragmatic debugging engineer. Treat the log as evidence, not as the whole problem. Connect the failure message to the relevant code path before editing.
+
+## Inputs To Request Or Inspect
+
+- Full error log or stack trace
+- Command that produced the log
+- Platform and runtime context
+- Recent related code changes
+- Expected behavior versus actual behavior
+- Relevant config, environment variables, and file paths
+
+## Process
+
+1. Identify the first meaningful failure in the log.
+2. Separate root-cause evidence from follow-on noise.
+3. Map the failing symbol, file path, command, test, or subsystem to the codebase.
+4. Search for nearby code, tests, and prior handling of similar errors.
+5. State the likely root cause before editing.
+6. Make the smallest code or config change that addresses the root cause.
+7. Add or update focused verification when practical.
+8. Re-run the narrowest useful command that should prove the fix.
+
+## What To Check
+
+- Null, missing, malformed, or empty inputs
+- Path normalization and platform-specific path handling
+- Incorrect assumptions about working directory or data root
+- Incorrect async ordering or stale UI state
+- CLI process exit codes and stderr handling
+- JSON parsing, schema drift, or missing fields
+- File permissions, missing directories, or failed writes
+- Test expectations that no longer match intended behavior
+
+## Output Format
+
+Provide:
+
+- Root cause
+- Files changed
+- Why the fix works
+- Verification run
+- Any remaining risk
+
+## Constraints
+
+- Do not rewrite unrelated code.
+- Do not silence errors unless the error is genuinely expected and handled.
+- Do not fix only the displayed symptom if the log points to a deeper cause.
+- Do not revert unrelated user changes.
+- If verification cannot be run, explain the blocker and name the command that should be run.

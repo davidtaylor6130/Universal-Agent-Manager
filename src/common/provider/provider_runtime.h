@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 /// <summary>
@@ -48,24 +49,20 @@ class IProviderRuntime
 	/// <summary>Canonical provider runtime id (for example `gemini-cli`).</summary>
 	virtual const char* RuntimeId() const = 0;
 	/// <summary>Returns whether this runtime backend is enabled in the current build.</summary>
-	virtual bool IsEnabled() const = 0;
+	virtual bool IsEnabled() const { return true; }
 	/// <summary>Returns a concise reason when runtime is disabled in this build.</summary>
-	virtual const char* DisabledReason() const = 0;
+	virtual const char* DisabledReason() const { return ""; }
 
-	/// <summary>Builds a provider prompt from user text and file references.</summary>
-	virtual std::string BuildPrompt(const ProviderProfile& profile, const std::string& user_prompt, const std::vector<std::string>& files) const = 0;
-	/// <summary>Builds the provider command for one request.</summary>
-	virtual std::string BuildCommand(const ProviderProfile& profile, const AppSettings& settings, const std::string& prompt, const std::vector<std::string>& files, const std::string& resume_session_id) const = 0;
 	/// <summary>Builds interactive terminal argv for the active provider.</summary>
 	virtual std::vector<std::string> BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const = 0;
 	/// <summary>Maps provider-native message types to app message roles.</summary>
-	virtual MessageRole RoleFromNativeType(const ProviderProfile& profile, const std::string& native_type) const = 0;
+	virtual MessageRole RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const = 0;
 	/// <summary>Loads history according to runtime policy.</summary>
 	virtual std::vector<ChatSession> LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path& native_history_chats_dir, const ProviderRuntimeHistoryLoadOptions& options) const = 0;
 	/// <summary>Saves chat according to runtime history policy.</summary>
 	virtual bool SaveHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const ChatSession& chat) const = 0;
 	/// <summary>Returns true when runtime uses Gemini-native history plus local overlay.</summary>
-	virtual bool UsesNativeOverlayHistory(const ProviderProfile& profile) const = 0;
+	virtual bool UsesNativeOverlayHistory(const ProviderProfile& profile) const { (void)profile; return false; }
 	/// <summary>Discovers all chat sources this runtime manages. Returns empty result when not supported.</summary>
 	virtual ProviderDiscoveryResult DiscoverChatSources(const ProviderProfile& profile) const
 	{
@@ -91,32 +88,69 @@ class IProviderRuntime
 		return "unknown";
 	}
 	/// <summary>Returns the native session directory for a workspace path.</summary>
-	virtual std::filesystem::path GetNativeSessionDirectory(const std::filesystem::path& workspacePath) const
+	virtual std::filesystem::path GetNativeSessionDirectory(const std::filesystem::path& workspace_path) const
 	{
-		(void)workspacePath;
+		(void)workspace_path;
 		return {};
 	}
 	/// <summary>Rebuilds a provider-native session file from UAM source of truth. Returns true on success.</summary>
-	virtual bool RebuildNativeSessionFile(const ProviderProfile& profile, const ChatSession& chat, const std::filesystem::path& workspacePath) const
+	virtual bool RebuildNativeSessionFile(const ProviderProfile& profile, const ChatSession& chat, const std::filesystem::path& workspace_path) const
 	{
 		(void)profile;
 		(void)chat;
-		(void)workspacePath;
+		(void)workspace_path;
 		return true;
 	}
 
 	/// <summary>Returns true when provider uses Gemini JSON history files.</summary>
-	virtual bool SupportsGeminiJsonHistory(const ProviderProfile& profile) const = 0;
+	virtual bool SupportsGeminiJsonHistory(const ProviderProfile& profile) const
+	{
+		(void)profile;
+		return false;
+	}
 	/// <summary>Returns true when provider persists via local chat storage only.</summary>
-	virtual bool UsesLocalHistory(const ProviderProfile& profile) const = 0;
+	virtual bool UsesLocalHistory(const ProviderProfile& profile) const
+	{
+		(void)profile;
+		return true;
+	}
 	/// <summary>Returns true when provider execution is internal engine backed.</summary>
-	virtual bool UsesInternalEngine(const ProviderProfile& profile) const = 0;
+	virtual bool UsesInternalEngine(const ProviderProfile& profile) const
+	{
+		(void)profile;
+		return false;
+	}
 	/// <summary>Returns true when provider output is fixed to CLI terminal mode.</summary>
-	virtual bool UsesCliOutput(const ProviderProfile& profile) const = 0;
-	/// <summary>Returns true when provider output is fixed to structured chat mode.</summary>
-	virtual bool UsesStructuredOutput(const ProviderProfile& profile) const = 0;
+	virtual bool UsesCliOutput(const ProviderProfile& profile) const
+	{
+		(void)profile;
+		return true;
+	}
 	/// <summary>Returns true when prompt bootstrap should use @.gemini path injection.</summary>
-	virtual bool UsesGeminiPathBootstrap(const ProviderProfile& profile) const = 0;
+	virtual bool UsesGeminiPathBootstrap(const ProviderProfile& profile) const
+	{
+		(void)profile;
+		return false;
+	}
+
+	/// <summary>Builds the argv for a provider worker command (batch mode, no terminal).</summary>
+	virtual std::vector<std::string> BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const = 0;
+
+	/// <summary>Builds the argv that launches the provider's structured (ACP/app-server) process over stdio.</summary>
+	virtual std::vector<std::string> BuildStructuredLaunchArgv(const ProviderProfile& profile, const ChatSession& chat) const = 0;
+
+	/// <summary>
+	/// Returns true when <paramref name="tool_name"/> is a tool this provider treats as a sub-agent
+	/// invocation, even when the ACP update does not carry an explicit <c>isSubAgent</c> /
+	/// <c>subAgentId</c> field. The default implementation returns false; providers whose ACP
+	/// adapter emits sub-agent tool calls as plain <c>tool_call</c> updates should override this
+	/// so the sub-agent visual is applied from the initial pending update, not just at completion.
+	/// </summary>
+	virtual bool ProviderRecognizesSubagentTool(std::string_view tool_name) const
+	{
+		(void)tool_name;
+		return false;
+	}
 };
 
 /// <summary>
@@ -128,9 +162,9 @@ class ProviderRuntimeRegistry
 	/// <summary>Resolves runtime implementation by provider profile.</summary>
 	static const IProviderRuntime& Resolve(const ProviderProfile& profile);
 	/// <summary>Resolves runtime implementation by provider id.</summary>
-	static const IProviderRuntime& ResolveById(const std::string& provider_id);
-	/// <summary>Returns true when provider id maps to a known runtime id.</summary>
-	static bool IsKnownRuntimeId(const std::string& provider_id);
+	static const IProviderRuntime& ResolveById(std::string_view provider_id);
+	/// <summary>Returns true when provider id maps to an enabled runtime in this build.</summary>
+	static bool IsEnabledRuntimeId(std::string_view provider_id);
 };
 
 /// <summary>
@@ -139,25 +173,20 @@ class ProviderRuntimeRegistry
 class ProviderRuntime
 {
   public:
-	/// <summary>Builds a provider prompt from user text and file references.</summary>
-	static std::string BuildPrompt(const ProviderProfile& profile, const std::string& user_prompt, const std::vector<std::string>& files);
-
-	/// <summary>Builds the provider command for one request.</summary>
-	static std::string BuildCommand(const ProviderProfile& profile, const AppSettings& settings, const std::string& prompt, const std::vector<std::string>& files, const std::string& resume_session_id);
 
 	/// <summary>Builds interactive terminal argv for the active provider.</summary>
 	static std::vector<std::string> BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings);
 	/// <summary>Returns true when runtime backend for this profile is enabled in current build.</summary>
 	static bool IsRuntimeEnabled(const ProviderProfile& profile);
 	/// <summary>Returns true when runtime backend for this provider id is enabled in current build.</summary>
-	static bool IsRuntimeEnabled(const std::string& provider_id);
+	static bool IsRuntimeEnabled(std::string_view provider_id);
 	/// <summary>Returns disabled reason string for this profile runtime backend, or empty when enabled.</summary>
 	static std::string DisabledReason(const ProviderProfile& profile);
 	/// <summary>Returns disabled reason string for this provider id runtime backend, or empty when enabled.</summary>
-	static std::string DisabledReason(const std::string& provider_id);
+	static std::string DisabledReason(std::string_view provider_id);
 
 	/// <summary>Maps provider-native message types to app message roles.</summary>
-	static MessageRole RoleFromNativeType(const ProviderProfile& profile, const std::string& native_type);
+	static MessageRole RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type);
 	/// <summary>Loads history according to runtime policy.</summary>
 	static std::vector<ChatSession> LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path& native_history_chats_dir, const ProviderRuntimeHistoryLoadOptions& options = {});
 	/// <summary>Saves chat according to runtime history policy.</summary>
@@ -172,12 +201,12 @@ class ProviderRuntime
 	static bool UsesInternalEngine(const ProviderProfile& profile);
 	/// <summary>Returns true when provider output is fixed to CLI terminal mode.</summary>
 	static bool UsesCliOutput(const ProviderProfile& profile);
-	/// <summary>Returns true when provider output is fixed to structured chat mode.</summary>
-	static bool UsesStructuredOutput(const ProviderProfile& profile);
 	/// <summary>Returns true when prompt bootstrap should use @.gemini path injection.</summary>
 	static bool UsesGeminiPathBootstrap(const ProviderProfile& profile);
 	/// <summary>Discovers all chat sources this runtime manages.</summary>
 	static ProviderDiscoveryResult DiscoverChatSources(const ProviderProfile& profile);
 	/// <summary>Rebuilds a provider-native session file from UAM source of truth.</summary>
-	static bool RebuildNativeSessionFile(const ProviderProfile& profile, const ChatSession& chat, const std::filesystem::path& workspacePath);
+	static bool RebuildNativeSessionFile(const ProviderProfile& profile, const ChatSession& chat, const std::filesystem::path& workspace_path);
+	/// <summary>Returns true when this provider treats <paramref name="tool_name"/> as a sub-agent invocation.</summary>
+	static bool ProviderRecognizesSubagentTool(const ProviderProfile& profile, std::string_view tool_name);
 };

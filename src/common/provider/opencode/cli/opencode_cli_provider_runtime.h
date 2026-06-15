@@ -1,11 +1,18 @@
 #pragma once
 
-#include "common/provider/opencode/base/opencode_base_provider_runtime.h"
+#include "common/provider/provider_runtime.h"
 
-class OpenCodeCliProviderRuntime final : public OpenCodeBaseProviderRuntime
+class OpenCodeCliProviderRuntime final : public IProviderRuntime
 {
   public:
-	OpenCodeCliProviderRuntime();
+	const char* RuntimeId() const override;
+	std::vector<std::string> BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const override;
+	MessageRole RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const override;
+	std::vector<ChatSession> LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path& native_history_chats_dir, const ProviderRuntimeHistoryLoadOptions& options) const override;
+	bool SaveHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const ChatSession& chat) const override;
+	std::vector<std::string> BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const override;
+	std::vector<std::string> BuildStructuredLaunchArgv(const ProviderProfile& profile, const ChatSession& chat) const override;
+	bool ProviderRecognizesSubagentTool(std::string_view tool_name) const override;
 };
 
 const IProviderRuntime& GetOpenCodeCliProviderRuntime();

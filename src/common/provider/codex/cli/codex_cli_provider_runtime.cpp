@@ -1,35 +1,24 @@
 #include "common/provider/codex/cli/codex_cli_provider_runtime.h"
 
+#include "common/provider/codex/cli/codex_thread_id.h"
+#include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
 
-using namespace provider_runtime_internal;
+namespace
+{
+	constexpr const char* kCodexFullAutoFlag = "--full-auto";
+
+	std::vector<std::string> CodexFlagsFromSettings(const AppSettings& settings)
+	{
+		return uam::provider_runtime_internal::BuildProviderFlagsArgv(settings, kCodexFullAutoFlag);
+	}
+} // namespace
 
 const char* CodexCliProviderRuntime::RuntimeId() const
 {
-	return "codex-cli";
+	return uam::provider_ids::kCodexCli;
 }
 
-bool CodexCliProviderRuntime::IsEnabled() const
-{
-	return UAM_ENABLE_RUNTIME_CODEX_CLI != 0;
-}
-
-const char* CodexCliProviderRuntime::DisabledReason() const
-{
-	return "Runtime 'codex-cli' is disabled in this build (UAM_ENABLE_RUNTIME_CODEX_CLI=OFF).";
-}
-
-std::string CodexCliProviderRuntime::BuildPrompt(const ProviderProfile&, const std::string& user_prompt, const std::vector<std::string>& files) const
-{
-	return provider_runtime_internal::BuildPrompt(user_prompt, files);
-}
-
-std::string CodexCliProviderRuntime::BuildCommand(const ProviderProfile& profile, const AppSettings& settings, const std::string& prompt, const std::vector<std::string>& files, const std::string& resume_session_id) const
-{
-	const AppSettings provider_settings = MergeProviderSettings(profile, settings);
-	const std::string effective_resume_session_id = profile.supports_resume ? resume_session_id : "";
-	return BuildCommandFromTemplate(provider_settings, prompt, files, effective_resume_session_id, "codex exec {flags} {prompt}");
-}
 
 std::vector<std::string> CodexCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
 {
@@ -38,57 +27,68 @@ std::vector<std::string> CodexCliProviderRuntime::BuildInteractiveArgv(const Pro
 		return {};
 	}
 
-	return provider_runtime_internal::BuildInteractiveArgv(profile, chat, MergeProviderSettings(profile, settings));
+	const AppSettings provider_settings = uam::provider_runtime_internal::MergeProviderSettings(profile, settings);
+	std::vector<std::string> argv;
+	const std::string resume_id = uam::codex::ValidThreadIdOrEmpty(chat.native_session_id);
+	if (profile.supports_resume && !resume_id.empty())
+	{
+		uam::provider_runtime_internal::AppendLiteralArgs(argv, {"codex", "resume", "--no-alt-screen"});
+		argv.push_back(resume_id);
+	}
+	else
+	{
+		argv = uam::provider_runtime_internal::SplitInteractiveCommandOrDefault(profile, "codex --no-alt-screen");
+	}
+
+	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "-m", chat.model_id);
+
+	uam::provider_runtime_internal::AppendArgs(argv, CodexFlagsFromSettings(provider_settings));
+	return argv;
 }
 
-MessageRole CodexCliProviderRuntime::RoleFromNativeType(const ProviderProfile& profile, const std::string& native_type) const
+MessageRole CodexCliProviderRuntime::RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const
 {
-	return provider_runtime_internal::RoleFromNativeType(profile, native_type);
+	return uam::provider_runtime_internal::RoleFromNativeType(profile, native_type);
 }
 
-std::vector<ChatSession> CodexCliProviderRuntime::LoadHistory(const ProviderProfile&, const std::filesystem::path& data_root, const std::filesystem::path&, const ProviderRuntimeHistoryLoadOptions&) const
+std::vector<ChatSession> CodexCliProviderRuntime::LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path&, const ProviderRuntimeHistoryLoadOptions&) const
 {
-	return LoadLocalChats(data_root);
+	(void)profile;
+	return uam::provider_runtime_internal::LoadLocalChats(data_root);
 }
 
 bool CodexCliProviderRuntime::SaveHistory(const ProviderProfile&, const std::filesystem::path& data_root, const ChatSession& chat) const
 {
-	return SaveLocalChat(data_root, chat);
+	return uam::provider_runtime_internal::SaveLocalChat(data_root, chat);
 }
 
-bool CodexCliProviderRuntime::UsesNativeOverlayHistory(const ProviderProfile&) const
+
+std::vector<std::string> CodexCliProviderRuntime::BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const
 {
-	return false;
+	std::vector<std::string> argv = {"codex", "exec"};
+	const std::vector<std::string> flags = uam::provider_runtime_internal::ProviderWorkerFlags(profile, settings);
+	uam::provider_runtime_internal::AppendArgs(argv, flags);
+	
+	// Add read-only args for worker mode
+	constexpr const char* kCodexReadOnlyWorkerArgs[] = {
+	    "--ignore-user-config", "--ignore-rules", "--json", "--color", "never",
+	    "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only",
+	    "-c", "model_reasoning_effort=\"low\"",
+	};
+	for (const char* arg : kCodexReadOnlyWorkerArgs)
+	{
+		argv.push_back(arg);
+	}
+	
+	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "-m", model_id);
+
+	argv.push_back(std::string(prompt));
+	return argv;
 }
 
-bool CodexCliProviderRuntime::SupportsGeminiJsonHistory(const ProviderProfile&) const
+std::vector<std::string> CodexCliProviderRuntime::BuildStructuredLaunchArgv(const ProviderProfile&, const ChatSession&) const
 {
-	return false;
-}
-
-bool CodexCliProviderRuntime::UsesLocalHistory(const ProviderProfile&) const
-{
-	return true;
-}
-
-bool CodexCliProviderRuntime::UsesInternalEngine(const ProviderProfile&) const
-{
-	return false;
-}
-
-bool CodexCliProviderRuntime::UsesCliOutput(const ProviderProfile&) const
-{
-	return true;
-}
-
-bool CodexCliProviderRuntime::UsesStructuredOutput(const ProviderProfile&) const
-{
-	return false;
-}
-
-bool CodexCliProviderRuntime::UsesGeminiPathBootstrap(const ProviderProfile&) const
-{
-	return false;
+	return {"codex", "app-server", "--listen", "stdio://"};
 }
 
 const IProviderRuntime& GetCodexCliProviderRuntime()

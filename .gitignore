@@ -6,12 +6,9 @@
 # Runtime/data outputs
 /data/
 /.vectorised_rag/
-/subprojects/ollama_engine/models/
-/subprojects/ollama_engine/evaluation/reference_repos/
 
 # Local tool state
 /.gemini/
-/imgui.ini
 /msbuild_uam.log
 
 # IDE/system files
@@ -20,3 +17,15 @@
 .DS_Store
 /.github
 /Builds_New
+/BuildsTest
+
+# React frontend generated output
+/UI-V2/node_modules/
+/UI-V2/dist/
+/UI-V2/*.tsbuildinfo
+/UI-V2/.vite/
+/UI-V2/coverage/
+/.UAM
+
+compile_commands.json
+/.cache

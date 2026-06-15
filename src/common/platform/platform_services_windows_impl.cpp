@@ -1,19 +1,22 @@
 #include "platform_services_windows_impl.h"
 
 #include "common/paths/app_paths.h"
-#include "common/platform/sdl_includes.h"
+#include "common/paths/path_utils.h"
 #include "common/state/app_state.h"
+#include "common/utils/env_utils.h"
+#include "common/utils/range_utils.h"
+#include "common/utils/shell_escape.h"
+#include "common/utils/string_utils.h"
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cerrno>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <optional>
 #include <sstream>
+#include <string_view>
 #include <thread>
 
 #ifndef NOMINMAX
@@ -31,47 +34,22 @@
 
 namespace
 {
+	constexpr auto kDirectWindowsExecutableExtensions = std::to_array<std::string_view>({
+	    ".exe",
+	    ".com",
+	});
 
-	std::string TrimAsciiWhitespace(const std::string& value)
-	{
-		const std::size_t start = value.find_first_not_of(" \t\r\n");
+	constexpr auto kWindowsCommandScriptExtensions = std::to_array<std::string_view>({
+	    ".cmd",
+	    ".bat",
+	});
 
-		if (start == std::string::npos)
-		{
-			return "";
-		}
-
-		const std::size_t end = value.find_last_not_of(" \t\r\n");
-		return value.substr(start, end - start + 1);
-	}
-
-	std::string ShellQuoteWindowsForCmd(const std::string& value)
-	{
-		std::string escaped = "\"";
-
-		for (const char ch : value)
-		{
-			if (ch == '"')
-			{
-				escaped += "\"\"";
-			}
-			else if (ch == '%')
-			{
-				escaped += "%%";
-			}
-			else if (ch == '\r' || ch == '\n')
-			{
-				escaped.push_back(' ');
-			}
-			else
-			{
-				escaped.push_back(ch);
-			}
-		}
-
-		escaped.push_back('"');
-		return escaped;
-	}
+	constexpr auto kLaunchableWindowsCommandExtensions = std::to_array<std::string_view>({
+	    ".exe",
+	    ".com",
+	    ".cmd",
+	    ".bat",
+	});
 
 	std::wstring WideFromUtf8(const std::string& value)
 	{
@@ -131,6 +109,31 @@ namespace
 		}
 
 		return utf8;
+	}
+
+	std::string FormatWindowsError(const DWORD error)
+	{
+		LPWSTR buffer = nullptr;
+		const DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
+		const DWORD len = FormatMessageW(flags, nullptr, error, 0, reinterpret_cast<LPWSTR>(&buffer), 0, nullptr);
+		std::string message;
+		if (len > 0 && buffer != nullptr)
+		{
+			message = WideToUtf8(std::wstring(buffer, buffer + len));
+			while (!message.empty() && (message.back() == '\r' || message.back() == '\n' || message.back() == '.'))
+			{
+				message.pop_back();
+			}
+		}
+		if (buffer != nullptr)
+		{
+			LocalFree(buffer);
+		}
+		if (message.empty())
+		{
+			message = "Windows error " + std::to_string(static_cast<unsigned long>(error));
+		}
+		return message + " (" + std::to_string(static_cast<unsigned long>(error)) + ")";
 	}
 
 	std::string QuoteWindowsArg(const std::string& arg)
@@ -195,21 +198,401 @@ namespace
 
 	std::string BuildWindowsCommandLine(const std::vector<std::string>& argv)
 	{
-		std::ostringstream out;
-		bool first = true;
-
+		std::vector<std::string> quoted_args;
+		quoted_args.reserve(argv.size());
 		for (const std::string& arg : argv)
 		{
-			if (!first)
-			{
-				out << ' ';
-			}
-
-			out << QuoteWindowsArg(arg);
-			first = false;
+			quoted_args.push_back(QuoteWindowsArg(arg));
 		}
 
+		return uam::strings::Join(quoted_args, " ");
+	}
+
+	bool LooksLikeWindowsPath(const std::string& value)
+	{
+		return uam::strings::Contains(value, '\\') || uam::strings::Contains(value, '/') || uam::strings::Contains(value, ':');
+	}
+
+	std::string WindowsPathExtension(const std::string& value)
+	{
+		return uam::strings::ToLowerAscii(std::filesystem::path(value).extension().string());
+	}
+
+	bool IsDirectWindowsExecutableExtension(const std::string& extension)
+	{
+		return uam::ranges::Contains(kDirectWindowsExecutableExtensions, std::string_view(extension));
+	}
+
+	bool IsWindowsCommandScriptExtension(const std::string& extension)
+	{
+		return uam::ranges::Contains(kWindowsCommandScriptExtensions, std::string_view(extension));
+	}
+
+	bool IsLaunchableWindowsCommandExtension(const std::string& extension)
+	{
+		return IsDirectWindowsExecutableExtension(extension) || IsWindowsCommandScriptExtension(extension);
+	}
+
+	bool IsExistingRegularFileUtf8(const std::string& path)
+	{
+		const std::wstring wide = WideFromUtf8(path);
+		if (wide.empty())
+		{
+			return false;
+		}
+
+		const DWORD attrs = GetFileAttributesW(wide.c_str());
+		return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
+	}
+
+	std::optional<std::string> LaunchableCommandPathIfExists(const std::string& candidate)
+	{
+		if (!IsLaunchableWindowsCommandExtension(WindowsPathExtension(candidate)))
+		{
+			return std::nullopt;
+		}
+
+		if (!IsExistingRegularFileUtf8(candidate))
+		{
+			return std::nullopt;
+		}
+
+		return candidate;
+	}
+
+	std::string GetWindowsEnvironmentVariableUtf8(const wchar_t* name)
+	{
+		const DWORD required = GetEnvironmentVariableW(name, nullptr, 0);
+		if (required == 0)
+		{
+			return "";
+		}
+
+		std::wstring value(static_cast<std::size_t>(required), L'\0');
+		const DWORD written = GetEnvironmentVariableW(name, value.data(), required);
+		if (written == 0 || written >= required)
+		{
+			return "";
+		}
+
+		value.resize(static_cast<std::size_t>(written));
+		return WideToUtf8(value);
+	}
+
+	std::string TrimWindowsPathListEntry(const std::string& raw)
+	{
+		std::string value = uam::strings::Trim(raw);
+		if (value.size() >= 2 && value.front() == '"' && value.back() == '"')
+		{
+			value = value.substr(1, value.size() - 2);
+		}
+		return value;
+	}
+
+	std::vector<std::string> SplitWindowsPathList(const std::string& value)
+	{
+		std::vector<std::string> entries;
+		std::size_t start = 0;
+
+		while (start <= value.size())
+		{
+			const std::size_t end = value.find(';', start);
+			const std::string entry = TrimWindowsPathListEntry(value.substr(start, end == std::string::npos ? std::string::npos : end - start));
+			if (!entry.empty())
+			{
+				entries.push_back(entry);
+			}
+
+			if (end == std::string::npos)
+			{
+				break;
+			}
+			start = end + 1;
+		}
+
+		return entries;
+	}
+
+	std::string JoinWindowsPathUtf8(const std::string& directory, const std::string& filename)
+	{
+		return (std::filesystem::path(directory) / filename).string();
+	}
+
+	std::optional<std::string> ResolveWindowsCommandPath(const std::string& command)
+	{
+		const std::string trimmed = uam::strings::Trim(command);
+		if (trimmed.empty())
+		{
+			return std::nullopt;
+		}
+
+		const std::string extension = WindowsPathExtension(trimmed);
+		if (LooksLikeWindowsPath(trimmed))
+		{
+			if (!extension.empty())
+			{
+				return LaunchableCommandPathIfExists(trimmed);
+			}
+
+			for (const std::string_view candidate_extension : kLaunchableWindowsCommandExtensions)
+			{
+				if (auto resolved = LaunchableCommandPathIfExists(trimmed + std::string(candidate_extension)))
+				{
+					return resolved;
+				}
+			}
+
+			return std::nullopt;
+		}
+
+		const std::vector<std::string> path_entries = SplitWindowsPathList(GetWindowsEnvironmentVariableUtf8(L"PATH"));
+		if (!extension.empty())
+		{
+			for (const std::string& path_entry : path_entries)
+			{
+				if (auto resolved = LaunchableCommandPathIfExists(JoinWindowsPathUtf8(path_entry, trimmed)))
+				{
+					return resolved;
+				}
+			}
+
+			return std::nullopt;
+		}
+
+		for (const std::string& path_entry : path_entries)
+		{
+			for (const std::string_view candidate_extension : kLaunchableWindowsCommandExtensions)
+			{
+				if (auto resolved = LaunchableCommandPathIfExists(JoinWindowsPathUtf8(path_entry, trimmed + std::string(candidate_extension))))
+				{
+					return resolved;
+				}
+			}
+		}
+
+		return std::nullopt;
+	}
+
+	std::string ResolveComSpecPath()
+	{
+		std::string comspec = GetWindowsEnvironmentVariableUtf8(L"COMSPEC");
+		if (LaunchableCommandPathIfExists(comspec))
+		{
+			return comspec;
+		}
+
+		std::wstring system_directory(static_cast<std::size_t>(MAX_PATH), L'\0');
+		const UINT length = GetSystemDirectoryW(system_directory.data(), static_cast<UINT>(system_directory.size()));
+		if (length > 0 && length < system_directory.size())
+		{
+			system_directory.resize(static_cast<std::size_t>(length));
+			const std::string system_cmd = WideToUtf8(system_directory) + "\\cmd.exe";
+			if (LaunchableCommandPathIfExists(system_cmd))
+			{
+				return system_cmd;
+			}
+		}
+
+		return "cmd.exe";
+	}
+
+	std::string BuildCmdScriptInvocation(const std::string& script_path, const std::vector<std::string>& argv)
+	{
+		std::ostringstream out;
+		out << '"' << uam::shell::EscapeArg(script_path);
+
+		for (std::size_t i = 1; i < argv.size(); ++i)
+		{
+			out << ' ' << uam::shell::EscapeArg(argv[i]);
+		}
+
+		out << '"';
 		return out.str();
+	}
+
+	struct WindowsLaunchCommand
+	{
+		std::string command_line;
+		std::string original_command_line;
+		std::string resolved_command;
+		bool uses_cmd_wrapper = false;
+	};
+
+	WindowsLaunchCommand BuildWindowsLaunchCommand(const std::vector<std::string>& argv)
+	{
+		WindowsLaunchCommand launch;
+		launch.original_command_line = BuildWindowsCommandLine(argv);
+
+		if (argv.empty())
+		{
+			return launch;
+		}
+
+		const std::optional<std::string> resolved_command = ResolveWindowsCommandPath(argv.front());
+		if (!resolved_command)
+		{
+			launch.command_line = launch.original_command_line;
+			return launch;
+		}
+
+		launch.resolved_command = *resolved_command;
+		const std::string extension = WindowsPathExtension(launch.resolved_command);
+		if (IsWindowsCommandScriptExtension(extension))
+		{
+			launch.uses_cmd_wrapper = true;
+			launch.command_line = QuoteWindowsArg(ResolveComSpecPath()) + " /D /S /C " + BuildCmdScriptInvocation(launch.resolved_command, argv);
+			return launch;
+		}
+
+		std::vector<std::string> resolved_argv = argv;
+		resolved_argv.front() = launch.resolved_command;
+		launch.command_line = BuildWindowsCommandLine(resolved_argv);
+		return launch;
+	}
+
+	std::string WindowsLaunchDiagnosticSuffix(const WindowsLaunchCommand& launch)
+	{
+		std::ostringstream out;
+		if (!launch.original_command_line.empty())
+		{
+			out << " Original command: " << launch.original_command_line << ".";
+		}
+		if (!launch.resolved_command.empty())
+		{
+			out << " Resolved command: " << launch.resolved_command << ".";
+		}
+		if (launch.uses_cmd_wrapper)
+		{
+			out << " Wrapper: cmd.exe /D /S /C.";
+		}
+		return out.str();
+	}
+
+	void TerminateProcessTree(HANDLE job_object, HANDLE process_handle, const UINT exit_code)
+	{
+		if (job_object != nullptr)
+		{
+			TerminateJobObject(job_object, exit_code);
+			return;
+		}
+
+		if (process_handle != INVALID_HANDLE_VALUE)
+		{
+			TerminateProcess(process_handle, exit_code);
+		}
+	}
+
+	void TerminateProcessAndWaitBriefly(HANDLE process_handle, const UINT exit_code)
+	{
+		if (process_handle == nullptr || process_handle == INVALID_HANDLE_VALUE)
+		{
+			return;
+		}
+
+		TerminateProcess(process_handle, exit_code);
+		WaitForSingleObject(process_handle, 250);
+	}
+
+	void TerminateProcessTreeAndWaitBriefly(HANDLE job_object, HANDLE process_handle, const UINT exit_code)
+	{
+		TerminateProcessTree(job_object, process_handle, exit_code);
+		if (process_handle != nullptr && process_handle != INVALID_HANDLE_VALUE)
+		{
+			WaitForSingleObject(process_handle, 250);
+		}
+	}
+
+	void CloseInvalidHandleIfOpen(HANDLE& handle)
+	{
+		if (handle != nullptr && handle != INVALID_HANDLE_VALUE)
+		{
+			CloseHandle(handle);
+			handle = INVALID_HANDLE_VALUE;
+		}
+	}
+
+	void CloseConPtyPipeHandles(HANDLE& pipe_pty_in, HANDLE& pipe_pty_out, HANDLE& pipe_con_in, HANDLE& pipe_con_out)
+	{
+		CloseInvalidHandleIfOpen(pipe_pty_in);
+		CloseInvalidHandleIfOpen(pipe_pty_out);
+		CloseInvalidHandleIfOpen(pipe_con_in);
+		CloseInvalidHandleIfOpen(pipe_con_out);
+	}
+
+	void CloseConPtyAppPipeHandles(HANDLE& pipe_pty_in, HANDLE& pipe_pty_out)
+	{
+		CloseInvalidHandleIfOpen(pipe_pty_in);
+		CloseInvalidHandleIfOpen(pipe_pty_out);
+	}
+
+	void CloseStdioPipeHandles(HANDLE& stdin_read, HANDLE& stdin_write, HANDLE& stdout_read, HANDLE& stdout_write, HANDLE& stderr_read, HANDLE& stderr_write)
+	{
+		CloseInvalidHandleIfOpen(stdin_read);
+		CloseInvalidHandleIfOpen(stdin_write);
+		CloseInvalidHandleIfOpen(stdout_read);
+		CloseInvalidHandleIfOpen(stdout_write);
+		CloseInvalidHandleIfOpen(stderr_read);
+		CloseInvalidHandleIfOpen(stderr_write);
+	}
+
+	void CloseStdioChildPipeEnds(HANDLE& stdin_read, HANDLE& stdout_write, HANDLE& stderr_write)
+	{
+		CloseInvalidHandleIfOpen(stdin_read);
+		CloseInvalidHandleIfOpen(stdout_write);
+		CloseInvalidHandleIfOpen(stderr_write);
+	}
+
+	void CloseStdioParentPipeEnds(HANDLE& stdin_write, HANDLE& stdout_read, HANDLE& stderr_read)
+	{
+		CloseInvalidHandleIfOpen(stdin_write);
+		CloseInvalidHandleIfOpen(stdout_read);
+		CloseInvalidHandleIfOpen(stderr_read);
+	}
+
+	bool CreateKillOnCloseJobForProcess(HANDLE process_handle, HANDLE* job_out, std::string* error_out)
+	{
+		if (job_out != nullptr)
+		{
+			*job_out = nullptr;
+		}
+
+		HANDLE job = CreateJobObjectW(nullptr, nullptr);
+		if (job == nullptr)
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Failed to create process job object: " + FormatWindowsError(GetLastError()) + ".";
+			}
+			return false;
+		}
+
+		JOBOBJECT_EXTENDED_LIMIT_INFORMATION limit_info{};
+		limit_info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+		if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limit_info, sizeof(limit_info)))
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Failed to configure process job object: " + FormatWindowsError(GetLastError()) + ".";
+			}
+			CloseHandle(job);
+			return false;
+		}
+
+		if (!AssignProcessToJobObject(job, process_handle))
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Failed to assign process to job object: " + FormatWindowsError(GetLastError()) + ".";
+			}
+			CloseHandle(job);
+			return false;
+		}
+
+		if (job_out != nullptr)
+		{
+			*job_out = job;
+		}
+		return true;
 	}
 
 	using ResizePseudoConsoleFunc = HRESULT(WINAPI*)(HPCON, COORD);
@@ -247,40 +630,68 @@ namespace
 		}
 	}
 
+	std::ptrdiff_t ReadPipeNonBlocking(HANDLE pipe, char* buffer, std::size_t buffer_size, std::string* error_out = nullptr)
+	{
+		if (pipe == INVALID_HANDLE_VALUE)
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "stdio pipe handle is closed.";
+			}
+			return -1;
+		}
+
+		DWORD available = 0;
+		if (!PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr))
+		{
+			const DWORD err = GetLastError();
+			if (err != ERROR_BROKEN_PIPE && error_out != nullptr)
+			{
+				*error_out = FormatWindowsError(err);
+			}
+			return err == ERROR_BROKEN_PIPE ? 0 : -1;
+		}
+
+		if (available == 0)
+		{
+			return -2;
+		}
+
+		const DWORD to_read = static_cast<DWORD>(std::min<std::size_t>(buffer_size, available));
+		DWORD bytes_read = 0;
+		if (!ReadFile(pipe, buffer, to_read, &bytes_read, nullptr))
+		{
+			const DWORD err = GetLastError();
+			if (err != ERROR_BROKEN_PIPE && error_out != nullptr)
+			{
+				*error_out = FormatWindowsError(err);
+			}
+			return err == ERROR_BROKEN_PIPE ? 0 : -1;
+		}
+
+		if (bytes_read == 0)
+		{
+			return -2;
+		}
+
+		return static_cast<std::ptrdiff_t>(bytes_read);
+	}
+
 	std::optional<std::filesystem::path> ResolveWindowsHomePath()
 	{
-		if (const char* user_profile = std::getenv("USERPROFILE"))
+		if (const std::optional<std::filesystem::path> user_profile = uam::env::GetTrimmedPath("USERPROFILE"))
 		{
-			const std::string value = TrimAsciiWhitespace(user_profile);
-
-			if (!value.empty())
-			{
-				return std::filesystem::path(value);
-			}
+			return *user_profile;
 		}
 
-		if (const char* home_drive = std::getenv("HOMEDRIVE"))
+		if (const std::optional<std::filesystem::path> home_drive_path = uam::env::GetWindowsHomeDrivePath())
 		{
-			if (const char* home_path = std::getenv("HOMEPATH"))
-			{
-				const std::string drive = TrimAsciiWhitespace(home_drive);
-				const std::string path = TrimAsciiWhitespace(home_path);
-
-				if (!drive.empty() && !path.empty())
-				{
-					return std::filesystem::path(drive + path);
-				}
-			}
+			return *home_drive_path;
 		}
 
-		if (const char* home = std::getenv("HOME"))
+		if (const std::optional<std::filesystem::path> home = uam::env::GetTrimmedPath("HOME"))
 		{
-			const std::string value = TrimAsciiWhitespace(home);
-
-			if (!value.empty())
-			{
-				return std::filesystem::path(value);
-			}
+			return *home;
 		}
 
 		return std::nullopt;
@@ -297,6 +708,7 @@ namespace
 
 			return false;
 		}
+		selected_path_out->clear();
 
 		const HRESULT co_init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
 		const bool should_uninitialize = SUCCEEDED(co_init);
@@ -365,11 +777,7 @@ namespace
 
 		if (!initial_folder.empty())
 		{
-			std::error_code ec;
-			const bool exists = std::filesystem::exists(initial_folder, ec);
-			const bool is_directory = exists && std::filesystem::is_directory(initial_folder, ec);
-
-			if (!exists || ec || !is_directory)
+			if (!uam::paths::IsDirectoryNoThrow(initial_folder))
 			{
 				initial_folder = initial_folder.parent_path();
 			}
@@ -483,7 +891,7 @@ namespace
 
 		bool StartCliTerminalProcess(uam::CliTerminalState& terminal, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr) const override
 		{
-			if (argv.empty() || TrimAsciiWhitespace(argv.front()).empty())
+			if (argv.empty() || uam::strings::IsBlank(argv.front()))
 			{
 				if (error_out != nullptr)
 				{
@@ -509,25 +917,7 @@ namespace
 					*error_out = "Failed to create ConPTY pipes.";
 				}
 
-				if (pipe_pty_in != INVALID_HANDLE_VALUE)
-				{
-					CloseHandle(pipe_pty_in);
-				}
-
-				if (pipe_pty_out != INVALID_HANDLE_VALUE)
-				{
-					CloseHandle(pipe_pty_out);
-				}
-
-				if (pipe_con_in != INVALID_HANDLE_VALUE)
-				{
-					CloseHandle(pipe_con_in);
-				}
-
-				if (pipe_con_out != INVALID_HANDLE_VALUE)
-				{
-					CloseHandle(pipe_con_out);
-				}
+				CloseConPtyPipeHandles(pipe_pty_in, pipe_pty_out, pipe_con_in, pipe_con_out);
 
 				return false;
 			}
@@ -548,15 +938,12 @@ namespace
 					*error_out = "CreatePseudoConsole failed.";
 				}
 
-				CloseHandle(pipe_pty_in);
-				CloseHandle(pipe_pty_out);
-				CloseHandle(pipe_con_in);
-				CloseHandle(pipe_con_out);
+				CloseConPtyPipeHandles(pipe_pty_in, pipe_pty_out, pipe_con_in, pipe_con_out);
 				return false;
 			}
 
-			CloseHandle(pipe_con_in);
-			CloseHandle(pipe_con_out);
+			CloseInvalidHandleIfOpen(pipe_con_in);
+			CloseInvalidHandleIfOpen(pipe_con_out);
 
 			SIZE_T attr_size = 0;
 			InitializeProcThreadAttributeList(nullptr, 1, 0, &attr_size);
@@ -570,8 +957,7 @@ namespace
 				}
 
 				ClosePseudoConsoleSafe(pseudo_console);
-				CloseHandle(pipe_pty_in);
-				CloseHandle(pipe_pty_out);
+				CloseConPtyAppPipeHandles(pipe_pty_in, pipe_pty_out);
 				return false;
 			}
 
@@ -586,8 +972,7 @@ namespace
 				HeapFree(GetProcessHeap(), 0, terminal.attr_list);
 				terminal.attr_list = nullptr;
 				ClosePseudoConsoleSafe(pseudo_console);
-				CloseHandle(pipe_pty_in);
-				CloseHandle(pipe_pty_out);
+				CloseConPtyAppPipeHandles(pipe_pty_in, pipe_pty_out);
 				return false;
 			}
 
@@ -595,10 +980,9 @@ namespace
 			si.StartupInfo.cb = sizeof(si);
 			si.lpAttributeList = terminal.attr_list;
 			PROCESS_INFORMATION pi{};
-			
-			std::string command_str = BuildWindowsCommandLine(argv);
-			command_str = "cmd.exe /C " + command_str;
-			const std::wstring command_w = WideFromUtf8(command_str);
+
+			const WindowsLaunchCommand launch = BuildWindowsLaunchCommand(argv);
+			const std::wstring command_w = WideFromUtf8(launch.command_line);
 
 			if (command_w.empty())
 			{
@@ -611,41 +995,52 @@ namespace
 				HeapFree(GetProcessHeap(), 0, terminal.attr_list);
 				terminal.attr_list = nullptr;
 				ClosePseudoConsoleSafe(pseudo_console);
-				CloseHandle(pipe_pty_in);
-				CloseHandle(pipe_pty_out);
+				CloseConPtyAppPipeHandles(pipe_pty_in, pipe_pty_out);
 				return false;
 			}
 
 			std::vector<wchar_t> command_line(command_w.begin(), command_w.end());
 			command_line.push_back(L'\0');
 			const std::wstring working_directory_w = working_directory.empty() ? std::wstring() : working_directory.wstring();
-			const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT, nullptr, working_directory.empty() ? nullptr : working_directory_w.c_str(), &si.StartupInfo, &pi);
+			const DWORD creation_flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT;
+			const wchar_t* working_directory_arg = working_directory.empty() ? nullptr : working_directory_w.c_str();
+			const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, creation_flags, nullptr, working_directory_arg, &si.StartupInfo, &pi);
 
-		if (!created)
-		{
-			const DWORD last_error = GetLastError();
-			std::string cmd_line_str;
-			if (command_w.empty())
+			if (!created)
 			{
-				cmd_line_str = "(empty)";
-			}
-			else
-			{
-				cmd_line_str = WideToUtf8(command_w);
-			}
-			if (error_out != nullptr)
-			{
-				*error_out = "Failed to start provider process. Error code: " + std::to_string(last_error) + ". Command: " + cmd_line_str;
+				const DWORD last_error = GetLastError();
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to start provider process. " + FormatWindowsError(last_error) + ". Command: " + launch.command_line + "." + WindowsLaunchDiagnosticSuffix(launch);
+				}
+
+				DeleteProcThreadAttributeList(terminal.attr_list);
+				HeapFree(GetProcessHeap(), 0, terminal.attr_list);
+				terminal.attr_list = nullptr;
+				ClosePseudoConsoleSafe(pseudo_console);
+				CloseConPtyAppPipeHandles(pipe_pty_in, pipe_pty_out);
+				return false;
 			}
 
-			DeleteProcThreadAttributeList(terminal.attr_list);
-			HeapFree(GetProcessHeap(), 0, terminal.attr_list);
-			terminal.attr_list = nullptr;
-			ClosePseudoConsoleSafe(pseudo_console);
-			CloseHandle(pipe_pty_in);
-			CloseHandle(pipe_pty_out);
-			return false;
-		}
+			HANDLE job = nullptr;
+			std::string job_error;
+			if (!CreateKillOnCloseJobForProcess(pi.hProcess, &job, &job_error))
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = uam::strings::NonEmptyOrFallback(job_error, "Failed to protect provider process tree.");
+				}
+
+				TerminateProcessAndWaitBriefly(pi.hProcess, 1);
+				CloseInvalidHandleIfOpen(pi.hThread);
+				CloseInvalidHandleIfOpen(pi.hProcess);
+				DeleteProcThreadAttributeList(terminal.attr_list);
+				HeapFree(GetProcessHeap(), 0, terminal.attr_list);
+				terminal.attr_list = nullptr;
+				ClosePseudoConsoleSafe(pseudo_console);
+				CloseConPtyAppPipeHandles(pipe_pty_in, pipe_pty_out);
+				return false;
+			}
 
 			DWORD mode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
 
@@ -659,22 +1054,15 @@ namespace
 			terminal.pipe_output = pipe_pty_in;
 			terminal.process_info = pi;
 			terminal.pseudo_console = pseudo_console;
+			terminal.job_object = job;
+
 			return true;
 		}
 
 		void CloseCliTerminalHandles(uam::CliTerminalState& terminal) const override
 		{
-			if (terminal.pipe_input != INVALID_HANDLE_VALUE)
-			{
-				CloseHandle(terminal.pipe_input);
-				terminal.pipe_input = INVALID_HANDLE_VALUE;
-			}
-
-			if (terminal.pipe_output != INVALID_HANDLE_VALUE)
-			{
-				CloseHandle(terminal.pipe_output);
-				terminal.pipe_output = INVALID_HANDLE_VALUE;
-			}
+			CloseInvalidHandleIfOpen(terminal.pipe_input);
+			CloseInvalidHandleIfOpen(terminal.pipe_output);
 
 			if (terminal.attr_list != nullptr)
 			{
@@ -683,17 +1071,8 @@ namespace
 				terminal.attr_list = nullptr;
 			}
 
-			if (terminal.process_info.hThread != INVALID_HANDLE_VALUE)
-			{
-				CloseHandle(terminal.process_info.hThread);
-				terminal.process_info.hThread = INVALID_HANDLE_VALUE;
-			}
-
-			if (terminal.process_info.hProcess != INVALID_HANDLE_VALUE)
-			{
-				CloseHandle(terminal.process_info.hProcess);
-				terminal.process_info.hProcess = INVALID_HANDLE_VALUE;
-			}
+			CloseInvalidHandleIfOpen(terminal.process_info.hThread);
+			CloseInvalidHandleIfOpen(terminal.process_info.hProcess);
 
 			if (terminal.pseudo_console != nullptr)
 			{
@@ -701,11 +1080,17 @@ namespace
 				terminal.pseudo_console = nullptr;
 			}
 
+			if (terminal.job_object != nullptr)
+			{
+				CloseHandle(terminal.job_object);
+				terminal.job_object = nullptr;
+			}
+
 			terminal.process_info.dwProcessId = 0;
 			terminal.process_info.dwThreadId = 0;
 		}
 
-		bool WriteToCliTerminal(uam::CliTerminalState& terminal, const char* bytes, const std::size_t len) const override
+		bool WriteToCliTerminal(uam::CliTerminalState& terminal, const char* bytes, std::size_t len) const override
 		{
 			if (bytes == nullptr || len == 0)
 			{
@@ -736,52 +1121,19 @@ namespace
 			return true;
 		}
 
-		void StopCliTerminalProcess(uam::CliTerminalState& terminal, const bool fast_exit) const override
+		void StopCliTerminalProcess(uam::CliTerminalState& terminal, bool fast_exit) const override
 		{
 			if (terminal.process_info.hProcess == INVALID_HANDLE_VALUE)
 			{
+				CloseCliTerminalHandles(terminal);
 				return;
 			}
 
 			if (fast_exit)
 			{
-				TerminateProcess(terminal.process_info.hProcess, 1);
-				
-				// Very short wait for process termination.
+				TerminateProcessTree(terminal.job_object, terminal.process_info.hProcess, 1);
 				(void)WaitForSingleObject(terminal.process_info.hProcess, 50);
-
-				if (terminal.pseudo_console != nullptr)
-				{
-					ClosePseudoConsoleSafe(terminal.pseudo_console);
-					terminal.pseudo_console = nullptr;
-				}
-
-				if (terminal.pipe_input != INVALID_HANDLE_VALUE)
-				{
-					CloseHandle(terminal.pipe_input);
-					terminal.pipe_input = INVALID_HANDLE_VALUE;
-				}
-
-				if (terminal.pipe_output != INVALID_HANDLE_VALUE)
-				{
-					CloseHandle(terminal.pipe_output);
-					terminal.pipe_output = INVALID_HANDLE_VALUE;
-				}
-
-				if (terminal.process_info.hThread != INVALID_HANDLE_VALUE)
-				{
-					CloseHandle(terminal.process_info.hThread);
-					terminal.process_info.hThread = INVALID_HANDLE_VALUE;
-				}
-
-				if (terminal.process_info.hProcess != INVALID_HANDLE_VALUE)
-				{
-					CloseHandle(terminal.process_info.hProcess);
-					terminal.process_info.hProcess = INVALID_HANDLE_VALUE;
-				}
-
-				terminal.process_info.dwProcessId = 0;
-				terminal.process_info.dwThreadId = 0;
+				CloseCliTerminalHandles(terminal);
 				return;
 			}
 
@@ -795,49 +1147,11 @@ namespace
 
 			if (wait_result == WAIT_TIMEOUT)
 			{
-				TerminateProcess(terminal.process_info.hProcess, 1);
+				TerminateProcessTree(terminal.job_object, terminal.process_info.hProcess, 1);
 				wait_result = WaitForSingleObject(terminal.process_info.hProcess, 250);
 			}
 
-			if (terminal.pseudo_console != nullptr)
-			{
-				ClosePseudoConsoleSafe(terminal.pseudo_console);
-				terminal.pseudo_console = nullptr;
-			}
-
-			if (terminal.pipe_input != INVALID_HANDLE_VALUE)
-			{
-				CloseHandle(terminal.pipe_input);
-				terminal.pipe_input = INVALID_HANDLE_VALUE;
-			}
-
-			if (terminal.pipe_output != INVALID_HANDLE_VALUE)
-			{
-				CloseHandle(terminal.pipe_output);
-				terminal.pipe_output = INVALID_HANDLE_VALUE;
-			}
-
-			if (terminal.process_info.hThread != INVALID_HANDLE_VALUE)
-			{
-				CloseHandle(terminal.process_info.hThread);
-				terminal.process_info.hThread = INVALID_HANDLE_VALUE;
-			}
-
-			if (terminal.process_info.hProcess != INVALID_HANDLE_VALUE)
-			{
-				CloseHandle(terminal.process_info.hProcess);
-				terminal.process_info.hProcess = INVALID_HANDLE_VALUE;
-			}
-
-			if (terminal.attr_list != nullptr)
-			{
-				DeleteProcThreadAttributeList(terminal.attr_list);
-				HeapFree(GetProcessHeap(), 0, terminal.attr_list);
-				terminal.attr_list = nullptr;
-			}
-
-			terminal.process_info.dwProcessId = 0;
-			terminal.process_info.dwThreadId = 0;
+			CloseCliTerminalHandles(terminal);
 		}
 
 		void ResizeCliTerminal(uam::CliTerminalState& terminal) const override
@@ -849,7 +1163,7 @@ namespace
 			}
 		}
 
-		std::ptrdiff_t ReadCliTerminalOutput(uam::CliTerminalState& terminal, char* buffer, const std::size_t buffer_size) const override
+		std::ptrdiff_t ReadCliTerminalOutput(uam::CliTerminalState& terminal, char* buffer, std::size_t buffer_size) const override
 		{
 			if (terminal.pipe_output == INVALID_HANDLE_VALUE)
 			{
@@ -919,6 +1233,28 @@ namespace
 		}
 	};
 
+	class WindowsDataRootLock final : public uam::platform::DataRootLock
+	{
+	  public:
+		explicit WindowsDataRootLock(HANDLE handle) : m_handle(handle)
+		{
+		}
+
+		~WindowsDataRootLock() override
+		{
+			if (m_handle != INVALID_HANDLE_VALUE)
+			{
+				CloseHandle(m_handle);
+			}
+		}
+
+		WindowsDataRootLock(const WindowsDataRootLock&) = delete;
+		WindowsDataRootLock& operator=(const WindowsDataRootLock&) = delete;
+
+	  private:
+		HANDLE m_handle = INVALID_HANDLE_VALUE;
+	};
+
 	class WindowsProcessService final : public IPlatformProcessService
 	{
 	  public:
@@ -939,7 +1275,7 @@ namespace
 
 		std::string BuildShellCommandWithWorkingDirectory(const std::filesystem::path& working_directory, const std::string& command) const override
 		{
-			return "cd /d " + ShellQuoteWindowsForCmd(working_directory.string()) + " && " + command;
+			return "cd /d " + uam::shell::EscapeArg(working_directory.string()) + " && " + command;
 		}
 
 		bool CaptureCommandOutput(const std::string& command, std::string* output_out, int* raw_status_out, std::string* error_out = nullptr) const override
@@ -964,7 +1300,7 @@ namespace
 			return !result.timed_out && !result.canceled && result.error.empty();
 		}
 
-		int NormalizeCapturedCommandExitCode(const int raw_status) const override
+		int NormalizeCapturedCommandExitCode(int raw_status) const override
 		{
 			if (raw_status == STILL_ACTIVE)
 			{
@@ -973,7 +1309,7 @@ namespace
 			return raw_status;
 		}
 
-		ProcessExecutionResult ExecuteCommand(const std::string& command, const int timeout_ms = -1, std::stop_token stop_token = {}) const override
+		ProcessExecutionResult ExecuteCommand(const std::string& command, int timeout_ms = -1, std::stop_token stop_token = {}) const override
 		{
 			ProcessExecutionResult result;
 			SECURITY_ATTRIBUTES sa{};
@@ -994,8 +1330,8 @@ namespace
 
 			if (command_w.empty())
 			{
-				CloseHandle(stdout_read);
-				CloseHandle(stdout_write);
+				CloseInvalidHandleIfOpen(stdout_read);
+				CloseInvalidHandleIfOpen(stdout_write);
 				result.error = "Failed to encode command line.";
 				return result;
 			}
@@ -1012,13 +1348,25 @@ namespace
 
 			PROCESS_INFORMATION process_info{};
 			const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startup_info, &process_info);
-			CloseHandle(stdout_write);
+			CloseInvalidHandleIfOpen(stdout_write);
 
 			if (!created)
 			{
 				const DWORD launch_error = GetLastError();
-				CloseHandle(stdout_read);
+				CloseInvalidHandleIfOpen(stdout_read);
 				result.error = "Failed to launch command (Win32 error " + std::to_string(launch_error) + ").";
+				return result;
+			}
+
+			HANDLE job_object = nullptr;
+			std::string job_error;
+			if (!CreateKillOnCloseJobForProcess(process_info.hProcess, &job_object, &job_error))
+			{
+				TerminateProcessAndWaitBriefly(process_info.hProcess, 1);
+				CloseInvalidHandleIfOpen(stdout_read);
+				CloseInvalidHandleIfOpen(process_info.hProcess);
+				CloseInvalidHandleIfOpen(process_info.hThread);
+				result.error = uam::strings::NonEmptyOrFallback(job_error, "Failed to protect command process tree.");
 				return result;
 			}
 
@@ -1066,8 +1414,7 @@ namespace
 				{
 					result.canceled = true;
 					result.error = "Command canceled.";
-					TerminateProcess(process_info.hProcess, 1);
-					WaitForSingleObject(process_info.hProcess, 250);
+					TerminateProcessTreeAndWaitBriefly(job_object, process_info.hProcess, 1);
 					process_finished = true;
 				}
 
@@ -1075,8 +1422,7 @@ namespace
 				{
 					result.timed_out = true;
 					result.error = "Command timed out.";
-					TerminateProcess(process_info.hProcess, 1);
-					WaitForSingleObject(process_info.hProcess, 250);
+					TerminateProcessTreeAndWaitBriefly(job_object, process_info.hProcess, 1);
 					process_finished = true;
 				}
 
@@ -1102,9 +1448,10 @@ namespace
 
 			DWORD exit_code = 1;
 			GetExitCodeProcess(process_info.hProcess, &exit_code);
-			CloseHandle(stdout_read);
-			CloseHandle(process_info.hProcess);
-			CloseHandle(process_info.hThread);
+			CloseInvalidHandleIfOpen(stdout_read);
+			CloseHandle(job_object);
+			CloseInvalidHandleIfOpen(process_info.hProcess);
+			CloseInvalidHandleIfOpen(process_info.hThread);
 
 			if (!result.timed_out && !result.canceled)
 			{
@@ -1115,9 +1462,209 @@ namespace
 			return result;
 		}
 
-		std::string GeminiDowngradeCommand() const override
+		bool StartStdioProcess(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr) const override
 		{
-			return "npm install -g @google/gemini-cli@0.30.0";
+			if (argv.empty() || uam::strings::IsBlank(argv.front()))
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Stdio process command is empty.";
+				}
+				return false;
+			}
+
+			SECURITY_ATTRIBUTES sa{};
+			sa.nLength = sizeof(sa);
+			sa.bInheritHandle = TRUE;
+
+			HANDLE stdin_read = INVALID_HANDLE_VALUE;
+			HANDLE stdin_write = INVALID_HANDLE_VALUE;
+			HANDLE stdout_read = INVALID_HANDLE_VALUE;
+			HANDLE stdout_write = INVALID_HANDLE_VALUE;
+			HANDLE stderr_read = INVALID_HANDLE_VALUE;
+			HANDLE stderr_write = INVALID_HANDLE_VALUE;
+
+			if (!CreatePipe(&stdin_read, &stdin_write, &sa, 0) || !CreatePipe(&stdout_read, &stdout_write, &sa, 0) || !CreatePipe(&stderr_read, &stderr_write, &sa, 0))
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to create stdio process pipes.";
+				}
+				CloseStdioPipeHandles(stdin_read, stdin_write, stdout_read, stdout_write, stderr_read, stderr_write);
+				return false;
+			}
+
+			SetHandleInformation(stdin_write, HANDLE_FLAG_INHERIT, 0);
+			SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
+			SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0);
+
+			const WindowsLaunchCommand launch = BuildWindowsLaunchCommand(argv);
+			const std::wstring command_w = WideFromUtf8(launch.command_line);
+			if (command_w.empty())
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to encode stdio command line.";
+				}
+				CloseStdioPipeHandles(stdin_read, stdin_write, stdout_read, stdout_write, stderr_read, stderr_write);
+				return false;
+			}
+
+			std::vector<wchar_t> command_line(command_w.begin(), command_w.end());
+			command_line.push_back(L'\0');
+			const std::wstring working_directory_w = working_directory.empty() ? std::wstring() : working_directory.wstring();
+
+			STARTUPINFOW startup_info{};
+			startup_info.cb = sizeof(startup_info);
+			startup_info.dwFlags = STARTF_USESTDHANDLES;
+			startup_info.hStdInput = stdin_read;
+			startup_info.hStdOutput = stdout_write;
+			startup_info.hStdError = stderr_write;
+
+			PROCESS_INFORMATION process_info{};
+			const DWORD creation_flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT;
+			const wchar_t* working_directory_arg = working_directory.empty() ? nullptr : working_directory_w.c_str();
+			const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, creation_flags, nullptr, working_directory_arg, &startup_info, &process_info);
+
+			CloseStdioChildPipeEnds(stdin_read, stdout_write, stderr_write);
+
+			if (!created)
+			{
+				const DWORD launch_error = GetLastError();
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to start stdio process. " + FormatWindowsError(launch_error) + ". Command: " + launch.command_line + "." + WindowsLaunchDiagnosticSuffix(launch);
+				}
+				CloseStdioParentPipeEnds(stdin_write, stdout_read, stderr_read);
+				return false;
+			}
+
+			HANDLE job = nullptr;
+			std::string job_error;
+			if (!CreateKillOnCloseJobForProcess(process_info.hProcess, &job, &job_error))
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = uam::strings::NonEmptyOrFallback(job_error, "Failed to protect stdio process tree.");
+				}
+				TerminateProcessAndWaitBriefly(process_info.hProcess, 1);
+				CloseInvalidHandleIfOpen(process_info.hThread);
+				CloseInvalidHandleIfOpen(process_info.hProcess);
+				CloseStdioParentPipeEnds(stdin_write, stdout_read, stderr_read);
+				return false;
+			}
+
+			process.stdin_write = stdin_write;
+			process.stdout_read = stdout_read;
+			process.stderr_read = stderr_read;
+			process.process_info = process_info;
+			process.job_object = job;
+
+			return true;
+		}
+
+		void CloseStdioProcessHandles(uam::platform::StdioProcessPlatformFields& process) const override
+		{
+			CloseInvalidHandleIfOpen(process.stdin_write);
+			CloseInvalidHandleIfOpen(process.stdout_read);
+			CloseInvalidHandleIfOpen(process.stderr_read);
+			if (process.job_object != nullptr)
+			{
+				CloseHandle(process.job_object);
+				process.job_object = nullptr;
+			}
+			CloseInvalidHandleIfOpen(process.process_info.hThread);
+			CloseInvalidHandleIfOpen(process.process_info.hProcess);
+			process.process_info.dwProcessId = 0;
+			process.process_info.dwThreadId = 0;
+		}
+
+		bool WriteToStdioProcess(uam::platform::StdioProcessPlatformFields& process, const char* bytes, std::size_t len, std::string* error_out = nullptr) const override
+		{
+			if (bytes == nullptr || len == 0)
+			{
+				return true;
+			}
+			if (process.stdin_write == INVALID_HANDLE_VALUE)
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "stdin pipe handle is closed.";
+				}
+				return false;
+			}
+
+			std::size_t offset = 0;
+			while (offset < len)
+			{
+				const DWORD chunk = static_cast<DWORD>(std::min<std::size_t>(len - offset, static_cast<std::size_t>(MAXDWORD)));
+				DWORD written = 0;
+				if (!WriteFile(process.stdin_write, bytes + offset, chunk, &written, nullptr) || written == 0)
+				{
+					if (error_out != nullptr)
+					{
+						const DWORD err = GetLastError();
+						*error_out = written == 0 ? "stdin pipe write returned zero bytes." : FormatWindowsError(err);
+					}
+					return false;
+				}
+				offset += written;
+			}
+			return true;
+		}
+
+		void StopStdioProcess(uam::platform::StdioProcessPlatformFields& process, bool fast_exit) const override
+		{
+			if (process.process_info.hProcess == INVALID_HANDLE_VALUE)
+			{
+				CloseStdioProcessHandles(process);
+				return;
+			}
+
+			TerminateProcessTree(process.job_object, process.process_info.hProcess, 1);
+			WaitForSingleObject(process.process_info.hProcess, fast_exit ? 80 : 600);
+			CloseStdioProcessHandles(process);
+		}
+
+		std::ptrdiff_t ReadStdioProcessStdout(uam::platform::StdioProcessPlatformFields& process, char* buffer, std::size_t buffer_size, std::string* error_out = nullptr) const override
+		{
+			return ReadPipeNonBlocking(process.stdout_read, buffer, buffer_size, error_out);
+		}
+
+		std::ptrdiff_t ReadStdioProcessStderr(uam::platform::StdioProcessPlatformFields& process, char* buffer, std::size_t buffer_size, std::string* error_out = nullptr) const override
+		{
+			return ReadPipeNonBlocking(process.stderr_read, buffer, buffer_size, error_out);
+		}
+
+		bool PollStdioProcessExited(uam::platform::StdioProcessPlatformFields& process, int* exit_code_out = nullptr) const override
+		{
+			if (process.process_info.hProcess == INVALID_HANDLE_VALUE)
+			{
+				if (exit_code_out != nullptr)
+				{
+					*exit_code_out = -1;
+				}
+				return true;
+			}
+
+			if (WaitForSingleObject(process.process_info.hProcess, 0) != WAIT_OBJECT_0)
+			{
+				return false;
+			}
+
+			if (exit_code_out != nullptr)
+			{
+				DWORD exit_code = 0;
+				if (GetExitCodeProcess(process.process_info.hProcess, &exit_code))
+				{
+					*exit_code_out = static_cast<int>(exit_code);
+				}
+				else
+				{
+					*exit_code_out = -1;
+				}
+			}
+			return true;
 		}
 
 		std::filesystem::path ResolveCurrentExecutablePath() const override
@@ -1134,94 +1681,36 @@ namespace
 			return std::filesystem::path(buffer);
 		}
 
-		std::string OpenCodeBridgeBinaryName() const override
+		std::unique_ptr<uam::platform::DataRootLock> TryAcquireDataRootLock(const std::filesystem::path& data_root, std::string* error_out = nullptr) const override
 		{
-			return "uam_ollama_engine_bridge.exe";
-		}
-
-		bool StartOpenCodeBridgeProcess(const std::vector<std::string>& argv, uam::OpenCodeBridgeState& state, std::string* error_out = nullptr) const override
-		{
-			if (argv.empty() || TrimAsciiWhitespace(argv.front()).empty())
+			std::error_code ec;
+			if (!uam::paths::CreateDirectoriesNoThrow(data_root, &ec))
 			{
 				if (error_out != nullptr)
 				{
-					*error_out = "OpenCode bridge command is empty.";
+					*error_out = "Failed to create data root lock directory: " + ec.message();
 				}
-
-				return false;
+				return nullptr;
 			}
 
-			const std::wstring command_w = WideFromUtf8(BuildWindowsCommandLine(argv));
-
-			if (command_w.empty())
+			const std::filesystem::path lock_path = data_root / ".uam-data-root.lock";
+			const HANDLE handle = CreateFileW(lock_path.wstring().c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_HIDDEN, nullptr);
+			if (handle == INVALID_HANDLE_VALUE)
 			{
 				if (error_out != nullptr)
 				{
-					*error_out = "Failed to encode OpenCode bridge command line.";
+					const DWORD error = GetLastError();
+					*error_out = (error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION) ? "Another Universal Agent Manager instance is already using this data root." : "Failed to open data root lock file.";
 				}
-
-				return false;
+				return nullptr;
 			}
 
-			std::vector<wchar_t> command_line(command_w.begin(), command_w.end());
-			command_line.push_back(L'\0');
-
-			STARTUPINFOW startup_info{};
-			startup_info.cb = sizeof(startup_info);
-			PROCESS_INFORMATION process_info{};
-			const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup_info, &process_info);
-
-			if (!created)
-			{
-				const DWORD launch_error = GetLastError();
-
-				if (error_out != nullptr)
-				{
-					*error_out = "Failed to launch OpenCode bridge process (Win32 error " + std::to_string(launch_error) + ").";
-				}
-
-				return false;
-			}
-
-			state.process_handle = process_info.hProcess;
-			state.process_thread = process_info.hThread;
-			state.process_id = process_info.dwProcessId;
-			return true;
-		}
-
-		bool IsOpenCodeBridgeProcessRunning(uam::OpenCodeBridgeState& state) const override
-		{
-			if (state.process_handle == INVALID_HANDLE_VALUE || state.process_handle == nullptr)
-			{
-				return false;
-			}
-
-			return WaitForSingleObject(state.process_handle, 0) == WAIT_TIMEOUT;
-		}
-
-		void StopLocalBridgeProcess(uam::OpenCodeBridgeState& state) const override
-		{
-			if (state.process_handle != INVALID_HANDLE_VALUE && state.process_handle != nullptr)
-			{
-				const DWORD wait_result = WaitForSingleObject(state.process_handle, 0);
-
-				if (wait_result == WAIT_TIMEOUT)
-				{
-					TerminateProcess(state.process_handle, 1);
-					WaitForSingleObject(state.process_handle, 250);
-				}
-
-				CloseHandle(state.process_handle);
-				state.process_handle = INVALID_HANDLE_VALUE;
-			}
-
-			if (state.process_thread != INVALID_HANDLE_VALUE && state.process_thread != nullptr)
-			{
-				CloseHandle(state.process_thread);
-				state.process_thread = INVALID_HANDLE_VALUE;
-			}
-
-			state.process_id = 0;
+			const std::string pid_text = std::to_string(static_cast<unsigned long>(GetCurrentProcessId())) + "\n";
+			DWORD written = 0;
+			SetFilePointer(handle, 0, nullptr, FILE_BEGIN);
+			SetEndOfFile(handle);
+			WriteFile(handle, pid_text.data(), static_cast<DWORD>(pid_text.size()), &written, nullptr);
+			return std::make_unique<WindowsDataRootLock>(handle);
 		}
 
 		uintmax_t NativeGeminiSessionMaxFileBytes() const override
@@ -1242,12 +1731,55 @@ namespace
 				return "";
 			}
 			char uuid[37];
-			sprintf_s(uuid, sizeof(uuid),
-				"%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-				guid.Data1, guid.Data2, guid.Data3,
-				guid.Data4[0], guid.Data4[1], guid.Data4[2], guid.Data4[3],
-				guid.Data4[4], guid.Data4[5], guid.Data4[6], guid.Data4[7]);
+			const unsigned int d4_0 = guid.Data4[0];
+			const unsigned int d4_1 = guid.Data4[1];
+			const unsigned int d4_2 = guid.Data4[2];
+			const unsigned int d4_3 = guid.Data4[3];
+			const unsigned int d4_4 = guid.Data4[4];
+			const unsigned int d4_5 = guid.Data4[5];
+			const unsigned int d4_6 = guid.Data4[6];
+			const unsigned int d4_7 = guid.Data4[7];
+			sprintf_s(uuid, sizeof(uuid), "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x", guid.Data1, guid.Data2, guid.Data3, d4_0, d4_1, d4_2, d4_3, d4_4, d4_5, d4_6, d4_7);
 			return std::string(uuid);
+		}
+
+		bool LaunchShellAt(const std::filesystem::path& working_directory, std::string* error_out = nullptr) const override
+		{
+			if (working_directory.empty())
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Working directory is empty.";
+				}
+				return false;
+			}
+
+			SHELLEXECUTEINFOA shim{};
+			shim.cbSize = sizeof(SHELLEXECUTEINFOA);
+			shim.fMask = SEE_MASK_NOCLOSEPROCESS;
+			shim.hwnd = nullptr;
+			shim.lpVerb = "open";
+			shim.lpFile = "cmd.exe";
+			shim.lpParameters = nullptr;
+			shim.lpDirectory = working_directory.u8string().c_str();
+			shim.nShow = SW_SHOWNORMAL;
+
+			if (!ShellExecuteExA(&shim))
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to launch terminal.";
+				}
+				return false;
+			}
+
+			if (shim.hProcess != nullptr)
+			{
+				WaitForSingleObject(shim.hProcess, 2000);
+				CloseHandle(shim.hProcess);
+			}
+
+			return true;
 		}
 	};
 
@@ -1277,9 +1809,7 @@ namespace
 			}
 
 			std::error_code ec;
-			std::filesystem::create_directories(folder_path, ec);
-
-			if (ec)
+			if (!uam::paths::CreateDirectoriesNoThrow(folder_path, &ec))
 			{
 				if (error_out != nullptr)
 				{
@@ -1304,6 +1834,89 @@ namespace
 			return true;
 		}
 
+		bool OpenFolderInEditorPreset(const std::filesystem::path& folder_path, const std::string& editor_preset_id, std::string* error_out = nullptr) const override
+		{
+			if (folder_path.empty())
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Folder path is empty.";
+				}
+				return false;
+			}
+
+			if (!uam::paths::IsDirectoryNoThrow(folder_path))
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Workspace directory does not exist.";
+				}
+				return false;
+			}
+
+			std::wstring executable = L"Code.exe";
+			std::string label = "Visual Studio Code";
+			if (editor_preset_id == "visualstudio")
+			{
+				executable = L"devenv.exe";
+				label = "Visual Studio";
+			}
+			else if (editor_preset_id == "clion")
+			{
+				executable = L"clion64.exe";
+				label = "CLion";
+			}
+			else if (editor_preset_id == "rider")
+			{
+				executable = L"rider64.exe";
+				label = "Rider";
+			}
+			else if (editor_preset_id == "webstorm")
+			{
+				executable = L"webstorm64.exe";
+				label = "WebStorm";
+			}
+			else if (editor_preset_id == "pycharm")
+			{
+				executable = L"pycharm64.exe";
+				label = "PyCharm";
+			}
+			else if (editor_preset_id == "idea")
+			{
+				executable = L"idea64.exe";
+				label = "IntelliJ IDEA";
+			}
+			else if (editor_preset_id == "goland")
+			{
+				executable = L"goland64.exe";
+				label = "GoLand";
+			}
+			else if (editor_preset_id == "rustrover")
+			{
+				executable = L"rustrover64.exe";
+				label = "RustRover";
+			}
+			else if (editor_preset_id == "xcode")
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Xcode is not available on Windows.";
+				}
+				return false;
+			}
+
+			const HINSTANCE result = ShellExecuteW(nullptr, L"open", executable.c_str(), folder_path.c_str(), nullptr, SW_SHOWNORMAL);
+			if (reinterpret_cast<INT_PTR>(result) <= 32)
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to open workspace in " + label + ".";
+				}
+				return false;
+			}
+			return true;
+		}
+
 		bool RevealPathInFileManager(const std::filesystem::path& file_path, std::string* error_out = nullptr) const override
 		{
 			if (file_path.empty())
@@ -1316,7 +1929,7 @@ namespace
 				return false;
 			}
 
-			if (!std::filesystem::exists(file_path))
+			if (!uam::paths::PathExistsNoThrow(file_path))
 			{
 				return OpenFolderInFileManager(file_path.parent_path(), error_out);
 			}
@@ -1353,7 +1966,7 @@ namespace
 
 		std::filesystem::path ExpandLeadingTildePath(const std::string& raw_path) const override
 		{
-			const std::string trimmed = TrimAsciiWhitespace(raw_path);
+			const std::string trimmed = uam::strings::Trim(raw_path);
 
 			if (trimmed.empty())
 			{
@@ -1365,93 +1978,20 @@ namespace
 				return std::filesystem::path(trimmed);
 			}
 
-			if (const std::optional<std::filesystem::path> home = ResolveUserHomePath(); home.has_value())
+			if (const std::optional<std::filesystem::path> home = ResolveUserHomePath())
 			{
 				if (trimmed.size() == 1)
 				{
-					return home.value();
+					return *home;
 				}
 
 				if (trimmed[1] == '\\' || trimmed[1] == '/')
 				{
-					return home.value() / trimmed.substr(2);
+					return *home / trimmed.substr(2);
 				}
 			}
 
 			return std::filesystem::path(trimmed);
-		}
-
-		std::filesystem::path ResolveOpenCodeConfigPath() const override
-		{
-			if (const std::optional<std::filesystem::path> home = ResolveUserHomePath(); home.has_value())
-			{
-				return home.value() / ".config" / "opencode" / "opencode.json";
-			}
-
-			std::error_code cwd_ec;
-			const std::filesystem::path cwd = std::filesystem::current_path(cwd_ec);
-			return cwd_ec ? std::filesystem::path("opencode.json") : (cwd / ".config" / "opencode" / "opencode.json");
-		}
-	};
-
-	class WindowsUiTraits final : public IPlatformUiTraits
-	{
-	  public:
-		void ApplyProcessDpiAwareness() const override
-		{
-			SetProcessDPIAware();
-		}
-
-		void ConfigureOpenGlAttributes() const override
-		{
-			SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
-			SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-			SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-			SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
-		}
-
-		const char* OpenGlGlslVersion() const override
-		{
-			return "#version 130";
-		}
-
-		float AdjustSidebarWidth(const float layout_width, const float current_sidebar_width, const float effective_ui_scale) const override
-		{
-			(void)current_sidebar_width;
-			const float width_bias = 1.0f + ((std::max(1.0f, effective_ui_scale) - 1.0f) * 0.36f);
-			const float sidebar_ratio = (layout_width < 1180.0f) ? 0.35f : 0.30f;
-			float sidebar_width = std::clamp(layout_width * sidebar_ratio, 280.0f * width_bias, 470.0f * width_bias);
-			const float max_sidebar_from_main_floor = std::max(220.0f, layout_width - 560.0f);
-			return std::clamp(sidebar_width, 220.0f, max_sidebar_from_main_floor);
-		}
-
-		bool UseWindowsLayoutAdjustments() const override
-		{
-			return true;
-		}
-
-		bool UsesLogicalPointsForUiScale() const override
-		{
-			return false;
-		}
-
-		float PlatformUiSpacingScale() const override
-		{
-			return 1.14f;
-		}
-
-		std::optional<bool> DetectSystemPrefersLightTheme() const override
-		{
-			DWORD value = 1;
-			DWORD value_size = sizeof(value);
-			const LONG rc = RegGetValueA(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", "AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &value, &value_size);
-
-			if (rc == ERROR_SUCCESS)
-			{
-				return value != 0;
-			}
-
-			return std::nullopt;
 		}
 	};
 
@@ -1463,9 +2003,11 @@ PlatformServices& CreatePlatformServices()
 	static WindowsProcessService process_service;
 	static WindowsFileDialogService file_dialog_service;
 	static WindowsPathService path_service;
-	static WindowsUiTraits ui_traits;
 	static PlatformServices services{
-	    terminal_runtime, process_service, file_dialog_service, path_service, ui_traits,
+	    terminal_runtime,
+	    process_service,
+	    file_dialog_service,
+	    path_service,
 	};
 	return services;
 }

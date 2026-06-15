@@ -3,233 +3,192 @@
 #include <memory>
 #include <string>
 #include <vector>
-#include <utility>
 
-#include "app/application_core_helpers.h"
 #include "app/chat_domain_service.h"
+#include "app/native_session_link_service.h"
 #include "app/provider_resolution_service.h"
-#include "app/runtime_local_service.h"
+#include "common/runtime/acp/acp_session_runtime.h"
+#include "common/provider/codex/cli/codex_thread_id.h"
+#include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
-#include "common/runtime/terminal/terminal_launch.h"
 #include "common/runtime/terminal/terminal_lifecycle.h"
+#include "common/utils/string_utils.h"
 
-inline std::vector<std::string> ForceOpenCodeModelFlag(std::vector<std::string> argv, const std::string& provider_model_id)
+namespace uam
 {
-	if (argv.empty() || Trim(provider_model_id).empty())
+	inline constexpr std::string_view kCliTerminalIdPrefix = "term-";
+
+	inline std::string CliTerminalIdForChat(std::string_view chat_id)
 	{
-		return argv;
+		std::string terminal_id;
+		terminal_id.reserve(kCliTerminalIdPrefix.size() + chat_id.size());
+		terminal_id.append(kCliTerminalIdPrefix);
+		terminal_id.append(chat_id);
+		return terminal_id;
 	}
 
-	std::vector<std::string> filtered;
-	filtered.reserve(argv.size() + 2);
-
-	for (std::size_t i = 0; i < argv.size(); ++i)
+	inline bool ProviderUsesCodexCli(const ProviderProfile& provider)
 	{
-		const std::string& arg = argv[i];
+		return uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kCodexCli);
+	}
 
-		if (arg == "--model" || arg == "-m")
+	inline bool ProviderSupportsInteractiveTerminal(const ProviderProfile& provider)
+	{
+		return ProviderRuntime::IsRuntimeEnabled(provider) &&
+		       ProviderRuntime::UsesCliOutput(provider) &&
+		       !ProviderRuntime::UsesInternalEngine(provider) &&
+		       provider.supports_interactive;
+	}
+
+	inline std::string ProviderInteractiveTerminalUnavailableReason(const ProviderProfile& provider)
+	{
+		if (!ProviderRuntime::IsRuntimeEnabled(provider))
 		{
-			if (i + 1 < argv.size())
+			return uam::strings::NonEmptyOrFallback(ProviderRuntime::DisabledReason(provider), "Selected provider runtime is disabled in this build.");
+		}
+
+		if (!ProviderRuntime::UsesCliOutput(provider))
+		{
+			return "CLI output is unavailable for the selected provider.";
+		}
+
+		if (ProviderRuntime::UsesInternalEngine(provider) || !provider.supports_interactive)
+		{
+			return "Provider does not expose an interactive CLI runtime.";
+		}
+
+		return "";
+	}
+
+	inline std::string ResolveProviderInteractiveResumeId(const AppState& app, const ChatSession& chat, const ProviderProfile& provider)
+	{
+		if (const AcpSessionState* acp_session = FindAcpSessionForChat(app, chat.id); acp_session != nullptr && acp_session->running && !uam::strings::Trim(acp_session->session_id).empty())
+		{
+			return uam::strings::Trim(acp_session->session_id);
+		}
+
+		const std::string resolved_native_session_id = ResolvedNativeSessionIdForChat(app, chat);
+		if (!resolved_native_session_id.empty())
+		{
+			if (ProviderUsesCodexCli(provider))
 			{
-				++i;
+				return uam::codex::ValidThreadIdOrEmpty(resolved_native_session_id);
 			}
 
-			continue;
+			return resolved_native_session_id;
 		}
 
-		if (arg.rfind("--model=", 0) == 0 || arg.rfind("-m=", 0) == 0)
+		if (ProviderUsesCodexCli(provider))
 		{
-			continue;
+			return uam::codex::ValidThreadIdOrEmpty(chat.native_session_id);
 		}
 
-		filtered.push_back(arg);
+		const NativeSessionLinkService native_session_linker;
+		if (native_session_linker.HasRealNativeSessionId(chat))
+		{
+			return native_session_linker.RealNativeSessionId(chat);
+		}
+
+		return ChatHistorySyncService().ResolveResumeSessionIdForChat(app, chat);
 	}
 
-	filtered.push_back("--model");
-	filtered.push_back(provider_model_id);
-	return filtered;
-}
-
-inline std::vector<std::string> BuildProviderInteractiveArgv(const uam::AppState& app, const ChatSession& chat)
-{
-	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
-	ChatSession effective_chat = chat;
-
-	if (effective_chat.native_session_id.empty())
+	inline std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const ChatSession& chat)
 	{
-		const std::string resume_id = ChatHistorySyncService().ResolveResumeSessionIdForChat(app, chat);
+		const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+		ChatSession effective_chat = chat;
+		effective_chat.native_session_id = ResolveProviderInteractiveResumeId(app, chat, provider);
 
-		if (!resume_id.empty())
+		return ProviderRuntime::BuildInteractiveArgv(provider, effective_chat, app.settings);
+	}
+
+	inline void RepairCliTerminalIdentityForChat(AppState& app, CliTerminalState& terminal, const ChatSession& chat, const ProviderProfile& provider)
+	{
+		const std::string resume_id = ResolveProviderInteractiveResumeId(app, chat, provider);
+
+		if (terminal.frontend_chat_id != chat.id)
 		{
-			effective_chat.native_session_id = resume_id;
+			terminal.frontend_chat_id = chat.id;
+		}
+
+		if (CliTerminalAttachedChatId(terminal) != chat.id)
+		{
+			terminal.attached_chat_id = chat.id;
+		}
+
+		const std::string expected_terminal_id = CliTerminalIdForChat(chat.id);
+		if (terminal.terminal_id != expected_terminal_id)
+		{
+			terminal.terminal_id = expected_terminal_id;
+		}
+
+		if (CliTerminalAttachedSessionId(terminal) != resume_id)
+		{
+			terminal.attached_session_id = resume_id;
 		}
 	}
 
-	std::vector<std::string> argv = ProviderRuntime::BuildInteractiveArgv(provider, effective_chat, app.settings);
-
-	if (RuntimeLocalService().ProviderUsesLocalBridgeRuntime(provider))
+	inline CliTerminalState& EnsureCliTerminalForChat(AppState& app, const ChatSession& chat)
 	{
-		std::string selected_model = Trim(app.opencode_bridge.selected_model);
+		const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+		const std::string resume_id = ResolveProviderInteractiveResumeId(app, chat, provider);
+		const bool can_launch_terminal = ProviderSupportsInteractiveTerminal(provider);
 
-		if (selected_model.empty())
+		if (CliTerminalState* existing = FindCliTerminalForChat(app, chat.id))
 		{
-			selected_model = Trim(app.settings.selected_model_id);
-		}
+			RepairCliTerminalIdentityForChat(app, *existing, chat, provider);
 
-		if (!selected_model.empty())
-		{
-			std::string provider_model_id = selected_model;
-
-			if (provider_model_id.rfind("uam_local/", 0) != 0)
+			if (!can_launch_terminal)
 			{
-				provider_model_id = "uam_local/" + provider_model_id;
+				existing->should_launch = false;
+				if (!existing->running)
+				{
+					MarkCliTerminalDisabled(*existing);
+				}
 			}
 
-			argv = ForceOpenCodeModelFlag(std::move(argv), provider_model_id);
-		}
-	}
-
-	return argv;
-}
-
-inline uam::CliTerminalState& EnsureCliTerminalForChat(uam::AppState& app, const ChatSession& chat)
-{
-	const std::string resume_id = ChatHistorySyncService().ResolveResumeSessionIdForChat(app, chat);
-	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
-	const bool can_launch_terminal = ProviderRuntime::IsRuntimeEnabled(provider) && ProviderRuntime::UsesCliOutput(provider) && !ProviderRuntime::UsesInternalEngine(provider) && provider.supports_interactive;
-
-	if (uam::CliTerminalState* existing = FindCliTerminalForChat(app, chat.id))
-	{
-		if (existing->attached_session_id.empty() && !resume_id.empty())
-		{
-			existing->attached_session_id = resume_id;
+			return *existing;
 		}
 
+		auto terminal = std::make_unique<CliTerminalState>();
+		terminal->terminal_id = CliTerminalIdForChat(chat.id);
+		terminal->frontend_chat_id = chat.id;
+		terminal->attached_chat_id = chat.id;
+		terminal->attached_session_id = resume_id;
+		terminal->should_launch = can_launch_terminal;
 		if (!can_launch_terminal)
 		{
-			existing->should_launch = false;
+			MarkCliTerminalDisabled(*terminal);
 		}
-
-		return *existing;
+		app.cli_terminals.push_back(std::move(terminal));
+		return *app.cli_terminals.back();
 	}
 
-	auto terminal = std::make_unique<uam::CliTerminalState>();
-	terminal->attached_chat_id = chat.id;
-	terminal->attached_session_id = resume_id;
-	terminal->should_launch = can_launch_terminal;
-	app.cli_terminals.push_back(std::move(terminal));
-	return *app.cli_terminals.back();
-}
-
-inline void MarkSelectedCliTerminalForLaunch(uam::AppState& app)
-{
-	ChatSession* selected = ChatDomainService().SelectedChat(app);
-
-	if (selected == nullptr)
+	inline void MarkSelectedCliTerminalForLaunch(AppState& app)
 	{
-		return;
-	}
+		ChatSession* selected = ChatDomainService().SelectedChat(app);
 
-	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, *selected);
-
-	if (!ProviderRuntime::IsRuntimeEnabled(provider))
-	{
-		std::string reason = ProviderRuntime::DisabledReason(provider);
-		app.status_line = reason.empty() ? "Selected provider runtime is disabled in this build." : reason;
-		return;
-	}
-
-	if (!ProviderRuntime::UsesCliOutput(provider))
-	{
-		app.status_line = "CLI output is unavailable for the selected provider.";
-		return;
-	}
-
-	if (ProviderRuntime::UsesInternalEngine(provider) || !provider.supports_interactive)
-	{
-		app.status_line = "Provider does not expose an interactive CLI runtime.";
-		return;
-	}
-
-	uam::CliTerminalState& terminal = EnsureCliTerminalForChat(app, *selected);
-
-	if (!terminal.last_error.empty())
-	{
-		return;
-	}
-
-	terminal.should_launch = true;
-}
-
-inline bool SendPromptToCliRuntime(uam::AppState& app, ChatSession& chat, const std::string& prompt, std::string* error_out = nullptr)
-{
-	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
-
-	if (!ProviderRuntime::IsRuntimeEnabled(provider))
-	{
-		if (error_out != nullptr)
+		if (selected == nullptr)
 		{
-			*error_out = ProviderRuntime::DisabledReason(provider);
-
-			if (error_out->empty())
-			{
-				*error_out = "Selected provider runtime is disabled in this build.";
-			}
+			return;
 		}
 
-		return false;
-	}
-
-	if (RuntimeLocalService().ProviderUsesLocalBridgeRuntime(provider))
-	{
-		if (!RuntimeLocalService().RestartLocalBridgeIfModelChanged(app, error_out))
+		const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, *selected);
+		const std::string unavailable_reason = ProviderInteractiveTerminalUnavailableReason(provider);
+		if (!unavailable_reason.empty())
 		{
-			if (error_out != nullptr && error_out->empty())
-			{
-				*error_out = "Failed to start OpenCode bridge.";
-			}
-
-			if (error_out != nullptr && *error_out == "OpenCode bridge is starting.")
-			{
-				app.status_line = *error_out;
-			}
-
-			return false;
+			app.status_line = unavailable_reason;
+			return;
 		}
-	}
 
-	uam::CliTerminalState& terminal = EnsureCliTerminalForChat(app, chat);
+		CliTerminalState& terminal = EnsureCliTerminalForChat(app, *selected);
 
-	if (!terminal.running)
-	{
-		if (!StartCliTerminalForChat(app, terminal, chat, 30, 120))
+		if (!terminal.last_error.empty())
 		{
-			if (error_out != nullptr)
-			{
-				*error_out = terminal.last_error.empty() ? "Failed to start provider terminal." : terminal.last_error;
-			}
-
-			return false;
-		}
-	}
-
-	QueueStructuredPromptForTerminal(terminal, prompt);
-
-	if (!terminal.input_ready)
-	{
-		return true;
-	}
-
-	if (!FlushQueuedStructuredPromptsForTerminal(terminal, error_out))
-	{
-		if (error_out != nullptr && error_out->empty())
-		{
-			*error_out = "Failed to flush queued prompt(s) to provider terminal.";
+			return;
 		}
 
-		return false;
+		terminal.should_launch = true;
 	}
 
-	return true;
-}
+} // namespace uam

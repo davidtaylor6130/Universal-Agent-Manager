@@ -21,7 +21,7 @@ namespace uam::constants
 	/// <summary>
 	/// User-facing application version string.
 	/// </summary>
-	inline constexpr const char* kAppVersion = "1.0.0";
+	inline constexpr const char* kAppVersion = "V2.0.2";
 
 	/// <summary>
 	/// Copyright footer displayed in About dialogs.
@@ -31,6 +31,6 @@ namespace uam::constants
 	/// <summary>
 	/// Supported Gemini CLI version expected by this build.
 	/// </summary>
-	inline constexpr const char* kSupportedGeminiVersion = "0.30.0";
+	inline constexpr const char* kSupportedGeminiVersion = "0.38.1";
 
 } // namespace uam::constants

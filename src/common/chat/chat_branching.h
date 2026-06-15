@@ -3,6 +3,7 @@
 #include "common/models/app_models.h"
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 /// <summary>
@@ -14,5 +15,5 @@ class ChatBranching
 	/// <summary>Normalizes parent/root branch metadata across a chat collection.</summary>
 	static void Normalize(std::vector<ChatSession>& chats);
 	/// <summary>Reparents descendants when a branch node is removed.</summary>
-	static void ReparentChildrenAfterDelete(std::vector<ChatSession>& chats, const std::string& deleted_chat_id);
+	static void ReparentChildrenAfterDelete(std::vector<ChatSession>& chats, std::string_view deleted_chat_id);
 };

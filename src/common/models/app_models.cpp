@@ -1,6 +1,6 @@
 #include "common/models/app_models.h"
 
-std::string RoleToString(const MessageRole role)
+std::string RoleToString(MessageRole role)
 {
 	switch (role)
 	{
@@ -15,7 +15,7 @@ std::string RoleToString(const MessageRole role)
 	return "user";
 }
 
-MessageRole RoleFromString(const std::string& value)
+MessageRole RoleFromString(std::string_view value)
 {
 	if (value == "assistant")
 	{
@@ -30,12 +30,50 @@ MessageRole RoleFromString(const std::string& value)
 	return MessageRole::User;
 }
 
-std::string ViewModeToString(const CenterViewMode mode)
+std::string ViewModeToString(CenterViewMode mode)
 {
-	return (mode == CenterViewMode::CliConsole) ? "cli" : "structured";
+	(void)mode;
+	return "cli";
 }
 
-CenterViewMode ViewModeFromString(const std::string& value)
+CenterViewMode ViewModeFromString(std::string_view value)
 {
-	return (value == "cli") ? CenterViewMode::CliConsole : CenterViewMode::Structured;
+	(void)value;
+	return CenterViewMode::CliConsole;
+}
+
+std::string GoalStatusToString(GoalStatus status)
+{
+	switch (status)
+	{
+	case GoalStatus::Active:
+		return "active";
+	case GoalStatus::Complete:
+		return "complete";
+	case GoalStatus::Blocked:
+		return "blocked";
+	case GoalStatus::Paused:
+		return "paused";
+	}
+	return "active";
+}
+
+GoalStatus GoalStatusFromString(std::string_view value)
+{
+	if (value == "complete")
+	{
+		return GoalStatus::Complete;
+	}
+
+	if (value == "blocked")
+	{
+		return GoalStatus::Blocked;
+	}
+
+	if (value == "paused")
+	{
+		return GoalStatus::Paused;
+	}
+
+	return GoalStatus::Active;
 }

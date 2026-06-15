@@ -23,6 +23,8 @@ class GeminiJsonHistoryStore
 	static std::optional<ChatSession> ParseFile(const std::filesystem::path& file_path, const ProviderProfile& provider, const GeminiJsonHistoryStoreOptions& options = {});
 
 	static std::vector<ChatSession> Load(const std::filesystem::path& chats_dir, const ProviderProfile& provider, const GeminiJsonHistoryStoreOptions& options = {}, std::stop_token stop_token = {});
+
+	static bool SaveFile(const std::filesystem::path& file_path, const ChatSession& chat);
 };
 
 std::vector<ChatSession> LoadGeminiJsonHistoryForRuntime(const std::filesystem::path& chats_dir, const ProviderProfile& profile, const ProviderRuntimeHistoryLoadOptions& options, std::stop_token stop_token = {});

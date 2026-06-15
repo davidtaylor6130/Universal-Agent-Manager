@@ -1,7 +1,7 @@
 #pragma once
 
 /// <summary>
-/// Cross-platform terminal lifecycle management and shared libvterm plumbing.
+/// Cross-platform terminal lifecycle management for embedded provider CLIs.
 /// </summary>
 #include "common/runtime/terminal_common.h"
 
@@ -10,6 +10,6 @@
 /// </summary>
 
 /// <summary>
-/// Terminal rendering/polling integration and Gemini request orchestration.
+/// Terminal rendering/polling integration and provider CLI request orchestration.
 /// </summary>
 #include "common/runtime/terminal_polling.h"
