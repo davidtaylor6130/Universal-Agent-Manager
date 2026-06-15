@@ -278,6 +278,8 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/provider/runtime/provider_runtime_facade.cpp
   src/common/provider/runtime/provider_runtime_registry.cpp
   src/common/runtime/acp/acp_session_runtime.cpp
+  src/common/runtime/json_runtime.cpp
+  src/common/runtime/terminal_polling.cpp
   src/core/gemini_cli_compat.cpp
   ${UAM_PROVIDER_SOURCES}
   src/common/runtime/provider_cli_compatibility_service.cpp
@@ -716,6 +718,8 @@ if(UAM_BUILD_TESTS)
     src/common/provider/runtime/provider_runtime_facade.cpp
     src/common/provider/runtime/provider_runtime_registry.cpp
     src/common/runtime/acp/acp_session_runtime.cpp
+    src/common/runtime/json_runtime.cpp
+    src/common/runtime/terminal_polling.cpp
     src/common/runtime/provider_cli_compatibility_service.cpp
     src/core/chat_import_utils.cpp
     src/core/gemini_cli_compat.cpp
