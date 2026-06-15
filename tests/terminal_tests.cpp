@@ -1,5 +1,7 @@
 #include "test_harness.h"
 
+#include "common/runtime/acp/acp_session_state_helpers.h"
+
 using namespace uam_test;
 
 UAM_TEST(GeminiCliCompatibilityAcceptsCurrentStableVersions)

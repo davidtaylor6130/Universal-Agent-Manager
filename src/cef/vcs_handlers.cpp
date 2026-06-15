@@ -8,6 +8,7 @@
 #include "cef/cef_push.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
+#include "common/runtime/terminal/terminal_identity.h"
 #include "common/utils/nlohmann_json_utils.h"
 
 #include <nlohmann/json.hpp>
