@@ -1761,7 +1761,7 @@ namespace
 			shim.lpVerb = "open";
 			shim.lpFile = "cmd.exe";
 			shim.lpParameters = nullptr;
-			shim.lpDirectory = working_directory.u8string().c_str();
+			shim.lpDirectory = working_directory.string().c_str();
 			shim.nShow = SW_SHOWNORMAL;
 
 			if (!ShellExecuteExA(&shim))
