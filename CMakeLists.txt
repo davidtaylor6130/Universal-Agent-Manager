@@ -255,6 +255,16 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/cef/state_serializer.cpp
   src/cef/cef_push.cpp
   src/cef/chat_handlers.cpp
+  src/cef/chat_config_handlers.cpp
+  src/cef/settings_handlers.cpp
+  src/cef/markdown_handlers.cpp
+  src/cef/folder_handlers.cpp
+  src/cef/memory_handlers.cpp
+  src/cef/workspace_handlers.cpp
+  src/cef/vcs_handlers.cpp
+  src/cef/terminal_handlers.cpp
+  src/cef/acp_handlers.cpp
+  src/cef/goal_handlers.cpp
   src/common/models/app_models.cpp
   src/common/paths/app_paths.cpp
   src/common/chat/chat_folder_store.cpp
