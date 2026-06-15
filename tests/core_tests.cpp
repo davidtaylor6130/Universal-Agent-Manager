@@ -6,6 +6,7 @@
 #include "app/memory_library_service.h"
 #include "app/memory_service.h"
 #include "app/native_session_link_service.h"
+#include "app/provider_model_catalog_service.h"
 #include "app/provider_worker_command.h"
 #include "app/provider_profile_migration_service.h"
 #include "app/provider_resolution_service.h"
@@ -379,7 +380,6 @@ UAM_TEST(SettingsStoreLoadsLegacyButWritesReleaseSliceOnly)
 	const std::string expected_provider_id = provider_build_config::FirstEnabledProviderId();
 #endif
 	UAM_ASSERT_EQ(settings.active_provider_id, expected_provider_id);
-	UAM_ASSERT_EQ(settings.provider_command_template, std::string("gemini -p {prompt}"));
 	UAM_ASSERT_EQ(settings.provider_yolo_mode, true);
 	UAM_ASSERT_EQ(settings.provider_extra_flags, std::string("--approval-mode yolo"));
 	UAM_ASSERT_EQ(settings.cli_idle_timeout_seconds, 3600);
@@ -390,7 +390,7 @@ UAM_TEST(SettingsStoreLoadsLegacyButWritesReleaseSliceOnly)
 	UAM_ASSERT(SettingsStore::Save(settings_file, settings, mode));
 	const std::string saved = ReadFile(settings_file);
 	UAM_ASSERT(saved.find("active_provider_id=" + expected_provider_id) != std::string::npos);
-	UAM_ASSERT(saved.find("provider_command_template=gemini -p {prompt}") != std::string::npos);
+	UAM_ASSERT(saved.find("command_template") == std::string::npos);
 	UAM_ASSERT(saved.find("rag_") == std::string::npos);
 	UAM_ASSERT(saved.find("selected_model_id") == std::string::npos);
 	UAM_ASSERT(saved.find("vector_db_backend") == std::string::npos);
@@ -1347,22 +1347,6 @@ UAM_TEST(ProviderBuildConfigNormalizesEnabledProviderFallbacks)
 #endif
 	UAM_ASSERT_EQ(provider_build_config::EnabledCliProviderIdOrFirst("unknown-provider"), std::string(provider_build_config::FirstEnabledProviderId()));
 	UAM_ASSERT_EQ(provider_build_config::EnabledCliProviderIdOrFirst(""), std::string(provider_build_config::FirstEnabledProviderId()));
-	UAM_ASSERT_EQ(AppSettings().provider_command_template, std::string(provider_build_config::DefaultProviderCommandTemplate()));
-	UAM_ASSERT_EQ(AppSettings().gemini_command_template, std::string(provider_build_config::DefaultProviderCommandTemplate()));
-
-#if UAM_ENABLE_RUNTIME_GEMINI_CLI
-	UAM_ASSERT_EQ(std::string(provider_build_config::DefaultProviderCommandTemplate()), std::string("gemini {resume} {flags} {prompt}"));
-#elif UAM_ENABLE_RUNTIME_CODEX_CLI
-	UAM_ASSERT_EQ(std::string(provider_build_config::DefaultProviderCommandTemplate()), std::string("codex exec {flags} {prompt}"));
-#elif UAM_ENABLE_RUNTIME_CLAUDE_CLI
-	UAM_ASSERT_EQ(std::string(provider_build_config::DefaultProviderCommandTemplate()), std::string("claude -p {prompt}"));
-#elif UAM_ENABLE_RUNTIME_OPENCODE_CLI
-	UAM_ASSERT_EQ(std::string(provider_build_config::DefaultProviderCommandTemplate()), std::string("opencode run {flags} {prompt}"));
-#elif UAM_ENABLE_RUNTIME_COPILOT_CLI
-	UAM_ASSERT_EQ(std::string(provider_build_config::DefaultProviderCommandTemplate()), std::string("copilot -p {prompt} {flags}"));
-#else
-	UAM_ASSERT_EQ(std::string(provider_build_config::DefaultProviderCommandTemplate()), std::string(""));
-#endif
 
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
 	UAM_ASSERT_EQ(provider_build_config::NativeHistoryProviderIdOrFirst(), std::string(uam::provider_ids::kGeminiCli));
@@ -4544,6 +4528,34 @@ UAM_TEST(StateSerializerIncludesAllCliVersionManagers)
 	UAM_ASSERT_EQ(running_codex_it->value("lastCommand", ""), std::string("npm install -g @openai/codex@0.124.0"));
 }
 
+UAM_TEST(StateSerializerProviderJsonIncludesNpmPackageAndShortName)
+{
+	// FE-1: serialized provider JSON must carry shortName and npmPackageName so the frontend
+	// can prefer live state over the static fallback table.
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json& providers = serialized["providers"];
+	UAM_ASSERT(providers.is_array());
+	UAM_ASSERT(!providers.empty());
+
+	for (const nlohmann::json& provider : providers)
+	{
+		UAM_ASSERT(!provider.value("id", "").empty());
+		UAM_ASSERT(!provider.value("shortName", "").empty());
+		UAM_ASSERT(!provider.value("npmPackageName", "").empty());
+	}
+
+	const auto gemini_it = std::ranges::find_if(providers, [](const nlohmann::json& p) { return p.value("id", "") == "gemini-cli"; });
+	UAM_ASSERT(gemini_it != providers.end());
+	UAM_ASSERT_EQ(gemini_it->value("npmPackageName", ""), std::string("@google/gemini-cli"));
+
+	const auto claude_it = std::ranges::find_if(providers, [](const nlohmann::json& p) { return p.value("id", "") == "claude-cli"; });
+	UAM_ASSERT(claude_it != providers.end());
+	UAM_ASSERT_EQ(claude_it->value("npmPackageName", ""), std::string("@anthropic-ai/claude-code"));
+}
+
 UAM_TEST(CliProviderVersionCommandsUseCuratedPackages)
 {
 	const ProviderCliCompatibilityService service;
@@ -4925,7 +4937,6 @@ UAM_TEST(GeminiCliInteractiveArgvUsesResumeAndFlags)
 	UAM_ASSERT_EQ(trimmed_prepended_settings.provider_extra_flags, std::string("--trace"));
 	UAM_ASSERT_EQ(uam::provider_runtime_internal::BuildPrompt("hello", {" src/main.cpp ", " ", "README.md"}), std::string("hello\n\nReferenced files:\n- src/main.cpp\n- README.md\n"));
 	UAM_ASSERT_EQ(uam::provider_runtime_internal::BuildPrompt(std::string_view("xxhelloyy").substr(2, 5), {" README.md "}), std::string("hello\n\nReferenced files:\n- README.md\n"));
-	UAM_ASSERT_EQ(ProviderRuntime::BuildPrompt(profile, std::string_view("xxhelloyy").substr(2, 5), {" README.md "}), std::string("hello\n\nReferenced files:\n- README.md\n"));
 
 	ChatSession chat;
 	chat.id = "chat-1";
@@ -4940,35 +4951,20 @@ UAM_TEST(GeminiCliInteractiveArgvUsesResumeAndFlags)
 	UAM_ASSERT_EQ(argv[3], std::string("-r"));
 	UAM_ASSERT_EQ(argv[4], std::string("native-abc"));
 
+	// OC-3: a per-chat model id must reach the interactive gemini argv as --model <id> (trimmed).
+	chat.model_id = " gemini-2.5-pro ";
+	const std::vector<std::string> argv_with_model = ProviderRuntime::BuildInteractiveArgv(profile, chat, settings);
+	UAM_ASSERT_EQ(argv_with_model.size(), static_cast<std::size_t>(7));
+	UAM_ASSERT_EQ(argv_with_model[5], std::string("--model"));
+	UAM_ASSERT_EQ(argv_with_model[6], std::string("gemini-2.5-pro"));
+	chat.model_id.clear();
+
 	profile.interactive_command = "   ";
 	const std::vector<std::string> defaulted_argv = ProviderRuntime::BuildInteractiveArgv(profile, chat, AppSettings{});
 	UAM_ASSERT_EQ(defaulted_argv[0], std::string("gemini-cli"));
 	UAM_ASSERT(!uam::ranges::Contains(defaulted_argv, "   "));
 	profile.interactive_command.clear();
 
-	const std::string command = ProviderRuntime::BuildCommand(profile, settings, "hello", {" src/main.cpp ", " "}, " native-abc ");
-	UAM_ASSERT(command.find("native-abc") != std::string::npos);
-	UAM_ASSERT(command.find("src/main.cpp") != std::string::npos);
-	UAM_ASSERT(command.find(" native-abc ") == std::string::npos);
-	UAM_ASSERT(command.find(" src/main.cpp ") == std::string::npos);
-	const std::string sliced_command = ProviderRuntime::BuildCommand(profile, settings, std::string_view("xxhelloyy").substr(2, 5), {" README.md "}, " native-abc ");
-	UAM_ASSERT(sliced_command.find("hello") != std::string::npos);
-	UAM_ASSERT(sliced_command.find("README.md") != std::string::npos);
-	settings.provider_command_template = "   ";
-	const std::string default_template_command = ProviderRuntime::BuildCommand(profile, settings, "hello", {}, "");
-	UAM_ASSERT(default_template_command.find("gemini") != std::string::npos);
-	UAM_ASSERT(default_template_command.find("hello") != std::string::npos);
-	const std::string sliced_template_command = uam::provider_runtime_internal::BuildCommandFromTemplate(settings, std::string_view("xxhelloyy").substr(2, 5), {" README.md "}, " native-abc ", "tool {resume} {files} {prompt}");
-	UAM_ASSERT(sliced_template_command.find("native-abc") != std::string::npos);
-	UAM_ASSERT(sliced_template_command.find("README.md") != std::string::npos);
-	UAM_ASSERT(sliced_template_command.find("hello") != std::string::npos);
-	std::string template_command = "runner {flags}";
-	uam::provider_runtime_internal::ReplacePlaceholderOrAppend(template_command, std::string_view("zz{flags}yy").substr(2, 7), "--json");
-	uam::provider_runtime_internal::ReplacePlaceholderOrAppend(template_command, std::string_view("zz{prompt}yy").substr(2, 8), "hello");
-	UAM_ASSERT_EQ(template_command, std::string("runner --json hello"));
-	std::string empty_template_command;
-	uam::provider_runtime_internal::ReplacePlaceholderOrAppend(empty_template_command, "{prompt}", "hello");
-	UAM_ASSERT_EQ(empty_template_command, std::string("hello"));
 	std::vector<std::string> option_argv;
 	UAM_ASSERT(uam::provider_runtime_internal::AppendTrimmedOptionValue(option_argv, std::string_view("xx--flagyy").substr(2, 6), std::string_view("xx  value  yy").substr(2, 9)));
 	UAM_ASSERT(!uam::provider_runtime_internal::AppendTrimmedOptionValue(option_argv, "--empty", "   "));
@@ -5027,17 +5023,6 @@ UAM_TEST(CodexCliInteractiveArgvUsesResumeModelAndFlags)
 	UAM_ASSERT_EQ(invalid_resume[1], std::string("--no-alt-screen"));
 	UAM_ASSERT_EQ(invalid_resume[2], std::string("-m"));
 	UAM_ASSERT_EQ(invalid_resume[3], std::string("gpt-5.4"));
-
-	const std::string command = ProviderRuntime::BuildCommand(profile, settings, "hello", {" src/main.cpp "}, "ignored-session");
-	UAM_ASSERT(command.find("codex exec") != std::string::npos);
-	UAM_ASSERT(command.find("--full-auto") != std::string::npos);
-	UAM_ASSERT(command.find("--sandbox") != std::string::npos);
-	UAM_ASSERT(command.find("danger-full-access") != std::string::npos);
-	UAM_ASSERT(command.find("--ask-for-approval") != std::string::npos);
-	UAM_ASSERT(command.find("never") != std::string::npos);
-	UAM_ASSERT(command.find("--yolo") == std::string::npos);
-	UAM_ASSERT(command.find("src/main.cpp") != std::string::npos);
-	UAM_ASSERT(command.find(" src/main.cpp ") == std::string::npos);
 
 	ProviderProfile invalid_history_profile = profile;
 	invalid_history_profile.id = " codex-alias ";
@@ -5111,6 +5096,49 @@ UAM_TEST(ClaudeCliInteractiveArgvSupportsAcceptEditsMode)
 #endif
 }
 
+UAM_TEST(StructuredLaunchArgvIsProviderOwnedAndStable)
+{
+	// RT-3: each provider's structured-launch argv is owned by its runtime and resolved via
+	// the registry from BuildAcpLaunchArgv. Behavior must stay byte-identical per provider.
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	{
+		ChatSession chat;
+		chat.provider_id = "codex-cli";
+		const std::vector<std::string> argv = uam::BuildAcpLaunchArgvForTests(chat);
+		UAM_ASSERT_EQ(argv, (std::vector<std::string>{"codex", "app-server", "--listen", "stdio://"}));
+	}
+#endif
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	{
+		ChatSession chat;
+		chat.provider_id = "opencode-cli";
+		const std::vector<std::string> argv = uam::BuildAcpLaunchArgvForTests(chat);
+		UAM_ASSERT_EQ(argv, (std::vector<std::string>{"opencode", "acp"}));
+	}
+#endif
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	{
+		ChatSession chat;
+		chat.provider_id = "copilot-cli";
+		const std::vector<std::string> argv = uam::BuildAcpLaunchArgvForTests(chat);
+		UAM_ASSERT_EQ(argv, (std::vector<std::string>{"copilot", "--acp", "--stdio"}));
+	}
+#endif
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+	{
+		ChatSession chat;
+		chat.provider_id = "gemini-cli";
+		chat.model_id = " gemini-2.5-pro ";
+		const std::vector<std::string> argv = uam::BuildAcpLaunchArgvForTests(chat);
+		UAM_ASSERT_EQ(argv.size(), static_cast<std::size_t>(4));
+		UAM_ASSERT_EQ(argv[0], std::string("gemini"));
+		UAM_ASSERT_EQ(argv[1], std::string("--acp"));
+		UAM_ASSERT_EQ(argv[2], std::string("--model"));
+		UAM_ASSERT_EQ(argv[3], std::string("gemini-2.5-pro"));
+	}
+#endif
+}
+
 UAM_TEST(OpenCodeCliBuildsCommandsAndInteractiveArgv)
 {
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
@@ -5136,18 +5164,6 @@ UAM_TEST(OpenCodeCliBuildsCommandsAndInteractiveArgv)
 	UAM_ASSERT_EQ(argv[6], std::string("--agent"));
 	UAM_ASSERT_EQ(argv[7], std::string("build"));
 
-	const std::string command = ProviderRuntime::BuildCommand(profile, settings, "hello", {" src/main.cpp "}, " session-abc ");
-	UAM_ASSERT(command.find("opencode") != std::string::npos);
-	UAM_ASSERT(command.find("run") != std::string::npos);
-	UAM_ASSERT(command.find("--dangerously-skip-permissions") != std::string::npos);
-	UAM_ASSERT(command.find("--session") != std::string::npos);
-	UAM_ASSERT(command.find("session-abc") != std::string::npos);
-	UAM_ASSERT(command.find("--file") != std::string::npos);
-	UAM_ASSERT(command.find("src/main.cpp") != std::string::npos);
-	UAM_ASSERT(command.find("hello") != std::string::npos);
-	UAM_ASSERT(profile.command_template.find("{resume}") != std::string::npos);
-	UAM_ASSERT(profile.command_template.find("--session") != std::string::npos);
-
 	profile.interactive_command = "   ";
 	const std::vector<std::string> defaulted_argv = ProviderRuntime::BuildInteractiveArgv(profile, chat, AppSettings{});
 	UAM_ASSERT_EQ(defaulted_argv[0], std::string("opencode"));
@@ -5161,9 +5177,12 @@ UAM_TEST(OpenCodeCliBuildsCommandsAndInteractiveArgv)
 	legacy_chat.native_session_id = "open-code-session-runtime-load";
 	UAM_ASSERT(ChatRepository::SaveChat(temp.root, legacy_chat));
 
+	// OC-6: LoadHistory no longer stamps provider ids (identical to claude/codex/copilot);
+	// legacy blank-provider chats are normalized at the sidebar/terminal layer instead
+	// (see the OpenCodeLocalHistoryPolling* and sidebar-normalization tests).
 	const std::vector<ChatSession> loaded = ProviderRuntime::LoadHistory(ProviderProfileStore::DefaultOpenCodeProfile(), temp.root, {});
 	UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(1));
-	UAM_ASSERT_EQ(loaded.front().provider_id, std::string(uam::provider_ids::kOpenCodeCli));
+	UAM_ASSERT(loaded.front().provider_id.empty());
 	UAM_ASSERT_EQ(loaded.front().native_session_id, std::string("open-code-session-runtime-load"));
 #endif
 }
@@ -5237,8 +5256,13 @@ UAM_TEST(OpenCodeProviderRecognizesTaskToolAsSubAgent)
 	UAM_ASSERT(ProviderRuntime::ProviderRecognizesSubagentTool(profile, "subtask"));
 	UAM_ASSERT(ProviderRuntime::ProviderRecognizesSubagentTool(profile, "delegate"));
 	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "bash"));
-	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "read"));
-	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, ""));
+ 	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "read"));
+ 	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, ""));
+ 	// Superstrings must NOT match (OC-7: substring false-positive guard)
+ 	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "task_status"));
+ 	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "multitasking_helper"));
+ 	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "delegated"));
+ 	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "subtasker"));
 #endif
 }
 
@@ -6264,16 +6288,17 @@ UAM_TEST(CopilotCliBuildsCommandsAndInteractiveArgv)
 	const std::vector<std::string> yolo_argv = ProviderRuntime::BuildInteractiveArgv(profile, chat, AppSettings{});
 	UAM_ASSERT(uam::ranges::Contains(yolo_argv, "--allow-all"));
 
-	settings.provider_yolo_mode = true;
-	const std::string command = ProviderRuntime::BuildCommand(profile, settings, "hello", {"src/main.cpp"}, "copilot-session-abc");
-	UAM_ASSERT(command.find("copilot") != std::string::npos);
-	UAM_ASSERT(command.find("-p") != std::string::npos);
-	UAM_ASSERT(command.find("--resume") != std::string::npos);
-	UAM_ASSERT(command.find("copilot-session-abc") != std::string::npos);
-	UAM_ASSERT(command.find("--allow-all") != std::string::npos);
-	UAM_ASSERT(command.find("--debug") != std::string::npos);
-	UAM_ASSERT(command.find("src/main.cpp") != std::string::npos);
-	UAM_ASSERT(command.find("hello") != std::string::npos);
+	// PR-4: provider_yolo_mode=true routes through BuildProviderFlagsArgv → --allow-all exactly once.
+	chat.approval_mode.clear();
+	AppSettings yolo_settings;
+	yolo_settings.provider_yolo_mode = true;
+	const std::vector<std::string> yolo_mode_argv = ProviderRuntime::BuildInteractiveArgv(profile, chat, yolo_settings);
+	UAM_ASSERT(uam::ranges::Contains(yolo_mode_argv, "--allow-all"));
+	UAM_ASSERT_EQ(std::ranges::count(yolo_mode_argv, std::string("--allow-all")), static_cast<std::ptrdiff_t>(1));
+
+	// PR-4: yolo off → --allow-all absent.
+	const std::vector<std::string> no_yolo_argv = ProviderRuntime::BuildInteractiveArgv(profile, chat, AppSettings{});
+	UAM_ASSERT(!uam::ranges::Contains(no_yolo_argv, "--allow-all"));
 #endif
 }
 
@@ -7694,6 +7719,9 @@ UAM_TEST(CodexCachedModelsPopulateSelectorBeforeAppServerStarts)
 	chat.provider_id = " CoDeX ";
 	app.chats.push_back(std::move(chat));
 
+	app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
+	app.provider_model_catalog->Initialize(app.data_root);
+
 	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
 	const nlohmann::json acp = serialized["chats"][0]["acpSession"];
 	UAM_ASSERT_EQ(acp["availableModels"].size(), static_cast<std::size_t>(2));
@@ -7739,6 +7767,9 @@ UAM_TEST(OpenCodeConfigModelsPopulateSelectorBeforeAcpStarts)
 	chat.provider_id = " open-code ";
 	app.chats.push_back(std::move(chat));
 
+	app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
+	app.provider_model_catalog->Initialize(app.data_root);
+
 	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
 	const nlohmann::json acp = serialized["chats"][0]["acpSession"];
 	auto model_by_id = [&](const std::string& id) -> nlohmann::json
@@ -7763,7 +7794,7 @@ UAM_TEST(OpenCodeConfigModelsPopulateSelectorBeforeAcpStarts)
 
 UAM_TEST(OpenCodeZenFreeModelsParseAndFilterOfficialModelList)
 {
-	const nlohmann::json parsed = uam::StateSerializer::ParseOpenCodeZenFreeModelsForFrontend(nlohmann::json::parse(R"({
+	const nlohmann::json parsed = uam::ProviderModelCatalogService::ParseOpenCodeZenFreeModels(nlohmann::json::parse(R"({
   "object": "list",
   "data": [
     { "id": "deepseek-v4-flash-free", "object": "model", "owned_by": "opencode" },
@@ -7806,6 +7837,20 @@ UAM_TEST(OpenCodeZenFreeModelsRefreshFromFixtureAndCache)
 	chat.provider_id = "opencode-cli";
 	app.chats.push_back(std::move(chat));
 
+	app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
+	app.provider_model_catalog->Initialize(app.data_root);
+	UAM_ASSERT(app.provider_model_catalog->MaybeStartRefresh());
+	bool refreshed = false;
+	for (int attempt = 0; attempt < 2000 && !refreshed; ++attempt)
+	{
+		refreshed = app.provider_model_catalog->Poll();
+		if (!refreshed)
+		{
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+	}
+	UAM_ASSERT(refreshed);
+
 	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
 	const nlohmann::json acp = serialized["chats"][0]["acpSession"];
 	UAM_ASSERT_EQ(acp["availableModels"].size(), static_cast<std::size_t>(2));
@@ -7847,6 +7892,9 @@ UAM_TEST(OpenCodeRuntimeModelsMergeWithConfiguredModels)
 	session->available_models.push_back(uam::AcpModelState{" ollama-r9700/qwen3-coder:30b ", "Runtime duplicate", ""});
 	session->available_models.push_back(uam::AcpModelState{" ollama-r9700/mistral-small3.2:24b ", " Mistral Small 3.2 24B ", ""});
 	app.acp_sessions.push_back(std::move(session));
+
+	app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
+	app.provider_model_catalog->Initialize(app.data_root);
 
 	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
 	const nlohmann::json acp = serialized["chats"][0]["acpSession"];
@@ -11402,69 +11450,9 @@ UAM_TEST(AcpGoalWorkerTurnSchedulesOneReview)
 	UAM_ASSERT(app.chats.front().goals.front().tokens_used > 0);
 }
 
-UAM_TEST(OpenCodeBuildPromptPrependsGoalContextWhenActiveGoalProvided)
-{
-	const IProviderRuntime& runtime = GetOpenCodeCliProviderRuntime();
-	const ProviderProfile profile = ProviderProfileStore::DefaultOpenCodeProfile();
-
-	Goal goal;
-	goal.id = "goal_test_3";
-	goal.objective = "Ship a working build of the goal-aware prompt path.";
-	goal.status = GoalStatus::Active;
-	goal.token_budget = 4000;
-	goal.tokens_used = 250;
-
-	const std::string baseline = runtime.BuildPrompt(profile, "Explain the diff", {});
-	UAM_ASSERT_EQ(baseline, std::string("Explain the diff"));
-
-	const std::string with_goal = runtime.BuildPrompt(profile, "Explain the diff", {}, &goal, goal.tokens_used, goal.token_budget);
-	UAM_ASSERT(with_goal.find(goal.objective) != std::string::npos);
-	UAM_ASSERT(with_goal.find("Explain the diff") != std::string::npos);
-	UAM_ASSERT(with_goal.find(goal.objective) < with_goal.find("Explain the diff"));
-}
-
-UAM_TEST(ProviderRuntimeFacadeBuildPromptForwardsGoalContext)
-{
-	const ProviderProfile profile = ProviderProfileStore::DefaultOpenCodeProfile();
-
-	Goal goal;
-	goal.id = "goal_test_4";
-	goal.objective = "Land the goal-mode toggle behind a unit-tested contract.";
-	goal.status = GoalStatus::Active;
-	goal.token_budget = 1000;
-	goal.tokens_used = 100;
-
-	const std::string baseline = ProviderRuntime::BuildPrompt(profile, "Ship it", {});
-	UAM_ASSERT_EQ(baseline, std::string("Ship it"));
-
-	const std::string with_goal = ProviderRuntime::BuildPrompt(profile, "Ship it", {}, &goal, goal.tokens_used, goal.token_budget);
-	UAM_ASSERT(with_goal.find(goal.objective) != std::string::npos);
-	UAM_ASSERT(with_goal.find("Ship it") != std::string::npos);
-	UAM_ASSERT(with_goal.find(goal.objective) < with_goal.find("Ship it"));
-}
-
-UAM_TEST(CodexClaudeOpenCodeCommandsIncludeActiveGoalContext)
-{
-	Goal goal;
-	goal.id = "goal_command_1";
-	goal.objective = "Keep goal context in CLI command prompts.";
-	goal.status = GoalStatus::Active;
-	goal.tokens_used = 7;
-	goal.token_budget = 99;
-
-	ChatSession chat;
-	chat.active_goal_id = goal.id;
-	chat.goals.push_back(goal);
-
-	AppSettings settings;
-	const std::string codex_command = ProviderRuntime::BuildCommand(ProviderProfileStore::DefaultCodexProfile(), settings, "Do the work", {}, "", &chat);
-	const std::string claude_command = ProviderRuntime::BuildCommand(ProviderProfileStore::DefaultClaudeProfile(), settings, "Do the work", {}, "", &chat);
-	const std::string opencode_command = ProviderRuntime::BuildCommand(ProviderProfileStore::DefaultOpenCodeProfile(), settings, "Do the work", {}, "", &chat);
-
-	UAM_ASSERT(codex_command.find(goal.objective) != std::string::npos);
-	UAM_ASSERT(claude_command.find(goal.objective) != std::string::npos);
-	UAM_ASSERT(opencode_command.find(goal.objective) != std::string::npos);
-}
+// NOTE: The former BuildPrompt/BuildCommand goal-context tests were removed with the
+// dead one-shot command pipeline (PR-5). Goal-prompt composition is now exercised by the
+// GoalServiceBuildContinuationPrompt* tests and the live ACP goal-review tests above.
 
 int main()
 {
