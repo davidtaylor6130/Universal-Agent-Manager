@@ -86,6 +86,48 @@ std::string CodexTurnErrorMessage(const nlohmann::json& error);
 std::string CodexTurnErrorDetails(const AcpSessionState& session, const nlohmann::json& params, const nlohmann::json& error);
 std::string FormatAcpFailureMessage(const AcpSessionState& session, const AcpFailureDetails& details);
 
+// ACP lifecycle state string constants
+inline constexpr const char* kAcpLifecycleStarting = "starting";
+inline constexpr const char* kAcpLifecycleReady = "ready";
+inline constexpr const char* kAcpLifecycleProcessing = "processing";
+inline constexpr const char* kAcpLifecycleWaitingPermission = "waitingPermission";
+inline constexpr const char* kAcpLifecycleWaitingUserInput = "waitingUserInput";
+inline constexpr const char* kAcpLifecycleStopped = "stopped";
+inline constexpr const char* kAcpLifecycleError = "error";
+
+// Replay and session sizing constants
+inline constexpr std::size_t kMaxRecentStderrBytes = 16 * 1024;
+inline constexpr std::size_t kMinAssistantReplayPrefixBytes = 32;
+inline constexpr double kAcpStaleWaitSeconds = 120.0;
+
+// Goal turn kind labels
+inline constexpr std::string_view kGoalTurnKindNone = "";
+inline constexpr std::string_view kGoalTurnKindWorkerContinuation = "worker_continuation";
+inline constexpr std::string_view kGoalTurnKindReview = "review";
+
+// ACP failure detail bag for load retries
+struct AcpInvalidLoadRetryDetails
+{
+	AcpFailureDetails failure;
+	std::string error_data;
+	std::string detail_text;
+	std::string formatted_error;
+};
+
+// Replay state helpers
+void RememberAssistantReplayPrefixes(AcpSessionState& session, const ChatSession& chat, int turn_user_message_index);
+void RememberLoadHistoryReplayUpdates(AcpSessionState& session, const ChatSession& chat, int turn_user_message_index);
+std::string StripKnownAssistantReplayPrefix(const AcpSessionState& session, const std::string& text);
+std::string AssistantDeltaForIncomingText(const AcpSessionState& session, const std::string& current_assistant_text, const std::string& incoming_text);
+bool ReplayUpdateTypesCompatible(const std::string& expected, const std::string& incoming);
+bool ReplayToolUpdateMatches(const AcpReplayUpdateState& expected, const nlohmann::json& update, const std::string& update_type);
+bool ReplayTextUpdateMatches(const AcpReplayUpdateState& expected, const std::string& update_type, const std::string& incoming_text, std::string& live_suffix);
+bool TryConsumeLoadHistoryReplayUpdate(AcpSessionState& session, const nlohmann::json& update, const std::string& update_type, const std::string& incoming_text, std::string& live_text);
+std::string JsonRpcIdToStableString(const nlohmann::json& id);
+nlohmann::json StableStringToJsonRpcId(const std::string& request_id_json);
+int JsonRpcNumericId(const nlohmann::json& id);
+void AppendRecentStderr(AcpSessionState& session, const std::string& chunk);
+
 // Claude content text helpers
 nlohmann::json BuildClaudeInputMessage(const std::string& text);
 std::string ContentTextFromJson(const nlohmann::json& content);
