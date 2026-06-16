@@ -60,6 +60,12 @@ const char* InvalidResumeDiagnosticReason(const AcpSessionState& session);
 void AppendInvalidResumeDiagnostic(AcpSessionState& session, const std::string& raw_resume_id);
 bool MarkAcpRuntimeActivity(AcpSessionState& session, double now_seconds = GetAppTimeSeconds());
 
+// Resume-id resolution per provider
+std::string ValidCodexResumeId(const ChatSession& chat);
+std::string ValidGeminiResumeId(const ChatSession& chat);
+std::string ValidGenericAcpResumeId(const ChatSession& chat);
+std::string ResolvedAcpResumeIdForChat(const AppState& app, const ChatSession& chat);
+
 // Wait-state management
 void ResetAcpWaitState(AcpSessionState& session);
 void ResetAcpPendingInteractionState(AcpSessionState& session);
