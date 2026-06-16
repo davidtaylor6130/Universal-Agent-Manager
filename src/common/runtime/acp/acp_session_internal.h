@@ -86,6 +86,12 @@ std::string CodexTurnErrorMessage(const nlohmann::json& error);
 std::string CodexTurnErrorDetails(const AcpSessionState& session, const nlohmann::json& params, const nlohmann::json& error);
 std::string FormatAcpFailureMessage(const AcpSessionState& session, const AcpFailureDetails& details);
 
+// Message diagnostic detail helpers
+std::string AcpMessageMethodForDiagnostics(const nlohmann::json& message);
+std::string AcpMessageRequestIdForDiagnostics(const nlohmann::json& message);
+std::string PromptLengthDetail(const nlohmann::json& params);
+std::string AcpMessageDetailForDiagnostics(const nlohmann::json& message);
+
 // Protocol request builders
 nlohmann::json BuildInitializeRequest(int request_id);
 nlohmann::json BuildCodexInitializeRequest(int request_id);
