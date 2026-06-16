@@ -15,6 +15,17 @@
 namespace uam::acp_detail
 {
 
+// Plain data: ACP failure detail bag (used by FormatAcpFailureMessage)
+struct AcpFailureDetails
+{
+	std::string method;
+	std::string request_id;
+	bool has_code = false;
+	int code = 0;
+	std::string message;
+	bool has_detail = false;
+};
+
 // Session-type predicates
 bool AcpSessionMatchesProvider(const AcpSessionState& session, std::string_view protocol_kind, std::string_view canonical_provider_id);
 bool IsCodexSession(const AcpSessionState& session);
@@ -59,6 +70,18 @@ const char* InvalidResumeProviderLabel(const AcpSessionState& session);
 const char* InvalidResumeDiagnosticReason(const AcpSessionState& session);
 void AppendInvalidResumeDiagnostic(AcpSessionState& session, const std::string& raw_resume_id);
 bool MarkAcpRuntimeActivity(AcpSessionState& session, double now_seconds = GetAppTimeSeconds());
+
+// JSON field extraction helpers
+std::string JsonDiagnosticStringValue(const nlohmann::json& object, const char* key);
+std::string JsonDiagnosticStringValueOr(const nlohmann::json& object, const char* key, const std::string& fallback);
+bool JsonBooleanValueOr(const nlohmann::json& object, const char* key, bool fallback);
+int JsonIntegerValueOr(const nlohmann::json& object, const char* key, int fallback);
+nlohmann::json JsonObjectValue(const nlohmann::json& object, const char* key);
+nlohmann::json JsonArrayValue(const nlohmann::json& object, const char* key);
+std::string RecentStderrTail(const AcpSessionState& session);
+std::string CodexTurnErrorMessage(const nlohmann::json& error);
+std::string CodexTurnErrorDetails(const AcpSessionState& session, const nlohmann::json& params, const nlohmann::json& error);
+std::string FormatAcpFailureMessage(const AcpSessionState& session, const AcpFailureDetails& details);
 
 // Resume-id resolution per provider
 std::string ValidCodexResumeId(const ChatSession& chat);
