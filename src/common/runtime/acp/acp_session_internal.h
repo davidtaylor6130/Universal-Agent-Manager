@@ -116,6 +116,18 @@ struct AcpInvalidLoadRetryDetails
 	std::string formatted_error;
 };
 
+// Message sync helpers
+Message& EnsureAssistantMessage(ChatSession& chat, AcpSessionState& session);
+bool AppendThoughtChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk);
+std::string AppendAssistantChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk);
+ToolCall PersistedToolCallFromAcpToolCall(const AcpToolCallState& tool_call);
+bool UpsertPersistedToolCall(std::vector<ToolCall>& tool_calls, const AcpToolCallState& tool_call);
+bool SyncAcpToolCallsToAssistantMessage(ChatSession& chat, AcpSessionState& session, bool create_if_missing);
+MessagePlanEntry PersistedPlanEntryFromAcpPlanEntry(const AcpPlanEntryState& entry);
+std::vector<MessagePlanEntry> PersistedPlanEntriesFromAcpPlanEntries(const std::vector<AcpPlanEntryState>& entries);
+bool MessagePlanEntriesEqual(const std::vector<MessagePlanEntry>& lhs, const std::vector<MessagePlanEntry>& rhs);
+bool SyncAcpPlanToAssistantMessage(ChatSession& chat, AcpSessionState& session, bool create_if_missing);
+
 // Goal loop helpers
 std::string MessageTextForGoalReview(const ChatSession& chat, int index);
 std::string GoalTextPrefixForDiagnostics(const std::string& text);
