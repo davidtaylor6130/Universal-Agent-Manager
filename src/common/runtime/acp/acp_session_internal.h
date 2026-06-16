@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <initializer_list>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -84,6 +85,32 @@ std::string RecentStderrTail(const AcpSessionState& session);
 std::string CodexTurnErrorMessage(const nlohmann::json& error);
 std::string CodexTurnErrorDetails(const AcpSessionState& session, const nlohmann::json& params, const nlohmann::json& error);
 std::string FormatAcpFailureMessage(const AcpSessionState& session, const AcpFailureDetails& details);
+
+// Protocol request builders
+nlohmann::json BuildInitializeRequest(int request_id);
+nlohmann::json BuildCodexInitializeRequest(int request_id);
+nlohmann::json BuildCodexInitializedNotification();
+nlohmann::json BuildCodexModelListRequest(int request_id);
+nlohmann::json BuildNewSessionRequest(int request_id, const std::string& cwd);
+nlohmann::json BuildLoadSessionRequest(int request_id, const std::string& session_id, const std::string& cwd);
+nlohmann::json BuildCodexThreadStartRequest(int request_id, const ChatSession& chat, const std::string& cwd);
+nlohmann::json BuildCodexThreadResumeRequest(int request_id, const ChatSession& chat, const std::string& cwd);
+nlohmann::json BuildGeminiSessionSetupRequest(int request_id, const ChatSession& chat, const std::string& cwd, bool load_session_supported);
+nlohmann::json BuildCodexSessionSetupRequest(int request_id, const ChatSession& chat, const std::string& cwd);
+nlohmann::json BuildPromptRequest(int request_id, const std::string& session_id, const std::string& text);
+nlohmann::json BuildCodexTurnStartRequest(int request_id, const std::string& thread_id, const std::string& text, const ChatSession& chat, const std::string& active_model_id);
+nlohmann::json BuildCancelNotification(const std::string& session_id);
+nlohmann::json BuildCodexTurnInterruptRequest(int request_id, const std::string& thread_id, const std::string& turn_id);
+nlohmann::json BuildSetModeRequest(int request_id, const std::string& session_id, const std::string& mode_id);
+nlohmann::json BuildSetModelRequest(int request_id, const std::string& session_id, const std::string& model_id);
+
+// Protocol session state helpers
+bool TextContainsAnyCaseInsensitive(std::string_view text, std::initializer_list<std::string_view> needles);
+bool WordMatchesAnyCaseInsensitive(std::string_view text, std::initializer_list<std::string_view> words);
+bool AcpSessionCanSendQueuedPrompt(const AcpSessionState& session);
+bool GeminiErrorLooksLikeInvalidSessionId(const std::string& error_message, const std::string& error_data);
+std::string AppApprovalModeId(std::string_view mode_id);
+std::string ProviderApprovalModeId(const AcpSessionState& session, const std::string& mode_id);
 
 // Launch argv + request id helpers
 std::vector<std::string> BuildAcpLaunchArgv(const ProviderProfile& provider, const ChatSession& chat);
