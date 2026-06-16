@@ -280,6 +280,14 @@ void ClearGoalReviewState(AcpSessionState& session);
 void FailAcpTurnOrSession(AcpSessionState& session, const std::string& message);
 void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat);
 
+// ACP response handler helpers
+std::string PendingRequestSummary(const AcpSessionState& session);
+std::string ErrorDataForDiagnostics(const nlohmann::json& error);
+void UpdateAcpModesFromJson(AcpSessionState& session, const nlohmann::json& modes);
+void UpdateAcpModelsFromJson(AcpSessionState& session, const nlohmann::json& models);
+void HandleAcpRequest(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message);
+void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message);
+
 } // namespace uam::acp_detail
 
 // Cross-reference: avoid pulling in CEF-dependent acp_session_runtime.h from lifecycle code
