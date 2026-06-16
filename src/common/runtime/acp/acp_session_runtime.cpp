@@ -127,6 +127,80 @@ namespace uam
 		{
 			return uam::provider_profile_constants::StructuredProtocolOrGemini(provider.structured_protocol);
 		}
+
+		std::string CapDiagnosticString(const std::string& value, std::size_t max_bytes)
+		{
+			if (value.size() <= max_bytes)
+			{
+				return value;
+			}
+
+			std::ostringstream out;
+			out << value.substr(0, max_bytes) << "... [truncated " << (value.size() - max_bytes) << " bytes]";
+			return out.str();
+		}
+
+		std::string SanitizeLogField(const std::string& value)
+		{
+			std::string sanitized = CapDiagnosticString(value, kMaxAcpLogFieldBytes);
+			for (char& ch : sanitized)
+			{
+				if (ch == '\n' || ch == '\r' || ch == '\t')
+				{
+					ch = ' ';
+				}
+			}
+			return sanitized;
+		}
+
+		std::string QuoteLogField(const std::string& value)
+		{
+			std::string quoted;
+			quoted.reserve(value.size() + 2);
+			quoted.push_back('"');
+			for (const char ch : SanitizeLogField(value))
+			{
+				if (ch == '"' || ch == '\\')
+				{
+					quoted.push_back('\\');
+				}
+				quoted.push_back(ch);
+			}
+			quoted.push_back('"');
+			return quoted;
+		}
+
+		std::string AcpProcessHandleLabel(const AcpSessionState& session)
+		{
+#if defined(_WIN32)
+			if (session.process_info.dwProcessId != 0)
+			{
+				return std::to_string(static_cast<unsigned long long>(session.process_info.dwProcessId));
+			}
+#elif defined(__APPLE__)
+			if (session.child_pid > 0)
+			{
+				return std::to_string(static_cast<long long>(session.child_pid));
+			}
+#endif
+			return uam::strings::NonEmptyOrFallback(session.last_process_id, "0");
+		}
+
+		void AppendAcpLogField(std::ostringstream& out, const char* name, const std::string& value)
+		{
+			if (!value.empty())
+			{
+				out << ' ' << name << '=' << value;
+			}
+		}
+
+		void AppendQuotedAcpLogField(std::ostringstream& out, const char* name, const std::string& value)
+		{
+			if (!value.empty())
+			{
+				out << ' ' << name << '=' << QuoteLogField(value);
+			}
+		}
 	} // namespace acp_detail
 
 	namespace
@@ -145,7 +219,6 @@ namespace uam
 		constexpr std::size_t kMaxAcpDiagnosticEntries = 80;
 		constexpr std::size_t kMaxAcpDiagnosticFieldBytes = 4096;
 		constexpr std::size_t kMaxAcpDiagnosticDetailBytes = 8192;
-		constexpr std::size_t kMaxAcpLogFieldBytes = 512;
 		constexpr double kAcpStaleWaitSeconds = 120.0;
 		constexpr std::string_view kGoalTurnKindNone = "";
 		constexpr std::string_view kGoalTurnKindWorkerContinuation = "worker_continuation";
@@ -190,48 +263,6 @@ namespace uam
 		bool UpdateAcpStaleWait(AcpSessionState& session, double now_seconds);
 		bool TryAutoApprovePendingPermission(AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
 
-		std::string CapDiagnosticString(const std::string& value, std::size_t max_bytes)
-		{
-			if (value.size() <= max_bytes)
-			{
-				return value;
-			}
-
-			std::ostringstream out;
-			out << value.substr(0, max_bytes) << "... [truncated " << (value.size() - max_bytes) << " bytes]";
-			return out.str();
-		}
-
-		std::string SanitizeLogField(const std::string& value)
-		{
-			std::string sanitized = CapDiagnosticString(value, kMaxAcpLogFieldBytes);
-			for (char& ch : sanitized)
-			{
-				if (ch == '\n' || ch == '\r' || ch == '\t')
-				{
-					ch = ' ';
-				}
-			}
-			return sanitized;
-		}
-
-		std::string QuoteLogField(const std::string& value)
-		{
-			std::string quoted;
-			quoted.reserve(value.size() + 2);
-			quoted.push_back('"');
-			for (const char ch : SanitizeLogField(value))
-			{
-				if (ch == '"' || ch == '\\')
-				{
-					quoted.push_back('\\');
-				}
-				quoted.push_back(ch);
-			}
-			quoted.push_back('"');
-			return quoted;
-		}
-
 		std::string JsonRpcIdToDiagnosticString(const nlohmann::json& id)
 		{
 			if (id.is_null())
@@ -248,38 +279,6 @@ namespace uam
 		nlohmann::json JsonRpcIdOrNull(const nlohmann::json& message)
 		{
 			return uam::nlohmann_json::ValueOrNull(uam::nlohmann_json::FindField(message, "id"));
-		}
-
-		std::string AcpProcessHandleLabel(const AcpSessionState& session)
-		{
-#if defined(_WIN32)
-			if (session.process_info.dwProcessId != 0)
-			{
-				return std::to_string(static_cast<unsigned long long>(session.process_info.dwProcessId));
-			}
-#elif defined(__APPLE__)
-			if (session.child_pid > 0)
-			{
-				return std::to_string(static_cast<long long>(session.child_pid));
-			}
-#endif
-			return uam::strings::NonEmptyOrFallback(session.last_process_id, "0");
-		}
-
-		void AppendAcpLogField(std::ostringstream& out, const char* name, const std::string& value)
-		{
-			if (!value.empty())
-			{
-				out << ' ' << name << '=' << value;
-			}
-		}
-
-		void AppendQuotedAcpLogField(std::ostringstream& out, const char* name, const std::string& value)
-		{
-			if (!value.empty())
-			{
-				out << ' ' << name << '=' << QuoteLogField(value);
-			}
 		}
 
 		std::string FormatAcpDiagnosticLogLine(const AcpSessionState& session, const AcpDiagnosticEntryState& entry)
