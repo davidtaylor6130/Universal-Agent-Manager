@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app/goal_service.h"
 #include "common/runtime/app_time.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/state/app_state.h"
@@ -8,6 +9,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <initializer_list>
 #include <sstream>
@@ -113,6 +115,17 @@ struct AcpInvalidLoadRetryDetails
 	std::string detail_text;
 	std::string formatted_error;
 };
+
+// Goal loop helpers
+std::string MessageTextForGoalReview(const ChatSession& chat, int index);
+std::string GoalTextPrefixForDiagnostics(const std::string& text);
+std::string GoalLoopDiagnosticDetail(const AcpSessionState& session, const std::string& goal_id, const std::string& text = "");
+void AppendGoalLoopDiagnostic(AcpSessionState& session, const std::string& reason, const std::string& goal_id, const std::string& text = "");
+int64_t EstimateGoalTurnTokens(const ChatSession& chat, const AcpSessionState& session);
+bool CanQueueGoalInternalPrompt(const AcpSessionState& session);
+std::string NormalizeGoalNextPrompt(const std::string& prompt);
+bool GoalBlockerStopsImmediately(const std::string& blocker_kind);
+void ApplyGoalProgressUpdate(Goal& goal, const GoalService::ReviewDecision& decision);
 
 // Turn event helpers
 bool MessageBlocksEqual(const std::vector<MessageBlock>& lhs, const std::vector<MessageBlock>& rhs);
