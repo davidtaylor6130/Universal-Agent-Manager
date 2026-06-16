@@ -1,4 +1,5 @@
 #include "common/runtime/acp/acp_session_runtime.h"
+#include "common/runtime/acp/acp_session_internal.h"
 
 #include "app/chat_domain_service.h"
 #include "app/markdown_store_service.h"
@@ -59,65 +60,8 @@
 
 namespace uam
 {
-	namespace
+	namespace acp_detail
 	{
-		constexpr std::size_t kMaxRecentStderrBytes = 16 * 1024;
-		constexpr const char* kAcpLifecycleStarting = "starting";
-		constexpr const char* kAcpLifecycleReady = "ready";
-		constexpr const char* kAcpLifecycleProcessing = "processing";
-		constexpr const char* kAcpLifecycleWaitingPermission = "waitingPermission";
-		constexpr const char* kAcpLifecycleWaitingUserInput = "waitingUserInput";
-		constexpr const char* kAcpLifecycleStopped = "stopped";
-		constexpr const char* kAcpLifecycleError = "error";
-		constexpr std::size_t kMinAssistantReplayPrefixBytes = 32;
-		constexpr std::size_t kMaxAcpDiagnosticEntries = 80;
-		constexpr std::size_t kMaxAcpDiagnosticFieldBytes = 4096;
-		constexpr std::size_t kMaxAcpDiagnosticDetailBytes = 8192;
-		constexpr std::size_t kMaxAcpLogFieldBytes = 512;
-		constexpr double kAcpStaleWaitSeconds = 120.0;
-		constexpr std::string_view kGoalTurnKindNone = "";
-		constexpr std::string_view kGoalTurnKindWorkerContinuation = "worker_continuation";
-		constexpr std::string_view kGoalTurnKindReview = "review";
-		struct AcpFailureDetails
-		{
-			std::string method;
-			std::string request_id;
-			bool has_code = false;
-			int code = 0;
-			std::string message;
-			bool has_detail = false;
-		};
-
-		struct AcpInvalidLoadRetryDetails
-		{
-			AcpFailureDetails failure;
-			std::string error_data;
-			std::string detail_text;
-			std::string formatted_error;
-		};
-
-		void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_state);
-		void CompletePromptTurnAndHandleGoalLoop(AppState& app, AcpSessionState& session, ChatSession& chat, std::string_view lifecycle_state, CefRefPtr<CefBrowser> browser);
-		void FailAcpTurnOrSession(AcpSessionState& session, const std::string& message);
-		void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat);
-		void SaveChatQuietly(AppState& app, const ChatSession& chat);
-		void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds = 0.5);
-		void FlushPendingChatSaves(AppState& app);
-		bool SetChatNativeSessionIdIfChanged(ChatSession& chat, std::string_view session_id);
-		std::string JsonDiagnosticStringValue(const nlohmann::json& object, const char* key);
-		std::string JsonDiagnosticStringValueOr(const nlohmann::json& object, const char* key, const std::string& fallback);
-		bool JsonBooleanValueOr(const nlohmann::json& object, const char* key, bool fallback);
-		int JsonIntegerValueOr(const nlohmann::json& object, const char* key, int fallback);
-		nlohmann::json JsonObjectValue(const nlohmann::json& object, const char* key);
-		nlohmann::json JsonArrayValue(const nlohmann::json& object, const char* key);
-		std::string CodexTurnErrorMessage(const nlohmann::json& error);
-		std::string CodexTurnErrorDetails(const AcpSessionState& session, const nlohmann::json& params, const nlohmann::json& error);
-		std::string RecentStderrTail(const AcpSessionState& session);
-		std::string FormatAcpFailureMessage(const AcpSessionState& session, const AcpFailureDetails& details);
-		bool SyncAcpToolCallsToAssistantMessage(ChatSession& chat, AcpSessionState& session, bool create_if_missing);
-		bool UpdateAcpStaleWait(AcpSessionState& session, double now_seconds);
-		bool TryAutoApprovePendingPermission(AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
-
 		bool AcpSessionMatchesProvider(const AcpSessionState& session, std::string_view protocol_kind, std::string_view canonical_provider_id)
 		{
 			return session.protocol_kind == protocol_kind || uam::provider_ids::IsCliProviderAliasOf(session.provider_id, canonical_provider_id);
@@ -183,6 +127,68 @@ namespace uam
 		{
 			return uam::provider_profile_constants::StructuredProtocolOrGemini(provider.structured_protocol);
 		}
+	} // namespace acp_detail
+
+	namespace
+	{
+		using namespace acp_detail;
+
+		constexpr std::size_t kMaxRecentStderrBytes = 16 * 1024;
+		constexpr const char* kAcpLifecycleStarting = "starting";
+		constexpr const char* kAcpLifecycleReady = "ready";
+		constexpr const char* kAcpLifecycleProcessing = "processing";
+		constexpr const char* kAcpLifecycleWaitingPermission = "waitingPermission";
+		constexpr const char* kAcpLifecycleWaitingUserInput = "waitingUserInput";
+		constexpr const char* kAcpLifecycleStopped = "stopped";
+		constexpr const char* kAcpLifecycleError = "error";
+		constexpr std::size_t kMinAssistantReplayPrefixBytes = 32;
+		constexpr std::size_t kMaxAcpDiagnosticEntries = 80;
+		constexpr std::size_t kMaxAcpDiagnosticFieldBytes = 4096;
+		constexpr std::size_t kMaxAcpDiagnosticDetailBytes = 8192;
+		constexpr std::size_t kMaxAcpLogFieldBytes = 512;
+		constexpr double kAcpStaleWaitSeconds = 120.0;
+		constexpr std::string_view kGoalTurnKindNone = "";
+		constexpr std::string_view kGoalTurnKindWorkerContinuation = "worker_continuation";
+		constexpr std::string_view kGoalTurnKindReview = "review";
+		struct AcpFailureDetails
+		{
+			std::string method;
+			std::string request_id;
+			bool has_code = false;
+			int code = 0;
+			std::string message;
+			bool has_detail = false;
+		};
+
+		struct AcpInvalidLoadRetryDetails
+		{
+			AcpFailureDetails failure;
+			std::string error_data;
+			std::string detail_text;
+			std::string formatted_error;
+		};
+
+		void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_state);
+		void CompletePromptTurnAndHandleGoalLoop(AppState& app, AcpSessionState& session, ChatSession& chat, std::string_view lifecycle_state, CefRefPtr<CefBrowser> browser);
+		void FailAcpTurnOrSession(AcpSessionState& session, const std::string& message);
+		void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat);
+		void SaveChatQuietly(AppState& app, const ChatSession& chat);
+		void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds = 0.5);
+		void FlushPendingChatSaves(AppState& app);
+		bool SetChatNativeSessionIdIfChanged(ChatSession& chat, std::string_view session_id);
+		std::string JsonDiagnosticStringValue(const nlohmann::json& object, const char* key);
+		std::string JsonDiagnosticStringValueOr(const nlohmann::json& object, const char* key, const std::string& fallback);
+		bool JsonBooleanValueOr(const nlohmann::json& object, const char* key, bool fallback);
+		int JsonIntegerValueOr(const nlohmann::json& object, const char* key, int fallback);
+		nlohmann::json JsonObjectValue(const nlohmann::json& object, const char* key);
+		nlohmann::json JsonArrayValue(const nlohmann::json& object, const char* key);
+		std::string CodexTurnErrorMessage(const nlohmann::json& error);
+		std::string CodexTurnErrorDetails(const AcpSessionState& session, const nlohmann::json& params, const nlohmann::json& error);
+		std::string RecentStderrTail(const AcpSessionState& session);
+		std::string FormatAcpFailureMessage(const AcpSessionState& session, const AcpFailureDetails& details);
+		bool SyncAcpToolCallsToAssistantMessage(ChatSession& chat, AcpSessionState& session, bool create_if_missing);
+		bool UpdateAcpStaleWait(AcpSessionState& session, double now_seconds);
+		bool TryAutoApprovePendingPermission(AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
 
 		std::string CapDiagnosticString(const std::string& value, std::size_t max_bytes)
 		{
