@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/chat_domain_service.h"
+#include "app/native_session_link_service.h"
 #include "common/runtime/app_time.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_lifecycle.h"
