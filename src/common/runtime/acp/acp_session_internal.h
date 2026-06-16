@@ -259,4 +259,32 @@ void ClearAcpPendingWait(AcpSessionState& session);
 std::string ActiveAcpWaitRequestId(const AcpSessionState& session);
 std::string ActiveAcpWaitToolId(const AcpSessionState& session);
 
+// Session lifecycle helpers
+bool UpdateAcpStaleWait(AcpSessionState& session, double now_seconds);
+bool SendInitialize(AcpSessionState& session, std::string* error_out = nullptr);
+void ResetAcpRuntimeState(AcpSessionState& session);
+AcpSessionState& EnsureAcpSessionForChat(AppState& app, const ChatSession& chat);
+bool FailAcpSessionSetupWrite(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& fallback_message);
+bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
+bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSession& chat);
+bool RetryGeminiSessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, ChatSession& chat, const AcpInvalidLoadRetryDetails& details);
+bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat);
+bool SendQueuedPromptIfReady(AcpSessionState& session, const ChatSession& chat);
+void SaveChatQuietly(AppState& app, const ChatSession& chat);
+void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds = 0.5);
+bool SetChatNativeSessionIdIfChanged(ChatSession& chat, std::string_view session_id);
+void SyncResolvedNativeSessionIdForChat(AppState& app, const ChatSession& chat, std::string_view session_id, std::string_view previous_session_id = {});
+void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_state);
+bool QueueGoalInternalPrompt(AcpSessionState& session, ChatSession& chat, const std::string& prompt, bool review_turn);
+void ClearGoalReviewState(AcpSessionState& session);
+void FailAcpTurnOrSession(AcpSessionState& session, const std::string& message);
+void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat);
+
 } // namespace uam::acp_detail
+
+// Cross-reference: avoid pulling in CEF-dependent acp_session_runtime.h from lifecycle code
+namespace uam
+{
+AcpSessionState* FindAcpSessionForChat(AppState& app, const std::string& chat_id);
+const AcpSessionState* FindAcpSessionForChat(const AppState& app, const std::string& chat_id);
+} // namespace uam
