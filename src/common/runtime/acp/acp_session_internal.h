@@ -114,6 +114,24 @@ struct AcpInvalidLoadRetryDetails
 	std::string formatted_error;
 };
 
+// Turn event helpers
+bool MessageBlocksEqual(const std::vector<MessageBlock>& lhs, const std::vector<MessageBlock>& rhs);
+bool PersistableTurnEvent(const AcpTurnEventState& event);
+bool CanMergeTurnEventWithLastBlock(const AcpTurnEventState& event, const std::vector<MessageBlock>& blocks);
+bool HasMatchingTurnBlock(const std::vector<MessageBlock>& blocks, const AcpTurnEventState& event);
+std::vector<MessageBlock> MessageBlocksFromTurnEvents(const AcpSessionState& session);
+bool SyncMessageBlocksFromTurnEvents(Message& message, const AcpSessionState& session);
+Message* CurrentAssistantMessage(ChatSession& chat, const AcpSessionState& session);
+const Message* CurrentAssistantMessage(const ChatSession& chat, const AcpSessionState& session);
+bool SyncCurrentAssistantMessageBlocksFromTurnEvents(ChatSession& chat, AcpSessionState& session);
+void AppendAssistantTextTurnEvent(AcpSessionState& session, const std::string& chunk);
+bool AppendThoughtTurnEvent(AcpSessionState& session, const std::string& chunk);
+bool HasTurnToolEvent(const AcpSessionState& session, const std::string& tool_call_id);
+void AppendToolTurnEventIfNeeded(AcpSessionState& session, const std::string& tool_call_id);
+void AppendPermissionTurnEventIfNeeded(AcpSessionState& session, const std::string& request_id_json, const std::string& tool_call_id);
+void AppendUserInputTurnEventIfNeeded(AcpSessionState& session, const std::string& request_id_json, const std::string& item_id);
+void AppendPlanTurnEventIfNeeded(AcpSessionState& session);
+
 // Replay state helpers
 void RememberAssistantReplayPrefixes(AcpSessionState& session, const ChatSession& chat, int turn_user_message_index);
 void RememberLoadHistoryReplayUpdates(AcpSessionState& session, const ChatSession& chat, int turn_user_message_index);
