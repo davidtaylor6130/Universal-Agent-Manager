@@ -8,9 +8,11 @@
 #include <nlohmann/json.hpp>
 
 #include <cstddef>
+#include <filesystem>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace uam::acp_detail
 {
@@ -82,6 +84,14 @@ std::string RecentStderrTail(const AcpSessionState& session);
 std::string CodexTurnErrorMessage(const nlohmann::json& error);
 std::string CodexTurnErrorDetails(const AcpSessionState& session, const nlohmann::json& params, const nlohmann::json& error);
 std::string FormatAcpFailureMessage(const AcpSessionState& session, const AcpFailureDetails& details);
+
+// Launch argv + request id helpers
+std::vector<std::string> BuildAcpLaunchArgv(const ProviderProfile& provider, const ChatSession& chat);
+std::string JoinAcpArgvForDiagnostics(const std::vector<std::string>& argv);
+std::string AcpWorkingDirectoryString(const std::filesystem::path& workspace_root);
+std::string BuildAcpLaunchDetail(const ProviderProfile& provider, const AppState& app, const std::filesystem::path& workspace_root, const ChatSession& chat);
+std::string BuildAcpLaunchDetail(const AppState& app, const std::filesystem::path& workspace_root, const ChatSession& chat);
+int NextAcpRequestId(AcpSessionState& session, const std::string& method);
 
 // Resume-id resolution per provider
 std::string ValidCodexResumeId(const ChatSession& chat);
