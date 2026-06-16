@@ -13,6 +13,7 @@
 #include "common/runtime/terminal_common.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_idle_classifier.h"
+#include "common/runtime/terminal/terminal_identity.h"
 #include "common/utils/hash_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"

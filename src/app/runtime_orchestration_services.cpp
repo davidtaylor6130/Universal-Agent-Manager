@@ -23,6 +23,7 @@
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/json_runtime.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
+#include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal_common.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/string_utils.h"

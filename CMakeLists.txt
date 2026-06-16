@@ -282,6 +282,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/runtime/terminal_polling.cpp
   src/common/runtime/terminal/terminal_chat_sync.cpp
   src/common/runtime/terminal/terminal_debug_diagnostics.cpp
+  src/common/runtime/terminal/terminal_provider_cli.cpp
   src/common/runtime/terminal/terminal_idle_classifier.cpp
   src/common/runtime/terminal/terminal_identity.cpp
   src/common/runtime/terminal/terminal_lifecycle.cpp
@@ -727,6 +728,7 @@ if(UAM_BUILD_TESTS)
     src/common/runtime/terminal_polling.cpp
     src/common/runtime/terminal/terminal_chat_sync.cpp
     src/common/runtime/terminal/terminal_debug_diagnostics.cpp
+    src/common/runtime/terminal/terminal_provider_cli.cpp
     src/common/runtime/terminal/terminal_idle_classifier.cpp
     src/common/runtime/terminal/terminal_identity.cpp
     src/common/runtime/terminal/terminal_lifecycle.cpp
