@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/goal_service.h"
+#include "common/provider/provider_runtime.h"
 #include "common/runtime/app_time.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/state/app_state.h"
@@ -115,6 +116,11 @@ struct AcpInvalidLoadRetryDetails
 	std::string detail_text;
 	std::string formatted_error;
 };
+
+// Tool call state helpers
+AcpToolCallState& UpsertToolCall(AcpSessionState& session, const std::string& id);
+bool LooksLikeSubAgentTool(const nlohmann::json& update, const AcpToolCallState& tool_call, const IProviderRuntime& runtime);
+void ApplySubAgentMetadata(AcpToolCallState& tool_call, const nlohmann::json& update, const IProviderRuntime& runtime);
 
 // Message sync helpers
 Message& EnsureAssistantMessage(ChatSession& chat, AcpSessionState& session);
