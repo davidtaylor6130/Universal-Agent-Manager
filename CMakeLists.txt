@@ -279,6 +279,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/provider/runtime/provider_runtime_registry.cpp
   src/common/runtime/acp/acp_diagnostics.cpp
   src/common/runtime/acp/acp_session_runtime.cpp
+  src/common/runtime/acp/acp_wait_state.cpp
   src/common/runtime/json_runtime.cpp
   src/common/runtime/terminal_polling.cpp
   src/common/runtime/terminal/terminal_chat_sync.cpp
@@ -726,6 +727,7 @@ if(UAM_BUILD_TESTS)
     src/common/provider/runtime/provider_runtime_registry.cpp
     src/common/runtime/acp/acp_diagnostics.cpp
     src/common/runtime/acp/acp_session_runtime.cpp
+    src/common/runtime/acp/acp_wait_state.cpp
     src/common/runtime/json_runtime.cpp
     src/common/runtime/terminal_polling.cpp
     src/common/runtime/terminal/terminal_chat_sync.cpp

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/runtime/app_time.h"
+#include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/state/app_state.h"
 #include "common/provider/provider_profile.h"
 
@@ -58,5 +59,15 @@ const char* InvalidResumeProviderLabel(const AcpSessionState& session);
 const char* InvalidResumeDiagnosticReason(const AcpSessionState& session);
 void AppendInvalidResumeDiagnostic(AcpSessionState& session, const std::string& raw_resume_id);
 bool MarkAcpRuntimeActivity(AcpSessionState& session, double now_seconds = GetAppTimeSeconds());
+
+// Wait-state management
+void ResetAcpWaitState(AcpSessionState& session);
+void ResetAcpPendingInteractionState(AcpSessionState& session);
+void ResetAcpTurnStreamState(AcpSessionState& session);
+void ClearAcpStartupModelRequest(AcpSessionState& session);
+void BeginAcpPendingWait(AcpSessionState& session, std::string_view lifecycle_state);
+void ClearAcpPendingWait(AcpSessionState& session);
+std::string ActiveAcpWaitRequestId(const AcpSessionState& session);
+std::string ActiveAcpWaitToolId(const AcpSessionState& session);
 
 } // namespace uam::acp_detail
