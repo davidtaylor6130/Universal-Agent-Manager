@@ -288,6 +288,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/runtime/acp/acp_replay_state.cpp
   src/common/runtime/acp/acp_response_handlers.cpp
   src/common/runtime/acp/acp_session_lifecycle.cpp
+  src/common/runtime/acp/acp_session_update_handler.cpp
   src/common/runtime/acp/acp_tool_call_state.cpp
   src/common/runtime/acp/acp_turn_events.cpp
   src/common/runtime/acp/acp_json_helpers.cpp
@@ -753,6 +754,7 @@ if(UAM_BUILD_TESTS)
     src/common/runtime/acp/acp_replay_state.cpp
     src/common/runtime/acp/acp_response_handlers.cpp
     src/common/runtime/acp/acp_session_lifecycle.cpp
+    src/common/runtime/acp/acp_session_update_handler.cpp
     src/common/runtime/acp/acp_tool_call_state.cpp
     src/common/runtime/acp/acp_turn_events.cpp
     src/common/runtime/acp/acp_json_helpers.cpp
