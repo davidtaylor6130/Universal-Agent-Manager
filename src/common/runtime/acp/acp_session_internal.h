@@ -86,6 +86,14 @@ std::string CodexTurnErrorMessage(const nlohmann::json& error);
 std::string CodexTurnErrorDetails(const AcpSessionState& session, const nlohmann::json& params, const nlohmann::json& error);
 std::string FormatAcpFailureMessage(const AcpSessionState& session, const AcpFailureDetails& details);
 
+// Claude content text helpers
+nlohmann::json BuildClaudeInputMessage(const std::string& text);
+std::string ContentTextFromJson(const nlohmann::json& content);
+std::string ClaudeContentTextFromMessage(const nlohmann::json& message);
+std::string StripLeadingLineBreaks(std::string value);
+bool StartsWithLineBreak(const std::string& value);
+void AppendThoughtText(std::string& target, const std::string& chunk, bool starts_new_block);
+
 // Message diagnostic detail helpers
 std::string AcpMessageMethodForDiagnostics(const nlohmann::json& message);
 std::string AcpMessageRequestIdForDiagnostics(const nlohmann::json& message);
