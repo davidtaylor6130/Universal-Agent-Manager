@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <initializer_list>
 #include <sstream>
 #include <string>
@@ -116,6 +117,23 @@ struct AcpInvalidLoadRetryDetails
 	std::string detail_text;
 	std::string formatted_error;
 };
+
+// ACP wire I/O
+bool WriteAcpMessage(AcpSessionState& session, const nlohmann::json& message, std::string* error_out = nullptr);
+
+// Permission handler helpers
+void SendJsonRpcError(AcpSessionState& session, const nlohmann::json& id, int code, const std::string& message);
+nlohmann::json BuildGenericPermissionOutcomeResult(const std::string& option_id, bool cancelled);
+bool SendPermissionResponse(AcpSessionState& session, const std::string& request_id_json, const std::string& option_id, bool cancelled, std::string* error_out = nullptr);
+bool LooksLikeAutoApprovablePermission(const AcpPendingPermissionState& pending);
+bool IsRejectPermissionOption(const std::string& id, const std::string& name, const std::string& kind);
+bool IsAcceptPermissionOption(const std::string& id, const std::string& name);
+std::string AutoApproveOptionId(const AcpPendingPermissionState& pending);
+bool TryAutoApprovePendingPermission(AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
+void AppendIgnoredRequestDuringCancelDiagnostic(AcpSessionState& session, const nlohmann::json& message, const char* reason, const char* diagnostic_message);
+nlohmann::json BuildCodexUserInputResponse(const std::string& request_id_json, const std::map<std::string, std::vector<std::string>>& answers);
+bool SendCodexUserInputResponse(AcpSessionState& session, const std::string& request_id_json, const std::map<std::string, std::vector<std::string>>& answers, std::string* error_out = nullptr);
+void HandlePermissionRequest(AcpSessionState& session, ChatSession& chat, const nlohmann::json& message);
 
 // Tool call state helpers
 AcpToolCallState& UpsertToolCall(AcpSessionState& session, const std::string& id);
