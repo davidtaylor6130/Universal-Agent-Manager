@@ -233,7 +233,7 @@ inline std::string ResolveRequestedNewChatFolderId(const uam::AppState& app, con
 		const ChatFolder* folder = ChatDomainService().FindFolderById(app, requested_folder_id);
 		if (folder != nullptr)
 		{
-			return folder->directory;
+			return folder->id;
 		}
 	}
 
@@ -244,7 +244,7 @@ inline std::string ResolveRequestedNewChatFolderId(const uam::AppState& app, con
 	}
 
 	const ChatFolder* folder = ChatDomainService().FindFolderById(app, selected_chat->folder_id);
-	return folder ? folder->directory : std::string{};
+	return folder ? folder->id : std::string{};
 }
 
 // ---- Session lifecycle helpers ----------

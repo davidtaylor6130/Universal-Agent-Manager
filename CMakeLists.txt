@@ -209,10 +209,18 @@ if(WIN32)
   list(APPEND UAM_PLATFORM_SOURCES src/uam.rc)
   list(APPEND UAM_PLATFORM_IMPL_SOURCES
     src/common/platform/platform_services_windows_impl.cpp
+    src/common/platform/platform_pty_windows.cpp
+    src/common/platform/platform_process_windows.cpp
+    src/common/platform/platform_dialogs_windows.cpp
+    src/common/platform/platform_paths_windows.cpp
   )
 elseif(APPLE)
   list(APPEND UAM_PLATFORM_IMPL_SOURCES
     src/common/platform/platform_services_macos_impl.cpp
+    src/common/platform/platform_pty_macos.cpp
+    src/common/platform/platform_process_macos.cpp
+    src/common/platform/platform_dialogs_macos.cpp
+    src/common/platform/platform_paths_macos.cpp
   )
 endif()
 
@@ -246,6 +254,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/provider_profile_migration_service.cpp
   src/app/provider_model_catalog_service.cpp
   src/app/runtime_orchestration_services.cpp
+  src/app/pending_call_service.cpp
   src/app/vcs_commit_service.cpp
   src/cef/uam_cef_app.cpp
   src/cef/uam_cef_command_line_config.cpp
@@ -728,6 +737,8 @@ if(UAM_BUILD_TESTS)
     src/app/provider_profile_migration_service.cpp
     src/app/provider_model_catalog_service.cpp
     src/app/runtime_orchestration_services.cpp
+    src/app/pending_call_service.cpp
+  src/app/pending_call_service.cpp
     src/app/vcs_commit_service.cpp
     src/cef/uam_cef_command_line_config.cpp
     src/cef/uam_bridge_request.cpp
