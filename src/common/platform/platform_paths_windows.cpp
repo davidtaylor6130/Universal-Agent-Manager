@@ -5,28 +5,6 @@ using namespace uam::platform_windows_impl;
 namespace uam::platform_windows_impl
 {
 
-class WindowsDataRootLock final : public uam::platform::DataRootLock
-{
-  public:
-	explicit WindowsDataRootLock(HANDLE handle) : m_handle(handle)
-	{
-	}
-
-	~WindowsDataRootLock() override
-	{
-		if (m_handle != INVALID_HANDLE_VALUE)
-		{
-			CloseHandle(m_handle);
-		}
-	}
-
-	WindowsDataRootLock(const WindowsDataRootLock&) = delete;
-	WindowsDataRootLock& operator=(const WindowsDataRootLock&) = delete;
-
-  private:
-	HANDLE m_handle = INVALID_HANDLE_VALUE;
-};
-
 class WindowsPathService final : public IPlatformPathService
 {
   public:
