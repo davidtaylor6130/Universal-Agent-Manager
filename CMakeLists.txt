@@ -209,10 +209,18 @@ if(WIN32)
   list(APPEND UAM_PLATFORM_SOURCES src/uam.rc)
   list(APPEND UAM_PLATFORM_IMPL_SOURCES
     src/common/platform/platform_services_windows_impl.cpp
+    src/common/platform/platform_pty_windows.cpp
+    src/common/platform/platform_process_windows.cpp
+    src/common/platform/platform_dialogs_windows.cpp
+    src/common/platform/platform_paths_windows.cpp
   )
 elseif(APPLE)
   list(APPEND UAM_PLATFORM_IMPL_SOURCES
     src/common/platform/platform_services_macos_impl.cpp
+    src/common/platform/platform_pty_macos.cpp
+    src/common/platform/platform_process_macos.cpp
+    src/common/platform/platform_dialogs_macos.cpp
+    src/common/platform/platform_paths_macos.cpp
   )
 endif()
 
@@ -246,6 +254,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/provider_profile_migration_service.cpp
   src/app/provider_model_catalog_service.cpp
   src/app/runtime_orchestration_services.cpp
+  src/app/pending_call_service.cpp
   src/app/vcs_commit_service.cpp
   src/cef/uam_cef_app.cpp
   src/cef/uam_cef_command_line_config.cpp
@@ -255,6 +264,16 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/cef/state_serializer.cpp
   src/cef/cef_push.cpp
   src/cef/chat_handlers.cpp
+  src/cef/chat_config_handlers.cpp
+  src/cef/settings_handlers.cpp
+  src/cef/markdown_handlers.cpp
+  src/cef/folder_handlers.cpp
+  src/cef/memory_handlers.cpp
+  src/cef/workspace_handlers.cpp
+  src/cef/vcs_handlers.cpp
+  src/cef/terminal_handlers.cpp
+  src/cef/acp_handlers.cpp
+  src/cef/goal_handlers.cpp
   src/common/models/app_models.cpp
   src/common/paths/app_paths.cpp
   src/common/chat/chat_folder_store.cpp
@@ -267,7 +286,36 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/provider/provider_profile.cpp
   src/common/provider/runtime/provider_runtime_facade.cpp
   src/common/provider/runtime/provider_runtime_registry.cpp
+  src/common/runtime/acp/acp_claude_message_handlers.cpp
+  src/common/runtime/acp/acp_codex_message_handlers.cpp
+  src/common/runtime/acp/acp_content_text.cpp
+  src/common/runtime/acp/acp_diagnostics.cpp
+  src/common/runtime/acp/acp_goal_helpers.cpp
+  src/common/runtime/acp/acp_goal_loop.cpp
+  src/common/runtime/acp/acp_message_sync.cpp
+  src/common/runtime/acp/acp_permission_handlers.cpp
+  src/common/runtime/acp/acp_polling.cpp
+  src/common/runtime/acp/acp_replay_state.cpp
+  src/common/runtime/acp/acp_response_handlers.cpp
+  src/common/runtime/acp/acp_session_lifecycle.cpp
+  src/common/runtime/acp/acp_session_update_handler.cpp
+  src/common/runtime/acp/acp_tool_call_state.cpp
+  src/common/runtime/acp/acp_turn_events.cpp
+  src/common/runtime/acp/acp_json_helpers.cpp
+  src/common/runtime/acp/acp_launch.cpp
+  src/common/runtime/acp/acp_message_detail.cpp
+  src/common/runtime/acp/acp_request_builders.cpp
+  src/common/runtime/acp/acp_resume_rules.cpp
   src/common/runtime/acp/acp_session_runtime.cpp
+  src/common/runtime/acp/acp_wait_state.cpp
+  src/common/runtime/json_runtime.cpp
+  src/common/runtime/terminal_polling.cpp
+  src/common/runtime/terminal/terminal_chat_sync.cpp
+  src/common/runtime/terminal/terminal_debug_diagnostics.cpp
+  src/common/runtime/terminal/terminal_provider_cli.cpp
+  src/common/runtime/terminal/terminal_idle_classifier.cpp
+  src/common/runtime/terminal/terminal_identity.cpp
+  src/common/runtime/terminal/terminal_lifecycle.cpp
   src/core/gemini_cli_compat.cpp
   ${UAM_PROVIDER_SOURCES}
   src/common/runtime/provider_cli_compatibility_service.cpp
@@ -296,6 +344,8 @@ if(APPLE)
     libcef_dll_wrapper
     "-Wl,-framework,Security"
     "-Wl,-framework,WebKit"
+    "-Wl,-framework,IOKit"
+    "-Wl,-framework,CoreFoundation"
   )
 elseif(WIN32)
   target_link_libraries(universal_agent_manager PRIVATE
@@ -670,6 +720,10 @@ if(UAM_BUILD_TESTS)
   enable_testing()
   add_executable(uam_core_tests
     tests/core_tests.cpp
+    tests/memory_tests.cpp
+    tests/acp_session_tests.cpp
+    tests/terminal_tests.cpp
+    tests/goal_tests.cpp
     ${UAM_PLATFORM_IMPL_SOURCES}
     src/app/chat_domain_service.cpp
     src/app/chat_lifecycle_service.cpp
@@ -685,6 +739,8 @@ if(UAM_BUILD_TESTS)
     src/app/provider_profile_migration_service.cpp
     src/app/provider_model_catalog_service.cpp
     src/app/runtime_orchestration_services.cpp
+    src/app/pending_call_service.cpp
+  src/app/pending_call_service.cpp
     src/app/vcs_commit_service.cpp
     src/cef/uam_cef_command_line_config.cpp
     src/cef/uam_bridge_request.cpp
@@ -701,7 +757,36 @@ if(UAM_BUILD_TESTS)
     src/common/provider/provider_profile.cpp
     src/common/provider/runtime/provider_runtime_facade.cpp
     src/common/provider/runtime/provider_runtime_registry.cpp
+    src/common/runtime/acp/acp_claude_message_handlers.cpp
+    src/common/runtime/acp/acp_codex_message_handlers.cpp
+    src/common/runtime/acp/acp_content_text.cpp
+    src/common/runtime/acp/acp_diagnostics.cpp
+    src/common/runtime/acp/acp_goal_helpers.cpp
+    src/common/runtime/acp/acp_goal_loop.cpp
+    src/common/runtime/acp/acp_message_sync.cpp
+    src/common/runtime/acp/acp_permission_handlers.cpp
+    src/common/runtime/acp/acp_polling.cpp
+    src/common/runtime/acp/acp_replay_state.cpp
+    src/common/runtime/acp/acp_response_handlers.cpp
+    src/common/runtime/acp/acp_session_lifecycle.cpp
+    src/common/runtime/acp/acp_session_update_handler.cpp
+    src/common/runtime/acp/acp_tool_call_state.cpp
+    src/common/runtime/acp/acp_turn_events.cpp
+    src/common/runtime/acp/acp_json_helpers.cpp
+    src/common/runtime/acp/acp_launch.cpp
+    src/common/runtime/acp/acp_message_detail.cpp
+    src/common/runtime/acp/acp_request_builders.cpp
+    src/common/runtime/acp/acp_resume_rules.cpp
     src/common/runtime/acp/acp_session_runtime.cpp
+    src/common/runtime/acp/acp_wait_state.cpp
+    src/common/runtime/json_runtime.cpp
+    src/common/runtime/terminal_polling.cpp
+    src/common/runtime/terminal/terminal_chat_sync.cpp
+    src/common/runtime/terminal/terminal_debug_diagnostics.cpp
+    src/common/runtime/terminal/terminal_provider_cli.cpp
+    src/common/runtime/terminal/terminal_idle_classifier.cpp
+    src/common/runtime/terminal/terminal_identity.cpp
+    src/common/runtime/terminal/terminal_lifecycle.cpp
     src/common/runtime/provider_cli_compatibility_service.cpp
     src/core/chat_import_utils.cpp
     src/core/gemini_cli_compat.cpp
@@ -720,6 +805,8 @@ if(UAM_BUILD_TESTS)
       nlohmann_json::nlohmann_json
       libcef_dll_wrapper
       "-Wl,-framework,Security"
+      "-Wl,-framework,IOKit"
+      "-Wl,-framework,CoreFoundation"
     )
   elseif(WIN32)
     target_link_libraries(uam_core_tests PRIVATE

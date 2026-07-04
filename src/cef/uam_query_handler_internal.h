@@ -15,7 +15,14 @@
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/utils/nlohmann_json_utils.h"
 
+#include "common/config/editor_file_associations.h"
+#include "common/utils/range_utils.h"
+#include "common/utils/string_utils.h"
+
 #include <nlohmann/json.hpp>
+#include <array>
+#include <filesystem>
+#include <set>
 #include <string>
 #include <string_view>
 
@@ -226,7 +233,7 @@ inline std::string ResolveRequestedNewChatFolderId(const uam::AppState& app, con
 		const ChatFolder* folder = ChatDomainService().FindFolderById(app, requested_folder_id);
 		if (folder != nullptr)
 		{
-			return folder->directory;
+			return folder->id;
 		}
 	}
 
@@ -237,7 +244,7 @@ inline std::string ResolveRequestedNewChatFolderId(const uam::AppState& app, con
 	}
 
 	const ChatFolder* folder = ChatDomainService().FindFolderById(app, selected_chat->folder_id);
-	return folder ? folder->directory : std::string{};
+	return folder ? folder->id : std::string{};
 }
 
 // ---- Session lifecycle helpers ----------
@@ -300,6 +307,54 @@ inline bool AutoApprovePendingAcpPermissionOrFail(uam::AppState& app, const std:
 
 	cb->Failure(409, acp_error);
 	return false;
+}
+
+inline bool ShouldSkipEditorScanDirectory(const std::filesystem::path& path)
+{
+	static constexpr std::array<std::string_view, 8> kIgnoredDirectoryNames = {
+	    ".git", "node_modules", "Builds", "build", "dist", "out", ".venv", "venv",
+	};
+	const std::string name = path.filename().string();
+	return uam::ranges::Contains(kIgnoredDirectoryNames, std::string_view(name)) || uam::strings::StartsWith(name, "cmake-build-");
+}
+
+inline std::string SelectEditorPresetForWorkspace(const AppSettings& settings, const std::filesystem::path& workspace_root)
+{
+	constexpr std::size_t kMaxEditorPresetScanFiles = 5000;
+	std::set<std::string> found_extensions;
+	std::error_code ec;
+	std::size_t visited_files = 0;
+	std::filesystem::recursive_directory_iterator it(workspace_root, std::filesystem::directory_options::skip_permission_denied, ec);
+	const std::filesystem::recursive_directory_iterator end;
+	while (!ec && it != end && visited_files < kMaxEditorPresetScanFiles)
+	{
+		const std::filesystem::directory_entry entry = *it;
+		if (entry.is_directory(ec) && ShouldSkipEditorScanDirectory(entry.path()))
+		{
+			it.disable_recursion_pending();
+		}
+		else if (entry.is_regular_file(ec))
+		{
+			++visited_files;
+			const std::string extension = uam::editor_file_associations::NormalizeFileExtension(entry.path().extension().string());
+			if (!extension.empty())
+			{
+				found_extensions.insert(extension);
+			}
+		}
+		it.increment(ec);
+	}
+	for (const EditorFileAssociation& association : settings.editor_file_associations)
+	{
+		for (const std::string& raw_extension : association.extensions)
+		{
+			if (found_extensions.contains(uam::editor_file_associations::NormalizeFileExtension(raw_extension)))
+			{
+				return uam::editor_file_associations::NormalizeEditorPresetId(association.editor_preset_id, settings.default_editor_preset_id);
+			}
+		}
+	}
+	return uam::editor_file_associations::NormalizeEditorPresetId(settings.default_editor_preset_id);
 }
 
 } // namespace uam::query_handler_internal

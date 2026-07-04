@@ -59,5 +59,7 @@ std::string ResolveAcpSessionResumeIdForTests(const AppState& app, const ChatSes
 bool ProcessAcpLineForTests(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& line);
 bool IsValidCodexThreadIdForTests(const std::string& thread_id);
 bool UpdateAcpStaleWaitForTests(AcpSessionState& session, double now_seconds);
+std::string AutoApproveOptionIdForTests(const AcpPendingPermissionState& pending);
+bool ResumeStalledGoalLoopForTests(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds);
 
 } // namespace uam
