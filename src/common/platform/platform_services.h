@@ -79,6 +79,10 @@ class IPlatformProcessService
 	virtual std::size_t NativeGeminiSessionMaxMessages() const = 0;
 	virtual std::string GenerateUuid() const = 0;
 	virtual bool LaunchShellAt(const std::filesystem::path& working_directory, std::string* error_out = nullptr) const = 0;
+	/// Holds (or releases) an OS power assertion so idle system sleep and App Nap
+	/// style timer throttling cannot pause active agent turns or goal loops when
+	/// the display sleeps. Safe to call repeatedly with the same value.
+	virtual void SetKeepSystemAwake(bool keep_awake) const = 0;
 };
 
 /// <summary>

@@ -24,7 +24,9 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 	{
 		GoalService::RecordBlocker(app, goal_id, "Goal reviewer returned invalid JSON.");
 		SaveChatQuietly(app, chat);
-		if (Goal* active_goal = GoalService::FindActiveGoal(app, chat.id); active_goal != nullptr && active_goal->id == goal_id && active_goal->blocked_turn_count < 2)
+		// RecordBlocker marks the goal blocked after 3 consecutive invalid
+		// reviews, which clears the active goal and stops the retries below.
+		if (Goal* active_goal = GoalService::FindActiveGoal(app, chat.id); active_goal != nullptr && active_goal->id == goal_id)
 		{
 			(void)QueueGoalInternalPrompt(session, chat, GoalService::BuildReviewPrompt(*active_goal, review_user_prompt, review_assistant_text), true);
 		}
@@ -94,6 +96,8 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 	if (active_goal->same_next_prompt_count >= 3)
 	{
 		GoalService::RecordBlocker(app, goal_id, "Goal reviewer repeated the same next prompt.");
+		(void)GoalService::UpdateGoalStatus(app, goal_id, GoalStatus::Blocked);
+		AppendGoalLoopDiagnostic(session, "goal_blocked_repeated_next_prompt", goal_id, follow_up);
 		SaveChatQuietly(app, chat);
 		if (browser)
 		{
@@ -146,6 +150,33 @@ void ScheduleGoalReviewAfterSuccessfulTurn(AppState& app, AcpSessionState& sessi
 		return;
 	}
 
+	// Local models can degenerate into emitting the same output every turn.
+	// Three identical back-to-back worker outputs end the loop visibly
+	// instead of burning the review/continue cycle forever.
+	const std::string worker_text = uam::strings::Trim(recent_assistant_text);
+	if (worker_text == active_goal->last_assistant_text)
+	{
+		active_goal->same_assistant_text_count += 1;
+	}
+	else
+	{
+		active_goal->last_assistant_text = worker_text;
+		active_goal->same_assistant_text_count = 1;
+	}
+	if (active_goal->same_assistant_text_count >= 3)
+	{
+		const std::string goal_id = active_goal->id;
+		GoalService::RecordBlocker(app, goal_id, "Assistant returned identical output for 3 consecutive turns.");
+		(void)GoalService::UpdateGoalStatus(app, goal_id, GoalStatus::Blocked);
+		AppendGoalLoopDiagnostic(session, "goal_blocked_repeated_assistant_output", goal_id, worker_text);
+		SaveChatQuietly(app, chat);
+		if (browser)
+		{
+			uam::PushStateUpdateIfChanged(browser, app);
+		}
+		return;
+	}
+
 	GoalService::RecordTurnCompletion(app, active_goal->id, EstimateGoalTurnTokens(chat, session));
 	active_goal = GoalService::FindActiveGoal(app, chat.id);
 	SaveChatQuietly(app, chat);
@@ -164,7 +195,64 @@ void ScheduleGoalReviewAfterSuccessfulTurn(AppState& app, AcpSessionState& sessi
 	session.goal_review_assistant_text = recent_assistant_text;
 	const std::string review_prompt = GoalService::BuildReviewPrompt(*active_goal, session.goal_review_user_prompt, session.goal_review_assistant_text);
 	AppendGoalLoopDiagnostic(session, "schedule_review", active_goal->id, recent_assistant_text);
-	(void)QueueGoalInternalPrompt(session, chat, review_prompt, true);
+	if (!QueueGoalInternalPrompt(session, chat, review_prompt, true))
+	{
+		// Leaving goal_review_scheduled set with nothing queued would stall the
+		// loop forever; clear it so the watchdog can resume the goal instead.
+		AppendGoalLoopDiagnostic(session, "queue_review_failed", active_goal->id);
+		ClearGoalReviewState(session);
+	}
+}
+
+bool ResumeStalledGoalLoopIfNeeded(AppState& app, AcpSessionState& session, ChatSession& chat, CefRefPtr<CefBrowser> browser, double now_seconds)
+{
+	if (session.goal_resume_suppressed || !CanQueueGoalInternalPrompt(session))
+	{
+		return false;
+	}
+
+	Goal* active_goal = GoalService::FindActiveGoal(app, chat.id);
+	if (active_goal == nullptr || active_goal->objective.empty())
+	{
+		return false;
+	}
+	// Only resume a loop that has already run a turn; a freshly created goal
+	// waits for the user's first prompt.
+	if (active_goal->loop_count == 0 && active_goal->tokens_used == 0)
+	{
+		return false;
+	}
+	if (session.last_runtime_activity_time_s <= 0.0 || now_seconds - session.last_runtime_activity_time_s < kGoalLoopResumeIdleSeconds)
+	{
+		return false;
+	}
+
+	if (session.goal_auto_resume_attempts >= 3)
+	{
+		const std::string goal_id = active_goal->id;
+		GoalService::RecordBlocker(app, goal_id, "Goal loop stalled and could not be auto-resumed.");
+		(void)GoalService::UpdateGoalStatus(app, goal_id, GoalStatus::Blocked);
+		AppendGoalLoopDiagnostic(session, "goal_blocked_auto_resume_exhausted", goal_id);
+		SaveChatQuietly(app, chat);
+		if (browser)
+		{
+			uam::PushStateUpdateIfChanged(browser, app);
+		}
+		return true;
+	}
+
+	session.goal_auto_resume_attempts += 1;
+	// The session is idle, so any remaining goal-turn flags are leftovers of a
+	// failed queue or write; clear them before resuming.
+	session.goal_turn_kind.clear();
+	ClearGoalReviewState(session);
+	AppendGoalLoopDiagnostic(session, "auto_resume_stalled_goal_loop", active_goal->id);
+	(void)QueueGoalInternalPrompt(session, chat, GoalService::BuildContinuationPrompt(*active_goal, active_goal->tokens_used, active_goal->token_budget), false);
+	if (browser)
+	{
+		uam::PushStateUpdateIfChanged(browser, app);
+	}
+	return true;
 }
 
 void CompletePromptTurnAndHandleGoalLoop(AppState& app, AcpSessionState& session, ChatSession& chat, std::string_view lifecycle_state, CefRefPtr<CefBrowser> browser)
@@ -174,6 +262,7 @@ void CompletePromptTurnAndHandleGoalLoop(AppState& app, AcpSessionState& session
 	const std::string goal_id = session.goal_review_goal_id;
 	CompletePromptTurn(session, lifecycle_state);
 	session.crash_restart_attempts = 0;
+	session.goal_auto_resume_attempts = 0;
 
 	if (completed_review_turn)
 	{

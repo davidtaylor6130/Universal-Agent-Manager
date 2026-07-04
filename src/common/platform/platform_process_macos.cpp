@@ -1,5 +1,6 @@
 #include "platform_services_macos_impl_internal.h"
 
+#include <IOKit/pwr_mgt/IOPMLib.h>
 #include <Security/Security.h>
 
 using namespace uam::platform_macos_impl;
@@ -373,6 +374,34 @@ class MacProcessService final : public IPlatformProcessService
 		return std::string(uuid);
 #else
 		return "";
+#endif
+	}
+
+	void SetKeepSystemAwake(const bool keep_awake) const override
+	{
+#if defined(__APPLE__)
+		// ponytail: process-wide assertion; only PollTick (CEF UI thread) calls this.
+		static IOPMAssertionID assertion_id = kIOPMNullAssertionID;
+		const bool held = assertion_id != kIOPMNullAssertionID;
+		if (keep_awake == held)
+		{
+			return;
+		}
+		if (keep_awake)
+		{
+			IOPMAssertionID created = kIOPMNullAssertionID;
+			if (IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep, kIOPMAssertionLevelOn, CFSTR("Universal Agent Manager: active agent turn or goal loop"), &created) == kIOReturnSuccess)
+			{
+				assertion_id = created;
+			}
+		}
+		else
+		{
+			IOPMAssertionRelease(assertion_id);
+			assertion_id = kIOPMNullAssertionID;
+		}
+#else
+		(void)keep_awake;
 #endif
 	}
 

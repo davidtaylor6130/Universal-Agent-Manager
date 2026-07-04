@@ -751,6 +751,8 @@ namespace
 				goal.last_verification = JsonStringOrEmpty(goal_obj.Find("lastVerification"));
 				goal.last_next_prompt = JsonStringOrEmpty(goal_obj.Find("lastNextPrompt"));
 				goal.same_next_prompt_count = NonNegativeIntFieldOrZero(goal_obj.Find("sameNextPromptCount"));
+				goal.last_assistant_text = JsonStringOrEmpty(goal_obj.Find("lastAssistantText"));
+				goal.same_assistant_text_count = NonNegativeIntFieldOrZero(goal_obj.Find("sameAssistantTextCount"));
 				goal.loop_count = NonNegativeIntFieldOrZero(goal_obj.Find("loopCount"));
 				goal.created_at = JsonStringOrEmpty(goal_obj.Find("createdAt"));
 				goal.updated_at = JsonStringOrEmpty(goal_obj.Find("updatedAt"));
@@ -965,6 +967,8 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 			uam::json::SetString(goal_obj, "lastVerification", goal.last_verification);
 			uam::json::SetString(goal_obj, "lastNextPrompt", goal.last_next_prompt);
 			uam::json::SetNumber(goal_obj, "sameNextPromptCount", static_cast<double>(goal.same_next_prompt_count));
+			uam::json::SetString(goal_obj, "lastAssistantText", goal.last_assistant_text);
+			uam::json::SetNumber(goal_obj, "sameAssistantTextCount", static_cast<double>(goal.same_assistant_text_count));
 			uam::json::SetNumber(goal_obj, "loopCount", static_cast<double>(goal.loop_count));
 			uam::json::SetString(goal_obj, "createdAt", goal.created_at);
 			uam::json::SetString(goal_obj, "updatedAt", goal.updated_at);

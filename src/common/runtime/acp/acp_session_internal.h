@@ -103,6 +103,7 @@ inline constexpr const char* kAcpLifecycleError = "error";
 inline constexpr std::size_t kMaxRecentStderrBytes = 16 * 1024;
 inline constexpr std::size_t kMinAssistantReplayPrefixBytes = 32;
 inline constexpr double kAcpStaleWaitSeconds = 120.0;
+inline constexpr double kGoalLoopResumeIdleSeconds = 5.0;
 
 // Goal turn kind labels
 inline constexpr std::string_view kGoalTurnKindNone = "";
@@ -125,9 +126,8 @@ bool WriteAcpMessage(AcpSessionState& session, const nlohmann::json& message, st
 void SendJsonRpcError(AcpSessionState& session, const nlohmann::json& id, int code, const std::string& message);
 nlohmann::json BuildGenericPermissionOutcomeResult(const std::string& option_id, bool cancelled);
 bool SendPermissionResponse(AcpSessionState& session, const std::string& request_id_json, const std::string& option_id, bool cancelled, std::string* error_out = nullptr);
-bool LooksLikeAutoApprovablePermission(const AcpPendingPermissionState& pending);
 bool IsRejectPermissionOption(const std::string& id, const std::string& name, const std::string& kind);
-bool IsAcceptPermissionOption(const std::string& id, const std::string& name);
+bool IsAcceptPermissionOption(const std::string& id, const std::string& name, const std::string& kind);
 std::string AutoApproveOptionId(const AcpPendingPermissionState& pending);
 bool TryAutoApprovePendingPermission(AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
 void AppendIgnoredRequestDuringCancelDiagnostic(AcpSessionState& session, const nlohmann::json& message, const char* reason, const char* diagnostic_message);

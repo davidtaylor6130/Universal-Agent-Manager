@@ -218,6 +218,13 @@ namespace uam
 		// crash-looping provider cannot restart forever; cleared when a new user
 		// prompt is sent or a turn completes.
 		int crash_restart_attempts = 0;
+		// Counts watchdog re-queues of a stalled goal loop; the goal is marked
+		// blocked after 3 so a failing provider cannot be retried forever.
+		// Cleared when a turn completes or a new user prompt is sent.
+		int goal_auto_resume_attempts = 0;
+		// Set when the user cancels a turn so the goal-loop watchdog does not
+		// override an explicit stop; cleared on the next user prompt.
+		bool goal_resume_suppressed = false;
 		std::string goal_turn_kind;
 		bool goal_review_turn = false;
 		bool goal_review_scheduled = false;
