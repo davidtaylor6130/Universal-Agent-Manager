@@ -1,5 +1,5 @@
 #pragma once
-// Internal helpers shared across platform_pty_windows.cpp, platform_process_windows.cpp,
+// Internal helpers, WindowsDataRootLock, shared across platform_pty_windows.cpp, platform_process_windows.cpp,
 // platform_dialogs_windows.cpp, and platform_paths_windows.cpp.
 // Include only from those four TUs and platform_services_windows_impl.cpp.
 
@@ -885,5 +885,27 @@ inline bool BrowsePathWithNativeDialogWindows(const PlatformPathBrowseTarget tar
 
 	return true;
 }
+
+class WindowsDataRootLock final : public uam::platform::DataRootLock
+{
+  public:
+	explicit WindowsDataRootLock(HANDLE handle) : m_handle(handle)
+	{
+	}
+
+	~WindowsDataRootLock() override
+	{
+		if (m_handle != INVALID_HANDLE_VALUE)
+		{
+			CloseHandle(m_handle);
+		}
+	}
+
+	WindowsDataRootLock(const WindowsDataRootLock&) = delete;
+	WindowsDataRootLock& operator=(const WindowsDataRootLock&) = delete;
+
+  private:
+	HANDLE m_handle = INVALID_HANDLE_VALUE;
+};
 
 } // namespace uam::platform_windows_impl
