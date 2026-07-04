@@ -322,6 +322,12 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/platform/platform_services.cpp
 )
 
+set_target_properties(universal_agent_manager PROPERTIES
+  CXX_STANDARD 20
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF
+)
+
 target_include_directories(universal_agent_manager
   PRIVATE
     src
@@ -794,6 +800,12 @@ if(UAM_BUILD_TESTS)
     src/common/config/settings_store.cpp
     src/common/platform/platform_services.cpp
   )
+  set_target_properties(uam_core_tests PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+  )
+
   target_include_directories(uam_core_tests
     PRIVATE
       src
