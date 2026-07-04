@@ -42,3 +42,4 @@ compile_commands.json
 # OCR data and stray preview images
 *.traineddata
 /UI-V2/subagent-preview-*.png
+/.agents
