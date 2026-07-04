@@ -64,46 +64,9 @@ nlohmann::json BuildGenericPermissionOutcomeResult(const std::string& option_id,
 
 bool SendPermissionResponse(AcpSessionState& session, const std::string& request_id_json, const std::string& option_id, bool cancelled, std::string* error_out)
 {
-	nlohmann::json response = uam::acp_json_rpc::SuccessResponse(StableStringToJsonRpcId(request_id_json), nlohmann::json::object());
-	if (IsCodexSession(session))
-	{
-		const std::string kind = session.pending_permission.provider_request_kind;
-		const bool deny = uam::acp_permissions::IsDenyDecision(option_id, cancelled);
-		if (uam::acp_permissions::IsCodexDecisionPermissionKind(kind))
-		{
-			response["result"] = {{"decision", uam::acp_permissions::CodexDecisionForOption(option_id, cancelled)}};
-		}
-		else if (kind == uam::acp_permissions::kCodexPermissionsRequestKind)
-		{
-			nlohmann::json permissions = nlohmann::json::object();
-			if (!deny && !session.pending_permission.codex_approval_payload_json.empty())
-			{
-				try
-				{
-					const nlohmann::json payload = nlohmann::json::parse(session.pending_permission.codex_approval_payload_json);
-					if (const nlohmann::json* parsed_permissions = uam::nlohmann_json::FindField(payload, "permissions"); parsed_permissions != nullptr)
-					{
-						permissions = *parsed_permissions;
-					}
-				}
-				catch (const nlohmann::json::exception&)
-				{
-					permissions = nlohmann::json::object();
-				}
-			}
-			response["result"] = {
-			    {uam::acp_permissions::kPermissionsField, permissions},
-			    {uam::acp_permissions::kScopeField, uam::acp_permissions::kSessionScope},
-			};
-		}
-		else
-		{
-			response["result"] = nlohmann::json::object();
-		}
-		return WriteAcpMessage(session, response, error_out);
-	}
-
-	response["result"] = BuildGenericPermissionOutcomeResult(option_id, cancelled);
+	(void)request_id_json;
+	nlohmann::json response = ProviderRuntimeRegistry::ResolveById(session.provider_id)
+	    .OnAcpBuildPermissionResponse(session, option_id, cancelled);
 	return WriteAcpMessage(session, response, error_out);
 }
 
@@ -180,7 +143,7 @@ bool TryAutoApprovePendingPermission(AcpSessionState& session, const ChatSession
 	}
 
 	std::string option_id = AutoApproveOptionId(session.pending_permission);
-	if (!IsCodexSession(session) && option_id.empty())
+	if (option_id.empty())
 	{
 		return false;
 	}

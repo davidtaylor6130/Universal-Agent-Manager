@@ -10,6 +10,7 @@
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/utils/string_utils.h"
 
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <sstream>
@@ -69,25 +70,17 @@ bool UpdateAcpStaleWait(AcpSessionState& session, double now_seconds)
 
 bool SendInitialize(AcpSessionState& session, std::string* error_out)
 {
-	if (IsClaudeSession(session))
+	const int id = session.next_request_id++;
+	std::string method;
+	nlohmann::json msg = ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpBuildInitialize(session, id);
+	if (msg.is_null() || msg.empty())
 	{
-		session.initialized = true;
-		session.load_session_supported = true;
-		session.available_modes = {
-		    AcpModeState{uam::approval_modes::kDefaultApprovalMode, "Default", "Use Claude default permissions."},
-		    AcpModeState{uam::approval_modes::kAcceptEditsApprovalMode, "Accept Edits", "Auto-approve Claude file edits in the workspace."},
-		    AcpModeState{uam::approval_modes::kPlanApprovalMode, "Plan", "Let Claude research and propose changes without editing files."},
-		};
-		if (session.current_mode_id.empty())
-		{
-			session.current_mode_id = uam::approval_modes::kDefaultApprovalMode;
-		}
 		return true;
 	}
-
-	const int id = NextAcpRequestId(session, uam::acp_methods::kInitialize);
+	method = uam::acp_methods::kInitialize;
+	session.pending_request_methods[id] = method;
 	session.initialize_request_id = id;
-	return WriteAcpMessage(session, IsCodexSession(session) ? BuildCodexInitializeRequest(id) : BuildInitializeRequest(id), error_out);
+	return WriteAcpMessage(session, msg, error_out);
 }
 
 void ResetAcpRuntimeState(AcpSessionState& session)
@@ -175,9 +168,10 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, const ChatS
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 	session.provider_id = provider.id;
 	session.protocol_kind = ProviderStructuredProtocolOrDefault(provider);
-	const std::string codex_resume_id = IsCodexSession(session) ? ValidCodexResumeId(chat) : std::string{};
-	const std::string acp_resume_id = IsCodexSession(session) ? std::string{} : ResolvedAcpResumeIdForChat(app, chat);
-	session.session_id = IsCodexSession(session) ? codex_resume_id : acp_resume_id;
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
+	const std::string codex_resume_id = std::strcmp(runtime.AcpProtocolKind(), "codex-app-server") == 0 ? ValidCodexResumeId(chat) : std::string{};
+	const std::string acp_resume_id = codex_resume_id.empty() ? ResolvedAcpResumeIdForChat(app, chat) : std::string{};
+	session.session_id = codex_resume_id.empty() ? acp_resume_id : codex_resume_id;
 	session.codex_thread_id = codex_resume_id;
 	session.lifecycle_state = kAcpLifecycleStarting;
 
@@ -218,49 +212,13 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		return false;
 	}
 
-	if (IsClaudeSession(session))
-	{
-		session.session_ready = true;
-		session.session_id = ResolvedAcpResumeIdForChat(app, chat);
-		session.current_mode_id = chat.approval_mode.empty() ? uam::approval_modes::kDefaultApprovalMode : chat.approval_mode;
-		session.lifecycle_state = session.processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
-		return true;
-	}
-
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
 	const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
 	const std::string cwd = AcpWorkingDirectoryString(workspace_root);
 	const std::string resolved_resume_id = ResolvedAcpResumeIdForChat(app, chat);
-	ChatSession resume_chat = chat;
-	resume_chat.native_session_id = resolved_resume_id;
-	if (IsCodexSession(session))
-	{
-		const std::string raw_resume_id = uam::strings::Trim(chat.native_session_id);
-		const std::string resume_id = ValidCodexResumeId(resume_chat);
-		if (!raw_resume_id.empty() && resume_id.empty())
-		{
-			AppendAcpDiagnostic(session, "session_setup", "codex_invalid_resume_id_ignored", "", "", false, 0, "Ignoring invalid Codex thread id and starting a new thread.", "nativeSessionId=" + raw_resume_id);
-			chat.native_session_id.clear();
-			SaveChatQuietly(app, chat);
-		}
-		const bool can_resume = !resume_id.empty();
-		const int id = NextAcpRequestId(session, can_resume ? uam::acp_methods::kThreadResume : uam::acp_methods::kThreadStart);
-		session.session_setup_request_id = id;
-		session.ignore_session_updates_until_ready = false;
-		session.lifecycle_state = kAcpLifecycleStarting;
-		session.session_id = can_resume ? resume_id : "";
-		session.codex_thread_id = session.session_id;
-		ChatSession setup_chat = resume_chat;
-		setup_chat.native_session_id = resume_id;
-		const bool written = WriteAcpMessage(session, can_resume ? BuildCodexThreadResumeRequest(id, setup_chat, cwd) : BuildCodexThreadStartRequest(id, setup_chat, cwd));
-		if (!written)
-		{
-			return FailAcpSessionSetupWrite(app, session, chat, "Failed to create Codex app-server thread.");
-		}
-		return written;
-	}
 
 	const std::string raw_resume_id = uam::strings::Trim(chat.native_session_id);
-	const std::string resume_id = IsGenericAcpSession(session) ? ValidGenericAcpResumeId(resume_chat) : ValidGeminiResumeId(resume_chat);
+	const std::string resume_id = runtime.OnAcpValidateResumeId(chat);
 	if (!raw_resume_id.empty() && resume_id.empty())
 	{
 		AppendInvalidResumeDiagnostic(session, raw_resume_id);
@@ -268,34 +226,42 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		SaveChatQuietly(app, chat);
 	}
 
-	const bool can_load = !resume_id.empty() && session.load_session_supported;
-	const int id = NextAcpRequestId(session, can_load ? uam::acp_methods::kSessionLoad : uam::acp_methods::kSessionNew);
-	session.session_setup_request_id = id;
-	session.ignore_session_updates_until_ready = can_load;
-	session.lifecycle_state = kAcpLifecycleStarting;
-	session.session_id = can_load ? resume_id : "";
+	ChatSession resume_chat = chat;
+	resume_chat.native_session_id = resume_id.empty() ? resolved_resume_id : resume_id;
 
-	if (can_load)
+	const int id = session.next_request_id++;
+	std::string method;
+	nlohmann::json msg = runtime.OnAcpBuildSetupRequest(id, resume_chat, cwd, session.load_session_supported, method);
+
+	if (msg.is_null() || msg.empty())
 	{
-		const bool written = WriteAcpMessage(session, BuildLoadSessionRequest(id, resume_id, cwd));
-		if (!written)
-		{
-			return FailAcpSessionSetupWrite(app, session, chat, "Failed to load " + std::string(RuntimeDisplayName(session)) + " session.");
-		}
-		return written;
+		session.session_ready = true;
+		session.session_id = resolved_resume_id;
+		session.current_mode_id = chat.approval_mode.empty() ? uam::approval_modes::kDefaultApprovalMode : chat.approval_mode;
+		session.lifecycle_state = session.processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
+		return true;
 	}
 
-	const bool written = WriteAcpMessage(session, BuildNewSessionRequest(id, cwd));
+	session.pending_request_methods[id] = method;
+	session.session_setup_request_id = id;
+	session.ignore_session_updates_until_ready = method == uam::acp_methods::kSessionLoad;
+	session.lifecycle_state = kAcpLifecycleStarting;
+	session.session_id = resume_chat.native_session_id;
+	session.codex_thread_id = resume_chat.native_session_id;
+
+	const bool written = WriteAcpMessage(session, msg);
 	if (!written)
 	{
-		return FailAcpSessionSetupWrite(app, session, chat, "Failed to create " + std::string(RuntimeDisplayName(session)) + " session.");
+		return FailAcpSessionSetupWrite(app, session, chat, "Failed to " + std::string(method.find("load") != std::string::npos || method.find("resume") != std::string::npos ? "load" : "create") + " session.");
 	}
 	return written;
 }
 
 bool RetryGeminiSessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, ChatSession& chat, const AcpInvalidLoadRetryDetails& details)
 {
-	const bool unsupported_session = IsCodexSession(session) || IsGenericAcpSession(session);
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
+	const bool unsupported_session = runtime.IsGenericAcpSession() ||
+	    std::strcmp(runtime.AcpProtocolKind(), "codex-app-server") == 0;
 	const bool is_session_load = details.failure.method == uam::acp_methods::kSessionLoad;
 	const bool invalid_resume_error = GeminiErrorLooksLikeInvalidSessionId(details.failure.message, details.error_data);
 	if (unsupported_session || !is_session_load || session.gemini_resume_fallback_attempted || !invalid_resume_error)
@@ -334,7 +300,7 @@ bool RetryGeminiSessionNewAfterInvalidLoad(AppState& app, AcpSessionState& sessi
 
 bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat)
 {
-	if (!IsGenericAcpSession(session) || !session.running || !session.session_ready || session.startup_model_request_id != 0 || session.session_id.empty())
+	if (!ProviderRuntimeRegistry::ResolveById(session.provider_id).IsGenericAcpSession() || !session.running || !session.session_ready || session.startup_model_request_id != 0 || session.session_id.empty())
 	{
 		return false;
 	}
@@ -378,22 +344,27 @@ bool SendQueuedPromptIfReady(AcpSessionState& session, const ChatSession& chat)
 
 	const std::string prompt = session.queued_prompt;
 	session.lifecycle_state = kAcpLifecycleProcessing;
-	if (IsClaudeSession(session))
+
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
+	const int id = session.next_request_id++;
+	std::string method;
+	nlohmann::json msg = runtime.OnAcpBuildPrompt(session, id, prompt, chat, method);
+
+	if (msg.is_null() || msg.empty())
 	{
-		if (!WriteAcpMessage(session, BuildClaudeInputMessage(prompt)))
-		{
-			CompletePromptTurn(session, kAcpLifecycleError);
-			return true;
-		}
-		session.queued_prompt.clear();
+		CompletePromptTurn(session, kAcpLifecycleError);
 		return true;
 	}
 
-	const int id = NextAcpRequestId(session, IsCodexSession(session) ? uam::acp_methods::kTurnStart : uam::acp_methods::kSessionPrompt);
-	session.prompt_request_id = id;
-	const nlohmann::json request = IsCodexSession(session) ? BuildCodexTurnStartRequest(id, session.session_id, prompt, chat, session.current_model_id) : BuildPromptRequest(id, session.session_id, prompt);
-	if (!WriteAcpMessage(session, request))
+	if (!method.empty())
 	{
+		session.pending_request_methods[id] = method;
+		session.prompt_request_id = id;
+	}
+
+	if (!WriteAcpMessage(session, msg))
+	{
+		session.pending_request_methods.erase(id);
 		session.prompt_request_id = 0;
 		CompletePromptTurn(session, kAcpLifecycleError);
 		return true;

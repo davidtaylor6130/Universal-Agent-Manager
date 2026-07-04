@@ -7,10 +7,7 @@ import type { Goal } from '../../types/goal'
 import type { Provider } from '../../types/provider'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import {
-  isClaudeProvider,
-  isCodexProvider,
-  isCopilotProvider,
-  isOpenCodeProvider,
+  providerCapabilities,
   providerShortName,
 } from '../../utils/providerMetadata'
 import {
@@ -197,11 +194,11 @@ export function ComposerToolbar({
   onAttachFile: () => void
   onOpenMarkdownStore: () => void
 }) {
+  const caps = providerCapabilities(providerId, provider)
   const modelOptions = buildModelOptions(acp, modelId ?? '', provider, providerId)
   const currentModel = modelOptionFor(modelOptions, modelId)
-  const codexProvider = isCodexProvider(provider, providerId)
-  const reasoningOptions = codexProvider ? buildCodexReasoningOptions(acp, currentModel.id, reasoningEffort ?? '') : []
-  const speedOptions = codexProvider ? buildCodexSpeedOptions(acp, currentModel.id, serviceTier ?? '') : []
+  const reasoningOptions = caps.hasReasoningEffort ? buildCodexReasoningOptions(acp, currentModel.id, reasoningEffort ?? '') : []
+  const speedOptions = caps.hasServiceTier ? buildCodexSpeedOptions(acp, currentModel.id, serviceTier ?? '') : []
   const currentReasoning = modelOptionFor(reasoningOptions, reasoningEffort)
   const currentSpeed = modelOptionFor(speedOptions, serviceTier)
   const providerOptions = providers.length > 0 ? providers : [provider]
@@ -209,16 +206,15 @@ export function ComposerToolbar({
   const planActive = approvalModeId === 'plan'
   const acceptEditsActive = approvalModeId === 'acceptEdits'
   const yoloActive = autoApproveCommands
-  const claudeProvider = isClaudeProvider(provider, providerId)
   const hasRuntimeModes = Boolean(acp?.running && acp.availableModes.length > 0)
   const planAvailable = !hasRuntimeModes || acp?.availableModes.some((mode) => mode.id === 'plan')
-  const acceptEditsAvailable = claudeProvider && (!hasRuntimeModes || acp?.availableModes.some((mode) => mode.id === 'acceptEdits'))
+  const acceptEditsAvailable = caps.hasAcceptEditsMode && (!hasRuntimeModes || acp?.availableModes.some((mode) => mode.id === 'acceptEdits'))
   const yoloAvailable = true
   const planDisabled = Boolean(modelDisabled || !planAvailable)
   const acceptEditsDisabled = Boolean(modelDisabled || !acceptEditsAvailable)
   const yoloDisabled = false
   const memoryDisabled = Boolean(modelDisabled)
-  const autoLabel = claudeProvider ? 'Auto' : 'Yolo'
+  const autoLabel = caps.autoLabel
   const modeLabel = planActive ? 'Plan' : acceptEditsActive ? 'Accept Edits' : 'Default'
   const running = Boolean(acp?.processing)
   const chipStyle = {
@@ -361,7 +357,7 @@ export function ComposerToolbar({
           </div>
         )}
       </div>
-      {codexProvider && (
+      {caps.hasReasoningEffort && (
         <div ref={reasoningMenuRef} className="relative">
           <button
             type="button"
@@ -420,7 +416,7 @@ export function ComposerToolbar({
           )}
         </div>
       )}
-      {codexProvider && (
+      {caps.hasServiceTier && (
         <div ref={speedMenuRef} className="relative">
           <button
             type="button"
@@ -497,7 +493,7 @@ export function ComposerToolbar({
         <span style={{ color: planActive ? 'var(--accent)' : 'var(--text-3)', fontSize: 10 }}>●</span>
         <span>Plan</span>
       </button>
-      {claudeProvider && (
+      {caps.hasAcceptEditsMode && (
         <button
           type="button"
           title={acceptEditsAvailable ? 'Toggle Accept Edits mode. Claude can edit workspace files without prompting.' : 'Accept Edits mode unavailable'}
@@ -514,7 +510,7 @@ export function ComposerToolbar({
           }}
         >
           <span style={{ color: acceptEditsActive ? 'var(--green)' : 'var(--text-3)', fontSize: 10 }}>●</span>
-          <span>Accept Edits</span>
+          <span>{caps.acceptEditsLabel ?? 'Accept Edits'}</span>
         </button>
       )}
       <button
@@ -628,13 +624,13 @@ export function ComposerToolbar({
                   <span style={{ color: 'var(--text-3)' }}>Model</span>
                   <span>{currentModel.label}</span>
                 </div>
-                {codexProvider && (
+                {caps.hasReasoningEffort && (
                   <div className="flex justify-between gap-3">
                     <span style={{ color: 'var(--text-3)' }}>Reasoning</span>
                     <span>{currentReasoning.label}</span>
                   </div>
                 )}
-                {codexProvider && (
+                {caps.hasServiceTier && (
                   <div className="flex justify-between gap-3">
                     <span style={{ color: 'var(--text-3)' }}>Speed</span>
                     <span>{currentSpeed.label}</span>

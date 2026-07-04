@@ -43,8 +43,8 @@ import type { GoalStatus } from '../../types/goal'
 import { normalizeStoredTheme } from '../../utils/themeStorage'
 import {
   DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID,
-  CODEX_CLI_PROVIDER_ID,
   normalizeCliProviderIdAlias,
+  providerCapabilities,
 } from '../../utils/providerMetadata'
 
 // ---------------------------------------------------------------------------
@@ -1036,8 +1036,11 @@ export function providerChatDefaultsForNewChat(
   if (!saved) {
     defaults.memoryEnabled = state.memoryEnabledDefault
   }
-  if (providerId !== CODEX_CLI_PROVIDER_ID) {
+  const caps = providerCapabilities(providerId)
+  if (!caps.hasReasoningEffort) {
     defaults.reasoningEffort = ''
+  }
+  if (!caps.hasServiceTier) {
     defaults.serviceTier = ''
   }
   return defaults

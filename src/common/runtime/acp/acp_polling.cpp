@@ -9,6 +9,8 @@
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/string_utils.h"
 
+#include <cstring>
+
 #include <array>
 #include <sstream>
 #include <string>
@@ -38,58 +40,62 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 		return true;
 	}
 
-	if (IsClaudeSession(session))
 	{
-		try
-		{
-			HandleClaudeMessage(app, session, chat, message, browser);
-		}
-		catch (const std::exception& ex)
-		{
-			const std::string error_message = std::string("Claude stream-json message handling failed: ") + ex.what();
-			AppendAcpDiagnostic(session, "parse", "claude_message_parse_error", "", "", false, 0, error_message, CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
-			FailAcpTurnOrSession(session, error_message);
-			MarkAcpChatUnseenIfBackground(app, chat);
-		}
-		return true;
-	}
-
-	if (uam::nlohmann_json::FindField(message, "method") != nullptr)
-	{
-		const std::string method = JsonDiagnosticStringValue(message, "method");
-		if (IsCodexSession(session))
+		const IProviderRuntime& poll_runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
+		const char* protocol_kind = poll_runtime.AcpProtocolKind();
+		if (std::strcmp(protocol_kind, "claude-code-stream-json") == 0)
 		{
 			try
 			{
-				HandleCodexMessage(app, session, chat, message, browser);
+				HandleClaudeMessage(app, session, chat, message, browser);
 			}
 			catch (const std::exception& ex)
 			{
-				const std::string error_message = std::string("Codex app-server message handling failed: ") + ex.what();
-				AppendAcpDiagnostic(session, "parse", "codex_message_parse_error", method, "", false, 0, error_message, CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
+				const std::string error_message = std::string("Claude stream-json message handling failed: ") + ex.what();
+				AppendAcpDiagnostic(session, "parse", "claude_message_parse_error", "", "", false, 0, error_message, CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
 				FailAcpTurnOrSession(session, error_message);
 				MarkAcpChatUnseenIfBackground(app, chat);
 			}
+			return true;
 		}
-		else if (method == uam::acp_methods::kSessionUpdate)
-		{
-			HandleSessionUpdate(app, session, chat, JsonObjectValue(message, "params"), browser);
-		}
-		else
-		{
-			HandleAcpRequest(app, session, chat, message);
-		}
-		return true;
-	}
 
-	if (uam::nlohmann_json::FindField(message, "id") != nullptr)
-	{
-		HandleAcpResponse(app, session, chat, message);
-		return true;
-	}
+		if (uam::nlohmann_json::FindField(message, "method") != nullptr)
+		{
+			const std::string method = JsonDiagnosticStringValue(message, "method");
+			if (std::strcmp(protocol_kind, "codex-app-server") == 0)
+			{
+				try
+				{
+					HandleCodexMessage(app, session, chat, message, browser);
+				}
+				catch (const std::exception& ex)
+				{
+					const std::string error_message = std::string("Codex app-server message handling failed: ") + ex.what();
+					AppendAcpDiagnostic(session, "parse", "codex_message_parse_error", method, "", false, 0, error_message, CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
+					FailAcpTurnOrSession(session, error_message);
+					MarkAcpChatUnseenIfBackground(app, chat);
+				}
+			}
+			else if (method == uam::acp_methods::kSessionUpdate)
+			{
+				HandleSessionUpdate(app, session, chat, JsonObjectValue(message, "params"), browser);
+			}
+			else
+			{
+				HandleAcpRequest(app, session, chat, message);
+			}
+			return true;
+		}
 
-	AppendAcpDiagnostic(session, "message", "ignored_without_method_or_id", "", "", false, 0, "", CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
-	return false;
+		if (uam::nlohmann_json::FindField(message, "id") != nullptr)
+		{
+			HandleAcpResponse(app, session, chat, message);
+			return true;
+		}
+
+		AppendAcpDiagnostic(session, "message", "ignored_without_method_or_id", "", "", false, 0, "", CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
+		return false;
+	}
 }
 
 bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, CefRefPtr<CefBrowser> browser)

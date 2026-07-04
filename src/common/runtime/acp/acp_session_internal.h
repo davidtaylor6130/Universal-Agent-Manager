@@ -33,13 +33,7 @@ struct AcpFailureDetails
 	bool has_detail = false;
 };
 
-// Session-type predicates
-bool AcpSessionMatchesProvider(const AcpSessionState& session, std::string_view protocol_kind, std::string_view canonical_provider_id);
-bool IsCodexSession(const AcpSessionState& session);
-bool IsClaudeSession(const AcpSessionState& session);
-bool IsOpenCodeSession(const AcpSessionState& session);
-bool IsCopilotSession(const AcpSessionState& session);
-bool IsGenericAcpSession(const AcpSessionState& session);
+
 const char* RuntimeDisplayName(const AcpSessionState& session);
 std::string MessageProviderId(const AcpSessionState& session);
 std::string AcpTimestampNow();
@@ -74,7 +68,7 @@ void AppendAcpDiagnostic(
     const std::string& detail = "");
 // clang-format on
 const char* InvalidResumeProviderLabel(const AcpSessionState& session);
-const char* InvalidResumeDiagnosticReason(const AcpSessionState& session);
+std::string InvalidResumeDiagnosticReason(const AcpSessionState& session);
 void AppendInvalidResumeDiagnostic(AcpSessionState& session, const std::string& raw_resume_id);
 bool MarkAcpRuntimeActivity(AcpSessionState& session, double now_seconds = GetAppTimeSeconds());
 

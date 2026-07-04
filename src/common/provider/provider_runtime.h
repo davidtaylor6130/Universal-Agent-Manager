@@ -3,12 +3,20 @@
 #include "common/models/app_models.h"
 #include "common/provider/provider_profile.h"
 
+#include <nlohmann/json.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
+
+namespace uam
+{
+struct AcpSessionState;
+struct AppState;
+} // namespace uam
 
 /// <summary>
 /// Runtime history load policy options.
@@ -151,6 +159,67 @@ class IProviderRuntime
 		(void)tool_name;
 		return false;
 	}
+
+	// == ACP Session Strategy ==
+
+	/// <summary>ACP protocol variant for message routing.</summary>
+	virtual const char* AcpProtocolKind() const { return ""; }
+
+	/// <summary>Display name for this provider in ACP mode.</summary>
+	virtual const char* GetAcpDisplayName() const { return RuntimeId(); }
+
+	/// <summary>
+	/// Build the initialize request. May set session fields if skipping wire (Claude).
+	/// Returns empty to skip wire initialize.
+	/// </summary>
+	virtual nlohmann::json OnAcpBuildInitialize(uam::AcpSessionState& session, int request_id) const;
+
+	/// <summary>Called after initialize response received.</summary>
+	virtual void OnAcpInitializeResult(uam::AcpSessionState& session, const nlohmann::json& result) const;
+
+	/// <summary>
+	/// Build the session setup request and return the method name via out_method.
+	/// chat has resolved native_session_id. can_load indicates session load is supported.
+	/// </summary>
+	virtual nlohmann::json OnAcpBuildSetupRequest(int request_id, const ChatSession& chat,
+	    const std::string& cwd, bool can_load, std::string& out_method) const;
+
+	/// <summary>Validates a resume ID for this provider. Returns valid id or empty.</summary>
+	virtual std::string OnAcpValidateResumeId(const ChatSession& chat) const;
+
+	/// <summary>Build the prompt request and return the method name via out_method.</summary>
+	virtual nlohmann::json OnAcpBuildPrompt(uam::AcpSessionState& session, int request_id,
+	    const std::string& prompt, const ChatSession& chat, std::string& out_method) const;
+
+	/// <summary>True when prompt can be sent without session_id (Claude stream-json).</summary>
+	virtual bool OnAcpCanSendPromptWithoutSessionId() const { return false; }
+
+	/// <summary>
+	/// Build cancel message and return method name via out_method (empty for notifications).
+	/// Returns null/empty to skip cancel.
+	/// </summary>
+	virtual nlohmann::json OnAcpBuildCancel(const uam::AcpSessionState& session,
+	    int request_id, std::string& out_method) const;
+
+	/// <summary>Set mode locally. Return true if handled locally (no wire call).</summary>
+	virtual bool OnAcpSetModeLocally(uam::AcpSessionState& session, const std::string& mode_id) const;
+
+	/// <summary>Set model locally. Return true if handled locally (no wire call).</summary>
+	virtual bool OnAcpSetModelLocally(uam::AcpSessionState& session, const std::string& model_id) const;
+
+	/// <summary>Build permission response.</summary>
+	virtual nlohmann::json OnAcpBuildPermissionResponse(const uam::AcpSessionState& session,
+	    const std::string& option_id, bool cancelled) const;
+
+	/// <summary>Try to auto-approve pending permission. Return true if approved.</summary>
+	virtual bool OnAcpTryAutoApprove(uam::AcpSessionState& session, const ChatSession& chat,
+	    std::string* error_out) const;
+
+	/// <summary>Map approval mode ID for this provider.</summary>
+	virtual std::string OnAcpMapApprovalModeId(const std::string& mode_id) const;
+
+	/// <summary>True when this is a generic ACP provider (OpenCode, Copilot).</summary>
+	virtual bool IsGenericAcpSession() const { return false; }
 };
 
 /// <summary>

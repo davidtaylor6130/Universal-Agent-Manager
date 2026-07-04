@@ -3,6 +3,7 @@
 #include "common/config/approval_modes.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
+#include "common/runtime/acp/acp_session_internal.h"
 #include "common/utils/string_utils.h"
 
 #include <string_view>
@@ -86,6 +87,20 @@ std::vector<std::string> CopilotCliProviderRuntime::BuildWorkerArgv(const Provid
 std::vector<std::string> CopilotCliProviderRuntime::BuildStructuredLaunchArgv(const ProviderProfile&, const ChatSession&) const
 {
 	return {"copilot", "--acp", "--stdio"};
+}
+
+std::string CopilotCliProviderRuntime::OnAcpValidateResumeId(const ChatSession& chat) const
+{
+	return uam::acp_detail::ValidGenericAcpResumeId(chat);
+}
+
+std::string CopilotCliProviderRuntime::OnAcpMapApprovalModeId(const std::string& mode_id) const
+{
+	if (mode_id == uam::approval_modes::kAcceptEditsApprovalMode)
+	{
+		return uam::approval_modes::kDefaultApprovalMode;
+	}
+	return mode_id;
 }
 
 const IProviderRuntime& GetCopilotCliProviderRuntime()

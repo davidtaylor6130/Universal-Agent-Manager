@@ -4,12 +4,12 @@
 import type { AcpBinding, AcpModel } from '../../store/useAppStore'
 import type { Provider } from '../../types/provider'
 import {
-  isClaudeProvider,
-  isCodexProvider,
-  isCopilotProvider,
-  isOpenCodeProvider,
+  providerCapabilities,
   providerRuntimeKindLabel,
   providerShortName,
+  GEMINI_DEFAULT_MODEL_LABELS,
+  CODEX_REASONING_LABELS,
+  CODEX_SPEED_LABELS,
 } from '../../utils/providerMetadata'
 
 export interface ModelOption {
@@ -19,39 +19,7 @@ export interface ModelOption {
   detail: string
 }
 
-export const GEMINI_FALLBACK_ACP_MODEL_OPTIONS: ModelOption[] = [
-  { id: '', label: 'CLI default', shortLabel: 'CLI default', detail: 'Use Gemini CLI settings' },
-  { id: 'auto-gemini-3', label: 'Auto 3', shortLabel: 'Auto 3', detail: 'Gemini 3 routing' },
-  { id: 'auto-gemini-2.5', label: 'Auto 2.5', shortLabel: 'Auto 2.5', detail: 'Gemini 2.5 routing' },
-  { id: 'pro', label: 'Pro', shortLabel: 'Pro', detail: 'Prioritize capability' },
-  { id: 'flash', label: 'Flash', shortLabel: 'Flash', detail: 'Prioritize speed' },
-  { id: 'flash-lite', label: 'Flash Lite', shortLabel: 'Flash Lite', detail: 'Fastest option' },
-]
-
-export const FRIENDLY_MODEL_LABELS: Record<string, Pick<ModelOption, 'label' | 'shortLabel' | 'detail'>> = {
-  '': { label: 'CLI default', shortLabel: 'CLI default', detail: 'Use Gemini CLI settings' },
-  'auto-gemini-3': { label: 'Auto 3', shortLabel: 'Auto 3', detail: 'Gemini 3 routing' },
-  'auto-gemini-2.5': { label: 'Auto 2.5', shortLabel: 'Auto 2.5', detail: 'Gemini 2.5 routing' },
-  pro: { label: 'Pro', shortLabel: 'Pro', detail: 'Prioritize capability' },
-  flash: { label: 'Flash', shortLabel: 'Flash', detail: 'Prioritize speed' },
-  'flash-lite': { label: 'Flash Lite', shortLabel: 'Flash Lite', detail: 'Fastest option' },
-}
-
-export const CODEX_REASONING_LABELS: Record<string, Pick<ModelOption, 'label' | 'shortLabel' | 'detail'>> = {
-  '': { label: 'CLI default', shortLabel: 'Default', detail: 'Use Codex default reasoning' },
-  none: { label: 'None', shortLabel: 'None', detail: 'No extra reasoning' },
-  minimal: { label: 'Minimal', shortLabel: 'Minimal', detail: 'Fastest reasoning' },
-  low: { label: 'Low', shortLabel: 'Low', detail: 'Faster responses' },
-  medium: { label: 'Medium', shortLabel: 'Medium', detail: 'Balanced reasoning' },
-  high: { label: 'High', shortLabel: 'High', detail: 'Deeper reasoning' },
-  xhigh: { label: 'XHigh', shortLabel: 'XHigh', detail: 'Maximum reasoning' },
-}
-
-export const CODEX_SPEED_LABELS: Record<string, Pick<ModelOption, 'label' | 'shortLabel' | 'detail'>> = {
-  '': { label: 'CLI default', shortLabel: 'Default', detail: 'Use Codex default speed' },
-  fast: { label: 'Fast', shortLabel: 'Fast', detail: 'Prioritize latency' },
-  flex: { label: 'Flex', shortLabel: 'Flex', detail: 'Use flexible service tier' },
-}
+export const FRIENDLY_MODEL_LABELS = GEMINI_DEFAULT_MODEL_LABELS
 
 export function providerRuntimeLabel(provider?: Provider, acp?: AcpBinding) {
   return providerRuntimeKindLabel(provider, acp?.protocolKind)
@@ -105,24 +73,20 @@ export function buildModelOptions(
   providerId: string
 ): ModelOption[] {
   const providerName = providerShortName(provider, providerId)
-  const codexProvider = isCodexProvider(provider, providerId)
-  const claudeProvider = isClaudeProvider(provider, providerId)
-  const copilotProvider = isCopilotProvider(provider, providerId)
-  const openCodeProvider = isOpenCodeProvider(provider, providerId)
+  const caps = providerCapabilities(providerId, provider)
   const runtimeOptions = (acp?.availableModels ?? []).flatMap((model) => {
-    const option = modelOptionFromRuntime(model, !codexProvider && !claudeProvider && !copilotProvider && !openCodeProvider)
+    const option = modelOptionFromRuntime(model, caps.usesFriendlyModelLabels)
     return option ? [option] : []
   })
   const defaultOption = providerDefaultModelOption(providerName)
-  const fallbackOptions = codexProvider
-    ? [defaultOption]
-    : claudeProvider
-      ? [defaultOption, { id: 'sonnet', label: 'Sonnet', shortLabel: 'Sonnet', detail: 'Latest Sonnet alias' }, { id: 'opus', label: 'Opus', shortLabel: 'Opus', detail: 'Latest Opus alias' }]
-      : copilotProvider
-        ? [defaultOption]
-        : openCodeProvider
-          ? [defaultOption]
-    : [defaultOption, ...GEMINI_FALLBACK_ACP_MODEL_OPTIONS.slice(1)]
+  const fallbackOptions = caps.usesFriendlyModelLabels
+    ? [defaultOption,
+      { id: 'auto-gemini-3', label: 'Auto 3', shortLabel: 'Auto 3', detail: 'Gemini 3 routing' },
+      { id: 'auto-gemini-2.5', label: 'Auto 2.5', shortLabel: 'Auto 2.5', detail: 'Gemini 2.5 routing' },
+      { id: 'pro', label: 'Pro', shortLabel: 'Pro', detail: 'Prioritize capability' },
+      { id: 'flash', label: 'Flash', shortLabel: 'Flash', detail: 'Prioritize speed' },
+      { id: 'flash-lite', label: 'Flash Lite', shortLabel: 'Flash Lite', detail: 'Fastest option' }]
+    : [defaultOption]
   const baseOptions = runtimeOptions.length > 0
     ? [defaultOption, ...runtimeOptions]
     : fallbackOptions
@@ -136,7 +100,7 @@ export function buildModelOptions(
   }
 
   if (selectedModelId && !seen.has(selectedModelId)) {
-    const friendly = codexProvider || openCodeProvider ? undefined : FRIENDLY_MODEL_LABELS[selectedModelId]
+    const friendly = caps.usesFriendlyModelLabels ? FRIENDLY_MODEL_LABELS[selectedModelId] : undefined
     options.push(
       friendly
         ? { id: selectedModelId, ...friendly }

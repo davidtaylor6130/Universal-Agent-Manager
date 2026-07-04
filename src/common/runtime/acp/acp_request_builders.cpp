@@ -152,7 +152,7 @@ bool AcpSessionCanSendQueuedPrompt(const AcpSessionState& session)
 		return false;
 	}
 
-	return IsClaudeSession(session) || !session.session_id.empty();
+	return ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpCanSendPromptWithoutSessionId() || !session.session_id.empty();
 }
 
 bool GeminiErrorLooksLikeInvalidSessionId(const std::string& error_message, const std::string& error_data)
@@ -269,15 +269,7 @@ std::string AppApprovalModeId(std::string_view mode_id)
 
 std::string ProviderApprovalModeId(const AcpSessionState& session, const std::string& mode_id)
 {
-	if (IsCopilotSession(session) && mode_id == uam::approval_modes::kAcceptEditsApprovalMode)
-	{
-		return uam::approval_modes::kDefaultApprovalMode;
-	}
-	if (!IsCodexSession(session) && !IsClaudeSession(session) && mode_id == uam::approval_modes::kAcceptEditsApprovalMode)
-	{
-		return uam::approval_modes::kProviderAutoEditApprovalMode;
-	}
-	return mode_id;
+	return ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpMapApprovalModeId(mode_id);
 }
 
 } // namespace uam::acp_detail

@@ -13,6 +13,11 @@ class OpenCodeCliProviderRuntime final : public IProviderRuntime
 	std::vector<std::string> BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const override;
 	std::vector<std::string> BuildStructuredLaunchArgv(const ProviderProfile& profile, const ChatSession& chat) const override;
 	bool ProviderRecognizesSubagentTool(std::string_view tool_name) const override;
+
+	const char* AcpProtocolKind() const override { return "opencode-acp"; }
+	const char* GetAcpDisplayName() const override { return "OpenCode ACP"; }
+	bool IsGenericAcpSession() const override { return true; }
+	std::string OnAcpValidateResumeId(const ChatSession& chat) const override;
 };
 
 const IProviderRuntime& GetOpenCodeCliProviderRuntime();
