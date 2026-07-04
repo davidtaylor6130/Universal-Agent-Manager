@@ -30,7 +30,8 @@ Light theme:
 - **Local-first storage** — Chat metadata, settings, folders, theme, window/sidebar state, markdown store, and durable memory are all stored locally as files. No cloud, no telemetry.
 - **Git worktree isolation** — Optional per-chat git worktree create, status, diff, commit, discard, and port workflows.
 - **Workspace folders** — One-level workspace folders drive provider working directories and Gemini history discovery.
-- **Durable memory** — Idle extraction and manual scans write durable memory files, with workspace-local memories under `<workspace>/.codex/memories/`.
+- **Durable memory** — Idle extraction and manual scans write durable memory files, with workspace-local memories under `<workspace>/.codex/memories/`. Memory library supports browsing, scanning, and categorizing lessons and failures.
+- **Goal system** — Plan-driven multi-step goals with auto-resume, loop detection, and stall watchdog.
 - **Concurrent sessions** — Multiple CLI and structured runtime sessions run side by side on macOS and Windows.
 
 Removed or intentionally unsupported surfaces include RAG engines, local model engines, templates, Dear ImGui, Linux builds, and checked-in frontend build output.
@@ -257,6 +258,8 @@ Data root resolution:
 - Terminal runtime: `src/common/runtime/terminal/` plus platform services
 - Local persistence: `src/common/chat`, `src/common/config`
 - Memory services: `src/app/memory_service.cpp`, `src/app/memory_library_service.cpp`
+- Goal system: `src/app/goal_service.cpp`, `src/common/runtime/acp/acp_goal_loop.cpp`
+- Markdown store: `src/app/markdown_store_service.cpp`
 - Workspace isolation: `src/app/git_worktree_service.cpp`
 - VCS commit workflows: `src/app/vcs_commit_service.cpp`
 
@@ -275,8 +278,9 @@ Current bridge capabilities include:
 - Markdown store: browse/set store directory, list entries, create entries, and reveal entries.
 - Memory library: list, create, delete, open roots, reveal entries, list scan candidates, and queue scans.
 - Git/VCS: worktree status/create/discard/port, changed-file status, diffs, commits, and commit message generation.
+- Goal system: list goals, create goals, delete goals, queue goal scans, and manage goal lifecycle.
 - Terminal sessions: start, stop, resize, and write xterm.js CLI input.
-- Structured sessions: stage attachments, send prompts, cancel turns, resolve permission and user-input requests, and stop ACP sessions.
+- Structured sessions: stage attachments, send prompts, cancel turns, resolve permission and user-input requests, stop ACP sessions, and manage goal loop lifecycle.
 
 ## Project Goals
 
@@ -308,11 +312,12 @@ Current bridge capabilities include:
 
 ## Known Issues & Status
 
-This is an actively developed project; the latest stable line is published as release `v2.0.2`. Tracked gaps live in [GitHub Issues](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues). Current focus areas:
+This is an actively developed project; the latest stable line is published as release `v2.1.3`. Tracked gaps live in [GitHub Issues](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues). Current focus areas:
 
 - Windows feature parity is behind macOS (CLI fallback and native history are in active development — see the Support Matrix).
-- The in-app goal loop ("ralph loop") has several open reliability issues around continuation, failure surfacing, and stop conditions ([#1](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/1)–[#6](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/6)).
-- The polished "Interactive" view is planned but not yet implemented.
+- The in-app goal loop has been significantly improved (stall watchdog, loop detection, keep-awake) but edge cases remain around continuation, failure surfacing, and stop conditions.
+- The polished "Interactive" view (CLI power with chat-bubble overlay) is planned but not yet implemented.
+- Monolith decomposition of the ACP session runtime and frontend Zustand store is ongoing.
 
 ## License
 
