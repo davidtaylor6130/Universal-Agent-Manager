@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
-project(universal_agent_manager LANGUAGES C CXX)
+project(universal_agent_manager VERSION 2.1.1 LANGUAGES C CXX)
 
 if(NOT WIN32 AND NOT APPLE)
   message(FATAL_ERROR "universal_agent_manager supports only Windows and macOS builds.")
@@ -320,6 +320,12 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   ${UAM_PROVIDER_SOURCES}
   src/common/runtime/provider_cli_compatibility_service.cpp
   src/common/platform/platform_services.cpp
+)
+
+set_target_properties(universal_agent_manager PROPERTIES
+  CXX_STANDARD 20
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF
 )
 
 target_include_directories(universal_agent_manager
@@ -794,6 +800,12 @@ if(UAM_BUILD_TESTS)
     src/common/config/settings_store.cpp
     src/common/platform/platform_services.cpp
   )
+  set_target_properties(uam_core_tests PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+  )
+
   target_include_directories(uam_core_tests
     PRIVATE
       src
