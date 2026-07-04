@@ -100,7 +100,7 @@ class GoalService
 	/// Returns empty string if no active goal or no objective.
 	/// </summary>
 	static std::string BuildContinuationPrompt(const Goal& goal, int64_t tokens_used, int64_t token_budget);
-	static std::string BuildReviewPrompt(const Goal& goal, const std::string& recent_user_prompt, const std::string& recent_assistant_text);
+	static std::string BuildReviewPrompt(const Goal& goal, const std::string& recent_user_prompt, const std::string& recent_assistant_text, int repeated_output_count = 0);
 	static std::optional<ReviewDecision> ParseReviewDecision(const std::string& text);
 
 	/// <summary>

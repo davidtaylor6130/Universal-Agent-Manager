@@ -151,8 +151,8 @@ void ScheduleGoalReviewAfterSuccessfulTurn(AppState& app, AcpSessionState& sessi
 	}
 
 	// Local models can degenerate into emitting the same output every turn.
-	// Three identical back-to-back worker outputs end the loop visibly
-	// instead of burning the review/continue cycle forever.
+	// Three identical back-to-back worker outputs make the reviewer loop-aware
+	// so it changes approach or reports blocked, instead of continuing blindly.
 	const std::string worker_text = uam::strings::Trim(recent_assistant_text);
 	if (worker_text == active_goal->last_assistant_text)
 	{
@@ -165,16 +165,7 @@ void ScheduleGoalReviewAfterSuccessfulTurn(AppState& app, AcpSessionState& sessi
 	}
 	if (active_goal->same_assistant_text_count >= 3)
 	{
-		const std::string goal_id = active_goal->id;
-		GoalService::RecordBlocker(app, goal_id, "Assistant returned identical output for 3 consecutive turns.");
-		(void)GoalService::UpdateGoalStatus(app, goal_id, GoalStatus::Blocked);
-		AppendGoalLoopDiagnostic(session, "goal_blocked_repeated_assistant_output", goal_id, worker_text);
-		SaveChatQuietly(app, chat);
-		if (browser)
-		{
-			uam::PushStateUpdateIfChanged(browser, app);
-		}
-		return;
+		AppendGoalLoopDiagnostic(session, "goal_loop_detected_review_notified", active_goal->id, worker_text);
 	}
 
 	GoalService::RecordTurnCompletion(app, active_goal->id, EstimateGoalTurnTokens(chat, session));
@@ -193,7 +184,7 @@ void ScheduleGoalReviewAfterSuccessfulTurn(AppState& app, AcpSessionState& sessi
 	session.goal_review_goal_id = active_goal->id;
 	session.goal_review_user_prompt = recent_user_prompt;
 	session.goal_review_assistant_text = recent_assistant_text;
-	const std::string review_prompt = GoalService::BuildReviewPrompt(*active_goal, session.goal_review_user_prompt, session.goal_review_assistant_text);
+	const std::string review_prompt = GoalService::BuildReviewPrompt(*active_goal, session.goal_review_user_prompt, session.goal_review_assistant_text, active_goal->same_assistant_text_count);
 	AppendGoalLoopDiagnostic(session, "schedule_review", active_goal->id, recent_assistant_text);
 	if (!QueueGoalInternalPrompt(session, chat, review_prompt, true))
 	{

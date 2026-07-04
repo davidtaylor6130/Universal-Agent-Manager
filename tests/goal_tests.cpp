@@ -398,7 +398,7 @@ UAM_TEST(AcpGoalWorkerTurnSchedulesOneReview)
 	UAM_ASSERT(app.chats.front().goals.front().tokens_used > 0);
 }
 
-UAM_TEST(AcpGoalRepeatedIdenticalWorkerOutputBlocksGoal)
+UAM_TEST(AcpGoalRepeatedIdenticalWorkerOutputMakesReviewLoopAware)
 {
 	TempDir temp("uam-goal-identical-output");
 	uam::AppState app;
@@ -413,7 +413,7 @@ UAM_TEST(AcpGoalRepeatedIdenticalWorkerOutputBlocksGoal)
 	chat.messages.push_back(std::move(user));
 	Goal goal;
 	goal.id = "goal-1";
-	goal.objective = "Stop when the model loops.";
+	goal.objective = "Recover when the model loops.";
 	goal.status = GoalStatus::Active;
 	chat.active_goal_id = goal.id;
 	chat.goals.push_back(goal);
@@ -440,10 +440,13 @@ UAM_TEST(AcpGoalRepeatedIdenticalWorkerOutputBlocksGoal)
 		UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), result_line));
 
 		UAM_ASSERT_EQ(app.chats.front().goals.front().same_assistant_text_count, turn);
+		UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+		UAM_ASSERT(raw_session->goal_review_scheduled);
+		// Reviews before the third identical turn carry no loop notice.
+		UAM_ASSERT_EQ(raw_session->queued_prompt.find("loopDetection") != std::string::npos, turn >= 3);
+
 		if (turn < 3)
 		{
-			UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
-			UAM_ASSERT(raw_session->goal_review_scheduled);
 			// Mimic the review turn concluding so the next worker turn can run.
 			raw_session->goal_review_scheduled = false;
 			raw_session->goal_review_turn = false;
@@ -454,10 +457,9 @@ UAM_TEST(AcpGoalRepeatedIdenticalWorkerOutputBlocksGoal)
 		}
 	}
 
-	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Blocked);
-	UAM_ASSERT(app.chats.front().active_goal_id.empty());
-	UAM_ASSERT(!raw_session->goal_review_scheduled);
-	UAM_ASSERT_EQ(app.chats.front().goals.front().last_blocker, std::string("Assistant returned identical output for 3 consecutive turns."));
+	UAM_ASSERT(raw_session->queued_prompt.find("identical output for 3 consecutive turns") != std::string::npos);
+	UAM_ASSERT(raw_session->queued_prompt.find("materially different approach") != std::string::npos);
+	UAM_ASSERT_EQ(app.chats.front().active_goal_id, std::string("goal-1"));
 }
 
 UAM_TEST(AcpGoalWatchdogResumesStalledLoopAndBlocksAfterRepeatedResumes)
