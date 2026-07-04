@@ -11,6 +11,7 @@ import {
   buildProviderCliInstallCommand,
   fallbackProviderForId,
   normalizeCliProviderIdAlias,
+  providerCapabilities,
 } from '../../utils/providerMetadata'
 import {
   ACP_APPROVAL_MODE_IDS,
@@ -721,8 +722,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               ...s,
               providerId: requestedProviderId,
               modelId: defaults.modelId,
-              reasoningEffort: requestedProviderId === CODEX_CLI_PROVIDER_ID ? defaults.reasoningEffort : '',
-              serviceTier: requestedProviderId === CODEX_CLI_PROVIDER_ID ? defaults.serviceTier : '',
+              reasoningEffort: providerCapabilities(requestedProviderId).hasReasoningEffort ? defaults.reasoningEffort : '',
+              serviceTier: providerCapabilities(requestedProviderId).hasServiceTier ? defaults.serviceTier : '',
               approvalMode: defaults.approvalMode,
               autoApproveCommands: defaults.autoApproveCommands,
               memoryEnabled: defaults.memoryEnabled,
@@ -1121,8 +1122,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       }
       for (const [providerId, defaults] of Object.entries(nextDefaults)) {
         const sanitized = sanitizeProviderChatDefaults(defaults)
-        if (providerId !== CODEX_CLI_PROVIDER_ID) {
+        const caps = providerCapabilities(providerId)
+        if (!caps.hasReasoningEffort) {
           sanitized.reasoningEffort = ''
+        }
+        if (!caps.hasServiceTier) {
           sanitized.serviceTier = ''
         }
         nextDefaults[providerId] = sanitized

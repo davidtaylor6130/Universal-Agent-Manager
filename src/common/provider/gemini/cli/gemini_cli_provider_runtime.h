@@ -5,6 +5,8 @@
 class GeminiCliProviderRuntime final : public IProviderRuntime
 {
   public:
+	const char* AcpProtocolKind() const override { return "gemini-acp"; }
+	const char* GetAcpDisplayName() const override { return "Gemini ACP"; }
 	const char* RuntimeId() const override;
 	std::vector<std::string> BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const override;
 	MessageRole RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const override;

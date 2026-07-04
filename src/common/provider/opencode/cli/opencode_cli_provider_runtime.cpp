@@ -2,6 +2,7 @@
 
 #include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
+#include "common/runtime/acp/acp_session_internal.h"
 
 namespace
 {
@@ -98,6 +99,11 @@ std::vector<std::string> OpenCodeCliProviderRuntime::BuildWorkerArgv(const Provi
 std::vector<std::string> OpenCodeCliProviderRuntime::BuildStructuredLaunchArgv(const ProviderProfile&, const ChatSession&) const
 {
 	return {"opencode", "acp"};
+}
+
+std::string OpenCodeCliProviderRuntime::OnAcpValidateResumeId(const ChatSession& chat) const
+{
+	return uam::acp_detail::ValidGenericAcpResumeId(chat);
 }
 
 const IProviderRuntime& GetOpenCodeCliProviderRuntime()

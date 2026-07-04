@@ -73,6 +73,7 @@ UAM_TEST(AcpPromptCompletionClearsProcessingByMethodAndPromptId)
 
 	auto session = std::make_unique<uam::AcpSessionState>();
 	session->chat_id = "chat-1";
+	session->provider_id = "gemini-cli";
 	session->processing = true;
 	session->waiting_for_permission = true;
 	session->prompt_request_id = 42;
@@ -138,6 +139,7 @@ UAM_TEST(AcpJsonRpcErrorsIncludeRequestDiagnostics)
 
 	auto session = std::make_unique<uam::AcpSessionState>();
 	session->chat_id = "chat-1";
+	session->provider_id = "gemini-cli";
 	session->running = true;
 	session->processing = true;
 	session->session_ready = true;
@@ -592,6 +594,7 @@ UAM_TEST(AcpMissingSessionIdRecordsDiagnostics)
 
 	auto session = std::make_unique<uam::AcpSessionState>();
 	session->chat_id = "chat-1";
+	session->provider_id = "gemini-cli";
 	session->running = true;
 	session->initialized = true;
 	session->session_setup_request_id = 8;

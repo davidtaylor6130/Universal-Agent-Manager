@@ -16,12 +16,9 @@ import type { Provider } from '../../types/provider'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
 import {
-  CODEX_CLI_PROVIDER_ID,
-  CLAUDE_CLI_PROVIDER_ID,
-  COPILOT_CLI_PROVIDER_ID,
   DEFAULT_PROVIDER_ID,
+  providerCapabilities,
   providerShortName,
-  providerUsesProtocol,
 } from '../../utils/providerMetadata'
 
 interface MemoryModelOption {
@@ -29,37 +26,6 @@ interface MemoryModelOption {
   label: string
   detail: string
 }
-
-const GEMINI_MEMORY_MODELS: MemoryModelOption[] = [
-  { id: '', label: 'CLI default', detail: 'Use Gemini CLI settings' },
-  { id: 'auto-gemini-3', label: 'Auto 3', detail: 'Gemini 3 routing' },
-  { id: 'auto-gemini-2.5', label: 'Auto 2.5', detail: 'Gemini 2.5 routing' },
-  { id: 'pro', label: 'Pro', detail: 'Prioritize capability' },
-  { id: 'flash', label: 'Flash', detail: 'Prioritize speed' },
-  { id: 'flash-lite', label: 'Flash Lite', detail: 'Fastest option' },
-]
-
-const CODEX_MEMORY_MODELS: MemoryModelOption[] = [
-  { id: '', label: 'CLI default', detail: 'Use Codex CLI settings' },
-  { id: 'gpt-5.4', label: 'GPT-5.4', detail: 'Frontier coding model' },
-  { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', detail: 'Smaller fast model' },
-  { id: 'gpt-5.2', label: 'GPT-5.2', detail: 'Balanced coding model' },
-]
-
-const CODEX_REASONING_OPTIONS: MemoryModelOption[] = [
-  { id: '', label: 'CLI default', detail: 'Use Codex default reasoning' },
-  { id: 'minimal', label: 'Minimal', detail: 'Fastest reasoning' },
-  { id: 'low', label: 'Low', detail: 'Faster responses' },
-  { id: 'medium', label: 'Medium', detail: 'Balanced reasoning' },
-  { id: 'high', label: 'High', detail: 'Deeper reasoning' },
-  { id: 'xhigh', label: 'XHigh', detail: 'Maximum reasoning' },
-]
-
-const CODEX_SPEED_OPTIONS: MemoryModelOption[] = [
-  { id: '', label: 'CLI default', detail: 'Use Codex default speed' },
-  { id: 'fast', label: 'Fast', detail: 'Prioritize latency' },
-  { id: 'flex', label: 'Flex', detail: 'Use flexible service tier' },
-]
 
 function providerDisplayName(provider?: Provider, fallbackId = '') {
   return providerShortName(provider, fallbackId)
@@ -74,32 +40,13 @@ function titleFromModelId(modelId: string) {
     .join(' ') || modelId
 }
 
-function isCodexProvider(provider?: Provider, providerId = '') {
-  return providerUsesProtocol(provider, providerId, CODEX_CLI_PROVIDER_ID)
-}
-
-function isClaudeProvider(provider?: Provider, providerId = '') {
-  return providerUsesProtocol(provider, providerId, CLAUDE_CLI_PROVIDER_ID)
-}
-
-function isCopilotProvider(provider?: Provider, providerId = '') {
-  return providerUsesProtocol(provider, providerId, COPILOT_CLI_PROVIDER_ID)
-}
-
 function memoryModelOptions(provider?: Provider, providerId = '', selectedModelId = '') {
-  const baseOptions = isCodexProvider(provider, providerId)
-    ? CODEX_MEMORY_MODELS
-    : isClaudeProvider(provider, providerId)
-      ? [
-          { id: '', label: 'CLI default', detail: 'Use Claude Code settings' },
-          { id: 'sonnet', label: 'Sonnet', detail: 'Latest Sonnet alias' },
-          { id: 'opus', label: 'Opus', detail: 'Latest Opus alias' },
-        ]
-      : isCopilotProvider(provider, providerId)
-        ? [
-            { id: '', label: 'CLI default', detail: 'Use GitHub Copilot CLI settings' },
-          ]
-      : GEMINI_MEMORY_MODELS
+  const caps = providerCapabilities(providerId, provider)
+  const baseOptions = caps.memoryModelIds.map((id) => ({
+    id,
+    label: caps.memoryModelLabels[id]?.label ?? titleFromModelId(id),
+    detail: caps.memoryModelLabels[id]?.detail ?? id,
+  }))
   if (!selectedModelId || baseOptions.some((option) => option.id === selectedModelId)) return baseOptions
   return [
     ...baseOptions,
@@ -723,13 +670,13 @@ export function SettingsModal() {
                 {providers.map((provider) => {
                   const defaults = defaultsForProvider(provider)
                   const modelOptions = memoryModelOptions(provider, provider.id, defaults.modelId)
-                  const codexProvider = isCodexProvider(provider, provider.id)
+                  const caps = providerCapabilities(provider.id, provider)
                   const providerName = providerDisplayName(provider, provider.id)
                   const expanded = expandedDefaultProviders[provider.id] ?? false
                   const modeOptions = [
                     { id: 'default', label: 'Default', detail: 'Use the provider default mode' },
                     { id: 'plan', label: 'Plan', detail: 'Ask the provider to plan first' },
-                    ...(isClaudeProvider(provider, provider.id) ? [{ id: 'acceptEdits', label: 'Accept Edits', detail: 'Auto-approve workspace file edits' }] : []),
+                    ...(caps.hasAcceptEditsMode ? [{ id: 'acceptEdits', label: 'Accept Edits', detail: 'Auto-approve workspace file edits' }] : []),
                   ]
                   return (
                     <ProviderDisclosureCard
@@ -763,26 +710,26 @@ export function SettingsModal() {
                               (approvalMode) => updateProviderDefaults(provider.id, { ...defaults, approvalMode })
                             )}
                           </div>
-                          {codexProvider && (
+                          {caps.hasReasoningEffort && (
                             <div className="grid gap-1">
                               <div>Reasoning</div>
                               {renderDefaultsMenu(
                                 `${provider.id}:reasoning`,
                                 defaults.reasoningEffort,
                                 `${providerName} default reasoning`,
-                                CODEX_REASONING_OPTIONS,
+                                caps.reasoningOptions,
                                 (reasoningEffort) => updateProviderDefaults(provider.id, { ...defaults, reasoningEffort })
                               )}
                             </div>
                           )}
-                          {codexProvider && (
+                          {caps.hasServiceTier && (
                             <div className="grid gap-1">
                               <div>Speed</div>
                               {renderDefaultsMenu(
                                 `${provider.id}:speed`,
                                 defaults.serviceTier,
                                 `${providerName} default speed`,
-                                CODEX_SPEED_OPTIONS,
+                                caps.speedOptions,
                                 (serviceTier) => updateProviderDefaults(provider.id, { ...defaults, serviceTier })
                               )}
                             </div>
@@ -1516,7 +1463,7 @@ export function SettingsModal() {
             </div>
             <div className="flex justify-between gap-3">
               <span style={{ color: 'var(--text-3)' }}>Version</span>
-              <span style={{ color: 'var(--text)' }}>V2.0.2</span>
+              <span style={{ color: 'var(--text)' }}>V2.1.1</span>
             </div>
           </div>
         </SectionCard>

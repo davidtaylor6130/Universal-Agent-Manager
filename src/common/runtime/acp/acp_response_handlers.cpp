@@ -5,6 +5,8 @@
 #include "common/paths/workspace_root.h"
 #include "common/provider/codex/cli/codex_thread_id.h"
 #include "common/runtime/acp/acp_model_json.h"
+
+#include <cstring>
 #include "common/runtime/acp/acp_protocol_methods.h"
 #include "common/utils/range_utils.h"
 #include "common/utils/string_utils.h"
@@ -150,7 +152,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 	}
 	if (session.prompt_request_id != 0 && id == session.prompt_request_id)
 	{
-		method = IsCodexSession(session) ? uam::acp_methods::kTurnStart : uam::acp_methods::kSessionPrompt;
+		method = std::strcmp(ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpProtocolKind(), "codex-app-server") == 0 ? uam::acp_methods::kTurnStart : uam::acp_methods::kSessionPrompt;
 	}
 
 	if (const nlohmann::json* error_ptr = uam::nlohmann_json::FindField(message, "error"))
@@ -199,7 +201,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		failure.has_detail = !detail_text.empty();
 		const std::string formatted_error = FormatAcpFailureMessage(session, failure);
 		AppendAcpDiagnostic(session, "response", "jsonrpc_error", method, request_id, has_code, code, error_message, detail_text);
-		if (IsCodexSession(session) && method == uam::acp_methods::kThreadResume && has_code && code == -32600 && uam::codex::ErrorLooksLikeInvalidThreadId(error_message) && !session.codex_resume_fallback_attempted)
+		if (std::strcmp(ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpProtocolKind(), "codex-app-server") == 0 && method == uam::acp_methods::kThreadResume && has_code && code == -32600 && uam::codex::ErrorLooksLikeInvalidThreadId(error_message) && !session.codex_resume_fallback_attempted)
 		{
 			session.codex_resume_fallback_attempted = true;
 			session.session_setup_request_id = 0;
@@ -263,7 +265,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		session.initialize_request_id = 0;
 		session.initialized = true;
 		session.lifecycle_state = kAcpLifecycleStarting;
-		if (IsCodexSession(session))
+		if (std::strcmp(ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpProtocolKind(), "codex-app-server") == 0)
 		{
 			session.agent_name = "codex";
 			session.agent_title = "Codex";

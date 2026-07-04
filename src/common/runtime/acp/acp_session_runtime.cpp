@@ -13,6 +13,7 @@
 #include "app/native_session_link_service.h"
 #include "app/provider_resolution_service.h"
 #include "common/chat/chat_repository.h"
+#include <cstring>
 #include "common/config/approval_modes.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
@@ -294,22 +295,28 @@ namespace uam
 		session->pending_assistant_thoughts.clear();
 		session->lifecycle_state = session->session_ready ? kAcpLifecycleReady : kAcpLifecycleStopped;
 
-		if (IsCodexSession(*session) && !session->session_id.empty() && !session->codex_turn_id.empty())
+		if (!session->session_id.empty())
 		{
-			const int id = NextAcpRequestId(*session, uam::acp_methods::kTurnInterrupt);
-			session->cancel_request_id = id;
-			if (!acp_detail::WriteAcpMessage(*session, BuildCodexTurnInterruptRequest(id, session->session_id, session->codex_turn_id), error_out))
+			const IProviderRuntime& cancel_runtime = ProviderRuntimeRegistry::ResolveById(session->provider_id);
+			int cancel_id = session->next_request_id++;
+			std::string cancel_method;
+			nlohmann::json cancel_msg = cancel_runtime.OnAcpBuildCancel(*session, cancel_id, cancel_method);
+			if (!cancel_msg.is_null() && !cancel_msg.empty())
 			{
-				session->pending_request_methods.erase(id);
-				session->cancel_request_id = 0;
-				return false;
-			}
-		}
-		else if (!session->session_id.empty())
-		{
-			if (!acp_detail::WriteAcpMessage(*session, BuildCancelNotification(session->session_id), error_out))
-			{
-				return false;
+				if (!cancel_method.empty())
+				{
+					session->pending_request_methods[cancel_id] = cancel_method;
+					session->cancel_request_id = cancel_id;
+				}
+				if (!acp_detail::WriteAcpMessage(*session, cancel_msg, error_out))
+				{
+					if (!cancel_method.empty())
+					{
+						session->pending_request_methods.erase(cancel_id);
+						session->cancel_request_id = 0;
+					}
+					return false;
+				}
 			}
 		}
 
@@ -374,25 +381,27 @@ namespace uam
 			}
 			return false;
 		}
-		if (IsCodexSession(*session))
 		{
+			const IProviderRuntime& sm_runtime = ProviderRuntimeRegistry::ResolveById(session->provider_id);
+			session->current_mode_id = mode_id;
+			if (sm_runtime.OnAcpSetModeLocally(*session, mode_id))
+			{
+				return true;
+			}
+			if (std::strcmp(sm_runtime.AcpProtocolKind(), "claude-code-stream-json") == 0)
+			{
+				return StopAcpSession(app, chat_id);
+			}
+
+			const int id = NextAcpRequestId(*session, uam::acp_methods::kSessionSetMode);
+			if (!acp_detail::WriteAcpMessage(*session, BuildSetModeRequest(id, session->session_id, ProviderApprovalModeId(*session, mode_id)), error_out))
+			{
+				session->pending_request_methods.erase(id);
+				return false;
+			}
 			session->current_mode_id = mode_id;
 			return true;
 		}
-		if (IsClaudeSession(*session))
-		{
-			session->current_mode_id = mode_id;
-			return StopAcpSession(app, chat_id);
-		}
-
-		const int id = NextAcpRequestId(*session, uam::acp_methods::kSessionSetMode);
-		if (!acp_detail::WriteAcpMessage(*session, BuildSetModeRequest(id, session->session_id, ProviderApprovalModeId(*session, mode_id)), error_out))
-		{
-			session->pending_request_methods.erase(id);
-			return false;
-		}
-		session->current_mode_id = mode_id;
-		return true;
 	}
 
 	bool SetAcpSessionModel(AppState& app, const std::string& chat_id, const std::string& model_id, std::string* error_out)
@@ -418,25 +427,27 @@ namespace uam
 			}
 			return false;
 		}
-		if (IsCodexSession(*session))
 		{
+			const IProviderRuntime& sm_runtime = ProviderRuntimeRegistry::ResolveById(session->provider_id);
+			session->current_model_id = model_id;
+			if (sm_runtime.OnAcpSetModelLocally(*session, model_id))
+			{
+				return true;
+			}
+			if (std::strcmp(sm_runtime.AcpProtocolKind(), "claude-code-stream-json") == 0)
+			{
+				return StopAcpSession(app, chat_id);
+			}
+
+			const int id = NextAcpRequestId(*session, uam::acp_methods::kSessionSetModel);
+			if (!acp_detail::WriteAcpMessage(*session, BuildSetModelRequest(id, session->session_id, model_id), error_out))
+			{
+				session->pending_request_methods.erase(id);
+				return false;
+			}
 			session->current_model_id = model_id;
 			return true;
 		}
-		if (IsClaudeSession(*session))
-		{
-			session->current_model_id = model_id;
-			return StopAcpSession(app, chat_id);
-		}
-
-		const int id = NextAcpRequestId(*session, uam::acp_methods::kSessionSetModel);
-		if (!acp_detail::WriteAcpMessage(*session, BuildSetModelRequest(id, session->session_id, model_id), error_out))
-		{
-			session->pending_request_methods.erase(id);
-			return false;
-		}
-		session->current_model_id = model_id;
-		return true;
 	}
 
 	bool TryAutoApprovePendingAcpPermission(AppState& app, const std::string& chat_id, std::string* error_out)

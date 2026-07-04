@@ -14,55 +14,9 @@
 namespace uam::acp_detail
 {
 
-bool AcpSessionMatchesProvider(const AcpSessionState& session, std::string_view protocol_kind, std::string_view canonical_provider_id)
-{
-	return session.protocol_kind == protocol_kind || uam::provider_ids::IsCliProviderAliasOf(session.provider_id, canonical_provider_id);
-}
-
-bool IsCodexSession(const AcpSessionState& session)
-{
-	return AcpSessionMatchesProvider(session, uam::provider_profile_constants::kProtocolCodexAppServer, uam::provider_ids::kCodexCli);
-}
-
-bool IsClaudeSession(const AcpSessionState& session)
-{
-	return AcpSessionMatchesProvider(session, uam::provider_profile_constants::kProtocolClaudeCodeStreamJson, uam::provider_ids::kClaudeCli);
-}
-
-bool IsOpenCodeSession(const AcpSessionState& session)
-{
-	return AcpSessionMatchesProvider(session, uam::provider_profile_constants::kProtocolOpenCodeAcp, uam::provider_ids::kOpenCodeCli);
-}
-
-bool IsCopilotSession(const AcpSessionState& session)
-{
-	return AcpSessionMatchesProvider(session, uam::provider_profile_constants::kProtocolCopilotAcp, uam::provider_ids::kCopilotCli);
-}
-
-bool IsGenericAcpSession(const AcpSessionState& session)
-{
-	return IsOpenCodeSession(session) || IsCopilotSession(session);
-}
-
 const char* RuntimeDisplayName(const AcpSessionState& session)
 {
-	if (IsCodexSession(session))
-	{
-		return "Codex app-server";
-	}
-	if (IsClaudeSession(session))
-	{
-		return "Claude stream-json";
-	}
-	if (IsOpenCodeSession(session))
-	{
-		return "OpenCode ACP";
-	}
-	if (IsCopilotSession(session))
-	{
-		return "GitHub Copilot ACP";
-	}
-	return "Gemini ACP";
+	return ProviderRuntimeRegistry::ResolveById(session.provider_id).GetAcpDisplayName();
 }
 
 std::string MessageProviderId(const AcpSessionState& session)
@@ -228,28 +182,12 @@ void AppendAcpDiagnostic(
 
 const char* InvalidResumeProviderLabel(const AcpSessionState& session)
 {
-	if (IsOpenCodeSession(session))
-	{
-		return "OpenCode";
-	}
-	if (IsCopilotSession(session))
-	{
-		return "GitHub Copilot";
-	}
-	return "Gemini";
+	return ProviderRuntimeRegistry::ResolveById(session.provider_id).GetAcpDisplayName();
 }
 
-const char* InvalidResumeDiagnosticReason(const AcpSessionState& session)
+std::string InvalidResumeDiagnosticReason(const AcpSessionState& session)
 {
-	if (IsOpenCodeSession(session))
-	{
-		return "opencode_invalid_resume_id_ignored";
-	}
-	if (IsCopilotSession(session))
-	{
-		return "copilot_invalid_resume_id_ignored";
-	}
-	return "gemini_invalid_resume_id_ignored";
+	return std::string(ProviderRuntimeRegistry::ResolveById(session.provider_id).RuntimeId()) + "_invalid_resume_id_ignored";
 }
 
 void AppendInvalidResumeDiagnostic(AcpSessionState& session, const std::string& raw_resume_id)

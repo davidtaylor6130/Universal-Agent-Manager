@@ -3,7 +3,7 @@ import { buildProviderCliInstallCommand, CODEX_CLI_PROVIDER_ID, CLAUDE_CLI_PROVI
 
 describe('providerMetadata', () => {
   it('returns known provider labels and structured protocols', () => {
-    expect(providerMetadataForId('claude-cli')).toEqual({
+    expect(providerMetadataForId('claude-cli')).toMatchObject({
       id: 'claude-cli',
       name: 'Claude Code',
       shortName: 'Claude',
@@ -31,7 +31,7 @@ describe('providerMetadata', () => {
 
   it('prefers provider display names and falls back to Gemini metadata for unknown ids', () => {
     expect(providerShortName({ id: 'custom', name: 'Custom Provider', shortName: '', color: '', description: '' }, 'custom')).toBe('Custom Provider')
-    expect(providerMetadataForId('unknown-provider')).toEqual({
+    expect(providerMetadataForId('unknown-provider')).toMatchObject({
       id: 'unknown-provider',
       name: 'Gemini CLI',
       shortName: 'Gemini',

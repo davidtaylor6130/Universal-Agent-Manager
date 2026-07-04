@@ -2,7 +2,9 @@
 
 #include "common/config/approval_modes.h"
 #include "common/provider/provider_ids.h"
+#include "common/state/app_state.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
+#include "common/runtime/acp/acp_session_internal.h"
 #include "common/utils/range_utils.h"
 
 #include <array>
@@ -105,6 +107,62 @@ std::vector<std::string> ClaudeCliProviderRuntime::BuildStructuredLaunchArgv(con
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", chat.model_id);
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--resume", chat.native_session_id);
 	return argv;
+}
+
+nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildInitialize(uam::AcpSessionState& session, int request_id) const
+{
+	(void)request_id;
+	session.initialized = true;
+	session.load_session_supported = true;
+	session.available_modes = {
+	    uam::AcpModeState{uam::approval_modes::kDefaultApprovalMode, "Default", "Use Claude default permissions."},
+	    uam::AcpModeState{uam::approval_modes::kAcceptEditsApprovalMode, "Accept Edits", "Auto-approve Claude file edits in the workspace."},
+	    uam::AcpModeState{uam::approval_modes::kPlanApprovalMode, "Plan", "Let Claude research and propose changes without editing files."},
+	};
+	if (session.current_mode_id.empty())
+	{
+		session.current_mode_id = uam::approval_modes::kDefaultApprovalMode;
+	}
+	return nullptr;
+}
+
+void ClaudeCliProviderRuntime::OnAcpInitializeResult(uam::AcpSessionState& session, const nlohmann::json& result) const
+{
+	(void)session;
+	(void)result;
+}
+
+nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildSetupRequest(int request_id, const ChatSession& chat,
+    const std::string& cwd, bool can_load, std::string& out_method) const
+{
+	(void)request_id;
+	(void)chat;
+	(void)cwd;
+	(void)can_load;
+	out_method.clear();
+	return nullptr;
+}
+
+nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildPrompt(uam::AcpSessionState& session, int request_id,
+    const std::string& prompt, const ChatSession& chat, std::string& out_method) const
+{
+	(void)session;
+	(void)request_id;
+	(void)chat;
+	out_method.clear();
+	return uam::acp_detail::BuildClaudeInputMessage(prompt);
+}
+
+bool ClaudeCliProviderRuntime::OnAcpSetModeLocally(uam::AcpSessionState& session, const std::string& mode_id) const
+{
+	session.current_mode_id = mode_id;
+	return false;
+}
+
+bool ClaudeCliProviderRuntime::OnAcpSetModelLocally(uam::AcpSessionState& session, const std::string& model_id) const
+{
+	session.current_model_id = model_id;
+	return false;
 }
 
 const IProviderRuntime& GetClaudeCliProviderRuntime()
