@@ -344,6 +344,8 @@ if(APPLE)
     libcef_dll_wrapper
     "-Wl,-framework,Security"
     "-Wl,-framework,WebKit"
+    "-Wl,-framework,IOKit"
+    "-Wl,-framework,CoreFoundation"
   )
 elseif(WIN32)
   target_link_libraries(universal_agent_manager PRIVATE
@@ -803,6 +805,8 @@ if(UAM_BUILD_TESTS)
       nlohmann_json::nlohmann_json
       libcef_dll_wrapper
       "-Wl,-framework,Security"
+      "-Wl,-framework,IOKit"
+      "-Wl,-framework,CoreFoundation"
     )
   elseif(WIN32)
     target_link_libraries(uam_core_tests PRIVATE

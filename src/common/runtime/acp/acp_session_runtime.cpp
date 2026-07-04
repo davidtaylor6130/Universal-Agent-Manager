@@ -235,6 +235,8 @@ namespace uam
 
 		session.queued_prompt = effective_prompt;
 		session.crash_restart_attempts = 0;
+		session.goal_auto_resume_attempts = 0;
+		session.goal_resume_suppressed = false;
 		ClearGoalReviewState(session);
 		session.goal_turn_kind.clear();
 		session.processing = true;
@@ -286,6 +288,7 @@ namespace uam
 		session->queued_prompt.clear();
 		session->processing = false;
 		session->cancel_requested = true;
+		session->goal_resume_suppressed = true;
 		ResetAcpPendingInteractionState(*session);
 		session->current_assistant_message_index = -1;
 		session->pending_assistant_thoughts.clear();
@@ -579,6 +582,11 @@ namespace uam
 				changed = true;
 			}
 
+			if (ResumeStalledGoalLoopIfNeeded(app, session, chat, browser, GetAppTimeSeconds()))
+			{
+				changed = true;
+			}
+
 			int exit_code = 0;
 			if (PlatformServicesFactory::Instance().process_service.PollStdioProcessExited(session, &exit_code))
 			{
@@ -772,6 +780,16 @@ namespace uam
 	bool UpdateAcpStaleWaitForTests(AcpSessionState& session, double now_seconds)
 	{
 		return UpdateAcpStaleWait(session, now_seconds);
+	}
+
+	std::string AutoApproveOptionIdForTests(const AcpPendingPermissionState& pending)
+	{
+		return acp_detail::AutoApproveOptionId(pending);
+	}
+
+	bool ResumeStalledGoalLoopForTests(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds)
+	{
+		return acp_detail::ResumeStalledGoalLoopIfNeeded(app, session, chat, nullptr, now_seconds);
 	}
 
 	void FlushPendingChatSaves(AppState& app)

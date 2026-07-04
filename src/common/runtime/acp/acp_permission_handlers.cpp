@@ -107,51 +107,49 @@ bool SendPermissionResponse(AcpSessionState& session, const std::string& request
 	return WriteAcpMessage(session, response, error_out);
 }
 
-bool LooksLikeAutoApprovablePermission(const AcpPendingPermissionState& pending)
-{
-	return TextContainsAnyCaseInsensitive(pending.kind,
-	                                      {
-	                                          "command",
-	                                          "file",
-	                                          "permission",
-	                                          "tool",
-	                                      }) ||
-	       TextContainsAnyCaseInsensitive(pending.title, {
-	                                             "command",
-	                                             "file change",
-	                                             "permission",
-	                                         });
-}
-
 bool IsRejectPermissionOption(const std::string& id, const std::string& name, const std::string& kind)
 {
 	return TextContainsAnyCaseInsensitive(id,
 	                                      {
 	                                          "decline",
 	                                          "deny",
+	                                          "reject",
 	                                          uam::acp_permissions::kCancelDecision,
 	                                      }) ||
 	       TextContainsAnyCaseInsensitive(name,
 	                                      {
 	                                          "decline",
 	                                          "deny",
+	                                          "reject",
 	                                          uam::acp_permissions::kCancelDecision,
 	                                      }) ||
 	       TextContainsAnyCaseInsensitive(kind, {
+	                                            "reject",
 	                                            uam::acp_permissions::kCancelOptionKind,
 	                                        });
 }
 
-bool IsAcceptPermissionOption(const std::string& id, const std::string& name)
+bool IsAcceptPermissionOption(const std::string& id, const std::string& name, const std::string& kind)
 {
-	return TextContainsAnyCaseInsensitive(id,
+	// ACP option kinds are allow_once / allow_always; ids and names vary by provider.
+	return TextContainsAnyCaseInsensitive(kind,
+	                                      {
+	                                          "allow",
+	                                      }) ||
+	       TextContainsAnyCaseInsensitive(id,
 	                                      {
 	                                          "accept",
 	                                          "allow",
+	                                          "approve",
+	                                          "yes",
+	                                          "once",
+	                                          "always",
 	                                      }) ||
 	       TextContainsAnyCaseInsensitive(name, {
 	                                            "accept",
 	                                            "allow",
+	                                            "approve",
+	                                            "yes",
 	                                        });
 }
 
@@ -166,7 +164,7 @@ std::string AutoApproveOptionId(const AcpPendingPermissionState& pending)
 		{
 			continue;
 		}
-		if (IsAcceptPermissionOption(id, name))
+		if (IsAcceptPermissionOption(id, name, kind))
 		{
 			return option.id;
 		}
@@ -177,10 +175,6 @@ std::string AutoApproveOptionId(const AcpPendingPermissionState& pending)
 bool TryAutoApprovePendingPermission(AcpSessionState& session, const ChatSession& chat, std::string* error_out)
 {
 	if (!chat.auto_approve_commands || session.pending_permission.request_id_json.empty())
-	{
-		return false;
-	}
-	if (!LooksLikeAutoApprovablePermission(session.pending_permission))
 	{
 		return false;
 	}

@@ -462,10 +462,17 @@ std::string GoalService::BuildContinuationPrompt(const Goal& goal, int64_t token
 	return ss.str();
 }
 
-std::string GoalService::BuildReviewPrompt(const Goal& goal, const std::string& recent_user_prompt, const std::string& recent_assistant_text)
+std::string GoalService::BuildReviewPrompt(const Goal& goal, const std::string& recent_user_prompt, const std::string& recent_assistant_text, int repeated_output_count)
 {
 	std::ostringstream ss;
 	ss << "Review progress toward the active thread goal. Return only strict JSON with this exact shape:\n";
+	if (repeated_output_count >= 3)
+	{
+		ss << "\n<loopDetection>\n";
+		ss << "Automatic loop detection: the worker returned identical output for " << repeated_output_count << " consecutive turns and was stopped before running another identical turn.\n";
+		ss << "Do not return continue with the same or a similar nextPrompt. Either return continue with a materially different approach in nextPrompt, or return blocked with a blockerKind explaining why progress is stuck.\n";
+		ss << "</loopDetection>\n\n";
+	}
 	ss << R"({"decision":"complete|continue|blocked","reason":"...","nextPrompt":"...","evidence":["..."],"blockerKind":"transient|needs_user|needs_external_state|invalid_review","progressUpdate":{"completed":["..."],"remaining":["..."],"currentStep":"...","lastVerification":"..."}})" << "\n\n";
 	ss << "Decision rules:\n";
 	ss << "- complete only when the objective is fully satisfied and evidence is non-empty.\n";

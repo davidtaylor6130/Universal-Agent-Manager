@@ -398,6 +398,157 @@ UAM_TEST(AcpGoalWorkerTurnSchedulesOneReview)
 	UAM_ASSERT(app.chats.front().goals.front().tokens_used > 0);
 }
 
+UAM_TEST(AcpGoalRepeatedIdenticalWorkerOutputMakesReviewLoopAware)
+{
+	TempDir temp("uam-goal-identical-output");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "gemini-cli";
+	Message user;
+	user.role = MessageRole::User;
+	user.content = "Implement the next fix.";
+	chat.messages.push_back(std::move(user));
+	Goal goal;
+	goal.id = "goal-1";
+	goal.objective = "Recover when the model loops.";
+	goal.status = GoalStatus::Active;
+	chat.active_goal_id = goal.id;
+	chat.goals.push_back(goal);
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->running = false;
+	session->session_ready = true;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	for (int turn = 1; turn <= 3; ++turn)
+	{
+		raw_session->processing = true;
+		raw_session->prompt_request_id = 10 + turn;
+		raw_session->pending_request_methods[10 + turn] = uam::acp_methods::kSessionPrompt;
+		raw_session->turn_user_message_index = 0;
+		raw_session->current_assistant_message_index = -1;
+		raw_session->turn_assistant_message_index = -1;
+
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Same worker output."}}}})"));
+		const std::string result_line = std::string(R"({"jsonrpc":"2.0","id":)") + std::to_string(10 + turn) + R"(,"result":{}})";
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), result_line));
+
+		UAM_ASSERT_EQ(app.chats.front().goals.front().same_assistant_text_count, turn);
+		UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+		UAM_ASSERT(raw_session->goal_review_scheduled);
+		// Reviews before the third identical turn carry no loop notice.
+		UAM_ASSERT_EQ(raw_session->queued_prompt.find("loopDetection") != std::string::npos, turn >= 3);
+
+		if (turn < 3)
+		{
+			// Mimic the review turn concluding so the next worker turn can run.
+			raw_session->goal_review_scheduled = false;
+			raw_session->goal_review_turn = false;
+			raw_session->goal_review_goal_id.clear();
+			raw_session->goal_turn_kind.clear();
+			raw_session->queued_prompt.clear();
+			raw_session->processing = false;
+		}
+	}
+
+	UAM_ASSERT(raw_session->queued_prompt.find("identical output for 3 consecutive turns") != std::string::npos);
+	UAM_ASSERT(raw_session->queued_prompt.find("materially different approach") != std::string::npos);
+	UAM_ASSERT_EQ(app.chats.front().active_goal_id, std::string("goal-1"));
+}
+
+UAM_TEST(AcpGoalWatchdogResumesStalledLoopAndBlocksAfterRepeatedResumes)
+{
+	TempDir temp("uam-goal-watchdog");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "opencode-cli";
+	Goal goal;
+	goal.id = "goal-1";
+	goal.objective = "Keep the loop moving.";
+	goal.status = GoalStatus::Active;
+	goal.loop_count = 1;
+	chat.active_goal_id = goal.id;
+	chat.goals.push_back(goal);
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->running = false;
+	session->session_ready = true;
+	session->processing = false;
+	session->last_runtime_activity_time_s = 1.0;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	// User-cancelled sessions must not be auto-resumed.
+	raw_session->goal_resume_suppressed = true;
+	UAM_ASSERT(!uam::ResumeStalledGoalLoopForTests(app, *raw_session, app.chats.front(), 100.0));
+	raw_session->goal_resume_suppressed = false;
+
+	UAM_ASSERT(uam::ResumeStalledGoalLoopForTests(app, *raw_session, app.chats.front(), 100.0));
+	UAM_ASSERT(!raw_session->queued_prompt.empty());
+	UAM_ASSERT_EQ(raw_session->goal_turn_kind, std::string("worker_continuation"));
+	UAM_ASSERT_EQ(raw_session->goal_auto_resume_attempts, 1);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+
+	// A loop that keeps stalling is blocked visibly instead of retried forever.
+	raw_session->processing = false;
+	raw_session->queued_prompt.clear();
+	raw_session->goal_turn_kind.clear();
+	raw_session->goal_auto_resume_attempts = 3;
+	raw_session->last_runtime_activity_time_s = 1.0;
+	UAM_ASSERT(uam::ResumeStalledGoalLoopForTests(app, *raw_session, app.chats.front(), 100.0));
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Blocked);
+	UAM_ASSERT(app.chats.front().active_goal_id.empty());
+}
+
+UAM_TEST(AcpGoalWatchdogIgnoresFreshGoalsAndBusySessions)
+{
+	TempDir temp("uam-goal-watchdog-guards");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "opencode-cli";
+	Goal goal;
+	goal.id = "goal-1";
+	goal.objective = "Wait for the first user prompt.";
+	goal.status = GoalStatus::Active;
+	chat.active_goal_id = goal.id;
+	chat.goals.push_back(goal);
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->running = false;
+	session->session_ready = true;
+	session->last_runtime_activity_time_s = 1.0;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	// Fresh goal (no turns yet): not resumed.
+	UAM_ASSERT(!uam::ResumeStalledGoalLoopForTests(app, *raw_session, app.chats.front(), 100.0));
+
+	// Engaged goal but busy session: not resumed.
+	app.chats.front().goals.front().loop_count = 1;
+	raw_session->processing = true;
+	UAM_ASSERT(!uam::ResumeStalledGoalLoopForTests(app, *raw_session, app.chats.front(), 100.0));
+	raw_session->processing = false;
+
+	// Engaged goal but recent activity: not resumed.
+	UAM_ASSERT(!uam::ResumeStalledGoalLoopForTests(app, *raw_session, app.chats.front(), 2.0));
+}
+
 // NOTE: The former BuildPrompt/BuildCommand goal-context tests were removed with the
 // dead one-shot command pipeline (PR-5). Goal-prompt composition is now exercised by the
 // GoalServiceBuildContinuationPrompt* tests and the live ACP goal-review tests above.

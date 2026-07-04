@@ -509,7 +509,10 @@ bool QueueGoalInternalPrompt(AcpSessionState& session, ChatSession& chat, const 
 	session.last_runtime_activity_time_s = GetAppTimeSeconds();
 	session.last_error.clear();
 	session.lifecycle_state = kAcpLifecycleProcessing;
-	return SendQueuedPromptIfReady(session, chat);
+	// Queued is success; if the session cannot send yet, the poll loop
+	// delivers the prompt once the session is ready.
+	(void)SendQueuedPromptIfReady(session, chat);
+	return true;
 }
 
 void ClearGoalReviewState(AcpSessionState& session)

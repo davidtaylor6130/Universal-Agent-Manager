@@ -118,6 +118,8 @@ struct Goal
 	std::string last_verification;
 	std::string last_next_prompt;
 	int same_next_prompt_count = 0;
+	std::string last_assistant_text;             // trimmed text of the last worker turn
+	int same_assistant_text_count = 0;           // consecutive identical worker outputs
 	int loop_count = 0;
 	std::string created_at;
 	std::string updated_at;

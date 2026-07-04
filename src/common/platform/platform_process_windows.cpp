@@ -493,6 +493,12 @@ class WindowsProcessService final : public IPlatformProcessService
 		return std::string(uuid);
 	}
 
+	void SetKeepSystemAwake(const bool keep_awake) const override
+	{
+		// ES_CONTINUOUS alone clears the requirement; repeated calls are cheap.
+		SetThreadExecutionState(keep_awake ? (ES_CONTINUOUS | ES_SYSTEM_REQUIRED) : ES_CONTINUOUS);
+	}
+
 	bool LaunchShellAt(const std::filesystem::path& working_directory, std::string* error_out = nullptr) const override
 	{
 		if (working_directory.empty())

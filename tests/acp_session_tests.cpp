@@ -1542,3 +1542,42 @@ UAM_TEST(AcpLoadHistoryReplaySuppressesHistoricalThoughts)
 	UAM_ASSERT_EQ(app.chats.front().messages[3].content, std::string("New answer"));
 }
 
+
+UAM_TEST(AutoApproveOptionIdMatchesAcpOptionKindsAndCommonLabels)
+{
+	// OpenCode-style ACP options classified by option kind, not just id/name text.
+	uam::AcpPendingPermissionState pending;
+	uam::AcpPermissionOptionState reject;
+	reject.id = "no";
+	reject.name = "No";
+	reject.kind = "reject_once";
+	uam::AcpPermissionOptionState proceed;
+	proceed.id = "proceed";
+	proceed.name = "Proceed";
+	proceed.kind = "allow_once";
+	pending.options.push_back(reject);
+	pending.options.push_back(proceed);
+	UAM_ASSERT_EQ(uam::AutoApproveOptionIdForTests(pending), std::string("proceed"));
+
+	// Reject-only requests are never auto-approved.
+	uam::AcpPendingPermissionState reject_only;
+	reject_only.options.push_back(reject);
+	UAM_ASSERT_EQ(uam::AutoApproveOptionIdForTests(reject_only), std::string(""));
+
+	// Name-based fallback still works when kinds are absent.
+	uam::AcpPendingPermissionState named;
+	uam::AcpPermissionOptionState allow_named;
+	allow_named.id = "opt-1";
+	allow_named.name = "Allow once";
+	named.options.push_back(allow_named);
+	UAM_ASSERT_EQ(uam::AutoApproveOptionIdForTests(named), std::string("opt-1"));
+
+	// "reject_always" kinds are skipped even when the name sounds positive.
+	uam::AcpPendingPermissionState tricky;
+	uam::AcpPermissionOptionState tricky_reject;
+	tricky_reject.id = "always";
+	tricky_reject.name = "Always";
+	tricky_reject.kind = "reject_always";
+	tricky.options.push_back(tricky_reject);
+	UAM_ASSERT_EQ(uam::AutoApproveOptionIdForTests(tricky), std::string(""));
+}

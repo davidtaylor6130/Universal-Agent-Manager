@@ -1,6 +1,7 @@
 #include "application.h"
 
 #include "chat_domain_service.h"
+#include "goal_service.h"
 #include "persistence_coordinator.h"
 #include "provider_model_catalog_service.h"
 #include "provider_resolution_service.h"
@@ -212,6 +213,27 @@ namespace
 		return !app.pending_calls.empty() || !app.memory_extraction_tasks.empty() || !app.memory_extraction_queue.empty();
 	}
 
+	bool ShouldKeepSystemAwake(const uam::AppState& app)
+	{
+		for (const auto& session : app.acp_sessions)
+		{
+			if (session != nullptr && session->running && (session->processing || session->waiting_for_permission || session->waiting_for_user_input || !session->queued_prompt.empty()))
+			{
+				return true;
+			}
+		}
+
+		for (const ChatSession& chat : app.chats)
+		{
+			if (!chat.active_goal_id.empty() && uam::GoalService::FindActiveGoal(app, chat.id) != nullptr)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	int GetNextPollDelayMs(const uam::AppState& app)
 	{
 		if (IsSelectedChatRunning(app))
@@ -320,6 +342,10 @@ void Application::PollTick()
 	{
 		uam::PushStateUpdateIfChanged(m_browser, m_app);
 	}
+
+	// Keep the machine awake while an agent turn or goal loop is active so
+	// display sleep / App Nap cannot pause this polling loop mid-goal.
+	m_platformServices->process_service.SetKeepSystemAwake(ShouldKeepSystemAwake(m_app));
 
 	ScheduleNextUpdate(GetNextPollDelayMs(m_app));
 }
