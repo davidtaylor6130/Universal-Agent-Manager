@@ -22,14 +22,9 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 	const std::optional<GoalService::ReviewDecision> parsed = GoalService::ParseReviewDecision(review_text);
 	if (!parsed.has_value())
 	{
-		GoalService::RecordBlocker(app, goal_id, "Goal reviewer returned invalid JSON.");
+		AppendGoalLoopDiagnostic(session, "review_json_invalid_default_complete", goal_id, review_text);
+		(void)GoalService::UpdateGoalStatus(app, goal_id, GoalStatus::Complete);
 		SaveChatQuietly(app, chat);
-		// RecordBlocker marks the goal blocked after 3 consecutive invalid
-		// reviews, which clears the active goal and stops the retries below.
-		if (Goal* active_goal = GoalService::FindActiveGoal(app, chat.id); active_goal != nullptr && active_goal->id == goal_id)
-		{
-			(void)QueueGoalInternalPrompt(session, chat, GoalService::BuildReviewPrompt(*active_goal, review_user_prompt, review_assistant_text), true);
-		}
 		if (browser)
 		{
 			uam::PushStateUpdateIfChanged(browser, app);
@@ -118,6 +113,7 @@ void ScheduleGoalReviewAfterSuccessfulTurn(AppState& app, AcpSessionState& sessi
 {
 	if (session.goal_review_turn || session.goal_review_scheduled)
 	{
+		AppendGoalLoopDiagnostic(session, "skip_schedule_already_in_progress", session.goal_review_goal_id);
 		return;
 	}
 	if (session.goal_turn_kind == kGoalTurnKindReview)
@@ -147,6 +143,7 @@ void ScheduleGoalReviewAfterSuccessfulTurn(AppState& app, AcpSessionState& sessi
 	Goal* active_goal = GoalService::FindActiveGoal(app, chat.id);
 	if (active_goal == nullptr || active_goal->objective.empty())
 	{
+		AppendGoalLoopDiagnostic(session, "skip_schedule_no_active_goal", session.goal_review_goal_id);
 		return;
 	}
 

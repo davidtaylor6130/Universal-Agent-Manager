@@ -632,6 +632,10 @@ export function reconcileCppMessages(
     return existing
   }
 
+  if (cppMessages.length < existingRealMessages.length) {
+    return existing
+  }
+
   let prefixLength = 0
   while (
     prefixLength < existingRealMessages.length &&
