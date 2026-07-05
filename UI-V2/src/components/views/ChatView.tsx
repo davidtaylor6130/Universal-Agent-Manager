@@ -1,4 +1,4 @@
-import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, ReactNode, RefObject, useEffect, useMemo, useRef, useState } from 'react'
+import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, ReactNode, RefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { Session } from '../../types/session'
 import { MarkdownContent } from '../markdown/Markdown'
@@ -87,6 +87,7 @@ interface ChatViewProps {
 
 const INITIAL_RENDERED_MESSAGES = 200
 const RENDERED_MESSAGE_BATCH_SIZE = 100
+const SCROLL_NEAR_BOTTOM_THRESHOLD = 100
 
 interface SelectedToolCallRef {
   id: string
@@ -190,7 +191,9 @@ export function ChatView({ session }: ChatViewProps) {
   const resumeGoal = useAppStore((s) => s.resumeGoal)
   const defaultGoalTokenBudget = useAppStore((s) => s.defaultGoalTokenBudgetByChatId[session.id] ?? 0)
   const setDefaultGoalTokenBudget = useAppStore((s) => s.setDefaultGoalTokenBudget)
+  const scrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const isNearBottomRef = useRef(true)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const providerMenuRef = useRef<HTMLDivElement>(null)
   const modelMenuRef = useRef<HTMLDivElement>(null)
@@ -234,7 +237,9 @@ export function ChatView({ session }: ChatViewProps) {
   )
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView?.({ block: 'end' })
+    if (isNearBottomRef.current) {
+      bottomRef.current?.scrollIntoView?.({ block: 'end' })
+    }
   }, [
     messages.length,
     messages[messages.length - 1]?.content,
@@ -249,6 +254,12 @@ export function ChatView({ session }: ChatViewProps) {
     turnSerial,
     acp?.lastError,
   ])
+
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_NEAR_BOTTOM_THRESHOLD
+  }, [])
 
   useEffect(() => {
     if (selectedToolCallRef && !selectedToolCall) {
@@ -714,7 +725,7 @@ export function ChatView({ session }: ChatViewProps) {
         />
       )}
       <div className="flex-1 flex flex-col min-w-0">
-        <div className="flex-1 overflow-auto" data-copy-surface="chat">
+        <div ref={scrollRef} className="flex-1 overflow-auto" data-copy-surface="chat" onScroll={handleScroll}>
           <div className="w-full px-4 py-4">
             <div className="flex items-center gap-2 mb-5 text-xs" style={{ color: 'var(--text-2)' }}>
               <span style={{ color: statusColor(acp), fontSize: 9 }}>●</span>
