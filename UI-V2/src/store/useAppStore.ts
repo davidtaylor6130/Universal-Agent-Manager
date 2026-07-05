@@ -151,7 +151,7 @@ function deserializeState(
   const nextMessages: Record<string, Message[]> = {}
   for (const chat of cpp.chats) {
     const existingMessages = existing.messages[chat.id]
-    if (!Array.isArray(chat.messages)) {
+    if (!Array.isArray(chat.messages) || (chat.messages.length === 0 && existingMessages?.length)) {
       if (existingMessages?.length) {
         nextMessages[chat.id] = existingMessages
       }
@@ -475,13 +475,36 @@ export const useAppStore = create<AppState>((set, get) => {
 
       for (const [chatId, token] of entries) {
         const existingMessages = nextMessages[chatId] ?? []
-        const lastMessage = existingMessages[existingMessages.length - 1]
-        if (!lastMessage || lastMessage.role !== 'assistant' || !lastMessage.isStreaming) continue
+        let lastMessage = existingMessages[existingMessages.length - 1]
 
-        const updatedMessages = [...existingMessages]
+        if (!lastMessage || lastMessage.role !== 'assistant' || !lastMessage.isStreaming) {
+          const placeholder: Message = {
+            id: `stream-${chatId}-${Date.now()}`,
+            sessionId: chatId,
+            role: 'assistant',
+            content: '',
+            thoughts: '',
+            planSummary: '',
+            planEntries: [],
+            toolCalls: [],
+            blocks: [],
+            attachments: [],
+            createdAt: new Date(),
+            isStreaming: true,
+          }
+          lastMessage = placeholder
+          const updatedMessages = [...existingMessages, placeholder]
+          if (nextMessages === state.messages) {
+            nextMessages = { ...state.messages }
+          }
+          nextMessages[chatId] = updatedMessages
+        }
+
+        const updatedMessages = [...(nextMessages[chatId] ?? existingMessages)]
         updatedMessages[updatedMessages.length - 1] = {
           ...lastMessage,
-          content: lastMessage.content + token,
+          content: (lastMessage as Message).content + token,
+          isStreaming: true,
         }
         if (nextMessages === state.messages) {
           nextMessages = { ...state.messages }

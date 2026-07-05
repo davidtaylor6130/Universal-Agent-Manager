@@ -465,7 +465,12 @@ std::string GoalService::BuildContinuationPrompt(const Goal& goal, int64_t token
 std::string GoalService::BuildReviewPrompt(const Goal& goal, const std::string& recent_user_prompt, const std::string& recent_assistant_text, int repeated_output_count)
 {
 	std::ostringstream ss;
-	ss << "Review progress toward the active thread goal. Return only strict JSON with this exact shape:\n";
+	ss << "You are a goal review agent. Your ONLY output must be a single JSON object. Do not output any text before or after the JSON object. Do not wrap it in markdown code fences. Do not include any explanation, preamble, or commentary.\n\n";
+	ss << R"(VALID OUTPUT — copy this exact shape, fill in values:)" << "\n";
+	ss << R"({"decision":"continue","reason":"Step 2 of 3 complete.","nextPrompt":"Implement the database schema in models.py.","evidence":["Created project skeleton"],"blockerKind":"","progressUpdate":{"completed":["Step 1: project skeleton"],"remaining":["Step 2: database schema","Step 3: API routes"],"currentStep":"Step 2: database schema","lastVerification":"Unit tests pass for skeleton"}})" << "\n\n";
+	ss << "INVALID — never output human-readable text like this:" << "\n";
+	ss << R"(Goal Review COMPLETE. All deliverables exist. Decision: STOP.)" << "\n\n";
+	ss << "FAILURE TO OUTPUT PURE JSON BREAKS THE REVIEW SYSTEM. The system cannot parse anything except the JSON object above.\n\n";
 	if (repeated_output_count >= 3)
 	{
 		ss << "\n<loopDetection>\n";
@@ -473,12 +478,11 @@ std::string GoalService::BuildReviewPrompt(const Goal& goal, const std::string& 
 		ss << "Do not return continue with the same or a similar nextPrompt. Either return continue with a materially different approach in nextPrompt, or return blocked with a blockerKind explaining why progress is stuck.\n";
 		ss << "</loopDetection>\n\n";
 	}
-	ss << R"({"decision":"complete|continue|blocked","reason":"...","nextPrompt":"...","evidence":["..."],"blockerKind":"transient|needs_user|needs_external_state|invalid_review","progressUpdate":{"completed":["..."],"remaining":["..."],"currentStep":"...","lastVerification":"..."}})" << "\n\n";
 	ss << "Decision rules:\n";
-	ss << "- complete only when the objective is fully satisfied and evidence is non-empty.\n";
-	ss << "- blocked when a concrete blocker prevents progress; classify blockerKind.\n";
-	ss << "- continue when more work can be done; nextPrompt must be a non-empty next agent prompt that makes concrete progress.\n";
-	ss << "- do not return continue with an empty nextPrompt; use blocked when progress requires user input or external state.\n\n";
+	ss << "- \"complete\": objective fully satisfied AND evidence array non-empty.\n";
+	ss << "- \"blocked\": concrete blocker prevents progress; classify blockerKind.\n";
+	ss << "- \"continue\": more work can be done; nextPrompt must be a non-empty concrete next step.\n";
+	ss << "- NEVER return continue with empty nextPrompt; use blocked when progress requires user input or external state.\n\n";
 	ss << "<objective>\n" << goal.objective << "\n</objective>\n\n";
 	if (!goal.completed_items.empty() || !goal.remaining_items.empty() || !goal.current_step.empty() || !goal.last_verification.empty())
 	{
@@ -532,7 +536,7 @@ std::optional<GoalService::ReviewDecision> GoalService::ParseReviewDecision(cons
 			return std::nullopt;
 		}
 		ReviewDecision decision;
-		decision.decision = uam::strings::Trim(parsed.value("decision", ""));
+		decision.decision = uam::strings::ToLowerAscii(uam::strings::Trim(parsed.value("decision", "")));
 		decision.reason = uam::strings::Trim(parsed.value("reason", ""));
 		decision.next_prompt = uam::strings::Trim(parsed.value("nextPrompt", ""));
 		decision.blocker_kind = uam::strings::Trim(parsed.value("blockerKind", ""));
@@ -543,6 +547,10 @@ std::optional<GoalService::ReviewDecision> GoalService::ParseReviewDecision(cons
 			decision.remaining_items = TrimmedStringArray(it->value("remaining", nlohmann::json::array()));
 			decision.current_step = uam::strings::Trim(it->value("currentStep", ""));
 			decision.last_verification = uam::strings::Trim(it->value("lastVerification", ""));
+		}
+		if (decision.decision == "stop" || decision.decision == "done" || decision.decision == "passed" || decision.decision == "yes")
+		{
+			decision.decision = "complete";
 		}
 		if (decision.decision != "complete" && decision.decision != "continue" && decision.decision != "blocked")
 		{
