@@ -834,9 +834,11 @@ void ChatHistorySyncService::ReconcileUnresolvedDraftLinksByDiscovery(uam::AppSt
 	{
 		std::vector<ChatSession> native_chats = LoadNativeSessionChats(source.chats_dir, native_provider);
 
+		NativeImportIndex import_index = LoadNativeImportIndex(app.data_root);
 		for (ChatSession& native_chat : native_chats)
 		{
 			native_chat.workspace_directory = source.folder_directory;
+			AssignKnownWorkspaceFolderToNewImport(app, import_index, fs::path(source.folder_directory), native_chat);
 		}
 
 		ApplyLocalOverrides(app, native_chats);
@@ -879,13 +881,18 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 				continue;
 			}
 
-			if (!import_folder_id)
-			{
-				import_folder_id = ResolvePersistedImportFolderIdForSource(app, source);
-			}
+			AssignKnownWorkspaceFolderToNewImport(app, import_index, fs::path(source.folder_directory), native_chat);
 
-			native_chat.folder_id = *import_folder_id;
-			native_chat.workspace_directory = source.folder_directory;
+			if (native_chat.folder_id.empty())
+			{
+				if (!import_folder_id)
+				{
+					import_folder_id = ResolvePersistedImportFolderIdForSource(app, source);
+				}
+
+				native_chat.folder_id = *import_folder_id;
+				native_chat.workspace_directory = source.folder_directory;
+			}
 
 			if (SaveImportedNativeChat(app, import_index, native_chat, *native_key, source.chats_dir, delete_native_after_import))
 			{

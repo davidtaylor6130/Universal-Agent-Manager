@@ -238,7 +238,7 @@ inline std::string ResolveRequestedNewChatFolderId(const uam::AppState& app, con
 	}
 
 	const ChatSession* selected_chat = ChatDomainService().SelectedChat(app);
-	if (selected_chat == nullptr || !selected_chat->folder_id.empty())
+	if (selected_chat == nullptr || selected_chat->folder_id.empty())
 	{
 		return std::string{};
 	}
