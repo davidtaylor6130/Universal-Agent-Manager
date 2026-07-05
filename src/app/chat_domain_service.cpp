@@ -226,6 +226,36 @@ void ChatDomainService::EnsureNewChatFolderSelection(uam::AppState& app) const
 
 void ChatDomainService::NormalizeChatFolderAssignments(uam::AppState& app) const
 {
+	for (ChatSession& chat : app.chats)
+	{
+		if (!chat.folder_id.empty() || uam::strings::IsBlank(chat.workspace_directory))
+		{
+			continue;
+		}
+
+		const std::filesystem::path chat_workspace = uam::paths::NormalizeExistingPath(
+		    PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(
+		        uam::strings::Trim(chat.workspace_directory)));
+
+		if (chat_workspace.empty())
+		{
+			continue;
+		}
+
+		for (const ChatFolder& folder : app.folders)
+		{
+			const std::filesystem::path folder_directory = uam::paths::NormalizeExistingPath(
+			    PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(
+			        uam::strings::Trim(folder.directory)));
+
+			if (!folder_directory.empty() && chat_workspace == folder_directory)
+			{
+				chat.folder_id = folder.id;
+				break;
+			}
+		}
+	}
+
 	const bool any_expanded_with_chats = std::ranges::any_of(app.folders, [&](const ChatFolder& folder) { return !folder.collapsed && CountChatsInFolder(app, folder.id) > 0; });
 
 	if (!any_expanded_with_chats)

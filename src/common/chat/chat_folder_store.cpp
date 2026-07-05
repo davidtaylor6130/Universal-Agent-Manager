@@ -57,6 +57,7 @@ namespace
 		if (normalized_key == kFolderIdKey)
 		{
 			folder.id = uam::strings::Trim(value);
+			std::erase_if(folder.id, [](char c) { return static_cast<unsigned char>(c) < 0x20; });
 		}
 		else if (normalized_key == kFolderTitleKey)
 		{
@@ -149,7 +150,8 @@ bool ChatFolderStore::Save(const std::filesystem::path& data_root, const std::ve
 
 	for (const ChatFolder& folder : folders)
 	{
-		const std::string folder_id = uam::strings::Trim(folder.id);
+		std::string folder_id = uam::strings::Trim(folder.id);
+		std::erase_if(folder_id, [](char c) { return static_cast<unsigned char>(c) < 0x20; });
 		if (folder_id.empty())
 		{
 			continue;

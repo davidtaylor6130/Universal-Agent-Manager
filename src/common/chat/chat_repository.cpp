@@ -702,6 +702,7 @@ namespace
 		chat.branch_root_chat_id = JsonStringOrEmpty(root.Find(kChatBranchRootChatIdField));
 		chat.branch_from_message_index = IntFieldAtLeastOrDefault(root.Find(kChatBranchFromMessageIndexField), -1, -1);
 		chat.folder_id = JsonStringOrEmpty(root.Find(kChatFolderIdField));
+		std::erase_if(chat.folder_id, [](char c) { return static_cast<unsigned char>(c) < 0x20; });
 		chat.title = JsonStringOrEmpty(root.Find(kChatTitleField));
 		chat.created_at = JsonStringOrEmpty(root.Find(kChatCreatedAtField));
 		chat.updated_at = JsonStringOrEmpty(root.Find(kChatUpdatedAtField));
@@ -902,7 +903,11 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 	uam::json::SetString(root, kChatParentChatIdField, chat.parent_chat_id);
 	uam::json::SetString(root, kChatBranchRootChatIdField, chat.branch_root_chat_id);
 	uam::json::SetNumber(root, kChatBranchFromMessageIndexField, static_cast<double>(chat.branch_from_message_index));
-	uam::json::SetString(root, kChatFolderIdField, chat.folder_id);
+	{
+		std::string folder_id_sanitized = chat.folder_id;
+		std::erase_if(folder_id_sanitized, [](char c) { return static_cast<unsigned char>(c) < 0x20; });
+		uam::json::SetString(root, kChatFolderIdField, std::move(folder_id_sanitized));
+	}
 	uam::json::SetString(root, kChatTitleField, chat.title);
 	uam::json::SetString(root, kChatCreatedAtField, chat.created_at);
 	uam::json::SetString(root, kChatUpdatedAtField, chat.updated_at);
