@@ -1,5 +1,7 @@
 import type { CSSProperties } from 'react'
+import { Pause, Play, Trash2 } from 'lucide-react'
 import type { Goal } from '../../types/goal'
+import { Tooltip } from '../ui'
 
 interface GoalBannerProps {
   goal: Goal
@@ -98,41 +100,44 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRemove }: Go
             Complete
           </button>
           {onPause && (
-            <button
-              type="button"
-              className="uam-secondary-button"
-              title="Pause goal"
-              aria-label="Pause goal"
-              onClick={onPause}
-              style={iconButtonStyle()}
-            >
-              ||
-            </button>
+            <Tooltip label="Pause goal">
+              <button
+                type="button"
+                className="uam-secondary-button"
+                aria-label="Pause goal"
+                onClick={onPause}
+                style={iconButtonStyle()}
+              >
+                <Pause size={14} aria-hidden />
+              </button>
+            </Tooltip>
           )}
         </>
       )}
       {goal.status !== 'active' && onResume && (
+        <Tooltip label="Resume goal">
+          <button
+            type="button"
+            className="uam-secondary-button"
+            aria-label="Resume goal"
+            onClick={onResume}
+            style={iconButtonStyle()}
+          >
+            <Play size={14} aria-hidden />
+          </button>
+        </Tooltip>
+      )}
+      <Tooltip label="Delete goal">
         <button
           type="button"
           className="uam-secondary-button"
-          title="Resume goal"
-          aria-label="Resume goal"
-          onClick={onResume}
-          style={iconButtonStyle()}
+          aria-label="Delete goal"
+          onClick={onRemove}
+          style={iconButtonStyle('var(--danger)')}
         >
-          ▶
+          <Trash2 size={14} aria-hidden />
         </button>
-      )}
-      <button
-        type="button"
-        className="uam-secondary-button"
-        title="Delete goal"
-        aria-label="Delete goal"
-        onClick={onRemove}
-        style={iconButtonStyle('var(--danger)')}
-      >
-        🗑
-      </button>
+      </Tooltip>
     </div>
   )
 }

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
+import { FolderOpen, X, Check } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
+import { Button, IconButton } from '../ui'
 import type { Folder } from '../../types/session'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope } from '../../types/memory'
 
@@ -92,7 +94,7 @@ function InlineMenu({
                   style={{ background: selected ? 'var(--accent-dim)' : 'transparent', color: selected ? 'var(--text)' : 'var(--text-2)' }}
                 >
                   <span className="min-w-0 truncate">{option.label}</span>
-                  {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
+                  {selected && <Check size={13} style={{ color: 'var(--green)' }} aria-hidden />}
                 </button>
               )
             })}
@@ -377,20 +379,11 @@ export function MemoryLibraryModal() {
               {memoryLibraryScope.rootPath}
             </div>
           </div>
-          <button
-            type="button"
+          <IconButton
+            icon={<X size={16} />}
+            label="Close memory library"
             onClick={closeMemoryLibrary}
-            style={{
-              background: 'transparent',
-              color: 'var(--text-3)',
-              border: 'none',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-              fontSize: 12,
-            }}
-          >
-            ✕
-          </button>
+          />
         </div>
 
         <div className="grid lg:grid-cols-[320px_minmax(0,1fr)] min-h-[620px] flex-1 min-h-0">
@@ -403,31 +396,31 @@ export function MemoryLibraryModal() {
           >
             <div className="space-y-2">
               {!isAllMemory && (
-                <button
-                  type="button"
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  block
                   onClick={() => void openMemoryRoot()}
-                  className="w-full rounded-md px-3 py-2 text-left text-xs"
-                  style={{ background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)' }}
                 >
                   Open memory root
-                </button>
+                </Button>
               )}
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="sm"
+                block
                 onClick={() => void refreshMemoryLibrary()}
-                className="w-full rounded-md px-3 py-2 text-left text-xs"
-                style={{ background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)' }}
               >
                 Refresh list
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                variant={isAdding ? 'secondary' : 'primary'}
+                size="sm"
+                block
                 onClick={() => setIsAdding((value) => !value)}
-                className="w-full rounded-md px-3 py-2 text-left text-xs"
-                style={{ background: 'var(--accent)', color: '#fff', border: 'none' }}
               >
                 {isAdding ? 'Close add form' : 'Add memory'}
-              </button>
+              </Button>
             </div>
 
             {isAdding && (
@@ -525,15 +518,15 @@ export function MemoryLibraryModal() {
                   </label>
                 </div>
 
-                <button
-                  type="button"
+                <Button
+                  variant="primary"
+                  block
+                  size="sm"
                   disabled={submitting || !draft.title.trim() || !draft.memory.trim()}
                   onClick={() => void submitDraft()}
-                  className="w-full rounded-md px-3 py-2 text-xs font-medium"
-                  style={{ background: 'var(--accent)', color: '#fff', border: 'none', opacity: submitting ? 0.6 : 1 }}
                 >
                   {submitting ? 'Saving...' : 'Save memory'}
-                </button>
+                </Button>
               </div>
             )}
           </aside>
@@ -550,21 +543,14 @@ export function MemoryLibraryModal() {
                 className="w-full rounded-md px-3 py-2 text-sm outline-none"
                 style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)' }}
               />
-              <button
-                type="button"
+              <Button
+                variant="danger"
+                size="sm"
                 disabled={memoryLibraryLoading || visibleEntryIds.length === 0}
                 onClick={() => setPendingMassDeleteEntryIds(visibleEntryIds)}
-                className="shrink-0 rounded-md px-3 py-2 text-xs font-medium"
-                style={{
-                  background: 'transparent',
-                  color: visibleEntryIds.length > 0 ? 'var(--red)' : 'var(--text-3)',
-                  border: '1px solid var(--border)',
-                  opacity: visibleEntryIds.length > 0 ? 1 : 0.55,
-                  cursor: visibleEntryIds.length > 0 ? 'pointer' : 'not-allowed',
-                }}
               >
                 {massDeleteLabel}
-              </button>
+              </Button>
             </div>
 
             {memoryLibraryError && (
@@ -599,23 +585,11 @@ export function MemoryLibraryModal() {
                         fontFamily: 'inherit',
                       }}
                     >
-                      <svg
-                        width="13"
-                        height="13"
-                        viewBox="0 0 16 16"
-                        fill="currentColor"
+                      <FolderOpen
+                        size={14}
                         style={{ flexShrink: 0, color: 'var(--accent)', opacity: 0.85 }}
                         aria-hidden="true"
-                      >
-                        {(expandedLocationGroups[location.key] ?? true) ? (
-                          <>
-                            <path d="M1 5.5A1.5 1.5 0 012.5 4H6l1.5 1.5H14A1.5 1.5 0 0115.5 7v.5H.5V5.5A1 1 0 011 5.5z" />
-                            <path d="M.5 8h15l-1.5 5.5H2L.5 8z" opacity="0.85" />
-                          </>
-                        ) : (
-                          <path d="M1 5.5A1.5 1.5 0 012.5 4H6l1.5 1.5H13.5A1.5 1.5 0 0115 7v5.5A1.5 1.5 0 0113.5 14h-11A1.5 1.5 0 011 12.5v-7z" />
-                        )}
-                      </svg>
+                      />
                       <span className="min-w-0 flex-1">
                         <span className="block text-sm font-semibold truncate" style={{ color: 'var(--text)' }}>
                           {location.label}
@@ -661,22 +635,20 @@ export function MemoryLibraryModal() {
                                       </div>
                                     </div>
                                     <div className="flex items-center gap-2">
-                                      <button
-                                        type="button"
+                                      <Button
+                                        variant="secondary"
+                                        size="sm"
                                         onClick={() => void revealMemoryEntry(entry.id)}
-                                        className="px-2 py-1 rounded-md text-[11px]"
-                                        style={{ background: 'transparent', color: 'var(--text-2)', border: '1px solid var(--border)' }}
                                       >
                                         Reveal file
-                                      </button>
-                                      <button
-                                        type="button"
+                                      </Button>
+                                      <Button
+                                        variant="danger"
+                                        size="sm"
                                         onClick={() => setPendingDeleteEntryId(entry.id)}
-                                        className="px-2 py-1 rounded-md text-[11px]"
-                                        style={{ background: 'transparent', color: 'var(--red)', border: '1px solid var(--border)' }}
                                       >
                                         Delete
-                                      </button>
+                                      </Button>
                                     </div>
                                   </div>
 
@@ -726,25 +698,23 @@ export function MemoryLibraryModal() {
               </div>
             </div>
             <div className="flex items-center justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={() => setPendingDeleteEntryId(null)}
-                className="px-4 py-1.5 rounded-md text-xs"
-                style={{ background: 'transparent', color: 'var(--text-2)', border: '1px solid var(--border)' }}
               >
                 Cancel
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
                 onClick={() => {
                   void deleteMemoryEntry(pendingDelete.id)
                   setPendingDeleteEntryId(null)
                 }}
-                className="px-4 py-1.5 rounded-md text-xs font-medium"
-                style={{ background: 'var(--red)', color: '#fff', border: 'none' }}
               >
                 Delete memory
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -773,25 +743,23 @@ export function MemoryLibraryModal() {
               </div>
             </div>
             <div className="flex items-center justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={() => setPendingMassDeleteEntryIds(null)}
-                className="px-4 py-1.5 rounded-md text-xs"
-                style={{ background: 'transparent', color: 'var(--text-2)', border: '1px solid var(--border)' }}
               >
                 Cancel
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
                 onClick={() => {
                   void deleteMemoryEntries(pendingMassDeleteEntryIds)
                   setPendingMassDeleteEntryIds(null)
                 }}
-                className="px-4 py-1.5 rounded-md text-xs font-medium"
-                style={{ background: 'var(--red)', color: '#fff', border: 'none' }}
               >
                 Delete {pendingMassDeleteCount} {pendingMassDeleteCount === 1 ? 'memory' : 'memories'}
-              </button>
+              </Button>
             </div>
           </div>
         </div>

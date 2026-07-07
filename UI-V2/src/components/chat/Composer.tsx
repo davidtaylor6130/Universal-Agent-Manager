@@ -2,6 +2,7 @@
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
 
 import { RefObject } from 'react'
+import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus } from 'lucide-react'
 import type { AcpBinding } from '../../store/useAppStore'
 import type { Goal } from '../../types/goal'
 import type { Provider } from '../../types/provider'
@@ -32,7 +33,7 @@ export function ComposerIcon({ name, size = 14 }: { name: ComposerIconName; size
     return (
       <span
         aria-hidden="true"
-        className="font-semibold leading-none"
+        className="font-semibold leading-none font-mono"
         style={{ fontSize: 11, letterSpacing: 0 }}
       >
         .md
@@ -40,63 +41,14 @@ export function ComposerIcon({ name, size = 14 }: { name: ComposerIconName; size
     )
   }
 
-  if (name === 'folder') {
-    return (
-      <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M2.5 4.2h4l1.1 1.4h5.9v6.2a1 1 0 0 1-1 1h-10a1 1 0 0 1-1-1V5.2a1 1 0 0 1 1-1Z" />
-      </svg>
-    )
+  switch (name) {
+    case 'folder': return <Folder size={size} aria-hidden />
+    case 'editor': return <SquarePen size={size} aria-hidden />
+    case 'git-tree': return <GitBranch size={size} aria-hidden />
+    case 'send': return <ArrowUp size={size} aria-hidden />
+    case 'terminal': return <SquareTerminal size={size} aria-hidden />
+    default: return <Plus size={size} aria-hidden />
   }
-
-  if (name === 'editor') {
-    return (
-      <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <rect x="2.5" y="3" width="11" height="8.5" rx="1.2" />
-        <path d="M5.5 13h5" />
-        <path d="M8 11.5V13" />
-        <path d="m5.6 6.1 1.2 1.2-1.2 1.2" />
-        <path d="M8.2 8.6h2.2" />
-      </svg>
-    )
-  }
-
-  if (name === 'git-tree') {
-    return (
-      <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <circle cx="4" cy="3.5" r="1.6" />
-        <circle cx="12" cy="8" r="1.6" />
-        <circle cx="4" cy="12.5" r="1.6" />
-        <path d="M4 5.1v5.8" />
-        <path d="M5.6 3.5h1.7A2.7 2.7 0 0 1 10 6.2V8h.4" />
-      </svg>
-    )
-  }
-
-  if (name === 'send') {
-    return (
-      <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M2.5 8 13 3.2 10.4 13 7.5 9.2 2.5 8Z" />
-        <path d="m7.5 9.2 2.2-2.4" />
-      </svg>
-    )
-  }
-
-  if (name === 'terminal') {
-    return (
-      <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <rect x="2" y="3" width="12" height="10" rx="1.5" />
-        <path d="m4.7 7.3 2 1.1-2 1.1" />
-        <path d="M8 10h4" />
-      </svg>
-    )
-  }
-
-  return (
-    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
-      <path d="M8 3.2v9.6" />
-      <path d="M3.2 8h9.6" />
-    </svg>
-  )
 }
 
 export function ComposerToolbar({

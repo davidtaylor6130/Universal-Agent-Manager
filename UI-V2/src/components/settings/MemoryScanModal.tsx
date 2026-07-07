@@ -1,6 +1,8 @@
 import { useEffect } from 'react'
+import { X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
+import { Button, IconButton } from '../ui'
 
 export function MemoryScanModal() {
   const isMemoryScanModalOpen = useAppStore((s) => s.isMemoryScanModalOpen)
@@ -64,22 +66,12 @@ export function MemoryScanModal() {
               Backfill durable memory from existing chat history.
             </div>
           </div>
-          <button
-            type="button"
+          <IconButton
+            icon={<X size={16} />}
+            label="Close scan modal"
             onClick={closeMemoryScanModal}
             disabled={memoryScanRunning}
-            style={{
-              background: 'transparent',
-              color: 'var(--text-3)',
-              border: 'none',
-              cursor: memoryScanRunning ? 'not-allowed' : 'pointer',
-              fontFamily: 'inherit',
-              fontSize: 12,
-              opacity: memoryScanRunning ? 0.5 : 1,
-            }}
-          >
-            ✕
-          </button>
+          />
         </div>
 
         <div className="p-5 md:p-6 overflow-y-auto min-h-0">
@@ -88,22 +80,20 @@ export function MemoryScanModal() {
               {memoryScanCandidates.length} eligible chat{memoryScanCandidates.length === 1 ? '' : 's'}
             </div>
             <div className="flex items-center gap-2">
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={selectAllMemoryScanChats}
-                className="px-2 py-1 rounded-md text-xs"
-                style={{ background: 'transparent', color: 'var(--text-2)', border: '1px solid var(--border)' }}
               >
                 Select all
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={selectNoMemoryScanChats}
-                className="px-2 py-1 rounded-md text-xs"
-                style={{ background: 'transparent', color: 'var(--text-2)', border: '1px solid var(--border)' }}
               >
                 Select none
-              </button>
+              </Button>
             </div>
           </div>
 
@@ -169,36 +159,22 @@ export function MemoryScanModal() {
           className="flex items-center justify-end gap-2 px-5 py-4"
           style={{ borderTop: '1px solid var(--border)' }}
         >
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={closeMemoryScanModal}
             disabled={memoryScanRunning}
-            className="px-4 py-1.5 rounded-md text-xs"
-            style={{
-              background: 'transparent',
-              color: 'var(--text-2)',
-              border: '1px solid var(--border)',
-              cursor: memoryScanRunning ? 'not-allowed' : 'pointer',
-              opacity: memoryScanRunning ? 0.5 : 1,
-            }}
           >
             Cancel
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
             onClick={() => void startMemoryScan()}
             disabled={memoryScanRunning || selectedMemoryScanChatIds.length === 0}
-            className="px-4 py-1.5 rounded-md text-xs font-medium"
-            style={{
-              background: 'var(--accent)',
-              color: '#fff',
-              border: 'none',
-              cursor: memoryScanRunning || selectedMemoryScanChatIds.length === 0 ? 'not-allowed' : 'pointer',
-              opacity: memoryScanRunning || selectedMemoryScanChatIds.length === 0 ? 0.5 : 1,
-            }}
           >
             {memoryScanRunning ? 'Starting scan...' : `Scan ${selectedMemoryScanChatIds.length} chat${selectedMemoryScanChatIds.length === 1 ? '' : 's'}`}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

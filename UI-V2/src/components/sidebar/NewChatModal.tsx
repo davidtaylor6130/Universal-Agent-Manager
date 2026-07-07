@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
+import { X, ChevronDown, ChevronUp } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { DEFAULT_PROVIDER_ID, providerRuntimeDescription } from '../../utils/providerMetadata'
+import { Button, Tooltip } from '../ui'
 
 export function NewChatModal() {
   const addSession = useAppStore((s) => s.addSession)
@@ -132,20 +134,24 @@ export function NewChatModal() {
           <span className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
             New Session
           </span>
-          <button
-            onClick={() => setNewChatModalOpen(false)}
-            className="text-xs rounded transition-colors duration-100"
-            style={{
-              background: 'transparent',
-              color: 'var(--text-3)',
-              border: 'none',
-              cursor: 'pointer',
-              padding: '2px 4px',
-              fontFamily: 'inherit',
-            }}
-          >
-            ✕
-          </button>
+          <Tooltip label="Close">
+            <button
+              onClick={() => setNewChatModalOpen(false)}
+              className="flex items-center justify-center rounded transition-colors duration-100"
+              style={{
+                background: 'transparent',
+                color: 'var(--text-3)',
+                border: 'none',
+                cursor: 'pointer',
+                padding: 0,
+                width: 20,
+                height: 20,
+                fontFamily: 'inherit',
+              }}
+            >
+              <X size={16} aria-hidden />
+            </button>
+          </Tooltip>
         </div>
 
         <div className="p-5 space-y-5">
@@ -203,8 +209,8 @@ export function NewChatModal() {
                         </div>
                       )}
                     </div>
-                    <span className="text-[10px]" style={{ color: 'var(--text-3)' }}>
-                      {folderMenuOpen ? '▲' : '▼'}
+                    <span style={{ color: 'var(--text-3)', display: 'flex', alignItems: 'center' }}>
+                      {folderMenuOpen ? <ChevronUp size={14} aria-hidden /> : <ChevronDown size={14} aria-hidden />}
                     </span>
                   </div>
                 </button>
@@ -275,8 +281,8 @@ export function NewChatModal() {
                       <ProviderLogo providerId={selectedProvider?.id} />
                       <span className="truncate">{selectedProvider?.shortName ?? selectedProvider?.name ?? 'Provider'}</span>
                     </span>
-                    <span className="text-[10px]" style={{ color: 'var(--text-3)' }}>
-                      {providerMenuOpen ? '▲' : '▼'}
+                    <span style={{ color: 'var(--text-3)', display: 'flex', alignItems: 'center' }}>
+                      {providerMenuOpen ? <ChevronUp size={14} aria-hidden /> : <ChevronDown size={14} aria-hidden />}
                     </span>
                   </div>
                 </button>
@@ -331,38 +337,21 @@ export function NewChatModal() {
           className="flex items-center justify-end gap-2 px-5 py-4"
           style={{ borderTop: '1px solid var(--border)' }}
         >
-          <button
+          <Button
+            variant="ghost"
+            size="md"
             onClick={() => setNewChatModalOpen(false)}
-            className="px-4 py-1.5 rounded-md text-xs transition-colors duration-150"
-            style={{
-              background: 'transparent',
-              color: 'var(--text-2)',
-              border: '1px solid var(--border)',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}
-            onMouseEnter={(e) => e.currentTarget.style.borderColor = 'var(--border-bright)'}
-            onMouseLeave={(e) => e.currentTarget.style.borderColor = 'var(--border)'}
           >
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
+            variant="primary"
+            size="md"
             onClick={handleCreate}
             disabled={!canCreate}
-            className="px-4 py-1.5 rounded-md text-xs font-medium transition-opacity duration-150"
-            style={{
-              background: 'var(--accent)',
-              color: '#fff',
-              border: 'none',
-              cursor: canCreate ? 'pointer' : 'not-allowed',
-              fontFamily: 'inherit',
-              opacity: canCreate ? 1 : 0.45,
-            }}
-            onMouseEnter={(e) => { if (canCreate) e.currentTarget.style.opacity = '0.88' }}
-            onMouseLeave={(e) => { e.currentTarget.style.opacity = canCreate ? '1' : '0.45' }}
           >
             Create Session
-          </button>
+          </Button>
         </div>
       </div>
     </div>

@@ -80,6 +80,7 @@ import {
   ComposerToolbar,
 } from '../chat/Composer'
 import { ProviderLogo } from '../shared/ProviderLogo'
+import { Button, IconButton } from '../ui'
 
 interface ChatViewProps {
   session: Session
@@ -728,7 +729,7 @@ export function ChatView({ session }: ChatViewProps) {
         <div ref={scrollRef} className="flex-1 overflow-auto" data-copy-surface="chat" onScroll={handleScroll}>
           <div className="w-full px-4 py-4">
             <div className="flex items-center gap-2 mb-5 text-xs" style={{ color: 'var(--text-2)' }}>
-              <span style={{ color: statusColor(acp), fontSize: 9 }}>●</span>
+              <span aria-hidden style={{ width: 7, height: 7, borderRadius: '50%', background: statusColor(acp), flexShrink: 0 }} />
               <span>{statusLabel(acp)}</span>
               {acp?.agentInfo?.title && (
                 <span style={{ color: 'var(--text-3)' }}>{acp.agentInfo.title}</span>
@@ -743,13 +744,13 @@ export function ChatView({ session }: ChatViewProps) {
             <div className="space-y-4">
               {earliestRenderedMessageIndex > 0 && (
                 <div className="flex justify-center">
-                  <button
-                    type="button"
-                    className="uam-secondary-button"
+                  <Button
+                    variant="secondary"
+                    size="sm"
                     onClick={() => setRenderedMessageCount((current) => current + RENDERED_MESSAGE_BATCH_SIZE)}
                   >
-                    <span>Show earlier messages</span>
-                  </button>
+                    Show earlier messages
+                  </Button>
                 </div>
               )}
               {visibleMessages.map((message, visibleIndex) => {
@@ -912,106 +913,62 @@ export function ChatView({ session }: ChatViewProps) {
                 >
                   {workspaceDirectory || 'No workspace directory selected'}
                 </span>
-                <button
-                  type="button"
-                disabled={!workspaceDirectory}
-                onClick={() => void openWorkspace()}
-                className="h-[24px] w-[28px] inline-flex flex-shrink-0 items-center justify-center text-[11px] font-medium"
-                title="Open workspace in Finder or File Explorer"
-                style={{
-                  border: '1px solid var(--border)',
-                  borderRadius: 6,
-                  background: workspaceDirectory ? 'var(--surface-up)' : 'var(--bg)',
-                  color: workspaceDirectory ? 'var(--text-2)' : 'var(--text-3)',
-                  opacity: workspaceDirectory ? 1 : 0.55,
-                }}
-                >
-                  <ComposerIcon name="folder" size={13} />
-        </button>
-        <button
-        type="button"
-        disabled={!workspaceDirectory}
-        onClick={() => void openWorkspaceEditor()}
-        className="h-[24px] w-[28px] inline-flex flex-shrink-0 items-center justify-center text-[11px] font-medium"
-        title="Open workspace in configured editor"
-        style={{
-          border: '1px solid var(--border)',
-          borderRadius: 6,
-          background: workspaceDirectory ? 'var(--surface-up)' : 'var(--bg)',
-          color: workspaceDirectory ? 'var(--text-2)' : 'var(--text-3)',
-          opacity: workspaceDirectory ? 1 : 0.55,
-        }}
-      >
-        <ComposerIcon name="editor" size={13} />
-      </button>
-      <button
-        type="button"
-        disabled={!workspaceDirectory}
-        onClick={() => void openWorkspaceTerminal()}
-        className="h-[24px] w-[28px] inline-flex flex-shrink-0 items-center justify-center text-[11px] font-medium"
-        title={!workspaceDirectory ? 'Select a workspace directory to open a terminal' : 'Open a terminal at the workspace location'}
-        style={{
-          border: '1px solid var(--border)',
-          borderRadius: 6,
-          background: workspaceDirectory ? 'var(--surface-up)' : 'var(--bg)',
-          color: workspaceDirectory ? 'var(--text-2)' : 'var(--text-3)',
-          opacity: workspaceDirectory ? 1 : 0.55,
-        }}
-      >
-        <ComposerIcon name="terminal" size={13} />
-      </button>
-      {!isGitWorktree && (
-        <button
-          type="button"
-          disabled={!workspaceDirectory || workspaceActionsDisabled}
-          onClick={() => void runWorkspaceAction('create')}
-          className="h-[24px] w-[28px] inline-flex flex-shrink-0 items-center justify-center text-[11px] font-medium"
-          title={workspaceActionsDisabled ? 'Stop the runtime before changing workspace isolation' : 'Create an isolated Git worktree for this chat'}
-          style={{
-            border: '1px solid var(--border)',
-            borderRadius: 6,
-            background: workspaceDirectory && !workspaceActionsDisabled ? 'var(--surface-up)' : 'var(--bg)',
-            color: workspaceDirectory && !workspaceActionsDisabled ? 'var(--text-2)' : 'var(--text-3)',
-            opacity: workspaceDirectory && !workspaceActionsDisabled ? 1 : 0.55,
-          }}
-        >
-          <ComposerIcon name="git-tree" size={13} />
-        </button>
-      )}
+                <IconButton
+                  variant="solid"
+                  size="sm"
+                  disabled={!workspaceDirectory}
+                  onClick={() => void openWorkspace()}
+                  icon={<ComposerIcon name="folder" size={14} />}
+                  label="Open workspace in Finder or File Explorer"
+                  tooltipSide="bottom"
+                />
+                <IconButton
+                  variant="solid"
+                  size="sm"
+                  disabled={!workspaceDirectory}
+                  onClick={() => void openWorkspaceEditor()}
+                  icon={<ComposerIcon name="editor" size={14} />}
+                  label="Open workspace in configured editor"
+                  tooltipSide="bottom"
+                />
+                <IconButton
+                  variant="solid"
+                  size="sm"
+                  disabled={!workspaceDirectory}
+                  onClick={() => void openWorkspaceTerminal()}
+                  icon={<ComposerIcon name="terminal" size={14} />}
+                  label={!workspaceDirectory ? 'Select a workspace directory to open a terminal' : 'Open a terminal at the workspace location'}
+                  tooltipSide="bottom"
+                />
+                {!isGitWorktree && (
+                  <IconButton
+                    variant="solid"
+                    size="sm"
+                    disabled={!workspaceDirectory || workspaceActionsDisabled}
+                    onClick={() => void runWorkspaceAction('create')}
+                    icon={<ComposerIcon name="git-tree" size={14} />}
+                    label={workspaceActionsDisabled ? 'Stop the runtime before changing workspace isolation' : 'Create an isolated Git worktree for this chat'}
+                    tooltipSide="bottom"
+                  />
+                )}
                 {isGitWorktree && (
                   <>
-                    <button
-                      type="button"
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       disabled={workspaceActionsDisabled}
                       onClick={() => void runWorkspaceAction('discard')}
-                      className="h-[24px] flex-shrink-0 px-2 text-[11px] font-medium"
-                      title={workspaceActionsDisabled ? 'Stop the runtime before discarding worktree changes' : 'Discard worktree changes and return this chat to the source workspace'}
-                      style={{
-                        border: '1px solid var(--border)',
-                        borderRadius: 6,
-                        background: workspaceActionsDisabled ? 'var(--bg)' : 'var(--surface-up)',
-                        color: workspaceActionsDisabled ? 'var(--text-3)' : 'var(--text-2)',
-                        opacity: workspaceActionsDisabled ? 0.55 : 1,
-                      }}
                     >
-                      Discard & return
-                    </button>
-                    <button
-                      type="button"
+                      Discard &amp; return
+                    </Button>
+                    <Button
+                      variant="primary"
+                      size="sm"
                       disabled={workspaceActionsDisabled}
                       onClick={() => void runWorkspaceAction('port')}
-                      className="h-[24px] flex-shrink-0 px-2 text-[11px] font-medium"
-                      title={workspaceActionsDisabled ? 'Stop the runtime before porting worktree changes' : 'Apply this chat worktree diff and return this chat to the source workspace'}
-                      style={{
-                        border: '1px solid color-mix(in srgb, var(--accent) 42%, var(--border))',
-                        borderRadius: 6,
-                        background: workspaceActionsDisabled ? 'var(--bg)' : 'color-mix(in srgb, var(--accent) 12%, var(--surface))',
-                        color: workspaceActionsDisabled ? 'var(--text-3)' : 'var(--text)',
-                        opacity: workspaceActionsDisabled ? 0.55 : 1,
-                      }}
                     >
                       Port back
-                    </button>
+                    </Button>
                   </>
                 )}
               </div>

@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
+import { AlertTriangle } from 'lucide-react'
 import { Session } from '../../types/session'
 import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF, isCefContext } from '../../ipc/cefBridge'
@@ -358,14 +359,15 @@ export function CLIView({ session }: CLIViewProps) {
     return (
       <div className="flex flex-col h-full overflow-hidden">
         <div
-          className="mx-4 mt-4 rounded-md border px-3 py-2 text-xs"
+          className="mx-4 mt-4 flex items-start gap-3 rounded-md border px-3 py-2 text-xs"
           style={{
             borderColor: 'color-mix(in srgb, var(--yellow) 45%, var(--border))',
             background: 'color-mix(in srgb, var(--yellow) 10%, var(--surface))',
             color: 'var(--text)',
           }}
         >
-          {unsupportedProviderMessage}
+          <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 2, color: 'var(--yellow)' }} aria-hidden />
+          <span>{unsupportedProviderMessage}</span>
         </div>
       </div>
     )

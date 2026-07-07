@@ -2,6 +2,7 @@
 // the MessageFrame wrapper. Extracted from ChatView.tsx (MO-3).
 
 import { ReactNode, useEffect, useState } from 'react'
+import { User, Code, ChevronDown } from 'lucide-react'
 import type {
   AcpPendingPermission,
   AcpPendingUserInput,
@@ -10,6 +11,7 @@ import type {
   AcpUserInputAnswers,
 } from '../../store/useAppStore'
 import type { Message } from '../../types/message'
+import { Tooltip } from '../ui'
 import {
   CopyTextButton,
   roleAccent,
@@ -25,46 +27,42 @@ export function SubAgentRunningPanel({ tool, onSelectTool }: { tool: AcpToolCall
   const statusColor = toolStatusColor(tool)
   const displayTitle = toolDisplayTitle(tool)
   return (
-    <button
-      type="button"
-      onClick={() => onSelectTool(tool.id)}
-      className="w-full text-left uam-subagent-panel"
-      style={{
-        display: 'grid',
-        gridTemplateColumns: 'minmax(0, 1fr) auto',
-        gap: 8,
-        alignItems: 'center',
-        padding: '10px 12px',
-        borderRadius: 8,
-        border: '1px solid color-mix(in srgb, var(--blue) 35%, var(--border-bright))',
-        borderLeft: '3px solid var(--blue)',
-        background: 'color-mix(in srgb, var(--blue) 8%, var(--surface))',
-        color: 'var(--text)',
-        boxShadow: '0 1px 0 color-mix(in srgb, var(--blue) 10%, transparent)',
-      }}
-      title="Open sub-agent details"
-    >
-      <span className="min-w-0 flex items-center gap-2" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <span
-          aria-hidden="true"
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            width: 22,
-            height: 22,
-            borderRadius: 6,
-            background: 'var(--blue-dim)',
-            color: 'var(--blue)',
-            flexShrink: 0,
-          }}
-        >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="8" cy="4.4" r="2.1" />
-            <path d="M4.4 13.2a3.6 3.6 0 0 1 7.2 0" />
-            <path d="M2.5 8.6h2.2M11.3 8.6h2.2" />
-          </svg>
-        </span>
+    <Tooltip label="Open sub-agent details">
+      <button
+        type="button"
+        onClick={() => onSelectTool(tool.id)}
+        className="w-full text-left uam-subagent-panel"
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'minmax(0, 1fr) auto',
+          gap: 8,
+          alignItems: 'center',
+          padding: '10px 12px',
+          borderRadius: 8,
+          border: '1px solid color-mix(in srgb, var(--blue) 35%, var(--border-bright))',
+          borderLeft: '3px solid var(--blue)',
+          background: 'color-mix(in srgb, var(--blue) 8%, var(--surface))',
+          color: 'var(--text)',
+          boxShadow: '0 1px 0 color-mix(in srgb, var(--blue) 10%, transparent)',
+        }}
+      >
+        <span className="min-w-0 flex items-center gap-2" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span
+            aria-hidden="true"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 22,
+              height: 22,
+              borderRadius: 6,
+              background: 'var(--blue-dim)',
+              color: 'var(--blue)',
+              flexShrink: 0,
+            }}
+          >
+            <User size={14} aria-hidden />
+          </span>
         <span className="min-w-0" style={{ display: 'flex', flexDirection: 'column', minWidth: 0, gap: 2 }}>
           <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--blue)' }}>
             <span aria-hidden="true" style={{ display: 'inline-block', width: 6, height: 6, borderRadius: 999, background: isActive ? statusColor : 'var(--text-3)', boxShadow: isActive ? `0 0 0 3px color-mix(in srgb, ${statusColor} 24%, transparent)` : 'none', animation: isActive ? 'uam-pulse 1.4s ease-in-out infinite' : 'none' }} />
@@ -91,7 +89,8 @@ export function SubAgentRunningPanel({ tool, onSelectTool }: { tool: AcpToolCall
           {tool.status.replace('_', ' ')}
         </span>
       )}
-    </button>
+      </button>
+    </Tooltip>
   )
 }
 
@@ -113,53 +112,48 @@ export function ToolCallInlineRows({ tools, onSelectTool }: { tools: AcpToolCall
         const displayTitle = toolDisplayTitle(tool)
         return (
         <div key={tool.id} className="uam-tool-timeline__item">
-          <button
-            type="button"
-            onClick={() => onSelectTool(tool.id)}
-            className="w-full grid text-left uam-tool-row"
-            style={{
-              gridTemplateColumns: '22px 86px minmax(0, 1fr) auto 18px',
-            }}
-            title="Open tool details"
-          >
-            <span
-              className="inline-flex items-center justify-center"
+          <Tooltip label="Open tool details">
+            <button
+              type="button"
+              onClick={() => onSelectTool(tool.id)}
+              className="w-full grid text-left uam-tool-row"
               style={{
-                width: 20,
-                height: 20,
-                borderRadius: 5,
-                color: 'var(--text-2)',
+                gridTemplateColumns: '22px 86px minmax(0, 1fr) auto 18px',
               }}
-              aria-hidden="true"
             >
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M5.2 3.2H3.7A1.7 1.7 0 0 0 2 4.9v6.2a1.7 1.7 0 0 0 1.7 1.7h1.5" />
-                <path d="M10.8 3.2h1.5A1.7 1.7 0 0 1 14 4.9v6.2a1.7 1.7 0 0 1-1.7 1.7h-1.5" />
-                <path d="M6.5 5.4 4.4 8l2.1 2.6M9.5 5.4 11.6 8l-2.1 2.6" />
-              </svg>
-            </span>
+              <span
+                className="inline-flex items-center justify-center"
+                style={{
+                  width: 20,
+                  height: 20,
+                  borderRadius: 5,
+                  color: 'var(--text-2)',
+                }}
+                aria-hidden="true"
+              >
+                <Code size={13} aria-hidden />
+              </span>
             <span className="text-[11px] font-medium" style={{ color: 'var(--teal)' }}>{displayKind}:</span>
             <span className="text-xs truncate" style={{ color: 'var(--text)' }}>{displayTitle}</span>
-            {tool.status && (
-              <span
-                className="text-[10px] font-medium"
-                style={{
-                  color: toolStatusColor(tool),
-                  border: '1px solid color-mix(in srgb, currentColor 22%, var(--border))',
-                  borderRadius: 6,
-                  background: 'color-mix(in srgb, currentColor 8%, var(--surface))',
-                  padding: '2px 7px',
-                }}
-              >
-                {tool.status.replace('_', ' ')}
+              {tool.status && (
+                <span
+                  className="text-[10px] font-medium"
+                  style={{
+                    color: toolStatusColor(tool),
+                    border: '1px solid color-mix(in srgb, currentColor 22%, var(--border))',
+                    borderRadius: 6,
+                    background: 'color-mix(in srgb, currentColor 8%, var(--surface))',
+                    padding: '2px 7px',
+                  }}
+                >
+                  {tool.status.replace('_', ' ')}
+                </span>
+              )}
+              <span style={{ color: 'var(--text-3)' }} aria-hidden="true">
+                <ChevronDown size={14} aria-hidden />
               </span>
-            )}
-            <span style={{ color: 'var(--text-3)' }} aria-hidden="true">
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                <path d="m5 6 3 3 3-3" />
-              </svg>
-            </span>
-          </button>
+            </button>
+          </Tooltip>
         </div>
         )
       })}
@@ -586,37 +580,40 @@ export function ToolCallModal({
           </div>
           <div className="flex items-center gap-2">
             {tool.isSubAgent && onOpenSubAgent && (
-              <button
-                type="button"
-                title="Open sub-agent chat"
-                onClick={onOpenSubAgent}
-                className="px-2 h-7 text-xs"
-                style={{
-                  borderRadius: 5,
-                  border: '1px solid var(--border-bright)',
-                  background: 'var(--accent-dim)',
-                  color: 'var(--text)',
-                }}
-              >
-                Open chat
-              </button>
+              <Tooltip label="Open sub-agent chat">
+                <button
+                  type="button"
+                  onClick={onOpenSubAgent}
+                  className="px-2 h-7 text-xs"
+                  style={{
+                    borderRadius: 5,
+                    border: '1px solid var(--border-bright)',
+                    background: 'var(--accent-dim)',
+                    color: 'var(--text)',
+                  }}
+                >
+                  Open chat
+                </button>
+              </Tooltip>
             )}
             <CopyTextButton text={toolCopyText} label="Copy" title="Copy tool output" />
           </div>
-          <button
-            type="button"
-            title="Close tool details"
-            onClick={onClose}
-            className="px-2 h-7 text-xs"
-            style={{
-              borderRadius: 5,
-              border: '1px solid var(--border)',
-              background: 'var(--bg)',
-              color: 'var(--text-2)',
-            }}
-          >
-            Close
-          </button>
+          <Tooltip label="Close tool details">
+            <button
+              type="button"
+              aria-label="Close tool details"
+              onClick={onClose}
+              className="px-2 h-7 text-xs"
+              style={{
+                borderRadius: 5,
+                border: '1px solid var(--border)',
+                background: 'var(--bg)',
+                color: 'var(--text-2)',
+              }}
+            >
+              Close
+            </button>
+          </Tooltip>
         </div>
         <div className="p-4 overflow-auto" style={{ maxHeight: 'calc(min(720px, 88vh) - 44px)' }}>
           <div className="grid gap-2 text-xs mb-4" style={{ color: 'var(--text-2)' }}>

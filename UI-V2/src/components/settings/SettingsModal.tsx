@@ -15,6 +15,8 @@ import { useTheme } from '../../hooks/useTheme'
 import type { Provider } from '../../types/provider'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
+import { ChevronDown, ChevronRight, X, Check } from 'lucide-react'
+import { Button, IconButton } from '../ui'
 import {
   DEFAULT_PROVIDER_ID,
   providerCapabilities,
@@ -186,7 +188,7 @@ function ProviderDisclosureCard(
             border: '1px solid var(--border)',
           }}
         >
-          {expanded ? '-' : '+'}
+          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         </span>
       </button>
 
@@ -436,7 +438,7 @@ export function SettingsModal() {
                       </span>
                     )}
                   </span>
-                  {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
+                  {selected && <Check size={13} style={{ color: 'var(--green)' }} aria-hidden />}
                 </button>
               )
             })}
@@ -521,7 +523,7 @@ export function SettingsModal() {
                 >
                   <span className="flex items-center gap-2">
                     <span className="flex-1">{option.label}</span>
-                    {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
+                    {selected && <Check size={13} style={{ color: 'var(--green)' }} aria-hidden />}
                   </span>
                   {option.detail && (
                     <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>
@@ -596,7 +598,7 @@ export function SettingsModal() {
                 }}
               >
                 <span className="flex-1">{preset.label}</span>
-                {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
+                {selected && <Check size={13} style={{ color: 'var(--green)' }} aria-hidden />}
               </button>
             )
           })}
@@ -736,30 +738,20 @@ export function SettingsModal() {
                           )}
                         </div>
                         <div className="flex flex-wrap gap-2">
-                          <button
-                            type="button"
+                          <Button
+                            variant={defaults.autoApproveCommands ? 'primary' : 'secondary'}
+                            size="sm"
                             onClick={() => updateProviderDefaults(provider.id, { ...defaults, autoApproveCommands: !defaults.autoApproveCommands })}
-                            className="px-2 py-1 rounded-md"
-                            style={{
-                              background: defaults.autoApproveCommands ? 'color-mix(in srgb, var(--yellow) 16%, var(--surface))' : 'var(--surface-up)',
-                              color: 'var(--text-2)',
-                              border: '1px solid var(--border)',
-                            }}
                           >
                             {defaults.autoApproveCommands ? 'Auto approve on' : 'Auto approve off'}
-                          </button>
-                          <button
-                            type="button"
+                          </Button>
+                          <Button
+                            variant={defaults.memoryEnabled ? 'primary' : 'secondary'}
+                            size="sm"
                             onClick={() => updateProviderDefaults(provider.id, { ...defaults, memoryEnabled: !defaults.memoryEnabled })}
-                            className="px-2 py-1 rounded-md"
-                            style={{
-                              background: defaults.memoryEnabled ? 'color-mix(in srgb, var(--green) 14%, var(--surface))' : 'var(--surface-up)',
-                              color: 'var(--text-2)',
-                              border: '1px solid var(--border)',
-                            }}
                           >
                             {defaults.memoryEnabled ? 'Memory on' : 'Memory off'}
-                          </button>
+                          </Button>
                         </div>
                       </div>
                     </ProviderDisclosureCard>
@@ -821,20 +813,14 @@ export function SettingsModal() {
                           </div>
                         )}
                       </div>
-                      <button
-                        type="button"
+                      <Button
+                        variant="secondary"
+                        size="sm"
                         disabled={manager.running}
                         onClick={() => void refreshCliProviderVersion(manager.providerId)}
-                        className="px-3 py-1.5 rounded-md text-xs disabled:opacity-50"
-                        style={{
-                          background: 'var(--surface-up)',
-                          color: 'var(--text)',
-                          border: '1px solid var(--border)',
-                          cursor: manager.running ? 'default' : 'pointer',
-                        }}
                       >
                         Refresh
-                      </button>
+                      </Button>
                     </div>
 
                     <div className="grid grid-cols-2 gap-3 mt-3">
@@ -868,23 +854,17 @@ export function SettingsModal() {
                         <div className="text-xs" style={{ color: 'var(--text-3)' }}>
                           Applies with npm globally for this provider.
                         </div>
-                        <button
-                          type="button"
+                        <Button
+                          variant={canApplyCliVersion ? 'primary' : 'secondary'}
+                          size="sm"
                           disabled={!canApplyCliVersion}
                           onClick={() => {
                             if (!window.confirm(`Install ${providerName} ${selectedCliVersion}?`)) return
                             void applyCliProviderVersion(manager.providerId, selectedCliVersion)
                           }}
-                          className="px-3 py-1.5 rounded-md text-xs disabled:opacity-50"
-                          style={{
-                            background: canApplyCliVersion ? 'var(--accent)' : 'var(--surface-up)',
-                            color: canApplyCliVersion ? '#fff' : 'var(--text-3)',
-                            border: canApplyCliVersion ? 'none' : '1px solid var(--border)',
-                            cursor: canApplyCliVersion ? 'pointer' : 'default',
-                          }}
                         >
                           {manager.running ? 'Running' : 'Apply'}
-                        </button>
+                        </Button>
                       </div>
                     </div>
 
@@ -935,18 +915,13 @@ export function SettingsModal() {
                     New chats default {memoryEnabledDefault ? 'on' : 'off'}
                   </div>
                 </div>
-                <button
-                  type="button"
+                <Button
+                  variant={memoryEnabledDefault ? 'primary' : 'secondary'}
+                  size="sm"
                   onClick={() => void setMemorySettings({ memoryEnabledDefault: !memoryEnabledDefault })}
-                  className="px-2 py-1 rounded-md text-xs"
-                  style={{
-                    background: memoryEnabledDefault ? 'var(--accent-dim)' : 'var(--surface)',
-                    color: 'var(--text)',
-                    border: '1px solid var(--border)',
-                  }}
                 >
                   {memoryEnabledDefault ? 'On' : 'Off'}
-                </button>
+                </Button>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -1073,7 +1048,7 @@ export function SettingsModal() {
                                 >
                                   <ProviderLogo providerId={candidate.id} />
                                   <span className="flex-1">{providerDisplayName(candidate, candidate.id)}</span>
-                                  {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
+                                  {selected && <Check size={13} style={{ color: 'var(--green)' }} aria-hidden />}
                                 </button>
                               )
                             })}
@@ -1138,7 +1113,7 @@ export function SettingsModal() {
                                 >
                                   <span className="flex items-center gap-2">
                                     <span className="flex-1">{option.label}</span>
-                                    {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
+                                    {selected && <Check size={13} style={{ color: 'var(--green)' }} aria-hidden />}
                                   </span>
                                   <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>{option.detail}</span>
                                 </button>
@@ -1216,20 +1191,13 @@ export function SettingsModal() {
                   Open the file-backed library for app-wide durable memories.
                 </div>
               </div>
-              <button
-                type="button"
+              <Button
+                variant="primary"
+                size="sm"
                 onClick={() => void openGlobalMemoryLibrary()}
-                className="px-3 py-1.5 rounded-md text-xs"
-                style={{
-                  background: 'var(--accent)',
-                  color: '#fff',
-                  border: 'none',
-                  cursor: 'pointer',
-                  fontFamily: 'inherit',
-                }}
               >
                 Open library
-              </button>
+              </Button>
             </div>
           </SectionCard>
 
@@ -1253,45 +1221,36 @@ export function SettingsModal() {
                     outline: 'none',
                   }}
                 />
-                <button
-                  type="button"
+                <Button
+                  variant="secondary"
+                  size="sm"
                   onClick={() => {
                     void browseMarkdownStoreDirectory(markdownStoreDraftDirectory).then((selected) => {
                       if (selected) setMarkdownStoreDraftDirectory(selected)
                     })
                   }}
-                  className="px-3 py-2 text-xs"
-                  style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface-up)', color: 'var(--text-2)' }}
                 >
                   Browse
-                </button>
-                <button
-                  type="button"
+                </Button>
+                <Button
+                  variant="primary"
+                  size="sm"
                   onClick={() => void setMarkdownStoreDirectory(markdownStoreDraftDirectory)}
-                  className="px-3 py-2 text-xs"
-                  style={{ border: 'none', borderRadius: 8, background: 'var(--accent)', color: '#fff' }}
                 >
                   Save
-                </button>
+                </Button>
               </div>
               <div className="flex items-center justify-between gap-4">
                 <div className="text-xs" style={{ color: 'var(--text-3)' }}>
                   Attach entries to chats as file path references.
                 </div>
-                <button
-                  type="button"
+                <Button
+                  variant="primary"
+                  size="sm"
                   onClick={() => void openMarkdownStore()}
-                  className="px-3 py-1.5 rounded-md text-xs"
-                  style={{
-                    background: 'var(--accent)',
-                    color: '#fff',
-                    border: 'none',
-                    cursor: 'pointer',
-                    fontFamily: 'inherit',
-                  }}
                 >
                   Open store
-                </button>
+                </Button>
               </div>
             </div>
           </SectionCard>
@@ -1309,20 +1268,13 @@ export function SettingsModal() {
                   Choose chats and queue a one-off backfill scan for memory extraction.
                 </div>
               </div>
-              <button
-                type="button"
+              <Button
+                variant="primary"
+                size="sm"
                 onClick={() => void openMemoryScanModal()}
-                className="px-3 py-1.5 rounded-md text-xs"
-                style={{
-                  background: 'var(--accent)',
-                  color: '#fff',
-                  border: 'none',
-                  cursor: 'pointer',
-                  fontFamily: 'inherit',
-                }}
               >
                 Scan Current Chats
-              </button>
+              </Button>
             </div>
           </SectionCard>
         </div>
@@ -1407,15 +1359,14 @@ export function SettingsModal() {
                           <div className="text-xs" style={{ color: 'var(--text-3)' }}>
                             {association.extensions.length} extension{association.extensions.length === 1 ? '' : 's'} open in {editorPresetLabel(association.editorPresetId)}
                           </div>
-                          <button
-                            type="button"
+                          <Button
+                            variant="secondary"
+                            size="sm"
                             disabled={editorAssociationsDraft.length <= 1}
                             onClick={() => saveEditorSettings(editorAssociationsDraft.filter((item) => item.id !== association.id))}
-                            className="px-3 py-1.5 text-xs disabled:opacity-50"
-                            style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface-up)', color: 'var(--text-2)' }}
                           >
                             Delete
-                          </button>
+                          </Button>
                         </div>
                       </div>
                     </ProviderDisclosureCard>
@@ -1423,8 +1374,9 @@ export function SettingsModal() {
                 })}
               </div>
 
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={() => {
                   const id = `editor-group-${Date.now()}`
                   const nextAssociations = [
@@ -1439,11 +1391,9 @@ export function SettingsModal() {
                   setExpandedEditorGroups((current) => ({ ...current, [id]: true }))
                   saveEditorSettings(nextAssociations)
                 }}
-                className="px-3 py-2 text-xs justify-self-start"
-                style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface-up)', color: 'var(--text)' }}
               >
                 Add group
-              </button>
+              </Button>
             </div>
           </SectionCard>
         </div>
@@ -1493,19 +1443,11 @@ export function SettingsModal() {
           <span className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
             Settings
           </span>
-          <button
+          <IconButton
+            icon={<X size={16} />}
+            label="Close settings"
             onClick={() => setSettingsOpen(false)}
-            style={{
-              background: 'transparent',
-              color: 'var(--text-3)',
-              border: 'none',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-              fontSize: 12,
-            }}
-          >
-            ✕
-          </button>
+          />
         </div>
 
         <div className="grid md:grid-cols-[220px_minmax(0,1fr)] min-h-[560px] flex-1 min-h-0">
@@ -1570,21 +1512,14 @@ export function SettingsModal() {
           className="px-5 py-4"
           style={{ borderTop: '1px solid var(--border)' }}
         >
-          <button
+          <Button
+            variant="primary"
+            block
+            size="md"
             onClick={() => setSettingsOpen(false)}
-            className="w-full py-1.5 rounded-md text-xs font-medium transition-opacity duration-150"
-            style={{
-              background: 'var(--accent)',
-              color: '#fff',
-              border: 'none',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.opacity = '0.88' }}
-            onMouseLeave={(e) => { e.currentTarget.style.opacity = '1' }}
           >
             Close
-          </button>
+          </Button>
         </div>
       </div>
     </div>
