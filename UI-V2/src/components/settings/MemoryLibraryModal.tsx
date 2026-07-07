@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { FolderOpen, X, Check } from 'lucide-react'
+import { FolderOpen, X, Check, ChevronUp, ChevronDown } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { Button, IconButton } from '../ui'
@@ -70,7 +70,7 @@ function InlineMenu({
           style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}
         >
           <span className="min-w-0 truncate">{selectedOption?.label ?? value}</span>
-          <span aria-hidden="true" style={{ color: 'var(--text-3)' }}>{open ? '▲' : '▼'}</span>
+          <span aria-hidden="true" style={{ color: 'var(--text-3)', display: 'inline-flex' }}>{open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}</span>
         </button>
         {open && (
           <div
