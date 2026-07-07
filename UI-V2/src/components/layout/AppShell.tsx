@@ -1,6 +1,6 @@
 import { useCallback } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
-import { PanelLeftClose, PanelLeftOpen, Brain, Settings2, GitBranch } from 'lucide-react'
+import { PanelLeftClose, PanelLeftOpen, Brain, Settings2, GitBranch, ArrowUpCircle, Bell } from 'lucide-react'
 import { Sidebar } from './Sidebar'
 import { MainPanel } from './MainPanel'
 import { VcsCommitPanel } from './VcsCommitPanel'
@@ -84,6 +84,11 @@ function RightActivityRail() {
   const commitPanelOpen = useAppStore((s) => s.commitPanelOpen)
   const setCommitPanelOpen = useAppStore((s) => s.setCommitPanelOpen)
 
+  // UI-only placeholders — wired to real data later (update check = issue #21,
+  // alerts = toast/notification system). Kept inert so the affordances exist now.
+  const updateAvailable: boolean = false
+  const alertCount: number = 0
+
   return (
     <aside className="uam-side-rail uam-side-rail--right" aria-label="Tool windows">
       <IconButton
@@ -93,6 +98,32 @@ function RightActivityRail() {
         active={commitPanelOpen}
         onClick={() => setCommitPanelOpen(!commitPanelOpen)}
       />
+      <div className="uam-side-rail__spacer" />
+      <span className="relative inline-flex">
+        <IconButton
+          icon={<Bell size={17} />}
+          label={alertCount > 0 ? `${alertCount} alert${alertCount === 1 ? '' : 's'}` : 'No new alerts'}
+          tooltipSide="left"
+        />
+        {alertCount > 0 && (
+          <span className="absolute -right-0.5 -top-0.5 pointer-events-none" aria-hidden>
+            <StatusDot tone="warning" size={7} />
+          </span>
+        )}
+      </span>
+      <span className="relative inline-flex">
+        <IconButton
+          icon={<ArrowUpCircle size={17} />}
+          label={updateAvailable ? 'Update available' : 'Check for updates'}
+          tooltipSide="left"
+          active={updateAvailable}
+        />
+        {updateAvailable && (
+          <span className="absolute -right-0.5 -top-0.5 pointer-events-none" aria-hidden>
+            <StatusDot tone="accent" pulse size={7} />
+          </span>
+        )}
+      </span>
     </aside>
   )
 }

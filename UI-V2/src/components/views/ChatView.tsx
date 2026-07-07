@@ -154,6 +154,7 @@ export function ChatView({ session }: ChatViewProps) {
   const [goalError, setGoalError] = useState('')
   const [goalSubmitting, setGoalSubmitting] = useState(false)
   const [goalArmNextMessage, setGoalArmNextMessage] = useState(false)
+  const [slashIndex, setSlashIndex] = useState(0)
   const [composerAttachments, setComposerAttachments] = useState<LocalAttachment[]>([])
   const [attachmentError, setAttachmentError] = useState('')
   const [renderedMessageCount, setRenderedMessageCount] = useState(INITIAL_RENDERED_MESSAGES)
@@ -533,12 +534,6 @@ export function ChatView({ session }: ChatViewProps) {
     }
   }
 
-  const onComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault()
-      void submit()
-    }
-  }
 
   const pendingPermission = acp?.pendingPermission
   const pendingUserInput = acp?.pendingUserInput
@@ -676,6 +671,65 @@ export function ChatView({ session }: ChatViewProps) {
     }
     setGoalArmNextMessage((value) => !value)
     setGoalError('')
+  }
+
+  // Slash command palette: typing "/" at the start of an empty-ish draft opens
+  // a traversable menu of UAM actions (Codex-style), filtered by what follows.
+  const slashCommands = useMemo(
+    () => [
+      { id: 'model', label: '/model', hint: 'Change the model', run: () => setModelOpen(true) },
+      { id: 'goal', label: '/goal', hint: 'Use the next message as a goal', run: handleToggleGoal },
+      {
+        id: 'memory',
+        label: '/memory',
+        hint: (session.memoryEnabled ?? true) ? 'Disable memory' : 'Enable memory',
+        run: () => void setSessionMemoryEnabled(session.id, !(session.memoryEnabled ?? true)),
+      },
+      { id: 'attach', label: '/attach', hint: 'Attach files', run: () => fileInputRef.current?.click() },
+      { id: 'markdown', label: '/markdown', hint: 'Open the markdown store', run: () => void openMarkdownStore() },
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [session.id, session.memoryEnabled]
+  )
+  const slashMatch = /^\/(\w*)$/.exec(draft)
+  const slashQuery = slashMatch ? slashMatch[1].toLowerCase() : null
+  const slashMatches = slashQuery !== null
+    ? slashCommands.filter((command) => command.label.slice(1).startsWith(slashQuery))
+    : []
+  const slashOpen = slashQuery !== null && slashMatches.length > 0
+  const runSlashCommand = (command: (typeof slashCommands)[number]) => {
+    setDraft('')
+    setSlashIndex(0)
+    command.run()
+  }
+
+  const onComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (slashOpen) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        setSlashIndex((i) => (i + 1) % slashMatches.length)
+        return
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        setSlashIndex((i) => (i - 1 + slashMatches.length) % slashMatches.length)
+        return
+      }
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault()
+        runSlashCommand(slashMatches[Math.min(slashIndex, slashMatches.length - 1)])
+        return
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setDraft('')
+        return
+      }
+    }
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault()
+      void submit()
+    }
   }
 
   const activePlanActions = canShowPlanActions && providerSupported
@@ -1226,6 +1280,38 @@ export function ChatView({ session }: ChatViewProps) {
             {attachmentError && (
               <div className="px-3 pt-2 text-[11px]" style={{ color: 'var(--red)' }}>
                 {attachmentError}
+              </div>
+            )}
+            {slashOpen && (
+              <div className="relative">
+                <div
+                  className="absolute left-3 right-3 z-40 overflow-hidden rounded-lg"
+                  style={{ bottom: 4, border: '1px solid var(--border-bright)', background: 'var(--surface)', boxShadow: 'var(--elev-3)' }}
+                  role="listbox"
+                  aria-label="Slash commands"
+                >
+                  <div className="px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)', borderBottom: '1px solid var(--border)' }}>
+                    Commands
+                  </div>
+                  {slashMatches.map((command, index) => {
+                    const active = index === Math.min(slashIndex, slashMatches.length - 1)
+                    return (
+                      <button
+                        key={command.id}
+                        type="button"
+                        role="option"
+                        aria-selected={active}
+                        onMouseEnter={() => setSlashIndex(index)}
+                        onMouseDown={(e) => { e.preventDefault(); runSlashCommand(command) }}
+                        className="flex w-full items-baseline gap-3 px-3 py-2 text-left"
+                        style={{ background: active ? 'var(--accent-dim)' : 'transparent', color: active ? 'var(--text)' : 'var(--text-2)' }}
+                      >
+                        <span className="font-mono text-sm" style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>{command.label}</span>
+                        <span className="text-xs" style={{ color: 'var(--text-3)' }}>{command.hint}</span>
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
             )}
             <textarea
