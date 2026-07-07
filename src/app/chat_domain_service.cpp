@@ -88,7 +88,10 @@ namespace
 
 	std::string_view RecentChatTimestamp(const ChatSession& chat)
 	{
-		return chat.last_opened_at.empty() ? std::string_view(chat.updated_at) : std::string_view(chat.last_opened_at);
+		// Recency = last message activity (updated_at), NOT selection time.
+		// Ordering by last_opened_at floated the just-selected chat to the top,
+		// reordering the sidebar on every click. See issue #49.
+		return chat.updated_at.empty() ? std::string_view(chat.created_at) : std::string_view(chat.updated_at);
 	}
 
 	bool IsValidChatIndex(const std::vector<ChatSession>& chats, int index)

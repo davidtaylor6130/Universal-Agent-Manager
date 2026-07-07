@@ -70,7 +70,8 @@ namespace
 
 	std::string_view RecentChatTimestamp(const ChatSession& chat)
 	{
-		return chat.last_opened_at.empty() ? std::string_view(chat.updated_at) : std::string_view(chat.last_opened_at);
+		// Recency = last message activity (updated_at), not selection time. See issue #49.
+		return chat.updated_at.empty() ? std::string_view(chat.created_at) : std::string_view(chat.updated_at);
 	}
 
 	std::string MakeCollisionSafeImportedChatId(const ChatSession& chat, const std::unordered_set<std::string>& existing_ids)
