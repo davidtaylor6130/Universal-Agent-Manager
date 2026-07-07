@@ -6,6 +6,14 @@ import { useAppStore } from '../../store/useAppStore'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
+// Plan / Accept-Edits / Auto / Memory now live inside the composer "Options" popover.
+function openComposerOptions(host: HTMLElement) {
+  act(() => {
+    (host.querySelector('button[aria-label="Options"]') as HTMLButtonElement | null)
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+}
+
 describe('ChatView', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
@@ -810,6 +818,7 @@ describe('ChatView', () => {
     const modelButton = host.querySelector('button[title="Select model"]') as HTMLButtonElement | null
     expect(modelButton).toBeTruthy()
     expect(modelButton?.disabled).toBe(true)
+    openComposerOptions(host)
     expect((host.querySelector('button[title^="Toggle planning mode"]') as HTMLButtonElement | null)?.disabled).toBe(true)
     expect((host.querySelector('button[title="Toggle Yolo mode"]') as HTMLButtonElement | null)?.disabled).toBe(false)
 
@@ -854,6 +863,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
+    openComposerOptions(host)
     const planButton = host.querySelector('button[title^="Toggle planning mode"]') as HTMLButtonElement | null
     expect(planButton).toBeTruthy()
     expect(planButton?.disabled).toBe(false)
@@ -941,6 +951,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
+    openComposerOptions(host)
     const yoloButton = host.querySelector('button[title="Toggle Yolo mode"]') as HTMLButtonElement | null
     expect(yoloButton).toBeTruthy()
     expect(yoloButton?.disabled).toBe(false)
@@ -1010,6 +1021,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
+    openComposerOptions(host)
     const planButton = host.querySelector('button[title^="Toggle planning mode"]') as HTMLButtonElement | null
     expect(planButton).toBeTruthy()
 
@@ -1060,6 +1072,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
+    openComposerOptions(host)
     const acceptEditsButton = host.querySelector('button[title="Toggle Accept Edits mode. Claude can edit workspace files without prompting."]') as HTMLButtonElement | null
     const autoButton = host.querySelector('button[title="Toggle Auto mode"]') as HTMLButtonElement | null
     expect(acceptEditsButton).toBeTruthy()
@@ -1330,6 +1343,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
+    openComposerOptions(host)
     const memoryButton = host.querySelector('button[title="Toggle memory"]') as HTMLButtonElement | null
     expect(memoryButton).toBeTruthy()
     expect(memoryButton?.disabled).toBe(false)

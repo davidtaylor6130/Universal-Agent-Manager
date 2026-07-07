@@ -1,8 +1,8 @@
 // ComposerToolbar: message input toolbar with model/mode pickers and
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
 
-import { RefObject } from 'react'
-import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Settings2 } from 'lucide-react'
+import { RefObject, useEffect, useRef, useState } from 'react'
+import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Settings2, SlidersHorizontal, ChevronDown } from 'lucide-react'
 import type { AcpBinding } from '../../store/useAppStore'
 import type { Goal } from '../../types/goal'
 import type { Provider } from '../../types/provider'
@@ -169,6 +169,24 @@ export function ComposerToolbar({
   const autoLabel = caps.autoLabel
   const modeLabel = planActive ? 'Plan' : acceptEditsActive ? 'Accept Edits' : 'Default'
   const running = Boolean(acp?.processing)
+  // Secondary mode controls (plan / accept-edits / auto / memory / markdown) are
+  // consolidated behind one "Options" popover to keep the toolbar quiet.
+  const [optionsOpen, setOptionsOpen] = useState(false)
+  const optionsRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!optionsOpen) return
+    const onDown = (e: MouseEvent) => {
+      if (optionsRef.current && !optionsRef.current.contains(e.target as Node)) setOptionsOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOptionsOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [optionsOpen])
+  const activeModeSummary = planActive ? 'Plan' : acceptEditsActive ? (caps.acceptEditsLabel ?? 'Accept Edits') : yoloActive ? autoLabel : 'Default'
   const chipStyle = {
     height: 26,
     borderRadius: 6,
@@ -427,80 +445,98 @@ export function ComposerToolbar({
           )}
         </div>
       )}
-      <button
-        type="button"
-        title={planAvailable ? 'Toggle planning mode. Claude Plan is read-only and will not edit files.' : 'Planning mode unavailable'}
-        aria-pressed={planActive}
-        onClick={onTogglePlan}
-        disabled={planDisabled}
-        className="inline-flex items-center gap-1.5 px-2"
-        style={{
-          ...chipStyle,
-          borderColor: planActive ? 'color-mix(in srgb, var(--accent) 55%, var(--border))' : 'var(--border)',
-          background: planActive ? 'var(--accent-dim)' : chipStyle.background,
-          color: planActive ? 'var(--text)' : 'var(--text-2)',
-          opacity: planDisabled ? 0.55 : 1,
-        }}
-      >
-        <span style={{ color: planActive ? 'var(--accent)' : 'var(--text-3)', fontSize: 10 }}>●</span>
-        <span>Plan</span>
-      </button>
-      {caps.hasAcceptEditsMode && (
+      <div ref={optionsRef} className="relative">
         <button
           type="button"
-          title={acceptEditsAvailable ? 'Toggle Accept Edits mode. Claude can edit workspace files without prompting.' : 'Accept Edits mode unavailable'}
-          aria-pressed={acceptEditsActive}
-          onClick={onToggleAcceptEdits}
-          disabled={acceptEditsDisabled}
+          title="Options: mode, memory, markdown"
+          aria-label="Options"
+          aria-expanded={optionsOpen}
+          onClick={() => setOptionsOpen((v) => !v)}
           className="inline-flex items-center gap-1.5 px-2"
           style={{
             ...chipStyle,
-            borderColor: acceptEditsActive ? 'color-mix(in srgb, var(--green) 52%, var(--border))' : 'var(--border)',
-            background: acceptEditsActive ? 'color-mix(in srgb, var(--green) 14%, var(--surface))' : chipStyle.background,
-            color: acceptEditsActive ? 'var(--text)' : 'var(--text-2)',
-            opacity: acceptEditsDisabled ? 0.55 : 1,
+            color: optionsOpen ? 'var(--text)' : 'var(--text-2)',
+            borderColor: optionsOpen ? 'var(--border-bright)' : 'var(--border)',
           }}
         >
-          <span style={{ color: acceptEditsActive ? 'var(--green)' : 'var(--text-3)', fontSize: 10 }}>●</span>
-          <span>{caps.acceptEditsLabel ?? 'Accept Edits'}</span>
+          <SlidersHorizontal size={13} aria-hidden />
+          <span>{activeModeSummary}</span>
+          <ChevronDown size={12} aria-hidden style={{ opacity: 0.6 }} />
         </button>
-      )}
-      <button
-        type="button"
-        title={yoloAvailable ? `Toggle ${autoLabel} mode` : `${autoLabel} mode unavailable`}
-        aria-pressed={yoloActive}
-        onClick={onToggleYolo}
-        disabled={yoloDisabled}
-        className="inline-flex items-center gap-1.5 px-2"
-        style={{
-          ...chipStyle,
-          borderColor: yoloActive ? 'color-mix(in srgb, var(--yellow) 55%, var(--border))' : 'var(--border)',
-          background: yoloActive ? 'color-mix(in srgb, var(--yellow) 16%, var(--surface))' : chipStyle.background,
-          color: yoloActive ? 'var(--text)' : 'var(--text-2)',
-          opacity: yoloDisabled ? 0.55 : 1,
-        }}
-      >
-        <span style={{ color: yoloActive ? 'var(--yellow)' : 'var(--text-3)', fontSize: 10 }}>●</span>
-        <span>{autoLabel}</span>
-      </button>
-      <button
-        type="button"
-        title="Toggle memory"
-        aria-pressed={memoryEnabled}
-        onClick={onToggleMemory}
-        disabled={memoryDisabled}
-        className="inline-flex items-center gap-1.5 px-2"
-        style={{
-          ...chipStyle,
-          borderColor: memoryEnabled ? 'color-mix(in srgb, var(--green) 50%, var(--border))' : 'var(--border)',
-          background: memoryEnabled ? 'color-mix(in srgb, var(--green) 14%, var(--surface))' : chipStyle.background,
-          color: memoryEnabled ? 'var(--text)' : 'var(--text-2)',
-          opacity: memoryDisabled ? 0.55 : 1,
-        }}
-      >
-        <span style={{ color: memoryEnabled ? 'var(--green)' : 'var(--text-3)', fontSize: 10 }}>●</span>
-        <span>Memory</span>
-      </button>
+        {optionsOpen && (
+          <div
+            className="absolute left-0 flex flex-col gap-1.5"
+            style={{
+              bottom: 34, minWidth: 210, zIndex: 40, padding: 8,
+              border: '1px solid var(--border-bright)', borderRadius: 8,
+              background: 'var(--surface)', boxShadow: 'var(--elev-3)',
+            }}
+          >
+            <div className="px-1 pb-0.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>Mode</div>
+            <button
+              type="button"
+              title={planAvailable ? 'Toggle planning mode. Claude Plan is read-only and will not edit files.' : 'Planning mode unavailable'}
+              aria-pressed={planActive}
+              onClick={onTogglePlan}
+              disabled={planDisabled}
+              className="inline-flex items-center gap-1.5 px-2 w-full justify-start"
+              style={{ ...chipStyle, borderColor: planActive ? 'color-mix(in srgb, var(--accent) 55%, var(--border))' : 'var(--border)', background: planActive ? 'var(--accent-dim)' : chipStyle.background, color: planActive ? 'var(--text)' : 'var(--text-2)', opacity: planDisabled ? 0.55 : 1 }}
+            >
+              <span style={{ color: planActive ? 'var(--accent)' : 'var(--text-3)', fontSize: 10 }}>●</span>
+              <span>Plan</span>
+            </button>
+            {caps.hasAcceptEditsMode && (
+              <button
+                type="button"
+                title={acceptEditsAvailable ? 'Toggle Accept Edits mode. Claude can edit workspace files without prompting.' : 'Accept Edits mode unavailable'}
+                aria-pressed={acceptEditsActive}
+                onClick={onToggleAcceptEdits}
+                disabled={acceptEditsDisabled}
+                className="inline-flex items-center gap-1.5 px-2 w-full justify-start"
+                style={{ ...chipStyle, borderColor: acceptEditsActive ? 'color-mix(in srgb, var(--green) 52%, var(--border))' : 'var(--border)', background: acceptEditsActive ? 'color-mix(in srgb, var(--green) 14%, var(--surface))' : chipStyle.background, color: acceptEditsActive ? 'var(--text)' : 'var(--text-2)', opacity: acceptEditsDisabled ? 0.55 : 1 }}
+              >
+                <span style={{ color: acceptEditsActive ? 'var(--green)' : 'var(--text-3)', fontSize: 10 }}>●</span>
+                <span>{caps.acceptEditsLabel ?? 'Accept Edits'}</span>
+              </button>
+            )}
+            <button
+              type="button"
+              title={yoloAvailable ? `Toggle ${autoLabel} mode` : `${autoLabel} mode unavailable`}
+              aria-pressed={yoloActive}
+              onClick={onToggleYolo}
+              disabled={yoloDisabled}
+              className="inline-flex items-center gap-1.5 px-2 w-full justify-start"
+              style={{ ...chipStyle, borderColor: yoloActive ? 'color-mix(in srgb, var(--yellow) 55%, var(--border))' : 'var(--border)', background: yoloActive ? 'color-mix(in srgb, var(--yellow) 16%, var(--surface))' : chipStyle.background, color: yoloActive ? 'var(--text)' : 'var(--text-2)', opacity: yoloDisabled ? 0.55 : 1 }}
+            >
+              <span style={{ color: yoloActive ? 'var(--yellow)' : 'var(--text-3)', fontSize: 10 }}>●</span>
+              <span>{autoLabel}</span>
+            </button>
+            <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
+            <button
+              type="button"
+              title="Toggle memory"
+              aria-pressed={memoryEnabled}
+              onClick={onToggleMemory}
+              disabled={memoryDisabled}
+              className="inline-flex items-center gap-1.5 px-2 w-full justify-start"
+              style={{ ...chipStyle, borderColor: memoryEnabled ? 'color-mix(in srgb, var(--green) 50%, var(--border))' : 'var(--border)', background: memoryEnabled ? 'color-mix(in srgb, var(--green) 14%, var(--surface))' : chipStyle.background, color: memoryEnabled ? 'var(--text)' : 'var(--text-2)', opacity: memoryDisabled ? 0.55 : 1 }}
+            >
+              <span style={{ color: memoryEnabled ? 'var(--green)' : 'var(--text-3)', fontSize: 10 }}>●</span>
+              <span>Memory</span>
+            </button>
+            <button
+              type="button"
+              title="Open Markdown Store"
+              onClick={onOpenMarkdownStore}
+              className="inline-flex items-center gap-1.5 px-2 w-full justify-start"
+              style={{ ...chipStyle }}
+            >
+              <ComposerIcon name="markdown" />
+              <span>Markdown store</span>
+            </button>
+          </div>
+        )}
+      </div>
       <button
         type="button"
         title={goalActive ? 'Pause goal mode' : goalPaused ? 'Resume goal mode' : goalArmed ? 'Next message will become the goal' : 'Use the next message as a goal'}
@@ -527,15 +563,6 @@ export function ComposerToolbar({
         style={iconChipStyle}
       >
         <ComposerIcon name="plus" />
-      </button>
-      <button
-        type="button"
-        title="Open Markdown Store"
-        onClick={onOpenMarkdownStore}
-        className="inline-flex items-center"
-        style={iconChipStyle}
-      >
-        <ComposerIcon name="markdown" />
       </button>
       <div className="ml-auto flex items-center gap-2">
         <div ref={settingsMenuRef} className="relative">
