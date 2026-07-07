@@ -43,3 +43,4 @@ compile_commands.json
 *.traineddata
 /UI-V2/subagent-preview-*.png
 /.agents
+/.playwright-mcp/
