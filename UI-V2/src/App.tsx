@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { AppShell } from './components/layout/AppShell'
+import { TooltipProvider } from './components/ui'
 import { useAppStore } from './store/useAppStore'
 import { installCopySelectionFallback } from './utils/copySelection'
 import { applyDocumentTheme } from './utils/themeStorage'
@@ -14,5 +15,9 @@ export default function App() {
 
   useEffect(() => installCopySelectionFallback(), [])
 
-  return <AppShell />
+  return (
+    <TooltipProvider>
+      <AppShell />
+    </TooltipProvider>
+  )
 }

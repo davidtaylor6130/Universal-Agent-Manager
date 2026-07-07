@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Plus } from 'lucide-react'
 import { FolderTree } from '../sidebar/FolderTree'
 import { ChatSearchBar } from '../sidebar/ChatSearchBar'
+import { Button } from '../ui'
 import { useAppStore } from '../../store/useAppStore'
 import { createRequestId, sendToCEF } from '../../ipc/cefBridge'
 import type { ChatSearchFilters, ChatStatusFilterId } from '../sidebar/chatSearch'
@@ -104,14 +106,15 @@ export function Sidebar() {
           background: 'color-mix(in srgb, var(--sidebar-bg) 92%, var(--surface))',
         }}
       >
-        <button
-          type="button"
-          className="uam-primary-button w-full justify-center"
+        <Button
+          variant="primary"
+          size="lg"
+          block
+          leadingIcon={<Plus size={16} />}
           onClick={() => setNewChatModalOpen(true)}
         >
-          <span aria-hidden="true">+</span>
-          <span>New Chat</span>
-        </button>
+          New Chat
+        </Button>
       </div>
     </div>
   )

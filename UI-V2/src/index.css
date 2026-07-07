@@ -83,6 +83,76 @@
   --term-selection:  rgba(232,121,58,0.28);
 }
 
+/* ── Design System Scales (theme-independent) ─────────────────
+   Redesign token layer. UI text is proportional sans; JetBrains Mono
+   is reserved for code, CLI output, and identifiers. Every component
+   should consume these tokens (and their Tailwind aliases) rather than
+   hard-coded px/hex. See components/ui/ for the primitives. */
+:root {
+  /* Font families */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Type scale (px) — meta / small / base / md / lg / xl / 2xl */
+  --fs-xs:   11px;
+  --fs-sm:   12px;
+  --fs-base: 13px;
+  --fs-md:   14px;
+  --fs-lg:   16px;
+  --fs-xl:   20px;
+  --fs-2xl:  24px;
+
+  /* Weights */
+  --fw-normal: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+
+  /* Spacing scale (4px rhythm) */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+
+  /* Radius scale */
+  --r-sm: 5px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-full: 999px;
+
+  /* Elevation scale — surface < card < popover < modal */
+  --elev-1: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 1px rgba(16, 24, 40, 0.04);
+  --elev-2: 0 2px 6px rgba(16, 24, 40, 0.08), 0 4px 12px rgba(16, 24, 40, 0.06);
+  --elev-3: 0 12px 32px rgba(16, 24, 40, 0.16), 0 4px 8px rgba(16, 24, 40, 0.08);
+
+  /* Motion */
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --ease: cubic-bezier(0.2, 0.6, 0.2, 1);
+
+  /* Semantic colors (alias the existing hue tokens; *-dim for soft fills) */
+  --success:     var(--green);
+  --success-dim: rgba(22, 163, 74, 0.12);
+  --warning:     var(--yellow);
+  --warning-dim: rgba(234, 179, 8, 0.14);
+  --error:       var(--red);
+  --error-dim:   rgba(239, 68, 68, 0.12);
+  --info:        var(--blue);
+  --info-dim:    var(--blue-dim);
+}
+
+[data-theme="dark"] {
+  --elev-1: 0 1px 2px rgba(0, 0, 0, 0.40);
+  --elev-2: 0 2px 8px rgba(0, 0, 0, 0.45), 0 6px 16px rgba(0, 0, 0, 0.35);
+  --elev-3: 0 16px 40px rgba(0, 0, 0, 0.55), 0 4px 10px rgba(0, 0, 0, 0.40);
+
+  --success-dim: rgba(74, 222, 128, 0.14);
+  --warning-dim: rgba(250, 204, 21, 0.16);
+  --error-dim:   rgba(248, 113, 113, 0.15);
+}
+
 /* ── Base Reset ───────────────────────────────────────────── */
 *, *::before, *::after {
   box-sizing: border-box;
@@ -97,15 +167,20 @@ html, body, #root {
 }
 
 body {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--font-sans);
   background: var(--bg);
   color: var(--text);
-  font-size: 13px;
-  line-height: 1.6;
+  font-size: var(--fs-base);
+  line-height: 1.55;
   user-select: text;
   -webkit-user-select: text;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* Monospace stays for code, terminal, and identifiers */
+code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
+  font-family: var(--font-mono);
 }
 
 .uam-app {
@@ -610,4 +685,176 @@ summary,
 .uam-subagent-panel:hover {
   background: color-mix(in srgb, var(--blue) 14%, var(--surface));
   border-color: color-mix(in srgb, var(--blue) 50%, var(--border-bright));
+}
+
+/* ══════════════════════════════════════════════════════════════
+   UI PRIMITIVES (components/ui/) — redesign design system.
+   Compose these; do not restyle bare <button>/<div> ad-hoc.
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── Button ─────────────────────────────────────────────────── */
+.uam-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  font-family: var(--font-sans);
+  font-weight: var(--fw-medium);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  transition: background var(--dur-fast) var(--ease),
+              border-color var(--dur-fast) var(--ease),
+              color var(--dur-fast) var(--ease),
+              box-shadow var(--dur-fast) var(--ease),
+              transform var(--dur-fast) var(--ease);
+}
+.uam-btn--sm { height: 26px; padding: 0 var(--sp-2); font-size: var(--fs-sm); }
+.uam-btn--md { height: 32px; padding: 0 var(--sp-3); font-size: var(--fs-base); }
+.uam-btn--lg { height: 38px; padding: 0 var(--sp-4); font-size: var(--fs-md); }
+.uam-btn--block { width: 100%; }
+.uam-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-glow);
+}
+.uam-btn:active:not(:disabled) { transform: translateY(0.5px); }
+.uam-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.uam-btn--primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: color-mix(in srgb, var(--accent) 80%, #000);
+}
+.uam-btn--primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, #fff); }
+
+.uam-btn--secondary {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--border-bright);
+}
+.uam-btn--secondary:hover:not(:disabled) {
+  background: var(--surface-up);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-bright));
+}
+
+.uam-btn--ghost {
+  background: transparent;
+  color: var(--text-2);
+}
+.uam-btn--ghost:hover:not(:disabled) { background: var(--sidebar-item-hover); color: var(--text); }
+
+.uam-btn--danger {
+  background: var(--error-dim);
+  color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 45%, transparent);
+}
+.uam-btn--danger:hover:not(:disabled) { background: color-mix(in srgb, var(--error) 18%, var(--surface)); }
+
+.uam-btn__spinner { animation: uam-spin 0.7s linear infinite; }
+@keyframes uam-spin { to { transform: rotate(360deg); } }
+
+/* ── IconButton ─────────────────────────────────────────────── */
+.uam-iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease),
+              color var(--dur-fast) var(--ease),
+              border-color var(--dur-fast) var(--ease);
+}
+.uam-iconbtn--sm { width: 26px; height: 26px; }
+.uam-iconbtn--md { width: 30px; height: 30px; }
+.uam-iconbtn--lg { width: 36px; height: 36px; }
+.uam-iconbtn:hover:not(:disabled) { background: var(--sidebar-item-hover); color: var(--text); }
+.uam-iconbtn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-glow);
+}
+.uam-iconbtn:disabled { opacity: 0.45; cursor: not-allowed; }
+.uam-iconbtn.is-active { background: var(--accent-dim); color: var(--accent); }
+.uam-iconbtn--solid { background: var(--surface); border-color: var(--border-bright); }
+.uam-iconbtn--danger:hover:not(:disabled) { background: var(--error-dim); color: var(--error); }
+
+/* ── Tooltip ────────────────────────────────────────────────── */
+.uam-tooltip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  max-width: 260px;
+  padding: 5px var(--sp-2);
+  background: var(--surface-high);
+  color: var(--text);
+  border: 1px solid var(--border-bright);
+  border-radius: var(--r-sm);
+  box-shadow: var(--elev-2);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  line-height: 1.35;
+  z-index: 60;
+  animation: uam-tooltip-in var(--dur-fast) var(--ease);
+}
+.uam-tooltip__kbd {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-up);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+}
+.uam-tooltip__arrow { fill: var(--surface-high); }
+@keyframes uam-tooltip-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+/* ── Card ───────────────────────────────────────────────────── */
+.uam-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: var(--sp-4);
+}
+.uam-card--flush { padding: 0; }
+.uam-card--elev-0 { box-shadow: none; }
+.uam-card--elev-1 { box-shadow: var(--elev-1); }
+.uam-card--elev-2 { box-shadow: var(--elev-2); }
+
+/* ── SectionHeader ──────────────────────────────────────────── */
+.uam-section-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+.uam-section-header__lead { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+.uam-section-header__icon { color: var(--text-2); display: inline-flex; }
+.uam-section-header__title {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+.uam-section-header__desc { font-size: var(--fs-sm); color: var(--text-3); margin-top: 1px; }
+.uam-section-header__actions { display: flex; align-items: center; gap: var(--sp-1); flex-shrink: 0; }
+
+/* ── StatusDot ──────────────────────────────────────────────── */
+.uam-status-dot { display: inline-block; border-radius: var(--r-full); flex-shrink: 0; }
+.uam-status-dot--neutral { background: var(--text-3); }
+.uam-status-dot--success { background: var(--success); }
+.uam-status-dot--warning { background: var(--warning); }
+.uam-status-dot--error   { background: var(--error); }
+.uam-status-dot--info    { background: var(--info); }
+.uam-status-dot--accent  { background: var(--accent); }
+.uam-status-dot.is-pulse { animation: uam-dot-pulse 1.6s var(--ease) infinite; }
+@keyframes uam-dot-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
+  50%      { box-shadow: 0 0 0 3px transparent; opacity: 0.75; }
 }

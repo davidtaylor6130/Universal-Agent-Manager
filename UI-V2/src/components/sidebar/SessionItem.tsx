@@ -1,7 +1,12 @@
 import { useState, useRef, useEffect, memo } from 'react'
+import {
+  Pin, MoreHorizontal, Pencil, Trash2, HelpCircle, ClipboardList, Brain,
+  ShieldCheck, SquareChevronRight, FileText, TriangleAlert, CircleAlert,
+} from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import type { Session } from '../../types/session'
+import { Tooltip } from '../ui'
 
 function formatSidebarTime(date: Date | null): string {
   if (!date || Number.isNaN(date.getTime())) {
@@ -64,66 +69,17 @@ const ATTENTION_LABELS: Record<AcpAttentionKind, string> = {
 }
 
 function sidebarStatusIcon(kind: AcpAttentionKind) {
-  if (kind === 'question') {
-    return <span className="session-status__question" aria-hidden="true">?</span>
+  const props = { size: 12, 'aria-hidden': true } as const
+  switch (kind) {
+    case 'question': return <HelpCircle {...props} />
+    case 'plan': return <ClipboardList {...props} />
+    case 'memory': return <Brain {...props} />
+    case 'permission': return <ShieldCheck {...props} />
+    case 'command': return <SquareChevronRight {...props} />
+    case 'file': return <FileText {...props} />
+    case 'error': return <TriangleAlert {...props} />
+    default: return <CircleAlert {...props} />
   }
-
-  if (kind === 'plan') {
-    return (
-      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M3 2.5h4.2c1 0 1.8.8 1.8 1.8v9.2c0-.8-.8-1.5-1.8-1.5H3V2.5z" />
-        <path d="M13 2.5H8.8C7.8 2.5 7 3.3 7 4.3v9.2c0-.8.8-1.5 1.8-1.5H13V2.5z" />
-      </svg>
-    )
-  }
-
-  if (kind === 'memory') {
-    return (
-      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M6.1 3.1A2 2 0 0 0 2.8 5a2.2 2.2 0 0 0 .2 4.3 2.1 2.1 0 0 0 3.1 2.3V3.1z" />
-        <path d="M9.9 3.1A2 2 0 0 1 13.2 5a2.2 2.2 0 0 1-.2 4.3 2.1 2.1 0 0 1-3.1 2.3V3.1z" />
-        <path d="M6.1 6.1H4.5M9.9 6.1h1.6M6.1 9.1H4.6M9.9 9.1h1.5" />
-      </svg>
-    )
-  }
-
-  if (kind === 'permission') {
-    return (
-      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M8 1.8l4.8 1.8v3.8c0 3.1-1.8 5.4-4.8 6.8-3-1.4-4.8-3.7-4.8-6.8V3.6L8 1.8z" />
-        <path d="M6.2 7.8l1.2 1.2 2.6-2.8" />
-      </svg>
-    )
-  }
-
-  if (kind === 'command') {
-    return (
-      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M2.5 4.2h11v7.6h-11z" />
-        <path d="M5 6.3l1.6 1.7L5 9.7M8.2 9.7h2.8" />
-      </svg>
-    )
-  }
-
-  if (kind === 'file') {
-    return (
-      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M4 2.2h5.2L12 5v8.8H4V2.2z" />
-        <path d="M9.2 2.2V5H12M5.8 8h4.4M5.8 10.4h3.4" />
-      </svg>
-    )
-  }
-
-  if (kind === 'error') {
-    return (
-      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M8 2.2l6 10.6H2L8 2.2z" />
-        <path d="M8 5.8v3.2M8 11.5h.01" />
-      </svg>
-    )
-  }
-
-  return <span className="session-status__question" aria-hidden="true">!</span>
 }
 
 export const SessionItem = memo(function SessionItem({ sessionId, session, forceShowPin }: SessionItemProps) {
@@ -227,32 +183,31 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
         }}
       >
         {!editing && (
-          <button
-            type="button"
-            aria-label={isPinned ? 'Unpin chat' : 'Pin chat'}
-            title={isPinned ? 'Unpin chat' : 'Pin chat'}
-            className={`flex flex-shrink-0 items-center justify-center rounded transition-opacity transition-colors duration-100 ${
-              (forceShowPin || isPinned) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
-            }`}
-            style={{
-              width: 18,
-              height: 18,
-              background: 'transparent',
-              color: isPinned ? 'var(--accent)' : 'var(--text-3)',
-              border: 'none',
-              cursor: 'pointer',
-              padding: 0,
-            }}
-            onClick={(e) => {
-              e.stopPropagation()
-              void setSessionPinned(sessionId, !isPinned)
-            }}
-            onDoubleClick={(e) => e.stopPropagation()}
-          >
-            <svg width="12" height="12" viewBox="0 0 16 16" fill={isPinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M5.4 1.7h5.2l-.9 3.8 2.3 2.4v1.2H8.7L8 14.3 7.3 9.1H4V7.9l2.3-2.4-.9-3.8z" />
-            </svg>
-          </button>
+          <Tooltip label={isPinned ? 'Unpin chat' : 'Pin chat'} side="top">
+            <button
+              type="button"
+              aria-label={isPinned ? 'Unpin chat' : 'Pin chat'}
+              className={`flex flex-shrink-0 items-center justify-center rounded transition-opacity transition-colors duration-100 ${
+                (forceShowPin || isPinned) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
+              }`}
+              style={{
+                width: 18,
+                height: 18,
+                background: 'transparent',
+                color: isPinned ? 'var(--accent)' : 'var(--text-3)',
+                border: 'none',
+                cursor: 'pointer',
+                padding: 0,
+              }}
+              onClick={(e) => {
+                e.stopPropagation()
+                void setSessionPinned(sessionId, !isPinned)
+              }}
+              onDoubleClick={(e) => e.stopPropagation()}
+            >
+              <Pin size={12} fill={isPinned ? 'currentColor' : 'none'} aria-hidden />
+            </button>
+          </Tooltip>
         )}
 
         {/* Name or edit input */}
@@ -316,25 +271,27 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
                 <span />
               </span>
             )}
-            <button
-              className="opacity-0 group-hover:opacity-100 flex-shrink-0 rounded transition-opacity duration-100"
-              style={{
-                width: 18,
-                height: 18,
-                background: 'transparent',
-                color: 'var(--text-3)',
-                border: 'none',
-                cursor: 'pointer',
-                fontSize: 12,
-                lineHeight: 1,
-              }}
-              onClick={(e) => {
-                e.stopPropagation()
-                setShowMenu((v) => !v)
-              }}
-            >
-              ···
-            </button>
+            <Tooltip label="More actions" side="top">
+              <button
+                type="button"
+                aria-label="More actions"
+                className="opacity-0 group-hover:opacity-100 flex-shrink-0 flex items-center justify-center rounded transition-opacity duration-100"
+                style={{
+                  width: 18,
+                  height: 18,
+                  background: 'transparent',
+                  color: 'var(--text-3)',
+                  border: 'none',
+                  cursor: 'pointer',
+                }}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setShowMenu((v) => !v)
+                }}
+              >
+                <MoreHorizontal size={14} aria-hidden />
+              </button>
+            </Tooltip>
           </div>
         )}
       </div>
@@ -353,19 +310,21 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
           }}
         >
           <button
-            className="w-full text-left px-3 py-1.5 text-xs transition-colors duration-100"
+            className="flex w-full items-center gap-2 text-left px-3 py-1.5 text-sm transition-colors duration-100"
             style={{ background: 'transparent', color: 'var(--text-2)', cursor: 'pointer', border: 'none', fontFamily: 'inherit' }}
             onMouseEnter={(e) => e.currentTarget.style.color = 'var(--text)'}
             onMouseLeave={(e) => e.currentTarget.style.color = 'var(--text-2)'}
             onClick={() => { setShowMenu(false); setEditing(true); setEditValue(sessionName) }}
           >
+            <Pencil size={13} aria-hidden />
             Rename
           </button>
           <button
-            className="w-full text-left px-3 py-1.5 text-xs transition-colors duration-100"
+            className="flex w-full items-center gap-2 text-left px-3 py-1.5 text-sm transition-colors duration-100"
             style={{ background: 'transparent', color: 'var(--red)', cursor: 'pointer', border: 'none', fontFamily: 'inherit' }}
             onClick={() => { setShowMenu(false); deleteSession(sessionId) }}
           >
+            <Trash2 size={13} aria-hidden />
             Delete
           </button>
         </div>
