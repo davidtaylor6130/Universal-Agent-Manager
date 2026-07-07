@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { RotateCw, X, Check, ChevronDown } from 'lucide-react'
 import { useAppStore, type VcsCommitStatus, type VcsType } from '../../store/useAppStore'
+import { Button, IconButton } from '../ui'
 
 function emptyStatus(workspaceDirectory = ''): VcsCommitStatus {
   return {
@@ -121,19 +123,16 @@ export function VcsCommitPanel() {
           <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Commit</div>
           <div className="truncate text-xs" style={{ color: 'var(--text-3)' }}>{status.workspaceDirectory || 'No workspace selected'}</div>
         </div>
-        <button type="button" className="uam-icon-button" title="Refresh VCS status" aria-label="Refresh VCS status" onClick={() => { void refresh(selectedVcsType, true) }}>
-          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M13 4v4H9" />
-            <path d="M3 12V8h4" />
-            <path d="M4.7 5.2A4.5 4.5 0 0 1 12.4 7" />
-            <path d="M11.3 10.8A4.5 4.5 0 0 1 3.6 9" />
-          </svg>
-        </button>
-        <button type="button" className="uam-icon-button" title="Close commit panel" aria-label="Close commit panel" onClick={() => setCommitPanelOpen(false)}>
-          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
-            <path d="M4 4l8 8M12 4l-8 8" />
-          </svg>
-        </button>
+        <IconButton
+          icon={<RotateCw size={16} />}
+          label="Refresh VCS status"
+          onClick={() => { void refresh(selectedVcsType, true) }}
+        />
+        <IconButton
+          icon={<X size={16} />}
+          label="Close commit panel"
+          onClick={() => setCommitPanelOpen(false)}
+        />
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-3">
@@ -157,7 +156,7 @@ export function VcsCommitPanel() {
                   style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
                 >
                   <span>{selectedVcsType.toUpperCase()}</span>
-                  <span aria-hidden="true" style={{ color: 'var(--text-3)' }}>{vcsMenuOpen ? '▲' : '▼'}</span>
+                  <ChevronDown size={14} style={{ color: 'var(--text-3)', flexShrink: 0, transform: vcsMenuOpen ? 'scaleY(-1)' : 'scaleY(1)' }} aria-hidden />
                 </button>
                 {vcsMenuOpen && (
                   <div
@@ -181,7 +180,7 @@ export function VcsCommitPanel() {
                           style={{ background: selected ? 'var(--accent-dim)' : 'transparent', color: selected ? 'var(--text)' : 'var(--text-2)' }}
                         >
                           <span>{type.toUpperCase()}</span>
-                          {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
+                          {selected && <Check size={13} style={{ color: 'var(--green)' }} aria-hidden />}
                         </button>
                       )
                     })}
@@ -246,9 +245,9 @@ export function VcsCommitPanel() {
             value={title}
             onChange={(event) => setTitle(event.target.value)}
           />
-          <button type="button" className="uam-secondary-button" disabled={generateDisabled} onClick={() => { void generateMessage() }}>
-            <span>{generating ? 'Generating...' : 'AI'}</span>
-          </button>
+          <Button variant="secondary" size="md" disabled={generateDisabled} onClick={() => { void generateMessage() }}>
+            {generating ? 'Generating...' : 'AI'}
+          </Button>
         </div>
         <textarea
           className="mb-2 h-24 w-full resize-none rounded-md p-2 text-sm"
@@ -257,9 +256,9 @@ export function VcsCommitPanel() {
           value={description}
           onChange={(event) => setDescription(event.target.value)}
         />
-        <button type="button" className="uam-primary-button w-full justify-center" disabled={commitDisabled} onClick={() => { void commit() }}>
-          <span>{committing ? 'Committing...' : 'Commit selected files'}</span>
-        </button>
+        <Button variant="primary" block disabled={commitDisabled} onClick={() => { void commit() }}>
+          {committing ? 'Committing...' : 'Commit selected files'}
+        </Button>
       </div>
     </aside>
   )

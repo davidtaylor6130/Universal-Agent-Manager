@@ -1,7 +1,8 @@
 // ComposerToolbar: message input toolbar with model/mode pickers and
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
 
-import { RefObject } from 'react'
+import { RefObject, useEffect, useRef, useState } from 'react'
+import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Settings2, Target } from 'lucide-react'
 import type { AcpBinding } from '../../store/useAppStore'
 import type { Goal } from '../../types/goal'
 import type { Provider } from '../../types/provider'
@@ -32,7 +33,7 @@ export function ComposerIcon({ name, size = 14 }: { name: ComposerIconName; size
     return (
       <span
         aria-hidden="true"
-        className="font-semibold leading-none"
+        className="font-semibold leading-none font-mono"
         style={{ fontSize: 11, letterSpacing: 0 }}
       >
         .md
@@ -40,63 +41,14 @@ export function ComposerIcon({ name, size = 14 }: { name: ComposerIconName; size
     )
   }
 
-  if (name === 'folder') {
-    return (
-      <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M2.5 4.2h4l1.1 1.4h5.9v6.2a1 1 0 0 1-1 1h-10a1 1 0 0 1-1-1V5.2a1 1 0 0 1 1-1Z" />
-      </svg>
-    )
+  switch (name) {
+    case 'folder': return <Folder size={size} aria-hidden />
+    case 'editor': return <SquarePen size={size} aria-hidden />
+    case 'git-tree': return <GitBranch size={size} aria-hidden />
+    case 'send': return <ArrowUp size={size} aria-hidden />
+    case 'terminal': return <SquareTerminal size={size} aria-hidden />
+    default: return <Plus size={size} aria-hidden />
   }
-
-  if (name === 'editor') {
-    return (
-      <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <rect x="2.5" y="3" width="11" height="8.5" rx="1.2" />
-        <path d="M5.5 13h5" />
-        <path d="M8 11.5V13" />
-        <path d="m5.6 6.1 1.2 1.2-1.2 1.2" />
-        <path d="M8.2 8.6h2.2" />
-      </svg>
-    )
-  }
-
-  if (name === 'git-tree') {
-    return (
-      <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <circle cx="4" cy="3.5" r="1.6" />
-        <circle cx="12" cy="8" r="1.6" />
-        <circle cx="4" cy="12.5" r="1.6" />
-        <path d="M4 5.1v5.8" />
-        <path d="M5.6 3.5h1.7A2.7 2.7 0 0 1 10 6.2V8h.4" />
-      </svg>
-    )
-  }
-
-  if (name === 'send') {
-    return (
-      <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M2.5 8 13 3.2 10.4 13 7.5 9.2 2.5 8Z" />
-        <path d="m7.5 9.2 2.2-2.4" />
-      </svg>
-    )
-  }
-
-  if (name === 'terminal') {
-    return (
-      <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <rect x="2" y="3" width="12" height="10" rx="1.5" />
-        <path d="m4.7 7.3 2 1.1-2 1.1" />
-        <path d="M8 10h4" />
-      </svg>
-    )
-  }
-
-  return (
-    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
-      <path d="M8 3.2v9.6" />
-      <path d="M3.2 8h9.6" />
-    </svg>
-  )
 }
 
 export function ComposerToolbar({
@@ -217,6 +169,23 @@ export function ComposerToolbar({
   const autoLabel = caps.autoLabel
   const modeLabel = planActive ? 'Plan' : acceptEditsActive ? 'Accept Edits' : 'Default'
   const running = Boolean(acp?.processing)
+  // Secondary mode controls (plan / accept-edits / auto / memory / markdown) are
+  // consolidated behind one "Options" popover to keep the toolbar quiet.
+  const [optionsOpen, setOptionsOpen] = useState(false)
+  const optionsRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!optionsOpen) return
+    const onDown = (e: MouseEvent) => {
+      if (optionsRef.current && !optionsRef.current.contains(e.target as Node)) setOptionsOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOptionsOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [optionsOpen])
   const chipStyle = {
     height: 26,
     borderRadius: 6,
@@ -238,125 +207,7 @@ export function ComposerToolbar({
         color: 'var(--text-2)',
       }}
     >
-      {(providerOptions.length > 1 || providerId !== providerOptions[0]?.id) && (
-      <div ref={providerMenuRef} className="relative">
-        <button
-          type="button"
-          title="Select provider"
-          onClick={onToggleProvider}
-          className="inline-flex items-center gap-1.5 px-2"
-          style={{
-            ...chipStyle,
-            color: providerOpen ? 'var(--text)' : 'var(--text-2)',
-            borderColor: providerOpen ? 'var(--border-bright)' : 'var(--border)',
-          }}
-        >
-          <ProviderLogo providerId={providerId} />
-          <span>{providerName}</span>
-        </button>
-        {providerOpen && (
-          <div
-            className="absolute left-0"
-            style={{
-              bottom: 32,
-              width: 230,
-              zIndex: 40,
-              border: '1px solid var(--border-bright)',
-              borderRadius: 8,
-              background: 'var(--surface)',
-              boxShadow: '0 14px 42px rgba(0, 0, 0, 0.28)',
-              padding: 6,
-            }}
-          >
-            <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>Provider</div>
-            {providerOptions.map((candidate) => {
-              const candidateName = providerShortName(candidate, candidate.id)
-              const selected = candidate.id === providerId
-              const disabled = !selected && !canChangeProvider
-              return (
-                <button
-                  key={candidate.id}
-                  type="button"
-                  onClick={() => {
-                    if (disabled) return
-                    onSelectProvider(candidate.id)
-                  }}
-                  disabled={disabled}
-                  className="w-full flex items-center gap-2 text-left px-2 py-2"
-                  style={{
-                    borderRadius: 6,
-                    background: selected ? 'var(--accent-dim)' : 'transparent',
-                    color: selected ? 'var(--text)' : 'var(--text-2)',
-                    opacity: disabled ? 0.5 : 1,
-                  }}
-                >
-                  <ProviderLogo providerId={candidate.id} />
-                  <span className="flex-1">{candidateName}</span>
-                  {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
-                </button>
-              )
-            })}
-          </div>
-        )}
-      </div>
-      )}
-      <div ref={modelMenuRef} className="relative">
-        <button
-          type="button"
-          title="Select model"
-          onClick={onToggleModel}
-          disabled={modelDisabled}
-          className="inline-flex items-center gap-1.5 px-2"
-          style={{
-            ...chipStyle,
-            color: modelOpen ? 'var(--text)' : 'var(--text-2)',
-            borderColor: modelOpen ? 'var(--border-bright)' : 'var(--border)',
-            opacity: modelDisabled ? 0.55 : 1,
-          }}
-        >
-          <span>Model</span>
-          <span style={{ color: 'var(--text)' }}>{currentModel.shortLabel}</span>
-        </button>
-        {modelOpen && !modelDisabled && (
-          <div
-            className="absolute left-0"
-            style={{
-              bottom: 32,
-              width: 260,
-              zIndex: 40,
-              border: '1px solid var(--border-bright)',
-              borderRadius: 8,
-              background: 'var(--surface)',
-              boxShadow: '0 14px 42px rgba(0, 0, 0, 0.28)',
-              padding: 6,
-            }}
-          >
-            <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>Model</div>
-            {modelOptions.map((option) => {
-              const selected = option.id === currentModel.id
-              return (
-                <button
-                  key={option.id || 'default'}
-                  type="button"
-                  onClick={() => onSelectModel(option.id)}
-                  className="w-full grid gap-0.5 text-left px-2 py-2"
-                  style={{
-                    borderRadius: 6,
-                    background: selected ? 'var(--accent-dim)' : 'transparent',
-                    color: selected ? 'var(--text)' : 'var(--text-2)',
-                  }}
-                >
-                  <span className="flex items-center gap-2">
-                    <span className="flex-1">{option.label}</span>
-                    {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
-                  </span>
-                  <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>{option.detail}</span>
-                </button>
-              )
-            })}
-          </div>
-        )}
-      </div>
+      {/* Provider selector moved to the workspace row above the input. */}
       {caps.hasReasoningEffort && (
         <div ref={reasoningMenuRef} className="relative">
           <button
@@ -475,117 +326,183 @@ export function ComposerToolbar({
           )}
         </div>
       )}
-      <button
-        type="button"
-        title={planAvailable ? 'Toggle planning mode. Claude Plan is read-only and will not edit files.' : 'Planning mode unavailable'}
-        aria-pressed={planActive}
-        onClick={onTogglePlan}
-        disabled={planDisabled}
-        className="inline-flex items-center gap-1.5 px-2"
-        style={{
-          ...chipStyle,
-          borderColor: planActive ? 'color-mix(in srgb, var(--accent) 55%, var(--border))' : 'var(--border)',
-          background: planActive ? 'var(--accent-dim)' : chipStyle.background,
-          color: planActive ? 'var(--text)' : 'var(--text-2)',
-          opacity: planDisabled ? 0.55 : 1,
-        }}
-      >
-        <span style={{ color: planActive ? 'var(--accent)' : 'var(--text-3)', fontSize: 10 }}>●</span>
-        <span>Plan</span>
-      </button>
-      {caps.hasAcceptEditsMode && (
+      <div ref={optionsRef} className="relative">
         <button
           type="button"
-          title={acceptEditsAvailable ? 'Toggle Accept Edits mode. Claude can edit workspace files without prompting.' : 'Accept Edits mode unavailable'}
-          aria-pressed={acceptEditsActive}
-          onClick={onToggleAcceptEdits}
-          disabled={acceptEditsDisabled}
-          className="inline-flex items-center gap-1.5 px-2"
+          title="Add files, goal, and options"
+          aria-label="Options"
+          aria-expanded={optionsOpen}
+          onClick={() => setOptionsOpen((v) => !v)}
+          className="inline-flex items-center"
           style={{
-            ...chipStyle,
-            borderColor: acceptEditsActive ? 'color-mix(in srgb, var(--green) 52%, var(--border))' : 'var(--border)',
-            background: acceptEditsActive ? 'color-mix(in srgb, var(--green) 14%, var(--surface))' : chipStyle.background,
-            color: acceptEditsActive ? 'var(--text)' : 'var(--text-2)',
-            opacity: acceptEditsDisabled ? 0.55 : 1,
+            ...iconChipStyle,
+            color: optionsOpen ? 'var(--text)' : 'var(--text-2)',
+            borderColor: optionsOpen ? 'var(--border-bright)' : 'var(--border)',
           }}
         >
-          <span style={{ color: acceptEditsActive ? 'var(--green)' : 'var(--text-3)', fontSize: 10 }}>●</span>
-          <span>{caps.acceptEditsLabel ?? 'Accept Edits'}</span>
+          <Plus size={16} aria-hidden />
         </button>
+        {optionsOpen && (
+          <div
+            className="absolute left-0 flex flex-col gap-1.5"
+            style={{
+              bottom: 34, minWidth: 210, zIndex: 40, padding: 8,
+              border: '1px solid var(--border-bright)', borderRadius: 8,
+              background: 'var(--surface)', boxShadow: 'var(--elev-3)',
+            }}
+          >
+            <button
+              type="button"
+              title="Attach files to the next message"
+              onClick={() => { setOptionsOpen(false); onAttachFile() }}
+              className="inline-flex items-center gap-1.5 px-2 w-full justify-start"
+              style={{ ...chipStyle }}
+            >
+              <Plus size={13} aria-hidden />
+              <span>Attach files</span>
+            </button>
+            <button
+              type="button"
+              title={goalActive ? 'Pause goal mode' : goalPaused ? 'Resume goal mode' : goalArmed ? 'Next message will become the goal' : 'Use the next message as a goal'}
+              aria-pressed={goalActive || goalArmed}
+              onClick={() => { setOptionsOpen(false); onToggleGoal() }}
+              disabled={modelDisabled}
+              className="inline-flex items-center gap-1.5 px-2 w-full justify-start"
+              style={{ ...chipStyle, borderColor: goalActive || goalArmed ? 'color-mix(in srgb, var(--purple) 55%, var(--border))' : 'var(--border)', background: goalActive || goalArmed ? 'color-mix(in srgb, var(--purple) 16%, var(--surface))' : chipStyle.background, color: goalActive || goalArmed ? 'var(--text)' : 'var(--text-2)', opacity: modelDisabled ? 0.55 : 1 }}
+            >
+              <Target size={13} aria-hidden style={{ color: goalActive || goalArmed ? 'var(--purple)' : 'var(--text-3)' }} />
+              <span>{goalArmed ? 'Goal: next message' : 'Goal'}</span>
+            </button>
+            <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
+            <div className="px-1 pb-0.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>Mode</div>
+            <button
+              type="button"
+              title={planAvailable ? 'Toggle planning mode. Claude Plan is read-only and will not edit files.' : 'Planning mode unavailable'}
+              aria-pressed={planActive}
+              onClick={onTogglePlan}
+              disabled={planDisabled}
+              className="inline-flex items-center gap-1.5 px-2 w-full justify-start"
+              style={{ ...chipStyle, borderColor: planActive ? 'color-mix(in srgb, var(--accent) 55%, var(--border))' : 'var(--border)', background: planActive ? 'var(--accent-dim)' : chipStyle.background, color: planActive ? 'var(--text)' : 'var(--text-2)', opacity: planDisabled ? 0.55 : 1 }}
+            >
+              <span style={{ color: planActive ? 'var(--accent)' : 'var(--text-3)', fontSize: 10 }}>●</span>
+              <span>Plan</span>
+            </button>
+            {caps.hasAcceptEditsMode && (
+              <button
+                type="button"
+                title={acceptEditsAvailable ? 'Toggle Accept Edits mode. Claude can edit workspace files without prompting.' : 'Accept Edits mode unavailable'}
+                aria-pressed={acceptEditsActive}
+                onClick={onToggleAcceptEdits}
+                disabled={acceptEditsDisabled}
+                className="inline-flex items-center gap-1.5 px-2 w-full justify-start"
+                style={{ ...chipStyle, borderColor: acceptEditsActive ? 'color-mix(in srgb, var(--green) 52%, var(--border))' : 'var(--border)', background: acceptEditsActive ? 'color-mix(in srgb, var(--green) 14%, var(--surface))' : chipStyle.background, color: acceptEditsActive ? 'var(--text)' : 'var(--text-2)', opacity: acceptEditsDisabled ? 0.55 : 1 }}
+              >
+                <span style={{ color: acceptEditsActive ? 'var(--green)' : 'var(--text-3)', fontSize: 10 }}>●</span>
+                <span>{caps.acceptEditsLabel ?? 'Accept Edits'}</span>
+              </button>
+            )}
+            <button
+              type="button"
+              title={yoloAvailable ? `Toggle ${autoLabel} mode` : `${autoLabel} mode unavailable`}
+              aria-pressed={yoloActive}
+              onClick={onToggleYolo}
+              disabled={yoloDisabled}
+              className="inline-flex items-center gap-1.5 px-2 w-full justify-start"
+              style={{ ...chipStyle, borderColor: yoloActive ? 'color-mix(in srgb, var(--yellow) 55%, var(--border))' : 'var(--border)', background: yoloActive ? 'color-mix(in srgb, var(--yellow) 16%, var(--surface))' : chipStyle.background, color: yoloActive ? 'var(--text)' : 'var(--text-2)', opacity: yoloDisabled ? 0.55 : 1 }}
+            >
+              <span style={{ color: yoloActive ? 'var(--yellow)' : 'var(--text-3)', fontSize: 10 }}>●</span>
+              <span>{autoLabel}</span>
+            </button>
+            <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
+            <button
+              type="button"
+              title="Toggle memory"
+              aria-pressed={memoryEnabled}
+              onClick={onToggleMemory}
+              disabled={memoryDisabled}
+              className="inline-flex items-center gap-1.5 px-2 w-full justify-start"
+              style={{ ...chipStyle, borderColor: memoryEnabled ? 'color-mix(in srgb, var(--green) 50%, var(--border))' : 'var(--border)', background: memoryEnabled ? 'color-mix(in srgb, var(--green) 14%, var(--surface))' : chipStyle.background, color: memoryEnabled ? 'var(--text)' : 'var(--text-2)', opacity: memoryDisabled ? 0.55 : 1 }}
+            >
+              <span style={{ color: memoryEnabled ? 'var(--green)' : 'var(--text-3)', fontSize: 10 }}>●</span>
+              <span>Memory</span>
+            </button>
+            <button
+              type="button"
+              title="Open Markdown Store"
+              onClick={onOpenMarkdownStore}
+              className="inline-flex items-center gap-1.5 px-2 w-full justify-start"
+              style={{ ...chipStyle }}
+            >
+              <ComposerIcon name="markdown" />
+              <span>Markdown store</span>
+            </button>
+          </div>
+        )}
+      </div>
+      {goalArmed && (
+        <span className="inline-flex items-center gap-1.5 px-2 rounded-md" style={{ height: 26, background: 'color-mix(in srgb, var(--purple) 16%, var(--surface))', color: 'var(--text)', border: '1px solid color-mix(in srgb, var(--purple) 45%, var(--border))' }}>
+          <Target size={12} aria-hidden style={{ color: 'var(--purple)' }} />
+          <span>Goal: next message</span>
+        </span>
       )}
-      <button
-        type="button"
-        title={yoloAvailable ? `Toggle ${autoLabel} mode` : `${autoLabel} mode unavailable`}
-        aria-pressed={yoloActive}
-        onClick={onToggleYolo}
-        disabled={yoloDisabled}
-        className="inline-flex items-center gap-1.5 px-2"
-        style={{
-          ...chipStyle,
-          borderColor: yoloActive ? 'color-mix(in srgb, var(--yellow) 55%, var(--border))' : 'var(--border)',
-          background: yoloActive ? 'color-mix(in srgb, var(--yellow) 16%, var(--surface))' : chipStyle.background,
-          color: yoloActive ? 'var(--text)' : 'var(--text-2)',
-          opacity: yoloDisabled ? 0.55 : 1,
-        }}
-      >
-        <span style={{ color: yoloActive ? 'var(--yellow)' : 'var(--text-3)', fontSize: 10 }}>●</span>
-        <span>{autoLabel}</span>
-      </button>
-      <button
-        type="button"
-        title="Toggle memory"
-        aria-pressed={memoryEnabled}
-        onClick={onToggleMemory}
-        disabled={memoryDisabled}
-        className="inline-flex items-center gap-1.5 px-2"
-        style={{
-          ...chipStyle,
-          borderColor: memoryEnabled ? 'color-mix(in srgb, var(--green) 50%, var(--border))' : 'var(--border)',
-          background: memoryEnabled ? 'color-mix(in srgb, var(--green) 14%, var(--surface))' : chipStyle.background,
-          color: memoryEnabled ? 'var(--text)' : 'var(--text-2)',
-          opacity: memoryDisabled ? 0.55 : 1,
-        }}
-      >
-        <span style={{ color: memoryEnabled ? 'var(--green)' : 'var(--text-3)', fontSize: 10 }}>●</span>
-        <span>Memory</span>
-      </button>
-      <button
-        type="button"
-        title={goalActive ? 'Pause goal mode' : goalPaused ? 'Resume goal mode' : goalArmed ? 'Next message will become the goal' : 'Use the next message as a goal'}
-        aria-pressed={goalActive || goalArmed}
-        onClick={onToggleGoal}
-        disabled={modelDisabled}
-        className="inline-flex items-center gap-1.5 px-2"
-        style={{
-          ...chipStyle,
-          borderColor: goalActive || goalArmed ? 'color-mix(in srgb, var(--purple) 55%, var(--border))' : 'var(--border)',
-          background: goalActive || goalArmed ? 'color-mix(in srgb, var(--purple) 16%, var(--surface))' : chipStyle.background,
-          color: goalActive || goalArmed ? 'var(--text)' : 'var(--text-2)',
-          opacity: modelDisabled ? 0.55 : 1,
-        }}
-      >
-        <span style={{ color: goalActive || goalArmed ? 'var(--purple)' : 'var(--text-3)', fontSize: 10 }}>●</span>
-        <span>{goalArmed ? 'Goal Next' : 'Goal'}</span>
-      </button>
-      <button
-        type="button"
-        title="Attach files"
-        onClick={onAttachFile}
-        className="inline-flex items-center"
-        style={iconChipStyle}
-      >
-        <ComposerIcon name="plus" />
-      </button>
-      <button
-        type="button"
-        title="Open Markdown Store"
-        onClick={onOpenMarkdownStore}
-        className="inline-flex items-center"
-        style={iconChipStyle}
-      >
-        <ComposerIcon name="markdown" />
-      </button>
       <div className="ml-auto flex items-center gap-2">
+        <div ref={modelMenuRef} className="relative">
+          <button
+            type="button"
+            title="Select model"
+            onClick={onToggleModel}
+            disabled={modelDisabled}
+            className="inline-flex items-center gap-1.5 px-2"
+            style={{
+              ...chipStyle,
+              color: modelOpen ? 'var(--text)' : 'var(--text-2)',
+              borderColor: modelOpen ? 'var(--border-bright)' : 'var(--border)',
+              opacity: modelDisabled ? 0.55 : 1,
+            }}
+          >
+            <span style={{ color: 'var(--text-3)' }}>Model</span>
+            <span style={{ color: 'var(--text)' }}>{currentModel.shortLabel}</span>
+          </button>
+          {modelOpen && !modelDisabled && (
+            <div
+              className="absolute right-0"
+              style={{
+                bottom: 32,
+                width: 260,
+                zIndex: 40,
+                border: '1px solid var(--border-bright)',
+                borderRadius: 8,
+                background: 'var(--surface)',
+                boxShadow: 'var(--elev-3)',
+                padding: 6,
+              }}
+            >
+              <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>Model</div>
+              {modelOptions.map((option) => {
+                const selected = option.id === currentModel.id
+                return (
+                  <button
+                    key={option.id || 'default'}
+                    type="button"
+                    onClick={() => onSelectModel(option.id)}
+                    className="w-full grid gap-0.5 text-left px-2 py-2"
+                    style={{
+                      borderRadius: 6,
+                      background: selected ? 'var(--accent-dim)' : 'transparent',
+                      color: selected ? 'var(--text)' : 'var(--text-2)',
+                    }}
+                  >
+                    <span className="flex items-center gap-2">
+                      <span className="flex-1">{option.label}</span>
+                      {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
+                    </span>
+                    <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>{option.detail}</span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
         <div ref={settingsMenuRef} className="relative">
           <button
             type="button"
@@ -598,7 +515,7 @@ export function ComposerToolbar({
               borderColor: settingsOpen ? 'var(--border-bright)' : 'var(--border)',
             }}
           >
-            <span>⚙</span>
+            <Settings2 size={14} aria-hidden />
           </button>
           {settingsOpen && (
             <div

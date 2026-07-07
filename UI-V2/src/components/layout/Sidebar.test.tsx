@@ -42,7 +42,7 @@ describe('Sidebar', () => {
       root.render(<Sidebar />)
     })
 
-    const button = Array.from(host.querySelectorAll('button')).find((candidate) => candidate.textContent === '+New Chat') as HTMLButtonElement
+    const button = Array.from(host.querySelectorAll('button')).find((candidate) => candidate.textContent === 'New Chat') as HTMLButtonElement
     expect(button).toBeTruthy()
     expect(button.closest('.flex-shrink-0')).toBeTruthy()
 

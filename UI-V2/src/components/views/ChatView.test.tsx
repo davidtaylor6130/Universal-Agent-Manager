@@ -6,6 +6,14 @@ import { useAppStore } from '../../store/useAppStore'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
+// Plan / Accept-Edits / Auto / Memory now live inside the composer "Options" popover.
+function openComposerOptions(host: HTMLElement) {
+  act(() => {
+    (host.querySelector('button[aria-label="Options"]') as HTMLButtonElement | null)
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+}
+
 describe('ChatView', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
@@ -200,7 +208,7 @@ describe('ChatView', () => {
     expect(host.textContent).toContain('After tool.')
     expect(host.textContent).toContain('Gemini')
     expect(host.textContent).not.toContain('ACP')
-    expect(host.textContent).toContain('Workspace')
+    expect(host.querySelector('button[aria-label="Select provider"]')).toBeTruthy()
     expect(host.textContent).toContain('/tmp/project')
     expect(host.textContent).not.toContain('Tools on')
     expect(host.textContent).toContain('Read file')
@@ -246,7 +254,7 @@ describe('ChatView', () => {
     expect(host.querySelector('[role="dialog"]')?.parentElement?.className).toContain('absolute')
     expect(host.querySelector('[role="dialog"]')?.parentElement?.className).not.toContain('fixed')
 
-    const closeToolButton = host.querySelector('button[title="Close tool details"]')
+    const closeToolButton = host.querySelector('button[aria-label="Close tool details"]')
     expect(closeToolButton).toBeTruthy()
     act(() => {
       closeToolButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -810,6 +818,7 @@ describe('ChatView', () => {
     const modelButton = host.querySelector('button[title="Select model"]') as HTMLButtonElement | null
     expect(modelButton).toBeTruthy()
     expect(modelButton?.disabled).toBe(true)
+    openComposerOptions(host)
     expect((host.querySelector('button[title^="Toggle planning mode"]') as HTMLButtonElement | null)?.disabled).toBe(true)
     expect((host.querySelector('button[title="Toggle Yolo mode"]') as HTMLButtonElement | null)?.disabled).toBe(false)
 
@@ -854,6 +863,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
+    openComposerOptions(host)
     const planButton = host.querySelector('button[title^="Toggle planning mode"]') as HTMLButtonElement | null
     expect(planButton).toBeTruthy()
     expect(planButton?.disabled).toBe(false)
@@ -941,6 +951,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
+    openComposerOptions(host)
     const yoloButton = host.querySelector('button[title="Toggle Yolo mode"]') as HTMLButtonElement | null
     expect(yoloButton).toBeTruthy()
     expect(yoloButton?.disabled).toBe(false)
@@ -1010,6 +1021,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
+    openComposerOptions(host)
     const planButton = host.querySelector('button[title^="Toggle planning mode"]') as HTMLButtonElement | null
     expect(planButton).toBeTruthy()
 
@@ -1060,6 +1072,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
+    openComposerOptions(host)
     const acceptEditsButton = host.querySelector('button[title="Toggle Accept Edits mode. Claude can edit workspace files without prompting."]') as HTMLButtonElement | null
     const autoButton = host.querySelector('button[title="Toggle Auto mode"]') as HTMLButtonElement | null
     expect(acceptEditsButton).toBeTruthy()
@@ -1196,12 +1209,13 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
+    openComposerOptions(host)
     const goalButton = host.querySelector('button[title="Use the next message as a goal"]') as HTMLButtonElement | null
     expect(goalButton).toBeTruthy()
     act(() => {
       goalButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    expect(host.textContent).toContain('Goal Next')
+    expect(host.textContent).toContain('Goal: next message')
 
     const textarea = host.querySelector('textarea') as HTMLTextAreaElement | null
     act(() => {
@@ -1255,11 +1269,21 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const pauseButton = host.querySelector('button[title="Pause goal"]') as HTMLButtonElement | null
-    const deleteButton = host.querySelector('button[title="Delete goal"]') as HTMLButtonElement | null
-    expect(host.textContent).toContain('Complete')
+    // Goal actions are consolidated into an overflow menu; open it to reach them.
+    const openGoalMenu = () => act(() => {
+      (host.querySelector('button[aria-label="Goal actions"]') as HTMLButtonElement | null)
+        ?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      ;(host.querySelector('button[aria-label="Goal actions"]') as HTMLButtonElement | null)
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    const menuItem = (text: string) =>
+      Array.from(host.querySelectorAll('button')).find((b) => b.textContent === text) as HTMLButtonElement | undefined
+
+    openGoalMenu()
+    expect(menuItem('Mark complete')).toBeTruthy()
+    const pauseButton = menuItem('Pause goal')
     expect(pauseButton).toBeTruthy()
-    expect(deleteButton).toBeTruthy()
+    expect(menuItem('Delete goal')).toBeTruthy()
 
     act(() => {
       pauseButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -1273,16 +1297,17 @@ describe('ChatView', () => {
       }))
     })
 
-    const resumeButton = host.querySelector('button[title="Resume goal"]') as HTMLButtonElement | null
+    openGoalMenu()
+    const resumeButton = menuItem('Resume goal')
     expect(resumeButton).toBeTruthy()
     act(() => {
       resumeButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(resumeGoal).toHaveBeenCalledWith('chat-1', 'goal-1')
 
-    const pausedDeleteButton = host.querySelector('button[title="Delete goal"]') as HTMLButtonElement | null
+    openGoalMenu()
     act(() => {
-      pausedDeleteButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      menuItem('Delete goal')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(removeGoal).toHaveBeenCalledWith('goal-1')
 
@@ -1319,6 +1344,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
+    openComposerOptions(host)
     const memoryButton = host.querySelector('button[title="Toggle memory"]') as HTMLButtonElement | null
     expect(memoryButton).toBeTruthy()
     expect(memoryButton?.disabled).toBe(false)
@@ -2066,7 +2092,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const openButton = host.querySelector('button[title="Open workspace in Finder or File Explorer"]') as HTMLButtonElement | null
+    const openButton = host.querySelector('button[aria-label="Open workspace in Finder or File Explorer"]') as HTMLButtonElement | null
     expect(openButton).toBeTruthy()
     expect(openButton?.disabled).toBe(false)
 
@@ -2367,7 +2393,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const openButton = host.querySelector('button[title="Open workspace in Finder or File Explorer"]') as HTMLButtonElement | null
+    const openButton = host.querySelector('button[aria-label="Open workspace in Finder or File Explorer"]') as HTMLButtonElement | null
     expect(openButton).toBeTruthy()
     expect(openButton?.disabled).toBe(true)
 

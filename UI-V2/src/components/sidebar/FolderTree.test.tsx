@@ -195,8 +195,14 @@ describe('FolderTree', () => {
       root.render(<FolderTree searchQuery="" />)
     })
 
+    // Folder actions are now in an overflow menu — open it first.
+    act(() => {
+      (host.querySelector('button[aria-label="Folder actions"]') as HTMLButtonElement | null)
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
     const memoryButton = Array.from(host.querySelectorAll('button')).find((button) =>
-      button.textContent?.includes('Memory')
+      button.textContent?.includes('Project memory')
     )
     expect(memoryButton).toBeTruthy()
 

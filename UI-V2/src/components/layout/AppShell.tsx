@@ -1,5 +1,28 @@
-import { useCallback } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
+import { PanelLeftClose, PanelLeftOpen, Brain, Settings2, GitBranch, ArrowUpCircle, Bell } from 'lucide-react'
+
+/** GitHub mark (lucide dropped brand icons). */
+function GithubLogo({ size = 17 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden focusable="false">
+      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+    </svg>
+  )
+}
+
+/** Simplified Apache Subversion mark. */
+function SvnLogo({ size = 17 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden focusable="false">
+      <circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none" />
+      <path d="M12 4a8 8 0 0 1 7 4.1" />
+      <path d="M20 12a8 8 0 0 1-4.1 7" />
+      <path d="M12 20a8 8 0 0 1-7-4.1" />
+      <path d="M4 12a8 8 0 0 1 4.1-7" />
+    </svg>
+  )
+}
 import { Sidebar } from './Sidebar'
 import { MainPanel } from './MainPanel'
 import { VcsCommitPanel } from './VcsCommitPanel'
@@ -11,6 +34,7 @@ import { MarkdownStoreModal } from '../settings/MarkdownStoreModal'
 import { useAppStore } from '../../store/useAppStore'
 import { Logo } from '../shared/Logo'
 import { ThemeToggle } from '../shared/ThemeToggle'
+import { IconButton, StatusDot } from '../ui'
 
 function formatMemoryTitle(entryCount: number, lastCreatedAt: string): string {
   if (entryCount <= 0) {
@@ -45,53 +69,35 @@ function LeftActivityRail() {
   return (
     <aside className="uam-side-rail uam-side-rail--left" aria-label="Main navigation">
       <Logo size={24} showText={false} />
-      <button
-        type="button"
-        title={sidebarCollapsed ? 'Expand chat selector' : 'Collapse chat selector'}
-        aria-label={sidebarCollapsed ? 'Expand chat selector' : 'Collapse chat selector'}
-        className="uam-icon-button"
+      <IconButton
+        icon={sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+        label={sidebarCollapsed ? 'Expand chat selector' : 'Collapse chat selector'}
+        tooltipSide="right"
         onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-      >
-        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <rect x="2.5" y="2.5" width="11" height="11" rx="1.5" />
-          <path d="M6 3v10" />
-          <path d={sidebarCollapsed ? 'M10 6 7.5 8 10 10' : 'M8 6 10.5 8 8 10'} />
-        </svg>
-      </button>
+      />
       <div className="uam-side-rail__spacer" />
       <ThemeToggle />
-      <button
-        type="button"
-        title={memoryTitle}
-        aria-label="Memory library"
-        className={`uam-icon-button ${hasMemories ? 'uam-icon-button--accent' : ''}`}
-        onClick={() => { void openAllMemoryLibrary() }}
-      >
-        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M6.1 3.1A2 2 0 0 0 2.8 5a2.2 2.2 0 0 0 .2 4.3 2.1 2.1 0 0 0 3.1 2.3V3.1z" />
-          <path d="M9.9 3.1A2 2 0 0 1 13.2 5a2.2 2.2 0 0 1-.2 4.3 2.1 2.1 0 0 1-3.1 2.3V3.1z" />
-          <path d="M6.1 6.1H4.5M9.9 6.1h1.6M6.1 9.1H4.6M9.9 9.1h1.5" />
-        </svg>
+      <span className="relative inline-flex">
+        <IconButton
+          icon={<Brain size={17} />}
+          label="Memory library"
+          tooltip={memoryTitle}
+          tooltipSide="right"
+          active={hasMemories}
+          onClick={() => { void openAllMemoryLibrary() }}
+        />
         {hasActivity && (
-          <span
-            className="memory-activity-dot"
-            data-testid="memory-activity-dot"
-            aria-hidden="true"
-          />
+          <span className="absolute -right-0.5 -top-0.5 pointer-events-none" data-testid="memory-activity-dot" aria-hidden="true">
+            <StatusDot tone="accent" pulse size={7} />
+          </span>
         )}
-      </button>
-      <button
-        type="button"
-        title="Settings"
-        aria-label="Settings"
-        className="uam-icon-button"
+      </span>
+      <IconButton
+        icon={<Settings2 size={17} />}
+        label="Settings"
+        tooltipSide="right"
         onClick={() => setSettingsOpen(true)}
-      >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-          <circle cx="12" cy="12" r="3" />
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-        </svg>
-      </button>
+      />
     </aside>
   )
 }
@@ -99,22 +105,64 @@ function LeftActivityRail() {
 function RightActivityRail() {
   const commitPanelOpen = useAppStore((s) => s.commitPanelOpen)
   const setCommitPanelOpen = useAppStore((s) => s.setCommitPanelOpen)
+  const activeSessionId = useAppStore((s) => s.activeSessionId)
+  const getChatWorktreeStatus = useAppStore((s) => s.getChatWorktreeStatus)
+  const [vcsKind, setVcsKind] = useState<'git' | 'svn' | null>(null)
+
+  // Detect the active chat's VCS so the toggle shows the matching logo.
+  useEffect(() => {
+    if (!activeSessionId) { setVcsKind(null); return }
+    let cancelled = false
+    void getChatWorktreeStatus(activeSessionId).then((status) => {
+      if (cancelled) return
+      setVcsKind(status?.isSvnWorkspace ? 'svn' : status?.isGitRepository ? 'git' : null)
+    })
+    return () => { cancelled = true }
+  }, [activeSessionId, getChatWorktreeStatus])
+
+  const vcsLabelKind = vcsKind === 'svn' ? 'SVN' : vcsKind === 'git' ? 'Git' : 'Git/SVN'
+  const vcsIcon = vcsKind === 'svn' ? <SvnLogo size={17} /> : vcsKind === 'git' ? <GithubLogo size={16} /> : <GitBranch size={17} />
+
+  // UI-only placeholders — wired to real data later (update check = issue #21,
+  // alerts = toast/notification system). Kept inert so the affordances exist now.
+  const updateAvailable: boolean = false
+  const alertCount: number = 0
 
   return (
     <aside className="uam-side-rail uam-side-rail--right" aria-label="Tool windows">
-      <button
-        type="button"
-        title={commitPanelOpen ? 'Close Git/SVN commit panel' : 'Open Git/SVN commit panel'}
-        aria-label={commitPanelOpen ? 'Close Git/SVN commit panel' : 'Open Git/SVN commit panel'}
-        className={`uam-icon-button ${commitPanelOpen ? 'uam-icon-button--active' : ''}`}
+      <IconButton
+        icon={vcsIcon}
+        label={commitPanelOpen ? `Close ${vcsLabelKind} commit panel` : `Open ${vcsLabelKind} commit panel`}
+        tooltipSide="left"
+        active={commitPanelOpen}
         onClick={() => setCommitPanelOpen(!commitPanelOpen)}
-      >
-        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M4 2.5h6l2 2V13a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1z" />
-          <path d="M5 8h6M5 10.5h4" />
-          <path d="M10 2.5V5h2" />
-        </svg>
-      </button>
+      />
+      <div className="uam-side-rail__spacer" />
+      <span className="relative inline-flex">
+        <IconButton
+          icon={<Bell size={17} />}
+          label={alertCount > 0 ? `${alertCount} alert${alertCount === 1 ? '' : 's'}` : 'No new alerts'}
+          tooltipSide="left"
+        />
+        {alertCount > 0 && (
+          <span className="absolute -right-0.5 -top-0.5 pointer-events-none" aria-hidden>
+            <StatusDot tone="warning" size={7} />
+          </span>
+        )}
+      </span>
+      <span className="relative inline-flex">
+        <IconButton
+          icon={<ArrowUpCircle size={17} />}
+          label={updateAvailable ? 'Update available' : 'Check for updates'}
+          tooltipSide="left"
+          active={updateAvailable}
+        />
+        {updateAvailable && (
+          <span className="absolute -right-0.5 -top-0.5 pointer-events-none" aria-hidden>
+            <StatusDot tone="accent" pulse size={7} />
+          </span>
+        )}
+      </span>
     </aside>
   )
 }

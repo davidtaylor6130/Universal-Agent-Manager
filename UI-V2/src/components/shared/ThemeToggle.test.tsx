@@ -15,7 +15,7 @@ describe('ThemeToggle', () => {
       root.render(<ThemeToggle />)
     })
 
-    expect(host.querySelector('button')?.title).toBe('Switch to light mode')
+    expect(host.querySelector('button')?.getAttribute('aria-label')).toBe('Switch to light mode')
 
     act(() => {
       root.unmount()

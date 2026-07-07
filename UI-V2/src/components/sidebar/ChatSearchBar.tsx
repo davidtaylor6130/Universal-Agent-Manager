@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
+import { Search, X, SlidersHorizontal, Check } from 'lucide-react'
 import type { ChatSearchFilters, ChatStatusFilterId } from './chatSearch'
+import { Tooltip } from '../ui'
 
 interface ChatSearchProviderFilterOption {
   id: string
@@ -82,21 +84,7 @@ export function ChatSearchBar({
             color: 'var(--text-3)',
           }}
         >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            style={{ flexShrink: 0 }}
-            aria-hidden="true"
-          >
-            <circle cx="11" cy="11" r="8" />
-            <line x1="21" y1="21" x2="16.65" y2="16.65" />
-          </svg>
+          <Search size={14} style={{ flexShrink: 0 }} aria-hidden />
 
           <input
             value={value}
@@ -117,53 +105,42 @@ export function ChatSearchBar({
           />
 
           {value && (
-            <button
-              type="button"
-              title="Clear search"
-              aria-label="Clear search"
-              className="flex items-center justify-center rounded transition-colors duration-100"
-              style={{
-                width: 18,
-                height: 18,
-                background: 'transparent',
-                border: 'none',
-                color: 'var(--text-3)',
-                cursor: 'pointer',
-                flexShrink: 0,
-              }}
-              onMouseEnter={(event) => {
-                event.currentTarget.style.background = 'var(--sidebar-item-hover)'
-                event.currentTarget.style.color = 'var(--text-2)'
-              }}
-              onMouseLeave={(event) => {
-                event.currentTarget.style.background = 'transparent'
-                event.currentTarget.style.color = 'var(--text-3)'
-              }}
-              onClick={onClear}
-            >
-              <svg
-                width="12"
-                height="12"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.4"
-                strokeLinecap="round"
-                aria-hidden="true"
+            <Tooltip label="Clear search" side="top">
+              <button
+                type="button"
+                aria-label="Clear search"
+                className="flex items-center justify-center rounded transition-colors duration-100"
+                style={{
+                  width: 18,
+                  height: 18,
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--text-3)',
+                  cursor: 'pointer',
+                  flexShrink: 0,
+                }}
+                onMouseEnter={(event) => {
+                  event.currentTarget.style.background = 'var(--sidebar-item-hover)'
+                  event.currentTarget.style.color = 'var(--text-2)'
+                }}
+                onMouseLeave={(event) => {
+                  event.currentTarget.style.background = 'transparent'
+                  event.currentTarget.style.color = 'var(--text-3)'
+                }}
+                onClick={onClear}
               >
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
+                <X size={13} aria-hidden />
+              </button>
+            </Tooltip>
           )}
         </div>
         <div className="relative" ref={popoverRef}>
+          <Tooltip label={activeFilterCount > 0 ? `${activeFilterCount} chat filter${activeFilterCount === 1 ? '' : 's'} active` : 'Filter chats'} side="bottom">
           <button
             type="button"
-            title={activeFilterCount > 0 ? `${activeFilterCount} chat filter${activeFilterCount === 1 ? '' : 's'} active` : 'Filter chats'}
             aria-label="Filter chats"
             aria-expanded={filtersOpen}
-            className="relative flex items-center justify-center rounded-md"
+            className="relative flex items-center justify-center rounded-md transition-colors duration-fast"
             style={{
               width: 32,
               height: 32,
@@ -173,10 +150,7 @@ export function ChatSearchBar({
             }}
             onClick={() => setFiltersOpen((open) => !open)}
           >
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M2.5 4h11M4.5 8h7M6.5 12h3" />
-              <path d="M11.5 3v2M6.5 7v2M9.5 11v2" />
-            </svg>
+            <SlidersHorizontal size={15} aria-hidden />
             {activeFilterCount > 0 && (
               <span
                 aria-hidden="true"
@@ -193,6 +167,7 @@ export function ChatSearchBar({
               </span>
             )}
           </button>
+          </Tooltip>
 
           {filtersOpen && (
             <div
@@ -252,7 +227,7 @@ export function ChatSearchBar({
                       onClick={() => onToggleStatusFilter(option.id)}
                     >
                       <span>{option.label}</span>
-                      <span aria-hidden="true">{active ? 'On' : ''}</span>
+                      {active && <Check size={13} style={{ color: 'var(--accent)' }} aria-hidden />}
                     </button>
                   )
                 })}
@@ -276,7 +251,7 @@ export function ChatSearchBar({
                       onClick={() => onToggleProviderFilter(provider.id)}
                     >
                       <span className="truncate">{provider.label}</span>
-                      <span aria-hidden="true">{active ? 'On' : ''}</span>
+                      {active && <Check size={13} style={{ color: 'var(--accent)' }} aria-hidden />}
                     </button>
                   )
                 })}

@@ -79,7 +79,9 @@ import {
   ComposerIcon,
   ComposerToolbar,
 } from '../chat/Composer'
+import { ChevronDown, Check } from 'lucide-react'
 import { ProviderLogo } from '../shared/ProviderLogo'
+import { Button, IconButton } from '../ui'
 
 interface ChatViewProps {
   session: Session
@@ -152,6 +154,7 @@ export function ChatView({ session }: ChatViewProps) {
   const [goalError, setGoalError] = useState('')
   const [goalSubmitting, setGoalSubmitting] = useState(false)
   const [goalArmNextMessage, setGoalArmNextMessage] = useState(false)
+  const [slashIndex, setSlashIndex] = useState(0)
   const [composerAttachments, setComposerAttachments] = useState<LocalAttachment[]>([])
   const [attachmentError, setAttachmentError] = useState('')
   const [renderedMessageCount, setRenderedMessageCount] = useState(INITIAL_RENDERED_MESSAGES)
@@ -181,6 +184,9 @@ export function ChatView({ session }: ChatViewProps) {
   const discardChatWorktreeChanges = useAppStore((s) => s.discardChatWorktreeChanges)
   const portChatWorktreeChanges = useAppStore((s) => s.portChatWorktreeChanges)
   const openMarkdownStore = useAppStore((s) => s.openMarkdownStore)
+  const markdownStoreEntries = useAppStore(useShallow((s) => s.markdownStoreEntries))
+  const refreshMarkdownStore = useAppStore((s) => s.refreshMarkdownStore)
+  const attachMarkdownStoreEntry = useAppStore((s) => s.attachMarkdownStoreEntry)
   const markdownStoreAttachments = useAppStore(useShallow((s) => s.markdownStoreAttachedBySessionId[session.id] ?? []))
   const detachMarkdownStoreEntry = useAppStore((s) => s.detachMarkdownStoreEntry)
   const goals = useAppStore((s) => s.goalsByChatId[session.id] ?? [])
@@ -531,12 +537,6 @@ export function ChatView({ session }: ChatViewProps) {
     }
   }
 
-  const onComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault()
-      void submit()
-    }
-  }
 
   const pendingPermission = acp?.pendingPermission
   const pendingUserInput = acp?.pendingUserInput
@@ -676,6 +676,78 @@ export function ChatView({ session }: ChatViewProps) {
     setGoalError('')
   }
 
+  // Slash command palette: typing "/" at the start of an empty-ish draft opens
+  // a traversable menu of UAM actions (Codex-style), filtered by what follows.
+  const slashCommands = useMemo(
+    () => [
+      { id: 'model', label: '/model', hint: 'Change the model', run: () => setModelOpen(true) },
+      { id: 'goal', label: '/goal', hint: 'Use the next message as a goal', run: handleToggleGoal },
+      {
+        id: 'memory',
+        label: '/memory',
+        hint: (session.memoryEnabled ?? true) ? 'Disable memory' : 'Enable memory',
+        run: () => void setSessionMemoryEnabled(session.id, !(session.memoryEnabled ?? true)),
+      },
+      { id: 'attach', label: '/attach', hint: 'Attach files', run: () => fileInputRef.current?.click() },
+      { id: 'markdown', label: '/markdown', hint: 'Open the markdown store', run: () => void openMarkdownStore() },
+      ...markdownStoreEntries.map((entry) => ({
+        id: `md:${entry.id}`,
+        label: '/' + entry.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
+        hint: entry.review || entry.preview || 'Attach markdown store skill',
+        run: () => attachMarkdownStoreEntry(session.id, entry),
+      })),
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [session.id, session.memoryEnabled, markdownStoreEntries]
+  )
+  const slashMatch = /^\/([\w-]*)$/.exec(draft)
+  const slashQuery = slashMatch ? slashMatch[1].toLowerCase() : null
+  const slashMatches = slashQuery !== null
+    ? slashCommands.filter((command) => command.label.slice(1).startsWith(slashQuery))
+    : []
+  const slashOpen = slashQuery !== null && slashMatches.length > 0
+  const slashPaletteVisible = slashQuery !== null
+  useEffect(() => {
+    if (slashPaletteVisible && markdownStoreEntries.length === 0) {
+      void refreshMarkdownStore()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slashPaletteVisible])
+  const runSlashCommand = (command: (typeof slashCommands)[number]) => {
+    setDraft('')
+    setSlashIndex(0)
+    command.run()
+  }
+
+  const onComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (slashOpen) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        setSlashIndex((i) => (i + 1) % slashMatches.length)
+        return
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        setSlashIndex((i) => (i - 1 + slashMatches.length) % slashMatches.length)
+        return
+      }
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault()
+        runSlashCommand(slashMatches[Math.min(slashIndex, slashMatches.length - 1)])
+        return
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setDraft('')
+        return
+      }
+    }
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault()
+      void submit()
+    }
+  }
+
   const activePlanActions = canShowPlanActions && providerSupported
     ? {
         show: true,
@@ -728,7 +800,7 @@ export function ChatView({ session }: ChatViewProps) {
         <div ref={scrollRef} className="flex-1 overflow-auto" data-copy-surface="chat" onScroll={handleScroll}>
           <div className="w-full px-4 py-4">
             <div className="flex items-center gap-2 mb-5 text-xs" style={{ color: 'var(--text-2)' }}>
-              <span style={{ color: statusColor(acp), fontSize: 9 }}>●</span>
+              <span aria-hidden style={{ width: 7, height: 7, borderRadius: '50%', background: statusColor(acp), flexShrink: 0 }} />
               <span>{statusLabel(acp)}</span>
               {acp?.agentInfo?.title && (
                 <span style={{ color: 'var(--text-3)' }}>{acp.agentInfo.title}</span>
@@ -743,13 +815,13 @@ export function ChatView({ session }: ChatViewProps) {
             <div className="space-y-4">
               {earliestRenderedMessageIndex > 0 && (
                 <div className="flex justify-center">
-                  <button
-                    type="button"
-                    className="uam-secondary-button"
+                  <Button
+                    variant="secondary"
+                    size="sm"
                     onClick={() => setRenderedMessageCount((current) => current + RENDERED_MESSAGE_BATCH_SIZE)}
                   >
-                    <span>Show earlier messages</span>
-                  </button>
+                    Show earlier messages
+                  </Button>
                 </div>
               )}
               {visibleMessages.map((message, visibleIndex) => {
@@ -883,7 +955,52 @@ export function ChatView({ session }: ChatViewProps) {
                 style={{ color: 'var(--text-3)', minWidth: 0 }}
                 title={workspaceDirectory || 'No workspace directory selected'}
               >
-                <span style={{ color: 'var(--text-2)', flexShrink: 0 }}>Workspace</span>
+                {(providers.length <= 1 && currentProviderId === providers[0]?.id) ? (
+                  <span style={{ color: 'var(--text-2)', flexShrink: 0 }}>Workspace</span>
+                ) : (
+                <div ref={providerMenuRef} className="relative" style={{ flexShrink: 0 }}>
+                  <button
+                    type="button"
+                    title="Select provider"
+                    aria-label="Select provider"
+                    aria-expanded={providerOpen}
+                    onClick={() => setProviderOpen((v) => !v)}
+                    className="inline-flex items-center gap-1.5 rounded-md px-2"
+                    style={{ height: 26, border: '1px solid var(--border)', background: providerOpen ? 'var(--surface-up)' : 'var(--surface)', color: 'var(--text-2)' }}
+                  >
+                    <ProviderLogo providerId={currentProviderId} />
+                    <span style={{ color: 'var(--text)' }}>{currentProviderName}</span>
+                    <ChevronDown size={12} aria-hidden style={{ opacity: 0.6 }} />
+                  </button>
+                  {providerOpen && (
+                    <div
+                      className="absolute left-0 z-40"
+                      style={{ top: 30, width: 230, border: '1px solid var(--border-bright)', borderRadius: 8, background: 'var(--surface)', boxShadow: 'var(--elev-3)', padding: 6 }}
+                    >
+                      <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>Provider</div>
+                      {providers.map((candidate) => {
+                        const candidateName = providerShortName(candidate, candidate.id)
+                        const selected = candidate.id === currentProviderId
+                        const disabled = !selected && !canChangeProvider
+                        return (
+                          <button
+                            key={candidate.id}
+                            type="button"
+                            disabled={disabled}
+                            onClick={() => { setProviderOpen(false); if (disabled) return; void setSessionProvider(session.id, candidate.id) }}
+                            className="w-full flex items-center gap-2 text-left px-2 py-2"
+                            style={{ borderRadius: 6, background: selected ? 'var(--accent-dim)' : 'transparent', color: selected ? 'var(--text)' : 'var(--text-2)', opacity: disabled ? 0.5 : 1 }}
+                          >
+                            <ProviderLogo providerId={candidate.id} />
+                            <span className="flex-1">{candidateName}</span>
+                            {selected && <Check size={13} aria-hidden style={{ color: 'var(--accent)' }} />}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+                )}
                 {isGitWorktree && (
                   <span
                     style={{
@@ -912,106 +1029,62 @@ export function ChatView({ session }: ChatViewProps) {
                 >
                   {workspaceDirectory || 'No workspace directory selected'}
                 </span>
-                <button
-                  type="button"
-                disabled={!workspaceDirectory}
-                onClick={() => void openWorkspace()}
-                className="h-[24px] w-[28px] inline-flex flex-shrink-0 items-center justify-center text-[11px] font-medium"
-                title="Open workspace in Finder or File Explorer"
-                style={{
-                  border: '1px solid var(--border)',
-                  borderRadius: 6,
-                  background: workspaceDirectory ? 'var(--surface-up)' : 'var(--bg)',
-                  color: workspaceDirectory ? 'var(--text-2)' : 'var(--text-3)',
-                  opacity: workspaceDirectory ? 1 : 0.55,
-                }}
-                >
-                  <ComposerIcon name="folder" size={13} />
-        </button>
-        <button
-        type="button"
-        disabled={!workspaceDirectory}
-        onClick={() => void openWorkspaceEditor()}
-        className="h-[24px] w-[28px] inline-flex flex-shrink-0 items-center justify-center text-[11px] font-medium"
-        title="Open workspace in configured editor"
-        style={{
-          border: '1px solid var(--border)',
-          borderRadius: 6,
-          background: workspaceDirectory ? 'var(--surface-up)' : 'var(--bg)',
-          color: workspaceDirectory ? 'var(--text-2)' : 'var(--text-3)',
-          opacity: workspaceDirectory ? 1 : 0.55,
-        }}
-      >
-        <ComposerIcon name="editor" size={13} />
-      </button>
-      <button
-        type="button"
-        disabled={!workspaceDirectory}
-        onClick={() => void openWorkspaceTerminal()}
-        className="h-[24px] w-[28px] inline-flex flex-shrink-0 items-center justify-center text-[11px] font-medium"
-        title={!workspaceDirectory ? 'Select a workspace directory to open a terminal' : 'Open a terminal at the workspace location'}
-        style={{
-          border: '1px solid var(--border)',
-          borderRadius: 6,
-          background: workspaceDirectory ? 'var(--surface-up)' : 'var(--bg)',
-          color: workspaceDirectory ? 'var(--text-2)' : 'var(--text-3)',
-          opacity: workspaceDirectory ? 1 : 0.55,
-        }}
-      >
-        <ComposerIcon name="terminal" size={13} />
-      </button>
-      {!isGitWorktree && (
-        <button
-          type="button"
-          disabled={!workspaceDirectory || workspaceActionsDisabled}
-          onClick={() => void runWorkspaceAction('create')}
-          className="h-[24px] w-[28px] inline-flex flex-shrink-0 items-center justify-center text-[11px] font-medium"
-          title={workspaceActionsDisabled ? 'Stop the runtime before changing workspace isolation' : 'Create an isolated Git worktree for this chat'}
-          style={{
-            border: '1px solid var(--border)',
-            borderRadius: 6,
-            background: workspaceDirectory && !workspaceActionsDisabled ? 'var(--surface-up)' : 'var(--bg)',
-            color: workspaceDirectory && !workspaceActionsDisabled ? 'var(--text-2)' : 'var(--text-3)',
-            opacity: workspaceDirectory && !workspaceActionsDisabled ? 1 : 0.55,
-          }}
-        >
-          <ComposerIcon name="git-tree" size={13} />
-        </button>
-      )}
+                <IconButton
+                  variant="solid"
+                  size="sm"
+                  disabled={!workspaceDirectory}
+                  onClick={() => void openWorkspace()}
+                  icon={<ComposerIcon name="folder" size={14} />}
+                  label="Open workspace in Finder or File Explorer"
+                  tooltipSide="bottom"
+                />
+                <IconButton
+                  variant="solid"
+                  size="sm"
+                  disabled={!workspaceDirectory}
+                  onClick={() => void openWorkspaceEditor()}
+                  icon={<ComposerIcon name="editor" size={14} />}
+                  label="Open workspace in configured editor"
+                  tooltipSide="bottom"
+                />
+                <IconButton
+                  variant="solid"
+                  size="sm"
+                  disabled={!workspaceDirectory}
+                  onClick={() => void openWorkspaceTerminal()}
+                  icon={<ComposerIcon name="terminal" size={14} />}
+                  label={!workspaceDirectory ? 'Select a workspace directory to open a terminal' : 'Open a terminal at the workspace location'}
+                  tooltipSide="bottom"
+                />
+                {!isGitWorktree && (
+                  <IconButton
+                    variant="solid"
+                    size="sm"
+                    disabled={!workspaceDirectory || workspaceActionsDisabled}
+                    onClick={() => void runWorkspaceAction('create')}
+                    icon={<ComposerIcon name="git-tree" size={14} />}
+                    label={workspaceActionsDisabled ? 'Stop the runtime before changing workspace isolation' : 'Create an isolated Git worktree for this chat'}
+                    tooltipSide="bottom"
+                  />
+                )}
                 {isGitWorktree && (
                   <>
-                    <button
-                      type="button"
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       disabled={workspaceActionsDisabled}
                       onClick={() => void runWorkspaceAction('discard')}
-                      className="h-[24px] flex-shrink-0 px-2 text-[11px] font-medium"
-                      title={workspaceActionsDisabled ? 'Stop the runtime before discarding worktree changes' : 'Discard worktree changes and return this chat to the source workspace'}
-                      style={{
-                        border: '1px solid var(--border)',
-                        borderRadius: 6,
-                        background: workspaceActionsDisabled ? 'var(--bg)' : 'var(--surface-up)',
-                        color: workspaceActionsDisabled ? 'var(--text-3)' : 'var(--text-2)',
-                        opacity: workspaceActionsDisabled ? 0.55 : 1,
-                      }}
                     >
-                      Discard & return
-                    </button>
-                    <button
-                      type="button"
+                      Discard &amp; return
+                    </Button>
+                    <Button
+                      variant="primary"
+                      size="sm"
                       disabled={workspaceActionsDisabled}
                       onClick={() => void runWorkspaceAction('port')}
-                      className="h-[24px] flex-shrink-0 px-2 text-[11px] font-medium"
-                      title={workspaceActionsDisabled ? 'Stop the runtime before porting worktree changes' : 'Apply this chat worktree diff and return this chat to the source workspace'}
-                      style={{
-                        border: '1px solid color-mix(in srgb, var(--accent) 42%, var(--border))',
-                        borderRadius: 6,
-                        background: workspaceActionsDisabled ? 'var(--bg)' : 'color-mix(in srgb, var(--accent) 12%, var(--surface))',
-                        color: workspaceActionsDisabled ? 'var(--text-3)' : 'var(--text)',
-                        opacity: workspaceActionsDisabled ? 0.55 : 1,
-                      }}
                     >
                       Port back
-                    </button>
+                    </Button>
                   </>
                 )}
               </div>
@@ -1223,6 +1296,41 @@ export function ChatView({ session }: ChatViewProps) {
             {attachmentError && (
               <div className="px-3 pt-2 text-[11px]" style={{ color: 'var(--red)' }}>
                 {attachmentError}
+              </div>
+            )}
+            {slashOpen && (
+              <div className="relative">
+                <div
+                  className="absolute left-3 right-3 z-40 overflow-hidden rounded-lg"
+                  style={{ bottom: 4, border: '1px solid var(--border-bright)', background: 'var(--surface)', boxShadow: 'var(--elev-3)' }}
+                  role="listbox"
+                  aria-label="Slash commands"
+                >
+                  <div className="px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)', borderBottom: '1px solid var(--border)' }}>
+                    Commands
+                  </div>
+                  <div className="overflow-y-auto" style={{ maxHeight: 360 }}>
+                  {slashMatches.map((command, index) => {
+                    const active = index === Math.min(slashIndex, slashMatches.length - 1)
+                    return (
+                      <button
+                        key={command.id}
+                        type="button"
+                        role="option"
+                        aria-selected={active}
+                        ref={active ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
+                        onMouseEnter={() => setSlashIndex(index)}
+                        onMouseDown={(e) => { e.preventDefault(); runSlashCommand(command) }}
+                        className="flex w-full items-baseline gap-3 px-3 py-2 text-left"
+                        style={{ background: active ? 'var(--accent-dim)' : 'transparent', color: active ? 'var(--text)' : 'var(--text-2)' }}
+                      >
+                        <span className="font-mono text-sm" style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>{command.label}</span>
+                        <span className="min-w-0 flex-1 truncate text-xs" style={{ color: 'var(--text-3)' }}>{command.hint}</span>
+                      </button>
+                    )
+                  })}
+                  </div>
+                </div>
               </div>
             )}
             <textarea

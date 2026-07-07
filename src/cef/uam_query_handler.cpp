@@ -52,6 +52,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"listMarkdownStoreEntries", &UamQueryHandler::HandleListMarkdownStoreEntries},
 		{"createMarkdownStoreEntry", &UamQueryHandler::HandleCreateMarkdownStoreEntry},
 		{"revealMarkdownStoreEntry", &UamQueryHandler::HandleRevealMarkdownStoreEntry},
+		{"editMarkdownStoreEntry", &UamQueryHandler::HandleEditMarkdownStoreEntry},
 		{"deleteSession", &UamQueryHandler::HandleDeleteSession},
 		{"createFolder", &UamQueryHandler::HandleCreateFolder},
 		{"renameFolder", &UamQueryHandler::HandleRenameFolder},

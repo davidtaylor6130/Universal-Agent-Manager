@@ -198,6 +198,29 @@ class MacFileDialogService final : public IPlatformFileDialogService
 
 		return true;
 	}
+
+	bool OpenFileInTextEditor(const std::filesystem::path& file_path, std::string* error_out = nullptr) const override
+	{
+		if (file_path.empty() || !uam::paths::IsRegularFileNoThrow(file_path))
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "File does not exist.";
+			}
+			return false;
+		}
+
+		std::string launch_error;
+		if (!RunProgramAndWait({"/usr/bin/open", "-t", file_path.string()}, &launch_error))
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = ErrorWithOptionalDetail("Failed to open file in text editor.", launch_error);
+			}
+			return false;
+		}
+		return true;
+	}
 };
 
 IPlatformFileDialogService& GetMacFileDialogService()

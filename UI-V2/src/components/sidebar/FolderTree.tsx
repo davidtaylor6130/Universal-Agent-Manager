@@ -1,7 +1,10 @@
-import { memo, useEffect, useState, useMemo } from 'react'
+import { memo, useEffect, useRef, useState, useMemo } from 'react'
+import type { ReactNode } from 'react'
+import { Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, X, MoreHorizontal, MessageSquarePlus, Brain, Pencil, Trash2 } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { SessionItem } from './SessionItem'
+import { Button, Tooltip } from '../ui'
 import {
   type ChatSearchFilters,
   buildChatSearchIndex,
@@ -260,32 +263,18 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
                   fontFamily: 'inherit',
                 }}
               />
-              <button
-                type="button"
-                className="px-2 py-1 rounded text-[10px] whitespace-nowrap"
-                style={{
-                  background: 'transparent',
-                  color: 'var(--text-3)',
-                  border: '1px solid var(--border)',
-                  cursor: 'pointer',
-                  fontFamily: 'inherit',
-                }}
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={() => { void chooseNewFolderDirectory() }}
               >
                 Browse
-              </button>
+              </Button>
             </div>
             <div className="flex items-center justify-end gap-2">
-              <button
-                type="button"
-                className="px-2 py-1 rounded text-[10px]"
-                style={{
-                  background: 'transparent',
-                  color: 'var(--text-3)',
-                  border: '1px solid var(--border)',
-                  cursor: 'pointer',
-                  fontFamily: 'inherit',
-                }}
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={() => {
                   setNewFolderName('')
                   setNewFolderDirectory('')
@@ -293,22 +282,15 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
                 }}
               >
                 Cancel
-              </button>
-              <button
-                type="button"
-                className="px-2 py-1 rounded text-[10px]"
-                style={{
-                  background: 'var(--accent)',
-                  color: '#fff',
-                  border: 'none',
-                  cursor: 'pointer',
-                  fontFamily: 'inherit',
-                }}
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
                 disabled={!newFolderName.trim() || !newFolderDirectory.trim()}
                 onClick={commitAddFolder}
               >
                 Create
-              </button>
+              </Button>
             </div>
           </div>
         ) : (
@@ -326,7 +308,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
             onMouseEnter={(e) => e.currentTarget.style.color = 'var(--text-2)'}
             onMouseLeave={(e) => e.currentTarget.style.color = 'var(--text-3)'}
           >
-            <span style={{ fontSize: 11 }}>+</span>
+            <Plus size={14} aria-hidden />
             <span>New folder</span>
           </button>
         )}
@@ -395,21 +377,25 @@ function DeleteFolderModal({
           <span className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
             Delete folder and chats?
           </span>
-          <button
-            type="button"
-            onClick={onCancel}
-            className="text-xs rounded transition-colors duration-100"
-            style={{
-              background: 'transparent',
-              color: 'var(--text-3)',
-              border: 'none',
-              cursor: 'pointer',
-              padding: '2px 4px',
-              fontFamily: 'inherit',
-            }}
-          >
-            X
-          </button>
+          <Tooltip label="Close">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="flex items-center justify-center rounded transition-colors duration-100"
+              style={{
+                background: 'transparent',
+                color: 'var(--text-3)',
+                border: 'none',
+                cursor: 'pointer',
+                padding: 0,
+                width: 20,
+                height: 20,
+                fontFamily: 'inherit',
+              }}
+            >
+              <X size={16} aria-hidden />
+            </button>
+          </Tooltip>
         </div>
 
         <div className="p-5 space-y-4">
@@ -446,38 +432,20 @@ function DeleteFolderModal({
           className="flex items-center justify-end gap-2 px-5 py-4"
           style={{ borderTop: '1px solid var(--border)' }}
         >
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="md"
             onClick={onCancel}
-            className="px-4 py-1.5 rounded-md text-xs transition-colors duration-150"
-            style={{
-              background: 'transparent',
-              color: 'var(--text-2)',
-              border: '1px solid var(--border)',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}
-            onMouseEnter={(e) => e.currentTarget.style.borderColor = 'var(--border-bright)'}
-            onMouseLeave={(e) => e.currentTarget.style.borderColor = 'var(--border)'}
           >
             Cancel
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="danger"
+            size="md"
             onClick={onConfirm}
-            className="px-4 py-1.5 rounded-md text-xs font-medium transition-opacity duration-150"
-            style={{
-              background: 'var(--red)',
-              color: '#fff',
-              border: 'none',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.opacity = '0.88' }}
-            onMouseLeave={(e) => { e.currentTarget.style.opacity = '1' }}
           >
             Delete Folder
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -487,6 +455,22 @@ function DeleteFolderModal({
 // ---------------------------------------------------------------------------
 // FolderRow - memoized so it only re-renders when its own folder/session IDs change
 // ---------------------------------------------------------------------------
+
+function FolderMenuItem({ icon, label, onClick, danger }: { icon: ReactNode; label: string; onClick: () => void; danger?: boolean }) {
+  return (
+    <button
+      type="button"
+      className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-left transition-colors duration-100"
+      style={{ background: 'transparent', color: danger ? 'var(--red)' : 'var(--text-2)', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--sidebar-item-hover)' }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+      onClick={onClick}
+    >
+      {icon}
+      {label}
+    </button>
+  )
+}
 
 interface FolderRowProps {
   folder: Folder
@@ -530,6 +514,8 @@ const FolderRow = memo(function FolderRow({
   sessionsById,
 }: FolderRowProps) {
   const [showAllSessions, setShowAllSessions] = useState(false)
+  const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
   const shouldLimitSessions = !isSearching && sessionIds.length > VISIBLE_SESSION_LIMIT
   const visibleSessionIds = shouldLimitSessions && !showAllSessions
     ? sessionIds.slice(0, VISIBLE_SESSION_LIMIT)
@@ -542,6 +528,20 @@ const FolderRow = memo(function FolderRow({
     }
   }, [sessionIds.length, showAllSessions])
 
+  useEffect(() => {
+    if (!menuPos) return
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuPos(null)
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuPos(null) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [menuPos])
+
   return (
     <div className="mb-2">
       {/* Folder header */}
@@ -553,22 +553,11 @@ const FolderRow = memo(function FolderRow({
         }}
         onClick={onToggle}
       >
-        <svg
-          width="13"
-          height="13"
-          viewBox="0 0 16 16"
-          fill="currentColor"
-          style={{ flexShrink: 0, color: 'var(--accent)', opacity: 0.85 }}
-        >
-          {shouldShowSessions ? (
-            <>
-              <path d="M1 5.5A1.5 1.5 0 012.5 4H6l1.5 1.5H14A1.5 1.5 0 0115.5 7v.5H.5V5.5A1 1 0 011 5.5z" />
-              <path d="M.5 8h15l-1.5 5.5H2L.5 8z" opacity="0.85" />
-            </>
-          ) : (
-            <path d="M1 5.5A1.5 1.5 0 012.5 4H6l1.5 1.5H13.5A1.5 1.5 0 0115 7v5.5A1.5 1.5 0 0113.5 14h-11A1.5 1.5 0 011 12.5v-7z" />
-          )}
-        </svg>
+        {shouldShowSessions ? (
+          <FolderOpenIcon size={14} style={{ flexShrink: 0, color: 'var(--accent)', opacity: 0.85 }} aria-hidden />
+        ) : (
+          <FolderIcon size={14} style={{ flexShrink: 0, color: 'var(--accent)', opacity: 0.85 }} aria-hidden />
+        )}
         <span className="font-semibold truncate flex-1" style={{ fontSize: 13 }}>
           {folder.name}
         </span>
@@ -579,55 +568,50 @@ const FolderRow = memo(function FolderRow({
         >
           {sessionIds.length}
         </span>
-        {/* Action buttons */}
+        {/* Overflow menu trigger */}
         <div
-          className="absolute right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-100"
+          className={`absolute right-2 transition-opacity duration-100 ${menuPos ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
           onClick={(e) => e.stopPropagation()}
         >
-          <button
-            type="button"
-            className="text-[10px] px-1.5 py-0.5 rounded"
-            style={{
-              background: 'var(--surface-up)',
-              color: 'var(--text-3)',
-              border: '1px solid var(--border)',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}
-            onClick={onOpenMemory}
-          >
-            Memory
-          </button>
-          <button
-            type="button"
-            className="text-[10px] px-1.5 py-0.5 rounded"
-            style={{
-              background: 'var(--surface-up)',
-              color: 'var(--text-3)',
-              border: '1px solid var(--border)',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}
-            onClick={onStartRename}
-          >
-            Rename
-          </button>
-          <button
-            type="button"
-            className="text-[10px] px-1.5 py-0.5 rounded"
-            style={{
-              background: 'var(--surface-up)',
-              color: 'var(--red)',
-              border: '1px solid var(--border)',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}
-            onClick={onDelete}
-          >
-            Delete
-          </button>
+          <Tooltip label="Folder actions" side="top">
+            <button
+              type="button"
+              aria-label="Folder actions"
+              className="flex items-center justify-center rounded"
+              style={{ width: 22, height: 22, background: 'var(--surface-up)', color: 'var(--text-3)', border: '1px solid var(--border)', cursor: 'pointer' }}
+              onClick={(e) => {
+                e.stopPropagation()
+                if (menuPos) { setMenuPos(null); return }
+                const r = e.currentTarget.getBoundingClientRect()
+                setMenuPos({ x: r.right - 168, y: r.bottom + 4 })
+              }}
+            >
+              <MoreHorizontal size={14} aria-hidden />
+            </button>
+          </Tooltip>
         </div>
       </div>
+
+      {menuPos && (
+        <div
+          ref={menuRef}
+          className="fixed z-50 rounded-md py-1 animate-fade-in"
+          style={{
+            left: Math.max(8, Math.min(menuPos.x, window.innerWidth - 176)),
+            top: Math.min(menuPos.y, window.innerHeight - 150),
+            minWidth: 168,
+            background: 'var(--surface-up)',
+            border: '1px solid var(--border-bright)',
+            boxShadow: 'var(--elev-2)',
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <FolderMenuItem icon={<MessageSquarePlus size={14} aria-hidden />} label="New chat" onClick={() => { setMenuPos(null); onCreateChat() }} />
+          <FolderMenuItem icon={<Brain size={14} aria-hidden />} label="Project memory" onClick={() => { setMenuPos(null); onOpenMemory() }} />
+          <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Rename folder" onClick={() => { setMenuPos(null); onStartRename() }} />
+          <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label="Delete folder" danger onClick={() => { setMenuPos(null); onDelete() }} />
+        </div>
+      )}
 
       {isEditing && (
         <div
@@ -671,51 +655,30 @@ const FolderRow = memo(function FolderRow({
                 fontFamily: 'inherit',
               }}
             />
-            <button
-              type="button"
-              className="px-2 py-1 rounded text-[10px] whitespace-nowrap"
-              style={{
-                background: 'transparent',
-                color: 'var(--text-3)',
-                border: '1px solid var(--border)',
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-              }}
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={onChooseDirectory}
             >
               Browse
-            </button>
+            </Button>
           </div>
           <div className="flex items-center justify-end gap-2">
-            <button
-              type="button"
-              className="px-2 py-1 rounded text-[10px]"
-              style={{
-                background: 'transparent',
-                color: 'var(--text-3)',
-                border: '1px solid var(--border)',
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-              }}
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={onCancelEdit}
             >
               Cancel
-            </button>
-            <button
-              type="button"
-              className="px-2 py-1 rounded text-[10px]"
-              style={{
-                background: 'var(--accent)',
-                color: '#fff',
-                border: 'none',
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-              }}
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
               disabled={!editFolderName.trim() || !editFolderDirectory.trim()}
               onClick={onCommitRename}
             >
               Save
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -782,10 +745,7 @@ const FolderRow = memo(function FolderRow({
                 e.currentTarget.style.borderColor = 'var(--border)'
               }}
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
-                <line x1="12" y1="5" x2="12" y2="19" />
-                <line x1="5" y1="12" x2="19" y2="12" />
-              </svg>
+              <Plus size={14} aria-hidden />
               <span>New chat</span>
             </button>
           )}

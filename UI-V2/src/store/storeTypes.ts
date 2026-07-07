@@ -112,6 +112,7 @@ export interface AppState {
   refreshMarkdownStore: () => Promise<boolean>
   createMarkdownStoreEntry: (draft: MarkdownStoreDraft) => Promise<boolean>
   revealMarkdownStoreEntry: (entry: MarkdownStoreEntry) => Promise<boolean>
+  editMarkdownStoreEntry: (entry: MarkdownStoreEntry) => Promise<boolean>
   attachMarkdownStoreEntry: (sessionId: string, entry: MarkdownStoreEntry) => void
   detachMarkdownStoreEntry: (sessionId: string, filePath: string) => void
   openSessionWorkspace: (id: string) => Promise<boolean>

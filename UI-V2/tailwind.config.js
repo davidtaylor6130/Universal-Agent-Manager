@@ -7,8 +7,36 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        mono: ['"JetBrains Mono"', 'monospace'],
-        sans: ['"JetBrains Mono"', 'monospace'],
+        // UI text is proportional sans; mono reserved for code/CLI/ids.
+        sans: ['var(--font-sans)'],
+        mono: ['var(--font-mono)'],
+      },
+      fontSize: {
+        xs:   ['var(--fs-xs)',   { lineHeight: '1.4' }],
+        sm:   ['var(--fs-sm)',   { lineHeight: '1.45' }],
+        base: ['var(--fs-base)', { lineHeight: '1.55' }],
+        md:   ['var(--fs-md)',   { lineHeight: '1.5' }],
+        lg:   ['var(--fs-lg)',   { lineHeight: '1.4' }],
+        xl:   ['var(--fs-xl)',   { lineHeight: '1.3' }],
+        '2xl':['var(--fs-2xl)',  { lineHeight: '1.25' }],
+      },
+      borderRadius: {
+        sm:   'var(--r-sm)',
+        md:   'var(--r-md)',
+        lg:   'var(--r-lg)',
+        full: 'var(--r-full)',
+      },
+      boxShadow: {
+        'elev-1': 'var(--elev-1)',
+        'elev-2': 'var(--elev-2)',
+        'elev-3': 'var(--elev-3)',
+      },
+      transitionTimingFunction: {
+        app: 'var(--ease)',
+      },
+      transitionDuration: {
+        fast: 'var(--dur-fast)',
+        base: 'var(--dur-base)',
       },
       colors: {
         // Theme-aware via CSS variables
@@ -27,6 +55,15 @@ export default {
         'app-blue-dim':      'var(--blue-dim)',
         'app-green':         'var(--green)',
         'app-red':           'var(--red)',
+        // Semantic
+        'app-success':       'var(--success)',
+        'app-success-dim':   'var(--success-dim)',
+        'app-warning':       'var(--warning)',
+        'app-warning-dim':   'var(--warning-dim)',
+        'app-error':         'var(--error)',
+        'app-error-dim':     'var(--error-dim)',
+        'app-info':          'var(--info)',
+        'app-info-dim':      'var(--info-dim)',
       },
       animation: {
         'blink': 'blink 1.1s step-end infinite',

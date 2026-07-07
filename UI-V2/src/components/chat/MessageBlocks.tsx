@@ -13,6 +13,7 @@ import type {
 } from '../../store/useAppStore'
 import type { Attachment, Message, MessageBlock } from '../../types/message'
 import type { Goal } from '../../types/goal'
+import { Tooltip } from '../ui'
 import {
   PermissionInlineCard,
   ToolCallInlineRows,
@@ -142,42 +143,47 @@ export function PlanBlock({
       )}
       {showActions && (
         <div className="flex flex-wrap gap-2 pt-1">
-          <button
-            type="button"
-            className="px-3 h-7 text-[11px] font-medium"
-            disabled={actionsDisabled}
-            title={actionsDisabled ? disabledTitle : 'Approve plan'}
-            style={{
-              borderRadius: 6,
-              border: '1px solid color-mix(in srgb, var(--green) 52%, var(--border-bright))',
-              background: actionsDisabled ? 'var(--surface-up)' : 'color-mix(in srgb, var(--green) 16%, var(--surface-up))',
-              color: actionsDisabled ? 'var(--text-3)' : 'var(--text)',
-              opacity: actionsDisabled ? 0.65 : 1,
-            }}
-            onClick={() => {
-              if (!actionsDisabled) onApprove?.()
-            }}
-          >
-            Approve
-          </button>
-          <button
-            type="button"
-            className="px-3 h-7 text-[11px] font-medium"
-            disabled={actionsDisabled}
-            title={actionsDisabled ? disabledTitle : 'Deny plan'}
-            style={{
-              borderRadius: 6,
-              border: '1px solid color-mix(in srgb, var(--red) 48%, var(--border-bright))',
-              background: actionsDisabled ? 'var(--surface-up)' : 'color-mix(in srgb, var(--red) 12%, var(--surface-up))',
-              color: actionsDisabled ? 'var(--text-3)' : 'var(--text)',
-              opacity: actionsDisabled ? 0.65 : 1,
-            }}
-            onClick={() => {
-              if (!actionsDisabled) onDeny?.()
-            }}
-          >
-            Deny
-          </button>
+          <Tooltip label={actionsDisabled ? disabledTitle : 'Approve plan'}>
+            <button
+              type="button"
+              className="px-3 h-7 text-[11px] font-medium"
+              disabled={actionsDisabled}
+              // Radix tooltips don't fire on disabled buttons; native title carries the reason.
+              title={actionsDisabled ? disabledTitle : undefined}
+              style={{
+                borderRadius: 6,
+                border: '1px solid color-mix(in srgb, var(--green) 52%, var(--border-bright))',
+                background: actionsDisabled ? 'var(--surface-up)' : 'color-mix(in srgb, var(--green) 16%, var(--surface-up))',
+                color: actionsDisabled ? 'var(--text-3)' : 'var(--text)',
+                opacity: actionsDisabled ? 0.65 : 1,
+              }}
+              onClick={() => {
+                if (!actionsDisabled) onApprove?.()
+              }}
+            >
+              Approve
+            </button>
+          </Tooltip>
+          <Tooltip label={actionsDisabled ? disabledTitle : 'Deny plan'}>
+            <button
+              type="button"
+              className="px-3 h-7 text-[11px] font-medium"
+              disabled={actionsDisabled}
+              title={actionsDisabled ? disabledTitle : undefined}
+              style={{
+                borderRadius: 6,
+                border: '1px solid color-mix(in srgb, var(--red) 48%, var(--border-bright))',
+                background: actionsDisabled ? 'var(--surface-up)' : 'color-mix(in srgb, var(--red) 12%, var(--surface-up))',
+                color: actionsDisabled ? 'var(--text-3)' : 'var(--text)',
+                opacity: actionsDisabled ? 0.65 : 1,
+              }}
+              onClick={() => {
+                if (!actionsDisabled) onDeny?.()
+              }}
+            >
+              Deny
+            </button>
+          </Tooltip>
         </div>
       )}
     </section>

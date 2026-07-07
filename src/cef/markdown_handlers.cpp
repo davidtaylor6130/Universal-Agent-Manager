@@ -142,3 +142,23 @@ void UamQueryHandler::HandleRevealMarkdownStoreEntry(CefRefPtr<CefBrowser> /*bro
 	cb->Success("{}");
 }
 
+void UamQueryHandler::HandleEditMarkdownStoreEntry(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::filesystem::path root = MarkdownStoreService::NormalizeRoot(m_app.settings.markdown_store_directory);
+	const std::string file_path = payload.value("filePath", "");
+	std::filesystem::path normalized_file;
+	std::string error;
+	if (!MarkdownStoreService::ValidateStoreFilePath(root, file_path, &normalized_file, &error))
+	{
+		cb->Failure(400, FailureDetailOrFallback(error, "Invalid Markdown Store file."));
+		return;
+	}
+
+	if (!PlatformServicesFactory::Instance().file_dialog_service.OpenFileInTextEditor(normalized_file, &error))
+	{
+		cb->Failure(500, FailureDetailOrFallback(error, "Failed to open Markdown Store file for editing."));
+		return;
+	}
+	cb->Success("{}");
+}
+

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../../store/useAppStore'
+import { Button } from '../ui'
 import type { MarkdownStoreDraft, MarkdownStoreEntry } from '../../types/markdownStore'
 
 const EMPTY_DRAFT: MarkdownStoreDraft = {
@@ -20,6 +21,7 @@ export function MarkdownStoreModal() {
   const refresh = useAppStore((s) => s.refreshMarkdownStore)
   const createEntry = useAppStore((s) => s.createMarkdownStoreEntry)
   const revealEntry = useAppStore((s) => s.revealMarkdownStoreEntry)
+  const editEntry = useAppStore((s) => s.editMarkdownStoreEntry)
   const attachEntry = useAppStore((s) => s.attachMarkdownStoreEntry)
   const [search, setSearch] = useState('')
   const [isAdding, setIsAdding] = useState(false)
@@ -86,9 +88,9 @@ export function MarkdownStoreModal() {
               {markdownStoreDirectory || 'No store directory configured'}
             </div>
           </div>
-          <button type="button" onClick={close} className="px-2 py-1 text-xs" style={{ color: 'var(--text-2)', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)' }}>
+          <Button variant="secondary" size="sm" onClick={close}>
             Close
-          </button>
+          </Button>
         </div>
 
         <div className="flex items-center gap-2 px-5 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
@@ -99,12 +101,12 @@ export function MarkdownStoreModal() {
             className="flex-1 text-sm"
             style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)', color: 'var(--text)', padding: '8px 10px', outline: 'none' }}
           />
-          <button type="button" onClick={() => void refresh()} className="px-3 py-2 text-xs" style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface-up)', color: 'var(--text-2)' }}>
+          <Button variant="secondary" size="sm" onClick={() => void refresh()}>
             Refresh
-          </button>
-          <button type="button" onClick={() => setIsAdding((value) => !value)} className="px-3 py-2 text-xs" style={{ border: 'none', borderRadius: 8, background: 'var(--accent)', color: '#fff' }}>
+          </Button>
+          <Button variant={isAdding ? 'secondary' : 'primary'} size="sm" onClick={() => setIsAdding((value) => !value)}>
             Publish
-          </button>
+          </Button>
         </div>
 
         {error && (
@@ -121,8 +123,8 @@ export function MarkdownStoreModal() {
               </div>
               <textarea value={draft.body} onChange={(event) => setDraft({ ...draft, body: event.target.value })} placeholder="Markdown body" rows={8} className="text-sm resize-vertical" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px', fontFamily: 'var(--font-mono)' }} />
               <div className="flex justify-end gap-2">
-                <button type="button" onClick={() => setIsAdding(false)} className="px-3 py-1.5 text-xs" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text-2)' }}>Cancel</button>
-                <button type="button" disabled={submitting || !draft.title.trim() || !draft.body.trim()} onClick={() => void submitDraft()} className="px-3 py-1.5 text-xs" style={{ border: 'none', borderRadius: 6, background: 'var(--accent)', color: '#fff', opacity: submitting || !draft.title.trim() || !draft.body.trim() ? 0.55 : 1 }}>Publish</button>
+                <Button variant="secondary" size="sm" onClick={() => setIsAdding(false)}>Cancel</Button>
+                <Button variant="primary" size="sm" disabled={submitting || !draft.title.trim() || !draft.body.trim()} onClick={() => void submitDraft()}>Publish</Button>
               </div>
             </div>
           )}
@@ -147,12 +149,15 @@ export function MarkdownStoreModal() {
                       <div className="mt-2 text-[11px] truncate" style={{ color: 'var(--text-3)' }}>{entry.filePath}</div>
                     </div>
                     <div className="flex flex-col gap-2">
-                      <button type="button" disabled={!activeSessionId} onClick={() => attach(entry)} className="px-3 py-1.5 text-xs" style={{ border: 'none', borderRadius: 6, background: activeSessionId ? 'var(--accent)' : 'var(--surface-up)', color: activeSessionId ? '#fff' : 'var(--text-3)' }}>
+                      <Button variant={activeSessionId ? 'primary' : 'secondary'} size="sm" disabled={!activeSessionId} onClick={() => attach(entry)}>
                         Attach
-                      </button>
-                      <button type="button" onClick={() => void revealEntry(entry)} className="px-3 py-1.5 text-xs" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface-up)', color: 'var(--text-2)' }}>
+                      </Button>
+                      <Button variant="secondary" size="sm" onClick={() => void editEntry(entry)}>
+                        Edit
+                      </Button>
+                      <Button variant="secondary" size="sm" onClick={() => void revealEntry(entry)}>
                         Reveal
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 </div>
