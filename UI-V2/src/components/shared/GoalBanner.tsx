@@ -1,7 +1,8 @@
-import type { CSSProperties } from 'react'
-import { Pause, Play, Trash2 } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
+import { Target, MoreHorizontal, Check, Pause, Play, Trash2 } from 'lucide-react'
 import type { Goal } from '../../types/goal'
-import { Tooltip } from '../ui'
+import { StatusDot, Tooltip, type StatusTone } from '../ui'
 
 interface GoalBannerProps {
   goal: Goal
@@ -11,16 +12,12 @@ interface GoalBannerProps {
   onRemove: () => void
 }
 
-function statusBadgeStyle(status: Goal['status']): CSSProperties {
+function statusTone(status: Goal['status']): StatusTone {
   switch (status) {
-    case 'active':
-      return { background: '#1a6d1a', color: '#b8f5b8' }
-    case 'complete':
-      return { background: '#1a4d6d', color: '#b8d8f5' }
-    case 'blocked':
-      return { background: '#6d1a1a', color: '#f5b8b8' }
-    case 'paused':
-      return { background: '#5a4a12', color: '#f5df8a' }
+    case 'active': return 'success'
+    case 'complete': return 'info'
+    case 'blocked': return 'error'
+    case 'paused': return 'warning'
   }
 }
 
@@ -33,111 +30,108 @@ function statusLabel(status: Goal['status']): string {
   }
 }
 
-function iconButtonStyle(color?: string): CSSProperties {
-  return {
-    padding: '1px 8px',
-    fontSize: 12,
-    minWidth: 28,
-    color,
-  }
+function MenuItem({ icon, label, onClick, danger }: { icon: ReactNode; label: string; onClick: () => void; danger?: boolean }) {
+  return (
+    <button
+      type="button"
+      className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-left transition-colors duration-100"
+      style={{ background: 'transparent', color: danger ? 'var(--error)' : 'var(--text-2)', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--sidebar-item-hover)' }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+      onClick={onClick}
+    >
+      {icon}
+      {label}
+    </button>
+  )
 }
 
 export function GoalBanner({ goal, onComplete, onPause, onResume, onRemove }: GoalBannerProps) {
-  const budgetDisplay = goal.tokenBudget
-    ? `${goal.tokensUsed ?? 0}/${goal.tokenBudget} tokens`
-    : null
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const budgetDisplay = goal.tokenBudget ? `${goal.tokensUsed ?? 0}/${goal.tokenBudget}` : null
   const blockerDisplay = goal.status === 'blocked' && goal.lastBlocker ? goal.lastBlocker : ''
+  const tone = statusTone(goal.status)
+
+  useEffect(() => {
+    if (!menuOpen) return
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [menuOpen])
 
   return (
     <div
-      className="flex items-center gap-3 px-4 py-2 text-xs"
-      style={{
-        background: 'var(--surface)',
-        borderTop: '1px solid var(--border)',
-        borderBottom: '1px solid var(--border)',
-      }}
+      className="flex items-center gap-2.5 px-4 py-2 text-sm"
+      style={{ background: 'var(--surface)', borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)' }}
     >
-      <span style={{ color: 'var(--text-2)', fontWeight: 600, whiteSpace: 'nowrap' }}>
-        Goal:
+      <Target size={15} style={{ color: 'var(--accent)', flexShrink: 0 }} aria-hidden />
+
+      {/* Status chip */}
+      <span
+        className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium flex-shrink-0"
+        style={{ background: `var(--${tone}-dim)`, color: `var(--${tone})` }}
+      >
+        <StatusDot tone={tone} pulse={goal.status === 'active'} size={7} />
+        {statusLabel(goal.status)}
       </span>
+
+      {/* Objective + optional blocker */}
       <div className="min-w-0 flex-1">
-        <div
-          className="truncate"
-          style={{ color: 'var(--text-1)', fontWeight: 500 }}
-          title={goal.objective}
-        >
+        <div className="truncate" style={{ color: 'var(--text)', fontWeight: 500 }} title={goal.objective}>
           {goal.objective}
         </div>
         {blockerDisplay && (
-          <div
-            className="truncate"
-            style={{ color: 'var(--text-3)', marginTop: 2 }}
-            title={blockerDisplay}
-          >
-            Blocked: {blockerDisplay}
+          <div className="truncate text-xs" style={{ color: 'var(--error)', marginTop: 1 }} title={blockerDisplay}>
+            {blockerDisplay}
           </div>
         )}
       </div>
-      <span
-        className="rounded px-1.5 py-0.5 font-medium"
-        style={statusBadgeStyle(goal.status)}
-      >
-        {statusLabel(goal.status)}
-      </span>
+
       {budgetDisplay && (
-        <span style={{ color: 'var(--text-3)', whiteSpace: 'nowrap' }}>
-          {budgetDisplay}
-        </span>
-      )}
-      {goal.status === 'active' && (
-        <>
-          <button
-            type="button"
-            className="uam-secondary-button"
-            onClick={onComplete}
-            style={{ padding: '1px 8px', fontSize: 11 }}
-          >
-            Complete
-          </button>
-          {onPause && (
-            <Tooltip label="Pause goal">
-              <button
-                type="button"
-                className="uam-secondary-button"
-                aria-label="Pause goal"
-                onClick={onPause}
-                style={iconButtonStyle()}
-              >
-                <Pause size={14} aria-hidden />
-              </button>
-            </Tooltip>
-          )}
-        </>
-      )}
-      {goal.status !== 'active' && onResume && (
-        <Tooltip label="Resume goal">
-          <button
-            type="button"
-            className="uam-secondary-button"
-            aria-label="Resume goal"
-            onClick={onResume}
-            style={iconButtonStyle()}
-          >
-            <Play size={14} aria-hidden />
-          </button>
+        <Tooltip label="Tokens used / budget">
+          <span className="text-xs font-mono flex-shrink-0" style={{ color: 'var(--text-3)' }}>{budgetDisplay}</span>
         </Tooltip>
       )}
-      <Tooltip label="Delete goal">
-        <button
-          type="button"
-          className="uam-secondary-button"
-          aria-label="Delete goal"
-          onClick={onRemove}
-          style={iconButtonStyle('var(--danger)')}
-        >
-          <Trash2 size={14} aria-hidden />
-        </button>
-      </Tooltip>
+
+      {/* All goal actions consolidated into one overflow menu */}
+      <div ref={menuRef} className="relative flex-shrink-0">
+        <Tooltip label="Goal actions">
+          <button
+            type="button"
+            aria-label="Goal actions"
+            className="flex items-center justify-center rounded-md transition-colors duration-100"
+            style={{ width: 28, height: 26, border: '1px solid var(--border)', background: menuOpen ? 'var(--surface-up)' : 'transparent', color: 'var(--text-2)', cursor: 'pointer' }}
+            onClick={() => setMenuOpen((v) => !v)}
+          >
+            <MoreHorizontal size={15} aria-hidden />
+          </button>
+        </Tooltip>
+        {menuOpen && (
+          <div
+            className="absolute right-0 z-50 rounded-md py-1 animate-fade-in"
+            style={{ top: 30, minWidth: 150, background: 'var(--surface-up)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}
+          >
+            {goal.status === 'active' && (
+              <MenuItem icon={<Check size={14} aria-hidden />} label="Mark complete" onClick={() => { setMenuOpen(false); onComplete() }} />
+            )}
+            {goal.status === 'active' && onPause && (
+              <MenuItem icon={<Pause size={14} aria-hidden />} label="Pause goal" onClick={() => { setMenuOpen(false); onPause() }} />
+            )}
+            {goal.status !== 'active' && onResume && (
+              <MenuItem icon={<Play size={14} aria-hidden />} label="Resume goal" onClick={() => { setMenuOpen(false); onResume() }} />
+            )}
+            <MenuItem icon={<Trash2 size={14} aria-hidden />} label="Delete goal" danger onClick={() => { setMenuOpen(false); onRemove() }} />
+          </div>
+        )}
+      </div>
     </div>
   )
 }

@@ -2,7 +2,7 @@
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
 
 import { RefObject } from 'react'
-import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus } from 'lucide-react'
+import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Settings2 } from 'lucide-react'
 import type { AcpBinding } from '../../store/useAppStore'
 import type { Goal } from '../../types/goal'
 import type { Provider } from '../../types/provider'
@@ -550,7 +550,7 @@ export function ComposerToolbar({
               borderColor: settingsOpen ? 'var(--border-bright)' : 'var(--border)',
             }}
           >
-            <span>⚙</span>
+            <Settings2 size={14} aria-hidden />
           </button>
           {settingsOpen && (
             <div

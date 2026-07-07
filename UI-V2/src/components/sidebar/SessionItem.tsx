@@ -113,7 +113,9 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
 
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(sessionName)
-  const [showMenu, setShowMenu] = useState(false)
+  // Context/overflow menu anchored to a viewport position (cursor or button).
+  const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
+  const showMenu = menuPos !== null
   const inputRef = useRef<HTMLInputElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const lastOpenedLabel = formatSidebarTime(sessionLastOpenedAt)
@@ -141,11 +143,16 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
     if (!showMenu) return
     const handler = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setShowMenu(false)
+        setMenuPos(null)
       }
     }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuPos(null) }
     document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', handler)
+      document.removeEventListener('keydown', onKey)
+    }
   }, [showMenu])
 
   const commitRename = () => {
@@ -179,7 +186,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
         }}
         onContextMenu={(e) => {
           e.preventDefault()
-          setShowMenu(true)
+          setMenuPos({ x: e.clientX, y: e.clientY })
         }}
       >
         {!editing && (
@@ -286,7 +293,9 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
                 }}
                 onClick={(e) => {
                   e.stopPropagation()
-                  setShowMenu((v) => !v)
+                  if (menuPos) { setMenuPos(null); return }
+                  const r = e.currentTarget.getBoundingClientRect()
+                  setMenuPos({ x: r.right, y: r.bottom + 4 })
                 }}
               >
                 <MoreHorizontal size={14} aria-hidden />
@@ -296,17 +305,18 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
         )}
       </div>
 
-      {/* Context menu */}
-      {showMenu && (
+      {/* Context menu — anchored at the cursor / trigger position */}
+      {menuPos && (
         <div
           ref={menuRef}
-          className="absolute z-50 rounded-md py-1 shadow-lg animate-fade-in"
+          className="fixed z-50 rounded-md py-1 animate-fade-in"
           style={{
-            left: 12,
-            top: '100%',
+            left: Math.min(menuPos.x, window.innerWidth - 160),
+            top: Math.min(menuPos.y, window.innerHeight - 90),
             minWidth: 140,
             background: 'var(--surface-up)',
             border: '1px solid var(--border-bright)',
+            boxShadow: 'var(--elev-2)',
           }}
         >
           <button
@@ -314,7 +324,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
             style={{ background: 'transparent', color: 'var(--text-2)', cursor: 'pointer', border: 'none', fontFamily: 'inherit' }}
             onMouseEnter={(e) => e.currentTarget.style.color = 'var(--text)'}
             onMouseLeave={(e) => e.currentTarget.style.color = 'var(--text-2)'}
-            onClick={() => { setShowMenu(false); setEditing(true); setEditValue(sessionName) }}
+            onClick={() => { setMenuPos(null); setEditing(true); setEditValue(sessionName) }}
           >
             <Pencil size={13} aria-hidden />
             Rename
@@ -322,7 +332,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
           <button
             className="flex w-full items-center gap-2 text-left px-3 py-1.5 text-sm transition-colors duration-100"
             style={{ background: 'transparent', color: 'var(--red)', cursor: 'pointer', border: 'none', fontFamily: 'inherit' }}
-            onClick={() => { setShowMenu(false); deleteSession(sessionId) }}
+            onClick={() => { setMenuPos(null); deleteSession(sessionId) }}
           >
             <Trash2 size={13} aria-hidden />
             Delete

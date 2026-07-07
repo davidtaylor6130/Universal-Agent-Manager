@@ -1255,11 +1255,21 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const pauseButton = host.querySelector('button[aria-label="Pause goal"]') as HTMLButtonElement | null
-    const deleteButton = host.querySelector('button[aria-label="Delete goal"]') as HTMLButtonElement | null
-    expect(host.textContent).toContain('Complete')
+    // Goal actions are consolidated into an overflow menu; open it to reach them.
+    const openGoalMenu = () => act(() => {
+      (host.querySelector('button[aria-label="Goal actions"]') as HTMLButtonElement | null)
+        ?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      ;(host.querySelector('button[aria-label="Goal actions"]') as HTMLButtonElement | null)
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    const menuItem = (text: string) =>
+      Array.from(host.querySelectorAll('button')).find((b) => b.textContent === text) as HTMLButtonElement | undefined
+
+    openGoalMenu()
+    expect(menuItem('Mark complete')).toBeTruthy()
+    const pauseButton = menuItem('Pause goal')
     expect(pauseButton).toBeTruthy()
-    expect(deleteButton).toBeTruthy()
+    expect(menuItem('Delete goal')).toBeTruthy()
 
     act(() => {
       pauseButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -1273,16 +1283,17 @@ describe('ChatView', () => {
       }))
     })
 
-    const resumeButton = host.querySelector('button[aria-label="Resume goal"]') as HTMLButtonElement | null
+    openGoalMenu()
+    const resumeButton = menuItem('Resume goal')
     expect(resumeButton).toBeTruthy()
     act(() => {
       resumeButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(resumeGoal).toHaveBeenCalledWith('chat-1', 'goal-1')
 
-    const pausedDeleteButton = host.querySelector('button[aria-label="Delete goal"]') as HTMLButtonElement | null
+    openGoalMenu()
     act(() => {
-      pausedDeleteButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      menuItem('Delete goal')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(removeGoal).toHaveBeenCalledWith('goal-1')
 
