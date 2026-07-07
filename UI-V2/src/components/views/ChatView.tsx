@@ -184,6 +184,9 @@ export function ChatView({ session }: ChatViewProps) {
   const discardChatWorktreeChanges = useAppStore((s) => s.discardChatWorktreeChanges)
   const portChatWorktreeChanges = useAppStore((s) => s.portChatWorktreeChanges)
   const openMarkdownStore = useAppStore((s) => s.openMarkdownStore)
+  const markdownStoreEntries = useAppStore(useShallow((s) => s.markdownStoreEntries))
+  const refreshMarkdownStore = useAppStore((s) => s.refreshMarkdownStore)
+  const attachMarkdownStoreEntry = useAppStore((s) => s.attachMarkdownStoreEntry)
   const markdownStoreAttachments = useAppStore(useShallow((s) => s.markdownStoreAttachedBySessionId[session.id] ?? []))
   const detachMarkdownStoreEntry = useAppStore((s) => s.detachMarkdownStoreEntry)
   const goals = useAppStore((s) => s.goalsByChatId[session.id] ?? [])
@@ -687,16 +690,29 @@ export function ChatView({ session }: ChatViewProps) {
       },
       { id: 'attach', label: '/attach', hint: 'Attach files', run: () => fileInputRef.current?.click() },
       { id: 'markdown', label: '/markdown', hint: 'Open the markdown store', run: () => void openMarkdownStore() },
+      ...markdownStoreEntries.map((entry) => ({
+        id: `md:${entry.id}`,
+        label: '/' + entry.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
+        hint: 'Attach markdown store skill',
+        run: () => attachMarkdownStoreEntry(session.id, entry),
+      })),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [session.id, session.memoryEnabled]
+    [session.id, session.memoryEnabled, markdownStoreEntries]
   )
-  const slashMatch = /^\/(\w*)$/.exec(draft)
+  const slashMatch = /^\/([\w-]*)$/.exec(draft)
   const slashQuery = slashMatch ? slashMatch[1].toLowerCase() : null
   const slashMatches = slashQuery !== null
     ? slashCommands.filter((command) => command.label.slice(1).startsWith(slashQuery))
     : []
   const slashOpen = slashQuery !== null && slashMatches.length > 0
+  const slashStoreLoadedRef = useRef(false)
+  useEffect(() => {
+    if (slashQuery !== null && !slashStoreLoadedRef.current) {
+      slashStoreLoadedRef.current = true
+      void refreshMarkdownStore()
+    }
+  }, [slashQuery, refreshMarkdownStore])
   const runSlashCommand = (command: (typeof slashCommands)[number]) => {
     setDraft('')
     setSlashIndex(0)
