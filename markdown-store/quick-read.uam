@@ -1,0 +1,92 @@
+---
+uamVersion: 1
+title: obsidian-quick-read
+maker: DavidTaylor6130
+review: Fast note reading and searching in Obsidian vault. Returns only useful info or "nothing found" — no filler. Uses subagent for the actual search/read work. Vault: /Volumes/Obsidian_Vault/David's 2nd Brain Vault/ Use when the user says "read this", "what do I have on [topic]", "find notes about". For 
+dateCreated: 2026-07-07T22:33:13Z
+dateUpdated: 2026-07-07T22:33:13Z
+---
+
+# Quick Read — Fast Note Reading via Subagent
+
+Vault: `/Volumes/Obsidian_Vault/David's 2nd Brain Vault/`
+
+## Your Role
+
+You are the quick-read entry point. When invoked:
+
+### Step 1 — Determine What to Search For
+
+From the user's input, identify:
+- **Topic** — what they want to find (e.g., "Cloudflare", "React hooks")
+- **Scope** — any specific folder mentioned (e.g., "in my Resources", "in Projects")
+- **Depth** — quick lookup vs. deep search
+
+### Step 2 — Launch Subagent for the Search
+
+```
+Launch subagent with task: read-obsidian-notes
+Search query: <topic>
+Scope: [specific folder or full vault]
+Depth: [quick = top results only | full = all matches across vault]
+Return format: [brief list of matching notes | full content of specific note]
+```
+
+### Step 3 — Present Results Concisely
+
+After subagent returns, format the output:
+
+#### For Search Results (most common):
+
+```markdown
+**"<query>" — <N> results:**
+
+1. **Title** (`path/to/file.mdx`) — brief snippet or summary
+2. ...
+
+No additional matches in Archives.
+```
+
+If only 1 result and it's clearly what they want: just show that one note's content.
+
+#### For Specific Note Request (e.g., "read my Cloudflare notes"):
+
+Show the full content of the most relevant file(s). If multiple files match, list them first with a prompt to pick which one.
+
+#### If Nothing Found:
+
+```
+Nothing found for "<query>" in vault.
+Checked: [folders searched]
+Suggestion: Did you mean <alternative topic>?
+```
+
+Be honest — don't guess at results.
+
+## When to Pass to Subagent
+
+The subagent handles all the actual searching:
+- `grep -rl` / `rg` for keyword search across vault
+- Reading individual files from disk
+- Checking frontmatter tags
+- Listing folder contents if browsing a specific directory
+
+You only decide what to search and how to present results.
+
+## Scope Selection (Quick Reference)
+
+| User says | Search scope |
+|-----------|-------------|
+| "what do I have on X" | Full vault (`03 Resources` + `04 Archives`) |
+| "in my Projects" | `00 Current Projects` only |
+| "in Software Knowledge" | `03 Resources/Software Knowleadge/` only |
+| "anything about X and Y" | Full vault, multiple terms |
+
+## Rules
+
+- **Only return useful information.** No preamble like "I found some notes for you." Just the results.
+- If nothing matches, say "Nothing found" with what was searched — don't invent connections.
+- Keep search scope tight by default (e.g., start with `03 Resources` before scanning entire vault).
+- Don't read full files unless user specifically asks for content — summaries first.
+- For single-note lookups, show the note directly rather than a list of results.
+- Max 1 clarifying question if scope is unclear. Skip questions if you can infer intent.

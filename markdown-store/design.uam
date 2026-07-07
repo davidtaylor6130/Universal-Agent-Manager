@@ -1,0 +1,128 @@
+---
+uamVersion: 1
+title: Design_Principles
+maker: DavidTaylor6130
+review: Imported from OpenCode skills
+dateCreated: 2026-07-07T22:33:13Z
+dateUpdated: 2026-07-07T22:33:13Z
+---
+
+# Skill: Design Review & Polish
+
+Automatically review and improve the GUI/UX/UI of any app you're working on. Activates when the user mentions designing, styling, building UI, creating components, or working on any visual interface.
+
+## How It Works
+
+When the user is building or modifying UI code, go through each principle below and check if the current code/changes comply. If not, suggest or apply the fix. Don't wait to be asked — this is always-on for any UI work.
+
+## The 13 Principles
+
+### 1. Affordances & Signifiers
+
+An element must make its interactivity obvious. Every clickable thing needs visual cues: hover state, cursor pointer, border/background change, or other interactive styling. Bare text or emoji without button chrome is broken — users can't tell what's clickable.
+
+**Rule:** All interactive elements must have `cursor: pointer`, a hover state, and visual distinction from static text.
+
+### 2. Visual Hierarchy
+
+Size, weight, color, and position must rank importance. The eye should land on the primary thing first. Without hierarchy everything competes and the user scans linearly.
+
+**Rule:** Define and use a type/weight/color scale that makes primary > secondary > meta obvious at a glance. Never let every element have equal visual weight.
+
+### 3. Grid & Spacing
+
+Use a consistent column grid and a spacing scale (4/8px rhythm) to align elements and create breathing room. Alignment reads as "designed/trustworthy"; random gaps read as broken.
+
+**Rule:** Use a spacing token scale (4, 8, 12, 16, 24, 32…) everywhere. No one-off pixel values. Cards and panels must align to the grid.
+
+### 4. Typography & Font Sizing
+
+Use a type scale (e.g. 12/13/15/18/24) with a proportional font for UI elements. Reserve monospace only for code/terminal output. Size is hierarchy.
+
+**Rule:** UI text uses a proportional font (Inter or similar). Mono only for code blocks, terminal output, and technical data. Define and enforce a type scale.
+
+### 5. Colour Theory
+
+A restrained palette: neutrals carry 90%, one accent for primary action, plus semantic colors (success/warn/error/info). Color should mean something; overuse kills signal.
+
+**Rule:** Define neutral tokens (background, surface, border, text), one accent color for primary actions, and semantic tokens (success, warn, error, info). Keep accent for primary action only.
+
+### 6. Shadows (Elevation)
+
+Shadows encode depth/layering: resting surface < card < popover < modal. They group content and signal "this floats above."
+
+**Rule:** Define a 3-4 step elevation scale mapped to surface roles. Use consistent shadow values per role, not random unrelated values.
+
+### 7. Icons & Buttons
+
+Use a single consistent icon pack (Lucide recommended — MIT, tree-shakable, consistent stroke) + a Button component system (primary/secondary/ghost/danger, sizes, states). Emoji render differently per-OS, don't theme, and look unprofessional.
+
+**Rule:** Replace all emoji icons with a single icon pack. Create a `<Button>` component with variants. No ad-hoc SVGs or emoji for UI controls.
+
+### 8. Feedback & States
+
+Every interactive element needs its full state set: hover, focus (keyboard!), active, disabled, loading, empty, error. A UI that never confirms an action feels broken/unresponsive.
+
+**Rule:** Every component must define all interactive states. Include loading spinners, empty states, error states, and focus rings (also a11y).
+
+### 9. Micro-interactions
+
+Small, fast (~150–250ms) transitions: button press, panel slide, list reorder, toast in/out. Motion tells the eye what changed and where it went.
+
+**Rule:** Add light CSS transitions for interactive elements. Use a restrained, springy set — never decorative. Keep transitions under 250ms.
+
+### 10. Overlays
+
+Modals, popovers, drawers, toasts, context menus, tooltips — layered surfaces with scrim, focus-trap, escape/click-out handling. Enable progressive disclosure without leaving context.
+
+**Rule:** Use standard overlay primitives. Move rarely-used content into drawers/popovers instead of cramming everything into modals.
+
+### 11. Progressive Disclosure
+
+Show the essential; reveal detail on demand (expanders, "advanced" sections, hover, drill-in). Cuts cognitive load and is the antidote to "everything on one screen."
+
+**Rule:** Default to essentials. Tuck advanced/metadata behind expanders, hover, and secondary panels. This is the backbone of clean UI.
+
+### 12. Tooltips on Everything
+
+A styled, delayed, theme-aware tooltip component on every icon-only control and truncated/technical label. Icon-only dashboards are unreadable without them.
+
+**Rule:** Create one `<Tooltip>` primitive (Radix or Floating-UI), apply app-wide. Every icon-only control and truncated label must have a tooltip.
+
+### 13. "Dashboardy" (the Throughline)
+
+Card-based, information-dense-but-scannable, grid-aligned, elevation-separated, icon-led, calm color. Turns a flat mono terminal into a scannable control surface. Everything above serves this.
+
+**Rule:** Dashboard surfaces use card-based layouts with consistent spacing, elevation, and icon-led navigation. Scanability > density.
+
+## When to Apply
+
+- Any UI component creation or modification
+- Any CSS/styling changes
+- Any layout/grid work
+- Any new page or panel
+- When reviewing UI code
+- When the user says "design", "style", "UI", "UX", "component", "layout", "dashboard", or similar
+
+## How to Apply
+
+1. Look at what the user is building or changing
+2. Check against all 13 principles
+3. Suggest or apply fixes that are practical and minimal
+4. Don't be dogmatic — apply the spirit of each rule, not just the letter
+5. When you spot a violation, name which principle it breaks and give a concrete fix
+6. For new components, proactively build them right from the start — don't wait for the user to ask
+
+## Output Pattern
+
+When suggesting changes:
+
+```
+[Principle #N: Name] — [what's wrong] → [fix]
+```
+
+When building new components, apply all relevant principles silently and mention which ones you applied if the user asks.
+
+## The Goal
+
+The throughline is #13: make everything "dashboardy" — card-based, scannable, grid-aligned, elevation-separated, icon-led, calm color. Every other principle serves this goal.

@@ -1,0 +1,724 @@
+---
+uamVersion: 1
+title: security-audit
+maker: DavidTaylor6130
+review: Comprehensive pre-release security audit for code repositories. Checks for API key leaks, hardcoded secrets, insecure configurations, exposed credentials, missing .gitignore entries, personal/sensitive directory references (Obsidian vaults, iCloud drives, local data stores), and other critical secur
+dateCreated: 2026-07-07T22:33:13Z
+dateUpdated: 2026-07-07T22:33:13Z
+---
+
+# Security Audit — Pre-Release Checklist
+
+You are performing a comprehensive security audit before the user releases or pushes code.
+Work through each check below systematically. Report findings clearly with severity levels.
+
+---
+
+## Severity Levels
+
+| Level | Meaning | Action Required |
+|-------|---------|-----------------|
+| **CRITICAL** | Immediate risk of data breach / credential exposure | Must fix before release |
+| **WARNING** | Potential security issue, low risk but good to address | Should fix before release |
+| **INFO** | Minor improvement or best practice suggestion | Optional |
+
+---
+
+## Step 0 — Gather Context
+
+```bash
+git log --oneline -5
+git status --short
+git remote -v
+cat .gitignore 2>/dev/null || echo "No .gitignore found"
+ls -la | head -30
+```
+
+Check if the repo is being pushed to a public remote:
+```bash
+git remote get-url origin 2>/dev/null
+# If URL contains github.com and no private org prefix → likely public
+```
+
+---
+
+## Step 1 — Secrets & API Key Leaks (CRITICAL)
+
+### Check for hardcoded secrets:
+
+```bash
+# Search common patterns across all files (skip node_modules, .git, dist)
+rg -n '(?i)(api_key|apikey|api-secret|secret_key|access_token|bearer|password|private.key|credentials)' --type-add 'all:!node_modules' --type-add 'all:!\.git' --type-add 'all:dist,!dist' --max-count 0 .
+
+# Specific regex patterns for common secret formats
+rg -n '(?i)(sk-[a-zA-Z0-9]{20,}|AKIA[0-9A-Z]{16})' .
+rg -n '(?i)(ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59})' .
+rg -n '(?i)(BEGIN (RSA |EC )?PRIVATE KEY)' --type add 'all:!node_modules' .
+
+# Check for AWS, GCP, Azure keys
+rg -n '(?i)((?:^|[\'\" ])[A-Za-z0-9/+=]{40}(?:[\'\" ]|$))' --max-count 0 .
+
+# Check for JWT secrets, database connection strings
+rg -n '(?i)(mongodb(\+srv)?://[^\s]+|postgresql?://[^\s]+|mysql://[^\s]+|redis://[^\s]+)' --max-count 0 .
+```
+
+### Check .env files:
+
+```bash
+# CRITICAL: .env or .env.local should NEVER be committed
+git ls-files | rg '\.env' || echo "No env files tracked (good)"
+ls -la .env* 2>/dev/null || echo "No local .env files found"
+```
+
+### Check for commented-out credentials:
+
+```bash
+# Secret patterns in comments — often forgotten during cleanup
+rg -n '(?i)//.*(?i)(api.key|secret|password|token)\s*[=:]\s*["\x27]?[a-zA-Z0-9]{16,}' . --max-count 0
+```
+
+---
+
+## Step 2 — Git History Issues (CRITICAL)
+
+### Check if secrets exist in git history:
+
+```bash
+# Even if removed from current files, they may still be in history
+git log -p --all | rg '(?i)(api.key|secret_key|password|token)\s*[=:]\s*["\x27][a-zA-Z0-9/+=]{16,}' || echo "No secrets found in history"
+
+# Check for accidentally committed large files (may contain embedded data)
+git rev-list --objects --all | git cat-file --batch-check='%(objecttype) %(objectname) %(objectsize) %(rest)' | awk '/^blob/ {print substr($0, index($0,$4))}' | sort -k3 -rn | head -5
+```
+
+### Check for sensitive files that should never be tracked:
+
+```bash
+git ls-files | rg '(?i)(\.pem|\.p12|\.keystore|\.jks|id_rsa|id_ed25519)' || echo "No private keys tracked (good)"
+```
+
+---
+
+## Step 3 — .gitignore Completeness (WARNING)
+
+Verify critical items are in `.gitignore`:
+
+```bash
+cat << 'EOF' | diff -u /dev/stdin .gitignore || true
+# Expected entries
+.env
+.env.local
+.env.production
+node_modules/
+.next/
+out/
+dist/
+.DS_Store
+*.log
+coverage/
+.idea/
+.vscode/settings.json
+*.pem
+*.key
+EOF
+```
+
+Missing critical patterns → flag as WARNING.
+
+---
+
+## Step 4 — Configuration & Code Issues (WARNING)
+
+### Check for exposed environment variable references:
+
+```bash
+# env vars should be referenced via process.env / NEXT_PUBLIC_ etc, not hardcoded values
+rg -n '(?i)(process\.env\.(SECRET|KEY|PASSWORD|TOKEN))' . --max-count 0 || echo "No direct secret env var access found"
+```
+
+### Check for debug/development code:
+
+```bash
+# Console logs with sensitive data patterns
+rg -n 'console\.(log|debug|warn).*(?i)(password|token|key|secret|email)' . --max-count 0 || echo "No sensitive console.log found (good)"
+
+# debugger statements left in code
+rg -n '^ *debugger\s*$' . --max-count 0 || echo "No debugger statements found (good)"
+
+# source maps that may expose secrets
+ls -la *.map 2>/dev/null || echo "No source maps in root"
+```
+
+### Check for insecure HTTP URLs:
+
+```bash
+rg -n 'http://' --type-add 'all:!node_modules' . --max-count 0 | rg -v 'localhost\|127\.0\.0\.1\|::1\|example\.com' || echo "No non-localhost http:// found (good)"
+```
+
+### Check for exposed third-party keys:
+
+```bash
+# Keys that are intentionally public (analytics, etc.) vs accidentally leaked
+rg -n '(?i)(UA-[0-9]+|[a-f0-9]{32})' . --max-count 0
+# Report which ones are intentional analytics IDs vs potential leaks
+```
+
+---
+
+## Step 5 — Deployment & Infrastructure (WARNING)
+
+### Check for exposed ports or dev server configs:
+
+```bash
+# In package.json, check for scripts that might expose internal services
+cat package.json | rg '(?i)(dev|start)\s*:\s*".*--port' || echo "No custom port exposure in scripts"
+
+# Check Docker/compose files if they exist
+ls Dockerfile docker-compose.* 2>/dev/null && cat Dockerfile 2>/dev/null | rg -n '(?i)(env|secret|key|password)' || echo "No Docker files found (skip)"
+```
+
+### Check for exposed metadata:
+
+```bash
+# Next.js / framework-specific metadata that may leak info
+ls next.config.* 2>/dev/null && cat next.config.* | rg -n '(?i)(analytics|tracking|api\.endpoint)' || echo "No config with tracking found"
+```
+
+---
+
+## Step 5.5 — Personal Directories, Sensitive Paths & Private Data Leaks (WARNING / CRITICAL)
+
+**This step is intentionally overly cautious.** It is better to flag something the user can ignore than to miss a real leak they will never know about. Scan all files in the working tree (not just tracked files), including hidden directories like `.claude/`, `.opencode/`, `agents/`, and `commands/`.
+
+### Check for hardcoded personal directory references:
+
+```bash
+# ============================================================
+# CATEGORY 1 — Obsidian / Personal Knowledge Base Vaults
+# ============================================================
+rg -n 'Obsidian_Vault|2nd Brain Vault|Obsidian\svault|\.obsidian/' . || echo "No Obsidian vault refs"
+
+# Check for any file under referenced personal knowledge base paths actually tracked in git
+for path in $(rg -o '/Volumes/[^ /]+' . | sort -u); do
+  git ls-files "$path" >/dev/null 2>&1 && echo "TRACKED: $path" || true
+done
+
+# ============================================================
+# CATEGORY 2 — iCloud Drive & Cloud Sync Paths (CRITICAL for macOS)
+# ============================================================
+rg -n 'Library/Mobile\ Documents|iCloud\ Drive|\.macbook\.pro|/Library/Mobile' . || echo "No iCloud refs"
+rg -n '~/Library/Mobile\ Documents/com~apple~Notes|~/Library/Mobile\ Documents/com~apple~Mail' . || echo "No Apple app data refs"
+
+# ============================================================
+# CATEGORY 3 — Named Mount Points & External Drives (/Volumes/)
+# ============================================================
+# Any /Volumes/ path that is NOT a standard mount (CD, floppy) is personal infrastructure
+rg -n '/Volumes/[^ ]+' . | rg -v '^(.*:)?#|\.DS_Store' || echo "No /Volumes/ refs"
+
+# Check if any tracked files are inside /Volumes/ paths (CRITICAL)
+for path in $(git ls-files); do
+  echo "$path" | grep -q '/Volumes/' && echo "TRACKED IN /VOLUMES/: $path"
+done
+
+# ============================================================
+# CATEGORY 4 — Home Directory Personal Paths (~)
+# ============================================================
+# Capitalized home paths that reveal personal directory structure
+rg -n '~/(Documents|Desktop|Downloads|Projects|Developer|Code|Library|Music|Movies|Pictures|Public)/' . || echo "No capitalized home path refs"
+
+# ============================================================
+# CATEGORY 5 — Personal Names & Device Identifiers in Paths
+# ============================================================
+# Paths containing real personal names (not generic terms like 'test', 'demo', 'sample')
+rg -n '/[^/]*david|/[^/]*David|/[^/]*Davi[ae]|~/[^/]+MacBook/' . || echo "No name/device refs in paths"
+
+# ============================================================
+# CATEGORY 6 — Local Development Servers with Personal Data
+# ============================================================
+# References to local databases or servers that may contain personal data
+rg -n '(?i)(localhost|127\.0\.0\.1|::1)[^ ]*:[0-9]{4,}' . || echo "No local server port refs"
+
+# Check for SQLite / local DB files that might be committed
+git ls-files | rg '\.sqlite|\.db$|\.sql$' || echo "No local database files tracked (good)"
+
+# ============================================================
+# CATEGORY 7 — Financial & Medical Personal Data Patterns
+# ============================================================
+# Credit card numbers, bank accounts, SSN patterns in any file
+rg -n '(?i)(\b[0-9]{4}[- ]?[0-9]{4}[- ]?[0-9]{4}[- ]?[0-9]{4}\b|routing\.number|account\.number|SSN|social.security)' . || echo "No financial data refs"
+rg -n '(?i)(medical.record|patient.name|diagnosis|prescription|insurance.number|blood.type|allergy)' . || echo "No medical data refs"
+
+# ============================================================
+# CATEGORY 8 — Contact Information in Config/Docs (not code)
+# ============================================================
+# Personal emails (exclude known public/service patterns)
+rg -n '(?i)[a-zA-Z0-9._%+-]+@(gmail|icloud|protonmail|yahoo|outlook|me)\.com' . | rg -v 'mailto:\|no-reply\|noreply\|example\.com\|test@|info@|contact@' || echo "No personal emails found"
+
+# Phone number patterns (US/Intl)
+rg -n '(?i)(\(?\d{3}\)?[- ]?\d{3}[- ]?\d{4}|phone:\s*\+?[0-9\s-]{10,})' . || echo "No phone numbers found"
+
+# ============================================================
+# CATEGORY 9 — Social Media & Identity Leaks
+# ============================================================
+# GitHub usernames in config (may reveal real identity if different from repo owner)
+rg -n '@[a-zA-Z0-9]' . | rg -v 'github\.com/' || echo "Check for social handles"
+
+# Twitter/X, Discord, Telegram handles
+rg -n '(?i)(discord\.gg|t\.me/|twitter\.com/@|x\.com/@)' . || echo "No social media refs"
+
+# ============================================================
+# CATEGORY 10 — Location & GPS Data
+# ============================================================
+# Latitude/longitude coordinates (may reveal home address)
+rg -n '(?i)(lat[^a-zA-Z][+-]?[0-9]+\.[0-9]+|lng[^a-zA-Z][+-]?[0-9]+\.[0-9]+)' . || echo "No GPS coords found"
+
+# Physical addresses (street, avenue, boulevard, etc.)
+rg -n '(?i)\b\d+\s+(main\s*st|elm\s*ave|oak\s*bld|park\s*rd|first\s*ave|second\s*blvd)' . || echo "No physical address refs"
+
+# ============================================================
+# CATEGORY 11 — Browser & App Data (cookies, sessions, cache)
+# ============================================================
+# References to browser cookies or session files
+rg -n '(?i)(cookies\.db|session\.store|login-data|Login\ Data|History|\s+cache)' . || echo "No browser data refs"
+
+# ============================================================
+# CATEGORY 12 — Certificate & Key Material in Files (not just paths)
+# ============================================================
+# Actual certificate content or key material embedded in files
+rg -n '-----BEGIN CERTIFICATE-----' . || echo "No certificates found"
+git ls-files | rg '\.crt$|\.cer$|\.pfx$|\.p12$|\.der$' || echo "No cert files tracked (good)"
+
+# ============================================================
+# CATEGORY 13 — Exposed IP Addresses & Network Configs
+# ============================================================
+# Private or public IPs in config docs (may reveal infrastructure)
+rg -n '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' . | rg -v '127\.0|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.' || echo "Check for exposed IPs"
+
+# ============================================================
+# CATEGORY 14 — Subdomain & Infrastructure Names
+# ============================================================
+# References to internal infrastructure, staging servers, dev environments
+rg -n '(?i)(staging|dev-env|internal\.api|admin\.panel|dashboard\.(app|com)|monitoring\.)' . || echo "No infra refs"
+
+# ============================================================
+# CATEGORY 15 — AI Model API Keys & Tokens (specific formats)
+# ============================================================
+# OpenAI, Anthropic, Google AI key patterns
+rg -n '(?i)(sk-proj-[a-zA-Z0-9]{20,}|sk-ant-[a-zA-Z0-9]{20,})' . || echo "No AI API key refs"
+
+# ============================================================
+# CATEGORY 16 — Untracked Files That Might Be Personal
+# ============================================================
+# Check ALL files in working tree (including untracked) for personal data categories
+for file in $(git ls-files -c --others --exclude-standard); do
+  case "$file" in
+    *.pdf|*.docx|*.xlsx|*.pptx|*.key|*.numbers|*.pages|*.mp4|*.mov|*.avi)
+      echo "POTENTIALLY PERSONAL FILE (untracked): $file" ;;
+  esac
+done
+
+# ============================================================
+# CATEGORY 17 — Hidden Config Directories That May Contain Secrets
+# ============================================================
+# Check .claude/, .opencode/ and similar for paths to personal dirs
+for dir in .claude .opencode .cursor .zed config; do
+  if [ -d "$dir" ]; then
+    rg -n '/Volumes/|~/Library/Mobile|Obsidian_Vault' "$dir/" || echo "No personal refs in $dir/"
+  fi
+done
+
+# ============================================================
+# CATEGORY 18 — Untracked Files That Look Personal or Sensitive
+# ============================================================
+# Check ALL files in working tree (including untracked) for file types that should not be public
+for file in $(git ls-files -c --others --exclude-standard); do
+  case "$file" in
+    *.pdf|*.docx|*.xlsx|*.pptx|*.key|*.numbers|*.pages|*.mp4|*.mov|*.avi|*.psd|*.ai|*.sketch)
+      echo "POTENTIALLY PERSONAL/PROFESSIONAL FILE (untracked): $file" ;;
+    *.eml|*.pst|*.ost|*.mbox)
+      echo "EMAIL ARCHIVE (untracked — may contain private communications): $file" ;;
+  esac
+done
+
+# ============================================================
+# CATEGORY 19 — Hidden Config Directories That May Contain Secrets or Personal Paths
+# ============================================================
+for dir in .claude .opencode .cursor .zed config; do
+  if [ -d "$dir" ]; then
+    rg -n '/Volumes/|~/Library/Mobile|Obsidian_Vault' "$dir/" || echo "No personal refs in $dir/"
+  fi
+done
+
+# ============================================================
+# CATEGORY 20 — Anything That Might Look BAD for Public Release (NOT just personal data)
+# This includes: profanity, unfinished work, developer notes that reveal process/strategy,
+# TODOs/WIP markers, internal jargon, names of third parties not meant to be public,
+# pricing/revenue info, legal mentions, HR/personnel references
+# ============================================================
+
+# --- 20a: Profanity & Offensive Language (in any file — docs count) ---
+rg -n 'fucking|shit\b|bitch\b|bastard\b|damn\b|asshole|piss\s+on|crap\b' . \
+  --iglob '!security-audit.md' || echo "No profanity found"
+
+# --- 20b: Unfinished Work / WIP Markers (looks sloppy in public) ---
+rg -n '(?i)(TODO|FIXME|HACK|XXX|WIP|WORKING\s*IN\s*PROGRESS|TEMPORARY|PLACEHOLDER|DRAFT|STUB)\s*[:\-\(]' . \
+  --iglob '!security-audit.md' || echo "No WIP markers found"
+
+# --- 20c: Developer Names & Personal Attribution in Code (not README) ---
+# Real person names in code comments, variable names, function names (not in doc files)
+rg -n '(?i)(by\s+[A-Z][a-z]+\s+[A-Z][a-z]+|author:\s*[A-Z][a-z]+|created\s+by|inspired\s+by)' . \
+  --include '!README.md' --include '!LICENSE' | rg -v 'example\|unknown\|anonymous' || echo "Check for dev names in code"
+
+# --- 20d: Internal Jargon / Unexplained Acronyms / Inside References ---
+rg -n '(?i)(internal\s+use\s*only|don'\''t\s+share|confidential|proprietary|\bFYI\b|\bNDA\b)' . || echo "Check for internal jargon"
+
+# --- 20e: Third-Party Names / Client References / Partner Mentions (unintended publicity) ---
+rg -n '(?i)(client:\s*[^,]+|customer:\s*[A-Z][a-z]|partner:\s*[A-Z]|[A-Z][a-z]+\s+Inc\.|[A-Z][a-z]+\s+LLC|@[A-Za-z0-9._%+-]+\.(com|org|net))' . \
+  | rg -v 'example\.\(com|github\.com|n8n\.io|node\.js|python\.org|mozilla\.org' || echo "Check for third-party references"
+
+# --- 20f: Pricing, Revenue, Salary, Financial Details (in any file) ---
+rg -n '(?i)(\$[0-9]{1,3}(,\$?[0-9]{3})*\s*(per\s*month|annual|salary|rate|budget|revenue|profit)|pricing:\s*\$|[0-9]+\s*k\s*(in\s*revenue|margin|profit))' . || echo "No pricing info found"
+
+# --- 20g: Legal Threats / Complaints / Dispute Language ---
+rg -n '(?i)(cease\s+and\s+desist|under\s*penalty\s+of\s+perjury|legal\s+counsel|\blawsuit\b|litigation|\btakedown\b|\bDMCA\b)' . || echo "No legal language found"
+
+# --- 20h: HR / Personnel References (names, titles, org charts) ---
+rg -n '(?i)(job\s+(title|description)|hire\.*senior|report\s+to|manager:\s*[A-Z]|employee.*review|performance\s+review|\boffice\s+policy\b)' . || echo "No HR references found"
+
+# --- 20i: URLs to Private/Internal Services (not public docs) ---
+rg -n 'https?://[^ ]+\.(internal|local|dev|staging|test|sandbox|preview)\.' . || echo "Check for private service URLs"
+
+# --- 20j: Git Commit Message Artifacts / Merge Conflict Markers Left in Files ---
+git log --all --pretty=format:'%B' | rg '(?i)(conflict|merge\s*resolv|fix\s*this)' || echo "No commit artifacts in working files"
+rg -n '^<<<<<<<\s|^=======\s|^>>>>>>>\s' . || echo "No merge conflict markers found (good)"
+
+# --- 20k: Excessive Console Logging / Debug Output Snippets ---
+rg -n 'console\.(log|debug|warn)\s*\(\s*["'"'"'][^\)]{100,}' . || echo "No excessive console.log snippets"
+
+# --- 20l: Copyright Year Artifacts (outdated = sloppy) ---
+rg -n '(?i)(copyright\s+©\s*[0-9]{4})' . | rg -v "$(date +%Y)" || echo "Outdated copyright years found"
+
+# --- 20m: Password Reset / Default Credentials in Docs or Examples ---
+rg -n '(?i)((password|default.*pass|initial.*pass)\s*[:=]\s*[A-Za-z0-9]+)' . \
+  | rg -v 'example\.\(com|placeholder|changeme|your-' || echo "Check for default credentials"
+
+# --- 20n: API Response Examples with Real Data (not sanitized) ---
+rg -n '(?i)("email"\s*:\s*"[^@]+@[a-z]+\.[a-z]{2,}"|"name"\s*:\s*"[A-Z][a-z]+\s+[A-Z][a-z]+"|"phone"\s*:\s*"[0-9\-\(\)\s]{7,}")' . || echo "Check for real data in API examples"
+
+# --- 20o: Unintentional Tone — Arrogance, Dismissiveness, or Mockery in Docs ---
+rg -n '(?i)(obviously|as\s+anyone\s*knows|trivial\b|simplest|\be\s*duh\b|\bfacepalm\b)' . || echo "Check for dismissive tone"
+
+# --- 20p: Dead Links / Broken References in Documentation ---
+rg -o 'https?://[^ >)]+' . | sort -u | while read url; do
+  curl -sI --max-time 5 "$url" | head -1 | grep -q "404\|Not Found\|410 Gone" && echo "DEAD LINK: $url"
+done || true
+
+# --- 20q: References to Expired / Outdated Software Versions (looks unmaintained) ---
+rg -n '(?i)(node\s*==?\s*v?(0?[6-9]|1[0-3])\.|react\s*@\s*(1[0-6]|[0-9]\.)|python\s*[23]\.[0-5]|django\s*[12]\.|rails\s*[45]\.)' . || echo "No outdated version refs"
+
+# --- 20r: Bragging / Self-Promotion in Code Comments (not README/README.md) ---
+rg -n '(?i)(\bbest\b.*\bcode\b|\bsmallest\b.*\bfastest\b|made\s+by\s+[A-Z]|insanely\s*good|unmatched)' . \
+  --include '!README*' | rg -v 'example' || echo "Check for code comments bragging"
+
+# --- 20s: StackOverflow / AI-Generated Artifacts (looks unprofessional) ---
+rg -n '(?i)(copied\s+from\s*stackoverflow|see\s+stack\s*(overflow|exchange)|generated\s+by\s*AI|AI-generated)' . || echo "Check for SO/AI artifacts"
+
+# --- 20t: Incomplete Code Blocks / Truncated Examples in Docs ---
+rg -n '```[a-z]*\s*$' . --max-count=0 | while read line; do
+  # Check if the next non-empty line closes the block (if not, it's an incomplete code block)
+  echo "INCOMPLETE CODE BLOCK: $line"
+done || true
+
+# --- 20u: File Paths with Spaces / Special Characters (looks unpolished) ---
+rg -n '(?i)(\/[a-zA-Z]+\s+[a-z]+|path\s*:\s*".*\s")' . | rg -v 'example\.\(com|\$\{|\$' || echo "Check for messy file paths"
+
+# ============================================================
+# CATEGORY 21 — Working Tree Hygiene (files that look sloppy before push)
+# ============================================================
+# Check for backup files, temp files, editor swap files in working tree
+for pattern in '*.bak' '*.orig' '*.swp' '*.swo' '*~' '.DS_Store' 'Thumbs.db'; do
+  find . -name "$pattern" | while read f; do
+    echo "TEMP/BACKUP FILE: $f (should be cleaned before push)"
+  done
+done
+
+# Check for files with Windows line endings in a mostly-mac repo
+git ls-files -z | xargs -0 file | rg 'CRLF' || echo "No Windows line endings found"
+
+# Check for very large files in working tree that look out of place
+find . -size +1M ! -path './.git/*' | while read f; do
+  case "$f" in *.jpg|*.png|*.gif|*.mp4) ;; # media is expected *) echo "LARGE FILE: $f ($(du -h "$f" | cut -f1)) — verify this belongs here" ;; esac
+done
+
+# Check for files with no extension (often accidental or leftover)
+find . -type f ! -name '.*' ! -path './.git/*' ! -name '*.md' ! -name '*.json' ! -name '*.txt' ! -name '*.sh' ! -name '*.yaml' ! -name '*.yml' ! -name '*.toml' ! -name '*.lock' ! -name '*.css' ! -name '*.js' ! -name '*.html' ! -name '*.png' ! -name '*.jpg' ! -name '*.pdf' ! -name '*.LICENSE' ! -name 'Dockerfile*' | grep -v '^$' || echo "No files with missing extensions"
+
+# ============================================================
+# CATEGORY 22 — Naming & Conventions That Look Unprofessional
+# ============================================================
+# Files/folders with uppercase names in a kebab-case repo (inconsistent)
+git ls-files | rg '[A-Z]' | while read f; do
+  echo "UPPERCASE FILENAME: $f"
+done
+
+# Folders named "new", "test", "temp", "copy", "untitled" (sloppy naming)
+find . -mindepth 1 -maxdepth 3 -type d \( -name 'new' -o -name 'New' -o -name 'Untitled' \
+  -o -name 'Test' -o -name 'test2' -o -name 'temp' -o -name 'Temp' \
+  -o -name 'copy' -o -name 'Copy' -o -name 'backup' -o -name 'Backup' \) | while read d; do
+  echo "SLOPPY FOLDER NAME: $d"
+done
+
+# ============================================================
+# CATEGORY 23 — Security Headers & CORS in Configs (not just secrets)
+# ============================================================
+rg -n '(?i)(Access-Control-Allow-Origin:\s*\*|cors\s*:\s*{\s*"origin"\s*:\s*"\*")' . || echo "No wildcard CORS found"
+
+# Check for missing Content-Security-Policy patterns in web configs
+ls *.config.* http*config* 2>/dev/null | head -5
+
+# ============================================================
+# CATEGORY 24 — Credential-Adjacent Patterns (not actual secrets, but suspicious)
+# ============================================================
+rg -n '(?i)(token\s*[:=]\s*"[^"]{0,10}"|key\s*[:=]\s*"x"|secret\s*[:=]\s*"none"|"password"\s*:\s*""\|"null")' . || echo "Check for suspicious empty/placeholder credentials"
+
+# Check for base64-encoded strings that could be hidden data
+rg -n '(?i)([A-Za-z0-9+/]{50,}={0,2})' . | rg -v 'example|placeholder|your-' || echo "Check for base64 blobs"
+
+# ============================================================
+# CATEGORY 25 — References to Services / Accounts That Could Be Compromised if Known
+# ============================================================
+# Staging URLs that look like real domains (not example.com)
+rg -n '(?i)(https?://[a-z0-9-]+\.(staging|dev\.local|test\.local|sandbox)\.)' . || echo "No staging URLs found"
+
+# References to specific cloud providers + project names
+rg -n '(?i)((aws|gcp|azure|digitalocean|heroku|vercel|netlify)\s*(project|name|bucket|account):\s*[A-Za-z0-9][^\s,]{5,})' . || echo "No cloud project refs"
+
+# Specific server/host names
+rg -n '(?i)(server\s+name:\s*[^ ]+\.(local|dev|test)|host\s*[=:]\s*[^ ]+(prod|staging|qa)\.)' . || echo "No server name refs"
+```
+
+### What to flag — exhaustive severity mapping:
+
+Any finding below should be reported. When in doubt, **flag it** — the user can always ignore false positives but cannot fix what they do not know about.
+
+#### A) Personal Data & Sensitive Paths (from Step 5.5 checks above)
+
+| Category | Example Finding | Severity | Why It Matters |
+|----------|----------------|----------|---------------|
+| Obsidian vault full path | `/Volumes/Obsidian_Vault/David's 2nd Brain Vault/` | **WARNING** | Exposes personal knowledge infrastructure; reveals folder structure of private notes |
+| iCloud / Mobile Documents paths | `~/Library/Mobile Documents/...` | **WARNING** | Could point to files synced across devices including sensitive documents |
+| Named `/Volumes/` mount | `/Volumes/Personal/`, `/Volumes/Timelocal/...` | **WARNING** | Reveals external drive names; if that drive has a name like "Backup-MyMac" it confirms device identity |
+| Capitalized `~/` home paths | `~/Documents/Projects/`, `~/Desktop/...` | **INFO** | Reveals personal directory structure (low risk but worth noting) |
+| Personal name in path | `/davidtaylormacbookpro/`, `MacBook-Pro.local` | **WARNING** | Confirms real identity / device name; useful for targeted attacks |
+| Device hostname in code | `.macbook.pro`, `David-iPhone` | **WARNING** | Device fingerprinting; could be used to craft targeted exploits |
+| Personal email address | `user@gmail.com` in agent/skill docs | **INFO** | May be intentional (your public identity), but verify it is what you want public |
+| Phone number anywhere | `+1-555-0123`, `(555) 123-4567` | **WARNING** | Real phone numbers are PII; should never appear in a repo |
+| Financial data patterns | Credit card format, routing/acct numbers, SSN | **CRITICAL** | Immediate financial identity theft risk — must remove before any push |
+| Medical/health references | Patient names, diagnoses, insurance | **CRITICAL** | HIPAA violation risk; health PII is extremely sensitive |
+| GPS coordinates | `lat: 37.7749` in config/docs | **WARNING** | Could reveal home address or frequent locations |
+| Physical street addresses | `123 Main St`, `456 Elm Ave` | **WARNING** | Real-world location PII — do not commit to public repos |
+| Tracked files inside `/Volumes/` paths | any file where git ls-files returns a /Volumes/ path | **CRITICAL** | Personal data from external drives is actually committed to the repo history |
+| Tracked SQLite/DB files | `*.sqlite`, `*.db` files in git ls-files | **WARNING** | Local databases may contain personal user data, messages, or credentials |
+| Browser data references | Cookies, login-data, session store paths | **WARNING** | Could point to exported browser data containing sensitive sessions |
+| Certificate content in files | `-----BEGIN CERTIFICATE-----` | **CRITICAL** | Public certs are fine; private keys or CA bundles should never be committed |
+| Untracked personal file types | `*.pdf`, `*.docx`, `*.xlsx`, `*.mp4`, `*.mov` (untracked) | **WARNING** | These file types in the working tree could be accidentally staged and pushed |
+| Exposed public IPs | Non-private IP addresses in docs/configs | **INFO** | May reveal server infrastructure; internal IPs are lower risk but worth noting |
+| Internal infrastructure names | `staging.example.com`, `admin.internal.dev` | **WARNING** | Reveals development environment structure to potential attackers |
+| Social media handles | `discord.gg/xxx`, `t.me/username`, `@handle on twitter` | **INFO** | May be intentional; verify they are public-facing accounts you want linked |
+| AI API key formats in docs | `sk-proj-...` or `sk-ant-...` patterns (even as examples) | **WARNING** | Even example keys can leak if they are real/active keys — always use placeholder values |
+
+#### B) Anything That Might Look BAD for Public Release (from Step 5.6 checks above)
+
+| Category | Example Finding | Severity | Why It Matters |
+|----------|----------------|----------|---------------|
+| Profanity / offensive language | `fuck`, `shit`, `damn` in any file including docs | **WARNING** | Makes the repo look unprofessional; may alienate visitors or future collaborators |
+| Unfinished work markers | `TODO`, `FIXME`, `WIP`, `WORKING IN PROGRESS`, `PLACEHOLDER` | **WARNING** | Signals unfinished/sloppy state to anyone reviewing the code — looks unmaintained |
+| Developer names in code comments | `by David Taylor`, `created by ...` (in non-doc files) | **INFO** | Not a security risk, but may be unnecessary personal attribution in tool configs |
+| Internal jargon / NDA language | `internal use only`, `don't share`, `confidential`, `NDA` | **WARNING** | Suggests this file should never have been public — raises questions about access controls |
+| Third-party names / client references | Real company names, partner mentions not intended for publicity | **WARNING** | Could violate NDAs or expose business relationships without consent |
+| Pricing / revenue / salary info | `$50k`, `pricing: $100/mo`, `revenue` numbers anywhere | **CRITICAL** | Financial data is extremely sensitive; even rough estimates can be used against you |
+| Legal threats / dispute language | `cease and desist`, `lawsuit`, `DMCA`, `takedown` | **WARNING** | Suggests legal trouble — looks bad to visitors, employers, or collaborators |
+| HR / personnel references | Job titles, hiring mentions, performance review language | **WARNING** | Reveals organizational structure; may indicate employment status (targeting risk) |
+| Private/internal service URLs | `*.internal`, `*.dev.local`, `*.staging` URLs in docs | **WARNING** | Reveals infrastructure topology to potential attackers |
+| Merge conflict markers left in files | `<<<<<<<`, `=======`, `>>>>>>>` | **WARNING** | Looks extremely sloppy — suggests incomplete work or carelessness |
+| Outdated copyright years | `copyright © 2019` in a repo updated in 2026 | **INFO** | Signals abandoned/unmaintained project to visitors |
+| Default / placeholder credentials with real values | `password: "admin123"`, default pass that is not actually a placeholder | **WARNING** | Could be accidentally used and then leaked; always use obviously fake placeholders like `changeme` |
+| API examples with real data (not sanitized) | Real email addresses, names, phone numbers in example responses | **WARNING** | Exposes third-party PII without consent — could violate privacy laws |
+| Dismissive / arrogant tone in comments | `obviously`, `as anyone knows`, `trivial`, `dumb question` | **INFO** | Makes the codebase feel unwelcoming to junior developers or new collaborators |
+| References to StackOverflow / AI-generated code | `copied from stackoverflow`, `generated by AI` in comments | **INFO** | May undermine credibility — better to credit sources properly or rewrite |
+| Untracked backup/temp files in working tree | `*.bak`, `*.orig`, `*~`, `.DS_Store`, editor swap files | **WARNING** | Looks sloppy before push; some may contain deleted sensitive data |
+| Files with Windows line endings (CRLF) on Mac repo | CRLF detected in tracked files | **INFO** | Suggests cross-platform carelessness; can cause diff noise and merge issues |
+| Very large files that look out of place | >1MB non-media file with no obvious purpose | **WARNING** | Wastes bandwidth, may contain embedded data, slows down repo clones for everyone |
+| Files with missing extensions or weird naming | No extension in a mostly-named repo; inconsistent naming conventions | **INFO** | Looks unpolished and makes the repo harder to navigate |
+| Uppercase filenames in kebab-case repo | `README` vs `readme`, `Config.md` vs `config.md` (inconsistent) | **INFO** | Case sensitivity can break builds on Linux; looks sloppy by comparison with neighbors |
+| Folders named "new", "test", "temp", "copy" | `./New/`, `./Untitled/`, `./Copy/` etc. | **WARNING** | Looks like a developer's desk — messy and unprofessional for public viewing |
+| Wildcard CORS headers in configs | `Access-Control-Allow-Origin: *` in any config file | **WARNING** | Security misconfiguration if this is ever deployed; looks careless even if theoretical |
+| Base64 blobs that could be hidden data | Long base64 strings not clearly documented as such | **WARNING** | Could be obfuscated credentials or data — raises red flags for reviewers |
+| References to specific cloud project names | `aws project: my-internal-app`, GCP bucket names, DigitalOcean droplets | **WARNING** | Reveals infrastructure details; could help attackers target your real deployments |
+| Specific server/host production names | Production server names that match the repo's purpose (e.g., a portfolio repo referencing live servers) | **WARNING** | Bridges the gap between public identity and private infrastructure |
+
+### Remediation — exact steps for each case:
+
+#### Personal data / sensitive paths remediation
+
+**Personal directory paths only referenced (not files tracked):**
+```bash
+# Option A: Replace with environment variable in config/docs
+# Before: Vault path: /Volumes/Obsidian_Vault/David's 2nd Brain Vault/
+# After:  Vault path: $VAULT_PATH (export VAULT_PATH="/Volumes/Obsidian_Vault/David's 2nd Brain Vault/" in ~/.zshrc)
+
+# Option B: Use generic placeholder
+# Before: /Volumes/Obsidian_Vault/...
+# After: <vault-root>/ or ${OBSIDIAN_VAULT}/
+```
+
+**Personal directories actually tracked in git (CRITICAL):**
+```bash
+# Remove from repo, keep local copy
+git rm -r --cached "/Volumes/SomeDir/path/to/file"
+git commit -m "Remove: personal data accidentally committed to repo"
+
+# If already pushed, use BFG Repo-Cleaner to purge history:
+npx bfg --replace-text patterns.txt  # where patterns.txt contains the sensitive paths
+git reflog expire --expire=now --all && git gc --prune=now
+```
+
+**Personal emails/phone numbers:**
+- Replace with placeholder like `user@example.com` or `+1-555-0000` in any file that will be public.
+- If the email is your intended public identity (e.g., on a README), note it as intentional and leave it.
+
+**Financial / medical data:**
+- Remove immediately from all files and all git history.
+- Rotate any credentials that may have been exposed alongside this data.
+
+**Untracked personal file types in working tree:**
+```bash
+# Check what will be staged before committing:
+git status --porcelain | rg '\.(pdf|docx|xlsx|mp4|mov)$'
+
+# Add to .gitignore if they should never be tracked:
+echo "*.pdf" >> .gitignore  # or more specific patterns like "docs/*.pdf"
+```
+
+**Device names / hostnames:**
+- Replace with generic placeholders in any docs that describe setup instructions (e.g., use `<your-mac>` instead of `David-MacBook-Pro`).
+
+#### Public release polish remediation
+
+**Profanity / offensive language:**
+- Remove or replace with neutral language. There is no reason for profanity to be permanently committed to a public repo.
+
+**Unfinished work markers (TODO/FIXME/WIP):**
+```bash
+# Either complete the work, move it to an issue tracker, or remove the marker from public docs
+# If keeping TODOs for yourself, put them in private config files (.gitignore'd)
+echo "# Personal TODOs — not for git" >> .todo.private.local
+rg -n '(?i)(TODO|FIXME|WIP)' . | while read line; do echo "$line"; done  # audit what remains
+```
+
+**Outdated copyright years:**
+```bash
+# Update to current year in any file that has a copyright notice
+sed -i '' 's/copyright\s*©\s*[0-9]\{4\}/copyright © '"$(date +%Y)"'/gi' <file>
+```
+
+**Merge conflict markers left in files:**
+```bash
+# Remove them — they indicate incomplete work
+rg -n '^<<<<<<<|^=======|^>>>>>>>' . | while read line; do
+  echo "Remove merge marker at: $line"
+done
+```
+
+**Untracked backup/temp files before push:**
+```bash
+# Clean up working tree before committing/pushing
+find . -name '*.bak' -o -name '*.orig' -o -name '*~' -o -name '*.swp' | xargs rm -f 2>/dev/null
+find . -name '.DS_Store' -delete  # or add to .gitignore if not already there
+```
+
+**Sloppy folder names (`New/`, `Untitled/`, etc.):**
+- Rename folders to descriptive, consistent names matching the project's naming convention (kebab-case or PascalCase — pick one and stick with it).
+
+**API examples with real data:**
+- Replace all real emails, phone numbers, and names in example responses with obviously fake placeholders: `user@example.com`, `+1-555-0000`, `John Doe`.
+
+**Dismissible / arrogant comments:**
+- Rewrite to neutral, professional tone. Code is read by many people — comments should educate, not judge.
+
+**References to third-party names / clients / partners:**
+- Replace with generic placeholders: `Acme Corp` → `[Client Name]`, real company → `A partner organization`.
+- Verify no NDA violation before any public disclosure.
+
+**Pricing / revenue / salary numbers:**
+- Remove entirely or replace with ranges/placeholders: `$50k/year` → `[salary range]`.
+- This is the most important thing to fix — financial data should never be public.
+
+---
+
+## Step 6 — File Permissions (INFO)
+
+```bash
+# Check for overly permissive files in the repo
+find . -name "*.sh" -o -name "*.pem" -o -name "*.key" | xargs ls -la 2>/dev/null | rg '^\-..x' || echo "No executable secrets found (good)"
+```
+
+---
+
+## Step 7 — Report & Remediation
+
+### Compile findings into a structured report:
+
+```markdown
+## Security Audit Results
+
+**Repository**: <repo-name>  
+**Remote**: <remote-url or "local only">  
+**Date**: <date>  
+
+### 🔴 CRITICAL (Must Fix)
+- [Issue description] → [File:line] → [Remediation: fix suggestion]
+
+### 🟡 WARNING (Should Fix)
+- [Issue description] → [File:line] → [Suggested improvement]
+
+### ℹ️ INFO (Optional Improvements)
+- [Observation]
+
+### ✅ Passed Checks
+- No hardcoded API keys found
+- .gitignore is complete
+- No secrets in git history
+```
+
+### Remediation Guidance
+
+For each finding, provide the exact command or code change to fix it:
+
+**Hardcoded secret:**
+```bash
+# Remove from file and add to .env
+echo "API_KEY=\"$(openssl rand -hex 32)\"" >> .env.local
+git rm --cached path/to/file # if already tracked
+```
+
+**Secret in git history:**
+```bash
+# Use BFG Repo-Cleaner or git filter-branch:
+npx bfg --replace-text secrets.txt
+git reflog expire --expire=now --all && git gc --prune=now
+```
+
+**.gitignore missing entries:**
+Provide the exact lines to add.
+
+---
+
+## Integration with Portfolio-Polish & Release Skills
+
+This skill should be run:
+1. **After** portfolio-polish (github-repo-cleanup) completes — it may have added/modified files that need checking
+2. **Before** repo-release (github-version-tag-release) creates the release — nothing gets released until all CRITICAL issues are resolved
+3. If any CRITICAL issue is found, STOP and ask the user to fix it before proceeding with the release
+
+Flow: `portfolio-polish → security-audit → (fix criticals) → release`

@@ -1,0 +1,277 @@
+---
+uamVersion: 1
+title: obsidian-save
+maker: DavidTaylor6130
+review: Take user input (a prompt + notes/content) and save it to their Obsidian vault in the best location, using PARA method. Automatically saves to the vault at /Volumes/Obsidian_Vault/David's 2nd Brain Vault/. Classifies content into numbered PARA folders, determines subfolder, creates file with frontma
+dateCreated: 2026-07-07T22:33:13Z
+dateUpdated: 2026-07-07T22:33:13Z
+---
+
+# Obsidian Save — Auto-Location Note Saving (PARA Method)
+
+Vault path: `/Volumes/Obsidian_Vault/David's 2nd Brain Vault/`
+
+You are helping the user save notes to their Obsidian vault using the PARA method
+(Promoted by Tiago Forte as part of his "Building a Second Brain" system).
+
+---
+
+## Step 0 — Verify Vault Access
+
+```bash
+ls "/Volumes/Obsidian_Vault/David's 2nd Brain Vault/" >/dev/null 2>&1 || echo "VAULT_INACCESSIBLE"
+```
+
+If the vault is inaccessible (NAS offline), inform the user and stop. Do not proceed without access.
+
+---
+
+## Step 1 — PARA Folder Mapping
+
+The vault uses numbered folders. Map classification to these exact paths:
+
+| PARA Category | Vault Folder | Path |
+|---------------|-------------|------|
+| **Projects** | `00 Current Projects` or `01 Future Projects` | `/Volumes/Obsidian_Vault/David's 2nd Brain Vault/00 Current Projects/` (active) or `.../01 Future Projects/` (not yet started) |
+| **Areas** | `02 Areas Of On Going Work - Targets` | `/Volumes/Obsidian_Vault/David's 2nd Brain Vault/02 Areas Of On Going Work - Targets/` |
+| **Resources** | `03 Resources` | `/Volumes/Obsidian_Vault/David's 2nd Brain Vault/03 Resources/<topic>/` |
+| **Archives** | `04 Archived Info and Projects` | `/Volumes/Obsidian_Vault/David's 2nd Brain Vault/04 Archived Info and Projects/<year>/` |
+
+### Classification Guide
+
+| Category | When to Use | Examples |
+|----------|-------------|---------|
+| **00 Current Projects** | Active work with a goal/deadline happening NOW | "Website Redesign", "Client Migration" |
+| **01 Future Projects** | Planned but not started yet | "App Launch Q3", "Portfolio Revamp" |
+| **02 Areas** | Ongoing responsibility, no end date | "Freelancing", "Health & Fitness" |
+| **03 Resources** | Reference material / knowledge on a topic | "React Patterns", "Markdown Tips" |
+| **04 Archives** | Completed, outdated, historical | Past projects, deprecated topics |
+
+### Classification Decision Tree
+
+```
+Is the content about an active project with a clear goal/deadline?
+  → Yes: 00 Current Projects
+  → No: Is it planned but not yet started?
+    → Yes: 01 Future Projects
+    → No: Is it an ongoing role or responsibility you maintain?
+      → Yes: 02 Areas Of On Going Work - Targets
+      → No: Is it reference material / knowledge on a topic?
+        → Yes: 03 Resources/<topic> (create subfolder if needed)
+        → No: 04 Archived Info and Projects/<current-year>/
+```
+
+### Additional Context Clues
+
+- **Keywords for 00 Current Projects**: deadline, sprint, milestone, deliverable, launch, build, create, design, ship, active, current
+- **Keywords for 01 Future Projects**: planned, roadmap, Q3, next quarter, upcoming, wishlist, backlog
+- **Keywords for 02 Areas**: management, oversight, maintenance, quality, standard, responsibility, health, finance
+- **Keywords for 03 Resources**: tutorial, guide, reference, tips, how-to, cheatsheet, patterns, examples, learning
+- **Keywords for 04 Archives**: completed, finished, legacy, old, deprecated, historical, past year
+
+---
+
+## Step 2 — Determine Subfolder (for Resources)
+
+Within `03 Resources`, use the vault's existing subfolder structure:
+
+```bash
+ls "/Volumes/Obsidian_Vault/David's 2nd Brain Vault/03 Resources/" 2>/dev/null
+# Existing: Hobbies, Reading Quotes Archive, Software Knowledge, Video Editing, General Knowledge
+```
+
+Pick the best matching subfolder. If no match exists, create a new one based on content topic (e.g., `Programming`, `Game Dev`, `DevOps`).
+
+### Subfolders to Create Automatically When Needed
+
+- **`General Knowledge`** — Always available under Resources for broad topics that don't fit elsewhere
+  - Path: `/Volumes/Obsidian_Vault/David's 2nd Brain Vault/03 Resources/General Knowledge/`
+  - Use when content is general knowledge / reference material with no clear category
+- **`Programming`** — Under Software Knowledge or standalone depending on context
+- Any other topic-specific folder that doesn't match existing ones
+
+---
+
+## Step 3 — Determine File Name & Frontmatter
+
+### Naming Convention
+
+```
+YYYY-MM-DD-slug-title.mdx
+```
+
+Extract the slug from the first meaningful words of the user's input. Lowercase, hyphen-separated.
+
+Examples:
+- `2026-01-15-react-hooks-patterns.mdx`
+- `2026-03-20-client-migration-notes.mdx`
+- `2026-06-27-security-audit-checklist.mdx`
+
+If no clear title emerges, use the first 3-4 content words.
+
+### Frontmatter Template
+
+```yaml
+---
+title: "Title from user input or generated"
+date: YYYY-MM-DD
+tags: [auto-detected-tags]
+para: Projects | Areas | Resources | Archives
+source: user-input
+created: YYYY-MM-DDThh:mm:ss+00:00
+relatedFolders: [relevant folder names as array]
+---
+```
+
+- Extract 3-8 relevant tags from content keywords
+- Set `para` to the PARA category name
+- Use UTC timezone for `created` timestamp
+- Add `relatedFolders` with any other PARA folders or topics that connect to this note
+
+### Check for Naming Conflicts
+
+Before writing, check if a file with the same date-slug already exists in the target folder:
+
+```bash
+ls "/Volumes/Obsidian_Vault/David's 2nd Brain Vault/<target-folder>/$(date +%Y-%m-%d)-"* >/dev/null 2>&1 && echo "CONFLICT" || echo "OK"
+```
+
+If there is a conflict, append a short suffix: `YYYY-MM-DD-slug-title-2.mdx`
+
+---
+
+## Step 4 — Cross-Linking Rules (Critical)
+
+The vault has a plugin that renders `.md` files as folder landing pages. Everything must link bidirectionally to create a connected knowledge graph. This makes it easier for future agents and the user to navigate related info.
+
+### Rule 1: Link FROM the new note TO relevant folder pages
+
+After saving, scan the content for topics that match existing resources. For each match, add a `[[wikilink]]` in the note body pointing to:
+- The **folder's `.md` page** (e.g., `[[03 Resources/Software Knowleadge]]`) — this is the folder landing page rendered by the plugin
+- Related **topic notes** in other folders
+
+Example content scan:
+```
+User says "Cloudflare DNS setup guide"
+→ Content mentions: Cloudflare, DNS, networking
+→ Match existing resources: Software Knowledge (tooling), General Knowledge (concepts)
+→ Add links: [[03 Resources/Software Knowleadge]], [[03 Resources/General Knowledge]]
+```
+
+### Rule 2: Link TO the folder page FROM the new note
+
+Add a "Related Folders" section at the bottom of the note (after the content, before the save timestamp):
+
+```markdown
+---
+**Related:**
+- [[03 Resources/Software Knowleadge]] — Software Stack & Tools
+- [[03 Resources/General Knowledge]] — General Reference
+- [[02 Areas Of On Going Work - Targets/Freelancing]] — Freelance Work
+---
+
+*Saved via opencode on YYYY-MM-DD*
+```
+
+Format the "Related" block as:
+- One bullet per linked folder/page
+- Include a brief descriptor after each wikilink (em-dash + short description of why it's related)
+- Only include 2-6 relevant links — don't over-link
+- Prioritize links to **folder pages** (the `.md` files that act as landing pages) over individual notes
+
+### Rule 3: Identify Cross-Category Connections
+
+Always check if the content bridges multiple PARA categories and link accordingly:
+
+| Content Example | Links To |
+|----------------|----------|
+| Cloudflare DNS setup | `[[03 Resources/Software Knowleadge]]` (tool), `[[03 Resources/General Knowledge]]` (DNS concept) |
+| React component patterns | `[[03 Resources/Programming]]`, `[[03 Resources/Software Knowleadge]]` |
+| Client website project | `[[00 Current Projects]]`, `[[02 Areas Of On Going Work - Targets/Freelancing]]` |
+| Game dev physics tutorial | `[[03 Resources/Hobbies]]`, `[[03 Resources/General Knowledge]]` |
+
+### Rule 4: Scan for Existing Related Notes Before Linking
+
+Before finalizing links, check what exists in the vault to avoid linking to non-existent resources:
+
+```bash
+# Check if a potential link target actually has an .md file (folder page) or notes
+ls "/Volumes/Obsidian_Vault/David's 2nd Brain Vault/03 Resources/Software Knowleadge/" 2>/dev/null | head -5
+
+# Look for existing notes that might be related to the new content
+grep -rl "cloudflare" "/Volumes/Obsidian_Vault/David's 2nd Brain Vault/" --include="*.mdx" --include="*.md" 2>/dev/null | head -5
+```
+
+If a linked folder has no `.md` landing page, note that the plugin may not render it — but still link to it (the folder page can be created later).
+
+---
+
+## Step 5 — Create & Save the Note
+
+Write the file to:
+
+```
+/Volumes/Obsidian_Vault/David's 2nd Brain Vault/<target-folder>/<filename>.mdx
+```
+
+### Content Formatting
+
+Structure the note based on input:
+
+```markdown
+# <Title>
+
+<Main content — preserve user's formatting and line breaks exactly>
+
+---
+**Related:**
+- [[03 Resources/Software Knowleadge]] — Software Stack & Tools
+- [[03 Resources/General Knowledge]] — General Reference
+---
+
+*Saved via opencode on YYYY-MM-DD*
+```
+
+If the user provided minimal input (just a prompt/idea), add a brief expansion:
+- Add relevant PARA tags at bottom
+- Suggest "Related" cross-links to similar notes in the vault if obvious connections exist
+- Add "Next Actions" section if content implies something actionable
+
+---
+
+## Step 6 — Verify & Report
+
+After saving, confirm to the user:
+
+```
+✅ Saved to Obsidian: <full-path-to-file>
+📂 PARA Category: <Projects/Areas/Resources/Archives>
+   → Folder: <exact folder name>
+🏷️ Tags: tag1, tag2, tag3
+🔗 Frontmatter added with date and metadata
+🔗 Cross-links: [[Folder Page 1]], [[Folder Page 2]]
+```
+
+---
+
+## Edge Cases & Fallbacks
+
+### Ambiguous Content (could be multiple categories)
+
+Pick the most likely. If equally balanced, choose **Resources** as the safest default. Note your reasoning in a comment at the top of the file: `<!-- Categorized as Resources — was also suitable for Areas -->`
+
+### User Provides Explicit Location
+
+If user says "save to 00 Current Projects" or "put it in my inbox", respect that and skip auto-classification. Use the exact folder they specify.
+
+### Content Looks Like a Fleeting Note / Quick Capture
+
+For brief, ephemeral content (1-2 sentences, no clear topic):
+- Save to `05 Collection Spot/` if appropriate — this is the vault's inbox equivalent
+- Tag with `fleeting` so it can be sorted later into proper PARA folder
+
+### Content About Personal Development / Self-Improvement
+
+If content is about the user themselves (habits, reflections, goals):
+- Consider saving to `06 Myself/` if it's personal introspection
+- Otherwise use standard PARA classification

@@ -1,0 +1,105 @@
+---
+uamVersion: 1
+title: github-create-pr
+maker: DavidTaylor6130
+review: PR creation workflow. Extracts issue references from commits, sanity-checks what's actually fixed, asks user for confirmation at each step, creates PR with `gh`, opens in browser. Use when user says "create pr", "make pr", "open pull request", "/create-pr", or passes issue numbers.
+dateCreated: 2026-07-07T22:33:13Z
+dateUpdated: 2026-07-07T22:33:13Z
+---
+
+# GitHub Create PR
+
+Workflow: identify commits → extract issues → sanity check → confirm → create → browser.
+
+## Workflow
+
+If user provided issue number(s), use them. Otherwise extract from commits.
+
+### 1. Identify Commits
+
+```bash
+# Get commits on current branch not on main/master
+git log origin/main..HEAD --oneline --no-decorate
+# or if on a branch already tracking
+git log @{u}..HEAD --oneline --no-decorate
+```
+
+Fallback if `main` doesn't exist: try `master`.
+
+Show user the commit list. Use `question` tool:
+- "These commits look correct — proceed"
+- "Different base branch — specify"
+- "Cancel"
+
+If user says different base, ask which branch with another question.
+
+### 2. Extract Issue References
+
+Parse each commit message for `#<number>`, `fixes #<number>`, `closes #<number>`, `resolves #<number>`, `GH-<number>`, or bare issue URLs.
+
+Collect unique issue numbers.
+
+If user provided issue numbers at start, merge with extracted ones. Deduplicate.
+
+Show collected issues to user. Use `question` tool:
+- "Issues found: X, Y. Link all to PR? (Recommended)"
+- "Only link specific issues — pick numbers"
+- "Different issues — I'll provide numbers"
+- "Cancel"
+
+### 3. Sanity Check
+
+For each issue number, check if commits actually reference it:
+
+```bash
+gh issue view <number> --json title,state,labels
+```
+
+Show table:
+
+| Issue | Title | State | Referenced in commits? |
+|-------|-------|-------|----------------------|
+| #X    | ...   | open  | ✅ yes (3 commits)    |
+| #Y    | ...   | closed | ⚠️ no commits reference |
+
+Use `question` tool:
+- "Sanity check passed — create PR"
+- "Flag — issue Y not referenced in any commit. Still include?" → if yes, proceed; if no, drop it
+- "Cancel"
+
+### 4. Create PR
+
+```bash
+gh pr create --fill --issue <comma-separated numbers>
+```
+
+If `--issue` doesn't support multiple, use the title/body approach:
+
+```bash
+gh pr create --title "<title>" --body "<body>" --fill
+```
+
+`--fill` reuses commit messages for body. Append issue references in body:
+```
+Closes #X, Closes #Y
+```
+
+Show user the PR title + body preview. Use `question` tool:
+- "Approve — open PR in browser"
+- "Edit title — I'll provide different title"
+- "Edit body — I'll provide different body"
+- "Cancel"
+
+### 5. Open Browser
+
+```bash
+gh pr view --web
+```
+
+User reviews and merges themselves.
+
+## Boundaries
+
+Requires `gh` CLI authenticated and `git` configured. Only for GitHub-hosted repos.
+
+If no `gh`, stop and tell user. If not a GitHub repo, stop.

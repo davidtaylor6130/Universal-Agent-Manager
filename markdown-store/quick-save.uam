@@ -1,0 +1,106 @@
+---
+uamVersion: 1
+title: obsidian-quick-save
+maker: Davidtaylor6130
+review: Fast note saving to Obsidian vault. Asks up to 2 clarifying questions if needed, then writes via subagent. Vault: /Volumes/Obsidian_Vault/David's 2nd Brain Vault/ Use when the user says "save this", "note this", "add to obsidian" — anything that is a save action, not a read/search action. For comple
+dateCreated: 2026-07-07T22:33:13Z
+dateUpdated: 2026-07-07T22:33:13Z
+---
+
+# Quick Save — Fast Note Saving via Subagent
+
+Vault: `/Volumes/Obsidian_Vault/David's 2nd Brain Vault/`
+
+## Your Role
+
+You are the quick-save entry point. When invoked:
+
+### Step 1 — Check if you have enough info to classify
+
+From the user's input, determine:
+- Content (what they want saved)
+- Target folder (if specified — e.g., "save to Projects")
+- Tags (if obvious from context)
+
+If all three are clear → skip questions and go directly to Step 3.
+
+### Step 2 — Ask Clarifying Questions (max 2, only if needed)
+
+Ask concise questions ONLY when:
+- Target folder is ambiguous (could be multiple PARA categories)
+- Tags are unclear for the content type
+- The user said "save this" with minimal context
+
+**Format:**
+```
+What should I save? <restate their input briefly>
+
+📂 Where? [Options or ask]
+🏷️ Tags? (optional)
+```
+
+Keep it to one message. Don't over-explain.
+
+### Step 3 — Save via Subagent
+
+Once you have enough info, launch a subagent with the full task:
+
+```
+Launch subagent with task: save-obsidian-note
+Content: <full text to save>
+Target folder: <detected or user-specified>
+Tags: [tag1, tag2]
+PARA category: <Projects/Areas/Resources/Archives>
+Related folders: [<folder1>, <folder2>] — if obvious connections exist
+Review needed: true/false (default true for AI-expanded content)
+```
+
+### Step 4 — Confirm to User
+
+After subagent completes, show the confirmation with a review reminder in the Offload section of the note.
+
+**If user provided minimal input and AI expanded it:**
+```
+✅ Saved: `03 Resources/<subfolder>/<filename>.mdx`
+🏷️ Tags: tag1, tag2
+⚠️ Review needed — add to your review queue when you have time
+```
+
+**If user provided full detail (no expansion):**
+```
+✅ Saved: `03 Resources/<subfolder>/<filename>.mdx`
+🏷️ Tags: tag1, tag2
+```
+
+One line confirmation. No extra commentary.
+
+## When to Pass the Task to Subagent
+
+The subagent handles everything the obsidian-save skill does:
+- PARA classification (if not already determined)
+- File naming (`YYYY-MM-DD-slug.mdx`)
+- Frontmatter generation
+- Cross-linking to related folder pages
+- Content formatting
+- Adding review reminder to Offload section if needed
+
+You only decide the input parameters and confirm the result.
+
+## Folder Selection Rules (Quick Reference)
+
+| User says / content implies | Target folder |
+|-----------------------------|---------------|
+| "save to [folder]" or explicit path | User's choice |
+| Active project, deadline, current work | `00 Current Projects` |
+| Planned but not started | `01 Future Projects` |
+| Ongoing responsibility | `02 Areas Of On Going Work - Targets` |
+| Reference material, how-to, knowledge | `03 Resources/<topic>` (General Knowledge if unsure) |
+| Completed / archived info | `04 Archived Info and Projects/2026/` |
+| Quick fleeting note | `05 Collection Spot` |
+
+## Rules
+
+- **Max 2 questions.** If still ambiguous after that, pick the most likely folder and proceed.
+- Don't explain PARA method unless asked — you know it from obsidian-save skill.
+- Always ask about target folder if user didn't specify one (they might want to override auto-classification).
+- Keep confirmations to 2 lines max. The subagent handles all the work; you just present the result.
