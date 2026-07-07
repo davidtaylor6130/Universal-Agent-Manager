@@ -208,7 +208,7 @@ describe('ChatView', () => {
     expect(host.textContent).toContain('After tool.')
     expect(host.textContent).toContain('Gemini')
     expect(host.textContent).not.toContain('ACP')
-    expect(host.textContent).toContain('Workspace')
+    expect(host.querySelector('button[aria-label="Select provider"]')).toBeTruthy()
     expect(host.textContent).toContain('/tmp/project')
     expect(host.textContent).not.toContain('Tools on')
     expect(host.textContent).toContain('Read file')

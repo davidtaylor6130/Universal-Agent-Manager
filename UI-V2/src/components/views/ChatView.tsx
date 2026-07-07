@@ -79,6 +79,7 @@ import {
   ComposerIcon,
   ComposerToolbar,
 } from '../chat/Composer'
+import { ChevronDown, Check } from 'lucide-react'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { Button, IconButton } from '../ui'
 
@@ -884,7 +885,52 @@ export function ChatView({ session }: ChatViewProps) {
                 style={{ color: 'var(--text-3)', minWidth: 0 }}
                 title={workspaceDirectory || 'No workspace directory selected'}
               >
-                <span style={{ color: 'var(--text-2)', flexShrink: 0 }}>Workspace</span>
+                {(providers.length <= 1 && currentProviderId === providers[0]?.id) ? (
+                  <span style={{ color: 'var(--text-2)', flexShrink: 0 }}>Workspace</span>
+                ) : (
+                <div ref={providerMenuRef} className="relative" style={{ flexShrink: 0 }}>
+                  <button
+                    type="button"
+                    title="Select provider"
+                    aria-label="Select provider"
+                    aria-expanded={providerOpen}
+                    onClick={() => setProviderOpen((v) => !v)}
+                    className="inline-flex items-center gap-1.5 rounded-md px-2"
+                    style={{ height: 26, border: '1px solid var(--border)', background: providerOpen ? 'var(--surface-up)' : 'var(--surface)', color: 'var(--text-2)' }}
+                  >
+                    <ProviderLogo providerId={currentProviderId} />
+                    <span style={{ color: 'var(--text)' }}>{currentProviderName}</span>
+                    <ChevronDown size={12} aria-hidden style={{ opacity: 0.6 }} />
+                  </button>
+                  {providerOpen && (
+                    <div
+                      className="absolute left-0 z-40"
+                      style={{ top: 30, width: 230, border: '1px solid var(--border-bright)', borderRadius: 8, background: 'var(--surface)', boxShadow: 'var(--elev-3)', padding: 6 }}
+                    >
+                      <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>Provider</div>
+                      {providers.map((candidate) => {
+                        const candidateName = providerShortName(candidate, candidate.id)
+                        const selected = candidate.id === currentProviderId
+                        const disabled = !selected && !canChangeProvider
+                        return (
+                          <button
+                            key={candidate.id}
+                            type="button"
+                            disabled={disabled}
+                            onClick={() => { setProviderOpen(false); if (disabled) return; void setSessionProvider(session.id, candidate.id) }}
+                            className="w-full flex items-center gap-2 text-left px-2 py-2"
+                            style={{ borderRadius: 6, background: selected ? 'var(--accent-dim)' : 'transparent', color: selected ? 'var(--text)' : 'var(--text-2)', opacity: disabled ? 0.5 : 1 }}
+                          >
+                            <ProviderLogo providerId={candidate.id} />
+                            <span className="flex-1">{candidateName}</span>
+                            {selected && <Check size={13} aria-hidden style={{ color: 'var(--accent)' }} />}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+                )}
                 {isGitWorktree && (
                   <span
                     style={{

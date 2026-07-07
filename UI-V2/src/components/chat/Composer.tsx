@@ -207,68 +207,7 @@ export function ComposerToolbar({
         color: 'var(--text-2)',
       }}
     >
-      {(providerOptions.length > 1 || providerId !== providerOptions[0]?.id) && (
-      <div ref={providerMenuRef} className="relative">
-        <button
-          type="button"
-          title="Select provider"
-          onClick={onToggleProvider}
-          className="inline-flex items-center gap-1.5 px-2"
-          style={{
-            ...chipStyle,
-            color: providerOpen ? 'var(--text)' : 'var(--text-2)',
-            borderColor: providerOpen ? 'var(--border-bright)' : 'var(--border)',
-          }}
-        >
-          <ProviderLogo providerId={providerId} />
-          <span>{providerName}</span>
-        </button>
-        {providerOpen && (
-          <div
-            className="absolute left-0"
-            style={{
-              bottom: 32,
-              width: 230,
-              zIndex: 40,
-              border: '1px solid var(--border-bright)',
-              borderRadius: 8,
-              background: 'var(--surface)',
-              boxShadow: '0 14px 42px rgba(0, 0, 0, 0.28)',
-              padding: 6,
-            }}
-          >
-            <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>Provider</div>
-            {providerOptions.map((candidate) => {
-              const candidateName = providerShortName(candidate, candidate.id)
-              const selected = candidate.id === providerId
-              const disabled = !selected && !canChangeProvider
-              return (
-                <button
-                  key={candidate.id}
-                  type="button"
-                  onClick={() => {
-                    if (disabled) return
-                    onSelectProvider(candidate.id)
-                  }}
-                  disabled={disabled}
-                  className="w-full flex items-center gap-2 text-left px-2 py-2"
-                  style={{
-                    borderRadius: 6,
-                    background: selected ? 'var(--accent-dim)' : 'transparent',
-                    color: selected ? 'var(--text)' : 'var(--text-2)',
-                    opacity: disabled ? 0.5 : 1,
-                  }}
-                >
-                  <ProviderLogo providerId={candidate.id} />
-                  <span className="flex-1">{candidateName}</span>
-                  {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
-                </button>
-              )
-            })}
-          </div>
-        )}
-      </div>
-      )}
+      {/* Provider selector moved to the workspace row above the input. */}
       {caps.hasReasoningEffort && (
         <div ref={reasoningMenuRef} className="relative">
           <button
