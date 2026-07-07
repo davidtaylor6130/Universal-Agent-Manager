@@ -21,6 +21,7 @@ export function MarkdownStoreModal() {
   const refresh = useAppStore((s) => s.refreshMarkdownStore)
   const createEntry = useAppStore((s) => s.createMarkdownStoreEntry)
   const revealEntry = useAppStore((s) => s.revealMarkdownStoreEntry)
+  const editEntry = useAppStore((s) => s.editMarkdownStoreEntry)
   const attachEntry = useAppStore((s) => s.attachMarkdownStoreEntry)
   const [search, setSearch] = useState('')
   const [isAdding, setIsAdding] = useState(false)
@@ -150,6 +151,9 @@ export function MarkdownStoreModal() {
                     <div className="flex flex-col gap-2">
                       <Button variant={activeSessionId ? 'primary' : 'secondary'} size="sm" disabled={!activeSessionId} onClick={() => attach(entry)}>
                         Attach
+                      </Button>
+                      <Button variant="secondary" size="sm" onClick={() => void editEntry(entry)}>
+                        Edit
                       </Button>
                       <Button variant="secondary" size="sm" onClick={() => void revealEntry(entry)}>
                         Reveal

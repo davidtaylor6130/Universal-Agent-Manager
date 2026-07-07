@@ -693,7 +693,7 @@ export function ChatView({ session }: ChatViewProps) {
       ...markdownStoreEntries.map((entry) => ({
         id: `md:${entry.id}`,
         label: '/' + entry.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
-        hint: 'Attach markdown store skill',
+        hint: entry.review || entry.preview || 'Attach markdown store skill',
         run: () => attachMarkdownStoreEntry(session.id, entry),
       })),
     ],
@@ -706,13 +706,13 @@ export function ChatView({ session }: ChatViewProps) {
     ? slashCommands.filter((command) => command.label.slice(1).startsWith(slashQuery))
     : []
   const slashOpen = slashQuery !== null && slashMatches.length > 0
-  const slashStoreLoadedRef = useRef(false)
+  const slashPaletteVisible = slashQuery !== null
   useEffect(() => {
-    if (slashQuery !== null && !slashStoreLoadedRef.current) {
-      slashStoreLoadedRef.current = true
+    if (slashPaletteVisible && markdownStoreEntries.length === 0) {
       void refreshMarkdownStore()
     }
-  }, [slashQuery, refreshMarkdownStore])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slashPaletteVisible])
   const runSlashCommand = (command: (typeof slashCommands)[number]) => {
     setDraft('')
     setSlashIndex(0)
@@ -1309,6 +1309,7 @@ export function ChatView({ session }: ChatViewProps) {
                   <div className="px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)', borderBottom: '1px solid var(--border)' }}>
                     Commands
                   </div>
+                  <div className="overflow-y-auto" style={{ maxHeight: 360 }}>
                   {slashMatches.map((command, index) => {
                     const active = index === Math.min(slashIndex, slashMatches.length - 1)
                     return (
@@ -1317,16 +1318,18 @@ export function ChatView({ session }: ChatViewProps) {
                         type="button"
                         role="option"
                         aria-selected={active}
+                        ref={active ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
                         onMouseEnter={() => setSlashIndex(index)}
                         onMouseDown={(e) => { e.preventDefault(); runSlashCommand(command) }}
                         className="flex w-full items-baseline gap-3 px-3 py-2 text-left"
                         style={{ background: active ? 'var(--accent-dim)' : 'transparent', color: active ? 'var(--text)' : 'var(--text-2)' }}
                       >
                         <span className="font-mono text-sm" style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>{command.label}</span>
-                        <span className="text-xs" style={{ color: 'var(--text-3)' }}>{command.hint}</span>
+                        <span className="min-w-0 flex-1 truncate text-xs" style={{ color: 'var(--text-3)' }}>{command.hint}</span>
                       </button>
                     )
                   })}
+                  </div>
                 </div>
               </div>
             )}

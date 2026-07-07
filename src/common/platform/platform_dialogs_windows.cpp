@@ -171,6 +171,30 @@ class WindowsFileDialogService final : public IPlatformFileDialogService
 
 		return true;
 	}
+
+	bool OpenFileInTextEditor(const std::filesystem::path& file_path, std::string* error_out = nullptr) const override
+	{
+		if (file_path.empty() || !uam::paths::IsRegularFileNoThrow(file_path))
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "File does not exist.";
+			}
+			return false;
+		}
+
+		const std::wstring params = L"\"" + file_path.wstring() + L"\"";
+		const HINSTANCE result = ShellExecuteW(nullptr, L"open", L"notepad.exe", params.c_str(), nullptr, SW_SHOWNORMAL);
+		if (reinterpret_cast<INT_PTR>(result) <= 32)
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Failed to open file in text editor.";
+			}
+			return false;
+		}
+		return true;
+	}
 };
 
 IPlatformFileDialogService& GetWindowsFileDialogService()

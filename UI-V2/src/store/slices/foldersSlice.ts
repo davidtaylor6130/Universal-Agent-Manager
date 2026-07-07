@@ -347,6 +347,20 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       return true
     },
 
+    editMarkdownStoreEntry: async (entry: MarkdownStoreEntry) => {
+      if (isCefContext()) {
+        const response = await sendToCEF({
+          action: 'editMarkdownStoreEntry',
+          payload: { filePath: entry.filePath },
+        })
+        if (!response.ok) {
+          set({ markdownStoreError: response.error ?? 'Failed to open Markdown Store entry for editing.' })
+          return false
+        }
+      }
+      return true
+    },
+
     attachMarkdownStoreEntry: (sessionId: string, entry: MarkdownStoreEntry) => set((state) => {
       const current = state.markdownStoreAttachedBySessionId[sessionId] ?? []
       if (current.some((candidate) => candidate.filePath === entry.filePath)) {
