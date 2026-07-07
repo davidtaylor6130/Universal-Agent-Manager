@@ -269,63 +269,6 @@ export function ComposerToolbar({
         )}
       </div>
       )}
-      <div ref={modelMenuRef} className="relative">
-        <button
-          type="button"
-          title="Select model"
-          onClick={onToggleModel}
-          disabled={modelDisabled}
-          className="inline-flex items-center gap-1.5 px-2"
-          style={{
-            ...chipStyle,
-            color: modelOpen ? 'var(--text)' : 'var(--text-2)',
-            borderColor: modelOpen ? 'var(--border-bright)' : 'var(--border)',
-            opacity: modelDisabled ? 0.55 : 1,
-          }}
-        >
-          <span>Model</span>
-          <span style={{ color: 'var(--text)' }}>{currentModel.shortLabel}</span>
-        </button>
-        {modelOpen && !modelDisabled && (
-          <div
-            className="absolute left-0"
-            style={{
-              bottom: 32,
-              width: 260,
-              zIndex: 40,
-              border: '1px solid var(--border-bright)',
-              borderRadius: 8,
-              background: 'var(--surface)',
-              boxShadow: '0 14px 42px rgba(0, 0, 0, 0.28)',
-              padding: 6,
-            }}
-          >
-            <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>Model</div>
-            {modelOptions.map((option) => {
-              const selected = option.id === currentModel.id
-              return (
-                <button
-                  key={option.id || 'default'}
-                  type="button"
-                  onClick={() => onSelectModel(option.id)}
-                  className="w-full grid gap-0.5 text-left px-2 py-2"
-                  style={{
-                    borderRadius: 6,
-                    background: selected ? 'var(--accent-dim)' : 'transparent',
-                    color: selected ? 'var(--text)' : 'var(--text-2)',
-                  }}
-                >
-                  <span className="flex items-center gap-2">
-                    <span className="flex-1">{option.label}</span>
-                    {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
-                  </span>
-                  <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>{option.detail}</span>
-                </button>
-              )
-            })}
-          </div>
-        )}
-      </div>
       {caps.hasReasoningEffort && (
         <div ref={reasoningMenuRef} className="relative">
           <button
@@ -564,6 +507,63 @@ export function ComposerToolbar({
         </span>
       )}
       <div className="ml-auto flex items-center gap-2">
+        <div ref={modelMenuRef} className="relative">
+          <button
+            type="button"
+            title="Select model"
+            onClick={onToggleModel}
+            disabled={modelDisabled}
+            className="inline-flex items-center gap-1.5 px-2"
+            style={{
+              ...chipStyle,
+              color: modelOpen ? 'var(--text)' : 'var(--text-2)',
+              borderColor: modelOpen ? 'var(--border-bright)' : 'var(--border)',
+              opacity: modelDisabled ? 0.55 : 1,
+            }}
+          >
+            <span style={{ color: 'var(--text-3)' }}>Model</span>
+            <span style={{ color: 'var(--text)' }}>{currentModel.shortLabel}</span>
+          </button>
+          {modelOpen && !modelDisabled && (
+            <div
+              className="absolute right-0"
+              style={{
+                bottom: 32,
+                width: 260,
+                zIndex: 40,
+                border: '1px solid var(--border-bright)',
+                borderRadius: 8,
+                background: 'var(--surface)',
+                boxShadow: 'var(--elev-3)',
+                padding: 6,
+              }}
+            >
+              <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>Model</div>
+              {modelOptions.map((option) => {
+                const selected = option.id === currentModel.id
+                return (
+                  <button
+                    key={option.id || 'default'}
+                    type="button"
+                    onClick={() => onSelectModel(option.id)}
+                    className="w-full grid gap-0.5 text-left px-2 py-2"
+                    style={{
+                      borderRadius: 6,
+                      background: selected ? 'var(--accent-dim)' : 'transparent',
+                      color: selected ? 'var(--text)' : 'var(--text-2)',
+                    }}
+                  >
+                    <span className="flex items-center gap-2">
+                      <span className="flex-1">{option.label}</span>
+                      {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
+                    </span>
+                    <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>{option.detail}</span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
         <div ref={settingsMenuRef} className="relative">
           <button
             type="button"
