@@ -91,6 +91,24 @@ describe('chatSearch', () => {
     expect(model.unfolderedSessionIds).toEqual(['s-loose'])
   })
 
+  it('sorts by activity (updatedAt), ignoring selection time (issue #49)', () => {
+    const early = new Date('2026-01-01T00:00:00.000Z')
+    const mid = new Date('2026-01-01T01:00:00.000Z')
+    const late = new Date('2026-01-01T02:00:00.000Z')
+    const folders = [makeFolder('general')]
+    const sessions = [
+      // Just selected (recent lastOpenedAt) but no new messages since.
+      makeSession('s-selected', 'Selected Chat', 'general', late, early),
+      // Selected earlier, but received a new message afterwards (newer updatedAt).
+      makeSession('s-active', 'Active Chat', 'general', mid, late),
+    ]
+
+    // Selecting must NOT float a chat to the top; only activity reorders.
+    const model = searchModel('', folders, sessions)
+
+    expect(model.folderRows[0].sessionIds).toEqual(['s-active', 's-selected'])
+  })
+
   it('matches chat titles case-insensitively', () => {
     const folders = [makeFolder('general'), makeFolder('work')]
     const sessions = [
@@ -142,12 +160,12 @@ describe('chatSearch', () => {
     expect(model.folderRows[0].sessionIds).toEqual(['s-match'])
   })
 
-  it('orders folder chats by most recent opened time', () => {
+  it('orders folder chats by most recent activity (updatedAt)', () => {
     const folders = [makeFolder('general')]
     const sessions = [
-      makeSession('s-old', 'Old Chat', 'general', new Date('2026-01-01T09:00:00.000Z')),
-      makeSession('s-new', 'New Chat', 'general', new Date('2026-01-01T11:00:00.000Z')),
-      makeSession('s-middle', 'Middle Chat', 'general', new Date('2026-01-01T10:00:00.000Z')),
+      makeSession('s-old', 'Old Chat', 'general', now, new Date('2026-01-01T09:00:00.000Z')),
+      makeSession('s-new', 'New Chat', 'general', now, new Date('2026-01-01T11:00:00.000Z')),
+      makeSession('s-middle', 'Middle Chat', 'general', now, new Date('2026-01-01T10:00:00.000Z')),
     ]
 
     const model = searchModel('', folders, sessions)
@@ -248,7 +266,7 @@ describe('chatSearch', () => {
     }
 
     expect(visibleSessionIds(searchModel('', folders, sessions, { providerIds: [], statusIds: ['pinned'] }, context))).toEqual(['s-pinned'])
-    expect(visibleSessionIds(searchModel('', folders, sessions, { providerIds: [], statusIds: ['running'] }, context))).toEqual(['s-running', 's-attention', 's-done'])
+    expect(visibleSessionIds(searchModel('', folders, sessions, { providerIds: [], statusIds: ['running'] }, context))).toEqual(['s-attention', 's-done', 's-running'])
     expect(visibleSessionIds(searchModel('', folders, sessions, { providerIds: [], statusIds: ['attention'] }, context))).toEqual(['s-attention'])
     expect(visibleSessionIds(searchModel('', folders, sessions, { providerIds: [], statusIds: ['done'] }, context))).toEqual(['s-done'])
     expect(visibleSessionIds(searchModel('', folders, sessions, { providerIds: [], statusIds: ['idle'] }, context))).toEqual(['s-idle'])
@@ -264,6 +282,6 @@ describe('chatSearch', () => {
 
     const model = searchModel('needle', folders, sessions, { providerIds: ['codex-cli'], statusIds: [] })
 
-    expect(visibleSessionIds(model)).toEqual(['s-search', 's-provider'])
+    expect(visibleSessionIds(model)).toEqual(['s-provider', 's-search'])
   })
 })

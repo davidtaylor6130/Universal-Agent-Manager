@@ -164,11 +164,9 @@ export function sessionMatchesChatSearchFilters(
 }
 
 function sessionRecentTime(session: Session): number {
-  const lastOpenedAt = session.lastOpenedAt?.getTime()
-  if (typeof lastOpenedAt === 'number' && Number.isFinite(lastOpenedAt)) {
-    return lastOpenedAt
-  }
-
+  // Sort by last interaction (updatedAt, bumped by C++ on every message append),
+  // NOT by selection time. lastOpenedAt is deliberately ignored: selecting a chat
+  // must not reorder the sidebar — chats move only on real activity. See issue #49.
   const updatedAt = session.updatedAt.getTime()
   if (Number.isFinite(updatedAt)) {
     return updatedAt
@@ -184,12 +182,14 @@ export function compareSessionsByRecent(a: Session, b: Session): number {
     return recentDelta
   }
 
-  const updatedDelta = b.updatedAt.getTime() - a.updatedAt.getTime()
-  if (updatedDelta !== 0) {
-    return updatedDelta
+  const createdDelta = b.createdAt.getTime() - a.createdAt.getTime()
+  if (createdDelta !== 0) {
+    return createdDelta
   }
 
-  return b.createdAt.getTime() - a.createdAt.getTime()
+  // Final tiebreak on a stable id so equal-timestamp chats keep a fixed order,
+  // independent of the backend's chatOrder — selecting a chat can't shuffle them.
+  return a.id.localeCompare(b.id)
 }
 
 export function buildChatSearchSessionGroups(
