@@ -2,7 +2,7 @@
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
 
 import { RefObject, useEffect, useRef, useState } from 'react'
-import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Settings2, SlidersHorizontal, ChevronDown } from 'lucide-react'
+import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Settings2, Target } from 'lucide-react'
 import type { AcpBinding } from '../../store/useAppStore'
 import type { Goal } from '../../types/goal'
 import type { Provider } from '../../types/provider'
@@ -186,7 +186,6 @@ export function ComposerToolbar({
       document.removeEventListener('keydown', onKey)
     }
   }, [optionsOpen])
-  const activeModeSummary = planActive ? 'Plan' : acceptEditsActive ? (caps.acceptEditsLabel ?? 'Accept Edits') : yoloActive ? autoLabel : 'Default'
   const chipStyle = {
     height: 26,
     borderRadius: 6,
@@ -448,20 +447,18 @@ export function ComposerToolbar({
       <div ref={optionsRef} className="relative">
         <button
           type="button"
-          title="Options: mode, memory, markdown"
+          title="Add files, goal, and options"
           aria-label="Options"
           aria-expanded={optionsOpen}
           onClick={() => setOptionsOpen((v) => !v)}
-          className="inline-flex items-center gap-1.5 px-2"
+          className="inline-flex items-center"
           style={{
-            ...chipStyle,
+            ...iconChipStyle,
             color: optionsOpen ? 'var(--text)' : 'var(--text-2)',
             borderColor: optionsOpen ? 'var(--border-bright)' : 'var(--border)',
           }}
         >
-          <SlidersHorizontal size={13} aria-hidden />
-          <span>{activeModeSummary}</span>
-          <ChevronDown size={12} aria-hidden style={{ opacity: 0.6 }} />
+          <Plus size={16} aria-hidden />
         </button>
         {optionsOpen && (
           <div
@@ -472,6 +469,29 @@ export function ComposerToolbar({
               background: 'var(--surface)', boxShadow: 'var(--elev-3)',
             }}
           >
+            <button
+              type="button"
+              title="Attach files to the next message"
+              onClick={() => { setOptionsOpen(false); onAttachFile() }}
+              className="inline-flex items-center gap-1.5 px-2 w-full justify-start"
+              style={{ ...chipStyle }}
+            >
+              <Plus size={13} aria-hidden />
+              <span>Attach files</span>
+            </button>
+            <button
+              type="button"
+              title={goalActive ? 'Pause goal mode' : goalPaused ? 'Resume goal mode' : goalArmed ? 'Next message will become the goal' : 'Use the next message as a goal'}
+              aria-pressed={goalActive || goalArmed}
+              onClick={() => { setOptionsOpen(false); onToggleGoal() }}
+              disabled={modelDisabled}
+              className="inline-flex items-center gap-1.5 px-2 w-full justify-start"
+              style={{ ...chipStyle, borderColor: goalActive || goalArmed ? 'color-mix(in srgb, var(--purple) 55%, var(--border))' : 'var(--border)', background: goalActive || goalArmed ? 'color-mix(in srgb, var(--purple) 16%, var(--surface))' : chipStyle.background, color: goalActive || goalArmed ? 'var(--text)' : 'var(--text-2)', opacity: modelDisabled ? 0.55 : 1 }}
+            >
+              <Target size={13} aria-hidden style={{ color: goalActive || goalArmed ? 'var(--purple)' : 'var(--text-3)' }} />
+              <span>{goalArmed ? 'Goal: next message' : 'Goal'}</span>
+            </button>
+            <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
             <div className="px-1 pb-0.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>Mode</div>
             <button
               type="button"
@@ -537,33 +557,12 @@ export function ComposerToolbar({
           </div>
         )}
       </div>
-      <button
-        type="button"
-        title={goalActive ? 'Pause goal mode' : goalPaused ? 'Resume goal mode' : goalArmed ? 'Next message will become the goal' : 'Use the next message as a goal'}
-        aria-pressed={goalActive || goalArmed}
-        onClick={onToggleGoal}
-        disabled={modelDisabled}
-        className="inline-flex items-center gap-1.5 px-2"
-        style={{
-          ...chipStyle,
-          borderColor: goalActive || goalArmed ? 'color-mix(in srgb, var(--purple) 55%, var(--border))' : 'var(--border)',
-          background: goalActive || goalArmed ? 'color-mix(in srgb, var(--purple) 16%, var(--surface))' : chipStyle.background,
-          color: goalActive || goalArmed ? 'var(--text)' : 'var(--text-2)',
-          opacity: modelDisabled ? 0.55 : 1,
-        }}
-      >
-        <span style={{ color: goalActive || goalArmed ? 'var(--purple)' : 'var(--text-3)', fontSize: 10 }}>●</span>
-        <span>{goalArmed ? 'Goal Next' : 'Goal'}</span>
-      </button>
-      <button
-        type="button"
-        title="Attach files"
-        onClick={onAttachFile}
-        className="inline-flex items-center"
-        style={iconChipStyle}
-      >
-        <ComposerIcon name="plus" />
-      </button>
+      {goalArmed && (
+        <span className="inline-flex items-center gap-1.5 px-2 rounded-md" style={{ height: 26, background: 'color-mix(in srgb, var(--purple) 16%, var(--surface))', color: 'var(--text)', border: '1px solid color-mix(in srgb, var(--purple) 45%, var(--border))' }}>
+          <Target size={12} aria-hidden style={{ color: 'var(--purple)' }} />
+          <span>Goal: next message</span>
+        </span>
+      )}
       <div className="ml-auto flex items-center gap-2">
         <div ref={settingsMenuRef} className="relative">
           <button

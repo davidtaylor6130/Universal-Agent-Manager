@@ -1209,12 +1209,13 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
+    openComposerOptions(host)
     const goalButton = host.querySelector('button[title="Use the next message as a goal"]') as HTMLButtonElement | null
     expect(goalButton).toBeTruthy()
     act(() => {
       goalButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    expect(host.textContent).toContain('Goal Next')
+    expect(host.textContent).toContain('Goal: next message')
 
     const textarea = host.querySelector('textarea') as HTMLTextAreaElement | null
     act(() => {
