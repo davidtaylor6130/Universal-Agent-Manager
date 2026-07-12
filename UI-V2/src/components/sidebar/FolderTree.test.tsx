@@ -116,7 +116,7 @@ describe('FolderTree', () => {
     host.remove()
   })
 
-  it('colours a collapsed folder from its focused hidden chat pane', () => {
+  it('shows every assigned pane colour when a collapsed folder layout changes', () => {
     const stored = new Map<string, string>()
     Object.defineProperty(globalThis, 'localStorage', {
       configurable: true,
@@ -126,7 +126,6 @@ describe('FolderTree', () => {
       },
     })
     useAppStore.setState((state) => ({ folders: state.folders.map((folder) => ({ ...folder, isExpanded: false })) }))
-    writeChatGridLayout({ ...defaultChatGridLayout, paneCount: 2, activePane: 1, sessionIds: ['', 'chat-3'] })
 
     const host = document.createElement('div')
     document.body.appendChild(host)
@@ -134,9 +133,16 @@ describe('FolderTree', () => {
     act(() => root.render(<FolderTree searchQuery="" />))
 
     expect(host.textContent).not.toContain('Chat 3')
+    expect((host.querySelector('[data-testid="folder-icon-project"]') as HTMLElement).style.color).toBe('var(--text-3)')
+
+    act(() => writeChatGridLayout({ ...defaultChatGridLayout, paneCount: 4, activePane: 1, sessionIds: ['chat-1', 'chat-3', '', ''] }))
+
     const folderIcon = host.querySelector('[data-testid="folder-icon-project"]') as HTMLElement
-    expect(folderIcon.style.color).toBe('rgb(236, 72, 153)')
+    expect(folderIcon.getAttribute('stroke')).toMatch(/^url\(#.+\)$/)
     expect(folderIcon.style.filter).toContain('drop-shadow')
+    expect(Array.from(host.querySelectorAll('[data-testid="folder-gradient-project"] stop')).map((stop) => stop.getAttribute('stop-color'))).toEqual([
+      '#f97316', '#f97316', '#ec4899', '#ec4899',
+    ])
 
     act(() => root.unmount())
     host.remove()
