@@ -13,6 +13,7 @@ import {
   tokenizeChatSearchQuery,
 } from './chatSearch'
 import type { Folder, Session } from '../../types/session'
+import { chatPaneColors, readChatGridLayout, subscribeChatGridLayout } from '../../utils/chatGridStorage'
 
 interface FolderTreeProps {
   searchQuery: string
@@ -43,6 +44,15 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const [editFolderName, setEditFolderName] = useState('')
   const [editFolderDirectory, setEditFolderDirectory] = useState('')
   const [pendingDeleteFolderId, setPendingDeleteFolderId] = useState<string | null>(null)
+  const [gridLayout, setGridLayout] = useState(readChatGridLayout)
+
+  useEffect(() => subscribeChatGridLayout(setGridLayout), [])
+
+  const paneColorForSessions = (sessionIds: string[]) => {
+    const paneIndexes = gridLayout.sessionIds.slice(0, gridLayout.paneCount).flatMap((id, index) => sessionIds.includes(id) ? [index] : [])
+    const paneIndex = paneIndexes.includes(gridLayout.activePane) ? gridLayout.activePane : paneIndexes[0]
+    return paneIndex === undefined ? '' : chatPaneColors[paneIndex]
+  }
 
   const searchTokens = useMemo(
     () => tokenizeChatSearchQuery(searchQuery),
@@ -173,6 +183,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
           folder={folder}
           sessionIds={sessionIds}
           shouldShowSessions={shouldShowSessions}
+          hiddenPaneColor={shouldShowSessions ? '' : paneColorForSessions(sessionIds)}
           isSearching={searchModel.isSearching}
           isEditing={editingFolderId === folder.id}
           editFolderName={editFolderName}
@@ -476,6 +487,7 @@ interface FolderRowProps {
   folder: Folder
   sessionIds: string[]
   shouldShowSessions: boolean
+  hiddenPaneColor: string
   isSearching: boolean
   isEditing: boolean
   editFolderName: string
@@ -497,6 +509,7 @@ const FolderRow = memo(function FolderRow({
   folder,
   sessionIds,
   shouldShowSessions,
+  hiddenPaneColor,
   isSearching,
   isEditing,
   editFolderName,
@@ -554,9 +567,9 @@ const FolderRow = memo(function FolderRow({
         onClick={onToggle}
       >
         {shouldShowSessions ? (
-          <FolderOpenIcon size={14} style={{ flexShrink: 0, color: 'var(--accent)', opacity: 0.85 }} aria-hidden />
+          <FolderOpenIcon data-testid={`folder-icon-${folder.id}`} size={14} style={{ flexShrink: 0, color: 'var(--accent)', opacity: 0.85 }} aria-hidden />
         ) : (
-          <FolderIcon size={14} style={{ flexShrink: 0, color: 'var(--accent)', opacity: 0.85 }} aria-hidden />
+          <FolderIcon data-testid={`folder-icon-${folder.id}`} size={14} style={{ flexShrink: 0, color: hiddenPaneColor || 'var(--accent)', opacity: hiddenPaneColor ? 1 : 0.85, transition: 'color 140ms ease, opacity 140ms ease' }} aria-hidden />
         )}
         <span className="font-semibold truncate flex-1" style={{ fontSize: 13 }}>
           {folder.name}

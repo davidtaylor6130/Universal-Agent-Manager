@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../../store/useAppStore'
 import type { Folder, Session } from '../../types/session'
 import { FolderTree } from './FolderTree'
+import { defaultChatGridLayout, writeChatGridLayout } from '../../utils/chatGridStorage'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -111,6 +112,30 @@ describe('FolderTree', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('colours a collapsed folder from its focused hidden chat pane', () => {
+    const stored = new Map<string, string>()
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem: (key: string) => stored.get(key) ?? null,
+        setItem: (key: string, value: string) => stored.set(key, value),
+      },
+    })
+    useAppStore.setState((state) => ({ folders: state.folders.map((folder) => ({ ...folder, isExpanded: false })) }))
+    writeChatGridLayout({ ...defaultChatGridLayout, paneCount: 2, activePane: 1, sessionIds: ['', 'chat-3'] })
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    expect(host.textContent).not.toContain('Chat 3')
+    expect((host.querySelector('[data-testid="folder-icon-project"]') as HTMLElement).style.color).toBe('rgb(59, 130, 246)')
+
+    act(() => root.unmount())
     host.remove()
   })
 

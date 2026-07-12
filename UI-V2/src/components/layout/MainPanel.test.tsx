@@ -166,8 +166,10 @@ describe('MainPanel', () => {
     expect(Array.from(host.querySelectorAll('button')).filter((button) => button.textContent?.includes('Select Chat'))).toHaveLength(3)
     const firstPane = host.querySelector('[data-testid="chat-pane-chat-1"]') as HTMLElement
     expect(firstPane.style.getPropertyValue('--accent')).toBe('#f97316')
-    expect(firstPane.style.border).toContain('3px')
+    expect(firstPane.style.border).toContain('1px')
+    expect(firstPane.style.boxShadow).toContain('inset 0 0 4px')
     expect(firstPane.style.filter).toBe('none')
+    expect(firstPane.style.transition).toContain('140ms')
 
     act(() => {
       assignChatToPane('chat-2', 1)
@@ -177,13 +179,14 @@ describe('MainPanel', () => {
     })
     expect(host.querySelectorAll('[data-testid^="chat-pane-"]')).toHaveLength(4)
     const fourthPane = host.querySelector('[data-testid="chat-pane-chat-4"]') as HTMLElement
-    expect(fourthPane.style.border).toContain('3px')
+    expect(fourthPane.style.border).toContain('1px')
+    expect(fourthPane.style.boxShadow).toContain('inset 0 0 4px')
     expect(firstPane.style.filter).toContain('brightness(0.82)')
 
     const secondPane = host.querySelector('[data-testid="chat-pane-chat-2"]') as HTMLElement
     act(() => secondPane.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
     expect(useAppStore.getState().activeSessionId).toBe('chat-2')
-    expect(secondPane.style.border).toContain('3px')
+    expect(secondPane.style.border).toContain('1px')
     expect(secondPane.style.filter).toBe('none')
 
     act(() => root.unmount())
