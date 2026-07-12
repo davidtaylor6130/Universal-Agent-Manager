@@ -180,7 +180,7 @@ function ChatPane({ session, active, paneIndex, onActivate }: {
 
       {/* View content */}
       <div className="flex-1 overflow-hidden">
-        {view === 'chat' ? <ChatView session={session} /> : <CLIView session={session} />}
+        {view === 'chat' ? <ChatView session={session} accentColor={paneColor} /> : <CLIView session={session} />}
       </div>
     </div>
   )

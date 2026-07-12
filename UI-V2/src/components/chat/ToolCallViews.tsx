@@ -2,6 +2,7 @@
 // the MessageFrame wrapper. Extracted from ChatView.tsx (MO-3).
 
 import { ReactNode, useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { User, Code, ChevronDown } from 'lucide-react'
 import type {
   AcpPendingPermission,
@@ -556,10 +557,12 @@ export function ToolCallModal({
   tool,
   onClose,
   onOpenSubAgent,
+  accentColor,
 }: {
   tool: AcpToolCall
   onClose: () => void
   onOpenSubAgent?: () => void
+  accentColor?: string
 }) {
   const toolCopyText = [
     toolDisplayTitle(tool) || tool.id || 'Tool call',
@@ -571,13 +574,17 @@ export function ToolCallModal({
     tool.content || 'No tool output yet.',
   ].join('\n')
 
-  return (
+  return createPortal(
     <div
-      className="absolute inset-0 flex items-center justify-center"
+      className="fixed inset-0 flex items-center justify-center"
       style={{
         zIndex: 1000,
         background: 'rgba(0, 0, 0, 0.48)',
         padding: 18,
+        ...(accentColor ? {
+          '--accent': accentColor,
+          '--accent-dim': `color-mix(in srgb, ${accentColor} 12%, transparent)`,
+        } : {}),
       }}
       onMouseDown={onClose}
     >
@@ -675,7 +682,8 @@ export function ToolCallModal({
           </pre>
         </div>
       </section>
-    </div>
+    </div>,
+    document.body
   )
 }
 

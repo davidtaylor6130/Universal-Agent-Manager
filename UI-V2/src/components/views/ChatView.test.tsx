@@ -232,8 +232,10 @@ describe('ChatView', () => {
     act(() => {
       providerButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    expect(host.textContent).toContain('Provider')
-    expect(host.textContent).toContain('Gemini')
+    const providerMenu = document.body.querySelector('[data-testid="provider-menu"]') as HTMLElement
+    expect(providerMenu.textContent).toContain('Provider')
+    expect(providerMenu.textContent).toContain('Gemini')
+    expect(providerMenu.style.position).toBe('fixed')
 
     const settingsButton = host.querySelector('button[title="Settings"]')
     expect(settingsButton).toBeTruthy()
@@ -250,16 +252,16 @@ describe('ChatView', () => {
     act(() => {
       toolButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    expect(host.textContent).toContain('Searching workspace symbols')
-    expect(host.querySelector('[role="dialog"]')?.parentElement?.className).toContain('absolute')
-    expect(host.querySelector('[role="dialog"]')?.parentElement?.className).not.toContain('fixed')
+    expect(document.body.textContent).toContain('Searching workspace symbols')
+    expect(document.body.querySelector('[role="dialog"]')?.parentElement?.className).toContain('fixed')
+    expect(document.body.querySelector('[role="dialog"]')?.parentElement?.parentElement).toBe(document.body)
 
-    const closeToolButton = host.querySelector('button[aria-label="Close tool details"]')
+    const closeToolButton = document.body.querySelector('button[aria-label="Close tool details"]')
     expect(closeToolButton).toBeTruthy()
     act(() => {
       closeToolButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    expect(host.textContent).not.toContain('Searching workspace symbols')
+    expect(document.body.textContent).not.toContain('Searching workspace symbols')
 
     const allowButton = Array.from(host.querySelectorAll('button')).find((button) =>
       button.textContent?.includes('Allow once')
@@ -1479,8 +1481,8 @@ describe('ChatView', () => {
     act(() => {
       toolButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    expect(host.textContent).toContain('Saved tool output')
-    expect(host.querySelector('[role="dialog"]')).toBeTruthy()
+    expect(document.body.textContent).toContain('Saved tool output')
+    expect(document.body.querySelector('[role="dialog"]')).toBeTruthy()
 
     act(() => {
       root.unmount()
@@ -1953,7 +1955,7 @@ describe('ChatView', () => {
     act(() => {
       toolButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    expect(host.textContent).toContain('Searching workspace symbols')
+    expect(document.body.textContent).toContain('Searching workspace symbols')
 
     act(() => {
       useAppStore.setState((state) => ({
@@ -2006,7 +2008,7 @@ describe('ChatView', () => {
     expect(host.textContent).toContain('Second answer only.')
     expect(host.textContent).not.toContain('This placeholder should be replaced.')
     expect(host.textContent).not.toContain('Searching workspace symbols')
-    expect(host.querySelector('[role="dialog"]')).toBeNull()
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
 
     act(() => {
       root.unmount()
