@@ -69,6 +69,51 @@ namespace uam
 	namespace
 	{
 		using namespace acp_detail;
+		constexpr int kAcpReconnectMaxAttempts = 3;
+		constexpr double kAcpReconnectBaseDelaySeconds = 0.25;
+
+		double AcpReconnectDelaySeconds(int attempt)
+		{
+			return kAcpReconnectBaseDelaySeconds * (1 << std::clamp(attempt, 0, kAcpReconnectMaxAttempts - 1));
+		}
+
+		void ScheduleAcpReconnect(AcpSessionState& session, double now_seconds)
+		{
+			session.reconnect_pending = true;
+			session.reconnect_attempts = 0;
+			session.reconnect_not_before_time_s = now_seconds + AcpReconnectDelaySeconds(0);
+			AppendAcpDiagnostic(session, "reconnect", "scheduled", "", "", false, 0, "Structured runtime disconnected; reconnect scheduled.");
+		}
+
+		bool TryReconnectAcpSession(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds)
+		{
+			if (!session.reconnect_pending || now_seconds < session.reconnect_not_before_time_s)
+			{
+				return false;
+			}
+
+			std::string error;
+			if (StartAcpProcessForChat(app, session, chat, &error))
+			{
+				session.reconnect_pending = false;
+				session.reconnect_attempts = 0;
+				session.reconnect_not_before_time_s = 0.0;
+				AppendAcpDiagnostic(session, "reconnect", "started", "", "", false, 0, "Structured runtime reconnected.");
+				return true;
+			}
+
+			++session.reconnect_attempts;
+			if (session.reconnect_attempts >= kAcpReconnectMaxAttempts)
+			{
+				session.reconnect_pending = false;
+				AppendAcpDiagnostic(session, "reconnect", "exhausted", "", "", false, 0, uam::strings::NonEmptyOrFallback(error, "Structured runtime reconnect failed."));
+				return true;
+			}
+
+			session.reconnect_not_before_time_s = now_seconds + AcpReconnectDelaySeconds(session.reconnect_attempts);
+			AppendAcpDiagnostic(session, "reconnect", "retry_scheduled", "", "", false, 0, uam::strings::NonEmptyOrFallback(error, "Structured runtime reconnect failed."));
+			return true;
+		}
 
 	} // namespace
 
@@ -343,6 +388,9 @@ namespace uam
 		session->cancel_requested = false;
 		session->lifecycle_state = kAcpLifecycleStopped;
 		session->queued_prompt.clear();
+		session->reconnect_pending = false;
+		session->reconnect_attempts = 0;
+		session->reconnect_not_before_time_s = 0.0;
 		ClearAcpStartupModelRequest(*session);
 		session->prompt_request_id = 0;
 		session->cancel_request_id = 0;
@@ -558,6 +606,11 @@ namespace uam
 			AcpSessionState& session = *session_ptr;
 			if (!session.running)
 			{
+				ChatSession* reconnect_chat = ChatDomainService().FindChatById(app, session.chat_id);
+				if (reconnect_chat != nullptr && TryReconnectAcpSession(app, session, *reconnect_chat, GetAppTimeSeconds()))
+				{
+					changed = true;
+				}
 				continue;
 			}
 
@@ -639,6 +692,7 @@ namespace uam
 				}
 				else
 				{
+					ScheduleAcpReconnect(session, GetAppTimeSeconds());
 					if (!session.last_error.empty())
 					{
 						MarkAcpChatUnseenIfBackground(app, chat);
@@ -791,6 +845,16 @@ namespace uam
 	bool UpdateAcpStaleWaitForTests(AcpSessionState& session, double now_seconds)
 	{
 		return UpdateAcpStaleWait(session, now_seconds);
+	}
+
+	double AcpReconnectDelaySecondsForTests(int attempt)
+	{
+		return AcpReconnectDelaySeconds(attempt);
+	}
+
+	void ScheduleAcpReconnectForTests(AcpSessionState& session, double now_seconds)
+	{
+		ScheduleAcpReconnect(session, now_seconds);
 	}
 
 	std::string AutoApproveOptionIdForTests(const AcpPendingPermissionState& pending)

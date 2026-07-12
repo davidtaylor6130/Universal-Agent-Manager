@@ -5168,6 +5168,22 @@ UAM_TEST(AcpStaleWaitDetectionRequiresRuntimeInactivity)
 	UAM_ASSERT_EQ(session.wait_started_time_s, 0.0);
 }
 
+UAM_TEST(AcpReconnectBackoffIsBounded)
+{
+	UAM_ASSERT_EQ(uam::AcpReconnectDelaySecondsForTests(-1), 0.25);
+	UAM_ASSERT_EQ(uam::AcpReconnectDelaySecondsForTests(0), 0.25);
+	UAM_ASSERT_EQ(uam::AcpReconnectDelaySecondsForTests(1), 0.5);
+	UAM_ASSERT_EQ(uam::AcpReconnectDelaySecondsForTests(2), 1.0);
+	UAM_ASSERT_EQ(uam::AcpReconnectDelaySecondsForTests(99), 1.0);
+
+	uam::AcpSessionState session;
+	uam::ScheduleAcpReconnectForTests(session, 10.0);
+	UAM_ASSERT(session.reconnect_pending);
+	UAM_ASSERT_EQ(session.reconnect_attempts, 0);
+	UAM_ASSERT_EQ(session.reconnect_not_before_time_s, 10.25);
+	UAM_ASSERT_EQ(session.diagnostics.back().reason, std::string("scheduled"));
+}
+
 UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 {
 	ChatSession chat;

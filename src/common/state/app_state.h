@@ -218,6 +218,9 @@ namespace uam
 		// crash-looping provider cannot restart forever; cleared when a new user
 		// prompt is sent or a turn completes.
 		int crash_restart_attempts = 0;
+		bool reconnect_pending = false;
+		int reconnect_attempts = 0;
+		double reconnect_not_before_time_s = 0.0;
 		// Counts watchdog re-queues of a stalled goal loop; the goal is marked
 		// blocked after 3 so a failing provider cannot be retried forever.
 		// Cleared when a turn completes or a new user prompt is sent.
