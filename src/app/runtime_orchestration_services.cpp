@@ -1389,7 +1389,7 @@ ChatSession* ChatHistorySyncService::FindInMemoryNativeSessionChatForOpen(uam::A
 }
 
 ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::AppState& app,
-                                                                         const ChatSession& source_chat,
+                                                                         const ChatSession& source_chat_reference,
                                                                          const ProviderProfile& provider,
                                                                          const std::string& native_session_id,
                                                                          bool persist_provider_normalization) const
@@ -1400,6 +1400,7 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 		return nullptr;
 	}
 
+	const ChatSession source_chat = source_chat_reference;
 	const std::string source_workspace_directory = uam::strings::Trim(source_chat.workspace_directory);
 	const std::string source_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider.id);
 	auto existing_matches_source_workspace = [&source_workspace_directory](const ChatSession& chat) {
