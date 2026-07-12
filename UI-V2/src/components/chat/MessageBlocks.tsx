@@ -3,6 +3,8 @@
 // Extracted from ChatView.tsx (MO-3).
 
 import { MarkdownContent } from '../markdown/Markdown'
+import { useEffect, useState } from 'react'
+import { useAppStore } from '../../store/useAppStore'
 import type {
   AcpPendingPermission,
   AcpPendingUserInput,
@@ -23,6 +25,50 @@ import {
 export function attachmentLabel(attachment: Attachment) {
   const path = attachment.path?.trim()
   return path || attachment.name
+}
+
+function SubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; tool: AcpToolCall }) {
+  const [chatId, setChatId] = useState('')
+  const [error, setError] = useState('')
+  const openSubAgentSession = useAppStore((state) => state.openSubAgentSession)
+  const session = useAppStore((state) => state.sessions.find((candidate) => candidate.id === chatId))
+  const messages = useAppStore((state) => state.messages[chatId] ?? [])
+
+  useEffect(() => {
+    if (!tool.subAgentId) {
+      setError('The provider did not expose a sub-agent session ID.')
+      return
+    }
+    let mounted = true
+    void openSubAgentSession(sourceChatId, tool.subAgentId, tool.subAgentTitle, false).then((openedChatId) => {
+      if (!mounted) return
+      if (openedChatId) setChatId(openedChatId)
+      else setError('Sub-agent chat history is unavailable.')
+    })
+    return () => { mounted = false }
+  }, [openSubAgentSession, sourceChatId, tool.subAgentId, tool.subAgentTitle])
+
+  if (error) return <div className="text-xs" style={{ color: 'var(--danger)' }}>{error}</div>
+  if (!chatId || !session) return <div className="text-xs" style={{ color: 'var(--text-3)' }}>Loading sub-agent chat…</div>
+
+  return (
+    <section className="space-y-3" aria-label={`Sub-agent chat: ${session.name}`}>
+      <div className="text-xs font-semibold" style={{ color: 'var(--blue)' }}>{session.name}</div>
+      {messages.length === 0 && <div className="text-xs" style={{ color: 'var(--text-3)' }}>No messages recorded.</div>}
+      {messages.map((message) => (
+        <article key={message.id} className="space-y-2" style={{ borderLeft: '2px solid var(--border-bright)', paddingLeft: 10 }}>
+          <div className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>{message.role}</div>
+          <PersistedMessageContent message={message} sourceChatId={chatId} onSelectTool={() => {}} />
+          {message.toolCalls?.map((nestedTool) => (
+            <details key={nestedTool.id} className="text-xs">
+              <summary className="cursor-pointer" style={{ color: 'var(--text-2)' }}>{nestedTool.title || nestedTool.id} output</summary>
+              <pre className="whitespace-pre-wrap mt-2" style={{ color: 'var(--text-2)' }}>{nestedTool.content || 'No output recorded.'}</pre>
+            </details>
+          ))}
+        </article>
+      ))}
+    </section>
+  )
 }
 
 export function ThinkingBlock({ text, defaultOpen = false }: { text: string; defaultOpen?: boolean }) {
@@ -282,10 +328,12 @@ export function PersistedMessageBlocksContent({
   blocks,
   onSelectTool,
   planActions,
+  sourceChatId,
 }: {
   message: Message
   blocks: MessageBlock[]
   onSelectTool: (messageId: string, toolId: string) => void
+  sourceChatId?: string
   planActions?: {
     show: boolean
     disabled: boolean
@@ -323,6 +371,7 @@ export function PersistedMessageBlocksContent({
               key={`block-tool-${block.toolCallId}-${index}`}
               tools={[tool]}
               onSelectTool={(toolId) => onSelectTool(message.id, toolId)}
+              renderSubAgentHistory={sourceChatId ? (tool) => <SubAgentHistory sourceChatId={sourceChatId} tool={tool} /> : undefined}
             />
           )
         }
@@ -352,9 +401,11 @@ export function PersistedMessageContent({
   message,
   onSelectTool,
   planActions,
+  sourceChatId,
 }: {
   message: Message
   onSelectTool: (messageId: string, toolId: string) => void
+  sourceChatId?: string
   planActions?: {
     show: boolean
     disabled: boolean
@@ -379,6 +430,7 @@ export function PersistedMessageContent({
           blocks={blocks}
           onSelectTool={onSelectTool}
           planActions={planActions}
+          sourceChatId={sourceChatId}
         />
         <AttachmentList attachments={attachments} />
       </div>
@@ -398,7 +450,11 @@ export function PersistedMessageContent({
     <div className="space-y-2">
       {message.content.trim() && (goalReview ? <GoalReviewBlock review={goalReview} /> : <MarkdownContent content={message.content} />)}
       <ThinkingBlock text={thoughts} />
-      <ToolCallInlineRows tools={toolCalls} onSelectTool={(toolId) => onSelectTool(message.id, toolId)} />
+      <ToolCallInlineRows
+        tools={toolCalls}
+        onSelectTool={(toolId) => onSelectTool(message.id, toolId)}
+        renderSubAgentHistory={sourceChatId ? (tool) => <SubAgentHistory sourceChatId={sourceChatId} tool={tool} /> : undefined}
+      />
       <PlanBlock
         summary={planSummary}
         entries={planEntries}
@@ -455,6 +511,7 @@ export function TurnTimelineContent({
   onResolveUserInput,
   onCancelTurn,
   onStopRuntime,
+  sourceChatId,
 }: {
   events: AcpTurnEvent[]
   tools: AcpToolCall[]
@@ -477,6 +534,7 @@ export function TurnTimelineContent({
   onResolveUserInput: (requestId: string, answers: AcpUserInputAnswers) => void
   onCancelTurn: () => void
   onStopRuntime: () => void
+  sourceChatId?: string
 }) {
   const toolById = new Map(tools.map((tool) => [tool.id, tool]))
   const hasPlanEvent = events.some((event) => event.type === 'plan')
@@ -539,7 +597,11 @@ export function TurnTimelineContent({
 
           return (
             <div key={`tool-${event.toolCallId}-${index}`} className="space-y-2">
-              <ToolCallInlineRows tools={[tool]} onSelectTool={onSelectTool} />
+              <ToolCallInlineRows
+                tools={[tool]}
+                onSelectTool={onSelectTool}
+                renderSubAgentHistory={sourceChatId ? (subAgentTool) => <SubAgentHistory sourceChatId={sourceChatId} tool={subAgentTool} /> : undefined}
+              />
               {shouldRenderPendingPermission && (
                 <PermissionInlineCard
                   permission={pendingPermission}

@@ -22,28 +22,42 @@ import {
   toolStatusColor,
 } from './StatusHelpers'
 
-export function SubAgentRunningPanel({ tool, onSelectTool }: { tool: AcpToolCall; onSelectTool: (toolId: string) => void }) {
+export function SubAgentRunningPanel({
+  tool,
+  onSelectTool,
+  renderHistory,
+}: {
+  tool: AcpToolCall
+  onSelectTool: (toolId: string) => void
+  renderHistory?: () => ReactNode
+}) {
+  const [open, setOpen] = useState(false)
   const isActive = tool.status === 'running' || tool.status === 'in_progress' || tool.status === 'pending'
   const statusColor = toolStatusColor(tool)
   const displayTitle = toolDisplayTitle(tool)
   return (
-    <Tooltip label="Open sub-agent details">
-      <button
-        type="button"
-        onClick={() => onSelectTool(tool.id)}
-        className="w-full text-left uam-subagent-panel"
+    <details
+      className="w-full uam-subagent-panel"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+      style={{
+        borderRadius: 8,
+        border: '1px solid color-mix(in srgb, var(--blue) 35%, var(--border-bright))',
+        borderLeft: '3px solid var(--blue)',
+        background: 'color-mix(in srgb, var(--blue) 8%, var(--surface))',
+        color: 'var(--text)',
+        boxShadow: '0 1px 0 color-mix(in srgb, var(--blue) 10%, transparent)',
+      }}
+    >
+      <summary
+        className="w-full text-left cursor-pointer"
         style={{
           display: 'grid',
           gridTemplateColumns: 'minmax(0, 1fr) auto',
           gap: 8,
           alignItems: 'center',
           padding: '10px 12px',
-          borderRadius: 8,
-          border: '1px solid color-mix(in srgb, var(--blue) 35%, var(--border-bright))',
-          borderLeft: '3px solid var(--blue)',
-          background: 'color-mix(in srgb, var(--blue) 8%, var(--surface))',
-          color: 'var(--text)',
-          boxShadow: '0 1px 0 color-mix(in srgb, var(--blue) 10%, transparent)',
+          listStyle: 'none',
         }}
       >
         <span className="min-w-0 flex items-center gap-2" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -89,12 +103,33 @@ export function SubAgentRunningPanel({ tool, onSelectTool }: { tool: AcpToolCall
           {tool.status.replace('_', ' ')}
         </span>
       )}
-      </button>
-    </Tooltip>
+      </summary>
+      {open && (
+        <div className="space-y-3" style={{ borderTop: '1px solid var(--border)', padding: 12 }}>
+          {renderHistory?.() ?? <pre className="whitespace-pre-wrap text-xs">{tool.content || 'No sub-agent history available yet.'}</pre>}
+          <button
+            type="button"
+            onClick={() => onSelectTool(tool.id)}
+            className="h-7 px-2 text-xs"
+            style={{ border: '1px solid var(--border)', borderRadius: 5, background: 'var(--bg)', color: 'var(--text-2)' }}
+          >
+            Tool details
+          </button>
+        </div>
+      )}
+    </details>
   )
 }
 
-export function ToolCallInlineRows({ tools, onSelectTool }: { tools: AcpToolCall[]; onSelectTool: (toolId: string) => void }) {
+export function ToolCallInlineRows({
+  tools,
+  onSelectTool,
+  renderSubAgentHistory,
+}: {
+  tools: AcpToolCall[]
+  onSelectTool: (toolId: string) => void
+  renderSubAgentHistory?: (tool: AcpToolCall) => ReactNode
+}) {
   if (tools.length === 0) return null
 
   return (
@@ -103,7 +138,7 @@ export function ToolCallInlineRows({ tools, onSelectTool }: { tools: AcpToolCall
         if (tool.isSubAgent) {
           return (
             <div key={tool.id} className="uam-tool-timeline__item">
-              <SubAgentRunningPanel tool={tool} onSelectTool={onSelectTool} />
+              <SubAgentRunningPanel tool={tool} onSelectTool={onSelectTool} renderHistory={renderSubAgentHistory ? () => renderSubAgentHistory(tool) : undefined} />
             </div>
           )
         }

@@ -39,6 +39,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 {
 	const std::string source_chat_id = payload.value("chatId", "");
 	const std::string native_session_id = uam::strings::Trim(payload.value("nativeSessionId", ""));
+	const bool select_chat = payload.value("selectChat", true);
 	if (native_session_id.empty())
 	{
 		cb->Failure(400, "A native session id is required.");
@@ -98,9 +99,12 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 	{
 		target_chat->provider_id = source_provider_id;
 	}
-	ChatDomainService().SelectChatById(m_app, target_chat_id);
+	if (select_chat)
+	{
+		ChatDomainService().SelectChatById(m_app, target_chat_id);
+	}
 
-	ChatSession* selected_chat = ChatDomainService().SelectedChat(m_app);
+	ChatSession* selected_chat = select_chat ? ChatDomainService().SelectedChat(m_app) : target_chat;
 	if (selected_chat == nullptr)
 	{
 		if (inserted_chat)
@@ -121,7 +125,10 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
 		selected_chat->last_opened_at = previous_last_opened_at;
-		ChatDomainService().SelectChatById(m_app, previous_selected_chat_id);
+		if (select_chat)
+		{
+			ChatDomainService().SelectChatById(m_app, previous_selected_chat_id);
+		}
 		if (!inserted_chat)
 		{
 			ChatHistorySyncService().RestoreOpenNativeSessionChatMetadata(*selected_chat, previous_provider_id, previous_native_session_id, previous_updated_at);
@@ -139,7 +146,10 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *selected_chat, "", ""))
 	{
 		selected_chat->last_opened_at = previous_last_opened_at;
-		ChatDomainService().SelectChatById(m_app, previous_selected_chat_id);
+		if (select_chat)
+		{
+			ChatDomainService().SelectChatById(m_app, previous_selected_chat_id);
+		}
 		if (!inserted_chat)
 		{
 			ChatHistorySyncService().RestoreOpenNativeSessionChatMetadata(*selected_chat, previous_provider_id, previous_native_session_id, previous_updated_at);
@@ -156,9 +166,9 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 	}
 
 	ChatDomainService().SortChatsByRecent(m_app.chats);
-	ChatDomainService().SelectChatById(m_app, target_chat_id);
+	ChatDomainService().SelectChatById(m_app, select_chat ? target_chat_id : previous_selected_chat_id);
 	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success("{}");
+	cb->Success(nlohmann::json{{"chatId", target_chat_id}}.dump());
 }
 
 void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -530,4 +540,3 @@ void UamQueryHandler::HandleSetChatMemoryEnabled(CefRefPtr<CefBrowser> browser, 
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
-

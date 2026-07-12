@@ -2012,11 +2012,27 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('opens a sub-agent chat from the tool details modal', async () => {
+  it('expands a sub-agent chat inline without replacing the current chat', async () => {
     const originalOpenSubAgentSession = useAppStore.getState().openSubAgentSession
-    const openSubAgentSession = vi.fn(() => Promise.resolve(true))
+    const openSubAgentSession = vi.fn(() => Promise.resolve('agent-chat'))
     useAppStore.setState((state) => ({
       openSubAgentSession,
+      sessions: [
+        ...state.sessions,
+        { ...state.sessions[0], id: 'agent-chat', name: 'Planner history' },
+      ],
+      messages: {
+        ...state.messages,
+        'agent-chat': [
+          {
+            id: 'agent-message-1',
+            sessionId: 'agent-chat',
+            role: 'assistant',
+            content: 'Sub-agent inspected the provider runtime.',
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+          },
+        ],
+      },
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
         'chat-1': {
@@ -2052,25 +2068,21 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const subAgentButton = Array.from(host.querySelectorAll('button')).find((button) =>
-      button.textContent?.includes('Sub-agent:')
-    ) as HTMLButtonElement | undefined
-    expect(subAgentButton).toBeTruthy()
-
-    act(() => {
-      subAgentButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-
-    const openChatButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Open chat') as HTMLButtonElement | undefined
-    expect(openChatButton).toBeTruthy()
+    const summary = Array.from(host.querySelectorAll('summary')).find((candidate) => candidate.textContent?.includes('Sub-agent:'))
+    expect(summary).toBeTruthy()
 
     await act(async () => {
-      openChatButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      const details = summary?.closest('details') as HTMLDetailsElement
+      details.open = true
+      details.dispatchEvent(new Event('toggle', { bubbles: true }))
+      await Promise.resolve()
       await Promise.resolve()
     })
 
-    expect(openSubAgentSession).toHaveBeenCalledWith('chat-1', 'agent-session-1', 'Planner')
-    expect(host.querySelector('[role="dialog"]')).toBeNull()
+    expect(openSubAgentSession).toHaveBeenCalledWith('chat-1', 'agent-session-1', 'Planner', false)
+    expect(host.textContent).toContain('Planner history')
+    expect(host.textContent).toContain('Sub-agent inspected the provider runtime.')
+    expect(useAppStore.getState().activeSessionId).toBe('chat-1')
 
     act(() => {
       root.unmount()

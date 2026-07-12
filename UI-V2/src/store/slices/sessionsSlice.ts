@@ -71,6 +71,7 @@ import type {
   GitWorktreeStatus,
   MemoryActivity,
   MemoryWorkerBinding,
+  OpenNativeSessionChatResponse,
   OpenWorkspaceEditorResponse,
   ProviderChatDefaults,
   VcsCommitMessageSuggestion,
@@ -138,8 +139,6 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     if (!isCefContext() || !chatId) return
     const current = get()
     const session = current.sessions.find((candidate) => candidate.id === chatId)
-    if (!session) return
-
     const requestKey = `getChatMessages:${chatId}`
     const requestId = createRequestId('getChatMessages')
     rememberPendingRequest(requestKey, requestId)
@@ -147,7 +146,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       action: 'getChatMessages',
       payload: {
         chatId,
-        messagesDigest: session.messagesDigest ?? '',
+        messagesDigest: session?.messagesDigest ?? '',
       },
       requestId,
     }).then((response) => {
@@ -157,12 +156,10 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
       const data = response.data
       if (data.chatId && data.chatId !== chatId) return
-      if (get().activeSessionId !== chatId) return
       if (data.unchanged) return
       if (!Array.isArray(data.messages)) return
 
       set((state) => {
-        if (state.activeSessionId !== chatId) return state
         const nextMessages = reconcileCppMessages(chatId, state.messages[chatId], data.messages ?? [])
         const messagesChanged = nextMessages !== state.messages[chatId]
         const nextDigest = data.messagesDigest ?? ''
@@ -389,27 +386,30 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return Boolean(session?.workspaceDirectory?.trim() || folderDirectory.trim())
     },
 
-    openSubAgentSession: async (sourceChatId: string, nativeSessionId: string, title = '') => {
+    openSubAgentSession: async (sourceChatId: string, nativeSessionId: string, title = '', selectChat = true) => {
       if (isCefContext()) {
-        const response = await sendToCEF({
+        const response = await sendToCEF<OpenNativeSessionChatResponse>({
           action: 'openNativeSessionChat',
           payload: {
             chatId: sourceChatId,
             nativeSessionId,
             title,
+            selectChat,
           },
         })
 
         if (!response.ok) {
           console.error('[CEF] openNativeSessionChat failed:', response.error)
-          return false
+          return null
         }
 
-        return true
+        const chatId = response.data?.chatId?.trim() ?? ''
+        if (chatId) requestChatMessagesFromCef(chatId)
+        return chatId || null
       }
 
       const sourceChat = get().sessions.find((candidate) => candidate.id === sourceChatId)
-      return Boolean(sourceChat && nativeSessionId.trim())
+      return sourceChat && nativeSessionId.trim() ? sourceChatId : null
     },
 
     getChatWorktreeStatus: async (id: string): Promise<GitWorktreeStatus | null> => {

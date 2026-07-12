@@ -856,12 +856,14 @@ export function ChatView({ session }: ChatViewProps) {
                             }}
                             onCancelTurn={() => void cancelAcpTurn(session.id)}
                             onStopRuntime={() => void stopAcpSession(session.id)}
+                            sourceChatId={session.id}
                         />
                       ) : (
                         <PersistedMessageContent
                           message={message}
                           onSelectTool={(messageId, toolId) => setSelectedToolCallRef({ id: toolId, messageId })}
                           planActions={planActionsForMessage(index)}
+                          sourceChatId={session.id}
                         />
                       )}
                     </MessageFrame>
@@ -888,6 +890,7 @@ export function ChatView({ session }: ChatViewProps) {
                             }}
                             onCancelTurn={() => void cancelAcpTurn(session.id)}
                             onStopRuntime={() => void stopAcpSession(session.id)}
+                            sourceChatId={session.id}
                         />
                       </MessageFrame>
                     )}
@@ -917,6 +920,7 @@ export function ChatView({ session }: ChatViewProps) {
                       }}
                       onCancelTurn={() => void cancelAcpTurn(session.id)}
                       onStopRuntime={() => void stopAcpSession(session.id)}
+                      sourceChatId={session.id}
                   />
                 </MessageFrame>
               )}
