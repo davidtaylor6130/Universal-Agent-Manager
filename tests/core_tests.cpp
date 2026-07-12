@@ -5298,6 +5298,25 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	UAM_ASSERT(copilot_detail.find("nativeSessionId=copilot-session-1") != std::string::npos);
 }
 
+UAM_TEST(ProviderCancelStrategyUsesWireMessageOrStopFallback)
+{
+	uam::AcpSessionState session;
+	session.session_id = "session-1";
+	std::string method;
+
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	const nlohmann::json claude_cancel = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kClaudeCli).OnAcpBuildCancel(session, 1, method);
+	UAM_ASSERT(claude_cancel.is_null());
+	UAM_ASSERT(method.empty());
+#endif
+
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+	const nlohmann::json gemini_cancel = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kGeminiCli).OnAcpBuildCancel(session, 2, method);
+	UAM_ASSERT(gemini_cancel.is_object());
+	UAM_ASSERT_EQ(gemini_cancel.value("method", ""), std::string("session/cancel"));
+#endif
+}
+
 UAM_TEST(AcpLaunchArgsUseResolvedProviderForBlankOpenCodeChat)
 {
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI

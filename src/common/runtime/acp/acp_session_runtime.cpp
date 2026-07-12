@@ -346,22 +346,23 @@ namespace uam
 			int cancel_id = session->next_request_id++;
 			std::string cancel_method;
 			nlohmann::json cancel_msg = cancel_runtime.OnAcpBuildCancel(*session, cancel_id, cancel_method);
-			if (!cancel_msg.is_null() && !cancel_msg.empty())
+			if (cancel_msg.is_null() || cancel_msg.empty())
+			{
+				return StopAcpSession(app, chat_id);
+			}
+			if (!cancel_method.empty())
+			{
+				session->pending_request_methods[cancel_id] = cancel_method;
+				session->cancel_request_id = cancel_id;
+			}
+			if (!acp_detail::WriteAcpMessage(*session, cancel_msg, error_out))
 			{
 				if (!cancel_method.empty())
 				{
-					session->pending_request_methods[cancel_id] = cancel_method;
-					session->cancel_request_id = cancel_id;
+					session->pending_request_methods.erase(cancel_id);
+					session->cancel_request_id = 0;
 				}
-				if (!acp_detail::WriteAcpMessage(*session, cancel_msg, error_out))
-				{
-					if (!cancel_method.empty())
-					{
-						session->pending_request_methods.erase(cancel_id);
-						session->cancel_request_id = 0;
-					}
-					return false;
-				}
+				return false;
 			}
 		}
 
