@@ -179,7 +179,7 @@ describe('SessionItem status icons', () => {
     expect(readChatGridLayout().activePane).toBe(1)
     expect(readChatGridLayout().sessionIds).toEqual(['chat-2', 'chat-1'])
     expect(useAppStore.getState().activeSessionId).toBe('chat-1')
-    expect(sessionRow.style.borderLeft).toContain('rgb(59, 130, 246)')
+    expect(sessionRow.style.borderLeft).toContain('rgb(236, 72, 153)')
 
     act(() => root.unmount())
     host.remove()

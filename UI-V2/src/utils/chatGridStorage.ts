@@ -11,7 +11,7 @@ export interface ChatGridLayout {
 const storageKey = 'uam-chat-grid-layout-v1'
 const layoutEvent = 'uam-chat-grid-layout'
 
-export const chatPaneColors = ['#f97316', '#3b82f6', '#22c55e', '#a855f7'] as const
+export const chatPaneColors = ['#f97316', '#ec4899', '#22c55e', '#a855f7'] as const
 
 export const defaultChatGridLayout: ChatGridLayout = {
   paneCount: 1,

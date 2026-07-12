@@ -133,7 +133,7 @@ describe('FolderTree', () => {
     act(() => root.render(<FolderTree searchQuery="" />))
 
     expect(host.textContent).not.toContain('Chat 3')
-    expect((host.querySelector('[data-testid="folder-icon-project"]') as HTMLElement).style.color).toBe('rgb(59, 130, 246)')
+    expect((host.querySelector('[data-testid="folder-icon-project"]') as HTMLElement).style.color).toBe('rgb(236, 72, 153)')
 
     act(() => root.unmount())
     host.remove()
