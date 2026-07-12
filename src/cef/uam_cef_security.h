@@ -245,7 +245,7 @@ namespace uam::cef
 	inline std::string FileUrlFromPath(const std::filesystem::path& path)
 	{
 		const std::filesystem::path final_path = uam::paths::NormalizeExistingOrAbsolutePath(path);
-		return "file://" + uam::paths::PortablePathString(final_path);
+		return "file://" + std::string(final_path.has_root_name() ? "/" : "") + uam::paths::PortablePathString(final_path);
 	}
 
 	inline std::optional<std::filesystem::path> FindTrustedUiIndexPath(const std::filesystem::path& exe_dir)
