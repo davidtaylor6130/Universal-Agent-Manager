@@ -5204,6 +5204,18 @@ UAM_TEST(AcpReconnectBackoffIsBounded)
 	UAM_ASSERT_EQ(session.reconnect_attempts, 0);
 	UAM_ASSERT_EQ(session.reconnect_not_before_time_s, 10.25);
 	UAM_ASSERT_EQ(session.diagnostics.back().reason, std::string("scheduled"));
+
+	session.reconnect_attempts = 2;
+	uam::ScheduleAcpReconnectForTests(session, 20.0);
+	UAM_ASSERT(session.reconnect_pending);
+	UAM_ASSERT_EQ(session.reconnect_attempts, 2);
+	UAM_ASSERT_EQ(session.reconnect_not_before_time_s, 21.0);
+
+	session.reconnect_attempts = 3;
+	uam::ScheduleAcpReconnectForTests(session, 30.0);
+	UAM_ASSERT(!session.reconnect_pending);
+	UAM_ASSERT_EQ(session.reconnect_not_before_time_s, 0.0);
+	UAM_ASSERT_EQ(session.diagnostics.back().reason, std::string("exhausted"));
 }
 
 UAM_TEST(AcpStdoutBufferRejectsOversizedLines)

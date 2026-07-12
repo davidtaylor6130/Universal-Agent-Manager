@@ -79,9 +79,15 @@ namespace uam
 
 		void ScheduleAcpReconnect(AcpSessionState& session, double now_seconds)
 		{
+			if (session.reconnect_attempts >= kAcpReconnectMaxAttempts)
+			{
+				session.reconnect_pending = false;
+				session.reconnect_not_before_time_s = 0.0;
+				AppendAcpDiagnostic(session, "reconnect", "exhausted", "", "", false, 0, "Structured runtime reconnect attempts exhausted.");
+				return;
+			}
 			session.reconnect_pending = true;
-			session.reconnect_attempts = 0;
-			session.reconnect_not_before_time_s = now_seconds + AcpReconnectDelaySeconds(0);
+			session.reconnect_not_before_time_s = now_seconds + AcpReconnectDelaySeconds(session.reconnect_attempts);
 			AppendAcpDiagnostic(session, "reconnect", "scheduled", "", "", false, 0, "Structured runtime disconnected; reconnect scheduled.");
 		}
 
@@ -92,17 +98,18 @@ namespace uam
 				return false;
 			}
 
+			const int next_attempt = session.reconnect_attempts + 1;
 			std::string error;
 			if (StartAcpProcessForChat(app, session, chat, &error))
 			{
 				session.reconnect_pending = false;
-				session.reconnect_attempts = 0;
+				session.reconnect_attempts = next_attempt;
 				session.reconnect_not_before_time_s = 0.0;
 				AppendAcpDiagnostic(session, "reconnect", "started", "", "", false, 0, "Structured runtime reconnected.");
 				return true;
 			}
 
-			++session.reconnect_attempts;
+			session.reconnect_attempts = next_attempt;
 			if (session.reconnect_attempts >= kAcpReconnectMaxAttempts)
 			{
 				session.reconnect_pending = false;
@@ -627,6 +634,11 @@ namespace uam
 			ChatSession& chat = *chat_ptr;
 			changed = DrainStderr(session) || changed;
 			changed = DrainStdout(app, session, chat, browser) || changed;
+			if (session.session_ready && session.reconnect_attempts > 0)
+			{
+				session.reconnect_attempts = 0;
+				session.reconnect_not_before_time_s = 0.0;
+			}
 
 			if (SendSessionSetupIfReady(app, session, chat))
 			{
