@@ -18,6 +18,17 @@
 namespace uam::acp_detail
 {
 
+bool AppendAcpStdoutChunk(AcpSessionState& session, std::string_view chunk)
+{
+	if (chunk.size() > kMaxAcpStdoutLineBytes || session.stdout_buffer.size() > kMaxAcpStdoutLineBytes - chunk.size())
+	{
+		session.stdout_buffer.clear();
+		return false;
+	}
+	session.stdout_buffer.append(chunk);
+	return true;
+}
+
 bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& line, CefRefPtr<CefBrowser> browser)
 {
 	const std::string trimmed = uam::strings::Trim(line);
@@ -109,7 +120,15 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 		if (read_bytes > 0)
 		{
 			changed = MarkAcpRuntimeActivity(session) || changed;
-			session.stdout_buffer.append(buffer.data(), static_cast<std::size_t>(read_bytes));
+			if (!AppendAcpStdoutChunk(session, std::string_view(buffer.data(), static_cast<std::size_t>(read_bytes))))
+			{
+				const std::string message = std::string(RuntimeDisplayName(session)) + " emitted an oversized structured response without a newline.";
+				AppendAcpDiagnostic(session, "parse", "stdout_line_too_large", "", "", false, 0, message);
+				FailAcpTurnOrSession(session, message);
+				MarkAcpChatUnseenIfBackground(app, chat);
+				PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
+				return true;
+			}
 			std::size_t newline_pos = std::string::npos;
 			while ((newline_pos = session.stdout_buffer.find('\n')) != std::string::npos)
 			{

@@ -5184,6 +5184,14 @@ UAM_TEST(AcpReconnectBackoffIsBounded)
 	UAM_ASSERT_EQ(session.diagnostics.back().reason, std::string("scheduled"));
 }
 
+UAM_TEST(AcpStdoutBufferRejectsOversizedLines)
+{
+	uam::AcpSessionState session;
+	UAM_ASSERT(uam::acp_detail::AppendAcpStdoutChunk(session, std::string(uam::acp_detail::kMaxAcpStdoutLineBytes, 'x')));
+	UAM_ASSERT(!uam::acp_detail::AppendAcpStdoutChunk(session, "x"));
+	UAM_ASSERT(session.stdout_buffer.empty());
+}
+
 UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 {
 	ChatSession chat;

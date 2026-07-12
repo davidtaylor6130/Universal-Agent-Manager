@@ -49,6 +49,7 @@
 #include "common/runtime/acp/acp_json_rpc.h"
 #include "common/runtime/acp/acp_model_json.h"
 #include "common/runtime/acp/acp_permissions.h"
+#include "common/runtime/acp/acp_polling.h"
 #include "common/runtime/acp/acp_protocol_methods.h"
 #include "common/runtime/acp/acp_request_defaults.h"
 #include "common/runtime/acp/acp_session_runtime.h"
