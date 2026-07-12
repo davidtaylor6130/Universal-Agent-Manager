@@ -1746,7 +1746,7 @@ UAM_TEST(ChatDomainServiceCreateNewChatNormalizesBoundaryIds)
 	UAM_ASSERT_EQ(chat.branch_from_message_index, -1);
 }
 
-UAM_TEST(ChatDomainServiceSortsByLastOpenedThenUpdatedThenCreated)
+UAM_TEST(ChatDomainServiceSortsByUpdatedThenCreatedWithoutSelectionReordering)
 {
 	ChatSession oldest;
 	oldest.id = "oldest";
@@ -1772,8 +1772,8 @@ UAM_TEST(ChatDomainServiceSortsByLastOpenedThenUpdatedThenCreated)
 	std::vector<ChatSession> chats = {oldest, opened, updated, created_tiebreaker};
 	ChatDomainService().SortChatsByRecent(chats);
 
-	UAM_ASSERT_EQ(chats[0].id, std::string("opened"));
-	UAM_ASSERT_EQ(chats[1].id, std::string("updated"));
+	UAM_ASSERT_EQ(chats[0].id, std::string("updated"));
+	UAM_ASSERT_EQ(chats[1].id, std::string("opened"));
 	UAM_ASSERT_EQ(chats[2].id, std::string("created-tiebreaker"));
 	UAM_ASSERT_EQ(chats[3].id, std::string("oldest"));
 }
