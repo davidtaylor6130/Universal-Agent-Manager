@@ -5352,6 +5352,7 @@ UAM_TEST(ClaudeStreamJsonMessagesUpdateChatAndSession)
 	chat.id = "chat-1";
 	chat.provider_id = "claude-cli";
 	chat.approval_mode = "plan";
+	chat.native_session_id = "claude-session-old";
 	app.chats.push_back(chat);
 	app.selected_chat_index = 0;
 
@@ -5368,6 +5369,7 @@ UAM_TEST(ClaudeStreamJsonMessagesUpdateChatAndSession)
 
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"system","subtype":"init","session_id":"claude-session-3","model":"sonnet","permissionMode":"plan"})"));
 	UAM_ASSERT_EQ(app.chats.front().native_session_id, std::string("claude-session-3"));
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id.at("chat-1"), std::string("claude-session-3"));
 	UAM_ASSERT_EQ(session.current_model_id, std::string("sonnet"));
 
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"assistant","session_id":"claude-session-3","message":{"role":"assistant","content":[{"type":"text","text":"Working on it."},{"type":"tool_use","id":"tool-1","name":"Read","input":{"file_path":"README.md"}}]}})"));
