@@ -266,17 +266,14 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
             {paneIndexes.map((paneIndex) => (
               <span
                 key={paneIndex}
-                className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-[9px] font-bold"
+                className="h-4 w-4 flex-shrink-0 rounded-full"
                 aria-label={`Chat shown in pane ${paneIndex + 1}${gridLayout.activePane === paneIndex ? ', focused' : ''}`}
                 title={`Pane ${paneIndex + 1}${gridLayout.activePane === paneIndex ? ' (focused)' : ''}`}
                 style={{
                   background: chatPaneColors[paneIndex],
-                  color: '#fff',
                   boxShadow: gridLayout.activePane === paneIndex ? '0 0 0 2px var(--text)' : undefined,
                 }}
-              >
-                {paneIndex + 1}
-              </span>
+              />
             ))}
             {lastOpenedLabel && (
               <span
@@ -353,16 +350,14 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
                 key={paneIndex}
                 type="button"
                 aria-label={`Show ${sessionName} in pane ${paneIndex + 1}`}
-                className="flex h-7 w-7 items-center justify-center rounded text-xs font-bold"
-                style={{ background: chatPaneColors[paneIndex], color: '#fff', border: 'none' }}
+                className="h-7 w-7 rounded-full"
+                style={{ background: chatPaneColors[paneIndex], border: 'none' }}
                 onClick={() => {
                   assignChatToPane(sessionId, paneIndex)
                   setActiveSession(sessionId)
                   setMenuPos(null)
                 }}
-              >
-                {paneIndex + 1}
-              </button>
+              />
             ))}
           </div>
           <button

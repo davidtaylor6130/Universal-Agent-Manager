@@ -157,7 +157,7 @@ describe('SessionItem status icons', () => {
     host.remove()
   })
 
-  it('shows its pane number and can move the chat from the context menu', () => {
+  it('shows its pane colour and can move the chat from the context menu', () => {
     writeChatGridLayout({
       ...defaultChatGridLayout,
       paneCount: 2,
@@ -169,9 +169,11 @@ describe('SessionItem status icons', () => {
 
     const paneBadge = host.querySelector('[aria-label="Chat shown in pane 1, focused"]') as HTMLElement
     expect(paneBadge).toBeTruthy()
+    expect(paneBadge.textContent).toBe('')
     act(() => paneBadge.closest('.cursor-pointer')?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
     const paneTwo = host.querySelector('button[aria-label="Show Chat 1 in pane 2"]') as HTMLButtonElement
     expect(paneTwo).toBeTruthy()
+    expect(paneTwo.textContent).toBe('')
     act(() => paneTwo.click())
 
     expect(readChatGridLayout().activePane).toBe(1)

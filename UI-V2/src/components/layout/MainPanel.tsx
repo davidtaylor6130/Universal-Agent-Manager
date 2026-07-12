@@ -82,7 +82,12 @@ function ChatPane({ session, active, paneIndex, onActivate }: {
       data-pane={paneIndex + 1}
       data-focused={active}
       onMouseDown={() => { if (!active) onActivate() }}
-      style={{ boxShadow: `inset 0 0 0 ${active ? 3 : 1}px ${paneColor}` }}
+      style={{
+        boxShadow: `inset 0 0 0 ${active ? 3 : 1}px ${paneColor}`,
+        '--accent': paneColor,
+        '--accent-dim': `color-mix(in srgb, ${paneColor} 12%, transparent)`,
+        '--accent-glow': `color-mix(in srgb, ${paneColor} 20%, transparent)`,
+      } as React.CSSProperties}
     >
       {/* Header bar */}
       <div
@@ -100,12 +105,10 @@ function ChatPane({ session, active, paneIndex, onActivate }: {
           title={session.name}
         >
           <span
-            className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full text-[11px] font-bold"
+            className="h-3 w-3 flex-shrink-0 rounded-full"
             aria-label={`Pane ${paneIndex + 1}${active ? ', focused' : ''}`}
-            style={{ background: paneColor, color: '#fff' }}
-          >
-            {paneIndex + 1}
-          </span>
+            style={{ background: paneColor }}
+          />
           <span className="truncate">{session.name}</span>
           <span
             className="inline-flex items-center gap-2 text-xs font-medium"
@@ -193,7 +196,7 @@ function EmptyPane({ active, paneIndex, onActivate }: { active: boolean; paneInd
       style={{ color: 'var(--text-3)', boxShadow: `inset 0 0 0 ${active ? 3 : 1}px ${paneColor}` }}
     >
       <span>
-        <span className="mx-auto mb-2 flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold" style={{ background: paneColor, color: '#fff' }}>{paneIndex + 1}</span>
+        <span className="mx-auto mb-2 block h-3 w-3 rounded-full" style={{ background: paneColor }} />
         <MessageSquare size={28} style={{ opacity: 0.3, margin: '0 auto 10px' }} />
         <span className="block text-sm">Select Chat</span>
       </span>

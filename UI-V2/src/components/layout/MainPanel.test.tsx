@@ -159,6 +159,9 @@ describe('MainPanel', () => {
     expect(host.querySelector('[data-testid="chat-grid-4"]')).not.toBeNull()
     expect(host.querySelectorAll('[data-testid^="chat-pane-"]')).toHaveLength(1)
     expect(Array.from(host.querySelectorAll('button')).filter((button) => button.textContent?.includes('Select Chat'))).toHaveLength(3)
+    const firstPane = host.querySelector('[data-testid="chat-pane-chat-1"]') as HTMLElement
+    expect(firstPane.style.getPropertyValue('--accent')).toBe('#f97316')
+    expect(host.querySelector('[aria-label="Pane 1, focused"]')?.textContent).toBe('')
 
     act(() => root.unmount())
     host.remove()
