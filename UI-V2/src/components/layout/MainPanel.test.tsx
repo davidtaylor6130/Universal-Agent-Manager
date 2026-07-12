@@ -166,7 +166,8 @@ describe('MainPanel', () => {
     expect(Array.from(host.querySelectorAll('button')).filter((button) => button.textContent?.includes('Select Chat'))).toHaveLength(3)
     const firstPane = host.querySelector('[data-testid="chat-pane-chat-1"]') as HTMLElement
     expect(firstPane.style.getPropertyValue('--accent')).toBe('#f97316')
-    expect(host.querySelector('[aria-label="Pane 1, focused"]')?.textContent).toBe('')
+    expect(firstPane.style.border).toContain('3px')
+    expect(firstPane.style.filter).toBe('none')
 
     act(() => {
       assignChatToPane('chat-2', 1)
@@ -175,12 +176,15 @@ describe('MainPanel', () => {
       useAppStore.setState({ activeSessionId: 'chat-4' })
     })
     expect(host.querySelectorAll('[data-testid^="chat-pane-"]')).toHaveLength(4)
-    expect(host.querySelector('[aria-label="Pane 4, focused"]')).toBeTruthy()
+    const fourthPane = host.querySelector('[data-testid="chat-pane-chat-4"]') as HTMLElement
+    expect(fourthPane.style.border).toContain('3px')
+    expect(firstPane.style.filter).toContain('brightness(0.82)')
 
     const secondPane = host.querySelector('[data-testid="chat-pane-chat-2"]') as HTMLElement
     act(() => secondPane.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
     expect(useAppStore.getState().activeSessionId).toBe('chat-2')
-    expect(host.querySelector('[aria-label="Pane 2, focused"]')).toBeTruthy()
+    expect(secondPane.style.border).toContain('3px')
+    expect(secondPane.style.filter).toBe('none')
 
     act(() => root.unmount())
     host.remove()

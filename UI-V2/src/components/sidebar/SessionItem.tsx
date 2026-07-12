@@ -263,18 +263,6 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
         {/* Context menu trigger — visible on hover */}
         {!editing && (
           <div className="ml-auto flex items-center gap-1">
-            {paneIndexes.map((paneIndex) => (
-              <span
-                key={paneIndex}
-                className="h-4 w-4 flex-shrink-0 rounded-full"
-                aria-label={`Chat shown in pane ${paneIndex + 1}${gridLayout.activePane === paneIndex ? ', focused' : ''}`}
-                title={`Pane ${paneIndex + 1}${gridLayout.activePane === paneIndex ? ' (focused)' : ''}`}
-                style={{
-                  background: chatPaneColors[paneIndex],
-                  boxShadow: gridLayout.activePane === paneIndex ? '0 0 0 2px var(--text)' : undefined,
-                }}
-              />
-            ))}
             {lastOpenedLabel && (
               <span
                 className="max-w-[58px] truncate text-[10px] tabular-nums transition-opacity duration-100 group-hover:opacity-0"
@@ -350,7 +338,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
                 key={paneIndex}
                 type="button"
                 aria-label={`Show ${sessionName} in pane ${paneIndex + 1}`}
-                className="h-7 w-7 rounded-full"
+                className="h-7 w-7 rounded"
                 style={{ background: chatPaneColors[paneIndex], border: 'none' }}
                 onClick={() => {
                   assignChatToPane(sessionId, paneIndex)

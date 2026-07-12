@@ -83,7 +83,8 @@ function ChatPane({ session, active, paneIndex, onActivate }: {
       data-focused={active}
       onMouseDown={() => { if (!active) onActivate() }}
       style={{
-        boxShadow: `inset 0 0 0 ${active ? 3 : 1}px ${paneColor}`,
+        border: `${active ? 3 : 1}px solid ${paneColor}`,
+        filter: active ? 'none' : 'brightness(0.82) saturate(0.72)',
         '--accent': paneColor,
         '--accent-dim': `color-mix(in srgb, ${paneColor} 12%, transparent)`,
         '--accent-glow': `color-mix(in srgb, ${paneColor} 20%, transparent)`,
@@ -104,11 +105,6 @@ function ChatPane({ session, active, paneIndex, onActivate }: {
           style={{ color: 'var(--text)' }}
           title={session.name}
         >
-          <span
-            className="h-3 w-3 flex-shrink-0 rounded-full"
-            aria-label={`Pane ${paneIndex + 1}${active ? ', focused' : ''}`}
-            style={{ background: paneColor }}
-          />
           <span className="truncate">{session.name}</span>
           <span
             className="inline-flex items-center gap-2 text-xs font-medium"
@@ -193,10 +189,9 @@ function EmptyPane({ active, paneIndex, onActivate }: { active: boolean; paneInd
       type="button"
       className="flex h-full w-full items-center justify-center text-center"
       onClick={onActivate}
-      style={{ color: 'var(--text-3)', boxShadow: `inset 0 0 0 ${active ? 3 : 1}px ${paneColor}` }}
+      style={{ color: 'var(--text-3)', border: `${active ? 3 : 1}px solid ${paneColor}`, filter: active ? 'none' : 'brightness(0.82) saturate(0.72)' }}
     >
       <span>
-        <span className="mx-auto mb-2 block h-3 w-3 rounded-full" style={{ background: paneColor }} />
         <MessageSquare size={28} style={{ opacity: 0.3, margin: '0 auto 10px' }} />
         <span className="block text-sm">Select Chat</span>
       </span>

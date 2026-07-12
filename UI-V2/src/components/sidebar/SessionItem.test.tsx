@@ -167,10 +167,10 @@ describe('SessionItem status icons', () => {
     useAppStore.setState({ activeSessionId: 'chat-1' })
     const { host, root } = renderSessionItem()
 
-    const paneBadge = host.querySelector('[aria-label="Chat shown in pane 1, focused"]') as HTMLElement
-    expect(paneBadge).toBeTruthy()
-    expect(paneBadge.textContent).toBe('')
-    act(() => paneBadge.closest('.cursor-pointer')?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
+    expect(host.querySelector('[aria-label^="Chat shown in pane"]')).toBeNull()
+    const sessionRow = host.querySelector('.cursor-pointer') as HTMLElement
+    expect(sessionRow.style.borderLeft).toContain('rgb(249, 115, 22)')
+    act(() => sessionRow.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
     const paneTwo = host.querySelector('button[aria-label="Show Chat 1 in pane 2"]') as HTMLButtonElement
     expect(paneTwo).toBeTruthy()
     expect(paneTwo.textContent).toBe('')
@@ -179,7 +179,7 @@ describe('SessionItem status icons', () => {
     expect(readChatGridLayout().activePane).toBe(1)
     expect(readChatGridLayout().sessionIds).toEqual(['chat-2', 'chat-1'])
     expect(useAppStore.getState().activeSessionId).toBe('chat-1')
-    expect(host.querySelector('[aria-label="Chat shown in pane 2, focused"]')).toBeTruthy()
+    expect(sessionRow.style.borderLeft).toContain('rgb(59, 130, 246)')
 
     act(() => root.unmount())
     host.remove()
