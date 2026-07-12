@@ -258,6 +258,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       })
     },
 
+    loadSessionMessages: requestChatMessagesFromCef,
+
     addSession: (name: string, folderId: string | null, providerId = GEMINI_CLI_PROVIDER_ID) => {
       const current = get()
       const selectedFolderId = folderId && current.folders.some((folder) => folder.id === folderId)
