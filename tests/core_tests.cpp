@@ -3418,6 +3418,23 @@ UAM_TEST(CodexThreadIdValidatorAcceptsOnlyUuidThreadIds)
 	UAM_ASSERT(!uam::IsValidCodexThreadIdForTests("6a6f0f3b-1a0b-4a9c-8a01-zzzzzzzzzzzz"));
 }
 
+UAM_TEST(EnabledProviderRuntimesSatisfyLaunchContract)
+{
+	ChatSession chat;
+	chat.id = "contract-chat";
+	AppSettings settings;
+	for (const ProviderProfile& profile : ProviderProfileStore::BuiltInProfiles())
+	{
+		const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(profile);
+		chat.provider_id = profile.id;
+		UAM_ASSERT(runtime.IsEnabled());
+		UAM_ASSERT_EQ(std::string(runtime.RuntimeId()), profile.id);
+		UAM_ASSERT(!runtime.BuildInteractiveArgv(profile, chat, settings).empty());
+		UAM_ASSERT(!runtime.BuildWorkerArgv(profile, settings, "contract prompt", "").empty());
+		UAM_ASSERT(!runtime.BuildStructuredLaunchArgv(profile, chat).empty());
+	}
+}
+
 UAM_TEST(GeminiCliInteractiveArgvUsesResumeAndFlags)
 {
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
