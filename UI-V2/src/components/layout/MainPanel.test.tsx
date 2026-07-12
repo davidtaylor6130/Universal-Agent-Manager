@@ -139,7 +139,7 @@ describe('MainPanel', () => {
     host.remove()
   })
 
-  it('shows four independently selectable chats in a two-by-two grid', () => {
+  it('leaves unassigned grid panes empty', () => {
     useAppStore.setState((state) => ({
       sessions: [1, 2, 3, 4].map((number) => ({
         ...state.sessions[0],
@@ -157,14 +157,8 @@ describe('MainPanel', () => {
     act(() => fourChats.click())
 
     expect(host.querySelector('[data-testid="chat-grid-4"]')).not.toBeNull()
-    expect(host.querySelectorAll('[data-testid^="chat-pane-"]')).toHaveLength(4)
-
-    const secondPane = host.querySelector('[data-testid="chat-pane-chat-2"]') as HTMLElement
-    act(() => secondPane.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
-    expect(useAppStore.getState().activeSessionId).toBe('chat-2')
-    expect(host.querySelector('[aria-label="Pane 2, focused"]')).toBeTruthy()
-    expect(host.querySelector('[aria-label="Pane 1"]')).toBeTruthy()
-    expect(secondPane.dataset.focused).toBe('true')
+    expect(host.querySelectorAll('[data-testid^="chat-pane-"]')).toHaveLength(1)
+    expect(Array.from(host.querySelectorAll('button')).filter((button) => button.textContent?.includes('Select Chat'))).toHaveLength(3)
 
     act(() => root.unmount())
     host.remove()

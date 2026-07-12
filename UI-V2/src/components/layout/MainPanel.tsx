@@ -195,7 +195,7 @@ function EmptyPane({ active, paneIndex, onActivate }: { active: boolean; paneInd
       <span>
         <span className="mx-auto mb-2 flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold" style={{ background: paneColor, color: '#fff' }}>{paneIndex + 1}</span>
         <MessageSquare size={28} style={{ opacity: 0.3, margin: '0 auto 10px' }} />
-        <span className="block text-sm">Select a chat from the sidebar</span>
+        <span className="block text-sm">Select Chat</span>
       </span>
     </button>
   )
@@ -262,10 +262,6 @@ export function MainPanel() {
       const sessionIds = [...current.sessionIds]
       while (sessionIds.length < paneCount) sessionIds.push('')
       if (activeSessionId) sessionIds[activePane] = activeSessionId
-      for (const session of sessions) {
-        if (sessionIds.slice(0, paneCount).every(Boolean) || sessionIds.includes(session.id)) continue
-        sessionIds[sessionIds.slice(0, paneCount).findIndex((id) => !id)] = session.id
-      }
       return { ...current, paneCount, activePane, sessionIds }
     })
   }
