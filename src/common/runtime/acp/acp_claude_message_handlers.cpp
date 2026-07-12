@@ -87,6 +87,7 @@ void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatS
 			{
 				tool_call.content = "Arguments:\n" + CapDiagnosticString(input->dump(), kMaxAcpDiagnosticDetailBytes);
 			}
+			ApplySubAgentMetadata(tool_call, item, ProviderRuntimeRegistry::ResolveById(session.provider_id));
 			AppendToolTurnEventIfNeeded(session, tool_id);
 			changed = SyncAcpToolCallsToAssistantMessage(chat, session, true) || changed;
 		}

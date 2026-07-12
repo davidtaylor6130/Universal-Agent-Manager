@@ -3757,23 +3757,17 @@ UAM_TEST(OpenCodeAcpSubAgentToolCallsAreVisibleAndPersistent)
 #endif
 }
 
-UAM_TEST(OpenCodeProviderRecognizesTaskToolAsSubAgent)
+UAM_TEST(AllProvidersRecognizeSharedSubAgentTools)
 {
-#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
-	const ProviderProfile profile = ProviderProfileStore::DefaultOpenCodeProfile();
-	UAM_ASSERT(ProviderRuntime::ProviderRecognizesSubagentTool(profile, "task"));
-	UAM_ASSERT(ProviderRuntime::ProviderRecognizesSubagentTool(profile, "TASK"));
-	UAM_ASSERT(ProviderRuntime::ProviderRecognizesSubagentTool(profile, "subtask"));
-	UAM_ASSERT(ProviderRuntime::ProviderRecognizesSubagentTool(profile, "delegate"));
-	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "bash"));
- 	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "read"));
- 	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, ""));
- 	// Superstrings must NOT match (OC-7: substring false-positive guard)
- 	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "task_status"));
- 	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "multitasking_helper"));
- 	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "delegated"));
- 	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "subtasker"));
-#endif
+	for (const ProviderProfile& profile : ProviderProfileStore::BuiltInProfiles())
+	{
+		UAM_ASSERT(ProviderRuntime::ProviderRecognizesSubagentTool(profile, "task"));
+		UAM_ASSERT(ProviderRuntime::ProviderRecognizesSubagentTool(profile, "functions.spawn_agent"));
+		UAM_ASSERT(ProviderRuntime::ProviderRecognizesSubagentTool(profile, "delegate_to_agent"));
+		UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "bash"));
+		UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "task_status"));
+		UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "delegated"));
+	}
 }
 
 UAM_TEST(OpenCodeAcpTaskToolCallIsDetectedAsSubAgentOnPendingUpdate)

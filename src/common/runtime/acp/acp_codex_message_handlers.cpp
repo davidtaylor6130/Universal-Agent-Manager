@@ -313,6 +313,7 @@ void HandleCodexToolItem(AcpSessionState& session, ChatSession& chat, const nloh
 	{
 		tool_call.content = content;
 	}
+	ApplySubAgentMetadata(tool_call, item, ProviderRuntimeRegistry::ResolveById(session.provider_id));
 	AppendToolTurnEventIfNeeded(session, item_id);
 	(void)SyncAcpToolCallsToAssistantMessage(chat, session, false);
 }
