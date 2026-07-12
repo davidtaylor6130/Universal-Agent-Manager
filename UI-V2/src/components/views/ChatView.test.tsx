@@ -1021,6 +1021,8 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
+    expect(host.textContent).toContain('Claude structured mode cannot surface interactive permission')
+
     openComposerOptions(host)
     const planButton = host.querySelector('button[title^="Toggle planning mode"]') as HTMLButtonElement | null
     expect(planButton).toBeTruthy()
