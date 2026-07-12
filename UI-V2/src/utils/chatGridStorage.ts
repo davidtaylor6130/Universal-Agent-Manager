@@ -9,6 +9,9 @@ export interface ChatGridLayout {
 }
 
 const storageKey = 'uam-chat-grid-layout-v1'
+const layoutEvent = 'uam-chat-grid-layout'
+
+export const chatPaneColors = ['#f97316', '#3b82f6', '#22c55e', '#a855f7'] as const
 
 export const defaultChatGridLayout: ChatGridLayout = {
   paneCount: 1,
@@ -52,4 +55,23 @@ export function writeChatGridLayout(layout: ChatGridLayout): void {
   } catch {
     // The in-memory layout still works when storage is unavailable.
   }
+  window.dispatchEvent(new CustomEvent<ChatGridLayout>(layoutEvent, { detail: layout }))
+}
+
+export function subscribeChatGridLayout(listener: (layout: ChatGridLayout) => void): () => void {
+  const handleLayout = (event: Event) => listener((event as CustomEvent<ChatGridLayout>).detail)
+  window.addEventListener(layoutEvent, handleLayout)
+  return () => window.removeEventListener(layoutEvent, handleLayout)
+}
+
+export function assignChatToPane(sessionId: string, paneIndex: number): ChatGridLayout {
+  const layout = readChatGridLayout()
+  const sessionIds = [...layout.sessionIds]
+  while (sessionIds.length < layout.paneCount) sessionIds.push('')
+  const previousPane = sessionIds.indexOf(sessionId)
+  if (previousPane >= 0) sessionIds[previousPane] = sessionIds[paneIndex]
+  sessionIds[paneIndex] = sessionId
+  const next = { ...layout, activePane: paneIndex, sessionIds }
+  writeChatGridLayout(next)
+  return next
 }

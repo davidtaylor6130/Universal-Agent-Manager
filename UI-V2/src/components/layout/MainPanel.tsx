@@ -11,7 +11,9 @@ import { DEFAULT_PROVIDER_ID, providerShortName } from '../../utils/providerMeta
 import { Tooltip } from '../ui'
 import type { Session } from '../../types/session'
 import {
+  chatPaneColors,
   readChatGridLayout,
+  subscribeChatGridLayout,
   writeChatGridLayout,
   type ChatGridLayout,
   type ChatPaneCount,
@@ -51,9 +53,10 @@ const PushStatusDot = memo(function PushStatusDot() {
   )
 })
 
-function ChatPane({ session, active, onActivate }: {
+function ChatPane({ session, active, paneIndex, onActivate }: {
   session: Session
   active: boolean
+  paneIndex: number
   onActivate: () => void
 }) {
   const [view, setView] = useState<'chat' | 'cli'>('chat')
@@ -70,13 +73,16 @@ function ChatPane({ session, active, onActivate }: {
   const providerId = session?.providerId || acpBinding?.providerId || DEFAULT_PROVIDER_ID
   const provider = providers.find((candidate) => candidate.id === providerId)
   const providerName = providerShortName(provider, providerId)
+  const paneColor = chatPaneColors[paneIndex]
 
   return (
     <div
       className="flex flex-col h-full overflow-hidden"
       data-testid={`chat-pane-${session.id}`}
+      data-pane={paneIndex + 1}
+      data-focused={active}
       onMouseDown={() => { if (!active) onActivate() }}
-      style={{ boxShadow: active ? 'inset 0 0 0 1px var(--accent)' : undefined }}
+      style={{ boxShadow: `inset 0 0 0 ${active ? 3 : 1}px ${paneColor}` }}
     >
       {/* Header bar */}
       <div
@@ -93,7 +99,13 @@ function ChatPane({ session, active, onActivate }: {
           style={{ color: 'var(--text)' }}
           title={session.name}
         >
-          <span style={{ width: 10, height: 10, borderRadius: 999, background: 'var(--accent)', flexShrink: 0 }} />
+          <span
+            className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full text-[11px] font-bold"
+            aria-label={`Pane ${paneIndex + 1}${active ? ', focused' : ''}`}
+            style={{ background: paneColor, color: '#fff' }}
+          >
+            {paneIndex + 1}
+          </span>
           <span className="truncate">{session.name}</span>
           <span
             className="inline-flex items-center gap-2 text-xs font-medium"
@@ -171,15 +183,17 @@ function ChatPane({ session, active, onActivate }: {
   )
 }
 
-function EmptyPane({ active, onActivate }: { active: boolean; onActivate: () => void }) {
+function EmptyPane({ active, paneIndex, onActivate }: { active: boolean; paneIndex: number; onActivate: () => void }) {
+  const paneColor = chatPaneColors[paneIndex]
   return (
     <button
       type="button"
       className="flex h-full w-full items-center justify-center text-center"
       onClick={onActivate}
-      style={{ color: 'var(--text-3)', boxShadow: active ? 'inset 0 0 0 1px var(--accent)' : undefined }}
+      style={{ color: 'var(--text-3)', boxShadow: `inset 0 0 0 ${active ? 3 : 1}px ${paneColor}` }}
     >
       <span>
+        <span className="mx-auto mb-2 flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold" style={{ background: paneColor, color: '#fff' }}>{paneIndex + 1}</span>
         <MessageSquare size={28} style={{ opacity: 0.3, margin: '0 auto 10px' }} />
         <span className="block text-sm">Select a chat from the sidebar</span>
       </span>
@@ -218,6 +232,7 @@ export function MainPanel() {
   const visibleSessions = visibleIds.map((id) => sessions.find((session) => session.id === id) ?? null)
 
   useEffect(() => writeChatGridLayout(layout), [layout])
+  useEffect(() => subscribeChatGridLayout((next) => setLayout((current) => current === next ? current : next)), [])
 
   useEffect(() => {
     if (!activeSessionId || !sessions.some((session) => session.id === activeSessionId)) return
@@ -258,8 +273,8 @@ export function MainPanel() {
   const pane = (index: number) => {
     const session = visibleSessions[index]
     return session
-      ? <ChatPane key={session.id} session={session} active={layout.activePane === index} onActivate={() => selectPane(index)} />
-      : <EmptyPane active={layout.activePane === index} onActivate={() => selectPane(index)} />
+      ? <ChatPane key={session.id} session={session} active={layout.activePane === index} paneIndex={index} onActivate={() => selectPane(index)} />
+      : <EmptyPane active={layout.activePane === index} paneIndex={index} onActivate={() => selectPane(index)} />
   }
 
   const verticalHandle = <PanelResizeHandle style={{ width: 1 }} />

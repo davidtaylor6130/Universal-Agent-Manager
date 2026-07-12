@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { defaultChatGridLayout, readChatGridLayout, writeChatGridLayout } from './chatGridStorage'
+import {
+  assignChatToPane,
+  defaultChatGridLayout,
+  readChatGridLayout,
+  subscribeChatGridLayout,
+  writeChatGridLayout,
+} from './chatGridStorage'
 
 describe('chat grid storage', () => {
   const values = new Map<string, string>()
@@ -32,5 +38,22 @@ describe('chat grid storage', () => {
     expect(readChatGridLayout()).toEqual(defaultChatGridLayout)
     vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new Error('denied') })
     expect(() => writeChatGridLayout(defaultChatGridLayout)).not.toThrow()
+  })
+
+  it('swaps an existing chat into a focused pane and notifies the grid', () => {
+    writeChatGridLayout({
+      ...defaultChatGridLayout,
+      paneCount: 4,
+      sessionIds: ['one', 'two', 'three', 'four'],
+    })
+    const listener = vi.fn()
+    const unsubscribe = subscribeChatGridLayout(listener)
+
+    const layout = assignChatToPane('one', 2)
+
+    expect(layout.activePane).toBe(2)
+    expect(layout.sessionIds).toEqual(['three', 'two', 'one', 'four'])
+    expect(listener).toHaveBeenCalledWith(layout)
+    unsubscribe()
   })
 })

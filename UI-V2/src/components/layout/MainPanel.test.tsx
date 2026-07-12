@@ -162,6 +162,9 @@ describe('MainPanel', () => {
     const secondPane = host.querySelector('[data-testid="chat-pane-chat-2"]') as HTMLElement
     act(() => secondPane.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
     expect(useAppStore.getState().activeSessionId).toBe('chat-2')
+    expect(host.querySelector('[aria-label="Pane 2, focused"]')).toBeTruthy()
+    expect(host.querySelector('[aria-label="Pane 1"]')).toBeTruthy()
+    expect(secondPane.dataset.focused).toBe('true')
 
     act(() => root.unmount())
     host.remove()
