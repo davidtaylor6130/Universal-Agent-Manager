@@ -45,7 +45,11 @@ Removed or intentionally unsupported surfaces include RAG engines, local model e
 
 ## Support Matrix
 
-Each provider has a structured chat path (over an ACP-style stdio protocol) and an xterm.js CLI fallback path. Native history is read from each provider's local store.
+Each provider has a structured chat path and an xterm.js CLI fallback. UAM persists normalized
+history for every provider; Gemini can additionally overlay its native JSON history.
+
+The detailed, release-gating capability matrix is maintained in
+[docs/provider-runtime-parity.md](docs/provider-runtime-parity.md).
 
 ### Provider Feature Support (Mac)
 
