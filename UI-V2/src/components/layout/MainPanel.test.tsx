@@ -31,6 +31,14 @@ import { useAppStore } from '../../store/useAppStore'
 describe('MainPanel', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    const stored = new Map<string, string>()
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem: (key: string) => stored.get(key) ?? null,
+        setItem: (key: string, value: string) => stored.set(key, value),
+      },
+    })
     useAppStore.setState({
       sessions: [
         {
@@ -128,6 +136,34 @@ describe('MainPanel', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('shows four independently selectable chats in a two-by-two grid', () => {
+    useAppStore.setState((state) => ({
+      sessions: [1, 2, 3, 4].map((number) => ({
+        ...state.sessions[0],
+        id: `chat-${number}`,
+        name: `Chat ${number}`,
+      })),
+      messages: { 'chat-1': [], 'chat-2': [], 'chat-3': [], 'chat-4': [] },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => root.render(<MainPanel />))
+    const fourChats = host.querySelector('button[aria-label="Show four chats"]') as HTMLButtonElement
+    act(() => fourChats.click())
+
+    expect(host.querySelector('[data-testid="chat-grid-4"]')).not.toBeNull()
+    expect(host.querySelectorAll('[data-testid^="chat-pane-"]')).toHaveLength(4)
+
+    const secondPane = host.querySelector('[data-testid="chat-pane-chat-2"]') as HTMLElement
+    act(() => secondPane.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
+    expect(useAppStore.getState().activeSessionId).toBe('chat-2')
+
+    act(() => root.unmount())
     host.remove()
   })
 })
