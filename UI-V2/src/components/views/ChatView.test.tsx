@@ -2017,14 +2017,15 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('expands a sub-agent chat inline without replacing the current chat', async () => {
+  it('expands multiple sub-agent chats inline without replacing the current chat', async () => {
     const originalOpenSubAgentSession = useAppStore.getState().openSubAgentSession
-    const openSubAgentSession = vi.fn(() => Promise.resolve('agent-chat'))
+    const openSubAgentSession = vi.fn((_sourceChatId: string, nativeSessionId: string) => Promise.resolve(nativeSessionId === 'agent-session-2' ? 'agent-chat-2' : 'agent-chat'))
     useAppStore.setState((state) => ({
       openSubAgentSession,
       sessions: [
         ...state.sessions,
         { ...state.sessions[0], id: 'agent-chat', name: 'Planner history' },
+        { ...state.sessions[0], id: 'agent-chat-2', name: 'Reviewer history' },
       ],
       messages: {
         ...state.messages,
@@ -2034,6 +2035,15 @@ describe('ChatView', () => {
             sessionId: 'agent-chat',
             role: 'assistant',
             content: 'Sub-agent inspected the provider runtime.',
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+          },
+        ],
+        'agent-chat-2': [
+          {
+            id: 'agent-message-2',
+            sessionId: 'agent-chat-2',
+            role: 'assistant',
+            content: 'Sub-agent reviewed the provider runtime.',
             createdAt: new Date('2026-01-01T00:00:00.000Z'),
           },
         ],
@@ -2053,10 +2063,21 @@ describe('ChatView', () => {
               subAgentId: 'agent-session-1',
               subAgentTitle: 'Planner',
             },
+            {
+              id: 'agent-tool-2',
+              title: 'Reviewer agent',
+              kind: 'sub-agent',
+              status: 'completed',
+              content: 'Reviewing with a sub-agent',
+              isSubAgent: true,
+              subAgentId: 'agent-session-2',
+              subAgentTitle: 'Reviewer',
+            },
           ],
           turnEvents: [
             { type: 'assistant_text', text: 'I am delegating to a sub-agent.' },
             { type: 'tool_call', toolCallId: 'agent-tool-1' },
+            { type: 'tool_call', toolCallId: 'agent-tool-2' },
           ],
           turnSerial: 2,
           pendingPermission: null,
@@ -2073,20 +2094,25 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const summary = Array.from(host.querySelectorAll('summary')).find((candidate) => candidate.textContent?.includes('Sub-agent:'))
-    expect(summary).toBeTruthy()
+    const summaries = Array.from(host.querySelectorAll('summary')).filter((candidate) => candidate.textContent?.includes('Sub-agent:'))
+    expect(summaries).toHaveLength(2)
 
     await act(async () => {
-      const details = summary?.closest('details') as HTMLDetailsElement
-      details.open = true
-      details.dispatchEvent(new Event('toggle', { bubbles: true }))
+      for (const summary of summaries) {
+        const details = summary.closest('details') as HTMLDetailsElement
+        details.open = true
+        details.dispatchEvent(new Event('toggle', { bubbles: true }))
+      }
       await Promise.resolve()
       await Promise.resolve()
     })
 
     expect(openSubAgentSession).toHaveBeenCalledWith('chat-1', 'agent-session-1', 'Planner', false)
+    expect(openSubAgentSession).toHaveBeenCalledWith('chat-1', 'agent-session-2', 'Reviewer', false)
     expect(host.textContent).toContain('Planner history')
     expect(host.textContent).toContain('Sub-agent inspected the provider runtime.')
+    expect(host.textContent).toContain('Reviewer history')
+    expect(host.textContent).toContain('Sub-agent reviewed the provider runtime.')
     expect(useAppStore.getState().activeSessionId).toBe('chat-1')
 
     act(() => {
