@@ -1169,7 +1169,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
             )}
             {isClaudeProvider(currentProvider, currentProviderId) && (
               <div className="mb-2 rounded-md border px-2.5 py-2 text-xs" style={{ borderColor: 'color-mix(in srgb, var(--yellow) 45%, var(--border))', background: 'color-mix(in srgb, var(--yellow) 10%, var(--surface))', color: 'var(--text-2)' }}>
-                Claude structured mode cannot surface interactive permission or user-input prompts. Use Accept Edits, Plan, or the CLI fallback when a turn needs interaction.
+                Claude structured mode cannot surface interactive permission or user-input prompts, and model discovery is limited to the active model. Use Accept Edits, Plan, or the CLI fallback when a turn needs interaction.
               </div>
             )}
             {acp?.lastError && (

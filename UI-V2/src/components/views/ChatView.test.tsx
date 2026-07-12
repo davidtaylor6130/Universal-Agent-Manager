@@ -1024,6 +1024,7 @@ describe('ChatView', () => {
     })
 
     expect(host.textContent).toContain('Claude structured mode cannot surface interactive permission')
+    expect(host.textContent).toContain('model discovery is limited to the active model')
 
     openComposerOptions(host)
     const planButton = host.querySelector('button[title^="Toggle planning mode"]') as HTMLButtonElement | null
