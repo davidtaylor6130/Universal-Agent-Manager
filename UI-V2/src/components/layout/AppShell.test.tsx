@@ -200,6 +200,48 @@ describe('AppShell', () => {
     host.remove()
   })
 
+  it('switches the VCS panel to the newly focused chat', async () => {
+    const getVcsCommitStatus = vi.fn(async (chatId: string) => ({
+      available: true,
+      vcsTypes: ['git' as const],
+      activeVcsType: 'git' as const,
+      workspaceDirectory: `/tmp/${chatId}`,
+      branchOrRevision: chatId,
+      changedFiles: [],
+      lineStatsReady: true,
+      warning: '',
+      error: '',
+    }))
+    useAppStore.setState({
+      sessions: [
+        { id: 'chat-1', name: 'Chat 1', viewMode: 'chat', folderId: 'folder', workspaceDirectory: '/tmp/chat-1', createdAt: new Date(), updatedAt: new Date() },
+        { id: 'chat-2', name: 'Chat 2', viewMode: 'chat', folderId: 'folder', workspaceDirectory: '/tmp/chat-2', createdAt: new Date(), updatedAt: new Date() },
+      ],
+      activeSessionId: 'chat-1',
+      commitPanelOpen: true,
+      getVcsCommitStatus,
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    await act(async () => {
+      root.render(<AppShell />)
+      await Promise.resolve()
+    })
+    expect(host.textContent).toContain('/tmp/chat-1')
+
+    await act(async () => {
+      useAppStore.setState({ activeSessionId: 'chat-2' })
+      await Promise.resolve()
+    })
+    expect(host.textContent).toContain('/tmp/chat-2')
+    expect(getVcsCommitStatus).toHaveBeenCalledWith('chat-2', 'git', expect.any(Object))
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('renders commit files as checklist rows with line stats and no diff view', async () => {
     useAppStore.setState({
       sessions: [

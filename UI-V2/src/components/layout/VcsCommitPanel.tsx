@@ -36,6 +36,16 @@ export function VcsCommitPanel() {
   const [vcsMenuOpen, setVcsMenuOpen] = useState(false)
   const latestStatusRequestRef = useRef('')
 
+  useEffect(() => {
+    latestStatusRequestRef.current = ''
+    setStatus(emptyStatus(session?.workspaceDirectory ?? ''))
+    setSelectedFiles([])
+    setTitle('')
+    setDescription('')
+    setNotice('')
+    setVcsMenuOpen(false)
+  }, [activeSessionId, session?.workspaceDirectory])
+
   const refresh = useCallback(async (vcsType = selectedVcsType, includeLineStats = false) => {
     if (!activeSessionId) {
       setStatus(emptyStatus())
