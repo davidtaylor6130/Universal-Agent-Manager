@@ -599,7 +599,11 @@ UAM_TEST(ChatImportUtilsBuildReadableTitlesFromPromptWrappers)
 
 UAM_TEST(CommandLineSplitPreservesQuotedEmptyArguments)
 {
+#if defined(_WIN32)
+	const std::vector<std::string> words = uam::command_line::SplitWords("alpha \"\" beta \"\" \"gamma delta\"");
+#else
 	const std::vector<std::string> words = uam::command_line::SplitWords("alpha \"\" beta '' gamma\\ delta");
+#endif
 	const std::vector<std::string> sliced_words = uam::command_line::SplitWords(std::string_view("xxalpha \"beta gamma\"yy").substr(2, 18));
 
 	UAM_ASSERT_EQ(words.size(), static_cast<std::size_t>(5));
@@ -2442,6 +2446,7 @@ UAM_TEST(GitWorktreeServiceCreatesDiscardsAndPortsChanges)
 	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
 	UAM_ASSERT(RunGitForTest(repo, "config user.email uam@example.test"));
 	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
+	UAM_ASSERT(RunGitForTest(repo, "config core.autocrlf false"));
 	UAM_ASSERT(uam::io::WriteTextFile(repo / "app.txt", "one\n"));
 	UAM_ASSERT(RunGitForTest(repo, "add app.txt"));
 	UAM_ASSERT(RunGitForTest(repo, "commit -m initial"));
