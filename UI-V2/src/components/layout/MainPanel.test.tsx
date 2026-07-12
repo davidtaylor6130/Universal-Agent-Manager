@@ -167,7 +167,7 @@ describe('MainPanel', () => {
     const firstPane = host.querySelector('[data-testid="chat-pane-chat-1"]') as HTMLElement
     expect(firstPane.style.getPropertyValue('--accent')).toBe('#f97316')
     expect(firstPane.style.border).toContain('1px')
-    expect(firstPane.style.boxShadow).toContain('inset 0 0 4px')
+    expect(firstPane.style.boxShadow).toContain('inset 0 0 8px')
     expect(firstPane.style.filter).toBe('none')
     expect(firstPane.style.transition).toContain('140ms')
 
@@ -180,7 +180,7 @@ describe('MainPanel', () => {
     expect(host.querySelectorAll('[data-testid^="chat-pane-"]')).toHaveLength(4)
     const fourthPane = host.querySelector('[data-testid="chat-pane-chat-4"]') as HTMLElement
     expect(fourthPane.style.border).toContain('1px')
-    expect(fourthPane.style.boxShadow).toContain('inset 0 0 4px')
+    expect(fourthPane.style.boxShadow).toContain('inset 0 0 8px')
     expect(firstPane.style.filter).toContain('brightness(0.82)')
 
     const secondPane = host.querySelector('[data-testid="chat-pane-chat-2"]') as HTMLElement

@@ -48,8 +48,9 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
 
   useEffect(() => subscribeChatGridLayout(setGridLayout), [])
 
-  const paneColorForSessions = (sessionIds: string[]) => {
-    const paneIndexes = gridLayout.sessionIds.slice(0, gridLayout.paneCount).flatMap((id, index) => sessionIds.includes(id) ? [index] : [])
+  const paneColorForFolder = (folderId: string) => {
+    const folderSessionIds = new Set(sessions.filter((session) => session.folderId === folderId).map((session) => session.id))
+    const paneIndexes = gridLayout.sessionIds.slice(0, gridLayout.paneCount).flatMap((id, index) => folderSessionIds.has(id) ? [index] : [])
     const paneIndex = paneIndexes.includes(gridLayout.activePane) ? gridLayout.activePane : paneIndexes[0]
     return paneIndex === undefined ? '' : chatPaneColors[paneIndex]
   }
@@ -183,7 +184,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
           folder={folder}
           sessionIds={sessionIds}
           shouldShowSessions={shouldShowSessions}
-          hiddenPaneColor={shouldShowSessions ? '' : paneColorForSessions(sessionIds)}
+          hiddenPaneColor={shouldShowSessions ? '' : paneColorForFolder(folder.id)}
           isSearching={searchModel.isSearching}
           isEditing={editingFolderId === folder.id}
           editFolderName={editFolderName}
@@ -567,9 +568,9 @@ const FolderRow = memo(function FolderRow({
         onClick={onToggle}
       >
         {shouldShowSessions ? (
-          <FolderOpenIcon data-testid={`folder-icon-${folder.id}`} size={14} style={{ flexShrink: 0, color: 'var(--accent)', opacity: 0.85 }} aria-hidden />
+          <FolderOpenIcon data-testid={`folder-icon-${folder.id}`} size={14} style={{ flexShrink: 0, color: 'var(--text-3)', opacity: 0.85 }} aria-hidden />
         ) : (
-          <FolderIcon data-testid={`folder-icon-${folder.id}`} size={14} style={{ flexShrink: 0, color: hiddenPaneColor || 'var(--accent)', opacity: hiddenPaneColor ? 1 : 0.85, transition: 'color 140ms ease, opacity 140ms ease' }} aria-hidden />
+          <FolderIcon data-testid={`folder-icon-${folder.id}`} size={14} style={{ flexShrink: 0, color: hiddenPaneColor || 'var(--text-3)', filter: hiddenPaneColor ? `drop-shadow(0 0 3px ${hiddenPaneColor})` : 'none', opacity: hiddenPaneColor ? 1 : 0.85, transition: 'color 140ms ease, filter 140ms ease, opacity 140ms ease' }} aria-hidden />
         )}
         <span className="font-semibold truncate flex-1" style={{ fontSize: 13 }}>
           {folder.name}

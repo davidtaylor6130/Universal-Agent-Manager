@@ -68,6 +68,7 @@ describe('FolderTree', () => {
     expect(host.textContent).not.toContain('⌃')
     expect(host.textContent).toContain('See more')
     expect(host.textContent).toContain('+2')
+    expect((host.querySelector('[data-testid="folder-icon-project"]') as HTMLElement).style.color).toBe('var(--text-3)')
     const activeTitle = Array.from(host.querySelectorAll('span')).find((span) => span.textContent === 'Chat 1')
     expect(activeTitle?.getAttribute('style')).toContain('var(--text)')
     expect(activeTitle?.getAttribute('style')).not.toContain('#ffffff')
@@ -133,7 +134,9 @@ describe('FolderTree', () => {
     act(() => root.render(<FolderTree searchQuery="" />))
 
     expect(host.textContent).not.toContain('Chat 3')
-    expect((host.querySelector('[data-testid="folder-icon-project"]') as HTMLElement).style.color).toBe('rgb(236, 72, 153)')
+    const folderIcon = host.querySelector('[data-testid="folder-icon-project"]') as HTMLElement
+    expect(folderIcon.style.color).toBe('rgb(236, 72, 153)')
+    expect(folderIcon.style.filter).toContain('drop-shadow')
 
     act(() => root.unmount())
     host.remove()
