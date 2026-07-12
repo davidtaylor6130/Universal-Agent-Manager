@@ -51,38 +51,6 @@ history for every provider; Gemini can additionally overlay its native JSON hist
 The detailed, release-gating capability matrix is maintained in
 [docs/provider-runtime-parity.md](docs/provider-runtime-parity.md).
 
-### Provider Feature Support (Mac)
-
-| Provider | ID | Structured | CLI Fallback | Native History | Interactive |
-|----------|:--:|:---------:|:------------:|:--------------:|:-----------:|
-| **Gemini CLI** | `gemini-cli` | ✅ | ✅ | ✅ | 🔜 |
-| **Codex CLI** | `codex-cli` | ✅ | ✅ | ✅ | 🔜 |
-| **Claude Code** | `claude-cli` | ✅ | ✅ | ✅ | 🔜 |
-| **OpenCode CLI** | `opencode-cli` | ✅ | ✅ | ✅ | 🔜 |
-| **GitHub Copilot CLI** | `copilot-cli` | ✅ | ✅ | ✅ | 🔜 |
-
-### Provider Feature Support (Windows)
-
-| Provider | ID | Structured | CLI Fallback | Native History | Interactive |
-|----------|:--:|:---------:|:------------:|:--------------:|:-----------:|
-| **Gemini CLI** | `gemini-cli` | ✅ | 🔜🛠️ | 🔜🛠️ | 🔜 |
-| **Codex CLI** | `codex-cli` | ✅ | 🔜🛠️ | 🔜🛠️ | 🔜 |
-| **Claude Code** | `claude-cli` | ✅ | 🔜🛠️ | 🔜🛠️ | 🔜 |
-| **OpenCode CLI** | `opencode-cli` | ✅ | 🔜🛠️ | 🔜🛠️ | 🔜 |
-| **GitHub Copilot CLI** | `copilot-cli` | ✅ | 🔜🛠️ | 🔜🛠️ | 🔜 |
-
-> Note: the primary development environment is macOS, so Windows features are ported and confirmed afterward. The Windows column is updated as each feature is verified.
-
-### Symbol Legend
-
-| Symbol | Status | Meaning |
-|:------:|:------:|---------|
-| ✅ | **Current** | Implemented and working |
-| ❌ | **Current** | Not available for this provider |
-| 🔜 | **Future** | Planned, not yet implemented |
-| 🔜🛠️ | **Future** | In active development |
-| 🚫 | **Future** | Explicitly not planned |
-
 ### View Definitions
 
 | View | Description |
@@ -318,7 +286,6 @@ Current bridge capabilities include:
 
 This is an actively developed project; the latest stable line is published as release `v3.0.1`. Tracked gaps live in [GitHub Issues](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues). Current focus areas:
 
-- Windows feature parity is behind macOS (CLI fallback and native history are in active development — see the Support Matrix).
 - The in-app goal loop has been significantly improved (stall watchdog, loop detection, keep-awake) but edge cases remain around continuation, failure surfacing, and stop conditions.
 - The polished "Interactive" view (CLI power with chat-bubble overlay) is planned but not yet implemented.
 - Monolith decomposition of the ACP session runtime and frontend Zustand store is ongoing.
