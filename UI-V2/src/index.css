@@ -687,6 +687,8 @@ summary,
   border-color: color-mix(in srgb, var(--blue) 50%, var(--border-bright));
 }
 
+.uam-subagent-panel[open] > div { animation: uam-tooltip-in var(--dur-fast) var(--ease); }
+
 /* ══════════════════════════════════════════════════════════════
    UI PRIMITIVES (components/ui/) — redesign design system.
    Compose these; do not restyle bare <button>/<div> ad-hoc.
