@@ -610,6 +610,7 @@ add_custom_target(uam_ui_v2_build
   VERBATIM
 )
 add_dependencies(universal_agent_manager uam_ui_v2_build)
+set_property(TARGET universal_agent_manager APPEND PROPERTY LINK_DEPENDS "${UAM_UI_DIST_SRC}/index.html")
 
 if(APPLE AND UAM_MACOS_BUNDLE)
   add_custom_command(TARGET universal_agent_manager POST_BUILD
