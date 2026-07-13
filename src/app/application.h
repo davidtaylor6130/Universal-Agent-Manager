@@ -6,6 +6,8 @@
 
 #include <filesystem>
 #include <memory>
+#include <string>
+#include <vector>
 
 /// <summary>
 /// Top-level application lifetime manager for the CEF build.
@@ -25,7 +27,7 @@ class Application
 	/// Called from main() once CEF has been initialized.
 	/// Runs CefRunMessageLoop() until the window is closed.
 	/// </summary>
-	int Run(CefMainArgs main_args);
+	int Run(CefMainArgs main_args, std::vector<std::string> launch_arguments = {});
 
 	/// <summary>
 	/// Called periodically from a CefTask on the UI thread.
@@ -39,6 +41,9 @@ class Application
 	std::unique_ptr<uam::platform::DataRootLock> m_dataRootLock;
 	CefRefPtr<CefBrowser> m_browser;
 	bool m_done = false;
+	bool m_shellActionInvocation = false;
+	std::string m_workspaceFolderAvailabilityFingerprint;
+	std::vector<std::string> m_launchArguments;
 	int m_exitCode = 0;
 
 	// ---- startup / teardown -----------------------------------------------

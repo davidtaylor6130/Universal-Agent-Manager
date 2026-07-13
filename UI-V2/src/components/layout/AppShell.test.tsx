@@ -19,6 +19,7 @@ describe('AppShell', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     useAppStore.setState({
+      folders: [],
       sessions: [],
       activeSessionId: null,
       isNewChatModalOpen: false,
@@ -30,6 +31,7 @@ describe('AppShell', () => {
       commitPanelOpen: false,
       sidebarWidthPx: 320,
       commitPanelWidthPx: 420,
+      shellActionNotification: '',
     })
   })
 
@@ -87,6 +89,48 @@ describe('AppShell', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('lists missing workspace folders in notifications', () => {
+    useAppStore.setState({
+      folders: [{
+        id: 'missing',
+        name: 'Deleted project',
+        parentId: null,
+        directory: '/tmp/deleted project',
+        isExpanded: true,
+        missing: true,
+        createdAt: new Date(),
+      }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<AppShell />))
+
+    const alerts = host.querySelector('button[aria-label="1 alert"]') as HTMLButtonElement
+    expect(alerts).toBeTruthy()
+    act(() => alerts.click())
+    expect(host.querySelector('[aria-label="Notifications"]')?.textContent).toContain('Workspace folder missing: Deleted project')
+    expect(host.querySelector('[aria-label="Notifications"]')?.textContent).toContain('/tmp/deleted project')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('shows shell action execution feedback in notifications', () => {
+    useAppStore.setState({ shellActionNotification: 'Started shell action: Review Selection' })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<AppShell />))
+
+    const alerts = host.querySelector('button[aria-label="1 alert"]') as HTMLButtonElement
+    act(() => alerts.click())
+    expect(host.querySelector('[aria-label="Notifications"]')?.textContent).toContain('Started shell action: Review Selection')
+
+    act(() => root.unmount())
     host.remove()
   })
 

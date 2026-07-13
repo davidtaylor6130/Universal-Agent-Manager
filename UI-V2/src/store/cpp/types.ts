@@ -60,6 +60,7 @@ export interface CppChat {
   serviceTier?: string
   approvalMode?: string
   autoApproveCommands?: boolean
+  commandSafetyTier?: 'low' | 'medium' | 'high'
   memoryEnabled?: boolean
   memoryLastProcessedMessageCount?: number
   memoryLastProcessedAt?: string
@@ -187,6 +188,9 @@ export interface AcpPendingPermission {
   kind: string
   status: string
   content: string
+  safetyRisk?: 'allowed' | 'warn' | 'warn_high'
+  safetyTier?: 'low' | 'medium' | 'high'
+  safetyRequiresApproval?: boolean
   options: AcpPermissionOption[]
 }
 
@@ -298,6 +302,7 @@ export interface CppFolder {
   title: string
   directory: string
   collapsed: boolean
+  missing?: boolean
 }
 
 export interface CppProvider {
@@ -363,6 +368,16 @@ export interface CliVersionProviderState {
 
 export interface CliVersionManager {
   providers: CliVersionProviderState[]
+}
+
+export interface ShellAction {
+  id: string
+  label: string
+  skillPath: string
+  acceptsFiles: boolean
+  acceptsFolders: boolean
+  enabled: boolean
+  openWorkspace: boolean
 }
 
 export interface CppSettings {
@@ -452,6 +467,8 @@ export interface CppAppState {
   settings: CppSettings
   memoryActivity?: MemoryActivity
   cliVersionManager?: CliVersionManager
+  shellActions?: ShellAction[]
+  shellActionNotification?: string
 }
 
 export interface CppStatePatch {
@@ -466,6 +483,8 @@ export interface CppStatePatch {
   settings?: CppSettings
   memoryActivity?: MemoryActivity
   cliVersionManager?: CliVersionManager
+  shellActions?: ShellAction[]
+  shellActionNotification?: string
 }
 
 export interface CliBinding {

@@ -52,6 +52,7 @@ import type {
   MemoryActivity,
   MemoryWorkerBinding,
   ProviderChatDefaults,
+  ShellAction,
 } from './cpp/types'
 
 import {
@@ -123,6 +124,8 @@ function deserializeState(
     providerChatDefaults: Record<string, ProviderChatDefaults>
     defaultEditorPresetId: string
     editorFileAssociations: EditorFileAssociation[]
+    shellActions: ShellAction[]
+    shellActionNotification: string
   }
 ) {
   // Build lookup maps for reference-identity preservation
@@ -279,6 +282,8 @@ function deserializeState(
     providerChatDefaults: pendingProviderChatDefaults?.providerChatDefaults ?? cpp.settings.providerChatDefaults ?? {},
     defaultEditorPresetId: cpp.settings.defaultEditorPresetId ?? 'vscode',
     editorFileAssociations: cpp.settings.editorFileAssociations ?? defaultEditorFileAssociations(),
+    shellActions: cpp.shellActions ?? existing.shellActions,
+    shellActionNotification: cpp.shellActionNotification ?? existing.shellActionNotification,
   }
 }
 
@@ -419,6 +424,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     providerChatDefaults: pendingProviderChatDefaults?.providerChatDefaults ?? patch.settings?.providerChatDefaults ?? current.providerChatDefaults,
     defaultEditorPresetId: patch.settings?.defaultEditorPresetId ?? current.defaultEditorPresetId,
     editorFileAssociations: patch.settings?.editorFileAssociations ?? current.editorFileAssociations,
+    shellActions: patch.shellActions ?? current.shellActions,
+    shellActionNotification: patch.shellActionNotification ?? current.shellActionNotification,
   }
 }
 
@@ -554,6 +561,8 @@ export const useAppStore = create<AppState>((set, get) => {
             providerChatDefaults: current.providerChatDefaults,
             defaultEditorPresetId: current.defaultEditorPresetId,
             editorFileAssociations: current.editorFileAssociations,
+            shellActions: current.shellActions,
+            shellActionNotification: current.shellActionNotification,
           })
           set(deserialized)
           // Sync theme to DOM
@@ -752,6 +761,8 @@ export const useAppStore = create<AppState>((set, get) => {
         providerChatDefaults: current.providerChatDefaults,
         defaultEditorPresetId: current.defaultEditorPresetId,
         editorFileAssociations: current.editorFileAssociations,
+        shellActions: current.shellActions,
+        shellActionNotification: current.shellActionNotification,
       })
       set(deserialized)
       if (deserialized.theme) {

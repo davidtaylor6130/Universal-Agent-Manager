@@ -8,7 +8,7 @@ import {
   isLatestPendingRequest,
   rememberPendingRequest,
 } from '../cpp/reconcile'
-import type { CppFolder } from '../cpp/types'
+import type { CppFolder, ShellAction } from '../cpp/types'
 import { DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID } from '../../utils/providerMetadata'
 import type { ZustandSet, ZustandGet } from '../storeTypes'
 
@@ -36,6 +36,8 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
     markdownStoreLoading: false,
     markdownStoreError: '',
     markdownStoreAttachedBySessionId: {} as Record<string, MarkdownStoreEntry[]>,
+    shellActions: [] as ShellAction[],
+    shellActionNotification: '',
 
     addFolder: (name: string, _parentId: string | null, directory: string) => {
       if (isCefContext()) {
@@ -259,6 +261,30 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       }
 
       set({ markdownStoreDirectory: trimmed, markdownStoreError: '' })
+      return true
+    },
+
+    setShellActions: async (actions: ShellAction[]) => {
+      if (isCefContext()) {
+        const response = await sendToCEF({ action: 'setShellActions', payload: { actions } })
+        if (!response.ok) {
+          set({ shellActionNotification: response.error ?? 'Failed to save shell actions.' })
+          return false
+        }
+      }
+      set({ shellActions: actions, shellActionNotification: 'Shell action settings saved. Choose Apply to update Finder or Explorer.' })
+      return true
+    },
+
+    applyShellActions: async () => {
+      if (isCefContext()) {
+        const response = await sendToCEF({ action: 'applyShellActions' })
+        if (!response.ok) {
+          set({ shellActionNotification: response.error ?? 'Failed to apply shell actions.' })
+          return false
+        }
+      }
+      set({ shellActionNotification: 'Shell actions applied successfully.' })
       return true
     },
 

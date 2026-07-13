@@ -873,7 +873,7 @@ inline bool BrowsePathWithNativeDialogWindows(const PlatformPathBrowseTarget tar
 		return false;
 	}
 
-	*selected_path_out = std::filesystem::path(selected_wide).string();
+	*selected_path_out = uam::paths::Utf8PathString(std::filesystem::path(selected_wide));
 	CoTaskMemFree(selected_wide);
 	selected_item->Release();
 	dialog->Release();

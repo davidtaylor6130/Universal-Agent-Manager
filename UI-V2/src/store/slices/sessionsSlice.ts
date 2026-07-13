@@ -991,6 +991,28 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
+    setSessionCommandSafetyTier: async (id: string, tier: 'low' | 'medium' | 'high'): Promise<boolean> => {
+      const previousSession = get().sessions.find((session) => session.id === id)
+      if (!previousSession || (previousSession.commandSafetyTier ?? 'medium') === tier) return Boolean(previousSession)
+      const applyTier = () => set((state) => ({
+        sessions: state.sessions.map((session) => session.id === id ? { ...session, commandSafetyTier: tier, updatedAt: new Date() } : session),
+      }))
+      if (!isCefContext()) {
+        applyTier()
+        return true
+      }
+
+      applyTier()
+      const response = await sendToCEF({
+        action: 'setChatCommandSafetyTier',
+        payload: { chatId: id, commandSafetyTier: tier },
+        requestId: createRequestId('setSessionCommandSafetyTier'),
+      })
+      if (response.ok) return true
+      set((state) => ({ sessions: state.sessions.map((session) => session.id === id ? previousSession : session) }))
+      return false
+    },
+
     setSessionMemoryEnabled: async (id: string, enabled: boolean): Promise<boolean> => {
       const previousSession = get().sessions.find((s) => s.id === id)
       if (!previousSession) {

@@ -255,6 +255,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/provider_profile_migration_service.cpp
   src/app/provider_model_catalog_service.cpp
   src/app/runtime_orchestration_services.cpp
+  src/app/shell_action_service.cpp
   src/app/pending_call_service.cpp
   src/app/vcs_commit_service.cpp
   src/cef/uam_cef_app.cpp
@@ -267,6 +268,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/cef/chat_handlers.cpp
   src/cef/chat_config_handlers.cpp
   src/cef/settings_handlers.cpp
+  src/cef/shell_action_handlers.cpp
   src/cef/markdown_handlers.cpp
   src/cef/folder_handlers.cpp
   src/cef/memory_handlers.cpp
@@ -360,6 +362,8 @@ elseif(WIN32)
     nlohmann_json::nlohmann_json
     libcef_dll_wrapper
     "${cef_binary_SOURCE_DIR}/Release/libcef.lib"
+    advapi32
+    shell32
   )
 endif()
 
@@ -751,6 +755,7 @@ if(UAM_BUILD_TESTS)
     src/app/provider_profile_migration_service.cpp
     src/app/provider_model_catalog_service.cpp
     src/app/runtime_orchestration_services.cpp
+    src/app/shell_action_service.cpp
     src/app/pending_call_service.cpp
     src/app/vcs_commit_service.cpp
     src/cef/uam_cef_command_line_config.cpp
@@ -831,6 +836,7 @@ if(UAM_BUILD_TESTS)
       nlohmann_json::nlohmann_json
       libcef_dll_wrapper
       "${cef_binary_SOURCE_DIR}/Release/libcef.lib"
+      advapi32
     )
   endif()
   target_compile_definitions(uam_core_tests PRIVATE

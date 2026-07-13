@@ -92,6 +92,23 @@ describe('FolderTree', () => {
     host.remove()
   })
 
+  it('marks a missing workspace folder accessibly without removing its chats', () => {
+    useAppStore.setState((state) => ({
+      folders: state.folders.map((folder) => ({ ...folder, missing: true })),
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const warning = host.querySelector('[data-testid="folder-missing-project"]')
+    expect(warning?.getAttribute('aria-label')).toBe('Workspace folder missing: /tmp/project')
+    expect(host.textContent).toContain('Chat 1')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('selects a visible chat row after folders are grouped for rendering', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)

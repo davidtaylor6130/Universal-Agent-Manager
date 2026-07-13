@@ -18,6 +18,7 @@ export interface Session {
   serviceTier?: string
   approvalMode?: string
   autoApproveCommands?: boolean
+  commandSafetyTier?: 'low' | 'medium' | 'high'
   memoryEnabled?: boolean
   memoryLastProcessedMessageCount?: number
   memoryLastProcessedAt?: string
@@ -34,5 +35,6 @@ export interface Folder {
   parentId: string | null
   directory: string
   isExpanded: boolean
+  missing?: boolean
   createdAt: Date
 }

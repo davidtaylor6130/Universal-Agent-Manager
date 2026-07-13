@@ -236,6 +236,15 @@ export function PermissionInlineCard({
           {permission.content}
         </pre>
       )}
+      {permission.safetyRequiresApproval && (
+        <div
+          role="alert"
+          className="mb-2 rounded-md px-2 py-1.5 text-[11px]"
+          style={{ border: '1px solid color-mix(in srgb, var(--yellow) 55%, var(--border))', background: 'color-mix(in srgb, var(--yellow) 10%, var(--surface))', color: 'var(--text-2)' }}
+        >
+          {permission.safetyRisk === 'warn_high' ? 'High-risk' : 'Command safety'} warning ({permission.safetyTier ?? 'medium'} tier). Approve or deny this action.
+        </div>
+      )}
       {waitIsStale && (
         <div
           className="mb-2 text-[11px]"

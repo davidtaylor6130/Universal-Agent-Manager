@@ -28,6 +28,7 @@ import {
   isCodexProvider,
   isCopilotProvider,
   isOpenCodeProvider,
+  providerCapabilities,
   providerRuntimeKindLabel,
   providerShortName,
 } from '../../utils/providerMetadata'
@@ -157,6 +158,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   const [goalSubmitting, setGoalSubmitting] = useState(false)
   const [goalArmNextMessage, setGoalArmNextMessage] = useState(false)
   const [slashIndex, setSlashIndex] = useState(0)
+  const [slashMessage, setSlashMessage] = useState('')
   const [composerAttachments, setComposerAttachments] = useState<LocalAttachment[]>([])
   const [attachmentError, setAttachmentError] = useState('')
   const [renderedMessageCount, setRenderedMessageCount] = useState(INITIAL_RENDERED_MESSAGES)
@@ -177,6 +179,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   const setSessionCodexOptions = useAppStore((s) => s.setSessionCodexOptions)
   const setSessionApprovalMode = useAppStore((s) => s.setSessionApprovalMode)
   const setSessionAutoApproveCommands = useAppStore((s) => s.setSessionAutoApproveCommands)
+  const setSessionCommandSafetyTier = useAppStore((s) => s.setSessionCommandSafetyTier)
   const setSessionMemoryEnabled = useAppStore((s) => s.setSessionMemoryEnabled)
   const openSessionWorkspace = useAppStore((s) => s.openSessionWorkspace)
   const openSessionWorkspaceEditor = useAppStore((s) => s.openSessionWorkspaceEditor)
@@ -286,6 +289,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
     setWorkspaceActionMessage('')
     setWorkspaceActionBusy(false)
     setGoalArmNextMessage(false)
+    setSlashMessage('')
     setRenderedMessageCount(INITIAL_RENDERED_MESSAGES)
   }, [session.id])
 
@@ -621,6 +625,43 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   )
   const currentModelId = acp?.currentModelId || session.modelId || ''
   const currentModeId = acp?.currentModeId || session.approvalMode || 'default'
+  const permissionModes = useMemo(() => {
+    if ((acp?.availableModes.length ?? 0) > 0) return acp!.availableModes
+    const modes = [
+      { id: 'default', name: 'Default', description: 'Use the provider default permission mode.' },
+      { id: 'plan', name: 'Plan', description: 'Plan before implementation.' },
+    ]
+    if (providerCapabilities(currentProviderId, currentProvider).hasAcceptEditsMode) {
+      modes.push({ id: 'acceptEdits', name: 'Accept Edits', description: 'Allow file edits while keeping command approvals.' })
+    }
+    return modes
+  }, [acp?.availableModes, currentProvider, currentProviderId])
+  const runPermissionCommand = async (rawMode?: string) => {
+    setDraft('')
+    setSlashIndex(0)
+    if (!providerSupported || !currentProvider.supportsStructured) {
+      setSlashMessage(`Permission-mode changes are unavailable for ${currentProviderName}.`)
+      return
+    }
+
+    const currentMode = permissionModes.find((mode) => mode.id === currentModeId)
+    if (!rawMode) {
+      setSlashMessage(`Permission mode: ${currentMode?.name ?? currentModeId}. Supported: ${permissionModes.map((mode) => mode.id).join(', ')}.`)
+      return
+    }
+
+    const normalized = rawMode.trim().toLowerCase()
+    const requested = permissionModes.find((mode) =>
+      mode.id.toLowerCase() === normalized || mode.name.toLowerCase().replace(/\s+/g, '-') === normalized
+    )
+    if (!requested) {
+      setSlashMessage(`Unsupported permission mode "${rawMode}". Supported: ${permissionModes.map((mode) => mode.id).join(', ')}.`)
+      return
+    }
+
+    const changed = await setSessionApprovalMode(session.id, requested.id)
+    setSlashMessage(changed ? `Permission mode changed to ${requested.name}.` : `Failed to change permission mode to ${requested.name}.`)
+  }
   const latestPlanMessageIndex = messages.reduce((latest, message, index) => {
     const hasPlan = message.role === 'assistant' && (Boolean(message.planSummary?.trim()) || (message.planEntries?.length ?? 0) > 0)
     return hasPlan ? index : latest
@@ -683,6 +724,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   const slashCommands = useMemo(
     () => [
       { id: 'model', label: '/model', hint: 'Change the model', run: () => setModelOpen(true) },
+      { id: 'permission', label: '/permission', hint: 'Inspect or change the permission mode', run: () => void runPermissionCommand() },
       { id: 'goal', label: '/goal', hint: 'Use the next message as a goal', run: handleToggleGoal },
       {
         id: 'memory',
@@ -700,7 +742,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
       })),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [session.id, session.memoryEnabled, markdownStoreEntries]
+    [session.id, session.memoryEnabled, markdownStoreEntries, currentModeId, permissionModes, providerSupported, currentProviderName]
   )
   const slashMatch = /^\/([\w-]*)$/.exec(draft)
   const slashQuery = slashMatch ? slashMatch[1].toLowerCase() : null
@@ -743,6 +785,12 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
         setDraft('')
         return
       }
+    }
+    const permissionCommand = /^\/permission(?:\s+(\S+))?\s*$/i.exec(draft)
+    if (event.key === 'Enter' && !event.shiftKey && permissionCommand) {
+      event.preventDefault()
+      void runPermissionCommand(permissionCommand[1])
+      return
     }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
@@ -1328,6 +1376,11 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                 {attachmentError}
               </div>
             )}
+            {slashMessage && (
+              <div role="status" className="px-3 pt-2 text-[11px]" style={{ color: 'var(--text-2)' }}>
+                {slashMessage}
+              </div>
+            )}
             {slashOpen && (
               <div className="relative">
                 <div
@@ -1348,7 +1401,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                         type="button"
                         role="option"
                         aria-selected={active}
-                        ref={active ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
+                        ref={active ? (el) => el?.scrollIntoView?.({ block: 'nearest' }) : undefined}
                         onMouseEnter={() => setSlashIndex(index)}
                         onMouseDown={(e) => { e.preventDefault(); runSlashCommand(command) }}
                         className="flex w-full items-baseline gap-3 px-3 py-2 text-left"
@@ -1406,6 +1459,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
               serviceTier={session.serviceTier ?? ''}
               approvalModeId={currentModeId}
               autoApproveCommands={session.autoApproveCommands ?? false}
+              commandSafetyTier={session.commandSafetyTier ?? 'medium'}
               memoryEnabled={session.memoryEnabled ?? true}
               canChangeProvider={canChangeProvider}
               providerOpen={providerOpen}
@@ -1484,6 +1538,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
               onToggleYolo={() => {
                 void setSessionAutoApproveCommands(session.id, !(session.autoApproveCommands ?? false))
               }}
+              onSetCommandSafetyTier={(tier) => void setSessionCommandSafetyTier(session.id, tier)}
               onToggleMemory={() => {
                 void setSessionMemoryEnabled(session.id, !(session.memoryEnabled ?? true))
               }}

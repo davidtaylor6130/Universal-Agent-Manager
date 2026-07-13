@@ -34,6 +34,7 @@ import type {
   MemoryActivity,
   MemoryWorkerBinding,
   ProviderChatDefaults,
+  ShellAction,
   VcsCommitResult,
   VcsCommitStatus,
   VcsType,
@@ -174,6 +175,11 @@ export function normalizeAcpApprovalMode(value: unknown): string {
   if (modeId === 'yolo') return 'default'
   if (modeId === 'auto_edit') return 'acceptEdits'
   return (ACP_APPROVAL_MODE_IDS as readonly string[]).includes(modeId) ? modeId : 'default'
+}
+
+export function normalizeCommandSafetyTier(value: unknown): 'low' | 'medium' | 'high' {
+  const tier = stringOr(value).trim().toLowerCase()
+  return tier === 'low' || tier === 'high' ? tier : 'medium'
 }
 
 export function sanitizePlanEntry(value: unknown): AcpPlanEntry | null {
@@ -383,6 +389,9 @@ export function sanitizePendingPermission(value: unknown): AcpPendingPermission 
     kind: stringOr(value.kind),
     status: stringOr(value.status),
     content: stringOr(value.content),
+    safetyRisk: value.safetyRisk === 'allowed' || value.safetyRisk === 'warn' || value.safetyRisk === 'warn_high' ? value.safetyRisk : undefined,
+    safetyTier: value.safetyTier === 'low' || value.safetyTier === 'medium' || value.safetyTier === 'high' ? value.safetyTier : undefined,
+    safetyRequiresApproval: booleanOr(value.safetyRequiresApproval),
     options: Array.isArray(value.options)
       ? value.options.flatMap((option) => {
           const sanitized = sanitizePermissionOption(option)
@@ -585,6 +594,7 @@ export function sanitizeCppFolder(value: unknown): CppFolder | null {
     title: stringOr(value.title, 'Untitled'),
     directory: stringOr(value.directory),
     collapsed: booleanOr(value.collapsed),
+    missing: booleanOr(value.missing),
   }
 }
 
@@ -601,6 +611,7 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     modelId: normalizeAcpModelId(value.modelId),
     approvalMode: normalizeAcpApprovalMode(value.approvalMode),
     autoApproveCommands: booleanOr(value.autoApproveCommands, stringOr(value.approvalMode).trim() === 'yolo'),
+    commandSafetyTier: normalizeCommandSafetyTier(value.commandSafetyTier),
     memoryEnabled: booleanOr(value.memoryEnabled, true),
     memoryLastProcessedMessageCount: finiteNumberOr(value.memoryLastProcessedMessageCount, 0),
     memoryLastProcessedAt: isString(value.memoryLastProcessedAt) ? value.memoryLastProcessedAt : undefined,
@@ -1132,6 +1143,7 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
         : null
 
   const settings = sanitizeCppSettings(value.settings)
+  const shellActions = sanitizeShellActions(value.shellActions)
 
   return {
     stateRevision: finiteNumberOr(value.stateRevision, 0),
@@ -1144,7 +1156,28 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
     settings,
     memoryActivity: sanitizeMemoryActivity(value.memoryActivity, settings.memoryLastStatus),
     cliVersionManager: sanitizeCliVersionManager(value.cliVersionManager),
+    shellActions,
+    shellActionNotification: stringOr(value.shellActionNotification),
   }
+}
+
+function sanitizeShellActions(value: unknown): ShellAction[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((entry) => {
+    if (!isRecord(entry)) return []
+    const id = stringOr(entry.id).trim()
+    const label = stringOr(entry.label).trim()
+    if (!id || !label) return []
+    return [{
+      id,
+      label,
+      skillPath: stringOr(entry.skillPath),
+      acceptsFiles: booleanOr(entry.acceptsFiles, true),
+      acceptsFolders: booleanOr(entry.acceptsFolders, true),
+      enabled: booleanOr(entry.enabled, true),
+      openWorkspace: booleanOr(entry.openWorkspace, false),
+    }]
+  })
 }
 
 export function sanitizeMessagesByChatId(value: unknown): Record<string, CppMessage[]> | undefined {
@@ -1199,5 +1232,7 @@ export function sanitizeCppStatePatch(value: unknown): CppStatePatch | null {
     settings: isRecord(value.settings) ? sanitizeCppSettings(value.settings) : undefined,
     memoryActivity: value.memoryActivity !== undefined ? sanitizeMemoryActivity(value.memoryActivity) : undefined,
     cliVersionManager: value.cliVersionManager !== undefined ? sanitizeCliVersionManager(value.cliVersionManager) : undefined,
+    shellActions: value.shellActions !== undefined ? sanitizeShellActions(value.shellActions) : undefined,
+    shellActionNotification: value.shellActionNotification !== undefined ? stringOr(value.shellActionNotification) : undefined,
   }
 }

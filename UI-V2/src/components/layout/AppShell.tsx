@@ -107,7 +107,10 @@ function RightActivityRail() {
   const setCommitPanelOpen = useAppStore((s) => s.setCommitPanelOpen)
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const getChatWorktreeStatus = useAppStore((s) => s.getChatWorktreeStatus)
+  const missingFolders = useAppStore((s) => s.folders.filter((folder) => folder.missing))
+  const shellActionNotification = useAppStore((s) => s.shellActionNotification)
   const [vcsKind, setVcsKind] = useState<'git' | 'svn' | null>(null)
+  const [alertsOpen, setAlertsOpen] = useState(false)
 
   // Detect the active chat's VCS so the toggle shows the matching logo.
   useEffect(() => {
@@ -123,10 +126,9 @@ function RightActivityRail() {
   const vcsLabelKind = vcsKind === 'svn' ? 'SVN' : vcsKind === 'git' ? 'Git' : 'Git/SVN'
   const vcsIcon = vcsKind === 'svn' ? <SvnLogo size={17} /> : vcsKind === 'git' ? <GithubLogo size={16} /> : <GitBranch size={17} />
 
-  // UI-only placeholders — wired to real data later (update check = issue #21,
-  // alerts = toast/notification system). Kept inert so the affordances exist now.
+  // UI-only update placeholder — wired to real data later (issue #21).
   const updateAvailable: boolean = false
-  const alertCount: number = 0
+  const alertCount = missingFolders.length + (shellActionNotification ? 1 : 0)
 
   return (
     <aside className="uam-side-rail uam-side-rail--right" aria-label="Tool windows">
@@ -143,11 +145,38 @@ function RightActivityRail() {
           icon={<Bell size={17} />}
           label={alertCount > 0 ? `${alertCount} alert${alertCount === 1 ? '' : 's'}` : 'No new alerts'}
           tooltipSide="left"
+          active={alertsOpen}
+          onClick={() => setAlertsOpen((open) => !open)}
         />
         {alertCount > 0 && (
           <span className="absolute -right-0.5 -top-0.5 pointer-events-none" aria-hidden>
             <StatusDot tone="warning" size={7} />
           </span>
+        )}
+        {alertsOpen && (
+          <div
+            role="status"
+            aria-label="Notifications"
+            className="absolute right-9 bottom-0 z-50 grid gap-2 rounded-md p-3"
+            style={{ width: 320, background: 'var(--surface-up)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}
+          >
+            {missingFolders.length === 0 && !shellActionNotification ? (
+              <span className="text-xs" style={{ color: 'var(--text-2)' }}>No notifications.</span>
+            ) : <>
+              {shellActionNotification && (
+                <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                  <strong style={{ color: 'var(--text)' }}>Finder / Explorer action</strong>
+                  <span>{shellActionNotification}</span>
+                </div>
+              )}
+              {missingFolders.map((folder) => (
+              <div key={folder.id} className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                <strong style={{ color: 'var(--yellow)' }}>Workspace folder missing: {folder.name}</strong>
+                <span className="break-all" style={{ color: 'var(--text-3)' }}>{folder.directory}</span>
+              </div>
+              ))}
+            </>}
+          </div>
         )}
       </span>
       <span className="relative inline-flex">

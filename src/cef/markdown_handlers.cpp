@@ -6,6 +6,7 @@
 #include "app/persistence_coordinator.h"
 #include "cef/cef_push.h"
 #include "common/platform/platform_services.h"
+#include "common/paths/path_utils.h"
 #include "common/utils/string_utils.h"
 
 #include <nlohmann/json.hpp>
@@ -30,7 +31,7 @@ namespace
 		entry_json["dateCreated"] = entry.date_created;
 		entry_json["dateUpdated"] = entry.date_updated;
 		entry_json["preview"] = entry.preview;
-		entry_json["filePath"] = entry.file_path.string();
+		entry_json["filePath"] = uam::paths::Utf8PathString(entry.file_path);
 		return entry_json;
 	}
 } // namespace
@@ -61,7 +62,7 @@ void UamQueryHandler::HandleSetMarkdownStoreDirectory(CefRefPtr<CefBrowser> brow
 			cb->Failure(400, FailureDetailOrFallback(error, "Invalid Markdown Store directory."));
 			return;
 		}
-		m_app.settings.markdown_store_directory = root.string();
+		m_app.settings.markdown_store_directory = uam::paths::Utf8PathString(root);
 	}
 	else
 	{
@@ -97,7 +98,7 @@ void UamQueryHandler::HandleListMarkdownStoreEntries(CefRefPtr<CefBrowser> /*bro
 		                 {
 			                 entry_json.push_back(SerializeMarkdownStoreEntry(entry));
 		                 }
-		                 return AsyncSuccess(WithOptionalRequestId(nlohmann::json{{"directory", root.string()}, {"entries", entry_json}}, request_id));
+		                 return AsyncSuccess(WithOptionalRequestId(nlohmann::json{{"directory", uam::paths::Utf8PathString(root)}, {"entries", entry_json}}, request_id));
 	                 });
 }
 
@@ -161,4 +162,3 @@ void UamQueryHandler::HandleEditMarkdownStoreEntry(CefRefPtr<CefBrowser> /*brows
 	}
 	cb->Success("{}");
 }
-

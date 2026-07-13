@@ -20,6 +20,7 @@ import type {
   MemoryActivity,
   MemoryWorkerBinding,
   ProviderChatDefaults,
+  ShellAction,
   PushChannelStatus,
   VcsCommitMessageSuggestion,
   VcsCommitResult,
@@ -58,6 +59,8 @@ export interface AppState {
   providerChatDefaults: Record<string, ProviderChatDefaults>
   defaultEditorPresetId: string
   editorFileAssociations: EditorFileAssociation[]
+  shellActions: ShellAction[]
+  shellActionNotification: string
 
   // UI
   theme: StoredTheme
@@ -99,11 +102,14 @@ export interface AppState {
   setSessionModel: (id: string, modelId: string) => Promise<boolean>
   setSessionApprovalMode: (id: string, modeId: string) => Promise<boolean>
   setSessionAutoApproveCommands: (id: string, enabled: boolean) => Promise<boolean>
+  setSessionCommandSafetyTier: (id: string, tier: 'low' | 'medium' | 'high') => Promise<boolean>
   setSessionMemoryEnabled: (id: string, enabled: boolean) => Promise<boolean>
   setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'memoryWorkerBindings'>>) => Promise<boolean>
   setSessionCodexOptions: (id: string, options: { reasoningEffort?: string; serviceTier?: string }) => Promise<boolean>
   setProviderChatDefaults: (settings: { defaultNewChatProviderId?: string; providerChatDefaults?: Record<string, ProviderChatDefaults> }) => Promise<boolean>
   setEditorSettings: (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'>) => Promise<boolean>
+  setShellActions: (actions: ShellAction[]) => Promise<boolean>
+  applyShellActions: () => Promise<boolean>
   refreshCliProviderVersion: (providerId?: string) => Promise<boolean>
   applyCliProviderVersion: (providerId: string, version: string) => Promise<boolean>
   browseMarkdownStoreDirectory: (currentValue: string) => Promise<string | null>
