@@ -53,6 +53,16 @@ const PushStatusDot = memo(function PushStatusDot() {
   )
 })
 
+function PaneFade({ active, color, paneIndex }: { active: boolean; color: string; paneIndex: number }) {
+  return (
+    <span
+      data-testid={`pane-fade-${paneIndex + 1}`}
+      aria-hidden
+      style={{ position: 'absolute', inset: 0, zIndex: 20, pointerEvents: 'none', boxShadow: `inset 0 0 ${active ? 8 : 6}px color-mix(in srgb, ${color} ${active ? 28 : 12}%, transparent)`, transition: 'box-shadow 140ms ease' }}
+    />
+  )
+}
+
 function ChatPane({ session, active, paneIndex, onActivate }: {
   session: Session
   active: boolean
@@ -77,16 +87,15 @@ function ChatPane({ session, active, paneIndex, onActivate }: {
 
   return (
     <div
-      className="flex flex-col h-full overflow-hidden"
+      className="relative flex flex-col h-full overflow-hidden"
       data-testid={`chat-pane-${session.id}`}
       data-pane={paneIndex + 1}
       data-focused={active}
       onMouseDown={() => { if (!active) onActivate() }}
       style={{
         border: `1px solid ${paneColor}`,
-        boxShadow: `inset 0 0 ${active ? 8 : 6}px color-mix(in srgb, ${paneColor} ${active ? 16 : 7}%, transparent)`,
         filter: active ? 'none' : 'brightness(0.82) saturate(0.72)',
-        transition: 'filter 140ms ease, box-shadow 140ms ease, border-color 140ms ease',
+        transition: 'filter 140ms ease, border-color 140ms ease',
         '--accent': paneColor,
         '--accent-dim': `color-mix(in srgb, ${paneColor} 12%, transparent)`,
         '--accent-glow': `color-mix(in srgb, ${paneColor} 20%, transparent)`,
@@ -180,6 +189,7 @@ function ChatPane({ session, active, paneIndex, onActivate }: {
       <div className="flex-1 overflow-hidden">
         {view === 'chat' ? <ChatView session={session} accentColor={paneColor} /> : <CLIView session={session} />}
       </div>
+      <PaneFade active={active} color={paneColor} paneIndex={paneIndex} />
     </div>
   )
 }
@@ -189,14 +199,16 @@ function EmptyPane({ active, paneIndex, onActivate }: { active: boolean; paneInd
   return (
     <button
       type="button"
-      className="flex h-full w-full items-center justify-center text-center"
+      className="relative flex h-full w-full items-center justify-center text-center"
+      data-focused={active}
       onClick={onActivate}
-      style={{ color: 'var(--text-3)', border: `1px solid ${paneColor}`, boxShadow: `inset 0 0 ${active ? 8 : 6}px color-mix(in srgb, ${paneColor} ${active ? 16 : 7}%, transparent)`, filter: active ? 'none' : 'brightness(0.82) saturate(0.72)', transition: 'filter 140ms ease, box-shadow 140ms ease, border-color 140ms ease' }}
+      style={{ color: 'var(--text-3)', border: `1px solid ${paneColor}`, filter: active ? 'none' : 'brightness(0.82) saturate(0.72)', transition: 'filter 140ms ease, border-color 140ms ease' }}
     >
       <span>
         <MessageSquare size={28} style={{ opacity: 0.3, margin: '0 auto 10px' }} />
         <span className="block text-sm">Select Chat</span>
       </span>
+      <PaneFade active={active} color={paneColor} paneIndex={paneIndex} />
     </button>
   )
 }
