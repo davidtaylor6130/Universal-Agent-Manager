@@ -166,10 +166,10 @@ describe('MainPanel', () => {
     expect(Array.from(host.querySelectorAll('button')).filter((button) => button.textContent?.includes('Select Chat'))).toHaveLength(3)
     const firstPane = host.querySelector('[data-testid="chat-pane-chat-1"]') as HTMLElement
     expect(firstPane.style.getPropertyValue('--accent')).toBe('#f97316')
-    expect(firstPane.style.border).toContain('1px')
+    expect(firstPane.style.border).toBe('1px solid transparent')
     const firstFade = firstPane.querySelector('[data-testid="pane-fade-1"]') as HTMLElement
-    expect(firstFade.style.boxShadow).toContain('inset 0 0 8px')
-    expect(firstFade.style.boxShadow).toContain('70%')
+    expect(firstFade.style.boxShadow).toContain('inset 0 0 16px')
+    expect(firstFade.style.boxShadow).toContain('80%')
     expect(firstFade.style.zIndex).toBe('20')
     expect(firstFade.style.pointerEvents).toBe('none')
     expect(firstPane.style.filter).toBe('none')
@@ -183,16 +183,16 @@ describe('MainPanel', () => {
     })
     expect(host.querySelectorAll('[data-testid^="chat-pane-"]')).toHaveLength(4)
     const fourthPane = host.querySelector('[data-testid="chat-pane-chat-4"]') as HTMLElement
-    expect(fourthPane.style.border).toContain('1px')
-    expect((fourthPane.querySelector('[data-testid="pane-fade-4"]') as HTMLElement).style.boxShadow).toContain('inset 0 0 8px')
-    expect(firstFade.style.boxShadow).toContain('inset 0 0 6px')
-    expect(firstFade.style.boxShadow).toContain('40%')
+    expect(fourthPane.style.border).toBe('1px solid transparent')
+    expect((fourthPane.querySelector('[data-testid="pane-fade-4"]') as HTMLElement).style.boxShadow).toContain('inset 0 0 16px')
+    expect(firstFade.style.boxShadow).toContain('inset 0 0 12px')
+    expect(firstFade.style.boxShadow).toContain('55%')
     expect(firstPane.style.filter).toContain('brightness(0.82)')
 
     const secondPane = host.querySelector('[data-testid="chat-pane-chat-2"]') as HTMLElement
     act(() => secondPane.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
     expect(useAppStore.getState().activeSessionId).toBe('chat-2')
-    expect(secondPane.style.border).toContain('1px')
+    expect(secondPane.style.border).toBe('1px solid transparent')
     expect(secondPane.style.filter).toBe('none')
 
     act(() => root.unmount())

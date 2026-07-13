@@ -58,7 +58,7 @@ function PaneFade({ active, color, paneIndex }: { active: boolean; color: string
     <span
       data-testid={`pane-fade-${paneIndex + 1}`}
       aria-hidden
-      style={{ position: 'absolute', inset: 0, zIndex: 20, pointerEvents: 'none', boxShadow: `inset 0 0 ${active ? 8 : 6}px color-mix(in srgb, ${color} ${active ? 70 : 40}%, transparent)`, transition: 'box-shadow 140ms ease' }}
+      style={{ position: 'absolute', inset: 0, zIndex: 20, pointerEvents: 'none', boxShadow: `inset 0 0 ${active ? 16 : 12}px color-mix(in srgb, ${color} ${active ? 80 : 55}%, transparent)`, transition: 'box-shadow 140ms ease' }}
     />
   )
 }
@@ -93,7 +93,7 @@ function ChatPane({ session, active, paneIndex, onActivate }: {
       data-focused={active}
       onMouseDown={() => { if (!active) onActivate() }}
       style={{
-        border: `1px solid ${paneColor}`,
+        border: '1px solid transparent',
         filter: active ? 'none' : 'brightness(0.82) saturate(0.72)',
         transition: 'filter 140ms ease, border-color 140ms ease',
         '--accent': paneColor,
@@ -202,7 +202,7 @@ function EmptyPane({ active, paneIndex, onActivate }: { active: boolean; paneInd
       className="relative flex h-full w-full items-center justify-center text-center"
       data-focused={active}
       onClick={onActivate}
-      style={{ color: 'var(--text-3)', border: `1px solid ${paneColor}`, filter: active ? 'none' : 'brightness(0.82) saturate(0.72)', transition: 'filter 140ms ease, border-color 140ms ease' }}
+      style={{ color: 'var(--text-3)', border: '1px solid transparent', filter: active ? 'none' : 'brightness(0.82) saturate(0.72)', transition: 'filter 140ms ease, border-color 140ms ease' }}
     >
       <span>
         <MessageSquare size={28} style={{ opacity: 0.3, margin: '0 auto 10px' }} />
