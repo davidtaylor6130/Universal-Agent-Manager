@@ -169,6 +169,7 @@ describe('MainPanel', () => {
     expect(firstPane.style.border).toContain('1px')
     const firstFade = firstPane.querySelector('[data-testid="pane-fade-1"]') as HTMLElement
     expect(firstFade.style.boxShadow).toContain('inset 0 0 8px')
+    expect(firstFade.style.boxShadow).toContain('70%')
     expect(firstFade.style.zIndex).toBe('20')
     expect(firstFade.style.pointerEvents).toBe('none')
     expect(firstPane.style.filter).toBe('none')
@@ -185,6 +186,7 @@ describe('MainPanel', () => {
     expect(fourthPane.style.border).toContain('1px')
     expect((fourthPane.querySelector('[data-testid="pane-fade-4"]') as HTMLElement).style.boxShadow).toContain('inset 0 0 8px')
     expect(firstFade.style.boxShadow).toContain('inset 0 0 6px')
+    expect(firstFade.style.boxShadow).toContain('40%')
     expect(firstPane.style.filter).toContain('brightness(0.82)')
 
     const secondPane = host.querySelector('[data-testid="chat-pane-chat-2"]') as HTMLElement
