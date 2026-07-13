@@ -25,12 +25,21 @@ vi.mock('@xterm/addon-fit', () => ({
 
 import { MainPanel } from './MainPanel'
 import { useAppStore } from '../../store/useAppStore'
+import { assignChatToPane } from '../../utils/chatGridStorage'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 describe('MainPanel', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    const stored = new Map<string, string>()
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem: (key: string) => stored.get(key) ?? null,
+        setItem: (key: string, value: string) => stored.set(key, value),
+      },
+    })
     useAppStore.setState({
       sessions: [
         {
@@ -128,6 +137,69 @@ describe('MainPanel', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('leaves unassigned grid panes empty', () => {
+    useAppStore.setState((state) => ({
+      sessions: [1, 2, 3, 4].map((number) => ({
+        ...state.sessions[0],
+        id: `chat-${number}`,
+        name: `Chat ${number}`,
+      })),
+      messages: { 'chat-1': [], 'chat-2': [], 'chat-3': [], 'chat-4': [] },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => root.render(<MainPanel />))
+    const twoChats = host.querySelector('button[aria-label="Show two chats"]') as HTMLButtonElement
+    act(() => twoChats.click())
+    expect(host.querySelector('[data-testid="chat-grid-2"]')).not.toBeNull()
+
+    const fourChats = host.querySelector('button[aria-label="Show four chats"]') as HTMLButtonElement
+    act(() => fourChats.click())
+
+    expect(host.querySelector('[data-testid="chat-grid-4"]')).not.toBeNull()
+    expect(host.querySelectorAll('[data-testid^="chat-pane-"]')).toHaveLength(1)
+    expect(Array.from(host.querySelectorAll('button')).filter((button) => button.textContent?.includes('Select Chat'))).toHaveLength(3)
+    const firstPane = host.querySelector('[data-testid="chat-pane-chat-1"]') as HTMLElement
+    expect(firstPane.style.getPropertyValue('--accent')).toBe('#f97316')
+    expect(firstPane.style.border).toBe('1px solid transparent')
+    const firstFade = firstPane.querySelector('[data-testid="pane-fade-1"]') as HTMLElement
+    expect(firstFade.style.boxShadow).toContain('inset 0 0 12px')
+    expect(firstFade.style.boxShadow).toContain('80%')
+    expect(firstFade.style.zIndex).toBe('20')
+    expect(firstFade.style.pointerEvents).toBe('none')
+    expect(firstPane.style.filter).toBe('none')
+    expect(firstPane.style.transition).toContain('140ms')
+
+    act(() => {
+      assignChatToPane('chat-2', 1)
+      assignChatToPane('chat-3', 2)
+      assignChatToPane('chat-4', 3)
+      useAppStore.setState({ activeSessionId: 'chat-4' })
+    })
+    expect(host.querySelectorAll('[data-testid^="chat-pane-"]')).toHaveLength(4)
+    const fourthPane = host.querySelector('[data-testid="chat-pane-chat-4"]') as HTMLElement
+    expect(fourthPane.style.border).toBe('1px solid transparent')
+    expect((fourthPane.querySelector('[data-testid="pane-fade-4"]') as HTMLElement).style.boxShadow).toContain('inset 0 0 12px')
+    expect(firstFade.style.boxShadow).toContain('inset 0 0 9px')
+    expect(firstFade.style.boxShadow).toContain('55%')
+    expect(firstPane.style.filter).toContain('brightness(0.82)')
+
+    act(() => useAppStore.setState({ activeSessionId: 'chat-1' }))
+    expect(host.querySelectorAll('[data-testid="chat-pane-chat-1"]')).toHaveLength(1)
+    expect(firstPane.dataset.focused).toBe('true')
+
+    const secondPane = host.querySelector('[data-testid="chat-pane-chat-2"]') as HTMLElement
+    act(() => secondPane.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
+    expect(useAppStore.getState().activeSessionId).toBe('chat-2')
+    expect(secondPane.style.border).toBe('1px solid transparent')
+    expect(secondPane.style.filter).toBe('none')
+
+    act(() => root.unmount())
     host.remove()
   })
 })

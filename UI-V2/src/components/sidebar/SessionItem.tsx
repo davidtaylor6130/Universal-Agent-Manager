@@ -7,6 +7,12 @@ import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import type { Session } from '../../types/session'
 import { Tooltip } from '../ui'
+import {
+  assignChatToPane,
+  chatPaneColors,
+  readChatGridLayout,
+  subscribeChatGridLayout,
+} from '../../utils/chatGridStorage'
 
 function formatSidebarTime(date: Date | null): string {
   if (!date || Number.isNaN(date.getTime())) {
@@ -113,6 +119,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
 
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(sessionName)
+  const [gridLayout, setGridLayout] = useState(readChatGridLayout)
   // Context/overflow menu anchored to a viewport position (cursor or button).
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
   const showMenu = menuPos !== null
@@ -120,6 +127,9 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
   const menuRef = useRef<HTMLDivElement>(null)
   const lastOpenedLabel = formatSidebarTime(sessionLastOpenedAt)
   const lastOpenedTitle = formatSidebarTimeTitle(sessionLastOpenedAt)
+  const paneIndexes = gridLayout.sessionIds
+    .slice(0, gridLayout.paneCount)
+    .flatMap((id, index) => id === sessionId ? [index] : [])
 
   const lifecycleStatus: SidebarStatus = acpBinding?.attentionKind
     ? { type: 'attention', kind: acpBinding.attentionKind, label: ATTENTION_LABELS[acpBinding.attentionKind] }
@@ -137,6 +147,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
       inputRef.current.select()
     }
   }, [editing])
+
+  useEffect(() => subscribeChatGridLayout(setGridLayout), [])
 
   // Close context menu on outside click
   useEffect(() => {
@@ -171,7 +183,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
         className="flex items-center gap-2 px-3 py-1.5 rounded-md mx-1.5 cursor-pointer transition-all duration-100"
         style={{
           background: isActive ? 'var(--sidebar-item-active)' : 'transparent',
-          borderLeft: isActive ? '3px solid var(--accent)' : '3px solid transparent',
+          borderLeft: paneIndexes.length > 0 ? `3px solid ${chatPaneColors[paneIndexes[0]]}` : '3px solid transparent',
         }}
         onClick={() => !editing && setActiveSession(sessionId)}
         onDoubleClick={() => {
@@ -311,14 +323,31 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
           ref={menuRef}
           className="fixed z-50 rounded-md py-1 animate-fade-in"
           style={{
-            left: Math.min(menuPos.x, window.innerWidth - 160),
-            top: Math.min(menuPos.y, window.innerHeight - 90),
-            minWidth: 140,
+            left: Math.min(menuPos.x, window.innerWidth - 190),
+            top: Math.min(menuPos.y, window.innerHeight - 150),
+            minWidth: 170,
             background: 'var(--surface-up)',
             border: '1px solid var(--border-bright)',
             boxShadow: 'var(--elev-2)',
           }}
         >
+          <div className="px-3 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-3)' }}>Show in pane</div>
+          <div className="flex gap-1 px-3 pb-2">
+            {Array.from({ length: gridLayout.paneCount }, (_, paneIndex) => (
+              <button
+                key={paneIndex}
+                type="button"
+                aria-label={`Show ${sessionName} in pane ${paneIndex + 1}`}
+                className="h-7 w-7 rounded"
+                style={{ background: chatPaneColors[paneIndex], border: 'none' }}
+                onClick={() => {
+                  assignChatToPane(sessionId, paneIndex)
+                  setActiveSession(sessionId)
+                  setMenuPos(null)
+                }}
+              />
+            ))}
+          </div>
           <button
             className="flex w-full items-center gap-2 text-left px-3 py-1.5 text-sm transition-colors duration-100"
             style={{ background: 'transparent', color: 'var(--text-2)', cursor: 'pointer', border: 'none', fontFamily: 'inherit' }}

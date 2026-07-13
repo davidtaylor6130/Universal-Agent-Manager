@@ -232,8 +232,10 @@ describe('ChatView', () => {
     act(() => {
       providerButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    expect(host.textContent).toContain('Provider')
-    expect(host.textContent).toContain('Gemini')
+    const providerMenu = document.body.querySelector('[data-testid="provider-menu"]') as HTMLElement
+    expect(providerMenu.textContent).toContain('Provider')
+    expect(providerMenu.textContent).toContain('Gemini')
+    expect(providerMenu.style.position).toBe('fixed')
 
     const settingsButton = host.querySelector('button[title="Settings"]')
     expect(settingsButton).toBeTruthy()
@@ -250,16 +252,16 @@ describe('ChatView', () => {
     act(() => {
       toolButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    expect(host.textContent).toContain('Searching workspace symbols')
-    expect(host.querySelector('[role="dialog"]')?.parentElement?.className).toContain('absolute')
-    expect(host.querySelector('[role="dialog"]')?.parentElement?.className).not.toContain('fixed')
+    expect(document.body.textContent).toContain('Searching workspace symbols')
+    expect(document.body.querySelector('[role="dialog"]')?.parentElement?.className).toContain('fixed')
+    expect(document.body.querySelector('[role="dialog"]')?.parentElement?.parentElement).toBe(document.body)
 
-    const closeToolButton = host.querySelector('button[aria-label="Close tool details"]')
+    const closeToolButton = document.body.querySelector('button[aria-label="Close tool details"]')
     expect(closeToolButton).toBeTruthy()
     act(() => {
       closeToolButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    expect(host.textContent).not.toContain('Searching workspace symbols')
+    expect(document.body.textContent).not.toContain('Searching workspace symbols')
 
     const allowButton = Array.from(host.querySelectorAll('button')).find((button) =>
       button.textContent?.includes('Allow once')
@@ -1021,6 +1023,9 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
+    expect(host.textContent).toContain('Claude structured mode cannot surface interactive permission')
+    expect(host.textContent).toContain('model discovery is limited to the active model')
+
     openComposerOptions(host)
     const planButton = host.querySelector('button[title^="Toggle planning mode"]') as HTMLButtonElement | null
     expect(planButton).toBeTruthy()
@@ -1477,8 +1482,8 @@ describe('ChatView', () => {
     act(() => {
       toolButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    expect(host.textContent).toContain('Saved tool output')
-    expect(host.querySelector('[role="dialog"]')).toBeTruthy()
+    expect(document.body.textContent).toContain('Saved tool output')
+    expect(document.body.querySelector('[role="dialog"]')).toBeTruthy()
 
     act(() => {
       root.unmount()
@@ -1951,7 +1956,7 @@ describe('ChatView', () => {
     act(() => {
       toolButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    expect(host.textContent).toContain('Searching workspace symbols')
+    expect(document.body.textContent).toContain('Searching workspace symbols')
 
     act(() => {
       useAppStore.setState((state) => ({
@@ -2004,7 +2009,7 @@ describe('ChatView', () => {
     expect(host.textContent).toContain('Second answer only.')
     expect(host.textContent).not.toContain('This placeholder should be replaced.')
     expect(host.textContent).not.toContain('Searching workspace symbols')
-    expect(host.querySelector('[role="dialog"]')).toBeNull()
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
 
     act(() => {
       root.unmount()
@@ -2012,11 +2017,38 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('opens a sub-agent chat from the tool details modal', async () => {
+  it('expands multiple sub-agent chats inline without replacing the current chat', async () => {
+    vi.useFakeTimers()
     const originalOpenSubAgentSession = useAppStore.getState().openSubAgentSession
-    const openSubAgentSession = vi.fn(() => Promise.resolve(true))
+    const openSubAgentSession = vi.fn((_sourceChatId: string, nativeSessionId: string) => Promise.resolve(nativeSessionId === 'agent-session-2' ? 'agent-chat-2' : 'agent-chat'))
     useAppStore.setState((state) => ({
       openSubAgentSession,
+      sessions: [
+        ...state.sessions,
+        { ...state.sessions[0], id: 'agent-chat', name: 'Planner history' },
+        { ...state.sessions[0], id: 'agent-chat-2', name: 'Reviewer history' },
+      ],
+      messages: {
+        ...state.messages,
+        'agent-chat': [
+          {
+            id: 'agent-message-1',
+            sessionId: 'agent-chat',
+            role: 'assistant',
+            content: 'Sub-agent inspected the provider runtime.',
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+          },
+        ],
+        'agent-chat-2': [
+          {
+            id: 'agent-message-2',
+            sessionId: 'agent-chat-2',
+            role: 'assistant',
+            content: 'Sub-agent reviewed the provider runtime.',
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+          },
+        ],
+      },
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
         'chat-1': {
@@ -2032,10 +2064,21 @@ describe('ChatView', () => {
               subAgentId: 'agent-session-1',
               subAgentTitle: 'Planner',
             },
+            {
+              id: 'agent-tool-2',
+              title: 'Reviewer agent',
+              kind: 'sub-agent',
+              status: 'completed',
+              content: 'Reviewing with a sub-agent',
+              isSubAgent: true,
+              subAgentId: 'agent-session-2',
+              subAgentTitle: 'Reviewer',
+            },
           ],
           turnEvents: [
             { type: 'assistant_text', text: 'I am delegating to a sub-agent.' },
             { type: 'tool_call', toolCallId: 'agent-tool-1' },
+            { type: 'tool_call', toolCallId: 'agent-tool-2' },
           ],
           turnSerial: 2,
           pendingPermission: null,
@@ -2052,31 +2095,40 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const subAgentButton = Array.from(host.querySelectorAll('button')).find((button) =>
-      button.textContent?.includes('Sub-agent:')
-    ) as HTMLButtonElement | undefined
-    expect(subAgentButton).toBeTruthy()
-
-    act(() => {
-      subAgentButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-
-    const openChatButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Open chat') as HTMLButtonElement | undefined
-    expect(openChatButton).toBeTruthy()
+    const summaries = Array.from(host.querySelectorAll('summary')).filter((candidate) => candidate.textContent?.includes('Sub-agent:'))
+    expect(summaries).toHaveLength(2)
 
     await act(async () => {
-      openChatButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      for (const summary of summaries) {
+        const details = summary.closest('details') as HTMLDetailsElement
+        details.open = true
+        details.dispatchEvent(new Event('toggle', { bubbles: true }))
+      }
+      await Promise.resolve()
       await Promise.resolve()
     })
 
-    expect(openSubAgentSession).toHaveBeenCalledWith('chat-1', 'agent-session-1', 'Planner')
-    expect(host.querySelector('[role="dialog"]')).toBeNull()
+    expect(openSubAgentSession).toHaveBeenCalledWith('chat-1', 'agent-session-1', 'Planner', false)
+    expect(openSubAgentSession).toHaveBeenCalledWith('chat-1', 'agent-session-2', 'Reviewer', false)
+    expect(host.textContent).toContain('Planner history')
+    expect(host.textContent).toContain('Sub-agent inspected the provider runtime.')
+    expect(host.textContent).toContain('Reviewer history')
+    expect(host.textContent).toContain('Sub-agent reviewed the provider runtime.')
+    expect(useAppStore.getState().activeSessionId).toBe('chat-1')
+
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+      await Promise.resolve()
+    })
+    expect(openSubAgentSession.mock.calls.filter(([, nativeSessionId]) => nativeSessionId === 'agent-session-1')).toHaveLength(2)
+    expect(openSubAgentSession.mock.calls.filter(([, nativeSessionId]) => nativeSessionId === 'agent-session-2')).toHaveLength(1)
 
     act(() => {
       root.unmount()
     })
     host.remove()
     useAppStore.setState({ openSubAgentSession: originalOpenSubAgentSession })
+    vi.useRealTimers()
   })
 
   it('opens the current workspace from the composer workspace row', async () => {

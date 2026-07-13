@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState, useMemo } from 'react'
+import { memo, useEffect, useId, useRef, useState, useMemo } from 'react'
 import type { ReactNode } from 'react'
 import { Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, X, MoreHorizontal, MessageSquarePlus, Brain, Pencil, Trash2 } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
@@ -13,6 +13,7 @@ import {
   tokenizeChatSearchQuery,
 } from './chatSearch'
 import type { Folder, Session } from '../../types/session'
+import { chatPaneColors, readChatGridLayout, subscribeChatGridLayout } from '../../utils/chatGridStorage'
 
 interface FolderTreeProps {
   searchQuery: string
@@ -43,6 +44,14 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const [editFolderName, setEditFolderName] = useState('')
   const [editFolderDirectory, setEditFolderDirectory] = useState('')
   const [pendingDeleteFolderId, setPendingDeleteFolderId] = useState<string | null>(null)
+  const [gridLayout, setGridLayout] = useState(readChatGridLayout)
+
+  useEffect(() => subscribeChatGridLayout(setGridLayout), [])
+
+  const paneColorsForFolder = (folderId: string) => {
+    const folderSessionIds = new Set(sessions.filter((session) => session.folderId === folderId).map((session) => session.id))
+    return gridLayout.sessionIds.slice(0, gridLayout.paneCount).flatMap((id, index) => folderSessionIds.has(id) ? [chatPaneColors[index]] : [])
+  }
 
   const searchTokens = useMemo(
     () => tokenizeChatSearchQuery(searchQuery),
@@ -173,6 +182,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
           folder={folder}
           sessionIds={sessionIds}
           shouldShowSessions={shouldShowSessions}
+          hiddenPaneColors={shouldShowSessions ? [] : paneColorsForFolder(folder.id)}
           isSearching={searchModel.isSearching}
           isEditing={editingFolderId === folder.id}
           editFolderName={editFolderName}
@@ -476,6 +486,7 @@ interface FolderRowProps {
   folder: Folder
   sessionIds: string[]
   shouldShowSessions: boolean
+  hiddenPaneColors: string[]
   isSearching: boolean
   isEditing: boolean
   editFolderName: string
@@ -497,6 +508,7 @@ const FolderRow = memo(function FolderRow({
   folder,
   sessionIds,
   shouldShowSessions,
+  hiddenPaneColors,
   isSearching,
   isEditing,
   editFolderName,
@@ -513,6 +525,7 @@ const FolderRow = memo(function FolderRow({
   onOpenMemory,
   sessionsById,
 }: FolderRowProps) {
+  const paneGradientId = useId().replace(/:/g, '')
   const [showAllSessions, setShowAllSessions] = useState(false)
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -554,9 +567,29 @@ const FolderRow = memo(function FolderRow({
         onClick={onToggle}
       >
         {shouldShowSessions ? (
-          <FolderOpenIcon size={14} style={{ flexShrink: 0, color: 'var(--accent)', opacity: 0.85 }} aria-hidden />
+          <FolderOpenIcon data-testid={`folder-icon-${folder.id}`} size={14} style={{ flexShrink: 0, color: 'var(--text-3)', opacity: 0.85 }} aria-hidden />
         ) : (
-          <FolderIcon size={14} style={{ flexShrink: 0, color: 'var(--accent)', opacity: 0.85 }} aria-hidden />
+          <>
+            {hiddenPaneColors.length > 1 && (
+              <svg data-testid={`folder-gradient-${folder.id}`} width="0" height="0" style={{ position: 'absolute' }} aria-hidden>
+                <defs>
+                  <linearGradient id={paneGradientId} x1="0" y1="0" x2="1" y2="0">
+                    {hiddenPaneColors.flatMap((color, index) => [
+                      <stop key={`${index}-start`} offset={`${index / hiddenPaneColors.length * 100}%`} stopColor={color} />,
+                      <stop key={`${index}-end`} offset={`${(index + 1) / hiddenPaneColors.length * 100}%`} stopColor={color} />,
+                    ])}
+                  </linearGradient>
+                </defs>
+              </svg>
+            )}
+            <FolderIcon
+              data-testid={`folder-icon-${folder.id}`}
+              size={14}
+              stroke={hiddenPaneColors.length > 1 ? `url(#${paneGradientId})` : 'currentColor'}
+              style={{ flexShrink: 0, color: hiddenPaneColors[0] || 'var(--text-3)', filter: hiddenPaneColors.length ? `drop-shadow(0 0 3px ${hiddenPaneColors[0]})` : 'none', opacity: hiddenPaneColors.length ? 1 : 0.85, transition: 'color 140ms ease, filter 140ms ease, opacity 140ms ease' }}
+              aria-hidden
+            />
+          </>
         )}
         <span className="font-semibold truncate flex-1" style={{ fontSize: 13 }}>
           {folder.name}

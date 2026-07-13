@@ -87,6 +87,7 @@ void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatS
 			{
 				tool_call.content = "Arguments:\n" + CapDiagnosticString(input->dump(), kMaxAcpDiagnosticDetailBytes);
 			}
+			ApplySubAgentMetadata(tool_call, item, ProviderRuntimeRegistry::ResolveById(session.provider_id));
 			AppendToolTurnEventIfNeeded(session, tool_id);
 			changed = SyncAcpToolCallsToAssistantMessage(chat, session, true) || changed;
 		}
@@ -212,9 +213,9 @@ void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& c
 		if (!session_id.empty())
 		{
 			session.session_id = session_id;
+			const std::string previous_native_session_id = chat.native_session_id;
 			if (SetChatNativeSessionIdIfChanged(chat, session_id))
 			{
-				const std::string previous_native_session_id = chat.native_session_id;
 				SyncResolvedNativeSessionIdForChat(app, chat, session_id, previous_native_session_id);
 				SaveChatQuietly(app, chat);
 			}

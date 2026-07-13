@@ -113,3 +113,8 @@ std::string IProviderRuntime::OnAcpMapApprovalModeId(const std::string& mode_id)
 	}
 	return mode_id;
 }
+
+bool IProviderRuntime::ProviderRecognizesSubagentTool(std::string_view tool_name) const
+{
+	return WordMatchesAnyCaseInsensitive(tool_name, {"task", "subtask", "delegate", "spawn_agent", "delegate_to_agent"});
+}

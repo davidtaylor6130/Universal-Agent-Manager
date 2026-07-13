@@ -129,9 +129,9 @@ bool WordMatchesAnyCaseInsensitive(std::string_view text, std::initializer_list<
 		std::size_t pos = 0;
 		while ((pos = lower_text.find(needle, pos)) != std::string_view::npos)
 		{
-			const bool before_ok = (pos == 0) || !std::isalnum(static_cast<unsigned char>(text[pos - 1]));
+			const bool before_ok = (pos == 0) || (!std::isalnum(static_cast<unsigned char>(text[pos - 1])) && text[pos - 1] != '_');
 			const std::size_t end_pos = pos + needle.size();
-			const bool after_ok = (end_pos >= text.size()) || !std::isalnum(static_cast<unsigned char>(text[end_pos]));
+			const bool after_ok = (end_pos >= text.size()) || (!std::isalnum(static_cast<unsigned char>(text[end_pos])) && text[end_pos] != '_');
 			if (before_ok && after_ok)
 				return true;
 			pos += 1;

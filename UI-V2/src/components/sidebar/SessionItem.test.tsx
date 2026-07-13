@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore, type AcpAttentionKind, type AcpBinding } from '../../store/useAppStore'
 import type { Session } from '../../types/session'
 import { SessionItem } from './SessionItem'
+import { defaultChatGridLayout, readChatGridLayout, writeChatGridLayout } from '../../utils/chatGridStorage'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -70,6 +71,14 @@ function renderSessionItem() {
 describe('SessionItem status icons', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    const stored = new Map<string, string>()
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem: (key: string) => stored.get(key) ?? null,
+        setItem: (key: string, value: string) => stored.set(key, value),
+      },
+    })
     useAppStore.setState({
       folders: [],
       sessions: [makeSession()],
@@ -145,6 +154,34 @@ describe('SessionItem status icons', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('shows its pane colour and can move the chat from the context menu', () => {
+    writeChatGridLayout({
+      ...defaultChatGridLayout,
+      paneCount: 2,
+      activePane: 0,
+      sessionIds: ['chat-1', 'chat-2'],
+    })
+    useAppStore.setState({ activeSessionId: 'chat-1' })
+    const { host, root } = renderSessionItem()
+
+    expect(host.querySelector('[aria-label^="Chat shown in pane"]')).toBeNull()
+    const sessionRow = host.querySelector('.cursor-pointer') as HTMLElement
+    expect(sessionRow.style.borderLeft).toContain('rgb(249, 115, 22)')
+    act(() => sessionRow.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
+    const paneTwo = host.querySelector('button[aria-label="Show Chat 1 in pane 2"]') as HTMLButtonElement
+    expect(paneTwo).toBeTruthy()
+    expect(paneTwo.textContent).toBe('')
+    act(() => paneTwo.click())
+
+    expect(readChatGridLayout().activePane).toBe(1)
+    expect(readChatGridLayout().sessionIds).toEqual(['chat-2', 'chat-1'])
+    expect(useAppStore.getState().activeSessionId).toBe('chat-1')
+    expect(sessionRow.style.borderLeft).toContain('rgb(236, 72, 153)')
+
+    act(() => root.unmount())
     host.remove()
   })
 })

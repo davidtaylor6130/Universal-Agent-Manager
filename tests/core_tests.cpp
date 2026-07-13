@@ -599,7 +599,11 @@ UAM_TEST(ChatImportUtilsBuildReadableTitlesFromPromptWrappers)
 
 UAM_TEST(CommandLineSplitPreservesQuotedEmptyArguments)
 {
+#if defined(_WIN32)
+	const std::vector<std::string> words = uam::command_line::SplitWords("alpha \"\" beta \"\" \"gamma delta\"");
+#else
 	const std::vector<std::string> words = uam::command_line::SplitWords("alpha \"\" beta '' gamma\\ delta");
+#endif
 	const std::vector<std::string> sliced_words = uam::command_line::SplitWords(std::string_view("xxalpha \"beta gamma\"yy").substr(2, 18));
 
 	UAM_ASSERT_EQ(words.size(), static_cast<std::size_t>(5));
@@ -1746,7 +1750,7 @@ UAM_TEST(ChatDomainServiceCreateNewChatNormalizesBoundaryIds)
 	UAM_ASSERT_EQ(chat.branch_from_message_index, -1);
 }
 
-UAM_TEST(ChatDomainServiceSortsByLastOpenedThenUpdatedThenCreated)
+UAM_TEST(ChatDomainServiceSortsByUpdatedThenCreatedWithoutSelectionReordering)
 {
 	ChatSession oldest;
 	oldest.id = "oldest";
@@ -1772,8 +1776,8 @@ UAM_TEST(ChatDomainServiceSortsByLastOpenedThenUpdatedThenCreated)
 	std::vector<ChatSession> chats = {oldest, opened, updated, created_tiebreaker};
 	ChatDomainService().SortChatsByRecent(chats);
 
-	UAM_ASSERT_EQ(chats[0].id, std::string("opened"));
-	UAM_ASSERT_EQ(chats[1].id, std::string("updated"));
+	UAM_ASSERT_EQ(chats[0].id, std::string("updated"));
+	UAM_ASSERT_EQ(chats[1].id, std::string("opened"));
 	UAM_ASSERT_EQ(chats[2].id, std::string("created-tiebreaker"));
 	UAM_ASSERT_EQ(chats[3].id, std::string("oldest"));
 }
@@ -2442,6 +2446,7 @@ UAM_TEST(GitWorktreeServiceCreatesDiscardsAndPortsChanges)
 	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
 	UAM_ASSERT(RunGitForTest(repo, "config user.email uam@example.test"));
 	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
+	UAM_ASSERT(RunGitForTest(repo, "config core.autocrlf false"));
 	UAM_ASSERT(uam::io::WriteTextFile(repo / "app.txt", "one\n"));
 	UAM_ASSERT(RunGitForTest(repo, "add app.txt"));
 	UAM_ASSERT(RunGitForTest(repo, "commit -m initial"));
@@ -3418,6 +3423,23 @@ UAM_TEST(CodexThreadIdValidatorAcceptsOnlyUuidThreadIds)
 	UAM_ASSERT(!uam::IsValidCodexThreadIdForTests("6a6f0f3b-1a0b-4a9c-8a01-zzzzzzzzzzzz"));
 }
 
+UAM_TEST(EnabledProviderRuntimesSatisfyLaunchContract)
+{
+	ChatSession chat;
+	chat.id = "contract-chat";
+	AppSettings settings;
+	for (const ProviderProfile& profile : ProviderProfileStore::BuiltInProfiles())
+	{
+		const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(profile);
+		chat.provider_id = profile.id;
+		UAM_ASSERT(runtime.IsEnabled());
+		UAM_ASSERT_EQ(std::string(runtime.RuntimeId()), profile.id);
+		UAM_ASSERT(!runtime.BuildInteractiveArgv(profile, chat, settings).empty());
+		UAM_ASSERT(!runtime.BuildWorkerArgv(profile, settings, "contract prompt", "").empty());
+		UAM_ASSERT(!runtime.BuildStructuredLaunchArgv(profile, chat).empty());
+	}
+}
+
 UAM_TEST(GeminiCliInteractiveArgvUsesResumeAndFlags)
 {
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
@@ -3757,23 +3779,17 @@ UAM_TEST(OpenCodeAcpSubAgentToolCallsAreVisibleAndPersistent)
 #endif
 }
 
-UAM_TEST(OpenCodeProviderRecognizesTaskToolAsSubAgent)
+UAM_TEST(AllProvidersRecognizeSharedSubAgentTools)
 {
-#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
-	const ProviderProfile profile = ProviderProfileStore::DefaultOpenCodeProfile();
-	UAM_ASSERT(ProviderRuntime::ProviderRecognizesSubagentTool(profile, "task"));
-	UAM_ASSERT(ProviderRuntime::ProviderRecognizesSubagentTool(profile, "TASK"));
-	UAM_ASSERT(ProviderRuntime::ProviderRecognizesSubagentTool(profile, "subtask"));
-	UAM_ASSERT(ProviderRuntime::ProviderRecognizesSubagentTool(profile, "delegate"));
-	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "bash"));
- 	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "read"));
- 	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, ""));
- 	// Superstrings must NOT match (OC-7: substring false-positive guard)
- 	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "task_status"));
- 	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "multitasking_helper"));
- 	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "delegated"));
- 	UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "subtasker"));
-#endif
+	for (const ProviderProfile& profile : ProviderProfileStore::BuiltInProfiles())
+	{
+		UAM_ASSERT(ProviderRuntime::ProviderRecognizesSubagentTool(profile, "task"));
+		UAM_ASSERT(ProviderRuntime::ProviderRecognizesSubagentTool(profile, "functions.spawn_agent"));
+		UAM_ASSERT(ProviderRuntime::ProviderRecognizesSubagentTool(profile, "delegate_to_agent"));
+		UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "bash"));
+		UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "task_status"));
+		UAM_ASSERT(!ProviderRuntime::ProviderRecognizesSubagentTool(profile, "delegated"));
+	}
 }
 
 UAM_TEST(OpenCodeAcpTaskToolCallIsDetectedAsSubAgentOnPendingUpdate)
@@ -4076,7 +4092,9 @@ UAM_TEST(OpenCodeOpenNativeSessionChatSeedsResolvedMappingWhenReusingExistingCha
 	local_sub_agent.title = "Planner";
 	local_sub_agent.workspace_directory = workspace_root.string();
 	local_sub_agent.native_session_id = "agent-session-1";
+	ChatDomainService().AddMessage(local_sub_agent, MessageRole::Assistant, "Fresh sub-agent result");
 	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, local_sub_agent));
+	local_sub_agent.messages.clear();
 	app.chats.push_back(local_sub_agent);
 
 	ChatSession* existing = ChatDomainService().FindChatByNativeSessionId(app, "agent-session-1");
@@ -4091,6 +4109,8 @@ UAM_TEST(OpenCodeOpenNativeSessionChatSeedsResolvedMappingWhenReusingExistingCha
 	UAM_ASSERT_EQ(reused->provider_id, opencode_provider.id);
 	UAM_ASSERT_EQ(reused->workspace_directory, workspace_root.string());
 	UAM_ASSERT_EQ(reused->native_session_id, std::string("agent-session-1"));
+	UAM_ASSERT_EQ(reused->messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(reused->messages.front().content, std::string("Fresh sub-agent result"));
 	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id[reused->id], std::string("agent-session-1"));
 	UAM_ASSERT(ChatDomainService().FindChatByNativeSessionId(app, "agent-session-1") == reused);
 #endif
@@ -5174,6 +5194,42 @@ UAM_TEST(AcpStaleWaitDetectionRequiresRuntimeInactivity)
 	UAM_ASSERT_EQ(session.wait_started_time_s, 0.0);
 }
 
+UAM_TEST(AcpReconnectBackoffIsBounded)
+{
+	UAM_ASSERT_EQ(uam::AcpReconnectDelaySecondsForTests(-1), 0.25);
+	UAM_ASSERT_EQ(uam::AcpReconnectDelaySecondsForTests(0), 0.25);
+	UAM_ASSERT_EQ(uam::AcpReconnectDelaySecondsForTests(1), 0.5);
+	UAM_ASSERT_EQ(uam::AcpReconnectDelaySecondsForTests(2), 1.0);
+	UAM_ASSERT_EQ(uam::AcpReconnectDelaySecondsForTests(99), 1.0);
+
+	uam::AcpSessionState session;
+	uam::ScheduleAcpReconnectForTests(session, 10.0);
+	UAM_ASSERT(session.reconnect_pending);
+	UAM_ASSERT_EQ(session.reconnect_attempts, 0);
+	UAM_ASSERT_EQ(session.reconnect_not_before_time_s, 10.25);
+	UAM_ASSERT_EQ(session.diagnostics.back().reason, std::string("scheduled"));
+
+	session.reconnect_attempts = 2;
+	uam::ScheduleAcpReconnectForTests(session, 20.0);
+	UAM_ASSERT(session.reconnect_pending);
+	UAM_ASSERT_EQ(session.reconnect_attempts, 2);
+	UAM_ASSERT_EQ(session.reconnect_not_before_time_s, 21.0);
+
+	session.reconnect_attempts = 3;
+	uam::ScheduleAcpReconnectForTests(session, 30.0);
+	UAM_ASSERT(!session.reconnect_pending);
+	UAM_ASSERT_EQ(session.reconnect_not_before_time_s, 0.0);
+	UAM_ASSERT_EQ(session.diagnostics.back().reason, std::string("exhausted"));
+}
+
+UAM_TEST(AcpStdoutBufferRejectsOversizedLines)
+{
+	uam::AcpSessionState session;
+	UAM_ASSERT(uam::acp_detail::AppendAcpStdoutChunk(session, std::string(uam::acp_detail::kMaxAcpStdoutLineBytes, 'x')));
+	UAM_ASSERT(!uam::acp_detail::AppendAcpStdoutChunk(session, "x"));
+	UAM_ASSERT(session.stdout_buffer.empty());
+}
+
 UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 {
 	ChatSession chat;
@@ -5288,6 +5344,25 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	UAM_ASSERT(copilot_detail.find("nativeSessionId=copilot-session-1") != std::string::npos);
 }
 
+UAM_TEST(ProviderCancelStrategyUsesWireMessageOrStopFallback)
+{
+	uam::AcpSessionState session;
+	session.session_id = "session-1";
+	std::string method;
+
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	const nlohmann::json claude_cancel = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kClaudeCli).OnAcpBuildCancel(session, 1, method);
+	UAM_ASSERT(claude_cancel.is_null());
+	UAM_ASSERT(method.empty());
+#endif
+
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+	const nlohmann::json gemini_cancel = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kGeminiCli).OnAcpBuildCancel(session, 2, method);
+	UAM_ASSERT(gemini_cancel.is_object());
+	UAM_ASSERT_EQ(gemini_cancel.value("method", ""), std::string("session/cancel"));
+#endif
+}
+
 UAM_TEST(AcpLaunchArgsUseResolvedProviderForBlankOpenCodeChat)
 {
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
@@ -5315,6 +5390,7 @@ UAM_TEST(ClaudeStreamJsonMessagesUpdateChatAndSession)
 	chat.id = "chat-1";
 	chat.provider_id = "claude-cli";
 	chat.approval_mode = "plan";
+	chat.native_session_id = "claude-session-old";
 	app.chats.push_back(chat);
 	app.selected_chat_index = 0;
 
@@ -5331,6 +5407,7 @@ UAM_TEST(ClaudeStreamJsonMessagesUpdateChatAndSession)
 
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"system","subtype":"init","session_id":"claude-session-3","model":"sonnet","permissionMode":"plan"})"));
 	UAM_ASSERT_EQ(app.chats.front().native_session_id, std::string("claude-session-3"));
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id.at("chat-1"), std::string("claude-session-3"));
 	UAM_ASSERT_EQ(session.current_model_id, std::string("sonnet"));
 
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"assistant","session_id":"claude-session-3","message":{"role":"assistant","content":[{"type":"text","text":"Working on it."},{"type":"tool_use","id":"tool-1","name":"Read","input":{"file_path":"README.md"}}]}})"));

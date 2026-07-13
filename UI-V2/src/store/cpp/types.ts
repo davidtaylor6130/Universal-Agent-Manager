@@ -432,6 +432,10 @@ export interface ChatMessagesResponse {
   messages?: CppMessage[]
 }
 
+export interface OpenNativeSessionChatResponse {
+  chatId?: string
+}
+
 export interface VcsCommitMessageSuggestion {
   title: string
   description: string

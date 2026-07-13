@@ -119,7 +119,6 @@ void ResetAcpRuntimeState(AcpSessionState& session)
 	session.last_process_id.clear();
 	session.assistant_replay_prefixes.clear();
 	session.load_history_replay_updates.clear();
-	session.diagnostics.clear();
 	session.agent_name.clear();
 	session.agent_title.clear();
 	session.agent_version.clear();
@@ -193,6 +192,9 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, const ChatS
 	}
 
 	session.running = true;
+	session.reconnect_pending = false;
+	session.reconnect_attempts = 0;
+	session.reconnect_not_before_time_s = 0.0;
 	session.last_process_id = AcpProcessHandleLabel(session);
 	AppendAcpDiagnostic(session, "process_launch", "started", "", "", false, 0, "", launch_detail);
 	if (!SendInitialize(session, error_out))

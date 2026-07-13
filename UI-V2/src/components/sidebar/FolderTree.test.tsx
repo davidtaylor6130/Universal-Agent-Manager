@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../../store/useAppStore'
 import type { Folder, Session } from '../../types/session'
 import { FolderTree } from './FolderTree'
+import { defaultChatGridLayout, writeChatGridLayout } from '../../utils/chatGridStorage'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -67,6 +68,7 @@ describe('FolderTree', () => {
     expect(host.textContent).not.toContain('⌃')
     expect(host.textContent).toContain('See more')
     expect(host.textContent).toContain('+2')
+    expect((host.querySelector('[data-testid="folder-icon-project"]') as HTMLElement).style.color).toBe('var(--text-3)')
     const activeTitle = Array.from(host.querySelectorAll('span')).find((span) => span.textContent === 'Chat 1')
     expect(activeTitle?.getAttribute('style')).toContain('var(--text)')
     expect(activeTitle?.getAttribute('style')).not.toContain('#ffffff')
@@ -111,6 +113,38 @@ describe('FolderTree', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('shows every assigned pane colour when a collapsed folder layout changes', () => {
+    const stored = new Map<string, string>()
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem: (key: string) => stored.get(key) ?? null,
+        setItem: (key: string, value: string) => stored.set(key, value),
+      },
+    })
+    useAppStore.setState((state) => ({ folders: state.folders.map((folder) => ({ ...folder, isExpanded: false })) }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    expect(host.textContent).not.toContain('Chat 3')
+    expect((host.querySelector('[data-testid="folder-icon-project"]') as HTMLElement).style.color).toBe('var(--text-3)')
+
+    act(() => writeChatGridLayout({ ...defaultChatGridLayout, paneCount: 4, activePane: 1, sessionIds: ['chat-1', 'chat-3', '', ''] }))
+
+    const folderIcon = host.querySelector('[data-testid="folder-icon-project"]') as HTMLElement
+    expect(folderIcon.getAttribute('stroke')).toMatch(/^url\(#.+\)$/)
+    expect(folderIcon.style.filter).toContain('drop-shadow')
+    expect(Array.from(host.querySelectorAll('[data-testid="folder-gradient-project"] stop')).map((stop) => stop.getAttribute('stop-color'))).toEqual([
+      '#f97316', '#f97316', '#ec4899', '#ec4899',
+    ])
+
+    act(() => root.unmount())
     host.remove()
   })
 

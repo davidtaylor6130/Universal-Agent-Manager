@@ -149,16 +149,10 @@ class IProviderRuntime
 
 	/// <summary>
 	/// Returns true when <paramref name="tool_name"/> is a tool this provider treats as a sub-agent
-	/// invocation, even when the ACP update does not carry an explicit <c>isSubAgent</c> /
-	/// <c>subAgentId</c> field. The default implementation returns false; providers whose ACP
-	/// adapter emits sub-agent tool calls as plain <c>tool_call</c> updates should override this
-	/// so the sub-agent visual is applied from the initial pending update, not just at completion.
+	/// invocation, even when the ACP update does not carry explicit sub-agent metadata. The shared
+	/// implementation recognizes the common task/delegate/spawn names; providers may extend it.
 	/// </summary>
-	virtual bool ProviderRecognizesSubagentTool(std::string_view tool_name) const
-	{
-		(void)tool_name;
-		return false;
-	}
+	virtual bool ProviderRecognizesSubagentTool(std::string_view tool_name) const;
 
 	// == ACP Session Strategy ==
 

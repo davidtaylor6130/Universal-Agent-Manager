@@ -1389,7 +1389,7 @@ ChatSession* ChatHistorySyncService::FindInMemoryNativeSessionChatForOpen(uam::A
 }
 
 ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::AppState& app,
-                                                                         const ChatSession& source_chat,
+                                                                         const ChatSession& source_chat_reference,
                                                                          const ProviderProfile& provider,
                                                                          const std::string& native_session_id,
                                                                          bool persist_provider_normalization) const
@@ -1400,6 +1400,7 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 		return nullptr;
 	}
 
+	const ChatSession source_chat = source_chat_reference;
 	const std::string source_workspace_directory = uam::strings::Trim(source_chat.workspace_directory);
 	const std::string source_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider.id);
 	auto existing_matches_source_workspace = [&source_workspace_directory](const ChatSession& chat) {
@@ -1518,7 +1519,9 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 					loaded_raw_match->provider_id = source_provider_id;
 				}
 				loaded_raw_match->native_session_id = target_native_session_id;
-				loaded_raw_match->updated_at = uam::time::TimestampNow();
+				loaded_raw_match->messages = imported_chat.messages;
+				loaded_raw_match->messages_loaded = imported_chat.messages_loaded;
+				loaded_raw_match->updated_at = imported_chat.updated_at;
 				app.resolved_native_sessions_by_chat_id[loaded_raw_match->id] = target_native_session_id;
 				return loaded_raw_match;
 			}
@@ -1533,7 +1536,9 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 					resolved_only_match->provider_id = source_provider_id;
 				}
 				resolved_only_match->native_session_id = target_native_session_id;
-				resolved_only_match->updated_at = uam::time::TimestampNow();
+				resolved_only_match->messages = imported_chat.messages;
+				resolved_only_match->messages_loaded = imported_chat.messages_loaded;
+				resolved_only_match->updated_at = imported_chat.updated_at;
 				app.resolved_native_sessions_by_chat_id[resolved_only_match->id] = target_native_session_id;
 				return resolved_only_match;
 			}
@@ -1548,7 +1553,9 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 					existing->provider_id = source_provider_id;
 				}
 				existing->native_session_id = target_native_session_id;
-				existing->updated_at = uam::time::TimestampNow();
+				existing->messages = imported_chat.messages;
+				existing->messages_loaded = imported_chat.messages_loaded;
+				existing->updated_at = imported_chat.updated_at;
 				app.resolved_native_sessions_by_chat_id[existing->id] = target_native_session_id;
 				return existing;
 			}

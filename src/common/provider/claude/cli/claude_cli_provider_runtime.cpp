@@ -153,6 +153,12 @@ nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildPrompt(uam::AcpSessionState& 
 	return uam::acp_detail::BuildClaudeInputMessage(prompt);
 }
 
+nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildCancel(const uam::AcpSessionState&, int, std::string& out_method) const
+{
+	out_method.clear();
+	return nullptr;
+}
+
 bool ClaudeCliProviderRuntime::OnAcpSetModeLocally(uam::AcpSessionState& session, const std::string& mode_id) const
 {
 	session.current_mode_id = mode_id;

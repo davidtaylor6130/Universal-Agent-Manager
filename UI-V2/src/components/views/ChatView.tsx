@@ -1,4 +1,5 @@
 import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, ReactNode, RefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
 import { Session } from '../../types/session'
 import { MarkdownContent } from '../markdown/Markdown'
@@ -85,6 +86,7 @@ import { Button, IconButton } from '../ui'
 
 interface ChatViewProps {
   session: Session
+  accentColor?: string
 }
 
 const INITIAL_RENDERED_MESSAGES = 200
@@ -138,7 +140,7 @@ function fileUriToPath(uri: string): string {
   }
 }
 
-export function ChatView({ session }: ChatViewProps) {
+export function ChatView({ session, accentColor }: ChatViewProps) {
   const [draft, setDraft] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [selectedToolCallRef, setSelectedToolCallRef] = useState<SelectedToolCallRef | null>(null)
@@ -761,6 +763,7 @@ export function ChatView({ session }: ChatViewProps) {
     canShowPlanActions && index === latestPlanMessageIndex
       ? activePlanActions
       : undefined
+  const providerMenuRect = providerOpen ? providerMenuRef.current?.getBoundingClientRect() : null
   const resolveClaudePlanPrompt = async (nextModeId: 'acceptEdits' | 'default' | 'plan') => {
     const prompt = claudePlanPrompt?.trim()
     if (!prompt) {
@@ -794,6 +797,7 @@ export function ChatView({ session }: ChatViewProps) {
           tool={selectedToolCall}
           onClose={() => setSelectedToolCallRef(null)}
           onOpenSubAgent={selectedToolCall.isSubAgent ? () => void openSelectedSubAgentSession() : undefined}
+          accentColor={accentColor}
         />
       )}
       <div className="flex-1 flex flex-col min-w-0">
@@ -856,12 +860,14 @@ export function ChatView({ session }: ChatViewProps) {
                             }}
                             onCancelTurn={() => void cancelAcpTurn(session.id)}
                             onStopRuntime={() => void stopAcpSession(session.id)}
+                            sourceChatId={session.id}
                         />
                       ) : (
                         <PersistedMessageContent
                           message={message}
                           onSelectTool={(messageId, toolId) => setSelectedToolCallRef({ id: toolId, messageId })}
                           planActions={planActionsForMessage(index)}
+                          sourceChatId={session.id}
                         />
                       )}
                     </MessageFrame>
@@ -888,6 +894,7 @@ export function ChatView({ session }: ChatViewProps) {
                             }}
                             onCancelTurn={() => void cancelAcpTurn(session.id)}
                             onStopRuntime={() => void stopAcpSession(session.id)}
+                            sourceChatId={session.id}
                         />
                       </MessageFrame>
                     )}
@@ -917,6 +924,7 @@ export function ChatView({ session }: ChatViewProps) {
                       }}
                       onCancelTurn={() => void cancelAcpTurn(session.id)}
                       onStopRuntime={() => void stopAcpSession(session.id)}
+                      sourceChatId={session.id}
                   />
                 </MessageFrame>
               )}
@@ -972,10 +980,26 @@ export function ChatView({ session }: ChatViewProps) {
                     <span style={{ color: 'var(--text)' }}>{currentProviderName}</span>
                     <ChevronDown size={12} aria-hidden style={{ opacity: 0.6 }} />
                   </button>
-                  {providerOpen && (
+                  {providerOpen && providerMenuRect && createPortal(
                     <div
-                      className="absolute left-0 z-40"
-                      style={{ top: 30, width: 230, border: '1px solid var(--border-bright)', borderRadius: 8, background: 'var(--surface)', boxShadow: 'var(--elev-3)', padding: 6 }}
+                      data-testid="provider-menu"
+                      style={{
+                        position: 'fixed',
+                        zIndex: 1000,
+                        left: Math.max(8, Math.min(providerMenuRect.left, window.innerWidth - 238)),
+                        bottom: window.innerHeight - providerMenuRect.top + 4,
+                        width: 230,
+                        border: '1px solid var(--border-bright)',
+                        borderRadius: 8,
+                        background: 'var(--surface)',
+                        boxShadow: 'var(--elev-3)',
+                        padding: 6,
+                        ...(accentColor ? {
+                          '--accent': accentColor,
+                          '--accent-dim': `color-mix(in srgb, ${accentColor} 12%, transparent)`,
+                        } : {}),
+                      }}
+                      onMouseDown={(event) => event.stopPropagation()}
                     >
                       <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>Provider</div>
                       {providers.map((candidate) => {
@@ -997,7 +1021,8 @@ export function ChatView({ session }: ChatViewProps) {
                           </button>
                         )
                       })}
-                    </div>
+                    </div>,
+                    document.body
                   )}
                 </div>
                 )}
@@ -1140,6 +1165,11 @@ export function ChatView({ session }: ChatViewProps) {
                 }}
               >
                 {unsupportedProviderMessage}
+              </div>
+            )}
+            {isClaudeProvider(currentProvider, currentProviderId) && (
+              <div className="mb-2 rounded-md border px-2.5 py-2 text-xs" style={{ borderColor: 'color-mix(in srgb, var(--yellow) 45%, var(--border))', background: 'color-mix(in srgb, var(--yellow) 10%, var(--surface))', color: 'var(--text-2)' }}>
+                Claude structured mode cannot surface interactive permission or user-input prompts, and model discovery is limited to the active model. Use Accept Edits, Plan, or the CLI fallback when a turn needs interaction.
               </div>
             )}
             {acp?.lastError && (
