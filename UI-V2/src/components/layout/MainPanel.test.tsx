@@ -189,6 +189,10 @@ describe('MainPanel', () => {
     expect(firstFade.style.boxShadow).toContain('55%')
     expect(firstPane.style.filter).toContain('brightness(0.82)')
 
+    act(() => useAppStore.setState({ activeSessionId: 'chat-1' }))
+    expect(host.querySelectorAll('[data-testid="chat-pane-chat-1"]')).toHaveLength(1)
+    expect(firstPane.dataset.focused).toBe('true')
+
     const secondPane = host.querySelector('[data-testid="chat-pane-chat-2"]') as HTMLElement
     act(() => secondPane.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
     expect(useAppStore.getState().activeSessionId).toBe('chat-2')

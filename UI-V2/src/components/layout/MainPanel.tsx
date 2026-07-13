@@ -250,6 +250,8 @@ export function MainPanel() {
     if (!activeSessionId || !sessions.some((session) => session.id === activeSessionId)) return
     setLayout((current) => {
       if (current.sessionIds[current.activePane] === activeSessionId) return current
+      const existingPane = current.sessionIds.slice(0, current.paneCount).indexOf(activeSessionId)
+      if (existingPane >= 0) return { ...current, activePane: existingPane }
       const sessionIds = [...current.sessionIds]
       sessionIds[current.activePane] = activeSessionId
       return { ...current, sessionIds }
