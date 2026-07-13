@@ -44,7 +44,7 @@ void IProviderRuntime::OnAcpInitializeResult(uam::AcpSessionState& session, cons
 nlohmann::json IProviderRuntime::OnAcpBuildSetupRequest(int request_id, const ChatSession& chat,
     const std::string& cwd, bool can_load, std::string& out_method) const
 {
-	if (can_load)
+	if (can_load && !uam::strings::IsBlank(chat.native_session_id))
 	{
 		out_method = uam::acp_methods::kSessionLoad;
 		return BuildLoadSessionRequest(request_id, chat.native_session_id, cwd);

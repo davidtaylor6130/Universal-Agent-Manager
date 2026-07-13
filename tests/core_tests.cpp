@@ -5034,6 +5034,16 @@ UAM_TEST(AcpJsonRpcBuildersUseProtocolMethods)
 	UAM_ASSERT_EQ(native_setup.value("method", ""), std::string("session/load"));
 	UAM_ASSERT_EQ(native_setup["params"].value("sessionId", ""), std::string("native-session"));
 
+	for (const std::string provider_id : {"gemini-cli", "copilot-cli", "opencode-cli"})
+	{
+		ChatSession fresh_chat;
+		fresh_chat.provider_id = provider_id;
+		std::string method;
+		const nlohmann::json setup = ProviderRuntimeRegistry::ResolveById(provider_id).OnAcpBuildSetupRequest(14, fresh_chat, "/tmp/project", true, method);
+		UAM_ASSERT_EQ(method, std::string("session/new"));
+		UAM_ASSERT_EQ(setup.value("method", ""), std::string("session/new"));
+	}
+
 	const nlohmann::json prompt = nlohmann::json::parse(uam::BuildAcpPromptRequestForTests(9, "sess-1", "hello"));
 	UAM_ASSERT_EQ(prompt.value("method", ""), std::string("session/prompt"));
 	UAM_ASSERT_EQ(prompt["params"].value("sessionId", ""), std::string("sess-1"));

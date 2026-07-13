@@ -63,10 +63,11 @@ function PaneFade({ active, color, paneIndex }: { active: boolean; color: string
   )
 }
 
-function ChatPane({ session, active, paneIndex, onActivate }: {
+function ChatPane({ session, active, paneIndex, showGlow, onActivate }: {
   session: Session
   active: boolean
   paneIndex: number
+  showGlow: boolean
   onActivate: () => void
 }) {
   const [view, setView] = useState<'chat' | 'cli'>('chat')
@@ -189,12 +190,12 @@ function ChatPane({ session, active, paneIndex, onActivate }: {
       <div className="flex-1 overflow-hidden">
         {view === 'chat' ? <ChatView session={session} accentColor={paneColor} /> : <CLIView session={session} />}
       </div>
-      <PaneFade active={active} color={paneColor} paneIndex={paneIndex} />
+      {showGlow && <PaneFade active={active} color={paneColor} paneIndex={paneIndex} />}
     </div>
   )
 }
 
-function EmptyPane({ active, paneIndex, onActivate }: { active: boolean; paneIndex: number; onActivate: () => void }) {
+function EmptyPane({ active, paneIndex, showGlow, onActivate }: { active: boolean; paneIndex: number; showGlow: boolean; onActivate: () => void }) {
   const paneColor = chatPaneColors[paneIndex]
   return (
     <button
@@ -208,7 +209,7 @@ function EmptyPane({ active, paneIndex, onActivate }: { active: boolean; paneInd
         <MessageSquare size={28} style={{ opacity: 0.3, margin: '0 auto 10px' }} />
         <span className="block text-sm">Select Chat</span>
       </span>
-      <PaneFade active={active} color={paneColor} paneIndex={paneIndex} />
+      {showGlow && <PaneFade active={active} color={paneColor} paneIndex={paneIndex} />}
     </button>
   )
 }
@@ -283,8 +284,8 @@ export function MainPanel() {
   const pane = (index: number) => {
     const session = visibleSessions[index]
     return session
-      ? <ChatPane key={session.id} session={session} active={layout.activePane === index} paneIndex={index} onActivate={() => selectPane(index)} />
-      : <EmptyPane active={layout.activePane === index} paneIndex={index} onActivate={() => selectPane(index)} />
+      ? <ChatPane key={session.id} session={session} active={layout.activePane === index} paneIndex={index} showGlow={layout.paneCount > 1} onActivate={() => selectPane(index)} />
+      : <EmptyPane active={layout.activePane === index} paneIndex={index} showGlow={layout.paneCount > 1} onActivate={() => selectPane(index)} />
   }
 
   const verticalHandle = <PanelResizeHandle style={{ width: 1 }} />

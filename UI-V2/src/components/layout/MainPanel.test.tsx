@@ -154,6 +154,8 @@ describe('MainPanel', () => {
     const root = createRoot(host)
 
     act(() => root.render(<MainPanel />))
+    expect(host.querySelector('[data-testid="pane-fade-1"]')).toBeNull()
+
     const twoChats = host.querySelector('button[aria-label="Show two chats"]') as HTMLButtonElement
     act(() => twoChats.click())
     expect(host.querySelector('[data-testid="chat-grid-2"]')).not.toBeNull()
