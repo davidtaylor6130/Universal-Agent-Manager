@@ -477,6 +477,8 @@ export const useAppStore = create<AppState>((set, get) => {
         const existingMessages = nextMessages[chatId] ?? []
         let lastMessage = existingMessages[existingMessages.length - 1]
 
+        if (lastMessage?.role === 'assistant' && !lastMessage.isStreaming) continue
+
         if (!lastMessage || lastMessage.role !== 'assistant' || !lastMessage.isStreaming) {
           const placeholder: Message = {
             id: `stream-${chatId}-${Date.now()}`,
