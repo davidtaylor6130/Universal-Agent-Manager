@@ -168,7 +168,7 @@ describe('MainPanel', () => {
     expect(firstPane.style.getPropertyValue('--accent')).toBe('#f97316')
     expect(firstPane.style.border).toBe('1px solid transparent')
     const firstFade = firstPane.querySelector('[data-testid="pane-fade-1"]') as HTMLElement
-    expect(firstFade.style.boxShadow).toContain('inset 0 0 16px')
+    expect(firstFade.style.boxShadow).toContain('inset 0 0 12px')
     expect(firstFade.style.boxShadow).toContain('80%')
     expect(firstFade.style.zIndex).toBe('20')
     expect(firstFade.style.pointerEvents).toBe('none')
@@ -184,8 +184,8 @@ describe('MainPanel', () => {
     expect(host.querySelectorAll('[data-testid^="chat-pane-"]')).toHaveLength(4)
     const fourthPane = host.querySelector('[data-testid="chat-pane-chat-4"]') as HTMLElement
     expect(fourthPane.style.border).toBe('1px solid transparent')
-    expect((fourthPane.querySelector('[data-testid="pane-fade-4"]') as HTMLElement).style.boxShadow).toContain('inset 0 0 16px')
-    expect(firstFade.style.boxShadow).toContain('inset 0 0 12px')
+    expect((fourthPane.querySelector('[data-testid="pane-fade-4"]') as HTMLElement).style.boxShadow).toContain('inset 0 0 12px')
+    expect(firstFade.style.boxShadow).toContain('inset 0 0 9px')
     expect(firstFade.style.boxShadow).toContain('55%')
     expect(firstPane.style.filter).toContain('brightness(0.82)')
 

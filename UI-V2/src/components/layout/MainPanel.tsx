@@ -58,7 +58,7 @@ function PaneFade({ active, color, paneIndex }: { active: boolean; color: string
     <span
       data-testid={`pane-fade-${paneIndex + 1}`}
       aria-hidden
-      style={{ position: 'absolute', inset: 0, zIndex: 20, pointerEvents: 'none', boxShadow: `inset 0 0 ${active ? 16 : 12}px color-mix(in srgb, ${color} ${active ? 80 : 55}%, transparent)`, transition: 'box-shadow 140ms ease' }}
+      style={{ position: 'absolute', inset: 0, zIndex: 20, pointerEvents: 'none', boxShadow: `inset 0 0 ${active ? 12 : 9}px color-mix(in srgb, ${color} ${active ? 80 : 55}%, transparent)`, transition: 'box-shadow 140ms ease' }}
     />
   )
 }
