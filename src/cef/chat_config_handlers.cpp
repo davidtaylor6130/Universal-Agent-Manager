@@ -95,6 +95,15 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 	const std::string previous_native_session_id = target_chat->native_session_id;
 	const std::string previous_updated_at = target_chat->updated_at;
 	const std::string previous_last_opened_at = target_chat->last_opened_at;
+	if (!inserted_chat && !select_chat)
+	{
+		target_chat = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(m_app, *source_chat, provider, native_session_id, false);
+		if (target_chat == nullptr)
+		{
+			cb->Failure(404, "Sub-agent chat history is unavailable.");
+			return;
+		}
+	}
 	if (target_chat->provider_id.empty())
 	{
 		target_chat->provider_id = source_provider_id;
@@ -121,7 +130,10 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 		return;
 	}
 
-	selected_chat->last_opened_at = uam::time::TimestampNow();
+	if (select_chat)
+	{
+		selected_chat->last_opened_at = uam::time::TimestampNow();
+	}
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
 		selected_chat->last_opened_at = previous_last_opened_at;

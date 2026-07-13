@@ -4092,7 +4092,9 @@ UAM_TEST(OpenCodeOpenNativeSessionChatSeedsResolvedMappingWhenReusingExistingCha
 	local_sub_agent.title = "Planner";
 	local_sub_agent.workspace_directory = workspace_root.string();
 	local_sub_agent.native_session_id = "agent-session-1";
+	ChatDomainService().AddMessage(local_sub_agent, MessageRole::Assistant, "Fresh sub-agent result");
 	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, local_sub_agent));
+	local_sub_agent.messages.clear();
 	app.chats.push_back(local_sub_agent);
 
 	ChatSession* existing = ChatDomainService().FindChatByNativeSessionId(app, "agent-session-1");
@@ -4107,6 +4109,8 @@ UAM_TEST(OpenCodeOpenNativeSessionChatSeedsResolvedMappingWhenReusingExistingCha
 	UAM_ASSERT_EQ(reused->provider_id, opencode_provider.id);
 	UAM_ASSERT_EQ(reused->workspace_directory, workspace_root.string());
 	UAM_ASSERT_EQ(reused->native_session_id, std::string("agent-session-1"));
+	UAM_ASSERT_EQ(reused->messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(reused->messages.front().content, std::string("Fresh sub-agent result"));
 	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id[reused->id], std::string("agent-session-1"));
 	UAM_ASSERT(ChatDomainService().FindChatByNativeSessionId(app, "agent-session-1") == reused);
 #endif

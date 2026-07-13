@@ -2018,6 +2018,7 @@ describe('ChatView', () => {
   })
 
   it('expands multiple sub-agent chats inline without replacing the current chat', async () => {
+    vi.useFakeTimers()
     const originalOpenSubAgentSession = useAppStore.getState().openSubAgentSession
     const openSubAgentSession = vi.fn((_sourceChatId: string, nativeSessionId: string) => Promise.resolve(nativeSessionId === 'agent-session-2' ? 'agent-chat-2' : 'agent-chat'))
     useAppStore.setState((state) => ({
@@ -2115,11 +2116,19 @@ describe('ChatView', () => {
     expect(host.textContent).toContain('Sub-agent reviewed the provider runtime.')
     expect(useAppStore.getState().activeSessionId).toBe('chat-1')
 
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+      await Promise.resolve()
+    })
+    expect(openSubAgentSession.mock.calls.filter(([, nativeSessionId]) => nativeSessionId === 'agent-session-1')).toHaveLength(2)
+    expect(openSubAgentSession.mock.calls.filter(([, nativeSessionId]) => nativeSessionId === 'agent-session-2')).toHaveLength(1)
+
     act(() => {
       root.unmount()
     })
     host.remove()
     useAppStore.setState({ openSubAgentSession: originalOpenSubAgentSession })
+    vi.useRealTimers()
   })
 
   it('opens the current workspace from the composer workspace row', async () => {

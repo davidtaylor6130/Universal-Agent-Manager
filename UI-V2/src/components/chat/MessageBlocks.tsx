@@ -33,20 +33,30 @@ function SubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; tool: A
   const openSubAgentSession = useAppStore((state) => state.openSubAgentSession)
   const session = useAppStore((state) => state.sessions.find((candidate) => candidate.id === chatId))
   const messages = useAppStore((state) => state.messages[chatId] ?? [])
+  const isActive = tool.status === 'running' || tool.status === 'in_progress' || tool.status === 'pending'
 
   useEffect(() => {
     if (!tool.subAgentId) {
       setError('The provider did not expose a sub-agent session ID.')
       return
     }
+    const subAgentId = tool.subAgentId
     let mounted = true
-    void openSubAgentSession(sourceChatId, tool.subAgentId, tool.subAgentTitle, false).then((openedChatId) => {
+    const refresh = () => void openSubAgentSession(sourceChatId, subAgentId, tool.subAgentTitle, false).then((openedChatId) => {
       if (!mounted) return
-      if (openedChatId) setChatId(openedChatId)
+      if (openedChatId) {
+        setChatId(openedChatId)
+        setError('')
+      }
       else setError('Sub-agent chat history is unavailable.')
     })
-    return () => { mounted = false }
-  }, [openSubAgentSession, sourceChatId, tool.subAgentId, tool.subAgentTitle])
+    refresh()
+    const refreshTimer = isActive ? window.setInterval(refresh, 1000) : undefined
+    return () => {
+      mounted = false
+      if (refreshTimer) window.clearInterval(refreshTimer)
+    }
+  }, [isActive, openSubAgentSession, sourceChatId, tool.subAgentId, tool.subAgentTitle])
 
   if (error) return <div className="text-xs" style={{ color: 'var(--danger)' }}>{error}</div>
   if (!chatId || !session) return <div className="text-xs" style={{ color: 'var(--text-3)' }}>Loading sub-agent chat…</div>
