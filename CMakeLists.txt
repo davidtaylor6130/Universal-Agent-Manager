@@ -119,6 +119,7 @@ set(CMAKE_FOLDER "ThirdParty/nlohmann_json")
 FetchContent_Declare(
   nlohmann_json
   URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 set(JSON_BuildTests OFF CACHE INTERNAL "")
 set(JSON_Install OFF CACHE INTERNAL "")
@@ -751,7 +752,6 @@ if(UAM_BUILD_TESTS)
     src/app/provider_model_catalog_service.cpp
     src/app/runtime_orchestration_services.cpp
     src/app/pending_call_service.cpp
-  src/app/pending_call_service.cpp
     src/app/vcs_commit_service.cpp
     src/cef/uam_cef_command_line_config.cpp
     src/cef/uam_bridge_request.cpp

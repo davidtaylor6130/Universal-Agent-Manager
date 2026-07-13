@@ -14,7 +14,6 @@ import type {
   AcpUserInputAnswers,
 } from '../../store/useAppStore'
 import type { Attachment, Message, MessageBlock } from '../../types/message'
-import type { Goal } from '../../types/goal'
 import { Tooltip } from '../ui'
 import {
   PermissionInlineCard,

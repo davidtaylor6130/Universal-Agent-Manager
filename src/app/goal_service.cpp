@@ -127,23 +127,15 @@ bool GoalService::UpdateGoalStatus(AppState& app, const std::string& goal_id, Go
 
 	goal->status = status;
 	goal->updated_at = uam::time::TimestampNow();
+	ChatSession* chat = FindChatForGoal(app, goal_id);
 
 	// Clear active goal for terminal statuses (Complete, Blocked, Paused)
-	if (status == GoalStatus::Complete || status == GoalStatus::Blocked || status == GoalStatus::Paused)
+	if ((status == GoalStatus::Complete || status == GoalStatus::Blocked || status == GoalStatus::Paused) &&
+	    chat != nullptr && chat->active_goal_id == goal_id)
 	{
-		for (auto& chat : app.chats)
-		{
-			if (chat.active_goal_id == goal_id)
-			{
-				chat.active_goal_id.clear();
-				chat.updated_at = uam::time::TimestampNow();
-				MarkDirty(app, chat.id);
-				break;
-			}
-		}
+		ClearActiveGoal(app, chat->id);
 	}
 
-	ChatSession* chat = FindChatForGoal(app, goal_id);
 	if (chat != nullptr)
 	{
 		MarkDirty(app, chat->id);
@@ -360,25 +352,19 @@ void GoalService::RecordTurnCompletion(AppState& app, const std::string& goal_id
 	// Reset blocker count on successful turn
 	goal->blocked_turn_count = 0;
 	goal->last_blocker.clear();
+	ChatSession* chat = FindChatForGoal(app, goal_id);
 
 	// Check if token budget is exceeded
 	if (goal->token_budget > 0 && goal->tokens_used >= goal->token_budget)
 	{
 		goal->status = GoalStatus::Blocked;
 		goal->last_blocker = "Token budget exceeded.";
-		for (auto& chat : app.chats)
+		if (chat != nullptr && chat->active_goal_id == goal_id)
 		{
-			if (chat.active_goal_id == goal_id)
-			{
-				chat.active_goal_id.clear();
-				chat.updated_at = uam::time::TimestampNow();
-				MarkDirty(app, chat.id);
-				break;
-			}
+			ClearActiveGoal(app, chat->id);
 		}
 	}
 
-	ChatSession* chat = FindChatForGoal(app, goal_id);
 	if (chat != nullptr)
 	{
 		MarkDirty(app, chat->id);
@@ -406,24 +392,18 @@ void GoalService::RecordBlocker(AppState& app, const std::string& goal_id, const
 	}
 
 	goal->updated_at = uam::time::TimestampNow();
+	ChatSession* chat = FindChatForGoal(app, goal_id);
 
 	// Mark as blocked after >= 3 consecutive turns at the same blocker
 	if (goal->blocked_turn_count >= 3)
 	{
 		goal->status = GoalStatus::Blocked;
-		for (auto& chat : app.chats)
+		if (chat != nullptr && chat->active_goal_id == goal_id)
 		{
-			if (chat.active_goal_id == goal_id)
-			{
-				chat.active_goal_id.clear();
-				chat.updated_at = uam::time::TimestampNow();
-				MarkDirty(app, chat.id);
-				break;
-			}
+			ClearActiveGoal(app, chat->id);
 		}
 	}
 
-	ChatSession* chat = FindChatForGoal(app, goal_id);
 	if (chat != nullptr)
 	{
 		MarkDirty(app, chat->id);
