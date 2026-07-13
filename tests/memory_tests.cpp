@@ -1150,4 +1150,3 @@ UAM_TEST(MemoryServiceFailedWorkerReportsCommandNotFound)
 	UAM_ASSERT(app.memory_activity.last_worker_output.find("command not found") != std::string::npos);
 	UAM_ASSERT_EQ(app.memory_activity.last_worker_exit_code, 127);
 }
-

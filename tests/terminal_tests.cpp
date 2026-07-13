@@ -1382,4 +1382,3 @@ UAM_TEST(ProviderInteractiveTerminalReasonMatchesSupportPredicate)
 	UAM_ASSERT_EQ(uam::ProviderInteractiveTerminalUnavailableReason(opencode_provider), std::string("Provider does not expose an interactive CLI runtime."));
 #endif
 }
-

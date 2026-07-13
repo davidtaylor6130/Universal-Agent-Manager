@@ -17,7 +17,6 @@ import {
   CopyTextButton,
   roleAccent,
   roleLabel,
-  statusColor,
   toolDisplayKind,
   toolDisplayTitle,
   toolStatusColor,

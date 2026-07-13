@@ -154,7 +154,7 @@ export function CLIView({ session }: CLIViewProps) {
 
         // Receive PTY output pushed from C++ via window.uamPush → CustomEvent.
         const onCliOutput = (e: Event) => {
-          const { sessionId, sourceChatId, terminalId, data } = (e as CustomEvent<{
+          const { sessionId, terminalId, data } = (e as CustomEvent<{
             sessionId?: string
           sourceChatId?: string
           terminalId?: string

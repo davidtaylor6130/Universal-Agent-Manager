@@ -74,27 +74,7 @@ bool CliTerminalIsBetterExactTerminalIdMatch(const CliTerminalState& candidate, 
 
 bool CliTerminalIsBetterChatMatch(const CliTerminalState& candidate, const CliTerminalState& best)
 {
-	if (candidate.running != best.running)
-	{
-		return candidate.running;
-	}
-
-	if (candidate.ui_attached != best.ui_attached)
-	{
-		return candidate.ui_attached;
-	}
-
-	if (candidate.last_activity_time_s != best.last_activity_time_s)
-	{
-		return candidate.last_activity_time_s > best.last_activity_time_s;
-	}
-
-	if (candidate.last_output_time_s != best.last_output_time_s)
-	{
-		return candidate.last_output_time_s > best.last_output_time_s;
-	}
-
-	return true;
+	return CliTerminalIsBetterExactTerminalIdMatch(candidate, best);
 }
 
 bool ChatIsBetterCliTerminalMatch(const ChatSession& candidate, const ChatSession& best)

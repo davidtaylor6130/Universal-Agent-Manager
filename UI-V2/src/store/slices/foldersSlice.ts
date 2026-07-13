@@ -10,7 +10,7 @@ import {
 } from '../cpp/reconcile'
 import type { CppFolder } from '../cpp/types'
 import { DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID } from '../../utils/providerMetadata'
-import type { AppState, ZustandSet, ZustandGet } from '../storeTypes'
+import type { ZustandSet, ZustandGet } from '../storeTypes'
 
 let folderCounter = 10
 

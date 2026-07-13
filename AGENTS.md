@@ -2,9 +2,9 @@
 
 ## Release Slice
 
-This repository is currently scoped to the Gemini CLI and Codex CLI release slice. Keep the app focused on React/CEF, ACP structured chat sessions, xterm.js terminal fallback sessions, provider save/resume, chat rename/delete/select/create/pin/branch, one-level workspace folders, durable memory files, and multiple concurrent CLI instances on macOS and Windows.
+This repository supports Gemini CLI, Codex CLI, OpenCode CLI, Claude Code CLI, and GitHub Copilot CLI. Keep the app focused on React/CEF, ACP structured chat sessions, xterm.js terminal fallback sessions, provider save/resume, chat rename/delete/select/create/pin/branch, one-level workspace folders, durable memory files, and multiple concurrent CLI instances on macOS and Windows.
 
-Unsupported non-Gemini/non-Codex providers, RAG engines, templates, VCS panels, local model engines, Dear ImGui, and checked-in frontend build output are intentionally removed.
+Do not remove any of these five provider implementations. Provider removal requires explicit user direction. RAG engines, templates, VCS panels, local model engines, Dear ImGui, and checked-in frontend build output remain outside this release slice.
 
 ## Build Commands
 
@@ -75,6 +75,9 @@ Tests use a custom framework in `tests/core_tests.cpp`, a CMake platform ifdef g
 - CEF bridge: `src/cef/uam_query_handler.cpp`
 - Gemini provider: `src/common/provider/gemini/`
 - Codex provider: `src/common/provider/codex/`
+- OpenCode provider: `src/common/provider/opencode/`
+- Claude Code provider: `src/common/provider/claude/`
+- GitHub Copilot provider: `src/common/provider/copilot/`
 - ACP runtime: `src/common/runtime/acp/`
 - Terminal runtime: `src/common/runtime/terminal/` plus platform services
 - Memory service: `src/app/memory_service.cpp`

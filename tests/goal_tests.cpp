@@ -552,4 +552,3 @@ UAM_TEST(AcpGoalWatchdogIgnoresFreshGoalsAndBusySessions)
 // NOTE: The former BuildPrompt/BuildCommand goal-context tests were removed with the
 // dead one-shot command pipeline (PR-5). Goal-prompt composition is now exercised by the
 // GoalServiceBuildContinuationPrompt* tests and the live ACP goal-review tests above.
-

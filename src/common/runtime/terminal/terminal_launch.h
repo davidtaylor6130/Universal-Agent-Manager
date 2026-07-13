@@ -18,13 +18,11 @@
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_dimensions.h"
 #include "common/runtime/terminal/terminal_lifecycle.h"
+#include "common/runtime/terminal/terminal_provider_cli.h"
 #include "common/utils/string_utils.h"
 
 namespace uam
 {
-
-	inline std::string ResolveProviderInteractiveResumeId(const AppState& app, const ChatSession& chat, const ProviderProfile& provider);
-	inline std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const ChatSession& chat);
 
 	inline bool FailCliTerminalStart(CliTerminalState& terminal, CliTerminalLifecycleState failure_state, std::string error_message)
 	{

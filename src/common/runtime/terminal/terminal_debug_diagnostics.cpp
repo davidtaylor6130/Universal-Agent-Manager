@@ -40,6 +40,21 @@ const ChatSession* FindChatForCliDiagnostics(const AppState& app, const CliTermi
 	return FindChatForCliTerminal(app, terminal);
 }
 
+namespace
+{
+	std::string NativeSessionIdForDiagnostics(const AppState& app, const ChatSession& chat)
+	{
+		const std::string resolved_native_session_id = ResolvedNativeSessionIdForChat(app, chat);
+		if (!resolved_native_session_id.empty())
+		{
+			return resolved_native_session_id;
+		}
+
+		const std::string native_session_id = NativeSessionLinkService().RealNativeSessionId(chat);
+		return native_session_id.empty() ? chat.native_session_id : native_session_id;
+	}
+} // namespace
+
 std::string CliProviderIdForDiagnostics(const AppState& app, const CliTerminalState& terminal)
 {
 	if (const ChatSession* chat = FindChatForCliDiagnostics(app, terminal); chat != nullptr)
@@ -54,19 +69,7 @@ std::string CliNativeSessionIdForDiagnostics(const AppState& app, const CliTermi
 {
 	if (const ChatSession* chat = FindChatForCliDiagnostics(app, terminal); chat != nullptr)
 	{
-		const std::string resolved_native_session_id = ResolvedNativeSessionIdForChat(app, *chat);
-		if (!resolved_native_session_id.empty())
-		{
-			return resolved_native_session_id;
-		}
-
-		const std::string native_session_id = NativeSessionLinkService().RealNativeSessionId(*chat);
-		if (!native_session_id.empty())
-		{
-			return native_session_id;
-		}
-
-		return chat->native_session_id;
+		return NativeSessionIdForDiagnostics(app, *chat);
 	}
 
 	return "";
@@ -76,19 +79,7 @@ std::string CliAttachedSessionIdForDiagnostics(const AppState& app, const CliTer
 {
 	if (const ChatSession* chat = FindChatForCliDiagnostics(app, terminal); chat != nullptr)
 	{
-		const std::string resolved_native_session_id = ResolvedNativeSessionIdForChat(app, *chat);
-		if (!resolved_native_session_id.empty())
-		{
-			return resolved_native_session_id;
-		}
-
-		const std::string native_session_id = NativeSessionLinkService().RealNativeSessionId(*chat);
-		if (!native_session_id.empty())
-		{
-			return native_session_id;
-		}
-
-		return chat->native_session_id;
+		return NativeSessionIdForDiagnostics(app, *chat);
 	}
 
 	return TrimCliTerminalIdentity(terminal.attached_session_id);
