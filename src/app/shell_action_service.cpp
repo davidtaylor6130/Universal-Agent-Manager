@@ -173,6 +173,20 @@ namespace
 		       "</dict></dict></plist>\n";
 	}
 
+	std::string MacWorkflowInfo(const ShellAction& action)
+	{
+		const std::string input_type = action.accepts_files && action.accepts_folders ? "public.item" :
+		                               action.accepts_folders ? "public.folder" : "public.data";
+		return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+		       "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+		       "<plist version=\"1.0\"><dict><key>NSServices</key><array><dict>"
+		       "<key>NSMenuItem</key><dict><key>default</key><string>" + XmlEscape(action.label) + "</string></dict>"
+		       "<key>NSMessage</key><string>runWorkflowAsService</string>"
+		       "<key>NSRequiredContext</key><dict><key>NSApplicationIdentifier</key><string>com.apple.finder</string></dict>"
+		       "<key>NSSendFileTypes</key><array><string>" + input_type + "</string></array>"
+		       "</dict></array></dict></plist>\n";
+	}
+
 #if defined(_WIN32)
 	std::wstring Wide(std::string_view value)
 	{
@@ -439,8 +453,9 @@ bool ShellActionService::Apply(const uam::AppState& app, const std::filesystem::
 	for (const ShellAction& action : app.shell_actions)
 	{
 		if (!action.enabled) continue;
-		const fs::path document = services / (std::string(kMacWorkflowPrefix) + SafeFileName(action.label) + ".workflow") / "Contents" / "document.wflow";
-		if (!uam::io::WriteTextFile(document, MacWorkflowDocument(action, executable)))
+		const fs::path contents = services / (std::string(kMacWorkflowPrefix) + SafeFileName(action.label) + ".workflow") / "Contents";
+		if (!uam::io::WriteTextFile(contents / "document.wflow", MacWorkflowDocument(action, executable)) ||
+		    !uam::io::WriteTextFile(contents / "Info.plist", MacWorkflowInfo(action)))
 		{
 			if (error_out != nullptr) *error_out = "Failed to install Finder Quick Action '" + action.label + "'.";
 			return false;

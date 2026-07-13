@@ -2,7 +2,7 @@
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
 
 import { KeyboardEvent as ReactKeyboardEvent, RefObject, useEffect, useId, useRef, useState } from 'react'
-import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Settings2, Target } from 'lucide-react'
+import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Settings2, Target, ClipboardList, Shield, ShieldAlert, ShieldCheck, Sparkles } from 'lucide-react'
 import type { AcpBinding } from '../../store/useAppStore'
 import type { Goal } from '../../types/goal'
 import type { Provider } from '../../types/provider'
@@ -18,6 +18,7 @@ import {
   buildModelOptions,
   modelOptionFor,
 } from './modelOptions'
+import { MenuSelect } from '../ui'
 
 export type ComposerIconName = 'editor' | 'folder' | 'git-tree' | 'markdown' | 'plus' | 'send' | 'terminal'
 
@@ -52,6 +53,13 @@ export function ComposerIcon({ name, size = 14 }: { name: ComposerIconName; size
   }
 }
 
+function permissionModeIcon(id: string) {
+  if (id === 'auto') return <Sparkles size={14} />
+  if (id === 'plan') return <ClipboardList size={14} />
+  if (id === 'acceptEdits') return <SquarePen size={14} />
+  return <ShieldCheck size={14} />
+}
+
 export function ComposerToolbar({
   acp,
   provider,
@@ -64,6 +72,8 @@ export function ComposerToolbar({
   reasoningEffort,
   serviceTier,
   approvalModeId,
+  permissionModeId,
+  permissionModes,
   autoApproveCommands,
   commandSafetyTier,
   memoryEnabled,
@@ -90,6 +100,7 @@ export function ComposerToolbar({
   onTogglePlan,
   onToggleAcceptEdits,
   onToggleYolo,
+  onSelectPermissionMode,
   onSetCommandSafetyTier,
   onToggleMemory,
   goalArmed,
@@ -113,6 +124,8 @@ export function ComposerToolbar({
   reasoningEffort?: string
   serviceTier?: string
   approvalModeId?: string
+  permissionModeId: string
+  permissionModes: Array<{ id: string; name: string; description?: string }>
   autoApproveCommands: boolean
   commandSafetyTier: 'low' | 'medium' | 'high'
   memoryEnabled: boolean
@@ -139,6 +152,7 @@ export function ComposerToolbar({
   onTogglePlan: () => void
   onToggleAcceptEdits: () => void
   onToggleYolo: () => void
+  onSelectPermissionMode: (modeId: string) => void
   onSetCommandSafetyTier: (tier: 'low' | 'medium' | 'high') => void
   onToggleMemory: () => void
   goalArmed: boolean
@@ -171,8 +185,7 @@ export function ComposerToolbar({
   const acceptEditsDisabled = Boolean(modelDisabled || !acceptEditsAvailable)
   const yoloDisabled = false
   const memoryDisabled = Boolean(modelDisabled)
-  const autoLabel = caps.autoLabel
-  const modeLabel = planActive ? 'Plan' : acceptEditsActive ? 'Accept Edits' : 'Default'
+  const autoLabel = 'Auto Decide'
   const running = Boolean(acp?.processing)
   // Secondary mode controls (plan / accept-edits / auto / memory / markdown) are
   // consolidated behind one "Options" popover to keep the toolbar quiet.
@@ -624,24 +637,33 @@ export function ComposerToolbar({
                     <span>{currentSpeed.label}</span>
                   </div>
                 )}
-                <div className="flex justify-between gap-3">
-                  <span style={{ color: 'var(--text-3)' }}>Mode</span>
-                  <span>{modeLabel}</span>
+                <div className="grid gap-1">
+                  <span className="flex items-center gap-1.5" style={{ color: 'var(--text-3)' }}><Shield size={13} aria-hidden /> Permission</span>
+                  <MenuSelect
+                    label="Permission mode"
+                    value={permissionModeId}
+                    options={permissionModes.map((mode) => ({
+                      value: mode.id,
+                      label: mode.name,
+                      description: mode.description,
+                      icon: permissionModeIcon(mode.id),
+                    }))}
+                    onChange={onSelectPermissionMode}
+                  />
                 </div>
-                <label className="grid gap-1">
-                  <span style={{ color: 'var(--text-3)' }}>Command safety</span>
-                  <select
-                    aria-label="Command safety tier"
+                <div className="grid gap-1">
+                  <span className="flex items-center gap-1.5" style={{ color: 'var(--text-3)' }}><ShieldAlert size={13} aria-hidden /> Command safety</span>
+                  <MenuSelect
+                    label="Command safety tier"
                     value={commandSafetyTier}
-                    onChange={(event) => onSetCommandSafetyTier(event.target.value as 'low' | 'medium' | 'high')}
-                    className="w-full px-2 py-1 text-xs"
-                    style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)' }}
-                  >
-                    <option value="low">Low</option>
-                    <option value="medium">Medium</option>
-                    <option value="high">High</option>
-                  </select>
-                </label>
+                    onChange={(value) => onSetCommandSafetyTier(value as 'low' | 'medium' | 'high')}
+                    options={[
+                      { value: 'low', label: 'Low', description: 'Warn about a smaller set of risky commands.', icon: <Shield size={14} /> },
+                      { value: 'medium', label: 'Medium', description: 'Balanced command warnings.', icon: <ShieldCheck size={14} /> },
+                      { value: 'high', label: 'High', description: 'Warn before more potentially risky commands.', icon: <ShieldAlert size={14} /> },
+                    ]}
+                  />
+                </div>
                 <div className="flex justify-between gap-3">
                   <span style={{ color: 'var(--text-3)' }}>Memory</span>
                   <span>{memoryEnabled ? 'On' : 'Off'}</span>

@@ -218,11 +218,17 @@ UAM_TEST(MacShellActionsApplyReplacesOnlyUamQuickActionsWithoutDuplicates)
 	std::vector<fs::path> workflows;
 	for (const fs::directory_entry& entry : fs::directory_iterator(services)) workflows.push_back(entry.path());
 	UAM_ASSERT_EQ(workflows.size(), static_cast<std::size_t>(2));
-	const std::string document = ReadFile(services / "Universal Agent Manager - Review Selection.workflow" / "Contents" / "document.wflow");
-	UAM_ASSERT(RunTestCommand("plutil -lint " + ShellQuoteForTest((services / "Universal Agent Manager - Review Selection.workflow" / "Contents" / "document.wflow").string())));
+	const fs::path workflow = services / "Universal Agent Manager - Review Selection.workflow";
+	const std::string document = ReadFile(workflow / "Contents" / "document.wflow");
+	const std::string info = ReadFile(workflow / "Contents" / "Info.plist");
+	UAM_ASSERT(RunTestCommand("plutil -lint " + ShellQuoteForTest((workflow / "Contents" / "document.wflow").string())));
+	UAM_ASSERT(RunTestCommand("plutil -lint " + ShellQuoteForTest((workflow / "Contents" / "Info.plist").string())));
+	UAM_ASSERT(RunTestCommand("/System/Library/CoreServices/pbs -read_bundle " + ShellQuoteForTest(workflow.string()) + " 2>&1 | grep -q " + ShellQuoteForTest("Review Selection")));
 	UAM_ASSERT(document.find("--uam-shell-action") != std::string::npos);
 	UAM_ASSERT(document.find("review-selection") != std::string::npos);
 	UAM_ASSERT(document.find("$@") != std::string::npos);
+	UAM_ASSERT(info.find("NSServices") != std::string::npos);
+	UAM_ASSERT(info.find("public.item") != std::string::npos);
 
 	app.shell_actions.front().enabled = false;
 	UAM_ASSERT(ShellActionService::Apply(app, executable, &error));

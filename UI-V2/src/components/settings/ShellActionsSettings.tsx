@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Plus, Trash2 } from 'lucide-react'
+import { BookOpen, Check, File, Files, Folder, FolderOpen, MousePointerClick, Plus, Sparkles, Trash2 } from 'lucide-react'
 import { useAppStore, type ShellAction } from '../../store/useAppStore'
-import { Button, IconButton } from '../ui'
+import { Button, IconButton, MenuSelect } from '../ui'
 
 function newAction(): ShellAction {
   const token = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`
@@ -50,7 +50,10 @@ export function ShellActionsSettings() {
   return (
     <div className="space-y-4">
       <div className="rounded-xl p-4 grid gap-2" style={{ border: '1px solid var(--border)', background: 'var(--surface-up)' }}>
-        <div className="text-sm font-medium" style={{ color: 'var(--text)' }}>Finder / Explorer actions</div>
+        <div className="flex items-center gap-2 text-sm font-medium" style={{ color: 'var(--text)' }}>
+          <MousePointerClick size={16} aria-hidden style={{ color: 'var(--accent)' }} />
+          Finder / Explorer actions
+        </div>
         <p className="text-xs" style={{ color: 'var(--text-3)' }}>
           Add per-user context-menu actions for files, folders, or both. Apply replaces only Universal Agent Manager entries.
         </p>
@@ -78,61 +81,56 @@ export function ShellActionsSettings() {
           </div>
 
           <div className="grid sm:grid-cols-2 gap-3">
-            <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-              Action
-              <select
-                aria-label={`Action for ${action.label}`}
+            <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+              <span>Action</span>
+              <MenuSelect
                 value={action.openWorkspace ? 'workspace' : 'skill'}
-                onChange={(event) => update(action.id, { openWorkspace: event.target.value === 'workspace' })}
-                className="rounded-md px-3 py-2 text-sm"
-                style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
-              >
-                <option value="workspace">Open as Workspace</option>
-                <option value="skill">Run skill</option>
-              </select>
-            </label>
-            <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-              Available for
-              <select
-                aria-label={`Input type for ${action.label}`}
+                label={`Action for ${action.label}`}
+                onChange={(value) => update(action.id, { openWorkspace: value === 'workspace' })}
+                options={[
+                  { value: 'workspace', label: 'Open as Workspace', description: 'Start a chat with the selected items.', icon: <FolderOpen size={15} /> },
+                  { value: 'skill', label: 'Run skill', description: 'Apply a Markdown Store skill to the selection.', icon: <Sparkles size={15} /> },
+                ]}
+              />
+            </div>
+            <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+              <span>Available for</span>
+              <MenuSelect
+                label={`Input type for ${action.label}`}
                 value={action.acceptsFiles && action.acceptsFolders ? 'both' : action.acceptsFolders ? 'folders' : 'files'}
-                onChange={(event) => update(action.id, {
-                  acceptsFiles: event.target.value !== 'folders',
-                  acceptsFolders: event.target.value !== 'files',
+                onChange={(value) => update(action.id, {
+                  acceptsFiles: value !== 'folders',
+                  acceptsFolders: value !== 'files',
                 })}
-                className="rounded-md px-3 py-2 text-sm"
-                style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
-              >
-                <option value="both">Files and folders</option>
-                <option value="files">Files only</option>
-                <option value="folders">Folders only</option>
-              </select>
-            </label>
+                options={[
+                  { value: 'both', label: 'Files and folders', icon: <Files size={15} /> },
+                  { value: 'files', label: 'Files only', icon: <File size={15} /> },
+                  { value: 'folders', label: 'Folders only', icon: <Folder size={15} /> },
+                ]}
+              />
+            </div>
           </div>
 
           {!action.openWorkspace && (
-            <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-              Skill
-              <select
-                aria-label={`Skill for ${action.label}`}
+            <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+              <span>Skill</span>
+              <MenuSelect
+                label={`Skill for ${action.label}`}
                 value={action.skillPath}
-                onChange={(event) => update(action.id, { skillPath: event.target.value })}
-                className="rounded-md px-3 py-2 text-sm"
-                style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
-              >
-                <option value="">Select a Markdown Store skill</option>
-                {markdownEntries.map((entry) => <option key={entry.filePath} value={entry.filePath}>{entry.title}</option>)}
-              </select>
-            </label>
+                onChange={(value) => update(action.id, { skillPath: value })}
+                options={[
+                  { value: '', label: 'Select a Markdown Store skill', icon: <BookOpen size={15} /> },
+                  ...markdownEntries.map((entry) => ({ value: entry.filePath, label: entry.title, icon: <BookOpen size={15} /> })),
+                ]}
+              />
+            </div>
           )}
         </fieldset>
       ))}
 
       <div className="flex items-center justify-between gap-3">
-        <Button variant="secondary" onClick={() => setActions((current) => [...current, newAction()])}>
-          <Plus size={14} /> Add action
-        </Button>
-        <Button onClick={() => void apply()} disabled={applying}>{applying ? 'Applying…' : 'Apply'}</Button>
+        <IconButton icon={<Plus size={16} />} label="Add shell action" variant="solid" onClick={() => setActions((current) => [...current, newAction()])} />
+        <Button variant="primary" leadingIcon={<Check size={14} />} loading={applying} onClick={() => void apply()}>Apply</Button>
       </div>
       {(error || notification) && <div role="status" className="text-xs" style={{ color: error ? 'var(--red)' : 'var(--text-2)' }}>{error || notification}</div>}
     </div>

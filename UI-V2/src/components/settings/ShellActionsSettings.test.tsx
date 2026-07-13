@@ -46,16 +46,19 @@ describe('ShellActionsSettings', () => {
     expect(host.textContent).toContain('Review skill')
     const label = host.querySelector('input[aria-label="Label for Review Selection"]') as HTMLInputElement
     const enabled = Array.from(host.querySelectorAll('input[type="checkbox"]'))[0] as HTMLInputElement
-    const inputType = host.querySelector('select[aria-label="Input type for Review Selection"]') as HTMLSelectElement
+    const inputType = host.querySelector('button[aria-label="Input type for Review Selection"]') as HTMLButtonElement
+    expect(host.querySelector('select')).toBeNull()
+    expect(inputType.querySelector('[data-menu-select-icon]')).not.toBeNull()
 
     await act(async () => {
       const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
       valueSetter?.call(label, 'Review résumé')
       label.dispatchEvent(new Event('input', { bubbles: true }))
       enabled.click()
-      inputType.value = 'files'
-      inputType.dispatchEvent(new Event('change', { bubbles: true }))
+      inputType.click()
     })
+    const filesOnly = Array.from(host.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Files only')) as HTMLButtonElement
+    await act(async () => { filesOnly.click() })
 
     const apply = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Apply')
     await act(async () => { apply?.click() })
