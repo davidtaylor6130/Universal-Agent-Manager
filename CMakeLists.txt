@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
-project(universal_agent_manager LANGUAGES C CXX)
+project(universal_agent_manager VERSION 4.0.0 LANGUAGES C CXX)
 
 if(NOT WIN32 AND NOT APPLE)
   message(FATAL_ERROR "universal_agent_manager supports only Windows and macOS builds.")
@@ -458,7 +458,8 @@ file(REMOVE_RECURSE \"\${UAM_BUNDLE_CONTENTS}/MacOS/UI-V2\")
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>${_hname}</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleVersion</key><string>1.0.0</string>
+  <key>CFBundleShortVersionString</key><string>${PROJECT_VERSION}</string>
+  <key>CFBundleVersion</key><string>${PROJECT_VERSION}</string>
   <key>LSBackgroundOnly</key><true/>
   <key>LSMinimumSystemVersion</key><string>10.15.0</string>
 </dict>
@@ -710,8 +711,10 @@ if(APPLE)
   if(UAM_MACOS_BUNDLE)
     set_target_properties(universal_agent_manager PROPERTIES
       MACOSX_BUNDLE_BUNDLE_NAME "Universal Agent Manager"
+      MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
       MACOSX_BUNDLE_GUI_IDENTIFIER "com.universalagentmanager.desktop"
       MACOSX_BUNDLE_ICON_FILE "app_icon.icns"
+      MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
     )
   endif()
 endif()
