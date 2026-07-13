@@ -5,6 +5,7 @@ import { applyDocumentTheme, readStoredTheme } from '../utils/themeStorage'
 export function useTheme() {
   const theme = useAppStore((s) => s.theme)
   const setTheme = useAppStore((s) => s.setTheme)
+  const customThemes = useAppStore((s) => s.customThemes)
 
   // Sync from localStorage on mount
   useEffect(() => {
@@ -13,8 +14,8 @@ export function useTheme() {
       setTheme(stored)
     }
     // Apply to HTML element
-    applyDocumentTheme(stored ?? theme)
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+    applyDocumentTheme(stored ?? theme, customThemes)
+  }, [customThemes, setTheme, theme])
 
   const toggle = () => setTheme(theme === 'dark' ? 'light' : 'dark')
 

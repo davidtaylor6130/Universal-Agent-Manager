@@ -7,10 +7,15 @@
 #include "common/chat/chat_branching.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
+#include "common/config/provider_chat_defaults.h"
+#include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/acp/acp_session_runtime.h"
+#include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/terminal_common.h"
+#include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/utils/string_utils.h"
+#include "common/utils/time_utils.h"
 
 #include <algorithm>
 #include <string_view>
@@ -292,6 +297,62 @@ namespace
 		ForgetDeletedChatReferences(app, deleted_chat_ids);
 	}
 } // namespace
+
+uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string_view chat_id, std::string_view provider_id)
+{
+	const ProviderProfile* provider = ProviderProfileStore::FindById(app.provider_profiles, provider_id);
+	if (provider == nullptr || !ProviderRuntime::IsRuntimeEnabled(*provider))
+	{
+		return ChatProviderSwitchResult::UnsupportedProvider;
+	}
+
+	ChatSession* chat = ChatDomainService().FindChatById(app, std::string(chat_id));
+	if (chat == nullptr)
+	{
+		return ChatProviderSwitchResult::ChatNotFound;
+	}
+	if (uam::provider_ids::NormalizeCliProviderAliasOrSelf(chat->provider_id) == provider->id)
+	{
+		return ChatProviderSwitchResult::Unchanged;
+	}
+	if (const AcpSessionState* session = FindAcpSessionForChat(app, chat->id); session != nullptr && AcpSessionHasActiveTurn(*session))
+	{
+		return ChatProviderSwitchResult::ActiveRuntime;
+	}
+	if (ChatHasBusyCliTerminal(app, chat->id))
+	{
+		return ChatProviderSwitchResult::ActiveRuntime;
+	}
+
+	const ChatSession previous_chat = *chat;
+	const auto previous_resolved_native_session = app.resolved_native_sessions_by_chat_id.find(chat->id);
+	const bool had_previous_resolved_native_session = previous_resolved_native_session != app.resolved_native_sessions_by_chat_id.end();
+	const std::string previous_resolved_native_session_id = had_previous_resolved_native_session ? previous_resolved_native_session->second : std::string{};
+	chat->provider_id = provider->id;
+	uam::provider_chat_defaults::ApplyToChat(app.settings, *chat);
+	chat->native_session_id.clear();
+	ChatHistorySyncService().ForgetResolvedNativeSessionForChat(app, chat->id);
+	chat->updated_at = uam::time::TimestampNow();
+
+	if (!ChatHistorySyncService().SaveChatWithStatus(app, *chat, "Chat provider updated.", "Chat provider changed in UI, but failed to save."))
+	{
+		*chat = previous_chat;
+		if (had_previous_resolved_native_session)
+		{
+			app.resolved_native_sessions_by_chat_id[chat->id] = previous_resolved_native_session_id;
+		}
+		else
+		{
+			app.resolved_native_sessions_by_chat_id.erase(chat->id);
+		}
+		return ChatProviderSwitchResult::SaveFailed;
+	}
+
+	(void)StopAcpSession(app, chat->id);
+	std::erase_if(app.acp_sessions, [&](const auto& session) { return session != nullptr && session->chat_id == chat->id; });
+	StopAndEraseCliTerminalForChat(app, chat->id, false);
+	return ChatProviderSwitchResult::Changed;
+}
 
 bool RemoveChatById(uam::AppState& app, const std::string& chat_id)
 {

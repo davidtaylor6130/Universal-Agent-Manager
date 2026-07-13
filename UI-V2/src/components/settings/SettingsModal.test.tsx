@@ -37,6 +37,9 @@ describe('SettingsModal memory settings', () => {
       memoryEnabledDefault: true,
       memoryIdleDelaySeconds: 120,
       memoryRecallBudgetBytes: 4096,
+      goalMaxLoopIterations: 200,
+      theme: 'dark',
+      customThemes: [],
       memoryWorkerBindings: {
         'gemini-cli': { workerProviderId: 'gemini-cli', workerModelId: '' },
       },
@@ -87,6 +90,10 @@ describe('SettingsModal memory settings', () => {
       setSettingsOpen: vi.fn(),
       setMemorySettings: vi.fn(() => Promise.resolve(true)),
       setEditorSettings: vi.fn(() => Promise.resolve(true)),
+      setTheme: vi.fn(),
+      refreshCustomThemes: vi.fn(() => Promise.resolve(true)),
+      saveCustomTheme: vi.fn((theme) => Promise.resolve(theme)),
+      deleteCustomTheme: vi.fn(() => Promise.resolve(true)),
       refreshCliProviderVersion: vi.fn(() => Promise.resolve(true)),
       applyCliProviderVersion: vi.fn(() => Promise.resolve(true)),
       openGlobalMemoryLibrary: vi.fn(() => Promise.resolve(true)),
@@ -151,7 +158,7 @@ describe('SettingsModal memory settings', () => {
   it('does not render native selects for memory worker controls', () => {
     const { host, root } = renderModal()
 
-    expect(host.querySelector('select')).toBeNull()
+    expect(host.querySelectorAll('select')).toHaveLength(1)
     expect(host.textContent).toContain('Appearance')
     expect(host.textContent).toContain('CLI Version')
     expect(host.textContent).toContain('Memory Settings')
@@ -163,6 +170,27 @@ describe('SettingsModal memory settings', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('updates the goal loop iteration cap', () => {
+    const { host, root } = renderModal()
+
+    openMemorySettingsSection(host)
+    const input = Array.from(host.querySelectorAll('input')).find(
+      (candidate) => candidate.parentElement?.textContent?.includes('Maximum iterations')
+    )
+    expect(input).toBeTruthy()
+
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+      valueSetter?.call(input, '0')
+      input?.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ goalMaxLoopIterations: 0 })
+
+    act(() => root.unmount())
     host.remove()
   })
 
@@ -571,6 +599,82 @@ describe('SettingsModal memory settings', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('creates, previews, and saves a custom theme', async () => {
+    const { host, root } = renderModal()
+    const createButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Create')
+
+    act(() => createButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+
+    const backgroundInput = host.querySelector('input[aria-label="Background color"]') as HTMLInputElement | null
+    expect(backgroundInput).toBeTruthy()
+    expect(host.querySelectorAll('input[type="color"]')).toHaveLength(12)
+
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+      valueSetter?.call(backgroundInput, '#123456')
+      backgroundInput?.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    expect(document.documentElement.style.getPropertyValue('--bg')).toBe('#123456')
+
+    const saveButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Save theme')
+    await act(async () => {
+      saveButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    const saveTheme = useAppStore.getState().saveCustomTheme
+    expect(saveTheme).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'custom:custom-theme',
+      colors: expect.objectContaining({ background: '#123456' }),
+    }))
+    expect(useAppStore.getState().setTheme).toHaveBeenCalledWith('custom:custom-theme')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('exports and imports validated theme JSON', async () => {
+    const customTheme = {
+      version: 1 as const,
+      id: 'custom:ocean' as const,
+      name: 'Ocean',
+      base: 'dark' as const,
+      colors: {
+        background: '#101820', surface: '#17212b', surfaceUp: '#22303c', text: '#f1f5f9',
+        textMuted: '#94a3b8', accent: '#38bdf8', sidebar: '#0b1219', userMessage: '#173047',
+        assistantMessage: '#17212b', success: '#22c55e', warning: '#f59e0b', error: '#ef4444',
+      },
+    }
+    useAppStore.setState({ theme: customTheme.id, customThemes: [customTheme] })
+    const createObjectUrl = vi.fn(() => 'blob:theme')
+    const revokeObjectUrl = vi.fn()
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectUrl })
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectUrl })
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    const { host, root } = renderModal()
+
+    const exportButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Export JSON')
+    act(() => exportButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(createObjectUrl).toHaveBeenCalledTimes(1)
+    expect(clickSpy).toHaveBeenCalledTimes(1)
+    expect(revokeObjectUrl).toHaveBeenCalledWith('blob:theme')
+
+    const importInput = host.querySelector('input[aria-label="Import theme JSON"]') as HTMLInputElement | null
+    const imported = { ...customTheme, id: 'custom:forest', name: 'Forest' }
+    const file = new File([], 'forest.json', { type: 'application/json' })
+    Object.defineProperty(file, 'text', { value: vi.fn(() => Promise.resolve(JSON.stringify(imported))) })
+    Object.defineProperty(importInput, 'files', { configurable: true, value: [file] })
+    await act(async () => {
+      importInput?.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    expect(useAppStore.getState().saveCustomTheme).toHaveBeenCalledWith(imported)
+    expect(useAppStore.getState().setTheme).toHaveBeenCalledWith('custom:forest')
+
+    act(() => root.unmount())
     host.remove()
   })
 })

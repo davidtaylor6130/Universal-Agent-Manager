@@ -2,14 +2,14 @@
 uamVersion: 1
 title: obsidian-save
 maker: DavidTaylor6130
-review: Take user input (a prompt + notes/content) and save it to their Obsidian vault in the best location, using PARA method. Automatically saves to the vault at /Volumes/Obsidian_Vault/David's 2nd Brain Vault/. Classifies content into numbered PARA folders, determines subfolder, creates file with frontma
+review: Take user input (a prompt + notes/content) and save it to their Obsidian vault in the best location, using PARA method. Automatically saves to the vault at $VAULT_PATH/. Classifies content into numbered PARA folders, determines subfolder, creates file with frontma
 dateCreated: 2026-07-07T22:33:13Z
 dateUpdated: 2026-07-07T22:33:13Z
 ---
 
 # Obsidian Save — Auto-Location Note Saving (PARA Method)
 
-Vault path: `/Volumes/Obsidian_Vault/David's 2nd Brain Vault/`
+Vault path: `$VAULT_PATH/`
 
 You are helping the user save notes to their Obsidian vault using the PARA method
 (Promoted by Tiago Forte as part of his "Building a Second Brain" system).
@@ -19,7 +19,7 @@ You are helping the user save notes to their Obsidian vault using the PARA metho
 ## Step 0 — Verify Vault Access
 
 ```bash
-ls "/Volumes/Obsidian_Vault/David's 2nd Brain Vault/" >/dev/null 2>&1 || echo "VAULT_INACCESSIBLE"
+ls "$VAULT_PATH/" >/dev/null 2>&1 || echo "VAULT_INACCESSIBLE"
 ```
 
 If the vault is inaccessible (NAS offline), inform the user and stop. Do not proceed without access.
@@ -32,10 +32,10 @@ The vault uses numbered folders. Map classification to these exact paths:
 
 | PARA Category | Vault Folder | Path |
 |---------------|-------------|------|
-| **Projects** | `00 Current Projects` or `01 Future Projects` | `/Volumes/Obsidian_Vault/David's 2nd Brain Vault/00 Current Projects/` (active) or `.../01 Future Projects/` (not yet started) |
-| **Areas** | `02 Areas Of On Going Work - Targets` | `/Volumes/Obsidian_Vault/David's 2nd Brain Vault/02 Areas Of On Going Work - Targets/` |
-| **Resources** | `03 Resources` | `/Volumes/Obsidian_Vault/David's 2nd Brain Vault/03 Resources/<topic>/` |
-| **Archives** | `04 Archived Info and Projects` | `/Volumes/Obsidian_Vault/David's 2nd Brain Vault/04 Archived Info and Projects/<year>/` |
+| **Projects** | `00 Current Projects` or `01 Future Projects` | `$VAULT_PATH/00 Current Projects/` (active) or `.../01 Future Projects/` (not yet started) |
+| **Areas** | `02 Areas Of On Going Work - Targets` | `$VAULT_PATH/02 Areas Of On Going Work - Targets/` |
+| **Resources** | `03 Resources` | `$VAULT_PATH/03 Resources/<topic>/` |
+| **Archives** | `04 Archived Info and Projects` | `$VAULT_PATH/04 Archived Info and Projects/<year>/` |
 
 ### Classification Guide
 
@@ -76,7 +76,7 @@ Is the content about an active project with a clear goal/deadline?
 Within `03 Resources`, use the vault's existing subfolder structure:
 
 ```bash
-ls "/Volumes/Obsidian_Vault/David's 2nd Brain Vault/03 Resources/" 2>/dev/null
+ls "$VAULT_PATH/03 Resources/" 2>/dev/null
 # Existing: Hobbies, Reading Quotes Archive, Software Knowledge, Video Editing, General Knowledge
 ```
 
@@ -85,7 +85,7 @@ Pick the best matching subfolder. If no match exists, create a new one based on 
 ### Subfolders to Create Automatically When Needed
 
 - **`General Knowledge`** — Always available under Resources for broad topics that don't fit elsewhere
-  - Path: `/Volumes/Obsidian_Vault/David's 2nd Brain Vault/03 Resources/General Knowledge/`
+  - Path: `$VAULT_PATH/03 Resources/General Knowledge/`
   - Use when content is general knowledge / reference material with no clear category
 - **`Programming`** — Under Software Knowledge or standalone depending on context
 - Any other topic-specific folder that doesn't match existing ones
@@ -133,7 +133,7 @@ relatedFolders: [relevant folder names as array]
 Before writing, check if a file with the same date-slug already exists in the target folder:
 
 ```bash
-ls "/Volumes/Obsidian_Vault/David's 2nd Brain Vault/<target-folder>/$(date +%Y-%m-%d)-"* >/dev/null 2>&1 && echo "CONFLICT" || echo "OK"
+ls "$VAULT_PATH/<target-folder>/$(date +%Y-%m-%d)-"* >/dev/null 2>&1 && echo "CONFLICT" || echo "OK"
 ```
 
 If there is a conflict, append a short suffix: `YYYY-MM-DD-slug-title-2.mdx`
@@ -196,10 +196,10 @@ Before finalizing links, check what exists in the vault to avoid linking to non-
 
 ```bash
 # Check if a potential link target actually has an .md file (folder page) or notes
-ls "/Volumes/Obsidian_Vault/David's 2nd Brain Vault/03 Resources/Software Knowleadge/" 2>/dev/null | head -5
+ls "$VAULT_PATH/03 Resources/Software Knowleadge/" 2>/dev/null | head -5
 
 # Look for existing notes that might be related to the new content
-grep -rl "cloudflare" "/Volumes/Obsidian_Vault/David's 2nd Brain Vault/" --include="*.mdx" --include="*.md" 2>/dev/null | head -5
+grep -rl "cloudflare" "$VAULT_PATH/" --include="*.mdx" --include="*.md" 2>/dev/null | head -5
 ```
 
 If a linked folder has no `.md` landing page, note that the plugin may not render it — but still link to it (the folder page can be created later).
@@ -211,7 +211,7 @@ If a linked folder has no `.md` landing page, note that the plugin may not rende
 Write the file to:
 
 ```
-/Volumes/Obsidian_Vault/David's 2nd Brain Vault/<target-folder>/<filename>.mdx
+$VAULT_PATH/<target-folder>/<filename>.mdx
 ```
 
 ### Content Formatting

@@ -3,7 +3,7 @@
 
 import { ReactNode, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { User, Code, ChevronDown } from 'lucide-react'
+import { User, Code, ChevronDown, Pencil, RotateCcw } from 'lucide-react'
 import type {
   AcpPendingPermission,
   AcpPendingUserInput,
@@ -12,14 +12,14 @@ import type {
   AcpUserInputAnswers,
 } from '../../store/useAppStore'
 import type { Message } from '../../types/message'
-import { Tooltip } from '../ui'
+import { IconButton, Tooltip } from '../ui'
 import {
   CopyTextButton,
   roleAccent,
   roleLabel,
+  ToolStatusIcon,
   toolDisplayKind,
   toolDisplayTitle,
-  toolStatusColor,
 } from './StatusHelpers'
 
 export function SubAgentRunningPanel({
@@ -32,8 +32,6 @@ export function SubAgentRunningPanel({
   renderHistory?: () => ReactNode
 }) {
   const [open, setOpen] = useState(false)
-  const isActive = tool.status === 'running' || tool.status === 'in_progress' || tool.status === 'pending'
-  const statusColor = toolStatusColor(tool)
   const displayTitle = toolDisplayTitle(tool)
   return (
     <details
@@ -77,32 +75,17 @@ export function SubAgentRunningPanel({
           >
             <User size={14} aria-hidden />
           </span>
-        <span className="min-w-0" style={{ display: 'flex', flexDirection: 'column', minWidth: 0, gap: 2 }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--blue)' }}>
-            <span aria-hidden="true" style={{ display: 'inline-block', width: 6, height: 6, borderRadius: 999, background: isActive ? statusColor : 'var(--text-3)', boxShadow: isActive ? `0 0 0 3px color-mix(in srgb, ${statusColor} 24%, transparent)` : 'none', animation: isActive ? 'uam-pulse 1.4s ease-in-out infinite' : 'none' }} />
-            Sub-agent:{isActive ? ' running' : ''}
-            <span style={{ fontSize: 10, fontWeight: 500, color: 'var(--text-3)', textTransform: 'none', letterSpacing: 0 }}>
-              {tool.kind && tool.kind !== 'sub-agent' ? tool.kind : ''}
+          <span className="min-w-0" style={{ display: 'flex', flexDirection: 'column', minWidth: 0, gap: 2 }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--blue)' }}>
+              Sub-agent:
+              <span style={{ fontSize: 10, fontWeight: 500, color: 'var(--text-3)', textTransform: 'none', letterSpacing: 0 }}>
+                {tool.kind && tool.kind !== 'sub-agent' ? tool.kind : ''}
+              </span>
             </span>
+            <span className="truncate" style={{ fontSize: 12, color: 'var(--text)' }}>{displayTitle}</span>
           </span>
-          <span className="truncate" style={{ fontSize: 12, color: 'var(--text)' }}>{displayTitle}</span>
         </span>
-      </span>
-      {tool.status && (
-        <span
-          className="text-[10px] font-medium"
-          style={{
-            color: statusColor,
-            border: '1px solid color-mix(in srgb, currentColor 22%, var(--border))',
-            borderRadius: 6,
-            background: 'color-mix(in srgb, currentColor 8%, var(--surface))',
-            padding: '2px 7px',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {tool.status.replace('_', ' ')}
-        </span>
-      )}
+        <ToolStatusIcon status={tool.status} />
       </summary>
       {open && (
         <div className="space-y-3" style={{ borderTop: '1px solid var(--border)', padding: 12 }}>
@@ -146,10 +129,10 @@ export function ToolCallInlineRows({
         const displayKind = toolDisplayKind(tool)
         const displayTitle = toolDisplayTitle(tool)
         return (
-        <div key={tool.id} className="uam-tool-timeline__item">
-          <Tooltip label="Open tool details">
+          <div key={tool.id} className="uam-tool-timeline__item">
             <button
               type="button"
+              title="Open tool details"
               onClick={() => onSelectTool(tool.id)}
               className="w-full grid text-left uam-tool-row"
               style={{
@@ -168,28 +151,14 @@ export function ToolCallInlineRows({
               >
                 <Code size={13} aria-hidden />
               </span>
-            <span className="text-[11px] font-medium" style={{ color: 'var(--teal)' }}>{displayKind}:</span>
-            <span className="text-xs truncate" style={{ color: 'var(--text)' }}>{displayTitle}</span>
-              {tool.status && (
-                <span
-                  className="text-[10px] font-medium"
-                  style={{
-                    color: toolStatusColor(tool),
-                    border: '1px solid color-mix(in srgb, currentColor 22%, var(--border))',
-                    borderRadius: 6,
-                    background: 'color-mix(in srgb, currentColor 8%, var(--surface))',
-                    padding: '2px 7px',
-                  }}
-                >
-                  {tool.status.replace('_', ' ')}
-                </span>
-              )}
+              <span className="text-[11px] font-medium" style={{ color: 'var(--teal)' }}>{displayKind}:</span>
+              <span className="text-xs truncate" style={{ color: 'var(--text)' }}>{displayTitle}</span>
+              <ToolStatusIcon status={tool.status} />
               <span style={{ color: 'var(--text-3)' }} aria-hidden="true">
                 <ChevronDown size={14} aria-hidden />
               </span>
             </button>
-          </Tooltip>
-        </div>
+          </div>
         )
       })}
     </div>
@@ -619,13 +588,13 @@ export function ToolCallModal({
             borderBottom: '1px solid var(--border)',
           }}
         >
-          <span style={{ color: toolStatusColor(tool), fontSize: 10 }}>●</span>
+          <ToolStatusIcon status={tool.status} />
           <div className="min-w-0 flex-1">
             <div className="text-sm font-semibold truncate" style={{ color: 'var(--text)' }}>
               {toolDisplayTitle(tool)}
             </div>
             <div className="text-[11px]" style={{ color: 'var(--text-3)' }}>
-              {[toolDisplayKind(tool), tool.kind, tool.status].filter(Boolean).join(' / ') || 'tool call'}
+              {[toolDisplayKind(tool), tool.kind].filter(Boolean).join(' / ') || 'tool call'}
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -672,7 +641,7 @@ export function ToolCallModal({
               <div><span style={{ color: 'var(--text-3)' }}>sub-agent:</span> {tool.subAgentId || tool.subAgentTitle || 'tracked from provider event'}</div>
             )}
             <div><span style={{ color: 'var(--text-3)' }}>kind:</span> {tool.kind || 'unknown'}</div>
-            <div><span style={{ color: 'var(--text-3)' }}>status:</span> {tool.status || 'unknown'}</div>
+            <div className="flex items-center"><ToolStatusIcon status={tool.status} /></div>
           </div>
           <pre
             className="whitespace-pre-wrap text-xs"
@@ -700,11 +669,19 @@ export function MessageFrame({
   children,
   assistantLabel,
   copyText = '',
+  branchLabel,
+  onEdit,
+  onRevert,
+  actionsDisabled = false,
 }: {
   role: Message['role']
   children: ReactNode
   assistantLabel: string
   copyText?: string
+  branchLabel?: string
+  onEdit?: () => void
+  onRevert?: () => void
+  actionsDisabled?: boolean
 }) {
   return (
     <div
@@ -719,16 +696,39 @@ export function MessageFrame({
           borderLeft: role !== 'user' ? `2px solid ${roleAccent(role)}` : undefined,
           borderRadius: role === 'user' ? 7 : 0,
           padding: role === 'user' ? '9px 11px' : '2px 0 2px 12px',
-          background: role === 'user' ? 'color-mix(in srgb, var(--accent-dim) 55%, var(--surface))' : 'transparent',
+          background: role === 'user' ? 'var(--message-user-bg)' : 'var(--message-assistant-bg)',
           color: 'var(--text)',
         }}
       >
         <div className="flex items-center gap-1.5 text-[11px] mb-1" style={{ color: roleAccent(role) }}>
           <span style={{ fontSize: 8 }}>●</span>
           <span>{roleLabel(role, assistantLabel)}</span>
-          {copyText.trim() && (
-            <span className="ml-auto">
-              <CopyTextButton text={copyText} label="Copy" title="Copy message" />
+          {branchLabel && (
+            <span className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: 'var(--accent-dim)', color: 'var(--accent)' }}>
+              {branchLabel}
+            </span>
+          )}
+          {(copyText.trim() || onEdit || onRevert) && (
+            <span className="ml-auto flex items-center gap-1">
+              <CopyTextButton text={copyText} label="Copy message" title="Copy message" />
+              {onEdit && (
+                <IconButton
+                  icon={<Pencil size={13} aria-hidden />}
+                  label="Edit message in new branch"
+                  size="sm"
+                  disabled={actionsDisabled}
+                  onClick={onEdit}
+                />
+              )}
+              {onRevert && (
+                <IconButton
+                  icon={<RotateCcw size={13} aria-hidden />}
+                  label="Revert to message in new branch"
+                  size="sm"
+                  disabled={actionsDisabled}
+                  onClick={onRevert}
+                />
+              )}
             </span>
           )}
         </div>

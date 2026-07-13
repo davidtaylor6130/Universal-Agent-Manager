@@ -2,6 +2,7 @@
 #include "cef/uam_query_handler_internal.h"
 
 #include "app/chat_domain_service.h"
+#include "app/chat_lifecycle_service.h"
 #include "app/persistence_coordinator.h"
 #include "app/provider_resolution_service.h"
 #include "app/runtime_orchestration_services.h"
@@ -27,14 +28,6 @@
 // ---------------------------------------------------------------------------
 
 using namespace uam::query_handler_internal;
-
-namespace
-{
-	uam::CliTerminalState* FindCliTerminalByRoutingKey(uam::AppState& app, const std::string& chat_id, const std::string& terminal_id)
-	{
-		return uam::FindCliTerminalForRoutingKey(app, chat_id, terminal_id);
-	}
-} // namespace
 
 void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
@@ -189,7 +182,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string model_id = uam::strings::Trim(payload.value("modelId", ""));
 
-	if (!IsAllowedAcpModelId(model_id))
+	if (!IsAllowedModelId(model_id))
 	{
 		cb->Failure(400, "Unsupported ACP model: " + model_id);
 		return;
@@ -322,83 +315,24 @@ void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string provider_id = uam::strings::Trim(payload.value("providerId", ""));
 
-	const ProviderProfile* provider = ProviderProfileStore::FindById(m_app.provider_profiles, provider_id);
-	if (provider == nullptr || !ProviderRuntime::IsRuntimeEnabled(*provider))
+	switch (uam::SwitchChatProvider(m_app, chat_id, provider_id))
 	{
+	case uam::ChatProviderSwitchResult::UnsupportedProvider:
 		cb->Failure(400, "Unsupported provider: " + provider_id);
 		return;
-	}
-
-	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
-	if (chat == nullptr)
-	{
+	case uam::ChatProviderSwitchResult::ChatNotFound:
+		cb->Failure(404, "Chat not found: " + chat_id);
 		return;
-	}
-
-	if (uam::provider_ids::NormalizeCliProviderAliasOrSelf(chat->provider_id) == provider->id)
-	{
-		uam::PushStateUpdateIfChanged(browser, m_app);
-		cb->Success("{}");
+	case uam::ChatProviderSwitchResult::ActiveRuntime:
+		cb->Failure(409, "Cannot change provider while a runtime turn or input request is active.");
 		return;
-	}
-
-	const std::size_t message_count = chat->messages_loaded ? chat->messages.size() : chat->persisted_message_count;
-	if (message_count > 0)
-	{
-		cb->Failure(409, "Cannot change provider after messages have been added.");
-		return;
-	}
-
-	if (uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat->id); session != nullptr && session->running)
-	{
-		cb->Failure(409, "Cannot change provider while the structured runtime is running.");
-		return;
-	}
-
-	if (uam::CliTerminalState* terminal = FindCliTerminalByRoutingKey(m_app, chat->id, ""); terminal != nullptr && terminal->running)
-	{
-		cb->Failure(409, "Cannot change provider while the CLI terminal is running.");
-		return;
-	}
-
-	const std::string previous_provider_id = chat->provider_id;
-	const std::string previous_model_id = chat->model_id;
-	const std::string previous_reasoning_effort = chat->reasoning_effort;
-	const std::string previous_service_tier = chat->service_tier;
-	const std::string previous_approval_mode = chat->approval_mode;
-	const bool previous_auto_approve_commands = chat->auto_approve_commands;
-	const bool previous_memory_enabled = chat->memory_enabled;
-	const std::string previous_native_session_id = chat->native_session_id;
-	const auto previous_resolved_native_session = m_app.resolved_native_sessions_by_chat_id.find(chat->id);
-	const bool had_previous_resolved_native_session = previous_resolved_native_session != m_app.resolved_native_sessions_by_chat_id.end();
-	const std::string previous_resolved_native_session_id = had_previous_resolved_native_session ? previous_resolved_native_session->second : std::string{};
-	const std::string previous_updated_at = chat->updated_at;
-	chat->provider_id = provider->id;
-	ApplyProviderDefaultsToChat(m_app.settings, *chat);
-	chat->native_session_id.clear();
-	ChatHistorySyncService().ForgetResolvedNativeSessionForChat(m_app, chat->id);
-	chat->updated_at = uam::time::TimestampNow();
-
-	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat provider updated.", "Chat provider changed in UI, but failed to save."))
-	{
-		chat->provider_id = previous_provider_id;
-		chat->model_id = previous_model_id;
-		chat->reasoning_effort = previous_reasoning_effort;
-		chat->service_tier = previous_service_tier;
-		chat->approval_mode = previous_approval_mode;
-		chat->auto_approve_commands = previous_auto_approve_commands;
-		chat->memory_enabled = previous_memory_enabled;
-		chat->native_session_id = previous_native_session_id;
-		if (had_previous_resolved_native_session)
-		{
-			m_app.resolved_native_sessions_by_chat_id[chat->id] = previous_resolved_native_session_id;
-		}
-		chat->updated_at = previous_updated_at;
+	case uam::ChatProviderSwitchResult::SaveFailed:
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat provider."));
 		return;
+	case uam::ChatProviderSwitchResult::Changed:
+	case uam::ChatProviderSwitchResult::Unchanged:
+		break;
 	}
-
-	uam::ClearStoppedCliTerminalAttachmentForChat(m_app, chat->id);
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");

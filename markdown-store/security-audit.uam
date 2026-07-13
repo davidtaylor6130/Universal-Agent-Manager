@@ -505,11 +505,11 @@ Any finding below should be reported. When in doubt, **flag it** — the user ca
 
 | Category | Example Finding | Severity | Why It Matters |
 |----------|----------------|----------|---------------|
-| Obsidian vault full path | `/Volumes/Obsidian_Vault/David's 2nd Brain Vault/` | **WARNING** | Exposes personal knowledge infrastructure; reveals folder structure of private notes |
+| Obsidian vault full path | `/<vault-root>/private-notes/` | **WARNING** | Exposes personal knowledge infrastructure; reveals folder structure of private notes |
 | iCloud / Mobile Documents paths | `~/Library/Mobile Documents/...` | **WARNING** | Could point to files synced across devices including sensitive documents |
 | Named `/Volumes/` mount | `/Volumes/Personal/`, `/Volumes/Timelocal/...` | **WARNING** | Reveals external drive names; if that drive has a name like "Backup-MyMac" it confirms device identity |
 | Capitalized `~/` home paths | `~/Documents/Projects/`, `~/Desktop/...` | **INFO** | Reveals personal directory structure (low risk but worth noting) |
-| Personal name in path | `/davidtaylormacbookpro/`, `MacBook-Pro.local` | **WARNING** | Confirms real identity / device name; useful for targeted attacks |
+| Personal name in path | `/Users/<username>/`, `<device-name>.local` | **WARNING** | Confirms real identity / device name; useful for targeted attacks |
 | Device hostname in code | `.macbook.pro`, `David-iPhone` | **WARNING** | Device fingerprinting; could be used to craft targeted exploits |
 | Personal email address | `user@gmail.com` in agent/skill docs | **INFO** | May be intentional (your public identity), but verify it is what you want public |
 | Phone number anywhere | `+1-555-0123`, `(555) 123-4567` | **WARNING** | Real phone numbers are PII; should never appear in a repo |
@@ -564,8 +564,8 @@ Any finding below should be reported. When in doubt, **flag it** — the user ca
 **Personal directory paths only referenced (not files tracked):**
 ```bash
 # Option A: Replace with environment variable in config/docs
-# Before: Vault path: /Volumes/Obsidian_Vault/David's 2nd Brain Vault/
-# After:  Vault path: $VAULT_PATH (export VAULT_PATH="/Volumes/Obsidian_Vault/David's 2nd Brain Vault/" in ~/.zshrc)
+# Before: Vault path: /Volumes/<private-vault>/notes/
+# After:  Vault path: $VAULT_PATH (export VAULT_PATH="/Volumes/<private-vault>/notes" in ~/.zshrc)
 
 # Option B: Use generic placeholder
 # Before: /Volumes/Obsidian_Vault/...

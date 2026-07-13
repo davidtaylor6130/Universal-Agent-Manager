@@ -389,7 +389,34 @@ namespace
 
 void ProviderCliCompatibilityService::StartVersionCheck(uam::AppState& app, bool force) const
 {
-	StartProviderVersionCheck(app, kDefaultProviderCliPolicyId, force);
+	if (app.runtime_cli_version_check_task.running)
+	{
+		return;
+	}
+	app.runtime_cli_version_check_queue.clear();
+	for (const ProviderProfile& profile : app.provider_profiles)
+	{
+		const std::string provider_id = NormalizeProviderCliPolicyIdOrDefault(profile.id);
+		if (FindProviderCliPolicy(provider_id) == nullptr || std::ranges::find(app.runtime_cli_version_check_queue, provider_id) != app.runtime_cli_version_check_queue.end())
+		{
+			continue;
+		}
+		if (!force)
+		{
+			const auto existing = app.runtime_cli_versions_by_provider_id.find(provider_id);
+			if (existing != app.runtime_cli_versions_by_provider_id.end() && existing->second.checked)
+			{
+				continue;
+			}
+		}
+		app.runtime_cli_version_check_queue.push_back(provider_id);
+	}
+	if (!app.runtime_cli_version_check_queue.empty())
+	{
+		const std::string provider_id = app.runtime_cli_version_check_queue.front();
+		app.runtime_cli_version_check_queue.pop_front();
+		StartProviderVersionCheck(app, provider_id, true);
+	}
 }
 
 void ProviderCliCompatibilityService::StartProviderVersionCheck(uam::AppState& app, std::string_view provider_id, bool force) const
@@ -505,6 +532,13 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 		else
 		{
 			provider_state.message = UnparsedVersionOutputMessage(ProviderTitle(app, provider_id), output);
+		}
+
+		while (!app.runtime_cli_version_check_queue.empty() && !app.runtime_cli_version_check_task.running)
+		{
+			const std::string queued_provider_id = app.runtime_cli_version_check_queue.front();
+			app.runtime_cli_version_check_queue.pop_front();
+			StartProviderVersionCheck(app, queued_provider_id, true);
 		}
 	}
 

@@ -11,6 +11,14 @@
 /.gemini/
 /msbuild_uam.log
 
+# Local secrets and signing material
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+
 # IDE/system files
 /.vs/
 /.idea/

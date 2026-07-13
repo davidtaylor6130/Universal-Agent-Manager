@@ -73,7 +73,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       const folder: Folder = {
         id: makeId('f', folderCounter),
         name,
-        parentId: _parentId,
+        parentId: null,
         directory,
         isExpanded: true,
         createdAt: new Date(),
@@ -123,6 +123,27 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
           f.id === id ? { ...f, isExpanded: !f.isExpanded } : f
         ),
       }))
+    },
+
+    reorderFolders: async (folderIds: string[]): Promise<boolean> => {
+      const previous = get().folders
+      const byId = new Map(previous.map((folder) => [folder.id, folder]))
+      const seen = new Set<string>()
+      const reordered = folderIds.flatMap((id) => {
+        const folder = byId.get(id)
+        return folder && !seen.has(id) ? (seen.add(id), [folder]) : []
+      })
+      reordered.push(...previous.filter((folder) => !seen.has(folder.id)))
+      set({ folders: reordered })
+      if (!isCefContext()) return true
+
+      const response = await sendToCEF({
+        action: 'reorderFolders',
+        payload: { folderIds: reordered.map((folder) => folder.id) },
+        requestId: createRequestId('reorderFolders'),
+      })
+      if (!response.ok) set({ folders: previous })
+      return response.ok
     },
 
     renameFolder: (id: string, name: string, directory: string) => {

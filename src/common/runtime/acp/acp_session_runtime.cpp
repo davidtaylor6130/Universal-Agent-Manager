@@ -148,7 +148,117 @@ namespace uam
 		return nullptr;
 	}
 
-	bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, const std::vector<std::string>& markdown_store_files, const std::vector<MessageAttachment>& attachments, bool, std::string* error_out)
+	namespace
+	{
+		bool StartAcpUserPrompt(AppState& app, AcpSessionState& session, ChatSession& chat, const AcpQueuedUserPromptState& queued, std::string* error_out)
+		{
+			if (!StartAcpProcessForChat(app, session, chat, error_out))
+			{
+				return false;
+			}
+
+			const std::string recall_preface = MemoryService::BuildRecallPreface(app, chat, queued.text);
+			std::string effective_prompt = recall_preface.empty() ? queued.text : recall_preface + queued.text;
+			const Goal* goal = queued.goal_id.empty()
+			                       ? GoalService::FindActiveGoal(app, chat.id)
+			                       : GoalService::FindGoalById(app, chat.id, queued.goal_id);
+			if (queued.goal_mode && goal != nullptr && goal->status == GoalStatus::Active && !goal->objective.empty())
+			{
+				const std::string goal_prompt = GoalService::BuildContinuationPrompt(*goal, goal->tokens_used, goal->token_budget);
+				if (!goal_prompt.empty())
+				{
+					effective_prompt = goal_prompt + "\n\n" + effective_prompt;
+				}
+			}
+
+			if (!queued.markdown_store_files.empty())
+			{
+				effective_prompt += "\n\nReferenced Markdown Store files:\n";
+				for (const std::string& file : queued.markdown_store_files)
+				{
+					effective_prompt += "- " + file + "\n";
+				}
+			}
+			if (!queued.attachments.empty())
+			{
+				bool wrote_files_header = false;
+				bool wrote_directories_header = false;
+				for (const MessageAttachment& attachment : queued.attachments)
+				{
+					if (attachment.path.empty())
+					{
+						continue;
+					}
+					if (attachment.kind == "directory")
+					{
+						if (!wrote_directories_header)
+						{
+							effective_prompt += "\n\nReferenced directories:\n";
+							wrote_directories_header = true;
+						}
+						effective_prompt += "- " + attachment.path + "\n";
+					}
+					else
+					{
+						if (!wrote_files_header)
+						{
+							effective_prompt += "\n\nReferenced files:\n";
+							wrote_files_header = true;
+						}
+						effective_prompt += "- " + attachment.path + "\n";
+					}
+				}
+			}
+
+			ChatDomainService::MessageAnalytics analytics;
+			analytics.provider = MessageProviderId(session);
+			ChatDomainService().AddMessageWithAnalytics(chat, MessageRole::User, queued.text, analytics);
+			if (!queued.markdown_store_files.empty() && !chat.messages.empty())
+			{
+				chat.messages.back().markdown_store_files = queued.markdown_store_files;
+			}
+			if (!queued.attachments.empty() && !chat.messages.empty())
+			{
+				chat.messages.back().attachments = queued.attachments;
+				for (const MessageAttachment& attachment : queued.attachments)
+				{
+					if (!attachment.path.empty() && !uam::ranges::Contains(chat.linked_files, attachment.path))
+					{
+						chat.linked_files.push_back(attachment.path);
+					}
+				}
+			}
+			SaveChatQuietly(app, chat);
+
+			session.queued_prompt = effective_prompt;
+			session.crash_restart_attempts = 0;
+			session.goal_auto_resume_attempts = 0;
+			session.goal_resume_suppressed = false;
+			ClearGoalReviewState(session);
+			session.goal_turn_kind.clear();
+			session.processing = true;
+			session.cancel_requested = false;
+			session.current_assistant_message_index = -1;
+			session.turn_user_message_index = static_cast<int>(chat.messages.size()) - 1;
+			session.turn_assistant_message_index = -1;
+			session.turn_serial += 1;
+			RememberAssistantReplayPrefixes(session, chat, session.turn_user_message_index);
+			RememberLoadHistoryReplayUpdates(session, chat, session.turn_user_message_index);
+			ResetAcpTurnStreamState(session);
+			ResetAcpPendingInteractionState(session);
+			session.last_runtime_activity_time_s = GetAppTimeSeconds();
+			session.last_error.clear();
+			session.lifecycle_state = session.session_ready ? kAcpLifecycleProcessing : kAcpLifecycleStarting;
+
+			if (session.session_ready)
+			{
+				(void)SendQueuedPromptIfReady(session, chat);
+			}
+			return true;
+		}
+	} // namespace
+
+	bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, const std::vector<std::string>& markdown_store_files, const std::vector<MessageAttachment>& attachments, bool goal_mode, std::string* error_out, const std::string& goal_id)
 	{
 		const std::string prompt = uam::strings::Trim(text);
 		if (prompt.empty())
@@ -200,117 +310,35 @@ namespace uam
 			session.provider_id = provider_id;
 			session.protocol_kind = protocol_kind;
 		}
-		if (session.processing)
-		{
-			if (error_out != nullptr)
-			{
-				*error_out = std::string(RuntimeDisplayName(session)) + " is already processing this chat.";
-			}
-			return false;
-		}
-
-		if (!StartAcpProcessForChat(app, session, chat, error_out))
-		{
-			return false;
-		}
-
-		const std::string recall_preface = MemoryService::BuildRecallPreface(app, chat, prompt);
-		std::string effective_prompt = recall_preface.empty() ? prompt : recall_preface + prompt;
-
 		const Goal* active_goal = GoalService::FindActiveGoal(app, chat.id);
-		if (active_goal && active_goal->status == GoalStatus::Active && !active_goal->objective.empty())
+		AcpQueuedUserPromptState queued;
+		queued.text = prompt;
+		queued.markdown_store_files = std::move(validated_markdown_store_files);
+		queued.attachments = attachments;
+		queued.goal_mode = goal_mode || active_goal != nullptr;
+		queued.goal_id = goal_id.empty() && active_goal != nullptr ? active_goal->id : goal_id;
+		if (session.processing || !session.queued_user_prompts.empty())
 		{
-			std::string goal_prompt = GoalService::BuildContinuationPrompt(*active_goal, active_goal->tokens_used, active_goal->token_budget);
-			if (!goal_prompt.empty())
-			{
-				effective_prompt = goal_prompt + "\n\n" + effective_prompt;
-			}
+			session.queued_user_prompts.push_back(std::move(queued));
+			return true;
 		}
-		
-		if (!validated_markdown_store_files.empty())
-		{
-			effective_prompt += "\n\nReferenced Markdown Store files:\n";
-			for (const std::string& file : validated_markdown_store_files)
-			{
-				effective_prompt += "- " + file + "\n";
-			}
-		}
-		if (!attachments.empty())
-		{
-			bool wrote_files_header = false;
-			bool wrote_directories_header = false;
-			for (const MessageAttachment& attachment : attachments)
-			{
-				if (attachment.path.empty())
-				{
-					continue;
-				}
-				if (attachment.kind == "directory")
-				{
-					if (!wrote_directories_header)
-					{
-						effective_prompt += "\n\nReferenced directories:\n";
-						wrote_directories_header = true;
-					}
-					effective_prompt += "- " + attachment.path + "\n";
-				}
-				else
-				{
-					if (!wrote_files_header)
-					{
-						effective_prompt += "\n\nReferenced files:\n";
-						wrote_files_header = true;
-					}
-					effective_prompt += "- " + attachment.path + "\n";
-				}
-			}
-		}
+		return StartAcpUserPrompt(app, session, chat, queued, error_out);
+	}
 
-		ChatDomainService::MessageAnalytics analytics;
-		analytics.provider = MessageProviderId(session);
-		ChatDomainService().AddMessageWithAnalytics(chat, MessageRole::User, prompt, analytics);
-		if (!validated_markdown_store_files.empty() && !chat.messages.empty())
+	bool DrainNextQueuedAcpUserPrompt(AppState& app, AcpSessionState& session, ChatSession& chat)
+	{
+		if (session.queued_user_prompts.empty())
 		{
-			chat.messages.back().markdown_store_files = validated_markdown_store_files;
+			return false;
 		}
-		if (!attachments.empty() && !chat.messages.empty())
+		std::string error;
+		if (!StartAcpUserPrompt(app, session, chat, session.queued_user_prompts.front(), &error))
 		{
-			chat.messages.back().attachments = attachments;
-			for (const MessageAttachment& attachment : attachments)
-			{
-				if (!attachment.path.empty() && !uam::ranges::Contains(chat.linked_files, attachment.path))
-				{
-					chat.linked_files.push_back(attachment.path);
-				}
-			}
+			session.last_error = uam::strings::NonEmptyOrFallback(error, "Failed to deliver queued prompt.");
+			session.lifecycle_state = kAcpLifecycleError;
+			return false;
 		}
-		SaveChatQuietly(app, chat);
-
-		session.queued_prompt = effective_prompt;
-		session.crash_restart_attempts = 0;
-		session.goal_auto_resume_attempts = 0;
-		session.goal_resume_suppressed = false;
-		ClearGoalReviewState(session);
-		session.goal_turn_kind.clear();
-		session.processing = true;
-		session.cancel_requested = false;
-		session.current_assistant_message_index = -1;
-		session.turn_user_message_index = static_cast<int>(chat.messages.size()) - 1;
-		session.turn_assistant_message_index = -1;
-		session.turn_serial += 1;
-		RememberAssistantReplayPrefixes(session, chat, session.turn_user_message_index);
-		RememberLoadHistoryReplayUpdates(session, chat, session.turn_user_message_index);
-		ResetAcpTurnStreamState(session);
-		ResetAcpPendingInteractionState(session);
-		session.last_runtime_activity_time_s = GetAppTimeSeconds();
-		session.last_error.clear();
-		session.lifecycle_state = session.session_ready ? kAcpLifecycleProcessing : kAcpLifecycleStarting;
-
-		if (session.session_ready)
-		{
-			(void)SendQueuedPromptIfReady(session, chat);
-		}
-
+		session.queued_user_prompts.pop_front();
 		return true;
 	}
 
@@ -322,7 +350,12 @@ namespace uam
 	bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error_out)
 	{
 		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
-		if (session == nullptr || !session->running)
+		if (session == nullptr)
+		{
+			return true;
+		}
+		session->queued_user_prompts.clear();
+		if (!session->running)
 		{
 			return true;
 		}
@@ -396,6 +429,7 @@ namespace uam
 		session->cancel_requested = false;
 		session->lifecycle_state = kAcpLifecycleStopped;
 		session->queued_prompt.clear();
+		session->queued_user_prompts.clear();
 		session->reconnect_pending = false;
 		session->reconnect_attempts = 0;
 		session->reconnect_not_before_time_s = 0.0;

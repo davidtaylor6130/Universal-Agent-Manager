@@ -40,10 +40,22 @@ namespace uam::settings
 		return uam::ranges::Contains(kThemeIds, value);
 	}
 
+	inline bool IsCustomThemeId(std::string_view value)
+	{
+		constexpr std::string_view prefix = "custom:";
+		if (!value.starts_with(prefix) || value.size() <= prefix.size() || value.size() > prefix.size() + 48)
+		{
+			return false;
+		}
+		return std::ranges::all_of(value.substr(prefix.size()), [](unsigned char ch) {
+			return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-';
+		});
+	}
+
 	inline std::string NormalizeThemeId(std::string_view value)
 	{
 		const std::string normalized = uam::strings::TrimAndLowerAscii(value);
-		return IsThemeId(normalized) ? normalized : std::string(kDarkThemeId);
+		return IsThemeId(normalized) || IsCustomThemeId(normalized) ? normalized : std::string(kDarkThemeId);
 	}
 
 	inline void ClampWindowSettings(AppSettings& settings)
@@ -58,5 +70,10 @@ namespace uam::settings
 	{
 		settings.memory_idle_delay_seconds = std::clamp(settings.memory_idle_delay_seconds, kMinMemoryIdleDelaySeconds, kMaxMemoryIdleDelaySeconds);
 		settings.memory_recall_budget_bytes = std::clamp(settings.memory_recall_budget_bytes, kMinMemoryRecallBudgetBytes, kMaxMemoryRecallBudgetBytes);
+	}
+
+	inline void ClampGoalSettings(AppSettings& settings)
+	{
+		settings.goal_max_loop_iterations = std::max(0, settings.goal_max_loop_iterations);
 	}
 } // namespace uam::settings

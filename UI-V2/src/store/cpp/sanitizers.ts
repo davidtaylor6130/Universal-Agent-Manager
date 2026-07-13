@@ -11,6 +11,7 @@ import type {
   AcpPendingUserInput,
   AcpPermissionOption,
   AcpPlanEntry,
+  AcpQueuedPrompt,
   AcpToolCall,
   AcpTurnEvent,
   AcpUserInputOption,
@@ -41,6 +42,7 @@ import type {
 } from './types'
 import type { Attachment, MessageBlock } from '../../types/message'
 import type { GoalStatus } from '../../types/goal'
+import type { ResourceCollection, ResourceReferenceType } from '../../types/resourceCollection'
 import { normalizeStoredTheme } from '../../utils/themeStorage'
 import {
   DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID,
@@ -58,6 +60,7 @@ export const MAX_MEMORY_IDLE_DELAY_SECONDS = 3600
 export const DEFAULT_MEMORY_RECALL_BUDGET_BYTES = 2048
 export const MIN_MEMORY_RECALL_BUDGET_BYTES = 512
 export const MAX_MEMORY_RECALL_BUDGET_BYTES = 8192
+export const DEFAULT_GOAL_MAX_LOOP_ITERATIONS = 200
 
 // ---------------------------------------------------------------------------
 // Primitive helpers
@@ -293,6 +296,26 @@ export function messageAttachments(message: CppMessage): Attachment[] {
     path: filePath,
   }))
   return [...markdownAttachments, ...(message.attachments ?? [])]
+}
+
+export function sanitizeQueuedPrompt(value: unknown): AcpQueuedPrompt | null {
+  if (!isRecord(value)) return null
+  const text = stringOr(value.text).trim()
+  if (!text) return null
+  return {
+    text,
+    markdownStoreFiles: Array.isArray(value.markdownStoreFiles)
+      ? value.markdownStoreFiles.filter(isString)
+      : [],
+    attachments: Array.isArray(value.attachments)
+      ? value.attachments.flatMap((attachment) => {
+          const sanitized = sanitizeAttachment(attachment)
+          return sanitized ? [sanitized] : []
+        })
+      : [],
+    goalMode: Boolean(value.goalMode),
+    goalId: stringOr(value.goalId),
+  }
 }
 
 export function sanitizeCppMessage(value: unknown): CppMessage | null {
@@ -548,6 +571,12 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
     turnUserMessageIndex: finiteNumberOr(value.turnUserMessageIndex, -1),
     turnAssistantMessageIndex: finiteNumberOr(value.turnAssistantMessageIndex, -1),
     turnSerial: finiteNumberOr(value.turnSerial, 0),
+    queuedPrompts: Array.isArray(value.queuedPrompts)
+      ? value.queuedPrompts.flatMap((prompt) => {
+          const sanitized = sanitizeQueuedPrompt(prompt)
+          return sanitized ? [sanitized] : []
+        })
+      : [],
     waitIsStale: Boolean(value.waitIsStale),
     waitStaleReason: stringOr(value.waitStaleReason),
     waitSeconds: finiteNumberOr(value.waitSeconds, 0),
@@ -573,6 +602,7 @@ export function sanitizeCppGoal(value: unknown): CppGoal | null {
     tokensUsed: finiteNumberOr(value.tokensUsed, 0),
     blockedTurnCount: finiteNumberOr(value.blockedTurnCount, 0),
     lastBlocker: isString(value.lastBlocker) ? value.lastBlocker : undefined,
+    lastDiagnostic: isString(value.lastDiagnostic) ? value.lastDiagnostic : undefined,
     completedItems: Array.isArray(value.completedItems) ? value.completedItems.filter(isString) : undefined,
     remainingItems: Array.isArray(value.remainingItems) ? value.remainingItems.filter(isString) : undefined,
     currentStep: isString(value.currentStep) ? value.currentStep : undefined,
@@ -608,6 +638,9 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     folderId: stringOr(value.folderId),
     pinned: booleanOr(value.pinned),
     providerId: stringOr(value.providerId, GEMINI_CLI_PROVIDER_ID),
+    parentChatId: isString(value.parentChatId) ? value.parentChatId : undefined,
+    branchFromMessageIndex: Math.trunc(finiteNumberOr(value.branchFromMessageIndex, -1)),
+    branchMessageEdited: booleanOr(value.branchMessageEdited),
     modelId: normalizeAcpModelId(value.modelId),
     approvalMode: normalizeAcpApprovalMode(value.approvalMode),
     autoApproveCommands: booleanOr(value.autoApproveCommands, stringOr(value.approvalMode).trim() === 'yolo'),
@@ -1069,6 +1102,10 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       memoryEnabledDefault: true,
       memoryIdleDelaySeconds: DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
       memoryRecallBudgetBytes: DEFAULT_MEMORY_RECALL_BUDGET_BYTES,
+      goalMaxLoopIterations: DEFAULT_GOAL_MAX_LOOP_ITERATIONS,
+      updateChecksEnabled: true,
+      updateLastCheckedAt: '',
+      dismissedUpdateVersions: {},
       memoryLastStatus: '',
       memoryWorkerBindings: {},
       defaultNewChatProviderId: GEMINI_CLI_PROVIDER_ID,
@@ -1090,12 +1127,24 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       }
     }
   }
+  const dismissedUpdateVersions: Record<string, string> = {}
+  if (isRecord(value.dismissedUpdateVersions)) {
+    for (const [id, version] of Object.entries(value.dismissedUpdateVersions)) {
+      if (typeof version === 'string' && id.trim() && version.trim()) {
+        dismissedUpdateVersions[id.trim()] = version.trim()
+      }
+    }
+  }
   return {
     activeProviderId: stringOr(value.activeProviderId, GEMINI_CLI_PROVIDER_ID),
     theme,
     memoryEnabledDefault: booleanOr(value.memoryEnabledDefault, true),
     memoryIdleDelaySeconds: clampedFiniteNumberOr(value.memoryIdleDelaySeconds, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_IDLE_DELAY_SECONDS),
     memoryRecallBudgetBytes: clampedFiniteNumberOr(value.memoryRecallBudgetBytes, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_RECALL_BUDGET_BYTES, MAX_MEMORY_RECALL_BUDGET_BYTES),
+    goalMaxLoopIterations: Math.max(0, Math.floor(finiteNumberOr(value.goalMaxLoopIterations, DEFAULT_GOAL_MAX_LOOP_ITERATIONS))),
+    updateChecksEnabled: booleanOr(value.updateChecksEnabled, true),
+    updateLastCheckedAt: stringOr(value.updateLastCheckedAt),
+    dismissedUpdateVersions,
     memoryLastStatus: stringOr(value.memoryLastStatus),
     memoryWorkerBindings: bindings,
     defaultNewChatProviderId: stringOr(value.defaultNewChatProviderId, stringOr(value.activeProviderId, GEMINI_CLI_PROVIDER_ID)),
@@ -1131,6 +1180,7 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
         return sanitized ? [sanitized] : []
       })
     : []
+  const resourceCollections = sanitizeResourceCollections(value.resourceCollections)
 
   const selectedChatId =
     isString(value.selectedChatId)
@@ -1147,7 +1197,9 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
 
   return {
     stateRevision: finiteNumberOr(value.stateRevision, 0),
+    appVersion: stringOr(value.appVersion),
     folders,
+    resourceCollections,
     chats,
     cliDebug: sanitizeCliDebugState(value.cliDebug),
     selectedChatId,
@@ -1193,6 +1245,31 @@ export function sanitizeMessagesByChatId(value: unknown): Record<string, CppMess
   return messagesByChatId
 }
 
+const RESOURCE_REFERENCE_TYPES = new Set<ResourceReferenceType>([
+  'workspace-folder', 'chat', 'file', 'website', 'desktop-app',
+])
+
+function sanitizeResourceCollections(value: unknown): ResourceCollection[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((entry) => {
+    if (!isRecord(entry)) return []
+    const id = stringOr(entry.id).trim()
+    const name = stringOr(entry.name).trim()
+    if (!id || !name) return []
+    const references = Array.isArray(entry.references)
+      ? entry.references.flatMap((item) => {
+          if (!isRecord(item)) return []
+          const referenceId = stringOr(item.id).trim()
+          const type = stringOr(item.type).trim() as ResourceReferenceType
+          const target = stringOr(item.target).trim()
+          if (!referenceId || !target || !RESOURCE_REFERENCE_TYPES.has(type)) return []
+          return [{ id: referenceId, type, target, label: stringOr(item.label).trim() }]
+        })
+      : []
+    return [{ id, name, collapsed: booleanOr(entry.collapsed, false), references }]
+  })
+}
+
 export function sanitizeCppStatePatch(value: unknown): CppStatePatch | null {
   if (!isRecord(value)) return null
 
@@ -1203,6 +1280,9 @@ export function sanitizeCppStatePatch(value: unknown): CppStatePatch | null {
           const sanitized = sanitizeCppFolder(folder)
           return sanitized ? [sanitized] : []
         })
+      : undefined,
+    resourceCollections: value.resourceCollections !== undefined
+      ? sanitizeResourceCollections(value.resourceCollections)
       : undefined,
     chats: Array.isArray(value.chats)
       ? value.chats.flatMap((chat) => {

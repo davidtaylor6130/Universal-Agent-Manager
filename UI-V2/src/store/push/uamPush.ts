@@ -70,6 +70,25 @@ export function parseUamPushPayload(payload: unknown): ParsedPushResult {
     return { ok: true, message: { type, chatId: raw.chatId } }
   }
 
+  if (type === 'dictation') {
+    if (raw.event === 'interim' || raw.event === 'final') {
+      if (!isString(raw.text)) {
+        return { ok: false, status: 'invalid-message', error: `dictation ${raw.event} requires text.` }
+      }
+      return { ok: true, message: { type, event: raw.event, text: raw.text } }
+    }
+    if (raw.event === 'error') {
+      if (!isString(raw.message)) {
+        return { ok: false, status: 'invalid-message', error: 'dictation error requires a message.' }
+      }
+      return { ok: true, message: { type, event: raw.event, message: raw.message } }
+    }
+    if (raw.event === 'end') {
+      return { ok: true, message: { type, event: raw.event } }
+    }
+    return { ok: false, status: 'invalid-message', error: 'dictation requires a supported event.' }
+  }
+
   return { ok: false, status: 'invalid-message', error: `Unsupported push message type: ${type}` }
 }
 

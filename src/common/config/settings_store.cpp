@@ -50,6 +50,10 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kMemoryEnabledDefaultKey = "memory_enabled_default";
 	constexpr std::string_view kMemoryIdleDelaySecondsKey = "memory_idle_delay_seconds";
 	constexpr std::string_view kMemoryRecallBudgetBytesKey = "memory_recall_budget_bytes";
+	constexpr std::string_view kGoalMaxLoopIterationsKey = "goal_max_loop_iterations";
+	constexpr std::string_view kUpdateChecksEnabledKey = "update_checks_enabled";
+	constexpr std::string_view kUpdateLastCheckedAtKey = "update_last_checked_at";
+	constexpr std::string_view kDismissedUpdateVersionsKey = "dismissed_update_versions";
 	constexpr std::string_view kMemoryWorkerBindingsKey = "memory_worker_bindings";
 	constexpr std::string_view kDefaultNewChatProviderIdKey = "default_new_chat_provider_id";
 	constexpr std::string_view kProviderChatDefaultsKey = "provider_chat_defaults";
@@ -141,6 +145,44 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 			}
 
 			bindings[chat_provider_id] = std::move(binding);
+		}
+	}
+
+	std::string EncodeDismissedUpdateVersions(const std::map<std::string, std::string>& versions)
+	{
+		nlohmann::json encoded = nlohmann::json::object();
+		for (const auto& [id, version] : versions)
+		{
+			const std::string safe_id = uam::strings::SafeLine(id, 128, true);
+			const std::string safe_version = uam::strings::SafeLine(version, 128, true);
+			if (!safe_id.empty() && !safe_version.empty())
+			{
+				encoded[safe_id] = safe_version;
+			}
+		}
+		return encoded.dump();
+	}
+
+	void DecodeDismissedUpdateVersions(std::string_view value, std::map<std::string, std::string>& versions)
+	{
+		versions.clear();
+		const nlohmann::json parsed = nlohmann::json::parse(value, nullptr, false);
+		if (!parsed.is_object())
+		{
+			return;
+		}
+		for (auto it = parsed.begin(); it != parsed.end(); ++it)
+		{
+			if (!it.value().is_string())
+			{
+				continue;
+			}
+			const std::string safe_id = uam::strings::SafeLine(it.key(), 128, true);
+			const std::string safe_version = uam::strings::SafeLine(it.value().get<std::string>(), 128, true);
+			if (!safe_id.empty() && !safe_version.empty())
+			{
+				versions[safe_id] = safe_version;
+			}
 		}
 	}
 
@@ -348,6 +390,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		settings.ui_theme = uam::settings::NormalizeThemeId(settings.ui_theme);
 		uam::settings::ClampWindowSettings(settings);
 		uam::settings::ClampMemorySettings(settings);
+		uam::settings::ClampGoalSettings(settings);
 		settings.default_editor_preset_id = uam::editor_file_associations::NormalizeEditorPresetId(settings.default_editor_preset_id);
 		uam::editor_file_associations::NormalizeEditorFileAssociations(settings.editor_file_associations);
 		uam::editor_file_associations::AppendMissingDefaultEditorGroups(settings);
@@ -399,6 +442,10 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteBoolSetting(lines, kMemoryEnabledDefaultKey, normalized.memory_enabled_default);
 	WriteSettingValue(lines, kMemoryIdleDelaySecondsKey, normalized.memory_idle_delay_seconds);
 	WriteSettingValue(lines, kMemoryRecallBudgetBytesKey, normalized.memory_recall_budget_bytes);
+	WriteSettingValue(lines, kGoalMaxLoopIterationsKey, normalized.goal_max_loop_iterations);
+	WriteBoolSetting(lines, kUpdateChecksEnabledKey, normalized.update_checks_enabled);
+	WriteEncodedSetting(lines, kUpdateLastCheckedAtKey, normalized.update_last_checked_at);
+	WriteEncodedSetting(lines, kDismissedUpdateVersionsKey, EncodeDismissedUpdateVersions(normalized.dismissed_update_versions));
 	WriteRawSetting(lines, kMemoryWorkerBindingsKey, EncodeMemoryWorkerBindings(normalized.memory_worker_bindings));
 	WriteEncodedSetting(lines, kDefaultNewChatProviderIdKey, normalized.default_new_chat_provider_id);
 	WriteRawSetting(lines, kProviderChatDefaultsKey, EncodeProviderChatDefaults(normalized.provider_chat_defaults));
@@ -512,6 +559,22 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		else if (key == kMemoryRecallBudgetBytesKey)
 		{
 			settings.memory_recall_budget_bytes = uam::parse::IntOr(value, settings.memory_recall_budget_bytes);
+		}
+		else if (key == kGoalMaxLoopIterationsKey)
+		{
+			settings.goal_max_loop_iterations = uam::parse::IntOr(value, settings.goal_max_loop_iterations);
+		}
+		else if (key == kUpdateChecksEnabledKey)
+		{
+			settings.update_checks_enabled = uam::parse::BoolOr(value, settings.update_checks_enabled);
+		}
+		else if (key == kUpdateLastCheckedAtKey)
+		{
+			settings.update_last_checked_at = decoded_value;
+		}
+		else if (key == kDismissedUpdateVersionsKey)
+		{
+			DecodeDismissedUpdateVersions(decoded_value, settings.dismissed_update_versions);
 		}
 		else if (key == kMemoryWorkerBindingsKey)
 		{

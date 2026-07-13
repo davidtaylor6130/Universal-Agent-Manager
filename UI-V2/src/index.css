@@ -30,6 +30,8 @@
   --green:           #16a34a;
   --red:             #ef4444;
   --yellow:          #eab308;
+  --message-user-bg: #fff3eb;
+  --message-assistant-bg: #ffffff;
 
   /* Sidebar */
   --sidebar-bg:      #fbfcfe;
@@ -69,6 +71,8 @@
   --green:           #4ade80;
   --red:             #f87171;
   --yellow:          #facc15;
+  --message-user-bg: #211811;
+  --message-assistant-bg: #12141b;
 
   --sidebar-bg:      #11131a;
   --sidebar-item-hover: rgba(255,255,255,0.04);

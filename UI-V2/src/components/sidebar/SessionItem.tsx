@@ -13,6 +13,7 @@ import {
   readChatGridLayout,
   subscribeChatGridLayout,
 } from '../../utils/chatGridStorage'
+import { CollectionMenuItems } from './CollectionMenuItems'
 
 function formatSidebarTime(date: Date | null): string {
   if (!date || Number.isNaN(date.getTime())) {
@@ -177,6 +178,11 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
   return (
     <div
       className="relative group"
+      draggable={!editing}
+      onDragStart={(event) => {
+        event.dataTransfer.effectAllowed = 'copy'
+        event.dataTransfer.setData('text/x-uam-chat-id', sessionId)
+      }}
       style={{ animation: 'fadeIn 0.12s ease-out' }}
     >
       <div
@@ -326,6 +332,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
             left: Math.min(menuPos.x, window.innerWidth - 190),
             top: Math.min(menuPos.y, window.innerHeight - 150),
             minWidth: 170,
+            maxHeight: 'min(420px, calc(100vh - 24px))',
+            overflowY: 'auto',
             background: 'var(--surface-up)',
             border: '1px solid var(--border-bright)',
             boxShadow: 'var(--elev-2)',
@@ -358,6 +366,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
             <Pencil size={13} aria-hidden />
             Rename
           </button>
+          <CollectionMenuItems type="chat" target={sessionId} label={sessionName} onAdded={() => setMenuPos(null)} />
           <button
             className="flex w-full items-center gap-2 text-left px-3 py-1.5 text-sm transition-colors duration-100"
             style={{ background: 'transparent', color: 'var(--red)', cursor: 'pointer', border: 'none', fontFamily: 'inherit' }}

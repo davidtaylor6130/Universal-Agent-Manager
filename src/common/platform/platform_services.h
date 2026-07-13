@@ -9,6 +9,7 @@
 #include <memory>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace uam
@@ -112,6 +113,34 @@ class IPlatformPathService
 	virtual std::filesystem::path ExpandLeadingTildePath(const std::string& raw_path) const = 0;
 };
 
+enum class DictationEventType
+{
+	Interim,
+	Final,
+	Error,
+	End,
+};
+
+struct DictationEvent
+{
+	DictationEventType type = DictationEventType::End;
+	std::string text;
+};
+
+/// <summary>
+/// Platform speech-to-text boundary. Implementations queue events from their
+/// native callback threads; the application drains them on the CEF UI thread.
+/// </summary>
+class IPlatformDictationService
+{
+  public:
+	virtual ~IPlatformDictationService() = default;
+	virtual bool Start(std::string_view locale, std::string* error_out = nullptr) = 0;
+	virtual void Stop() = 0;
+	virtual bool IsRunning() const = 0;
+	virtual std::vector<DictationEvent> PollEvents() = 0;
+};
+
 /// <summary>
 /// Aggregated platform services used by core/orchestration code.
 /// </summary>
@@ -121,6 +150,7 @@ struct PlatformServices
 	IPlatformProcessService& process_service;
 	IPlatformFileDialogService& file_dialog_service;
 	IPlatformPathService& path_service;
+	IPlatformDictationService& dictation_service;
 };
 
 /// <summary>

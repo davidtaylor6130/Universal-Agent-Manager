@@ -91,6 +91,10 @@ namespace uam::settings_frontend_json
 		settings_json["memoryEnabledDefault"] = settings.memory_enabled_default;
 		settings_json["memoryIdleDelaySeconds"] = std::clamp(settings.memory_idle_delay_seconds, uam::settings::kMinMemoryIdleDelaySeconds, uam::settings::kMaxMemoryIdleDelaySeconds);
 		settings_json["memoryRecallBudgetBytes"] = std::clamp(settings.memory_recall_budget_bytes, uam::settings::kMinMemoryRecallBudgetBytes, uam::settings::kMaxMemoryRecallBudgetBytes);
+		settings_json["goalMaxLoopIterations"] = std::max(0, settings.goal_max_loop_iterations);
+		settings_json["updateChecksEnabled"] = settings.update_checks_enabled;
+		settings_json["updateLastCheckedAt"] = settings.update_last_checked_at;
+		settings_json["dismissedUpdateVersions"] = settings.dismissed_update_versions;
 		settings_json["defaultNewChatProviderId"] = uam::provider_ids::NormalizeCliProviderAliasOrSelf(settings.default_new_chat_provider_id);
 		settings_json["providerChatDefaults"] = SerializeProviderChatDefaults(settings.provider_chat_defaults);
 		settings_json["defaultEditorPresetId"] = uam::editor_file_associations::NormalizeEditorPresetId(settings.default_editor_preset_id);

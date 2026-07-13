@@ -14,6 +14,8 @@ import {
 } from './chatSearch'
 import type { Folder, Session } from '../../types/session'
 import { chatPaneColors, readChatGridLayout, subscribeChatGridLayout } from '../../utils/chatGridStorage'
+import { ResourceCollections } from './ResourceCollections'
+import { CollectionMenuItems } from './CollectionMenuItems'
 
 interface FolderTreeProps {
   searchQuery: string
@@ -36,6 +38,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const browseFolderDirectory = useAppStore((s) => s.browseFolderDirectory)
   const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
   const openFolderMemoryLibrary = useAppStore((s) => s.openFolderMemoryLibrary)
+  const reorderFolders = useAppStore((s) => s.reorderFolders)
 
   const [addingFolder, setAddingFolder] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
@@ -45,6 +48,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const [editFolderDirectory, setEditFolderDirectory] = useState('')
   const [pendingDeleteFolderId, setPendingDeleteFolderId] = useState<string | null>(null)
   const [gridLayout, setGridLayout] = useState(readChatGridLayout)
+  const [draggedFolderId, setDraggedFolderId] = useState<string | null>(null)
+  const [folderDropTarget, setFolderDropTarget] = useState<{ id: string; edge: 'before' | 'after' } | null>(null)
 
   useEffect(() => subscribeChatGridLayout(setGridLayout), [])
 
@@ -150,8 +155,19 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     }
   }
 
+  const commitFolderDrop = (targetId: string, edge: 'before' | 'after') => {
+    if (!draggedFolderId || draggedFolderId === targetId) return
+    const ids = folders.map((folder) => folder.id).filter((id) => id !== draggedFolderId)
+    const targetIndex = ids.indexOf(targetId)
+    if (targetIndex < 0) return
+    ids.splice(targetIndex + (edge === 'after' ? 1 : 0), 0, draggedFolderId)
+    void reorderFolders(ids)
+  }
+
   return (
     <div className="select-none">
+      {!searchModel.isSearching && <ResourceCollections />}
+
       {searchModel.pinnedSessionIds.length > 0 && (
         <div className="mb-2">
           <div className="px-3 py-1" style={{ color: 'var(--text-3)' }}>
@@ -198,6 +214,16 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
           onCreateChat={() => setNewChatModalOpen(true, folder.id)}
           onOpenMemory={() => void openFolderMemoryLibrary(folder.id)}
           sessionsById={sessionsById}
+          draggable={!searchModel.isSearching}
+          dropEdge={folderDropTarget?.id === folder.id ? folderDropTarget.edge : null}
+          onDragStart={() => setDraggedFolderId(folder.id)}
+          onDragOver={(edge) => setFolderDropTarget({ id: folder.id, edge })}
+          onDragEnd={() => { setDraggedFolderId(null); setFolderDropTarget(null) }}
+          onDrop={(edge) => {
+            commitFolderDrop(folder.id, edge)
+            setDraggedFolderId(null)
+            setFolderDropTarget(null)
+          }}
         />
       ))}
 
@@ -502,6 +528,12 @@ interface FolderRowProps {
   onCreateChat: () => void
   onOpenMemory: () => void
   sessionsById: Map<string, Session>
+  draggable: boolean
+  dropEdge: 'before' | 'after' | null
+  onDragStart: () => void
+  onDragOver: (edge: 'before' | 'after') => void
+  onDragEnd: () => void
+  onDrop: (edge: 'before' | 'after') => void
 }
 
 const FolderRow = memo(function FolderRow({
@@ -524,6 +556,12 @@ const FolderRow = memo(function FolderRow({
   onCreateChat,
   onOpenMemory,
   sessionsById,
+  draggable,
+  dropEdge,
+  onDragStart,
+  onDragOver,
+  onDragEnd,
+  onDrop,
 }: FolderRowProps) {
   const paneGradientId = useId().replace(/:/g, '')
   const [showAllSessions, setShowAllSessions] = useState(false)
@@ -556,7 +594,33 @@ const FolderRow = memo(function FolderRow({
   }, [menuPos])
 
   return (
-    <div className="mb-2">
+    <div
+      className="mb-2"
+      data-testid={`folder-row-${folder.id}`}
+      draggable={draggable}
+      onDragStart={(event) => {
+        event.dataTransfer.effectAllowed = 'move'
+        event.dataTransfer.setData('text/x-uam-folder-id', folder.id)
+        event.dataTransfer.setData('text/x-uam-folder-resource-id', folder.id)
+        onDragStart()
+      }}
+      onDragOver={(event) => {
+        if (!draggable) return
+        event.preventDefault()
+        const rect = event.currentTarget.getBoundingClientRect()
+        onDragOver(event.clientY < rect.top + rect.height / 2 ? 'before' : 'after')
+      }}
+      onDrop={(event) => {
+        event.preventDefault()
+        const rect = event.currentTarget.getBoundingClientRect()
+        onDrop(event.clientY < rect.top + rect.height / 2 ? 'before' : 'after')
+      }}
+      onDragEnd={onDragEnd}
+      style={{
+        borderTop: dropEdge === 'before' ? '2px solid var(--accent)' : '2px solid transparent',
+        borderBottom: dropEdge === 'after' ? '2px solid var(--accent)' : '2px solid transparent',
+      }}
+    >
       {/* Folder header */}
       <div
         className="relative flex items-center gap-2 px-3 py-1.5 cursor-pointer group rounded-md mx-1"
@@ -565,6 +629,11 @@ const FolderRow = memo(function FolderRow({
           color: 'var(--text-2)',
         }}
         onClick={onToggle}
+        onContextMenu={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          setMenuPos({ x: event.clientX, y: event.clientY })
+        }}
       >
         {shouldShowSessions ? (
           <FolderOpenIcon data-testid={`folder-icon-${folder.id}`} size={14} style={{ flexShrink: 0, color: 'var(--text-3)', opacity: 0.85 }} aria-hidden />
@@ -644,6 +713,8 @@ const FolderRow = memo(function FolderRow({
             left: Math.max(8, Math.min(menuPos.x, window.innerWidth - 176)),
             top: Math.min(menuPos.y, window.innerHeight - 150),
             minWidth: 168,
+            maxHeight: 'min(420px, calc(100vh - 24px))',
+            overflowY: 'auto',
             background: 'var(--surface-up)',
             border: '1px solid var(--border-bright)',
             boxShadow: 'var(--elev-2)',
@@ -652,6 +723,7 @@ const FolderRow = memo(function FolderRow({
         >
           <FolderMenuItem icon={<MessageSquarePlus size={14} aria-hidden />} label="New chat" onClick={() => { setMenuPos(null); onCreateChat() }} />
           <FolderMenuItem icon={<Brain size={14} aria-hidden />} label="Project memory" onClick={() => { setMenuPos(null); onOpenMemory() }} />
+          <CollectionMenuItems type="workspace-folder" target={folder.id} label={folder.name} onAdded={() => setMenuPos(null)} />
           <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Rename folder" onClick={() => { setMenuPos(null); onStartRename() }} />
           <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label="Delete folder" danger onClick={() => { setMenuPos(null); onDelete() }} />
         </div>

@@ -109,6 +109,38 @@ describe('FolderTree', () => {
     host.remove()
   })
 
+  it('shows a drop indicator and persists drag reordering', () => {
+    const second = { ...makeFolder(), id: 'second', name: 'Second', directory: '/tmp/second' }
+    const reorderFolders = vi.fn(async () => true)
+    useAppStore.setState({ folders: [makeFolder(), second], sessions: [], reorderFolders })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const source = host.querySelector('[data-testid="folder-row-project"]') as HTMLElement
+    const target = host.querySelector('[data-testid="folder-row-second"]') as HTMLElement
+    vi.spyOn(target, 'getBoundingClientRect').mockReturnValue({ top: 0, bottom: 40, height: 40, left: 0, right: 100, width: 100, x: 0, y: 0, toJSON: () => ({}) })
+    const transfer = { effectAllowed: '', setData: vi.fn() }
+    const dragStart = new Event('dragstart', { bubbles: true })
+    Object.defineProperty(dragStart, 'dataTransfer', { value: transfer })
+    const dragOver = new Event('dragover', { bubbles: true, cancelable: true })
+    Object.defineProperty(dragOver, 'clientY', { value: 35 })
+    const drop = new Event('drop', { bubbles: true, cancelable: true })
+    Object.defineProperty(drop, 'clientY', { value: 35 })
+
+    act(() => {
+      source.dispatchEvent(dragStart)
+      target.dispatchEvent(dragOver)
+    })
+    expect(target.style.borderBottom).toContain('var(--accent)')
+    act(() => target.dispatchEvent(drop))
+    expect(reorderFolders).toHaveBeenCalledWith(['second', 'project'])
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('selects a visible chat row after folders are grouped for rendering', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)

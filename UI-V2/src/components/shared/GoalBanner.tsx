@@ -52,6 +52,8 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRemove }: Go
   const budgetDisplay = goal.tokenBudget ? `${goal.tokensUsed ?? 0}/${goal.tokenBudget}` : null
   const blockerDisplay = goal.status === 'blocked' && goal.lastBlocker ? goal.lastBlocker : ''
   const tone = statusTone(goal.status)
+  const completedCount = goal.completedItems?.length ?? 0
+  const totalItems = completedCount + (goal.remainingItems?.length ?? 0)
 
   useEffect(() => {
     if (!menuOpen) return
@@ -91,6 +93,20 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRemove }: Go
         {blockerDisplay && (
           <div className="truncate text-xs" style={{ color: 'var(--error)', marginTop: 1 }} title={blockerDisplay}>
             {blockerDisplay}
+          </div>
+        )}
+        {(goal.currentStep || totalItems > 0) && (
+          <div className="mt-1 flex items-center gap-2 text-[11px]" style={{ color: 'var(--text-3)' }}>
+            {totalItems > 0 && (
+              <progress
+                aria-label="Goal progress"
+                max={totalItems}
+                value={completedCount}
+                className="h-1.5 w-20"
+              />
+            )}
+            {totalItems > 0 && <span>{completedCount}/{totalItems}</span>}
+            {goal.currentStep && <span className="truncate">{goal.currentStep}</span>}
           </div>
         )}
       </div>

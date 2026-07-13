@@ -886,6 +886,29 @@ UAM_TEST(MemoryServiceListsAndQueuesManualScanCandidates)
 	MemoryService::StopMemoryTasks(app);
 }
 
+UAM_TEST(MemoryServiceRemovesNativeWorkerHistoryOnShutdown)
+{
+	TempDir temp("uam-memory-worker-native-cleanup");
+	const fs::path history_dir = temp.root / "chats";
+	fs::create_directories(history_dir);
+
+	const std::string worker_history = R"({"messages":[{"content":"You are a non-interactive memory extraction function. test"}]})";
+	UAM_ASSERT(uam::io::WriteTextFile(history_dir / "existing.json", worker_history));
+	UAM_ASSERT(uam::io::WriteTextFile(history_dir / "worker.json", worker_history));
+	UAM_ASSERT(uam::io::WriteTextFile(history_dir / "normal.json", R"({"messages":[{"content":"normal chat"}]})"));
+
+	uam::AppState app;
+	uam::AsyncMemoryExtractionTask stopped;
+	stopped.native_history_chats_dir = history_dir;
+	stopped.native_history_files_before = {"existing.json"};
+	stopped.state = std::make_shared<AsyncProcessTaskState>();
+	app.memory_extraction_tasks.push_back(std::move(stopped));
+	MemoryService::StopMemoryTasks(app);
+	UAM_ASSERT(fs::exists(history_dir / "existing.json"));
+	UAM_ASSERT(!fs::exists(history_dir / "worker.json"));
+	UAM_ASSERT(fs::exists(history_dir / "normal.json"));
+}
+
 UAM_TEST(MemoryServiceAutomaticGateSkipsLowSignalChatDelta)
 {
 	TempDir temp("uam-memory-auto-gate-low-signal");

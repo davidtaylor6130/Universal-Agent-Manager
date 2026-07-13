@@ -3,6 +3,7 @@
 #include "cef/cef_includes.h"
 #include "cef/state_serializer.h"
 #include "common/state/app_state.h"
+#include "common/platform/platform_services.h"
 
 #include <string>
 
@@ -41,5 +42,10 @@ namespace uam
 	/// Forwards raw PTY bytes (base64-encoded) from a CLI terminal session to xterm.js.
 	/// </summary>
 	void PushCliOutput(CefRefPtr<CefBrowser> browser, const std::string& frontend_chat_id, const std::string& source_chat_id, const std::string& terminal_id, const std::string& raw_bytes);
+
+	/// <summary>
+	/// Delivers one native speech-recognition event to the prompt composer.
+	/// </summary>
+	void PushDictationEvent(CefRefPtr<CefBrowser> browser, const DictationEvent& event);
 
 } // namespace uam

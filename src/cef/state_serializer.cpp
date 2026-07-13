@@ -4,6 +4,7 @@
 #include "app/provider_model_catalog_service.h"
 
 #include "common/chat/message_attachment_json.h"
+#include "common/constants/app_constants.h"
 #include "common/config/settings_frontend_json.h"
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
@@ -160,6 +161,9 @@ namespace uam
 			session_json["folderId"] = session.folder_id;
 			session_json["pinned"] = session.pinned;
 			session_json["providerId"] = session.provider_id;
+			session_json["parentChatId"] = session.parent_chat_id;
+			session_json["branchFromMessageIndex"] = session.branch_from_message_index;
+			session_json["branchMessageEdited"] = session.branch_message_edited;
 			session_json["modelId"] = session.model_id;
 			session_json["reasoningEffort"] = session.reasoning_effort;
 			session_json["serviceTier"] = session.service_tier;
@@ -232,6 +236,22 @@ namespace uam
 			    {std::string(attachment_fields::kPathField), attachment.path},
 			    {std::string(attachment_frontend_fields::kSizeBytesField), attachment.size_bytes},
 			    {std::string(attachment_fields::kCopiedField), attachment.copied},
+			};
+		}
+
+		nlohmann::json SerializeQueuedAcpUserPrompt(const AcpQueuedUserPromptState& prompt)
+		{
+			nlohmann::json attachments = JsonArrayWithCapacity(prompt.attachments.size());
+			for (const MessageAttachment& attachment : prompt.attachments)
+			{
+				attachments.push_back(SerializeAttachmentForFrontend(attachment));
+			}
+			return {
+			    {"text", prompt.text},
+			    {"markdownStoreFiles", prompt.markdown_store_files},
+			    {"attachments", std::move(attachments)},
+			    {"goalMode", prompt.goal_mode},
+			    {"goalId", prompt.goal_id},
 			};
 		}
 
@@ -662,6 +682,7 @@ namespace uam
 			acp_json["turnUserMessageIndex"] = -1;
 			acp_json["turnAssistantMessageIndex"] = -1;
 			acp_json["turnSerial"] = 0;
+			acp_json["queuedPrompts"] = nlohmann::json::array();
 			acp_json["waitIsStale"] = false;
 			acp_json["waitStaleReason"] = "";
 			acp_json["waitSeconds"] = 0;
@@ -711,6 +732,12 @@ namespace uam
 			acp_json["turnUserMessageIndex"] = session->turn_user_message_index;
 			acp_json["turnAssistantMessageIndex"] = session->turn_assistant_message_index;
 			acp_json["turnSerial"] = session->turn_serial;
+			nlohmann::json queued_prompts = JsonArrayWithCapacity(session->queued_user_prompts.size());
+			for (const AcpQueuedUserPromptState& prompt : session->queued_user_prompts)
+			{
+				queued_prompts.push_back(SerializeQueuedAcpUserPrompt(prompt));
+			}
+			acp_json["queuedPrompts"] = std::move(queued_prompts);
 			acp_json["goalTurnKind"] = session->goal_turn_kind;
 			acp_json["waitIsStale"] = session->wait_is_stale;
 			acp_json["waitStaleReason"] = session->wait_stale_reason;
@@ -742,6 +769,7 @@ namespace uam
 					goal_json["tokensUsed"] = goal.tokens_used;
 					goal_json["blockedTurnCount"] = goal.blocked_turn_count;
 					goal_json["lastBlocker"] = goal.last_blocker.empty() ? nullptr : nlohmann::json(goal.last_blocker);
+					goal_json["lastDiagnostic"] = goal.last_diagnostic.empty() ? nullptr : nlohmann::json(goal.last_diagnostic);
 					goal_json["completedItems"] = goal.completed_items;
 					goal_json["remainingItems"] = goal.remaining_items;
 					goal_json["currentStep"] = goal.current_step;
@@ -946,6 +974,16 @@ namespace uam
 			return folders_json;
 		}
 
+		nlohmann::json SerializeResourceCollectionsForFrontend(const std::vector<ResourceCollection>& collections)
+		{
+			nlohmann::json collections_json = JsonArrayWithCapacity(collections.size());
+			for (const ResourceCollection& collection : collections)
+			{
+				collections_json.push_back(StateSerializer::SerializeResourceCollection(collection));
+			}
+			return collections_json;
+		}
+
 		nlohmann::json SerializeProvidersForFrontend(const std::vector<ProviderProfile>& profiles)
 		{
 			nlohmann::json providers_json = JsonArrayWithCapacity(profiles.size());
@@ -987,8 +1025,10 @@ namespace uam
 	{
 		nlohmann::json j;
 		j["stateRevision"] = app.state_revision;
+		j["appVersion"] = uam::constants::kAppVersion;
 
 		j["folders"] = SerializeFoldersForFrontend(app.folders);
+		j["resourceCollections"] = SerializeResourceCollectionsForFrontend(app.resource_collections);
 		j["shellActions"] = SerializeShellActionsForFrontend(app.shell_actions);
 		j["shellActionNotification"] = app.shell_action_notification;
 
@@ -1028,6 +1068,7 @@ namespace uam
 		nlohmann::json j;
 
 		j["folders"] = SerializeFoldersForFrontend(app.folders);
+		j["resourceCollections"] = SerializeResourceCollectionsForFrontend(app.resource_collections);
 		j["shellActions"] = SerializeShellActionsForFrontend(app.shell_actions);
 		j["shellActionNotification"] = app.shell_action_notification;
 
@@ -1077,6 +1118,7 @@ namespace uam
 				goal_json["tokensUsed"] = goal.tokens_used;
 				goal_json["blockedTurnCount"] = goal.blocked_turn_count;
 				goal_json["lastBlocker"] = goal.last_blocker.empty() ? nullptr : nlohmann::json(goal.last_blocker);
+				goal_json["lastDiagnostic"] = goal.last_diagnostic.empty() ? nullptr : nlohmann::json(goal.last_diagnostic);
 				goal_json["completedItems"] = goal.completed_items;
 				goal_json["remainingItems"] = goal.remaining_items;
 				goal_json["currentStep"] = goal.current_step;
@@ -1104,6 +1146,31 @@ namespace uam
 		std::error_code ec;
 		j["missing"] = !folder.directory.empty() && !std::filesystem::is_directory(uam::paths::PathFromUtf8(folder.directory), ec);
 		return j;
+	}
+
+	nlohmann::json StateSerializer::SerializeResourceReference(const ResourceReference& reference)
+	{
+		return {
+		    {"id", reference.id},
+		    {"type", reference.type},
+		    {"target", reference.target},
+		    {"label", reference.label},
+		};
+	}
+
+	nlohmann::json StateSerializer::SerializeResourceCollection(const ResourceCollection& collection)
+	{
+		nlohmann::json references = JsonArrayWithCapacity(collection.references.size());
+		for (const ResourceReference& reference : collection.references)
+		{
+			references.push_back(SerializeResourceReference(reference));
+		}
+		return {
+		    {"id", collection.id},
+		    {"name", collection.name},
+		    {"collapsed", collection.collapsed},
+		    {"references", std::move(references)},
+		};
 	}
 
 	nlohmann::json StateSerializer::SerializeProvider(const ProviderProfile& profile)

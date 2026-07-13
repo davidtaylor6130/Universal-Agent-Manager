@@ -1,10 +1,12 @@
 import { sendToCEF, isCefContext, createRequestId } from '../../ipc/cefBridge'
 import {
   applyDocumentTheme,
+  normalizeCustomTheme,
   normalizeStoredTheme,
   readStoredTheme,
   writeStoredTheme,
   type StoredTheme,
+  type CustomTheme,
 } from '../../utils/themeStorage'
 import { pendingRequestIdsByKey } from '../push/pushBuffers'
 import {
@@ -21,8 +23,8 @@ export function readDocumentTheme(): StoredTheme {
   return normalizeStoredTheme(document.documentElement.getAttribute('data-theme')) ?? 'dark'
 }
 
-export function persistTheme(theme: StoredTheme): void {
-  applyDocumentTheme(theme)
+export function persistTheme(theme: StoredTheme, customThemes: CustomTheme[] = []): void {
+  applyDocumentTheme(theme, customThemes)
   writeStoredTheme(theme)
 }
 
@@ -116,6 +118,7 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
 
   return {
     theme: readDocumentTheme(),
+    customThemes: [] as CustomTheme[],
     isNewChatModalOpen: false,
     newChatFolderId: null as string | null,
     isSettingsOpen: false,
@@ -131,7 +134,7 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
 
     setTheme: (theme: StoredTheme) => {
       const previousTheme = get().theme
-      persistTheme(theme)
+      persistTheme(theme, get().customThemes)
       set({ theme })
       if (isCefContext()) {
         const requestKey = 'setTheme'
@@ -147,11 +150,49 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
             return
           }
 
-          persistTheme(previousTheme)
+          persistTheme(previousTheme, get().customThemes)
           set({ theme: previousTheme })
           pendingRequestIdsByKey.delete(requestKey)
         })
       }
+    },
+
+    refreshCustomThemes: async () => {
+      if (!isCefContext()) return true
+      const response = await sendToCEF<{ themes?: unknown[] }>({ action: 'listThemes' })
+      if (!response.ok) return false
+      const customThemes = (response.data?.themes ?? []).flatMap((theme) => {
+        const normalized = normalizeCustomTheme(theme)
+        return normalized ? [normalized] : []
+      })
+      set({ customThemes })
+      persistTheme(get().theme, customThemes)
+      return true
+    },
+
+    saveCustomTheme: async (theme: CustomTheme) => {
+      const normalizedInput = normalizeCustomTheme(theme)
+      if (!normalizedInput) return null
+      const response = await sendToCEF<{ theme?: unknown }>({ action: 'saveTheme', payload: { theme: normalizedInput } })
+      if (!response.ok) return null
+      const saved = normalizeCustomTheme(response.data?.theme)
+      if (!saved) return null
+      const customThemes = [...get().customThemes.filter((candidate) => candidate.id !== saved.id), saved]
+        .sort((a, b) => a.name.localeCompare(b.name))
+      set({ customThemes })
+      if (get().theme === saved.id) persistTheme(saved.id, customThemes)
+      return saved
+    },
+
+    deleteCustomTheme: async (id: string) => {
+      if (!id.startsWith('custom:')) return false
+      const response = await sendToCEF({ action: 'deleteTheme', payload: { id } })
+      if (!response.ok) return false
+      const customThemes = get().customThemes.filter((candidate) => candidate.id !== id)
+      const nextTheme = get().theme === id ? 'dark' : get().theme
+      set({ customThemes, theme: nextTheme })
+      persistTheme(nextTheme, customThemes)
+      return true
     },
 
     setNewChatModalOpen: (open: boolean, folderId?: string | null) => set({

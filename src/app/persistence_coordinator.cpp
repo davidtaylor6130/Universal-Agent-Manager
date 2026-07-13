@@ -25,6 +25,7 @@ namespace
 	constexpr const char* kDefaultDataDirectoryName = "data";
 	constexpr const char* kFallbackDataRootDirectoryName = "universal_agent_manager_data";
 	constexpr const char* kChatsDirectoryName = "chats";
+	constexpr const char* kThemesDirectoryName = "themes";
 	constexpr const char* kProviderCliNoOutputMessage = "(Provider CLI returned no output.)";
 	constexpr const char* kProviderCliExitCodePrefix = "\n\n[Provider CLI exited with code ";
 
@@ -119,6 +120,11 @@ bool PersistenceCoordinator::EnsureDataRootLayout(const fs::path& data_root, std
 	}
 
 	if (!EnsureDirectory(data_root / kChatsDirectoryName, "chats dir", error_out))
+	{
+		return false;
+	}
+
+	if (!EnsureDirectory(data_root / kThemesDirectoryName, "themes dir", error_out))
 	{
 		return false;
 	}

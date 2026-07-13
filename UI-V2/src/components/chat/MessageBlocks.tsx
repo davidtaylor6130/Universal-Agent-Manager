@@ -17,6 +17,7 @@ import type { Attachment, Message, MessageBlock } from '../../types/message'
 import { Tooltip } from '../ui'
 import {
   PermissionInlineCard,
+  ToolCallModal,
   ToolCallInlineRows,
   UserInputInlineCard,
 } from './ToolCallViews'
@@ -29,6 +30,7 @@ export function attachmentLabel(attachment: Attachment) {
 function SubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; tool: AcpToolCall }) {
   const [chatId, setChatId] = useState('')
   const [error, setError] = useState('')
+  const [selectedTool, setSelectedTool] = useState<AcpToolCall | null>(null)
   const openSubAgentSession = useAppStore((state) => state.openSubAgentSession)
   const session = useAppStore((state) => state.sessions.find((candidate) => candidate.id === chatId))
   const messages = useAppStore((state) => state.messages[chatId] ?? [])
@@ -62,18 +64,17 @@ function SubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; tool: A
 
   return (
     <section className="space-y-3" aria-label={`Sub-agent chat: ${session.name}`}>
+      {selectedTool && <ToolCallModal tool={selectedTool} onClose={() => setSelectedTool(null)} />}
       <div className="text-xs font-semibold" style={{ color: 'var(--blue)' }}>{session.name}</div>
       {messages.length === 0 && <div className="text-xs" style={{ color: 'var(--text-3)' }}>No messages recorded.</div>}
       {messages.map((message) => (
         <article key={message.id} className="space-y-2" style={{ borderLeft: '2px solid var(--border-bright)', paddingLeft: 10 }}>
           <div className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>{message.role}</div>
-          <PersistedMessageContent message={message} sourceChatId={chatId} onSelectTool={() => {}} />
-          {message.toolCalls?.map((nestedTool) => (
-            <details key={nestedTool.id} className="text-xs">
-              <summary className="cursor-pointer" style={{ color: 'var(--text-2)' }}>{nestedTool.title || nestedTool.id} output</summary>
-              <pre className="whitespace-pre-wrap mt-2" style={{ color: 'var(--text-2)' }}>{nestedTool.content || 'No output recorded.'}</pre>
-            </details>
-          ))}
+          <PersistedMessageContent
+            message={message}
+            sourceChatId={chatId}
+            onSelectTool={(_, toolId) => setSelectedTool(message.toolCalls?.find((candidate) => candidate.id === toolId) ?? null)}
+          />
         </article>
       ))}
     </section>
@@ -249,6 +250,9 @@ type GoalReviewDecision = {
   decision: 'complete' | 'continue' | 'blocked'
   reason: string
   nextPrompt: string
+  evidence: string[]
+  currentStep: string
+  lastVerification: string
 }
 
 export function parseGoalReviewDecision(text: string): GoalReviewDecision | null {
@@ -260,7 +264,9 @@ export function parseGoalReviewDecision(text: string): GoalReviewDecision | null
   if (first < 0 || last <= first) return null
 
   try {
-    const parsed = JSON.parse(trimmed.slice(first, last + 1)) as Partial<GoalReviewDecision>
+    const parsed = JSON.parse(trimmed.slice(first, last + 1)) as Partial<GoalReviewDecision> & {
+      progressUpdate?: { currentStep?: unknown; lastVerification?: unknown }
+    }
     if (parsed.decision !== 'complete' && parsed.decision !== 'continue' && parsed.decision !== 'blocked') {
       return null
     }
@@ -268,6 +274,9 @@ export function parseGoalReviewDecision(text: string): GoalReviewDecision | null
       decision: parsed.decision,
       reason: typeof parsed.reason === 'string' ? parsed.reason : '',
       nextPrompt: typeof parsed.nextPrompt === 'string' ? parsed.nextPrompt : '',
+      evidence: Array.isArray(parsed.evidence) ? parsed.evidence.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())) : [],
+      currentStep: typeof parsed.progressUpdate?.currentStep === 'string' ? parsed.progressUpdate.currentStep : '',
+      lastVerification: typeof parsed.progressUpdate?.lastVerification === 'string' ? parsed.progressUpdate.lastVerification : '',
     }
   } catch {
     return null
@@ -313,6 +322,13 @@ export function GoalReviewBlock({ review }: { review: GoalReviewDecision }) {
       {review.reason && (
         <div className="text-xs" style={{ color: 'var(--text-2)' }}>
           {review.reason}
+        </div>
+      )}
+      {(review.currentStep || review.lastVerification || review.evidence.length > 0) && (
+        <div className="space-y-1 text-xs" style={{ borderTop: '1px solid color-mix(in srgb, var(--purple) 24%, var(--border))', paddingTop: 8, color: 'var(--text-2)' }}>
+          {review.currentStep && <div><span className="font-semibold">Current: </span>{review.currentStep}</div>}
+          {review.lastVerification && <div><span className="font-semibold">Verified: </span>{review.lastVerification}</div>}
+          {review.evidence.map((item) => <div key={item}><span className="font-semibold">Evidence: </span>{item}</div>)}
         </div>
       )}
       {review.nextPrompt && review.decision === 'continue' && (

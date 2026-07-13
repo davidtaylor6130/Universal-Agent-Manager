@@ -2,6 +2,7 @@
 #include "cef/uam_query_handler_internal.h"
 
 #include "app/persistence_coordinator.h"
+#include "app/theme_service.h"
 #include "cef/cef_push.h"
 #include "common/config/editor_file_associations.h"
 #include "common/config/settings_normalization.h"
@@ -111,7 +112,12 @@ void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, con
 	{
 		m_app.settings.memory_recall_budget_bytes = *recall_budget_bytes;
 	}
+	if (const std::optional<int> max_loop_iterations = uam::nlohmann_json::IntFieldStrict(payload, "goalMaxLoopIterations"))
+	{
+		m_app.settings.goal_max_loop_iterations = *max_loop_iterations;
+	}
 	uam::settings::ClampMemorySettings(m_app.settings);
+	uam::settings::ClampGoalSettings(m_app.settings);
 	if (const nlohmann::json* worker_bindings = uam::nlohmann_json::FindObjectField(payload, "workerBindings"); worker_bindings != nullptr)
 	{
 		for (auto it = worker_bindings->begin(); it != worker_bindings->end(); ++it)
@@ -186,6 +192,42 @@ void UamQueryHandler::HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browse
 	cb->Success("{}");
 }
 
+void UamQueryHandler::HandleSetUpdateSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const AppSettings previous = m_app.settings;
+	m_app.settings.update_checks_enabled = payload.value("enabled", m_app.settings.update_checks_enabled);
+	m_app.settings.update_last_checked_at = uam::strings::SafeLine(
+	    payload.value("lastCheckedAt", m_app.settings.update_last_checked_at), 64, true);
+
+	if (const nlohmann::json* dismissed = uam::nlohmann_json::FindObjectField(payload, "dismissedVersions"); dismissed != nullptr)
+	{
+		m_app.settings.dismissed_update_versions.clear();
+		for (auto it = dismissed->begin(); it != dismissed->end(); ++it)
+		{
+			if (!it.value().is_string())
+			{
+				continue;
+			}
+			const std::string id = uam::strings::SafeLine(it.key(), 128, true);
+			const std::string version = uam::strings::SafeLine(it.value().get<std::string>(), 128, true);
+			if (!id.empty() && !version.empty())
+			{
+				m_app.settings.dismissed_update_versions[id] = version;
+			}
+		}
+	}
+
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		m_app.settings = previous;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist update settings."));
+		return;
+	}
+
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
 void UamQueryHandler::HandleSetEditorSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string default_editor_preset_id = uam::strings::Trim(payload.value("defaultEditorPresetId", m_app.settings.default_editor_preset_id));
@@ -223,6 +265,13 @@ void UamQueryHandler::HandleRefreshCliProviderVersion(CefRefPtr<CefBrowser> brow
 	cb->Success("{}");
 }
 
+void UamQueryHandler::HandleRefreshAllCliProviderVersions(CefRefPtr<CefBrowser> browser, const nlohmann::json&, CefRefPtr<Callback> cb)
+{
+	ProviderCliCompatibilityService().StartVersionCheck(m_app, true);
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
 void UamQueryHandler::HandleApplyCliProviderVersion(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string provider_id = CliVersionProviderFromPayloadOrSelection(m_app, payload);
@@ -241,7 +290,13 @@ void UamQueryHandler::HandleApplyCliProviderVersion(CefRefPtr<CefBrowser> browse
 
 void UamQueryHandler::HandleSetTheme(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const std::string theme = payload.value("theme", "dark");
+	const std::string requested_theme = uam::strings::TrimAndLowerAscii(payload.value("theme", "dark"));
+	const std::string theme = uam::settings::NormalizeThemeId(requested_theme);
+	if (theme != requested_theme || (ThemeService::IsCustomThemeId(theme) && !ThemeService::Exists(m_app.data_root, theme)))
+	{
+		cb->Failure(400, "Theme does not exist or has an invalid id.");
+		return;
+	}
 	const std::string previous_theme = m_app.settings.ui_theme;
 	m_app.settings.ui_theme = theme;
 	if (!PersistenceCoordinator().SaveSettings(m_app))
@@ -254,4 +309,3 @@ void UamQueryHandler::HandleSetTheme(CefRefPtr<CefBrowser> browser, const nlohma
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
-

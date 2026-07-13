@@ -4,7 +4,7 @@
 // by the push deserializer.
 
 import type { Session, Folder } from '../../types/session'
-import type { Message, MessageBlock } from '../../types/message'
+import type { Attachment, Message, MessageBlock } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import {
   DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID,
@@ -129,6 +129,9 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     previous.folderId === next.folderId &&
     (previous.isPinned ?? false) === (next.isPinned ?? false) &&
     (previous.providerId ?? GEMINI_CLI_PROVIDER_ID) === next.providerId &&
+    (previous.parentChatId ?? '') === (next.parentChatId ?? '') &&
+    (previous.branchFromMessageIndex ?? -1) === (next.branchFromMessageIndex ?? -1) &&
+    (previous.branchMessageEdited ?? false) === (next.branchMessageEdited ?? false) &&
     (previous.modelId ?? '') === (next.modelId ?? '') &&
     (previous.reasoningEffort ?? '') === (next.reasoningEffort ?? '') &&
     (previous.serviceTier ?? '') === (next.serviceTier ?? '') &&
@@ -167,6 +170,9 @@ export function sessionFromCppChat(
     folderId: chat.folderId || null,
     isPinned: chat.pinned ?? false,
     providerId: normalizeProviderIdForVisibleProviders(chat.providerId, visibleProviders),
+    parentChatId: chat.parentChatId ?? '',
+    branchFromMessageIndex: chat.branchFromMessageIndex ?? -1,
+    branchMessageEdited: chat.branchMessageEdited ?? false,
     modelId: chat.modelId ?? '',
     reasoningEffort: normalizeCodexReasoningEffort(chat.reasoningEffort),
     serviceTier: normalizeCodexServiceTier(chat.serviceTier),
@@ -406,6 +412,7 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.turnUserMessageIndex === next.turnUserMessageIndex &&
     existing.turnAssistantMessageIndex === next.turnAssistantMessageIndex &&
     existing.turnSerial === next.turnSerial &&
+    queuedPromptsEquivalent(existing.queuedPrompts ?? [], next.queuedPrompts ?? []) &&
     existing.waitIsStale === next.waitIsStale &&
     existing.waitStaleReason === next.waitStaleReason &&
     existing.waitSeconds === next.waitSeconds &&
@@ -498,6 +505,7 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     turnUserMessageIndex: typeof acp?.turnUserMessageIndex === 'number' ? acp.turnUserMessageIndex : -1,
     turnAssistantMessageIndex: typeof acp?.turnAssistantMessageIndex === 'number' ? acp.turnAssistantMessageIndex : -1,
     turnSerial: typeof acp?.turnSerial === 'number' ? acp.turnSerial : 0,
+    queuedPrompts: acp?.queuedPrompts ?? [],
     waitIsStale: Boolean(acp?.waitIsStale),
     waitStaleReason: typeof acp?.waitStaleReason === 'string' ? acp.waitStaleReason : '',
     waitSeconds: typeof acp?.waitSeconds === 'number' ? acp.waitSeconds : 0,
@@ -603,6 +611,7 @@ function cppMessagesEquivalent(existing: Message, next: CppMessage) {
     planEntriesEquivalent(existing.planEntries ?? [], next.planEntries ?? []) &&
     toolCallsEquivalent(existing.toolCalls ?? [], next.toolCalls ?? []) &&
     messageBlocksEquivalent(existing.blocks ?? [], next.blocks ?? []) &&
+    attachmentsEquivalent(existing.attachments ?? [], messageAttachments(next)) &&
     existing.createdAt.getTime() === cppMessageCreatedAtMillis(next)
   )
 }
@@ -696,6 +705,32 @@ export function messageBlocksEquivalent(existing: MessageBlock[], next: MessageB
       (block.toolCallId ?? '') === (other.toolCallId ?? '') &&
       (block.requestId ?? '') === (other.requestId ?? '')
     )
+  })
+}
+
+export function attachmentsEquivalent(existing: Attachment[], next: Attachment[]) {
+  if (existing.length !== next.length) return false
+  return existing.every((attachment, index) => {
+    const other = next[index]
+    return attachment.id === other.id &&
+      attachment.name === other.name &&
+      attachment.type === other.type &&
+      attachment.size === other.size &&
+      (attachment.path ?? '') === (other.path ?? '')
+  })
+}
+
+export function queuedPromptsEquivalent(existing: AcpBinding['queuedPrompts'], next: AcpBinding['queuedPrompts']) {
+  const previous = existing ?? []
+  const incoming = next ?? []
+  if (previous.length !== incoming.length) return false
+  return previous.every((prompt, index) => {
+    const other = incoming[index]
+    return prompt.text === other.text &&
+      prompt.goalMode === other.goalMode &&
+      prompt.goalId === other.goalId &&
+      sameArrayEntries(prompt.markdownStoreFiles, other.markdownStoreFiles) &&
+      attachmentsEquivalent(prompt.attachments, other.attachments)
   })
 }
 

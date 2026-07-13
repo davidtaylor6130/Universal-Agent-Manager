@@ -1,6 +1,118 @@
 #include "test_harness.h"
+#include "app/chat_lifecycle_service.h"
 
 using namespace uam_test;
+
+UAM_TEST(ChatProviderSwitchPreservesHistoryStopsIdleRuntimesAndClearsIdentity)
+{
+	TempDir temp("uam-provider-switch-history");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	UAM_ASSERT(app.provider_profiles.size() >= 2);
+	const std::string source_provider_id = app.provider_profiles[0].id;
+	const std::string target_provider_id = app.provider_profiles[1].id;
+	app.settings.provider_chat_defaults[target_provider_id] = ProviderChatDefaults{"target-model", "plan", true, false, "high", "fast"};
+
+	ChatSession chat;
+	chat.id = "chat-switch";
+	chat.provider_id = source_provider_id;
+	chat.native_session_id = "old-native-session";
+	chat.messages.push_back(Message{MessageRole::User, "Preserve this history."});
+	app.chats.push_back(chat);
+	app.resolved_native_sessions_by_chat_id[chat.id] = "old-resolved-session";
+
+	auto acp = std::make_unique<uam::AcpSessionState>();
+	acp->chat_id = chat.id;
+	acp->provider_id = source_provider_id;
+	acp->session_id = "old-native-session";
+	acp->running = true;
+	acp->lifecycle_state = "ready";
+	app.acp_sessions.push_back(std::move(acp));
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = chat.id;
+	terminal->attached_chat_id = chat.id;
+	terminal->attached_session_id = "old-native-session";
+	terminal->running = true;
+	terminal->lifecycle_state = uam::CliTerminalLifecycleState::Idle;
+	terminal->turn_state = uam::CliTerminalTurnState::Idle;
+	app.cli_terminals.push_back(std::move(terminal));
+
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, target_provider_id), uam::ChatProviderSwitchResult::Changed);
+	const ChatSession& changed = app.chats.front();
+	UAM_ASSERT_EQ(changed.provider_id, target_provider_id);
+	UAM_ASSERT_EQ(changed.model_id, std::string("target-model"));
+	UAM_ASSERT_EQ(changed.approval_mode, std::string("plan"));
+	UAM_ASSERT_EQ(changed.messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(changed.messages.front().content, std::string("Preserve this history."));
+	UAM_ASSERT(changed.native_session_id.empty());
+	UAM_ASSERT(app.resolved_native_sessions_by_chat_id.find(chat.id) == app.resolved_native_sessions_by_chat_id.end());
+	UAM_ASSERT(app.acp_sessions.empty());
+	UAM_ASSERT(app.cli_terminals.empty());
+
+	const std::vector<ChatSession> saved = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(saved.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(saved.front().provider_id, target_provider_id);
+	UAM_ASSERT_EQ(saved.front().messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(saved.front().native_session_id.empty());
+}
+
+UAM_TEST(ChatProviderSwitchRejectsActiveAcpTurnAndWait)
+{
+	TempDir temp("uam-provider-switch-active");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	UAM_ASSERT(app.provider_profiles.size() >= 2);
+	ChatSession chat;
+	chat.id = "chat-active";
+	chat.provider_id = app.provider_profiles[0].id;
+	chat.native_session_id = "keep-native";
+	app.chats.push_back(chat);
+	auto acp = std::make_unique<uam::AcpSessionState>();
+	acp->chat_id = chat.id;
+	acp->processing = true;
+	app.acp_sessions.push_back(std::move(acp));
+
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, app.provider_profiles[1].id), uam::ChatProviderSwitchResult::ActiveRuntime);
+	app.acp_sessions.front()->processing = false;
+	app.acp_sessions.front()->waiting_for_user_input = true;
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, app.provider_profiles[1].id), uam::ChatProviderSwitchResult::ActiveRuntime);
+	UAM_ASSERT_EQ(app.chats.front().provider_id, app.provider_profiles[0].id);
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, std::string("keep-native"));
+}
+
+UAM_TEST(ChatProviderSwitchSaveFailureRollsBackAndLeavesIdleRuntime)
+{
+	TempDir temp("uam-provider-switch-rollback");
+	const fs::path blocked_data_root = temp.root / "not-a-directory";
+	UAM_ASSERT(uam::io::WriteTextFile(blocked_data_root, "file"));
+	uam::AppState app;
+	app.data_root = blocked_data_root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	UAM_ASSERT(app.provider_profiles.size() >= 2);
+	ChatSession chat;
+	chat.id = "chat-rollback";
+	chat.provider_id = app.provider_profiles[0].id;
+	chat.model_id = "old-model";
+	chat.native_session_id = "old-native";
+	chat.messages.push_back(Message{MessageRole::User, "Keep me."});
+	app.chats.push_back(chat);
+	app.resolved_native_sessions_by_chat_id[chat.id] = "old-resolved";
+	auto acp = std::make_unique<uam::AcpSessionState>();
+	acp->chat_id = chat.id;
+	acp->running = true;
+	app.acp_sessions.push_back(std::move(acp));
+
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, app.provider_profiles[1].id), uam::ChatProviderSwitchResult::SaveFailed);
+	UAM_ASSERT_EQ(app.chats.front().provider_id, app.provider_profiles[0].id);
+	UAM_ASSERT_EQ(app.chats.front().model_id, std::string("old-model"));
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, std::string("old-native"));
+	UAM_ASSERT_EQ(app.chats.front().messages.front().content, std::string("Keep me."));
+	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id.at(chat.id), std::string("old-resolved"));
+	UAM_ASSERT_EQ(app.acp_sessions.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(app.acp_sessions.front()->running);
+}
 
 UAM_TEST(AppModelEnumHelpersParsePersistedValuesFromViews)
 {
@@ -824,6 +936,7 @@ UAM_TEST(SettingsStorePersistsMemorySettings)
 	settings.memory_enabled_default = false;
 	settings.memory_idle_delay_seconds = 75;
 	settings.memory_recall_budget_bytes = 1536;
+	settings.goal_max_loop_iterations = 321;
 	settings.memory_worker_bindings["gemini-cli"] = MemoryWorkerBinding{"codex-cli", " gpt,5.4;mini "};
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
 	settings.memory_worker_bindings[" CoDeX "] = MemoryWorkerBinding{" CoDeX ", " alias-model "};
@@ -844,6 +957,7 @@ UAM_TEST(SettingsStorePersistsMemorySettings)
 	UAM_ASSERT_EQ(loaded.memory_enabled_default, false);
 	UAM_ASSERT_EQ(loaded.memory_idle_delay_seconds, 75);
 	UAM_ASSERT_EQ(loaded.memory_recall_budget_bytes, 1536);
+	UAM_ASSERT_EQ(loaded.goal_max_loop_iterations, 321);
 	UAM_ASSERT_EQ(loaded.memory_worker_bindings["gemini-cli"].worker_provider_id, expected_worker_provider_id);
 	UAM_ASSERT_EQ(loaded.memory_worker_bindings["gemini-cli"].worker_model_id, std::string("gpt,5.4;mini"));
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
@@ -889,6 +1003,29 @@ UAM_TEST(SettingsStorePersistsProviderChatDefaults)
 	UAM_ASSERT_EQ(loaded.provider_chat_defaults["gemini-cli"].model_id, std::string("flash"));
 	UAM_ASSERT_EQ(loaded.provider_chat_defaults["gemini-cli"].reasoning_effort, std::string("high"));
 	UAM_ASSERT_EQ(loaded.provider_chat_defaults["gemini-cli"].service_tier, std::string("fast"));
+}
+
+UAM_TEST(SettingsStorePersistsUpdateCheckPreferences)
+{
+	TempDir temp("uam-update-settings");
+	const fs::path settings_file = temp.root / "settings.txt";
+	AppSettings settings;
+	settings.update_checks_enabled = false;
+	settings.update_last_checked_at = "2026-07-13T20:00:00.000Z";
+	settings.dismissed_update_versions = {
+	    {"uam", "4.2.0"},
+	    {"codex-cli", "0.130.0"},
+	};
+
+	UAM_ASSERT(SettingsStore::Save(settings_file, settings, CenterViewMode::CliConsole));
+	AppSettings loaded;
+	CenterViewMode mode = CenterViewMode::CliConsole;
+	SettingsStore::Load(settings_file, loaded, mode);
+
+	UAM_ASSERT(!loaded.update_checks_enabled);
+	UAM_ASSERT_EQ(loaded.update_last_checked_at, std::string("2026-07-13T20:00:00.000Z"));
+	UAM_ASSERT_EQ(loaded.dismissed_update_versions["uam"], std::string("4.2.0"));
+	UAM_ASSERT_EQ(loaded.dismissed_update_versions["codex-cli"], std::string("0.130.0"));
 }
 
 UAM_TEST(SettingsStorePersistsEditorSettings)
@@ -1892,6 +2029,69 @@ UAM_TEST(ChatDomainServiceCreateNewChatNormalizesBoundaryIds)
 	UAM_ASSERT_EQ(chat.provider_id, std::string("codex-cli"));
 	UAM_ASSERT_EQ(chat.branch_root_chat_id, chat.id);
 	UAM_ASSERT_EQ(chat.branch_from_message_index, -1);
+}
+
+UAM_TEST(ChatDomainServiceBranchesPastUserMessagesWithoutOverwritingHistory)
+{
+	TempDir temp("uam-message-branch");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession source = ChatDomainService().CreateNewChat("folder-1", "codex-cli");
+	source.id = "chat-source";
+	source.branch_root_chat_id = source.id;
+	source.title = "Source";
+	source.messages.push_back(Message{MessageRole::User, "Original prompt"});
+	source.messages.push_back(Message{MessageRole::Assistant, "Original answer"});
+	app.chats.push_back(source);
+	ChatDomainService().SelectChatById(app, source.id);
+
+	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::string("Edited prompt")));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+	const ChatSession* edited = ChatDomainService().SelectedChat(app);
+	UAM_ASSERT(edited != nullptr);
+	UAM_ASSERT(edited->id != source.id);
+	UAM_ASSERT_EQ(edited->parent_chat_id, source.id);
+	UAM_ASSERT_EQ(edited->branch_from_message_index, 0);
+	UAM_ASSERT(edited->branch_message_edited);
+	UAM_ASSERT_EQ(edited->messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(edited->messages.front().content, std::string("Edited prompt"));
+	UAM_ASSERT_EQ(ChatDomainService().FindChatById(app, source.id)->messages[0].content, std::string("Original prompt"));
+	UAM_ASSERT_EQ(ChatDomainService().FindChatById(app, source.id)->messages.size(), static_cast<std::size_t>(2));
+
+	const std::vector<ChatSession> saved = ChatRepository::LoadLocalChats(temp.root);
+	const auto saved_edited = std::ranges::find_if(saved, [edited_id = edited->id](const ChatSession& chat) { return chat.id == edited_id; });
+	UAM_ASSERT(saved_edited != saved.end());
+	UAM_ASSERT(saved_edited->branch_message_edited);
+	UAM_ASSERT_EQ(saved_edited->messages.front().content, std::string("Edited prompt"));
+
+	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(app, source.id, 0));
+	const ChatSession* reverted = ChatDomainService().SelectedChat(app);
+	UAM_ASSERT(reverted != nullptr);
+	UAM_ASSERT(!reverted->branch_message_edited);
+	UAM_ASSERT_EQ(reverted->messages.front().content, std::string("Original prompt"));
+	UAM_ASSERT_EQ(ChatDomainService().FindChatById(app, source.id)->messages.size(), static_cast<std::size_t>(2));
+}
+
+UAM_TEST(ChatDomainServiceRejectsMessageBranchDuringActiveTurn)
+{
+	TempDir temp("uam-message-branch-active");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession source = ChatDomainService().CreateNewChat("folder-1", "codex-cli");
+	source.messages.push_back(Message{MessageRole::User, "Original prompt"});
+	app.chats.push_back(source);
+	auto acp = std::make_unique<uam::AcpSessionState>();
+	acp->chat_id = source.id;
+	acp->running = true;
+	acp->processing = true;
+	app.acp_sessions.push_back(std::move(acp));
+
+	UAM_ASSERT(!ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::string("Edited prompt")));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.status_line, std::string("Wait for the active turn to finish before branching."));
 }
 
 UAM_TEST(ChatDomainServiceSortsByUpdatedThenCreatedWithoutSelectionReordering)
@@ -3159,6 +3359,10 @@ UAM_TEST(StatePatchSettingsIncludeChatDefaults)
 	app.settings.ui_theme = " LIGHT ";
 	app.settings.memory_idle_delay_seconds = 5;
 	app.settings.memory_recall_budget_bytes = 100000;
+	app.settings.goal_max_loop_iterations = -1;
+	app.settings.update_checks_enabled = false;
+	app.settings.update_last_checked_at = "2026-07-13T20:00:00.000Z";
+	app.settings.dismissed_update_versions["uam"] = "4.2.0";
 	app.settings.default_new_chat_provider_id = " CoDeX ";
 	app.settings.provider_chat_defaults[" CoDeX "] = ProviderChatDefaults{" gpt-5.4 ", " plan ", true, false, " HIGH ", " FAST "};
 	app.settings.memory_worker_bindings[" CoDeX "] = MemoryWorkerBinding{" GEMINI ", " worker-model "};
@@ -3175,6 +3379,10 @@ UAM_TEST(StatePatchSettingsIncludeChatDefaults)
 	UAM_ASSERT_EQ(settings.value("theme", ""), std::string("light"));
 	UAM_ASSERT_EQ(settings.value("memoryIdleDelaySeconds", 0), uam::settings::kMinMemoryIdleDelaySeconds);
 	UAM_ASSERT_EQ(settings.value("memoryRecallBudgetBytes", 0), uam::settings::kMaxMemoryRecallBudgetBytes);
+	UAM_ASSERT_EQ(settings.value("goalMaxLoopIterations", -1), 0);
+	UAM_ASSERT(!settings.value("updateChecksEnabled", true));
+	UAM_ASSERT_EQ(settings.value("updateLastCheckedAt", ""), std::string("2026-07-13T20:00:00.000Z"));
+	UAM_ASSERT_EQ(settings["dismissedUpdateVersions"].value("uam", ""), std::string("4.2.0"));
 	UAM_ASSERT_EQ(settings.value("defaultNewChatProviderId", ""), std::string("codex-cli"));
 	UAM_ASSERT_EQ(settings.value("markdownStoreDirectory", ""), std::string("/tmp/markdown"));
 	UAM_ASSERT_EQ(settings.value("defaultEditorPresetId", ""), std::string("clion"));

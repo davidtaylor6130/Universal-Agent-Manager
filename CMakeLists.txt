@@ -4,6 +4,10 @@ if(POLICY CMP0091)
 endif()
 project(universal_agent_manager VERSION 4.1.0 LANGUAGES C CXX)
 
+if(APPLE)
+  enable_language(OBJCXX)
+endif()
+
 if(NOT WIN32 AND NOT APPLE)
   message(FATAL_ERROR "universal_agent_manager supports only Windows and macOS builds.")
 endif()
@@ -214,6 +218,7 @@ if(WIN32)
     src/common/platform/platform_process_windows.cpp
     src/common/platform/platform_dialogs_windows.cpp
     src/common/platform/platform_paths_windows.cpp
+    src/common/platform/platform_dictation_windows.cpp
   )
 elseif(APPLE)
   list(APPEND UAM_PLATFORM_IMPL_SOURCES
@@ -222,6 +227,11 @@ elseif(APPLE)
     src/common/platform/platform_process_macos.cpp
     src/common/platform/platform_dialogs_macos.cpp
     src/common/platform/platform_paths_macos.cpp
+    src/common/platform/platform_dictation_macos.mm
+  )
+  set_source_files_properties(
+    src/common/platform/platform_dictation_macos.mm
+    PROPERTIES COMPILE_OPTIONS "-fobjc-arc"
   )
 endif()
 
@@ -251,11 +261,13 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/native_session_link_service.cpp
   src/app/persistence_coordinator.cpp
   src/app/provider_resolution_service.cpp
-  src/app/provider_worker_command.cpp
+  src/app/resource_collection_service.cpp
+    src/app/provider_worker_command.cpp
   src/app/provider_profile_migration_service.cpp
   src/app/provider_model_catalog_service.cpp
   src/app/runtime_orchestration_services.cpp
   src/app/shell_action_service.cpp
+  src/app/theme_service.cpp
   src/app/pending_call_service.cpp
   src/app/vcs_commit_service.cpp
   src/cef/uam_cef_app.cpp
@@ -268,13 +280,16 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/cef/chat_handlers.cpp
   src/cef/chat_config_handlers.cpp
   src/cef/settings_handlers.cpp
+  src/cef/theme_handlers.cpp
   src/cef/shell_action_handlers.cpp
   src/cef/markdown_handlers.cpp
   src/cef/folder_handlers.cpp
+  src/cef/resource_collection_handlers.cpp
   src/cef/memory_handlers.cpp
   src/cef/workspace_handlers.cpp
   src/cef/vcs_handlers.cpp
   src/cef/terminal_handlers.cpp
+  src/cef/dictation_handlers.cpp
   src/cef/acp_handlers.cpp
   src/cef/goal_handlers.cpp
   src/common/models/app_models.cpp
@@ -356,6 +371,9 @@ if(APPLE)
     "-Wl,-framework,WebKit"
     "-Wl,-framework,IOKit"
     "-Wl,-framework,CoreFoundation"
+    "-Wl,-framework,AVFoundation"
+    "-Wl,-framework,Foundation"
+    "-Wl,-framework,Speech"
   )
 elseif(WIN32)
   target_link_libraries(universal_agent_manager PRIVATE
@@ -364,6 +382,7 @@ elseif(WIN32)
     "${cef_binary_SOURCE_DIR}/Release/libcef.lib"
     advapi32
     shell32
+    windowsapp
   )
 endif()
 
@@ -625,8 +644,13 @@ if(APPLE AND UAM_MACOS_BUNDLE)
     COMMAND ${CMAKE_COMMAND} -E copy_directory
       "${UAM_UI_DIST_SRC}"
       "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/UI-V2/dist"
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/markdown-store"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${CMAKE_CURRENT_SOURCE_DIR}/markdown-store/skill-builder.uam"
+      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/markdown-store/skill-builder.uam"
     COMMAND ${CMAKE_COMMAND} -E echo "Bundled UI-V2 build id: ${UAM_UI_BUILD_ID}"
-    COMMENT "Copying UI-V2/dist to Contents/Resources/"
+    COMMENT "Copying UI-V2/dist and bundled Markdown Store entries to Contents/Resources/"
   )
 else()
   add_custom_command(TARGET universal_agent_manager POST_BUILD
@@ -635,8 +659,13 @@ else()
     COMMAND ${CMAKE_COMMAND} -E copy_directory
       "${UAM_UI_DIST_SRC}"
       "$<TARGET_FILE_DIR:universal_agent_manager>/UI-V2/dist"
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+      "$<TARGET_FILE_DIR:universal_agent_manager>/markdown-store"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${CMAKE_CURRENT_SOURCE_DIR}/markdown-store/skill-builder.uam"
+      "$<TARGET_FILE_DIR:universal_agent_manager>/markdown-store/skill-builder.uam"
     COMMAND ${CMAKE_COMMAND} -E echo "Bundled UI-V2 build id: ${UAM_UI_BUILD_ID}"
-    COMMENT "Copying UI-V2/dist to build output"
+    COMMENT "Copying UI-V2/dist and bundled Markdown Store entries to build output"
   )
 endif()
 
@@ -720,6 +749,7 @@ if(APPLE)
       MACOSX_BUNDLE_GUI_IDENTIFIER "com.universalagentmanager.desktop"
       MACOSX_BUNDLE_ICON_FILE "app_icon.icns"
       MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+      MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/cmake/Info.plist.in"
     )
   endif()
 endif()
@@ -740,6 +770,8 @@ if(UAM_BUILD_TESTS)
     tests/acp_session_tests.cpp
     tests/terminal_tests.cpp
     tests/goal_tests.cpp
+    tests/theme_tests.cpp
+    tests/resource_collection_tests.cpp
     ${UAM_PLATFORM_IMPL_SOURCES}
     src/app/chat_domain_service.cpp
     src/app/chat_lifecycle_service.cpp
@@ -751,11 +783,13 @@ if(UAM_BUILD_TESTS)
     src/app/native_session_link_service.cpp
     src/app/persistence_coordinator.cpp
     src/app/provider_resolution_service.cpp
+    src/app/resource_collection_service.cpp
   src/app/provider_worker_command.cpp
     src/app/provider_profile_migration_service.cpp
     src/app/provider_model_catalog_service.cpp
     src/app/runtime_orchestration_services.cpp
     src/app/shell_action_service.cpp
+    src/app/theme_service.cpp
     src/app/pending_call_service.cpp
     src/app/vcs_commit_service.cpp
     src/cef/uam_cef_command_line_config.cpp
@@ -830,6 +864,9 @@ if(UAM_BUILD_TESTS)
       "-Wl,-framework,Security"
       "-Wl,-framework,IOKit"
       "-Wl,-framework,CoreFoundation"
+      "-Wl,-framework,AVFoundation"
+      "-Wl,-framework,Foundation"
+      "-Wl,-framework,Speech"
     )
   elseif(WIN32)
     target_link_libraries(uam_core_tests PRIVATE
@@ -837,6 +874,7 @@ if(UAM_BUILD_TESTS)
       libcef_dll_wrapper
       "${cef_binary_SOURCE_DIR}/Release/libcef.lib"
       advapi32
+      windowsapp
     )
   endif()
   target_compile_definitions(uam_core_tests PRIVATE

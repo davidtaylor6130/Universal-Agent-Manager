@@ -4,7 +4,8 @@ import type { Provider } from '../types/provider'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope, MemoryScanCandidate } from '../types/memory'
 import type { MarkdownStoreDraft, MarkdownStoreEntry } from '../types/markdownStore'
 import type { Goal, GoalStatus } from '../types/goal'
-import type { StoredTheme } from '../utils/themeStorage'
+import type { CustomTheme, StoredTheme } from '../utils/themeStorage'
+import type { ResourceCollection, ResourceReference, ResourceReferenceType } from '../types/resourceCollection'
 import type {
   AcpBinding,
   AcpUserInputAnswers,
@@ -32,6 +33,7 @@ import type { StoreApi } from 'zustand'
 export interface AppState {
   // Data
   folders: Folder[]
+  resourceCollections: ResourceCollection[]
   sessions: Session[]
   activeSessionId: string | null
   lastAppliedStateRevision: number
@@ -50,6 +52,11 @@ export interface AppState {
   memoryEnabledDefault: boolean
   memoryIdleDelaySeconds: number
   memoryRecallBudgetBytes: number
+  goalMaxLoopIterations: number
+  appVersion: string
+  updateChecksEnabled: boolean
+  updateLastCheckedAt: string
+  dismissedUpdateVersions: Record<string, string>
   memoryLastStatus: string
   memoryWorkerBindings: Record<string, MemoryWorkerBinding>
   memoryActivity: MemoryActivity
@@ -64,6 +71,7 @@ export interface AppState {
 
   // UI
   theme: StoredTheme
+  customThemes: CustomTheme[]
   isNewChatModalOpen: boolean
   newChatFolderId: string | null
   isSettingsOpen: boolean
@@ -96,6 +104,7 @@ export interface AppState {
   setActiveSession: (id: string) => void
   loadSessionMessages: (id: string) => void
   addSession: (name: string, folderId: string | null, providerId?: string) => void
+  branchFromMessage: (id: string, messageIndex: number, content?: string) => Promise<string | null>
   renameSession: (id: string, name: string) => void
   setSessionPinned: (id: string, pinned: boolean) => Promise<boolean>
   setSessionProvider: (id: string, providerId: string) => Promise<boolean>
@@ -104,7 +113,8 @@ export interface AppState {
   setSessionAutoApproveCommands: (id: string, enabled: boolean) => Promise<boolean>
   setSessionCommandSafetyTier: (id: string, tier: 'low' | 'medium' | 'high') => Promise<boolean>
   setSessionMemoryEnabled: (id: string, enabled: boolean) => Promise<boolean>
-  setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'memoryWorkerBindings'>>) => Promise<boolean>
+  setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'goalMaxLoopIterations' | 'memoryWorkerBindings'>>) => Promise<boolean>
+  setUpdateSettings: (settings: Partial<Pick<AppState, 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>) => Promise<boolean>
   setSessionCodexOptions: (id: string, options: { reasoningEffort?: string; serviceTier?: string }) => Promise<boolean>
   setProviderChatDefaults: (settings: { defaultNewChatProviderId?: string; providerChatDefaults?: Record<string, ProviderChatDefaults> }) => Promise<boolean>
   setEditorSettings: (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'>) => Promise<boolean>
@@ -148,9 +158,18 @@ export interface AppState {
   // Folder actions
   addFolder: (name: string, parentId: string | null, directory: string) => Promise<boolean>
   toggleFolder: (id: string) => void
+  reorderFolders: (folderIds: string[]) => Promise<boolean>
   renameFolder: (id: string, name: string, directory: string) => void
   deleteFolder: (id: string) => void
   browseFolderDirectory: (currentValue: string) => Promise<string | null>
+  createResourceCollection: (name: string) => Promise<ResourceCollection | null>
+  renameResourceCollection: (collectionId: string, name: string) => Promise<boolean>
+  deleteResourceCollection: (collectionId: string) => Promise<boolean>
+  toggleResourceCollection: (collectionId: string) => Promise<boolean>
+  reorderResourceCollections: (collectionIds: string[]) => Promise<boolean>
+  addResourceReference: (collectionId: string, type: ResourceReferenceType, target: string, label?: string) => Promise<ResourceReference | null>
+  removeResourceReference: (collectionId: string, referenceId: string) => Promise<boolean>
+  reorderResourceReferences: (collectionId: string, referenceIds: string[]) => Promise<boolean>
   openAllMemoryLibrary: () => Promise<boolean>
   openGlobalMemoryLibrary: () => Promise<boolean>
   openFolderMemoryLibrary: (folderId: string) => Promise<boolean>
@@ -181,6 +200,9 @@ export interface AppState {
 
   // UI actions
   setTheme: (theme: StoredTheme) => void
+  refreshCustomThemes: () => Promise<boolean>
+  saveCustomTheme: (theme: CustomTheme) => Promise<CustomTheme | null>
+  deleteCustomTheme: (id: string) => Promise<boolean>
   setNewChatModalOpen: (open: boolean, folderId?: string | null) => void
   setSettingsOpen: (open: boolean) => void
   setSidebarCollapsed: (collapsed: boolean) => void

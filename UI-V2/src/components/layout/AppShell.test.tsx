@@ -15,9 +15,21 @@ import { AppShell } from './AppShell'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
+const localStorageValues = new Map<string, string>()
+Object.defineProperty(window, 'localStorage', {
+  configurable: true,
+  value: {
+    getItem: (key: string) => localStorageValues.get(key) ?? null,
+    setItem: (key: string, value: string) => localStorageValues.set(key, value),
+    removeItem: (key: string) => localStorageValues.delete(key),
+    clear: () => localStorageValues.clear(),
+  },
+})
+
 describe('AppShell', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    window.localStorage.clear()
     useAppStore.setState({
       folders: [],
       sessions: [],
@@ -32,7 +44,52 @@ describe('AppShell', () => {
       sidebarWidthPx: 320,
       commitPanelWidthPx: 420,
       shellActionNotification: '',
+      appVersion: 'V4.1.0',
+      updateChecksEnabled: true,
+      updateLastCheckedAt: new Date().toISOString(),
+      dismissedUpdateVersions: {},
+      cliVersionManager: { providers: [] },
     })
+  })
+
+  it('shows the update count and opens a full sidebar panel', async () => {
+    window.localStorage.setItem('uam-update-catalog-v1', JSON.stringify({
+      checkedAt: '2026-07-13T20:00:00.000Z',
+      uam: { version: 'V4.2.0', url: 'https://example.test/uam' },
+      providers: {
+        'codex-cli': { version: '0.130.0', url: 'https://example.test/codex' },
+      },
+    }))
+    useAppStore.setState({
+      providers: [{ id: 'codex-cli', name: 'Codex CLI', shortName: 'Codex', description: '', color: '#fff' }],
+      cliVersionManager: {
+        providers: [{
+          providerId: 'codex-cli',
+          installedVersion: '0.124.0',
+          selectedVersion: '0.124.0',
+          availableVersions: [{ version: '0.124.0', preferred: true }],
+          preferredVersion: '0.124.0',
+          status: 'supported',
+          message: '',
+          running: false,
+          lastCommand: '',
+          lastOutput: '',
+        }],
+      },
+    })
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    await act(async () => root.render(<AppShell />))
+
+    const button = host.querySelector('button[aria-label="2 updates available"]') as HTMLButtonElement
+    expect(button).toBeTruthy()
+    expect(button.parentElement?.querySelector('span[aria-hidden]')?.textContent).toBe('1')
+    act(() => button.click())
+    expect(host.querySelector('[data-testid="updates-panel"]')).toBeTruthy()
+    expect(host.textContent).toContain('Universal Agent Manager')
+    expect(host.textContent).toContain('Codex')
+
+    act(() => root.unmount())
   })
 
   it('renders edge-to-edge with side rails and without a total header bar', () => {

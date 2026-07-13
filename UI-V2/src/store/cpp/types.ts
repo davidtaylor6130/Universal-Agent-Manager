@@ -5,6 +5,7 @@
 import type { Attachment, MessageBlock } from '../../types/message'
 import type { GoalStatus } from '../../types/goal'
 import type { StoredTheme } from '../../utils/themeStorage'
+import type { ResourceCollection } from '../../types/resourceCollection'
 
 export type CliLifecycleState = 'disabled' | 'stopped' | 'idle' | 'busy' | 'shuttingDown'
 export type AcpLifecycleState =
@@ -55,6 +56,9 @@ export interface CppChat {
   folderId: string
   pinned?: boolean
   providerId: string
+  parentChatId?: string
+  branchFromMessageIndex?: number
+  branchMessageEdited?: boolean
   modelId?: string
   reasoningEffort?: string
   serviceTier?: string
@@ -102,6 +106,7 @@ export interface CppGoal {
   tokensUsed?: number
   blockedTurnCount?: number
   lastBlocker?: string
+  lastDiagnostic?: string
   completedItems?: string[]
   remainingItems?: string[]
   currentStep?: string
@@ -224,6 +229,14 @@ export interface AcpAgentInfo {
   version: string
 }
 
+export interface AcpQueuedPrompt {
+  text: string
+  markdownStoreFiles: string[]
+  attachments: Attachment[]
+  goalMode: boolean
+  goalId: string
+}
+
 export interface AcpDiagnosticEntry {
   time: string
   event: string
@@ -262,6 +275,7 @@ export interface CppAcpSession {
   turnUserMessageIndex?: number
   turnAssistantMessageIndex?: number
   turnSerial?: number
+  queuedPrompts?: AcpQueuedPrompt[]
   waitIsStale?: boolean
   waitStaleReason?: string
   waitSeconds?: number
@@ -386,6 +400,10 @@ export interface CppSettings {
   memoryEnabledDefault: boolean
   memoryIdleDelaySeconds: number
   memoryRecallBudgetBytes: number
+  goalMaxLoopIterations: number
+  updateChecksEnabled: boolean
+  updateLastCheckedAt: string
+  dismissedUpdateVersions: Record<string, string>
   memoryLastStatus: string
   memoryWorkerBindings: Record<string, MemoryWorkerBinding>
   defaultNewChatProviderId?: string
@@ -458,7 +476,9 @@ export interface VcsCommitMessageSuggestion {
 
 export interface CppAppState {
   stateRevision?: number
+  appVersion?: string
   folders: CppFolder[]
+  resourceCollections?: ResourceCollection[]
   chats: CppChat[]
   cliDebug?: CppCliDebugState
   selectedChatId: string | null
@@ -474,6 +494,7 @@ export interface CppAppState {
 export interface CppStatePatch {
   stateRevision?: number
   folders?: CppFolder[]
+  resourceCollections?: ResourceCollection[]
   chats?: CppChat[]
   chatOrder?: string[]
   removedChatIds?: string[]
@@ -525,6 +546,7 @@ export interface AcpBinding {
   turnUserMessageIndex: number
   turnAssistantMessageIndex: number
   turnSerial: number
+  queuedPrompts?: AcpQueuedPrompt[]
   waitIsStale?: boolean
   waitStaleReason?: string
   waitSeconds?: number
@@ -540,6 +562,11 @@ export interface CliTranscript {
 
 export type PushChannelStatus = 'no-push-yet' | 'connected' | 'parse-error' | 'invalid-message'
 
+export type DictationPushMessage =
+  | { type: 'dictation'; event: 'interim' | 'final'; text: string }
+  | { type: 'dictation'; event: 'error'; message: string }
+  | { type: 'dictation'; event: 'end' }
+
 export type ParsedPushMessage =
   | { type: 'stateUpdate'; data: CppAppState }
   | { type: 'statePatch'; data: CppStatePatch }
@@ -552,6 +579,7 @@ export type ParsedPushMessage =
     }
   | { type: 'streamToken'; chatId: string; token: string }
   | { type: 'streamDone'; chatId: string }
+  | DictationPushMessage
 
 export type ParsedPushResult =
   | { ok: true; message: ParsedPushMessage }

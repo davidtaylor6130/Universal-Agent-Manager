@@ -3,6 +3,7 @@
 #include "app/chat_domain_service.h"
 #include "common/models/app_models.h"
 #include "common/config/approval_modes.h"
+#include "common/config/provider_chat_defaults.h"
 #include "common/provider/codex/codex_options.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
@@ -45,57 +46,16 @@ inline nlohmann::json WithOptionalRequestId(nlohmann::json value, const std::str
 	return value;
 }
 
-constexpr std::size_t kMaxAcpModelIdLength = 160;
-
-inline bool IsSafeAcpModelIdToken(std::string_view value)
-{
-	if (value.empty() || value.size() > kMaxAcpModelIdLength || value.front() == '-')
-	{
-		return false;
-	}
-	for (const char ch : value)
-	{
-		const bool safe = uam::strings::IsAsciiAlnum(static_cast<unsigned char>(ch)) || ch == '.' || ch == '_' || ch == '-' || ch == ':' || ch == '/';
-		if (!safe)
-		{
-			return false;
-		}
-	}
-	return true;
-}
-
-inline bool IsAllowedAcpModelId(std::string_view model_id)
-{
-	return model_id.empty() || IsSafeAcpModelIdToken(model_id);
-}
+using uam::provider_chat_defaults::IsAllowedModelId;
 
 // ---- Provider chat defaults helpers ----------
-
-inline ProviderChatDefaults NormalizeProviderChatDefaultsForRuntime(ProviderChatDefaults defaults)
-{
-	defaults.model_id = uam::strings::Trim(defaults.model_id);
-	if (!IsAllowedAcpModelId(defaults.model_id))
-	{
-		defaults.model_id.clear();
-	}
-
-	defaults.approval_mode = uam::approval_modes::NormalizeIncomingApprovalModeId(defaults.approval_mode);
-	if (!uam::approval_modes::IsAppApprovalMode(defaults.approval_mode))
-	{
-		defaults.approval_mode = uam::approval_modes::kDefaultApprovalMode;
-	}
-
-	defaults.reasoning_effort = uam::codex::NormalizeReasoningEffort(defaults.reasoning_effort);
-	defaults.service_tier = uam::codex::NormalizeServiceTier(defaults.service_tier);
-	return defaults;
-}
 
 inline ProviderChatDefaults DefaultsFromPayload(const nlohmann::json& value, const ProviderChatDefaults& fallback)
 {
 	ProviderChatDefaults defaults = fallback;
 	if (!value.is_object())
 	{
-		return NormalizeProviderChatDefaultsForRuntime(defaults);
+		return uam::provider_chat_defaults::Normalize(defaults);
 	}
 	defaults.model_id = uam::nlohmann_json::TrimmedStringValueOr(value, "modelId", defaults.model_id);
 	defaults.approval_mode = uam::nlohmann_json::TrimmedStringValueOr(value, "approvalMode", defaults.approval_mode);
@@ -109,18 +69,12 @@ inline ProviderChatDefaults DefaultsFromPayload(const nlohmann::json& value, con
 	}
 	defaults.reasoning_effort = uam::nlohmann_json::TrimmedStringValueOr(value, "reasoningEffort", defaults.reasoning_effort);
 	defaults.service_tier = uam::nlohmann_json::TrimmedStringValueOr(value, "serviceTier", defaults.service_tier);
-	return NormalizeProviderChatDefaultsForRuntime(defaults);
+	return uam::provider_chat_defaults::Normalize(defaults);
 }
 
 inline ProviderChatDefaults DefaultsForProvider(const AppSettings& settings, const std::string& provider_id)
 {
-	const std::string normalized_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
-	const auto found = settings.provider_chat_defaults.find(normalized_provider_id);
-	if (found != settings.provider_chat_defaults.end())
-	{
-		return NormalizeProviderChatDefaultsForRuntime(found->second);
-	}
-	return ProviderChatDefaults{"", uam::approval_modes::kDefaultApprovalMode, false, settings.memory_enabled_default, "", ""};
+	return uam::provider_chat_defaults::ForProvider(settings, provider_id);
 }
 
 inline void ApplyProviderDefaultsToChat(const AppSettings& settings, ChatSession& chat, const nlohmann::json* payload_defaults = nullptr)
@@ -130,17 +84,7 @@ inline void ApplyProviderDefaultsToChat(const AppSettings& settings, ChatSession
 	{
 		defaults = DefaultsFromPayload(*payload_defaults, defaults);
 	}
-	if (!uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kCodexCli))
-	{
-		defaults.reasoning_effort.clear();
-		defaults.service_tier.clear();
-	}
-	chat.model_id = defaults.model_id;
-	chat.approval_mode = defaults.approval_mode;
-	chat.auto_approve_commands = defaults.auto_approve_commands;
-	chat.memory_enabled = defaults.memory_enabled;
-	chat.reasoning_effort = defaults.reasoning_effort;
-	chat.service_tier = defaults.service_tier;
+	uam::provider_chat_defaults::ApplyToChat(chat, std::move(defaults));
 }
 
 // ---- Chat domain helpers (use ChatDomainService) ----------

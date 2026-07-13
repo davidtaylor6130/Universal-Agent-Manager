@@ -189,6 +189,15 @@ namespace uam
 		std::vector<AcpUserInputQuestionState> questions;
 	};
 
+	struct AcpQueuedUserPromptState
+	{
+		std::string text;
+		std::vector<std::string> markdown_store_files;
+		std::vector<MessageAttachment> attachments;
+		bool goal_mode = false;
+		std::string goal_id;
+	};
+
 	struct AcpSessionState : public platform::StdioProcessPlatformFields
 	{
 		std::string chat_id;
@@ -217,6 +226,7 @@ namespace uam
 		int turn_assistant_message_index = -1;
 		int turn_serial = 0;
 		std::string queued_prompt;
+		std::deque<AcpQueuedUserPromptState> queued_user_prompts;
 		// Counts automatic relaunches after the process died before the queued
 		// prompt was delivered. Deliberately survives ResetAcpRuntimeState so a
 		// crash-looping provider cannot restart forever; cleared when a new user
@@ -372,6 +382,7 @@ namespace uam
 		fs::path native_history_chats_dir;
 		AppSettings settings;
 		std::vector<ChatFolder> folders;
+		std::vector<ResourceCollection> resource_collections;
 		std::vector<ShellAction> shell_actions;
 		std::string shell_action_notification;
 		std::vector<ProviderProfile> provider_profiles;
@@ -403,6 +414,7 @@ namespace uam
 		AsyncCommandTask runtime_cli_pin_task;
 		std::string runtime_cli_version_provider_id;
 		std::string runtime_cli_pin_provider_id;
+		std::deque<std::string> runtime_cli_version_check_queue;
 		std::vector<AsyncMemoryExtractionTask> memory_extraction_tasks;
 		std::deque<QueuedMemoryExtractionTask> memory_extraction_queue;
 		std::unordered_map<std::string, double> memory_idle_started_at_by_chat_id;

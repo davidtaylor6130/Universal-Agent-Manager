@@ -112,6 +112,7 @@ struct Goal
 	int64_t tokens_used = 0;
 	int blocked_turn_count = 0;              // consecutive turns at same blocker
 	std::string last_blocker;                // description of current blocker
+	std::string last_diagnostic;             // durable goal-loop diagnostic reason
 	std::vector<std::string> completed_items;
 	std::vector<std::string> remaining_items;
 	std::string current_step;
@@ -136,6 +137,7 @@ struct ChatSession
 	std::string parent_chat_id;
 	std::string branch_root_chat_id;
 	int branch_from_message_index = -1;
+	bool branch_message_edited = false;
 	std::string folder_id;
 	std::string title;
 	std::string created_at;
@@ -202,6 +204,22 @@ struct ChatFolder
 	bool collapsed = false;
 };
 
+struct ResourceReference
+{
+	std::string id;
+	std::string type;
+	std::string target;
+	std::string label;
+};
+
+struct ResourceCollection
+{
+	std::string id;
+	std::string name;
+	bool collapsed = false;
+	std::vector<ResourceReference> references;
+};
+
 struct ShellAction
 {
 	std::string id;
@@ -239,6 +257,10 @@ struct AppSettings
 	bool memory_enabled_default = true;
 	int memory_idle_delay_seconds = 60;
 	int memory_recall_budget_bytes = 2048;
+	int goal_max_loop_iterations = 200; // 0 = unlimited
+	bool update_checks_enabled = true;
+	std::string update_last_checked_at;
+	std::map<std::string, std::string> dismissed_update_versions;
 	std::map<std::string, MemoryWorkerBinding> memory_worker_bindings;
 	std::string default_new_chat_provider_id = provider_build_config::FirstEnabledProviderId();
 	std::map<std::string, ProviderChatDefaults> provider_chat_defaults;

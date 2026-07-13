@@ -5,8 +5,10 @@
 #include "persistence_coordinator.h"
 #include "provider_model_catalog_service.h"
 #include "provider_resolution_service.h"
+#include "resource_collection_service.h"
 #include "runtime_orchestration_services.h"
 #include "shell_action_service.h"
+#include "theme_service.h"
 #include "memory_service.h"
 
 #include "common/constants/app_constants.h"
@@ -115,6 +117,7 @@ namespace
 		uam::ResetAsyncCommandTask(app.runtime_cli_version_check_task);
 		uam::ResetAsyncCommandTask(app.runtime_cli_pin_task);
 		app.runtime_cli_version_provider_id.clear();
+		app.runtime_cli_version_check_queue.clear();
 		app.runtime_cli_pin_provider_id.clear();
 		app.runtime_cli_versions_by_provider_id.clear();
 	}
@@ -250,8 +253,12 @@ namespace
 		return false;
 	}
 
-	int GetNextPollDelayMs(const uam::AppState& app)
+	int GetNextPollDelayMs(const uam::AppState& app, bool dictation_running)
 	{
+		if (dictation_running)
+		{
+			return 50;
+		}
 		if (IsSelectedChatRunning(app))
 		{
 			return 16;
@@ -373,6 +380,10 @@ void Application::PollTick()
 	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
 	const bool runtime_state_changed = pending_calls_changed || acp_sessions_changed || cli_terminals_changed || memory_changed || shell_actions_changed || folder_availability_changed;
 	const bool ui_relevant_state_changed = runtime_state_changed || provider_compatibility_changed || uam::HasDeferredStatePush();
+	for (const DictationEvent& event : m_platformServices->dictation_service.PollEvents())
+	{
+		uam::PushDictationEvent(m_browser, event);
+	}
 
 	// Push only when the serialized app state actually changed.
 	if (m_browser && ui_relevant_state_changed)
@@ -384,7 +395,7 @@ void Application::PollTick()
 	// display sleep / App Nap cannot pause this polling loop mid-goal.
 	m_platformServices->process_service.SetKeepSystemAwake(ShouldKeepSystemAwake(m_app));
 
-	ScheduleNextUpdate(GetNextPollDelayMs(m_app));
+	ScheduleNextUpdate(GetNextPollDelayMs(m_app, m_platformServices->dictation_service.IsRunning()));
 }
 
 void Application::ScheduleNextUpdate(int delay_ms)
@@ -498,6 +509,11 @@ bool Application::InitializeState()
 
 	PersistenceCoordinator().LoadSettings(m_app);
 	bool settings_dirty = false;
+	if (ThemeService::IsCustomThemeId(m_app.settings.ui_theme) && !ThemeService::Exists(m_app.data_root, m_app.settings.ui_theme))
+	{
+		m_app.settings.ui_theme = "dark";
+		settings_dirty = true;
+	}
 	// PR-7: provider profiles are build-defined, not user data. They are reset to the
 	// built-in set on every startup and never persisted, so any per-profile "store" plumbing
 	// (e.g. EnsureDefaultProfile) is belt-and-suspenders unless profiles later become editable.
@@ -528,6 +544,7 @@ bool Application::InitializeState()
 	m_app.provider_model_catalog->Initialize(m_app.data_root);
 
 	ChatHistorySyncService().LoadSidebarChatsByDiscovery(m_app);
+	m_app.resource_collections = uam::ResourceCollectionService::Load(m_app.data_root);
 	MemoryService::RefreshMemoryActivity(m_app);
 
 	if (!m_app.chats.empty())
@@ -618,6 +635,10 @@ bool Application::InitializeCef(CefMainArgs main_args)
 void Application::Shutdown()
 {
 	m_done = true;
+	if (m_platformServices != nullptr)
+	{
+		m_platformServices->dictation_service.Stop();
+	}
 	PersistenceCoordinator().SaveSettings(m_app);
 
 	for (PendingRuntimeCall& call : m_app.pending_calls)

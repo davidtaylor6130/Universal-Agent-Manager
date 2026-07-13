@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "common/runtime/acp/acp_goal_loop.h"
 
 using namespace uam_test;
 
@@ -1613,4 +1614,123 @@ UAM_TEST(CommandSafetyAppliesToStandardAcpExecutePermissions)
 	UAM_ASSERT_EQ(raw_session->pending_permission.safety_risk, std::string("warn"));
 	UAM_ASSERT_EQ(raw_session->pending_permission.safety_tier, std::string("low"));
 	UAM_ASSERT(raw_session->pending_permission.safety_requires_approval);
+}
+
+UAM_TEST(AcpQueuedUserPromptsPreserveFifoPayloadAndBeatGoalReview)
+{
+	TempDir temp("uam-acp-user-prompt-queue");
+	const fs::path markdown_store = temp.root / "markdown-store";
+	fs::create_directories(markdown_store);
+	const fs::path skill = markdown_store / "review.uam";
+	UAM_ASSERT(uam::io::WriteTextFile(skill, "# Review\n"));
+	const std::string normalized_skill = uam::paths::NormalizeExistingPath(skill).string();
+
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	UAM_ASSERT(app.provider_profiles.size() >= 2);
+	app.settings.active_provider_id = app.provider_profiles.front().id;
+	app.settings.markdown_store_directory = markdown_store.string();
+
+	ChatSession chat;
+	chat.id = "chat-queue";
+	chat.provider_id = app.provider_profiles.front().id;
+	chat.workspace_directory = temp.root.string();
+	Goal goal;
+	goal.id = "goal-queue";
+	goal.objective = "Finish queued work.";
+	chat.active_goal_id = goal.id;
+	chat.goals.push_back(goal);
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-queue";
+	session->provider_id = app.provider_profiles.front().id;
+	session->running = true;
+	session->processing = true;
+	session->session_ready = false;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	MessageAttachment attachment;
+	attachment.id = "attachment-1";
+	attachment.name = "diagram.png";
+	attachment.kind = "image";
+	attachment.mime_type = "image/png";
+	attachment.path = "attachments/diagram.png";
+	attachment.size_bytes = 42;
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, "chat-queue", "First queued prompt", {skill.string()}, {attachment}, true, &error, goal.id));
+	UAM_ASSERT(uam::SendAcpPrompt(app, "chat-queue", "Second queued prompt", {}, {}, true, &error, goal.id));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().attachments.front().id, std::string("attachment-1"));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().markdown_store_files.front(), normalized_skill);
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().goal_id, goal.id);
+	raw_session->processing = false;
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, "chat-queue", app.provider_profiles[1].id), uam::ChatProviderSwitchResult::ActiveRuntime);
+	raw_session->processing = true;
+
+	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json queued = serialized["chats"][0]["acpSession"]["queuedPrompts"];
+	UAM_ASSERT_EQ(queued.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(queued[0].value("text", ""), std::string("First queued prompt"));
+	UAM_ASSERT_EQ(queued[0].value("goalId", ""), goal.id);
+	UAM_ASSERT_EQ(queued[0]["attachments"][0].value("id", ""), std::string("attachment-1"));
+
+	uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, *raw_session, app.chats.front(), "ready", nullptr);
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().messages.back().content, std::string("First queued prompt"));
+	UAM_ASSERT_EQ(app.chats.front().messages.back().attachments.front().id, std::string("attachment-1"));
+	UAM_ASSERT_EQ(app.chats.front().messages.back().markdown_store_files.front(), normalized_skill);
+	UAM_ASSERT(!raw_session->goal_review_scheduled);
+
+	uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, *raw_session, app.chats.front(), "ready", nullptr);
+	UAM_ASSERT(raw_session->queued_user_prompts.empty());
+	UAM_ASSERT_EQ(app.chats.front().messages.back().content, std::string("Second queued prompt"));
+
+	raw_session->processing = true;
+	UAM_ASSERT(uam::SendAcpPrompt(app, "chat-queue", "Cancel me", {}, {}, false, &error));
+	raw_session->running = false;
+	UAM_ASSERT(uam::CancelAcpTurn(app, "chat-queue", &error));
+	UAM_ASSERT(raw_session->queued_user_prompts.empty());
+	raw_session->queued_user_prompts.push_back(uam::AcpQueuedUserPromptState{"Stop me"});
+	UAM_ASSERT(uam::StopAcpSession(app, "chat-queue"));
+	UAM_ASSERT(raw_session->queued_user_prompts.empty());
+}
+
+UAM_TEST(AcpQueuedUserPromptFailureKeepsLaterPromptsInOrder)
+{
+	TempDir temp("uam-acp-user-prompt-failure");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.settings.active_provider_id = app.provider_profiles.front().id;
+	ChatSession chat;
+	chat.id = "chat-queue-failure";
+	chat.provider_id = app.provider_profiles.front().id;
+	chat.workspace_directory = temp.root.string();
+	app.chats.push_back(std::move(chat));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-queue-failure";
+	session->provider_id = app.provider_profiles.front().id;
+	session->session_id = "session-1";
+	session->running = true;
+	session->processing = true;
+	session->session_ready = true;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, "chat-queue-failure", "First", {}, {}, false, &error));
+	UAM_ASSERT(uam::SendAcpPrompt(app, "chat-queue-failure", "Second", {}, {}, false, &error));
+
+	uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, *raw_session, app.chats.front(), "ready", nullptr);
+	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("error"));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().text, std::string("Second"));
+	UAM_ASSERT_EQ(app.chats.front().messages.back().content, std::string("First"));
+	UAM_ASSERT(uam::SendAcpPrompt(app, "chat-queue-failure", "Third", {}, {}, false, &error));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts[0].text, std::string("Second"));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts[1].text, std::string("Third"));
 }

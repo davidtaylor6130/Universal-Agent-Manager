@@ -4,10 +4,12 @@
 #include "app/provider_resolution_service.h"
 #include "common/chat/chat_branching.h"
 #include "common/chat/chat_ids.h"
+#include "common/chat/chat_repository.h"
 #include "common/chat/native_chat_identity.h"
 #include "common/paths/workspace_root.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/terminal_common.h"
+#include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
 
@@ -616,13 +618,20 @@ ChatSession ChatDomainService::CreateNewChat(const std::string& folder_id, const
 	return chat;
 }
 
-bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::string& source_chat_id, int message_index) const
+bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content) const
 {
 	const int source_index = FindChatIndexById(app, source_chat_id);
 
 	if (source_index < 0)
 	{
 		app.status_line = "Branch source chat no longer exists.";
+		return false;
+	}
+
+	std::string hydrate_warning;
+	if (!ChatRepository::HydrateChatMessages(app.data_root, app.chats[source_index], &hydrate_warning))
+	{
+		app.status_line = uam::strings::NonEmptyOrFallback(hydrate_warning, "Failed to load branch source messages.");
 		return false;
 	}
 
@@ -640,11 +649,24 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 		return false;
 	}
 
+	if (uam::ChatHasActiveAcpSession(app, source.id) || uam::ChatHasBusyCliTerminal(app, source.id))
+	{
+		app.status_line = "Wait for the active turn to finish before branching.";
+		return false;
+	}
+
+	if (replacement_content.has_value() && uam::strings::IsBlank(*replacement_content))
+	{
+		app.status_line = "Edited message content is required.";
+		return false;
+	}
+
 	ChatSession branch = CreateNewChat(source.folder_id, source.provider_id);
 	branch.native_session_id.clear();
 	branch.parent_chat_id = source.id;
 	branch.branch_root_chat_id = uam::strings::NonEmptyOrFallback(source.branch_root_chat_id, source.id);
 	branch.branch_from_message_index = message_index;
+	branch.branch_message_edited = replacement_content.has_value();
 	branch.linked_files = source.linked_files;
 	branch.model_id = source.model_id;
 	branch.reasoning_effort = source.reasoning_effort;
@@ -656,15 +678,34 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 	const bool branch_from_git_worktree = uam::paths::HasGitWorktreeSource(source);
 	branch.workspace_directory = branch_from_git_worktree ? source.workspace_source_directory : uam::paths::ResolveWorkspaceRootPath(app, source).string();
 	branch.messages.assign(source.messages.begin(), source.messages.begin() + message_index + 1);
+	if (replacement_content.has_value())
+	{
+		branch.messages.back().content = *replacement_content;
+	}
 	branch.updated_at = uam::time::TimestampNow();
 	branch.last_opened_at = branch.updated_at;
-	branch.title = BranchTitleFromMessage(source.messages[message_index].content);
+	branch.title = BranchTitleFromMessage(branch.messages.back().content);
 
+	const ProviderProfile& branch_provider = ProviderResolutionService().ProviderForChatOrDefault(app, branch);
+	if (!ProviderRuntime::SaveHistory(branch_provider, app.data_root, branch))
+	{
+		app.status_line = "Failed to save branch chat.";
+		return false;
+	}
+
+	const std::string previous_selected_chat_id = SelectedChatId(app);
 	app.chats.push_back(branch);
 	ChatBranching::Normalize(app.chats);
 	SortChatsByRecent(app.chats);
 	SelectChatById(app, branch.id);
-	PersistenceCoordinator().SaveSettings(app);
+	if (!PersistenceCoordinator().SaveSettings(app))
+	{
+		std::erase_if(app.chats, [&branch](const ChatSession& chat) { return chat.id == branch.id; });
+		SelectChatById(app, previous_selected_chat_id);
+		(void)ChatRepository::DeleteChatStorageFiles(app.data_root, branch.id);
+		app.status_line = "Failed to persist branch selection.";
+		return false;
+	}
 
 	const ChatSession* selected_branch = SelectedChat(app);
 	if (selected_branch != nullptr && ProviderResolutionService().ChatUsesCliOutput(app, *selected_branch))
@@ -672,15 +713,7 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 		uam::MarkSelectedCliTerminalForLaunch(app);
 	}
 
-	const ProviderProfile& branch_provider = ProviderResolutionService().ProviderForChatOrDefault(app, branch);
-
-	if (!ProviderRuntime::SaveHistory(branch_provider, app.data_root, branch))
-	{
-		app.status_line = "Branch created in memory, but failed to save.";
-		return false;
-	}
-
-	app.status_line = "Branch chat created.";
+	app.status_line = replacement_content.has_value() ? "Edited message opened in a new branch." : "Chat reverted in a new branch.";
 	return true;
 }
 

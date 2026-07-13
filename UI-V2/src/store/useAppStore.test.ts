@@ -33,6 +33,7 @@ function makeCppState(
         collapsed: false,
       },
     ],
+    resourceCollections: [],
     chats: [
       {
         id: 'chat-1',
@@ -67,6 +68,10 @@ function makeCppState(
       memoryEnabledDefault: true,
       memoryIdleDelaySeconds: 60,
       memoryRecallBudgetBytes: 2048,
+      goalMaxLoopIterations: 200,
+      updateChecksEnabled: true,
+      updateLastCheckedAt: '',
+      dismissedUpdateVersions: {},
       memoryLastStatus: '',
       memoryWorkerBindings: {},
       defaultEditorPresetId: 'vscode',
@@ -103,8 +108,12 @@ function resetStore() {
     cliDebugState: null,
     memoryEnabledDefault: true,
     memoryIdleDelaySeconds: 60,
-    memoryRecallBudgetBytes: 2048,
-    memoryLastStatus: '',
+      memoryRecallBudgetBytes: 2048,
+      goalMaxLoopIterations: 200,
+      updateChecksEnabled: true,
+      updateLastCheckedAt: '',
+      dismissedUpdateVersions: {},
+      memoryLastStatus: '',
     memoryWorkerBindings: {},
     defaultNewChatProviderId: 'gemini-cli',
     providerChatDefaults: {},
@@ -916,6 +925,37 @@ describe('useAppStore Gemini CLI slice', () => {
     })
   })
 
+  it('creates edited and reverted message branches through CEF', async () => {
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
+      onSuccess(JSON.stringify({ chatId: 'branch-1' }))
+    }
+
+    await expect(useAppStore.getState().branchFromMessage('chat-1', 2, 'Edited prompt')).resolves.toBe('branch-1')
+    await expect(useAppStore.getState().branchFromMessage('chat-1', 0)).resolves.toBe('branch-1')
+    expect(requests.map(({ action, payload }) => ({ action, payload }))).toEqual([
+      { action: 'branchFromMessage', payload: { chatId: 'chat-1', messageIndex: 2, content: 'Edited prompt' } },
+      { action: 'branchFromMessage', payload: { chatId: 'chat-1', messageIndex: 0 } },
+    ])
+  })
+
+  it('keeps message branch metadata from native state', () => {
+    const state = makeCppState(3)
+    state.chats[0] = {
+      ...state.chats[0],
+      parentChatId: 'chat-root',
+      branchFromMessageIndex: 2,
+      branchMessageEdited: true,
+    }
+    useAppStore.getState().loadFromCef(state)
+    expect(useAppStore.getState().sessions[0]).toMatchObject({
+      parentChatId: 'chat-root',
+      branchFromMessageIndex: 2,
+      branchMessageEdited: true,
+    })
+  })
+
   it('creates CEF sessions with the selected Codex provider', async () => {
     const requests: Array<{ action: string; payload?: unknown }> = []
     window.cefQuery = ({ request, onSuccess }) => {
@@ -1124,7 +1164,7 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().sessions[0].isPinned).toBe(false)
   })
 
-  it('changes providers only for empty stopped local sessions', async () => {
+  it('changes providers while preserving existing message history', async () => {
     const now = new Date()
     useAppStore.setState({
       providers: [
@@ -1156,8 +1196,39 @@ describe('useAppStore Gemini CLI slice', () => {
         ],
       },
     })
-    await expect(useAppStore.getState().setSessionProvider('chat-1', 'gemini-cli')).resolves.toBe(false)
-    expect(useAppStore.getState().sessions[0].providerId).toBe('codex-cli')
+    await expect(useAppStore.getState().setSessionProvider('chat-1', 'gemini-cli')).resolves.toBe(true)
+    expect(useAppStore.getState().sessions[0].providerId).toBe('gemini-cli')
+    expect(useAppStore.getState().messages['chat-1']).toHaveLength(1)
+  })
+
+  it('allows an idle runtime provider switch but rejects active turns and waits', async () => {
+    const cppState = makeCppState(1)
+    cppState.chats[0].acpSession = {
+      sessionId: 'old-native-session',
+      running: true,
+      lifecycleState: 'ready',
+      processing: false,
+      readySinceLastSelect: true,
+      lastError: '',
+      pendingPermission: null,
+    }
+    useAppStore.getState().loadFromCef(cppState)
+
+    await expect(useAppStore.getState().setSessionProvider('chat-1', 'codex-cli')).resolves.toBe(true)
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => ({ ...session, providerId: 'gemini-cli' })),
+      acpBindingBySessionId: {
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: true },
+      },
+    }))
+    await expect(useAppStore.getState().setSessionProvider('chat-1', 'codex-cli')).resolves.toBe(false)
+
+    useAppStore.setState({
+      acpBindingBySessionId: {
+        'chat-1': { ...useAppStore.getState().acpBindingBySessionId['chat-1'], processing: false, pendingUserInput: { requestId: 'wait-1', itemId: 'item-1', status: 'pending', questions: [] } },
+      },
+    })
+    await expect(useAppStore.getState().setSessionProvider('chat-1', 'codex-cli')).resolves.toBe(false)
   })
 
   it('rejects switching a session to an unavailable provider in a Gemini-only provider list', async () => {
@@ -1865,6 +1936,23 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(state.lastAppliedStateRevision).toBe(7)
   })
 
+  it('reorders workspace folders and keeps omitted folders stable', async () => {
+    const createdAt = new Date()
+    useAppStore.setState({
+      folders: ['one', 'two', 'three'].map((id) => ({
+        id,
+        name: id,
+        parentId: null,
+        directory: `/tmp/${id}`,
+        isExpanded: true,
+        createdAt,
+      })),
+    })
+
+    await expect(useAppStore.getState().reorderFolders(['three', 'one'])).resolves.toBe(true)
+    expect(useAppStore.getState().folders.map((folder) => folder.id)).toEqual(['three', 'one', 'two'])
+  })
+
   it('rolls folder expansion back on CEF failure without changing the active chat', async () => {
     const now = new Date()
     const requests: Array<{ action: string; payload?: unknown }> = []
@@ -2267,13 +2355,16 @@ describe('useAppStore Gemini CLI slice', () => {
     await expect(useAppStore.getState().setMemorySettings({
       memoryIdleDelaySeconds: -1,
       memoryRecallBudgetBytes: 999999,
+      goalMaxLoopIterations: -1,
     })).resolves.toBe(true)
 
     expect(useAppStore.getState().memoryIdleDelaySeconds).toBe(30)
     expect(useAppStore.getState().memoryRecallBudgetBytes).toBe(8192)
+    expect(useAppStore.getState().goalMaxLoopIterations).toBe(0)
     expect(requests[0].action).toBe('setMemorySettings')
     expect(requests[0].payload?.idleDelaySeconds).toBe(30)
     expect(requests[0].payload?.recallBudgetBytes).toBe(8192)
+    expect(requests[0].payload?.goalMaxLoopIterations).toBe(0)
   })
 
   it('loads the global memory library through CEF', async () => {
@@ -2616,6 +2707,37 @@ describe('useAppStore Gemini CLI slice', () => {
     const promptRequest = requests.find((request) => request.action === 'sendAcpPrompt')
     expect(promptRequest?.payload?.goalId).toBe('goal-1')
     expect(promptRequest?.payload?.goalMode).toBe(true)
+  })
+
+  it('loads queued ACP prompt payloads and blocks provider switching until they clear', async () => {
+    const state = makeCppState(1)
+    state.chats[0].acpSession = {
+      sessionId: 'acp-chat-1',
+      running: true,
+      processing: false,
+      lifecycleState: 'error',
+      queuedPrompts: [
+        {
+          text: 'Queued follow-up',
+          markdownStoreFiles: ['/tmp/review.uam'],
+          attachments: [
+            { id: 'attachment-1', name: 'diagram.png', type: 'image', size: 42, path: '/tmp/diagram.png' },
+          ],
+          goalMode: true,
+          goalId: 'goal-1',
+        },
+      ],
+    }
+    useAppStore.getState().loadFromCef(state)
+
+    expect(useAppStore.getState().acpBindingBySessionId['chat-1'].queuedPrompts).toEqual(state.chats[0].acpSession.queuedPrompts)
+    const requests: unknown[] = []
+    ensureTestWindow().cefQuery = ((params: { request: string }) => {
+      requests.push(JSON.parse(params.request))
+    }) as unknown as TestWindow['cefQuery']
+
+    await expect(useAppStore.getState().setSessionProvider('chat-1', 'codex-cli')).resolves.toBe(false)
+    expect(requests).toEqual([])
   })
 
   it('resumes a goal through the setActiveGoal backend action', async () => {

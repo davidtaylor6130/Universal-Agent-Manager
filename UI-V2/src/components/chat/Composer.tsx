@@ -2,7 +2,7 @@
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
 
 import { KeyboardEvent as ReactKeyboardEvent, RefObject, useEffect, useId, useRef, useState } from 'react'
-import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Settings2, Target, ClipboardList, Shield, ShieldAlert, ShieldCheck, Sparkles } from 'lucide-react'
+import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Settings2, Target, ClipboardList, Shield, ShieldAlert, ShieldCheck, Sparkles, Mic, Square } from 'lucide-react'
 import type { AcpBinding } from '../../store/useAppStore'
 import type { Goal } from '../../types/goal'
 import type { Provider } from '../../types/provider'
@@ -21,6 +21,7 @@ import {
 import { MenuSelect } from '../ui'
 
 export type ComposerIconName = 'editor' | 'folder' | 'git-tree' | 'markdown' | 'plus' | 'send' | 'terminal'
+export type DictationState = 'idle' | 'starting' | 'listening' | 'stopping'
 
 export function acpRuntimeBlocksControlChanges(acp?: AcpBinding | null): boolean {
   return Boolean(
@@ -53,11 +54,11 @@ export function ComposerIcon({ name, size = 14 }: { name: ComposerIconName; size
   }
 }
 
-function permissionModeIcon(id: string) {
-  if (id === 'auto') return <Sparkles size={14} />
-  if (id === 'plan') return <ClipboardList size={14} />
-  if (id === 'acceptEdits') return <SquarePen size={14} />
-  return <ShieldCheck size={14} />
+export function permissionModeIcon(id: string, size = 14) {
+  if (id === 'auto') return <Sparkles size={size} />
+  if (id === 'plan') return <ClipboardList size={size} />
+  if (id === 'acceptEdits') return <SquarePen size={size} />
+  return <ShieldCheck size={size} />
 }
 
 export function ComposerToolbar({
@@ -112,6 +113,9 @@ export function ComposerToolbar({
   onStopRuntime,
   onAttachFile,
   onOpenMarkdownStore,
+  dictationState,
+  dictationAvailable,
+  onToggleDictation,
 }: {
   acp?: AcpBinding
   provider: Provider
@@ -164,6 +168,9 @@ export function ComposerToolbar({
   onStopRuntime: () => void
   onAttachFile: () => void
   onOpenMarkdownStore: () => void
+  dictationState: DictationState
+  dictationAvailable: boolean
+  onToggleDictation: () => void
 }) {
   const caps = providerCapabilities(providerId, provider)
   const modelOptions = buildModelOptions(acp, modelId ?? '', provider, providerId)
@@ -508,6 +515,24 @@ export function ComposerToolbar({
         </span>
       )}
       <div className="ml-auto flex items-center gap-2">
+        <button
+          type="button"
+          title={!dictationAvailable ? 'Dictation requires the desktop app' : dictationState === 'idle' ? 'Start dictation' : dictationState === 'starting' ? 'Starting dictation' : 'Stop dictation'}
+          aria-label={dictationState === 'idle' ? 'Start dictation' : dictationState === 'starting' ? 'Starting dictation' : 'Stop dictation'}
+          aria-pressed={dictationState !== 'idle'}
+          onClick={onToggleDictation}
+          disabled={!dictationAvailable || dictationState === 'starting' || dictationState === 'stopping'}
+          className="h-[30px] w-[34px] text-xs font-semibold inline-flex items-center justify-center"
+          style={{
+            borderRadius: 7,
+            border: `1px solid ${dictationState === 'idle' ? 'var(--border)' : 'color-mix(in srgb, var(--red) 46%, var(--border-bright))'}`,
+            background: dictationState === 'idle' ? 'var(--surface-up)' : 'color-mix(in srgb, var(--red) 14%, var(--surface))',
+            color: dictationState === 'idle' ? 'var(--text-2)' : 'var(--red)',
+            opacity: !dictationAvailable || dictationState === 'starting' || dictationState === 'stopping' ? 0.55 : 1,
+          }}
+        >
+          {dictationState === 'idle' ? <Mic size={15} aria-hidden /> : <Square size={12} fill="currentColor" aria-hidden />}
+        </button>
         <div ref={modelMenuRef} className="relative">
           <button
             ref={modelTriggerRef}
@@ -690,27 +715,36 @@ export function ComposerToolbar({
             </div>
           )}
         </div>
+        {running && (
+          <button
+            type="button"
+            title="Stop runtime"
+            onClick={onStopRuntime}
+            className="h-[30px] w-[34px] text-xs font-semibold inline-flex items-center justify-center"
+            style={{
+              borderRadius: 7,
+              border: '1px solid color-mix(in srgb, var(--red) 46%, var(--border-bright))',
+              background: 'color-mix(in srgb, var(--red) 14%, var(--surface))',
+              color: 'var(--red)',
+            }}
+          >
+            <span aria-hidden="true" style={{ width: 9, height: 9, borderRadius: 2, background: 'currentColor' }} />
+          </button>
+        )}
         <button
-          type={running ? 'button' : 'submit'}
-          title={running ? 'Stop runtime' : 'Send prompt'}
-          disabled={!running && !canSend}
-          onClick={running ? onStopRuntime : undefined}
+          type="submit"
+          title={running ? 'Queue prompt' : 'Send prompt'}
+          disabled={!canSend}
           className="h-[30px] w-[34px] text-xs font-semibold inline-flex items-center justify-center"
           style={{
             borderRadius: 7,
-            border: running
-              ? '1px solid color-mix(in srgb, var(--red) 46%, var(--border-bright))'
-              : '1px solid color-mix(in srgb, var(--accent) 64%, var(--border-bright))',
-            background: running ? 'color-mix(in srgb, var(--red) 14%, var(--surface))' : canSend ? 'var(--accent)' : 'var(--surface-up)',
-            color: running ? 'var(--red)' : canSend ? '#fff' : 'var(--text-3)',
-            boxShadow: !running && canSend ? '0 8px 18px color-mix(in srgb, var(--accent) 20%, transparent)' : 'none',
+            border: '1px solid color-mix(in srgb, var(--accent) 64%, var(--border-bright))',
+            background: canSend ? 'var(--accent)' : 'var(--surface-up)',
+            color: canSend ? '#fff' : 'var(--text-3)',
+            boxShadow: canSend ? '0 8px 18px color-mix(in srgb, var(--accent) 20%, transparent)' : 'none',
           }}
         >
-          {running ? (
-            <span aria-hidden="true" style={{ width: 9, height: 9, borderRadius: 2, background: 'currentColor' }} />
-          ) : (
-            <ComposerIcon name="send" size={15} />
-          )}
+          <ComposerIcon name="send" size={15} />
         </button>
       </div>
     </div>

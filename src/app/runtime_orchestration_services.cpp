@@ -382,6 +382,7 @@ namespace
 		native.parent_chat_id = local.parent_chat_id;
 		native.branch_root_chat_id = local.branch_root_chat_id;
 		native.branch_from_message_index = local.branch_from_message_index;
+		native.branch_message_edited = local.branch_message_edited;
 		native.workspace_directory = local.workspace_directory;
 		native.approval_mode = local.approval_mode;
 		native.auto_approve_commands = local.auto_approve_commands;

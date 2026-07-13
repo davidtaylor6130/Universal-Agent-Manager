@@ -17,12 +17,14 @@ import {
   ACP_APPROVAL_MODE_IDS,
   cefPayloadOrRawResponse,
   clampedFiniteNumberOr,
+  DEFAULT_GOAL_MAX_LOOP_ITERATIONS,
   DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
   DEFAULT_MEMORY_RECALL_BUDGET_BYTES,
   defaultEditorFileAssociations,
   emptyCliVersionManager,
   emptyCliVersionProviderState,
   emptyMemoryActivity,
+  finiteNumberOr,
   failedGitWorktreeResult,
   isAllowedAcpModelId,
   isRecord,
@@ -200,6 +202,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     memoryEnabledDefault: true,
     memoryIdleDelaySeconds: DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
     memoryRecallBudgetBytes: DEFAULT_MEMORY_RECALL_BUDGET_BYTES,
+    goalMaxLoopIterations: DEFAULT_GOAL_MAX_LOOP_ITERATIONS,
+    appVersion: 'V4.1.0',
+    updateChecksEnabled: true,
+    updateLastCheckedAt: '',
+    dismissedUpdateVersions: {} as Record<string, string>,
     memoryLastStatus: '',
     memoryWorkerBindings: {} as Record<string, MemoryWorkerBinding>,
     memoryActivity: { ...emptyMemoryActivity } as MemoryActivity,
@@ -320,6 +327,65 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         isNewChatModalOpen: false,
         newChatFolderId: null,
       }))
+    },
+
+    branchFromMessage: async (id: string, messageIndex: number, content?: string): Promise<string | null> => {
+      if (isCefContext()) {
+        const response = await sendToCEF<{ chatId?: string }>({
+          action: 'branchFromMessage',
+          payload: {
+            chatId: id,
+            messageIndex,
+            ...(content === undefined ? {} : { content }),
+          },
+        })
+        if (!response.ok) {
+          console.error('[CEF] branchFromMessage failed:', response.error)
+          return null
+        }
+        return response.data?.chatId?.trim() || null
+      }
+
+      const source = get().sessions.find((session) => session.id === id)
+      const sourceMessages = get().messages[id] ?? []
+      const sourceMessage = sourceMessages[messageIndex]
+      if (!source || sourceMessage?.role !== 'user' || (content !== undefined && !content.trim())) return null
+
+      sessionCounter++
+      const branchId = makeId('branch', sessionCounter)
+      const now = new Date()
+      const branchMessages = sourceMessages.slice(0, messageIndex + 1).map((message, index) => ({
+        ...message,
+        sessionId: branchId,
+        ...(index === messageIndex && content !== undefined ? { content } : {}),
+      }))
+      const branch: Session = {
+        ...source,
+        id: branchId,
+        name: `Branch: ${(content ?? sourceMessage.content).trim().slice(0, 40)}`,
+        parentChatId: source.id,
+        branchFromMessageIndex: messageIndex,
+        branchMessageEdited: content !== undefined,
+        messageCount: branchMessages.length,
+        messagesDigest: '',
+        createdAt: now,
+        updatedAt: now,
+        lastOpenedAt: now,
+        ...(source.workspaceIsolationKind === 'gitWorktree' ? {
+          workspaceDirectory: source.workspaceSourceDirectory ?? '',
+          workspaceIsolationKind: '',
+          workspaceSourceDirectory: '',
+          workspaceBaseRef: '',
+          workspaceBranchName: '',
+          workspaceWorktreeDirectory: '',
+        } : {}),
+      }
+      set((state) => ({
+        sessions: [branch, ...state.sessions],
+        messages: { ...state.messages, [branchId]: branchMessages },
+        activeSessionId: branchId,
+      }))
+      return branchId
     },
 
     openSessionWorkspace: async (id: string) => {
@@ -711,8 +777,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       }
 
       const acp = current.acpBindingBySessionId[id]
-      const messages = current.messages[id] ?? []
-      if (messages.length > 0 || acp?.running || acp?.processing) {
+      const cli = current.cliBindingBySessionId[id]
+      if (acp?.processing || (acp?.queuedPrompts?.length ?? 0) > 0 || acp?.pendingPermission || acp?.pendingUserInput || cli?.processing || cli?.turnState === 'busy') {
         return false
       }
       const defaults = current.providerChatDefaults[requestedProviderId] ?? sanitizeProviderChatDefaults(null)
@@ -1059,17 +1125,19 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    setMemorySettings: async (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'memoryWorkerBindings'>>): Promise<boolean> => {
+    setMemorySettings: async (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'goalMaxLoopIterations' | 'memoryWorkerBindings'>>): Promise<boolean> => {
       const previous = {
         memoryEnabledDefault: get().memoryEnabledDefault,
         memoryIdleDelaySeconds: get().memoryIdleDelaySeconds,
         memoryRecallBudgetBytes: get().memoryRecallBudgetBytes,
+        goalMaxLoopIterations: get().goalMaxLoopIterations,
         memoryWorkerBindings: get().memoryWorkerBindings,
       }
       const next = {
         memoryEnabledDefault: settings.memoryEnabledDefault ?? previous.memoryEnabledDefault,
         memoryIdleDelaySeconds: clampedFiniteNumberOr(settings.memoryIdleDelaySeconds, previous.memoryIdleDelaySeconds, MIN_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_IDLE_DELAY_SECONDS),
         memoryRecallBudgetBytes: clampedFiniteNumberOr(settings.memoryRecallBudgetBytes, previous.memoryRecallBudgetBytes, MIN_MEMORY_RECALL_BUDGET_BYTES, MAX_MEMORY_RECALL_BUDGET_BYTES),
+        goalMaxLoopIterations: Math.max(0, Math.floor(finiteNumberOr(settings.goalMaxLoopIterations, previous.goalMaxLoopIterations))),
         memoryWorkerBindings: settings.memoryWorkerBindings ?? previous.memoryWorkerBindings,
       }
       const applySettings = () => set(next)
@@ -1083,6 +1151,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             enabledDefault: next.memoryEnabledDefault,
             idleDelaySeconds: next.memoryIdleDelaySeconds,
             recallBudgetBytes: next.memoryRecallBudgetBytes,
+            goalMaxLoopIterations: next.goalMaxLoopIterations,
             workerBindings: next.memoryWorkerBindings,
           },
           requestId,
@@ -1096,6 +1165,33 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
       applySettings()
       return true
+    },
+
+    setUpdateSettings: async (settings: Partial<Pick<AppState, 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>): Promise<boolean> => {
+      const previous = {
+        updateChecksEnabled: get().updateChecksEnabled,
+        updateLastCheckedAt: get().updateLastCheckedAt,
+        dismissedUpdateVersions: get().dismissedUpdateVersions,
+      }
+      const next = {
+        updateChecksEnabled: settings.updateChecksEnabled ?? previous.updateChecksEnabled,
+        updateLastCheckedAt: settings.updateLastCheckedAt ?? previous.updateLastCheckedAt,
+        dismissedUpdateVersions: settings.dismissedUpdateVersions ?? previous.dismissedUpdateVersions,
+      }
+      set(next)
+      if (!isCefContext()) return true
+
+      const response = await sendToCEF({
+        action: 'setUpdateSettings',
+        payload: {
+          enabled: next.updateChecksEnabled,
+          lastCheckedAt: next.updateLastCheckedAt,
+          dismissedVersions: next.dismissedUpdateVersions,
+        },
+        requestId: createRequestId('setUpdateSettings'),
+      })
+      if (!response.ok) set(previous)
+      return response.ok
     },
 
     setEditorSettings: async (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'>): Promise<boolean> => {

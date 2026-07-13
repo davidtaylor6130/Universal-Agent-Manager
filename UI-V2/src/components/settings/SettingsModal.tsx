@@ -10,8 +10,15 @@ import {
   type MemoryWorkerBinding,
   type ProviderChatDefaults,
 } from '../../store/useAppStore'
-import { ThemeToggle } from '../shared/ThemeToggle'
 import { useTheme } from '../../hooks/useTheme'
+import {
+  applyDocumentTheme,
+  BUILT_IN_THEME_COLORS,
+  normalizeCustomTheme,
+  type CustomTheme,
+  type ThemeColors,
+  type StoredTheme,
+} from '../../utils/themeStorage'
 import type { Provider } from '../../types/provider'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
@@ -23,6 +30,7 @@ import {
   providerCapabilities,
   providerShortName,
 } from '../../utils/providerMetadata'
+import { titleFromModelId } from '../chat/modelOptions'
 
 interface MemoryModelOption {
   id: string
@@ -32,15 +40,6 @@ interface MemoryModelOption {
 
 function providerDisplayName(provider?: Provider, fallbackId = '') {
   return providerShortName(provider, fallbackId)
-}
-
-function titleFromModelId(modelId: string) {
-  const source = modelId.split('/').pop() ?? modelId
-  return source
-    .split(/[-_.]+/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ') || modelId
 }
 
 function memoryModelOptions(provider?: Provider, providerId = '', selectedModelId = '') {
@@ -92,6 +91,30 @@ const EDITOR_PRESETS = [
   { id: 'goland', label: 'GoLand' },
   { id: 'rustrover', label: 'RustRover' },
 ]
+
+const THEME_COLOR_FIELDS: Array<{ key: keyof ThemeColors; label: string }> = [
+  { key: 'background', label: 'Background' },
+  { key: 'surface', label: 'Surface' },
+  { key: 'surfaceUp', label: 'Raised surface' },
+  { key: 'text', label: 'Text' },
+  { key: 'textMuted', label: 'Muted text' },
+  { key: 'accent', label: 'Accent' },
+  { key: 'sidebar', label: 'Sidebar' },
+  { key: 'userMessage', label: 'User message' },
+  { key: 'assistantMessage', label: 'Assistant message' },
+  { key: 'success', label: 'Success' },
+  { key: 'warning', label: 'Warning' },
+  { key: 'error', label: 'Error' },
+]
+
+function customThemeId(name: string, themes: CustomTheme[]) {
+  const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'theme'
+  const ids = new Set(themes.map((theme) => theme.id))
+  let id: CustomTheme['id'] = `custom:${base}`
+  let suffix = 2
+  while (ids.has(id)) id = `custom:${base}-${suffix++}`
+  return id
+}
 
 function editorPresetLabel(id: string) {
   return EDITOR_PRESETS.find((preset) => preset.id === id)?.label ?? 'VS Code'
@@ -213,6 +236,14 @@ export function SettingsModal() {
   const memoryEnabledDefault = useAppStore((s) => s.memoryEnabledDefault)
   const memoryIdleDelaySeconds = useAppStore((s) => s.memoryIdleDelaySeconds)
   const memoryRecallBudgetBytes = useAppStore((s) => s.memoryRecallBudgetBytes)
+  const goalMaxLoopIterations = useAppStore((s) => s.goalMaxLoopIterations)
+  const appVersion = useAppStore((s) => s.appVersion)
+  const updateChecksEnabled = useAppStore((s) => s.updateChecksEnabled)
+  const setUpdateSettings = useAppStore((s) => s.setUpdateSettings)
+  const customThemes = useAppStore(useShallow((s) => s.customThemes))
+  const refreshCustomThemes = useAppStore((s) => s.refreshCustomThemes)
+  const saveCustomTheme = useAppStore((s) => s.saveCustomTheme)
+  const deleteCustomTheme = useAppStore((s) => s.deleteCustomTheme)
   const memoryWorkerBindings = useAppStore(useShallow((s) => s.memoryWorkerBindings))
   const memoryLastStatus = useAppStore((s) => s.memoryLastStatus)
   const memoryActivity = useAppStore(useShallow((s) => s.memoryActivity))
@@ -232,7 +263,7 @@ export function SettingsModal() {
   const openMarkdownStore = useAppStore((s) => s.openMarkdownStore)
   const openGlobalMemoryLibrary = useAppStore((s) => s.openGlobalMemoryLibrary)
   const openMemoryScanModal = useAppStore((s) => s.openMemoryScanModal)
-  const { theme } = useTheme()
+  const { theme, setTheme } = useTheme()
   const [openMemoryMenu, setOpenMemoryMenu] = useState<string | null>(null)
   const [openEditorMenu, setOpenEditorMenu] = useState<string | null>(null)
   const [openDefaultsMenu, setOpenDefaultsMenu] = useState<string | null>(null)
@@ -245,10 +276,23 @@ export function SettingsModal() {
   const [editorAssociationsDraft, setEditorAssociationsDraft] = useState(editorFileAssociations)
   const [defaultEditorDraft, setDefaultEditorDraft] = useState(defaultEditorPresetId)
   const [selectedSection, setSelectedSection] = useState<SettingsSectionId>('appearance')
+  const [themeDraft, setThemeDraft] = useState<CustomTheme | null>(null)
+  const [themeMessage, setThemeMessage] = useState('')
   const memoryMenuRef = useRef<HTMLDivElement>(null)
   const editorMenuRef = useRef<HTMLDivElement>(null)
   const defaultsMenuRef = useRef<HTMLDivElement>(null)
   const cliVersionMenuRef = useRef<HTMLDivElement>(null)
+  const themeImportRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    void refreshCustomThemes()
+  }, [refreshCustomThemes])
+
+  useEffect(() => {
+    if (!themeDraft) return
+    applyDocumentTheme(themeDraft.id, [themeDraft])
+    return () => applyDocumentTheme(theme, customThemes)
+  }, [customThemes, theme, themeDraft])
 
   useEffect(() => {
     setSelectedCliVersions((current) => {
@@ -622,24 +666,164 @@ export function SettingsModal() {
     memoryActivity.lastWorkerTimedOut ? 'timed out' : '',
     memoryActivity.lastWorkerUpdatedAt || '',
   ].filter(Boolean).join(' | ')
+  const selectedCustomTheme = customThemes.find((candidate) => candidate.id === theme)
+  const startNewTheme = (source?: CustomTheme) => {
+    const base = source?.base ?? (theme === 'light' ? 'light' : 'dark')
+    const name = source ? `${source.name} Copy` : 'Custom Theme'
+    setThemeDraft({
+      version: 1,
+      id: customThemeId(name, customThemes),
+      name,
+      base,
+      colors: { ...(source?.colors ?? BUILT_IN_THEME_COLORS[base]) },
+    })
+    setThemeMessage('')
+  }
+  const cloneCurrentTheme = () => {
+    if (selectedCustomTheme) {
+      startNewTheme(selectedCustomTheme)
+      return
+    }
+    const base = theme === 'light' || (theme === 'system' && document.documentElement.getAttribute('data-theme') === 'light') ? 'light' : 'dark'
+    startNewTheme({ version: 1, id: 'custom:built-in', name: `${base === 'dark' ? 'Dark' : 'Light'}`, base, colors: { ...BUILT_IN_THEME_COLORS[base] } })
+  }
+  const saveThemeDraft = async () => {
+    if (!themeDraft) return
+    const saved = await saveCustomTheme(themeDraft)
+    if (!saved) {
+      setThemeMessage('Theme could not be saved. Check its name and colors.')
+      return
+    }
+    setThemeDraft(saved)
+    setTheme(saved.id)
+    setThemeMessage('Theme saved.')
+  }
+  const removeSelectedTheme = async () => {
+    if (!selectedCustomTheme || !window.confirm(`Delete ${selectedCustomTheme.name}?`)) return
+    const deleted = await deleteCustomTheme(selectedCustomTheme.id)
+    setThemeDraft(null)
+    setThemeMessage(deleted ? 'Theme deleted.' : 'Theme could not be deleted.')
+  }
+  const importThemeFile = async (file?: File) => {
+    if (!file) return
+    try {
+      const imported = normalizeCustomTheme(JSON.parse(await file.text()))
+      if (!imported) throw new Error('invalid')
+      const saved = await saveCustomTheme(imported)
+      if (!saved) throw new Error('save')
+      setTheme(saved.id)
+      setThemeDraft(saved)
+      setThemeMessage('Theme imported.')
+    } catch {
+      setThemeMessage('Theme import failed. Choose a valid UAM theme JSON file.')
+    }
+  }
+  const exportSelectedTheme = () => {
+    if (!selectedCustomTheme) return
+    const url = URL.createObjectURL(new Blob([`${JSON.stringify(selectedCustomTheme, null, 2)}\n`], { type: 'application/json' }))
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `${selectedCustomTheme.id.slice('custom:'.length)}.json`
+    anchor.click()
+    URL.revokeObjectURL(url)
+    setThemeMessage('Theme exported.')
+  }
   const renderSectionContent = () => {
     if (selectedSection === 'appearance') {
       return (
         <div className="space-y-4">
           <SectionCard
             title="Appearance"
-            description="Choose how Universal Agent Manager looks across the app."
+            description="Choose a built-in theme or create a validated custom palette."
           >
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <div className="text-sm" style={{ color: 'var(--text)' }}>
-                  Theme
-                </div>
-                <div className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>
-                  {theme === 'system' ? 'System theme' : theme === 'dark' ? 'Dark mode' : 'Light mode'} active
-                </div>
+            <div className="grid gap-4">
+              <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                <span>Theme</span>
+                <select
+                  aria-label="Theme"
+                  value={theme}
+                  onChange={(event) => {
+                    setThemeDraft(null)
+                    setTheme(event.target.value as StoredTheme)
+                    setThemeMessage('')
+                  }}
+                  className="w-full px-3 py-2"
+                  style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface)', color: 'var(--text)' }}
+                >
+                  <option value="dark">Dark</option>
+                  <option value="light">Light</option>
+                  <option value="system">System</option>
+                  {customThemes.map((customTheme) => <option key={customTheme.id} value={customTheme.id}>{customTheme.name}</option>)}
+                </select>
+              </label>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" onClick={() => startNewTheme()}>Create</Button>
+                <Button size="sm" onClick={cloneCurrentTheme}>Clone</Button>
+                <Button size="sm" disabled={!selectedCustomTheme} onClick={() => setThemeDraft(selectedCustomTheme ? { ...selectedCustomTheme, colors: { ...selectedCustomTheme.colors } } : null)}>Edit</Button>
+                <Button size="sm" disabled={!selectedCustomTheme} onClick={() => void removeSelectedTheme()}>Delete</Button>
+                <Button size="sm" onClick={() => themeImportRef.current?.click()}>Import JSON</Button>
+                <Button size="sm" disabled={!selectedCustomTheme} onClick={exportSelectedTheme}>Export JSON</Button>
+                <input
+                  ref={themeImportRef}
+                  type="file"
+                  accept="application/json,.json"
+                  className="hidden"
+                  aria-label="Import theme JSON"
+                  onChange={(event) => {
+                    const file = event.currentTarget.files?.[0]
+                    event.currentTarget.value = ''
+                    void importThemeFile(file)
+                  }}
+                />
               </div>
-              <ThemeToggle />
+              {themeDraft && (
+                <div className="grid gap-4 rounded-lg p-3" style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                      <span>Name</span>
+                      <input
+                        aria-label="Theme name"
+                        value={themeDraft.name}
+                        maxLength={64}
+                        onChange={(event) => setThemeDraft({ ...themeDraft, name: event.target.value })}
+                        className="px-2 py-1.5"
+                        style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)' }}
+                      />
+                    </label>
+                    <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                      <span>Base</span>
+                      <select
+                        aria-label="Theme base"
+                        value={themeDraft.base}
+                        onChange={(event) => setThemeDraft({ ...themeDraft, base: event.target.value as 'dark' | 'light' })}
+                        className="px-2 py-1.5"
+                        style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)' }}
+                      >
+                        <option value="dark">Dark</option>
+                        <option value="light">Light</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                    {THEME_COLOR_FIELDS.map(({ key, label }) => (
+                      <label key={key} className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs" style={{ border: '1px solid var(--border)', color: 'var(--text-2)' }}>
+                        <span>{label}</span>
+                        <input
+                          type="color"
+                          aria-label={`${label} color`}
+                          value={themeDraft.colors[key]}
+                          onChange={(event) => setThemeDraft({ ...themeDraft, colors: { ...themeDraft.colors, [key]: event.target.value } })}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="primary" disabled={!themeDraft.name.trim()} onClick={() => void saveThemeDraft()}>Save theme</Button>
+                    <Button size="sm" onClick={() => setThemeDraft(null)}>Cancel preview</Button>
+                  </div>
+                </div>
+              )}
+              {themeMessage && <div role="status" className="text-xs" style={{ color: themeMessage.includes('failed') || themeMessage.includes('could not') ? 'var(--red)' : 'var(--text-2)' }}>{themeMessage}</div>}
             </div>
           </SectionCard>
         </div>
@@ -965,6 +1149,30 @@ export function SettingsModal() {
                 </label>
               </div>
             </div>
+          </SectionCard>
+
+          <SectionCard
+            title="Goal Loop Safety"
+            description="Stop runaway goal loops after a fixed number of review cycles."
+          >
+            <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+              Maximum iterations
+              <input
+                type="number"
+                min={0}
+                step={1}
+                value={goalMaxLoopIterations}
+                onChange={(event) => void setMemorySettings({ goalMaxLoopIterations: Number(event.currentTarget.value) })}
+                style={{
+                  background: 'var(--surface)',
+                  color: 'var(--text)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 8,
+                  padding: '8px 10px',
+                }}
+              />
+              <span style={{ color: 'var(--text-3)' }}>Set to 0 for unlimited iterations.</span>
+            </label>
           </SectionCard>
 
           <SectionCard
@@ -1419,9 +1627,22 @@ export function SettingsModal() {
             </div>
             <div className="flex justify-between gap-3">
               <span style={{ color: 'var(--text-3)' }}>Version</span>
-              <span style={{ color: 'var(--text)' }}>V4.1.0</span>
+              <span style={{ color: 'var(--text)' }}>{appVersion}</span>
             </div>
           </div>
+        </SectionCard>
+        <SectionCard
+          title="Update checks"
+          description="Check UAM releases and installed provider CLIs at most once every 24 hours."
+        >
+          <label className="flex cursor-pointer items-center justify-between gap-4 text-sm" style={{ color: 'var(--text)' }}>
+            <span>Automatically check for updates</span>
+            <input
+              type="checkbox"
+              checked={updateChecksEnabled}
+              onChange={(event) => { void setUpdateSettings({ updateChecksEnabled: event.target.checked }) }}
+            />
+          </label>
         </SectionCard>
       </div>
     )

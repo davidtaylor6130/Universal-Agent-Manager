@@ -9,6 +9,7 @@ export interface Goal {
   tokensUsed?: number
   blockedTurnCount?: number
   lastBlocker?: string
+  lastDiagnostic?: string
   completedItems?: string[]
   remainingItems?: string[]
   currentStep?: string

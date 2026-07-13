@@ -82,6 +82,8 @@ import { createSessionsSlice } from './slices/sessionsSlice'
 import { createFoldersSlice } from './slices/foldersSlice'
 import { createGoalsSlice } from './slices/goalsSlice'
 import { createUiSlice } from './slices/uiSlice'
+import { createResourceCollectionsSlice } from './slices/resourceCollectionsSlice'
+import type { ResourceCollection } from '../types/resourceCollection'
 
 import type { AppState } from './storeTypes'
 export type { AppState }
@@ -105,6 +107,7 @@ function deserializeState(
   existing: {
     sessions: Session[]
     folders: Folder[]
+    resourceCollections: ResourceCollection[]
     messages: Record<string, Message[]>
     providers: Provider[]
     activeSessionId: string | null
@@ -115,6 +118,11 @@ function deserializeState(
     memoryEnabledDefault: boolean
     memoryIdleDelaySeconds: number
     memoryRecallBudgetBytes: number
+    goalMaxLoopIterations: number
+    appVersion: string
+    updateChecksEnabled: boolean
+    updateLastCheckedAt: string
+    dismissedUpdateVersions: Record<string, string>
     memoryLastStatus: string
     memoryWorkerBindings: Record<string, MemoryWorkerBinding>
     memoryActivity: MemoryActivity
@@ -242,6 +250,7 @@ function deserializeState(
         tokensUsed: cppGoal.tokensUsed,
         blockedTurnCount: cppGoal.blockedTurnCount,
         lastBlocker: cppGoal.lastBlocker,
+        lastDiagnostic: cppGoal.lastDiagnostic,
         completedItems: cppGoal.completedItems,
         remainingItems: cppGoal.remainingItems,
         currentStep: cppGoal.currentStep,
@@ -258,6 +267,7 @@ function deserializeState(
 
   return {
     folders,
+    resourceCollections: cpp.resourceCollections ?? existing.resourceCollections,
     sessions: sessionsWithPendingCodexOptions,
     messages,
     goalsByChatId,
@@ -273,6 +283,11 @@ function deserializeState(
     memoryEnabledDefault: cpp.settings.memoryEnabledDefault,
     memoryIdleDelaySeconds: cpp.settings.memoryIdleDelaySeconds,
     memoryRecallBudgetBytes: cpp.settings.memoryRecallBudgetBytes,
+    goalMaxLoopIterations: cpp.settings.goalMaxLoopIterations,
+    appVersion: cpp.appVersion || existing.appVersion,
+    updateChecksEnabled: cpp.settings.updateChecksEnabled,
+    updateLastCheckedAt: cpp.settings.updateLastCheckedAt,
+    dismissedUpdateVersions: cpp.settings.dismissedUpdateVersions,
     memoryLastStatus: cpp.settings.memoryLastStatus,
     memoryWorkerBindings: cpp.settings.memoryWorkerBindings,
     memoryActivity: cpp.memoryActivity ?? sanitizeMemoryActivity(undefined, cpp.settings.memoryLastStatus),
@@ -299,6 +314,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
   const folders = patch.folders
     ? patch.folders.map((folder) => folderFromCppFolder(folder, existingFoldersById[folder.id]))
     : current.folders
+  const resourceCollections = patch.resourceCollections ?? current.resourceCollections
 
   const providers = patch.providers
     ? patch.providers.map((provider) => providerFromCppProvider(provider, existingProvidersById[provider.id]))
@@ -375,6 +391,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
         tokensUsed: cppGoal.tokensUsed,
         blockedTurnCount: cppGoal.blockedTurnCount,
         lastBlocker: cppGoal.lastBlocker,
+        lastDiagnostic: cppGoal.lastDiagnostic,
         completedItems: cppGoal.completedItems,
         remainingItems: cppGoal.remainingItems,
         currentStep: cppGoal.currentStep,
@@ -401,6 +418,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
 
   return {
     folders,
+    resourceCollections,
     sessions: sessionsWithPendingCodexOptions,
     messages: sameRecordEntries(current.messages, messages) ? current.messages : messages,
     goalsByChatId,
@@ -415,6 +433,10 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     memoryEnabledDefault: patch.settings?.memoryEnabledDefault ?? current.memoryEnabledDefault,
     memoryIdleDelaySeconds: patch.settings?.memoryIdleDelaySeconds ?? current.memoryIdleDelaySeconds,
     memoryRecallBudgetBytes: patch.settings?.memoryRecallBudgetBytes ?? current.memoryRecallBudgetBytes,
+    goalMaxLoopIterations: patch.settings?.goalMaxLoopIterations ?? current.goalMaxLoopIterations,
+    updateChecksEnabled: patch.settings?.updateChecksEnabled ?? current.updateChecksEnabled,
+    updateLastCheckedAt: patch.settings?.updateLastCheckedAt ?? current.updateLastCheckedAt,
+    dismissedUpdateVersions: patch.settings?.dismissedUpdateVersions ?? current.dismissedUpdateVersions,
     memoryLastStatus: patch.settings?.memoryLastStatus ?? current.memoryLastStatus,
     memoryWorkerBindings: patch.settings?.memoryWorkerBindings ?? current.memoryWorkerBindings,
     memoryActivity: patch.memoryActivity ?? current.memoryActivity,
@@ -486,7 +508,7 @@ export const useAppStore = create<AppState>((set, get) => {
 
         if (lastMessage?.role === 'assistant' && !lastMessage.isStreaming) continue
 
-        if (!lastMessage || lastMessage.role !== 'assistant' || !lastMessage.isStreaming) {
+        if (!lastMessage || lastMessage.role !== 'assistant') {
           const placeholder: Message = {
             id: `stream-${chatId}-${Date.now()}`,
             sessionId: chatId,
@@ -542,6 +564,7 @@ export const useAppStore = create<AppState>((set, get) => {
           const deserialized = deserializeState(sanitized, {
             sessions: current.sessions,
             folders: current.folders,
+            resourceCollections: current.resourceCollections,
             messages: current.messages,
             providers: current.providers,
             activeSessionId: current.activeSessionId,
@@ -552,6 +575,11 @@ export const useAppStore = create<AppState>((set, get) => {
             memoryEnabledDefault: current.memoryEnabledDefault,
             memoryIdleDelaySeconds: current.memoryIdleDelaySeconds,
             memoryRecallBudgetBytes: current.memoryRecallBudgetBytes,
+            goalMaxLoopIterations: current.goalMaxLoopIterations,
+            appVersion: current.appVersion,
+            updateChecksEnabled: current.updateChecksEnabled,
+            updateLastCheckedAt: current.updateLastCheckedAt,
+            dismissedUpdateVersions: current.dismissedUpdateVersions,
             memoryLastStatus: current.memoryLastStatus,
             memoryWorkerBindings: current.memoryWorkerBindings,
             memoryActivity: current.memoryActivity,
@@ -567,7 +595,7 @@ export const useAppStore = create<AppState>((set, get) => {
           set(deserialized)
           // Sync theme to DOM
           if (deserialized.theme) {
-            persistTheme(deserialized.theme)
+            persistTheme(deserialized.theme, get().customThemes)
           }
         }
       }
@@ -629,7 +657,7 @@ export const useAppStore = create<AppState>((set, get) => {
             if (next) {
               set(next)
               if (next.theme) {
-                persistTheme(next.theme)
+                persistTheme(next.theme, get().customThemes)
               }
             }
           }
@@ -719,6 +747,9 @@ export const useAppStore = create<AppState>((set, get) => {
             }
           }
           break
+        case 'dictation':
+          window.dispatchEvent(new CustomEvent('uam-dictation', { detail: msg }))
+          break
         }
       }
     }
@@ -728,6 +759,7 @@ export const useAppStore = create<AppState>((set, get) => {
   return {
     ...createSessionsSlice(set, get, inCef),
     ...createFoldersSlice(set, get),
+    ...createResourceCollectionsSlice(set, get),
     ...createGoalsSlice(set, get),
     ...createUiSlice(set, get, inCef),
 
@@ -742,6 +774,7 @@ export const useAppStore = create<AppState>((set, get) => {
       const deserialized = deserializeState(sanitized, {
         sessions: current.sessions,
         folders: current.folders,
+        resourceCollections: current.resourceCollections,
         messages: current.messages,
         providers: current.providers,
         activeSessionId: current.activeSessionId,
@@ -752,6 +785,11 @@ export const useAppStore = create<AppState>((set, get) => {
         memoryEnabledDefault: current.memoryEnabledDefault,
         memoryIdleDelaySeconds: current.memoryIdleDelaySeconds,
         memoryRecallBudgetBytes: current.memoryRecallBudgetBytes,
+        goalMaxLoopIterations: current.goalMaxLoopIterations,
+        appVersion: current.appVersion,
+        updateChecksEnabled: current.updateChecksEnabled,
+        updateLastCheckedAt: current.updateLastCheckedAt,
+        dismissedUpdateVersions: current.dismissedUpdateVersions,
         memoryLastStatus: current.memoryLastStatus,
         memoryWorkerBindings: current.memoryWorkerBindings,
         memoryActivity: current.memoryActivity,
@@ -766,7 +804,7 @@ export const useAppStore = create<AppState>((set, get) => {
       })
       set(deserialized)
       if (deserialized.theme) {
-        persistTheme(deserialized.theme)
+        persistTheme(deserialized.theme, get().customThemes)
       }
     },
   }

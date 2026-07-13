@@ -1448,6 +1448,7 @@ void MemoryService::StopMemoryTasks(uam::AppState& app)
 	for (uam::AsyncMemoryExtractionTask& task : app.memory_extraction_tasks)
 	{
 		uam::StopAsyncMemoryExtractionWorker(task);
+		RemoveNewMemoryWorkerNativeHistoryFiles(task);
 		task.state.reset();
 	}
 	app.memory_extraction_tasks.clear();

@@ -158,7 +158,15 @@ void UamQueryHandler::HandleStopCli(CefRefPtr<CefBrowser> browser, const nlohman
 	}
 
 	term->ui_attached = false;
-	uam::LogCliDiagnosticEvent(m_app, "handle_stop_cli", "ui_detached", term);
+	if (payload.value("quit", false) && term->running)
+	{
+		uam::BeginCliTerminalIdleShutdown(*term);
+		uam::LogCliDiagnosticEvent(m_app, "handle_stop_cli", "quit_requested", term);
+	}
+	else
+	{
+		uam::LogCliDiagnosticEvent(m_app, "handle_stop_cli", "ui_detached", term);
+	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
@@ -208,4 +216,3 @@ void UamQueryHandler::HandleWriteCliInput(CefRefPtr<CefBrowser> browser, const n
 
 	cb->Success("{}");
 }
-

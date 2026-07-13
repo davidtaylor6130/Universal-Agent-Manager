@@ -8,6 +8,7 @@ IPlatformTerminalRuntime& GetWindowsTerminalRuntime();
 IPlatformProcessService& GetWindowsProcessService();
 IPlatformFileDialogService& GetWindowsFileDialogService();
 IPlatformPathService& GetWindowsPathService();
+IPlatformDictationService& GetWindowsDictationService();
 } // namespace uam::platform_windows_impl
 
 PlatformServices& CreatePlatformServices()
@@ -17,6 +18,7 @@ PlatformServices& CreatePlatformServices()
 	    uam::platform_windows_impl::GetWindowsProcessService(),
 	    uam::platform_windows_impl::GetWindowsFileDialogService(),
 	    uam::platform_windows_impl::GetWindowsPathService(),
+	    uam::platform_windows_impl::GetWindowsDictationService(),
 	};
 	return services;
 }

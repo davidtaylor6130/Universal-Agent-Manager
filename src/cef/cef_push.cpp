@@ -27,6 +27,7 @@ namespace
 	constexpr const char* kPushTypeStreamToken = "streamToken";
 	constexpr const char* kPushTypeStreamDone = "streamDone";
 	constexpr const char* kPushTypeCliOutput = "cliOutput";
+	constexpr const char* kPushTypeDictation = "dictation";
 	constexpr long long kStatePatchSlowSerializationMs = 8;
 	constexpr std::size_t kStatePatchLargeMessageBytes = 64 * 1024;
 	// While a turn streams, the selected chat's messagesDigest changes on nearly
@@ -510,6 +511,30 @@ namespace uam
 		msg["sourceChatId"] = source_chat_id;
 		msg["terminalId"] = terminal_id;
 		msg["data"] = uam::base64::Encode(raw_bytes);
+		PostPush(browser, msg.dump());
+	}
+
+	void PushDictationEvent(CefRefPtr<CefBrowser> browser, const DictationEvent& event)
+	{
+		nlohmann::json msg = PushMessage(kPushTypeDictation);
+		switch (event.type)
+		{
+			case DictationEventType::Interim:
+				msg["event"] = "interim";
+				msg["text"] = event.text;
+				break;
+			case DictationEventType::Final:
+				msg["event"] = "final";
+				msg["text"] = event.text;
+				break;
+			case DictationEventType::Error:
+				msg["event"] = "error";
+				msg["message"] = event.text;
+				break;
+			case DictationEventType::End:
+				msg["event"] = "end";
+				break;
+		}
 		PostPush(browser, msg.dump());
 	}
 

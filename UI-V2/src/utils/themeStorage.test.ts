@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
-import { applyDocumentTheme, readStoredTheme, resolveDocumentTheme, writeStoredTheme } from './themeStorage'
+import {
+  applyDocumentTheme,
+  normalizeCustomTheme,
+  readStoredTheme,
+  resolveDocumentTheme,
+  writeStoredTheme,
+} from './themeStorage'
 
 describe('themeStorage', () => {
   it('returns null when localStorage reads throw', () => {
@@ -49,5 +55,27 @@ describe('themeStorage', () => {
       configurable: true,
       value: originalMatchMedia,
     })
+  })
+
+  it('validates and applies every custom theme color', () => {
+    const theme = normalizeCustomTheme({
+      version: 1,
+      id: 'custom:ocean',
+      name: 'Ocean',
+      base: 'dark',
+      colors: {
+        background: '#101820', surface: '#17212B', surfaceUp: '#22303c', text: '#f1f5f9',
+        textMuted: '#94a3b8', accent: '#38bdf8', sidebar: '#0b1219', userMessage: '#173047',
+        assistantMessage: '#17212b', success: '#22c55e', warning: '#f59e0b', error: '#ef4444',
+      },
+    })
+
+    expect(theme?.colors.surface).toBe('#17212b')
+    applyDocumentTheme('custom:ocean', theme ? [theme] : [])
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+    expect(document.documentElement.style.getPropertyValue('--bg')).toBe('#101820')
+    expect(document.documentElement.style.getPropertyValue('--message-user-bg')).toBe('#173047')
+    expect(document.documentElement.style.getPropertyValue('--accent-dim')).toContain('#38bdf8')
+    expect(normalizeCustomTheme({ ...theme, colors: { ...theme?.colors, accent: 'blue' } })).toBeNull()
   })
 })

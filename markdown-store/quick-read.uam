@@ -2,14 +2,14 @@
 uamVersion: 1
 title: obsidian-quick-read
 maker: DavidTaylor6130
-review: Fast note reading and searching in Obsidian vault. Returns only useful info or "nothing found" — no filler. Uses subagent for the actual search/read work. Vault: /Volumes/Obsidian_Vault/David's 2nd Brain Vault/ Use when the user says "read this", "what do I have on [topic]", "find notes about". For 
+review: Fast note reading and searching in Obsidian vault. Returns only useful info or "nothing found" — no filler. Uses subagent for the actual search/read work. Vault: $VAULT_PATH/. Use when the user says "read this", "what do I have on [topic]", or "find notes about".
 dateCreated: 2026-07-07T22:33:13Z
 dateUpdated: 2026-07-07T22:33:13Z
 ---
 
 # Quick Read — Fast Note Reading via Subagent
 
-Vault: `/Volumes/Obsidian_Vault/David's 2nd Brain Vault/`
+Vault: `$VAULT_PATH/`
 
 ## Your Role
 

@@ -167,6 +167,7 @@ bool PollPendingRuntimeCall(uam::AppState& app)
 				selected_chat->parent_chat_id = pending_chat_snapshot.parent_chat_id;
 				selected_chat->branch_root_chat_id = pending_chat_snapshot.branch_root_chat_id;
 				selected_chat->branch_from_message_index = pending_chat_snapshot.branch_from_message_index;
+				selected_chat->branch_message_edited = pending_chat_snapshot.branch_message_edited;
 
 				if (!pending_chat_snapshot.folder_id.empty())
 				{

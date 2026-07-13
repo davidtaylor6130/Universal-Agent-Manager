@@ -416,23 +416,12 @@ class MacProcessService final : public IPlatformProcessService
 			return false;
 		}
 
-		std::string escaped_path;
-		for (char c : working_directory.generic_string())
-		{
-			if (c == ' ' || c == '\'' || c == '"' || c == '\\' || c == '$')
-			{
-				escaped_path += '\\';
-			}
-			escaped_path += c;
-		}
-
-		std::string command = "open -a Terminal --args --cd-path '" + escaped_path + "' &";
-		int result = std::system(command.c_str());
-		if (result != 0)
+		std::string launch_error;
+		if (!RunProgramAndWait({"/usr/bin/open", "-n", "-a", "Terminal", working_directory.string()}, &launch_error))
 		{
 			if (error_out != nullptr)
 			{
-				*error_out = "Failed to launch terminal.";
+				*error_out = ErrorWithOptionalDetail("Failed to launch terminal.", launch_error);
 			}
 			return false;
 		}

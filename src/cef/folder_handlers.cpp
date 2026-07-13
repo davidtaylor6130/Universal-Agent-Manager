@@ -10,6 +10,9 @@
 
 #include <nlohmann/json.hpp>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // Folder handlers (create, rename, delete, toggle, browse)
@@ -133,3 +136,50 @@ void UamQueryHandler::HandleBrowseFolderDirectory(CefRefPtr<CefBrowser> /*browse
 	cb->Success(result.dump());
 }
 
+void UamQueryHandler::HandleReorderFolders(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const nlohmann::json* ordered_ids = uam::nlohmann_json::FindArrayField(payload, "folderIds");
+	if (ordered_ids == nullptr)
+	{
+		cb->Failure(400, "folderIds must be an array.");
+		return;
+	}
+
+	std::unordered_map<std::string, ChatFolder> folders_by_id;
+	for (const ChatFolder& folder : m_app.folders)
+	{
+		folders_by_id.emplace(folder.id, folder);
+	}
+	std::unordered_set<std::string> added;
+	std::vector<ChatFolder> reordered;
+	reordered.reserve(m_app.folders.size());
+	for (const nlohmann::json& value : *ordered_ids)
+	{
+		if (!value.is_string())
+		{
+			continue;
+		}
+		const std::string id = uam::strings::Trim(value.get<std::string>());
+		const auto folder = folders_by_id.find(id);
+		if (folder != folders_by_id.end() && added.insert(id).second)
+		{
+			reordered.push_back(folder->second);
+		}
+	}
+	for (const ChatFolder& folder : m_app.folders)
+	{
+		if (added.insert(folder.id).second)
+		{
+			reordered.push_back(folder);
+		}
+	}
+
+	if (!ChatFolderStore::Save(m_app.data_root, reordered))
+	{
+		cb->Failure(500, "Failed to persist folder order.");
+		return;
+	}
+	m_app.folders = std::move(reordered);
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}

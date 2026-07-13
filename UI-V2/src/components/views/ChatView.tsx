@@ -1,4 +1,4 @@
-import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, ReactNode, RefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, RefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
 import { Session } from '../../types/session'
@@ -15,6 +15,7 @@ import {
   type AcpTurnEvent,
   type AcpUserInputAnswers,
   type ChatAttachmentInput,
+  type DictationPushMessage,
 } from '../../store/useAppStore'
 import type { Attachment, Message, MessageBlock } from '../../types/message'
 import type { Provider } from '../../types/provider'
@@ -54,7 +55,6 @@ import {
   statusLabel,
   toolDisplayKind,
   toolDisplayTitle,
-  toolStatusColor,
 } from '../chat/StatusHelpers'
 import {
   isCancelPermissionOption,
@@ -80,10 +80,13 @@ import {
   type ComposerIconName,
   ComposerIcon,
   ComposerToolbar,
+  permissionModeIcon,
+  type DictationState,
 } from '../chat/Composer'
-import { Brain, BookOpen, Check, ChevronDown, ClipboardList, Cpu, FileText, Paperclip, Shield, ShieldCheck, Sparkles, SquarePen, Target } from 'lucide-react'
+import { Brain, BookOpen, Check, ChevronDown, Cpu, FileText, Paperclip, Shield, Target } from 'lucide-react'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { Button, IconButton } from '../ui'
+import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
 
 interface ChatViewProps {
   session: Session
@@ -102,19 +105,7 @@ interface SelectedToolCallRef {
 const PLAN_APPROVE_PROMPT = 'Proceed with the plan.'
 const PLAN_DENY_PROMPT = 'Do not proceed with this plan. Please revise it before making changes.'
 
-function permissionModeIcon(id: string): ReactNode {
-  if (id === 'auto') return <Sparkles size={15} />
-  if (id === 'plan') return <ClipboardList size={15} />
-  if (id === 'acceptEdits') return <SquarePen size={15} />
-  return <ShieldCheck size={15} />
-}
-
 type LocalAttachmentStatus = 'ready' | 'staging' | 'failed'
-interface LocalAttachment extends Attachment {
-  status: LocalAttachmentStatus
-  error?: string
-}
-
 interface LocalAttachment extends Attachment {
   status: LocalAttachmentStatus
   error?: string
@@ -138,6 +129,9 @@ function readFileBase64(file: File): Promise<string> {
   })
 }
 
+function joinedDictationText(base: string, finalText: string, interimText: string) {
+  return [base.trimEnd(), finalText.trim(), interimText.trim()].filter(Boolean).join(' ')
+}
 
 function fileUriToPath(uri: string): string {
   if (!uri.startsWith('file://')) return uri
@@ -151,6 +145,8 @@ function fileUriToPath(uri: string): string {
 export function ChatView({ session, accentColor }: ChatViewProps) {
   const [draft, setDraft] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [dictationState, setDictationState] = useState<DictationState>('idle')
+  const [dictationError, setDictationError] = useState('')
   const [selectedToolCallRef, setSelectedToolCallRef] = useState<SelectedToolCallRef | null>(null)
   const [providerOpen, setProviderOpen] = useState(false)
   const [modelOpen, setModelOpen] = useState(false)
@@ -169,15 +165,21 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false)
   const [composerAttachments, setComposerAttachments] = useState<LocalAttachment[]>([])
   const [attachmentError, setAttachmentError] = useState('')
+  const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null)
+  const [editingMessageText, setEditingMessageText] = useState('')
+  const [branchingMessageIndex, setBranchingMessageIndex] = useState<number | null>(null)
+  const [messageBranchError, setMessageBranchError] = useState('')
   const [renderedMessageCount, setRenderedMessageCount] = useState(INITIAL_RENDERED_MESSAGES)
   const messages = useAppStore(useShallow((s) => s.messages[session.id] ?? []))
   const folderDirectory = useAppStore((s) =>
     session.folderId ? s.folders.find((folder) => folder.id === session.folderId)?.directory ?? '' : ''
   )
   const acp = useAppStore((s) => s.acpBindingBySessionId[session.id])
+  const cli = useAppStore((s) => s.cliBindingBySessionId[session.id])
   const providers = useAppStore((s) => s.providers)
   const stageChatAttachments = useAppStore((s) => s.stageChatAttachments)
   const sendAcpPrompt = useAppStore((s) => s.sendAcpPrompt)
+  const branchFromMessage = useAppStore((s) => s.branchFromMessage)
   const cancelAcpTurn = useAppStore((s) => s.cancelAcpTurn)
   const stopAcpSession = useAppStore((s) => s.stopAcpSession)
   const resolveAcpPermission = useAppStore((s) => s.resolveAcpPermission)
@@ -219,6 +221,13 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   const reasoningMenuRef = useRef<HTMLDivElement>(null)
   const speedMenuRef = useRef<HTMLDivElement>(null)
   const settingsMenuRef = useRef<HTMLDivElement>(null)
+  const dictationActiveRef = useRef(false)
+  const dictationBaseDraftRef = useRef('')
+  const dictationFinalTextRef = useRef('')
+  const dictationInterimTextRef = useRef('')
+  const dictationHadErrorRef = useRef(false)
+  const dictationSubmittedRef = useRef(false)
+  const submitDictatedPromptRef = useRef<(prompt: string) => void>(() => {})
 
   const selectedToolCall = useMemo(
     () => {
@@ -299,6 +308,10 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
     setGoalArmNextMessage(false)
     setSlashMessage('')
     setPermissionMenuOpen(false)
+    setEditingMessageIndex(null)
+    setEditingMessageText('')
+    setBranchingMessageIndex(null)
+    setMessageBranchError('')
     setRenderedMessageCount(INITIAL_RENDERED_MESSAGES)
   }, [session.id])
 
@@ -502,10 +515,10 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
     return true
   }
 
-  const submit = async (event?: FormEvent) => {
+  const submit = async (event?: FormEvent, promptOverride?: string) => {
     event?.preventDefault()
-    if (!canSend) return
-    const prompt = draft.trim()
+    const prompt = (promptOverride ?? draft).trim()
+    if (!providerSupported || !prompt || submitting || goalSubmitting || composerAttachments.some((attachment) => attachment.status !== 'ready')) return
 
     // Handle /goal command
     if (prompt.startsWith('/goal ')) {
@@ -627,11 +640,111 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   const unsupportedProviderMessage = providerSupported
     ? ''
     : `${currentProviderName} is not supported in this build. Switch this chat to Gemini CLI to continue.`
-  const canChangeProvider = messages.length === 0 && !acp?.running && !acp?.processing
+  const canChangeProvider = !acp?.processing && !(acp?.queuedPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy'
+  const createMessageBranch = async (messageIndex: number, content?: string) => {
+    setBranchingMessageIndex(messageIndex)
+    setMessageBranchError('')
+    const branchId = await branchFromMessage(session.id, messageIndex, content)
+    setBranchingMessageIndex(null)
+    if (!branchId) {
+      setMessageBranchError('Could not create the message branch. Wait for the current turn to finish and try again.')
+      return
+    }
+    setEditingMessageIndex(null)
+    setEditingMessageText('')
+  }
+  const dictationActive = dictationState !== 'idle'
   const canSend = useMemo(
-    () => providerSupported && draft.trim().length > 0 && !submitting && !goalSubmitting && !acp?.processing && !composerAttachments.some((attachment) => attachment.status !== 'ready'),
-    [providerSupported, draft, submitting, goalSubmitting, acp?.processing, composerAttachments]
+    () => providerSupported && draft.trim().length > 0 && !submitting && !goalSubmitting && !dictationActive && !composerAttachments.some((attachment) => attachment.status !== 'ready'),
+    [providerSupported, draft, submitting, goalSubmitting, dictationActive, composerAttachments]
   )
+  const dictationAvailable = isCefContext()
+
+  submitDictatedPromptRef.current = (prompt) => {
+    void submit(undefined, prompt)
+  }
+
+  const startDictation = async () => {
+    if (!dictationAvailable || dictationActiveRef.current) return
+    dictationActiveRef.current = true
+    dictationBaseDraftRef.current = draft
+    dictationFinalTextRef.current = ''
+    dictationInterimTextRef.current = ''
+    dictationHadErrorRef.current = false
+    dictationSubmittedRef.current = false
+    setDictationError('')
+    setDictationState('starting')
+
+    const response = await sendToCEF<{ started: boolean }>({
+      action: 'startDictation',
+      payload: { locale: navigator.language || '' },
+    })
+    if (!dictationActiveRef.current) return
+    if (!response.ok) {
+      dictationActiveRef.current = false
+      setDictationState('idle')
+      setDictationError(response.error || 'Failed to start dictation.')
+      return
+    }
+    setDictationState('listening')
+  }
+
+  const stopDictation = async () => {
+    if (!dictationActiveRef.current) return
+    setDictationState('stopping')
+    const response = await sendToCEF<{ stopped: boolean }>({ action: 'stopDictation' })
+    if (!response.ok && dictationActiveRef.current) {
+      setDictationState('listening')
+      setDictationError(response.error || 'Failed to stop dictation.')
+    }
+  }
+
+  useEffect(() => {
+    const onDictation = (event: Event) => {
+      const message = (event as CustomEvent<DictationPushMessage>).detail
+      if (!dictationActiveRef.current || !message || message.type !== 'dictation') return
+
+      if (message.event === 'interim') {
+        dictationInterimTextRef.current = message.text
+        setDraft(joinedDictationText(dictationBaseDraftRef.current, dictationFinalTextRef.current, message.text))
+        return
+      }
+      if (message.event === 'final') {
+        dictationFinalTextRef.current = joinedDictationText(dictationFinalTextRef.current, message.text, '')
+        dictationInterimTextRef.current = ''
+        setDraft(joinedDictationText(dictationBaseDraftRef.current, dictationFinalTextRef.current, ''))
+        return
+      }
+      if (message.event === 'error') {
+        dictationHadErrorRef.current = true
+        setDictationError(message.message || 'Dictation failed.')
+        setDictationState('stopping')
+        return
+      }
+
+      const prompt = joinedDictationText(
+        dictationBaseDraftRef.current,
+        dictationFinalTextRef.current,
+        dictationInterimTextRef.current
+      )
+      dictationActiveRef.current = false
+      setDictationState('idle')
+      setDraft(prompt)
+      if (!dictationHadErrorRef.current && !dictationSubmittedRef.current && prompt.trim()) {
+        dictationSubmittedRef.current = true
+        submitDictatedPromptRef.current(prompt)
+      }
+    }
+
+    window.addEventListener('uam-dictation', onDictation)
+    return () => {
+      window.removeEventListener('uam-dictation', onDictation)
+      if (dictationActiveRef.current) {
+        dictationActiveRef.current = false
+        void sendToCEF({ action: 'stopDictation' })
+      }
+    }
+  }, [session.id])
   const currentModelId = acp?.currentModelId || session.modelId || ''
   const currentModeId = acp?.currentModeId || session.approvalMode || 'default'
   const permissionModes = useMemo(() => {
@@ -785,7 +898,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
           id: `permission:${mode.id}`,
           label: mode.name,
           hint: `${mode.id === selectedPermissionModeId ? 'Current · ' : ''}${mode.description || `Use ${mode.name} permission mode`}`,
-          icon: permissionModeIcon(mode.id),
+          icon: permissionModeIcon(mode.id, 15),
           run: () => void runPermissionCommand(mode.id),
         }))
     : slashQuery !== null
@@ -924,13 +1037,63 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                 const index = earliestRenderedMessageIndex + visibleIndex
                 const shouldRenderTimelineAtAssistant = renderTimelineAtAssistant && index === turnAssistantMessageIndex
                 const shouldSkipAssistantMessage = renderTimelineAfterUser && index === turnAssistantMessageIndex
+                const isUserMessage = message.role === 'user'
+                const isEditingMessage = editingMessageIndex === index
+                const isBranchPoint = session.branchFromMessageIndex === index
+                const branchLabel = isBranchPoint
+                  ? session.branchMessageEdited ? 'Edited branch' : 'Reverted branch'
+                  : undefined
 
                 if (shouldSkipAssistantMessage) return null
 
                 return (
                   <div key={message.id} className="space-y-2">
-                    <MessageFrame role={message.role} assistantLabel={currentProviderName} copyText={message.content}>
-                      {shouldRenderTimelineAtAssistant ? (
+                    <MessageFrame
+                      role={message.role}
+                      assistantLabel={currentProviderName}
+                      copyText={message.content}
+                      branchLabel={branchLabel}
+                      actionsDisabled={!canChangeProvider || branchingMessageIndex !== null}
+                      onEdit={isUserMessage ? () => {
+                        setEditingMessageIndex(index)
+                        setEditingMessageText(message.content)
+                        setMessageBranchError('')
+                      } : undefined}
+                      onRevert={isUserMessage ? () => void createMessageBranch(index) : undefined}
+                    >
+                      {isEditingMessage ? (
+                        <div className="space-y-2">
+                          <textarea
+                            aria-label="Edit message"
+                            autoFocus
+                            value={editingMessageText}
+                            onChange={(event) => setEditingMessageText(event.target.value)}
+                            rows={Math.max(3, editingMessageText.split('\n').length)}
+                            className="w-full resize-y rounded-md p-2 text-sm"
+                            style={{ border: '1px solid var(--border-bright)', background: 'var(--bg)', color: 'var(--text)' }}
+                          />
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => setEditingMessageIndex(null)}
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="primary"
+                              loading={branchingMessageIndex === index}
+                              disabled={!editingMessageText.trim() || !canChangeProvider}
+                              onClick={() => void createMessageBranch(index, editingMessageText)}
+                            >
+                              Save to new branch
+                            </Button>
+                          </div>
+                        </div>
+                      ) : shouldRenderTimelineAtAssistant ? (
                         <TurnTimelineContent
                           key={`turn-${turnSerial}-assistant`}
                           events={turnEvents}
@@ -993,6 +1156,11 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                   </div>
                 )
               })}
+              {messageBranchError && (
+                <div role="alert" className="text-center text-xs" style={{ color: 'var(--danger)' }}>
+                  {messageBranchError}
+                </div>
+              )}
               {turnEvents.length > 0 && !renderTimelineAfterUser && !renderTimelineAtAssistant && (
                 <MessageFrame key={`turn-${turnSerial}-fallback`} role="assistant" assistantLabel={currentProviderName}>
                   <TurnTimelineContent
@@ -1365,6 +1533,11 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                 overflow: 'visible',
               }}
             >
+            {(acp?.queuedPrompts?.length ?? 0) > 0 && (
+              <div className="px-3 pt-2 text-[11px]" role="status" style={{ color: 'var(--accent)' }}>
+                {acp!.queuedPrompts!.length} {acp!.queuedPrompts!.length === 1 ? 'prompt' : 'prompts'} queued
+              </div>
+            )}
             {(markdownStoreAttachments.length > 0 || composerAttachments.length > 0) && (
               <div className="flex flex-wrap gap-2 px-3 pt-3">
                 {markdownStoreAttachments.map((entry) => (
@@ -1464,6 +1637,17 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                 </div>
               </div>
             )}
+            {(dictationActive || dictationError) && (
+              <div
+                id={`dictation-status-${session.id}`}
+                role={dictationError ? 'alert' : 'status'}
+                aria-live={dictationError ? 'assertive' : 'polite'}
+                className="px-3 pt-2 text-[11px]"
+                style={{ color: dictationError ? 'var(--red)' : 'var(--accent)' }}
+              >
+                {dictationError || (dictationState === 'stopping' ? 'Finishing dictation…' : 'Listening…')}
+              </div>
+            )}
             <textarea
               value={draft}
               onChange={(event) => {
@@ -1474,7 +1658,8 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
               onPaste={onComposerPaste}
               rows={3}
               placeholder={`Message ${currentProviderName}`}
-              disabled={submitting}
+              disabled={submitting || dictationActive}
+              aria-describedby={dictationActive || dictationError ? `dictation-status-${session.id}` : undefined}
               className="w-full resize-none text-sm"
               style={{
                 minHeight: 72,
@@ -1605,6 +1790,12 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
               onStopRuntime={() => void stopAcpSession(session.id)}
               onAttachFile={() => fileInputRef.current?.click()}
               onOpenMarkdownStore={() => void openMarkdownStore()}
+              dictationState={dictationState}
+              dictationAvailable={dictationAvailable}
+              onToggleDictation={() => {
+                if (dictationActiveRef.current) void stopDictation()
+                else void startDictation()
+              }}
             />
             </div>
           </div>

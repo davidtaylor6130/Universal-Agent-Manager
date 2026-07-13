@@ -82,6 +82,7 @@ namespace
 	constexpr std::string_view kChatParentChatIdField = "parent_chat_id";
 	constexpr std::string_view kChatBranchRootChatIdField = "branch_root_chat_id";
 	constexpr std::string_view kChatBranchFromMessageIndexField = "branch_from_message_index";
+	constexpr std::string_view kChatBranchMessageEditedField = "branch_message_edited";
 	constexpr std::string_view kChatFolderIdField = "folder_id";
 	constexpr std::string_view kChatTitleField = "title";
 	constexpr std::string_view kChatCreatedAtField = "created_at";
@@ -587,7 +588,7 @@ namespace
 			return false;
 		}
 
-		return lhs.branch_from_message_index == rhs.branch_from_message_index;
+		return lhs.branch_from_message_index == rhs.branch_from_message_index && lhs.branch_message_edited == rhs.branch_message_edited;
 	}
 
 	bool ChatDisplayFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
@@ -703,6 +704,7 @@ namespace
 		chat.parent_chat_id = JsonStringOrEmpty(root.Find(kChatParentChatIdField));
 		chat.branch_root_chat_id = JsonStringOrEmpty(root.Find(kChatBranchRootChatIdField));
 		chat.branch_from_message_index = IntFieldAtLeastOrDefault(root.Find(kChatBranchFromMessageIndexField), -1, -1);
+		chat.branch_message_edited = JsonBoolOrDefault(root.Find(kChatBranchMessageEditedField), false);
 		chat.folder_id = JsonStringOrEmpty(root.Find(kChatFolderIdField));
 		std::erase_if(chat.folder_id, [](char c) { return static_cast<unsigned char>(c) < 0x20; });
 		chat.title = JsonStringOrEmpty(root.Find(kChatTitleField));
@@ -749,6 +751,7 @@ namespace
 				goal.tokens_used = static_cast<int64_t>(NonNegativeIntFieldOrZero(goal_obj.Find("tokensUsed")));
 				goal.blocked_turn_count = NonNegativeIntFieldOrZero(goal_obj.Find("blockedTurnCount"));
 				goal.last_blocker = JsonStringOrEmpty(goal_obj.Find("lastBlocker"));
+				goal.last_diagnostic = JsonStringOrEmpty(goal_obj.Find("lastDiagnostic"));
 				goal.completed_items = JsonStringArrayOrEmpty(goal_obj.Find("completedItems"));
 				goal.remaining_items = JsonStringArrayOrEmpty(goal_obj.Find("remainingItems"));
 				goal.current_step = JsonStringOrEmpty(goal_obj.Find("currentStep"));
@@ -906,6 +909,7 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 	uam::json::SetString(root, kChatParentChatIdField, chat.parent_chat_id);
 	uam::json::SetString(root, kChatBranchRootChatIdField, chat.branch_root_chat_id);
 	uam::json::SetNumber(root, kChatBranchFromMessageIndexField, static_cast<double>(chat.branch_from_message_index));
+	uam::json::SetBool(root, kChatBranchMessageEditedField, chat.branch_message_edited);
 	{
 		std::string folder_id_sanitized = chat.folder_id;
 		std::erase_if(folder_id_sanitized, [](char c) { return static_cast<unsigned char>(c) < 0x20; });
@@ -970,6 +974,7 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 			uam::json::SetNumber(goal_obj, "tokensUsed", static_cast<double>(goal.tokens_used));
 			uam::json::SetNumber(goal_obj, "blockedTurnCount", static_cast<double>(goal.blocked_turn_count));
 			uam::json::SetString(goal_obj, "lastBlocker", goal.last_blocker);
+			uam::json::SetString(goal_obj, "lastDiagnostic", goal.last_diagnostic);
 			uam::json::SetValue(goal_obj, "completedItems", StringArrayToJson(goal.completed_items));
 			uam::json::SetValue(goal_obj, "remainingItems", StringArrayToJson(goal.remaining_items));
 			uam::json::SetString(goal_obj, "currentStep", goal.current_step);

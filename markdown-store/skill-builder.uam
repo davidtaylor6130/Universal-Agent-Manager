@@ -1,0 +1,78 @@
+---
+uamVersion: 1
+title: skill-builder
+maker: Universal Agent Manager
+review: Create, validate, and package concise SKILL.md-based skills, including MCP tool and resource references.
+dateCreated: 2026-07-13T00:00:00Z
+dateUpdated: 2026-07-13T00:00:00Z
+---
+
+# Skill Builder
+
+Create the smallest valid skill that handles the user's concrete examples.
+
+## Gather requirements
+
+Ask once for any missing essentials:
+
+1. Skill name and what requests should trigger it.
+2. A concise description and two representative user requests.
+3. Available tools, MCP tools, and resource templates it may use.
+4. Output format: preview, skill folder, or packaged archive.
+5. Destination. Default to the active provider's discoverable skills directory.
+6. Tutorial mode. Recommend it for first-time authors.
+
+Proceed with sensible defaults when an answer is optional. Never overwrite an existing skill without confirmation.
+
+## Tutorial mode
+
+Briefly explain before generating:
+
+- `name` and `description` determine discovery and triggering.
+- `SKILL.md` contains the workflow loaded after the skill triggers.
+- Add `scripts/`, `references/`, or `assets/` only when they remove repeated work.
+- Keep instructions imperative, concise, and under 500 lines.
+
+Show this minimal shape:
+
+```text
+skill-name/
+└── SKILL.md
+```
+
+## Build
+
+Normalize the name to lowercase hyphen-case, using only letters, digits, and hyphens, with at most 63 characters. Make the folder name match it.
+
+Generate `SKILL.md` with exactly this frontmatter schema:
+
+```yaml
+---
+name: skill-name
+description: State what the skill does and the requests or contexts that should trigger it.
+---
+```
+
+Put procedural instructions in the body. Keep all triggering guidance in `description`; do not add a redundant "when to use" section. Reuse platform features and existing tools before adding scripts or dependencies.
+
+For MCP support:
+
+- Inspect callable tools and list MCP resources or resource templates when those capabilities are available.
+- Reference only tools, parameter names, resource URIs, and templates that were actually discovered or explicitly supplied by the user.
+- Explain when each reference should be used; never invent an MCP contract.
+- Keep detailed schemas in one-level `references/` files only when needed.
+
+## Validate before saving
+
+Check all of the following:
+
+- The folder and `name` match and obey the naming rules.
+- YAML contains only non-empty `name` and `description` fields.
+- The description covers purpose and triggering contexts.
+- Linked files exist and relative paths resolve from `SKILL.md`.
+- No placeholder, duplicate documentation, or unused resource remains.
+- No unavailable tool or fabricated MCP reference is named.
+
+Run `quick_validate.py <skill-folder>` from the installed skill-creator tooling when available. Otherwise perform the checks directly and report that the official validator was unavailable. Fix every validation error before saving or packaging.
+
+Save the folder only after validation. For a packaged archive, archive that validated folder without adding wrapper documentation. Report the destination, created files, and validation result.

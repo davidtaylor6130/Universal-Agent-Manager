@@ -26,6 +26,7 @@ function SvnLogo({ size = 17 }: { size?: number }) {
 import { Sidebar } from './Sidebar'
 import { MainPanel } from './MainPanel'
 import { VcsCommitPanel } from './VcsCommitPanel'
+import { UpdatesPanel } from './UpdatesPanel'
 import { NewChatModal } from '../sidebar/NewChatModal'
 import { SettingsModal } from '../settings/SettingsModal'
 import { MemoryLibraryModal } from '../settings/MemoryLibraryModal'
@@ -35,6 +36,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { Logo } from '../shared/Logo'
 import { ThemeToggle } from '../shared/ThemeToggle'
 import { IconButton, StatusDot } from '../ui'
+import { useUpdateMonitor, type UpdateMonitor } from '../../hooks/useUpdateMonitor'
 
 function formatMemoryTitle(entryCount: number, lastCreatedAt: string): string {
   if (entryCount <= 0) {
@@ -102,7 +104,7 @@ function LeftActivityRail() {
   )
 }
 
-function RightActivityRail() {
+function RightActivityRail({ monitor, updatesOpen, onToggleUpdates }: { monitor: UpdateMonitor; updatesOpen: boolean; onToggleUpdates: () => void }) {
   const commitPanelOpen = useAppStore((s) => s.commitPanelOpen)
   const setCommitPanelOpen = useAppStore((s) => s.setCommitPanelOpen)
   const activeSessionId = useAppStore((s) => s.activeSessionId)
@@ -126,8 +128,8 @@ function RightActivityRail() {
   const vcsLabelKind = vcsKind === 'svn' ? 'SVN' : vcsKind === 'git' ? 'Git' : 'Git/SVN'
   const vcsIcon = vcsKind === 'svn' ? <SvnLogo size={17} /> : vcsKind === 'git' ? <GithubLogo size={16} /> : <GitBranch size={17} />
 
-  // UI-only update placeholder — wired to real data later (issue #21).
-  const updateAvailable: boolean = false
+  const updateCount = monitor.updates.length
+  const runtimeUpdateCount = monitor.updates.filter((update) => update.providerId).length
   const alertCount = missingFolders.length + (shellActionNotification ? 1 : 0)
 
   return (
@@ -182,13 +184,14 @@ function RightActivityRail() {
       <span className="relative inline-flex">
         <IconButton
           icon={<ArrowUpCircle size={17} />}
-          label={updateAvailable ? 'Update available' : 'Check for updates'}
+          label={updateCount > 0 ? `${updateCount} update${updateCount === 1 ? '' : 's'} available` : 'Check for updates'}
           tooltipSide="left"
-          active={updateAvailable}
+          active={updatesOpen || updateCount > 0}
+          onClick={onToggleUpdates}
         />
-        {updateAvailable && (
-          <span className="absolute -right-0.5 -top-0.5 pointer-events-none" aria-hidden>
-            <StatusDot tone="accent" pulse size={7} />
+        {runtimeUpdateCount > 0 && (
+          <span className="absolute -right-1.5 -top-1.5 pointer-events-none min-w-4 rounded-full px-1 text-center text-[9px] font-bold leading-4" style={{ background: 'var(--accent)', color: 'var(--bg)' }} aria-hidden>
+            {runtimeUpdateCount}
           </span>
         )}
       </span>
@@ -197,6 +200,7 @@ function RightActivityRail() {
 }
 
 export function AppShell() {
+  const refreshCustomThemes = useAppStore((state) => state.refreshCustomThemes)
   const isNewChatModalOpen = useAppStore((s) => s.isNewChatModalOpen)
   const isSettingsOpen = useAppStore((s) => s.isSettingsOpen)
   const memoryLibraryScope = useAppStore((s) => s.memoryLibraryScope)
@@ -208,6 +212,12 @@ export function AppShell() {
   const commitPanelWidthPx = useAppStore((s) => s.commitPanelWidthPx)
   const setSidebarWidthPx = useAppStore((s) => s.setSidebarWidthPx)
   const setCommitPanelWidthPx = useAppStore((s) => s.setCommitPanelWidthPx)
+  const updateMonitor = useUpdateMonitor()
+  const [updatesOpen, setUpdatesOpen] = useState(false)
+
+  useEffect(() => {
+    void refreshCustomThemes()
+  }, [refreshCustomThemes])
 
   const startResize = useCallback((
     side: 'sidebar' | 'commit',
@@ -303,7 +313,13 @@ export function AppShell() {
         </>
       )}
 
-      <RightActivityRail />
+      {updatesOpen && <UpdatesPanel monitor={updateMonitor} onClose={() => setUpdatesOpen(false)} />}
+
+      <RightActivityRail
+        monitor={updateMonitor}
+        updatesOpen={updatesOpen}
+        onToggleUpdates={() => setUpdatesOpen((open) => !open)}
+      />
 
       {/* Modals */}
       {isNewChatModalOpen && <NewChatModal />}

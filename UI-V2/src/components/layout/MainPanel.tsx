@@ -5,7 +5,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { CLIView } from '../views/CLIView'
 import { ChatView } from '../views/ChatView'
-import { isCefContext } from '../../ipc/cefBridge'
+import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { DEFAULT_PROVIDER_ID, providerShortName } from '../../utils/providerMetadata'
 import { Tooltip } from '../ui'
@@ -74,7 +74,7 @@ function ChatPane({ session, active, paneIndex, showGlow, onActivate }: {
   const providers = useAppStore(useShallow((s) => s.providers))
   const acpBinding = useAppStore((s) => s.acpBindingBySessionId[session.id])
   const cliBinding = useAppStore((s) => s.cliBindingBySessionId[session.id])
-  const viewSwitchLocked = Boolean(
+  const cliSwitchLocked = Boolean(
     acpBinding?.processing ||
       acpBinding?.lifecycleState === 'waitingPermission' ||
       cliBinding?.processing ||
@@ -144,39 +144,46 @@ function ChatPane({ session, active, paneIndex, showGlow, onActivate }: {
             background: 'var(--bg)',
           }}
         >
-          <Tooltip label={viewSwitchLocked && view !== 'chat' ? 'Wait for current output to finish' : 'Chat view'} side="bottom">
+          <Tooltip label="Chat view" side="bottom">
             <button
               type="button"
-              disabled={viewSwitchLocked && view !== 'chat'}
               onClick={() => {
-                if (!viewSwitchLocked) setView('chat')
+                if (view === 'cli' && isCefContext()) {
+                  void sendToCEF({
+                    action: 'stopCliTerminal',
+                    payload: {
+                      chatId: cliBinding?.boundChatId ?? session.id,
+                      terminalId: cliBinding?.terminalId ?? '',
+                      quit: true,
+                    },
+                  })
+                }
+                setView('chat')
               }}
               className="h-7 px-3 text-xs"
               style={{
                 borderRadius: 5,
                 color: view === 'chat' ? 'var(--text)' : 'var(--text-2)',
                 background: view === 'chat' ? 'var(--surface-up)' : 'transparent',
-                opacity: viewSwitchLocked && view !== 'chat' ? 0.5 : 1,
-                cursor: viewSwitchLocked && view !== 'chat' ? 'not-allowed' : 'default',
               }}
             >
               Chat
             </button>
           </Tooltip>
-          <Tooltip label={viewSwitchLocked && view !== 'cli' ? 'Wait for current output to finish' : 'Terminal fallback'} side="bottom">
+          <Tooltip label={cliSwitchLocked && view !== 'cli' ? 'Wait for current output to finish' : 'Terminal fallback'} side="bottom">
             <button
               type="button"
-              disabled={viewSwitchLocked && view !== 'cli'}
+              disabled={cliSwitchLocked && view !== 'cli'}
               onClick={() => {
-                if (!viewSwitchLocked) setView('cli')
+                if (!cliSwitchLocked) setView('cli')
               }}
               className="h-7 px-3 text-xs"
               style={{
                 borderRadius: 5,
                 color: view === 'cli' ? 'var(--text)' : 'var(--text-2)',
                 background: view === 'cli' ? 'var(--surface-up)' : 'transparent',
-                opacity: viewSwitchLocked && view !== 'cli' ? 0.5 : 1,
-                cursor: viewSwitchLocked && view !== 'cli' ? 'not-allowed' : 'default',
+                opacity: cliSwitchLocked && view !== 'cli' ? 0.5 : 1,
+                cursor: cliSwitchLocked && view !== 'cli' ? 'not-allowed' : 'default',
               }}
             >
               CLI

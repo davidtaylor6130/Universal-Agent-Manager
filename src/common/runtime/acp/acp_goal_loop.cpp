@@ -1,5 +1,6 @@
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 
 #include "cef/cef_push.h"
 
@@ -59,7 +60,7 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 			(void)GoalService::UpdateGoalStatus(app, goal_id, GoalStatus::Blocked);
 		}
 		SaveChatQuietly(app, chat);
-		if (Goal* active_goal = GoalService::FindActiveGoal(app, chat.id); active_goal != nullptr && active_goal->id == goal_id && !GoalBlockerStopsImmediately(decision.blocker_kind))
+		if (Goal* active_goal = GoalService::FindActiveGoal(app, chat.id); active_goal != nullptr && active_goal->id == goal_id && !GoalBlockerStopsImmediately(decision.blocker_kind) && session.queued_user_prompts.empty())
 		{
 			(void)QueueGoalInternalPrompt(session, chat, GoalService::BuildContinuationPrompt(*active_goal, active_goal->tokens_used, active_goal->token_budget), false);
 		}
@@ -78,6 +79,20 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 	}
 
 	ApplyGoalProgressUpdate(*active_goal, decision);
+	if (app.settings.goal_max_loop_iterations > 0 && active_goal->loop_count >= app.settings.goal_max_loop_iterations)
+	{
+		constexpr const char* blocker = "Maximum goal loop iterations reached";
+		active_goal->last_diagnostic = "goal_blocked_max_loop_iterations_reached";
+		GoalService::RecordBlocker(app, goal_id, blocker);
+		(void)GoalService::UpdateGoalStatus(app, goal_id, GoalStatus::Blocked);
+		AppendGoalLoopDiagnostic(session, "goal_blocked_max_loop_iterations_reached", goal_id, blocker);
+		SaveChatQuietly(app, chat);
+		if (browser)
+		{
+			uam::PushStateUpdateIfChanged(browser, app);
+		}
+		return true;
+	}
 	const std::string follow_up = NormalizeGoalNextPrompt(decision.next_prompt);
 	if (active_goal->last_next_prompt == follow_up)
 	{
@@ -101,7 +116,10 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 		return true;
 	}
 	SaveChatQuietly(app, chat);
-	(void)QueueGoalInternalPrompt(session, chat, follow_up, false);
+	if (session.queued_user_prompts.empty())
+	{
+		(void)QueueGoalInternalPrompt(session, chat, follow_up, false);
+	}
 	if (browser)
 	{
 		uam::PushStateUpdateIfChanged(browser, app);
@@ -272,6 +290,20 @@ void CompletePromptTurnAndHandleGoalLoop(AppState& app, AcpSessionState& session
 		{
 			session.goal_turn_kind.clear();
 		}
+		if (!session.queued_user_prompts.empty())
+		{
+			(void)uam::DrainNextQueuedAcpUserPrompt(app, session, chat);
+		}
+		return;
+	}
+
+	if (!session.queued_user_prompts.empty())
+	{
+		if (session.goal_turn_kind == completed_goal_turn_kind)
+		{
+			session.goal_turn_kind.clear();
+		}
+		(void)uam::DrainNextQueuedAcpUserPrompt(app, session, chat);
 		return;
 	}
 

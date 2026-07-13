@@ -76,7 +76,7 @@ int64_t EstimateGoalTurnTokens(const ChatSession& chat, const AcpSessionState& s
 
 bool CanQueueGoalInternalPrompt(const AcpSessionState& session)
 {
-	return session.session_ready && !session.processing && !session.waiting_for_permission && !session.waiting_for_user_input && !session.cancel_requested && session.prompt_request_id == 0 && session.cancel_request_id == 0 && session.queued_prompt.empty();
+	return session.session_ready && !session.processing && !session.waiting_for_permission && !session.waiting_for_user_input && !session.cancel_requested && session.prompt_request_id == 0 && session.cancel_request_id == 0 && session.queued_prompt.empty() && session.queued_user_prompts.empty();
 }
 
 std::string NormalizeGoalNextPrompt(const std::string& prompt)

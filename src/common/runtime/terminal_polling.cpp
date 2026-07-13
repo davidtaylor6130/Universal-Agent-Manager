@@ -454,21 +454,6 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 	const ProviderProfile terminal_provider = (terminal_chat != nullptr) ? ProviderResolutionService().ProviderForChatOrDefault(app, *terminal_chat) : ProviderResolutionService().ActiveProviderOrDefault(app);
 	const std::filesystem::path terminal_native_history_chats_dir = (terminal_chat != nullptr) ? ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(app, *terminal_chat) : std::filesystem::path{};
 
-	const auto append_recent_output = [&](const char* bytes, std::size_t len)
-	{
-		if (bytes == nullptr || len == 0)
-		{
-			return;
-		}
-
-		terminal.recent_output_bytes.append(bytes, len);
-
-		if (terminal.recent_output_bytes.size() > kRecentOutputBufferLimitBytes)
-		{
-			const std::size_t trim_count = terminal.recent_output_bytes.size() - kRecentOutputBufferLimitBytes;
-			terminal.recent_output_bytes.erase(0, trim_count);
-		}
-	};
 	const IPlatformTerminalRuntime& platform_terminal_runtime = PlatformServicesFactory::Instance().terminal_runtime;
 
 	if (!terminal.running || !platform_terminal_runtime.HasReadableTerminalOutputHandle(terminal))
@@ -500,9 +485,7 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 			terminal.last_activity_time_s = now;
 			terminal.last_ai_output_time_s = now;
 			changed = true;
-			append_recent_output(buffer, static_cast<std::size_t>(read_bytes));
 			output_for_frontend.append(buffer, static_cast<std::size_t>(read_bytes));
-			uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "pty_read", &terminal, "", static_cast<long long>(read_bytes));
 			continue;
 		}
 
@@ -534,6 +517,12 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 
 	if (!output_for_frontend.empty())
 	{
+		terminal.recent_output_bytes.append(output_for_frontend);
+		if (terminal.recent_output_bytes.size() > kRecentOutputBufferLimitBytes)
+		{
+			terminal.recent_output_bytes.erase(0, terminal.recent_output_bytes.size() - kRecentOutputBufferLimitBytes);
+		}
+
 		const std::string primary_chat_id = CliTerminalPrimaryChatId(terminal);
 		uam::PushCliOutput(browser, primary_chat_id, primary_chat_id, terminal.terminal_id, output_for_frontend);
 	}

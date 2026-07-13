@@ -157,6 +157,67 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('copies, edits, and reverts messages with icon actions and branch-safe requests', async () => {
+    const branchFromMessage = vi.fn(() => Promise.resolve('branch-1'))
+    useAppStore.setState((state) => ({
+      branchFromMessage,
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+          processingStartedAtMs: null,
+          pendingPermission: null,
+          pendingUserInput: null,
+          turnEvents: [],
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const copyButton = host.querySelector('button[aria-label="Copy message"]')
+    expect(copyButton?.querySelector('svg')).toBeTruthy()
+    const editButton = host.querySelector('button[aria-label="Edit message in new branch"]')
+    const revertButton = host.querySelector('button[aria-label="Revert to message in new branch"]')
+    expect(editButton).toBeTruthy()
+    expect(revertButton).toBeTruthy()
+
+    act(() => editButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    const editTextarea = host.querySelector('textarea[aria-label="Edit message"]') as HTMLTextAreaElement | null
+    expect(editTextarea?.value).toBe('Please inspect the workspace')
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(editTextarea, 'Inspect only the tests')
+      editTextarea?.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const saveButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Save to new branch')
+    await act(async () => saveButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(branchFromMessage).toHaveBeenCalledWith('chat-1', 0, 'Inspect only the tests')
+
+    await act(async () => revertButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(branchFromMessage).toHaveBeenCalledWith('chat-1', 0, undefined)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('marks the edited or reverted branch point', () => {
+    const session = { ...useAppStore.getState().sessions[0], branchFromMessageIndex: 0, branchMessageEdited: true }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={session} />))
+    expect(host.textContent).toContain('Edited branch')
+    act(() => root.render(<ChatView session={{ ...session, branchMessageEdited: false }} />))
+    expect(host.textContent).toContain('Reverted branch')
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('uses the composer action as Send when the runtime is idle', () => {
     useAppStore.setState((state) => ({
       acpBindingBySessionId: {
@@ -1451,6 +1512,9 @@ describe('ChatView', () => {
       tokenBudget: 0,
       tokensUsed: 0,
       blockedTurnCount: 0,
+      completedItems: ['Audit messages'],
+      remainingItems: ['Implement editing', 'Run tests'],
+      currentStep: 'Implement editing',
       createdAt: new Date('2026-01-01T00:00:00.000Z'),
       updatedAt: new Date('2026-01-01T00:00:00.000Z'),
     }
@@ -1469,6 +1533,11 @@ describe('ChatView', () => {
     act(() => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
+
+    const progress = host.querySelector('progress[aria-label="Goal progress"]') as HTMLProgressElement | null
+    expect(progress?.max).toBe(3)
+    expect(progress?.value).toBe(1)
+    expect(host.textContent).toContain('Implement editing')
 
     // Goal actions are consolidated into an overflow menu; open it to reach them.
     const openGoalMenu = () => act(() => {
@@ -1669,7 +1738,8 @@ describe('ChatView', () => {
 
     expect(host.textContent).toContain('Tool call:')
     expect(host.textContent).toContain('Read saved file')
-    expect(host.textContent).toContain('completed')
+    expect(host.querySelector('[data-tool-status="completed"][aria-label="Tool status: Completed"]')).toBeTruthy()
+    expect(host.querySelector('[data-tool-status="completed"] svg')).toBeTruthy()
 
     const toolButton = Array.from(host.querySelectorAll('button')).find((button) =>
       button.textContent?.includes('Read saved file')
@@ -1679,7 +1749,10 @@ describe('ChatView', () => {
       toolButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(document.body.textContent).toContain('Saved tool output')
-    expect(document.body.querySelector('[role="dialog"]')).toBeTruthy()
+    const dialog = document.body.querySelector('[role="dialog"]')
+    expect(dialog).toBeTruthy()
+    expect(dialog?.querySelector('[data-tool-status="completed"][aria-label="Tool status: Completed"]')).toBeTruthy()
+    expect(dialog?.textContent).not.toContain('status: completed')
 
     act(() => {
       root.unmount()
@@ -1780,7 +1853,7 @@ describe('ChatView', () => {
             message.id === 'm-2'
               ? {
                   ...message,
-                  content: '{"decision":"continue","reason":"More work remains.","nextPrompt":"Continue with the next page."}',
+                  content: '{"decision":"continue","reason":"More work remains.","nextPrompt":"Continue with the next page.","evidence":["Reviewed the current diff."],"progressUpdate":{"currentStep":"Finish the branch UI.","lastVerification":"Focused tests passed."}}',
                   thoughts: '',
                   toolCalls: [],
                   planSummary: '',
@@ -1820,6 +1893,9 @@ describe('ChatView', () => {
     expect(host.textContent).toContain('Continue')
     expect(host.textContent).toContain('More work remains.')
     expect(host.textContent).toContain('Next:')
+    expect(host.textContent).toContain('Reviewed the current diff.')
+    expect(host.textContent).toContain('Finish the branch UI.')
+    expect(host.textContent).toContain('Focused tests passed.')
 
     act(() => {
       root.unmount()
@@ -2232,6 +2308,7 @@ describe('ChatView', () => {
             sessionId: 'agent-chat',
             role: 'assistant',
             content: 'Sub-agent inspected the provider runtime.',
+            toolCalls: [{ id: 'nested-tool-1', title: 'Inspect runtime', kind: 'read', status: 'completed', content: 'Nested tool output' }],
             createdAt: new Date('2026-01-01T00:00:00.000Z'),
           },
         ],
@@ -2293,6 +2370,8 @@ describe('ChatView', () => {
 
     const summaries = Array.from(host.querySelectorAll('summary')).filter((candidate) => candidate.textContent?.includes('Sub-agent:'))
     expect(summaries).toHaveLength(2)
+    expect(summaries[0].querySelector('[data-tool-status="running"][aria-label="Tool status: Running"]')).toBeTruthy()
+    expect(summaries[1].querySelector('[data-tool-status="completed"][aria-label="Tool status: Completed"]')).toBeTruthy()
 
     await act(async () => {
       for (const summary of summaries) {
@@ -2310,6 +2389,10 @@ describe('ChatView', () => {
     expect(host.textContent).toContain('Sub-agent inspected the provider runtime.')
     expect(host.textContent).toContain('Reviewer history')
     expect(host.textContent).toContain('Sub-agent reviewed the provider runtime.')
+    expect(host.textContent?.match(/Inspect runtime/g)).toHaveLength(1)
+    const nestedToolButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Inspect runtime'))
+    act(() => nestedToolButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain('Nested tool output')
     expect(useAppStore.getState().activeSessionId).toBe('chat-1')
 
     await act(async () => {
@@ -2661,6 +2744,7 @@ describe('ChatView', () => {
           collapsed: false,
         },
       ],
+      resourceCollections: [],
       chats: [
         {
           id: 'chat-1',
@@ -2700,6 +2784,10 @@ describe('ChatView', () => {
         memoryEnabledDefault: true,
         memoryIdleDelaySeconds: 60,
         memoryRecallBudgetBytes: 2048,
+        goalMaxLoopIterations: 200,
+        updateChecksEnabled: true,
+        updateLastCheckedAt: '',
+        dismissedUpdateVersions: {},
         memoryLastStatus: '',
         memoryWorkerBindings: {
           'gemini-cli': { workerProviderId: 'gemini-cli', workerModelId: '' },
@@ -2745,5 +2833,141 @@ describe('ChatView', () => {
       root.unmount()
     })
     host.remove()
+  })
+
+  it('dictates interim and final text, stops accessibly, and submits exactly once on end', async () => {
+    const requests: Array<{ action: string; payload?: { locale?: string } }> = []
+    const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+    window.cefQuery = vi.fn(({ request, onSuccess }) => {
+      requests.push(JSON.parse(request) as { action: string; payload?: { locale?: string } })
+      onSuccess('{}')
+    })
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+          pendingPermission: null,
+          turnEvents: [],
+        },
+      },
+      sendAcpPrompt,
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'Please')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+
+    const startButton = host.querySelector('button[aria-label="Start dictation"]') as HTMLButtonElement
+    expect(startButton).toBeTruthy()
+    expect(startButton.getAttribute('aria-pressed')).toBe('false')
+    await act(async () => {
+      startButton.click()
+      await Promise.resolve()
+    })
+
+    expect(requests[0]?.action).toBe('startDictation')
+    expect(typeof requests[0]?.payload?.locale).toBe('string')
+    expect(host.querySelector('button[aria-label="Stop dictation"]')?.getAttribute('aria-pressed')).toBe('true')
+    expect(host.querySelector('[role="status"]')?.textContent).toContain('Listening')
+    expect(textarea.disabled).toBe(true)
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('uam-dictation', {
+        detail: { type: 'dictation', event: 'interim', text: 'write' },
+      }))
+    })
+    expect(textarea.value).toBe('Please write')
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('uam-dictation', {
+        detail: { type: 'dictation', event: 'final', text: 'write tests' },
+      }))
+    })
+    expect(textarea.value).toBe('Please write tests')
+
+    await act(async () => {
+      ;(host.querySelector('button[aria-label="Stop dictation"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    expect(requests.some((request) => request.action === 'stopDictation')).toBe(true)
+    expect(host.querySelector('[role="status"]')?.textContent).toContain('Finishing dictation')
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('uam-dictation', {
+        detail: { type: 'dictation', event: 'end' },
+      }))
+      await Promise.resolve()
+    })
+    expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Please write tests', [])
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('uam-dictation', {
+        detail: { type: 'dictation', event: 'end' },
+      }))
+      await Promise.resolve()
+    })
+    expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+
+    act(() => root.unmount())
+    host.remove()
+    delete window.cefQuery
+  })
+
+  it('surfaces native dictation permission errors without submitting partial text', async () => {
+    const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+    window.cefQuery = vi.fn(({ onSuccess }) => onSuccess('{}'))
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+          pendingPermission: null,
+          turnEvents: [],
+        },
+      },
+      sendAcpPrompt,
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    await act(async () => {
+      ;(host.querySelector('button[aria-label="Start dictation"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    act(() => {
+      window.dispatchEvent(new CustomEvent('uam-dictation', {
+        detail: { type: 'dictation', event: 'error', message: 'Microphone permission was denied.' },
+      }))
+    })
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Microphone permission was denied.')
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('uam-dictation', {
+        detail: { type: 'dictation', event: 'end' },
+      }))
+      await Promise.resolve()
+    })
+    expect(sendAcpPrompt).not.toHaveBeenCalled()
+    expect(host.querySelector('button[aria-label="Start dictation"]')).toBeTruthy()
+
+    act(() => root.unmount())
+    host.remove()
+    delete window.cefQuery
   })
 })

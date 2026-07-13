@@ -8,6 +8,7 @@ IPlatformTerminalRuntime& GetMacTerminalRuntime();
 IPlatformProcessService& GetMacProcessService();
 IPlatformFileDialogService& GetMacFileDialogService();
 IPlatformPathService& GetMacPathService();
+IPlatformDictationService& GetMacDictationService();
 } // namespace uam::platform_macos_impl
 
 PlatformServices& CreatePlatformServices()
@@ -17,6 +18,7 @@ PlatformServices& CreatePlatformServices()
 	    uam::platform_macos_impl::GetMacProcessService(),
 	    uam::platform_macos_impl::GetMacFileDialogService(),
 	    uam::platform_macos_impl::GetMacPathService(),
+	    uam::platform_macos_impl::GetMacDictationService(),
 	};
 	return services;
 }

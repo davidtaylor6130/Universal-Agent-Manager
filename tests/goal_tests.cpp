@@ -257,6 +257,67 @@ UAM_TEST(AcpGoalReviewTurnQueuesWorkerContinuationWithoutReviewingReviewOutput)
 	UAM_ASSERT_EQ(app.chats.front().goals.front().same_next_prompt_count, 1);
 }
 
+UAM_TEST(AcpGoalReviewContinuationHonorsConfiguredLoopCap)
+{
+	TempDir temp("uam-goal-loop-cap");
+	auto run_review = [&](const std::string& chat_id, int max_iterations, int initial_loop_count, bool expect_blocked) {
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.settings.goal_max_loop_iterations = max_iterations;
+
+		ChatSession chat;
+		chat.id = chat_id;
+		chat.provider_id = "gemini-cli";
+		Goal goal;
+		goal.id = "goal-1";
+		goal.objective = "Finish without an unbounded loop.";
+		goal.status = GoalStatus::Active;
+		goal.loop_count = initial_loop_count;
+		chat.active_goal_id = goal.id;
+		chat.goals.push_back(goal);
+		app.chats.push_back(std::move(chat));
+
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat_id;
+		session->session_ready = true;
+		session->processing = true;
+		session->prompt_request_id = 10;
+		session->pending_request_methods[10] = uam::acp_methods::kSessionPrompt;
+		session->goal_turn_kind = "review";
+		session->goal_review_turn = true;
+		session->goal_review_scheduled = true;
+		session->goal_review_goal_id = "goal-1";
+		uam::AcpSessionState* raw_session = session.get();
+		app.acp_sessions.push_back(std::move(session));
+
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"decision\":\"continue\",\"reason\":\"More work remains.\",\"nextPrompt\":\"Continue the implementation.\"}"}}}})"));
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":10,"result":{}})"));
+		UAM_ASSERT_EQ(app.chats.front().goals.front().loop_count, initial_loop_count + 1);
+
+		if (!expect_blocked)
+		{
+			UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+			UAM_ASSERT_EQ(raw_session->queued_prompt, std::string("Continue the implementation."));
+			return;
+		}
+
+		UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Blocked);
+		UAM_ASSERT_EQ(app.chats.front().goals.front().last_blocker, std::string("Maximum goal loop iterations reached"));
+		UAM_ASSERT(raw_session->queued_prompt.empty());
+		UAM_ASSERT(!raw_session->diagnostics.empty());
+		UAM_ASSERT_EQ(raw_session->diagnostics.back().reason, std::string("goal_blocked_max_loop_iterations_reached"));
+		const std::vector<ChatSession> saved = ChatRepository::LoadLocalChats(temp.root);
+		const auto saved_chat = std::find_if(saved.begin(), saved.end(), [&](const ChatSession& candidate) { return candidate.id == chat_id; });
+		UAM_ASSERT(saved_chat != saved.end());
+		UAM_ASSERT_EQ(saved_chat->goals.front().last_blocker, std::string("Maximum goal loop iterations reached"));
+		UAM_ASSERT_EQ(saved_chat->goals.front().last_diagnostic, std::string("goal_blocked_max_loop_iterations_reached"));
+	};
+
+	run_review("below-cap", 2, 0, false);
+	run_review("at-cap", 2, 1, true);
+	run_review("unlimited", 0, 200, false);
+}
+
 UAM_TEST(AcpGoalReviewTurnWithLostReviewBoolDoesNotScheduleReviewOfReviewOutput)
 {
 	TempDir temp("uam-goal-review-lost-bool");

@@ -18,6 +18,7 @@
 #include "common/utils/time_utils.h"
 
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 
 // ---------------------------------------------------------------------------
@@ -164,6 +165,43 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleBranchFromMessage(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const std::optional<int> message_index = uam::nlohmann_json::IntFieldStrict(payload, "messageIndex");
+	if (!message_index.has_value() || *message_index < 0)
+	{
+		cb->Failure(400, "A valid message index is required.");
+		return;
+	}
+
+	if (uam::query_handler_internal::FindChatOrFail(m_app, chat_id, cb, "Branch source chat no longer exists.") == nullptr)
+	{
+		return;
+	}
+	const std::optional<std::string> replacement_content = payload.contains("content")
+	                                                      ? std::optional<std::string>(payload.value("content", ""))
+	                                                      : std::nullopt;
+
+	if (!ChatDomainService().CreateBranchFromMessage(m_app, chat_id, *message_index, replacement_content))
+	{
+		cb->Failure(409, uam::query_handler_internal::FailureDetailOrFallback(m_app.status_line, "Failed to create message branch."));
+		return;
+	}
+
+	const ChatSession* branch = ChatDomainService().SelectedChat(m_app);
+	if (branch == nullptr)
+	{
+		cb->Failure(500, "Branch was created but could not be selected.");
+		return;
+	}
+
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	nlohmann::json result;
+	result["chatId"] = branch->id;
+	cb->Success(result.dump());
 }
 
 void UamQueryHandler::HandleRenameSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

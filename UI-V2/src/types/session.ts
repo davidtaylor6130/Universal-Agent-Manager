@@ -7,6 +7,9 @@ export interface Session {
   folderId: string | null
   isPinned?: boolean
   providerId?: string
+  parentChatId?: string
+  branchFromMessageIndex?: number
+  branchMessageEdited?: boolean
   workspaceDirectory?: string
   workspaceIsolationKind?: string
   workspaceSourceDirectory?: string

@@ -25,7 +25,7 @@ export function providerRuntimeLabel(provider?: Provider, acp?: AcpBinding) {
   return providerRuntimeKindLabel(provider, acp?.protocolKind)
 }
 
-function titleFromModelId(modelId: string) {
+export function titleFromModelId(modelId: string) {
   const source = modelId.split('/').pop() ?? modelId
   return source
     .split(/[-_.]+/)

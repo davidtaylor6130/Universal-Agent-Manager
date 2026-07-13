@@ -32,6 +32,12 @@ class StateSerializer
 	/// Serialise a single folder.
 	static nlohmann::json SerializeFolder(const ChatFolder& folder);
 
+	/// Serialise a resource collection and its ordered references.
+	static nlohmann::json SerializeResourceCollection(const ResourceCollection& collection);
+
+	/// Serialise a single resource reference.
+	static nlohmann::json SerializeResourceReference(const ResourceReference& reference);
+
 	/// Serialise a provider profile.
 	static nlohmann::json SerializeProvider(const ProviderProfile& profile);
 };

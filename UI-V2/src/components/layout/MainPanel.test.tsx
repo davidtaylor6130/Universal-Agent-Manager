@@ -32,6 +32,10 @@ import { assignChatToPane } from '../../utils/chatGridStorage'
 describe('MainPanel', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      disconnect() {}
+    })
     const stored = new Map<string, string>()
     Object.defineProperty(globalThis, 'localStorage', {
       configurable: true,
@@ -40,6 +44,7 @@ describe('MainPanel', () => {
         setItem: (key: string, value: string) => stored.set(key, value),
       },
     })
+    delete window.cefQuery
     useAppStore.setState({
       sessions: [
         {
@@ -137,6 +142,60 @@ describe('MainPanel', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('quits a busy CLI when switching back to chat', () => {
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request) as { action: string; payload?: Record<string, unknown> })
+      onSuccess('{}')
+    }
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+        },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => root.render(<MainPanel />))
+    const button = (label: string) =>
+      Array.from(host.querySelectorAll('button')).find((candidate) => candidate.textContent === label) as HTMLButtonElement
+    act(() => button('CLI').click())
+    act(() => {
+      useAppStore.setState({
+        cliBindingBySessionId: {
+          'chat-1': {
+            terminalId: 'term-1',
+            boundChatId: 'chat-1',
+            running: true,
+            lifecycleState: 'busy',
+            turnState: 'busy',
+            processing: true,
+            readySinceLastSelect: false,
+            active: true,
+            lastError: '',
+          },
+        },
+      })
+    })
+
+    expect(button('Chat').disabled).toBe(false)
+    act(() => button('Chat').click())
+    expect(requests).toContainEqual({
+      action: 'stopCliTerminal',
+      payload: { chatId: 'chat-1', terminalId: 'term-1', quit: true },
+      requestId: expect.any(String),
+    })
+
+    act(() => root.unmount())
     host.remove()
   })
 

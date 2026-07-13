@@ -15,6 +15,7 @@ inline bool AcpSessionHasActiveTurn(const AcpSessionState& session)
 	return session.processing ||
 	       AcpSessionIsWaitingForInput(session) ||
 	       !session.queued_prompt.empty() ||
+	       !session.queued_user_prompts.empty() ||
 	       session.prompt_request_id != 0;
 }
 
