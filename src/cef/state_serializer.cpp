@@ -165,6 +165,7 @@ namespace uam
 			session_json["serviceTier"] = session.service_tier;
 			session_json["approvalMode"] = session.approval_mode;
 			session_json["autoApproveCommands"] = session.auto_approve_commands;
+			session_json["commandSafetyTier"] = session.command_safety_tier;
 			session_json["memoryEnabled"] = session.memory_enabled;
 			session_json["memoryLastProcessedMessageCount"] = session.memory_last_processed_message_count;
 			session_json["memoryLastProcessedAt"] = session.memory_last_processed_at;
@@ -572,6 +573,9 @@ namespace uam
 			permission_json["kind"] = permission.kind;
 			permission_json["status"] = permission.status;
 			permission_json["content"] = permission.content;
+			permission_json["safetyRisk"] = permission.safety_risk;
+			permission_json["safetyTier"] = permission.safety_tier;
+			permission_json["safetyRequiresApproval"] = permission.safety_requires_approval;
 
 			nlohmann::json options = JsonArrayWithCapacity(permission.options.size());
 			for (const AcpPermissionOptionState& option : permission.options)
@@ -955,6 +959,24 @@ namespace uam
 			return providers_json;
 		}
 
+		nlohmann::json SerializeShellActionsForFrontend(const std::vector<ShellAction>& actions)
+		{
+			nlohmann::json result = JsonArrayWithCapacity(actions.size());
+			for (const ShellAction& action : actions)
+			{
+				result.push_back({
+				    {"id", action.id},
+				    {"label", action.label},
+				    {"skillPath", action.skill_path},
+				    {"acceptsFiles", action.accepts_files},
+				    {"acceptsFolders", action.accepts_folders},
+				    {"enabled", action.enabled},
+				    {"openWorkspace", action.open_workspace},
+				});
+			}
+			return result;
+		}
+
 	} // anonymous namespace
 
 	// ---------------------------------------------------------------------------
@@ -967,6 +989,8 @@ namespace uam
 		j["stateRevision"] = app.state_revision;
 
 		j["folders"] = SerializeFoldersForFrontend(app.folders);
+		j["shellActions"] = SerializeShellActionsForFrontend(app.shell_actions);
+		j["shellActionNotification"] = app.shell_action_notification;
 
 		// Chat sessions
 		nlohmann::json chats_arr = JsonArrayWithCapacity(app.chats.size());
@@ -976,7 +1000,7 @@ namespace uam
 		{
 			const bool selected_chat = !has_selected_chat || selected_chat_id == chat.id;
 			nlohmann::json chat_json = (selected_chat && chat.messages_loaded) ? SerializeSession(chat) : SerializeFingerprintSession(app, chat);
-			chat_json["workspaceDirectory"] = uam::paths::ResolveWorkspaceRootPath(app, chat).string();
+			chat_json["workspaceDirectory"] = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat));
 
 			chat_json["cliTerminal"] = SerializeChatTerminalSummary(app, chat);
 			chat_json["acpSession"] = SerializeAcpSessionSummary(app, chat);
@@ -1004,6 +1028,8 @@ namespace uam
 		nlohmann::json j;
 
 		j["folders"] = SerializeFoldersForFrontend(app.folders);
+		j["shellActions"] = SerializeShellActionsForFrontend(app.shell_actions);
+		j["shellActionNotification"] = app.shell_action_notification;
 
 		nlohmann::json chats_arr = JsonArrayWithCapacity(app.chats.size());
 		for (const auto& chat : app.chats)
@@ -1075,6 +1101,8 @@ namespace uam
 		j["title"] = folder.title;
 		j["directory"] = folder.directory;
 		j["collapsed"] = folder.collapsed;
+		std::error_code ec;
+		j["missing"] = !folder.directory.empty() && !std::filesystem::is_directory(uam::paths::PathFromUtf8(folder.directory), ec);
 		return j;
 	}
 

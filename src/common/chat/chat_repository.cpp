@@ -3,6 +3,7 @@
 #include "common/chat/chat_ids.h"
 #include "common/chat/message_attachment_json.h"
 #include "common/config/approval_modes.h"
+#include "common/security/command_safety.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
 #include "common/provider/codex/cli/codex_thread_id.h"
@@ -96,6 +97,7 @@ namespace
 	constexpr std::string_view kChatWorkspaceWorktreeDirectoryField = "workspace_worktree_directory";
 	constexpr std::string_view kChatApprovalModeField = "approval_mode";
 	constexpr std::string_view kChatAutoApproveCommandsField = "auto_approve_commands";
+	constexpr std::string_view kChatCommandSafetyTierField = "commandSafetyTier";
 	constexpr std::string_view kChatModelIdField = "model_id";
 	constexpr std::string_view kChatReasoningEffortField = "reasoning_effort";
 	constexpr std::string_view kChatServiceTierField = "service_tier";
@@ -618,7 +620,7 @@ namespace
 
 	bool ChatProviderFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
 	{
-		if (lhs.approval_mode != rhs.approval_mode || lhs.auto_approve_commands != rhs.auto_approve_commands || lhs.model_id != rhs.model_id)
+		if (lhs.approval_mode != rhs.approval_mode || lhs.auto_approve_commands != rhs.auto_approve_commands || lhs.command_safety_tier != rhs.command_safety_tier || lhs.model_id != rhs.model_id)
 		{
 			return false;
 		}
@@ -717,6 +719,7 @@ namespace
 		chat.workspace_worktree_directory = JsonStringOrEmpty(root.Find(kChatWorkspaceWorktreeDirectoryField));
 		chat.approval_mode = JsonStringOrEmpty(root.Find(kChatApprovalModeField));
 		chat.auto_approve_commands = JsonBoolOrDefault(root.Find(kChatAutoApproveCommandsField), false);
+		chat.command_safety_tier = uam::command_safety::NormalizeTier(JsonStringOrEmpty(root.Find(kChatCommandSafetyTierField)));
 		if (chat.approval_mode == uam::approval_modes::kLegacyYoloApprovalMode)
 		{
 			chat.approval_mode = uam::approval_modes::kDefaultApprovalMode;
@@ -922,6 +925,7 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 	uam::json::SetString(root, kChatWorkspaceWorktreeDirectoryField, chat.workspace_worktree_directory);
 	uam::json::SetString(root, kChatApprovalModeField, chat.approval_mode);
 	uam::json::SetBool(root, kChatAutoApproveCommandsField, chat.auto_approve_commands);
+	uam::json::SetString(root, kChatCommandSafetyTierField, uam::command_safety::NormalizeTier(chat.command_safety_tier));
 	uam::json::SetString(root, kChatModelIdField, chat.model_id);
 	uam::json::SetString(root, kChatReasoningEffortField, chat.reasoning_effort);
 	uam::json::SetString(root, kChatServiceTierField, chat.service_tier);
@@ -1145,6 +1149,7 @@ namespace
 		hydrated.workspace_worktree_directory = summary.workspace_worktree_directory;
 		hydrated.approval_mode = summary.approval_mode;
 		hydrated.auto_approve_commands = summary.auto_approve_commands;
+		hydrated.command_safety_tier = summary.command_safety_tier;
 		hydrated.model_id = summary.model_id;
 		hydrated.reasoning_effort = summary.reasoning_effort;
 		hydrated.service_tier = summary.service_tier;

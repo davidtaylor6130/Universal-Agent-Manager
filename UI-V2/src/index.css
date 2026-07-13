@@ -783,6 +783,37 @@ summary,
 .uam-iconbtn--solid { background: var(--surface); border-color: var(--border-bright); }
 .uam-iconbtn--danger:hover:not(:disabled) { background: var(--error-dim); color: var(--error); }
 
+/* ── MenuSelect ─────────────────────────────────────────────── */
+.uam-menu-select__trigger {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease),
+              border-color var(--dur-fast) var(--ease),
+              box-shadow var(--dur-fast) var(--ease);
+}
+.uam-menu-select__trigger:hover:not(:disabled) {
+  background: var(--surface-up);
+  border-color: var(--border-bright);
+}
+.uam-menu-select__trigger:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-glow);
+}
+.uam-menu-select__trigger:disabled { opacity: 0.55; cursor: not-allowed; }
+.uam-menu-select__chevron { flex: none; transition: transform var(--dur-fast) var(--ease); }
+.uam-menu-select__chevron.is-open { transform: rotate(180deg); }
+.uam-menu-select__option {
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.uam-menu-select__option:hover,
+.uam-menu-select__option:focus-visible { background: var(--sidebar-item-hover); }
+.uam-menu-select__option.is-selected { background: var(--accent-dim); }
+
 /* ── Tooltip ────────────────────────────────────────────────── */
 .uam-tooltip {
   display: inline-flex;

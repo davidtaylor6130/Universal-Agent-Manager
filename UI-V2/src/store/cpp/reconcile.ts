@@ -14,6 +14,7 @@ import {
 import {
   messageAttachments,
   normalizeAcpApprovalMode,
+  normalizeCommandSafetyTier,
   normalizeAcpModelId,
   normalizeCodexReasoningEffort,
   normalizeCodexServiceTier,
@@ -71,7 +72,8 @@ export function normalizeProviderIdForVisibleProviders(
 export function foldersEquivalent(previous: Folder, next: Folder): boolean {
   return previous.name === next.name &&
     previous.directory === next.directory &&
-    previous.isExpanded === next.isExpanded
+    previous.isExpanded === next.isExpanded &&
+    previous.missing === next.missing
 }
 
 export function folderFromCppFolder(folder: CppFolder, previous: Folder | undefined): Folder {
@@ -81,6 +83,7 @@ export function folderFromCppFolder(folder: CppFolder, previous: Folder | undefi
     parentId: null,
     directory: folder.directory ?? '',
     isExpanded: !folder.collapsed,
+    missing: folder.missing,
     createdAt: previous?.createdAt ?? new Date(),
   }
 
@@ -131,6 +134,7 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     (previous.serviceTier ?? '') === (next.serviceTier ?? '') &&
     (previous.approvalMode ?? 'default') === next.approvalMode &&
     (previous.autoApproveCommands ?? false) === (next.autoApproveCommands ?? false) &&
+    (previous.commandSafetyTier ?? 'medium') === (next.commandSafetyTier ?? 'medium') &&
     (previous.memoryEnabled ?? true) === next.memoryEnabled &&
     (previous.memoryLastProcessedMessageCount ?? 0) === next.memoryLastProcessedMessageCount &&
     (previous.memoryLastProcessedAt ?? '') === next.memoryLastProcessedAt &&
@@ -168,6 +172,7 @@ export function sessionFromCppChat(
     serviceTier: normalizeCodexServiceTier(chat.serviceTier),
     approvalMode: normalizeAcpApprovalMode(chat.approvalMode),
     autoApproveCommands: chat.autoApproveCommands ?? false,
+    commandSafetyTier: normalizeCommandSafetyTier(chat.commandSafetyTier),
     memoryEnabled: chat.memoryEnabled ?? true,
     memoryLastProcessedMessageCount: chat.memoryLastProcessedMessageCount ?? 0,
     memoryLastProcessedAt: chat.memoryLastProcessedAt ?? '',

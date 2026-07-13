@@ -117,6 +117,8 @@ function resetStore() {
         editorPresetId: 'vscode',
       },
     ],
+    shellActions: [],
+    shellActionNotification: '',
     memoryActivity: {
       entryCount: 0,
       lastCreatedAt: '',
@@ -1570,6 +1572,30 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().sessions[0].autoApproveCommands).toBe(true)
   })
 
+  it('persists command safety tier changes through CEF and rolls back on failure', async () => {
+    const now = new Date()
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    let rejectNext = false
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      requests.push(JSON.parse(request))
+      if (rejectNext) onFailure(500, 'Safety tier failed')
+      else onSuccess('{}')
+    }
+    useAppStore.setState({
+      sessions: [{
+        id: 'chat-1', name: 'Chat', viewMode: 'chat', folderId: 'default', commandSafetyTier: 'medium', createdAt: now, updatedAt: now,
+      }],
+    })
+
+    await expect(useAppStore.getState().setSessionCommandSafetyTier('chat-1', 'low')).resolves.toBe(true)
+    expect(requests[0]).toMatchObject({ action: 'setChatCommandSafetyTier', payload: { chatId: 'chat-1', commandSafetyTier: 'low' } })
+    expect(useAppStore.getState().sessions[0].commandSafetyTier).toBe('low')
+
+    rejectNext = true
+    await expect(useAppStore.getState().setSessionCommandSafetyTier('chat-1', 'high')).resolves.toBe(false)
+    expect(useAppStore.getState().sessions[0].commandSafetyTier).toBe('low')
+  })
+
   it('sends planning mode changes when the live runtime mode differs from the saved chat mode', async () => {
     const now = new Date()
     const requests: Array<{ action: string; payload?: unknown }> = []
@@ -2200,6 +2226,32 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().defaultEditorPresetId).toBe('webstorm')
     expect(useAppStore.getState().editorFileAssociations[0].extensions).toEqual(['.cpp', '.h'])
     expect(useAppStore.getState().editorFileAssociations[1].editorPresetId).toBe('webstorm')
+  })
+
+  it('saves and applies shell actions through CEF', async () => {
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
+      onSuccess('{}')
+    }
+    const actions = [{
+      id: 'review',
+      label: 'Review Selection',
+      skillPath: '/tmp/Review ü.uam',
+      acceptsFiles: true,
+      acceptsFolders: false,
+      enabled: true,
+      openWorkspace: false,
+    }]
+
+    await expect(useAppStore.getState().setShellActions(actions)).resolves.toBe(true)
+    await expect(useAppStore.getState().applyShellActions()).resolves.toBe(true)
+
+    expect(requests).toHaveLength(2)
+    expect(requests[0]).toMatchObject({ action: 'setShellActions', payload: { actions } })
+    expect(requests[1]).toMatchObject({ action: 'applyShellActions' })
+    expect(useAppStore.getState().shellActions).toEqual(actions)
+    expect(useAppStore.getState().shellActionNotification).toBe('Shell actions applied successfully.')
   })
 
   it('clamps memory settings before optimistic updates and CEF persistence', async () => {

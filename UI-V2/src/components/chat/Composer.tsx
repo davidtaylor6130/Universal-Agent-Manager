@@ -1,13 +1,14 @@
 // ComposerToolbar: message input toolbar with model/mode pickers and
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
 
-import { RefObject, useEffect, useRef, useState } from 'react'
-import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Settings2, Target } from 'lucide-react'
+import { KeyboardEvent as ReactKeyboardEvent, RefObject, useEffect, useId, useRef, useState } from 'react'
+import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Settings2, Target, ClipboardList, Shield, ShieldAlert, ShieldCheck, Sparkles } from 'lucide-react'
 import type { AcpBinding } from '../../store/useAppStore'
 import type { Goal } from '../../types/goal'
 import type { Provider } from '../../types/provider'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import {
+  COPILOT_CLI_PROVIDER_ID,
   providerCapabilities,
   providerShortName,
 } from '../../utils/providerMetadata'
@@ -17,6 +18,7 @@ import {
   buildModelOptions,
   modelOptionFor,
 } from './modelOptions'
+import { MenuSelect } from '../ui'
 
 export type ComposerIconName = 'editor' | 'folder' | 'git-tree' | 'markdown' | 'plus' | 'send' | 'terminal'
 
@@ -51,6 +53,13 @@ export function ComposerIcon({ name, size = 14 }: { name: ComposerIconName; size
   }
 }
 
+function permissionModeIcon(id: string) {
+  if (id === 'auto') return <Sparkles size={14} />
+  if (id === 'plan') return <ClipboardList size={14} />
+  if (id === 'acceptEdits') return <SquarePen size={14} />
+  return <ShieldCheck size={14} />
+}
+
 export function ComposerToolbar({
   acp,
   provider,
@@ -63,7 +72,10 @@ export function ComposerToolbar({
   reasoningEffort,
   serviceTier,
   approvalModeId,
+  permissionModeId,
+  permissionModes,
   autoApproveCommands,
+  commandSafetyTier,
   memoryEnabled,
   canChangeProvider,
   providerOpen,
@@ -88,6 +100,8 @@ export function ComposerToolbar({
   onTogglePlan,
   onToggleAcceptEdits,
   onToggleYolo,
+  onSelectPermissionMode,
+  onSetCommandSafetyTier,
   onToggleMemory,
   goalArmed,
   goalActive,
@@ -110,7 +124,10 @@ export function ComposerToolbar({
   reasoningEffort?: string
   serviceTier?: string
   approvalModeId?: string
+  permissionModeId: string
+  permissionModes: Array<{ id: string; name: string; description?: string }>
   autoApproveCommands: boolean
+  commandSafetyTier: 'low' | 'medium' | 'high'
   memoryEnabled: boolean
   canChangeProvider: boolean
   providerOpen: boolean
@@ -135,6 +152,8 @@ export function ComposerToolbar({
   onTogglePlan: () => void
   onToggleAcceptEdits: () => void
   onToggleYolo: () => void
+  onSelectPermissionMode: (modeId: string) => void
+  onSetCommandSafetyTier: (tier: 'low' | 'medium' | 'high') => void
   onToggleMemory: () => void
   goalArmed: boolean
   goalActive: boolean
@@ -166,13 +185,56 @@ export function ComposerToolbar({
   const acceptEditsDisabled = Boolean(modelDisabled || !acceptEditsAvailable)
   const yoloDisabled = false
   const memoryDisabled = Boolean(modelDisabled)
-  const autoLabel = caps.autoLabel
-  const modeLabel = planActive ? 'Plan' : acceptEditsActive ? 'Accept Edits' : 'Default'
+  const autoLabel = 'Auto Decide'
   const running = Boolean(acp?.processing)
   // Secondary mode controls (plan / accept-edits / auto / memory / markdown) are
   // consolidated behind one "Options" popover to keep the toolbar quiet.
   const [optionsOpen, setOptionsOpen] = useState(false)
+  const [modelFocusIndex, setModelFocusIndex] = useState(0)
   const optionsRef = useRef<HTMLDivElement>(null)
+  const modelTriggerRef = useRef<HTMLButtonElement>(null)
+  const modelWasOpenRef = useRef(false)
+  const modelOptionRefs = useRef<Array<HTMLButtonElement | null>>([])
+  const modelListId = useId()
+
+  useEffect(() => {
+    if (!modelOpen) return
+    const selectedIndex = Math.max(0, modelOptions.findIndex((option) => option.id === currentModel.id))
+    const focusIsOutsideMenu = !modelOptionRefs.current.includes(document.activeElement as HTMLButtonElement)
+    if (focusIsOutsideMenu && modelFocusIndex !== selectedIndex) {
+      setModelFocusIndex(selectedIndex)
+      return
+    }
+    const option = modelOptionRefs.current[modelFocusIndex]
+    option?.focus()
+    option?.scrollIntoView?.({ block: 'nearest' })
+  }, [currentModel.id, modelFocusIndex, modelOpen])
+
+  useEffect(() => {
+    const wasOpen = modelWasOpenRef.current
+    modelWasOpenRef.current = modelOpen
+    if (wasOpen && !modelOpen) modelTriggerRef.current?.focus()
+  }, [modelOpen])
+
+  const onModelKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      onToggleModel()
+      modelTriggerRef.current?.focus()
+      return
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      onSelectModel(modelOptions[modelFocusIndex]?.id ?? currentModel.id)
+      modelTriggerRef.current?.focus()
+      return
+    }
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End') return
+    event.preventDefault()
+    if (event.key === 'Home') setModelFocusIndex(0)
+    else if (event.key === 'End') setModelFocusIndex(modelOptions.length - 1)
+    else setModelFocusIndex((index) => (index + (event.key === 'ArrowDown' ? 1 : -1) + modelOptions.length) % modelOptions.length)
+  }
   useEffect(() => {
     if (!optionsOpen) return
     const onDown = (e: MouseEvent) => {
@@ -448,10 +510,14 @@ export function ComposerToolbar({
       <div className="ml-auto flex items-center gap-2">
         <div ref={modelMenuRef} className="relative">
           <button
+            ref={modelTriggerRef}
             type="button"
             title="Select model"
             onClick={onToggleModel}
             disabled={modelDisabled}
+            aria-haspopup="listbox"
+            aria-expanded={modelOpen}
+            aria-controls={modelOpen ? modelListId : undefined}
             className="inline-flex items-center gap-1.5 px-2"
             style={{
               ...chipStyle,
@@ -465,6 +531,10 @@ export function ComposerToolbar({
           </button>
           {modelOpen && !modelDisabled && (
             <div
+              id={modelListId}
+              role="listbox"
+              aria-label="Model"
+              onKeyDown={onModelKeyDown}
               className="absolute right-0"
               style={{
                 bottom: 32,
@@ -478,28 +548,42 @@ export function ComposerToolbar({
               }}
             >
               <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>Model</div>
-              {modelOptions.map((option) => {
-                const selected = option.id === currentModel.id
-                return (
-                  <button
-                    key={option.id || 'default'}
-                    type="button"
-                    onClick={() => onSelectModel(option.id)}
-                    className="w-full grid gap-0.5 text-left px-2 py-2"
-                    style={{
-                      borderRadius: 6,
-                      background: selected ? 'var(--accent-dim)' : 'transparent',
-                      color: selected ? 'var(--text)' : 'var(--text-2)',
-                    }}
-                  >
-                    <span className="flex items-center gap-2">
-                      <span className="flex-1">{option.label}</span>
-                      {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
-                    </span>
-                    <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>{option.detail}</span>
-                  </button>
-                )
-              })}
+              <div style={{ maxHeight: 520, overflowY: 'auto' }}>
+                {modelOptions.map((option, index) => {
+                  const selected = option.id === currentModel.id
+                  const hideRepeatedCopilotDetail = providerId === COPILOT_CLI_PROVIDER_ID && option.detail.trim().toLowerCase() === option.label.trim().toLowerCase()
+                  return (
+                    <button
+                      key={option.id || 'default'}
+                      ref={(element) => { modelOptionRefs.current[index] = element }}
+                      type="button"
+                      role="option"
+                      aria-selected={selected}
+                      tabIndex={index === modelFocusIndex ? 0 : -1}
+                      onFocus={() => setModelFocusIndex(index)}
+                      onMouseEnter={() => setModelFocusIndex(index)}
+                      onClick={() => {
+                        onSelectModel(option.id)
+                        modelTriggerRef.current?.focus()
+                      }}
+                      className="w-full grid gap-0.5 text-left px-2 py-2"
+                      style={{
+                        minHeight: 52,
+                        borderRadius: 6,
+                        background: selected ? 'var(--accent-dim)' : 'transparent',
+                        color: selected ? 'var(--text)' : 'var(--text-2)',
+                        outline: index === modelFocusIndex ? '1px solid var(--accent)' : 'none',
+                      }}
+                    >
+                      <span className="flex items-center gap-2">
+                        <span className="flex-1">{option.label}</span>
+                        {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
+                      </span>
+                      {!hideRepeatedCopilotDetail && <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>{option.detail}</span>}
+                    </button>
+                  )
+                })}
+              </div>
             </div>
           )}
         </div>
@@ -553,9 +637,32 @@ export function ComposerToolbar({
                     <span>{currentSpeed.label}</span>
                   </div>
                 )}
-                <div className="flex justify-between gap-3">
-                  <span style={{ color: 'var(--text-3)' }}>Mode</span>
-                  <span>{modeLabel}</span>
+                <div className="grid gap-1">
+                  <span className="flex items-center gap-1.5" style={{ color: 'var(--text-3)' }}><Shield size={13} aria-hidden /> Permission</span>
+                  <MenuSelect
+                    label="Permission mode"
+                    value={permissionModeId}
+                    options={permissionModes.map((mode) => ({
+                      value: mode.id,
+                      label: mode.name,
+                      description: mode.description,
+                      icon: permissionModeIcon(mode.id),
+                    }))}
+                    onChange={onSelectPermissionMode}
+                  />
+                </div>
+                <div className="grid gap-1">
+                  <span className="flex items-center gap-1.5" style={{ color: 'var(--text-3)' }}><ShieldAlert size={13} aria-hidden /> Command safety</span>
+                  <MenuSelect
+                    label="Command safety tier"
+                    value={commandSafetyTier}
+                    onChange={(value) => onSetCommandSafetyTier(value as 'low' | 'medium' | 'high')}
+                    options={[
+                      { value: 'low', label: 'Low', description: 'Warn about a smaller set of risky commands.', icon: <Shield size={14} /> },
+                      { value: 'medium', label: 'Medium', description: 'Balanced command warnings.', icon: <ShieldCheck size={14} /> },
+                      { value: 'high', label: 'High', description: 'Warn before more potentially risky commands.', icon: <ShieldAlert size={14} /> },
+                    ]}
+                  />
                 </div>
                 <div className="flex justify-between gap-3">
                   <span style={{ color: 'var(--text-3)' }}>Memory</span>

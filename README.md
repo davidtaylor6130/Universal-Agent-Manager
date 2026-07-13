@@ -30,6 +30,8 @@ Light theme:
 - **Local-first storage** — Chat metadata, settings, folders, theme, window/sidebar state, markdown store, and durable memory are all stored locally as files. No cloud, no telemetry.
 - **Git worktree isolation** — Optional per-chat git worktree create, status, diff, commit, discard, and port workflows.
 - **Workspace folders** — One-level workspace folders drive provider working directories and Gemini history discovery.
+- **Command safety** — Low, medium, and high safety tiers gate risky commands, with permission modes available from chat settings and the slash-command menu.
+- **Finder and Explorer actions** — Configurable per-user shell actions open selected files and folders as workspaces or run Markdown Store skills.
 - **Durable memory** — Idle extraction and manual scans write durable memory files, with workspace-local memories under `<workspace>/.codex/memories/`. Memory library supports browsing, scanning, and categorizing lessons and failures.
 - **Goal system** — Plan-driven multi-step goals with auto-resume, loop detection, and stall watchdog.
 - **Concurrent sessions** — Multiple CLI and structured runtime sessions run side by side on macOS and Windows.
@@ -284,7 +286,7 @@ Current bridge capabilities include:
 
 ## Known Issues & Status
 
-This is an actively developed project; the latest stable line is published as release `v4.0.2`. Tracked gaps live in [GitHub Issues](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues). Current focus areas:
+This is an actively developed project; the latest stable line is published as release `v4.1.0`. Tracked gaps live in [GitHub Issues](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues). Current focus areas:
 
 - The in-app goal loop has been significantly improved (stall watchdog, loop detection, keep-awake) but edge cases remain around continuation, failure surfacing, and stop conditions.
 - The polished "Interactive" view (CLI power with chat-bubble overlay) is planned but not yet implemented.

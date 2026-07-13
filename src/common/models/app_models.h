@@ -155,6 +155,7 @@ struct ChatSession
 	std::string workspace_worktree_directory;
 	std::string approval_mode;
 	bool auto_approve_commands = false;
+	std::string command_safety_tier = "medium";
 	std::string model_id;
 	std::string reasoning_effort;
 	std::string service_tier;
@@ -199,6 +200,17 @@ struct ChatFolder
 	std::string title;
 	std::string directory;
 	bool collapsed = false;
+};
+
+struct ShellAction
+{
+	std::string id;
+	std::string label;
+	std::string skill_path;
+	bool accepts_files = true;
+	bool accepts_folders = true;
+	bool enabled = true;
+	bool open_workspace = false;
 };
 
 /// <summary>

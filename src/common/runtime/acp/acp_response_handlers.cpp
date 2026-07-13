@@ -30,7 +30,7 @@ void HandleAcpRequest(AppState& app, AcpSessionState& session, ChatSession& chat
 
 	if (method == uam::acp_methods::kSessionRequestPermission)
 	{
-		HandlePermissionRequest(session, chat, message);
+		HandlePermissionRequest(app, session, chat, message);
 		return;
 	}
 

@@ -52,6 +52,8 @@ namespace
 	std::string g_last_pushed_providers_fingerprint;
 	std::string g_last_pushed_settings_fingerprint;
 	std::string g_last_pushed_memory_fingerprint;
+	std::string g_last_pushed_shell_actions_fingerprint;
+	std::string g_last_pushed_shell_action_notification;
 	std::string g_last_pushed_selected_chat_id;
 
 	/// Posts a window.uamPush(json) call to the browser's main frame.
@@ -87,6 +89,8 @@ namespace
 		g_last_pushed_providers_fingerprint = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "providers").dump();
 		g_last_pushed_settings_fingerprint = SerializeSettingsForPatch(app).dump();
 		g_last_pushed_memory_fingerprint = uam::nlohmann_json::ObjectFieldOrEmpty(fingerprint_state, "memoryActivity").dump();
+		g_last_pushed_shell_actions_fingerprint = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "shellActions").dump();
+		g_last_pushed_shell_action_notification = uam::nlohmann_json::TrimmedStringValue(fingerprint_state, {"shellActionNotification"});
 		g_last_pushed_selected_chat_id = ChatDomainService().SelectedChatId(app);
 		g_last_pushed_message_digests_by_chat_id.clear();
 		g_last_pushed_chat_summaries_by_chat_id.clear();
@@ -343,6 +347,16 @@ namespace
 
 		const nlohmann::json memory = uam::nlohmann_json::ObjectFieldOrEmpty(fingerprint_state, "memoryActivity");
 		AddChangedJsonField(data, "memoryActivity", memory, g_last_pushed_memory_fingerprint);
+
+		const nlohmann::json shell_actions = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "shellActions");
+		AddChangedJsonField(data, "shellActions", shell_actions, g_last_pushed_shell_actions_fingerprint);
+
+		const std::string shell_notification = uam::nlohmann_json::TrimmedStringValue(fingerprint_state, {"shellActionNotification"});
+		if (shell_notification != g_last_pushed_shell_action_notification)
+		{
+			data["shellActionNotification"] = shell_notification;
+			g_last_pushed_shell_action_notification = shell_notification;
+		}
 
 		if (selected_chat_id != g_last_pushed_selected_chat_id)
 		{

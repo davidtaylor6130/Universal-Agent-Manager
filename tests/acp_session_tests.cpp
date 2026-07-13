@@ -1584,3 +1584,33 @@ UAM_TEST(AutoApproveOptionIdMatchesAcpOptionKindsAndCommonLabels)
 	tricky.options.push_back(tricky_reject);
 	UAM_ASSERT_EQ(uam::AutoApproveOptionIdForTests(tricky), std::string(""));
 }
+
+UAM_TEST(CommandSafetyAppliesToStandardAcpExecutePermissions)
+{
+	TempDir temp("uam-acp-command-safety");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "gemini-cli";
+	chat.workspace_directory = temp.root.string();
+	chat.command_safety_tier = "low";
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->provider_id = "gemini-cli";
+	session->protocol_kind = "gemini-acp";
+	session->running = true;
+	session->processing = true;
+	session->session_ready = true;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":5,"method":"session/request_permission","params":{"toolCall":{"toolCallId":"tool-1","title":"Write file","kind":"execute","status":"pending","content":{"type":"text","text":"echo hello > output.txt"}},"options":[{"optionId":"allow-once","name":"Allow once","kind":"allow_once"},{"optionId":"deny","name":"Deny","kind":"reject_once"}]}})"));
+	UAM_ASSERT(raw_session->waiting_for_permission);
+	UAM_ASSERT_EQ(raw_session->pending_permission.safety_risk, std::string("warn"));
+	UAM_ASSERT_EQ(raw_session->pending_permission.safety_tier, std::string("low"));
+	UAM_ASSERT(raw_session->pending_permission.safety_requires_approval);
+}

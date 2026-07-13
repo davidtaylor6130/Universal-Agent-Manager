@@ -157,6 +157,10 @@ namespace uam
 		std::string kind;
 		std::string status;
 		std::string content;
+		std::string safety_risk;
+		std::string safety_tier;
+		bool safety_requires_approval = false;
+		bool version_controlled_workspace = false;
 		std::vector<AcpPermissionOptionState> options;
 	};
 
@@ -368,6 +372,8 @@ namespace uam
 		fs::path native_history_chats_dir;
 		AppSettings settings;
 		std::vector<ChatFolder> folders;
+		std::vector<ShellAction> shell_actions;
+		std::string shell_action_notification;
 		std::vector<ProviderProfile> provider_profiles;
 		uam::FrontendActionMap frontend_actions;
 

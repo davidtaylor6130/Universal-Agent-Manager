@@ -28,6 +28,7 @@ import {
   isCodexProvider,
   isCopilotProvider,
   isOpenCodeProvider,
+  providerCapabilities,
   providerRuntimeKindLabel,
   providerShortName,
 } from '../../utils/providerMetadata'
@@ -80,7 +81,7 @@ import {
   ComposerIcon,
   ComposerToolbar,
 } from '../chat/Composer'
-import { ChevronDown, Check } from 'lucide-react'
+import { Brain, BookOpen, Check, ChevronDown, ClipboardList, Cpu, FileText, Paperclip, Shield, ShieldCheck, Sparkles, SquarePen, Target } from 'lucide-react'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { Button, IconButton } from '../ui'
 
@@ -100,6 +101,13 @@ interface SelectedToolCallRef {
 
 const PLAN_APPROVE_PROMPT = 'Proceed with the plan.'
 const PLAN_DENY_PROMPT = 'Do not proceed with this plan. Please revise it before making changes.'
+
+function permissionModeIcon(id: string): ReactNode {
+  if (id === 'auto') return <Sparkles size={15} />
+  if (id === 'plan') return <ClipboardList size={15} />
+  if (id === 'acceptEdits') return <SquarePen size={15} />
+  return <ShieldCheck size={15} />
+}
 
 type LocalAttachmentStatus = 'ready' | 'staging' | 'failed'
 interface LocalAttachment extends Attachment {
@@ -157,6 +165,8 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   const [goalSubmitting, setGoalSubmitting] = useState(false)
   const [goalArmNextMessage, setGoalArmNextMessage] = useState(false)
   const [slashIndex, setSlashIndex] = useState(0)
+  const [slashMessage, setSlashMessage] = useState('')
+  const [permissionMenuOpen, setPermissionMenuOpen] = useState(false)
   const [composerAttachments, setComposerAttachments] = useState<LocalAttachment[]>([])
   const [attachmentError, setAttachmentError] = useState('')
   const [renderedMessageCount, setRenderedMessageCount] = useState(INITIAL_RENDERED_MESSAGES)
@@ -177,6 +187,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   const setSessionCodexOptions = useAppStore((s) => s.setSessionCodexOptions)
   const setSessionApprovalMode = useAppStore((s) => s.setSessionApprovalMode)
   const setSessionAutoApproveCommands = useAppStore((s) => s.setSessionAutoApproveCommands)
+  const setSessionCommandSafetyTier = useAppStore((s) => s.setSessionCommandSafetyTier)
   const setSessionMemoryEnabled = useAppStore((s) => s.setSessionMemoryEnabled)
   const openSessionWorkspace = useAppStore((s) => s.openSessionWorkspace)
   const openSessionWorkspaceEditor = useAppStore((s) => s.openSessionWorkspaceEditor)
@@ -286,6 +297,8 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
     setWorkspaceActionMessage('')
     setWorkspaceActionBusy(false)
     setGoalArmNextMessage(false)
+    setSlashMessage('')
+    setPermissionMenuOpen(false)
     setRenderedMessageCount(INITIAL_RENDERED_MESSAGES)
   }, [session.id])
 
@@ -621,6 +634,62 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   )
   const currentModelId = acp?.currentModelId || session.modelId || ''
   const currentModeId = acp?.currentModeId || session.approvalMode || 'default'
+  const permissionModes = useMemo(() => {
+    const modes = (acp?.availableModes.length ?? 0) > 0
+      ? [...acp!.availableModes]
+      : [
+          { id: 'default', name: 'Default', description: 'Use the provider default permission mode.' },
+          { id: 'plan', name: 'Plan', description: 'Plan before implementation.' },
+        ]
+    if ((acp?.availableModes.length ?? 0) === 0 && providerCapabilities(currentProviderId, currentProvider).hasAcceptEditsMode) {
+      modes.push({ id: 'acceptEdits', name: 'Accept Edits', description: 'Allow file edits while keeping command approvals.' })
+    }
+    if (!modes.some((mode) => mode.id === 'auto')) {
+      modes.push({ id: 'auto', name: 'Auto Decide', description: 'Automatically approve requests that command safety allows.' })
+    }
+    return modes
+  }, [acp?.availableModes, currentProvider, currentProviderId])
+  const selectedPermissionModeId = session.autoApproveCommands ? 'auto' : currentModeId
+  const applyPermissionMode = async (modeId: string) => {
+    if (!providerSupported || !currentProvider.supportsStructured) return false
+    if (modeId === 'auto') {
+      return session.autoApproveCommands || await setSessionAutoApproveCommands(session.id, true)
+    }
+    if (session.autoApproveCommands && !await setSessionAutoApproveCommands(session.id, false)) return false
+    return modeId === currentModeId || await setSessionApprovalMode(session.id, modeId)
+  }
+  const selectPermissionMode = async (modeId: string) => {
+    const mode = permissionModes.find((candidate) => candidate.id === modeId)
+    if (!mode) return
+    const changed = await applyPermissionMode(mode.id)
+    setSlashMessage(changed ? `Permission mode changed to ${mode.name}.` : `Failed to change permission mode to ${mode.name}.`)
+  }
+  const runPermissionCommand = async (rawMode?: string) => {
+    setDraft('')
+    setSlashIndex(0)
+    setPermissionMenuOpen(false)
+    if (!providerSupported || !currentProvider.supportsStructured) {
+      setSlashMessage(`Permission-mode changes are unavailable for ${currentProviderName}.`)
+      return
+    }
+
+    if (!rawMode) {
+      setPermissionMenuOpen(true)
+      return
+    }
+
+    const normalized = rawMode.trim().toLowerCase()
+    const requested = permissionModes.find((mode) =>
+      mode.id.toLowerCase() === normalized || mode.name.toLowerCase().replace(/\s+/g, '-') === normalized
+    )
+    if (!requested) {
+      setSlashMessage(`Unsupported permission mode "${rawMode}". Supported: ${permissionModes.map((mode) => mode.id).join(', ')}.`)
+      return
+    }
+
+    const changed = await applyPermissionMode(requested.id)
+    setSlashMessage(changed ? `Permission mode changed to ${requested.name}.` : `Failed to change permission mode to ${requested.name}.`)
+  }
   const latestPlanMessageIndex = messages.reduce((latest, message, index) => {
     const hasPlan = message.role === 'assistant' && (Boolean(message.planSummary?.trim()) || (message.planEntries?.length ?? 0) > 0)
     return hasPlan ? index : latest
@@ -682,42 +751,58 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   // a traversable menu of UAM actions (Codex-style), filtered by what follows.
   const slashCommands = useMemo(
     () => [
-      { id: 'model', label: '/model', hint: 'Change the model', run: () => setModelOpen(true) },
-      { id: 'goal', label: '/goal', hint: 'Use the next message as a goal', run: handleToggleGoal },
+      { id: 'model', label: '/model', hint: 'Change the model', icon: <Cpu size={15} />, run: () => setModelOpen(true) },
+      { id: 'permission', label: '/permission', hint: 'Choose the permission mode', icon: <Shield size={15} />, run: () => void runPermissionCommand() },
+      { id: 'goal', label: '/goal', hint: 'Use the next message as a goal', icon: <Target size={15} />, run: handleToggleGoal },
       {
         id: 'memory',
         label: '/memory',
         hint: (session.memoryEnabled ?? true) ? 'Disable memory' : 'Enable memory',
+        icon: <Brain size={15} />,
         run: () => void setSessionMemoryEnabled(session.id, !(session.memoryEnabled ?? true)),
       },
-      { id: 'attach', label: '/attach', hint: 'Attach files', run: () => fileInputRef.current?.click() },
-      { id: 'markdown', label: '/markdown', hint: 'Open the markdown store', run: () => void openMarkdownStore() },
+      { id: 'attach', label: '/attach', hint: 'Attach files', icon: <Paperclip size={15} />, run: () => fileInputRef.current?.click() },
+      { id: 'markdown', label: '/markdown', hint: 'Open the markdown store', icon: <BookOpen size={15} />, run: () => void openMarkdownStore() },
       ...markdownStoreEntries.map((entry) => ({
         id: `md:${entry.id}`,
         label: '/' + entry.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
         hint: entry.review || entry.preview || 'Attach markdown store skill',
+        icon: <FileText size={15} />,
         run: () => attachMarkdownStoreEntry(session.id, entry),
       })),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [session.id, session.memoryEnabled, markdownStoreEntries]
+    [session.id, session.memoryEnabled, session.autoApproveCommands, markdownStoreEntries, currentModeId, permissionModes, providerSupported, currentProviderName]
   )
+  const permissionModeMatch = /^\/permission\s+([\w-]*)$/i.exec(draft)
   const slashMatch = /^\/([\w-]*)$/.exec(draft)
   const slashQuery = slashMatch ? slashMatch[1].toLowerCase() : null
-  const slashMatches = slashQuery !== null
-    ? slashCommands.filter((command) => command.label.slice(1).startsWith(slashQuery))
-    : []
-  const slashOpen = slashQuery !== null && slashMatches.length > 0
-  const slashPaletteVisible = slashQuery !== null
+  const permissionModeQuery = permissionMenuOpen ? '' : permissionModeMatch?.[1].toLowerCase()
+  const slashMatches = permissionModeQuery !== undefined
+    ? permissionModes
+        .filter((mode) => mode.id.toLowerCase().startsWith(permissionModeQuery) || mode.name.toLowerCase().replace(/\s+/g, '-').startsWith(permissionModeQuery))
+        .map((mode) => ({
+          id: `permission:${mode.id}`,
+          label: mode.name,
+          hint: `${mode.id === selectedPermissionModeId ? 'Current · ' : ''}${mode.description || `Use ${mode.name} permission mode`}`,
+          icon: permissionModeIcon(mode.id),
+          run: () => void runPermissionCommand(mode.id),
+        }))
+    : slashQuery !== null
+      ? slashCommands.filter((command) => command.label.slice(1).startsWith(slashQuery))
+      : []
+  const slashOpen = slashMatches.length > 0 && (slashQuery !== null || permissionModeQuery !== undefined)
+  const slashPaletteVisible = slashQuery !== null || permissionModeQuery !== undefined
   useEffect(() => {
     if (slashPaletteVisible && markdownStoreEntries.length === 0) {
       void refreshMarkdownStore()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slashPaletteVisible])
-  const runSlashCommand = (command: (typeof slashCommands)[number]) => {
+  const runSlashCommand = (command: { run: () => void }) => {
     setDraft('')
     setSlashIndex(0)
+    setPermissionMenuOpen(false)
     command.run()
   }
 
@@ -741,8 +826,15 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
       if (event.key === 'Escape') {
         event.preventDefault()
         setDraft('')
+        setPermissionMenuOpen(false)
         return
       }
+    }
+    const permissionCommand = /^\/permission(?:\s+(\S+))?\s*$/i.exec(draft)
+    if (event.key === 'Enter' && !event.shiftKey && permissionCommand) {
+      event.preventDefault()
+      void runPermissionCommand(permissionCommand[1])
+      return
     }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
@@ -1258,6 +1350,11 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                 </div>
               </div>
             )}
+            {slashMessage && (
+              <div role="status" className="mb-2 rounded-md px-3 py-2 text-[11px]" style={{ color: 'var(--text-2)', border: '1px solid var(--border)', background: 'var(--surface-up)' }}>
+                {slashMessage}
+              </div>
+            )}
             <div
               onDragOver={(event) => event.preventDefault()}
               onDrop={onComposerDrop}
@@ -1334,10 +1431,11 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                   className="absolute left-3 right-3 z-40 overflow-hidden rounded-lg"
                   style={{ bottom: 4, border: '1px solid var(--border-bright)', background: 'var(--surface)', boxShadow: 'var(--elev-3)' }}
                   role="listbox"
-                  aria-label="Slash commands"
+                  aria-label={permissionModeQuery !== undefined ? 'Permission modes' : 'Slash commands'}
                 >
-                  <div className="px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)', borderBottom: '1px solid var(--border)' }}>
-                    Commands
+                  <div className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)', borderBottom: '1px solid var(--border)' }}>
+                    {permissionModeQuery !== undefined ? <Shield size={12} aria-hidden /> : <BookOpen size={12} aria-hidden />}
+                    {permissionModeQuery !== undefined ? 'Permission mode' : 'Commands'}
                   </div>
                   <div className="overflow-y-auto" style={{ maxHeight: 360 }}>
                   {slashMatches.map((command, index) => {
@@ -1348,14 +1446,17 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                         type="button"
                         role="option"
                         aria-selected={active}
-                        ref={active ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
+                        ref={active ? (el) => el?.scrollIntoView?.({ block: 'nearest' }) : undefined}
                         onMouseEnter={() => setSlashIndex(index)}
                         onMouseDown={(e) => { e.preventDefault(); runSlashCommand(command) }}
-                        className="flex w-full items-baseline gap-3 px-3 py-2 text-left"
+                        className="flex w-full items-start gap-2.5 px-3 py-2 text-left"
                         style={{ background: active ? 'var(--accent-dim)' : 'transparent', color: active ? 'var(--text)' : 'var(--text-2)' }}
                       >
-                        <span className="font-mono text-sm" style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>{command.label}</span>
-                        <span className="min-w-0 flex-1 truncate text-xs" style={{ color: 'var(--text-3)' }}>{command.hint}</span>
+                        <span aria-hidden className="mt-0.5 shrink-0" style={{ color: active ? 'var(--accent)' : 'var(--text-2)' }}>{command.icon}</span>
+                        <span className="min-w-0 flex-1">
+                          <span className={permissionModeQuery === undefined ? 'block font-mono text-sm' : 'block text-sm'} style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>{command.label}</span>
+                          <span className="block truncate text-xs" style={{ color: 'var(--text-3)' }}>{command.hint}</span>
+                        </span>
                       </button>
                     )
                   })}
@@ -1365,7 +1466,10 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
             )}
             <textarea
               value={draft}
-              onChange={(event) => setDraft(event.target.value)}
+              onChange={(event) => {
+                setDraft(event.target.value)
+                setPermissionMenuOpen(false)
+              }}
               onKeyDown={onComposerKeyDown}
               onPaste={onComposerPaste}
               rows={3}
@@ -1405,7 +1509,10 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
               reasoningEffort={session.reasoningEffort ?? ''}
               serviceTier={session.serviceTier ?? ''}
               approvalModeId={currentModeId}
+              permissionModeId={selectedPermissionModeId}
+              permissionModes={permissionModes}
               autoApproveCommands={session.autoApproveCommands ?? false}
+              commandSafetyTier={session.commandSafetyTier ?? 'medium'}
               memoryEnabled={session.memoryEnabled ?? true}
               canChangeProvider={canChangeProvider}
               providerOpen={providerOpen}
@@ -1484,6 +1591,8 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
               onToggleYolo={() => {
                 void setSessionAutoApproveCommands(session.id, !(session.autoApproveCommands ?? false))
               }}
+              onSelectPermissionMode={(modeId) => void selectPermissionMode(modeId)}
+              onSetCommandSafetyTier={(tier) => void setSessionCommandSafetyTier(session.id, tier)}
               onToggleMemory={() => {
                 void setSessionMemoryEnabled(session.id, !(session.memoryEnabled ?? true))
               }}

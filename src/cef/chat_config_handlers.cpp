@@ -15,6 +15,7 @@
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_lifecycle.h"
+#include "common/security/command_safety.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
 
@@ -513,6 +514,39 @@ void UamQueryHandler::HandleSetChatAutoApproveCommands(CefRefPtr<CefBrowser> bro
 
 	if (enabled && !AutoApprovePendingAcpPermissionOrFail(m_app, chat->id, cb))
 	{
+		return;
+	}
+
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleSetChatCommandSafetyTier(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const std::string requested = uam::strings::ToLowerAscii(uam::strings::Trim(payload.value("commandSafetyTier", "")));
+	if (requested != "low" && requested != "medium" && requested != "high")
+	{
+		cb->Failure(400, "Command safety tier must be low, medium, or high.");
+		return;
+	}
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (chat == nullptr) return;
+	if (chat->command_safety_tier == requested)
+	{
+		cb->Success("{}");
+		return;
+	}
+
+	const std::string previous = chat->command_safety_tier;
+	const std::string previous_updated_at = chat->updated_at;
+	chat->command_safety_tier = requested;
+	chat->updated_at = uam::time::TimestampNow();
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Command safety tier updated.", "Command safety tier changed in UI, but failed to save."))
+	{
+		chat->command_safety_tier = previous;
+		chat->updated_at = previous_updated_at;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist command safety tier."));
 		return;
 	}
 

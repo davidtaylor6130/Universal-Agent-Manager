@@ -318,7 +318,7 @@ void HandleCodexToolItem(AcpSessionState& session, ChatSession& chat, const nloh
 	(void)SyncAcpToolCallsToAssistantMessage(chat, session, false);
 }
 
-void HandleCodexPendingPermission(AcpSessionState& session, ChatSession& chat, const nlohmann::json& message, const std::string& kind)
+void HandleCodexPendingPermission(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message, const std::string& kind)
 {
 	if (uam::AcpSessionHasPendingCancel(session))
 	{
@@ -383,6 +383,7 @@ void HandleCodexPendingPermission(AcpSessionState& session, ChatSession& chat, c
 		tracked_tool_call.content = pending.content;
 	}
 	AppendPermissionTurnEventIfNeeded(session, pending.request_id_json, pending.tool_call_id);
+	ApplyCommandSafetyDecision(app, chat, pending);
 	session.pending_permission = std::move(pending);
 	if (TryAutoApprovePendingPermission(session, chat))
 	{
@@ -672,17 +673,17 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 	}
 	if (method == uam::acp_methods::kItemCommandExecutionRequestApproval)
 	{
-		HandleCodexPendingPermission(session, chat, message, uam::acp_permissions::kCodexCommandRequestKind);
+		HandleCodexPendingPermission(app, session, chat, message, uam::acp_permissions::kCodexCommandRequestKind);
 		return;
 	}
 	if (method == uam::acp_methods::kItemFileChangeRequestApproval)
 	{
-		HandleCodexPendingPermission(session, chat, message, uam::acp_permissions::kCodexFileRequestKind);
+		HandleCodexPendingPermission(app, session, chat, message, uam::acp_permissions::kCodexFileRequestKind);
 		return;
 	}
 	if (method == uam::acp_methods::kItemPermissionsRequestApproval)
 	{
-		HandleCodexPendingPermission(session, chat, message, uam::acp_permissions::kCodexPermissionsRequestKind);
+		HandleCodexPendingPermission(app, session, chat, message, uam::acp_permissions::kCodexPermissionsRequestKind);
 		return;
 	}
 	if (method == uam::acp_methods::kItemToolRequestUserInput)

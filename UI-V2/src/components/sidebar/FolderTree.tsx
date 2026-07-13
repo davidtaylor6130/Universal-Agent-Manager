@@ -1,6 +1,6 @@
 import { memo, useEffect, useId, useRef, useState, useMemo } from 'react'
 import type { ReactNode } from 'react'
-import { Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, X, MoreHorizontal, MessageSquarePlus, Brain, Pencil, Trash2 } from 'lucide-react'
+import { Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, X, MoreHorizontal, MessageSquarePlus, Brain, Pencil, Trash2, TriangleAlert } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { SessionItem } from './SessionItem'
@@ -594,6 +594,17 @@ const FolderRow = memo(function FolderRow({
         <span className="font-semibold truncate flex-1" style={{ fontSize: 13 }}>
           {folder.name}
         </span>
+        {folder.missing && (
+          <span
+            role="img"
+            aria-label={`Workspace folder missing: ${folder.directory}`}
+            title={`Workspace folder missing: ${folder.directory}`}
+            data-testid={`folder-missing-${folder.id}`}
+            style={{ color: 'var(--yellow)', flexShrink: 0 }}
+          >
+            <TriangleAlert size={14} aria-hidden />
+          </span>
+        )}
         {/* Count */}
         <span
           className="text-xs flex-shrink-0 rounded px-1 group-hover:opacity-0 transition-opacity duration-100"

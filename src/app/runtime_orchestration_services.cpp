@@ -385,6 +385,7 @@ namespace
 		native.workspace_directory = local.workspace_directory;
 		native.approval_mode = local.approval_mode;
 		native.auto_approve_commands = local.auto_approve_commands;
+		native.command_safety_tier = local.command_safety_tier;
 		native.model_id = local.model_id;
 		native.extra_flags = local.extra_flags;
 		if (!uam::strings::IsBlank(local.last_opened_at))

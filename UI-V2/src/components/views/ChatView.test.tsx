@@ -116,6 +116,9 @@ describe('ChatView', () => {
             kind: 'read',
             status: 'pending',
             content: 'Read /tmp/project/file.txt',
+            safetyRisk: 'warn',
+            safetyTier: 'low',
+            safetyRequiresApproval: true,
             options: [{ id: 'allow-once', name: 'Allow once', kind: 'allow_once' }],
           },
           pendingUserInput: null,
@@ -267,6 +270,7 @@ describe('ChatView', () => {
       button.textContent?.includes('Allow once')
     )
     expect(allowButton).toBeTruthy()
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Command safety warning (low tier)')
 
     act(() => {
       allowButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -543,6 +547,108 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('changes the per-chat command safety tier from chat settings', () => {
+    const setSessionCommandSafetyTier = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => ({ ...session, commandSafetyTier: 'medium' as const })),
+      setSessionCommandSafetyTier,
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    act(() => (host.querySelector('button[title="Settings"]') as HTMLButtonElement).click())
+
+    const selector = host.querySelector('button[aria-label="Command safety tier"]') as HTMLButtonElement
+    expect(selector.textContent).toContain('Medium')
+    expect(host.querySelector('select')).toBeNull()
+    act(() => selector.click())
+    const low = Array.from(host.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Low')) as HTMLButtonElement
+    act(() => low.click())
+    expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'low')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('discovers, inspects, validates, and applies permission slash commands', async () => {
+    const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
+    const setSessionAutoApproveCommands = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+          availableModes: [
+            { id: 'default', name: 'Default', description: '' },
+            { id: 'plan', name: 'Plan', description: '' },
+          ],
+          currentModeId: 'default',
+        },
+      },
+      setSessionApprovalMode,
+      setSessionAutoApproveCommands,
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    const setDraft = (value: string) => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, value)
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+
+    act(() => setDraft('/p'))
+    expect(host.querySelector('[aria-label="Slash commands"]')?.textContent).toContain('/permission')
+
+    await act(async () => {
+      setDraft('/permission')
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    const permissionMenu = host.querySelector('[aria-label="Permission modes"]')
+    expect(textarea.value).toBe('')
+    expect(permissionMenu?.textContent).toContain('Default')
+    expect(permissionMenu?.textContent).toContain('Plan')
+    expect(permissionMenu?.textContent).toContain('Auto Decide')
+    expect(permissionMenu?.querySelector('svg')).not.toBeNull()
+    expect(textarea.parentElement?.querySelector('[role="status"]')).toBeNull()
+    expect(setSessionApprovalMode).not.toHaveBeenCalled()
+
+    const slashAutoDecide = Array.from(permissionMenu?.querySelectorAll('[role="option"]') ?? []).find((option) => option.textContent?.includes('Auto Decide')) as HTMLButtonElement
+    await act(async () => { slashAutoDecide.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })) })
+    expect(setSessionAutoApproveCommands).toHaveBeenCalledWith('chat-1', true)
+    expect(host.querySelector('[role="status"]')?.textContent).toContain('Permission mode changed to Auto Decide.')
+
+    act(() => (host.querySelector('button[title="Settings"]') as HTMLButtonElement).click())
+    const permission = host.querySelector('button[aria-label="Permission mode"]') as HTMLButtonElement
+    expect(permission.textContent).toContain('Default')
+    act(() => permission.click())
+    const autoDecide = Array.from(host.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Auto Decide')) as HTMLButtonElement
+    expect(autoDecide).toBeTruthy()
+    act(() => (host.querySelector('button[title="Settings"]') as HTMLButtonElement).click())
+
+    await act(async () => {
+      setDraft('/permission plan')
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'plan')
+    expect(host.querySelector('[role="status"]')?.textContent).toContain('Permission mode changed to Plan.')
+
+    await act(async () => {
+      setDraft('/permission unrestricted')
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(setSessionApprovalMode).toHaveBeenCalledTimes(1)
+    expect(host.querySelector('[role="status"]')?.textContent).toContain('Unsupported permission mode "unrestricted"')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('renders Codex runtime model options without Gemini fallback labels', () => {
     const setSessionModel = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
@@ -607,6 +713,96 @@ describe('ChatView', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('navigates long model lists with the keyboard and keeps them scrollable', () => {
+    const setSessionModel = vi.fn(() => Promise.resolve(true))
+    const availableModels = Array.from({ length: 12 }, (_, index) => ({
+      id: `model-${index}`,
+      name: `Model ${index}`,
+      description: `Model ${index} detail`,
+    }))
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1' ? { ...session, providerId: 'codex-cli', modelId: 'model-0' } : session
+      ),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          providerId: 'codex-cli',
+          lifecycleState: 'ready',
+          processing: false,
+          availableModels,
+          currentModelId: 'model-0',
+        },
+      },
+      setSessionModel,
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const trigger = host.querySelector('button[title="Select model"]') as HTMLButtonElement
+    expect(trigger.getAttribute('aria-haspopup')).toBe('listbox')
+    act(() => trigger.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+
+    const listbox = host.querySelector('[role="listbox"]') as HTMLDivElement
+    const options = Array.from(listbox.querySelectorAll<HTMLButtonElement>('[role="option"]'))
+    expect(options).toHaveLength(13)
+    expect((listbox.lastElementChild as HTMLElement).style.maxHeight).toBe('520px')
+    expect((listbox.lastElementChild as HTMLElement).style.overflowY).toBe('auto')
+    expect(document.activeElement?.textContent).toContain('Model 0')
+
+    act(() => listbox.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
+    expect(document.activeElement?.textContent).toContain('Model 1')
+    act(() => listbox.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    expect(setSessionModel).toHaveBeenCalledWith('chat-1', 'model-1')
+    expect(document.activeElement).toBe(trigger)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('hides only repeated Copilot model details', () => {
+    useAppStore.setState((state) => ({
+      providers: [
+        ...state.providers,
+        { id: 'copilot-cli', name: 'GitHub Copilot CLI', shortName: 'Copilot', color: '#fff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'copilot-acp' },
+      ],
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1' ? { ...session, providerId: 'copilot-cli', modelId: '' } : session
+      ),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          providerId: 'copilot-cli',
+          lifecycleState: 'ready',
+          processing: false,
+          availableModels: [
+            { id: 'gpt-5.4', name: 'gpt-5.4', description: '' },
+            { id: 'claude-opus', name: 'Claude Opus', description: 'Best for complex tasks' },
+          ],
+          currentModelId: '',
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    act(() => (host.querySelector('button[title="Select model"]') as HTMLButtonElement).click())
+
+    const repeated = Array.from(host.querySelectorAll<HTMLElement>('[role="option"]')).find((option) => option.textContent?.includes('gpt-5.4'))
+    expect(repeated?.textContent?.match(/gpt-5\.4/g)).toHaveLength(1)
+    expect(host.textContent).toContain('Best for complex tasks')
+
+    act(() => root.unmount())
     host.remove()
   })
 
@@ -822,7 +1018,7 @@ describe('ChatView', () => {
     expect(modelButton?.disabled).toBe(true)
     openComposerOptions(host)
     expect((host.querySelector('button[title^="Toggle planning mode"]') as HTMLButtonElement | null)?.disabled).toBe(true)
-    expect((host.querySelector('button[title="Toggle Yolo mode"]') as HTMLButtonElement | null)?.disabled).toBe(false)
+    expect((host.querySelector('button[title="Toggle Auto Decide mode"]') as HTMLButtonElement | null)?.disabled).toBe(false)
 
     act(() => {
       modelButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -954,7 +1150,7 @@ describe('ChatView', () => {
     })
 
     openComposerOptions(host)
-    const yoloButton = host.querySelector('button[title="Toggle Yolo mode"]') as HTMLButtonElement | null
+    const yoloButton = host.querySelector('button[title="Toggle Auto Decide mode"]') as HTMLButtonElement | null
     expect(yoloButton).toBeTruthy()
     expect(yoloButton?.disabled).toBe(false)
     expect(yoloButton?.getAttribute('aria-pressed')).toBe('false')
@@ -1079,11 +1275,11 @@ describe('ChatView', () => {
 
     openComposerOptions(host)
     const acceptEditsButton = host.querySelector('button[title="Toggle Accept Edits mode. Claude can edit workspace files without prompting."]') as HTMLButtonElement | null
-    const autoButton = host.querySelector('button[title="Toggle Auto mode"]') as HTMLButtonElement | null
+    const autoButton = host.querySelector('button[title="Toggle Auto Decide mode"]') as HTMLButtonElement | null
     expect(acceptEditsButton).toBeTruthy()
     expect(acceptEditsButton?.disabled).toBe(false)
     expect(acceptEditsButton?.textContent).toContain('Accept Edits')
-    expect(autoButton?.textContent).toContain('Auto')
+    expect(autoButton?.textContent).toContain('Auto Decide')
 
     act(() => {
       acceptEditsButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))

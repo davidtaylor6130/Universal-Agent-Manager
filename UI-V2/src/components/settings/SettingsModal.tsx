@@ -17,6 +17,7 @@ import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
 import { ChevronDown, ChevronRight, X, Check } from 'lucide-react'
 import { Button, IconButton } from '../ui'
+import { ShellActionsSettings } from './ShellActionsSettings'
 import {
   DEFAULT_PROVIDER_ID,
   providerCapabilities,
@@ -60,7 +61,7 @@ function selectedMemoryModelLabel(options: MemoryModelOption[], modelId: string)
   return options.find((option) => option.id === modelId)?.label ?? titleFromModelId(modelId)
 }
 
-type SettingsSectionId = 'appearance' | 'defaults' | 'cli-version' | 'memory-settings' | 'memory-store' | 'editors' | 'about'
+type SettingsSectionId = 'appearance' | 'defaults' | 'cli-version' | 'memory-settings' | 'memory-store' | 'editors' | 'shell-actions' | 'about'
 
 interface SettingsSection {
   id: SettingsSectionId
@@ -75,6 +76,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'memory-settings', label: 'Memory Settings', detail: 'Defaults and workers' },
   { id: 'memory-store', label: 'Memory Store', detail: 'Library and backfill' },
   { id: 'editors', label: 'Editors', detail: 'Workspace launch presets' },
+  { id: 'shell-actions', label: 'Shell Actions', detail: 'Finder and Explorer menus' },
   { id: 'about', label: 'About', detail: 'Version information' },
 ]
 
@@ -1400,6 +1402,10 @@ export function SettingsModal() {
       )
     }
 
+    if (selectedSection === 'shell-actions') {
+      return <ShellActionsSettings />
+    }
+
     return (
       <div className="space-y-4">
         <SectionCard
@@ -1413,7 +1419,7 @@ export function SettingsModal() {
             </div>
             <div className="flex justify-between gap-3">
               <span style={{ color: 'var(--text-3)' }}>Version</span>
-              <span style={{ color: 'var(--text)' }}>V4.0.2</span>
+              <span style={{ color: 'var(--text)' }}>V4.1.0</span>
             </div>
           </div>
         </SectionCard>

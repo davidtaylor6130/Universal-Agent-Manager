@@ -6,6 +6,7 @@
 #include "provider_model_catalog_service.h"
 #include "provider_resolution_service.h"
 #include "runtime_orchestration_services.h"
+#include "shell_action_service.h"
 #include "memory_service.h"
 
 #include "common/constants/app_constants.h"
@@ -49,6 +50,10 @@
 #include <unordered_set>
 #include <vector>
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 namespace fs = std::filesystem;
 
 // ---------------------------------------------------------------------------
@@ -67,6 +72,17 @@ namespace uam_cef_globals
 
 namespace
 {
+	std::string WorkspaceFolderAvailabilityFingerprint(const std::vector<ChatFolder>& folders)
+	{
+		std::string result;
+		for (const ChatFolder& folder : folders)
+		{
+			result += folder.id;
+			result.push_back('\0');
+			result.push_back(folder.directory.empty() || uam::paths::IsDirectoryNoThrow(uam::paths::PathFromUtf8(folder.directory)) ? '1' : '0');
+		}
+		return result;
+	}
 
 	bool IsMacAppBundleExecutable(const fs::path& exe_path)
 	{
@@ -287,12 +303,17 @@ Application::~Application()
 	m_platformServices = nullptr;
 }
 
-int Application::Run(CefMainArgs main_args)
+int Application::Run(CefMainArgs main_args, std::vector<std::string> launch_arguments)
 {
 	m_platformServices = &PlatformServicesFactory::Instance();
+	m_launchArguments = std::move(launch_arguments);
 
 	if (!InitializeState())
 	{
+		if (m_shellActionInvocation && m_exitCode == 0)
+		{
+			return 0;
+		}
 		return m_exitCode != 0 ? m_exitCode : 1;
 	}
 
@@ -325,6 +346,22 @@ void Application::PollTick()
 	uam::FlushPendingChatSaves(m_app);
 	const bool cli_terminals_changed = uam::PollAllCliTerminals(m_browser, m_app);
 	const bool memory_changed = MemoryService::ProcessDueMemoryWork(m_app);
+	const bool shell_actions_changed = ShellActionService::ProcessPendingRequests(m_app);
+	const std::string folder_availability = WorkspaceFolderAvailabilityFingerprint(m_app.folders);
+	const bool folder_availability_changed = folder_availability != m_workspaceFolderAvailabilityFingerprint;
+	m_workspaceFolderAvailabilityFingerprint = folder_availability;
+	if (shell_actions_changed && m_browser && m_browser->GetHost())
+	{
+		m_browser->GetHost()->SetFocus(true);
+#if defined(_WIN32)
+		const HWND window = m_browser->GetHost()->GetWindowHandle();
+		if (window != nullptr)
+		{
+			ShowWindow(window, SW_RESTORE);
+			SetForegroundWindow(window);
+		}
+#endif
+	}
 	ProviderCliCompatibilityService().Poll(m_app);
 
 	// Poll the provider model catalog service for async model refresh completion.
@@ -334,7 +371,7 @@ void Application::PollTick()
 		m_app.provider_model_catalog->MaybeStartRefresh();
 	}
 	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
-	const bool runtime_state_changed = pending_calls_changed || acp_sessions_changed || cli_terminals_changed || memory_changed;
+	const bool runtime_state_changed = pending_calls_changed || acp_sessions_changed || cli_terminals_changed || memory_changed || shell_actions_changed || folder_availability_changed;
 	const bool ui_relevant_state_changed = runtime_state_changed || provider_compatibility_changed || uam::HasDeferredStatePush();
 
 	// Push only when the serialized app state actually changed.
@@ -433,10 +470,23 @@ bool Application::InitializeState()
 		return false;
 	}
 
+	std::string shell_action_error;
+	if (!ShellActionService::QueueLaunchRequest(m_app.data_root, m_launchArguments, &m_shellActionInvocation, &shell_action_error))
+	{
+		std::fprintf(stderr, "%s\n", shell_action_error.c_str());
+		m_exitCode = 1;
+		return false;
+	}
+
 	std::string data_root_lock_error;
 	m_dataRootLock = m_platformServices->process_service.TryAcquireDataRootLock(m_app.data_root, &data_root_lock_error);
 	if (m_dataRootLock == nullptr)
 	{
+		if (m_shellActionInvocation)
+		{
+			m_exitCode = 0;
+			return false;
+		}
 		if (data_root_lock_error.empty())
 		{
 			data_root_lock_error = "Another Universal Agent Manager instance is already using this data root.";
@@ -470,6 +520,8 @@ bool Application::InitializeState()
 	}
 
 	m_app.folders = ChatFolderStore::Load(m_app.data_root);
+	m_workspaceFolderAvailabilityFingerprint = WorkspaceFolderAvailabilityFingerprint(m_app.folders);
+	m_app.shell_actions = ShellActionService::Load(m_app.data_root);
 
 	// Initialize the provider model catalog service (async refresh for OpenCode Zen models).
 	m_app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();

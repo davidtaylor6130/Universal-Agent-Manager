@@ -144,7 +144,21 @@ namespace uam::paths
 
 	inline std::string PortablePathString(const std::filesystem::path& path)
 	{
-		return path.generic_string();
+		const std::u8string value = path.generic_u8string();
+		return std::string(reinterpret_cast<const char*>(value.data()), value.size());
+	}
+
+	inline std::filesystem::path PathFromUtf8(std::string_view value)
+	{
+		if (value.empty()) return {};
+		const auto* begin = reinterpret_cast<const char8_t*>(value.data());
+		return std::filesystem::path(std::u8string(begin, begin + value.size()));
+	}
+
+	inline std::string Utf8PathString(const std::filesystem::path& path)
+	{
+		const std::u8string value = path.u8string();
+		return std::string(reinterpret_cast<const char*>(value.data()), value.size());
 	}
 
 	inline std::string NormalizedPortablePathString(const std::filesystem::path& path)
@@ -154,7 +168,7 @@ namespace uam::paths
 
 	inline std::string NormalizedNativePathString(const std::filesystem::path& path)
 	{
-		return LexicallyNormalPath(path).string();
+		return Utf8PathString(LexicallyNormalPath(path));
 	}
 
 	inline std::string NormalizeExistingPortablePathString(const std::filesystem::path& path)

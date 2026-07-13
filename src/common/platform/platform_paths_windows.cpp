@@ -29,7 +29,7 @@ class WindowsPathService final : public IPlatformPathService
 
 		if (trimmed[0] != '~')
 		{
-			return std::filesystem::path(trimmed);
+			return uam::paths::PathFromUtf8(trimmed);
 		}
 
 		if (const std::optional<std::filesystem::path> home = ResolveUserHomePath())
@@ -41,11 +41,11 @@ class WindowsPathService final : public IPlatformPathService
 
 			if (trimmed[1] == '\\' || trimmed[1] == '/')
 			{
-				return *home / trimmed.substr(2);
+				return *home / uam::paths::PathFromUtf8(trimmed.substr(2));
 			}
 		}
 
-		return std::filesystem::path(trimmed);
+		return uam::paths::PathFromUtf8(trimmed);
 	}
 };
 
