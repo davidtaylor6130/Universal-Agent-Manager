@@ -635,6 +635,10 @@ describe('useAppStore Gemini CLI slice', () => {
     state = cefStore.getState()
     expect(state.messages['chat-1'].map((message) => message.content)).toEqual(['replacement'])
 
+    testWindow.uamPush?.({ type: 'streamToken', chatId: 'chat-1', token: '? duplicated hint' })
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    expect(cefStore.getState().messages['chat-1'].map((message) => message.content)).toEqual(['replacement'])
+
     testWindow.uamPush?.({
       type: 'statePatch',
       data: {
