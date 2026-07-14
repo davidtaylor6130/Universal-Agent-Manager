@@ -574,6 +574,10 @@ bool Application::InitializeCef(CefMainArgs main_args)
 {
 	CefSettings settings;
 	settings.no_sandbox = true;
+	const fs::path cef_cache_path = m_app.data_root / "cef";
+	CefString(&settings.root_cache_path) = uam::paths::NormalizedNativePathString(cef_cache_path);
+	CefString(&settings.cache_path) = uam::paths::NormalizedNativePathString(cef_cache_path);
+	CefString(&settings.log_file) = uam::paths::NormalizedNativePathString(m_app.data_root / "cef.log");
 
 	// Resolve CEF resource paths relative to the executable.
 	CefString exe_dir_str;
