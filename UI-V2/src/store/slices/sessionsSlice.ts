@@ -203,7 +203,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     memoryIdleDelaySeconds: DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
     memoryRecallBudgetBytes: DEFAULT_MEMORY_RECALL_BUDGET_BYTES,
     goalMaxLoopIterations: DEFAULT_GOAL_MAX_LOOP_ITERATIONS,
-    appVersion: 'V4.1.0',
+    appVersion: 'V4.2.0',
     updateChecksEnabled: true,
     updateLastCheckedAt: '',
     dismissedUpdateVersions: {} as Record<string, string>,
@@ -267,7 +267,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
     loadSessionMessages: requestChatMessagesFromCef,
 
-    addSession: (name: string, folderId: string | null, providerId = GEMINI_CLI_PROVIDER_ID) => {
+    addSession: (name: string, folderId: string | null, providerId = GEMINI_CLI_PROVIDER_ID, modelId?: string) => {
       const current = get()
       const selectedFolderId = folderId && current.folders.some((folder) => folder.id === folderId)
         ? folderId
@@ -284,6 +284,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           ? normalizedDefaultProviderId
           : GEMINI_CLI_PROVIDER_ID
       const defaults = providerChatDefaultsForNewChat(current, requestedProviderId)
+      if (modelId !== undefined) defaults.modelId = modelId.trim()
 
       if (isCefContext()) {
         sendToCEF({
@@ -1622,6 +1623,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               sessionId,
               role: 'assistant',
               content: 'ACP dev mode response placeholder.',
+              providerId: state.sessions.find((session) => session.id === sessionId)?.providerId,
               createdAt: now,
             },
           ],

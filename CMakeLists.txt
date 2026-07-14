@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
-project(universal_agent_manager VERSION 4.1.0 LANGUAGES C CXX)
+project(universal_agent_manager VERSION 4.2.0 LANGUAGES C CXX)
 
 if(APPLE)
   enable_language(OBJCXX)
@@ -144,7 +144,7 @@ elseif(APPLE)
   else()
     set(CEF_PLATFORM "macosx64")
   endif()
-  set(CEF_VERSION "138.0.61+g664e74a+chromium-138.0.7204.308")
+  set(CEF_VERSION "146.0.10+g8219561+chromium-146.0.7680.179")
 else()
   set(CEF_PLATFORM "linux64")
   set(CEF_VERSION "138.0.61+g664e74a+chromium-138.0.7204.308")
@@ -222,6 +222,7 @@ if(WIN32)
   )
 elseif(APPLE)
   list(APPEND UAM_PLATFORM_IMPL_SOURCES
+    src/common/platform/platform_application_macos.mm
     src/common/platform/platform_services_macos_impl.cpp
     src/common/platform/platform_pty_macos.cpp
     src/common/platform/platform_process_macos.cpp
@@ -368,6 +369,7 @@ if(APPLE)
     nlohmann_json::nlohmann_json
     libcef_dll_wrapper
     "-Wl,-framework,Security"
+    "-Wl,-framework,AppKit"
     "-Wl,-framework,WebKit"
     "-Wl,-framework,IOKit"
     "-Wl,-framework,CoreFoundation"
@@ -862,6 +864,7 @@ if(UAM_BUILD_TESTS)
       nlohmann_json::nlohmann_json
       libcef_dll_wrapper
       "-Wl,-framework,Security"
+      "-Wl,-framework,AppKit"
       "-Wl,-framework,IOKit"
       "-Wl,-framework,CoreFoundation"
       "-Wl,-framework,AVFoundation"
@@ -896,6 +899,15 @@ if(UAM_BUILD_TESTS)
   endif()
   set_target_properties(uam_core_tests PROPERTIES FOLDER "Tests")
   add_test(NAME uam_core_tests COMMAND uam_core_tests)
+  if(APPLE)
+    add_executable(uam_macos_application_tests
+      tests/macos_application_tests.mm
+      src/common/platform/platform_application_macos.mm
+    )
+    target_include_directories(uam_macos_application_tests PRIVATE src ${cef_binary_SOURCE_DIR})
+    target_link_libraries(uam_macos_application_tests PRIVATE "-Wl,-framework,AppKit")
+    add_test(NAME uam_macos_application_tests COMMAND uam_macos_application_tests)
+  endif()
   add_test(
     NAME uam_platform_ifdef_guard
     COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/check_platform_ifdefs.cmake

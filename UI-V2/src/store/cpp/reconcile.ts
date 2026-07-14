@@ -606,6 +606,7 @@ function cppMessagesEquivalent(existing: Message, next: CppMessage) {
   return (
     existing.role === next.role &&
     existing.content === next.content &&
+    (existing.providerId ?? '') === (next.providerId ?? '') &&
     (existing.thoughts ?? '') === (next.thoughts ?? '') &&
     (existing.planSummary ?? '') === (next.planSummary ?? '') &&
     planEntriesEquivalent(existing.planEntries ?? [], next.planEntries ?? []) &&
@@ -623,6 +624,7 @@ export function buildMessageFromCpp(chatId: string, message: CppMessage, index: 
     sessionId: chatId,
     role: message.role,
     content: message.content,
+    providerId: message.providerId,
     thoughts: message.thoughts ?? '',
     planSummary: message.planSummary ?? '',
     planEntries: message.planEntries ?? [],

@@ -27,6 +27,8 @@ namespace
 			action.id = uam::strings::Trim(value.value("id", ""));
 			action.label = uam::strings::Trim(value.value("label", ""));
 			action.skill_path = uam::strings::Trim(value.value("skillPath", ""));
+			action.provider_id = uam::strings::Trim(value.value("providerId", ""));
+			action.model_id = uam::strings::Trim(value.value("modelId", ""));
 			action.accepts_files = value.value("acceptsFiles", true);
 			action.accepts_folders = value.value("acceptsFolders", true);
 			action.enabled = value.value("enabled", true);

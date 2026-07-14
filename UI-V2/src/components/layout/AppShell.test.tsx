@@ -169,8 +169,11 @@ describe('AppShell', () => {
     const alerts = host.querySelector('button[aria-label="1 alert"]') as HTMLButtonElement
     expect(alerts).toBeTruthy()
     act(() => alerts.click())
-    expect(host.querySelector('[aria-label="Notifications"]')?.textContent).toContain('Workspace folder missing: Deleted project')
-    expect(host.querySelector('[aria-label="Notifications"]')?.textContent).toContain('/tmp/deleted project')
+    const panel = host.querySelector('[data-testid="notifications-panel"]')
+    expect(panel).toBeTruthy()
+    expect(panel?.classList.contains('absolute')).toBe(false)
+    expect(panel?.textContent).toContain('Workspace folder missing: Deleted project')
+    expect(panel?.textContent).toContain('/tmp/deleted project')
 
     act(() => root.unmount())
     host.remove()

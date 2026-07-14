@@ -128,11 +128,14 @@ export function ToolCallInlineRows({
 
         const displayKind = toolDisplayKind(tool)
         const displayTitle = toolDisplayTitle(tool)
+        const normalizedStatus = tool.status.trim().toLowerCase()
+        const active = normalizedStatus === 'running' || normalizedStatus === 'in_progress' || normalizedStatus === 'inprogress'
         return (
           <div key={tool.id} className="uam-tool-timeline__item">
             <button
               type="button"
               title="Open tool details"
+              data-active={active}
               onClick={() => onSelectTool(tool.id)}
               className="w-full grid text-left uam-tool-row"
               style={{
@@ -186,7 +189,7 @@ export function PermissionInlineCard({
 
   return (
     <div
-      className="my-2"
+      className="my-2 uam-attention-card"
       style={{
         border: '1px solid var(--border-bright)',
         borderRadius: 7,
@@ -373,7 +376,7 @@ export function UserInputInlineCard({
 
   return (
     <div
-      className="my-2"
+      className="my-2 uam-attention-card"
       data-testid="user-input-card"
       style={{
         border: '1px solid color-mix(in srgb, var(--yellow) 56%, var(--border-bright))',
@@ -673,6 +676,8 @@ export function MessageFrame({
   onEdit,
   onRevert,
   actionsDisabled = false,
+  streaming = false,
+  goalReview = false,
 }: {
   role: Message['role']
   children: ReactNode
@@ -682,34 +687,42 @@ export function MessageFrame({
   onEdit?: () => void
   onRevert?: () => void
   actionsDisabled?: boolean
+  streaming?: boolean
+  goalReview?: boolean
 }) {
+  const accent = goalReview ? 'var(--purple)' : roleAccent(role)
   return (
     <div
       className="flex"
       style={{ justifyContent: role === 'user' ? 'flex-end' : 'flex-start' }}
     >
       <article
-        className="min-w-0"
+        className={`min-w-0 uam-message-frame${streaming ? ' is-streaming' : ''}${goalReview ? ' uam-message-frame--goal-review' : ''}`}
+        data-message-kind={goalReview ? 'goal-review' : role}
         style={{
           maxWidth: role === 'user' ? '78%' : '100%',
           border: role === 'user' ? '1px solid var(--border)' : '1px solid transparent',
-          borderLeft: role !== 'user' ? `2px solid ${roleAccent(role)}` : undefined,
-          borderRadius: role === 'user' ? 7 : 0,
-          padding: role === 'user' ? '9px 11px' : '2px 0 2px 12px',
-          background: role === 'user' ? 'var(--message-user-bg)' : 'var(--message-assistant-bg)',
+          borderLeft: role !== 'user' ? `2px solid ${accent}` : undefined,
+          borderRadius: role === 'user' ? 7 : goalReview ? 8 : 0,
+          padding: role === 'user' ? '9px 11px' : goalReview ? '8px 10px 10px 12px' : '2px 0 2px 12px',
+          background: role === 'user'
+            ? 'var(--message-user-bg)'
+            : goalReview
+              ? 'color-mix(in srgb, var(--purple) 5%, var(--message-assistant-bg))'
+              : 'var(--message-assistant-bg)',
           color: 'var(--text)',
         }}
       >
-        <div className="flex items-center gap-1.5 text-[11px] mb-1" style={{ color: roleAccent(role) }}>
+        <div className="flex items-center gap-1.5 text-[11px] mb-1" style={{ color: accent }}>
           <span style={{ fontSize: 8 }}>●</span>
-          <span>{roleLabel(role, assistantLabel)}</span>
+          <span>{goalReview ? 'Goal Reviewer' : roleLabel(role, assistantLabel)}</span>
           {branchLabel && (
             <span className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: 'var(--accent-dim)', color: 'var(--accent)' }}>
               {branchLabel}
             </span>
           )}
           {(copyText.trim() || onEdit || onRevert) && (
-            <span className="ml-auto flex items-center gap-1">
+            <span className="ml-auto flex items-center gap-1 uam-message-frame__actions">
               <CopyTextButton text={copyText} label="Copy message" title="Copy message" />
               {onEdit && (
                 <IconButton

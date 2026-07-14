@@ -103,7 +103,7 @@ export interface AppState {
   // Session actions
   setActiveSession: (id: string) => void
   loadSessionMessages: (id: string) => void
-  addSession: (name: string, folderId: string | null, providerId?: string) => void
+  addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string) => void
   branchFromMessage: (id: string, messageIndex: number, content?: string) => Promise<string | null>
   renameSession: (id: string, name: string) => void
   setSessionPinned: (id: string, pinned: boolean) => Promise<boolean>

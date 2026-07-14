@@ -261,6 +261,10 @@ namespace uam
 			message_json["role"] = RoleStr(message.role);
 			message_json["content"] = message.content;
 			message_json["createdAt"] = message.created_at;
+			if (!message.provider.empty())
+			{
+				message_json["providerId"] = message.provider;
+			}
 			if (!message.thoughts.empty())
 			{
 				message_json["thoughts"] = message.thoughts;
@@ -1006,6 +1010,8 @@ namespace uam
 				    {"id", action.id},
 				    {"label", action.label},
 				    {"skillPath", action.skill_path},
+				    {"providerId", action.provider_id},
+				    {"modelId", action.model_id},
 				    {"acceptsFiles", action.accepts_files},
 				    {"acceptsFolders", action.accepts_folders},
 				    {"enabled", action.enabled},

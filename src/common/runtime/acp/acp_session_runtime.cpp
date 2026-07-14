@@ -210,15 +210,12 @@ namespace uam
 				}
 			}
 
-			ChatDomainService::MessageAnalytics analytics;
-			analytics.provider = MessageProviderId(session);
-			ChatDomainService().AddMessageWithAnalytics(chat, MessageRole::User, queued.text, analytics);
-			if (!queued.markdown_store_files.empty() && !chat.messages.empty())
+			if (queued.append_user_message)
 			{
+				ChatDomainService::MessageAnalytics analytics;
+				analytics.provider = MessageProviderId(session);
+				ChatDomainService().AddMessageWithAnalytics(chat, MessageRole::User, queued.text, analytics);
 				chat.messages.back().markdown_store_files = queued.markdown_store_files;
-			}
-			if (!queued.attachments.empty() && !chat.messages.empty())
-			{
 				chat.messages.back().attachments = queued.attachments;
 				for (const MessageAttachment& attachment : queued.attachments)
 				{
@@ -315,6 +312,7 @@ namespace uam
 		queued.text = prompt;
 		queued.markdown_store_files = std::move(validated_markdown_store_files);
 		queued.attachments = attachments;
+		queued.append_user_message = true;
 		queued.goal_mode = goal_mode || active_goal != nullptr;
 		queued.goal_id = goal_id.empty() && active_goal != nullptr ? active_goal->id : goal_id;
 		if (session.processing || !session.queued_user_prompts.empty())
@@ -345,6 +343,29 @@ namespace uam
 	bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, std::string* error_out)
 	{
 		return SendAcpPrompt(app, chat_id, text, std::vector<std::string>{}, std::vector<MessageAttachment>{}, false, error_out);
+	}
+
+	bool RetryLastAcpPrompt(AppState& app, const std::string& chat_id, std::string* error_out)
+	{
+		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+		if (chat == nullptr || chat->messages.empty() || chat->messages.back().role != MessageRole::User)
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "The message to retry is no longer available.";
+			}
+			return false;
+		}
+
+		const Message& message = chat->messages.back();
+		AcpQueuedUserPromptState queued;
+		queued.text = message.content;
+		queued.markdown_store_files = message.markdown_store_files;
+		queued.attachments = message.attachments;
+		queued.append_user_message = false;
+
+		AcpSessionState& session = EnsureAcpSessionForChat(app, *chat);
+		return StartAcpUserPrompt(app, session, *chat, queued, error_out);
 	}
 
 	bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error_out)

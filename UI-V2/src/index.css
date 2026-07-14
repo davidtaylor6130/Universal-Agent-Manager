@@ -264,11 +264,126 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
   box-shadow:
     0 1px 0 color-mix(in srgb, var(--border) 65%, transparent),
     0 8px 24px color-mix(in srgb, black 3%, transparent);
+  transition:
+    transform var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
 }
 
 .uam-tool-row:hover {
   border-color: var(--border-bright);
   background: color-mix(in srgb, var(--surface) 96%, var(--bg));
+  box-shadow: 0 5px 18px color-mix(in srgb, black 8%, transparent);
+  transform: translateY(-1px);
+}
+
+.uam-tool-row[data-active="true"] {
+  animation: uam-working-outline 1.8s var(--ease) infinite;
+}
+
+.uam-message-frame {
+  position: relative;
+}
+
+.uam-message-frame.is-streaming {
+  animation: uam-streaming-message 1.8s var(--ease) infinite;
+}
+
+.uam-message-frame__actions {
+  opacity: 0;
+  transform: translateY(2px);
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+
+.uam-message-frame:hover .uam-message-frame__actions,
+.uam-message-frame:focus-within .uam-message-frame__actions {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.uam-thinking-block > summary {
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.uam-thinking-block > summary:hover {
+  background: color-mix(in srgb, var(--yellow) 8%, transparent);
+}
+
+.uam-thinking-block[data-active="true"] > summary span:nth-child(2) {
+  animation: uam-pulse 1.6s var(--ease) infinite;
+}
+
+.uam-attention-card {
+  animation: uam-attention-in 180ms var(--ease);
+}
+
+.uam-runtime-status > summary {
+  width: fit-content;
+  list-style: none;
+}
+
+.uam-runtime-status[data-has-details="true"] > summary {
+  cursor: pointer;
+}
+
+.uam-runtime-status > summary::-webkit-details-marker {
+  display: none;
+}
+
+.uam-runtime-status__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.uam-runtime-status[data-active="true"] .uam-runtime-status__dot {
+  animation: uam-pulse 1.6s var(--ease) infinite;
+}
+
+.uam-runtime-status__chevron {
+  color: var(--text-3);
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.uam-runtime-status[open] .uam-runtime-status__chevron {
+  transform: rotate(180deg);
+}
+
+@keyframes uam-working-outline {
+  0%, 100% { border-color: var(--border); }
+  50% { border-color: color-mix(in srgb, var(--blue) 48%, var(--border)); }
+}
+
+@keyframes uam-streaming-message {
+  0%, 100% { box-shadow: -4px 0 12px color-mix(in srgb, var(--blue) 0%, transparent); }
+  50% { box-shadow: -4px 0 12px color-mix(in srgb, var(--blue) 18%, transparent); }
+}
+
+@keyframes uam-attention-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (hover: none) {
+  .uam-message-frame__actions {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .uam-tool-row[data-active="true"],
+  .uam-message-frame.is-streaming,
+  .uam-thinking-block[data-active="true"] > summary span:nth-child(2),
+  .uam-attention-card,
+  .uam-runtime-status[data-active="true"] .uam-runtime-status__dot {
+    animation: none;
+  }
 }
 
 .uam-icon-button {
@@ -684,6 +799,39 @@ summary,
 @keyframes uam-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.55; transform: scale(0.85); }
+}
+
+.uam-dictation-button {
+  border: 1px solid var(--border);
+  background: var(--surface-up);
+  color: var(--text-2);
+}
+
+.uam-dictation-button[data-dictation-state="starting"] {
+  border-color: color-mix(in srgb, var(--accent) 46%, var(--border-bright));
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+  color: var(--accent);
+}
+
+.uam-dictation-button[data-dictation-state="listening"],
+.uam-dictation-button[data-dictation-state="error"] {
+  border-color: color-mix(in srgb, var(--red) 46%, var(--border-bright));
+  background: color-mix(in srgb, var(--red) 14%, var(--surface));
+  color: var(--red);
+}
+
+.uam-dictation-button[data-dictation-state="stopping"] {
+  border-color: color-mix(in srgb, var(--yellow) 46%, var(--border-bright));
+  background: color-mix(in srgb, var(--yellow) 14%, var(--surface));
+  color: var(--yellow);
+}
+
+.uam-dictation-listening-indicator {
+  animation: uam-pulse 1.15s var(--ease) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .uam-dictation-listening-indicator { animation: none; }
 }
 
 .uam-subagent-panel:hover {

@@ -328,6 +328,14 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 	const auto previous_resolved_native_session = app.resolved_native_sessions_by_chat_id.find(chat->id);
 	const bool had_previous_resolved_native_session = previous_resolved_native_session != app.resolved_native_sessions_by_chat_id.end();
 	const std::string previous_resolved_native_session_id = had_previous_resolved_native_session ? previous_resolved_native_session->second : std::string{};
+	const std::string previous_provider_id = ProviderResolutionService().ProviderForChatOrDefault(app, *chat).id;
+	for (Message& message : chat->messages)
+	{
+		if (message.role == MessageRole::Assistant && uam::strings::IsBlank(message.provider))
+		{
+			message.provider = previous_provider_id;
+		}
+	}
 	chat->provider_id = provider->id;
 	uam::provider_chat_defaults::ApplyToChat(app.settings, *chat);
 	chat->native_session_id.clear();

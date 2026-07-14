@@ -225,6 +225,8 @@ struct ShellAction
 	std::string id;
 	std::string label;
 	std::string skill_path;
+	std::string provider_id;
+	std::string model_id;
 	bool accepts_files = true;
 	bool accepts_folders = true;
 	bool enabled = true;

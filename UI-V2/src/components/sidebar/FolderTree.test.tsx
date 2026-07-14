@@ -300,4 +300,21 @@ describe('FolderTree', () => {
     })
     host.remove()
   })
+
+  it('opens the shared new-chat flow from the folder context menu', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const folderHeader = host.querySelector('[data-testid="folder-row-project"]')?.firstElementChild
+    act(() => folderHeader?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
+    const newChat = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('New chat'))
+    act(() => newChat?.click())
+
+    expect(useAppStore.getState()).toMatchObject({ isNewChatModalOpen: true, newChatFolderId: 'project' })
+
+    act(() => root.unmount())
+    host.remove()
+  })
 })

@@ -5,6 +5,7 @@
 #include "app/markdown_store_service.h"
 #include "app/persistence_coordinator.h"
 #include "common/chat/chat_repository.h"
+#include "common/config/provider_chat_defaults.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
 #include "common/runtime/acp/acp_session_runtime.h"
@@ -112,6 +113,8 @@ namespace
 		result.id = SafeId(source.id);
 		result.label = uam::strings::Trim(source.label);
 		result.skill_path = uam::strings::Trim(source.skill_path);
+		result.provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(source.provider_id);
+		result.model_id = uam::strings::Trim(source.model_id);
 		if (result.id.empty() || result.label.empty())
 		{
 			if (error_out != nullptr) *error_out = "Every shell action requires an id and label.";
@@ -127,6 +130,16 @@ namespace
 			if (error_out != nullptr) *error_out = "Shell action '" + result.label + "' requires a skill file.";
 			return false;
 		}
+		if (!result.provider_id.empty() && !uam::provider_ids::IsKnownCliProviderId(result.provider_id))
+		{
+			if (error_out != nullptr) *error_out = "Shell action '" + result.label + "' has an unsupported provider.";
+			return false;
+		}
+		if (!uam::provider_chat_defaults::IsAllowedModelId(result.model_id))
+		{
+			if (error_out != nullptr) *error_out = "Shell action '" + result.label + "' has an invalid model.";
+			return false;
+		}
 		return true;
 	}
 
@@ -134,6 +147,7 @@ namespace
 	{
 		return {
 			{"id", action.id}, {"label", action.label}, {"skillPath", action.skill_path},
+			{"providerId", action.provider_id}, {"modelId", action.model_id},
 			{"acceptsFiles", action.accepts_files}, {"acceptsFolders", action.accepts_folders},
 			{"enabled", action.enabled}, {"openWorkspace", action.open_workspace}
 		};
@@ -313,18 +327,13 @@ namespace
 			return false;
 		}
 
-		ChatSession chat = ChatDomainService().CreateNewChat(folder_id, app.settings.default_new_chat_provider_id);
+		ChatSession chat = ChatDomainService().CreateNewChat(
+		    folder_id,
+		    action_it->provider_id.empty() ? app.settings.default_new_chat_provider_id : action_it->provider_id);
 		chat.title = action_it->open_workspace ? FolderTitle(workspace) : action_it->label;
 		chat.workspace_directory = uam::paths::Utf8PathString(workspace);
-		if (const auto defaults = app.settings.provider_chat_defaults.find(chat.provider_id); defaults != app.settings.provider_chat_defaults.end())
-		{
-			chat.model_id = defaults->second.model_id;
-			chat.approval_mode = defaults->second.approval_mode;
-			chat.auto_approve_commands = defaults->second.auto_approve_commands;
-			chat.memory_enabled = defaults->second.memory_enabled;
-			chat.reasoning_effort = defaults->second.reasoning_effort;
-			chat.service_tier = defaults->second.service_tier;
-		}
+		uam::provider_chat_defaults::ApplyToChat(app.settings, chat);
+		if (!action_it->model_id.empty()) chat.model_id = action_it->model_id;
 		app.chats.push_back(std::move(chat));
 		ChatSession& created = app.chats.back();
 		ChatDomainService().SelectChatById(app, created.id);
@@ -371,6 +380,8 @@ std::vector<ShellAction> ShellActionService::Load(const std::filesystem::path& d
 			raw.id = value.value("id", "");
 			raw.label = value.value("label", "");
 			raw.skill_path = value.value("skillPath", "");
+			raw.provider_id = value.value("providerId", "");
+			raw.model_id = value.value("modelId", "");
 			raw.accepts_files = value.value("acceptsFiles", true);
 			raw.accepts_folders = value.value("acceptsFolders", true);
 			raw.enabled = value.value("enabled", true);

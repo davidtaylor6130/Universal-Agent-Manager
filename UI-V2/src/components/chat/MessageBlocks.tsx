@@ -15,6 +15,7 @@ import type {
 } from '../../store/useAppStore'
 import type { Attachment, Message, MessageBlock } from '../../types/message'
 import { Tooltip } from '../ui'
+import { BookOpen } from 'lucide-react'
 import {
   PermissionInlineCard,
   ToolCallModal,
@@ -81,13 +82,23 @@ function SubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; tool: A
   )
 }
 
-export function ThinkingBlock({ text, defaultOpen = false }: { text: string; defaultOpen?: boolean }) {
+export function ThinkingBlock({
+  text,
+  defaultOpen = false,
+  active = false,
+}: {
+  text: string
+  defaultOpen?: boolean
+  active?: boolean
+}) {
   if (!text.trim()) return null
 
   return (
     <details
       aria-label="Thinking"
       data-testid="thinking-block"
+      data-active={active}
+      className="uam-thinking-block"
       open={defaultOpen}
       style={{
         border: '1px solid color-mix(in srgb, var(--yellow) 58%, var(--border))',
@@ -283,6 +294,21 @@ export function parseGoalReviewDecision(text: string): GoalReviewDecision | null
   }
 }
 
+export function goalReviewForMessage(message: Message): GoalReviewDecision | null {
+  if (message.role !== 'assistant') return null
+
+  const contentReview = parseGoalReviewDecision(message.content)
+  if (contentReview) return contentReview
+
+  for (const block of message.blocks ?? []) {
+    if (block.type !== 'assistant_text') continue
+    const blockReview = parseGoalReviewDecision(block.text)
+    if (blockReview) return blockReview
+  }
+
+  return null
+}
+
 export function goalReviewDecisionStyle(decision: GoalReviewDecision['decision']) {
   if (decision === 'complete') return { color: 'var(--green)', label: 'Complete' }
   if (decision === 'blocked') return { color: 'var(--red)', label: 'Blocked' }
@@ -295,6 +321,7 @@ export function GoalReviewBlock({ review }: { review: GoalReviewDecision }) {
   return (
     <section
       data-testid="goal-review-block"
+      aria-label="Goal review"
       className="space-y-2"
       style={{
         border: '1px solid color-mix(in srgb, var(--purple) 44%, var(--border))',
@@ -445,7 +472,7 @@ export function PersistedMessageContent({
   const planEntries = message.role === 'assistant' ? message.planEntries ?? [] : []
   const blocks = message.role === 'assistant' ? message.blocks ?? [] : []
   const attachments = message.attachments ?? []
-  const goalReview = message.role === 'assistant' ? parseGoalReviewDecision(message.content) : null
+  const goalReview = goalReviewForMessage(message)
 
   if (blocks.length > 0) {
     return (
@@ -497,25 +524,54 @@ export function PersistedMessageContent({
 export function AttachmentList({ attachments }: { attachments: Attachment[] }) {
   if (attachments.length === 0) return null
 
+  const markdownStoreAttachments = attachments.filter((attachment) => attachment.type === 'markdown-store')
+  const fileAttachments = attachments.filter((attachment) => attachment.type !== 'markdown-store')
+
   return (
-    <div className="flex flex-wrap gap-2">
-      {attachments.map((attachment) => (
-        <span
-          key={attachment.id}
-          className="inline-flex items-center gap-2 max-w-full text-[11px]"
-          title={attachmentLabel(attachment)}
-          style={{
-            border: '1px solid var(--border)',
-            borderRadius: 999,
-            background: 'var(--surface-up)',
-            color: 'var(--text-2)',
-            padding: '3px 7px',
-          }}
-        >
-          <span className="truncate max-w-[320px]">{attachment.path || attachment.name}</span>
-          <span style={{ color: 'var(--text-3)' }}>{attachment.type}</span>
-        </span>
-      ))}
+    <div className="space-y-2">
+      {markdownStoreAttachments.length > 0 && (
+        <div className="flex flex-wrap gap-2" aria-label="Markdown Store context">
+          {markdownStoreAttachments.map((attachment) => (
+            <span
+              key={attachment.id}
+              className="inline-flex items-center gap-2 max-w-full text-[11px]"
+              title={attachmentLabel(attachment)}
+              style={{
+                border: '1px solid color-mix(in srgb, var(--purple) 45%, var(--border))',
+                borderRadius: 7,
+                background: 'color-mix(in srgb, var(--purple) 10%, var(--surface-up))',
+                color: 'var(--text-2)',
+                padding: '5px 8px',
+              }}
+            >
+              <BookOpen size={13} aria-hidden style={{ color: 'var(--purple)' }} />
+              <span style={{ color: 'var(--purple)' }}>Markdown Store</span>
+              <span className="truncate max-w-[320px]">{attachment.name}</span>
+            </span>
+          ))}
+        </div>
+      )}
+      {fileAttachments.length > 0 && (
+        <div className="flex flex-wrap gap-2" aria-label="File attachments">
+          {fileAttachments.map((attachment) => (
+            <span
+              key={attachment.id}
+              className="inline-flex items-center gap-2 max-w-full text-[11px]"
+              title={attachmentLabel(attachment)}
+              style={{
+                border: '1px solid var(--border)',
+                borderRadius: 999,
+                background: 'var(--surface-up)',
+                color: 'var(--text-2)',
+                padding: '3px 7px',
+              }}
+            >
+              <span className="truncate max-w-[320px]">{attachment.path || attachment.name}</span>
+              <span style={{ color: 'var(--text-3)' }}>{attachment.type}</span>
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -537,6 +593,7 @@ export function TurnTimelineContent({
   onCancelTurn,
   onStopRuntime,
   sourceChatId,
+  active = false,
 }: {
   events: AcpTurnEvent[]
   tools: AcpToolCall[]
@@ -560,6 +617,7 @@ export function TurnTimelineContent({
   onCancelTurn: () => void
   onStopRuntime: () => void
   sourceChatId?: string
+  active?: boolean
 }) {
   const toolById = new Map(tools.map((tool) => [tool.id, tool]))
   const hasPlanEvent = events.some((event) => event.type === 'plan')
@@ -585,7 +643,7 @@ export function TurnTimelineContent({
         }
 
         if (event.type === 'thought') {
-          return <ThinkingBlock key={`thought-${index}`} text={event.text} defaultOpen />
+          return <ThinkingBlock key={`thought-${index}`} text={event.text} active={active} />
         }
 
         if (event.type === 'plan') {

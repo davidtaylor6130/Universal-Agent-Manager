@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui'
 import type { MarkdownStoreDraft, MarkdownStoreEntry } from '../../types/markdownStore'
+import { BookOpen, ExternalLink, Paperclip, Search } from 'lucide-react'
 
 const EMPTY_DRAFT: MarkdownStoreDraft = {
   title: '',
@@ -94,13 +95,22 @@ export function MarkdownStoreModal() {
         </div>
 
         <div className="flex items-center gap-2 px-5 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
-          <input
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="Search published markdown"
-            className="flex-1 text-sm"
-            style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)', color: 'var(--text)', padding: '8px 10px', outline: 'none' }}
-          />
+          <label className="flex flex-1 items-center gap-2 px-2.5" style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)' }}>
+            <Search size={14} aria-hidden style={{ color: 'var(--text-3)' }} />
+            <input
+              type="search"
+              aria-label="Search Markdown Store"
+              autoFocus
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Find by title, maker, review, content, or path"
+              className="flex-1 text-sm"
+              style={{ border: 0, background: 'transparent', color: 'var(--text)', padding: '8px 0', outline: 'none' }}
+            />
+          </label>
+          <span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>
+            {filtered.length} of {entries.length}
+          </span>
           <Button variant="secondary" size="sm" onClick={() => void refresh()}>
             Refresh
           </Button>
@@ -132,7 +142,9 @@ export function MarkdownStoreModal() {
           {loading ? (
             <div className="text-sm" style={{ color: 'var(--text-3)' }}>Loading Markdown Store...</div>
           ) : filtered.length === 0 ? (
-            <div className="text-sm" style={{ color: 'var(--text-3)' }}>No `.uam` files found.</div>
+            <div className="text-sm" style={{ color: 'var(--text-3)' }}>
+              {search.trim() ? `No Markdown Store entries match “${search.trim()}”.` : 'No `.uam` files found.'}
+            </div>
           ) : (
             <div className="grid gap-2">
               {filtered.map((entry) => (
@@ -149,13 +161,13 @@ export function MarkdownStoreModal() {
                       <div className="mt-2 text-[11px] truncate" style={{ color: 'var(--text-3)' }}>{entry.filePath}</div>
                     </div>
                     <div className="flex flex-col gap-2">
-                      <Button variant={activeSessionId ? 'primary' : 'secondary'} size="sm" disabled={!activeSessionId} onClick={() => attach(entry)}>
-                        Attach
+                      <Button leadingIcon={<Paperclip size={13} />} variant={activeSessionId ? 'primary' : 'secondary'} size="sm" disabled={!activeSessionId} onClick={() => attach(entry)}>
+                        Attach to message
                       </Button>
-                      <Button variant="secondary" size="sm" onClick={() => void editEntry(entry)}>
-                        Edit
+                      <Button leadingIcon={<BookOpen size={13} />} variant="secondary" size="sm" onClick={() => void editEntry(entry)}>
+                        Open in editor
                       </Button>
-                      <Button variant="secondary" size="sm" onClick={() => void revealEntry(entry)}>
+                      <Button leadingIcon={<ExternalLink size={13} />} variant="secondary" size="sm" onClick={() => void revealEntry(entry)}>
                         Reveal
                       </Button>
                     </div>

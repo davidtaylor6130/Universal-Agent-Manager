@@ -74,9 +74,11 @@ import {
   ThinkingBlock,
   TurnTimelineContent,
   attachmentLabel,
+  goalReviewForMessage,
 } from '../chat/MessageBlocks'
 import {
   acpRuntimeBlocksControlChanges,
+  COMMAND_SAFETY_TIERS,
   type ComposerIconName,
   ComposerIcon,
   ComposerToolbar,
@@ -150,8 +152,6 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   const [selectedToolCallRef, setSelectedToolCallRef] = useState<SelectedToolCallRef | null>(null)
   const [providerOpen, setProviderOpen] = useState(false)
   const [modelOpen, setModelOpen] = useState(false)
-  const [reasoningOpen, setReasoningOpen] = useState(false)
-  const [speedOpen, setSpeedOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [claudePlanPrompt, setClaudePlanPrompt] = useState<string | null>(null)
   const [openWorkspaceError, setOpenWorkspaceError] = useState('')
@@ -218,8 +218,6 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const providerMenuRef = useRef<HTMLDivElement>(null)
   const modelMenuRef = useRef<HTMLDivElement>(null)
-  const reasoningMenuRef = useRef<HTMLDivElement>(null)
-  const speedMenuRef = useRef<HTMLDivElement>(null)
   const settingsMenuRef = useRef<HTMLDivElement>(null)
   const dictationActiveRef = useRef(false)
   const dictationBaseDraftRef = useRef('')
@@ -326,8 +324,6 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   useEffect(() => {
     if (runtimeBlocksControlChanges) {
       setModelOpen(false)
-      setReasoningOpen(false)
-      setSpeedOpen(false)
     }
   }, [runtimeBlocksControlChanges])
 
@@ -344,14 +340,6 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
         setModelOpen(false)
       }
 
-      if (reasoningOpen && reasoningMenuRef.current && !reasoningMenuRef.current.contains(target)) {
-        setReasoningOpen(false)
-      }
-
-      if (speedOpen && speedMenuRef.current && !speedMenuRef.current.contains(target)) {
-        setSpeedOpen(false)
-      }
-
       if (settingsOpen && settingsMenuRef.current && !settingsMenuRef.current.contains(target)) {
         setSettingsOpen(false)
       }
@@ -361,8 +349,6 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
       if (event.key !== 'Escape') return
       setProviderOpen(false)
       setModelOpen(false)
-      setReasoningOpen(false)
-      setSpeedOpen(false)
       setSettingsOpen(false)
       setSelectedToolCallRef(null)
     }
@@ -373,7 +359,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
       document.removeEventListener('mousedown', onMouseDown)
       document.removeEventListener('keydown', onKeyDown)
     }
-  }, [modelOpen, providerOpen, reasoningOpen, settingsOpen, speedOpen])
+  }, [modelOpen, providerOpen, settingsOpen])
 
   const stageFiles = async (files: File[]) => {
     const realFiles = files.filter((file) => file.size > 0 || file.type || file.name)
@@ -636,7 +622,9 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   )
   const currentProviderName = providerShortName(currentProvider, currentProviderId)
   const currentRuntimeLabel = providerRuntimeLabel(currentProvider, acp)
-  const currentErrorTitle = `${currentProviderName} ${currentRuntimeLabel} error`
+  const errorProviderId = acp?.providerId || currentProviderId
+  const errorProvider = providers.find((candidate) => candidate.id === errorProviderId) ?? fallbackProviderForId(errorProviderId)
+  const currentErrorTitle = `${providerShortName(errorProvider, errorProviderId)} ${providerRuntimeLabel(errorProvider, acp)} error`
   const unsupportedProviderMessage = providerSupported
     ? ''
     : `${currentProviderName} is not supported in this build. Switch this chat to Gemini CLI to continue.`
@@ -746,6 +734,14 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
     }
   }, [session.id])
   const currentModelId = acp?.currentModelId || session.modelId || ''
+  const currentModel = modelOptionFor(buildModelOptions(acp, currentModelId, currentProvider, currentProviderId), currentModelId)
+  const currentProviderCapabilities = providerCapabilities(currentProviderId, currentProvider)
+  const reasoningOptions = currentProviderCapabilities.hasReasoningEffort
+    ? buildCodexReasoningOptions(acp, currentModel.id, session.reasoningEffort ?? '')
+    : []
+  const speedOptions = currentProviderCapabilities.hasServiceTier
+    ? buildCodexSpeedOptions(acp, currentModel.id, session.serviceTier ?? '')
+    : []
   const currentModeId = acp?.currentModeId || session.approvalMode || 'default'
   const permissionModes = useMemo(() => {
     const modes = (acp?.availableModes.length ?? 0) > 0
@@ -802,6 +798,48 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
 
     const changed = await applyPermissionMode(requested.id)
     setSlashMessage(changed ? `Permission mode changed to ${requested.name}.` : `Failed to change permission mode to ${requested.name}.`)
+  }
+  const runCommandSafetyCommand = async (rawTier?: string) => {
+    setDraft('')
+    setSlashIndex(0)
+    if (!rawTier) {
+      setDraft('/safety ')
+      return
+    }
+    const requested = COMMAND_SAFETY_TIERS.find((tier) => tier.id === rawTier.trim().toLowerCase())
+    if (!requested) {
+      setSlashMessage(`Unsupported command safety tier "${rawTier}". Supported: ${COMMAND_SAFETY_TIERS.map((tier) => tier.id).join(', ')}.`)
+      return
+    }
+    const changed = await setSessionCommandSafetyTier(session.id, requested.id)
+    setSlashMessage(changed ? `Command safety changed to ${requested.label}.` : `Failed to change command safety to ${requested.label}.`)
+  }
+  const runCodexOptionCommand = async (kind: 'reasoning' | 'speed', rawValue?: string) => {
+    setDraft('')
+    setSlashIndex(0)
+    const options = kind === 'reasoning' ? reasoningOptions : speedOptions
+    const label = kind === 'reasoning' ? 'Reasoning' : 'Speed'
+    if (options.length === 0) {
+      setSlashMessage(`${label} changes are unavailable for ${currentProviderName}.`)
+      return
+    }
+    if (!rawValue) {
+      setDraft(`/${kind} `)
+      return
+    }
+    const normalized = rawValue.trim().toLowerCase()
+    const requested = options.find((option) =>
+      (option.id || 'default').toLowerCase() === normalized ||
+      option.label.toLowerCase().replace(/\s+/g, '-') === normalized
+    )
+    if (!requested) {
+      setSlashMessage(`Unsupported ${kind} "${rawValue}". Supported: ${options.map((option) => option.id || 'default').join(', ')}.`)
+      return
+    }
+    const changed = kind === 'reasoning'
+      ? await setSessionCodexOptions(session.id, { reasoningEffort: requested.id, serviceTier: session.serviceTier ?? '' })
+      : await setSessionCodexOptions(session.id, { reasoningEffort: session.reasoningEffort ?? '', serviceTier: requested.id })
+    setSlashMessage(changed ? `${label} changed to ${requested.label}.` : `Failed to change ${kind} to ${requested.label}.`)
   }
   const latestPlanMessageIndex = messages.reduce((latest, message, index) => {
     const hasPlan = message.role === 'assistant' && (Boolean(message.planSummary?.trim()) || (message.planEntries?.length ?? 0) > 0)
@@ -865,7 +903,10 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   const slashCommands = useMemo(
     () => [
       { id: 'model', label: '/model', hint: 'Change the model', icon: <Cpu size={15} />, run: () => setModelOpen(true) },
+      ...(reasoningOptions.length > 0 ? [{ id: 'reasoning', label: '/reasoning', hint: 'Choose Codex reasoning', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('reasoning') }] : []),
+      ...(speedOptions.length > 0 ? [{ id: 'speed', label: '/speed', hint: 'Choose Codex speed', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('speed') }] : []),
       { id: 'permission', label: '/permission', hint: 'Choose the permission mode', icon: <Shield size={15} />, run: () => void runPermissionCommand() },
+      { id: 'safety', label: '/safety', hint: 'Choose the command safety tier', icon: <Shield size={15} />, run: () => void runCommandSafetyCommand() },
       { id: 'goal', label: '/goal', hint: 'Use the next message as a goal', icon: <Target size={15} />, run: handleToggleGoal },
       {
         id: 'memory',
@@ -885,12 +926,18 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
       })),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [session.id, session.memoryEnabled, session.autoApproveCommands, markdownStoreEntries, currentModeId, permissionModes, providerSupported, currentProviderName]
+    [session.id, session.memoryEnabled, session.autoApproveCommands, session.commandSafetyTier, session.reasoningEffort, session.serviceTier, markdownStoreEntries, currentModeId, permissionModes, providerSupported, currentProviderName, reasoningOptions, speedOptions]
   )
   const permissionModeMatch = /^\/permission\s+([\w-]*)$/i.exec(draft)
+  const commandSafetyMatch = /^\/safety\s+([\w-]*)$/i.exec(draft)
+  const codexOptionMatch = /^\/(reasoning|speed)\s+([\w-]*)$/i.exec(draft)
   const slashMatch = /^\/([\w-]*)$/.exec(draft)
   const slashQuery = slashMatch ? slashMatch[1].toLowerCase() : null
   const permissionModeQuery = permissionMenuOpen ? '' : permissionModeMatch?.[1].toLowerCase()
+  const commandSafetyQuery = commandSafetyMatch?.[1].toLowerCase()
+  const codexOptionKind = codexOptionMatch?.[1].toLowerCase() as 'reasoning' | 'speed' | undefined
+  const codexOptionQuery = codexOptionMatch?.[2].toLowerCase()
+  const codexOptionQueryOptions = codexOptionKind === 'reasoning' ? reasoningOptions : codexOptionKind === 'speed' ? speedOptions : []
   const slashMatches = permissionModeQuery !== undefined
     ? permissionModes
         .filter((mode) => mode.id.toLowerCase().startsWith(permissionModeQuery) || mode.name.toLowerCase().replace(/\s+/g, '-').startsWith(permissionModeQuery))
@@ -901,11 +948,34 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
           icon: permissionModeIcon(mode.id, 15),
           run: () => void runPermissionCommand(mode.id),
         }))
+    : commandSafetyQuery !== undefined
+      ? COMMAND_SAFETY_TIERS
+          .filter((tier) => tier.id.startsWith(commandSafetyQuery) || tier.label.toLowerCase().startsWith(commandSafetyQuery))
+          .map((tier) => ({
+            id: `safety:${tier.id}`,
+            label: tier.label,
+            hint: `${tier.id === (session.commandSafetyTier ?? 'medium') ? 'Current · ' : ''}${tier.detail}`,
+            icon: <Shield size={15} />,
+            run: () => void runCommandSafetyCommand(tier.id),
+          }))
+    : codexOptionKind !== undefined
+      ? codexOptionQueryOptions
+          .filter((option) =>
+            (option.id || 'default').toLowerCase().startsWith(codexOptionQuery ?? '') ||
+            option.label.toLowerCase().replace(/\s+/g, '-').startsWith(codexOptionQuery ?? '')
+          )
+          .map((option) => ({
+            id: `${codexOptionKind}:${option.id || 'default'}`,
+            label: option.label,
+            hint: `${option.id === (codexOptionKind === 'reasoning' ? session.reasoningEffort ?? '' : session.serviceTier ?? '') ? 'Current · ' : ''}${option.detail}`,
+            icon: <Cpu size={15} />,
+            run: () => void runCodexOptionCommand(codexOptionKind, option.id || 'default'),
+          }))
     : slashQuery !== null
       ? slashCommands.filter((command) => command.label.slice(1).startsWith(slashQuery))
       : []
-  const slashOpen = slashMatches.length > 0 && (slashQuery !== null || permissionModeQuery !== undefined)
-  const slashPaletteVisible = slashQuery !== null || permissionModeQuery !== undefined
+  const slashOpen = slashMatches.length > 0 && (slashQuery !== null || permissionModeQuery !== undefined || commandSafetyQuery !== undefined || codexOptionKind !== undefined)
+  const slashPaletteVisible = slashQuery !== null || permissionModeQuery !== undefined || commandSafetyQuery !== undefined || codexOptionKind !== undefined
   useEffect(() => {
     if (slashPaletteVisible && markdownStoreEntries.length === 0) {
       void refreshMarkdownStore()
@@ -947,6 +1017,18 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
     if (event.key === 'Enter' && !event.shiftKey && permissionCommand) {
       event.preventDefault()
       void runPermissionCommand(permissionCommand[1])
+      return
+    }
+    const commandSafetyCommand = /^\/safety(?:\s+(\S+))?\s*$/i.exec(draft)
+    if (event.key === 'Enter' && !event.shiftKey && commandSafetyCommand) {
+      event.preventDefault()
+      void runCommandSafetyCommand(commandSafetyCommand[1])
+      return
+    }
+    const codexOptionCommand = /^\/(reasoning|speed)(?:\s+(\S+))?\s*$/i.exec(draft)
+    if (event.key === 'Enter' && !event.shiftKey && codexOptionCommand) {
+      event.preventDefault()
+      void runCodexOptionCommand(codexOptionCommand[1].toLowerCase() as 'reasoning' | 'speed', codexOptionCommand[2])
       return
     }
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -1008,18 +1090,29 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
       <div className="flex-1 flex flex-col min-w-0">
         <div ref={scrollRef} className="flex-1 overflow-auto" data-copy-surface="chat" onScroll={handleScroll}>
           <div className="w-full px-4 py-4">
-            <div className="flex items-center gap-2 mb-5 text-xs" style={{ color: 'var(--text-2)' }}>
-              <span aria-hidden style={{ width: 7, height: 7, borderRadius: '50%', background: statusColor(acp), flexShrink: 0 }} />
-              <span>{statusLabel(acp)}</span>
-              {acp?.agentInfo?.title && (
-                <span style={{ color: 'var(--text-3)' }}>{acp.agentInfo.title}</span>
+            <details
+              className="uam-runtime-status mb-5 text-xs"
+              data-active={Boolean(acp?.processing)}
+              data-has-details={Boolean(acp?.agentInfo?.title || acp?.sessionId)}
+            >
+              <summary
+                className="flex items-center gap-2 select-none"
+                style={{ color: 'var(--text-2)' }}
+                onClick={(event) => {
+                  if (!acp?.agentInfo?.title && !acp?.sessionId) event.preventDefault()
+                }}
+              >
+                <span className="uam-runtime-status__dot" aria-hidden style={{ background: statusColor(acp) }} />
+                <span>{statusLabel(acp)}</span>
+                {(acp?.agentInfo?.title || acp?.sessionId) && <ChevronDown size={13} className="uam-runtime-status__chevron" aria-hidden />}
+              </summary>
+              {(acp?.agentInfo?.title || acp?.sessionId) && (
+                <div className="flex flex-wrap items-center gap-2 pl-[15px] pt-1" style={{ color: 'var(--text-3)' }}>
+                  {acp?.agentInfo?.title && <span>{acp.agentInfo.title}</span>}
+                  {acp?.sessionId && <span className="truncate">Session {acp.sessionId}</span>}
+                </div>
               )}
-              {acp?.sessionId && (
-                <span className="truncate" style={{ color: 'var(--text-3)' }}>
-                  {acp.sessionId}
-                </span>
-              )}
-            </div>
+            </details>
 
             <div className="space-y-4">
               {earliestRenderedMessageIndex > 0 && (
@@ -1040,6 +1133,12 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                 const isUserMessage = message.role === 'user'
                 const isEditingMessage = editingMessageIndex === index
                 const isBranchPoint = session.branchFromMessageIndex === index
+                const goalReview = goalReviewForMessage(message)
+                const messageProviderId = message.providerId?.trim() || currentProviderId
+                const messageProviderName = providerShortName(
+                  providers.find((candidate) => candidate.id === messageProviderId),
+                  messageProviderId
+                )
                 const branchLabel = isBranchPoint
                   ? session.branchMessageEdited ? 'Edited branch' : 'Reverted branch'
                   : undefined
@@ -1050,9 +1149,11 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                   <div key={message.id} className="space-y-2">
                     <MessageFrame
                       role={message.role}
-                      assistantLabel={currentProviderName}
+                      assistantLabel={messageProviderName}
                       copyText={message.content}
                       branchLabel={branchLabel}
+                      goalReview={Boolean(goalReview)}
+                      streaming={Boolean(shouldRenderTimelineAtAssistant && acp?.processing)}
                       actionsDisabled={!canChangeProvider || branchingMessageIndex !== null}
                       onEdit={isUserMessage ? () => {
                         setEditingMessageIndex(index)
@@ -1113,9 +1214,10 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                             onResolveUserInput={(requestId, answers) => {
                               void resolveAcpUserInput(session.id, requestId, answers)
                             }}
-                            onCancelTurn={() => void cancelAcpTurn(session.id)}
-                            onStopRuntime={() => void stopAcpSession(session.id)}
-                            sourceChatId={session.id}
+                          onCancelTurn={() => void cancelAcpTurn(session.id)}
+                          onStopRuntime={() => void stopAcpSession(session.id)}
+                          sourceChatId={session.id}
+                          active={Boolean(acp?.processing)}
                         />
                       ) : (
                         <PersistedMessageContent
@@ -1127,7 +1229,12 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                       )}
                     </MessageFrame>
                     {renderTimelineAfterUser && index === turnUserMessageIndex && (
-                      <MessageFrame key={`turn-${turnSerial}-after-user`} role="assistant" assistantLabel={currentProviderName}>
+                      <MessageFrame
+                        key={`turn-${turnSerial}-after-user`}
+                        role="assistant"
+                        assistantLabel={currentProviderName}
+                        streaming={Boolean(acp?.processing)}
+                      >
                         <TurnTimelineContent
                           key={`turn-${turnSerial}-after-user-content`}
                           events={turnEvents}
@@ -1147,9 +1254,10 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                             onResolveUserInput={(requestId, answers) => {
                               void resolveAcpUserInput(session.id, requestId, answers)
                             }}
-                            onCancelTurn={() => void cancelAcpTurn(session.id)}
-                            onStopRuntime={() => void stopAcpSession(session.id)}
-                            sourceChatId={session.id}
+                          onCancelTurn={() => void cancelAcpTurn(session.id)}
+                          onStopRuntime={() => void stopAcpSession(session.id)}
+                          sourceChatId={session.id}
+                          active={Boolean(acp?.processing)}
                         />
                       </MessageFrame>
                     )}
@@ -1162,7 +1270,12 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                 </div>
               )}
               {turnEvents.length > 0 && !renderTimelineAfterUser && !renderTimelineAtAssistant && (
-                <MessageFrame key={`turn-${turnSerial}-fallback`} role="assistant" assistantLabel={currentProviderName}>
+                <MessageFrame
+                  key={`turn-${turnSerial}-fallback`}
+                  role="assistant"
+                  assistantLabel={currentProviderName}
+                  streaming={Boolean(acp?.processing)}
+                >
                   <TurnTimelineContent
                     key={`turn-${turnSerial}-fallback-content`}
                     events={turnEvents}
@@ -1182,9 +1295,10 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                       onResolveUserInput={(requestId, answers) => {
                         void resolveAcpUserInput(session.id, requestId, answers)
                       }}
-                      onCancelTurn={() => void cancelAcpTurn(session.id)}
-                      onStopRuntime={() => void stopAcpSession(session.id)}
-                      sourceChatId={session.id}
+                    onCancelTurn={() => void cancelAcpTurn(session.id)}
+                    onStopRuntime={() => void stopAcpSession(session.id)}
+                    sourceChatId={session.id}
+                    active={Boolean(acp?.processing)}
                   />
                 </MessageFrame>
               )}
@@ -1546,13 +1660,15 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                     className="inline-flex items-center gap-2 max-w-full text-[11px]"
                     title={entry.filePath}
                     style={{
-                      border: '1px solid var(--border)',
-                      borderRadius: 999,
-                      background: 'var(--surface-up)',
+                      border: '1px solid color-mix(in srgb, var(--purple) 45%, var(--border))',
+                      borderRadius: 7,
+                      background: 'color-mix(in srgb, var(--purple) 10%, var(--surface-up))',
                       color: 'var(--text-2)',
-                      padding: '3px 7px',
+                      padding: '5px 8px',
                     }}
                   >
+                    <BookOpen size={13} aria-hidden style={{ color: 'var(--purple)' }} />
+                    <span style={{ color: 'var(--purple)' }}>Markdown Store</span>
                     <span className="truncate max-w-[260px]">{entry.title || entry.filePath.split(/[\\/]/).pop()}</span>
                     <button
                       type="button"
@@ -1604,11 +1720,11 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                   className="absolute left-3 right-3 z-40 overflow-hidden rounded-lg"
                   style={{ bottom: 4, border: '1px solid var(--border-bright)', background: 'var(--surface)', boxShadow: 'var(--elev-3)' }}
                   role="listbox"
-                  aria-label={permissionModeQuery !== undefined ? 'Permission modes' : 'Slash commands'}
+                  aria-label={permissionModeQuery !== undefined ? 'Permission modes' : commandSafetyQuery !== undefined ? 'Command safety tiers' : codexOptionKind === 'reasoning' ? 'Reasoning options' : codexOptionKind === 'speed' ? 'Speed options' : 'Slash commands'}
                 >
                   <div className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)', borderBottom: '1px solid var(--border)' }}>
-                    {permissionModeQuery !== undefined ? <Shield size={12} aria-hidden /> : <BookOpen size={12} aria-hidden />}
-                    {permissionModeQuery !== undefined ? 'Permission mode' : 'Commands'}
+                    {permissionModeQuery !== undefined || commandSafetyQuery !== undefined ? <Shield size={12} aria-hidden /> : codexOptionKind !== undefined ? <Cpu size={12} aria-hidden /> : <BookOpen size={12} aria-hidden />}
+                    {permissionModeQuery !== undefined ? 'Permission mode' : commandSafetyQuery !== undefined ? 'Command safety' : codexOptionKind === 'reasoning' ? 'Reasoning' : codexOptionKind === 'speed' ? 'Speed' : 'Commands'}
                   </div>
                   <div className="overflow-y-auto" style={{ maxHeight: 360 }}>
                   {slashMatches.map((command, index) => {
@@ -1627,7 +1743,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                       >
                         <span aria-hidden className="mt-0.5 shrink-0" style={{ color: active ? 'var(--accent)' : 'var(--text-2)' }}>{command.icon}</span>
                         <span className="min-w-0 flex-1">
-                          <span className={permissionModeQuery === undefined ? 'block font-mono text-sm' : 'block text-sm'} style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>{command.label}</span>
+                          <span className={permissionModeQuery === undefined && commandSafetyQuery === undefined && codexOptionKind === undefined ? 'block font-mono text-sm' : 'block text-sm'} style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>{command.label}</span>
                           <span className="block truncate text-xs" style={{ color: 'var(--text-3)' }}>{command.hint}</span>
                         </span>
                       </button>
@@ -1642,10 +1758,17 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                 id={`dictation-status-${session.id}`}
                 role={dictationError ? 'alert' : 'status'}
                 aria-live={dictationError ? 'assertive' : 'polite'}
+                data-dictation-state={dictationError ? 'error' : dictationState}
                 className="px-3 pt-2 text-[11px]"
                 style={{ color: dictationError ? 'var(--red)' : 'var(--accent)' }}
               >
-                {dictationError || (dictationState === 'stopping' ? 'Finishing dictation…' : 'Listening…')}
+                {dictationError || (
+                  dictationState === 'starting'
+                    ? 'Starting dictation…'
+                    : dictationState === 'stopping'
+                      ? 'Finishing dictation…'
+                      : 'Listening…'
+                )}
               </div>
             )}
             <textarea
@@ -1702,51 +1825,25 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
               canChangeProvider={canChangeProvider}
               providerOpen={providerOpen}
               modelOpen={modelOpen}
-              reasoningOpen={reasoningOpen}
-              speedOpen={speedOpen}
               settingsOpen={settingsOpen}
               providerMenuRef={providerMenuRef}
               modelMenuRef={modelMenuRef}
-              reasoningMenuRef={reasoningMenuRef}
-              speedMenuRef={speedMenuRef}
               settingsMenuRef={settingsMenuRef}
               onToggleProvider={() => {
                 setProviderOpen((value) => !value)
                 setModelOpen(false)
-                setReasoningOpen(false)
-                setSpeedOpen(false)
                 setSettingsOpen(false)
               }}
               onToggleModel={() => {
                 if (runtimeBlocksControlChanges) return
                 setModelOpen((value) => !value)
                 setProviderOpen(false)
-                setReasoningOpen(false)
-                setSpeedOpen(false)
-                setSettingsOpen(false)
-              }}
-              onToggleReasoning={() => {
-                if (runtimeBlocksControlChanges) return
-                setReasoningOpen((value) => !value)
-                setProviderOpen(false)
-                setModelOpen(false)
-                setSpeedOpen(false)
-                setSettingsOpen(false)
-              }}
-              onToggleSpeed={() => {
-                if (runtimeBlocksControlChanges) return
-                setSpeedOpen((value) => !value)
-                setProviderOpen(false)
-                setModelOpen(false)
-                setReasoningOpen(false)
                 setSettingsOpen(false)
               }}
               onToggleSettings={() => {
                 setSettingsOpen((value) => !value)
                 setProviderOpen(false)
                 setModelOpen(false)
-                setReasoningOpen(false)
-                setSpeedOpen(false)
               }}
               onSelectProvider={(providerId) => {
                 setProviderOpen(false)
@@ -1758,11 +1855,9 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                 void setSessionModel(session.id, modelId)
               }}
               onSelectReasoning={(reasoningEffort) => {
-                setReasoningOpen(false)
                 void setSessionCodexOptions(session.id, { reasoningEffort, serviceTier: session.serviceTier ?? '' })
               }}
               onSelectSpeed={(serviceTier) => {
-                setSpeedOpen(false)
                 void setSessionCodexOptions(session.id, { reasoningEffort: session.reasoningEffort ?? '', serviceTier })
               }}
               onTogglePlan={() => {
@@ -1791,6 +1886,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
               onAttachFile={() => fileInputRef.current?.click()}
               onOpenMarkdownStore={() => void openMarkdownStore()}
               dictationState={dictationState}
+              dictationError={dictationError}
               dictationAvailable={dictationAvailable}
               onToggleDictation={() => {
                 if (dictationActiveRef.current) void stopDictation()

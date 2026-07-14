@@ -22,6 +22,7 @@ namespace uam::provider_ids
 	inline constexpr auto kVersionManagedCliProviderIds = std::to_array<const char*>({
 	    kGeminiCli,
 	    kCodexCli,
+	    kClaudeCli,
 	    kOpenCodeCli,
 	    kCopilotCli,
 	});

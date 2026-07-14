@@ -1,7 +1,44 @@
 #include "test_harness.h"
 #include "app/chat_lifecycle_service.h"
+#include "cef/uam_query_handler_internal.h"
 
 using namespace uam_test;
+
+UAM_TEST(ChatProviderSwitchBridgePayloadHandlesNullStringFields)
+{
+	const auto null_provider = uam::cef::ParseBridgeRequest(
+	    R"({"action":"setChatProvider","payload":{"chatId":"chat-opencode","providerId":null},"requestId":"switch-1"})");
+	UAM_ASSERT(null_provider.ok);
+	UAM_ASSERT_EQ(null_provider.request.action, std::string("setChatProvider"));
+	UAM_ASSERT_EQ(uam::query_handler_internal::ProviderSwitchChatIdFromPayload(null_provider.request.payload), std::string("chat-opencode"));
+	UAM_ASSERT_EQ(uam::query_handler_internal::ProviderSwitchProviderIdFromPayload(null_provider.request.payload), std::string{});
+
+	const auto null_chat = uam::cef::ParseBridgeRequest(
+	    R"({"action":"setChatProvider","payload":{"chatId":null,"providerId":"codex-cli"},"requestId":"switch-2"})");
+	UAM_ASSERT(null_chat.ok);
+	UAM_ASSERT_EQ(uam::query_handler_internal::ProviderSwitchChatIdFromPayload(null_chat.request.payload), std::string{});
+	UAM_ASSERT_EQ(uam::query_handler_internal::ProviderSwitchProviderIdFromPayload(null_chat.request.payload), std::string("codex-cli"));
+
+	const auto valid_switch = uam::cef::ParseBridgeRequest(
+	    R"({"action":"setChatProvider","payload":{"chatId":"chat-opencode","providerId":"codex-cli"},"requestId":"switch-3"})");
+	UAM_ASSERT(valid_switch.ok);
+	UAM_ASSERT_EQ(uam::query_handler_internal::ProviderSwitchChatIdFromPayload(valid_switch.request.payload), std::string("chat-opencode"));
+	UAM_ASSERT_EQ(uam::query_handler_internal::ProviderSwitchProviderIdFromPayload(valid_switch.request.payload), std::string("codex-cli"));
+}
+
+UAM_TEST(AcpPromptBridgePayloadHandlesNullGoalId)
+{
+	const auto no_goal = uam::cef::ParseBridgeRequest(
+	    R"({"action":"sendAcpPrompt","payload":{"chatId":"chat-opencode","text":"hello","markdownStoreFiles":[],"attachments":[],"goalMode":false,"goalId":null}})");
+	UAM_ASSERT(no_goal.ok);
+	UAM_ASSERT_EQ(no_goal.request.action, std::string("sendAcpPrompt"));
+	UAM_ASSERT_EQ(uam::query_handler_internal::AcpPromptGoalIdFromPayload(no_goal.request.payload), std::string{});
+
+	const auto active_goal = uam::cef::ParseBridgeRequest(
+	    R"({"action":"sendAcpPrompt","payload":{"chatId":"chat-codex","text":"continue","markdownStoreFiles":[],"attachments":[],"goalMode":true,"goalId":" goal-1 "}})");
+	UAM_ASSERT(active_goal.ok);
+	UAM_ASSERT_EQ(uam::query_handler_internal::AcpPromptGoalIdFromPayload(active_goal.request.payload), std::string("goal-1"));
+}
 
 UAM_TEST(ChatProviderSwitchPreservesHistoryStopsIdleRuntimesAndClearsIdentity)
 {
@@ -18,7 +55,10 @@ UAM_TEST(ChatProviderSwitchPreservesHistoryStopsIdleRuntimesAndClearsIdentity)
 	chat.id = "chat-switch";
 	chat.provider_id = source_provider_id;
 	chat.native_session_id = "old-native-session";
-	chat.messages.push_back(Message{MessageRole::User, "Preserve this history."});
+	Message historical_message{MessageRole::Assistant, "Preserve this history."};
+	historical_message.provider = source_provider_id;
+	chat.messages.push_back(std::move(historical_message));
+	chat.messages.push_back(Message{MessageRole::Assistant, "Legacy history without a provider."});
 	app.chats.push_back(chat);
 	app.resolved_native_sessions_by_chat_id[chat.id] = "old-resolved-session";
 
@@ -43,8 +83,10 @@ UAM_TEST(ChatProviderSwitchPreservesHistoryStopsIdleRuntimesAndClearsIdentity)
 	UAM_ASSERT_EQ(changed.provider_id, target_provider_id);
 	UAM_ASSERT_EQ(changed.model_id, std::string("target-model"));
 	UAM_ASSERT_EQ(changed.approval_mode, std::string("plan"));
-	UAM_ASSERT_EQ(changed.messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(changed.messages.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(changed.messages.front().content, std::string("Preserve this history."));
+	UAM_ASSERT_EQ(changed.messages.front().provider, source_provider_id);
+	UAM_ASSERT_EQ(changed.messages.back().provider, source_provider_id);
 	UAM_ASSERT(changed.native_session_id.empty());
 	UAM_ASSERT(app.resolved_native_sessions_by_chat_id.find(chat.id) == app.resolved_native_sessions_by_chat_id.end());
 	UAM_ASSERT(app.acp_sessions.empty());
@@ -53,7 +95,9 @@ UAM_TEST(ChatProviderSwitchPreservesHistoryStopsIdleRuntimesAndClearsIdentity)
 	const std::vector<ChatSession> saved = ChatRepository::LoadLocalChats(temp.root);
 	UAM_ASSERT_EQ(saved.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(saved.front().provider_id, target_provider_id);
-	UAM_ASSERT_EQ(saved.front().messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(saved.front().messages.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(saved.front().messages.front().provider, source_provider_id);
+	UAM_ASSERT_EQ(saved.front().messages.back().provider, source_provider_id);
 	UAM_ASSERT(saved.front().native_session_id.empty());
 }
 
@@ -238,6 +282,8 @@ UAM_TEST(ShellActionsPersistValidateAndQueueUnicodePaths)
 	action.id = "review-action";
 	action.label = "Review selection";
 	action.skill_path = uam::paths::Utf8PathString(temp.root / "skills" / uam::paths::PathFromUtf8("review ü.uam"));
+	action.provider_id = "codex";
+	action.model_id = "gpt-5.4";
 	action.accepts_files = true;
 	action.accepts_folders = false;
 	action.enabled = true;
@@ -248,6 +294,8 @@ UAM_TEST(ShellActionsPersistValidateAndQueueUnicodePaths)
 	UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(loaded.front().label, action.label);
 	UAM_ASSERT_EQ(loaded.front().skill_path, action.skill_path);
+	UAM_ASSERT_EQ(loaded.front().provider_id, std::string(uam::provider_ids::kCodexCli));
+	UAM_ASSERT_EQ(loaded.front().model_id, action.model_id);
 	UAM_ASSERT(loaded.front().accepts_files);
 	UAM_ASSERT(!loaded.front().accepts_folders);
 
@@ -256,6 +304,12 @@ UAM_TEST(ShellActionsPersistValidateAndQueueUnicodePaths)
 	duplicate.label = "REVIEW SELECTION";
 	UAM_ASSERT(!ShellActionService::Save(temp.root, {action, duplicate}, &error));
 	UAM_ASSERT(error.find("labels must be unique") != std::string::npos);
+
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "shell_actions.json", R"([{"id":"legacy","label":"Legacy","openWorkspace":true}])"));
+	const std::vector<ShellAction> legacy = ShellActionService::Load(temp.root);
+	UAM_ASSERT_EQ(legacy.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(legacy.front().provider_id.empty());
+	UAM_ASSERT(legacy.front().model_id.empty());
 
 	const fs::path selected = temp.root / "folder with spaces" / uam::paths::PathFromUtf8("résumé.txt");
 	bool recognized = false;
@@ -278,10 +332,12 @@ UAM_TEST(ShellActionOpenWorkspaceRequestCreatesAndSelectsPersistedChat)
 	uam::AppState app;
 	app.data_root = temp.root / "data";
 	fs::create_directories(app.data_root);
-	app.settings.default_new_chat_provider_id = provider_build_config::FirstEnabledProviderId();
+	app.settings.default_new_chat_provider_id.clear();
 	ShellAction action;
 	action.id = "open-workspace";
 	action.label = "Open in UAM";
+	action.provider_id = provider_build_config::FirstEnabledProviderId();
+	action.model_id = "shell-action-model";
 	action.open_workspace = true;
 	action.accepts_files = false;
 	action.accepts_folders = true;
@@ -296,6 +352,8 @@ UAM_TEST(ShellActionOpenWorkspaceRequestCreatesAndSelectsPersistedChat)
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), app.chats.front().id);
 	UAM_ASSERT_EQ(app.chats.front().workspace_directory, uam::paths::Utf8PathString(workspace));
+	UAM_ASSERT_EQ(app.chats.front().provider_id, action.provider_id);
+	UAM_ASSERT_EQ(app.chats.front().model_id, action.model_id);
 	UAM_ASSERT(app.shell_action_notification.find("Opened workspace") != std::string::npos);
 	UAM_ASSERT(uam::paths::PathExistsNoThrow(AppPaths::UamChatFilePath(app.data_root, app.chats.front().id)));
 }
@@ -1197,18 +1255,16 @@ UAM_TEST(ProviderIdsExposeNamedCliMembershipSets)
 	UAM_ASSERT(IsKnownCliProviderId(kClaudeCli));
 	UAM_ASSERT(IsVersionManagedCliProviderId(kGeminiCli));
 	UAM_ASSERT(IsVersionManagedCliProviderId(kCodexCli));
+	UAM_ASSERT(IsVersionManagedCliProviderId(kClaudeCli));
 	UAM_ASSERT(IsVersionManagedCliProviderId(kOpenCodeCli));
 	UAM_ASSERT(IsVersionManagedCliProviderId(kCopilotCli));
-	UAM_ASSERT(!IsVersionManagedCliProviderId(kClaudeCli));
 	UAM_ASSERT(!IsKnownCliProviderId("unknown-provider"));
 	UAM_ASSERT_EQ(NormalizeVersionManagedCliProviderId(" opencode-cli "), std::string(kOpenCodeCli));
 	UAM_ASSERT_EQ(NormalizeVersionManagedCliProviderId(" open-code "), std::string(kOpenCodeCli));
 	UAM_ASSERT_EQ(NormalizeVersionManagedCliProviderId(" GitHub-Copilot "), std::string(kCopilotCli));
 	UAM_ASSERT_EQ(NormalizeVersionManagedCliProviderId(std::string_view("xx codex-cli yy").substr(2, 11)), std::string(kCodexCli));
-	UAM_ASSERT_EQ(NormalizeVersionManagedCliProviderId(kClaudeCli), std::string(kGeminiCli));
-	UAM_ASSERT_EQ(NormalizeVersionManagedCliProviderId(kClaudeCli, kCodexCli), std::string(kCodexCli));
-	UAM_ASSERT_EQ(NormalizeVersionManagedCliProviderId(kClaudeCli, " GitHub-Copilot "), std::string(kCopilotCli));
-	UAM_ASSERT_EQ(NormalizeVersionManagedCliProviderId(kClaudeCli, "unknown-provider"), std::string(kGeminiCli));
+	UAM_ASSERT_EQ(NormalizeVersionManagedCliProviderId(kClaudeCli), std::string(kClaudeCli));
+	UAM_ASSERT_EQ(NormalizeVersionManagedCliProviderId(" Claude-Code ", kCodexCli), std::string(kClaudeCli));
 	UAM_ASSERT_EQ(NormalizeCliProviderAlias(" open-code "), std::string(kOpenCodeCli));
 	UAM_ASSERT_EQ(NormalizeCliProviderAlias(std::string_view("xx Claude-Code yy").substr(2, 13)), std::string(kClaudeCli));
 	UAM_ASSERT_EQ(NormalizeCliProviderAlias("github-copilot"), std::string(kCopilotCli));
@@ -2092,6 +2148,60 @@ UAM_TEST(ChatDomainServiceRejectsMessageBranchDuringActiveTurn)
 	UAM_ASSERT(!ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::string("Edited prompt")));
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(app.status_line, std::string("Wait for the active turn to finish before branching."));
+}
+
+UAM_TEST(MessageBranchRetryDispatchesRegenerationWithoutDuplicatingPrompt)
+{
+	TempDir temp("uam-message-branch-retry");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession source = ChatDomainService().CreateNewChat("folder-1", "gemini-cli");
+	source.id = "chat-source";
+	source.model_id = "gemini-2.5-pro";
+	Message prompt{MessageRole::User, "Retry this prompt"};
+	prompt.markdown_store_files = {(temp.root / "context.md").string()};
+	prompt.attachments.push_back(MessageAttachment{"file-1", "notes.txt", "file", "text/plain", "notes.txt"});
+	source.messages.push_back(std::move(prompt));
+	app.chats.push_back(std::move(source));
+
+	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(app, "chat-source", 0));
+	ChatSession* branch = ChatDomainService().SelectedChat(app);
+	UAM_ASSERT(branch != nullptr);
+	const std::string branch_id = branch->id;
+	UAM_ASSERT_EQ(branch->model_id, std::string("gemini-2.5-pro"));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	uam::AcpSessionState* raw_session = session.get();
+	raw_session->chat_id = branch_id;
+	raw_session->provider_id = "gemini-cli";
+	raw_session->protocol_kind = "gemini-acp";
+	raw_session->running = true;
+	raw_session->initialized = true;
+	raw_session->session_ready = true;
+	raw_session->session_id = "retry-session";
+#if defined(_WIN32)
+	const std::vector<std::string> sink_argv = {"cmd", "/C", "more > NUL"};
+#else
+	const std::vector<std::string> sink_argv = {"/bin/sh", "-c", "cat >/dev/null"};
+#endif
+	std::string launch_error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*raw_session, temp.root, sink_argv, &launch_error));
+	app.acp_sessions.push_back(std::move(session));
+
+	std::string retry_error;
+	UAM_ASSERT(uam::RetryLastAcpPrompt(app, branch_id, &retry_error));
+	UAM_ASSERT(retry_error.empty());
+	UAM_ASSERT_EQ(branch->messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(raw_session->turn_user_message_index, 0);
+	UAM_ASSERT(raw_session->processing);
+	UAM_ASSERT(raw_session->prompt_request_id != 0);
+	UAM_ASSERT(!raw_session->diagnostics.empty());
+	UAM_ASSERT_EQ(raw_session->diagnostics.back().reason, std::string("sent"));
+
+	PlatformServicesFactory::Instance().process_service.StopStdioProcess(*raw_session, true);
+	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*raw_session);
 }
 
 UAM_TEST(ChatDomainServiceSortsByUpdatedThenCreatedWithoutSelectionReordering)
@@ -3258,6 +3368,8 @@ UAM_TEST(StateSerializerIncludesShellActionConfigurationAndNotification)
 	action.id = "review";
 	action.label = "Review Selection";
 	action.skill_path = "/tmp/review.uam";
+	action.provider_id = uam::provider_ids::kCodexCli;
+	action.model_id = "gpt-5.4";
 	action.accepts_files = true;
 	action.accepts_folders = false;
 	action.enabled = true;
@@ -3266,6 +3378,8 @@ UAM_TEST(StateSerializerIncludesShellActionConfigurationAndNotification)
 	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
 	UAM_ASSERT_EQ(serialized["shellActions"].size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(serialized["shellActions"][0].value("label", ""), action.label);
+	UAM_ASSERT_EQ(serialized["shellActions"][0].value("providerId", ""), action.provider_id);
+	UAM_ASSERT_EQ(serialized["shellActions"][0].value("modelId", ""), action.model_id);
 	UAM_ASSERT(!serialized["shellActions"][0].value("acceptsFolders", true));
 	UAM_ASSERT_EQ(serialized.value("shellActionNotification", ""), app.shell_action_notification);
 }
@@ -3441,6 +3555,10 @@ UAM_TEST(StateSerializerIncludesAllCliVersionManagers)
 	UAM_ASSERT_EQ(codex_it->value("status", ""), std::string("supported"));
 	UAM_ASSERT((*codex_it)["availableVersions"].is_array());
 	UAM_ASSERT(!(*codex_it)["availableVersions"].empty());
+	const auto claude_it = std::ranges::find_if(providers, [](const nlohmann::json& provider) { return provider.value("providerId", "") == "claude-cli"; });
+	UAM_ASSERT(claude_it != providers.end());
+	UAM_ASSERT_EQ(claude_it->value("preferredVersion", ""), std::string("latest"));
+	UAM_ASSERT(!(*claude_it)["availableVersions"].empty());
 
 	app.runtime_cli_pin_task.running = true;
 	app.runtime_cli_pin_provider_id = " CoDeX ";
@@ -3635,6 +3753,7 @@ UAM_TEST(StateSerializerIncludesMessageToolCalls)
 	assistant.role = MessageRole::Assistant;
 	assistant.content = "Done.";
 	assistant.created_at = "2026-01-01T00:00:01.000Z";
+	assistant.provider = "codex-cli";
 	ToolCall tool_call;
 	tool_call.id = "tool-1";
 	tool_call.name = "Read file";
@@ -3671,6 +3790,7 @@ UAM_TEST(StateSerializerIncludesMessageToolCalls)
 
 	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
 	const nlohmann::json tool_json = serialized["chats"][0]["messages"][0]["toolCalls"][0];
+	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][0].value("providerId", ""), std::string("codex-cli"));
 	UAM_ASSERT_EQ(tool_json.value("id", ""), std::string("tool-1"));
 	UAM_ASSERT_EQ(tool_json.value("title", ""), std::string("Read file"));
 	UAM_ASSERT_EQ(tool_json.value("status", ""), std::string("completed"));

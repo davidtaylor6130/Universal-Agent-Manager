@@ -13,6 +13,7 @@
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
 #include "common/state/app_state.h"
 #include "common/utils/time_utils.h"
@@ -197,10 +198,17 @@ void UamQueryHandler::HandleBranchFromMessage(CefRefPtr<CefBrowser> browser, con
 		cb->Failure(500, "Branch was created but could not be selected.");
 		return;
 	}
+	const std::string branch_id = branch->id;
+	std::string retry_error;
+	if (!uam::RetryLastAcpPrompt(m_app, branch_id, &retry_error))
+	{
+		cb->Failure(500, uam::query_handler_internal::FailureDetailOrFallback(retry_error, "Branch created but regeneration could not start."));
+		return;
+	}
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	nlohmann::json result;
-	result["chatId"] = branch->id;
+	result["chatId"] = branch_id;
 	cb->Success(result.dump());
 }
 

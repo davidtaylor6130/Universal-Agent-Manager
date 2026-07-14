@@ -8,6 +8,12 @@
 
 #include "include/cef_app.h"
 
+#include <cstdio>
+
+#if defined(__APPLE__)
+#include "common/platform/platform_application_macos.h"
+#endif
+
 #if defined(_WIN32)
 #include <windows.h>
 #include <shellapi.h>
@@ -66,6 +72,14 @@ int main(int argc, char* argv[])
 	const int exit_code = CefExecuteProcess(main_args, cef_app.get(), nullptr);
 	if (exit_code >= 0)
 		return exit_code;
+
+#if defined(__APPLE__)
+	if (!uam::platform::InitializeMacApplication())
+	{
+		std::fprintf(stderr, "Failed to initialize the CEF-compatible macOS application.\n");
+		return 1;
+	}
+#endif
 
 	Application application;
 	return application.Run(main_args, std::vector<std::string>(argv, argv + argc));

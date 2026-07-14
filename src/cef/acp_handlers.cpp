@@ -416,7 +416,7 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 	std::string error;
 	const std::vector<MessageAttachment> attachments = ParseStagedAttachments(payload);
 	const bool goal_mode = payload.value("goalMode", false);
-	const std::string goal_id = payload.value("goalId", "");
+	const std::string goal_id = AcpPromptGoalIdFromPayload(payload);
 	if (!uam::SendAcpPrompt(m_app, chat_id, text, markdown_store_files, attachments, goal_mode, &error, goal_id))
 	{
 		cb->Failure(chat_id.empty() || text.empty() ? 400 : 500, FailureDetailOrFallback(error, "Failed to send ACP prompt."));

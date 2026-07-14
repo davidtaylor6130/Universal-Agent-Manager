@@ -155,10 +155,10 @@ describe('SettingsModal memory settings', () => {
     })
   }
 
-  it('does not render native selects for memory worker controls', () => {
+  it('does not render native selects in settings', () => {
     const { host, root } = renderModal()
 
-    expect(host.querySelectorAll('select')).toHaveLength(1)
+    expect(host.querySelectorAll('select')).toHaveLength(0)
     expect(host.textContent).toContain('Appearance')
     expect(host.textContent).toContain('CLI Version')
     expect(host.textContent).toContain('Memory Settings')
@@ -170,6 +170,23 @@ describe('SettingsModal memory settings', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('changes themes through the in-app menu', () => {
+    const { host, root } = renderModal()
+    const themeButton = host.querySelector('button[aria-label="Theme"]') as HTMLButtonElement | null
+
+    act(() => themeButton?.click())
+    expect(host.querySelector('[role="listbox"][aria-label="Theme"]')).toBeTruthy()
+
+    const lightOption = Array.from(host.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Light')) as HTMLButtonElement | undefined
+    act(() => lightOption?.click())
+
+    expect(useAppStore.getState().setTheme).toHaveBeenCalledWith('light')
+    expect(host.querySelector('[role="listbox"][aria-label="Theme"]')).toBeNull()
+
+    act(() => root.unmount())
     host.remove()
   })
 
@@ -314,7 +331,7 @@ describe('SettingsModal memory settings', () => {
     })
 
     expect(host.textContent).toContain('Build and release information')
-    expect(host.textContent).toContain('V4.1.0')
+    expect(host.textContent).toContain('V4.2.0')
     expect(host.textContent).not.toContain('Gemini memory worker')
 
     act(() => {
@@ -610,7 +627,20 @@ describe('SettingsModal memory settings', () => {
 
     const backgroundInput = host.querySelector('input[aria-label="Background color"]') as HTMLInputElement | null
     expect(backgroundInput).toBeTruthy()
-    expect(host.querySelectorAll('input[type="color"]')).toHaveLength(12)
+    expect(host.querySelectorAll('input[type="color"]')).toHaveLength(0)
+    expect(host.querySelectorAll('select')).toHaveLength(0)
+    expect(host.querySelector('[role="radiogroup"][aria-label="Theme base"]')).toBeTruthy()
+    expect(host.querySelectorAll('input[pattern="#[0-9A-Fa-f]{6}"]')).toHaveLength(12)
+
+    const saveButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Save theme') as HTMLButtonElement | undefined
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+      valueSetter?.call(backgroundInput, '#123')
+      backgroundInput?.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(backgroundInput?.getAttribute('aria-invalid')).toBe('true')
+    expect(saveButton?.disabled).toBe(true)
+    expect(host.textContent).toContain('Every color must use #RRGGBB format.')
 
     act(() => {
       const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
@@ -619,8 +649,9 @@ describe('SettingsModal memory settings', () => {
     })
 
     expect(document.documentElement.style.getPropertyValue('--bg')).toBe('#123456')
+    expect(backgroundInput?.getAttribute('aria-invalid')).toBe('false')
+    expect(saveButton?.disabled).toBe(false)
 
-    const saveButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Save theme')
     await act(async () => {
       saveButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })

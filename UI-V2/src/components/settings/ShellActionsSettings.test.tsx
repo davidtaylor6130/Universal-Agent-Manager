@@ -14,12 +14,19 @@ describe('ShellActionsSettings', () => {
         id: 'review-selection',
         label: 'Review Selection',
         skillPath: '/tmp/Skills/Review ü.uam',
+        providerId: 'codex-cli',
+        modelId: 'gpt-5.4',
         acceptsFiles: true,
         acceptsFolders: true,
         enabled: true,
         openWorkspace: false,
       }],
       shellActionNotification: '',
+      defaultNewChatProviderId: 'gemini-cli',
+      providers: [
+        { id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#4285f4', description: '' },
+        { id: 'codex-cli', name: 'Codex CLI', shortName: 'Codex', color: '#10a37f', description: '' },
+      ],
       markdownStoreEntries: [{
         id: 'review',
         title: 'Review skill',
@@ -47,6 +54,7 @@ describe('ShellActionsSettings', () => {
     const label = host.querySelector('input[aria-label="Label for Review Selection"]') as HTMLInputElement
     const enabled = Array.from(host.querySelectorAll('input[type="checkbox"]'))[0] as HTMLInputElement
     const inputType = host.querySelector('button[aria-label="Input type for Review Selection"]') as HTMLButtonElement
+    const provider = host.querySelector('button[aria-label="Provider for Review Selection"]') as HTMLButtonElement
     expect(host.querySelector('select')).toBeNull()
     expect(inputType.querySelector('[data-menu-select-icon]')).not.toBeNull()
 
@@ -60,11 +68,26 @@ describe('ShellActionsSettings', () => {
     const filesOnly = Array.from(host.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Files only')) as HTMLButtonElement
     await act(async () => { filesOnly.click() })
 
+    await act(async () => { provider.click() })
+    const gemini = Array.from(host.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Gemini')) as HTMLButtonElement
+    await act(async () => { gemini.click() })
+    const model = host.querySelector('button[aria-label="Model for Review résumé"]') as HTMLButtonElement
+    await act(async () => { model.click() })
+    const flash = Array.from(host.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('FlashPrioritize speed')) as HTMLButtonElement
+    await act(async () => { flash.click() })
+
     const apply = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Apply')
     await act(async () => { apply?.click() })
 
     expect(useAppStore.getState().setShellActions).toHaveBeenCalledWith([
-      expect.objectContaining({ label: 'Review résumé', enabled: false, acceptsFiles: true, acceptsFolders: false }),
+      expect.objectContaining({
+        label: 'Review résumé',
+        providerId: 'gemini-cli',
+        modelId: 'flash',
+        enabled: false,
+        acceptsFiles: true,
+        acceptsFolders: false,
+      }),
     ])
     expect(useAppStore.getState().applyShellActions).toHaveBeenCalledTimes(1)
 

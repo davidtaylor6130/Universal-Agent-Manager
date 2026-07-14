@@ -186,6 +186,7 @@ describe('ChatView', () => {
     const revertButton = host.querySelector('button[aria-label="Revert to message in new branch"]')
     expect(editButton).toBeTruthy()
     expect(revertButton).toBeTruthy()
+    expect(editButton?.parentElement?.classList.contains('uam-message-frame__actions')).toBe(true)
 
     act(() => editButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
     const editTextarea = host.querySelector('textarea[aria-label="Edit message"]') as HTMLTextAreaElement | null
@@ -288,8 +289,12 @@ describe('ChatView', () => {
     expect(thinkingBlock?.tagName).toBe('DETAILS')
     expect(thinkingBlock?.textContent).toContain('Thinking')
     expect(thinkingBlock?.textContent).toContain('Need to inspect the workspace first.')
-    expect(thinkingBlock?.hasAttribute('open')).toBe(true)
-    expect(host.querySelectorAll('details')).toHaveLength(1)
+    expect(thinkingBlock?.hasAttribute('open')).toBe(false)
+    expect(thinkingBlock?.dataset.active).toBe('true')
+    expect(host.querySelector('.uam-tool-row')?.getAttribute('data-active')).toBe('true')
+    expect(host.querySelector('.uam-message-frame.is-streaming')).not.toBeNull()
+    const runtimeStatus = host.querySelector('.uam-runtime-status') as HTMLDetailsElement | null
+    expect(runtimeStatus?.open).toBe(false)
 
     const providerButton = host.querySelector('button[title="Select provider"]')
     expect(providerButton).toBeTruthy()
@@ -608,25 +613,106 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('changes the per-chat command safety tier from chat settings', () => {
+  it('keeps the provider label captured on a historical assistant message', () => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1' ? { ...session, providerId: 'codex-cli' } : session
+      ),
+      messages: {
+        'chat-1': [{
+          id: 'historical-gemini',
+          sessionId: 'chat-1',
+          role: 'assistant',
+          content: 'Historical Gemini answer',
+          providerId: 'gemini-cli',
+          createdAt: new Date('2026-01-01T00:00:01.000Z'),
+        }],
+      },
+      acpBindingBySessionId: {},
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const messageFrame = Array.from(host.querySelectorAll('article'))
+      .find((article) => article.textContent?.includes('Historical Gemini answer'))
+    expect(messageFrame?.textContent).toContain('Gemini')
+    expect(messageFrame?.textContent).not.toContain('Codex')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('changes permissions and command safety from + and /safety, not chat settings', async () => {
+    const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
     const setSessionCommandSafetyTier = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
-      sessions: state.sessions.map((session) => ({ ...session, commandSafetyTier: 'medium' as const })),
+      sessions: state.sessions.map((session) => ({ ...session, approvalMode: 'default', commandSafetyTier: 'medium' as const })),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+          currentModeId: 'default',
+          pendingPermission: null,
+        },
+      },
+      setSessionApprovalMode,
       setSessionCommandSafetyTier,
     }))
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
-    act(() => (host.querySelector('button[title="Settings"]') as HTMLButtonElement).click())
+    openComposerOptions(host)
 
-    const selector = host.querySelector('button[aria-label="Command safety tier"]') as HTMLButtonElement
-    expect(selector.textContent).toContain('Medium')
+    const permission = host.querySelector('button[aria-label="Permission mode"]') as HTMLButtonElement
+    expect(permission.textContent).toContain('Default')
+    act(() => permission.click())
+    const plan = Array.from(host.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Plan')) as HTMLButtonElement
+    await act(async () => { plan.click(); await Promise.resolve() })
+    expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'plan')
+
+    const safety = host.querySelector('button[aria-label="Command safety tier"]') as HTMLButtonElement
+    expect(safety.textContent).toContain('Medium')
     expect(host.querySelector('select')).toBeNull()
-    act(() => selector.click())
+    act(() => safety.click())
     const low = Array.from(host.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Low')) as HTMLButtonElement
-    act(() => low.click())
+    await act(async () => { low.click(); await Promise.resolve() })
     expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'low')
+
+    openComposerOptions(host)
+    act(() => (host.querySelector('button[title="Settings"]') as HTMLButtonElement).click())
+    expect(host.textContent).toContain('Chat settings')
+    expect(host.querySelector('button[aria-label="Permission mode"]')).toBeNull()
+    expect(host.querySelector('button[aria-label="Command safety tier"]')).toBeNull()
+
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    const setDraft = (value: string) => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, value)
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    await act(async () => {
+      setDraft('/safety high')
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(setSessionCommandSafetyTier).toHaveBeenLastCalledWith('chat-1', 'high')
+    expect(host.querySelector('[role="status"]')?.textContent).toContain('Command safety changed to High.')
+
+    await act(async () => {
+      setDraft('/safety unrestricted')
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(setSessionCommandSafetyTier).toHaveBeenCalledTimes(2)
+    expect(host.querySelector('[role="status"]')?.textContent).toContain('Unsupported command safety tier "unrestricted"')
 
     act(() => root.unmount())
     host.remove()
@@ -684,14 +770,6 @@ describe('ChatView', () => {
     expect(setSessionAutoApproveCommands).toHaveBeenCalledWith('chat-1', true)
     expect(host.querySelector('[role="status"]')?.textContent).toContain('Permission mode changed to Auto Decide.')
 
-    act(() => (host.querySelector('button[title="Settings"]') as HTMLButtonElement).click())
-    const permission = host.querySelector('button[aria-label="Permission mode"]') as HTMLButtonElement
-    expect(permission.textContent).toContain('Default')
-    act(() => permission.click())
-    const autoDecide = Array.from(host.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Auto Decide')) as HTMLButtonElement
-    expect(autoDecide).toBeTruthy()
-    act(() => (host.querySelector('button[title="Settings"]') as HTMLButtonElement).click())
-
     await act(async () => {
       setDraft('/permission plan')
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
@@ -705,6 +783,88 @@ describe('ChatView', () => {
     })
     expect(setSessionApprovalMode).toHaveBeenCalledTimes(1)
     expect(host.querySelector('[role="status"]')?.textContent).toContain('Unsupported permission mode "unrestricted"')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps Codex reasoning and speed in the + menu and slash commands, not toolbar cliplets', async () => {
+    const setSessionCodexOptions = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => session.id === 'chat-1'
+        ? { ...session, providerId: 'codex-cli', modelId: 'gpt-5.4', reasoningEffort: 'low', serviceTier: 'flex' }
+        : session),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          providerId: 'codex-cli',
+          protocolKind: 'codex-app-server',
+          lifecycleState: 'ready',
+          processing: false,
+          processingStartedAtMs: null,
+          pendingPermission: null,
+          availableModels: [{
+            id: 'gpt-5.4',
+            name: 'gpt-5.4',
+            description: 'Latest Codex model.',
+            supportedReasoningEfforts: ['low', 'high', 'xhigh'],
+            additionalSpeedTiers: ['fast', 'flex'],
+          }],
+          currentModelId: 'gpt-5.4',
+        },
+      },
+      setSessionCodexOptions,
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    expect(host.querySelector('button[title="Select Codex reasoning"]')).toBeNull()
+    expect(host.querySelector('button[title="Select Codex speed"]')).toBeNull()
+    openComposerOptions(host)
+
+    const reasoning = host.querySelector('button[aria-label="Reasoning"]') as HTMLButtonElement
+    const speed = host.querySelector('button[aria-label="Speed"]') as HTMLButtonElement
+    expect(reasoning.textContent).toContain('Low')
+    expect(speed.textContent).toContain('Flex')
+
+    act(() => reasoning.click())
+    const high = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="option"]'))
+      .find((option) => option.textContent?.startsWith('High')) as HTMLButtonElement
+    await act(async () => { high.click(); await Promise.resolve() })
+    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(1, 'chat-1', { reasoningEffort: 'high', serviceTier: 'flex' })
+
+    act(() => speed.click())
+    const fast = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="option"]'))
+      .find((option) => option.textContent?.startsWith('Fast')) as HTMLButtonElement
+    await act(async () => { fast.click(); await Promise.resolve() })
+    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(2, 'chat-1', { reasoningEffort: 'low', serviceTier: 'fast' })
+
+    openComposerOptions(host)
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    const setDraft = (value: string) => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, value)
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+
+    await act(async () => {
+      setDraft('/reasoning xhigh')
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(3, 'chat-1', { reasoningEffort: 'xhigh', serviceTier: 'flex' })
+    expect(host.querySelector('[role="status"]')?.textContent).toContain('Reasoning changed to XHigh.')
+
+    await act(async () => {
+      setDraft('/speed flex')
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(4, 'chat-1', { reasoningEffort: 'low', serviceTier: 'flex' })
+    expect(host.querySelector('[role="status"]')?.textContent).toContain('Speed changed to Flex.')
 
     act(() => root.unmount())
     host.remove()
@@ -1679,7 +1839,7 @@ describe('ChatView', () => {
     expect(thinkingBlock?.textContent).toContain('Persisted reasoning')
     expect(thinkingBlock?.textContent).toContain('with detail.')
     expect(thinkingBlock?.hasAttribute('open')).toBe(false)
-    expect(host.querySelectorAll('details')).toHaveLength(1)
+    expect(host.querySelectorAll('[data-testid="thinking-block"]')).toHaveLength(1)
 
     act(() => {
       root.unmount()
@@ -1843,7 +2003,8 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('renders goal review JSON as a goal review block', () => {
+  it('renders ordered goal review JSON as a distinct block without raw JSON', () => {
+    const reviewJson = '{"decision":"continue","reason":"More work remains.","nextPrompt":"Continue with the next page.","evidence":["Reviewed the current diff."],"progressUpdate":{"currentStep":"Finish the branch UI.","lastVerification":"Focused tests passed."}}'
     useAppStore.setState((state) => {
       const currentMessages = state.messages['chat-1'] ?? []
       return {
@@ -1853,12 +2014,12 @@ describe('ChatView', () => {
             message.id === 'm-2'
               ? {
                   ...message,
-                  content: '{"decision":"continue","reason":"More work remains.","nextPrompt":"Continue with the next page.","evidence":["Reviewed the current diff."],"progressUpdate":{"currentStep":"Finish the branch UI.","lastVerification":"Focused tests passed."}}',
+                  content: 'Grouped fallback content should not render.',
                   thoughts: '',
                   toolCalls: [],
                   planSummary: '',
                   planEntries: [],
-                  blocks: [],
+                  blocks: [{ type: 'assistant_text' as const, text: reviewJson }],
                 }
               : message
           ),
@@ -1888,7 +2049,12 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    expect(host.querySelector('[data-testid="goal-review-block"]')).not.toBeNull()
+    const goalReviewFrame = host.querySelector('[data-message-kind="goal-review"]')
+    expect(goalReviewFrame).not.toBeNull()
+    expect(goalReviewFrame?.textContent).toContain('Goal Reviewer')
+    expect(goalReviewFrame?.querySelector('[data-testid="goal-review-block"]')).not.toBeNull()
+    expect(goalReviewFrame?.textContent).not.toContain('{"decision"')
+    expect(goalReviewFrame?.textContent).not.toContain('Grouped fallback content should not render.')
     expect(host.textContent).toContain('Goal Review')
     expect(host.textContent).toContain('Continue')
     expect(host.textContent).toContain('More work remains.')
@@ -2184,11 +2350,12 @@ describe('ChatView', () => {
     const root = createRoot(host)
 
     act(() => {
-      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+      root.render(<ChatView session={{ ...useAppStore.getState().sessions[0], providerId: 'opencode-cli' }} />)
     })
 
     const form = host.querySelector('form')
       expect(form?.textContent).toContain('Gemini ACP error')
+      expect(form?.textContent).not.toContain('OpenCode ACP error')
       expect(form?.textContent).toContain('Internal ACP failure')
       expect(form?.textContent).toContain('Diagnostics')
       expect(form?.textContent).toContain('Exit code: 137')
@@ -2838,8 +3005,14 @@ describe('ChatView', () => {
   it('dictates interim and final text, stops accessibly, and submits exactly once on end', async () => {
     const requests: Array<{ action: string; payload?: { locale?: string } }> = []
     const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+    let completeDictationStart: (() => void) | undefined
     window.cefQuery = vi.fn(({ request, onSuccess }) => {
-      requests.push(JSON.parse(request) as { action: string; payload?: { locale?: string } })
+      const parsed = JSON.parse(request) as { action: string; payload?: { locale?: string } }
+      requests.push(parsed)
+      if (parsed.action === 'startDictation') {
+        completeDictationStart = () => onSuccess('{}')
+        return
+      }
       onSuccess('{}')
     })
     useAppStore.setState((state) => ({
@@ -2877,7 +3050,20 @@ describe('ChatView', () => {
 
     expect(requests[0]?.action).toBe('startDictation')
     expect(typeof requests[0]?.payload?.locale).toBe('string')
-    expect(host.querySelector('button[aria-label="Stop dictation"]')?.getAttribute('aria-pressed')).toBe('true')
+    const startingButton = host.querySelector('button[aria-label="Starting dictation"]') as HTMLButtonElement
+    expect(startingButton.dataset.dictationState).toBe('starting')
+    expect(startingButton.getAttribute('aria-busy')).toBe('true')
+    expect(host.querySelector('[role="status"]')?.textContent).toContain('Starting dictation')
+
+    await act(async () => {
+      completeDictationStart?.()
+      await Promise.resolve()
+    })
+
+    const listeningButton = host.querySelector('button[aria-label="Stop dictation"]') as HTMLButtonElement
+    expect(listeningButton.getAttribute('aria-pressed')).toBe('true')
+    expect(listeningButton.dataset.dictationState).toBe('listening')
+    expect(listeningButton.querySelector('.uam-dictation-listening-indicator')).toBeTruthy()
     expect(host.querySelector('[role="status"]')?.textContent).toContain('Listening')
     expect(textarea.disabled).toBe(true)
 
@@ -2901,6 +3087,10 @@ describe('ChatView', () => {
     })
     expect(requests.some((request) => request.action === 'stopDictation')).toBe(true)
     expect(host.querySelector('[role="status"]')?.textContent).toContain('Finishing dictation')
+    const stoppingButton = host.querySelector('button[aria-label="Finishing dictation"]') as HTMLButtonElement
+    expect(stoppingButton.dataset.dictationState).toBe('stopping')
+    expect(stoppingButton.getAttribute('aria-busy')).toBe('true')
+    expect(stoppingButton.querySelector('.uam-dictation-listening-indicator')).toBeNull()
 
     await act(async () => {
       window.dispatchEvent(new CustomEvent('uam-dictation', {
@@ -2956,6 +3146,9 @@ describe('ChatView', () => {
       }))
     })
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('Microphone permission was denied.')
+    const errorButton = host.querySelector('button[aria-label="Dictation error"]') as HTMLButtonElement
+    expect(errorButton.dataset.dictationState).toBe('error')
+    expect(errorButton.querySelector('.uam-dictation-listening-indicator')).toBeNull()
 
     await act(async () => {
       window.dispatchEvent(new CustomEvent('uam-dictation', {
@@ -2964,7 +3157,9 @@ describe('ChatView', () => {
       await Promise.resolve()
     })
     expect(sendAcpPrompt).not.toHaveBeenCalled()
-    expect(host.querySelector('button[aria-label="Start dictation"]')).toBeTruthy()
+    const retryButton = host.querySelector('button[aria-label="Retry dictation"]') as HTMLButtonElement
+    expect(retryButton.dataset.dictationState).toBe('error')
+    expect(retryButton.disabled).toBe(false)
 
     act(() => root.unmount())
     host.remove()

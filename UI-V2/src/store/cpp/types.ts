@@ -30,6 +30,7 @@ export type AcpAttentionKind =
 export interface CppMessage {
   role: 'user' | 'assistant' | 'system'
   content: string
+  providerId?: string
   thoughts?: string
   planSummary?: string
   planEntries?: AcpPlanEntry[]
@@ -388,6 +389,8 @@ export interface ShellAction {
   id: string
   label: string
   skillPath: string
+  providerId: string
+  modelId: string
   acceptsFiles: boolean
   acceptsFolders: boolean
   enabled: boolean

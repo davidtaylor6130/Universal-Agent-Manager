@@ -23,7 +23,7 @@ import type { Provider } from '../../types/provider'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
 import { ChevronDown, ChevronRight, X, Check } from 'lucide-react'
-import { Button, IconButton } from '../ui'
+import { Button, IconButton, MenuSelect } from '../ui'
 import { ShellActionsSettings } from './ShellActionsSettings'
 import {
   DEFAULT_PROVIDER_ID,
@@ -106,6 +106,7 @@ const THEME_COLOR_FIELDS: Array<{ key: keyof ThemeColors; label: string }> = [
   { key: 'warning', label: 'Warning' },
   { key: 'error', label: 'Error' },
 ]
+const THEME_COLOR_PATTERN = /^#[0-9A-Fa-f]{6}$/
 
 function customThemeId(name: string, themes: CustomTheme[]) {
   const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'theme'
@@ -309,6 +310,7 @@ export function SettingsModal() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
+      if (e.defaultPrevented) return
       if (openMemoryMenu) {
         setOpenMemoryMenu(null)
         return
@@ -667,6 +669,10 @@ export function SettingsModal() {
     memoryActivity.lastWorkerUpdatedAt || '',
   ].filter(Boolean).join(' | ')
   const selectedCustomTheme = customThemes.find((candidate) => candidate.id === theme)
+  const themeDraftValid = Boolean(
+    themeDraft?.name.trim()
+    && Object.values(themeDraft.colors).every((color) => THEME_COLOR_PATTERN.test(color))
+  )
   const startNewTheme = (source?: CustomTheme) => {
     const base = source?.base ?? (theme === 'light' ? 'light' : 'dark')
     const name = source ? `${source.name} Copy` : 'Custom Theme'
@@ -688,7 +694,7 @@ export function SettingsModal() {
     startNewTheme({ version: 1, id: 'custom:built-in', name: `${base === 'dark' ? 'Dark' : 'Light'}`, base, colors: { ...BUILT_IN_THEME_COLORS[base] } })
   }
   const saveThemeDraft = async () => {
-    if (!themeDraft) return
+    if (!themeDraft || !themeDraftValid) return
     const saved = await saveCustomTheme(themeDraft)
     if (!saved) {
       setThemeMessage('Theme could not be saved. Check its name and colors.')
@@ -730,6 +736,12 @@ export function SettingsModal() {
   }
   const renderSectionContent = () => {
     if (selectedSection === 'appearance') {
+      const themeOptions: Array<{ value: StoredTheme; label: string }> = [
+        { value: 'dark', label: 'Dark' },
+        { value: 'light', label: 'Light' },
+        { value: 'system', label: 'System' },
+        ...customThemes.map((customTheme) => ({ value: customTheme.id, label: customTheme.name })),
+      ]
       return (
         <div className="space-y-4">
           <SectionCard
@@ -737,25 +749,19 @@ export function SettingsModal() {
             description="Choose a built-in theme or create a validated custom palette."
           >
             <div className="grid gap-4">
-              <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+              <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
                 <span>Theme</span>
-                <select
-                  aria-label="Theme"
+                <MenuSelect
+                  label="Theme"
                   value={theme}
-                  onChange={(event) => {
+                  options={themeOptions}
+                  onChange={(value) => {
                     setThemeDraft(null)
-                    setTheme(event.target.value as StoredTheme)
+                    setTheme(value as StoredTheme)
                     setThemeMessage('')
                   }}
-                  className="w-full px-3 py-2"
-                  style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface)', color: 'var(--text)' }}
-                >
-                  <option value="dark">Dark</option>
-                  <option value="light">Light</option>
-                  <option value="system">System</option>
-                  {customThemes.map((customTheme) => <option key={customTheme.id} value={customTheme.id}>{customTheme.name}</option>)}
-                </select>
-              </label>
+                />
+              </div>
               <div className="flex flex-wrap gap-2">
                 <Button size="sm" onClick={() => startNewTheme()}>Create</Button>
                 <Button size="sm" onClick={cloneCurrentTheme}>Clone</Button>
@@ -790,35 +796,64 @@ export function SettingsModal() {
                         style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)' }}
                       />
                     </label>
-                    <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                      <span>Base</span>
-                      <select
-                        aria-label="Theme base"
-                        value={themeDraft.base}
-                        onChange={(event) => setThemeDraft({ ...themeDraft, base: event.target.value as 'dark' | 'light' })}
-                        className="px-2 py-1.5"
-                        style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)' }}
-                      >
-                        <option value="dark">Dark</option>
-                        <option value="light">Light</option>
-                      </select>
-                    </label>
+                    <fieldset className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                      <legend>Base</legend>
+                      <div role="radiogroup" aria-label="Theme base" className="grid grid-cols-2 gap-1 rounded-md p-1" style={{ border: '1px solid var(--border)', background: 'var(--bg)' }}>
+                        {(['dark', 'light'] as const).map((base) => {
+                          const selected = themeDraft.base === base
+                          return (
+                            <button
+                              key={base}
+                              type="button"
+                              role="radio"
+                              aria-checked={selected}
+                              onClick={() => setThemeDraft({ ...themeDraft, base })}
+                              className="rounded px-2 py-1 capitalize transition-colors duration-150"
+                              style={{ background: selected ? 'var(--accent-dim)' : 'transparent', color: selected ? 'var(--text)' : 'var(--text-2)' }}
+                            >
+                              {base}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </fieldset>
                   </div>
                   <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                    {/* CEF native popup controls crash on macOS 26; keep theme editing in-app. */}
                     {THEME_COLOR_FIELDS.map(({ key, label }) => (
                       <label key={key} className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs" style={{ border: '1px solid var(--border)', color: 'var(--text-2)' }}>
                         <span>{label}</span>
-                        <input
-                          type="color"
-                          aria-label={`${label} color`}
-                          value={themeDraft.colors[key]}
-                          onChange={(event) => setThemeDraft({ ...themeDraft, colors: { ...themeDraft.colors, [key]: event.target.value } })}
-                        />
+                        <span className="flex items-center gap-2">
+                          <span
+                            aria-hidden="true"
+                            className="h-5 w-5 rounded-full transition-transform duration-150 hover:scale-110"
+                            style={{ background: themeDraft.colors[key], border: '1px solid var(--border)' }}
+                          />
+                          <input
+                            type="text"
+                            inputMode="text"
+                            aria-label={`${label} color`}
+                            value={themeDraft.colors[key]}
+                            maxLength={7}
+                            pattern="#[0-9A-Fa-f]{6}"
+                            spellCheck={false}
+                            aria-invalid={!THEME_COLOR_PATTERN.test(themeDraft.colors[key])}
+                            aria-describedby={!THEME_COLOR_PATTERN.test(themeDraft.colors[key]) ? 'theme-color-format-error' : undefined}
+                            onChange={(event) => setThemeDraft({ ...themeDraft, colors: { ...themeDraft.colors, [key]: event.target.value } })}
+                            className="w-20 rounded px-2 py-1 font-mono uppercase transition-colors duration-150 focus:outline-none"
+                            style={{ border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' }}
+                          />
+                        </span>
                       </label>
                     ))}
                   </div>
+                  {!themeDraftValid && (
+                    <p id="theme-color-format-error" role="alert" className="text-xs" style={{ color: 'var(--red)' }}>
+                      Every color must use #RRGGBB format.
+                    </p>
+                  )}
                   <div className="flex gap-2">
-                    <Button size="sm" variant="primary" disabled={!themeDraft.name.trim()} onClick={() => void saveThemeDraft()}>Save theme</Button>
+                    <Button size="sm" variant="primary" disabled={!themeDraftValid} onClick={() => void saveThemeDraft()}>Save theme</Button>
                     <Button size="sm" onClick={() => setThemeDraft(null)}>Cancel preview</Button>
                   </div>
                 </div>

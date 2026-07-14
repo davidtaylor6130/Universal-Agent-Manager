@@ -46,6 +46,21 @@ inline nlohmann::json WithOptionalRequestId(nlohmann::json value, const std::str
 	return value;
 }
 
+inline std::string ProviderSwitchChatIdFromPayload(const nlohmann::json& payload)
+{
+	return uam::nlohmann_json::TrimmedStringValue(payload, {"chatId"});
+}
+
+inline std::string ProviderSwitchProviderIdFromPayload(const nlohmann::json& payload)
+{
+	return uam::nlohmann_json::TrimmedStringValue(payload, {"providerId"});
+}
+
+inline std::string AcpPromptGoalIdFromPayload(const nlohmann::json& payload)
+{
+	return uam::nlohmann_json::TrimmedStringValue(payload, {"goalId"});
+}
+
 using uam::provider_chat_defaults::IsAllowedModelId;
 
 // ---- Provider chat defaults helpers ----------

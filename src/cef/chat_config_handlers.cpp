@@ -312,8 +312,8 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 
 void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const std::string chat_id = payload.value("chatId", "");
-	const std::string provider_id = uam::strings::Trim(payload.value("providerId", ""));
+	const std::string chat_id = ProviderSwitchChatIdFromPayload(payload);
+	const std::string provider_id = ProviderSwitchProviderIdFromPayload(payload);
 
 	switch (uam::SwitchChatProvider(m_app, chat_id, provider_id))
 	{

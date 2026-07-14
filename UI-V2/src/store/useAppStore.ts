@@ -514,6 +514,7 @@ export const useAppStore = create<AppState>((set, get) => {
             sessionId: chatId,
             role: 'assistant',
             content: '',
+            providerId: state.sessions.find((session) => session.id === chatId)?.providerId,
             thoughts: '',
             planSummary: '',
             planEntries: [],

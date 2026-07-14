@@ -186,6 +186,7 @@ describe('useAppStore Gemini CLI slice', () => {
       {
         role: 'assistant',
         content: 'Final answer',
+        providerId: 'codex-cli',
         thoughts: 'Persisted backend thought',
         planSummary: 'Persisted plan summary',
         planEntries: [{ content: 'Persisted plan step', priority: '1', status: 'completed' }],
@@ -305,6 +306,7 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(state.messages['chat-1'][0]).toMatchObject({
       role: 'assistant',
       content: 'Final answer',
+      providerId: 'codex-cli',
       thoughts: 'Persisted backend thought',
       planSummary: 'Persisted plan summary',
     })
@@ -971,7 +973,7 @@ describe('useAppStore Gemini CLI slice', () => {
       ],
     })
 
-    useAppStore.getState().addSession('Codex Chat', 'default', ' CoDeX ')
+    useAppStore.getState().addSession('Codex Chat', 'default', ' CoDeX ', 'gpt-5.4')
     await new Promise((resolve) => setTimeout(resolve, 0))
 
     expect(requests).toHaveLength(1)
@@ -981,7 +983,7 @@ describe('useAppStore Gemini CLI slice', () => {
       folderId: 'default',
       providerId: 'codex-cli',
       defaults: {
-        modelId: '',
+        modelId: 'gpt-5.4',
         approvalMode: 'default',
         autoApproveCommands: false,
         memoryEnabled: true,
@@ -2326,6 +2328,8 @@ describe('useAppStore Gemini CLI slice', () => {
       id: 'review',
       label: 'Review Selection',
       skillPath: '/tmp/Review ü.uam',
+      providerId: 'codex-cli',
+      modelId: 'gpt-5.4',
       acceptsFiles: true,
       acceptsFolders: false,
       enabled: true,

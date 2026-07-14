@@ -124,11 +124,18 @@ describe('ResourceCollections', () => {
     expect(useAppStore.getState().resourceCollections[0]?.name).toBe('Work')
     await click(host.querySelector('[aria-label="Actions for Work"]'))
     await click(Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Add resource')) ?? null)
+    const typePicker = host.querySelector('[aria-label="Resource type"]')
+    expect(typePicker?.tagName).toBe('BUTTON')
+    expect(host.querySelector('select')).toBeNull()
+    await click(typePicker)
+    expect(host.querySelector('[role="listbox"][aria-label="Resource type"]')).toBeTruthy()
+    await click(Array.from(host.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Website')) ?? null)
     input(host.querySelector('[aria-label="Resource target"]') as HTMLInputElement, 'https://example.com')
     input(host.querySelector('[aria-label="Resource label"]') as HTMLInputElement, 'Docs')
     await click(Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Add resource') ?? null)
 
     expect(useAppStore.getState().resourceCollections[0].references[0]).toMatchObject({
+      type: 'website',
       target: 'https://example.com',
       label: 'Docs',
     })

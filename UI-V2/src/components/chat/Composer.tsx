@@ -23,6 +23,12 @@ import { MenuSelect } from '../ui'
 export type ComposerIconName = 'editor' | 'folder' | 'git-tree' | 'markdown' | 'plus' | 'send' | 'terminal'
 export type DictationState = 'idle' | 'starting' | 'listening' | 'stopping'
 
+export const COMMAND_SAFETY_TIERS = [
+  { id: 'low', label: 'Low', detail: 'Warn about a smaller set of risky commands.' },
+  { id: 'medium', label: 'Medium', detail: 'Balanced command warnings.' },
+  { id: 'high', label: 'High', detail: 'Warn before more potentially risky commands.' },
+] as const
+
 export function acpRuntimeBlocksControlChanges(acp?: AcpBinding | null): boolean {
   return Boolean(
     acp?.processing ||
@@ -81,18 +87,12 @@ export function ComposerToolbar({
   canChangeProvider,
   providerOpen,
   modelOpen,
-  reasoningOpen,
-  speedOpen,
   settingsOpen,
   providerMenuRef,
   modelMenuRef,
-  reasoningMenuRef,
-  speedMenuRef,
   settingsMenuRef,
   onToggleProvider,
   onToggleModel,
-  onToggleReasoning,
-  onToggleSpeed,
   onToggleSettings,
   onSelectProvider,
   onSelectModel,
@@ -114,6 +114,7 @@ export function ComposerToolbar({
   onAttachFile,
   onOpenMarkdownStore,
   dictationState,
+  dictationError,
   dictationAvailable,
   onToggleDictation,
 }: {
@@ -136,18 +137,12 @@ export function ComposerToolbar({
   canChangeProvider: boolean
   providerOpen: boolean
   modelOpen: boolean
-  reasoningOpen: boolean
-  speedOpen: boolean
   settingsOpen: boolean
   providerMenuRef: RefObject<HTMLDivElement>
   modelMenuRef: RefObject<HTMLDivElement>
-  reasoningMenuRef: RefObject<HTMLDivElement>
-  speedMenuRef: RefObject<HTMLDivElement>
   settingsMenuRef: RefObject<HTMLDivElement>
   onToggleProvider: () => void
   onToggleModel: () => void
-  onToggleReasoning: () => void
-  onToggleSpeed: () => void
   onToggleSettings: () => void
   onSelectProvider: (providerId: string) => void
   onSelectModel: (modelId: string) => void
@@ -169,6 +164,7 @@ export function ComposerToolbar({
   onAttachFile: () => void
   onOpenMarkdownStore: () => void
   dictationState: DictationState
+  dictationError?: string
   dictationAvailable: boolean
   onToggleDictation: () => void
 }) {
@@ -194,6 +190,18 @@ export function ComposerToolbar({
   const memoryDisabled = Boolean(modelDisabled)
   const autoLabel = 'Auto Decide'
   const running = Boolean(acp?.processing)
+  const dictationVisualState = dictationError ? 'error' : dictationState
+  const dictationLabel = !dictationAvailable
+    ? 'Dictation requires the desktop app'
+    : dictationError
+      ? dictationState === 'idle' ? 'Retry dictation' : 'Dictation error'
+      : dictationState === 'starting'
+        ? 'Starting dictation'
+        : dictationState === 'listening'
+          ? 'Stop dictation'
+          : dictationState === 'stopping'
+            ? 'Finishing dictation'
+            : 'Start dictation'
   // Secondary mode controls (plan / accept-edits / auto / memory / markdown) are
   // consolidated behind one "Options" popover to keep the toolbar quiet.
   const [optionsOpen, setOptionsOpen] = useState(false)
@@ -277,124 +285,6 @@ export function ComposerToolbar({
       }}
     >
       {/* Provider selector moved to the workspace row above the input. */}
-      {caps.hasReasoningEffort && (
-        <div ref={reasoningMenuRef} className="relative">
-          <button
-            type="button"
-            title="Select Codex reasoning"
-            onClick={onToggleReasoning}
-            disabled={modelDisabled}
-            className="inline-flex items-center gap-1.5 px-2"
-            style={{
-              ...chipStyle,
-              color: reasoningOpen ? 'var(--text)' : 'var(--text-2)',
-              borderColor: reasoningOpen ? 'var(--border-bright)' : 'var(--border)',
-              opacity: modelDisabled ? 0.55 : 1,
-            }}
-          >
-            <span>Reasoning</span>
-            <span style={{ color: 'var(--text)' }}>{currentReasoning.shortLabel}</span>
-          </button>
-          {reasoningOpen && !modelDisabled && (
-            <div
-              className="absolute left-0"
-              style={{
-                bottom: 32,
-                width: 250,
-                zIndex: 40,
-                border: '1px solid var(--border-bright)',
-                borderRadius: 8,
-                background: 'var(--surface)',
-                boxShadow: '0 14px 42px rgba(0, 0, 0, 0.28)',
-                padding: 6,
-              }}
-            >
-              <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>Reasoning</div>
-              {reasoningOptions.map((option) => {
-                const selected = option.id === currentReasoning.id
-                return (
-                  <button
-                    key={option.id || 'default'}
-                    type="button"
-                    onClick={() => onSelectReasoning(option.id)}
-                    className="w-full grid gap-0.5 text-left px-2 py-2"
-                    style={{
-                      borderRadius: 6,
-                      background: selected ? 'var(--accent-dim)' : 'transparent',
-                      color: selected ? 'var(--text)' : 'var(--text-2)',
-                    }}
-                  >
-                    <span className="flex items-center gap-2">
-                      <span className="flex-1">{option.label}</span>
-                      {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
-                    </span>
-                    <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>{option.detail}</span>
-                  </button>
-                )
-              })}
-            </div>
-          )}
-        </div>
-      )}
-      {caps.hasServiceTier && (
-        <div ref={speedMenuRef} className="relative">
-          <button
-            type="button"
-            title="Select Codex speed"
-            onClick={onToggleSpeed}
-            disabled={modelDisabled}
-            className="inline-flex items-center gap-1.5 px-2"
-            style={{
-              ...chipStyle,
-              color: speedOpen ? 'var(--text)' : 'var(--text-2)',
-              borderColor: speedOpen ? 'var(--border-bright)' : 'var(--border)',
-              opacity: modelDisabled ? 0.55 : 1,
-            }}
-          >
-            <span>Speed</span>
-            <span style={{ color: 'var(--text)' }}>{currentSpeed.shortLabel}</span>
-          </button>
-          {speedOpen && !modelDisabled && (
-            <div
-              className="absolute left-0"
-              style={{
-                bottom: 32,
-                width: 230,
-                zIndex: 40,
-                border: '1px solid var(--border-bright)',
-                borderRadius: 8,
-                background: 'var(--surface)',
-                boxShadow: '0 14px 42px rgba(0, 0, 0, 0.28)',
-                padding: 6,
-              }}
-            >
-              <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>Speed</div>
-              {speedOptions.map((option) => {
-                const selected = option.id === currentSpeed.id
-                return (
-                  <button
-                    key={option.id || 'default'}
-                    type="button"
-                    onClick={() => onSelectSpeed(option.id)}
-                    className="w-full grid gap-0.5 text-left px-2 py-2"
-                    style={{
-                      borderRadius: 6,
-                      background: selected ? 'var(--accent-dim)' : 'transparent',
-                      color: selected ? 'var(--text)' : 'var(--text-2)',
-                    }}
-                  >
-                    <span className="flex items-center gap-2">
-                      <span className="flex-1">{option.label}</span>
-                      {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
-                    </span>
-                    <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>{option.detail}</span>
-                  </button>
-                )
-              })}
-            </div>
-          )}
-        </div>
-      )}
       <div ref={optionsRef} className="relative">
         <button
           type="button"
@@ -442,6 +332,54 @@ export function ComposerToolbar({
               <Target size={13} aria-hidden style={{ color: goalActive || goalArmed ? 'var(--purple)' : 'var(--text-3)' }} />
               <span>{goalArmed ? 'Goal: next message' : 'Goal'}</span>
             </button>
+            {(caps.hasReasoningEffort || caps.hasServiceTier) && (
+              <>
+                <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
+                <div className="px-1 pb-0.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>Codex</div>
+                {caps.hasReasoningEffort && (
+                  <MenuSelect
+                    label="Reasoning"
+                    value={currentReasoning.id}
+                    options={reasoningOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
+                    onChange={onSelectReasoning}
+                    disabled={modelDisabled}
+                  />
+                )}
+                {caps.hasServiceTier && (
+                  <MenuSelect
+                    label="Speed"
+                    value={currentSpeed.id}
+                    options={speedOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
+                    onChange={onSelectSpeed}
+                    disabled={modelDisabled}
+                  />
+                )}
+              </>
+            )}
+            <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
+            <div className="px-1 pb-0.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>Permissions</div>
+            <MenuSelect
+              label="Permission mode"
+              value={permissionModeId}
+              options={permissionModes.map((mode) => ({
+                value: mode.id,
+                label: mode.name,
+                description: mode.description,
+                icon: permissionModeIcon(mode.id),
+              }))}
+              onChange={onSelectPermissionMode}
+            />
+            <MenuSelect
+              label="Command safety tier"
+              value={commandSafetyTier}
+              onChange={(value) => onSetCommandSafetyTier(value as 'low' | 'medium' | 'high')}
+              options={COMMAND_SAFETY_TIERS.map((tier) => ({
+                value: tier.id,
+                label: tier.label,
+                description: tier.detail,
+                icon: tier.id === 'low' ? <Shield size={14} /> : tier.id === 'medium' ? <ShieldCheck size={14} /> : <ShieldAlert size={14} />,
+              }))}
+            />
             <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
             <div className="px-1 pb-0.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>Mode</div>
             <button
@@ -517,21 +455,29 @@ export function ComposerToolbar({
       <div className="ml-auto flex items-center gap-2">
         <button
           type="button"
-          title={!dictationAvailable ? 'Dictation requires the desktop app' : dictationState === 'idle' ? 'Start dictation' : dictationState === 'starting' ? 'Starting dictation' : 'Stop dictation'}
-          aria-label={dictationState === 'idle' ? 'Start dictation' : dictationState === 'starting' ? 'Starting dictation' : 'Stop dictation'}
+          title={dictationError || dictationLabel}
+          aria-label={dictationLabel}
           aria-pressed={dictationState !== 'idle'}
+          aria-busy={dictationState === 'starting' || dictationState === 'stopping'}
+          data-dictation-state={dictationVisualState}
           onClick={onToggleDictation}
           disabled={!dictationAvailable || dictationState === 'starting' || dictationState === 'stopping'}
-          className="h-[30px] w-[34px] text-xs font-semibold inline-flex items-center justify-center"
+          className="uam-dictation-button h-[30px] w-[34px] text-xs font-semibold inline-flex items-center justify-center"
           style={{
             borderRadius: 7,
-            border: `1px solid ${dictationState === 'idle' ? 'var(--border)' : 'color-mix(in srgb, var(--red) 46%, var(--border-bright))'}`,
-            background: dictationState === 'idle' ? 'var(--surface-up)' : 'color-mix(in srgb, var(--red) 14%, var(--surface))',
-            color: dictationState === 'idle' ? 'var(--text-2)' : 'var(--red)',
             opacity: !dictationAvailable || dictationState === 'starting' || dictationState === 'stopping' ? 0.55 : 1,
           }}
         >
-          {dictationState === 'idle' ? <Mic size={15} aria-hidden /> : <Square size={12} fill="currentColor" aria-hidden />}
+          {dictationState === 'idle' || dictationState === 'starting'
+            ? <Mic size={15} aria-hidden />
+            : (
+                <Square
+                  size={12}
+                  fill="currentColor"
+                  aria-hidden
+                  className={dictationVisualState === 'listening' ? 'uam-dictation-listening-indicator' : undefined}
+                />
+              )}
         </button>
         <div ref={modelMenuRef} className="relative">
           <button
@@ -662,33 +608,6 @@ export function ComposerToolbar({
                     <span>{currentSpeed.label}</span>
                   </div>
                 )}
-                <div className="grid gap-1">
-                  <span className="flex items-center gap-1.5" style={{ color: 'var(--text-3)' }}><Shield size={13} aria-hidden /> Permission</span>
-                  <MenuSelect
-                    label="Permission mode"
-                    value={permissionModeId}
-                    options={permissionModes.map((mode) => ({
-                      value: mode.id,
-                      label: mode.name,
-                      description: mode.description,
-                      icon: permissionModeIcon(mode.id),
-                    }))}
-                    onChange={onSelectPermissionMode}
-                  />
-                </div>
-                <div className="grid gap-1">
-                  <span className="flex items-center gap-1.5" style={{ color: 'var(--text-3)' }}><ShieldAlert size={13} aria-hidden /> Command safety</span>
-                  <MenuSelect
-                    label="Command safety tier"
-                    value={commandSafetyTier}
-                    onChange={(value) => onSetCommandSafetyTier(value as 'low' | 'medium' | 'high')}
-                    options={[
-                      { value: 'low', label: 'Low', description: 'Warn about a smaller set of risky commands.', icon: <Shield size={14} /> },
-                      { value: 'medium', label: 'Medium', description: 'Balanced command warnings.', icon: <ShieldCheck size={14} /> },
-                      { value: 'high', label: 'High', description: 'Warn before more potentially risky commands.', icon: <ShieldAlert size={14} /> },
-                    ]}
-                  />
-                </div>
                 <div className="flex justify-between gap-3">
                   <span style={{ color: 'var(--text-3)' }}>Memory</span>
                   <span>{memoryEnabled ? 'On' : 'Off'}</span>

@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
 import { BookOpen, Check, File, Files, Folder, FolderOpen, MousePointerClick, Plus, Sparkles, Trash2 } from 'lucide-react'
 import { useAppStore, type ShellAction } from '../../store/useAppStore'
+import { DEFAULT_PROVIDER_ID, providerRuntimeDescription } from '../../utils/providerMetadata'
+import { buildModelOptions } from '../chat/modelOptions'
+import { ProviderLogo } from '../shared/ProviderLogo'
 import { Button, IconButton, MenuSelect } from '../ui'
 
 function newAction(): ShellAction {
@@ -9,6 +12,8 @@ function newAction(): ShellAction {
     id: `action-${token}`,
     label: 'New action',
     skillPath: '',
+    providerId: '',
+    modelId: '',
     acceptsFiles: true,
     acceptsFolders: true,
     enabled: true,
@@ -20,6 +25,8 @@ export function ShellActionsSettings() {
   const savedActions = useAppStore((s) => s.shellActions)
   const notification = useAppStore((s) => s.shellActionNotification)
   const markdownEntries = useAppStore((s) => s.markdownStoreEntries)
+  const providers = useAppStore((s) => s.providers)
+  const defaultNewChatProviderId = useAppStore((s) => s.defaultNewChatProviderId)
   const refreshMarkdownStore = useAppStore((s) => s.refreshMarkdownStore)
   const setShellActions = useAppStore((s) => s.setShellActions)
   const applyShellActions = useAppStore((s) => s.applyShellActions)
@@ -59,7 +66,11 @@ export function ShellActionsSettings() {
         </p>
       </div>
 
-      {actions.map((action) => (
+      {actions.map((action) => {
+        const providerId = action.providerId || defaultNewChatProviderId || providers[0]?.id || DEFAULT_PROVIDER_ID
+        const provider = providers.find((candidate) => candidate.id === providerId) ?? providers[0]
+        const modelOptions = buildModelOptions(undefined, action.modelId, provider, providerId)
+        return (
         <fieldset key={action.id} className="rounded-xl p-4 grid gap-3" style={{ border: '1px solid var(--border)' }}>
           <legend className="sr-only">Shell action {action.label}</legend>
           <div className="flex gap-3 items-center">
@@ -78,6 +89,42 @@ export function ShellActionsSettings() {
               Enabled
             </label>
             <IconButton icon={<Trash2 size={15} />} label={`Remove ${action.label}`} onClick={() => setActions((current) => current.filter((item) => item.id !== action.id))} />
+          </div>
+
+          <div className="grid sm:grid-cols-2 gap-3">
+            <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+              <span>Provider</span>
+              <MenuSelect
+                label={`Provider for ${action.label}`}
+                value={action.providerId}
+                onChange={(value) => update(action.id, { providerId: value, modelId: '' })}
+                options={[
+                  { value: '', label: 'New chat default', description: 'Use the provider selected in Chat defaults.' },
+                  ...providers.map((candidate) => ({
+                    value: candidate.id,
+                    label: candidate.shortName || candidate.name,
+                    description: providerRuntimeDescription(candidate, candidate.id),
+                    icon: <ProviderLogo providerId={candidate.id} />,
+                  })),
+                ]}
+              />
+            </div>
+            <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+              <span>Model</span>
+              <MenuSelect
+                label={`Model for ${action.label}`}
+                value={action.modelId}
+                onChange={(value) => update(action.id, { modelId: value })}
+                options={[
+                  { value: '', label: 'Provider default', description: 'Use the saved default for this provider.' },
+                  ...modelOptions.filter((option) => option.id).map((option) => ({
+                    value: option.id,
+                    label: option.label,
+                    description: option.detail,
+                  })),
+                ]}
+              />
+            </div>
           </div>
 
           <div className="grid sm:grid-cols-2 gap-3">
@@ -126,7 +173,8 @@ export function ShellActionsSettings() {
             </div>
           )}
         </fieldset>
-      ))}
+        )
+      })}
 
       <div className="flex items-center justify-between gap-3">
         <IconButton icon={<Plus size={16} />} label="Add shell action" variant="solid" onClick={() => setActions((current) => [...current, newAction()])} />

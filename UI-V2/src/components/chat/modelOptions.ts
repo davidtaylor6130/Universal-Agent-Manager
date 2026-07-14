@@ -79,13 +79,16 @@ export function buildModelOptions(
     return option ? [option] : []
   })
   const defaultOption = providerDefaultModelOption(providerName)
-  const fallbackOptions = caps.usesFriendlyModelLabels
-    ? [defaultOption,
-      { id: 'auto-gemini-3', label: 'Auto 3', shortLabel: 'Auto 3', detail: 'Gemini 3 routing' },
-      { id: 'auto-gemini-2.5', label: 'Auto 2.5', shortLabel: 'Auto 2.5', detail: 'Gemini 2.5 routing' },
-      { id: 'pro', label: 'Pro', shortLabel: 'Pro', detail: 'Prioritize capability' },
-      { id: 'flash', label: 'Flash', shortLabel: 'Flash', detail: 'Prioritize speed' },
-      { id: 'flash-lite', label: 'Flash Lite', shortLabel: 'Flash Lite', detail: 'Fastest option' }]
+  const fallbackOptions = caps.memoryModelIds.length > 0
+    ? caps.memoryModelIds.map((id) => {
+      const label = caps.memoryModelLabels[id]?.label ?? titleFromModelId(id)
+      return {
+        id,
+        label,
+        shortLabel: label,
+        detail: caps.memoryModelLabels[id]?.detail ?? id,
+      }
+    })
     : [defaultOption]
   const baseOptions = runtimeOptions.length > 0
     ? [defaultOption, ...runtimeOptions]

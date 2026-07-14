@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
-import { PanelLeftClose, PanelLeftOpen, Brain, Settings2, GitBranch, ArrowUpCircle, Bell } from 'lucide-react'
+import { PanelLeftClose, PanelLeftOpen, Brain, Settings2, GitBranch, ArrowUpCircle, Bell, X } from 'lucide-react'
 
 /** GitHub mark (lucide dropped brand icons). */
 function GithubLogo({ size = 17 }: { size?: number }) {
@@ -104,15 +104,53 @@ function LeftActivityRail() {
   )
 }
 
-function RightActivityRail({ monitor, updatesOpen, onToggleUpdates }: { monitor: UpdateMonitor; updatesOpen: boolean; onToggleUpdates: () => void }) {
+function NotificationsPanel({ onClose }: { onClose: () => void }) {
+  const missingFolders = useAppStore((s) => s.folders.filter((folder) => folder.missing))
+  const shellActionNotification = useAppStore((s) => s.shellActionNotification)
+
+  return (
+    <aside
+      aria-label="Notifications"
+      data-testid="notifications-panel"
+      className="flex h-full w-[360px] shrink-0 flex-col overflow-hidden"
+      style={{ background: 'var(--surface)', borderLeft: '1px solid var(--border)' }}
+    >
+      <header className="flex items-center justify-between gap-3 px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
+        <div className="flex items-center gap-2 text-sm font-semibold" style={{ color: 'var(--text)' }}>
+          <Bell size={16} /> Notifications
+        </div>
+        <IconButton icon={<X size={16} />} label="Close notifications" onClick={onClose} />
+      </header>
+      <div className="flex-1 overflow-y-auto p-4">
+        {missingFolders.length === 0 && !shellActionNotification ? (
+          <span className="text-xs" style={{ color: 'var(--text-2)' }}>No notifications.</span>
+        ) : (
+          <div className="grid gap-3">
+            {shellActionNotification && (
+              <div className="grid gap-1 rounded-xl p-3 text-xs" style={{ color: 'var(--text-2)', background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
+                <strong style={{ color: 'var(--text)' }}>Finder / Explorer action</strong>
+                <span>{shellActionNotification}</span>
+              </div>
+            )}
+            {missingFolders.map((folder) => (
+              <div key={folder.id} className="grid gap-1 rounded-xl p-3 text-xs" style={{ color: 'var(--text-2)', background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
+                <strong style={{ color: 'var(--yellow)' }}>Workspace folder missing: {folder.name}</strong>
+                <span className="break-all" style={{ color: 'var(--text-3)' }}>{folder.directory}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </aside>
+  )
+}
+
+function RightActivityRail({ alertCount, alertsOpen, monitor, updatesOpen, onToggleAlerts, onToggleUpdates }: { alertCount: number; alertsOpen: boolean; monitor: UpdateMonitor; updatesOpen: boolean; onToggleAlerts: () => void; onToggleUpdates: () => void }) {
   const commitPanelOpen = useAppStore((s) => s.commitPanelOpen)
   const setCommitPanelOpen = useAppStore((s) => s.setCommitPanelOpen)
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const getChatWorktreeStatus = useAppStore((s) => s.getChatWorktreeStatus)
-  const missingFolders = useAppStore((s) => s.folders.filter((folder) => folder.missing))
-  const shellActionNotification = useAppStore((s) => s.shellActionNotification)
   const [vcsKind, setVcsKind] = useState<'git' | 'svn' | null>(null)
-  const [alertsOpen, setAlertsOpen] = useState(false)
 
   // Detect the active chat's VCS so the toggle shows the matching logo.
   useEffect(() => {
@@ -130,8 +168,6 @@ function RightActivityRail({ monitor, updatesOpen, onToggleUpdates }: { monitor:
 
   const updateCount = monitor.updates.length
   const runtimeUpdateCount = monitor.updates.filter((update) => update.providerId).length
-  const alertCount = missingFolders.length + (shellActionNotification ? 1 : 0)
-
   return (
     <aside className="uam-side-rail uam-side-rail--right" aria-label="Tool windows">
       <IconButton
@@ -148,37 +184,12 @@ function RightActivityRail({ monitor, updatesOpen, onToggleUpdates }: { monitor:
           label={alertCount > 0 ? `${alertCount} alert${alertCount === 1 ? '' : 's'}` : 'No new alerts'}
           tooltipSide="left"
           active={alertsOpen}
-          onClick={() => setAlertsOpen((open) => !open)}
+          onClick={onToggleAlerts}
         />
         {alertCount > 0 && (
           <span className="absolute -right-0.5 -top-0.5 pointer-events-none" aria-hidden>
             <StatusDot tone="warning" size={7} />
           </span>
-        )}
-        {alertsOpen && (
-          <div
-            role="status"
-            aria-label="Notifications"
-            className="absolute right-9 bottom-0 z-50 grid gap-2 rounded-md p-3"
-            style={{ width: 320, background: 'var(--surface-up)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}
-          >
-            {missingFolders.length === 0 && !shellActionNotification ? (
-              <span className="text-xs" style={{ color: 'var(--text-2)' }}>No notifications.</span>
-            ) : <>
-              {shellActionNotification && (
-                <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                  <strong style={{ color: 'var(--text)' }}>Finder / Explorer action</strong>
-                  <span>{shellActionNotification}</span>
-                </div>
-              )}
-              {missingFolders.map((folder) => (
-              <div key={folder.id} className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                <strong style={{ color: 'var(--yellow)' }}>Workspace folder missing: {folder.name}</strong>
-                <span className="break-all" style={{ color: 'var(--text-3)' }}>{folder.directory}</span>
-              </div>
-              ))}
-            </>}
-          </div>
         )}
       </span>
       <span className="relative inline-flex">
@@ -212,7 +223,9 @@ export function AppShell() {
   const commitPanelWidthPx = useAppStore((s) => s.commitPanelWidthPx)
   const setSidebarWidthPx = useAppStore((s) => s.setSidebarWidthPx)
   const setCommitPanelWidthPx = useAppStore((s) => s.setCommitPanelWidthPx)
+  const alertCount = useAppStore((s) => s.folders.filter((folder) => folder.missing).length + (s.shellActionNotification ? 1 : 0))
   const updateMonitor = useUpdateMonitor()
+  const [alertsOpen, setAlertsOpen] = useState(false)
   const [updatesOpen, setUpdatesOpen] = useState(false)
 
   useEffect(() => {
@@ -315,9 +328,14 @@ export function AppShell() {
 
       {updatesOpen && <UpdatesPanel monitor={updateMonitor} onClose={() => setUpdatesOpen(false)} />}
 
+      {alertsOpen && <NotificationsPanel onClose={() => setAlertsOpen(false)} />}
+
       <RightActivityRail
+        alertCount={alertCount}
+        alertsOpen={alertsOpen}
         monitor={updateMonitor}
         updatesOpen={updatesOpen}
+        onToggleAlerts={() => setAlertsOpen((open) => !open)}
         onToggleUpdates={() => setUpdatesOpen((open) => !open)}
       />
 

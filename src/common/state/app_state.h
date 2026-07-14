@@ -194,6 +194,7 @@ namespace uam
 		std::string text;
 		std::vector<std::string> markdown_store_files;
 		std::vector<MessageAttachment> attachments;
+		bool append_user_message = true;
 		bool goal_mode = false;
 		std::string goal_id;
 	};

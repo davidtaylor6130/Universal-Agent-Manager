@@ -327,6 +327,7 @@ export function sanitizeCppMessage(value: unknown): CppMessage | null {
   return {
     role,
     content: value.content,
+    providerId: isString(value.providerId) ? value.providerId : undefined,
     thoughts: isString(value.thoughts) ? value.thoughts : undefined,
     planSummary: isString(value.planSummary) ? value.planSummary : undefined,
     planEntries: Array.isArray(value.planEntries)
@@ -1224,6 +1225,8 @@ function sanitizeShellActions(value: unknown): ShellAction[] {
       id,
       label,
       skillPath: stringOr(entry.skillPath),
+      providerId: normalizeCliProviderIdAlias(stringOr(entry.providerId)),
+      modelId: normalizeAcpModelId(entry.modelId),
       acceptsFiles: booleanOr(entry.acceptsFiles, true),
       acceptsFolders: booleanOr(entry.acceptsFolders, true),
       enabled: booleanOr(entry.enabled, true),

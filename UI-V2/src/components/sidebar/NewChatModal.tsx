@@ -4,7 +4,8 @@ import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { DEFAULT_PROVIDER_ID, providerRuntimeDescription } from '../../utils/providerMetadata'
-import { Button, Tooltip } from '../ui'
+import { Button, MenuSelect, Tooltip } from '../ui'
+import { buildModelOptions } from '../chat/modelOptions'
 
 export function NewChatModal() {
   const addSession = useAppStore((s) => s.addSession)
@@ -12,6 +13,7 @@ export function NewChatModal() {
   const folders = useAppStore(useShallow((s) => s.folders))
   const providers = useAppStore(useShallow((s) => s.providers))
   const defaultNewChatProviderId = useAppStore((s) => s.defaultNewChatProviderId)
+  const providerChatDefaults = useAppStore(useShallow((s) => s.providerChatDefaults))
   const newChatFolderId = useAppStore((s) => s.newChatFolderId)
   const initialFolderId =
     newChatFolderId !== null && folders.some((folder) => folder.id === newChatFolderId)
@@ -19,11 +21,12 @@ export function NewChatModal() {
       : null
   const [name, setName] = useState('')
   const [folderId, setFolderId] = useState<string | null>(initialFolderId)
-  const [providerId, setProviderId] = useState<string>(
+  const initialProviderId =
     providers.some((provider) => provider.id === defaultNewChatProviderId)
       ? defaultNewChatProviderId
       : providers[0]?.id ?? DEFAULT_PROVIDER_ID
-  )
+  const [providerId, setProviderId] = useState(initialProviderId)
+  const [modelId, setModelId] = useState(providerChatDefaults[initialProviderId]?.modelId ?? '')
   const [folderMenuOpen, setFolderMenuOpen] = useState(false)
   const [providerMenuOpen, setProviderMenuOpen] = useState(false)
   const nameRef = useRef<HTMLInputElement>(null)
@@ -57,14 +60,18 @@ export function NewChatModal() {
   useEffect(() => {
     if (providers.length === 0) return
     if (!providers.some((provider) => provider.id === providerId)) {
-      setProviderId(providers.some((provider) => provider.id === defaultNewChatProviderId) ? defaultNewChatProviderId : providers[0].id)
+      const nextProviderId = providers.some((provider) => provider.id === defaultNewChatProviderId) ? defaultNewChatProviderId : providers[0].id
+      setProviderId(nextProviderId)
+      setModelId(providerChatDefaults[nextProviderId]?.modelId ?? '')
     }
-  }, [providers, providerId, defaultNewChatProviderId])
+  }, [providers, providerId, defaultNewChatProviderId, providerChatDefaults])
 
   // Close on Escape
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (e.defaultPrevented || (e.target instanceof Element && e.target.closest('[role="listbox"]'))) return
+
         if (providerMenuOpen) {
           setProviderMenuOpen(false)
           return
@@ -103,12 +110,13 @@ export function NewChatModal() {
     }
 
     const n = name.trim() || 'New Session'
-    addSession(n, folderId, providerId)
+    addSession(n, folderId, providerId, modelId)
   }
 
   const selectedFolder =
     (folderId !== null ? folders.find((f) => f.id === folderId) : null) ?? null
   const selectedProvider = providers.find((provider) => provider.id === providerId) ?? providers[0] ?? null
+  const modelOptions = buildModelOptions(undefined, modelId, selectedProvider ?? undefined, providerId)
   const canCreate = selectedFolder !== null
 
   return (
@@ -188,6 +196,7 @@ export function NewChatModal() {
               <div className="relative" ref={folderMenuRef}>
                 <button
                   type="button"
+                  aria-label="Folder"
                   onClick={() => setFolderMenuOpen((open) => !open)}
                   className="w-full rounded-md px-3 py-2 text-left transition-colors duration-100"
                   style={{
@@ -266,6 +275,7 @@ export function NewChatModal() {
               <div className="relative" ref={providerMenuRef}>
                 <button
                   type="button"
+                  aria-label="Provider"
                   onClick={() => setProviderMenuOpen((open) => !open)}
                   className="w-full rounded-md px-3 py-2 text-left transition-colors duration-100"
                   style={{
@@ -304,6 +314,7 @@ export function NewChatModal() {
                           type="button"
                           onClick={() => {
                             setProviderId(provider.id)
+                            setModelId(providerChatDefaults[provider.id]?.modelId ?? '')
                             setProviderMenuOpen(false)
                           }}
                           className="w-full rounded-md px-2 py-2 text-left transition-colors duration-100"
@@ -330,6 +341,20 @@ export function NewChatModal() {
               </div>
             </div>
           )}
+
+          <div>
+            <div className="mb-1.5 text-xs font-medium" style={{ color: 'var(--text-2)' }}>Model</div>
+            <MenuSelect
+              label="Model"
+              value={modelId}
+              options={modelOptions.map((option) => ({
+                value: option.id,
+                label: option.label,
+                description: option.detail,
+              }))}
+              onChange={setModelId}
+            />
+          </div>
         </div>
 
         {/* Footer */}

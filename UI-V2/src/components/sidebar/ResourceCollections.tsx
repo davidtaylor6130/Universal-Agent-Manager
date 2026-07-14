@@ -5,15 +5,15 @@ import {
 } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import type { ResourceCollection, ResourceReference, ResourceReferenceType } from '../../types/resourceCollection'
-import { Button, Tooltip } from '../ui'
+import { Button, MenuSelect, Tooltip } from '../ui'
 import { CollectionMenuItems } from './CollectionMenuItems'
 
-const RESOURCE_TYPES: { id: ResourceReferenceType; label: string; placeholder: string }[] = [
-  { id: 'file', label: 'File', placeholder: '/path/to/file' },
-  { id: 'website', label: 'Website', placeholder: 'https://example.com' },
-  { id: 'desktop-app', label: 'Desktop app', placeholder: '/Applications/App.app' },
-  { id: 'workspace-folder', label: 'Workspace folder', placeholder: 'Folder ID' },
-  { id: 'chat', label: 'Chat', placeholder: 'Chat ID' },
+const RESOURCE_TYPES: { value: ResourceReferenceType; label: string; placeholder: string }[] = [
+  { value: 'file', label: 'File', placeholder: '/path/to/file' },
+  { value: 'website', label: 'Website', placeholder: 'https://example.com' },
+  { value: 'desktop-app', label: 'Desktop app', placeholder: '/Applications/App.app' },
+  { value: 'workspace-folder', label: 'Workspace folder', placeholder: 'Folder ID' },
+  { value: 'chat', label: 'Chat', placeholder: 'Chat ID' },
 ]
 
 function referenceIcon(type: ResourceReferenceType) {
@@ -33,20 +33,19 @@ function AddReferenceForm({ collectionId, onDone }: { collectionId: string; onDo
   const [target, setTarget] = useState('')
   const [label, setLabel] = useState('')
   const addReference = useAppStore((state) => state.addResourceReference)
-  const selectedType = RESOURCE_TYPES.find((item) => item.id === type) ?? RESOURCE_TYPES[0]
+  const selectedType = RESOURCE_TYPES.find((item) => item.value === type) ?? RESOURCE_TYPES[0]
 
   return (
     <div className="mx-3 mb-2 space-y-2 rounded-md p-2" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
       <div className="flex gap-2">
-        <select
-          aria-label="Resource type"
-          value={type}
-          onChange={(event) => setType(event.target.value as ResourceReferenceType)}
-          className="min-w-0 flex-1 rounded px-2 py-1 text-xs"
-          style={{ background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)' }}
-        >
-          {RESOURCE_TYPES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
-        </select>
+        <div className="min-w-0 flex-1">
+          <MenuSelect
+            label="Resource type"
+            value={type}
+            options={RESOURCE_TYPES}
+            onChange={(value) => setType(value as ResourceReferenceType)}
+          />
+        </div>
         <button type="button" aria-label="Cancel resource" onClick={onDone} style={{ background: 'transparent', border: 'none', color: 'var(--text-3)' }}>
           <X size={14} />
         </button>
