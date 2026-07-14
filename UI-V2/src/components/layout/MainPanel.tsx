@@ -1,15 +1,16 @@
-import { memo, useEffect, useState } from 'react'
+import { lazy, memo, Suspense, useEffect, useState } from 'react'
 import { Columns2, Grid2X2, MessageSquare, ChevronDown, Square } from 'lucide-react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
-import { CLIView } from '../views/CLIView'
 import { ChatView } from '../views/ChatView'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { DEFAULT_PROVIDER_ID, providerShortName } from '../../utils/providerMetadata'
 import { Tooltip } from '../ui'
 import type { Session } from '../../types/session'
+
+const CLIView = lazy(() => import('../views/CLIView').then(({ CLIView }) => ({ default: CLIView })))
 import {
   chatPaneColors,
   readChatGridLayout,
@@ -195,7 +196,9 @@ function ChatPane({ session, active, paneIndex, showGlow, onActivate }: {
 
       {/* View content */}
       <div className="flex-1 overflow-hidden">
-        {view === 'chat' ? <ChatView session={session} accentColor={paneColor} /> : <CLIView session={session} />}
+        {view === 'chat'
+          ? <ChatView session={session} accentColor={paneColor} />
+          : <Suspense fallback={<div className="flex h-full items-center justify-center text-sm" style={{ color: 'var(--text-2)' }}>Loading terminal…</div>}><CLIView session={session} /></Suspense>}
       </div>
       {showGlow && <PaneFade active={active} color={paneColor} paneIndex={paneIndex} />}
     </div>

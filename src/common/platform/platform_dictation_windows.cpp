@@ -3,6 +3,7 @@
 #if defined(_WIN32)
 
 #include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Globalization.h>
 #include <winrt/Windows.Media.SpeechRecognition.h>
 
@@ -109,7 +110,7 @@ class WindowsDictationService final : public IPlatformDictationService
 			}
 
 			SpeechSession session = recognizer.ContinuousRecognitionSession();
-			auto hypothesis_revoker = session.HypothesisGenerated(winrt::auto_revoke, [this, generation](const SpeechSession&, const SpeechContinuousRecognitionHypothesisGeneratedEventArgs& args) {
+			auto hypothesis_revoker = recognizer.HypothesisGenerated(winrt::auto_revoke, [this, generation](const SpeechRecognizer&, const SpeechRecognitionHypothesisGeneratedEventArgs& args) {
 				EnqueueIfCurrent(generation, {DictationEventType::Interim, winrt::to_string(args.Hypothesis().Text())});
 			});
 			auto result_revoker = session.ResultGenerated(winrt::auto_revoke, [this, generation](const SpeechSession&, const SpeechContinuousRecognitionResultGeneratedEventArgs& args) {

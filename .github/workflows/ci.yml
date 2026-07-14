@@ -44,3 +44,12 @@ jobs:
       - run: cmake -S . -B Builds/tests -DUAM_BUILD_TESTS=ON
       - run: cmake --build Builds/tests --config Debug
       - run: ctest --test-dir Builds/tests -C Debug --output-on-failure
+      - name: Smoke test Windows app launch
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:UAM_DATA_DIR = Join-Path $env:RUNNER_TEMP 'uam-smoke'
+          $process = Start-Process Builds/tests/Debug/universal_agent_manager.exe -PassThru
+          Start-Sleep -Seconds 5
+          if ($process.HasExited) { throw "Windows app exited during startup with code $($process.ExitCode)." }
+          Stop-Process -Id $process.Id -Force

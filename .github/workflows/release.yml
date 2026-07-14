@@ -61,6 +61,16 @@ jobs:
       - name: Build
         run: cmake --build Builds --config Release
 
+      - name: Smoke test Windows app launch
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:UAM_DATA_DIR = Join-Path $env:RUNNER_TEMP 'uam-smoke'
+          $process = Start-Process Builds/Release/universal_agent_manager.exe -PassThru
+          Start-Sleep -Seconds 5
+          if ($process.HasExited) { throw "Windows app exited during startup with code $($process.ExitCode)." }
+          Stop-Process -Id $process.Id -Force
+
       # macOS output: Builds/universal_agent_manager.app (ad-hoc signed via
       # `codesign --sign -`, no certificate required). ditto preserves the bundle.
       - name: Package (macOS)
@@ -99,3 +109,4 @@ jobs:
         with:
           files: dist/*.zip
           fail_on_unmatched_files: true
+          generate_release_notes: true

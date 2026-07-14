@@ -145,7 +145,7 @@ describe('MainPanel', () => {
     host.remove()
   })
 
-  it('quits a busy CLI when switching back to chat', () => {
+  it('quits a busy CLI when switching back to chat', async () => {
     const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
     window.cefQuery = ({ request, onSuccess }) => {
       requests.push(JSON.parse(request) as { action: string; payload?: Record<string, unknown> })
@@ -168,7 +168,10 @@ describe('MainPanel', () => {
     act(() => root.render(<MainPanel />))
     const button = (label: string) =>
       Array.from(host.querySelectorAll('button')).find((candidate) => candidate.textContent === label) as HTMLButtonElement
-    act(() => button('CLI').click())
+    await act(async () => button('CLI').click())
+    await act(async () => {
+      await vi.dynamicImportSettled()
+    })
     act(() => {
       useAppStore.setState({
         cliBindingBySessionId: {
