@@ -157,6 +157,33 @@
   --error-dim:   rgba(248, 113, 113, 0.15);
 }
 
+.uam-side-panel-in {
+  animation: uam-side-panel-in var(--dur-base) var(--ease);
+}
+
+.uam-pane-in {
+  animation: uam-pane-in var(--dur-base) var(--ease);
+}
+
+@keyframes uam-side-panel-in {
+  from { opacity: 0; transform: translateX(8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes uam-pane-in {
+  from { opacity: 0.72; transform: scale(0.997); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
 /* ── Base Reset ───────────────────────────────────────────── */
 *, *::before, *::after {
   box-sizing: border-box;
@@ -233,6 +260,76 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 .uam-resize-handle:hover {
   background: var(--border-bright);
 }
+
+.uam-layout-button,
+.uam-segment-button {
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background var(--dur-fast) var(--ease),
+              color var(--dur-fast) var(--ease),
+              border-color var(--dur-fast) var(--ease);
+}
+
+.uam-layout-button:hover,
+.uam-segment-button:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--sidebar-item-hover) !important;
+}
+
+.uam-layout-button:focus-visible,
+.uam-segment-button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-glow);
+}
+
+.uam-segment-button:disabled {
+  cursor: not-allowed;
+}
+
+.uam-composer-action {
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease),
+              border-color var(--dur-fast) var(--ease),
+              color var(--dur-fast) var(--ease),
+              box-shadow var(--dur-fast) var(--ease),
+              transform var(--dur-fast) var(--ease);
+}
+
+.uam-composer-action:hover:not(:disabled) { transform: translateY(-1px); }
+.uam-composer-action:active:not(:disabled) { transform: translateY(0); }
+.uam-composer-action:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent-glow);
+}
+.uam-composer-action:disabled { cursor: not-allowed; }
+
+.uam-attachment-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.uam-attachment-remove:hover { background: var(--error-dim); color: var(--error) !important; transform: scale(1.06); }
+.uam-attachment-remove:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.uam-choice-button {
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease),
+              border-color var(--dur-fast) var(--ease),
+              color var(--dur-fast) var(--ease),
+              box-shadow var(--dur-fast) var(--ease),
+              transform var(--dur-fast) var(--ease);
+}
+.uam-choice-button:hover:not(:disabled) { border-color: var(--border-bright) !important; transform: translateY(-1px); }
+.uam-choice-button:active:not(:disabled) { transform: translateY(0); }
+.uam-choice-button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent-glow);
+}
+.uam-choice-button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 .uam-icon-button,
 .uam-primary-button,

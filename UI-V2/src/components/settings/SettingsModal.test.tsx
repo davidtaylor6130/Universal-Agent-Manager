@@ -87,6 +87,7 @@ describe('SettingsModal memory settings', () => {
           editorPresetId: 'vscode',
         },
       ],
+      markdownStoreDirectory: '/tmp/markdown-store',
       setSettingsOpen: vi.fn(),
       setMemorySettings: vi.fn(() => Promise.resolve(true)),
       setEditorSettings: vi.fn(() => Promise.resolve(true)),
@@ -154,6 +155,29 @@ describe('SettingsModal memory settings', () => {
       memoryStoreSectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
   }
+
+  it('keeps modal dismissal visually secondary', () => {
+    const { host, root } = renderModal()
+    const closeButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Close') as HTMLButtonElement
+
+    expect(closeButton.className).toContain('uam-btn--secondary')
+    expect(closeButton.className).not.toContain('uam-btn--block')
+    expect(closeButton.parentElement?.className).toContain('justify-end')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('includes units on memory numeric settings', () => {
+    const { host, root } = renderModal()
+    openMemorySettingsSection(host)
+
+    expect(host.textContent).toContain('Idle delay (seconds)')
+    expect(host.textContent).toContain('Recall budget (bytes)')
+
+    act(() => root.unmount())
+    host.remove()
+  })
 
   it('does not render native selects in settings', () => {
     const { host, root } = renderModal()
@@ -331,7 +355,7 @@ describe('SettingsModal memory settings', () => {
     })
 
     expect(host.textContent).toContain('Build and release information')
-    expect(host.textContent).toContain('V4.2.2')
+    expect(host.textContent).toContain('V4.3.0')
     expect(host.textContent).not.toContain('Gemini memory worker')
 
     act(() => {
@@ -353,6 +377,7 @@ describe('SettingsModal memory settings', () => {
       'button[title="Default editor"]'
     ) as HTMLButtonElement | null
     expect(defaultEditorButton).toBeTruthy()
+    expect(defaultEditorButton?.querySelector('.uam-menu-select__chevron')).toBeTruthy()
 
     act(() => {
       defaultEditorButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -591,6 +616,20 @@ describe('SettingsModal memory settings', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('keeps secondary memory-store actions visually secondary', () => {
+    const { host, root } = renderModal()
+    openMemoryStoreSection(host)
+
+    const saveButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Save') as HTMLButtonElement
+    const openStoreButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Open store') as HTMLButtonElement
+
+    expect(saveButton.disabled).toBe(true)
+    expect(openStoreButton.className).toContain('uam-btn--secondary')
+
+    act(() => root.unmount())
     host.remove()
   })
 

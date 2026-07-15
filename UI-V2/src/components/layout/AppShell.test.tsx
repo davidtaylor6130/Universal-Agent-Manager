@@ -149,7 +149,10 @@ describe('AppShell', () => {
     host.remove()
   })
 
-  it('lists missing workspace folders in notifications', () => {
+  it('offers notification-specific actions for missing workspace folders', async () => {
+    const browseFolderDirectory = vi.fn().mockResolvedValue('/tmp/relinked project')
+    const renameFolder = vi.fn()
+    const deleteFolder = vi.fn()
     useAppStore.setState({
       folders: [{
         id: 'missing',
@@ -160,6 +163,13 @@ describe('AppShell', () => {
         missing: true,
         createdAt: new Date(),
       }],
+      sessions: [
+        { id: 'one', name: 'One', viewMode: 'chat', folderId: 'missing', createdAt: new Date(), updatedAt: new Date() },
+        { id: 'two', name: 'Two', viewMode: 'chat', folderId: 'missing', createdAt: new Date(), updatedAt: new Date() },
+      ],
+      browseFolderDirectory,
+      renameFolder,
+      deleteFolder,
     })
     const host = document.createElement('div')
     document.body.appendChild(host)
@@ -174,6 +184,19 @@ describe('AppShell', () => {
     expect(panel?.classList.contains('absolute')).toBe(false)
     expect(panel?.textContent).toContain('Workspace folder missing: Deleted project')
     expect(panel?.textContent).toContain('/tmp/deleted project')
+    const relink = Array.from(panel?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Relink')
+    const remove = Array.from(panel?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Remove')
+    expect(relink).toBeTruthy()
+    expect(remove).toBeTruthy()
+
+    await act(async () => relink?.click())
+    expect(browseFolderDirectory).toHaveBeenCalledWith('/tmp/deleted project')
+    expect(renameFolder).toHaveBeenCalledWith('missing', 'Deleted project', '/tmp/relinked project')
+
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    await act(async () => remove?.click())
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('delete 2 chats'))
+    expect(deleteFolder).toHaveBeenCalledWith('missing')
 
     act(() => root.unmount())
     host.remove()
@@ -188,7 +211,34 @@ describe('AppShell', () => {
 
     const alerts = host.querySelector('button[aria-label="1 alert"]') as HTMLButtonElement
     act(() => alerts.click())
-    expect(host.querySelector('[aria-label="Notifications"]')?.textContent).toContain('Started shell action: Review Selection')
+    const panel = host.querySelector('[aria-label="Notifications"]')
+    expect(panel?.textContent).toContain('Started shell action: Review Selection')
+    expect(panel?.querySelector('.uam-btn')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps right-side tool windows mutually exclusive', async () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => root.render(<AppShell />))
+
+    act(() => (host.querySelector('button[aria-label="No new alerts"]') as HTMLButtonElement).click())
+    expect(host.querySelector('[data-testid="notifications-panel"]')).toBeTruthy()
+    expect(host.textContent).toContain('You’re all caught up')
+
+    act(() => (host.querySelector('button[aria-label="Check for updates"]') as HTMLButtonElement).click())
+    expect(host.querySelector('[data-testid="notifications-panel"]')).toBeNull()
+    expect(host.querySelector('[data-testid="updates-panel"]')).toBeTruthy()
+
+    await act(async () => {
+      ;(host.querySelector('button[aria-label="Open Git/SVN commit panel"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('[data-testid="updates-panel"]')).toBeNull()
+    expect(host.querySelector('[data-testid="commit-panel"]')).toBeTruthy()
 
     act(() => root.unmount())
     host.remove()

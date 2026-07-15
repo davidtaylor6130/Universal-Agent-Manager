@@ -85,7 +85,7 @@ import {
   permissionModeIcon,
   type DictationState,
 } from '../chat/Composer'
-import { Brain, BookOpen, Check, ChevronDown, Cpu, FileText, Paperclip, Shield, Target } from 'lucide-react'
+import { Brain, BookOpen, Check, ChevronDown, Cpu, FileText, Paperclip, Shield, Target, X } from 'lucide-react'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { Button, IconButton } from '../ui'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
@@ -1357,6 +1357,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                   {providerOpen && providerMenuRect && createPortal(
                     <div
                       data-testid="provider-menu"
+                      className="animate-fade-in"
                       style={{
                         position: 'fixed',
                         zIndex: 1000,
@@ -1386,8 +1387,8 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                             type="button"
                             disabled={disabled}
                             onClick={() => { setProviderOpen(false); if (disabled) return; void setSessionProvider(session.id, candidate.id) }}
-                            className="w-full flex items-center gap-2 text-left px-2 py-2"
-                            style={{ borderRadius: 6, background: selected ? 'var(--accent-dim)' : 'transparent', color: selected ? 'var(--text)' : 'var(--text-2)', opacity: disabled ? 0.5 : 1 }}
+                            className={`uam-menu-select__option w-full flex items-center gap-2 text-left px-2 py-2${selected ? ' is-selected' : ''}`}
+                            style={{ borderRadius: 6, color: selected ? 'var(--text)' : 'var(--text-2)', opacity: disabled ? 0.5 : 1 }}
                           >
                             <ProviderLogo providerId={candidate.id} />
                             <span className="flex-1">{candidateName}</span>
@@ -1513,7 +1514,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
               )}
               {openWorkspaceError && (
               <div
-                className="mb-2 text-xs"
+                className="mb-2 text-xs animate-fade-in"
                 style={{
                   border: '1px solid color-mix(in srgb, var(--red) 45%, var(--border))',
                   borderRadius: 6,
@@ -1584,51 +1585,30 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                   <span className="min-w-0 flex-1" style={{ color: 'var(--text-2)' }}>
                     Claude Plan mode is read-only. Choose how to proceed with this prompt.
                   </span>
-                  <button
-                    type="button"
+                  <Button
+                    size="sm"
+                    variant="primary"
                     disabled={submitting}
                     onClick={() => void resolveClaudePlanPrompt('acceptEdits')}
-                    className="px-2 py-1"
-                    style={{
-                      border: '1px solid color-mix(in srgb, var(--green) 48%, var(--border))',
-                      borderRadius: 6,
-                      background: 'color-mix(in srgb, var(--green) 16%, var(--surface))',
-                      color: 'var(--text)',
-                      opacity: submitting ? 0.6 : 1,
-                    }}
                   >
                     Accept edits and proceed
-                  </button>
-                  <button
-                    type="button"
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
                     disabled={submitting}
                     onClick={() => void resolveClaudePlanPrompt('default')}
-                    className="px-2 py-1"
-                    style={{
-                      border: '1px solid var(--border)',
-                      borderRadius: 6,
-                      background: 'var(--bg)',
-                      color: 'var(--text-2)',
-                      opacity: submitting ? 0.6 : 1,
-                    }}
                   >
                     Review each edit
-                  </button>
-                  <button
-                    type="button"
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
                     disabled={submitting}
                     onClick={() => void resolveClaudePlanPrompt('plan')}
-                    className="px-2 py-1"
-                    style={{
-                      border: '1px solid var(--border)',
-                      borderRadius: 6,
-                      background: 'var(--bg)',
-                      color: 'var(--text-2)',
-                      opacity: submitting ? 0.6 : 1,
-                    }}
                   >
                     Keep planning
-                  </button>
+                  </Button>
                 </div>
               </div>
             )}
@@ -1674,9 +1654,11 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                       type="button"
                       onClick={() => detachMarkdownStoreEntry(session.id, entry.filePath)}
                       title="Remove Markdown Store attachment"
+                      aria-label={`Remove ${entry.title || 'Markdown Store'} attachment`}
+                      className="uam-attachment-remove"
                       style={{ color: 'var(--text-3)' }}
                     >
-                      x
+                      <X size={12} aria-hidden />
                     </button>
                   </span>
                 ))}
@@ -1701,9 +1683,11 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                       type="button"
                       onClick={() => setComposerAttachments((current) => current.filter((item) => item.id !== attachment.id))}
                       title="Remove attachment"
+                      aria-label={`Remove ${attachment.name} attachment`}
+                      className="uam-attachment-remove"
                       style={{ color: 'var(--text-3)' }}
                     >
-                      x
+                      <X size={12} aria-hidden />
                     </button>
                   </span>
                 ))}
@@ -1717,7 +1701,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
             {slashOpen && (
               <div className="relative">
                 <div
-                  className="absolute left-3 right-3 z-40 overflow-hidden rounded-lg"
+                  className="absolute left-3 right-3 z-40 overflow-hidden rounded-lg animate-fade-in"
                   style={{ bottom: 4, border: '1px solid var(--border-bright)', background: 'var(--surface)', boxShadow: 'var(--elev-3)' }}
                   role="listbox"
                   aria-label={permissionModeQuery !== undefined ? 'Permission modes' : commandSafetyQuery !== undefined ? 'Command safety tiers' : codexOptionKind === 'reasoning' ? 'Reasoning options' : codexOptionKind === 'speed' ? 'Speed options' : 'Slash commands'}
@@ -1738,8 +1722,8 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                         ref={active ? (el) => el?.scrollIntoView?.({ block: 'nearest' }) : undefined}
                         onMouseEnter={() => setSlashIndex(index)}
                         onMouseDown={(e) => { e.preventDefault(); runSlashCommand(command) }}
-                        className="flex w-full items-start gap-2.5 px-3 py-2 text-left"
-                        style={{ background: active ? 'var(--accent-dim)' : 'transparent', color: active ? 'var(--text)' : 'var(--text-2)' }}
+                        className={`uam-menu-select__option flex w-full items-start gap-2.5 px-3 py-2 text-left${active ? ' is-selected' : ''}`}
+                        style={{ color: active ? 'var(--text)' : 'var(--text-2)' }}
                       >
                         <span aria-hidden className="mt-0.5 shrink-0" style={{ color: active ? 'var(--accent)' : 'var(--text-2)' }}>{command.icon}</span>
                         <span className="min-w-0 flex-1">

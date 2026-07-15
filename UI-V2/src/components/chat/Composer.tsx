@@ -292,7 +292,7 @@ export function ComposerToolbar({
           aria-label="Options"
           aria-expanded={optionsOpen}
           onClick={() => setOptionsOpen((v) => !v)}
-          className="inline-flex items-center"
+          className="uam-composer-action inline-flex items-center"
           style={{
             ...iconChipStyle,
             color: optionsOpen ? 'var(--text)' : 'var(--text-2)',
@@ -303,7 +303,7 @@ export function ComposerToolbar({
         </button>
         {optionsOpen && (
           <div
-            className="absolute left-0 flex flex-col gap-1.5"
+            className="absolute left-0 flex flex-col gap-1.5 animate-fade-in"
             style={{
               bottom: 34, minWidth: 210, zIndex: 40, padding: 8,
               border: '1px solid var(--border-bright)', borderRadius: 8,
@@ -314,7 +314,7 @@ export function ComposerToolbar({
               type="button"
               title="Attach files to the next message"
               onClick={() => { setOptionsOpen(false); onAttachFile() }}
-              className="inline-flex items-center gap-1.5 px-2 w-full justify-start"
+              className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
               style={{ ...chipStyle }}
             >
               <Plus size={13} aria-hidden />
@@ -326,7 +326,7 @@ export function ComposerToolbar({
               aria-pressed={goalActive || goalArmed}
               onClick={() => { setOptionsOpen(false); onToggleGoal() }}
               disabled={modelDisabled}
-              className="inline-flex items-center gap-1.5 px-2 w-full justify-start"
+              className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
               style={{ ...chipStyle, borderColor: goalActive || goalArmed ? 'color-mix(in srgb, var(--purple) 55%, var(--border))' : 'var(--border)', background: goalActive || goalArmed ? 'color-mix(in srgb, var(--purple) 16%, var(--surface))' : chipStyle.background, color: goalActive || goalArmed ? 'var(--text)' : 'var(--text-2)', opacity: modelDisabled ? 0.55 : 1 }}
             >
               <Target size={13} aria-hidden style={{ color: goalActive || goalArmed ? 'var(--purple)' : 'var(--text-3)' }} />
@@ -381,14 +381,14 @@ export function ComposerToolbar({
               }))}
             />
             <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
-            <div className="px-1 pb-0.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>Mode</div>
+            <div className="px-1 pb-0.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>Quick switches</div>
             <button
               type="button"
               title={planAvailable ? 'Toggle planning mode. Claude Plan is read-only and will not edit files.' : 'Planning mode unavailable'}
               aria-pressed={planActive}
               onClick={onTogglePlan}
               disabled={planDisabled}
-              className="inline-flex items-center gap-1.5 px-2 w-full justify-start"
+              className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
               style={{ ...chipStyle, borderColor: planActive ? 'color-mix(in srgb, var(--accent) 55%, var(--border))' : 'var(--border)', background: planActive ? 'var(--accent-dim)' : chipStyle.background, color: planActive ? 'var(--text)' : 'var(--text-2)', opacity: planDisabled ? 0.55 : 1 }}
             >
               <span style={{ color: planActive ? 'var(--accent)' : 'var(--text-3)', fontSize: 10 }}>●</span>
@@ -401,7 +401,7 @@ export function ComposerToolbar({
                 aria-pressed={acceptEditsActive}
                 onClick={onToggleAcceptEdits}
                 disabled={acceptEditsDisabled}
-                className="inline-flex items-center gap-1.5 px-2 w-full justify-start"
+                className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
                 style={{ ...chipStyle, borderColor: acceptEditsActive ? 'color-mix(in srgb, var(--green) 52%, var(--border))' : 'var(--border)', background: acceptEditsActive ? 'color-mix(in srgb, var(--green) 14%, var(--surface))' : chipStyle.background, color: acceptEditsActive ? 'var(--text)' : 'var(--text-2)', opacity: acceptEditsDisabled ? 0.55 : 1 }}
               >
                 <span style={{ color: acceptEditsActive ? 'var(--green)' : 'var(--text-3)', fontSize: 10 }}>●</span>
@@ -414,7 +414,7 @@ export function ComposerToolbar({
               aria-pressed={yoloActive}
               onClick={onToggleYolo}
               disabled={yoloDisabled}
-              className="inline-flex items-center gap-1.5 px-2 w-full justify-start"
+              className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
               style={{ ...chipStyle, borderColor: yoloActive ? 'color-mix(in srgb, var(--yellow) 55%, var(--border))' : 'var(--border)', background: yoloActive ? 'color-mix(in srgb, var(--yellow) 16%, var(--surface))' : chipStyle.background, color: yoloActive ? 'var(--text)' : 'var(--text-2)', opacity: yoloDisabled ? 0.55 : 1 }}
             >
               <span style={{ color: yoloActive ? 'var(--yellow)' : 'var(--text-3)', fontSize: 10 }}>●</span>
@@ -427,7 +427,7 @@ export function ComposerToolbar({
               aria-pressed={memoryEnabled}
               onClick={onToggleMemory}
               disabled={memoryDisabled}
-              className="inline-flex items-center gap-1.5 px-2 w-full justify-start"
+              className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
               style={{ ...chipStyle, borderColor: memoryEnabled ? 'color-mix(in srgb, var(--green) 50%, var(--border))' : 'var(--border)', background: memoryEnabled ? 'color-mix(in srgb, var(--green) 14%, var(--surface))' : chipStyle.background, color: memoryEnabled ? 'var(--text)' : 'var(--text-2)', opacity: memoryDisabled ? 0.55 : 1 }}
             >
               <span style={{ color: memoryEnabled ? 'var(--green)' : 'var(--text-3)', fontSize: 10 }}>●</span>
@@ -436,8 +436,8 @@ export function ComposerToolbar({
             <button
               type="button"
               title="Open Markdown Store"
-              onClick={onOpenMarkdownStore}
-              className="inline-flex items-center gap-1.5 px-2 w-full justify-start"
+              onClick={() => { setOptionsOpen(false); onOpenMarkdownStore() }}
+              className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
               style={{ ...chipStyle }}
             >
               <ComposerIcon name="markdown" />
@@ -462,7 +462,7 @@ export function ComposerToolbar({
           data-dictation-state={dictationVisualState}
           onClick={onToggleDictation}
           disabled={!dictationAvailable || dictationState === 'starting' || dictationState === 'stopping'}
-          className="uam-dictation-button h-[30px] w-[34px] text-xs font-semibold inline-flex items-center justify-center"
+          className="uam-composer-action uam-dictation-button h-[30px] w-[34px] text-xs font-semibold inline-flex items-center justify-center"
           style={{
             borderRadius: 7,
             opacity: !dictationAvailable || dictationState === 'starting' || dictationState === 'stopping' ? 0.55 : 1,
@@ -484,12 +484,13 @@ export function ComposerToolbar({
             ref={modelTriggerRef}
             type="button"
             title="Select model"
+            aria-label="Select model"
             onClick={onToggleModel}
             disabled={modelDisabled}
             aria-haspopup="listbox"
             aria-expanded={modelOpen}
             aria-controls={modelOpen ? modelListId : undefined}
-            className="inline-flex items-center gap-1.5 px-2"
+            className="uam-composer-action inline-flex items-center gap-1.5 px-2"
             style={{
               ...chipStyle,
               color: modelOpen ? 'var(--text)' : 'var(--text-2)',
@@ -506,7 +507,7 @@ export function ComposerToolbar({
               role="listbox"
               aria-label="Model"
               onKeyDown={onModelKeyDown}
-              className="absolute right-0"
+              className="absolute right-0 animate-fade-in"
               style={{
                 bottom: 32,
                 width: 260,
@@ -537,11 +538,10 @@ export function ComposerToolbar({
                         onSelectModel(option.id)
                         modelTriggerRef.current?.focus()
                       }}
-                      className="w-full grid gap-0.5 text-left px-2 py-2"
+                      className={`uam-menu-select__option w-full grid gap-0.5 text-left px-2 py-2${selected ? ' is-selected' : ''}`}
                       style={{
                         minHeight: 52,
                         borderRadius: 6,
-                        background: selected ? 'var(--accent-dim)' : 'transparent',
                         color: selected ? 'var(--text)' : 'var(--text-2)',
                         outline: index === modelFocusIndex ? '1px solid var(--accent)' : 'none',
                       }}
@@ -562,8 +562,10 @@ export function ComposerToolbar({
           <button
             type="button"
             title="Settings"
+            aria-label="Chat settings"
+            aria-expanded={settingsOpen}
             onClick={onToggleSettings}
-            className="inline-flex items-center gap-1.5 px-2"
+            className="uam-composer-action inline-flex items-center gap-1.5 px-2"
             style={{
               ...chipStyle,
               color: settingsOpen ? 'var(--text)' : 'var(--text-2)',
@@ -574,7 +576,7 @@ export function ComposerToolbar({
           </button>
           {settingsOpen && (
             <div
-              className="absolute right-0"
+              className="absolute right-0 animate-fade-in"
               style={{
                 bottom: 32,
                 width: 250,
@@ -638,8 +640,9 @@ export function ComposerToolbar({
           <button
             type="button"
             title="Stop runtime"
+            aria-label="Stop runtime"
             onClick={onStopRuntime}
-            className="h-[30px] w-[34px] text-xs font-semibold inline-flex items-center justify-center"
+            className="uam-composer-action h-[30px] w-[34px] text-xs font-semibold inline-flex items-center justify-center"
             style={{
               borderRadius: 7,
               border: '1px solid color-mix(in srgb, var(--red) 46%, var(--border-bright))',
@@ -653,8 +656,9 @@ export function ComposerToolbar({
         <button
           type="submit"
           title={running ? 'Queue prompt' : 'Send prompt'}
+          aria-label={running ? 'Queue prompt' : 'Send prompt'}
           disabled={!canSend}
-          className="h-[30px] w-[34px] text-xs font-semibold inline-flex items-center justify-center"
+          className="uam-composer-action h-[30px] w-[34px] text-xs font-semibold inline-flex items-center justify-center"
           style={{
             borderRadius: 7,
             border: '1px solid color-mix(in srgb, var(--accent) 64%, var(--border-bright))',

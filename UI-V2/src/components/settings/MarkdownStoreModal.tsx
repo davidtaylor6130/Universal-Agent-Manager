@@ -69,12 +69,13 @@ export function MarkdownStoreModal() {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0, 0, 0, 0.45)' }}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in" style={{ background: 'rgba(0, 0, 0, 0.45)', backdropFilter: 'blur(4px)' }}>
       <div
         role="dialog"
         aria-modal="true"
         aria-label="Markdown Store"
-        className="w-full max-w-5xl max-h-[86vh] flex flex-col overflow-hidden"
+        tabIndex={-1}
+        className="w-full max-w-5xl max-h-[86vh] flex flex-col overflow-hidden animate-slide-in"
         style={{
           background: 'var(--surface)',
           border: '1px solid var(--border-bright)',
@@ -125,7 +126,7 @@ export function MarkdownStoreModal() {
 
         <div className="flex-1 overflow-auto px-5 py-4">
           {isAdding && (
-            <div className="mb-4 grid gap-3 p-3" style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)' }}>
+            <div className="mb-4 grid gap-3 p-3 animate-fade-in" style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)' }}>
               <input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="Title" className="text-sm" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px' }} />
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <input value={draft.maker} onChange={(event) => setDraft({ ...draft, maker: event.target.value })} placeholder="Maker" className="text-sm" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px' }} />
@@ -142,8 +143,14 @@ export function MarkdownStoreModal() {
           {loading ? (
             <div className="text-sm" style={{ color: 'var(--text-3)' }}>Loading Markdown Store...</div>
           ) : filtered.length === 0 ? (
-            <div className="text-sm" style={{ color: 'var(--text-3)' }}>
-              {search.trim() ? `No Markdown Store entries match “${search.trim()}”.` : 'No `.uam` files found.'}
+            <div className="flex flex-col items-center gap-2 rounded-xl p-8 text-center animate-fade-in" style={{ color: 'var(--text-3)', border: '1px solid var(--border)', background: 'var(--surface-up)' }}>
+              {search.trim() ? <Search size={24} strokeWidth={1.5} aria-hidden /> : <BookOpen size={24} strokeWidth={1.5} aria-hidden />}
+              <div className="text-sm font-medium" style={{ color: 'var(--text-2)' }}>
+                {search.trim() ? 'No Markdown Store entries match this search' : 'No Markdown Store entries yet'}
+              </div>
+              <div className="text-xs">
+                {search.trim() ? 'Try another term or clear the search.' : 'Publish a `.uam` file to reuse it in future chats.'}
+              </div>
             </div>
           ) : (
             <div className="grid gap-2">

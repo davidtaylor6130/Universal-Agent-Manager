@@ -84,6 +84,7 @@ class IPlatformProcessService
 	/// style timer throttling cannot pause active agent turns or goal loops when
 	/// the display sleeps. Safe to call repeatedly with the same value.
 	virtual void SetKeepSystemAwake(bool keep_awake) const = 0;
+	virtual bool EmbeddedBrowserUsesMockKeychain() const = 0;
 };
 
 /// <summary>
@@ -111,6 +112,7 @@ class IPlatformPathService
 	virtual std::filesystem::path DefaultDataRootPath() const = 0;
 	virtual std::optional<std::filesystem::path> ResolveUserHomePath() const = 0;
 	virtual std::filesystem::path ExpandLeadingTildePath(const std::string& raw_path) const = 0;
+	virtual bool CanProbeDirectoryWithoutPrompt(const std::filesystem::path& path) const = 0;
 };
 
 enum class DictationEventType

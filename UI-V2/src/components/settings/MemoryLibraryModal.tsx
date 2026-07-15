@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { FolderOpen, X, Check, ChevronUp, ChevronDown } from 'lucide-react'
+import { FolderOpen, X, Check, ChevronUp, ChevronDown, SearchX } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { Button, IconButton } from '../ui'
@@ -14,6 +14,13 @@ const MEMORY_CATEGORIES = [
 ] as const
 
 const MEMORY_CONFIDENCE = ['high', 'medium', 'low'] as const
+
+const memoryCategoryLabel = (category: string) => ({
+  'Failures/AI_Failures': 'AI failures',
+  'Failures/User_Failures': 'Your failures',
+  'Lessons/AI_Lessons': 'AI lessons',
+  'Lessons/User_Lessons': 'Your lessons',
+}[category] ?? category.replace(/_/g, ' ').replace('/', ' · '))
 
 const EMPTY_DRAFT: MemoryEntryDraft = {
   category: MEMORY_CATEGORIES[2],
@@ -312,7 +319,7 @@ export function MemoryLibraryModal() {
       .filter((folder) => folder.directory.trim().length > 0)
       .map((folder) => ({ value: `folder:${folder.id}`, label: folder.name })),
   ]
-  const categoryOptions = MEMORY_CATEGORIES.map((category) => ({ value: category, label: category }))
+  const categoryOptions = MEMORY_CATEGORIES.map((category) => ({ value: category, label: memoryCategoryLabel(category) }))
   const confidenceOptions = MEMORY_CONFIDENCE.map((confidence) => ({ value: confidence, label: confidence }))
 
   const submitDraft = async () => {
@@ -364,6 +371,10 @@ export function MemoryLibraryModal() {
       }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={memoryTitle}
+        tabIndex={-1}
         className="rounded-2xl shadow-2xl w-full max-w-6xl mx-4 animate-slide-in overflow-hidden flex flex-col"
         style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', maxHeight: 'calc(100vh - 2rem)' }}
       >
@@ -495,7 +506,7 @@ export function MemoryLibraryModal() {
                   />
                 </label>
 
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid gap-2">
                   <InlineMenu
                     label="Confidence"
                     value={draft.confidence}
@@ -565,10 +576,18 @@ export function MemoryLibraryModal() {
               </div>
             ) : filteredEntries.length === 0 ? (
               <div
-                className="rounded-xl p-6 text-sm"
+                className="rounded-xl p-8 text-center flex flex-col items-center gap-2 animate-fade-in"
                 style={{ background: 'var(--surface-up)', border: '1px solid var(--border)', color: 'var(--text-3)' }}
               >
-                No memory entries found for this scope.
+                {hasSearchQuery
+                  ? <SearchX size={24} strokeWidth={1.5} aria-hidden />
+                  : <FolderOpen size={24} strokeWidth={1.5} aria-hidden />}
+                <div className="text-sm font-medium" style={{ color: 'var(--text-2)' }}>
+                  {hasSearchQuery ? 'No memory matches this search' : 'No memory saved here yet'}
+                </div>
+                <div className="text-xs">
+                  {hasSearchQuery ? 'Try another term or clear the search.' : 'Add a memory to make it available to future chats.'}
+                </div>
               </div>
             ) : (
               <div className="space-y-4">
@@ -612,7 +631,7 @@ export function MemoryLibraryModal() {
                           <section key={`${location.key}:${category}`}>
                             <div className="flex items-center justify-between gap-2 mb-2">
                               <div className="text-[11px] font-semibold uppercase tracking-[0.16em]" style={{ color: 'var(--text-3)' }}>
-                                {category}
+                                {memoryCategoryLabel(category)}
                               </div>
                               <div className="text-[10px] rounded px-1.5 py-0.5" style={{ background: 'var(--surface-up)', color: 'var(--text-3)', border: '1px solid var(--border)' }}>
                                 {entries.length}
@@ -684,6 +703,10 @@ export function MemoryLibraryModal() {
           }}
         >
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Delete memory entry"
+            tabIndex={-1}
             className="rounded-xl shadow-2xl w-full max-w-md mx-4"
             style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)' }}
           >
@@ -729,6 +752,10 @@ export function MemoryLibraryModal() {
           }}
         >
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={hasSearchQuery ? 'Delete matching memories' : 'Delete all memories'}
+            tabIndex={-1}
             className="rounded-xl shadow-2xl w-full max-w-md mx-4"
             style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)' }}
           >

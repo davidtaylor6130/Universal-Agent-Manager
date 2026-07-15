@@ -145,9 +145,9 @@ describe('MemoryLibraryModal all memory scope', () => {
     expect(host.textContent).toContain('Local failure')
     expect(host.textContent).toContain('General')
     expect(host.textContent).toContain('/tmp/project/.UAM')
-    expect(host.textContent).toContain('Lessons/AI_Lessons')
-    expect(host.textContent).toContain('Lessons/User_Lessons')
-    expect(host.textContent).toContain('Failures/AI_Failures')
+    expect(host.textContent).toContain('AI lessons')
+    expect(host.textContent).toContain('Your lessons')
+    expect(host.textContent).toContain('AI failures')
     expect(host.textContent).not.toContain('Open memory root')
 
     act(() => {
@@ -161,6 +161,9 @@ describe('MemoryLibraryModal all memory scope', () => {
     const { host, root } = renderModal({ createMemoryEntry })
 
     clickButton(host, 'Add memory')
+
+    const sourceChatInput = Array.from(host.querySelectorAll('label')).find((label) => label.textContent?.includes('Source chat'))?.querySelector('input')
+    expect(sourceChatInput?.parentElement?.parentElement?.className).not.toContain('grid-cols-2')
 
     expect(host.querySelector('select')).toBeNull()
     const targetButton = Array.from(host.querySelectorAll('button')).find(
@@ -207,14 +210,28 @@ describe('MemoryLibraryModal all memory scope', () => {
 
     expect(host.textContent).toContain('Global memory')
     expect(host.textContent).toContain('Global lesson')
-    expect(host.textContent).toContain('Lessons/AI_Lessons')
+    expect(host.textContent).toContain('AI lessons')
     expect(host.textContent).not.toContain('General')
     expect(host.textContent).not.toContain('Local lesson')
-    expect(host.textContent).not.toContain('Failures/AI_Failures')
+    expect(host.textContent).not.toContain('AI failures')
 
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('explains when a memory search has no matches', () => {
+    const { host, root } = renderModal()
+    const searchInput = host.querySelector('input[placeholder^="Search memory"]') as HTMLInputElement
+
+    changeInput(searchInput, 'nothing-matches-this')
+
+    expect(host.textContent).toContain('No memory matches this search')
+    expect(host.textContent).toContain('Try another term or clear the search.')
+    expect(host.textContent).not.toContain('No memory saved here yet')
+
+    act(() => root.unmount())
     host.remove()
   })
 

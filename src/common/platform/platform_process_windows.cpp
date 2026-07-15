@@ -8,6 +8,11 @@ namespace uam::platform_windows_impl
 class WindowsProcessService final : public IPlatformProcessService
 {
   public:
+	bool EmbeddedBrowserUsesMockKeychain() const override
+	{
+		return false;
+	}
+
 	bool SupportsDetachedProcesses() const override
 	{
 		return true;

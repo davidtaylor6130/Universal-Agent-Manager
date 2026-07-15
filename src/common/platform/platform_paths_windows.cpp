@@ -8,6 +8,11 @@ namespace uam::platform_windows_impl
 class WindowsPathService final : public IPlatformPathService
 {
   public:
+	bool CanProbeDirectoryWithoutPrompt(const std::filesystem::path&) const override
+	{
+		return true;
+	}
+
 	std::filesystem::path DefaultDataRootPath() const override
 	{
 		return AppPaths::DefaultDataRootPath();

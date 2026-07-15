@@ -1,6 +1,7 @@
 #include "common/paths/app_paths.h"
 
 #include "common/paths/path_utils.h"
+#include "common/platform/platform_services.h"
 #include "common/utils/env_utils.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/nlohmann_json_utils.h"
@@ -30,7 +31,9 @@ namespace
 
 	fs::path NormalizePathForCompare(const fs::path& path)
 	{
-		return uam::paths::NormalizeExistingPath(path);
+		return PlatformServicesFactory::Instance().path_service.CanProbeDirectoryWithoutPrompt(path)
+		           ? uam::paths::NormalizeExistingPath(path)
+		           : uam::paths::AbsolutePathNoThrow(path).lexically_normal();
 	}
 
 	bool PathComponentEquals(const fs::path& lhs, const fs::path& rhs)

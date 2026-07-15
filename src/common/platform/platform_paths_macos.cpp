@@ -1,5 +1,7 @@
 #include "platform_services_macos_impl_internal.h"
 
+#include <algorithm>
+
 using namespace uam::platform_macos_impl;
 
 namespace uam::platform_macos_impl
@@ -8,6 +10,28 @@ namespace uam::platform_macos_impl
 class MacPathService final : public IPlatformPathService
 {
   public:
+	bool CanProbeDirectoryWithoutPrompt(const std::filesystem::path& path) const override
+	{
+		const std::optional<std::filesystem::path> home = ResolveUserHomePath();
+		if (!home)
+		{
+			return true;
+		}
+
+		const std::filesystem::path candidate = path.lexically_normal();
+		for (const char* folder : {"Desktop", "Documents", "Downloads"})
+		{
+			const std::filesystem::path protected_root = (*home / folder).lexically_normal();
+			const auto mismatch = std::mismatch(protected_root.begin(), protected_root.end(), candidate.begin(), candidate.end());
+			if (mismatch.first == protected_root.end())
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
 	std::filesystem::path DefaultDataRootPath() const override
 	{
 		return AppPaths::DefaultDataRootPath();

@@ -159,19 +159,19 @@ export function VcsCommitPanel() {
               <div className="relative mt-1">
                 <button
                   type="button"
-                  className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1 text-left"
+                  className="uam-menu-select__trigger flex w-full items-center justify-between gap-2 rounded-md px-2 py-1 text-left"
                   aria-haspopup="listbox"
                   aria-expanded={vcsMenuOpen}
                   onClick={() => setVcsMenuOpen((open) => !open)}
-                  style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
+                  style={{ color: 'var(--text)' }}
                 >
                   <span>{selectedVcsType.toUpperCase()}</span>
-                  <ChevronDown size={14} style={{ color: 'var(--text-3)', flexShrink: 0, transform: vcsMenuOpen ? 'scaleY(-1)' : 'scaleY(1)' }} aria-hidden />
+                  <ChevronDown className={vcsMenuOpen ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} style={{ color: 'var(--text-3)' }} aria-hidden />
                 </button>
                 {vcsMenuOpen && (
                   <div
                     role="listbox"
-                    className="absolute left-0 right-0 top-full z-30 mt-1 overflow-hidden rounded-md"
+                    className="absolute left-0 right-0 top-full z-30 mt-1 overflow-hidden rounded-md animate-fade-in"
                     style={{ background: 'var(--surface-up)', border: '1px solid var(--border)', boxShadow: '0 10px 24px rgba(0,0,0,0.24)' }}
                   >
                     {status.vcsTypes.map((type) => {
@@ -182,12 +182,12 @@ export function VcsCommitPanel() {
                           type="button"
                           role="option"
                           aria-selected={selected}
-                          className="flex w-full items-center justify-between px-2 py-1 text-left"
+                          className={`uam-menu-select__option flex w-full items-center justify-between px-2 py-1 text-left${selected ? ' is-selected' : ''}`}
                           onClick={() => {
                             setVcsMenuOpen(false)
                             void refresh(type)
                           }}
-                          style={{ background: selected ? 'var(--accent-dim)' : 'transparent', color: selected ? 'var(--text)' : 'var(--text-2)' }}
+                          style={{ color: selected ? 'var(--text)' : 'var(--text-2)' }}
                         >
                           <span>{type.toUpperCase()}</span>
                           {selected && <Check size={13} style={{ color: 'var(--green)' }} aria-hidden />}

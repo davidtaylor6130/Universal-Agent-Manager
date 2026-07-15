@@ -13,7 +13,6 @@ import {
   readChatGridLayout,
   subscribeChatGridLayout,
 } from '../../utils/chatGridStorage'
-import { CollectionMenuItems } from './CollectionMenuItems'
 
 function formatSidebarTime(date: Date | null): string {
   if (!date || Number.isNaN(date.getTime())) {
@@ -366,7 +365,6 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
             <Pencil size={13} aria-hidden />
             Rename
           </button>
-          <CollectionMenuItems type="chat" target={sessionId} label={sessionName} onAdded={() => setMenuPos(null)} />
           <button
             className="flex w-full items-center gap-2 text-left px-3 py-1.5 text-sm transition-colors duration-100"
             style={{ background: 'transparent', color: 'var(--red)', cursor: 'pointer', border: 'none', fontFamily: 'inherit' }}

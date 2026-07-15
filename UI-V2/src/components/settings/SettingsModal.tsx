@@ -429,11 +429,9 @@ export function SettingsModal() {
           aria-haspopup="listbox"
           aria-expanded={openDefaultsMenu === menuId}
           onClick={() => setOpenDefaultsMenu(openDefaultsMenu === menuId ? null : menuId)}
-          className="w-full text-left"
+          className="uam-menu-select__trigger flex w-full items-center justify-between gap-2 text-left"
           style={{
-            background: 'var(--surface-up)',
             color: 'var(--text)',
-            border: '1px solid var(--border)',
             borderRadius: 8,
             padding: '8px 10px',
           }}
@@ -442,12 +440,13 @@ export function SettingsModal() {
             {selectedOption ? renderOptionIcon?.(selectedOption) : null}
             <span className="truncate">{selectedOption?.label ?? titleFromModelId(value)}</span>
           </span>
+          <ChevronDown className={openDefaultsMenu === menuId ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />
         </button>
         {openDefaultsMenu === menuId && (
           <div
             role="listbox"
             aria-label={label}
-            className="absolute left-0 right-0"
+            className="absolute left-0 right-0 animate-fade-in"
             style={{
               top: 38,
               zIndex: 70,
@@ -470,10 +469,9 @@ export function SettingsModal() {
                     onSelect(option.id)
                     setOpenDefaultsMenu(null)
                   }}
-                  className="w-full flex items-center gap-2 text-left px-2 py-2"
+                  className={`uam-menu-select__option w-full flex items-center gap-2 text-left px-2 py-2${selected ? ' is-selected' : ''}`}
                   style={{
                     borderRadius: 6,
-                    background: selected ? 'var(--accent-dim)' : 'transparent',
                     color: selected ? 'var(--text)' : 'var(--text-2)',
                   }}
                 >
@@ -523,23 +521,21 @@ export function SettingsModal() {
           aria-expanded={openCliVersionMenu === menuId}
           disabled={disabled}
           onClick={() => setOpenCliVersionMenu(openCliVersionMenu === menuId ? null : menuId)}
-          className="w-full text-left disabled:opacity-50"
+          className="uam-menu-select__trigger flex w-full items-center justify-between gap-2 text-left disabled:opacity-50"
           style={{
-            background: 'var(--surface-up)',
             color: 'var(--text)',
-            border: '1px solid var(--border)',
             borderRadius: 8,
             padding: '8px 10px',
-            cursor: disabled ? 'default' : 'pointer',
           }}
         >
           <span className="truncate">{selectedOption?.label ?? 'No versions available'}</span>
+          {!disabled && <ChevronDown className={openCliVersionMenu === menuId ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />}
         </button>
         {!disabled && openCliVersionMenu === menuId && (
           <div
             role="listbox"
             aria-label={label}
-            className="absolute left-0 right-0"
+            className="absolute left-0 right-0 animate-fade-in"
             style={{
               top: 38,
               zIndex: 70,
@@ -562,10 +558,9 @@ export function SettingsModal() {
                     onSelect(option.id)
                     setOpenCliVersionMenu(null)
                   }}
-                  className="w-full grid gap-0.5 text-left px-2 py-2"
+                  className={`uam-menu-select__option w-full grid gap-0.5 text-left px-2 py-2${selected ? ' is-selected' : ''}`}
                   style={{
                     borderRadius: 6,
-                    background: selected ? 'var(--accent-dim)' : 'transparent',
                     color: selected ? 'var(--text)' : 'var(--text-2)',
                   }}
                 >
@@ -600,22 +595,21 @@ export function SettingsModal() {
         aria-haspopup="listbox"
         aria-expanded={openEditorMenu === menuId}
         onClick={() => setOpenEditorMenu(openEditorMenu === menuId ? null : menuId)}
-        className="w-full text-left"
+        className="uam-menu-select__trigger flex w-full items-center justify-between gap-2 text-left"
         style={{
-          background: 'var(--surface-up)',
           color: 'var(--text)',
-          border: '1px solid var(--border)',
           borderRadius: 8,
           padding: '8px 10px',
         }}
       >
-        {editorPresetLabel(value)}
+        <span className="truncate">{editorPresetLabel(value)}</span>
+        <ChevronDown className={openEditorMenu === menuId ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />
       </button>
       {openEditorMenu === menuId && (
         <div
           role="listbox"
           aria-label={label}
-          className="absolute left-0 right-0"
+          className="absolute left-0 right-0 animate-fade-in"
           style={{
             top: 38,
             zIndex: 60,
@@ -638,10 +632,9 @@ export function SettingsModal() {
                   onSelect(preset.id)
                   setOpenEditorMenu(null)
                 }}
-                className="w-full flex items-center gap-2 text-left px-2 py-2"
+                className={`uam-menu-select__option w-full flex items-center gap-2 text-left px-2 py-2${selected ? ' is-selected' : ''}`}
                 style={{
                   borderRadius: 6,
-                  background: selected ? 'var(--accent-dim)' : 'transparent',
                   color: selected ? 'var(--text)' : 'var(--text-2)',
                 }}
               >
@@ -1147,7 +1140,7 @@ export function SettingsModal() {
 
               <div className="grid grid-cols-2 gap-3">
                 <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                  Idle delay
+                  Idle delay (seconds)
                   <input
                     type="number"
                     min={MIN_MEMORY_IDLE_DELAY_SECONDS}
@@ -1165,7 +1158,7 @@ export function SettingsModal() {
                 </label>
 
                 <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                  Recall budget bytes
+                  Recall budget (bytes)
                   <input
                     type="number"
                     min={MIN_MEMORY_RECALL_BUDGET_BYTES}
@@ -1480,6 +1473,7 @@ export function SettingsModal() {
                 <Button
                   variant="primary"
                   size="sm"
+                  disabled={!markdownStoreDraftDirectory.trim() || markdownStoreDraftDirectory.trim() === markdownStoreDirectory}
                   onClick={() => void setMarkdownStoreDirectory(markdownStoreDraftDirectory)}
                 >
                   Save
@@ -1490,7 +1484,7 @@ export function SettingsModal() {
                   Attach entries to chats as file path references.
                 </div>
                 <Button
-                  variant="primary"
+                  variant="secondary"
                   size="sm"
                   onClick={() => void openMarkdownStore()}
                 >
@@ -1690,6 +1684,10 @@ export function SettingsModal() {
       onClick={(e) => { if (e.target === e.currentTarget) setSettingsOpen(false) }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Settings"
+        tabIndex={-1}
         className="rounded-2xl shadow-2xl w-full max-w-5xl mx-4 animate-slide-in overflow-hidden flex flex-col"
         style={{
           background: 'var(--surface)',
@@ -1738,7 +1736,7 @@ export function SettingsModal() {
                       setOpenDefaultsMenu(null)
                       setOpenCliVersionMenu(null)
                     }}
-                    className="w-full text-left px-3 py-2.5 rounded-xl transition-colors"
+                    className="uam-choice-button w-full text-left px-3 py-2.5 rounded-xl"
                     style={{
                       background: active ? 'var(--surface)' : 'transparent',
                       border: active ? '1px solid var(--border-bright)' : '1px solid transparent',
@@ -1766,17 +1764,18 @@ export function SettingsModal() {
                 {SETTINGS_SECTIONS.find((section) => section.id === selectedSection)?.detail}
               </div>
             </div>
-            {renderSectionContent()}
+            <div key={selectedSection} className="animate-fade-in">
+              {renderSectionContent()}
+            </div>
           </div>
         </div>
 
         <div
-          className="px-5 py-4"
+          className="flex justify-end px-5 py-4"
           style={{ borderTop: '1px solid var(--border)' }}
         >
           <Button
-            variant="primary"
-            block
+            variant="secondary"
             size="md"
             onClick={() => setSettingsOpen(false)}
           >

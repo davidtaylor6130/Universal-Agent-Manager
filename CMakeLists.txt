@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
-project(universal_agent_manager VERSION 4.2.2 LANGUAGES C CXX)
+project(universal_agent_manager VERSION 4.3.0 LANGUAGES C CXX)
 
 if(APPLE)
   enable_language(OBJCXX)
@@ -483,6 +483,7 @@ file(REMOVE_RECURSE \"\${UAM_BUNDLE_CONTENTS}/MacOS/UI-V2\")
   <key>CFBundleIdentifier</key><string>com.universalagentmanager.desktop.${_hid}</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>${_hname}</string>
+  <key>CFBundleDisplayName</key><string>Universal Agent Manager</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${PROJECT_VERSION}</string>
   <key>CFBundleVersion</key><string>${PROJECT_VERSION}</string>

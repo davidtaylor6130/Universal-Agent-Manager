@@ -4,7 +4,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { DEFAULT_PROVIDER_ID, providerRuntimeDescription } from '../../utils/providerMetadata'
-import { Button, MenuSelect, Tooltip } from '../ui'
+import { Button, IconButton, MenuSelect } from '../ui'
 import { buildModelOptions } from '../chat/modelOptions'
 
 export function NewChatModal() {
@@ -109,7 +109,7 @@ export function NewChatModal() {
       return
     }
 
-    const n = name.trim() || 'New Session'
+    const n = name.trim() || 'New chat'
     addSession(n, folderId, providerId, modelId)
   }
 
@@ -128,6 +128,10 @@ export function NewChatModal() {
       }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="New chat"
+        tabIndex={-1}
         className="rounded-xl shadow-2xl w-full max-w-md mx-4 animate-slide-in"
         style={{
           background: 'var(--surface)',
@@ -140,33 +144,16 @@ export function NewChatModal() {
           style={{ borderBottom: '1px solid var(--border)' }}
         >
           <span className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
-            New Session
+            New chat
           </span>
-          <Tooltip label="Close">
-            <button
-              onClick={() => setNewChatModalOpen(false)}
-              className="flex items-center justify-center rounded transition-colors duration-100"
-              style={{
-                background: 'transparent',
-                color: 'var(--text-3)',
-                border: 'none',
-                cursor: 'pointer',
-                padding: 0,
-                width: 20,
-                height: 20,
-                fontFamily: 'inherit',
-              }}
-            >
-              <X size={16} aria-hidden />
-            </button>
-          </Tooltip>
+          <IconButton icon={<X size={16} />} label="Close new chat" onClick={() => setNewChatModalOpen(false)} />
         </div>
 
         <div className="p-5 space-y-5">
           {/* Name */}
           <div>
             <label className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--text-2)' }}>
-              Session name
+              Chat name
             </label>
             <input
               ref={nameRef}
@@ -197,13 +184,12 @@ export function NewChatModal() {
                 <button
                   type="button"
                   aria-label="Folder"
+                  aria-haspopup="listbox"
+                  aria-expanded={folderMenuOpen}
                   onClick={() => setFolderMenuOpen((open) => !open)}
-                  className="w-full rounded-md px-3 py-2 text-left transition-colors duration-100"
+                  className="uam-menu-select__trigger w-full rounded-md px-3 py-2 text-left"
                   style={{
-                    background: 'var(--surface-up)',
-                    border: '1px solid var(--border)',
                     color: 'var(--text)',
-                    cursor: 'pointer',
                     fontFamily: 'inherit',
                   }}
                 >
@@ -226,6 +212,8 @@ export function NewChatModal() {
 
                 {folderMenuOpen && (
                   <div
+                    role="listbox"
+                    aria-label="Folder"
                     className="absolute left-0 right-0 top-full z-10 mt-1 max-h-52 overflow-y-auto rounded-md p-1 shadow-2xl"
                     style={{
                       background: 'var(--surface)',
@@ -239,16 +227,16 @@ export function NewChatModal() {
                         <button
                           key={f.id}
                           type="button"
+                          role="option"
+                          aria-selected={isSelected}
                           onClick={() => {
                             setFolderId(f.id)
                             setFolderMenuOpen(false)
                           }}
-                          className="w-full rounded-md px-2 py-2 text-left transition-colors duration-100"
+                          className={`uam-menu-select__option w-full rounded-md px-2 py-2 text-left${isSelected ? ' is-selected' : ''}`}
                           style={{
-                            background: isSelected ? 'color-mix(in srgb, var(--accent) 16%, transparent)' : 'transparent',
                             border: 'none',
                             color: 'var(--text)',
-                            cursor: 'pointer',
                             fontFamily: 'inherit',
                           }}
                         >
@@ -276,13 +264,12 @@ export function NewChatModal() {
                 <button
                   type="button"
                   aria-label="Provider"
+                  aria-haspopup="listbox"
+                  aria-expanded={providerMenuOpen}
                   onClick={() => setProviderMenuOpen((open) => !open)}
-                  className="w-full rounded-md px-3 py-2 text-left transition-colors duration-100"
+                  className="uam-menu-select__trigger w-full rounded-md px-3 py-2 text-left"
                   style={{
-                    background: 'var(--surface-up)',
-                    border: '1px solid var(--border)',
                     color: 'var(--text)',
-                    cursor: 'pointer',
                     fontFamily: 'inherit',
                   }}
                 >
@@ -299,6 +286,8 @@ export function NewChatModal() {
 
                 {providerMenuOpen && (
                   <div
+                    role="listbox"
+                    aria-label="Provider"
                     className="absolute left-0 right-0 top-full z-10 mt-1 max-h-52 overflow-y-auto rounded-md p-1 shadow-2xl"
                     style={{
                       background: 'var(--surface)',
@@ -312,17 +301,17 @@ export function NewChatModal() {
                         <button
                           key={provider.id}
                           type="button"
+                          role="option"
+                          aria-selected={isSelected}
                           onClick={() => {
                             setProviderId(provider.id)
                             setModelId(providerChatDefaults[provider.id]?.modelId ?? '')
                             setProviderMenuOpen(false)
                           }}
-                          className="w-full rounded-md px-2 py-2 text-left transition-colors duration-100"
+                          className={`uam-menu-select__option w-full rounded-md px-2 py-2 text-left${isSelected ? ' is-selected' : ''}`}
                           style={{
-                            background: isSelected ? 'color-mix(in srgb, var(--accent) 16%, transparent)' : 'transparent',
                             border: 'none',
                             color: 'var(--text)',
-                            cursor: 'pointer',
                             fontFamily: 'inherit',
                           }}
                         >
@@ -375,7 +364,7 @@ export function NewChatModal() {
             onClick={handleCreate}
             disabled={!canCreate}
           >
-            Create Session
+            Create chat
           </Button>
         </div>
       </div>

@@ -29,7 +29,7 @@ Light theme:
 - **Universal chat history** — Chats are stored in UAM's own normalized format, so you can start with one provider and continue with another.
 - **Local-first storage** — Chat metadata, settings, folders, theme, window/sidebar state, markdown store, and durable memory are all stored locally as files. No cloud, no telemetry.
 - **Git worktree isolation** — Optional per-chat git worktree create, status, diff, commit, discard, and port workflows.
-- **Workspace folders** — One-level workspace folders drive provider working directories and Gemini history discovery.
+- **Workspace folders** — One-level workspace folders drive provider working directories and Gemini history discovery, with collapsible collections for grouping related workspaces.
 - **Command safety** — Low, medium, and high safety tiers gate risky commands, with permission modes available from the composer `+` menu and slash commands.
 - **Finder and Explorer actions** — Configurable per-user shell actions open selected files and folders as workspaces or run Markdown Store skills.
 - **Durable memory** — Idle extraction and manual scans write durable memory files, with workspace-local memories under `<workspace>/.codex/memories/`. Memory library supports browsing, scanning, and categorizing lessons and failures.
@@ -286,7 +286,7 @@ Current bridge capabilities include:
 
 ## Known Issues & Status
 
-This is an actively developed project; the current development and release line is `v4.2.2`. Published builds are available from [GitHub Releases](https://github.com/davidtaylor6130/Universal-Agent-Manager/releases), and tracked gaps live in [GitHub Issues](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues). Current focus areas:
+This is an actively developed project; the current development and release line is `v4.3.0`. Published builds are available from [GitHub Releases](https://github.com/davidtaylor6130/Universal-Agent-Manager/releases), and tracked gaps live in [GitHub Issues](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues). Current focus areas:
 
 - The in-app goal loop has been significantly improved (stall watchdog, loop detection, keep-awake) but edge cases remain around continuation, failure surfacing, and stop conditions.
 - The polished "Interactive" view (CLI power with chat-bubble overlay) is planned but not yet implemented.
