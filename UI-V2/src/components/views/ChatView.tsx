@@ -1,5 +1,4 @@
 import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, RefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
 import { Session } from '../../types/session'
 import { MarkdownContent } from '../markdown/Markdown'
@@ -85,6 +84,7 @@ import {
   permissionModeIcon,
   type DictationState,
 } from '../chat/Composer'
+import { ViewportMenu } from '../ui'
 import { Brain, BookOpen, Check, ChevronDown, Cpu, FileText, Paperclip, Shield, Target, X } from 'lucide-react'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { Button, IconButton } from '../ui'
@@ -219,6 +219,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   const providerMenuRef = useRef<HTMLDivElement>(null)
   const modelMenuRef = useRef<HTMLDivElement>(null)
   const settingsMenuRef = useRef<HTMLDivElement>(null)
+  const slashMenuAnchorRef = useRef<HTMLDivElement>(null)
   const dictationActiveRef = useRef(false)
   const dictationBaseDraftRef = useRef('')
   const dictationFinalTextRef = useRef('')
@@ -331,6 +332,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
     const onMouseDown = (event: MouseEvent) => {
       const target = event.target
       if (!(target instanceof Node)) return
+      if (target instanceof Element && target.closest('[data-viewport-menu]')) return
 
       if (providerOpen && providerMenuRef.current && !providerMenuRef.current.contains(target)) {
         setProviderOpen(false)
@@ -1050,7 +1052,6 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
     canShowPlanActions && index === latestPlanMessageIndex
       ? activePlanActions
       : undefined
-  const providerMenuRect = providerOpen ? providerMenuRef.current?.getBoundingClientRect() : null
   const resolveClaudePlanPrompt = async (nextModeId: 'acceptEdits' | 'default' | 'plan') => {
     const prompt = claudePlanPrompt?.trim()
     if (!prompt) {
@@ -1354,15 +1355,13 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                     <span style={{ color: 'var(--text)' }}>{currentProviderName}</span>
                     <ChevronDown size={12} aria-hidden style={{ opacity: 0.6 }} />
                   </button>
-                  {providerOpen && providerMenuRect && createPortal(
-                    <div
+                  {providerOpen && (
+                    <ViewportMenu
+                      anchorRef={providerMenuRef}
+                      side="top"
                       data-testid="provider-menu"
                       className="animate-fade-in"
                       style={{
-                        position: 'fixed',
-                        zIndex: 1000,
-                        left: Math.max(8, Math.min(providerMenuRect.left, window.innerWidth - 238)),
-                        bottom: window.innerHeight - providerMenuRect.top + 4,
                         width: 230,
                         border: '1px solid var(--border-bright)',
                         borderRadius: 8,
@@ -1396,8 +1395,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                           </button>
                         )
                       })}
-                    </div>,
-                    document.body
+                    </ViewportMenu>
                   )}
                 </div>
                 )}
@@ -1699,10 +1697,12 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
               </div>
             )}
             {slashOpen && (
-              <div className="relative">
-                <div
-                  className="absolute left-3 right-3 z-40 overflow-hidden rounded-lg animate-fade-in"
-                  style={{ bottom: 4, border: '1px solid var(--border-bright)', background: 'var(--surface)', boxShadow: 'var(--elev-3)' }}
+              <div ref={slashMenuAnchorRef} className="relative">
+                <ViewportMenu
+                  anchorRef={slashMenuAnchorRef}
+                  side="top"
+                  className="overflow-hidden rounded-lg animate-fade-in"
+                  style={{ width: Math.max(0, (slashMenuAnchorRef.current?.getBoundingClientRect().width ?? 24) - 24), border: '1px solid var(--border-bright)', background: 'var(--surface)', boxShadow: 'var(--elev-3)' }}
                   role="listbox"
                   aria-label={permissionModeQuery !== undefined ? 'Permission modes' : commandSafetyQuery !== undefined ? 'Command safety tiers' : codexOptionKind === 'reasoning' ? 'Reasoning options' : codexOptionKind === 'speed' ? 'Speed options' : 'Slash commands'}
                 >
@@ -1734,7 +1734,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                     )
                   })}
                   </div>
-                </div>
+                </ViewportMenu>
               </div>
             )}
             {(dictationActive || dictationError) && (

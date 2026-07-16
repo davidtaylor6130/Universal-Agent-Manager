@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { RotateCw, X, Check, ChevronDown } from 'lucide-react'
+import { RotateCw, X } from 'lucide-react'
 import { useAppStore, type VcsCommitStatus, type VcsType } from '../../store/useAppStore'
-import { Button, IconButton } from '../ui'
+import { Button, IconButton, MenuSelect } from '../ui'
 
 function emptyStatus(workspaceDirectory = ''): VcsCommitStatus {
   return {
@@ -33,7 +33,6 @@ export function VcsCommitPanel() {
   const [committing, setCommitting] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [notice, setNotice] = useState('')
-  const [vcsMenuOpen, setVcsMenuOpen] = useState(false)
   const latestStatusRequestRef = useRef('')
 
   useEffect(() => {
@@ -43,7 +42,6 @@ export function VcsCommitPanel() {
     setTitle('')
     setDescription('')
     setNotice('')
-    setVcsMenuOpen(false)
   }, [activeSessionId, session?.workspaceDirectory])
 
   const refresh = useCallback(async (vcsType = selectedVcsType, includeLineStats = false) => {
@@ -156,46 +154,13 @@ export function VcsCommitPanel() {
           <div>
             <div style={{ color: 'var(--text-3)' }}>VCS</div>
             {status.vcsTypes.length > 1 ? (
-              <div className="relative mt-1">
-                <button
-                  type="button"
-                  className="uam-menu-select__trigger flex w-full items-center justify-between gap-2 rounded-md px-2 py-1 text-left"
-                  aria-haspopup="listbox"
-                  aria-expanded={vcsMenuOpen}
-                  onClick={() => setVcsMenuOpen((open) => !open)}
-                  style={{ color: 'var(--text)' }}
-                >
-                  <span>{selectedVcsType.toUpperCase()}</span>
-                  <ChevronDown className={vcsMenuOpen ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} style={{ color: 'var(--text-3)' }} aria-hidden />
-                </button>
-                {vcsMenuOpen && (
-                  <div
-                    role="listbox"
-                    className="absolute left-0 right-0 top-full z-30 mt-1 overflow-hidden rounded-md animate-fade-in"
-                    style={{ background: 'var(--surface-up)', border: '1px solid var(--border)', boxShadow: '0 10px 24px rgba(0,0,0,0.24)' }}
-                  >
-                    {status.vcsTypes.map((type) => {
-                      const selected = type === selectedVcsType
-                      return (
-                        <button
-                          key={type}
-                          type="button"
-                          role="option"
-                          aria-selected={selected}
-                          className={`uam-menu-select__option flex w-full items-center justify-between px-2 py-1 text-left${selected ? ' is-selected' : ''}`}
-                          onClick={() => {
-                            setVcsMenuOpen(false)
-                            void refresh(type)
-                          }}
-                          style={{ color: selected ? 'var(--text)' : 'var(--text-2)' }}
-                        >
-                          <span>{type.toUpperCase()}</span>
-                          {selected && <Check size={13} style={{ color: 'var(--green)' }} aria-hidden />}
-                        </button>
-                      )
-                    })}
-                  </div>
-                )}
+              <div className="mt-1">
+                <MenuSelect
+                  label="VCS"
+                  value={selectedVcsType}
+                  options={status.vcsTypes.map((type) => ({ value: type, label: type.toUpperCase() }))}
+                  onChange={(type) => { void refresh(type as VcsType) }}
+                />
               </div>
             ) : (
               <div className="mt-1 font-medium" style={{ color: 'var(--text)' }}>{status.available ? status.activeVcsType.toUpperCase() : 'None'}</div>

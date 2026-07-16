@@ -6,7 +6,7 @@ import {
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import type { Session } from '../../types/session'
-import { Tooltip } from '../ui'
+import { Tooltip, ViewportMenu } from '../ui'
 import {
   assignChatToPane,
   chatPaneColors,
@@ -324,15 +324,12 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
 
       {/* Context menu — anchored at the cursor / trigger position */}
       {menuPos && (
-        <div
+        <ViewportMenu
           ref={menuRef}
+          point={menuPos}
           className="fixed z-50 rounded-md py-1 animate-fade-in"
           style={{
-            left: Math.min(menuPos.x, window.innerWidth - 190),
-            top: Math.min(menuPos.y, window.innerHeight - 150),
             minWidth: 170,
-            maxHeight: 'min(420px, calc(100vh - 24px))',
-            overflowY: 'auto',
             background: 'var(--surface-up)',
             border: '1px solid var(--border-bright)',
             boxShadow: 'var(--elev-2)',
@@ -373,7 +370,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
             <Trash2 size={13} aria-hidden />
             Delete
           </button>
-        </div>
+        </ViewportMenu>
       )}
     </div>
   )

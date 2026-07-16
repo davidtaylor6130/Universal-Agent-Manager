@@ -32,7 +32,7 @@ describe('NewChatModal', () => {
     act(() => {
       host.querySelector<HTMLButtonElement>('button[aria-label="Provider"]')?.click()
     })
-    const codex = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Codex'))
+    const codex = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Codex'))
     act(() => codex?.click())
 
     expect(host.querySelector('select[aria-label="Model"]')).toBeNull()
@@ -41,22 +41,22 @@ describe('NewChatModal', () => {
       model.click()
     })
     expect(model.getAttribute('aria-expanded')).toBe('true')
-    const modelList = host.querySelector<HTMLElement>('[role="listbox"][aria-label="Model"]')!
+    const modelList = document.body.querySelector<HTMLElement>('[role="listbox"][aria-label="Model"]')!
     expect(modelList).toBeTruthy()
 
     act(() => {
       modelList.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     })
-    expect(host.querySelector('[role="listbox"][aria-label="Model"]')).toBeNull()
+    expect(document.body.querySelector('[role="listbox"][aria-label="Model"]')).toBeNull()
     expect(setNewChatModalOpen).not.toHaveBeenCalled()
 
     act(() => model.click())
-    expect(host.querySelector('[role="listbox"][aria-label="Model"]')).toBeTruthy()
+    expect(document.body.querySelector('[role="listbox"][aria-label="Model"]')).toBeTruthy()
     act(() => document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
-    expect(host.querySelector('[role="listbox"][aria-label="Model"]')).toBeNull()
+    expect(document.body.querySelector('[role="listbox"][aria-label="Model"]')).toBeNull()
 
     act(() => model.click())
-    const gpt = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) =>
+    const gpt = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) =>
       option.textContent?.includes('GPT-5.4')
     )
     act(() => gpt?.click())

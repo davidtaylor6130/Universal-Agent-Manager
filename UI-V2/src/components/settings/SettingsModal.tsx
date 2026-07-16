@@ -23,7 +23,7 @@ import type { Provider } from '../../types/provider'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
 import { ChevronDown, ChevronRight, X, Check } from 'lucide-react'
-import { Button, IconButton, MenuSelect } from '../ui'
+import { Button, IconButton, MenuSelect, ViewportMenu } from '../ui'
 import { ShellActionsSettings } from './ShellActionsSettings'
 import {
   DEFAULT_PROVIDER_ID,
@@ -283,6 +283,7 @@ export function SettingsModal() {
   const editorMenuRef = useRef<HTMLDivElement>(null)
   const defaultsMenuRef = useRef<HTMLDivElement>(null)
   const cliVersionMenuRef = useRef<HTMLDivElement>(null)
+  const popupAnchorsRef = useRef(new Map<string, HTMLButtonElement>())
   const themeImportRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -337,6 +338,7 @@ export function SettingsModal() {
     const handler = (event: MouseEvent) => {
       const target = event.target
       if (!(target instanceof Node)) return
+      if (target instanceof Element && target.closest('[data-viewport-menu]')) return
       if (!memoryMenuRef.current?.contains(target)) setOpenMemoryMenu(null)
       if (!editorMenuRef.current?.contains(target)) setOpenEditorMenu(null)
       if (!defaultsMenuRef.current?.contains(target)) setOpenDefaultsMenu(null)
@@ -424,6 +426,7 @@ export function SettingsModal() {
     return (
       <div className="relative">
         <button
+          ref={(element) => { if (element) popupAnchorsRef.current.set(menuId, element) }}
           type="button"
           title={label}
           aria-haspopup="listbox"
@@ -443,13 +446,13 @@ export function SettingsModal() {
           <ChevronDown className={openDefaultsMenu === menuId ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />
         </button>
         {openDefaultsMenu === menuId && (
-          <div
+          <ViewportMenu
+            anchorRef={{ current: popupAnchorsRef.current.get(menuId) ?? null }}
             role="listbox"
             aria-label={label}
-            className="absolute left-0 right-0 animate-fade-in"
+            className="animate-fade-in"
             style={{
-              top: 38,
-              zIndex: 70,
+              width: popupAnchorsRef.current.get(menuId)?.getBoundingClientRect().width,
               border: '1px solid var(--border-bright)',
               borderRadius: 10,
               background: 'var(--surface)',
@@ -488,7 +491,7 @@ export function SettingsModal() {
                 </button>
               )
             })}
-          </div>
+          </ViewportMenu>
         )}
       </div>
     )
@@ -515,6 +518,7 @@ export function SettingsModal() {
     return (
       <div className="relative">
         <button
+          ref={(element) => { if (element) popupAnchorsRef.current.set(menuId, element) }}
           type="button"
           title={label}
           aria-haspopup="listbox"
@@ -532,13 +536,13 @@ export function SettingsModal() {
           {!disabled && <ChevronDown className={openCliVersionMenu === menuId ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />}
         </button>
         {!disabled && openCliVersionMenu === menuId && (
-          <div
+          <ViewportMenu
+            anchorRef={{ current: popupAnchorsRef.current.get(menuId) ?? null }}
             role="listbox"
             aria-label={label}
-            className="absolute left-0 right-0 animate-fade-in"
+            className="animate-fade-in"
             style={{
-              top: 38,
-              zIndex: 70,
+              width: popupAnchorsRef.current.get(menuId)?.getBoundingClientRect().width,
               border: '1px solid var(--border-bright)',
               borderRadius: 10,
               background: 'var(--surface)',
@@ -576,7 +580,7 @@ export function SettingsModal() {
                 </button>
               )
             })}
-          </div>
+          </ViewportMenu>
         )}
       </div>
     )
@@ -590,6 +594,7 @@ export function SettingsModal() {
   ) => (
     <div className="relative">
       <button
+        ref={(element) => { if (element) popupAnchorsRef.current.set(menuId, element) }}
         type="button"
         title={label}
         aria-haspopup="listbox"
@@ -606,13 +611,13 @@ export function SettingsModal() {
         <ChevronDown className={openEditorMenu === menuId ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />
       </button>
       {openEditorMenu === menuId && (
-        <div
+        <ViewportMenu
+          anchorRef={{ current: popupAnchorsRef.current.get(menuId) ?? null }}
           role="listbox"
           aria-label={label}
-          className="absolute left-0 right-0 animate-fade-in"
+          className="animate-fade-in"
           style={{
-            top: 38,
-            zIndex: 60,
+            width: popupAnchorsRef.current.get(menuId)?.getBoundingClientRect().width,
             border: '1px solid var(--border-bright)',
             borderRadius: 10,
             background: 'var(--surface)',
@@ -643,7 +648,7 @@ export function SettingsModal() {
               </button>
             )
           })}
-        </div>
+        </ViewportMenu>
       )}
     </div>
   )
@@ -1228,6 +1233,7 @@ export function SettingsModal() {
                     <div className="grid grid-cols-2 gap-2">
                       <div className="relative">
                         <button
+                          ref={(element) => { if (element) popupAnchorsRef.current.set(providerMenuId, element) }}
                           type="button"
                           title={`${providerDisplayName(provider, provider.id)} memory worker provider`}
                           aria-haspopup="listbox"
@@ -1248,13 +1254,12 @@ export function SettingsModal() {
                           </span>
                         </button>
                         {openMemoryMenu === providerMenuId && (
-                          <div
+                          <ViewportMenu
+                            anchorRef={{ current: popupAnchorsRef.current.get(providerMenuId) ?? null }}
                             role="listbox"
                             aria-label={`${providerDisplayName(provider, provider.id)} memory worker provider`}
-                            className="absolute left-0 right-0"
                             style={{
-                              top: 38,
-                              zIndex: 60,
+                              width: popupAnchorsRef.current.get(providerMenuId)?.getBoundingClientRect().width,
                               border: '1px solid var(--border-bright)',
                               borderRadius: 10,
                               background: 'var(--surface)',
@@ -1290,12 +1295,13 @@ export function SettingsModal() {
                                 </button>
                               )
                             })}
-                          </div>
+                          </ViewportMenu>
                         )}
                       </div>
 
                       <div className="relative">
                         <button
+                          ref={(element) => { if (element) popupAnchorsRef.current.set(modelMenuId, element) }}
                           type="button"
                           title={`${providerDisplayName(provider, provider.id)} memory worker model`}
                           aria-haspopup="listbox"
@@ -1313,13 +1319,12 @@ export function SettingsModal() {
                           {selectedMemoryModelLabel(modelOptions, binding.workerModelId)}
                         </button>
                         {openMemoryMenu === modelMenuId && (
-                          <div
+                          <ViewportMenu
+                            anchorRef={{ current: popupAnchorsRef.current.get(modelMenuId) ?? null }}
                             role="listbox"
                             aria-label={`${providerDisplayName(provider, provider.id)} memory worker model`}
-                            className="absolute left-0 right-0"
                             style={{
-                              top: 38,
-                              zIndex: 60,
+                              width: popupAnchorsRef.current.get(modelMenuId)?.getBoundingClientRect().width,
                               border: '1px solid var(--border-bright)',
                               borderRadius: 10,
                               background: 'var(--surface)',
@@ -1357,7 +1362,7 @@ export function SettingsModal() {
                                 </button>
                               )
                             })}
-                          </div>
+                          </ViewportMenu>
                         )}
                       </div>
                     </div>

@@ -18,7 +18,7 @@ import {
   buildModelOptions,
   modelOptionFor,
 } from './modelOptions'
-import { MenuSelect } from '../ui'
+import { MenuSelect, ViewportMenu } from '../ui'
 
 export type ComposerIconName = 'editor' | 'folder' | 'git-tree' | 'markdown' | 'plus' | 'send' | 'terminal'
 export type DictationState = 'idle' | 'starting' | 'listening' | 'stopping'
@@ -207,7 +207,10 @@ export function ComposerToolbar({
   const [optionsOpen, setOptionsOpen] = useState(false)
   const [modelFocusIndex, setModelFocusIndex] = useState(0)
   const optionsRef = useRef<HTMLDivElement>(null)
+  const optionsTriggerRef = useRef<HTMLButtonElement>(null)
+  const optionsMenuRef = useRef<HTMLDivElement>(null)
   const modelTriggerRef = useRef<HTMLButtonElement>(null)
+  const settingsTriggerRef = useRef<HTMLButtonElement>(null)
   const modelWasOpenRef = useRef(false)
   const modelOptionRefs = useRef<Array<HTMLButtonElement | null>>([])
   const modelListId = useId()
@@ -253,7 +256,9 @@ export function ComposerToolbar({
   useEffect(() => {
     if (!optionsOpen) return
     const onDown = (e: MouseEvent) => {
-      if (optionsRef.current && !optionsRef.current.contains(e.target as Node)) setOptionsOpen(false)
+      const target = e.target as Node
+      if (target instanceof Element && target.closest('[data-viewport-menu]')) return
+      if (!optionsRef.current?.contains(target) && !optionsMenuRef.current?.contains(target)) setOptionsOpen(false)
     }
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOptionsOpen(false) }
     document.addEventListener('mousedown', onDown)
@@ -287,6 +292,7 @@ export function ComposerToolbar({
       {/* Provider selector moved to the workspace row above the input. */}
       <div ref={optionsRef} className="relative">
         <button
+          ref={optionsTriggerRef}
           type="button"
           title="Add files, goal, and options"
           aria-label="Options"
@@ -302,10 +308,13 @@ export function ComposerToolbar({
           <Plus size={16} aria-hidden />
         </button>
         {optionsOpen && (
-          <div
-            className="absolute left-0 flex flex-col gap-1.5 animate-fade-in"
+          <ViewportMenu
+            ref={optionsMenuRef}
+            anchorRef={optionsTriggerRef}
+            side="top"
+            className="flex flex-col gap-1.5 animate-fade-in"
             style={{
-              bottom: 34, minWidth: 210, zIndex: 40, padding: 8,
+              minWidth: 210, padding: 8,
               border: '1px solid var(--border-bright)', borderRadius: 8,
               background: 'var(--surface)', boxShadow: 'var(--elev-3)',
             }}
@@ -443,7 +452,7 @@ export function ComposerToolbar({
               <ComposerIcon name="markdown" />
               <span>Markdown store</span>
             </button>
-          </div>
+          </ViewportMenu>
         )}
       </div>
       {goalArmed && (
@@ -502,16 +511,17 @@ export function ComposerToolbar({
             <span style={{ color: 'var(--text)' }}>{currentModel.shortLabel}</span>
           </button>
           {modelOpen && !modelDisabled && (
-            <div
+            <ViewportMenu
+              anchorRef={modelTriggerRef}
+              side="top"
+              align="end"
               id={modelListId}
               role="listbox"
               aria-label="Model"
               onKeyDown={onModelKeyDown}
-              className="absolute right-0 animate-fade-in"
+              className="animate-fade-in"
               style={{
-                bottom: 32,
                 width: 260,
-                zIndex: 40,
                 border: '1px solid var(--border-bright)',
                 borderRadius: 8,
                 background: 'var(--surface)',
@@ -555,11 +565,12 @@ export function ComposerToolbar({
                   )
                 })}
               </div>
-            </div>
+            </ViewportMenu>
           )}
         </div>
         <div ref={settingsMenuRef} className="relative">
           <button
+            ref={settingsTriggerRef}
             type="button"
             title="Settings"
             aria-label="Chat settings"
@@ -575,12 +586,13 @@ export function ComposerToolbar({
             <Settings2 size={14} aria-hidden />
           </button>
           {settingsOpen && (
-            <div
-              className="absolute right-0 animate-fade-in"
+            <ViewportMenu
+              anchorRef={settingsTriggerRef}
+              side="top"
+              align="end"
+              className="animate-fade-in"
               style={{
-                bottom: 32,
                 width: 250,
-                zIndex: 40,
                 border: '1px solid var(--border-bright)',
                 borderRadius: 8,
                 background: 'var(--surface)',
@@ -633,7 +645,7 @@ export function ComposerToolbar({
                   />
                 </label>
               </div>
-            </div>
+            </ViewportMenu>
           )}
         </div>
         {running && (

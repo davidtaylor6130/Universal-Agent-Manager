@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Search, X, SlidersHorizontal, Check } from 'lucide-react'
 import type { ChatSearchFilters, ChatStatusFilterId } from './chatSearch'
-import { Tooltip } from '../ui'
+import { Tooltip, ViewportMenu } from '../ui'
 
 interface ChatSearchProviderFilterOption {
   id: string
@@ -43,6 +43,8 @@ export function ChatSearchBar({
 }: ChatSearchBarProps) {
   const [filtersOpen, setFiltersOpen] = useState(false)
   const popoverRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
   const activeFilterCount = filters.providerIds.length + filters.statusIds.length + (deepSearch ? 1 : 0)
 
   useEffect(() => {
@@ -50,7 +52,7 @@ export function ChatSearchBar({
 
     const onMouseDown = (event: MouseEvent) => {
       const target = event.target
-      if (target instanceof Node && popoverRef.current && !popoverRef.current.contains(target)) {
+      if (target instanceof Node && !popoverRef.current?.contains(target) && !menuRef.current?.contains(target)) {
         setFiltersOpen(false)
       }
     }
@@ -137,6 +139,7 @@ export function ChatSearchBar({
         <div className="relative" ref={popoverRef}>
           <Tooltip label={activeFilterCount > 0 ? `${activeFilterCount} chat filter${activeFilterCount === 1 ? '' : 's'} active` : 'Filter chats'} side="bottom">
           <button
+            ref={triggerRef}
             type="button"
             aria-label="Filter chats"
             aria-expanded={filtersOpen}
@@ -170,8 +173,11 @@ export function ChatSearchBar({
           </Tooltip>
 
           {filtersOpen && (
-            <div
-              className="absolute right-0 z-40 mt-2 w-56 rounded-md p-2 text-xs shadow-xl"
+            <ViewportMenu
+              ref={menuRef}
+              anchorRef={triggerRef}
+              align="end"
+              className="w-56 rounded-md p-2 text-xs shadow-xl"
               style={{
                 background: 'var(--surface-up)',
                 border: '1px solid var(--border-bright)',
@@ -256,7 +262,7 @@ export function ChatSearchBar({
                   )
                 })}
               </div>
-            </div>
+            </ViewportMenu>
           )}
         </div>
       </div>

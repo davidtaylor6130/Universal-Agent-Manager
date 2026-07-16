@@ -5,7 +5,7 @@ import type { LucideIcon } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { SessionItem } from './SessionItem'
-import { Button, IconButton, Tooltip } from '../ui'
+import { Button, IconButton, Tooltip, ViewportMenu } from '../ui'
 import {
   type ChatSearchFilters,
   buildChatSearchIndex,
@@ -882,15 +882,12 @@ const FolderRow = memo(function FolderRow({
       </div>
 
       {menuPos && (
-        <div
+        <ViewportMenu
           ref={menuRef}
+          point={menuPos}
           className="fixed z-50 rounded-md py-1 animate-fade-in"
           style={{
-            left: Math.max(8, Math.min(menuPos.x, window.innerWidth - 176)),
-            top: Math.min(menuPos.y, window.innerHeight - 150),
             minWidth: 168,
-            maxHeight: 'min(420px, calc(100vh - 24px))',
-            overflowY: 'auto',
             background: 'var(--surface-up)',
             border: '1px solid var(--border-bright)',
             boxShadow: 'var(--elev-2)',
@@ -902,7 +899,7 @@ const FolderRow = memo(function FolderRow({
           <CollectionMenuItems target={folder.id} label={folder.name} onAdded={() => setMenuPos(null)} />
           <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Rename folder" onClick={() => { setMenuPos(null); onStartRename() }} />
           <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label="Delete folder" danger onClick={() => { setMenuPos(null); onDelete() }} />
-        </div>
+        </ViewportMenu>
       )}
 
       {isEditing && (

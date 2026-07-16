@@ -171,7 +171,7 @@ describe('SessionItem status icons', () => {
     const sessionRow = host.querySelector('.cursor-pointer') as HTMLElement
     expect(sessionRow.style.borderLeft).toContain('rgb(249, 115, 22)')
     act(() => sessionRow.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
-    const paneTwo = host.querySelector('button[aria-label="Show Chat 1 in pane 2"]') as HTMLButtonElement
+    const paneTwo = document.body.querySelector('button[aria-label="Show Chat 1 in pane 2"]') as HTMLButtonElement
     expect(paneTwo).toBeTruthy()
     expect(paneTwo.textContent).toBe('')
     act(() => paneTwo.click())

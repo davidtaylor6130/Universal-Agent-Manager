@@ -311,7 +311,7 @@ describe('ChatView', () => {
     act(() => {
       settingsButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    expect(host.textContent).toContain('Chat settings')
+    expect(document.body.textContent).toContain('Chat settings')
     expect(host.textContent).not.toContain('Unavailable')
 
     const toolButton = Array.from(host.querySelectorAll('button')).find((button) =>
@@ -672,26 +672,26 @@ describe('ChatView', () => {
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
     openComposerOptions(host)
 
-    const permission = host.querySelector('button[aria-label="Permission mode"]') as HTMLButtonElement
+    const permission = document.body.querySelector('button[aria-label="Permission mode"]') as HTMLButtonElement
     expect(permission.textContent).toContain('Default')
     act(() => permission.click())
-    const plan = Array.from(host.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Plan')) as HTMLButtonElement
+    const plan = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Plan')) as HTMLButtonElement
     await act(async () => { plan.click(); await Promise.resolve() })
     expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'plan')
 
-    const safety = host.querySelector('button[aria-label="Command safety tier"]') as HTMLButtonElement
+    const safety = document.body.querySelector('button[aria-label="Command safety tier"]') as HTMLButtonElement
     expect(safety.textContent).toContain('Medium')
     expect(host.querySelector('select')).toBeNull()
     act(() => safety.click())
-    const low = Array.from(host.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Low')) as HTMLButtonElement
+    const low = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Low')) as HTMLButtonElement
     await act(async () => { low.click(); await Promise.resolve() })
     expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'low')
 
     openComposerOptions(host)
     act(() => (host.querySelector('button[title="Settings"]') as HTMLButtonElement).click())
-    expect(host.textContent).toContain('Chat settings')
-    expect(host.querySelector('button[aria-label="Permission mode"]')).toBeNull()
-    expect(host.querySelector('button[aria-label="Command safety tier"]')).toBeNull()
+    expect(document.body.textContent).toContain('Chat settings')
+    expect(document.body.querySelector('button[aria-label="Permission mode"]')).toBeNull()
+    expect(document.body.querySelector('button[aria-label="Command safety tier"]')).toBeNull()
 
     const textarea = host.querySelector('textarea') as HTMLTextAreaElement
     const setDraft = (value: string) => {
@@ -750,13 +750,13 @@ describe('ChatView', () => {
     }
 
     act(() => setDraft('/p'))
-    expect(host.querySelector('[aria-label="Slash commands"]')?.textContent).toContain('/permission')
+    expect(document.body.querySelector('[aria-label="Slash commands"]')?.textContent).toContain('/permission')
 
     await act(async () => {
       setDraft('/permission')
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     })
-    const permissionMenu = host.querySelector('[aria-label="Permission modes"]')
+    const permissionMenu = document.body.querySelector('[aria-label="Permission modes"]')
     expect(textarea.value).toBe('')
     expect(permissionMenu?.textContent).toContain('Default')
     expect(permissionMenu?.textContent).toContain('Plan')
@@ -826,19 +826,19 @@ describe('ChatView', () => {
     expect(host.querySelector('button[title="Select Codex speed"]')).toBeNull()
     openComposerOptions(host)
 
-    const reasoning = host.querySelector('button[aria-label="Reasoning"]') as HTMLButtonElement
-    const speed = host.querySelector('button[aria-label="Speed"]') as HTMLButtonElement
+    const reasoning = document.body.querySelector('button[aria-label="Reasoning"]') as HTMLButtonElement
+    const speed = document.body.querySelector('button[aria-label="Speed"]') as HTMLButtonElement
     expect(reasoning.textContent).toContain('Low')
     expect(speed.textContent).toContain('Flex')
 
     act(() => reasoning.click())
-    const high = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="option"]'))
+    const high = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'))
       .find((option) => option.textContent?.startsWith('High')) as HTMLButtonElement
     await act(async () => { high.click(); await Promise.resolve() })
     expect(setSessionCodexOptions).toHaveBeenNthCalledWith(1, 'chat-1', { reasoningEffort: 'high', serviceTier: 'flex' })
 
     act(() => speed.click())
-    const fast = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="option"]'))
+    const fast = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'))
       .find((option) => option.textContent?.startsWith('Fast')) as HTMLButtonElement
     await act(async () => { fast.click(); await Promise.resolve() })
     expect(setSessionCodexOptions).toHaveBeenNthCalledWith(2, 'chat-1', { reasoningEffort: 'low', serviceTier: 'fast' })
@@ -914,14 +914,14 @@ describe('ChatView', () => {
       modelButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(host.textContent).toContain('CLI default')
-    expect(host.textContent).toContain('Use Codex CLI settings')
-    expect(host.textContent).toContain('gpt-5.4')
-    expect(host.textContent).toContain('GPT-5.4-Mini')
-    expect(host.textContent).not.toContain('Auto 3')
-    expect(host.textContent).not.toContain('Flash Lite')
+    expect(document.body.textContent).toContain('CLI default')
+    expect(document.body.textContent).toContain('Use Codex CLI settings')
+    expect(document.body.textContent).toContain('gpt-5.4')
+    expect(document.body.textContent).toContain('GPT-5.4-Mini')
+    expect(document.body.textContent).not.toContain('Auto 3')
+    expect(document.body.textContent).not.toContain('Flash Lite')
 
-    const miniButton = Array.from(host.querySelectorAll('button')).find((button) =>
+    const miniButton = Array.from(document.body.querySelectorAll('button')).find((button) =>
       button.textContent?.includes('GPT-5.4-Mini')
     )
     expect(miniButton).toBeTruthy()
@@ -971,7 +971,7 @@ describe('ChatView', () => {
     expect(trigger.getAttribute('aria-haspopup')).toBe('listbox')
     act(() => trigger.dispatchEvent(new MouseEvent('click', { bubbles: true })))
 
-    const listbox = host.querySelector('[role="listbox"]') as HTMLDivElement
+    const listbox = document.body.querySelector('[role="listbox"]') as HTMLDivElement
     const options = Array.from(listbox.querySelectorAll<HTMLButtonElement>('[role="option"]'))
     expect(options).toHaveLength(13)
     expect((listbox.lastElementChild as HTMLElement).style.maxHeight).toBe('520px')
@@ -1019,9 +1019,9 @@ describe('ChatView', () => {
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
     act(() => (host.querySelector('button[title="Select model"]') as HTMLButtonElement).click())
 
-    const repeated = Array.from(host.querySelectorAll<HTMLElement>('[role="option"]')).find((option) => option.textContent?.includes('gpt-5.4'))
+    const repeated = Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]')).find((option) => option.textContent?.includes('gpt-5.4'))
     expect(repeated?.textContent?.match(/gpt-5\.4/g)).toHaveLength(1)
-    expect(host.textContent).toContain('Best for complex tasks')
+    expect(document.body.textContent).toContain('Best for complex tasks')
 
     act(() => root.unmount())
     host.remove()
@@ -1074,14 +1074,14 @@ describe('ChatView', () => {
       modelButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(host.textContent).toContain('CLI default')
-    expect(host.textContent).toContain('Use OpenCode CLI settings')
-    expect(host.textContent).toContain('Qwen3.6 35B A3B Q4')
-    expect(host.textContent).toContain('Qwen3 Coder 30B')
-    expect(host.textContent).not.toContain('Auto 3')
-    expect(host.textContent).not.toContain('Flash Lite')
+    expect(document.body.textContent).toContain('CLI default')
+    expect(document.body.textContent).toContain('Use OpenCode CLI settings')
+    expect(document.body.textContent).toContain('Qwen3.6 35B A3B Q4')
+    expect(document.body.textContent).toContain('Qwen3 Coder 30B')
+    expect(document.body.textContent).not.toContain('Auto 3')
+    expect(document.body.textContent).not.toContain('Flash Lite')
 
-    const coderButton = Array.from(host.querySelectorAll('button')).find((button) =>
+    const coderButton = Array.from(document.body.querySelectorAll('button')).find((button) =>
       button.textContent?.includes('Qwen3 Coder 30B')
     )
     expect(coderButton).toBeTruthy()
@@ -1141,12 +1141,12 @@ describe('ChatView', () => {
       modelButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(host.textContent).toContain('DeepSeek V4 Flash Free')
-    expect(host.textContent).toContain('OpenCode Zen free model.')
-    expect(host.textContent).toContain('Big Pickle')
+    expect(document.body.textContent).toContain('DeepSeek V4 Flash Free')
+    expect(document.body.textContent).toContain('OpenCode Zen free model.')
+    expect(document.body.textContent).toContain('Big Pickle')
     expect(host.textContent).not.toContain('Auto 3')
 
-    const freeButton = Array.from(host.querySelectorAll('button')).find((button) =>
+    const freeButton = Array.from(document.body.querySelectorAll('button')).find((button) =>
       button.textContent?.includes('DeepSeek V4 Flash Free')
     )
     expect(freeButton).toBeTruthy()
@@ -1204,9 +1204,9 @@ describe('ChatView', () => {
     })
 
     expect(host.textContent).toContain('Auto 3')
-    expect(host.textContent).toContain('Gemini 3 Flash')
+    expect(document.body.textContent).toContain('Gemini 3 Flash')
 
-    const flashButton = Array.from(host.querySelectorAll('button')).find((button) =>
+    const flashButton = Array.from(document.body.querySelectorAll('button')).find((button) =>
       button.textContent?.includes('Gemini 3 Flash')
     )
     expect(flashButton).toBeTruthy()
@@ -1238,8 +1238,8 @@ describe('ChatView', () => {
     expect(modelButton).toBeTruthy()
     expect(modelButton?.disabled).toBe(true)
     openComposerOptions(host)
-    expect((host.querySelector('button[title^="Toggle planning mode"]') as HTMLButtonElement | null)?.disabled).toBe(true)
-    expect((host.querySelector('button[title="Toggle Auto Decide mode"]') as HTMLButtonElement | null)?.disabled).toBe(false)
+    expect((document.body.querySelector('button[title^="Toggle planning mode"]') as HTMLButtonElement | null)?.disabled).toBe(true)
+    expect((document.body.querySelector('button[title="Toggle Auto Decide mode"]') as HTMLButtonElement | null)?.disabled).toBe(false)
 
     act(() => {
       modelButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -1283,7 +1283,7 @@ describe('ChatView', () => {
     })
 
     openComposerOptions(host)
-    const planButton = host.querySelector('button[title^="Toggle planning mode"]') as HTMLButtonElement | null
+    const planButton = document.body.querySelector('button[title^="Toggle planning mode"]') as HTMLButtonElement | null
     expect(planButton).toBeTruthy()
     expect(planButton?.disabled).toBe(false)
     expect(planButton?.getAttribute('aria-pressed')).toBe('false')
@@ -1371,7 +1371,7 @@ describe('ChatView', () => {
     })
 
     openComposerOptions(host)
-    const yoloButton = host.querySelector('button[title="Toggle Auto Decide mode"]') as HTMLButtonElement | null
+    const yoloButton = document.body.querySelector('button[title="Toggle Auto Decide mode"]') as HTMLButtonElement | null
     expect(yoloButton).toBeTruthy()
     expect(yoloButton?.disabled).toBe(false)
     expect(yoloButton?.getAttribute('aria-pressed')).toBe('false')
@@ -1444,7 +1444,7 @@ describe('ChatView', () => {
     expect(host.textContent).toContain('model discovery is limited to the active model')
 
     openComposerOptions(host)
-    const planButton = host.querySelector('button[title^="Toggle planning mode"]') as HTMLButtonElement | null
+    const planButton = document.body.querySelector('button[title^="Toggle planning mode"]') as HTMLButtonElement | null
     expect(planButton).toBeTruthy()
 
     act(() => {
@@ -1495,8 +1495,8 @@ describe('ChatView', () => {
     })
 
     openComposerOptions(host)
-    const acceptEditsButton = host.querySelector('button[title="Toggle Accept Edits mode. Claude can edit workspace files without prompting."]') as HTMLButtonElement | null
-    const autoButton = host.querySelector('button[title="Toggle Auto Decide mode"]') as HTMLButtonElement | null
+    const acceptEditsButton = document.body.querySelector('button[title="Toggle Accept Edits mode. Claude can edit workspace files without prompting."]') as HTMLButtonElement | null
+    const autoButton = document.body.querySelector('button[title="Toggle Auto Decide mode"]') as HTMLButtonElement | null
     expect(acceptEditsButton).toBeTruthy()
     expect(acceptEditsButton?.disabled).toBe(false)
     expect(acceptEditsButton?.textContent).toContain('Accept Edits')
@@ -1632,7 +1632,7 @@ describe('ChatView', () => {
     })
 
     openComposerOptions(host)
-    const goalButton = host.querySelector('button[title="Use the next message as a goal"]') as HTMLButtonElement | null
+    const goalButton = document.body.querySelector('button[title="Use the next message as a goal"]') as HTMLButtonElement | null
     expect(goalButton).toBeTruthy()
     act(() => {
       goalButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -1707,7 +1707,7 @@ describe('ChatView', () => {
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     const menuItem = (text: string) =>
-      Array.from(host.querySelectorAll('button')).find((b) => b.textContent === text) as HTMLButtonElement | undefined
+      Array.from(document.body.querySelectorAll('button')).find((b) => b.textContent === text) as HTMLButtonElement | undefined
 
     openGoalMenu()
     expect(menuItem('Mark complete')).toBeTruthy()
@@ -1775,7 +1775,7 @@ describe('ChatView', () => {
     })
 
     openComposerOptions(host)
-    const memoryButton = host.querySelector('button[title="Toggle memory"]') as HTMLButtonElement | null
+    const memoryButton = document.body.querySelector('button[title="Toggle memory"]') as HTMLButtonElement | null
     expect(memoryButton).toBeTruthy()
     expect(memoryButton?.disabled).toBe(false)
     expect(memoryButton?.getAttribute('aria-pressed')).toBe('true')

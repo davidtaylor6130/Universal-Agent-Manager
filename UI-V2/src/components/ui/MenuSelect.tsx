@@ -1,5 +1,6 @@
 import { KeyboardEvent, ReactNode, useEffect, useId, useRef, useState } from 'react'
 import { Check, ChevronDown } from 'lucide-react'
+import { ViewportMenu } from './ViewportMenu'
 
 export interface MenuSelectOption {
   value: string
@@ -25,6 +26,7 @@ export function MenuSelect({
   const [focusIndex, setFocusIndex] = useState(0)
   const rootRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([])
   const listId = useId()
   const selectedIndex = Math.max(0, options.findIndex((option) => option.value === value))
@@ -34,7 +36,8 @@ export function MenuSelect({
     if (!open) return
     setFocusIndex(selectedIndex)
     const onPointerDown = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
+      const target = event.target as Node
+      if (!rootRef.current?.contains(target) && !listRef.current?.contains(target)) setOpen(false)
     }
     document.addEventListener('mousedown', onPointerDown)
     return () => document.removeEventListener('mousedown', onPointerDown)
@@ -89,13 +92,15 @@ export function MenuSelect({
         <ChevronDown className={open ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />
       </button>
       {open && (
-        <div
+        <ViewportMenu
+          ref={listRef}
+          anchorRef={triggerRef}
           id={listId}
           role="listbox"
           aria-label={label}
           onKeyDown={onListKeyDown}
-          className="absolute left-0 right-0 z-[80] mt-1 overflow-y-auto rounded-md p-1"
-          style={{ maxHeight: 240, background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}
+          className="rounded-md p-1"
+          style={{ minWidth: triggerRef.current?.getBoundingClientRect().width, maxHeight: 240, background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}
         >
           {options.map((option, index) => (
             <button
@@ -119,7 +124,7 @@ export function MenuSelect({
               <Check size={13} aria-hidden className="mt-0.5 shrink-0" style={{ opacity: option.value === value ? 1 : 0 }} />
             </button>
           ))}
-        </div>
+        </ViewportMenu>
       )}
     </div>
   )

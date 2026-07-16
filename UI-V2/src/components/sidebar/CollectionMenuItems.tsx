@@ -47,7 +47,7 @@ export function CollectionMenuItems({
           onClick={() => { void moveFolderToCollection(null, target, label).then((moved) => { if (moved) onAdded() }) }}
         >
           <Library size={13} aria-hidden />
-          <span>None</span>
+          <span>Remove from collection</span>
         </button>
       )}
       {collections.map((collection) => {

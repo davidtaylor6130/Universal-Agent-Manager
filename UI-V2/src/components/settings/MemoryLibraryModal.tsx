@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
-import { FolderOpen, X, Check, ChevronUp, ChevronDown, SearchX } from 'lucide-react'
+import { FolderOpen, X, SearchX } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, IconButton } from '../ui'
+import { Button, IconButton, MenuSelect } from '../ui'
 import type { Folder } from '../../types/session'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope } from '../../types/memory'
 
@@ -61,53 +61,10 @@ function InlineMenu({
   options: MenuOption[]
   onChange: (value: string) => void
 }) {
-  const [open, setOpen] = useState(false)
-  const selectedOption = options.find((option) => option.value === value) ?? options[0]
-
   return (
     <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
       <span>{label}</span>
-      <div className="relative">
-        <button
-          type="button"
-          aria-haspopup="listbox"
-          aria-expanded={open}
-          className="flex w-full items-center justify-between gap-2 text-left"
-          onClick={() => setOpen((current) => !current)}
-          style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}
-        >
-          <span className="min-w-0 truncate">{selectedOption?.label ?? value}</span>
-          <span aria-hidden="true" style={{ color: 'var(--text-3)', display: 'inline-flex' }}>{open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}</span>
-        </button>
-        {open && (
-          <div
-            role="listbox"
-            className="absolute left-0 right-0 top-full z-40 mt-1 max-h-56 overflow-y-auto"
-            style={{ background: 'var(--surface-up)', border: '1px solid var(--border)', borderRadius: 8, boxShadow: '0 10px 24px rgba(0,0,0,0.24)' }}
-          >
-            {options.map((option) => {
-              const selected = option.value === value
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  role="option"
-                  aria-selected={selected}
-                  className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left"
-                  onClick={() => {
-                    onChange(option.value)
-                    setOpen(false)
-                  }}
-                  style={{ background: selected ? 'var(--accent-dim)' : 'transparent', color: selected ? 'var(--text)' : 'var(--text-2)' }}
-                >
-                  <span className="min-w-0 truncate">{option.label}</span>
-                  {selected && <Check size={13} style={{ color: 'var(--green)' }} aria-hidden />}
-                </button>
-              )
-            })}
-          </div>
-        )}
-      </div>
+      <MenuSelect label={label} value={value} options={options} onChange={onChange} />
     </div>
   )
 }

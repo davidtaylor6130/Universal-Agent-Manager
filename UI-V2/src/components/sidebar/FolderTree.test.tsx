@@ -157,6 +157,39 @@ describe('FolderTree', () => {
     host.remove()
   })
 
+  it('removes a workspace from its collection without deleting the workspace or chats', async () => {
+    useAppStore.setState({
+      resourceCollections: [{
+        id: 'work',
+        name: 'Work',
+        collapsed: false,
+        references: [{ id: 'project-ref', type: 'workspace-folder', target: 'project', label: 'Project' }],
+      }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const collectedFolder = host.querySelector('[data-testid="folder-collection-work"] [data-testid="folder-row-project"]') as HTMLElement
+    act(() => collectedFolder.firstElementChild?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 20 })))
+
+    const menu = document.body.querySelector('[data-viewport-menu]') as HTMLElement
+    expect(menu).toBeTruthy()
+    expect(collectedFolder.contains(menu)).toBe(false)
+    const remove = Array.from(menu.querySelectorAll('button')).find((button) => button.textContent?.includes('Remove from collection'))
+    await act(async () => { remove?.click(); await Promise.resolve() })
+
+    expect(useAppStore.getState().resourceCollections[0].references).toEqual([])
+    expect(useAppStore.getState().folders.map((folder) => folder.id)).toContain('project')
+    expect(useAppStore.getState().sessions).toHaveLength(7)
+    expect(host.querySelector('[data-testid="folder-collection-work"] [data-testid="folder-row-project"]')).toBeNull()
+    expect(host.querySelector('[data-testid="folder-row-project"]')).toBeTruthy()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('marks a missing workspace folder accessibly without removing its chats', () => {
     useAppStore.setState((state) => ({
       folders: state.folders.map((folder) => ({ ...folder, missing: true })),
@@ -383,7 +416,7 @@ describe('FolderTree', () => {
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    const memoryButton = Array.from(host.querySelectorAll('button')).find((button) =>
+    const memoryButton = Array.from(document.body.querySelectorAll('button')).find((button) =>
       button.textContent?.includes('Project memory')
     )
     expect(memoryButton).toBeTruthy()
@@ -408,7 +441,7 @@ describe('FolderTree', () => {
 
     const folderHeader = host.querySelector('[data-testid="folder-row-project"]')?.firstElementChild
     act(() => folderHeader?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
-    const newChat = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('New chat'))
+    const newChat = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('New chat'))
     act(() => newChat?.click())
 
     expect(useAppStore.getState()).toMatchObject({ isNewChatModalOpen: true, newChatFolderId: 'project' })
