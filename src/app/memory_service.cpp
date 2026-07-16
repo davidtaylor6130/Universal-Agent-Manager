@@ -1072,7 +1072,7 @@ namespace
 		for (const ChatFolder& folder : app.folders)
 		{
 			const fs::path workspace_root = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(folder.directory);
-			if (!workspace_root.empty())
+			if (!workspace_root.empty() && PlatformServicesFactory::Instance().path_service.CanProbeDirectoryWithoutPrompt(workspace_root))
 			{
 				AddUniqueMemoryRoot(roots, seen, MemoryService::LocalMemoryRoot(workspace_root));
 			}
@@ -1080,7 +1080,7 @@ namespace
 		for (const ChatSession& chat : app.chats)
 		{
 			const fs::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
-			if (!workspace_root.empty())
+			if (!workspace_root.empty() && PlatformServicesFactory::Instance().path_service.CanProbeDirectoryWithoutPrompt(workspace_root))
 			{
 				AddUniqueMemoryRoot(roots, seen, MemoryService::LocalMemoryRoot(workspace_root));
 			}

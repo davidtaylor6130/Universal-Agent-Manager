@@ -12,7 +12,7 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
     <aside
       aria-label="Updates"
       data-testid="updates-panel"
-      className="flex h-full w-[360px] shrink-0 flex-col overflow-hidden"
+      className="uam-side-panel-in flex h-full w-[360px] shrink-0 flex-col overflow-hidden"
       style={{ background: 'var(--surface)', borderLeft: '1px solid var(--border)' }}
     >
       <header className="flex items-center justify-between gap-3 px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>

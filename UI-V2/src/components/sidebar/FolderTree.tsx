@@ -1,10 +1,11 @@
 import { memo, useEffect, useId, useRef, useState, useMemo } from 'react'
 import type { ReactNode } from 'react'
-import { Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, X, MoreHorizontal, MessageSquarePlus, Brain, Pencil, Trash2, TriangleAlert } from 'lucide-react'
+import { Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, X, MoreHorizontal, MessageSquarePlus, Brain, Pencil, Trash2, TriangleAlert, ChevronRight, Library, SearchX } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { SessionItem } from './SessionItem'
-import { Button, Tooltip } from '../ui'
+import { Button, IconButton, Tooltip } from '../ui'
 import {
   type ChatSearchFilters,
   buildChatSearchIndex,
@@ -14,8 +15,8 @@ import {
 } from './chatSearch'
 import type { Folder, Session } from '../../types/session'
 import { chatPaneColors, readChatGridLayout, subscribeChatGridLayout } from '../../utils/chatGridStorage'
-import { ResourceCollections } from './ResourceCollections'
-import { CollectionMenuItems } from './CollectionMenuItems'
+import { CollectionMenuItems, moveFolderToCollection } from './CollectionMenuItems'
+import type { ResourceCollection } from '../../types/resourceCollection'
 
 interface FolderTreeProps {
   searchQuery: string
@@ -29,6 +30,7 @@ const EMPTY_SEARCH_INDEX = {}
 export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: FolderTreeProps) {
   const folders = useAppStore(useShallow((s) => s.folders))
   const sessions = useAppStore(useShallow((s) => s.sessions))
+  const resourceCollections = useAppStore(useShallow((s) => s.resourceCollections))
   const cliBindingBySessionId = useAppStore(useShallow((s) => s.cliBindingBySessionId))
   const acpBindingBySessionId = useAppStore(useShallow((s) => s.acpBindingBySessionId))
   const toggleFolder        = useAppStore((s) => s.toggleFolder)
@@ -39,8 +41,11 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
   const openFolderMemoryLibrary = useAppStore((s) => s.openFolderMemoryLibrary)
   const reorderFolders = useAppStore((s) => s.reorderFolders)
+  const createResourceCollection = useAppStore((s) => s.createResourceCollection)
 
   const [addingFolder, setAddingFolder] = useState(false)
+  const [addingCollection, setAddingCollection] = useState(false)
+  const [newCollectionName, setNewCollectionName] = useState('')
   const [newFolderName, setNewFolderName] = useState('')
   const [newFolderDirectory, setNewFolderDirectory] = useState('')
   const [editingFolderId, setEditingFolderId] = useState<string | null>(null)
@@ -50,13 +55,21 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const [gridLayout, setGridLayout] = useState(readChatGridLayout)
   const [draggedFolderId, setDraggedFolderId] = useState<string | null>(null)
   const [folderDropTarget, setFolderDropTarget] = useState<{ id: string; edge: 'before' | 'after' } | null>(null)
+  const addControlsRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => subscribeChatGridLayout(setGridLayout), [])
 
-  const paneColorsForFolder = (folderId: string) => {
-    const folderSessionIds = new Set(sessions.filter((session) => session.folderId === folderId).map((session) => session.id))
+  useEffect(() => {
+    if (addingFolder || addingCollection) {
+      addControlsRef.current?.scrollIntoView?.({ block: 'nearest' })
+    }
+  }, [addingCollection, addingFolder])
+
+  const paneColorsForFolders = (folderIds: Set<string>) => {
+    const folderSessionIds = new Set(sessions.filter((session) => session.folderId && folderIds.has(session.folderId)).map((session) => session.id))
     return gridLayout.sessionIds.slice(0, gridLayout.paneCount).flatMap((id, index) => folderSessionIds.has(id) ? [chatPaneColors[index]] : [])
   }
+  const paneColorsForFolder = (folderId: string) => paneColorsForFolders(new Set([folderId]))
 
   const searchTokens = useMemo(
     () => tokenizeChatSearchQuery(searchQuery),
@@ -123,6 +136,16 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     })
   }
 
+  const commitAddCollection = () => {
+    const name = newCollectionName.trim()
+    if (!name) return
+    void createResourceCollection(name).then((created) => {
+      if (!created) return
+      setNewCollectionName('')
+      setAddingCollection(false)
+    })
+  }
+
   const startRenameFolder = (folder: (typeof folders)[number]) => {
     setEditingFolderId(folder.id)
     setEditFolderName(folder.name)
@@ -164,10 +187,57 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     void reorderFolders(ids)
   }
 
+  const folderRowsById = new Map(searchModel.folderRows.map((row) => [row.folder.id, row]))
+  const groupedFolderIds = new Set<string>()
+  const collectionGroups = resourceCollections.map((collection) => ({
+    collection,
+    folderRows: collection.references.flatMap((reference) => {
+      if (reference.type !== 'workspace-folder' || groupedFolderIds.has(reference.target)) return []
+      const row = folderRowsById.get(reference.target)
+      if (!row) return []
+      groupedFolderIds.add(reference.target)
+      return [row]
+    }),
+  }))
+  const ungroupedFolderRows = searchModel.folderRows.filter(({ folder }) => !groupedFolderIds.has(folder.id))
+
+  const renderFolderRow = ({ folder, sessionIds, shouldShowSessions }: (typeof searchModel.folderRows)[number]) => (
+    <FolderRow
+      key={folder.id}
+      folder={folder}
+      sessionIds={sessionIds}
+      shouldShowSessions={shouldShowSessions}
+      hiddenPaneColors={shouldShowSessions ? [] : paneColorsForFolder(folder.id)}
+      isSearching={searchModel.isSearching}
+      isEditing={editingFolderId === folder.id}
+      editFolderName={editFolderName}
+      editFolderDirectory={editFolderDirectory}
+      onToggle={() => toggleFolder(folder.id)}
+      onStartRename={() => startRenameFolder(folder)}
+      onDelete={() => setPendingDeleteFolderId(folder.id)}
+      onEditNameChange={setEditFolderName}
+      onEditDirectoryChange={setEditFolderDirectory}
+      onCommitRename={() => commitRenameFolder(folder.id)}
+      onCancelEdit={() => setEditingFolderId(null)}
+      onChooseDirectory={() => void chooseEditFolderDirectory()}
+      onCreateChat={() => setNewChatModalOpen(true, folder.id)}
+      onOpenMemory={() => void openFolderMemoryLibrary(folder.id)}
+      sessionsById={sessionsById}
+      draggable={!searchModel.isSearching}
+      dropEdge={folderDropTarget?.id === folder.id ? folderDropTarget.edge : null}
+      onDragStart={() => setDraggedFolderId(folder.id)}
+      onDragOver={(edge) => setFolderDropTarget({ id: folder.id, edge })}
+      onDragEnd={() => { setDraggedFolderId(null); setFolderDropTarget(null) }}
+      onDrop={(edge) => {
+        commitFolderDrop(folder.id, edge)
+        setDraggedFolderId(null)
+        setFolderDropTarget(null)
+      }}
+    />
+  )
+
   return (
     <div className="select-none">
-      {!searchModel.isSearching && <ResourceCollections />}
-
       {searchModel.pinnedSessionIds.length > 0 && (
         <div className="mb-2">
           <div className="px-3 py-1" style={{ color: 'var(--text-3)' }}>
@@ -181,7 +251,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
         </div>
       )}
 
-      {!searchModel.isSearching && searchModel.folderRows.length > 0 && (
+      {!searchModel.isSearching && (searchModel.folderRows.length > 0 || resourceCollections.length > 0) && (
         <div className="px-3 pb-1 pt-1" style={{ color: 'var(--text-3)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span className="text-xs font-medium tracking-wider uppercase" style={{ letterSpacing: '0.08em', fontSize: 10, whiteSpace: 'nowrap' }}>
@@ -192,40 +262,22 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
         </div>
       )}
 
-      {searchModel.folderRows.map(({ folder, sessionIds, shouldShowSessions }) => (
-        <FolderRow
-          key={folder.id}
-          folder={folder}
-          sessionIds={sessionIds}
-          shouldShowSessions={shouldShowSessions}
-          hiddenPaneColors={shouldShowSessions ? [] : paneColorsForFolder(folder.id)}
-          isSearching={searchModel.isSearching}
-          isEditing={editingFolderId === folder.id}
-          editFolderName={editFolderName}
-          editFolderDirectory={editFolderDirectory}
-          onToggle={() => toggleFolder(folder.id)}
-          onStartRename={() => startRenameFolder(folder)}
-          onDelete={() => setPendingDeleteFolderId(folder.id)}
-          onEditNameChange={setEditFolderName}
-          onEditDirectoryChange={setEditFolderDirectory}
-          onCommitRename={() => commitRenameFolder(folder.id)}
-          onCancelEdit={() => setEditingFolderId(null)}
-          onChooseDirectory={() => void chooseEditFolderDirectory()}
-          onCreateChat={() => setNewChatModalOpen(true, folder.id)}
-          onOpenMemory={() => void openFolderMemoryLibrary(folder.id)}
-          sessionsById={sessionsById}
-          draggable={!searchModel.isSearching}
-          dropEdge={folderDropTarget?.id === folder.id ? folderDropTarget.edge : null}
-          onDragStart={() => setDraggedFolderId(folder.id)}
-          onDragOver={(edge) => setFolderDropTarget({ id: folder.id, edge })}
-          onDragEnd={() => { setDraggedFolderId(null); setFolderDropTarget(null) }}
-          onDrop={(edge) => {
-            commitFolderDrop(folder.id, edge)
-            setDraggedFolderId(null)
-            setFolderDropTarget(null)
+      {!searchModel.isSearching && collectionGroups.map(({ collection, folderRows }) => (
+        <FolderCollection
+          key={collection.id}
+          collection={collection}
+          folderCount={folderRows.length}
+          hiddenPaneColors={paneColorsForFolders(new Set(folderRows.map(({ folder }) => folder.id)))}
+          onFolderDrop={(folderId) => {
+            const folder = folders.find((item) => item.id === folderId)
+            if (folder) void moveFolderToCollection(collection.id, folder.id, folder.name)
           }}
-        />
+        >
+          {folderRows.map(renderFolderRow)}
+        </FolderCollection>
       ))}
+
+      {(searchModel.isSearching ? searchModel.folderRows : ungroupedFolderRows).map(renderFolderRow)}
 
       {/* Unfoldered sessions */}
       {searchModel.unfolderedSessionIds.length > 0 && (
@@ -242,13 +294,15 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       )}
 
       {searchModel.isSearching && !searchModel.hasMatches && (
-        <div className="px-3 py-2 text-xs" style={{ color: 'var(--text-3)', fontSize: 11 }}>
-          No matching chats
+        <div className="mx-3 my-6 flex flex-col items-center gap-1 text-center animate-fade-in" style={{ color: 'var(--text-3)' }}>
+          <SearchX size={22} strokeWidth={1.5} aria-hidden />
+          <div className="text-xs font-medium" style={{ color: 'var(--text-2)' }}>No chats match this search</div>
+          <div className="text-[11px]">Try another term or clear the filters.</div>
         </div>
       )}
 
       {/* Add folder */}
-      <div className="mt-2 px-3">
+      <div ref={addControlsRef} className="mt-2 px-3">
         {addingFolder ? (
           <div
             className="rounded-md p-2 space-y-2"
@@ -329,24 +383,42 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
               </Button>
             </div>
           </div>
+        ) : addingCollection ? (
+          <div className="flex gap-1">
+            <input
+              autoFocus
+              aria-label="Collection name"
+              value={newCollectionName}
+              onChange={(event) => setNewCollectionName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') commitAddCollection()
+                if (event.key === 'Escape') { setNewCollectionName(''); setAddingCollection(false) }
+              }}
+              placeholder="Collection name"
+              className="min-w-0 flex-1 rounded px-2 py-1 text-xs outline-none"
+              style={{ background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)' }}
+            />
+            <Button size="sm" variant="primary" disabled={!newCollectionName.trim()} onClick={commitAddCollection}>Create</Button>
+          </div>
         ) : (
-          <button
-            onClick={() => setAddingFolder(true)}
-            className="flex items-center gap-1.5 text-xs transition-colors duration-100"
-            style={{
-              color: 'var(--text-3)',
-              background: 'transparent',
-              border: 'none',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-              padding: '2px 0',
-            }}
-            onMouseEnter={(e) => e.currentTarget.style.color = 'var(--text-2)'}
-            onMouseLeave={(e) => e.currentTarget.style.color = 'var(--text-3)'}
-          >
-            <Plus size={14} aria-hidden />
-            <span>New folder</span>
-          </button>
+          <div className="flex gap-4">
+            <button
+              onClick={() => setAddingFolder(true)}
+              className="flex items-center gap-1.5 text-xs transition-colors duration-100"
+              style={{ color: 'var(--text-3)', background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: '2px 0' }}
+            >
+              <Plus size={14} aria-hidden />
+              <span>New folder</span>
+            </button>
+            <button
+              onClick={() => setAddingCollection(true)}
+              className="flex items-center gap-1.5 text-xs transition-colors duration-100"
+              style={{ color: 'var(--text-3)', background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: '2px 0' }}
+            >
+              <Plus size={14} aria-hidden />
+              <span>New collection</span>
+            </button>
+          </div>
         )}
       </div>
 
@@ -362,6 +434,147 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
         />
       )}
     </div>
+  )
+}
+
+function FolderCollection({ collection, folderCount, hiddenPaneColors, onFolderDrop, children }: { collection: ResourceCollection; folderCount: number; hiddenPaneColors: string[]; onFolderDrop: (folderId: string) => void; children: ReactNode }) {
+  const toggle = useAppStore((state) => state.toggleResourceCollection)
+  const rename = useAppStore((state) => state.renameResourceCollection)
+  const remove = useAppStore((state) => state.deleteResourceCollection)
+  const [editing, setEditing] = useState(false)
+  const [name, setName] = useState(collection.name)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [dropTarget, setDropTarget] = useState(false)
+
+  const commitName = () => {
+    const trimmed = name.trim()
+    if (trimmed && trimmed !== collection.name) void rename(collection.id, trimmed)
+    else setName(collection.name)
+    setEditing(false)
+  }
+
+  return (
+    <div
+      className="mb-2"
+      data-testid={`folder-collection-${collection.id}`}
+      onDragOver={(event) => {
+        if (!event.dataTransfer.types.includes('text/x-uam-folder-resource-id')) return
+        event.preventDefault()
+        setDropTarget(true)
+      }}
+      onDragLeave={() => setDropTarget(false)}
+      onDrop={(event) => {
+        const folderId = event.dataTransfer.getData('text/x-uam-folder-resource-id')
+        if (!folderId) return
+        event.preventDefault()
+        event.stopPropagation()
+        setDropTarget(false)
+        onFolderDrop(folderId)
+      }}
+    >
+      <div
+        className="group relative mx-1 flex items-center gap-2 rounded-md px-3 py-1.5 transition-colors duration-150"
+        style={{ color: 'var(--text-2)', background: dropTarget ? 'var(--sidebar-item-hover)' : 'color-mix(in srgb, var(--surface-up) 70%, transparent)', border: '1px solid var(--border)', outline: dropTarget ? '1px solid var(--accent)' : 'none' }}
+      >
+        <Tooltip label={collection.collapsed ? `Expand ${collection.name}` : `Collapse ${collection.name}`}>
+          <button
+            type="button"
+            aria-label={collection.collapsed ? `Expand ${collection.name}` : `Collapse ${collection.name}`}
+            aria-expanded={!collection.collapsed}
+            onClick={() => { void toggle(collection.id) }}
+            style={{ display: 'flex', background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer', padding: 0 }}
+          >
+            <ChevronRight size={14} className="transition-transform duration-200 ease-out motion-reduce:transition-none" style={{ transform: collection.collapsed ? 'rotate(0deg)' : 'rotate(90deg)' }} />
+          </button>
+        </Tooltip>
+        <PaneColorIcon
+          Icon={Library}
+          colors={collection.collapsed ? hiddenPaneColors : []}
+          testId={`collection-icon-${collection.id}`}
+        />
+        {editing ? (
+          <input
+            autoFocus
+            aria-label={`Rename ${collection.name}`}
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            onBlur={commitName}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') commitName()
+              if (event.key === 'Escape') { setName(collection.name); setEditing(false) }
+            }}
+            className="min-w-0 flex-1 bg-transparent text-xs outline-none"
+            style={{ color: 'var(--text)', borderBottom: '1px solid var(--accent)' }}
+          />
+        ) : (
+          <Tooltip label={collection.name}>
+            <button type="button" className="min-w-0 flex-1 truncate text-left text-[13px] font-semibold" onClick={() => { void toggle(collection.id) }} style={{ background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer' }}>
+              {collection.name}
+            </button>
+          </Tooltip>
+        )}
+        <span className="text-[10px]" style={{ color: 'var(--text-3)' }}>{folderCount}</span>
+        <Tooltip label="Collection actions">
+          <button type="button" aria-label={`Actions for ${collection.name}`} onClick={() => setMenuOpen((open) => !open)} style={{ background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer', padding: 0 }}>
+            <MoreHorizontal size={14} />
+          </button>
+        </Tooltip>
+      </div>
+      {menuOpen && (
+        <div className="mx-3 my-1 rounded-md py-1" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
+          <button type="button" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" style={{ border: 'none', color: 'var(--text-2)' }} onClick={() => { setMenuOpen(false); setEditing(true) }}><Pencil size={12} />Rename</button>
+          <button type="button" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" style={{ border: 'none', color: 'var(--red)' }} onClick={() => { setMenuOpen(false); if (window.confirm(`Delete collection “${collection.name}”? Folders will remain.`)) void remove(collection.id) }}><Trash2 size={12} />Delete</button>
+        </div>
+      )}
+      <div
+        aria-hidden={collection.collapsed}
+        {...(collection.collapsed ? { inert: '' } : {})}
+        className={`grid transition-[grid-template-rows,opacity] duration-200 ease-out motion-reduce:transition-none ${collection.collapsed ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100'}`}
+      >
+        <div className="min-h-0 overflow-hidden">
+          <div
+            data-testid={`collection-children-${collection.id}`}
+            className="ml-6 mr-1 mt-1 rounded-r-md border-l-2 py-1 pl-2 transition-transform duration-200 ease-out motion-reduce:transition-none"
+            style={{
+              background: 'color-mix(in srgb, var(--surface-up) 55%, transparent)',
+              borderColor: 'color-mix(in srgb, var(--accent) 72%, var(--border))',
+              boxShadow: 'inset 0 1px color-mix(in srgb, var(--border) 55%, transparent), inset 0 -1px color-mix(in srgb, var(--border) 55%, transparent)',
+              transform: collection.collapsed ? 'translateY(-6px)' : 'translateY(0)',
+            }}
+          >
+            {children}
+            {folderCount === 0 && <div className="px-3 py-2 text-xs" style={{ color: 'var(--text-3)' }}>Drag a workspace here</div>}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function PaneColorIcon({ Icon, colors, testId }: { Icon: LucideIcon; colors: string[]; testId: string }) {
+  const gradientId = useId().replace(/:/g, '')
+  return (
+    <>
+      {colors.length > 1 && (
+        <svg data-testid={`${testId}-gradient`} width="0" height="0" style={{ position: 'absolute' }} aria-hidden>
+          <defs>
+            <linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="0">
+              {colors.flatMap((color, index) => [
+                <stop key={`${index}-start`} offset={`${index / colors.length * 100}%`} stopColor={color} />,
+                <stop key={`${index}-end`} offset={`${(index + 1) / colors.length * 100}%`} stopColor={color} />,
+              ])}
+            </linearGradient>
+          </defs>
+        </svg>
+      )}
+      <Icon
+        data-testid={testId}
+        size={14}
+        stroke={colors.length > 1 ? `url(#${gradientId})` : 'currentColor'}
+        style={{ flexShrink: 0, color: colors[0] || 'var(--text-3)', filter: colors.length ? `drop-shadow(0 0 3px ${colors[0]})` : 'none', opacity: colors.length ? 1 : 0.85, transition: 'color 140ms ease, filter 140ms ease, opacity 140ms ease' }}
+        aria-hidden
+      />
+    </>
   )
 }
 
@@ -400,6 +613,10 @@ function DeleteFolderModal({
       }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Delete folder and chats"
+        tabIndex={-1}
         className="rounded-xl shadow-2xl w-full max-w-md mx-4 animate-slide-in"
         style={{
           background: 'var(--surface)',
@@ -413,25 +630,7 @@ function DeleteFolderModal({
           <span className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
             Delete folder and chats?
           </span>
-          <Tooltip label="Close">
-            <button
-              type="button"
-              onClick={onCancel}
-              className="flex items-center justify-center rounded transition-colors duration-100"
-              style={{
-                background: 'transparent',
-                color: 'var(--text-3)',
-                border: 'none',
-                cursor: 'pointer',
-                padding: 0,
-                width: 20,
-                height: 20,
-                fontFamily: 'inherit',
-              }}
-            >
-              <X size={16} aria-hidden />
-            </button>
-          </Tooltip>
+          <IconButton icon={<X size={16} />} label="Close delete folder dialog" onClick={onCancel} />
         </div>
 
         <div className="p-5 space-y-4">
@@ -496,10 +695,8 @@ function FolderMenuItem({ icon, label, onClick, danger }: { icon: ReactNode; lab
   return (
     <button
       type="button"
-      className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-left transition-colors duration-100"
-      style={{ background: 'transparent', color: danger ? 'var(--red)' : 'var(--text-2)', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
-      onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--sidebar-item-hover)' }}
-      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+      className="uam-menu-select__option flex w-full items-center gap-2 px-3 py-1.5 text-sm text-left"
+      style={{ color: danger ? 'var(--red)' : 'var(--text-2)', border: 'none', fontFamily: 'inherit' }}
       onClick={onClick}
     >
       {icon}
@@ -563,7 +760,6 @@ const FolderRow = memo(function FolderRow({
   onDragEnd,
   onDrop,
 }: FolderRowProps) {
-  const paneGradientId = useId().replace(/:/g, '')
   const [showAllSessions, setShowAllSessions] = useState(false)
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -638,27 +834,7 @@ const FolderRow = memo(function FolderRow({
         {shouldShowSessions ? (
           <FolderOpenIcon data-testid={`folder-icon-${folder.id}`} size={14} style={{ flexShrink: 0, color: 'var(--text-3)', opacity: 0.85 }} aria-hidden />
         ) : (
-          <>
-            {hiddenPaneColors.length > 1 && (
-              <svg data-testid={`folder-gradient-${folder.id}`} width="0" height="0" style={{ position: 'absolute' }} aria-hidden>
-                <defs>
-                  <linearGradient id={paneGradientId} x1="0" y1="0" x2="1" y2="0">
-                    {hiddenPaneColors.flatMap((color, index) => [
-                      <stop key={`${index}-start`} offset={`${index / hiddenPaneColors.length * 100}%`} stopColor={color} />,
-                      <stop key={`${index}-end`} offset={`${(index + 1) / hiddenPaneColors.length * 100}%`} stopColor={color} />,
-                    ])}
-                  </linearGradient>
-                </defs>
-              </svg>
-            )}
-            <FolderIcon
-              data-testid={`folder-icon-${folder.id}`}
-              size={14}
-              stroke={hiddenPaneColors.length > 1 ? `url(#${paneGradientId})` : 'currentColor'}
-              style={{ flexShrink: 0, color: hiddenPaneColors[0] || 'var(--text-3)', filter: hiddenPaneColors.length ? `drop-shadow(0 0 3px ${hiddenPaneColors[0]})` : 'none', opacity: hiddenPaneColors.length ? 1 : 0.85, transition: 'color 140ms ease, filter 140ms ease, opacity 140ms ease' }}
-              aria-hidden
-            />
-          </>
+          <PaneColorIcon Icon={FolderIcon} colors={hiddenPaneColors} testId={`folder-icon-${folder.id}`} />
         )}
         <span className="font-semibold truncate flex-1" style={{ fontSize: 13 }}>
           {folder.name}
@@ -723,7 +899,7 @@ const FolderRow = memo(function FolderRow({
         >
           <FolderMenuItem icon={<MessageSquarePlus size={14} aria-hidden />} label="New chat" onClick={() => { setMenuPos(null); onCreateChat() }} />
           <FolderMenuItem icon={<Brain size={14} aria-hidden />} label="Project memory" onClick={() => { setMenuPos(null); onOpenMemory() }} />
-          <CollectionMenuItems type="workspace-folder" target={folder.id} label={folder.name} onAdded={() => setMenuPos(null)} />
+          <CollectionMenuItems target={folder.id} label={folder.name} onAdded={() => setMenuPos(null)} />
           <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Rename folder" onClick={() => { setMenuPos(null); onStartRename() }} />
           <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label="Delete folder" danger onClick={() => { setMenuPos(null); onDelete() }} />
         </div>

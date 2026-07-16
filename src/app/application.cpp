@@ -81,7 +81,9 @@ namespace
 		{
 			result += folder.id;
 			result.push_back('\0');
-			result.push_back(folder.directory.empty() || uam::paths::IsDirectoryNoThrow(uam::paths::PathFromUtf8(folder.directory)) ? '1' : '0');
+			const fs::path directory = uam::paths::PathFromUtf8(folder.directory);
+			const bool can_probe = PlatformServicesFactory::Instance().path_service.CanProbeDirectoryWithoutPrompt(directory);
+			result.push_back(folder.directory.empty() || !can_probe || uam::paths::IsDirectoryNoThrow(directory) ? '1' : '0');
 		}
 		return result;
 	}

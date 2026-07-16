@@ -61,10 +61,10 @@ describe('NewChatModal', () => {
     )
     act(() => gpt?.click())
 
-    const create = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Create Session')
+    const create = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Create chat')
     act(() => create?.click())
 
-    expect(addSession).toHaveBeenCalledWith('New Session', 'project', 'codex-cli', 'gpt-5.4')
+    expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'codex-cli', 'gpt-5.4')
 
     act(() => root.unmount())
     host.remove()

@@ -236,7 +236,7 @@ export function PermissionInlineCard({
           <div className="flex flex-wrap gap-2 mt-2">
             <button
               type="button"
-              className="px-2.5 h-7 text-[11px] font-medium"
+              className="uam-choice-button px-2.5 h-7 text-[11px] font-medium"
               style={{
                 borderRadius: 6,
                 border: '1px solid var(--border-bright)',
@@ -249,7 +249,7 @@ export function PermissionInlineCard({
             </button>
             <button
               type="button"
-              className="px-2.5 h-7 text-[11px]"
+              className="uam-choice-button px-2.5 h-7 text-[11px]"
               style={{
                 borderRadius: 6,
                 border: '1px solid var(--border)',
@@ -268,7 +268,7 @@ export function PermissionInlineCard({
           <button
             key={option.id}
             type="button"
-            className="px-3 h-7 text-[11px] font-medium"
+            className="uam-choice-button px-3 h-7 text-[11px] font-medium"
             style={{
               borderRadius: 6,
               border: '1px solid var(--border-bright)',
@@ -409,7 +409,7 @@ export function UserInputInlineCard({
           <div className="flex flex-wrap gap-2 mt-2">
             <button
               type="button"
-              className="px-2.5 h-7 text-[11px] font-medium"
+              className="uam-choice-button px-2.5 h-7 text-[11px] font-medium"
               style={{
                 borderRadius: 6,
                 border: '1px solid var(--border-bright)',
@@ -422,7 +422,7 @@ export function UserInputInlineCard({
             </button>
             <button
               type="button"
-              className="px-2.5 h-7 text-[11px]"
+              className="uam-choice-button px-2.5 h-7 text-[11px]"
               style={{
                 borderRadius: 6,
                 border: '1px solid var(--border)',
@@ -460,7 +460,7 @@ export function UserInputInlineCard({
                       <button
                         key={`${question.id}-${option.label}`}
                         type="button"
-                        className="px-3 py-1.5 text-[11px] text-left"
+                        className="uam-choice-button px-3 py-1.5 text-[11px] text-left"
                         style={{
                           borderRadius: 6,
                           border: active
@@ -516,7 +516,7 @@ export function UserInputInlineCard({
       <div className="flex justify-end pt-3">
         <button
           type="button"
-          className="px-3 h-7 text-[11px] font-medium"
+          className="uam-choice-button px-3 h-7 text-[11px] font-medium"
           disabled={!canSubmit}
           style={{
             borderRadius: 6,
@@ -572,6 +572,7 @@ export function ToolCallModal({
         role="dialog"
         aria-modal="true"
         aria-label="Tool details"
+        tabIndex={-1}
         className="w-full"
         style={{
           maxWidth: 680,

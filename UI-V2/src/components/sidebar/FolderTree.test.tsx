@@ -47,6 +47,7 @@ describe('FolderTree', () => {
       cliBindingBySessionId: {},
       acpBindingBySessionId: {},
       cliTranscriptBySessionId: {},
+      resourceCollections: [],
       isNewChatModalOpen: false,
       newChatFolderId: null,
       openFolderMemoryLibrary: vi.fn(() => Promise.resolve(true)),
@@ -89,6 +90,70 @@ describe('FolderTree', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('uses collections only to group, collapse, and accept workspace folders', async () => {
+    const second = { ...makeFolder(), id: 'second', name: 'Second', directory: '/tmp/second' }
+    useAppStore.setState({
+      folders: [makeFolder(), second],
+      resourceCollections: [{
+        id: 'work',
+        name: 'Work',
+        collapsed: false,
+        references: [{ id: 'project-ref', type: 'workspace-folder', target: 'project', label: 'Project' }],
+      }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const collection = host.querySelector('[data-testid="folder-collection-work"]')
+    expect(collection?.querySelector('[data-testid="folder-row-project"]')).toBeTruthy()
+    const collectionChildren = collection?.querySelector('[data-testid="collection-children-work"]') as HTMLElement
+    expect(collectionChildren.className).toContain('ml-6')
+    expect(collectionChildren.className).toContain('border-l-2')
+    expect(collectionChildren.className).toContain('duration-200')
+    expect(collectionChildren.style.background).toContain('var(--surface-up)')
+    expect(collectionChildren.style.transform).toBe('translateY(0)')
+    expect(collection?.querySelector('[data-testid="folder-row-second"]')).toBeNull()
+    expect(host.querySelectorAll('[data-testid="folder-row-project"]')).toHaveLength(1)
+    expect(host.textContent).not.toContain('Collections')
+
+    act(() => {
+      collection?.querySelector('button[aria-label="Collapse Work"]')
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(host.querySelector('[data-testid="collection-children-work"]')?.parentElement?.parentElement?.getAttribute('aria-hidden')).toBe('true')
+    expect(collectionChildren.style.transform).toBe('translateY(-6px)')
+    expect(host.querySelector('[data-testid="folder-row-second"]')).toBeTruthy()
+
+    const data = new Map<string, string>()
+    const transfer = {
+      effectAllowed: '',
+      get types() { return [...data.keys()] },
+      getData: (type: string) => data.get(type) ?? '',
+      setData: (type: string, value: string) => { data.set(type, value) },
+    }
+    const dragStart = new Event('dragstart', { bubbles: true })
+    Object.defineProperty(dragStart, 'dataTransfer', { value: transfer })
+    const dragOver = new Event('dragover', { bubbles: true, cancelable: true })
+    Object.defineProperty(dragOver, 'dataTransfer', { value: transfer })
+    const drop = new Event('drop', { bubbles: true, cancelable: true })
+    Object.defineProperty(drop, 'dataTransfer', { value: transfer })
+
+    await act(async () => {
+      host.querySelector('[data-testid="folder-row-second"]')?.dispatchEvent(dragStart)
+      collection?.dispatchEvent(dragOver)
+      collection?.dispatchEvent(drop)
+    })
+
+    expect(useAppStore.getState().resourceCollections[0].references.map((reference) => reference.target)).toEqual(['project', 'second'])
+    expect(collection?.querySelector('[data-testid="folder-row-second"]')).toBeTruthy()
+
+    act(() => root.unmount())
     host.remove()
   })
 
@@ -189,7 +254,41 @@ describe('FolderTree', () => {
     const folderIcon = host.querySelector('[data-testid="folder-icon-project"]') as HTMLElement
     expect(folderIcon.getAttribute('stroke')).toMatch(/^url\(#.+\)$/)
     expect(folderIcon.style.filter).toContain('drop-shadow')
-    expect(Array.from(host.querySelectorAll('[data-testid="folder-gradient-project"] stop')).map((stop) => stop.getAttribute('stop-color'))).toEqual([
+    expect(Array.from(host.querySelectorAll('[data-testid="folder-icon-project-gradient"] stop')).map((stop) => stop.getAttribute('stop-color'))).toEqual([
+      '#f97316', '#f97316', '#ec4899', '#ec4899',
+    ])
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('shows every hidden workspace pane colour on a collapsed collection', () => {
+    const stored = new Map<string, string>()
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem: (key: string) => stored.get(key) ?? null,
+        setItem: (key: string, value: string) => stored.set(key, value),
+      },
+    })
+    useAppStore.setState({
+      resourceCollections: [{
+        id: 'work',
+        name: 'Work',
+        collapsed: true,
+        references: [{ id: 'project-ref', type: 'workspace-folder', target: 'project', label: 'Project' }],
+      }],
+    })
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    act(() => writeChatGridLayout({ ...defaultChatGridLayout, paneCount: 4, activePane: 1, sessionIds: ['chat-1', 'chat-3', '', ''] }))
+
+    const collectionIcon = host.querySelector('[data-testid="collection-icon-work"]') as HTMLElement
+    expect(collectionIcon.getAttribute('stroke')).toMatch(/^url\(#.+\)$/)
+    expect(Array.from(host.querySelectorAll('[data-testid="collection-icon-work-gradient"] stop')).map((stop) => stop.getAttribute('stop-color'))).toEqual([
       '#f97316', '#f97316', '#ec4899', '#ec4899',
     ])
 
@@ -316,5 +415,37 @@ describe('FolderTree', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('shows a helpful empty search state', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="nothing-matches-this" />))
+
+    expect(host.textContent).toContain('No chats match this search')
+    expect(host.textContent).toContain('Try another term or clear the filters.')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps the new-folder form visible in the scrolling sidebar', () => {
+    const scrollIntoView = vi.fn()
+    const previousScrollIntoView = HTMLElement.prototype.scrollIntoView
+    HTMLElement.prototype.scrollIntoView = scrollIntoView
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const newFolder = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'New folder')
+    act(() => newFolder?.click())
+
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' })
+
+    act(() => root.unmount())
+    host.remove()
+    HTMLElement.prototype.scrollIntoView = previousScrollIntoView
   })
 })

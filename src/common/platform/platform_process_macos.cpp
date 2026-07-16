@@ -11,6 +11,11 @@ namespace uam::platform_macos_impl
 class MacProcessService final : public IPlatformProcessService
 {
   public:
+	bool EmbeddedBrowserUsesMockKeychain() const override
+	{
+		return true;
+	}
+
 	bool SupportsDetachedProcesses() const override
 	{
 		return true;
@@ -315,7 +320,7 @@ class MacProcessService final : public IPlatformProcessService
 		}
 
 		const std::filesystem::path lock_path = data_root / ".uam-data-root.lock";
-		const int fd = open(lock_path.c_str(), O_RDWR | O_CREAT, 0600);
+		const int fd = open(lock_path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
 		if (fd < 0)
 		{
 			if (error_out != nullptr)

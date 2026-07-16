@@ -1,5 +1,5 @@
 import { lazy, memo, Suspense, useEffect, useState } from 'react'
-import { Columns2, Grid2X2, MessageSquare, ChevronDown, Square } from 'lucide-react'
+import { Columns2, Grid2X2, MessageSquare, Square } from 'lucide-react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -7,7 +7,7 @@ import { ChatView } from '../views/ChatView'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { DEFAULT_PROVIDER_ID, providerShortName } from '../../utils/providerMetadata'
-import { Tooltip } from '../ui'
+import { StatusDot, Tooltip } from '../ui'
 import type { Session } from '../../types/session'
 
 const CLIView = lazy(() => import('../views/CLIView').then(({ CLIView }) => ({ default: CLIView })))
@@ -26,15 +26,6 @@ const PushStatusDot = memo(function PushStatusDot() {
   const lastPushAtMs = useAppStore((s) => s.lastPushAtMs)
   const uiBuildId = useAppStore((s) => s.uiBuildId)
 
-  const color =
-    pushChannelStatus === 'connected' ? '#22c55e'
-    : pushChannelStatus === 'no-push-yet' ? '#eab308'
-    : '#ef4444'
-
-  const timeLabel = lastPushAtMs
-    ? new Date(lastPushAtMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-    : ''
-
   const tooltip =
     pushChannelStatus === 'connected'
       ? `Push connected • last update ${lastPushAtMs ? new Date(lastPushAtMs).toLocaleTimeString() : '—'} • UI ${uiBuildId}`
@@ -43,14 +34,11 @@ const PushStatusDot = memo(function PushStatusDot() {
         : `Push error: ${pushChannelError}`
 
   return (
-    <div
-      className="flex items-center gap-1 flex-shrink-0 mr-3"
-      style={{ color, fontSize: 11, opacity: 0.9 }}
-      title={tooltip}
-    >
-      <span style={{ fontSize: 7, lineHeight: 1 }}>●</span>
-      {timeLabel && <span style={{ opacity: 0.8 }}>{timeLabel}</span>}
-    </div>
+    <Tooltip label={tooltip} side="bottom">
+      <span className="mr-3 inline-flex h-7 items-center px-2" aria-label={`Backend connection: ${pushChannelStatus}`}>
+        <StatusDot tone={pushChannelStatus === 'connected' ? 'success' : pushChannelStatus === 'no-push-yet' ? 'warning' : 'error'} pulse={pushChannelStatus === 'connected'} size={7} />
+      </span>
+    </Tooltip>
   )
 })
 
@@ -89,7 +77,7 @@ function ChatPane({ session, active, paneIndex, showGlow, onActivate }: {
 
   return (
     <div
-      className="relative flex flex-col h-full overflow-hidden"
+      className="uam-pane-in relative flex flex-col h-full overflow-hidden"
       data-testid={`chat-pane-${session.id}`}
       data-pane={paneIndex + 1}
       data-focused={active}
@@ -120,6 +108,7 @@ function ChatPane({ session, active, paneIndex, showGlow, onActivate }: {
         >
           <span className="truncate">{session.name}</span>
           <span
+            data-testid={`provider-badge-${session.id}`}
             className="inline-flex items-center gap-2 text-xs font-medium"
             style={{
               height: 30,
@@ -133,7 +122,6 @@ function ChatPane({ session, active, paneIndex, showGlow, onActivate }: {
           >
             <ProviderLogo providerId={providerId} />
             <span>{providerName} Provider</span>
-            <ChevronDown size={13} aria-hidden />
           </span>
         </div>
 
@@ -161,7 +149,7 @@ function ChatPane({ session, active, paneIndex, showGlow, onActivate }: {
                 }
                 setView('chat')
               }}
-              className="h-7 px-3 text-xs"
+              className="uam-segment-button h-7 px-3 text-xs"
               style={{
                 borderRadius: 5,
                 color: view === 'chat' ? 'var(--text)' : 'var(--text-2)',
@@ -178,7 +166,7 @@ function ChatPane({ session, active, paneIndex, showGlow, onActivate }: {
               onClick={() => {
                 if (!cliSwitchLocked) setView('cli')
               }}
-              className="h-7 px-3 text-xs"
+              className="uam-segment-button h-7 px-3 text-xs"
               style={{
                 borderRadius: 5,
                 color: view === 'cli' ? 'var(--text)' : 'var(--text-2)',
@@ -210,14 +198,14 @@ function EmptyPane({ active, paneIndex, showGlow, onActivate }: { active: boolea
   return (
     <button
       type="button"
-      className="relative flex h-full w-full items-center justify-center text-center"
+      className="uam-pane-in relative flex h-full w-full items-center justify-center text-center"
       data-focused={active}
       onClick={onActivate}
       style={{ color: 'var(--text-3)', border: '1px solid transparent', filter: active ? 'none' : 'brightness(0.82) saturate(0.72)', transition: 'filter 140ms ease, border-color 140ms ease' }}
     >
       <span>
         <MessageSquare size={28} style={{ opacity: 0.3, margin: '0 auto 10px' }} />
-        <span className="block text-sm">Select Chat</span>
+        <span className="block text-sm">Select chat</span>
       </span>
       {showGlow && <PaneFade active={active} color={paneColor} paneIndex={paneIndex} />}
     </button>
@@ -230,17 +218,20 @@ function LayoutButton({ count, current, onClick, children }: {
   onClick: (count: ChatPaneCount) => void
   children: React.ReactNode
 }) {
+  const label = `Show ${count === 1 ? 'one chat' : count === 2 ? 'two chats' : 'four chats'}`
   return (
-    <button
-      type="button"
-      className="flex h-7 w-8 items-center justify-center rounded"
-      aria-label={`Show ${count === 1 ? 'one chat' : count === 2 ? 'two chats' : 'four chats'}`}
-      aria-pressed={current === count}
-      onClick={() => onClick(count)}
-      style={{ color: current === count ? 'var(--accent)' : 'var(--text-2)', background: current === count ? 'var(--accent-dim)' : 'transparent' }}
-    >
-      {children}
-    </button>
+    <Tooltip label={label} side="bottom">
+      <button
+        type="button"
+        className="uam-layout-button flex h-7 w-8 items-center justify-center rounded"
+        aria-label={label}
+        aria-pressed={current === count}
+        onClick={() => onClick(count)}
+        style={{ color: current === count ? 'var(--accent)' : 'var(--text-2)', background: current === count ? 'var(--accent-dim)' : 'transparent' }}
+      >
+        {children}
+      </button>
+    </Tooltip>
   )
 }
 

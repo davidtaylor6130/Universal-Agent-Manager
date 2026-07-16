@@ -101,6 +101,9 @@ describe('MainPanel', () => {
       root.render(<MainPanel />)
     })
 
+    expect(host.querySelectorAll('.uam-layout-button')).toHaveLength(3)
+    expect(host.querySelector('[data-testid="provider-badge-chat-1"] .lucide-chevron-down')).toBeNull()
+
     const cliButton = () =>
       Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'CLI') as HTMLButtonElement
 
@@ -227,7 +230,7 @@ describe('MainPanel', () => {
 
     expect(host.querySelector('[data-testid="chat-grid-4"]')).not.toBeNull()
     expect(host.querySelectorAll('[data-testid^="chat-pane-"]')).toHaveLength(1)
-    expect(Array.from(host.querySelectorAll('button')).filter((button) => button.textContent?.includes('Select Chat'))).toHaveLength(3)
+    expect(Array.from(host.querySelectorAll('button')).filter((button) => button.textContent?.includes('Select chat'))).toHaveLength(3)
     const firstPane = host.querySelector('[data-testid="chat-pane-chat-1"]') as HTMLElement
     expect(firstPane.style.getPropertyValue('--accent')).toBe('#f97316')
     expect(firstPane.style.border).toBe('1px solid transparent')

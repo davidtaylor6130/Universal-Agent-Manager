@@ -1149,8 +1149,9 @@ namespace uam
 		j["title"] = folder.title;
 		j["directory"] = folder.directory;
 		j["collapsed"] = folder.collapsed;
-		std::error_code ec;
-		j["missing"] = !folder.directory.empty() && !std::filesystem::is_directory(uam::paths::PathFromUtf8(folder.directory), ec);
+		const std::filesystem::path directory = uam::paths::PathFromUtf8(folder.directory);
+		const bool can_probe = PlatformServicesFactory::Instance().path_service.CanProbeDirectoryWithoutPrompt(directory);
+		j["missing"] = !folder.directory.empty() && can_probe && !uam::paths::IsDirectoryNoThrow(directory);
 		return j;
 	}
 

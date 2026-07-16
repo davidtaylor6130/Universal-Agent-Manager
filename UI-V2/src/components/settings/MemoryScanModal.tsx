@@ -47,6 +47,10 @@ export function MemoryScanModal() {
       }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Scan current chats"
+        tabIndex={-1}
         className="rounded-2xl shadow-2xl w-full max-w-4xl mx-4 animate-slide-in overflow-hidden flex flex-col"
         style={{
           background: 'var(--surface)',

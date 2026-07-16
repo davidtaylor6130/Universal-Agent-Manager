@@ -3,6 +3,7 @@
 #include "cef/uam_cef_command_line_config.h"
 #include "cef/uam_cef_security.h"
 #include "common/paths/path_utils.h"
+#include "common/platform/platform_services.h"
 #include "common/utils/io_utils.h"
 
 #include "include/cef_browser.h"
@@ -192,6 +193,11 @@ void UamCefApp::OnBeforeCommandLineProcessing(const CefString& process_type, Cef
 		std::fprintf(stderr, "[CEF] macOS web-app shortcut crash workaround: disable-features=%s\n", disabled_features.c_str());
 	}
 #endif
+
+	if (PlatformServicesFactory::Instance().process_service.EmbeddedBrowserUsesMockKeychain())
+	{
+		command_line->AppendSwitch("use-mock-keychain");
+	}
 }
 
 void UamCefApp::OnContextInitialized()
