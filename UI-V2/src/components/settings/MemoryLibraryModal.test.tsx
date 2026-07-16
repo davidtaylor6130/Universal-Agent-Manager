@@ -175,7 +175,7 @@ describe('MemoryLibraryModal all memory scope', () => {
       targetButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    const options = Array.from(host.querySelectorAll('[role="option"]')).map((option) => option.textContent?.replace('●', '').trim())
+    const options = Array.from(document.body.querySelectorAll('[role="option"]')).map((option) => option.textContent?.replace('●', '').trim())
     expect(options).toEqual(['Global memory', 'General'])
     expect(createMemoryEntry).not.toHaveBeenCalled()
 

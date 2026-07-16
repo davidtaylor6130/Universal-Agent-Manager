@@ -202,13 +202,13 @@ describe('SettingsModal memory settings', () => {
     const themeButton = host.querySelector('button[aria-label="Theme"]') as HTMLButtonElement | null
 
     act(() => themeButton?.click())
-    expect(host.querySelector('[role="listbox"][aria-label="Theme"]')).toBeTruthy()
+    expect(document.body.querySelector('[role="listbox"][aria-label="Theme"]')).toBeTruthy()
 
-    const lightOption = Array.from(host.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Light')) as HTMLButtonElement | undefined
+    const lightOption = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Light')) as HTMLButtonElement | undefined
     act(() => lightOption?.click())
 
     expect(useAppStore.getState().setTheme).toHaveBeenCalledWith('light')
-    expect(host.querySelector('[role="listbox"][aria-label="Theme"]')).toBeNull()
+    expect(document.body.querySelector('[role="listbox"][aria-label="Theme"]')).toBeNull()
 
     act(() => root.unmount())
     host.remove()
@@ -266,7 +266,7 @@ describe('SettingsModal memory settings', () => {
       targetVersionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    const nextVersionOption = Array.from(host.querySelectorAll('button[role="option"]')).find(
+    const nextVersionOption = Array.from(document.body.querySelectorAll('button[role="option"]')).find(
       (button) => button.textContent?.includes('0.124.0')
     )
     expect(nextVersionOption).toBeTruthy()
@@ -383,7 +383,7 @@ describe('SettingsModal memory settings', () => {
       defaultEditorButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    const webstormOption = Array.from(host.querySelectorAll('button[role="option"]')).find(
+    const webstormOption = Array.from(document.body.querySelectorAll('button[role="option"]')).find(
       (button) => button.textContent?.includes('WebStorm')
     )
     expect(webstormOption).toBeTruthy()
@@ -460,7 +460,7 @@ describe('SettingsModal memory settings', () => {
       cppEditorButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    const clionOption = Array.from(host.querySelectorAll('button[role="option"]')).find(
+    const clionOption = Array.from(document.body.querySelectorAll('button[role="option"]')).find(
       (button) => button.textContent?.includes('CLion')
     )
     expect(clionOption).toBeTruthy()
@@ -536,7 +536,7 @@ describe('SettingsModal memory settings', () => {
       providerButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    const codexOption = Array.from(host.querySelectorAll('button[role="option"]')).find(
+    const codexOption = Array.from(document.body.querySelectorAll('button[role="option"]')).find(
       (button) => button.textContent?.includes('Codex')
     )
     expect(codexOption).toBeTruthy()
@@ -576,7 +576,7 @@ describe('SettingsModal memory settings', () => {
       modelButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    const flashOption = Array.from(host.querySelectorAll('button[role="option"]')).find(
+    const flashOption = Array.from(document.body.querySelectorAll('button[role="option"]')).find(
       (button) => button.textContent?.includes('Prioritize speed')
     )
     expect(flashOption).toBeTruthy()
