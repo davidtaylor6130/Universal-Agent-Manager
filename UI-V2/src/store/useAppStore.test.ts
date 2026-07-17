@@ -2721,7 +2721,7 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(promptRequest?.payload?.steerNow).toBe(false)
 
     await expect(useAppStore.getState().sendAcpPrompt('chat-1', 'steer now', [], true)).resolves.toBe(true)
-    expect(requests.at(-1)?.payload?.steerNow).toBe(true)
+    expect(requests[requests.length - 1]?.payload?.steerNow).toBe(true)
   })
 
   it('requests non-blocking provider model discovery and marks the selector loading', async () => {
