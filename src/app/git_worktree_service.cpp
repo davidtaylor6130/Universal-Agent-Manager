@@ -819,7 +819,7 @@ namespace uam
 
 		if (result.status.managed_repository)
 		{
-			const ProcessExecutionResult check_result = RunCommand(BuildGitCommandInDirectory(source, "apply --check " + uam::shell::EscapeArg(patch_path.string())));
+			const ProcessExecutionResult check_result = RunCommand(BuildGitCommandInDirectory(source, "-c core.autocrlf=false apply --check " + uam::shell::EscapeArg(patch_path.string())));
 			if (!CommandSucceeded(check_result))
 			{
 				result.patch_path = patch_path;
@@ -827,7 +827,7 @@ namespace uam
 				return result;
 			}
 		}
-		ProcessExecutionResult apply_result = RunCommand(BuildGitCommandInDirectory(source, std::string("apply ") + (result.status.managed_repository ? "" : "--3way ") + uam::shell::EscapeArg(patch_path.string())));
+		ProcessExecutionResult apply_result = RunCommand(BuildGitCommandInDirectory(source, std::string(result.status.managed_repository ? "-c core.autocrlf=false apply " : "apply --3way ") + uam::shell::EscapeArg(patch_path.string())));
 		if (!CommandSucceeded(apply_result))
 		{
 			result.patch_path = patch_path;
