@@ -4,6 +4,7 @@
 #include "common/models/app_models.h"
 #include "common/config/approval_modes.h"
 #include "common/config/provider_chat_defaults.h"
+#include "common/memory/memory_levels.h"
 #include "common/provider/codex/codex_options.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
@@ -82,6 +83,7 @@ inline ProviderChatDefaults DefaultsFromPayload(const nlohmann::json& value, con
 	{
 		defaults.memory_enabled = *memory_enabled;
 	}
+	defaults.memory_level = uam::memory_levels::Normalize(uam::nlohmann_json::TrimmedStringValueOr(value, "memoryLevel", defaults.memory_level), defaults.memory_enabled);
 	defaults.reasoning_effort = uam::nlohmann_json::TrimmedStringValueOr(value, "reasoningEffort", defaults.reasoning_effort);
 	defaults.service_tier = uam::nlohmann_json::TrimmedStringValueOr(value, "serviceTier", defaults.service_tier);
 	return uam::provider_chat_defaults::Normalize(defaults);

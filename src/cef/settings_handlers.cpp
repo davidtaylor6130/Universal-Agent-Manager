@@ -6,6 +6,7 @@
 #include "cef/cef_push.h"
 #include "common/config/editor_file_associations.h"
 #include "common/config/settings_normalization.h"
+#include "common/memory/memory_levels.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
@@ -104,6 +105,8 @@ void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, con
 	{
 		m_app.settings.memory_enabled_default = *enabled_default;
 	}
+	m_app.settings.memory_level_default = uam::memory_levels::Normalize(uam::nlohmann_json::TrimmedStringValueOr(payload, "levelDefault", m_app.settings.memory_level_default), m_app.settings.memory_enabled_default);
+	m_app.settings.memory_enabled_default = uam::memory_levels::IsEnabled(m_app.settings.memory_level_default);
 	if (const std::optional<int> idle_delay_seconds = uam::nlohmann_json::IntFieldStrict(payload, "idleDelaySeconds"))
 	{
 		m_app.settings.memory_idle_delay_seconds = *idle_delay_seconds;

@@ -417,7 +417,11 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 	const std::vector<MessageAttachment> attachments = ParseStagedAttachments(payload);
 	const bool goal_mode = payload.value("goalMode", false);
 	const std::string goal_id = AcpPromptGoalIdFromPayload(payload);
-	if (!uam::SendAcpPrompt(m_app, chat_id, text, markdown_store_files, attachments, goal_mode, &error, goal_id))
+	const bool steer_now = payload.value("steerNow", false);
+	const bool sent = steer_now
+	                    ? uam::SteerAcpPrompt(m_app, chat_id, text, markdown_store_files, attachments, goal_mode, &error, goal_id)
+	                    : uam::SendAcpPrompt(m_app, chat_id, text, markdown_store_files, attachments, goal_mode, &error, goal_id);
+	if (!sent)
 	{
 		cb->Failure(chat_id.empty() || text.empty() ? 400 : 500, FailureDetailOrFallback(error, "Failed to send ACP prompt."));
 		return;
@@ -425,6 +429,36 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleDiscoverProviderModels(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (chat == nullptr) return;
+	if (!ChatProviderAvailableOrFail(m_app, *chat, cb)) return;
+	if (m_app.provider_model_catalog == nullptr)
+	{
+		cb->Failure(500, "Provider model catalog is unavailable.");
+		return;
+	}
+	const bool should_start = m_app.provider_model_catalog->BeginDiscoveryIfMissing(chat->provider_id);
+	if (!should_start)
+	{
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		cb->Success(nlohmann::json{{"started", false}, {"pending", m_app.provider_model_catalog->IsDiscoveryPending(chat->provider_id)}}.dump());
+		return;
+	}
+	std::string error;
+	if (!uam::StartAcpModelDiscovery(m_app, chat->id, &error))
+	{
+		m_app.provider_model_catalog->RememberRefreshFailure(chat->provider_id, FailureDetailOrFallback(error, "Provider model discovery failed to start."));
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		cb->Failure(500, FailureDetailOrFallback(error, "Provider model discovery failed to start."));
+		return;
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success(nlohmann::json{{"started", true}, {"pending", true}}.dump());
 }
 
 void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

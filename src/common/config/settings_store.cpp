@@ -4,6 +4,7 @@
 #include "common/config/approval_modes.h"
 #include "common/config/line_value_codec.h"
 #include "common/config/settings_normalization.h"
+#include "common/memory/memory_levels.h"
 #include "common/paths/path_utils.h"
 #include "common/provider/codex/codex_options.h"
 #include "common/provider/provider_ids.h"
@@ -48,6 +49,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kWindowHeightKey = "window_height";
 	constexpr std::string_view kWindowMaximizedKey = "window_maximized";
 	constexpr std::string_view kMemoryEnabledDefaultKey = "memory_enabled_default";
+	constexpr std::string_view kMemoryLevelDefaultKey = "memory_level_default";
 	constexpr std::string_view kMemoryIdleDelaySecondsKey = "memory_idle_delay_seconds";
 	constexpr std::string_view kMemoryRecallBudgetBytesKey = "memory_recall_budget_bytes";
 	constexpr std::string_view kGoalMaxLoopIterationsKey = "goal_max_loop_iterations";
@@ -208,6 +210,8 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		defaults.approval_mode = uam::approval_modes::NormalizePersistedProviderDefaultApprovalMode(defaults.approval_mode);
 		defaults.reasoning_effort = uam::codex::NormalizeReasoningEffort(defaults.reasoning_effort);
 		defaults.service_tier = uam::codex::NormalizeServiceTier(defaults.service_tier);
+		defaults.memory_level = uam::memory_levels::Normalize(defaults.memory_level, defaults.memory_enabled);
+		defaults.memory_enabled = uam::memory_levels::IsEnabled(defaults.memory_level);
 		return defaults;
 	}
 
@@ -262,6 +266,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 			    defaults.memory_enabled ? "1" : "0",
 			    defaults.reasoning_effort,
 			    defaults.service_tier,
+			    defaults.memory_level,
 			}, kSettingsFieldDelimiterText));
 		}
 		return uam::strings::JoinNonEmpty(encoded_entries, kSettingsEntryDelimiterText);
@@ -285,6 +290,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 			defaults.memory_enabled = BoolFieldOr(fields, 4, true);
 			defaults.reasoning_effort = uam::DecodedLineFieldOr(fields, 5, "");
 			defaults.service_tier = uam::DecodedLineFieldOr(fields, 6, "");
+			defaults.memory_level = uam::memory_levels::Normalize(uam::DecodedLineFieldOr(fields, 7, ""), defaults.memory_enabled);
 
 			std::string provider_id;
 			if (!TryNormalizeProviderChatDefaults(uam::DecodedLineFieldOr(fields, 0, ""), defaults, provider_id, defaults))
@@ -372,7 +378,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		const std::string provider_key(provider_id);
 		if (!settings.provider_chat_defaults.contains(provider_key))
 		{
-			settings.provider_chat_defaults[provider_key] = ProviderChatDefaults{"", uam::approval_modes::kDefaultApprovalMode, false, settings.memory_enabled_default, "", ""};
+			settings.provider_chat_defaults[provider_key] = ProviderChatDefaults{"", uam::approval_modes::kDefaultApprovalMode, false, settings.memory_enabled_default, "", "", settings.memory_level_default};
 			return;
 		}
 
@@ -390,6 +396,8 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		settings.ui_theme = uam::settings::NormalizeThemeId(settings.ui_theme);
 		uam::settings::ClampWindowSettings(settings);
 		uam::settings::ClampMemorySettings(settings);
+		settings.memory_level_default = uam::memory_levels::Normalize(settings.memory_level_default, settings.memory_enabled_default);
+		settings.memory_enabled_default = uam::memory_levels::IsEnabled(settings.memory_level_default);
 		uam::settings::ClampGoalSettings(settings);
 		settings.default_editor_preset_id = uam::editor_file_associations::NormalizeEditorPresetId(settings.default_editor_preset_id);
 		uam::editor_file_associations::NormalizeEditorFileAssociations(settings.editor_file_associations);
@@ -440,6 +448,7 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteSettingValue(lines, kWindowHeightKey, normalized.window_height);
 	WriteBoolSetting(lines, kWindowMaximizedKey, normalized.window_maximized);
 	WriteBoolSetting(lines, kMemoryEnabledDefaultKey, normalized.memory_enabled_default);
+	WriteEncodedSetting(lines, kMemoryLevelDefaultKey, normalized.memory_level_default);
 	WriteSettingValue(lines, kMemoryIdleDelaySecondsKey, normalized.memory_idle_delay_seconds);
 	WriteSettingValue(lines, kMemoryRecallBudgetBytesKey, normalized.memory_recall_budget_bytes);
 	WriteSettingValue(lines, kGoalMaxLoopIterationsKey, normalized.goal_max_loop_iterations);
@@ -551,6 +560,10 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		else if (key == kMemoryEnabledDefaultKey)
 		{
 			settings.memory_enabled_default = uam::parse::BoolOr(value, settings.memory_enabled_default);
+		}
+		else if (key == kMemoryLevelDefaultKey)
+		{
+			settings.memory_level_default = uam::memory_levels::Normalize(uam::DecodeLineValue(value), settings.memory_enabled_default);
 		}
 		else if (key == kMemoryIdleDelaySecondsKey)
 		{

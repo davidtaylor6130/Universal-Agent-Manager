@@ -1,5 +1,6 @@
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_goal_loop.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 
 #include "common/config/approval_modes.h"
 #include "common/paths/workspace_root.h"
@@ -133,6 +134,43 @@ void UpdateAcpModelsFromJson(AcpSessionState& session, const nlohmann::json& mod
 	}
 }
 
+nlohmann::json ModelsForPersistentCache(const std::vector<AcpModelState>& models)
+{
+	nlohmann::json result = nlohmann::json::array();
+	for (const AcpModelState& model : models)
+	{
+		if (model.id.empty())
+		{
+			continue;
+		}
+		result.push_back({
+		    {"id", model.id},
+		    {"name", model.name},
+		    {"description", model.description},
+		    {"defaultReasoningEffort", model.default_reasoning_effort},
+		    {"supportedReasoningEfforts", model.supported_reasoning_efforts},
+		    {"additionalSpeedTiers", model.additional_speed_tiers},
+		});
+	}
+	return result;
+}
+
+void RememberDiscoveredModels(AppState& app, const AcpSessionState& session)
+{
+	if (app.provider_model_catalog != nullptr && !session.available_models.empty())
+	{
+		(void)app.provider_model_catalog->RememberSuccessfulModels(session.provider_id, ModelsForPersistentCache(session.available_models));
+	}
+}
+
+void FinishModelDiscoveryWithoutResults(AppState& app, const AcpSessionState& session)
+{
+	if (app.provider_model_catalog != nullptr && session.available_models.empty() && app.provider_model_catalog->IsDiscoveryPending(session.provider_id))
+	{
+		app.provider_model_catalog->RememberRefreshFailure(session.provider_id, "Provider model discovery completed without reporting any models.");
+	}
+}
+
 void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
 {
 	const nlohmann::json response_id = JsonRpcIdOrNull(message);
@@ -200,6 +238,10 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		failure.message = error_message;
 		failure.has_detail = !detail_text.empty();
 		const std::string formatted_error = FormatAcpFailureMessage(session, failure);
+		if (app.provider_model_catalog != nullptr && (method == uam::acp_methods::kModelList || method == uam::acp_methods::kSessionNew || method == uam::acp_methods::kSessionLoad))
+		{
+			app.provider_model_catalog->RememberRefreshFailure(session.provider_id, formatted_error);
+		}
 		AppendAcpDiagnostic(session, "response", "jsonrpc_error", method, request_id, has_code, code, error_message, detail_text);
 		if (std::strcmp(ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpProtocolKind(), "codex-app-server") == 0 && method == uam::acp_methods::kThreadResume && has_code && code == -32600 && uam::codex::ErrorLooksLikeInvalidThreadId(error_message) && !session.codex_resume_fallback_attempted)
 		{
@@ -336,6 +378,8 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 				}
 			}
 		}
+		RememberDiscoveredModels(app, session);
+		FinishModelDiscoveryWithoutResults(app, session);
 		return;
 	}
 
@@ -410,6 +454,8 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			session.session_id = uam::nlohmann_json::TrimmedStringValueOr(result, "sessionId", session.session_id);
 			UpdateAcpModesFromJson(session, JsonObjectValue(result, "modes"));
 			UpdateAcpModelsFromJson(session, JsonObjectValue(result, "models"));
+			RememberDiscoveredModels(app, session);
+			FinishModelDiscoveryWithoutResults(app, session);
 		}
 		const std::string previous_native_session_id = chat.native_session_id;
 		SetChatNativeSessionIdIfChanged(chat, session.session_id);
@@ -438,6 +484,8 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		{
 			UpdateAcpModesFromJson(session, JsonObjectValue(result, "modes"));
 			UpdateAcpModelsFromJson(session, JsonObjectValue(result, "models"));
+			RememberDiscoveredModels(app, session);
+			FinishModelDiscoveryWithoutResults(app, session);
 		}
 		session.session_ready = true;
 		session.ignore_session_updates_until_ready = false;
@@ -457,15 +505,19 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 	if (method == uam::acp_methods::kSessionCancel)
 	{
 		session.cancel_requested = false;
+		session.cancel_requested_time_s = 0.0;
 		session.cancel_request_id = 0;
+		(void)DrainNextQueuedAcpUserPrompt(app, session, chat);
 		return;
 	}
 
 	if (method == uam::acp_methods::kTurnInterrupt)
 	{
 		session.cancel_requested = false;
+		session.cancel_requested_time_s = 0.0;
 		session.cancel_request_id = 0;
 		session.codex_turn_id.clear();
+		(void)DrainNextQueuedAcpUserPrompt(app, session, chat);
 		return;
 	}
 

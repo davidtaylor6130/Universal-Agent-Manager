@@ -165,4 +165,38 @@ describe('CLIView', () => {
     })
     host.remove()
   })
+
+  it('preserves and atomically submits a terminal-fallback steering prompt', async () => {
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    ;(window as TestWindow).cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request)
+      requests.push(parsed)
+      if (parsed.action === 'startCliTerminal') {
+        onSuccess(JSON.stringify({ terminalId: 'term-1', sourceChatId: 'chat-1', running: true, lifecycleState: 'busy', turnState: 'busy', pendingSteer: false, lastError: '' }))
+      } else if (parsed.action === 'steerCliTerminal') {
+        onSuccess(JSON.stringify({ terminalId: 'term-1', sourceChatId: 'chat-1', running: true, lifecycleState: 'busy', turnState: 'busy', pendingSteer: true, lastError: '' }))
+      } else onSuccess('{}')
+    }
+    useAppStore.setState({ providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }] })
+    const session = { id: 'chat-1', name: 'Gemini Session', providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => { root.render(<CLIView session={session} />); await new Promise((resolve) => setTimeout(resolve, 0)) })
+
+    const input = host.querySelector('input[aria-label="Terminal steering prompt"]') as HTMLInputElement
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'Change direction')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => { (host.querySelector('button[aria-label="Steer terminal now"]') as HTMLButtonElement).click(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+    expect(requests.find((request) => request.action === 'steerCliTerminal')?.payload).toMatchObject({ chatId: 'chat-1', terminalId: 'term-1', text: 'Change direction', retry: false })
+    expect(input.value).toBe('Change direction')
+    expect(host.querySelector('button[aria-label="Steering terminal prompt"]')).toBeTruthy()
+
+    await act(async () => { useAppStore.getState().setCliBinding('chat-1', { pendingSteer: false, processing: true }); await Promise.resolve() })
+    expect(input.value).toBe('')
+    act(() => root.unmount())
+    host.remove()
+  })
 })

@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { Session, Folder } from '../types/session'
 import { Message } from '../types/message'
 import { Provider } from '../types/provider'
+import type { MemoryLevel } from '../types/memory'
 import { sendToCEF, isCefContext, createRequestId } from '../ipc/cefBridge'
 import {
   CLI_TRANSCRIPT_FLUSH_DELAY_MS,
@@ -116,6 +117,7 @@ function deserializeState(
     acpBindingBySessionId: Record<string, AcpBinding>
     cliDebugState: CppCliDebugState | null
     memoryEnabledDefault: boolean
+    memoryLevelDefault: MemoryLevel
     memoryIdleDelaySeconds: number
     memoryRecallBudgetBytes: number
     goalMaxLoopIterations: number
@@ -260,6 +262,8 @@ function deserializeState(
         loopCount: cppGoal.loopCount,
         createdAt: new Date(cppGoal.createdAt || Date.now()),
         updatedAt: new Date(cppGoal.updatedAt || Date.now()),
+		executionOwner: cppGoal.executionOwner ?? 'uam',
+		providerCommand: cppGoal.providerCommand ?? '',
       }))
       goalsByChatId[chat.id] = goalObjects
     }
@@ -281,6 +285,7 @@ function deserializeState(
     cliTranscriptBySessionId,
     cliDebugState,
     memoryEnabledDefault: cpp.settings.memoryEnabledDefault,
+    memoryLevelDefault: cpp.settings.memoryLevelDefault ?? (cpp.settings.memoryEnabledDefault ? 'strict' : 'off'),
     memoryIdleDelaySeconds: cpp.settings.memoryIdleDelaySeconds,
     memoryRecallBudgetBytes: cpp.settings.memoryRecallBudgetBytes,
     goalMaxLoopIterations: cpp.settings.goalMaxLoopIterations,
@@ -431,6 +436,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     acpBindingBySessionId: sameRecordEntries(current.acpBindingBySessionId, acpBindingBySessionId) ? current.acpBindingBySessionId : acpBindingBySessionId,
     cliTranscriptBySessionId: sameRecordEntries(current.cliTranscriptBySessionId, cliTranscriptBySessionId) ? current.cliTranscriptBySessionId : cliTranscriptBySessionId,
     memoryEnabledDefault: patch.settings?.memoryEnabledDefault ?? current.memoryEnabledDefault,
+    memoryLevelDefault: patch.settings?.memoryLevelDefault ?? (patch.settings?.memoryEnabledDefault === undefined ? current.memoryLevelDefault : patch.settings.memoryEnabledDefault ? 'strict' : 'off'),
     memoryIdleDelaySeconds: patch.settings?.memoryIdleDelaySeconds ?? current.memoryIdleDelaySeconds,
     memoryRecallBudgetBytes: patch.settings?.memoryRecallBudgetBytes ?? current.memoryRecallBudgetBytes,
     goalMaxLoopIterations: patch.settings?.goalMaxLoopIterations ?? current.goalMaxLoopIterations,
@@ -574,6 +580,7 @@ export const useAppStore = create<AppState>((set, get) => {
             acpBindingBySessionId: current.acpBindingBySessionId,
             cliDebugState: current.cliDebugState,
             memoryEnabledDefault: current.memoryEnabledDefault,
+            memoryLevelDefault: current.memoryLevelDefault,
             memoryIdleDelaySeconds: current.memoryIdleDelaySeconds,
             memoryRecallBudgetBytes: current.memoryRecallBudgetBytes,
             goalMaxLoopIterations: current.goalMaxLoopIterations,
@@ -784,6 +791,7 @@ export const useAppStore = create<AppState>((set, get) => {
         acpBindingBySessionId: current.acpBindingBySessionId,
         cliDebugState: current.cliDebugState,
         memoryEnabledDefault: current.memoryEnabledDefault,
+        memoryLevelDefault: current.memoryLevelDefault,
         memoryIdleDelaySeconds: current.memoryIdleDelaySeconds,
         memoryRecallBudgetBytes: current.memoryRecallBudgetBytes,
         goalMaxLoopIterations: current.goalMaxLoopIterations,

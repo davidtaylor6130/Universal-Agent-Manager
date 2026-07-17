@@ -674,6 +674,7 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 	branch.approval_mode = source.approval_mode;
 	branch.auto_approve_commands = source.auto_approve_commands;
 	branch.command_safety_tier = source.command_safety_tier;
+	branch.memory_level = source.memory_level;
 	branch.memory_enabled = source.memory_enabled;
 	const bool branch_from_git_worktree = uam::paths::HasGitWorktreeSource(source);
 	branch.workspace_directory = branch_from_git_worktree ? source.workspace_source_directory : uam::paths::ResolveWorkspaceRootPath(app, source).string();

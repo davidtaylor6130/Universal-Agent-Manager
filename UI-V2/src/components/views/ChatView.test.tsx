@@ -157,6 +157,60 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('steers an active turn without losing the draft when steering fails', async () => {
+    const sendAcpPrompt = vi.fn(() => Promise.resolve(false))
+    useAppStore.setState({ sendAcpPrompt })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'Change direction now')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const steer = host.querySelector('button[aria-label^="Steer now"]') as HTMLButtonElement
+    expect(steer.title).toContain('Interrupt the current turn')
+    await act(async () => { steer.click(); await Promise.resolve() })
+
+    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Change direction now', [], true)
+    expect(textarea.value).toBe('Change direction now')
+    expect(host.querySelector('button[aria-label="Steering prompt"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('shows every queued prompt in order in a constrained composer panel', () => {
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          queuedPrompts: [
+            { text: 'First queued prompt', markdownStoreFiles: ['/tmp/review.uam'], attachments: [], goalMode: false, goalId: '' },
+            { text: 'Second queued prompt', markdownStoreFiles: [], attachments: [], goalMode: false, goalId: '' },
+          ],
+        },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const queue = host.querySelector('[aria-label="Queued prompts"]') as HTMLElement
+    expect(queue.textContent).toContain('2 prompts queued')
+    expect(queue.textContent?.indexOf('First queued prompt')).toBeLessThan(queue.textContent?.indexOf('Second queued prompt') ?? 0)
+    expect(queue.textContent).toContain('1 attachment')
+    expect(queue.style.maxHeight).toBe('128px')
+    expect(queue.className).toContain('overflow-y-auto')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('copies, edits, and reverts messages with icon actions and branch-safe requests', async () => {
     const branchFromMessage = vi.fn(() => Promise.resolve('branch-1'))
     useAppStore.setState((state) => ({
@@ -783,6 +837,42 @@ describe('ChatView', () => {
     })
     expect(setSessionApprovalMode).toHaveBeenCalledTimes(1)
     expect(host.querySelector('[role="status"]')?.textContent).toContain('Unsupported permission mode "unrestricted"')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('always offers /markdown and exposes only favorite collision-safe skill commands', async () => {
+    const attachMarkdownStoreEntry = vi.fn()
+    useAppStore.setState({
+      markdownStoreEntries: [
+        { id: 'one', title: 'Review', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: true, sourceProvider: 'codex', commandName: 'review', filePath: '/tmp/one.uam' },
+        { id: 'two', title: 'Review', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: true, sourceProvider: 'gemini-cli', commandName: 'review-2', filePath: '/tmp/two.uam' },
+        { id: 'three', title: 'Hidden', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: false, sourceProvider: 'claude-code', commandName: 'hidden', filePath: '/tmp/three.uam' },
+      ],
+      refreshMarkdownStore: vi.fn(() => Promise.resolve(true)),
+      attachMarkdownStoreEntry,
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '/')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const palette = document.body.querySelector('[aria-label="Slash commands"]')
+    expect(palette?.textContent).toContain('/markdown')
+    expect(palette?.textContent).toContain('/review')
+    expect(palette?.textContent).toContain('/review-2')
+    expect(palette?.textContent).toContain('codex')
+    expect(palette?.textContent).toContain('gemini-cli')
+    expect(palette?.textContent).not.toContain('/hidden')
+
+    const reviewTwo = Array.from(palette?.querySelectorAll('[role="option"]') ?? []).find((option) => option.textContent?.includes('/review-2')) as HTMLElement
+    act(() => reviewTwo.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
+    expect(attachMarkdownStoreEntry).toHaveBeenCalledWith('chat-1', expect.objectContaining({ id: 'two' }))
 
     act(() => root.unmount())
     host.remove()
@@ -1651,7 +1741,7 @@ describe('ChatView', () => {
       form?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     })
 
-    expect(setGoal).toHaveBeenCalledWith('chat-1', 'Ship the goal loop', 1234)
+	expect(setGoal).toHaveBeenCalledWith('chat-1', 'Ship the goal loop', 1234, 'uam')
     expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Ship the goal loop', [])
 
     act(() => {
@@ -1659,6 +1749,38 @@ describe('ChatView', () => {
     })
     host.remove()
   })
+
+	it('delegates a configured provider goal command exactly once', async () => {
+	  const setGoal = vi.fn(() => Promise.resolve('goal-native'))
+	  const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+	  useAppStore.setState((state) => ({
+		setGoal,
+		sendAcpPrompt,
+		defaultGoalTokenBudgetByChatId: { ...state.defaultGoalTokenBudgetByChatId, 'chat-1': 0 },
+		providers: state.providers.map((provider) => provider.id === 'codex-cli' ? { ...provider, nativeGoalCommand: '/ralph' } : provider),
+		sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'codex-cli' } : session),
+	  }))
+
+	  const host = document.createElement('div')
+	  document.body.appendChild(host)
+	  const root = createRoot(host)
+	  act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+	  const textarea = host.querySelector('textarea')!
+	  act(() => {
+		const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+		valueSetter?.call(textarea, '/goal Keep the objective literal')
+		textarea.dispatchEvent(new Event('input', { bubbles: true }))
+	  })
+	  await act(async () => {
+		host.querySelector('form')?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+	  })
+
+	  expect(setGoal).toHaveBeenCalledWith('chat-1', 'Keep the objective literal', 0, 'provider')
+	  expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+	  expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', '/ralph Keep the objective literal', [])
+	  act(() => root.unmount())
+	  host.remove()
+	})
 
   it('renders active goal pause/delete controls and paused goal resume control', async () => {
     const updateGoalStatus = vi.fn(() => Promise.resolve(true))
@@ -1747,11 +1869,11 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('toggles the memory chip', () => {
-    const setSessionMemoryEnabled = vi.fn(() => Promise.resolve(true))
+  it('selects the per-chat memory level from options and /memory', async () => {
+    const setSessionMemoryLevel = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) =>
-        session.id === 'chat-1' ? { ...session, memoryEnabled: true } : session
+        session.id === 'chat-1' ? { ...session, memoryEnabled: true, memoryLevel: 'strict' as const } : session
       ),
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
@@ -1763,7 +1885,7 @@ describe('ChatView', () => {
           pendingPermission: null,
         },
       },
-      setSessionMemoryEnabled,
+      setSessionMemoryLevel,
     }))
 
     const host = document.createElement('div')
@@ -1775,16 +1897,29 @@ describe('ChatView', () => {
     })
 
     openComposerOptions(host)
-    const memoryButton = document.body.querySelector('button[title="Toggle memory"]') as HTMLButtonElement | null
+    const memoryButton = document.body.querySelector('button[aria-label="Memory"]') as HTMLButtonElement | null
     expect(memoryButton).toBeTruthy()
     expect(memoryButton?.disabled).toBe(false)
-    expect(memoryButton?.getAttribute('aria-pressed')).toBe('true')
 
     act(() => {
       memoryButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(setSessionMemoryEnabled).toHaveBeenCalledWith('chat-1', false)
+    const balanced = Array.from(document.body.querySelectorAll('button[role="option"]')).find((button) => button.textContent?.includes('Balanced'))
+    act(() => {
+      balanced?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(setSessionMemoryLevel).toHaveBeenCalledWith('chat-1', 'balanced')
+
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '/memory open')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(setSessionMemoryLevel).toHaveBeenLastCalledWith('chat-1', 'open')
 
     act(() => {
       root.unmount()
@@ -2605,6 +2740,44 @@ describe('ChatView', () => {
     })
     host.remove()
     useAppStore.setState({ openSessionWorkspace: originalOpenSessionWorkspace })
+  })
+
+  it('expires successful workspace feedback but keeps errors until dismissed', async () => {
+    vi.useFakeTimers()
+    const originalEditor = useAppStore.getState().openSessionWorkspaceEditor
+    const originalTerminal = useAppStore.getState().openSessionTerminal
+    useAppStore.setState({
+      openSessionWorkspaceEditor: vi.fn(() => Promise.resolve(true)),
+      openSessionTerminal: vi.fn(() => Promise.resolve(false)),
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    await act(async () => {
+      ;(host.querySelector('button[aria-label="Open workspace in configured editor"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('[role="status"]')?.textContent).toContain('Opened workspace editor.')
+    expect(host.querySelector('button[aria-label="Dismiss workspace action message"]')).toBeTruthy()
+    act(() => vi.advanceTimersByTime(5000))
+    expect(host.textContent).not.toContain('Opened workspace editor.')
+
+    await act(async () => {
+      ;(host.querySelector('button[aria-label="Open a terminal at the workspace location"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    expect(Array.from(host.querySelectorAll('[role="alert"]')).some((alert) => alert.textContent?.includes('Failed to open terminal.'))).toBe(true)
+    act(() => vi.advanceTimersByTime(6000))
+    expect(host.textContent).toContain('Failed to open terminal.')
+    act(() => (host.querySelector('button[aria-label="Dismiss workspace action message"]') as HTMLButtonElement).click())
+    expect(host.textContent).not.toContain('Failed to open terminal.')
+
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ openSessionWorkspaceEditor: originalEditor, openSessionTerminal: originalTerminal })
+    vi.useRealTimers()
   })
 
   it('clears transient worktree action messages when the active chat changes', async () => {

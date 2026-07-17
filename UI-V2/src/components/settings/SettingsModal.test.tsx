@@ -35,6 +35,7 @@ describe('SettingsModal memory settings', () => {
         },
       ],
       memoryEnabledDefault: true,
+      memoryLevelDefault: 'strict',
       memoryIdleDelaySeconds: 120,
       memoryRecallBudgetBytes: 4096,
       goalMaxLoopIterations: 200,
@@ -231,6 +232,23 @@ describe('SettingsModal memory settings', () => {
 
     expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ goalMaxLoopIterations: 0 })
 
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('updates the default memory selectivity level', () => {
+    const { host, root } = renderModal()
+    openMemorySettingsSection(host)
+    const select = host.querySelector('select[aria-label="Default memory level"]') as HTMLSelectElement | null
+    expect(select?.value).toBe('strict')
+
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set
+      valueSetter?.call(select, 'balanced')
+      select?.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ memoryLevelDefault: 'balanced' })
     act(() => root.unmount())
     host.remove()
   })

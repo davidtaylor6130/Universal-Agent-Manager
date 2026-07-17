@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "common/runtime/acp/acp_goal_loop.h"
 
 using namespace uam_test;
 
@@ -608,6 +609,57 @@ UAM_TEST(AcpGoalWatchdogIgnoresFreshGoalsAndBusySessions)
 
 	// Engaged goal but recent activity: not resumed.
 	UAM_ASSERT(!uam::ResumeStalledGoalLoopForTests(app, *raw_session, app.chats.front(), 2.0));
+}
+
+UAM_TEST(AcpProviderManagedGoalSkipsUamLoopCompletesAndPersistsOwner)
+{
+	TempDir temp("uam-provider-managed-goal");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "chat-provider-goal";
+	chat.provider_id = "codex-cli";
+	chat.messages.push_back({MessageRole::User, "/goal Keep this literal", "now"});
+	chat.messages.push_back({MessageRole::Assistant, "Completed by provider.", "now"});
+	app.chats.push_back(std::move(chat));
+
+	std::string goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, app.chats.front().id, "Keep this literal", 100, &goal_id, "provider", "/goal"));
+	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, app.chats.front().id, goal_id));
+	Goal& goal = app.chats.front().goals.front();
+	goal.loop_count = 7;
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = app.chats.front().id;
+	session->provider_id = "codex-cli";
+	session->session_ready = true;
+	session->processing = true;
+	session->turn_user_message_index = 0;
+	session->turn_assistant_message_index = 1;
+	session->last_runtime_activity_time_s = 1.0;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(!uam::ResumeStalledGoalLoopForTests(app, *raw_session, app.chats.front(), 100.0));
+	uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, *raw_session, app.chats.front(), "ready", nullptr);
+	UAM_ASSERT_EQ(goal.status, GoalStatus::Complete);
+	UAM_ASSERT(app.chats.front().active_goal_id.empty());
+	UAM_ASSERT(raw_session->queued_prompt.empty());
+	UAM_ASSERT(raw_session->queued_user_prompts.empty());
+	UAM_ASSERT_EQ(goal.loop_count, 7);
+
+	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, app.chats.front().id, goal_id));
+	std::string cancel_error;
+	UAM_ASSERT(uam::CancelAcpTurn(app, app.chats.front().id, &cancel_error));
+	UAM_ASSERT_EQ(goal.status, GoalStatus::Paused);
+	UAM_ASSERT(app.chats.front().active_goal_id.empty());
+
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(app.data_root);
+	UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(loaded.front().goals.front().execution_owner, std::string("provider"));
+	UAM_ASSERT_EQ(loaded.front().goals.front().provider_command, std::string("/goal"));
 }
 
 // NOTE: The former BuildPrompt/BuildCommand goal-context tests were removed with the

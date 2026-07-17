@@ -3,6 +3,7 @@
 #include "common/chat/chat_ids.h"
 #include "common/chat/message_attachment_json.h"
 #include "common/config/approval_modes.h"
+#include "common/memory/memory_levels.h"
 #include "common/security/command_safety.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
@@ -103,6 +104,7 @@ namespace
 	constexpr std::string_view kChatReasoningEffortField = "reasoning_effort";
 	constexpr std::string_view kChatServiceTierField = "service_tier";
 	constexpr std::string_view kChatExtraFlagsField = "extra_flags";
+	constexpr std::string_view kChatMemoryLevelField = "memory_level";
 	constexpr std::string_view kChatMemoryEnabledField = "memory_enabled";
 	constexpr std::string_view kChatMemoryLastProcessedMessageCountField = "memory_last_processed_message_count";
 	constexpr std::string_view kChatMemoryLastProcessedAtField = "memory_last_processed_at";
@@ -635,7 +637,7 @@ namespace
 
 	bool ChatMemoryFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
 	{
-		if (lhs.memory_enabled != rhs.memory_enabled || lhs.memory_last_processed_message_count != rhs.memory_last_processed_message_count)
+		if (lhs.memory_level != rhs.memory_level || lhs.memory_enabled != rhs.memory_enabled || lhs.memory_last_processed_message_count != rhs.memory_last_processed_message_count)
 		{
 			return false;
 		}
@@ -732,6 +734,8 @@ namespace
 		chat.service_tier = JsonStringOrEmpty(root.Find(kChatServiceTierField));
 		chat.extra_flags = JsonStringOrEmpty(root.Find(kChatExtraFlagsField));
 		chat.memory_enabled = JsonBoolOrDefault(root.Find(kChatMemoryEnabledField), true);
+		chat.memory_level = uam::memory_levels::Normalize(JsonStringOrEmpty(root.Find(kChatMemoryLevelField)), chat.memory_enabled);
+		chat.memory_enabled = uam::memory_levels::IsEnabled(chat.memory_level);
 		chat.memory_last_processed_message_count = NonNegativeIntFieldOrZero(root.Find(kChatMemoryLastProcessedMessageCountField));
 		chat.memory_last_processed_at = JsonStringOrEmpty(root.Find(kChatMemoryLastProcessedAtField));
 
@@ -763,6 +767,8 @@ namespace
 				goal.loop_count = NonNegativeIntFieldOrZero(goal_obj.Find("loopCount"));
 				goal.created_at = JsonStringOrEmpty(goal_obj.Find("createdAt"));
 				goal.updated_at = JsonStringOrEmpty(goal_obj.Find("updatedAt"));
+				goal.execution_owner = JsonStringOrEmpty(goal_obj.Find("executionOwner")) == "provider" ? "provider" : "uam";
+				goal.provider_command = goal.execution_owner == "provider" ? JsonStringOrEmpty(goal_obj.Find("providerCommand")) : "";
 				chat.goals.push_back(std::move(goal));
 			}
 		}
@@ -934,7 +940,9 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 	uam::json::SetString(root, kChatReasoningEffortField, chat.reasoning_effort);
 	uam::json::SetString(root, kChatServiceTierField, chat.service_tier);
 	uam::json::SetString(root, kChatExtraFlagsField, chat.extra_flags);
-	uam::json::SetBool(root, kChatMemoryEnabledField, chat.memory_enabled);
+	const std::string memory_level = uam::memory_levels::Normalize(chat.memory_level, chat.memory_enabled);
+	uam::json::SetString(root, kChatMemoryLevelField, memory_level);
+	uam::json::SetBool(root, kChatMemoryEnabledField, uam::memory_levels::IsEnabled(memory_level));
 	uam::json::SetNumber(root, kChatMemoryLastProcessedMessageCountField, static_cast<double>(chat.memory_last_processed_message_count));
 	uam::json::SetString(root, kChatMemoryLastProcessedAtField, chat.memory_last_processed_at);
 
@@ -986,6 +994,8 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 			uam::json::SetNumber(goal_obj, "loopCount", static_cast<double>(goal.loop_count));
 			uam::json::SetString(goal_obj, "createdAt", goal.created_at);
 			uam::json::SetString(goal_obj, "updatedAt", goal.updated_at);
+			uam::json::SetString(goal_obj, "executionOwner", goal.execution_owner == "provider" ? "provider" : "uam");
+			uam::json::SetString(goal_obj, "providerCommand", goal.execution_owner == "provider" ? goal.provider_command : "");
 			uam::json::PushValue(goals_arr, std::move(goal_obj));
 		}
 		uam::json::SetValue(root, "goals", std::move(goals_arr));
@@ -1159,6 +1169,7 @@ namespace
 		hydrated.reasoning_effort = summary.reasoning_effort;
 		hydrated.service_tier = summary.service_tier;
 		hydrated.extra_flags = summary.extra_flags;
+		hydrated.memory_level = summary.memory_level;
 		hydrated.memory_enabled = summary.memory_enabled;
 		hydrated.memory_last_processed_message_count = summary.memory_last_processed_message_count;
 		hydrated.memory_last_processed_at = summary.memory_last_processed_at;

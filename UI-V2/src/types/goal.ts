@@ -19,4 +19,6 @@ export interface Goal {
   loopCount?: number
   createdAt: Date
   updatedAt: Date
+	executionOwner?: 'uam' | 'provider'
+	providerCommand?: string
 }

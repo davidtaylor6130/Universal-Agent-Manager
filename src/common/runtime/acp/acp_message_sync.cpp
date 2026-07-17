@@ -1,5 +1,6 @@
 #include "common/runtime/acp/acp_session_internal.h"
 
+#include "common/runtime/acp/acp_statuses.h"
 #include "common/utils/string_utils.h"
 
 #include <cstddef>
@@ -154,6 +155,20 @@ bool SyncAcpToolCallsToAssistantMessage(ChatSession& chat, AcpSessionState& sess
 		chat.updated_at = AcpTimestampNow();
 	}
 	return changed;
+}
+
+bool FinalizeActiveAcpToolCallsAsCancelled(ChatSession& chat, AcpSessionState& session)
+{
+	bool changed = false;
+	for (AcpToolCallState& tool_call : session.tool_calls)
+	{
+		if (uam::acp_statuses::IsActiveStatus(tool_call.status))
+		{
+			tool_call.status = uam::acp_statuses::kCancelled;
+			changed = true;
+		}
+	}
+	return changed && SyncAcpToolCallsToAssistantMessage(chat, session, true);
 }
 
 MessagePlanEntry PersistedPlanEntryFromAcpPlanEntry(const AcpPlanEntryState& entry)

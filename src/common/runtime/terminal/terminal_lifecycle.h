@@ -10,7 +10,16 @@ namespace uam
 {
 
 inline constexpr double kCliTerminalDefaultIdleShutdownTimeoutSeconds = 60.0;
+inline constexpr double kCliTerminalSteerRestartTimeoutSeconds = 3.0;
+inline constexpr double kCliTerminalSteerFailureTimeoutSeconds = 10.0;
 inline constexpr std::string_view kCliTerminalQuitCommand = "/quit\r\n";
+
+enum class CliTerminalSteerRecoveryAction
+{
+	None,
+	Restart,
+	ReportTimeout,
+};
 
 enum class CliTerminalStopMode
 {
@@ -20,6 +29,10 @@ enum class CliTerminalStopMode
 
 void CloseCliTerminalHandles(CliTerminalState& terminal);
 bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, std::size_t len);
+std::string BuildCliTerminalPromptInput(std::string_view prompt);
+bool RequestCliTerminalSteer(CliTerminalState& terminal, std::string_view prompt, bool retry, std::string* error_out = nullptr);
+bool TryDeliverPendingCliTerminalSteer(CliTerminalState& terminal);
+CliTerminalSteerRecoveryAction CliTerminalSteerRecovery(const CliTerminalState& terminal, double now_seconds);
 const char* CliTerminalLifecycleStateLabel(CliTerminalLifecycleState state);
 const char* CliTerminalLifecycleStateLabel(const CliTerminalState& terminal);
 bool CliTerminalLifecycleIsProcessing(const CliTerminalState& terminal);

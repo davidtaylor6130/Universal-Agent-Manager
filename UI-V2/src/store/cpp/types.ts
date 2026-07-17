@@ -6,6 +6,7 @@ import type { Attachment, MessageBlock } from '../../types/message'
 import type { GoalStatus } from '../../types/goal'
 import type { StoredTheme } from '../../utils/themeStorage'
 import type { ResourceCollection } from '../../types/resourceCollection'
+import type { MemoryLevel } from '../../types/memory'
 
 export type CliLifecycleState = 'disabled' | 'stopped' | 'idle' | 'busy' | 'shuttingDown'
 export type AcpLifecycleState =
@@ -67,6 +68,7 @@ export interface CppChat {
   autoApproveCommands?: boolean
   commandSafetyTier?: 'low' | 'medium' | 'high'
   memoryEnabled?: boolean
+  memoryLevel?: MemoryLevel
   memoryLastProcessedMessageCount?: number
   memoryLastProcessedAt?: string
   workspaceDirectory?: string
@@ -91,6 +93,7 @@ export interface CppChat {
     processing?: boolean
     readySinceLastSelect?: boolean
     active?: boolean
+    pendingSteer?: boolean
     lastError: string
   }
   acpSession?: CppAcpSession
@@ -117,11 +120,14 @@ export interface CppGoal {
   loopCount?: number
   createdAt: string
   updatedAt: string
+	executionOwner?: 'uam' | 'provider'
+	providerCommand?: string
 }
 
 export interface GitWorktreeStatus {
   isGitRepository: boolean
   isSvnWorkspace: boolean
+	managedRepository: boolean
   isolated: boolean
   sourceDirty: boolean
   worktreeDirty: boolean
@@ -271,6 +277,7 @@ export interface CppAcpSession {
   availableModes?: AcpMode[]
   currentModeId?: string
   availableModels?: AcpModel[]
+  modelsLoading?: boolean
   currentModelId?: string
   turnEvents?: AcpTurnEvent[]
   turnUserMessageIndex?: number
@@ -329,6 +336,7 @@ export interface CppProvider {
   supportsStructured?: boolean
   structuredProtocol?: string
   npmPackageName?: string
+	nativeGoalCommand?: string
 }
 
 export interface MemoryWorkerBinding {
@@ -341,6 +349,7 @@ export interface ProviderChatDefaults {
   approvalMode: string
   autoApproveCommands: boolean
   memoryEnabled: boolean
+  memoryLevel?: MemoryLevel
   reasoningEffort: string
   serviceTier: string
 }
@@ -401,6 +410,7 @@ export interface CppSettings {
   activeProviderId: string
   theme: StoredTheme
   memoryEnabledDefault: boolean
+  memoryLevelDefault?: MemoryLevel
   memoryIdleDelaySeconds: number
   memoryRecallBudgetBytes: number
   goalMaxLoopIterations: number
@@ -520,6 +530,7 @@ export interface CliBinding {
   processing: boolean
   readySinceLastSelect: boolean
   active: boolean
+  pendingSteer?: boolean
   lastError: string
 }
 
@@ -544,6 +555,7 @@ export interface AcpBinding {
   availableModes: AcpMode[]
   currentModeId: string
   availableModels: AcpModel[]
+  modelsLoading?: boolean
   currentModelId: string
   turnEvents: AcpTurnEvent[]
   turnUserMessageIndex: number

@@ -70,6 +70,9 @@ namespace uam
 		CliTerminalLifecycleState lifecycle_state = CliTerminalLifecycleState::Stopped;
 		std::string recent_output_bytes;
 		std::string last_native_history_snapshot_digest;
+		std::string pending_steer_prompt;
+		double pending_steer_started_time_s = 0.0;
+		bool pending_steer_restart_attempted = false;
 		std::string last_error;
 	};
 
@@ -197,6 +200,7 @@ namespace uam
 		bool append_user_message = true;
 		bool goal_mode = false;
 		std::string goal_id;
+		bool priority_steer = false;
 	};
 
 	struct AcpSessionState : public platform::StdioProcessPlatformFields
@@ -216,6 +220,7 @@ namespace uam
 		bool waiting_for_permission = false;
 		bool waiting_for_user_input = false;
 		bool cancel_requested = false;
+		double cancel_requested_time_s = 0.0;
 		int next_request_id = 1;
 		int initialize_request_id = 0;
 		int session_setup_request_id = 0;

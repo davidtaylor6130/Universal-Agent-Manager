@@ -90,6 +90,7 @@ void ResetAcpRuntimeState(AcpSessionState& session)
 	session.load_session_supported = false;
 	session.processing = false;
 	session.cancel_requested = false;
+	session.cancel_requested_time_s = 0.0;
 	session.next_request_id = 1;
 	session.initialize_request_id = 0;
 	session.session_setup_request_id = 0;
@@ -452,6 +453,7 @@ void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_sta
 	session.prompt_request_id = 0;
 	session.processing = false;
 	session.cancel_requested = false;
+	session.cancel_requested_time_s = 0.0;
 	session.queued_prompt.clear();
 	session.current_assistant_message_index = -1;
 	session.codex_turn_id.clear();
@@ -473,6 +475,7 @@ bool QueueGoalInternalPrompt(AcpSessionState& session, ChatSession& chat, const 
 	AppendGoalLoopDiagnostic(session, review_turn ? "queue_review" : "queue_worker_continuation", session.goal_review_goal_id, prompt);
 	session.processing = true;
 	session.cancel_requested = false;
+	session.cancel_requested_time_s = 0.0;
 	session.current_assistant_message_index = -1;
 	session.turn_user_message_index = -1;
 	session.turn_assistant_message_index = -1;

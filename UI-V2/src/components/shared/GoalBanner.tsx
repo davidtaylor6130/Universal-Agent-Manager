@@ -87,6 +87,9 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRemove }: Go
         <StatusDot tone={tone} pulse={goal.status === 'active'} size={7} />
         {statusLabel(goal.status)}
       </span>
+	  <span className="text-[11px] flex-shrink-0" style={{ color: 'var(--text-3)' }}>
+		{goal.executionOwner === 'provider' ? 'Provider managed' : 'UAM managed'}
+	  </span>
 
       {/* Objective + optional blocker */}
       <div className="min-w-0 flex-1">

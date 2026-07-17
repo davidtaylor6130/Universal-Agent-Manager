@@ -1,9 +1,9 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { AlertTriangle } from 'lucide-react'
+import { AlertTriangle, Zap } from 'lucide-react'
 import { Session } from '../../types/session'
 import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF, isCefContext } from '../../ipc/cefBridge'
@@ -22,6 +22,7 @@ interface StartCliTerminalResponse {
   lifecycleState?: CliLifecycleState | string
   turnState?: 'idle' | 'busy' | string
   lastError?: string
+  pendingSteer?: boolean
   replayData?: string
 }
 
@@ -80,9 +81,45 @@ export function CLIView({ session }: CLIViewProps) {
   const cliBinding = useAppStore(useShallow((s) => s.cliBindingBySessionId[session.id]))
   const cliTranscript = useAppStore(useShallow((s) => s.cliTranscriptBySessionId[session.id]))
   const setCliBinding = useAppStore((s) => s.setCliBinding)
+  const [steerDraft, setSteerDraft] = useState('')
+  const [steerSubmitting, setSteerSubmitting] = useState(false)
+  const pendingSteerWasSeenRef = useRef(false)
   const currentProviderId = session.providerId?.trim() || DEFAULT_PROVIDER_ID
   const providerSupported = providers.some((provider) => provider.id === currentProviderId)
   const unsupportedProviderMessage = `Provider '${currentProviderId}' is not supported in this build. Switch this chat to Gemini CLI to use terminal mode.`
+
+  useEffect(() => {
+    if (cliBinding?.pendingSteer) pendingSteerWasSeenRef.current = true
+    else if (pendingSteerWasSeenRef.current) {
+      pendingSteerWasSeenRef.current = false
+      setSteerDraft('')
+    }
+  }, [cliBinding?.pendingSteer])
+
+  const steerTerminal = async () => {
+    const text = steerDraft.trim()
+    if (!text || steerSubmitting || !isCefContext()) return
+    setSteerSubmitting(true)
+    const response = await sendToCEF<StartCliTerminalResponse>({
+      action: 'steerCliTerminal',
+      payload: {
+        chatId: cliBinding?.boundChatId ?? session.id,
+        terminalId: cliBinding?.terminalId ?? '',
+        text,
+        retry: Boolean(cliBinding?.pendingSteer),
+      },
+    })
+    if (!response.ok) {
+      setSteerSubmitting(false)
+      return
+    }
+    const pendingSteer = Boolean(response.data?.pendingSteer)
+    setCliBinding(session.id, { pendingSteer, lastError: response.data?.lastError ?? '' })
+    setSteerSubmitting(false)
+    if (!pendingSteer) {
+      setSteerDraft('')
+    }
+  }
 
   useEffect(() => {
     if (!providerSupported) return
@@ -218,6 +255,7 @@ export function CLIView({ session }: CLIViewProps) {
             lifecycleState,
             processing,
             active: lifecycleState === 'idle' && running,
+            pendingSteer: Boolean(data.pendingSteer),
             turnState: processing ? 'busy' : 'idle',
             lastError: data.lastError ?? '',
           })
@@ -395,6 +433,32 @@ export function CLIView({ session }: CLIViewProps) {
       >
         <div ref={terminalRef} className="h-full" />
       </div>
+      {(cliBinding?.processing || cliBinding?.pendingSteer) && (
+        <div className="flex flex-shrink-0 items-center gap-2 px-3 py-2" style={{ borderTop: '1px solid var(--border)', background: 'var(--surface)' }}>
+          <input
+            aria-label="Terminal steering prompt"
+            value={steerDraft}
+            onChange={(event) => setSteerDraft(event.target.value)}
+            onKeyDown={(event) => { if (event.key === 'Enter') void steerTerminal() }}
+            placeholder="Interrupt and send a new instruction"
+            className="min-w-0 flex-1 text-xs"
+            style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)', padding: '7px 9px' }}
+          />
+          <button
+            type="button"
+            title="Interrupt the terminal turn and send this prompt next"
+            aria-label={steerSubmitting || (cliBinding?.pendingSteer && !cliBinding.lastError) ? 'Steering terminal prompt' : 'Steer terminal now'}
+            aria-busy={steerSubmitting || (cliBinding?.pendingSteer && !cliBinding.lastError)}
+            disabled={!steerDraft.trim() || steerSubmitting || Boolean(cliBinding?.pendingSteer && !cliBinding.lastError)}
+            onClick={() => void steerTerminal()}
+            className="uam-composer-action h-[30px] px-3 text-xs font-semibold inline-flex items-center justify-center gap-1.5"
+            style={{ borderRadius: 7, border: '1px solid color-mix(in srgb, var(--yellow) 48%, var(--border-bright))', background: 'color-mix(in srgb, var(--yellow) 12%, var(--surface))', color: 'var(--yellow)' }}
+          >
+            <Zap size={13} className={steerSubmitting ? 'animate-pulse' : undefined} aria-hidden />
+            {cliBinding?.pendingSteer ? 'Retry steer' : 'Steer now'}
+          </button>
+        </div>
+      )}
     </div>
   )
 }

@@ -3,9 +3,9 @@ import { X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { DEFAULT_PROVIDER_ID, providerRuntimeDescription } from '../../utils/providerMetadata'
+import { DEFAULT_PROVIDER_ID, providerCapabilities, providerRuntimeDescription } from '../../utils/providerMetadata'
 import { Button, IconButton, MenuSelect } from '../ui'
-import { buildModelOptions } from '../chat/modelOptions'
+import { buildCodexReasoningOptions, buildModelOptions, reasoningEffortForModel, selectedRuntimeModel } from '../chat/modelOptions'
 
 export function NewChatModal() {
   const addSession = useAppStore((s) => s.addSession)
@@ -14,6 +14,9 @@ export function NewChatModal() {
   const providers = useAppStore(useShallow((s) => s.providers))
   const defaultNewChatProviderId = useAppStore((s) => s.defaultNewChatProviderId)
   const providerChatDefaults = useAppStore(useShallow((s) => s.providerChatDefaults))
+	const sessions = useAppStore(useShallow((s) => s.sessions))
+	const acpBindingBySessionId = useAppStore(useShallow((s) => s.acpBindingBySessionId))
+  const discoverProviderModels = useAppStore((s) => s.discoverProviderModels)
   const newChatFolderId = useAppStore((s) => s.newChatFolderId)
   const initialFolderId =
     newChatFolderId !== null && folders.some((folder) => folder.id === newChatFolderId)
@@ -27,7 +30,9 @@ export function NewChatModal() {
       : providers[0]?.id ?? DEFAULT_PROVIDER_ID
   const [providerId, setProviderId] = useState(initialProviderId)
   const [modelId, setModelId] = useState(providerChatDefaults[initialProviderId]?.modelId ?? '')
+	const [reasoningEffort, setReasoningEffort] = useState(providerChatDefaults[initialProviderId]?.reasoningEffort ?? '')
   const nameRef = useRef<HTMLInputElement>(null)
+  const discoveryRequestedRef = useRef(new Set<string>())
 
   useEffect(() => {
     nameRef.current?.focus()
@@ -58,6 +63,7 @@ export function NewChatModal() {
       const nextProviderId = providers.some((provider) => provider.id === defaultNewChatProviderId) ? defaultNewChatProviderId : providers[0].id
       setProviderId(nextProviderId)
       setModelId(providerChatDefaults[nextProviderId]?.modelId ?? '')
+	  setReasoningEffort(providerChatDefaults[nextProviderId]?.reasoningEffort ?? '')
     }
   }, [providers, providerId, defaultNewChatProviderId, providerChatDefaults])
 
@@ -80,13 +86,26 @@ export function NewChatModal() {
     }
 
     const n = name.trim() || 'New chat'
-    addSession(n, folderId, providerId, modelId)
+	addSession(n, folderId, providerId, modelId, reasoningEffortForModel(cachedAcp, modelId, reasoningEffort))
   }
 
   const selectedFolder =
     (folderId !== null ? folders.find((f) => f.id === folderId) : null) ?? null
   const selectedProvider = providers.find((provider) => provider.id === providerId) ?? providers[0] ?? null
-  const modelOptions = buildModelOptions(undefined, modelId, selectedProvider ?? undefined, providerId)
+	const providerSessions = sessions.filter((session) => session.providerId === providerId)
+	const discoverySession = providerSessions[0]
+	const cachedAcp = providerSessions.map((session) => acpBindingBySessionId[session.id]).find((binding) => (binding?.availableModels.length ?? 0) > 0)
+	  ?? (discoverySession ? acpBindingBySessionId[discoverySession.id] : undefined)
+	const modelOptions = buildModelOptions(cachedAcp, modelId, selectedProvider ?? undefined, providerId)
+	const runtimeSupportsReasoning = (selectedRuntimeModel(cachedAcp, modelId)?.supportedReasoningEfforts?.length ?? 0) > 0
+	const reasoningOptions = providerCapabilities(providerId, selectedProvider ?? undefined).hasReasoningEffort || runtimeSupportsReasoning
+	  ? buildCodexReasoningOptions(cachedAcp, modelId, reasoningEffort)
+	  : []
+  useEffect(() => {
+    if (!discoverySession || cachedAcp?.modelsLoading || discoveryRequestedRef.current.has(providerId)) return
+    discoveryRequestedRef.current.add(providerId)
+    void discoverProviderModels(discoverySession.id)
+  }, [cachedAcp?.availableModels.length, cachedAcp?.modelsLoading, discoverProviderModels, discoverySession, providerId])
   const canCreate = selectedFolder !== null
 
   return (
@@ -176,13 +195,14 @@ export function NewChatModal() {
                 onChange={(nextProviderId) => {
                   setProviderId(nextProviderId)
                   setModelId(providerChatDefaults[nextProviderId]?.modelId ?? '')
+				  setReasoningEffort(providerChatDefaults[nextProviderId]?.reasoningEffort ?? '')
                 }}
               />
             </div>
           )}
 
           <div>
-            <div className="mb-1.5 text-xs font-medium" style={{ color: 'var(--text-2)' }}>Model</div>
+            <div className="mb-1.5 text-xs font-medium" style={{ color: 'var(--text-2)' }}>Model{cachedAcp?.modelsLoading ? ' · discovering…' : ''}</div>
             <MenuSelect
               label="Model"
               value={modelId}
@@ -191,9 +211,23 @@ export function NewChatModal() {
                 label: option.label,
                 description: option.detail,
               }))}
-              onChange={setModelId}
+			  onChange={(nextModelId) => {
+				setModelId(nextModelId)
+				setReasoningEffort(reasoningEffortForModel(cachedAcp, nextModelId, reasoningEffort))
+			  }}
             />
           </div>
+		  {reasoningOptions.length > 0 && (
+			<div>
+			  <div className="mb-1.5 text-xs font-medium" style={{ color: 'var(--text-2)' }}>Reasoning effort</div>
+			  <MenuSelect
+				label="Reasoning effort"
+				value={reasoningEffortForModel(cachedAcp, modelId, reasoningEffort)}
+				options={reasoningOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
+				onChange={setReasoningEffort}
+			  />
+			</div>
+		  )}
         </div>
 
         {/* Footer */}

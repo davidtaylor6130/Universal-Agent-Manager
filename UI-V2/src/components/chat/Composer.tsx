@@ -2,7 +2,7 @@
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
 
 import { KeyboardEvent as ReactKeyboardEvent, RefObject, useEffect, useId, useRef, useState } from 'react'
-import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Settings2, Target, ClipboardList, Shield, ShieldAlert, ShieldCheck, Sparkles, Mic, Square } from 'lucide-react'
+import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Settings2, Target, ClipboardList, Shield, ShieldAlert, ShieldCheck, Sparkles, Mic, Square, Zap } from 'lucide-react'
 import type { AcpBinding } from '../../store/useAppStore'
 import type { Goal } from '../../types/goal'
 import type { Provider } from '../../types/provider'
@@ -17,8 +17,10 @@ import {
   buildCodexSpeedOptions,
   buildModelOptions,
   modelOptionFor,
+  selectedRuntimeModel,
 } from './modelOptions'
 import { MenuSelect, ViewportMenu } from '../ui'
+import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 
 export type ComposerIconName = 'editor' | 'folder' | 'git-tree' | 'markdown' | 'plus' | 'send' | 'terminal'
 export type DictationState = 'idle' | 'starting' | 'listening' | 'stopping'
@@ -83,7 +85,7 @@ export function ComposerToolbar({
   permissionModes,
   autoApproveCommands,
   commandSafetyTier,
-  memoryEnabled,
+  memoryLevel,
   canChangeProvider,
   providerOpen,
   modelOpen,
@@ -103,7 +105,7 @@ export function ComposerToolbar({
   onToggleYolo,
   onSelectPermissionMode,
   onSetCommandSafetyTier,
-  onToggleMemory,
+  onSelectMemoryLevel,
   goalArmed,
   goalActive,
   goalPaused,
@@ -111,6 +113,8 @@ export function ComposerToolbar({
   onToggleGoal,
   onSetDefaultGoalTokenBudget,
   onStopRuntime,
+  onSteerNow,
+  steering,
   onAttachFile,
   onOpenMarkdownStore,
   dictationState,
@@ -133,7 +137,7 @@ export function ComposerToolbar({
   permissionModes: Array<{ id: string; name: string; description?: string }>
   autoApproveCommands: boolean
   commandSafetyTier: 'low' | 'medium' | 'high'
-  memoryEnabled: boolean
+  memoryLevel: MemoryLevel
   canChangeProvider: boolean
   providerOpen: boolean
   modelOpen: boolean
@@ -153,7 +157,7 @@ export function ComposerToolbar({
   onToggleYolo: () => void
   onSelectPermissionMode: (modeId: string) => void
   onSetCommandSafetyTier: (tier: 'low' | 'medium' | 'high') => void
-  onToggleMemory: () => void
+  onSelectMemoryLevel: (level: MemoryLevel) => void
   goalArmed: boolean
   goalActive: boolean
   goalPaused: boolean
@@ -161,6 +165,8 @@ export function ComposerToolbar({
   onToggleGoal: () => void
   onSetDefaultGoalTokenBudget: (value: number) => void
   onStopRuntime: () => void
+  onSteerNow: () => void
+  steering: boolean
   onAttachFile: () => void
   onOpenMarkdownStore: () => void
   dictationState: DictationState
@@ -171,7 +177,9 @@ export function ComposerToolbar({
   const caps = providerCapabilities(providerId, provider)
   const modelOptions = buildModelOptions(acp, modelId ?? '', provider, providerId)
   const currentModel = modelOptionFor(modelOptions, modelId)
-  const reasoningOptions = caps.hasReasoningEffort ? buildCodexReasoningOptions(acp, currentModel.id, reasoningEffort ?? '') : []
+  const runtimeSupportsReasoning = (selectedRuntimeModel(acp, currentModel.id)?.supportedReasoningEfforts?.length ?? 0) > 0
+  const reasoningOptions = caps.hasReasoningEffort || runtimeSupportsReasoning ? buildCodexReasoningOptions(acp, currentModel.id, reasoningEffort ?? '') : []
+  const hasReasoningEffort = reasoningOptions.length > 0
   const speedOptions = caps.hasServiceTier ? buildCodexSpeedOptions(acp, currentModel.id, serviceTier ?? '') : []
   const currentReasoning = modelOptionFor(reasoningOptions, reasoningEffort)
   const currentSpeed = modelOptionFor(speedOptions, serviceTier)
@@ -341,11 +349,11 @@ export function ComposerToolbar({
               <Target size={13} aria-hidden style={{ color: goalActive || goalArmed ? 'var(--purple)' : 'var(--text-3)' }} />
               <span>{goalArmed ? 'Goal: next message' : 'Goal'}</span>
             </button>
-            {(caps.hasReasoningEffort || caps.hasServiceTier) && (
+            {(hasReasoningEffort || caps.hasServiceTier) && (
               <>
                 <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
                 <div className="px-1 pb-0.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>Codex</div>
-                {caps.hasReasoningEffort && (
+                {hasReasoningEffort && (
                   <MenuSelect
                     label="Reasoning"
                     value={currentReasoning.id}
@@ -430,18 +438,13 @@ export function ComposerToolbar({
               <span>{autoLabel}</span>
             </button>
             <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
-            <button
-              type="button"
-              title="Toggle memory"
-              aria-pressed={memoryEnabled}
-              onClick={onToggleMemory}
+            <MenuSelect
+              label="Memory"
+              value={memoryLevel}
+              options={MEMORY_LEVEL_OPTIONS.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
+              onChange={(level) => onSelectMemoryLevel(level as MemoryLevel)}
               disabled={memoryDisabled}
-              className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
-              style={{ ...chipStyle, borderColor: memoryEnabled ? 'color-mix(in srgb, var(--green) 50%, var(--border))' : 'var(--border)', background: memoryEnabled ? 'color-mix(in srgb, var(--green) 14%, var(--surface))' : chipStyle.background, color: memoryEnabled ? 'var(--text)' : 'var(--text-2)', opacity: memoryDisabled ? 0.55 : 1 }}
-            >
-              <span style={{ color: memoryEnabled ? 'var(--green)' : 'var(--text-3)', fontSize: 10 }}>●</span>
-              <span>Memory</span>
-            </button>
+            />
             <button
               type="button"
               title="Open Markdown Store"
@@ -530,6 +533,7 @@ export function ComposerToolbar({
               }}
             >
               <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>Model</div>
+              {acp?.modelsLoading && <div role="status" className="px-2 py-1 text-[11px]" style={{ color: 'var(--accent)' }}>Discovering models…</div>}
               <div style={{ maxHeight: 520, overflowY: 'auto' }}>
                 {modelOptions.map((option, index) => {
                   const selected = option.id === currentModel.id
@@ -610,7 +614,7 @@ export function ComposerToolbar({
                   <span style={{ color: 'var(--text-3)' }}>Model</span>
                   <span>{currentModel.label}</span>
                 </div>
-                {caps.hasReasoningEffort && (
+                {hasReasoningEffort && (
                   <div className="flex justify-between gap-3">
                     <span style={{ color: 'var(--text-3)' }}>Reasoning</span>
                     <span>{currentReasoning.label}</span>
@@ -624,7 +628,7 @@ export function ComposerToolbar({
                 )}
                 <div className="flex justify-between gap-3">
                   <span style={{ color: 'var(--text-3)' }}>Memory</span>
-                  <span>{memoryEnabled ? 'On' : 'Off'}</span>
+                  <span>{MEMORY_LEVEL_OPTIONS.find((option) => option.id === memoryLevel)?.label ?? 'Strict'}</span>
                 </div>
                 <label className="grid gap-1">
                   <span style={{ color: 'var(--text-3)' }}>Goal token budget</span>
@@ -649,21 +653,35 @@ export function ComposerToolbar({
           )}
         </div>
         {running && (
-          <button
-            type="button"
-            title="Stop runtime"
-            aria-label="Stop runtime"
-            onClick={onStopRuntime}
-            className="uam-composer-action h-[30px] w-[34px] text-xs font-semibold inline-flex items-center justify-center"
-            style={{
-              borderRadius: 7,
-              border: '1px solid color-mix(in srgb, var(--red) 46%, var(--border-bright))',
-              background: 'color-mix(in srgb, var(--red) 14%, var(--surface))',
-              color: 'var(--red)',
-            }}
-          >
-            <span aria-hidden="true" style={{ width: 9, height: 9, borderRadius: 2, background: 'currentColor' }} />
-          </button>
+          <>
+            <button
+              type="button"
+              title="Stop runtime"
+              aria-label="Stop runtime"
+              onClick={onStopRuntime}
+              className="uam-composer-action h-[30px] w-[34px] text-xs font-semibold inline-flex items-center justify-center"
+              style={{
+                borderRadius: 7,
+                border: '1px solid color-mix(in srgb, var(--red) 46%, var(--border-bright))',
+                background: 'color-mix(in srgb, var(--red) 14%, var(--surface))',
+                color: 'var(--red)',
+              }}
+            >
+              <span aria-hidden="true" style={{ width: 9, height: 9, borderRadius: 2, background: 'currentColor' }} />
+            </button>
+            <button
+              type="button"
+              title="Interrupt the current turn and send this draft next"
+              aria-label={steering ? 'Steering prompt' : 'Steer now: interrupt the current turn and send this draft next'}
+              aria-busy={steering}
+              disabled={!canSend || steering}
+              onClick={onSteerNow}
+              className="uam-composer-action h-[30px] w-[34px] text-xs font-semibold inline-flex items-center justify-center"
+              style={{ borderRadius: 7, border: '1px solid color-mix(in srgb, var(--yellow) 48%, var(--border-bright))', background: 'color-mix(in srgb, var(--yellow) 12%, var(--surface))', color: 'var(--yellow)' }}
+            >
+              <Zap size={14} className={steering ? 'animate-pulse' : undefined} aria-hidden />
+            </button>
+          </>
         )}
         <button
           type="submit"

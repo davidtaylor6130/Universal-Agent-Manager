@@ -15,6 +15,10 @@ namespace uam::acp_detail
 
 void HandleSessionUpdate(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& params, CefRefPtr<CefBrowser> browser)
 {
+	if (uam::AcpSessionHasPendingCancel(session))
+	{
+		return;
+	}
 	const nlohmann::json update = JsonObjectValue(params, "update");
 	if (!update.is_object())
 	{

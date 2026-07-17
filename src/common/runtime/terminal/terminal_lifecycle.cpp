@@ -30,6 +30,93 @@ bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, std::size
 	return wrote;
 }
 
+std::string BuildCliTerminalPromptInput(std::string_view prompt)
+{
+	std::string safe;
+	safe.reserve(prompt.size() + 16);
+	for (const unsigned char ch : prompt)
+	{
+		if (ch == '\n' || ch == '\t' || ch >= 0x20) safe.push_back(static_cast<char>(ch));
+	}
+	safe = uam::strings::Trim(safe);
+	return safe.empty() ? std::string{} : "\x1b[200~" + safe + "\x1b[201~\r";
+}
+
+bool RequestCliTerminalSteer(CliTerminalState& terminal, std::string_view prompt, bool retry, std::string* error_out)
+{
+	if (error_out != nullptr) error_out->clear();
+	const std::string input = BuildCliTerminalPromptInput(prompt);
+	if (input.empty())
+	{
+		if (error_out != nullptr) *error_out = "Steering prompt is empty.";
+		return false;
+	}
+	if (!terminal.running)
+	{
+		if (error_out != nullptr) *error_out = "Terminal fallback is not running.";
+		return false;
+	}
+	if (!terminal.pending_steer_prompt.empty() && !retry)
+	{
+		if (error_out != nullptr) *error_out = "A terminal steering prompt is already pending.";
+		return false;
+	}
+	if (retry && !terminal.pending_steer_prompt.empty() && BuildCliTerminalPromptInput(terminal.pending_steer_prompt) != input)
+	{
+		if (error_out != nullptr) *error_out = "Retry must preserve the pending steering prompt.";
+		return false;
+	}
+
+	terminal.pending_steer_prompt = std::string(prompt);
+	terminal.pending_steer_started_time_s = GetAppTimeSeconds();
+	terminal.pending_steer_restart_attempted = false;
+	terminal.last_error.clear();
+	if (CliTerminalLifecycleIsIdleLive(terminal)) return TryDeliverPendingCliTerminalSteer(terminal);
+	constexpr char interrupt = '\x03';
+	if (!WriteToCliTerminal(terminal, &interrupt, 1))
+	{
+		terminal.last_error = "Failed to interrupt terminal fallback; steering prompt retained for retry.";
+		if (error_out != nullptr) *error_out = terminal.last_error;
+		return false;
+	}
+	return true;
+}
+
+bool TryDeliverPendingCliTerminalSteer(CliTerminalState& terminal)
+{
+	if (terminal.pending_steer_prompt.empty() || !CliTerminalLifecycleIsIdleLive(terminal)) return false;
+	const std::string input = BuildCliTerminalPromptInput(terminal.pending_steer_prompt);
+	if (input.empty() || !WriteToCliTerminal(terminal, input.data(), input.size()))
+	{
+		terminal.last_error = "Failed to deliver terminal steering prompt; prompt retained for retry.";
+		return false;
+	}
+	terminal.pending_steer_prompt.clear();
+	terminal.pending_steer_started_time_s = 0.0;
+	terminal.pending_steer_restart_attempted = false;
+	terminal.last_error.clear();
+	MarkCliTerminalTurnBusy(terminal);
+	return true;
+}
+
+CliTerminalSteerRecoveryAction CliTerminalSteerRecovery(const CliTerminalState& terminal, double now_seconds)
+{
+	if (terminal.pending_steer_prompt.empty() || terminal.pending_steer_started_time_s <= 0.0)
+	{
+		return CliTerminalSteerRecoveryAction::None;
+	}
+	const double wait_seconds = now_seconds - terminal.pending_steer_started_time_s;
+	if (!terminal.pending_steer_restart_attempted && wait_seconds >= kCliTerminalSteerRestartTimeoutSeconds)
+	{
+		return CliTerminalSteerRecoveryAction::Restart;
+	}
+	if (terminal.pending_steer_restart_attempted && wait_seconds >= kCliTerminalSteerFailureTimeoutSeconds && terminal.last_error.empty())
+	{
+		return CliTerminalSteerRecoveryAction::ReportTimeout;
+	}
+	return CliTerminalSteerRecoveryAction::None;
+}
+
 const char* CliTerminalLifecycleStateLabel(CliTerminalLifecycleState state)
 {
 	switch (state)

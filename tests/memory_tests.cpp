@@ -200,6 +200,59 @@ UAM_TEST(MemoryServiceSaveGateRequiresHighConfidenceAndEvidence)
 	UAM_ASSERT_EQ(app.memory_activity.last_created_count, 0);
 }
 
+UAM_TEST(MemoryServiceSelectivityLevelsControlPromptAndSaveGate)
+{
+	TempDir temp("uam-memory-levels");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const fs::path workspace = temp.root / "workspace";
+	fs::create_directories(workspace);
+
+	ChatSession chat = ChatDomainService().CreateNewChat("", "gemini-cli");
+	chat.id = "chat-memory-levels";
+	chat.workspace_directory = workspace.string();
+	chat.messages.push_back({MessageRole::User, "The project API prefix is /v2.", "now"});
+	app.chats.push_back(chat);
+
+	const std::string medium_fact = R"({"memories":[{"scope":"local","category":"Lessons/User_Lessons","title":"Project API prefix","memory":"The project API prefix is /v2.","evidence":"User stated the project API prefix is /v2.","confidence":"medium"}]})";
+	std::string error;
+	app.chats[0].memory_level = "strict";
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats[0], workspace, medium_fact, -1, &error));
+	UAM_ASSERT(!fs::exists(workspace / ".UAM" / "Lessons" / "User_Lessons" / "project-api-prefix.md"));
+	UAM_ASSERT(MemoryService::BuildWorkerPromptForTests(app.chats[0]).find("critical lesson") != std::string::npos);
+
+	app.chats[0].memory_level = "balanced";
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats[0], workspace, medium_fact, -1, &error));
+	UAM_ASSERT(fs::exists(workspace / ".UAM" / "Lessons" / "User_Lessons" / "project-api-prefix.md"));
+	UAM_ASSERT(MemoryService::BuildWorkerPromptForTests(app.chats[0]).find("medium-confidence") != std::string::npos);
+
+	const std::string low_progress = R"({"memories":[{"scope":"local","category":"Lessons/User_Lessons","title":"Current progress","memory":"The settings cleanup is unfinished and needs follow-up.","evidence":"The transcript says the cleanup is unfinished.","confidence":"low"}]})";
+	app.chats[0].memory_level = "open";
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats[0], workspace, low_progress, -1, &error));
+	UAM_ASSERT(fs::exists(workspace / ".UAM" / "Lessons" / "User_Lessons" / "current-progress.md"));
+	UAM_ASSERT(MemoryService::BuildWorkerPromptForTests(app.chats[0]).find("every directly supported useful") != std::string::npos);
+
+	const std::string sensitive = R"({"memories":[{"scope":"local","category":"Lessons/User_Lessons","title":"API token","memory":"The password is hunter2 and token is sk-secret-value.","evidence":"User supplied a password.","confidence":"high"}]})";
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats[0], workspace, sensitive, -1, &error));
+	UAM_ASSERT(!fs::exists(workspace / ".UAM" / "Lessons" / "User_Lessons" / "api-token.md"));
+
+	nlohmann::json invalid = {{"memories", nlohmann::json::array({
+	    {{"scope", "elsewhere"}, {"category", "Lessons/User_Lessons"}, {"title", "Unsafe scope"}, {"memory", "Valid text"}, {"evidence", "Direct evidence"}, {"confidence", "high"}},
+	    {{"scope", "local"}, {"category", "Lessons/User_Lessons"}, {"title", "Oversized entry"}, {"memory", std::string(1401, 'x')}, {"evidence", "Direct evidence"}, {"confidence", "high"}},
+	    {{"scope", "local"}, {"category", "Lessons/User_Lessons"}, {"title", "Extra field"}, {"memory", "Valid text"}, {"evidence", "Direct evidence"}, {"confidence", "high"}, {"unexpected", "value"}},
+	})}};
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats[0], workspace, invalid.dump(), -1, &error));
+	UAM_ASSERT(!fs::exists(workspace / ".UAM" / "Lessons" / "User_Lessons" / "unsafe-scope.md"));
+	UAM_ASSERT(!fs::exists(workspace / ".UAM" / "Lessons" / "User_Lessons" / "oversized-entry.md"));
+	UAM_ASSERT(!fs::exists(workspace / ".UAM" / "Lessons" / "User_Lessons" / "extra-field.md"));
+
+	const std::string tool_output = R"({"type":"item.completed","item":{"type":"command_execution","command":"cat secret.txt"}}
+{"memories":[{"scope":"local","category":"Lessons/User_Lessons","title":"Tool-derived memory","memory":"A structurally valid entry.","evidence":"Worker output.","confidence":"high"}]})";
+	UAM_ASSERT(!MemoryService::ApplyWorkerOutput(app, app.chats[0], workspace, tool_output, -1, &error));
+	UAM_ASSERT(error.find("tool or file access") != std::string::npos);
+	UAM_ASSERT(!fs::exists(workspace / ".UAM" / "Lessons" / "User_Lessons" / "tool-derived-memory.md"));
+}
+
 UAM_TEST(MemoryServiceSaveGateRejectsUnfinishedProgressMemory)
 {
 	TempDir temp("uam-memory-save-gate-unfinished");
@@ -937,6 +990,41 @@ UAM_TEST(MemoryServiceAutomaticGateSkipsLowSignalChatDelta)
 	UAM_ASSERT_EQ(app.memory_extraction_tasks.size(), static_cast<std::size_t>(0));
 	UAM_ASSERT_EQ(app.chats[0].memory_last_processed_message_count, 1);
 	UAM_ASSERT(app.memory_last_status.find("skipped low-signal") != std::string::npos);
+}
+
+UAM_TEST(MemoryServiceAutomaticScanGateUsesConfiguredSelectivity)
+{
+	TempDir temp("uam-memory-level-auto-gate");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.settings.memory_idle_delay_seconds = -1;
+	const double idle_started_at = std::max(0.001, uam::GetAppTimeSeconds());
+
+	for (const std::string& level : {std::string("off"), std::string("strict"), std::string("balanced"), std::string("open")})
+	{
+		ChatSession chat = ChatDomainService().CreateNewChat("", "gemini-cli");
+		chat.id = "chat-" + level;
+		chat.title = level;
+		chat.workspace_directory = temp.root.string();
+		chat.memory_level = level;
+		chat.memory_enabled = level != "off";
+		chat.messages.push_back({MessageRole::User, "The project API prefix is /v2.", "now"});
+		app.memory_idle_started_at_by_chat_id[chat.id] = idle_started_at;
+		app.chats.push_back(std::move(chat));
+	}
+
+	uam::AsyncMemoryExtractionTask running_task;
+	running_task.running = true;
+	running_task.chat_id = "other-chat";
+	running_task.state = std::make_shared<AsyncProcessTaskState>();
+	app.memory_extraction_tasks.push_back(std::move(running_task));
+
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(app.memory_extraction_queue[0].chat_id, std::string("chat-balanced"));
+	UAM_ASSERT_EQ(app.memory_extraction_queue[1].chat_id, std::string("chat-open"));
+	UAM_ASSERT_EQ(app.chats[1].memory_last_processed_message_count, 1);
+	MemoryService::StopMemoryTasks(app);
 }
 
 UAM_TEST(MemoryServiceAutomaticGateSkipsUnfinishedProgressOnlyChatDelta)

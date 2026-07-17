@@ -35,7 +35,9 @@ class GoalService
 	/// Returns true on success, false if chat not found.
 	/// </summary>
 	static bool CreateGoal(AppState& app, const std::string& chat_id, const std::string& objective,
-	                       int64_t token_budget, std::string* created_goal_id = nullptr);
+	                       int64_t token_budget, std::string* created_goal_id = nullptr,
+	                       std::string execution_owner = "uam", std::string provider_command = "");
+	static bool IsProviderManaged(const Goal& goal);
 
 	/// <summary>
 	/// Update the objective of an existing goal.

@@ -61,9 +61,25 @@ std::string IProviderRuntime::OnAcpValidateResumeId(const ChatSession& chat) con
 nlohmann::json IProviderRuntime::OnAcpBuildPrompt(uam::AcpSessionState& session, int request_id,
     const std::string& prompt, const ChatSession& chat, std::string& out_method) const
 {
-	(void)chat;
 	out_method = uam::acp_methods::kSessionPrompt;
-	return BuildPromptRequest(request_id, session.session_id, prompt);
+	std::string supported_effort;
+	for (const uam::AcpModelState& model : session.available_models)
+	{
+		if (model.id != chat.model_id)
+		{
+			continue;
+		}
+		for (const std::string& effort : model.supported_reasoning_efforts)
+		{
+			if (effort == chat.reasoning_effort)
+			{
+				supported_effort = effort;
+				break;
+			}
+		}
+		break;
+	}
+	return BuildPromptRequest(request_id, session.session_id, prompt, supported_effort);
 }
 
 nlohmann::json IProviderRuntime::OnAcpBuildCancel(const uam::AcpSessionState& session,

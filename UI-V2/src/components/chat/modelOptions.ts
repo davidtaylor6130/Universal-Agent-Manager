@@ -61,7 +61,7 @@ function modelOptionFromRuntime(model: AcpModel, useFriendlyLabels: boolean): Mo
   }
 }
 
-function codexSelectedRuntimeModel(acp: AcpBinding | undefined, modelId: string): AcpModel | undefined {
+export function selectedRuntimeModel(acp: AcpBinding | undefined, modelId: string): AcpModel | undefined {
   const models = acp?.availableModels ?? []
   return models.find((model) => model.id === modelId) ?? models.find((model) => Boolean(model.defaultReasoningEffort)) ?? models[0]
 }
@@ -133,16 +133,26 @@ export function labeledOption(id: string, labels: Record<string, Pick<ModelOptio
 }
 
 export function buildCodexReasoningOptions(acp: AcpBinding | undefined, modelId: string, selectedReasoningEffort = ''): ModelOption[] {
-  const runtimeModel = codexSelectedRuntimeModel(acp, modelId)
-  const runtimeEfforts = runtimeModel?.supportedReasoningEfforts ?? []
-  const base = runtimeEfforts.length > 0 ? runtimeEfforts : ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']
-  const ids = ['', ...base]
-  if (selectedReasoningEffort && !ids.includes(selectedReasoningEffort)) ids.push(selectedReasoningEffort)
-  return Array.from(new Set(ids)).map((id) => labeledOption(id, CODEX_REASONING_LABELS))
+	const runtimeModel = selectedRuntimeModel(acp, modelId)
+	const runtimeEfforts = runtimeModel?.supportedReasoningEfforts ?? []
+	if (runtimeModel && runtimeEfforts.length === 0) return []
+	const base = runtimeEfforts.length > 0 ? runtimeEfforts : ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']
+	const ids = runtimeModel ? [...base] : ['', ...base]
+	if (!runtimeModel && selectedReasoningEffort && !ids.includes(selectedReasoningEffort)) ids.push(selectedReasoningEffort)
+	return Array.from(new Set(ids)).map((id) => labeledOption(id, CODEX_REASONING_LABELS))
+}
+
+export function reasoningEffortForModel(acp: AcpBinding | undefined, modelId: string, currentEffort = '') {
+	const model = selectedRuntimeModel(acp, modelId)
+	if (!model) return currentEffort
+	const supported = model.supportedReasoningEfforts ?? []
+	if (supported.length === 0) return ''
+	if (supported.includes(currentEffort)) return currentEffort
+	return supported.includes(model.defaultReasoningEffort ?? '') ? model.defaultReasoningEffort ?? '' : supported[0]
 }
 
 export function buildCodexSpeedOptions(acp: AcpBinding | undefined, modelId: string, selectedServiceTier = ''): ModelOption[] {
-  const runtimeModel = codexSelectedRuntimeModel(acp, modelId)
+	const runtimeModel = selectedRuntimeModel(acp, modelId)
   const runtimeTiers = runtimeModel?.additionalSpeedTiers ?? []
   const ids = ['', ...new Set([...runtimeTiers, 'fast', 'flex'])]
   if (selectedServiceTier && !ids.includes(selectedServiceTier)) ids.push(selectedServiceTier)

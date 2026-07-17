@@ -157,6 +157,37 @@ describe('FolderTree', () => {
     host.remove()
   })
 
+  it('opens collection actions in a dismissible viewport menu without expanding the collection layout', () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {}; unobserve() {}; disconnect() {} })
+    useAppStore.setState({
+      resourceCollections: [{ id: 'work', name: 'Work', collapsed: false, references: [] }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const collection = host.querySelector('[data-testid="folder-collection-work"]') as HTMLElement
+    const trigger = collection.querySelector('button[aria-label="Actions for Work"]') as HTMLButtonElement
+    const childCount = collection.children.length
+    act(() => trigger.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+
+    const menu = document.body.querySelector('[role="menu"][aria-label="Work actions"]') as HTMLElement
+    expect(menu).toBeTruthy()
+    expect(collection.contains(menu)).toBe(false)
+    expect(collection.children).toHaveLength(childCount)
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    expect(document.activeElement?.textContent).toContain('Rename')
+
+    act(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    expect(document.body.querySelector('[aria-label="Work actions"]')).toBeNull()
+    expect(document.activeElement).toBe(trigger)
+
+    act(() => root.unmount())
+    host.remove()
+    vi.unstubAllGlobals()
+  })
+
   it('removes a workspace from its collection without deleting the workspace or chats', async () => {
     useAppStore.setState({
       resourceCollections: [{
@@ -472,7 +503,10 @@ describe('FolderTree', () => {
     const root = createRoot(host)
     act(() => root.render(<FolderTree searchQuery="" />))
 
-    const newFolder = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'New folder')
+    const actions = Array.from(host.querySelectorAll('button')).filter((button) => ['New workspace', 'New collection'].includes(button.textContent ?? ''))
+    expect(actions.map((button) => button.textContent)).toEqual(['New workspace', 'New collection'])
+    expect(actions[0].parentElement?.className).toContain('justify-center')
+    const newFolder = actions[0]
     act(() => newFolder?.click())
 
     expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' })

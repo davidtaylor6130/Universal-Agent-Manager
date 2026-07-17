@@ -107,7 +107,7 @@ ProviderProfile ProviderProfileStore::DefaultGeminiProfile()
 
 ProviderProfile ProviderProfileStore::DefaultCodexProfile()
 {
-	return MakeBuiltInCliProfile({
+	ProviderProfile profile = MakeBuiltInCliProfile({
 	    .id = uam::provider_ids::kCodexCli,
 	    .title = "Codex CLI",
 	    .interactive_command = "codex --no-alt-screen",
@@ -119,6 +119,8 @@ ProviderProfile ProviderProfileStore::DefaultCodexProfile()
 	    .user_message_types = {"user"},
 	    .assistant_message_types = {"assistant", "codex"},
 	});
+	profile.native_goal_command = "/goal";
+	return profile;
 }
 
 ProviderProfile ProviderProfileStore::DefaultClaudeProfile()

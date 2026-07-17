@@ -142,6 +142,7 @@ std::string AppendAssistantChunk(ChatSession& chat, AcpSessionState& session, co
 ToolCall PersistedToolCallFromAcpToolCall(const AcpToolCallState& tool_call);
 bool UpsertPersistedToolCall(std::vector<ToolCall>& tool_calls, const AcpToolCallState& tool_call);
 bool SyncAcpToolCallsToAssistantMessage(ChatSession& chat, AcpSessionState& session, bool create_if_missing);
+bool FinalizeActiveAcpToolCallsAsCancelled(ChatSession& chat, AcpSessionState& session);
 MessagePlanEntry PersistedPlanEntryFromAcpPlanEntry(const AcpPlanEntryState& entry);
 std::vector<MessagePlanEntry> PersistedPlanEntriesFromAcpPlanEntries(const std::vector<AcpPlanEntryState>& entries);
 bool MessagePlanEntriesEqual(const std::vector<MessagePlanEntry>& lhs, const std::vector<MessagePlanEntry>& rhs);
@@ -215,7 +216,7 @@ nlohmann::json BuildCodexThreadStartRequest(int request_id, const ChatSession& c
 nlohmann::json BuildCodexThreadResumeRequest(int request_id, const ChatSession& chat, const std::string& cwd);
 nlohmann::json BuildGeminiSessionSetupRequest(int request_id, const ChatSession& chat, const std::string& cwd, bool load_session_supported);
 nlohmann::json BuildCodexSessionSetupRequest(int request_id, const ChatSession& chat, const std::string& cwd);
-nlohmann::json BuildPromptRequest(int request_id, const std::string& session_id, const std::string& text);
+nlohmann::json BuildPromptRequest(int request_id, const std::string& session_id, const std::string& text, const std::string& reasoning_effort = "");
 nlohmann::json BuildCodexTurnStartRequest(int request_id, const std::string& thread_id, const std::string& text, const ChatSession& chat, const std::string& active_model_id);
 nlohmann::json BuildCancelNotification(const std::string& session_id);
 nlohmann::json BuildCodexTurnInterruptRequest(int request_id, const std::string& thread_id, const std::string& turn_id);

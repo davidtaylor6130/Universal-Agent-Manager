@@ -41,7 +41,7 @@ describe('UpdatesPanel', () => {
     expect(host.textContent).toContain('0.130.0')
 
     await act(async () => {
-      ;(Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Update now')) as HTMLButtonElement).click()
+      ;(host.querySelector('button[aria-label="Update Codex CLI to 0.130.0"]') as HTMLButtonElement).click()
     })
     expect(state.applyCliProviderVersion).toHaveBeenCalledWith('codex-cli', '0.130.0')
 
@@ -52,16 +52,21 @@ describe('UpdatesPanel', () => {
     act(() => root.unmount())
   })
 
-  it('renders an empty state and manual check action', async () => {
+  it('renders accessible icon-only footer actions and their loading state', async () => {
     const host = document.createElement('div')
     const root = createRoot(host)
     const state = monitor({ updates: [] })
     await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
     expect(host.textContent).toContain('Everything is up to date')
     await act(async () => {
-      ;(Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Check now')) as HTMLButtonElement).click()
+      ;(host.querySelector('button[aria-label="Check for updates"]') as HTMLButtonElement).click()
     })
     expect(state.checkNow).toHaveBeenCalledOnce()
+    await act(async () => root.render(<UpdatesPanel monitor={monitor({ updates: [], checking: true })} onClose={vi.fn()} />))
+    const checking = host.querySelector('button[aria-label="Checking for updates"]') as HTMLButtonElement
+    expect(checking.disabled).toBe(true)
+    expect(checking.getAttribute('aria-busy')).toBe('true')
+    expect(checking.querySelector('.animate-spin')).toBeTruthy()
     act(() => root.unmount())
   })
 })

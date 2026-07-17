@@ -543,7 +543,7 @@ bool Application::InitializeState()
 
 	// Initialize the provider model catalog service (async refresh for OpenCode Zen models).
 	m_app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
-	m_app.provider_model_catalog->Initialize(m_app.data_root);
+	m_app.provider_model_catalog->Initialize(m_app.data_root, m_app.provider_profiles, m_app.settings.provider_extra_flags);
 
 	ChatHistorySyncService().LoadSidebarChatsByDiscovery(m_app);
 	m_app.resource_collections = uam::ResourceCollectionService::Load(m_app.data_root);

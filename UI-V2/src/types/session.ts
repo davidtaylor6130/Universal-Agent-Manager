@@ -1,3 +1,5 @@
+import type { MemoryLevel } from './memory'
+
 export type ViewMode = 'chat' | 'cli'
 
 export interface Session {
@@ -23,6 +25,7 @@ export interface Session {
   autoApproveCommands?: boolean
   commandSafetyTier?: 'low' | 'medium' | 'high'
   memoryEnabled?: boolean
+  memoryLevel?: MemoryLevel
   memoryLastProcessedMessageCount?: number
   memoryLastProcessedAt?: string
   messageCount?: number

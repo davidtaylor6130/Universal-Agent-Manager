@@ -1,5 +1,7 @@
 #pragma once
 
+#include "common/memory/memory_levels.h"
+
 #include "common/config/approval_modes.h"
 #include "common/config/editor_file_associations.h"
 #include "common/config/settings_normalization.h"
@@ -53,6 +55,7 @@ namespace uam::settings_frontend_json
 			    {"approvalMode", uam::approval_modes::NormalizePersistedProviderDefaultApprovalMode(entry.second.approval_mode)},
 			    {"autoApproveCommands", entry.second.auto_approve_commands},
 			    {"memoryEnabled", entry.second.memory_enabled},
+			    {"memoryLevel", uam::memory_levels::Normalize(entry.second.memory_level, entry.second.memory_enabled)},
 			    {"reasoningEffort", uam::codex::NormalizeReasoningEffort(entry.second.reasoning_effort)},
 			    {"serviceTier", uam::codex::NormalizeServiceTier(entry.second.service_tier)},
 			};
@@ -89,6 +92,7 @@ namespace uam::settings_frontend_json
 		settings_json["activeProviderId"] = uam::provider_ids::NormalizeCliProviderAliasOrSelf(settings.active_provider_id);
 		settings_json["theme"] = uam::settings::NormalizeThemeId(settings.ui_theme);
 		settings_json["memoryEnabledDefault"] = settings.memory_enabled_default;
+		settings_json["memoryLevelDefault"] = uam::memory_levels::Normalize(settings.memory_level_default, settings.memory_enabled_default);
 		settings_json["memoryIdleDelaySeconds"] = std::clamp(settings.memory_idle_delay_seconds, uam::settings::kMinMemoryIdleDelaySeconds, uam::settings::kMaxMemoryIdleDelaySeconds);
 		settings_json["memoryRecallBudgetBytes"] = std::clamp(settings.memory_recall_budget_bytes, uam::settings::kMinMemoryRecallBudgetBytes, uam::settings::kMaxMemoryRecallBudgetBytes);
 		settings_json["goalMaxLoopIterations"] = std::max(0, settings.goal_max_loop_iterations);

@@ -17,6 +17,8 @@ describe('NewChatModal', () => {
       defaultNewChatProviderId: 'gemini-cli',
       providerChatDefaults: {},
       newChatFolderId: 'project',
+	  sessions: [],
+	  acpBindingBySessionId: {},
     })
   })
 
@@ -64,7 +66,8 @@ describe('NewChatModal', () => {
     const create = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Create chat')
     act(() => create?.click())
 
-    expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'codex-cli', 'gpt-5.4')
+	expect(host.querySelector<HTMLButtonElement>('button[aria-label="Reasoning effort"]')).toBeTruthy()
+	expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'codex-cli', 'gpt-5.4', '')
 
     act(() => root.unmount())
     host.remove()

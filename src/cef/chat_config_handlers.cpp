@@ -8,6 +8,7 @@
 #include "app/runtime_orchestration_services.h"
 #include "cef/cef_push.h"
 #include "common/config/approval_modes.h"
+#include "common/memory/memory_levels.h"
 #include "common/provider/codex/codex_options.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
@@ -21,6 +22,7 @@
 #include "common/utils/time_utils.h"
 
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <string>
 
 // ---------------------------------------------------------------------------
@@ -206,7 +208,33 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 		return;
 	}
 
-	if (chat->model_id == model_id)
+	std::string next_reasoning_effort;
+	if (session != nullptr)
+	{
+		for (const uam::AcpModelState& model : session->available_models)
+		{
+			if (model.id != model_id || model.supported_reasoning_efforts.empty())
+			{
+				continue;
+			}
+			next_reasoning_effort = model.supported_reasoning_efforts.front();
+			for (const std::string& effort : model.supported_reasoning_efforts)
+			{
+				if (effort == chat->reasoning_effort || (chat->reasoning_effort.empty() && effort == model.default_reasoning_effort))
+				{
+					next_reasoning_effort = effort;
+					break;
+				}
+				if (effort == model.default_reasoning_effort)
+				{
+					next_reasoning_effort = effort;
+				}
+			}
+			break;
+		}
+	}
+
+	if (chat->model_id == model_id && chat->reasoning_effort == next_reasoning_effort)
 	{
 		if (session != nullptr && session->running && !model_id.empty() && session->current_model_id != model_id)
 		{
@@ -223,13 +251,16 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 	}
 
 	const std::string previous_model_id = chat->model_id;
+	const std::string previous_reasoning_effort = chat->reasoning_effort;
 	const std::string previous_updated_at = chat->updated_at;
 	chat->model_id = model_id;
+	chat->reasoning_effort = next_reasoning_effort;
 	chat->updated_at = uam::time::TimestampNow();
 
 	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat model updated.", "Chat model changed in UI, but failed to save."))
 	{
 		chat->model_id = previous_model_id;
+		chat->reasoning_effort = previous_reasoning_effort;
 		chat->updated_at = previous_updated_at;
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat model."));
 		return;
@@ -242,6 +273,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 		if (!live_updated)
 		{
 			chat->model_id = previous_model_id;
+			chat->reasoning_effort = previous_reasoning_effort;
 			chat->updated_at = previous_updated_at;
 			(void)ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat model reverted.", "Chat model changed in UI, but failed to revert.");
 			cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live ACP model."));
@@ -256,18 +288,12 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
-	const std::string reasoning_effort = uam::codex::NormalizeReasoningEffort(payload.value("reasoningEffort", ""));
-	const std::string service_tier = uam::codex::NormalizeServiceTier(payload.value("serviceTier", ""));
+	std::string reasoning_effort = uam::codex::NormalizeReasoningEffort(payload.value("reasoningEffort", ""));
+	std::string service_tier = uam::codex::NormalizeServiceTier(payload.value("serviceTier", ""));
 
 	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
 	if (chat == nullptr)
 	{
-		return;
-	}
-
-	if (!uam::provider_ids::IsCliProviderAliasOf(chat->provider_id, uam::provider_ids::kCodexCli))
-	{
-		cb->Failure(409, "Codex reasoning and speed options are only available for Codex chats.");
 		return;
 	}
 
@@ -277,6 +303,37 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 	}
 
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat->id);
+	const bool is_codex = uam::provider_ids::IsCliProviderAliasOf(chat->provider_id, uam::provider_ids::kCodexCli);
+	const uam::AcpModelState* selected_model = nullptr;
+	if (session != nullptr)
+	{
+		for (const uam::AcpModelState& model : session->available_models)
+		{
+			if (model.id == chat->model_id)
+			{
+				selected_model = &model;
+				break;
+			}
+		}
+	}
+	if (!is_codex && (selected_model == nullptr || selected_model->supported_reasoning_efforts.empty()))
+	{
+		cb->Failure(409, "This provider model does not expose reasoning-effort options.");
+		return;
+	}
+	if (selected_model != nullptr && !selected_model->supported_reasoning_efforts.empty())
+	{
+		const auto requested = std::ranges::find(selected_model->supported_reasoning_efforts, reasoning_effort);
+		if (requested == selected_model->supported_reasoning_efforts.end())
+		{
+			const auto configured_default = std::ranges::find(selected_model->supported_reasoning_efforts, selected_model->default_reasoning_effort);
+			reasoning_effort = configured_default != selected_model->supported_reasoning_efforts.end() ? *configured_default : selected_model->supported_reasoning_efforts.front();
+		}
+	}
+	if (!is_codex)
+	{
+		service_tier.clear();
+	}
 	if (session != nullptr && AcpSessionBlocksModelChange(*session))
 	{
 		cb->Failure(409, "Cannot change Codex reasoning or speed while the structured runtime is busy.");
@@ -297,7 +354,7 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 	chat->service_tier = service_tier;
 	chat->updated_at = uam::time::TimestampNow();
 
-	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Codex chat options updated.", "Codex chat options changed in UI, but failed to save."))
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat model options updated.", "Chat model options changed in UI, but failed to save."))
 	{
 		chat->reasoning_effort = previous_reasoning_effort;
 		chat->service_tier = previous_service_tier;
@@ -492,13 +549,14 @@ void UamQueryHandler::HandleSetChatMemoryEnabled(CefRefPtr<CefBrowser> browser, 
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const bool enabled = payload.value("enabled", true);
+	const std::string requested_level = uam::memory_levels::Normalize(uam::nlohmann_json::TrimmedStringValueOr(payload, "memoryLevel", ""), enabled);
 	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
 	if (chat == nullptr)
 	{
 		return;
 	}
 
-	if (chat->memory_enabled == enabled)
+	if (chat->memory_level == requested_level && chat->memory_enabled == uam::memory_levels::IsEnabled(requested_level))
 	{
 		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Success("{}");
@@ -506,12 +564,15 @@ void UamQueryHandler::HandleSetChatMemoryEnabled(CefRefPtr<CefBrowser> browser, 
 	}
 
 	const bool previous = chat->memory_enabled;
+	const std::string previous_level = chat->memory_level;
 	const std::string previous_updated_at = chat->updated_at;
-	chat->memory_enabled = enabled;
+	chat->memory_level = requested_level;
+	chat->memory_enabled = uam::memory_levels::IsEnabled(requested_level);
 	chat->updated_at = uam::time::TimestampNow();
 	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat memory setting updated.", "Chat memory setting changed in UI, but failed to save."))
 	{
 		chat->memory_enabled = previous;
+		chat->memory_level = previous_level;
 		chat->updated_at = previous_updated_at;
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat memory setting."));
 		return;

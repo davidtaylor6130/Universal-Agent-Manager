@@ -2,6 +2,7 @@
 
 #include "common/config/approval_modes.h"
 #include "common/models/app_models.h"
+#include "common/memory/memory_levels.h"
 #include "common/provider/codex/codex_options.h"
 #include "common/provider/provider_ids.h"
 #include "common/utils/string_utils.h"
@@ -40,6 +41,8 @@ namespace uam::provider_chat_defaults
 		}
 		defaults.reasoning_effort = uam::codex::NormalizeReasoningEffort(defaults.reasoning_effort);
 		defaults.service_tier = uam::codex::NormalizeServiceTier(defaults.service_tier);
+		defaults.memory_level = uam::memory_levels::Normalize(defaults.memory_level, defaults.memory_enabled);
+		defaults.memory_enabled = uam::memory_levels::IsEnabled(defaults.memory_level);
 		return defaults;
 	}
 
@@ -51,7 +54,7 @@ namespace uam::provider_chat_defaults
 		{
 			return Normalize(found->second);
 		}
-		return ProviderChatDefaults{"", uam::approval_modes::kDefaultApprovalMode, false, settings.memory_enabled_default, "", ""};
+		return ProviderChatDefaults{"", uam::approval_modes::kDefaultApprovalMode, false, settings.memory_enabled_default, "", "", settings.memory_level_default};
 	}
 
 	inline void ApplyToChat(ChatSession& chat, ProviderChatDefaults defaults)
@@ -64,6 +67,7 @@ namespace uam::provider_chat_defaults
 		chat.model_id = defaults.model_id;
 		chat.approval_mode = defaults.approval_mode;
 		chat.auto_approve_commands = defaults.auto_approve_commands;
+		chat.memory_level = defaults.memory_level;
 		chat.memory_enabled = defaults.memory_enabled;
 		chat.reasoning_effort = defaults.reasoning_effort;
 		chat.service_tier = defaults.service_tier;

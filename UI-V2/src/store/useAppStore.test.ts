@@ -921,6 +921,7 @@ describe('useAppStore Gemini CLI slice', () => {
         approvalMode: 'default',
         autoApproveCommands: false,
         memoryEnabled: true,
+        memoryLevel: 'strict',
         reasoningEffort: '',
         serviceTier: '',
       },
@@ -987,6 +988,7 @@ describe('useAppStore Gemini CLI slice', () => {
         approvalMode: 'default',
         autoApproveCommands: false,
         memoryEnabled: true,
+        memoryLevel: 'strict',
         reasoningEffort: '',
         serviceTier: '',
       },
@@ -1030,6 +1032,7 @@ describe('useAppStore Gemini CLI slice', () => {
         approvalMode: 'plan',
         autoApproveCommands: true,
         memoryEnabled: false,
+        memoryLevel: 'off',
         reasoningEffort: 'high',
         serviceTier: 'fast',
       },
@@ -1454,6 +1457,7 @@ describe('useAppStore Gemini CLI slice', () => {
         approvalMode: 'acceptEdits',
         autoApproveCommands: true,
         memoryEnabled: false,
+        memoryLevel: 'off',
         reasoningEffort: 'xhigh',
         serviceTier: 'fast',
       },
@@ -1462,6 +1466,7 @@ describe('useAppStore Gemini CLI slice', () => {
         approvalMode: 'plan',
         autoApproveCommands: false,
         memoryEnabled: true,
+        memoryLevel: 'strict',
         reasoningEffort: '',
         serviceTier: '',
       },
@@ -1530,6 +1535,7 @@ describe('useAppStore Gemini CLI slice', () => {
         approvalMode: 'plan',
         autoApproveCommands: true,
         memoryEnabled: false,
+        memoryLevel: 'off' as const,
         reasoningEffort: 'high',
         serviceTier: 'fast',
       },
@@ -2263,8 +2269,9 @@ describe('useAppStore Gemini CLI slice', () => {
 
     await expect(useAppStore.getState().setSessionMemoryEnabled('chat-1', true)).resolves.toBe(true)
     expect(requests[0].action).toBe('setChatMemoryEnabled')
-    expect(requests[0].payload).toEqual({ chatId: 'chat-1', enabled: true })
+    expect(requests[0].payload).toEqual({ chatId: 'chat-1', enabled: true, memoryLevel: 'strict' })
     expect(useAppStore.getState().sessions[0].memoryEnabled).toBe(true)
+    expect(useAppStore.getState().sessions[0].memoryLevel).toBe('strict')
   })
 
   it('persists editor settings through CEF', async () => {
@@ -2711,6 +2718,29 @@ describe('useAppStore Gemini CLI slice', () => {
     const promptRequest = requests.find((request) => request.action === 'sendAcpPrompt')
     expect(promptRequest?.payload?.goalId).toBe('goal-1')
     expect(promptRequest?.payload?.goalMode).toBe(true)
+    expect(promptRequest?.payload?.steerNow).toBe(false)
+
+    await expect(useAppStore.getState().sendAcpPrompt('chat-1', 'steer now', [], true)).resolves.toBe(true)
+    expect(requests.at(-1)?.payload?.steerNow).toBe(true)
+  })
+
+  it('requests non-blocking provider model discovery and marks the selector loading', async () => {
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    ensureTestWindow().cefQuery = ((params: { request: string; onSuccess?: (response: string) => void }) => {
+      const parsed = JSON.parse(params.request)
+      requests.push(parsed)
+      params.onSuccess?.(JSON.stringify({ started: true, pending: true }))
+    }) as unknown as TestWindow['cefQuery']
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], availableModels: [], modelsLoading: false },
+      },
+    }))
+
+    await expect(useAppStore.getState().discoverProviderModels('chat-1')).resolves.toBe(true)
+    expect(requests).toContainEqual(expect.objectContaining({ action: 'discoverProviderModels', payload: { chatId: 'chat-1' } }))
+    expect(useAppStore.getState().acpBindingBySessionId['chat-1'].modelsLoading).toBe(true)
   })
 
   it('loads queued ACP prompt payloads and blocks provider switching until they clear', async () => {

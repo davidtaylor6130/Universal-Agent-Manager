@@ -20,6 +20,7 @@ import {
   type StoredTheme,
 } from '../../utils/themeStorage'
 import type { Provider } from '../../types/provider'
+import { MEMORY_LEVEL_OPTIONS } from '../../types/memory'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
 import { ChevronDown, ChevronRight, X, Check } from 'lucide-react'
@@ -235,6 +236,7 @@ export function SettingsModal() {
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen)
   const providers = useAppStore(useShallow((s) => s.providers))
   const memoryEnabledDefault = useAppStore((s) => s.memoryEnabledDefault)
+  const memoryLevelDefault = useAppStore((s) => s.memoryLevelDefault)
   const memoryIdleDelaySeconds = useAppStore((s) => s.memoryIdleDelaySeconds)
   const memoryRecallBudgetBytes = useAppStore((s) => s.memoryRecallBudgetBytes)
   const goalMaxLoopIterations = useAppStore((s) => s.goalMaxLoopIterations)
@@ -375,6 +377,7 @@ export function SettingsModal() {
       modelId: saved?.modelId ?? '',
       approvalMode: saved?.approvalMode ?? 'default',
       autoApproveCommands: saved?.autoApproveCommands ?? false,
+      memoryLevel: saved?.memoryLevel ?? memoryLevelDefault,
       memoryEnabled: saved?.memoryEnabled ?? memoryEnabledDefault,
       reasoningEffort: saved?.reasoningEffort ?? '',
       serviceTier: saved?.serviceTier ?? '',
@@ -964,13 +967,21 @@ export function SettingsModal() {
                           >
                             {defaults.autoApproveCommands ? 'Auto approve on' : 'Auto approve off'}
                           </Button>
-                          <Button
-                            variant={defaults.memoryEnabled ? 'primary' : 'secondary'}
-                            size="sm"
-                            onClick={() => updateProviderDefaults(provider.id, { ...defaults, memoryEnabled: !defaults.memoryEnabled })}
-                          >
-                            {defaults.memoryEnabled ? 'Memory on' : 'Memory off'}
-                          </Button>
+                          <label className="inline-flex items-center gap-2 text-xs" style={{ color: 'var(--text-2)' }}>
+                            Memory
+                            <select
+                              aria-label={`${providerName} default memory level`}
+                              value={defaults.memoryLevel}
+                              onChange={(event) => updateProviderDefaults(provider.id, {
+                                ...defaults,
+                                memoryLevel: event.currentTarget.value as ProviderChatDefaults['memoryLevel'],
+                                memoryEnabled: event.currentTarget.value !== 'off',
+                              })}
+                              className="uam-select px-2 py-1"
+                            >
+                              {MEMORY_LEVEL_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+                            </select>
+                          </label>
                         </div>
                       </div>
                     </ProviderDisclosureCard>
@@ -1130,17 +1141,16 @@ export function SettingsModal() {
               <div className="flex items-center justify-between gap-4">
                 <div>
                   <div className="text-sm" style={{ color: 'var(--text)' }}>Memory</div>
-                  <div className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>
-                    New chats default {memoryEnabledDefault ? 'on' : 'off'}
-                  </div>
+                  <div className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>New chats default to {memoryLevelDefault}</div>
                 </div>
-                <Button
-                  variant={memoryEnabledDefault ? 'primary' : 'secondary'}
-                  size="sm"
-                  onClick={() => void setMemorySettings({ memoryEnabledDefault: !memoryEnabledDefault })}
+                <select
+                  aria-label="Default memory level"
+                  value={memoryLevelDefault}
+                  onChange={(event) => void setMemorySettings({ memoryLevelDefault: event.currentTarget.value as typeof memoryLevelDefault })}
+                  className="uam-select px-2 py-1 text-sm"
                 >
-                  {memoryEnabledDefault ? 'On' : 'Off'}
-                </Button>
+                  {MEMORY_LEVEL_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+                </select>
               </div>
 
               <div className="grid grid-cols-2 gap-3">

@@ -11,11 +11,14 @@
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/range_utils.h"
 #include "common/utils/string_utils.h"
+#include "common/utils/time_utils.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <optional>
+#include <sstream>
 #include <thread>
 #include <vector>
 
@@ -101,6 +104,34 @@ namespace
 		constexpr std::string_view free_suffix = "-free";
 		return id == "big-pickle" || (id.size() >= free_suffix.size() && id.compare(id.size() - free_suffix.size(), free_suffix.size(), free_suffix) == 0);
 	}
+
+	std::string StableCatalogFingerprint(std::string_view value)
+	{
+		std::uint64_t hash = 1469598103934665603ULL;
+		for (const unsigned char ch : value)
+		{
+			hash ^= ch;
+			hash *= 1099511628211ULL;
+		}
+		std::ostringstream out;
+		out << std::hex << hash;
+		return out.str();
+	}
+
+	std::string NonSecretCatalogEnvironmentContext()
+	{
+		constexpr std::array<const char*, 17> names{
+		    "CODEX_HOME", "CLAUDE_CONFIG_DIR", "GEMINI_CLI_HOME", "GEMINI_HOME", "XDG_CONFIG_HOME", "OPENCODE_CONFIG", "COPILOT_HOME",
+		    "OPENAI_BASE_URL", "OPENAI_API_BASE", "ANTHROPIC_BASE_URL", "GOOGLE_GEMINI_BASE_URL", "GEMINI_API_BASE_URL",
+		    "GH_HOST", "OPENAI_ORGANIZATION", "OPENAI_ORG_ID", "OPENAI_PROJECT", "GITHUB_USER",
+		};
+		std::string context;
+		for (const char* name : names)
+		{
+			if (const auto value = uam::env::GetTrimmedString(name)) context += "\n" + std::string(name) + "=" + *value;
+		}
+		return context;
+	}
 }
 
 namespace uam
@@ -114,10 +145,24 @@ ProviderModelCatalogService::ProviderModelCatalogService()
 {
 }
 
-void ProviderModelCatalogService::Initialize(const fs::path& data_root)
+void ProviderModelCatalogService::Initialize(const fs::path& data_root, const std::vector<ProviderProfile>& profiles, std::string_view configuration_context)
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
 	m_data_root = data_root;
+	m_catalog_key_by_provider_id.clear();
+	m_pending_discovery_provider_ids.clear();
+	m_refresh_attempted_provider_ids.clear();
+	for (const ProviderProfile& profile : profiles)
+	{
+		const std::string provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(profile.id);
+		std::string fingerprint_source = provider_id + "\n" + profile.execution_mode + "\n" + profile.output_mode + "\n" + profile.interactive_command + "\n" + profile.structured_protocol + "\n" + profile.native_goal_command + "\n" + std::string(configuration_context) + NonSecretCatalogEnvironmentContext();
+		for (const std::string& flag : profile.runtime_flags)
+		{
+			fingerprint_source += "\n" + flag;
+		}
+		m_catalog_key_by_provider_id[provider_id] = provider_id + "-" + StableCatalogFingerprint(fingerprint_source);
+	}
+	LoadPersistentCatalogs();
 
 	// Pre-load cached models at startup (no network).
 	m_cached_codex_models = ReadCachedCodexModels();
@@ -230,6 +275,115 @@ nlohmann::json ProviderModelCatalogService::GetCachedCodexModels() const
 	return m_cached_codex_models;
 }
 
+std::string ProviderModelCatalogService::CatalogKey(const std::string& provider_id) const
+{
+	const std::string normalized = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
+	const auto configured = m_catalog_key_by_provider_id.find(normalized);
+	return configured == m_catalog_key_by_provider_id.end() ? normalized : configured->second;
+}
+
+void ProviderModelCatalogService::LoadPersistentCatalogs()
+{
+	m_persistent_catalogs = nlohmann::json::object();
+	const nlohmann::json root = ReadJsonFile(m_data_root / kProviderModelsCacheFile);
+	if (root.is_object())
+	{
+		const nlohmann::json* catalogs = uam::nlohmann_json::FindObjectField(root, "catalogs");
+		if (catalogs != nullptr)
+		{
+			m_persistent_catalogs = *catalogs;
+		}
+	}
+}
+
+bool ProviderModelCatalogService::WritePersistentCatalogs() const
+{
+	if (m_data_root.empty())
+	{
+		return false;
+	}
+	return uam::io::WriteTextFile(m_data_root / kProviderModelsCacheFile, nlohmann::json{{"version", 1}, {"catalogs", m_persistent_catalogs}}.dump(2) + "\n");
+}
+
+bool ProviderModelCatalogService::RememberSuccessfulModels(const std::string& provider_id, const nlohmann::json& models)
+{
+	if (!models.is_array() || models.empty())
+	{
+		return false;
+	}
+
+	std::lock_guard<std::mutex> lock(m_mutex);
+	const std::string normalized_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
+	m_pending_discovery_provider_ids.erase(normalized_provider_id);
+	const std::string key = CatalogKey(normalized_provider_id);
+	const nlohmann::json previous = m_persistent_catalogs.contains(key) ? m_persistent_catalogs[key] : nlohmann::json{};
+	m_persistent_catalogs[key] = {
+	    {"providerId", normalized_provider_id},
+	    {"models", models},
+	    {"updatedAt", uam::time::TimestampNow()},
+	};
+	if (!WritePersistentCatalogs())
+	{
+		if (previous.is_null() || previous.empty())
+		{
+			m_persistent_catalogs.erase(key);
+		}
+		else
+		{
+			m_persistent_catalogs[key] = previous;
+		}
+		m_refresh_error_by_provider_id[normalized_provider_id] = "Failed to persist provider model cache.";
+		return false;
+	}
+	m_refresh_error_by_provider_id.erase(normalized_provider_id);
+	return true;
+}
+
+void ProviderModelCatalogService::RememberRefreshFailure(const std::string& provider_id, std::string error)
+{
+	std::lock_guard<std::mutex> lock(m_mutex);
+	const std::string normalized = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
+	m_pending_discovery_provider_ids.erase(normalized);
+	m_refresh_error_by_provider_id[normalized] = uam::strings::Trim(std::move(error));
+}
+
+nlohmann::json ProviderModelCatalogService::GetCachedProviderModels(const std::string& provider_id) const
+{
+	std::lock_guard<std::mutex> lock(m_mutex);
+	const std::string key = CatalogKey(provider_id);
+	const auto entry = m_persistent_catalogs.find(key);
+	if (entry == m_persistent_catalogs.end() || !entry->is_object())
+	{
+		return nlohmann::json::array();
+	}
+	const nlohmann::json* models = uam::nlohmann_json::FindArrayField(*entry, "models");
+	return models == nullptr ? nlohmann::json::array() : *models;
+}
+
+std::string ProviderModelCatalogService::GetProviderRefreshError(const std::string& provider_id) const
+{
+	std::lock_guard<std::mutex> lock(m_mutex);
+	const auto error = m_refresh_error_by_provider_id.find(uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id));
+	return error == m_refresh_error_by_provider_id.end() ? std::string{} : error->second;
+}
+
+bool ProviderModelCatalogService::BeginDiscoveryIfMissing(const std::string& provider_id)
+{
+	std::lock_guard<std::mutex> lock(m_mutex);
+	const std::string normalized = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
+	if (m_pending_discovery_provider_ids.contains(normalized) || m_refresh_attempted_provider_ids.contains(normalized)) return false;
+	m_pending_discovery_provider_ids.insert(normalized);
+	m_refresh_attempted_provider_ids.insert(normalized);
+	m_refresh_error_by_provider_id.erase(normalized);
+	return true;
+}
+
+bool ProviderModelCatalogService::IsDiscoveryPending(const std::string& provider_id) const
+{
+	std::lock_guard<std::mutex> lock(m_mutex);
+	return m_pending_discovery_provider_ids.contains(uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id));
+}
+
 nlohmann::json ProviderModelCatalogService::MergeAcpModelArrays(nlohmann::json fallback_models, nlohmann::json runtime_models)
 {
 	if (!fallback_models.is_array())
@@ -269,15 +423,16 @@ nlohmann::json ProviderModelCatalogService::MergeAcpModelArrays(nlohmann::json f
 
 nlohmann::json ProviderModelCatalogService::FallbackAcpModelsForChat(const std::string& provider_id) const
 {
+	nlohmann::json cached = GetCachedProviderModels(provider_id);
 	if (uam::provider_ids::IsCliProviderAliasOf(provider_id, uam::provider_ids::kCodexCli))
 	{
-		return GetCachedCodexModels();
+		return MergeAcpModelArrays(std::move(cached), GetCachedCodexModels());
 	}
 	if (uam::provider_ids::IsCliProviderAliasOf(provider_id, uam::provider_ids::kOpenCodeCli))
 	{
-		return MergeAcpModelArrays(GetConfiguredOpenCodeModels(), GetOpenCodeZenFreeModels());
+		return MergeAcpModelArrays(std::move(cached), MergeAcpModelArrays(GetConfiguredOpenCodeModels(), GetOpenCodeZenFreeModels()));
 	}
-	return nlohmann::json::array();
+	return cached;
 }
 
 std::string ProviderModelCatalogService::FallbackAcpCurrentModelForChat(const std::string& provider_id, const std::string& chat_model_id) const

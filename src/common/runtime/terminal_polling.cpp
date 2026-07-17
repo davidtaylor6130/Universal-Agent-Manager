@@ -14,6 +14,8 @@
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_idle_classifier.h"
 #include "common/runtime/terminal/terminal_identity.h"
+#include "common/runtime/terminal/terminal_launch.h"
+#include "common/runtime/terminal/terminal_lifecycle.h"
 #include "common/utils/hash_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
@@ -672,6 +674,39 @@ bool PollAllCliTerminals(CefRefPtr<CefBrowser> browser, uam::AppState& app)
 		terminal->last_polled_time_s = now;
 		const bool preserve_selection = !selected_chat_id.empty() && !CliTerminalMatchesChatId(*terminal, selected_chat_id);
 		changed |= PollCliTerminal(browser, app, *terminal, preserve_selection);
+
+		if (!terminal->pending_steer_prompt.empty())
+		{
+			if (uam::TryDeliverPendingCliTerminalSteer(*terminal))
+			{
+				uam::LogCliDiagnosticEvent(app, "poll_all_cli_terminals", "steer_prompt_delivered", terminal.get());
+				changed = true;
+			}
+			else
+			{
+				const CliTerminalSteerRecoveryAction recovery = CliTerminalSteerRecovery(*terminal, now);
+				if (recovery == CliTerminalSteerRecoveryAction::Restart)
+				{
+					terminal->pending_steer_restart_attempted = true;
+					terminal->pending_steer_started_time_s = now;
+					if (const ChatSession* chat = FindChatForCliTerminal(app, *terminal); chat != nullptr && StartCliTerminalForChat(app, *terminal, *chat, terminal->rows, terminal->cols))
+					{
+						uam::LogCliDiagnosticEvent(app, "poll_all_cli_terminals", "steer_hard_restart", terminal.get());
+					}
+					else
+					{
+						terminal->last_error = "Terminal steering restart failed; prompt retained for retry.";
+					}
+					changed = true;
+				}
+				else if (recovery == CliTerminalSteerRecoveryAction::ReportTimeout)
+				{
+					terminal->last_error = "Terminal steering timed out after restart; prompt retained for retry.";
+					uam::LogCliDiagnosticEvent(app, "poll_all_cli_terminals", "steer_timeout", terminal.get());
+					changed = true;
+				}
+			}
+		}
 
 		if (!terminal->running)
 		{

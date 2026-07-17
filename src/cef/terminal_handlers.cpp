@@ -48,6 +48,7 @@ namespace
 		data["lifecycleState"] = uam::CliTerminalLifecycleStateLabel(terminal);
 		data["turnState"] = uam::CliTerminalLifecycleIsProcessing(terminal) ? "busy" : "idle";
 		data["lastError"] = terminal.last_error;
+		data["pendingSteer"] = !terminal.pending_steer_prompt.empty();
 
 		if (!terminal.recent_output_bytes.empty())
 		{
@@ -215,4 +216,26 @@ void UamQueryHandler::HandleWriteCliInput(CefRefPtr<CefBrowser> browser, const n
 	}
 
 	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleSteerCliTerminal(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const std::string terminal_id = payload.value("terminalId", "");
+	uam::CliTerminalState* terminal = FindCliTerminalByRoutingKey(m_app, chat_id, terminal_id);
+	if (terminal == nullptr)
+	{
+		cb->Failure(404, "Terminal fallback session was not found.");
+		return;
+	}
+	std::string error;
+	if (!uam::RequestCliTerminalSteer(*terminal, payload.value("text", ""), payload.value("retry", false), &error))
+	{
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		cb->Failure(500, FailureDetailOrFallback(error, "Failed to steer terminal fallback."));
+		return;
+	}
+	uam::LogCliDiagnosticEvent(m_app, "handle_steer_cli_terminal", "steer_requested", terminal);
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success(BuildCliBindingResponse(*terminal).dump());
 }

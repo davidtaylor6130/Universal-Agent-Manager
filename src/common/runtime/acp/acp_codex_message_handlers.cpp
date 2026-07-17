@@ -490,6 +490,13 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 {
 	const std::string method = JsonDiagnosticStringValue(message, "method");
 	const nlohmann::json params = JsonObjectValue(message, "params");
+	const bool permission_request = method == uam::acp_methods::kItemCommandExecutionRequestApproval ||
+	                                method == uam::acp_methods::kItemFileChangeRequestApproval ||
+	                                method == uam::acp_methods::kItemPermissionsRequestApproval;
+	if (!permission_request && !uam::AcpSessionHasActiveTurn(session) && (method.rfind("item/", 0) == 0 || method.rfind("turn/", 0) == 0 || method == uam::acp_methods::kError))
+	{
+		return;
+	}
 
 	if (method == uam::acp_methods::kTurnStarted)
 	{
