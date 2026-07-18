@@ -6044,6 +6044,9 @@ UAM_TEST(AcpReconnectBackoffIsBounded)
 UAM_TEST(AcpStdoutBufferRejectsOversizedLines)
 {
 	uam::AcpSessionState session;
+	UAM_ASSERT(uam::acp_detail::AppendAcpStdoutChunk(session, std::string(5 * 1024 * 1024, 'x')));
+	UAM_ASSERT_EQ(session.stdout_buffer.size(), static_cast<std::size_t>(5 * 1024 * 1024));
+	session.stdout_buffer.clear();
 	UAM_ASSERT(uam::acp_detail::AppendAcpStdoutChunk(session, std::string(uam::acp_detail::kMaxAcpStdoutLineBytes, 'x')));
 	UAM_ASSERT(!uam::acp_detail::AppendAcpStdoutChunk(session, "x"));
 	UAM_ASSERT(session.stdout_buffer.empty());

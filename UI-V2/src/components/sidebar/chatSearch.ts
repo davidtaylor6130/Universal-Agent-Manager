@@ -203,8 +203,16 @@ export function buildChatSearchSessionGroups(
   const isTextSearching = searchTokens.length > 0
   const isFiltering = hasActiveChatSearchFilters(filters)
   const isSearching = isTextSearching || isFiltering
-  const sortedSessions = [...sessions].sort(compareSessionsByRecent)
-  const matchingSessionIds = new Set(
+  const branchRootId = (session: Session) => session.branchRootChatId || session.parentChatId || session.id
+  const familyActivity = new Map<string, number>()
+  for (const session of sessions) {
+    const rootId = branchRootId(session)
+    familyActivity.set(rootId, Math.max(familyActivity.get(rootId) ?? 0, sessionRecentTime(session)))
+  }
+  const sortedSessions = [...sessions].sort((a, b) =>
+    (familyActivity.get(branchRootId(b)) ?? 0) - (familyActivity.get(branchRootId(a)) ?? 0) || compareSessionsByRecent(a, b)
+  )
+  const matchingBranchRootIds = new Set(
     sortedSessions
       .filter((session) => {
         const searchMatch = isTextSearching
@@ -215,7 +223,7 @@ export function buildChatSearchSessionGroups(
         const filterMatch = sessionMatchesChatSearchFilters(session, filters, filterContext)
         return isSearching ? searchMatch || filterMatch : true
       })
-      .map((session) => session.id)
+      .map(branchRootId)
   )
 
   const sessionIdsByFolderId = new Map<string, string[]>()
@@ -223,7 +231,8 @@ export function buildChatSearchSessionGroups(
   const unfolderedSessionIds: string[] = []
 
   for (const session of sortedSessions) {
-    if (isSearching && !matchingSessionIds.has(session.id)) {
+    const rootId = branchRootId(session)
+    if (session.id !== rootId || (isSearching && !matchingBranchRootIds.has(rootId))) {
       continue
     }
 

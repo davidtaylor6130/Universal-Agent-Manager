@@ -110,9 +110,18 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
   const sessionName = sessionSummary.name
   const sessionLastOpenedAt = sessionSummary.lastOpenedAt
   const isPinned = sessionSummary.isPinned
-  const isActive = useAppStore((s) => s.activeSessionId === sessionId)
-  const cliBinding = useAppStore(useShallow((s) => s.cliBindingBySessionId[sessionId]))
-  const acpBinding = useAppStore(useShallow((s) => s.acpBindingBySessionId[sessionId]))
+  const familySessionIds = useAppStore(useShallow((s) => s.sessions
+    .filter((candidate) => (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === sessionId)
+    .map((candidate) => candidate.id)))
+  const isActive = useAppStore((s) => familySessionIds.includes(s.activeSessionId ?? ''))
+  const lifecycleStatus = useAppStore(useShallow((s): SidebarStatus => {
+    const acpBindings = familySessionIds.flatMap((id) => s.acpBindingBySessionId[id] ? [s.acpBindingBySessionId[id]] : [])
+    const cliBindings = familySessionIds.flatMap((id) => s.cliBindingBySessionId[id] ? [s.cliBindingBySessionId[id]] : [])
+    const attention = acpBindings.find((binding) => binding.attentionKind)?.attentionKind
+    if (attention) return { type: 'attention', kind: attention, label: ATTENTION_LABELS[attention] }
+    if (acpBindings.some((binding) => binding.processing || binding.lifecycleState === 'waitingPermission') || cliBindings.some((binding) => binding.lifecycleState === 'busy' || binding.lifecycleState === 'shuttingDown')) return { type: 'processing', label: 'Gemini running' }
+    return acpBindings.some((binding) => binding.readySinceLastSelect) || cliBindings.some((binding) => binding.readySinceLastSelect) ? { type: 'idle', label: 'Done' } : null
+  }))
   const setActiveSession = useAppStore((s) => s.setActiveSession)
   const setSessionPinned = useAppStore((s) => s.setSessionPinned)
   const renameSession = useAppStore((s) => s.renameSession)
@@ -130,17 +139,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
   const lastOpenedTitle = formatSidebarTimeTitle(sessionLastOpenedAt)
   const paneIndexes = gridLayout.sessionIds
     .slice(0, gridLayout.paneCount)
-    .flatMap((id, index) => id === sessionId ? [index] : [])
-
-  const lifecycleStatus: SidebarStatus = acpBinding?.attentionKind
-    ? { type: 'attention', kind: acpBinding.attentionKind, label: ATTENTION_LABELS[acpBinding.attentionKind] }
-    : acpBinding?.processing || acpBinding?.lifecycleState === 'waitingPermission'
-      ? { type: 'processing', label: 'Gemini running' }
-      : cliBinding?.lifecycleState === 'busy' || cliBinding?.lifecycleState === 'shuttingDown'
-        ? { type: 'processing', label: 'Gemini running' }
-        : acpBinding?.readySinceLastSelect || cliBinding?.readySinceLastSelect
-          ? { type: 'idle', label: 'Done' }
-          : null
+    .flatMap((id, index) => familySessionIds.includes(id) ? [index] : [])
 
   useEffect(() => {
     if (editing && inputRef.current) {
@@ -192,7 +191,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
           background: isActive ? 'var(--sidebar-item-active)' : 'transparent',
           borderLeft: paneIndexes.length > 0 ? `3px solid ${chatPaneColors[paneIndexes[0]]}` : '3px solid transparent',
         }}
-        onClick={() => !editing && setActiveSession(sessionId)}
+        onClick={() => !editing && !isActive && setActiveSession(sessionId)}
         onDoubleClick={() => {
           setEditing(true)
           setEditValue(sessionName)

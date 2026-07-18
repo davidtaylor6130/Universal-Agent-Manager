@@ -659,6 +659,7 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     pinned: booleanOr(value.pinned),
     providerId: stringOr(value.providerId, GEMINI_CLI_PROVIDER_ID),
     parentChatId: isString(value.parentChatId) ? value.parentChatId : undefined,
+    branchRootChatId: isString(value.branchRootChatId) ? value.branchRootChatId : undefined,
     branchFromMessageIndex: Math.trunc(finiteNumberOr(value.branchFromMessageIndex, -1)),
     branchMessageEdited: booleanOr(value.branchMessageEdited),
     modelId: normalizeAcpModelId(value.modelId),

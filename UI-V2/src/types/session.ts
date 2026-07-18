@@ -10,6 +10,7 @@ export interface Session {
   isPinned?: boolean
   providerId?: string
   parentChatId?: string
+  branchRootChatId?: string
   branchFromMessageIndex?: number
   branchMessageEdited?: boolean
   workspaceDirectory?: string

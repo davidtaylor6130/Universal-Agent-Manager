@@ -91,6 +91,19 @@ describe('chatSearch', () => {
     expect(model.unfolderedSessionIds).toEqual(['s-loose'])
   })
 
+  it('keeps branches in one sidebar row and maps branch searches to their root chat', () => {
+    const folders = [makeFolder('general')]
+    const root = { ...makeSession('root', 'Original chat', 'general'), branchRootChatId: 'root' }
+    const branch = {
+      ...makeSession('branch', 'Edited deployment prompt', 'general', now, new Date('2026-01-01T01:00:00.000Z')),
+      parentChatId: 'root',
+      branchRootChatId: 'root',
+    }
+
+    expect(visibleSessionIds(searchModel('', folders, [root, branch]))).toEqual(['root'])
+    expect(visibleSessionIds(searchModel('deployment', folders, [root, branch]))).toEqual(['root'])
+  })
+
   it('sorts by activity (updatedAt), ignoring selection time (issue #49)', () => {
     const early = new Date('2026-01-01T00:00:00.000Z')
     const mid = new Date('2026-01-01T01:00:00.000Z')

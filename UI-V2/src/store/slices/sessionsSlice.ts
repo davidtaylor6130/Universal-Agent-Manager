@@ -383,6 +383,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         id: branchId,
         name: `Branch: ${(content ?? sourceMessage.content).trim().slice(0, 40)}`,
         parentChatId: source.id,
+        branchRootChatId: source.branchRootChatId || source.id,
         branchFromMessageIndex: messageIndex,
         branchMessageEdited: content !== undefined,
         messageCount: branchMessages.length,
@@ -918,7 +919,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 	  const requestedReasoningEffort = options.reasoningEffort === undefined
 	    ? normalizedEffort
 	    : supportedEfforts.length > 0
-	    ? supportedEfforts.includes(normalizedEffort) ? normalizedEffort : supportedEfforts.includes(runtimeModel?.defaultReasoningEffort ?? '') ? runtimeModel?.defaultReasoningEffort ?? '' : supportedEfforts[0]
+	    ? supportedEfforts.includes(normalizedEffort) ? normalizedEffort : supportedEfforts[supportedEfforts.length - 1]
 	    : normalizedEffort
 	  const requestedServiceTier = options.serviceTier === undefined ? previousSession.serviceTier ?? '' : codexProvider ? normalizeCodexServiceTier(options.serviceTier) : ''
       if ((previousSession.reasoningEffort ?? '') === requestedReasoningEffort && (previousSession.serviceTier ?? '') === requestedServiceTier) {

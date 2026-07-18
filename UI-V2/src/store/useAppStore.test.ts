@@ -984,12 +984,14 @@ describe('useAppStore Gemini CLI slice', () => {
     state.chats[0] = {
       ...state.chats[0],
       parentChatId: 'chat-root',
+      branchRootChatId: 'chat-family',
       branchFromMessageIndex: 2,
       branchMessageEdited: true,
     }
     useAppStore.getState().loadFromCef(state)
     expect(useAppStore.getState().sessions[0]).toMatchObject({
       parentChatId: 'chat-root',
+      branchRootChatId: 'chat-family',
       branchFromMessageIndex: 2,
       branchMessageEdited: true,
     })

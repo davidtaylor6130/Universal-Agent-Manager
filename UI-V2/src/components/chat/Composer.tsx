@@ -83,8 +83,8 @@ export function permissionModeIcon(id: string, size = 14) {
   return <ShieldCheck size={size} />
 }
 
-function ActiveModeChip({ label, icon, onClear }: { label: string; icon: ReactNode; onClear: () => void }) {
-  return <button type="button" aria-label={`Disable ${label}`} onClick={onClear} className="uam-choice-button inline-flex h-[26px] items-center gap-1.5 rounded-md px-2 text-[11px]" style={{ border: '1px solid var(--border-bright)', background: 'var(--surface-up)', color: 'var(--text-2)' }}>{icon}<span>{label}</span><X size={11} aria-hidden style={{ color: 'var(--text-3)' }} /></button>
+function ActiveModeChip({ label, icon, onClear }: { label: string; icon: ReactNode; onClear?: () => void }) {
+  return <button type="button" aria-label={onClear ? `Disable ${label}` : label} onClick={onClear} className="uam-choice-button inline-flex h-[26px] items-center gap-1.5 rounded-md px-2 text-[11px]" style={{ border: '1px solid var(--border-bright)', background: 'var(--surface-up)', color: 'var(--text-2)' }}>{icon}<span>{label}</span>{onClear && <X size={11} aria-hidden style={{ color: 'var(--text-3)' }} />}</button>
 }
 
 export function ComposerToolbar({
@@ -199,7 +199,6 @@ export function ComposerToolbar({
   const speedOptions = caps.hasServiceTier ? buildCodexSpeedOptions(acp, currentModel.id, serviceTier ?? '') : []
   const currentReasoning = modelOptionFor(reasoningOptions, reasoningEffort)
   const currentSpeed = modelOptionFor(speedOptions, serviceTier)
-  const defaultReasoningEffort = selectedRuntimeModel(acp, currentModel.id)?.defaultReasoningEffort ?? ''
   const providerOptions = providers.length > 0 ? providers : [provider]
   const modelDisabled = acpRuntimeBlocksControlChanges(acp)
   const planActive = approvalModeId === 'plan'
@@ -480,7 +479,7 @@ export function ComposerToolbar({
       {planActive && <ActiveModeChip label="Plan" icon={<ClipboardList size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={() => onSelectAgentMode('default')} />}
       {permissionModeId !== 'default' && <ActiveModeChip label={permissionModeId === 'auto' ? `Auto Decide: ${COMMAND_SAFETY_TIERS.find((tier) => tier.id === commandSafetyTier)?.label ?? 'Medium'}` : permissionMode.name} icon={permissionModeIcon(permissionModeId, 12)} onClear={() => onSelectPermissionMode('default')} />}
       {memoryChipVisible && <ActiveModeChip label={`Memory ${MEMORY_LEVEL_OPTIONS.find((option) => option.id === memoryLevel)?.label ?? memoryLevel}`} icon={<span aria-hidden>●</span>} onClear={onClearMemoryLevel} />}
-      {reasoningEffort && reasoningEffort !== defaultReasoningEffort && <ActiveModeChip label={`Reasoning: ${currentReasoning.label}`} icon={<Cpu size={12} aria-hidden />} onClear={() => onSelectReasoning(defaultReasoningEffort)} />}
+      {hasReasoningEffort && <ActiveModeChip label={`Reasoning: ${currentReasoning.label}`} icon={<Cpu size={12} aria-hidden />} />}
       {serviceTier && <ActiveModeChip label={`Speed: ${currentSpeed.label}`} icon={<Sparkles size={12} aria-hidden />} onClear={() => onSelectSpeed('')} />}
       <div className="ml-auto flex items-center gap-2">
         <div ref={modelMenuRef} className="relative">

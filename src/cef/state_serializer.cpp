@@ -163,6 +163,7 @@ namespace uam
 			session_json["pinned"] = session.pinned;
 			session_json["providerId"] = session.provider_id;
 			session_json["parentChatId"] = session.parent_chat_id;
+			session_json["branchRootChatId"] = uam::strings::NonEmptyOrFallback(session.branch_root_chat_id, session.id);
 			session_json["branchFromMessageIndex"] = session.branch_from_message_index;
 			session_json["branchMessageEdited"] = session.branch_message_edited;
 			session_json["modelId"] = session.model_id;
