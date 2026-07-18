@@ -1,6 +1,7 @@
 import type { Session } from '../../types/session'
 import type { Attachment, Message } from '../../types/message'
 import type { Provider } from '../../types/provider'
+import type { MemoryLevel } from '../../types/memory'
 import { sendToCEF, isCefContext, createRequestId } from '../../ipc/cefBridge'
 import {
   CLAUDE_CLI_PROVIDER_ID,
@@ -14,7 +15,7 @@ import {
   providerCapabilities,
 } from '../../utils/providerMetadata'
 import {
-  ACP_APPROVAL_MODE_IDS,
+  AGENT_MODE_IDS,
   cefPayloadOrRawResponse,
   clampedFiniteNumberOr,
   DEFAULT_GOAL_MAX_LOOP_ITERATIONS,
@@ -35,6 +36,7 @@ import {
   normalizeAcpApprovalMode,
   normalizeCodexReasoningEffort,
   normalizeCodexServiceTier,
+  normalizeMemoryLevel,
   providerChatDefaultsForNewChat,
   sanitizeAttachment,
   sanitizeEditorFileAssociations,
@@ -81,6 +83,8 @@ import type {
   VcsCommitStatus,
   VcsFileDiffResponse,
   VcsType,
+  VoiceInputCapabilities,
+  VoiceInputMode,
 } from '../cpp/types'
 import type { AppState, ZustandSet, ZustandGet } from '../storeTypes'
 
@@ -200,6 +204,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     cliTranscriptBySessionId: {} as Record<string, CliTranscript>,
     cliDebugState: null as CppCliDebugState | null,
     memoryEnabledDefault: true,
+    memoryLevelDefault: 'strict' as MemoryLevel,
     memoryIdleDelaySeconds: DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
     memoryRecallBudgetBytes: DEFAULT_MEMORY_RECALL_BUDGET_BYTES,
     goalMaxLoopIterations: DEFAULT_GOAL_MAX_LOOP_ITERATIONS,
@@ -215,6 +220,16 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     providerChatDefaults: {} as Record<string, ProviderChatDefaults>,
     defaultEditorPresetId: 'vscode',
     editorFileAssociations: defaultEditorFileAssociations() as EditorFileAssociation[],
+    voiceInputMode: 'system' as VoiceInputMode,
+    voiceInputServerBaseUrl: '',
+    voiceInputServerEndpoint: '/v1/audio/transcriptions',
+    voiceInputServerModel: 'whisper-1',
+    voiceInputApiKeyEnv: 'OPENAI_API_KEY',
+    voiceInputCapabilities: {
+      system: { supported: true, reason: '' },
+      local: { supported: false, reason: 'Coming soon.' },
+      server: { supported: false, reason: 'Unavailable.' },
+    } as VoiceInputCapabilities,
 
     setActiveSession: (id: string) => {
       if (isCefContext()) {
@@ -267,7 +282,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
     loadSessionMessages: requestChatMessagesFromCef,
 
-    addSession: (name: string, folderId: string | null, providerId = GEMINI_CLI_PROVIDER_ID, modelId?: string) => {
+    addSession: (name: string, folderId: string | null, providerId = GEMINI_CLI_PROVIDER_ID, modelId?: string, reasoningEffort?: string) => {
       const current = get()
       const selectedFolderId = folderId && current.folders.some((folder) => folder.id === folderId)
         ? folderId
@@ -285,6 +300,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           : GEMINI_CLI_PROVIDER_ID
       const defaults = providerChatDefaultsForNewChat(current, requestedProviderId)
       if (modelId !== undefined) defaults.modelId = modelId.trim()
+	  if (reasoningEffort !== undefined) defaults.reasoningEffort = normalizeCodexReasoningEffort(reasoningEffort)
 
       if (isCefContext()) {
         sendToCEF({
@@ -314,8 +330,10 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         modelId: defaults.modelId,
         reasoningEffort: defaults.reasoningEffort,
         serviceTier: defaults.serviceTier,
-        approvalMode: defaults.approvalMode,
+        approvalMode: defaults.approvalMode === 'acceptEdits' ? 'default' : defaults.approvalMode,
+        commandSafetyTier: defaults.approvalMode === 'acceptEdits' ? 'acceptEdits' : 'medium',
         autoApproveCommands: defaults.autoApproveCommands,
+        memoryLevel: defaults.memoryLevel,
         memoryEnabled: defaults.memoryEnabled,
         createdAt: now,
         updatedAt: now,
@@ -498,6 +516,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return {
         isGitRepository: true,
         isSvnWorkspace: false,
+		managedRepository: false,
         isolated: session?.workspaceIsolationKind === 'gitWorktree',
         sourceDirty: false,
         worktreeDirty: false,
@@ -782,7 +801,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (acp?.processing || (acp?.queuedPrompts?.length ?? 0) > 0 || acp?.pendingPermission || acp?.pendingUserInput || cli?.processing || cli?.turnState === 'busy') {
         return false
       }
-      const defaults = current.providerChatDefaults[requestedProviderId] ?? sanitizeProviderChatDefaults(null)
+      const defaults = sanitizeProviderChatDefaults(current.providerChatDefaults[requestedProviderId] ?? null)
 
       const applyProvider = () => {
         set((state) => ({
@@ -793,8 +812,10 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               modelId: defaults.modelId,
               reasoningEffort: providerCapabilities(requestedProviderId).hasReasoningEffort ? defaults.reasoningEffort : '',
               serviceTier: providerCapabilities(requestedProviderId).hasServiceTier ? defaults.serviceTier : '',
-              approvalMode: defaults.approvalMode,
+              approvalMode: defaults.approvalMode === 'acceptEdits' ? 'default' : defaults.approvalMode,
+              commandSafetyTier: defaults.approvalMode === 'acceptEdits' ? 'acceptEdits' : 'medium',
               autoApproveCommands: defaults.autoApproveCommands,
+              memoryLevel: defaults.memoryLevel,
               memoryEnabled: defaults.memoryEnabled,
               updatedAt: new Date(),
             } : s
@@ -842,15 +863,14 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (!previousSession) {
         return false
       }
-
-      if ((previousSession.modelId ?? '') === requestedModelId) {
+	  if ((previousSession.modelId ?? '') === requestedModelId) {
         return true
       }
 
       const applyModel = () => {
         set((state) => ({
           sessions: state.sessions.map((s) =>
-            s.id === id ? { ...s, modelId: requestedModelId, updatedAt: new Date() } : s
+			s.id === id ? { ...s, modelId: requestedModelId, updatedAt: new Date() } : s
           ),
         }))
       }
@@ -886,12 +906,21 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     },
 
     setSessionCodexOptions: async (id: string, options: { reasoningEffort?: string; serviceTier?: string }): Promise<boolean> => {
-      const requestedReasoningEffort = normalizeCodexReasoningEffort(options.reasoningEffort)
-      const requestedServiceTier = normalizeCodexServiceTier(options.serviceTier)
       const previousSession = get().sessions.find((s) => s.id === id)
-      if (!previousSession || (previousSession.providerId ?? GEMINI_CLI_PROVIDER_ID) !== CODEX_CLI_PROVIDER_ID) {
+	  if (!previousSession) {
         return false
       }
+	  const codexProvider = (previousSession.providerId ?? GEMINI_CLI_PROVIDER_ID) === CODEX_CLI_PROVIDER_ID
+	  const runtimeModel = get().acpBindingBySessionId[id]?.availableModels.find((model) => model.id === (previousSession.modelId ?? ''))
+	  const supportedEfforts = runtimeModel?.supportedReasoningEfforts ?? []
+	  if (!codexProvider && supportedEfforts.length === 0) return false
+	  const normalizedEffort = options.reasoningEffort === undefined ? previousSession.reasoningEffort ?? '' : normalizeCodexReasoningEffort(options.reasoningEffort)
+	  const requestedReasoningEffort = options.reasoningEffort === undefined
+	    ? normalizedEffort
+	    : supportedEfforts.length > 0
+	    ? supportedEfforts.includes(normalizedEffort) ? normalizedEffort : supportedEfforts.includes(runtimeModel?.defaultReasoningEffort ?? '') ? runtimeModel?.defaultReasoningEffort ?? '' : supportedEfforts[0]
+	    : normalizedEffort
+	  const requestedServiceTier = options.serviceTier === undefined ? previousSession.serviceTier ?? '' : codexProvider ? normalizeCodexServiceTier(options.serviceTier) : ''
       if ((previousSession.reasoningEffort ?? '') === requestedReasoningEffort && (previousSession.serviceTier ?? '') === requestedServiceTier) {
         return true
       }
@@ -922,7 +951,6 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
         if (response.ok) {
           clearPendingRequest(requestKey, response.requestId)
-          clearPendingCodexOptions(id, response.requestId)
           return true
         }
 
@@ -942,7 +970,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
     setSessionApprovalMode: async (id: string, modeId: string): Promise<boolean> => {
       const requestedModeId = modeId.trim() || 'default'
-      if (!(ACP_APPROVAL_MODE_IDS as readonly string[]).includes(requestedModeId)) {
+      if (!(AGENT_MODE_IDS as readonly string[]).includes(requestedModeId)) {
         return false
       }
 
@@ -1058,7 +1086,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    setSessionCommandSafetyTier: async (id: string, tier: 'low' | 'medium' | 'high'): Promise<boolean> => {
+    setSessionCommandSafetyTier: async (id: string, tier: 'off' | 'acceptEdits' | 'low' | 'medium' | 'high' | 'yolo'): Promise<boolean> => {
       const previousSession = get().sessions.find((session) => session.id === id)
       if (!previousSession || (previousSession.commandSafetyTier ?? 'medium') === tier) return Boolean(previousSession)
       const applyTier = () => set((state) => ({
@@ -1069,30 +1097,45 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         return true
       }
 
+	  const requestKey = `setSessionCommandSafetyTier:${id}`
+	  const requestId = createRequestId('setSessionCommandSafetyTier')
+	  rememberPendingRequest(requestKey, requestId)
       applyTier()
       const response = await sendToCEF({
         action: 'setChatCommandSafetyTier',
         payload: { chatId: id, commandSafetyTier: tier },
-        requestId: createRequestId('setSessionCommandSafetyTier'),
+        requestId,
       })
-      if (response.ok) return true
-      set((state) => ({ sessions: state.sessions.map((session) => session.id === id ? previousSession : session) }))
+	  if (response.ok) {
+		clearPendingRequest(requestKey, response.requestId)
+		return true
+	  }
+	  if (isLatestPendingRequest(requestKey, response.requestId)) {
+		set((state) => ({ sessions: state.sessions.map((session) => session.id === id ? previousSession : session) }))
+		pendingRequestIdsByKey.delete(requestKey)
+	  }
       return false
     },
 
     setSessionMemoryEnabled: async (id: string, enabled: boolean): Promise<boolean> => {
+      return get().setSessionMemoryLevel(id, enabled ? 'strict' : 'off')
+    },
+
+    setSessionMemoryLevel: async (id: string, level: MemoryLevel): Promise<boolean> => {
       const previousSession = get().sessions.find((s) => s.id === id)
       if (!previousSession) {
         return false
       }
-      if ((previousSession.memoryEnabled ?? true) === enabled) {
+      const requestedLevel = normalizeMemoryLevel(level)
+      const enabled = requestedLevel !== 'off'
+      if ((previousSession.memoryLevel ?? ((previousSession.memoryEnabled ?? true) ? 'strict' : 'off')) === requestedLevel) {
         return true
       }
 
       const applyMemory = () => {
         set((state) => ({
           sessions: state.sessions.map((s) =>
-            s.id === id ? { ...s, memoryEnabled: enabled, updatedAt: new Date() } : s
+            s.id === id ? { ...s, memoryLevel: requestedLevel, memoryEnabled: enabled, updatedAt: new Date() } : s
           ),
         }))
       }
@@ -1104,7 +1147,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         applyMemory()
         const response = await sendToCEF({
           action: 'setChatMemoryEnabled',
-          payload: { chatId: id, enabled },
+          payload: { chatId: id, enabled, memoryLevel: requestedLevel },
           requestId,
         })
 
@@ -1126,16 +1169,20 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    setMemorySettings: async (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'goalMaxLoopIterations' | 'memoryWorkerBindings'>>): Promise<boolean> => {
+    setMemorySettings: async (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryLevelDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'goalMaxLoopIterations' | 'memoryWorkerBindings'>>): Promise<boolean> => {
       const previous = {
         memoryEnabledDefault: get().memoryEnabledDefault,
+        memoryLevelDefault: get().memoryLevelDefault,
         memoryIdleDelaySeconds: get().memoryIdleDelaySeconds,
         memoryRecallBudgetBytes: get().memoryRecallBudgetBytes,
         goalMaxLoopIterations: get().goalMaxLoopIterations,
         memoryWorkerBindings: get().memoryWorkerBindings,
       }
+      const requestedDefaultLevel = settings.memoryLevelDefault
+        ?? (settings.memoryEnabledDefault === undefined ? previous.memoryLevelDefault : settings.memoryEnabledDefault ? 'strict' : 'off')
       const next = {
-        memoryEnabledDefault: settings.memoryEnabledDefault ?? previous.memoryEnabledDefault,
+        memoryLevelDefault: normalizeMemoryLevel(requestedDefaultLevel),
+        memoryEnabledDefault: normalizeMemoryLevel(requestedDefaultLevel) !== 'off',
         memoryIdleDelaySeconds: clampedFiniteNumberOr(settings.memoryIdleDelaySeconds, previous.memoryIdleDelaySeconds, MIN_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_IDLE_DELAY_SECONDS),
         memoryRecallBudgetBytes: clampedFiniteNumberOr(settings.memoryRecallBudgetBytes, previous.memoryRecallBudgetBytes, MIN_MEMORY_RECALL_BUDGET_BYTES, MAX_MEMORY_RECALL_BUDGET_BYTES),
         goalMaxLoopIterations: Math.max(0, Math.floor(finiteNumberOr(settings.goalMaxLoopIterations, previous.goalMaxLoopIterations))),
@@ -1150,6 +1197,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           action: 'setMemorySettings',
           payload: {
             enabledDefault: next.memoryEnabledDefault,
+            levelDefault: next.memoryLevelDefault,
             idleDelaySeconds: next.memoryIdleDelaySeconds,
             recallBudgetBytes: next.memoryRecallBudgetBytes,
             goalMaxLoopIterations: next.goalMaxLoopIterations,
@@ -1166,6 +1214,31 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
       applySettings()
       return true
+    },
+
+    setVoiceInputSettings: async (settings: Pick<AppState, 'voiceInputMode' | 'voiceInputServerBaseUrl' | 'voiceInputServerEndpoint' | 'voiceInputServerModel' | 'voiceInputApiKeyEnv'>): Promise<boolean> => {
+      const previous = {
+        voiceInputMode: get().voiceInputMode,
+        voiceInputServerBaseUrl: get().voiceInputServerBaseUrl,
+        voiceInputServerEndpoint: get().voiceInputServerEndpoint,
+        voiceInputServerModel: get().voiceInputServerModel,
+        voiceInputApiKeyEnv: get().voiceInputApiKeyEnv,
+      }
+      set(settings)
+      if (!isCefContext()) return true
+      const response = await sendToCEF({
+        action: 'setVoiceInputSettings',
+        payload: {
+          mode: settings.voiceInputMode,
+          serverBaseUrl: settings.voiceInputServerBaseUrl,
+          serverEndpoint: settings.voiceInputServerEndpoint,
+          serverModel: settings.voiceInputServerModel,
+          apiKeyEnv: settings.voiceInputApiKeyEnv,
+        },
+      })
+      if (response.ok) return true
+      set(previous)
+      return false
     },
 
     setUpdateSettings: async (settings: Partial<Pick<AppState, 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>): Promise<boolean> => {
@@ -1487,6 +1560,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               processing: processing || cliLifecycleIsProcessing(lifecycleState),
               readySinceLastSelect: binding.readySinceLastSelect ?? existingBinding?.readySinceLastSelect ?? false,
               active: binding.active ?? existingBinding?.active ?? false,
+              pendingSteer: binding.pendingSteer ?? existingBinding?.pendingSteer ?? false,
               lastError: binding.lastError ?? existingBinding?.lastError ?? '',
             },
           },
@@ -1519,7 +1593,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       }))
     },
 
-    sendAcpPrompt: async (sessionId: string, text: string, attachments: Attachment[] = []): Promise<boolean> => {
+    sendAcpPrompt: async (sessionId: string, text: string, attachments: Attachment[] = [], steerNow = false): Promise<boolean> => {
       const prompt = text.trim()
       if (!prompt) {
         return false
@@ -1538,6 +1612,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             attachments,
             goalMode: goalId != null,
             goalId,
+            steerNow,
           },
         })
         if (!response.ok) {
@@ -1669,6 +1744,64 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         },
       }))
       return true
+    },
+
+    removeQueuedAcpPrompt: async (sessionId: string, index: number): Promise<boolean> => {
+      if (isCefContext()) {
+        const response = await sendToCEF({
+          action: 'manageQueuedAcpPrompt',
+          payload: { chatId: sessionId, operation: 'remove', index },
+        })
+        return response.ok
+      }
+      set((state) => ({
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          [sessionId]: {
+            ...state.acpBindingBySessionId[sessionId],
+            queuedPrompts: (state.acpBindingBySessionId[sessionId]?.queuedPrompts ?? []).filter((_, queuedIndex) => queuedIndex !== index),
+          },
+        },
+      }))
+      return true
+    },
+
+    steerQueuedAcpPrompt: async (sessionId: string, index: number): Promise<boolean> => {
+      if (isCefContext()) {
+        const response = await sendToCEF({
+          action: 'manageQueuedAcpPrompt',
+          payload: { chatId: sessionId, operation: 'steer', index },
+        })
+        return response.ok
+      }
+      set((state) => {
+        const queuedPrompts = [...(state.acpBindingBySessionId[sessionId]?.queuedPrompts ?? [])]
+        const [prompt] = queuedPrompts.splice(index, 1)
+        if (!prompt) return state
+        return {
+          acpBindingBySessionId: {
+            ...state.acpBindingBySessionId,
+            [sessionId]: {
+              ...state.acpBindingBySessionId[sessionId],
+              queuedPrompts: [prompt, ...queuedPrompts],
+            },
+          },
+        }
+      })
+      return true
+    },
+
+    discoverProviderModels: async (sessionId: string): Promise<boolean> => {
+      if (!isCefContext()) return false
+      const response = await sendToCEF<{ started?: boolean; pending?: boolean }>({ action: 'discoverProviderModels', payload: { chatId: sessionId } })
+      if (!response.ok) return false
+      if (response.data?.pending) set((state) => ({
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          [sessionId]: { ...state.acpBindingBySessionId[sessionId], modelsLoading: true },
+        },
+      }))
+      return Boolean(response.data?.started || response.data?.pending)
     },
 
     cancelAcpTurn: async (sessionId: string): Promise<boolean> => {

@@ -388,6 +388,8 @@ namespace
 		native.auto_approve_commands = local.auto_approve_commands;
 		native.command_safety_tier = local.command_safety_tier;
 		native.model_id = local.model_id;
+		native.reasoning_effort = local.reasoning_effort;
+		native.service_tier = local.service_tier;
 		native.extra_flags = local.extra_flags;
 		if (!uam::strings::IsBlank(local.last_opened_at))
 		{

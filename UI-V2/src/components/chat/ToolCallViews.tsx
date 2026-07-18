@@ -701,13 +701,14 @@ export function MessageFrame({
         className={`min-w-0 uam-message-frame${streaming ? ' is-streaming' : ''}${goalReview ? ' uam-message-frame--goal-review' : ''}`}
         data-message-kind={goalReview ? 'goal-review' : role}
         style={{
-          maxWidth: role === 'user' ? '78%' : '100%',
-          border: role === 'user' ? '1px solid var(--border)' : '1px solid transparent',
+          maxWidth: '100%',
+          border: '1px solid transparent',
           borderLeft: role !== 'user' ? `2px solid ${accent}` : undefined,
-          borderRadius: role === 'user' ? 7 : goalReview ? 8 : 0,
-          padding: role === 'user' ? '9px 11px' : goalReview ? '8px 10px 10px 12px' : '2px 0 2px 12px',
+          borderRight: role === 'user' ? `2px solid ${accent}` : undefined,
+          borderRadius: goalReview ? 8 : 0,
+          padding: role === 'user' ? '2px 12px 2px 0' : goalReview ? '8px 10px 10px 12px' : '2px 0 2px 12px',
           background: role === 'user'
-            ? 'var(--message-user-bg)'
+            ? 'transparent'
             : goalReview
               ? 'color-mix(in srgb, var(--purple) 5%, var(--message-assistant-bg))'
               : 'var(--message-assistant-bg)',

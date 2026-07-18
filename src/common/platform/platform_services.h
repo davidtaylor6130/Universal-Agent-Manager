@@ -129,6 +129,15 @@ struct DictationEvent
 	std::string text;
 };
 
+struct DictationOptions
+{
+	std::string mode = "system";
+	std::string locale;
+	std::string server_url;
+	std::string server_model;
+	std::string server_api_key;
+};
+
 /// <summary>
 /// Platform speech-to-text boundary. Implementations queue events from their
 /// native callback threads; the application drains them on the CEF UI thread.
@@ -137,7 +146,7 @@ class IPlatformDictationService
 {
   public:
 	virtual ~IPlatformDictationService() = default;
-	virtual bool Start(std::string_view locale, std::string* error_out = nullptr) = 0;
+	virtual bool Start(const DictationOptions& options, std::string* error_out = nullptr) = 0;
 	virtual void Stop() = 0;
 	virtual bool IsRunning() const = 0;
 	virtual std::vector<DictationEvent> PollEvents() = 0;

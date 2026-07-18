@@ -4,6 +4,8 @@
 #include "common/config/approval_modes.h"
 #include "common/config/line_value_codec.h"
 #include "common/config/settings_normalization.h"
+#include "common/config/voice_input_settings.h"
+#include "common/memory/memory_levels.h"
 #include "common/paths/path_utils.h"
 #include "common/provider/codex/codex_options.h"
 #include "common/provider/provider_ids.h"
@@ -48,6 +50,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kWindowHeightKey = "window_height";
 	constexpr std::string_view kWindowMaximizedKey = "window_maximized";
 	constexpr std::string_view kMemoryEnabledDefaultKey = "memory_enabled_default";
+	constexpr std::string_view kMemoryLevelDefaultKey = "memory_level_default";
 	constexpr std::string_view kMemoryIdleDelaySecondsKey = "memory_idle_delay_seconds";
 	constexpr std::string_view kMemoryRecallBudgetBytesKey = "memory_recall_budget_bytes";
 	constexpr std::string_view kGoalMaxLoopIterationsKey = "goal_max_loop_iterations";
@@ -61,6 +64,11 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kDefaultEditorPresetIdKey = "default_editor_preset_id";
 	constexpr std::string_view kEditorDefaultGroupsVersionKey = "editor_default_groups_version";
 	constexpr std::string_view kEditorFileAssociationsKey = "editor_file_associations";
+	constexpr std::string_view kVoiceInputModeKey = "voice_input_mode";
+	constexpr std::string_view kVoiceInputServerBaseUrlKey = "voice_input_server_base_url";
+	constexpr std::string_view kVoiceInputServerEndpointKey = "voice_input_server_endpoint";
+	constexpr std::string_view kVoiceInputServerModelKey = "voice_input_server_model";
+	constexpr std::string_view kVoiceInputApiKeyEnvKey = "voice_input_api_key_env";
 
 	constexpr std::string_view kLegacyGeminiYoloModeKey = "gemini_yolo_mode";
 	constexpr std::string_view kLegacyGeminiExtraFlagsKey = "gemini_extra_flags";
@@ -208,6 +216,8 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		defaults.approval_mode = uam::approval_modes::NormalizePersistedProviderDefaultApprovalMode(defaults.approval_mode);
 		defaults.reasoning_effort = uam::codex::NormalizeReasoningEffort(defaults.reasoning_effort);
 		defaults.service_tier = uam::codex::NormalizeServiceTier(defaults.service_tier);
+		defaults.memory_level = uam::memory_levels::Normalize(defaults.memory_level, defaults.memory_enabled);
+		defaults.memory_enabled = uam::memory_levels::IsEnabled(defaults.memory_level);
 		return defaults;
 	}
 
@@ -262,6 +272,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 			    defaults.memory_enabled ? "1" : "0",
 			    defaults.reasoning_effort,
 			    defaults.service_tier,
+			    defaults.memory_level,
 			}, kSettingsFieldDelimiterText));
 		}
 		return uam::strings::JoinNonEmpty(encoded_entries, kSettingsEntryDelimiterText);
@@ -285,6 +296,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 			defaults.memory_enabled = BoolFieldOr(fields, 4, true);
 			defaults.reasoning_effort = uam::DecodedLineFieldOr(fields, 5, "");
 			defaults.service_tier = uam::DecodedLineFieldOr(fields, 6, "");
+			defaults.memory_level = uam::memory_levels::Normalize(uam::DecodedLineFieldOr(fields, 7, ""), defaults.memory_enabled);
 
 			std::string provider_id;
 			if (!TryNormalizeProviderChatDefaults(uam::DecodedLineFieldOr(fields, 0, ""), defaults, provider_id, defaults))
@@ -372,7 +384,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		const std::string provider_key(provider_id);
 		if (!settings.provider_chat_defaults.contains(provider_key))
 		{
-			settings.provider_chat_defaults[provider_key] = ProviderChatDefaults{"", uam::approval_modes::kDefaultApprovalMode, false, settings.memory_enabled_default, "", ""};
+			settings.provider_chat_defaults[provider_key] = ProviderChatDefaults{"", uam::approval_modes::kDefaultApprovalMode, false, settings.memory_enabled_default, "", "", settings.memory_level_default};
 			return;
 		}
 
@@ -390,10 +402,17 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		settings.ui_theme = uam::settings::NormalizeThemeId(settings.ui_theme);
 		uam::settings::ClampWindowSettings(settings);
 		uam::settings::ClampMemorySettings(settings);
+		settings.memory_level_default = uam::memory_levels::Normalize(settings.memory_level_default, settings.memory_enabled_default);
+		settings.memory_enabled_default = uam::memory_levels::IsEnabled(settings.memory_level_default);
 		uam::settings::ClampGoalSettings(settings);
 		settings.default_editor_preset_id = uam::editor_file_associations::NormalizeEditorPresetId(settings.default_editor_preset_id);
 		uam::editor_file_associations::NormalizeEditorFileAssociations(settings.editor_file_associations);
 		uam::editor_file_associations::AppendMissingDefaultEditorGroups(settings);
+		settings.voice_input_mode = uam::voice_input::NormalizeMode(settings.voice_input_mode);
+		settings.voice_input_server_base_url = uam::strings::Trim(settings.voice_input_server_base_url);
+		settings.voice_input_server_endpoint = uam::strings::Trim(settings.voice_input_server_endpoint);
+		settings.voice_input_server_model = uam::strings::Trim(settings.voice_input_server_model);
+		settings.voice_input_api_key_env = uam::strings::Trim(settings.voice_input_api_key_env);
 		NormalizeMemoryWorkerBindings(settings.memory_worker_bindings);
 		NormalizeProviderChatDefaultsByProvider(settings.provider_chat_defaults);
 
@@ -440,6 +459,7 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteSettingValue(lines, kWindowHeightKey, normalized.window_height);
 	WriteBoolSetting(lines, kWindowMaximizedKey, normalized.window_maximized);
 	WriteBoolSetting(lines, kMemoryEnabledDefaultKey, normalized.memory_enabled_default);
+	WriteEncodedSetting(lines, kMemoryLevelDefaultKey, normalized.memory_level_default);
 	WriteSettingValue(lines, kMemoryIdleDelaySecondsKey, normalized.memory_idle_delay_seconds);
 	WriteSettingValue(lines, kMemoryRecallBudgetBytesKey, normalized.memory_recall_budget_bytes);
 	WriteSettingValue(lines, kGoalMaxLoopIterationsKey, normalized.goal_max_loop_iterations);
@@ -453,6 +473,11 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteEncodedSetting(lines, kDefaultEditorPresetIdKey, normalized.default_editor_preset_id);
 	WriteSettingValue(lines, kEditorDefaultGroupsVersionKey, normalized.editor_default_groups_version);
 	WriteRawSetting(lines, kEditorFileAssociationsKey, EncodeEditorFileAssociations(normalized.editor_file_associations));
+	WriteEncodedSetting(lines, kVoiceInputModeKey, normalized.voice_input_mode);
+	WriteEncodedSetting(lines, kVoiceInputServerBaseUrlKey, normalized.voice_input_server_base_url);
+	WriteEncodedSetting(lines, kVoiceInputServerEndpointKey, normalized.voice_input_server_endpoint);
+	WriteEncodedSetting(lines, kVoiceInputServerModelKey, normalized.voice_input_server_model);
+	WriteEncodedSetting(lines, kVoiceInputApiKeyEnvKey, normalized.voice_input_api_key_env);
 	return uam::io::WriteTextFile(settings_file, lines.str());
 }
 
@@ -552,6 +577,10 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		{
 			settings.memory_enabled_default = uam::parse::BoolOr(value, settings.memory_enabled_default);
 		}
+		else if (key == kMemoryLevelDefaultKey)
+		{
+			settings.memory_level_default = uam::memory_levels::Normalize(uam::DecodeLineValue(value), settings.memory_enabled_default);
+		}
 		else if (key == kMemoryIdleDelaySecondsKey)
 		{
 			settings.memory_idle_delay_seconds = uam::parse::IntOr(value, settings.memory_idle_delay_seconds);
@@ -603,6 +632,26 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		else if (key == kEditorFileAssociationsKey)
 		{
 			DecodeEditorFileAssociations(decoded_value, settings.editor_file_associations);
+		}
+		else if (key == kVoiceInputModeKey)
+		{
+			settings.voice_input_mode = decoded_value;
+		}
+		else if (key == kVoiceInputServerBaseUrlKey)
+		{
+			settings.voice_input_server_base_url = decoded_value;
+		}
+		else if (key == kVoiceInputServerEndpointKey)
+		{
+			settings.voice_input_server_endpoint = decoded_value;
+		}
+		else if (key == kVoiceInputServerModelKey)
+		{
+			settings.voice_input_server_model = decoded_value;
+		}
+		else if (key == kVoiceInputApiKeyEnvKey)
+		{
+			settings.voice_input_api_key_env = decoded_value;
 		}
 	}
 

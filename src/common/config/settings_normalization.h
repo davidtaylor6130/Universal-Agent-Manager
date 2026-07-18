@@ -14,10 +14,20 @@ namespace uam::settings
 	inline constexpr const char* kDarkThemeId = "dark";
 	inline constexpr const char* kLightThemeId = "light";
 	inline constexpr const char* kSystemThemeId = "system";
+	inline constexpr const char* kMidnightThemeId = "midnight";
+	inline constexpr const char* kPaperThemeId = "paper";
+	inline constexpr const char* kDuskThemeId = "dusk";
+	inline constexpr const char* kAuroraThemeId = "aurora";
+	inline constexpr const char* kContrastThemeId = "contrast";
 	inline constexpr auto kThemeIds = std::to_array<std::string_view>({
 	    kDarkThemeId,
 	    kLightThemeId,
 	    kSystemThemeId,
+	    kMidnightThemeId,
+	    kPaperThemeId,
+	    kDuskThemeId,
+	    kAuroraThemeId,
+	    kContrastThemeId,
 	});
 
 	inline constexpr int kMinCliIdleTimeoutSeconds = 30;

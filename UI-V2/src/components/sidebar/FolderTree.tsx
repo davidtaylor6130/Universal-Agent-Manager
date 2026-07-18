@@ -1,11 +1,11 @@
 import { memo, useEffect, useId, useRef, useState, useMemo } from 'react'
 import type { ReactNode } from 'react'
-import { Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, X, MoreHorizontal, MessageSquarePlus, Brain, Pencil, Trash2, TriangleAlert, ChevronRight, Library, SearchX } from 'lucide-react'
+import { Check, Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, X, MoreHorizontal, MessageSquarePlus, Brain, Pencil, Trash2, TriangleAlert, ChevronRight, Library, SearchX } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { SessionItem } from './SessionItem'
-import { Button, IconButton, Tooltip } from '../ui'
+import { Button, IconButton, Tooltip, ViewportMenu } from '../ui'
 import {
   type ChatSearchFilters,
   buildChatSearchIndex,
@@ -384,7 +384,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
             </div>
           </div>
         ) : addingCollection ? (
-          <div className="flex gap-1">
+          <div className="flex items-center gap-1">
             <input
               autoFocus
               aria-label="Collection name"
@@ -398,17 +398,32 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
               className="min-w-0 flex-1 rounded px-2 py-1 text-xs outline-none"
               style={{ background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)' }}
             />
-            <Button size="sm" variant="primary" disabled={!newCollectionName.trim()} onClick={commitAddCollection}>Create</Button>
+            <IconButton
+              icon={<Check size={14} />}
+              label="Create collection"
+              size="sm"
+              disabled={!newCollectionName.trim()}
+              onClick={commitAddCollection}
+              style={{ background: 'var(--accent)', borderColor: 'var(--accent)', color: 'white' }}
+            />
+            <IconButton
+              icon={<X size={14} />}
+              label="Cancel new collection"
+              variant="danger"
+              size="sm"
+              onClick={() => { setNewCollectionName(''); setAddingCollection(false) }}
+              style={{ color: 'var(--error)' }}
+            />
           </div>
         ) : (
-          <div className="flex gap-4">
+          <div className="flex justify-center gap-4">
             <button
               onClick={() => setAddingFolder(true)}
               className="flex items-center gap-1.5 text-xs transition-colors duration-100"
               style={{ color: 'var(--text-3)', background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: '2px 0' }}
             >
               <Plus size={14} aria-hidden />
-              <span>New folder</span>
+              <span>New workspace</span>
             </button>
             <button
               onClick={() => setAddingCollection(true)}
@@ -444,7 +459,35 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, onFolderD
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(collection.name)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [menuPoint, setMenuPoint] = useState<{ x: number; y: number } | null>(null)
   const [dropTarget, setDropTarget] = useState(false)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const activeSessionId = useAppStore((state) => state.activeSessionId)
+  const menuTriggerRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => { setMenuOpen(false) }, [activeSessionId])
+
+  useEffect(() => {
+    if (!menuOpen) return
+    menuRef.current?.querySelector<HTMLButtonElement>('button')?.focus()
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as Node
+      if (!menuRef.current?.contains(target) && !menuTriggerRef.current?.contains(target)) { setMenuOpen(false); setMenuPoint(null) }
+    }
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setMenuOpen(false)
+      setMenuPoint(null)
+      menuTriggerRef.current?.focus()
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [menuOpen])
 
   const commitName = () => {
     const trimmed = name.trim()
@@ -475,6 +518,12 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, onFolderD
       <div
         className="group relative mx-1 flex items-center gap-2 rounded-md px-3 py-1.5 transition-colors duration-150"
         style={{ color: 'var(--text-2)', background: dropTarget ? 'var(--sidebar-item-hover)' : 'color-mix(in srgb, var(--surface-up) 70%, transparent)', border: '1px solid var(--border)', outline: dropTarget ? '1px solid var(--accent)' : 'none' }}
+        onContextMenu={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          setMenuPoint({ x: event.clientX, y: event.clientY })
+          setMenuOpen(true)
+        }}
       >
         <Tooltip label={collection.collapsed ? `Expand ${collection.name}` : `Collapse ${collection.name}`}>
           <button
@@ -515,16 +564,16 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, onFolderD
         )}
         <span className="text-[10px]" style={{ color: 'var(--text-3)' }}>{folderCount}</span>
         <Tooltip label="Collection actions">
-          <button type="button" aria-label={`Actions for ${collection.name}`} onClick={() => setMenuOpen((open) => !open)} style={{ background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer', padding: 0 }}>
+          <button ref={menuTriggerRef} type="button" aria-label={`Actions for ${collection.name}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => { setMenuPoint(null); setMenuOpen((open) => !open) }} style={{ background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer', padding: 0 }}>
             <MoreHorizontal size={14} />
           </button>
         </Tooltip>
       </div>
       {menuOpen && (
-        <div className="mx-3 my-1 rounded-md py-1" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
-          <button type="button" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" style={{ border: 'none', color: 'var(--text-2)' }} onClick={() => { setMenuOpen(false); setEditing(true) }}><Pencil size={12} />Rename</button>
-          <button type="button" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" style={{ border: 'none', color: 'var(--red)' }} onClick={() => { setMenuOpen(false); if (window.confirm(`Delete collection “${collection.name}”? Folders will remain.`)) void remove(collection.id) }}><Trash2 size={12} />Delete</button>
-        </div>
+        <ViewportMenu ref={menuRef} {...(menuPoint ? { point: menuPoint } : { anchorRef: menuTriggerRef, align: 'end' as const })} role="menu" aria-label={`${collection.name} actions`} className="rounded-md py-1" style={{ minWidth: 140, background: 'var(--surface-up)', border: '1px solid var(--border)', boxShadow: 'var(--elev-2)' }}>
+          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" style={{ border: 'none', color: 'var(--text-2)' }} onClick={() => { setMenuOpen(false); setEditing(true) }}><Pencil size={12} />Rename</button>
+          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" style={{ border: 'none', color: 'var(--red)' }} onClick={() => { setMenuOpen(false); setConfirmingDelete(true) }}><Trash2 size={12} />Delete</button>
+        </ViewportMenu>
       )}
       <div
         aria-hidden={collection.collapsed}
@@ -547,6 +596,15 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, onFolderD
           </div>
         </div>
       </div>
+      {confirmingDelete && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'rgba(0,0,0,.5)' }} onClick={(event) => { if (event.target === event.currentTarget) setConfirmingDelete(false) }}>
+          <div role="alertdialog" aria-modal="true" aria-label={`Delete ${collection.name} collection`} className="w-full max-w-md rounded-xl animate-slide-in" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
+            <div className="px-5 py-4 text-sm font-semibold" style={{ color: 'var(--text)', borderBottom: '1px solid var(--border)' }}>Delete collection?</div>
+            <div className="p-5 text-sm" style={{ color: 'var(--text-2)' }}>“{collection.name}” will be permanently deleted. Workspaces remain, but this collection cannot be restored.</div>
+            <div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}><Button size="sm" onClick={() => setConfirmingDelete(false)}>Cancel</Button><Button size="sm" variant="danger" onClick={() => { setConfirmingDelete(false); void remove(collection.id) }}>Delete collection</Button></div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -778,7 +836,9 @@ const FolderRow = memo(function FolderRow({
   useEffect(() => {
     if (!menuPos) return
     const onDown = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuPos(null)
+      const target = e.target as Node
+      if (target instanceof Element && target.closest('[data-viewport-menu]')) return
+      if (menuRef.current && !menuRef.current.contains(target)) setMenuPos(null)
     }
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuPos(null) }
     document.addEventListener('mousedown', onDown)
@@ -791,7 +851,7 @@ const FolderRow = memo(function FolderRow({
 
   return (
     <div
-      className="mb-2"
+      className="mb-1"
       data-testid={`folder-row-${folder.id}`}
       draggable={draggable}
       onDragStart={(event) => {
@@ -882,15 +942,12 @@ const FolderRow = memo(function FolderRow({
       </div>
 
       {menuPos && (
-        <div
+        <ViewportMenu
           ref={menuRef}
+          point={menuPos}
           className="fixed z-50 rounded-md py-1 animate-fade-in"
           style={{
-            left: Math.max(8, Math.min(menuPos.x, window.innerWidth - 176)),
-            top: Math.min(menuPos.y, window.innerHeight - 150),
             minWidth: 168,
-            maxHeight: 'min(420px, calc(100vh - 24px))',
-            overflowY: 'auto',
             background: 'var(--surface-up)',
             border: '1px solid var(--border-bright)',
             boxShadow: 'var(--elev-2)',
@@ -902,7 +959,7 @@ const FolderRow = memo(function FolderRow({
           <CollectionMenuItems target={folder.id} label={folder.name} onAdded={() => setMenuPos(null)} />
           <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Rename folder" onClick={() => { setMenuPos(null); onStartRename() }} />
           <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label="Delete folder" danger onClick={() => { setMenuPos(null); onDelete() }} />
-        </div>
+        </ViewportMenu>
       )}
 
       {isEditing && (

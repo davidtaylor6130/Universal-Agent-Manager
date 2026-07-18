@@ -1,8 +1,8 @@
 import type { Session, Folder } from '../types/session'
 import type { Message, Attachment } from '../types/message'
 import type { Provider } from '../types/provider'
-import type { MemoryEntry, MemoryEntryDraft, MemoryScope, MemoryScanCandidate } from '../types/memory'
-import type { MarkdownStoreDraft, MarkdownStoreEntry } from '../types/markdownStore'
+import type { MemoryEntry, MemoryEntryDraft, MemoryLevel, MemoryScope, MemoryScanCandidate } from '../types/memory'
+import type { MarkdownStoreConflictAction, MarkdownStoreDraft, MarkdownStoreEntry, MarkdownStoreImportCandidate, MarkdownStoreImportResult } from '../types/markdownStore'
 import type { Goal, GoalStatus } from '../types/goal'
 import type { CustomTheme, StoredTheme } from '../utils/themeStorage'
 import type { ResourceCollection, ResourceReference, ResourceReferenceType } from '../types/resourceCollection'
@@ -27,6 +27,8 @@ import type {
   VcsCommitResult,
   VcsCommitStatus,
   VcsType,
+  VoiceInputCapabilities,
+  VoiceInputMode,
 } from './cpp/types'
 import type { StoreApi } from 'zustand'
 
@@ -50,6 +52,7 @@ export interface AppState {
   cliTranscriptBySessionId: Record<string, CliTranscript>
   cliDebugState: CppCliDebugState | null
   memoryEnabledDefault: boolean
+  memoryLevelDefault: MemoryLevel
   memoryIdleDelaySeconds: number
   memoryRecallBudgetBytes: number
   goalMaxLoopIterations: number
@@ -62,6 +65,12 @@ export interface AppState {
   memoryActivity: MemoryActivity
   cliVersionManager: CliVersionManager
   markdownStoreDirectory: string
+  voiceInputMode: VoiceInputMode
+  voiceInputServerBaseUrl: string
+  voiceInputServerEndpoint: string
+  voiceInputServerModel: string
+  voiceInputApiKeyEnv: string
+  voiceInputCapabilities: VoiceInputCapabilities
   defaultNewChatProviderId: string
   providerChatDefaults: Record<string, ProviderChatDefaults>
   defaultEditorPresetId: string
@@ -103,7 +112,7 @@ export interface AppState {
   // Session actions
   setActiveSession: (id: string) => void
   loadSessionMessages: (id: string) => void
-  addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string) => void
+  addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string, reasoningEffort?: string) => void
   branchFromMessage: (id: string, messageIndex: number, content?: string) => Promise<string | null>
   renameSession: (id: string, name: string) => void
   setSessionPinned: (id: string, pinned: boolean) => Promise<boolean>
@@ -111,9 +120,11 @@ export interface AppState {
   setSessionModel: (id: string, modelId: string) => Promise<boolean>
   setSessionApprovalMode: (id: string, modeId: string) => Promise<boolean>
   setSessionAutoApproveCommands: (id: string, enabled: boolean) => Promise<boolean>
-  setSessionCommandSafetyTier: (id: string, tier: 'low' | 'medium' | 'high') => Promise<boolean>
+  setSessionCommandSafetyTier: (id: string, tier: 'off' | 'acceptEdits' | 'low' | 'medium' | 'high' | 'yolo') => Promise<boolean>
   setSessionMemoryEnabled: (id: string, enabled: boolean) => Promise<boolean>
-  setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'goalMaxLoopIterations' | 'memoryWorkerBindings'>>) => Promise<boolean>
+  setSessionMemoryLevel: (id: string, level: MemoryLevel) => Promise<boolean>
+  setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryLevelDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'goalMaxLoopIterations' | 'memoryWorkerBindings'>>) => Promise<boolean>
+  setVoiceInputSettings: (settings: Pick<AppState, 'voiceInputMode' | 'voiceInputServerBaseUrl' | 'voiceInputServerEndpoint' | 'voiceInputServerModel' | 'voiceInputApiKeyEnv'>) => Promise<boolean>
   setUpdateSettings: (settings: Partial<Pick<AppState, 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>) => Promise<boolean>
   setSessionCodexOptions: (id: string, options: { reasoningEffort?: string; serviceTier?: string }) => Promise<boolean>
   setProviderChatDefaults: (settings: { defaultNewChatProviderId?: string; providerChatDefaults?: Record<string, ProviderChatDefaults> }) => Promise<boolean>
@@ -128,6 +139,11 @@ export interface AppState {
   closeMarkdownStore: () => void
   refreshMarkdownStore: () => Promise<boolean>
   createMarkdownStoreEntry: (draft: MarkdownStoreDraft) => Promise<boolean>
+  updateMarkdownStoreEntry: (entry: MarkdownStoreEntry, draft: MarkdownStoreDraft) => Promise<boolean>
+  setMarkdownStoreFavorite: (entry: MarkdownStoreEntry, favorite: boolean) => Promise<boolean>
+  browseMarkdownStoreImport: (kind: 'file' | 'folder') => Promise<string | null>
+  previewMarkdownStoreImports: (options: { includeProviders?: boolean; paths?: string[] }) => Promise<MarkdownStoreImportCandidate[]>
+  importMarkdownStoreEntries: (imports: Array<{ sourceProvider: string; sourcePath: string; conflictAction: MarkdownStoreConflictAction }>) => Promise<MarkdownStoreImportResult[]>
   revealMarkdownStoreEntry: (entry: MarkdownStoreEntry) => Promise<boolean>
   editMarkdownStoreEntry: (entry: MarkdownStoreEntry) => Promise<boolean>
   attachMarkdownStoreEntry: (sessionId: string, entry: MarkdownStoreEntry) => void
@@ -147,7 +163,7 @@ export interface AppState {
   deleteSession: (id: string) => void
 
   // Goal actions
-  setGoal: (chatId: string, objective: string, tokenBudget?: number) => Promise<string | null>
+	setGoal: (chatId: string, objective: string, tokenBudget?: number, executionOwner?: 'uam' | 'provider') => Promise<string | null>
   updateGoalStatus: (goalId: string, status: GoalStatus) => Promise<boolean>
   removeGoal: (goalId: string) => Promise<boolean>
   resumeGoal: (chatId: string, goalId: string) => Promise<boolean>
@@ -192,7 +208,10 @@ export interface AppState {
 
   // ACP actions
   stageChatAttachments: (sessionId: string, items: ChatAttachmentInput[]) => Promise<Attachment[]>
-  sendAcpPrompt: (sessionId: string, text: string, attachments?: Attachment[]) => Promise<boolean>
+  sendAcpPrompt: (sessionId: string, text: string, attachments?: Attachment[], steerNow?: boolean) => Promise<boolean>
+  removeQueuedAcpPrompt: (sessionId: string, index: number) => Promise<boolean>
+  steerQueuedAcpPrompt: (sessionId: string, index: number) => Promise<boolean>
+  discoverProviderModels: (sessionId: string) => Promise<boolean>
   cancelAcpTurn: (sessionId: string) => Promise<boolean>
   resolveAcpPermission: (sessionId: string, requestId: string, optionId: string | 'cancelled') => Promise<boolean>
   resolveAcpUserInput: (sessionId: string, requestId: string, answers: AcpUserInputAnswers) => Promise<boolean>

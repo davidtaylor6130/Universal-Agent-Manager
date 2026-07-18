@@ -164,6 +164,11 @@ void ScheduleGoalReviewAfterSuccessfulTurn(AppState& app, AcpSessionState& sessi
 		AppendGoalLoopDiagnostic(session, "skip_schedule_no_active_goal", session.goal_review_goal_id);
 		return;
 	}
+	if (GoalService::IsProviderManaged(*active_goal))
+	{
+		AppendGoalLoopDiagnostic(session, "skip_schedule_provider_managed", active_goal->id);
+		return;
+	}
 
 	// Local models can degenerate into emitting the same output every turn.
 	// Three identical back-to-back worker outputs make the reviewer loop-aware
@@ -222,6 +227,10 @@ bool ResumeStalledGoalLoopIfNeeded(AppState& app, AcpSessionState& session, Chat
 	{
 		return false;
 	}
+	if (GoalService::IsProviderManaged(*active_goal))
+	{
+		return false;
+	}
 	// Only resume a loop that has already run a turn; a freshly created goal
 	// waits for the user's first prompt.
 	if (active_goal->loop_count == 0 && active_goal->tokens_used == 0)
@@ -269,6 +278,24 @@ void CompletePromptTurnAndHandleGoalLoop(AppState& app, AcpSessionState& session
 	CompletePromptTurn(session, lifecycle_state);
 	session.crash_restart_attempts = 0;
 	session.goal_auto_resume_attempts = 0;
+	if (Goal* active_goal = GoalService::FindActiveGoal(app, chat.id); active_goal != nullptr && GoalService::IsProviderManaged(*active_goal))
+	{
+		const std::string provider_goal_id = active_goal->id;
+		ClearGoalReviewState(session);
+		session.goal_turn_kind.clear();
+		(void)GoalService::UpdateGoalStatus(app, provider_goal_id, GoalStatus::Complete);
+		AppendGoalLoopDiagnostic(session, "provider_managed_complete", provider_goal_id);
+		SaveChatQuietly(app, chat);
+		if (!session.queued_user_prompts.empty())
+		{
+			(void)uam::DrainNextQueuedAcpUserPrompt(app, session, chat);
+		}
+		if (browser)
+		{
+			uam::PushStateUpdateIfChanged(browser, app);
+		}
+		return;
+	}
 
 	if (completed_review_turn)
 	{

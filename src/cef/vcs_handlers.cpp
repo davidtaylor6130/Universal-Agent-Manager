@@ -58,6 +58,7 @@ namespace
 		nlohmann::json json;
 		json["isGitRepository"] = status.is_git_repository;
 		json["isSvnWorkspace"] = status.is_svn_workspace;
+		json["managedRepository"] = status.managed_repository;
 		json["isolated"] = status.isolated;
 		json["sourceDirty"] = status.source_dirty;
 		json["worktreeDirty"] = status.worktree_dirty;
@@ -347,4 +348,3 @@ void UamQueryHandler::HandleGenerateVcsCommitMessage(CefRefPtr<CefBrowser> /*bro
 		                     request_id));
 	                 });
 }
-

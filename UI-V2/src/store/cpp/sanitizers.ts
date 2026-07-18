@@ -42,6 +42,7 @@ import type {
 } from './types'
 import type { Attachment, MessageBlock } from '../../types/message'
 import type { GoalStatus } from '../../types/goal'
+import type { MemoryLevel } from '../../types/memory'
 import type { ResourceCollection, ResourceReferenceType } from '../../types/resourceCollection'
 import { normalizeStoredTheme } from '../../utils/themeStorage'
 import {
@@ -61,6 +62,14 @@ export const DEFAULT_MEMORY_RECALL_BUDGET_BYTES = 2048
 export const MIN_MEMORY_RECALL_BUDGET_BYTES = 512
 export const MAX_MEMORY_RECALL_BUDGET_BYTES = 8192
 export const DEFAULT_GOAL_MAX_LOOP_ITERATIONS = 200
+
+export function normalizeMemoryLevel(value: unknown, legacyEnabled = true): MemoryLevel {
+  if (!legacyEnabled) return 'off'
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : ''
+  return normalized === 'off' || normalized === 'strict' || normalized === 'balanced' || normalized === 'open'
+    ? normalized
+    : 'strict'
+}
 
 // ---------------------------------------------------------------------------
 // Primitive helpers
@@ -180,9 +189,14 @@ export function normalizeAcpApprovalMode(value: unknown): string {
   return (ACP_APPROVAL_MODE_IDS as readonly string[]).includes(modeId) ? modeId : 'default'
 }
 
-export function normalizeCommandSafetyTier(value: unknown): 'low' | 'medium' | 'high' {
+export function normalizeAgentMode(value: unknown): string {
+  const modeId = stringOr(value).trim()
+  return (AGENT_MODE_IDS as readonly string[]).includes(modeId) ? modeId : 'default'
+}
+
+export function normalizeCommandSafetyTier(value: unknown): 'off' | 'acceptEdits' | 'low' | 'medium' | 'high' | 'yolo' {
   const tier = stringOr(value).trim().toLowerCase()
-  return tier === 'low' || tier === 'high' ? tier : 'medium'
+  return tier === 'acceptedits' ? 'acceptEdits' : tier === 'off' || tier === 'low' || tier === 'high' || tier === 'yolo' ? tier : 'medium'
 }
 
 export function sanitizePlanEntry(value: unknown): AcpPlanEntry | null {
@@ -371,6 +385,7 @@ export function sanitizeCppCliTerminal(value: unknown): CppChat['cliTerminal'] |
     processing: typeof value.processing === 'boolean' ? value.processing : undefined,
     readySinceLastSelect: typeof value.readySinceLastSelect === 'boolean' ? value.readySinceLastSelect : undefined,
     active: typeof value.active === 'boolean' ? value.active : undefined,
+    pendingSteer: typeof value.pendingSteer === 'boolean' ? value.pendingSteer : undefined,
     lastError: stringOr(value.lastError),
   }
 }
@@ -562,6 +577,8 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
           return sanitized ? [sanitized] : []
         })
       : [],
+    modelsLoading: booleanOr(value.modelsLoading),
+    modelRefreshError: stringOr(value.modelRefreshError),
     currentModelId: normalizeAcpModelId(value.currentModelId),
     turnEvents: Array.isArray(value.turnEvents)
       ? value.turnEvents.flatMap((event) => {
@@ -613,6 +630,8 @@ export function sanitizeCppGoal(value: unknown): CppGoal | null {
     loopCount: finiteNumberOr(value.loopCount, 0),
     createdAt: stringOr(value.createdAt),
     updatedAt: stringOr(value.updatedAt),
+	executionOwner: value.executionOwner === 'provider' ? 'provider' : 'uam',
+	providerCommand: isString(value.providerCommand) ? value.providerCommand : '',
   }
 }
 
@@ -643,10 +662,11 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     branchFromMessageIndex: Math.trunc(finiteNumberOr(value.branchFromMessageIndex, -1)),
     branchMessageEdited: booleanOr(value.branchMessageEdited),
     modelId: normalizeAcpModelId(value.modelId),
-    approvalMode: normalizeAcpApprovalMode(value.approvalMode),
+    approvalMode: normalizeAgentMode(value.approvalMode),
     autoApproveCommands: booleanOr(value.autoApproveCommands, stringOr(value.approvalMode).trim() === 'yolo'),
     commandSafetyTier: normalizeCommandSafetyTier(value.commandSafetyTier),
-    memoryEnabled: booleanOr(value.memoryEnabled, true),
+    memoryEnabled: normalizeMemoryLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)) !== 'off',
+    memoryLevel: normalizeMemoryLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)),
     memoryLastProcessedMessageCount: finiteNumberOr(value.memoryLastProcessedMessageCount, 0),
     memoryLastProcessedAt: isString(value.memoryLastProcessedAt) ? value.memoryLastProcessedAt : undefined,
     workspaceDirectory: isString(value.workspaceDirectory) ? value.workspaceDirectory : undefined,
@@ -690,6 +710,7 @@ export function sanitizeCppProvider(value: unknown): CppProvider | null {
     supportsCli: typeof value.supportsCli === 'boolean' ? value.supportsCli : undefined,
     supportsStructured: typeof value.supportsStructured === 'boolean' ? value.supportsStructured : undefined,
     structuredProtocol: isString(value.structuredProtocol) ? value.structuredProtocol : undefined,
+	nativeGoalCommand: isString(value.nativeGoalCommand) ? value.nativeGoalCommand.trim() : undefined,
   }
 }
 
@@ -741,6 +762,7 @@ export function sanitizeGitWorktreeStatus(value: unknown): GitWorktreeStatus | n
   return {
     isGitRepository: booleanOr(value.isGitRepository),
     isSvnWorkspace: booleanOr(value.isSvnWorkspace),
+	managedRepository: booleanOr(value.managedRepository),
     isolated: booleanOr(value.isolated),
     sourceDirty: booleanOr(value.sourceDirty),
     worktreeDirty: booleanOr(value.worktreeDirty),
@@ -775,6 +797,7 @@ export function cefPayloadOrRawResponse<T>(response: { data?: T }): unknown {
 }
 
 export const ACP_APPROVAL_MODE_IDS = ['default', 'acceptEdits', 'plan'] as const
+export const AGENT_MODE_IDS = ['default', 'plan'] as const
 
 export function sanitizeVcsType(value: unknown): VcsType {
   return value === 'svn' ? 'svn' : 'git'
@@ -1044,6 +1067,7 @@ export function sanitizeProviderChatDefaults(value: unknown): ProviderChatDefaul
       approvalMode: 'default',
       autoApproveCommands: false,
       memoryEnabled: true,
+      memoryLevel: 'strict',
       reasoningEffort: '',
       serviceTier: '',
     }
@@ -1052,7 +1076,8 @@ export function sanitizeProviderChatDefaults(value: unknown): ProviderChatDefaul
     modelId: normalizeAcpModelId(value.modelId),
     approvalMode: normalizeAcpApprovalMode(value.approvalMode),
     autoApproveCommands: booleanOr(value.autoApproveCommands),
-    memoryEnabled: booleanOr(value.memoryEnabled, true),
+    memoryEnabled: normalizeMemoryLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)) !== 'off',
+    memoryLevel: normalizeMemoryLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)),
     reasoningEffort: normalizeCodexReasoningEffort(value.reasoningEffort),
     serviceTier: normalizeCodexServiceTier(value.serviceTier),
   }
@@ -1073,13 +1098,15 @@ export function providerChatDefaultsForNewChat(
   state: {
     providerChatDefaults: Record<string, ProviderChatDefaults>
     memoryEnabledDefault: boolean
+    memoryLevelDefault: MemoryLevel
   },
   providerId: string
 ): ProviderChatDefaults {
   const saved = state.providerChatDefaults[providerId]
   const defaults = sanitizeProviderChatDefaults(saved ?? null)
   if (!saved) {
-    defaults.memoryEnabled = state.memoryEnabledDefault
+    defaults.memoryLevel = normalizeMemoryLevel(state.memoryLevelDefault, state.memoryEnabledDefault)
+    defaults.memoryEnabled = defaults.memoryLevel !== 'off'
   }
   const caps = providerCapabilities(providerId)
   if (!caps.hasReasoningEffort) {
@@ -1101,6 +1128,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       activeProviderId: GEMINI_CLI_PROVIDER_ID,
       theme: 'dark',
       memoryEnabledDefault: true,
+      memoryLevelDefault: 'strict',
       memoryIdleDelaySeconds: DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
       memoryRecallBudgetBytes: DEFAULT_MEMORY_RECALL_BUDGET_BYTES,
       goalMaxLoopIterations: DEFAULT_GOAL_MAX_LOOP_ITERATIONS,
@@ -1112,6 +1140,12 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       defaultNewChatProviderId: GEMINI_CLI_PROVIDER_ID,
       providerChatDefaults: {},
       markdownStoreDirectory: '',
+      voiceInputMode: 'system',
+      voiceInputServerBaseUrl: '',
+      voiceInputServerEndpoint: '/v1/audio/transcriptions',
+      voiceInputServerModel: 'whisper-1',
+      voiceInputApiKeyEnv: 'OPENAI_API_KEY',
+      voiceInputCapabilities: { system: { supported: true, reason: '' }, local: { supported: false, reason: 'Coming soon.' }, server: { supported: false, reason: 'Unavailable.' } },
       defaultEditorPresetId: 'vscode',
       editorFileAssociations: defaultEditorFileAssociations(),
     }
@@ -1136,10 +1170,18 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       }
     }
   }
+  const capability = (input: unknown, fallbackSupported: boolean) => isRecord(input)
+    ? { supported: booleanOr(input.supported, fallbackSupported), reason: stringOr(input.reason) }
+    : { supported: fallbackSupported, reason: '' }
+  const capabilities = isRecord(value.voiceInputCapabilities) ? value.voiceInputCapabilities : {}
+  const voiceInputMode = ['system', 'local', 'server'].includes(stringOr(value.voiceInputMode))
+    ? stringOr(value.voiceInputMode) as 'system' | 'local' | 'server'
+    : 'system'
   return {
     activeProviderId: stringOr(value.activeProviderId, GEMINI_CLI_PROVIDER_ID),
     theme,
-    memoryEnabledDefault: booleanOr(value.memoryEnabledDefault, true),
+    memoryEnabledDefault: normalizeMemoryLevel(value.memoryLevelDefault, booleanOr(value.memoryEnabledDefault, true)) !== 'off',
+    memoryLevelDefault: normalizeMemoryLevel(value.memoryLevelDefault, booleanOr(value.memoryEnabledDefault, true)),
     memoryIdleDelaySeconds: clampedFiniteNumberOr(value.memoryIdleDelaySeconds, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_IDLE_DELAY_SECONDS),
     memoryRecallBudgetBytes: clampedFiniteNumberOr(value.memoryRecallBudgetBytes, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_RECALL_BUDGET_BYTES, MAX_MEMORY_RECALL_BUDGET_BYTES),
     goalMaxLoopIterations: Math.max(0, Math.floor(finiteNumberOr(value.goalMaxLoopIterations, DEFAULT_GOAL_MAX_LOOP_ITERATIONS))),
@@ -1151,6 +1193,16 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     defaultNewChatProviderId: stringOr(value.defaultNewChatProviderId, stringOr(value.activeProviderId, GEMINI_CLI_PROVIDER_ID)),
     providerChatDefaults: sanitizeProviderChatDefaultsMap(value.providerChatDefaults),
     markdownStoreDirectory: stringOr(value.markdownStoreDirectory),
+    voiceInputMode,
+    voiceInputServerBaseUrl: stringOr(value.voiceInputServerBaseUrl),
+    voiceInputServerEndpoint: stringOr(value.voiceInputServerEndpoint, '/v1/audio/transcriptions'),
+    voiceInputServerModel: stringOr(value.voiceInputServerModel, 'whisper-1'),
+    voiceInputApiKeyEnv: stringOr(value.voiceInputApiKeyEnv, 'OPENAI_API_KEY'),
+    voiceInputCapabilities: {
+      system: capability(capabilities.system, true),
+      local: capability(capabilities.local, false),
+      server: capability(capabilities.server, false),
+    },
     defaultEditorPresetId: sanitizeEditorPresetId(value.defaultEditorPresetId),
     editorFileAssociations: sanitizeEditorFileAssociations(value.editorFileAssociations),
   }

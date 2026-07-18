@@ -8,6 +8,7 @@
 #include "app/runtime_orchestration_services.h"
 #include "cef/cef_push.h"
 #include "common/config/approval_modes.h"
+#include "common/memory/memory_levels.h"
 #include "common/provider/codex/codex_options.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
@@ -21,6 +22,7 @@
 #include "common/utils/time_utils.h"
 
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <string>
 
 // ---------------------------------------------------------------------------
@@ -200,15 +202,11 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 	}
 
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat->id);
-	if (session != nullptr && AcpSessionBlocksModelChange(*session))
-	{
-		cb->Failure(409, "Cannot change model while the structured runtime is busy.");
-		return;
-	}
+	const bool defer_live_update = session != nullptr && AcpSessionBlocksModelChange(*session);
 
 	if (chat->model_id == model_id)
 	{
-		if (session != nullptr && session->running && !model_id.empty() && session->current_model_id != model_id)
+		if (!defer_live_update && session != nullptr && session->running && !model_id.empty() && session->current_model_id != model_id)
 		{
 			std::string acp_error;
 			if (!uam::SetAcpSessionModel(m_app, chat->id, model_id, &acp_error))
@@ -235,7 +233,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 		return;
 	}
 
-	if (session != nullptr && session->running)
+	if (!defer_live_update && session != nullptr && session->running)
 	{
 		std::string acp_error;
 		const bool live_updated = model_id.empty() ? uam::StopAcpSession(m_app, chat->id) : uam::SetAcpSessionModel(m_app, chat->id, model_id, &acp_error);
@@ -256,18 +254,12 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
-	const std::string reasoning_effort = uam::codex::NormalizeReasoningEffort(payload.value("reasoningEffort", ""));
-	const std::string service_tier = uam::codex::NormalizeServiceTier(payload.value("serviceTier", ""));
+	std::string reasoning_effort = uam::codex::NormalizeReasoningEffort(payload.value("reasoningEffort", ""));
+	std::string service_tier = uam::codex::NormalizeServiceTier(payload.value("serviceTier", ""));
 
 	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
 	if (chat == nullptr)
 	{
-		return;
-	}
-
-	if (!uam::provider_ids::IsCliProviderAliasOf(chat->provider_id, uam::provider_ids::kCodexCli))
-	{
-		cb->Failure(409, "Codex reasoning and speed options are only available for Codex chats.");
 		return;
 	}
 
@@ -277,12 +269,37 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 	}
 
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat->id);
-	if (session != nullptr && AcpSessionBlocksModelChange(*session))
+	const bool is_codex = uam::provider_ids::IsCliProviderAliasOf(chat->provider_id, uam::provider_ids::kCodexCli);
+	const uam::AcpModelState* selected_model = nullptr;
+	if (session != nullptr)
 	{
-		cb->Failure(409, "Cannot change Codex reasoning or speed while the structured runtime is busy.");
+		for (const uam::AcpModelState& model : session->available_models)
+		{
+			if (model.id == chat->model_id)
+			{
+				selected_model = &model;
+				break;
+			}
+		}
+	}
+	if (!is_codex && (selected_model == nullptr || selected_model->supported_reasoning_efforts.empty()))
+	{
+		cb->Failure(409, "This provider model does not expose reasoning-effort options.");
 		return;
 	}
-
+	if (selected_model != nullptr && !selected_model->supported_reasoning_efforts.empty())
+	{
+		const auto requested = std::ranges::find(selected_model->supported_reasoning_efforts, reasoning_effort);
+		if (requested == selected_model->supported_reasoning_efforts.end())
+		{
+			const auto configured_default = std::ranges::find(selected_model->supported_reasoning_efforts, selected_model->default_reasoning_effort);
+			reasoning_effort = configured_default != selected_model->supported_reasoning_efforts.end() ? *configured_default : selected_model->supported_reasoning_efforts.front();
+		}
+	}
+	if (!is_codex)
+	{
+		service_tier.clear();
+	}
 	if (chat->reasoning_effort == reasoning_effort && chat->service_tier == service_tier)
 	{
 		uam::PushStateUpdateIfChanged(browser, m_app);
@@ -297,7 +314,7 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 	chat->service_tier = service_tier;
 	chat->updated_at = uam::time::TimestampNow();
 
-	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Codex chat options updated.", "Codex chat options changed in UI, but failed to save."))
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat model options updated.", "Chat model options changed in UI, but failed to save."))
 	{
 		chat->reasoning_effort = previous_reasoning_effort;
 		chat->service_tier = previous_service_tier;
@@ -343,7 +360,7 @@ void UamQueryHandler::HandleSetChatApprovalMode(CefRefPtr<CefBrowser> browser, c
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string mode_id = uam::approval_modes::NormalizeIncomingApprovalModeId(payload.value("modeId", ""));
 
-	if (!uam::approval_modes::IsAppApprovalMode(mode_id))
+	if (!uam::approval_modes::IsAgentMode(mode_id))
 	{
 		cb->Failure(400, "Unsupported ACP mode: " + mode_id);
 		return;
@@ -361,18 +378,15 @@ void UamQueryHandler::HandleSetChatApprovalMode(CefRefPtr<CefBrowser> browser, c
 	}
 
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat->id);
-	if (session != nullptr && AcpSessionBlocksModelChange(*session))
-	{
-		cb->Failure(409, "Cannot change structured runtime mode while the structured runtime is busy.");
-		return;
-	}
+	const bool defer_live_update = session != nullptr && AcpSessionBlocksModelChange(*session);
+	const std::string effective_mode_id = uam::approval_modes::EffectiveProviderMode(mode_id, chat->command_safety_tier);
 
 	if (chat->approval_mode == mode_id)
 	{
-		if (session != nullptr && session->running && session->current_mode_id != mode_id)
+		if (!defer_live_update && session != nullptr && session->running && session->current_mode_id != effective_mode_id)
 		{
 			std::string acp_error;
-			if (!uam::SetAcpSessionMode(m_app, chat->id, mode_id, &acp_error))
+			if (!uam::SetAcpSessionMode(m_app, chat->id, effective_mode_id, &acp_error))
 			{
 				cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live ACP mode."));
 				return;
@@ -396,10 +410,10 @@ void UamQueryHandler::HandleSetChatApprovalMode(CefRefPtr<CefBrowser> browser, c
 		return;
 	}
 
-	if (session != nullptr && session->running)
+	if (!defer_live_update && session != nullptr && session->running)
 	{
 		std::string acp_error;
-		if (!uam::SetAcpSessionMode(m_app, chat->id, mode_id, &acp_error))
+		if (!uam::SetAcpSessionMode(m_app, chat->id, effective_mode_id, &acp_error))
 		{
 			chat->approval_mode = previous_mode_id;
 			chat->updated_at = previous_updated_at;
@@ -458,12 +472,13 @@ void UamQueryHandler::HandleSetChatAutoApproveCommands(CefRefPtr<CefBrowser> bro
 void UamQueryHandler::HandleSetChatCommandSafetyTier(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
-	const std::string requested = uam::strings::ToLowerAscii(uam::strings::Trim(payload.value("commandSafetyTier", "")));
-	if (requested != "low" && requested != "medium" && requested != "high")
+	const std::string raw_requested = uam::strings::ToLowerAscii(uam::strings::Trim(payload.value("commandSafetyTier", "")));
+	if (raw_requested != "off" && raw_requested != "acceptedits" && raw_requested != "low" && raw_requested != "medium" && raw_requested != "high" && raw_requested != "yolo")
 	{
-		cb->Failure(400, "Command safety tier must be low, medium, or high.");
+		cb->Failure(400, "Permission mode must be default, yolo, or auto-decide with low, medium, or high safety.");
 		return;
 	}
+	const std::string requested = raw_requested == "acceptedits" ? uam::approval_modes::kAcceptEditsApprovalMode : raw_requested;
 	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
 	if (chat == nullptr) return;
 	if (chat->command_safety_tier == requested)
@@ -474,7 +489,9 @@ void UamQueryHandler::HandleSetChatCommandSafetyTier(CefRefPtr<CefBrowser> brows
 
 	const std::string previous = chat->command_safety_tier;
 	const std::string previous_updated_at = chat->updated_at;
+	const std::string previous_effective_mode = uam::approval_modes::EffectiveProviderMode(chat->approval_mode, previous);
 	chat->command_safety_tier = requested;
+	const std::string requested_effective_mode = uam::approval_modes::EffectiveProviderMode(chat->approval_mode, requested);
 	chat->updated_at = uam::time::TimestampNow();
 	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Command safety tier updated.", "Command safety tier changed in UI, but failed to save."))
 	{
@@ -482,6 +499,20 @@ void UamQueryHandler::HandleSetChatCommandSafetyTier(CefRefPtr<CefBrowser> brows
 		chat->updated_at = previous_updated_at;
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist command safety tier."));
 		return;
+	}
+	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat->id);
+	if (session != nullptr && session->running && !AcpSessionBlocksModelChange(*session) &&
+	    previous_effective_mode != requested_effective_mode && session->current_mode_id != requested_effective_mode)
+	{
+		std::string acp_error;
+		if (!uam::SetAcpSessionMode(m_app, chat->id, requested_effective_mode, &acp_error))
+		{
+			chat->command_safety_tier = previous;
+			chat->updated_at = previous_updated_at;
+			(void)ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat permissions reverted.", "Chat permissions changed in UI, but failed to revert.");
+			cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live ACP permissions."));
+			return;
+		}
 	}
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
@@ -492,13 +523,14 @@ void UamQueryHandler::HandleSetChatMemoryEnabled(CefRefPtr<CefBrowser> browser, 
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const bool enabled = payload.value("enabled", true);
+	const std::string requested_level = uam::memory_levels::Normalize(uam::nlohmann_json::TrimmedStringValueOr(payload, "memoryLevel", ""), enabled);
 	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
 	if (chat == nullptr)
 	{
 		return;
 	}
 
-	if (chat->memory_enabled == enabled)
+	if (chat->memory_level == requested_level && chat->memory_enabled == uam::memory_levels::IsEnabled(requested_level))
 	{
 		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Success("{}");
@@ -506,12 +538,15 @@ void UamQueryHandler::HandleSetChatMemoryEnabled(CefRefPtr<CefBrowser> browser, 
 	}
 
 	const bool previous = chat->memory_enabled;
+	const std::string previous_level = chat->memory_level;
 	const std::string previous_updated_at = chat->updated_at;
-	chat->memory_enabled = enabled;
+	chat->memory_level = requested_level;
+	chat->memory_enabled = uam::memory_levels::IsEnabled(requested_level);
 	chat->updated_at = uam::time::TimestampNow();
 	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat memory setting updated.", "Chat memory setting changed in UI, but failed to save."))
 	{
 		chat->memory_enabled = previous;
+		chat->memory_level = previous_level;
 		chat->updated_at = previous_updated_at;
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat memory setting."));
 		return;

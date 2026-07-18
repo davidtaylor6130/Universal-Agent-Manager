@@ -20,6 +20,7 @@ class MemoryService
 		bool memory_enabled = true;
 		std::string memory_last_processed_at;
 		bool already_fully_processed = false;
+		std::string memory_level = "strict";
 	};
 
 	static std::filesystem::path GlobalMemoryRoot(const std::filesystem::path& data_root);

@@ -17,6 +17,8 @@ describe('NewChatModal', () => {
       defaultNewChatProviderId: 'gemini-cli',
       providerChatDefaults: {},
       newChatFolderId: 'project',
+	  sessions: [],
+	  acpBindingBySessionId: {},
     })
   })
 
@@ -32,7 +34,7 @@ describe('NewChatModal', () => {
     act(() => {
       host.querySelector<HTMLButtonElement>('button[aria-label="Provider"]')?.click()
     })
-    const codex = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Codex'))
+    const codex = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Codex'))
     act(() => codex?.click())
 
     expect(host.querySelector('select[aria-label="Model"]')).toBeNull()
@@ -41,22 +43,22 @@ describe('NewChatModal', () => {
       model.click()
     })
     expect(model.getAttribute('aria-expanded')).toBe('true')
-    const modelList = host.querySelector<HTMLElement>('[role="listbox"][aria-label="Model"]')!
+    const modelList = document.body.querySelector<HTMLElement>('[role="listbox"][aria-label="Model"]')!
     expect(modelList).toBeTruthy()
 
     act(() => {
       modelList.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     })
-    expect(host.querySelector('[role="listbox"][aria-label="Model"]')).toBeNull()
+    expect(document.body.querySelector('[role="listbox"][aria-label="Model"]')).toBeNull()
     expect(setNewChatModalOpen).not.toHaveBeenCalled()
 
     act(() => model.click())
-    expect(host.querySelector('[role="listbox"][aria-label="Model"]')).toBeTruthy()
+    expect(document.body.querySelector('[role="listbox"][aria-label="Model"]')).toBeTruthy()
     act(() => document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
-    expect(host.querySelector('[role="listbox"][aria-label="Model"]')).toBeNull()
+    expect(document.body.querySelector('[role="listbox"][aria-label="Model"]')).toBeNull()
 
     act(() => model.click())
-    const gpt = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) =>
+    const gpt = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) =>
       option.textContent?.includes('GPT-5.4')
     )
     act(() => gpt?.click())
@@ -64,8 +66,43 @@ describe('NewChatModal', () => {
     const create = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Create chat')
     act(() => create?.click())
 
-    expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'codex-cli', 'gpt-5.4')
+	expect(host.querySelector<HTMLButtonElement>('button[aria-label="Reasoning effort"]')).toBeTruthy()
+	expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'codex-cli', 'gpt-5.4', '')
 
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('defaults to the available workspace when opened globally', () => {
+    const addSession = vi.fn()
+    useAppStore.setState({ addSession, newChatFolderId: null })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<NewChatModal />))
+
+    const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')
+    expect(create?.disabled).toBe(false)
+    act(() => create?.click())
+    expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'gemini-cli', '', '')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('blocks chat creation and offers to create a workspace when none exists', async () => {
+    const browseFolderDirectory = vi.fn().mockResolvedValue('/tmp/New Workspace')
+    const addFolder = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({ folders: [], newChatFolderId: null, browseFolderDirectory, addFolder })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<NewChatModal />))
+    expect(host.textContent).toContain('A workspace is required')
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')?.disabled).toBe(true)
+    const createWorkspace = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create workspace')
+    await act(async () => { createWorkspace?.click(); await Promise.resolve(); await Promise.resolve() })
+    expect(addFolder).toHaveBeenCalledWith('New Workspace', null, '/tmp/New Workspace')
     act(() => root.unmount())
     host.remove()
   })

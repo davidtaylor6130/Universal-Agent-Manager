@@ -14,6 +14,7 @@
 #include "app/provider_resolution_service.h"
 #include "common/chat/chat_repository.h"
 #include <cstring>
+#include <iterator>
 #include "common/config/approval_modes.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
@@ -71,6 +72,7 @@ namespace uam
 		using namespace acp_detail;
 		constexpr int kAcpReconnectMaxAttempts = 3;
 		constexpr double kAcpReconnectBaseDelaySeconds = 0.25;
+		constexpr double kAcpCancelTimeoutSeconds = 5.0;
 
 		double AcpReconnectDelaySeconds(int attempt)
 		{
@@ -150,27 +152,10 @@ namespace uam
 
 	namespace
 	{
-		bool StartAcpUserPrompt(AppState& app, AcpSessionState& session, ChatSession& chat, const AcpQueuedUserPromptState& queued, std::string* error_out)
+		std::string BuildAcpPromptBody(AppState& app, ChatSession& chat, const AcpQueuedUserPromptState& queued)
 		{
-			if (!StartAcpProcessForChat(app, session, chat, error_out))
-			{
-				return false;
-			}
-
 			const std::string recall_preface = MemoryService::BuildRecallPreface(app, chat, queued.text);
 			std::string effective_prompt = recall_preface.empty() ? queued.text : recall_preface + queued.text;
-			const Goal* goal = queued.goal_id.empty()
-			                       ? GoalService::FindActiveGoal(app, chat.id)
-			                       : GoalService::FindGoalById(app, chat.id, queued.goal_id);
-			if (queued.goal_mode && goal != nullptr && goal->status == GoalStatus::Active && !goal->objective.empty())
-			{
-				const std::string goal_prompt = GoalService::BuildContinuationPrompt(*goal, goal->tokens_used, goal->token_budget);
-				if (!goal_prompt.empty())
-				{
-					effective_prompt = goal_prompt + "\n\n" + effective_prompt;
-				}
-			}
-
 			if (!queued.markdown_store_files.empty())
 			{
 				effective_prompt += "\n\nReferenced Markdown Store files:\n";
@@ -209,9 +194,49 @@ namespace uam
 					}
 				}
 			}
+			return effective_prompt;
+		}
 
-			if (queued.append_user_message)
+		std::string BuildAcpBatchPrompt(AppState& app, ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch)
+		{
+			std::string effective_prompt;
+			for (std::size_t index = 0; index < batch.size(); ++index)
 			{
+				if (!effective_prompt.empty())
+				{
+					effective_prompt += "\n\n";
+				}
+				if (batch.size() > 1)
+				{
+					effective_prompt += "Queued user message " + std::to_string(index + 1) + ":\n";
+				}
+				effective_prompt += BuildAcpPromptBody(app, chat, batch[index]);
+			}
+
+			const AcpQueuedUserPromptState& first = batch.front();
+			const Goal* goal = first.goal_id.empty()
+			                       ? GoalService::FindActiveGoal(app, chat.id)
+			                       : GoalService::FindGoalById(app, chat.id, first.goal_id);
+			if (first.goal_mode && goal != nullptr && goal->status == GoalStatus::Active && !goal->objective.empty())
+			{
+				const std::string goal_prompt = GoalService::BuildContinuationPrompt(*goal, goal->tokens_used, goal->token_budget);
+				if (!goal_prompt.empty())
+				{
+					effective_prompt = goal_prompt + "\n\n" + effective_prompt;
+				}
+			}
+			return effective_prompt;
+		}
+
+		void AppendQueuedUserMessages(ChatSession& chat, AcpSessionState& session, const std::deque<AcpQueuedUserPromptState>& batch)
+		{
+			for (const AcpQueuedUserPromptState& queued : batch)
+			{
+				if (!queued.append_user_message)
+				{
+					continue;
+				}
+
 				ChatDomainService::MessageAnalytics analytics;
 				analytics.provider = MessageProviderId(session);
 				ChatDomainService().AddMessageWithAnalytics(chat, MessageRole::User, queued.text, analytics);
@@ -225,9 +250,25 @@ namespace uam
 					}
 				}
 			}
-			SaveChatQuietly(app, chat);
+		}
 
-			session.queued_prompt = effective_prompt;
+		bool StartAcpUserPromptBatch(AppState& app, AcpSessionState& session, ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, std::string* error_out)
+		{
+			if (batch.empty() || !StartAcpProcessForChat(app, session, chat, error_out))
+			{
+				return false;
+			}
+			const std::string desired_mode = uam::approval_modes::EffectiveProviderMode(chat.approval_mode, chat.command_safety_tier);
+			if (session.session_ready && !uam::strings::IsBlank(chat.approval_mode) && session.current_mode_id != desired_mode && !SetAcpSessionMode(app, chat.id, desired_mode, error_out))
+			{
+				return false;
+			}
+			if (session.session_ready && !chat.model_id.empty() && session.current_model_id != chat.model_id && !SetAcpSessionModel(app, chat.id, chat.model_id, error_out))
+			{
+				return false;
+			}
+
+			session.queued_prompt = BuildAcpBatchPrompt(app, chat, batch);
 			session.crash_restart_attempts = 0;
 			session.goal_auto_resume_attempts = 0;
 			session.goal_resume_suppressed = false;
@@ -235,8 +276,10 @@ namespace uam
 			session.goal_turn_kind.clear();
 			session.processing = true;
 			session.cancel_requested = false;
+			session.cancel_requested_time_s = 0.0;
 			session.current_assistant_message_index = -1;
-			session.turn_user_message_index = static_cast<int>(chat.messages.size()) - 1;
+			const std::size_t appended_message_count = static_cast<std::size_t>(std::count_if(batch.begin(), batch.end(), [](const AcpQueuedUserPromptState& queued) { return queued.append_user_message; }));
+			session.turn_user_message_index = static_cast<int>(chat.messages.size() + appended_message_count) - 1;
 			session.turn_assistant_message_index = -1;
 			session.turn_serial += 1;
 			RememberAssistantReplayPrefixes(session, chat, session.turn_user_message_index);
@@ -250,23 +293,80 @@ namespace uam
 			if (session.session_ready)
 			{
 				(void)SendQueuedPromptIfReady(session, chat);
+				if (session.lifecycle_state == kAcpLifecycleError)
+				{
+					if (error_out != nullptr)
+					{
+						*error_out = uam::strings::NonEmptyOrFallback(session.last_error, "Failed to deliver queued prompt batch.");
+					}
+					return false;
+				}
 			}
+			AppendQueuedUserMessages(chat, session, batch);
+			SaveChatQuietly(app, chat);
 			return true;
+		}
+
+		bool StartAcpUserPrompt(AppState& app, AcpSessionState& session, ChatSession& chat, const AcpQueuedUserPromptState& queued, std::string* error_out)
+		{
+			return StartAcpUserPromptBatch(app, session, chat, std::deque<AcpQueuedUserPromptState>{queued}, error_out);
+		}
+
+		bool BuildQueuedAcpUserPrompt(AppState& app, ChatSession& chat, const std::string& text, const std::vector<std::string>& markdown_store_files, const std::vector<MessageAttachment>& attachments, bool goal_mode, const std::string& goal_id, AcpQueuedUserPromptState& queued, std::string* error_out)
+		{
+			queued.text = uam::strings::Trim(text);
+			if (queued.text.empty())
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Prompt is empty.";
+				}
+				return false;
+			}
+
+			const std::filesystem::path markdown_store_root = MarkdownStoreService::NormalizeRoot(app.settings.markdown_store_directory);
+			for (const std::string& file : markdown_store_files)
+			{
+				std::filesystem::path normalized_file;
+				if (!MarkdownStoreService::ValidateStoreFilePath(markdown_store_root, file, &normalized_file, error_out))
+				{
+					return false;
+				}
+				queued.markdown_store_files.push_back(normalized_file.string());
+			}
+
+			const Goal* active_goal = GoalService::FindActiveGoal(app, chat.id);
+			queued.attachments = attachments;
+			queued.goal_mode = goal_mode || active_goal != nullptr;
+			queued.goal_id = goal_id.empty() && active_goal != nullptr ? active_goal->id : goal_id;
+			return true;
+		}
+
+		bool CanMergeQueuedUserPrompts(const AcpQueuedUserPromptState& target, const AcpQueuedUserPromptState& next)
+		{
+			return target.append_user_message && next.append_user_message &&
+			       !target.priority_steer && !next.priority_steer &&
+			       target.goal_mode == next.goal_mode && target.goal_id == next.goal_id;
+		}
+
+		void MergeQueuedUserPrompt(AcpQueuedUserPromptState& target, AcpQueuedUserPromptState&& next)
+		{
+			target.text += "\n\n" + next.text;
+			for (std::string& file : next.markdown_store_files)
+			{
+				if (!uam::ranges::Contains(target.markdown_store_files, file))
+				{
+					target.markdown_store_files.push_back(std::move(file));
+				}
+			}
+			target.attachments.insert(target.attachments.end(),
+			                          std::make_move_iterator(next.attachments.begin()),
+			                          std::make_move_iterator(next.attachments.end()));
 		}
 	} // namespace
 
 	bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, const std::vector<std::string>& markdown_store_files, const std::vector<MessageAttachment>& attachments, bool goal_mode, std::string* error_out, const std::string& goal_id)
 	{
-		const std::string prompt = uam::strings::Trim(text);
-		if (prompt.empty())
-		{
-			if (error_out != nullptr)
-			{
-				*error_out = "Prompt is empty.";
-			}
-			return false;
-		}
-
 		ChatSession* chat_ptr = ChatDomainService().FindChatById(app, chat_id);
 		if (chat_ptr == nullptr)
 		{
@@ -278,19 +378,12 @@ namespace uam
 		}
 
 		ChatSession& chat = *chat_ptr;
-		std::vector<std::string> validated_markdown_store_files;
-		const std::filesystem::path markdown_store_root = MarkdownStoreService::NormalizeRoot(app.settings.markdown_store_directory);
-		for (const std::string& file : markdown_store_files)
-		{
-			std::filesystem::path normalized_file;
-			if (!MarkdownStoreService::ValidateStoreFilePath(markdown_store_root, file, &normalized_file, error_out))
-			{
-				return false;
-			}
-			validated_markdown_store_files.push_back(normalized_file.string());
-		}
-
 		AcpSessionState& session = EnsureAcpSessionForChat(app, chat);
+		AcpQueuedUserPromptState queued;
+		if (!BuildQueuedAcpUserPrompt(app, chat, text, markdown_store_files, attachments, goal_mode, goal_id, queued, error_out))
+		{
+			return false;
+		}
 		if (uam::AcpSessionHasPendingCancel(session))
 		{
 			const std::string provider_id = session.provider_id;
@@ -307,20 +400,133 @@ namespace uam
 			session.provider_id = provider_id;
 			session.protocol_kind = protocol_kind;
 		}
-		const Goal* active_goal = GoalService::FindActiveGoal(app, chat.id);
-		AcpQueuedUserPromptState queued;
-		queued.text = prompt;
-		queued.markdown_store_files = std::move(validated_markdown_store_files);
-		queued.attachments = attachments;
-		queued.append_user_message = true;
-		queued.goal_mode = goal_mode || active_goal != nullptr;
-		queued.goal_id = goal_id.empty() && active_goal != nullptr ? active_goal->id : goal_id;
 		if (session.processing || !session.queued_user_prompts.empty())
 		{
-			session.queued_user_prompts.push_back(std::move(queued));
+			if (!session.queued_user_prompts.empty() && CanMergeQueuedUserPrompts(session.queued_user_prompts.back(), queued))
+			{
+				MergeQueuedUserPrompt(session.queued_user_prompts.back(), std::move(queued));
+			}
+			else
+			{
+				session.queued_user_prompts.push_back(std::move(queued));
+			}
 			return true;
 		}
 		return StartAcpUserPrompt(app, session, chat, queued, error_out);
+	}
+
+	bool SteerAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, const std::vector<std::string>& markdown_store_files, const std::vector<MessageAttachment>& attachments, bool goal_mode, std::string* error_out, const std::string& goal_id)
+	{
+		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+		if (chat == nullptr)
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Chat not found: " + chat_id;
+			}
+			return false;
+		}
+
+		AcpQueuedUserPromptState steering_prompt;
+		if (!BuildQueuedAcpUserPrompt(app, *chat, text, markdown_store_files, attachments, goal_mode, goal_id, steering_prompt, error_out))
+		{
+			return false;
+		}
+		steering_prompt.priority_steer = true;
+
+		AcpSessionState& session = EnsureAcpSessionForChat(app, *chat);
+		if (!uam::AcpSessionHasActiveTurn(session))
+		{
+			return StartAcpUserPrompt(app, session, *chat, steering_prompt, error_out);
+		}
+
+		std::deque<AcpQueuedUserPromptState> existing_queue = std::move(session.queued_user_prompts);
+		if (!CancelAcpTurn(app, chat_id, error_out))
+		{
+			session.queued_user_prompts = std::move(existing_queue);
+			return false;
+		}
+		session.queued_user_prompts = std::move(existing_queue);
+		session.queued_user_prompts.push_front(std::move(steering_prompt));
+		return uam::AcpSessionHasPendingCancel(session) || DrainNextQueuedAcpUserPrompt(app, session, *chat);
+	}
+
+	bool RemoveQueuedAcpPrompt(AppState& app, const std::string& chat_id, std::size_t index, std::string* error_out)
+	{
+		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
+		if (session == nullptr || index >= session->queued_user_prompts.size())
+		{
+			if (error_out != nullptr) *error_out = "Queued prompt not found.";
+			return false;
+		}
+		session->queued_user_prompts.erase(session->queued_user_prompts.begin() + static_cast<std::ptrdiff_t>(index));
+		return true;
+	}
+
+	bool SteerQueuedAcpPrompt(AppState& app, const std::string& chat_id, std::size_t index, std::string* error_out)
+	{
+		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
+		if (chat == nullptr || session == nullptr || index >= session->queued_user_prompts.size())
+		{
+			if (error_out != nullptr) *error_out = "Queued prompt not found.";
+			return false;
+		}
+		AcpQueuedUserPromptState prompt = std::move(session->queued_user_prompts[index]);
+		session->queued_user_prompts.erase(session->queued_user_prompts.begin() + static_cast<std::ptrdiff_t>(index));
+		prompt.priority_steer = true;
+		if (!uam::AcpSessionHasActiveTurn(*session)) return StartAcpUserPrompt(app, *session, *chat, prompt, error_out);
+		std::deque<AcpQueuedUserPromptState> remaining_queue = std::move(session->queued_user_prompts);
+		if (!CancelAcpTurn(app, chat_id, error_out))
+		{
+			session->queued_user_prompts = std::move(remaining_queue);
+			const std::size_t restored_index = std::min(index, session->queued_user_prompts.size());
+			session->queued_user_prompts.insert(session->queued_user_prompts.begin() + static_cast<std::ptrdiff_t>(restored_index), std::move(prompt));
+			return false;
+		}
+		session->queued_user_prompts = std::move(remaining_queue);
+		session->queued_user_prompts.push_front(std::move(prompt));
+		return uam::AcpSessionHasPendingCancel(*session) || DrainNextQueuedAcpUserPrompt(app, *session, *chat);
+	}
+
+	bool StartAcpModelDiscovery(AppState& app, const std::string& chat_id, std::string* error_out, bool stop_when_complete)
+	{
+		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+		if (chat == nullptr)
+		{
+			if (error_out != nullptr) *error_out = "Chat not found: " + chat_id;
+			return false;
+		}
+		AcpSessionState& session = EnsureAcpSessionForChat(app, *chat);
+		if (session.running)
+		{
+			if (!session.available_models.empty())
+			{
+				if (app.provider_model_catalog != nullptr)
+				{
+					nlohmann::json models = nlohmann::json::array();
+					for (const AcpModelState& model : session.available_models)
+					{
+						models.push_back({{"id", model.id}, {"name", model.name}, {"description", model.description}, {"defaultReasoningEffort", model.default_reasoning_effort}, {"supportedReasoningEfforts", model.supported_reasoning_efforts}, {"additionalSpeedTiers", model.additional_speed_tiers}});
+					}
+					(void)app.provider_model_catalog->RememberSuccessfulModels(session.provider_id, models);
+				}
+				return true;
+			}
+			if (uam::AcpSessionHasPendingRuntimeRequest(session) || !session.session_ready) return true;
+			if (uam::AcpSessionHasActiveTurn(session))
+			{
+				if (error_out != nullptr) *error_out = "Model discovery is unavailable during an active provider turn; retry when it finishes.";
+				return false;
+			}
+			(void)StopAcpSession(app, chat_id);
+		}
+		if (!StartAcpProcessForChat(app, session, *chat, error_out))
+		{
+			return false;
+		}
+		session.model_discovery_only = stop_when_complete;
+		return true;
 	}
 
 	bool DrainNextQueuedAcpUserPrompt(AppState& app, AcpSessionState& session, ChatSession& chat)
@@ -329,14 +535,20 @@ namespace uam
 		{
 			return false;
 		}
+		std::deque<AcpQueuedUserPromptState> batch;
+		if (session.queued_user_prompts.front().priority_steer) batch.push_back(session.queued_user_prompts.front());
+		else batch = session.queued_user_prompts;
 		std::string error;
-		if (!StartAcpUserPrompt(app, session, chat, session.queued_user_prompts.front(), &error))
+		if (!StartAcpUserPromptBatch(app, session, chat, batch, &error))
 		{
 			session.last_error = uam::strings::NonEmptyOrFallback(error, "Failed to deliver queued prompt.");
 			session.lifecycle_state = kAcpLifecycleError;
 			return false;
 		}
-		session.queued_user_prompts.pop_front();
+		for (std::size_t index = 0; index < batch.size(); ++index)
+		{
+			session.queued_user_prompts.pop_front();
+		}
 		return true;
 	}
 
@@ -376,55 +588,78 @@ namespace uam
 			return true;
 		}
 		session->queued_user_prompts.clear();
-		if (!session->running)
+		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+		if (chat != nullptr && acp_detail::FinalizeActiveAcpToolCallsAsCancelled(*chat, *session))
 		{
-			return true;
+			acp_detail::SaveChatQuietly(app, *chat);
 		}
-
+		if (chat != nullptr)
+		{
+			if (Goal* active_goal = GoalService::FindActiveGoal(app, chat_id); active_goal != nullptr && GoalService::IsProviderManaged(*active_goal))
+			{
+				(void)GoalService::UpdateGoalStatus(app, active_goal->id, GoalStatus::Paused);
+				acp_detail::SaveChatQuietly(app, *chat);
+			}
+		}
 		const std::string pending_permission_request_id = session->pending_permission.request_id_json;
-		if (!pending_permission_request_id.empty())
+		if (session->running && !pending_permission_request_id.empty())
 		{
 			(void)acp_detail::SendPermissionResponse(*session, pending_permission_request_id, "", true, error_out);
 		}
 		const std::string pending_user_input_request_id = session->pending_user_input.request_id_json;
-		if (!pending_user_input_request_id.empty())
+		if (session->running && !pending_user_input_request_id.empty())
 		{
 			(void)acp_detail::SendCodexUserInputResponse(*session, pending_user_input_request_id, {}, error_out);
 		}
 
 		session->queued_prompt.clear();
+		if (session->prompt_request_id != 0)
+		{
+			session->pending_request_methods.erase(session->prompt_request_id);
+			session->prompt_request_id = 0;
+		}
 		session->processing = false;
 		session->cancel_requested = true;
+		session->cancel_requested_time_s = GetAppTimeSeconds();
 		session->goal_resume_suppressed = true;
 		ResetAcpPendingInteractionState(*session);
 		session->current_assistant_message_index = -1;
 		session->pending_assistant_thoughts.clear();
 		session->lifecycle_state = session->session_ready ? kAcpLifecycleReady : kAcpLifecycleStopped;
-
-		if (!session->session_id.empty())
+		if (!session->running)
 		{
-			const IProviderRuntime& cancel_runtime = ProviderRuntimeRegistry::ResolveById(session->provider_id);
-			int cancel_id = session->next_request_id++;
-			std::string cancel_method;
-			nlohmann::json cancel_msg = cancel_runtime.OnAcpBuildCancel(*session, cancel_id, cancel_method);
-			if (cancel_msg.is_null() || cancel_msg.empty())
-			{
-				return StopAcpSession(app, chat_id);
-			}
+			session->cancel_requested = false;
+			session->cancel_requested_time_s = 0.0;
+			session->lifecycle_state = kAcpLifecycleStopped;
+			return true;
+		}
+
+		if (session->session_id.empty())
+		{
+			return StopAcpSession(app, chat_id);
+		}
+
+		const IProviderRuntime& cancel_runtime = ProviderRuntimeRegistry::ResolveById(session->provider_id);
+		int cancel_id = session->next_request_id++;
+		std::string cancel_method;
+		nlohmann::json cancel_msg = cancel_runtime.OnAcpBuildCancel(*session, cancel_id, cancel_method);
+		if (cancel_msg.is_null() || cancel_msg.empty())
+		{
+			return StopAcpSession(app, chat_id);
+		}
+		if (!cancel_method.empty())
+		{
+			session->pending_request_methods[cancel_id] = cancel_method;
+			session->cancel_request_id = cancel_id;
+		}
+		if (!acp_detail::WriteAcpMessage(*session, cancel_msg, error_out))
+		{
 			if (!cancel_method.empty())
 			{
-				session->pending_request_methods[cancel_id] = cancel_method;
-				session->cancel_request_id = cancel_id;
+				session->pending_request_methods.erase(cancel_id);
+				session->cancel_request_id = 0;
 			}
-			if (!acp_detail::WriteAcpMessage(*session, cancel_msg, error_out))
-			{
-				if (!cancel_method.empty())
-				{
-					session->pending_request_methods.erase(cancel_id);
-					session->cancel_request_id = 0;
-				}
-				return false;
-			}
+			return false;
 		}
 
 		return true;
@@ -437,6 +672,10 @@ namespace uam
 		{
 			return true;
 		}
+		if (ChatSession* chat = ChatDomainService().FindChatById(app, chat_id); chat != nullptr && acp_detail::FinalizeActiveAcpToolCallsAsCancelled(*chat, *session))
+		{
+			acp_detail::SaveChatQuietly(app, *chat);
+		}
 
 		if (session->running)
 		{
@@ -446,8 +685,10 @@ namespace uam
 		session->running = false;
 		session->initialized = false;
 		session->session_ready = false;
+		session->model_discovery_only = false;
 		session->processing = false;
 		session->cancel_requested = false;
+		session->cancel_requested_time_s = 0.0;
 		session->lifecycle_state = kAcpLifecycleStopped;
 		session->queued_prompt.clear();
 		session->queued_user_prompts.clear();
@@ -618,6 +859,7 @@ namespace uam
 		session->waiting_for_permission = false;
 		ClearAcpPendingWait(*session);
 		session->cancel_requested = false;
+		session->cancel_requested_time_s = 0.0;
 		session->lifecycle_state = session->processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
 		return true;
 	}
@@ -687,8 +929,26 @@ namespace uam
 			}
 
 			ChatSession& chat = *chat_ptr;
+			const double now_seconds = GetAppTimeSeconds();
+			if (uam::AcpSessionHasPendingCancel(session) && session.cancel_requested_time_s > 0.0 && now_seconds - session.cancel_requested_time_s >= kAcpCancelTimeoutSeconds)
+			{
+				std::deque<AcpQueuedUserPromptState> queued = std::move(session.queued_user_prompts);
+				AppendAcpDiagnostic(session, "cancel", "timeout_restart", "", "", false, 0, "Cancellation timed out; restarting the structured runtime.");
+				(void)StopAcpSession(app, session.chat_id);
+				session.queued_user_prompts = std::move(queued);
+				if (!session.queued_user_prompts.empty())
+				{
+					(void)DrainNextQueuedAcpUserPrompt(app, session, chat);
+				}
+				changed = true;
+				continue;
+			}
 			changed = DrainStderr(session) || changed;
 			changed = DrainStdout(app, session, chat, browser) || changed;
+			if (!session.running)
+			{
+				continue;
+			}
 			if (session.session_ready && session.reconnect_attempts > 0)
 			{
 				session.reconnect_attempts = 0;
@@ -722,6 +982,7 @@ namespace uam
 			int exit_code = 0;
 			if (PlatformServicesFactory::Instance().process_service.PollStdioProcessExited(session, &exit_code))
 			{
+				const bool model_discovery_only = session.model_discovery_only;
 				// Snapshot the turn before MarkAcpProcessExited clears it: if the
 				// process died before the queued prompt was ever delivered (e.g. a
 				// startup crash), the turn can be retried safely without risking a
@@ -739,6 +1000,18 @@ namespace uam
 				const std::string goal_review_assistant_text = session.goal_review_assistant_text;
 
 				MarkAcpProcessExited(session, true, exit_code);
+				if (model_discovery_only)
+				{
+					session.model_discovery_only = false;
+					session.session_id.clear();
+					session.codex_thread_id.clear();
+					if (app.provider_model_catalog != nullptr)
+					{
+						app.provider_model_catalog->RememberRefreshFailure(session.provider_id, std::string(RuntimeDisplayName(session)) + " exited before model discovery completed.");
+					}
+					changed = true;
+					continue;
+				}
 
 				std::string restart_error;
 				if (undelivered_prompt && session.crash_restart_attempts < 1 && StartAcpProcessForChat(app, session, chat, &restart_error))

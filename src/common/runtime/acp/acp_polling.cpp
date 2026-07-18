@@ -111,6 +111,10 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 
 bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, CefRefPtr<CefBrowser> browser)
 {
+	if (!session.running)
+	{
+		return false;
+	}
 	bool changed = false;
 	std::array<char, 8192> buffer{};
 	while (true)
@@ -135,6 +139,10 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 				std::string line = session.stdout_buffer.substr(0, newline_pos);
 				session.stdout_buffer.erase(0, newline_pos + 1);
 				changed = ProcessAcpLine(app, session, chat, line, browser) || changed;
+				if (!session.running)
+				{
+					return true;
+				}
 			}
 			continue;
 		}

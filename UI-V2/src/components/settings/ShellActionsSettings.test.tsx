@@ -65,15 +65,15 @@ describe('ShellActionsSettings', () => {
       enabled.click()
       inputType.click()
     })
-    const filesOnly = Array.from(host.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Files only')) as HTMLButtonElement
+    const filesOnly = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Files only')) as HTMLButtonElement
     await act(async () => { filesOnly.click() })
 
     await act(async () => { provider.click() })
-    const gemini = Array.from(host.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Gemini')) as HTMLButtonElement
+    const gemini = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Gemini')) as HTMLButtonElement
     await act(async () => { gemini.click() })
     const model = host.querySelector('button[aria-label="Model for Review résumé"]') as HTMLButtonElement
     await act(async () => { model.click() })
-    const flash = Array.from(host.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('FlashPrioritize speed')) as HTMLButtonElement
+    const flash = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('FlashPrioritize speed')) as HTMLButtonElement
     await act(async () => { flash.click() })
 
     const apply = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Apply')
@@ -91,6 +91,7 @@ describe('ShellActionsSettings', () => {
     ])
     expect(useAppStore.getState().applyShellActions).toHaveBeenCalledTimes(1)
 
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
     const remove = host.querySelector('button[aria-label="Remove Review résumé"]') as HTMLButtonElement
     act(() => remove.click())
     expect(host.textContent).not.toContain('Review résumé')

@@ -11,6 +11,7 @@ namespace uam
 	{
 		bool is_git_repository = false;
 		bool is_svn_workspace = false;
+		bool managed_repository = false;
 		bool isolated = false;
 		bool source_dirty = false;
 		bool worktree_dirty = false;

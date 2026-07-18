@@ -29,6 +29,7 @@ struct ProviderProfile
 	std::string prompt_bootstrap_path;
 	std::vector<std::string> user_message_types;
 	std::vector<std::string> assistant_message_types;
+	std::string native_goal_command;
 };
 
 /// <summary>

@@ -1,5 +1,4 @@
-import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, RefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, RefObject, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { Session } from '../../types/session'
 import { MarkdownContent } from '../markdown/Markdown'
@@ -42,6 +41,7 @@ import {
   labeledOption,
   modelOptionFor,
   providerRuntimeLabel,
+  selectedRuntimeModel,
 } from '../chat/modelOptions'
 import {
   AcpErrorDetails,
@@ -79,20 +79,33 @@ import {
 import {
   acpRuntimeBlocksControlChanges,
   COMMAND_SAFETY_TIERS,
+  PERMISSION_MODES,
   type ComposerIconName,
   ComposerIcon,
   ComposerToolbar,
   permissionModeIcon,
+  permissionModeForTier,
   type DictationState,
 } from '../chat/Composer'
-import { Brain, BookOpen, Check, ChevronDown, Cpu, FileText, Paperclip, Shield, Target, X } from 'lucide-react'
+import { ViewportMenu } from '../ui'
+import { Brain, BookOpen, Check, ChevronDown, ChevronRight, CornerUpRight, Cpu, FileText, Paperclip, Shield, Target, X } from 'lucide-react'
 import { ProviderLogo } from '../shared/ProviderLogo'
+import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { Button, IconButton } from '../ui'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
 
 interface ChatViewProps {
   session: Session
   accentColor?: string
+}
+
+type SlashCommand = {
+  id: string
+  label: string
+  hint: string
+  icon: ReactNode
+  run: () => void
+  groupEntries?: SlashCommand[]
 }
 
 const INITIAL_RENDERED_MESSAGES = 200
@@ -108,6 +121,7 @@ const PLAN_APPROVE_PROMPT = 'Proceed with the plan.'
 const PLAN_DENY_PROMPT = 'Do not proceed with this plan. Please revise it before making changes.'
 
 type LocalAttachmentStatus = 'ready' | 'staging' | 'failed'
+type WorkspaceFeedback = { message: string; tone: 'success' | 'warning' | 'error' }
 interface LocalAttachment extends Attachment {
   status: LocalAttachmentStatus
   error?: string
@@ -147,29 +161,37 @@ function fileUriToPath(uri: string): string {
 export function ChatView({ session, accentColor }: ChatViewProps) {
   const [draft, setDraft] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [steering, setSteering] = useState(false)
   const [dictationState, setDictationState] = useState<DictationState>('idle')
+  const [dictationElapsedSeconds, setDictationElapsedSeconds] = useState(0)
   const [dictationError, setDictationError] = useState('')
   const [selectedToolCallRef, setSelectedToolCallRef] = useState<SelectedToolCallRef | null>(null)
   const [providerOpen, setProviderOpen] = useState(false)
   const [modelOpen, setModelOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [claudePlanPrompt, setClaudePlanPrompt] = useState<string | null>(null)
-  const [openWorkspaceError, setOpenWorkspaceError] = useState('')
-  const [workspaceActionMessage, setWorkspaceActionMessage] = useState('')
+  const [workspaceFeedback, setWorkspaceFeedback] = useState<WorkspaceFeedback | null>(null)
   const [workspaceActionBusy, setWorkspaceActionBusy] = useState(false)
   const [goalError, setGoalError] = useState('')
   const [goalSubmitting, setGoalSubmitting] = useState(false)
   const [goalArmNextMessage, setGoalArmNextMessage] = useState(false)
   const [slashIndex, setSlashIndex] = useState(0)
   const [slashMessage, setSlashMessage] = useState('')
+  const [slashGroup, setSlashGroup] = useState('')
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false)
+  const [memoryChipExplicit, setMemoryChipExplicit] = useState(false)
   const [composerAttachments, setComposerAttachments] = useState<LocalAttachment[]>([])
   const [attachmentError, setAttachmentError] = useState('')
+  const [dismissedAcpErrorKey, setDismissedAcpErrorKey] = useState('')
   const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null)
   const [editingMessageText, setEditingMessageText] = useState('')
   const [branchingMessageIndex, setBranchingMessageIndex] = useState<number | null>(null)
   const [messageBranchError, setMessageBranchError] = useState('')
   const [renderedMessageCount, setRenderedMessageCount] = useState(INITIAL_RENDERED_MESSAGES)
+  const steerTurnSerialRef = useRef(0)
+
+  useEffect(() => setMemoryChipExplicit(false), [session.id])
+  const slashGroupButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({})
   const messages = useAppStore(useShallow((s) => s.messages[session.id] ?? []))
   const folderDirectory = useAppStore((s) =>
     session.folderId ? s.folders.find((folder) => folder.id === session.folderId)?.directory ?? '' : ''
@@ -179,6 +201,8 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   const providers = useAppStore((s) => s.providers)
   const stageChatAttachments = useAppStore((s) => s.stageChatAttachments)
   const sendAcpPrompt = useAppStore((s) => s.sendAcpPrompt)
+  const removeQueuedAcpPrompt = useAppStore((s) => s.removeQueuedAcpPrompt)
+  const steerQueuedAcpPrompt = useAppStore((s) => s.steerQueuedAcpPrompt)
   const branchFromMessage = useAppStore((s) => s.branchFromMessage)
   const cancelAcpTurn = useAppStore((s) => s.cancelAcpTurn)
   const stopAcpSession = useAppStore((s) => s.stopAcpSession)
@@ -188,9 +212,9 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   const setSessionModel = useAppStore((s) => s.setSessionModel)
   const setSessionCodexOptions = useAppStore((s) => s.setSessionCodexOptions)
   const setSessionApprovalMode = useAppStore((s) => s.setSessionApprovalMode)
-  const setSessionAutoApproveCommands = useAppStore((s) => s.setSessionAutoApproveCommands)
   const setSessionCommandSafetyTier = useAppStore((s) => s.setSessionCommandSafetyTier)
-  const setSessionMemoryEnabled = useAppStore((s) => s.setSessionMemoryEnabled)
+  const setSessionMemoryLevel = useAppStore((s) => s.setSessionMemoryLevel)
+  const configuredApprovalMode = useAppStore((s) => s.sessions.find((candidate) => candidate.id === session.id)?.approvalMode)
   const openSessionWorkspace = useAppStore((s) => s.openSessionWorkspace)
   const openSessionWorkspaceEditor = useAppStore((s) => s.openSessionWorkspaceEditor)
   const openSessionTerminal = useAppStore((s) => s.openSessionTerminal)
@@ -200,6 +224,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   const portChatWorktreeChanges = useAppStore((s) => s.portChatWorktreeChanges)
   const openMarkdownStore = useAppStore((s) => s.openMarkdownStore)
   const markdownStoreEntries = useAppStore(useShallow((s) => s.markdownStoreEntries))
+  const defaultMemoryLevel = useAppStore((s) => s.memoryLevelDefault)
   const refreshMarkdownStore = useAppStore((s) => s.refreshMarkdownStore)
   const attachMarkdownStoreEntry = useAppStore((s) => s.attachMarkdownStoreEntry)
   const markdownStoreAttachments = useAppStore(useShallow((s) => s.markdownStoreAttachedBySessionId[session.id] ?? []))
@@ -224,7 +249,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   const dictationFinalTextRef = useRef('')
   const dictationInterimTextRef = useRef('')
   const dictationHadErrorRef = useRef(false)
-  const dictationSubmittedRef = useRef(false)
+  const dictationSubmitAfterStopRef = useRef(false)
   const submitDictatedPromptRef = useRef<(prompt: string) => void>(() => {})
 
   const selectedToolCall = useMemo(
@@ -299,9 +324,9 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
 
   useEffect(() => {
     setComposerAttachments([])
+    setSteering(false)
     setAttachmentError('')
-    setOpenWorkspaceError('')
-    setWorkspaceActionMessage('')
+    setWorkspaceFeedback(null)
     setWorkspaceActionBusy(false)
     setGoalArmNextMessage(false)
     setSlashMessage('')
@@ -314,10 +339,34 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   }, [session.id])
 
   useEffect(() => {
+    if (!acp?.lastError) setDismissedAcpErrorKey('')
+  }, [acp?.lastError])
+
+  useEffect(() => {
+    if (dictationState !== 'listening') { setDictationElapsedSeconds(0); return }
+    const startedAt = Date.now()
+    const timer = window.setInterval(() => setDictationElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000)), 250)
+    return () => window.clearInterval(timer)
+  }, [dictationState])
+
+  useEffect(() => {
     if (session.workspaceIsolationKind !== 'gitWorktree') {
-      setWorkspaceActionMessage('')
+      setWorkspaceFeedback(null)
     }
   }, [session.workspaceIsolationKind])
+
+  useEffect(() => {
+    if (steering && (acp?.turnSerial ?? 0) > steerTurnSerialRef.current)
+    {
+      setSteering(false)
+    }
+  }, [acp?.turnSerial, steering])
+
+  useEffect(() => {
+    if (workspaceFeedback?.tone !== 'success') return
+    const timeout = window.setTimeout(() => setWorkspaceFeedback(null), 5000)
+    return () => window.clearTimeout(timeout)
+  }, [workspaceFeedback])
 
   const runtimeBlocksControlChanges = acpRuntimeBlocksControlChanges(acp)
 
@@ -331,6 +380,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
     const onMouseDown = (event: MouseEvent) => {
       const target = event.target
       if (!(target instanceof Node)) return
+      if (target instanceof Element && target.closest('[data-viewport-menu]')) return
 
       if (providerOpen && providerMenuRef.current && !providerMenuRef.current.contains(target)) {
         setProviderOpen(false)
@@ -489,41 +539,77 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
     }
 
     setGoalSubmitting(true)
-    const goalId = await setGoalStore(session.id, objective, tokenBudget)
+	const nativeGoalCommand = currentProvider.nativeGoalCommand?.trim() ?? ''
+	const providerManaged = Boolean(nativeGoalCommand)
+	const goalId = await setGoalStore(session.id, objective, tokenBudget, providerManaged ? 'provider' : 'uam')
+	const goalAttachments = composerAttachments
+	  .filter((attachment) => attachment.status === 'ready')
+	  .map(({ status, error, ...attachment }) => attachment)
+	const sent = goalId ? await sendAcpPrompt(session.id, providerManaged ? `${nativeGoalCommand} ${objective}` : objective, goalAttachments) : false
     setGoalSubmitting(false)
 
-    if (goalId) {
+	if (goalId && sent) {
       setDraft('')
+	  setComposerAttachments([])
+	  setAttachmentError('')
       setGoalError('')
     } else {
-      setGoalError('Failed to create goal.')
+	  setGoalError(goalId ? 'Goal was created, but the first prompt failed to send.' : 'Failed to create goal.')
     }
     return true
   }
 
-  const submit = async (event?: FormEvent, promptOverride?: string) => {
+  const submit = async (event?: FormEvent, promptOverride?: string, steerNow = false) => {
     event?.preventDefault()
     const prompt = (promptOverride ?? draft).trim()
     if (!providerSupported || !prompt || submitting || goalSubmitting || composerAttachments.some((attachment) => attachment.status !== 'ready')) return
+	if (dictationActiveRef.current && promptOverride === undefined) {
+	  await stopDictation(true)
+	  return
+	}
+	const readyAttachments = composerAttachments
+	  .filter((attachment) => attachment.status === 'ready')
+	  .map(({ status, error, ...attachment }) => attachment)
 
     // Handle /goal command
     if (prompt.startsWith('/goal ')) {
       void submitGoal(prompt)
       return
     }
+	const nativeGoalCommand = currentProvider.nativeGoalCommand?.trim() ?? ''
+	if (nativeGoalCommand && (prompt === nativeGoalCommand || prompt.startsWith(`${nativeGoalCommand} `))) {
+	  const objective = prompt.slice(nativeGoalCommand.length).trim()
+	  if (!objective) {
+		setGoalError('Goal objective is required.')
+		return
+	  }
+	  setGoalSubmitting(true)
+	  const goalId = await setGoalStore(session.id, objective, defaultGoalTokenBudget, 'provider')
+	  const ok = goalId ? await sendAcpPrompt(session.id, prompt, readyAttachments) : false
+	  setGoalSubmitting(false)
+	  if (!ok) {
+		setGoalError(goalId ? 'Goal was created, but the provider command failed to send.' : 'Failed to create goal.')
+		return
+	  }
+	  setGoalError('')
+	  setDraft('')
+	  setComposerAttachments([])
+	  setAttachmentError('')
+	  return
+	}
 
-    const readyAttachments = composerAttachments
-      .filter((attachment) => attachment.status === 'ready')
-      .map(({ status, error, ...attachment }) => attachment)
     if (goalArmNextMessage) {
       setGoalSubmitting(true)
-      const goalId = await setGoalStore(session.id, prompt, defaultGoalTokenBudget)
+	  const providerGoalCommand = currentProvider.nativeGoalCommand?.trim() ?? ''
+	  const goalId = await setGoalStore(session.id, prompt, defaultGoalTokenBudget, providerGoalCommand ? 'provider' : 'uam')
       if (!goalId) {
         setGoalSubmitting(false)
         setGoalError('Failed to create goal.')
         return
       }
-      const ok = await sendAcpPrompt(session.id, prompt, readyAttachments)
+      const ok = steerNow
+		? await sendAcpPrompt(session.id, providerGoalCommand ? `${providerGoalCommand} ${prompt}` : prompt, readyAttachments, true)
+		: await sendAcpPrompt(session.id, providerGoalCommand ? `${providerGoalCommand} ${prompt}` : prompt, readyAttachments)
       setGoalSubmitting(false)
       if (!ok) {
         setGoalError('Goal was created, but the first prompt failed to send.')
@@ -537,13 +623,20 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
       return
     }
 
-    if (isClaudeProvider(currentProvider, currentProviderId) && currentModeId === 'plan') {
+    if (!steerNow && isClaudeProvider(currentProvider, currentProviderId) && currentModeId === 'plan') {
       setClaudePlanPrompt(prompt)
       return
     }
     setSubmitting(true)
-    const ok = await sendAcpPrompt(session.id, prompt, readyAttachments)
+    if (steerNow) {
+      steerTurnSerialRef.current = acp?.turnSerial ?? 0
+      setSteering(true)
+    }
+    const ok = steerNow
+      ? await sendAcpPrompt(session.id, prompt, readyAttachments, true)
+      : await sendAcpPrompt(session.id, prompt, readyAttachments)
     setSubmitting(false)
+    if (!ok) setSteering(false)
     if (ok) {
       setDraft('')
       setComposerAttachments([])
@@ -560,33 +653,27 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   const workspaceActionsDisabled = workspaceActionBusy || Boolean(acp?.running || acp?.processing)
   const openWorkspace = async () => {
     if (!workspaceDirectory) return
-    setOpenWorkspaceError('')
+    setWorkspaceFeedback(null)
     const ok = await openSessionWorkspace(session.id)
-    if (!ok) {
-      setOpenWorkspaceError('Failed to open workspace directory.')
-    }
+    setWorkspaceFeedback(ok
+      ? { message: 'Opened workspace directory.', tone: 'success' }
+      : { message: 'Failed to open workspace directory.', tone: 'error' })
   }
   const openWorkspaceEditor = async () => {
     if (!workspaceDirectory) return
-    setOpenWorkspaceError('')
-    setWorkspaceActionMessage('')
+    setWorkspaceFeedback(null)
     const ok = await openSessionWorkspaceEditor(session.id)
-    if (ok) {
-      setWorkspaceActionMessage('Opened workspace editor.')
-    } else {
-      setOpenWorkspaceError('Failed to open workspace editor.')
-    }
+    setWorkspaceFeedback(ok
+      ? { message: 'Opened workspace editor.', tone: 'success' }
+      : { message: 'Failed to open workspace editor.', tone: 'error' })
   }
   const openWorkspaceTerminal = async () => {
     if (!workspaceDirectory) return
-    setOpenWorkspaceError('')
-    setWorkspaceActionMessage('')
+    setWorkspaceFeedback(null)
     const ok = await openSessionTerminal(session.id)
-    if (ok) {
-      setWorkspaceActionMessage('Opened terminal at workspace.')
-    } else {
-      setOpenWorkspaceError('Failed to open terminal.')
-    }
+    setWorkspaceFeedback(ok
+      ? { message: 'Opened terminal at workspace.', tone: 'success' }
+      : { message: 'Failed to open terminal.', tone: 'error' })
   }
   const openSelectedSubAgentSession = async () => {
     if (!selectedToolCall?.isSubAgent || !selectedToolCall.subAgentId) return
@@ -597,8 +684,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   }
   const runWorkspaceAction = async (action: 'create' | 'discard' | 'port') => {
     if (workspaceActionsDisabled) return
-    setOpenWorkspaceError('')
-    setWorkspaceActionMessage('')
+    setWorkspaceFeedback(null)
     setWorkspaceActionBusy(true)
     const result =
       action === 'create'
@@ -608,9 +694,13 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
           : await portChatWorktreeChanges(session.id)
     setWorkspaceActionBusy(false)
     if (result.ok) {
-      setWorkspaceActionMessage(result.message || (action === 'port' ? 'Applied chat changes and returned to the source workspace.' : 'Workspace action complete.'))
+      const warning = result.status?.warning
+      setWorkspaceFeedback({
+        message: warning || result.message || (action === 'port' ? 'Applied chat changes and returned to the source workspace.' : 'Workspace action complete.'),
+        tone: warning ? 'warning' : 'success',
+      })
     } else {
-      setOpenWorkspaceError(result.message || 'Workspace action failed.')
+      setWorkspaceFeedback({ message: result.status?.error || result.message || 'Workspace action failed.', tone: 'error' })
     }
   }
   const currentProviderId = session.providerId || acp?.providerId || DEFAULT_PROVIDER_ID
@@ -625,6 +715,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   const errorProviderId = acp?.providerId || currentProviderId
   const errorProvider = providers.find((candidate) => candidate.id === errorProviderId) ?? fallbackProviderForId(errorProviderId)
   const currentErrorTitle = `${providerShortName(errorProvider, errorProviderId)} ${providerRuntimeLabel(errorProvider, acp)} error`
+  const currentAcpErrorKey = acp?.lastError ? `${session.id}:${acp.lastError}` : ''
   const unsupportedProviderMessage = providerSupported
     ? ''
     : `${currentProviderName} is not supported in this build. Switch this chat to Gemini CLI to continue.`
@@ -643,8 +734,8 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   }
   const dictationActive = dictationState !== 'idle'
   const canSend = useMemo(
-    () => providerSupported && draft.trim().length > 0 && !submitting && !goalSubmitting && !dictationActive && !composerAttachments.some((attachment) => attachment.status !== 'ready'),
-    [providerSupported, draft, submitting, goalSubmitting, dictationActive, composerAttachments]
+    () => providerSupported && draft.trim().length > 0 && !submitting && !goalSubmitting && !composerAttachments.some((attachment) => attachment.status !== 'ready'),
+    [providerSupported, draft, submitting, goalSubmitting, composerAttachments]
   )
   const dictationAvailable = isCefContext()
 
@@ -659,7 +750,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
     dictationFinalTextRef.current = ''
     dictationInterimTextRef.current = ''
     dictationHadErrorRef.current = false
-    dictationSubmittedRef.current = false
+    dictationSubmitAfterStopRef.current = false
     setDictationError('')
     setDictationState('starting')
 
@@ -677,11 +768,13 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
     setDictationState('listening')
   }
 
-  const stopDictation = async () => {
+  async function stopDictation(submitAfterStop = false) {
     if (!dictationActiveRef.current) return
+	dictationSubmitAfterStopRef.current = submitAfterStop
     setDictationState('stopping')
     const response = await sendToCEF<{ stopped: boolean }>({ action: 'stopDictation' })
     if (!response.ok && dictationActiveRef.current) {
+	  dictationSubmitAfterStopRef.current = false
       setDictationState('listening')
       setDictationError(response.error || 'Failed to stop dictation.')
     }
@@ -715,11 +808,12 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
         dictationFinalTextRef.current,
         dictationInterimTextRef.current
       )
+	  const submitAfterStop = dictationSubmitAfterStopRef.current
+	  dictationSubmitAfterStopRef.current = false
       dictationActiveRef.current = false
       setDictationState('idle')
       setDraft(prompt)
-      if (!dictationHadErrorRef.current && !dictationSubmittedRef.current && prompt.trim()) {
-        dictationSubmittedRef.current = true
+      if (submitAfterStop && !dictationHadErrorRef.current && prompt.trim()) {
         submitDictatedPromptRef.current(prompt)
       }
     }
@@ -733,45 +827,49 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
       }
     }
   }, [session.id])
-  const currentModelId = acp?.currentModelId || session.modelId || ''
+  // The persisted chat setting is the choice for the next turn. ACP can still
+  // report the previous idle model until that turn begins.
+  const currentModelId = session.modelId || acp?.currentModelId || ''
   const currentModel = modelOptionFor(buildModelOptions(acp, currentModelId, currentProvider, currentProviderId), currentModelId)
   const currentProviderCapabilities = providerCapabilities(currentProviderId, currentProvider)
-  const reasoningOptions = currentProviderCapabilities.hasReasoningEffort
+  const runtimeSupportsReasoning = (selectedRuntimeModel(acp, currentModel.id)?.supportedReasoningEfforts?.length ?? 0) > 0
+  const reasoningOptions = currentProviderCapabilities.hasReasoningEffort || runtimeSupportsReasoning
     ? buildCodexReasoningOptions(acp, currentModel.id, session.reasoningEffort ?? '')
     : []
   const speedOptions = currentProviderCapabilities.hasServiceTier
     ? buildCodexSpeedOptions(acp, currentModel.id, session.serviceTier ?? '')
     : []
-  const currentModeId = acp?.currentModeId || session.approvalMode || 'default'
-  const permissionModes = useMemo(() => {
+  const currentModeId = configuredApprovalMode || session.approvalMode || acp?.currentModeId || 'default'
+  const agentModes = useMemo(() => {
     const modes = (acp?.availableModes.length ?? 0) > 0
-      ? [...acp!.availableModes]
+      ? acp!.availableModes.filter((mode) => mode.id === 'default' || mode.id === 'plan')
       : [
-          { id: 'default', name: 'Default', description: 'Use the provider default permission mode.' },
-          { id: 'plan', name: 'Plan', description: 'Plan before implementation.' },
+          { id: 'default', name: 'Default', description: 'Use the provider default agent.' },
+          { id: 'plan', name: 'Plan', description: 'Research and plan before implementation.' },
         ]
-    if ((acp?.availableModes.length ?? 0) === 0 && providerCapabilities(currentProviderId, currentProvider).hasAcceptEditsMode) {
-      modes.push({ id: 'acceptEdits', name: 'Accept Edits', description: 'Allow file edits while keeping command approvals.' })
-    }
-    if (!modes.some((mode) => mode.id === 'auto')) {
-      modes.push({ id: 'auto', name: 'Auto Decide', description: 'Automatically approve requests that command safety allows.' })
-    }
     return modes
   }, [acp?.availableModes, currentProvider, currentProviderId])
-  const selectedPermissionModeId = session.autoApproveCommands ? 'auto' : currentModeId
+  const permissionModes = useMemo(
+    () => PERMISSION_MODES.filter((mode) => mode.id !== 'acceptEdits' || providerCapabilities(currentProviderId, currentProvider).hasAcceptEditsMode),
+    [currentProvider, currentProviderId]
+  )
+  const selectedPermissionModeId = permissionModeForTier(session.commandSafetyTier ?? 'medium')
   const applyPermissionMode = async (modeId: string) => {
     if (!providerSupported || !currentProvider.supportsStructured) return false
+    if (modeId === 'default') return setSessionCommandSafetyTier(session.id, 'off')
+    if (modeId === 'acceptEdits') return setSessionCommandSafetyTier(session.id, 'acceptEdits')
+    if (modeId === 'yolo') return setSessionCommandSafetyTier(session.id, 'yolo')
     if (modeId === 'auto') {
-      return session.autoApproveCommands || await setSessionAutoApproveCommands(session.id, true)
+      const tier = session.commandSafetyTier
+      return setSessionCommandSafetyTier(session.id, tier === 'low' || tier === 'high' ? tier : 'medium')
     }
-    if (session.autoApproveCommands && !await setSessionAutoApproveCommands(session.id, false)) return false
-    return modeId === currentModeId || await setSessionApprovalMode(session.id, modeId)
+    return false
   }
   const selectPermissionMode = async (modeId: string) => {
     const mode = permissionModes.find((candidate) => candidate.id === modeId)
     if (!mode) return
     const changed = await applyPermissionMode(mode.id)
-    setSlashMessage(changed ? `Permission mode changed to ${mode.name}.` : `Failed to change permission mode to ${mode.name}.`)
+    setSlashMessage(changed ? '' : `Failed to change permission mode to ${mode.name}.`)
   }
   const runPermissionCommand = async (rawMode?: string) => {
     setDraft('')
@@ -797,7 +895,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
     }
 
     const changed = await applyPermissionMode(requested.id)
-    setSlashMessage(changed ? `Permission mode changed to ${requested.name}.` : `Failed to change permission mode to ${requested.name}.`)
+    setSlashMessage(changed ? '' : `Failed to change permission mode to ${requested.name}.`)
   }
   const runCommandSafetyCommand = async (rawTier?: string) => {
     setDraft('')
@@ -837,8 +935,8 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
       return
     }
     const changed = kind === 'reasoning'
-      ? await setSessionCodexOptions(session.id, { reasoningEffort: requested.id, serviceTier: session.serviceTier ?? '' })
-      : await setSessionCodexOptions(session.id, { reasoningEffort: session.reasoningEffort ?? '', serviceTier: requested.id })
+      ? await setSessionCodexOptions(session.id, { reasoningEffort: requested.id })
+      : await setSessionCodexOptions(session.id, { serviceTier: requested.id })
     setSlashMessage(changed ? `${label} changed to ${requested.label}.` : `Failed to change ${kind} to ${requested.label}.`)
   }
   const latestPlanMessageIndex = messages.reduce((latest, message, index) => {
@@ -900,7 +998,14 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
 
   // Slash command palette: typing "/" at the start of an empty-ish draft opens
   // a traversable menu of UAM actions (Codex-style), filtered by what follows.
-  const slashCommands = useMemo(
+  const currentMemoryLevel: MemoryLevel = session.memoryLevel ?? ((session.memoryEnabled ?? true) ? 'strict' : 'off')
+  const runMemoryCommand = (level: MemoryLevel) => {
+    setDraft('')
+    setSlashIndex(0)
+    setMemoryChipExplicit(true)
+    void setSessionMemoryLevel(session.id, level)
+  }
+  const slashCommands = useMemo<SlashCommand[]>(
     () => [
       { id: 'model', label: '/model', hint: 'Change the model', icon: <Cpu size={15} />, run: () => setModelOpen(true) },
       ...(reasoningOptions.length > 0 ? [{ id: 'reasoning', label: '/reasoning', hint: 'Choose Codex reasoning', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('reasoning') }] : []),
@@ -911,40 +1016,59 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
       {
         id: 'memory',
         label: '/memory',
-        hint: (session.memoryEnabled ?? true) ? 'Disable memory' : 'Enable memory',
+        hint: `Choose memory level · current: ${currentMemoryLevel}`,
         icon: <Brain size={15} />,
-        run: () => void setSessionMemoryEnabled(session.id, !(session.memoryEnabled ?? true)),
+        run: () => setDraft('/memory '),
       },
       { id: 'attach', label: '/attach', hint: 'Attach files', icon: <Paperclip size={15} />, run: () => fileInputRef.current?.click() },
-      { id: 'markdown', label: '/markdown', hint: 'Open the markdown store', icon: <BookOpen size={15} />, run: () => void openMarkdownStore() },
-      ...markdownStoreEntries.map((entry) => ({
+      { id: 'skills', label: '/skills', hint: 'Open Skills', icon: <BookOpen size={15} />, run: () => void openMarkdownStore() },
+      ...markdownStoreEntries.filter((entry) => entry.favorite && !entry.group).map((entry) => ({
         id: `md:${entry.id}`,
-        label: '/' + entry.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
-        hint: entry.review || entry.preview || 'Attach markdown store skill',
+        label: '/' + (entry.commandName || entry.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'skill'),
+        hint: `${entry.title}${entry.sourceProvider ? ` · ${entry.sourceProvider}` : ''}`,
         icon: <FileText size={15} />,
         run: () => attachMarkdownStoreEntry(session.id, entry),
       })),
+      ...Object.entries(markdownStoreEntries.filter((entry) => entry.favorite && entry.group).reduce<Record<string, typeof markdownStoreEntries>>((groups, entry) => {
+        ;(groups[entry.group!] ??= []).push(entry)
+        return groups
+      }, {})).map(([group, entries]) => ({
+        id: `md-group:${group}`,
+        label: '/' + (group.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'skills'),
+        hint: `${entries.length} skill${entries.length === 1 ? '' : 's'}`,
+        icon: <BookOpen size={15} />,
+        run: () => setSlashGroup(group),
+        groupEntries: entries.map((entry) => ({
+          id: `md:${entry.id}`,
+          label: '/' + (entry.commandName || entry.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'skill'),
+          hint: `${entry.title}${entry.sourceProvider ? ` · ${entry.sourceProvider}` : ''}`,
+          icon: <FileText size={15} />,
+          run: () => attachMarkdownStoreEntry(session.id, entry),
+        })),
+      })),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [session.id, session.memoryEnabled, session.autoApproveCommands, session.commandSafetyTier, session.reasoningEffort, session.serviceTier, markdownStoreEntries, currentModeId, permissionModes, providerSupported, currentProviderName, reasoningOptions, speedOptions]
+    [session.id, currentMemoryLevel, session.commandSafetyTier, session.reasoningEffort, session.serviceTier, markdownStoreEntries, currentModeId, permissionModes, providerSupported, currentProviderName, reasoningOptions, speedOptions]
   )
   const permissionModeMatch = /^\/permission\s+([\w-]*)$/i.exec(draft)
   const commandSafetyMatch = /^\/safety\s+([\w-]*)$/i.exec(draft)
+  const memoryLevelMatch = /^\/memory\s+([\w-]*)$/i.exec(draft)
   const codexOptionMatch = /^\/(reasoning|speed)\s+([\w-]*)$/i.exec(draft)
   const slashMatch = /^\/([\w-]*)$/.exec(draft)
   const slashQuery = slashMatch ? slashMatch[1].toLowerCase() : null
   const permissionModeQuery = permissionMenuOpen ? '' : permissionModeMatch?.[1].toLowerCase()
   const commandSafetyQuery = commandSafetyMatch?.[1].toLowerCase()
+  const memoryLevelQuery = memoryLevelMatch?.[1].toLowerCase()
   const codexOptionKind = codexOptionMatch?.[1].toLowerCase() as 'reasoning' | 'speed' | undefined
   const codexOptionQuery = codexOptionMatch?.[2].toLowerCase()
   const codexOptionQueryOptions = codexOptionKind === 'reasoning' ? reasoningOptions : codexOptionKind === 'speed' ? speedOptions : []
-  const slashMatches = permissionModeQuery !== undefined
+  const slashMatches: SlashCommand[] = permissionModeQuery !== undefined
     ? permissionModes
         .filter((mode) => mode.id.toLowerCase().startsWith(permissionModeQuery) || mode.name.toLowerCase().replace(/\s+/g, '-').startsWith(permissionModeQuery))
         .map((mode) => ({
           id: `permission:${mode.id}`,
           label: mode.name,
-          hint: `${mode.id === selectedPermissionModeId ? 'Current · ' : ''}${mode.description || `Use ${mode.name} permission mode`}`,
+          hint: `${mode.id === selectedPermissionModeId ? 'Current · ' : ''}${mode.description}`,
           icon: permissionModeIcon(mode.id, 15),
           run: () => void runPermissionCommand(mode.id),
         }))
@@ -957,6 +1081,16 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
             hint: `${tier.id === (session.commandSafetyTier ?? 'medium') ? 'Current · ' : ''}${tier.detail}`,
             icon: <Shield size={15} />,
             run: () => void runCommandSafetyCommand(tier.id),
+          }))
+    : memoryLevelQuery !== undefined
+      ? MEMORY_LEVEL_OPTIONS
+          .filter((option) => option.id.startsWith(memoryLevelQuery) || option.label.toLowerCase().startsWith(memoryLevelQuery))
+          .map((option) => ({
+            id: `memory:${option.id}`,
+            label: option.label,
+            hint: `${option.id === currentMemoryLevel ? 'Current · ' : ''}${option.detail}`,
+            icon: <Brain size={15} />,
+            run: () => runMemoryCommand(option.id),
           }))
     : codexOptionKind !== undefined
       ? codexOptionQueryOptions
@@ -972,10 +1106,10 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
             run: () => void runCodexOptionCommand(codexOptionKind, option.id || 'default'),
           }))
     : slashQuery !== null
-      ? slashCommands.filter((command) => command.label.slice(1).startsWith(slashQuery))
+      ? slashCommands.filter((command) => command.label.slice(1).toLowerCase().startsWith(slashQuery))
       : []
-  const slashOpen = slashMatches.length > 0 && (slashQuery !== null || permissionModeQuery !== undefined || commandSafetyQuery !== undefined || codexOptionKind !== undefined)
-  const slashPaletteVisible = slashQuery !== null || permissionModeQuery !== undefined || commandSafetyQuery !== undefined || codexOptionKind !== undefined
+  const slashOpen = slashMatches.length > 0 && (slashQuery !== null || permissionModeQuery !== undefined || commandSafetyQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined)
+  const slashPaletteVisible = slashQuery !== null || permissionModeQuery !== undefined || commandSafetyQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined
   useEffect(() => {
     if (slashPaletteVisible && markdownStoreEntries.length === 0) {
       void refreshMarkdownStore()
@@ -988,6 +1122,8 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
     setPermissionMenuOpen(false)
     command.run()
   }
+  const activeSlashGroup = slashCommands.find((command) => command.id === `md-group:${slashGroup}`)
+  const activeSlashGroupAnchor = { current: slashGroupButtonRefs.current[slashGroup] }
 
   const onComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (slashOpen) {
@@ -1050,7 +1186,6 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
     canShowPlanActions && index === latestPlanMessageIndex
       ? activePlanActions
       : undefined
-  const providerMenuRect = providerOpen ? providerMenuRef.current?.getBoundingClientRect() : null
   const resolveClaudePlanPrompt = async (nextModeId: 'acceptEdits' | 'default' | 'plan') => {
     const prompt = claudePlanPrompt?.trim()
     if (!prompt) {
@@ -1059,8 +1194,11 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
     }
 
     setSubmitting(true)
-    const modeOk = nextModeId === 'plan' ? true : await setSessionApprovalMode(session.id, nextModeId)
-    if (modeOk) {
+    const modeOk = nextModeId === 'plan' ? true : await setSessionApprovalMode(session.id, 'default')
+    const permissionOk = !modeOk || nextModeId !== 'acceptEdits'
+      ? modeOk
+      : await setSessionCommandSafetyTier(session.id, 'acceptEdits')
+    if (permissionOk) {
       const readyAttachments = composerAttachments
         .filter((attachment) => attachment.status === 'ready')
         .map(({ status, error, ...attachment }) => attachment)
@@ -1114,7 +1252,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
               )}
             </details>
 
-            <div className="space-y-4">
+            <div className="space-y-2">
               {earliestRenderedMessageIndex > 0 && (
                 <div className="flex justify-center">
                   <Button
@@ -1146,7 +1284,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                 if (shouldSkipAssistantMessage) return null
 
                 return (
-                  <div key={message.id} className="space-y-2">
+                  <div key={message.id} className="space-y-1">
                     <MessageFrame
                       role={message.role}
                       assistantLabel={messageProviderName}
@@ -1331,15 +1469,13 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
             background: 'var(--surface)',
           }}
         >
-            <div className="p-3">
+            <div className="flex flex-col p-3">
               <div
-                className="mb-2 flex flex-wrap items-center gap-2 text-[11px]"
+                className="order-10 mt-2 flex flex-wrap items-center gap-2 text-[11px]"
                 style={{ color: 'var(--text-3)', minWidth: 0 }}
                 title={workspaceDirectory || 'No workspace directory selected'}
               >
-                {(providers.length <= 1 && currentProviderId === providers[0]?.id) ? (
-                  <span style={{ color: 'var(--text-2)', flexShrink: 0 }}>Workspace</span>
-                ) : (
+                {(providers.length <= 1 && currentProviderId === providers[0]?.id) ? null : (
                 <div ref={providerMenuRef} className="relative" style={{ flexShrink: 0 }}>
                   <button
                     type="button"
@@ -1347,22 +1483,18 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                     aria-label="Select provider"
                     aria-expanded={providerOpen}
                     onClick={() => setProviderOpen((v) => !v)}
-                    className="inline-flex items-center gap-1.5 rounded-md px-2"
-                    style={{ height: 26, border: '1px solid var(--border)', background: providerOpen ? 'var(--surface-up)' : 'var(--surface)', color: 'var(--text-2)' }}
+                    className="uam-composer-action inline-flex items-center justify-center"
+                    style={{ width: 28, height: 28, borderRadius: 7, border: '1px solid var(--border-bright)', background: providerOpen ? 'var(--surface-up)' : 'var(--surface)', color: 'var(--text-2)' }}
                   >
                     <ProviderLogo providerId={currentProviderId} />
-                    <span style={{ color: 'var(--text)' }}>{currentProviderName}</span>
-                    <ChevronDown size={12} aria-hidden style={{ opacity: 0.6 }} />
                   </button>
-                  {providerOpen && providerMenuRect && createPortal(
-                    <div
+                  {providerOpen && (
+                    <ViewportMenu
+                      anchorRef={providerMenuRef}
+                      side="top"
                       data-testid="provider-menu"
                       className="animate-fade-in"
                       style={{
-                        position: 'fixed',
-                        zIndex: 1000,
-                        left: Math.max(8, Math.min(providerMenuRect.left, window.innerWidth - 238)),
-                        bottom: window.innerHeight - providerMenuRect.top + 4,
                         width: 230,
                         border: '1px solid var(--border-bright)',
                         borderRadius: 8,
@@ -1396,8 +1528,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                           </button>
                         )
                       })}
-                    </div>,
-                    document.body
+                    </ViewportMenu>
                   )}
                 </div>
                 )}
@@ -1490,43 +1621,30 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
               </div>
               {isGitWorktree && sourceWorkspaceDirectory && (
                 <div
-                  className="mb-2 truncate text-[11px]"
+                  className="order-10 mt-2 truncate text-[11px]"
                   style={{ color: 'var(--text-3)' }}
                   title={sourceWorkspaceDirectory}
                 >
                   Source {sourceWorkspaceDirectory}
                 </div>
               )}
-              {workspaceActionMessage && (
+              {workspaceFeedback && (
                 <div
-                  className="mb-2 text-xs"
+                  role={workspaceFeedback.tone === 'error' ? 'alert' : 'status'}
+                  className="order-10 mt-2 flex items-start gap-2 text-xs"
                   style={{
-                    border: '1px solid color-mix(in srgb, var(--green) 38%, var(--border))',
+                    border: `1px solid color-mix(in srgb, var(--${workspaceFeedback.tone === 'success' ? 'green' : workspaceFeedback.tone === 'warning' ? 'yellow' : 'red'}) 42%, var(--border))`,
                     borderRadius: 6,
                     padding: '8px 10px',
-                    background: 'color-mix(in srgb, var(--green) 8%, var(--surface))',
+                    background: `color-mix(in srgb, var(--${workspaceFeedback.tone === 'success' ? 'green' : workspaceFeedback.tone === 'warning' ? 'yellow' : 'red'}) 9%, var(--surface))`,
                     color: 'var(--text)',
                     overflowWrap: 'anywhere',
                   }}
                 >
-                  {workspaceActionMessage}
+                  <span className="min-w-0 flex-1">{workspaceFeedback.message}</span>
+                  <button type="button" aria-label="Dismiss workspace action message" onClick={() => setWorkspaceFeedback(null)} style={{ border: 0, background: 'transparent', color: 'var(--text-3)', padding: 0 }}><X size={13} aria-hidden /></button>
                 </div>
               )}
-              {openWorkspaceError && (
-              <div
-                className="mb-2 text-xs animate-fade-in"
-                style={{
-                  border: '1px solid color-mix(in srgb, var(--red) 45%, var(--border))',
-                  borderRadius: 6,
-                  padding: '8px 10px',
-                  background: 'color-mix(in srgb, var(--red) 10%, var(--surface))',
-                  color: 'var(--text)',
-                  overflowWrap: 'anywhere',
-                }}
-              >
-                {openWorkspaceError}
-              </div>
-            )}
             {!providerSupported && (
               <div
                 className="mb-2 text-xs"
@@ -1547,7 +1665,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                 Claude structured mode cannot surface interactive permission or user-input prompts, and model discovery is limited to the active model. Use Accept Edits, Plan, or the CLI fallback when a turn needs interaction.
               </div>
             )}
-            {acp?.lastError && (
+            {acp?.lastError && currentAcpErrorKey !== dismissedAcpErrorKey && (
               <div
                 className="mb-2 text-xs"
                 style={{
@@ -1566,6 +1684,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                     {acp.lastError}
                   </div>
                   <CopyTextButton text={buildAcpErrorCopyText(acp, currentErrorTitle)} label="Copy error" title="Copy error details" />
+                  <IconButton icon={<X size={13} />} label="Dismiss composer error" onClick={() => setDismissedAcpErrorKey(currentAcpErrorKey)} />
                 </div>
                 <AcpErrorDetails acp={acp} title={currentErrorTitle} />
                   </div>
@@ -1617,6 +1736,46 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                 {slashMessage}
               </div>
             )}
+            {(acp?.queuedPrompts?.length ?? 0) > 0 && (
+              <div className="mb-1.5" role="status" aria-label="Queued prompt">
+                {acp!.queuedPrompts!.slice(0, 1).map((prompt, index) => (
+                  <div
+                    key={`${index}-${prompt.text}`}
+                    className="flex items-center gap-2 px-3 py-1.5 text-[11px] animate-fade-in transition-[background-color,transform] duration-150 hover:-translate-y-px"
+                    style={{
+                      color: 'var(--text-2)',
+                      border: '1px solid color-mix(in srgb, var(--accent) 28%, var(--border))',
+                      borderRadius: 8,
+                      background: 'color-mix(in srgb, var(--accent) 7%, var(--surface))',
+                    }}
+                  >
+                    <span className="shrink-0 font-medium" style={{ color: 'var(--accent)' }}>Queued</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="line-clamp-2 whitespace-pre-wrap break-words">{prompt.text}</span>
+                      {(prompt.attachments.length > 0 || prompt.markdownStoreFiles.length > 0) && (
+                        <span style={{ color: 'var(--text-3)' }}>{prompt.attachments.length + prompt.markdownStoreFiles.length} attachment{prompt.attachments.length + prompt.markdownStoreFiles.length === 1 ? '' : 's'}</span>
+                      )}
+                    </span>
+                    <IconButton
+                      icon={<CornerUpRight size={14} />}
+                      label="Steer with this prompt now"
+                      disabled={steering}
+                      onClick={() => {
+                        steerTurnSerialRef.current = acp?.turnSerial ?? 0
+                        setSteering(true)
+                        void steerQueuedAcpPrompt(session.id, index).then((ok) => { if (!ok) setSteering(false) })
+                      }}
+                    />
+                    <IconButton
+                      icon={<X size={14} />}
+                      label="Remove queued prompt"
+                      disabled={steering}
+                      onClick={() => { void removeQueuedAcpPrompt(session.id, index) }}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
             <div
               onDragOver={(event) => event.preventDefault()}
               onDrop={onComposerDrop}
@@ -1627,11 +1786,6 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                 overflow: 'visible',
               }}
             >
-            {(acp?.queuedPrompts?.length ?? 0) > 0 && (
-              <div className="px-3 pt-2 text-[11px]" role="status" style={{ color: 'var(--accent)' }}>
-                {acp!.queuedPrompts!.length} {acp!.queuedPrompts!.length === 1 ? 'prompt' : 'prompts'} queued
-              </div>
-            )}
             {(markdownStoreAttachments.length > 0 || composerAttachments.length > 0) && (
               <div className="flex flex-wrap gap-2 px-3 pt-3">
                 {markdownStoreAttachments.map((entry) => (
@@ -1648,13 +1802,13 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                     }}
                   >
                     <BookOpen size={13} aria-hidden style={{ color: 'var(--purple)' }} />
-                    <span style={{ color: 'var(--purple)' }}>Markdown Store</span>
+                    <span style={{ color: 'var(--purple)' }}>Skills</span>
                     <span className="truncate max-w-[260px]">{entry.title || entry.filePath.split(/[\\/]/).pop()}</span>
                     <button
                       type="button"
                       onClick={() => detachMarkdownStoreEntry(session.id, entry.filePath)}
-                      title="Remove Markdown Store attachment"
-                      aria-label={`Remove ${entry.title || 'Markdown Store'} attachment`}
+                      title="Remove skill attachment"
+                      aria-label={`Remove ${entry.title || 'skill'} attachment`}
                       className="uam-attachment-remove"
                       style={{ color: 'var(--text-3)' }}
                     >
@@ -1701,8 +1855,8 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
             {slashOpen && (
               <div className="relative">
                 <div
-                  className="absolute left-3 right-3 z-40 overflow-hidden rounded-lg animate-fade-in"
-                  style={{ bottom: 4, border: '1px solid var(--border-bright)', background: 'var(--surface)', boxShadow: 'var(--elev-3)' }}
+                  className="overflow-hidden rounded-lg animate-fade-in"
+                  style={{ position: 'absolute', left: 12, right: 12, bottom: 4, zIndex: 1000, border: '1px solid var(--border-bright)', background: 'var(--surface)', boxShadow: 'var(--elev-3)' }}
                   role="listbox"
                   aria-label={permissionModeQuery !== undefined ? 'Permission modes' : commandSafetyQuery !== undefined ? 'Command safety tiers' : codexOptionKind === 'reasoning' ? 'Reasoning options' : codexOptionKind === 'speed' ? 'Speed options' : 'Slash commands'}
                 >
@@ -1719,7 +1873,10 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                         type="button"
                         role="option"
                         aria-selected={active}
-                        ref={active ? (el) => el?.scrollIntoView?.({ block: 'nearest' }) : undefined}
+                        ref={(element) => {
+                          if (command.groupEntries) slashGroupButtonRefs.current[command.id.slice('md-group:'.length)] = element
+                          if (active) element?.scrollIntoView?.({ block: 'nearest' })
+                        }}
                         onMouseEnter={() => setSlashIndex(index)}
                         onMouseDown={(e) => { e.preventDefault(); runSlashCommand(command) }}
                         className={`uam-menu-select__option flex w-full items-start gap-2.5 px-3 py-2 text-left${active ? ' is-selected' : ''}`}
@@ -1727,7 +1884,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                       >
                         <span aria-hidden className="mt-0.5 shrink-0" style={{ color: active ? 'var(--accent)' : 'var(--text-2)' }}>{command.icon}</span>
                         <span className="min-w-0 flex-1">
-                          <span className={permissionModeQuery === undefined && commandSafetyQuery === undefined && codexOptionKind === undefined ? 'block font-mono text-sm' : 'block text-sm'} style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>{command.label}</span>
+                          <span className={permissionModeQuery === undefined && commandSafetyQuery === undefined && codexOptionKind === undefined ? 'block font-mono text-sm' : 'block text-sm'} style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>{command.label}{command.groupEntries && <ChevronRight className="ml-1 inline" size={14} aria-hidden />}</span>
                           <span className="block truncate text-xs" style={{ color: 'var(--text-3)' }}>{command.hint}</span>
                         </span>
                       </button>
@@ -1736,6 +1893,12 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                   </div>
                 </div>
               </div>
+            )}
+            {activeSlashGroup?.groupEntries && activeSlashGroupAnchor.current && (
+              <ViewportMenu anchorRef={activeSlashGroupAnchor} side="right" role="menu" aria-label={`${slashGroup} skills`} className="animate-fade-in" style={{ width: 280, border: '1px solid var(--border-bright)', borderRadius: 8, background: 'var(--surface)', boxShadow: 'var(--elev-3)', padding: 6 }}>
+                <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>{slashGroup}</div>
+                {activeSlashGroup.groupEntries.map((command) => <button key={command.id} type="button" role="menuitem" onMouseDown={(event) => { event.preventDefault(); setSlashGroup(''); runSlashCommand(command) }} className="uam-menu-select__option w-full flex items-start gap-2 px-2 py-2 text-left" style={{ borderRadius: 6, color: 'var(--text-2)' }}><FileText size={15} className="mt-0.5 shrink-0" aria-hidden /><span className="min-w-0"><span className="block font-mono text-sm" style={{ color: 'var(--text)' }}>{command.label}</span><span className="block truncate text-xs" style={{ color: 'var(--text-3)' }}>{command.hint}</span></span></button>)}
+              </ViewportMenu>
             )}
             {(dictationActive || dictationError) && (
               <div
@@ -1802,10 +1965,11 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
               serviceTier={session.serviceTier ?? ''}
               approvalModeId={currentModeId}
               permissionModeId={selectedPermissionModeId}
-              permissionModes={permissionModes}
-              autoApproveCommands={session.autoApproveCommands ?? false}
+              agentModes={agentModes}
               commandSafetyTier={session.commandSafetyTier ?? 'medium'}
-              memoryEnabled={session.memoryEnabled ?? true}
+              memoryLevel={currentMemoryLevel}
+              defaultMemoryLevel={defaultMemoryLevel}
+              memoryChipVisible={memoryChipExplicit || currentMemoryLevel !== defaultMemoryLevel}
               canChangeProvider={canChangeProvider}
               providerOpen={providerOpen}
               modelOpen={modelOpen}
@@ -1839,26 +2003,21 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
                 void setSessionModel(session.id, modelId)
               }}
               onSelectReasoning={(reasoningEffort) => {
-                void setSessionCodexOptions(session.id, { reasoningEffort, serviceTier: session.serviceTier ?? '' })
+                void setSessionCodexOptions(session.id, { reasoningEffort })
               }}
               onSelectSpeed={(serviceTier) => {
-                void setSessionCodexOptions(session.id, { reasoningEffort: session.reasoningEffort ?? '', serviceTier })
+                void setSessionCodexOptions(session.id, { serviceTier })
               }}
-              onTogglePlan={() => {
-                const nextMode = currentModeId === 'plan' ? 'default' : 'plan'
-                void setSessionApprovalMode(session.id, nextMode)
-              }}
-              onToggleAcceptEdits={() => {
-                const nextMode = currentModeId === 'acceptEdits' ? 'default' : 'acceptEdits'
-                void setSessionApprovalMode(session.id, nextMode)
-              }}
-              onToggleYolo={() => {
-                void setSessionAutoApproveCommands(session.id, !(session.autoApproveCommands ?? false))
-              }}
+              onSelectAgentMode={(modeId) => void setSessionApprovalMode(session.id, modeId)}
               onSelectPermissionMode={(modeId) => void selectPermissionMode(modeId)}
               onSetCommandSafetyTier={(tier) => void setSessionCommandSafetyTier(session.id, tier)}
-              onToggleMemory={() => {
-                void setSessionMemoryEnabled(session.id, !(session.memoryEnabled ?? true))
+              onSelectMemoryLevel={(level) => {
+                setMemoryChipExplicit(true)
+                void setSessionMemoryLevel(session.id, level)
+              }}
+              onClearMemoryLevel={() => {
+                setMemoryChipExplicit(false)
+                void setSessionMemoryLevel(session.id, defaultMemoryLevel)
               }}
               goalArmed={goalArmNextMessage}
               goalActive={Boolean(activeGoal)}
@@ -1871,6 +2030,7 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
               onOpenMarkdownStore={() => void openMarkdownStore()}
               dictationState={dictationState}
               dictationError={dictationError}
+              dictationElapsedSeconds={dictationElapsedSeconds}
               dictationAvailable={dictationAvailable}
               onToggleDictation={() => {
                 if (dictationActiveRef.current) void stopDictation()

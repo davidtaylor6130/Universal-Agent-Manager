@@ -9,4 +9,5 @@ export interface Provider {
   supportsStructured?: boolean
   structuredProtocol?: string
   npmPackageName?: string
+	nativeGoalCommand?: string
 }

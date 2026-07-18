@@ -35,9 +35,12 @@ describe('SettingsModal memory settings', () => {
         },
       ],
       memoryEnabledDefault: true,
+      memoryLevelDefault: 'strict',
       memoryIdleDelaySeconds: 120,
       memoryRecallBudgetBytes: 4096,
       goalMaxLoopIterations: 200,
+      defaultNewChatProviderId: 'codex-cli',
+      providerChatDefaults: {},
       theme: 'dark',
       customThemes: [],
       memoryWorkerBindings: {
@@ -90,6 +93,7 @@ describe('SettingsModal memory settings', () => {
       markdownStoreDirectory: '/tmp/markdown-store',
       setSettingsOpen: vi.fn(),
       setMemorySettings: vi.fn(() => Promise.resolve(true)),
+      setProviderChatDefaults: vi.fn(() => Promise.resolve(true)),
       setEditorSettings: vi.fn(() => Promise.resolve(true)),
       setTheme: vi.fn(),
       refreshCustomThemes: vi.fn(() => Promise.resolve(true)),
@@ -156,13 +160,28 @@ describe('SettingsModal memory settings', () => {
     })
   }
 
-  it('keeps modal dismissal visually secondary', () => {
-    const { host, root } = renderModal()
-    const closeButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Close') as HTMLButtonElement
+  function openGoalLoopsSection(host: HTMLElement) {
+    const button = Array.from(host.querySelectorAll('button')).find(
+      (candidate) => candidate.textContent?.includes('Goal Loops') && candidate.textContent?.includes('Loop safety')
+    )
+    expect(button).toBeTruthy()
+    act(() => button?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+  }
 
-    expect(closeButton.className).toContain('uam-btn--secondary')
-    expect(closeButton.className).not.toContain('uam-btn--block')
-    expect(closeButton.parentElement?.className).toContain('justify-end')
+  function openMarkdownStoreSection(host: HTMLElement) {
+    const button = Array.from(host.querySelectorAll('button')).find(
+      (candidate) => candidate.textContent?.includes('Skills') && candidate.textContent?.includes('Reusable prompts and attachments')
+    )
+    expect(button).toBeTruthy()
+    act(() => button?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+  }
+
+  it('uses an icon-first modal dismissal', () => {
+    const { host, root } = renderModal()
+    const closeButton = host.querySelector('button[aria-label="Close settings"]') as HTMLButtonElement
+
+    expect(closeButton).toBeTruthy()
+    expect(closeButton.textContent).toBe('')
 
     act(() => root.unmount())
     host.remove()
@@ -202,13 +221,13 @@ describe('SettingsModal memory settings', () => {
     const themeButton = host.querySelector('button[aria-label="Theme"]') as HTMLButtonElement | null
 
     act(() => themeButton?.click())
-    expect(host.querySelector('[role="listbox"][aria-label="Theme"]')).toBeTruthy()
+    expect(document.body.querySelector('[role="listbox"][aria-label="Theme"]')).toBeTruthy()
 
-    const lightOption = Array.from(host.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Light')) as HTMLButtonElement | undefined
+    const lightOption = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Light')) as HTMLButtonElement | undefined
     act(() => lightOption?.click())
 
     expect(useAppStore.getState().setTheme).toHaveBeenCalledWith('light')
-    expect(host.querySelector('[role="listbox"][aria-label="Theme"]')).toBeNull()
+    expect(document.body.querySelector('[role="listbox"][aria-label="Theme"]')).toBeNull()
 
     act(() => root.unmount())
     host.remove()
@@ -217,20 +236,35 @@ describe('SettingsModal memory settings', () => {
   it('updates the goal loop iteration cap', () => {
     const { host, root } = renderModal()
 
-    openMemorySettingsSection(host)
-    const input = Array.from(host.querySelectorAll('input')).find(
-      (candidate) => candidate.parentElement?.textContent?.includes('Maximum iterations')
-    )
-    expect(input).toBeTruthy()
+    openGoalLoopsSection(host)
+    const decrease = host.querySelector('button[aria-label="Decrease maximum goal loop iterations"]') as HTMLButtonElement
+    const output = host.querySelector('output[aria-label="Maximum goal loop iterations"]')
+    expect(decrease).toBeTruthy()
+    expect(output?.textContent).toBe('200')
+    expect(host.querySelector('input[type="number"]')).toBeNull()
 
     act(() => {
-      const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
-      valueSetter?.call(input, '0')
-      input?.dispatchEvent(new Event('change', { bubbles: true }))
+      decrease.click()
     })
 
-    expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ goalMaxLoopIterations: 0 })
+    expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ goalMaxLoopIterations: 199 })
 
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('updates the default memory selectivity level', () => {
+    const { host, root } = renderModal()
+    openMemorySettingsSection(host)
+    const group = host.querySelector('[role="radiogroup"][aria-label="Default memory level"]') as HTMLElement
+    const balanced = Array.from(group.querySelectorAll('button[role="radio"]')).find((button) => button.textContent === 'Balanced') as HTMLButtonElement
+    expect(group.querySelector('button[aria-checked="true"]')?.textContent).toBe('Strict')
+
+    act(() => {
+      balanced.click()
+    })
+
+    expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ memoryLevelDefault: 'balanced' })
     act(() => root.unmount())
     host.remove()
   })
@@ -256,6 +290,7 @@ describe('SettingsModal memory settings', () => {
     })
 
     expect(host.textContent).toContain('0.123.0')
+    expect(host.querySelector('button[aria-label="Refresh Codex CLI version"]')?.textContent).toBe('')
 
     const targetVersionButton = host.querySelector(
       'button[title="Codex target version"]'
@@ -266,7 +301,7 @@ describe('SettingsModal memory settings', () => {
       targetVersionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    const nextVersionOption = Array.from(host.querySelectorAll('button[role="option"]')).find(
+    const nextVersionOption = Array.from(document.body.querySelectorAll('button[role="option"]')).find(
       (button) => button.textContent?.includes('0.124.0')
     )
     expect(nextVersionOption).toBeTruthy()
@@ -275,11 +310,10 @@ describe('SettingsModal memory settings', () => {
       nextVersionOption?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    const applyButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Apply' && !(button as HTMLButtonElement).disabled
-    ) as HTMLButtonElement | undefined
+    const applyButton = host.querySelector('button[aria-label="Apply Codex CLI version"]') as HTMLButtonElement
     expect(applyButton).toBeTruthy()
     expect(applyButton?.disabled).toBe(false)
+    expect(applyButton.textContent).toBe('')
 
     act(() => {
       applyButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -291,6 +325,23 @@ describe('SettingsModal memory settings', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('animates CLI actions while a version check is running', () => {
+    const providers = useAppStore.getState().cliVersionManager.providers.map((provider) =>
+      provider.providerId === 'codex-cli' ? { ...provider, running: true, status: 'checking' as const } : provider
+    )
+    useAppStore.setState({ cliVersionManager: { providers } })
+    const { host, root } = renderModal()
+
+    openCliVersionSection(host)
+    act(() => (host.querySelector('button[aria-label="Show Codex CLI version settings"]') as HTMLButtonElement).click())
+
+    expect(host.querySelector('button[aria-label="Refresh Codex CLI version"] svg')?.classList.contains('animate-spin')).toBe(true)
+    expect(host.querySelector('button[aria-label="Installing Codex CLI version"] svg')?.classList.contains('animate-spin')).toBe(true)
+
+    act(() => root.unmount())
     host.remove()
   })
 
@@ -322,10 +373,47 @@ describe('SettingsModal memory settings', () => {
 
     expect(host.textContent).toContain('Reasoning')
     expect(host.textContent).toContain('Auto approve off')
+    expect(host.querySelector('#codex-cli-defaults-panel')?.className).toContain('animate-fade-in')
+    expect(host.querySelector('select')).toBeNull()
+    const memoryLevel = host.querySelector('button[title="Codex default memory level"]') as HTMLButtonElement
+    expect(memoryLevel).toBeTruthy()
+
+    act(() => memoryLevel.click())
+    const openMemory = Array.from(document.body.querySelectorAll('button[role="option"]')).find((button) => button.textContent?.includes('Save every valid')) as HTMLButtonElement
+    expect(openMemory).toBeTruthy()
+    act(() => openMemory.click())
+    expect(useAppStore.getState().setProviderChatDefaults).toHaveBeenCalledWith(expect.objectContaining({
+      providerChatDefaults: expect.objectContaining({
+        'codex-cli': expect.objectContaining({ memoryLevel: 'open', memoryEnabled: true }),
+      }),
+    }))
 
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('refreshes cached provider models manually and surfaces refresh failures', () => {
+    const discoverProviderModels = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      sessions: [{ ...state.sessions[0], id: 'chat-model-cache', providerId: 'codex-cli' }],
+      acpBindingBySessionId: {
+        'chat-model-cache': { ...state.acpBindingBySessionId[state.sessions[0]?.id], modelsLoading: false, modelRefreshError: '' },
+      },
+      discoverProviderModels,
+    }))
+    const { host, root } = renderModal()
+    const defaults = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat Defaults') && button.textContent?.includes('Provider and new-chat settings')) as HTMLButtonElement
+    act(() => defaults.click())
+    act(() => (host.querySelector('button[aria-label="Show Codex chat defaults"]') as HTMLButtonElement).click())
+    act(() => (host.querySelector('button[aria-label="Refresh Codex models"]') as HTMLButtonElement).click())
+    expect(discoverProviderModels).toHaveBeenCalledWith('chat-model-cache')
+
+    act(() => useAppStore.setState((state) => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-model-cache': { ...state.acpBindingBySessionId['chat-model-cache'], modelRefreshError: 'Model refresh failed.' } } })))
+    expect(host.querySelector('[role="status"]')?.textContent).toContain('Model refresh failed.')
+
+    act(() => root.unmount())
     host.remove()
   })
 
@@ -336,7 +424,8 @@ describe('SettingsModal memory settings', () => {
 
     expect(host.textContent).toContain('Memory Workers')
     expect(host.textContent).toContain('Gemini memory worker')
-    expect(host.textContent).toContain('CLI default')
+    expect(host.textContent).toContain('Default')
+    expect(host.textContent).not.toContain('CLI default')
     expect(host.textContent).not.toContain('Build and release information')
 
     openMemoryStoreSection(host)
@@ -383,7 +472,7 @@ describe('SettingsModal memory settings', () => {
       defaultEditorButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    const webstormOption = Array.from(host.querySelectorAll('button[role="option"]')).find(
+    const webstormOption = Array.from(document.body.querySelectorAll('button[role="option"]')).find(
       (button) => button.textContent?.includes('WebStorm')
     )
     expect(webstormOption).toBeTruthy()
@@ -429,6 +518,9 @@ describe('SettingsModal memory settings', () => {
 
     expect(host.textContent).toContain('Extensions')
     expect(host.textContent).toContain('8 extensions open in VS Code')
+    expect(host.querySelector('#cpp-editor-group-panel')?.className).toContain('animate-fade-in')
+    expect(host.querySelector('button[aria-label="Delete C++ editor group"]')).toBeTruthy()
+    expect(host.querySelector('button[aria-label="Add editor group"]')).toBeTruthy()
 
     act(() => {
       root.unmount()
@@ -460,7 +552,7 @@ describe('SettingsModal memory settings', () => {
       cppEditorButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    const clionOption = Array.from(host.querySelectorAll('button[role="option"]')).find(
+    const clionOption = Array.from(document.body.querySelectorAll('button[role="option"]')).find(
       (button) => button.textContent?.includes('CLion')
     )
     expect(clionOption).toBeTruthy()
@@ -536,7 +628,7 @@ describe('SettingsModal memory settings', () => {
       providerButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    const codexOption = Array.from(host.querySelectorAll('button[role="option"]')).find(
+    const codexOption = Array.from(document.body.querySelectorAll('button[role="option"]')).find(
       (button) => button.textContent?.includes('Codex')
     )
     expect(codexOption).toBeTruthy()
@@ -576,7 +668,7 @@ describe('SettingsModal memory settings', () => {
       modelButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    const flashOption = Array.from(host.querySelectorAll('button[role="option"]')).find(
+    const flashOption = Array.from(document.body.querySelectorAll('button[role="option"]')).find(
       (button) => button.textContent?.includes('Prioritize speed')
     )
     expect(flashOption).toBeTruthy()
@@ -619,16 +711,32 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
-  it('keeps secondary memory-store actions visually secondary', () => {
+  it('keeps Markdown Store configuration actions in their own section', () => {
     const { host, root } = renderModal()
-    openMemoryStoreSection(host)
+    openMarkdownStoreSection(host)
 
-    const saveButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Save') as HTMLButtonElement
+    const saveButton = host.querySelector('button[aria-label="Save Skills directory"]') as HTMLButtonElement
     const openStoreButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Open store') as HTMLButtonElement
 
     expect(saveButton.disabled).toBe(true)
-    expect(openStoreButton.className).toContain('uam-btn--secondary')
+    expect(openStoreButton).toBeTruthy()
 
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('configures an OpenAI-compatible voice transcription server without storing a secret', () => {
+    useAppStore.setState({ voiceInputCapabilities: { system: { supported: true, reason: '' }, local: { supported: false, reason: 'Coming soon.' }, server: { supported: true, reason: '' } } })
+    const { host, root } = renderModal()
+    const voiceSection = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Voice Input'))
+    act(() => voiceSection?.click())
+    const service = host.querySelector<HTMLButtonElement>('button[aria-label="Speech-to-text service"]')!
+    act(() => service.click())
+    const server = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.includes('OpenAI-compatible server'))
+    act(() => server?.click())
+    expect(host.querySelector('input[aria-label="Voice transcription server URL"]')).toBeTruthy()
+    expect(host.querySelector('input[aria-label="Voice transcription credential environment variable"]')).toBeTruthy()
+    expect(host.textContent).toContain('does not store the secret')
     act(() => root.unmount())
     host.remove()
   })
@@ -650,7 +758,8 @@ describe('SettingsModal memory settings', () => {
     expect(useAppStore.getState().openMemoryScanModal).toHaveBeenCalledTimes(1)
 
     const modalShell = host.querySelector('.rounded-2xl.shadow-2xl') as HTMLDivElement | null
-    expect(modalShell?.style.maxHeight).toBe('calc(100vh - 2rem)')
+    expect(modalShell).toBeTruthy()
+    expect(modalShell?.className).toContain('flex-col')
 
     act(() => {
       root.unmount()

@@ -1,14 +1,18 @@
 #pragma once
 
 #include "common/models/app_models.h"
+#include "common/provider/provider_profile.h"
 
 #include <string>
 #include <string_view>
 #include <vector>
 #include <mutex>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <map>
+#include <set>
 #include <thread>
 
 #include <nlohmann/json.hpp>
@@ -24,7 +28,7 @@ class ProviderModelCatalogService
 	ProviderModelCatalogService();
 
 	/// Initialize with data root path. Must be called before any other methods.
-	void Initialize(const std::filesystem::path& data_root);
+	void Initialize(const std::filesystem::path& data_root, const std::vector<ProviderProfile>& profiles = {}, std::string_view configuration_context = {});
 
 	/// Start an async refresh of OpenCode Zen free models if needed (respects 10-min throttle).
 	/// Returns true if a refresh was started, false if skipped (throttled/disabled/fixture).
@@ -45,6 +49,22 @@ class ProviderModelCatalogService
 
 	/// Get Codex models from cache file (cached).
 	nlohmann::json GetCachedCodexModels() const;
+
+	/// Persist a provider's latest successful runtime model discovery without replacing a valid cache on empty results.
+	bool RememberSuccessfulModels(const std::string& provider_id, const nlohmann::json& models);
+
+	/// Record a refresh failure while retaining the last successful provider cache.
+	void RememberRefreshFailure(const std::string& provider_id, std::string error);
+
+	/// Return the isolated persistent cache for the provider's current configuration.
+	nlohmann::json GetCachedProviderModels(const std::string& provider_id) const;
+	std::string GetProviderRefreshError(const std::string& provider_id) const;
+	/// Start discovery only when no usable cache exists or its last successful refresh is stale.
+	bool BeginDiscoveryIfStale(const std::string& provider_id);
+	/// Start a user-requested discovery even when the cache is fresh.
+	bool BeginDiscovery(const std::string& provider_id);
+	bool BeginDiscoveryIfMissing(const std::string& provider_id);
+	bool IsDiscoveryPending(const std::string& provider_id) const;
 
 	/// Merge fallback models with runtime models (same logic as before).
 	static nlohmann::json MergeAcpModelArrays(nlohmann::json fallback_models, nlohmann::json runtime_models);
@@ -75,6 +95,11 @@ class ProviderModelCatalogService
 	nlohmann::json m_configured_open_code_models;
 	std::string m_configured_open_code_default_model;
 	nlohmann::json m_cached_codex_models;
+	nlohmann::json m_persistent_catalogs;
+	std::map<std::string, std::string> m_catalog_key_by_provider_id;
+	std::map<std::string, std::string> m_refresh_error_by_provider_id;
+	std::set<std::string> m_pending_discovery_provider_ids;
+	std::set<std::string> m_refresh_attempted_provider_ids;
 
 	// OpenCode config file mtime for cache invalidation.
 	std::filesystem::file_time_type m_open_code_config_mtime;
@@ -91,6 +116,8 @@ class ProviderModelCatalogService
 	static constexpr const char* kOpenCodeZenFreeModelsCacheFile = "opencode_zen_free_models_cache.json";
 	static constexpr const char* kOpenCodeZenModelsFixtureEnv = "UAM_OPENCODE_ZEN_MODELS_PATH";
 	static constexpr const char* kOpenCodeZenRefreshDisabledEnv = "UAM_DISABLE_OPENCODE_ZEN_REFRESH";
+	static constexpr const char* kProviderModelsCacheFile = "provider_model_catalog_cache.json";
+	static constexpr std::int64_t kProviderModelCacheFreshnessSeconds = 7 * 24 * 60 * 60;
 
 	// Internal helpers.
 	std::filesystem::path OpenCodeZenFreeModelsCachePath() const;
@@ -102,6 +129,9 @@ class ProviderModelCatalogService
 	nlohmann::json ReadConfiguredOpenCodeModels();
 	std::string ReadConfiguredOpenCodeDefaultModel();
 	nlohmann::json ReadCachedCodexModels();
+	std::string CatalogKey(const std::string& provider_id) const;
+	void LoadPersistentCatalogs();
+	bool WritePersistentCatalogs() const;
 
 	void StartRefreshTask();
 	bool TryConsumeRefreshOutput();

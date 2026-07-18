@@ -23,6 +23,11 @@ namespace uam::approval_modes
 	    kPlanApprovalMode,
 	});
 
+	inline constexpr auto kAgentModes = std::to_array<std::string_view>({
+	    kDefaultApprovalMode,
+	    kPlanApprovalMode,
+	});
+
 	inline constexpr auto kPersistedProviderDefaultApprovalModes = std::to_array<std::string_view>({
 	    kAcceptEditsApprovalMode,
 	    kPlanApprovalMode,
@@ -41,6 +46,18 @@ namespace uam::approval_modes
 	inline bool IsAppApprovalMode(const char* mode_id)
 	{
 		return IsAppApprovalMode(uam::strings::ViewOrEmpty(mode_id));
+	}
+
+	inline bool IsAgentMode(std::string_view mode_id)
+	{
+		return uam::ranges::Contains(kAgentModes, mode_id);
+	}
+
+	inline std::string EffectiveProviderMode(std::string_view agent_mode, std::string_view permission_mode)
+	{
+		if (uam::strings::TrimAsciiView(agent_mode) == kPlanApprovalMode) return kPlanApprovalMode;
+		if (uam::strings::TrimAsciiView(permission_mode) == kAcceptEditsApprovalMode) return kAcceptEditsApprovalMode;
+		return kDefaultApprovalMode;
 	}
 
 	inline bool IsPersistedProviderDefaultApprovalMode(std::string_view mode_id)

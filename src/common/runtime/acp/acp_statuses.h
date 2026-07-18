@@ -12,7 +12,14 @@ namespace uam::acp_statuses
 	inline constexpr const char* kInProgress = "in_progress";
 	inline constexpr const char* kCompleted = "completed";
 	inline constexpr const char* kFailed = "failed";
+	inline constexpr const char* kCancelled = "cancelled";
 	inline constexpr const char* kAutoApproved = "auto_approved";
+
+	inline bool IsActiveStatus(std::string_view status)
+	{
+		const std::string_view trimmed = uam::strings::TrimAsciiView(status);
+		return trimmed == kPending || trimmed == kRunning || trimmed == kInProgress;
+	}
 
 	inline bool IsFailedStatus(std::string_view status)
 	{

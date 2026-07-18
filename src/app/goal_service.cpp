@@ -67,7 +67,8 @@ namespace
 } // namespace
 
 bool GoalService::CreateGoal(AppState& app, const std::string& chat_id, const std::string& objective,
-                              int64_t token_budget, std::string* created_goal_id)
+                              int64_t token_budget, std::string* created_goal_id,
+							  std::string execution_owner, std::string provider_command)
 {
 	ChatSession* chat = FindChatMutable(app, chat_id);
 	if (chat == nullptr)
@@ -85,6 +86,8 @@ bool GoalService::CreateGoal(AppState& app, const std::string& chat_id, const st
 	goal.last_blocker.clear();
 	goal.created_at = uam::time::TimestampNow();
 	goal.updated_at = uam::time::TimestampNow();
+	goal.execution_owner = execution_owner == "provider" ? "provider" : "uam";
+	goal.provider_command = goal.execution_owner == "provider" ? uam::strings::Trim(provider_command) : "";
 
 	chat->goals.push_back(std::move(goal));
 	MarkDirty(app, chat_id);
@@ -95,6 +98,11 @@ bool GoalService::CreateGoal(AppState& app, const std::string& chat_id, const st
 	}
 
 	return true;
+}
+
+bool GoalService::IsProviderManaged(const Goal& goal)
+{
+	return goal.execution_owner == "provider" && !goal.provider_command.empty();
 }
 
 bool GoalService::UpdateGoalObjective(AppState& app, const std::string& goal_id, const std::string& objective)

@@ -18,6 +18,7 @@ import {
   normalizeAcpModelId,
   normalizeCodexReasoningEffort,
   normalizeCodexServiceTier,
+  normalizeMemoryLevel,
 } from './sanitizers'
 import {
   pendingCodexOptionsByChatId,
@@ -100,7 +101,8 @@ export function providersEquivalent(previous: Provider, next: Provider): boolean
     previous.supportsCli === next.supportsCli &&
     previous.supportsStructured === next.supportsStructured &&
     previous.structuredProtocol === next.structuredProtocol &&
-    previous.npmPackageName === next.npmPackageName
+	previous.npmPackageName === next.npmPackageName &&
+	previous.nativeGoalCommand === next.nativeGoalCommand
 }
 
 export function providerFromCppProvider(provider: CppProvider, previous: Provider | undefined): Provider {
@@ -115,6 +117,7 @@ export function providerFromCppProvider(provider: CppProvider, previous: Provide
     supportsStructured: provider.supportsStructured,
     structuredProtocol: provider.structuredProtocol,
     npmPackageName: provider.npmPackageName,
+	  nativeGoalCommand: provider.nativeGoalCommand,
   }
 
   if (previous) {
@@ -139,6 +142,7 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     (previous.autoApproveCommands ?? false) === (next.autoApproveCommands ?? false) &&
     (previous.commandSafetyTier ?? 'medium') === (next.commandSafetyTier ?? 'medium') &&
     (previous.memoryEnabled ?? true) === next.memoryEnabled &&
+    (previous.memoryLevel ?? ((previous.memoryEnabled ?? true) ? 'strict' : 'off')) === next.memoryLevel &&
     (previous.memoryLastProcessedMessageCount ?? 0) === next.memoryLastProcessedMessageCount &&
     (previous.memoryLastProcessedAt ?? '') === next.memoryLastProcessedAt &&
     (previous.workspaceDirectory ?? '') === (next.workspaceDirectory ?? '') &&
@@ -179,7 +183,8 @@ export function sessionFromCppChat(
     approvalMode: normalizeAcpApprovalMode(chat.approvalMode),
     autoApproveCommands: chat.autoApproveCommands ?? false,
     commandSafetyTier: normalizeCommandSafetyTier(chat.commandSafetyTier),
-    memoryEnabled: chat.memoryEnabled ?? true,
+    memoryLevel: normalizeMemoryLevel(chat.memoryLevel, chat.memoryEnabled ?? true),
+    memoryEnabled: normalizeMemoryLevel(chat.memoryLevel, chat.memoryEnabled ?? true) !== 'off',
     memoryLastProcessedMessageCount: chat.memoryLastProcessedMessageCount ?? 0,
     memoryLastProcessedAt: chat.memoryLastProcessedAt ?? '',
     workspaceDirectory: chat.workspaceDirectory ?? '',
@@ -407,6 +412,8 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     modesEquivalent(existing.availableModes, next.availableModes) &&
     existing.currentModeId === next.currentModeId &&
     modelsEquivalent(existing.availableModels, next.availableModels) &&
+    existing.modelsLoading === next.modelsLoading &&
+    existing.modelRefreshError === next.modelRefreshError &&
     existing.currentModelId === next.currentModelId &&
     turnEventsEquivalent(existing.turnEvents, next.turnEvents) &&
     existing.turnUserMessageIndex === next.turnUserMessageIndex &&
@@ -433,6 +440,7 @@ export function cliBindingsEquivalent(existing: CliBinding | undefined, next: Cl
     existing.processing === next.processing &&
     existing.readySinceLastSelect === next.readySinceLastSelect &&
     existing.active === next.active &&
+    existing.pendingSteer === next.pendingSteer &&
     existing.lastError === next.lastError
   )
 }
@@ -457,6 +465,7 @@ export function cliBindingFromCppChat(chat: CppChat, previous: CliBinding | unde
     processing,
     readySinceLastSelect: Boolean(chat.cliTerminal.readySinceLastSelect),
     active: lifecycleState === 'idle' && running,
+    pendingSteer: Boolean(chat.cliTerminal.pendingSteer),
     lastError: chat.cliTerminal.lastError ?? '',
   }
 
@@ -500,6 +509,8 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     availableModes: Array.isArray(acp?.availableModes) ? acp!.availableModes : [],
     currentModeId: normalizeAcpApprovalMode(acp?.currentModeId ?? chat.approvalMode),
     availableModels: Array.isArray(acp?.availableModels) ? acp!.availableModels : [],
+    modelsLoading: Boolean(acp?.modelsLoading),
+    modelRefreshError: acp?.modelRefreshError ?? '',
     currentModelId: normalizeAcpModelId(acp?.currentModelId ?? chat.modelId),
     turnEvents: Array.isArray(acp?.turnEvents) ? acp!.turnEvents : [],
     turnUserMessageIndex: typeof acp?.turnUserMessageIndex === 'number' ? acp.turnUserMessageIndex : -1,
@@ -758,6 +769,7 @@ export function applyPendingCodexOptions(sessions: Session[]): Session[] {
       return session
     }
     if ((session.reasoningEffort ?? '') === pending.reasoningEffort && (session.serviceTier ?? '') === pending.serviceTier) {
+      pendingCodexOptionsByChatId.delete(session.id)
       return session
     }
     changed = true

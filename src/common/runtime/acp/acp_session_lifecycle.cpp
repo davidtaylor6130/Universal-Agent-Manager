@@ -90,6 +90,7 @@ void ResetAcpRuntimeState(AcpSessionState& session)
 	session.load_session_supported = false;
 	session.processing = false;
 	session.cancel_requested = false;
+	session.cancel_requested_time_s = 0.0;
 	session.next_request_id = 1;
 	session.initialize_request_id = 0;
 	session.session_setup_request_id = 0;
@@ -215,6 +216,10 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	}
 
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
+	if (session.model_discovery_only && std::strcmp(runtime.AcpProtocolKind(), "codex-app-server") == 0)
+	{
+		return false;
+	}
 	const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
 	const std::string cwd = AcpWorkingDirectoryString(workspace_root);
 	const std::string resolved_resume_id = ResolvedAcpResumeIdForChat(app, chat);
@@ -239,7 +244,7 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	{
 		session.session_ready = true;
 		session.session_id = resolved_resume_id;
-		session.current_mode_id = chat.approval_mode.empty() ? uam::approval_modes::kDefaultApprovalMode : chat.approval_mode;
+		session.current_mode_id = uam::approval_modes::EffectiveProviderMode(chat.approval_mode, chat.command_safety_tier);
 		session.lifecycle_state = session.processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
 		return true;
 	}
@@ -452,6 +457,7 @@ void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_sta
 	session.prompt_request_id = 0;
 	session.processing = false;
 	session.cancel_requested = false;
+	session.cancel_requested_time_s = 0.0;
 	session.queued_prompt.clear();
 	session.current_assistant_message_index = -1;
 	session.codex_turn_id.clear();
@@ -473,6 +479,7 @@ bool QueueGoalInternalPrompt(AcpSessionState& session, ChatSession& chat, const 
 	AppendGoalLoopDiagnostic(session, review_turn ? "queue_review" : "queue_worker_continuation", session.goal_review_goal_id, prompt);
 	session.processing = true;
 	session.cancel_requested = false;
+	session.cancel_requested_time_s = 0.0;
 	session.current_assistant_message_index = -1;
 	session.turn_user_message_index = -1;
 	session.turn_assistant_message_index = -1;

@@ -16,6 +16,7 @@ namespace
 
 	constexpr auto kClaudeProviderPermissionModes = std::to_array<std::string_view>({
 	    uam::approval_modes::kDefaultApprovalMode,
+	    uam::approval_modes::kAcceptEditsApprovalMode,
 	    uam::approval_modes::kPlanApprovalMode,
 	});
 
@@ -35,7 +36,7 @@ namespace
 
 		if (!settings.provider_yolo_mode)
 		{
-			const std::string approval_mode = uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode);
+			const std::string approval_mode = uam::approval_modes::EffectiveProviderMode(chat.approval_mode, chat.command_safety_tier);
 			if (ShouldPassClaudePermissionMode(approval_mode))
 			{
 				uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--permission-mode", approval_mode);
@@ -103,7 +104,7 @@ std::vector<std::string> ClaudeCliProviderRuntime::BuildWorkerArgv(const Provide
 std::vector<std::string> ClaudeCliProviderRuntime::BuildStructuredLaunchArgv(const ProviderProfile&, const ChatSession& chat) const
 {
 	std::vector<std::string> argv = {"claude", "-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose"};
-	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--permission-mode", uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode));
+	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--permission-mode", uam::approval_modes::EffectiveProviderMode(chat.approval_mode, chat.command_safety_tier));
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", chat.model_id);
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--resume", chat.native_session_id);
 	return argv;

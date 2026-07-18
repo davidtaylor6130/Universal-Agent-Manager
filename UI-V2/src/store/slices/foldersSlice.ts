@@ -1,6 +1,6 @@
 import type { Folder } from '../../types/session'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope, MemoryScanCandidate } from '../../types/memory'
-import type { MarkdownStoreDraft, MarkdownStoreEntry } from '../../types/markdownStore'
+import type { MarkdownStoreConflictAction, MarkdownStoreDraft, MarkdownStoreEntry, MarkdownStoreImportCandidate, MarkdownStoreImportResult } from '../../types/markdownStore'
 import { sendToCEF, isCefContext, createRequestId } from '../../ipc/cefBridge'
 import { pendingRequestIdsByKey } from '../push/pushBuffers'
 import {
@@ -271,7 +271,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
           payload: { directory: trimmed },
         })
         if (!response.ok) {
-          set({ markdownStoreError: response.error ?? 'Failed to save Markdown Store directory.' })
+          set({ markdownStoreError: response.error ?? 'Failed to save Skills directory.' })
           return false
         }
         set({
@@ -336,7 +336,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
         if (!response.ok) {
           set({
             markdownStoreLoading: false,
-            markdownStoreError: response.error ?? 'Failed to load Markdown Store.',
+            markdownStoreError: response.error ?? 'Failed to load Skills.',
           })
           return false
         }
@@ -360,7 +360,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
           payload: draft,
         })
         if (!response.ok) {
-          set({ markdownStoreError: response.error ?? 'Failed to publish Markdown Store entry.' })
+          set({ markdownStoreError: response.error ?? 'Failed to publish skill.' })
           return false
         }
         return get().refreshMarkdownStore()
@@ -374,10 +374,90 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
         dateCreated: new Date().toISOString(),
         dateUpdated: new Date().toISOString(),
         preview: draft.body,
+        body: draft.body,
+        favorite: false,
+        sourceProvider: '',
+        sourcePath: '',
+        commandName: draft.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'skill',
+        group: '',
         filePath: `${get().markdownStoreDirectory}/${draft.title || Date.now()}.uam`,
       }
       set((state) => ({ markdownStoreEntries: [...state.markdownStoreEntries, synthetic] }))
       return true
+    },
+
+    updateMarkdownStoreEntry: async (entry: MarkdownStoreEntry, draft: MarkdownStoreDraft) => {
+      if (isCefContext()) {
+        const response = await sendToCEF<MarkdownStoreEntry>({
+          action: 'updateMarkdownStoreEntry',
+          payload: { filePath: entry.filePath, ...draft },
+        })
+        if (!response.ok) {
+          set({ markdownStoreError: response.error ?? 'Failed to save skill.' })
+          return false
+        }
+        return get().refreshMarkdownStore()
+      }
+      set((state) => ({
+        markdownStoreEntries: state.markdownStoreEntries.map((candidate) => candidate.filePath === entry.filePath
+          ? { ...candidate, ...draft, preview: draft.body, dateUpdated: new Date().toISOString() }
+          : candidate),
+      }))
+      return true
+    },
+
+    setMarkdownStoreFavorite: async (entry: MarkdownStoreEntry, favorite: boolean) => {
+      set((state) => ({
+        markdownStoreEntries: state.markdownStoreEntries.map((candidate) => candidate.filePath === entry.filePath ? { ...candidate, favorite } : candidate),
+      }))
+      if (isCefContext()) {
+        const response = await sendToCEF<MarkdownStoreEntry>({
+          action: 'setMarkdownStoreFavorite',
+          payload: { filePath: entry.filePath, favorite },
+        })
+        if (!response.ok) {
+          set((state) => ({
+            markdownStoreEntries: state.markdownStoreEntries.map((candidate) => candidate.filePath === entry.filePath ? { ...candidate, favorite: entry.favorite ?? false } : candidate),
+            markdownStoreError: response.error ?? 'Failed to update skill favorite.',
+          }))
+          return false
+        }
+        if (response.data) set((state) => ({
+          markdownStoreEntries: state.markdownStoreEntries.map((candidate) => candidate.filePath === entry.filePath ? response.data! : candidate),
+          markdownStoreError: '',
+        }))
+      }
+      return true
+    },
+
+    browseMarkdownStoreImport: async (kind: 'file' | 'folder') => {
+      if (!isCefContext()) return null
+      const response = await sendToCEF<{ selectedPath?: string }>({ action: 'browseMarkdownStoreImport', payload: { kind } })
+      const selected = response.ok ? response.data?.selectedPath?.trim() ?? '' : ''
+      if (!response.ok) set({ markdownStoreError: response.error ?? 'Failed to choose import source.' })
+      return selected || null
+    },
+
+    previewMarkdownStoreImports: async (options: { includeProviders?: boolean; paths?: string[] }) => {
+      if (!isCefContext()) return [] as MarkdownStoreImportCandidate[]
+      const response = await sendToCEF<{ candidates?: MarkdownStoreImportCandidate[] }>({ action: 'previewMarkdownStoreImports', payload: options })
+      if (!response.ok) {
+        set({ markdownStoreError: response.error ?? 'Failed to preview skill imports.' })
+        return []
+      }
+      set({ markdownStoreError: '' })
+      return response.data?.candidates ?? []
+    },
+
+    importMarkdownStoreEntries: async (imports: Array<{ sourceProvider: string; sourcePath: string; conflictAction: MarkdownStoreConflictAction }>) => {
+      if (!isCefContext()) return [] as MarkdownStoreImportResult[]
+      const response = await sendToCEF<{ results?: MarkdownStoreImportResult[] }>({ action: 'importMarkdownStoreEntries', payload: { imports } })
+      if (!response.ok) {
+        set({ markdownStoreError: response.error ?? 'Failed to import skills.' })
+        return []
+      }
+      await get().refreshMarkdownStore()
+      return response.data?.results ?? []
     },
 
     revealMarkdownStoreEntry: async (entry: MarkdownStoreEntry) => {
@@ -387,7 +467,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
           payload: { filePath: entry.filePath },
         })
         if (!response.ok) {
-          set({ markdownStoreError: response.error ?? 'Failed to reveal Markdown Store entry.' })
+          set({ markdownStoreError: response.error ?? 'Failed to reveal skill.' })
           return false
         }
       }
@@ -401,7 +481,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
           payload: { filePath: entry.filePath },
         })
         if (!response.ok) {
-          set({ markdownStoreError: response.error ?? 'Failed to open Markdown Store entry for editing.' })
+          set({ markdownStoreError: response.error ?? 'Failed to open skill for editing.' })
           return false
         }
       }
@@ -822,7 +902,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       }
 
       const sessions = get().sessions
-        .filter((session) => (session.memoryEnabled ?? true) && (get().messages[session.id]?.length ?? 0) > 0)
+        .filter((session) => (session.memoryLevel ?? ((session.memoryEnabled ?? true) ? 'strict' : 'off')) !== 'off' && (get().messages[session.id]?.length ?? 0) > 0)
         .map((session) => ({
           chatId: session.id,
           title: session.name,
@@ -831,6 +911,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
           providerId: session.providerId ?? GEMINI_CLI_PROVIDER_ID,
           messageCount: get().messages[session.id]?.length ?? 0,
           memoryEnabled: session.memoryEnabled ?? true,
+          memoryLevel: session.memoryLevel ?? ((session.memoryEnabled ?? true) ? 'strict' : 'off'),
           memoryLastProcessedAt: session.memoryLastProcessedAt ?? '',
           alreadyFullyProcessed: false,
         }))

@@ -31,8 +31,32 @@ namespace
 		entry_json["dateCreated"] = entry.date_created;
 		entry_json["dateUpdated"] = entry.date_updated;
 		entry_json["preview"] = entry.preview;
+		entry_json["body"] = entry.body;
+		entry_json["favorite"] = entry.favorite;
+		entry_json["sourceProvider"] = entry.source_provider;
+		entry_json["sourcePath"] = entry.source_path;
+		entry_json["commandName"] = entry.command_name;
+		entry_json["group"] = entry.group;
 		entry_json["filePath"] = uam::paths::Utf8PathString(entry.file_path);
 		return entry_json;
+	}
+
+	nlohmann::json SerializeImportCandidate(const MarkdownStoreService::ImportCandidate& candidate)
+	{
+		return {
+			{"id", candidate.id}, {"title", candidate.title}, {"maker", candidate.maker}, {"review", candidate.review},
+			{"preview", candidate.preview}, {"sourceProvider", candidate.source_provider},
+			{"sourcePath", uam::paths::Utf8PathString(candidate.source_path)}, {"supported", candidate.supported},
+			{"validationError", candidate.validation_error}, {"collisionPath", uam::paths::Utf8PathString(candidate.collision_path)},
+		};
+	}
+
+	MarkdownStoreService::ImportConflictAction ParseConflictAction(std::string value)
+	{
+		value = uam::strings::TrimAndLowerAscii(value);
+		if (value == "replace") return MarkdownStoreService::ImportConflictAction::Replace;
+		if (value == "separate") return MarkdownStoreService::ImportConflictAction::Separate;
+		return MarkdownStoreService::ImportConflictAction::Skip;
 	}
 } // namespace
 
@@ -110,6 +134,7 @@ void UamQueryHandler::HandleCreateMarkdownStoreEntry(CefRefPtr<CefBrowser> brows
 	draft.maker = payload.value("maker", "");
 	draft.review = payload.value("review", "");
 	draft.body = payload.value("body", "");
+	draft.group = payload.value("group", "");
 
 	MarkdownStoreService::Entry created;
 	std::string error;
@@ -121,6 +146,102 @@ void UamQueryHandler::HandleCreateMarkdownStoreEntry(CefRefPtr<CefBrowser> brows
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success(SerializeMarkdownStoreEntry(created).dump());
+}
+
+void UamQueryHandler::HandleUpdateMarkdownStoreEntry(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::filesystem::path root = MarkdownStoreService::NormalizeRoot(m_app.settings.markdown_store_directory);
+	MarkdownStoreService::Draft draft{payload.value("title", ""), payload.value("maker", ""), payload.value("review", ""), payload.value("body", ""), payload.value("group", "")};
+	MarkdownStoreService::Entry updated;
+	std::string error;
+	if (!MarkdownStoreService::UpdateEntry(root, payload.value("filePath", ""), draft, &updated, &error))
+	{
+		cb->Failure(400, FailureDetailOrFallback(error, "Failed to update Markdown Store entry."));
+		return;
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success(SerializeMarkdownStoreEntry(updated).dump());
+}
+
+void UamQueryHandler::HandleSetMarkdownStoreFavorite(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::filesystem::path root = MarkdownStoreService::NormalizeRoot(m_app.settings.markdown_store_directory);
+	MarkdownStoreService::Entry updated;
+	std::string error;
+	if (!MarkdownStoreService::SetFavorite(root, payload.value("filePath", ""), payload.value("favorite", false), &updated, &error))
+	{
+		cb->Failure(400, FailureDetailOrFallback(error, "Failed to update Markdown Store favorite."));
+		return;
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success(SerializeMarkdownStoreEntry(updated).dump());
+}
+
+void UamQueryHandler::HandleBrowseMarkdownStoreImport(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const PlatformPathBrowseTarget target = payload.value("kind", "file") == "folder" ? PlatformPathBrowseTarget::Directory : PlatformPathBrowseTarget::File;
+	const std::filesystem::path initial_path = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(payload.value("currentValue", ""));
+	std::string selected_path;
+	std::string error;
+	if (!PlatformServicesFactory::Instance().file_dialog_service.BrowsePath(target, initial_path, &selected_path, &error))
+	{
+		cb->Failure(500, FailureDetailOrFallback(error, "Failed to browse import source."));
+		return;
+	}
+	cb->Success(nlohmann::json{{"selectedPath", selected_path}}.dump());
+}
+
+void UamQueryHandler::HandlePreviewMarkdownStoreImports(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::filesystem::path root = MarkdownStoreService::NormalizeRoot(m_app.settings.markdown_store_directory);
+	std::vector<MarkdownStoreService::ImportSource> sources;
+	if (payload.value("includeProviders", false)) sources = MarkdownStoreService::DefaultImportSources();
+	if (const auto found = payload.find("paths"); found != payload.end() && found->is_array())
+	{
+		for (const auto& value : *found)
+		{
+			if (value.is_string()) sources.push_back({"manual", value.get<std::string>()});
+		}
+	}
+	RunAsyncCefQuery(cb, [root, sources = std::move(sources)]()
+	{
+		std::string error;
+		const auto candidates = MarkdownStoreService::PreviewImports(root, sources, &error);
+		if (!error.empty()) return AsyncFailure(400, error);
+		nlohmann::json values = nlohmann::json::array();
+		for (const auto& candidate : candidates) values.push_back(SerializeImportCandidate(candidate));
+		return AsyncSuccess(nlohmann::json{{"candidates", values}});
+	});
+}
+
+void UamQueryHandler::HandleImportMarkdownStoreEntries(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::filesystem::path root = MarkdownStoreService::NormalizeRoot(m_app.settings.markdown_store_directory);
+	std::vector<MarkdownStoreService::ImportRequest> requests;
+	if (const auto found = payload.find("imports"); found != payload.end() && found->is_array())
+	{
+		for (const auto& value : *found)
+		{
+			if (!value.is_object()) continue;
+			requests.push_back({value.value("sourceProvider", "manual"), value.value("sourcePath", ""), ParseConflictAction(value.value("conflictAction", "skip"))});
+		}
+	}
+	std::string error;
+	const auto results = MarkdownStoreService::ImportEntries(root, requests, &error);
+	if (!error.empty())
+	{
+		cb->Failure(400, error);
+		return;
+	}
+	nlohmann::json values = nlohmann::json::array();
+	for (const auto& result : results)
+	{
+		nlohmann::json value{{"sourcePath", uam::paths::Utf8PathString(result.source_path)}, {"status", result.status}, {"message", result.message}};
+		if (!result.entry.id.empty()) value["entry"] = SerializeMarkdownStoreEntry(result.entry);
+		values.push_back(std::move(value));
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success(nlohmann::json{{"results", values}}.dump());
 }
 
 void UamQueryHandler::HandleRevealMarkdownStoreEntry(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)

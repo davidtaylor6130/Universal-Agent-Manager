@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Target, MoreHorizontal, Check, Pause, Play, Trash2 } from 'lucide-react'
 import type { Goal } from '../../types/goal'
-import { StatusDot, Tooltip, type StatusTone } from '../ui'
+import { StatusDot, Tooltip, ViewportMenu, type StatusTone } from '../ui'
 
 interface GoalBannerProps {
   goal: Goal
@@ -49,6 +49,8 @@ function MenuItem({ icon, label, onClick, danger }: { icon: ReactNode; label: st
 export function GoalBanner({ goal, onComplete, onPause, onResume, onRemove }: GoalBannerProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const popupRef = useRef<HTMLDivElement>(null)
   const budgetDisplay = goal.tokenBudget ? `${goal.tokensUsed ?? 0}/${goal.tokenBudget}` : null
   const blockerDisplay = goal.status === 'blocked' && goal.lastBlocker ? goal.lastBlocker : ''
   const tone = statusTone(goal.status)
@@ -58,7 +60,8 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRemove }: Go
   useEffect(() => {
     if (!menuOpen) return
     const onDown = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false)
+      const target = e.target as Node
+      if (!menuRef.current?.contains(target) && !popupRef.current?.contains(target)) setMenuOpen(false)
     }
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuOpen(false) }
     document.addEventListener('mousedown', onDown)
@@ -84,6 +87,9 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRemove }: Go
         <StatusDot tone={tone} pulse={goal.status === 'active'} size={7} />
         {statusLabel(goal.status)}
       </span>
+	  <span className="text-[11px] flex-shrink-0" style={{ color: 'var(--text-3)' }}>
+		{goal.executionOwner === 'provider' ? 'Provider managed' : 'UAM managed'}
+	  </span>
 
       {/* Objective + optional blocker */}
       <div className="min-w-0 flex-1">
@@ -121,6 +127,7 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRemove }: Go
       <div ref={menuRef} className="relative flex-shrink-0">
         <Tooltip label="Goal actions">
           <button
+            ref={triggerRef}
             type="button"
             aria-label="Goal actions"
             className="flex items-center justify-center rounded-md transition-colors duration-100"
@@ -131,9 +138,12 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRemove }: Go
           </button>
         </Tooltip>
         {menuOpen && (
-          <div
-            className="absolute right-0 z-50 rounded-md py-1 animate-fade-in"
-            style={{ top: 30, minWidth: 150, background: 'var(--surface-up)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}
+          <ViewportMenu
+            ref={popupRef}
+            anchorRef={triggerRef}
+            align="end"
+            className="rounded-md py-1 animate-fade-in"
+            style={{ minWidth: 150, background: 'var(--surface-up)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}
           >
             {goal.status === 'active' && (
               <MenuItem icon={<Check size={14} aria-hidden />} label="Mark complete" onClick={() => { setMenuOpen(false); onComplete() }} />
@@ -145,7 +155,7 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRemove }: Go
               <MenuItem icon={<Play size={14} aria-hidden />} label="Resume goal" onClick={() => { setMenuOpen(false); onResume() }} />
             )}
             <MenuItem icon={<Trash2 size={14} aria-hidden />} label="Delete goal" danger onClick={() => { setMenuOpen(false); onRemove() }} />
-          </div>
+          </ViewportMenu>
         )}
       </div>
     </div>

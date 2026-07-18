@@ -12,7 +12,7 @@ namespace uam::codex
 {
 	inline constexpr auto kUuidHyphenPositions = std::to_array<std::size_t>({8, 13, 18, 23});
 	inline constexpr std::string_view kUuidUrnPrefix = "urn:uuid:";
-	inline constexpr auto kInvalidThreadIdErrorMarkers = std::to_array<std::string_view>({"invalid thread id", "urn:uuid"});
+	inline constexpr auto kInvalidThreadIdErrorMarkers = std::to_array<std::string_view>({"invalid thread id", "no rollout found for thread id", "urn:uuid"});
 
 	inline bool IsUuidHex(char ch)
 	{

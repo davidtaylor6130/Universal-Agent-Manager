@@ -317,6 +317,7 @@ void UamQueryHandler::HandleListMemoryScanCandidates(CefRefPtr<CefBrowser> /*bro
 		    {"providerId", candidate.provider_id},
 		    {"messageCount", candidate.message_count},
 		    {"memoryEnabled", candidate.memory_enabled},
+		    {"memoryLevel", candidate.memory_level},
 		    {"memoryLastProcessedAt", candidate.memory_last_processed_at},
 		    {"alreadyFullyProcessed", candidate.already_fully_processed},
 		});
@@ -346,4 +347,3 @@ void UamQueryHandler::HandleScanCurrentChats(CefRefPtr<CefBrowser> browser, cons
 	response["queuedCount"] = queued_count;
 	cb->Success(response.dump());
 }
-

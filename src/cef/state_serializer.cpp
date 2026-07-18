@@ -2,6 +2,7 @@
 
 #include "app/chat_domain_service.h"
 #include "app/provider_model_catalog_service.h"
+#include "common/memory/memory_levels.h"
 
 #include "common/chat/message_attachment_json.h"
 #include "common/constants/app_constants.h"
@@ -170,7 +171,8 @@ namespace uam
 			session_json["approvalMode"] = session.approval_mode;
 			session_json["autoApproveCommands"] = session.auto_approve_commands;
 			session_json["commandSafetyTier"] = session.command_safety_tier;
-			session_json["memoryEnabled"] = session.memory_enabled;
+			session_json["memoryLevel"] = uam::memory_levels::Normalize(session.memory_level, session.memory_enabled);
+			session_json["memoryEnabled"] = uam::memory_levels::IsEnabled(session.memory_level, session.memory_enabled);
 			session_json["memoryLastProcessedMessageCount"] = session.memory_last_processed_message_count;
 			session_json["memoryLastProcessedAt"] = session.memory_last_processed_at;
 			session_json["workspaceDirectory"] = std::string(workspace_directory);
@@ -252,6 +254,7 @@ namespace uam
 			    {"attachments", std::move(attachments)},
 			    {"goalMode", prompt.goal_mode},
 			    {"goalId", prompt.goal_id},
+			    {"prioritySteer", prompt.priority_steer},
 			};
 		}
 
@@ -448,6 +451,7 @@ namespace uam
 				terminal_json["processing"] = processing;
 				terminal_json["readySinceLastSelect"] = ready_since_last_select;
 				terminal_json["active"] = uam::CliTerminalLifecycleIsIdleLive(*terminal);
+				terminal_json["pendingSteer"] = !terminal->pending_steer_prompt.empty();
 				terminal_json["lastError"] = terminal->last_error;
 				return terminal_json;
 			}
@@ -460,6 +464,7 @@ namespace uam
 			terminal_json["processing"] = processing;
 			terminal_json["readySinceLastSelect"] = ready_since_last_select;
 			terminal_json["active"] = false;
+			terminal_json["pendingSteer"] = false;
 			terminal_json["lastError"] = "";
 			return terminal_json;
 		}
@@ -681,6 +686,8 @@ namespace uam
 			acp_json["availableModes"] = nlohmann::json::array();
 			acp_json["currentModeId"] = chat.approval_mode;
 			acp_json["availableModels"] = FallbackAcpModelsForChat(app, chat);
+			acp_json["modelsLoading"] = app.provider_model_catalog != nullptr && app.provider_model_catalog->IsDiscoveryPending(chat.provider_id);
+			acp_json["modelRefreshError"] = app.provider_model_catalog == nullptr ? std::string{} : app.provider_model_catalog->GetProviderRefreshError(chat.provider_id);
 			acp_json["currentModelId"] = FallbackAcpCurrentModelForChat(app, chat);
 			acp_json["turnEvents"] = nlohmann::json::array();
 			acp_json["turnUserMessageIndex"] = -1;
@@ -731,6 +738,8 @@ namespace uam
 			acp_json["availableModes"] = SerializeAcpModes(session->available_modes);
 			acp_json["currentModeId"] = uam::strings::NonEmptyOrFallback(session->current_mode_id, chat.approval_mode);
 			acp_json["availableModels"] = ProviderModelCatalogService::MergeAcpModelArrays(FallbackAcpModelsForChat(app, chat), SerializeAcpModels(session->available_models));
+			acp_json["modelsLoading"] = app.provider_model_catalog != nullptr && app.provider_model_catalog->IsDiscoveryPending(chat.provider_id);
+			acp_json["modelRefreshError"] = app.provider_model_catalog == nullptr ? std::string{} : app.provider_model_catalog->GetProviderRefreshError(chat.provider_id);
 			acp_json["currentModelId"] = uam::strings::NonEmptyOrFallback(session->current_model_id, FallbackAcpCurrentModelForChat(app, chat));
 			acp_json["turnEvents"] = SerializeAcpTurnEvents(session->turn_events);
 			acp_json["turnUserMessageIndex"] = session->turn_user_message_index;
@@ -783,6 +792,8 @@ namespace uam
 					goal_json["loopCount"] = goal.loop_count;
 					goal_json["createdAt"] = goal.created_at;
 					goal_json["updatedAt"] = goal.updated_at;
+					goal_json["executionOwner"] = goal.execution_owner == "provider" ? "provider" : "uam";
+					goal_json["providerCommand"] = goal.execution_owner == "provider" ? goal.provider_command : "";
 					goals_arr.push_back(std::move(goal_json));
 				}
 				chat_json["goals"] = goals_arr;
@@ -1134,6 +1145,8 @@ namespace uam
 				goal_json["loopCount"] = goal.loop_count;
 				goal_json["createdAt"] = goal.created_at;
 				goal_json["updatedAt"] = goal.updated_at;
+				goal_json["executionOwner"] = goal.execution_owner == "provider" ? "provider" : "uam";
+				goal_json["providerCommand"] = goal.execution_owner == "provider" ? goal.provider_command : "";
 				goals_arr.push_back(std::move(goal_json));
 			}
 			j["goals"] = goals_arr;
@@ -1190,6 +1203,7 @@ namespace uam
 		j["supportsCli"] = profile.supports_cli;
 		j["supportsStructured"] = profile.supports_structured;
 		j["structuredProtocol"] = profile.structured_protocol;
+		j["nativeGoalCommand"] = profile.native_goal_command;
 		
 		const std::string npm_package = GetNpmPackageNameForProvider(profile.id);
 		if (!npm_package.empty())

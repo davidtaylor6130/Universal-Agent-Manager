@@ -9,6 +9,7 @@
 
 /* ── Theme Tokens ─────────────────────────────────────────── */
 :root {
+  --provider-logo-codex-filter: none;
   --desktop-bg:      #e9edf5;
   --window-bg:       #f8f9fb;
   --bg:              #f7f8fa;
@@ -50,6 +51,7 @@
 }
 
 [data-theme="dark"] {
+  --provider-logo-codex-filter: invert(1);
   --desktop-bg:      #31435b;
   --window-bg:       #0c0d11;
   --bg:              #0f1117;
@@ -86,6 +88,20 @@
   --term-cursor:     #e8793a;
   --term-selection:  rgba(232,121,58,0.28);
 }
+
+/* Built-ins keep the same token contract as Dark/Light so every view, including
+   focus rings, selections, scrollbars, and xterm fallback, changes together. */
+[data-theme="midnight"] { --desktop-bg:#17233a; --window-bg:#080d18; --bg:#0b1020; --surface:#11182b; --surface-up:#1a2440; --surface-high:#243152; --border:rgba(191,219,254,.13); --border-bright:rgba(191,219,254,.23); --text:#e6eefc; --text-2:#a7b8d6; --text-3:#7183a6; --accent:#60a5fa; --accent-dim:rgba(96,165,250,.18); --accent-glow:rgba(96,165,250,.34); --teal:#5eead4; --teal-dim:rgba(94,234,212,.14); --blue:#60a5fa; --blue-dim:rgba(96,165,250,.16); --green:#86efac; --red:#fda4af; --yellow:#fde68a; --message-user-bg:#13284a; --message-assistant-bg:#11182b; --sidebar-bg:#0d1425; --sidebar-item-hover:rgba(230,238,252,.07); --sidebar-item-active:rgba(96,165,250,.22); --scroll-thumb:rgba(191,219,254,.22); --scroll-track:transparent; --term-bg:#070b15; --term-fg:#e6eefc; --term-cursor:#93c5fd; --term-selection:rgba(96,165,250,.34); --success-dim:rgba(134,239,172,.16); --warning-dim:rgba(253,230,138,.18); --error-dim:rgba(253,164,175,.17); }
+[data-theme="paper"] { --desktop-bg:#dfe7e5; --window-bg:#fdfcf8; --bg:#f8f7f1; --surface:#fffef9; --surface-up:#f0eee5; --surface-high:#e6e3d8; --border:rgba(58,65,55,.14); --border-bright:rgba(58,65,55,.25); --text:#26302a; --text-2:#5d6a60; --text-3:#899289; --accent:#0f766e; --accent-dim:rgba(15,118,110,.14); --accent-glow:rgba(15,118,110,.28); --teal:#0f766e; --teal-dim:rgba(15,118,110,.13); --blue:#2563eb; --blue-dim:rgba(37,99,235,.12); --green:#15803d; --red:#c2410c; --yellow:#a16207; --message-user-bg:#e8f5f1; --message-assistant-bg:#fffef9; --sidebar-bg:#f2f3ed; --sidebar-item-hover:rgba(38,48,42,.06); --sidebar-item-active:rgba(15,118,110,.15); --scroll-thumb:rgba(38,48,42,.22); --scroll-track:transparent; --term-bg:#eeeee7; --term-fg:#202820; --term-cursor:#0f766e; --term-selection:rgba(15,118,110,.24); --success-dim:rgba(21,128,61,.14); --warning-dim:rgba(161,98,7,.15); --error-dim:rgba(194,65,12,.14); }
+[data-theme="dusk"] { --desktop-bg:#3c354e; --window-bg:#1c1828; --bg:#211c2d; --surface:#292239; --surface-up:#352d48; --surface-high:#433957; --border:rgba(231,217,255,.12); --border-bright:rgba(231,217,255,.22); --text:#f1eafd; --text-2:#c3b8d4; --text-3:#897d9c; --accent:#c4a7ff; --accent-dim:rgba(196,167,255,.18); --accent-glow:rgba(196,167,255,.34); --teal:#7dd3c7; --teal-dim:rgba(125,211,199,.14); --blue:#a5b4fc; --blue-dim:rgba(165,180,252,.16); --green:#a7f3d0; --red:#fda4af; --yellow:#fde68a; --message-user-bg:#392c4d; --message-assistant-bg:#292239; --sidebar-bg:#241e32; --sidebar-item-hover:rgba(241,234,253,.07); --sidebar-item-active:rgba(196,167,255,.22); --scroll-thumb:rgba(231,217,255,.22); --scroll-track:transparent; --term-bg:#181321; --term-fg:#f1eafd; --term-cursor:#c4a7ff; --term-selection:rgba(196,167,255,.34); --success-dim:rgba(167,243,208,.16); --warning-dim:rgba(253,230,138,.18); --error-dim:rgba(253,164,175,.17); }
+[data-theme="aurora"] { --desktop-bg:#123a3e; --window-bg:#071d25; --bg:#09252c; --surface:#0d3038; --surface-up:#12414a; --surface-high:#18545d; --border:rgba(203,255,243,.13); --border-bright:rgba(203,255,243,.24); --text:#e1fff7; --text-2:#a4d9cf; --text-3:#669b95; --accent:#f472b6; --accent-dim:rgba(244,114,182,.19); --accent-glow:rgba(244,114,182,.36); --teal:#5eead4; --teal-dim:rgba(94,234,212,.16); --blue:#67e8f9; --blue-dim:rgba(103,232,249,.16); --green:#a7f3d0; --red:#fda4af; --yellow:#fde68a; --message-user-bg:#143c4a; --message-assistant-bg:#0d3038; --sidebar-bg:#0a2931; --sidebar-item-hover:rgba(225,255,247,.07); --sidebar-item-active:rgba(244,114,182,.23); --scroll-thumb:rgba(203,255,243,.22); --scroll-track:transparent; --term-bg:#061a20; --term-fg:#e1fff7; --term-cursor:#f9a8d4; --term-selection:rgba(244,114,182,.34); --success-dim:rgba(167,243,208,.16); --warning-dim:rgba(253,230,138,.18); --error-dim:rgba(253,164,175,.17); }
+[data-theme="contrast"] { --desktop-bg:#000; --window-bg:#000; --bg:#000; --surface:#000; --surface-up:#111; --surface-high:#222; --border:#fff; --border-bright:#fff; --text:#fff; --text-2:#fff; --text-3:#d9d9d9; --accent:#00ffff; --accent-dim:rgba(0,255,255,.32); --accent-glow:rgba(0,255,255,.65); --teal:#00ffff; --teal-dim:rgba(0,255,255,.28); --blue:#6ea8ff; --blue-dim:rgba(110,168,255,.28); --green:#75ff75; --red:#ff8a8a; --yellow:#ffff4d; --message-user-bg:#001f2a; --message-assistant-bg:#000; --sidebar-bg:#000; --sidebar-item-hover:#222; --sidebar-item-active:#004c59; --scroll-thumb:#fff; --scroll-track:#000; --term-bg:#000; --term-fg:#fff; --term-cursor:#00ffff; --term-selection:rgba(0,255,255,.48); --success-dim:rgba(117,255,117,.28); --warning-dim:rgba(255,255,77,.30); --error-dim:rgba(255,138,138,.30); }
+
+[data-theme="midnight"], [data-theme="dusk"], [data-theme="aurora"], [data-theme="contrast"] {
+  --provider-logo-codex-filter: invert(1);
+}
+
+.uam-provider-logo--codex { filter: var(--provider-logo-codex-filter); }
 
 /* ── Design System Scales (theme-independent) ─────────────────
    Redesign token layer. UI text is proportional sans; JetBrains Mono
@@ -1031,6 +1047,28 @@ summary,
 .uam-iconbtn.is-active { background: var(--accent-dim); color: var(--accent); }
 .uam-iconbtn--solid { background: var(--surface); border-color: var(--border-bright); }
 .uam-iconbtn--danger:hover:not(:disabled) { background: var(--error-dim); color: var(--error); }
+
+.uam-switch { display: inline-flex; align-items: center; gap: 9px; cursor: pointer; color: var(--text-2); }
+.uam-switch input { position: absolute; opacity: 0; pointer-events: none; }
+.uam-switch__track { position: relative; width: 34px; height: 19px; flex: 0 0 auto; border-radius: 999px; background: var(--surface-high); border: 1px solid var(--border-bright); transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease); }
+.uam-switch__thumb { position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%; background: var(--text-3); box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform 160ms var(--ease), background 160ms var(--ease); }
+.uam-switch input:checked + .uam-switch__track { background: var(--accent); border-color: var(--accent); }
+.uam-switch input:checked + .uam-switch__track .uam-switch__thumb { transform: translateX(15px); background: white; }
+.uam-switch input:focus-visible + .uam-switch__track { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent-glow); }
+.uam-switch input:disabled + .uam-switch__track, .uam-switch input:disabled ~ .uam-switch__label { opacity: .45; }
+.uam-switch__label { font-size: var(--fs-sm); transition: color var(--dur-fast) var(--ease); }
+
+.uam-dictation-wave { display: inline-flex; align-items: center; gap: 2px; height: 14px; }
+.uam-dictation-wave i { display: block; width: 2px; height: 5px; border-radius: 2px; background: currentColor; animation: uam-dictation-bar .72s ease-in-out infinite alternate; }
+.uam-dictation-wave i:nth-child(2) { animation-delay: .18s; }
+.uam-dictation-wave i:nth-child(3) { animation-delay: .36s; }
+.uam-dictation-wave--wide { gap: 3px; height: 18px; }
+.uam-dictation-wave--wide i { height: 6px; }
+.uam-dictation-wave--wide i:nth-child(4) { animation-delay: .12s; }
+.uam-dictation-wave--wide i:nth-child(5) { animation-delay: .3s; }
+.uam-dictation-wave--wide i:nth-child(6) { animation-delay: .06s; }
+.uam-dictation-wave--wide i:nth-child(7) { animation-delay: .24s; }
+@keyframes uam-dictation-bar { to { height: 13px; } }
 
 /* ── MenuSelect ─────────────────────────────────────────────── */
 .uam-menu-select__trigger {

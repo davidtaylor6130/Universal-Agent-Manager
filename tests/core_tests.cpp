@@ -411,13 +411,23 @@ UAM_TEST(MacShellActionsApplyReplacesOnlyUamQuickActionsWithoutDuplicates)
 
 UAM_TEST(SettingsNormalizationExposesKnownThemeIds)
 {
-	UAM_ASSERT_EQ(uam::settings::kThemeIds.size(), static_cast<std::size_t>(3));
+	UAM_ASSERT_EQ(uam::settings::kThemeIds.size(), static_cast<std::size_t>(8));
 	UAM_ASSERT(uam::settings::IsThemeId(uam::settings::kDarkThemeId));
 	UAM_ASSERT(uam::settings::IsThemeId(uam::settings::kLightThemeId));
 	UAM_ASSERT(uam::settings::IsThemeId(uam::settings::kSystemThemeId));
+	UAM_ASSERT(uam::settings::IsThemeId(uam::settings::kMidnightThemeId));
+	UAM_ASSERT(uam::settings::IsThemeId(uam::settings::kPaperThemeId));
+	UAM_ASSERT(uam::settings::IsThemeId(uam::settings::kDuskThemeId));
+	UAM_ASSERT(uam::settings::IsThemeId(uam::settings::kAuroraThemeId));
+	UAM_ASSERT(uam::settings::IsThemeId(uam::settings::kContrastThemeId));
 	UAM_ASSERT(!uam::settings::IsThemeId("unknown"));
 	UAM_ASSERT_EQ(uam::settings::NormalizeThemeId(" LIGHT "), std::string(uam::settings::kLightThemeId));
 	UAM_ASSERT_EQ(uam::settings::NormalizeThemeId(std::string_view("xx SYSTEM yy").substr(2, 8)), std::string(uam::settings::kSystemThemeId));
+	UAM_ASSERT_EQ(uam::settings::NormalizeThemeId(" MIDNIGHT "), std::string(uam::settings::kMidnightThemeId));
+	UAM_ASSERT_EQ(uam::settings::NormalizeThemeId("paper"), std::string(uam::settings::kPaperThemeId));
+	UAM_ASSERT_EQ(uam::settings::NormalizeThemeId("dusk"), std::string(uam::settings::kDuskThemeId));
+	UAM_ASSERT_EQ(uam::settings::NormalizeThemeId("aurora"), std::string(uam::settings::kAuroraThemeId));
+	UAM_ASSERT_EQ(uam::settings::NormalizeThemeId("contrast"), std::string(uam::settings::kContrastThemeId));
 	UAM_ASSERT_EQ(uam::settings::NormalizeThemeId("unknown"), std::string(uam::settings::kDarkThemeId));
 }
 
@@ -758,6 +768,7 @@ UAM_TEST(SharedAsciiStringUtilitiesBackStrictParsing)
 	UAM_ASSERT(!uam::ranges::InsertTrimmedNonEmptyString(unique_set, " \n "));
 	UAM_ASSERT(unique_set.contains("beta"));
 	UAM_ASSERT_EQ(uam::strings::SafeLine(std::string_view("xx  First\r\nSecond  yy").substr(2, 16), 32, true), std::string("First  Second"));
+	UAM_ASSERT_EQ(uam::strings::SafeLine("xxxx—", 6), std::string("xxxx"));
 	UAM_ASSERT_EQ(uam::strings::TrimAndLowerAscii(padded), std::string("yes"));
 	UAM_ASSERT_EQ(uam::strings::ToLowerAscii(std::string_view("xxMiXeDyy").substr(2, 5)), std::string("mixed"));
 	UAM_ASSERT_EQ(uam::strings::TrimAndLowerAscii(std::string_view("xx  CoDeX  yy").substr(2, 9)), std::string("codex"));
@@ -932,6 +943,9 @@ UAM_TEST(CommandSafetyClassifiesReadsWritesNetworkAndTierEnforcement)
 	UAM_ASSERT_EQ(ClassifyCommand("cat file.txt && rm file.txt"), RiskLevel::Warn);
 
 	UAM_ASSERT(!RequiresApproval(Tier::Low, RiskLevel::Allowed, false));
+	UAM_ASSERT(!RequiresApproval(Tier::Off, RiskLevel::WarnHigh, false));
+	UAM_ASSERT(!RequiresApproval(Tier::AcceptEdits, RiskLevel::WarnHigh, false));
+	UAM_ASSERT(!RequiresApproval(Tier::Yolo, RiskLevel::WarnHigh, false));
 	UAM_ASSERT(RequiresApproval(Tier::Low, RiskLevel::Warn, true));
 	UAM_ASSERT(!RequiresApproval(Tier::Medium, RiskLevel::Warn, true));
 	UAM_ASSERT(RequiresApproval(Tier::Medium, RiskLevel::Warn, false));
@@ -991,7 +1005,8 @@ UAM_TEST(SettingsStorePersistsMemorySettings)
 	const fs::path settings_file = temp.root / "settings.txt";
 
 	AppSettings settings;
-	settings.memory_enabled_default = false;
+	settings.memory_level_default = "balanced";
+	settings.memory_enabled_default = true;
 	settings.memory_idle_delay_seconds = 75;
 	settings.memory_recall_budget_bytes = 1536;
 	settings.goal_max_loop_iterations = 321;
@@ -1012,7 +1027,8 @@ UAM_TEST(SettingsStorePersistsMemorySettings)
 	const std::string expected_worker_provider_id = provider_build_config::FirstEnabledProviderId();
 #endif
 
-	UAM_ASSERT_EQ(loaded.memory_enabled_default, false);
+	UAM_ASSERT_EQ(loaded.memory_level_default, std::string("balanced"));
+	UAM_ASSERT_EQ(loaded.memory_enabled_default, true);
 	UAM_ASSERT_EQ(loaded.memory_idle_delay_seconds, 75);
 	UAM_ASSERT_EQ(loaded.memory_recall_budget_bytes, 1536);
 	UAM_ASSERT_EQ(loaded.goal_max_loop_iterations, 321);
@@ -1024,11 +1040,54 @@ UAM_TEST(SettingsStorePersistsMemorySettings)
 #endif
 
 	const fs::path decoded_settings_file = temp.root / "decoded-settings.txt";
-	UAM_ASSERT(uam::io::WriteTextFile(decoded_settings_file, "memory_worker_bindings=gemini-cli, CoDeX , sliced-model;bad-entry\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(decoded_settings_file, "memory_enabled_default=0\nmemory_worker_bindings=gemini-cli, CoDeX , sliced-model;bad-entry\n"));
 	AppSettings decoded;
 	SettingsStore::Load(decoded_settings_file, decoded, mode);
+	UAM_ASSERT_EQ(decoded.memory_level_default, std::string("off"));
+	UAM_ASSERT(!decoded.memory_enabled_default);
 	UAM_ASSERT_EQ(decoded.memory_worker_bindings["gemini-cli"].worker_provider_id, expected_worker_provider_id);
 	UAM_ASSERT_EQ(decoded.memory_worker_bindings["gemini-cli"].worker_model_id, std::string("sliced-model"));
+}
+
+UAM_TEST(VoiceInputSettingsPersistValidateAndParseServerResponses)
+{
+	TempDir temp("uam-voice-settings");
+	const fs::path settings_file = temp.root / "settings.txt";
+	AppSettings settings;
+	settings.voice_input_mode = "server";
+	settings.voice_input_server_base_url = "https://voice.example.test/";
+	settings.voice_input_server_endpoint = "/v1/audio/transcriptions";
+	settings.voice_input_server_model = "whisper-large-v3";
+	settings.voice_input_api_key_env = "UAM_VOICE_API_KEY";
+	UAM_ASSERT(SettingsStore::Save(settings_file, settings, CenterViewMode::CliConsole));
+
+	AppSettings loaded;
+	CenterViewMode mode = CenterViewMode::CliConsole;
+	SettingsStore::Load(settings_file, loaded, mode);
+	UAM_ASSERT_EQ(loaded.voice_input_mode, std::string("server"));
+	UAM_ASSERT_EQ(loaded.voice_input_server_base_url, std::string("https://voice.example.test/"));
+	UAM_ASSERT_EQ(loaded.voice_input_server_model, std::string("whisper-large-v3"));
+	UAM_ASSERT_EQ(loaded.voice_input_api_key_env, std::string("UAM_VOICE_API_KEY"));
+	UAM_ASSERT(ReadFile(settings_file).find("actual-secret") == std::string::npos);
+	const nlohmann::json frontend = uam::settings_frontend_json::SerializeCommonSettingsFields(loaded);
+	UAM_ASSERT_EQ(frontend.value("voiceInputMode", ""), std::string("server"));
+	UAM_ASSERT_EQ(frontend.value("voiceInputApiKeyEnv", ""), std::string("UAM_VOICE_API_KEY"));
+	UAM_ASSERT(frontend["voiceInputCapabilities"]["local"].value("supported", true) == false);
+
+	std::string error;
+	UAM_ASSERT(uam::voice_input::ValidateServerSettings("https://voice.example.test", "/v1/audio/transcriptions", "whisper-1", "OPENAI_API_KEY", &error));
+	UAM_ASSERT(uam::voice_input::ValidateServerSettings("http://localhost:8000", "/v1/audio/transcriptions", "whisper-1", "", &error));
+	UAM_ASSERT(!uam::voice_input::ValidateServerSettings("http://voice.example.test", "/v1/audio/transcriptions", "whisper-1", "OPENAI_API_KEY", &error));
+	UAM_ASSERT(!uam::voice_input::ValidateServerSettings("https://user:secret@voice.example.test", "/v1/audio/transcriptions", "whisper-1", "OPENAI_API_KEY", &error));
+	UAM_ASSERT(!uam::voice_input::ValidateServerSettings("https://voice.example.test", "v1/audio/transcriptions", "whisper-1", "OPENAI_API_KEY", &error));
+	UAM_ASSERT(!uam::voice_input::ValidateServerSettings("https://voice.example.test", "/v1/audio/transcriptions", "whisper-1", "bad-name", &error));
+	UAM_ASSERT_EQ(uam::voice_input::BuildServerUrl("https://voice.example.test/", "/v1/audio/transcriptions"), std::string("https://voice.example.test/v1/audio/transcriptions"));
+
+	std::string transcript;
+	UAM_ASSERT(uam::voice_input::ParseTranscriptResponse(R"({"text":" hello world "})", transcript, &error));
+	UAM_ASSERT_EQ(transcript, std::string("hello world"));
+	UAM_ASSERT(!uam::voice_input::ParseTranscriptResponse(R"({"error":"bad request"})", transcript, &error));
+	UAM_ASSERT(!uam::voice_input::ParseTranscriptResponse(R"({"text":""})", transcript, &error));
 }
 
 UAM_TEST(SettingsStorePersistsProviderChatDefaults)
@@ -1673,6 +1732,12 @@ UAM_TEST(AcpModelJsonParserHandlesCodexModelAliasesAndVisibility)
 	UAM_ASSERT_EQ(parsed->model.additional_speed_tiers.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(parsed->model.additional_speed_tiers[0], std::string("fast"));
 
+	model["modelId"] = "generic/reasoner";
+	const std::optional<uam::AcpModelState> generic = uam::acp_models::ParseAcpModelState(model);
+	UAM_ASSERT(generic.has_value());
+	UAM_ASSERT_EQ(generic->default_reasoning_effort, std::string("medium"));
+	UAM_ASSERT_EQ(generic->supported_reasoning_efforts.size(), static_cast<std::size_t>(2));
+
 	model["visibility"] = "hidden";
 	UAM_ASSERT(!uam::acp_models::ParseCodexModelEntry(model).has_value());
 
@@ -1697,6 +1762,12 @@ UAM_TEST(ApprovalModeHelpersPreserveAppAndProviderMappings)
 	UAM_ASSERT(IsAppApprovalMode(kDefaultApprovalMode));
 	UAM_ASSERT(IsAppApprovalMode(kAcceptEditsApprovalMode));
 	UAM_ASSERT(IsAppApprovalMode(kPlanApprovalMode));
+	UAM_ASSERT(IsAgentMode(kDefaultApprovalMode));
+	UAM_ASSERT(IsAgentMode(kPlanApprovalMode));
+	UAM_ASSERT(!IsAgentMode(kAcceptEditsApprovalMode));
+	UAM_ASSERT_EQ(EffectiveProviderMode(kDefaultApprovalMode, "off"), std::string(kDefaultApprovalMode));
+	UAM_ASSERT_EQ(EffectiveProviderMode(kDefaultApprovalMode, kAcceptEditsApprovalMode), std::string(kAcceptEditsApprovalMode));
+	UAM_ASSERT_EQ(EffectiveProviderMode(kPlanApprovalMode, kAcceptEditsApprovalMode), std::string(kPlanApprovalMode));
 	UAM_ASSERT(IsAppApprovalMode(std::string_view("xxacceptEditsyy").substr(2, 11)));
 	UAM_ASSERT(!IsAppApprovalMode("unsupported"));
 	UAM_ASSERT(IsPersistedProviderDefaultApprovalMode(kAcceptEditsApprovalMode));
@@ -1891,11 +1962,66 @@ UAM_TEST(ChatRepositoryMigratesLegacyYoloModeToAutoApproveCommands)
 	UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(loaded.front().approval_mode, std::string("default"));
 	UAM_ASSERT(loaded.front().auto_approve_commands);
+	UAM_ASSERT_EQ(loaded.front().command_safety_tier, std::string("yolo"));
 
 	UAM_ASSERT(ChatRepository::SaveChat(temp.root, loaded.front()));
 	const nlohmann::json rewritten_json = nlohmann::json::parse(ReadFile(legacy_file));
 	UAM_ASSERT_EQ(rewritten_json.value("approval_mode", ""), std::string("default"));
 	UAM_ASSERT(rewritten_json.value("auto_approve_commands", false));
+	UAM_ASSERT_EQ(rewritten_json.value("commandSafetyTier", ""), std::string("yolo"));
+}
+
+UAM_TEST(ChatRepositoryMigratesLegacyAcceptEditsAgentModeToPermissions)
+{
+	TempDir temp("uam-chat-accept-edits-migration");
+	const fs::path chats_dir = temp.root / "chats";
+	fs::create_directories(chats_dir);
+	const fs::path legacy_file = chats_dir / "legacy-accept-edits.json";
+
+	UAM_ASSERT(uam::io::WriteTextFile(legacy_file, R"({
+  "id": "legacy-accept-edits",
+  "provider_id": "claude-cli",
+  "approval_mode": "acceptEdits",
+  "title": "Legacy Accept Edits",
+  "created_at": "2026-01-01 00:00:00",
+  "updated_at": "2026-01-01 00:00:01",
+  "messages": []
+})"));
+
+	const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(loaded.front().approval_mode, std::string("default"));
+	UAM_ASSERT_EQ(loaded.front().command_safety_tier, std::string("acceptEdits"));
+}
+
+UAM_TEST(NativeHistoryRefreshPreservesIndependentModelControls)
+{
+	TempDir temp("uam-native-refresh-model-controls");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession local;
+	local.id = "chat-1";
+	local.provider_id = "codex-cli";
+	local.title = "Local";
+	local.model_id = "gpt-5.4";
+	local.reasoning_effort = "xhigh";
+	local.service_tier = "fast";
+	local.command_safety_tier = "medium";
+	local.created_at = "2026-01-01T00:00:00.000Z";
+	local.updated_at = "2026-01-01T00:00:01.000Z";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, local));
+
+	ChatSession native = local;
+	native.reasoning_effort.clear();
+	native.service_tier.clear();
+	native.command_safety_tier = "off";
+	std::vector<ChatSession> native_chats{native};
+	ChatHistorySyncService().ApplyLocalOverrides(app, native_chats, false);
+
+	UAM_ASSERT_EQ(native_chats.front().reasoning_effort, std::string("xhigh"));
+	UAM_ASSERT_EQ(native_chats.front().service_tier, std::string("fast"));
+	UAM_ASSERT_EQ(native_chats.front().command_safety_tier, std::string("medium"));
 }
 
 UAM_TEST(ChatRepositoryMigratesLegacyDirectoryMessageRoles)
@@ -1931,6 +2057,34 @@ UAM_TEST(ChatRepositoryMigratesLegacyDirectoryMessageRoles)
 	const nlohmann::json migrated_json = nlohmann::json::parse(ReadFile(temp.root / "chats" / "legacy-dir-roles.json"));
 	UAM_ASSERT_EQ(migrated_json["messages"][1].value("role", ""), std::string("assistant"));
 	UAM_ASSERT_EQ(migrated_json["messages"][2].value("role", ""), std::string("system"));
+}
+
+UAM_TEST(ChatRepositoryPersistsMemoryLevelAndMigratesLegacyBoolean)
+{
+	TempDir temp("uam-chat-memory-level");
+	ChatSession chat;
+	chat.id = "chat-memory-level";
+	chat.provider_id = "gemini-cli";
+	chat.title = "Memory Level";
+	chat.created_at = "2026-01-01T00:00:00.000Z";
+	chat.updated_at = "2026-01-01T00:00:01.000Z";
+	chat.memory_level = "open";
+	chat.memory_enabled = true;
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+
+	std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(loaded.front().memory_level, std::string("open"));
+	UAM_ASSERT(loaded.front().memory_enabled);
+
+	const fs::path path = AppPaths::UamChatFilePath(temp.root, chat.id);
+	nlohmann::json legacy = nlohmann::json::parse(ReadFile(path));
+	legacy.erase("memory_level");
+	legacy["memory_enabled"] = false;
+	UAM_ASSERT(uam::io::WriteTextFile(path, legacy.dump(2)));
+	loaded = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(loaded.front().memory_level, std::string("off"));
+	UAM_ASSERT(!loaded.front().memory_enabled);
 }
 
 UAM_TEST(ChatRepositoryRecoveryWarningDetectsMemoryMetadataMismatch)
@@ -2781,6 +2935,18 @@ UAM_TEST(ChatRepositoryPersistsCommandSafetyTierAndDefaultsToMedium)
 
 	std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(temp.root);
 	UAM_ASSERT_EQ(loaded.front().command_safety_tier, std::string("high"));
+	chat.command_safety_tier = "off";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	loaded = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(loaded.front().command_safety_tier, std::string("off"));
+	chat.command_safety_tier = "yolo";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	loaded = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(loaded.front().command_safety_tier, std::string("yolo"));
+	chat.command_safety_tier = "acceptEdits";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	loaded = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(loaded.front().command_safety_tier, std::string("acceptEdits"));
 
 	nlohmann::json persisted = nlohmann::json::parse(ReadFile(AppPaths::UamChatFilePath(temp.root, chat.id)));
 	persisted.erase("commandSafetyTier");
@@ -2975,6 +3141,104 @@ UAM_TEST(GitWorktreeServiceCreatesDiscardsAndPortsChanges)
 	UAM_ASSERT_EQ(app.chats.front().workspace_worktree_directory, std::string(""));
 	UAM_ASSERT_EQ(uam::paths::ResolveWorkspaceRootPath(app, app.chats.front()), uam::paths::AbsolutePathNoThrow(repo));
 	UAM_ASSERT(!fs::exists(second_worktree));
+}
+
+UAM_TEST(GitWorktreeServiceIsolatesSvnAndPlainFoldersWithManagedLocalGit)
+{
+	if (!GitAvailableForTests())
+	{
+		return;
+	}
+
+	TempDir temp("uam-managed-git-worktree");
+	const fs::path source = temp.root / "source";
+	fs::create_directories(source / ".svn");
+	fs::create_directories(source / ".UAM");
+	UAM_ASSERT(uam::io::WriteTextFile(source / "app.txt", "local baseline edit\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(source / "unrelated.txt", "original\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(source / ".svn" / "entries", "svn metadata\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(source / ".UAM" / "memory.md", "private UAM data\n"));
+
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatFolder folder;
+	folder.id = "folder";
+	folder.directory = source.string();
+	app.folders.push_back(folder);
+	ChatSession chat = ChatDomainService().CreateNewChat(folder.id, "codex-cli");
+	chat.id = "chat-managed-worktree";
+	chat.workspace_directory = source.string();
+	app.chats.push_back(chat);
+
+	uam::GitWorktreeService service;
+	uam::GitWorktreeOperationResult created = service.CreateForChat(app, app.chats.front());
+	UAM_ASSERT(created.ok);
+	UAM_ASSERT(created.status.managed_repository);
+	UAM_ASSERT(created.status.is_svn_workspace);
+	const fs::path svn_worktree = app.chats.front().workspace_worktree_directory;
+	const fs::path svn_repository = svn_worktree.parent_path() / ("managed-repository-" + uam::hashing::Hex64(uam::hashing::Fnv1a64(app.chats.front().id)));
+	UAM_ASSERT_EQ(ReadFile(svn_worktree / "app.txt"), std::string("local baseline edit\n"));
+	UAM_ASSERT(!fs::exists(svn_worktree / ".svn"));
+	UAM_ASSERT(!fs::exists(svn_worktree / ".UAM"));
+	const ProcessExecutionResult remotes = PlatformServicesFactory::Instance().process_service.ExecuteCommand("git -C " + ShellQuoteForTest(svn_worktree.string()) + " remote", 120000);
+	UAM_ASSERT(remotes.ok && remotes.exit_code == 0);
+	UAM_ASSERT(uam::strings::IsBlank(remotes.output));
+	ChatSession concurrent = ChatDomainService().CreateNewChat(folder.id, "codex-cli");
+	concurrent.id = "chat-managed-concurrent";
+	concurrent.workspace_directory = source.string();
+	app.chats.push_back(std::move(concurrent));
+	UAM_ASSERT(service.CreateForChat(app, app.chats.back()).ok);
+	const fs::path concurrent_worktree = app.chats.back().workspace_worktree_directory;
+	const fs::path concurrent_repository = concurrent_worktree.parent_path() / ("managed-repository-" + uam::hashing::Hex64(uam::hashing::Fnv1a64(app.chats.back().id)));
+	UAM_ASSERT(concurrent_repository != svn_repository);
+
+	UAM_ASSERT(uam::io::WriteTextFile(svn_worktree / "app.txt", "discarded change\n"));
+	UAM_ASSERT(service.DiscardChatChanges(app, app.chats.front()).ok);
+	UAM_ASSERT_EQ(ReadFile(source / "app.txt"), std::string("local baseline edit\n"));
+	UAM_ASSERT_EQ(ReadFile(source / "unrelated.txt"), std::string("original\n"));
+	UAM_ASSERT_EQ(ReadFile(source / ".svn" / "entries"), std::string("svn metadata\n"));
+	UAM_ASSERT(!fs::exists(svn_worktree));
+	UAM_ASSERT(!fs::exists(svn_repository));
+	UAM_ASSERT(fs::exists(concurrent_worktree));
+	UAM_ASSERT(fs::exists(concurrent_repository));
+	UAM_ASSERT(service.DiscardChatChanges(app, app.chats.back()).ok);
+	UAM_ASSERT(!fs::exists(concurrent_worktree));
+	UAM_ASSERT(!fs::exists(concurrent_repository));
+
+	std::error_code ec;
+	fs::remove_all(source / ".svn", ec);
+	UAM_ASSERT(!ec);
+	created = service.CreateForChat(app, app.chats.front());
+	UAM_ASSERT(created.ok);
+	UAM_ASSERT(created.status.managed_repository);
+	UAM_ASSERT(!created.status.is_svn_workspace);
+	const fs::path plain_worktree = app.chats.front().workspace_worktree_directory;
+	const fs::path plain_repository = plain_worktree.parent_path() / ("managed-repository-" + uam::hashing::Hex64(uam::hashing::Fnv1a64(app.chats.front().id)));
+	UAM_ASSERT(uam::io::WriteTextFile(plain_worktree / "app.txt", "ported committed change\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(plain_worktree / "new.txt", "new file\n"));
+	UAM_ASSERT(RunGitForTest(plain_worktree, "add -A"));
+	UAM_ASSERT(RunGitForTest(plain_worktree, "commit -m " + ShellQuoteForTest("agent commit")));
+	UAM_ASSERT(uam::io::WriteTextFile(source / "unrelated.txt", "unrelated source change\n"));
+	uam::GitWorktreeOperationResult ported = service.PortChatChanges(app, app.chats.front());
+	UAM_ASSERT(ported.ok);
+	UAM_ASSERT_EQ(ReadFile(source / "app.txt"), std::string("ported committed change\n"));
+	UAM_ASSERT_EQ(ReadFile(source / "new.txt"), std::string("new file\n"));
+	UAM_ASSERT_EQ(ReadFile(source / "unrelated.txt"), std::string("unrelated source change\n"));
+	UAM_ASSERT(!fs::exists(plain_worktree));
+	UAM_ASSERT(!fs::exists(plain_repository));
+
+	created = service.CreateForChat(app, app.chats.front());
+	UAM_ASSERT(created.ok);
+	const fs::path conflict_worktree = app.chats.front().workspace_worktree_directory;
+	UAM_ASSERT(uam::io::WriteTextFile(conflict_worktree / "app.txt", "agent version\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(source / "app.txt", "source version\n"));
+	const uam::GitWorktreeOperationResult conflicted = service.PortChatChanges(app, app.chats.front());
+	UAM_ASSERT(!conflicted.ok);
+	UAM_ASSERT(conflicted.message.find("Source changed after the isolation baseline") != std::string::npos);
+	UAM_ASSERT_EQ(ReadFile(source / "app.txt"), std::string("source version\n"));
+	UAM_ASSERT(fs::exists(conflict_worktree));
+	UAM_ASSERT(service.DiscardChatChanges(app, app.chats.front()).ok);
 }
 
 UAM_TEST(VcsCommitServiceDetectsGitSvnBothAndNone)
@@ -3473,6 +3737,7 @@ UAM_TEST(StatePatchSettingsIncludeChatDefaults)
 	app.settings.ui_theme = " LIGHT ";
 	app.settings.memory_idle_delay_seconds = 5;
 	app.settings.memory_recall_budget_bytes = 100000;
+	app.settings.memory_level_default = "balanced";
 	app.settings.goal_max_loop_iterations = -1;
 	app.settings.update_checks_enabled = false;
 	app.settings.update_last_checked_at = "2026-07-13T20:00:00.000Z";
@@ -3493,6 +3758,8 @@ UAM_TEST(StatePatchSettingsIncludeChatDefaults)
 	UAM_ASSERT_EQ(settings.value("theme", ""), std::string("light"));
 	UAM_ASSERT_EQ(settings.value("memoryIdleDelaySeconds", 0), uam::settings::kMinMemoryIdleDelaySeconds);
 	UAM_ASSERT_EQ(settings.value("memoryRecallBudgetBytes", 0), uam::settings::kMaxMemoryRecallBudgetBytes);
+	UAM_ASSERT_EQ(settings.value("memoryLevelDefault", ""), std::string("balanced"));
+	UAM_ASSERT(settings.value("memoryEnabledDefault", false));
 	UAM_ASSERT_EQ(settings.value("goalMaxLoopIterations", -1), 0);
 	UAM_ASSERT(!settings.value("updateChecksEnabled", true));
 	UAM_ASSERT_EQ(settings.value("updateLastCheckedAt", ""), std::string("2026-07-13T20:00:00.000Z"));
@@ -3504,6 +3771,8 @@ UAM_TEST(StatePatchSettingsIncludeChatDefaults)
 	UAM_ASSERT_EQ(settings["providerChatDefaults"]["codex-cli"].value("approvalMode", ""), std::string("plan"));
 	UAM_ASSERT_EQ(settings["providerChatDefaults"]["codex-cli"].value("reasoningEffort", ""), std::string("high"));
 	UAM_ASSERT_EQ(settings["providerChatDefaults"]["codex-cli"].value("serviceTier", ""), std::string("fast"));
+	UAM_ASSERT_EQ(settings["providerChatDefaults"]["codex-cli"].value("memoryLevel", ""), std::string("off"));
+	UAM_ASSERT(!settings["providerChatDefaults"]["codex-cli"].value("memoryEnabled", true));
 	UAM_ASSERT_EQ(settings["memoryWorkerBindings"]["codex-cli"].value("workerProviderId", ""), std::string("gemini-cli"));
 	UAM_ASSERT_EQ(settings["memoryWorkerBindings"]["codex-cli"].value("workerModelId", ""), std::string("worker-model"));
 	UAM_ASSERT_EQ(settings["editorFileAssociations"].size(), static_cast<std::size_t>(1));
@@ -3947,6 +4216,7 @@ UAM_TEST(CodexThreadIdValidatorAcceptsOnlyUuidThreadIds)
 	UAM_ASSERT(uam::IsValidCodexThreadIdForTests("urn:uuid:6a6f0f3b-1a0b-4a9c-8a01-111111111111"));
 	UAM_ASSERT_EQ(uam::codex::ValidThreadIdOrEmpty(std::string_view("xx 6a6f0f3b-1a0b-4a9c-8a01-111111111111 yy").substr(2, 38)), std::string("6a6f0f3b-1a0b-4a9c-8a01-111111111111"));
 	UAM_ASSERT(uam::codex::ErrorLooksLikeInvalidThreadId(std::string_view("xxInvalid thread idyy").substr(2, 17)));
+	UAM_ASSERT(uam::codex::ErrorLooksLikeInvalidThreadId("no rollout found for thread id 6a6f0f3b-1a0b-4a9c-8a01-111111111111"));
 	UAM_ASSERT(!uam::IsValidCodexThreadIdForTests(""));
 	UAM_ASSERT(!uam::IsValidCodexThreadIdForTests("chat-1"));
 	UAM_ASSERT(!uam::IsValidCodexThreadIdForTests("native-abc"));
@@ -4099,6 +4369,7 @@ UAM_TEST(ClaudeCliInteractiveArgvUsesResumeModelModeAndFlags)
 {
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 	ProviderProfile profile = ProviderProfileStore::DefaultClaudeProfile();
+	UAM_ASSERT_EQ(profile.native_goal_command, std::string("/goal"));
 	AppSettings settings;
 	settings.provider_yolo_mode = false;
 	settings.provider_extra_flags = "--add-dir ../shared";
@@ -4132,7 +4403,9 @@ UAM_TEST(ClaudeCliInteractiveArgvUsesResumeModelModeAndFlags)
 
 	chat.approval_mode = " acceptEdits ";
 	const std::vector<std::string> accept_edits = ProviderRuntime::BuildInteractiveArgv(profile, chat, AppSettings{});
-	UAM_ASSERT_EQ(std::ranges::find(accept_edits, "--permission-mode"), accept_edits.end());
+	const auto default_permission = std::ranges::find(accept_edits, "--permission-mode");
+	UAM_ASSERT(default_permission != accept_edits.end());
+	UAM_ASSERT_EQ(*(default_permission + 1), std::string("default"));
 
 	profile.interactive_command = "claude --debug-shell";
 	chat.native_session_id.clear();
@@ -4149,13 +4422,18 @@ UAM_TEST(ClaudeCliInteractiveArgvSupportsAcceptEditsMode)
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 	ChatSession chat;
 	chat.provider_id = "claude-cli";
-	chat.approval_mode = "acceptEdits";
+	chat.approval_mode = "default";
+	chat.command_safety_tier = "acceptEdits";
 
 	const std::vector<std::string> argv = uam::BuildAcpLaunchArgvForTests(chat);
 	UAM_ASSERT_EQ(argv.size(), static_cast<std::size_t>(9));
 	UAM_ASSERT_EQ(argv[0], std::string("claude"));
 	UAM_ASSERT_EQ(argv[7], std::string("--permission-mode"));
 	UAM_ASSERT_EQ(argv[8], std::string("acceptEdits"));
+
+	chat.approval_mode = "plan";
+	const std::vector<std::string> plan_argv = uam::BuildAcpLaunchArgvForTests(chat);
+	UAM_ASSERT_EQ(plan_argv[8], std::string("plan"));
 #endif
 }
 
@@ -5889,6 +6167,7 @@ UAM_TEST(ProviderCancelStrategyUsesWireMessageOrStopFallback)
 {
 	uam::AcpSessionState session;
 	session.session_id = "session-1";
+	session.codex_turn_id = "turn-1";
 	std::string method;
 
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
@@ -5901,6 +6180,29 @@ UAM_TEST(ProviderCancelStrategyUsesWireMessageOrStopFallback)
 	const nlohmann::json gemini_cancel = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kGeminiCli).OnAcpBuildCancel(session, 2, method);
 	UAM_ASSERT(gemini_cancel.is_object());
 	UAM_ASSERT_EQ(gemini_cancel.value("method", ""), std::string("session/cancel"));
+	UAM_ASSERT(method.empty());
+#endif
+
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	const nlohmann::json codex_cancel = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kCodexCli).OnAcpBuildCancel(session, 3, method);
+	UAM_ASSERT(codex_cancel.is_object());
+	UAM_ASSERT_EQ(codex_cancel.value("method", ""), std::string("turn/interrupt"));
+	UAM_ASSERT_EQ(codex_cancel.value("id", 0), 3);
+	UAM_ASSERT_EQ(method, std::string("turn/interrupt"));
+#endif
+
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	const nlohmann::json opencode_cancel = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kOpenCodeCli).OnAcpBuildCancel(session, 4, method);
+	UAM_ASSERT(opencode_cancel.is_object());
+	UAM_ASSERT_EQ(opencode_cancel.value("method", ""), std::string("session/cancel"));
+	UAM_ASSERT(method.empty());
+#endif
+
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	const nlohmann::json copilot_cancel = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kCopilotCli).OnAcpBuildCancel(session, 5, method);
+	UAM_ASSERT(copilot_cancel.is_object());
+	UAM_ASSERT_EQ(copilot_cancel.value("method", ""), std::string("session/cancel"));
+	UAM_ASSERT(method.empty());
 #endif
 }
 
@@ -6553,10 +6855,18 @@ UAM_TEST(MarkdownStoreCreatesListsAndValidatesUamFiles)
 	UAM_ASSERT_EQ(created.file_path.extension().string(), std::string(".uam"));
 
 	error = "stale";
-	const std::vector<MarkdownStoreService::Entry> entries = MarkdownStoreService::ListEntries(root, &error);
+	std::vector<MarkdownStoreService::Entry> entries = MarkdownStoreService::ListEntries(root, &error);
 	UAM_ASSERT(error.empty());
 	UAM_ASSERT_EQ(entries.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(entries.front().title, std::string("Release Notes"));
+	UAM_ASSERT(uam::io::WriteTextFile(root / "grouped.uam", "---\ntitle: Grouped\nfavorite: true\ngroup: Workflows\n---\n\n# Grouped\n"));
+	entries = MarkdownStoreService::ListEntries(root, &error);
+	const auto grouped = std::find_if(entries.begin(), entries.end(), [](const MarkdownStoreService::Entry& entry) { return entry.title == "Grouped"; });
+	UAM_ASSERT(grouped != entries.end());
+	UAM_ASSERT_EQ(grouped->group, std::string("Workflows"));
+	MarkdownStoreService::Entry grouped_favorite;
+	UAM_ASSERT(MarkdownStoreService::SetFavorite(root, grouped->file_path.string(), false, &grouped_favorite, &error));
+	UAM_ASSERT_EQ(grouped_favorite.group, std::string("Workflows"));
 
 	fs::path normalized_file;
 	error = "stale";
@@ -6579,6 +6889,120 @@ UAM_TEST(MarkdownStoreCreatesListsAndValidatesUamFiles)
 	UAM_ASSERT(!MarkdownStoreService::CreateEntry(root, invalid_draft, &stale_entry, &error));
 	UAM_ASSERT(stale_entry.id.empty());
 	UAM_ASSERT(stale_entry.file_path.empty());
+}
+
+UAM_TEST(MarkdownStoreImportPreviewKeepsTruncatedUtf8Valid)
+{
+	TempDir temp("uam-markdown-import-utf8");
+	const fs::path root = temp.root / "store";
+	const fs::path source = temp.root / "skill.md";
+	fs::create_directories(root);
+	UAM_ASSERT(uam::io::WriteTextFile(source, "# UTF-8\n\n" + std::string(319, 'x') + "— trailing text\n"));
+	std::string error;
+	const auto preview = MarkdownStoreService::PreviewImports(root, {{"codex", source}}, &error);
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(preview.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(preview.front().supported);
+	UAM_ASSERT_EQ(preview.front().preview, std::string(319, 'x'));
+}
+
+UAM_TEST(MarkdownStoreImportsEditsFavoritesAndResolvesConflictsWithoutChangingSources)
+{
+	TempDir temp("uam-markdown-library");
+	const fs::path root = temp.root / "store";
+	const fs::path sources_root = temp.root / "provider-sources";
+	fs::create_directories(root);
+	const std::vector<std::string> providers{"codex", "claude-code", "gemini-cli", "opencode", "github-copilot"};
+	std::vector<MarkdownStoreService::ImportSource> sources;
+	std::map<fs::path, std::string> original_source_text;
+	for (std::size_t index = 0; index < providers.size(); ++index)
+	{
+		const fs::path directory = sources_root / providers[index];
+		fs::create_directories(directory);
+		const fs::path path = directory / "skill.md";
+		const std::string text = "---\ntitle: " + providers[index] + " Skill\nmaker: CLI\nreview: Imported summary\n---\n\n# Instructions\n\nRun safe workflow " + std::to_string(index) + ".\n";
+		UAM_ASSERT(uam::io::WriteTextFile(path, text));
+		original_source_text[path] = text;
+		sources.push_back({providers[index], directory});
+	}
+	const fs::path unsupported = sources_root / "codex" / "ignored.txt";
+	UAM_ASSERT(uam::io::WriteTextFile(unsupported, "never execute this"));
+	original_source_text[unsupported] = "never execute this";
+
+	std::string error;
+	const auto preview = MarkdownStoreService::PreviewImports(root, sources, &error);
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(preview.size(), static_cast<std::size_t>(6));
+	UAM_ASSERT_EQ(std::ranges::count_if(preview, [](const auto& candidate) { return candidate.supported; }), static_cast<std::ptrdiff_t>(5));
+	UAM_ASSERT_EQ(std::ranges::count_if(preview, [](const auto& candidate) { return !candidate.supported && !candidate.validation_error.empty(); }), static_cast<std::ptrdiff_t>(1));
+
+	std::vector<MarkdownStoreService::ImportRequest> requests;
+	for (const auto& candidate : preview)
+	{
+		if (candidate.supported) requests.push_back({candidate.source_provider, candidate.source_path, MarkdownStoreService::ImportConflictAction::Separate});
+	}
+	const auto imported = MarkdownStoreService::ImportEntries(root, requests, &error);
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(imported.size(), static_cast<std::size_t>(5));
+	UAM_ASSERT(std::ranges::all_of(imported, [](const auto& result) { return result.status == "imported" && result.entry.file_path.extension() == ".uam"; }));
+	for (const auto& [path, expected] : original_source_text)
+	{
+		std::string actual;
+		UAM_ASSERT(uam::io::TryReadTextFile(path, actual));
+		UAM_ASSERT_EQ(actual, expected);
+	}
+
+	auto entries = MarkdownStoreService::ListEntries(root, &error);
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(entries.size(), static_cast<std::size_t>(5));
+	UAM_ASSERT(std::ranges::all_of(entries, [](const auto& entry) { return !entry.source_provider.empty() && !entry.source_path.empty() && !entry.command_name.empty() && !entry.body.empty(); }));
+	std::set<std::string> commands;
+	for (const auto& entry : entries) UAM_ASSERT(commands.insert(entry.command_name).second);
+
+	MarkdownStoreService::Entry favorite_entry;
+	UAM_ASSERT(MarkdownStoreService::SetFavorite(root, entries.front().file_path.string(), true, &favorite_entry, &error));
+	UAM_ASSERT(favorite_entry.favorite);
+	const std::string original_created = favorite_entry.date_created;
+	const std::string original_command = favorite_entry.command_name;
+	const std::string original_provenance = favorite_entry.source_path;
+	MarkdownStoreService::Draft edited{favorite_entry.title + " Edited", "Editor", "Updated summary", "# Updated\n\nEdited body."};
+	UAM_ASSERT(MarkdownStoreService::UpdateEntry(root, favorite_entry.file_path.string(), edited, &favorite_entry, &error));
+	UAM_ASSERT_EQ(favorite_entry.date_created, original_created);
+	UAM_ASSERT_EQ(favorite_entry.command_name, original_command);
+	UAM_ASSERT_EQ(favorite_entry.source_path, original_provenance);
+	UAM_ASSERT(favorite_entry.favorite);
+	UAM_ASSERT(favorite_entry.body.find("Edited body.") != std::string::npos);
+
+	std::string before_failed_save;
+	UAM_ASSERT(uam::io::TryReadTextFile(favorite_entry.file_path, before_failed_save));
+	MarkdownStoreService::Draft invalid{"Invalid", "", "", ""};
+	UAM_ASSERT(!MarkdownStoreService::UpdateEntry(root, favorite_entry.file_path.string(), invalid, nullptr, &error));
+	std::string after_failed_save;
+	UAM_ASSERT(uam::io::TryReadTextFile(favorite_entry.file_path, after_failed_save));
+	UAM_ASSERT_EQ(after_failed_save, before_failed_save);
+
+	const fs::path collision_source = sources_root / "collision.md";
+	const std::string collision_text = "# " + favorite_entry.title + "\n\nReplacement body.\n";
+	UAM_ASSERT(uam::io::WriteTextFile(collision_source, collision_text));
+	const auto collision_preview = MarkdownStoreService::PreviewImports(root, {{favorite_entry.source_provider, collision_source}}, &error);
+	UAM_ASSERT_EQ(collision_preview.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(!collision_preview.front().collision_path.empty());
+	const std::size_t before_collision_count = MarkdownStoreService::ListEntries(root).size();
+	const auto skipped = MarkdownStoreService::ImportEntries(root, {{favorite_entry.source_provider, collision_source, MarkdownStoreService::ImportConflictAction::Skip}}, &error);
+	UAM_ASSERT_EQ(skipped.front().status, std::string("skipped"));
+	UAM_ASSERT_EQ(MarkdownStoreService::ListEntries(root).size(), before_collision_count);
+	const auto replaced = MarkdownStoreService::ImportEntries(root, {{favorite_entry.source_provider, collision_source, MarkdownStoreService::ImportConflictAction::Replace}}, &error);
+	UAM_ASSERT_EQ(replaced.front().status, std::string("imported"));
+	UAM_ASSERT(replaced.front().entry.favorite);
+	UAM_ASSERT_EQ(replaced.front().entry.command_name, original_command);
+	UAM_ASSERT(replaced.front().entry.body.find("Replacement body") != std::string::npos);
+	const auto separate = MarkdownStoreService::ImportEntries(root, {{"manual", collision_source, MarkdownStoreService::ImportConflictAction::Separate}}, &error);
+	UAM_ASSERT_EQ(separate.front().status, std::string("imported"));
+	UAM_ASSERT(separate.front().entry.command_name != replaced.front().entry.command_name);
+	UAM_ASSERT_EQ(MarkdownStoreService::ListEntries(root).size(), before_collision_count + 1);
+	std::string collision_source_after;
+	UAM_ASSERT(uam::io::TryReadTextFile(collision_source, collision_source_after));
+	UAM_ASSERT_EQ(collision_source_after, collision_text);
 }
 
 UAM_TEST(MoveChatToFolderHandlesMissingWorkspacePaths)

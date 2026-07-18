@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef } from 'react'
-import { X, ChevronDown, ChevronUp } from 'lucide-react'
+import { FolderPlus, TriangleAlert, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { DEFAULT_PROVIDER_ID, providerRuntimeDescription } from '../../utils/providerMetadata'
+import { DEFAULT_PROVIDER_ID, providerCapabilities, providerRuntimeDescription } from '../../utils/providerMetadata'
 import { Button, IconButton, MenuSelect } from '../ui'
-import { buildModelOptions } from '../chat/modelOptions'
+import { buildCodexReasoningOptions, buildModelOptions, reasoningEffortForModel, selectedRuntimeModel } from '../chat/modelOptions'
 
 export function NewChatModal() {
   const addSession = useAppStore((s) => s.addSession)
@@ -14,11 +14,16 @@ export function NewChatModal() {
   const providers = useAppStore(useShallow((s) => s.providers))
   const defaultNewChatProviderId = useAppStore((s) => s.defaultNewChatProviderId)
   const providerChatDefaults = useAppStore(useShallow((s) => s.providerChatDefaults))
+	const sessions = useAppStore(useShallow((s) => s.sessions))
+	const activeSessionId = useAppStore((s) => s.activeSessionId)
+	const acpBindingBySessionId = useAppStore(useShallow((s) => s.acpBindingBySessionId))
+  const discoverProviderModels = useAppStore((s) => s.discoverProviderModels)
+  const addFolder = useAppStore((s) => s.addFolder)
+  const browseFolderDirectory = useAppStore((s) => s.browseFolderDirectory)
   const newChatFolderId = useAppStore((s) => s.newChatFolderId)
-  const initialFolderId =
-    newChatFolderId !== null && folders.some((folder) => folder.id === newChatFolderId)
-      ? newChatFolderId
-      : null
+  const activeFolderId = sessions.find((session) => session.id === activeSessionId)?.folderId ?? null
+  const initialFolderId = [newChatFolderId, activeFolderId, folders[0]?.id]
+    .find((candidate) => candidate !== null && candidate !== undefined && folders.some((folder) => folder.id === candidate)) ?? null
   const [name, setName] = useState('')
   const [folderId, setFolderId] = useState<string | null>(initialFolderId)
   const initialProviderId =
@@ -27,11 +32,11 @@ export function NewChatModal() {
       : providers[0]?.id ?? DEFAULT_PROVIDER_ID
   const [providerId, setProviderId] = useState(initialProviderId)
   const [modelId, setModelId] = useState(providerChatDefaults[initialProviderId]?.modelId ?? '')
-  const [folderMenuOpen, setFolderMenuOpen] = useState(false)
-  const [providerMenuOpen, setProviderMenuOpen] = useState(false)
+  const [reasoningEffort, setReasoningEffort] = useState(providerChatDefaults[initialProviderId]?.reasoningEffort ?? '')
+  const [creatingWorkspace, setCreatingWorkspace] = useState(false)
+  const [workspaceError, setWorkspaceError] = useState('')
   const nameRef = useRef<HTMLInputElement>(null)
-  const folderMenuRef = useRef<HTMLDivElement>(null)
-  const providerMenuRef = useRef<HTMLDivElement>(null)
+  const discoveryRequestedRef = useRef(new Set<string>())
 
   useEffect(() => {
     nameRef.current?.focus()
@@ -40,15 +45,14 @@ export function NewChatModal() {
   useEffect(() => {
     if (folders.length === 0) {
       if (folderId !== null) setFolderId(null)
-      if (folderMenuOpen) setFolderMenuOpen(false)
       return
     }
 
     const folderExists = folderId !== null && folders.some((f) => f.id === folderId)
     if (!folderExists) {
-      setFolderId(null)
+      setFolderId(folders[0].id)
     }
-  }, [folders, folderId, folderMenuOpen])
+  }, [folders, folderId])
 
   useEffect(() => {
     if (newChatFolderId === null) return
@@ -63,6 +67,7 @@ export function NewChatModal() {
       const nextProviderId = providers.some((provider) => provider.id === defaultNewChatProviderId) ? defaultNewChatProviderId : providers[0].id
       setProviderId(nextProviderId)
       setModelId(providerChatDefaults[nextProviderId]?.modelId ?? '')
+	  setReasoningEffort(providerChatDefaults[nextProviderId]?.reasoningEffort ?? '')
     }
   }, [providers, providerId, defaultNewChatProviderId, providerChatDefaults])
 
@@ -72,37 +77,12 @@ export function NewChatModal() {
       if (e.key === 'Escape') {
         if (e.defaultPrevented || (e.target instanceof Element && e.target.closest('[role="listbox"]'))) return
 
-        if (providerMenuOpen) {
-          setProviderMenuOpen(false)
-          return
-        }
-
-        if (folderMenuOpen) {
-          setFolderMenuOpen(false)
-          return
-        }
-
         setNewChatModalOpen(false)
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [folderMenuOpen, providerMenuOpen, setNewChatModalOpen])
-
-  useEffect(() => {
-    const handlePointerDown = (event: MouseEvent) => {
-      if (folderMenuOpen && folderMenuRef.current && event.target instanceof Node && !folderMenuRef.current.contains(event.target)) {
-        setFolderMenuOpen(false)
-      }
-
-      if (providerMenuOpen && providerMenuRef.current && event.target instanceof Node && !providerMenuRef.current.contains(event.target)) {
-        setProviderMenuOpen(false)
-      }
-    }
-
-    window.addEventListener('mousedown', handlePointerDown)
-    return () => window.removeEventListener('mousedown', handlePointerDown)
-  }, [folderMenuOpen, providerMenuOpen])
+  }, [setNewChatModalOpen])
 
   const handleCreate = () => {
     if (folderId === null || !folders.some((folder) => folder.id === folderId)) {
@@ -110,14 +90,37 @@ export function NewChatModal() {
     }
 
     const n = name.trim() || 'New chat'
-    addSession(n, folderId, providerId, modelId)
+	addSession(n, folderId, providerId, modelId, reasoningEffortForModel(cachedAcp, modelId, reasoningEffort))
   }
 
   const selectedFolder =
     (folderId !== null ? folders.find((f) => f.id === folderId) : null) ?? null
   const selectedProvider = providers.find((provider) => provider.id === providerId) ?? providers[0] ?? null
-  const modelOptions = buildModelOptions(undefined, modelId, selectedProvider ?? undefined, providerId)
+	const providerSessions = sessions.filter((session) => session.providerId === providerId)
+	const discoverySession = providerSessions[0]
+	const cachedAcp = providerSessions.map((session) => acpBindingBySessionId[session.id]).find((binding) => (binding?.availableModels.length ?? 0) > 0)
+	  ?? (discoverySession ? acpBindingBySessionId[discoverySession.id] : undefined)
+	const modelOptions = buildModelOptions(cachedAcp, modelId, selectedProvider ?? undefined, providerId)
+	const runtimeSupportsReasoning = (selectedRuntimeModel(cachedAcp, modelId)?.supportedReasoningEfforts?.length ?? 0) > 0
+	const reasoningOptions = providerCapabilities(providerId, selectedProvider ?? undefined).hasReasoningEffort || runtimeSupportsReasoning
+	  ? buildCodexReasoningOptions(cachedAcp, modelId, reasoningEffort)
+	  : []
+  useEffect(() => {
+    if (!discoverySession || cachedAcp?.modelsLoading || discoveryRequestedRef.current.has(providerId)) return
+    discoveryRequestedRef.current.add(providerId)
+    void discoverProviderModels(discoverySession.id)
+  }, [cachedAcp?.availableModels.length, cachedAcp?.modelsLoading, discoverProviderModels, discoverySession, providerId])
   const canCreate = selectedFolder !== null
+
+  const createWorkspace = async () => {
+    setCreatingWorkspace(true)
+    setWorkspaceError('')
+    const directory = await browseFolderDirectory('')
+    const name = directory?.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'Workspace'
+    const created = directory ? await addFolder(name, null, directory) : false
+    setCreatingWorkspace(false)
+    if (directory && !created) setWorkspaceError('The workspace could not be created. Choose another folder.')
+  }
 
   return (
     <div
@@ -180,77 +183,27 @@ export function NewChatModal() {
               <label className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--text-2)' }}>
                 Folder
               </label>
-              <div className="relative" ref={folderMenuRef}>
-                <button
-                  type="button"
-                  aria-label="Folder"
-                  aria-haspopup="listbox"
-                  aria-expanded={folderMenuOpen}
-                  onClick={() => setFolderMenuOpen((open) => !open)}
-                  className="uam-menu-select__trigger w-full rounded-md px-3 py-2 text-left"
-                  style={{
-                    color: 'var(--text)',
-                    fontFamily: 'inherit',
-                  }}
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-xs">
-                        {selectedFolder ? selectedFolder.name : 'Choose a folder'}
-                      </div>
-                      {selectedFolder?.directory && (
-                        <div className="truncate text-[10px]" style={{ color: 'var(--text-3)' }}>
-                          {selectedFolder.directory}
-                        </div>
-                      )}
-                    </div>
-                    <span style={{ color: 'var(--text-3)', display: 'flex', alignItems: 'center' }}>
-                      {folderMenuOpen ? <ChevronUp size={14} aria-hidden /> : <ChevronDown size={14} aria-hidden />}
-                    </span>
-                  </div>
-                </button>
+              <MenuSelect
+                label="Folder"
+                value={folderId ?? ''}
+                options={folders.map((folder) => ({ value: folder.id, label: folder.name, description: folder.directory }))}
+                onChange={setFolderId}
+              />
+            </div>
+          )}
 
-                {folderMenuOpen && (
-                  <div
-                    role="listbox"
-                    aria-label="Folder"
-                    className="absolute left-0 right-0 top-full z-10 mt-1 max-h-52 overflow-y-auto rounded-md p-1 shadow-2xl"
-                    style={{
-                      background: 'var(--surface)',
-                      border: '1px solid var(--border-bright)',
-                    }}
-                  >
-                    {folders.map((f) => {
-                      const isSelected = selectedFolder?.id === f.id
-
-                      return (
-                        <button
-                          key={f.id}
-                          type="button"
-                          role="option"
-                          aria-selected={isSelected}
-                          onClick={() => {
-                            setFolderId(f.id)
-                            setFolderMenuOpen(false)
-                          }}
-                          className={`uam-menu-select__option w-full rounded-md px-2 py-2 text-left${isSelected ? ' is-selected' : ''}`}
-                          style={{
-                            border: 'none',
-                            color: 'var(--text)',
-                            fontFamily: 'inherit',
-                          }}
-                        >
-                          <div className="text-xs">{f.name}</div>
-                          {f.directory && (
-                            <div className="truncate text-[10px]" style={{ color: 'var(--text-3)' }}>
-                              {f.directory}
-                            </div>
-                          )}
-                        </button>
-                      )
-                    })}
-                  </div>
-                )}
+          {!selectedFolder && (
+            <div role="alert" className="rounded-lg p-3 animate-fade-in" style={{ background: 'color-mix(in srgb, var(--yellow) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--yellow) 35%, var(--border))' }}>
+              <div className="flex items-start gap-2">
+                <TriangleAlert size={16} aria-hidden style={{ color: 'var(--yellow)', flexShrink: 0 }} />
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium" style={{ color: 'var(--text)' }}>A workspace is required</div>
+                  <p className="mt-1 text-xs" style={{ color: 'var(--text-2)' }}>Agents cannot start a chat without a valid workspace folder.</p>
+                  {workspaceError && <p className="mt-1 text-xs" style={{ color: 'var(--red)' }}>{workspaceError}</p>}
+                  <Button className="mt-3" variant="secondary" size="sm" leadingIcon={<FolderPlus size={14} />} disabled={creatingWorkspace} onClick={() => void createWorkspace()}>
+                    {creatingWorkspace ? 'Choosing…' : 'Create workspace'}
+                  </Button>
+                </div>
               </div>
             </div>
           )}
@@ -260,79 +213,26 @@ export function NewChatModal() {
               <label className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--text-2)' }}>
                 Provider
               </label>
-              <div className="relative" ref={providerMenuRef}>
-                <button
-                  type="button"
-                  aria-label="Provider"
-                  aria-haspopup="listbox"
-                  aria-expanded={providerMenuOpen}
-                  onClick={() => setProviderMenuOpen((open) => !open)}
-                  className="uam-menu-select__trigger w-full rounded-md px-3 py-2 text-left"
-                  style={{
-                    color: 'var(--text)',
-                    fontFamily: 'inherit',
-                  }}
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="min-w-0 flex items-center gap-2 text-xs">
-                      <ProviderLogo providerId={selectedProvider?.id} />
-                      <span className="truncate">{selectedProvider?.shortName ?? selectedProvider?.name ?? 'Provider'}</span>
-                    </span>
-                    <span style={{ color: 'var(--text-3)', display: 'flex', alignItems: 'center' }}>
-                      {providerMenuOpen ? <ChevronUp size={14} aria-hidden /> : <ChevronDown size={14} aria-hidden />}
-                    </span>
-                  </div>
-                </button>
-
-                {providerMenuOpen && (
-                  <div
-                    role="listbox"
-                    aria-label="Provider"
-                    className="absolute left-0 right-0 top-full z-10 mt-1 max-h-52 overflow-y-auto rounded-md p-1 shadow-2xl"
-                    style={{
-                      background: 'var(--surface)',
-                      border: '1px solid var(--border-bright)',
-                    }}
-                  >
-                    {providers.map((provider) => {
-                      const isSelected = selectedProvider?.id === provider.id
-
-                      return (
-                        <button
-                          key={provider.id}
-                          type="button"
-                          role="option"
-                          aria-selected={isSelected}
-                          onClick={() => {
-                            setProviderId(provider.id)
-                            setModelId(providerChatDefaults[provider.id]?.modelId ?? '')
-                            setProviderMenuOpen(false)
-                          }}
-                          className={`uam-menu-select__option w-full rounded-md px-2 py-2 text-left${isSelected ? ' is-selected' : ''}`}
-                          style={{
-                            border: 'none',
-                            color: 'var(--text)',
-                            fontFamily: 'inherit',
-                          }}
-                        >
-                          <div className="flex items-center gap-2 text-xs">
-                            <ProviderLogo providerId={provider.id} />
-                            <span>{provider.shortName || provider.name}</span>
-                          </div>
-                          <div className="truncate text-[10px]" style={{ color: 'var(--text-3)' }}>
-                            {providerRuntimeDescription(provider, provider.id)}
-                          </div>
-                        </button>
-                      )
-                    })}
-                  </div>
-                )}
-              </div>
+              <MenuSelect
+                label="Provider"
+                value={providerId}
+                options={providers.map((provider) => ({
+                  value: provider.id,
+                  label: provider.shortName || provider.name,
+                  description: providerRuntimeDescription(provider, provider.id),
+                  icon: <ProviderLogo providerId={provider.id} />,
+                }))}
+                onChange={(nextProviderId) => {
+                  setProviderId(nextProviderId)
+                  setModelId(providerChatDefaults[nextProviderId]?.modelId ?? '')
+				  setReasoningEffort(providerChatDefaults[nextProviderId]?.reasoningEffort ?? '')
+                }}
+              />
             </div>
           )}
 
           <div>
-            <div className="mb-1.5 text-xs font-medium" style={{ color: 'var(--text-2)' }}>Model</div>
+            <div className="mb-1.5 text-xs font-medium" style={{ color: 'var(--text-2)' }}>Model{cachedAcp?.modelsLoading ? ' · discovering…' : ''}</div>
             <MenuSelect
               label="Model"
               value={modelId}
@@ -341,9 +241,23 @@ export function NewChatModal() {
                 label: option.label,
                 description: option.detail,
               }))}
-              onChange={setModelId}
+			  onChange={(nextModelId) => {
+				setModelId(nextModelId)
+				setReasoningEffort(reasoningEffortForModel(cachedAcp, nextModelId, reasoningEffort))
+			  }}
             />
           </div>
+		  {reasoningOptions.length > 0 && (
+			<div>
+			  <div className="mb-1.5 text-xs font-medium" style={{ color: 'var(--text-2)' }}>Reasoning effort</div>
+			  <MenuSelect
+				label="Reasoning effort"
+				value={reasoningEffortForModel(cachedAcp, modelId, reasoningEffort)}
+				options={reasoningOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
+				onChange={setReasoningEffort}
+			  />
+			</div>
+		  )}
         </div>
 
         {/* Footer */}

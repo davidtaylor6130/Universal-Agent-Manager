@@ -13,17 +13,20 @@ import {
 import { useTheme } from '../../hooks/useTheme'
 import {
   applyDocumentTheme,
+  BUILT_IN_THEMES,
   BUILT_IN_THEME_COLORS,
   normalizeCustomTheme,
+  resolveDocumentTheme,
   type CustomTheme,
   type ThemeColors,
   type StoredTheme,
 } from '../../utils/themeStorage'
 import type { Provider } from '../../types/provider'
+import { MEMORY_LEVEL_OPTIONS } from '../../types/memory'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
-import { ChevronDown, ChevronRight, X, Check } from 'lucide-react'
-import { Button, IconButton, MenuSelect } from '../ui'
+import { BookOpen, Brain, Check, ChevronDown, ChevronRight, Download, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Save, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
+import { Button, IconButton, MenuSelect, Switch, ViewportMenu } from '../ui'
 import { ShellActionsSettings } from './ShellActionsSettings'
 import {
   DEFAULT_PROVIDER_ID,
@@ -60,23 +63,27 @@ function selectedMemoryModelLabel(options: MemoryModelOption[], modelId: string)
   return options.find((option) => option.id === modelId)?.label ?? titleFromModelId(modelId)
 }
 
-type SettingsSectionId = 'appearance' | 'defaults' | 'cli-version' | 'memory-settings' | 'memory-store' | 'editors' | 'shell-actions' | 'about'
+type SettingsSectionId = 'appearance' | 'defaults' | 'cli-version' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'editors' | 'shell-actions' | 'about'
 
 interface SettingsSection {
   id: SettingsSectionId
   label: string
   detail: string
+  icon: LucideIcon
 }
 
 const SETTINGS_SECTIONS: SettingsSection[] = [
-  { id: 'appearance', label: 'Appearance', detail: 'Theme and display' },
-  { id: 'defaults', label: 'Chat Defaults', detail: 'Provider and new-chat settings' },
-  { id: 'cli-version', label: 'CLI Version', detail: 'Run or revert provider CLIs' },
-  { id: 'memory-settings', label: 'Memory Settings', detail: 'Defaults and workers' },
-  { id: 'memory-store', label: 'Memory Store', detail: 'Library and backfill' },
-  { id: 'editors', label: 'Editors', detail: 'Workspace launch presets' },
-  { id: 'shell-actions', label: 'Shell Actions', detail: 'Finder and Explorer menus' },
-  { id: 'about', label: 'About', detail: 'Version information' },
+  { id: 'appearance', label: 'Appearance', detail: 'Theme and display', icon: Palette },
+  { id: 'defaults', label: 'Chat Defaults', detail: 'Provider and new-chat settings', icon: MessageSquare },
+  { id: 'cli-version', label: 'CLI Version', detail: 'Run or revert provider CLIs', icon: TerminalSquare },
+  { id: 'voice-input', label: 'Voice Input', detail: 'Speech-to-text provider', icon: Mic },
+  { id: 'memory-settings', label: 'Memory Settings', detail: 'Defaults and workers', icon: Brain },
+  { id: 'memory-store', label: 'Memory Store', detail: 'Library and backfill', icon: MemoryStick },
+  { id: 'markdown-store', label: 'Skills', detail: 'Reusable prompts and attachments', icon: BookOpen },
+  { id: 'goal-loops', label: 'Goal Loops', detail: 'Loop safety', icon: Target },
+  { id: 'editors', label: 'Editors', detail: 'Workspace launch presets', icon: Pencil },
+  { id: 'shell-actions', label: 'Shell Actions', detail: 'Finder and Explorer menus', icon: MousePointerClick },
+  { id: 'about', label: 'About', detail: 'Version information', icon: Info },
 ]
 
 const EDITOR_PRESETS = [
@@ -148,10 +155,9 @@ function SectionCard(
 ) {
   return (
     <section
-      className="rounded-xl p-4"
+      className="pb-5"
       style={{
-        background: 'color-mix(in srgb, var(--surface-up) 78%, var(--surface))',
-        border: '1px solid var(--border)',
+        borderBottom: '1px solid var(--border)',
       }}
     >
       <div className="mb-4">
@@ -207,21 +213,21 @@ function ProviderDisclosureCard(
         </span>
         <span
           aria-hidden="true"
-          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-sm"
+          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-sm transition-colors duration-150"
           style={{
             background: expanded ? 'var(--accent-dim)' : 'var(--surface-up)',
             color: 'var(--text-2)',
             border: '1px solid var(--border)',
           }}
         >
-          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          <ChevronRight size={14} className={`transition-transform duration-150${expanded ? ' rotate-90' : ''}`} />
         </span>
       </button>
 
       {expanded && (
         <div
           id={panelId}
-          className="mt-3 pt-3"
+          className="mt-3 pt-3 animate-fade-in"
           style={{ borderTop: '1px solid var(--border)' }}
         >
           {children}
@@ -234,7 +240,11 @@ function ProviderDisclosureCard(
 export function SettingsModal() {
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen)
   const providers = useAppStore(useShallow((s) => s.providers))
+  const sessions = useAppStore(useShallow((s) => s.sessions))
+  const acpBindings = useAppStore(useShallow((s) => s.acpBindingBySessionId))
+  const discoverProviderModels = useAppStore((s) => s.discoverProviderModels)
   const memoryEnabledDefault = useAppStore((s) => s.memoryEnabledDefault)
+  const memoryLevelDefault = useAppStore((s) => s.memoryLevelDefault)
   const memoryIdleDelaySeconds = useAppStore((s) => s.memoryIdleDelaySeconds)
   const memoryRecallBudgetBytes = useAppStore((s) => s.memoryRecallBudgetBytes)
   const goalMaxLoopIterations = useAppStore((s) => s.goalMaxLoopIterations)
@@ -250,6 +260,12 @@ export function SettingsModal() {
   const memoryActivity = useAppStore(useShallow((s) => s.memoryActivity))
   const cliVersionManager = useAppStore(useShallow((s) => s.cliVersionManager))
   const markdownStoreDirectory = useAppStore((s) => s.markdownStoreDirectory)
+  const savedVoiceMode = useAppStore((s) => s.voiceInputMode)
+  const savedVoiceServerBaseUrl = useAppStore((s) => s.voiceInputServerBaseUrl)
+  const savedVoiceServerEndpoint = useAppStore((s) => s.voiceInputServerEndpoint)
+  const savedVoiceServerModel = useAppStore((s) => s.voiceInputServerModel)
+  const savedVoiceCredentialEnv = useAppStore((s) => s.voiceInputApiKeyEnv)
+  const voiceCapabilities = useAppStore((s) => s.voiceInputCapabilities)
   const defaultNewChatProviderId = useAppStore((s) => s.defaultNewChatProviderId)
   const providerChatDefaults = useAppStore(useShallow((s) => s.providerChatDefaults))
   const defaultEditorPresetId = useAppStore((s) => s.defaultEditorPresetId)
@@ -261,6 +277,7 @@ export function SettingsModal() {
   const applyCliProviderVersion = useAppStore((s) => s.applyCliProviderVersion)
   const browseMarkdownStoreDirectory = useAppStore((s) => s.browseMarkdownStoreDirectory)
   const setMarkdownStoreDirectory = useAppStore((s) => s.setMarkdownStoreDirectory)
+  const setVoiceInputSettings = useAppStore((s) => s.setVoiceInputSettings)
   const openMarkdownStore = useAppStore((s) => s.openMarkdownStore)
   const openGlobalMemoryLibrary = useAppStore((s) => s.openGlobalMemoryLibrary)
   const openMemoryScanModal = useAppStore((s) => s.openMemoryScanModal)
@@ -279,10 +296,19 @@ export function SettingsModal() {
   const [selectedSection, setSelectedSection] = useState<SettingsSectionId>('appearance')
   const [themeDraft, setThemeDraft] = useState<CustomTheme | null>(null)
   const [themeMessage, setThemeMessage] = useState('')
+  const [voiceMode, setVoiceMode] = useState(savedVoiceMode)
+  const [voiceServerUrl, setVoiceServerUrl] = useState(savedVoiceServerBaseUrl)
+  const [voiceServerEndpoint, setVoiceServerEndpoint] = useState(savedVoiceServerEndpoint)
+  const [voiceServerModel, setVoiceServerModel] = useState(savedVoiceServerModel)
+  const [voiceCredentialEnv, setVoiceCredentialEnv] = useState(savedVoiceCredentialEnv)
+  const [voiceSaving, setVoiceSaving] = useState(false)
+  const [voiceMessage, setVoiceMessage] = useState('')
+  const [pendingDelete, setPendingDelete] = useState<{ kind: 'theme' | 'editor'; id: string; name: string } | null>(null)
   const memoryMenuRef = useRef<HTMLDivElement>(null)
   const editorMenuRef = useRef<HTMLDivElement>(null)
   const defaultsMenuRef = useRef<HTMLDivElement>(null)
   const cliVersionMenuRef = useRef<HTMLDivElement>(null)
+  const popupAnchorsRef = useRef(new Map<string, HTMLButtonElement>())
   const themeImportRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -337,6 +363,7 @@ export function SettingsModal() {
     const handler = (event: MouseEvent) => {
       const target = event.target
       if (!(target instanceof Node)) return
+      if (target instanceof Element && target.closest('[data-viewport-menu]')) return
       if (!memoryMenuRef.current?.contains(target)) setOpenMemoryMenu(null)
       if (!editorMenuRef.current?.contains(target)) setOpenEditorMenu(null)
       if (!defaultsMenuRef.current?.contains(target)) setOpenDefaultsMenu(null)
@@ -349,6 +376,14 @@ export function SettingsModal() {
   useEffect(() => {
     setMarkdownStoreDraftDirectory(markdownStoreDirectory)
   }, [markdownStoreDirectory])
+
+  useEffect(() => {
+    setVoiceMode(savedVoiceMode)
+    setVoiceServerUrl(savedVoiceServerBaseUrl)
+    setVoiceServerEndpoint(savedVoiceServerEndpoint)
+    setVoiceServerModel(savedVoiceServerModel)
+    setVoiceCredentialEnv(savedVoiceCredentialEnv)
+  }, [savedVoiceCredentialEnv, savedVoiceMode, savedVoiceServerBaseUrl, savedVoiceServerEndpoint, savedVoiceServerModel])
 
   useEffect(() => {
     setEditorAssociationsDraft(editorFileAssociations)
@@ -373,6 +408,7 @@ export function SettingsModal() {
       modelId: saved?.modelId ?? '',
       approvalMode: saved?.approvalMode ?? 'default',
       autoApproveCommands: saved?.autoApproveCommands ?? false,
+      memoryLevel: saved?.memoryLevel ?? memoryLevelDefault,
       memoryEnabled: saved?.memoryEnabled ?? memoryEnabledDefault,
       reasoningEffort: saved?.reasoningEffort ?? '',
       serviceTier: saved?.serviceTier ?? '',
@@ -424,6 +460,7 @@ export function SettingsModal() {
     return (
       <div className="relative">
         <button
+          ref={(element) => { if (element) popupAnchorsRef.current.set(menuId, element) }}
           type="button"
           title={label}
           aria-haspopup="listbox"
@@ -443,13 +480,13 @@ export function SettingsModal() {
           <ChevronDown className={openDefaultsMenu === menuId ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />
         </button>
         {openDefaultsMenu === menuId && (
-          <div
+          <ViewportMenu
+            anchorRef={{ current: popupAnchorsRef.current.get(menuId) ?? null }}
             role="listbox"
             aria-label={label}
-            className="absolute left-0 right-0 animate-fade-in"
+            className="animate-fade-in"
             style={{
-              top: 38,
-              zIndex: 70,
+              width: popupAnchorsRef.current.get(menuId)?.getBoundingClientRect().width,
               border: '1px solid var(--border-bright)',
               borderRadius: 10,
               background: 'var(--surface)',
@@ -488,7 +525,7 @@ export function SettingsModal() {
                 </button>
               )
             })}
-          </div>
+          </ViewportMenu>
         )}
       </div>
     )
@@ -515,6 +552,7 @@ export function SettingsModal() {
     return (
       <div className="relative">
         <button
+          ref={(element) => { if (element) popupAnchorsRef.current.set(menuId, element) }}
           type="button"
           title={label}
           aria-haspopup="listbox"
@@ -532,13 +570,13 @@ export function SettingsModal() {
           {!disabled && <ChevronDown className={openCliVersionMenu === menuId ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />}
         </button>
         {!disabled && openCliVersionMenu === menuId && (
-          <div
+          <ViewportMenu
+            anchorRef={{ current: popupAnchorsRef.current.get(menuId) ?? null }}
             role="listbox"
             aria-label={label}
-            className="absolute left-0 right-0 animate-fade-in"
+            className="animate-fade-in"
             style={{
-              top: 38,
-              zIndex: 70,
+              width: popupAnchorsRef.current.get(menuId)?.getBoundingClientRect().width,
               border: '1px solid var(--border-bright)',
               borderRadius: 10,
               background: 'var(--surface)',
@@ -576,7 +614,7 @@ export function SettingsModal() {
                 </button>
               )
             })}
-          </div>
+          </ViewportMenu>
         )}
       </div>
     )
@@ -590,6 +628,7 @@ export function SettingsModal() {
   ) => (
     <div className="relative">
       <button
+        ref={(element) => { if (element) popupAnchorsRef.current.set(menuId, element) }}
         type="button"
         title={label}
         aria-haspopup="listbox"
@@ -606,13 +645,13 @@ export function SettingsModal() {
         <ChevronDown className={openEditorMenu === menuId ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />
       </button>
       {openEditorMenu === menuId && (
-        <div
+        <ViewportMenu
+          anchorRef={{ current: popupAnchorsRef.current.get(menuId) ?? null }}
           role="listbox"
           aria-label={label}
-          className="absolute left-0 right-0 animate-fade-in"
+          className="animate-fade-in"
           style={{
-            top: 38,
-            zIndex: 60,
+            width: popupAnchorsRef.current.get(menuId)?.getBoundingClientRect().width,
             border: '1px solid var(--border-bright)',
             borderRadius: 10,
             background: 'var(--surface)',
@@ -643,7 +682,7 @@ export function SettingsModal() {
               </button>
             )
           })}
-        </div>
+        </ViewportMenu>
       )}
     </div>
   )
@@ -683,7 +722,7 @@ export function SettingsModal() {
       startNewTheme(selectedCustomTheme)
       return
     }
-    const base = theme === 'light' || (theme === 'system' && document.documentElement.getAttribute('data-theme') === 'light') ? 'light' : 'dark'
+    const base = resolveDocumentTheme(theme)
     startNewTheme({ version: 1, id: 'custom:built-in', name: `${base === 'dark' ? 'Dark' : 'Light'}`, base, colors: { ...BUILT_IN_THEME_COLORS[base] } })
   }
   const saveThemeDraft = async () => {
@@ -698,7 +737,7 @@ export function SettingsModal() {
     setThemeMessage('Theme saved.')
   }
   const removeSelectedTheme = async () => {
-    if (!selectedCustomTheme || !window.confirm(`Delete ${selectedCustomTheme.name}?`)) return
+    if (!selectedCustomTheme) return
     const deleted = await deleteCustomTheme(selectedCustomTheme.id)
     setThemeDraft(null)
     setThemeMessage(deleted ? 'Theme deleted.' : 'Theme could not be deleted.')
@@ -730,9 +769,7 @@ export function SettingsModal() {
   const renderSectionContent = () => {
     if (selectedSection === 'appearance') {
       const themeOptions: Array<{ value: StoredTheme; label: string }> = [
-        { value: 'dark', label: 'Dark' },
-        { value: 'light', label: 'Light' },
-        { value: 'system', label: 'System' },
+        ...BUILT_IN_THEMES.map(({ id, label }) => ({ value: id, label })),
         ...customThemes.map((customTheme) => ({ value: customTheme.id, label: customTheme.name })),
       ]
       return (
@@ -759,7 +796,7 @@ export function SettingsModal() {
                 <Button size="sm" onClick={() => startNewTheme()}>Create</Button>
                 <Button size="sm" onClick={cloneCurrentTheme}>Clone</Button>
                 <Button size="sm" disabled={!selectedCustomTheme} onClick={() => setThemeDraft(selectedCustomTheme ? { ...selectedCustomTheme, colors: { ...selectedCustomTheme.colors } } : null)}>Edit</Button>
-                <Button size="sm" disabled={!selectedCustomTheme} onClick={() => void removeSelectedTheme()}>Delete</Button>
+                <Button size="sm" variant="danger" disabled={!selectedCustomTheme} onClick={() => selectedCustomTheme && setPendingDelete({ kind: 'theme', id: selectedCustomTheme.id, name: selectedCustomTheme.name })}>Delete</Button>
                 <Button size="sm" onClick={() => themeImportRef.current?.click()}>Import JSON</Button>
                 <Button size="sm" disabled={!selectedCustomTheme} onClick={exportSelectedTheme}>Export JSON</Button>
                 <input
@@ -888,11 +925,13 @@ export function SettingsModal() {
                   const modelOptions = memoryModelOptions(provider, provider.id, defaults.modelId)
                   const caps = providerCapabilities(provider.id, provider)
                   const providerName = providerDisplayName(provider, provider.id)
+                  const providerSession = sessions.find((session) => session.providerId === provider.id)
+                  const modelsLoading = providerSession ? acpBindings[providerSession.id]?.modelsLoading : false
+                  const modelRefreshError = providerSession ? acpBindings[providerSession.id]?.modelRefreshError : ''
                   const expanded = expandedDefaultProviders[provider.id] ?? false
                   const modeOptions = [
                     { id: 'default', label: 'Default', detail: 'Use the provider default mode' },
                     { id: 'plan', label: 'Plan', detail: 'Ask the provider to plan first' },
-                    ...(caps.hasAcceptEditsMode ? [{ id: 'acceptEdits', label: 'Accept Edits', detail: 'Auto-approve workspace file edits' }] : []),
                   ]
                   return (
                     <ProviderDisclosureCard
@@ -917,11 +956,11 @@ export function SettingsModal() {
                             )}
                           </div>
                           <div className="grid gap-1">
-                            <div>Mode</div>
+                            <div>Agent</div>
                             {renderDefaultsMenu(
                               `${provider.id}:mode`,
                               defaults.approvalMode,
-                              `${providerName} default mode`,
+                              `${providerName} default agent`,
                               modeOptions,
                               (approvalMode) => updateProviderDefaults(provider.id, { ...defaults, approvalMode })
                             )}
@@ -951,7 +990,7 @@ export function SettingsModal() {
                             </div>
                           )}
                         </div>
-                        <div className="flex flex-wrap gap-2">
+                        <div className="grid grid-cols-2 gap-2">
                           <Button
                             variant={defaults.autoApproveCommands ? 'primary' : 'secondary'}
                             size="sm"
@@ -959,13 +998,26 @@ export function SettingsModal() {
                           >
                             {defaults.autoApproveCommands ? 'Auto approve on' : 'Auto approve off'}
                           </Button>
-                          <Button
-                            variant={defaults.memoryEnabled ? 'primary' : 'secondary'}
-                            size="sm"
-                            onClick={() => updateProviderDefaults(provider.id, { ...defaults, memoryEnabled: !defaults.memoryEnabled })}
-                          >
-                            {defaults.memoryEnabled ? 'Memory on' : 'Memory off'}
-                          </Button>
+                          <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                            <div>Memory</div>
+                            {renderDefaultsMenu(
+                              `${provider.id}:memory`,
+                              defaults.memoryLevel ?? 'off',
+                              `${providerName} default memory level`,
+                              MEMORY_LEVEL_OPTIONS,
+                              (memoryLevel) => updateProviderDefaults(provider.id, {
+                                ...defaults,
+                                memoryLevel: memoryLevel as ProviderChatDefaults['memoryLevel'],
+                                memoryEnabled: memoryLevel !== 'off',
+                              })
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <IconButton icon={<RefreshCw size={14} className={modelsLoading ? 'animate-spin' : ''} />} label={`Refresh ${providerName} models`} disabled={!providerSession || modelsLoading} onClick={() => providerSession && void discoverProviderModels(providerSession.id)} />
+                          <span role="status" className="text-xs" style={{ color: modelRefreshError ? 'var(--red)' : 'var(--text-3)' }}>
+                            {modelsLoading ? 'Refreshing models…' : modelRefreshError || (providerSession ? 'Cached models are ready' : 'Open a chat to refresh models')}
+                          </span>
                         </div>
                       </div>
                     </ProviderDisclosureCard>
@@ -1027,14 +1079,12 @@ export function SettingsModal() {
                           </div>
                         )}
                       </div>
-                      <Button
-                        variant="secondary"
-                        size="sm"
+                      <IconButton
+                        icon={<RefreshCw size={15} className={manager.running && manager.status === 'checking' ? 'animate-spin' : undefined} />}
+                        label={`Refresh ${providerName} CLI version`}
                         disabled={manager.running}
                         onClick={() => void refreshCliProviderVersion(manager.providerId)}
-                      >
-                        Refresh
-                      </Button>
+                      />
                     </div>
 
                     <div className="grid grid-cols-2 gap-3 mt-3">
@@ -1068,17 +1118,16 @@ export function SettingsModal() {
                         <div className="text-xs" style={{ color: 'var(--text-3)' }}>
                           Applies with npm globally for this provider.
                         </div>
-                        <Button
-                          variant={canApplyCliVersion ? 'primary' : 'secondary'}
-                          size="sm"
+                        <IconButton
+                          icon={manager.running ? <RefreshCw size={15} className="animate-spin" /> : <Download size={15} />}
+                          label={manager.running ? `Installing ${providerName} CLI version` : `Apply ${providerName} CLI version`}
+                          variant={canApplyCliVersion ? 'solid' : 'ghost'}
                           disabled={!canApplyCliVersion}
                           onClick={() => {
                             if (!window.confirm(`Install ${providerName} ${selectedCliVersion}?`)) return
                             void applyCliProviderVersion(manager.providerId, selectedCliVersion)
                           }}
-                        >
-                          {manager.running ? 'Running' : 'Apply'}
-                        </Button>
+                        />
                       </div>
                     </div>
 
@@ -1122,20 +1171,17 @@ export function SettingsModal() {
             description="Control how new chats use memory and how much background context is retained."
           >
             <div className="space-y-3">
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <div className="text-sm" style={{ color: 'var(--text)' }}>Memory</div>
-                  <div className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>
-                    New chats default {memoryEnabledDefault ? 'on' : 'off'}
-                  </div>
+              <div>
+                <div className="mb-2 flex items-end justify-between gap-4">
+                  <div className="text-sm" style={{ color: 'var(--text)' }}>Default memory level</div>
+                  <div className="text-xs" style={{ color: 'var(--text-3)' }}>{MEMORY_LEVEL_OPTIONS.find((option) => option.id === memoryLevelDefault)?.detail}</div>
                 </div>
-                <Button
-                  variant={memoryEnabledDefault ? 'primary' : 'secondary'}
-                  size="sm"
-                  onClick={() => void setMemorySettings({ memoryEnabledDefault: !memoryEnabledDefault })}
-                >
-                  {memoryEnabledDefault ? 'On' : 'Off'}
-                </Button>
+                <div role="radiogroup" aria-label="Default memory level" className="grid grid-cols-4 overflow-hidden rounded-lg" style={{ border: '1px solid var(--border)' }}>
+                  {MEMORY_LEVEL_OPTIONS.map((option) => {
+                    const selected = option.id === memoryLevelDefault
+                    return <button key={option.id} type="button" role="radio" aria-checked={selected} onClick={() => void setMemorySettings({ memoryLevelDefault: option.id })} className="uam-segment-button px-3 py-2 text-xs" style={{ border: 0, borderRight: option.id === 'open' ? 0 : '1px solid var(--border)', background: selected ? 'var(--accent-dim)' : 'transparent', color: selected ? 'var(--accent)' : 'var(--text-2)' }}>{option.label}</button>
+                  })}
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -1180,30 +1226,6 @@ export function SettingsModal() {
           </SectionCard>
 
           <SectionCard
-            title="Goal Loop Safety"
-            description="Stop runaway goal loops after a fixed number of review cycles."
-          >
-            <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-              Maximum iterations
-              <input
-                type="number"
-                min={0}
-                step={1}
-                value={goalMaxLoopIterations}
-                onChange={(event) => void setMemorySettings({ goalMaxLoopIterations: Number(event.currentTarget.value) })}
-                style={{
-                  background: 'var(--surface)',
-                  color: 'var(--text)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 8,
-                  padding: '8px 10px',
-                }}
-              />
-              <span style={{ color: 'var(--text-3)' }}>Set to 0 for unlimited iterations.</span>
-            </label>
-          </SectionCard>
-
-          <SectionCard
             title="Memory Workers"
             description="Choose which provider and model should handle memory work for each provider."
           >
@@ -1228,6 +1250,7 @@ export function SettingsModal() {
                     <div className="grid grid-cols-2 gap-2">
                       <div className="relative">
                         <button
+                          ref={(element) => { if (element) popupAnchorsRef.current.set(providerMenuId, element) }}
                           type="button"
                           title={`${providerDisplayName(provider, provider.id)} memory worker provider`}
                           aria-haspopup="listbox"
@@ -1248,13 +1271,12 @@ export function SettingsModal() {
                           </span>
                         </button>
                         {openMemoryMenu === providerMenuId && (
-                          <div
+                          <ViewportMenu
+                            anchorRef={{ current: popupAnchorsRef.current.get(providerMenuId) ?? null }}
                             role="listbox"
                             aria-label={`${providerDisplayName(provider, provider.id)} memory worker provider`}
-                            className="absolute left-0 right-0"
                             style={{
-                              top: 38,
-                              zIndex: 60,
+                              width: popupAnchorsRef.current.get(providerMenuId)?.getBoundingClientRect().width,
                               border: '1px solid var(--border-bright)',
                               borderRadius: 10,
                               background: 'var(--surface)',
@@ -1290,12 +1312,13 @@ export function SettingsModal() {
                                 </button>
                               )
                             })}
-                          </div>
+                          </ViewportMenu>
                         )}
                       </div>
 
                       <div className="relative">
                         <button
+                          ref={(element) => { if (element) popupAnchorsRef.current.set(modelMenuId, element) }}
                           type="button"
                           title={`${providerDisplayName(provider, provider.id)} memory worker model`}
                           aria-haspopup="listbox"
@@ -1313,13 +1336,12 @@ export function SettingsModal() {
                           {selectedMemoryModelLabel(modelOptions, binding.workerModelId)}
                         </button>
                         {openMemoryMenu === modelMenuId && (
-                          <div
+                          <ViewportMenu
+                            anchorRef={{ current: popupAnchorsRef.current.get(modelMenuId) ?? null }}
                             role="listbox"
                             aria-label={`${providerDisplayName(provider, provider.id)} memory worker model`}
-                            className="absolute left-0 right-0"
                             style={{
-                              top: 38,
-                              zIndex: 60,
+                              width: popupAnchorsRef.current.get(modelMenuId)?.getBoundingClientRect().width,
                               border: '1px solid var(--border-bright)',
                               borderRadius: 10,
                               background: 'var(--surface)',
@@ -1357,7 +1379,7 @@ export function SettingsModal() {
                                 </button>
                               )
                             })}
-                          </div>
+                          </ViewportMenu>
                         )}
                       </div>
                     </div>
@@ -1413,6 +1435,60 @@ export function SettingsModal() {
       )
     }
 
+    if (selectedSection === 'voice-input') {
+      let serverUrlError = ''
+      if (voiceServerUrl.trim()) {
+        try {
+          const url = new URL(voiceServerUrl)
+          if (url.protocol !== 'https:' && !['localhost', '127.0.0.1', '::1'].includes(url.hostname)) serverUrlError = 'Use HTTPS unless the server runs on localhost.'
+        } catch {
+          serverUrlError = 'Enter a valid server URL.'
+        }
+      }
+      const voiceDirty = voiceMode !== savedVoiceMode || voiceServerUrl !== savedVoiceServerBaseUrl || voiceServerEndpoint !== savedVoiceServerEndpoint || voiceServerModel !== savedVoiceServerModel || voiceCredentialEnv !== savedVoiceCredentialEnv
+      const selectedCapability = voiceCapabilities[voiceMode]
+      const serverInvalid = voiceMode === 'server' && (!!serverUrlError || !voiceServerUrl.trim() || !voiceServerEndpoint.trim() || !voiceServerModel.trim() || !voiceCredentialEnv.trim())
+      return (
+        <SectionCard title="Voice Input" description="Choose where recorded audio is transcribed. Audio is only sent to the selected service.">
+          <div className="grid gap-4">
+            <MenuSelect
+              label="Speech-to-text service"
+              value={voiceMode}
+              options={[
+                { value: 'system', label: 'System speech recognition', description: voiceCapabilities.system.reason || 'Use the operating system speech service.' },
+                { value: 'local', label: 'Local AI model · Coming soon', description: voiceCapabilities.local.reason || 'Requires a compatible local model and hardware check.' },
+                { value: 'server', label: 'OpenAI-compatible server', description: voiceCapabilities.server.reason || 'Send recorded audio to an audio transcription API.' },
+              ]}
+              onChange={(value) => {
+                const next = value as typeof voiceMode
+                if (voiceCapabilities[next].supported) setVoiceMode(next)
+                else setVoiceMessage(voiceCapabilities[next].reason || 'This speech-to-text service is unavailable.')
+              }}
+            />
+            {voiceMode === 'system' && <div role="status" className="rounded-lg p-3 text-xs animate-fade-in" style={{ color: 'var(--text-2)', background: 'var(--surface)', border: '1px solid var(--border)' }}>Uses the current on-device/system dictation service. Choose a server for AI speech-to-text.</div>}
+            {voiceMode === 'local' && <div role="status" className="rounded-lg p-3 text-xs animate-fade-in" style={{ color: 'var(--text-2)', background: 'var(--surface)', border: '1px solid var(--border)' }}>Local AI transcription is coming soon. UAM will enable it only after confirming compatible hardware and an installed model.</div>}
+            {voiceMode === 'server' && (
+              <div className="grid gap-3 rounded-lg p-3 animate-fade-in" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>Server base URL<input aria-label="Voice transcription server URL" value={voiceServerUrl} onChange={(event) => setVoiceServerUrl(event.target.value)} placeholder="https://api.example.com" className="rounded-lg px-3 py-2 outline-none transition-colors focus:border-[var(--accent)]" style={{ color: 'var(--text)', background: 'var(--bg)', border: `1px solid ${serverUrlError ? 'var(--red)' : 'var(--border)'}` }} />{serverUrlError && <span role="alert" style={{ color: 'var(--red)' }}>{serverUrlError}</span>}</label>
+                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>Transcription endpoint<input aria-label="Voice transcription endpoint" value={voiceServerEndpoint} onChange={(event) => setVoiceServerEndpoint(event.target.value)} placeholder="/v1/audio/transcriptions" className="rounded-lg px-3 py-2 font-mono outline-none" style={{ color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)' }} /></label>
+                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>Model<input aria-label="Voice transcription model" value={voiceServerModel} onChange={(event) => setVoiceServerModel(event.target.value)} placeholder="whisper-1" className="rounded-lg px-3 py-2 outline-none" style={{ color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)' }} /></label>
+                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>Credential environment variable<input aria-label="Voice transcription credential environment variable" value={voiceCredentialEnv} onChange={(event) => setVoiceCredentialEnv(event.target.value.replace(/[^A-Za-z0-9_]/g, '').toUpperCase())} placeholder="OPENAI_API_KEY" className="rounded-lg px-3 py-2 font-mono outline-none" style={{ color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)' }} /><span style={{ color: 'var(--text-3)' }}>UAM reads this environment variable; it does not store the secret.</span></label>
+              </div>
+            )}
+            {voiceMessage && <div role="status" className="text-xs" style={{ color: voiceMessage.includes('saved') ? 'var(--green)' : 'var(--red)' }}>{voiceMessage}</div>}
+            <div className="flex justify-end"><IconButton variant="solid" icon={<Save size={15} />} label="Save voice input settings" disabled={voiceSaving || !voiceDirty || !selectedCapability.supported || serverInvalid} onClick={() => {
+              setVoiceSaving(true)
+              setVoiceMessage('')
+              void setVoiceInputSettings({ voiceInputMode: voiceMode, voiceInputServerBaseUrl: voiceServerUrl.trim(), voiceInputServerEndpoint: voiceServerEndpoint.trim(), voiceInputServerModel: voiceServerModel.trim(), voiceInputApiKeyEnv: voiceCredentialEnv.trim() }).then((saved) => {
+                setVoiceSaving(false)
+                setVoiceMessage(saved ? 'Voice input settings saved.' : 'Voice input settings could not be saved.')
+              })
+            }} /></div>
+          </div>
+        </SectionCard>
+      )
+    }
+
     if (selectedSection === 'memory-store') {
       return (
         <div className="space-y-4">
@@ -1440,61 +1516,6 @@ export function SettingsModal() {
           </SectionCard>
 
           <SectionCard
-            title="Markdown Store"
-            description="Publish and attach internal `.uam` markdown files from a shared directory."
-          >
-            <div className="grid gap-3">
-              <div className="flex items-center gap-2">
-                <input
-                  value={markdownStoreDraftDirectory}
-                  onChange={(event) => setMarkdownStoreDraftDirectory(event.target.value)}
-                  placeholder="Markdown Store directory"
-                  className="min-w-0 flex-1 text-xs"
-                  style={{
-                    border: '1px solid var(--border)',
-                    borderRadius: 8,
-                    background: 'var(--bg)',
-                    color: 'var(--text)',
-                    padding: '8px 10px',
-                    outline: 'none',
-                  }}
-                />
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => {
-                    void browseMarkdownStoreDirectory(markdownStoreDraftDirectory).then((selected) => {
-                      if (selected) setMarkdownStoreDraftDirectory(selected)
-                    })
-                  }}
-                >
-                  Browse
-                </Button>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  disabled={!markdownStoreDraftDirectory.trim() || markdownStoreDraftDirectory.trim() === markdownStoreDirectory}
-                  onClick={() => void setMarkdownStoreDirectory(markdownStoreDraftDirectory)}
-                >
-                  Save
-                </Button>
-              </div>
-              <div className="flex items-center justify-between gap-4">
-                <div className="text-xs" style={{ color: 'var(--text-3)' }}>
-                  Attach entries to chats as file path references.
-                </div>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => void openMarkdownStore()}
-                >
-                  Open store
-                </Button>
-              </div>
-            </div>
-          </SectionCard>
-
-          <SectionCard
             title="Memory Backfill"
             description="Scan existing chats to extract durable memories from older history."
           >
@@ -1517,6 +1538,40 @@ export function SettingsModal() {
             </div>
           </SectionCard>
         </div>
+      )
+    }
+
+    if (selectedSection === 'markdown-store') {
+      return (
+        <SectionCard title="Skills" description="Publish and attach reusable `.uam` files from one shared directory.">
+          <div className="grid gap-3">
+            <div className="flex items-center gap-2">
+              <input value={markdownStoreDraftDirectory} onChange={(event) => setMarkdownStoreDraftDirectory(event.target.value)} placeholder="Skills directory" className="min-w-0 flex-1 text-xs" style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)', color: 'var(--text)', padding: '8px 10px', outline: 'none' }} />
+              <IconButton icon={<FolderOpen size={15} />} label="Browse for Skills directory" onClick={() => { void browseMarkdownStoreDirectory(markdownStoreDraftDirectory).then((selected) => { if (selected) setMarkdownStoreDraftDirectory(selected) }) }} />
+              <IconButton variant="solid" icon={<Save size={15} />} label="Save Skills directory" disabled={!markdownStoreDraftDirectory.trim() || markdownStoreDraftDirectory.trim() === markdownStoreDirectory} onClick={() => void setMarkdownStoreDirectory(markdownStoreDraftDirectory)} />
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-xs" style={{ color: 'var(--text-3)' }}>Favorite entries become composer slash commands; other entries can be attached from the store.</span>
+              <Button variant="primary" size="sm" leadingIcon={<BookOpen size={14} />} onClick={() => void openMarkdownStore()}>Open store</Button>
+            </div>
+          </div>
+        </SectionCard>
+      )
+    }
+
+    if (selectedSection === 'goal-loops') {
+      return (
+        <SectionCard title="Goal Loop Safety" description="Limit UAM-managed review loops. Provider-native goals continue to use provider controls.">
+          <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+            <span>Maximum iterations</span>
+            <div className="flex w-fit items-center overflow-hidden rounded-lg" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+              <IconButton icon={<Minus size={14} />} label="Decrease maximum goal loop iterations" size="sm" disabled={goalMaxLoopIterations === 0} onClick={() => void setMemorySettings({ goalMaxLoopIterations: Math.max(0, goalMaxLoopIterations - 1) })} />
+              <output aria-label="Maximum goal loop iterations" className="min-w-16 px-3 text-center tabular-nums" style={{ color: 'var(--text)' }}>{goalMaxLoopIterations || 'Unlimited'}</output>
+              <IconButton icon={<Plus size={14} />} label="Increase maximum goal loop iterations" size="sm" onClick={() => void setMemorySettings({ goalMaxLoopIterations: goalMaxLoopIterations + 1 })} />
+            </div>
+            <span style={{ color: 'var(--text-3)' }}>Decrease to 0 for unlimited iterations.</span>
+          </div>
+        </SectionCard>
       )
     }
 
@@ -1598,14 +1653,14 @@ export function SettingsModal() {
                           <div className="text-xs" style={{ color: 'var(--text-3)' }}>
                             {association.extensions.length} extension{association.extensions.length === 1 ? '' : 's'} open in {editorPresetLabel(association.editorPresetId)}
                           </div>
-                          <Button
-                            variant="secondary"
+                          <IconButton
+                            icon={<Trash2 size={14} />}
+                            label={`Delete ${groupName} editor group`}
+                            variant="danger"
                             size="sm"
                             disabled={editorAssociationsDraft.length <= 1}
-                            onClick={() => saveEditorSettings(editorAssociationsDraft.filter((item) => item.id !== association.id))}
-                          >
-                            Delete
-                          </Button>
+                            onClick={() => setPendingDelete({ kind: 'editor', id: association.id, name: groupName })}
+                          />
                         </div>
                       </div>
                     </ProviderDisclosureCard>
@@ -1613,8 +1668,9 @@ export function SettingsModal() {
                 })}
               </div>
 
-              <Button
-                variant="secondary"
+              <IconButton
+                icon={<Plus size={15} />}
+                label="Add editor group"
                 size="sm"
                 onClick={() => {
                   const id = `editor-group-${Date.now()}`
@@ -1630,9 +1686,7 @@ export function SettingsModal() {
                   setExpandedEditorGroups((current) => ({ ...current, [id]: true }))
                   saveEditorSettings(nextAssociations)
                 }}
-              >
-                Add group
-              </Button>
+              />
             </div>
           </SectionCard>
         </div>
@@ -1664,14 +1718,7 @@ export function SettingsModal() {
           title="Update checks"
           description="Check UAM releases and installed provider CLIs at most once every 24 hours."
         >
-          <label className="flex cursor-pointer items-center justify-between gap-4 text-sm" style={{ color: 'var(--text)' }}>
-            <span>Automatically check for updates</span>
-            <input
-              type="checkbox"
-              checked={updateChecksEnabled}
-              onChange={(event) => { void setUpdateSettings({ updateChecksEnabled: event.target.checked }) }}
-            />
-          </label>
+          <Switch label="Automatically check for updates" checked={updateChecksEnabled} onChange={(event) => { void setUpdateSettings({ updateChecksEnabled: event.target.checked }) }} />
         </SectionCard>
       </div>
     )
@@ -1692,7 +1739,7 @@ export function SettingsModal() {
         style={{
           background: 'var(--surface)',
           border: '1px solid var(--border-bright)',
-          maxHeight: 'calc(100vh - 2rem)',
+          height: 'min(760px, calc(100vh - 2rem))',
         }}
       >
         {/* Header */}
@@ -1724,6 +1771,7 @@ export function SettingsModal() {
             <div className="space-y-1">
               {SETTINGS_SECTIONS.map((section) => {
                 const active = section.id === selectedSection
+                const SectionIcon = section.icon
                 return (
                   <button
                     key={section.id}
@@ -1743,11 +1791,9 @@ export function SettingsModal() {
                       boxShadow: active ? '0 8px 20px rgba(0, 0, 0, 0.08)' : 'none',
                     }}
                   >
-                    <div className="text-sm font-medium" style={{ color: active ? 'var(--text)' : 'var(--text-2)' }}>
-                      {section.label}
-                    </div>
-                    <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-3)' }}>
-                      {section.detail}
+                    <div className="flex items-center gap-2.5">
+                      <SectionIcon size={15} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} />
+                      <div className="min-w-0"><div className="text-sm font-medium" style={{ color: active ? 'var(--text)' : 'var(--text-2)' }}>{section.label}</div><div className="truncate text-[11px] mt-0.5" style={{ color: 'var(--text-3)' }}>{section.detail}</div></div>
                     </div>
                   </button>
                 )
@@ -1770,19 +1816,23 @@ export function SettingsModal() {
           </div>
         </div>
 
-        <div
-          className="flex justify-end px-5 py-4"
-          style={{ borderTop: '1px solid var(--border)' }}
-        >
-          <Button
-            variant="secondary"
-            size="md"
-            onClick={() => setSettingsOpen(false)}
-          >
-            Close
-          </Button>
-        </div>
       </div>
+      {pendingDelete && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'rgba(0,0,0,.35)' }} onClick={(event) => { if (event.target === event.currentTarget) setPendingDelete(null) }}>
+          <div role="alertdialog" aria-modal="true" aria-label={`Delete ${pendingDelete.name}`} className="w-full max-w-md rounded-xl animate-slide-in" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
+            <div className="px-5 py-4 text-sm font-semibold" style={{ color: 'var(--text)', borderBottom: '1px solid var(--border)' }}>Delete {pendingDelete.kind === 'theme' ? 'theme' : 'editor group'}?</div>
+            <div className="p-5 text-sm" style={{ color: 'var(--text-2)' }}>“{pendingDelete.name}” will be permanently deleted. This cannot be undone or restored.</div>
+            <div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
+              <Button size="sm" onClick={() => setPendingDelete(null)}>Cancel</Button>
+              <Button size="sm" variant="danger" onClick={() => {
+                if (pendingDelete.kind === 'theme') void removeSelectedTheme()
+                else saveEditorSettings(editorAssociationsDraft.filter((item) => item.id !== pendingDelete.id))
+                setPendingDelete(null)
+              }}>Delete permanently</Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

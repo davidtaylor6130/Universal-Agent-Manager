@@ -89,6 +89,7 @@ describe('SessionItem status icons', () => {
       cliTranscriptBySessionId: {},
       isNewChatModalOpen: false,
       newChatFolderId: null,
+      resourceCollections: [],
     })
   })
 
@@ -171,7 +172,7 @@ describe('SessionItem status icons', () => {
     const sessionRow = host.querySelector('.cursor-pointer') as HTMLElement
     expect(sessionRow.style.borderLeft).toContain('rgb(249, 115, 22)')
     act(() => sessionRow.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
-    const paneTwo = host.querySelector('button[aria-label="Show Chat 1 in pane 2"]') as HTMLButtonElement
+    const paneTwo = document.body.querySelector('button[aria-label="Show Chat 1 in pane 2"]') as HTMLButtonElement
     expect(paneTwo).toBeTruthy()
     expect(paneTwo.textContent).toBe('')
     act(() => paneTwo.click())
@@ -181,6 +182,38 @@ describe('SessionItem status icons', () => {
     expect(useAppStore.getState().activeSessionId).toBe('chat-1')
     expect(sessionRow.style.borderLeft).toContain('rgb(236, 72, 153)')
 
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('hides pane assignment noise in single-chat view', () => {
+    writeChatGridLayout(defaultChatGridLayout)
+    const { host, root } = renderSessionItem()
+
+    act(() => (host.querySelector('.cursor-pointer') as HTMLElement).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
+    const menu = document.body.querySelector('[data-viewport-menu]') as HTMLElement
+    expect(menu.textContent).not.toContain('Show in pane')
+    expect(menu.querySelector('button[aria-label^="Show Chat 1 in pane"]')).toBeNull()
+    expect(menu.textContent).toContain('Rename')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('moves a chat to a collection from its right-click menu', async () => {
+    const addResourceReference = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({
+      resourceCollections: [{ id: 'work', name: 'Work', collapsed: false, references: [] }],
+      addResourceReference,
+      removeResourceReference: vi.fn().mockResolvedValue(true),
+    })
+    const { host, root } = renderSessionItem()
+    act(() => (host.querySelector('.cursor-pointer') as HTMLElement).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
+    const move = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('Move to collection'))
+    act(() => move?.click())
+    const work = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.trim() === 'Work')
+    await act(async () => { work?.click(); await Promise.resolve() })
+    expect(addResourceReference).toHaveBeenCalledWith('work', 'chat', 'chat-1', 'Chat 1')
     act(() => root.unmount())
     host.remove()
   })

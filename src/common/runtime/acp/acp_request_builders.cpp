@@ -177,13 +177,17 @@ nlohmann::json BuildCodexSessionSetupRequest(int request_id, const ChatSession& 
 	return BuildCodexThreadResumeRequest(request_id, resume_chat, cwd);
 }
 
-nlohmann::json BuildPromptRequest(int request_id, const std::string& session_id, const std::string& text)
+nlohmann::json BuildPromptRequest(int request_id, const std::string& session_id, const std::string& text, const std::string& reasoning_effort)
 {
-	return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kSessionPrompt,
-	                                  {
-	                                      {"sessionId", session_id},
-	                                      {"prompt", nlohmann::json::array({uam::acp_content::TextPart(text)})},
-	                                  });
+	nlohmann::json params = {
+	    {"sessionId", session_id},
+	    {"prompt", nlohmann::json::array({uam::acp_content::TextPart(text)})},
+	};
+	if (!reasoning_effort.empty())
+	{
+		params["reasoningEffort"] = reasoning_effort;
+	}
+	return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kSessionPrompt, std::move(params));
 }
 
 nlohmann::json BuildCodexTurnStartRequest(int request_id, const std::string& thread_id, const std::string& text, const ChatSession& chat, const std::string& active_model_id)

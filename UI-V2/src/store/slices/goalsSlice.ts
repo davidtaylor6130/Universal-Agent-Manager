@@ -9,11 +9,11 @@ export function createGoalsSlice(set: ZustandSet, get: ZustandGet) {
     goalModeByChatId: {} as Record<string, boolean>,
     defaultGoalTokenBudgetByChatId: {} as Record<string, number>,
 
-    setGoal: async (chatId: string, objective: string, tokenBudget = 0): Promise<string | null> => {
+	setGoal: async (chatId: string, objective: string, tokenBudget = 0, executionOwner: 'uam' | 'provider' = 'uam'): Promise<string | null> => {
       if (isCefContext()) {
         const response = await sendToCEF<{ goalId: string }>({
           action: 'setGoal',
-          payload: { chatId, objective, tokenBudget },
+		  payload: { chatId, objective, tokenBudget, executionOwner },
           requestId: createRequestId('setGoal'),
         })
         if (response.ok && response.data?.goalId) {
@@ -41,6 +41,8 @@ export function createGoalsSlice(set: ZustandSet, get: ZustandGet) {
         loopCount: 0,
         createdAt: now,
         updatedAt: now,
+		executionOwner,
+		providerCommand: executionOwner === 'provider' ? get().providers.find((provider) => provider.id === get().sessions.find((session) => session.id === chatId)?.providerId)?.nativeGoalCommand ?? '' : '',
       }
       set((state: AppState) => ({
         goalsByChatId: {

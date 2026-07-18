@@ -124,6 +124,8 @@ struct Goal
 	int loop_count = 0;
 	std::string created_at;
 	std::string updated_at;
+	std::string execution_owner = "uam";
+	std::string provider_command;
 };
 
 /// <summary>
@@ -167,6 +169,7 @@ struct ChatSession
 	std::string memory_last_processed_at;
 	std::vector<Goal> goals;
 	std::string active_goal_id;
+	std::string memory_level = "strict";
 };
 
 struct MemoryWorkerBinding
@@ -191,6 +194,7 @@ struct ProviderChatDefaults
 	bool memory_enabled = true;
 	std::string reasoning_effort;
 	std::string service_tier;
+	std::string memory_level = "strict";
 };
 
 /// <summary>
@@ -270,6 +274,13 @@ struct AppSettings
 	std::string default_editor_preset_id = "vscode";
 	int editor_default_groups_version = 0;
 	std::vector<EditorFileAssociation> editor_file_associations;
+	std::string memory_level_default = "strict";
+	std::string voice_input_mode = "system";
+	std::string voice_input_server_base_url = "https://api.openai.com";
+	std::string voice_input_server_endpoint = "/v1/audio/transcriptions";
+	std::string voice_input_server_model = "whisper-1";
+	// A credential environment-variable name is persisted; the credential itself never is.
+	std::string voice_input_api_key_env = "OPENAI_API_KEY";
 };
 
 /// <summary>

@@ -102,6 +102,37 @@ UAM_TEST(CliLifecycleTransitionsDriveBackgroundShutdownEligibility)
 	UAM_ASSERT(app.chats_with_unseen_updates.empty());
 }
 
+UAM_TEST(CliTerminalSteeringInputIsBracketedAndDropsUnsafeControls)
+{
+	const std::string input = uam::BuildCliTerminalPromptInput(std::string_view("xx  Change\x1b[31m direction\nnow  yy").substr(2, 30));
+	UAM_ASSERT(input.starts_with("\x1b[200~"));
+	UAM_ASSERT(input.ends_with("\x1b[201~\r"));
+	UAM_ASSERT(input.find('\x1b', 1) == std::string::npos || input.find('\x1b', 1) == input.size() - 7);
+	UAM_ASSERT(input.find("Change[31m direction\nnow") != std::string::npos);
+	UAM_ASSERT(uam::BuildCliTerminalPromptInput(" \x01\x02 ").empty());
+
+	uam::CliTerminalState terminal;
+	terminal.running = true;
+	uam::MarkCliTerminalTurnBusy(terminal);
+	std::string error;
+	UAM_ASSERT(!uam::RequestCliTerminalSteer(terminal, "Preserve this", false, &error));
+	UAM_ASSERT_EQ(terminal.pending_steer_prompt, std::string("Preserve this"));
+	UAM_ASSERT(error.find("retained for retry") != std::string::npos);
+	UAM_ASSERT(!uam::RequestCliTerminalSteer(terminal, "Duplicate", false, &error));
+	UAM_ASSERT_EQ(terminal.pending_steer_prompt, std::string("Preserve this"));
+	UAM_ASSERT(!uam::RequestCliTerminalSteer(terminal, "Changed retry", true, &error));
+	UAM_ASSERT_EQ(terminal.pending_steer_prompt, std::string("Preserve this"));
+
+	terminal.pending_steer_started_time_s = 100.0;
+	terminal.pending_steer_restart_attempted = false;
+	UAM_ASSERT_EQ(uam::CliTerminalSteerRecovery(terminal, 102.9), uam::CliTerminalSteerRecoveryAction::None);
+	UAM_ASSERT_EQ(uam::CliTerminalSteerRecovery(terminal, 103.0), uam::CliTerminalSteerRecoveryAction::Restart);
+	terminal.pending_steer_restart_attempted = true;
+	terminal.last_error.clear();
+	UAM_ASSERT_EQ(uam::CliTerminalSteerRecovery(terminal, 109.9), uam::CliTerminalSteerRecoveryAction::None);
+	UAM_ASSERT_EQ(uam::CliTerminalSteerRecovery(terminal, 110.0), uam::CliTerminalSteerRecoveryAction::ReportTimeout);
+}
+
 UAM_TEST(CliTerminalActiveHelpersUseTrimmedIdentity)
 {
 	uam::AppState app;

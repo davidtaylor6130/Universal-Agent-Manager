@@ -1,6 +1,6 @@
-import { ArrowUpCircle, ExternalLink, RefreshCw, X } from 'lucide-react'
+import { ArrowUpCircle, Download, ExternalLink, RefreshCw, X } from 'lucide-react'
 import type { UpdateMonitor } from '../../hooks/useUpdateMonitor'
-import { Button, IconButton } from '../ui'
+import { IconButton } from '../ui'
 
 export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onClose: () => void }) {
   const checked = monitor.lastCheckedAt ? new Date(monitor.lastCheckedAt) : null
@@ -57,18 +57,12 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {update.providerId && update.installable ? (
-                    <Button size="sm" variant="primary" disabled={monitor.providerChecksRunning} onClick={() => { void monitor.applyCliProviderVersion(update.providerId!, update.latestVersion) }}>
-                      Update now
-                    </Button>
+                    <IconButton size="sm" variant="solid" icon={<Download size={14} />} label={`Update ${update.name} to ${update.latestVersion}`} disabled={monitor.providerChecksRunning} onClick={() => { void monitor.applyCliProviderVersion(update.providerId!, update.latestVersion) }} />
                   ) : (
-                    <Button size="sm" variant="primary" onClick={() => window.open(update.url, '_blank', 'noopener')}>
-                      View release <ExternalLink size={13} />
-                    </Button>
+                    <IconButton size="sm" variant="solid" icon={<ExternalLink size={14} />} label={`View ${update.name} ${update.latestVersion} release`} onClick={() => window.open(update.url, '_blank', 'noopener')} />
                   )}
                   {update.providerId && (
-                    <Button size="sm" variant="secondary" onClick={() => window.open(update.url, '_blank', 'noopener')}>
-                      Instructions <ExternalLink size={13} />
-                    </Button>
+                    <IconButton size="sm" icon={<ExternalLink size={14} />} label={`Open ${update.name} update instructions`} onClick={() => window.open(update.url, '_blank', 'noopener')} />
                   )}
                 </div>
               </article>
@@ -78,10 +72,8 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
       </div>
 
       <footer className="flex items-center justify-between gap-2 p-3" style={{ borderTop: '1px solid var(--border)' }}>
-        <Button size="sm" variant="secondary" leadingIcon={<RefreshCw size={14} className={monitor.checking ? 'animate-spin' : ''} />} disabled={monitor.checking} onClick={() => { void monitor.checkNow() }}>
-          {monitor.checking ? 'Checking…' : 'Check now'}
-        </Button>
-        {monitor.updates.length > 0 && <Button size="sm" variant="ghost" onClick={monitor.dismissAll}>Dismiss all</Button>}
+        <IconButton size="sm" icon={<RefreshCw size={14} className={monitor.checking ? 'animate-spin' : ''} />} label={monitor.checking ? 'Checking for updates' : 'Check for updates'} aria-busy={monitor.checking} disabled={monitor.checking} onClick={() => { void monitor.checkNow() }} />
+        {monitor.updates.length > 0 && <IconButton size="sm" icon={<X size={14} />} label="Dismiss all updates" onClick={monitor.dismissAll} />}
       </footer>
     </aside>
   )

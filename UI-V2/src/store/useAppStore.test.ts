@@ -666,6 +666,42 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(state.cliBindingBySessionId['chat-1']).toBeUndefined()
   })
 
+  it('continues streaming into an authoritative assistant message during an active ACP turn', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    testWindow.cefQuery = ({ onSuccess }) => {
+      const initialState = makeCppState(1)
+      initialState.chats.push({
+        ...initialState.chats[0],
+        id: 'chat-2',
+        title: 'Background session',
+        messages: [
+          { role: 'assistant', content: 'First', createdAt: '2026-01-01T00:00:00.000Z' },
+        ],
+        acpSession: {
+          sessionId: 'acp-chat-2',
+          running: true,
+          processing: true,
+          lifecycleState: 'processing',
+        },
+      })
+      onSuccess(JSON.stringify(initialState))
+    }
+
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    testWindow.uamPush?.({ type: 'streamToken', chatId: 'chat-2', token: ' second' })
+    await new Promise((resolve) => setTimeout(resolve, 80))
+
+    const messages = cefStore.getState().messages['chat-2']
+    expect(messages[messages.length - 1]).toMatchObject({
+      content: 'First second',
+      isStreaming: true,
+    })
+  })
+
   it('applies selected chat patches with hydrated messages and chat order', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()
@@ -921,6 +957,7 @@ describe('useAppStore Gemini CLI slice', () => {
         approvalMode: 'default',
         autoApproveCommands: false,
         memoryEnabled: true,
+        memoryLevel: 'strict',
         reasoningEffort: '',
         serviceTier: '',
       },
@@ -987,6 +1024,7 @@ describe('useAppStore Gemini CLI slice', () => {
         approvalMode: 'default',
         autoApproveCommands: false,
         memoryEnabled: true,
+        memoryLevel: 'strict',
         reasoningEffort: '',
         serviceTier: '',
       },
@@ -1030,6 +1068,7 @@ describe('useAppStore Gemini CLI slice', () => {
         approvalMode: 'plan',
         autoApproveCommands: true,
         memoryEnabled: false,
+        memoryLevel: 'off',
         reasoningEffort: 'high',
         serviceTier: 'fast',
       },
@@ -1268,6 +1307,11 @@ describe('useAppStore Gemini CLI slice', () => {
           viewMode: 'chat',
           folderId: 'default',
           modelId: '',
+          reasoningEffort: 'high',
+          serviceTier: 'flex',
+          approvalMode: 'plan',
+          commandSafetyTier: 'low',
+          memoryLevel: 'balanced',
           createdAt: now,
           updatedAt: now,
         },
@@ -1298,6 +1342,11 @@ describe('useAppStore Gemini CLI slice', () => {
           viewMode: 'chat',
           folderId: 'default',
           modelId: '',
+          reasoningEffort: 'high',
+          serviceTier: 'flex',
+          approvalMode: 'plan',
+          commandSafetyTier: 'low',
+          memoryLevel: 'balanced',
           createdAt: now,
           updatedAt: now,
         },
@@ -1309,7 +1358,14 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(requests).toHaveLength(1)
     expect(requests[0].action).toBe('setChatModel')
     expect(requests[0].payload).toEqual({ chatId: 'chat-1', modelId: 'auto-gemini-3' })
-    expect(useAppStore.getState().sessions[0].modelId).toBe('auto-gemini-3')
+    expect(useAppStore.getState().sessions[0]).toMatchObject({
+      modelId: 'auto-gemini-3',
+      reasoningEffort: 'high',
+      serviceTier: 'flex',
+      approvalMode: 'plan',
+      commandSafetyTier: 'low',
+      memoryLevel: 'balanced',
+    })
   })
 
   it('sends Codex reasoning and speed changes through CEF and rolls back on failure', async () => {
@@ -1350,18 +1406,41 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().sessions[0].reasoningEffort).toBe('high')
     expect(useAppStore.getState().sessions[0].serviceTier).toBe('fast')
 
+    await expect(useAppStore.getState().setSessionCodexOptions('chat-1', { reasoningEffort: 'medium' })).resolves.toBe(true)
+    expect(requests[1].payload).toEqual({ chatId: 'chat-1', reasoningEffort: 'medium', serviceTier: 'fast' })
+    await expect(useAppStore.getState().setSessionCodexOptions('chat-1', { serviceTier: 'flex' })).resolves.toBe(true)
+    expect(requests[2].payload).toEqual({ chatId: 'chat-1', reasoningEffort: 'medium', serviceTier: 'flex' })
+
     rejectNext = true
     await expect(useAppStore.getState().setSessionCodexOptions('chat-1', {
       reasoningEffort: 'low',
       serviceTier: 'flex',
     })).resolves.toBe(false)
 
-    expect(requests[1].payload).toEqual({ chatId: 'chat-1', reasoningEffort: 'low', serviceTier: 'flex' })
-    expect(useAppStore.getState().sessions[0].reasoningEffort).toBe('high')
-    expect(useAppStore.getState().sessions[0].serviceTier).toBe('fast')
+    expect(requests[3].payload).toEqual({ chatId: 'chat-1', reasoningEffort: 'low', serviceTier: 'flex' })
+    expect(useAppStore.getState().sessions[0].reasoningEffort).toBe('medium')
+    expect(useAppStore.getState().sessions[0].serviceTier).toBe('flex')
   })
 
-  it('keeps pending Codex reasoning and speed when stale backend state arrives before CEF success', async () => {
+  it('changes Auto Decide without altering model reasoning or speed', async () => {
+    const now = new Date()
+    window.cefQuery = ({ onSuccess }) => onSuccess('{}')
+    useAppStore.setState({
+      sessions: [{
+        id: 'chat-1', name: 'Codex Session', viewMode: 'chat', folderId: 'default', providerId: 'codex-cli',
+        reasoningEffort: 'xhigh', serviceTier: 'flex', commandSafetyTier: 'off', createdAt: now, updatedAt: now,
+      }],
+    })
+
+    await expect(useAppStore.getState().setSessionCommandSafetyTier('chat-1', 'medium')).resolves.toBe(true)
+    expect(useAppStore.getState().sessions[0]).toMatchObject({
+      commandSafetyTier: 'medium',
+      reasoningEffort: 'xhigh',
+      serviceTier: 'flex',
+    })
+  })
+
+  it('keeps pending Codex reasoning when CEF succeeds before a stale permissions patch', async () => {
     const now = new Date()
     const cefSuccess: { current: ((response: string) => void) | null } = { current: null }
     window.cefQuery = ({ onSuccess }) => {
@@ -1385,25 +1464,34 @@ describe('useAppStore Gemini CLI slice', () => {
     })
 
     const change = useAppStore.getState().setSessionCodexOptions('chat-1', {
-      reasoningEffort: 'high',
+      reasoningEffort: 'xhigh',
       serviceTier: 'fast',
     })
 
-    expect(useAppStore.getState().sessions[0].reasoningEffort).toBe('high')
-    expect(useAppStore.getState().sessions[0].serviceTier).toBe('fast')
-
-    const staleState = makeCppState(1)
-    staleState.chats[0].providerId = 'codex-cli'
-    staleState.chats[0].reasoningEffort = 'medium'
-    staleState.chats[0].serviceTier = 'flex'
-    useAppStore.getState().loadFromCef(staleState)
-
-    expect(useAppStore.getState().sessions[0].reasoningEffort).toBe('high')
+    expect(useAppStore.getState().sessions[0].reasoningEffort).toBe('xhigh')
     expect(useAppStore.getState().sessions[0].serviceTier).toBe('fast')
 
     expect(cefSuccess.current).toBeTruthy()
     cefSuccess.current?.('{}')
     await expect(change).resolves.toBe(true)
+
+    const staleState = makeCppState(1)
+    staleState.chats[0].providerId = 'codex-cli'
+    staleState.chats[0].reasoningEffort = 'medium'
+    staleState.chats[0].serviceTier = 'flex'
+    staleState.chats[0].commandSafetyTier = 'medium'
+    useAppStore.getState().loadFromCef(staleState)
+
+    expect(useAppStore.getState().sessions[0].reasoningEffort).toBe('xhigh')
+    expect(useAppStore.getState().sessions[0].serviceTier).toBe('fast')
+
+    const confirmedState = makeCppState(2)
+    confirmedState.chats[0].providerId = 'codex-cli'
+    confirmedState.chats[0].reasoningEffort = 'xhigh'
+    confirmedState.chats[0].serviceTier = 'fast'
+    confirmedState.chats[0].commandSafetyTier = 'medium'
+    useAppStore.getState().loadFromCef(confirmedState)
+    expect(useAppStore.getState().sessions[0].reasoningEffort).toBe('xhigh')
   })
 
   it('sends provider chat defaults through CEF and rolls back on failure', async () => {
@@ -1454,6 +1542,7 @@ describe('useAppStore Gemini CLI slice', () => {
         approvalMode: 'acceptEdits',
         autoApproveCommands: true,
         memoryEnabled: false,
+        memoryLevel: 'off',
         reasoningEffort: 'xhigh',
         serviceTier: 'fast',
       },
@@ -1462,6 +1551,7 @@ describe('useAppStore Gemini CLI slice', () => {
         approvalMode: 'plan',
         autoApproveCommands: false,
         memoryEnabled: true,
+        memoryLevel: 'strict',
         reasoningEffort: '',
         serviceTier: '',
       },
@@ -1530,6 +1620,7 @@ describe('useAppStore Gemini CLI slice', () => {
         approvalMode: 'plan',
         autoApproveCommands: true,
         memoryEnabled: false,
+        memoryLevel: 'off' as const,
         reasoningEffort: 'high',
         serviceTier: 'fast',
       },
@@ -1656,17 +1747,22 @@ describe('useAppStore Gemini CLI slice', () => {
     }
     useAppStore.setState({
       sessions: [{
-        id: 'chat-1', name: 'Chat', viewMode: 'chat', folderId: 'default', commandSafetyTier: 'medium', createdAt: now, updatedAt: now,
+        id: 'chat-1', name: 'Chat', viewMode: 'chat', folderId: 'default', commandSafetyTier: 'medium', approvalMode: 'plan', reasoningEffort: 'high', serviceTier: 'flex', memoryLevel: 'balanced', createdAt: now, updatedAt: now,
       }],
     })
 
     await expect(useAppStore.getState().setSessionCommandSafetyTier('chat-1', 'low')).resolves.toBe(true)
     expect(requests[0]).toMatchObject({ action: 'setChatCommandSafetyTier', payload: { chatId: 'chat-1', commandSafetyTier: 'low' } })
-    expect(useAppStore.getState().sessions[0].commandSafetyTier).toBe('low')
+    expect(useAppStore.getState().sessions[0]).toMatchObject({ commandSafetyTier: 'low', approvalMode: 'plan', reasoningEffort: 'high', serviceTier: 'flex', memoryLevel: 'balanced' })
+
+    await expect(useAppStore.getState().setSessionCommandSafetyTier('chat-1', 'yolo')).resolves.toBe(true)
+    expect(requests[1]).toMatchObject({ payload: { commandSafetyTier: 'yolo' } })
+    await expect(useAppStore.getState().setSessionCommandSafetyTier('chat-1', 'off')).resolves.toBe(true)
+    expect(requests[2]).toMatchObject({ payload: { commandSafetyTier: 'off' } })
 
     rejectNext = true
     await expect(useAppStore.getState().setSessionCommandSafetyTier('chat-1', 'high')).resolves.toBe(false)
-    expect(useAppStore.getState().sessions[0].commandSafetyTier).toBe('low')
+    expect(useAppStore.getState().sessions[0].commandSafetyTier).toBe('off')
   })
 
   it('sends planning mode changes when the live runtime mode differs from the saved chat mode', async () => {
@@ -2263,8 +2359,9 @@ describe('useAppStore Gemini CLI slice', () => {
 
     await expect(useAppStore.getState().setSessionMemoryEnabled('chat-1', true)).resolves.toBe(true)
     expect(requests[0].action).toBe('setChatMemoryEnabled')
-    expect(requests[0].payload).toEqual({ chatId: 'chat-1', enabled: true })
+    expect(requests[0].payload).toEqual({ chatId: 'chat-1', enabled: true, memoryLevel: 'strict' })
     expect(useAppStore.getState().sessions[0].memoryEnabled).toBe(true)
+    expect(useAppStore.getState().sessions[0].memoryLevel).toBe('strict')
   })
 
   it('persists editor settings through CEF', async () => {
@@ -2369,6 +2466,26 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(requests[0].payload?.idleDelaySeconds).toBe(30)
     expect(requests[0].payload?.recallBudgetBytes).toBe(8192)
     expect(requests[0].payload?.goalMaxLoopIterations).toBe(0)
+  })
+
+  it('persists voice input settings without sending a credential value', async () => {
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
+      onSuccess('{}')
+    }
+    await expect(useAppStore.getState().setVoiceInputSettings({
+      voiceInputMode: 'server',
+      voiceInputServerBaseUrl: 'https://speech.example.com',
+      voiceInputServerEndpoint: '/v1/audio/transcriptions',
+      voiceInputServerModel: 'whisper-1',
+      voiceInputApiKeyEnv: 'SPEECH_API_KEY',
+    })).resolves.toBe(true)
+    expect(requests[0]).toMatchObject({
+      action: 'setVoiceInputSettings',
+      payload: { mode: 'server', serverBaseUrl: 'https://speech.example.com', serverEndpoint: '/v1/audio/transcriptions', serverModel: 'whisper-1', apiKeyEnv: 'SPEECH_API_KEY' },
+    })
+    expect(JSON.stringify(requests[0])).not.toContain('secret')
   })
 
   it('loads the global memory library through CEF', async () => {
@@ -2711,6 +2828,45 @@ describe('useAppStore Gemini CLI slice', () => {
     const promptRequest = requests.find((request) => request.action === 'sendAcpPrompt')
     expect(promptRequest?.payload?.goalId).toBe('goal-1')
     expect(promptRequest?.payload?.goalMode).toBe(true)
+    expect(promptRequest?.payload?.steerNow).toBe(false)
+
+    await expect(useAppStore.getState().sendAcpPrompt('chat-1', 'steer now', [], true)).resolves.toBe(true)
+    expect(requests[requests.length - 1]?.payload?.steerNow).toBe(true)
+  })
+
+  it('requests non-blocking provider model discovery and marks the selector loading', async () => {
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    ensureTestWindow().cefQuery = ((params: { request: string; onSuccess?: (response: string) => void }) => {
+      const parsed = JSON.parse(params.request)
+      requests.push(parsed)
+      params.onSuccess?.(JSON.stringify({ started: true, pending: true }))
+    }) as unknown as TestWindow['cefQuery']
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], availableModels: [], modelsLoading: false },
+      },
+    }))
+
+    await expect(useAppStore.getState().discoverProviderModels('chat-1')).resolves.toBe(true)
+    expect(requests).toContainEqual(expect.objectContaining({ action: 'discoverProviderModels', payload: { chatId: 'chat-1' } }))
+    expect(useAppStore.getState().acpBindingBySessionId['chat-1'].modelsLoading).toBe(true)
+  })
+
+  it('removes and prioritizes individual queued ACP prompts through one backend action', async () => {
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    ensureTestWindow().cefQuery = ((params: { request: string; onSuccess?: (response: string) => void }) => {
+      requests.push(JSON.parse(params.request))
+      params.onSuccess?.('{}')
+    }) as unknown as TestWindow['cefQuery']
+
+    await expect(useAppStore.getState().removeQueuedAcpPrompt('chat-1', 2)).resolves.toBe(true)
+    await expect(useAppStore.getState().steerQueuedAcpPrompt('chat-1', 1)).resolves.toBe(true)
+
+    expect(requests.map(({ action, payload }) => ({ action, payload }))).toEqual([
+      { action: 'manageQueuedAcpPrompt', payload: { chatId: 'chat-1', operation: 'remove', index: 2 } },
+      { action: 'manageQueuedAcpPrompt', payload: { chatId: 'chat-1', operation: 'steer', index: 1 } },
+    ])
   })
 
   it('loads queued ACP prompt payloads and blocks provider switching until they clear', async () => {

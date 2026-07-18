@@ -1,8 +1,8 @@
 // ComposerToolbar: message input toolbar with model/mode pickers and
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
 
-import { KeyboardEvent as ReactKeyboardEvent, RefObject, useEffect, useId, useRef, useState } from 'react'
-import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Settings2, Target, ClipboardList, Shield, ShieldAlert, ShieldCheck, Sparkles, Mic, Square } from 'lucide-react'
+import { KeyboardEvent as ReactKeyboardEvent, RefObject, type ReactNode, useEffect, useId, useRef, useState } from 'react'
+import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Settings2, Target, ClipboardList, Cpu, Shield, ShieldAlert, ShieldCheck, Sparkles, Mic, Square, X } from 'lucide-react'
 import type { AcpBinding } from '../../store/useAppStore'
 import type { Goal } from '../../types/goal'
 import type { Provider } from '../../types/provider'
@@ -17,8 +17,10 @@ import {
   buildCodexSpeedOptions,
   buildModelOptions,
   modelOptionFor,
+  selectedRuntimeModel,
 } from './modelOptions'
-import { MenuSelect } from '../ui'
+import { MenuSelect, ViewportMenu } from '../ui'
+import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 
 export type ComposerIconName = 'editor' | 'folder' | 'git-tree' | 'markdown' | 'plus' | 'send' | 'terminal'
 export type DictationState = 'idle' | 'starting' | 'listening' | 'stopping'
@@ -28,6 +30,19 @@ export const COMMAND_SAFETY_TIERS = [
   { id: 'medium', label: 'Medium', detail: 'Balanced command warnings.' },
   { id: 'high', label: 'High', detail: 'Warn before more potentially risky commands.' },
 ] as const
+
+export const PERMISSION_MODES = [
+  { id: 'default', name: 'Default', description: 'Ask before commands and file changes.' },
+  { id: 'acceptEdits', name: 'Accept Edits', description: 'Automatically approve workspace file edits.' },
+  { id: 'yolo', name: 'YOLO', description: 'Automatically approve every permission request.' },
+  { id: 'auto', name: 'Auto Decide', description: 'Automatically approve requests allowed by command safety.' },
+] as const
+
+export type CommandSafetyTier = 'off' | 'acceptEdits' | 'low' | 'medium' | 'high' | 'yolo'
+
+export function permissionModeForTier(tier: CommandSafetyTier): 'default' | 'acceptEdits' | 'yolo' | 'auto' {
+  return tier === 'off' ? 'default' : tier === 'acceptEdits' ? 'acceptEdits' : tier === 'yolo' ? 'yolo' : 'auto'
+}
 
 export function acpRuntimeBlocksControlChanges(acp?: AcpBinding | null): boolean {
   return Boolean(
@@ -62,9 +77,14 @@ export function ComposerIcon({ name, size = 14 }: { name: ComposerIconName; size
 
 export function permissionModeIcon(id: string, size = 14) {
   if (id === 'auto') return <Sparkles size={size} />
-  if (id === 'plan') return <ClipboardList size={size} />
+  if (id === 'yolo') return <ShieldAlert size={size} />
   if (id === 'acceptEdits') return <SquarePen size={size} />
+  if (id === 'plan') return <ClipboardList size={size} />
   return <ShieldCheck size={size} />
+}
+
+function ActiveModeChip({ label, icon, onClear }: { label: string; icon: ReactNode; onClear: () => void }) {
+  return <button type="button" aria-label={`Disable ${label}`} onClick={onClear} className="uam-choice-button inline-flex h-[26px] items-center gap-1.5 rounded-md px-2 text-[11px]" style={{ border: '1px solid var(--border-bright)', background: 'var(--surface-up)', color: 'var(--text-2)' }}>{icon}<span>{label}</span><X size={11} aria-hidden style={{ color: 'var(--text-3)' }} /></button>
 }
 
 export function ComposerToolbar({
@@ -80,10 +100,11 @@ export function ComposerToolbar({
   serviceTier,
   approvalModeId,
   permissionModeId,
-  permissionModes,
-  autoApproveCommands,
+  agentModes,
   commandSafetyTier,
-  memoryEnabled,
+  memoryLevel,
+  defaultMemoryLevel,
+  memoryChipVisible,
   canChangeProvider,
   providerOpen,
   modelOpen,
@@ -98,12 +119,11 @@ export function ComposerToolbar({
   onSelectModel,
   onSelectReasoning,
   onSelectSpeed,
-  onTogglePlan,
-  onToggleAcceptEdits,
-  onToggleYolo,
+  onSelectAgentMode,
   onSelectPermissionMode,
   onSetCommandSafetyTier,
-  onToggleMemory,
+  onSelectMemoryLevel,
+  onClearMemoryLevel,
   goalArmed,
   goalActive,
   goalPaused,
@@ -115,6 +135,7 @@ export function ComposerToolbar({
   onOpenMarkdownStore,
   dictationState,
   dictationError,
+  dictationElapsedSeconds,
   dictationAvailable,
   onToggleDictation,
 }: {
@@ -130,10 +151,11 @@ export function ComposerToolbar({
   serviceTier?: string
   approvalModeId?: string
   permissionModeId: string
-  permissionModes: Array<{ id: string; name: string; description?: string }>
-  autoApproveCommands: boolean
-  commandSafetyTier: 'low' | 'medium' | 'high'
-  memoryEnabled: boolean
+  agentModes: Array<{ id: string; name: string; description?: string }>
+  commandSafetyTier: CommandSafetyTier
+  memoryLevel: MemoryLevel
+  defaultMemoryLevel: MemoryLevel
+  memoryChipVisible: boolean
   canChangeProvider: boolean
   providerOpen: boolean
   modelOpen: boolean
@@ -148,12 +170,11 @@ export function ComposerToolbar({
   onSelectModel: (modelId: string) => void
   onSelectReasoning: (reasoningEffort: string) => void
   onSelectSpeed: (serviceTier: string) => void
-  onTogglePlan: () => void
-  onToggleAcceptEdits: () => void
-  onToggleYolo: () => void
+  onSelectAgentMode: (modeId: string) => void
   onSelectPermissionMode: (modeId: string) => void
   onSetCommandSafetyTier: (tier: 'low' | 'medium' | 'high') => void
-  onToggleMemory: () => void
+  onSelectMemoryLevel: (level: MemoryLevel) => void
+  onClearMemoryLevel: () => void
   goalArmed: boolean
   goalActive: boolean
   goalPaused: boolean
@@ -165,30 +186,26 @@ export function ComposerToolbar({
   onOpenMarkdownStore: () => void
   dictationState: DictationState
   dictationError?: string
+  dictationElapsedSeconds: number
   dictationAvailable: boolean
   onToggleDictation: () => void
 }) {
   const caps = providerCapabilities(providerId, provider)
   const modelOptions = buildModelOptions(acp, modelId ?? '', provider, providerId)
   const currentModel = modelOptionFor(modelOptions, modelId)
-  const reasoningOptions = caps.hasReasoningEffort ? buildCodexReasoningOptions(acp, currentModel.id, reasoningEffort ?? '') : []
+  const runtimeSupportsReasoning = (selectedRuntimeModel(acp, currentModel.id)?.supportedReasoningEfforts?.length ?? 0) > 0
+  const reasoningOptions = caps.hasReasoningEffort || runtimeSupportsReasoning ? buildCodexReasoningOptions(acp, currentModel.id, reasoningEffort ?? '') : []
+  const hasReasoningEffort = reasoningOptions.length > 0
   const speedOptions = caps.hasServiceTier ? buildCodexSpeedOptions(acp, currentModel.id, serviceTier ?? '') : []
   const currentReasoning = modelOptionFor(reasoningOptions, reasoningEffort)
   const currentSpeed = modelOptionFor(speedOptions, serviceTier)
+  const defaultReasoningEffort = selectedRuntimeModel(acp, currentModel.id)?.defaultReasoningEffort ?? ''
   const providerOptions = providers.length > 0 ? providers : [provider]
   const modelDisabled = acpRuntimeBlocksControlChanges(acp)
   const planActive = approvalModeId === 'plan'
-  const acceptEditsActive = approvalModeId === 'acceptEdits'
-  const yoloActive = autoApproveCommands
-  const hasRuntimeModes = Boolean(acp?.running && acp.availableModes.length > 0)
-  const planAvailable = !hasRuntimeModes || acp?.availableModes.some((mode) => mode.id === 'plan')
-  const acceptEditsAvailable = caps.hasAcceptEditsMode && (!hasRuntimeModes || acp?.availableModes.some((mode) => mode.id === 'acceptEdits'))
-  const yoloAvailable = true
-  const planDisabled = Boolean(modelDisabled || !planAvailable)
-  const acceptEditsDisabled = Boolean(modelDisabled || !acceptEditsAvailable)
-  const yoloDisabled = false
-  const memoryDisabled = Boolean(modelDisabled)
-  const autoLabel = 'Auto Decide'
+  const memoryDisabled = false
+  const permissionModes = PERMISSION_MODES.filter((mode) => mode.id !== 'acceptEdits' || caps.hasAcceptEditsMode)
+  const permissionMode = permissionModes.find((mode) => mode.id === permissionModeId) ?? permissionModes[0]
   const running = Boolean(acp?.processing)
   const dictationVisualState = dictationError ? 'error' : dictationState
   const dictationLabel = !dictationAvailable
@@ -202,12 +219,21 @@ export function ComposerToolbar({
           : dictationState === 'stopping'
             ? 'Finishing dictation'
             : 'Start dictation'
+  const dictationActive = dictationState !== 'idle' || Boolean(dictationError)
+  const dictationStatusText = dictationError || (dictationState === 'starting'
+    ? 'Starting dictation…'
+    : dictationState === 'stopping'
+      ? 'Finishing dictation…'
+      : 'Listening…')
   // Secondary mode controls (plan / accept-edits / auto / memory / markdown) are
   // consolidated behind one "Options" popover to keep the toolbar quiet.
   const [optionsOpen, setOptionsOpen] = useState(false)
   const [modelFocusIndex, setModelFocusIndex] = useState(0)
   const optionsRef = useRef<HTMLDivElement>(null)
+  const optionsTriggerRef = useRef<HTMLButtonElement>(null)
+  const optionsMenuRef = useRef<HTMLDivElement>(null)
   const modelTriggerRef = useRef<HTMLButtonElement>(null)
+  const settingsTriggerRef = useRef<HTMLButtonElement>(null)
   const modelWasOpenRef = useRef(false)
   const modelOptionRefs = useRef<Array<HTMLButtonElement | null>>([])
   const modelListId = useId()
@@ -244,16 +270,23 @@ export function ComposerToolbar({
       modelTriggerRef.current?.focus()
       return
     }
-    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End') return
+    if (modelOptions.length === 0 || (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End')) return
     event.preventDefault()
     if (event.key === 'Home') setModelFocusIndex(0)
     else if (event.key === 'End') setModelFocusIndex(modelOptions.length - 1)
     else setModelFocusIndex((index) => (index + (event.key === 'ArrowDown' ? 1 : -1) + modelOptions.length) % modelOptions.length)
   }
+  const onModelTriggerKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+    event.preventDefault()
+    if (!modelOpen) onToggleModel()
+  }
   useEffect(() => {
     if (!optionsOpen) return
     const onDown = (e: MouseEvent) => {
-      if (optionsRef.current && !optionsRef.current.contains(e.target as Node)) setOptionsOpen(false)
+      const target = e.target as Node
+      if (target instanceof Element && target.closest('[data-viewport-menu]')) return
+      if (!optionsRef.current?.contains(target) && !optionsMenuRef.current?.contains(target)) setOptionsOpen(false)
     }
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOptionsOpen(false) }
     document.addEventListener('mousedown', onDown)
@@ -284,9 +317,9 @@ export function ComposerToolbar({
         color: 'var(--text-2)',
       }}
     >
-      {/* Provider selector moved to the workspace row above the input. */}
       <div ref={optionsRef} className="relative">
         <button
+          ref={optionsTriggerRef}
           type="button"
           title="Add files, goal, and options"
           aria-label="Options"
@@ -302,10 +335,13 @@ export function ComposerToolbar({
           <Plus size={16} aria-hidden />
         </button>
         {optionsOpen && (
-          <div
-            className="absolute left-0 flex flex-col gap-1.5 animate-fade-in"
+          <ViewportMenu
+            ref={optionsMenuRef}
+            anchorRef={optionsTriggerRef}
+            side="top"
+            className="flex flex-col gap-1.5 animate-fade-in"
             style={{
-              bottom: 34, minWidth: 210, zIndex: 40, padding: 8,
+              minWidth: 210, padding: 8,
               border: '1px solid var(--border-bright)', borderRadius: 8,
               background: 'var(--surface)', boxShadow: 'var(--elev-3)',
             }}
@@ -332,11 +368,11 @@ export function ComposerToolbar({
               <Target size={13} aria-hidden style={{ color: goalActive || goalArmed ? 'var(--purple)' : 'var(--text-3)' }} />
               <span>{goalArmed ? 'Goal: next message' : 'Goal'}</span>
             </button>
-            {(caps.hasReasoningEffort || caps.hasServiceTier) && (
+            {(hasReasoningEffort || caps.hasServiceTier) && (
               <>
                 <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
-                <div className="px-1 pb-0.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>Codex</div>
-                {caps.hasReasoningEffort && (
+                <div className="px-1 pb-0.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>Model</div>
+                {hasReasoningEffort && (
                   <MenuSelect
                     label="Reasoning"
                     value={currentReasoning.id}
@@ -357,9 +393,22 @@ export function ComposerToolbar({
               </>
             )}
             <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
+            <div className="px-1 pb-0.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>Agent</div>
+            <MenuSelect
+              label="Agent mode"
+              value={approvalModeId ?? 'default'}
+              options={agentModes.map((mode) => ({
+                value: mode.id,
+                label: mode.name,
+                description: mode.description,
+                icon: permissionModeIcon(mode.id),
+              }))}
+              onChange={onSelectAgentMode}
+            />
+            <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
             <div className="px-1 pb-0.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>Permissions</div>
             <MenuSelect
-              label="Permission mode"
+              label="Permissions"
               value={permissionModeId}
               options={permissionModes.map((mode) => ({
                 value: mode.id,
@@ -369,90 +418,41 @@ export function ComposerToolbar({
               }))}
               onChange={onSelectPermissionMode}
             />
-            <MenuSelect
-              label="Command safety tier"
-              value={commandSafetyTier}
-              onChange={(value) => onSetCommandSafetyTier(value as 'low' | 'medium' | 'high')}
-              options={COMMAND_SAFETY_TIERS.map((tier) => ({
-                value: tier.id,
-                label: tier.label,
-                description: tier.detail,
-                icon: tier.id === 'low' ? <Shield size={14} /> : tier.id === 'medium' ? <ShieldCheck size={14} /> : <ShieldAlert size={14} />,
-              }))}
-            />
-            <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
-            <div className="px-1 pb-0.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>Quick switches</div>
-            <button
-              type="button"
-              title={planAvailable ? 'Toggle planning mode. Claude Plan is read-only and will not edit files.' : 'Planning mode unavailable'}
-              aria-pressed={planActive}
-              onClick={onTogglePlan}
-              disabled={planDisabled}
-              className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
-              style={{ ...chipStyle, borderColor: planActive ? 'color-mix(in srgb, var(--accent) 55%, var(--border))' : 'var(--border)', background: planActive ? 'var(--accent-dim)' : chipStyle.background, color: planActive ? 'var(--text)' : 'var(--text-2)', opacity: planDisabled ? 0.55 : 1 }}
-            >
-              <span style={{ color: planActive ? 'var(--accent)' : 'var(--text-3)', fontSize: 10 }}>●</span>
-              <span>Plan</span>
-            </button>
-            {caps.hasAcceptEditsMode && (
-              <button
-                type="button"
-                title={acceptEditsAvailable ? 'Toggle Accept Edits mode. Claude can edit workspace files without prompting.' : 'Accept Edits mode unavailable'}
-                aria-pressed={acceptEditsActive}
-                onClick={onToggleAcceptEdits}
-                disabled={acceptEditsDisabled}
-                className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
-                style={{ ...chipStyle, borderColor: acceptEditsActive ? 'color-mix(in srgb, var(--green) 52%, var(--border))' : 'var(--border)', background: acceptEditsActive ? 'color-mix(in srgb, var(--green) 14%, var(--surface))' : chipStyle.background, color: acceptEditsActive ? 'var(--text)' : 'var(--text-2)', opacity: acceptEditsDisabled ? 0.55 : 1 }}
-              >
-                <span style={{ color: acceptEditsActive ? 'var(--green)' : 'var(--text-3)', fontSize: 10 }}>●</span>
-                <span>{caps.acceptEditsLabel ?? 'Accept Edits'}</span>
-              </button>
+            {permissionModeId === 'auto' && (
+              <MenuSelect
+                label="Auto Decide safety"
+                value={commandSafetyTier}
+                onChange={(value) => onSetCommandSafetyTier(value as 'low' | 'medium' | 'high')}
+                options={COMMAND_SAFETY_TIERS.map((tier) => ({
+                  value: tier.id,
+                  label: tier.label,
+                  description: tier.detail,
+                  icon: tier.id === 'low' ? <Shield size={14} /> : tier.id === 'medium' ? <ShieldCheck size={14} /> : <ShieldAlert size={14} />,
+                }))}
+              />
             )}
-            <button
-              type="button"
-              title={yoloAvailable ? `Toggle ${autoLabel} mode` : `${autoLabel} mode unavailable`}
-              aria-pressed={yoloActive}
-              onClick={onToggleYolo}
-              disabled={yoloDisabled}
-              className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
-              style={{ ...chipStyle, borderColor: yoloActive ? 'color-mix(in srgb, var(--yellow) 55%, var(--border))' : 'var(--border)', background: yoloActive ? 'color-mix(in srgb, var(--yellow) 16%, var(--surface))' : chipStyle.background, color: yoloActive ? 'var(--text)' : 'var(--text-2)', opacity: yoloDisabled ? 0.55 : 1 }}
-            >
-              <span style={{ color: yoloActive ? 'var(--yellow)' : 'var(--text-3)', fontSize: 10 }}>●</span>
-              <span>{autoLabel}</span>
-            </button>
             <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
-            <button
-              type="button"
-              title="Toggle memory"
-              aria-pressed={memoryEnabled}
-              onClick={onToggleMemory}
+            <MenuSelect
+              label="Memory"
+              value={memoryLevel}
+              options={MEMORY_LEVEL_OPTIONS.map((option) => ({ value: option.id, label: `Memory ${option.label}`, description: option.detail }))}
+              onChange={(level) => onSelectMemoryLevel(level as MemoryLevel)}
               disabled={memoryDisabled}
-              className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
-              style={{ ...chipStyle, borderColor: memoryEnabled ? 'color-mix(in srgb, var(--green) 50%, var(--border))' : 'var(--border)', background: memoryEnabled ? 'color-mix(in srgb, var(--green) 14%, var(--surface))' : chipStyle.background, color: memoryEnabled ? 'var(--text)' : 'var(--text-2)', opacity: memoryDisabled ? 0.55 : 1 }}
-            >
-              <span style={{ color: memoryEnabled ? 'var(--green)' : 'var(--text-3)', fontSize: 10 }}>●</span>
-              <span>Memory</span>
-            </button>
+            />
             <button
               type="button"
-              title="Open Markdown Store"
+              title="Open Skills"
               onClick={() => { setOptionsOpen(false); onOpenMarkdownStore() }}
               className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
               style={{ ...chipStyle }}
             >
               <ComposerIcon name="markdown" />
-              <span>Markdown store</span>
+              <span>Skills</span>
             </button>
-          </div>
+          </ViewportMenu>
         )}
       </div>
-      {goalArmed && (
-        <span className="inline-flex items-center gap-1.5 px-2 rounded-md" style={{ height: 26, background: 'color-mix(in srgb, var(--purple) 16%, var(--surface))', color: 'var(--text)', border: '1px solid color-mix(in srgb, var(--purple) 45%, var(--border))' }}>
-          <Target size={12} aria-hidden style={{ color: 'var(--purple)' }} />
-          <span>Goal: next message</span>
-        </span>
-      )}
-      <div className="ml-auto flex items-center gap-2">
+      {dictationActive ? (
         <button
           type="button"
           title={dictationError || dictationLabel}
@@ -462,23 +462,27 @@ export function ComposerToolbar({
           data-dictation-state={dictationVisualState}
           onClick={onToggleDictation}
           disabled={!dictationAvailable || dictationState === 'starting' || dictationState === 'stopping'}
-          className="uam-composer-action uam-dictation-button h-[30px] w-[34px] text-xs font-semibold inline-flex items-center justify-center"
-          style={{
-            borderRadius: 7,
-            opacity: !dictationAvailable || dictationState === 'starting' || dictationState === 'stopping' ? 0.55 : 1,
-          }}
+          className="uam-composer-action uam-dictation-button flex h-[30px] min-w-0 flex-1 items-center justify-center gap-3 px-3 text-xs font-semibold animate-fade-in"
+          style={{ borderRadius: 7, opacity: !dictationAvailable || dictationState === 'starting' || dictationState === 'stopping' ? 0.55 : 1 }}
         >
-          {dictationState === 'idle' || dictationState === 'starting'
-            ? <Mic size={15} aria-hidden />
-            : (
-                <Square
-                  size={12}
-                  fill="currentColor"
-                  aria-hidden
-                  className={dictationVisualState === 'listening' ? 'uam-dictation-listening-indicator' : undefined}
-                />
-              )}
+          {dictationState === 'listening' ? (
+            <span className="uam-dictation-listening-indicator uam-dictation-wave uam-dictation-wave--wide" aria-hidden>
+              <i /><i /><i /><i /><i /><i /><i />
+            </span>
+          ) : <Mic size={15} aria-hidden />}
+          <span>{dictationStatusText}</span>
+          {dictationState === 'listening' && (
+            <span className="tabular-nums">{Math.floor(dictationElapsedSeconds / 60)}:{String(dictationElapsedSeconds % 60).padStart(2, '0')}</span>
+          )}
         </button>
+      ) : <>
+      {goalArmed && <ActiveModeChip label="Goal: next message" icon={<Target size={12} aria-hidden style={{ color: 'var(--purple)' }} />} onClear={onToggleGoal} />}
+      {planActive && <ActiveModeChip label="Plan" icon={<ClipboardList size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={() => onSelectAgentMode('default')} />}
+      {permissionModeId !== 'default' && <ActiveModeChip label={permissionModeId === 'auto' ? `Auto Decide: ${COMMAND_SAFETY_TIERS.find((tier) => tier.id === commandSafetyTier)?.label ?? 'Medium'}` : permissionMode.name} icon={permissionModeIcon(permissionModeId, 12)} onClear={() => onSelectPermissionMode('default')} />}
+      {memoryChipVisible && <ActiveModeChip label={`Memory ${MEMORY_LEVEL_OPTIONS.find((option) => option.id === memoryLevel)?.label ?? memoryLevel}`} icon={<span aria-hidden>●</span>} onClear={onClearMemoryLevel} />}
+      {reasoningEffort && reasoningEffort !== defaultReasoningEffort && <ActiveModeChip label={`Reasoning: ${currentReasoning.label}`} icon={<Cpu size={12} aria-hidden />} onClear={() => onSelectReasoning(defaultReasoningEffort)} />}
+      {serviceTier && <ActiveModeChip label={`Speed: ${currentSpeed.label}`} icon={<Sparkles size={12} aria-hidden />} onClear={() => onSelectSpeed('')} />}
+      <div className="ml-auto flex items-center gap-2">
         <div ref={modelMenuRef} className="relative">
           <button
             ref={modelTriggerRef}
@@ -490,28 +494,30 @@ export function ComposerToolbar({
             aria-haspopup="listbox"
             aria-expanded={modelOpen}
             aria-controls={modelOpen ? modelListId : undefined}
+            onKeyDown={onModelTriggerKeyDown}
             className="uam-composer-action inline-flex items-center gap-1.5 px-2"
             style={{
               ...chipStyle,
+              borderRadius: 7,
               color: modelOpen ? 'var(--text)' : 'var(--text-2)',
-              borderColor: modelOpen ? 'var(--border-bright)' : 'var(--border)',
+              borderColor: 'var(--border-bright)',
               opacity: modelDisabled ? 0.55 : 1,
             }}
           >
-            <span style={{ color: 'var(--text-3)' }}>Model</span>
             <span style={{ color: 'var(--text)' }}>{currentModel.shortLabel}</span>
           </button>
           {modelOpen && !modelDisabled && (
-            <div
+            <ViewportMenu
+              anchorRef={modelTriggerRef}
+              side="top"
+              align="end"
               id={modelListId}
               role="listbox"
               aria-label="Model"
               onKeyDown={onModelKeyDown}
-              className="absolute right-0 animate-fade-in"
+              className="animate-fade-in"
               style={{
-                bottom: 32,
                 width: 260,
-                zIndex: 40,
                 border: '1px solid var(--border-bright)',
                 borderRadius: 8,
                 background: 'var(--surface)',
@@ -520,6 +526,7 @@ export function ComposerToolbar({
               }}
             >
               <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>Model</div>
+              {acp?.modelsLoading && <div role="status" className="px-2 py-1 text-[11px]" style={{ color: 'var(--accent)' }}>Discovering models…</div>}
               <div style={{ maxHeight: 520, overflowY: 'auto' }}>
                 {modelOptions.map((option, index) => {
                   const selected = option.id === currentModel.id
@@ -543,7 +550,7 @@ export function ComposerToolbar({
                         minHeight: 52,
                         borderRadius: 6,
                         color: selected ? 'var(--text)' : 'var(--text-2)',
-                        outline: index === modelFocusIndex ? '1px solid var(--accent)' : 'none',
+                        boxShadow: index === modelFocusIndex ? 'inset 0 0 0 1px var(--accent)' : 'none',
                       }}
                     >
                       <span className="flex items-center gap-2">
@@ -555,11 +562,12 @@ export function ComposerToolbar({
                   )
                 })}
               </div>
-            </div>
+            </ViewportMenu>
           )}
         </div>
         <div ref={settingsMenuRef} className="relative">
           <button
+            ref={settingsTriggerRef}
             type="button"
             title="Settings"
             aria-label="Chat settings"
@@ -575,12 +583,13 @@ export function ComposerToolbar({
             <Settings2 size={14} aria-hidden />
           </button>
           {settingsOpen && (
-            <div
-              className="absolute right-0 animate-fade-in"
+            <ViewportMenu
+              anchorRef={settingsTriggerRef}
+              side="top"
+              align="end"
+              className="animate-fade-in"
               style={{
-                bottom: 32,
                 width: 250,
-                zIndex: 40,
                 border: '1px solid var(--border-bright)',
                 borderRadius: 8,
                 background: 'var(--surface)',
@@ -598,7 +607,7 @@ export function ComposerToolbar({
                   <span style={{ color: 'var(--text-3)' }}>Model</span>
                   <span>{currentModel.label}</span>
                 </div>
-                {caps.hasReasoningEffort && (
+                {hasReasoningEffort && (
                   <div className="flex justify-between gap-3">
                     <span style={{ color: 'var(--text-3)' }}>Reasoning</span>
                     <span>{currentReasoning.label}</span>
@@ -612,7 +621,7 @@ export function ComposerToolbar({
                 )}
                 <div className="flex justify-between gap-3">
                   <span style={{ color: 'var(--text-3)' }}>Memory</span>
-                  <span>{memoryEnabled ? 'On' : 'Off'}</span>
+                  <span>{MEMORY_LEVEL_OPTIONS.find((option) => option.id === memoryLevel)?.label ?? 'Strict'}</span>
                 </div>
                 <label className="grid gap-1">
                   <span style={{ color: 'var(--text-3)' }}>Goal token budget</span>
@@ -633,26 +642,17 @@ export function ComposerToolbar({
                   />
                 </label>
               </div>
-            </div>
+            </ViewportMenu>
           )}
         </div>
-        {running && (
-          <button
-            type="button"
-            title="Stop runtime"
-            aria-label="Stop runtime"
-            onClick={onStopRuntime}
-            className="uam-composer-action h-[30px] w-[34px] text-xs font-semibold inline-flex items-center justify-center"
-            style={{
-              borderRadius: 7,
-              border: '1px solid color-mix(in srgb, var(--red) 46%, var(--border-bright))',
-              background: 'color-mix(in srgb, var(--red) 14%, var(--surface))',
-              color: 'var(--red)',
-            }}
-          >
-            <span aria-hidden="true" style={{ width: 9, height: 9, borderRadius: 2, background: 'currentColor' }} />
-          </button>
-        )}
+        <button type="button" title={dictationLabel} aria-label={dictationLabel} aria-pressed="false" data-dictation-state="idle" onClick={onToggleDictation} disabled={!dictationAvailable} className="uam-composer-action uam-dictation-button h-[30px] text-xs font-semibold inline-flex items-center justify-center gap-1.5 px-2" style={{ borderRadius: 7, opacity: dictationAvailable ? 1 : 0.55 }}>
+          <Mic size={15} aria-hidden />
+        </button>
+      </div>
+      </>}
+        {running && !canSend ? (
+          <button type="button" title="Stop runtime" aria-label="Stop runtime" onClick={onStopRuntime} className="uam-composer-action h-[30px] w-[34px] text-xs font-semibold inline-flex items-center justify-center" style={{ borderRadius: 7, border: '1px solid color-mix(in srgb, var(--red) 46%, var(--border-bright))', background: 'color-mix(in srgb, var(--red) 14%, var(--surface))', color: 'var(--red)' }}><Square size={11} fill="currentColor" aria-hidden /></button>
+        ) : (
         <button
           type="submit"
           title={running ? 'Queue prompt' : 'Send prompt'}
@@ -669,7 +669,7 @@ export function ComposerToolbar({
         >
           <ComposerIcon name="send" size={15} />
         </button>
-      </div>
+        )}
     </div>
   )
 }

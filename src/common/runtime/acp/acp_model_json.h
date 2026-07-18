@@ -78,6 +78,9 @@ namespace uam::acp_models
 			parsed.name = parsed.id;
 		}
 		parsed.description = uam::nlohmann_json::TrimmedStringValue(model, {"description"});
+		parsed.default_reasoning_effort = uam::codex::NormalizeReasoningEffort(uam::nlohmann_json::TrimmedStringValue(model, {"defaultReasoningEffort", "default_reasoning_effort"}));
+		parsed.supported_reasoning_efforts = UniqueStringArrayValue(model, "supportedReasoningEfforts", uam::codex::NormalizeReasoningEffort);
+		parsed.additional_speed_tiers = UniqueStringArrayValue(model, "additionalSpeedTiers", uam::codex::NormalizeServiceTier);
 		return parsed;
 	}
 
