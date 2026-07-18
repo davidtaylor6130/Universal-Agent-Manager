@@ -15,10 +15,26 @@ export function placeViewportMenu(
   anchor: ViewportMenuAnchor,
   menu: { width: number; height: number },
   viewport: { width: number; height: number },
-  side: 'top' | 'bottom' = 'bottom',
+  side: 'top' | 'right' | 'bottom' | 'left' = 'bottom',
   align: 'start' | 'end' = 'start',
   gap = 4,
 ) {
+  if (side === 'left' || side === 'right') {
+    const preferredLeft = side === 'right' ? anchor.right + gap : anchor.left - menu.width - gap
+    const alternateLeft = side === 'right' ? anchor.left - menu.width - gap : anchor.right + gap
+    const preferredFits = preferredLeft >= VIEWPORT_GAP && preferredLeft + menu.width <= viewport.width - VIEWPORT_GAP
+    return {
+      left: Math.min(
+        Math.max(preferredFits ? preferredLeft : alternateLeft, VIEWPORT_GAP),
+        Math.max(VIEWPORT_GAP, viewport.width - menu.width - VIEWPORT_GAP),
+      ),
+      top: Math.min(
+        Math.max(align === 'end' ? anchor.bottom - menu.height : anchor.top, VIEWPORT_GAP),
+        Math.max(VIEWPORT_GAP, viewport.height - menu.height - VIEWPORT_GAP),
+      ),
+    }
+  }
+
   const below = anchor.bottom + gap
   const above = anchor.top - menu.height - gap
   const preferredTop = side === 'bottom' ? below : above
@@ -39,7 +55,7 @@ export function placeViewportMenu(
 export interface ViewportMenuProps extends HTMLAttributes<HTMLDivElement> {
   anchorRef?: RefObject<HTMLElement>
   point?: { x: number; y: number }
-  side?: 'top' | 'bottom'
+  side?: 'top' | 'right' | 'bottom' | 'left'
   align?: 'start' | 'end'
   gap?: number
 }

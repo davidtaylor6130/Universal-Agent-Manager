@@ -215,6 +215,7 @@ namespace uam
 		bool running = false;
 		bool initialized = false;
 		bool session_ready = false;
+		bool model_discovery_only = false;
 		bool load_session_supported = false;
 		bool processing = false;
 		bool waiting_for_permission = false;

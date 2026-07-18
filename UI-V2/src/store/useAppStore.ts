@@ -130,6 +130,12 @@ function deserializeState(
     memoryActivity: MemoryActivity
     cliVersionManager: CliVersionManager
     markdownStoreDirectory: string
+    voiceInputMode: AppState['voiceInputMode']
+    voiceInputServerBaseUrl: string
+    voiceInputServerEndpoint: string
+    voiceInputServerModel: string
+    voiceInputApiKeyEnv: string
+    voiceInputCapabilities: AppState['voiceInputCapabilities']
     defaultNewChatProviderId: string
     providerChatDefaults: Record<string, ProviderChatDefaults>
     defaultEditorPresetId: string
@@ -298,6 +304,12 @@ function deserializeState(
     memoryActivity: cpp.memoryActivity ?? sanitizeMemoryActivity(undefined, cpp.settings.memoryLastStatus),
     cliVersionManager: cpp.cliVersionManager ?? existing.cliVersionManager,
     markdownStoreDirectory: cpp.settings.markdownStoreDirectory ?? '',
+    voiceInputMode: cpp.settings.voiceInputMode ?? 'system',
+    voiceInputServerBaseUrl: cpp.settings.voiceInputServerBaseUrl ?? '',
+    voiceInputServerEndpoint: cpp.settings.voiceInputServerEndpoint ?? '/v1/audio/transcriptions',
+    voiceInputServerModel: cpp.settings.voiceInputServerModel ?? 'whisper-1',
+    voiceInputApiKeyEnv: cpp.settings.voiceInputApiKeyEnv ?? 'OPENAI_API_KEY',
+    voiceInputCapabilities: cpp.settings.voiceInputCapabilities ?? existing.voiceInputCapabilities,
     defaultNewChatProviderId: pendingProviderChatDefaults?.defaultNewChatProviderId ?? cpp.settings.defaultNewChatProviderId ?? cpp.settings.activeProviderId ?? GEMINI_CLI_PROVIDER_ID,
     providerChatDefaults: pendingProviderChatDefaults?.providerChatDefaults ?? cpp.settings.providerChatDefaults ?? {},
     defaultEditorPresetId: cpp.settings.defaultEditorPresetId ?? 'vscode',
@@ -448,6 +460,12 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     memoryActivity: patch.memoryActivity ?? current.memoryActivity,
     cliVersionManager: patch.cliVersionManager ?? current.cliVersionManager,
     markdownStoreDirectory: patch.settings?.markdownStoreDirectory ?? current.markdownStoreDirectory,
+    voiceInputMode: patch.settings?.voiceInputMode ?? current.voiceInputMode,
+    voiceInputServerBaseUrl: patch.settings?.voiceInputServerBaseUrl ?? current.voiceInputServerBaseUrl,
+    voiceInputServerEndpoint: patch.settings?.voiceInputServerEndpoint ?? current.voiceInputServerEndpoint,
+    voiceInputServerModel: patch.settings?.voiceInputServerModel ?? current.voiceInputServerModel,
+    voiceInputApiKeyEnv: patch.settings?.voiceInputApiKeyEnv ?? current.voiceInputApiKeyEnv,
+    voiceInputCapabilities: patch.settings?.voiceInputCapabilities ?? current.voiceInputCapabilities,
     defaultNewChatProviderId: pendingProviderChatDefaults?.defaultNewChatProviderId ?? patch.settings?.defaultNewChatProviderId ?? current.defaultNewChatProviderId,
     providerChatDefaults: pendingProviderChatDefaults?.providerChatDefaults ?? patch.settings?.providerChatDefaults ?? current.providerChatDefaults,
     defaultEditorPresetId: patch.settings?.defaultEditorPresetId ?? current.defaultEditorPresetId,
@@ -512,7 +530,7 @@ export const useAppStore = create<AppState>((set, get) => {
         const existingMessages = nextMessages[chatId] ?? []
         let lastMessage = existingMessages[existingMessages.length - 1]
 
-        if (lastMessage?.role === 'assistant' && !lastMessage.isStreaming) continue
+        if (lastMessage?.role === 'assistant' && !lastMessage.isStreaming && !state.acpBindingBySessionId[chatId]?.processing) continue
 
         if (!lastMessage || lastMessage.role !== 'assistant') {
           const placeholder: Message = {
@@ -593,6 +611,12 @@ export const useAppStore = create<AppState>((set, get) => {
             memoryActivity: current.memoryActivity,
             cliVersionManager: current.cliVersionManager,
             markdownStoreDirectory: current.markdownStoreDirectory,
+            voiceInputMode: current.voiceInputMode,
+            voiceInputServerBaseUrl: current.voiceInputServerBaseUrl,
+            voiceInputServerEndpoint: current.voiceInputServerEndpoint,
+            voiceInputServerModel: current.voiceInputServerModel,
+            voiceInputApiKeyEnv: current.voiceInputApiKeyEnv,
+            voiceInputCapabilities: current.voiceInputCapabilities,
             defaultNewChatProviderId: current.defaultNewChatProviderId,
             providerChatDefaults: current.providerChatDefaults,
             defaultEditorPresetId: current.defaultEditorPresetId,
@@ -804,6 +828,12 @@ export const useAppStore = create<AppState>((set, get) => {
         memoryActivity: current.memoryActivity,
         cliVersionManager: current.cliVersionManager,
         markdownStoreDirectory: current.markdownStoreDirectory,
+        voiceInputMode: current.voiceInputMode,
+        voiceInputServerBaseUrl: current.voiceInputServerBaseUrl,
+        voiceInputServerEndpoint: current.voiceInputServerEndpoint,
+        voiceInputServerModel: current.voiceInputServerModel,
+        voiceInputApiKeyEnv: current.voiceInputApiKeyEnv,
+        voiceInputCapabilities: current.voiceInputCapabilities,
         defaultNewChatProviderId: current.defaultNewChatProviderId,
         providerChatDefaults: current.providerChatDefaults,
         defaultEditorPresetId: current.defaultEditorPresetId,

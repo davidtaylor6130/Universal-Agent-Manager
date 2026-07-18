@@ -530,7 +530,7 @@ export function AttachmentList({ attachments }: { attachments: Attachment[] }) {
   return (
     <div className="space-y-2">
       {markdownStoreAttachments.length > 0 && (
-        <div className="flex flex-wrap gap-2" aria-label="Markdown Store context">
+        <div className="flex flex-wrap gap-2" aria-label="Skills context">
           {markdownStoreAttachments.map((attachment) => (
             <span
               key={attachment.id}
@@ -545,7 +545,7 @@ export function AttachmentList({ attachments }: { attachments: Attachment[] }) {
               }}
             >
               <BookOpen size={13} aria-hidden style={{ color: 'var(--purple)' }} />
-              <span style={{ color: 'var(--purple)' }}>Markdown Store</span>
+              <span style={{ color: 'var(--purple)' }}>Skills</span>
               <span className="truncate max-w-[320px]">{attachment.name}</span>
             </span>
           ))}

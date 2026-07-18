@@ -275,6 +275,12 @@ struct AppSettings
 	int editor_default_groups_version = 0;
 	std::vector<EditorFileAssociation> editor_file_associations;
 	std::string memory_level_default = "strict";
+	std::string voice_input_mode = "system";
+	std::string voice_input_server_base_url = "https://api.openai.com";
+	std::string voice_input_server_endpoint = "/v1/audio/transcriptions";
+	std::string voice_input_server_model = "whisper-1";
+	// A credential environment-variable name is persisted; the credential itself never is.
+	std::string voice_input_api_key_env = "OPENAI_API_KEY";
 };
 
 /// <summary>

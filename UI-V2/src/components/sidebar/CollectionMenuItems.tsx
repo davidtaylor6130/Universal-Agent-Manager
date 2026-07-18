@@ -1,80 +1,108 @@
-import { Library } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { ChevronRight, Library } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
+import { ViewportMenu } from '../ui'
+import type { ResourceReferenceType } from '../../types/resourceCollection'
 
-export async function moveFolderToCollection(collectionId: string | null, target: string, label: string) {
+export async function moveResourceToCollection(collectionId: string | null, type: ResourceReferenceType, target: string, label: string) {
   const { resourceCollections, addResourceReference, removeResourceReference } = useAppStore.getState()
   const memberships = resourceCollections.flatMap((collection) => collection.references
-    .filter((reference) => reference.type === 'workspace-folder' && reference.target === target)
+    .filter((reference) => reference.type === type && reference.target === target)
     .map((reference) => ({ collectionId: collection.id, referenceId: reference.id })))
   const alreadyInTarget = memberships.some((membership) => membership.collectionId === collectionId)
 
-  if (collectionId && !alreadyInTarget && !await addResourceReference(collectionId, 'workspace-folder', target, label)) return false
+  if (collectionId && !alreadyInTarget && !await addResourceReference(collectionId, type, target, label)) return false
   const results = await Promise.all(memberships
     .filter((membership) => membership.collectionId !== collectionId)
     .map((membership) => removeResourceReference(membership.collectionId, membership.referenceId)))
   return results.every(Boolean)
 }
 
+export const moveFolderToCollection = (collectionId: string | null, target: string, label: string) =>
+  moveResourceToCollection(collectionId, 'workspace-folder', target, label)
+
 export function CollectionMenuItems({
   target,
   label,
   onAdded,
+  type = 'workspace-folder',
 }: {
   target: string
   label: string
   onAdded: () => void
+  type?: ResourceReferenceType
 }) {
   const collections = useAppStore((state) => state.resourceCollections)
+  const [open, setOpen] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement>(null)
 
   if (collections.length === 0) return null
 
   const memberships = collections.flatMap((collection) => collection.references
-    .filter((reference) => reference.type === 'workspace-folder' && reference.target === target)
+    .filter((reference) => reference.type === type && reference.target === target)
     .map((reference) => ({ collectionId: collection.id, referenceId: reference.id })))
   const currentCollectionIds = new Set(memberships.map(({ collectionId }) => collectionId))
 
   return (
     <>
       <div className="mx-2 my-1" style={{ borderTop: '1px solid var(--border)' }} />
-      <div className="px-3 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-3)' }}>
-        Move to collection
-      </div>
-      {memberships.length > 0 && (
-        <button
-          type="button"
-          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm"
-          style={{ background: 'transparent', border: 'none', color: 'var(--text-2)', fontFamily: 'inherit' }}
-          onClick={() => { void moveFolderToCollection(null, target, label).then((moved) => { if (moved) onAdded() }) }}
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="uam-menu-select__option flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm"
+        style={{ border: 'none', color: 'var(--text-2)', fontFamily: 'inherit' }}
+        onClick={() => setOpen((value) => !value)}
+        onMouseEnter={() => setOpen(true)}
+      >
+        <Library size={13} aria-hidden />
+        <span className="flex-1">Move to collection</span>
+        <ChevronRight size={13} aria-hidden />
+      </button>
+      {open && (
+        <ViewportMenu
+          anchorRef={triggerRef}
+          side="right"
+          role="menu"
+          aria-label="Move to collection"
+          className="rounded-md py-1 animate-fade-in"
+          style={{ minWidth: 168, background: 'var(--surface-up)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}
         >
-          <Library size={13} aria-hidden />
-          <span>Remove from collection</span>
-        </button>
+          {memberships.length > 0 && (
+            <button
+              type="button"
+              role="menuitem"
+              className="uam-menu-select__option flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm"
+              style={{ border: 'none', color: 'var(--text-2)', fontFamily: 'inherit' }}
+              onClick={() => { void moveResourceToCollection(null, type, target, label).then((moved) => { if (moved) onAdded() }) }}
+            >
+              <Library size={13} aria-hidden />
+              <span>Remove from collection</span>
+            </button>
+          )}
+          {collections.map((collection) => {
+            const current = currentCollectionIds.has(collection.id)
+            return (
+              <button
+                key={collection.id}
+                type="button"
+                role="menuitem"
+                disabled={current}
+                className="uam-menu-select__option flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm"
+                style={{ border: 'none', color: current ? 'var(--text-3)' : 'var(--text-2)', cursor: current ? 'default' : 'pointer', fontFamily: 'inherit' }}
+                onClick={() => {
+                  if (current) return
+                  void moveResourceToCollection(collection.id, type, target, label).then((moved) => { if (moved) onAdded() })
+                }}
+              >
+                <Library size={13} aria-hidden />
+                <span className="truncate">{collection.name}{current ? ' (current)' : ''}</span>
+              </button>
+            )
+          })}
+        </ViewportMenu>
       )}
-      {collections.map((collection) => {
-        const current = currentCollectionIds.has(collection.id)
-        return (
-          <button
-            key={collection.id}
-            type="button"
-            disabled={current}
-            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm"
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: current ? 'var(--text-3)' : 'var(--text-2)',
-              cursor: current ? 'default' : 'pointer',
-              fontFamily: 'inherit',
-            }}
-            onClick={() => {
-              if (current) return
-              void moveFolderToCollection(collection.id, target, label).then((moved) => { if (moved) onAdded() })
-            }}
-          >
-            <Library size={13} aria-hidden />
-            <span className="truncate">{collection.name}{current ? ' (current)' : ''}</span>
-          </button>
-        )
-      })}
     </>
   )
 }

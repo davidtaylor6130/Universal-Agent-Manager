@@ -1,4 +1,4 @@
-export type BuiltInTheme = 'dark' | 'light' | 'system'
+export type BuiltInTheme = 'dark' | 'light' | 'system' | 'midnight' | 'paper' | 'dusk' | 'aurora' | 'contrast'
 export type StoredTheme = BuiltInTheme | `custom:${string}`
 export type ResolvedTheme = 'dark' | 'light'
 
@@ -24,6 +24,17 @@ export interface CustomTheme {
   base: ResolvedTheme
   colors: ThemeColors
 }
+
+export const BUILT_IN_THEMES: ReadonlyArray<{ id: BuiltInTheme; label: string; base: ResolvedTheme }> = [
+  { id: 'dark', label: 'Dark', base: 'dark' },
+  { id: 'light', label: 'Light', base: 'light' },
+  { id: 'system', label: 'System', base: 'light' },
+  { id: 'midnight', label: 'Midnight', base: 'dark' },
+  { id: 'paper', label: 'Paper', base: 'light' },
+  { id: 'dusk', label: 'Dusk', base: 'dark' },
+  { id: 'aurora', label: 'Aurora', base: 'dark' },
+  { id: 'contrast', label: 'High Contrast', base: 'dark' },
+]
 
 export const BUILT_IN_THEME_COLORS: Record<ResolvedTheme, ThemeColors> = {
   dark: {
@@ -62,7 +73,7 @@ const DERIVED_CSS_PROPERTIES = [
 ]
 
 export function normalizeStoredTheme(value: unknown): StoredTheme | null {
-  if (value === 'dark' || value === 'light' || value === 'system') return value
+  if (BUILT_IN_THEMES.some((theme) => theme.id === value)) return value as BuiltInTheme
   return typeof value === 'string' && CUSTOM_THEME_ID.test(value) ? value as StoredTheme : null
 }
 
@@ -109,6 +120,7 @@ export function writeStoredTheme(theme: StoredTheme): void {
 export function resolveDocumentTheme(theme: StoredTheme): ResolvedTheme {
   if (theme.startsWith('custom:')) return 'dark'
   if (theme === 'dark' || theme === 'light') return theme
+  if (theme !== 'system') return BUILT_IN_THEMES.find((candidate) => candidate.id === theme)?.base ?? 'dark'
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
     return 'light'
   }
@@ -121,7 +133,7 @@ export function applyDocumentTheme(theme: StoredTheme, customThemes: CustomTheme
     for (const property of Object.values(CUSTOM_CSS_PROPERTIES)) root.style.removeProperty(property)
     for (const property of DERIVED_CSS_PROPERTIES) root.style.removeProperty(property)
     const customTheme = customThemes.find((candidate) => candidate.id === theme)
-    root.setAttribute('data-theme', customTheme?.base ?? resolveDocumentTheme(theme))
+    root.setAttribute('data-theme', customTheme?.base ?? (theme === 'system' ? resolveDocumentTheme(theme) : theme))
     if (customTheme) {
       for (const [key, property] of Object.entries(CUSTOM_CSS_PROPERTIES) as Array<[keyof ThemeColors, string]>) {
         root.style.setProperty(property, customTheme.colors[key])

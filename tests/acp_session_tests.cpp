@@ -687,7 +687,7 @@ UAM_TEST(AcpSessionNewParsesModesModelsAndModeUpdates)
 	UAM_ASSERT_EQ(acp.value("currentModeId", ""), std::string("plan"));
 	UAM_ASSERT_EQ(acp["availableModels"].size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(acp.value("currentModelId", ""), std::string("auto-gemini-3"));
-	UAM_ASSERT_EQ(acp.value("lastError", ""), std::string("Model discovery failed"));
+	UAM_ASSERT_EQ(acp.value("lastError", ""), std::string{});
 }
 
 UAM_TEST(CodexCachedModelsPopulateSelectorBeforeAppServerStarts)
@@ -813,7 +813,8 @@ UAM_TEST(ProviderModelCatalogPersistsSuccessfulRefreshAndIsolatesConfigurations)
 		uam::ProviderModelCatalogService restarted;
 		restarted.Initialize(temp.root, {first});
 		UAM_ASSERT_EQ(restarted.GetCachedProviderModels(first.id), models);
-		UAM_ASSERT(restarted.BeginDiscoveryIfMissing(first.id));
+		UAM_ASSERT(!restarted.BeginDiscoveryIfStale(first.id));
+		UAM_ASSERT(restarted.BeginDiscovery(first.id));
 		restarted.RememberRefreshFailure(first.id, "background refresh failed");
 		UAM_ASSERT_EQ(restarted.GetCachedProviderModels(first.id), models);
 	}
@@ -827,6 +828,15 @@ UAM_TEST(ProviderModelCatalogPersistsSuccessfulRefreshAndIsolatesConfigurations)
 	isolated.RememberRefreshFailure(second.id, "isolated failure");
 	UAM_ASSERT(!isolated.IsDiscoveryPending(second.id));
 	UAM_ASSERT(!isolated.BeginDiscoveryIfMissing(second.id));
+
+	// A cache without the epoch freshness marker predates the seven-day policy and refreshes once.
+	const fs::path cache_path = temp.root / "provider_model_catalog_cache.json";
+	nlohmann::json persisted = nlohmann::json::parse(uam::io::ReadTextFile(cache_path));
+	for (auto& entry : persisted["catalogs"].items()) entry.value().erase("updatedAtSec");
+	UAM_ASSERT(uam::io::WriteTextFile(cache_path, persisted.dump()));
+	uam::ProviderModelCatalogService stale;
+	stale.Initialize(temp.root, {first});
+	UAM_ASSERT(stale.BeginDiscoveryIfStale(first.id));
 }
 
 UAM_TEST(OpenCodeZenFreeModelsParseAndFilterOfficialModelList)
@@ -942,6 +952,53 @@ UAM_TEST(OpenCodeRuntimeModelsMergeWithConfiguredModels)
 	UAM_ASSERT_EQ(acp["availableModels"][6].value("id", ""), std::string("opencode/nemotron-3-super-free"));
 	UAM_ASSERT_EQ(acp["availableModels"][7].value("id", ""), std::string("ollama-r9700/mistral-small3.2:24b"));
 	UAM_ASSERT_EQ(acp["availableModels"][7].value("name", ""), std::string("Mistral Small 3.2 24B"));
+}
+
+UAM_TEST(BackgroundCodexModelDiscoveryStopsAfterCachingModels)
+{
+	TempDir temp("uam-background-model-discovery");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "chat-discovery";
+	chat.provider_id = "codex-cli";
+	app.chats.push_back(std::move(chat));
+	app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
+	app.provider_model_catalog->Initialize(app.data_root, app.provider_profiles);
+	UAM_ASSERT(app.provider_model_catalog->BeginDiscoveryIfMissing("codex-cli"));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-discovery";
+	session->provider_id = "codex-cli";
+	session->protocol_kind = "codex-app-server";
+	session->running = true;
+	session->model_discovery_only = true;
+	session->pending_request_methods[2] = "model/list";
+	uam::AcpSessionState* raw_session = session.get();
+	const std::string model_list_response = R"({"jsonrpc":"2.0","id":2,"result":{"data":[{"id":"gpt-test","displayName":"GPT Test","visibility":"list"}]}})";
+#if defined(__APPLE__)
+	std::string launch_error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*raw_session, temp.root, {"/bin/sh", "-c", "printf '%s\\n' '" + model_list_response + "'; sleep 5"}, &launch_error));
+#endif
+	app.acp_sessions.push_back(std::move(session));
+
+#if defined(__APPLE__)
+	for (int attempt = 0; attempt < 100 && raw_session->running; ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+#else
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), model_list_response));
+#endif
+	UAM_ASSERT(!raw_session->running);
+	UAM_ASSERT(!raw_session->model_discovery_only);
+	UAM_ASSERT(!raw_session->reconnect_pending);
+	UAM_ASSERT(raw_session->session_id.empty());
+	UAM_ASSERT(raw_session->last_error.empty());
+	UAM_ASSERT(!app.provider_model_catalog->IsDiscoveryPending("codex-cli"));
+	UAM_ASSERT_EQ(app.provider_model_catalog->GetCachedProviderModels("codex-cli")[0].value("id", ""), std::string("gpt-test"));
 }
 
 UAM_TEST(CodexAppServerStateTransitionsMapModelsTurnsToolsAndApprovals)
@@ -1713,6 +1770,15 @@ UAM_TEST(CommandSafetyAppliesToStandardAcpExecutePermissions)
 	UAM_ASSERT_EQ(raw_session->pending_permission.safety_risk, std::string("warn"));
 	UAM_ASSERT_EQ(raw_session->pending_permission.safety_tier, std::string("low"));
 	UAM_ASSERT(raw_session->pending_permission.safety_requires_approval);
+
+	raw_session->pending_permission = uam::AcpPendingPermissionState{};
+	raw_session->waiting_for_permission = false;
+	app.chats.front().command_safety_tier = "off";
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":6,"method":"session/request_permission","params":{"toolCall":{"toolCallId":"tool-2","title":"Write file","kind":"execute","status":"pending","content":{"type":"text","text":"echo hello > output.txt"}},"options":[{"optionId":"allow-once","name":"Allow once","kind":"allow_once"},{"optionId":"deny","name":"Deny","kind":"reject_once"}]}})"));
+	UAM_ASSERT(raw_session->waiting_for_permission);
+	UAM_ASSERT(raw_session->pending_permission.safety_risk.empty());
+	UAM_ASSERT(raw_session->pending_permission.safety_tier.empty());
+	UAM_ASSERT(!raw_session->pending_permission.safety_requires_approval);
 }
 
 UAM_TEST(AcpQueuedUserPromptsPreserveFifoPayloadAndBeatGoalReview)
@@ -1762,7 +1828,8 @@ UAM_TEST(AcpQueuedUserPromptsPreserveFifoPayloadAndBeatGoalReview)
 	UAM_ASSERT(uam::SendAcpPrompt(app, "chat-queue", "First queued prompt", {skill.string()}, {attachment}, true, &error, goal.id));
 	UAM_ASSERT(uam::SendAcpPrompt(app, "chat-queue", "Second queued prompt", {}, {}, true, &error, goal.id));
 	UAM_ASSERT(error.empty());
-	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().text, std::string("First queued prompt\n\nSecond queued prompt"));
 	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().attachments.front().id, std::string("attachment-1"));
 	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().markdown_store_files.front(), normalized_skill);
 	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().goal_id, goal.id);
@@ -1772,20 +1839,18 @@ UAM_TEST(AcpQueuedUserPromptsPreserveFifoPayloadAndBeatGoalReview)
 
 	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
 	const nlohmann::json queued = serialized["chats"][0]["acpSession"]["queuedPrompts"];
-	UAM_ASSERT_EQ(queued.size(), static_cast<std::size_t>(2));
-	UAM_ASSERT_EQ(queued[0].value("text", ""), std::string("First queued prompt"));
+	UAM_ASSERT_EQ(queued.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(queued[0].value("text", ""), std::string("First queued prompt\n\nSecond queued prompt"));
 	UAM_ASSERT_EQ(queued[0].value("goalId", ""), goal.id);
 	UAM_ASSERT_EQ(queued[0]["attachments"][0].value("id", ""), std::string("attachment-1"));
 
 	uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, *raw_session, app.chats.front(), "ready", nullptr);
 	UAM_ASSERT(raw_session->queued_user_prompts.empty());
-	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(2));
-	UAM_ASSERT_EQ(app.chats.front().messages[0].content, std::string("First queued prompt"));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().messages[0].content, std::string("First queued prompt\n\nSecond queued prompt"));
 	UAM_ASSERT_EQ(app.chats.front().messages[0].attachments.front().id, std::string("attachment-1"));
 	UAM_ASSERT_EQ(app.chats.front().messages[0].markdown_store_files.front(), normalized_skill);
-	UAM_ASSERT_EQ(app.chats.front().messages[1].content, std::string("Second queued prompt"));
-	UAM_ASSERT(raw_session->queued_prompt.find("Queued user message 1:\nFirst queued prompt") != std::string::npos);
-	UAM_ASSERT(raw_session->queued_prompt.find("Queued user message 2:\nSecond queued prompt") != std::string::npos);
+	UAM_ASSERT(raw_session->queued_prompt.find("First queued prompt\n\nSecond queued prompt") != std::string::npos);
 	UAM_ASSERT(raw_session->queued_prompt.find("attachments/diagram.png") != std::string::npos);
 	UAM_ASSERT(!raw_session->goal_review_scheduled);
 
@@ -1826,15 +1891,70 @@ UAM_TEST(AcpQueuedUserPromptFailureKeepsLaterPromptsInOrder)
 
 	uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, *raw_session, app.chats.front(), "ready", nullptr);
 	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("error"));
-	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(2));
-	UAM_ASSERT_EQ(raw_session->queued_user_prompts[0].text, std::string("First"));
-	UAM_ASSERT_EQ(raw_session->queued_user_prompts[1].text, std::string("Second"));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts[0].text, std::string("First\n\nSecond"));
 	UAM_ASSERT(app.chats.front().messages.empty());
 	UAM_ASSERT(uam::SendAcpPrompt(app, "chat-queue-failure", "Third", {}, {}, false, &error));
-	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(3));
-	UAM_ASSERT_EQ(raw_session->queued_user_prompts[0].text, std::string("First"));
-	UAM_ASSERT_EQ(raw_session->queued_user_prompts[1].text, std::string("Second"));
-	UAM_ASSERT_EQ(raw_session->queued_user_prompts[2].text, std::string("Third"));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts[0].text, std::string("First\n\nSecond\n\nThird"));
+}
+
+UAM_TEST(AcpQueuedTurnAppliesDeferredCodexModeAndModelBeforeNextPrompt)
+{
+	TempDir temp("uam-acp-deferred-controls");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.settings.active_provider_id = "codex-cli";
+	ChatSession chat;
+	chat.id = "chat-deferred-controls";
+	chat.provider_id = "codex-cli";
+	chat.workspace_directory = temp.root.string();
+	chat.approval_mode = "plan";
+	chat.model_id = "gpt-5.4-mini";
+	app.chats.push_back(std::move(chat));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-deferred-controls";
+	session->provider_id = "codex-cli";
+	session->protocol_kind = "codex-app-server";
+	session->session_id = "thread-1";
+	session->running = true;
+	session->processing = false;
+	session->session_ready = true;
+	session->current_mode_id = "default";
+	session->current_model_id = "gpt-5.4";
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+	std::string error;
+	(void)uam::SendAcpPrompt(app, "chat-deferred-controls", "Use the new controls", {}, {}, false, &error);
+	UAM_ASSERT_EQ(raw_session->current_mode_id, std::string("plan"));
+	UAM_ASSERT_EQ(raw_session->current_model_id, std::string("gpt-5.4-mini"));
+}
+
+UAM_TEST(CodexIdleModelChangeUpdatesTheLiveSelectorState)
+{
+	TempDir temp("uam-codex-idle-model");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "chat-codex-idle-model";
+	chat.provider_id = "codex-cli";
+	app.chats.push_back(std::move(chat));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-codex-idle-model";
+	session->provider_id = "codex-cli";
+	session->protocol_kind = "codex-app-server";
+	session->session_id = "thread-1";
+	session->running = true;
+	session->session_ready = true;
+	session->current_model_id = "gpt-5.4";
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	std::string error;
+	UAM_ASSERT(uam::SetAcpSessionModel(app, "chat-codex-idle-model", "gpt-5.4-mini", &error));
+	UAM_ASSERT_EQ(raw_session->current_model_id, std::string("gpt-5.4-mini"));
 }
 
 UAM_TEST(AcpSteerPrioritizesPromptPreservesQueueAndStartsAfterInterrupt)
@@ -1911,6 +2031,64 @@ UAM_TEST(AcpSteerPrioritizesPromptPreservesQueueAndStartsAfterInterrupt)
 	UAM_ASSERT(raw_session->queued_user_prompts.empty());
 	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(3));
 	UAM_ASSERT_EQ(app.chats.front().messages[2].content, std::string("Older queued"));
+
+	PlatformServicesFactory::Instance().process_service.StopStdioProcess(*raw_session, true);
+	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*raw_session);
+}
+
+UAM_TEST(AcpQueuedPromptManagementRemovesAndPrioritizesSelectedPrompt)
+{
+	TempDir temp("uam-acp-queued-management");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "chat-queued-management";
+	chat.provider_id = "codex-cli";
+	chat.workspace_directory = temp.root.string();
+	Message assistant;
+	assistant.role = MessageRole::Assistant;
+	chat.messages.push_back(std::move(assistant));
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-queued-management";
+	session->provider_id = "codex-cli";
+	session->protocol_kind = "codex-app-server";
+	session->running = true;
+	session->initialized = true;
+	session->session_ready = true;
+	session->processing = true;
+	session->session_id = "6a6f0f3b-1a0b-4a9c-8a01-222222222222";
+	session->codex_turn_id = "turn-queued";
+	session->current_assistant_message_index = 0;
+	session->queued_user_prompts.push_back(uam::AcpQueuedUserPromptState{"First"});
+	session->queued_user_prompts.push_back(uam::AcpQueuedUserPromptState{"Second"});
+	session->queued_user_prompts.push_back(uam::AcpQueuedUserPromptState{"Remove me"});
+	uam::AcpSessionState* raw_session = session.get();
+
+#if defined(_WIN32)
+	const std::vector<std::string> sink_argv = {"cmd", "/C", "more > NUL"};
+#else
+	const std::vector<std::string> sink_argv = {"/bin/sh", "-c", "cat >/dev/null"};
+#endif
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*raw_session, temp.root, sink_argv, &error));
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::RemoveQueuedAcpPrompt(app, "chat-queued-management", 2, &error));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT(uam::SteerQueuedAcpPrompt(app, "chat-queued-management", 1, &error));
+	UAM_ASSERT(raw_session->cancel_requested);
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts[0].text, std::string("Second"));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts[1].text, std::string("First"));
+
+	const std::string interrupt_response = "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(raw_session->cancel_request_id) + ",\"result\":{}}";
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), interrupt_response));
+	UAM_ASSERT_EQ(app.chats.front().messages.back().content, std::string("Second"));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().text, std::string("First"));
 
 	PlatformServicesFactory::Instance().process_service.StopStdioProcess(*raw_session, true);
 	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*raw_session);

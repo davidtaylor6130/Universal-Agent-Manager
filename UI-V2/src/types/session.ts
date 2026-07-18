@@ -23,7 +23,7 @@ export interface Session {
   serviceTier?: string
   approvalMode?: string
   autoApproveCommands?: boolean
-  commandSafetyTier?: 'low' | 'medium' | 'high'
+  commandSafetyTier?: 'off' | 'acceptEdits' | 'low' | 'medium' | 'high' | 'yolo'
   memoryEnabled?: boolean
   memoryLevel?: MemoryLevel
   memoryLastProcessedMessageCount?: number

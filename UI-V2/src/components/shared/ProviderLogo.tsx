@@ -64,7 +64,7 @@ export function ProviderLogo({ providerId, size = 16, style, className }: Provid
         <img
           src={logoSrc}
           alt=""
-          className="block h-full w-full object-contain"
+          className={`block h-full w-full object-contain${codex ? ' uam-provider-logo--codex' : ''}`}
           draggable={false}
         />
       ) : (

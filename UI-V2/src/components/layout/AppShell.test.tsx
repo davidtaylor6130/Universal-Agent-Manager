@@ -492,15 +492,13 @@ describe('AppShell', () => {
       await Promise.resolve()
     })
 
-    const fileCheckbox = Array.from(host.querySelectorAll('input[type="checkbox"]')).find((input) =>
-      input.getAttribute('aria-label') !== 'Select all changed files'
-    ) as HTMLInputElement
+    const fileCheckbox = host.querySelector('button[role="checkbox"][aria-label="Select src/app.ts"]') as HTMLButtonElement
     await act(async () => {
       fileCheckbox.dispatchEvent(new MouseEvent('click', { bubbles: true }))
       await Promise.resolve()
     })
 
-    const aiButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'AI') as HTMLButtonElement
+    const aiButton = host.querySelector('button[aria-label="Generate commit message"]') as HTMLButtonElement
     await act(async () => {
       aiButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
       await Promise.resolve()

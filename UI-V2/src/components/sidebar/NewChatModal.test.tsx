@@ -72,4 +72,38 @@ describe('NewChatModal', () => {
     act(() => root.unmount())
     host.remove()
   })
+
+  it('defaults to the available workspace when opened globally', () => {
+    const addSession = vi.fn()
+    useAppStore.setState({ addSession, newChatFolderId: null })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<NewChatModal />))
+
+    const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')
+    expect(create?.disabled).toBe(false)
+    act(() => create?.click())
+    expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'gemini-cli', '', '')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('blocks chat creation and offers to create a workspace when none exists', async () => {
+    const browseFolderDirectory = vi.fn().mockResolvedValue('/tmp/New Workspace')
+    const addFolder = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({ folders: [], newChatFolderId: null, browseFolderDirectory, addFolder })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<NewChatModal />))
+    expect(host.textContent).toContain('A workspace is required')
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')?.disabled).toBe(true)
+    const createWorkspace = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create workspace')
+    await act(async () => { createWorkspace?.click(); await Promise.resolve(); await Promise.resolve() })
+    expect(addFolder).toHaveBeenCalledWith('New Workspace', null, '/tmp/New Workspace')
+    act(() => root.unmount())
+    host.remove()
+  })
 })

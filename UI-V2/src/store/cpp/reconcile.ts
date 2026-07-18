@@ -413,6 +413,7 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.currentModeId === next.currentModeId &&
     modelsEquivalent(existing.availableModels, next.availableModels) &&
     existing.modelsLoading === next.modelsLoading &&
+    existing.modelRefreshError === next.modelRefreshError &&
     existing.currentModelId === next.currentModelId &&
     turnEventsEquivalent(existing.turnEvents, next.turnEvents) &&
     existing.turnUserMessageIndex === next.turnUserMessageIndex &&
@@ -509,6 +510,7 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     currentModeId: normalizeAcpApprovalMode(acp?.currentModeId ?? chat.approvalMode),
     availableModels: Array.isArray(acp?.availableModels) ? acp!.availableModels : [],
     modelsLoading: Boolean(acp?.modelsLoading),
+    modelRefreshError: acp?.modelRefreshError ?? '',
     currentModelId: normalizeAcpModelId(acp?.currentModelId ?? chat.modelId),
     turnEvents: Array.isArray(acp?.turnEvents) ? acp!.turnEvents : [],
     turnUserMessageIndex: typeof acp?.turnUserMessageIndex === 'number' ? acp.turnUserMessageIndex : -1,
@@ -767,6 +769,7 @@ export function applyPendingCodexOptions(sessions: Session[]): Session[] {
       return session
     }
     if ((session.reasoningEffort ?? '') === pending.reasoningEffort && (session.serviceTier ?? '') === pending.serviceTier) {
+      pendingCodexOptionsByChatId.delete(session.id)
       return session
     }
     changed = true

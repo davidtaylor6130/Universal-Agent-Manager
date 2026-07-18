@@ -5,8 +5,6 @@ import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ChatView } from '../views/ChatView'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
-import { ProviderLogo } from '../shared/ProviderLogo'
-import { DEFAULT_PROVIDER_ID, providerShortName } from '../../utils/providerMetadata'
 import { StatusDot, Tooltip } from '../ui'
 import type { Session } from '../../types/session'
 
@@ -60,7 +58,6 @@ function ChatPane({ session, active, paneIndex, showGlow, onActivate }: {
   onActivate: () => void
 }) {
   const [view, setView] = useState<'chat' | 'cli'>('chat')
-  const providers = useAppStore(useShallow((s) => s.providers))
   const acpBinding = useAppStore((s) => s.acpBindingBySessionId[session.id])
   const cliBinding = useAppStore((s) => s.cliBindingBySessionId[session.id])
   const cliSwitchLocked = Boolean(
@@ -70,9 +67,6 @@ function ChatPane({ session, active, paneIndex, showGlow, onActivate }: {
       cliBinding?.lifecycleState === 'busy' ||
       cliBinding?.lifecycleState === 'shuttingDown'
   )
-  const providerId = session?.providerId || acpBinding?.providerId || DEFAULT_PROVIDER_ID
-  const provider = providers.find((candidate) => candidate.id === providerId)
-  const providerName = providerShortName(provider, providerId)
   const paneColor = chatPaneColors[paneIndex]
 
   return (
@@ -107,22 +101,6 @@ function ChatPane({ session, active, paneIndex, showGlow, onActivate }: {
           title={session.name}
         >
           <span className="truncate">{session.name}</span>
-          <span
-            data-testid={`provider-badge-${session.id}`}
-            className="inline-flex items-center gap-2 text-xs font-medium"
-            style={{
-              height: 30,
-              border: '1px solid color-mix(in srgb, var(--teal) 28%, var(--border))',
-              borderRadius: 7,
-              background: 'var(--teal-dim)',
-              color: 'var(--teal)',
-              padding: '0 10px',
-              flexShrink: 0,
-            }}
-          >
-            <ProviderLogo providerId={providerId} />
-            <span>{providerName} Provider</span>
-          </span>
         </div>
 
         <div

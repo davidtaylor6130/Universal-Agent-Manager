@@ -26,6 +26,7 @@ namespace
 	constexpr std::size_t kTimestampMaxChars = 80;
 	constexpr std::size_t kPreviewMaxChars = 320;
 	constexpr std::size_t kCommandMaxChars = 80;
+	constexpr std::size_t kGroupMaxChars = 160;
 	constexpr std::uintmax_t kImportMaxBytes = 2U * 1024U * 1024U;
 
 	void SetError(std::string* error_out, std::string_view message)
@@ -149,7 +150,7 @@ namespace
 			preview += line;
 			if (preview.size() >= kPreviewMaxChars)
 			{
-				preview.resize(kPreviewMaxChars);
+				preview = uam::strings::SafeLine(preview, kPreviewMaxChars);
 				break;
 			}
 		}
@@ -209,6 +210,7 @@ namespace
 		out_entry.source_provider = uam::strings::SafeLine(HeaderValue(parts.headers, "sourceProvider"), kMakerMaxChars, true);
 		out_entry.source_path = uam::strings::SafeLine(HeaderValue(parts.headers, "sourcePath"), 4096, true);
 		out_entry.command_name = uam::strings::AsciiSlug(HeaderValue(parts.headers, "commandName"), kCommandMaxChars, "");
+		out_entry.group = uam::strings::SafeLine(HeaderValue(parts.headers, "group"), kGroupMaxChars, true);
 		if (out_entry.command_name.empty()) out_entry.command_name = LegacyCommandName(path, out_entry.title);
 		out_entry.file_path = path;
 		return !out_entry.title.empty();
@@ -239,6 +241,7 @@ namespace
 		markdown += "sourceProvider: " + uam::strings::SafeLine(metadata.source_provider, kMakerMaxChars, true) + "\n";
 		markdown += "sourcePath: " + uam::strings::SafeLine(metadata.source_path, 4096, true) + "\n";
 		markdown += "commandName: " + uam::strings::AsciiSlug(metadata.command_name, kCommandMaxChars, "skill") + "\n";
+		if (!draft.group.empty()) markdown += "group: " + uam::strings::SafeLine(draft.group, kGroupMaxChars, true) + "\n";
 		markdown += "---\n\n";
 		markdown += draft.body + "\n";
 		return markdown;
@@ -250,6 +253,7 @@ namespace
 		input.maker = uam::strings::SafeLine(input.maker, kMakerMaxChars, true);
 		input.review = uam::strings::SafeLine(input.review, kReviewMaxChars, true);
 		input.body = uam::strings::Trim(input.body);
+		input.group = uam::strings::SafeLine(input.group, kGroupMaxChars, true);
 		if (input.title.empty() || input.body.empty())
 		{
 			SetError(error_out, "Markdown Store entry requires a title and body.");
@@ -342,6 +346,7 @@ namespace
 		draft.maker = uam::strings::SafeLine(HeaderValue(parts.headers, "maker"), kMakerMaxChars, true);
 		draft.review = uam::strings::SafeLine(HeaderValue(parts.headers, "review"), kReviewMaxChars, true);
 		draft.body = uam::strings::Trim(parts.body);
+		draft.group = uam::strings::SafeLine(HeaderValue(parts.headers, "group"), kGroupMaxChars, true);
 		MarkdownStoreService::Draft sanitized;
 		if (!SanitizeDraft(std::move(draft), sanitized, error_out))
 		{
@@ -526,6 +531,7 @@ bool MarkdownStoreService::UpdateEntry(const fs::path& root, std::string_view fi
 		SetError(error_out, "Markdown Store entry could not be loaded.");
 		return false;
 	}
+	if (draft.group.empty()) draft.group = existing.group;
 	PersistedMetadata metadata{existing.date_created, existing.favorite, existing.source_provider, existing.source_path,
 	                           existing.command_name.empty() ? UniqueCommandName(root, existing.title, target) : existing.command_name};
 	if (!uam::io::WriteTextFile(target, BuildMarkdown(draft, metadata)))
@@ -557,7 +563,7 @@ bool MarkdownStoreService::SetFavorite(const fs::path& root, std::string_view fi
 		SetError(error_out, "Markdown Store entry could not be loaded.");
 		return false;
 	}
-	Draft draft{existing.title, existing.maker, existing.review, existing.body};
+	Draft draft{existing.title, existing.maker, existing.review, existing.body, existing.group};
 	PersistedMetadata metadata{existing.date_created, favorite, existing.source_provider, existing.source_path,
 	                           existing.command_name.empty() ? UniqueCommandName(root, existing.title, target) : existing.command_name};
 	if (!uam::io::WriteTextFile(target, BuildMarkdown(draft, metadata)))

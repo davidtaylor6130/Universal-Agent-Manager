@@ -189,9 +189,14 @@ export function normalizeAcpApprovalMode(value: unknown): string {
   return (ACP_APPROVAL_MODE_IDS as readonly string[]).includes(modeId) ? modeId : 'default'
 }
 
-export function normalizeCommandSafetyTier(value: unknown): 'low' | 'medium' | 'high' {
+export function normalizeAgentMode(value: unknown): string {
+  const modeId = stringOr(value).trim()
+  return (AGENT_MODE_IDS as readonly string[]).includes(modeId) ? modeId : 'default'
+}
+
+export function normalizeCommandSafetyTier(value: unknown): 'off' | 'acceptEdits' | 'low' | 'medium' | 'high' | 'yolo' {
   const tier = stringOr(value).trim().toLowerCase()
-  return tier === 'low' || tier === 'high' ? tier : 'medium'
+  return tier === 'acceptedits' ? 'acceptEdits' : tier === 'off' || tier === 'low' || tier === 'high' || tier === 'yolo' ? tier : 'medium'
 }
 
 export function sanitizePlanEntry(value: unknown): AcpPlanEntry | null {
@@ -573,6 +578,7 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
         })
       : [],
     modelsLoading: booleanOr(value.modelsLoading),
+    modelRefreshError: stringOr(value.modelRefreshError),
     currentModelId: normalizeAcpModelId(value.currentModelId),
     turnEvents: Array.isArray(value.turnEvents)
       ? value.turnEvents.flatMap((event) => {
@@ -656,7 +662,7 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     branchFromMessageIndex: Math.trunc(finiteNumberOr(value.branchFromMessageIndex, -1)),
     branchMessageEdited: booleanOr(value.branchMessageEdited),
     modelId: normalizeAcpModelId(value.modelId),
-    approvalMode: normalizeAcpApprovalMode(value.approvalMode),
+    approvalMode: normalizeAgentMode(value.approvalMode),
     autoApproveCommands: booleanOr(value.autoApproveCommands, stringOr(value.approvalMode).trim() === 'yolo'),
     commandSafetyTier: normalizeCommandSafetyTier(value.commandSafetyTier),
     memoryEnabled: normalizeMemoryLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)) !== 'off',
@@ -791,6 +797,7 @@ export function cefPayloadOrRawResponse<T>(response: { data?: T }): unknown {
 }
 
 export const ACP_APPROVAL_MODE_IDS = ['default', 'acceptEdits', 'plan'] as const
+export const AGENT_MODE_IDS = ['default', 'plan'] as const
 
 export function sanitizeVcsType(value: unknown): VcsType {
   return value === 'svn' ? 'svn' : 'git'
@@ -1133,6 +1140,12 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       defaultNewChatProviderId: GEMINI_CLI_PROVIDER_ID,
       providerChatDefaults: {},
       markdownStoreDirectory: '',
+      voiceInputMode: 'system',
+      voiceInputServerBaseUrl: '',
+      voiceInputServerEndpoint: '/v1/audio/transcriptions',
+      voiceInputServerModel: 'whisper-1',
+      voiceInputApiKeyEnv: 'OPENAI_API_KEY',
+      voiceInputCapabilities: { system: { supported: true, reason: '' }, local: { supported: false, reason: 'Coming soon.' }, server: { supported: false, reason: 'Unavailable.' } },
       defaultEditorPresetId: 'vscode',
       editorFileAssociations: defaultEditorFileAssociations(),
     }
@@ -1157,6 +1170,13 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       }
     }
   }
+  const capability = (input: unknown, fallbackSupported: boolean) => isRecord(input)
+    ? { supported: booleanOr(input.supported, fallbackSupported), reason: stringOr(input.reason) }
+    : { supported: fallbackSupported, reason: '' }
+  const capabilities = isRecord(value.voiceInputCapabilities) ? value.voiceInputCapabilities : {}
+  const voiceInputMode = ['system', 'local', 'server'].includes(stringOr(value.voiceInputMode))
+    ? stringOr(value.voiceInputMode) as 'system' | 'local' | 'server'
+    : 'system'
   return {
     activeProviderId: stringOr(value.activeProviderId, GEMINI_CLI_PROVIDER_ID),
     theme,
@@ -1173,6 +1193,16 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     defaultNewChatProviderId: stringOr(value.defaultNewChatProviderId, stringOr(value.activeProviderId, GEMINI_CLI_PROVIDER_ID)),
     providerChatDefaults: sanitizeProviderChatDefaultsMap(value.providerChatDefaults),
     markdownStoreDirectory: stringOr(value.markdownStoreDirectory),
+    voiceInputMode,
+    voiceInputServerBaseUrl: stringOr(value.voiceInputServerBaseUrl),
+    voiceInputServerEndpoint: stringOr(value.voiceInputServerEndpoint, '/v1/audio/transcriptions'),
+    voiceInputServerModel: stringOr(value.voiceInputServerModel, 'whisper-1'),
+    voiceInputApiKeyEnv: stringOr(value.voiceInputApiKeyEnv, 'OPENAI_API_KEY'),
+    voiceInputCapabilities: {
+      system: capability(capabilities.system, true),
+      local: capability(capabilities.local, false),
+      server: capability(capabilities.server, false),
+    },
     defaultEditorPresetId: sanitizeEditorPresetId(value.defaultEditorPresetId),
     editorFileAssociations: sanitizeEditorFileAssociations(value.editorFileAssociations),
   }

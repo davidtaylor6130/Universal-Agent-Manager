@@ -27,6 +27,8 @@ import type {
   VcsCommitResult,
   VcsCommitStatus,
   VcsType,
+  VoiceInputCapabilities,
+  VoiceInputMode,
 } from './cpp/types'
 import type { StoreApi } from 'zustand'
 
@@ -63,6 +65,12 @@ export interface AppState {
   memoryActivity: MemoryActivity
   cliVersionManager: CliVersionManager
   markdownStoreDirectory: string
+  voiceInputMode: VoiceInputMode
+  voiceInputServerBaseUrl: string
+  voiceInputServerEndpoint: string
+  voiceInputServerModel: string
+  voiceInputApiKeyEnv: string
+  voiceInputCapabilities: VoiceInputCapabilities
   defaultNewChatProviderId: string
   providerChatDefaults: Record<string, ProviderChatDefaults>
   defaultEditorPresetId: string
@@ -112,10 +120,11 @@ export interface AppState {
   setSessionModel: (id: string, modelId: string) => Promise<boolean>
   setSessionApprovalMode: (id: string, modeId: string) => Promise<boolean>
   setSessionAutoApproveCommands: (id: string, enabled: boolean) => Promise<boolean>
-  setSessionCommandSafetyTier: (id: string, tier: 'low' | 'medium' | 'high') => Promise<boolean>
+  setSessionCommandSafetyTier: (id: string, tier: 'off' | 'acceptEdits' | 'low' | 'medium' | 'high' | 'yolo') => Promise<boolean>
   setSessionMemoryEnabled: (id: string, enabled: boolean) => Promise<boolean>
   setSessionMemoryLevel: (id: string, level: MemoryLevel) => Promise<boolean>
   setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryLevelDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'goalMaxLoopIterations' | 'memoryWorkerBindings'>>) => Promise<boolean>
+  setVoiceInputSettings: (settings: Pick<AppState, 'voiceInputMode' | 'voiceInputServerBaseUrl' | 'voiceInputServerEndpoint' | 'voiceInputServerModel' | 'voiceInputApiKeyEnv'>) => Promise<boolean>
   setUpdateSettings: (settings: Partial<Pick<AppState, 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>) => Promise<boolean>
   setSessionCodexOptions: (id: string, options: { reasoningEffort?: string; serviceTier?: string }) => Promise<boolean>
   setProviderChatDefaults: (settings: { defaultNewChatProviderId?: string; providerChatDefaults?: Record<string, ProviderChatDefaults> }) => Promise<boolean>
@@ -200,6 +209,8 @@ export interface AppState {
   // ACP actions
   stageChatAttachments: (sessionId: string, items: ChatAttachmentInput[]) => Promise<Attachment[]>
   sendAcpPrompt: (sessionId: string, text: string, attachments?: Attachment[], steerNow?: boolean) => Promise<boolean>
+  removeQueuedAcpPrompt: (sessionId: string, index: number) => Promise<boolean>
+  steerQueuedAcpPrompt: (sessionId: string, index: number) => Promise<boolean>
   discoverProviderModels: (sessionId: string) => Promise<boolean>
   cancelAcpTurn: (sessionId: string) => Promise<boolean>
   resolveAcpPermission: (sessionId: string, requestId: string, optionId: string | 'cancelled') => Promise<boolean>

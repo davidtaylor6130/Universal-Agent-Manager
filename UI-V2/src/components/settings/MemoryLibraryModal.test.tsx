@@ -78,6 +78,7 @@ function renderModal({
         createdAt: new Date(),
       },
     ],
+    resourceCollections: [],
     memoryLibraryScope: {
       scopeType: 'all',
       folderId: '',
@@ -109,7 +110,9 @@ function renderModal({
 }
 
 function clickButton(host: HTMLElement, text: string) {
-  const button = Array.from(host.querySelectorAll('button')).find((candidate) => candidate.textContent?.includes(text)) as HTMLButtonElement
+  const button = Array.from(host.querySelectorAll('button')).find((candidate) =>
+    candidate.textContent?.includes(text) || candidate.getAttribute('aria-label')?.includes(text)
+  ) as HTMLButtonElement
   expect(button).toBeTruthy()
   act(() => {
     button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -135,19 +138,18 @@ describe('MemoryLibraryModal all memory scope', () => {
     })
   })
 
-  it('groups aggregate entries by location and category', () => {
+  it('separates memory locations into a navigation rail', () => {
     const { host, root } = renderModal()
 
     expect(host.textContent).toContain('All Memory')
+    const locations = host.querySelector('nav[aria-label="Memory locations"]') as HTMLElement
+    expect(locations).toBeTruthy()
     expect(host.textContent).toContain('Global memory')
-    expect(host.textContent).toContain('Global lesson')
-    expect(host.textContent).toContain('Local lesson')
-    expect(host.textContent).toContain('Local failure')
     expect(host.textContent).toContain('General')
-    expect(host.textContent).toContain('/tmp/project/.UAM')
+    expect(host.textContent).toContain('Global lesson')
     expect(host.textContent).toContain('AI lessons')
-    expect(host.textContent).toContain('Your lessons')
-    expect(host.textContent).toContain('AI failures')
+    expect(host.textContent).not.toContain('Local lesson')
+    expect(locations.querySelector('button[aria-current="page"]')?.textContent).toContain('Global memory')
     expect(host.textContent).not.toContain('Open memory root')
 
     act(() => {
@@ -185,15 +187,16 @@ describe('MemoryLibraryModal all memory scope', () => {
     host.remove()
   })
 
-  it('collapses a location group without hiding other locations', () => {
+  it('shows the selected memory location in the content pane', () => {
     const { host, root } = renderModal()
 
     clickButton(host, 'General')
 
     expect(host.textContent).toContain('General')
-    expect(host.textContent).not.toContain('Local lesson')
-    expect(host.textContent).not.toContain('Local failure')
-    expect(host.textContent).toContain('Global lesson')
+    expect(host.textContent).toContain('Local lesson')
+    expect(host.textContent).toContain('Local failure')
+    expect(host.textContent).not.toContain('Global lesson')
+    expect(host.querySelector('nav[aria-label="Memory locations"] button[aria-current="page"]')?.textContent).toContain('General')
 
     act(() => {
       root.unmount()
@@ -211,7 +214,8 @@ describe('MemoryLibraryModal all memory scope', () => {
     expect(host.textContent).toContain('Global memory')
     expect(host.textContent).toContain('Global lesson')
     expect(host.textContent).toContain('AI lessons')
-    expect(host.textContent).not.toContain('General')
+    expect(host.textContent).toContain('Unassigned workspaces')
+    expect(host.textContent).toContain('General')
     expect(host.textContent).not.toContain('Local lesson')
     expect(host.textContent).not.toContain('AI failures')
 
@@ -246,7 +250,7 @@ describe('MemoryLibraryModal all memory scope', () => {
     clickButton(host, 'Delete matches')
 
     expect(host.textContent).toContain('Delete matching memories?')
-    expect(host.textContent).toContain('This deletes 2 matching memory entries')
+    expect(host.textContent).toContain('This permanently deletes 2 matching memory entries')
     expect(deleteMemoryEntries).not.toHaveBeenCalled()
 
     clickButton(host, 'Delete 2 memories')

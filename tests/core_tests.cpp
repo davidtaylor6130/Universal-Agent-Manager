@@ -411,13 +411,23 @@ UAM_TEST(MacShellActionsApplyReplacesOnlyUamQuickActionsWithoutDuplicates)
 
 UAM_TEST(SettingsNormalizationExposesKnownThemeIds)
 {
-	UAM_ASSERT_EQ(uam::settings::kThemeIds.size(), static_cast<std::size_t>(3));
+	UAM_ASSERT_EQ(uam::settings::kThemeIds.size(), static_cast<std::size_t>(8));
 	UAM_ASSERT(uam::settings::IsThemeId(uam::settings::kDarkThemeId));
 	UAM_ASSERT(uam::settings::IsThemeId(uam::settings::kLightThemeId));
 	UAM_ASSERT(uam::settings::IsThemeId(uam::settings::kSystemThemeId));
+	UAM_ASSERT(uam::settings::IsThemeId(uam::settings::kMidnightThemeId));
+	UAM_ASSERT(uam::settings::IsThemeId(uam::settings::kPaperThemeId));
+	UAM_ASSERT(uam::settings::IsThemeId(uam::settings::kDuskThemeId));
+	UAM_ASSERT(uam::settings::IsThemeId(uam::settings::kAuroraThemeId));
+	UAM_ASSERT(uam::settings::IsThemeId(uam::settings::kContrastThemeId));
 	UAM_ASSERT(!uam::settings::IsThemeId("unknown"));
 	UAM_ASSERT_EQ(uam::settings::NormalizeThemeId(" LIGHT "), std::string(uam::settings::kLightThemeId));
 	UAM_ASSERT_EQ(uam::settings::NormalizeThemeId(std::string_view("xx SYSTEM yy").substr(2, 8)), std::string(uam::settings::kSystemThemeId));
+	UAM_ASSERT_EQ(uam::settings::NormalizeThemeId(" MIDNIGHT "), std::string(uam::settings::kMidnightThemeId));
+	UAM_ASSERT_EQ(uam::settings::NormalizeThemeId("paper"), std::string(uam::settings::kPaperThemeId));
+	UAM_ASSERT_EQ(uam::settings::NormalizeThemeId("dusk"), std::string(uam::settings::kDuskThemeId));
+	UAM_ASSERT_EQ(uam::settings::NormalizeThemeId("aurora"), std::string(uam::settings::kAuroraThemeId));
+	UAM_ASSERT_EQ(uam::settings::NormalizeThemeId("contrast"), std::string(uam::settings::kContrastThemeId));
 	UAM_ASSERT_EQ(uam::settings::NormalizeThemeId("unknown"), std::string(uam::settings::kDarkThemeId));
 }
 
@@ -758,6 +768,7 @@ UAM_TEST(SharedAsciiStringUtilitiesBackStrictParsing)
 	UAM_ASSERT(!uam::ranges::InsertTrimmedNonEmptyString(unique_set, " \n "));
 	UAM_ASSERT(unique_set.contains("beta"));
 	UAM_ASSERT_EQ(uam::strings::SafeLine(std::string_view("xx  First\r\nSecond  yy").substr(2, 16), 32, true), std::string("First  Second"));
+	UAM_ASSERT_EQ(uam::strings::SafeLine("xxxx—", 6), std::string("xxxx"));
 	UAM_ASSERT_EQ(uam::strings::TrimAndLowerAscii(padded), std::string("yes"));
 	UAM_ASSERT_EQ(uam::strings::ToLowerAscii(std::string_view("xxMiXeDyy").substr(2, 5)), std::string("mixed"));
 	UAM_ASSERT_EQ(uam::strings::TrimAndLowerAscii(std::string_view("xx  CoDeX  yy").substr(2, 9)), std::string("codex"));
@@ -932,6 +943,9 @@ UAM_TEST(CommandSafetyClassifiesReadsWritesNetworkAndTierEnforcement)
 	UAM_ASSERT_EQ(ClassifyCommand("cat file.txt && rm file.txt"), RiskLevel::Warn);
 
 	UAM_ASSERT(!RequiresApproval(Tier::Low, RiskLevel::Allowed, false));
+	UAM_ASSERT(!RequiresApproval(Tier::Off, RiskLevel::WarnHigh, false));
+	UAM_ASSERT(!RequiresApproval(Tier::AcceptEdits, RiskLevel::WarnHigh, false));
+	UAM_ASSERT(!RequiresApproval(Tier::Yolo, RiskLevel::WarnHigh, false));
 	UAM_ASSERT(RequiresApproval(Tier::Low, RiskLevel::Warn, true));
 	UAM_ASSERT(!RequiresApproval(Tier::Medium, RiskLevel::Warn, true));
 	UAM_ASSERT(RequiresApproval(Tier::Medium, RiskLevel::Warn, false));
@@ -1033,6 +1047,47 @@ UAM_TEST(SettingsStorePersistsMemorySettings)
 	UAM_ASSERT(!decoded.memory_enabled_default);
 	UAM_ASSERT_EQ(decoded.memory_worker_bindings["gemini-cli"].worker_provider_id, expected_worker_provider_id);
 	UAM_ASSERT_EQ(decoded.memory_worker_bindings["gemini-cli"].worker_model_id, std::string("sliced-model"));
+}
+
+UAM_TEST(VoiceInputSettingsPersistValidateAndParseServerResponses)
+{
+	TempDir temp("uam-voice-settings");
+	const fs::path settings_file = temp.root / "settings.txt";
+	AppSettings settings;
+	settings.voice_input_mode = "server";
+	settings.voice_input_server_base_url = "https://voice.example.test/";
+	settings.voice_input_server_endpoint = "/v1/audio/transcriptions";
+	settings.voice_input_server_model = "whisper-large-v3";
+	settings.voice_input_api_key_env = "UAM_VOICE_API_KEY";
+	UAM_ASSERT(SettingsStore::Save(settings_file, settings, CenterViewMode::CliConsole));
+
+	AppSettings loaded;
+	CenterViewMode mode = CenterViewMode::CliConsole;
+	SettingsStore::Load(settings_file, loaded, mode);
+	UAM_ASSERT_EQ(loaded.voice_input_mode, std::string("server"));
+	UAM_ASSERT_EQ(loaded.voice_input_server_base_url, std::string("https://voice.example.test/"));
+	UAM_ASSERT_EQ(loaded.voice_input_server_model, std::string("whisper-large-v3"));
+	UAM_ASSERT_EQ(loaded.voice_input_api_key_env, std::string("UAM_VOICE_API_KEY"));
+	UAM_ASSERT(ReadFile(settings_file).find("actual-secret") == std::string::npos);
+	const nlohmann::json frontend = uam::settings_frontend_json::SerializeCommonSettingsFields(loaded);
+	UAM_ASSERT_EQ(frontend.value("voiceInputMode", ""), std::string("server"));
+	UAM_ASSERT_EQ(frontend.value("voiceInputApiKeyEnv", ""), std::string("UAM_VOICE_API_KEY"));
+	UAM_ASSERT(frontend["voiceInputCapabilities"]["local"].value("supported", true) == false);
+
+	std::string error;
+	UAM_ASSERT(uam::voice_input::ValidateServerSettings("https://voice.example.test", "/v1/audio/transcriptions", "whisper-1", "OPENAI_API_KEY", &error));
+	UAM_ASSERT(uam::voice_input::ValidateServerSettings("http://localhost:8000", "/v1/audio/transcriptions", "whisper-1", "", &error));
+	UAM_ASSERT(!uam::voice_input::ValidateServerSettings("http://voice.example.test", "/v1/audio/transcriptions", "whisper-1", "OPENAI_API_KEY", &error));
+	UAM_ASSERT(!uam::voice_input::ValidateServerSettings("https://user:secret@voice.example.test", "/v1/audio/transcriptions", "whisper-1", "OPENAI_API_KEY", &error));
+	UAM_ASSERT(!uam::voice_input::ValidateServerSettings("https://voice.example.test", "v1/audio/transcriptions", "whisper-1", "OPENAI_API_KEY", &error));
+	UAM_ASSERT(!uam::voice_input::ValidateServerSettings("https://voice.example.test", "/v1/audio/transcriptions", "whisper-1", "bad-name", &error));
+	UAM_ASSERT_EQ(uam::voice_input::BuildServerUrl("https://voice.example.test/", "/v1/audio/transcriptions"), std::string("https://voice.example.test/v1/audio/transcriptions"));
+
+	std::string transcript;
+	UAM_ASSERT(uam::voice_input::ParseTranscriptResponse(R"({"text":" hello world "})", transcript, &error));
+	UAM_ASSERT_EQ(transcript, std::string("hello world"));
+	UAM_ASSERT(!uam::voice_input::ParseTranscriptResponse(R"({"error":"bad request"})", transcript, &error));
+	UAM_ASSERT(!uam::voice_input::ParseTranscriptResponse(R"({"text":""})", transcript, &error));
 }
 
 UAM_TEST(SettingsStorePersistsProviderChatDefaults)
@@ -1707,6 +1762,12 @@ UAM_TEST(ApprovalModeHelpersPreserveAppAndProviderMappings)
 	UAM_ASSERT(IsAppApprovalMode(kDefaultApprovalMode));
 	UAM_ASSERT(IsAppApprovalMode(kAcceptEditsApprovalMode));
 	UAM_ASSERT(IsAppApprovalMode(kPlanApprovalMode));
+	UAM_ASSERT(IsAgentMode(kDefaultApprovalMode));
+	UAM_ASSERT(IsAgentMode(kPlanApprovalMode));
+	UAM_ASSERT(!IsAgentMode(kAcceptEditsApprovalMode));
+	UAM_ASSERT_EQ(EffectiveProviderMode(kDefaultApprovalMode, "off"), std::string(kDefaultApprovalMode));
+	UAM_ASSERT_EQ(EffectiveProviderMode(kDefaultApprovalMode, kAcceptEditsApprovalMode), std::string(kAcceptEditsApprovalMode));
+	UAM_ASSERT_EQ(EffectiveProviderMode(kPlanApprovalMode, kAcceptEditsApprovalMode), std::string(kPlanApprovalMode));
 	UAM_ASSERT(IsAppApprovalMode(std::string_view("xxacceptEditsyy").substr(2, 11)));
 	UAM_ASSERT(!IsAppApprovalMode("unsupported"));
 	UAM_ASSERT(IsPersistedProviderDefaultApprovalMode(kAcceptEditsApprovalMode));
@@ -1901,11 +1962,66 @@ UAM_TEST(ChatRepositoryMigratesLegacyYoloModeToAutoApproveCommands)
 	UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(loaded.front().approval_mode, std::string("default"));
 	UAM_ASSERT(loaded.front().auto_approve_commands);
+	UAM_ASSERT_EQ(loaded.front().command_safety_tier, std::string("yolo"));
 
 	UAM_ASSERT(ChatRepository::SaveChat(temp.root, loaded.front()));
 	const nlohmann::json rewritten_json = nlohmann::json::parse(ReadFile(legacy_file));
 	UAM_ASSERT_EQ(rewritten_json.value("approval_mode", ""), std::string("default"));
 	UAM_ASSERT(rewritten_json.value("auto_approve_commands", false));
+	UAM_ASSERT_EQ(rewritten_json.value("commandSafetyTier", ""), std::string("yolo"));
+}
+
+UAM_TEST(ChatRepositoryMigratesLegacyAcceptEditsAgentModeToPermissions)
+{
+	TempDir temp("uam-chat-accept-edits-migration");
+	const fs::path chats_dir = temp.root / "chats";
+	fs::create_directories(chats_dir);
+	const fs::path legacy_file = chats_dir / "legacy-accept-edits.json";
+
+	UAM_ASSERT(uam::io::WriteTextFile(legacy_file, R"({
+  "id": "legacy-accept-edits",
+  "provider_id": "claude-cli",
+  "approval_mode": "acceptEdits",
+  "title": "Legacy Accept Edits",
+  "created_at": "2026-01-01 00:00:00",
+  "updated_at": "2026-01-01 00:00:01",
+  "messages": []
+})"));
+
+	const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(loaded.front().approval_mode, std::string("default"));
+	UAM_ASSERT_EQ(loaded.front().command_safety_tier, std::string("acceptEdits"));
+}
+
+UAM_TEST(NativeHistoryRefreshPreservesIndependentModelControls)
+{
+	TempDir temp("uam-native-refresh-model-controls");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession local;
+	local.id = "chat-1";
+	local.provider_id = "codex-cli";
+	local.title = "Local";
+	local.model_id = "gpt-5.4";
+	local.reasoning_effort = "xhigh";
+	local.service_tier = "fast";
+	local.command_safety_tier = "medium";
+	local.created_at = "2026-01-01T00:00:00.000Z";
+	local.updated_at = "2026-01-01T00:00:01.000Z";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, local));
+
+	ChatSession native = local;
+	native.reasoning_effort.clear();
+	native.service_tier.clear();
+	native.command_safety_tier = "off";
+	std::vector<ChatSession> native_chats{native};
+	ChatHistorySyncService().ApplyLocalOverrides(app, native_chats, false);
+
+	UAM_ASSERT_EQ(native_chats.front().reasoning_effort, std::string("xhigh"));
+	UAM_ASSERT_EQ(native_chats.front().service_tier, std::string("fast"));
+	UAM_ASSERT_EQ(native_chats.front().command_safety_tier, std::string("medium"));
 }
 
 UAM_TEST(ChatRepositoryMigratesLegacyDirectoryMessageRoles)
@@ -2819,6 +2935,18 @@ UAM_TEST(ChatRepositoryPersistsCommandSafetyTierAndDefaultsToMedium)
 
 	std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(temp.root);
 	UAM_ASSERT_EQ(loaded.front().command_safety_tier, std::string("high"));
+	chat.command_safety_tier = "off";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	loaded = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(loaded.front().command_safety_tier, std::string("off"));
+	chat.command_safety_tier = "yolo";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	loaded = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(loaded.front().command_safety_tier, std::string("yolo"));
+	chat.command_safety_tier = "acceptEdits";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	loaded = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(loaded.front().command_safety_tier, std::string("acceptEdits"));
 
 	nlohmann::json persisted = nlohmann::json::parse(ReadFile(AppPaths::UamChatFilePath(temp.root, chat.id)));
 	persisted.erase("commandSafetyTier");
@@ -4088,6 +4216,7 @@ UAM_TEST(CodexThreadIdValidatorAcceptsOnlyUuidThreadIds)
 	UAM_ASSERT(uam::IsValidCodexThreadIdForTests("urn:uuid:6a6f0f3b-1a0b-4a9c-8a01-111111111111"));
 	UAM_ASSERT_EQ(uam::codex::ValidThreadIdOrEmpty(std::string_view("xx 6a6f0f3b-1a0b-4a9c-8a01-111111111111 yy").substr(2, 38)), std::string("6a6f0f3b-1a0b-4a9c-8a01-111111111111"));
 	UAM_ASSERT(uam::codex::ErrorLooksLikeInvalidThreadId(std::string_view("xxInvalid thread idyy").substr(2, 17)));
+	UAM_ASSERT(uam::codex::ErrorLooksLikeInvalidThreadId("no rollout found for thread id 6a6f0f3b-1a0b-4a9c-8a01-111111111111"));
 	UAM_ASSERT(!uam::IsValidCodexThreadIdForTests(""));
 	UAM_ASSERT(!uam::IsValidCodexThreadIdForTests("chat-1"));
 	UAM_ASSERT(!uam::IsValidCodexThreadIdForTests("native-abc"));
@@ -4240,6 +4369,7 @@ UAM_TEST(ClaudeCliInteractiveArgvUsesResumeModelModeAndFlags)
 {
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 	ProviderProfile profile = ProviderProfileStore::DefaultClaudeProfile();
+	UAM_ASSERT_EQ(profile.native_goal_command, std::string("/goal"));
 	AppSettings settings;
 	settings.provider_yolo_mode = false;
 	settings.provider_extra_flags = "--add-dir ../shared";
@@ -4273,7 +4403,9 @@ UAM_TEST(ClaudeCliInteractiveArgvUsesResumeModelModeAndFlags)
 
 	chat.approval_mode = " acceptEdits ";
 	const std::vector<std::string> accept_edits = ProviderRuntime::BuildInteractiveArgv(profile, chat, AppSettings{});
-	UAM_ASSERT_EQ(std::ranges::find(accept_edits, "--permission-mode"), accept_edits.end());
+	const auto default_permission = std::ranges::find(accept_edits, "--permission-mode");
+	UAM_ASSERT(default_permission != accept_edits.end());
+	UAM_ASSERT_EQ(*(default_permission + 1), std::string("default"));
 
 	profile.interactive_command = "claude --debug-shell";
 	chat.native_session_id.clear();
@@ -4290,13 +4422,18 @@ UAM_TEST(ClaudeCliInteractiveArgvSupportsAcceptEditsMode)
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 	ChatSession chat;
 	chat.provider_id = "claude-cli";
-	chat.approval_mode = "acceptEdits";
+	chat.approval_mode = "default";
+	chat.command_safety_tier = "acceptEdits";
 
 	const std::vector<std::string> argv = uam::BuildAcpLaunchArgvForTests(chat);
 	UAM_ASSERT_EQ(argv.size(), static_cast<std::size_t>(9));
 	UAM_ASSERT_EQ(argv[0], std::string("claude"));
 	UAM_ASSERT_EQ(argv[7], std::string("--permission-mode"));
 	UAM_ASSERT_EQ(argv[8], std::string("acceptEdits"));
+
+	chat.approval_mode = "plan";
+	const std::vector<std::string> plan_argv = uam::BuildAcpLaunchArgvForTests(chat);
+	UAM_ASSERT_EQ(plan_argv[8], std::string("plan"));
 #endif
 }
 
@@ -6718,10 +6855,18 @@ UAM_TEST(MarkdownStoreCreatesListsAndValidatesUamFiles)
 	UAM_ASSERT_EQ(created.file_path.extension().string(), std::string(".uam"));
 
 	error = "stale";
-	const std::vector<MarkdownStoreService::Entry> entries = MarkdownStoreService::ListEntries(root, &error);
+	std::vector<MarkdownStoreService::Entry> entries = MarkdownStoreService::ListEntries(root, &error);
 	UAM_ASSERT(error.empty());
 	UAM_ASSERT_EQ(entries.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(entries.front().title, std::string("Release Notes"));
+	UAM_ASSERT(uam::io::WriteTextFile(root / "grouped.uam", "---\ntitle: Grouped\nfavorite: true\ngroup: Workflows\n---\n\n# Grouped\n"));
+	entries = MarkdownStoreService::ListEntries(root, &error);
+	const auto grouped = std::find_if(entries.begin(), entries.end(), [](const MarkdownStoreService::Entry& entry) { return entry.title == "Grouped"; });
+	UAM_ASSERT(grouped != entries.end());
+	UAM_ASSERT_EQ(grouped->group, std::string("Workflows"));
+	MarkdownStoreService::Entry grouped_favorite;
+	UAM_ASSERT(MarkdownStoreService::SetFavorite(root, grouped->file_path.string(), false, &grouped_favorite, &error));
+	UAM_ASSERT_EQ(grouped_favorite.group, std::string("Workflows"));
 
 	fs::path normalized_file;
 	error = "stale";
@@ -6744,6 +6889,21 @@ UAM_TEST(MarkdownStoreCreatesListsAndValidatesUamFiles)
 	UAM_ASSERT(!MarkdownStoreService::CreateEntry(root, invalid_draft, &stale_entry, &error));
 	UAM_ASSERT(stale_entry.id.empty());
 	UAM_ASSERT(stale_entry.file_path.empty());
+}
+
+UAM_TEST(MarkdownStoreImportPreviewKeepsTruncatedUtf8Valid)
+{
+	TempDir temp("uam-markdown-import-utf8");
+	const fs::path root = temp.root / "store";
+	const fs::path source = temp.root / "skill.md";
+	fs::create_directories(root);
+	UAM_ASSERT(uam::io::WriteTextFile(source, "# UTF-8\n\n" + std::string(319, 'x') + "— trailing text\n"));
+	std::string error;
+	const auto preview = MarkdownStoreService::PreviewImports(root, {{"codex", source}}, &error);
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(preview.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(preview.front().supported);
+	UAM_ASSERT_EQ(preview.front().preview, std::string(319, 'x'));
 }
 
 UAM_TEST(MarkdownStoreImportsEditsFavoritesAndResolvesConflictsWithoutChangingSources)

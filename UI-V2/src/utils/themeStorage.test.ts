@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   applyDocumentTheme,
+  BUILT_IN_THEMES,
   normalizeCustomTheme,
   readStoredTheme,
   resolveDocumentTheme,
@@ -29,6 +30,26 @@ describe('themeStorage', () => {
   it('applies a valid theme to the document', () => {
     applyDocumentTheme('light')
     expect(document.documentElement.getAttribute('data-theme')).toBe('light')
+  })
+
+  it('makes the built-in palettes available, applies them, and persists the selection', () => {
+    const palettes = ['midnight', 'paper', 'dusk', 'aurora', 'contrast'] as const
+    const values = new Map<string, string>()
+    const previousStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value) },
+    })
+    expect(BUILT_IN_THEMES.map((theme) => theme.id)).toEqual(expect.arrayContaining([...palettes]))
+
+    for (const palette of palettes) {
+      applyDocumentTheme(palette)
+      expect(document.documentElement.getAttribute('data-theme')).toBe(palette)
+      writeStoredTheme(palette)
+      expect(readStoredTheme()).toBe(palette)
+    }
+    if (previousStorage) Object.defineProperty(globalThis, 'localStorage', previousStorage)
+    else delete (globalThis as { localStorage?: Storage }).localStorage
   })
 
   it('preserves the system theme preference while applying a resolved document theme', () => {

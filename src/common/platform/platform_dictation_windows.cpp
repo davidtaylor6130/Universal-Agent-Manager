@@ -19,8 +19,13 @@ namespace uam::platform_windows_impl
 class WindowsDictationService final : public IPlatformDictationService
 {
   public:
-	bool Start(std::string_view locale, std::string* error_out = nullptr) override
+	bool Start(const DictationOptions& options, std::string* error_out = nullptr) override
 	{
+		if (options.mode != "system")
+		{
+			if (error_out) *error_out = options.mode == "local" ? "Local AI transcription is coming soon." : "Server transcription audio capture is not available on Windows yet.";
+			return false;
+		}
 		std::jthread previous_worker;
 		std::uint64_t generation = 0;
 		{
@@ -45,7 +50,7 @@ class WindowsDictationService final : public IPlatformDictationService
 			previous_worker.join();
 		}
 
-		std::jthread worker([this, generation, locale_copy = std::string(locale)](std::stop_token stop_token) {
+		std::jthread worker([this, generation, locale_copy = options.locale](std::stop_token stop_token) {
 			RunRecognition(stop_token, generation, locale_copy);
 		});
 		{

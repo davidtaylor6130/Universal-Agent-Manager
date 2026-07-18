@@ -271,7 +271,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
           payload: { directory: trimmed },
         })
         if (!response.ok) {
-          set({ markdownStoreError: response.error ?? 'Failed to save Markdown Store directory.' })
+          set({ markdownStoreError: response.error ?? 'Failed to save Skills directory.' })
           return false
         }
         set({
@@ -336,7 +336,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
         if (!response.ok) {
           set({
             markdownStoreLoading: false,
-            markdownStoreError: response.error ?? 'Failed to load Markdown Store.',
+            markdownStoreError: response.error ?? 'Failed to load Skills.',
           })
           return false
         }
@@ -360,7 +360,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
           payload: draft,
         })
         if (!response.ok) {
-          set({ markdownStoreError: response.error ?? 'Failed to publish Markdown Store entry.' })
+          set({ markdownStoreError: response.error ?? 'Failed to publish skill.' })
           return false
         }
         return get().refreshMarkdownStore()
@@ -379,6 +379,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
         sourceProvider: '',
         sourcePath: '',
         commandName: draft.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'skill',
+        group: '',
         filePath: `${get().markdownStoreDirectory}/${draft.title || Date.now()}.uam`,
       }
       set((state) => ({ markdownStoreEntries: [...state.markdownStoreEntries, synthetic] }))
@@ -392,7 +393,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
           payload: { filePath: entry.filePath, ...draft },
         })
         if (!response.ok) {
-          set({ markdownStoreError: response.error ?? 'Failed to save Markdown Store entry.' })
+          set({ markdownStoreError: response.error ?? 'Failed to save skill.' })
           return false
         }
         return get().refreshMarkdownStore()
@@ -417,7 +418,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
         if (!response.ok) {
           set((state) => ({
             markdownStoreEntries: state.markdownStoreEntries.map((candidate) => candidate.filePath === entry.filePath ? { ...candidate, favorite: entry.favorite ?? false } : candidate),
-            markdownStoreError: response.error ?? 'Failed to update Markdown Store favorite.',
+            markdownStoreError: response.error ?? 'Failed to update skill favorite.',
           }))
           return false
         }
@@ -441,7 +442,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       if (!isCefContext()) return [] as MarkdownStoreImportCandidate[]
       const response = await sendToCEF<{ candidates?: MarkdownStoreImportCandidate[] }>({ action: 'previewMarkdownStoreImports', payload: options })
       if (!response.ok) {
-        set({ markdownStoreError: response.error ?? 'Failed to preview Markdown Store imports.' })
+        set({ markdownStoreError: response.error ?? 'Failed to preview skill imports.' })
         return []
       }
       set({ markdownStoreError: '' })
@@ -452,7 +453,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       if (!isCefContext()) return [] as MarkdownStoreImportResult[]
       const response = await sendToCEF<{ results?: MarkdownStoreImportResult[] }>({ action: 'importMarkdownStoreEntries', payload: { imports } })
       if (!response.ok) {
-        set({ markdownStoreError: response.error ?? 'Failed to import Markdown Store entries.' })
+        set({ markdownStoreError: response.error ?? 'Failed to import skills.' })
         return []
       }
       await get().refreshMarkdownStore()
@@ -466,7 +467,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
           payload: { filePath: entry.filePath },
         })
         if (!response.ok) {
-          set({ markdownStoreError: response.error ?? 'Failed to reveal Markdown Store entry.' })
+          set({ markdownStoreError: response.error ?? 'Failed to reveal skill.' })
           return false
         }
       }
@@ -480,7 +481,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
           payload: { filePath: entry.filePath },
         })
         if (!response.ok) {
-          set({ markdownStoreError: response.error ?? 'Failed to open Markdown Store entry for editing.' })
+          set({ markdownStoreError: response.error ?? 'Failed to open skill for editing.' })
           return false
         }
       }

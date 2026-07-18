@@ -140,11 +140,17 @@ std::string AutoApproveOptionId(const AcpPendingPermissionState& pending)
 
 bool TryAutoApprovePendingPermission(AcpSessionState& session, const ChatSession& chat, std::string* error_out)
 {
-	if (session.pending_permission.request_id_json.empty() || session.pending_permission.safety_requires_approval)
+	const auto tier = uam::command_safety::ParseTier(chat.command_safety_tier);
+	if (session.pending_permission.request_id_json.empty() || tier == uam::command_safety::Tier::Off)
 	{
 		return false;
 	}
-	if (session.pending_permission.safety_risk.empty() && !chat.auto_approve_commands)
+	if (tier == uam::command_safety::Tier::AcceptEdits && session.pending_permission.safety_tier != "acceptEdits")
+	{
+		return false;
+	}
+	if (tier != uam::command_safety::Tier::Yolo && tier != uam::command_safety::Tier::AcceptEdits &&
+	    (session.pending_permission.safety_risk.empty() || session.pending_permission.safety_requires_approval))
 	{
 		return false;
 	}
@@ -208,14 +214,25 @@ bool SendCodexUserInputResponse(AcpSessionState& session, const std::string& req
 
 void ApplyCommandSafetyDecision(const AppState& app, const ChatSession& chat, AcpPendingPermissionState& pending)
 {
+	const auto tier = uam::command_safety::ParseTier(chat.command_safety_tier);
+	if (tier == uam::command_safety::Tier::Off || tier == uam::command_safety::Tier::Yolo) return;
 	const std::string kind = uam::strings::ToLowerAscii(uam::strings::Trim(pending.kind));
 	const bool command = kind == "commandexecution" || kind == "execute";
 	const bool file_change = kind == "filechange" || kind == "edit" || kind == "write" || kind == "create" || kind == "delete" || kind == "move";
+	if (tier == uam::command_safety::Tier::AcceptEdits)
+	{
+		if (file_change)
+		{
+			pending.safety_risk = "allowed";
+			pending.safety_tier = "acceptEdits";
+			pending.safety_requires_approval = false;
+		}
+		return;
+	}
 	if (!command && !file_change) return;
 	const auto risk = file_change
 	    ? uam::command_safety::RiskLevel::Warn
 	    : uam::command_safety::ClassifyCommand(pending.content);
-	const auto tier = uam::command_safety::ParseTier(chat.command_safety_tier);
 	pending.safety_risk = uam::command_safety::RiskLevelName(risk);
 	pending.safety_tier = uam::command_safety::TierName(tier);
 	pending.version_controlled_workspace = uam::command_safety::WorkspaceIsVersionControlled(uam::paths::ResolveWorkspaceRootPath(app, chat));

@@ -65,7 +65,8 @@ namespace uam::provider_chat_defaults
 			defaults.service_tier.clear();
 		}
 		chat.model_id = defaults.model_id;
-		chat.approval_mode = defaults.approval_mode;
+		chat.approval_mode = defaults.approval_mode == uam::approval_modes::kAcceptEditsApprovalMode ? uam::approval_modes::kDefaultApprovalMode : defaults.approval_mode;
+		if (defaults.approval_mode == uam::approval_modes::kAcceptEditsApprovalMode) chat.command_safety_tier = uam::approval_modes::kAcceptEditsApprovalMode;
 		chat.auto_approve_commands = defaults.auto_approve_commands;
 		chat.memory_level = defaults.memory_level;
 		chat.memory_enabled = defaults.memory_enabled;

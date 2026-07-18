@@ -36,6 +36,7 @@ namespace
 		entry_json["sourceProvider"] = entry.source_provider;
 		entry_json["sourcePath"] = entry.source_path;
 		entry_json["commandName"] = entry.command_name;
+		entry_json["group"] = entry.group;
 		entry_json["filePath"] = uam::paths::Utf8PathString(entry.file_path);
 		return entry_json;
 	}
@@ -133,6 +134,7 @@ void UamQueryHandler::HandleCreateMarkdownStoreEntry(CefRefPtr<CefBrowser> brows
 	draft.maker = payload.value("maker", "");
 	draft.review = payload.value("review", "");
 	draft.body = payload.value("body", "");
+	draft.group = payload.value("group", "");
 
 	MarkdownStoreService::Entry created;
 	std::string error;
@@ -149,7 +151,7 @@ void UamQueryHandler::HandleCreateMarkdownStoreEntry(CefRefPtr<CefBrowser> brows
 void UamQueryHandler::HandleUpdateMarkdownStoreEntry(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::filesystem::path root = MarkdownStoreService::NormalizeRoot(m_app.settings.markdown_store_directory);
-	MarkdownStoreService::Draft draft{payload.value("title", ""), payload.value("maker", ""), payload.value("review", ""), payload.value("body", "")};
+	MarkdownStoreService::Draft draft{payload.value("title", ""), payload.value("maker", ""), payload.value("review", ""), payload.value("body", ""), payload.value("group", "")};
 	MarkdownStoreService::Entry updated;
 	std::string error;
 	if (!MarkdownStoreService::UpdateEntry(root, payload.value("filePath", ""), draft, &updated, &error))

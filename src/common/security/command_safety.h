@@ -12,9 +12,12 @@ namespace uam::command_safety
 
 enum class Tier
 {
+	Off,
+	AcceptEdits,
 	Low,
 	Medium,
-	High
+	High,
+	Yolo
 };
 
 enum class RiskLevel
@@ -27,15 +30,21 @@ enum class RiskLevel
 inline Tier ParseTier(std::string_view value)
 {
 	const std::string normalized = uam::strings::ToLowerAscii(uam::strings::Trim(value));
+	if (normalized == "off") return Tier::Off;
+	if (normalized == "acceptedits") return Tier::AcceptEdits;
 	if (normalized == "low") return Tier::Low;
 	if (normalized == "high") return Tier::High;
+	if (normalized == "yolo") return Tier::Yolo;
 	return Tier::Medium;
 }
 
 inline std::string TierName(Tier tier)
 {
+	if (tier == Tier::Off) return "off";
+	if (tier == Tier::AcceptEdits) return "acceptEdits";
 	if (tier == Tier::Low) return "low";
 	if (tier == Tier::High) return "high";
+	if (tier == Tier::Yolo) return "yolo";
 	return "medium";
 }
 
@@ -119,6 +128,7 @@ inline bool WorkspaceIsVersionControlled(const std::filesystem::path& workspace)
 
 inline bool RequiresApproval(Tier tier, RiskLevel risk, bool version_controlled_workspace)
 {
+	if (tier == Tier::Off || tier == Tier::AcceptEdits || tier == Tier::Yolo) return false;
 	if (risk == RiskLevel::Allowed) return false;
 	if (risk == RiskLevel::WarnHigh || tier == Tier::Low) return true;
 	// ponytail: workspace-level VCS detection; parse individual command targets if cross-root writes become common.

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { FolderOpen, X, SearchX } from 'lucide-react'
+import { ChevronDown, ExternalLink, FolderOpen, Library, Plus, RefreshCw, Search, SearchX, Trash2, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { Button, IconButton, MenuSelect } from '../ui'
@@ -43,6 +43,7 @@ interface MemoryLocationGroup {
   count: number
   sortIndex: number
   categories: MemoryCategoryGroup[]
+  entries: MemoryEntry[]
 }
 
 interface MenuOption {
@@ -132,6 +133,18 @@ function buildMemoryLocationGroups(
     entries: MemoryEntry[]
   }>()
 
+  if (scope.scopeType === 'all' || scope.scopeType === 'global') {
+    groups.set('global', { label: 'Global memory', rootPath: scope.scopeType === 'global' ? scope.rootPath : 'Global memory root', sortIndex: -1, entries: [] })
+  }
+  if (scope.scopeType === 'all') {
+    folders.forEach((folder, index) => groups.set(`folder:${folder.id}`, {
+      label: folder.name,
+      rootPath: `${folder.directory.replace(/[\\/]+$/, '')}/.UAM`,
+      sortIndex: index,
+      entries: [],
+    }))
+  }
+
   for (const entry of entries) {
     const key = memoryLocationKey(entry, scope)
     const folderIndex = key.startsWith('folder:')
@@ -163,6 +176,7 @@ function buildMemoryLocationGroups(
       rootPath: group.rootPath,
       count: group.entries.length,
       sortIndex: group.sortIndex,
+      entries: group.entries,
       categories: MEMORY_CATEGORIES
         .map((category) => ({
           category,
@@ -191,13 +205,14 @@ export function MemoryLibraryModal() {
   const openMemoryRoot = useAppStore((s) => s.openMemoryRoot)
   const revealMemoryEntry = useAppStore((s) => s.revealMemoryEntry)
   const folders = useAppStore(useShallow((s) => s.folders))
+  const resourceCollections = useAppStore(useShallow((s) => s.resourceCollections))
   const [searchQuery, setSearchQuery] = useState('')
   const [isAdding, setIsAdding] = useState(false)
   const [draft, setDraft] = useState<MemoryEntryDraft>(EMPTY_DRAFT)
   const [submitting, setSubmitting] = useState(false)
   const [pendingDeleteEntryId, setPendingDeleteEntryId] = useState<string | null>(null)
   const [pendingMassDeleteEntryIds, setPendingMassDeleteEntryIds] = useState<string[] | null>(null)
-  const [expandedLocationGroups, setExpandedLocationGroups] = useState<Record<string, boolean>>({})
+  const [selectedLocationKey, setSelectedLocationKey] = useState('')
 
   useEffect(() => {
     if (!memoryLibraryScope) {
@@ -236,26 +251,6 @@ export function MemoryLibraryModal() {
     () => buildMemoryLocationGroups(filteredEntries, memoryLibraryScope, folders),
     [filteredEntries, folders, memoryLibraryScope],
   )
-
-  useEffect(() => {
-    setExpandedLocationGroups((current) => {
-      let changed = false
-      const next: Record<string, boolean> = {}
-
-      for (const group of groupedEntries) {
-        next[group.key] = current[group.key] ?? true
-        if (current[group.key] === undefined) {
-          changed = true
-        }
-      }
-
-      if (Object.keys(current).length !== Object.keys(next).length) {
-        changed = true
-      }
-
-      return changed ? next : current
-    })
-  }, [groupedEntries])
 
   if (!memoryLibraryScope) {
     return null
@@ -309,15 +304,16 @@ export function MemoryLibraryModal() {
 
   const pendingDelete = memoryLibraryEntries.find((entry) => entry.id === pendingDeleteEntryId) ?? null
   const pendingMassDeleteCount = pendingMassDeleteEntryIds?.length ?? 0
-  const visibleEntryIds = filteredEntries.map((entry) => entry.id)
   const hasSearchQuery = searchQuery.trim().length > 0
   const massDeleteLabel = hasSearchQuery ? 'Delete matches' : 'Delete all'
-  const toggleLocationGroup = (key: string) => {
-    setExpandedLocationGroups((current) => ({
-      ...current,
-      [key]: !(current[key] ?? true),
-    }))
-  }
+  const requestedLocation = groupedEntries.find((location) => location.key === selectedLocationKey) ?? groupedEntries[0]
+  const selectedLocation = hasSearchQuery && requestedLocation?.count === 0
+    ? groupedEntries.find((location) => location.count > 0) ?? requestedLocation
+    : requestedLocation
+  const visibleEntryIds = selectedLocation?.entries.map((entry) => entry.id) ?? []
+  const groupedFolderIds = new Set(resourceCollections.flatMap((collection) => collection.references
+    .filter((reference) => reference.type === 'workspace-folder')
+    .map((reference) => reference.target)))
 
   return (
     <div
@@ -333,7 +329,7 @@ export function MemoryLibraryModal() {
         aria-label={memoryTitle}
         tabIndex={-1}
         className="rounded-2xl shadow-2xl w-full max-w-6xl mx-4 animate-slide-in overflow-hidden flex flex-col"
-        style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', maxHeight: 'calc(100vh - 2rem)' }}
+        style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', height: 'min(780px, calc(100vh - 2rem))' }}
       >
         <div
           className="flex items-center justify-between px-5 py-4"
@@ -362,34 +358,71 @@ export function MemoryLibraryModal() {
               borderRight: '1px solid var(--border)',
             }}
           >
-            <div className="space-y-2">
+            <div className="flex items-center gap-1">
               {!isAllMemory && (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  block
-                  onClick={() => void openMemoryRoot()}
-                >
-                  Open memory root
-                </Button>
+                <IconButton icon={<FolderOpen size={15} />} label="Open memory root" onClick={() => void openMemoryRoot()} />
               )}
-              <Button
-                variant="secondary"
-                size="sm"
-                block
-                onClick={() => void refreshMemoryLibrary()}
-              >
-                Refresh list
-              </Button>
-              <Button
-                variant={isAdding ? 'secondary' : 'primary'}
-                size="sm"
-                block
-                onClick={() => setIsAdding((value) => !value)}
-              >
-                {isAdding ? 'Close add form' : 'Add memory'}
-              </Button>
+              <IconButton icon={<RefreshCw size={15} className={memoryLibraryLoading ? 'animate-spin' : undefined} />} label="Refresh memory library" disabled={memoryLibraryLoading} onClick={() => void refreshMemoryLibrary()} />
+              <IconButton icon={isAdding ? <X size={15} /> : <Plus size={15} />} label={isAdding ? 'Close add form' : 'Add memory'} variant={isAdding ? 'ghost' : 'solid'} active={isAdding} onClick={() => setIsAdding((value) => !value)} />
             </div>
+
+            {groupedEntries.length > 0 && (
+              <nav aria-label="Memory locations" className="grid gap-1">
+                <div className="px-2 text-[10px] font-semibold uppercase tracking-[0.16em]" style={{ color: 'var(--text-3)' }}>Locations</div>
+                {groupedEntries.filter((location) => location.key === 'global').map((location) => {
+                  const active = location.key === selectedLocation?.key
+                  return (
+                    <button
+                      key={location.key}
+                      type="button"
+                      aria-current={active ? 'page' : undefined}
+                      onClick={() => setSelectedLocationKey(location.key)}
+                      className="flex items-center gap-2 rounded-md px-2 py-2 text-left transition-colors duration-150"
+                      style={{ background: active ? 'var(--accent-dim)' : 'transparent', color: active ? 'var(--text)' : 'var(--text-2)', border: 0 }}
+                    >
+                      <Library size={14} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-xs font-medium">{location.label}</span>
+                        <span className="block truncate text-[10px]" style={{ color: 'var(--text-3)' }}>{location.rootPath}</span>
+                      </span>
+                      <span className="text-[10px] tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span>
+                    </button>
+                  )
+                })}
+                {isAllMemory && resourceCollections.map((collection) => {
+                  const locations = collection.references.flatMap((reference) => {
+                    if (reference.type !== 'workspace-folder') return []
+                    const location = groupedEntries.find((group) => group.key === `folder:${reference.target}`)
+                    return location ? [location] : []
+                  })
+                  if (locations.length === 0) return null
+                  return (
+                    <div key={collection.id} className="mt-1">
+                      <div className="flex items-center gap-1.5 px-2 py-1 text-xs font-semibold" style={{ color: 'var(--text-2)' }}>
+                        <ChevronDown size={13} aria-hidden className="transition-transform duration-150" />
+                        <Library size={13} aria-hidden />
+                        <span className="truncate">{collection.name}</span>
+                      </div>
+                      <div className="ml-4 grid gap-0.5 border-l pl-1" style={{ borderColor: 'var(--border)' }}>
+                        {locations.map((location) => {
+                          const active = location.key === selectedLocation?.key
+                          return <button key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => setSelectedLocationKey(location.key)} className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors duration-150" style={{ background: active ? 'var(--accent-dim)' : 'transparent', color: active ? 'var(--text)' : 'var(--text-2)', border: 0 }}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-[10px] tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></button>
+                        })}
+                      </div>
+                    </div>
+                  )
+                })}
+                {isAllMemory && groupedEntries.some((location) => location.key.startsWith('folder:') && !groupedFolderIds.has(location.key.slice(7))) && (
+                  <div className="mt-1">
+                    <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em]" style={{ color: 'var(--text-3)' }}>Unassigned workspaces</div>
+                    {groupedEntries.filter((location) => location.key.startsWith('folder:') && !groupedFolderIds.has(location.key.slice(7))).map((location) => {
+                      const active = location.key === selectedLocation?.key
+                      return <button key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => setSelectedLocationKey(location.key)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors duration-150" style={{ background: active ? 'var(--accent-dim)' : 'transparent', color: active ? 'var(--text)' : 'var(--text-2)', border: 0 }}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-[10px] tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></button>
+                    })}
+                  </div>
+                )}
+              </nav>
+            )}
 
             {isAdding && (
               <div
@@ -500,25 +533,28 @@ export function MemoryLibraryModal() {
           </aside>
 
           <div className="p-5 md:p-6 overflow-y-auto min-h-0">
-            <div className="flex items-center gap-3 mb-4">
+            <div className="flex items-center gap-2 mb-4">
+              <label className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-3" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
+              <Search size={14} aria-hidden style={{ color: 'var(--text-3)' }} />
               <input
+                aria-label="Search memory library"
                 value={searchQuery}
                 onChange={(event) => {
                   const value = event.currentTarget.value
                   setSearchQuery(value)
                 }}
                 placeholder="Search memory titles, categories, previews, or source chats"
-                className="w-full rounded-md px-3 py-2 text-sm outline-none"
-                style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)' }}
+                className="w-full py-2 text-sm outline-none"
+                style={{ background: 'transparent', color: 'var(--text)', border: 0 }}
               />
-              <Button
+              </label>
+              <IconButton
                 variant="danger"
-                size="sm"
+                icon={<Trash2 size={15} />}
+                label={massDeleteLabel}
                 disabled={memoryLibraryLoading || visibleEntryIds.length === 0}
                 onClick={() => setPendingMassDeleteEntryIds(visibleEntryIds)}
-              >
-                {massDeleteLabel}
-              </Button>
+              />
             </div>
 
             {memoryLibraryError && (
@@ -531,7 +567,7 @@ export function MemoryLibraryModal() {
               <div className="text-sm" style={{ color: 'var(--text-3)' }}>
                 Loading memory library...
               </div>
-            ) : filteredEntries.length === 0 ? (
+            ) : !selectedLocation || selectedLocation.entries.length === 0 ? (
               <div
                 className="rounded-xl p-8 text-center flex flex-col items-center gap-2 animate-fade-in"
                 style={{ background: 'var(--surface-up)', border: '1px solid var(--border)', color: 'var(--text-3)' }}
@@ -546,46 +582,14 @@ export function MemoryLibraryModal() {
                   {hasSearchQuery ? 'Try another term or clear the search.' : 'Add a memory to make it available to future chats.'}
                 </div>
               </div>
-            ) : (
-              <div className="space-y-4">
-                {groupedEntries.map((location) => (
-                  <section key={location.key}>
-                    <button
-                      type="button"
-                      onClick={() => toggleLocationGroup(location.key)}
-                      className="w-full relative flex items-center gap-2 px-3 py-2 cursor-pointer group rounded-md text-left"
-                      style={{
-                        background: 'var(--surface-up)',
-                        color: 'var(--text-2)',
-                        border: '1px solid var(--border)',
-                        fontFamily: 'inherit',
-                      }}
-                    >
-                      <FolderOpen
-                        size={14}
-                        style={{ flexShrink: 0, color: 'var(--accent)', opacity: 0.85 }}
-                        aria-hidden="true"
-                      />
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-sm font-semibold truncate" style={{ color: 'var(--text)' }}>
-                          {location.label}
-                        </span>
-                        <span className="block text-[11px] truncate mt-0.5" style={{ color: 'var(--text-3)' }}>
-                          {location.rootPath}
-                        </span>
-                      </span>
-                      <span
-                        className="text-xs flex-shrink-0 rounded px-1"
-                        style={{ fontSize: 10, background: 'var(--surface-high)', color: 'var(--text-3)' }}
-                      >
-                        {location.count}
-                      </span>
-                    </button>
-
-                    {(expandedLocationGroups[location.key] ?? true) && (
-                      <div className="mt-3 ml-4 space-y-4">
-                        {location.categories.map(({ category, entries }) => (
-                          <section key={`${location.key}:${category}`}>
+            ) : selectedLocation ? (
+              <div key={selectedLocation.key} className="space-y-4 animate-fade-in">
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold truncate" style={{ color: 'var(--text)' }}>{selectedLocation.label}</div>
+                  <div className="mt-0.5 text-[11px] truncate" style={{ color: 'var(--text-3)' }}>{selectedLocation.rootPath}</div>
+                </div>
+                {selectedLocation.categories.map(({ category, entries }) => (
+                          <section key={`${selectedLocation.key}:${category}`}>
                             <div className="flex items-center justify-between gap-2 mb-2">
                               <div className="text-[11px] font-semibold uppercase tracking-[0.16em]" style={{ color: 'var(--text-3)' }}>
                                 {memoryCategoryLabel(category)}
@@ -598,8 +602,8 @@ export function MemoryLibraryModal() {
                               {entries.map((entry) => (
                                 <article
                                   key={entry.id}
-                                  className="rounded-xl p-4"
-                                  style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}
+                                  className="p-3 transition-colors duration-150 hover:bg-[var(--surface-up)]"
+                                  style={{ borderBottom: '1px solid var(--border)' }}
                                 >
                                   <div className="flex items-start justify-between gap-4">
                                     <div className="min-w-0">
@@ -611,20 +615,8 @@ export function MemoryLibraryModal() {
                                       </div>
                                     </div>
                                     <div className="flex items-center gap-2">
-                                      <Button
-                                        variant="secondary"
-                                        size="sm"
-                                        onClick={() => void revealMemoryEntry(entry.id)}
-                                      >
-                                        Reveal file
-                                      </Button>
-                                      <Button
-                                        variant="danger"
-                                        size="sm"
-                                        onClick={() => setPendingDeleteEntryId(entry.id)}
-                                      >
-                                        Delete
-                                      </Button>
+                                      <IconButton icon={<ExternalLink size={14} />} label={`Reveal ${entry.title} file`} onClick={() => void revealMemoryEntry(entry.id)} />
+                                      <IconButton icon={<Trash2 size={14} />} label={`Delete ${entry.title}`} variant="danger" onClick={() => setPendingDeleteEntryId(entry.id)} />
                                     </div>
                                   </div>
 
@@ -641,12 +633,8 @@ export function MemoryLibraryModal() {
                             </div>
                           </section>
                         ))}
-                      </div>
-                    )}
-                  </section>
-                ))}
               </div>
-            )}
+            ) : null}
           </div>
         </div>
       </div>
@@ -674,7 +662,7 @@ export function MemoryLibraryModal() {
             </div>
             <div className="p-5 space-y-4">
               <div className="text-sm" style={{ color: 'var(--text)' }}>
-                This removes "{pendingDelete.title}" from the memory library and deletes the backing markdown file.
+                This permanently removes "{pendingDelete.title}" and deletes its backing markdown file. This cannot be undone or restored.
               </div>
             </div>
             <div className="flex items-center justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
@@ -723,7 +711,7 @@ export function MemoryLibraryModal() {
             </div>
             <div className="p-5 space-y-4">
               <div className="text-sm" style={{ color: 'var(--text)' }}>
-                This deletes {pendingMassDeleteCount} {hasSearchQuery ? 'matching' : 'listed'} memory {pendingMassDeleteCount === 1 ? 'entry' : 'entries'} and removes the backing markdown {pendingMassDeleteCount === 1 ? 'file' : 'files'}.
+                This permanently deletes {pendingMassDeleteCount} {hasSearchQuery ? 'matching' : 'listed'} memory {pendingMassDeleteCount === 1 ? 'entry' : 'entries'} and removes the backing markdown {pendingMassDeleteCount === 1 ? 'file' : 'files'}. This cannot be undone or restored.
               </div>
             </div>
             <div className="flex items-center justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>

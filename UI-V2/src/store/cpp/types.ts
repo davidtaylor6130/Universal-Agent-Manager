@@ -66,7 +66,7 @@ export interface CppChat {
   serviceTier?: string
   approvalMode?: string
   autoApproveCommands?: boolean
-  commandSafetyTier?: 'low' | 'medium' | 'high'
+  commandSafetyTier?: 'off' | 'acceptEdits' | 'low' | 'medium' | 'high' | 'yolo'
   memoryEnabled?: boolean
   memoryLevel?: MemoryLevel
   memoryLastProcessedMessageCount?: number
@@ -278,6 +278,7 @@ export interface CppAcpSession {
   currentModeId?: string
   availableModels?: AcpModel[]
   modelsLoading?: boolean
+  modelRefreshError?: string
   currentModelId?: string
   turnEvents?: AcpTurnEvent[]
   turnUserMessageIndex?: number
@@ -422,8 +423,22 @@ export interface CppSettings {
   defaultNewChatProviderId?: string
   providerChatDefaults?: Record<string, ProviderChatDefaults>
   markdownStoreDirectory?: string
+  voiceInputMode?: VoiceInputMode
+  voiceInputServerBaseUrl?: string
+  voiceInputServerEndpoint?: string
+  voiceInputServerModel?: string
+  voiceInputApiKeyEnv?: string
+  voiceInputCapabilities?: VoiceInputCapabilities
   defaultEditorPresetId?: string
   editorFileAssociations?: EditorFileAssociation[]
+}
+
+export type VoiceInputMode = 'system' | 'local' | 'server'
+export interface VoiceInputCapability { supported: boolean; reason: string }
+export interface VoiceInputCapabilities {
+  system: VoiceInputCapability
+  local: VoiceInputCapability
+  server: VoiceInputCapability
 }
 
 export interface EditorFileAssociation {
@@ -556,6 +571,7 @@ export interface AcpBinding {
   currentModeId: string
   availableModels: AcpModel[]
   modelsLoading?: boolean
+  modelRefreshError?: string
   currentModelId: string
   turnEvents: AcpTurnEvent[]
   turnUserMessageIndex: number

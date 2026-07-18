@@ -431,6 +431,29 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 	cb->Success("{}");
 }
 
+void UamQueryHandler::HandleManageQueuedAcpPrompt(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const std::string operation = payload.value("operation", "");
+	const int index = payload.value("index", -1);
+	if (chat_id.empty() || index < 0 || (operation != "remove" && operation != "steer"))
+	{
+		cb->Failure(400, "Invalid queued prompt action.");
+		return;
+	}
+	std::string error;
+	const bool ok = operation == "steer"
+	    ? uam::SteerQueuedAcpPrompt(m_app, chat_id, static_cast<std::size_t>(index), &error)
+	    : uam::RemoveQueuedAcpPrompt(m_app, chat_id, static_cast<std::size_t>(index), &error);
+	if (!ok)
+	{
+		cb->Failure(409, FailureDetailOrFallback(error, "Failed to update queued prompt."));
+		return;
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
 void UamQueryHandler::HandleDiscoverProviderModels(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
@@ -442,7 +465,7 @@ void UamQueryHandler::HandleDiscoverProviderModels(CefRefPtr<CefBrowser> browser
 		cb->Failure(500, "Provider model catalog is unavailable.");
 		return;
 	}
-	const bool should_start = m_app.provider_model_catalog->BeginDiscoveryIfMissing(chat->provider_id);
+	const bool should_start = m_app.provider_model_catalog->BeginDiscovery(chat->provider_id);
 	if (!should_start)
 	{
 		uam::PushStateUpdateIfChanged(browser, m_app);

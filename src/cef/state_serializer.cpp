@@ -676,7 +676,7 @@ namespace uam
 			acp_json["readySinceLastSelect"] = ready_since_last_select;
 			acp_json["attentionKind"] = nullptr;
 			acp_json["lifecycleState"] = "stopped";
-			acp_json["lastError"] = app.provider_model_catalog == nullptr ? std::string{} : app.provider_model_catalog->GetProviderRefreshError(chat.provider_id);
+			acp_json["lastError"] = "";
 			acp_json["recentStderr"] = "";
 			acp_json["lastExitCode"] = nullptr;
 			acp_json["diagnostics"] = nlohmann::json::array();
@@ -687,6 +687,7 @@ namespace uam
 			acp_json["currentModeId"] = chat.approval_mode;
 			acp_json["availableModels"] = FallbackAcpModelsForChat(app, chat);
 			acp_json["modelsLoading"] = app.provider_model_catalog != nullptr && app.provider_model_catalog->IsDiscoveryPending(chat.provider_id);
+			acp_json["modelRefreshError"] = app.provider_model_catalog == nullptr ? std::string{} : app.provider_model_catalog->GetProviderRefreshError(chat.provider_id);
 			acp_json["currentModelId"] = FallbackAcpCurrentModelForChat(app, chat);
 			acp_json["turnEvents"] = nlohmann::json::array();
 			acp_json["turnUserMessageIndex"] = -1;
@@ -721,10 +722,7 @@ namespace uam
 			const std::string attention_kind = AcpAttentionKindForFrontend(*session);
 			acp_json["attentionKind"] = uam::nlohmann_json::StringOrNull(attention_kind);
 			acp_json["lifecycleState"] = session->lifecycle_state;
-			const std::string model_refresh_error = app.provider_model_catalog == nullptr
-			    ? std::string{}
-			    : app.provider_model_catalog->GetProviderRefreshError(chat.provider_id);
-			acp_json["lastError"] = uam::strings::NonEmptyOrFallback(session->last_error, model_refresh_error);
+			acp_json["lastError"] = session->last_error;
 			acp_json["recentStderr"] = session->recent_stderr;
 			acp_json["lastExitCode"] = uam::nlohmann_json::IntOrNull(session->has_last_exit_code, session->last_exit_code);
 			acp_json["agentInfo"] = {
@@ -741,6 +739,7 @@ namespace uam
 			acp_json["currentModeId"] = uam::strings::NonEmptyOrFallback(session->current_mode_id, chat.approval_mode);
 			acp_json["availableModels"] = ProviderModelCatalogService::MergeAcpModelArrays(FallbackAcpModelsForChat(app, chat), SerializeAcpModels(session->available_models));
 			acp_json["modelsLoading"] = app.provider_model_catalog != nullptr && app.provider_model_catalog->IsDiscoveryPending(chat.provider_id);
+			acp_json["modelRefreshError"] = app.provider_model_catalog == nullptr ? std::string{} : app.provider_model_catalog->GetProviderRefreshError(chat.provider_id);
 			acp_json["currentModelId"] = uam::strings::NonEmptyOrFallback(session->current_model_id, FallbackAcpCurrentModelForChat(app, chat));
 			acp_json["turnEvents"] = SerializeAcpTurnEvents(session->turn_events);
 			acp_json["turnUserMessageIndex"] = session->turn_user_message_index;

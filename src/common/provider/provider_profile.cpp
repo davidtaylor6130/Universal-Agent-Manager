@@ -125,7 +125,7 @@ ProviderProfile ProviderProfileStore::DefaultCodexProfile()
 
 ProviderProfile ProviderProfileStore::DefaultClaudeProfile()
 {
-	return MakeBuiltInCliProfile({
+	ProviderProfile profile = MakeBuiltInCliProfile({
 	    .id = uam::provider_ids::kClaudeCli,
 	    .title = "Claude Code",
 	    .interactive_command = "claude",
@@ -137,6 +137,8 @@ ProviderProfile ProviderProfileStore::DefaultClaudeProfile()
 	    .user_message_types = {"user", "human"},
 	    .assistant_message_types = {"assistant", "claude"},
 	});
+	profile.native_goal_command = "/goal";
+	return profile;
 }
 
 ProviderProfile ProviderProfileStore::DefaultOpenCodeProfile()

@@ -34,7 +34,7 @@ export interface ProviderMetadata {
 }
 
 export const GEMINI_DEFAULT_MODEL_LABELS: Record<string, { label: string; shortLabel: string; detail: string }> = {
-  '': { label: 'CLI default', shortLabel: 'CLI default', detail: 'Use Gemini CLI settings' },
+  '': { label: 'Default', shortLabel: 'Default', detail: 'Use Gemini settings' },
   'auto-gemini-3': { label: 'Auto 3', shortLabel: 'Auto 3', detail: 'Gemini 3 routing' },
   'auto-gemini-2.5': { label: 'Auto 2.5', shortLabel: 'Auto 2.5', detail: 'Gemini 2.5 routing' },
   pro: { label: 'Pro', shortLabel: 'Pro', detail: 'Prioritize capability' },
@@ -43,7 +43,7 @@ export const GEMINI_DEFAULT_MODEL_LABELS: Record<string, { label: string; shortL
 }
 
 export const CODEX_REASONING_LABELS: Record<string, { label: string; shortLabel: string; detail: string }> = {
-  '': { label: 'CLI default', shortLabel: 'Default', detail: 'Use Codex default reasoning' },
+  '': { label: 'Default', shortLabel: 'Default', detail: 'Use Codex default reasoning' },
   none: { label: 'None', shortLabel: 'None', detail: 'No extra reasoning' },
   minimal: { label: 'Minimal', shortLabel: 'Minimal', detail: 'Fastest reasoning' },
   low: { label: 'Low', shortLabel: 'Low', detail: 'Faster responses' },
@@ -53,13 +53,13 @@ export const CODEX_REASONING_LABELS: Record<string, { label: string; shortLabel:
 }
 
 export const CODEX_SPEED_LABELS: Record<string, { label: string; shortLabel: string; detail: string }> = {
-  '': { label: 'CLI default', shortLabel: 'Default', detail: 'Use Codex default speed' },
+  '': { label: 'Default', shortLabel: 'Default', detail: 'Use Codex default speed' },
   fast: { label: 'Fast', shortLabel: 'Fast', detail: 'Prioritize latency' },
   flex: { label: 'Flex', shortLabel: 'Flex', detail: 'Use flexible service tier' },
 }
 
 export const CODEX_REASONING_OPTIONS = [
-  { id: '', label: 'CLI default', detail: 'Use Codex default reasoning' },
+  { id: '', label: 'Default', detail: 'Use Codex default reasoning' },
   { id: 'minimal', label: 'Minimal', detail: 'Fastest reasoning' },
   { id: 'low', label: 'Low', detail: 'Faster responses' },
   { id: 'medium', label: 'Medium', detail: 'Balanced reasoning' },
@@ -68,14 +68,14 @@ export const CODEX_REASONING_OPTIONS = [
 ]
 
 export const CODEX_SPEED_OPTIONS = [
-  { id: '', label: 'CLI default', detail: 'Use Codex default speed' },
+  { id: '', label: 'Default', detail: 'Use Codex default speed' },
   { id: 'fast', label: 'Fast', detail: 'Prioritize latency' },
   { id: 'flex', label: 'Flex', detail: 'Use flexible service tier' },
 ]
 
 const GEMINI_MEMORY_MODEL_IDS = ['', 'auto-gemini-3', 'pro', 'flash', 'flash-lite']
 const GEMINI_MEMORY_MODEL_LABELS: Record<string, { label: string; detail: string }> = {
-  '': { label: 'CLI default', detail: 'Use Gemini CLI settings' },
+  '': { label: 'Default', detail: 'Use Gemini settings' },
   'auto-gemini-3': { label: 'Auto 3', detail: 'Gemini 3 routing' },
   pro: { label: 'Pro', detail: 'Prioritize capability' },
   flash: { label: 'Flash', detail: 'Prioritize speed' },
@@ -83,18 +83,18 @@ const GEMINI_MEMORY_MODEL_LABELS: Record<string, { label: string; detail: string
 }
 const CODEX_MEMORY_MODEL_IDS = ['', 'gpt-5.4', 'gpt-5.3', 'gpt-5.2', 'gpt-5.1']
 const CODEX_MEMORY_MODEL_LABELS: Record<string, { label: string; detail: string }> = {
-  '': { label: 'CLI default', detail: 'Use Codex CLI settings' },
+  '': { label: 'Default', detail: 'Use Codex settings' },
   'gpt-5.4': { label: 'GPT-5.4', detail: 'Frontier coding model' },
   'gpt-5.4-mini': { label: 'GPT-5.4 Mini', detail: 'Smaller fast model' },
   'gpt-5.2': { label: 'GPT-5.2', detail: 'Balanced coding model' },
 }
 const CLAUDE_MEMORY_MODEL_LABELS: Record<string, { label: string; detail: string }> = {
-  '': { label: 'CLI default', detail: 'Use Claude Code settings' },
+  '': { label: 'Default', detail: 'Use Claude Code settings' },
   sonnet: { label: 'Sonnet', detail: 'Latest Sonnet alias' },
   opus: { label: 'Opus', detail: 'Latest Opus alias' },
 }
 const GENERIC_MEMORY_MODEL_LABELS: Record<string, { label: string; detail: string }> = {
-  '': { label: 'CLI default', detail: 'Use CLI settings' },
+  '': { label: 'Default', detail: 'Use provider settings' },
 }
 
 const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {

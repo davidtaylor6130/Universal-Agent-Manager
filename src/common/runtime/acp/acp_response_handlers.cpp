@@ -171,6 +171,19 @@ void FinishModelDiscoveryWithoutResults(AppState& app, const AcpSessionState& se
 	}
 }
 
+void StopBackgroundModelDiscovery(AppState& app, AcpSessionState& session)
+{
+	if (!session.model_discovery_only)
+	{
+		return;
+	}
+	const std::string chat_id = session.chat_id;
+	(void)StopAcpSession(app, chat_id);
+	session.session_id.clear();
+	session.codex_thread_id.clear();
+	session.last_error.clear();
+}
+
 void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
 {
 	const nlohmann::json response_id = JsonRpcIdOrNull(message);
@@ -238,7 +251,8 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		failure.message = error_message;
 		failure.has_detail = !detail_text.empty();
 		const std::string formatted_error = FormatAcpFailureMessage(session, failure);
-		if (app.provider_model_catalog != nullptr && (method == uam::acp_methods::kModelList || method == uam::acp_methods::kSessionNew || method == uam::acp_methods::kSessionLoad))
+		const bool model_discovery_request = method == uam::acp_methods::kModelList || method == uam::acp_methods::kSessionNew || method == uam::acp_methods::kSessionLoad;
+		if (app.provider_model_catalog != nullptr && (model_discovery_request || (session.model_discovery_only && method == uam::acp_methods::kInitialize)))
 		{
 			app.provider_model_catalog->RememberRefreshFailure(session.provider_id, formatted_error);
 		}
@@ -276,6 +290,11 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		invalid_load_retry.formatted_error = formatted_error;
 		if (RetryGeminiSessionNewAfterInvalidLoad(app, session, chat, invalid_load_retry))
 		{
+			return;
+		}
+		if (session.model_discovery_only && (model_discovery_request || method == uam::acp_methods::kInitialize))
+		{
+			StopBackgroundModelDiscovery(app, session);
 			return;
 		}
 		if (method == uam::acp_methods::kSessionSetModel && id == session.startup_model_request_id)
@@ -380,6 +399,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		}
 		RememberDiscoveredModels(app, session);
 		FinishModelDiscoveryWithoutResults(app, session);
+		StopBackgroundModelDiscovery(app, session);
 		return;
 	}
 
@@ -413,7 +433,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		    AcpModeState{uam::approval_modes::kDefaultApprovalMode, "Default", "Use Codex default collaboration mode."},
 		    AcpModeState{uam::approval_modes::kPlanApprovalMode, "Plan", "Ask Codex to plan before implementing."},
 		};
-		session.current_mode_id = chat.approval_mode.empty() ? uam::approval_modes::kDefaultApprovalMode : chat.approval_mode;
+		session.current_mode_id = uam::approval_modes::EffectiveProviderMode(chat.approval_mode, chat.command_safety_tier);
 		session.session_ready = !session.session_id.empty();
 		session.lifecycle_state = session.session_ready ? kAcpLifecycleReady : kAcpLifecycleError;
 		if (!session.session_ready)
@@ -454,12 +474,15 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			session.session_id = uam::nlohmann_json::TrimmedStringValueOr(result, "sessionId", session.session_id);
 			UpdateAcpModesFromJson(session, JsonObjectValue(result, "modes"));
 			UpdateAcpModelsFromJson(session, JsonObjectValue(result, "models"));
-			RememberDiscoveredModels(app, session);
-			FinishModelDiscoveryWithoutResults(app, session);
 		}
-		const std::string previous_native_session_id = chat.native_session_id;
-		SetChatNativeSessionIdIfChanged(chat, session.session_id);
-		SyncResolvedNativeSessionIdForChat(app, chat, session.session_id, previous_native_session_id);
+		RememberDiscoveredModels(app, session);
+		FinishModelDiscoveryWithoutResults(app, session);
+		if (!session.model_discovery_only)
+		{
+			const std::string previous_native_session_id = chat.native_session_id;
+			SetChatNativeSessionIdIfChanged(chat, session.session_id);
+			SyncResolvedNativeSessionIdForChat(app, chat, session.session_id, previous_native_session_id);
+		}
 		session.session_ready = !session.session_id.empty();
 		session.lifecycle_state = session.session_ready ? kAcpLifecycleReady : kAcpLifecycleError;
 		if (!session.session_ready)
@@ -473,7 +496,11 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			session.last_error = FormatAcpFailureMessage(session, failure);
 			AppendAcpDiagnostic(session, "response", "missing_session_id", method, request_id, false, 0, session.last_error, detail);
 		}
-		SaveChatQuietly(app, chat);
+		if (!session.model_discovery_only)
+		{
+			SaveChatQuietly(app, chat);
+		}
+		StopBackgroundModelDiscovery(app, session);
 		return;
 	}
 
@@ -484,12 +511,13 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		{
 			UpdateAcpModesFromJson(session, JsonObjectValue(result, "modes"));
 			UpdateAcpModelsFromJson(session, JsonObjectValue(result, "models"));
-			RememberDiscoveredModels(app, session);
-			FinishModelDiscoveryWithoutResults(app, session);
 		}
+		RememberDiscoveredModels(app, session);
+		FinishModelDiscoveryWithoutResults(app, session);
 		session.session_ready = true;
 		session.ignore_session_updates_until_ready = false;
 		session.lifecycle_state = kAcpLifecycleReady;
+		StopBackgroundModelDiscovery(app, session);
 		return;
 	}
 

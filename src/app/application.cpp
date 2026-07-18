@@ -20,6 +20,7 @@
 #include "common/chat/chat_repository.h"
 #include "common/config/frontend_actions.h"
 #include "common/provider/provider_profile.h"
+#include "common/provider/provider_profile_constants.h"
 #include "common/provider/provider_runtime.h"
 #include "common/provider/runtime/provider_build_config.h"
 #include "common/runtime/acp/acp_session_runtime.h"
@@ -415,6 +416,20 @@ void Application::ScheduleNextUpdate(int delay_ms)
 void Application::OnBrowserReady(CefRefPtr<CefBrowser> browser)
 {
 	m_browser = browser;
+	if (m_app.provider_model_catalog != nullptr)
+	{
+		std::unordered_set<std::string> providers_started;
+		for (const ChatSession& chat : m_app.chats)
+		{
+			if (std::string(ProviderRuntimeRegistry::ResolveById(chat.provider_id).AcpProtocolKind()) == uam::provider_profile_constants::kProtocolClaudeCodeStreamJson) continue;
+			if (!providers_started.insert(chat.provider_id).second || !m_app.provider_model_catalog->BeginDiscoveryIfStale(chat.provider_id)) continue;
+			std::string discovery_error;
+			if (!uam::StartAcpModelDiscovery(m_app, chat.id, &discovery_error, true))
+			{
+				m_app.provider_model_catalog->RememberRefreshFailure(chat.provider_id, std::move(discovery_error));
+			}
+		}
+	}
 	// Start the polling loop as soon as the browser window exists.
 	ScheduleNextUpdate(50);
 }

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { X } from 'lucide-react'
+import { FolderPlus, TriangleAlert, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -15,13 +15,15 @@ export function NewChatModal() {
   const defaultNewChatProviderId = useAppStore((s) => s.defaultNewChatProviderId)
   const providerChatDefaults = useAppStore(useShallow((s) => s.providerChatDefaults))
 	const sessions = useAppStore(useShallow((s) => s.sessions))
+	const activeSessionId = useAppStore((s) => s.activeSessionId)
 	const acpBindingBySessionId = useAppStore(useShallow((s) => s.acpBindingBySessionId))
   const discoverProviderModels = useAppStore((s) => s.discoverProviderModels)
+  const addFolder = useAppStore((s) => s.addFolder)
+  const browseFolderDirectory = useAppStore((s) => s.browseFolderDirectory)
   const newChatFolderId = useAppStore((s) => s.newChatFolderId)
-  const initialFolderId =
-    newChatFolderId !== null && folders.some((folder) => folder.id === newChatFolderId)
-      ? newChatFolderId
-      : null
+  const activeFolderId = sessions.find((session) => session.id === activeSessionId)?.folderId ?? null
+  const initialFolderId = [newChatFolderId, activeFolderId, folders[0]?.id]
+    .find((candidate) => candidate !== null && candidate !== undefined && folders.some((folder) => folder.id === candidate)) ?? null
   const [name, setName] = useState('')
   const [folderId, setFolderId] = useState<string | null>(initialFolderId)
   const initialProviderId =
@@ -30,7 +32,9 @@ export function NewChatModal() {
       : providers[0]?.id ?? DEFAULT_PROVIDER_ID
   const [providerId, setProviderId] = useState(initialProviderId)
   const [modelId, setModelId] = useState(providerChatDefaults[initialProviderId]?.modelId ?? '')
-	const [reasoningEffort, setReasoningEffort] = useState(providerChatDefaults[initialProviderId]?.reasoningEffort ?? '')
+  const [reasoningEffort, setReasoningEffort] = useState(providerChatDefaults[initialProviderId]?.reasoningEffort ?? '')
+  const [creatingWorkspace, setCreatingWorkspace] = useState(false)
+  const [workspaceError, setWorkspaceError] = useState('')
   const nameRef = useRef<HTMLInputElement>(null)
   const discoveryRequestedRef = useRef(new Set<string>())
 
@@ -46,7 +50,7 @@ export function NewChatModal() {
 
     const folderExists = folderId !== null && folders.some((f) => f.id === folderId)
     if (!folderExists) {
-      setFolderId(null)
+      setFolderId(folders[0].id)
     }
   }, [folders, folderId])
 
@@ -107,6 +111,16 @@ export function NewChatModal() {
     void discoverProviderModels(discoverySession.id)
   }, [cachedAcp?.availableModels.length, cachedAcp?.modelsLoading, discoverProviderModels, discoverySession, providerId])
   const canCreate = selectedFolder !== null
+
+  const createWorkspace = async () => {
+    setCreatingWorkspace(true)
+    setWorkspaceError('')
+    const directory = await browseFolderDirectory('')
+    const name = directory?.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'Workspace'
+    const created = directory ? await addFolder(name, null, directory) : false
+    setCreatingWorkspace(false)
+    if (directory && !created) setWorkspaceError('The workspace could not be created. Choose another folder.')
+  }
 
   return (
     <div
@@ -175,6 +189,22 @@ export function NewChatModal() {
                 options={folders.map((folder) => ({ value: folder.id, label: folder.name, description: folder.directory }))}
                 onChange={setFolderId}
               />
+            </div>
+          )}
+
+          {!selectedFolder && (
+            <div role="alert" className="rounded-lg p-3 animate-fade-in" style={{ background: 'color-mix(in srgb, var(--yellow) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--yellow) 35%, var(--border))' }}>
+              <div className="flex items-start gap-2">
+                <TriangleAlert size={16} aria-hidden style={{ color: 'var(--yellow)', flexShrink: 0 }} />
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium" style={{ color: 'var(--text)' }}>A workspace is required</div>
+                  <p className="mt-1 text-xs" style={{ color: 'var(--text-2)' }}>Agents cannot start a chat without a valid workspace folder.</p>
+                  {workspaceError && <p className="mt-1 text-xs" style={{ color: 'var(--red)' }}>{workspaceError}</p>}
+                  <Button className="mt-3" variant="secondary" size="sm" leadingIcon={<FolderPlus size={14} />} disabled={creatingWorkspace} onClick={() => void createWorkspace()}>
+                    {creatingWorkspace ? 'Choosing…' : 'Create workspace'}
+                  </Button>
+                </div>
+              </div>
             </div>
           )}
 

@@ -255,7 +255,11 @@ namespace uam::strings
 		}
 		if (safe_value.size() > max_chars)
 		{
-			safe_value = safe_value.substr(0, max_chars);
+			while (max_chars > 0 && (static_cast<unsigned char>(safe_value[max_chars]) & 0xc0U) == 0x80U)
+			{
+				--max_chars;
+			}
+			safe_value.resize(max_chars);
 		}
 		return safe_value;
 	}

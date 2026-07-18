@@ -8,6 +8,7 @@
 #include <vector>
 #include <mutex>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <map>
@@ -58,6 +59,10 @@ class ProviderModelCatalogService
 	/// Return the isolated persistent cache for the provider's current configuration.
 	nlohmann::json GetCachedProviderModels(const std::string& provider_id) const;
 	std::string GetProviderRefreshError(const std::string& provider_id) const;
+	/// Start discovery only when no usable cache exists or its last successful refresh is stale.
+	bool BeginDiscoveryIfStale(const std::string& provider_id);
+	/// Start a user-requested discovery even when the cache is fresh.
+	bool BeginDiscovery(const std::string& provider_id);
 	bool BeginDiscoveryIfMissing(const std::string& provider_id);
 	bool IsDiscoveryPending(const std::string& provider_id) const;
 
@@ -112,6 +117,7 @@ class ProviderModelCatalogService
 	static constexpr const char* kOpenCodeZenModelsFixtureEnv = "UAM_OPENCODE_ZEN_MODELS_PATH";
 	static constexpr const char* kOpenCodeZenRefreshDisabledEnv = "UAM_DISABLE_OPENCODE_ZEN_REFRESH";
 	static constexpr const char* kProviderModelsCacheFile = "provider_model_catalog_cache.json";
+	static constexpr std::int64_t kProviderModelCacheFreshnessSeconds = 7 * 24 * 60 * 60;
 
 	// Internal helpers.
 	std::filesystem::path OpenCodeZenFreeModelsCachePath() const;

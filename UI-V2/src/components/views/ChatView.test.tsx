@@ -157,7 +157,7 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('steers an active turn without losing the draft when steering fails', async () => {
+  it('queues a draft during an active turn and keeps it when sending fails', async () => {
     const sendAcpPrompt = vi.fn(() => Promise.resolve(false))
     useAppStore.setState({ sendAcpPrompt })
     const host = document.createElement('div')
@@ -170,11 +170,11 @@ describe('ChatView', () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'Change direction now')
       textarea.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    const steer = host.querySelector('button[aria-label^="Steer now"]') as HTMLButtonElement
-    expect(steer.title).toContain('Interrupt the current turn')
-    await act(async () => { steer.click(); await Promise.resolve() })
+    const queue = host.querySelector('button[aria-label="Queue prompt"]') as HTMLButtonElement
+    expect(queue).toBeTruthy()
+    await act(async () => { queue.click(); await Promise.resolve() })
 
-    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Change direction now', [], true)
+    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Change direction now', [])
     expect(textarea.value).toBe('Change direction now')
     expect(host.querySelector('button[aria-label="Steering prompt"]')).toBeNull()
 
@@ -182,15 +182,14 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('shows every queued prompt in order in a constrained composer panel', () => {
+  it('shows one combined queued prompt in a constrained composer panel', () => {
     useAppStore.setState((state) => ({
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
         'chat-1': {
           ...state.acpBindingBySessionId['chat-1'],
           queuedPrompts: [
-            { text: 'First queued prompt', markdownStoreFiles: ['/tmp/review.uam'], attachments: [], goalMode: false, goalId: '' },
-            { text: 'Second queued prompt', markdownStoreFiles: [], attachments: [], goalMode: false, goalId: '' },
+            { text: 'First queued prompt\n\nSecond queued prompt', markdownStoreFiles: ['/tmp/review.uam'], attachments: [], goalMode: false, goalId: '' },
           ],
         },
       },
@@ -200,12 +199,11 @@ describe('ChatView', () => {
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
-    const queue = host.querySelector('[aria-label="Queued prompts"]') as HTMLElement
-    expect(queue.textContent).toContain('2 prompts queued')
+    const queue = host.querySelector('[aria-label="Queued prompt"]') as HTMLElement
     expect(queue.textContent?.indexOf('First queued prompt')).toBeLessThan(queue.textContent?.indexOf('Second queued prompt') ?? 0)
     expect(queue.textContent).toContain('1 attachment')
-    expect(queue.style.maxHeight).toBe('128px')
-    expect(queue.className).toContain('overflow-y-auto')
+    expect(queue.querySelectorAll('button[aria-label="Steer with this prompt now"]')).toHaveLength(1)
+    expect(queue.querySelectorAll('button[aria-label="Remove queued prompt"]')).toHaveLength(1)
 
     act(() => root.unmount())
     host.remove()
@@ -350,8 +348,9 @@ describe('ChatView', () => {
     const runtimeStatus = host.querySelector('.uam-runtime-status') as HTMLDetailsElement | null
     expect(runtimeStatus?.open).toBe(false)
 
-    const providerButton = host.querySelector('button[title="Select provider"]')
+    const providerButton = host.querySelector('button[title="Select provider"]') as HTMLButtonElement | null
     expect(providerButton).toBeTruthy()
+    expect(providerButton?.style.borderRadius).toBe('7px')
     act(() => {
       providerButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
@@ -658,7 +657,7 @@ describe('ChatView', () => {
 
     expect(host.textContent).toContain('Codex')
     expect(host.textContent).not.toContain('App Server')
-    expect(host.textContent).toContain('CLI default')
+    expect(host.textContent).toContain('GPT-5.4')
     expect(host.querySelector('textarea')?.getAttribute('placeholder')).toBe('Message Codex')
 
     act(() => {
@@ -702,7 +701,7 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('changes permissions and command safety from + and /safety, not chat settings', async () => {
+  it('keeps agent mode separate from permissions and exposes safety only for Auto Decide', async () => {
     const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
     const setSessionCommandSafetyTier = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
@@ -726,14 +725,21 @@ describe('ChatView', () => {
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
     openComposerOptions(host)
 
-    const permission = document.body.querySelector('button[aria-label="Permission mode"]') as HTMLButtonElement
-    expect(permission.textContent).toContain('Default')
-    act(() => permission.click())
+    const agent = document.body.querySelector('button[aria-label="Agent mode"]') as HTMLButtonElement
+    expect(agent.textContent).toContain('Default')
+    act(() => agent.click())
     const plan = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Plan')) as HTMLButtonElement
     await act(async () => { plan.click(); await Promise.resolve() })
     expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'plan')
 
-    const safety = document.body.querySelector('button[aria-label="Command safety tier"]') as HTMLButtonElement
+    const permission = document.body.querySelector('button[aria-label="Permissions"]') as HTMLButtonElement
+    expect(permission.textContent).toContain('Auto Decide')
+    act(() => permission.click())
+    const yolo = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('YOLO')) as HTMLButtonElement
+    await act(async () => { yolo.click(); await Promise.resolve() })
+    expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'yolo')
+
+    const safety = document.body.querySelector('button[aria-label="Auto Decide safety"]') as HTMLButtonElement
     expect(safety.textContent).toContain('Medium')
     expect(host.querySelector('select')).toBeNull()
     act(() => safety.click())
@@ -744,8 +750,8 @@ describe('ChatView', () => {
     openComposerOptions(host)
     act(() => (host.querySelector('button[title="Settings"]') as HTMLButtonElement).click())
     expect(document.body.textContent).toContain('Chat settings')
-    expect(document.body.querySelector('button[aria-label="Permission mode"]')).toBeNull()
-    expect(document.body.querySelector('button[aria-label="Command safety tier"]')).toBeNull()
+    expect(document.body.querySelector('button[aria-label="Permissions"]')).toBeNull()
+    expect(document.body.querySelector('button[aria-label="Auto Decide safety"]')).toBeNull()
 
     const textarea = host.querySelector('textarea') as HTMLTextAreaElement
     const setDraft = (value: string) => {
@@ -765,7 +771,7 @@ describe('ChatView', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
       await Promise.resolve()
     })
-    expect(setSessionCommandSafetyTier).toHaveBeenCalledTimes(2)
+    expect(setSessionCommandSafetyTier).toHaveBeenCalledTimes(3)
     expect(host.querySelector('[role="status"]')?.textContent).toContain('Unsupported command safety tier "unrestricted"')
 
     act(() => root.unmount())
@@ -774,7 +780,7 @@ describe('ChatView', () => {
 
   it('discovers, inspects, validates, and applies permission slash commands', async () => {
     const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
-    const setSessionAutoApproveCommands = vi.fn(() => Promise.resolve(true))
+    const setSessionCommandSafetyTier = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
@@ -790,7 +796,7 @@ describe('ChatView', () => {
         },
       },
       setSessionApprovalMode,
-      setSessionAutoApproveCommands,
+      setSessionCommandSafetyTier,
     }))
 
     const host = document.createElement('div')
@@ -813,7 +819,8 @@ describe('ChatView', () => {
     const permissionMenu = document.body.querySelector('[aria-label="Permission modes"]')
     expect(textarea.value).toBe('')
     expect(permissionMenu?.textContent).toContain('Default')
-    expect(permissionMenu?.textContent).toContain('Plan')
+    expect(permissionMenu?.textContent).not.toContain('Plan')
+    expect(permissionMenu?.textContent).toContain('YOLO')
     expect(permissionMenu?.textContent).toContain('Auto Decide')
     expect(permissionMenu?.querySelector('svg')).not.toBeNull()
     expect(textarea.parentElement?.querySelector('[role="status"]')).toBeNull()
@@ -821,28 +828,28 @@ describe('ChatView', () => {
 
     const slashAutoDecide = Array.from(permissionMenu?.querySelectorAll('[role="option"]') ?? []).find((option) => option.textContent?.includes('Auto Decide')) as HTMLButtonElement
     await act(async () => { slashAutoDecide.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })) })
-    expect(setSessionAutoApproveCommands).toHaveBeenCalledWith('chat-1', true)
-    expect(host.querySelector('[role="status"]')?.textContent).toContain('Permission mode changed to Auto Decide.')
+    expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'medium')
+    expect(host.textContent).not.toContain('Permission mode changed')
 
     await act(async () => {
-      setDraft('/permission plan')
+      setDraft('/permission yolo')
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     })
-    expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'plan')
-    expect(host.querySelector('[role="status"]')?.textContent).toContain('Permission mode changed to Plan.')
+    expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'yolo')
+    expect(host.textContent).not.toContain('Permission mode changed')
 
     await act(async () => {
       setDraft('/permission unrestricted')
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     })
-    expect(setSessionApprovalMode).toHaveBeenCalledTimes(1)
+    expect(setSessionApprovalMode).not.toHaveBeenCalled()
     expect(host.querySelector('[role="status"]')?.textContent).toContain('Unsupported permission mode "unrestricted"')
 
     act(() => root.unmount())
     host.remove()
   })
 
-  it('always offers /markdown and exposes only favorite collision-safe skill commands', async () => {
+  it('always offers /skills and exposes only favorite collision-safe skill commands', async () => {
     const attachMarkdownStoreEntry = vi.fn()
     useAppStore.setState({
       markdownStoreEntries: [
@@ -858,12 +865,17 @@ describe('ChatView', () => {
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
     const textarea = host.querySelector('textarea') as HTMLTextAreaElement
-    act(() => {
+    await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '/')
       textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      await Promise.resolve()
     })
-    const palette = document.body.querySelector('[aria-label="Slash commands"]')
-    expect(palette?.textContent).toContain('/markdown')
+    const palette = document.body.querySelector('[aria-label="Slash commands"]') as HTMLElement | null
+    expect(palette?.style.position).toBe('absolute')
+    expect(palette?.style.left).toBe('12px')
+    expect(palette?.style.right).toBe('12px')
+    expect(palette?.parentElement).toBe(textarea.previousElementSibling)
+    expect(palette?.textContent).toContain('/skills')
     expect(palette?.textContent).toContain('/review')
     expect(palette?.textContent).toContain('/review-2')
     expect(palette?.textContent).toContain('codex')
@@ -878,7 +890,41 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('keeps Codex reasoning and speed in the + menu and slash commands, not toolbar cliplets', async () => {
+  it('groups favorite Markdown Store skills in a submenu', async () => {
+    const attachMarkdownStoreEntry = vi.fn()
+    useAppStore.setState({
+      markdownStoreEntries: [
+        { id: 'one', title: 'Review', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: true, commandName: 'review', group: 'Workflows', filePath: '/tmp/one.uam' },
+        { id: 'two', title: 'Release', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: true, commandName: 'release', group: 'Workflows', filePath: '/tmp/two.uam' },
+      ],
+      refreshMarkdownStore: vi.fn(() => Promise.resolve(true)),
+      attachMarkdownStoreEntry,
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '/')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      await Promise.resolve()
+    })
+    const group = Array.from(document.body.querySelectorAll('[aria-label="Slash commands"] [role="option"]')).find((option) => option.textContent?.includes('/workflows')) as HTMLElement
+    expect(group.textContent).toContain('/workflows')
+    expect(group.textContent).not.toContain('/review')
+    act(() => group.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
+    const submenu = document.body.querySelector('[aria-label="Workflows skills"]') as HTMLElement
+    expect(submenu.textContent).toContain('/review')
+    expect(submenu.textContent).toContain('/release')
+    const review = Array.from(submenu.querySelectorAll('[role="menuitem"]')).find((item) => item.textContent?.includes('/review')) as HTMLElement
+    act(() => review.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
+    expect(attachMarkdownStoreEntry).toHaveBeenCalledWith('chat-1', expect.objectContaining({ id: 'one' }))
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps Codex reasoning and speed in the + menu and shows non-default values as removable chips', async () => {
     const setSessionCodexOptions = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) => session.id === 'chat-1'
@@ -914,6 +960,8 @@ describe('ChatView', () => {
 
     expect(host.querySelector('button[title="Select Codex reasoning"]')).toBeNull()
     expect(host.querySelector('button[title="Select Codex speed"]')).toBeNull()
+    expect(host.querySelector('button[aria-label="Disable Reasoning: Low"]')).toBeTruthy()
+    expect(host.querySelector('button[aria-label="Disable Speed: Flex"]')).toBeTruthy()
     openComposerOptions(host)
 
     const reasoning = document.body.querySelector('button[aria-label="Reasoning"]') as HTMLButtonElement
@@ -925,13 +973,13 @@ describe('ChatView', () => {
     const high = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'))
       .find((option) => option.textContent?.startsWith('High')) as HTMLButtonElement
     await act(async () => { high.click(); await Promise.resolve() })
-    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(1, 'chat-1', { reasoningEffort: 'high', serviceTier: 'flex' })
+    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(1, 'chat-1', { reasoningEffort: 'high' })
 
     act(() => speed.click())
     const fast = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'))
       .find((option) => option.textContent?.startsWith('Fast')) as HTMLButtonElement
     await act(async () => { fast.click(); await Promise.resolve() })
-    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(2, 'chat-1', { reasoningEffort: 'low', serviceTier: 'fast' })
+    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(2, 'chat-1', { serviceTier: 'fast' })
 
     openComposerOptions(host)
     const textarea = host.querySelector('textarea') as HTMLTextAreaElement
@@ -945,7 +993,7 @@ describe('ChatView', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
       await Promise.resolve()
     })
-    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(3, 'chat-1', { reasoningEffort: 'xhigh', serviceTier: 'flex' })
+    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(3, 'chat-1', { reasoningEffort: 'xhigh' })
     expect(host.querySelector('[role="status"]')?.textContent).toContain('Reasoning changed to XHigh.')
 
     await act(async () => {
@@ -953,7 +1001,7 @@ describe('ChatView', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
       await Promise.resolve()
     })
-    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(4, 'chat-1', { reasoningEffort: 'low', serviceTier: 'flex' })
+    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(4, 'chat-1', { serviceTier: 'flex' })
     expect(host.querySelector('[role="status"]')?.textContent).toContain('Speed changed to Flex.')
 
     act(() => root.unmount())
@@ -997,15 +1045,14 @@ describe('ChatView', () => {
 
     const modelButton = host.querySelector('button[title="Select model"]')
     expect(modelButton).toBeTruthy()
-    expect(modelButton?.textContent).toContain('Model')
     expect(modelButton?.textContent).toContain('gpt-5.4')
+    expect(host.querySelector('.uam-provider-logo--codex')).toBeTruthy()
 
     act(() => {
       modelButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(document.body.textContent).toContain('CLI default')
-    expect(document.body.textContent).toContain('Use Codex CLI settings')
+    expect(document.body.textContent).not.toContain('CLI default')
     expect(document.body.textContent).toContain('gpt-5.4')
     expect(document.body.textContent).toContain('GPT-5.4-Mini')
     expect(document.body.textContent).not.toContain('Auto 3')
@@ -1024,6 +1071,41 @@ describe('ChatView', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('shows the selected Codex model while ACP still reports the previous idle model', () => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1' ? { ...session, providerId: 'codex-cli', modelId: 'gpt-5.4-mini' } : session
+      ),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          providerId: 'codex-cli',
+          protocolKind: 'codex-app-server',
+          lifecycleState: 'ready',
+          processing: false,
+          processingStartedAtMs: null,
+          pendingPermission: null,
+          availableModels: [
+            { id: 'gpt-5.4', name: 'GPT-5.4', description: '' },
+            { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', description: '' },
+          ],
+          currentModelId: 'gpt-5.4',
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    expect(host.querySelector('button[title="Select model"]')?.textContent).toContain('GPT-5.4 Mini')
+
+    act(() => root.unmount())
     host.remove()
   })
 
@@ -1059,17 +1141,19 @@ describe('ChatView', () => {
 
     const trigger = host.querySelector('button[title="Select model"]') as HTMLButtonElement
     expect(trigger.getAttribute('aria-haspopup')).toBe('listbox')
-    act(() => trigger.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(trigger.style.borderRadius).toBe('7px')
+    act(() => trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
 
     const listbox = document.body.querySelector('[role="listbox"]') as HTMLDivElement
     const options = Array.from(listbox.querySelectorAll<HTMLButtonElement>('[role="option"]'))
-    expect(options).toHaveLength(13)
+    expect(options).toHaveLength(12)
     expect((listbox.lastElementChild as HTMLElement).style.maxHeight).toBe('520px')
     expect((listbox.lastElementChild as HTMLElement).style.overflowY).toBe('auto')
     expect(document.activeElement?.textContent).toContain('Model 0')
 
     act(() => listbox.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
     expect(document.activeElement?.textContent).toContain('Model 1')
+    expect((document.activeElement as HTMLElement).style.boxShadow).toContain('inset')
     act(() => listbox.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
     expect(setSessionModel).toHaveBeenCalledWith('chat-1', 'model-1')
     expect(document.activeElement).toBe(trigger)
@@ -1158,14 +1242,12 @@ describe('ChatView', () => {
 
     const modelButton = host.querySelector('button[title="Select model"]')
     expect(modelButton).toBeTruthy()
-    expect(modelButton?.textContent).toContain('Model')
 
     act(() => {
       modelButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(document.body.textContent).toContain('CLI default')
-    expect(document.body.textContent).toContain('Use OpenCode CLI settings')
+    expect(document.body.textContent).not.toContain('CLI default')
     expect(document.body.textContent).toContain('Qwen3.6 35B A3B Q4')
     expect(document.body.textContent).toContain('Qwen3 Coder 30B')
     expect(document.body.textContent).not.toContain('Auto 3')
@@ -1286,7 +1368,6 @@ describe('ChatView', () => {
 
     const modelButton = host.querySelector('button[title="Select model"]')
     expect(modelButton).toBeTruthy()
-    expect(modelButton?.textContent).toContain('Model')
     expect(modelButton?.textContent).toContain('Auto 3')
 
     act(() => {
@@ -1328,8 +1409,8 @@ describe('ChatView', () => {
     expect(modelButton).toBeTruthy()
     expect(modelButton?.disabled).toBe(true)
     openComposerOptions(host)
-    expect((document.body.querySelector('button[title^="Toggle planning mode"]') as HTMLButtonElement | null)?.disabled).toBe(true)
-    expect((document.body.querySelector('button[title="Toggle Auto Decide mode"]') as HTMLButtonElement | null)?.disabled).toBe(false)
+    expect((document.body.querySelector('button[aria-label="Agent mode"]') as HTMLButtonElement | null)?.disabled).toBe(false)
+    expect((document.body.querySelector('button[aria-label="Permissions"]') as HTMLButtonElement | null)?.disabled).toBe(false)
 
     act(() => {
       modelButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -1344,7 +1425,26 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('toggles the planning chip and reflects runtime plan state', () => {
+  it('does not surface a runtime-only Plan mode as a user-selected chip', () => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, approvalMode: 'default' } : session),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], currentModeId: 'plan', processing: false },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    expect(host.querySelector('button[aria-label="Disable Plan"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('selects Plan only from Agent mode and clears only the Plan chip', () => {
     const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) =>
@@ -1373,14 +1473,11 @@ describe('ChatView', () => {
     })
 
     openComposerOptions(host)
-    const planButton = document.body.querySelector('button[title^="Toggle planning mode"]') as HTMLButtonElement | null
-    expect(planButton).toBeTruthy()
-    expect(planButton?.disabled).toBe(false)
-    expect(planButton?.getAttribute('aria-pressed')).toBe('false')
-
-    act(() => {
-      planButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    const agentButton = document.body.querySelector('button[aria-label="Agent mode"]') as HTMLButtonElement
+    expect(agentButton.textContent).toContain('Default')
+    act(() => agentButton.click())
+    const planOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.startsWith('Plan')) as HTMLButtonElement
+    act(() => planOption.click())
 
     expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'plan')
 
@@ -1399,7 +1496,7 @@ describe('ChatView', () => {
       }))
     })
 
-    expect(planButton?.getAttribute('aria-pressed')).toBe('true')
+    expect(host.querySelector('button[aria-label="Disable Plan"]')).toBeTruthy()
 
     act(() => {
       useAppStore.setState((state) => ({
@@ -1416,11 +1513,7 @@ describe('ChatView', () => {
       }))
     })
 
-    act(() => {
-      planButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-
-    expect(setSessionApprovalMode).toHaveBeenLastCalledWith('chat-1', 'default')
+    expect(host.querySelector('button[aria-label="Disable Plan"]')).toBeNull()
 
     act(() => {
       root.unmount()
@@ -1428,11 +1521,11 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('toggles the Yolo chip without changing Plan mode', () => {
-    const setSessionAutoApproveCommands = vi.fn(() => Promise.resolve(true))
+  it('changes Permissions without changing Plan, reasoning, speed, or memory', () => {
+    const setSessionCommandSafetyTier = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) =>
-        session.id === 'chat-1' ? { ...session, approvalMode: 'plan', autoApproveCommands: false } : session
+        session.id === 'chat-1' ? { ...session, approvalMode: 'plan', commandSafetyTier: 'medium', reasoningEffort: 'high', serviceTier: 'flex', memoryLevel: 'strict' } : session
       ),
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
@@ -1449,7 +1542,7 @@ describe('ChatView', () => {
           pendingPermission: null,
         },
       },
-      setSessionAutoApproveCommands,
+      setSessionCommandSafetyTier,
     }))
 
     const host = document.createElement('div')
@@ -1461,33 +1554,26 @@ describe('ChatView', () => {
     })
 
     openComposerOptions(host)
-    const yoloButton = document.body.querySelector('button[title="Toggle Auto Decide mode"]') as HTMLButtonElement | null
-    expect(yoloButton).toBeTruthy()
-    expect(yoloButton?.disabled).toBe(false)
-    expect(yoloButton?.getAttribute('aria-pressed')).toBe('false')
-
-    act(() => {
-      yoloButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-
-    expect(setSessionAutoApproveCommands).toHaveBeenCalledWith('chat-1', true)
+    const permissionButton = document.body.querySelector('button[aria-label="Permissions"]') as HTMLButtonElement
+    act(() => permissionButton.click())
+    const yoloOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.startsWith('YOLO')) as HTMLButtonElement
+    act(() => yoloOption.click())
+    expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'yolo')
 
     act(() => {
       useAppStore.setState((state) => ({
         sessions: state.sessions.map((session) =>
-          session.id === 'chat-1' ? { ...session, autoApproveCommands: true } : session
+          session.id === 'chat-1' ? { ...session, commandSafetyTier: 'yolo' } : session
         ),
       }))
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    expect(yoloButton?.getAttribute('aria-pressed')).toBe('true')
-
-    act(() => {
-      yoloButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-
-    expect(setSessionAutoApproveCommands).toHaveBeenLastCalledWith('chat-1', false)
+    const yoloChip = host.querySelector('button[aria-label="Disable YOLO"]') as HTMLButtonElement
+    expect(yoloChip).toBeTruthy()
+    act(() => yoloChip.click())
+    expect(setSessionCommandSafetyTier).toHaveBeenLastCalledWith('chat-1', 'off')
+    expect(useAppStore.getState().sessions[0]).toMatchObject({ approvalMode: 'plan', reasoningEffort: 'high', serviceTier: 'flex', memoryLevel: 'strict' })
 
     act(() => {
       root.unmount()
@@ -1533,8 +1619,7 @@ describe('ChatView', () => {
     expect(host.textContent).toContain('Claude structured mode cannot surface interactive permission')
     expect(host.textContent).toContain('model discovery is limited to the active model')
 
-    openComposerOptions(host)
-    const planButton = document.body.querySelector('button[title^="Toggle planning mode"]') as HTMLButtonElement | null
+    const planButton = host.querySelector('button[aria-label="Disable Plan"]') as HTMLButtonElement | null
     expect(planButton).toBeTruthy()
 
     act(() => {
@@ -1549,11 +1634,14 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('toggles Claude Accept Edits mode', () => {
+  it('keeps Claude Accept Edits in Permissions and independent from Agent mode', () => {
     const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
+    const setSessionCommandSafetyTier = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) =>
-        session.id === 'chat-1' ? { ...session, providerId: 'claude-cli', approvalMode: 'default' } : session
+        session.id === 'chat-1'
+          ? { ...session, providerId: 'claude-cli', approvalMode: 'plan', commandSafetyTier: 'off', reasoningEffort: 'high', serviceTier: 'flex', memoryLevel: 'strict' }
+          : session
       ),
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
@@ -1569,11 +1657,12 @@ describe('ChatView', () => {
             { id: 'acceptEdits', name: 'Accept Edits', description: '' },
             { id: 'plan', name: 'Plan', description: '' },
           ],
-          currentModeId: 'default',
+          currentModeId: 'plan',
           pendingPermission: null,
         },
       },
       setSessionApprovalMode,
+      setSessionCommandSafetyTier,
     }))
 
     const host = document.createElement('div')
@@ -1585,39 +1674,35 @@ describe('ChatView', () => {
     })
 
     openComposerOptions(host)
-    const acceptEditsButton = document.body.querySelector('button[title="Toggle Accept Edits mode. Claude can edit workspace files without prompting."]') as HTMLButtonElement | null
-    const autoButton = document.body.querySelector('button[title="Toggle Auto Decide mode"]') as HTMLButtonElement | null
+    const agentButton = document.body.querySelector('button[aria-label="Agent mode"]') as HTMLButtonElement
+    act(() => agentButton.click())
+    expect(Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).some((option) => option.textContent?.startsWith('Accept Edits'))).toBe(false)
+    act(() => agentButton.click())
+
+    const permissionButton = document.body.querySelector('button[aria-label="Permissions"]') as HTMLButtonElement
+    act(() => permissionButton.click())
+    const acceptEditsButton = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.startsWith('Accept Edits')) as HTMLButtonElement
     expect(acceptEditsButton).toBeTruthy()
-    expect(acceptEditsButton?.disabled).toBe(false)
-    expect(acceptEditsButton?.textContent).toContain('Accept Edits')
-    expect(autoButton?.textContent).toContain('Auto Decide')
+    act(() => acceptEditsButton.click())
 
-    act(() => {
-      acceptEditsButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-
-    expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'acceptEdits')
+    expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'acceptEdits')
+    expect(setSessionApprovalMode).not.toHaveBeenCalled()
 
     act(() => {
       useAppStore.setState((state) => ({
         sessions: state.sessions.map((session) =>
-          session.id === 'chat-1' ? { ...session, approvalMode: 'acceptEdits' } : session
+          session.id === 'chat-1' ? { ...session, commandSafetyTier: 'acceptEdits' } : session
         ),
-        acpBindingBySessionId: {
-          ...state.acpBindingBySessionId,
-          'chat-1': {
-            ...state.acpBindingBySessionId['chat-1'],
-            currentModeId: 'acceptEdits',
-          },
-        },
       }))
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    act(() => {
-      acceptEditsButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-
-    expect(setSessionApprovalMode).toHaveBeenLastCalledWith('chat-1', 'default')
+    const acceptEditsChip = host.querySelector('button[aria-label="Disable Accept Edits"]') as HTMLButtonElement
+    expect(acceptEditsChip).toBeTruthy()
+    act(() => acceptEditsChip.click())
+    expect(setSessionCommandSafetyTier).toHaveBeenLastCalledWith('chat-1', 'off')
+    expect(setSessionApprovalMode).not.toHaveBeenCalled()
+    expect(useAppStore.getState().sessions[0]).toMatchObject({ approvalMode: 'plan', reasoningEffort: 'high', serviceTier: 'flex', memoryLevel: 'strict' })
 
     act(() => {
       root.unmount()
@@ -1627,6 +1712,7 @@ describe('ChatView', () => {
 
   it('asks how to proceed before sending a prompt from Claude plan mode', async () => {
     const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
+    const setSessionCommandSafetyTier = vi.fn(() => Promise.resolve(true))
     const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) =>
@@ -1651,6 +1737,7 @@ describe('ChatView', () => {
         },
       },
       setSessionApprovalMode,
+      setSessionCommandSafetyTier,
       sendAcpPrompt,
     }))
 
@@ -1684,7 +1771,8 @@ describe('ChatView', () => {
       acceptAndProceed?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'acceptEdits')
+    expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'default')
+    expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'acceptEdits')
     expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'proceed')
 
     act(() => {
@@ -1870,7 +1958,10 @@ describe('ChatView', () => {
   })
 
   it('selects the per-chat memory level from options and /memory', async () => {
-    const setSessionMemoryLevel = vi.fn(() => Promise.resolve(true))
+    const setSessionMemoryLevel = vi.fn((_id: string, level: 'off' | 'strict' | 'balanced' | 'open') => {
+      useAppStore.setState((state) => ({ sessions: state.sessions.map((candidate) => candidate.id === 'chat-1' ? { ...candidate, memoryEnabled: level !== 'off', memoryLevel: level } : candidate) }))
+      return Promise.resolve(true)
+    })
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) =>
         session.id === 'chat-1' ? { ...session, memoryEnabled: true, memoryLevel: 'strict' as const } : session
@@ -1911,6 +2002,15 @@ describe('ChatView', () => {
     })
 
     expect(setSessionMemoryLevel).toHaveBeenCalledWith('chat-1', 'balanced')
+
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    expect(host.querySelector('button[aria-label="Disable Memory Balanced"]')).toBeTruthy()
+
+    act(() => { (document.body.querySelector('button[aria-label="Memory"]') as HTMLButtonElement).click() })
+    const strict = Array.from(document.body.querySelectorAll('button[role="option"]')).find((button) => button.textContent?.includes('Strict')) as HTMLButtonElement
+    act(() => strict.click())
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    expect(host.querySelector('button[aria-label="Disable Memory Strict"]')).toBeTruthy()
 
     const textarea = host.querySelector('textarea') as HTMLTextAreaElement
     await act(async () => {
@@ -2506,7 +2606,25 @@ describe('ChatView', () => {
       expect(writeText.mock.calls[0][0]).toContain('Internal ACP failure')
       expect(writeText.mock.calls[0][0]).toContain('stderr stack trace')
       const text = host.textContent ?? ''
-    expect(text.indexOf('After tool.')).toBeLessThan(text.indexOf('Gemini ACP error'))
+      expect(text.indexOf('After tool.')).toBeLessThan(text.indexOf('Gemini ACP error'))
+      const dismissErrorButton = form?.querySelector<HTMLButtonElement>('button[aria-label="Dismiss composer error"]')
+      expect(dismissErrorButton).toBeTruthy()
+      act(() => dismissErrorButton?.click())
+      expect(form?.textContent).not.toContain('Internal ACP failure')
+
+      act(() => useAppStore.setState((state) => ({
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          'chat-1': { ...state.acpBindingBySessionId['chat-1'], lastError: '' },
+        },
+      })))
+      act(() => useAppStore.setState((state) => ({
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          'chat-1': { ...state.acpBindingBySessionId['chat-1'], lastError: 'Internal ACP failure' },
+        },
+      })))
+      expect(form?.textContent).toContain('Internal ACP failure')
 
     act(() => {
       root.unmount()
@@ -3175,7 +3293,7 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('dictates interim and final text, stops accessibly, and submits exactly once on end', async () => {
+  it('keeps stopped dictation as a draft and only submits when Send stops it', async () => {
     const requests: Array<{ action: string; payload?: { locale?: string } }> = []
     const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
     let completeDictationStart: (() => void) | undefined
@@ -3226,6 +3344,8 @@ describe('ChatView', () => {
     const startingButton = host.querySelector('button[aria-label="Starting dictation"]') as HTMLButtonElement
     expect(startingButton.dataset.dictationState).toBe('starting')
     expect(startingButton.getAttribute('aria-busy')).toBe('true')
+    expect(host.querySelector('button[aria-label="Send prompt"]')).toBeTruthy()
+    expect(host.querySelector('button[aria-label="Options"]')).toBeTruthy()
     expect(host.querySelector('[role="status"]')?.textContent).toContain('Starting dictation')
 
     await act(async () => {
@@ -3271,8 +3391,23 @@ describe('ChatView', () => {
       }))
       await Promise.resolve()
     })
-    expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
-    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Please write tests', [])
+    expect(sendAcpPrompt).not.toHaveBeenCalled()
+    expect(textarea.value).toBe('Please write tests')
+
+    await act(async () => {
+      ;(host.querySelector('button[aria-label="Start dictation"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+      completeDictationStart?.()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('button[aria-label="Stop dictation"]')).toBeTruthy()
+
+    await act(async () => {
+      ;(host.querySelector('button[aria-label="Send prompt"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    expect(requests.filter((request) => request.action === 'stopDictation')).toHaveLength(2)
+    expect(sendAcpPrompt).not.toHaveBeenCalled()
 
     await act(async () => {
       window.dispatchEvent(new CustomEvent('uam-dictation', {
@@ -3281,6 +3416,7 @@ describe('ChatView', () => {
       await Promise.resolve()
     })
     expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Please write tests', [])
 
     act(() => root.unmount())
     host.remove()

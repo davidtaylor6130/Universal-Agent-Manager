@@ -162,9 +162,10 @@ export function CopyTextButton({
         className="inline-flex h-6 w-6 items-center justify-center"
         style={{
           borderRadius: 5,
-          border: '1px solid var(--border)',
-          background: status === 'failed' ? 'color-mix(in srgb, var(--red) 16%, var(--surface))' : 'var(--surface-up)',
+          border: 0,
+          background: 'transparent',
           color: status === 'copied' ? 'var(--green)' : status === 'failed' ? 'var(--red)' : 'var(--text-2)',
+          transition: 'color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease)',
         }}
       >
         {status === 'copied' ? <Check size={13} aria-hidden /> : status === 'failed' ? <CircleX size={13} aria-hidden /> : <Copy size={13} aria-hidden />}

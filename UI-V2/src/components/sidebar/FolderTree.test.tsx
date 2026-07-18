@@ -86,6 +86,8 @@ describe('FolderTree', () => {
     expect(host.textContent).toContain('Chat 6')
     expect(host.textContent).toContain('Chat 7')
     expect(host.textContent).toContain('Show less')
+    expect(host.querySelector('[data-testid="folder-row-project"]')?.className).toContain('mb-1')
+    expect(Array.from(host.querySelectorAll('span')).find((span) => span.textContent === 'Chat 1')?.closest('.cursor-pointer')?.className).toContain('py-1')
 
     act(() => {
       root.unmount()
@@ -188,6 +190,28 @@ describe('FolderTree', () => {
     vi.unstubAllGlobals()
   })
 
+  it('opens collection actions from the collection context menu', () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {}; unobserve() {}; disconnect() {} })
+    useAppStore.setState({
+      resourceCollections: [{ id: 'work', name: 'Work', collapsed: false, references: [] }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const header = host.querySelector('[data-testid="folder-collection-work"] > div') as HTMLElement
+    act(() => header.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 80, clientY: 90 })))
+
+    const menu = document.body.querySelector('[role="menu"][aria-label="Work actions"]')
+    expect(menu?.textContent).toContain('Rename')
+    expect(menu?.textContent).toContain('Delete')
+
+    act(() => root.unmount())
+    host.remove()
+    vi.unstubAllGlobals()
+  })
+
   it('removes a workspace from its collection without deleting the workspace or chats', async () => {
     useAppStore.setState({
       resourceCollections: [{
@@ -208,7 +232,12 @@ describe('FolderTree', () => {
     const menu = document.body.querySelector('[data-viewport-menu]') as HTMLElement
     expect(menu).toBeTruthy()
     expect(collectedFolder.contains(menu)).toBe(false)
-    const remove = Array.from(menu.querySelectorAll('button')).find((button) => button.textContent?.includes('Remove from collection'))
+    expect(menu.textContent).not.toContain('Remove from collection')
+    const move = Array.from(menu.querySelectorAll('button')).find((button) => button.textContent?.includes('Move to collection')) as HTMLButtonElement
+    act(() => move.click())
+    const submenu = document.body.querySelector('[role="menu"][aria-label="Move to collection"]') as HTMLElement
+    expect(submenu).toBeTruthy()
+    const remove = Array.from(submenu.querySelectorAll('button')).find((button) => button.textContent?.includes('Remove from collection'))
     await act(async () => { remove?.click(); await Promise.resolve() })
 
     expect(useAppStore.getState().resourceCollections[0].references).toEqual([])
@@ -514,5 +543,42 @@ describe('FolderTree', () => {
     act(() => root.unmount())
     host.remove()
     HTMLElement.prototype.scrollIntoView = previousScrollIntoView
+  })
+
+  it('uses icon-only confirm and cancel actions when naming a collection', async () => {
+    const createResourceCollection = vi.fn(async (name: string) => ({ id: 'ideas', name, collapsed: false, references: [] }))
+    useAppStore.setState({ createResourceCollection })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const openForm = () => Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'New collection')?.click()
+    act(openForm)
+
+    const confirm = host.querySelector('button[aria-label="Create collection"]') as HTMLButtonElement
+    const cancel = host.querySelector('button[aria-label="Cancel new collection"]') as HTMLButtonElement
+    expect(confirm.textContent).toBe('')
+    expect(confirm.disabled).toBe(true)
+    expect(confirm.style.background).toBe('var(--accent)')
+    expect(cancel.textContent).toBe('')
+    expect(cancel.style.color).toBe('var(--error)')
+
+    act(() => cancel.click())
+    expect(host.querySelector('input[aria-label="Collection name"]')).toBeNull()
+
+    act(openForm)
+    const input = host.querySelector('input[aria-label="Collection name"]') as HTMLInputElement
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'Ideas')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const enabledConfirm = host.querySelector('button[aria-label="Create collection"]') as HTMLButtonElement
+    expect(enabledConfirm.disabled).toBe(false)
+    await act(async () => { enabledConfirm.click(); await Promise.resolve() })
+    expect(createResourceCollection).toHaveBeenCalledWith('Ideas')
+
+    act(() => root.unmount())
+    host.remove()
   })
 })

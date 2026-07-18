@@ -39,7 +39,14 @@ describe('MarkdownStoreModal', () => {
     const root = createRoot(host)
     act(() => root.render(<MarkdownStoreModal />))
 
-    const search = host.querySelector('input[aria-label="Search Markdown Store"]') as HTMLInputElement
+    const dialog = host.querySelector('[role="dialog"][aria-label="Skills"]') as HTMLElement
+    const create = host.querySelector('button[aria-label="Create skill"]') as HTMLButtonElement
+    expect(dialog.className).toContain('h-[min(780px,90vh)]')
+    expect(dialog.querySelector('.overflow-y-auto')).toBeTruthy()
+    expect(create.style.border).toBe('0px')
+    expect(create.textContent).toBe('')
+
+    const search = host.querySelector('input[aria-label="Search Skills"]') as HTMLInputElement
     act(() => {
       const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
       valueSetter?.call(search, 'regressions')
@@ -50,10 +57,10 @@ describe('MarkdownStoreModal', () => {
     expect(host.textContent).not.toContain('Release notes')
     expect(host.textContent).toContain('1 of 2')
 
-    act(() => Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Open in external editor'))?.click())
+    act(() => (host.querySelector('button[aria-label="Open in external editor"]') as HTMLButtonElement)?.click())
     expect(useAppStore.getState().editMarkdownStoreEntry).toHaveBeenCalledWith(expect.objectContaining({ id: 'review' }))
 
-    act(() => Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Attach to message'))?.click())
+    act(() => (host.querySelector('button[aria-label="Attach to message"]') as HTMLButtonElement)?.click())
     expect(useAppStore.getState().attachMarkdownStoreEntry).toHaveBeenCalledWith('chat-1', expect.objectContaining({ id: 'review' }))
     expect(useAppStore.getState().closeMarkdownStore).toHaveBeenCalledTimes(1)
 
@@ -76,7 +83,7 @@ describe('MarkdownStoreModal', () => {
     act(() => root.render(<MarkdownStoreModal />))
 
     const choose = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Choose folder')
-    const publish = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'New entry') as HTMLButtonElement
+    const publish = host.querySelector('button[aria-label="Create skill"]') as HTMLButtonElement
     expect(choose).toBeTruthy()
     expect(publish.disabled).toBe(true)
 
@@ -98,7 +105,7 @@ describe('MarkdownStoreModal', () => {
     const root = createRoot(host)
     act(() => root.render(<MarkdownStoreModal />))
 
-    const filter = host.querySelector('select[aria-label="Filter Markdown Store"]') as HTMLSelectElement
+    const filter = host.querySelector('select[aria-label="Filter Skills"]') as HTMLSelectElement
     act(() => { filter.value = 'favorites'; filter.dispatchEvent(new Event('change', { bubbles: true })) })
     expect(host.textContent).toContain('Release notes')
     expect(host.textContent).not.toContain('Review code')
@@ -122,7 +129,7 @@ describe('MarkdownStoreModal', () => {
     const root = createRoot(host)
     act(() => root.render(<MarkdownStoreModal />))
 
-    act(() => Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Edit in app')?.click())
+    act(() => (host.querySelector('button[aria-label="Edit Review code in app"]') as HTMLButtonElement)?.click())
     const title = host.querySelector('input[aria-label="Entry title"]') as HTMLInputElement
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(title, 'Review carefully')
@@ -153,7 +160,7 @@ describe('MarkdownStoreModal', () => {
     const root = createRoot(host)
     act(() => root.render(<MarkdownStoreModal />))
 
-    await act(async () => { Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Import providers')?.click(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+    await act(async () => { (host.querySelector('button[aria-label="Import provider skills"]') as HTMLButtonElement)?.click(); await new Promise((resolve) => setTimeout(resolve, 0)) })
     expect(host.textContent).toContain('Import preview')
     expect(host.textContent).toContain('Unsupported file type')
     const collision = host.querySelector('select[aria-label="Collision action for Review code"]') as HTMLSelectElement

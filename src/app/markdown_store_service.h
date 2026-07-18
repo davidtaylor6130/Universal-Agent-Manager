@@ -22,6 +22,7 @@ class MarkdownStoreService
 		std::string source_provider;
 		std::string source_path;
 		std::string command_name;
+		std::string group;
 		std::filesystem::path file_path;
 	};
 
@@ -31,6 +32,7 @@ class MarkdownStoreService
 		std::string maker;
 		std::string review;
 		std::string body;
+		std::string group;
 	};
 
 	struct ImportSource

@@ -15,4 +15,13 @@ describe('placeViewportMenu', () => {
       { width: 320, height: 200 },
     ).left).toBe(8)
   })
+
+  it('opens beside an anchor and flips at the right edge', () => {
+    expect(placeViewportMenu(
+      { left: 280, right: 300, top: 40, bottom: 70 },
+      { width: 120, height: 80 },
+      { width: 320, height: 200 },
+      'right',
+    )).toEqual({ left: 156, top: 40 })
+  })
 })

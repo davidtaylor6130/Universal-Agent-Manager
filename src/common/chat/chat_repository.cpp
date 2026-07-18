@@ -728,6 +728,12 @@ namespace
 		{
 			chat.approval_mode = uam::approval_modes::kDefaultApprovalMode;
 			chat.auto_approve_commands = true;
+			chat.command_safety_tier = "yolo";
+		}
+		else if (chat.approval_mode == uam::approval_modes::kAcceptEditsApprovalMode)
+		{
+			chat.approval_mode = uam::approval_modes::kDefaultApprovalMode;
+			chat.command_safety_tier = uam::approval_modes::kAcceptEditsApprovalMode;
 		}
 		chat.model_id = JsonStringOrEmpty(root.Find(kChatModelIdField));
 		chat.reasoning_effort = JsonStringOrEmpty(root.Find(kChatReasoningEffortField));

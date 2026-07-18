@@ -11,6 +11,7 @@ export interface MarkdownStoreEntry {
   sourceProvider?: string
   sourcePath?: string
   commandName?: string
+  group?: string
   filePath: string
 }
 

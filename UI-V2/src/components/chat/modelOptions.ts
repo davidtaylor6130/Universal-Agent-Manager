@@ -34,12 +34,12 @@ export function titleFromModelId(modelId: string) {
     .join(' ') || modelId
 }
 
-function providerDefaultModelOption(providerName: string): ModelOption {
+function unresolvedModelOption(providerName: string): ModelOption {
   return {
     id: '',
-    label: 'CLI default',
-    shortLabel: 'CLI default',
-    detail: `Use ${providerName} CLI settings`,
+    label: 'Detecting model…',
+    shortLabel: 'Detecting model…',
+    detail: `Waiting for ${providerName} to report its active model`,
   }
 }
 
@@ -78,9 +78,8 @@ export function buildModelOptions(
     const option = modelOptionFromRuntime(model, caps.usesFriendlyModelLabels)
     return option ? [option] : []
   })
-  const defaultOption = providerDefaultModelOption(providerName)
   const fallbackOptions = caps.memoryModelIds.length > 0
-    ? caps.memoryModelIds.map((id) => {
+    ? caps.memoryModelIds.filter(Boolean).map((id) => {
       const label = caps.memoryModelLabels[id]?.label ?? titleFromModelId(id)
       return {
         id,
@@ -89,9 +88,9 @@ export function buildModelOptions(
         detail: caps.memoryModelLabels[id]?.detail ?? id,
       }
     })
-    : [defaultOption]
+    : []
   const baseOptions = runtimeOptions.length > 0
-    ? [defaultOption, ...runtimeOptions]
+    ? runtimeOptions
     : fallbackOptions
   const options: ModelOption[] = []
   const seen = new Set<string>()
@@ -120,7 +119,7 @@ export function buildModelOptions(
 }
 
 export function modelOptionFor(options: ModelOption[], modelId?: string) {
-  return options.find((option) => option.id === (modelId ?? '')) ?? options[0] ?? providerDefaultModelOption('provider')
+  return options.find((option) => option.id === (modelId ?? '')) ?? options[0] ?? unresolvedModelOption('Provider')
 }
 
 export function labeledOption(id: string, labels: Record<string, Pick<ModelOption, 'label' | 'shortLabel' | 'detail'>>): ModelOption {

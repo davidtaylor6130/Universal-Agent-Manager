@@ -321,6 +321,7 @@ bool ProviderModelCatalogService::RememberSuccessfulModels(const std::string& pr
 	    {"providerId", normalized_provider_id},
 	    {"models", models},
 	    {"updatedAt", uam::time::TimestampNow()},
+	    {"updatedAtSec", uam::time::TimestampNowSec()},
 	};
 	if (!WritePersistentCatalogs())
 	{
@@ -367,15 +368,38 @@ std::string ProviderModelCatalogService::GetProviderRefreshError(const std::stri
 	return error == m_refresh_error_by_provider_id.end() ? std::string{} : error->second;
 }
 
-bool ProviderModelCatalogService::BeginDiscoveryIfMissing(const std::string& provider_id)
+bool ProviderModelCatalogService::BeginDiscoveryIfStale(const std::string& provider_id)
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
 	const std::string normalized = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
+	const auto entry = m_persistent_catalogs.find(CatalogKey(normalized));
+	const nlohmann::json* models = entry == m_persistent_catalogs.end() ? nullptr : uam::nlohmann_json::FindArrayField(entry.value(), "models");
+	const std::int64_t updated_at = entry == m_persistent_catalogs.end() ? 0 : entry->value("updatedAtSec", static_cast<std::int64_t>(0));
+	if (models != nullptr && !models->empty() && updated_at > 0 && uam::time::TimestampNowSec() - updated_at < kProviderModelCacheFreshnessSeconds)
+	{
+		return false;
+	}
 	if (m_pending_discovery_provider_ids.contains(normalized) || m_refresh_attempted_provider_ids.contains(normalized)) return false;
 	m_pending_discovery_provider_ids.insert(normalized);
 	m_refresh_attempted_provider_ids.insert(normalized);
 	m_refresh_error_by_provider_id.erase(normalized);
 	return true;
+}
+
+bool ProviderModelCatalogService::BeginDiscovery(const std::string& provider_id)
+{
+	std::lock_guard<std::mutex> lock(m_mutex);
+	const std::string normalized = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
+	if (m_pending_discovery_provider_ids.contains(normalized)) return false;
+	m_pending_discovery_provider_ids.insert(normalized);
+	m_refresh_attempted_provider_ids.insert(normalized);
+	m_refresh_error_by_provider_id.erase(normalized);
+	return true;
+}
+
+bool ProviderModelCatalogService::BeginDiscoveryIfMissing(const std::string& provider_id)
+{
+	return BeginDiscoveryIfStale(provider_id);
 }
 
 bool ProviderModelCatalogService::IsDiscoveryPending(const std::string& provider_id) const

@@ -13,6 +13,7 @@ import {
   readChatGridLayout,
   subscribeChatGridLayout,
 } from '../../utils/chatGridStorage'
+import { CollectionMenuItems } from './CollectionMenuItems'
 
 function formatSidebarTime(date: Date | null): string {
   if (!date || Number.isNaN(date.getTime())) {
@@ -154,6 +155,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
   useEffect(() => {
     if (!showMenu) return
     const handler = (e: MouseEvent) => {
+      if (e.target instanceof Element && e.target.closest('[data-viewport-menu]')) return
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setMenuPos(null)
       }
@@ -185,7 +187,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
       style={{ animation: 'fadeIn 0.12s ease-out' }}
     >
       <div
-        className="flex items-center gap-2 px-3 py-1.5 rounded-md mx-1.5 cursor-pointer transition-all duration-100"
+        className="flex items-center gap-2 px-3 py-1 rounded-md mx-1.5 cursor-pointer transition-all duration-100"
         style={{
           background: isActive ? 'var(--sidebar-item-active)' : 'transparent',
           borderLeft: paneIndexes.length > 0 ? `3px solid ${chatPaneColors[paneIndexes[0]]}` : '3px solid transparent',
@@ -335,23 +337,27 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
             boxShadow: 'var(--elev-2)',
           }}
         >
-          <div className="px-3 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-3)' }}>Show in pane</div>
-          <div className="flex gap-1 px-3 pb-2">
-            {Array.from({ length: gridLayout.paneCount }, (_, paneIndex) => (
-              <button
-                key={paneIndex}
-                type="button"
-                aria-label={`Show ${sessionName} in pane ${paneIndex + 1}`}
-                className="h-7 w-7 rounded"
-                style={{ background: chatPaneColors[paneIndex], border: 'none' }}
-                onClick={() => {
-                  assignChatToPane(sessionId, paneIndex)
-                  setActiveSession(sessionId)
-                  setMenuPos(null)
-                }}
-              />
-            ))}
-          </div>
+          {gridLayout.paneCount > 1 && (
+            <>
+              <div className="px-3 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-3)' }}>Show in pane</div>
+              <div className="flex gap-1 px-3 pb-2">
+                {Array.from({ length: gridLayout.paneCount }, (_, paneIndex) => (
+                  <button
+                    key={paneIndex}
+                    type="button"
+                    aria-label={`Show ${sessionName} in pane ${paneIndex + 1}`}
+                    className="h-7 w-7 rounded"
+                    style={{ background: chatPaneColors[paneIndex], border: 'none' }}
+                    onClick={() => {
+                      assignChatToPane(sessionId, paneIndex)
+                      setActiveSession(sessionId)
+                      setMenuPos(null)
+                    }}
+                  />
+                ))}
+              </div>
+            </>
+          )}
           <button
             className="flex w-full items-center gap-2 text-left px-3 py-1.5 text-sm transition-colors duration-100"
             style={{ background: 'transparent', color: 'var(--text-2)', cursor: 'pointer', border: 'none', fontFamily: 'inherit' }}
@@ -362,6 +368,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
             <Pencil size={13} aria-hidden />
             Rename
           </button>
+          <CollectionMenuItems type="chat" target={sessionId} label={sessionName} onAdded={() => setMenuPos(null)} />
           <button
             className="flex w-full items-center gap-2 text-left px-3 py-1.5 text-sm transition-colors duration-100"
             style={{ background: 'transparent', color: 'var(--red)', cursor: 'pointer', border: 'none', fontFamily: 'inherit' }}

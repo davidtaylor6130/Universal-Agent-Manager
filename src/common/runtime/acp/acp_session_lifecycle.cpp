@@ -216,6 +216,10 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	}
 
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
+	if (session.model_discovery_only && std::strcmp(runtime.AcpProtocolKind(), "codex-app-server") == 0)
+	{
+		return false;
+	}
 	const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
 	const std::string cwd = AcpWorkingDirectoryString(workspace_root);
 	const std::string resolved_resume_id = ResolvedAcpResumeIdForChat(app, chat);
@@ -240,7 +244,7 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	{
 		session.session_ready = true;
 		session.session_id = resolved_resume_id;
-		session.current_mode_id = chat.approval_mode.empty() ? uam::approval_modes::kDefaultApprovalMode : chat.approval_mode;
+		session.current_mode_id = uam::approval_modes::EffectiveProviderMode(chat.approval_mode, chat.command_safety_tier);
 		session.lifecycle_state = session.processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
 		return true;
 	}
