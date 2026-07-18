@@ -258,6 +258,12 @@ namespace uam
 			{
 				return false;
 			}
+			const std::string selected_model_id = uam::strings::NonEmptyOrFallback(chat.model_id, session.current_model_id);
+			const auto selected_model = std::ranges::find_if(session.available_models, [&selected_model_id](const AcpModelState& model) { return model.id == selected_model_id; });
+			if (selected_model != session.available_models.end() && !selected_model->supported_reasoning_efforts.empty() && !uam::ranges::Contains(selected_model->supported_reasoning_efforts, chat.reasoning_effort))
+			{
+				chat.reasoning_effort = selected_model->supported_reasoning_efforts.back();
+			}
 			const std::string desired_mode = uam::approval_modes::EffectiveProviderMode(chat.approval_mode, chat.command_safety_tier);
 			if (session.session_ready && !uam::strings::IsBlank(chat.approval_mode) && session.current_mode_id != desired_mode && !SetAcpSessionMode(app, chat.id, desired_mode, error_out))
 			{

@@ -133,6 +133,7 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     (previous.isPinned ?? false) === (next.isPinned ?? false) &&
     (previous.providerId ?? GEMINI_CLI_PROVIDER_ID) === next.providerId &&
     (previous.parentChatId ?? '') === (next.parentChatId ?? '') &&
+    (previous.branchRootChatId ?? previous.id) === (next.branchRootChatId ?? next.id) &&
     (previous.branchFromMessageIndex ?? -1) === (next.branchFromMessageIndex ?? -1) &&
     (previous.branchMessageEdited ?? false) === (next.branchMessageEdited ?? false) &&
     (previous.modelId ?? '') === (next.modelId ?? '') &&
@@ -175,6 +176,7 @@ export function sessionFromCppChat(
     isPinned: chat.pinned ?? false,
     providerId: normalizeProviderIdForVisibleProviders(chat.providerId, visibleProviders),
     parentChatId: chat.parentChatId ?? '',
+    branchRootChatId: chat.branchRootChatId || chat.id,
     branchFromMessageIndex: chat.branchFromMessageIndex ?? -1,
     branchMessageEdited: chat.branchMessageEdited ?? false,
     modelId: chat.modelId ?? '',

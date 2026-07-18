@@ -924,7 +924,7 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('keeps Codex reasoning and speed in the + menu and shows non-default values as removable chips', async () => {
+  it('keeps Codex reasoning and speed in the + menu and always shows the reasoning effort', async () => {
     const setSessionCodexOptions = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) => session.id === 'chat-1'
@@ -960,7 +960,8 @@ describe('ChatView', () => {
 
     expect(host.querySelector('button[title="Select Codex reasoning"]')).toBeNull()
     expect(host.querySelector('button[title="Select Codex speed"]')).toBeNull()
-    expect(host.querySelector('button[aria-label="Disable Reasoning: Low"]')).toBeTruthy()
+    expect(host.querySelector('button[aria-label="Reasoning: Low"]')).toBeTruthy()
+    expect(host.querySelector('button[aria-label="Disable Reasoning: Low"]')).toBeNull()
     expect(host.querySelector('button[aria-label="Disable Speed: Flex"]')).toBeTruthy()
     openComposerOptions(host)
 
@@ -1003,6 +1004,41 @@ describe('ChatView', () => {
     })
     expect(setSessionCodexOptions).toHaveBeenNthCalledWith(4, 'chat-1', { serviceTier: 'flex' })
     expect(host.querySelector('[role="status"]')?.textContent).toContain('Speed changed to Flex.')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('switches persisted edit and resend branches inside one chat', () => {
+    const setActiveSession = vi.fn()
+    useAppStore.setState((state) => ({
+      sessions: [
+        { ...state.sessions[0], id: 'chat-root', branchRootChatId: 'chat-root' },
+        {
+          ...state.sessions[0],
+          id: 'chat-branch',
+          name: 'Edited branch',
+          parentChatId: 'chat-root',
+          branchRootChatId: 'chat-root',
+          createdAt: new Date('2026-01-01T00:01:00.000Z'),
+        },
+      ],
+      messages: {
+        'chat-root': state.messages['chat-1'],
+        'chat-branch': state.messages['chat-1'],
+      },
+      activeSessionId: 'chat-branch',
+      setActiveSession,
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[1]} />))
+
+    expect(host.querySelector('[aria-label="Chat branches"]')?.textContent).toContain('2 / 2')
+    act(() => (host.querySelector('button[aria-label="Previous chat branch"]') as HTMLButtonElement).click())
+    expect(setActiveSession).toHaveBeenCalledWith('chat-root')
 
     act(() => root.unmount())
     host.remove()

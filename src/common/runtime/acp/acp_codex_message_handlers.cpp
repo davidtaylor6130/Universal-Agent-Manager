@@ -510,10 +510,18 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 	}
 	if (method == uam::acp_methods::kTurnCompleted)
 	{
+		const bool completed_cancelled_turn = uam::AcpSessionHasPendingCancel(session);
+		if (completed_cancelled_turn)
+		{
+			session.pending_request_methods.erase(session.cancel_request_id);
+			session.cancel_request_id = 0;
+			session.cancel_requested = false;
+			session.cancel_requested_time_s = 0.0;
+		}
 		const nlohmann::json turn = JsonObjectValue(params, "turn");
 		const nlohmann::json error = JsonObjectValue(turn, "error");
 		const std::string turn_status = JsonDiagnosticStringValue(turn, "status");
-		if ((error.is_object() && !error.empty()) || uam::acp_statuses::IsFailedStatus(turn_status))
+		if (!completed_cancelled_turn && ((error.is_object() && !error.empty()) || uam::acp_statuses::IsFailedStatus(turn_status)))
 		{
 			nlohmann::json error_params = {
 			    {"willRetry", false},
@@ -538,7 +546,10 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 			MarkAcpChatUnseenIfBackground(app, chat);
 			return;
 		}
-		(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
+		if (!completed_cancelled_turn)
+		{
+			(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
+		}
 		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, browser);
 		if (browser)
 		{

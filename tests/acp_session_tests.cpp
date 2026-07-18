@@ -1923,12 +1923,17 @@ UAM_TEST(AcpQueuedTurnAppliesDeferredCodexModeAndModelBeforeNextPrompt)
 	session->session_ready = true;
 	session->current_mode_id = "default";
 	session->current_model_id = "gpt-5.4";
+	uam::AcpModelState model;
+	model.id = "gpt-5.4-mini";
+	model.supported_reasoning_efforts = {"low", "high", "xhigh"};
+	session->available_models.push_back(std::move(model));
 	uam::AcpSessionState* raw_session = session.get();
 	app.acp_sessions.push_back(std::move(session));
 	std::string error;
 	(void)uam::SendAcpPrompt(app, "chat-deferred-controls", "Use the new controls", {}, {}, false, &error);
 	UAM_ASSERT_EQ(raw_session->current_mode_id, std::string("plan"));
 	UAM_ASSERT_EQ(raw_session->current_model_id, std::string("gpt-5.4-mini"));
+	UAM_ASSERT_EQ(app.chats.front().reasoning_effort, std::string("xhigh"));
 }
 
 UAM_TEST(CodexIdleModelChangeUpdatesTheLiveSelectorState)
@@ -2018,14 +2023,19 @@ UAM_TEST(AcpSteerPrioritizesPromptPreservesQueueAndStartsAfterInterrupt)
 	UAM_ASSERT(raw_session->cancel_request_id != 0);
 	UAM_ASSERT_EQ(raw_session->pending_request_methods.at(raw_session->cancel_request_id), std::string("turn/interrupt"));
 
-	const std::string interrupt_response = "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(raw_session->cancel_request_id) + ",\"result\":{}}";
-	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), interrupt_response));
+	const int interrupt_request_id = raw_session->cancel_request_id;
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-1","status":"interrupted"}}})"));
 	UAM_ASSERT(!raw_session->cancel_requested);
+	UAM_ASSERT_EQ(raw_session->cancel_request_id, 0);
 	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().text, std::string("Older queued"));
 	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(app.chats.front().messages[1].content, std::string("Steer immediately"));
 	UAM_ASSERT_EQ(app.chats.front().messages[1].attachments.front().id, std::string("attachment-1"));
+
+	const std::string late_interrupt_response = "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(interrupt_request_id) + ",\"result\":{}}";
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), late_interrupt_response));
+	UAM_ASSERT(raw_session->processing);
 
 	uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, *raw_session, app.chats.front(), "ready", nullptr);
 	UAM_ASSERT(raw_session->queued_user_prompts.empty());

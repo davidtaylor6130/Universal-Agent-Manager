@@ -292,8 +292,7 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 		const auto requested = std::ranges::find(selected_model->supported_reasoning_efforts, reasoning_effort);
 		if (requested == selected_model->supported_reasoning_efforts.end())
 		{
-			const auto configured_default = std::ranges::find(selected_model->supported_reasoning_efforts, selected_model->default_reasoning_effort);
-			reasoning_effort = configured_default != selected_model->supported_reasoning_efforts.end() ? *configured_default : selected_model->supported_reasoning_efforts.front();
+			reasoning_effort = selected_model->supported_reasoning_efforts.back();
 		}
 	}
 	if (!is_codex)

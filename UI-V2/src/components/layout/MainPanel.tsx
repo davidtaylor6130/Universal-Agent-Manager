@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useEffect, useState } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useState } from 'react'
 import { Columns2, Grid2X2, MessageSquare, Square } from 'lucide-react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { useAppStore } from '../../store/useAppStore'
@@ -50,12 +50,12 @@ function PaneFade({ active, color, paneIndex }: { active: boolean; color: string
   )
 }
 
-function ChatPane({ session, active, paneIndex, showGlow, onActivate }: {
+const ChatPane = memo(function ChatPane({ session, active, paneIndex, showGlow, onActivate }: {
   session: Session
   active: boolean
   paneIndex: number
   showGlow: boolean
-  onActivate: () => void
+  onActivate: (paneIndex: number, sessionId?: string) => void
 }) {
   const [view, setView] = useState<'chat' | 'cli'>('chat')
   const acpBinding = useAppStore((s) => s.acpBindingBySessionId[session.id])
@@ -75,7 +75,7 @@ function ChatPane({ session, active, paneIndex, showGlow, onActivate }: {
       data-testid={`chat-pane-${session.id}`}
       data-pane={paneIndex + 1}
       data-focused={active}
-      onMouseDown={() => { if (!active) onActivate() }}
+      onMouseDown={() => { if (!active) onActivate(paneIndex, session.id) }}
       style={{
         border: '1px solid transparent',
         filter: active ? 'none' : 'brightness(0.82) saturate(0.72)',
@@ -169,16 +169,16 @@ function ChatPane({ session, active, paneIndex, showGlow, onActivate }: {
       {showGlow && <PaneFade active={active} color={paneColor} paneIndex={paneIndex} />}
     </div>
   )
-}
+})
 
-function EmptyPane({ active, paneIndex, showGlow, onActivate }: { active: boolean; paneIndex: number; showGlow: boolean; onActivate: () => void }) {
+const EmptyPane = memo(function EmptyPane({ active, paneIndex, showGlow, onActivate }: { active: boolean; paneIndex: number; showGlow: boolean; onActivate: (paneIndex: number, sessionId?: string) => void }) {
   const paneColor = chatPaneColors[paneIndex]
   return (
     <button
       type="button"
       className="uam-pane-in relative flex h-full w-full items-center justify-center text-center"
       data-focused={active}
-      onClick={onActivate}
+      onClick={() => onActivate(paneIndex)}
       style={{ color: 'var(--text-3)', border: '1px solid transparent', filter: active ? 'none' : 'brightness(0.82) saturate(0.72)', transition: 'filter 140ms ease, border-color 140ms ease' }}
     >
       <span>
@@ -188,7 +188,7 @@ function EmptyPane({ active, paneIndex, showGlow, onActivate }: { active: boolea
       {showGlow && <PaneFade active={active} color={paneColor} paneIndex={paneIndex} />}
     </button>
   )
-}
+})
 
 function LayoutButton({ count, current, onClick, children }: {
   count: ChatPaneCount
@@ -244,11 +244,10 @@ export function MainPanel() {
     }
   }, [loadSessionMessages, visibleIds.join('|')])
 
-  const selectPane = (index: number) => {
+  const selectPane = useCallback((index: number, sessionId?: string) => {
     setLayout((current) => ({ ...current, activePane: index }))
-    const sessionId = visibleIds[index]
-    if (sessionId && sessionId !== activeSessionId) setActiveSession(sessionId)
-  }
+    if (sessionId) setActiveSession(sessionId)
+  }, [setActiveSession])
 
   const setPaneCount = (paneCount: ChatPaneCount) => {
     setLayout((current) => {
@@ -263,8 +262,8 @@ export function MainPanel() {
   const pane = (index: number) => {
     const session = visibleSessions[index]
     return session
-      ? <ChatPane key={session.id} session={session} active={layout.activePane === index} paneIndex={index} showGlow={layout.paneCount > 1} onActivate={() => selectPane(index)} />
-      : <EmptyPane active={layout.activePane === index} paneIndex={index} showGlow={layout.paneCount > 1} onActivate={() => selectPane(index)} />
+      ? <ChatPane key={session.id} session={session} active={layout.activePane === index} paneIndex={index} showGlow={layout.paneCount > 1} onActivate={selectPane} />
+      : <EmptyPane active={layout.activePane === index} paneIndex={index} showGlow={layout.paneCount > 1} onActivate={selectPane} />
   }
 
   const verticalHandle = <PanelResizeHandle style={{ width: 1 }} />

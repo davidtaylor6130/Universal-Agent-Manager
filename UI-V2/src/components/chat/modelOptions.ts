@@ -147,7 +147,7 @@ export function reasoningEffortForModel(acp: AcpBinding | undefined, modelId: st
 	const supported = model.supportedReasoningEfforts ?? []
 	if (supported.length === 0) return ''
 	if (supported.includes(currentEffort)) return currentEffort
-	return supported.includes(model.defaultReasoningEffort ?? '') ? model.defaultReasoningEffort ?? '' : supported[0]
+	return supported[supported.length - 1]
 }
 
 export function buildCodexSpeedOptions(acp: AcpBinding | undefined, modelId: string, selectedServiceTier = ''): ModelOption[] {

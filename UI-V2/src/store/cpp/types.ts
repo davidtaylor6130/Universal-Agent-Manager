@@ -59,6 +59,7 @@ export interface CppChat {
   pinned?: boolean
   providerId: string
   parentChatId?: string
+  branchRootChatId?: string
   branchFromMessageIndex?: number
   branchMessageEdited?: boolean
   modelId?: string

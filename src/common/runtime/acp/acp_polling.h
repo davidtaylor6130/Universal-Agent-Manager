@@ -10,7 +10,7 @@
 namespace uam::acp_detail
 {
 
-inline constexpr std::size_t kMaxAcpStdoutLineBytes = 4 * 1024 * 1024;
+inline constexpr std::size_t kMaxAcpStdoutLineBytes = 64 * 1024 * 1024;
 
 bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& line, CefRefPtr<CefBrowser> browser);
 bool AppendAcpStdoutChunk(AcpSessionState& session, std::string_view chunk);

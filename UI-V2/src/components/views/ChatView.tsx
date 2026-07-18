@@ -1,4 +1,4 @@
-import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, RefObject, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, RefObject, type ReactNode, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { Session } from '../../types/session'
 import { MarkdownContent } from '../markdown/Markdown'
@@ -88,7 +88,7 @@ import {
   type DictationState,
 } from '../chat/Composer'
 import { ViewportMenu } from '../ui'
-import { Brain, BookOpen, Check, ChevronDown, ChevronRight, CornerUpRight, Cpu, FileText, Paperclip, Shield, Target, X } from 'lucide-react'
+import { Brain, BookOpen, Check, ChevronDown, ChevronLeft, ChevronRight, CornerUpRight, Cpu, FileText, Paperclip, Shield, Target, X } from 'lucide-react'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { Button, IconButton } from '../ui'
@@ -158,7 +158,7 @@ function fileUriToPath(uri: string): string {
   }
 }
 
-export function ChatView({ session, accentColor }: ChatViewProps) {
+export const ChatView = memo(function ChatView({ session, accentColor }: ChatViewProps) {
   const [draft, setDraft] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [steering, setSteering] = useState(false)
@@ -204,6 +204,12 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
   const removeQueuedAcpPrompt = useAppStore((s) => s.removeQueuedAcpPrompt)
   const steerQueuedAcpPrompt = useAppStore((s) => s.steerQueuedAcpPrompt)
   const branchFromMessage = useAppStore((s) => s.branchFromMessage)
+  const setActiveSession = useAppStore((s) => s.setActiveSession)
+  const branchRootChatId = session.branchRootChatId || session.parentChatId || session.id
+  const branchSessions = useAppStore(useShallow((s) => s.sessions
+    .filter((candidate) => (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === branchRootChatId)
+    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())))
+  const branchIndex = branchSessions.findIndex((candidate) => candidate.id === session.id)
   const cancelAcpTurn = useAppStore((s) => s.cancelAcpTurn)
   const stopAcpSession = useAppStore((s) => s.stopAcpSession)
   const resolveAcpPermission = useAppStore((s) => s.resolveAcpPermission)
@@ -1253,6 +1259,15 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
             </details>
 
             <div className="space-y-2">
+              {branchSessions.length > 1 && (
+                <div className="flex justify-center" role="group" aria-label="Chat branches">
+                  <span className="inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-[11px]" style={{ border: '1px solid var(--border)', color: 'var(--text-2)', background: 'var(--surface)' }}>
+                    <IconButton icon={<ChevronLeft size={13} />} label="Previous chat branch" disabled={branchIndex <= 0} onClick={() => setActiveSession(branchSessions[branchIndex - 1].id)} />
+                    <span className="min-w-[42px] text-center tabular-nums">{branchIndex + 1} / {branchSessions.length}</span>
+                    <IconButton icon={<ChevronRight size={13} />} label="Next chat branch" disabled={branchIndex >= branchSessions.length - 1} onClick={() => setActiveSession(branchSessions[branchIndex + 1].id)} />
+                  </span>
+                </div>
+              )}
               {earliestRenderedMessageIndex > 0 && (
                 <div className="flex justify-center">
                   <Button
@@ -2043,4 +2058,4 @@ export function ChatView({ session, accentColor }: ChatViewProps) {
       </div>
     </div>
   )
-}
+})
