@@ -208,7 +208,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     memoryIdleDelaySeconds: DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
     memoryRecallBudgetBytes: DEFAULT_MEMORY_RECALL_BUDGET_BYTES,
     goalMaxLoopIterations: DEFAULT_GOAL_MAX_LOOP_ITERATIONS,
-    appVersion: 'V4.3.0',
+    appVersion: 'V4.4.0',
     updateChecksEnabled: true,
     updateLastCheckedAt: '',
     dismissedUpdateVersions: {} as Record<string, string>,
