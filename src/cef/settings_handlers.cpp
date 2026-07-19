@@ -228,6 +228,30 @@ void UamQueryHandler::HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browse
 	cb->Success("{}");
 }
 
+void UamQueryHandler::HandleSetSidebarSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::optional<bool> show_provider_icons = uam::nlohmann_json::BoolFieldStrict(payload, "showProviderIconsInSidebar");
+	const std::optional<bool> show_worktree_path = uam::nlohmann_json::BoolFieldStrict(payload, "showWorktreePathInSidebar");
+	if (!show_provider_icons || !show_worktree_path)
+	{
+		cb->Failure(400, "Sidebar settings must be booleans.");
+		return;
+	}
+
+	const AppSettings previous = m_app.settings;
+	m_app.settings.show_provider_icons_in_sidebar = *show_provider_icons;
+	m_app.settings.show_worktree_path_in_sidebar = *show_worktree_path;
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		m_app.settings = previous;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist sidebar settings."));
+		return;
+	}
+
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
 void UamQueryHandler::HandleSetUpdateSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const AppSettings previous = m_app.settings;

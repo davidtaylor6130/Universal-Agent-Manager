@@ -65,6 +65,8 @@ function makeCppState(
     settings: {
       activeProviderId: 'gemini-cli',
       theme: 'dark',
+      showProviderIconsInSidebar: true,
+      showWorktreePathInSidebar: true,
       memoryEnabledDefault: true,
       memoryIdleDelaySeconds: 60,
       memoryRecallBudgetBytes: 2048,
@@ -136,6 +138,8 @@ function resetStore() {
       lastStatus: '',
     },
     theme: 'dark',
+    showProviderIconsInSidebar: true,
+    showWorktreePathInSidebar: true,
     isNewChatModalOpen: false,
     isSettingsOpen: false,
     memoryLibraryScope: null,
@@ -2415,6 +2419,34 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().defaultEditorPresetId).toBe('webstorm')
     expect(useAppStore.getState().editorFileAssociations[0].extensions).toEqual(['.cpp', '.h'])
     expect(useAppStore.getState().editorFileAssociations[1].editorPresetId).toBe('webstorm')
+  })
+
+  it('reconciles and persists sidebar display settings through CEF', async () => {
+    const cppState = makeCppState(1)
+    cppState.settings.showProviderIconsInSidebar = false
+    cppState.settings.showWorktreePathInSidebar = false
+    useAppStore.getState().loadFromCef(cppState)
+
+    expect(useAppStore.getState().showProviderIconsInSidebar).toBe(false)
+    expect(useAppStore.getState().showWorktreePathInSidebar).toBe(false)
+
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
+      onSuccess('{}')
+    }
+
+    await expect(useAppStore.getState().setSidebarSettings({
+      showProviderIconsInSidebar: true,
+      showWorktreePathInSidebar: false,
+    })).resolves.toBe(true)
+
+    expect(requests[0]).toMatchObject({
+      action: 'setSidebarSettings',
+      payload: { showProviderIconsInSidebar: true, showWorktreePathInSidebar: false },
+    })
+    expect(useAppStore.getState().showProviderIconsInSidebar).toBe(true)
+    expect(useAppStore.getState().showWorktreePathInSidebar).toBe(false)
   })
 
   it('saves and applies shell actions through CEF', async () => {

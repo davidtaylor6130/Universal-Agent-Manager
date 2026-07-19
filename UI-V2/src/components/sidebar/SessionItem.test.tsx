@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore, type AcpAttentionKind, type AcpBinding } from '../../store/useAppStore'
 import type { Session } from '../../types/session'
-import { SessionItem } from './SessionItem'
+import { formatSidebarWorktreePath, SessionItem } from './SessionItem'
 import { defaultChatGridLayout, readChatGridLayout, writeChatGridLayout } from '../../utils/chatGridStorage'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -90,7 +90,32 @@ describe('SessionItem status icons', () => {
       isNewChatModalOpen: false,
       newChatFolderId: null,
       resourceCollections: [],
+      showProviderIconsInSidebar: true,
+      showWorktreePathInSidebar: true,
     })
+  })
+
+  it('shows provider and shortened worktree context when enabled', () => {
+    useAppStore.setState({
+      sessions: [{
+        ...makeSession(),
+        providerId: 'codex-cli',
+        workspaceWorktreeDirectory: '/Users/david/project/.uam-worktrees/chat-abc123',
+      }],
+    })
+    const { host, root } = renderSessionItem()
+
+    expect(formatSidebarWorktreePath('C:\\Users\\david\\project\\chat-abc123')).toBe('.../project/chat-abc123')
+    expect(host.querySelector('img.uam-provider-logo--codex')?.parentElement?.style.width).toBe('14px')
+    expect(host.textContent).toContain('.../.uam-worktrees/chat-abc123')
+    expect(host.querySelector('[title="/Users/david/project/.uam-worktrees/chat-abc123"]')).toBeTruthy()
+
+    act(() => useAppStore.setState({ showProviderIconsInSidebar: false, showWorktreePathInSidebar: false }))
+    expect(host.querySelector('img.uam-provider-logo--codex')).toBeNull()
+    expect(host.textContent).not.toContain('.uam-worktrees')
+
+    act(() => root.unmount())
+    host.remove()
   })
 
   it.each([

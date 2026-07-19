@@ -57,6 +57,8 @@ export interface AppState {
   memoryRecallBudgetBytes: number
   goalMaxLoopIterations: number
   appVersion: string
+  showProviderIconsInSidebar: boolean
+  showWorktreePathInSidebar: boolean
   updateChecksEnabled: boolean
   updateLastCheckedAt: string
   dismissedUpdateVersions: Record<string, string>
@@ -222,6 +224,7 @@ export interface AppState {
   refreshCustomThemes: () => Promise<boolean>
   saveCustomTheme: (theme: CustomTheme) => Promise<CustomTheme | null>
   deleteCustomTheme: (id: string) => Promise<boolean>
+  setSidebarSettings: (settings: Pick<AppState, 'showProviderIconsInSidebar' | 'showWorktreePathInSidebar'>) => Promise<boolean>
   setNewChatModalOpen: (open: boolean, folderId?: string | null) => void
   setSettingsOpen: (open: boolean) => void
   setSidebarCollapsed: (collapsed: boolean) => void

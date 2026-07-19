@@ -43,6 +43,8 @@ describe('SettingsModal memory settings', () => {
       providerChatDefaults: {},
       theme: 'dark',
       customThemes: [],
+      showProviderIconsInSidebar: true,
+      showWorktreePathInSidebar: true,
       memoryWorkerBindings: {
         'gemini-cli': { workerProviderId: 'gemini-cli', workerModelId: '' },
       },
@@ -99,6 +101,7 @@ describe('SettingsModal memory settings', () => {
       refreshCustomThemes: vi.fn(() => Promise.resolve(true)),
       saveCustomTheme: vi.fn((theme) => Promise.resolve(theme)),
       deleteCustomTheme: vi.fn(() => Promise.resolve(true)),
+      setSidebarSettings: vi.fn(() => Promise.resolve(true)),
       refreshCliProviderVersion: vi.fn(() => Promise.resolve(true)),
       applyCliProviderVersion: vi.fn(() => Promise.resolve(true)),
       openGlobalMemoryLibrary: vi.fn(() => Promise.resolve(true)),
@@ -228,6 +231,30 @@ describe('SettingsModal memory settings', () => {
 
     expect(useAppStore.getState().setTheme).toHaveBeenCalledWith('light')
     expect(document.body.querySelector('[role="listbox"][aria-label="Theme"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('toggles sidebar provider icons and worktree paths independently', () => {
+    const { host, root } = renderModal()
+    const providerIcons = host.querySelector<HTMLInputElement>('input[aria-label="Show provider icons in sidebar"]')
+    const worktreePath = host.querySelector<HTMLInputElement>('input[aria-label="Show worktree path in sidebar"]')
+
+    expect(providerIcons?.checked).toBe(true)
+    expect(worktreePath?.checked).toBe(true)
+
+    act(() => providerIcons?.click())
+    expect(useAppStore.getState().setSidebarSettings).toHaveBeenCalledWith({
+      showProviderIconsInSidebar: false,
+      showWorktreePathInSidebar: true,
+    })
+
+    act(() => worktreePath?.click())
+    expect(useAppStore.getState().setSidebarSettings).toHaveBeenCalledWith({
+      showProviderIconsInSidebar: true,
+      showWorktreePathInSidebar: false,
+    })
 
     act(() => root.unmount())
     host.remove()

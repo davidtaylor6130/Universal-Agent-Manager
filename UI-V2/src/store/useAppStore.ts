@@ -122,6 +122,8 @@ function deserializeState(
     memoryRecallBudgetBytes: number
     goalMaxLoopIterations: number
     appVersion: string
+    showProviderIconsInSidebar: boolean
+    showWorktreePathInSidebar: boolean
     updateChecksEnabled: boolean
     updateLastCheckedAt: string
     dismissedUpdateVersions: Record<string, string>
@@ -296,6 +298,8 @@ function deserializeState(
     memoryRecallBudgetBytes: cpp.settings.memoryRecallBudgetBytes,
     goalMaxLoopIterations: cpp.settings.goalMaxLoopIterations,
     appVersion: cpp.appVersion || existing.appVersion,
+    showProviderIconsInSidebar: cpp.settings.showProviderIconsInSidebar ?? true,
+    showWorktreePathInSidebar: cpp.settings.showWorktreePathInSidebar ?? true,
     updateChecksEnabled: cpp.settings.updateChecksEnabled,
     updateLastCheckedAt: cpp.settings.updateLastCheckedAt,
     dismissedUpdateVersions: cpp.settings.dismissedUpdateVersions,
@@ -452,6 +456,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     memoryIdleDelaySeconds: patch.settings?.memoryIdleDelaySeconds ?? current.memoryIdleDelaySeconds,
     memoryRecallBudgetBytes: patch.settings?.memoryRecallBudgetBytes ?? current.memoryRecallBudgetBytes,
     goalMaxLoopIterations: patch.settings?.goalMaxLoopIterations ?? current.goalMaxLoopIterations,
+    showProviderIconsInSidebar: patch.settings?.showProviderIconsInSidebar ?? current.showProviderIconsInSidebar,
+    showWorktreePathInSidebar: patch.settings?.showWorktreePathInSidebar ?? current.showWorktreePathInSidebar,
     updateChecksEnabled: patch.settings?.updateChecksEnabled ?? current.updateChecksEnabled,
     updateLastCheckedAt: patch.settings?.updateLastCheckedAt ?? current.updateLastCheckedAt,
     dismissedUpdateVersions: patch.settings?.dismissedUpdateVersions ?? current.dismissedUpdateVersions,
@@ -603,6 +609,8 @@ export const useAppStore = create<AppState>((set, get) => {
             memoryRecallBudgetBytes: current.memoryRecallBudgetBytes,
             goalMaxLoopIterations: current.goalMaxLoopIterations,
             appVersion: current.appVersion,
+            showProviderIconsInSidebar: current.showProviderIconsInSidebar,
+            showWorktreePathInSidebar: current.showWorktreePathInSidebar,
             updateChecksEnabled: current.updateChecksEnabled,
             updateLastCheckedAt: current.updateLastCheckedAt,
             dismissedUpdateVersions: current.dismissedUpdateVersions,
@@ -820,6 +828,8 @@ export const useAppStore = create<AppState>((set, get) => {
         memoryRecallBudgetBytes: current.memoryRecallBudgetBytes,
         goalMaxLoopIterations: current.goalMaxLoopIterations,
         appVersion: current.appVersion,
+        showProviderIconsInSidebar: current.showProviderIconsInSidebar,
+        showWorktreePathInSidebar: current.showWorktreePathInSidebar,
         updateChecksEnabled: current.updateChecksEnabled,
         updateLastCheckedAt: current.updateLastCheckedAt,
         dismissedUpdateVersions: current.dismissedUpdateVersions,

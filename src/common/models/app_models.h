@@ -251,6 +251,8 @@ struct AppSettings
 	bool gemini_yolo_mode = false;
 	std::string gemini_extra_flags;
 	std::string ui_theme = "dark";
+	bool show_provider_icons_in_sidebar = true;
+	bool show_worktree_path_in_sidebar = true;
 	bool confirm_delete_chat = true;
 	bool confirm_delete_folder = true;
 	bool remember_last_chat = true;
