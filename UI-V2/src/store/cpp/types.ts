@@ -411,6 +411,8 @@ export interface ShellAction {
 export interface CppSettings {
   activeProviderId: string
   theme: StoredTheme
+  showProviderIconsInSidebar?: boolean
+  showWorktreePathInSidebar?: boolean
   memoryEnabledDefault: boolean
   memoryLevelDefault?: MemoryLevel
   memoryIdleDelaySeconds: number

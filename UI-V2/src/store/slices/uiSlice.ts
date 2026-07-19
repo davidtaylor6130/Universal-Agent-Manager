@@ -119,6 +119,8 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
   return {
     theme: readDocumentTheme(),
     customThemes: [] as CustomTheme[],
+    showProviderIconsInSidebar: true,
+    showWorktreePathInSidebar: true,
     isNewChatModalOpen: false,
     newChatFolderId: null as string | null,
     isSettingsOpen: false,
@@ -193,6 +195,18 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
       set({ customThemes, theme: nextTheme })
       persistTheme(nextTheme, customThemes)
       return true
+    },
+
+    setSidebarSettings: async (settings: Pick<AppState, 'showProviderIconsInSidebar' | 'showWorktreePathInSidebar'>) => {
+      const previous = {
+        showProviderIconsInSidebar: get().showProviderIconsInSidebar,
+        showWorktreePathInSidebar: get().showWorktreePathInSidebar,
+      }
+      set(settings)
+      if (!isCefContext()) return true
+      const response = await sendToCEF({ action: 'setSidebarSettings', payload: settings, requestId: createRequestId('setSidebarSettings') })
+      if (!response.ok) set(previous)
+      return response.ok
     },
 
     setNewChatModalOpen: (open: boolean, folderId?: string | null) => set({

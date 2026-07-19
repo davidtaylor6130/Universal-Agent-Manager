@@ -249,6 +249,9 @@ export function SettingsModal() {
   const memoryRecallBudgetBytes = useAppStore((s) => s.memoryRecallBudgetBytes)
   const goalMaxLoopIterations = useAppStore((s) => s.goalMaxLoopIterations)
   const appVersion = useAppStore((s) => s.appVersion)
+  const showProviderIconsInSidebar = useAppStore((s) => s.showProviderIconsInSidebar)
+  const showWorktreePathInSidebar = useAppStore((s) => s.showWorktreePathInSidebar)
+  const setSidebarSettings = useAppStore((s) => s.setSidebarSettings)
   const updateChecksEnabled = useAppStore((s) => s.updateChecksEnabled)
   const setUpdateSettings = useAppStore((s) => s.setUpdateSettings)
   const customThemes = useAppStore(useShallow((s) => s.customThemes))
@@ -889,6 +892,20 @@ export function SettingsModal() {
                 </div>
               )}
               {themeMessage && <div role="status" className="text-xs" style={{ color: themeMessage.includes('failed') || themeMessage.includes('could not') ? 'var(--red)' : 'var(--text-2)' }}>{themeMessage}</div>}
+            </div>
+          </SectionCard>
+          <SectionCard title="Sidebar" description="Choose the context shown beside each chat.">
+            <div className="grid gap-3">
+              <Switch
+                label="Show provider icons in sidebar"
+                checked={showProviderIconsInSidebar}
+                onChange={(event) => void setSidebarSettings({ showProviderIconsInSidebar: event.target.checked, showWorktreePathInSidebar })}
+              />
+              <Switch
+                label="Show worktree path in sidebar"
+                checked={showWorktreePathInSidebar}
+                onChange={(event) => void setSidebarSettings({ showProviderIconsInSidebar, showWorktreePathInSidebar: event.target.checked })}
+              />
             </div>
           </SectionCard>
         </div>

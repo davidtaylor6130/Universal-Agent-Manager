@@ -1145,6 +1145,23 @@ UAM_TEST(SettingsStorePersistsUpdateCheckPreferences)
 	UAM_ASSERT_EQ(loaded.dismissed_update_versions["codex-cli"], std::string("0.130.0"));
 }
 
+UAM_TEST(SettingsStorePersistsSidebarDisplaySettings)
+{
+	TempDir temp("uam-sidebar-settings");
+	const fs::path settings_file = temp.root / "settings.txt";
+	AppSettings settings;
+	settings.show_provider_icons_in_sidebar = false;
+	settings.show_worktree_path_in_sidebar = false;
+
+	UAM_ASSERT(SettingsStore::Save(settings_file, settings, CenterViewMode::CliConsole));
+	AppSettings loaded;
+	CenterViewMode mode = CenterViewMode::CliConsole;
+	SettingsStore::Load(settings_file, loaded, mode);
+
+	UAM_ASSERT(!loaded.show_provider_icons_in_sidebar);
+	UAM_ASSERT(!loaded.show_worktree_path_in_sidebar);
+}
+
 UAM_TEST(SettingsStorePersistsEditorSettings)
 {
 	TempDir temp("uam-editor-settings");

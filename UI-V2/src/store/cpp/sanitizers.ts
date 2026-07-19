@@ -1128,6 +1128,8 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     return {
       activeProviderId: GEMINI_CLI_PROVIDER_ID,
       theme: 'dark',
+      showProviderIconsInSidebar: true,
+      showWorktreePathInSidebar: true,
       memoryEnabledDefault: true,
       memoryLevelDefault: 'strict',
       memoryIdleDelaySeconds: DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
@@ -1181,6 +1183,8 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
   return {
     activeProviderId: stringOr(value.activeProviderId, GEMINI_CLI_PROVIDER_ID),
     theme,
+    showProviderIconsInSidebar: booleanOr(value.showProviderIconsInSidebar, true),
+    showWorktreePathInSidebar: booleanOr(value.showWorktreePathInSidebar, true),
     memoryEnabledDefault: normalizeMemoryLevel(value.memoryLevelDefault, booleanOr(value.memoryEnabledDefault, true)) !== 'off',
     memoryLevelDefault: normalizeMemoryLevel(value.memoryLevelDefault, booleanOr(value.memoryEnabledDefault, true)),
     memoryIdleDelaySeconds: clampedFiniteNumberOr(value.memoryIdleDelaySeconds, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_IDLE_DELAY_SECONDS),

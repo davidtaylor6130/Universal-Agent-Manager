@@ -40,6 +40,8 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kCliIdleTimeoutSecondsKey = "cli_idle_timeout_seconds";
 	constexpr std::string_view kCenterViewModeKey = "center_view_mode";
 	constexpr std::string_view kUiThemeKey = "ui_theme";
+	constexpr std::string_view kShowProviderIconsInSidebarKey = "show_provider_icons_in_sidebar";
+	constexpr std::string_view kShowWorktreePathInSidebarKey = "show_worktree_path_in_sidebar";
 	constexpr std::string_view kConfirmDeleteChatKey = "confirm_delete_chat";
 	constexpr std::string_view kConfirmDeleteFolderKey = "confirm_delete_folder";
 	constexpr std::string_view kRememberLastChatKey = "remember_last_chat";
@@ -449,6 +451,8 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteSettingValue(lines, kCliIdleTimeoutSecondsKey, normalized.cli_idle_timeout_seconds);
 	WriteRawSetting(lines, kCenterViewModeKey, ViewModeToString(center_view_mode));
 	WriteEncodedSetting(lines, kUiThemeKey, normalized.ui_theme);
+	WriteBoolSetting(lines, kShowProviderIconsInSidebarKey, normalized.show_provider_icons_in_sidebar);
+	WriteBoolSetting(lines, kShowWorktreePathInSidebarKey, normalized.show_worktree_path_in_sidebar);
 	WriteBoolSetting(lines, kConfirmDeleteChatKey, normalized.confirm_delete_chat);
 	WriteBoolSetting(lines, kConfirmDeleteFolderKey, normalized.confirm_delete_folder);
 	WriteBoolSetting(lines, kRememberLastChatKey, normalized.remember_last_chat);
@@ -536,6 +540,14 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		else if (key == kUiThemeKey)
 		{
 			settings.ui_theme = uam::settings::NormalizeThemeId(decoded_value);
+		}
+		else if (key == kShowProviderIconsInSidebarKey)
+		{
+			settings.show_provider_icons_in_sidebar = uam::parse::BoolOr(value, settings.show_provider_icons_in_sidebar);
+		}
+		else if (key == kShowWorktreePathInSidebarKey)
+		{
+			settings.show_worktree_path_in_sidebar = uam::parse::BoolOr(value, settings.show_worktree_path_in_sidebar);
 		}
 		else if (key == kConfirmDeleteChatKey)
 		{

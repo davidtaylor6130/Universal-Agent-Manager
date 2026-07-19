@@ -46,6 +46,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setChatMemoryEnabled", &UamQueryHandler::HandleSetChatMemoryEnabled},
 		{"setMemorySettings", &UamQueryHandler::HandleSetMemorySettings},
 		{"setVoiceInputSettings", &UamQueryHandler::HandleSetVoiceInputSettings},
+		{"setSidebarSettings", &UamQueryHandler::HandleSetSidebarSettings},
 		{"setUpdateSettings", &UamQueryHandler::HandleSetUpdateSettings},
 		{"setProviderChatDefaults", &UamQueryHandler::HandleSetProviderChatDefaults},
 		{"setEditorSettings", &UamQueryHandler::HandleSetEditorSettings},

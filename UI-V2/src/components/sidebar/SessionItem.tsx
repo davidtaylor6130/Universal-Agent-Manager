@@ -7,6 +7,7 @@ import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import type { Session } from '../../types/session'
 import { Tooltip, ViewportMenu } from '../ui'
+import { ProviderLogo } from '../shared/ProviderLogo'
 import {
   assignChatToPane,
   chatPaneColors,
@@ -50,6 +51,11 @@ function formatSidebarTimeTitle(date: Date | null): string {
     hour: '2-digit',
     minute: '2-digit',
   })}`
+}
+
+export function formatSidebarWorktreePath(path: string): string {
+  const parts = path.replace(/\\/g, '/').replace(/\/+$/, '').split('/').filter(Boolean)
+  return parts.length > 2 ? `.../${parts.slice(-2).join('/')}` : parts.join('/')
 }
 
 interface SessionItemProps {
@@ -97,6 +103,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
         name: session.name,
         lastOpenedAt: session.lastOpenedAt ?? session.updatedAt ?? null,
         isPinned: session.isPinned ?? false,
+        providerId: session.providerId,
+        worktreeDirectory: session.workspaceWorktreeDirectory ?? '',
       }
     }
 
@@ -105,11 +113,15 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
       name: storeSession?.name ?? '',
       lastOpenedAt: storeSession?.lastOpenedAt ?? storeSession?.updatedAt ?? null,
       isPinned: storeSession?.isPinned ?? false,
+      providerId: storeSession?.providerId,
+      worktreeDirectory: storeSession?.workspaceWorktreeDirectory ?? '',
     }
   }))
   const sessionName = sessionSummary.name
   const sessionLastOpenedAt = sessionSummary.lastOpenedAt
   const isPinned = sessionSummary.isPinned
+  const showProviderIcon = useAppStore((s) => s.showProviderIconsInSidebar)
+  const showWorktreePath = useAppStore((s) => s.showWorktreePathInSidebar)
   const familySessionIds = useAppStore(useShallow((s) => s.sessions
     .filter((candidate) => (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === sessionId)
     .map((candidate) => candidate.id)))
@@ -207,6 +219,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
           setMenuPos({ x: e.clientX, y: e.clientY })
         }}
       >
+        {!editing && showProviderIcon && sessionSummary.providerId && <ProviderLogo providerId={sessionSummary.providerId} size={14} />}
         {!editing && (
           <Tooltip label={isPinned ? 'Unpin chat' : 'Pin chat'} side="top">
             <button
@@ -258,12 +271,14 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
             onClick={(e) => e.stopPropagation()}
           />
         ) : (
-          <span
-            className="flex-1 text-xs truncate"
-            style={{ color: isActive ? 'var(--text)' : 'var(--text-2)' }}
-          >
-            {sessionName}
-          </span>
+          <div className="min-w-0 flex-1">
+            <span className="block truncate text-xs" style={{ color: isActive ? 'var(--text)' : 'var(--text-2)' }}>{sessionName}</span>
+            {showWorktreePath && sessionSummary.worktreeDirectory && (
+              <span className="block truncate text-[10px]" title={sessionSummary.worktreeDirectory} style={{ color: 'var(--text-3)' }}>
+                {formatSidebarWorktreePath(sessionSummary.worktreeDirectory)}
+              </span>
+            )}
+          </div>
         )}
 
         {/* Context menu trigger — visible on hover */}
