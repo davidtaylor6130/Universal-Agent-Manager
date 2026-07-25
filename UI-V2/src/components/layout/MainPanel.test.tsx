@@ -34,6 +34,7 @@ describe('MainPanel', () => {
     vi.restoreAllMocks()
     vi.stubGlobal('ResizeObserver', class {
       observe() {}
+      unobserve() {}
       disconnect() {}
     })
     const stored = new Map<string, string>()
@@ -52,6 +53,7 @@ describe('MainPanel', () => {
           name: 'Gemini Session',
           viewMode: 'chat',
           folderId: null,
+          workspaceDirectory: '/tmp/project',
           createdAt: new Date('2026-01-01T00:00:00.000Z'),
           updatedAt: new Date('2026-01-01T00:00:00.000Z'),
         },
@@ -104,9 +106,12 @@ describe('MainPanel', () => {
     expect(host.querySelectorAll('.uam-layout-button')).toHaveLength(3)
     expect(host.querySelector('[data-testid="provider-badge-chat-1"] .lucide-chevron-down')).toBeNull()
 
-    const cliButton = () =>
-      Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'CLI') as HTMLButtonElement
+    const chatButton = () => host.querySelector('button[aria-label="Chat view"]') as HTMLButtonElement
+    const cliButton = () => host.querySelector('button[aria-label="Terminal fallback"]') as HTMLButtonElement
 
+    expect(chatButton().textContent).toBe('')
+    expect(cliButton().textContent).toBe('')
+    expect(host.querySelector('[data-testid="chat-workspace-chat-1"]')?.textContent).toBe('project')
     expect(cliButton().disabled).toBe(true)
 
     act(() => {
@@ -170,8 +175,8 @@ describe('MainPanel', () => {
 
     act(() => root.render(<MainPanel />))
     const button = (label: string) =>
-      Array.from(host.querySelectorAll('button')).find((candidate) => candidate.textContent === label) as HTMLButtonElement
-    await act(async () => button('CLI').click())
+      host.querySelector(`button[aria-label="${label}"]`) as HTMLButtonElement
+    await act(async () => button('Terminal fallback').click())
     await act(async () => {
       await vi.dynamicImportSettled()
     })
@@ -193,8 +198,8 @@ describe('MainPanel', () => {
       })
     })
 
-    expect(button('Chat').disabled).toBe(false)
-    act(() => button('Chat').click())
+    expect(button('Chat view').disabled).toBe(false)
+    act(() => button('Chat view').click())
     expect(requests).toContainEqual({
       action: 'stopCliTerminal',
       payload: { chatId: 'chat-1', terminalId: 'term-1', quit: true },
@@ -219,7 +224,6 @@ describe('MainPanel', () => {
     const root = createRoot(host)
 
     act(() => root.render(<MainPanel />))
-    expect(host.querySelector('[data-testid="pane-fade-1"]')).toBeNull()
 
     const twoChats = host.querySelector('button[aria-label="Show two chats"]') as HTMLButtonElement
     act(() => twoChats.click())
@@ -232,15 +236,13 @@ describe('MainPanel', () => {
     expect(host.querySelectorAll('[data-testid^="chat-pane-"]')).toHaveLength(1)
     expect(Array.from(host.querySelectorAll('button')).filter((button) => button.textContent?.includes('Select chat'))).toHaveLength(3)
     const firstPane = host.querySelector('[data-testid="chat-pane-chat-1"]') as HTMLElement
-    expect(firstPane.style.getPropertyValue('--accent')).toBe('#f97316')
-    expect(firstPane.style.border).toBe('1px solid transparent')
-    const firstFade = firstPane.querySelector('[data-testid="pane-fade-1"]') as HTMLElement
-    expect(firstFade.style.boxShadow).toContain('inset 0 0 12px')
-    expect(firstFade.style.boxShadow).toContain('80%')
-    expect(firstFade.style.zIndex).toBe('20')
-    expect(firstFade.style.pointerEvents).toBe('none')
-    expect(firstPane.style.filter).toBe('none')
-    expect(firstPane.style.transition).toContain('140ms')
+    expect(firstPane.style.getPropertyValue('--pane-color')).toBe('#f97316')
+    expect(firstPane.dataset.focused).toBe('true')
+    expect(firstPane.dataset.multiPane).toBe('true')
+    expect(firstPane.querySelector('[data-testid^="pane-fade-"]')).toBeNull()
+    expect(firstPane.style.filter).toBe('')
+    expect(firstPane.classList.contains('uam-pane-in')).toBe(false)
+    expect(firstPane.style.opacity).toBe('')
 
     act(() => {
       assignChatToPane('chat-2', 1)
@@ -250,21 +252,20 @@ describe('MainPanel', () => {
     })
     expect(host.querySelectorAll('[data-testid^="chat-pane-"]')).toHaveLength(4)
     const fourthPane = host.querySelector('[data-testid="chat-pane-chat-4"]') as HTMLElement
-    expect(fourthPane.style.border).toBe('1px solid transparent')
-    expect((fourthPane.querySelector('[data-testid="pane-fade-4"]') as HTMLElement).style.boxShadow).toContain('inset 0 0 12px')
-    expect(firstFade.style.boxShadow).toContain('inset 0 0 9px')
-    expect(firstFade.style.boxShadow).toContain('55%')
-    expect(firstPane.style.filter).toContain('brightness(0.82)')
+    expect(fourthPane.dataset.focused).toBe('true')
+    expect(firstPane.dataset.focused).toBe('false')
+    expect(firstPane.style.filter).toBe('')
 
     act(() => useAppStore.setState({ activeSessionId: 'chat-1' }))
     expect(host.querySelectorAll('[data-testid="chat-pane-chat-1"]')).toHaveLength(1)
     expect(firstPane.dataset.focused).toBe('true')
 
     const secondPane = host.querySelector('[data-testid="chat-pane-chat-2"]') as HTMLElement
-    act(() => secondPane.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
+    const secondPaneChatButton = secondPane.querySelector('button[aria-label="Chat view"]') as HTMLButtonElement
+    act(() => secondPaneChatButton.focus())
     expect(useAppStore.getState().activeSessionId).toBe('chat-2')
-    expect(secondPane.style.border).toBe('1px solid transparent')
-    expect(secondPane.style.filter).toBe('none')
+    expect(secondPane.dataset.focused).toBe('true')
+    expect(secondPane.style.filter).toBe('')
 
     act(() => root.unmount())
     host.remove()

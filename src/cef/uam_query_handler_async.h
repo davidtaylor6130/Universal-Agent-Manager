@@ -4,6 +4,7 @@
 
 #include "cef/uam_query_handler.h"
 
+#include <functional>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <thread>
@@ -32,14 +33,31 @@ inline AsyncCefResult AsyncFailure(int status, std::string error)
 class CefQueryCallbackTask : public CefTask
 {
   public:
-	CefQueryCallbackTask(CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, AsyncCefResult result)
-	    : m_callback(std::move(callback)), m_result(std::move(result))
+	CefQueryCallbackTask(CefRefPtr<CefMessageRouterBrowserSide::Callback> callback,
+	                     AsyncCefResult result,
+	                     std::function<void(AsyncCefResult&)> completion = {})
+	    : m_callback(std::move(callback)), m_result(std::move(result)), m_completion(std::move(completion))
 	{
 	}
 
 	void Execute() override
 	{
 		CEF_REQUIRE_UI_THREAD();
+		if (m_completion)
+		{
+			try
+			{
+				m_completion(m_result);
+			}
+			catch (const std::exception& ex)
+			{
+				m_result = AsyncFailure(500, ex.what());
+			}
+			catch (...)
+			{
+				m_result = AsyncFailure(500, "Async bridge completion failed.");
+			}
+		}
 		if (!m_callback) return;
 		if (m_result.ok)
 		{
@@ -54,6 +72,7 @@ class CefQueryCallbackTask : public CefTask
   private:
 	CefRefPtr<CefMessageRouterBrowserSide::Callback> m_callback;
 	AsyncCefResult m_result;
+	std::function<void(AsyncCefResult&)> m_completion;
 	IMPLEMENT_REFCOUNTING(CefQueryCallbackTask);
 };
 
@@ -77,6 +96,38 @@ void RunAsyncCefQuery(CefRefPtr<CefMessageRouterBrowserSide::Callback> callback,
 			    result = AsyncFailure(500, "Async bridge request failed.");
 		    }
 		    CefPostTask(TID_UI, new CefQueryCallbackTask(callback, std::move(result)));
+	    })
+	    .detach();
+}
+
+template <typename Worker, typename Completion>
+void RunAsyncCefQuery(CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, Worker worker, Completion completion)
+{
+	std::thread(
+	    [callback = std::move(callback), worker = std::move(worker), completion = std::move(completion)]() mutable
+	    {
+		    AsyncCefResult result;
+		    try
+		    {
+			    result = worker();
+		    }
+		    catch (const std::exception& ex)
+		    {
+			    result = AsyncFailure(500, ex.what());
+		    }
+		    catch (...)
+		    {
+			    result = AsyncFailure(500, "Async bridge request failed.");
+		    }
+		    CefPostTask(
+		        TID_UI,
+		        new CefQueryCallbackTask(
+		            callback,
+		            std::move(result),
+		            [completion = std::move(completion)](AsyncCefResult& completed_result) mutable
+		            {
+			            completion(completed_result);
+		            }));
 	    })
 	    .detach();
 }

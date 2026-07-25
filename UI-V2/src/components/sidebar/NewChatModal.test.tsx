@@ -63,11 +63,17 @@ describe('NewChatModal', () => {
     )
     act(() => gpt?.click())
 
+    const reasoning = host.querySelector<HTMLButtonElement>('button[aria-label="Reasoning effort"]')!
+    act(() => reasoning.click())
+    const high = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) =>
+      option.textContent?.startsWith('High')
+    )
+    act(() => high?.click())
+
     const create = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Create chat')
     act(() => create?.click())
 
-	expect(host.querySelector<HTMLButtonElement>('button[aria-label="Reasoning effort"]')).toBeTruthy()
-	expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'codex-cli', 'gpt-5.4', '')
+	expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'codex-cli', 'gpt-5.4', 'high')
 
     act(() => root.unmount())
     host.remove()
@@ -85,6 +91,117 @@ describe('NewChatModal', () => {
     expect(create?.disabled).toBe(false)
     act(() => create?.click())
     expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'gemini-cli', '', '')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('creates with the provider-default model and runtime-default effort shown when saved defaults are empty', () => {
+    const addSession = vi.fn()
+    useAppStore.setState({
+      addSession,
+      sessions: [{
+        id: 'codex-existing',
+        name: 'Codex',
+        viewMode: 'chat',
+        folderId: 'project',
+        providerId: 'codex-cli',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }],
+      acpBindingBySessionId: {
+        'codex-existing': {
+          sessionId: 'native-codex',
+          providerId: 'codex-cli',
+          protocolKind: 'codex-app-server',
+          threadId: '',
+          running: false,
+          lifecycleState: 'stopped',
+          processing: false,
+          processingStartedAtMs: null,
+          readySinceLastSelect: false,
+          lastError: '',
+          recentStderr: '',
+          lastExitCode: null,
+          diagnostics: [],
+          toolCalls: [],
+          planEntries: [],
+          availableModes: [],
+          currentModeId: 'default',
+          availableModels: [{
+            id: 'gpt-5.6-sol',
+            name: 'GPT-5.6-Sol',
+            description: 'Latest frontier model.',
+            defaultReasoningEffort: 'low',
+            supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+          }],
+          currentModelId: '',
+          turnEvents: [],
+          turnUserMessageIndex: -1,
+          turnAssistantMessageIndex: -1,
+          turnSerial: 0,
+          pendingPermission: null,
+          pendingUserInput: null,
+          agentInfo: null,
+        },
+      },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<NewChatModal />))
+
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Provider"]')?.click())
+    const codex = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'))
+      .find((option) => option.textContent?.includes('Codex'))
+    act(() => codex?.click())
+
+    expect(host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.textContent).toContain('Default')
+    const reasoning = host.querySelector<HTMLButtonElement>('button[aria-label="Reasoning effort"]')!
+    expect(reasoning.textContent).toContain('Low')
+    const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Create chat')
+    act(() => create?.click())
+
+    expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'codex-cli', '', 'low')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('submits once while creation is pending and unlocks after failure', async () => {
+    let finishCreation: (created: boolean) => void = () => {}
+    const addSession = vi.fn()
+      .mockImplementationOnce(() => new Promise<boolean>((resolve) => { finishCreation = resolve }))
+      .mockResolvedValueOnce(true)
+    useAppStore.setState({ addSession })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<NewChatModal />))
+
+    const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Create chat')!
+    act(() => {
+      create.click()
+      create.click()
+    })
+
+    expect(addSession).toHaveBeenCalledTimes(1)
+    expect(create.disabled).toBe(true)
+    expect(create.getAttribute('aria-busy')).toBe('true')
+
+    await act(async () => {
+      finishCreation(false)
+      await Promise.resolve()
+    })
+    expect(create.disabled).toBe(false)
+
+    await act(async () => {
+      create.click()
+      await Promise.resolve()
+    })
+    expect(addSession).toHaveBeenCalledTimes(2)
 
     act(() => root.unmount())
     host.remove()

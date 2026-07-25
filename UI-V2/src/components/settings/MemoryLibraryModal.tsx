@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ExternalLink, FolderOpen, Library, Plus, RefreshCw, Search, SearchX, Trash2, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -210,6 +210,7 @@ export function MemoryLibraryModal() {
   const [isAdding, setIsAdding] = useState(false)
   const [draft, setDraft] = useState<MemoryEntryDraft>(EMPTY_DRAFT)
   const [submitting, setSubmitting] = useState(false)
+  const submittingRef = useRef(false)
   const [pendingDeleteEntryId, setPendingDeleteEntryId] = useState<string | null>(null)
   const [pendingMassDeleteEntryIds, setPendingMassDeleteEntryIds] = useState<string[] | null>(null)
   const [selectedLocationKey, setSelectedLocationKey] = useState('')
@@ -275,10 +276,11 @@ export function MemoryLibraryModal() {
   const confidenceOptions = MEMORY_CONFIDENCE.map((confidence) => ({ value: confidence, label: confidence }))
 
   const submitDraft = async () => {
-    if (!draft.title.trim() || !draft.memory.trim()) {
+    if (submittingRef.current || !draft.title.trim() || !draft.memory.trim()) {
       return
     }
 
+    submittingRef.current = true
     setSubmitting(true)
     const saveDraft: MemoryEntryDraft = {
       ...draft,
@@ -291,8 +293,13 @@ export function MemoryLibraryModal() {
       saveDraft.targetScopeType = 'global'
       saveDraft.targetFolderId = ''
     }
-    const ok = await createMemoryEntry(saveDraft)
-    setSubmitting(false)
+    let ok = false
+    try {
+      ok = await createMemoryEntry(saveDraft)
+    } finally {
+      submittingRef.current = false
+      setSubmitting(false)
+    }
 
     if (!ok) {
       return

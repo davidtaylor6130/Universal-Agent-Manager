@@ -14,10 +14,19 @@ function openComposerOptions(host: HTMLElement) {
   })
 }
 
+function openWorkspaceActions(host: HTMLElement) {
+  act(() => {
+    (host.querySelector('button[aria-label="Workspace actions"]') as HTMLButtonElement | null)
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+  return Array.from(document.body.querySelectorAll<HTMLElement>('[role="menu"][aria-label="Workspace actions"]')).at(-1) ?? null
+}
+
 describe('ChatView', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     useAppStore.setState({
+      workingDisplayMode: 'verbose',
       folders: [
         {
           id: 'default',
@@ -125,12 +134,49 @@ describe('ChatView', () => {
           agentInfo: { name: 'gemini', title: 'Gemini CLI', version: '0.36.0' },
         },
       },
+      cliBindingBySessionId: {},
     })
+  })
+
+  it('uses the persisted assistant duration when a completed turn timeline stays visible', () => {
+    useAppStore.setState((state) => ({
+      workingDisplayMode: 'compact',
+      messages: {
+        ...state.messages,
+        'chat-1': state.messages['chat-1'].map((message) =>
+          message.role === 'assistant' ? { ...message, processingTimeMs: 83_000 } : message
+        ),
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+          processingStartedAtMs: null,
+          pendingPermission: null,
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    expect(host.querySelector('[data-testid="working-summary"]')?.textContent).toContain('Worked for 1m 23s')
+    expect(host.querySelector('[data-testid="working-summary"]')?.textContent).not.toContain('Worked for 0s')
+
+    act(() => root.unmount())
+    host.remove()
   })
 
   it('uses the composer action as Stop while the runtime is processing', async () => {
     const stopAcpSession = vi.fn(() => Promise.resolve(true))
-    useAppStore.setState({ stopAcpSession })
+    useAppStore.setState((state) => ({
+      stopAcpSession,
+      sessions: state.sessions.map((session) => ({ ...session, commandSafetyTier: 'off' as const })),
+    }))
 
     const host = document.createElement('div')
     document.body.appendChild(host)
@@ -142,6 +188,13 @@ describe('ChatView', () => {
 
     const stopButton = Array.from(host.querySelectorAll('button')).find((button) => button.title === 'Stop runtime') as HTMLButtonElement
     expect(stopButton).toBeTruthy()
+    expect(host.querySelector('[data-mode-chip="Permissions: Default"]')).toBeTruthy()
+    expect(host.querySelector('button[aria-label="Permissions: Default"]')).toBeNull()
+    expect(host.querySelector('.uam-composer-toolbar .uam-composer-status-chips [data-mode-chip="Permissions: Default"]')).toBeTruthy()
+    expect(host.querySelector('.uam-composer-surface')).toBeTruthy()
+    expect(host.querySelector('[data-mode-chip="Permissions: Default"] .uam-mode-chip__label--compact')?.textContent).toBe('Default')
+    expect(host.querySelector('[aria-label="Chat settings"]')).toBeNull()
+    expect(stopButton.classList.contains('shrink-0')).toBe(true)
     expect(host.textContent).not.toContain('Working ')
 
     await act(async () => {
@@ -154,6 +207,141 @@ describe('ChatView', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('shows one quiet startup indicator until the first turn event arrives', async () => {
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'processing',
+          processing: true,
+          turnEvents: [],
+          turnAssistantMessageIndex: -1,
+        },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    expect(host.querySelectorAll('[data-testid="turn-starting"]')).toHaveLength(1)
+    expect(host.querySelector('[data-testid="turn-starting"]')?.textContent).toContain('Starting')
+
+    await act(async () => {
+      useAppStore.setState((state) => ({
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          'chat-1': {
+            ...state.acpBindingBySessionId['chat-1'],
+            turnEvents: [{ type: 'assistant_text', text: 'First token' }],
+          },
+        },
+      }))
+      await Promise.resolve()
+    })
+    expect(host.querySelector('[data-testid="turn-starting"]')).toBeNull()
+    expect(host.textContent).toContain('First token')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('clears local steering state if a queued steer request does not immediately start a new turn', async () => {
+    const steerQueuedAcpPrompt = vi.fn(async () => true)
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const sessionId = useAppStore.getState().sessions[0].id
+
+    useAppStore.setState((state) => ({
+      steerQueuedAcpPrompt,
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        [sessionId]: {
+          ...state.acpBindingBySessionId[sessionId],
+          turnSerial: 3,
+          processing: true,
+          turnEvents: [{ type: 'assistant_text', text: 'Streaming now.' }],
+          queuedPrompts: [{
+            text: 'Re-evaluate this first.',
+            markdownStoreFiles: [],
+            attachments: [],
+            goalMode: false,
+            goalId: '',
+            prioritySteer: true,
+          }],
+        },
+      },
+    }))
+    const steerButtonSelector = 'button[aria-label="Steer with this prompt now"]'
+
+    vi.useFakeTimers()
+    await act(async () => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+      await Promise.resolve()
+    })
+
+    const steerButton = host.querySelector(steerButtonSelector) as HTMLButtonElement
+    expect(steerButton).toBeTruthy()
+    act(() => {
+      steerButton.click()
+    })
+    expect(steerQueuedAcpPrompt).toHaveBeenCalledWith(sessionId, 0)
+    expect(steerButton.disabled).toBe(true)
+
+    await act(async () => {
+      vi.advanceTimersByTime(6000)
+      await Promise.resolve()
+    })
+
+    const clearedSteerButton = host.querySelector(steerButtonSelector) as HTMLButtonElement
+    expect(clearedSteerButton.disabled).toBe(false)
+
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+    vi.useRealTimers()
+  })
+
+  it('combines provider and model controls and folds workspace actions into the composer', () => {
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+          pendingPermission: null,
+        },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    expect(host.querySelector('.uam-workspace-row')).toBeNull()
+    expect(host.querySelector('button[aria-label="Select provider"]')).toBeNull()
+    expect(host.querySelector('.uam-composer-toolbar button[aria-label="Workspace actions"]')).toBeTruthy()
+
+    const selector = host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement
+    expect(selector).toBeTruthy()
+    expect(selector.querySelector('svg')).toBeTruthy()
+    act(() => selector.click())
+
+    const menu = document.body.querySelector('[role="menu"][aria-label="Provider and model"]') as HTMLElement
+    expect(menu).toBeTruthy()
+    expect(menu.textContent).toContain('Provider')
+    expect(menu.textContent).toContain('Model')
+    expect(menu.textContent).toContain('Gemini')
+    expect(menu.textContent).toContain('Auto 3')
+
+    act(() => root.unmount())
     host.remove()
   })
 
@@ -177,6 +365,89 @@ describe('ChatView', () => {
     expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Change direction now', [])
     expect(textarea.value).toBe('Change direction now')
     expect(host.querySelector('button[aria-label="Steering prompt"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('submits a prompt only once before the submitting state rerenders', async () => {
+    const finishSends: Array<(ok: boolean) => void> = []
+    const sendAcpPrompt = vi.fn(() => new Promise<boolean>((resolve) => finishSends.push(resolve)))
+    useAppStore.setState({ sendAcpPrompt })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'Queue only once')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const queue = host.querySelector('button[aria-label="Queue prompt"]') as HTMLButtonElement
+    act(() => {
+      queue.click()
+      queue.click()
+    })
+
+    expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      finishSends.forEach((finish) => finish(false))
+      await Promise.resolve()
+    })
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('does not let a send finishing in another chat clear the current draft', async () => {
+    let finishSend: (ok: boolean) => void = () => {}
+    const sendAcpPrompt = vi.fn(() => new Promise<boolean>((resolve) => { finishSend = resolve }))
+    useAppStore.setState((state) => ({
+      sendAcpPrompt,
+      sessions: [
+        state.sessions[0],
+        {
+          ...state.sessions[0],
+          id: 'chat-2',
+          name: 'Second chat',
+        },
+      ],
+      messages: { ...state.messages, 'chat-2': [] },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-2': {
+          ...state.acpBindingBySessionId['chat-1'],
+          sessionId: 'native-2',
+          processing: false,
+          pendingPermission: null,
+          turnEvents: [],
+        },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    let textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'First chat prompt')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    act(() => (host.querySelector('button[aria-label="Queue prompt"]') as HTMLButtonElement).click())
+
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[1]} />))
+    textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'Second chat draft')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      finishSend(true)
+      await Promise.resolve()
+    })
+
+    expect(textarea.value).toBe('Second chat draft')
 
     act(() => root.unmount())
     host.remove()
@@ -317,7 +588,7 @@ describe('ChatView', () => {
 
     expect(host.textContent).toContain('Before tool.')
     expect(host.textContent).toContain('const ok = true')
-    expect(host.textContent).toContain('Tool call:')
+    expect(host.textContent).not.toContain('Tool call:')
     expect(host.textContent).toContain('Search symbols')
     expect(host.textContent).toContain('Thinking')
     expect(host.textContent).toContain('Need to inspect the workspace first.')
@@ -325,16 +596,16 @@ describe('ChatView', () => {
     expect(host.textContent).toContain('After tool.')
     expect(host.textContent).toContain('Gemini')
     expect(host.textContent).not.toContain('ACP')
-    expect(host.querySelector('button[aria-label="Select provider"]')).toBeTruthy()
-    expect(host.textContent).toContain('/tmp/project')
+    expect(host.querySelector('button[aria-label="Select provider and model"]')).toBeTruthy()
+    expect(host.querySelector('.uam-workspace-row')).toBeNull()
     expect(host.textContent).not.toContain('Tools on')
     expect(host.textContent).toContain('Read file')
 
     const streamText = host.textContent ?? ''
-    expect(streamText.indexOf('Before tool.')).toBeLessThan(streamText.indexOf('Tool call:'))
+    expect(streamText.indexOf('Before tool.')).toBeLessThan(streamText.indexOf('Search symbols'))
     expect(streamText.indexOf('Before tool.')).toBeLessThan(streamText.indexOf('Thinking'))
-    expect(streamText.indexOf('Thinking')).toBeLessThan(streamText.indexOf('Tool call:'))
-    expect(streamText.indexOf('Tool call:')).toBeLessThan(streamText.indexOf('Read file'))
+    expect(streamText.indexOf('Thinking')).toBeLessThan(streamText.indexOf('Search symbols'))
+    expect(streamText.indexOf('Search symbols')).toBeLessThan(streamText.indexOf('Read file'))
     expect(streamText.indexOf('Read file')).toBeLessThan(streamText.indexOf('After tool.'))
     const thinkingBlock = host.querySelector('[data-testid="thinking-block"]') as HTMLDetailsElement | null
     expect(host.querySelectorAll('[data-testid="thinking-block"]')).toHaveLength(1)
@@ -342,33 +613,19 @@ describe('ChatView', () => {
     expect(thinkingBlock?.textContent).toContain('Thinking')
     expect(thinkingBlock?.textContent).toContain('Need to inspect the workspace first.')
     expect(thinkingBlock?.hasAttribute('open')).toBe(false)
-    expect(thinkingBlock?.dataset.active).toBe('true')
+    expect(thinkingBlock?.dataset.active).toBe('false')
     expect(host.querySelector('.uam-tool-row')?.getAttribute('data-active')).toBe('true')
+    expect(host.querySelector('.uam-tool-row__kind')?.textContent).toBe('Tool')
     expect(host.querySelector('.uam-message-frame.is-streaming')).not.toBeNull()
-    const runtimeStatus = host.querySelector('.uam-runtime-status') as HTMLDetailsElement | null
-    expect(runtimeStatus?.open).toBe(false)
+    expect(host.querySelector('.uam-runtime-status')).toBeNull()
+    expect((host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).title).toContain('Permission')
 
-    const providerButton = host.querySelector('button[title="Select provider"]') as HTMLButtonElement | null
-    expect(providerButton).toBeTruthy()
-    expect(providerButton?.style.borderRadius).toBe('7px')
-    act(() => {
-      providerButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-    const providerMenu = document.body.querySelector('[data-testid="provider-menu"]') as HTMLElement
-    expect(providerMenu.textContent).toContain('Provider')
-    expect(providerMenu.textContent).toContain('Gemini')
-    expect(providerMenu.style.position).toBe('fixed')
-
-    const settingsButton = host.querySelector('button[title="Settings"]')
-    expect(settingsButton).toBeTruthy()
-    act(() => {
-      settingsButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-    expect(document.body.textContent).toContain('Chat settings')
+    openComposerOptions(host)
+    expect(document.body.textContent).toContain('Goal token budget')
     expect(host.textContent).not.toContain('Unavailable')
 
     const toolButton = Array.from(host.querySelectorAll('button')).find((button) =>
-      button.textContent?.includes('Tool call:')
+      button.textContent?.includes('Search symbols')
     )
     expect(toolButton).toBeTruthy()
     act(() => {
@@ -657,7 +914,7 @@ describe('ChatView', () => {
 
     expect(host.textContent).toContain('Codex')
     expect(host.textContent).not.toContain('App Server')
-    expect(host.textContent).toContain('GPT-5.4')
+    expect(host.querySelector('button[aria-label="Select provider and model"]')?.textContent).toContain('Default')
     expect(host.querySelector('textarea')?.getAttribute('placeholder')).toBe('Message Codex')
 
     act(() => {
@@ -747,9 +1004,10 @@ describe('ChatView', () => {
     await act(async () => { low.click(); await Promise.resolve() })
     expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'low')
 
-    openComposerOptions(host)
-    act(() => (host.querySelector('button[title="Settings"]') as HTMLButtonElement).click())
-    expect(document.body.textContent).toContain('Chat settings')
+    const optionsButton = host.querySelector('button[aria-label="Options"]') as HTMLButtonElement
+    if (optionsButton.getAttribute('aria-expanded') === 'true') {
+      act(() => optionsButton.click())
+    }
     expect(document.body.querySelector('button[aria-label="Permissions"]')).toBeNull()
     expect(document.body.querySelector('button[aria-label="Auto Decide safety"]')).toBeNull()
 
@@ -960,7 +1218,8 @@ describe('ChatView', () => {
 
     expect(host.querySelector('button[title="Select Codex reasoning"]')).toBeNull()
     expect(host.querySelector('button[title="Select Codex speed"]')).toBeNull()
-    expect(host.querySelector('button[aria-label="Reasoning: Low"]')).toBeTruthy()
+    expect(host.querySelector('[data-mode-chip="Reasoning: Low"]')).toBeTruthy()
+    expect(host.querySelector('button[aria-label="Reasoning: Low"]')).toBeNull()
     expect(host.querySelector('button[aria-label="Disable Reasoning: Low"]')).toBeNull()
     expect(host.querySelector('button[aria-label="Disable Speed: Flex"]')).toBeTruthy()
     openComposerOptions(host)
@@ -1020,12 +1279,25 @@ describe('ChatView', () => {
           name: 'Edited branch',
           parentChatId: 'chat-root',
           branchRootChatId: 'chat-root',
+          branchFromMessageIndex: 0,
+          branchMessageEdited: true,
           createdAt: new Date('2026-01-01T00:01:00.000Z'),
+        },
+        {
+          ...state.sessions[0],
+          id: 'chat-branch-2',
+          name: 'Resent branch',
+          parentChatId: 'chat-root',
+          branchRootChatId: 'chat-root',
+          branchFromMessageIndex: 0,
+          branchMessageEdited: false,
+          createdAt: new Date('2026-01-01T00:02:00.000Z'),
         },
       ],
       messages: {
         'chat-root': state.messages['chat-1'],
         'chat-branch': state.messages['chat-1'],
+        'chat-branch-2': state.messages['chat-1'],
       },
       activeSessionId: 'chat-branch',
       setActiveSession,
@@ -1036,9 +1308,17 @@ describe('ChatView', () => {
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[1]} />))
 
-    expect(host.querySelector('[aria-label="Chat branches"]')?.textContent).toContain('2 / 2')
-    act(() => (host.querySelector('button[aria-label="Previous chat branch"]') as HTMLButtonElement).click())
+    expect(host.querySelector('[aria-label="Chat branches"]')).toBeNull()
+    const branchPoint = host.querySelector('[data-message-kind="user"]')
+    const navigation = branchPoint?.querySelector('[aria-label="Message branches"]')
+    expect(navigation?.textContent).toContain('2 / 3')
+    expect(navigation?.classList.contains('uam-message-frame__actions')).toBe(true)
+    expect(branchPoint?.querySelector('button[aria-label="Edit message in new branch"]')).toBeTruthy()
+    expect(branchPoint?.querySelector('button[aria-label="Revert to message in new branch"]')).toBeTruthy()
+    act(() => (navigation?.querySelector('button[aria-label="Previous message branch"]') as HTMLButtonElement).click())
     expect(setActiveSession).toHaveBeenCalledWith('chat-root')
+    act(() => (navigation?.querySelector('button[aria-label="Next message branch"]') as HTMLButtonElement).click())
+    expect(setActiveSession).toHaveBeenCalledWith('chat-branch-2')
 
     act(() => root.unmount())
     host.remove()
@@ -1079,7 +1359,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const modelButton = host.querySelector('button[title="Select model"]')
+    const modelButton = host.querySelector('button[aria-label="Select provider and model"]')
     expect(modelButton).toBeTruthy()
     expect(modelButton?.textContent).toContain('gpt-5.4')
     expect(host.querySelector('.uam-provider-logo--codex')).toBeTruthy()
@@ -1107,6 +1387,73 @@ describe('ChatView', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('keeps a new provider-default model visible until ACP resolves it', () => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1' ? { ...session, providerId: 'codex-cli', modelId: '' } : session
+      ),
+      acpBindingBySessionId: {},
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const defaultSession = useAppStore.getState().sessions[0]
+    act(() => root.render(<ChatView session={defaultSession} />))
+
+    const defaultModelButton = host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement
+    expect(defaultModelButton.textContent).toContain('Default')
+    act(() => defaultModelButton.click())
+    const defaultMenu = document.body.querySelector('[role="menu"][aria-label="Provider and model"]') as HTMLElement
+    expect(Array.from(defaultMenu.querySelectorAll('[data-testid="model-options"] [role="menuitemradio"]')).some((option) => option.textContent?.includes('Default'))).toBe(true)
+    act(() => defaultMenu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+
+    const explicitSession = { ...defaultSession, modelId: 'gpt-5.4' }
+    act(() => root.render(<ChatView session={explicitSession} />))
+    const explicitModelButton = host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement
+    expect(explicitModelButton.textContent).toContain('GPT-5.4')
+    act(() => explicitModelButton.click())
+    const explicitMenu = document.body.querySelector('[role="menu"][aria-label="Provider and model"]') as HTMLElement
+    expect(Array.from(explicitMenu.querySelectorAll('[data-testid="model-options"] [role="menuitemradio"]')).some((option) => option.textContent?.includes('Default'))).toBe(false)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('ignores a stale ACP model catalog after switching provider', () => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1' ? { ...session, providerId: 'codex-cli', modelId: '' } : session
+      ),
+      acpBindingBySessionId: {
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          providerId: 'gemini-cli',
+          protocolKind: 'gemini-acp',
+          lifecycleState: 'ready',
+          processing: false,
+          pendingPermission: null,
+          availableModels: [
+            { id: 'auto-gemini-3', name: 'Auto 3', description: 'Stale Gemini catalog' },
+          ],
+          currentModelId: 'auto-gemini-3',
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const selector = host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement
+    expect(selector.textContent).toContain('Default')
+    expect(selector.textContent).not.toContain('Auto 3')
+
+    act(() => root.unmount())
     host.remove()
   })
 
@@ -1139,7 +1486,7 @@ describe('ChatView', () => {
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
-    expect(host.querySelector('button[title="Select model"]')?.textContent).toContain('GPT-5.4 Mini')
+    expect(host.querySelector('button[aria-label="Select provider and model"]')?.textContent).toContain('GPT-5.4 Mini')
 
     act(() => root.unmount())
     host.remove()
@@ -1175,22 +1522,23 @@ describe('ChatView', () => {
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
-    const trigger = host.querySelector('button[title="Select model"]') as HTMLButtonElement
-    expect(trigger.getAttribute('aria-haspopup')).toBe('listbox')
+    const trigger = host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement
+    expect(trigger.getAttribute('aria-haspopup')).toBe('menu')
     expect(trigger.style.borderRadius).toBe('7px')
     act(() => trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
 
-    const listbox = document.body.querySelector('[role="listbox"]') as HTMLDivElement
-    const options = Array.from(listbox.querySelectorAll<HTMLButtonElement>('[role="option"]'))
+    const menu = document.body.querySelector('[role="menu"][aria-label="Provider and model"]') as HTMLDivElement
+    const modelOptions = menu.querySelector('[data-testid="model-options"]') as HTMLDivElement
+    const options = Array.from(modelOptions.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'))
     expect(options).toHaveLength(12)
-    expect((listbox.lastElementChild as HTMLElement).style.maxHeight).toBe('520px')
-    expect((listbox.lastElementChild as HTMLElement).style.overflowY).toBe('auto')
+    expect(modelOptions.style.maxHeight).toBe('520px')
+    expect(modelOptions.style.overflowY).toBe('auto')
     expect(document.activeElement?.textContent).toContain('Model 0')
 
-    act(() => listbox.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
+    act(() => menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
     expect(document.activeElement?.textContent).toContain('Model 1')
     expect((document.activeElement as HTMLElement).style.boxShadow).toContain('inset')
-    act(() => listbox.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    act(() => menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
     expect(setSessionModel).toHaveBeenCalledWith('chat-1', 'model-1')
     expect(document.activeElement).toBe(trigger)
 
@@ -1227,9 +1575,9 @@ describe('ChatView', () => {
     document.body.appendChild(host)
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
-    act(() => (host.querySelector('button[title="Select model"]') as HTMLButtonElement).click())
+    act(() => (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click())
 
-    const repeated = Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]')).find((option) => option.textContent?.includes('gpt-5.4'))
+    const repeated = Array.from(document.body.querySelectorAll<HTMLElement>('[data-testid="model-options"] [role="menuitemradio"]')).find((option) => option.textContent?.includes('gpt-5.4'))
     expect(repeated?.textContent?.match(/gpt-5\.4/g)).toHaveLength(1)
     expect(document.body.textContent).toContain('Best for complex tasks')
 
@@ -1276,7 +1624,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const modelButton = host.querySelector('button[title="Select model"]')
+    const modelButton = host.querySelector('button[aria-label="Select provider and model"]')
     expect(modelButton).toBeTruthy()
 
     act(() => {
@@ -1344,7 +1692,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const modelButton = host.querySelector('button[title="Select model"]')
+    const modelButton = host.querySelector('button[aria-label="Select provider and model"]')
     act(() => {
       modelButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
@@ -1402,7 +1750,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const modelButton = host.querySelector('button[title="Select model"]')
+    const modelButton = host.querySelector('button[aria-label="Select provider and model"]')
     expect(modelButton).toBeTruthy()
     expect(modelButton?.textContent).toContain('Auto 3')
 
@@ -1441,7 +1789,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const modelButton = host.querySelector('button[title="Select model"]') as HTMLButtonElement | null
+    const modelButton = host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement | null
     expect(modelButton).toBeTruthy()
     expect(modelButton?.disabled).toBe(true)
     openComposerOptions(host)
@@ -1909,7 +2257,8 @@ describe('ChatView', () => {
   it('renders active goal pause/delete controls and paused goal resume control', async () => {
     const updateGoalStatus = vi.fn(() => Promise.resolve(true))
     const removeGoal = vi.fn(() => Promise.resolve(true))
-    const resumeGoal = vi.fn(() => Promise.resolve(true))
+    let finishResume: ((ok: boolean) => void) | undefined
+    const resumeGoal = vi.fn(() => new Promise<boolean>((resolve) => { finishResume = resolve }))
     const goal = {
       id: 'goal-1',
       chatId: 'chat-1',
@@ -1980,8 +2329,15 @@ describe('ChatView', () => {
       resumeButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(resumeGoal).toHaveBeenCalledWith('chat-1', 'goal-1')
-
     openGoalMenu()
+    const pendingResume = menuItem('Resuming…')
+    expect(pendingResume?.disabled).toBe(true)
+    await act(async () => {
+      finishResume?.(false)
+      await Promise.resolve()
+    })
+    expect(host.textContent).toContain('Failed to resume goal.')
+
     act(() => {
       menuItem('Delete goal')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
@@ -2167,7 +2523,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    expect(host.textContent).toContain('Tool call:')
+    expect(host.textContent).not.toContain('Tool call:')
     expect(host.textContent).toContain('Read saved file')
     expect(host.querySelector('[data-tool-status="completed"][aria-label="Tool status: Completed"]')).toBeTruthy()
     expect(host.querySelector('[data-tool-status="completed"] svg')).toBeTruthy()
@@ -2263,10 +2619,10 @@ describe('ChatView', () => {
     expect(tool).toBeGreaterThan(firstVisible)
     expect(secondThought).toBeGreaterThan(tool)
     expect(finalVisible).toBeGreaterThan(secondThought)
-    expect(plan).toBeGreaterThan(finalVisible)
+    expect(plan).toBe(-1)
     expect(text).not.toContain('Grouped content should not render.')
     expect(text).not.toContain('Grouped thought should not render.')
-    expect(text.match(/Tool call:/g) ?? []).toHaveLength(1)
+    expect(text.match(/Ordered saved tool/g) ?? []).toHaveLength(1)
 
     act(() => {
       root.unmount()
@@ -2347,7 +2703,7 @@ describe('ChatView', () => {
       sendAcpPrompt,
       setSessionApprovalMode,
       sessions: state.sessions.map((session) =>
-        session.id === 'chat-1' ? { ...session, providerId: 'codex-cli' } : session
+        session.id === 'chat-1' ? { ...session, providerId: 'codex-cli', approvalMode: 'plan' } : session
       ),
       messages: {
         ...state.messages,
@@ -2370,6 +2726,11 @@ describe('ChatView', () => {
               { content: 'Update Codex support.', priority: 'duplicate', status: 'pending' },
               { content: 'Inspect protocol events', priority: '', status: 'completed' },
               { content: 'Patch rendering', priority: '', status: 'pending' },
+            ],
+            blocks: [
+              { type: 'thought', text: '### Reasoning\nInspecting files.\n\n### Summary\nNeed to patch Codex handling.' },
+              { type: 'plan' },
+              { type: 'plan' },
             ],
             createdAt: new Date('2026-01-01T00:00:01.000Z'),
           },
@@ -2412,6 +2773,7 @@ describe('ChatView', () => {
     expect(host.textContent).toContain('completed')
     expect(host.textContent).toContain('Patch rendering')
     expect(host.textContent).toContain('pending')
+    expect(host.querySelectorAll('[data-testid="plan-block"]')).toHaveLength(1)
 
     const approveButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Approve')
     const denyButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Deny')
@@ -2443,7 +2805,50 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('hides plan actions for historical Codex plans after a later user message', () => {
+  it('does not promote ordinary Codex task progress into an actionable Plan card', () => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1' ? { ...session, providerId: 'codex-cli', approvalMode: 'default' } : session
+      ),
+      messages: {
+        ...state.messages,
+        'chat-1': [{
+          id: 'm-1',
+          sessionId: 'chat-1',
+          role: 'assistant',
+          content: 'Implemented the requested change.',
+          planSummary: 'Internal task progress.',
+          planEntries: [{ content: 'Run tests', priority: '', status: 'completed' }],
+          createdAt: new Date('2026-01-01T00:00:01.000Z'),
+        }],
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          providerId: 'codex-cli',
+          currentModeId: 'default',
+          processing: false,
+          turnEvents: [],
+          turnUserMessageIndex: -1,
+          turnAssistantMessageIndex: -1,
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    expect(host.textContent).toContain('Implemented the requested change.')
+    expect(host.querySelector('[data-testid="plan-block"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('hides historical Codex plan cards after a later user message', () => {
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) =>
         session.id === 'chat-1' ? { ...session, providerId: 'codex-cli' } : session
@@ -2501,8 +2906,8 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    expect(host.textContent).toContain('Historical plan.')
-    expect(host.textContent).toContain('Old step')
+    expect(host.textContent).not.toContain('Historical plan.')
+    expect(host.textContent).not.toContain('Old step')
     expect(Array.from(host.querySelectorAll('button')).some((button) => button.textContent === 'Approve')).toBe(false)
     expect(Array.from(host.querySelectorAll('button')).some((button) => button.textContent === 'Deny')).toBe(false)
 
@@ -2515,7 +2920,7 @@ describe('ChatView', () => {
   it('disables Codex plan actions while the active ACP plan is still processing', () => {
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) =>
-        session.id === 'chat-1' ? { ...session, providerId: 'codex-cli' } : session
+        session.id === 'chat-1' ? { ...session, providerId: 'codex-cli', approvalMode: 'plan' } : session
       ),
       messages: {
         ...state.messages,
@@ -2678,7 +3083,7 @@ describe('ChatView', () => {
     })
 
     const toolButton = Array.from(host.querySelectorAll('button')).find((button) =>
-      button.textContent?.includes('Tool call:')
+      button.textContent?.includes('Search symbols')
     )
     expect(toolButton).toBeTruthy()
     act(() => {
@@ -2879,9 +3284,10 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const openButton = host.querySelector('button[aria-label="Open workspace in Finder or File Explorer"]') as HTMLButtonElement | null
+    openWorkspaceActions(host)
+    const openButton = document.body.querySelector('button[role="menuitem"]') as HTMLButtonElement | null
     expect(openButton).toBeTruthy()
-    expect(openButton?.disabled).toBe(false)
+    expect(openButton?.textContent).toContain('Open workspace')
 
     await act(async () => {
       openButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -2909,8 +3315,9 @@ describe('ChatView', () => {
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
+    openWorkspaceActions(host)
     await act(async () => {
-      ;(host.querySelector('button[aria-label="Open workspace in configured editor"]') as HTMLButtonElement).click()
+      ;(Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')).find((button) => button.textContent?.includes('Open in editor')) as HTMLButtonElement).click()
       await Promise.resolve()
     })
     expect(host.querySelector('[role="status"]')?.textContent).toContain('Opened workspace editor.')
@@ -2918,8 +3325,9 @@ describe('ChatView', () => {
     act(() => vi.advanceTimersByTime(5000))
     expect(host.textContent).not.toContain('Opened workspace editor.')
 
+    openWorkspaceActions(host)
     await act(async () => {
-      ;(host.querySelector('button[aria-label="Open a terminal at the workspace location"]') as HTMLButtonElement).click()
+      ;(Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')).find((button) => button.textContent?.includes('Open terminal')) as HTMLButtonElement).click()
       await Promise.resolve()
     })
     expect(Array.from(host.querySelectorAll('[role="alert"]')).some((alert) => alert.textContent?.includes('Failed to open terminal.'))).toBe(true)
@@ -2932,6 +3340,61 @@ describe('ChatView', () => {
     host.remove()
     useAppStore.setState({ openSessionWorkspaceEditor: originalEditor, openSessionTerminal: originalTerminal })
     vi.useRealTimers()
+  })
+
+  it('matches worktree action availability to the native runtime rules', () => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => ({
+        ...session,
+        workspaceDirectory: '/tmp/project/.uam-worktrees/chat-1',
+        workspaceSourceDirectory: '/tmp/project',
+        workspaceIsolationKind: 'gitWorktree',
+      })),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          running: true,
+          processing: false,
+          pendingPermission: null,
+          pendingUserInput: null,
+          queuedPrompts: [],
+        },
+      },
+      cliBindingBySessionId: {},
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    openWorkspaceActions(host)
+    const discard = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]'))
+      .find((button) => button.textContent === 'Discard & return') as HTMLButtonElement
+    expect(discard.disabled).toBe(false)
+
+    act(() => {
+      useAppStore.setState({
+        cliBindingBySessionId: {
+          'chat-1': {
+            terminalId: 'term-1',
+            boundChatId: 'chat-1',
+            running: true,
+            lifecycleState: 'idle',
+            turnState: 'idle',
+            processing: false,
+            readySinceLastSelect: true,
+            active: true,
+            lastError: '',
+          },
+        },
+      })
+    })
+    expect(discard.disabled).toBe(true)
+
+    act(() => root.unmount())
+    host.remove()
   })
 
   it('clears transient worktree action messages when the active chat changes', async () => {
@@ -2990,7 +3453,8 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const discardButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Discard & return') as HTMLButtonElement | undefined
+    const workspaceMenu = openWorkspaceActions(host)
+    const discardButton = Array.from(workspaceMenu?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Discard & return') as HTMLButtonElement | undefined
     expect(discardButton).toBeTruthy()
 
     await act(async () => {
@@ -3005,7 +3469,6 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[1]} />)
     })
 
-    expect(host.textContent).toContain('/tmp/project')
     expect(host.textContent).not.toContain('Discarded changes in the chat worktree.')
     expect(useAppStore.getState().activeSessionId).toBe('chat-1')
 
@@ -3052,7 +3515,8 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const discardButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Discard & return') as HTMLButtonElement | undefined
+    const workspaceMenu = openWorkspaceActions(host)
+    const discardButton = Array.from(workspaceMenu?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Discard & return') as HTMLButtonElement | undefined
     expect(discardButton).toBeTruthy()
 
     await act(async () => {
@@ -3204,7 +3668,7 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('disables the workspace open button when no workspace is selected', () => {
+  it('hides workspace actions when no workspace is selected', () => {
     useAppStore.setState((state) => ({
       folders: state.folders.map((folder) => ({ ...folder, directory: '' })),
       sessions: state.sessions.map((session) => ({ ...session, workspaceDirectory: '' })),
@@ -3218,9 +3682,10 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const openButton = host.querySelector('button[aria-label="Open workspace in Finder or File Explorer"]') as HTMLButtonElement | null
-    expect(openButton).toBeTruthy()
-    expect(openButton?.disabled).toBe(true)
+    const workspaceCue = host.querySelector('button[aria-label="Workspace not selected"]') as HTMLButtonElement
+    expect(workspaceCue).toBeTruthy()
+    expect(workspaceCue.disabled).toBe(true)
+    expect(host.querySelector('button[aria-label="Workspace actions"]')).toBeNull()
 
     act(() => {
       root.unmount()
@@ -3298,7 +3763,7 @@ describe('ChatView', () => {
     })
 
     expect(host.textContent).not.toContain('Codex is not supported in this build')
-    expect(host.querySelector('button[title="Select provider"]')).toBeNull()
+    expect(host.querySelector('button[aria-label="Select provider and model"]')).toBeTruthy()
 
     act(() => {
       root.unmount()
@@ -3306,7 +3771,7 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('hides the provider selector when Gemini is the only available provider for the chat', () => {
+  it('omits the provider group when Gemini is the only available provider for the chat', () => {
     useAppStore.setState({
       providers: [
         { id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' },
@@ -3321,7 +3786,10 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    expect(host.querySelector('button[title="Select provider"]')).toBeNull()
+    const selector = host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement
+    expect(selector).toBeTruthy()
+    act(() => selector.click())
+    expect(document.body.querySelector('[role="group"][aria-label="Provider"]')).toBeNull()
 
     act(() => {
       root.unmount()

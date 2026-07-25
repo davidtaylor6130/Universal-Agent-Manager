@@ -252,7 +252,7 @@ bool GeminiJsonHistoryStore::SaveFile(const std::filesystem::path& file_path, co
 	for (const Message& msg : chat.messages)
 	{
 		JsonValue msg_obj = uam::json::Object();
-		uam::json::SetString(msg_obj, "type", msg.role == MessageRole::User ? "user" : "model");
+			uam::json::SetString(msg_obj, "type", msg.role == MessageRole::User ? "user" : msg.role == MessageRole::System ? "info" : "model");
 		uam::json::SetString(msg_obj, "timestamp", msg.created_at.empty() ? uam::time::TimestampNow() : msg.created_at);
 		uam::json::SetString(msg_obj, "content", msg.content);
 		uam::json::PushValue(messages_arr, std::move(msg_obj));

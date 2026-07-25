@@ -26,11 +26,28 @@ UAM_TEST(GoalServiceBuildContinuationPromptReturnsEmptyForBlankObjective)
 {
 	Goal goal;
 	goal.id = "goal_test_2";
-	goal.objective = "";
+	goal.objective = " \t ";
 	goal.status = GoalStatus::Active;
 
 	const std::string prompt = uam::GoalService::BuildContinuationPrompt(goal, 0, 0);
 	UAM_ASSERT(prompt.empty());
+}
+
+UAM_TEST(GoalServiceMaintainsOnlyOneActiveGoalPerChat)
+{
+	uam::AppState app;
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+	chat.id = "chat-single-active-goal";
+	app.chats.push_back(chat);
+
+	std::string first_goal_id;
+	std::string second_goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "First goal.", 0, &first_goal_id));
+	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, chat.id, first_goal_id));
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Second goal.", 0, &second_goal_id));
+	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, chat.id, second_goal_id));
+
+	UAM_ASSERT_EQ(std::ranges::count(app.chats.front().goals, GoalStatus::Active, &Goal::status), static_cast<std::ptrdiff_t>(1));
 }
 
 UAM_TEST(GoalServiceStatusBlockerAndTokenUpdatesMarkParentAndClearActive)
@@ -126,6 +143,71 @@ UAM_TEST(GoalServicePauseClearsActiveGoalAndResumeReactivates)
 	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, chat.id, goal_id));
 	UAM_ASSERT_EQ(app.chats.front().active_goal_id, goal_id);
 	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+}
+
+UAM_TEST(AcpResumeGoalQueuesWorkBeforePublishingActiveState)
+{
+	uam::AppState app;
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+	chat.id = "chat-resume-work";
+	std::string goal_id;
+	app.chats.push_back(chat);
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Finish the paused work.", 0, &goal_id));
+	Goal& goal = app.chats.front().goals.front();
+	goal.status = GoalStatus::Paused;
+	goal.last_next_prompt = "Run the focused regression tests.";
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->session_ready = true;
+	session->goal_resume_suppressed = true;
+	session->goal_auto_resume_attempts = 2;
+	session->turn_serial = 4;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	std::string error;
+	UAM_ASSERT(uam::acp_detail::ResumeGoal(app, chat.id, goal_id, &error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(app.chats.front().active_goal_id, goal_id);
+	UAM_ASSERT_EQ(goal.status, GoalStatus::Active);
+	UAM_ASSERT_EQ(raw_session->queued_prompt, std::string("Run the focused regression tests."));
+	UAM_ASSERT_EQ(raw_session->turn_serial, 5);
+	UAM_ASSERT(!raw_session->goal_resume_suppressed);
+	UAM_ASSERT_EQ(raw_session->goal_auto_resume_attempts, 0);
+}
+
+UAM_TEST(AcpResumeGoalQueuesProviderCommandAndKeepsPausedWhenBusy)
+{
+	uam::AppState app;
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+	chat.id = "chat-resume-provider";
+	std::string goal_id;
+	app.chats.push_back(chat);
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Ship the provider task.", 0, &goal_id, "provider", "/goal"));
+	Goal& goal = app.chats.front().goals.front();
+	goal.status = GoalStatus::Paused;
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->session_ready = true;
+	session->processing = true;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	std::string error;
+	UAM_ASSERT(!uam::acp_detail::ResumeGoal(app, chat.id, goal_id, &error));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT(app.chats.front().active_goal_id.empty());
+	UAM_ASSERT_EQ(goal.status, GoalStatus::Paused);
+	UAM_ASSERT_EQ(raw_session->turn_serial, 0);
+
+	raw_session->processing = false;
+	error.clear();
+	UAM_ASSERT(uam::acp_detail::ResumeGoal(app, chat.id, goal_id, &error));
+	UAM_ASSERT_EQ(raw_session->queued_prompt, std::string("/goal Ship the provider task."));
+	UAM_ASSERT_EQ(app.chats.front().active_goal_id, goal_id);
+	UAM_ASSERT_EQ(goal.status, GoalStatus::Active);
 }
 
 UAM_TEST(ChatRepositoryPersistsPausedGoalProgressState)
@@ -571,6 +653,46 @@ UAM_TEST(AcpGoalWatchdogResumesStalledLoopAndBlocksAfterRepeatedResumes)
 	UAM_ASSERT(uam::ResumeStalledGoalLoopForTests(app, *raw_session, app.chats.front(), 100.0));
 	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Blocked);
 	UAM_ASSERT(app.chats.front().active_goal_id.empty());
+}
+
+UAM_TEST(AcpCancelledGoalTurnDoesNotQueueAnotherGoalPrompt)
+{
+	TempDir temp("uam-goal-cancel");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-goal-cancel";
+	chat.provider_id = "codex-cli";
+	chat.messages.push_back(Message{MessageRole::User, "Do the work"});
+	chat.messages.push_back(Message{MessageRole::Assistant, "Partial result"});
+	Goal goal;
+	goal.id = "goal-cancel";
+	goal.objective = "Finish the work.";
+	chat.goals.push_back(goal);
+	chat.active_goal_id = goal.id;
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-goal-cancel";
+	session->provider_id = "codex-cli";
+	session->protocol_kind = "codex-app-server";
+	session->running = true;
+	session->session_ready = true;
+	session->processing = true;
+	session->cancel_requested = true;
+	session->goal_resume_suppressed = true;
+	session->turn_user_message_index = 0;
+	session->turn_assistant_message_index = 1;
+	session->current_assistant_message_index = 1;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(),
+	                                     R"({"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-1","status":"interrupted"}}})"));
+
+	UAM_ASSERT(raw_session->queued_prompt.empty());
+	UAM_ASSERT(!raw_session->processing);
 }
 
 UAM_TEST(AcpGoalWatchdogIgnoresFreshGoalsAndBusySessions)

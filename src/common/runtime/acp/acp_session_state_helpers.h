@@ -34,6 +34,8 @@ inline bool AcpSessionHasPendingRuntimeRequest(const AcpSessionState& session)
 	return session.initialize_request_id != 0 ||
 	       session.session_setup_request_id != 0 ||
 	       session.startup_model_request_id != 0 ||
+	       session.mode_change_request_id != 0 ||
+	       session.model_change_request_id != 0 ||
 	       session.prompt_request_id != 0 ||
 	       session.cancel_request_id != 0;
 }

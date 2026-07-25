@@ -1,6 +1,6 @@
 # run_performance_test.ps1
 $testDataRoot = Join-Path (Get-Location) "perf_test_data"
-$chatsDir = Join-Path $testDataRoot "uam_chats"
+$chatsDir = Join-Path $testDataRoot "chats"
 $count = 500
 
 Write-Host "--- UAM Performance Test Setup ---" -ForegroundColor Cyan

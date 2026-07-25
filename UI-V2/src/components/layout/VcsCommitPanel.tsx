@@ -95,9 +95,11 @@ export function VcsCommitPanel() {
 
   const generateMessage = async () => {
     if (!activeSessionId || generateDisabled) return
+    const sourceSessionId = activeSessionId
     setGenerating(true)
     setNotice('')
-    const suggestion = await generateVcsCommitMessage(activeSessionId, selectedVcsType, selectedFiles)
+    const suggestion = await generateVcsCommitMessage(sourceSessionId, selectedVcsType, selectedFiles)
+    if (useAppStore.getState().activeSessionId !== sourceSessionId) return
     setGenerating(false)
     if (!suggestion) {
       setNotice('Failed to generate a commit message.')

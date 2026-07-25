@@ -22,6 +22,14 @@ UamQueryHandler::UamQueryHandler(uam::AppState& app, std::string trusted_ui_inde
 
 bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	const std::string chat_id = payload.value("chatId", "");
+	if ((!chat_id.empty() && m_app.worktree_operation_chat_ids.contains(chat_id)) ||
+	    (!m_app.worktree_operation_chat_ids.empty() && (action == "deleteFolder" || action == "rescanFolderChats")))
+	{
+		cb->Failure(409, "Wait for the chat worktree operation to finish.");
+		return true;
+	}
+
 	struct Route
 	{
 		std::string_view action;
@@ -32,6 +40,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"getInitialState", &UamQueryHandler::HandleGetInitialState},
 		{"selectSession", &UamQueryHandler::HandleSelectSession},
 		{"getChatMessages", &UamQueryHandler::HandleGetChatMessages},
+		{"getToolCallContent", &UamQueryHandler::HandleGetToolCallContent},
 		{"createSession", &UamQueryHandler::HandleCreateSession},
 		{"branchFromMessage", &UamQueryHandler::HandleBranchFromMessage},
 		{"openNativeSessionChat", &UamQueryHandler::HandleOpenNativeSessionChat},
@@ -72,6 +81,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"deleteFolder", &UamQueryHandler::HandleDeleteFolder},
 		{"toggleFolder", &UamQueryHandler::HandleToggleFolder},
 		{"reorderFolders", &UamQueryHandler::HandleReorderFolders},
+		{"rescanFolderChats", &UamQueryHandler::HandleRescanFolderChats},
 		{"createResourceCollection", &UamQueryHandler::HandleCreateResourceCollection},
 		{"renameResourceCollection", &UamQueryHandler::HandleRenameResourceCollection},
 		{"deleteResourceCollection", &UamQueryHandler::HandleDeleteResourceCollection},
@@ -123,6 +133,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setGoal", &UamQueryHandler::HandleSetGoal},
 		{"updateGoalStatus", &UamQueryHandler::HandleUpdateGoalStatus},
 		{"setActiveGoal", &UamQueryHandler::HandleSetActiveGoal},
+		{"resumeGoal", &UamQueryHandler::HandleResumeGoal},
 		{"removeGoal", &UamQueryHandler::HandleRemoveGoal},
 	};
 

@@ -212,11 +212,12 @@ bool PollPendingRuntimeCall(uam::AppState& app)
 			app.resolved_native_sessions_by_chat_id.erase(pending_chat_id);
 			ChatSession* fallback_chat = ChatDomainService().FindChatById(app, pending_chat_id);
 
-			if (fallback_chat != nullptr)
-			{
-				ChatDomainService().AddMessage(*fallback_chat, MessageRole::System, output);
+				if (fallback_chat != nullptr)
+				{
+					ChatDomainService().AddMessage(*fallback_chat, MessageRole::System, output);
+					ChatRepository::SaveChat(app.data_root, *fallback_chat);
 
-				if (pending_chat_id != selected_before_id)
+					if (pending_chat_id != selected_before_id)
 				{
 					uam::MarkChatUnseen(app, pending_chat_id);
 				}

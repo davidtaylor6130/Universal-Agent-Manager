@@ -3,6 +3,7 @@ import {
   applyDocumentTheme,
   BUILT_IN_THEMES,
   normalizeCustomTheme,
+  normalizeStoredTheme,
   readStoredTheme,
   resolveDocumentTheme,
   writeStoredTheme,
@@ -33,7 +34,7 @@ describe('themeStorage', () => {
   })
 
   it('makes the built-in palettes available, applies them, and persists the selection', () => {
-    const palettes = ['midnight', 'paper', 'dusk', 'aurora', 'contrast'] as const
+    const palettes = ['focus', 'midnight', 'paper', 'dusk', 'aurora', 'contrast'] as const
     const values = new Map<string, string>()
     const previousStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
     Object.defineProperty(globalThis, 'localStorage', {
@@ -41,6 +42,9 @@ describe('themeStorage', () => {
       value: { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value) },
     })
     expect(BUILT_IN_THEMES.map((theme) => theme.id)).toEqual(expect.arrayContaining([...palettes]))
+    expect(BUILT_IN_THEMES.find((theme) => theme.id === 'focus')?.label).toBe('Focus')
+    expect(BUILT_IN_THEMES.find((theme) => theme.id === 'dark')?.label).toBe('OG')
+    expect(normalizeStoredTheme('mono')).toBe('focus')
 
     for (const palette of palettes) {
       applyDocumentTheme(palette)

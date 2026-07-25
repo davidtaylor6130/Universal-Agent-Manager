@@ -458,9 +458,24 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 
 	const IPlatformTerminalRuntime& platform_terminal_runtime = PlatformServicesFactory::Instance().terminal_runtime;
 
-	if (!terminal.running || !platform_terminal_runtime.HasReadableTerminalOutputHandle(terminal))
+	if (!terminal.running)
 	{
 		return false;
+	}
+	if (!platform_terminal_runtime.HasReadableTerminalOutputHandle(terminal))
+	{
+		const bool was_shutting_down = terminal.lifecycle_state == uam::CliTerminalLifecycleState::ShuttingDown;
+		uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "pty_output_unavailable", &terminal);
+		if (was_shutting_down)
+		{
+			StopCliTerminalAfterProviderExit(app, terminal, true);
+		}
+		else
+		{
+			uam::FailCliTerminalTransport(terminal, "Provider terminal output connection is unavailable.");
+			app.status_line = terminal.last_error;
+		}
+		return true;
 	}
 
 	char buffer[8192];
@@ -507,11 +522,14 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 
 		const bool was_shutting_down = terminal.lifecycle_state == uam::CliTerminalLifecycleState::ShuttingDown;
 		uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "pty_read_failed", &terminal);
-		uam::StopCliTerminal(terminal);
-		terminal.should_launch = false;
-		if (!was_shutting_down)
+		if (was_shutting_down)
 		{
-			app.status_line = "Provider terminal read failed.";
+			StopCliTerminalAfterProviderExit(app, terminal, true);
+		}
+		else
+		{
+			uam::FailCliTerminalTransport(terminal, "Provider terminal read failed.");
+			app.status_line = terminal.last_error;
 		}
 		changed = true;
 		break;
@@ -524,14 +542,19 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 		{
 			terminal.recent_output_bytes.erase(0, terminal.recent_output_bytes.size() - kRecentOutputBufferLimitBytes);
 		}
+		terminal.current_turn_output_bytes.append(output_for_frontend);
+		if (terminal.current_turn_output_bytes.size() > kTerminalPromptScanLimit)
+		{
+			terminal.current_turn_output_bytes.erase(0, terminal.current_turn_output_bytes.size() - kTerminalPromptScanLimit);
+		}
 
 		const std::string primary_chat_id = CliTerminalPrimaryChatId(terminal);
 		uam::PushCliOutput(browser, primary_chat_id, primary_chat_id, terminal.terminal_id, output_for_frontend);
 	}
 
 	const bool terminal_uses_codex_cli = uam::provider_ids::IsCliProviderAliasOf(terminal_provider.id, uam::provider_ids::kCodexCli);
-	const bool prompt_indicates_idle = ProviderRecentOutputIndicatesInputPrompt(terminal_provider, terminal.recent_output_bytes);
-	if (terminal.running && terminal.lifecycle_state == uam::CliTerminalLifecycleState::Busy && prompt_indicates_idle)
+	const bool prompt_indicates_idle = ProviderRecentOutputIndicatesInputPrompt(terminal_provider, terminal.current_turn_output_bytes);
+	if (uam::CliTerminalPromptConfirmsTurnIdle(terminal, prompt_indicates_idle, !output_for_frontend.empty(), GetAppTimeSeconds()))
 	{
 		uam::MarkCliTerminalTurnIdle(terminal);
 		uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "turn_marked_idle_from_prompt", &terminal);
@@ -587,7 +610,7 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 	}
 	else if (terminal.running && !terminal_uses_native_history && uam::provider_ids::IsCliProviderAliasOf(terminal_provider.id, uam::provider_ids::kOpenCodeCli) && terminal_chat != nullptr && sync_interval_elapsed)
 	{
-		const std::vector<ChatSession> local_now = ChatRepository::LoadLocalChats(app.data_root);
+		const std::vector<ChatSession> local_now = ChatRepository::LoadLocalChatSummaries(app.data_root);
 		const bool retry_without_snapshot = terminal.session_ids_before.empty();
 		if (!retry_without_snapshot)
 		{

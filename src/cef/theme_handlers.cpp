@@ -46,7 +46,7 @@ void UamQueryHandler::HandleDeleteTheme(CefRefPtr<CefBrowser> browser, const nlo
 
 	if (m_app.settings.ui_theme == id)
 	{
-		m_app.settings.ui_theme = uam::settings::kDarkThemeId;
+		m_app.settings.ui_theme = uam::settings::kFocusThemeId;
 		if (!PersistenceCoordinator().SaveSettings(m_app))
 		{
 			cb->Failure(500, "Theme was deleted, but the fallback setting could not be saved.");

@@ -43,6 +43,7 @@ describe('SettingsModal memory settings', () => {
       providerChatDefaults: {},
       theme: 'dark',
       customThemes: [],
+      workingDisplayMode: 'verbose',
       showProviderIconsInSidebar: true,
       showWorktreePathInSidebar: true,
       memoryWorkerBindings: {
@@ -101,9 +102,11 @@ describe('SettingsModal memory settings', () => {
       refreshCustomThemes: vi.fn(() => Promise.resolve(true)),
       saveCustomTheme: vi.fn((theme) => Promise.resolve(theme)),
       deleteCustomTheme: vi.fn(() => Promise.resolve(true)),
+      setWorkingDisplayMode: vi.fn(),
       setSidebarSettings: vi.fn(() => Promise.resolve(true)),
       refreshCliProviderVersion: vi.fn(() => Promise.resolve(true)),
       applyCliProviderVersion: vi.fn(() => Promise.resolve(true)),
+      openAllMemoryLibrary: vi.fn(() => Promise.resolve(true)),
       openGlobalMemoryLibrary: vi.fn(() => Promise.resolve(true)),
       openMemoryScanModal: vi.fn(() => Promise.resolve(true)),
     })
@@ -255,6 +258,19 @@ describe('SettingsModal memory settings', () => {
       showProviderIconsInSidebar: true,
       showWorktreePathInSidebar: false,
     })
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('toggles compact working without changing sidebar settings', () => {
+    const { host, root } = renderModal()
+    const compactWorking = host.querySelector<HTMLInputElement>('input[aria-label="Compact working"]')
+
+    expect(compactWorking?.checked).toBe(false)
+
+    act(() => compactWorking?.click())
+    expect(useAppStore.getState().setWorkingDisplayMode).toHaveBeenCalledWith('compact')
 
     act(() => root.unmount())
     host.remove()
@@ -471,7 +487,7 @@ describe('SettingsModal memory settings', () => {
     })
 
     expect(host.textContent).toContain('Build and release information')
-    expect(host.textContent).toContain('V4.4.0')
+    expect(host.textContent).toContain('V4.4.2')
     expect(host.textContent).not.toContain('Gemini memory worker')
 
     act(() => {
@@ -716,7 +732,7 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
-  it('opens the global memory library from the memory store section', () => {
+  it('opens the same all-memory library as the activity rail from settings', () => {
     const { host, root } = renderModal()
 
     openMemoryStoreSection(host)
@@ -730,7 +746,8 @@ describe('SettingsModal memory settings', () => {
       openLibraryButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(useAppStore.getState().openGlobalMemoryLibrary).toHaveBeenCalledTimes(1)
+    expect(useAppStore.getState().openAllMemoryLibrary).toHaveBeenCalledTimes(1)
+    expect(useAppStore.getState().openGlobalMemoryLibrary).not.toHaveBeenCalled()
 
     act(() => {
       root.unmount()
@@ -838,6 +855,29 @@ describe('SettingsModal memory settings', () => {
     }))
     expect(useAppStore.getState().setTheme).toHaveBeenCalledWith('custom:custom-theme')
 
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('saves a custom theme only once before the modal rerenders', async () => {
+    const finishes: Array<(theme: null) => void> = []
+    const save = vi.fn(() => new Promise<null>((resolve) => finishes.push(resolve)))
+    useAppStore.setState({ saveCustomTheme: save })
+    const { host, root } = renderModal()
+    const createButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Create') as HTMLButtonElement
+    act(() => createButton.click())
+    const saveButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Save theme') as HTMLButtonElement
+
+    act(() => {
+      saveButton.click()
+      saveButton.click()
+    })
+
+    expect(save).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      finishes.forEach((finish) => finish(null))
+      await Promise.resolve()
+    })
     act(() => root.unmount())
     host.remove()
   })

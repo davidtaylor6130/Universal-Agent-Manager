@@ -158,52 +158,9 @@ namespace
 		return true;
 	}
 
-	bool ChatHistoryDeleteFailed(uam::AppState& app, const ChatSession& chat)
-	{
-		const ChatStorageDeleteResult storage_delete = ChatRepository::DeleteChatStorageFiles(app.data_root, chat.id);
-
-		std::error_code native_delete_error;
-		DeleteNativeHistoryForChatIfNeeded(app, chat, &native_delete_error);
-
-		return storage_delete.Failed() || static_cast<bool>(native_delete_error);
-	}
-
-	std::string StatusAfterSingleChatDelete(const ChatStorageDeleteResult& storage_delete,
-	                                        bool native_delete_attempted,
-	                                        const std::error_code& native_delete_error,
-	                                        bool settings_saved)
-	{
-		std::string status_line = settings_saved ? "Chat deleted." : "Chat deleted, but failed to persist settings.";
-
-		if (storage_delete.legacy_directory_error)
-		{
-			status_line = "Chat removed from UI, but deleting local history failed.";
-		}
-		else if (storage_delete.metadata_file_error || storage_delete.unsafe_chat_id)
-		{
-			status_line = "Chat removed from UI, but deleting chat metadata failed.";
-		}
-		else if (native_delete_attempted && native_delete_error)
-		{
-			status_line = "Chat removed from UI, but deleting native provider history failed.";
-		}
-
-		if (!settings_saved)
-		{
-			status_line += " Settings persistence also failed.";
-		}
-
-		return status_line;
-	}
-
-	std::string StatusAfterFolderDelete(std::size_t deleted_chat_count, bool history_delete_failed, bool settings_saved)
+	std::string StatusAfterFolderDelete(std::size_t deleted_chat_count, bool settings_saved)
 	{
 		std::string status_line = "Folder deleted. Deleted " + std::to_string(deleted_chat_count) + " chat(s).";
-
-		if (history_delete_failed)
-		{
-			status_line = "Folder removed from UI, but deleting some chat history failed.";
-		}
 
 		if (!settings_saved)
 		{
@@ -362,6 +319,78 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 	return ChatProviderSwitchResult::Changed;
 }
 
+bool uam::BranchFromMessageAndRetry(AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, std::string* branch_id_out, std::string* error_out)
+{
+	const std::string previous_selected_chat_id = ChatDomainService().SelectedChatId(app);
+	if (!ChatDomainService().CreateBranchFromMessage(app, source_chat_id, message_index, replacement_content))
+	{
+		if (error_out != nullptr)
+		{
+			*error_out = app.status_line;
+		}
+		return false;
+	}
+
+	const ChatSession* branch = ChatDomainService().SelectedChat(app);
+	if (branch == nullptr)
+	{
+		if (error_out != nullptr)
+		{
+			*error_out = "Branch was created but could not be selected.";
+		}
+		return false;
+	}
+	const std::string branch_id = branch->id;
+	const ChatSession branch_snapshot = *branch;
+	if (branch_id_out != nullptr)
+	{
+		*branch_id_out = branch_id;
+	}
+	std::string retry_error;
+	if (RetryLastAcpPrompt(app, branch_id, &retry_error))
+	{
+		return true;
+	}
+
+	StopChatRuntimes(app, branch_id);
+	std::erase_if(app.acp_sessions, [&branch_id](const auto& session) { return session != nullptr && session->chat_id == branch_id; });
+	const ChatStorageDeleteResult storage_delete = ChatRepository::DeleteChatStorageFiles(app.data_root, branch_id);
+	if (storage_delete.Failed())
+	{
+		const bool history_restored = SaveChatHistories(app, {branch_snapshot});
+		app.status_line = retry_error + " Branch cleanup failed, so the branch was kept." +
+		                  (history_restored ? "" : " Its local history could not be restored.");
+		if (error_out != nullptr)
+		{
+			*error_out = app.status_line;
+		}
+		return false;
+	}
+
+	ChatDomainService().SelectChatById(app, previous_selected_chat_id);
+	if (!PersistenceCoordinator().SaveSettings(app))
+	{
+		const bool history_restored = SaveChatHistories(app, {branch_snapshot});
+		ChatDomainService().SelectChatById(app, branch_id);
+		ChatDomainService().RefreshRememberedSelection(app);
+		app.status_line = retry_error + " Branch selection rollback failed, so the branch was kept." +
+		                  (history_restored ? "" : " Its local history could not be restored.");
+		if (error_out != nullptr)
+		{
+			*error_out = app.status_line;
+		}
+		return false;
+	}
+
+	std::erase_if(app.chats, [&branch_id](const ChatSession& chat) { return chat.id == branch_id; });
+	app.status_line = retry_error;
+	if (error_out != nullptr)
+	{
+		*error_out = retry_error;
+	}
+	return false;
+}
+
 bool RemoveChatById(uam::AppState& app, const std::string& chat_id)
 {
 	const std::string target_chat_id = uam::strings::Trim(chat_id);
@@ -389,18 +418,35 @@ bool RemoveChatById(uam::AppState& app, const std::string& chat_id)
 		return false;
 	}
 
-	StopChatRuntimes(app, chat.id);
-
 	std::vector<ChatSession> next_chats = app.chats;
 	ChatBranching::ReparentChildrenAfterDelete(next_chats, chat.id);
 	std::erase_if(next_chats, [&](const ChatSession& existing_chat) { return existing_chat.id == chat.id; });
 
-	if (!SaveChatHistories(app, next_chats))
+	const ChatStorageDeleteResult storage_delete = ChatRepository::DeleteChatStorageFiles(app.data_root, chat.id);
+	if (storage_delete.Failed())
 	{
-		SaveChatHistories(app, app.chats);
-		app.status_line = "Failed to persist chat reparenting before delete.";
+		const bool rollback_saved = SaveChatHistories(app, app.chats);
+		app.status_line = StatusAfterFolderDeletePreconditionFailure("Failed to delete local chat history; chat was kept.", rollback_saved);
 		return false;
 	}
+
+	if (!SaveChatHistories(app, next_chats))
+	{
+		const bool rollback_saved = SaveChatHistories(app, app.chats);
+		app.status_line = StatusAfterFolderDeletePreconditionFailure("Failed to persist chat reparenting before delete.", rollback_saved);
+		return false;
+	}
+
+	std::error_code native_delete_ec;
+	DeleteNativeHistoryForChatIfNeeded(app, chat, &native_delete_ec);
+	if (native_delete_ec)
+	{
+		const bool rollback_saved = SaveChatHistories(app, app.chats);
+		app.status_line = StatusAfterFolderDeletePreconditionFailure("Failed to delete native provider history; chat was kept.", rollback_saved);
+		return false;
+	}
+
+	StopChatRuntimes(app, chat.id);
 
 	app.chats = std::move(next_chats);
 	ChatBranching::Normalize(app.chats);
@@ -408,12 +454,7 @@ bool RemoveChatById(uam::AppState& app, const std::string& chat_id)
 	ApplyDeletedChatsToUiState(app, {chat.id}, selected_chat_id, previous_selected_chat_index, true);
 
 	const bool settings_saved = PersistenceCoordinator().SaveSettings(app);
-	const ChatStorageDeleteResult storage_delete = ChatRepository::DeleteChatStorageFiles(app.data_root, chat.id);
-
-	std::error_code native_delete_ec;
-	const bool native_delete_attempted = DeleteNativeHistoryForChatIfNeeded(app, chat, &native_delete_ec);
-
-	app.status_line = StatusAfterSingleChatDelete(storage_delete, native_delete_attempted, native_delete_ec, settings_saved);
+	app.status_line = settings_saved ? "Chat deleted." : "Chat deleted, but failed to persist settings.";
 	return true;
 }
 
@@ -436,6 +477,7 @@ bool DeleteFolderById(uam::AppState& app, const std::string& folder_id)
 
 	const ChatFolder deleted_folder = app.folders[folder_index];
 	const std::vector<ChatSession> original_chats = app.chats;
+	const std::vector<ChatFolder> original_folders = app.folders;
 
 	if (FolderHasRunningChat(app, target_folder_id))
 	{
@@ -449,6 +491,12 @@ bool DeleteFolderById(uam::AppState& app, const std::string& folder_id)
 	{
 		return SaveChatHistories(app, original_chats);
 	};
+	const auto restore_original_state = [&]()
+	{
+		const bool chats_saved = restore_original_chats();
+		const bool folders_saved = ChatFolderStore::Save(app.data_root, original_folders);
+		return chats_saved && folders_saved;
+	};
 
 	std::vector<ChatSession> next_chats = app.chats;
 
@@ -459,6 +507,15 @@ bool DeleteFolderById(uam::AppState& app, const std::string& folder_id)
 
 	std::erase_if(next_chats, [&](const ChatSession& chat) { return deleted.ids.contains(chat.id); });
 	ChatBranching::Normalize(next_chats);
+
+	for (const ChatSession& deleted_chat : deleted.chats)
+	{
+		if (ChatRepository::DeleteChatStorageFiles(app.data_root, deleted_chat.id).Failed())
+		{
+			app.status_line = StatusAfterFolderDeletePreconditionFailure("Failed to delete local chat history; folder was kept.", restore_original_chats());
+			return false;
+		}
+	}
 
 	if (!SaveChatHistories(app, next_chats))
 	{
@@ -471,7 +528,26 @@ bool DeleteFolderById(uam::AppState& app, const std::string& folder_id)
 
 	if (!ChatFolderStore::Save(app.data_root, next_folders))
 	{
-		app.status_line = StatusAfterFolderDeletePreconditionFailure("Failed to persist folder metadata before delete.", restore_original_chats());
+		app.status_line = StatusAfterFolderDeletePreconditionFailure("Failed to persist folder metadata before delete.", restore_original_state());
+		return false;
+	}
+
+	for (const ChatSession& deleted_chat : deleted.chats)
+	{
+		std::error_code native_delete_ec;
+		DeleteNativeHistoryForChatIfNeeded(app, deleted_chat, &native_delete_ec);
+		if (native_delete_ec)
+		{
+			app.status_line = StatusAfterFolderDeletePreconditionFailure("Failed to delete native provider history; folder was kept.", restore_original_state());
+			return false;
+		}
+	}
+
+	std::error_code native_workspace_delete_ec;
+	ChatHistorySyncService().DeleteNativeWorkspaceHistoryForFolder(app, deleted_folder, &native_workspace_delete_ec);
+	if (native_workspace_delete_ec)
+	{
+		app.status_line = StatusAfterFolderDeletePreconditionFailure("Failed to delete native workspace history; folder was kept.", restore_original_state());
 		return false;
 	}
 
@@ -490,20 +566,9 @@ bool DeleteFolderById(uam::AppState& app, const std::string& folder_id)
 
 	const bool settings_saved = PersistenceCoordinator().SaveSettings(app);
 
-	bool chat_history_delete_failed = false;
-
-	for (const ChatSession& deleted_chat : deleted.chats)
-	{
-		chat_history_delete_failed = ChatHistoryDeleteFailed(app, deleted_chat) || chat_history_delete_failed;
-	}
-
-	std::error_code native_workspace_delete_ec;
-	ChatHistorySyncService().DeleteNativeWorkspaceHistoryForFolder(app, deleted_folder, &native_workspace_delete_ec);
-	chat_history_delete_failed = chat_history_delete_failed || static_cast<bool>(native_workspace_delete_ec);
-
 	app.folders = std::move(next_folders);
 
-	app.status_line = StatusAfterFolderDelete(deleted.chats.size(), chat_history_delete_failed, settings_saved);
+	app.status_line = StatusAfterFolderDelete(deleted.chats.size(), settings_saved);
 	return true;
 }
 

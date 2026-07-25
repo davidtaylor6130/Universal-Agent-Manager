@@ -37,8 +37,14 @@ describe('UpdatesPanel', () => {
     await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
 
     expect(host.textContent).toContain('Codex CLI')
+    expect(host.textContent).toContain('1 update available')
+    expect(host.textContent).toContain('Current')
+    expect(host.textContent).toContain('Available')
     expect(host.textContent).toContain('0.124.0')
     expect(host.textContent).toContain('0.130.0')
+    expect(host.querySelector('[data-update-available="true"]')).toBeTruthy()
+    expect(host.querySelector('button[aria-label="Update Codex CLI to 0.130.0"]')?.textContent).toContain('Install update')
+    expect(host.querySelector('button[aria-label="Open Codex CLI update instructions"]')?.textContent).toContain('Release notes')
 
     await act(async () => {
       ;(host.querySelector('button[aria-label="Update Codex CLI to 0.130.0"]') as HTMLButtonElement).click()

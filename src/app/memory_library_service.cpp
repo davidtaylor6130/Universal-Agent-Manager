@@ -186,6 +186,13 @@ namespace
 
 		for (const ChatSession& chat : app.chats)
 		{
+			const ChatFolder* folder = uam::paths::FindWorkspaceFolderById(app, chat.folder_id);
+			if (uam::strings::IsBlank(chat.workspace_directory) &&
+			    !uam::paths::HasGitWorktreeDirectory(chat) &&
+			    (folder == nullptr || uam::strings::IsBlank(folder->directory)))
+			{
+				continue;
+			}
 			const fs::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
 			AddUniqueMemoryLibraryRoot(roots, seen, "folder", chat.folder_id, WorkspaceLabel(workspace_root, chat), MemoryService::LocalMemoryRoot(workspace_root));
 		}

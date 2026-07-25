@@ -297,6 +297,25 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			StopBackgroundModelDiscovery(app, session);
 			return;
 		}
+		if (method == uam::acp_methods::kSessionSetMode && id == session.mode_change_request_id)
+		{
+			if (RollbackAcpModeChange(session, chat))
+			{
+				SaveChatQuietly(app, chat);
+			}
+		}
+		if (method == uam::acp_methods::kSessionSetModel && id == session.model_change_request_id)
+		{
+			const std::string previous_model_id = session.model_change_previous_id;
+			const std::string rejected_model_id = session.model_change_requested_id;
+			session.current_model_id = previous_model_id;
+			if (session.model_change_previous_chat_id.has_value() && chat.model_id == rejected_model_id)
+			{
+				chat.model_id = *session.model_change_previous_chat_id;
+				SaveChatQuietly(app, chat);
+			}
+			ClearAcpModelChangeRequest(session);
+		}
 		if (method == uam::acp_methods::kSessionSetModel && id == session.startup_model_request_id)
 		{
 			ClearAcpStartupModelRequest(session);
@@ -448,6 +467,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			AppendAcpDiagnostic(session, "response", "missing_thread_id", method, request_id, false, 0, session.last_error, detail);
 		}
 		SaveChatQuietly(app, chat);
+		(void)ResumeQueuedUserPromptsAfterSessionSetup(app, session, chat);
 		return;
 	}
 
@@ -501,6 +521,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			SaveChatQuietly(app, chat);
 		}
 		StopBackgroundModelDiscovery(app, session);
+		(void)ResumeQueuedUserPromptsAfterSessionSetup(app, session, chat);
 		return;
 	}
 
@@ -518,6 +539,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		session.ignore_session_updates_until_ready = false;
 		session.lifecycle_state = kAcpLifecycleReady;
 		StopBackgroundModelDiscovery(app, session);
+		(void)ResumeQueuedUserPromptsAfterSessionSetup(app, session, chat);
 		return;
 	}
 
@@ -551,9 +573,29 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 
 	if (uam::acp_methods::IsSessionModeOrModelUpdateMethod(method))
 	{
-		if (method == uam::acp_methods::kSessionSetModel && JsonRpcNumericId(JsonRpcIdOrNull(message)) == session.startup_model_request_id)
+		const int response_id = JsonRpcNumericId(JsonRpcIdOrNull(message));
+		if (method == uam::acp_methods::kSessionSetMode && response_id == session.mode_change_request_id)
 		{
-			ClearAcpStartupModelRequest(session);
+			session.current_mode_id = session.mode_change_requested_id;
+			ClearAcpModeChangeRequest(session);
+			session.last_error.clear();
+			session.lifecycle_state = session.processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
+			(void)SendQueuedPromptIfReady(session, chat);
+		}
+		if (method == uam::acp_methods::kSessionSetModel)
+		{
+			if (response_id == session.model_change_request_id)
+			{
+				session.current_model_id = session.model_change_requested_id;
+				ClearAcpModelChangeRequest(session);
+				session.last_error.clear();
+				session.lifecycle_state = kAcpLifecycleReady;
+			}
+			if (response_id == session.startup_model_request_id)
+			{
+				ClearAcpStartupModelRequest(session);
+			}
+			(void)SendQueuedPromptIfReady(session, chat);
 		}
 		return;
 	}

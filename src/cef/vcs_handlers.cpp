@@ -2,10 +2,12 @@
 #include "cef/uam_query_handler_internal.h"
 #include "cef/uam_query_handler_async.h"
 
+#include "app/chat_domain_service.h"
 #include "app/git_worktree_service.h"
 #include "app/runtime_orchestration_services.h"
 #include "app/vcs_commit_service.h"
 #include "cef/cef_push.h"
+#include "common/chat/chat_repository.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/runtime/terminal/terminal_identity.h"
@@ -13,6 +15,8 @@
 
 #include <nlohmann/json.hpp>
 #include <filesystem>
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -25,9 +29,9 @@ using namespace uam::query_handler_async;
 
 namespace
 {
-		uam::AppState BuildReadOnlyAppSnapshot(std::filesystem::path data_root, AppSettings settings, std::vector<ChatFolder> folders, std::vector<ProviderProfile> provider_profiles)
-		{
-			uam::AppState snapshot;
+	uam::AppState BuildReadOnlyAppSnapshot(std::filesystem::path data_root, AppSettings settings, std::vector<ChatFolder> folders, std::vector<ProviderProfile> provider_profiles)
+	{
+		uam::AppState snapshot;
 		snapshot.data_root = std::move(data_root);
 		snapshot.settings = std::move(settings);
 		snapshot.folders = std::move(folders);
@@ -79,6 +83,101 @@ namespace
 		json["message"] = result.message;
 		json["patchPath"] = result.patch_path.empty() ? "" : result.patch_path.string();
 		return json;
+	}
+
+	using WorktreeOperation = uam::GitWorktreeOperationResult (uam::GitWorktreeService::*)(uam::AppState&, ChatSession&) const;
+
+	struct WorktreeAsyncState
+	{
+		uam::GitWorktreeOperationResult result;
+		std::string isolation_kind;
+		std::string source_directory;
+		std::string base_ref;
+		std::string branch_name;
+		std::string worktree_directory;
+		std::string updated_at;
+	};
+
+	void CaptureWorktreeFields(WorktreeAsyncState& target, const ChatSession& source)
+	{
+		target.isolation_kind = source.workspace_isolation_kind;
+		target.source_directory = source.workspace_source_directory;
+		target.base_ref = source.workspace_base_ref;
+		target.branch_name = source.workspace_branch_name;
+		target.worktree_directory = source.workspace_worktree_directory;
+		target.updated_at = source.updated_at;
+	}
+
+	void ApplyWorktreeFields(ChatSession& target, const WorktreeAsyncState& source)
+	{
+		target.workspace_isolation_kind = source.isolation_kind;
+		target.workspace_source_directory = source.source_directory;
+		target.workspace_base_ref = source.base_ref;
+		target.workspace_branch_name = source.branch_name;
+		target.workspace_worktree_directory = source.worktree_directory;
+		target.updated_at = source.updated_at;
+	}
+
+	void RunWorktreeOperationAsync(uam::AppState& app,
+	                               CefRefPtr<CefBrowser> browser,
+	                               CefRefPtr<CefMessageRouterBrowserSide::Callback> callback,
+	                               const std::string& chat_id,
+	                               WorktreeOperation operation,
+	                               std::string failure_fallback)
+	{
+		auto state = std::make_shared<WorktreeAsyncState>();
+		ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(app);
+		uam::AppState* live_app = &app;
+		app.worktree_operation_chat_ids.insert(chat_id);
+
+		RunAsyncCefQuery(
+		    callback,
+		    [snapshot_inputs = std::move(snapshot_inputs), state, chat_id, operation, failure_fallback = std::move(failure_fallback)]() mutable
+		    {
+			    uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
+			    std::string load_warning;
+			    std::optional<ChatSession> chat = ChatRepository::LoadLocalChat(
+			        snapshot.data_root, chat_id, true, &load_warning);
+			    if (!chat)
+			    {
+				    return AsyncFailure(
+				        500,
+				        FailureDetailOrFallback(
+				            load_warning, "Failed to load chat before its worktree operation."));
+			    }
+			    snapshot.chats.push_back(std::move(*chat));
+			    const uam::GitWorktreeService service;
+			    state->result = (service.*operation)(snapshot, snapshot.chats.front());
+			    CaptureWorktreeFields(*state, snapshot.chats.front());
+			    if (!state->result.ok)
+			    {
+				    std::string message = FailureDetailOrFallback(state->result.message, failure_fallback);
+				    if (!state->result.patch_path.empty())
+				    {
+					    message += "\nPatch saved at: " + state->result.patch_path.string();
+				    }
+				    return AsyncFailure(400, std::move(message));
+			    }
+			    return AsyncSuccess(SerializeGitWorktreeResult(state->result));
+		    },
+		    [live_app, browser, state, chat_id](AsyncCefResult& result)
+		    {
+			    live_app->worktree_operation_chat_ids.erase(chat_id);
+			    if (!result.ok)
+			    {
+				    return;
+			    }
+
+			    ChatSession* live_chat = ChatDomainService().FindChatById(*live_app, chat_id);
+			    if (live_chat == nullptr)
+			    {
+				    result = AsyncFailure(404, "Chat was removed while its worktree operation was running.");
+				    return;
+			    }
+
+			    ApplyWorktreeFields(*live_chat, *state);
+			    uam::PushStateUpdateIfChanged(browser, *live_app);
+		    });
 	}
 
 	nlohmann::json SerializeVcsCommitStatus(const uam::VcsCommitStatus& status)
@@ -162,8 +261,26 @@ void UamQueryHandler::HandleGetChatWorktreeStatus(CefRefPtr<CefBrowser> /*browse
 		return;
 	}
 
-	const uam::GitWorktreeStatus status = uam::GitWorktreeService().Status(m_app, *chat);
-	cb->Success(SerializeGitWorktreeStatus(status).dump());
+	const std::string chat_id = chat->id;
+	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
+	RunAsyncCefQuery(
+	    cb,
+	    [snapshot_inputs = std::move(snapshot_inputs), chat_id]() mutable
+	    {
+		    uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
+		    std::string load_warning;
+		    std::optional<ChatSession> chat = ChatRepository::LoadLocalChat(
+		        snapshot.data_root, chat_id, false, &load_warning);
+		    if (!chat)
+		    {
+			    return AsyncFailure(
+			        500,
+			        FailureDetailOrFallback(
+			            load_warning, "Failed to load chat worktree status."));
+		    }
+		    return AsyncSuccess(SerializeGitWorktreeStatus(
+		        uam::GitWorktreeService().Status(snapshot, *chat)));
+	    });
 }
 
 void UamQueryHandler::HandleCreateChatWorktree(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -173,21 +290,23 @@ void UamQueryHandler::HandleCreateChatWorktree(CefRefPtr<CefBrowser> browser, co
 	{
 		return;
 	}
+	if (m_app.pending_chat_save_at_by_chat_id.contains(chat->id))
+	{
+		cb->Failure(409, "Wait for chat history to finish saving before changing workspace isolation.");
+		return;
+	}
 	if (ChatRuntimeBusy(m_app, chat->id))
 	{
 		cb->Failure(409, "Stop the chat runtime before changing workspace isolation.");
 		return;
 	}
 
-	const uam::GitWorktreeOperationResult result = uam::GitWorktreeService().CreateForChat(m_app, *chat);
-	if (!result.ok)
-	{
-		cb->Failure(400, FailureDetailOrFallback(result.message, "Failed to create isolated Git worktree."));
-		return;
-	}
-
-	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success(SerializeGitWorktreeResult(result).dump());
+	RunWorktreeOperationAsync(m_app,
+	                          browser,
+	                          cb,
+	                          chat->id,
+	                          &uam::GitWorktreeService::CreateForChat,
+	                          "Failed to create isolated Git worktree.");
 }
 
 void UamQueryHandler::HandleDiscardChatWorktreeChanges(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -197,21 +316,23 @@ void UamQueryHandler::HandleDiscardChatWorktreeChanges(CefRefPtr<CefBrowser> bro
 	{
 		return;
 	}
+	if (m_app.pending_chat_save_at_by_chat_id.contains(chat->id))
+	{
+		cb->Failure(409, "Wait for chat history to finish saving before changing workspace isolation.");
+		return;
+	}
 	if (ChatRuntimeBusy(m_app, chat->id))
 	{
 		cb->Failure(409, "Stop the chat runtime before discarding worktree changes.");
 		return;
 	}
 
-	const uam::GitWorktreeOperationResult result = uam::GitWorktreeService().DiscardChatChanges(m_app, *chat);
-	if (!result.ok)
-	{
-		cb->Failure(400, FailureDetailOrFallback(result.message, "Failed to discard worktree changes."));
-		return;
-	}
-
-	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success(SerializeGitWorktreeResult(result).dump());
+	RunWorktreeOperationAsync(m_app,
+	                          browser,
+	                          cb,
+	                          chat->id,
+	                          &uam::GitWorktreeService::DiscardChatChanges,
+	                          "Failed to discard worktree changes.");
 }
 
 void UamQueryHandler::HandlePortChatWorktreeChanges(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -221,26 +342,23 @@ void UamQueryHandler::HandlePortChatWorktreeChanges(CefRefPtr<CefBrowser> browse
 	{
 		return;
 	}
+	if (m_app.pending_chat_save_at_by_chat_id.contains(chat->id))
+	{
+		cb->Failure(409, "Wait for chat history to finish saving before changing workspace isolation.");
+		return;
+	}
 	if (ChatRuntimeBusy(m_app, chat->id))
 	{
 		cb->Failure(409, "Stop the chat runtime before porting worktree changes.");
 		return;
 	}
 
-	const uam::GitWorktreeOperationResult result = uam::GitWorktreeService().PortChatChanges(m_app, *chat);
-	if (!result.ok)
-	{
-		std::string message = FailureDetailOrFallback(result.message, "Failed to port worktree changes.");
-		if (!result.patch_path.empty())
-		{
-			message += "\nPatch saved at: " + result.patch_path.string();
-		}
-		cb->Failure(400, message);
-		return;
-	}
-
-	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success(SerializeGitWorktreeResult(result).dump());
+	RunWorktreeOperationAsync(m_app,
+	                          browser,
+	                          cb,
+	                          chat->id,
+	                          &uam::GitWorktreeService::PortChatChanges,
+	                          "Failed to port worktree changes.");
 }
 
 void UamQueryHandler::HandleGetVcsCommitStatus(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)

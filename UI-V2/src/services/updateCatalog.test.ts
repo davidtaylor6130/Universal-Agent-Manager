@@ -98,4 +98,26 @@ describe('update catalog', () => {
     expect(Object.keys(catalog.providers)).toHaveLength(4)
     vi.unstubAllGlobals()
   })
+
+  it('keeps successful results when one service returns invalid JSON', async () => {
+    let call = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      const currentCall = ++call
+      return {
+        ok: true,
+        status: 200,
+        json: async () => {
+          if (currentCall === 2) throw new SyntaxError('invalid JSON')
+          return currentCall === 1
+            ? { tag_name: 'V4.2.0', html_url: 'https://example.test/release' }
+            : { version: `1.0.${currentCall}` }
+        },
+      }
+    }))
+
+    const catalog = await fetchLatestUpdateCatalog()
+    expect(catalog.uam.version).toBe('V4.2.0')
+    expect(Object.keys(catalog.providers)).toHaveLength(4)
+    vi.unstubAllGlobals()
+  })
 })

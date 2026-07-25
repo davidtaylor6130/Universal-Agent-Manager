@@ -39,6 +39,7 @@ export interface CppMessage {
   blocks?: MessageBlock[]
   markdownStoreFiles?: string[]
   attachments?: Attachment[]
+  processingTimeMs?: number
   createdAt: string
 }
 
@@ -154,6 +155,7 @@ export interface AcpToolCall {
   kind: string
   status: string
   content: string
+  contentDeferred?: boolean
   isSubAgent?: boolean
   subAgentId?: string
   subAgentTitle?: string
@@ -243,6 +245,7 @@ export interface AcpQueuedPrompt {
   attachments: Attachment[]
   goalMode: boolean
   goalId: string
+  prioritySteer?: boolean
 }
 
 export interface AcpDiagnosticEntry {

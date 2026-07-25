@@ -51,6 +51,7 @@ describe('FolderTree', () => {
       isNewChatModalOpen: false,
       newChatFolderId: null,
       openFolderMemoryLibrary: vi.fn(() => Promise.resolve(true)),
+      rescanFolderChats: vi.fn(() => Promise.resolve(true)),
     })
   })
 
@@ -67,17 +68,19 @@ describe('FolderTree', () => {
     expect(host.textContent).toContain('Chat 5')
     expect(host.textContent).not.toContain('Chat 6')
     expect(host.textContent).not.toContain('⌃')
-    expect(host.textContent).toContain('See more')
-    expect(host.textContent).toContain('+2')
+    expect(host.textContent).toContain('Show 2 more')
+    expect(host.textContent).not.toContain('See more')
+    expect(Array.from(host.querySelectorAll('button')).filter((button) => button.textContent?.trim() === 'New chat')).toHaveLength(0)
     expect((host.querySelector('[data-testid="folder-icon-project"]') as HTMLElement).style.color).toBe('var(--text-3)')
     const activeTitle = Array.from(host.querySelectorAll('span')).find((span) => span.textContent === 'Chat 1')
     expect(activeTitle?.getAttribute('style')).toContain('var(--text)')
     expect(activeTitle?.getAttribute('style')).not.toContain('#ffffff')
 
     const seeMoreButton = Array.from(host.querySelectorAll('button')).find((button) =>
-      button.textContent?.includes('See more')
+      button.textContent?.includes('Show 2 more')
     )
     expect(seeMoreButton).toBeTruthy()
+    expect(seeMoreButton?.style.borderStyle).toBe('none')
 
     act(() => {
       seeMoreButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -86,7 +89,7 @@ describe('FolderTree', () => {
     expect(host.textContent).toContain('Chat 6')
     expect(host.textContent).toContain('Chat 7')
     expect(host.textContent).toContain('Show less')
-    expect(host.querySelector('[data-testid="folder-row-project"]')?.className).toContain('mb-1')
+    expect(host.querySelector('[data-testid="folder-row-project"]')?.className).toContain('mb-0')
     expect(Array.from(host.querySelectorAll('span')).find((span) => span.textContent === 'Chat 1')?.closest('.cursor-pointer')?.className).toContain('py-1')
 
     act(() => {
@@ -113,12 +116,15 @@ describe('FolderTree', () => {
 
     const collection = host.querySelector('[data-testid="folder-collection-work"]')
     expect(collection?.querySelector('[data-testid="folder-row-project"]')).toBeTruthy()
+    const collectionHeader = collection?.firstElementChild as HTMLElement
     const collectionChildren = collection?.querySelector('[data-testid="collection-children-work"]') as HTMLElement
-    expect(collectionChildren.className).toContain('ml-6')
-    expect(collectionChildren.className).toContain('border-l-2')
-    expect(collectionChildren.className).toContain('duration-200')
-    expect(collectionChildren.style.background).toContain('var(--surface-up)')
-    expect(collectionChildren.style.transform).toBe('translateY(0)')
+    expect(collectionChildren.className).toContain('ml-3')
+    expect(collectionChildren.className).toContain('pl-1')
+    expect(collectionChildren.className).toContain('py-0')
+    expect(collectionChildren.className).not.toContain('border-l-2')
+    expect(collectionHeader.style.border).toBe('1px solid transparent')
+    expect(collectionChildren.style.background).toBe('transparent')
+    expect(collectionChildren.style.boxShadow).toBe('none')
     expect(collection?.querySelector('[data-testid="folder-row-second"]')).toBeNull()
     expect(host.querySelectorAll('[data-testid="folder-row-project"]')).toHaveLength(1)
     expect(host.textContent).not.toContain('Collections')
@@ -129,7 +135,6 @@ describe('FolderTree', () => {
     })
 
     expect(host.querySelector('[data-testid="collection-children-work"]')?.parentElement?.parentElement?.getAttribute('aria-hidden')).toBe('true')
-    expect(collectionChildren.style.transform).toBe('translateY(-6px)')
     expect(host.querySelector('[data-testid="folder-row-second"]')).toBeTruthy()
 
     const data = new Map<string, string>()
@@ -154,6 +159,45 @@ describe('FolderTree', () => {
 
     expect(useAppStore.getState().resourceCollections[0].references.map((reference) => reference.target)).toEqual(['project', 'second'])
     expect(collection?.querySelector('[data-testid="folder-row-second"]')).toBeTruthy()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('compacts collection, workspace, and chat rows without hiding their actions', () => {
+    useAppStore.setState({
+      resourceCollections: [{
+        id: 'work',
+        name: 'Work',
+        collapsed: false,
+        references: [{ id: 'project-ref', type: 'workspace-folder', target: 'project', label: 'Project' }],
+      }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const collection = host.querySelector<HTMLElement>('[data-testid="folder-collection-work"]')
+    const collectionHeader = host.querySelector<HTMLElement>('[data-testid="collection-header-work"]')
+    const folder = host.querySelector<HTMLElement>('[data-testid="folder-row-project"]')
+    const folderHeader = host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')
+    const chat = host.querySelector<HTMLElement>('[data-testid="session-row-chat-1"]')
+
+    expect(collection?.className).toContain('mb-0')
+    expect(collectionHeader?.className).toContain('gap-1.5')
+    expect(collectionHeader?.className).toContain('px-2.5')
+    expect(collectionHeader?.className).toContain('py-0.5')
+    expect(folder?.className).toContain('mb-0')
+    expect(folder?.style.boxShadow).toBe('none')
+    expect(folderHeader?.className).toContain('gap-1.5')
+    expect(folderHeader?.className).toContain('px-2.5')
+    expect(folderHeader?.className).toContain('py-0.5')
+    expect(chat?.className).toContain('gap-1.5')
+    expect(chat?.className).toContain('px-2.5')
+    expect(chat?.className).toContain('py-1')
+    expect(chat?.parentElement?.parentElement?.className).toContain('pl-3.5')
+    expect(chat?.querySelector('button[aria-label="More actions"]')).toBeTruthy()
 
     act(() => root.unmount())
     host.remove()
@@ -291,7 +335,7 @@ describe('FolderTree', () => {
       source.dispatchEvent(dragStart)
       target.dispatchEvent(dragOver)
     })
-    expect(target.style.borderBottom).toContain('var(--accent)')
+    expect(target.style.boxShadow).toContain('inset 0 -2px var(--accent)')
     act(() => target.dispatchEvent(drop))
     expect(reorderFolders).toHaveBeenCalledWith(['second', 'project'])
 
@@ -345,10 +389,12 @@ describe('FolderTree', () => {
     act(() => writeChatGridLayout({ ...defaultChatGridLayout, paneCount: 4, activePane: 1, sessionIds: ['chat-1', 'chat-3', '', ''] }))
 
     const folderIcon = host.querySelector('[data-testid="folder-icon-project"]') as HTMLElement
-    expect(folderIcon.getAttribute('stroke')).toMatch(/^url\(#.+\)$/)
-    expect(folderIcon.style.filter).toContain('drop-shadow')
-    expect(Array.from(host.querySelectorAll('[data-testid="folder-icon-project-gradient"] stop')).map((stop) => stop.getAttribute('stop-color'))).toEqual([
-      '#f97316', '#f97316', '#ec4899', '#ec4899',
+    expect(folderIcon.getAttribute('stroke')).not.toMatch(/^url\(#.+\)$/)
+    expect(folderIcon.style.color).toBe('var(--text-3)')
+    expect(folderIcon.style.filter).toBe('none')
+    expect(host.querySelector('[role="img"][aria-label="Shown in panes 1 and 2"]')).toBeTruthy()
+    expect(Array.from(host.querySelectorAll('[data-testid="folder-icon-project-marker"]')).map((marker) => (marker as HTMLElement).style.background)).toEqual([
+      'rgb(249, 115, 22)', 'rgb(236, 72, 153)',
     ])
 
     act(() => root.unmount())
@@ -380,9 +426,11 @@ describe('FolderTree', () => {
     act(() => writeChatGridLayout({ ...defaultChatGridLayout, paneCount: 4, activePane: 1, sessionIds: ['chat-1', 'chat-3', '', ''] }))
 
     const collectionIcon = host.querySelector('[data-testid="collection-icon-work"]') as HTMLElement
-    expect(collectionIcon.getAttribute('stroke')).toMatch(/^url\(#.+\)$/)
-    expect(Array.from(host.querySelectorAll('[data-testid="collection-icon-work-gradient"] stop')).map((stop) => stop.getAttribute('stop-color'))).toEqual([
-      '#f97316', '#f97316', '#ec4899', '#ec4899',
+    expect(collectionIcon.getAttribute('stroke')).not.toMatch(/^url\(#.+\)$/)
+    expect(collectionIcon.style.color).toBe('var(--text-3)')
+    expect(host.querySelector('[role="img"][aria-label="Shown in panes 1 and 2"]')).toBeTruthy()
+    expect(Array.from(host.querySelectorAll('[data-testid="collection-icon-work-marker"]')).map((marker) => (marker as HTMLElement).style.background)).toEqual([
+      'rgb(249, 115, 22)', 'rgb(236, 72, 153)',
     ])
 
     act(() => root.unmount())
@@ -442,11 +490,14 @@ describe('FolderTree', () => {
     expect(host.textContent).toContain('Pinned chats')
     expect(host.textContent).toContain('Chat 1')
 
+    expect(host.querySelector('[role="img"][aria-label="Pinned"]')).toBeTruthy()
     const pinButton = host.querySelector<HTMLButtonElement>('button[aria-label="Pin chat"]')
     expect(pinButton).toBeTruthy()
-    expect(pinButton?.className).toContain('opacity-0')
-    expect(pinButton?.className).toContain('group-hover:opacity-100')
-    expect(pinButton?.className).toContain('group-focus-within:opacity-100')
+    const actions = pinButton?.closest<HTMLElement>('[data-testid^="session-actions-"]')
+    expect(actions?.className).toContain('absolute')
+    expect(actions?.className).toContain('opacity-0')
+    expect(actions?.className).toContain('group-hover:opacity-100')
+    expect(actions?.className).toContain('group-focus-within:opacity-100')
 
     act(() => {
       pinButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -505,6 +556,27 @@ describe('FolderTree', () => {
     act(() => newChat?.click())
 
     expect(useAppStore.getState()).toMatchObject({ isNewChatModalOpen: true, newChatFolderId: 'project' })
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('rescans chats from the folder context menu', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    act(() => {
+      host.querySelector('[data-testid="folder-header-project"]')
+        ?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))
+    })
+    const rescan = Array.from(document.body.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Rescan chats')
+    )
+    act(() => rescan?.click())
+
+    expect(useAppStore.getState().rescanFolderChats).toHaveBeenCalledWith('project')
 
     act(() => root.unmount())
     host.remove()

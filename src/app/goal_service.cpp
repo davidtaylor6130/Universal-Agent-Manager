@@ -180,6 +180,16 @@ bool GoalService::SetActiveGoal(AppState& app, const std::string& chat_id, const
 		return false;
 	}
 
+	const std::string updated_at = uam::time::TimestampNow();
+	for (auto& goal : chat->goals)
+	{
+		if (goal.id != goal_id && goal.status == GoalStatus::Active)
+		{
+			goal.status = GoalStatus::Paused;
+			goal.updated_at = updated_at;
+		}
+	}
+
 	if (matched_goal->status == GoalStatus::Blocked)
 	{
 		matched_goal->blocked_turn_count = 0;
@@ -190,9 +200,9 @@ bool GoalService::SetActiveGoal(AppState& app, const std::string& chat_id, const
 		matched_goal->blocked_turn_count = 0;
 	}
 	matched_goal->status = GoalStatus::Active;
-	matched_goal->updated_at = uam::time::TimestampNow();
+	matched_goal->updated_at = updated_at;
 	chat->active_goal_id = goal_id;
-	chat->updated_at = uam::time::TimestampNow();
+	chat->updated_at = updated_at;
 	MarkDirty(app, chat_id);
 	return true;
 }
@@ -420,7 +430,7 @@ void GoalService::RecordBlocker(AppState& app, const std::string& goal_id, const
 
 std::string GoalService::BuildContinuationPrompt(const Goal& goal, int64_t tokens_used, int64_t token_budget)
 {
-	if (goal.objective.empty())
+	if (uam::strings::IsBlank(goal.objective))
 	{
 		return "";
 	}

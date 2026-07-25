@@ -550,7 +550,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 		{
 			(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 		}
-		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, browser);
+		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, browser, !completed_cancelled_turn);
 		if (browser)
 		{
 			uam::PushStreamDone(browser, chat.id);

@@ -1064,12 +1064,7 @@ namespace
 		{
 			text = text.substr(memory_at + 9);
 		}
-		text = uam::strings::Trim(text);
-		if (text.size() > 320)
-		{
-			text = text.substr(0, 320);
-		}
-		return text;
+		return uam::strings::SafeLine(text, 320);
 	}
 
 	template <typename Visit> void ForEachMemoryFileInRoot(const fs::path& root, Visit&& visit)

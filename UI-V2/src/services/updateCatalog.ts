@@ -71,9 +71,12 @@ export async function fetchLatestUpdateCatalog(): Promise<LatestUpdateCatalog> {
     ),
   ])
   const releaseResponse = releaseResult.status === 'fulfilled' ? releaseResult.value : null
-  const release = releaseResponse?.ok
-    ? await releaseResponse.json() as { tag_name?: string; html_url?: string }
-    : {}
+  let release: { tag_name?: string; html_url?: string } = {}
+  try {
+    if (releaseResponse?.ok) release = await releaseResponse.json()
+  } catch {
+    // Keep the independent provider results.
+  }
 
   const providers: LatestUpdateCatalog['providers'] = {}
   for (let index = 0; index < providerEntries.length; index += 1) {
@@ -81,7 +84,12 @@ export async function fetchLatestUpdateCatalog(): Promise<LatestUpdateCatalog> {
     const result = providerResults[index]
     if (result.status !== 'fulfilled' || !result.value.ok) continue
     const response = result.value
-    const payload = await response.json() as { version?: string }
+    let payload: { version?: string }
+    try {
+      payload = await response.json()
+    } catch {
+      continue
+    }
     if (!payload.version) continue
     providers[providerId] = {
       version: payload.version,

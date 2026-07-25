@@ -3,7 +3,7 @@
 // Extracted from ChatView.tsx (MO-3).
 
 import { MarkdownContent } from '../markdown/Markdown'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useAppStore } from '../../store/useAppStore'
 import type {
   AcpPendingPermission,
@@ -15,7 +15,7 @@ import type {
 } from '../../store/useAppStore'
 import type { Attachment, Message, MessageBlock } from '../../types/message'
 import { Tooltip } from '../ui'
-import { BookOpen } from 'lucide-react'
+import { BookOpen, Brain, ChevronRight, LoaderCircle } from 'lucide-react'
 import {
   PermissionInlineCard,
   ToolCallModal,
@@ -33,6 +33,7 @@ function SubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; tool: A
   const [error, setError] = useState('')
   const [selectedTool, setSelectedTool] = useState<AcpToolCall | null>(null)
   const openSubAgentSession = useAppStore((state) => state.openSubAgentSession)
+  const workingDisplayMode = useAppStore((state) => state.workingDisplayMode)
   const session = useAppStore((state) => state.sessions.find((candidate) => candidate.id === chatId))
   const messages = useAppStore((state) => state.messages[chatId] ?? [])
   const isActive = tool.status === 'running' || tool.status === 'in_progress' || tool.status === 'pending'
@@ -60,12 +61,12 @@ function SubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; tool: A
     }
   }, [isActive, openSubAgentSession, sourceChatId, tool.subAgentId, tool.subAgentTitle])
 
-  if (error) return <div className="text-xs" style={{ color: 'var(--danger)' }}>{error}</div>
+  if (error) return <div className="text-xs" style={{ color: 'var(--error)' }}>{error}</div>
   if (!chatId || !session) return <div className="text-xs" style={{ color: 'var(--text-3)' }}>Loading sub-agent chat…</div>
 
   return (
     <section className="space-y-3" aria-label={`Sub-agent chat: ${session.name}`}>
-      {selectedTool && <ToolCallModal tool={selectedTool} onClose={() => setSelectedTool(null)} />}
+      {selectedTool && <ToolCallModal tool={selectedTool} chatId={chatId} onClose={() => setSelectedTool(null)} />}
       <div className="text-xs font-semibold" style={{ color: 'var(--blue)' }}>{session.name}</div>
       {messages.length === 0 && <div className="text-xs" style={{ color: 'var(--text-3)' }}>No messages recorded.</div>}
       {messages.map((message) => (
@@ -73,6 +74,7 @@ function SubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; tool: A
           <div className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>{message.role}</div>
           <PersistedMessageContent
             message={message}
+            workingMode={workingDisplayMode}
             sourceChatId={chatId}
             onSelectTool={(_, toolId) => setSelectedTool(message.toolCalls?.find((candidate) => candidate.id === toolId) ?? null)}
           />
@@ -98,42 +100,112 @@ export function ThinkingBlock({
       aria-label="Thinking"
       data-testid="thinking-block"
       data-active={active}
-      className="uam-thinking-block"
+      className="uam-thinking-block uam-thinking-row"
       open={defaultOpen}
-      style={{
-        border: '1px solid color-mix(in srgb, var(--yellow) 58%, var(--border))',
-        borderLeft: '4px solid var(--yellow)',
-        borderRadius: 6,
-        background: 'color-mix(in srgb, var(--yellow) 12%, var(--surface))',
-        color: 'var(--text-2)',
-        overflow: 'hidden',
-      }}
     >
-      <summary
-        className="flex items-center gap-2 text-[11px] font-semibold cursor-pointer select-none"
-        style={{
-          minHeight: 34,
-          padding: '0 10px',
-          color: 'var(--text)',
-          listStyle: 'none',
-        }}
-      >
-        <span aria-hidden="true" style={{ color: 'var(--yellow)', fontSize: 12, fontWeight: 700 }}>{'>'}</span>
-        <span style={{ color: 'var(--yellow)', fontSize: 9 }}>●</span>
-        <span>Thinking</span>
-        <span className="ml-auto text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>
-          details
-        </span>
+      <summary className="uam-thinking-row__summary">
+        <Brain className="uam-thinking-row__icon" size={13} aria-hidden />
+        <span className="uam-thinking-row__kind">Thinking</span>
+        <span className="uam-thinking-row__preview">{text.split('\n').find((line) => line.trim())}</span>
+        <ChevronRight className="uam-thinking-row__chevron" size={13} aria-hidden />
       </summary>
-      <div
-        className="px-3 pb-3 pt-2 text-xs"
-        style={{
-          borderTop: '1px solid color-mix(in srgb, var(--yellow) 35%, var(--border))',
-          color: 'var(--text-2)',
-        }}
-      >
+      <div className="uam-thinking-row__content">
         <MarkdownContent content={text} />
       </div>
+    </details>
+  )
+}
+
+export type WorkingDisplayMode = 'compact' | 'verbose'
+
+function formatWorkedDuration(seconds = 0) {
+  const wholeSeconds = Math.max(0, Math.round(seconds))
+  const minutes = Math.floor(wholeSeconds / 60)
+  const remainder = wholeSeconds % 60
+  if (minutes === 0) return `${remainder}s`
+  if (remainder === 0) return `${minutes}m`
+  return `${minutes}m ${remainder}s`
+}
+
+function lastNonEmptyLine(text: string) {
+  return text.split('\n').reverse().find((line) => line.trim())?.trim() ?? ''
+}
+
+function CompactWorkingSummary({
+  events,
+  tools,
+  active,
+  workedSeconds,
+  onSelectTool,
+  renderSubAgentHistory,
+}: {
+  events: AcpTurnEvent[]
+  tools: AcpToolCall[]
+  active: boolean
+  workedSeconds?: number
+  onSelectTool: (toolId: string) => void
+  renderSubAgentHistory?: (tool: AcpToolCall) => ReactNode
+}) {
+  const [open, setOpen] = useState(active)
+  const toolById = new Map(tools.map((tool) => [tool.id, tool]))
+  const lastTextUpdate = events.slice().reverse().find(
+    (event) => (event.type === 'thought' || event.type === 'assistant_text') && event.text.trim()
+  )
+  const lastUpdate = lastTextUpdate && (lastTextUpdate.type === 'thought' || lastTextUpdate.type === 'assistant_text')
+    ? lastNonEmptyLine(lastTextUpdate.text) || 'Reasoning completed'
+    : tools.length > 0
+      ? `${active ? 'Using' : 'Used'} a tool`
+      : 'Reasoning completed'
+
+  useEffect(() => setOpen(active), [active])
+
+  return (
+    <details
+      data-testid="working-summary"
+      className="uam-working-summary"
+      data-active={active}
+      open={open}
+    >
+      <summary
+        className="uam-working-summary__header"
+        onClick={(event) => {
+          event.preventDefault()
+          setOpen(active || !open)
+        }}
+      >
+        {active
+          ? <LoaderCircle className="uam-working-summary__spinner" size={14} aria-hidden />
+          : <ChevronRight className="uam-working-summary__chevron" size={14} aria-hidden />}
+        <span className="uam-working-summary__label">
+          {active ? 'Working' : `Worked for ${formatWorkedDuration(workedSeconds)}`}
+        </span>
+        <span className="uam-working-summary__last">{lastUpdate}</span>
+      </summary>
+      {open && (
+        <div className="uam-working-summary__content">
+          {events.map((event, index) => {
+            if (event.type === 'assistant_text') {
+              return <MarkdownContent key={`compact-text-${index}`} content={event.text} />
+            }
+            if (event.type === 'thought') {
+              return <ThinkingBlock key={`compact-thought-${index}`} text={event.text} />
+            }
+            if (event.type === 'tool_call') {
+              const tool = toolById.get(event.toolCallId)
+              if (!tool) return null
+              return (
+                <ToolCallInlineRows
+                  key={`compact-tool-${event.toolCallId}-${index}`}
+                  tools={[tool]}
+                  onSelectTool={onSelectTool}
+                  renderSubAgentHistory={renderSubAgentHistory}
+                />
+              )
+            }
+            return null
+          })}
+        </div>
+      )}
     </details>
   )
 }
@@ -173,7 +245,7 @@ export function PlanBlock({
     const content = entry.content.trim()
     return content && content !== planSummary
   }) ?? []
-  if (!planSummary && planEntries.length === 0) return null
+  if (!showActions || (!planSummary && planEntries.length === 0)) return null
 
   return (
     <section
@@ -381,11 +453,15 @@ export function PersistedMessageBlocksContent({
   onSelectTool,
   planActions,
   sourceChatId,
+  workingMode = 'verbose',
+  workedSeconds,
 }: {
   message: Message
   blocks: MessageBlock[]
   onSelectTool: (messageId: string, toolId: string) => void
   sourceChatId?: string
+  workingMode?: WorkingDisplayMode
+  workedSeconds?: number
   planActions?: {
     show: boolean
     disabled: boolean
@@ -396,21 +472,48 @@ export function PersistedMessageBlocksContent({
 }) {
   const toolById = new Map((message.toolCalls ?? []).map((tool) => [tool.id, tool]))
   const lastPlanBlockIndex = blocks.reduce((latest, block, index) => block.type === 'plan' ? index : latest, -1)
+  const lastAssistantTextIndex = blocks.reduce(
+    (latest, block, index) => block.type === 'assistant_text' && block.text.trim() ? index : latest,
+    -1
+  )
+  const compactWorkingEvents: AcpTurnEvent[] = workingMode === 'compact'
+    ? blocks.flatMap<AcpTurnEvent>((block, index) => {
+        if (block.type === 'thought') return [{ type: 'thought' as const, text: block.text }]
+        if (block.type === 'tool_call') return [{ type: 'tool_call' as const, toolCallId: block.toolCallId }]
+        if (block.type === 'assistant_text' && index !== lastAssistantTextIndex) {
+          return [{ type: 'assistant_text' as const, text: block.text }]
+        }
+        return []
+      })
+    : []
 
   return (
     <div className="space-y-2">
+      {compactWorkingEvents.length > 0 && (
+        <CompactWorkingSummary
+          events={compactWorkingEvents}
+          tools={message.toolCalls ?? []}
+          active={false}
+          workedSeconds={workedSeconds}
+          onSelectTool={(toolId) => onSelectTool(message.id, toolId)}
+          renderSubAgentHistory={sourceChatId ? (tool) => <SubAgentHistory sourceChatId={sourceChatId} tool={tool} /> : undefined}
+        />
+      )}
       {blocks.map((block, index) => {
         if (block.type === 'assistant_text') {
+          if (workingMode === 'compact' && index !== lastAssistantTextIndex) return null
           const review = parseGoalReviewDecision(block.text)
           if (review) return <GoalReviewBlock key={`block-goal-review-${index}`} review={review} />
           return <MarkdownContent key={`block-text-${index}`} content={block.text} />
         }
 
         if (block.type === 'thought') {
+          if (workingMode === 'compact') return null
           return <ThinkingBlock key={`block-thought-${index}`} text={block.text} />
         }
 
         if (block.type === 'tool_call') {
+          if (workingMode === 'compact') return null
           const tool = toolById.get(block.toolCallId) ?? {
             id: block.toolCallId,
             title: block.toolCallId,
@@ -454,10 +557,12 @@ export function PersistedMessageContent({
   onSelectTool,
   planActions,
   sourceChatId,
+  workingMode = 'verbose',
 }: {
   message: Message
   onSelectTool: (messageId: string, toolId: string) => void
   sourceChatId?: string
+  workingMode?: WorkingDisplayMode
   planActions?: {
     show: boolean
     disabled: boolean
@@ -473,6 +578,7 @@ export function PersistedMessageContent({
   const blocks = message.role === 'assistant' ? message.blocks ?? [] : []
   const attachments = message.attachments ?? []
   const goalReview = goalReviewForMessage(message)
+  const workedSeconds = (message.processingTimeMs ?? 0) / 1000
 
   if (blocks.length > 0) {
     return (
@@ -483,6 +589,8 @@ export function PersistedMessageContent({
           onSelectTool={onSelectTool}
           planActions={planActions}
           sourceChatId={sourceChatId}
+          workingMode={workingMode}
+          workedSeconds={workedSeconds}
         />
         <AttachmentList attachments={attachments} />
       </div>
@@ -500,13 +608,30 @@ export function PersistedMessageContent({
 
   return (
     <div className="space-y-2">
+      {workingMode === 'compact' && (thoughts || toolCalls.length > 0) ? (
+        <CompactWorkingSummary
+          events={[
+            ...(thoughts ? [{ type: 'thought' as const, text: thoughts }] : []),
+            ...toolCalls.map((tool) => ({ type: 'tool_call' as const, toolCallId: tool.id })),
+          ]}
+          tools={toolCalls}
+          active={false}
+          workedSeconds={workedSeconds}
+          onSelectTool={(toolId) => onSelectTool(message.id, toolId)}
+          renderSubAgentHistory={sourceChatId ? (tool) => <SubAgentHistory sourceChatId={sourceChatId} tool={tool} /> : undefined}
+        />
+      ) : null}
       {message.content.trim() && (goalReview ? <GoalReviewBlock review={goalReview} /> : <MarkdownContent content={message.content} />)}
-      <ThinkingBlock text={thoughts} />
-      <ToolCallInlineRows
-        tools={toolCalls}
-        onSelectTool={(toolId) => onSelectTool(message.id, toolId)}
-        renderSubAgentHistory={sourceChatId ? (tool) => <SubAgentHistory sourceChatId={sourceChatId} tool={tool} /> : undefined}
-      />
+      {workingMode !== 'compact' && (
+        <>
+          <ThinkingBlock text={thoughts} />
+          <ToolCallInlineRows
+            tools={toolCalls}
+            onSelectTool={(toolId) => onSelectTool(message.id, toolId)}
+            renderSubAgentHistory={sourceChatId ? (tool) => <SubAgentHistory sourceChatId={sourceChatId} tool={tool} /> : undefined}
+          />
+        </>
+      )}
       <PlanBlock
         summary={planSummary}
         entries={planEntries}
@@ -594,6 +719,8 @@ export function TurnTimelineContent({
   onStopRuntime,
   sourceChatId,
   active = false,
+  workingMode = 'verbose',
+  workedSeconds,
 }: {
   events: AcpTurnEvent[]
   tools: AcpToolCall[]
@@ -618,9 +745,12 @@ export function TurnTimelineContent({
   onStopRuntime: () => void
   sourceChatId?: string
   active?: boolean
+  workingMode?: WorkingDisplayMode
+  workedSeconds?: number
 }) {
   const toolById = new Map(tools.map((tool) => [tool.id, tool]))
   const hasPlanEvent = events.some((event) => event.type === 'plan')
+  const lastPlanEventIndex = events.reduce((latest, event, index) => event.type === 'plan' ? index : latest, -1)
   const hasPendingPermissionEvent = Boolean(
     pendingPermission &&
       events.some((event) => event.type === 'permission_request' && event.requestId === pendingPermission.requestId)
@@ -634,16 +764,39 @@ export function TurnTimelineContent({
       pendingUserInput.itemId &&
       events.some((event) => event.type === 'tool_call' && event.toolCallId === pendingUserInput.itemId)
   )
+  const compactWorkingEvents = workingMode === 'compact' && !active
+    ? events.filter((event, index) => {
+        if (event.type === 'thought' || event.type === 'tool_call') return true
+        if (event.type !== 'assistant_text') return false
+        return events.slice(index + 1).some((candidate) => candidate.type === 'assistant_text' && candidate.text.trim())
+      })
+    : []
 
   return (
     <div className="space-y-2">
+      {compactWorkingEvents.length > 0 && (
+        <CompactWorkingSummary
+          events={compactWorkingEvents}
+          tools={tools}
+          active={active}
+          workedSeconds={workedSeconds}
+          onSelectTool={onSelectTool}
+          renderSubAgentHistory={sourceChatId ? (tool) => <SubAgentHistory sourceChatId={sourceChatId} tool={tool} /> : undefined}
+        />
+      )}
       {events.map((event, index) => {
         if (event.type === 'assistant_text') {
+          if (
+            workingMode === 'compact' &&
+            !active &&
+            events.slice(index + 1).some((candidate) => candidate.type === 'assistant_text' && candidate.text.trim())
+          ) return null
           return <MarkdownContent key={`text-${index}`} content={event.text} />
         }
 
         if (event.type === 'thought') {
-          return <ThinkingBlock key={`thought-${index}`} text={event.text} active={active} />
+          if (workingMode === 'compact' && !active) return null
+          return <ThinkingBlock key={`thought-${index}`} text={event.text} active={active && index === events.length - 1} />
         }
 
         if (event.type === 'plan') {
@@ -652,7 +805,7 @@ export function TurnTimelineContent({
               key={`plan-${index}`}
               summary={planSummary}
               entries={planEntries}
-              showActions={planActions?.show}
+              showActions={index === lastPlanEventIndex && planActions?.show}
               actionsDisabled={planActions?.disabled}
               disabledTitle={planActions?.disabledTitle}
               onApprove={planActions?.onApprove}
@@ -677,6 +830,36 @@ export function TurnTimelineContent({
             pendingUserInput &&
             !hasPendingUserInputEvent &&
             pendingUserInput.itemId === event.toolCallId
+
+          if (workingMode === 'compact' && !active) {
+            if (!shouldRenderPendingPermission && !shouldRenderPendingUserInput) return null
+            return (
+              <div key={`tool-attention-${event.toolCallId}-${index}`} className="space-y-2">
+                {shouldRenderPendingPermission && (
+                  <PermissionInlineCard
+                    permission={pendingPermission}
+                    onResolve={onResolvePermission}
+                    waitIsStale={waitIsStale}
+                    waitStaleReason={waitStaleReason}
+                    waitSeconds={waitSeconds}
+                    onCancelTurn={onCancelTurn}
+                    onStopRuntime={onStopRuntime}
+                  />
+                )}
+                {shouldRenderPendingUserInput && (
+                  <UserInputInlineCard
+                    input={pendingUserInput}
+                    onResolve={onResolveUserInput}
+                    waitIsStale={waitIsStale}
+                    waitStaleReason={waitStaleReason}
+                    waitSeconds={waitSeconds}
+                    onCancelTurn={onCancelTurn}
+                    onStopRuntime={onStopRuntime}
+                  />
+                )}
+              </div>
+            )
+          }
 
           return (
             <div key={`tool-${event.toolCallId}-${index}`} className="space-y-2">

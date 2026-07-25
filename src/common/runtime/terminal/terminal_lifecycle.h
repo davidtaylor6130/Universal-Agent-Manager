@@ -9,7 +9,7 @@
 namespace uam
 {
 
-inline constexpr double kCliTerminalDefaultIdleShutdownTimeoutSeconds = 60.0;
+inline constexpr double kCliTerminalPromptSettleSeconds = 0.2;
 inline constexpr double kCliTerminalSteerRestartTimeoutSeconds = 3.0;
 inline constexpr double kCliTerminalSteerFailureTimeoutSeconds = 10.0;
 inline constexpr std::string_view kCliTerminalQuitCommand = "/quit\r\n";
@@ -28,6 +28,7 @@ enum class CliTerminalStopMode
 };
 
 void CloseCliTerminalHandles(CliTerminalState& terminal);
+void FailCliTerminalTransport(CliTerminalState& terminal, std::string_view message);
 bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, std::size_t len);
 std::string BuildCliTerminalPromptInput(std::string_view prompt);
 bool RequestCliTerminalSteer(CliTerminalState& terminal, std::string_view prompt, bool retry, std::string* error_out = nullptr);
@@ -37,7 +38,8 @@ const char* CliTerminalLifecycleStateLabel(CliTerminalLifecycleState state);
 const char* CliTerminalLifecycleStateLabel(const CliTerminalState& terminal);
 bool CliTerminalLifecycleIsProcessing(const CliTerminalState& terminal);
 bool CliTerminalLifecycleIsIdleLive(const CliTerminalState& terminal);
-void MarkCliTerminalTurnBusy(CliTerminalState& terminal);
+bool CliTerminalPromptConfirmsTurnIdle(CliTerminalState& terminal, bool prompt_detected, bool received_output, double now_seconds);
+void MarkCliTerminalTurnBusy(CliTerminalState& terminal, bool settle_first_prompt = true);
 void MarkCliTerminalTurnIdle(CliTerminalState& terminal);
 bool IsCliTerminalTurnBusy(const CliTerminalState& terminal);
 void MarkCliTerminalShuttingDown(CliTerminalState& terminal);
@@ -48,7 +50,7 @@ void RequestCliTerminalQuit(CliTerminalState& terminal);
 void BeginCliTerminalIdleShutdown(CliTerminalState& terminal);
 bool PendingCallMatchesCliTerminalIdentity(const AppState& app, std::string_view identity);
 bool CliTerminalHasPendingCall(const AppState& app, const CliTerminalState& terminal);
-bool IsCliTerminalEligibleForBackgroundIdleShutdown(const AppState& app, const CliTerminalState& terminal, std::string_view selected_chat_id, double now, double idle_timeout_seconds = kCliTerminalDefaultIdleShutdownTimeoutSeconds);
+bool IsCliTerminalEligibleForBackgroundIdleShutdown(const AppState& app, const CliTerminalState& terminal, std::string_view selected_chat_id, double now);
 void StopCliTerminal(CliTerminalState& terminal, bool clear_identity = false, CliTerminalStopMode stop_mode = CliTerminalStopMode::Graceful);
 CliTerminalState* FindCliTerminalForChat(AppState& app, std::string_view chat_id);
 void SyncCliTerminalToNativeHistory(AppState& app, const CliTerminalState& terminal);

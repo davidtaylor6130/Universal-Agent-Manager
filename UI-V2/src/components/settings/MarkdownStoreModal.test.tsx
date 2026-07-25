@@ -2,6 +2,7 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../../store/useAppStore'
+import type { MarkdownStoreImportCandidate, MarkdownStoreImportResult } from '../../types/markdownStore'
 import { MarkdownStoreModal } from './MarkdownStoreModal'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -168,6 +169,101 @@ describe('MarkdownStoreModal', () => {
     await act(async () => { Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Import selected')?.click(); await new Promise((resolve) => setTimeout(resolve, 0)) })
     expect(importEntries).toHaveBeenCalledWith([{ sourceProvider: 'codex', sourcePath: '/tmp/source.md', conflictAction: 'separate' }])
 
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps the most recently requested import preview', async () => {
+    let resolveProvider: (value: MarkdownStoreImportCandidate[]) => void = () => {}
+    let resolveFile: (value: MarkdownStoreImportCandidate[]) => void = () => {}
+    useAppStore.setState({
+      browseMarkdownStoreImport: vi.fn(() => Promise.resolve('/tmp/recent.md')),
+      previewMarkdownStoreImports: vi.fn((options) => new Promise<MarkdownStoreImportCandidate[]>((resolve) => {
+        if (options.includeProviders) resolveProvider = resolve
+        else resolveFile = resolve
+      })),
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<MarkdownStoreModal />))
+
+    act(() => (host.querySelector('button[aria-label="Import provider skills"]') as HTMLButtonElement).click())
+    await act(async () => {
+      (host.querySelector('button[aria-label="Import file"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      resolveFile([{ id: 'recent', title: 'Recent file', maker: '', review: '', preview: '', sourceProvider: 'file', sourcePath: '/tmp/recent.md', supported: true, validationError: '', collisionPath: '' }])
+      await Promise.resolve()
+    })
+    expect(host.textContent).toContain('Recent file')
+
+    await act(async () => {
+      resolveProvider([{ id: 'stale', title: 'Stale provider skill', maker: '', review: '', preview: '', sourceProvider: 'provider', sourcePath: '/tmp/stale.md', supported: true, validationError: '', collisionPath: '' }])
+      await Promise.resolve()
+    })
+    expect(host.textContent).toContain('Recent file')
+    expect(host.textContent).not.toContain('Stale provider skill')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('saves an entry only once before the submitting state rerenders', async () => {
+    const finishes: Array<(ok: boolean) => void> = []
+    const update = vi.fn(() => new Promise<boolean>((resolve) => finishes.push(resolve)))
+    useAppStore.setState({ updateMarkdownStoreEntry: update })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<MarkdownStoreModal />))
+    act(() => (host.querySelector('button[aria-label="Edit Review code in app"]') as HTMLButtonElement).click())
+    const save = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Save') as HTMLButtonElement
+
+    act(() => {
+      save.click()
+      save.click()
+    })
+
+    expect(update).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      finishes.forEach((finish) => finish(false))
+      await Promise.resolve()
+    })
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('runs an import only once before the importing state rerenders', async () => {
+    const finishes: Array<(results: MarkdownStoreImportResult[]) => void> = []
+    const importEntries = vi.fn(() => new Promise<MarkdownStoreImportResult[]>((resolve) => finishes.push(resolve)))
+    useAppStore.setState({
+      previewMarkdownStoreImports: vi.fn(() => Promise.resolve([
+        { id: 'one', title: 'One', maker: '', review: '', preview: '', sourceProvider: 'file', sourcePath: '/tmp/one.md', supported: true, validationError: '', collisionPath: '' },
+      ])),
+      importMarkdownStoreEntries: importEntries,
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<MarkdownStoreModal />))
+    await act(async () => {
+      (host.querySelector('button[aria-label="Import provider skills"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    const run = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Import selected') as HTMLButtonElement
+
+    act(() => {
+      run.click()
+      run.click()
+    })
+
+    expect(importEntries).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      finishes.forEach((finish) => finish([]))
+      await Promise.resolve()
+    })
     act(() => root.unmount())
     host.remove()
   })

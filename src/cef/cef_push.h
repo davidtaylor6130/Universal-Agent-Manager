@@ -26,6 +26,7 @@ namespace uam
 	{
 		return StateSerializer::SerializeFingerprint(app).dump();
 	}
+	std::string StatePatchForTests(const AppState& before, const AppState& after);
 	std::string SettingsPatchForTests(const AppState& app);
 
 	/// <summary>

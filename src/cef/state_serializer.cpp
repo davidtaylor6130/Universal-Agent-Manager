@@ -57,19 +57,6 @@ namespace uam
 			return "user";
 		}
 
-		std::string ToolCallContentForFrontend(const ToolCall& tool_call)
-		{
-			if (!tool_call.args_json.empty() && !tool_call.result_text.empty())
-			{
-				return "Arguments:\n" + tool_call.args_json + "\n\nResult:\n" + tool_call.result_text;
-			}
-			if (!tool_call.result_text.empty())
-			{
-				return tool_call.result_text;
-			}
-			return tool_call.args_json;
-		}
-
 		nlohmann::json JsonArrayWithCapacity(std::size_t capacity)
 		{
 			nlohmann::json array = nlohmann::json::array();
@@ -193,7 +180,7 @@ namespace uam
 			tool_json["title"] = tool_call.name;
 			tool_json["kind"] = uam::strings::NonEmptyOrFallback(tool_call.name, "tool");
 			tool_json["status"] = tool_call.status;
-			tool_json["content"] = ToolCallContentForFrontend(tool_call);
+			tool_json["contentDeferred"] = !tool_call.args_json.empty() || !tool_call.result_text.empty();
 			tool_json["isSubAgent"] = tool_call.is_sub_agent;
 			tool_json["subAgentId"] = tool_call.sub_agent_id;
 			tool_json["subAgentTitle"] = tool_call.sub_agent_title;
@@ -265,6 +252,10 @@ namespace uam
 			message_json["role"] = RoleStr(message.role);
 			message_json["content"] = message.content;
 			message_json["createdAt"] = message.created_at;
+			if (message.processing_time_ms > 0)
+			{
+				message_json["processingTimeMs"] = message.processing_time_ms;
+			}
 			if (!message.provider.empty())
 			{
 				message_json["providerId"] = message.provider;
@@ -372,7 +363,6 @@ namespace uam
 
 			std::uint64_t hash = uam::hashing::kFnv1a64OffsetBasis;
 
-			FingerprintHashString(hash, session.updated_at);
 			FingerprintHashString(hash, std::to_string(session.messages.size()));
 
 			if (!session.messages.empty())
@@ -381,7 +371,7 @@ namespace uam
 				FingerprintHashString(hash, RoleStr(last_message.role));
 				FingerprintHashString(hash, last_message.created_at);
 				FingerprintHashString(hash, last_message.provider);
-				FingerprintHashString(hash, std::to_string(last_message.content.size()));
+				FingerprintHashString(hash, last_message.content);
 				FingerprintHashString(hash, std::to_string(last_message.tool_calls.size()));
 				for (const ToolCall& tool_call : last_message.tool_calls)
 				{
@@ -1154,6 +1144,19 @@ namespace uam
 		}
 
 		return j;
+	}
+
+	std::string StateSerializer::ToolCallContentForFrontend(const ToolCall& tool_call)
+	{
+		if (!tool_call.args_json.empty() && !tool_call.result_text.empty())
+		{
+			return "Arguments:\n" + tool_call.args_json + "\n\nResult:\n" + tool_call.result_text;
+		}
+		if (!tool_call.result_text.empty())
+		{
+			return tool_call.result_text;
+		}
+		return tool_call.args_json;
 	}
 
 	nlohmann::json StateSerializer::SerializeFolder(const ChatFolder& folder)

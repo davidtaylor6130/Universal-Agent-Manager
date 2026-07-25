@@ -137,12 +137,30 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       set({ folders: reordered })
       if (!isCefContext()) return true
 
+      const requestKey = 'reorderFolders'
+      const requestId = createRequestId(requestKey)
+      rememberPendingRequest(requestKey, requestId)
       const response = await sendToCEF({
         action: 'reorderFolders',
         payload: { folderIds: reordered.map((folder) => folder.id) },
-        requestId: createRequestId('reorderFolders'),
+        requestId,
       })
-      if (!response.ok) set({ folders: previous })
+      if (response.ok) {
+        clearPendingRequest(requestKey, response.requestId)
+      } else if (isLatestPendingRequest(requestKey, response.requestId)) {
+        set({ folders: previous })
+        pendingRequestIdsByKey.delete(requestKey)
+      }
+      return response.ok
+    },
+
+    rescanFolderChats: async (id: string): Promise<boolean> => {
+      if (!isCefContext()) return true
+      const response = await sendToCEF({
+        action: 'rescanFolderChats',
+        payload: { folderId: id },
+        requestId: createRequestId('rescanFolderChats'),
+      })
       return response.ok
     },
 
@@ -173,7 +191,11 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
             }
 
             set((state) => ({
-              folders: state.folders.map((folder) => (folder.id === id ? previousFolder : folder)),
+              folders: state.folders.map((folder) => (folder.id === id ? {
+                ...folder,
+                name: previousFolder.name,
+                directory: previousFolder.directory,
+              } : folder)),
             }))
             pendingRequestIdsByKey.delete(requestKey)
           }
@@ -512,7 +534,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       set({ memoryLibraryLoading: true, memoryLibraryError: '' })
 
       if (isCefContext()) {
-        const requestKey = 'listMemoryEntries:all'
+        const requestKey = 'listMemoryEntries:open'
         const requestId = createRequestId(requestKey)
         rememberPendingRequest(requestKey, requestId)
         const response = await sendToCEF<{ scope?: MemoryScope; entries?: MemoryEntry[] }>({
@@ -559,7 +581,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       set({ memoryLibraryLoading: true, memoryLibraryError: '' })
 
       if (isCefContext()) {
-        const requestKey = 'listMemoryEntries:global'
+        const requestKey = 'listMemoryEntries:open'
         const requestId = createRequestId(requestKey)
         rememberPendingRequest(requestKey, requestId)
         const response = await sendToCEF<{ scope?: MemoryScope; entries?: MemoryEntry[] }>({
@@ -605,7 +627,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       set({ memoryLibraryLoading: true, memoryLibraryError: '' })
 
       if (isCefContext()) {
-        const requestKey = `listMemoryEntries:folder:${folderId}`
+        const requestKey = 'listMemoryEntries:open'
         const requestId = createRequestId('listMemoryEntries')
         rememberPendingRequest(requestKey, requestId)
         const response = await sendToCEF<{ scope?: MemoryScope; entries?: MemoryEntry[] }>({

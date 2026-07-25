@@ -23,9 +23,11 @@ export function useUpdateMonitor() {
   const [checking, setChecking] = useState(false)
   const [error, setError] = useState('')
   const autoCheckAttemptedRef = useRef(false)
+  const checkingRef = useRef(false)
 
   const checkNow = useCallback(async () => {
-    if (checking) return
+    if (checkingRef.current) return
+    checkingRef.current = true
     setChecking(true)
     setError('')
     try {
@@ -43,9 +45,10 @@ export function useUpdateMonitor() {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Update check failed.')
     } finally {
+      checkingRef.current = false
       setChecking(false)
     }
-  }, [checking, refreshCliProviderVersion, setUpdateSettings, versionManager.providers])
+  }, [refreshCliProviderVersion, setUpdateSettings, versionManager.providers])
 
   useEffect(() => {
     if (!enabled) {

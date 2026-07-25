@@ -99,7 +99,7 @@ namespace uam
 		}
 		else if (uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kOpenCodeCli))
 		{
-			terminal.session_ids_before = ChatHistorySyncService().SessionIdsFromChats(ChatRepository::LoadLocalChats(app.data_root));
+			terminal.session_ids_before = ChatHistorySyncService().SessionIdsFromChats(ChatRepository::LoadLocalChatSummaries(app.data_root));
 		}
 		else if (chat_uses_codex_cli && !uam::codex::IsValidThreadId(chat.native_session_id))
 		{
@@ -138,7 +138,7 @@ namespace uam
 
 		terminal.running = true;
 		terminal.should_launch = false;
-		MarkCliTerminalTurnBusy(terminal);
+		MarkCliTerminalTurnBusy(terminal, false);
 		LogCliDiagnosticEvent(app, "start_cli_terminal_for_chat", "process_launched", &terminal, "argv0=" + interactive_argv.front());
 
 		return true;

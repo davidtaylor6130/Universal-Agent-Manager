@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useAppStore } from '../store/useAppStore'
-import { applyDocumentTheme, readStoredTheme } from '../utils/themeStorage'
+import { applyDocumentTheme, readStoredTheme, resolveDocumentTheme } from '../utils/themeStorage'
 
 export function useTheme() {
   const theme = useAppStore((s) => s.theme)
@@ -17,7 +17,8 @@ export function useTheme() {
     applyDocumentTheme(stored ?? theme, customThemes)
   }, [customThemes, setTheme, theme])
 
-  const toggle = () => setTheme(theme === 'dark' ? 'light' : 'dark')
+  const resolvedTheme = resolveDocumentTheme(theme, customThemes)
+  const toggle = () => setTheme(resolvedTheme === 'dark' ? 'light' : 'focus')
 
-  return { theme, toggle, setTheme }
+  return { theme, resolvedTheme, toggle, setTheme }
 }

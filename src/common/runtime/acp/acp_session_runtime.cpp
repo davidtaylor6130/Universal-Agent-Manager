@@ -73,6 +73,7 @@ namespace uam
 		constexpr int kAcpReconnectMaxAttempts = 3;
 		constexpr double kAcpReconnectBaseDelaySeconds = 0.25;
 		constexpr double kAcpCancelTimeoutSeconds = 5.0;
+		constexpr double kAcpSetupInactivityTimeoutSeconds = 60.0;
 
 		double AcpReconnectDelaySeconds(int attempt)
 		{
@@ -121,6 +122,55 @@ namespace uam
 
 			session.reconnect_not_before_time_s = now_seconds + AcpReconnectDelaySeconds(session.reconnect_attempts);
 			AppendAcpDiagnostic(session, "reconnect", "retry_scheduled", "", "", false, 0, uam::strings::NonEmptyOrFallback(error, "Structured runtime reconnect failed."));
+			return true;
+		}
+
+		bool HandleAcpSetupInactivityTimeout(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds)
+		{
+			if (!session.running ||
+			    session.session_ready ||
+			    session.lifecycle_state != kAcpLifecycleStarting ||
+			    uam::AcpSessionIsWaitingForInput(session) ||
+			    now_seconds - session.last_runtime_activity_time_s < kAcpSetupInactivityTimeoutSeconds)
+			{
+				return false;
+			}
+
+			const bool active_turn = uam::AcpSessionHasActiveTurn(session);
+			const bool model_discovery_only = session.model_discovery_only;
+			const std::string message = std::string(RuntimeDisplayName(session)) + " setup timed out after 60 seconds without runtime activity.";
+			const std::string detail = "pending_requests=" + PendingRequestSummary(session) +
+			    (session.recent_stderr.empty() ? "" : "\nstderr_tail=" + RecentStderrTail(session));
+			AppendAcpDiagnostic(session, "session_setup", "setup_timeout", "", "", false, 0, message, detail);
+			PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
+			session.last_error = message;
+			MarkAcpProcessExited(session, false, 0);
+
+			if (model_discovery_only)
+			{
+				session.model_discovery_only = false;
+				session.session_id.clear();
+				session.codex_thread_id.clear();
+				if (app.provider_model_catalog != nullptr)
+				{
+					app.provider_model_catalog->RememberRefreshFailure(session.provider_id, message);
+				}
+			}
+			else
+			{
+				ScheduleAcpReconnect(session, now_seconds);
+				if (active_turn)
+				{
+					if (Goal* active_goal = GoalService::FindActiveGoal(app, chat.id); active_goal != nullptr)
+					{
+						GoalService::RecordBlocker(app, active_goal->id, message);
+						(void)GoalService::UpdateGoalStatus(app, active_goal->id, GoalStatus::Blocked);
+						AppendGoalLoopDiagnostic(session, "goal_blocked_setup_timeout", active_goal->id, message);
+					}
+				}
+			}
+
+			MarkAcpChatUnseenIfBackground(app, chat);
 			return true;
 		}
 
@@ -262,7 +312,9 @@ namespace uam
 			const auto selected_model = std::ranges::find_if(session.available_models, [&selected_model_id](const AcpModelState& model) { return model.id == selected_model_id; });
 			if (selected_model != session.available_models.end() && !selected_model->supported_reasoning_efforts.empty() && !uam::ranges::Contains(selected_model->supported_reasoning_efforts, chat.reasoning_effort))
 			{
-				chat.reasoning_effort = selected_model->supported_reasoning_efforts.back();
+				chat.reasoning_effort = uam::ranges::Contains(selected_model->supported_reasoning_efforts, selected_model->default_reasoning_effort)
+				                            ? selected_model->default_reasoning_effort
+				                            : selected_model->supported_reasoning_efforts.front();
 			}
 			const std::string desired_mode = uam::approval_modes::EffectiveProviderMode(chat.approval_mode, chat.command_safety_tier);
 			if (session.session_ready && !uam::strings::IsBlank(chat.approval_mode) && session.current_mode_id != desired_mode && !SetAcpSessionMode(app, chat.id, desired_mode, error_out))
@@ -292,7 +344,8 @@ namespace uam
 			RememberLoadHistoryReplayUpdates(session, chat, session.turn_user_message_index);
 			ResetAcpTurnStreamState(session);
 			ResetAcpPendingInteractionState(session);
-			session.last_runtime_activity_time_s = GetAppTimeSeconds();
+			session.turn_started_time_s = GetAppTimeSeconds();
+			session.last_runtime_activity_time_s = session.turn_started_time_s;
 			session.last_error.clear();
 			session.lifecycle_state = session.session_ready ? kAcpLifecycleProcessing : kAcpLifecycleStarting;
 
@@ -558,6 +611,24 @@ namespace uam
 		return true;
 	}
 
+	namespace acp_detail
+	{
+
+	bool ResumeQueuedUserPromptsAfterSessionSetup(AppState& app, AcpSessionState& session, ChatSession& chat)
+	{
+		if (!session.session_ready || session.model_discovery_only)
+		{
+			return false;
+		}
+		if (session.processing)
+		{
+			return SendQueuedPromptIfReady(session, chat);
+		}
+		return DrainNextQueuedAcpUserPrompt(app, session, chat);
+	}
+
+	} // namespace acp_detail
+
 	bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, std::string* error_out)
 	{
 		return SendAcpPrompt(app, chat_id, text, std::vector<std::string>{}, std::vector<MessageAttachment>{}, false, error_out);
@@ -577,7 +648,23 @@ namespace uam
 
 		const Message& message = chat->messages.back();
 		AcpQueuedUserPromptState queued;
-		queued.text = message.content;
+		if (chat->messages.size() > 1)
+		{
+			queued.text = "Continue this branched conversation using the prior transcript as context.\n\n"
+			              "Prior conversation:\n";
+			for (auto prior = chat->messages.begin(); prior != chat->messages.end() - 1; ++prior)
+			{
+				if (!uam::strings::IsBlank(prior->content))
+				{
+					queued.text += RoleToString(prior->role) + ": " + prior->content + "\n\n";
+				}
+			}
+			queued.text += "Current user message:\n" + message.content;
+		}
+		else
+		{
+			queued.text = message.content;
+		}
 		queued.markdown_store_files = message.markdown_store_files;
 		queued.attachments = message.attachments;
 		queued.append_user_message = false;
@@ -702,6 +789,8 @@ namespace uam
 		session->reconnect_attempts = 0;
 		session->reconnect_not_before_time_s = 0.0;
 		ClearAcpStartupModelRequest(*session);
+		ClearAcpModeChangeRequest(*session);
+		ClearAcpModelChangeRequest(*session);
 		session->prompt_request_id = 0;
 		session->cancel_request_id = 0;
 		session->current_assistant_message_index = -1;
@@ -716,7 +805,12 @@ namespace uam
 		return true;
 	}
 
-	bool SetAcpSessionMode(AppState& app, const std::string& chat_id, const std::string& mode_id, std::string* error_out)
+	bool SetAcpSessionMode(AppState& app,
+	                       const std::string& chat_id,
+	                       const std::string& mode_id,
+	                       std::string* error_out,
+	                       std::optional<std::string> previous_chat_mode_id,
+	                       std::optional<std::string> previous_command_safety_tier)
 	{
 		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
 		if (session == nullptr || !session->running)
@@ -731,6 +825,14 @@ namespace uam
 			}
 			return false;
 		}
+		if (session->mode_change_request_id != 0)
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Cannot change structured runtime mode while another mode change is pending.";
+			}
+			return false;
+		}
 		if (!session->session_ready || session->session_id.empty())
 		{
 			if (error_out != nullptr)
@@ -741,6 +843,7 @@ namespace uam
 		}
 		{
 			const IProviderRuntime& sm_runtime = ProviderRuntimeRegistry::ResolveById(session->provider_id);
+			const std::string previous_mode_id = session->current_mode_id;
 			session->current_mode_id = mode_id;
 			if (sm_runtime.OnAcpSetModeLocally(*session, mode_id))
 			{
@@ -752,9 +855,26 @@ namespace uam
 			}
 
 			const int id = NextAcpRequestId(*session, uam::acp_methods::kSessionSetMode);
+			session->mode_change_request_id = id;
+			session->mode_change_previous_id = previous_mode_id;
+			session->mode_change_previous_chat_id = std::move(previous_chat_mode_id);
+			session->mode_change_previous_command_safety_tier = std::move(previous_command_safety_tier);
+			session->mode_change_requested_id = mode_id;
 			if (!acp_detail::WriteAcpMessage(*session, BuildSetModeRequest(id, session->session_id, ProviderApprovalModeId(*session, mode_id)), error_out))
 			{
 				session->pending_request_methods.erase(id);
+				if (ChatSession* chat = ChatDomainService().FindChatById(app, chat_id); chat != nullptr)
+				{
+					if (RollbackAcpModeChange(*session, *chat))
+					{
+						SaveChatQuietly(app, *chat);
+					}
+				}
+				else
+				{
+					session->current_mode_id = session->mode_change_previous_id;
+					ClearAcpModeChangeRequest(*session);
+				}
 				return false;
 			}
 			session->current_mode_id = mode_id;
@@ -762,7 +882,7 @@ namespace uam
 		}
 	}
 
-	bool SetAcpSessionModel(AppState& app, const std::string& chat_id, const std::string& model_id, std::string* error_out)
+	bool SetAcpSessionModel(AppState& app, const std::string& chat_id, const std::string& model_id, std::string* error_out, std::optional<std::string> previous_chat_model_id)
 	{
 		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
 		if (session == nullptr || !session->running)
@@ -777,6 +897,14 @@ namespace uam
 			}
 			return false;
 		}
+		if (session->model_change_request_id != 0)
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Cannot change structured runtime model while another model change is pending.";
+			}
+			return false;
+		}
 		if (!session->session_ready || session->session_id.empty())
 		{
 			if (error_out != nullptr)
@@ -787,6 +915,7 @@ namespace uam
 		}
 		{
 			const IProviderRuntime& sm_runtime = ProviderRuntimeRegistry::ResolveById(session->provider_id);
+			const std::string previous_model_id = session->current_model_id;
 			session->current_model_id = model_id;
 			if (sm_runtime.OnAcpSetModelLocally(*session, model_id))
 			{
@@ -798,9 +927,15 @@ namespace uam
 			}
 
 			const int id = NextAcpRequestId(*session, uam::acp_methods::kSessionSetModel);
+			session->model_change_request_id = id;
+			session->model_change_previous_id = previous_model_id;
+			session->model_change_previous_chat_id = previous_chat_model_id.value_or(previous_model_id);
+			session->model_change_requested_id = model_id;
 			if (!acp_detail::WriteAcpMessage(*session, BuildSetModelRequest(id, session->session_id, model_id), error_out))
 			{
 				session->pending_request_methods.erase(id);
+				session->current_model_id = session->model_change_previous_id;
+				ClearAcpModelChangeRequest(*session);
 				return false;
 			}
 			session->current_model_id = model_id;
@@ -953,6 +1088,11 @@ namespace uam
 			changed = DrainStdout(app, session, chat, browser) || changed;
 			if (!session.running)
 			{
+				continue;
+			}
+			if (HandleAcpSetupInactivityTimeout(app, session, chat, now_seconds))
+			{
+				changed = true;
 				continue;
 			}
 			if (session.session_ready && session.reconnect_attempts > 0)
@@ -1228,11 +1368,19 @@ namespace uam
 		for (const std::string& chat_id : due_chat_ids)
 		{
 			const ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
-			if (chat != nullptr)
+			if (chat == nullptr)
 			{
-				(void)ChatRepository::SaveChat(app.data_root, *chat);
+				app.pending_chat_save_at_by_chat_id.erase(chat_id);
+				continue;
 			}
-			app.pending_chat_save_at_by_chat_id.erase(chat_id);
+			if (ChatRepository::SaveChat(app.data_root, *chat))
+			{
+				app.pending_chat_save_at_by_chat_id.erase(chat_id);
+			}
+			else
+			{
+				app.pending_chat_save_at_by_chat_id[chat_id] = now + 1.0;
+			}
 		}
 	}
 

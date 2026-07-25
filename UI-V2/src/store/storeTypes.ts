@@ -83,6 +83,7 @@ export interface AppState {
   // UI
   theme: StoredTheme
   customThemes: CustomTheme[]
+  workingDisplayMode: 'compact' | 'verbose'
   isNewChatModalOpen: boolean
   newChatFolderId: string | null
   isSettingsOpen: boolean
@@ -114,7 +115,7 @@ export interface AppState {
   // Session actions
   setActiveSession: (id: string) => void
   loadSessionMessages: (id: string) => void
-  addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string, reasoningEffort?: string) => void
+  addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string, reasoningEffort?: string) => Promise<boolean>
   branchFromMessage: (id: string, messageIndex: number, content?: string) => Promise<string | null>
   renameSession: (id: string, name: string) => void
   setSessionPinned: (id: string, pinned: boolean) => Promise<boolean>
@@ -177,6 +178,7 @@ export interface AppState {
   addFolder: (name: string, parentId: string | null, directory: string) => Promise<boolean>
   toggleFolder: (id: string) => void
   reorderFolders: (folderIds: string[]) => Promise<boolean>
+  rescanFolderChats: (id: string) => Promise<boolean>
   renameFolder: (id: string, name: string, directory: string) => void
   deleteFolder: (id: string) => void
   browseFolderDirectory: (currentValue: string) => Promise<string | null>
@@ -221,6 +223,7 @@ export interface AppState {
 
   // UI actions
   setTheme: (theme: StoredTheme) => void
+  setWorkingDisplayMode: (mode: 'compact' | 'verbose') => void
   refreshCustomThemes: () => Promise<boolean>
   saveCustomTheme: (theme: CustomTheme) => Promise<CustomTheme | null>
   deleteCustomTheme: (id: string) => Promise<boolean>

@@ -108,6 +108,9 @@ namespace
 	constexpr std::string_view kChatMemoryEnabledField = "memory_enabled";
 	constexpr std::string_view kChatMemoryLastProcessedMessageCountField = "memory_last_processed_message_count";
 	constexpr std::string_view kChatMemoryLastProcessedAtField = "memory_last_processed_at";
+	constexpr std::string_view kChatPersistedMessageCountField = "persisted_message_count";
+	constexpr std::string_view kChatPersistedMessagesDigestField = "persisted_messages_digest";
+	constexpr std::string_view kChatSummarySourceSizeField = "summary_source_size";
 	constexpr std::string_view kChatMessagesField = "messages";
 
 	MessageRole ParseLegacyMessageRoleFromFilename(const fs::path& message_file)
@@ -673,7 +676,24 @@ namespace
 		return ChatScalarFieldsEquivalentForRecovery(lhs, rhs) && MessagesEquivalentForRecovery(lhs.messages, rhs.messages);
 	}
 
-	LoadChatResult ParseLocalChatFile(const fs::path& path, bool include_messages = true)
+	fs::path SummaryCachePathForChatFile(const fs::path& path)
+	{
+		return path.parent_path().parent_path() / "chat-summaries" / path.filename();
+	}
+
+	bool SummaryCacheIsCurrent(const fs::path& chat_path, const fs::path& summary_path)
+	{
+		std::error_code ec;
+		const auto chat_time = fs::last_write_time(chat_path, ec);
+		if (ec)
+		{
+			return false;
+		}
+		const auto summary_time = fs::last_write_time(summary_path, ec);
+		return !ec && summary_time >= chat_time;
+	}
+
+	LoadChatResult ParseLocalChatFile(const fs::path& path, bool include_messages = true, std::uintmax_t expected_source_size = 0)
 	{
 		const std::string file_text = uam::io::ReadTextFile(path);
 		if (file_text.empty())
@@ -681,13 +701,18 @@ namespace
 			return {std::nullopt, "is empty"};
 		}
 
-		const auto root_opt = ParseJson(file_text);
+		auto root_opt = ParseJson(file_text);
 		if (!root_opt || root_opt->type != JsonValue::Type::Object)
 		{
 			return {std::nullopt, "contains invalid JSON"};
 		}
 
-		const JsonValue& root = *root_opt;
+		JsonValue& root = *root_opt;
+		if (expected_source_size > 0 &&
+		    NonNegativeUintmaxFieldOrZero(root.Find(kChatSummarySourceSizeField)) != expected_source_size)
+		{
+			return {std::nullopt, "is a stale summary cache"};
+		}
 		ChatSession chat;
 
 		chat.id = JsonStringOrEmpty(root.Find(kChatIdField));
@@ -806,7 +831,8 @@ namespace
 		}
 		else
 		{
-			chat.persisted_message_count = 0;
+			chat.persisted_message_count = static_cast<std::size_t>(
+			    NonNegativeUintmaxFieldOrZero(root.Find(kChatPersistedMessageCountField)));
 		}
 
 		chat.messages_loaded = include_messages;
@@ -814,7 +840,20 @@ namespace
 		{
 			chat.persisted_message_count = chat.messages.size();
 		}
-		chat.persisted_messages_digest = SummaryDigest(chat, chat.persisted_message_count);
+		chat.persisted_messages_digest = JsonStringOrEmpty(root.Find(kChatPersistedMessagesDigestField));
+		if (chat.persisted_messages_digest.empty())
+		{
+			chat.persisted_messages_digest = SummaryDigest(chat, chat.persisted_message_count);
+		}
+
+		if (!include_messages && expected_source_size == 0 && path.extension() == ".json")
+		{
+			root.object_value.erase(std::string(kChatMessagesField));
+			uam::json::SetNumber(root, kChatPersistedMessageCountField, static_cast<double>(chat.persisted_message_count));
+			uam::json::SetString(root, kChatPersistedMessagesDigestField, chat.persisted_messages_digest);
+			uam::json::SetNumber(root, kChatSummarySourceSizeField, static_cast<double>(file_text.size()));
+			(void)uam::io::WriteTextFile(SummaryCachePathForChatFile(path), SerializeJson(root));
+		}
 
 		return {std::move(chat), ""};
 	}
@@ -1014,7 +1053,19 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 	}
 
 	const std::string json = SerializeJson(root);
-	return uam::io::WriteTextFile(file_path, json);
+	if (!uam::io::WriteTextFile(file_path, json))
+	{
+		return false;
+	}
+
+	root.object_value.erase(std::string(kChatMessagesField));
+	const std::size_t message_count = chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count;
+	uam::json::SetNumber(root, kChatPersistedMessageCountField, static_cast<double>(message_count));
+	uam::json::SetString(root, kChatPersistedMessagesDigestField,
+	                     chat.persisted_messages_digest.empty() ? SummaryDigest(chat, message_count) : chat.persisted_messages_digest);
+	uam::json::SetNumber(root, kChatSummarySourceSizeField, static_cast<double>(json.size()));
+	(void)uam::io::WriteTextFile(AppPaths::UamChatSummaryFilePath(data_root, chat.id), SerializeJson(root));
+	return true;
 }
 
 ChatStorageDeleteResult ChatRepository::DeleteChatStorageFiles(const std::filesystem::path& data_root, std::string_view chat_id)
@@ -1028,6 +1079,8 @@ ChatStorageDeleteResult ChatRepository::DeleteChatStorageFiles(const std::filesy
 
 	uam::paths::RemoveAllNoThrow(AppPaths::ChatPath(data_root, chat_id), &result.legacy_directory_error);
 	uam::paths::RemoveFileNoThrow(AppPaths::UamChatFilePath(data_root, chat_id), &result.metadata_file_error);
+	std::error_code ignored_summary_error;
+	uam::paths::RemoveFileNoThrow(AppPaths::UamChatSummaryFilePath(data_root, chat_id), &ignored_summary_error);
 	return result;
 }
 
@@ -1283,7 +1336,21 @@ namespace
 				continue;
 			}
 
-			const LoadChatResult primary_chat = ParseLocalChatFile(entry.path(), include_messages);
+			LoadChatResult primary_chat;
+			if (!include_messages)
+			{
+				const fs::path summary_path = AppPaths::UamChatSummaryFilePath(data_root, entry.path().stem().string());
+				std::error_code size_error;
+				const std::uintmax_t source_size = fs::file_size(entry.path(), size_error);
+				if (!size_error && SummaryCacheIsCurrent(entry.path(), summary_path))
+				{
+					primary_chat = ParseLocalChatFile(summary_path, false, source_size);
+				}
+			}
+			if (!primary_chat.chat)
+			{
+				primary_chat = ParseLocalChatFile(entry.path(), include_messages);
+			}
 			if (primary_chat.chat)
 			{
 				const ChatSession& primary = *primary_chat.chat;
@@ -1348,6 +1415,38 @@ std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::p
 std::vector<ChatSession> ChatRepository::LoadLocalChatSummaries(const std::filesystem::path& data_root, std::string* warning_out)
 {
 	return LoadLocalChatsImpl(data_root, false, warning_out);
+}
+
+std::optional<ChatSession> ChatRepository::LoadLocalChat(const std::filesystem::path& data_root, std::string_view chat_id, bool include_messages, std::string* warning_out)
+{
+	SetWarning(warning_out, "");
+	if (!uam::chat_ids::IsSafeStorageChatId(chat_id))
+	{
+		SetWarning(warning_out, "contains an unsafe chat id");
+		return std::nullopt;
+	}
+
+	const fs::path chat_path = AppPaths::UamChatFilePath(data_root, chat_id);
+	LoadChatResult loaded;
+	if (!include_messages)
+	{
+		const fs::path summary_path = AppPaths::UamChatSummaryFilePath(data_root, chat_id);
+		std::error_code size_error;
+		const std::uintmax_t source_size = fs::file_size(chat_path, size_error);
+		if (!size_error && SummaryCacheIsCurrent(chat_path, summary_path))
+		{
+			loaded = ParseLocalChatFile(summary_path, false, source_size);
+		}
+	}
+	if (!loaded.chat)
+	{
+		loaded = ParseLocalChatFile(chat_path, include_messages);
+	}
+	if (!loaded.chat)
+	{
+		SetWarning(warning_out, loaded.error);
+	}
+	return std::move(loaded.chat);
 }
 
 bool ChatRepository::HydrateChatMessages(const std::filesystem::path& data_root, ChatSession& chat, std::string* warning_out)

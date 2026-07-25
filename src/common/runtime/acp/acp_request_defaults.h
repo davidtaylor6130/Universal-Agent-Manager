@@ -10,7 +10,7 @@
 namespace uam::acp_request_defaults
 {
 	inline constexpr const char* kClientName = "universal-agent-manager";
-	inline constexpr const char* kClientVersion = "1.0.1";
+	inline const std::string kClientVersion = std::string(uam::constants::kAppVersion).substr(1);
 	inline constexpr const char* kCodexApprovalPolicy = "on-request";
 	inline constexpr const char* kCodexSandbox = "workspace-write";
 

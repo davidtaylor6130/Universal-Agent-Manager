@@ -50,9 +50,11 @@ namespace
 	std::unordered_map<std::string, std::string> g_last_pushed_message_digests_by_chat_id;
 	std::unordered_map<std::string, std::string> g_last_pushed_chat_summaries_by_chat_id;
 	std::string g_last_pushed_folders_fingerprint;
+	std::string g_last_pushed_resource_collections_fingerprint;
 	std::string g_last_pushed_providers_fingerprint;
 	std::string g_last_pushed_settings_fingerprint;
 	std::string g_last_pushed_memory_fingerprint;
+	std::string g_last_pushed_cli_version_manager_fingerprint;
 	std::string g_last_pushed_shell_actions_fingerprint;
 	std::string g_last_pushed_shell_action_notification;
 	std::string g_last_pushed_selected_chat_id;
@@ -87,9 +89,11 @@ namespace
 	{
 		const nlohmann::json fingerprint_state = uam::StateSerializer::SerializeFingerprint(app);
 		g_last_pushed_folders_fingerprint = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "folders").dump();
+		g_last_pushed_resource_collections_fingerprint = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "resourceCollections").dump();
 		g_last_pushed_providers_fingerprint = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "providers").dump();
 		g_last_pushed_settings_fingerprint = SerializeSettingsForPatch(app).dump();
 		g_last_pushed_memory_fingerprint = uam::nlohmann_json::ObjectFieldOrEmpty(fingerprint_state, "memoryActivity").dump();
+		g_last_pushed_cli_version_manager_fingerprint = uam::nlohmann_json::ObjectFieldOrEmpty(fingerprint_state, "cliVersionManager").dump();
 		g_last_pushed_shell_actions_fingerprint = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "shellActions").dump();
 		g_last_pushed_shell_action_notification = uam::nlohmann_json::TrimmedStringValue(fingerprint_state, {"shellActionNotification"});
 		g_last_pushed_selected_chat_id = ChatDomainService().SelectedChatId(app);
@@ -340,6 +344,9 @@ namespace
 		const nlohmann::json folders = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "folders");
 		AddChangedJsonField(data, "folders", folders, g_last_pushed_folders_fingerprint);
 
+		const nlohmann::json resource_collections = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "resourceCollections");
+		AddChangedJsonField(data, "resourceCollections", resource_collections, g_last_pushed_resource_collections_fingerprint);
+
 		const nlohmann::json providers = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "providers");
 		AddChangedJsonField(data, "providers", providers, g_last_pushed_providers_fingerprint);
 
@@ -348,6 +355,9 @@ namespace
 
 		const nlohmann::json memory = uam::nlohmann_json::ObjectFieldOrEmpty(fingerprint_state, "memoryActivity");
 		AddChangedJsonField(data, "memoryActivity", memory, g_last_pushed_memory_fingerprint);
+
+		const nlohmann::json cli_version_manager = uam::nlohmann_json::ObjectFieldOrEmpty(fingerprint_state, "cliVersionManager");
+		AddChangedJsonField(data, "cliVersionManager", cli_version_manager, g_last_pushed_cli_version_manager_fingerprint);
 
 		const nlohmann::json shell_actions = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "shellActions");
 		AddChangedJsonField(data, "shellActions", shell_actions, g_last_pushed_shell_actions_fingerprint);
@@ -455,6 +465,12 @@ namespace uam
 	std::string SettingsPatchForTests(const AppState& app)
 	{
 		return SerializeSettingsForPatch(app).dump();
+	}
+
+	std::string StatePatchForTests(const AppState& before, const AppState& after)
+	{
+		ResetPatchBaselines(before);
+		return BuildStatePatchMessage(after, StateSerializer::SerializeFingerprint(after));
 	}
 
 	bool HasDeferredStatePush()

@@ -1,4 +1,4 @@
-export type BuiltInTheme = 'dark' | 'light' | 'system' | 'midnight' | 'paper' | 'dusk' | 'aurora' | 'contrast'
+export type BuiltInTheme = 'focus' | 'dark' | 'light' | 'system' | 'midnight' | 'paper' | 'dusk' | 'aurora' | 'contrast'
 export type StoredTheme = BuiltInTheme | `custom:${string}`
 export type ResolvedTheme = 'dark' | 'light'
 
@@ -26,7 +26,8 @@ export interface CustomTheme {
 }
 
 export const BUILT_IN_THEMES: ReadonlyArray<{ id: BuiltInTheme; label: string; base: ResolvedTheme }> = [
-  { id: 'dark', label: 'Dark', base: 'dark' },
+  { id: 'focus', label: 'Focus', base: 'dark' },
+  { id: 'dark', label: 'OG', base: 'dark' },
   { id: 'light', label: 'Light', base: 'light' },
   { id: 'system', label: 'System', base: 'light' },
   { id: 'midnight', label: 'Midnight', base: 'dark' },
@@ -73,6 +74,7 @@ const DERIVED_CSS_PROPERTIES = [
 ]
 
 export function normalizeStoredTheme(value: unknown): StoredTheme | null {
+  if (value === 'mono') return 'focus'
   if (BUILT_IN_THEMES.some((theme) => theme.id === value)) return value as BuiltInTheme
   return typeof value === 'string' && CUSTOM_THEME_ID.test(value) ? value as StoredTheme : null
 }
@@ -117,8 +119,8 @@ export function writeStoredTheme(theme: StoredTheme): void {
   }
 }
 
-export function resolveDocumentTheme(theme: StoredTheme): ResolvedTheme {
-  if (theme.startsWith('custom:')) return 'dark'
+export function resolveDocumentTheme(theme: StoredTheme, customThemes: CustomTheme[] = []): ResolvedTheme {
+  if (theme.startsWith('custom:')) return customThemes.find((candidate) => candidate.id === theme)?.base ?? 'dark'
   if (theme === 'dark' || theme === 'light') return theme
   if (theme !== 'system') return BUILT_IN_THEMES.find((candidate) => candidate.id === theme)?.base ?? 'dark'
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {

@@ -148,6 +148,7 @@ class MacProcessService final : public IPlatformProcessService
 
 		if (pid == 0)
 		{
+			(void)setpgid(0, 0);
 			dup2(stdin_pipe[0], STDIN_FILENO);
 			dup2(stdout_pipe[1], STDOUT_FILENO);
 			dup2(stderr_pipe[1], STDERR_FILENO);
@@ -170,6 +171,7 @@ class MacProcessService final : public IPlatformProcessService
 			_exit(127);
 		}
 
+		(void)setpgid(pid, pid);
 		CloseFdIfOpen(stdin_pipe[0]);
 		CloseFdIfOpen(stdout_pipe[1]);
 		CloseFdIfOpen(stderr_pipe[1]);
@@ -223,11 +225,11 @@ class MacProcessService final : public IPlatformProcessService
 		const pid_t child_pid = process.child_pid;
 		if (fast_exit)
 		{
-			kill(child_pid, SIGKILL);
+			SignalTerminalProcessGroup(child_pid, SIGKILL);
 		}
 		else
 		{
-			kill(child_pid, SIGTERM);
+			SignalTerminalProcessGroup(child_pid, SIGTERM);
 		}
 
 		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(fast_exit ? 80 : 600);
@@ -243,7 +245,7 @@ class MacProcessService final : public IPlatformProcessService
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
 
-		kill(child_pid, SIGKILL);
+		SignalTerminalProcessGroup(child_pid, SIGKILL);
 		(void)waitpid(child_pid, &status, WNOHANG);
 		CloseStdioProcessHandles(process);
 	}
@@ -368,13 +370,17 @@ class MacProcessService final : public IPlatformProcessService
 		randomBytes[8] = (randomBytes[8] & 0x3f) | 0x80;
 		const char* hexDigits = "0123456789abcdef";
 		char uuid[37];
+		int output_index = 0;
 		for (int i = 0; i < 16; ++i)
 		{
-			int byte = randomBytes[i];
-			uuid[i * 2] = hexDigits[(byte >> 4) & 0x0f];
-			uuid[i * 2 + 1] = hexDigits[byte & 0x0f];
+			if (i == 4 || i == 6 || i == 8 || i == 10)
+			{
+				uuid[output_index++] = '-';
+			}
+			const int byte = randomBytes[i];
+			uuid[output_index++] = hexDigits[(byte >> 4) & 0x0f];
+			uuid[output_index++] = hexDigits[byte & 0x0f];
 		}
-		uuid[8] = uuid[13] = uuid[18] = uuid[23] = '-';
 		uuid[36] = '\0';
 		return std::string(uuid);
 #else

@@ -73,5 +73,6 @@ UAM_TEST(ThemeServiceRejectsTraversalAndInvalidColors)
 UAM_TEST(CustomThemeIdsSurviveSettingsNormalization)
 {
 	UAM_ASSERT_EQ(uam::settings::NormalizeThemeId(" CUSTOM:Midnight "), std::string("custom:midnight"));
-	UAM_ASSERT_EQ(uam::settings::NormalizeThemeId("custom:../bad"), std::string("dark"));
+	UAM_ASSERT_EQ(uam::settings::NormalizeThemeId("custom:../bad"), std::string(uam::settings::kFocusThemeId));
+	UAM_ASSERT_EQ(uam::settings::NormalizeThemeId("mono"), std::string(uam::settings::kFocusThemeId));
 }

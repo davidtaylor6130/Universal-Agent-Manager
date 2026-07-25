@@ -3,6 +3,7 @@
 
 #include "app/chat_domain_service.h"
 #include "app/chat_lifecycle_service.h"
+#include "app/runtime_orchestration_services.h"
 #include "cef/cef_push.h"
 #include "cef/state_serializer.h"
 #include "common/chat/chat_folder_store.h"
@@ -182,4 +183,32 @@ void UamQueryHandler::HandleReorderFolders(CefRefPtr<CefBrowser> browser, const 
 	m_app.folders = std::move(reordered);
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleRescanFolderChats(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string folder_id = uam::strings::Trim(payload.value("folderId", ""));
+	if (ChatDomainService().FindFolderById(m_app, folder_id) == nullptr)
+	{
+		cb->Failure(404, "Folder not found: " + folder_id);
+		return;
+	}
+
+	const std::string selected_chat_id = ChatDomainService().SelectedChatId(m_app);
+	const std::string composer_text = m_app.composer_text;
+	const ChatHistorySyncService::ImportResult result =
+	    ChatHistorySyncService().ImportCodexRolloutChatsForFolder(m_app, folder_id);
+	ChatHistorySyncService().LoadSidebarChats(m_app);
+	if (!selected_chat_id.empty())
+	{
+		ChatDomainService().SelectChatById(m_app, selected_chat_id);
+		m_app.composer_text = composer_text;
+	}
+	m_app.status_line = result.imported_count == 0
+	                        ? "No new Codex chats found."
+	                        : "Imported " + std::to_string(result.imported_count) + " Codex chat" +
+	                              (result.imported_count == 1 ? "." : "s.");
+
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success(nlohmann::json{{"importedCount", result.imported_count}, {"scannedCount", result.total_count}}.dump());
 }

@@ -11,6 +11,7 @@
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/string_utils.h"
 
+#include <algorithm>
 #include <map>
 #include <string>
 #include <vector>
@@ -68,6 +69,14 @@ nlohmann::json BuildGenericPermissionOutcomeResult(const std::string& option_id,
 bool SendPermissionResponse(AcpSessionState& session, const std::string& request_id_json, const std::string& option_id, bool cancelled, std::string* error_out)
 {
 	(void)request_id_json;
+	if (!cancelled && std::ranges::none_of(session.pending_permission.options, [&option_id](const AcpPermissionOptionState& option) { return option.id == option_id; }))
+	{
+		if (error_out != nullptr)
+		{
+			*error_out = "ACP permission option is not offered by the active request.";
+		}
+		return false;
+	}
 	nlohmann::json response = ProviderRuntimeRegistry::ResolveById(session.provider_id)
 	    .OnAcpBuildPermissionResponse(session, option_id, cancelled);
 	return WriteAcpMessage(session, response, error_out);

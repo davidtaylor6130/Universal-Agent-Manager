@@ -1,6 +1,5 @@
 #include "app/git_worktree_service.h"
 
-#include "app/persistence_coordinator.h"
 #include "app/provider_resolution_service.h"
 #include "common/chat/chat_repository.h"
 #include "common/paths/path_utils.h"
@@ -417,14 +416,6 @@ namespace uam
 				}
 				return false;
 			}
-			if (!PersistenceCoordinator().SaveSettings(app))
-			{
-				if (error_out != nullptr)
-				{
-					*error_out = uam::strings::NonEmptyOrFallback(app.status_line, "Failed to persist application settings.");
-				}
-				return false;
-			}
 			return true;
 		}
 
@@ -460,6 +451,28 @@ namespace uam
 			const std::filesystem::path source = SourcePathFromStatusOrChat(app, chat, status);
 			const std::filesystem::path repository = status.managed_repository ? ManagedRepositoryRoot(app, source, chat.id) : source;
 			const std::filesystem::path worktree = WorktreePathFromStatus(status);
+			const std::filesystem::path managed_root = app.data_root / "worktrees";
+
+			if (status.managed_repository && !PathIsWithin(repository, managed_root))
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Refusing to remove a managed repository outside UAM's data directory.";
+				}
+				return false;
+			}
+
+			ChatSession cleared_chat = chat;
+			cleared_chat.workspace_isolation_kind.clear();
+			cleared_chat.workspace_source_directory.clear();
+			cleared_chat.workspace_base_ref.clear();
+			cleared_chat.workspace_branch_name.clear();
+			cleared_chat.workspace_worktree_directory.clear();
+			cleared_chat.updated_at = uam::time::TimestampNow();
+			if (!SaveChat(app, cleared_chat, error_out))
+			{
+				return false;
+			}
 
 			if (!worktree.empty())
 			{
@@ -467,6 +480,7 @@ namespace uam
 				{
 					if (!GitCommand(repository, "worktree remove --force " + uam::shell::EscapeArg(worktree.string()), error_out))
 					{
+						SaveChat(app, chat, nullptr);
 						return false;
 					}
 				}
@@ -480,18 +494,10 @@ namespace uam
 
 			if (status.managed_repository && uam::paths::PathExistsNoThrow(repository))
 			{
-				const std::filesystem::path managed_root = app.data_root / "worktrees";
-				if (!PathIsWithin(repository, managed_root))
-				{
-					if (error_out != nullptr)
-					{
-						*error_out = "Refusing to remove a managed repository outside UAM's data directory.";
-					}
-					return false;
-				}
 				std::error_code ec;
 				if (!uam::paths::RemoveAllNoThrow(repository, &ec))
 				{
+					chat = std::move(cleared_chat);
 					if (error_out != nullptr)
 					{
 						*error_out = "Failed to remove managed repository: " + ec.message();
@@ -500,13 +506,8 @@ namespace uam
 				}
 			}
 
-			chat.workspace_isolation_kind.clear();
-			chat.workspace_source_directory.clear();
-			chat.workspace_base_ref.clear();
-			chat.workspace_branch_name.clear();
-			chat.workspace_worktree_directory.clear();
-			chat.updated_at = uam::time::TimestampNow();
-			return SaveChat(app, chat, error_out);
+			chat = std::move(cleared_chat);
+			return true;
 		}
 
 		void PopulateSourceRepositoryStatus(GitWorktreeStatus& status, const std::filesystem::path& source_candidate)

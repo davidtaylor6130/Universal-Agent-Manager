@@ -384,6 +384,12 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     const nextCli = cliBindingFromCppChat(chat, cliBindingBySessionId[chat.id])
     if (nextCli) {
       cliBindingBySessionId[chat.id] = nextCli
+      const nextTranscript = normalizeCliTranscript(
+        cliTranscriptBySessionId[chat.id],
+        nextCli.terminalId
+      )
+      if (nextTranscript) cliTranscriptBySessionId[chat.id] = nextTranscript
+      else delete cliTranscriptBySessionId[chat.id]
     }
 
     if (chat.acpSession) {
@@ -422,6 +428,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
         loopCount: cppGoal.loopCount,
         createdAt: new Date(cppGoal.createdAt || Date.now()),
         updatedAt: new Date(cppGoal.updatedAt || Date.now()),
+        executionOwner: cppGoal.executionOwner ?? 'uam',
+        providerCommand: cppGoal.providerCommand ?? '',
       }))
     }
   }
@@ -499,6 +507,10 @@ export const useAppStore = create<AppState>((set, get) => {
       for (const [sessionId, pending] of entries) {
         const chunk = pending.chunks.join('')
         if (!chunk) continue
+        const activeTerminalId = state.cliBindingBySessionId[sessionId]?.terminalId ?? ''
+        if (pending.terminalId && activeTerminalId && pending.terminalId !== activeTerminalId) {
+          continue
+        }
 
         if (nextTranscripts === state.cliTranscriptBySessionId) {
           nextTranscripts = { ...state.cliTranscriptBySessionId }

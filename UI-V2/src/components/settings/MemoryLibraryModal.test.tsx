@@ -187,6 +187,34 @@ describe('MemoryLibraryModal all memory scope', () => {
     host.remove()
   })
 
+  it('saves a memory only once before the submitting state rerenders', async () => {
+    const finishes: Array<(ok: boolean) => void> = []
+    const createMemoryEntry = vi.fn(() => new Promise<boolean>((resolve) => finishes.push(resolve)))
+    const { host, root } = renderModal({ createMemoryEntry })
+    clickButton(host, 'Add memory')
+    const title = Array.from(host.querySelectorAll('label')).find((label) => label.textContent?.startsWith('Title'))?.querySelector('input') as HTMLInputElement
+    const memory = Array.from(host.querySelectorAll('label')).find((label) => label.textContent?.startsWith('Memory'))?.querySelector('textarea') as HTMLTextAreaElement
+    changeInput(title, 'Remember once')
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(memory, 'Only one persisted entry')
+      memory.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const save = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Save memory') as HTMLButtonElement
+
+    act(() => {
+      save.click()
+      save.click()
+    })
+
+    expect(createMemoryEntry).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      finishes.forEach((finish) => finish(false))
+      await Promise.resolve()
+    })
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('shows the selected memory location in the content pane', () => {
     const { host, root } = renderModal()
 

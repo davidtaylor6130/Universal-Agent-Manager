@@ -250,6 +250,9 @@ void ResetAcpWaitState(AcpSessionState& session);
 void ResetAcpPendingInteractionState(AcpSessionState& session);
 void ResetAcpTurnStreamState(AcpSessionState& session);
 void ClearAcpStartupModelRequest(AcpSessionState& session);
+void ClearAcpModeChangeRequest(AcpSessionState& session);
+bool RollbackAcpModeChange(AcpSessionState& session, ChatSession& chat);
+void ClearAcpModelChangeRequest(AcpSessionState& session);
 void BeginAcpPendingWait(AcpSessionState& session, std::string_view lifecycle_state);
 void ClearAcpPendingWait(AcpSessionState& session);
 std::string ActiveAcpWaitRequestId(const AcpSessionState& session);
@@ -266,6 +269,7 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 bool RetryGeminiSessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, ChatSession& chat, const AcpInvalidLoadRetryDetails& details);
 bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat);
 bool SendQueuedPromptIfReady(AcpSessionState& session, const ChatSession& chat);
+bool ResumeQueuedUserPromptsAfterSessionSetup(AppState& app, AcpSessionState& session, ChatSession& chat);
 void SaveChatQuietly(AppState& app, const ChatSession& chat);
 void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds = 0.5);
 bool SetChatNativeSessionIdIfChanged(ChatSession& chat, std::string_view session_id);

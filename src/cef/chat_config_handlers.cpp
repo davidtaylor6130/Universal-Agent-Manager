@@ -23,6 +23,7 @@
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <optional>
 #include <string>
 
 // ---------------------------------------------------------------------------
@@ -236,7 +237,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 	if (!defer_live_update && session != nullptr && session->running)
 	{
 		std::string acp_error;
-		const bool live_updated = model_id.empty() ? uam::StopAcpSession(m_app, chat->id) : uam::SetAcpSessionModel(m_app, chat->id, model_id, &acp_error);
+		const bool live_updated = model_id.empty() ? uam::StopAcpSession(m_app, chat->id) : uam::SetAcpSessionModel(m_app, chat->id, model_id, &acp_error, previous_model_id);
 		if (!live_updated)
 		{
 			chat->model_id = previous_model_id;
@@ -412,7 +413,7 @@ void UamQueryHandler::HandleSetChatApprovalMode(CefRefPtr<CefBrowser> browser, c
 	if (!defer_live_update && session != nullptr && session->running)
 	{
 		std::string acp_error;
-		if (!uam::SetAcpSessionMode(m_app, chat->id, effective_mode_id, &acp_error))
+		if (!uam::SetAcpSessionMode(m_app, chat->id, effective_mode_id, &acp_error, previous_mode_id))
 		{
 			chat->approval_mode = previous_mode_id;
 			chat->updated_at = previous_updated_at;
@@ -504,7 +505,7 @@ void UamQueryHandler::HandleSetChatCommandSafetyTier(CefRefPtr<CefBrowser> brows
 	    previous_effective_mode != requested_effective_mode && session->current_mode_id != requested_effective_mode)
 	{
 		std::string acp_error;
-		if (!uam::SetAcpSessionMode(m_app, chat->id, requested_effective_mode, &acp_error))
+		if (!uam::SetAcpSessionMode(m_app, chat->id, requested_effective_mode, &acp_error, std::nullopt, previous))
 		{
 			chat->command_safety_tier = previous;
 			chat->updated_at = previous_updated_at;

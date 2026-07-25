@@ -88,8 +88,7 @@ import {
   type DictationState,
 } from '../chat/Composer'
 import { ViewportMenu } from '../ui'
-import { Brain, BookOpen, Check, ChevronDown, ChevronLeft, ChevronRight, CornerUpRight, Cpu, FileText, Paperclip, Shield, Target, X } from 'lucide-react'
-import { ProviderLogo } from '../shared/ProviderLogo'
+import { Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, Paperclip, Shield, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { Button, IconButton } from '../ui'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
@@ -111,6 +110,7 @@ type SlashCommand = {
 const INITIAL_RENDERED_MESSAGES = 200
 const RENDERED_MESSAGE_BATCH_SIZE = 100
 const SCROLL_NEAR_BOTTOM_THRESHOLD = 100
+const STEERING_TIMEOUT_MS = 5000
 
 interface SelectedToolCallRef {
   id: string
@@ -166,9 +166,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const [dictationElapsedSeconds, setDictationElapsedSeconds] = useState(0)
   const [dictationError, setDictationError] = useState('')
   const [selectedToolCallRef, setSelectedToolCallRef] = useState<SelectedToolCallRef | null>(null)
-  const [providerOpen, setProviderOpen] = useState(false)
   const [modelOpen, setModelOpen] = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [claudePlanPrompt, setClaudePlanPrompt] = useState<string | null>(null)
   const [workspaceFeedback, setWorkspaceFeedback] = useState<WorkspaceFeedback | null>(null)
   const [workspaceActionBusy, setWorkspaceActionBusy] = useState(false)
@@ -189,6 +188,15 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const [messageBranchError, setMessageBranchError] = useState('')
   const [renderedMessageCount, setRenderedMessageCount] = useState(INITIAL_RENDERED_MESSAGES)
   const steerTurnSerialRef = useRef(0)
+  const steeringTimeoutRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (steeringTimeoutRef.current !== null) {
+        window.clearTimeout(steeringTimeoutRef.current)
+      }
+    }
+  }, [])
 
   useEffect(() => setMemoryChipExplicit(false), [session.id])
   const slashGroupButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({})
@@ -197,6 +205,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     session.folderId ? s.folders.find((folder) => folder.id === session.folderId)?.directory ?? '' : ''
   )
   const acp = useAppStore((s) => s.acpBindingBySessionId[session.id])
+  const workingDisplayMode = useAppStore((s) => s.workingDisplayMode)
   const cli = useAppStore((s) => s.cliBindingBySessionId[session.id])
   const providers = useAppStore((s) => s.providers)
   const stageChatAttachments = useAppStore((s) => s.stageChatAttachments)
@@ -209,7 +218,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const branchSessions = useAppStore(useShallow((s) => s.sessions
     .filter((candidate) => (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === branchRootChatId)
     .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())))
-  const branchIndex = branchSessions.findIndex((candidate) => candidate.id === session.id)
   const cancelAcpTurn = useAppStore((s) => s.cancelAcpTurn)
   const stopAcpSession = useAppStore((s) => s.stopAcpSession)
   const resolveAcpPermission = useAppStore((s) => s.resolveAcpPermission)
@@ -247,9 +255,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const bottomRef = useRef<HTMLDivElement>(null)
   const isNearBottomRef = useRef(true)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const providerMenuRef = useRef<HTMLDivElement>(null)
   const modelMenuRef = useRef<HTMLDivElement>(null)
-  const settingsMenuRef = useRef<HTMLDivElement>(null)
+  const workspaceMenuRef = useRef<HTMLDivElement>(null)
   const dictationActiveRef = useRef(false)
   const dictationBaseDraftRef = useRef('')
   const dictationFinalTextRef = useRef('')
@@ -257,6 +264,14 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const dictationHadErrorRef = useRef(false)
   const dictationSubmitAfterStopRef = useRef(false)
   const submitDictatedPromptRef = useRef<(prompt: string) => void>(() => {})
+  const submitInFlightRef = useRef(false)
+  const currentSessionIdRef = useRef(session.id)
+
+  useEffect(() => {
+    currentSessionIdRef.current = session.id
+    submitInFlightRef.current = false
+    setSubmitting(false)
+  }, [session.id])
 
   const selectedToolCall = useMemo(
     () => {
@@ -277,6 +292,11 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const turnAssistantMessageIndex = acp?.turnAssistantMessageIndex ?? -1
   const turnUserMessageIndex = acp?.turnUserMessageIndex ?? -1
   const turnSerial = acp?.turnSerial ?? 0
+  const turnWorkedSeconds = acp?.processing
+    ? acp.processingStartedAtMs ? (Date.now() - acp.processingStartedAtMs) / 1000 : undefined
+    : turnAssistantMessageIndex >= 0
+      ? (messages[turnAssistantMessageIndex]?.processingTimeMs ?? 0) / 1000
+      : undefined
   const renderTimelineAfterUser =
     turnEvents.length > 0 &&
     turnUserMessageIndex >= 0 &&
@@ -334,6 +354,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     setAttachmentError('')
     setWorkspaceFeedback(null)
     setWorkspaceActionBusy(false)
+    setWorkspaceMenuOpen(false)
     setGoalArmNextMessage(false)
     setSlashMessage('')
     setPermissionMenuOpen(false)
@@ -362,11 +383,22 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   }, [session.workspaceIsolationKind])
 
   useEffect(() => {
-    if (steering && (acp?.turnSerial ?? 0) > steerTurnSerialRef.current)
-    {
+    if (!steering) return
+    const nextTurnStarted = (acp?.turnSerial ?? 0) > steerTurnSerialRef.current
+    const queuedSteerStillPending = Boolean(acp?.queuedPrompts?.[0]?.prioritySteer)
+    if (nextTurnStarted || (!acp?.processing && !queuedSteerStillPending)) {
       setSteering(false)
+      if (steeringTimeoutRef.current !== null) {
+        window.clearTimeout(steeringTimeoutRef.current)
+        steeringTimeoutRef.current = null
+      }
+      return
     }
-  }, [acp?.turnSerial, steering])
+    if (steeringTimeoutRef.current !== null) {
+      window.clearTimeout(steeringTimeoutRef.current)
+    }
+    steeringTimeoutRef.current = window.setTimeout(() => setSteering(false), STEERING_TIMEOUT_MS)
+  }, [acp?.turnSerial, acp?.processing, acp?.queuedPrompts, steering])
 
   useEffect(() => {
     if (workspaceFeedback?.tone !== 'success') return
@@ -388,24 +420,19 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       if (!(target instanceof Node)) return
       if (target instanceof Element && target.closest('[data-viewport-menu]')) return
 
-      if (providerOpen && providerMenuRef.current && !providerMenuRef.current.contains(target)) {
-        setProviderOpen(false)
-      }
-
       if (modelOpen && modelMenuRef.current && !modelMenuRef.current.contains(target)) {
         setModelOpen(false)
       }
 
-      if (settingsOpen && settingsMenuRef.current && !settingsMenuRef.current.contains(target)) {
-        setSettingsOpen(false)
+      if (workspaceMenuOpen && workspaceMenuRef.current && !workspaceMenuRef.current.contains(target)) {
+        setWorkspaceMenuOpen(false)
       }
     }
 
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key !== 'Escape') return
-      setProviderOpen(false)
       setModelOpen(false)
-      setSettingsOpen(false)
+      setWorkspaceMenuOpen(false)
       setSelectedToolCallRef(null)
     }
 
@@ -415,7 +442,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       document.removeEventListener('mousedown', onMouseDown)
       document.removeEventListener('keydown', onKeyDown)
     }
-  }, [modelOpen, providerOpen, settingsOpen])
+  }, [modelOpen, workspaceMenuOpen])
 
   const stageFiles = async (files: File[]) => {
     const realFiles = files.filter((file) => file.size > 0 || file.type || file.name)
@@ -568,7 +595,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const submit = async (event?: FormEvent, promptOverride?: string, steerNow = false) => {
     event?.preventDefault()
     const prompt = (promptOverride ?? draft).trim()
-    if (!providerSupported || !prompt || submitting || goalSubmitting || composerAttachments.some((attachment) => attachment.status !== 'ready')) return
+    if (!providerSupported || !prompt || submitInFlightRef.current || goalSubmitting || composerAttachments.some((attachment) => attachment.status !== 'ready')) return
 	if (dictationActiveRef.current && promptOverride === undefined) {
 	  await stopDictation(true)
 	  return
@@ -633,17 +660,37 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       setClaudePlanPrompt(prompt)
       return
     }
+    const submittedSessionId = session.id
+    submitInFlightRef.current = true
     setSubmitting(true)
     if (steerNow) {
+      if (steeringTimeoutRef.current !== null) {
+        window.clearTimeout(steeringTimeoutRef.current)
+        steeringTimeoutRef.current = null
+      }
       steerTurnSerialRef.current = acp?.turnSerial ?? 0
       setSteering(true)
     }
-    const ok = steerNow
-      ? await sendAcpPrompt(session.id, prompt, readyAttachments, true)
-      : await sendAcpPrompt(session.id, prompt, readyAttachments)
-    setSubmitting(false)
-    if (!ok) setSteering(false)
-    if (ok) {
+    let ok = false
+    try {
+      ok = await (steerNow
+        ? sendAcpPrompt(session.id, prompt, readyAttachments, true)
+        : sendAcpPrompt(session.id, prompt, readyAttachments))
+    } catch {
+      ok = false
+    }
+    if (currentSessionIdRef.current === submittedSessionId) {
+      submitInFlightRef.current = false
+      setSubmitting(false)
+    }
+    if (!ok) {
+      if (steeringTimeoutRef.current !== null) {
+        window.clearTimeout(steeringTimeoutRef.current)
+        steeringTimeoutRef.current = null
+      }
+      setSteering(false)
+    }
+    if (ok && currentSessionIdRef.current === submittedSessionId) {
       setDraft('')
       setComposerAttachments([])
       setAttachmentError('')
@@ -656,7 +703,13 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const workspaceDirectory = session.workspaceDirectory?.trim() || folderDirectory.trim()
   const isGitWorktree = session.workspaceIsolationKind === 'gitWorktree'
   const sourceWorkspaceDirectory = session.workspaceSourceDirectory?.trim() || (!isGitWorktree ? workspaceDirectory : '')
-  const workspaceActionsDisabled = workspaceActionBusy || Boolean(acp?.running || acp?.processing)
+  const workspaceActionsDisabled = workspaceActionBusy || Boolean(
+    acp?.processing ||
+    acp?.pendingPermission ||
+    acp?.pendingUserInput ||
+    (acp?.queuedPrompts?.length ?? 0) > 0 ||
+    cli?.running
+  )
   const openWorkspace = async () => {
     if (!workspaceDirectory) return
     setWorkspaceFeedback(null)
@@ -716,8 +769,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       providers.find((candidate) => candidate.id === currentProviderId) ?? fallbackProviderForId(currentProviderId),
     [currentProviderId, providers]
   )
+  const providerAcp = acp?.providerId === currentProviderId ? acp : undefined
   const currentProviderName = providerShortName(currentProvider, currentProviderId)
-  const currentRuntimeLabel = providerRuntimeLabel(currentProvider, acp)
   const errorProviderId = acp?.providerId || currentProviderId
   const errorProvider = providers.find((candidate) => candidate.id === errorProviderId) ?? fallbackProviderForId(errorProviderId)
   const currentErrorTitle = `${providerShortName(errorProvider, errorProviderId)} ${providerRuntimeLabel(errorProvider, acp)} error`
@@ -835,26 +888,27 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   }, [session.id])
   // The persisted chat setting is the choice for the next turn. ACP can still
   // report the previous idle model until that turn begins.
-  const currentModelId = session.modelId || acp?.currentModelId || ''
-  const currentModel = modelOptionFor(buildModelOptions(acp, currentModelId, currentProvider, currentProviderId), currentModelId)
+  const currentModelId = session.modelId || providerAcp?.currentModelId || ''
+  const showUnresolvedDefaultModel = !session.modelId && !providerAcp?.currentModelId
+  const currentModel = modelOptionFor(buildModelOptions(providerAcp, currentModelId, currentProvider, currentProviderId, showUnresolvedDefaultModel), currentModelId)
   const currentProviderCapabilities = providerCapabilities(currentProviderId, currentProvider)
-  const runtimeSupportsReasoning = (selectedRuntimeModel(acp, currentModel.id)?.supportedReasoningEfforts?.length ?? 0) > 0
+  const runtimeSupportsReasoning = (selectedRuntimeModel(providerAcp, currentModel.id)?.supportedReasoningEfforts?.length ?? 0) > 0
   const reasoningOptions = currentProviderCapabilities.hasReasoningEffort || runtimeSupportsReasoning
-    ? buildCodexReasoningOptions(acp, currentModel.id, session.reasoningEffort ?? '')
+    ? buildCodexReasoningOptions(providerAcp, currentModel.id, session.reasoningEffort ?? '')
     : []
   const speedOptions = currentProviderCapabilities.hasServiceTier
-    ? buildCodexSpeedOptions(acp, currentModel.id, session.serviceTier ?? '')
+    ? buildCodexSpeedOptions(providerAcp, currentModel.id, session.serviceTier ?? '')
     : []
-  const currentModeId = configuredApprovalMode || session.approvalMode || acp?.currentModeId || 'default'
+  const currentModeId = configuredApprovalMode || session.approvalMode || providerAcp?.currentModeId || 'default'
   const agentModes = useMemo(() => {
-    const modes = (acp?.availableModes.length ?? 0) > 0
-      ? acp!.availableModes.filter((mode) => mode.id === 'default' || mode.id === 'plan')
+    const modes = (providerAcp?.availableModes.length ?? 0) > 0
+      ? providerAcp!.availableModes.filter((mode) => mode.id === 'default' || mode.id === 'plan')
       : [
           { id: 'default', name: 'Default', description: 'Use the provider default agent.' },
           { id: 'plan', name: 'Plan', description: 'Research and plan before implementation.' },
         ]
     return modes
-  }, [acp?.availableModes, currentProvider, currentProviderId])
+  }, [providerAcp?.availableModes, currentProvider, currentProviderId])
   const permissionModes = useMemo(
     () => PERMISSION_MODES.filter((mode) => mode.id !== 'acceptEdits' || providerCapabilities(currentProviderId, currentProvider).hasAcceptEditsMode),
     [currentProvider, currentProviderId]
@@ -951,7 +1005,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   }, -1)
   const latestPlanHasLaterUser =
     latestPlanMessageIndex >= 0 && messages.slice(latestPlanMessageIndex + 1).some((message) => message.role === 'user')
-  const canShowPlanActions = isCodexProvider(currentProvider, currentProviderId) && latestPlanMessageIndex >= 0 && !latestPlanHasLaterUser
+  const canShowPlanActions = isCodexProvider(currentProvider, currentProviderId) && currentModeId === 'plan' && latestPlanMessageIndex >= 0 && !latestPlanHasLaterUser
   const planActionBlockedByRuntime = runtimeBlocksControlChanges
   const planActionsDisabled = Boolean(submitting || planActionBlockedByRuntime)
   const planActionsDisabledTitle = planActionBlockedByRuntime
@@ -974,10 +1028,13 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       void updateGoalStatus(displayedGoal.id, 'complete')
     }
   }
-  const handleResumeGoal = () => {
-    if (displayedGoal) {
-      void resumeGoal(session.id, displayedGoal.id)
-    }
+  const handleResumeGoal = async () => {
+    if (!displayedGoal || goalSubmitting) return
+    setGoalError('')
+    setGoalSubmitting(true)
+    const resumed = await resumeGoal(session.id, displayedGoal.id)
+    setGoalSubmitting(false)
+    if (!resumed) setGoalError('Failed to resume goal.')
   }
   const handlePauseGoal = () => {
     if (displayedGoal) {
@@ -995,7 +1052,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       return
     }
     if (displayedGoal && displayedGoal.status !== 'active') {
-      void resumeGoal(session.id, displayedGoal.id)
+      void handleResumeGoal()
       return
     }
     setGoalArmNextMessage((value) => !value)
@@ -1226,48 +1283,16 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       {selectedToolCall && (
         <ToolCallModal
           tool={selectedToolCall}
+          chatId={selectedToolCallRef?.messageId ? session.id : undefined}
           onClose={() => setSelectedToolCallRef(null)}
           onOpenSubAgent={selectedToolCall.isSubAgent ? () => void openSelectedSubAgentSession() : undefined}
           accentColor={accentColor}
         />
       )}
       <div className="flex-1 flex flex-col min-w-0">
-        <div ref={scrollRef} className="flex-1 overflow-auto" data-copy-surface="chat" onScroll={handleScroll}>
-          <div className="w-full px-4 py-4">
-            <details
-              className="uam-runtime-status mb-5 text-xs"
-              data-active={Boolean(acp?.processing)}
-              data-has-details={Boolean(acp?.agentInfo?.title || acp?.sessionId)}
-            >
-              <summary
-                className="flex items-center gap-2 select-none"
-                style={{ color: 'var(--text-2)' }}
-                onClick={(event) => {
-                  if (!acp?.agentInfo?.title && !acp?.sessionId) event.preventDefault()
-                }}
-              >
-                <span className="uam-runtime-status__dot" aria-hidden style={{ background: statusColor(acp) }} />
-                <span>{statusLabel(acp)}</span>
-                {(acp?.agentInfo?.title || acp?.sessionId) && <ChevronDown size={13} className="uam-runtime-status__chevron" aria-hidden />}
-              </summary>
-              {(acp?.agentInfo?.title || acp?.sessionId) && (
-                <div className="flex flex-wrap items-center gap-2 pl-[15px] pt-1" style={{ color: 'var(--text-3)' }}>
-                  {acp?.agentInfo?.title && <span>{acp.agentInfo.title}</span>}
-                  {acp?.sessionId && <span className="truncate">Session {acp.sessionId}</span>}
-                </div>
-              )}
-            </details>
-
-            <div className="space-y-2">
-              {branchSessions.length > 1 && (
-                <div className="flex justify-center" role="group" aria-label="Chat branches">
-                  <span className="inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-[11px]" style={{ border: '1px solid var(--border)', color: 'var(--text-2)', background: 'var(--surface)' }}>
-                    <IconButton icon={<ChevronLeft size={13} />} label="Previous chat branch" disabled={branchIndex <= 0} onClick={() => setActiveSession(branchSessions[branchIndex - 1].id)} />
-                    <span className="min-w-[42px] text-center tabular-nums">{branchIndex + 1} / {branchSessions.length}</span>
-                    <IconButton icon={<ChevronRight size={13} />} label="Next chat branch" disabled={branchIndex >= branchSessions.length - 1} onClick={() => setActiveSession(branchSessions[branchIndex + 1].id)} />
-                  </span>
-                </div>
-              )}
+        <div ref={scrollRef} className="uam-chat-transcript flex-1 overflow-auto" data-copy-surface="chat" onScroll={handleScroll}>
+          <div className="uam-chat-content w-full py-4">
+            <div className="uam-message-list space-y-1.5">
               {earliestRenderedMessageIndex > 0 && (
                 <div className="flex justify-center">
                   <Button
@@ -1285,14 +1310,24 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 const shouldSkipAssistantMessage = renderTimelineAfterUser && index === turnAssistantMessageIndex
                 const isUserMessage = message.role === 'user'
                 const isEditingMessage = editingMessageIndex === index
-                const isBranchPoint = session.branchFromMessageIndex === index
+                const branchParentId = session.parentChatId && session.branchFromMessageIndex === index
+                  ? session.parentChatId
+                  : session.id
+                const messageBranchSessions = isUserMessage
+                  ? branchSessions.filter((candidate) =>
+                    candidate.id === branchParentId ||
+                    (candidate.parentChatId === branchParentId && candidate.branchFromMessageIndex === index)
+                  )
+                  : []
+                const messageBranchIndex = messageBranchSessions.findIndex((candidate) => candidate.id === session.id)
+                const isBranchPoint = messageBranchSessions.length > 1 && messageBranchIndex >= 0
                 const goalReview = goalReviewForMessage(message)
                 const messageProviderId = message.providerId?.trim() || currentProviderId
                 const messageProviderName = providerShortName(
                   providers.find((candidate) => candidate.id === messageProviderId),
                   messageProviderId
                 )
-                const branchLabel = isBranchPoint
+                const branchLabel = session.branchFromMessageIndex === index
                   ? session.branchMessageEdited ? 'Edited branch' : 'Reverted branch'
                   : undefined
 
@@ -1305,6 +1340,12 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                       assistantLabel={messageProviderName}
                       copyText={message.content}
                       branchLabel={branchLabel}
+                      branchNavigation={isBranchPoint ? {
+                        current: messageBranchIndex + 1,
+                        total: messageBranchSessions.length,
+                        onPrevious: () => setActiveSession(messageBranchSessions[messageBranchIndex - 1].id),
+                        onNext: () => setActiveSession(messageBranchSessions[messageBranchIndex + 1].id),
+                      } : undefined}
                       goalReview={Boolean(goalReview)}
                       streaming={Boolean(shouldRenderTimelineAtAssistant && acp?.processing)}
                       actionsDisabled={!canChangeProvider || branchingMessageIndex !== null}
@@ -1371,6 +1412,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                           onStopRuntime={() => void stopAcpSession(session.id)}
                           sourceChatId={session.id}
                           active={Boolean(acp?.processing)}
+                          workingMode={workingDisplayMode}
+                          workedSeconds={turnWorkedSeconds}
                         />
                       ) : (
                         <PersistedMessageContent
@@ -1378,6 +1421,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                           onSelectTool={(messageId, toolId) => setSelectedToolCallRef({ id: toolId, messageId })}
                           planActions={planActionsForMessage(index)}
                           sourceChatId={session.id}
+                          workingMode={workingDisplayMode}
                         />
                       )}
                     </MessageFrame>
@@ -1411,14 +1455,27 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                           onStopRuntime={() => void stopAcpSession(session.id)}
                           sourceChatId={session.id}
                           active={Boolean(acp?.processing)}
+                          workingMode={workingDisplayMode}
+                          workedSeconds={turnWorkedSeconds}
                         />
                       </MessageFrame>
                     )}
                   </div>
                 )
               })}
+              {acp?.processing && turnEvents.length === 0 && (
+                <div
+                  data-testid="turn-starting"
+                  role="status"
+                  className="uam-turn-starting flex items-center gap-2 px-4 py-2 text-xs"
+                  style={{ color: 'var(--text-3)' }}
+                >
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full" style={{ background: 'var(--accent)' }} aria-hidden />
+                  Starting…
+                </div>
+              )}
               {messageBranchError && (
-                <div role="alert" className="text-center text-xs" style={{ color: 'var(--danger)' }}>
+                <div role="alert" className="text-center text-xs" style={{ color: 'var(--error)' }}>
                   {messageBranchError}
                 </div>
               )}
@@ -1452,6 +1509,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                     onStopRuntime={() => void stopAcpSession(session.id)}
                     sourceChatId={session.id}
                     active={Boolean(acp?.processing)}
+                    workingMode={workingDisplayMode}
+                    workedSeconds={turnWorkedSeconds}
                   />
                 </MessageFrame>
               )}
@@ -1461,7 +1520,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
         </div>
 
         {goalError && (
-          <div className="px-4 py-1 text-xs" style={{ background: 'var(--surface)', color: 'var(--danger)' }}>
+          <div className="px-4 py-1 text-xs" style={{ background: 'var(--surface)', color: 'var(--error)' }}>
             {goalError}
           </div>
         )}
@@ -1471,7 +1530,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
             goal={displayedGoal}
             onComplete={handleCompleteGoal}
             onPause={handlePauseGoal}
-            onResume={handleResumeGoal}
+            onResume={() => void handleResumeGoal()}
+            resumePending={goalSubmitting}
             onRemove={handleRemoveGoal}
           />
         )}
@@ -1480,169 +1540,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
           onSubmit={submit}
           className="flex-shrink-0"
           style={{
-            borderTop: '1px solid var(--border)',
-            background: 'var(--surface)',
+            background: 'color-mix(in srgb, var(--bg) 94%, var(--surface))',
           }}
         >
-            <div className="flex flex-col p-3">
-              <div
-                className="order-10 mt-2 flex flex-wrap items-center gap-2 text-[11px]"
-                style={{ color: 'var(--text-3)', minWidth: 0 }}
-                title={workspaceDirectory || 'No workspace directory selected'}
-              >
-                {(providers.length <= 1 && currentProviderId === providers[0]?.id) ? null : (
-                <div ref={providerMenuRef} className="relative" style={{ flexShrink: 0 }}>
-                  <button
-                    type="button"
-                    title="Select provider"
-                    aria-label="Select provider"
-                    aria-expanded={providerOpen}
-                    onClick={() => setProviderOpen((v) => !v)}
-                    className="uam-composer-action inline-flex items-center justify-center"
-                    style={{ width: 28, height: 28, borderRadius: 7, border: '1px solid var(--border-bright)', background: providerOpen ? 'var(--surface-up)' : 'var(--surface)', color: 'var(--text-2)' }}
-                  >
-                    <ProviderLogo providerId={currentProviderId} />
-                  </button>
-                  {providerOpen && (
-                    <ViewportMenu
-                      anchorRef={providerMenuRef}
-                      side="top"
-                      data-testid="provider-menu"
-                      className="animate-fade-in"
-                      style={{
-                        width: 230,
-                        border: '1px solid var(--border-bright)',
-                        borderRadius: 8,
-                        background: 'var(--surface)',
-                        boxShadow: 'var(--elev-3)',
-                        padding: 6,
-                        ...(accentColor ? {
-                          '--accent': accentColor,
-                          '--accent-dim': `color-mix(in srgb, ${accentColor} 12%, transparent)`,
-                        } : {}),
-                      }}
-                      onMouseDown={(event) => event.stopPropagation()}
-                    >
-                      <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>Provider</div>
-                      {providers.map((candidate) => {
-                        const candidateName = providerShortName(candidate, candidate.id)
-                        const selected = candidate.id === currentProviderId
-                        const disabled = !selected && !canChangeProvider
-                        return (
-                          <button
-                            key={candidate.id}
-                            type="button"
-                            disabled={disabled}
-                            onClick={() => { setProviderOpen(false); if (disabled) return; void setSessionProvider(session.id, candidate.id) }}
-                            className={`uam-menu-select__option w-full flex items-center gap-2 text-left px-2 py-2${selected ? ' is-selected' : ''}`}
-                            style={{ borderRadius: 6, color: selected ? 'var(--text)' : 'var(--text-2)', opacity: disabled ? 0.5 : 1 }}
-                          >
-                            <ProviderLogo providerId={candidate.id} />
-                            <span className="flex-1">{candidateName}</span>
-                            {selected && <Check size={13} aria-hidden style={{ color: 'var(--accent)' }} />}
-                          </button>
-                        )
-                      })}
-                    </ViewportMenu>
-                  )}
-                </div>
-                )}
-                {isGitWorktree && (
-                  <span
-                    style={{
-                      border: '1px solid color-mix(in srgb, var(--green) 42%, var(--border))',
-                      borderRadius: 6,
-                      background: 'color-mix(in srgb, var(--green) 10%, var(--surface))',
-                      color: 'var(--text-2)',
-                      padding: '3px 7px',
-                      flexShrink: 0,
-                    }}
-                    title={sourceWorkspaceDirectory ? `Source: ${sourceWorkspaceDirectory}` : 'Isolated Git worktree'}
-                  >
-                    Git worktree
-                  </span>
-                )}
-                <span
-                  className="min-w-0 flex-1 truncate"
-                style={{
-                  border: '1px solid var(--border)',
-                  borderRadius: 6,
-                  background: 'var(--bg)',
-                  color: workspaceDirectory ? 'var(--text-2)' : 'var(--text-3)',
-                  padding: '3px 7px',
-                  minWidth: 0,
-                }}
-                >
-                  {workspaceDirectory || 'No workspace directory selected'}
-                </span>
-                <IconButton
-                  variant="solid"
-                  size="sm"
-                  disabled={!workspaceDirectory}
-                  onClick={() => void openWorkspace()}
-                  icon={<ComposerIcon name="folder" size={14} />}
-                  label="Open workspace in Finder or File Explorer"
-                  tooltipSide="bottom"
-                />
-                <IconButton
-                  variant="solid"
-                  size="sm"
-                  disabled={!workspaceDirectory}
-                  onClick={() => void openWorkspaceEditor()}
-                  icon={<ComposerIcon name="editor" size={14} />}
-                  label="Open workspace in configured editor"
-                  tooltipSide="bottom"
-                />
-                <IconButton
-                  variant="solid"
-                  size="sm"
-                  disabled={!workspaceDirectory}
-                  onClick={() => void openWorkspaceTerminal()}
-                  icon={<ComposerIcon name="terminal" size={14} />}
-                  label={!workspaceDirectory ? 'Select a workspace directory to open a terminal' : 'Open a terminal at the workspace location'}
-                  tooltipSide="bottom"
-                />
-                {!isGitWorktree && (
-                  <IconButton
-                    variant="solid"
-                    size="sm"
-                    disabled={!workspaceDirectory || workspaceActionsDisabled}
-                    onClick={() => void runWorkspaceAction('create')}
-                    icon={<ComposerIcon name="git-tree" size={14} />}
-                    label={workspaceActionsDisabled ? 'Stop the runtime before changing workspace isolation' : 'Create an isolated Git worktree for this chat'}
-                    tooltipSide="bottom"
-                  />
-                )}
-                {isGitWorktree && (
-                  <>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      disabled={workspaceActionsDisabled}
-                      onClick={() => void runWorkspaceAction('discard')}
-                    >
-                      Discard &amp; return
-                    </Button>
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      disabled={workspaceActionsDisabled}
-                      onClick={() => void runWorkspaceAction('port')}
-                    >
-                      Port back
-                    </Button>
-                  </>
-                )}
-              </div>
-              {isGitWorktree && sourceWorkspaceDirectory && (
-                <div
-                  className="order-10 mt-2 truncate text-[11px]"
-                  style={{ color: 'var(--text-3)' }}
-                  title={sourceWorkspaceDirectory}
-                >
-                  Source {sourceWorkspaceDirectory}
-                </div>
-              )}
+            <div className="uam-chat-content uam-composer-region flex flex-col p-3">
               {workspaceFeedback && (
                 <div
                   role={workspaceFeedback.tone === 'error' ? 'alert' : 'status'}
@@ -1756,7 +1657,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 {acp!.queuedPrompts!.slice(0, 1).map((prompt, index) => (
                   <div
                     key={`${index}-${prompt.text}`}
-                    className="flex items-center gap-2 px-3 py-1.5 text-[11px] animate-fade-in transition-[background-color,transform] duration-150 hover:-translate-y-px"
+                    className="uam-queued-prompt flex items-center gap-2 px-3 py-1.5 text-[11px] animate-fade-in transition-colors duration-150"
                     style={{
                       color: 'var(--text-2)',
                       border: '1px solid color-mix(in srgb, var(--accent) 28%, var(--border))',
@@ -1778,7 +1679,17 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                       onClick={() => {
                         steerTurnSerialRef.current = acp?.turnSerial ?? 0
                         setSteering(true)
-                        void steerQueuedAcpPrompt(session.id, index).then((ok) => { if (!ok) setSteering(false) })
+                        if (steeringTimeoutRef.current !== null) {
+                          window.clearTimeout(steeringTimeoutRef.current)
+                          steeringTimeoutRef.current = null
+                        }
+                        void steerQueuedAcpPrompt(session.id, index)
+                          .then((ok) => {
+                            if (!ok) setSteering(false)
+                          })
+                          .catch(() => {
+                            setSteering(false)
+                          })
                       }}
                     />
                     <IconButton
@@ -1792,12 +1703,14 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               </div>
             )}
             <div
+              className="uam-composer-surface"
               onDragOver={(event) => event.preventDefault()}
               onDrop={onComposerDrop}
               style={{
-                border: '1px solid var(--border-bright)',
-                borderRadius: 9,
-                background: 'var(--bg)',
+                border: 'none',
+                borderRadius: 10,
+                background: 'var(--surface)',
+                boxShadow: 'var(--elev-1)',
                 overflow: 'visible',
               }}
             >
@@ -1945,7 +1858,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               placeholder={`Message ${currentProviderName}`}
               disabled={submitting || dictationActive}
               aria-describedby={dictationActive || dictationError ? `dictation-status-${session.id}` : undefined}
-              className="w-full resize-none text-sm"
+              className="uam-composer-textarea w-full resize-none text-sm"
               style={{
                 minHeight: 72,
                 maxHeight: 160,
@@ -1968,13 +1881,16 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               }}
             />
             <ComposerToolbar
-              acp={acp}
+              acp={providerAcp}
               provider={currentProvider}
               providers={providers}
               providerId={currentProviderId}
-              providerName={currentProviderName}
+              canChangeProvider={canChangeProvider}
               canSend={canSend}
+              runtimeStatusLabel={statusLabel(providerAcp)}
+              runtimeStatusColor={statusColor(providerAcp)}
               modelId={currentModelId}
+              includeDefaultModel={showUnresolvedDefaultModel}
               session={session}
               reasoningEffort={session.reasoningEffort ?? ''}
               serviceTier={session.serviceTier ?? ''}
@@ -1985,33 +1901,15 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               memoryLevel={currentMemoryLevel}
               defaultMemoryLevel={defaultMemoryLevel}
               memoryChipVisible={memoryChipExplicit || currentMemoryLevel !== defaultMemoryLevel}
-              canChangeProvider={canChangeProvider}
-              providerOpen={providerOpen}
               modelOpen={modelOpen}
-              settingsOpen={settingsOpen}
-              providerMenuRef={providerMenuRef}
               modelMenuRef={modelMenuRef}
-              settingsMenuRef={settingsMenuRef}
-              onToggleProvider={() => {
-                setProviderOpen((value) => !value)
-                setModelOpen(false)
-                setSettingsOpen(false)
-              }}
               onToggleModel={() => {
-                if (runtimeBlocksControlChanges) return
                 setModelOpen((value) => !value)
-                setProviderOpen(false)
-                setSettingsOpen(false)
-              }}
-              onToggleSettings={() => {
-                setSettingsOpen((value) => !value)
-                setProviderOpen(false)
-                setModelOpen(false)
+                setWorkspaceMenuOpen(false)
               }}
               onSelectProvider={(providerId) => {
-                setProviderOpen(false)
-                if (providerId === currentProviderId || !canChangeProvider) return
-                void setSessionProvider(session.id, providerId)
+                setModelOpen(false)
+                if (providerId !== currentProviderId) void setSessionProvider(session.id, providerId)
               }}
               onSelectModel={(modelId) => {
                 setModelOpen(false)
@@ -2043,6 +1941,52 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               onStopRuntime={() => void stopAcpSession(session.id)}
               onAttachFile={() => fileInputRef.current?.click()}
               onOpenMarkdownStore={() => void openMarkdownStore()}
+              workspaceControl={(
+                <div ref={workspaceMenuRef} className="relative shrink-0">
+                  <IconButton
+                    size="sm"
+                    disabled={!workspaceDirectory}
+                    onClick={() => {
+                      setWorkspaceMenuOpen((open) => !open)
+                      setModelOpen(false)
+                    }}
+                    icon={<ComposerIcon name="folder" size={14} />}
+                    label={workspaceDirectory ? 'Workspace actions' : 'Workspace not selected'}
+                    tooltipSide="bottom"
+                  />
+                  {workspaceMenuOpen && workspaceDirectory && (
+                    <ViewportMenu
+                      anchorRef={workspaceMenuRef}
+                      side="top"
+                      role="menu"
+                      aria-label="Workspace actions"
+                      className="animate-fade-in"
+                      style={{ width: 240, border: '1px solid var(--border-bright)', borderRadius: 8, background: 'var(--surface)', boxShadow: 'var(--elev-3)', padding: 6 }}
+                    >
+                      <div className="truncate px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }} title={workspaceDirectory}>
+                        {workspaceDirectory}
+                      </div>
+                      {isGitWorktree && (
+                        <div className="px-2 pb-1 text-[11px]" style={{ color: 'var(--green)' }}>
+                          Git worktree{sourceWorkspaceDirectory ? ` · source ${sourceWorkspaceDirectory}` : ''}
+                        </div>
+                      )}
+                      <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspace() }}><ComposerIcon name="folder" size={14} /><span>Open workspace</span></button>
+                      <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspaceEditor() }}><ComposerIcon name="editor" size={14} /><span>Open in editor</span></button>
+                      <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspaceTerminal() }}><ComposerIcon name="terminal" size={14} /><span>Open terminal</span></button>
+                      <div className="my-1 border-t" style={{ borderColor: 'var(--border)' }} />
+                      {!isGitWorktree ? (
+                        <button type="button" role="menuitem" disabled={workspaceActionsDisabled} className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" style={{ opacity: workspaceActionsDisabled ? 0.5 : 1 }} onClick={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('create') }}><ComposerIcon name="git-tree" size={14} /><span>Create worktree</span></button>
+                      ) : (
+                        <>
+                          <button type="button" role="menuitem" disabled={workspaceActionsDisabled} className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" style={{ opacity: workspaceActionsDisabled ? 0.5 : 1 }} onClick={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('discard') }}><span>Discard &amp; return</span></button>
+                          <button type="button" role="menuitem" disabled={workspaceActionsDisabled} className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" style={{ opacity: workspaceActionsDisabled ? 0.5 : 1 }} onClick={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('port') }}><span>Port back</span></button>
+                        </>
+                      )}
+                    </ViewportMenu>
+                  )}
+                </div>
+              )}
               dictationState={dictationState}
               dictationError={dictationError}
               dictationElapsedSeconds={dictationElapsedSeconds}

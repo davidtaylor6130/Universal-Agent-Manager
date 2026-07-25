@@ -94,7 +94,8 @@ export function Sidebar() {
         onClearFilters={clearFilters}
       />
       <div
-        className="flex-1 overflow-y-auto overflow-x-hidden py-2"
+        data-testid="sidebar-tree-scroll"
+        className="flex-1 overflow-y-auto overflow-x-hidden py-1"
         style={{ borderTop: '1px solid var(--border)' }}
       >
         <FolderTree searchQuery={searchQuery} deepSearchSessionIds={deepSearch ? deepSearchSessionIds : undefined} filters={filters} />

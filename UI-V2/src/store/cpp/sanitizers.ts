@@ -218,6 +218,7 @@ export function sanitizeToolCall(value: unknown): AcpToolCall | null {
     kind: stringOr(value.kind),
     status: stringOr(value.status),
     content: stringOr(value.content),
+    contentDeferred: booleanOr(value.contentDeferred),
     isSubAgent: booleanOr(value.isSubAgent),
     subAgentId: stringOr(value.subAgentId),
     subAgentTitle: stringOr(value.subAgentTitle),
@@ -329,6 +330,7 @@ export function sanitizeQueuedPrompt(value: unknown): AcpQueuedPrompt | null {
       : [],
     goalMode: Boolean(value.goalMode),
     goalId: stringOr(value.goalId),
+    prioritySteer: typeof value.prioritySteer === 'boolean' ? value.prioritySteer : undefined,
   }
 }
 
@@ -362,12 +364,16 @@ export function sanitizeCppMessage(value: unknown): CppMessage | null {
           return sanitized ? [sanitized as MessageBlock] : []
         })
       : [],
+    markdownStoreFiles: Array.isArray(value.markdownStoreFiles)
+      ? value.markdownStoreFiles.filter(isString)
+      : [],
     attachments: Array.isArray(value.attachments)
       ? value.attachments.flatMap((attachment) => {
           const sanitized = sanitizeAttachment(attachment)
           return sanitized ? [sanitized] : []
-        })
+      })
       : [],
+    processingTimeMs: Math.max(0, finiteNumberOr(value.processingTimeMs, 0)),
     createdAt: stringOr(value.createdAt),
   }
 }
@@ -663,6 +669,8 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     branchFromMessageIndex: Math.trunc(finiteNumberOr(value.branchFromMessageIndex, -1)),
     branchMessageEdited: booleanOr(value.branchMessageEdited),
     modelId: normalizeAcpModelId(value.modelId),
+    reasoningEffort: normalizeCodexReasoningEffort(value.reasoningEffort),
+    serviceTier: normalizeCodexServiceTier(value.serviceTier),
     approvalMode: normalizeAgentMode(value.approvalMode),
     autoApproveCommands: booleanOr(value.autoApproveCommands, stringOr(value.approvalMode).trim() === 'yolo'),
     commandSafetyTier: normalizeCommandSafetyTier(value.commandSafetyTier),
@@ -711,6 +719,7 @@ export function sanitizeCppProvider(value: unknown): CppProvider | null {
     supportsCli: typeof value.supportsCli === 'boolean' ? value.supportsCli : undefined,
     supportsStructured: typeof value.supportsStructured === 'boolean' ? value.supportsStructured : undefined,
     structuredProtocol: isString(value.structuredProtocol) ? value.structuredProtocol : undefined,
+    npmPackageName: isString(value.npmPackageName) ? value.npmPackageName.trim() : undefined,
 	nativeGoalCommand: isString(value.nativeGoalCommand) ? value.nativeGoalCommand.trim() : undefined,
   }
 }
@@ -1127,7 +1136,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
   if (!isRecord(value)) {
     return {
       activeProviderId: GEMINI_CLI_PROVIDER_ID,
-      theme: 'dark',
+      theme: 'focus',
       showProviderIconsInSidebar: true,
       showWorktreePathInSidebar: true,
       memoryEnabledDefault: true,
@@ -1154,7 +1163,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     }
   }
 
-  const theme = normalizeStoredTheme(value.theme) ?? 'dark'
+  const theme = normalizeStoredTheme(value.theme) ?? 'focus'
   const bindings: Record<string, MemoryWorkerBinding> = {}
   if (isRecord(value.memoryWorkerBindings)) {
     for (const [providerId, binding] of Object.entries(value.memoryWorkerBindings)) {

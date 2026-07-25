@@ -31,7 +31,6 @@ namespace uam
 		constexpr int kDefaultCommandTimeoutMs = 120000;
 		constexpr std::size_t kGitPorcelainStatusCodeWidth = 2;
 		constexpr std::size_t kGitPorcelainPathOffset = 3;
-		constexpr std::string_view kGitPorcelainRenameSeparator = " -> ";
 		constexpr std::size_t kSvnStatusCodeWidth = 7;
 		constexpr std::size_t kSvnStatusPathOffset = 7;
 
@@ -208,20 +207,26 @@ namespace uam
 		std::vector<VcsChangedFile> ParseGitStatus(const std::string& status)
 		{
 			std::vector<VcsChangedFile> files;
-			std::istringstream lines(status);
-			std::string line;
-			while (std::getline(lines, line))
+			std::size_t position = 0;
+			while (position + kGitPorcelainPathOffset <= status.size())
 			{
-				if (line.size() <= kGitPorcelainPathOffset)
+				const std::string code = status.substr(position, kGitPorcelainStatusCodeWidth);
+				position += kGitPorcelainPathOffset;
+				const std::size_t path_end = status.find('\0', position);
+				if (path_end == std::string::npos)
 				{
-					continue;
+					break;
 				}
-				const std::string code = line.substr(0, kGitPorcelainStatusCodeWidth);
-				std::string path = line.substr(kGitPorcelainPathOffset);
-				const auto rename_at = path.find(kGitPorcelainRenameSeparator);
-				if (rename_at != std::string::npos)
+				const std::string path = status.substr(position, path_end - position);
+				position = path_end + 1;
+				if (code.find('R') != std::string::npos || code.find('C') != std::string::npos)
 				{
-					path = path.substr(rename_at + kGitPorcelainRenameSeparator.size());
+					const std::size_t original_path_end = status.find('\0', position);
+					if (original_path_end == std::string::npos)
+					{
+						break;
+					}
+					position = original_path_end + 1;
 				}
 				files.push_back({path, code, code[0] != ' ' && code[0] != '?'});
 			}
@@ -498,7 +503,7 @@ namespace uam
 		{
 			if (type == VcsType::Git)
 			{
-				return BuildGitCommandInDirectory(workspace, "diff -- " + uam::shell::EscapeArg(path));
+				return BuildGitCommandInDirectory(workspace, "diff HEAD -- " + uam::shell::EscapeArg(path));
 			}
 			return "svn diff " + BuildSvnPathArgument(workspace, path);
 		}
@@ -556,7 +561,7 @@ namespace uam
 			{
 				status.branch_or_revision = output;
 			}
-			if (OutputCommandRaw(BuildGitCommandInDirectory(workspace, "status --porcelain"), &output, &error))
+			if (OutputCommandRaw(BuildGitCommandInDirectory(workspace, "status --porcelain=v1 -z"), &output, &error))
 			{
 				status.changed_files = ParseGitStatus(output);
 				if (include_line_stats)

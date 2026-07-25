@@ -61,7 +61,6 @@ namespace uam::provider_chat_defaults
 	{
 		if (!uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kCodexCli))
 		{
-			defaults.reasoning_effort.clear();
 			defaults.service_tier.clear();
 		}
 		chat.model_id = defaults.model_id;

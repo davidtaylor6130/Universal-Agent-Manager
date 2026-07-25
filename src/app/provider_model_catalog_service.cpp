@@ -229,22 +229,26 @@ bool ProviderModelCatalogService::Poll()
 
 		// Check opencode config mtime for cache invalidation.
 		const fs::path config_path = OpenCodeConfigPath();
-		if (fs::exists(config_path))
+		std::error_code mtime_error;
+		const fs::file_time_type current_mtime = fs::last_write_time(config_path, mtime_error);
+		if (mtime_error)
 		{
-			try
+			if (m_open_code_config_mtime != fs::file_time_type{} ||
+			    !m_configured_open_code_models.empty() ||
+			    !m_configured_open_code_default_model.empty())
 			{
-				const auto current_mtime = fs::last_write_time(config_path);
-				if (current_mtime != m_open_code_config_mtime)
-				{
-					m_open_code_config_mtime = current_mtime;
-					m_configured_open_code_models = ReadConfiguredOpenCodeModels();
-					m_configured_open_code_default_model = ReadConfiguredOpenCodeDefaultModel();
-				}
+				m_open_code_config_mtime = fs::file_time_type{};
+				m_configured_open_code_models = nlohmann::json::array();
+				m_configured_open_code_default_model.clear();
+				updated = true;
 			}
-			catch (const fs::filesystem_error&)
-			{
-				// Ignore filesystem errors during mtime check.
-			}
+		}
+		else if (current_mtime != m_open_code_config_mtime)
+		{
+			m_open_code_config_mtime = current_mtime;
+			m_configured_open_code_models = ReadConfiguredOpenCodeModels();
+			m_configured_open_code_default_model = ReadConfiguredOpenCodeDefaultModel();
+			updated = true;
 		}
 	}
 

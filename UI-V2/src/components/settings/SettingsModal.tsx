@@ -249,6 +249,8 @@ export function SettingsModal() {
   const memoryRecallBudgetBytes = useAppStore((s) => s.memoryRecallBudgetBytes)
   const goalMaxLoopIterations = useAppStore((s) => s.goalMaxLoopIterations)
   const appVersion = useAppStore((s) => s.appVersion)
+  const workingDisplayMode = useAppStore((s) => s.workingDisplayMode)
+  const setWorkingDisplayMode = useAppStore((s) => s.setWorkingDisplayMode)
   const showProviderIconsInSidebar = useAppStore((s) => s.showProviderIconsInSidebar)
   const showWorktreePathInSidebar = useAppStore((s) => s.showWorktreePathInSidebar)
   const setSidebarSettings = useAppStore((s) => s.setSidebarSettings)
@@ -282,7 +284,7 @@ export function SettingsModal() {
   const setMarkdownStoreDirectory = useAppStore((s) => s.setMarkdownStoreDirectory)
   const setVoiceInputSettings = useAppStore((s) => s.setVoiceInputSettings)
   const openMarkdownStore = useAppStore((s) => s.openMarkdownStore)
-  const openGlobalMemoryLibrary = useAppStore((s) => s.openGlobalMemoryLibrary)
+  const openAllMemoryLibrary = useAppStore((s) => s.openAllMemoryLibrary)
   const openMemoryScanModal = useAppStore((s) => s.openMemoryScanModal)
   const { theme, setTheme } = useTheme()
   const [openMemoryMenu, setOpenMemoryMenu] = useState<string | null>(null)
@@ -708,6 +710,7 @@ export function SettingsModal() {
     themeDraft?.name.trim()
     && Object.values(themeDraft.colors).every((color) => THEME_COLOR_PATTERN.test(color))
   )
+  const themeSaveInFlightRef = useRef(false)
   const startNewTheme = (source?: CustomTheme) => {
     const base = source?.base ?? (theme === 'light' ? 'light' : 'dark')
     const name = source ? `${source.name} Copy` : 'Custom Theme'
@@ -725,19 +728,24 @@ export function SettingsModal() {
       startNewTheme(selectedCustomTheme)
       return
     }
-    const base = resolveDocumentTheme(theme)
+    const base = resolveDocumentTheme(theme, customThemes)
     startNewTheme({ version: 1, id: 'custom:built-in', name: `${base === 'dark' ? 'Dark' : 'Light'}`, base, colors: { ...BUILT_IN_THEME_COLORS[base] } })
   }
   const saveThemeDraft = async () => {
-    if (!themeDraft || !themeDraftValid) return
-    const saved = await saveCustomTheme(themeDraft)
-    if (!saved) {
-      setThemeMessage('Theme could not be saved. Check its name and colors.')
-      return
+    if (!themeDraft || !themeDraftValid || themeSaveInFlightRef.current) return
+    themeSaveInFlightRef.current = true
+    try {
+      const saved = await saveCustomTheme(themeDraft)
+      if (!saved) {
+        setThemeMessage('Theme could not be saved. Check its name and colors.')
+        return
+      }
+      setThemeDraft(saved)
+      setTheme(saved.id)
+      setThemeMessage('Theme saved.')
+    } finally {
+      themeSaveInFlightRef.current = false
     }
-    setThemeDraft(saved)
-    setTheme(saved.id)
-    setThemeMessage('Theme saved.')
   }
   const removeSelectedTheme = async () => {
     if (!selectedCustomTheme) return
@@ -907,6 +915,13 @@ export function SettingsModal() {
                 onChange={(event) => void setSidebarSettings({ showProviderIconsInSidebar, showWorktreePathInSidebar: event.target.checked })}
               />
             </div>
+          </SectionCard>
+          <SectionCard title="Chat activity" description="Choose how reasoning and tool activity is presented.">
+            <Switch
+              label="Compact working"
+              checked={workingDisplayMode === 'compact'}
+              onChange={(event) => setWorkingDisplayMode(event.target.checked ? 'compact' : 'verbose')}
+            />
           </SectionCard>
         </div>
       )
@@ -1511,21 +1526,21 @@ export function SettingsModal() {
         <div className="space-y-4">
           <SectionCard
             title="Memory Library"
-            description="Browse, add, delete, and reveal global memory files without leaving the app."
+            description="Browse global and project memory files without leaving the app."
           >
             <div className="flex items-center justify-between gap-4">
               <div>
                 <div className="text-sm" style={{ color: 'var(--text)' }}>
-                  Global memory browser
+                  All memory
                 </div>
                 <div className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>
-                  Open the file-backed library for app-wide durable memories.
+                  Browse global memory alongside collections and workspace folders.
                 </div>
               </div>
               <Button
                 variant="primary"
                 size="sm"
-                onClick={() => void openGlobalMemoryLibrary()}
+                onClick={() => void openAllMemoryLibrary()}
               >
                 Open library
               </Button>

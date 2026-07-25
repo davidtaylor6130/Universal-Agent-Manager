@@ -74,15 +74,15 @@ export function ChatSearchBar({
   return (
     <div
       className="flex h-12 flex-shrink-0 items-center px-4"
-      style={{ background: 'var(--surface)' }}
+      style={{ background: 'var(--sidebar-bg)' }}
     >
       <div className="flex w-full items-center gap-2">
         <div
           className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2"
           style={{
             height: 32,
-            background: 'var(--surface)',
-            border: '1px solid var(--border)',
+            background: 'var(--surface-up)',
+            border: '1px solid transparent',
             color: 'var(--text-3)',
           }}
         >
@@ -147,8 +147,8 @@ export function ChatSearchBar({
             style={{
               width: 32,
               height: 32,
-              border: '1px solid var(--border)',
-              background: activeFilterCount > 0 ? 'var(--accent)' : 'var(--surface)',
+              border: '1px solid transparent',
+              background: activeFilterCount > 0 ? 'var(--accent)' : 'var(--surface-up)',
               color: activeFilterCount > 0 ? 'white' : 'var(--text-2)',
             }}
             onClick={() => setFiltersOpen((open) => !open)}

@@ -14,6 +14,7 @@ export interface MessageToolCall {
   kind: string
   status: string
   content: string
+  contentDeferred?: boolean
   isSubAgent?: boolean
   subAgentId?: string
   subAgentTitle?: string
@@ -46,5 +47,6 @@ export interface Message {
   blocks?: MessageBlock[]
   isStreaming?: boolean
   attachments?: Attachment[]
+  processingTimeMs?: number
   createdAt: Date
 }

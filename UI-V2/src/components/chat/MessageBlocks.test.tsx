@@ -1,7 +1,8 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { describe, expect, it } from 'vitest'
-import { AttachmentList } from './MessageBlocks'
+import { describe, expect, it, vi } from 'vitest'
+import { AttachmentList, PersistedMessageContent, ThinkingBlock, TurnTimelineContent } from './MessageBlocks'
+import { ToolCallModal } from './ToolCallViews'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -23,5 +24,260 @@ describe('AttachmentList', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+})
+
+describe('working transcript', () => {
+  const tools = [{
+    id: 'tool-1',
+    title: '/bin/zsh -lc "rg TODO src"',
+    kind: 'shell',
+    status: 'completed',
+    content: 'No matches',
+  }]
+
+  const renderTimeline = (workingMode: 'compact' | 'verbose', active = false) => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(
+      <TurnTimelineContent
+        events={[
+          { type: 'assistant_text', text: 'I will inspect the workspace first.' },
+          { type: 'thought', text: 'Checking the code paths.' },
+          { type: 'tool_call', toolCallId: 'tool-1' },
+          { type: 'assistant_text', text: 'The workspace is clean.' },
+        ]}
+        tools={active ? [{ ...tools[0], status: 'in_progress' }] : tools}
+        pendingPermission={null}
+        pendingUserInput={null}
+        onSelectTool={vi.fn()}
+        onResolvePermission={vi.fn()}
+        onResolveUserInput={vi.fn()}
+        onCancelTurn={vi.fn()}
+        onStopRuntime={vi.fn()}
+        workingMode={workingMode}
+        workedSeconds={83}
+        active={active}
+      />
+    ))
+    return { host, root }
+  }
+
+  it('collapses completed thinking and tools into a compact worked summary', () => {
+    const { host, root } = renderTimeline('compact')
+    const summary = host.querySelector('[data-testid="working-summary"]') as HTMLDetailsElement | null
+
+    expect(summary?.open).toBe(false)
+    expect(summary?.textContent).toContain('Worked for 1m 23s')
+    expect(summary?.querySelector('.uam-working-summary__last')?.textContent).toBe('Checking the code paths.')
+    expect(summary?.textContent).not.toContain('I will inspect the workspace first.')
+    expect(summary?.textContent).not.toContain('The workspace is clean.')
+    expect(summary?.querySelector('[data-testid="thinking-block"]')).toBeNull()
+    expect(summary?.querySelector('.uam-tool-row')).toBeNull()
+
+    act(() => summary?.querySelector('summary')?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(summary?.open).toBe(true)
+    expect(summary?.querySelector('[data-testid="thinking-block"]')?.textContent).toContain('Checking the code paths.')
+    expect(summary?.querySelector('.uam-tool-row')?.textContent).toContain('/bin/zsh')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps only the latest assistant update outside compact working', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(
+      <PersistedMessageContent
+        message={{
+          id: 'message-1',
+          sessionId: 'chat-1',
+          role: 'assistant',
+          content: 'Finished.',
+          createdAt: new Date(),
+          processingTimeMs: 83_000,
+          blocks: [
+            { type: 'thought', text: 'First thought.\nLatest reasoning update.' },
+            { type: 'assistant_text', text: 'Interim progress.' },
+            { type: 'tool_call', toolCallId: 'tool-1' },
+            { type: 'assistant_text', text: 'Finished.' },
+          ],
+          toolCalls: tools,
+        }}
+        workingMode="compact"
+        onSelectTool={vi.fn()}
+      />
+    ))
+
+    const summary = host.querySelector('[data-testid="working-summary"]') as HTMLDetailsElement | null
+    expect(summary?.textContent).toContain('Worked for 1m 23s')
+    expect(summary?.querySelector('.uam-working-summary__last')?.textContent).toBe('Interim progress.')
+    expect(host.textContent).toContain('Finished.')
+    expect(summary?.querySelector('[data-testid="thinking-block"]')).toBeNull()
+    expect(summary?.querySelector('.uam-tool-row')).toBeNull()
+
+    act(() => summary?.querySelector('summary')?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(summary?.textContent).toContain('Latest reasoning update.')
+    expect(summary?.textContent).toContain('Interim progress.')
+    expect(summary?.textContent).toContain('/bin/zsh')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('places legacy persisted work before the final assistant response', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(
+      <PersistedMessageContent
+        message={{
+          id: 'message-legacy',
+          sessionId: 'chat-1',
+          role: 'assistant',
+          content: 'Final answer.',
+          thoughts: 'Checked the state.',
+          toolCalls: tools,
+          createdAt: new Date(),
+          processingTimeMs: 12_000,
+        }}
+        workingMode="compact"
+        onSelectTool={vi.fn()}
+      />
+    ))
+
+    const text = host.textContent ?? ''
+    expect(text.indexOf('Worked for 12s')).toBeLessThan(text.indexOf('Final answer.'))
+    expect(host.querySelector('[data-testid="working-summary"] [data-testid="thinking-block"]')).toBeNull()
+    expect(host.querySelector('[data-testid="working-summary"] .uam-tool-row')).toBeNull()
+
+    const summary = host.querySelector('[data-testid="working-summary"]') as HTMLDetailsElement | null
+    act(() => summary?.querySelector('summary')?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(summary?.querySelector('[data-testid="thinking-block"]')).toBeTruthy()
+    expect(summary?.querySelector('.uam-tool-row')).toBeTruthy()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps compact work expanded while active', () => {
+    const { host, root } = renderTimeline('compact', true)
+    const summary = host.querySelector('[data-testid="working-summary"]') as HTMLDetailsElement | null
+
+    expect(summary).toBeNull()
+    expect(host.querySelector('[data-testid="thinking-block"]')).toBeTruthy()
+    expect(host.querySelector('.uam-tool-row')?.textContent).toContain('/bin/zsh')
+    expect(host.textContent).toContain('I will inspect the workspace first.')
+    expect(host.textContent).toContain('The workspace is clean.')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('preserves chronological thinking and tool rows in verbose mode', () => {
+    const { host, root } = renderTimeline('verbose')
+
+    expect(host.querySelector('[data-testid="working-summary"]')).toBeNull()
+    expect(host.querySelector('[data-testid="thinking-block"]')).toBeTruthy()
+    expect(host.querySelector('.uam-tool-row')).toBeTruthy()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('renders thinking with the same row language as tools', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ThinkingBlock text="Inspecting state." />))
+
+    expect(host.querySelector('.uam-thinking-row')).toBeTruthy()
+    expect(host.querySelector('.uam-thinking-row__icon')).toBeTruthy()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('animates only the current thinking event while a turn is active', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(
+      <TurnTimelineContent
+        events={[
+          { type: 'thought', text: 'Earlier thought.' },
+          { type: 'tool_call', toolCallId: 'tool-1' },
+          { type: 'thought', text: 'Current thought.' },
+        ]}
+        tools={tools}
+        pendingPermission={null}
+        pendingUserInput={null}
+        onSelectTool={vi.fn()}
+        onResolvePermission={vi.fn()}
+        onResolveUserInput={vi.fn()}
+        onCancelTurn={vi.fn()}
+        onStopRuntime={vi.fn()}
+        active
+      />
+    ))
+
+    const thoughts = host.querySelectorAll('[data-testid="thinking-block"]')
+    expect(thoughts).toHaveLength(2)
+    expect((thoughts[0] as HTMLElement).dataset.active).toBe('false')
+    expect((thoughts[1] as HTMLElement).dataset.active).toBe('true')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps tool details compact and closes them with Escape', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const onClose = vi.fn()
+    act(() => root.render(<ToolCallModal tool={{ ...tools[0], content: 'ok\\n\\u001b[31merror\\u001b[0m' }} onClose={onClose} />))
+
+    expect(document.body.querySelector('.uam-tool-modal')).toBeTruthy()
+    const output = document.body.querySelector('.uam-tool-modal__output')
+    expect(output?.textContent).toContain('error')
+    expect(output?.textContent).not.toContain('\\u001b')
+    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })))
+    expect(onClose).toHaveBeenCalledOnce()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('loads deferred persisted tool output only when its modal opens', async () => {
+    const previousCefQuery = window.cefQuery
+    window.cefQuery = ({ request, onSuccess }) => {
+      expect(JSON.parse(request)).toMatchObject({
+        action: 'getToolCallContent',
+        payload: { chatId: 'chat-1', toolCallId: 'tool-1' },
+      })
+      onSuccess(JSON.stringify({ content: 'Loaded on demand' }))
+    }
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => {
+      root.render(
+        <ToolCallModal
+          tool={{ ...tools[0], content: '', contentDeferred: true }}
+          chatId="chat-1"
+          onClose={vi.fn()}
+        />
+      )
+      await Promise.resolve()
+    })
+
+    expect(document.body.querySelector('.uam-tool-modal__output')?.textContent).toContain('Loaded on demand')
+
+    act(() => root.unmount())
+    host.remove()
+    window.cefQuery = previousCefQuery
   })
 })

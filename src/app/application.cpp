@@ -19,12 +19,16 @@
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
 #include "common/config/frontend_actions.h"
+#include "common/config/settings_normalization.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_profile_constants.h"
 #include "common/provider/provider_runtime.h"
 #include "common/provider/runtime/provider_build_config.h"
+#include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/terminal_common.h"
+#include "common/runtime/terminal/terminal_identity.h"
+#include "common/runtime/terminal/terminal_lifecycle.h"
 #include "common/runtime/terminal_polling.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/config/settings_store.h"
@@ -202,19 +206,20 @@ namespace
 
 	bool IsSelectedChatRunning(const uam::AppState& app)
 	{
-		const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
-		if (selected_chat_id.empty())
+		const ChatSession* selected_chat = ChatDomainService().SelectedChat(app);
+		if (selected_chat == nullptr)
 		{
 			return false;
 		}
 
-		if (uam::ChatHasActiveCliTerminal(app, selected_chat_id))
+		if (const uam::CliTerminalState* terminal = uam::FindCliTerminalForChat(app, *selected_chat);
+		    terminal != nullptr && terminal->running && uam::CliTerminalLifecycleIsProcessing(*terminal))
 		{
 			return true;
 		}
 
-		const uam::AcpSessionState* acp = FindAcpSessionForChat(app, selected_chat_id);
-		return acp != nullptr && acp->running;
+		const uam::AcpSessionState* acp = FindAcpSessionForChat(app, selected_chat->id);
+		return acp != nullptr && acp->running && uam::AcpSessionHasBlockingRuntimeWork(*acp);
 	}
 
 	bool IsAnyRuntimeActive(const uam::AppState& app)
@@ -528,7 +533,7 @@ bool Application::InitializeState()
 	bool settings_dirty = false;
 	if (ThemeService::IsCustomThemeId(m_app.settings.ui_theme) && !ThemeService::Exists(m_app.data_root, m_app.settings.ui_theme))
 	{
-		m_app.settings.ui_theme = "dark";
+		m_app.settings.ui_theme = uam::settings::kFocusThemeId;
 		settings_dirty = true;
 	}
 	// PR-7: provider profiles are build-defined, not user data. They are reset to the
