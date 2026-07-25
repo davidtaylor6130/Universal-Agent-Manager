@@ -2012,6 +2012,44 @@ UAM_TEST(AcpQueuedUserPromptsPreserveFifoPayloadAndBeatGoalReview)
 	UAM_ASSERT(raw_session->queued_user_prompts.empty());
 }
 
+UAM_TEST(AcpSmallModelModeCreatesGoalAndKeepsQueuedPromptsAtomic)
+{
+	TempDir temp("uam-acp-small-model-queue");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.settings.active_provider_id = app.provider_profiles.front().id;
+
+	ChatSession chat;
+	chat.id = "chat-small-model";
+	chat.provider_id = app.provider_profiles.front().id;
+	chat.workspace_directory = temp.root.string();
+	chat.small_model_mode = true;
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-small-model";
+	session->provider_id = app.provider_profiles.front().id;
+	session->running = true;
+	session->session_ready = false;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, "chat-small-model", "Implement the requested feature.", {}, {}, false, &error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(app.chats.front().goals.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().active_goal_id, app.chats.front().goals.front().id);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().objective, std::string("Implement the requested feature."));
+	UAM_ASSERT(raw_session->queued_prompt.find("This is the planning turn") != std::string::npos);
+
+	UAM_ASSERT(uam::SendAcpPrompt(app, "chat-small-model", "Second instruction.", {}, {}, false, &error));
+	UAM_ASSERT(uam::SendAcpPrompt(app, "chat-small-model", "Third instruction.", {}, {}, false, &error));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts[0].text, std::string("Second instruction."));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts[1].text, std::string("Third instruction."));
+}
+
 UAM_TEST(AcpQueuedUserPromptFailureKeepsLaterPromptsInOrder)
 {
 	TempDir temp("uam-acp-user-prompt-failure");

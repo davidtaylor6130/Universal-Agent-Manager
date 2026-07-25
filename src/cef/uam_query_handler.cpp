@@ -53,6 +53,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setChatAutoApproveCommands", &UamQueryHandler::HandleSetChatAutoApproveCommands},
 		{"setChatCommandSafetyTier", &UamQueryHandler::HandleSetChatCommandSafetyTier},
 		{"setChatMemoryEnabled", &UamQueryHandler::HandleSetChatMemoryEnabled},
+		{"setChatSmallModelMode", &UamQueryHandler::HandleSetChatSmallModelMode},
 		{"setMemorySettings", &UamQueryHandler::HandleSetMemorySettings},
 		{"setVoiceInputSettings", &UamQueryHandler::HandleSetVoiceInputSettings},
 		{"setSidebarSettings", &UamQueryHandler::HandleSetSidebarSettings},

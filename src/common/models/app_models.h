@@ -170,6 +170,7 @@ struct ChatSession
 	std::vector<Goal> goals;
 	std::string active_goal_id;
 	std::string memory_level = "strict";
+	bool small_model_mode = false;
 };
 
 struct MemoryWorkerBinding
@@ -195,6 +196,7 @@ struct ProviderChatDefaults
 	std::string reasoning_effort;
 	std::string service_tier;
 	std::string memory_level = "strict";
+	bool small_model_mode = false;
 };
 
 /// <summary>

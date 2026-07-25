@@ -144,6 +144,7 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     (previous.commandSafetyTier ?? 'medium') === (next.commandSafetyTier ?? 'medium') &&
     (previous.memoryEnabled ?? true) === next.memoryEnabled &&
     (previous.memoryLevel ?? ((previous.memoryEnabled ?? true) ? 'strict' : 'off')) === next.memoryLevel &&
+    (previous.smallModelMode ?? false) === (next.smallModelMode ?? false) &&
     (previous.memoryLastProcessedMessageCount ?? 0) === next.memoryLastProcessedMessageCount &&
     (previous.memoryLastProcessedAt ?? '') === next.memoryLastProcessedAt &&
     (previous.workspaceDirectory ?? '') === (next.workspaceDirectory ?? '') &&
@@ -187,6 +188,7 @@ export function sessionFromCppChat(
     commandSafetyTier: normalizeCommandSafetyTier(chat.commandSafetyTier),
     memoryLevel: normalizeMemoryLevel(chat.memoryLevel, chat.memoryEnabled ?? true),
     memoryEnabled: normalizeMemoryLevel(chat.memoryLevel, chat.memoryEnabled ?? true) !== 'off',
+    smallModelMode: chat.smallModelMode ?? false,
     memoryLastProcessedMessageCount: chat.memoryLastProcessedMessageCount ?? 0,
     memoryLastProcessedAt: chat.memoryLastProcessedAt ?? '',
     workspaceDirectory: chat.workspaceDirectory ?? '',

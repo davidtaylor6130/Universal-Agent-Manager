@@ -114,6 +114,7 @@ export function ComposerToolbar({
   memoryLevel,
   defaultMemoryLevel,
   memoryChipVisible,
+  smallModelMode,
   modelOpen,
   modelMenuRef,
   onToggleModel,
@@ -126,6 +127,7 @@ export function ComposerToolbar({
   onSetCommandSafetyTier,
   onSelectMemoryLevel,
   onClearMemoryLevel,
+  onToggleSmallModelMode,
   goalArmed,
   goalActive,
   goalPaused,
@@ -162,6 +164,7 @@ export function ComposerToolbar({
   memoryLevel: MemoryLevel
   defaultMemoryLevel: MemoryLevel
   memoryChipVisible: boolean
+  smallModelMode: boolean
   modelOpen: boolean
   modelMenuRef: RefObject<HTMLDivElement>
   onToggleModel: () => void
@@ -174,6 +177,7 @@ export function ComposerToolbar({
   onSetCommandSafetyTier: (tier: 'low' | 'medium' | 'high') => void
   onSelectMemoryLevel: (level: MemoryLevel) => void
   onClearMemoryLevel: () => void
+  onToggleSmallModelMode: () => void
   goalArmed: boolean
   goalActive: boolean
   goalPaused: boolean
@@ -454,6 +458,18 @@ export function ComposerToolbar({
             />
             <button
               type="button"
+              title="Plan first, then run and review one verified step at a time"
+              aria-pressed={smallModelMode}
+              onClick={onToggleSmallModelMode}
+              disabled={modelDisabled}
+              className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
+              style={{ ...chipStyle, borderColor: smallModelMode ? 'color-mix(in srgb, var(--accent) 55%, var(--border))' : 'var(--border)', background: smallModelMode ? 'var(--accent-dim)' : chipStyle.background, color: smallModelMode ? 'var(--text)' : 'var(--text-2)', opacity: modelDisabled ? 0.55 : 1 }}
+            >
+              <Cpu size={13} aria-hidden />
+              <span>Small-model workflow {smallModelMode ? 'on' : 'off'}</span>
+            </button>
+            <button
+              type="button"
               title="Open Skills"
               onClick={() => { setOptionsOpen(false); onOpenMarkdownStore() }}
               className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
@@ -500,6 +516,7 @@ export function ComposerToolbar({
           onClear={permissionModeId === 'default' ? undefined : () => onSelectPermissionMode('default')}
         />
         {memoryChipVisible && <ActiveModeChip label={`Memory ${MEMORY_LEVEL_OPTIONS.find((option) => option.id === memoryLevel)?.label ?? memoryLevel}`} compactLabel={MEMORY_LEVEL_OPTIONS.find((option) => option.id === memoryLevel)?.label ?? memoryLevel} icon={<span aria-hidden>●</span>} onClear={onClearMemoryLevel} />}
+        {smallModelMode && <ActiveModeChip label="Small-model workflow" compactLabel="Small model" icon={<Cpu size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={modelDisabled ? undefined : onToggleSmallModelMode} />}
         {hasReasoningEffort && <ActiveModeChip label={`Reasoning: ${currentReasoning.label}`} compactLabel={currentReasoning.label} icon={<Cpu size={12} aria-hidden />} />}
         {serviceTier && <ActiveModeChip label={`Speed: ${currentSpeed.label}`} compactLabel={currentSpeed.label} icon={<Sparkles size={12} aria-hidden />} onClear={() => onSelectSpeed('')} />}
       </div>

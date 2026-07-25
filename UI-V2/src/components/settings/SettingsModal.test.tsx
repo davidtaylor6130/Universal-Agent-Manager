@@ -431,6 +431,15 @@ describe('SettingsModal memory settings', () => {
       }),
     }))
 
+    const smallModelWorkflow = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Small-model workflow off')) as HTMLButtonElement
+    expect(smallModelWorkflow).toBeTruthy()
+    act(() => smallModelWorkflow.click())
+    expect(useAppStore.getState().setProviderChatDefaults).toHaveBeenCalledWith(expect.objectContaining({
+      providerChatDefaults: expect.objectContaining({
+        'codex-cli': expect.objectContaining({ smallModelMode: true }),
+      }),
+    }))
+
     act(() => {
       root.unmount()
     })

@@ -1140,7 +1140,7 @@ UAM_TEST(SettingsStorePersistsProviderChatDefaults)
 	AppSettings settings;
 	settings.default_new_chat_provider_id = "codex-cli";
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
-	settings.provider_chat_defaults[" CoDeX "] = ProviderChatDefaults{" gpt-5.4 ", "plan", true, false, "high", "fast"};
+	settings.provider_chat_defaults[" CoDeX "] = ProviderChatDefaults{" gpt-5.4 ", "plan", true, false, "high", "fast", "strict", true};
 #endif
 	settings.provider_chat_defaults["gemini-cli"] = ProviderChatDefaults{" flash ", "default", false, true, "high", "fast"};
 
@@ -1158,10 +1158,12 @@ UAM_TEST(SettingsStorePersistsProviderChatDefaults)
 	UAM_ASSERT_EQ(loaded.provider_chat_defaults["codex-cli"].memory_enabled, false);
 	UAM_ASSERT_EQ(loaded.provider_chat_defaults["codex-cli"].reasoning_effort, std::string("high"));
 	UAM_ASSERT_EQ(loaded.provider_chat_defaults["codex-cli"].service_tier, std::string("fast"));
+	UAM_ASSERT(loaded.provider_chat_defaults["codex-cli"].small_model_mode);
 #endif
 	UAM_ASSERT_EQ(loaded.provider_chat_defaults["gemini-cli"].model_id, std::string("flash"));
 	UAM_ASSERT_EQ(loaded.provider_chat_defaults["gemini-cli"].reasoning_effort, std::string("high"));
 	UAM_ASSERT_EQ(loaded.provider_chat_defaults["gemini-cli"].service_tier, std::string("fast"));
+	UAM_ASSERT(!loaded.provider_chat_defaults["gemini-cli"].small_model_mode);
 }
 
 UAM_TEST(SettingsStorePersistsUpdateCheckPreferences)
@@ -4124,7 +4126,7 @@ UAM_TEST(StatePatchSettingsIncludeChatDefaults)
 	app.settings.update_last_checked_at = "2026-07-13T20:00:00.000Z";
 	app.settings.dismissed_update_versions["uam"] = "4.2.0";
 	app.settings.default_new_chat_provider_id = " CoDeX ";
-	app.settings.provider_chat_defaults[" CoDeX "] = ProviderChatDefaults{" gpt-5.4 ", " plan ", true, false, " HIGH ", " FAST "};
+	app.settings.provider_chat_defaults[" CoDeX "] = ProviderChatDefaults{" gpt-5.4 ", " plan ", true, false, " HIGH ", " FAST ", "strict", true};
 	app.settings.memory_worker_bindings[" CoDeX "] = MemoryWorkerBinding{" GEMINI ", " worker-model "};
 	app.settings.markdown_store_directory = " /tmp/markdown ";
 	app.settings.default_editor_preset_id = " CLION ";
@@ -4154,6 +4156,7 @@ UAM_TEST(StatePatchSettingsIncludeChatDefaults)
 	UAM_ASSERT_EQ(settings["providerChatDefaults"]["codex-cli"].value("serviceTier", ""), std::string("fast"));
 	UAM_ASSERT_EQ(settings["providerChatDefaults"]["codex-cli"].value("memoryLevel", ""), std::string("off"));
 	UAM_ASSERT(!settings["providerChatDefaults"]["codex-cli"].value("memoryEnabled", true));
+	UAM_ASSERT(settings["providerChatDefaults"]["codex-cli"].value("smallModelMode", false));
 	UAM_ASSERT_EQ(settings["memoryWorkerBindings"]["codex-cli"].value("workerProviderId", ""), std::string("gemini-cli"));
 	UAM_ASSERT_EQ(settings["memoryWorkerBindings"]["codex-cli"].value("workerModelId", ""), std::string("worker-model"));
 	UAM_ASSERT_EQ(settings["editorFileAssociations"].size(), static_cast<std::size_t>(1));

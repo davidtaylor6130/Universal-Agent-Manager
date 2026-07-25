@@ -269,7 +269,7 @@ namespace uam
 			                       : GoalService::FindGoalById(app, chat.id, first.goal_id);
 			if (first.goal_mode && goal != nullptr && goal->status == GoalStatus::Active && !goal->objective.empty())
 			{
-				const std::string goal_prompt = GoalService::BuildContinuationPrompt(*goal, goal->tokens_used, goal->token_budget);
+				const std::string goal_prompt = GoalService::BuildContinuationPrompt(*goal, goal->tokens_used, goal->token_budget, chat.small_model_mode);
 				if (!goal_prompt.empty())
 				{
 					effective_prompt = goal_prompt + "\n\n" + effective_prompt;
@@ -395,6 +395,21 @@ namespace uam
 			}
 
 			const Goal* active_goal = GoalService::FindActiveGoal(app, chat.id);
+			if (chat.small_model_mode && active_goal == nullptr && !goal_mode && goal_id.empty())
+			{
+				std::string created_goal_id;
+				if (!GoalService::CreateGoal(app, chat.id, queued.text, 0, &created_goal_id) ||
+				    !GoalService::SetActiveGoal(app, chat.id, created_goal_id))
+				{
+					if (error_out != nullptr)
+					{
+						*error_out = "Failed to start the small-model workflow.";
+					}
+					return false;
+				}
+				SaveChatQuietly(app, chat);
+				active_goal = GoalService::FindActiveGoal(app, chat.id);
+			}
 			queued.attachments = attachments;
 			queued.goal_mode = goal_mode || active_goal != nullptr;
 			queued.goal_id = goal_id.empty() && active_goal != nullptr ? active_goal->id : goal_id;
@@ -461,7 +476,7 @@ namespace uam
 		}
 		if (session.processing || !session.queued_user_prompts.empty())
 		{
-			if (!session.queued_user_prompts.empty() && CanMergeQueuedUserPrompts(session.queued_user_prompts.back(), queued))
+			if (!chat.small_model_mode && !session.queued_user_prompts.empty() && CanMergeQueuedUserPrompts(session.queued_user_prompts.back(), queued))
 			{
 				MergeQueuedUserPrompt(session.queued_user_prompts.back(), std::move(queued));
 			}
@@ -595,7 +610,7 @@ namespace uam
 			return false;
 		}
 		std::deque<AcpQueuedUserPromptState> batch;
-		if (session.queued_user_prompts.front().priority_steer) batch.push_back(session.queued_user_prompts.front());
+		if (chat.small_model_mode || session.queued_user_prompts.front().priority_steer) batch.push_back(session.queued_user_prompts.front());
 		else batch = session.queued_user_prompts;
 		std::string error;
 		if (!StartAcpUserPromptBatch(app, session, chat, batch, &error))

@@ -27,6 +27,7 @@ export interface Session {
   commandSafetyTier?: 'off' | 'acceptEdits' | 'low' | 'medium' | 'high' | 'yolo'
   memoryEnabled?: boolean
   memoryLevel?: MemoryLevel
+  smallModelMode?: boolean
   memoryLastProcessedMessageCount?: number
   memoryLastProcessedAt?: string
   messageCount?: number

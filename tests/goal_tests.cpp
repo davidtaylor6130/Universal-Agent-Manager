@@ -50,6 +50,34 @@ UAM_TEST(GoalServiceMaintainsOnlyOneActiveGoalPerChat)
 	UAM_ASSERT_EQ(std::ranges::count(app.chats.front().goals, GoalStatus::Active, &Goal::status), static_cast<std::ptrdiff_t>(1));
 }
 
+UAM_TEST(GoalServiceSmallModelPromptPlansThenExecutesOneDurableStep)
+{
+	Goal goal;
+	goal.objective = "Implement and verify the parser fix.";
+
+	const std::string planning_prompt = uam::GoalService::BuildContinuationPrompt(goal, 0, 0, true);
+	UAM_ASSERT(planning_prompt.find("This is the planning turn") != std::string::npos);
+	UAM_ASSERT(planning_prompt.find("do not edit files") != std::string::npos);
+	UAM_ASSERT(planning_prompt.find("3-8 ordered atomic, verifiable steps") != std::string::npos);
+
+	goal.loop_count = 1;
+	goal.completed_items = {"Located the shared parser"};
+	goal.remaining_items = {"Add the parser guard", "Run the parser test"};
+	goal.current_step = "Add the parser guard";
+	goal.last_verification = "Parser test reproduces the failure";
+	const std::string worker_prompt = uam::GoalService::BuildContinuationPrompt(
+	    goal, 120, 1000, true, "Add one guard in parser.cpp and run the focused parser test.");
+	UAM_ASSERT(worker_prompt.find("Execute exactly one atomic step") != std::string::npos);
+	UAM_ASSERT(worker_prompt.find("Add one guard in parser.cpp") != std::string::npos);
+	UAM_ASSERT(worker_prompt.find("Located the shared parser") != std::string::npos);
+	UAM_ASSERT(worker_prompt.find("Parser test reproduces the failure") != std::string::npos);
+
+	goal.loop_count = 0;
+	const std::string review_prompt = uam::GoalService::BuildReviewPrompt(goal, goal.objective, "1. Inspect parser\n2. Add guard", 0, true);
+	UAM_ASSERT(review_prompt.find("mandatory planning turn") != std::string::npos);
+	UAM_ASSERT(review_prompt.find("ONLY output must be a single JSON object") != std::string::npos);
+}
+
 UAM_TEST(GoalServiceStatusBlockerAndTokenUpdatesMarkParentAndClearActive)
 {
 	uam::AppState app;
@@ -215,6 +243,7 @@ UAM_TEST(ChatRepositoryPersistsPausedGoalProgressState)
 	TempDir temp("uam-goal-progress-state");
 	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
 	chat.id = "chat-goal-progress";
+	chat.small_model_mode = true;
 	Goal goal;
 	goal.id = "goal-progress";
 	goal.objective = "Track durable progress.";
@@ -246,6 +275,7 @@ UAM_TEST(ChatRepositoryPersistsPausedGoalProgressState)
 	UAM_ASSERT_EQ(loaded_goal.last_next_prompt, std::string("Do second"));
 	UAM_ASSERT_EQ(loaded_goal.same_next_prompt_count, 2);
 	UAM_ASSERT_EQ(loaded_goal.loop_count, 3);
+	UAM_ASSERT(loaded.front().small_model_mode);
 }
 
 UAM_TEST(GoalServiceParseReviewDecisionAllowsWrappedStrictJson)
@@ -338,6 +368,70 @@ UAM_TEST(AcpGoalReviewTurnQueuesWorkerContinuationWithoutReviewingReviewOutput)
 	UAM_ASSERT_EQ(raw_session->queued_prompt, std::string("Apply the runtime guard."));
 	UAM_ASSERT_EQ(app.chats.front().goals.front().last_next_prompt, std::string("Apply the runtime guard."));
 	UAM_ASSERT_EQ(app.chats.front().goals.front().same_next_prompt_count, 1);
+
+	raw_session->queued_prompt.clear();
+	raw_session->prompt_request_id = 11;
+	raw_session->pending_request_methods[11] = uam::acp_methods::kSessionPrompt;
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Applied the runtime guard and ran its focused test."}}}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":11,"result":{}})"));
+	UAM_ASSERT_EQ(raw_session->goal_turn_kind, std::string("review"));
+	UAM_ASSERT(raw_session->goal_review_turn);
+	UAM_ASSERT(raw_session->goal_review_scheduled);
+	UAM_ASSERT_EQ(raw_session->goal_review_user_prompt, std::string("Apply the runtime guard."));
+	UAM_ASSERT_EQ(raw_session->goal_review_assistant_text, std::string("Applied the runtime guard and ran its focused test."));
+	UAM_ASSERT(raw_session->queued_prompt.find("You are a goal review agent") != std::string::npos);
+}
+
+UAM_TEST(AcpInvalidGoalReviewRetriesOnceThenBlocksInsteadOfCompleting)
+{
+	TempDir temp("uam-invalid-goal-review");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-invalid-review";
+	chat.provider_id = "gemini-cli";
+	Goal goal;
+	goal.id = "goal-invalid-review";
+	goal.objective = "Implement work that must not be marked complete by malformed output.";
+	goal.status = GoalStatus::Active;
+	chat.active_goal_id = goal.id;
+	chat.goals.push_back(goal);
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-invalid-review";
+	session->provider_id = "gemini-cli";
+	session->session_ready = true;
+	session->processing = true;
+	session->prompt_request_id = 10;
+	session->pending_request_methods[10] = uam::acp_methods::kSessionPrompt;
+	session->goal_turn_kind = "review";
+	session->goal_review_turn = true;
+	session->goal_review_scheduled = true;
+	session->goal_review_goal_id = goal.id;
+	session->goal_review_user_prompt = "Implement the work.";
+	session->goal_review_assistant_text = "I made partial progress.";
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Goal Review COMPLETE"}}}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":10,"result":{}})"));
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+	UAM_ASSERT_EQ(raw_session->goal_review_repair_attempts, 1);
+	UAM_ASSERT(raw_session->goal_review_turn);
+	UAM_ASSERT(raw_session->queued_prompt.find("only repair attempt") != std::string::npos);
+
+	raw_session->queued_prompt.clear();
+	raw_session->prompt_request_id = 11;
+	raw_session->pending_request_methods[11] = uam::acp_methods::kSessionPrompt;
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Still not JSON"}}}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":11,"result":{}})"));
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Blocked);
+	UAM_ASSERT(app.chats.front().active_goal_id.empty());
+	UAM_ASSERT_EQ(app.chats.front().goals.front().last_diagnostic, std::string("goal_blocked_invalid_review"));
+	UAM_ASSERT(!raw_session->diagnostics.empty());
+	UAM_ASSERT_EQ(raw_session->diagnostics.back().reason, std::string("goal_blocked_invalid_review"));
 }
 
 UAM_TEST(AcpGoalReviewContinuationHonorsConfiguredLoopCap)

@@ -262,6 +262,7 @@ namespace uam
 		std::string goal_review_goal_id;
 		std::string goal_review_user_prompt;
 		std::string goal_review_assistant_text;
+		int goal_review_repair_attempts = 0;
 		bool ignore_session_updates_until_ready = false;
 		bool codex_resume_fallback_attempted = false;
 		bool gemini_resume_fallback_attempted = false;

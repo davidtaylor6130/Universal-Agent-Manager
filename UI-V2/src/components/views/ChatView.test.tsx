@@ -19,7 +19,8 @@ function openWorkspaceActions(host: HTMLElement) {
     (host.querySelector('button[aria-label="Workspace actions"]') as HTMLButtonElement | null)
       ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
   })
-  return Array.from(document.body.querySelectorAll<HTMLElement>('[role="menu"][aria-label="Workspace actions"]')).at(-1) ?? null
+  const menus = Array.from(document.body.querySelectorAll<HTMLElement>('[role="menu"][aria-label="Workspace actions"]'))
+  return menus[menus.length - 1] ?? null
 }
 
 describe('ChatView', () => {
@@ -3454,7 +3455,7 @@ describe('ChatView', () => {
     })
 
     const workspaceMenu = openWorkspaceActions(host)
-    const discardButton = Array.from(workspaceMenu?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Discard & return') as HTMLButtonElement | undefined
+    const discardButton = Array.from(workspaceMenu?.querySelectorAll<HTMLButtonElement>('button') ?? []).find((button) => button.textContent === 'Discard & return')
     expect(discardButton).toBeTruthy()
 
     await act(async () => {
@@ -3516,7 +3517,7 @@ describe('ChatView', () => {
     })
 
     const workspaceMenu = openWorkspaceActions(host)
-    const discardButton = Array.from(workspaceMenu?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Discard & return') as HTMLButtonElement | undefined
+    const discardButton = Array.from(workspaceMenu?.querySelectorAll<HTMLButtonElement>('button') ?? []).find((button) => button.textContent === 'Discard & return')
     expect(discardButton).toBeTruthy()
 
     await act(async () => {

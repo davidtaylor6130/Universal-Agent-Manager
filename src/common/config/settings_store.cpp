@@ -275,6 +275,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 			    defaults.reasoning_effort,
 			    defaults.service_tier,
 			    defaults.memory_level,
+			    defaults.small_model_mode ? "1" : "0",
 			}, kSettingsFieldDelimiterText));
 		}
 		return uam::strings::JoinNonEmpty(encoded_entries, kSettingsEntryDelimiterText);
@@ -299,6 +300,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 			defaults.reasoning_effort = uam::DecodedLineFieldOr(fields, 5, "");
 			defaults.service_tier = uam::DecodedLineFieldOr(fields, 6, "");
 			defaults.memory_level = uam::memory_levels::Normalize(uam::DecodedLineFieldOr(fields, 7, ""), defaults.memory_enabled);
+			defaults.small_model_mode = BoolFieldOr(fields, 8, false);
 
 			std::string provider_id;
 			if (!TryNormalizeProviderChatDefaults(uam::DecodedLineFieldOr(fields, 0, ""), defaults, provider_id, defaults))
