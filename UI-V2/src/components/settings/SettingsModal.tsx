@@ -413,6 +413,7 @@ export function SettingsModal() {
       autoApproveCommands: saved?.autoApproveCommands ?? false,
       memoryLevel: saved?.memoryLevel ?? memoryLevelDefault,
       memoryEnabled: saved?.memoryEnabled ?? memoryEnabledDefault,
+      smallModelMode: saved?.smallModelMode ?? false,
       reasoningEffort: saved?.reasoningEffort ?? '',
       serviceTier: saved?.serviceTier ?? '',
     }
@@ -1029,6 +1030,17 @@ export function SettingsModal() {
                               })
                             )}
                           </div>
+                        </div>
+                        <div className="grid gap-1">
+                          <Button
+                            variant={defaults.smallModelMode ? 'primary' : 'secondary'}
+                            size="sm"
+                            aria-pressed={defaults.smallModelMode}
+                            onClick={() => updateProviderDefaults(provider.id, { ...defaults, smallModelMode: !defaults.smallModelMode })}
+                          >
+                            {defaults.smallModelMode ? 'Small-model workflow on' : 'Small-model workflow off'}
+                          </Button>
+                          <span style={{ color: 'var(--text-3)' }}>Plan first, then run and review one verified step at a time.</span>
                         </div>
                         <div className="flex items-center gap-2">
                           <IconButton icon={<RefreshCw size={14} className={modelsLoading ? 'animate-spin' : ''} />} label={`Refresh ${providerName} models`} disabled={!providerSession || modelsLoading} onClick={() => providerSession && void discoverProviderModels(providerSession.id)} />

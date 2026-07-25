@@ -70,6 +70,7 @@ export interface CppChat {
   commandSafetyTier?: 'off' | 'acceptEdits' | 'low' | 'medium' | 'high' | 'yolo'
   memoryEnabled?: boolean
   memoryLevel?: MemoryLevel
+  smallModelMode?: boolean
   memoryLastProcessedMessageCount?: number
   memoryLastProcessedAt?: string
   workspaceDirectory?: string
@@ -352,6 +353,7 @@ export interface ProviderChatDefaults {
   autoApproveCommands: boolean
   memoryEnabled: boolean
   memoryLevel?: MemoryLevel
+  smallModelMode?: boolean
   reasoningEffort: string
   serviceTier: string
 }

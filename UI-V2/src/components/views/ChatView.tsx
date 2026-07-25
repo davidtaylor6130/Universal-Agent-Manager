@@ -220,6 +220,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const setSessionApprovalMode = useAppStore((s) => s.setSessionApprovalMode)
   const setSessionCommandSafetyTier = useAppStore((s) => s.setSessionCommandSafetyTier)
   const setSessionMemoryLevel = useAppStore((s) => s.setSessionMemoryLevel)
+  const setSessionSmallModelMode = useAppStore((s) => s.setSessionSmallModelMode)
   const configuredApprovalMode = useAppStore((s) => s.sessions.find((candidate) => candidate.id === session.id)?.approvalMode)
   const openSessionWorkspace = useAppStore((s) => s.openSessionWorkspace)
   const openSessionWorkspaceEditor = useAppStore((s) => s.openSessionWorkspaceEditor)
@@ -1985,6 +1986,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               memoryLevel={currentMemoryLevel}
               defaultMemoryLevel={defaultMemoryLevel}
               memoryChipVisible={memoryChipExplicit || currentMemoryLevel !== defaultMemoryLevel}
+              smallModelMode={session.smallModelMode ?? false}
               canChangeProvider={canChangeProvider}
               providerOpen={providerOpen}
               modelOpen={modelOpen}
@@ -2034,6 +2036,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 setMemoryChipExplicit(false)
                 void setSessionMemoryLevel(session.id, defaultMemoryLevel)
               }}
+              onToggleSmallModelMode={() => void setSessionSmallModelMode(session.id, !(session.smallModelMode ?? false))}
               goalArmed={goalArmNextMessage}
               goalActive={Boolean(activeGoal)}
               goalPaused={Boolean(goalPaused)}

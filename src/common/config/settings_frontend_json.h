@@ -59,6 +59,7 @@ namespace uam::settings_frontend_json
 			    {"memoryLevel", uam::memory_levels::Normalize(entry.second.memory_level, entry.second.memory_enabled)},
 			    {"reasoningEffort", uam::codex::NormalizeReasoningEffort(entry.second.reasoning_effort)},
 			    {"serviceTier", uam::codex::NormalizeServiceTier(entry.second.service_tier)},
+			    {"smallModelMode", entry.second.small_model_mode},
 			};
 		}
 		return defaults_json;

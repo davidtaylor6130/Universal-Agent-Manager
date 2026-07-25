@@ -174,6 +174,7 @@ namespace uam
 			session_json["commandSafetyTier"] = session.command_safety_tier;
 			session_json["memoryLevel"] = uam::memory_levels::Normalize(session.memory_level, session.memory_enabled);
 			session_json["memoryEnabled"] = uam::memory_levels::IsEnabled(session.memory_level, session.memory_enabled);
+			session_json["smallModelMode"] = session.small_model_mode;
 			session_json["memoryLastProcessedMessageCount"] = session.memory_last_processed_message_count;
 			session_json["memoryLastProcessedAt"] = session.memory_last_processed_at;
 			session_json["workspaceDirectory"] = std::string(workspace_directory);

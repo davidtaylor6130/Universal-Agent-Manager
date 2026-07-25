@@ -105,6 +105,7 @@ export function ComposerToolbar({
   memoryLevel,
   defaultMemoryLevel,
   memoryChipVisible,
+  smallModelMode,
   canChangeProvider,
   providerOpen,
   modelOpen,
@@ -124,6 +125,7 @@ export function ComposerToolbar({
   onSetCommandSafetyTier,
   onSelectMemoryLevel,
   onClearMemoryLevel,
+  onToggleSmallModelMode,
   goalArmed,
   goalActive,
   goalPaused,
@@ -156,6 +158,7 @@ export function ComposerToolbar({
   memoryLevel: MemoryLevel
   defaultMemoryLevel: MemoryLevel
   memoryChipVisible: boolean
+  smallModelMode: boolean
   canChangeProvider: boolean
   providerOpen: boolean
   modelOpen: boolean
@@ -175,6 +178,7 @@ export function ComposerToolbar({
   onSetCommandSafetyTier: (tier: 'low' | 'medium' | 'high') => void
   onSelectMemoryLevel: (level: MemoryLevel) => void
   onClearMemoryLevel: () => void
+  onToggleSmallModelMode: () => void
   goalArmed: boolean
   goalActive: boolean
   goalPaused: boolean
@@ -440,6 +444,18 @@ export function ComposerToolbar({
             />
             <button
               type="button"
+              title="Plan first, then run and review one verified step at a time"
+              aria-pressed={smallModelMode}
+              onClick={onToggleSmallModelMode}
+              disabled={modelDisabled}
+              className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
+              style={{ ...chipStyle, borderColor: smallModelMode ? 'color-mix(in srgb, var(--accent) 55%, var(--border))' : 'var(--border)', background: smallModelMode ? 'var(--accent-dim)' : chipStyle.background, color: smallModelMode ? 'var(--text)' : 'var(--text-2)', opacity: modelDisabled ? 0.55 : 1 }}
+            >
+              <Cpu size={13} aria-hidden />
+              <span>Small-model workflow {smallModelMode ? 'on' : 'off'}</span>
+            </button>
+            <button
+              type="button"
               title="Open Skills"
               onClick={() => { setOptionsOpen(false); onOpenMarkdownStore() }}
               className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
@@ -479,6 +495,7 @@ export function ComposerToolbar({
       {planActive && <ActiveModeChip label="Plan" icon={<ClipboardList size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={() => onSelectAgentMode('default')} />}
       {permissionModeId !== 'default' && <ActiveModeChip label={permissionModeId === 'auto' ? `Auto Decide: ${COMMAND_SAFETY_TIERS.find((tier) => tier.id === commandSafetyTier)?.label ?? 'Medium'}` : permissionMode.name} icon={permissionModeIcon(permissionModeId, 12)} onClear={() => onSelectPermissionMode('default')} />}
       {memoryChipVisible && <ActiveModeChip label={`Memory ${MEMORY_LEVEL_OPTIONS.find((option) => option.id === memoryLevel)?.label ?? memoryLevel}`} icon={<span aria-hidden>●</span>} onClear={onClearMemoryLevel} />}
+      {smallModelMode && <ActiveModeChip label="Small-model workflow" icon={<Cpu size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={modelDisabled ? undefined : onToggleSmallModelMode} />}
       {hasReasoningEffort && <ActiveModeChip label={`Reasoning: ${currentReasoning.label}`} icon={<Cpu size={12} aria-hidden />} />}
       {serviceTier && <ActiveModeChip label={`Speed: ${currentSpeed.label}`} icon={<Sparkles size={12} aria-hidden />} onClear={() => onSelectSpeed('')} />}
       <div className="ml-auto flex items-center gap-2">
@@ -621,6 +638,10 @@ export function ComposerToolbar({
                 <div className="flex justify-between gap-3">
                   <span style={{ color: 'var(--text-3)' }}>Memory</span>
                   <span>{MEMORY_LEVEL_OPTIONS.find((option) => option.id === memoryLevel)?.label ?? 'Strict'}</span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span style={{ color: 'var(--text-3)' }}>Small-model workflow</span>
+                  <span>{smallModelMode ? 'On' : 'Off'}</span>
                 </div>
                 <label className="grid gap-1">
                   <span style={{ color: 'var(--text-3)' }}>Goal token budget</span>

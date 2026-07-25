@@ -108,6 +108,7 @@ void ResetAcpRuntimeState(AcpSessionState& session)
 	session.goal_review_goal_id.clear();
 	session.goal_review_user_prompt.clear();
 	session.goal_review_assistant_text.clear();
+	session.goal_review_repair_attempts = 0;
 	session.ignore_session_updates_until_ready = false;
 	session.codex_resume_fallback_attempted = false;
 	session.gemini_resume_fallback_attempted = false;
@@ -476,6 +477,10 @@ bool QueueGoalInternalPrompt(AcpSessionState& session, ChatSession& chat, const 
 	session.queued_prompt = prompt;
 	session.goal_turn_kind = review_turn ? std::string(kGoalTurnKindReview) : std::string(kGoalTurnKindWorkerContinuation);
 	session.goal_review_turn = review_turn;
+	if (!review_turn)
+	{
+		session.goal_review_user_prompt = prompt;
+	}
 	AppendGoalLoopDiagnostic(session, review_turn ? "queue_review" : "queue_worker_continuation", session.goal_review_goal_id, prompt);
 	session.processing = true;
 	session.cancel_requested = false;

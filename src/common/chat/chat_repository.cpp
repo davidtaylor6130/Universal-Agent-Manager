@@ -108,6 +108,7 @@ namespace
 	constexpr std::string_view kChatMemoryEnabledField = "memory_enabled";
 	constexpr std::string_view kChatMemoryLastProcessedMessageCountField = "memory_last_processed_message_count";
 	constexpr std::string_view kChatMemoryLastProcessedAtField = "memory_last_processed_at";
+	constexpr std::string_view kChatSmallModelModeField = "small_model_mode";
 	constexpr std::string_view kChatMessagesField = "messages";
 
 	MessageRole ParseLegacyMessageRoleFromFilename(const fs::path& message_file)
@@ -623,7 +624,7 @@ namespace
 
 	bool ChatProviderFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
 	{
-		if (lhs.approval_mode != rhs.approval_mode || lhs.auto_approve_commands != rhs.auto_approve_commands || lhs.command_safety_tier != rhs.command_safety_tier || lhs.model_id != rhs.model_id)
+		if (lhs.approval_mode != rhs.approval_mode || lhs.auto_approve_commands != rhs.auto_approve_commands || lhs.command_safety_tier != rhs.command_safety_tier || lhs.model_id != rhs.model_id || lhs.small_model_mode != rhs.small_model_mode)
 		{
 			return false;
 		}
@@ -744,6 +745,7 @@ namespace
 		chat.memory_enabled = uam::memory_levels::IsEnabled(chat.memory_level);
 		chat.memory_last_processed_message_count = NonNegativeIntFieldOrZero(root.Find(kChatMemoryLastProcessedMessageCountField));
 		chat.memory_last_processed_at = JsonStringOrEmpty(root.Find(kChatMemoryLastProcessedAtField));
+		chat.small_model_mode = JsonBoolOrDefault(root.Find(kChatSmallModelModeField), false);
 
 		// Load goals array
 		if (const JsonValue* goals_arr = uam::json::ArrayOrNull(root.Find("goals")); goals_arr != nullptr)
@@ -951,6 +953,7 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 	uam::json::SetBool(root, kChatMemoryEnabledField, uam::memory_levels::IsEnabled(memory_level));
 	uam::json::SetNumber(root, kChatMemoryLastProcessedMessageCountField, static_cast<double>(chat.memory_last_processed_message_count));
 	uam::json::SetString(root, kChatMemoryLastProcessedAtField, chat.memory_last_processed_at);
+	uam::json::SetBool(root, kChatSmallModelModeField, chat.small_model_mode);
 
 	if (chat.messages_loaded && !chat.messages.empty())
 	{
@@ -1179,6 +1182,7 @@ namespace
 		hydrated.memory_enabled = summary.memory_enabled;
 		hydrated.memory_last_processed_message_count = summary.memory_last_processed_message_count;
 		hydrated.memory_last_processed_at = summary.memory_last_processed_at;
+		hydrated.small_model_mode = summary.small_model_mode;
 	}
 
 	ChatSession BuildRecoveredChatFromBackup(const fs::path& backup_path, const LoadChatResult& backup_chat, bool include_messages, const std::string& recovered_id)

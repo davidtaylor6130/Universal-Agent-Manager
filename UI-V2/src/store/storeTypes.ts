@@ -125,6 +125,7 @@ export interface AppState {
   setSessionCommandSafetyTier: (id: string, tier: 'off' | 'acceptEdits' | 'low' | 'medium' | 'high' | 'yolo') => Promise<boolean>
   setSessionMemoryEnabled: (id: string, enabled: boolean) => Promise<boolean>
   setSessionMemoryLevel: (id: string, level: MemoryLevel) => Promise<boolean>
+  setSessionSmallModelMode: (id: string, enabled: boolean) => Promise<boolean>
   setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryLevelDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'goalMaxLoopIterations' | 'memoryWorkerBindings'>>) => Promise<boolean>
   setVoiceInputSettings: (settings: Pick<AppState, 'voiceInputMode' | 'voiceInputServerBaseUrl' | 'voiceInputServerEndpoint' | 'voiceInputServerModel' | 'voiceInputApiKeyEnv'>) => Promise<boolean>
   setUpdateSettings: (settings: Partial<Pick<AppState, 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>) => Promise<boolean>

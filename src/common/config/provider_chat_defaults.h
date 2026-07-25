@@ -72,6 +72,7 @@ namespace uam::provider_chat_defaults
 		chat.memory_enabled = defaults.memory_enabled;
 		chat.reasoning_effort = defaults.reasoning_effort;
 		chat.service_tier = defaults.service_tier;
+		chat.small_model_mode = defaults.small_model_mode;
 	}
 
 	inline void ApplyToChat(const AppSettings& settings, ChatSession& chat)

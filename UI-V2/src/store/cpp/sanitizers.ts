@@ -668,6 +668,7 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     commandSafetyTier: normalizeCommandSafetyTier(value.commandSafetyTier),
     memoryEnabled: normalizeMemoryLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)) !== 'off',
     memoryLevel: normalizeMemoryLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)),
+    smallModelMode: booleanOr(value.smallModelMode),
     memoryLastProcessedMessageCount: finiteNumberOr(value.memoryLastProcessedMessageCount, 0),
     memoryLastProcessedAt: isString(value.memoryLastProcessedAt) ? value.memoryLastProcessedAt : undefined,
     workspaceDirectory: isString(value.workspaceDirectory) ? value.workspaceDirectory : undefined,
@@ -1069,6 +1070,7 @@ export function sanitizeProviderChatDefaults(value: unknown): ProviderChatDefaul
       autoApproveCommands: false,
       memoryEnabled: true,
       memoryLevel: 'strict',
+      smallModelMode: false,
       reasoningEffort: '',
       serviceTier: '',
     }
@@ -1079,6 +1081,7 @@ export function sanitizeProviderChatDefaults(value: unknown): ProviderChatDefaul
     autoApproveCommands: booleanOr(value.autoApproveCommands),
     memoryEnabled: normalizeMemoryLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)) !== 'off',
     memoryLevel: normalizeMemoryLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)),
+    smallModelMode: booleanOr(value.smallModelMode),
     reasoningEffort: normalizeCodexReasoningEffort(value.reasoningEffort),
     serviceTier: normalizeCodexServiceTier(value.serviceTier),
   }

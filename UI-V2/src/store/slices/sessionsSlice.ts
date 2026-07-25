@@ -335,6 +335,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         autoApproveCommands: defaults.autoApproveCommands,
         memoryLevel: defaults.memoryLevel,
         memoryEnabled: defaults.memoryEnabled,
+        smallModelMode: defaults.smallModelMode,
         createdAt: now,
         updatedAt: now,
         lastOpenedAt: now,
@@ -818,6 +819,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               autoApproveCommands: defaults.autoApproveCommands,
               memoryLevel: defaults.memoryLevel,
               memoryEnabled: defaults.memoryEnabled,
+              smallModelMode: defaults.smallModelMode,
               updatedAt: new Date(),
             } : s
           ),
@@ -1120,6 +1122,47 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
     setSessionMemoryEnabled: async (id: string, enabled: boolean): Promise<boolean> => {
       return get().setSessionMemoryLevel(id, enabled ? 'strict' : 'off')
+    },
+
+    setSessionSmallModelMode: async (id: string, enabled: boolean): Promise<boolean> => {
+      const previousSession = get().sessions.find((s) => s.id === id)
+      if (!previousSession || (previousSession.smallModelMode ?? false) === enabled) {
+        return Boolean(previousSession)
+      }
+
+      const applyMode = () => {
+        set((state) => ({
+          sessions: state.sessions.map((s) =>
+            s.id === id ? { ...s, smallModelMode: enabled, updatedAt: new Date() } : s
+          ),
+        }))
+      }
+
+      if (isCefContext()) {
+        const requestKey = `setSessionSmallModelMode:${id}`
+        const requestId = createRequestId('setSessionSmallModelMode')
+        rememberPendingRequest(requestKey, requestId)
+        applyMode()
+        const response = await sendToCEF({
+          action: 'setChatSmallModelMode',
+          payload: { chatId: id, enabled },
+          requestId,
+        })
+        if (response.ok) {
+          clearPendingRequest(requestKey, response.requestId)
+          return true
+        }
+        if (isLatestPendingRequest(requestKey, response.requestId)) {
+          set((state) => ({
+            sessions: state.sessions.map((s) => (s.id === id ? previousSession : s)),
+          }))
+          pendingRequestIdsByKey.delete(requestKey)
+        }
+        return false
+      }
+
+      applyMode()
+      return true
     },
 
     setSessionMemoryLevel: async (id: string, level: MemoryLevel): Promise<boolean> => {

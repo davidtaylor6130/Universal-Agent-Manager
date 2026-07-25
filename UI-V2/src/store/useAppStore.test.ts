@@ -962,6 +962,7 @@ describe('useAppStore Gemini CLI slice', () => {
         autoApproveCommands: false,
         memoryEnabled: true,
         memoryLevel: 'strict',
+        smallModelMode: false,
         reasoningEffort: '',
         serviceTier: '',
       },
@@ -1031,6 +1032,7 @@ describe('useAppStore Gemini CLI slice', () => {
         autoApproveCommands: false,
         memoryEnabled: true,
         memoryLevel: 'strict',
+        smallModelMode: false,
         reasoningEffort: '',
         serviceTier: '',
       },
@@ -1056,6 +1058,7 @@ describe('useAppStore Gemini CLI slice', () => {
           approvalMode: 'plan',
           autoApproveCommands: true,
           memoryEnabled: false,
+          smallModelMode: true,
           reasoningEffort: 'high',
           serviceTier: 'fast',
         },
@@ -1075,6 +1078,7 @@ describe('useAppStore Gemini CLI slice', () => {
         autoApproveCommands: true,
         memoryEnabled: false,
         memoryLevel: 'off',
+        smallModelMode: true,
         reasoningEffort: 'high',
         serviceTier: 'fast',
       },
@@ -1096,6 +1100,7 @@ describe('useAppStore Gemini CLI slice', () => {
       approvalMode: 'plan',
       autoApproveCommands: true,
       memoryEnabled: false,
+      smallModelMode: true,
       reasoningEffort: 'high',
       serviceTier: 'fast',
     })
@@ -1528,6 +1533,7 @@ describe('useAppStore Gemini CLI slice', () => {
           approvalMode: 'acceptEdits',
           autoApproveCommands: true,
           memoryEnabled: false,
+          smallModelMode: true,
           reasoningEffort: 'xhigh',
           serviceTier: 'fast',
         },
@@ -1549,6 +1555,7 @@ describe('useAppStore Gemini CLI slice', () => {
         autoApproveCommands: true,
         memoryEnabled: false,
         memoryLevel: 'off',
+        smallModelMode: true,
         reasoningEffort: 'xhigh',
         serviceTier: 'fast',
       },
@@ -1558,6 +1565,7 @@ describe('useAppStore Gemini CLI slice', () => {
         autoApproveCommands: false,
         memoryEnabled: true,
         memoryLevel: 'strict',
+        smallModelMode: false,
         reasoningEffort: '',
         serviceTier: '',
       },
@@ -1627,6 +1635,7 @@ describe('useAppStore Gemini CLI slice', () => {
         autoApproveCommands: true,
         memoryEnabled: false,
         memoryLevel: 'off' as const,
+        smallModelMode: false,
         reasoningEffort: 'high',
         serviceTier: 'fast',
       },
@@ -2310,6 +2319,7 @@ describe('useAppStore Gemini CLI slice', () => {
   it('deserializes memory state and toggles chat memory through CEF', async () => {
     const cppState = makeCppState(1)
     cppState.chats[0].memoryEnabled = false
+    cppState.chats[0].smallModelMode = true
     cppState.chats[0].memoryLastProcessedMessageCount = 3
     cppState.chats[0].memoryLastProcessedAt = '2026-01-01T00:00:02.000Z'
     cppState.settings.memoryEnabledDefault = false
@@ -2339,6 +2349,7 @@ describe('useAppStore Gemini CLI slice', () => {
 
     useAppStore.getState().loadFromCef(cppState)
     expect(useAppStore.getState().sessions[0].memoryEnabled).toBe(false)
+    expect(useAppStore.getState().sessions[0].smallModelMode).toBe(true)
     expect(useAppStore.getState().sessions[0].memoryLastProcessedMessageCount).toBe(3)
     expect(useAppStore.getState().memoryEnabledDefault).toBe(false)
     expect(useAppStore.getState().memoryIdleDelaySeconds).toBe(90)
@@ -2368,6 +2379,11 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(requests[0].payload).toEqual({ chatId: 'chat-1', enabled: true, memoryLevel: 'strict' })
     expect(useAppStore.getState().sessions[0].memoryEnabled).toBe(true)
     expect(useAppStore.getState().sessions[0].memoryLevel).toBe('strict')
+
+    await expect(useAppStore.getState().setSessionSmallModelMode('chat-1', false)).resolves.toBe(true)
+    expect(requests[1].action).toBe('setChatSmallModelMode')
+    expect(requests[1].payload).toEqual({ chatId: 'chat-1', enabled: false })
+    expect(useAppStore.getState().sessions[0].smallModelMode).toBe(false)
   })
 
   it('persists editor settings through CEF', async () => {

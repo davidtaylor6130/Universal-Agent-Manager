@@ -554,3 +554,40 @@ void UamQueryHandler::HandleSetChatMemoryEnabled(CefRefPtr<CefBrowser> browser, 
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
+
+void UamQueryHandler::HandleSetChatSmallModelMode(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const std::optional<bool> enabled = uam::nlohmann_json::BoolFieldStrict(payload, "enabled");
+	if (!enabled)
+	{
+		cb->Failure(400, "Small-model mode must be a boolean.");
+		return;
+	}
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (chat == nullptr)
+	{
+		return;
+	}
+	if (chat->small_model_mode == *enabled)
+	{
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		cb->Success("{}");
+		return;
+	}
+
+	const bool previous = chat->small_model_mode;
+	const std::string previous_updated_at = chat->updated_at;
+	chat->small_model_mode = *enabled;
+	chat->updated_at = uam::time::TimestampNow();
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Small-model workflow updated.", "Small-model workflow changed in UI, but failed to save."))
+	{
+		chat->small_model_mode = previous;
+		chat->updated_at = previous_updated_at;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist small-model workflow."));
+		return;
+	}
+
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
